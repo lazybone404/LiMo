@@ -380,6 +380,7 @@ async def generate_stream(transcript_id: str, request: Request,
     if "screenshot" in format_list and source_type == "video" and not video_understanding:
         source_url = tx.get("sourceUrl", "")
         if source_url:
+            logger.info("原片截图：开始下载视频 %s", source_url[:80])
             cookies = ""
             auth = config.get("auth", {})
             url_lower = source_url.lower()
@@ -392,6 +393,10 @@ async def generate_stream(transcript_id: str, request: Request,
             from app.generation.content_preparer import ContentPreparer as _CP
             screenshot_video_path = await loop.run_in_executor(
                 None, _CP._download_video, source_url, cookies)
+            if screenshot_video_path:
+                logger.info("原片截图：视频下载完成 %s", screenshot_video_path)
+            else:
+                logger.warning("原片截图：视频下载失败，截图将不可用")
 
     guard = request.app.state.guard
     cancel_event = asyncio.Event()
@@ -425,11 +430,13 @@ async def generate_stream(transcript_id: str, request: Request,
                 polished_prompt = build_polish_prompt(
                     clean_text, tx.get("title", ""), style, source_type,
                     formats=format_list, user_notes=user_notes,
-                    target_language=target_language)
+                    target_language=target_language,
+                    video_understanding=video_understanding)
                 notes_prompt = build_notes_prompt(
                     clean_text, tx.get("title", ""), style, source_type,
                     formats=format_list, user_notes=user_notes,
-                    target_language=target_language)
+                    target_language=target_language,
+                    video_understanding=video_understanding)
 
                 # 续写：把残缺内容加进去
                 if partial_content:
@@ -548,13 +555,15 @@ async def generate_stream(transcript_id: str, request: Request,
                 prompt = build_polish_prompt(
                     clean_text, tx.get("title", ""), style, source_type,
                     formats=format_list, user_notes=user_notes,
-                    target_language=target_language)
+                    target_language=target_language,
+                    video_understanding=video_understanding)
             else:
                 from app.generation.prompt import build_notes_prompt
                 prompt = build_notes_prompt(
                     clean_text, tx.get("title", ""), style, source_type,
                     formats=format_list, user_notes=user_notes,
-                    target_language=target_language)
+                    target_language=target_language,
+                    video_understanding=video_understanding)
 
             if partial_content:
                 prompt = _build_continue_prompt(prompt, partial_content)

@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import fitz  # PyMuPDF
 
+from app.core.errors import FatalError
 from app.core.types import PipelineInput, AdapterOutput, RawMetadata, InputType, ProgressEvent
 from app.core.protocols import PipelineAdapter
 from app.core.registry import EngineRegistry

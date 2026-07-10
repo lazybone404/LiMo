@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import re
+import shutil
 import zipfile
 from datetime import datetime
 

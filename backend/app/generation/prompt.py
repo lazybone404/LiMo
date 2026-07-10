@@ -99,8 +99,10 @@ def get_toc_format() -> str:
 def get_link_format() -> str:
     return """\n10. **原片跳转**: 在每个 ## 章节正文第一行插入时间戳标记 `*Content-[mm:ss]`，表示该章节对应的视频时间点。不要将标记放在标题行中，不要在目录中加此标记。"""
 
-def get_screenshot_format() -> str:
-    return """\n11. **原片截图（必须执行）**: 每个 ## 章节末尾必须插入截图占位符 `*Screenshot-[mm:ss]`，时间戳从你看到的网格图左上角黄色数字中选取最相关的帧。即使某章节无明显的视觉内容，也应选取该时间段最接近的画面。"""
+def get_screenshot_format(has_visual: bool = False) -> str:
+    if has_visual:
+        return """\n11. **原片截图（必须执行）**: 每个 ## 章节末尾必须插入截图占位符 `*Screenshot-[mm:ss]`，时间戳从你看到的网格图左上角黄色数字中选取最相关的帧。即使某章节无明显的视觉内容，也应选取该时间段最接近的画面。"""
+    return """\n11. **原片截图（必须执行）**: 每个 ## 章节末尾必须插入截图占位符 `*Screenshot-[mm:ss]`，时间戳从转写文本中该章节对应的讲话时间中选取。选择最能代表该章节内容的时刻。"""
 
 def get_summary_format() -> str:
     return """\n🧠 Final Touch:
@@ -463,7 +465,8 @@ def build_polish_prompt(raw_text: str, title: str = "", style: str = "detailed",
                         source_type: str = "text",
                         formats: list[str] | None = None,
                         user_notes: str = "",
-                        target_language: str = "zh-CN") -> str:
+                        target_language: str = "zh-CN",
+                        video_understanding: bool = False) -> str:
     """构建整理版原文 prompt"""
     from app.core.types import DOC_SOURCE_TYPES
     is_doc = source_type in DOC_SOURCE_TYPES
@@ -492,7 +495,10 @@ def build_polish_prompt(raw_text: str, title: str = "", style: str = "detailed",
     if formats:
         for f in formats:
             if f in polish_format_fns:
-                prompt += polish_format_fns[f]()
+                if f == "screenshot":
+                    prompt += polish_format_fns[f](has_visual=video_understanding)
+                else:
+                    prompt += polish_format_fns[f]()
 
     # 风格指令 — polish 场景用轻量约束
     if style and style != 'none':
@@ -513,7 +519,8 @@ def build_notes_prompt(raw_text: str, title: str = "", style: str = "detailed",
                        source_type: str = "text",
                        formats: list[str] | None = None,
                        user_notes: str = "",
-                       target_language: str = "zh-CN") -> str:
+                       target_language: str = "zh-CN",
+                       video_understanding: bool = False) -> str:
     """构建结构化笔记 prompt"""
     from app.core.types import DOC_SOURCE_TYPES
     is_doc = source_type in DOC_SOURCE_TYPES
@@ -544,7 +551,12 @@ def build_notes_prompt(raw_text: str, title: str = "", style: str = "detailed",
     if formats:
         for f in formats:
             if f in format_fns:
-                prompt += format_fns[f](target_language) if f == "translate" else format_fns[f]()
+                if f == "translate":
+                    prompt += format_fns[f](target_language)
+                elif f == "screenshot":
+                    prompt += format_fns[f](has_visual=video_understanding)
+                else:
+                    prompt += format_fns[f]()
 
     if user_notes.strip():
         prompt += f"\n\n## 用户备注\n以下是用户提供的额外上下文和备注，请在生成笔记时参考这些信息，适当融入相关内容：\n{user_notes.strip()}"

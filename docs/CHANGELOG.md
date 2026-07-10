@@ -6,6 +6,44 @@
 
 ---
 
+## 2026-07-11 — 打包前缺陷修复：漏导入 + 截图 prompt + SVG 下载 + 死代码
+
+### 漏导入（PyInstaller 打包后致命）
+
+全量审计 36+ Python 文件，修复 3 处漏 import：
+
+| 文件 | 漏的 import | 触发场景 |
+|------|------------|---------|
+| `adapters/document.py` | `FatalError` | Doc 导入时引擎未绑定 → NameError 500 |
+| `routers/model.py` | `AppError` | 厂商/引擎名称校验失败 → NameError 500 |
+| `routers/export.py` | `shutil` | KaTeX 服务端渲染预检 `shutil.which("node")` → NameError 500 |
+
+### 纯文本 LLM 截图 prompt 修复
+
+`video_understanding=false` 时 LLM 看不到网格图，但 prompt 还在说"从网格图左上角黄色数字中选取"。LLM 无图可选，不生成 `*Screenshot-[mm:ss]` 标记 → 截图后处理无标记可替换。
+
+**修复**：`get_screenshot_format(has_visual=bool)` 按 VL 开关分叉——无 VL 时让 LLM 从转写时间戳中选取。
+
+### tiktoken 打包兼容
+
+PyInstaller 打包后 `tiktoken.get_encoding()` 抛 `AttributeError`（模块正常导入但原生扩展未链接），`except ImportError` 未捕获。改为 `except (ImportError, AttributeError)`。
+
+### 思维导图 SVG 下载死按钮
+
+`ExportMenu` 用 `document.querySelector('#mindmap svg')` 但 MindmapView 外层没有 `id="mindmap"` 容器，选择器永远返回 null。
+
+### 死代码清理
+
+- `engineHasImages`：GenPanel 中 ~12 行 useMemo 计算 + GenerateOptions 中 prop 声明，从未被读取
+
+### 影响范围
+
+- **后端 4 文件**：document.py / model.py / export.py / content_preparer.py
+- **后端 2 文件**：prompt.py + generate.py（函数签名 + 调用者）
+- **前端 2 文件**：PreviewArea.tsx / GenPanel.tsx / GenerateOptions.tsx
+
+---
+
 ## 2026-07-11 — 代码质量审查：修复 6 项 bug + 死代码清理 + 诊断增强
 
 ### 修复

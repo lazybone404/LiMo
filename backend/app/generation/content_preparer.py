@@ -28,7 +28,7 @@ try:
     _TIK_ENCODER = tiktoken.get_encoding("cl100k_base")
     def _estimate_tokens(text: str) -> int:
         return len(_TIK_ENCODER.encode(text))
-except ImportError:
+except (ImportError, AttributeError):
     def _estimate_tokens(text: str) -> int:
         return len(text) // 2
 

@@ -31,6 +31,7 @@ def _post_process_content_markers(markdown: str) -> str:
 def _post_process_screenshots(markdown: str, video_path: str | None) -> str:
     """将 *Screenshot-[mm:ss] 标记替换为实际截图 URL"""
     if not video_path or not os.path.exists(video_path):
+        logger.info("原片截图：无视频文件，跳过（video_path=%s）", video_path)
         return markdown
 
     try:
@@ -39,8 +40,10 @@ def _post_process_screenshots(markdown: str, video_path: str | None) -> str:
 
         matches = extract_screenshot_timestamps(markdown)
         if not matches:
+            logger.info("原片截图：LLM 未生成 *Screenshot-[mm:ss] 标记")
             return markdown
 
+        logger.info("原片截图：找到 %d 个标记，开始 ffmpeg 抽帧", len(matches))
         output_dir = os.path.join(os.getcwd(), "data", "screenshots")
         for idx, (marker, ts) in enumerate(matches):
             try:
@@ -48,6 +51,7 @@ def _post_process_screenshots(markdown: str, video_path: str | None) -> str:
                 filename = Path(img_path).name
                 img_url = f"/static/screenshots/{filename}"
                 markdown = markdown.replace(marker, f"![]({img_url})", 1)
+                logger.info("原片截图：%s → %s", marker, filename)
             except Exception as e:
                 logger.warning("截图生成失败 ts=%ds: %s", ts, e)
 
