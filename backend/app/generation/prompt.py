@@ -486,6 +486,8 @@ def build_polish_prompt(raw_text: str, title: str = "", style: str = "detailed",
         "references": get_references_format,
         "toc": get_toc_format,
         "images": get_images_format,
+        "screenshot": get_screenshot_format,
+        "link": get_link_format,
     }
     if formats:
         for f in formats:
