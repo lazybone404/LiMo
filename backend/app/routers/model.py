@@ -1,0 +1,662 @@
+"""
+模型管理路由 — 复刻 BiliNote 的 Provider + Model 方案
+"""
+
+import hashlib
+import logging
+
+import requests
+from fastapi import APIRouter, Request
+from pydantic import BaseModel
+
+from app.core.config_io import merge_sensitive, mask_sensitive
+from app.core.registry import EngineRegistry
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+# ── Pydantic models ──
+
+class ProviderData(BaseModel):
+    name: str
+    api_key: str = ""
+    base_url: str = ""
+    type: str = "custom"
+
+
+class ProviderUpdateData(BaseModel):
+    name: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    enabled: int | None = None
+
+
+class AddModelData(BaseModel):
+    provider_id: str
+    model_name: str
+    context_window: int | None = None  # 用户自定义上下文窗口（token），为空则使用厂商默认
+
+
+class SceneBindData(BaseModel):
+    generate: int | None = None   # enabled_models id
+    chat: int | None = None
+    image_process: int | None = None
+
+class EngineFallbackData(BaseModel):
+    enabled: bool = True
+
+
+# ── Helpers ──
+
+def _get_cfg(request: Request) -> dict:
+    return request.app.state.config
+
+
+def _save_cfg(cfg: dict):
+    from app.core.config_io import save_config
+    save_config(cfg)
+
+
+PROVIDER_DEFAULTS = {
+    "deepseek": {"name": "DeepSeek", "base_url": "https://api.deepseek.com", "type": "built-in"},
+    "dashscope": {"name": "阿里云 DashScope", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "type": "built-in"},
+    "openai": {"name": "OpenAI", "base_url": "https://api.openai.com/v1", "type": "built-in"},
+    "anthropic": {"name": "Anthropic", "base_url": "https://api.anthropic.com", "type": "built-in"},
+    "google": {"name": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta", "type": "built-in"},
+    "zhipu": {"name": "智谱 GLM", "base_url": "https://open.bigmodel.cn/api/paas/v4", "type": "built-in"},
+    "moonshot": {"name": "Moonshot Kimi", "base_url": "https://api.moonshot.cn/v1", "type": "built-in"},
+}
+
+
+def _get_providers(cfg: dict) -> list[dict]:
+    """获取所有 provider，自动补全内置供应商（返回副本，不污染原始 config）"""
+    providers: list = [dict(p) for p in cfg.get("providers", [])]
+    existing_ids = {p["id"] for p in providers}
+    global_key = cfg.get("llm", {}).get("api_key", "")
+    for pid, info in PROVIDER_DEFAULTS.items():
+        if pid not in existing_ids:
+            providers.append({
+                "id": pid, "name": info["name"],
+                "api_key": "", "base_url": info["base_url"],
+                "type": info["type"], "enabled": 1,
+            })
+    # 同步全局 api_key 到默认 provider（仅 Key 格式匹配时同步）
+    global_provider = cfg.get("llm", {}).get("provider", "deepseek")
+    for p in providers:
+        if p["id"] == global_provider and p.get("api_key") == "":
+            # 防 Key 错配：DashScope Key 不同步到 DeepSeek
+            if "sk-ws-" in global_key and global_provider == "deepseek":
+                logger.warning("全局 API Key 疑似 DashScope 格式（sk-ws-...），不同步到 DeepSeek。请在设置页分别配置各厂商 Key。")
+                continue
+            if "sk-ant" in global_key and global_provider != "anthropic":
+                logger.warning("全局 API Key 疑似 Anthropic 格式（sk-ant-...），不同步到 %s。", global_provider)
+                continue
+            p["api_key"] = global_key
+    return providers
+
+
+# ── Provider ──
+
+@router.get("/providers")
+def list_providers(request: Request):
+    providers = _get_providers(_get_cfg(request))
+    # 返回脱敏副本，不污染原始 config（否则 save_config 会把脱敏值写回 config.yaml）
+    result = []
+    for p in providers:
+        p = dict(p)
+        if p.get("api_key"):
+            p["api_key"] = mask_sensitive(p["api_key"])
+        result.append(p)
+    return result
+
+
+@router.post("/providers")
+def add_provider(data: ProviderData, request: Request):
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        providers = cfg.get("providers", [])
+
+        import re as _re
+        pid = _re.sub(r'[^a-z0-9_-]', '', data.name.lower().replace(" ", "-"))[:32]
+        if not pid:
+            raise AppError("PROV_INVALID_NAME", "厂商名称无效，至少包含一个字母或数字", recoverable=False)
+        providers.append({
+            "id": pid, "name": data.name,
+            "api_key": data.api_key, "base_url": data.base_url,
+            "type": data.type, "enabled": 1,
+        })
+        cfg["providers"] = providers
+        _save_cfg(cfg)
+    return {"status": "ok", "id": pid}
+
+
+@router.put("/providers/{provider_id}")
+def update_provider(provider_id: str, data: ProviderUpdateData, request: Request):
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        providers = cfg.get("providers", [])
+        found = False
+        for p in providers:
+            if p["id"] == provider_id:
+                found = True
+                if data.name is not None: p["name"] = data.name
+                if data.api_key is not None:
+                    p["api_key"] = merge_sensitive(data.api_key, p.get("api_key", ""))
+                if data.base_url is not None: p["base_url"] = data.base_url
+                if data.enabled is not None: p["enabled"] = data.enabled
+                break
+
+        # 内置厂商：首次保存 Key 时自动注册到 providers 数组
+        if not found and provider_id in PROVIDER_DEFAULTS:
+            default = dict(PROVIDER_DEFAULTS[provider_id])
+            default["id"] = provider_id
+            if data.name is not None: default["name"] = data.name
+            if data.api_key is not None: default["api_key"] = merge_sensitive(data.api_key, "")
+            if data.base_url is not None: default["base_url"] = data.base_url
+            if data.enabled is not None: default["enabled"] = data.enabled
+            default["custom"] = False
+            providers.append(default)
+            found = True
+
+        # 双向同步：key 也写一份到 llm.api_key（兼容旧代码）
+        if data.api_key is not None and found:
+            default_provider = cfg.get("llm", {}).get("provider", "")
+            if provider_id == default_provider:
+                old_llm_key = cfg.get("llm", {}).get("api_key", "")
+                cfg.setdefault("llm", {})["api_key"] = merge_sensitive(data.api_key, old_llm_key)
+
+        cfg["providers"] = providers
+        _save_cfg(cfg)
+    return {"status": "ok"}
+
+
+@router.delete("/providers/{provider_id}")
+def delete_provider(provider_id: str, request: Request):
+    """删除 LLM 厂商（仅允许自定义厂商，内置厂商拒绝删除）"""
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        providers = cfg.get("providers", [])
+        target = next((p for p in providers if p["id"] == provider_id), None)
+        if not target:
+            return {"error": "厂商不存在", "status": "not_found"}
+        if target.get("type") == "built-in":
+            return {"error": "不能删除内置厂商", "status": "forbidden"}
+        cfg["providers"] = [p for p in providers if p["id"] != provider_id]
+        _save_cfg(cfg)
+    return {"status": "deleted"}
+
+
+@router.post("/providers/{provider_id}/test")
+def test_connection(provider_id: str, request: Request):
+    """测试连通性 — 尝试 GET /v1/models 验证 key 和 base_url"""
+    cfg = _get_cfg(request)
+    providers = {p["id"]: p for p in _get_providers(cfg)}
+    prov = providers.get(provider_id)
+    if not prov:
+        return {"ok": False, "error": "Provider not found"}
+
+    base_url = (prov.get("base_url") or "").rstrip("/")
+    api_key = prov.get("api_key", "")
+    if not api_key:
+        return {"ok": False, "error": "未配置 API Key"}
+
+    if not base_url.endswith("/v1"):
+        base_url += "/v1"
+
+    try:
+        resp = requests.get(
+            f"{base_url}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15,
+        )
+        if resp.status_code in (200, 401):
+            # 401 = key 有效但无权限列出模型，也算连通
+            return {"ok": True, "status": resp.status_code}
+        return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+    except requests.Timeout:
+        return {"ok": False, "error": "连接超时（15s）"}
+    except requests.ConnectionError:
+        return {"ok": False, "error": f"无法连接 {base_url}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+# ── Model ──
+
+@router.get("/models")
+def list_enabled_models(request: Request):
+    """已启用的模型列表"""
+    cfg = _get_cfg(request)
+    return cfg.get("enabled_models", [])
+
+
+@router.get("/models/refresh/{provider_id}")
+def refresh_models(provider_id: str, request: Request):
+    """从供应商 API 拉取可用模型列表（LLM + 引擎通用）"""
+    cfg = _get_cfg(request)
+    # 先尝试 LLM providers，再尝试 engine providers
+    providers = {p["id"]: p for p in _get_providers(cfg)}
+    prov = providers.get(provider_id)
+    is_llm = prov is not None
+    if not prov:
+        eng_provs = {p["id"]: p for p in cfg.get("engine_providers", [])}
+        prov = eng_provs.get(provider_id)
+    if not prov:
+        return {"error": "Provider not found"}
+
+    # Engine provider → 从 builtin_models 返回已知模型列表
+    if not is_llm:
+        for p in cfg.get("engine_providers", []):
+            if p["id"] == provider_id and p.get("builtin_models"):
+                return {"models": [{"id": bm["model_name"], "owned_by": provider_id, "desc": bm.get("desc", "")} for bm in p["builtin_models"]]}
+        return {"models": []}
+
+    # LLM provider → 调用 /v1/models API 拉取
+    base_url = (prov.get("base_url") or "").rstrip("/")
+    if not base_url.endswith("/v1"):
+        base_url += "/v1"
+
+    try:
+        resp = requests.get(
+            f"{base_url}/models",
+            headers={"Authorization": f"Bearer {prov.get('api_key', '')}"},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            items = data.get("data", [])
+            skip_words = ["embedding", "moderation", "dall-e", "babbage", "davinci", "omni"]
+            models = []
+            for m in items:
+                mid = m.get("id", "")
+                if any(w in mid.lower() for w in skip_words):
+                    continue
+                models.append({"id": mid, "owned_by": m.get("owned_by", "")})
+            if models:
+                return {"models": models[:50]}
+    except Exception as e:
+        logger.warning("模型刷新失败 (%s): %s", provider_id, str(e)[:120])
+
+    # API 拉取失败 → 回退到 llm_models 预置列表
+    preset = cfg.get("llm_models", {}).get(provider_id, [])
+    if preset:
+        return {"models": preset}
+    return {"models": []}
+
+
+# 各厂商多模态模型命名约定
+# 格式：{"include": [...], "exclude": [...]} 或 ["pattern", ...]（纯 include）
+# include 中的 "*" = 全匹配；exclude 用于排除已知不支持的子系列
+_PROVIDER_IMAGE_RULES: dict[str, dict] = {
+    "openai":     {"include": ["gpt-4o", "gpt-4.1", "o1", "o3", "o4"]},
+    "anthropic":  {"include": ["claude"], "exclude": ["haiku"]},  # Claude 全系除 Haiku
+    # Qwen3.5+ 统一多模态（plus/flash/开源全系），旧 VL/Omni/QVQ 也支持视觉
+    "dashscope":  {"include": ["qwen-vl", "qwen-omni", "qvq", "qwen3.7-plus", "qwen3.6", "qwen3.5", "qwen3-vl"],
+                   "exclude": ["coder"]},
+    "google":     {"include": ["*"]},
+    "deepseek":   {"include": ["vl", "vision"]},
+    "zhipu":      {"include": ["glm-4v", "vl", "vision"]},
+    "moonshot":   {"include": []},
+}
+
+
+def _detect_capabilities(provider_id: str, model_name: str) -> list[str]:
+    """根据厂商约定检测模型能力标签（多模态/纯文本）
+
+    已知厂商按规则表自动检测；自定义/未知 provider 默认只标 text，
+    用户可在 Settings 页面手动切换「多模态」标记。
+    """
+    caps = ["text"]
+    name = model_name.lower()
+    prov = provider_id.lower()
+
+    rules = _PROVIDER_IMAGE_RULES.get(prov)
+    if rules:
+        include = rules.get("include", rules) if isinstance(rules, list) else rules.get("include", [])
+        exclude = rules.get("exclude", []) if isinstance(rules, dict) else []
+        if "*" in include:
+            caps.append("image")
+        elif any(p in name for p in include):
+            if not exclude or not any(e in name for e in exclude):
+                caps.append("image")
+    # 其他 provider 不猜测 — 用户自行标记
+
+    return caps
+
+
+@router.post("/models")
+def add_model(data: AddModelData, request: Request):
+    """启用一个模型"""
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        models: list = cfg.get("enabled_models", [])
+
+        # 去重
+        for m in models:
+            if m["provider_id"] == data.provider_id and m["model_name"] == data.model_name:
+                return {"status": "ok", "id": m["id"]}
+
+        new_id = int(hashlib.md5(f"{data.provider_id}:{data.model_name}".encode()).hexdigest()[:8], 16)
+        caps = _detect_capabilities(data.provider_id, data.model_name)
+        entry = {
+            "id": new_id, "provider_id": data.provider_id,
+            "model_name": data.model_name, "capabilities": caps,
+        }
+        if data.context_window is not None:
+            entry["context_window"] = data.context_window
+        models.append(entry)
+        cfg["enabled_models"] = models
+        _save_cfg(cfg)
+    return {"status": "ok", "id": new_id, "capabilities": caps}
+
+
+class UpdateModelData(BaseModel):
+    capabilities: list[str] | None = None  # 手动覆写能力标签
+
+
+@router.put("/models/{model_id}")
+def update_model(model_id: int, data: UpdateModelData, request: Request):
+    """更新已启用模型（如手动标记多模态能力）"""
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        models = cfg.get("enabled_models", [])
+        for m in models:
+            if m["id"] == model_id:
+                if data.capabilities is not None:
+                    m["capabilities"] = data.capabilities
+                _save_cfg(cfg)
+                return {"status": "ok", "id": model_id, "capabilities": m.get("capabilities", ["text"])}
+    return {"error": "模型不存在"}
+
+
+@router.delete("/models/{model_id}")
+def delete_model(model_id: int, request: Request):
+    """删除一个已启用模型"""
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        models = cfg.get("enabled_models", [])
+        cfg["enabled_models"] = [m for m in models if m["id"] != model_id]
+        _save_cfg(cfg)
+    return {"status": "ok"}
+
+
+# ── Scene bindings ──
+
+@router.get("/scene-models")
+def get_scene_models(request: Request):
+    cfg = _get_cfg(request)
+    return cfg.get("scene_models", {"generate": None, "chat": None, "image_process": None})
+
+
+@router.post("/scene-models")
+def set_scene_models(data: SceneBindData, request: Request):
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        cfg["scene_models"] = {"generate": data.generate, "chat": data.chat, "image_process": data.image_process}
+        _save_cfg(cfg)
+    return {"status": "ok"}
+
+
+# ── Resolve model for use ──
+
+# ── Engine Provider ──
+
+class EngineProviderData(BaseModel):
+    name: str
+    api_key: str = ""
+    base_url: str = ""
+    type: str = "custom"
+
+
+class AddEngineModelData(BaseModel):
+    provider_id: str
+    model_name: str
+    category: str  # asr / ocr / doc
+
+
+@router.get("/engine-providers")
+def list_engine_providers(request: Request):
+    """内置 + 用户自定义引擎厂商（返回副本，不污染原始 config）"""
+    cfg = _get_cfg(request)
+    providers = [dict(p) for p in cfg.get("engine_providers", [])]
+    # 同步 DashScope Key
+    ds_key = cfg.get("cloud", {}).get("dashscope", "")
+    for p in providers:
+        if p["id"] == "dashscope" and ds_key:
+            p["api_key"] = ds_key
+    # 脱敏返回
+    for p in providers:
+        p["api_key"] = mask_sensitive(p.get("api_key", ""))
+    return providers
+
+
+@router.post("/engine-providers")
+def add_engine_provider(data: EngineProviderData, request: Request):
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        providers = cfg.get("engine_providers", [])
+        import re as _re
+        pid = _re.sub(r'[^a-z0-9_-]', '', data.name.lower().replace(" ", "-"))[:32]
+        if not pid:
+            raise AppError("ENG_PROV_INVALID_NAME", "引擎厂商名称无效，至少包含一个字母或数字", recoverable=False)
+        providers.append({
+            "id": pid, "name": data.name, "type": data.type,
+            "api_key": data.api_key, "base_url": data.base_url,
+            "capabilities": [],
+        })
+        cfg["engine_providers"] = providers
+        _save_cfg(cfg)
+    return {"status": "ok", "id": pid}
+
+
+class UpdateEngineProviderBody(BaseModel):
+    api_key: str | None = None
+    base_url: str | None = None
+    name: str | None = None
+
+@router.put("/engine-providers/{provider_id}")
+def update_engine_provider(provider_id: str, data: UpdateEngineProviderBody, request: Request):
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        updated = False
+        for p in cfg.get("engine_providers", []):
+            if p["id"] == provider_id:
+                if data.api_key is not None:
+                    p["api_key"] = merge_sensitive(data.api_key, p.get("api_key", ""))
+                    updated = True
+                    # DashScope key 双向同步 → cloud.dashscope
+                    if provider_id == "dashscope":
+                        old_ds_key = cfg.get("cloud", {}).get("dashscope", "")
+                        cfg.setdefault("cloud", {})["dashscope"] = merge_sensitive(data.api_key, old_ds_key)
+                if data.base_url is not None:
+                    p["base_url"] = data.base_url
+                if data.name is not None:
+                    p["name"] = data.name
+                break
+        if updated:
+            _save_cfg(cfg)
+    return {"status": "ok"}
+
+
+@router.delete("/engine-providers/{provider_id}")
+def delete_engine_provider(provider_id: str, request: Request):
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        # 只允许删自定义的
+        builtins = {"dashscope", "faster-whisper", "pymupdf"}
+        if provider_id in builtins:
+            return {"error": "不能删除内置引擎厂商"}
+        cfg["engine_providers"] = [p for p in cfg.get("engine_providers", []) if p["id"] != provider_id]
+        cfg["engine_models"] = [m for m in cfg.get("engine_models", []) if m["provider_id"] != provider_id]
+        _save_cfg(cfg)
+    return {"status": "ok"}
+
+
+# ── Engine Model ──
+
+@router.get("/engine-models")
+def list_engine_models(request: Request):
+    """列出所有引擎模型（builtin 自动注册 + 用户自定义），不修改全局 config"""
+    cfg = _get_cfg(request)
+    models = [dict(m) for m in cfg.get("engine_models", [])]  # 深拷贝每一项，不污染全局
+    ENGINE_CATS = {"asr", "ocr", "doc"}
+    # 从 engine_providers 的 builtin_models 自动注册（只注册引擎类模型）
+    existing = {(m["provider_id"], m["model_name"], m["category"]) for m in models}
+    for prov in cfg.get("engine_providers", []):
+        for bm in prov.get("builtin_models", []):
+            if bm["category"] not in ENGINE_CATS:
+                continue  # 跳过 LLM 模型
+            key = (prov["id"], bm["model_name"], bm["category"])
+            if key not in existing:
+                mid = int(hashlib.md5(f"engine:{prov['id']}:{bm['model_name']}".encode()).hexdigest()[:8], 16)
+                models.append({"id": mid, "provider_id": prov["id"], "model_name": bm["model_name"], "category": bm["category"]})
+    # 注入 capabilities（来自 EngineRegistry）+ desc（来自 builtin_models）
+    providers = {p["id"]: p for p in cfg.get("engine_providers", [])}
+    for m in models:
+        cat = m["category"]
+        name = m["model_name"]
+        # capabilities from EngineRegistry
+        engine = EngineRegistry.get(cat, name)
+        m["capabilities"] = getattr(engine, "capabilities", []) if engine else []
+        # desc from builtin_models
+        prov = providers.get(m["provider_id"])
+        if prov:
+            for bm in prov.get("builtin_models", []):
+                if bm["model_name"] == name:
+                    m["desc"] = bm.get("desc", "")
+                    break
+        if "desc" not in m:
+            m["desc"] = ""
+    return models
+
+
+@router.post("/engine-models")
+def add_engine_model(data: AddEngineModelData, request: Request):
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        models = cfg.get("engine_models", [])
+        mid = int(hashlib.md5(f"engine:{data.provider_id}:{data.model_name}".encode()).hexdigest()[:8], 16)
+        # 去重
+        for m in models:
+            if m["id"] == mid:
+                return {"status": "ok", "id": mid}
+        models.append({"id": mid, "provider_id": data.provider_id, "model_name": data.model_name, "category": data.category})
+        cfg["engine_models"] = models
+        _save_cfg(cfg)
+    return {"status": "ok", "id": mid}
+
+
+@router.delete("/engine-models/{model_id}")
+def delete_engine_model(model_id: int, request: Request):
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        cfg["engine_models"] = [m for m in cfg.get("engine_models", []) if m["id"] != model_id]
+        _save_cfg(cfg)
+    return {"status": "ok"}
+
+
+# ── Engine bindings ──
+# key: "asr" | "ocr" | "doc:text+image" | "doc:text-only" | ...
+
+class EngineBindData(BaseModel):
+    bindings: dict[str, int | str | None] = {}
+
+@router.get("/engine-bindings")
+def get_engine_bindings(request: Request):
+    cfg = _get_cfg(request)
+    raw = cfg.get("engine_bindings", {})
+
+    # 构建 name→id 映射（字符串引擎名转数字 ID，前端只认数字）
+    import hashlib
+    name_to_id: dict[str, dict[str, int]] = {}
+    for m in cfg.get("engine_models", []):
+        name_to_id.setdefault(m["category"], {})[m["model_name"]] = m["id"]
+    # 补充 EngineRegistry 中的引擎
+    from app.core.registry import EngineRegistry
+    for cat, store in EngineRegistry._stores.items():
+        for name in store:
+            if cat not in name_to_id or name not in name_to_id[cat]:
+                mid = int(hashlib.md5(f"engine:reg:{cat}:{name}".encode()).hexdigest()[:8], 16)
+                name_to_id.setdefault(cat, {})[name] = mid
+
+    result: dict[str, int | None] = {}
+    for key, val in raw.items():
+        if isinstance(val, list) and len(val) > 0:
+            v = val[0]
+        else:
+            v = val
+        if isinstance(v, str):
+            lookup = name_to_id.get(key) or name_to_id.get(key.split(':')[0], {})
+            result[key] = lookup.get(v, None)
+        elif isinstance(v, int):
+            result[key] = v
+        else:
+            result[key] = None
+    return result
+
+@router.post("/engine-bindings")
+def set_engine_bindings(data: EngineBindData, request: Request):
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        def _wrap(v: int | str) -> list:
+            return [v]
+        # 合并而非替换：保留其他类别的绑定
+        # null 表示"不修改此 key"而非"清空"——前端可能在 capabilities
+        # 返回 null 时连带发送，不应覆盖有效绑定。显式清空请发 []。
+        existing = cfg.get("engine_bindings", {})
+        for key, val in data.bindings.items():
+            if val is None:
+                continue
+            # 空列表 = 清除绑定（区别于 null = 不修改）
+            if isinstance(val, list) and len(val) == 0:
+                existing.pop(key, None)
+            else:
+                existing[key] = _wrap(val)
+        cfg["engine_bindings"] = existing
+        _save_cfg(cfg)
+    return {"status": "ok"}
+
+
+@router.get("/engine-auto-fallback")
+def get_engine_auto_fallback(request: Request):
+    """获取引擎自动降级开关状态"""
+    return {"enabled": _get_cfg(request).get("engine_auto_fallback", True)}
+
+@router.post("/engine-auto-fallback")
+def set_engine_auto_fallback(data: EngineFallbackData, request: Request):
+    """设置引擎自动降级开关"""
+    with request.app.state.config_lock:
+        cfg = _get_cfg(request)
+        cfg["engine_auto_fallback"] = data.enabled
+        _save_cfg(cfg)
+    return {"status": "ok", "enabled": data.enabled}
+
+
+@router.get("/resolve-model/{model_id}")
+def resolve_model(model_id: int, request: Request):
+    """根据 enabled_models id 解析出 provider + api_key + model_name"""
+    cfg = _get_cfg(request)
+    models = cfg.get("enabled_models", [])
+    providers = {p["id"]: p for p in _get_providers(cfg)}
+
+    for m in models:
+        if m["id"] == model_id:
+            prov = providers.get(m["provider_id"], {})
+            api_key = prov.get("api_key", "")
+            return {
+                "provider": m["provider_id"],
+                "model_name": m["model_name"],
+                "api_key": mask_sensitive(api_key) if api_key else "",
+                "base_url": prov.get("base_url", ""),
+            }
+
+    # 回退到全局配置
+    llm = cfg.get("llm", {})
+    provider = llm.get("provider", "deepseek")
+    return {
+        "provider": provider,
+        "model_name": llm.get("model", {}).get(provider, "deepseek-v4-flash"),
+        "api_key": llm.get("api_key", ""),
+        "base_url": llm.get("base_url", {}).get(provider, ""),
+    }

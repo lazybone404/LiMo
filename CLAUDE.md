@@ -1,0 +1,418 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## 项目概述
+
+LiMo — 知识管理系统。输入 URL/文本/文件 → 适配器提取正文 → LLM 生成结构化 Markdown。
+设计哲学：**复杂性不是设计进去的，而是后续插件化长出来的**。
+
+## 文档索引
+
+| 文档 | 内容 | 何时读 |
+|------|------|--------|
+| [architecture.md](docs/architecture.md) | 六层分层架构，每层模块职责、交互、陷阱 | 理解整体架构和模块边界 |
+| [frontend-patterns.md](docs/frontend-patterns.md) | 状态管理、取消机制、TaskPanel、apiUrl | 改前端状态/任务相关代码 |
+| [export-pipeline.md](docs/export-pipeline.md) | 导出架构、两条路径设计、Tab→内容映射表、KaTeX/Pygments | 改导出功能、新增 tab |
+| [CHANGELOG.md](docs/CHANGELOG.md) | 修改记录：做了什么、为什么、影响范围 | 了解历史决策、避免重复踩坑 |
+| [STATUS.md](docs/STATUS.md) | 纯事实清单（文件/端点/引擎计数） | 需要统计数据 |
+| [user-scenarios.md](docs/user-scenarios.md) | 10 个用户场景及实现状态 | 理解产品需求 |
+| [system-design-spec.md](docs/system-design-spec.md) | 原始设计蓝图（历史参考） | 理解早期设计意图 |
+| [engine-standards.md](design/engine-standards.md) | 引擎评审标准+实测数据 | 添加/修改引擎 |
+
+## 常用命令
+
+### 后端（Python/FastAPI）
+
+```bash
+cd backend
+# 开发启动（端口 7413，--reload 已启用）
+uv run uvicorn main:app --host 127.0.0.1 --port 7413 --reload
+
+# 注意：--reload 只重载代码变更，不重跑 startup event。
+# 修改 config.yaml / 适配器注册 / 引擎注册后需手动重启。
+
+# 运行测试（6 个测试）
+python tests/test_prompt.py          # Prompt 构建验证
+python tests/test_adapters.py        # 适配器注册 + 路由
+python tests/test_engines.py         # 引擎注册 + 查找
+python tests/test_store.py           # Store CRUD + 并发安全
+python tests/test_url_security.py    # URL SSRF 防护
+python tests/test_e2e_smoke.py       # 端到端冒烟测试
+```
+
+### 前端（React/TypeScript/Vite）
+
+```bash
+cd frontend
+npm run dev       # 开发服务器，端口 5173，API 代理 → 127.0.0.1:7413
+npm run build     # 类型检查 + 生产构建
+npm run lint      # oxlint
+```
+
+### 一键启动
+
+```bash
+bash start.sh                  # 启动后端(7413) + 前端(5173)
+bash restart-backend.sh [port] # 杀端口进程后重启
+```
+
+### Tauri 桌面打包
+
+```bash
+cd frontend
+npx tauri dev       # Tauri 开发模式（需先启动后端 7413）
+npx tauri build     # 生产构建 → NSIS/MSI 安装包
+cargo check         # 仅 Rust 类型检查（不完整编译）
+```
+
+#### PyInstaller 构建后端
+
+```bash
+cd backend
+# ⚠️ 必须指定 --distpath，否则输出到 dist/ 而 Tauri 打包的是 bin/ 里的旧文件
+uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
+```
+
+**常见陷阱**：
+- spec 文件 `pathex=['backend']` 是相对于项目根目录的，在 `backend/` 目录下执行需注意
+- `console=False` 避免黑框闪烁
+- `COLLECT` 模式（one-dir）：生成 `LiMoBackend.exe` + `_internal/` 目录
+- Tauri `externalBin` 只打包 exe，`resources` 负责 `_internal/`
+- Tauri v2 `externalBin` 自动加平台后缀（如 `-x86_64-pc-windows-msvc.exe`），PyInstaller 输出的 exe 需重命名匹配
+- 新增 Python 依赖后需同步更新 spec 的 `hiddenimports` 和 `collect_all` 列表
+- **certifi 必须加入 spec**：PyInstaller 打包后 SSL 证书路径丢失，启动时需设 `SSL_CERT_FILE` 环境变量
+- **searxng .git 目录必须清理**：PyInstaller 收集 `bin/searxng/.git` 后 Tauri 构建会因权限错误(os error 5)失败
+- **PyInstaller 必须在项目根目录执行**：spec 中 `pathex=['backend']` 和 `datas` 相对路径依赖 CWD
+- **KaTeX + markmap/d3 离线资源**：PyInstaller 通过 `datas` 打包 `backend/static/`（含 katex + markmap子目录）。打包前需确保这些目录存在且文件是最新的（从 `frontend/node_modules/` 复制），否则导出的 HTML 思维导图和公式将依赖 CDN（离线不可用）
+
+## 架构
+
+### 三层管道
+
+```
+输入 → Adapter.adapt() → RawTranscript → 存 transcript
+                                              ↓
+                    ┌─────────────────────────┼──────────────────────────┐
+                    │                         │                          │
+                    ▼                         ▼                          ▼
+              LLM Generator          LLM (image_process)           LLM Chat
+         generate_both()          优先→Engine 回退             AgentRunner
+                    │                         │                          │
+                    ▼                         ▼                          ▼
+              MarkdownView              ProcessResult               conversations/
+           save_markdown()        save_process_result()
+         版本管理(2版)             同 mode 覆盖
+```
+
+**生成管道**（视频/网页/文本/文档 → LLM 创作）：
+- 输入 `rawText`，触发 `POST /generate/{id}`
+- 双产物并行（notes + polished），`source_type` 派发不同 prompt 模板
+- 同 mode 保留最近 2 版，前端 v2/v1 切换器
+- 存储：`markdown/` + `markdown_index.json`
+
+**处理管道**（图片/Document → LLM 优先 → Engine 回退）：
+- 输入 `file_path`（原始文件），触发 `POST /process/{id}`
+- 4 mode：extract/table/digitize/understand
+- 旧端点 `/process-image/{id}` 已废弃，保留兼容
+- 同 mode 覆盖（不版本化，OCR 是确定性的）
+- 调度：请求 `model_id` → `scene_models.image_process` → `scene_models.generate` → Engine
+- 存储：`process/` + `process_index.json`
+
+**对话管道**（Agent 工具循环）：
+- `search_web`（Tavily → SearXNG → DDG 三级降级）+ `fetch_url`（trafilatura/Jina）
+- 流式 SSE 端点 + 对话持久化（`conversations/` + CRUD）
+- 历史上下文近 40 条消息
+- 5 个工具：search_docs / lookup_doc / list_docs / search_web / fetch_url
+
+**事实验证管道**（独立于生成管道，Agent 网络能力驱动）：
+- 端点 `POST /fact-check/{id}` + SSE 流式 `GET /fact-check/{id}/stream`
+- 三阶段：提取事实断言(LLM) → 逐条搜索验证(web search + fetch) → LLM 交叉核查 → Markdown 报告
+- 验证源 fallback：已有 notes → 已有 polished → 原始转录
+- 存储为 MarkdownView（mode=FACT_CHECK），前端 PreviewArea fact_check tab
+- `FactCheckEngine`（`app/generation/fact_check.py`）— 复用 agent/tools.py 的 search_web/fetch_url
+
+### 适配器注册
+
+`app/adapters/__init__.py` → `AdapterRegistry.register()`。新增管道只需实现 `accept()` + `adapt()` 并注册即生效。注册顺序决定路由优先级：Video → Document → Image → Webpage → Text（兜底）。
+
+### 引擎系统
+
+`app/engines/__init__.py` → `EngineRegistry.register()`。三类引擎：
+- **ASR**：dashscope-asr（云端）→ faster-whisper（本地）
+- **OCR**：dashscope-ocr（云端）→ Tesseract（本地便携版，`backend/bin/tesseract/`）
+- **Doc**：pymupdf4llm / pymupdf / pymupdf-text / pdf-ocr / python-docx / python-docx-text / python-pptx / python-pptx-text / openpyxl / markitdown / ebooklib
+
+引擎绑定通过 `engine_bindings` 动态 key 分配，doc 拆为子场景（`doc:text+image` / `doc:text-only` / `doc:scan-ocr` / `doc:word` / `doc:ppt` / `doc:excel` / `doc:epub` 等），设置页可独立配置。
+
+### 模型管理
+
+Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat` / `image_process`）。`resolve_model()`（`app/core/model_resolver.py`）是唯一模型解析入口，generate/chat/process 统一调用。多模态能力通过 `_PROVIDER_IMAGE_RULES` 按厂商 include/exclude 规则自动检测。
+
+### 前端四栏布局
+
+```
+[GenPanel] | [DocLibrary] | [PreviewArea] | [AIPanel]
+```
+- 可拖拽 resize，50–600px，<80px 自动折叠为 PanelStrip
+- 快捷键：`Ctrl+G` 切换生成面板，`Ctrl+I` 切换 AI 面板
+- Zustand 单 store（`frontend/src/store/index.ts`），processingTasks + localStorage 持久化
+
+### Tauri 桌面壳
+
+```
+LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
+       │                              │
+       ▼                              ▼
+  WebView2 加载                 FastAPI 后端
+  frontend/dist/                backend/
+```
+
+- **开发模式**：Vite dev server (:5173) + 手动启动后端，Tauri 加载 `devUrl`
+- **生产模式**：`frontendDist` 静态文件 + `std::process::Command` 直接启动 PyInstaller 打包的 `LiMoBackend.exe`（非 Tauri sidecar()，避免 ACL 复杂度）
+- **就绪探测**：Rust 端 HTTP GET `/health` 轮询（500ms 间隔，45s 超时），就绪后 emit `backend-ready` 事件
+- **进程管理**：`SidecarHandle(Mutex<Option<Child>>)` 持有进程句柄；窗口关闭 → `RunEvent::ExitRequested` → `child.kill()`
+- **重启命令**：`restart_backend_sidecar` Tauri command，kill 旧进程 → spawn 新进程 → 重新探测
+- **诊断**：`analyze_install_path()` 检查路径非 ASCII/空格/父目录可写性；`app_log()` 写 `limo_startup.log`；后端 stderr 重定向到 `limo_backend_stderr.log`
+- **PATH 增强**：`enhance_path()` 追加 ffmpeg 常见路径，确保 yt-dlp 等工具能找到 ffmpeg
+- **API 适配**：`client.ts` 检测 `__TAURI_INTERNALS__` → 生产用 `http://127.0.0.1:7413/api`，开发用 `/api`（Vite proxy）
+- **CORS**：`main.py` 使用 `allow_origin_regex=".*"` + `allow_credentials=True` + `_ForceCORSMiddleware` 兜底（Tauri WebView2 使用 `tauri://localhost` / `https://tauri.localhost` 等动态 origin）
+- **配置**：`tauri.conf.json` — 1400×900 窗口 + `maximized: true` + `com.limo.app` 标识
+- **依赖**：Rust 端 `tauri` (features=["devtools"]) + `tauri-plugin-shell` + `tauri-plugin-log`
+
+## 关键设计决策
+
+### 数据流与持久化
+- **配置唯一入口**：`app/core/config_io.py` → `save_config()`。禁止业务模块直接 `yaml.dump`
+- **模型解析唯一入口**：`app/core/model_resolver.py` → `resolve_model()`。generate/chat/process 统一调用
+- **引擎映射唯一入口**：`_resolve_doc_engine` 用 `model_name` 查找（非 `provider_id`），支持字符串/数字/列表三种绑定格式
+- **引擎绑定保存合并**：`set_engine_bindings` 合并而非替换 — 保存 OCR 绑定不会删除 ASR 绑定。`cfg["engine_bindings"] = stored`（全量替换）→ `existing.update(stored)`（增量合并）
+- **LLM Key 双向同步**：`update_provider` 自动同步到 `llm.api_key`；generate router 在 `llm.api_key` 为空时从 providers 回退
+
+### 导入与去重
+- **唯一导入入口**：GenPanel 是唯一导入入口，DocLibrary 只负责搜索/筛选/列表
+- **两层去重**：URL 去重（`find_by_url`）在请求到达时拦截；内容去重（SHA256 contentHash）在提取正文后拦截。Store 级拒绝写入
+- **导入区纯粹化**：ImportSection 不受 currentDoc 影响，按钮永远是「导入」
+
+### 生成与处理
+- **双产物并行**：`generate_both()` 通过 `asyncio.gather` 并行产出 notes + polished。source_type 派发 prompt（视频/网页→通用，PDF/Document→文档 prompt，Excel→分析报告+数据摘要）
+- **图片三开关**：`keep_refs`（保留引用路径）→ `send_to_llm`（发给 LLM）→ `optimize_images`（PIL 缩放≤1024px），GenPanel 三层缩进选项
+- **目标语言**：config.yaml `target_language` + prompt 参数化，8 语言可选
+- **LLM 续写**：`finish=length` → 自动续写 3 轮，temperature 递减
+- **流式 + 取消**：SSE 端点，cancel_event 真正中断 token 消耗，取消保存 partial 可续写
+
+### 并发与安全
+- **并发控制**：`ExecutionGuard` 双层信号量 — `cloud_semaphore(5)` 给生成/处理/云端引擎，`local_semaphore(2)` 给本地 CPU 引擎（faster-whisper）。本地慢操作不抢占云端快操作的槽位。
+- **并发安全**：Store `threading.Lock` 防 RMW 竞态；engine `copy.copy()` 防 api_key 串用
+- **安全加固**：path traversal 防护、上传 2GB 预检、SSRF 防护（`url_security` 共享校验，5 个下载入口全部加固）
+
+### 前端关键模式
+- **GenPanel 类型门控**：5 类型选择器（网页|视频|文本|文件|图片），文件 5 子标签（PDF|Word|PPT|Excel|EPUB），每种类型只看到相关选项
+- **PreviewArea 按 sourceType 分派 tab**：视频 3tab / 文档 3tab / Excel 3tab / 图片 5tab / 网页 3tab / 文本 3tab + 思维导图
+- **Transcript 视图分派**：JSON+segments → 时间轴（视频）；否则 → 完整 Markdown 渲染
+- **处理进度按 tab 粒度**：生成笔记只影响 summary/polished tab，图片处理只影响对应 mode tab
+- **主题系统**：双机制 — CSS 变量（`--tk-*` 14 个语义令牌）+ Tailwind v4 `@theme` 引用。Light/Dark/System 三模式，`data-theme` 属性驱动。Markdown 用 12 个 `--md-*` 变量
+
+### 导出系统
+
+**两条路径设计**（详见 [export-pipeline.md](docs/export-pipeline.md)）：
+- **ExportMenu**（PreviewArea 工具栏下拉）：快捷单文件导出，内容自动跟随当前预览 tab。MD/复制走客户端 store 直读，HTML/ZIP 走后端
+- **ExportPanel**（顶部 Download → 侧边面板）：批量多文档导出，用户手动选 tab/格式/主题。全部走后端
+
+**核心约束**：
+- 用户在预览栏看到什么，导出就应该得到什么。禁止导出与预览不一致的内容
+- 前端 `ExportMenu.tsx` 中 `TAB_EXPORT` 表是 tab→导出行为的**唯一映射入口**。新增 tab 时在此表加一行即可，无需改其他逻辑
+- 后端 `GET /export/{id}` 内容源回退链：markdown（notes/polished/fact_check）→ process_results（图片 extract/table 等）→ transcript（rawText）→ 404
+- 图片文档没有 markdown 条目，HTML 导出依赖 `get_process_results()` 回退
+- mindmap HTML 导出走独立端点 `/export/{id}/mindmap`（markmap 库需要特殊 HTML 模板）
+- `apiUrl()` / `downloadFromUrl()` 内部已拼接 BASE（含 `/api`），调用方传路径时**禁止加 `/api` 前缀**，否则产生 `/api/api/...` 导致 404
+
+**已修复的关键问题**（2026-07-10）：
+- `/api/api/` 路径重复 → 6 处修复
+- data_preview tab HTML 导出 fallthrough 到 notes → 修复为 transcript
+- skeleton tab 导出笔记而非骨架 → 修复为 rawText
+- mindmap tab HTML 导出笔记 → 修复为走 mindmap 端点
+- 图片 tab HTML 导出 404 → 后端增加 process result 回退
+- ExportPanel 预览显示无关文档 → 限制为仅当选中=当前文档时显示
+- ExportPanel "导出全部产物"按钮仅单文档 → 改为支持多文档（POST /export/batch）
+
+- 图片收集/重写/内联三个核心函数 → 4 端点改造
+- HTML 自包含（KaTeX 预渲染·内联 CSS·零 CDN·4 主题），默认 `limo` 匹配应用内预览的 `--md-*` CSS 变量
+- ZIP 三种图片模式（独立文件夹/base64 内嵌/不包含）+ 多产物标签（笔记/整理版原文/事实验证/提取文字等）
+- 思维导图：SVG 下载 + markmap 交互式 HTML（~980KB·暗色自适应）
+
+### 安全
+- **敏感信息脱敏**：LLM Key / Cookie / Tavily Key 在 `GET /api/config` 中统一脱敏返回（`mask_sensitive`），保存时 `merge_sensitive` 防 `***` 覆盖真实值
+- **SSRF 防护**：`url_security.validate_url()` — 14 个内网/保留 IP 段黑名单 + DNS 解析二次校验 + 协议白名单。⚠️ WebpageAdapter 曾遗漏 SSRF 校验（已修复），新增管道必须加
+- **路径遍历防护**：`_safe_filename()` 取文件名末段 + `resolve().relative_to()` 双重校验，图片/文件服务均防护
+- **Markdown XSS 防护**：前端 `<a>` 组件拒绝 `javascript:`/`data:` 协议，ReactMarkdown 默认不渲染原始 HTML
+- **SSL 证书 (PyInstaller)**：启动时从 `certifi.where()` 设 `SSL_CERT_FILE` + `REQUESTS_CA_BUNDLE` 环境变量。缺此则 dashscope SDK / openai / yt-dlp 的 HTTPS 请求全部失败
+- **代理注入**：启动时从 `config.fetch.proxy` 读到代理地址后设 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量，确保所有 HTTP 库（dashscope/requests/httpx/yt-dlp）统一走代理
+
+### 其他
+- **数学公式**：全局 `remark-math` + `rehype-katex`，LaTeX `$$` 块自动排版
+- **日志系统**：`contextvars.ContextVar` 注入 `request_id` → ASGI middleware，全链路追踪。`MemoryHandler`（`main.py` 中配置）缓存最近 1000 条日志供前端 LogPanel 轮询（`GET /api/logs`），重启后清空
+- **引擎自动降级开关**：`engine_auto_fallback` 配置项，设置页一键切换。6 个引擎解析点全部尊重此开关，关闭时引擎失败直接报错，不再静默降级
+- **Tesseract 便携版**：`backend/bin/tesseract/` 内置，启动自动注册并绑定 OCR，开箱即用
+- **EPUB**：ebooklib 章节+骨架提取，前端 EpubSkeletonPanel 章节树，支持选中章节/全书生成
+- **模糊帧过滤**：`frame_quality.py` — Laplacian 方差 + 熵 + 边缘密度评分，视频抽帧时自动丢弃低质量帧
+- **KaTeX 离线缓存**：`_get_katex_assets()` 从 node_modules 加载 CSS/JS 内联到 HTML，导出文件完全自包含（零 CDN，断网可用）
+- **KaTeX 服务端渲染**：`_render_formulas_katex()` 调 Node.js 脚本预渲染公式。打包环境无 Node.js → 先 `shutil.which("node")` 预检，不存则静默回退客户端渲染
+- **markmap 离线化**：`markmap.ts` 不调用 `markmap-common` 的 `loadCSS`/`loadJS`（动态 CDN 加载会被 Edge WebView2 跟踪防护拦截），KaTeX CSS 在 PreviewArea 中静态 import，hljs 由 react-syntax-highlighter 内联
+- **设置持久化**：`ProviderSettings.tsx` 中引擎/LLM Key 的保存不能仅靠 `onBlur`（组件卸载时不触发），需加 `useEffect` cleanup 用 ref 兜底保存
+- **上下文窗口可配置**：`addModel()` API 支持 `context_window` 参数，ProviderSettings 中展示（如 "1M ctx"），前端按模型粒度配置
+- **路由异常标准化**：ingest / fact_check / chat / process 路由全部使用 AppError 体系。config / model / files / generate / conversations 路由仍有 18 处 `return {"error":"..."}` 旧格式待迁移
+- **Content-Disposition 中文文件名**：必须用 RFC 5987 `filename*=UTF-8''` 编码，否则 Starlette 会尝试 latin-1 编码 → UnicodeEncodeError
+- **日志函数签名**：`app.core.logging.warning(msg, **kwargs)` 只接受 1 个位置参数 + kwargs，不能用 `%s` 占位符多参数调用。多参数用 f-string
+- **空文本去重碰撞**：空字符串 SHA256 固定为 `e3b0c44...`，两个空导入会误判为重复。TextAdapter 需检查 `text.strip()` 非空
+- **前端 apiUrl() 辅助函数**：`client.ts` 导出 `apiUrl(path)`，Tauri 下拼接 `http://127.0.0.1:7413/api`，浏览器下保持相对路径。所有 HTTP 请求必须走这个函数或 `apiFetch`
+- **processingTasks key 粒度**：`${docId}__${kind}` — 同一文档的不同操作（retranscribe/generate/process）不互相覆盖，store 提供 `clearDocTasks(docId)` 批量清除
+- **设置页 overlay**：`App.tsx` 中设置页用条件渲染 overlay 而非替换整个 render tree，避免 GenPanel 卸载丢失进行中的任务状态
+- **SSE 断开保护**：`streamGenerate` 追踪 `receivedDoneOrError` 标志，连接异常断开时触发 `onError('连接意外断开')` 防止 `generating` 永不复位
+- **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
+- **取消机制**：retranscribe 端点通过 `cancel_event` + `request.is_disconnected()` 轮询检测客户端断连，0.5s 检测延迟；视频适配器 ASR 降级链每轮引擎前检查 `cancel_event.is_set()`
+
+## 关键模式（2026-07-10 审查沉淀）
+
+以下模式是实现中易错的关键约束，新增代码必须遵守。
+
+### 前端
+
+1. **processingTasks 键格式**：`{docId}__{kind}`，永不用裸 `docId` 查找。`clearDocTasks` 只清 store，必须先 `cancelTask` 再 `clearDocTasks`。详见 [frontend-patterns.md](docs/frontend-patterns.md)。
+2. **取消操作**：`cancelTask(docId)` 用裸 docId（非完整键），导入固定用 `"__import__"`。`createAbort` 注册的 key 必须与 `cancelTask` 的 key 一致。
+3. **所有 HTTP 请求**：必须走 `apiUrl()` 或 `apiFetch()`。裸 `fetch('/api/...')` 在 Tauri 下失败。
+4. **API Key 保存**：`(val || undefined) ?? current` — 空字符串不是 nullish，会覆盖真实 key。
+5. **操作互斥**：`lockOtherOps = retranscribing || imageProcessing`。Ctrl+G 拦截检查 `generating || processingTasks > 0`。
+
+### 后端
+
+6. **信号量**：`await guard.semaphore.acquire()` 后立即 `try:`，否则异常泄漏。
+7. **配置深拷贝**：`DEFAULT_CONFIG` 必须 `copy.deepcopy()`，浅拷贝污染嵌套 dict。
+8. **引擎绑定合并**：保存用增量合并，`null`=不修改，`[]`=清除绑定。
+9. **适配器错误**：失败必须 `raise FatalError`，不要 `return AdapterOutput(engine="none")`。
+10. **markdown→HTML 导出**：移除 `nl2br` 扩展，GFM 特性（删除线/任务列表）用正则预处理，Pygments 可选依赖。详见 [export-pipeline.md](docs/export-pipeline.md)。
+
+## 待办事项
+
+> 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始
+
+### 📥 内容导入
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ✅ | URL 导入 | 网页/视频/图片 URL → 适配器路由 → 正文提取 |
+| ✅ | 文本粘贴 | 直接粘贴纯文本/Markdown |
+| ✅ | 文件上传 | 本地文件（PDF/Word/PPT/Excel/EPUB/图片/视频），最大 2GB |
+| ✅ | URL 去重 | `find_by_url` 拦截重复 URL |
+| ✅ | 内容去重 | SHA256 contentHash 拦截重复内容 |
+| ✅ | SSE 流式导入 | 实时进度推送 + 心跳保活 + 客户端断开不丢结果 |
+| ✅ | 平台认证 | B站/YouTube Cookie 注入，自动解析 Netscape 格式 |
+| ✅ | 文件拖拽上传 | ImportSection `onDragOver`/`onDrop` + `validateDropFile` 扩展名校验，拖拽区高亮反馈 |
+
+### 📝 转录 & 引擎
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ✅ | ASR 引擎 | dashscope Paraformer (云端) + faster-whisper small/medium/large-v3 (本地) |
+| ✅ | OCR 引擎 | dashscope VL (云端) + Tesseract 便携版 (内置 `backend/bin/tesseract/`) |
+| ✅ | Doc 引擎 | PyMuPDF (PDF) + python-docx/pptx/xlsx + openpyxl + markitdown + ebooklib |
+| ✅ | 引擎绑定 | `engine_bindings` 按子场景配置，doc 拆为 text+image / text-only / scan-ocr / word / ppt / excel / epub |
+| ✅ | 引擎降级开关 | `engine_auto_fallback`，失败直接报错，不再静默 fallback |
+| ✅ | 视频帧提取 | OpenCV 抽帧 + 网格拼接 + 去重 |
+| ✅ | 模糊帧过滤 | Laplacian 方差 + 熵 + 边缘密度评分，丢弃低质量帧 |
+| ❌ | VL 帧过滤 | PaddleOCR 文字区域检测，区分 PPT/演讲者帧（`ocr.py:264` 仅有注释占位） |
+| ❌ | PDF Layer 2 | 表格修正/数字化/理解（基于转录 MD + 原页面截图），引擎链路已有，需编排 LLM 调用 |
+
+### ✨ LLM 生成
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ✅ | 双产物并行 | notes + polished，`asyncio.gather` 并发 |
+| ✅ | prompt 按类型派发 | 视频/网页→通用，PDF/文档→文档 prompt，Excel→分析+数据摘要 |
+| ✅ | SSE 流式输出 | 逐 token 推送 + cancel_event 真正中断 |
+| ✅ | 自动续写 | `finish=length` → 3 轮续写，temperature 递减 |
+| ✅ | 版本管理 | 同 mode 保留最近 2 版，前端 v2/v1 切换 |
+| ✅ | 模型解析 | `resolve_model()` 唯一入口，多模态能力自动检测 |
+| ✅ | 目标语言 | config `target_language`，8 语言可选 |
+
+### 🔍 图片处理
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ✅ | 4 种模式 | extract (文字提取) / table (表格) / digitize (数字化) / understand (理解) |
+| ✅ | LLM 优先 | 请求 model_id → scene_models.image_process → scene_models.generate → Engine fallback |
+| ✅ | 图片优化 | `optimize_images` 开关，PIL 缩放 ≤ 1024px |
+| ✅ | 同 mode 覆盖 | OCR 结果确定性，不版本化 |
+
+### 💬 AI 对话
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ✅ | 5 个工具 | search_docs / lookup_doc / list_docs / search_web / fetch_url |
+| ✅ | 搜索多级降级 | Tavily API → SearXNG 自动启动 → DuckDuckGo |
+| ✅ | SearXNG 便携版 | 自动检测 `.exe` 启动，asyncio.Lock 防并发 |
+| ✅ | SSE 流式 + 持久化 | 逐 token 推送 + 自动保存对话 + 40 条历史上下文 |
+| ✅ | 对话 CRUD | 新建/重命名/删除/追加消息 |
+
+### ✅ 事实验证
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ✅ | 三阶段管道 | 提取事实断言 (LLM) → 搜索验证 (web) → 交叉核查 (LLM) |
+| ✅ | SSE 流式进度 | extract → verify (逐条) → report (流式) |
+| ✅ | 前端 tab | PreviewArea fact_check tab + 进度指示 + Markdown 报告渲染 |
+| ✅ | 验证源 fallback | notes → polished → transcript |
+| ❌ | 报告可交互 | 点击来源链接查看原文，批量验证多文档 |
+
+### 📤 导出
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ✅ | MD 下载 | 前端 Blob 直接下载 |
+| ✅ | HTML 导出 | `_build_selfcontained_html()`，4 主题 (paper/github/minimal/limo) |
+| ✅ | KaTeX 内联 | `_get_katex_assets()` 从 node_modules 读 CSS/JS 嵌入 HTML，零 CDN 依赖 |
+| ✅ | ZIP 批量 | 全部产物打包，图片独立文件夹 |
+| ✅ | 思维导图 | SVG 下载 + markmap 交互式 HTML (~980KB，暗色自适应) |
+| ✅ | 对话导出 | Markdown + JSON，支持批量 ZIP |
+| ❌ | 图片预处理复用 | 导入时已 optimize_images，导出 ZIP 未复用压缩后图片 |
+| ❌ | 导出进度反馈 | 大文档导出无进度提示 |
+
+### 🎨 前端 UI/UX
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ✅ | 四栏布局 | GenPanel \| DocLibrary \| PreviewArea \| AIPanel，可拖拽 resize |
+| ✅ | PanelStrip | <80px 自动折叠为图标条 |
+| ✅ | 快捷键 | `Ctrl+G` 生成面板，`Ctrl+I` AI 面板 |
+| ✅ | 主题系统 | 14 个 CSS 令牌 + Tailwind v4 + Light/Dark/System + 12 个 `--md-*` 变量 |
+| ✅ | GenPanel 类型门控 | 5 类型 × 5 子标签，逐类型显隐选项 |
+| ✅ | EPUB 骨架面板 | EpubSkeletonPanel 章节树 + 选中章节/全书切换 |
+| ✅ | 事实验证 UI | fact_check tab + 流式进度指示 + 报告渲染 |
+
+### 🛡️ 安全 & 运维
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ✅ | SSRF 防护 | 14 个内网/保留 IP 段黑名单 + DNS 二次校验 + 协议白名单 |
+| ✅ | 路径遍历防护 | `_safe_filename()` + `resolve().relative_to()` 双重校验 |
+| ✅ | 敏感信息脱敏 | LLM Key / Cookie / Tavily Key 统一 `mask_sensitive` + `merge_sensitive` |
+| ✅ | XSS 防护 | Markdown `<a>` 拒绝 `javascript:`/`data:` 协议 |
+| ✅ | 并发控制 | `ExecutionGuard` Semaphore(3)，generate/process/retranscribe 已接入 |
+| ✅ | 上下文窗口可配置 | `addModel()` API + ProviderSettings 展示 |
+| ✅ | 日志全链路追踪 | `contextvars.ContextVar` 注入 `request_id`，前端日志面板 |
+| 🟡 | 旧格式错误迁移 | conversations/generate 已迁移为 AppError，config/model/files 剩余 16 处 |
+
+### 📊 汇总
+
+| 域 | 完成 | 总计 | 进度 |
+|----|------|------|------|
+| 📥 内容导入 | 8 | 8 | 100% |
+| 📝 转录 & 引擎 | 8 | 10 | 80% |
+| ✨ LLM 生成 | 7 | 7 | 100% |
+| 🔍 图片处理 | 4 | 4 | 100% |
+| 💬 AI 对话 | 5 | 5 | 100% |
+| ✅ 事实验证 | 4 | 5 | 80% |
+| 📤 导出 | 7 | 8 | 88% |
+| 🎨 前端 UI/UX | 7 | 7 | 100% |
+| 🛡️ 安全 & 运维 | 8 | 8 | 100% |
+| **合计** | **58** | **62** | **94%** |

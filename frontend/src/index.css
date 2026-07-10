@@ -1,0 +1,292 @@
+@import "tailwindcss";
+
+/* ══════════════════════════════════════════════════════════
+   LiMo — Design Tokens & Theme System
+   Three-layer: Primitives → Tailwind @theme → Markdown vars
+   ══════════════════════════════════════════════════════════ */
+
+/* ── Layer 1: Primitives (Apple System Palette) ─────────── */
+
+:root {
+  /* Grays */
+  --apple-gray-50:  #F5F5F7;
+  --apple-gray-100: #E8E8ED;
+  --apple-gray-200: #D2D2D7;
+  --apple-gray-300: #AEAEB2;
+  --apple-gray-400: #8E8E93;
+  --apple-gray-500: #636366;
+  --apple-gray-600: #48484A;
+  --apple-gray-700: #363639;
+  --apple-gray-800: #2C2C2E;
+  --apple-gray-900: #1C1C1E;
+  --apple-gray-950: #0D0D0F;
+
+  /* Accent */
+  --apple-blue:       #007AFF;
+  --apple-blue-hover: #0066D6;
+
+  /* Functional */
+  --apple-green:   #34C759;
+  --apple-orange:  #FF9500;
+  --apple-red:     #FF3B30;
+  --apple-pink:    #FF375F;
+  --apple-purple:  #AF52DE;
+  --apple-teal:    #5AC8FA;
+
+  /* Animation */
+  --ease-apple: cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+/* ── Layer 2: Semantic Variables (data-theme driven) ─────── */
+
+/* Light defaults */
+:root {
+  --tk-surface: #F5F5F7;
+  --tk-elevated: #FFFFFF;
+  --tk-hover: #E8E8ED;
+  --tk-foreground: #1C1C1E;
+  --tk-muted: #8E8E93;
+  --tk-dimmed: #636366;
+  --tk-disabled: #AEAEB2;
+  --tk-accent: #007AFF;
+  --tk-accent-hover: #0066D6;
+  --tk-border: #D2D2D7;
+  --tk-border-light: #E8E8ED;
+  --tk-success: #34C759;
+  --tk-warning: #FF9500;
+  --tk-error: #FF3B30;
+}
+
+/* Dark overrides */
+[data-theme="dark"] {
+  --tk-surface: #161618;
+  --tk-elevated: #222226;
+  --tk-hover: #1C1C20;
+  --tk-foreground: #E8E8ED;
+  --tk-muted: #A0A0A8;
+  --tk-dimmed: #888892;
+  --tk-disabled: #6A6A74;
+  --tk-accent: #3B9EFF;
+  --tk-accent-hover: #5AAFFF;
+  --tk-border: #3A3A40;
+  --tk-border-light: #2E2E34;
+  --tk-success: #30D158;
+  --tk-warning: #FF9F0A;
+  --tk-error: #FF453A;
+}
+
+/* ── Layer 3: Tailwind v4 @theme (var() references) ─────── */
+
+@theme {
+  --color-surface: var(--tk-surface);
+  --color-elevated: var(--tk-elevated);
+  --color-surface-hover: var(--tk-hover);
+  --color-foreground: var(--tk-foreground);
+  --color-muted: var(--tk-muted);
+  --color-dimmed: var(--tk-dimmed);
+  --color-disabled: var(--tk-disabled);
+  --color-accent: var(--tk-accent);
+  --color-accent-hover: var(--tk-accent-hover);
+  --color-border-default: var(--tk-border);
+  --color-border-light: var(--tk-border-light);
+  --color-success: var(--tk-success);
+  --color-warning: var(--tk-warning);
+  --color-error: var(--tk-error);
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* ── Global Styles ──────────────────────────────────────── */
+
+body {
+  font-family: var(--font-sans);
+  background: var(--tk-surface);
+  color: var(--tk-foreground);
+  margin: 0;
+  overflow: hidden;
+}
+
+#root { height: 100vh; display: flex; flex-direction: column; }
+
+/* Frosted glass */
+.glass {
+  background: color-mix(in srgb, var(--tk-surface) 80%, transparent);
+  backdrop-filter: blur(20px) saturate(180%);
+}
+
+/* Resize handles */
+.r-handle { width: 5px; cursor: col-resize; background: transparent; flex-shrink: 0; position: relative; z-index: 5; }
+.r-handle::after {
+  content: '';
+  position: absolute;
+  inset: 0 2px;
+  background: var(--tk-border-light);
+  border-radius: 1px;
+}
+.r-handle:hover, .r-handle.active { background: rgba(0,122,255,0.1); }
+.r-handle:hover::after, .r-handle.active::after {
+  background: var(--tk-accent);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-thumb {
+  background: var(--tk-border);
+  border-radius: 2px;
+}
+
+/* ── Markdown Color Variables ───────────────────────────── */
+
+:root {
+  --md-h1: #1E3A5F;
+  --md-h2: #1D4ED8;
+  --md-h3: #2563EB;
+  --md-h4: #3B82F6;
+  --md-strong: #1E40AF;
+  --md-link: #2563EB;
+  --md-blockquote-bg: #EFF6FF;
+  --md-blockquote-border: #3B82F6;
+  --md-code-bg: #F0F4FF;
+  --md-code-color: #1D4ED8;
+  --md-table-border: #D2D2D7;
+  --md-table-header-bg: #F5F5F7;
+  --md-hr: #D2D2D7;
+}
+
+[data-theme="dark"] {
+  --md-h1: #93C5FD;
+  --md-h2: #60A5FA;
+  --md-h3: #3B82F6;
+  --md-h4: #2563EB;
+  --md-strong: #93C5FD;
+  --md-link: #60A5FA;
+  --md-blockquote-bg: rgba(59,130,246,0.1);
+  --md-blockquote-border: #3B82F6;
+  --md-code-bg: rgba(59,130,246,0.12);
+  --md-code-color: #93C5FD;
+  --md-table-border: var(--color-border-default);
+  --md-table-header-bg: var(--color-surface-hover);
+  --md-hr: var(--color-border-default);
+}
+
+/* ── GitHub Markdown Overrides (blue hierarchy) ─────────── */
+
+.markdown-body h1 { color: var(--md-h1); }
+.markdown-body h2 { color: var(--md-h2); }
+.markdown-body h3 { color: var(--md-h3); }
+.markdown-body h4 { color: var(--md-h4); }
+.markdown-body strong { color: var(--md-strong); }
+.markdown-body a { color: var(--md-link); }
+.markdown-body blockquote {
+  border-left-color: var(--md-blockquote-border);
+  background: var(--md-blockquote-bg);
+}
+.markdown-body code {
+  background: var(--md-code-bg);
+  color: var(--md-code-color);
+}
+.markdown-body hr { border-color: var(--md-hr); }
+.markdown-body table th, .markdown-body table td {
+  border-color: var(--md-table-border);
+}
+.markdown-body table th {
+  background: var(--md-table-header-bg);
+}
+
+/* GitHub Markdown dark mode — manual overrides since GitHub CSS
+   uses @media (prefers-color-scheme:dark) which won't fire with
+   our manual data-theme toggle. These mirror GitHub's dark palette. */
+[data-theme="dark"] .markdown-body {
+  color: var(--tk-foreground);
+  background-color: transparent;
+}
+[data-theme="dark"] .markdown-body table tr {
+  background-color: transparent;
+  border-color: var(--color-border-default);
+}
+[data-theme="dark"] .markdown-body table tr:nth-child(2n) {
+  background-color: rgba(255,255,255,0.03);
+}
+[data-theme="dark"] .markdown-body img {
+  background-color: transparent;
+}
+[data-theme="dark"] .markdown-body pre {
+  background-color: var(--color-surface-hover);
+}
+[data-theme="dark"] .markdown-body summary {
+  color: var(--color-muted);
+}
+[data-theme="dark"] .markdown-body kbd {
+  background-color: var(--color-surface-hover);
+  border-color: var(--color-border-default);
+  color: var(--color-muted);
+  box-shadow: inset 0 -1px 0 var(--color-border-default);
+}
+[data-theme="dark"] .markdown-body input[type="checkbox"] {
+  accent-color: var(--color-accent);
+}
+
+/* ── Chat Markdown ──────────────────────────────────────── */
+
+.markdown-chat table { border-collapse: collapse; width: 100%; margin: 0.5em 0; font-size: 0.9em; }
+.markdown-chat th, .markdown-chat td {
+  border: 1px solid var(--md-table-border);
+  padding: 6px 10px;
+  text-align: left;
+}
+.markdown-chat th {
+  background: var(--md-table-header-bg);
+  font-weight: 600;
+}
+.markdown-chat code {
+  background: var(--md-code-bg);
+  color: var(--md-code-color);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+.markdown-chat pre {
+  background: var(--tk-hover);
+  padding: 10px 14px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.markdown-chat pre code { background: none; padding: 0; }
+.markdown-chat blockquote {
+  border-left: 3px solid var(--md-blockquote-border);
+  padding-left: 12px;
+  color: var(--tk-dimmed);
+  margin: 0.5em 0;
+}
+.markdown-chat ul, .markdown-chat ol { padding-left: 1.5em; margin: 0.3em 0; }
+
+/* ── Mindmap Dark Mode — use markmap's native .markmap-dark ─ */
+
+.markmap-dark .markmap {
+  --markmap-text-color: var(--color-foreground);
+  --markmap-code-bg: var(--color-surface-hover);
+  --markmap-circle-open-bg: var(--color-border-default);
+}
+
+/* ── Animations ─────────────────────────────────────────── */
+
+@keyframes card-enter {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

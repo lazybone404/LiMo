@@ -1,0 +1,247 @@
+"""
+LiMo — FastAPI 入口
+"""
+
+import logging
+import sys
+import threading
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from app.core.config import load_config
+from app.core.concurrency import ExecutionGuard
+from app.core.logging import request_id, init_request_id_logging, RequestIDFilter
+from app.storage.store import Store
+
+app = FastAPI(title="LiMo", version="0.1.0")
+
+@app.middleware("http")
+async def add_request_id(request, call_next):
+    """每个 HTTP 请求注入唯一 request_id 到日志上下文"""
+    import uuid
+    token = request_id.set(request.headers.get("X-Request-ID", uuid.uuid4().hex[:16]))
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id.get()
+    request_id.reset(token)
+    return response
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 兜底：有些 FastAPI 版本 CORSMiddleware 对 tauri:// 协议不生效
+# 用纯 ASGI 中间件强制加 CORS 头
+from starlette.types import ASGIApp, Scope, Receive, Send
+class _ForceCORSMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] == "http":
+            async def _send(message):
+                if message["type"] == "http.response.start":
+                    headers = dict(message.get("headers", []))
+                    origin = [v for k, v in (scope.get("headers", []) or []) if k == b"origin"]
+                    headers[b"access-control-allow-origin"] = origin[0] if origin else b"*"
+                    headers[b"access-control-allow-credentials"] = b"true"
+                    headers[b"access-control-allow-methods"] = b"*"
+                    headers[b"access-control-allow-headers"] = b"*"
+                    message["headers"] = list(headers.items())
+                await send(message)
+            await self.app(scope, receive, _send)
+        else:
+            await self.app(scope, receive, send)
+
+app.add_middleware(_ForceCORSMiddleware)
+
+# 截图静态文件
+_screenshots_dir = Path("data/screenshots")
+_screenshots_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/static/screenshots", StaticFiles(directory=str(_screenshots_dir)), name="screenshots")
+
+
+# ── 全局异常处理 — AppError → 结构化 JSON 响应 ──
+
+from app.core.errors import AppError
+from app.core import logging as log
+
+@app.exception_handler(AppError)
+async def app_error_handler(request, exc: AppError):
+    """AppError 体系 → { code, message, detail, recoverable }"""
+    log.warning("AppError", code=exc.code, message=exc.message,
+                path=request.url.path, recoverable=exc.recoverable)
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+
+
+@app.exception_handler(Exception)
+async def unexpected_error_handler(request, exc: Exception):
+    """未预期的异常 — 统一 500 + 日志 traceback"""
+    log.exception("Unexpected server error", path=request.url.path, error=str(exc)[:200])
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=500, content={
+        "code": "INTERNAL_ERROR",
+        "message": "服务器内部错误，请稍后重试或联系开发者",
+        "detail": str(exc)[:300],
+        "recoverable": True,
+    })
+
+
+def _init_logging(config: dict) -> None:
+    """统一日志初始化 — 控制台 + 滚动文件 + 内存环形缓冲，尊重 config.yaml 的 log_level"""
+    level_name = config.get("log_level", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    # root logger — 控制所有 logger.getLogger(__name__) 的输出
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # 控制台格式：HH:MM:SS LEVEL    module  message
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(level)
+    console.addFilter(RequestIDFilter())
+    console.setFormatter(logging.Formatter(
+        "%(asctime)s.%(msecs)03d %(levelname)-7s [rid=%(request_id)s] %(name)-30s %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    root.addHandler(console)
+
+    # 内存环形缓冲区 — 供前端日志面板调用 GET /api/logs
+    from collections import deque
+    _log_buffer: deque[dict] = deque(maxlen=1000)
+    app.state.log_buffer = _log_buffer
+
+    class BufferHandler(logging.Handler):
+        def emit(self, record):
+            _log_buffer.append({
+                "ts": record.created,
+                "level": record.levelname.lower(),
+                "name": record.name,
+                "msg": self.format(record),
+            })
+
+    buf_handler = BufferHandler()
+    buf_handler.setLevel(logging.DEBUG)
+    buf_handler.addFilter(RequestIDFilter())
+    buf_handler.setFormatter(logging.Formatter(
+        "%(asctime)s.%(msecs)03d %(levelname)-5s [rid=%(request_id)s] %(name)-25s %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    root.addHandler(buf_handler)
+
+    # 错误日志文件 — 滚动 3 × 1MB，路径 data_dir/error.log
+    try:
+        log_dir = Path(config.get("data_dir", "data"))
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_dir / "error.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8",
+        )
+        file_handler.setLevel(logging.WARNING)
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s:%(lineno)d  %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        root.addHandler(file_handler)
+    except OSError:
+        pass  # 写文件失败不阻塞启动
+
+    # 抑制 uvicorn access 日志的重复输出（它自己已经打印了简要信息）
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    root.info("日志初始化完成 level=%s dir=%s", level_name, config.get("data_dir", "data"))
+
+
+@app.on_event("startup")
+async def startup():
+    from datetime import datetime
+    app.state.started_at = datetime.now().isoformat()
+
+    config = load_config()
+    app.state.config = config
+
+    # PyInstaller 打包后 SSL 证书路径丢失，显式设置
+    import os as _os
+    try:
+        import certifi
+        _os.environ["SSL_CERT_FILE"] = certifi.where()
+        _os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+    except Exception:
+        pass
+
+    # 注入全局代理 → dashscope SDK / openai / yt-dlp 统一走 proxy
+    _proxy = (config.get("fetch", {}) or {}).get("proxy", "").strip()
+    if _proxy:
+        _os.environ["HTTP_PROXY"] = _proxy
+        _os.environ["HTTPS_PROXY"] = _proxy
+        _os.environ["http_proxy"] = _proxy
+        _os.environ["https_proxy"] = _proxy
+
+    _init_logging(config)
+    init_request_id_logging()  # 注入 RequestID 过滤器
+
+    # 存储
+    app.state.store = Store(config.get("data_dir", "data"))
+
+    # 适配器
+    from app.adapters import init_adapters
+    init_adapters()
+    app.state.adapters_ready = True
+
+    # 引擎
+    from app.engines import init_engines
+    init_engines(config)
+    app.state.engines_ready = True
+
+    # Config 写入锁 — 防止并发 RMW 损坏 config.yaml
+    app.state.config_lock = threading.Lock()
+
+    # 全局并发控制 — 限制 LLM/引擎并发数，超限自动排队
+    app.state.guard = ExecutionGuard(cloud_max=5, local_max=2)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "version": "0.1.0", "started_at": app.state.started_at}
+
+
+# 路由（files 在 ingest 之前——/files/{id}/original 比 /files/{id}/{name} 更具体，必须先匹配）
+from app.routers import ingest, generate, fact_check, config as config_router, capabilities, chat, model, process, files, export, conversations
+app.include_router(files.router, prefix="/api")
+app.include_router(ingest.router, prefix="/api")
+app.include_router(generate.router, prefix="/api")
+app.include_router(fact_check.router, prefix="/api")
+app.include_router(config_router.router, prefix="/api")
+app.include_router(capabilities.router, prefix="/api")
+app.include_router(chat.router, prefix="/api")
+app.include_router(model.router, prefix="/api")
+app.include_router(process.router, prefix="/api")
+app.include_router(export.router, prefix="/api")
+app.include_router(conversations.router, prefix="/api")
+
+# ── 日志查看端点 ──
+
+from fastapi.responses import JSONResponse as _JSONResponse
+
+@app.get("/api/logs")
+async def view_logs(request: Request):
+    """返回内存中的日志缓冲区（最近 N 条），供前端日志面板调用"""
+    lines = int(request.query_params.get("lines", 200))
+    level = request.query_params.get("level", "all")
+    buf = getattr(request.app.state, 'log_buffer', [])
+    entries = list(buf)
+    if level != "all":
+        entries = [e for e in entries if e["level"] == level]
+    entries = entries[-lines:]
+    return _JSONResponse({"logs": entries, "total": len(buf), "returned": len(entries)})
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=7413)
