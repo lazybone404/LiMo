@@ -54,7 +54,7 @@ export function ChatCore({
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; id: string; title: string } | null>(null)
   const [toolStatus, setToolStatus] = useState('')
-  const bottomRef = useRef<HTMLDivElement>(null)
+
 
   const s = SCALES[scale]
 
@@ -76,8 +76,13 @@ export function ChatCore({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 滚动
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
+  const chatScrollRef = useRef<HTMLDivElement>(null)
+
+  // 滚动 — 用 scrollTop 替代 scrollIntoView，避免带动整个页面滚动
+  useEffect(() => {
+    const el = chatScrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [chatMessages])
 
   // 切换对话
   const switchConv = (id: string) => {
@@ -232,7 +237,7 @@ export function ChatCore({
             <span className="text-disabled ml-auto truncate">{currentTitle.slice(0, 24)}</span>
           </div>
 
-          <div className={`flex-1 overflow-y-auto ${s.pad} ${s.gap}`}>
+          <div ref={chatScrollRef} className={`flex-1 overflow-y-auto ${s.pad} ${s.gap}`}>
             {chatMessages.length === 0 && (
               <div className="flex gap-2"><div className={`${s.avatar} rounded-full bg-surface-hover flex items-center justify-center shrink-0`}><Bot size={s.icon} className="text-dimmed" /></div><div className={`max-w-[95%] px-3.5 py-2 bg-surface ${s.msg} rounded-2xl rounded-bl-md`}>你好！我是你的知识库助手。选中文档后可以向我提问。</div></div>
             )}
@@ -253,7 +258,6 @@ export function ChatCore({
             {chatLoading && !chatMessages.some(m => m.role === 'assistant' && m.content === '') && (
               <div className="flex gap-2"><div className={`${s.avatar} rounded-full bg-surface-hover flex items-center justify-center shrink-0`}><Bot size={s.icon} className="text-dimmed" /></div><div className="px-4 py-2.5 bg-surface rounded-2xl rounded-bl-md">{toolStatus ? <span className={`${s.msg} text-dimmed`}>{toolStatus}</span> : <span className="inline-flex gap-1"><span className="w-1.5 h-1.5 rounded-full bg-disabled animate-bounce" style={{ animationDelay: '0ms' }} /><span className="w-1.5 h-1.5 rounded-full bg-disabled animate-bounce" style={{ animationDelay: '150ms' }} /><span className="w-1.5 h-1.5 rounded-full bg-disabled animate-bounce" style={{ animationDelay: '300ms' }} /></span>}</div></div>
             )}
-            <div ref={bottomRef} />
           </div>
 
           <div className="p-3 border-t border-border-light">
