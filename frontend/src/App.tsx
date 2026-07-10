@@ -9,6 +9,7 @@ import { PreviewArea } from './components/preview/PreviewArea'
 import { AIPanel } from './components/ai-chat/AIPanel'
 import { FloatingAI } from './components/ai-chat/FloatingAI'
 import { SettingsPage } from './components/settings/SettingsPage'
+import { SetupWizard } from './components/ui/SetupWizard'
 import { ResizeHandle } from './components/ui/ResizeHandle'
 import { PanelStrip } from './components/ui/PanelStrip'
 import { ThemeToggle } from './components/ui/ThemeToggle'
@@ -23,6 +24,10 @@ export default function App() {
   const setDocs = useStore(s => s.setDocs)
   const [showSettings, setShowSettings] = useState(false)
   const [showExport, setShowExport] = useState(false)
+  const [showSetup, setShowSetup] = useState(() => {
+    // 首次启动检测（localStorage 标记）
+    try { return !localStorage.getItem('limo_setup_done') } catch { return false }
+  })
 
   const panelWidths = useStore(s => s.panelWidths)
   const panelsCollapsed = useStore(s => s.panelsCollapsed)
@@ -85,6 +90,13 @@ export default function App() {
         }
       }
     }} tabIndex={-1}>
+      {/* 首次启动向导 */}
+      {showSetup && (
+        <SetupWizard onDone={() => {
+          try { localStorage.setItem('limo_setup_done', '1') } catch {}
+          setShowSetup(false)
+        }} />
+      )}
       {/* 顶部栏 */}
       <header className="glass border-b border-border-light h-12 flex items-center px-4 shrink-0 z-10">
         <div className="flex items-center gap-2.5">

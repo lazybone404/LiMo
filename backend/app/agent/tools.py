@@ -12,6 +12,7 @@ import logging
 import os
 import socket
 import subprocess
+import sys
 import time
 import urllib.parse
 
@@ -27,10 +28,32 @@ _SEARXNG_STARTUP_TIMEOUT = 15
 
 
 def _get_searxng_launcher() -> list[str] | None:
-    """返回 SearXNG 启动命令。优先用 .exe（最快），其次 python 脚本。找不到返回 None。"""
+    """返回 SearXNG 启动命令。查找顺序：
+    1. SEARXNG_BIN_PATH 环境变量（Rust launcher 设置，安装目录）
+    2. PyInstaller 打包：exe 同级 searxng/ 目录
+    3. 开发环境：backend/bin/searxng/
+    找不到返回 None。
+    """
+    # 1. 环境变量：Rust launcher 检测到安装目录下的 searxng
+    env_path = os.environ.get("SEARXNG_BIN_PATH", "")
+    if env_path and os.path.isdir(env_path):
+        for candidate in [
+            os.path.join(env_path, "searxng", "SearXNG for Windows.exe"),
+            os.path.join(env_path, "SearXNG for Windows.exe"),
+        ]:
+            if os.path.exists(candidate):
+                return [candidate]
+
+    # 2. PyInstaller 打包：exe 同级 searxng/
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        exe = os.path.join(exe_dir, "searxng", "searxng", "SearXNG for Windows.exe")
+        if os.path.exists(exe):
+            return [exe]
+
+    # 3. 开发环境：backend/bin/searxng/
     base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     searx_dir = os.path.join(base, "searxng")
-    # 优先用 Windows 便携版 EXE
     exe = os.path.join(searx_dir, "SearXNG for Windows.exe")
     if os.path.exists(exe):
         return [exe]

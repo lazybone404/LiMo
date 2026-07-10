@@ -35,7 +35,8 @@
       "bin/LiMoBackend/LiMoBackend"
     ],
     "resources": {
-      "bin/LiMoBackend/_internal": "_internal"
+      "bin/LiMoBackend/_internal": "_internal",
+      "bin/LiMoBackend/ffmpeg": "ffmpeg"
     },
     "icon": [
       "icons/32x32.png",

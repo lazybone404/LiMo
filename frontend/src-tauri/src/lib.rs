@@ -69,6 +69,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_install_path_diagnostics,
             restart_backend_sidecar,
+            detect_components,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -134,6 +135,10 @@ fn spawn_backend(exe_dir: &Path) -> Result<Child, String> {
         let ffmpeg_dir = exe_dir.join("ffmpeg");
         if ffmpeg_dir.exists() {
             cmd.env("FFMPEG_BIN_PATH", ffmpeg_dir.to_string_lossy().to_string());
+        }
+        let searxng_dir = exe_dir.join("searxng");
+        if searxng_dir.exists() {
+            cmd.env("SEARXNG_BIN_PATH", searxng_dir.to_string_lossy().to_string());
         }
 
         let child = cmd.spawn().map_err(|e| format!("启动失败: {}", e))?;
@@ -275,10 +280,101 @@ fn get_install_path_diagnostics() -> InstallPathDiagnostics {
     analyze_install_path(&env::current_exe().unwrap_or_default())
 }
 
+// ── 组件检测 ──
+
+#[derive(serde::Serialize, Clone)]
+struct ComponentStatus {
+    /// "ffmpeg" | "searxng"
+    name: String,
+    /// "found" | "missing" | "bundled"
+    status: String,
+    /// 可执行文件路径（找到时）
+    path: Option<String>,
+}
+
+/// 在指定目录和系统 PATH 中查找可执行文件
+fn find_in_dir_or_path(name: &str, search_dir: &Path) -> Option<String> {
+    let exe_name = if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() };
+    // 1. 安装目录优先
+    let bundled = search_dir.join(&exe_name);
+    if bundled.exists() {
+        return Some(bundled.to_string_lossy().to_string());
+    }
+    // 2. 系统 PATH
+    if let Ok(path_var) = env::var("PATH") {
+        for dir in path_var.split(if cfg!(windows) { ';' } else { ':' }) {
+            let candidate = Path::new(dir).join(&exe_name);
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+fn detect_components() -> Vec<ComponentStatus> {
+    let exe_dir = env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_default();
+
+    let mut results = Vec::new();
+
+    // ffmpeg 检测
+    let ffmpeg_path = find_in_dir_or_path("ffmpeg", &exe_dir.join("ffmpeg"));
+    results.push(ComponentStatus {
+        name: "ffmpeg".into(),
+        status: if ffmpeg_path.is_some() { "found".into() } else { "missing".into() },
+        path: ffmpeg_path,
+    });
+
+    // SearXNG 检测
+    let searxng_dir = exe_dir.join("searxng");
+    let searxng_exe = if cfg!(windows) {
+        searxng_dir.join("searxng").join("SearXNG for Windows.exe")
+    } else {
+        searxng_dir.join("searxng")
+    };
+    let searxng_found = if searxng_exe.exists() {
+        Some(searxng_exe.to_string_lossy().to_string())
+    } else {
+        // 尝试系统 PATH
+        find_in_dir_or_path("searxng", &Path::new("").join(""))
+            .or_else(|| find_in_dir_or_path("python", &Path::new("").join(""))
+                .map(|_| "searxng (python module)".into()))
+    };
+    results.push(ComponentStatus {
+        name: "searxng".into(),
+        status: if searxng_found.is_some() { "found".into() } else { "missing".into() },
+        path: searxng_found,
+    });
+
+    results
+}
+
 // ── PATH 增强 ──
 
 fn enhance_path(current_path: &str) -> String {
-    let paths = if cfg!(windows) {
+    let mut extra = Vec::new();
+
+    // 安装目录下的组件优先
+    let exe_dir = env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    if let Some(ref dir) = exe_dir {
+        let ffmpeg_dir = dir.join("ffmpeg");
+        if ffmpeg_dir.exists() {
+            extra.push(ffmpeg_dir.to_string_lossy().to_string());
+        }
+        let searxng_dir = dir.join("searxng");
+        if searxng_dir.exists() {
+            extra.push(searxng_dir.to_string_lossy().to_string());
+        }
+    }
+
+    // 常见系统路径
+    let system_paths: Vec<&str> = if cfg!(windows) {
         vec!["C:\\ffmpeg\\bin", "C:\\Program Files\\ffmpeg\\bin",
              "C:\\tools\\ffmpeg\\bin", "C:\\ProgramData\\chocolatey\\bin"]
     } else if cfg!(target_os = "macos") {
@@ -286,8 +382,10 @@ fn enhance_path(current_path: &str) -> String {
     } else {
         vec!["/usr/local/bin", "/usr/bin", "/bin"]
     };
+
     let sep = if cfg!(windows) { ";" } else { ":" };
-    let mut parts: Vec<&str> = paths.iter().map(|s| *s).collect();
-    if !current_path.is_empty() { parts.push(current_path); }
+    let mut parts: Vec<String> = extra;
+    parts.extend(system_paths.iter().map(|s| s.to_string()));
+    if !current_path.is_empty() { parts.push(current_path.to_string()); }
     parts.join(sep)
 }
