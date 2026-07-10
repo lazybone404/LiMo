@@ -182,16 +182,19 @@ Python `markdown` 库不原生支持 GFM 删除线和任务列表。在转换前
 
 ```python
 def _preprocess_gfm(md: str) -> str:
+    # 表格前补空行 — Python markdown tables 扩展要求表格前有空行，
+    # 但 GFM/react-markdown 允许紧跟前导文字。LLM 常生成 "文字\n|表头|\n|---|" 格式
+    md = re.sub(r'(^[^\n|][^\n]*)\n(\|[^\n]+\|[ \t]*\n\|[-: |]+\|)',
+               r'\1\n\n\2', md, flags=re.MULTILINE)
     # ~~text~~ → <del>text</del>
     md = re.sub(r'~~(.+?)~~', r'<del>\1</del>', md)
-    # - [ ] task → ☐ task
+    # - [ ] task → ☐ task / - [x] task → ☑ task
     md = re.sub(r'^- \[ \] (.+)$', r'- ☐ \1', md, flags=re.MULTILINE)
-    # - [x] task → ☑ task
     md = re.sub(r'^- \[x\] (.+)$', r'- ☑ \1', md, flags=re.MULTILINE)
     return md
 ```
 
-**局限**：用 Unicode 字符 ☐/☑ 而非 `<input type="checkbox">`，因为静态 HTML 无法交互。
+**局限**：任务列表用 Unicode 字符 ☐/☑ 而非 `<input type="checkbox">`，因为静态 HTML 无法交互。
 
 ---
 
@@ -270,6 +273,10 @@ HTML 中嵌入 KaTeX auto-render 脚本，CDN 回退。但已优先使用服务�
 ### 端点：`GET /export/{id}/mindmap`
 
 调用 `_build_mindmap_html(md, title)` 生成自包含 HTML。内容源优先取笔记 markdown（非 polished、非 fact_check），回退到 rawText。
+
+### 资源内联策略
+
+d3.js、markmap-view、markmap-lib 三个库优先从本地 `node_modules/` / `static/markmap/` 读取并内联为 `<script>...</script>`，不可用时 CDN 回退。**注意**：内联路径必须用 `<script>` 标签包裹，CDN 回退路径自带 `src` 属性。2026-07-10 修复了内联 JS 裸放（无 `<script>` 包裹）导致浏览器不执行的问题。
 
 ### Markdown 清洗顺序
 

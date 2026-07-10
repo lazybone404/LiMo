@@ -90,7 +90,7 @@ class Generator:
     ) -> MarkdownView:
         """生成单个产物（notes 或 polished）。"""
         keep_refs = formats is not None and "images" in formats
-        send_to_llm = image_analyze and keep_refs
+        send_to_llm = bool(image_analyze)
 
         clean_text, image_urls, video_path = await self._prep.prepare(
             raw_text, vl_config, keep_refs,
@@ -137,7 +137,7 @@ class Generator:
     ) -> tuple[MarkdownView, MarkdownView]:
         """并行生成双产物（polished + notes）。Excel 生成 report + summary。"""
         keep_refs = formats is not None and "images" in formats
-        send_to_llm = image_analyze and keep_refs
+        send_to_llm = bool(image_analyze)
 
         clean_text, image_urls, video_path = await self._prep.prepare(
             raw_text, vl_config, keep_refs,
@@ -169,6 +169,7 @@ class Generator:
             content_a = _post_process_content_markers(content_a)
             content_b = _post_process_content_markers(content_b)
             if formats and "screenshot" in formats:
+                content_a = _post_process_screenshots(content_a, video_path)
                 content_b = _post_process_screenshots(content_b, video_path)
         finally:
             self._cleanup_video(video_path)

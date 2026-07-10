@@ -74,6 +74,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
              {"model_name": "qwen-vl-max", "category": "ocr", "desc": "VL 模型 · 文字提取"},
              {"model_name": "qwen-vl-plus", "category": "ocr", "desc": "VL 模型 · 轻量"},
          ]},
+        {"id": "bcut", "name": "B站必剪（免费云转写）", "type": "cloud", "base_url": "", "api_key": "", "capabilities": ["asr"],
+         "builtin_models": [
+             {"model_name": "bcut", "category": "asr", "desc": "免费云转写 · 中文优化"},
+         ]},
         {"id": "faster-whisper", "name": "faster-whisper", "type": "local", "base_url": "", "api_key": "", "capabilities": ["asr"],
          "builtin_models": [
              {"model_name": "small", "category": "asr", "desc": "464MB · CPU"},
@@ -142,10 +146,31 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
         elif not isinstance(val, list):
             bindings[cat] = []
 
-    # 增量同步：DEFAULT_CONFIG 新增的 builtin_models 自动补入已有配置
+    # 增量同步：DEFAULT_CONFIG 新增的 builtin_models + provider 条目自动补入已有配置
+    _sync_missing_providers(config)
     _sync_builtin_models(config)
 
     return config
+
+
+def _sync_missing_providers(config: dict):
+    """将 DEFAULT_CONFIG 中已定义但用户 config.yaml 中缺失的 engine_providers 补入。
+
+    _deep_merge 对列表是整段替换，旧 config.yaml 不包含新增 provider（如 bcut）。
+    此函数按 id 匹配，补入 DEFAULT_CONFIG 中有而用户配置中没有的条目。
+    """
+    default_provs = DEFAULT_CONFIG.get("engine_providers", [])
+    user_provs = config.get("engine_providers", [])
+    user_ids = {p["id"] for p in user_provs}
+    added = False
+    for dp in default_provs:
+        if dp["id"] not in user_ids:
+            user_provs.append(dp)
+            added = True
+            logger = __import__("logging").getLogger(__name__)
+            logger.info("Auto-added missing engine_provider: %s", dp["id"])
+    if added:
+        config["engine_providers"] = user_provs
 
 
 def _deep_merge(base: dict, override: dict):

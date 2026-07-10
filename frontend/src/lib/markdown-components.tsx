@@ -86,6 +86,9 @@ function MarkdownImage({ src, alt, ...props }: any) {
   const [broken, setBroken] = useState(false)
   const imgSrc = (typeof src === 'string' && src.startsWith('/api/')) ? apiUrl(src.slice(4)) : src
 
+  // 空 src 会导致浏览器重新加载整页，不渲染该元素
+  if (!imgSrc || imgSrc === '') return null
+
   if (broken) {
     return (
       <div className="my-6 flex justify-center">
@@ -167,13 +170,14 @@ export function createMarkdownComponents() {
     },
     img: MarkdownImage,
     p({ children, ...props }: any) {
+      const pid = React.useId()
       function renderContent(text: unknown): React.ReactNode {
         if (typeof text !== 'string') return text as React.ReactNode
         const parts = text.split(/(\*?Content-\[\d{2}:\d{2}\])/g)
         return parts.map((part, i) => {
           if (part.includes('Content-[')) {
             const time = part.match(/\[(\d{2}:\d{2})\]/)?.[1] || ''
-            return <span key={i} className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{time}</span>
+            return <span key={`${pid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{time}</span>
           }
           return part
         })
@@ -185,13 +189,14 @@ export function createMarkdownComponents() {
       return hasBlockChild ? <div {...props}>{processed}</div> : <p {...props}>{processed}</p>
     },
     li({ children, ...props }: any) {
+      const lid = React.useId()
       const processed = React.Children.map(children, child => {
         if (typeof child === 'string') {
           const parts = child.split(/(\*?Content-\[\d{2}:\d{2}\])/g)
           return parts.map((part, i) => {
             if (part.includes('Content-[')) {
               const time = part.match(/\[(\d{2}:\d{2})\]/)?.[1] || ''
-              return <span key={i} className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{time}</span>
+              return <span key={`${lid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{time}</span>
             }
             return part
           })

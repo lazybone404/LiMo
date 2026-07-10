@@ -109,8 +109,9 @@ async def export_content(
         # 默认取 notes，避免 polished 排在前面导致与预览栏不一致
         filter_mode = mode if mode else "notes"
         mds = store.get_markdowns_by_transcript(tx_id, mode=filter_mode)
-        # notes 没找到时回退到所有产物
-        if not mds:
+        # mode 已显式指定但未找到 → 不回退到其他 mode 的内容（预览一致原则）
+        # 仅 mode 为空（用户未指定）时，无 notes 才回退到任意可用产物
+        if not mds and not mode:
             mds = store.get_markdowns_by_transcript(tx_id, mode="")
         content = mds[0]["content"] if mds else ""
         # 回退：无 markdown 条目时尝试 process results
@@ -463,6 +464,11 @@ def _to_html(md: str, title: str, theme: str) -> str:
 
 def _preprocess_gfm(md: str) -> str:
     """预处理 GFM 特性（Python markdown 不原生支持）"""
+    # 确保 GFM 表格前有空行 — Python markdown tables 扩展要求表格前有空行，
+    # 但 GFM 标准允许表格紧跟前导文字。不加此行会导致"[文字]\n|表头|\n|---|"
+    # 被当作段落文本输出（react-markdown + remark-gfm 可正常渲染）
+    md = re.sub(r'(^[^\n|][^\n]*)\n(\|[^\n]+\|[ \t]*\n\|[-: |]+\|)',
+               r'\1\n\n\2', md, flags=re.MULTILINE)
     # 删除线 ~~text~~ → <del>text</del>
     md = re.sub(r'~~(.+?)~~', r'<del>\1</del>', md)
     # 任务列表 - [ ] → ☐, - [x] → ☑
@@ -918,9 +924,9 @@ def _build_mindmap_html(md: str, title: str) -> str:
 </head>
 <body>
 <svg id="mindmap"></svg>
-{d3_js if d3_js else '<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>'}
-{mv_js if mv_js else '<script src="https://cdn.jsdelivr.net/npm/markmap-view@0.17.0/dist/browser/index.js"></script>'}
-{ml_js if ml_js else '<script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.17.0/dist/browser/index.iife.js"></script>'}
+{f'<script>{d3_js}</script>' if d3_js else '<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>'}
+{f'<script>{mv_js}</script>' if mv_js else '<script src="https://cdn.jsdelivr.net/npm/markmap-view@0.17.0/dist/browser/index.js"></script>'}
+{f'<script>{ml_js}</script>' if ml_js else '<script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.17.0/dist/browser/index.iife.js"></script>'}
 <script>
 (function() {{
   var mm = window.markmap;

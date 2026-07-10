@@ -114,26 +114,6 @@ export function GenPanel() {
   const effectiveType = currentDoc?.sourceType || inputType
   const typeMeta = getTypeMeta(effectiveType, caps?.genOptions)
 
-  // 当前引擎是否支持图片提取（用于「保留文档图片」选项的可用性）
-  const engineHasImages = useMemo(() => {
-    if (!typeMeta.isDoc) return false
-    // retranscribe: 查找已用引擎
-    if (currentDoc?.engine) {
-      const eng = engineOptions.doc?.find(e => e.name === currentDoc.engine)
-      return eng?.capabilities?.includes('image') ?? false
-    }
-    // import mode: 查找当前子类型绑定的引擎
-    const cat = SUB_SCENARIO[fileSubType] || 'doc:word'
-    const binding = engineBindings[cat]
-    if (binding) {
-      const eng = engineOptions.doc?.find(e => e.id === binding)
-      return eng?.capabilities?.includes('image') ?? false
-    }
-    return false
-    // engineOptions/engineBindings 是 store 派生对象，身份每渲染变化，但内容浅比较等价；计算代价低，按需重算
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentDoc, engineOptions, engineBindings, fileSubType, typeMeta.isDoc])
-
   const styleKeys = (typeMeta.isExcel
     ? caps?.excelStyles || ['detailed', 'minimal', 'business']
     : typeMeta.isDoc
@@ -151,7 +131,6 @@ export function GenPanel() {
   const ocrModesReady = Object.keys(ocrEngines).length > 0
 
   // ── Effects ──
-  useEffect(() => { if (!videoUnderstanding && formatScreenshot) setFormatScreenshot(false) }, [videoUnderstanding, formatScreenshot])
 
   useEffect(() => {
     if (!ocrModesReady) return
@@ -470,8 +449,10 @@ export function GenPanel() {
       unit_height: isVideo ? unitHeight : undefined,
       save_quality: isVideo ? saveQuality : undefined,
       frame_quality_filter: isVideo ? frameQualityFilter : undefined,
-      image_analyze: formatImages ? imageAnalyze : undefined,
-      image_optimize: (formatImages && imageAnalyze) ? imageOptimize : undefined,
+      // 视频：AI 画面理解开启 = 直接发给 LLM；文档：formatImages 勾选后才可选发送
+      image_analyze: isVideo ? videoUnderstanding : (formatImages ? imageAnalyze : undefined),
+      // 图片预处理：视频从 VL 参数取，文档从嵌套选项取
+      image_optimize: isVideo ? (videoUnderstanding ? imageOptimize : undefined) : ((formatImages && imageAnalyze) ? imageOptimize : undefined),
       continue_from: continueFrom || undefined,
     }, {
       onChunk(text, mode) {
@@ -667,7 +648,7 @@ export function GenPanel() {
                   formatImages={formatImages} setFormatImages={setFormatImages}
                   imageAnalyze={imageAnalyze} setImageAnalyze={setImageAnalyze}
                   imageOptimize={imageOptimize} setImageOptimize={setImageOptimize}
-                  engineHasImages={engineHasImages} hasImageModel={hasImageModel}
+                  hasImageModel={hasImageModel}
                   style={style} setStyle={setStyle} styleKeys={styleKeysWithNone}
                   selectedCore={selectedCore} setSelectedCore={setSelectedCore}
                   videoUnderstanding={videoUnderstanding} setVideoUnderstanding={setVideoUnderstanding}

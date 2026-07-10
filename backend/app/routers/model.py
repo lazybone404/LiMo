@@ -484,7 +484,7 @@ def delete_engine_provider(provider_id: str, request: Request):
     with request.app.state.config_lock:
         cfg = _get_cfg(request)
         # 只允许删自定义的
-        builtins = {"dashscope", "faster-whisper", "pymupdf"}
+        builtins = {"bcut", "dashscope", "faster-whisper", "pymupdf"}
         if provider_id in builtins:
             return {"error": "不能删除内置引擎厂商"}
         cfg["engine_providers"] = [p for p in cfg.get("engine_providers", []) if p["id"] != provider_id]

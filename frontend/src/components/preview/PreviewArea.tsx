@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useStore } from '../../store'
-import { getTranscript, getMarkdown, fetchProcessResults, streamFactCheck, apiUrl } from '../../api/client'
+import { getTranscript, getMarkdown, fetchProcessResults, streamFactCheck, apiUrl, ApiErrorException } from '../../api/client'
 import { loadGenPrefs } from '../gen-panel/genPrefs'
 import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
@@ -95,10 +95,15 @@ export function PreviewArea() {
     if (!currentDocId) return
     const capturedId = currentDocId
     const isSame = () => capturedId === useStore.getState().currentDocId
+    // recoverable 错误（"尚未生成"等）是预期状态，静默处理
+    const isRecoverable = (err: unknown) => err instanceof ApiErrorException && err.apiError.recoverable
+    const handleLoadError = (label: string, err: unknown) => {
+      if (!isRecoverable(err)) { console.error(`${label}:`, err); if (isSame()) setContentLoadError(true) }
+    }
     // 预加载 rawText（已无 base64，体积小，不阻塞）
     getTranscript(capturedId).then(tx => {
       if (tx && isSame()) setCurrentRawText(tx.rawText ?? '')
-    }).catch(err => { console.error('加载转录失败:', err); if (isSame()) setContentLoadError(true) })
+    }).catch(err => { handleLoadError('加载转录失败', err) })
     getMarkdown(capturedId).then(md => {
       if (!isSame()) return
       if (md) {
@@ -110,10 +115,10 @@ export function PreviewArea() {
         setMarkdownMeta(null)
         setMarkdownVersions([])
       }
-    }).catch(err => { console.error('加载笔记失败:', err); if (isSame()) setContentLoadError(true) })
+    }).catch(err => { handleLoadError('加载笔记失败', err) })
     getMarkdown(capturedId, 'polished').then(md => {
       if (isSame()) setCurrentPolishedContent(md && md.content ? md.content : null)
-    }).catch(err => { console.error('加载整理版原文失败:', err); if (isSame()) setContentLoadError(true) })
+    }).catch(err => { handleLoadError('加载整理版原文失败', err) })
     getMarkdown(capturedId, 'fact_check').then(md => {
       if (!isSame()) return
       if (md?.content) {
@@ -129,7 +134,7 @@ export function PreviewArea() {
           verified_at: (md as any).verified_at,
         })
       }
-    }).catch(err => { console.error('加载事实验证失败:', err); if (isSame()) setContentLoadError(true) })
+    }).catch(err => { handleLoadError('加载事实验证失败', err) })
     // 文档/视频/PDF — 若无笔记则自动显示转录
     Promise.all([
       getMarkdown(capturedId),
@@ -142,7 +147,7 @@ export function PreviewArea() {
         const sourceType = st.docs.find(d => d.id === capturedId)?.sourceType
         setActiveView(sourceType === 'epub' ? 'skeleton' : 'transcript')
       }
-    }).catch(err => { console.error('加载文档内容失败:', err); if (isSame()) setContentLoadError(true) })
+    }).catch(err => { handleLoadError('加载文档内容失败', err) })
     // 加载已持久化的处理结果
     fetchProcessResults(capturedId).then(results => {
       if (results.length > 0 && isSame()) {
@@ -598,7 +603,7 @@ export function PreviewArea() {
               <span className="text-[10px] text-disabled">版本</span>
               {versionLoading && <Loader2 size={10} className="animate-spin text-accent" />}
               {markdownVersions.map(v => (
-                <button key={v.version}
+                <button key={v.id}
                   onClick={() => loadVersion(v.version, activeView === 'polished' ? 'polished' : 'notes')}
                   disabled={versionLoading}
                   className={`px-2 py-0.5 rounded text-[11px] font-mono transition-all disabled:opacity-40 ${

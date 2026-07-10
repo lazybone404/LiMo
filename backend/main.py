@@ -73,11 +73,19 @@ from app.core import logging as log
 
 @app.exception_handler(AppError)
 async def app_error_handler(request, exc: AppError):
-    """AppError 体系 → { code, message, detail, recoverable }"""
-    log.warning("AppError", code=exc.code, message=exc.message,
-                path=request.url.path, recoverable=exc.recoverable)
+    """AppError 体系 → { code, message, detail, recoverable }
+
+    recoverable=True → INFO（预期业务状态，不是异常，如 MD_NOT_FOUND "尚未生成"）
+    recoverable=False → WARNING（需关注的异常，如权限拒绝、配置错误）
+    """
+    if not exc.recoverable:
+        log.warning("AppError", code=exc.code, message=exc.message,
+                    path=request.url.path)
     from fastapi.responses import JSONResponse
-    return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+    # recoverable 错误返回 200，避免浏览器 DevTools 显示网络错误
+    # （如 "尚未生成" 是预期业务状态，不是真的 HTTP 错误）
+    http_status = 200 if exc.recoverable else exc.status_code
+    return JSONResponse(status_code=http_status, content=exc.to_dict())
 
 
 @app.exception_handler(Exception)

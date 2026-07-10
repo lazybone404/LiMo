@@ -209,7 +209,8 @@ export function ProviderSettings() {
   const allLlmNames = new Set(refreshResult.map(r => r.id))
   enabledModels.filter(m => m.provider_id === selectedLlmId).forEach(m => allLlmNames.add(m.model_name))
 
-  const engineBuiltins = selectedEngineId === 'faster-whisper' ? ['medium', 'small'] :
+  const engineBuiltins = selectedEngineId === 'bcut' ? ['bcut'] :
+    selectedEngineId === 'faster-whisper' ? ['medium', 'small'] :
     selectedEngineId === 'pymupdf' ? ['pymupdf', 'markitdown'] : []
   const allEngineNames = new Set(engineBuiltins)
   engineRefreshResult.forEach(r => allEngineNames.add(r.id))
@@ -385,7 +386,7 @@ export function ProviderSettings() {
                     </button>
                   </div>
                 )}
-                {selectedEngineId !== 'dashscope' && selectedEngineId !== 'faster-whisper' && selectedEngineId !== 'pymupdf' && (
+                {selectedEngineId !== 'bcut' && selectedEngineId !== 'dashscope' && selectedEngineId !== 'faster-whisper' && selectedEngineId !== 'pymupdf' && (
                   <button onClick={() => handleDeleteEngineProv(selectedEngineId)}
                     className="flex items-center gap-1 text-[11px] text-error hover:underline"><Trash2 size={11} />删除</button>
                 )}

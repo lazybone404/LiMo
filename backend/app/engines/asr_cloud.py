@@ -133,7 +133,7 @@ class DashScopeASREngine(Engine):
             )
         return result_resp.output
 
-    def execute(self, audio_path: str) -> TranscriptResult:
+    def execute(self, audio_path: str, **kwargs) -> TranscriptResult:
         if not self.api_key:
             raise RuntimeError("DashScope API key 未配置，请在设置中填写阿里云 API Key")
 

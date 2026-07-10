@@ -89,6 +89,16 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
         store = request.app.state.store
         config = request.app.state.config
 
+        # 客户端断连监听（LLM 调用会检查 cancel_event 停止 token 消耗）
+        cancel_event = asyncio.Event()
+        async def _watch_disconnect():
+            while not cancel_event.is_set():
+                if await request.is_disconnected():
+                    cancel_event.set()
+                    return
+                await asyncio.sleep(0.5)
+        disconnect_task = asyncio.create_task(_watch_disconnect())
+
         # 查找 transcript
         tx = store.get_transcript(transcript_id)
         if not tx:
@@ -150,9 +160,8 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
                         prompt_text,
                         image_urls=[data_url],
                         max_tokens=4096, temperature=0.1,
-                        # max_continuations=0 与 generator.py 的 max_continuations=3 不同：
-                        # OCR/图片处理是确定性的，不需要续写；生成笔记是创意性的，需要续写补全。
                         max_continuations=0,
+                        cancel_event=cancel_event,
                     )
 
                     if text and text.strip():

@@ -14,7 +14,7 @@ import { ResizeHandle } from './components/ui/ResizeHandle'
 import { PanelStrip } from './components/ui/PanelStrip'
 import { ThemeToggle } from './components/ui/ThemeToggle'
 import { fetchCapabilities, listTranscripts } from './api/client'
-import { Settings, PanelLeft, Library, MessageSquare, PenLine, Bot, Download } from 'lucide-react'
+import { Settings, PanelLeft, Library, MessageSquare, PenLine, Bot, Archive } from 'lucide-react'
 
 export default function App() {
   const genPanelOpen = useStore(s => s.genPanelOpen)
@@ -153,7 +153,7 @@ export default function App() {
           <TaskPanelToggle />
           <div className="w-px h-5 bg-border-default" />
           <ThemeToggle />
-          <button onClick={() => setShowExport(true)} className="p-1.5 rounded-lg hover:bg-surface-hover text-muted hover:text-dimmed transition-colors" title="导出"><Download size={15} /></button>
+          <button onClick={() => setShowExport(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-surface-hover text-muted hover:text-dimmed transition-colors" title="批量导出 · 侧边面板"><Archive size={15} /><span className="text-[12px]">导出</span></button>
         </div>
         <div className="flex-1" />
       </header>

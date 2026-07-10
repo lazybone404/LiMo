@@ -3,6 +3,7 @@
 参照 BiliNote pipeline.py: pipe_subtitle → pipe_download → pipe_transcribe
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -184,7 +185,7 @@ class VideoAdapter(PipelineAdapter):
                 if audio_path.exists() and audio_path.stat().st_size > 0:
                     pg("downloading", "done", "音频提取完成", 50)
                     pg("transcribing", "running", "语音转写中...（可能需要几分钟）", 55)
-                    asr_result = self._transcribe(audio_path, warnings)
+                    asr_result = await self._transcribe(audio_path, warnings)
                     if asr_result.get("segments"):
                         pg("transcribing", "done",
                            f"转写完成 ({len(asr_result.get('segments', []))}段)", 85)
@@ -393,19 +394,15 @@ class VideoAdapter(PipelineAdapter):
 
             if provider_id == "dashscope":
                 eng_name = "dashscope-asr"
-                engine = EngineRegistry.get("asr", eng_name)
-                if engine:
-                    return eng_name, engine, model_name
             elif provider_id == "faster-whisper":
                 eng_name = f"faster-whisper-{model_name}" if model_name in ("small", "medium", "large-v3") else "faster-whisper-small"
-                engine = EngineRegistry.get("asr", eng_name)
-                if engine:
-                    return eng_name, engine, model_name
+            elif provider_id == "bcut":
+                eng_name = "bcut-asr"
             else:
-                # 未知 provider → 尝试直接用 model_name 查
-                engine = EngineRegistry.get("asr", model_name)
-                if engine:
-                    return model_name, engine, model_name
+                eng_name = model_name
+            engine = EngineRegistry.get("asr", eng_name)
+            if engine:
+                return eng_name, engine, model_name
 
         # 所有绑定均不可用 → 检查是否允许自动降级
         auto_fallback = cfg.get("engine_auto_fallback", True)
@@ -425,7 +422,7 @@ class VideoAdapter(PipelineAdapter):
         logger.error("无可用 ASR 引擎")
         return "", None, ""
 
-    def _transcribe(self, audio_path: Path, warnings: list) -> dict:
+    async def _transcribe(self, audio_path: Path, warnings: list) -> dict:
         eng_name, engine, model_name = self._resolve_asr_engine()
         if not engine:
             warnings.append("ASR 引擎未注册: " + eng_name)
@@ -442,7 +439,9 @@ class VideoAdapter(PipelineAdapter):
                 engine.api_key = dashscope_key
                 logger.info("ASR: 动态注入 DashScope API Key")
 
-        # 带降级链的执行
+        # 带降级链的执行（同步引擎放入 asyncio.to_thread 避免阻塞事件循环）
+        # 这样客户端断连检测 _watch_disconnect 可以正常运行并 set cancel_event，
+        # 后台线程中的引擎在逐段检查 cancel_event 后立即停止 CPU 消耗。
         cancel_event = (self._engine_config or {}).get("cancel_event")
         tried = []
         current = engine
@@ -452,7 +451,7 @@ class VideoAdapter(PipelineAdapter):
                 raise FatalError("操作已取消")
             logger.info("ASR: 尝试 %s (model=%s)", current_name, model_name)
             try:
-                result = current.run(str(audio_path))
+                result = await asyncio.to_thread(current.run, str(audio_path), cancel_event=cancel_event)
                 if result and result.segments:
                     logger.info("ASR: %s 成功 (%d段, %s)", current_name, len(result.segments), result.language)
                     return {
@@ -466,6 +465,8 @@ class VideoAdapter(PipelineAdapter):
                         "engine_used": current_name,
                     }
                 warnings.append(f"ASR {current_name} 返回空结果")
+            except FatalError:
+                raise  # 取消或其他致命错误，不降级，直接抛出
             except Exception as e:
                 warnings.append(f"ASR {current_name} 失败: {e}")
                 logger.warning("ASR %s 失败: %s", current_name, str(e)[:120])

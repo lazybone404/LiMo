@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-07-10 | **版本**: 0.1.1
+**更新**: 2026-07-11 | **版本**: 0.1.1
 
 ---
 
@@ -11,12 +11,12 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 60 |
+| 后端 Python 文件 | 61 |
 | 前端 TS/TSX 文件 | 40 |
 | API 路由模块 | 11 |
 | API 端点 | ~60 |
 | 适配器 | 7 |
-| 引擎 (ASR/Doc/OCR) | 16 |
+| 引擎 (ASR/Doc/OCR) | 17 |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 8 |
 
@@ -38,10 +38,10 @@
 
 | 类别 | 引擎 | 类型 |
 |------|------|------|
+| ASR | bcut-asr | 免费云 |
 | ASR | dashscope-asr | 云端 |
 | ASR | faster-whisper-small | 本地 |
 | ASR | faster-whisper-medium | 本地 |
-| ASR | faster-whisper-large-v3 | 本地 |
 | Doc | pymupdf / pymupdf-text / pymupdf4llm | 本地 |
 | Doc | pdf-ocr | 本地+云端 |
 | Doc | python-docx / python-docx-text | 本地 |
@@ -52,7 +52,7 @@
 | OCR | dashscope-ocr | 云端 |
 | OCR | tesseract | 本地 |
 
-**引擎计数方式**：`EngineRegistry.register()` 调用次数。Doc 引擎按子能力分别注册（共 10 项），加上 ASR 4 项、OCR 2 项 = 16。
+**引擎计数方式**：`EngineRegistry.register()` 调用次数。ASR 4 + Doc 11 + OCR 2 = 17。
 
 ## 管道
 

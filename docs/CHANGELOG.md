@@ -6,6 +6,353 @@
 
 ---
 
+## 2026-07-11 — 代码质量审查：修复 6 项 bug + 死代码清理 + 诊断增强
+
+### 修复
+
+| # | 严重度 | 问题 | 文件 |
+|---|:---:|------|------|
+| B1 | 中 | `_warn_mismatched_fields` 误报：`image_analyze` 加入 video 后，两个类型互相检查时会打 warning | `generate.py` |
+| B2 | 高 | 单产物路径用 raw `mode` 而非 `stream_mode` 判断 GenerateMode，传入非标准 mode 值时可能误判 | `generate.py` |
+| B6 | 中 | `generate_both` 只对 notes 做截图后处理，漏了 polished 内容 | `generator.py` |
+| B7 | 中 | `_optimize_data_uri` 缺 RGBA→RGB 转换，VL RGBA 图片保存 JPEG 可能失败 | `content_preparer.py` |
+| B8 | 中 | yt-dlp 下载失败时临时目录泄漏，长时间运行累积磁盘占用 | `content_preparer.py` |
+| B10 | 低 | ASR 绑定日志说 whisper-small 是默认，实际 bcut 是首选 | `engines/__init__.py` |
+
+### 死代码清理
+
+- **`engineHasImages`**：GenPanel.tsx 中 ~12 行 useMemo 计算 + GenerateOptions.tsx 中 prop 声明，GenerateOptions 从未读取。已删除。
+- **React 重复 key**：版本切换器用 `v.version` → 改为 `v.id`。markdown `p`/`li` 时间戳 badge 用 `useId()` 前缀。
+
+### 图片→LLM 链路修复
+
+- **空 src 警告**：图片剥离后 `![alt]` 渲染成 `<img src="">` → 改为 `[📷 alt]` 文本占位符
+- **`MarkdownImage`**：空 src 直接不渲染元素（`return null`），避免浏览器重载整页
+
+### LLM 流式诊断增强
+
+`service.py` 加两份日志：
+- 多模态请求体大小：`img_chars=2500K`，帮助诊断上传瓶颈
+- 首个 chunk 到达时间：定位延迟在 API 侧还是网络侧
+
+### 影响范围
+
+- `generate.py`：type fields 共享字段处理 + `mode`→`stream_mode`
+- `generator.py`：screenshot 双产物一致性
+- `content_preparer.py`：RGBA 兼容 + temp dir 清理 + 空 src 修复
+- `engines/__init__.py`：日志文案修正
+- `client.ts`：VL 参数序列化补全 + `!== undefined` 统一
+- `markdown-components.tsx`：空 src 守卫 + key 唯一性
+- `PreviewArea.tsx`：版本 key 修复
+- `GenPanel.tsx`：死代码删除 + VL 联动简化
+- `GenerateOptions.tsx`：对标 BiliNote 简化 UI + VL 参数折叠
+- `service.py`：多模态流式诊断日志
+
+---
+
+## 2026-07-11 — 对标 BiliNote 简化视频画面理解：一个开关 = VL + 发给 LLM
+
+### 背景
+
+之前 LiMo 的视频画面理解被拆成三层嵌套：`启用画面截图 → 保留截帧图片 → AI 分析图片`。对标 BiliNote 后发现过度设计——VL 管线生成的网格图是给大模型看的，嵌入笔记毫无意义（2×2 四格拼图对读者什么也说明不了）。BiliNote 的设计是 `video_understanding` 一个开关直接控制"VL 跑 + 发给 LLM"，简洁直观。
+
+### 修改
+
+**删除三级嵌套，改为对标 BiliNote 的单一开关：**
+
+```
+之前（过度设计）：
+  视觉理解
+  └── 启用画面截图 [checkbox]
+      ├── 截图间隔、拼图尺寸...
+      笔记格式
+      └── 保留截帧图片 [checkbox]     ← 网格图嵌入文章（无意义）
+          └── AI 分析图片 [checkbox]   ← 真正发给 LLM
+              └── 图片预处理 [checkbox]
+
+现在（对标 BiliNote）：
+  AI 画面理解 ← "截取视频画面发给多模态模型辅助分析"
+  └── 启用 [checkbox]
+      ├── 截图间隔（秒）
+      ├── 拼图尺寸（列 × 行）
+      └── ▸ 高级设置（可折叠）
+          ├── 单帧分辨率 / JPEG 质量
+          ├── 相邻重复帧去重 / 帧质量过滤
+          └── 图片预处理
+  
+  笔记格式
+  └── 原片截图  ← 独立，ffmpeg 单帧，不经过大模型
+```
+
+**文档类型不变**：保留文档图片 → AI 分析图片 → 图片预处理 三级嵌套。文档图片对读者有意义，不同于 VL 网格图。
+
+**后端同步简化**：`send_to_llm = bool(image_analyze)`。前端已保证门控（视频=videoUnderstanding，文档=formatImages&&imageAnalyze），后端不再重复检查 `keep_refs`。
+
+**VL 参数精简**：默认只显示间隔+拼图（对标 BiliNote），其余折叠到 `<details>` 高级设置中。
+
+### React 重复 key 修复
+
+`markdown-components.tsx` 中 `p` 和 `li` 组件的 `key={i}` 在 `React.Children.map` 展平后产生重复 key。修复：使用 `React.useId()` 为每个组件实例生成唯一前缀 `key={`${pid}-${i}`}`。
+
+### 前台参数序列化修复
+
+`client.ts` 缺失 5 个 VL 参数（`dedupe_enabled`/`unit_width`/`unit_height`/`save_quality`/`frame_quality_filter`）的序列化。全部布尔/数字参数改为 `!== undefined` 判断。
+
+### 单产物路径 send_to_llm / optimize_images 漏传
+
+`generate.py` 单产物路径只传了 `keep_refs`，漏了 `send_to_llm` 和 `optimize_images`。
+
+### 图片优化覆盖率
+
+VL 图片和文档 data URI 发给 LLM 时此前不经过 optimize_images。
+
+### 影响范围
+
+- **前端 `GenerateOptions.tsx`**：三级嵌套改为单一开关 + VL 参数折叠 + 无模型时禁用
+- **前端 `GenPanel.tsx`**：删除 VL↔formatImages 双向联动，image_analyze 按视频/文档分派
+- **前端 `client.ts`**：补 5 个 VL 参数 + `!== undefined` 序列化
+- **后端 `generate.py`**：`send_to_llm` 简化 + 单产物补参
+- **后端 `generator.py`**：`send_to_llm` 简化
+- **后端 `content_preparer.py`**：VL 图片 + data URI 优化覆盖
+- **后端 `markdown-components.tsx`**：React 重复 key 修复
+
+---
+
+## 2026-07-11 — 视频截图逻辑解耦 + 图片→LLM 全链路修复
+
+### 视频截图两条管线解耦
+
+视频类型有两套完全独立的图片系统，之前被错误地耦合在一起：
+
+| 选项 | 管线 | 时机 | 图片流向 |
+|------|------|------|----------|
+| **原片截图** | ffmpeg 单帧抽取 | LLM 生成**后**，按 AI 标记的时间点抽帧 | 嵌入文章，**不经过大模型** |
+| **启用画面截图** | VL 管线（下载视频→抽帧→拼网格→base64） | LLM 生成**前** | 嵌入文章 + 可选发给 LLM（AI 分析图片） |
+
+**问题 1**：「原片截图」被 `disabled={!videoUnderstanding}` 人为禁用，但后端 `generate.py:378` 本来就在无 VL 时独立下载视频做截图。**修复**：移除该约束，两个选项完全独立。
+
+**问题 2**：关掉「保留截帧图片」后 VL 管线照样空跑（下载视频→抽帧→拼网格→丢弃）。**修复**：加反向联动 `!formatImages → setVideoUnderstanding(false)`。
+
+**问题 3**：开 VL 自动开保留截帧图片，但没有反向联动。已在 GenPanel.tsx 补齐。
+
+### 图片→LLM 参数传输修复
+
+#### 5 个 VL 参数前端从未传给后端（严重）
+
+`client.ts:streamGenerate()` 缺失 `dedupe_enabled`、`unit_width`、`unit_height`、`save_quality`、`frame_quality_filter` 的 query string 序列化。用户调整「单帧分辨率」「JPEG 质量」「去重」「帧质量过滤」**从未生效**，后端永远用默认值。
+
+**同时修复**：所有布尔/数字参数从 truthiness 判断（`if (opts.xxx)`）改为 `!== undefined`，确保 `false` 和 `0` 也能正确传输。此前 `dedupe_enabled=false` 被当作 falsy 跳过 → 后端用默认值 `true`。
+
+#### 单产物模式 send_to_llm / optimize_images 漏传
+
+`generate.py` 单产物路径（line 538-540）调用 `prepare()` 时只传了 `keep_refs`，没传 `send_to_llm` 和 `optimize_images`。双产物路径正确传了三个参数。
+
+**影响**：用户只勾选「笔记」或只勾选「整理版」时，「AI 分析图片」和「图片预处理」静默失效——图片永不给 LLM，也不压缩。
+
+### 图片优化覆盖率修复
+
+`optimize_images=True`（图片预处理）此前只在部分路径生效：
+
+| 图片来源 | 嵌入文本 | 发给 LLM |
+|---------|:---:|:---:|
+| VL 网格图 | ✅ `_format_vl_images` | ❌→✅ `_optimize_data_uri` |
+| 文档 data URI | 不嵌入（剥离） | ❌→✅ `_optimize_image_data` |
+| 文档文件引用 | 保留原路径 | ✅ `_optimize_image_data` |
+
+### 影响范围
+
+- **前端 `GenerateOptions.tsx`**：移除原片截图 disabled 约束 + 描述文案
+- **前端 `GenPanel.tsx`**：加反向联动 effect（关保留截帧→关 VL）
+- **前端 `client.ts`**：补 5 个 VL 参数 + 全部改为 `!== undefined` 序列化
+- **后端 `generate.py`**：单产物路径补 `send_to_llm` + `optimize_images`
+- **后端 `content_preparer.py`**：VL 图片 + data URI 发给 LLM 时走优化
+
+---
+
+## 2026-07-10 — 新增 Bcut（必剪）免费云转写引擎，设为默认
+
+### 背景
+
+faster-whisper 需要本地下载模型（~500MB），首次使用慢且占用 CPU。BiliNote 项目已有 B站必剪 API 的免费云转写实现，可直接搬运。
+
+### Bcut API 特点
+
+- **免费**：无需 API Key，只需 User-Agent
+- **云转写**：上传音频 → B站服务器转写 → 返回分段结果
+- **中文优化**：B站背景，中文识别质量好
+- **耗时**：通常 10-60 秒（取决于音频长度和排队）
+
+### 实现
+
+`backend/app/engines/asr_bcut.py` — `BcutASREngine`，实现 `Engine` 协议：
+- 分片上传音频（最多 ~500 分片）
+- 创建转写任务 → 轮询结果（最长 500s 超时）
+- 逐轮检查 `cancel_event`，支持取消
+- 返回 `TranscriptResult`（语言 + 分段 + 时间戳）
+
+### 默认绑定优先级
+
+```
+bcut（免费云）→ faster-whisper-small（本地兜底）→ dashscope（需 Key）
+```
+
+用户开箱即用，无需配置任何 Key 或下载模型。
+
+### 影响范围
+
+- **`backend/app/engines/asr_bcut.py`**：新增，~150 行
+- **`backend/app/engines/__init__.py`**：注册 + 自动模型条目 + 绑定
+- **`backend/app/adapters/video.py`**：`_resolve_asr_engine` 加 bcut provider 分支
+
+---
+
+## 2026-07-10 — 修复：PyInstaller 打包后后端启动崩溃（OpenSSL DLL 冲突）
+
+### 现象
+
+安装 LiMo 后启动，前端加载成功但所有 API 请求返回 `ERR_CONNECTION_REFUSED`。直接运行 `LiMoBackend.exe` 报错：
+
+```
+ImportError: DLL load failed while importing _ssl: 找不到指定的程序。
+```
+
+### 根因
+
+`cryptography` 包携带的 `libcrypto-3-x64.dll`（~5MB）覆盖了 Python 原生版本（~8MB）。`_ssl.pyd` → `libssl-3-x64.dll` → `libcrypto-3-x64.dll` 依赖链中，cryptography 提供的 libcrypto 缺少 `libssl` 需要的导出符号，导致整个 `ssl` 模块无法加载 → FastAPI/anyio 无法启动。
+
+### 修复
+
+`LiMoBackend.spec` 中：
+1. `collect_all('cryptography')` 后过滤掉其携带的 `libcrypto*/libssl*` DLL
+2. 显式从 `sys.base_prefix/DLLs/` 添加 Python 原生的 OpenSSL DLL
+
+### 影响范围
+
+- **`backend/LiMoBackend.spec`**：新增 DLL 过滤逻辑 + 显式添加原生 OpenSSL
+- **`CLAUDE.md`**：常见陷阱新增 OpenSSL 冲突条目
+- 后续新增 pip 依赖时，若该包携带 OpenSSL DLL，可能再次触发此问题
+
+### 验证方法
+
+打包后直接运行 `LiMoBackend.exe`，确认输出 `Uvicorn running on http://127.0.0.1:7413`
+
+---
+
+## 2026-07-10 — 思维导图 HTML 导出空白（JS 未包裹 script 标签）
+
+### 现象
+
+导出的思维导图 HTML 文件在浏览器中打开后完全空白，什么都没有显示。
+
+### 根因
+
+`_build_mindmap_html()` 中，当本地 d3.js / markmap-view / markmap-lib 文件存在时，直接内联 JS 源码但**没有用 `<script>` 标签包裹**：
+
+```python
+# 修复前：裸 JS 文本，浏览器不执行
+{d3_js if d3_js else '<script src="..."></script>'}
+```
+
+浏览器将这三个库的源代码当作文本节点渲染，`window.markmap` 永远为 undefined。只有 CDN 回退路径（`else` 分支）有 `<script>` 标签。
+
+### 修复
+
+每个内联 JS 都用 `<script>...</script>` 包裹：
+
+```python
+# 修复后
+{f'<script>{d3_js}</script>' if d3_js else '<script src="..."></script>'}
+```
+
+已验证 d3.min.js / markmap-view.js / markmap-lib.js 均不含 `</script>` 字面量，无提前闭合风险。
+
+### 影响范围
+
+- **`backend/app/routers/export.py`**：`_build_mindmap_html()` 第 921-923 行
+- 同步影响 `GET /export/{id}/mindmap` 和 `POST /export/custom` 两条路径
+
+---
+
+## 2026-07-10 — GFM 表格渲染遗漏 + mode 回退静默返回错误内容
+
+### 表格问题
+
+LLM 生成的 Markdown 中，"三大痛点：\n| 痛点 |" 这种表格紧跟前导文字无空行的写法在 GFM 中合法（react-markdown 正常渲染），但 Python markdown `tables` 扩展要求表格前有空行，导致导出 HTML 中表格被当作段落文本输出（原样显示管道符）。
+
+**修复**：`_preprocess_gfm()` 中加正则，检测非表格行后紧跟表头+分隔行的模式，自动插入空行。
+
+### mode 回退问题
+
+`GET /export/{id}?mode=notes` 在 notes 未生成时，回退逻辑取全部 markdown 的第一个条目。若 polished 已生成，导出会静默返回 polished 内容，违反"预览一致"原则（预览栏显示"尚未生成笔记"）。
+
+**修复**：仅当 mode 为空（默认）时回退到任意产物；mode 已被显式指定但未找到时，不进回退链，后续走 process results 或 404。
+
+### 影响范围
+
+- **`backend/app/routers/export.py`**：`_preprocess_gfm()` + `export_content()` 回退逻辑
+
+---
+
+## 2026-07-10 — ASR 引擎自动注册（启动即可用）
+
+### 现象
+
+界面显示已绑定 ASR 引擎，但导入视频时报"ASR 绑定链为空或全部失败，自动降级已关闭"。engine_models 表中只有 OCR 记录，ASR 模型条目缺失。
+
+### 根因
+
+Tesseract OCR 在 `init_engines()` 中有完整的自动注册逻辑（写入 `engine_models` + `engine_bindings`），但 faster-whisper / DashScope ASR 只注册了引擎实例，缺失了模型条目和默认绑定。`_resolve_asr_engine()` 通过 `engine_models` 表查找绑定 → 找不到 → 返回空。
+
+### 修复
+
+`app/engines/__init__.py`：对标 Tesseract 补齐 ASR 三步自动注册：
+1. 写入 `engine_models`（faster-whisper-small/medium + dashscope）
+2. faster-whisper-small 作为默认首选（本地免费，零配置即可用）
+3. 清理 `engine_bindings` 中失效的绑定 ID
+
+### 影响范围
+
+- **`backend/app/engines/__init__.py`**：新增 ~60 行 ASR 自动注册
+- 首次安装用户开箱即用，已有用户启动后自动修复失效绑定
+
+---
+
+## 2026-07-10 — 取消机制全链路修复（LLM Token + 本地 ASR CPU）
+
+### 现象
+
+点击取消按钮后前端 UI 清除、`AbortController.abort()` 触发，但后端继续消耗 token / CPU：
+- **chat/stream**：`cancel_event` 创建后没人 set，Agent 工具循环继续跑
+- **process（图片处理）**：完全没有取消机制，LLM 调用不可中断
+- **本地 ASR（faster-whisper）**：同步阻塞代码卡死事件循环，`_watch_disconnect` 协程无机会执行
+
+### 根因
+
+三个独立问题：
+1. `chat.py` 有 `cancel_event = asyncio.Event()` 但没有 `_watch_disconnect` 任务来监听客户端断连并 set 它
+2. `process.py` 是普通 POST 端点，`async with guard.semaphore` 内部没有任何取消检测
+3. `video.py:_transcribe()` 中 `engine.run()` 是同步阻塞调用，整个事件循环被卡死（包括 `_watch_disconnect`）。faster-whisper 逐段 yield 但未检查取消信号
+
+### 修复
+
+| 层 | 文件 | 改动 |
+|------|------|------|
+| chat 端点 | `routers/chat.py` | 加 `_watch_disconnect` + finally cleanup |
+| process 端点 | `routers/process.py` | 加 `cancel_event` + disconnect 监听，传入 `llm.call()` |
+| 适配器 | `adapters/video.py` | `_transcribe` 改为 `async`，`engine.run()` 用 `asyncio.to_thread` 放到线程池 |
+| ASR 引擎 | `engines/asr.py` | `execute()` 接受 `cancel_event`，逐 segment 检查并抛 `FatalError` |
+| 云端 ASR | `engines/asr_cloud.py` | `execute()` 签名加 `**kwargs` 兼容 cancel_event 透传 |
+
+**关键设计**：`asyncio.to_thread` 将同步引擎调用放到后台线程，事件循环恢复空闲 → `_watch_disconnect` 可正常运行 → `cancel_event.set()` → 线程中引擎在下一个 segment 检测到 → 立即停止，不再跑完整个转写。
+
+### 影响范围
+
+- 6 个文件，涉及聊天/图片处理/视频导入三条管线
+- 取消后 token 消耗和本地 CPU 消耗可真正停止
+- DashScope ASR（云端）因 HTTP 请求无法中断，但耗时短（几秒），影响小
+
+---
+
 ## 2026-07-10 — 项目重命名：DeepDraft → LiMo（沥墨）
 
 ### 背景

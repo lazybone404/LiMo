@@ -226,6 +226,14 @@ async def chat_stream(
 
     async def sse_stream():
         full_answer: list[str] = []
+        # 客户端断连监听 → cancel_event
+        async def _watch_disconnect():
+            while not cancel_event.is_set():
+                if await request.is_disconnected():
+                    cancel_event.set()
+                    return
+                await asyncio.sleep(0.5)
+        disconnect_task = asyncio.create_task(_watch_disconnect())
         try:
             # 首条事件：返回 conversation_id
             yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
@@ -244,6 +252,9 @@ async def chat_stream(
                 store.save_conversation(conv_msg2)
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
+        finally:
+            if not disconnect_task.done():
+                disconnect_task.cancel()
 
     return StreamingResponse(
         sse_stream(),

@@ -85,7 +85,7 @@ class ContentPreparer:
         import asyncio
         loop = asyncio.get_event_loop()
 
-        # --- VL 管线 ---
+        # --- VL 管线：截帧 → 网格图（始终执行，结果按 keep_refs/send_to_llm 分流）---
         vl_image_urls = None
         video_path = None
         if vl_config:
@@ -98,10 +98,21 @@ class ContentPreparer:
                 vl_image_urls, video_path = await loop.run_in_executor(
                     None, self._run_vl_pipeline, vl_config, source_url)
 
+        # VL 截帧图的处理（对标文档图片的 keep_refs / send_to_llm / optimize 三层）：
+        # - keep_refs: 截帧图嵌入为 Markdown ![](...) 引用
+        # - send_to_llm: 截帧图作为 base64 发给 LLM
+        # - optimize_images: 截帧图 PIL 缩放 ≤1024px
+        vl_text_inline = ""
+        if vl_image_urls and keep_refs:
+            vl_text_inline = self._format_vl_images(vl_image_urls,
+                                                     optimize=optimize_images)
+
         # --- 剥离转录图片（线程池执行，避免读文件+编码阻塞事件循环）---
         clean_text, doc_image_urls = await loop.run_in_executor(
             None, self._extract_and_strip_data_uris,
             raw_text, self.store_root, keep_refs, send_to_llm, optimize_images)
+        if vl_text_inline:
+            clean_text = clean_text + "\n\n" + vl_text_inline
 
         # --- 截断过长文本 ---
         clean_text, _ = self._truncate_text(
@@ -111,8 +122,15 @@ class ContentPreparer:
             self.llm_config.get("model_context_window"),
         )
 
-        # --- 合并 VL 截图 + 文档图片 ---
-        merged_urls = (vl_image_urls or []) + (doc_image_urls or [])
+        # --- 合并 VL 截图 + 文档图片 → 仅 send_to_llm 时发给 LLM ---
+        llm_vl_urls: list[str] = []
+        if vl_image_urls and send_to_llm:
+            if optimize_images:
+                llm_vl_urls = [self._optimize_data_uri(u) for u in vl_image_urls]
+            else:
+                llm_vl_urls = list(vl_image_urls)
+        llm_doc_urls = doc_image_urls or []
+        merged_urls = llm_vl_urls + llm_doc_urls
         has_image = any("image" in (c or "") for c in self.llm_config.get("capabilities", []))
         image_urls = merged_urls if (merged_urls and has_image) else None
 
@@ -154,9 +172,15 @@ class ContentPreparer:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(url, download=True)
             files = list(Path(tmp_dir).iterdir())
-            return str(files[0]) if files else None
+            if not files:
+                import shutil
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                return None
+            return str(files[0])
         except Exception as e:
             logger.warning("VL 视频下载失败: %s", e)
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
             return None
 
     @staticmethod
@@ -193,6 +217,46 @@ class ContentPreparer:
             logger.warning("VL: VideoReader 失败: %s，回退纯文本生成", e)
             return None, video_path
 
+    # ── VL 截帧图内联 ──
+
+    @staticmethod
+    def _format_vl_images(vl_urls: list[str], optimize: bool = False) -> str:
+        """将 VL 网格 base64 图转为 Markdown 引用嵌入文本。
+        对标文档图片的 keep_refs 模式：图片不出现在 LLM 上下文中，但保留在笔记里。
+        optimize=True 时 PIL 缩放长边 ≤1024px 以减小文件体积。
+        """
+        parts: list[str] = []
+        for i, url in enumerate(vl_urls):
+            if optimize and url.startswith("data:image"):
+                try:
+                    url = ContentPreparer._optimize_data_uri(url)
+                except Exception as e:
+                    logger.warning("VL 图片优化失败 (第%d张): %s", i + 1, e)
+            parts.append(f"![视频截帧 {i + 1}]({url})")
+        logger.info("VL: %d 张截帧图已嵌入文章 (%s)", len(parts),
+                     "已优化" if optimize else "原始尺寸")
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _optimize_data_uri(data_uri: str, max_edge: int = 1024) -> str:
+        """PIL 缩放 base64 图片，长边 ≤ max_edge px，返回优化后的 data URI"""
+        import base64
+        from io import BytesIO
+        from PIL import Image
+        header, b64 = data_uri.split(",", 1)
+        img_data = base64.b64decode(b64)
+        img = Image.open(BytesIO(img_data))
+        w, h = img.size
+        if max(w, h) > max_edge:
+            ratio = max_edge / max(w, h)
+            img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+        buf = BytesIO()
+        fmt = img.format or "JPEG"
+        if fmt.upper() in ("JPEG", "JPG") and img.mode in ("RGBA", "P", "LA"):
+            img = img.convert("RGB")
+        img.save(buf, format=fmt, quality=85, optimize=True)
+        return f"data:image/{fmt.lower()};base64,{base64.b64encode(buf.getvalue()).decode()}"
+
     # ── 图片剥离 ──
 
     @staticmethod
@@ -218,8 +282,11 @@ class ContentPreparer:
             if m.re is data_uri_re:
                 uri = m.group(2)
                 if send_to_llm:
+                    if optimize_images:
+                        uri = _optimize_image_data(uri)
                     image_urls.append(uri)
-                return f'![{alt}]'
+                # 剥离 base64 后用文本占位符（非 ![]() 语法，避免渲染空 src）
+                return f'[📷 {alt}]' if alt else '[📷 图片]'
             elif store_root:
                 full_path = m.group(2)
                 tx_id = m.group(3)
@@ -238,7 +305,7 @@ class ContentPreparer:
                     if keep_refs:
                         return f'![{alt}]({full_path})'
                     else:
-                        return f'![{alt}]'
+                        return f'[📷 {alt}]' if alt else '[📷 图片]'
             return m.group(0)
 
         clean_text = data_uri_re.sub(_replacer, raw_text)

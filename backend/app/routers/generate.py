@@ -29,18 +29,20 @@ router = APIRouter()
 _TYPE_FIELDS: dict[str, set[str]] = {
     "video": {"video_understanding", "video_interval", "grid_cols", "grid_rows",
               "dedupe_enabled", "unit_width", "unit_height", "save_quality",
-              "frame_quality_filter"},
+              "frame_quality_filter", "image_analyze", "image_optimize"},
     "document": {"image_analyze", "image_optimize"},  # PDF/Word/PPT 共享
     "epub": {"use_skeleton", "chapter_indices"},
 }
 
 # 不属于该类型的字段会被静默忽略（向后兼容）
 def _warn_mismatched_fields(source_type: str, values: dict):
+    own_fields = _TYPE_FIELDS.get(source_type, set())
     for st, fields in _TYPE_FIELDS.items():
         if st == source_type:
             continue
-        # 如果该类型的专属字段被设置了非默认值，打 warning
         for f in fields:
+            if f in own_fields:
+                continue  # 共享字段，跳过（如 image_analyze 同时属于 video 和 document）
             val = values.get(f)
             if val and val is not False and val != [] and val != 0:
                 log.warning(
@@ -413,7 +415,8 @@ async def generate_stream(transcript_id: str, request: Request,
                 from app.generation.prompt import build_polish_prompt, build_notes_prompt
 
                 keep_refs = "images" in format_list
-                send_to_llm = image_analyze and keep_refs
+                # 前端已保证门控：视频=videoUnderstanding，文档=formatImages&&imageAnalyze
+                send_to_llm = bool(image_analyze)
 
                 # 预处理（VL + 图片剥离 + 截断）
                 clean_text, image_urls, video_path = await preparer.prepare(
@@ -536,8 +539,9 @@ async def generate_stream(transcript_id: str, request: Request,
 
             # ── 单产物 ──
             keep_refs = "images" in format_list
+            send_to_llm = bool(image_analyze)
             clean_text, image_urls, video_path = await preparer.prepare(
-                epub_text, vl_config, keep_refs)
+                epub_text, vl_config, keep_refs, send_to_llm=send_to_llm, optimize_images=image_optimize)
 
             if stream_mode == "polished":
                 from app.generation.prompt import build_polish_prompt
@@ -564,7 +568,7 @@ async def generate_stream(transcript_id: str, request: Request,
             # 完成后保存
             content = _post_process("".join(all_chunks), format_list,
                                     video_path or screenshot_video_path, source_type)
-            mv_mode = GenerateMode.POLISHED if mode == "polished" else GenerateMode.NOTES
+            mv_mode = GenerateMode.POLISHED if stream_mode == "polished" else GenerateMode.NOTES
             mv = MarkdownView(
                 id=f"md_{uuid.uuid4().hex[:12]}",
                 transcript_id=transcript_id, content=content,
@@ -595,7 +599,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 content = "".join(all_chunks)
                 if partial_content:
                     content = partial_content.rstrip() + "\n\n" + content
-                mv_mode = GenerateMode.POLISHED if mode == "polished" else GenerateMode.NOTES
+                mv_mode = GenerateMode.POLISHED if stream_mode == "polished" else GenerateMode.NOTES
                 mv = MarkdownView(
                     id=f"md_{uuid.uuid4().hex[:12]}",
                     transcript_id=transcript_id, content=content,

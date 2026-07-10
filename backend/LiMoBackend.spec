@@ -5,6 +5,17 @@ datas = [
     ('bin', 'bin'),
     ('static', 'static'),  # KaTeX + markmap/d3 离线资源
 ]
+# tiktoken_ext / dateparser_data — namespace package，collect_all 不会自动收集
+# PyInstaller 对 namespace package 的处理不可靠，显式添加每个文件
+import sys as _spec_sys
+_sp_dir = os.path.join(_spec_sys.prefix, 'Lib', 'site-packages')
+for _ns_pkg in ['tiktoken_ext', 'dateparser_data']:
+    _ns_dir = os.path.join(_sp_dir, _ns_pkg)
+    if os.path.isdir(_ns_dir):
+        for _f in os.listdir(_ns_dir):
+            _fp = os.path.join(_ns_dir, _f)
+            if os.path.isfile(_fp) and not _f.startswith('.'):
+                datas.append((_fp, _ns_pkg))
 binaries = []
 hiddenimports = [
     'uvicorn', 'fastapi', 'starlette', 'pydantic',
@@ -18,7 +29,8 @@ hiddenimports = [
     'urllib3', 'charset_normalizer', 'idna',
     'tqdm', 'click',
     # 直接使用的包
-    'pymupdf4llm', 'tiktoken', 'ffmpeg',
+    'pymupdf4llm', 'tiktoken', 'tiktoken_ext', 'tiktoken_ext.openai_public', 'ffmpeg',
+    'dateparser_data',
     'markdown', 'pygments', 'pygments.lexers', 'pygments.formatters', 'pygments.styles',
 ]
 
@@ -65,6 +77,24 @@ for pkg in ['faster_whisper', 'pymupdf', 'pymupdf4llm', 'dashscope',
         datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
     except Exception:
         pass
+
+# ⚠️ cryptography 携带的 libcrypto-3-x64.dll 版本与 Python 原生 _ssl.pyd 不兼容，
+# 必须排除并用 Python 基础安装的版本替换
+# PyInstaller 6.x binaries 格式: (dest_name, src_path)
+binaries = [(dest, src) for dest, src in binaries
+            if not (dest.startswith('libcrypto') and 'cryptography' in src)]
+binaries = [(dest, src) for dest, src in binaries
+            if not (dest.startswith('libssl') and 'cryptography' in src)]
+
+# 显式添加 Python 原生的 OpenSSL DLL（与 _ssl.pyd 版本匹配）
+import sys as _sys
+_py_dlls = os.path.join(getattr(_sys, 'base_prefix', _sys.prefix), 'DLLs')
+for _dll in ['libcrypto-3-x64.dll', 'libssl-3-x64.dll']:
+    _dll_path = os.path.join(_py_dlls, _dll)
+    if os.path.exists(_dll_path):
+        binaries.append((_dll_path, '.'))
+    else:
+        print(f'WARNING: Python native OpenSSL DLL not found: {_dll_path}')
 
 
 a = Analysis(

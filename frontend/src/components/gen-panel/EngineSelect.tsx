@@ -15,7 +15,7 @@ const STRATEGY_LABEL: Record<string, Record<string, string>> = {
     ebooklib: '章节+元数据',
   },
   asr: {
-    'faster-whisper-small': '本地快速', 'faster-whisper-medium': '本地平衡',
+    'bcut': '免费云转写 · B站必剪', 'faster-whisper-small': '本地快速', 'faster-whisper-medium': '本地平衡',
     'dashscope-asr': '云端精转',
   },
   ocr: {

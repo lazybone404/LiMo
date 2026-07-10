@@ -105,6 +105,12 @@ async def capabilities(request: Request):
         "adapters": [a.name for a in AdapterRegistry.all()],
         "engines": engine_details,
         "engineProviders": {
+            "bcut": {
+                "name": "B站必剪（免费云转写）",
+                "type": "cloud",
+                "keyConfigured": True,  # 免费，无需 Key
+                "capabilities": ["asr"],
+            },
             "dashscope": {
                 "name": "阿里云 DashScope",
                 "type": "cloud",

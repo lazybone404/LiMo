@@ -86,6 +86,8 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 - **searxng .git 目录必须清理**：PyInstaller 收集 `bin/searxng/.git` 后 Tauri 构建会因权限错误(os error 5)失败
 - **PyInstaller 必须在项目根目录执行**：spec 中 `pathex=['backend']` 和 `datas` 相对路径依赖 CWD
 - **KaTeX + markmap/d3 离线资源**：PyInstaller 通过 `datas` 打包 `backend/static/`（含 katex + markmap子目录）。打包前需确保这些目录存在且文件是最新的（从 `frontend/node_modules/` 复制），否则导出的 HTML 思维导图和公式将依赖 CDN（离线不可用）
+- **OpenSSL DLL 版本冲突**：`cryptography` 包携带的 `libcrypto-3-x64.dll`（~5MB）会覆盖 Python 原生的（~8MB），导致 `_ssl.pyd` 加载失败（`ImportError: DLL load failed`），最终使后端无法启动。spec 中需排除 cryptography 的 DLL 并显式添加 `sys.base_prefix/DLLs/` 下的原始版本。**每次新增依赖后验证**：直接运行 `LiMoBackend.exe` 确认能输出 `Uvicorn running on http://127.0.0.1:7413`
+- **PyInstaller binaries 格式**：`collect_all` 返回 `(dest_name, src_path)`，`Analysis(binaries=[])` 期望 `(src_path, dest_dir)`。追加 binaries 时用 `(abs_src_path, '.')` 格式
 
 ## 架构
 
@@ -197,7 +199,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 ### 生成与处理
 - **双产物并行**：`generate_both()` 通过 `asyncio.gather` 并行产出 notes + polished。source_type 派发 prompt（视频/网页→通用，PDF/Document→文档 prompt，Excel→分析报告+数据摘要）
-- **图片三开关**：`keep_refs`（保留引用路径）→ `send_to_llm`（发给 LLM）→ `optimize_images`（PIL 缩放≤1024px），GenPanel 三层缩进选项
+- **图片→LLM 双轨制**：视频和文档走不同路径。视频：「AI 画面理解」一键开关 = VL 管线 + 网格图发 LLM（对标 BiliNote），网格图不嵌入笔记。文档：保留文档图片→AI 分析图片→图片预处理三级，文档图片嵌入文章有价值。`send_to_llm = bool(image_analyze)`，前端保证门控。
 - **目标语言**：config.yaml `target_language` + prompt 参数化，8 语言可选
 - **LLM 续写**：`finish=length` → 自动续写 3 轮，temperature 递减
 - **流式 + 取消**：SSE 端点，cancel_event 真正中断 token 消耗，取消保存 partial 可续写
@@ -271,9 +273,9 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **设置页 overlay**：`App.tsx` 中设置页用条件渲染 overlay 而非替换整个 render tree，避免 GenPanel 卸载丢失进行中的任务状态
 - **SSE 断开保护**：`streamGenerate` 追踪 `receivedDoneOrError` 标志，连接异常断开时触发 `onError('连接意外断开')` 防止 `generating` 永不复位
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
-- **取消机制**：retranscribe 端点通过 `cancel_event` + `request.is_disconnected()` 轮询检测客户端断连，0.5s 检测延迟；视频适配器 ASR 降级链每轮引擎前检查 `cancel_event.is_set()`
+- **取消机制**：6 个端点全部覆盖 — generate/ingest/retranscribe/fact_check/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎（faster-whisper）用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐 segment 检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（2026-07-10 审查沉淀）
+## 关键模式（2026-07-10 审查沉淀，2026-07-11 追加）
 
 以下模式是实现中易错的关键约束，新增代码必须遵守。
 
@@ -284,15 +286,23 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 3. **所有 HTTP 请求**：必须走 `apiUrl()` 或 `apiFetch()`。裸 `fetch('/api/...')` 在 Tauri 下失败。
 4. **API Key 保存**：`(val || undefined) ?? current` — 空字符串不是 nullish，会覆盖真实 key。
 5. **操作互斥**：`lockOtherOps = retranscribing || imageProcessing`。Ctrl+G 拦截检查 `generating || processingTasks > 0`。
+6. **query string 参数序列化**：`streamGenerate` 中新增参数时必须在 `client.ts` 加对应的 `params.set()`。布尔/数字参数用 `!== undefined` 而非 truthiness，否则 `false`/`0` 被当作 falsy 跳过，后端收到默认值。**本次已修复**：`dedupe_enabled`、`unit_width`、`unit_height`、`save_quality`、`frame_quality_filter` 此前因缺失序列化从未生效。
+7. **React 列表 key 唯一性**：`React.Children.map` 会展平嵌套数组，若各子元素内部都用 `key={i}`（数组索引），展平后产生重复 key。使用 `React.useId()` 生成组件实例唯一前缀 `key={`${id}-${i}`}`。**本次已修复**：markdown-components 中 `p`/`li` 组件的时间戳 badge。
+8. **视频画面理解对标 BiliNote**：「AI 画面理解」一个开关 = VL 管线 + 网格图发 LLM。网格图不嵌入笔记（对读者无意义）。不要恢复 formatImages/imageAnalyze/imageOptimize 三级嵌套。
 
 ### 后端
 
-6. **信号量**：`await guard.semaphore.acquire()` 后立即 `try:`，否则异常泄漏。
-7. **配置深拷贝**：`DEFAULT_CONFIG` 必须 `copy.deepcopy()`，浅拷贝污染嵌套 dict。
-8. **引擎绑定合并**：保存用增量合并，`null`=不修改，`[]`=清除绑定。
-9. **适配器错误**：失败必须 `raise FatalError`，不要 `return AdapterOutput(engine="none")`。
-10. **markdown→HTML 导出**：移除 `nl2br` 扩展，GFM 特性（删除线/任务列表）用正则预处理，Pygments 可选依赖。详见 [export-pipeline.md](docs/export-pipeline.md)。
-11. **引擎图片双模式**：所有 Doc 引擎必须支持 `media_dir` 非空（写文件引用 `![alt](img_0001.png)`）和 `media_dir` 为空（内嵌 base64 `![alt](data:image/...;base64,...)`）两种模式。不可用 `if media_dir` 守卫静默跳过图片提取。已统一：PyMuPDF / PyMuPDF4LLM / MarkItDown / DocxEngine / PptxEngine / EpubEngine。
+9. **信号量**：`await guard.semaphore.acquire()` 后立即 `try:`，否则异常泄漏。
+10. **配置深拷贝**：`DEFAULT_CONFIG` 必须 `copy.deepcopy()`，浅拷贝污染嵌套 dict。
+11. **引擎绑定合并**：保存用增量合并，`null`=不修改，`[]`=清除绑定。
+12. **适配器错误**：失败必须 `raise FatalError`，不要 `return AdapterOutput(engine="none")`。
+13. **markdown→HTML 导出**：移除 `nl2br` 扩展，GFM 特性（删除线/任务列表/表格前空行）用 `_preprocess_gfm()` 正则预处理，Pygments 可选依赖。详见 [export-pipeline.md](docs/export-pipeline.md)。
+14. **引擎图片双模式**：所有 Doc 引擎必须支持 `media_dir` 非空（写文件引用 `![alt](img_0001.png)`）和 `media_dir` 为空（内嵌 base64 `![alt](data:image/...;base64,...)`）两种模式。不可用 `if media_dir` 守卫静默跳过图片提取。已统一：PyMuPDF / PyMuPDF4LLM / MarkItDown / DocxEngine / PptxEngine / EpubEngine。
+15. **本地引擎异步化**：耗时引擎（faster-whisper 等）必须通过 `asyncio.to_thread` 调用以释放事件循环，否则 `_watch_disconnect` 协程被卡死无法 set cancel_event。引擎 `execute()` 内需逐段检查 `cancel_event.is_set()` 并在取消时抛 `FatalError`。新增耗时本地引擎时遵守此模式。
+16. **prepare() 参数对称**：`ContentPreparer.prepare()` 的 `send_to_llm` 和 `optimize_images` 参数在双产物路径和单产物路径必须保持一致。**本次已修复**：单产物路径此前漏传，导致「AI 分析图片」在只选 notes 或只选 polished 时静默失效。
+17. **图片优化覆盖率**：`ContentPreparer` 中新增图片路径时，必须确保 `optimize_images` 同时覆盖「嵌入文本」和「发给 LLM」两个方向。**本次已修复**：VL 图片和文档 data URI 发给 LLM 时此前不走优化。
+18. **图片剥离占位符**：base64 剥离后不能用 `![alt]`（Markdown 渲染成 `<img src="">`），改用 `[📷 alt]` 纯文本占位符。否则空 src 触发浏览器重载整页。
+19. **screenshot 后处理双产物对称**：`_post_process_screenshots` 必须同时应用于 polished 和 notes。`generate_both` 此前只处理 notes。**本次已修复**。
 
 ## 待办事项
 

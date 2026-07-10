@@ -27,7 +27,6 @@ interface Props {
   formatImages: boolean; setFormatImages: (v: boolean) => void
   imageAnalyze: boolean; setImageAnalyze: (v: boolean) => void
   imageOptimize: boolean; setImageOptimize: (v: boolean) => void
-  engineHasImages: boolean  // 当前引擎是否支持图片提取
   hasImageModel: boolean  // 当前模型是否支持多模态
   // 风格
   style: string; setStyle: (v: string) => void
@@ -104,9 +103,9 @@ export function GenerateOptions(props: Props) {
           {p.typeMeta.isVideo && (
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={p.formatScreenshot} onChange={e => p.setFormatScreenshot(e.target.checked)}
-                disabled={!p.videoUnderstanding} className="w-4 h-4 accent-accent disabled:opacity-30" />
-              <span className={`text-[13px] ${!p.videoUnderstanding ? 'text-disabled' : ''}`}>原片截图</span>
-              {!p.videoUnderstanding && <span className="text-[10px] text-warning ml-1">需先开启画面截图</span>}
+                className="w-4 h-4 accent-accent" />
+              <span className="text-[13px]">原片截图</span>
+              <span className="text-[10px] text-disabled">AI 在文中标记时间点 → 本地 ffmpeg 抽帧嵌入，不经过大模型</span>
             </label>
           )}
           <label className="flex items-center gap-2 cursor-pointer">
@@ -141,7 +140,7 @@ export function GenerateOptions(props: Props) {
           <label className="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" checked={p.formatSummary} onChange={e => p.setFormatSummary(e.target.checked)} className="w-4 h-4 accent-accent" />
             <span className="text-[13px]">AI 总结</span></label>
-          {p.typeMeta.hasImages && (
+          {(p.typeMeta.hasImages) && (
             <>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={p.formatImages} onChange={e => p.setFormatImages(e.target.checked)}
@@ -157,7 +156,7 @@ export function GenerateOptions(props: Props) {
                     {p.hasImageModel ? '图片发给多模态 LLM 做视觉理解' : '需多模态模型（当前模型不支持图片）'}
                   </span></label>
               )}
-              {p.formatImages && p.imageAnalyze && p.engineHasImages && (
+              {p.formatImages && p.imageAnalyze && (
                 <label className="flex items-center gap-2 cursor-pointer ml-10">
                   <input type="checkbox" checked={p.imageOptimize} onChange={e => p.setImageOptimize(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
                   <span className="text-[12px]">图片预处理</span>
@@ -193,14 +192,19 @@ export function GenerateOptions(props: Props) {
       </div>
     )}
 
-    {/* 视觉理解 — 视频专属 */}
+    {/* AI 画面理解 — 视频专属 */}
     {p.typeMeta.isVideo && (
       <div className="pt-3 border-t border-border-light">
-        <span className="text-[12px] font-medium text-dimmed mb-2 block">视觉理解</span>
-        <label className="flex items-center gap-2 cursor-pointer mb-2">
-          <input type="checkbox" checked={p.videoUnderstanding} onChange={e => p.setVideoUnderstanding(e.target.checked)} className="w-4 h-4 accent-accent" />
+        <span className="text-[12px] font-medium text-dimmed mb-2 block">AI 画面理解</span>
+        <span className="text-[11px] text-disabled block -mt-1 mb-2">截取视频画面发给多模态模型辅助分析</span>
+        {!p.hasImageModel && (
+          <p className="text-[11px] text-warning mb-2">需多模态模型（当前模型不支持图片），请在设置中启用</p>
+        )}
+        <label className={`flex items-center gap-2 mb-2 ${p.hasImageModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+          <input type="checkbox" checked={p.videoUnderstanding} onChange={e => p.setVideoUnderstanding(e.target.checked)}
+            disabled={!p.hasImageModel} className="w-4 h-4 accent-accent disabled:opacity-30" />
           <Camera size={13} className="text-muted" />
-          <span className="text-[13px]">启用画面截图</span>
+          <span className={`text-[13px] ${!p.hasImageModel ? 'text-disabled' : ''}`}>启用</span>
         </label>
         {p.videoUnderstanding && (
           <div className="space-y-2 pl-6 border-l-2 border-accent/20">
@@ -210,7 +214,7 @@ export function GenerateOptions(props: Props) {
                 className="w-20 px-2 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none" />
             </div>
             <div>
-              <label className="text-[11px] text-muted block mb-0.5">拼图尺寸</label>
+              <label className="text-[11px] text-muted block mb-0.5">拼图尺寸（列 × 行）</label>
               <div className="flex items-center gap-1">
                 <input type="number" value={p.gridCols} onChange={e => p.setGridCols(Math.max(1, Math.min(10, +e.target.value)))}
                   className="w-14 px-2 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none" />
@@ -219,29 +223,35 @@ export function GenerateOptions(props: Props) {
                   className="w-14 px-2 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none" />
               </div>
             </div>
-            <div>
-              <label className="text-[11px] text-muted block mb-0.5">单帧分辨率</label>
-              <div className="flex items-center gap-1">
-                <input type="number" value={p.unitWidth} onChange={e => p.setUnitWidth(Math.max(160, Math.min(1920, +e.target.value)))}
-                  className="w-14 px-2 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none" />
-                <span className="text-[12px] text-disabled">×</span>
-                <input type="number" value={p.unitHeight} onChange={e => p.setUnitHeight(Math.max(120, Math.min(1080, +e.target.value)))}
-                  className="w-14 px-2 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none" />
+            <details className="text-[11px] text-muted">
+              <summary className="cursor-pointer hover:text-dimmed">高级设置</summary>
+              <div className="mt-2 space-y-2">
+                <div>
+                  <label className="text-[11px] text-muted block mb-0.5">单帧分辨率</label>
+                  <div className="flex items-center gap-1">
+                    <input type="number" value={p.unitWidth} onChange={e => p.setUnitWidth(Math.max(160, Math.min(1920, +e.target.value)))}
+                      className="w-14 px-2 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none" />
+                    <span className="text-[12px] text-disabled">×</span>
+                    <input type="number" value={p.unitHeight} onChange={e => p.setUnitHeight(Math.max(120, Math.min(1080, +e.target.value)))}
+                      className="w-14 px-2 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none" />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[11px] text-muted block mb-0.5">JPEG 质量</label>
+                  <input type="number" value={p.saveQuality} onChange={e => p.setSaveQuality(Math.max(1, Math.min(100, +e.target.value)))}
+                    className="w-20 px-2 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none" />
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={p.dedupeEnabled} onChange={e => p.setDedupeEnabled(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
+                  <span className="text-[11px]">相邻重复帧去重</span></label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={p.frameQualityFilter} onChange={e => p.setFrameQualityFilter(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
+                  <span className="text-[11px]">帧质量过滤（跳过模糊/纯色帧）</span></label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={p.imageOptimize} onChange={e => p.setImageOptimize(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
+                  <span className="text-[11px]">图片预处理（PIL 缩放 ≤1024px，省 Token）</span></label>
               </div>
-            </div>
-            <div>
-              <label className="text-[11px] text-muted block mb-0.5">JPEG 质量</label>
-              <input type="number" value={p.saveQuality} onChange={e => p.setSaveQuality(Math.max(1, Math.min(100, +e.target.value)))}
-                className="w-20 px-2 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none" />
-            </div>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={p.dedupeEnabled} onChange={e => p.setDedupeEnabled(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
-              <span className="text-[11px] text-muted">相邻重复帧去重</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={p.frameQualityFilter} onChange={e => p.setFrameQualityFilter(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
-              <span className="text-[11px] text-muted">帧质量过滤（跳过模糊/纯色帧）</span>
-            </label>
+            </details>
           </div>
         )}
       </div>

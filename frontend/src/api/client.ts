@@ -131,7 +131,7 @@ export async function listTranscripts(params?: {
 export async function getTranscript(id: string): Promise<TranscriptFull | null> {
   const r = await apiFetch(`${BASE}/transcripts/${id}`)
   const data = await r.json()
-  if (data.error) return null
+  if (data.error || data.code) return null
   return data as TranscriptFull
 }
 
@@ -437,7 +437,8 @@ export async function getMarkdown(transcriptId: string, mode?: string, version?:
   const qs = params.toString()
   const r = await apiFetch(`${BASE}/markdown/${transcriptId}${qs ? '?' + qs : ''}`)
   const data = await r.json()
-  if (data.error) return null
+  // 兼容旧格式（data.error）和新 AppError 格式（data.code + data.recoverable）
+  if (data.error || data.code) return null
   return data
 }
 
@@ -463,13 +464,19 @@ export function streamGenerate(
   if (opts.formats) params.set('formats', opts.formats as string)
   if (opts.model_id) params.set('model_id', String(opts.model_id))
   if (opts.user_notes) params.set('user_notes', opts.user_notes as string)
-  if (opts.video_understanding) params.set('video_understanding', 'true')
-  if (opts.video_interval) params.set('video_interval', String(opts.video_interval))
-  if (opts.grid_cols) params.set('grid_cols', String(opts.grid_cols))
-  if (opts.grid_rows) params.set('grid_rows', String(opts.grid_rows))
+  // 使用 !== undefined 而非 truthiness，确保 false / 0 也能正确传输
+  if (opts.video_understanding !== undefined) params.set('video_understanding', String(opts.video_understanding))
+  if (opts.video_interval !== undefined) params.set('video_interval', String(opts.video_interval))
+  if (opts.grid_cols !== undefined) params.set('grid_cols', String(opts.grid_cols))
+  if (opts.grid_rows !== undefined) params.set('grid_rows', String(opts.grid_rows))
+  if (opts.dedupe_enabled !== undefined) params.set('dedupe_enabled', String(opts.dedupe_enabled))
+  if (opts.unit_width !== undefined) params.set('unit_width', String(opts.unit_width))
+  if (opts.unit_height !== undefined) params.set('unit_height', String(opts.unit_height))
+  if (opts.save_quality !== undefined) params.set('save_quality', String(opts.save_quality))
+  if (opts.frame_quality_filter !== undefined) params.set('frame_quality_filter', String(opts.frame_quality_filter))
   if (options.continue_from) params.set('continue_from', options.continue_from)
-  if (opts.image_analyze) params.set('image_analyze', 'true')
-  if (opts.image_optimize) params.set('image_optimize', 'true')
+  if (opts.image_analyze !== undefined) params.set('image_analyze', String(opts.image_analyze))
+  if (opts.image_optimize !== undefined) params.set('image_optimize', String(opts.image_optimize))
 
   const qs = params.toString()
   // 追踪 SSE 是否正常结束（收到 done/error/cancelled 事件）

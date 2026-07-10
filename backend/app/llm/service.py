@@ -120,8 +120,9 @@ class LLMService:
                     "image_url": {"url": url, "detail": "auto"},
                 })
             messages: list[dict] = [{"role": "user", "content": content}]
-            logger.info("LLM 多模态流式: provider=%s model=%s images=%d",
-                        self.provider, self.model, len(image_urls))
+            total_img_chars = sum(len(u) for u in image_urls)
+            logger.info("LLM 多模态流式: provider=%s model=%s images=%d img_chars=%dK",
+                        self.provider, self.model, len(image_urls), total_img_chars // 1000)
         else:
             messages = [{"role": "user", "content": prompt}]
             logger.info("LLM 流式: provider=%s model=%s tokens=%d",
@@ -158,7 +159,12 @@ class LLMService:
                             provider=self.provider, model=self.model,
                         ) from e
 
+            first_chunk = True
             async for chunk in stream:
+                if first_chunk:
+                    logger.info("LLM 首个 chunk 到达: provider=%s model=%s",
+                               self.provider, self.model)
+                    first_chunk = False
                 # 每个 chunk 间检查取消
                 if cancel_event and cancel_event.is_set():
                     logger.info("LLM 流式已被取消（第 %d 轮中，已生成 %d chars）",
