@@ -89,6 +89,9 @@ class LLMService:
             if self.base_url:
                 kwargs["base_url"] = self.base_url
             self._client = AsyncOpenAI(**kwargs)
+            logger.info("LLM 客户端: provider=%s model=%s base_url=%s key_prefix=%s",
+                       self.provider, self.model, self.base_url or "default",
+                       self.api_key[:7] + "***")
         return self._client
 
     @property

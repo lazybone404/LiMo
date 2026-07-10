@@ -200,6 +200,16 @@ export function ExportMenu() {
     setOpen(false)
     const clone = svg.cloneNode(true) as SVGElement
     clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+    // 收集页面中 markmap 相关的样式表规则，内联到 SVG 中
+    // cloneNode 丢失外部 CSS，文本/颜色等样式会消失
+    const styleEl = document.createElement('style')
+    styleEl.textContent = Array.from(document.styleSheets)
+      .filter(s => { try { return s.cssRules } catch { return false } })
+      .flatMap(s => Array.from(s.cssRules))
+      .filter(r => r instanceof CSSStyleRule)
+      .map(r => r.cssText)
+      .join('\n')
+    clone.insertBefore(styleEl, clone.firstChild)
     const result = downloadText(clone.outerHTML, makeFileName('svg'), 'image/svg+xml')
     if (result.ok) {
       addToast('SVG 已下载，请查看下载文件夹')

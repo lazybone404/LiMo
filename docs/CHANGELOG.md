@@ -32,15 +32,25 @@ PyInstaller 打包后 `tiktoken.get_encoding()` 抛 `AttributeError`（模块正
 
 `ExportMenu` 用 `document.querySelector('#mindmap svg')` 但 MindmapView 外层没有 `id="mindmap"` 容器，选择器永远返回 null。
 
+### AI 面板 `scrollIntoView` 带动全页滚动
+
+ChatCore 用 `bottomRef.scrollIntoView()` 滚动聊天到最新消息。面板刚挂载、布局未完成时，`scrollIntoView` 会带动整个页面向上翻。
+
+**修复**：改用聊天容器的 `scrollTop = scrollHeight`，仅影响自身区域。
+
 ### 死代码清理
 
 - `engineHasImages`：GenPanel 中 ~12 行 useMemo 计算 + GenerateOptions 中 prop 声明，从未被读取
+
+### 打包
+
+PyInstaller + Tauri v2 双包构建成功，含 ffmpeg 运行时。
 
 ### 影响范围
 
 - **后端 4 文件**：document.py / model.py / export.py / content_preparer.py
 - **后端 2 文件**：prompt.py + generate.py（函数签名 + 调用者）
-- **前端 2 文件**：PreviewArea.tsx / GenPanel.tsx / GenerateOptions.tsx
+- **前端 3 文件**：PreviewArea.tsx / GenPanel.tsx / GenerateOptions.tsx / ChatCore.tsx
 
 ---
 

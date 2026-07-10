@@ -1,14 +1,9 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useStore } from '../../store'
-import { X, Download, FileText, Globe, File, Archive, Search, Eye, EyeOff, ChevronUp, ChevronDown } from 'lucide-react'
+import { X, Download, FileText, Globe, File, Archive, Search, ChevronUp, ChevronDown } from 'lucide-react'
 import { getTypeMeta } from '../gen-panel/constants'
 import { downloadFromUrl, downloadBlob } from '../../lib/download'
-
 import { apiUrl } from '../../api/client'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
 
 type Format = 'md' | 'html' | 'plain'
 
@@ -25,9 +20,6 @@ const TYPE_LABELS: Record<string, string> = {
 
 export function ExportPanel({ onClose }: { onClose: () => void }) {
   const currentDocId = useStore(s => s.currentDocId)
-  const currentContent = useStore(s => s.currentContent)
-  const currentPolishedContent = useStore(s => s.currentPolishedContent)
-  const currentRawText = useStore(s => s.currentRawText)
   const docs = useStore(s => s.docs)
   const addToast = useStore(s => s.addToast)
 
@@ -116,13 +108,6 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
 
   // ── 预览 ──
   const [exporting, setExporting] = useState(false)
-  const [showPreview, setShowPreview] = useState(false)
-  // 仅当选中单个文档且与当前预览文档一致时才显示内容预览
-  // 否则预览内容与导出内容不匹配，误导用户
-  const previewContent = (selectedIds.length === 1 && selectedIds[0] === currentDocId)
-    ? (currentContent || currentPolishedContent || currentRawText || '')
-    : ''
-
   // ── 导出摘要 ──
   const previewLines = useMemo(() => {
     const lines: string[] = []
@@ -309,43 +294,27 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
               className="w-full px-3 py-2 bg-surface border border-border-default rounded-lg text-[13px] font-mono outline-none" />
           </section>
 
-          {/* ── 实时预览 ── */}
+          {/* ── 导出摘要 ── */}
           <section>
-            <button onClick={() => setShowPreview(!showPreview)}
-              className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground hover:text-accent transition-colors">
-              {showPreview ? <EyeOff size={14} /> : <Eye size={14} />}
-              实时预览
-            </button>
-            {showPreview && (
-              <div className="mt-2 max-h-[250px] overflow-y-auto bg-surface border border-border-light rounded-xl p-4">
-                {previewContent ? (
-                  <div className="markdown-body text-[13px]">
-                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false }]]}>
-                      {previewContent.slice(0, 5000) + (previewContent.length > 5000 ? '\n\n*(前 5000 字)*' : '')}
-                    </ReactMarkdown>
-                  </div>
-                ) : (
-                  <p className="text-[12px] text-disabled text-center py-8">
-                    {selectedIds.length === 0 ? '选中文档后可预览' :
-                     selectedIds.length > 1 ? '多篇导出时不显示预览' :
-                     '在预览栏中打开此文档后可预览'}
+            <h3 className="text-[13px] font-semibold text-foreground mb-2">导出摘要</h3>
+            {previewLines.length === 0 || (previewLines.length === 1 && previewLines[0] === '未选择导出内容') ? (
+              <p className="text-[12px] text-disabled bg-surface rounded-xl p-4">
+                {selectedIds.length === 0 ? '请在「选择文档」中选中文档' : '请在「导出内容」中选择要导出的产物'}
+              </p>
+            ) : (
+              <div className="bg-surface rounded-xl p-3 space-y-0.5">
+                {previewLines.map((line, i) => (
+                  <p key={i} className={`text-[11px] text-dimmed font-mono ${line.startsWith('📹') || line.startsWith('🌐') || line.startsWith('📄') || line.startsWith('📝') || line.startsWith('🖼') || line.startsWith('📊') || line.startsWith('📚') ? 'mt-1.5' : ''}`}>
+                    {line || ' '}
                   </p>
-                )}
+                ))}
               </div>
             )}
           </section>
         </div>
 
         {/* ── 底部 ── */}
-        <footer className="border-t px-5 py-4 shrink-0 space-y-3">
-          <div className="bg-surface rounded-xl p-3">
-            <div className="text-[10px] text-disabled uppercase tracking-wide mb-1">导出预览</div>
-            {previewLines.map((line, i) => (
-              <p key={i} className={`text-[11px] text-dimmed font-mono ${line.startsWith('📹') || line.startsWith('🌐') || line.startsWith('📄') || line.startsWith('📝') || line.startsWith('🖼') || line.startsWith('📊') || line.startsWith('📚') ? 'mt-1' : ''}`}>
-                {line || ' '}
-              </p>
-            ))}
-          </div>
+        <footer className="border-t px-5 py-4 shrink-0">
           <div className="flex gap-2">
             <button disabled={selectedIds.length === 0 || exporting} onClick={async () => {
               if (selectedIds.length === 0) return
@@ -372,7 +341,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
               finally { setExporting(false) }
             }}
               className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 bg-surface text-dimmed text-[13px] font-medium rounded-xl hover:bg-surface-hover transition-colors ${selectedIds.length === 0 ? 'opacity-30' : ''}`}>
-              {exporting ? '打包中...' : <><Archive size={14} /> 导出全部产物</>}
+              {exporting ? '打包中...' : <><Archive size={14} /> 一键导出所有产物 (ZIP)</>}
             </button>
             <button disabled={!canExport || exporting} onClick={async () => {
               setExporting(true)
@@ -395,7 +364,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
             }}
               className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 bg-accent text-white text-[13px] font-medium rounded-xl hover:bg-accent-hover disabled:opacity-30 transition-colors">
               <Download size={14} />
-              {exporting ? '导出中...' : `导出 ${totalFiles} 个文件 ${formats.length > 1 || totalFiles > 1 ? '(ZIP)' : ''}`}
+              {exporting ? '导出中...' : `按上方设置导出 ${totalFiles} 个文件 ${formats.length > 1 || totalFiles > 1 ? '(ZIP)' : ''}`}
             </button>
           </div>
         </footer>
