@@ -1,10 +1,10 @@
 [package]
-name = "app"
+name = "limo"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "LiMo — AI 知识管理系统"
+authors = ["lazybone404"]
 license = ""
-repository = ""
+repository = "https://github.com/lazybone404/LiMo"
 edition = "2021"
 rust-version = "1.77.2"
 

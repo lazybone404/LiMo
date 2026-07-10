@@ -2,8 +2,8 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas = [
-    ('C:/WorkPlace/Tool/MyBigWork/backend/bin', 'bin'),
-    ('C:/WorkPlace/Tool/MyBigWork/backend/static', 'static'),  # KaTeX + markmap/d3 离线资源
+    ('bin', 'bin'),
+    ('static', 'static'),  # KaTeX + markmap/d3 离线资源
 ]
 binaries = []
 hiddenimports = [

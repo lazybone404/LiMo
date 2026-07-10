@@ -19,6 +19,7 @@ LiMo — 知识管理系统。输入 URL/文本/文件 → 适配器提取正文
 | [user-scenarios.md](docs/user-scenarios.md) | 10 个用户场景及实现状态 | 理解产品需求 |
 | [system-design-spec.md](docs/system-design-spec.md) | 原始设计蓝图（历史参考） | 理解早期设计意图 |
 | [engine-standards.md](design/engine-standards.md) | 引擎评审标准+实测数据 | 添加/修改引擎 |
+| [doc-transcript-design.md](docs/doc-transcript-design.md) | Doc 转录原始提案（部分仍有效） | 理解 Word/PPT/EPUB 早期设计意图 |
 
 ## 常用命令
 
@@ -134,7 +135,7 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 
 ### 适配器注册
 
-`app/adapters/__init__.py` → `AdapterRegistry.register()`。新增管道只需实现 `accept()` + `adapt()` 并注册即生效。注册顺序决定路由优先级：Video → Document → Image → Webpage → Text（兜底）。
+`app/adapters/__init__.py` → `AdapterRegistry.register()`。新增管道只需实现 `accept()` + `adapt()` 并注册即生效。注册顺序决定路由优先级：Video（含 BilibiliSubtitle / YouTubeSubtitle 字幕优先提取）→ Document → Image → Webpage → Text（兜底）。共 7 个适配器。
 
 ### 引擎系统
 
@@ -261,7 +262,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **markmap 离线化**：`markmap.ts` 不调用 `markmap-common` 的 `loadCSS`/`loadJS`（动态 CDN 加载会被 Edge WebView2 跟踪防护拦截），KaTeX CSS 在 PreviewArea 中静态 import，hljs 由 react-syntax-highlighter 内联
 - **设置持久化**：`ProviderSettings.tsx` 中引擎/LLM Key 的保存不能仅靠 `onBlur`（组件卸载时不触发），需加 `useEffect` cleanup 用 ref 兜底保存
 - **上下文窗口可配置**：`addModel()` API 支持 `context_window` 参数，ProviderSettings 中展示（如 "1M ctx"），前端按模型粒度配置
-- **路由异常标准化**：ingest / fact_check / chat / process 路由全部使用 AppError 体系。config / model / files / generate / conversations 路由仍有 18 处 `return {"error":"..."}` 旧格式待迁移
+- **路由异常标准化**：ingest / fact_check / chat / process / generate / conversations 路由全部使用 AppError 体系。config / model / files 路由仍有 14 处 `return {"error":"..."}` 旧格式待迁移
 - **Content-Disposition 中文文件名**：必须用 RFC 5987 `filename*=UTF-8''` 编码，否则 Starlette 会尝试 latin-1 编码 → UnicodeEncodeError
 - **日志函数签名**：`app.core.logging.warning(msg, **kwargs)` 只接受 1 个位置参数 + kwargs，不能用 `%s` 占位符多参数调用。多参数用 f-string
 - **空文本去重碰撞**：空字符串 SHA256 固定为 `e3b0c44...`，两个空导入会误判为重复。TextAdapter 需检查 `text.strip()` 非空
@@ -291,6 +292,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 8. **引擎绑定合并**：保存用增量合并，`null`=不修改，`[]`=清除绑定。
 9. **适配器错误**：失败必须 `raise FatalError`，不要 `return AdapterOutput(engine="none")`。
 10. **markdown→HTML 导出**：移除 `nl2br` 扩展，GFM 特性（删除线/任务列表）用正则预处理，Pygments 可选依赖。详见 [export-pipeline.md](docs/export-pipeline.md)。
+11. **引擎图片双模式**：所有 Doc 引擎必须支持 `media_dir` 非空（写文件引用 `![alt](img_0001.png)`）和 `media_dir` 为空（内嵌 base64 `![alt](data:image/...;base64,...)`）两种模式。不可用 `if media_dir` 守卫静默跳过图片提取。已统一：PyMuPDF / PyMuPDF4LLM / MarkItDown / DocxEngine / PptxEngine / EpubEngine。
 
 ## 待办事项
 
