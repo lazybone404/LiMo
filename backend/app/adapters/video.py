@@ -361,7 +361,8 @@ class VideoAdapter(PipelineAdapter):
             "-vn", "-acodec", "libmp3lame", "-b:a", "64k",
             "-ar", "16000", "-ac", "1",
             str(audio_path),
-        ], check=True, capture_output=True, timeout=300)
+        ], check=True, capture_output=True, timeout=300,
+           creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         return audio_path
 
     def _get_dashscope_key(self) -> str:

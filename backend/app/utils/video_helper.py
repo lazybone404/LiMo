@@ -1,6 +1,7 @@
 """
 视频辅助 — ffmpeg 单帧截图
 """
+import os
 import subprocess
 import uuid
 from pathlib import Path
@@ -25,7 +26,8 @@ def generate_screenshot(video_path: str, output_dir: str, timestamp: int, index:
         "-hide_banner", "-loglevel", "error",
     ]
 
-    result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg 截图失败: {result.stderr}")
 

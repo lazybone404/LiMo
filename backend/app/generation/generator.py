@@ -23,9 +23,10 @@ MAX_TOKENS = 65536
 # ── 后处理（模块级工具函数） ──
 
 def _post_process_content_markers(markdown: str) -> str:
-    """将 *Content-[mm:ss] 转为安全的 markdown 链接格式，避免 * 被解析为斜体"""
+    """Content-[mm:ss] 标记由前端渲染为时间戳 badge，后端不做替换。
+    仅移除可能残留的前导 *（避免被 markdown 解析为斜体）。"""
     import re
-    return re.sub(r'\*?Content-\[(\d{1,2}:\d{1,2})\]', r'[▶ \1](#)', markdown)
+    return re.sub(r'\*(Content-\[\d{1,2}:\d{1,2}\])', r'\1', markdown)
 
 
 def _post_process_screenshots(markdown: str, video_path: str | None, store_root: str = "") -> str:

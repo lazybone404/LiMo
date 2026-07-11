@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Copy, Check, Play, Link2 } from 'lucide-react'
+import { Copy, Check, Play, Camera, Link2 } from 'lucide-react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { appUrl } from '../api/client'
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
@@ -173,11 +173,14 @@ export function createMarkdownComponents() {
       const pid = React.useId()
       function renderContent(text: unknown): React.ReactNode {
         if (typeof text !== 'string') return text as React.ReactNode
-        const parts = text.split(/(\*?Content-\[\d{2}:\d{2}\])/g)
+        const parts = text.split(/(\*?(?:Content|Screenshot)-\[\d{2}:\d{2}\])/g)
         return parts.map((part, i) => {
+          const time = part.match(/\[(\d{2}:\d{2})\]/)?.[1] || ''
           if (part.includes('Content-[')) {
-            const time = part.match(/\[(\d{2}:\d{2})\]/)?.[1] || ''
             return <span key={`${pid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{time}</span>
+          }
+          if (part.includes('Screenshot-[')) {
+            return <span key={`${pid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-warning/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Camera size={9} className="text-warning" />{time}</span>
           }
           return part
         })
@@ -192,11 +195,14 @@ export function createMarkdownComponents() {
       const lid = React.useId()
       const processed = React.Children.map(children, child => {
         if (typeof child === 'string') {
-          const parts = child.split(/(\*?Content-\[\d{2}:\d{2}\])/g)
+          const parts = child.split(/(\*?(?:Content|Screenshot)-\[\d{2}:\d{2}\])/g)
           return parts.map((part, i) => {
+            const time = part.match(/\[(\d{2}:\d{2})\]/)?.[1] || ''
             if (part.includes('Content-[')) {
-              const time = part.match(/\[(\d{2}:\d{2})\]/)?.[1] || ''
               return <span key={`${lid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{time}</span>
+            }
+            if (part.includes('Screenshot-[')) {
+              return <span key={`${lid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-warning/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Camera size={9} className="text-warning" />{time}</span>
             }
             return part
           })

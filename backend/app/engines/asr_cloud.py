@@ -70,11 +70,13 @@ class DashScopeASREngine(Engine):
         if audio_fmt not in ("wav", "pcm"):
             tmp_wav = Path(tempfile.mktemp(suffix=".wav"))
             logger.info("DashScope Recognition: 转换 %s → wav", audio_fmt)
+            import os as _os
             subprocess.run([
                 "ffmpeg", "-y", "-i", file_path,
                 "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
                 str(tmp_wav),
-            ], check=True, capture_output=True, timeout=300)
+            ], check=True, capture_output=True, timeout=300,
+               creationflags=subprocess.CREATE_NO_WINDOW if _os.name == 'nt' else 0)
             call_path = str(tmp_wav)
             audio_fmt = "wav"
 

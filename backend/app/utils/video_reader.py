@@ -71,7 +71,7 @@ class VideoReader:
             "-hide_banner", "-loglevel", "error",
         ]
         try:
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             return output_path
         except subprocess.CalledProcessError:
             return None

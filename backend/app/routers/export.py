@@ -38,11 +38,13 @@ def _render_formulas_katex(md: str) -> str:
     if not shutil.which("node") or not _KATEX_SCRIPT.exists():
         return md
     try:
+        import os as _os
         r = subprocess.run(
             ["node", str(_KATEX_SCRIPT)],
             input=md, capture_output=True, text=True, timeout=60,
             encoding='utf-8', errors='replace',
             cwd=str(_KATEX_SCRIPT.parent),
+            creationflags=subprocess.CREATE_NO_WINDOW if _os.name == 'nt' else 0,
         )
         if r.returncode == 0:
             return r.stdout

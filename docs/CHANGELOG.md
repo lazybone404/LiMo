@@ -6,6 +6,26 @@
 
 ---
 
+## 2026-07-12 — ffmpeg 黑框消除 + 标记渲染修复 + URL 统一
+
+### subprocess 黑框消除
+生成视频产物时 ffmpeg 会弹出 cmd 黑框。6 处 `subprocess.run` 调用加 `creationflags=subprocess.CREATE_NO_WINDOW`：
+- `video_reader.py` / `video_helper.py` / `video.py` / `asr_cloud.py` / `export.py`
+
+### Content/Screenshot 标记渲染修复
+- `Content-[mm:ss]`：后端不再替换为死链接 `[▶ mm:ss](#)`，改为保留原文。前端渲染为 Play 图标时间戳 badge
+- `Screenshot-[mm:ss]`：前端新增 Camera 图标 badge 渲染。后端勾选「原片截图」后 ffmpeg 抽帧替换为真实图片
+- 后端 `_post_process_content_markers` 仅移除前导 `*`（避免 markdown 斜体干扰），不改变标记主体
+
+### `appUrl()` 统一应用内 URL
+Tauri 打包端无 Vite proxy，`/api/` 和 `/static/` 路径需转为绝对 URL。新增 `appUrl(path)` 函数，统一 `MarkdownImage` / `DocLibrary` / `VideoBanner` 三处图片加载。
+
+### 影响范围
+- **后端 5 文件**：video_reader.py / video_helper.py / video.py / asr_cloud.py / export.py / generator.py
+- **前端 3 文件**：client.ts / markdown-components.tsx / DocLibrary.tsx / VideoBanner.tsx
+
+---
+
 ## 2026-07-12 — 打包兼容 + 路径统一 + 测试支撑
 
 ### `_transcribe` 漏 `await` 修复
