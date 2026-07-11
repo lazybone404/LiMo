@@ -576,7 +576,7 @@ export function PreviewArea() {
             </div>
           )
         }
-        return <div id="mindmap" className="w-full h-full"><MindmapView value={currentContent} /></div>
+        return <div id="mindmap" className="relative flex-1 min-h-0"><MindmapView value={currentContent} /></div>
 
       default:
         return null

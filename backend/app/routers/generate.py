@@ -498,7 +498,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 if polished_chunks:
                     polished_content = _post_process(
                         "".join(polished_chunks), format_list,
-                        video_path or screenshot_video_path, source_type)
+                        video_path or screenshot_video_path, source_type, store.root)
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
                         transcript_id=transcript_id, content=polished_content,
@@ -509,7 +509,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 if notes_chunks:
                     notes_content = _post_process(
                         "".join(notes_chunks), format_list,
-                        video_path or screenshot_video_path, source_type)
+                        video_path or screenshot_video_path, source_type, store.root)
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
                         transcript_id=transcript_id, content=notes_content,
@@ -576,7 +576,7 @@ async def generate_stream(transcript_id: str, request: Request,
 
             # 完成后保存
             content = _post_process("".join(all_chunks), format_list,
-                                    video_path or screenshot_video_path, source_type)
+                                    video_path or screenshot_video_path, source_type, store.root)
             mv_mode = GenerateMode.POLISHED if stream_mode == "polished" else GenerateMode.NOTES
             mv = MarkdownView(
                 id=f"md_{uuid.uuid4().hex[:12]}",
@@ -651,14 +651,14 @@ def _build_continue_prompt(original_prompt: str, partial_content: str) -> str:
 
 
 def _post_process(content: str, formats: list[str],
-                  video_path, source_type: str) -> str:
+                  video_path, source_type: str, store_root: str = "") -> str:
     """后处理（对齐原有 Generator 行为）"""
     from app.generation.generator import (
         _post_process_content_markers, _post_process_screenshots,
     )
     content = _post_process_content_markers(content)
     if "screenshot" in formats and video_path:
-        content = _post_process_screenshots(content, str(video_path))
+        content = _post_process_screenshots(content, str(video_path), store_root=store_root)
     return content
 
 

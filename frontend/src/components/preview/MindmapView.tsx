@@ -56,8 +56,8 @@ export default function MindmapView({ value }: MindmapViewProps) {
   }, [value, resolvedTheme])
 
   return (
-    <div className={`flex-1 bg-elevated overflow-hidden ${resolvedTheme === 'dark' ? 'markmap-dark' : ''}`}>
-      <svg ref={svgRef} style={{ display: 'block', width: '100%', height: '100%', minHeight: '200px' }} />
+    <div className={`absolute inset-0 overflow-hidden ${resolvedTheme === 'dark' ? 'markmap-dark' : ''}`}>
+      <svg ref={svgRef} style={{ display: 'block', width: '100%', height: '100%' }} />
     </div>
   )
 }

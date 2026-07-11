@@ -172,9 +172,13 @@ class MarkItDownEngine(Engine):
 
         # 如果有 media_dir，把内嵌 base64 图片写出为独立文件
         if media_dir:
-            import base64, re
+            import base64, re, logging
             from pathlib import Path
+            _log = logging.getLogger(__name__)
             img_idx = 0
+            data_uri_pat = re.compile(r'!\[([^\]]*)\]\(data:image\/[^;]+;base64,([^)]+)\)')
+            before_count = len(data_uri_pat.findall(text))
+            _log.info("MarkItDown: 找到 %d 个 base64 图片", before_count)
             def _save_base64(m):
                 nonlocal img_idx
                 alt = m.group(1) or "img"
@@ -190,9 +194,11 @@ class MarkItDownEngine(Engine):
                     img_idx += 1
                     (Path(media_dir) / fname).write_bytes(data)
                     return f"![{alt}]({fname})"
-                except Exception:
+                except Exception as e:
+                    _log.warning("MarkItDown 图片保存失败: alt=%s err=%s", alt[:40], e)
                     return m.group(0)
-            text = re.sub(r'!\[([^\]]*)\]\(data:image\/[^;]+;base64,([^)]+)\)', _save_base64, text)
+            text = data_uri_pat.sub(_save_base64, text)
+            _log.info("MarkItDown: 图片写入完成 %d 个", img_idx)
 
         return DocResult(
             text=text,

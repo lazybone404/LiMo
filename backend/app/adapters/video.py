@@ -252,7 +252,7 @@ class VideoAdapter(PipelineAdapter):
 
         # ── Step 3: ASR ──
         pg("transcribing", "running", "语音转写中...（可能需要几分钟）", 55)
-        asr_result = self._transcribe(audio_path, warnings)
+        asr_result = await self._transcribe(audio_path, warnings)
 
         if not asr_result.get("segments"):
             # 汇总 ASR 失败原因
@@ -508,7 +508,7 @@ class VideoAdapter(PipelineAdapter):
         pg("extracting_audio", "done", "音频提取完成", 50)
         pg("transcribing", "running", "语音转写中...（可能需要几分钟）", 60)
 
-        asr_result = self._transcribe(audio_path, warnings)
+        asr_result = await self._transcribe(audio_path, warnings)
 
         if not asr_result.get("segments"):
             pg("transcribing", "error", "转写失败", 90)

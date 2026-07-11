@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { Copy, Check, Play, Link2 } from 'lucide-react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { apiUrl } from '../api/client'
+import { appUrl } from '../api/client'
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import Zoom from 'react-medium-image-zoom'
 import { useStore } from '../store'
@@ -84,7 +84,7 @@ function CodeBlock({ inline, className, children, ...props }: any) {
 /** 图片组件 — 加载失败时显示占位符，而非静默隐藏 */
 function MarkdownImage({ src, alt, ...props }: any) {
   const [broken, setBroken] = useState(false)
-  const imgSrc = (typeof src === 'string' && src.startsWith('/api/')) ? apiUrl(src.slice(4)) : src
+  const imgSrc = (typeof src === 'string') ? appUrl(src) : src
 
   // 空 src 会导致浏览器重新加载整页，不渲染该元素
   if (!imgSrc || imgSrc === '') return null

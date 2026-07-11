@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from 'react'
 import { useStore } from '../../store'
-import { deleteTranscript, updateTranscript } from '../../api/client'
+import { deleteTranscript, updateTranscript, appUrl } from '../../api/client'
 import { ContextMenu } from '../ui/ContextMenu'
 import { Search, X, CheckCircle2, Loader2, Circle, PanelLeftClose, Pencil, Trash2, Film, Globe, FileText, PenLine, BarChart3, TrendingUp, BookOpen, Paperclip, MessageSquare, Image as ImageIcon, Download, Music, Mic, Bot, Eye, Settings, RefreshCw, Tag, Clipboard, Archive, CheckSquare, Square } from 'lucide-react'
 import { exportBatch } from '../../api/client'
@@ -307,7 +307,7 @@ export function DocLibrary() {
                   )}
                   {/* 左侧：封面图 或 类型图标（带颜色背景） */}
                   {doc.coverUrl ? (
-                    <img src={doc.coverUrl} alt="" referrerPolicy="no-referrer"
+                    <img src={appUrl(doc.coverUrl)} alt="" referrerPolicy="no-referrer"
                       className="w-10 h-10 rounded-lg object-cover shrink-0 mt-0.5" />
                   ) : (
                     <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 mt-0.5"

@@ -7,6 +7,16 @@ export function apiUrl(path: string): string {
   return path.startsWith('http') ? path : `${BASE}${path}`
 }
 
+/** 将应用内路径（/api/...、/static/...）转为可访问的完整 URL。
+ *  Tauri 打包端无 Vite proxy，需补全 http://127.0.0.1:7413。
+ *  外部 URL 原样返回。 */
+export function appUrl(path: string): string {
+  if (!path || path.startsWith('http')) return path
+  if (!isTauri) return path
+  if (path.startsWith('/api/')) return apiUrl(path.slice(4))
+  return `http://127.0.0.1:7413${path}`
+}
+
 // ── 结构化 API 错误 ──
 
 export interface ApiError {

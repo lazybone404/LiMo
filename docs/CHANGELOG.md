@@ -6,6 +6,72 @@
 
 ---
 
+## 2026-07-12 — 打包兼容 + 路径统一 + 测试支撑
+
+### `_transcribe` 漏 `await` 修复
+video.py 两处 `self._transcribe(...)` 改为 `async def` 后漏 `await`，返回 coroutine → 下游 `asr_result.get("segments")` 抛 `AttributeError`。
+
+### `appUrl()` 统一 URL 转换
+打包端（Tauri）无 Vite proxy，`/api/` 和 `/static/` 路径需转为 `http://127.0.0.1:7413` 绝对 URL。新增 `appUrl(path)` 函数，统一处理 `/api/`、`/static/`、外部链接三种情况。
+
+**受影响组件**（全改为 `appUrl()`）：
+- `MarkdownImage`：笔记内嵌图片、截图
+- `DocLibrary`：文档封面
+- `VideoBanner`：视频横幅封面
+
+### 截图路径从 CWD → data_dir
+- 后端生成：`os.getcwd()/data/screenshots/` → `{store_root}/screenshots/`
+- StaticFiles 挂载：模块级相对路径 → startup 内 `{data_dir}/screenshots/`
+- 打包端和网页端统一到 `~/.mybigwork/screenshots/`
+
+### 文件日志
+新增 `app.log`（5×2MB 滚动，INFO 全量），路径 `{data_dir}/app.log`。打包端用户无法看终端，错误排查全靠这个文件。
+
+### 文档删除时清理图片
+`Store.delete_transcript` 现在清理 `files/{tx_id}/` 目录（文档内嵌图片），避免孤儿文件堆积。
+
+### MarkItDown 图片诊断
+`MarkItDownEngine` 加日志：找到 base64 图片数、写入成功数、解码失败详情。
+
+### 影响范围
+- **后端 4 文件**：video.py / main.py / generator.py / store.py / doc.py
+- **前端 4 文件**：client.ts / markdown-components.tsx / DocLibrary.tsx / VideoBanner.tsx
+
+---
+
+## 2026-07-11 — 交互修复 + 导出面板重构 + 默认值修正
+
+### AI 面板 / 思维导图滚动修复
+- AI 面板 `scrollIntoView` → 容器 `scrollTop`，不再带动全页上翻
+- 思维导图 `mm.fit()` defer 到 `requestAnimationFrame`，避免布局未完成触发页面滚动
+
+### 思维导图白屏
+`flex-1 bg-elevated` + `minHeight:200px` → 容器高度不足时 SVG 只有 200px，剩余空间显示浅色背景（像白色遮罩）。改为 `absolute inset-0` 填满父容器。
+
+### ExportPanel 重构
+- 按钮标签：「导出全部产物」→「一键导出所有产物 (ZIP)」；「导出 N 个文件」→「按上方设置导出 N 个文件」
+- 删除 Markdown 预览（内容和导出不一致），替换为文字摘要
+- 清理死代码：5 个无用 import、3 个 store selector、2 个 state 变量
+
+### SVG 导出文字消失
+`cloneNode` 丢失外部 CSS → 内联页面所有样式表规则到 `<style>` 标签注入 SVG。
+
+### `streamDisplay=false` 产物静默丢失
+流式关闭时 `onChunk` 直接 return，`onDone` 从空缓冲区取内容 → 产物永远为空。改为内部 ref 缓冲区始终累积，不受开关影响。
+
+### SSE `\r\n` 解析
+部分 API 返回 CRLF 换行 → JSON 解析失败，事件静默丢弃。4 处 SSE 解析统一加 `\r\n→\n` 归一化。
+
+### 默认值修正
+- `engine_auto_fallback`：`True → False`，引擎失败直接报错而非静默降级
+- 公式图片渲染：`dpi 150→100, fontsize 16→14, pad 0.08→0.05`
+
+### 影响范围
+- **前端 5 文件**：GenPanel.tsx / client.ts / MindmapView.tsx / ExportPanel.tsx / ExportMenu.tsx
+- **后端 2 文件**：config.py / export.py
+
+---
+
 ## 2026-07-11 — 打包前缺陷修复：漏导入 + 截图 prompt + SVG 下载 + 死代码
 
 ### 漏导入（PyInstaller 打包后致命）

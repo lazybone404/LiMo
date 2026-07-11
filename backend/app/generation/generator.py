@@ -28,7 +28,7 @@ def _post_process_content_markers(markdown: str) -> str:
     return re.sub(r'\*?Content-\[(\d{1,2}:\d{1,2})\]', r'[▶ \1](#)', markdown)
 
 
-def _post_process_screenshots(markdown: str, video_path: str | None) -> str:
+def _post_process_screenshots(markdown: str, video_path: str | None, store_root: str = "") -> str:
     """将 *Screenshot-[mm:ss] 标记替换为实际截图 URL"""
     if not video_path or not os.path.exists(video_path):
         logger.info("原片截图：无视频文件，跳过（video_path=%s）", video_path)
@@ -44,7 +44,8 @@ def _post_process_screenshots(markdown: str, video_path: str | None) -> str:
             return markdown
 
         logger.info("原片截图：找到 %d 个标记，开始 ffmpeg 抽帧", len(matches))
-        output_dir = os.path.join(os.getcwd(), "data", "screenshots")
+        # 使用 store_root 而非 os.getcwd()——打包后 CWD 不可靠
+        output_dir = os.path.join(store_root or os.getcwd(), "screenshots")
         for idx, (marker, ts) in enumerate(matches):
             try:
                 img_path = generate_screenshot(video_path, output_dir, ts, idx)

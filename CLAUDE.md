@@ -304,7 +304,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 18. **图片剥离占位符**：base64 剥离后不能用 `![alt]`（Markdown 渲染成 `<img src="">`），改用 `[📷 alt]` 纯文本占位符。否则空 src 触发浏览器重载整页。
 19. **screenshot 后处理双产物对称**：`_post_process_screenshots` 必须同时应用于 polished 和 notes。`generate_both` 此前只处理 notes。**本次已修复**。
 20. **异常类导入完整性**：新增 `raise FatalError`/`AppError` 等自定义异常时必须确认文件顶部有对应 import。PyInstaller 打包后不会通过间接导入自动补全。**本次已修复**：document.py（FatalError）、model.py（AppError）、export.py（shutil）。
-
+21. **`appUrl()` 统一应用内 URL**：前端所有图片组件（MarkdownImage / DocLibrary / VideoBanner）必须用 `appUrl()` 而非裸 URL。打包端无 Vite proxy，`/api/` 和 `/static/` 路径需转为 `http://127.0.0.1:7413` 绝对 URL。`apiUrl()` 仅用于 `/api/` 下的 fetch 请求。
+22. **`async def` 全调用链 `await`**：将同步函数改为 `async def` 后，必须检查所有调用点是否加 `await`。Python 不会为漏掉的 await 报编译错——静默返回 coroutine。**本次已修复**：video.py 三处 `_transcribe` 调用，两处漏 `await`。
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始

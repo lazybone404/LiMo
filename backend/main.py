@@ -60,10 +60,7 @@ class _ForceCORSMiddleware:
 
 app.add_middleware(_ForceCORSMiddleware)
 
-# 截图静态文件
-_screenshots_dir = Path("data/screenshots")
-_screenshots_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/static/screenshots", StaticFiles(directory=str(_screenshots_dir)), name="screenshots")
+# 截图静态文件在 startup 中按 config data_dir 挂载
 
 
 # ── 全局异常处理 — AppError → 结构化 JSON 响应 ──
@@ -143,19 +140,20 @@ def _init_logging(config: dict) -> None:
     ))
     root.addHandler(buf_handler)
 
-    # 错误日志文件 — 滚动 3 × 1MB，路径 data_dir/error.log
+    # 全量应用日志 — 滚动 5 × 2MB，路径 data_dir/app.log
+    # 打包端用户无法看终端，所有日志写入文件供排查
     try:
         log_dir = Path(config.get("data_dir", "data"))
         log_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
-            log_dir / "error.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8",
+        app_log = RotatingFileHandler(
+            log_dir / "app.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8",
         )
-        file_handler.setLevel(logging.WARNING)
-        file_handler.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)s %(name)s:%(lineno)d  %(message)s",
+        app_log.setLevel(logging.INFO)
+        app_log.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-5s [rid=%(request_id)s] %(name)s:%(lineno)d  %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         ))
-        root.addHandler(file_handler)
+        root.addHandler(app_log)
     except OSError:
         pass  # 写文件失败不阻塞启动
 
@@ -196,6 +194,11 @@ async def startup():
 
     # 存储
     app.state.store = Store(config.get("data_dir", "data"))
+
+    # 截图静态文件 — 基于 data_dir 而非 CWD（打包后 CWD 不可靠）
+    _ss_dir = Path(config.get("data_dir", "data")) / "screenshots"
+    _ss_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/static/screenshots", StaticFiles(directory=str(_ss_dir)), name="screenshots")
 
     # 适配器
     from app.adapters import init_adapters

@@ -1,4 +1,5 @@
 import { ExternalLink } from 'lucide-react'
+import { appUrl } from '../../api/client'
 
 interface VideoBannerProps {
   title?: string
@@ -26,7 +27,7 @@ export function VideoBanner({ title, coverUrl, uploader, platform, sourceUrl, cr
       <div className="absolute inset-0">
         {hasCover ? (
           <img
-            src={coverUrl}
+            src={appUrl(coverUrl)}
             alt=""
             referrerPolicy="no-referrer"
             className="h-full w-full object-cover blur-xl brightness-[0.35] scale-110"
@@ -41,7 +42,7 @@ export function VideoBanner({ title, coverUrl, uploader, platform, sourceUrl, cr
         {/* 封面缩略图 */}
         {hasCover && (
           <img
-            src={coverUrl}
+            src={appUrl(coverUrl)}
             alt={title || ''}
             referrerPolicy="no-referrer"
             className="h-16 w-28 shrink-0 rounded-md object-cover shadow-md"

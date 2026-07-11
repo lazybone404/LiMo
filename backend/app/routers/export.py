@@ -564,10 +564,10 @@ def _render_formulas_to_images(md: str) -> str:
             h = max(0.55, min(1.2, len(expr) * 0.008 + 0.45))
             fig, ax = plt.subplots(figsize=(w, h))
             ax.axis('off')
-            ax.text(0.5, 0.5, f"${expr}$", fontsize=16, ha='center', va='center',
+            ax.text(0.5, 0.5, f"${expr}$", fontsize=14, ha='center', va='center',
                     transform=ax.transAxes)
             buf = io.BytesIO()
-            fig.savefig(buf, format='png', dpi=150, bbox_inches='tight', pad_inches=0.08,
+            fig.savefig(buf, format='png', dpi=100, bbox_inches='tight', pad_inches=0.05,
                         facecolor='white', edgecolor='none')
             plt.close(fig)
             buf.seek(0)

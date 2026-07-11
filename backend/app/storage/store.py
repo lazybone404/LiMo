@@ -329,12 +329,18 @@ class Store:
                 if md_path.exists():
                     md_path.unlink()
             self._index["markdowns"].pop(id, None)
-            # 清理关联 process（v2 修复：之前遗漏了）
+            # 清理关联 process
             processes = self._index["processes"].pop(id, [])
             for pr in processes:
                 pr_path = self._path_for_id(pr["id"], "process")
                 if pr_path.exists():
                     pr_path.unlink()
+            # 清理文档图片目录（files/{tx_id}/）
+            files_dir = self.root / "files" / self._sanitize_id(id)
+            if files_dir.exists():
+                for f in files_dir.iterdir():
+                    f.unlink()
+                files_dir.rmdir()
             self._save_index()
         return True
 
