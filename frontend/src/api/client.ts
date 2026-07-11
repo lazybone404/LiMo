@@ -506,6 +506,8 @@ export function streamGenerate(
         const { done, value } = await reader.read()
         if (done) break
         buffer += decoder.decode(value, { stream: true })
+        // 归一化 \r\n → \n，部分 LLM API 返回 CRLF 换行
+        buffer = buffer.replace(/\r\n/g, '\n')
         const parts = buffer.split('\n\n')
         buffer = parts.pop() || ''
 
@@ -578,6 +580,7 @@ export function streamFactCheck(
         const { done, value } = await reader.read()
         if (done) break
         buffer += decoder.decode(value, { stream: true })
+        buffer = buffer.replace(/\r\n/g, '\n')
         const parts = buffer.split('\n\n')
         buffer = parts.pop() || ''
         for (const part of parts) {
@@ -663,6 +666,7 @@ export function streamChat(
         const { done, value } = await reader.read()
         if (done) break
         buffer += decoder.decode(value, { stream: true })
+        buffer = buffer.replace(/\r\n/g, '\n')
         const parts = buffer.split('\n\n')
         buffer = parts.pop() || ''
         for (const part of parts) {

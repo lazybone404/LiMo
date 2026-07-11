@@ -189,6 +189,10 @@ export function GenPanel() {
 
   // ── C2: AbortController 管理（用 taskManager 注册，TaskPanel 可取消）──
   const importSeqRef = useRef(0)  // 导入计数器，确保每次导入用独立 key
+  // 流式内容累积缓冲区 — streamDisplay=false 时 UI 不更新但数据不丢
+  const accNotesRef = useRef('')
+  const accPolishedRef = useRef('')
+  const accSingleRef = useRef('')
 
   const createAbort = useCallback((docId: string) => {
     const ctrl = new AbortController()
@@ -403,6 +407,7 @@ export function GenPanel() {
     setError(''); setImportError(''); setGenerating(true)
     const doc = useStore.getState().docs.find(d => d.id === capturedId)
     setProcessing(capturedId + '__generate', { kind: 'generate', title: doc?.title || '' })
+    accNotesRef.current = ''; accPolishedRef.current = ''; accSingleRef.current = ''
     setIsStreaming(true)
     setActiveView(typeMeta.isExcel ? 'report' : 'summary')
 
@@ -456,29 +461,28 @@ export function GenPanel() {
       continue_from: continueFrom || undefined,
     }, {
       onChunk(text, mode) {
-        if (!isSameDoc(capturedId) || !streamDisplay) return
-        // 双产物模式：分别更新 polished/notes 内容
+        if (!isSameDoc(capturedId)) return
+        // 始终累积到内部缓冲区（streamDisplay=false 时 UI 不更新但数据不丢）
         if (mode === 'polished') {
-          const prev = useStore.getState().currentPolishedContent || ''
-          setCurrentPolishedContent(prev + text)
+          accPolishedRef.current += text
+          if (streamDisplay) setCurrentPolishedContent(accPolishedRef.current)
         } else if (mode === 'notes') {
-          const prev = useStore.getState().currentContent || ''
-          setCurrentContent(prev + text)
+          accNotesRef.current += text
+          if (streamDisplay) setCurrentContent(accNotesRef.current)
         } else {
-          // 单产物模式：更新统一的流式缓冲区
-          const prev = useStore.getState().streamingContent || ''
-          setStreamingContent(prev + text)
+          accSingleRef.current += text
+          if (streamDisplay) setStreamingContent(accSingleRef.current)
         }
       },
       onDone(_result) {
         if (!isSameDoc(capturedId)) return
         setGenerating(false); setProcessing(capturedId + '__generate', null)
         setIsStreaming(false)
-        // 内容整理
+        // 内容整理 — 从内部缓冲区读取，streamDisplay=false 时也不会丢
         if (!isBoth) {
           const hasCore = selectedCore.includes('notes') || selectedCore.includes('polished')
           if (hasCore) {
-            const finalContent = useStore.getState().streamingContent
+            const finalContent = accSingleRef.current || useStore.getState().streamingContent || ''
             if (isPolishedOnly) {
               setCurrentPolishedContent(finalContent)
             } else {
@@ -487,7 +491,11 @@ export function GenPanel() {
           }
           setStreamingContent(null)
         } else {
-          // 双产物模式：polished/notes 已在 onChunk 中分派完毕
+          // 双产物模式：确保最终内容从缓冲区写入 store
+          if (!streamDisplay) {
+            if (accPolishedRef.current) setCurrentPolishedContent(accPolishedRef.current)
+            if (accNotesRef.current) setCurrentContent(accNotesRef.current)
+          }
           setStreamingContent(null)
         }
         // 刷新版本列表

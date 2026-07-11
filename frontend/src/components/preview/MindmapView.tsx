@@ -44,7 +44,10 @@ export default function MindmapView({ value }: MindmapViewProps) {
     }
 
     const { root } = transformer.transform(cleanMindmapContent(value || ''))
-    mm.setData(root).then(() => mm.fit())
+    mm.setData(root).then(() => {
+      // 延迟到下一帧执行 fit()，避免布局未完成时触发页面滚动
+      requestAnimationFrame(() => mm.fit())
+    })
 
     return () => {
       if (svg) svg.innerHTML = ''
