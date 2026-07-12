@@ -71,7 +71,6 @@ const TAB_EXPORT: Record<string, TabExportConfig> = {
   understand:  { contentKey: 'imageResult',htmlMode: 'understand', suffix: '-理解内容',       label: '理解内容' },
   // —— 无导出内容 ——
   original:    { contentKey: 'none',        htmlMode: '',           suffix: '',              label: '原图' },
-  ocr:         { contentKey: 'none',        htmlMode: '',           suffix: '',              label: 'OCR' },
 }
 
 /**
