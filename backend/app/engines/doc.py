@@ -179,6 +179,12 @@ class MarkItDownEngine(Engine):
             data_uri_pat = re.compile(r'!\[([^\]]*)\]\(data:image\/[^;]+;base64,([^)]+)\)')
             before_count = len(data_uri_pat.findall(text))
             _log.info("MarkItDown: 找到 %d 个 base64 图片", before_count)
+            if before_count == 0:
+                # 诊断：检查 MarkItDown 实际输出的图片格式
+                img_patterns = re.findall(r'(!\[[^\]]*\](?:\([^)]+\))?|<img[^>]+src="[^"]*"[^>]*>)', text)
+                if img_patterns:
+                    _log.info("MarkItDown 图片格式: %d 个非 base64 引用，示例: %s",
+                              len(img_patterns), img_patterns[:3])
             def _save_base64(m):
                 nonlocal img_idx
                 alt = m.group(1) or "img"

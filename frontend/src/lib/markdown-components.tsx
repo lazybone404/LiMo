@@ -115,14 +115,24 @@ function MarkdownImage({ src, alt, ...props }: any) {
   )
 }
 
-export function createMarkdownComponents() {
+export function createMarkdownComponents(sourceUrl?: string, isVideo?: boolean) {
+  // 仅视频文档构造时间戳跳转链接
+  const makeTimeLink = (mm: string, ss: string) => {
+    if (!sourceUrl || !isVideo) return null
+    const totalSec = parseInt(mm) * 60 + parseInt(ss)
+    const u = sourceUrl
+    if (u.includes('bilibili.com')) return `${u.replace(/[?&]spm_id_from=.*/, '').replace(/\/\?.*$/, '')}?t=${totalSec}`
+    if (u.includes('youtube.com') || u.includes('youtu.be')) return `${u.split('?')[0]}?t=${totalSec}`
+    return `${u}#t=${totalSec}`
+  }
   return {
     h2: ({ children, ...props }: any) => {
       const { clean, text } = cleanHeading(children)
       const id = headingId(text)
+      const scrollTo = (e: React.MouseEvent) => { e.preventDefault(); document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
       return <h2 id={id} className="group relative" {...props}>
         {clean}
-        <a href={`#${id}`} className="absolute -left-6 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-disabled hover:text-accent" aria-label="链接到此标题">
+        <a href={`#${id}`} onClick={scrollTo} className="absolute -left-6 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-disabled hover:text-accent" aria-label="链接到此标题">
           <Link2 size={14} />
         </a>
       </h2>
@@ -130,9 +140,10 @@ export function createMarkdownComponents() {
     h3: ({ children, ...props }: any) => {
       const { clean, text } = cleanHeading(children)
       const id = headingId(text)
+      const scrollTo = (e: React.MouseEvent) => { e.preventDefault(); document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
       return <h3 id={id} className="group relative" {...props}>
         {clean}
-        <a href={`#${id}`} className="absolute -left-6 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-disabled hover:text-accent" aria-label="链接到此标题">
+        <a href={`#${id}`} onClick={scrollTo} className="absolute -left-6 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-disabled hover:text-accent" aria-label="链接到此标题">
           <Link2 size={13} />
         </a>
       </h3>
@@ -140,9 +151,10 @@ export function createMarkdownComponents() {
     h4: ({ children, ...props }: any) => {
       const { clean, text } = cleanHeading(children)
       const id = headingId(text)
+      const scrollTo = (e: React.MouseEvent) => { e.preventDefault(); document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
       return <h4 id={id} className="group relative" {...props}>
         {clean}
-        <a href={`#${id}`} className="absolute -left-6 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-disabled hover:text-accent" aria-label="链接到此标题">
+        <a href={`#${id}`} onClick={scrollTo} className="absolute -left-6 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-disabled hover:text-accent" aria-label="链接到此标题">
           <Link2 size={12} />
         </a>
       </h4>
@@ -154,9 +166,15 @@ export function createMarkdownComponents() {
       if (!safe) {
         return <span {...props}>{children}</span>
       }
+      // 空锚点链接不作跳转（旧产物残留的 [#](#)）避免页面滚动
+      const isDeadHash = href === '#' && !props.id
       const text = typeof children === 'string' ? children : String(children?.[0] ?? '')
       const isOriginLink = text.startsWith('原片 @') || text.includes('*Content-[') || text.startsWith('▶ ')
 
+      if (isDeadHash) {
+        // 旧产物残留的 [#](#) 链接，不跳转
+        return <span className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{text.replace('▶ ', '')}</span>
+      }
       if (isOriginLink) {
         const timeMatch = text.match(/(\d{2}:\d{2})/)
         const timeText = timeMatch ? timeMatch[1] : '原片'
@@ -175,12 +193,17 @@ export function createMarkdownComponents() {
         if (typeof text !== 'string') return text as React.ReactNode
         const parts = text.split(/(\*?(?:Content|Screenshot)-\[\d{2}:\d{2}\])/g)
         return parts.map((part, i) => {
-          const time = part.match(/\[(\d{2}:\d{2})\]/)?.[1] || ''
+          const time = part.match(/\[(\d{1,2}):(\d{1,2})\]/)
+          const mm = time?.[1] || ''
+          const ss = time?.[2] || ''
+          const timeText = time ? `${mm}:${ss}` : ''
+          const link = time && sourceUrl ? makeTimeLink(mm, ss) : null
           if (part.includes('Content-[')) {
-            return <span key={`${pid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{time}</span>
+            const badge = <span className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{timeText}</span>
+            return link ? <a key={`${pid}-${i}`} href={link} target="_blank" rel="noopener noreferrer" className="no-underline">{badge}</a> : <span key={`${pid}-${i}`}>{badge}</span>
           }
           if (part.includes('Screenshot-[')) {
-            return <span key={`${pid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-warning/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Camera size={9} className="text-warning" />{time}</span>
+            return <span key={`${pid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-warning/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Camera size={9} className="text-warning" />{timeText}</span>
           }
           return part
         })
@@ -197,12 +220,17 @@ export function createMarkdownComponents() {
         if (typeof child === 'string') {
           const parts = child.split(/(\*?(?:Content|Screenshot)-\[\d{2}:\d{2}\])/g)
           return parts.map((part, i) => {
-            const time = part.match(/\[(\d{2}:\d{2})\]/)?.[1] || ''
+            const time = part.match(/\[(\d{1,2}):(\d{1,2})\]/)
+            const mm = time?.[1] || ''
+            const ss = time?.[2] || ''
+            const timeText = time ? `${mm}:${ss}` : ''
+            const link = time && sourceUrl ? makeTimeLink(mm, ss) : null
             if (part.includes('Content-[')) {
-              return <span key={`${lid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{time}</span>
+              const badge = <span className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{timeText}</span>
+              return link ? <a key={`${lid}-${i}`} href={link} target="_blank" rel="noopener noreferrer" className="no-underline">{badge}</a> : <span key={`${lid}-${i}`}>{badge}</span>
             }
             if (part.includes('Screenshot-[')) {
-              return <span key={`${lid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-warning/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Camera size={9} className="text-warning" />{time}</span>
+              return <span key={`${lid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-warning/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Camera size={9} className="text-warning" />{timeText}</span>
             }
             return part
           })

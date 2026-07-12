@@ -220,7 +220,7 @@ def init_engines(config: dict | None = None):
         ("doc:text-only", "pymupdf", "pymupdf-text"),    # PDF 纯文字
         ("doc:scan-ocr", "pymupdf", "pdf-ocr"),          # 扫描件 OCR
         ("doc:word", "pymupdf", "python-docx"),           # Word
-        ("doc:ppt", "pymupdf", "markitdown"),             # PPT（图片提取最优）
+        ("doc:ppt", "pymupdf", "python-pptx"),             # PPT（python-pptx 图片提取稳定）
         ("doc:excel", "pymupdf", "openpyxl"),             # Excel
         ("doc:epub", "pymupdf", "ebooklib"),              # EPUB
     ]

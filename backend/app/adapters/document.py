@@ -109,7 +109,7 @@ class DocumentAdapter(PipelineAdapter):
                 elif ext in (".docx", ".doc"):
                     eng_name = "python-docx"
                 elif ext in (".pptx", ".ppt"):
-                    eng_name = "markitdown"  # markitdown 图片提取远优于 python-pptx（33张 vs ~1张）
+                    eng_name = "python-pptx"  # python-pptx 图片提取稳定；markitdown 对某些 PPTX 不提取图片
                 elif ext in (".xlsx", ".xls"):
                     eng_name = "openpyxl"
                 elif ext == ".epub":

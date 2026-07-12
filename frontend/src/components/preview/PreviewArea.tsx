@@ -51,7 +51,9 @@ export function PreviewArea() {
   const setPanelCollapsed = useStore(s => s.setPanelCollapsed)
 
   const currentDoc = docs.find(d => d.id === currentDocId)
-  const imageMarkdownComponents = useMemo(() => createMarkdownComponents(), [])
+  const sourceUrl = currentDoc?.sourceUrl
+  const isVideo = currentDoc?.sourceType === 'video'
+  const imageMarkdownComponents = useMemo(() => createMarkdownComponents(sourceUrl, isVideo), [sourceUrl, isVideo])
 
   // TOC 拖拽回调
   const resizeToc = useCallback((dx: number) => {
@@ -318,7 +320,7 @@ export function PreviewArea() {
         }
         return <>
           {videoBanner}
-          <MarkdownPreview content={currentPolishedContent} meta={markdownMeta} />
+          <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={currentPolishedContent} meta={markdownMeta} />
         </>
       case 'polished':
       case 'summary':
@@ -335,7 +337,7 @@ export function PreviewArea() {
           }
           return <>
             {videoBanner}
-            <MarkdownPreview content={currentContent} meta={markdownMeta} />
+            <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={currentContent} meta={markdownMeta} />
           </>
         }
         if (!displayContent) {
@@ -359,7 +361,7 @@ export function PreviewArea() {
         return <>
           <PartialBanner versions={markdownVersions} isStreaming={isStreaming} />
           {videoBanner}
-          <MarkdownPreview content={displayContent} meta={markdownMeta} />
+          <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
         </>
 
       case 'ocr':
@@ -558,7 +560,7 @@ export function PreviewArea() {
                 {factChecking ? '验证中...' : '重新验证'}
               </button>
             </div>
-            <MarkdownPreview content={currentFactCheckContent}
+            <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={currentFactCheckContent}
               meta={factCheckMeta
                 ? { style: 'detailed', mode: 'fact_check', version: 1 }
                 : null} />
