@@ -182,6 +182,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
           {typeGroups.length > 0 && (
             <section>
               <h3 className="text-[13px] font-semibold text-foreground mb-2">导出内容 · 按类型分组</h3>
+              <p className="text-[10px] text-disabled -mt-1 mb-2">仅导出已生成的产物，未生成的内容会被自动跳过</p>
               <div className="space-y-2">
                 {typeGroups.map(g => {
                   const icon = TYPE_LABELS[g.type] || '📄'
@@ -226,6 +227,10 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
                 )
               })}
             </div>
+            {/* 思维导图固定 HTML，与格式选择无关 */}
+            {Object.values(groupTabs).some(tabs => tabs.includes('mindmap')) && (
+              <p className="text-[10px] text-disabled mt-1.5">思维导图始终导出为交互式 HTML，不受上方格式选择影响</p>
+            )}
           </section>
 
           {/* ── 导出设置 ── */}

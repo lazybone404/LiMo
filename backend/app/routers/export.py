@@ -600,23 +600,31 @@ def _render_formulas_to_images(md: str) -> str:
 # ── 图片收集/重写（导出自包含核心）──
 
 _IMG_RE = re.compile(r'!\[([^\]]*)\]\(/api/files/([a-zA-Z0-9_\-]+)/([a-zA-Z0-9_\-.]{1,}[^\s)]*)\)')
+# 截图图片（/static/screenshots/filename.jpg）
+_SS_RE  = re.compile(r'!\[([^\]]*)\]\(/static/screenshots/([a-zA-Z0-9_\-.]{1,}[^\s)]*)\)')
 
 
-def _find_image_refs(text: str) -> list[tuple[str, str]]:
-    """扫描文本中所有 /api/files/ 图片引用 → [(tx_id, filename), ...]。
+def _find_image_refs(text: str) -> list[tuple[str, str, str | None]]:
+    """扫描文本中所有图片引用 → [(tx_id, filename, source), ...]。
+    source='files' 表示文档内嵌图；source='screenshots' 表示视频截图。
     按首次出现顺序排列并去重。
     """
     seen: set[str] = set()
-    refs: list[tuple[str, str]] = []
+    refs: list[tuple[str, str, str | None]] = []
     for m in _IMG_RE.finditer(text):
         full = m.group(0)
         if full not in seen:
             seen.add(full)
-            refs.append((m.group(2), m.group(3)))  # tx_id, filename
+            refs.append((m.group(2), m.group(3), "files"))
+    for m in _SS_RE.finditer(text):
+        full = m.group(0)
+        if full not in seen:
+            seen.add(full)
+            refs.append(("", m.group(2), "screenshots"))
     return refs
 
 
-def _collect_images(refs: list[tuple[str, str]], store_root: str
+def _collect_images(refs: list[tuple[str, str, str | None]], store_root: str
                      ) -> tuple[dict[str, bytes], dict[str, str]]:
     """从磁盘读取所有引用图片。
     返回 (image_data, name_map):
@@ -628,8 +636,11 @@ def _collect_images(refs: list[tuple[str, str]], store_root: str
     name_map: dict[str, str] = {}
     seen_names: set[str] = set()
 
-    for tx_id, filename in refs:
-        src = Path(store_root) / "files" / tx_id / filename
+    for tx_id, filename, source in refs:
+        if source == "screenshots":
+            src = Path(store_root) / "screenshots" / filename
+        else:
+            src = Path(store_root) / "files" / tx_id / filename
         if not src.exists():
             logger.warning("导出图片缺失: %s", src)
             continue
@@ -657,17 +668,19 @@ def _collect_images(refs: list[tuple[str, str]], store_root: str
 
 def _rewrite_image_paths(text: str, name_map: dict[str, str],
                          prefix: str = "images/") -> str:
-    """将 /api/files/{tx_id}/{old_name} → {prefix}{new_name}。
+    """将 /api/files/{tx_id}/{old_name} 和 /static/screenshots/{old_name} → {prefix}{new_name}。
     name_map: {出现在原始文本中的完整文件名: 最终文件名}（来自 _collect_images 的去重结果）。
     """
 
     def _replace(m: re.Match) -> str:
         alt = m.group(1)
-        filename = m.group(3)
+        filename = m.group(3) if m.re is _IMG_RE else m.group(2)
         new_name = name_map.get(filename, filename)
         return f"![{alt}]({prefix}{new_name})"
 
-    return _IMG_RE.sub(_replace, text)
+    text = _IMG_RE.sub(_replace, text)
+    text = _SS_RE.sub(_replace, text)
+    return text
 
 
 def _inline_images(text: str, image_data: dict[str, bytes],
@@ -680,12 +693,15 @@ def _inline_images(text: str, image_data: dict[str, bytes],
     # 构建 final_name → data 的快速查找
     def _replace(m: re.Match) -> str:
         alt = m.group(1)
-        tx_id = m.group(2)
-        filename = m.group(3)
+        is_ss = m.re is _SS_RE
+        filename = m.group(2) if is_ss else m.group(3)
         final_name = name_map.get(filename, filename)
         data = image_data.get(final_name)
         if not data:
-            src = Path(store_root) / "files" / tx_id / filename
+            if is_ss:
+                src = Path(store_root) / "screenshots" / filename
+            else:
+                src = Path(store_root) / "files" / m.group(2) / filename
             if src.exists():
                 data = src.read_bytes()
         if data:
@@ -698,7 +714,9 @@ def _inline_images(text: str, image_data: dict[str, bytes],
             return f"![{alt}](data:{mime};base64,{b64})"
         return m.group(0)
 
-    return _IMG_RE.sub(_replace, text)
+    text = _IMG_RE.sub(_replace, text)
+    text = _SS_RE.sub(_replace, text)
+    return text
 
 
 # ── KaTeX 自包含缓存 ──

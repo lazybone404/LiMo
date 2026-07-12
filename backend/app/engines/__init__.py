@@ -207,6 +207,42 @@ def init_engines(config: dict | None = None):
         logger.warning(f"EPUB engine init failed: {e}")
     logger.info("Doc engines: pymupdf + pymupdf-text + python-docx + python-docx-text + python-pptx + python-pptx-text + openpyxl + markitdown + pdf-ocr (ocr key={'configured' if dashscope_ocr_key else 'NOT SET'})")
 
+    # Doc 引擎自动注册到 engine_models + engine_bindings，用户开箱即用
+    # 对标 ASR 和 OCR 的自动注册逻辑
+    import hashlib as _hl
+    doc_bindings_changed = False
+    doc_bindings = config.setdefault("engine_bindings", {})
+
+    # 子场景 → 默认引擎的确定性 MD5 id
+    # provider_id 必须和 build_engine_models() 的哈希键一致（engine:{provider}:{model}）
+    _DOC_DEFAULTS: list[tuple[str, str, str]] = [
+        ("doc:text+image", "pymupdf", "pymupdf"),       # PDF 文字+图片
+        ("doc:text-only", "pymupdf", "pymupdf-text"),    # PDF 纯文字
+        ("doc:scan-ocr", "pymupdf", "pdf-ocr"),          # 扫描件 OCR
+        ("doc:word", "pymupdf", "python-docx"),           # Word
+        ("doc:ppt", "pymupdf", "markitdown"),             # PPT（图片提取最优）
+        ("doc:excel", "pymupdf", "openpyxl"),             # Excel
+        ("doc:epub", "pymupdf", "ebooklib"),              # EPUB
+    ]
+    for sub_scene, prov_id, model_name in _DOC_DEFAULTS:
+        mid = int(_hl.md5(f"engine:{prov_id}:{model_name}".encode()).hexdigest()[:8], 16)
+        if mid not in existing_ids:
+            engine_models.append({
+                "id": mid, "provider_id": prov_id,
+                "model_name": model_name, "category": "doc",
+            })
+            existing_ids.add(mid)
+            models_changed = True
+            logger.info("Auto-added %s to engine_models (id=%d)", model_name, mid)
+        # 自动绑定默认引擎（仅当子场景从未配置过，已配置的空列表也不覆盖）
+        if sub_scene not in doc_bindings:
+            doc_bindings[sub_scene] = mid
+            doc_bindings_changed = True
+
+    if doc_bindings_changed:
+        logger.info("Auto-bound default doc engines: %s",
+                    {k: v for k, v in doc_bindings.items() if k.startswith("doc:")})
+
     # OCR — 云端 VL 提取文字，本地 Tesseract 轻量兜底
     try:
         from .ocr import DashScopeOCREngine
@@ -221,6 +257,7 @@ def init_engines(config: dict | None = None):
 
     # Tesseract — 本地 OCR，无云降级（失败应明确报错而非偷偷走云端）
     # 自动注册到 engine_models + engine_bindings.ocr，用户无需手动设置
+    ocr_bound = False
     try:
         from .ocr import TesseractEngine
         tesseract = TesseractEngine()
@@ -251,11 +288,12 @@ def init_engines(config: dict | None = None):
             bindings["ocr"] = ocr_list
             logger.info("Auto-bound tesseract to engine_bindings.ocr")
 
-        # 持久化 — 仅变更时写，避免每次都写盘拖慢启动
-        if asr_changed or ocr_bound or mid not in existing_ids:
-            from app.core.config_io import save_config
-            save_config(config)
     except ImportError as e:
         logger.info(f"Tesseract not available: {e}")
     except Exception as e:
         logger.warning(f"Tesseract init failed: {e}")
+
+    # 持久化 — Tesseract 可用性无关，引擎注册/绑定变更必须写盘
+    if asr_changed or models_changed or doc_bindings_changed or ocr_bound:
+        from app.core.config_io import save_config
+        save_config(config)

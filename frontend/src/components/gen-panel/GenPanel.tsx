@@ -149,6 +149,32 @@ export function GenPanel() {
     }
   }, [fileObj])
 
+  // 引擎默认绑定：页面加载时自动填充空绑定，用户无需手动选择
+  useEffect(() => {
+    if (!caps?.engineBindings || !caps?.engineOptions) return
+    const bindings = { ...caps.engineBindings }
+    let changed = false
+    const docOptions = caps.engineOptions['doc'] || []
+    // 所有需要检查的 key：已有的 + doc 子场景（即使后端还没返回）
+    const allKeys = new Set(Object.keys(bindings))
+    for (const sk of ['doc:text+image','doc:text-only','doc:scan-ocr','doc:word','doc:ppt','doc:excel','doc:epub']) {
+      allKeys.add(sk)
+    }
+    for (const cat of allKeys) {
+      if (bindings[cat] != null) continue
+      if (cat === 'asr' || cat === 'ocr' || cat === 'doc') {
+        const opts = caps.engineOptions[cat]
+        if (opts?.length) { bindings[cat] = opts[0].id; changed = true }
+      } else if (cat.startsWith('doc:') && docOptions.length) {
+        bindings[cat] = docOptions[0].id; changed = true
+      }
+    }
+    if (changed) {
+      setCapabilities({ ...caps, engineBindings: bindings })
+      saveEngineBindings(bindings).catch(() => {})
+    }
+  }, [caps?.engineBindings, caps?.engineOptions])
+
   // 持久化
   useEffect(() => {
     saveGenPrefs({ style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot,
