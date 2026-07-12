@@ -6,6 +6,26 @@
 
 ---
 
+## 2026-07-12 — Content 时间戳可点击 + 标题锚点滚动修复 + PPT 默认引擎切换
+
+### Content-[mm:ss] → 可点击跳转
+对标 BiliNote：`Content-[mm:ss]` 现在是可点击的链接，点击跳转到原视频对应时间点（B站/YouTube/通用格式）。仅视频文档生效，非视频文档显示静态 badge。
+
+### 标题锚点 `scrollIntoView`
+点击 `#heading-id` 链接不再带动整个窗口滚动，改为 `preventDefault` + 目标元素 `scrollIntoView`，仅影响预览区。
+
+### 旧产物 `[▶ mm:ss](#)` 死链接
+`_post_process_content_markers` 历史残留的 `href="#"` 链接不再跳转，渲染为静态 Play badge。
+
+### PPTX 默认引擎 markitdown → python-pptx
+MarkItDown 对某些 PPTX 不提取图片（找到 0 个 base64）。`doc:ppt` 默认引擎换回 `python-pptx`。
+
+### 影响范围
+- **前端**：markdown-components.tsx / MarkdownPreview.tsx / PreviewArea.tsx / GenPanel.tsx / ExportPanel.tsx
+- **后端**：engines/__init__.py / document.py
+
+---
+
 ## 2026-07-12 — 引擎开箱即用 + 截图导出内联 + 思维导图格式提示
 
 ### Doc 引擎自动绑定（开箱即用）
