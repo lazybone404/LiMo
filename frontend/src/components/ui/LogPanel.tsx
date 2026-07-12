@@ -100,7 +100,7 @@ export function LogPanel({ onClose }: { onClose: () => void }) {
         <div ref={scrollRef} className="flex-1 overflow-auto bg-[#1E1E1E] p-3 font-mono text-xs leading-relaxed">
           {logs.length === 0 ? (
             <div className="text-dimmed italic pt-4 text-center">
-              {errorCount > 3 ? '日志加载失败，请检查后端是否运行' : '暂无日志'}
+              {errorCount > 1 ? '日志加载失败，请检查后端是否运行' : '暂无日志'}
             </div>
           ) : (
             logs.map((l, i) => (

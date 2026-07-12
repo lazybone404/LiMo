@@ -745,8 +745,9 @@ async def ingest_stream(
                 "percent": ev.percent,
                 "message": ev.message,
             })
-        except Exception:
-            logger.warning("Failed to push progress event to SSE queue", exc_info=True)
+        # 客户端断开/Slow Consumer 导致 queue 满属于预期行为，仅记 warning 不抛异常
+        except asyncio.QueueFull:
+            logger.warning("SSE queue full, dropping progress event (client may have disconnected)")
 
     async def run_pipeline():
         """在后台运行适配器管道"""

@@ -574,6 +574,12 @@ export function streamFactCheck(
   const params = new URLSearchParams()
   if (options.model_id) params.set('model_id', String(options.model_id))
   const qs = params.toString()
+  // 追踪 SSE 是否正常结束（收到 done/error/cancelled 事件）
+  let receivedDoneOrError = false
+  const origOnDone = callbacks.onDone
+  const origOnError = callbacks.onError
+  callbacks.onDone = (...args) => { receivedDoneOrError = true; origOnDone(...args) }
+  callbacks.onError = (msg) => { receivedDoneOrError = true; origOnError(msg) }
   fetch(`${BASE}/fact-check/${transcriptId}/stream${qs ? '?' + qs : ''}`, { signal })
     .then(async (response) => {
       if (!response.ok) {
@@ -616,6 +622,10 @@ export function streamFactCheck(
             } catch { /* broken JSON */ }
           }
         }
+      }
+      // 循环退出但没有 done/error 事件 → 连接异常断开
+      if (!receivedDoneOrError) {
+        callbacks.onError('连接意外断开，请重试')
       }
     })
     .catch(err => {

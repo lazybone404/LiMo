@@ -497,7 +497,7 @@ export function ProviderSettings() {
             onClick={async () => {
               const next = !autoFallback
               setAutoFallback(next)
-              try { await setEngineAutoFallback(next) } catch { setAutoFallback(!next) }
+              try { await setEngineAutoFallback(next) } catch { setAutoFallback(!next); addToast('切换失败，请检查网络连接', 'error') }
             }}
             className={`w-10 h-5 rounded-full transition-colors relative ${autoFallback ? 'bg-success' : 'bg-surface-hover'}`}
           >

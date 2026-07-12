@@ -6,6 +6,58 @@
 
 ---
 
+## 2026-07-13（下午）— 8 项增强修复 + 打包
+
+### HTML 导出预览一致性
+- **标题锚点**：`<h2>/<h3>/<h4>` 自动追加 `id` 属性，算法对齐前端 `headingId()`，导出 HTML 中标题链接可定位
+- **时间戳 badge**：`Content-[mm:ss]` → 蓝色圆角 badge `▶ 12:34`，`Screenshot-[mm:ss]` → 橙色 badge `📷 12:34`，CSS 自动注入所有主题
+- **MD 图片路径**：单文件下载时自动将 `/api/files/` / `/static/screenshots/` 重写为绝对 URL（基于 `request.base_url`），外部查看不再裂图
+
+### 错误处理增强
+- **引擎降级 toggle**：网络失败时显示 Toast（此前静默回退）
+- **streamFactCheck**：加 `receivedDoneOrError` 守卫，对标 `streamGenerate`，SSE 异常断开时通知用户
+- **LogPanel**：连续失败阈值从 12s 降为 6s，更快反馈
+
+### 代码质量
+- `ingest.py` SSE queue 异常：`except Exception` → `except asyncio.QueueFull` + 注释
+- `GenPanel.tsx` `lockOtherOps`：注释准确描述互斥分工
+
+### 影响范围
+- **后端**：export.py / ingest.py
+- **前端**：client.ts / ProviderSettings.tsx / LogPanel.tsx / GenPanel.tsx
+
+---
+
+## 2026-07-13（上午）— Bcut ASR 引擎 + 计划核查 + 文档同步
+
+### Bcut ASR 引擎（B站必剪免费云转写）
+新增 `bcut-asr` 引擎，免费云端转写，无需 API Key，中文优化。启动时自动绑定为 ASR 默认引擎。优先级：bcut（免费云）→ dashscope-asr（云端）→ faster-whisper（本地兜底）。
+
+### 代码库全面核查
+对照 DeepDraft 计划逐项核实 47 项修复状态：两个严重问题和全部 12 个高危问题均已修复。下午完成 8 项增强修复后，剩余 5 项低优先级待办（引擎绑定解绑 UI、Config 保存回滚、思维导图清洗对齐、generating per-doc、system-design-spec 精简）。
+
+### 多端点静默失败 → Toast
+5 个端点的 `.catch()` 从仅 `console.error` 改为用户可见的 Toast 提示：App 初始化加载（2 处）、设置保存（1 处）、聊天对话加载（3 处）。
+
+### HTML 导出 GFM + 代码高亮
+Pygments 语法高亮 + 语言标签栏，GFM 删除线（`~~text~~` → `<del>`）和任务列表（`- [ ]` → `☐`），`nl2br` 移除。导出 HTML 与预览区渲染行为一致。
+
+### 图片 broken 回退
+`markdown-components.tsx` 中 `<img>` 新增 `onError` handler，加载失败时显示占位符。
+
+### 设置页兜底保存
+`ProviderSettings.tsx` 中引擎/LLM Key 用 `useEffect` cleanup ref 兜底，防止组件卸载时 `onBlur` 不触发导致配置丢失。
+
+### CLAUDE.md 同步
+新增 3 条后端关键模式（`CREATE_NO_WINDOW`、`store.root` 路径、`_watch_disconnect` 标准取消），补全 bcut ASR 引擎，修正不一致的旧格式错误计数。
+
+### 影响范围
+- **后端**：engines/__init__.py / engines/asr_bcut.py（新增）/ export.py / routers/generate.py
+- **前端**：App.tsx / ChatCore.tsx / SettingsPage.tsx / ProviderSettings.tsx / markdown-components.tsx / client.ts
+- **文档**：CLAUDE.md / STATUS.md / CHANGELOG.md
+
+---
+
 ## 2026-07-12 — 新图标 + README 重写 + 文档中链接修复
 
 ### 新应用图标

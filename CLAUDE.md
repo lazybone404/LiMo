@@ -142,7 +142,7 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 ### 引擎系统
 
 `app/engines/__init__.py` → `EngineRegistry.register()`。三类引擎：
-- **ASR**：dashscope-asr（云端）→ faster-whisper（本地）
+- **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端）→ faster-whisper（本地）
 - **OCR**：dashscope-ocr（云端）→ Tesseract（本地便携版，`backend/bin/tesseract/`）
 - **Doc**：pymupdf4llm / pymupdf / pymupdf-text / pdf-ocr / python-docx / python-docx-text / python-pptx / python-pptx-text / openpyxl / markitdown / ebooklib
 
@@ -226,6 +226,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - 用户在预览栏看到什么，导出就应该得到什么。禁止导出与预览不一致的内容
 - 前端 `ExportMenu.tsx` 中 `TAB_EXPORT` 表是 tab→导出行为的**唯一映射入口**。新增 tab 时在此表加一行即可，无需改其他逻辑
 - 后端 `GET /export/{id}` 内容源回退链：markdown（notes/polished/fact_check）→ process_results（图片 extract/table 等）→ transcript（rawText）→ 404
+- HTML 导出已对齐预览：Pygments 代码高亮 + 语言标签、GFM 删除线/任务列表、时间戳 badge（Content 蓝色/Screenshot 橙色）、标题锚点 id
+- MD 导出自动将图片路径重写为绝对 URL（基于 `request.base_url`），外部查看不再裂图
 - 图片文档没有 markdown 条目，HTML 导出依赖 `get_process_results()` 回退
 - mindmap HTML 导出走独立端点 `/export/{id}/mindmap`（markmap 库需要特殊 HTML 模板）
 - `apiUrl()` / `downloadFromUrl()` 内部已拼接 BASE（含 `/api`），调用方传路径时**禁止加 `/api` 前缀**，否则产生 `/api/api/...` 导致 404
@@ -255,7 +257,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 ### 其他
 - **数学公式**：全局 `remark-math` + `rehype-katex`，LaTeX `$$` 块自动排版
 - **日志系统**：`contextvars.ContextVar` 注入 `request_id` → ASGI middleware，全链路追踪。`MemoryHandler`（`main.py` 中配置）缓存最近 1000 条日志供前端 LogPanel 轮询（`GET /api/logs`），重启后清空
-- **引擎自动降级开关**：`engine_auto_fallback` 配置项，设置页一键切换。6 个引擎解析点全部尊重此开关，关闭时引擎失败直接报错，不再静默降级
+- **引擎自动降级开关**：`engine_auto_fallback` 配置项（默认 `False`），设置页一键切换。6 个引擎解析点全部尊重此开关，关闭时引擎失败直接报错，不再静默降级
 - **Tesseract 便携版**：`backend/bin/tesseract/` 内置，启动自动注册并绑定 OCR，开箱即用
 - **EPUB**：ebooklib 章节+骨架提取，前端 EpubSkeletonPanel 章节树，支持选中章节/全书生成
 - **模糊帧过滤**：`frame_quality.py` — Laplacian 方差 + 熵 + 边缘密度评分，视频抽帧时自动丢弃低质量帧
@@ -264,7 +266,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **markmap 离线化**：`markmap.ts` 不调用 `markmap-common` 的 `loadCSS`/`loadJS`（动态 CDN 加载会被 Edge WebView2 跟踪防护拦截），KaTeX CSS 在 PreviewArea 中静态 import，hljs 由 react-syntax-highlighter 内联
 - **设置持久化**：`ProviderSettings.tsx` 中引擎/LLM Key 的保存不能仅靠 `onBlur`（组件卸载时不触发），需加 `useEffect` cleanup 用 ref 兜底保存
 - **上下文窗口可配置**：`addModel()` API 支持 `context_window` 参数，ProviderSettings 中展示（如 "1M ctx"），前端按模型粒度配置
-- **路由异常标准化**：ingest / fact_check / chat / process / generate / conversations 路由全部使用 AppError 体系。config / model / files 路由仍有 14 处 `return {"error":"..."}` 旧格式待迁移
+- **路由异常标准化**：ingest / fact_check / chat / process / generate / conversations 路由全部使用 AppError 体系。config / model / files 路由仍有 15 处 `return {"error":"..."}` 旧格式待迁移（config.py:7, model.py:5, files.py:3）
 - **Content-Disposition 中文文件名**：必须用 RFC 5987 `filename*=UTF-8''` 编码，否则 Starlette 会尝试 latin-1 编码 → UnicodeEncodeError
 - **日志函数签名**：`app.core.logging.warning(msg, **kwargs)` 只接受 1 个位置参数 + kwargs，不能用 `%s` 占位符多参数调用。多参数用 f-string
 - **空文本去重碰撞**：空字符串 SHA256 固定为 `e3b0c44...`，两个空导入会误判为重复。TextAdapter 需检查 `text.strip()` 非空
@@ -306,6 +308,9 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 20. **异常类导入完整性**：新增 `raise FatalError`/`AppError` 等自定义异常时必须确认文件顶部有对应 import。PyInstaller 打包后不会通过间接导入自动补全。**本次已修复**：document.py（FatalError）、model.py（AppError）、export.py（shutil）。
 21. **`appUrl()` 统一应用内 URL**：前端所有图片组件（MarkdownImage / DocLibrary / VideoBanner）必须用 `appUrl()` 而非裸 URL。打包端无 Vite proxy，`/api/` 和 `/static/` 路径需转为 `http://127.0.0.1:7413` 绝对 URL。`apiUrl()` 仅用于 `/api/` 下的 fetch 请求。
 22. **`async def` 全调用链 `await`**：将同步函数改为 `async def` 后，必须检查所有调用点是否加 `await`。Python 不会为漏掉的 await 报编译错——静默返回 coroutine。**本次已修复**：video.py 三处 `_transcribe` 调用，两处漏 `await`。
+23. **`subprocess.CREATE_NO_WINDOW`**：所有 Windows 下 `subprocess.run/Popen` 调用必须加 `creationflags=subprocess.CREATE_NO_WINDOW`，否则 ffmpeg/yt-dlp 等会弹出 CMD 黑框。当前已涵盖 video.py、video_reader.py、video_helper.py、asr_cloud.py、export.py 共 5 个文件。新增 subprocess 调用时必须携带此 flag。
+24. **文件路径基于 `store.root`**：打包环境下 `os.getcwd()` 指向 exe 所在目录而非数据目录。所有文件读写路径（截图、导出、临时文件等）必须基于 `store.root`。`StaticFiles` 挂载也应在 startup event 中用 `store.root` 动态计算路径，而非模块级 `os.getcwd()` 求值。
+25. **`_watch_disconnect` 标准取消模式**：5 个端点（generate/ingest/retranscribe/chat/process）均使用相同的 `_watch_disconnect` 闭包 + `cancel_event` + `disconnect_task` 模式。新增支持取消的 SSE/长时端点时复用此模式，保持 0.5s 检测间隔和 `finally` 清理逻辑一致。未来可提取为 `app/core/disconnect.py` 公共工具。
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始
@@ -327,7 +332,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| ✅ | ASR 引擎 | dashscope Paraformer (云端) + faster-whisper small/medium/large-v3 (本地) |
+| ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端) + faster-whisper small/medium/large-v3 (本地) |
 | ✅ | OCR 引擎 | dashscope VL (云端) + Tesseract 便携版 (内置 `backend/bin/tesseract/`) |
 | ✅ | Doc 引擎 | PyMuPDF (PDF) + python-docx/pptx/xlsx + openpyxl + markitdown + ebooklib |
 | ✅ | 引擎绑定 | `engine_bindings` 按子场景配置，doc 拆为 text+image / text-only / scan-ocr / word / ppt / excel / epub |
@@ -402,6 +407,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | GenPanel 类型门控 | 5 类型 × 5 子标签，逐类型显隐选项 |
 | ✅ | EPUB 骨架面板 | EpubSkeletonPanel 章节树 + 选中章节/全书切换 |
 | ✅ | 事实验证 UI | fact_check tab + 流式进度指示 + 报告渲染 |
+| ✅ | 首次启动向导 | SetupWizard 检测 ffmpeg/SearXNG 等系统依赖 |
 
 ### 🛡️ 安全 & 运维
 
@@ -414,7 +420,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 并发控制 | `ExecutionGuard` Semaphore(3)，generate/process/retranscribe 已接入 |
 | ✅ | 上下文窗口可配置 | `addModel()` API + ProviderSettings 展示 |
 | ✅ | 日志全链路追踪 | `contextvars.ContextVar` 注入 `request_id`，前端日志面板 |
-| 🟡 | 旧格式错误迁移 | conversations/generate 已迁移为 AppError，config/model/files 剩余 16 处 |
+| 🟡 | 旧格式错误迁移 | conversations/generate 已迁移为 AppError，config/model/files 剩余 15 处 |
 
 ### 📊 汇总
 
@@ -427,6 +433,6 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 💬 AI 对话 | 5 | 5 | 100% |
 | ✅ 事实验证 | 4 | 5 | 80% |
 | 📤 导出 | 7 | 8 | 88% |
-| 🎨 前端 UI/UX | 7 | 7 | 100% |
+| 🎨 前端 UI/UX | 8 | 8 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **58** | **62** | **94%** |
+| **合计** | **59** | **63** | **94%** |

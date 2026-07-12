@@ -582,7 +582,7 @@ export function GenPanel() {
 
   // ── Render ──
   const isBusy = importing || generating || retranscribing || imageProcessing
-  // 操作互斥：转录中禁止生成/处理，反之亦然
+  // 操作互斥：转录/图片处理中 → 禁生成；反向（生成 → 禁转录）见下方按钮 disabled 中的 generating 条件
   const lockOtherOps = retranscribing || imageProcessing
   return (
     <aside className="w-full border-r border-border-light flex flex-col shrink-0 bg-elevated/60 backdrop-blur-[20px] overflow-y-auto overflow-x-hidden h-full">

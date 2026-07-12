@@ -149,7 +149,11 @@ async def export_content(
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}"},
         )
 
-    # MD: 直接返回原始 Markdown（路径保持 /api/files/...）
+    # MD: 将图片路径重写为绝对 URL，外部查看时不裂图
+    # 使用请求的 base_url 拼接完整路径（开发模式走 Vite proxy，打包模式直连 127.0.0.1:7413）
+    base = str(request.base_url).rstrip('/')
+    content = re.sub(r'\(/api/files/', f'({base}/api/files/', content)
+    content = re.sub(r'\(/static/screenshots/', f'({base}/static/screenshots/', content)
     safe_name = _safe_filename(title)
     suffix = f"-{mode}" if mode else ""
     encoded_name = quote(f"{safe_name}{suffix}.md", safe='')
@@ -477,6 +481,13 @@ def _preprocess_gfm(md: str) -> str:
     # 任务列表 - [ ] → ☐, - [x] → ☑
     md = re.sub(r'^- \[ \] (.+)$', r'- ☐ \1', md, flags=re.MULTILINE)
     md = re.sub(r'^- \[x\] (.+)$', r'- ☑ \1', md, flags=re.MULTILINE)
+    # 时间戳 badge — Content-[mm:ss] → 蓝色, Screenshot-[mm:ss] → 橙色
+    md = re.sub(
+        r'Content-\[(\d{2}:\d{2})\]',
+        r'<span class="ts-badge ts-content">▶ \1</span>', md)
+    md = re.sub(
+        r'Screenshot-\[(\d{2}:\d{2})\]',
+        r'<span class="ts-badge ts-screenshot">📷 \1</span>', md)
     return md
 
 
@@ -492,6 +503,7 @@ def _markdown_to_html(md: str) -> str:
     except ImportError:
         html = f"<pre>{md}</pre>"
     html = _add_lang_labels(html)
+    html = _add_heading_ids(html)
     return html
 
 
@@ -507,6 +519,28 @@ def _add_lang_labels(html: str) -> str:
         _insert_label,
         html,
     )
+
+
+def _add_heading_ids(html: str) -> str:
+    """给 <h2>/<h3>/<h4> 追加 id 属性（算法对齐前端 headingId），
+    使得 HTML 导出中的标题锚点链接可以定位"""
+    def _make_id(text: str) -> str:
+        # 先清除时间戳标记
+        text = re.sub(r'(?:▶ |\*?Content-\[)?\d{2}:\d{2}\]?', '', text)
+        text = re.sub(r'Screenshot-\[\d{2}:\d{2}\]', '', text)
+        # 转小写、空白→短横、保留字母/数字/CJK
+        text = text.lower().strip()
+        text = re.sub(r'\s+', '-', text)
+        text = re.sub(r'[^a-z0-9一-鿿\-]', '', text)
+        text = re.sub(r'-+', '-', text)
+        return text.strip('-')
+
+    def _repl(m: re.Match) -> str:
+        tag, inner = m.group(1), m.group(2)
+        id_ = _make_id(inner)
+        return f'<{tag} id="{id_}">{inner}</{tag}>'
+
+    return re.sub(r'<(h[234])>(.+?)</\1>', _repl, html)
 
 
 def _get_pygments_css() -> str:
@@ -525,6 +559,16 @@ def _get_pygments_css() -> str:
         return css
     except Exception:
         return ""
+
+
+def _get_badge_css() -> str:
+    """时间戳 badge CSS — 对标前端 markdown-components.tsx 的 Tailwind 样式"""
+    return """
+.ts-badge { display: inline-block; border-radius: 999px; padding: 1px 8px;
+    font-size: 0.8em; font-weight: 500; vertical-align: middle; margin: 0 2px; }
+.ts-content { background: rgba(0,122,255,0.1); color: #007aff; }
+.ts-screenshot { background: rgba(255,149,0,0.1); color: #ff9500; }
+"""
 
 
 # DEPRECATED: 参见上方注释。所有 HTML 导出已统一使用 _build_selfcontained_html()。
@@ -797,6 +841,9 @@ def _build_selfcontained_html(md: str, title: str, theme: str = "limo") -> str:
     pygments_css = _get_pygments_css()
     if pygments_css:
         style_block += f"\n<style>{pygments_css}</style>"
+    badge_css = _get_badge_css()
+    if badge_css:
+        style_block += f"\n<style>{badge_css}</style>"
     if katex_css:
         style_block += f"\n<style>{katex_css}</style>"
 

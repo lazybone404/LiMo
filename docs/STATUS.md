@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-07-12 | **版本**: 0.1.1
+**更新**: 2026-07-13 | **版本**: 0.1.1
 
 ---
 
@@ -11,8 +11,8 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 61 |
-| 前端 TS/TSX 文件 | 40 |
+| 后端 Python 文件 | 62 |
+| 前端 TS/TSX 文件 | 41 |
 | API 路由模块 | 11 |
 | API 端点 | ~60 |
 | 适配器 | 7 |
@@ -63,7 +63,7 @@
 | 处理 | `POST /api/process/{id}` | 图片 OCR |
 | 对话 | `POST /api/chat` + `/chat/stream` | AI Agent |
 | 事实验证 | `POST /api/fact-check/{id}` + `/stream` | LLM 验证 |
-| 导出 | `GET /api/export/{id}` + `/all` + `/batch` + `/mindmap` + `POST /api/export/custom` | HTML/MD/ZIP/思维导图 |
+| 导出 | `GET /api/export/{id}` + `/all` + `/batch` + `/mindmap` + `POST /api/export/custom` | HTML(含代码高亮+GFM+时间戳badge)/MD(图片绝对URL)/ZIP/思维导图 |
 
 ## 前端组件
 
@@ -78,6 +78,7 @@
 | ExportMenu | 快捷导出（MD/HTML/ZIP/复制） |
 | ExportPanel | 自定义导出（tab选择/格式/主题） |
 | LogPanel | 实时日志查看 |
+| SetupWizard | 首次启动向导 |
 
 ## 进度
 
@@ -90,9 +91,9 @@
 | AI 对话 | 5 | 5 | 100% |
 | 事实验证 | 4 | 5 | 80% |
 | 导出 | 7 | 8 | 88% |
-| 前端 UI/UX | 7 | 7 | 100% |
+| 前端 UI/UX | 8 | 8 | 100% |
 | 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **58** | **62** | **94%** |
+| **合计** | **59** | **63** | **94%** |
 
 > 进度说明：
 > - 转录 & 引擎：8/10 — 待完成 VL 帧过滤（PaddleOCR 文字区域检测）、PDF Layer 2（表格修正/数字化/理解）
@@ -104,7 +105,7 @@
 ```
 backend/app/
   adapters/      7 个适配器
-  engines/       16 个引擎
+  engines/       17 个引擎
   routers/       11 个路由模块
   generation/    生成/处理/事实验证
   agent/         LLM Agent 工具
