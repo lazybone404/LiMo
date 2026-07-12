@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-07-12 — 新图标 + README 重写 + 文档中链接修复
+
+### 新应用图标
+白底深蓝国风"沥墨"图形，替换了全部尺寸的图标（Tauri 打包 + favicon + 顶栏 logo）。
+
+### README 重写
+按用户任务重新组织——导入能做什么、AI 能产出什么、怎么导出——而不是堆技术细节。
+
+### 旧产物死链接修复
+历史 `[▶ mm:ss](#)` 链接渲染为静态 Play badge，不再触发页面滚动。
+
+### 影响范围
+- **文档**：README.md / CHANGELOG.md
+- **前端**：App.tsx / index.html / markdown-components.tsx / 图标文件
+
+---
+
 ## 2026-07-12 — Content 时间戳可点击 + 标题锚点滚动修复 + PPT 默认引擎切换
 
 ### Content-[mm:ss] → 可点击跳转

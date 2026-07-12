@@ -100,7 +100,7 @@ export default function App() {
       {/* 顶部栏 */}
       <header className="glass border-b border-border-light h-12 flex items-center px-4 shrink-0 z-10">
         <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-xs">D</div>
+          <img src="/logo.png" className="w-7 h-7 rounded-lg object-cover" alt="LiMo" />
           <span className="font-semibold text-[15px]">LiMo</span>
         </div>
         {/* 集中式面板切换 — 对标 BiliNote 工具栏 */}
