@@ -6,6 +6,41 @@
 
 ---
 
+## 2026-07-12 — 引擎开箱即用 + 截图导出内联 + 思维导图格式提示
+
+### Doc 引擎自动绑定（开箱即用）
+
+用户第一次用不需要碰引擎设置。三层修复：
+- **后端**：`init_engines` 启动时自动注册 7 个 doc 子场景（text+image/word/ppt/excel/epub 等）到 `engine_models` + `engine_bindings`，MD5 ID 与 `build_engine_models` 对齐。save_config 移出 Tesseract try 块，绑写不受影响
+- **前端**：页面加载时自动把 null 的 binding 填成第一个可用引擎 ID，`saveEngineBindings` 写盘
+- 下拉框「系统默认」不再是空壳——背后有真实 ID
+
+### 截图导出内联
+
+导出系统之前只内联 `/api/files/` 文档图片，漏了 `/static/screenshots/` 视频截图。
+- `_find_image_refs` 新增 `_SS_RE` 匹配截图 URL
+- `_collect_images` 支持 `screenshots/` 目录读取
+- `_inline_images` / `_rewrite_image_paths` 同时处理两种图片源
+- HTML 导出自包含、ZIP separate/inline 三种模式全覆盖
+
+### ExportPanel UI 提示
+
+- 思维导图勾选时显示"始终导出为交互式 HTML，不受格式选择影响"
+- 导出内容区显示"仅导出已生成的产物，未生成的内容会被自动跳过"
+
+### 其他
+
+- 后端 4 个 `subprocess` 调用统一加 `CREATE_NO_WINDOW` 消除 ffmpeg 黑框
+- `Content-[mm:ss]` 后端不再替换为死链接，改由前端渲染为时间戳 badge
+- `Screenshot-[mm:ss]` 前端新增 Camera 图标 badge
+- 生成/导出完成后均有 Toast 提示
+
+### 影响范围
+- **后端**：engines/__init__.py / export.py / generator.py / video*.py / asr_cloud.py
+- **前端**：GenPanel.tsx / ExportPanel.tsx / ExportMenu.tsx / markdown-components.tsx / DocLibrary.tsx / VideoBanner.tsx
+
+---
+
 ## 2026-07-12 — ffmpeg 黑框消除 + 标记渲染修复 + URL 统一
 
 ### subprocess 黑框消除
