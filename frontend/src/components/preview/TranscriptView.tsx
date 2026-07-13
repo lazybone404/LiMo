@@ -52,6 +52,16 @@ export function TranscriptView({ rawText, sourceType }: { rawText: string; sourc
     return <pre className="text-[12px] whitespace-pre-wrap">{JSON.stringify(parsed, null, 2)}</pre>
   }
 
+  // 网页/文本：纯文本渲染，跳过 Markdown 解析
+  // ReactMarkdown 会把 #、|、* 等字符意外解析为标题/表格/斜体
+  if (isPlain) {
+    return (
+      <div className="text-[14px] leading-relaxed whitespace-pre-wrap break-words max-w-[720px] mx-auto">
+        {rawText}
+      </div>
+    )
+  }
+
   return (
     <div className="markdown-body">
       <ReactMarkdown remarkPlugins={remark} rehypePlugins={rehype} components={components}>

@@ -50,7 +50,7 @@ hiddenimports += [
     'lxml', 'courlan', 'htmldate', 'justext', 'tld',
     'babel', 'dateparser', 'regex', 'tzlocal',
     'soupsieve', 'bs4',
-    'magika', 'markdownify',
+    'magika', 'markdownify', 'html2text',
     'cffi', 'cryptography',
     'rich', 'pygments',
     'sympy', 'mpmath',

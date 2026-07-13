@@ -1,5 +1,5 @@
 """
-网页适配器 — URL → trafilatura 正文提取
+网页适配器 — URL → 正文提取（trafilatura 主 + html2text 回退）
 """
 
 import logging
@@ -12,6 +12,61 @@ from app.core.protocols import PipelineAdapter
 from app.core.errors import TranscribeError
 
 logger = logging.getLogger(__name__)
+
+
+def _garbage_ratio(text: str) -> float:
+    """估算文本中垃圾字符（控制字符/不可打印字符）的比例"""
+    if not text:
+        return 1.0
+    # 控制字符 + 替换字符 U+FFFD
+    garbage = sum(1 for c in text if ord(c) < 32 and c not in "\n\r\t")
+    # 连续 base64 块（超过 60 个 base64 字符 = 约 45 字节的二进制数据）
+    b64_blocks = len(re.findall(r"[A-Za-z0-9+/=]{60,}", text))
+    return (garbage + b64_blocks * 60) / max(len(text), 1)
+
+
+def _extract_with_trafilatura(html: str) -> str | None:
+    """trafilatura 提取，过滤垃圾"""
+    text = trafilatura.extract(
+        html,
+        output_format="markdown",
+        include_comments=False,
+        include_tables=True,
+        target_language="zh",
+        deduplicate=True,
+    )
+    if not text:
+        return None
+    text = _clean_extracted(text)
+    if _garbage_ratio(text) > 0.3:
+        logger.warning("trafilatura 提取结果垃圾比例过高(%.1f%%)，尝试回退", _garbage_ratio(text) * 100)
+        return None
+    return text
+
+
+def _extract_fallback(html: str) -> str:
+    """回退方案：html2text → 纯文本提取（兜底，宁可少不可乱）"""
+    try:
+        import html2text
+        h = html2text.HTML2Text()
+        h.ignore_links = True
+        h.ignore_images = True
+        h.ignore_emphasis = True
+        h.body_width = 0
+        text = h.handle(html)
+        text = _clean_extracted(text)
+        if text and len(text) >= 10:
+            return text
+    except ImportError:
+        pass
+
+    # 终极回退：正则去标签
+    text = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    text = _clean_extracted(text)
+    return text.strip()
 
 
 def _clean_extracted(text: str) -> str:
@@ -77,30 +132,41 @@ class WebpageAdapter(PipelineAdapter):
         from app.utils.url_security import validate_url
         validate_url(url)
 
-        # 下载
-        downloaded = trafilatura.fetch_url(url)
+        # 下载（使用 requests 而非 trafilatura.fetch_url，后者编码处理不稳定）
+        import requests as _requests
+        try:
+            resp = _requests.get(
+                url,
+                timeout=30,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                    "Accept-Encoding": "gzip, deflate",
+                },
+            )
+            resp.raise_for_status()
+            # 优先使用响应头声明的编码，回退到 UTF-8
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            downloaded = resp.text
+        except Exception as e:
+            # 回退到 trafilatura.fetch_url
+            logger.warning("requests 下载失败 (%s)，回退到 trafilatura.fetch_url", str(e)[:80])
+            downloaded = trafilatura.fetch_url(url)
+
         if not downloaded:
             raise TranscribeError.empty(detail=f"无法下载: {url}")
 
         if on_progress:
             on_progress(ProgressEvent(phase="extract", status="running", message="提取正文..."))
 
-        # 提取
-        extracted = trafilatura.extract(
-            downloaded,
-            output_format="markdown",
-            include_comments=False,
-            include_tables=True,
-            target_language="zh",
-            deduplicate=True,
-        )
+        # 提取：trafilatura 主 → html2text 回退 → 正则去标签兜底
+        extracted = _extract_with_trafilatura(downloaded)
         if not extracted:
-            raise TranscribeError.empty(detail=f"正文提取为空: {url}")
-
-        # 后处理：过滤 base64/CSS/控制字符等垃圾
-        extracted = _clean_extracted(extracted)
+            logger.info("trafilatura 失败，尝试 html2text 回退")
+            extracted = _extract_fallback(downloaded)
         if not extracted or len(extracted) < 10:
-            raise TranscribeError.empty(detail=f"正文提取后为空: {url}")
+            raise TranscribeError.empty(detail=f"正文提取为空: {url}")
 
         if on_progress:
             on_progress(ProgressEvent(phase="extract", status="done"))

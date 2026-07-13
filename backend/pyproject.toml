@@ -46,6 +46,7 @@ dependencies = [
     "markdown>=3.10.2",
     # 其他
     "gmssl>=3.2",
+    "html2text>=2025.4.15",
 ]
 
 [dependency-groups]
