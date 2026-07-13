@@ -32,7 +32,6 @@ const DOC_SCENARIOS: Record<string, string> = {
   'doc:ppt-convert': 'PPT 文档转换',
   'doc:excel': 'Excel',
   'doc:epub': 'EPUB',
-  'doc:epub': 'EPUB',
 }
 
 export function ProviderSettings() {
