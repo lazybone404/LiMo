@@ -86,6 +86,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
          ]},
         {"id": "pymupdf", "name": "PyMuPDF", "type": "local", "base_url": "", "api_key": "", "capabilities": ["doc"],
          "builtin_models": [
+             {"model_name": "pymupdf4llm", "category": "doc", "desc": "PDF 文字+图片+矢量图（推荐）"},
              {"model_name": "pymupdf", "category": "doc", "desc": "PDF 文字层直读"},
              {"model_name": "pymupdf-text", "category": "doc", "desc": "PDF 仅文字（无图片）"},
              {"model_name": "markitdown", "category": "doc", "desc": "Office/EPUB 转 Markdown"},

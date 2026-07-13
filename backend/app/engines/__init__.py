@@ -213,8 +213,8 @@ def init_engines(config: dict | None = None):
     # 子场景 → 默认引擎的确定性 MD5 id
     # provider_id 必须和 build_engine_models() 的哈希键一致（engine:{provider}:{model}）
     _DOC_DEFAULTS: list[tuple[str, str, str]] = [
-        ("doc:text+image", "pymupdf", "pymupdf"),       # PDF 文字+图片
-        ("doc:text-only", "pymupdf", "pymupdf-text"),    # PDF 纯文字
+        ("doc:text+image", "pymupdf", "pymupdf4llm"),    # PDF 文字+图片（pymupdf4llm 效果最好）
+        ("doc:text-only", "pymupdf", "pymupdf-text"),     # PDF 纯文字
         ("doc:scan-ocr", "pymupdf", "pdf-ocr"),          # 扫描件 OCR
         ("doc:word", "pymupdf", "python-docx"),           # Word
         ("doc:ppt", "pymupdf", "python-pptx"),             # PPT（python-pptx 图片提取稳定）

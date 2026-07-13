@@ -211,7 +211,7 @@ export function ProviderSettings() {
 
   const engineBuiltins = selectedEngineId === 'bcut' ? ['bcut'] :
     selectedEngineId === 'faster-whisper' ? ['medium', 'small'] :
-    selectedEngineId === 'pymupdf' ? ['pymupdf', 'markitdown'] : []
+    selectedEngineId === 'pymupdf' ? ['pymupdf4llm', 'pymupdf', 'markitdown'] : []
   const allEngineNames = new Set(engineBuiltins)
   engineRefreshResult.forEach(r => allEngineNames.add(r.id))
   engineModels.filter(m => m.provider_id === selectedEngineId).forEach(m => allEngineNames.add(m.model_name))

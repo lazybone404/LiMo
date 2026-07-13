@@ -1,6 +1,6 @@
 /** 文件子类型 → 可用引擎名列表（GenPanel / ImportSection / ProviderSettings 共用） */
 export const DOC_ENGINE_NAMES: Record<string, string[]> = {
-  pdf: ['pymupdf4llm', 'pymupdf', 'pymupdf-text', 'pdf-ocr'],
+  pdf: ['pymupdf4llm', 'pymupdf', 'pymupdf-text', 'pdf-ocr'],  // pymupdf4llm 排第一 = 推荐默认
   word: ['python-docx', 'python-docx-text', 'markitdown'],
   ppt: ['python-pptx', 'python-pptx-text', 'markitdown'],
   excel: ['openpyxl', 'markitdown'],

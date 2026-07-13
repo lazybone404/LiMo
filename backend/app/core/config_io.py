@@ -48,8 +48,24 @@ def is_masked(value: str) -> bool:
     return bool(value) and "***" in str(value)
 
 
+def clean_api_key(value: str) -> str:
+    """清洗 API Key：去首尾空白、去 HTML 标签包裹、去引号包裹。
+
+    防止用户从网页复制 Key 时带入了 HTML 标签或多余的引号/空格。
+    """
+    import re
+    v = value.strip().strip("'\"")  # 去首尾空白+引号
+    # 检测被 HTML 标签包裹的情况：<div>sk-xxx</div> → sk-xxx
+    m = re.search(r'>([^<]+)<', v)
+    if m:
+        inner = m.group(1).strip().strip("'\"")
+        if len(inner) > 4:
+            return inner
+    return v
+
+
 def merge_sensitive(new_val: str, old_val: str) -> str:
-    """若前端传了脱敏值（含***），保留旧值；否则用新值"""
+    """若前端传了脱敏值（含***），保留旧值；否则用新值（自动清洗）"""
     if new_val and is_masked(new_val) and old_val:
         return old_val
-    return new_val
+    return clean_api_key(new_val)
