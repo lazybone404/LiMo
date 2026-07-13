@@ -384,44 +384,7 @@ class Store:
                 return e
         return None
 
-    # ── 公开的 transcript 更新方法（替代外部直接操作 _index） ──
-
-    # DEPRECATED: unused, kept for future use
-    def update_transcript_title(self, tx_id: str, new_title: str) -> bool:
-        """更新 transcript 标题（锁内 RMW）"""
-        with self._lock:
-            for i, entry in enumerate(self._index["transcripts"]):
-                if entry["id"] == tx_id:
-                    self._index["transcripts"][i]["title"] = new_title
-                    self._save_index()
-                    return True
-        return False
-
-    # DEPRECATED: unused, kept for future use
-    def update_transcript_meta(self, tx_id: str, title: str | None = None,
-                               tags: list[str] | None = None) -> bool:
-        """更新 transcript 标题和/或标签（锁内 RMW）"""
-        with self._lock:
-            for i, entry in enumerate(self._index["transcripts"]):
-                if entry["id"] == tx_id:
-                    if title is not None:
-                        self._index["transcripts"][i]["title"] = title
-                    if tags is not None:
-                        self._index["transcripts"][i]["tags"] = tags
-                    self._save_index()
-                    return True
-        return False
-
-    # DEPRECATED: unused, kept for future use
-    def replace_transcript_entry(self, tx_id: str, new_data: dict) -> bool:
-        """替换 transcript 索引条目（用于重新转录）。new_data 为完整的 index entry dict。"""
-        with self._lock:
-            for i, entry in enumerate(self._index["transcripts"]):
-                if entry["id"] == tx_id:
-                    self._index["transcripts"][i] = new_data
-                    self._save_index()
-                    return True
-        return False
+    # ── MarkdownView CRUD ──
 
     def save_transcript_full(self, tx_data: dict) -> bool:
         """保存完整 transcript（文件 + 索引），用于已有文档的更新。
@@ -470,22 +433,6 @@ class Store:
             self._save_index()
         return True
 
-    # DEPRECATED: unused, kept for future use
-    def complete_partial(self, markdown_id: str, new_content: str) -> bool:
-        """将 partial 产物更新为 complete——续写完成时调用，不增版本号"""
-        path = self._path_for_id(markdown_id, "markdown")
-        self._atomic_write(path, new_content)
-        with self._lock:
-            for tx_id, entries in self._index["markdowns"].items():
-                if isinstance(entries, dict):
-                    continue
-                for e in entries:
-                    if e.get("id") == markdown_id:
-                        e["status"] = "complete"
-                        self._save_index()
-                        return True
-        return False
-
     def get_markdown(self, id: str) -> Optional[str]:
         path = self._path_for_id(id, "markdown")
         if not path.exists():
@@ -508,17 +455,6 @@ class Store:
             if content:
                 result.append({**meta, "content": content})
         return sorted(result, key=lambda e: e.get("version", 0), reverse=True)
-
-    # DEPRECATED: unused, kept for future use
-    def get_markdown_by_transcript(self, transcript_id: str) -> Optional[dict]:
-        """获取指定 transcript 的 Markdown（优先返回笔记，兼容旧接口）"""
-        mds = self.get_markdowns_by_transcript(transcript_id)
-        if not mds:
-            return None
-        for md in mds:
-            if md.get("mode") != "polished":
-                return md
-        return mds[0]
 
     # ── ProcessResult CRUD ──
 

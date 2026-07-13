@@ -457,19 +457,6 @@ hr { border-color: #D2D2D7; }
 }""",
 }
 
-# DEPRECATED: _to_html / HTML_HEAD / HTML_FOOT 已不再使用。
-# 所有 HTML 导出已统一走 _build_selfcontained_html()
-# （优先本地 node_modules KaTeX + CDN 回退，零外部依赖）。
-# 保留以下代码以备未来需要轻量 CDN-base 导出时恢复。
-
-"""
-HTML_HEAD = ...
-
-def _to_html(md: str, title: str, theme: str) -> str:
-    ...
-    return HTML_HEAD.format(...) + html_body + HTML_FOOT
-"""
-
 def _preprocess_gfm(md: str) -> str:
     """预处理 GFM 特性（Python markdown 不原生支持）"""
     # 确保 GFM 表格前有空行 — Python markdown tables 扩展要求表格前有空行，
@@ -570,19 +557,6 @@ def _get_badge_css() -> str:
 .ts-content { background: rgba(0,122,255,0.1); color: #007aff; }
 .ts-screenshot { background: rgba(255,149,0,0.1); color: #ff9500; }
 """
-
-
-# DEPRECATED: 参见上方注释。所有 HTML 导出已统一使用 _build_selfcontained_html()。
-# def _to_html(md: str, title: str, theme: str) -> str:
-#     md, ph = _protect_latex(md)
-#     html_body = _markdown_to_html(md)
-#     html_body = _restore_latex(html_body, ph)
-#     html_body = _render_formulas_katex(html_body)
-#     theme_css = HTML_THEMES.get(theme, HTML_THEMES["github"])
-#     pygments_css = _get_pygments_css()
-#     if pygments_css:
-#         theme_css += "\n" + pygments_css
-#     return HTML_HEAD.format(title=title, theme=theme_css) + html_body + HTML_FOOT
 
 
 def _render_formulas_to_images(md: str) -> str:

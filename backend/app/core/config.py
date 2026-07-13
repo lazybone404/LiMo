@@ -231,25 +231,3 @@ def build_engine_models(config: dict) -> list[dict]:
                                "model_name": bm["model_name"], "category": bm["category"]})
                 existing.add(key)
     return models
-
-
-# DEPRECATED: unused, kept for future use
-def resolve_preset_model(config: dict, preset_id: str) -> dict:
-    """
-    根据预设 ID 解析出实际使用的 provider + model。
-    如果预设的 provider/model 为空，回退到全局配置。
-    """
-    presets = {p["id"]: p for p in config.get("llm_presets", [])}
-    preset = presets.get(preset_id)
-
-    llm = config.get("llm", {})
-    provider = llm.get("provider", "deepseek")
-
-    if preset and preset.get("provider"):
-        provider = preset["provider"]
-    if preset and preset.get("model"):
-        model = preset["model"]
-    else:
-        model = llm.get("model", {}).get(provider, "deepseek-v4-flash")
-
-    return {"provider": provider, "model": model}

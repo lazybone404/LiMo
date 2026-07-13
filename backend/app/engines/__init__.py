@@ -133,22 +133,19 @@ def init_engines(config: dict | None = None):
             models_changed = True
             logger.info("Auto-added dashscope-asr to engine_models (id=%d)", mid_dashscope)
 
-    # 自动绑定优先级：bcut（免费云）→ faster-whisper-small（本地兜底）
+    # 自动绑定：仅在列表为空时初始化默认（bcut→whisper），不强制重排已有绑定
+    # 修复：之前强制先删后插 bcut/whisper 导致每次启动 asr_changed=True → save_config 覆盖用户 key
     bindings = config.setdefault("engine_bindings", {})
     asr_list: list = bindings.get("asr", [])
     asr_old = list(asr_list)
     # 清理失效的绑定（ID 在 engine_models 中不存在）
     asr_list = [mid for mid in asr_list if mid in existing_ids]
-    # 保证 bcut 和 faster-whisper-small 都在列表中，bcut 优先
-    for mid in [mid_bcut, mid_whisper_small]:
-        if mid in asr_list:
-            asr_list.remove(mid)
-    asr_list.insert(0, mid_whisper_small)  # 末尾兜底
-    asr_list.insert(0, mid_bcut)            # 首位默认
-    bindings["asr"] = asr_list
-    if asr_list != asr_old:
-        logger.info("Auto-bound bcut (default) + faster-whisper-small (fallback) to engine_bindings.asr")
+    # 仅在绑定列表为空时初始化默认绑定，尊重用户手动调整的顺序
+    if not asr_list:
+        asr_list = [mid_bcut, mid_whisper_small]
+        logger.info("Auto-initialized ASR bindings: bcut (default) + faster-whisper-small (fallback)")
 
+    bindings["asr"] = asr_list
     asr_changed = models_changed or (asr_list != asr_old)
 
     # OCR key（Doc 引擎 PDFOCREngine 也需要）
@@ -295,5 +292,7 @@ def init_engines(config: dict | None = None):
 
     # 持久化 — Tesseract 可用性无关，引擎注册/绑定变更必须写盘
     if asr_changed or models_changed or doc_bindings_changed or ocr_bound:
+        logger.info("init_engines: 引擎绑定/模型变更，持久化到 config.yaml (asr=%s models=%s doc_bindings=%s ocr=%s)",
+                    asr_changed, models_changed, doc_bindings_changed, ocr_bound)
         from app.core.config_io import save_config
         save_config(config)

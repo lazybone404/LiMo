@@ -5,11 +5,11 @@ import logging
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.core.errors import AppError
-
+from app.core.dependencies import get_store
 from app.core.types import Conversation, ChatMessage
 
 logger = logging.getLogger(__name__)
@@ -26,14 +26,12 @@ class RenameRequest(BaseModel):
 
 
 @router.get("/conversations")
-def list_conversations(request: Request):
-    store = request.app.state.store
+def list_conversations(store=Depends(get_store)):
     return store.list_conversations()
 
 
 @router.get("/conversations/{conv_id}")
-def get_conversation(conv_id: str, request: Request):
-    store = request.app.state.store
+def get_conversation(conv_id: str, store=Depends(get_store)):
     conv = store.get_conversation(conv_id)
     if not conv:
         raise AppError("CONV_NOT_FOUND", "对话不存在", status_code=404)
@@ -41,8 +39,7 @@ def get_conversation(conv_id: str, request: Request):
 
 
 @router.post("/conversations")
-def create_conversation(title: str = "", request: Request = None):
-    store = request.app.state.store
+def create_conversation(title: str = "", store=Depends(get_store)):
     conv = Conversation(
         id=f"conv_{uuid.uuid4().hex[:12]}",
         title=title or "新对话",
@@ -52,9 +49,8 @@ def create_conversation(title: str = "", request: Request = None):
 
 
 @router.patch("/conversations/{conv_id}/append")
-def append_message(conv_id: str, data: AppendRequest, request: Request):
+def append_message(conv_id: str, data: AppendRequest, store=Depends(get_store)):
     """追加消息到对话"""
-    store = request.app.state.store
     conv = store.get_conversation(conv_id)
     if not conv:
         raise AppError("CONV_NOT_FOUND", "对话不存在", status_code=404)
@@ -76,14 +72,12 @@ def append_message(conv_id: str, data: AppendRequest, request: Request):
 
 
 @router.patch("/conversations/{conv_id}/rename")
-def rename_conversation(conv_id: str, data: RenameRequest, request: Request):
-    store = request.app.state.store
+def rename_conversation(conv_id: str, data: RenameRequest, store=Depends(get_store)):
     ok = store.rename_conversation(conv_id, data.title)
     return {"status": "ok" if ok else "not found"}
 
 
 @router.delete("/conversations/{conv_id}")
-def delete_conversation(conv_id: str, request: Request):
-    store = request.app.state.store
+def delete_conversation(conv_id: str, store=Depends(get_store)):
     store.delete_conversation(conv_id)
     return {"status": "deleted"}

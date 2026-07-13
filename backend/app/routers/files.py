@@ -6,8 +6,9 @@ import logging
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
+from app.core.dependencies import get_store
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ def _safe_local_path(store_root: str, transcript_id: str, filename: str) -> Path
 
 
 @router.get("/files/{transcript_id}/cover")
-def get_cover_image(transcript_id: str, request: Request):
+def get_cover_image(transcript_id: str, store=Depends(get_store)):
     """返回文档的本地封面缩略图。
 
     视频导入时由 _persist_cover_image 下载到
@@ -57,7 +58,6 @@ def get_cover_image(transcript_id: str, request: Request):
     if not _check_tx_id(transcript_id):
         return {"error": "无效的文档 ID"}
 
-    store = request.app.state.store
     tx = store.get_transcript(transcript_id)
     if not tx:
         return {"error": "文档不存在"}

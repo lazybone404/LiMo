@@ -5,8 +5,9 @@
 新增管道或引擎时，只需后端注册，前端自动适配。
 """
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends
 from app.core.registry import AdapterRegistry, EngineRegistry
+from app.core.dependencies import get_config
 from app.generation.prompt import STYLE_MAP, DOC_STYLE_MAP, EXCEL_STYLE_MAP, AVAILABLE_OPTIONS, VIDEO_STYLE_KEYS
 from app.generation.product_registry import to_capability_list
 
@@ -14,8 +15,7 @@ router = APIRouter()
 
 
 @router.get("/capabilities")
-async def capabilities(request: Request):
-    config = request.app.state.config
+async def capabilities(config=Depends(get_config)):
     has_dashscope = bool(config.get("cloud", {}).get("dashscope", ""))
 
     # 从 engine_models 动态构建 engineOptions（从 config 的 builtin_models 自动注册）
