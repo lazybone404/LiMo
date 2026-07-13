@@ -99,26 +99,22 @@ class DocumentAdapter(PipelineAdapter):
         sub_scenario = self._ext_to_sub_scenario(ext)
         engine_chain = self._resolve_doc_engine_chain(cfg, sub_scenario=sub_scenario)
         if not engine_chain:
-            auto_fallback = cfg.get("engine_auto_fallback", True) if cfg else True
-            if not auto_fallback:
-                raise FatalError("Doc 引擎未绑定，自动降级已关闭，请在设置中绑定文档引擎")
+            # 未绑定 → 按扩展名兜底（不受 auto_fallback 控制：这是默认行为，不是降级）
+            if ext == ".pdf":
+                eng_name = "pymupdf"
+            elif ext in (".docx", ".doc"):
+                eng_name = "python-docx"
+            elif ext in (".pptx", ".ppt"):
+                eng_name = "python-pptx"  # python-pptx 图片提取稳定；markitdown 对某些 PPTX 不提取图片
+            elif ext in (".xlsx", ".xls"):
+                eng_name = "openpyxl"
+            elif ext == ".epub":
+                eng_name = "ebooklib"
             else:
-                # 未绑定 → 按扩展名兜底
-                if ext == ".pdf":
-                    eng_name = "pymupdf"
-                elif ext in (".docx", ".doc"):
-                    eng_name = "python-docx"
-                elif ext in (".pptx", ".ppt"):
-                    eng_name = "python-pptx"  # python-pptx 图片提取稳定；markitdown 对某些 PPTX 不提取图片
-                elif ext in (".xlsx", ".xls"):
-                    eng_name = "openpyxl"
-                elif ext == ".epub":
-                    eng_name = "ebooklib"
-                else:
-                    eng_name = "markitdown"
-                engine = EngineRegistry.get("doc", eng_name)
-                if engine:
-                    engine_chain = [(eng_name, engine)]
+                eng_name = "pymupdf"
+            engine = EngineRegistry.get("doc", eng_name)
+            if engine:
+                engine_chain = [(eng_name, engine)]
 
         if not engine_chain:
             logger.warning("无可用文档引擎")
@@ -138,6 +134,7 @@ class DocumentAdapter(PipelineAdapter):
         # 转录图片输出目录（引擎写文件用）
         media_dir = cfg.get("media_dir", "") if cfg else ""
 
+        auto_fallback = cfg.get("engine_auto_fallback", True) if cfg else True
         for eng_name, engine in engine_chain:
             # 深拷贝防并发竞态
             engine = copy.copy(engine)
@@ -152,8 +149,14 @@ class DocumentAdapter(PipelineAdapter):
                     logger.info("Doc 引擎 %s 成功: %d chars, %d pages", eng_name, len(raw_text), pages)
                     break
                 logger.warning("Doc 引擎 %s 返回空结果", eng_name)
+                if not auto_fallback:
+                    raise FatalError(f"Doc 引擎 {eng_name} 返回空结果（自动降级已关闭）")
+            except FatalError:
+                raise
             except Exception as e:
                 logger.warning("Doc 引擎 %s 失败: %s", eng_name, str(e)[:120])
+                if not auto_fallback:
+                    raise FatalError(f"Doc 引擎 {eng_name} 失败（自动降级已关闭）: {str(e)[:100]}") from e
                 continue
 
         if not raw_text:

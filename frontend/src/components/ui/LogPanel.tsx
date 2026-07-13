@@ -24,20 +24,23 @@ export function LogPanel({ onClose }: { onClose: () => void }) {
   const addToast = useStore(s => s.addToast)
   const scrollRef = useRef<HTMLDivElement>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+  const logsEmptyRef = useRef(true)  // 用 ref 避免 setInterval 闭包陈旧问题
+
+  const [errorCount, setErrorCount] = useState(0)
 
   const fetchLogs = async () => {
     try {
       const r = await apiFetch(apiUrl(`/logs?lines=300&level=${levelFilter}`))
       const data = await r.json()
-      setLogs(data.logs || [])
+      const entries = data.logs || []
+      setLogs(entries)
+      logsEmptyRef.current = entries.length === 0
     } catch {
       // 连续失败时显示提示（避免连接数限制或网络波动导致空白）
-      if (logs.length === 0) setErrorCount(c => c + 1)
+      if (logsEmptyRef.current) setErrorCount(c => c + 1)
     }
     finally { setLoading(false) }
   }
-
-  const [errorCount, setErrorCount] = useState(0)
 
   // 首次加载 + 每 3 秒刷新
   useEffect(() => {

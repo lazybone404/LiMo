@@ -289,6 +289,96 @@ DOC_STYLE_MAP_POLISH = {
 }
 PDF_STYLE_MAP_POLISH = DOC_STYLE_MAP_POLISH
 
+# ── Excel 数据摘要辅助函数 ──
+
+def _parse_markdown_table(data_text: str) -> dict:
+    """从 Markdown 表格文本中提取结构化摘要，减少 LLM token 消耗并引导分析。
+
+    返回 dict：sheets 列表，每个 sheet 含 name/rows/cols/columns/sample_rows。
+    sample_rows 最多取首尾各 3 行。
+    """
+    import re
+    sheets: list[dict] = []
+    current_sheet = None
+    current_rows: list[list[str]] = []
+    header: list[str] = []
+    in_table = False
+
+    # 无显式 Sheet 标题时视为一个匿名 sheet
+    current_sheet = {"name": "Sheet1"}
+    sheets = [current_sheet]
+
+    for line in data_text.split("\n"):
+        # 匹配 sheet 标题
+        m = re.match(r"^##\s+Sheet:\s*(.+)", line)
+        if m:
+            if header:
+                current_sheet["rows"] = len(current_rows)
+                current_sheet["cols"] = len(header)
+                current_sheet["columns"] = header[:20]
+                # 首尾各取最多 3 行
+                current_sheet["sample_rows"] = current_rows[:3] + (
+                    current_rows[-3:] if len(current_rows) > 6 else []
+                )
+            current_sheet = {"name": m.group(1).strip()}
+            sheets.append(current_sheet)
+            current_rows = []
+            header = []
+            in_table = False
+            continue
+
+        # 检测表格分隔行
+        if re.match(r"^\|[\s\-:|]+\|$", line):
+            if current_rows and not header:
+                header = current_rows.pop()
+            in_table = True
+            continue
+
+        # 表格数据行
+        if in_table and line.startswith("|"):
+            cells = [c.strip() for c in line.split("|")[1:-1]]
+            current_rows.append(cells)
+
+    # 最后一个 sheet
+    if current_sheet and header:
+        current_sheet["rows"] = len(current_rows)
+        current_sheet["cols"] = len(header)
+        current_sheet["columns"] = header[:20]
+        current_sheet["sample_rows"] = current_rows[:3] + (
+            current_rows[-3:] if len(current_rows) > 6 else []
+        )
+
+    return {"total_sheets": len(sheets), "sheets": sheets}
+
+
+def _build_data_summary(data_text: str) -> str:
+    """将 Markdown 表格替换为结构化摘要 + 仅保留首尾各 3 行样品。
+
+    大幅减少 token 消耗并防止 LLM 直接复制原表。
+    """
+    info = _parse_markdown_table(data_text)
+    parts: list[str] = []
+
+    for sh in info["sheets"]:
+        cols_str = ", ".join(sh.get("columns", [])[:20])
+        parts.append(
+            f"## {sh['name']}\n"
+            f"共 {sh['rows']} 行 × {sh['cols']} 列\n"
+            f"字段: {cols_str}\n"
+        )
+        if sh.get("sample_rows"):
+            parts.append("数据样品（首尾各 3 行）：")
+            # 构建微型 Markdown 表格展示样品
+            cols = sh.get("columns", [])
+            parts.append("| " + " | ".join(cols[:8]) + " |")
+            parts.append("| " + " | ".join(["---"] * min(len(cols), 8)) + " |")
+            for row in sh["sample_rows"]:
+                parts.append("| " + " | ".join(row[:8]) + " |")
+        parts.append("")
+
+    return "\n".join(parts)
+
+
 # ── Excel 专用 Prompt ──
 
 EXCEL_REPORT_PROMPT = """你是一个专业的数据分析师，擅长从结构化数据中提取洞察。
@@ -296,23 +386,23 @@ EXCEL_REPORT_PROMPT = """你是一个专业的数据分析师，擅长从结构�
 语言要求：
 - 输出必须使用 **中文** 撰写。
 
-数据内容（Markdown 表格）：
----
-{data_text}
----
+{data_section}
 
 你的任务：
-根据上面的数据表格，生成一份**数据分析报告**。请遵循以下原则：
+基于以上数据摘要和样品，生成一份**数据分析报告**。遵循以下原则：
 
-1. **概览**: 简要描述数据来源（sheet 名称、行列数）。
-2. **关键指标**: 提取最重要的数字和指标（合计、平均值、增长率等）。
-3. **趋势分析**: 如有时间序列数据，分析趋势和变化。
-4. **对比分析**: 比较不同类别/维度的数据。
-5. **异常检测**: 标记明显异常值或值得关注的波动。
-6. **图表说明**: 如果数据中包含图表标签，解释其意义。
-7. **建议**: 基于数据提出 actionable 的建议。
+1. **概览**: 简要描述数据结构（sheet 数量、行列规模、主要字段）。
+2. **数据质量**: 检查缺失值、重复值、数据类型一致性等问题。
+3. **关键发现**: 从数据样品中识别模式、趋势、异常值或值得关注的指标。
+4. **字段解读**: 对每个字段的含义和作用进行推测和解读。
+5. **建议**: 基于数据特征提出可操作的下一步行动建议。
 
 {style_text}
+
+⚠️ 严禁事项：
+- **严禁**在报告中重复输出完整数据表格 — 报告是分析，不是数据备份
+- **严禁**逐行罗列数据 — 应按主题/指标/模式组织
+- 如需引用具体数据作为例证，仅引用关键的一两行，不要展开
 
 输出说明：
 - 仅返回最终的 **Markdown 内容**
@@ -325,20 +415,21 @@ EXCEL_SUMMARY_PROMPT = """你是一个专业的数据分析师，擅长提炼核
 - 输出必须使用 **中文** 撰写。
 - 简洁有力，控制字数。
 
-数据内容（Markdown 表格）：
----
-{data_text}
----
+{data_section}
 
 你的任务：
-根据上面的数据表格，生成一份**数据摘要**。遵循以下原则：
+基于以上数据摘要和样品，生成一份**数据摘要**。遵循以下原则：
 
-1. 📊 **数据规模**: 几行几列、几个 sheet
-2. 🔢 **核心指标**: 3-5 个最重要的数字（合计、均值、极值等）
-3. 📈 **关键发现**: 2-4 句话总结最重要的洞察
-4. ⚠️ **需注意**: 异常值、缺失项、数据质量问题
+1. 📊 **数据规模**: 几行几列、几个 sheet、各字段数据类型
+2. 🔢 **核心指标**: 基于样品数据，提取 3-5 个值得关注的数值特征
+3. 📈 **关键发现**: 2-4 句话总结数据中透露的关键信息
+4. ⚠️ **需注意**: 缺失值、格式不一致等数据质量问题
 
 {style_text}
+
+⚠️ 严禁事项：
+- **严禁**重复输出完整数据 — 摘要不是数据副本
+- **严禁**逐行罗列每条记录
 
 输出说明：
 - 仅返回最终的 **Markdown 内容**
@@ -379,9 +470,15 @@ EXCEL_STYLE_KEYS = list(EXCEL_STYLE_MAP.keys())
 
 def build_excel_report_prompt(data_text: str, style: str = "detailed",
                                user_notes: str = "") -> str:
-    """构建 Excel 分析报告 prompt —— 用户备注作为分析指引放开头"""
+    """构建 Excel 分析报告 prompt —— 数据摘要替代原始表格，用户备注作为分析指引放开头"""
     style_text = "" if style == 'none' else EXCEL_STYLE_MAP.get(style, "")
-    prompt = EXCEL_REPORT_PROMPT.format(data_text=data_text, style_text=style_text)
+    # 将原始 Markdown 表格替换为结构化摘要，减少 token 并防止 LLM 照抄原表
+    try:
+        data_section = _build_data_summary(data_text)
+    except Exception:
+        # 解析失败（非标准表格格式）→ 回退到原文
+        data_section = f"数据内容（Markdown 表格）：\n---\n{data_text}\n---"
+    prompt = EXCEL_REPORT_PROMPT.format(data_section=data_section, style_text=style_text)
 
     if user_notes.strip():
         prompt = (
@@ -393,9 +490,13 @@ def build_excel_report_prompt(data_text: str, style: str = "detailed",
 
 def build_excel_summary_prompt(data_text: str, style: str = "detailed",
                                 user_notes: str = "") -> str:
-    """构建 Excel 数据摘要 prompt —— 用户备注作为分析指引放开头"""
+    """构建 Excel 数据摘要 prompt —— 数据摘要替代原始表格，用户备注作为分析指引放开头"""
     style_text = "" if style == 'none' else EXCEL_STYLE_MAP.get(style, "")
-    prompt = EXCEL_SUMMARY_PROMPT.format(data_text=data_text, style_text=style_text)
+    try:
+        data_section = _build_data_summary(data_text)
+    except Exception:
+        data_section = f"数据内容（Markdown 表格）：\n---\n{data_text}\n---"
+    prompt = EXCEL_SUMMARY_PROMPT.format(data_section=data_section, style_text=style_text)
 
     if user_notes.strip():
         prompt = (

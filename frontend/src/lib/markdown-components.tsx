@@ -239,5 +239,10 @@ export function createMarkdownComponents(sourceUrl?: string, isVideo?: boolean) 
       })
       return <li {...props}>{processed}</li>
     },
+    table: ({ children, ...props }: any) => (
+      <div className="md-table-wrap overflow-auto my-4 rounded-lg border border-border-light" style={{ maxHeight: '70vh' }}>
+        <table className="min-w-full" {...props}>{children}</table>
+      </div>
+    ),
   }
 }

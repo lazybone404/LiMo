@@ -85,7 +85,8 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 - **certifi 必须加入 spec**：PyInstaller 打包后 SSL 证书路径丢失，启动时需设 `SSL_CERT_FILE` 环境变量
 - **searxng .git 目录必须清理**：PyInstaller 收集 `bin/searxng/.git` 后 Tauri 构建会因权限错误(os error 5)失败
 - **PyInstaller 必须在项目根目录执行**：spec 中 `pathex=['backend']` 和 `datas` 相对路径依赖 CWD
-- **KaTeX + markmap/d3 离线资源**：PyInstaller 通过 `datas` 打包 `backend/static/`（含 katex + markmap子目录）。打包前需确保这些目录存在且文件是最新的（从 `frontend/node_modules/` 复制），否则导出的 HTML 思维导图和公式将依赖 CDN（离线不可用）
+- **KaTeX + markmap/d3 离线资源**：PyInstaller 通过 `datas` 打包 `backend/static/`（含 katex + markmap子目录）。打包前需确保字体完整（从 `frontend/node_modules/katex/dist/fonts/` 复制 60 字体到 `backend/static/katex/fonts/`），否则导出的 HTML 公式碎掉。HTML 导出中 CSS 的 `url(fonts/...)` 会被 base64 内联，完全自包含
+- **ffmpeg 内置**：将系统 ffmpeg.exe + ffprobe.exe 复制到 `frontend/src-tauri/bin/LiMoBackend/ffmpeg/`（PyInstaller 之后、Tauri 之前），Tauri `resources` 自动打包。Rust `enhance_path()` 启动时追加到 PATH + 设 `FFMPEG_BIN_PATH` 环境变量
 - **OpenSSL DLL 版本冲突**：`cryptography` 包携带的 `libcrypto-3-x64.dll`（~5MB）会覆盖 Python 原生的（~8MB），导致 `_ssl.pyd` 加载失败（`ImportError: DLL load failed`），最终使后端无法启动。spec 中需排除 cryptography 的 DLL 并显式添加 `sys.base_prefix/DLLs/` 下的原始版本。**每次新增依赖后验证**：直接运行 `LiMoBackend.exe` 确认能输出 `Uvicorn running on http://127.0.0.1:7413`
 - **PyInstaller binaries 格式**：`collect_all` 返回 `(dest_name, src_path)`，`Analysis(binaries=[])` 期望 `(src_path, dest_dir)`。追加 binaries 时用 `(abs_src_path, '.')` 格式
 
@@ -177,7 +178,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **进程管理**：`SidecarHandle(Mutex<Option<Child>>)` 持有进程句柄；窗口关闭 → `RunEvent::ExitRequested` → `child.kill()`
 - **重启命令**：`restart_backend_sidecar` Tauri command，kill 旧进程 → spawn 新进程 → 重新探测
 - **诊断**：`analyze_install_path()` 检查路径非 ASCII/空格/父目录可写性；`app_log()` 写 `limo_startup.log`；后端 stderr 重定向到 `limo_backend_stderr.log`
-- **PATH 增强**：`enhance_path()` 追加 ffmpeg 常见路径，确保 yt-dlp 等工具能找到 ffmpeg
+- **PATH 增强**：`enhance_path()` 优先追加安装目录下的 `ffmpeg/`（内置），再追加系统常见路径，确保 yt-dlp 等工具能找到 ffmpeg。同时设 `FFMPEG_BIN_PATH` 环境变量指向内置路径
 - **API 适配**：`client.ts` 检测 `__TAURI_INTERNALS__` → 生产用 `http://127.0.0.1:7413/api`，开发用 `/api`（Vite proxy）
 - **CORS**：`main.py` 使用 `allow_origin_regex=".*"` + `allow_credentials=True` + `_ForceCORSMiddleware` 兜底（Tauri WebView2 使用 `tauri://localhost` / `https://tauri.localhost` 等动态 origin）
 - **配置**：`tauri.conf.json` — 1400×900 窗口 + `maximized: true` + `com.limo.app` 标识
@@ -312,6 +313,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 24. **文件路径基于 `store.root`**：打包环境下 `os.getcwd()` 指向 exe 所在目录而非数据目录。所有文件读写路径（截图、导出、临时文件等）必须基于 `store.root`。`StaticFiles` 挂载也应在 startup event 中用 `store.root` 动态计算路径，而非模块级 `os.getcwd()` 求值。
 25. **`_watch_disconnect` 标准取消模式**：5 个端点（generate/ingest/retranscribe/chat/process）均使用相同的 `_watch_disconnect` 闭包 + `cancel_event` + `disconnect_task` 模式。新增支持取消的 SSE/长时端点时复用此模式，保持 0.5s 检测间隔和 `finally` 清理逻辑一致。未来可提取为 `app/core/disconnect.py` 公共工具。
 26. **禁止函数内重复导入**：不要在函数内部写已存在于模块顶部的 `from X import Y`。Python 解析到函数内的赋值语句后会将 `Y` 视为整个函数的局部变量——若函数内导入在条件分支中且条件未命中，函数内其他引用会抛出 `UnboundLocalError`。**本次已修复**：process.py:215、model.py:578 的 `EngineRegistry` 阴影导入。新增代码时：函数内仅导入模块级不存在的名称（如打破循环导入），且放在函数顶部无条件路径上。
+27. **remark 插件顺序**：`remarkMath` 必须在 `remarkGfm` 之前。否则公式内的 `_`（下标）和 `<`（`x_{<k}`）会被 GFM 先解释为斜体/HTML 标签 → `$$` 定界符破裂 → KaTeX 渲染失败。**本次已修复**：markdown-plugins.ts。
+28. **`engine_auto_fallback` 语义**：该开关仅控制**引擎失败后是否重试下一个**，不控制扩展名兜底（pdf→pymupdf 等）。扩展名兜底是默认行为，新用户无绑定时必须可用。**本次已修复**：document.py adapt() 中扩展名兜底移出 auto_fallback 条件块。
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始
@@ -389,8 +392,9 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 状态 | 功能 | 说明 |
 |------|------|------|
 | ✅ | MD 下载 | 前端 Blob 直接下载 |
-| ✅ | HTML 导出 | `_build_selfcontained_html()`，4 主题 (paper/github/minimal/limo) |
-| ✅ | KaTeX 内联 | `_get_katex_assets()` 从 node_modules 读 CSS/JS 嵌入 HTML，零 CDN 依赖 |
+| ✅ | HTML 导出 | 代码高亮(Pygments)+GFM+时间戳badge+标题锚点，4 主题，完全自包含 |
+| ✅ | KaTeX 内联 | CSS/JS/字体(60个) base64 内联，零 CDN，断网可用 |
+| ✅ | MD 图片路径 | 导出时自动重写为绝对 URL，外部查看不裂图 |
 | ✅ | ZIP 批量 | 全部产物打包，图片独立文件夹 |
 | ✅ | 思维导图 | SVG 下载 + markmap 交互式 HTML (~980KB，暗色自适应) |
 | ✅ | 对话导出 | Markdown + JSON，支持批量 ZIP |

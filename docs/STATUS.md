@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-07-13 | **版本**: 0.1.1
+**更新**: 2026-07-13 | **版本**: 0.1.3
 
 ---
 
@@ -63,7 +63,7 @@
 | 处理 | `POST /api/process/{id}` | 图片 OCR |
 | 对话 | `POST /api/chat` + `/chat/stream` | AI Agent |
 | 事实验证 | `POST /api/fact-check/{id}` + `/stream` | LLM 验证 |
-| 导出 | `GET /api/export/{id}` + `/all` + `/batch` + `/mindmap` + `POST /api/export/custom` | HTML(含代码高亮+GFM+时间戳badge)/MD(图片绝对URL)/ZIP/思维导图 |
+| 导出 | 6 端点：单文件/全产物/批量/思维导图/自定义 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/ZIP(3模式)/思维导图(交互版+SVG) |
 
 ## 前端组件
 

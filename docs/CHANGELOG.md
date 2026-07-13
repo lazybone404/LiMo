@@ -6,62 +6,42 @@
 
 ---
 
-## 2026-07-13（下午）— 8 项增强修复 + 阴影导入 bug + 打包
+## 2026-07-13 — 全面修复：8 项增强 + Bcut ASR + KaTeX + 公式渲染 + 引擎语义修正 + 打包
 
-### 关键 Bug 修复：UnboundLocalError（打包版图片处理失败）
-`process.py:215` 和 `model.py:578` 在函数内部有条件 `from app.core.registry import EngineRegistry`，覆盖了模块级同名导入。当条件分支不执行时，局部变量未绑定 → `UnboundLocalError`。**打包版才暴露**：图片处理 + 引擎链非空时才触发。AST 扫描确认全代码库无其他同类问题。新增 CLAUDE.md 模式 #26。
+### Bug 修复
+- **UnboundLocalError**：`process.py`/`model.py` 函数内条件导入 `EngineRegistry` 覆盖模块级导入 → 条件未命中时抛异常。AST 扫描确认全代码库无其他同类问题
+- **KaTeX 字体 404**：CSS 内联后 `@font-face` 保留相对路径 → 离线 HTML 公式渲染异常。60 字体 base64 内联 + 补齐 `backend/static/katex/fonts/`
+- **公式渲染破裂**：`remarkGfm` 在 `remarkMath` 之前 → `_`/`<` 被误解析 → `$$` 块破裂。交换插件顺序
+- **LogPanel 始终显示"暂无日志"**：`setInterval` 闭包陈旧，`logs.length` 永远为 0。改用 `useRef`
+- **表格无滚动**：`<table>` 无容器 → 宽表溢出。新增 `overflow-x:auto` + `max-height:70vh` 包裹
 
-### 关键 Bug 修复：HTML 导出 KaTeX 字体 404
-KaTeX CSS 内联后，`@font-face` 中的 `url(fonts/...)` 相对路径在离线 HTML 中无法加载 → 数学公式渲染异常。两处修复：
-1. `_get_katex_assets()` 加载 CSS 后自动将字体 base64 内联（60 字体 → ~1.4MB CSS），HTML 完全自包含
-2. `backend/static/katex/fonts/` 此前为空（漏从 node_modules 复制），PyInstaller 打包后字体缺失；已修复复制步骤
+### 引擎与适配器
+- **引擎降级语义修正**：`auto_fallback` 不再拦截扩展名兜底（新用户无绑定时必须可用），仅控制引擎失败后的重试行为
+- **未知扩展名兜底**：`markitdown` → `pymupdf`
+- **Bcut ASR 引擎**：B站必剪免费云转写，启动时自动绑定为 ASR 默认，优先级最高
 
-### HTML 导出预览一致性
-- **标题锚点**：`<h2>/<h3>/<h4>` 自动追加 `id` 属性，算法对齐前端 `headingId()`，导出 HTML 中标题链接可定位
-- **时间戳 badge**：`Content-[mm:ss]` → 蓝色圆角 badge `▶ 12:34`，`Screenshot-[mm:ss]` → 橙色 badge `📷 12:34`，CSS 自动注入所有主题
-- **MD 图片路径**：单文件下载时自动将 `/api/files/` / `/static/screenshots/` 重写为绝对 URL（基于 `request.base_url`），外部查看不再裂图
+### HTML 导出
+- 标题锚点 id、时间戳 badge（Content 蓝色/Screenshot 橙色）、MD 图片路径绝对 URL 重写
+- Pygments 代码高亮 + GFM 删除线/任务列表 + `nl2br` 移除
 
-### 错误处理增强
-- **引擎降级 toggle**：网络失败时显示 Toast（此前静默回退）
-- **streamFactCheck**：加 `receivedDoneOrError` 守卫，对标 `streamGenerate`，SSE 异常断开时通知用户
-- **LogPanel**：连续失败阈值从 12s 降为 6s，更快反馈
+### 错误处理
+- 5 端点静默失败 → Toast（App 初始化/设置保存/聊天加载）
+- 引擎降级 toggle Toast、streamFactCheck `receivedDoneOrError` 守卫
+- LogPanel 阈值 12s→6s、SSE queue 异常类型收窄
 
 ### 代码质量
-- `ingest.py` SSE queue 异常：`except Exception` → `except asyncio.QueueFull` + 注释
-- `GenPanel.tsx` `lockOtherOps`：注释准确描述互斥分工
+- spec `hiddenimports` 清理 5 处无效条目 → 0 ERROR
+- 3 条新后端模式（`CREATE_NO_WINDOW`、`store.root`、`_watch_disconnect`）+ 2 条（阴影导入、插件顺序、auto_fallback 语义）
+- 文档全面同步（CLAUDE.md/STATUS.md/CHANGELOG.md）
+
+### 打包
+- ffmpeg.exe + ffprobe.exe（434MB）内置，MSI 514MB
+- KaTeX 60 字体打包
 
 ### 影响范围
-- **后端**：export.py / ingest.py
-- **前端**：client.ts / ProviderSettings.tsx / LogPanel.tsx / GenPanel.tsx
-
----
-
-## 2026-07-13（上午）— Bcut ASR 引擎 + 计划核查 + 文档同步
-
-### Bcut ASR 引擎（B站必剪免费云转写）
-新增 `bcut-asr` 引擎，免费云端转写，无需 API Key，中文优化。启动时自动绑定为 ASR 默认引擎。优先级：bcut（免费云）→ dashscope-asr（云端）→ faster-whisper（本地兜底）。
-
-### 代码库全面核查
-对照 DeepDraft 计划逐项核实 47 项修复状态：两个严重问题和全部 12 个高危问题均已修复。下午完成 8 项增强修复后，剩余 5 项低优先级待办（引擎绑定解绑 UI、Config 保存回滚、思维导图清洗对齐、generating per-doc、system-design-spec 精简）。
-
-### 多端点静默失败 → Toast
-5 个端点的 `.catch()` 从仅 `console.error` 改为用户可见的 Toast 提示：App 初始化加载（2 处）、设置保存（1 处）、聊天对话加载（3 处）。
-
-### HTML 导出 GFM + 代码高亮
-Pygments 语法高亮 + 语言标签栏，GFM 删除线（`~~text~~` → `<del>`）和任务列表（`- [ ]` → `☐`），`nl2br` 移除。导出 HTML 与预览区渲染行为一致。
-
-### 图片 broken 回退
-`markdown-components.tsx` 中 `<img>` 新增 `onError` handler，加载失败时显示占位符。
-
-### 设置页兜底保存
-`ProviderSettings.tsx` 中引擎/LLM Key 用 `useEffect` cleanup ref 兜底，防止组件卸载时 `onBlur` 不触发导致配置丢失。
-
-### CLAUDE.md 同步
-新增 3 条后端关键模式（`CREATE_NO_WINDOW`、`store.root` 路径、`_watch_disconnect` 标准取消），补全 bcut ASR 引擎，修正不一致的旧格式错误计数。
-
-### 影响范围
-- **后端**：engines/__init__.py / engines/asr_bcut.py（新增）/ export.py / routers/generate.py
-- **前端**：App.tsx / ChatCore.tsx / SettingsPage.tsx / ProviderSettings.tsx / markdown-components.tsx / client.ts
+- **后端**：export.py / ingest.py / process.py / model.py / document.py / LiMoBackend.spec / engines/__init__.py
+- **前端**：client.ts / ProviderSettings.tsx / LogPanel.tsx / GenPanel.tsx / markdown-components.tsx / markdown-plugins.ts / App.tsx / ChatCore.tsx / SettingsPage.tsx
+- **打包**：bin/LiMoBackend/ffmpeg/ / backend/static/katex/fonts/
 - **文档**：CLAUDE.md / STATUS.md / CHANGELOG.md
 
 ---

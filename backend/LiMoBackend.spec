@@ -20,7 +20,7 @@ binaries = []
 hiddenimports = [
     'uvicorn', 'fastapi', 'starlette', 'pydantic',
     'openai', 'httpx', 'aiohttp', 'requests',
-    'pyyaml', 'python_multipart', 'dateutil',
+    'python_multipart', 'dateutil',
     'PIL', 'numpy',
     'gmssl', 'websocket',
     # 关键子依赖（PyInstaller 常漏掉）
@@ -29,7 +29,7 @@ hiddenimports = [
     'urllib3', 'charset_normalizer', 'idna',
     'tqdm', 'click',
     # 直接使用的包
-    'pymupdf4llm', 'tiktoken', 'tiktoken_ext', 'tiktoken_ext.openai_public', 'ffmpeg',
+    'pymupdf4llm', 'tiktoken', 'ffmpeg',
     'dateparser_data',
     'markdown', 'pygments', 'pygments.lexers', 'pygments.formatters', 'pygments.styles',
 ]
@@ -49,7 +49,7 @@ hiddenimports += [
     'huggingface_hub', 'filelock', 'fsspec',
     'lxml', 'courlan', 'htmldate', 'justext', 'tld',
     'babel', 'dateparser', 'regex', 'tzlocal',
-    'soupsieve', 'beautifulsoup4',
+    'soupsieve', 'bs4',
     'magika', 'markdownify',
     'cffi', 'cryptography',
     'rich', 'pygments',
@@ -57,8 +57,7 @@ hiddenimports += [
 ]
 # 格式别名
 hiddenimports += [
-    'yaml',       # pyyaml 别名
-    'Pillow',     # PIL 别名
+    'yaml',       # pyyaml import 名
     'cv2',        # opencv
     'fitz',       # pymupdf
     'yt_dlp',     # 视频下载

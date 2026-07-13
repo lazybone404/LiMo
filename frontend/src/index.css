@@ -129,10 +129,25 @@ body {
 }
 
 /* Scrollbar */
-::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-thumb {
   background: var(--tk-border);
   border-radius: 2px;
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* 表格容器滚动条 — 比全局更粗更可见 */
+.md-table-wrap::-webkit-scrollbar { width: 8px; height: 8px; }
+.md-table-wrap::-webkit-scrollbar-thumb {
+  background: var(--tk-border);
+  border-radius: 4px;
+}
+.md-table-wrap::-webkit-scrollbar-thumb:hover {
+  background: var(--tk-dimmed);
+}
+.md-table-wrap::-webkit-scrollbar-track {
+  background: var(--tk-surface);
+  border-radius: 4px;
 }
 
 /* ── Markdown Color Variables ───────────────────────────── */
