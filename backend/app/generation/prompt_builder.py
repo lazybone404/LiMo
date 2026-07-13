@@ -62,7 +62,7 @@ class PromptBuilder:
     ) -> tuple[str, str]:
         """构建双产物 prompt：(polished_prompt, notes_prompt)。
 
-        Excel 特殊处理：返回 (report_prompt, summary_prompt)。
+        Excel 只生成数据摘要，两个产物内容相同。
         """
         if source_type == "xlsx":
             # Excel 只有数据摘要一个产物（分析报告已移除——LLM 无法做真正的数值分析）
