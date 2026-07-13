@@ -5,7 +5,7 @@ import { loadGenPrefs } from '../gen-panel/genPrefs'
 import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle } from 'lucide-react'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle, Copy, Check } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -20,6 +20,45 @@ import { TranscriptView } from './TranscriptView'
 import { MarkdownPreview } from './MarkdownPreview'
 import { PartialBanner } from './PartialBanner'
 import 'katex/dist/katex.min.css'
+
+function CopyContentBtn({ activeView, currentContent, currentPolishedContent, currentRawText, currentFactCheckContent }: {
+  activeView: string
+  currentContent: string | null
+  currentPolishedContent: string | null
+  currentRawText: string | null
+  currentFactCheckContent: string | null
+}) {
+  const [copied, setCopied] = useState(false)
+  const addToast = useStore(s => s.addToast)
+
+  const getContent = () => {
+    switch (activeView) {
+      case 'polished': return currentPolishedContent
+      case 'fact_check': return currentFactCheckContent
+      case 'data_preview':
+      case 'transcript': return currentRawText
+      default: return currentContent
+    }
+  }
+
+  const handleCopy = () => {
+    const text = getContent()
+    if (!text) { addToast('没有可复制的内容', 'error'); return }
+    navigator.clipboard.writeText(text).then(
+      () => { setCopied(true); addToast('已复制到剪贴板'); setTimeout(() => setCopied(false), 1500) },
+      () => addToast('复制失败', 'error'),
+    )
+  }
+
+  if (!getContent()) return null
+
+  return (
+    <button onClick={handleCopy}
+      className="px-3 py-1.5 text-[12px] rounded-full transition-colors text-dimmed hover:bg-surface-hover"
+      title="复制内容"
+    >{copied ? <Check size={14} className="text-success" /> : <Copy size={14} />}</button>
+  )
+}
 
 /** PreviewArea 主组件 — 内容预览 + Tab 切换 + 工具栏 */
 export function PreviewArea() {
@@ -604,6 +643,13 @@ export function PreviewArea() {
           )}
         </div>
         <div className="flex items-center gap-1.5">
+          <CopyContentBtn
+            activeView={activeView}
+            currentContent={currentContent}
+            currentPolishedContent={currentPolishedContent}
+            currentRawText={currentRawText}
+            currentFactCheckContent={currentFactCheckContent}
+          />
           <ExportMenu />
           <button
             onClick={() => setShowLogs(!showLogs)}

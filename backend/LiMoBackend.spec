@@ -32,6 +32,16 @@ hiddenimports = [
     'pymupdf4llm', 'tiktoken', 'ffmpeg',
     'dateparser_data',
     'markdown', 'pygments', 'pygments.lexers', 'pygments.formatters', 'pygments.styles',
+    # app 模块（函数内动态 import，PyInstaller 静态分析遗漏）
+    'app.generation.generator', 'app.generation.content_preparer',
+    'app.generation.prompt_builder', 'app.generation.prompt',
+    'app.generation.fact_check', 'app.core.model_resolver',
+    'app.core.cookie_parser', 'app.utils.url_security',
+    'app.utils.screenshot_marker', 'app.utils.video_helper',
+    'app.utils.video_reader', 'app.downloaders.douyin_downloader',
+    'app.downloaders.douyin_helper',
+    'app.llm', 'app.llm.service', 'app.llm.agent', 'app.llm.errors',
+    'app.agent', 'app.agent.tools',
 ]
 
 # 引擎相关
