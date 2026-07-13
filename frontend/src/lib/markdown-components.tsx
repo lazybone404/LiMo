@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Copy, Check, Play, Camera, Link2, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react'
+import { Copy, Check, Play, Camera, Link2 } from 'lucide-react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { appUrl } from '../api/client'
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
@@ -111,37 +111,6 @@ function MarkdownImage({ src, alt, ...props }: any) {
           onError={() => setBroken(true)}
           {...props} />
       </Zoom>
-    </div>
-  )
-}
-
-/** 可缩放表格容器 — 支持放大/缩小/重置，按钮 hover 时可见 */
-function ZoomableTable({ children }: { children: React.ReactNode }) {
-  const [scale, setScale] = useState(100)
-  const min = 25; const max = 200; const step = 25
-  return (
-    <div className="group relative md-table-wrap overflow-auto my-4 rounded-lg border border-border-light" style={{ maxHeight: '70vh' }}>
-      {/* 缩放控制 — hover 时显示在右上角 */}
-      <div className="absolute top-2 right-2 z-10 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity bg-surface/90 backdrop-blur rounded-md border border-border-light px-1 py-0.5 shadow-sm">
-        <button onClick={() => setScale(s => Math.max(min, s - step))} disabled={scale <= min}
-          className="p-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" title="缩小">
-          <ZoomOut size={14} />
-        </button>
-        <span className="text-[11px] font-mono text-dimmed min-w-[36px] text-center select-none">{scale}%</span>
-        <button onClick={() => setScale(s => Math.min(max, s + step))} disabled={scale >= max}
-          className="p-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" title="放大">
-          <ZoomIn size={14} />
-        </button>
-        {scale !== 100 && (
-          <button onClick={() => setScale(100)}
-            className="p-1 rounded hover:bg-surface-hover text-dimmed hover:text-foreground transition-colors" title="重置">
-            <RotateCcw size={12} />
-          </button>
-        )}
-      </div>
-      <div style={{ zoom: `${scale / 100}` }}>
-        <table className="min-w-full">{children}</table>
-      </div>
     </div>
   )
 }
@@ -271,7 +240,9 @@ export function createMarkdownComponents(sourceUrl?: string, isVideo?: boolean) 
       return <li {...props}>{processed}</li>
     },
     table: ({ children }: any) => (
-      <ZoomableTable>{children}</ZoomableTable>
+      <div className="md-table-wrap overflow-x-auto my-4 rounded-lg border border-border-light">
+        <table className="min-w-full">{children}</table>
+      </div>
     ),
   }
 }
