@@ -9,6 +9,7 @@
 ## 2026-07-13 — 全面修复：8 项增强 + Bcut ASR + KaTeX + 公式渲染 + 引擎语义修正 + 打包
 
 ### 本轮追加修复（同日）
+
 - **配置 Key 重启丢失**：`init_engines` 中 ASR 绑定强制先删后插重排 → 每次启动 `asr_changed=True` → `save_config` 写全量 config.yaml。若内存 config 缺字段则永久丢失。改为仅空列表初始化，后续启动不再触发保存。新增日志标注每次保存的变更来源
 - **表格滚动条**：全局 CSS 补 `height: 4px`（横向滚动条之前 0px=不可见），新增 `.md-table-wrap` 8px 可见滚动条 + hover 变色。表格改用标准 `overflow-x: auto` 包裹（对标 GitHub），不嵌套纵向滚动避免"滑到底才能横滚"的体验问题
 - **Excel 分析报告无价值**：新增 `_parse_markdown_table()` 解析表格→结构化摘要（行列数+列名+首尾样品），重写 prompt 模板新增 `⚠️ 严禁事项` 禁止重复输出原始表格。51KB 原始数据→~1KB 摘要发给 LLM
@@ -22,6 +23,7 @@
 - **产物选择同步**：切换文档类型时自动重置 selectedCore 到可用产物列表，消除 Excel 默认勾选不一致
 
 ### Bug 修复
+
 - **UnboundLocalError**：`process.py`/`model.py` 函数内条件导入 `EngineRegistry` 覆盖模块级导入 → 条件未命中时抛异常。AST 扫描确认全代码库无其他同类问题
 - **KaTeX 字体 404**：CSS 内联后 `@font-face` 保留相对路径 → 离线 HTML 公式渲染异常。60 字体 base64 内联 + 补齐 `backend/static/katex/fonts/`
 - **公式渲染破裂**：`remarkGfm` 在 `remarkMath` 之前 → `_`/`<` 被误解析 → `$$` 块破裂。交换插件顺序
@@ -29,30 +31,36 @@
 - **表格无滚动**：`<table>` 无容器 → 宽表溢出。新增 `overflow-x: auto` 包裹 + `.md-table-wrap` 8px 可见滚动条
 
 ### 引擎与适配器
+
 - **引擎降级语义修正**：`auto_fallback` 不再拦截扩展名兜底（新用户无绑定时必须可用），仅控制引擎失败后的重试行为
 - **未知扩展名兜底**：`markitdown` → `pymupdf`
 - **Bcut ASR 引擎**：B站必剪免费云转写，启动时自动绑定为 ASR 默认，优先级最高
 
 ### HTML 导出
+
 - 标题锚点 id、时间戳 badge（Content 蓝色/Screenshot 橙色）、MD 图片路径绝对 URL 重写
 - Pygments 代码高亮 + GFM 删除线/任务列表 + `nl2br` 移除
 
 ### 错误处理
+
 - 5 端点静默失败 → Toast（App 初始化/设置保存/聊天加载）
 - 引擎降级 toggle Toast、streamFactCheck `receivedDoneOrError` 守卫
 - LogPanel 阈值 12s→6s、SSE queue 异常类型收窄
 
 ### 代码质量
+
 - spec `hiddenimports` 清理 5 处无效条目 → 0 ERROR
 - 3 条新后端模式（`CREATE_NO_WINDOW`、`store.root`、`_watch_disconnect`）+ 2 条（阴影导入、插件顺序、auto_fallback 语义）
 - 文档全面同步（CLAUDE.md/STATUS.md/CHANGELOG.md）
 
 ### 打包
+
 - ffmpeg.exe + ffprobe.exe（434MB）内置，MSI 514MB
 - KaTeX 60 字体打包
 
 ### 影响范围
-- **后端**：export.py / ingest.py / process.py / model.py / document.py / LiMoBackend.spec / engines/__init__.py / prompt.py
+
+- **后端**：export.py / ingest.py / process.py / model.py / document.py / LiMoBackend.spec / engines/**init**.py / prompt.py
 - **前端**：client.ts / ProviderSettings.tsx / LogPanel.tsx / GenPanel.tsx / markdown-components.tsx / markdown-plugins.ts / index.css / App.tsx / ChatCore.tsx / SettingsPage.tsx
 - **打包**：bin/LiMoBackend/ffmpeg/ / backend/static/katex/fonts/
 - **文档**：CLAUDE.md / STATUS.md / CHANGELOG.md
@@ -62,15 +70,19 @@
 ## 2026-07-12 — 新图标 + README 重写 + 文档中链接修复
 
 ### 新应用图标
+
 白底深蓝国风"沥墨"图形，替换了全部尺寸的图标（Tauri 打包 + favicon + 顶栏 logo）。
 
 ### README 重写
+
 按用户任务重新组织——导入能做什么、AI 能产出什么、怎么导出——而不是堆技术细节。
 
 ### 旧产物死链接修复
+
 历史 `[▶ mm:ss](#)` 链接渲染为静态 Play badge，不再触发页面滚动。
 
 ### 影响范围
+
 - **文档**：README.md / CHANGELOG.md
 - **前端**：App.tsx / index.html / markdown-components.tsx / 图标文件
 
@@ -79,20 +91,25 @@
 ## 2026-07-12 — Content 时间戳可点击 + 标题锚点滚动修复 + PPT 默认引擎切换
 
 ### Content-[mm:ss] → 可点击跳转
+
 对标 BiliNote：`Content-[mm:ss]` 现在是可点击的链接，点击跳转到原视频对应时间点（B站/YouTube/通用格式）。仅视频文档生效，非视频文档显示静态 badge。
 
 ### 标题锚点 `scrollIntoView`
+
 点击 `#heading-id` 链接不再带动整个窗口滚动，改为 `preventDefault` + 目标元素 `scrollIntoView`，仅影响预览区。
 
 ### 旧产物 `[▶ mm:ss](#)` 死链接
+
 `_post_process_content_markers` 历史残留的 `href="#"` 链接不再跳转，渲染为静态 Play badge。
 
 ### PPTX 默认引擎 markitdown → python-pptx
+
 MarkItDown 对某些 PPTX 不提取图片（找到 0 个 base64）。`doc:ppt` 默认引擎换回 `python-pptx`。
 
 ### 影响范围
+
 - **前端**：markdown-components.tsx / MarkdownPreview.tsx / PreviewArea.tsx / GenPanel.tsx / ExportPanel.tsx
-- **后端**：engines/__init__.py / document.py
+- **后端**：engines/**init**.py / document.py
 
 ---
 
@@ -101,6 +118,7 @@ MarkItDown 对某些 PPTX 不提取图片（找到 0 个 base64）。`doc:ppt` �
 ### Doc 引擎自动绑定（开箱即用）
 
 用户第一次用不需要碰引擎设置。三层修复：
+
 - **后端**：`init_engines` 启动时自动注册 7 个 doc 子场景（text+image/word/ppt/excel/epub 等）到 `engine_models` + `engine_bindings`，MD5 ID 与 `build_engine_models` 对齐。save_config 移出 Tesseract try 块，绑写不受影响
 - **前端**：页面加载时自动把 null 的 binding 填成第一个可用引擎 ID，`saveEngineBindings` 写盘
 - 下拉框「系统默认」不再是空壳——背后有真实 ID
@@ -108,6 +126,7 @@ MarkItDown 对某些 PPTX 不提取图片（找到 0 个 base64）。`doc:ppt` �
 ### 截图导出内联
 
 导出系统之前只内联 `/api/files/` 文档图片，漏了 `/static/screenshots/` 视频截图。
+
 - `_find_image_refs` 新增 `_SS_RE` 匹配截图 URL
 - `_collect_images` 支持 `screenshots/` 目录读取
 - `_inline_images` / `_rewrite_image_paths` 同时处理两种图片源
@@ -126,7 +145,8 @@ MarkItDown 对某些 PPTX 不提取图片（找到 0 个 base64）。`doc:ppt` �
 - 生成/导出完成后均有 Toast 提示
 
 ### 影响范围
-- **后端**：engines/__init__.py / export.py / generator.py / video*.py / asr_cloud.py
+
+- **后端**：engines/**init**.py / export.py / generator.py / video\*.py / asr_cloud.py
 - **前端**：GenPanel.tsx / ExportPanel.tsx / ExportMenu.tsx / markdown-components.tsx / DocLibrary.tsx / VideoBanner.tsx
 
 ---
@@ -134,18 +154,23 @@ MarkItDown 对某些 PPTX 不提取图片（找到 0 个 base64）。`doc:ppt` �
 ## 2026-07-12 — ffmpeg 黑框消除 + 标记渲染修复 + URL 统一
 
 ### subprocess 黑框消除
+
 生成视频产物时 ffmpeg 会弹出 cmd 黑框。6 处 `subprocess.run` 调用加 `creationflags=subprocess.CREATE_NO_WINDOW`：
+
 - `video_reader.py` / `video_helper.py` / `video.py` / `asr_cloud.py` / `export.py`
 
 ### Content/Screenshot 标记渲染修复
+
 - `Content-[mm:ss]`：后端不再替换为死链接 `[▶ mm:ss](#)`，改为保留原文。前端渲染为 Play 图标时间戳 badge
 - `Screenshot-[mm:ss]`：前端新增 Camera 图标 badge 渲染。后端勾选「原片截图」后 ffmpeg 抽帧替换为真实图片
 - 后端 `_post_process_content_markers` 仅移除前导 `*`（避免 markdown 斜体干扰），不改变标记主体
 
 ### `appUrl()` 统一应用内 URL
+
 Tauri 打包端无 Vite proxy，`/api/` 和 `/static/` 路径需转为绝对 URL。新增 `appUrl(path)` 函数，统一 `MarkdownImage` / `DocLibrary` / `VideoBanner` 三处图片加载。
 
 ### 影响范围
+
 - **后端 5 文件**：video_reader.py / video_helper.py / video.py / asr_cloud.py / export.py / generator.py
 - **前端 3 文件**：client.ts / markdown-components.tsx / DocLibrary.tsx / VideoBanner.tsx
 
@@ -154,31 +179,39 @@ Tauri 打包端无 Vite proxy，`/api/` 和 `/static/` 路径需转为绝对 URL
 ## 2026-07-12 — 打包兼容 + 路径统一 + 测试支撑
 
 ### `_transcribe` 漏 `await` 修复
+
 video.py 两处 `self._transcribe(...)` 改为 `async def` 后漏 `await`，返回 coroutine → 下游 `asr_result.get("segments")` 抛 `AttributeError`。
 
 ### `appUrl()` 统一 URL 转换
+
 打包端（Tauri）无 Vite proxy，`/api/` 和 `/static/` 路径需转为 `http://127.0.0.1:7413` 绝对 URL。新增 `appUrl(path)` 函数，统一处理 `/api/`、`/static/`、外部链接三种情况。
 
 **受影响组件**（全改为 `appUrl()`）：
+
 - `MarkdownImage`：笔记内嵌图片、截图
 - `DocLibrary`：文档封面
 - `VideoBanner`：视频横幅封面
 
 ### 截图路径从 CWD → data_dir
+
 - 后端生成：`os.getcwd()/data/screenshots/` → `{store_root}/screenshots/`
 - StaticFiles 挂载：模块级相对路径 → startup 内 `{data_dir}/screenshots/`
 - 打包端和网页端统一到 `~/.mybigwork/screenshots/`
 
 ### 文件日志
+
 新增 `app.log`（5×2MB 滚动，INFO 全量），路径 `{data_dir}/app.log`。打包端用户无法看终端，错误排查全靠这个文件。
 
 ### 文档删除时清理图片
+
 `Store.delete_transcript` 现在清理 `files/{tx_id}/` 目录（文档内嵌图片），避免孤儿文件堆积。
 
 ### MarkItDown 图片诊断
+
 `MarkItDownEngine` 加日志：找到 base64 图片数、写入成功数、解码失败详情。
 
 ### 影响范围
+
 - **后端 4 文件**：video.py / main.py / generator.py / store.py / doc.py
 - **前端 4 文件**：client.ts / markdown-components.tsx / DocLibrary.tsx / VideoBanner.tsx
 
@@ -187,31 +220,39 @@ video.py 两处 `self._transcribe(...)` 改为 `async def` 后漏 `await`，返�
 ## 2026-07-11 — 交互修复 + 导出面板重构 + 默认值修正
 
 ### AI 面板 / 思维导图滚动修复
+
 - AI 面板 `scrollIntoView` → 容器 `scrollTop`，不再带动全页上翻
 - 思维导图 `mm.fit()` defer 到 `requestAnimationFrame`，避免布局未完成触发页面滚动
 
 ### 思维导图白屏
+
 `flex-1 bg-elevated` + `minHeight:200px` → 容器高度不足时 SVG 只有 200px，剩余空间显示浅色背景（像白色遮罩）。改为 `absolute inset-0` 填满父容器。
 
 ### ExportPanel 重构
+
 - 按钮标签：「导出全部产物」→「一键导出所有产物 (ZIP)」；「导出 N 个文件」→「按上方设置导出 N 个文件」
 - 删除 Markdown 预览（内容和导出不一致），替换为文字摘要
 - 清理死代码：5 个无用 import、3 个 store selector、2 个 state 变量
 
 ### SVG 导出文字消失
+
 `cloneNode` 丢失外部 CSS → 内联页面所有样式表规则到 `<style>` 标签注入 SVG。
 
 ### `streamDisplay=false` 产物静默丢失
+
 流式关闭时 `onChunk` 直接 return，`onDone` 从空缓冲区取内容 → 产物永远为空。改为内部 ref 缓冲区始终累积，不受开关影响。
 
 ### SSE `\r\n` 解析
+
 部分 API 返回 CRLF 换行 → JSON 解析失败，事件静默丢弃。4 处 SSE 解析统一加 `\r\n→\n` 归一化。
 
 ### 默认值修正
+
 - `engine_auto_fallback`：`True → False`，引擎失败直接报错而非静默降级
 - 公式图片渲染：`dpi 150→100, fontsize 16→14, pad 0.08→0.05`
 
 ### 影响范围
+
 - **前端 5 文件**：GenPanel.tsx / client.ts / MindmapView.tsx / ExportPanel.tsx / ExportMenu.tsx
 - **后端 2 文件**：config.py / export.py
 
@@ -223,11 +264,11 @@ video.py 两处 `self._transcribe(...)` 改为 `async def` 后漏 `await`，返�
 
 全量审计 36+ Python 文件，修复 3 处漏 import：
 
-| 文件 | 漏的 import | 触发场景 |
-|------|------------|---------|
-| `adapters/document.py` | `FatalError` | Doc 导入时引擎未绑定 → NameError 500 |
-| `routers/model.py` | `AppError` | 厂商/引擎名称校验失败 → NameError 500 |
-| `routers/export.py` | `shutil` | KaTeX 服务端渲染预检 `shutil.which("node")` → NameError 500 |
+| 文件                   | 漏的 import  | 触发场景                                                    |
+| ---------------------- | ------------ | ----------------------------------------------------------- |
+| `adapters/document.py` | `FatalError` | Doc 导入时引擎未绑定 → NameError 500                        |
+| `routers/model.py`     | `AppError`   | 厂商/引擎名称校验失败 → NameError 500                       |
+| `routers/export.py`    | `shutil`     | KaTeX 服务端渲染预检 `shutil.which("node")` → NameError 500 |
 
 ### 纯文本 LLM 截图 prompt 修复
 
@@ -269,14 +310,14 @@ PyInstaller + Tauri v2 双包构建成功，含 ffmpeg 运行时。
 
 ### 修复
 
-| # | 严重度 | 问题 | 文件 |
-|---|:---:|------|------|
-| B1 | 中 | `_warn_mismatched_fields` 误报：`image_analyze` 加入 video 后，两个类型互相检查时会打 warning | `generate.py` |
-| B2 | 高 | 单产物路径用 raw `mode` 而非 `stream_mode` 判断 GenerateMode，传入非标准 mode 值时可能误判 | `generate.py` |
-| B6 | 中 | `generate_both` 只对 notes 做截图后处理，漏了 polished 内容 | `generator.py` |
-| B7 | 中 | `_optimize_data_uri` 缺 RGBA→RGB 转换，VL RGBA 图片保存 JPEG 可能失败 | `content_preparer.py` |
-| B8 | 中 | yt-dlp 下载失败时临时目录泄漏，长时间运行累积磁盘占用 | `content_preparer.py` |
-| B10 | 低 | ASR 绑定日志说 whisper-small 是默认，实际 bcut 是首选 | `engines/__init__.py` |
+| #   | 严重度 | 问题                                                                                          | 文件                  |
+| --- | :----: | --------------------------------------------------------------------------------------------- | --------------------- |
+| B1  |   中   | `_warn_mismatched_fields` 误报：`image_analyze` 加入 video 后，两个类型互相检查时会打 warning | `generate.py`         |
+| B2  |   高   | 单产物路径用 raw `mode` 而非 `stream_mode` 判断 GenerateMode，传入非标准 mode 值时可能误判    | `generate.py`         |
+| B6  |   中   | `generate_both` 只对 notes 做截图后处理，漏了 polished 内容                                   | `generator.py`        |
+| B7  |   中   | `_optimize_data_uri` 缺 RGBA→RGB 转换，VL RGBA 图片保存 JPEG 可能失败                         | `content_preparer.py` |
+| B8  |   中   | yt-dlp 下载失败时临时目录泄漏，长时间运行累积磁盘占用                                         | `content_preparer.py` |
+| B10 |   低   | ASR 绑定日志说 whisper-small 是默认，实际 bcut 是首选                                         | `engines/__init__.py` |
 
 ### 死代码清理
 
@@ -291,6 +332,7 @@ PyInstaller + Tauri v2 双包构建成功，含 ffmpeg 运行时。
 ### LLM 流式诊断增强
 
 `service.py` 加两份日志：
+
 - 多模态请求体大小：`img_chars=2500K`，帮助诊断上传瓶颈
 - 首个 chunk 到达时间：定位延迟在 API 侧还是网络侧
 
@@ -338,7 +380,7 @@ PyInstaller + Tauri v2 双包构建成功，含 ffmpeg 运行时。
           ├── 单帧分辨率 / JPEG 质量
           ├── 相邻重复帧去重 / 帧质量过滤
           └── 图片预处理
-  
+
   笔记格式
   └── 原片截图  ← 独立，ffmpeg 单帧，不经过大模型
 ```
@@ -383,10 +425,10 @@ VL 图片和文档 data URI 发给 LLM 时此前不经过 optimize_images。
 
 视频类型有两套完全独立的图片系统，之前被错误地耦合在一起：
 
-| 选项 | 管线 | 时机 | 图片流向 |
-|------|------|------|----------|
-| **原片截图** | ffmpeg 单帧抽取 | LLM 生成**后**，按 AI 标记的时间点抽帧 | 嵌入文章，**不经过大模型** |
-| **启用画面截图** | VL 管线（下载视频→抽帧→拼网格→base64） | LLM 生成**前** | 嵌入文章 + 可选发给 LLM（AI 分析图片） |
+| 选项             | 管线                                   | 时机                                   | 图片流向                               |
+| ---------------- | -------------------------------------- | -------------------------------------- | -------------------------------------- |
+| **原片截图**     | ffmpeg 单帧抽取                        | LLM 生成**后**，按 AI 标记的时间点抽帧 | 嵌入文章，**不经过大模型**             |
+| **启用画面截图** | VL 管线（下载视频→抽帧→拼网格→base64） | LLM 生成**前**                         | 嵌入文章 + 可选发给 LLM（AI 分析图片） |
 
 **问题 1**：「原片截图」被 `disabled={!videoUnderstanding}` 人为禁用，但后端 `generate.py:378` 本来就在无 VL 时独立下载视频做截图。**修复**：移除该约束，两个选项完全独立。
 
@@ -412,11 +454,11 @@ VL 图片和文档 data URI 发给 LLM 时此前不经过 optimize_images。
 
 `optimize_images=True`（图片预处理）此前只在部分路径生效：
 
-| 图片来源 | 嵌入文本 | 发给 LLM |
-|---------|:---:|:---:|
-| VL 网格图 | ✅ `_format_vl_images` | ❌→✅ `_optimize_data_uri` |
-| 文档 data URI | 不嵌入（剥离） | ❌→✅ `_optimize_image_data` |
-| 文档文件引用 | 保留原路径 | ✅ `_optimize_image_data` |
+| 图片来源      |        嵌入文本        |           发给 LLM           |
+| ------------- | :--------------------: | :--------------------------: |
+| VL 网格图     | ✅ `_format_vl_images` |  ❌→✅ `_optimize_data_uri`  |
+| 文档 data URI |     不嵌入（剥离）     | ❌→✅ `_optimize_image_data` |
+| 文档文件引用  |       保留原路径       |  ✅ `_optimize_image_data`   |
 
 ### 影响范围
 
@@ -444,6 +486,7 @@ faster-whisper 需要本地下载模型（~500MB），首次使用慢且占用 C
 ### 实现
 
 `backend/app/engines/asr_bcut.py` — `BcutASREngine`，实现 `Engine` 协议：
+
 - 分片上传音频（最多 ~500 分片）
 - 创建转写任务 → 轮询结果（最长 500s 超时）
 - 逐轮检查 `cancel_event`，支持取消
@@ -482,6 +525,7 @@ ImportError: DLL load failed while importing _ssl: 找不到指定的程序。
 ### 修复
 
 `LiMoBackend.spec` 中：
+
 1. `collect_all('cryptography')` 后过滤掉其携带的 `libcrypto*/libssl*` DLL
 2. 显式从 `sys.base_prefix/DLLs/` 添加 Python 原生的 OpenSSL DLL
 
@@ -565,6 +609,7 @@ Tesseract OCR 在 `init_engines()` 中有完整的自动注册逻辑（写入 `e
 ### 修复
 
 `app/engines/__init__.py`：对标 Tesseract 补齐 ASR 三步自动注册：
+
 1. 写入 `engine_models`（faster-whisper-small/medium + dashscope）
 2. faster-whisper-small 作为默认首选（本地免费，零配置即可用）
 3. 清理 `engine_bindings` 中失效的绑定 ID
@@ -581,6 +626,7 @@ Tesseract OCR 在 `init_engines()` 中有完整的自动注册逻辑（写入 `e
 ### 现象
 
 点击取消按钮后前端 UI 清除、`AbortController.abort()` 触发，但后端继续消耗 token / CPU：
+
 - **chat/stream**：`cancel_event` 创建后没人 set，Agent 工具循环继续跑
 - **process（图片处理）**：完全没有取消机制，LLM 调用不可中断
 - **本地 ASR（faster-whisper）**：同步阻塞代码卡死事件循环，`_watch_disconnect` 协程无机会执行
@@ -588,19 +634,20 @@ Tesseract OCR 在 `init_engines()` 中有完整的自动注册逻辑（写入 `e
 ### 根因
 
 三个独立问题：
+
 1. `chat.py` 有 `cancel_event = asyncio.Event()` 但没有 `_watch_disconnect` 任务来监听客户端断连并 set 它
 2. `process.py` 是普通 POST 端点，`async with guard.semaphore` 内部没有任何取消检测
 3. `video.py:_transcribe()` 中 `engine.run()` 是同步阻塞调用，整个事件循环被卡死（包括 `_watch_disconnect`）。faster-whisper 逐段 yield 但未检查取消信号
 
 ### 修复
 
-| 层 | 文件 | 改动 |
-|------|------|------|
-| chat 端点 | `routers/chat.py` | 加 `_watch_disconnect` + finally cleanup |
-| process 端点 | `routers/process.py` | 加 `cancel_event` + disconnect 监听，传入 `llm.call()` |
-| 适配器 | `adapters/video.py` | `_transcribe` 改为 `async`，`engine.run()` 用 `asyncio.to_thread` 放到线程池 |
-| ASR 引擎 | `engines/asr.py` | `execute()` 接受 `cancel_event`，逐 segment 检查并抛 `FatalError` |
-| 云端 ASR | `engines/asr_cloud.py` | `execute()` 签名加 `**kwargs` 兼容 cancel_event 透传 |
+| 层           | 文件                   | 改动                                                                         |
+| ------------ | ---------------------- | ---------------------------------------------------------------------------- |
+| chat 端点    | `routers/chat.py`      | 加 `_watch_disconnect` + finally cleanup                                     |
+| process 端点 | `routers/process.py`   | 加 `cancel_event` + disconnect 监听，传入 `llm.call()`                       |
+| 适配器       | `adapters/video.py`    | `_transcribe` 改为 `async`，`engine.run()` 用 `asyncio.to_thread` 放到线程池 |
+| ASR 引擎     | `engines/asr.py`       | `execute()` 接受 `cancel_event`，逐 segment 检查并抛 `FatalError`            |
+| 云端 ASR     | `engines/asr_cloud.py` | `execute()` 签名加 `**kwargs` 兼容 cancel_event 透传                         |
 
 **关键设计**：`asyncio.to_thread` 将同步引擎调用放到后台线程，事件循环恢复空闲 → `_watch_disconnect` 可正常运行 → `cancel_event.set()` → 线程中引擎在下一个 segment 检测到 → 立即停止，不再跑完整个转写。
 
@@ -668,6 +715,7 @@ Tesseract OCR 在 `init_engines()` 中有完整的自动注册逻辑（写入 `e
 **文件**: `backend/app/engines/doc.py`
 
 `_extract_pptx_image()` 现在支持双模式：
+
 - `media_dir` 非空 → 写文件引用 `![slide image](img_0001.png)`（原行为）
 - `media_dir` 为空 → 内嵌 base64 `![slide image](data:image/png;base64,...)`
 
@@ -695,15 +743,15 @@ Tesseract OCR 在 `init_engines()` 中有完整的自动注册逻辑（写入 `e
                           content_preparer: keep_refs/send_to_llm 控制
 ```
 
-| 引擎 | 图片输出 | 备注 |
-|------|---------|------|
-| PyMuPDF (text_only=False) | ✅ 文件/base64 | 嵌入图片 + 表格 |
-| PyMuPDF4LLM | ✅ 文件/base64 | write_images=True |
-| MarkItDown | ✅ 文件/base64 | 全格式通用 |
-| DocxEngine (text_only=False) | ✅ 文件/base64 | 行内图片 |
+| 引擎                         | 图片输出       | 备注                     |
+| ---------------------------- | -------------- | ------------------------ |
+| PyMuPDF (text_only=False)    | ✅ 文件/base64 | 嵌入图片 + 表格          |
+| PyMuPDF4LLM                  | ✅ 文件/base64 | write_images=True        |
+| MarkItDown                   | ✅ 文件/base64 | 全格式通用               |
+| DocxEngine (text_only=False) | ✅ 文件/base64 | 行内图片                 |
 | PptxEngine (text_only=False) | ✅ 文件/base64 | **本轮新增 base64 回退** |
-| EpubEngine | ✅ 文件/base64 | **本轮新增 base64 回退** |
-| ExcelEngine | ❌ | 无图片管线（表格为主） |
+| EpubEngine                   | ✅ 文件/base64 | **本轮新增 base64 回退** |
+| ExcelEngine                  | ❌             | 无图片管线（表格为主）   |
 
 ### 影响范围
 
@@ -725,6 +773,7 @@ Tesseract OCR 在 `init_engines()` 中有完整的自动注册逻辑（写入 `e
 **根因**：`_get_markmap_assets()` 仅从 `frontend/node_modules/` 读取 d3.js 和 markmap JS 文件。PyInstaller 打包后该路径不存在，思维导图 HTML 导出依赖 CDN fallback，但 Tauri WebView2 跟踪防护会拦截 CDN 请求，导致离线环境导出空白。
 
 **改法**：
+
 - `export.py` `_get_markmap_assets()`：增加双路径搜索（对标 KaTeX 已有设计）
   - 开发环境：`frontend/node_modules/`（优先）
   - 打包环境：`backend/static/markmap/`（备选）
@@ -738,6 +787,7 @@ Tesseract OCR 在 `init_engines()` 中有完整的自动注册逻辑（写入 `e
 **根因**：`FactCheckEngine.verify_claim()` 中搜索、LLM 调用、未预期异常共用一个笼统的 catch，日志 `验证 claim '...' 失败: {e}` 无法区分失败阶段。上次日志中 `失败: ` 后面为空即是因为异常类型不明。
 
 **改法**：
+
 - 搜索阶段：独立 try/except，记录 provider source + query
 - 搜索无结果时：info 级别日志记录 provider 和 query（方便排查是搜索源问题还是 query 问题）
 - LLM 交叉验证阶段：独立 try/except，标识"LLM 交叉验证失败"
@@ -745,12 +795,12 @@ Tesseract OCR 在 `init_engines()` 中有完整的自动注册逻辑（写入 `e
 
 #### 3. 核实 plan 中 47 项实际状态
 
-| 状态 | 项目 |
-|------|------|
-| 已修复 | C1, H1-H8, H12（9 项，之前会话中已修） |
-| 误报 | C2（`disconnect_task=None` 在 try 前是防御性写法，finally 块引用它做 None 检查） |
-| 本轮修复 | d3.js 离线、事实验证日志（2 项） |
-| 低优先级 | SearXNG 未打包（200MB+ 依赖，非 bug，搜索降级链正常） |
+| 状态     | 项目                                                                             |
+| -------- | -------------------------------------------------------------------------------- |
+| 已修复   | C1, H1-H8, H12（9 项，之前会话中已修）                                           |
+| 误报     | C2（`disconnect_task=None` 在 try 前是防御性写法，finally 块引用它做 None 检查） |
+| 本轮修复 | d3.js 离线、事实验证日志（2 项）                                                 |
+| 低优先级 | SearXNG 未打包（200MB+ 依赖，非 bug，搜索降级链正常）                            |
 
 ### 影响范围
 
@@ -765,6 +815,7 @@ Tesseract OCR 在 `init_engines()` 中有完整的自动注册逻辑（写入 `e
 ### 背景
 
 用户反馈两个问题：
+
 1. "详细导出无法导出" — 控制台报 `/api/api/export/custom` 404
 2. "快速导出导出的不是预览栏展示的对应产物"
 
@@ -776,14 +827,14 @@ Tesseract OCR 在 `init_engines()` 中有完整的自动注册逻辑（写入 `e
 
 **根因**：`downloadFromUrl()` / `apiUrl()` 内部已拼接 BASE（含 `/api`），但调用方又传了带 `/api` 前缀的路径。
 
-| 文件 | 修复 |
-|------|------|
-| `ExportMenu.tsx:85` HTML 导出 | `/api/export/` → `/export/` |
-| `ExportMenu.tsx:121` 思维导图导出 | 同上 |
-| `ExportMenu.tsx:164` ZIP 导出 | 同上 |
-| `ExportPanel.tsx:346` 导出全部产物 | 同上 |
-| `ExportPanel.tsx:362` 详细导出 | `apiUrl('/api/export/custom')` → `apiUrl('/export/custom')` |
-| `ChatCore.tsx:313` 对话导出 | 同上 |
+| 文件                               | 修复                                                        |
+| ---------------------------------- | ----------------------------------------------------------- |
+| `ExportMenu.tsx:85` HTML 导出      | `/api/export/` → `/export/`                                 |
+| `ExportMenu.tsx:121` 思维导图导出  | 同上                                                        |
+| `ExportMenu.tsx:164` ZIP 导出      | 同上                                                        |
+| `ExportPanel.tsx:346` 导出全部产物 | 同上                                                        |
+| `ExportPanel.tsx:362` 详细导出     | `apiUrl('/api/export/custom')` → `apiUrl('/export/custom')` |
+| `ChatCore.tsx:313` 对话导出        | 同上                                                        |
 
 #### 2. ExportMenu 重写 — 集中式 Tab→内容映射表
 
@@ -816,6 +867,7 @@ const TAB_EXPORT: Record<string, TabExportConfig> = {
 **为什么**：图片文档（sourceType=image）没有 markdown 条目，处理结果存在 `process_results` 中。原先 `export_content` 端点只查 markdown 表 → 404。
 
 **改法**：在 `export.py:115` 增加回退链：
+
 ```
 markdown（notes/polished/fact_check）→ process_results（extract/table 等）→ 404
 ```
@@ -863,9 +915,11 @@ markdown（notes/polished/fact_check）→ process_results（extract/table 等�
 #### P2：行内 `$` 解析 — 防误匹配货币
 
 `_protect_latex` / `_remove_formulas` / `_render_formulas_to_images` 三处行内 `$` 正则统一改为 TeX 惯例：
+
 ```
 (?<!\d)\$(?=\S)(.+?)(?<=\S)\$(?!\d)
 ```
+
 `$` 前后不邻数字或空白，不再误匹配 `$5 and $10`。
 
 #### P2：`_to_html` / `HTML_HEAD` / `HTML_FOOT` 弃用

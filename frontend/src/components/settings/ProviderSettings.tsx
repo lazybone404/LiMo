@@ -31,7 +31,7 @@ const DOC_SCENARIOS: Record<string, string> = {
   'doc:ppt-text': 'PPT 仅文字',
   'doc:ppt-convert': 'PPT 文档转换',
   'doc:excel': 'Excel',
-  // TODO(epub): EPUB 暂无专用引擎和子场景，待设计
+  'doc:epub': 'EPUB',
   'doc:epub': 'EPUB',
 }
 

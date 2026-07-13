@@ -124,11 +124,11 @@ export function ImportSection(props: Props) {
                   <EngineSelect category={cat} label="转录方案" options={filteredDocEngines}
                     binding={p.engineBindings[cat] ?? null} onChange={p.handleEngineChange}
                     extraHint={{
-                      pdf: 'PDF 推荐 PyMuPDF 引擎 · 文字+图片+表格',
-                      word: 'Word 推荐 python-docx 引擎 · 文字+表格+图片',
-                      ppt: 'PPT 推荐 python-pptx 引擎 · 文字+表格+图片+备注',
-                      excel: 'Excel 推荐 openpyxl 引擎 · 表格数据提取+图表标签',
-                      epub: 'EPUB 仅支持 MarkItDown 引擎 · 章节结构和图片保留',
+                      pdf: 'PDF 推荐 pymupdf4llm · 文字+图片+矢量图',
+                      word: 'Word 推荐 python-docx · 文字+表格+图片',
+                      ppt: 'PPT 推荐 python-pptx · 文字+表格+图片+备注',
+                      excel: 'Excel 推荐 openpyxl · 表格数据提取+图表标签',
+                      epub: 'EPUB 推荐 ebooklib · 章节结构+图片保留',
                     }[p.fileSubType]} />
                 )
               })()}
