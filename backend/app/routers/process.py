@@ -212,7 +212,6 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
                     raise AppError("PROC_NO_OCR_ENGINE",
                                   "未绑定 OCR 引擎，自动降级已关闭（可在设置中开启）",
                                   recoverable=False)
-                from app.core.registry import EngineRegistry
                 for eng_name in EngineRegistry.list_category("ocr"):
                     engine_priority.append((eng_name, "", "default"))
                     logger.warning("OCR 引擎链为空，降级使用: %s", eng_name)

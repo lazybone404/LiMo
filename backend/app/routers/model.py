@@ -574,8 +574,7 @@ def get_engine_bindings(request: Request):
     name_to_id: dict[str, dict[str, int]] = {}
     for m in cfg.get("engine_models", []):
         name_to_id.setdefault(m["category"], {})[m["model_name"]] = m["id"]
-    # 补充 EngineRegistry 中的引擎
-    from app.core.registry import EngineRegistry
+    # 补充 EngineRegistry 中的引擎（已在模块顶部导入）
     for cat, store in EngineRegistry._stores.items():
         for name in store:
             if cat not in name_to_id or name not in name_to_id[cat]:

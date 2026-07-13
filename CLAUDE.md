@@ -311,6 +311,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 23. **`subprocess.CREATE_NO_WINDOW`**：所有 Windows 下 `subprocess.run/Popen` 调用必须加 `creationflags=subprocess.CREATE_NO_WINDOW`，否则 ffmpeg/yt-dlp 等会弹出 CMD 黑框。当前已涵盖 video.py、video_reader.py、video_helper.py、asr_cloud.py、export.py 共 5 个文件。新增 subprocess 调用时必须携带此 flag。
 24. **文件路径基于 `store.root`**：打包环境下 `os.getcwd()` 指向 exe 所在目录而非数据目录。所有文件读写路径（截图、导出、临时文件等）必须基于 `store.root`。`StaticFiles` 挂载也应在 startup event 中用 `store.root` 动态计算路径，而非模块级 `os.getcwd()` 求值。
 25. **`_watch_disconnect` 标准取消模式**：5 个端点（generate/ingest/retranscribe/chat/process）均使用相同的 `_watch_disconnect` 闭包 + `cancel_event` + `disconnect_task` 模式。新增支持取消的 SSE/长时端点时复用此模式，保持 0.5s 检测间隔和 `finally` 清理逻辑一致。未来可提取为 `app/core/disconnect.py` 公共工具。
+26. **禁止函数内重复导入**：不要在函数内部写已存在于模块顶部的 `from X import Y`。Python 解析到函数内的赋值语句后会将 `Y` 视为整个函数的局部变量——若函数内导入在条件分支中且条件未命中，函数内其他引用会抛出 `UnboundLocalError`。**本次已修复**：process.py:215、model.py:578 的 `EngineRegistry` 阴影导入。新增代码时：函数内仅导入模块级不存在的名称（如打破循环导入），且放在函数顶部无条件路径上。
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始

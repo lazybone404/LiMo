@@ -6,7 +6,10 @@
 
 ---
 
-## 2026-07-13（下午）— 8 项增强修复 + 打包
+## 2026-07-13（下午）— 8 项增强修复 + 阴影导入 bug + 打包
+
+### 关键 Bug 修复：UnboundLocalError（打包版图片处理失败）
+`process.py:215` 和 `model.py:578` 在函数内部有条件 `from app.core.registry import EngineRegistry`，覆盖了模块级同名导入。当条件分支不执行时，局部变量未绑定 → `UnboundLocalError`。**打包版才暴露**：图片处理 + 引擎链非空时才触发。AST 扫描确认全代码库无其他同类问题。
 
 ### HTML 导出预览一致性
 - **标题锚点**：`<h2>/<h3>/<h4>` 自动追加 `id` 属性，算法对齐前端 `headingId()`，导出 HTML 中标题链接可定位
