@@ -1,11 +1,15 @@
 import { useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
+import { REMARK_PLUGINS, REHYPE_PLUGINS, REMARK_PLUGINS_PLAIN, REHYPE_PLUGINS_PLAIN } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
 import { EpubChapterView } from './EpubSkeletonPanel'
 
-export function TranscriptView({ rawText }: { rawText: string }) {
+export function TranscriptView({ rawText, sourceType }: { rawText: string; sourceType?: string }) {
   const components = useMemo(() => createMarkdownComponents(), [])
+  // 网页/纯文本内容不含公式，用纯文本插件避免 KaTeX 误识别 base64/CSS 残留
+  const isPlain = sourceType === 'webpage' || sourceType === 'text'
+  const remark = isPlain ? REMARK_PLUGINS_PLAIN : REMARK_PLUGINS
+  const rehype = isPlain ? REHYPE_PLUGINS_PLAIN : REHYPE_PLUGINS
 
   // 尝试 JSON 解析
   let parsed: any = null
@@ -50,7 +54,7 @@ export function TranscriptView({ rawText }: { rawText: string }) {
 
   return (
     <div className="markdown-body">
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
+      <ReactMarkdown remarkPlugins={remark} rehypePlugins={rehype} components={components}>
         {rawText}
       </ReactMarkdown>
     </div>

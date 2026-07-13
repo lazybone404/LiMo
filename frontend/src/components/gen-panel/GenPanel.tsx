@@ -140,6 +140,17 @@ export function GenPanel() {
     }
   }, [ocrModesReady, ocrSupportedModes, imageMode])
 
+  // 切换文档类型时，确保 selectedCore 匹配当前类型可用的产物
+  useEffect(() => {
+    const validNames = new Set(typeMeta.coreProducts.map(p => p.name))
+    if (validNames.size === 0) return  // 图片类型无产物
+    // 当前选中产物不属于此类型的可选列表 → 重置为全部可选
+    if (!selectedCore.some(n => validNames.has(n))) {
+      setSelectedCore(typeMeta.coreProducts.map(p => p.name))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typeMeta.coreProducts])
+
   useEffect(() => {
     if (!fileObj) return
     const ext = '.' + (fileObj.name.split('.').pop() || '').toLowerCase()
@@ -645,8 +656,8 @@ export function GenPanel() {
                 <span className="font-medium text-foreground truncate">{currentDoc.title}</span>
               </div>
 
-              {/* 转录引擎 — 切换后点重新转录 */}
-              {(currentDoc.sourceType === 'video' || typeMeta.isDoc) && (
+              {/* 重新转录 — 视频/文档有引擎选择，网页/文本仅重提取 */}
+              {(currentDoc.sourceType === 'video' || typeMeta.isDoc || currentDoc.sourceType === 'webpage' || currentDoc.sourceType === 'text') && (
                 <div className="space-y-2">
                   {currentDoc.sourceType === 'video' && engineOptions.asr?.length > 0 && (
                     <EngineSelect category="asr" label="语音转写" options={engineOptions.asr}

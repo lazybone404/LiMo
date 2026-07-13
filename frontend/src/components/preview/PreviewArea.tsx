@@ -306,7 +306,7 @@ export function PreviewArea() {
             </div>
           )
         }
-        return <TranscriptView rawText={currentRawText} />
+        return <TranscriptView rawText={currentRawText} sourceType={currentDoc?.sourceType} />
       case 'polished':
       case 'summary':
         if (isViewProcessing(activeView) && !isStreaming) return processingPlaceholder
@@ -456,7 +456,7 @@ export function PreviewArea() {
             {videoBanner}
             {currentRawText ? (
               <>
-                <TranscriptView rawText={currentRawText} />
+                <TranscriptView rawText={currentRawText} sourceType={currentDoc?.sourceType} />
                 {/* H3: 转录质量指示 */}
                 {(() => {
                   const len = currentRawText.length
