@@ -16,7 +16,9 @@ from pydantic import BaseModel
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.core.errors import AppError
 from app.core import logging as log
+from app.core.model_resolver import resolve_llm_config
 from app.llm import LLMService, CancelledError
+from app.generation.fact_check import FactCheckEngine
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -40,14 +42,12 @@ async def fact_check(transcript_id: str, req: FactCheckRequest, request: Request
 
         ctx = _resolve_content(store, tx, transcript_id)
 
-        from app.core.model_resolver import resolve_llm_config
         llm_config = resolve_llm_config(config, req.model_id, scene="generate")
         if not llm_config.get("api_key"):
             raise AppError("FC_NO_API_KEY", "LLM API Key 未配置", recoverable=False)
 
         llm = LLMService(config, model_id=req.model_id)
 
-        from app.generation.fact_check import FactCheckEngine
         fc = FactCheckEngine(llm)
         fc_res = await fc.run(ctx["content"])
 
@@ -94,7 +94,6 @@ async def fact_check_stream(transcript_id: str, request: Request,
 
     ctx = _resolve_content(store, tx, transcript_id)
 
-    from app.core.model_resolver import resolve_llm_config
     llm_config = resolve_llm_config(config, model_id, scene="generate")
     if not llm_config.get("api_key"):
         raise AppError("FC_NO_API_KEY", "LLM API Key 未配置", recoverable=False)
@@ -114,7 +113,6 @@ async def fact_check_stream(transcript_id: str, request: Request,
                 await asyncio.sleep(0.5)
         disconnect_task = asyncio.create_task(_watch())
         try:
-            from app.generation.fact_check import FactCheckEngine
             fc = FactCheckEngine(llm)
             fc_id = None
             fc_report = ""

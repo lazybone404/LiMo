@@ -181,18 +181,39 @@ class Generator:
             return polished, mv
 
         logger.info("Generating polished + notes in parallel...")
-            polished = MarkdownView(
-                id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
-                content=content_a,
-                style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
-                mode=GenerateMode.POLISHED,
+        try:
+            task_a = self._llm.call(
+                prompt_a, image_urls=image_urls, max_tokens=MAX_TOKENS,
+                temperature=0.7, max_continuations=3,
+                cancel_event=cancel_event,
             )
-            notes = MarkdownView(
-                id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
-                content=content_b,
-                style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
-                mode=GenerateMode.NOTES,
+            task_b = self._llm.call(
+                prompt_b, image_urls=image_urls,
+                max_tokens=MAX_TOKENS, temperature=0.7,
+                max_continuations=3, cancel_event=cancel_event,
             )
+            content_a, content_b = await asyncio.gather(task_a, task_b)
+
+            content_a = _post_process_content_markers(content_a)
+            content_b = _post_process_content_markers(content_b)
+            if formats and "screenshot" in formats:
+                content_a = _post_process_screenshots(content_a, video_path)
+                content_b = _post_process_screenshots(content_b, video_path)
+        finally:
+            self._cleanup_video(video_path)
+
+        polished = MarkdownView(
+            id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
+            content=content_a,
+            style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
+            mode=GenerateMode.POLISHED,
+        )
+        notes = MarkdownView(
+            id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
+            content=content_b,
+            style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
+            mode=GenerateMode.NOTES,
+        )
         return polished, notes
 
     @staticmethod

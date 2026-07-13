@@ -18,8 +18,12 @@ from pydantic import BaseModel
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.core.errors import GenerateError, AppError
 from app.core import logging as log
-from app.core.model_resolver import resolve_model as _resolve_model
+from app.core.model_resolver import resolve_model as _resolve_model, resolve_llm_config
 from app.llm import LLMService, CancelledError
+from app.generation.generator import Generator, _post_process_content_markers, _post_process_screenshots
+from app.generation.content_preparer import ContentPreparer
+from app.generation.prompt_builder import PromptBuilder
+from app.generation.prompt import build_polish_prompt, build_notes_prompt
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -117,7 +121,6 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
     async with guard.semaphore:
         store = request.app.state.store
         config = request.app.state.config
-        from app.core.model_resolver import resolve_llm_config
         llm_config = resolve_llm_config(config, req.model_id)
         # ── LLMService ──
         llm = LLMService(config, model_id=req.model_id)
@@ -127,10 +130,6 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
             raise AppError("GEN_NOT_FOUND", "文档不存在，请先导入内容")
         if not llm_config.get("api_key"):
             raise AppError("GEN_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
-
-        from app.generation.generator import Generator
-        from app.generation.content_preparer import ContentPreparer
-        from app.generation.prompt_builder import PromptBuilder
 
         vl_config = None
         if req.video_understanding:
@@ -333,8 +332,6 @@ async def generate_stream(transcript_id: str, request: Request,
         raise AppError("GEN_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
     # ── 内容准备 + Prompt 构建 ──
-    from app.generation.content_preparer import ContentPreparer
-    from app.generation.prompt_builder import PromptBuilder
     target_language = config.get("target_language", "zh-CN")
     prep_cfg = {
         "provider": llm.provider, "api_key": llm.api_key,
@@ -390,9 +387,8 @@ async def generate_stream(transcript_id: str, request: Request,
                 cookies = auth.get("youtube", "")
             import asyncio as _asyncio
             loop = _asyncio.get_event_loop()
-            from app.generation.content_preparer import ContentPreparer as _CP
             screenshot_video_path = await loop.run_in_executor(
-                None, _CP._download_video, source_url, cookies)
+                None, ContentPreparer._download_video, source_url, cookies)
             if screenshot_video_path:
                 logger.info("原片截图：视频下载完成 %s", screenshot_video_path)
             else:
@@ -417,8 +413,6 @@ async def generate_stream(transcript_id: str, request: Request,
 
             # ── 双产物并行 ──
             if stream_mode == "both":
-                from app.generation.prompt import build_polish_prompt, build_notes_prompt
-
                 keep_refs = "images" in format_list
                 # 前端已保证门控：视频=videoUnderstanding，文档=formatImages&&imageAnalyze
                 send_to_llm = bool(image_analyze)
@@ -551,14 +545,12 @@ async def generate_stream(transcript_id: str, request: Request,
                 epub_text, vl_config, keep_refs, send_to_llm=send_to_llm, optimize_images=image_optimize)
 
             if stream_mode == "polished":
-                from app.generation.prompt import build_polish_prompt
                 prompt = build_polish_prompt(
                     clean_text, tx.get("title", ""), style, source_type,
                     formats=format_list, user_notes=user_notes,
                     target_language=target_language,
                     video_understanding=video_understanding)
             else:
-                from app.generation.prompt import build_notes_prompt
                 prompt = build_notes_prompt(
                     clean_text, tx.get("title", ""), style, source_type,
                     formats=format_list, user_notes=user_notes,
@@ -653,9 +645,6 @@ def _build_continue_prompt(original_prompt: str, partial_content: str) -> str:
 def _post_process(content: str, formats: list[str],
                   video_path, source_type: str, store_root: str = "") -> str:
     """后处理（对齐原有 Generator 行为）"""
-    from app.generation.generator import (
-        _post_process_content_markers, _post_process_screenshots,
-    )
     content = _post_process_content_markers(content)
     if "screenshot" in formats and video_path:
         content = _post_process_screenshots(content, str(video_path), store_root=store_root)
