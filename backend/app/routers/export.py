@@ -2,6 +2,7 @@
 导出端点 — Markdown → HTML / 原始 MD 下载 / 批量 zip
 对标 BiliNote export.py: markdown→HTML（含表格/代码块/LaTeX）→ 浏览器下载
 """
+import base64
 import io
 import json
 import logging
@@ -772,6 +773,8 @@ _MARKMAP_CACHE: dict[str, str] | None = None
 def _get_katex_assets() -> dict[str, str]:
     """返回 {"css": ..., "js": ...} 用于内联到 HTML。
     优先读 frontend/node_modules/katex/dist/，不可用时空字典。
+    CSS 中 @font-face 的 url(fonts/...) 替换为 base64 data URI，
+    确保 HTML 文件完全自包含（离线可用，零 CDN 依赖）。
     首次加载后内存缓存。
     """
     global _KATEX_CACHE
@@ -788,7 +791,22 @@ def _get_katex_assets() -> dict[str, str]:
         js_file = dist / "katex.min.js"
         auto_render = dist / "contrib" / "auto-render.min.js"
         if css_file.exists() and js_file.exists():
-            _KATEX_CACHE["css"] = css_file.read_text(encoding="utf-8")
+            css = css_file.read_text(encoding="utf-8")
+            # 内联字体：url(fonts/xxx.woff2) → url(data:font/woff2;base64,...)
+            fonts_dir = dist / "fonts"
+            if fonts_dir.exists():
+                def _inline_font(m: re.Match) -> str:
+                    font_file = fonts_dir / m.group(1)
+                    if not font_file.exists():
+                        return m.group(0)
+                    ext = font_file.suffix.lower()
+                    mime = {".woff2": "font/woff2", ".woff": "font/woff",
+                            ".ttf": "font/truetype"}.get(ext, "application/octet-stream")
+                    b64 = base64.b64encode(font_file.read_bytes()).decode()
+                    return f"url(data:{mime};base64,{b64})"
+                css = re.sub(r'url\(fonts/([^)]+)\)', _inline_font, css)
+                logger.info("KaTeX fonts inlined from %s/fonts", dist)
+            _KATEX_CACHE["css"] = css
             js = js_file.read_text(encoding="utf-8")
             if auto_render.exists():
                 js += "\n" + auto_render.read_text(encoding="utf-8")

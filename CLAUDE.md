@@ -261,7 +261,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **Tesseract 便携版**：`backend/bin/tesseract/` 内置，启动自动注册并绑定 OCR，开箱即用
 - **EPUB**：ebooklib 章节+骨架提取，前端 EpubSkeletonPanel 章节树，支持选中章节/全书生成
 - **模糊帧过滤**：`frame_quality.py` — Laplacian 方差 + 熵 + 边缘密度评分，视频抽帧时自动丢弃低质量帧
-- **KaTeX 离线缓存**：`_get_katex_assets()` 从 node_modules 加载 CSS/JS 内联到 HTML，导出文件完全自包含（零 CDN，断网可用）
+- **KaTeX 离线缓存**：`_get_katex_assets()` 从 node_modules/static 加载 CSS/JS/字体，CSS 中 `url(fonts/...)` 替换为 base64 data URI（60 个字体），导出 HTML 完全自包含（零 CDN，断网可用）
 - **KaTeX 服务端渲染**：`_render_formulas_katex()` 调 Node.js 脚本预渲染公式。打包环境无 Node.js → 先 `shutil.which("node")` 预检，不存则静默回退客户端渲染
 - **markmap 离线化**：`markmap.ts` 不调用 `markmap-common` 的 `loadCSS`/`loadJS`（动态 CDN 加载会被 Edge WebView2 跟踪防护拦截），KaTeX CSS 在 PreviewArea 中静态 import，hljs 由 react-syntax-highlighter 内联
 - **设置持久化**：`ProviderSettings.tsx` 中引擎/LLM Key 的保存不能仅靠 `onBlur`（组件卸载时不触发），需加 `useEffect` cleanup 用 ref 兜底保存
