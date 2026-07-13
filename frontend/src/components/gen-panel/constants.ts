@@ -80,7 +80,6 @@ export function getTypeMeta(sourceType: string, _genOptions: Record<string, stri
   } else if (isExcel) {
     tabs = [
       { key: 'data_preview', label: '数据预览' },
-      { key: 'report', label: '分析报告' },
       { key: 'summary', label: '数据摘要' },
     ]
   } else if (isDoc) {
@@ -120,13 +119,12 @@ export function getTypeMeta(sourceType: string, _genOptions: Record<string, stri
     hasImages: st === 'pdf' || st === 'docx' || st === 'pptx' || st === 'epub',
     hasFactCheck: !isImage && !isExcel,
     coreProducts: isImage ? [] : isExcel ? [
-      { name: 'polished', label: '分析报告', description: '从数据生成分析报告' },
-      { name: 'notes', label: '数据摘要', description: '生成数据摘要' },
+      { name: 'both', label: '数据摘要', description: '概况·关键指标·字段解读' },
     ] : [
       { name: 'notes', label: '笔记', description: '结构化笔记：提取关键信息' },
       { name: 'polished', label: '整理版原文', description: '去噪音、修正错别字、合并段落' },
     ],
-    generateLabel: isExcel ? '生成分析报告' : '生成',
+    generateLabel: isExcel ? '生成数据摘要' : '生成',
     tabs,
   }
 }

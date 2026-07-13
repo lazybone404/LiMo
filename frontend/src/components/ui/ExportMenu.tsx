@@ -55,7 +55,6 @@ const TAB_EXPORT: Record<string, TabExportConfig> = {
   fact_check:  { contentKey: 'factCheck',  htmlMode: 'fact_check', suffix: '-事实验证',       label: '事实验证' },
   // —— Excel 专属 ——
   data_preview:{ contentKey: 'rawText',    htmlMode: 'transcript', suffix: '',              label: '数据预览' },
-  report:      { contentKey: 'polished',   htmlMode: 'polished',   suffix: '-分析报告',       label: '分析报告' },
   // —— EPUB 专属 ——
   skeleton:    { contentKey: 'rawText',    htmlMode: 'transcript', suffix: '-骨架',           label: '章节骨架' },
   // —— 思维导图 ——

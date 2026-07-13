@@ -154,46 +154,33 @@ class Generator:
             source_type, clean_text, title, style, formats, user_notes,
         )
 
-        is_excel = source_type == "xlsx"
-        logger.info("Generating %s in parallel...",
-                     "report + summary" if is_excel else "polished + notes")
-
-        try:
-            task_a = self._llm.call(
-                prompt_a, image_urls=image_urls, max_tokens=MAX_TOKENS,
-                temperature=0.7, max_continuations=3,
-                cancel_event=cancel_event,
-            )
-            task_b = self._llm.call(
-                prompt_b, image_urls=image_urls,
-                max_tokens=MAX_TOKENS // 2 if is_excel else MAX_TOKENS,
-                temperature=0.7, max_continuations=3,
-                cancel_event=cancel_event,
-            )
-            content_a, content_b = await asyncio.gather(task_a, task_b)
-
-            content_a = _post_process_content_markers(content_a)
-            content_b = _post_process_content_markers(content_b)
-            if formats and "screenshot" in formats:
-                content_a = _post_process_screenshots(content_a, video_path)
-                content_b = _post_process_screenshots(content_b, video_path)
-        finally:
-            self._cleanup_video(video_path)
-
-        if is_excel:
-            polished = MarkdownView(
+        # Excel 只需一个数据摘要产物（分析报告已移除——LLM 无法做数值分析）
+        if source_type == "xlsx":
+            logger.info("Generating Excel summary...")
+            try:
+                content = await self._llm.call(
+                    prompt_a, image_urls=image_urls,
+                    max_tokens=MAX_TOKENS, temperature=0.7,
+                    max_continuations=3, cancel_event=cancel_event,
+                )
+                content = _post_process_content_markers(content)
+            finally:
+                self._cleanup_video(video_path)
+            mv = MarkdownView(
                 id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
-                content=content_a,
-                style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
-                mode=GenerateMode.POLISHED,
-            )
-            notes = MarkdownView(
-                id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
-                content=content_b,
+                content=content,
                 style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
                 mode=GenerateMode.NOTES,
             )
-        else:
+            polished = MarkdownView(
+                id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
+                content=content,
+                style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
+                mode=GenerateMode.POLISHED,
+            )
+            return polished, mv
+
+        logger.info("Generating polished + notes in parallel...")
             polished = MarkdownView(
                 id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
                 content=content_a,

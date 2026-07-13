@@ -327,17 +327,30 @@ def _parse_markdown_table(data_text: str) -> dict:
             in_table = False
             continue
 
-        # 检测表格分隔行
+        # 非表格行（空行/普通文本）— 结束当前表格
+        if not line.startswith("|") and not line.startswith("##"):
+            if in_table and header:
+                current_sheet["rows"] = len(current_rows)
+                current_sheet["cols"] = len(header)
+                current_sheet["columns"] = header[:20]
+                current_sheet["sample_rows"] = current_rows[:3] + (
+                    current_rows[-3:] if len(current_rows) > 6 else []
+                )
+            in_table = False
+            continue
+
+        # 检测表格分隔行（|---|---|）
         if re.match(r"^\|[\s\-:|]+\|$", line):
             if current_rows and not header:
                 header = current_rows.pop()
             in_table = True
             continue
 
-        # 表格数据行
-        if in_table and line.startswith("|"):
+        # 表格数据行（包括分隔行之前的表头行）
+        if line.startswith("|"):
             cells = [c.strip() for c in line.split("|")[1:-1]]
             current_rows.append(cells)
+            continue
 
     # 最后一个 sheet
     if current_sheet and header:
@@ -380,34 +393,6 @@ def _build_data_summary(data_text: str) -> str:
 
 
 # ── Excel 专用 Prompt ──
-
-EXCEL_REPORT_PROMPT = """你是一个专业的数据分析师，擅长从结构化数据中提取洞察。
-
-语言要求：
-- 输出必须使用 **中文** 撰写。
-
-{data_section}
-
-你的任务：
-基于以上数据摘要和样品，生成一份**数据分析报告**。遵循以下原则：
-
-1. **概览**: 简要描述数据结构（sheet 数量、行列规模、主要字段）。
-2. **数据质量**: 检查缺失值、重复值、数据类型一致性等问题。
-3. **关键发现**: 从数据样品中识别模式、趋势、异常值或值得关注的指标。
-4. **字段解读**: 对每个字段的含义和作用进行推测和解读。
-5. **建议**: 基于数据特征提出可操作的下一步行动建议。
-
-{style_text}
-
-⚠️ 严禁事项：
-- **严禁**在报告中重复输出完整数据表格 — 报告是分析，不是数据备份
-- **严禁**逐行罗列数据 — 应按主题/指标/模式组织
-- 如需引用具体数据作为例证，仅引用关键的一两行，不要展开
-
-输出说明：
-- 仅返回最终的 **Markdown 内容**
-- 使用表格、列表和标题组织内容
-- **不要**将输出包裹在代码块中"""
 
 EXCEL_SUMMARY_PROMPT = """你是一个专业的数据分析师，擅长提炼核心数据指标。
 
@@ -466,26 +451,6 @@ EXCEL_STYLE_MAP = {
 }
 
 EXCEL_STYLE_KEYS = list(EXCEL_STYLE_MAP.keys())
-
-
-def build_excel_report_prompt(data_text: str, style: str = "detailed",
-                               user_notes: str = "") -> str:
-    """构建 Excel 分析报告 prompt —— 数据摘要替代原始表格，用户备注作为分析指引放开头"""
-    style_text = "" if style == 'none' else EXCEL_STYLE_MAP.get(style, "")
-    # 将原始 Markdown 表格替换为结构化摘要，减少 token 并防止 LLM 照抄原表
-    try:
-        data_section = _build_data_summary(data_text)
-    except Exception:
-        # 解析失败（非标准表格格式）→ 回退到原文
-        data_section = f"数据内容（Markdown 表格）：\n---\n{data_text}\n---"
-    prompt = EXCEL_REPORT_PROMPT.format(data_section=data_section, style_text=style_text)
-
-    if user_notes.strip():
-        prompt = (
-            f"## 分析要求（用户指定，优先遵循）\n{user_notes.strip()}\n\n---\n\n"
-            + prompt
-        )
-    return prompt
 
 
 def build_excel_summary_prompt(data_text: str, style: str = "detailed",

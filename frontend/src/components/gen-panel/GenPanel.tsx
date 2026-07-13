@@ -435,7 +435,7 @@ export function GenPanel() {
     setProcessing(capturedId + '__generate', { kind: 'generate', title: doc?.title || '' })
     accNotesRef.current = ''; accPolishedRef.current = ''; accSingleRef.current = ''
     setIsStreaming(true)
-    setActiveView(typeMeta.isExcel ? 'report' : 'summary')
+    setActiveView('summary')
 
     const formatStr = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
       formatSummary && 'summary', formatTranslate && 'translate',

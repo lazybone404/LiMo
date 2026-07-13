@@ -10,7 +10,6 @@ PromptBuilder — prompt 构建与派发
 from .prompt import (
     build_notes_prompt,
     build_polish_prompt,
-    build_excel_report_prompt,
     build_excel_summary_prompt,
 )
 
@@ -36,13 +35,8 @@ class PromptBuilder:
         mode: "notes" | "polished" | "report" | "summary"
         """
         if source_type == "xlsx":
-            if mode == "report":
-                return build_excel_report_prompt(clean_text, style, user_notes=user_notes)
-            elif mode == "summary":
-                return build_excel_summary_prompt(clean_text, style, user_notes=user_notes)
-            else:
-                # Excel 默认用 summary
-                return build_excel_summary_prompt(clean_text, style, user_notes=user_notes)
+            # Excel 只生成数据摘要（LLM 无法做真正的数值分析）
+            return build_excel_summary_prompt(clean_text, style, user_notes=user_notes)
 
         if mode == "polished":
             return build_polish_prompt(
@@ -71,9 +65,9 @@ class PromptBuilder:
         Excel 特殊处理：返回 (report_prompt, summary_prompt)。
         """
         if source_type == "xlsx":
-            report_prompt = build_excel_report_prompt(clean_text, style, user_notes=user_notes)
-            summary_prompt = build_excel_summary_prompt(clean_text, style, user_notes=user_notes)
-            return report_prompt, summary_prompt
+            # Excel 只有数据摘要一个产物（分析报告已移除——LLM 无法做真正的数值分析）
+            sp = build_excel_summary_prompt(clean_text, style, user_notes=user_notes)
+            return sp, sp  # 双产物接口兼容，两份相同
 
         polished_prompt = build_polish_prompt(
             clean_text, title, style, source_type,

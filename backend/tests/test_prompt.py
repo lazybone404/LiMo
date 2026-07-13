@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from app.generation.prompt import (
     build_notes_prompt, build_polish_prompt,
-    build_excel_report_prompt, build_excel_summary_prompt,
+    build_excel_summary_prompt,
     get_references_format,
 )
 
@@ -33,15 +33,12 @@ assert '整理版原文' in p or '文本编辑' in p
 assert '输出格式：第一行必须是文档标题' in p
 print('PASS: polish prompt')
 
-# ── Excel 报告 ──
-p = build_excel_report_prompt('| A | B |\n|---|---|\n| 1 | 2 |', 'detailed')
-assert '数据分析报告' in p
-assert '| A | B |' in p
-print('PASS: Excel report prompt')
-
-# ── Excel 摘要 ──
+# ── Excel 摘要（分析报告已移除）──
 p = build_excel_summary_prompt('| X | Y |\n|---|---|\n| 3 | 4 |', 'minimal')
 assert '数据摘要' in p
+assert 'Sheet1' in p       # _build_data_summary 解析出 sheet 名
+assert 'X' in p and 'Y' in p  # 列名保留
+print('PASS: Excel summary prompt')
 print('PASS: Excel summary prompt')
 
 # ── 参考文献格式 ──

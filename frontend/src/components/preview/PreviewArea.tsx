@@ -243,7 +243,7 @@ export function PreviewArea() {
     // import / retranscribe 是文档级别，影响所有 tab
     if (activeTask.kind === 'import' || activeTask.kind === 'retranscribe') return true
     // generate 影响笔记/分析报告/数据摘要
-    if (activeTask.kind === 'generate') return view === 'summary' || view === 'polished' || view === 'report' || view === 'data_preview'
+    if (activeTask.kind === 'generate') return view === 'summary' || view === 'polished' || view === 'data_preview'
     if (activeTask.kind === 'fact_check') return view === 'fact_check'
     // process-image 只影响对应 mode 的 tab
     if (activeTask.kind === 'process') return view === activeTask.mode
@@ -307,31 +307,16 @@ export function PreviewArea() {
           )
         }
         return <TranscriptView rawText={currentRawText} />
-      // Excel 分析报告 — polishedContent
-      case 'report':
-        if (isViewProcessing(activeView) && !isStreaming) return processingPlaceholder
-        if (!currentPolishedContent) {
-          return (
-            <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
-              <p className="text-[15px] text-dimmed mb-3">尚未生成</p>
-              <p className="text-[13px] text-disabled mb-6">点击左侧「生成分析报告」按钮</p>
-            </div>
-          )
-        }
-        return <>
-          {videoBanner}
-          <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={currentPolishedContent} meta={markdownMeta} />
-        </>
       case 'polished':
       case 'summary':
         if (isViewProcessing(activeView) && !isStreaming) return processingPlaceholder
         if (typeMeta.isExcel) {
-          // Excel: summary = 数据摘要
+          // Excel: 仅数据摘要（分析报告已移除）
           if (!currentContent) {
             return (
               <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
                 <p className="text-[15px] text-dimmed mb-3">尚未生成</p>
-                <p className="text-[13px] text-disabled mb-6">点击左侧「生成分析报告」按钮</p>
+                <p className="text-[13px] text-disabled mb-6">点击左侧「生成数据摘要」按钮</p>
               </div>
             )
           }
