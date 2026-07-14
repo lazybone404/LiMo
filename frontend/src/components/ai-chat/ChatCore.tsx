@@ -4,6 +4,7 @@ import { streamChat, listConversations, getConversation, deleteConversation, ren
 import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
 import ReactMarkdown from 'react-markdown'
 import { Search, Plus, Trash2, Pencil, Download, Send, Bot, User, MessageSquare, ChevronRight, ChevronLeft } from 'lucide-react'
+import { ContextMenu } from '../ui/ContextMenu'
 
 interface ChatCoreProps {
   compact: boolean
@@ -290,27 +291,10 @@ export function ChatCore({
       </div>
 
       {/* 右键菜单 */}
-      {contextMenu && (
-        <div className="fixed z-[10001] bg-elevated border border-border-light rounded-xl shadow-xl py-1 min-w-[160px]" style={{ left: contextMenu.x, top: contextMenu.y }}>
-          {renamingId === contextMenu.id ? (
-            <div className="px-3 py-1.5 flex items-center gap-2">
-              <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && renameValue.trim()) {
-                    renameConversation(contextMenu.id, renameValue.trim())
-                    setConvList(prev => prev.map(c => c.id === contextMenu.id ? { ...c, title: renameValue.trim() } : c))
-                    onConversationsChange?.(convList.map(c => c.id === contextMenu.id ? { ...c, title: renameValue.trim() } : c))
-                    setRenamingId(null); setContextMenu(null)
-                  } else if (e.key === 'Escape') { setRenamingId(null); setContextMenu(null) }
-                }}
-                onBlur={() => { setRenamingId(null); setContextMenu(null) }}
-                className="flex-1 px-2 py-0.5 bg-surface border border-border-default rounded text-[12px] outline-none" />
-            </div>
-          ) : (
-            <button onClick={() => { setRenamingId(contextMenu.id); setRenameValue(contextMenu.title); setContextMenu(null) }}
-              className="w-full text-left px-3 py-1.5 text-[12px] hover:bg-surface flex items-center gap-2"><Pencil size={12} />重命名</button>
-          )}
-          <button onClick={async () => {
+      {contextMenu && !renamingId && deletingId !== contextMenu.id && (
+        <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} items={[
+          { label: '重命名', icon: <Pencil size={12} />, onClick: () => { setRenamingId(contextMenu.id); setRenameValue(contextMenu.title); setContextMenu(null) } },
+          { label: '导出 Markdown', icon: <Download size={12} />, onClick: async () => {
             setContextMenu(null)
             try {
               const { downloadFromUrl } = await import('../../lib/download')
@@ -320,25 +304,50 @@ export function ChatCore({
             } catch (e) {
               addToast('导出失败: ' + (e instanceof Error ? e.message : String(e)), 'error')
             }
-          }}
-            className="w-full text-left px-3 py-1.5 text-[12px] hover:bg-surface flex items-center gap-2"><Download size={12} />导出 Markdown</button>
-          {deletingId === contextMenu.id ? (
-            <div className="px-3 py-1.5 flex items-center gap-2">
-              <span className="text-[11px] text-error">确认删除？</span>
-              <button onClick={() => {
-                deleteConversation(contextMenu.id)
-                setConvList(prev => prev.filter(c => c.id !== contextMenu.id))
-                onConversationsChange?.(convList.filter(c => c.id !== contextMenu.id))
-                if (currentConvId === contextMenu.id) { setCurrentConvId(null); setChatMessages([]); onCurrentConvChange?.(null) }
-                setDeletingId(null); setContextMenu(null)
-              }} className="px-2 py-0.5 bg-error text-white text-[11px] rounded">删除</button>
-              <button onClick={() => { setDeletingId(null); setContextMenu(null) }}
-                className="px-2 py-0.5 bg-surface border border-border-default text-[11px] rounded">取消</button>
+          }},
+          { label: '删除', icon: <Trash2 size={12} />, danger: true, onClick: () => { setDeletingId(contextMenu.id); setContextMenu(null) } },
+        ]} />
+      )}
+      {/* 重命名内联弹窗 */}
+      {renamingId && (
+        <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => setRenamingId(null)}>
+          <div className="bg-elevated rounded-2xl shadow-2xl border border-border-light p-6 max-w-[320px] w-full mx-4" onClick={e => e.stopPropagation()}>
+            <h3 className="text-[17px] font-semibold mb-4">重命名对话</h3>
+            <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && renameValue.trim()) {
+                  renameConversation(renamingId, renameValue.trim())
+                  setConvList(prev => prev.map(c => c.id === renamingId ? { ...c, title: renameValue.trim() } : c))
+                  onConversationsChange?.(convList.map(c => c.id === renamingId ? { ...c, title: renameValue.trim() } : c))
+                  setRenamingId(null)
+                } else if (e.key === 'Escape') setRenamingId(null)
+              }}
+              className="w-full px-3 py-2 bg-surface border border-border-default rounded-lg text-[13px] outline-none mb-4" />
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setRenamingId(null)} className="px-4 py-2 text-[13px] text-dimmed hover:bg-surface rounded-lg">取消</button>
+              <button onClick={() => { renameConversation(renamingId, renameValue.trim()); setConvList(prev => prev.map(c => c.id === renamingId ? { ...c, title: renameValue.trim() } : c)); onConversationsChange?.(convList.map(c => c.id === renamingId ? { ...c, title: renameValue.trim() } : c)); setRenamingId(null) }}
+                className="px-4 py-2 bg-accent text-white text-[13px] font-medium rounded-lg">确定</button>
             </div>
-          ) : (
-            <button onClick={() => { setDeletingId(contextMenu.id); setContextMenu(null) }}
-              className="w-full text-left px-3 py-1.5 text-[12px] hover:bg-error/10 text-red-500 flex items-center gap-2"><Trash2 size={12} />删除</button>
-          )}
+          </div>
+        </div>
+      )}
+      {/* 删除确认弹窗 */}
+      {deletingId && (
+        <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => setDeletingId(null)}>
+          <div className="bg-elevated rounded-2xl shadow-2xl border border-border-light p-6 max-w-[320px] w-full mx-4" onClick={e => e.stopPropagation()}>
+            <h3 className="text-[17px] font-semibold mb-2">删除对话</h3>
+            <p className="text-[13px] text-dimmed mb-6">此操作不可撤销。</p>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setDeletingId(null)} className="px-4 py-2 text-[13px] text-dimmed hover:bg-surface rounded-lg">取消</button>
+              <button onClick={() => {
+                deleteConversation(deletingId)
+                setConvList(prev => prev.filter(c => c.id !== deletingId))
+                onConversationsChange?.(convList.filter(c => c.id !== deletingId))
+                if (currentConvId === deletingId) { setCurrentConvId(null); setChatMessages([]); onCurrentConvChange?.(null) }
+                setDeletingId(null)
+              }} className="px-4 py-2 bg-error text-white text-[13px] font-medium rounded-lg">删除</button>
+            </div>
+          </div>
         </div>
       )}
     </>

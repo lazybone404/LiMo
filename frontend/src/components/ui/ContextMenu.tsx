@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 
 interface MenuItem {
   label: string
@@ -16,8 +17,7 @@ interface Props {
 }
 
 /**
- * 右键菜单 — Apple 风格
- * 参照 components.md §12.2
+ * 右键菜单 — Apple 风格，Portal 到 body 避免父元素 transform/filter 干扰定位
  */
 export function ContextMenu({ x, y, items, onClose }: Props) {
   const menuRef = useRef<HTMLDivElement>(null)
@@ -28,7 +28,6 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
         onClose()
       }
     }
-    // 延迟绑定避免立即触发
     const timer = setTimeout(() => {
       document.addEventListener('click', handler)
       document.addEventListener('contextmenu', handler)
@@ -40,13 +39,13 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
     }
   }, [onClose])
 
-  // 智能翻转：空间不够时菜单出现在鼠标另一侧，始终贴近光标
+  // 智能翻转：空间不够时菜单出现在鼠标另一侧
   const menuWidth = 180
   const menuHeight = items.length * 36 + 16
   const adjustedX = x + menuWidth > window.innerWidth ? x - menuWidth : x
   const adjustedY = y + menuHeight > window.innerHeight ? y - menuHeight : y
 
-  return (
+  return createPortal(
     <div
       ref={menuRef}
       className="fixed z-[200] bg-elevated/95 backdrop-blur-[20px] rounded-xl shadow-lg border border-border-light py-1 min-w-40 animate-[fadeIn_0.12s_ease-out]"
@@ -66,6 +65,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
           <span>{item.label}</span>
         </button>
       ))}
-    </div>
+    </div>,
+    document.body,
   )
 }
