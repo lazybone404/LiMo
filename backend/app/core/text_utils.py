@@ -13,7 +13,7 @@ _SENTENCE_BOUNDARIES = (
 )
 
 
-def smart_truncate(text: str, max_chars: int,
+def smart_truncate(text: str | None, max_chars: int,
                    ellipsis: str = "...") -> str:
     """在 max_chars 内的句子/段落边界处截断。
 
@@ -21,6 +21,8 @@ def smart_truncate(text: str, max_chars: int,
     不使用空格作为边界——代码/公式/英文技术文档中空格太常见。
     找不到合适边界时硬截+标记。
     """
+    if not text:
+        return ""
     if len(text) <= max_chars:
         return text
 

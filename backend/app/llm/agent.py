@@ -26,12 +26,12 @@ def _tool_display(tool_name: str, args: dict) -> str:
         q = args.get("query", "")
         return f"正在搜索网络: {q}" if q else "正在搜索网络..."
     if tool_name == "fetch_url":
-        url = args.get("url", "")
+        url = str(args.get("url", ""))
         try:
             domain = urlparse(url).netloc or url[:60]
         except Exception:
-            domain = url[:60]
-        return f"正在读取: {domain}"
+            domain = url[:60] if url else ""
+        return f"正在读取: {domain}" if domain else "正在读取网页..."
     if tool_name == "search_docs":
         q = args.get("query", "")
         return f"正在搜索知识库: {q}" if q else "正在搜索知识库..."
