@@ -26,6 +26,7 @@ router = APIRouter()
 
 class FactCheckRequest(BaseModel):
     model_id: int | None = None
+    verify_mode: str = "llm"  # "llm" | "web"
 
 
 @router.post("/fact-check/{transcript_id}")
@@ -49,7 +50,7 @@ async def fact_check(transcript_id: str, req: FactCheckRequest, request: Request
         llm = LLMService(config, model_id=req.model_id)
 
         engine = ReviewEngine(llm)
-        fc_res = await engine.run(ctx["content"])
+        fc_res = await engine.run(ctx["content"], verify_mode=req.verify_mode)
 
         fc_mv = MarkdownView(
             id=fc_res["id"], transcript_id=transcript_id,
@@ -88,8 +89,9 @@ async def fact_check(transcript_id: str, req: FactCheckRequest, request: Request
 
 @router.get("/fact-check/{transcript_id}/stream")
 async def fact_check_stream(transcript_id: str, request: Request,
-                            model_id: int | None = None):
-    """SSE 流式事实验证"""
+                            model_id: int | None = None,
+                            verify_mode: str = "llm"):
+    """SSE 流式事实验证。verify_mode: llm（默认，基于模型知识）| web（联网搜索）"""
     store = request.app.state.store
     config = request.app.state.config
 
@@ -125,7 +127,7 @@ async def fact_check_stream(transcript_id: str, request: Request,
             fc_trustworthiness = 0
             fc_trustworthiness_label = ""
             fc_has_content = True
-            async for event in engine.run_streaming(ctx["content"], cancel_event):
+            async for event in engine.run_streaming(ctx["content"], cancel_event, verify_mode=verify_mode):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if event.get("type") == "done":
                     fc_id = event.get("id", "")

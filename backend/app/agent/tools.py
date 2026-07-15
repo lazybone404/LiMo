@@ -107,6 +107,7 @@ async def _ensure_searxng() -> None:
                 cmd,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 cwd=os.path.dirname(cmd[0]),
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
             deadline = time.time() + _SEARXNG_STARTUP_TIMEOUT
             while time.time() < deadline:
