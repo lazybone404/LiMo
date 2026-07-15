@@ -89,7 +89,7 @@ export function getTypeMeta(sourceType: string, _genOptions: Record<string, stri
         { key: 'summary', label: '笔记' },
         { key: 'polished', label: '整理版原文' },
         { key: 'transcript', label: '转录' },
-        { key: 'fact_check', label: '事实核查' },
+        { key: 'fact_check', label: 'AI 审核' },
         { key: 'mindmap', label: '思维导图' },
       ]
     } else {
@@ -97,7 +97,7 @@ export function getTypeMeta(sourceType: string, _genOptions: Record<string, stri
         { key: 'summary', label: '笔记' },
         { key: 'polished', label: '整理版原文' },
         { key: 'transcript', label: '转录' },
-        { key: 'fact_check', label: '事实核查' },
+        { key: 'fact_check', label: 'AI 审核' },
         { key: 'mindmap', label: '思维导图' },
       ]
     }
@@ -106,7 +106,7 @@ export function getTypeMeta(sourceType: string, _genOptions: Record<string, stri
       { key: 'summary', label: '笔记' },
       { key: 'polished', label: '整理版原文' },
       { key: 'transcript', label: '原始转录' },
-      { key: 'fact_check', label: '事实核查' },
+      { key: 'fact_check', label: 'AI 审核' },
       { key: 'mindmap', label: '思维导图' },
     ]
   }

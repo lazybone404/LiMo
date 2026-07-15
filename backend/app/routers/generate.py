@@ -318,11 +318,7 @@ async def generate_stream(transcript_id: str, request: Request,
         mds = store.get_markdowns_by_transcript(transcript_id)
         for md in mds:
             if md.get("status") == "partial":
-                if stream_mode == "polished":
-                    if md.get("mode") == "polished":
-                        partial_content = store.get_markdown(md["id"]) or ""
-                        break
-                elif md.get("mode", "") != "polished":
+                if md.get("mode", "") == stream_mode:
                     partial_content = store.get_markdown(md["id"]) or ""
                     break
 
@@ -659,17 +655,13 @@ async def get_markdown(transcript_id: str, mode: str = "", version: int = 0, req
     if not mds:
         raise AppError("MD_NOT_FOUND", "尚未生成，请先点击生成按钮", status_code=404)
 
-    # 按模式筛选
-    want_polished = mode == "polished"
-    mode_mds = [md for md in mds if (md.get("mode", "") == "polished") == want_polished]
-    if not mode_mds:
-        # fallback: 兼容旧数据
-        for md in mds:
-            if md.get("mode", "") != "polished":
-                mode_mds = [md]
-                break
+    # 按模式精确筛选（notes / polished / fact_check 各自独立，不混在一起）
+    if mode:
+        mode_mds = [md for md in mds if md.get("mode", "") == mode]
         if not mode_mds:
-            mode_mds = mds
+            raise AppError("MD_NOT_FOUND", f"尚未生成 {mode} 内容，请先点击生成按钮", status_code=404)
+    else:
+        mode_mds = mds
 
     # 选择版本（默认最新 = idx 0，因为 get_markdowns_by_transcript 已降序排列）
     selected = mode_mds[0]

@@ -18,7 +18,7 @@ from app.core.errors import AppError
 from app.core import logging as log
 from app.core.model_resolver import resolve_llm_config
 from app.llm import LLMService, CancelledError
-from app.generation.fact_check import FactCheckEngine
+from app.generation.review import ReviewEngine
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -48,8 +48,8 @@ async def fact_check(transcript_id: str, req: FactCheckRequest, request: Request
 
         llm = LLMService(config, model_id=req.model_id)
 
-        fc = FactCheckEngine(llm)
-        fc_res = await fc.run(ctx["content"])
+        engine = ReviewEngine(llm)
+        fc_res = await engine.run(ctx["content"])
 
         fc_mv = MarkdownView(
             id=fc_res["id"], transcript_id=transcript_id,
@@ -58,24 +58,29 @@ async def fact_check(transcript_id: str, req: FactCheckRequest, request: Request
         )
         from datetime import datetime
         store.save_markdown(fc_mv, extra={
-            "verified_count": fc_res["verified_count"],
-            "disputed_count": fc_res["disputed_count"],
-            "unverifiable_count": fc_res["unverifiable_count"],
-            "overall_score": fc_res["overall_score"],
+            "verified_count": fc_res.get("verified_count", 0),
+            "disputed_count": fc_res.get("disputed_count", 0),
+            "unverifiable_count": fc_res.get("unverifiable_count", 0),
+            "trustworthiness": fc_res.get("trustworthiness", 0),
+            "trustworthiness_label": fc_res.get("trustworthiness_label", ""),
             "source_mode": ctx["source_mode"],
             "source_version": ctx["source_version"],
             "verified_at": datetime.now().isoformat(),
         })
 
-        log.info("Fact check done", tx_id=transcript_id,
-                 verified=fc_res["verified_count"], disputed=fc_res["disputed_count"])
+        log.info("AI Review done", tx_id=transcript_id,
+                 claims=len(fc_res.get("claims", [])),
+                 issues=len(fc_res.get("issues", [])),
+                 trustworthiness=fc_res.get("trustworthiness", 0))
         return {
             "id": fc_mv.id, "transcriptId": transcript_id,
             "content": fc_mv.content,
-            "verified_count": fc_res["verified_count"],
-            "disputed_count": fc_res["disputed_count"],
-            "unverifiable_count": fc_res["unverifiable_count"],
-            "overall_score": fc_res["overall_score"],
+            "verified_count": fc_res.get("verified_count", 0),
+            "disputed_count": fc_res.get("disputed_count", 0),
+            "unverifiable_count": fc_res.get("unverifiable_count", 0),
+            "trustworthiness": fc_res.get("trustworthiness", 0),
+            "trustworthiness_label": fc_res.get("trustworthiness_label", ""),
+            "has_content": fc_res.get("has_content", True),
             "source_mode": ctx["source_mode"],
             "source_version": ctx["source_version"],
         }
@@ -113,22 +118,26 @@ async def fact_check_stream(transcript_id: str, request: Request,
                 await asyncio.sleep(0.5)
         disconnect_task = asyncio.create_task(_watch())
         try:
-            fc = FactCheckEngine(llm)
+            engine = ReviewEngine(llm)
             fc_id = None
             fc_report = ""
             fc_verified = fc_disputed = fc_unverifiable = 0
-            fc_score = 0.0
-            async for event in fc.run_streaming(ctx["content"], cancel_event):
+            fc_trustworthiness = 0
+            fc_trustworthiness_label = ""
+            fc_has_content = True
+            async for event in engine.run_streaming(ctx["content"], cancel_event):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if event.get("type") == "done":
                     fc_id = event.get("id", "")
                     fc_verified = event.get("verified_count", 0)
                     fc_disputed = event.get("disputed_count", 0)
                     fc_unverifiable = event.get("unverifiable_count", 0)
-                    fc_score = event.get("overall_score", 0)
-                elif event.get("phase") == "report" and "text" in event:
+                    fc_trustworthiness = event.get("trustworthiness", 0)
+                    fc_trustworthiness_label = event.get("trustworthiness_label", "")
+                    fc_has_content = event.get("has_content", True)
+                elif event.get("phase") == "review" and "text" in event:
                     fc_report += event["text"]
-            if fc_id:
+            if fc_id and fc_has_content:
                 from datetime import datetime
                 fc_mv = MarkdownView(
                     id=fc_id, transcript_id=transcript_id,
@@ -139,7 +148,8 @@ async def fact_check_stream(transcript_id: str, request: Request,
                     "verified_count": fc_verified,
                     "disputed_count": fc_disputed,
                     "unverifiable_count": fc_unverifiable,
-                    "overall_score": fc_score,
+                    "trustworthiness": fc_trustworthiness,
+                    "trustworthiness_label": fc_trustworthiness_label,
                     "source_mode": ctx["source_mode"],
                     "source_version": ctx["source_version"],
                     "verified_at": datetime.now().isoformat(),

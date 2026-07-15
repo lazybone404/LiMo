@@ -35,7 +35,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const [proxyUrl, setProxyUrl] = useState('http://127.0.0.1:7890')
   const [saved, setSaved] = useState(false)
   const [cookieConfigured, setCookieConfigured] = useState<Record<string, boolean>>({})
-  const [searchProvider, setSearchProvider] = useState('searxng')
+  const [searchProvider, setSearchProvider] = useState('duckduckgo')
   const [searxngUrl, setSearxngUrl] = useState('http://127.0.0.1:18080')
   const [tavilyApiKey, setTavilyApiKey] = useState('')
   const [fetchProvider, setFetchProvider] = useState('trafilatura')
@@ -61,7 +61,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
       if (cfg.target_language) setTargetLanguage(cfg.target_language)
       if (cfg.agent_tools) {
         if (cfg.agent_tools.search) {
-          setSearchProvider(cfg.agent_tools.search.provider || 'searxng')
+          setSearchProvider(cfg.agent_tools.search.provider || 'duckduckgo')
           setSearxngUrl(cfg.agent_tools.search.searxng_url || 'http://127.0.0.1:18080')
           setTavilyApiKey(cfg.agent_tools.search.tavily_api_key || '')
         }
@@ -254,7 +254,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
             <div className="space-y-4">
               <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
                 <p className="text-[13px] text-muted">
-                  AI 对话时，当本地知识库不足以回答问题，Agent 会使用以下方案搜索网络和抓取网页。SearXNG 需自行部署，未启动时自动降级 DuckDuckGo。
+                  AI 对话和报告审核时使用以下方案搜索网络和抓取网页。DuckDuckGo 免费零配置，SearXNG 需本地部署，Tavily 需 API Key 但质量最高。
                 </p>
 
                 {/* 搜索方案 */}
@@ -264,7 +264,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                     className="w-full px-3 py-2.5 bg-surface border border-border-default rounded-[10px] text-[14px] outline-none">
                     <option value="tavily">Tavily（AI 优化搜索，需 API Key）</option>
                     <option value="searxng">SearXNG（本地免费，自动启动便携版）</option>
-                    <option value="duckduckgo">DuckDuckGo（零配置兜底，需代理）</option>
+                    <option value="duckduckgo">DuckDuckGo（免费零配置，真实网页搜索）</option>
                   </select>
                   {searchProvider === 'tavily' && (
                     <input type="password" value={tavilyApiKey} onChange={e => setTavilyApiKey(e.target.value)}

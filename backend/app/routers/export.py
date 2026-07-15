@@ -1057,7 +1057,7 @@ def export_custom(data: ExportCustomRequest, request: Request):
                 content = ""
                 if tab == "summary":
                     for md in mds:
-                        if md.get("mode", "") != "polished":
+                        if md.get("mode", "") == "notes":
                             content = store.get_markdown(md["id"]) or ""
                             break
                 elif tab == "polished":

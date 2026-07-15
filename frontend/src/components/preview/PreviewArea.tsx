@@ -237,12 +237,29 @@ export function PreviewArea() {
     }, {
       onChunk(text, phase) {
         if (!isSame()) return
-        if (phase === 'report') {
+        if (phase === 'review') {
+          // 审核报告流式追加
           const prev = useStore.getState().currentFactCheckContent || ''
           useStore.getState().setCurrentFactCheckContent(prev + text)
-        } else if (phase === 'verify') {
-          const prev = useStore.getState().factCheckProgress?.text || ''
-          useStore.getState().setFactCheckProgress({ phase: 'verify', text: prev + text })
+        }
+      },
+      onProgress(data) {
+        if (!isSame()) return
+        const st = useStore.getState()
+        if (data.phase === 'static_review') {
+          // 静态审核结果：summary + issues
+          st.setFactCheckProgress({
+            phase: 'static_review',
+            text: data.text || '',
+            summary: data.summary,
+            issues: data.issues,
+          })
+        } else if (data.phase === 'verify') {
+          // 验证进度
+          st.setFactCheckProgress({
+            phase: 'verify',
+            text: data.text || `正在验证 (${data.claim}/${data.total})...`,
+          })
         }
       },
       onDone(result) {
@@ -256,7 +273,10 @@ export function PreviewArea() {
             verified_count: result.verified_count,
             disputed_count: result.disputed_count,
             unverifiable_count: result.unverifiable_count,
-            overall_score: result.overall_score,
+            trustworthiness: result.trustworthiness,
+            trustworthiness_label: result.trustworthiness_label,
+            deductions: result.deductions,
+            has_content: result.has_content,
             source_mode: (result as any).source_mode,
             source_version: (result as any).source_version,
             verified_at: new Date().toISOString(),
@@ -265,7 +285,11 @@ export function PreviewArea() {
         getMarkdown(docId, 'fact_check').then(md => {
           if (isSame() && md?.content) useStore.getState().setCurrentFactCheckContent(md.content)
         })
-        useStore.getState().addToast('事实验证完成', 'success')
+        if (result?.has_content === false) {
+          useStore.getState().addToast('未发现可审核的事实性内容', 'info')
+        } else {
+          useStore.getState().addToast('AI 审核完成', 'success')
+        }
       },
       onError(msg) {
         if (!isSame()) return
@@ -518,72 +542,141 @@ export function PreviewArea() {
         )
 
       case 'fact_check': {
-        // 验证中且无报告：优先展示进度（先于 isViewProcessing 判断）
+        // ── 状态 A: 静态审核进行中 / 刚完成（有 summary 无报告）──
+        const hasStaticResult = factCheckProgress?.phase === 'static_review'
+          && factCheckProgress?.summary && !currentFactCheckContent
+        if (hasStaticResult) {
+          const s = factCheckProgress!.summary!
+          const issues = factCheckProgress!.issues || []
+          return (
+            <div className="max-w-[720px] mx-auto px-10 py-8">
+              <p className="text-[14px] font-medium text-dimmed mb-5">📋 静态审核</p>
+              {/* Claims 统计 */}
+              <div className="grid grid-cols-3 gap-3 mb-5">
+                <div className="p-3 bg-surface rounded-lg text-center">
+                  <div className="text-[22px] font-semibold text-foreground">{s.claims_count}</div>
+                  <div className="text-[11px] text-dimmed">可核查断言</div>
+                </div>
+                <div className="p-3 bg-surface rounded-lg text-center">
+                  <div className="text-[22px] font-semibold text-foreground">{s.facts + s.data}</div>
+                  <div className="text-[11px] text-dimmed">事实/数据</div>
+                </div>
+                <div className="p-3 bg-surface rounded-lg text-center">
+                  <div className="text-[22px] font-semibold text-foreground">{s.opinion}</div>
+                  <div className="text-[11px] text-dimmed">观点（不验证）</div>
+                </div>
+              </div>
+              {/* Issues */}
+              {issues.length > 0 && (
+                <div className="mb-4">
+                  <p className="text-[13px] text-dimmed mb-2">发现问题（{issues.length} 处）:</p>
+                  <div className="space-y-2">
+                    {issues.map((issue, i) => (
+                      <div key={i} className="p-3 bg-surface rounded-lg border border-border-light">
+                        <span className="text-[11px] px-1.5 py-0.5 rounded bg-warning/10 text-warning mr-2">
+                          {issue.type === 'fact_error' ? '事实错误' :
+                           issue.type === 'data_inaccurate' ? '数据近似' :
+                           issue.type === 'citation_missing' ? '缺少引用' :
+                           issue.type === 'source_weak' ? '来源偏弱' :
+                           issue.type === 'reasoning_gap' ? '推理跳跃' :
+                           issue.type === 'logic_conflict' ? '逻辑冲突' :
+                           issue.type === 'overclaim' ? '过度确定化' :
+                           issue.type === 'vague_definition' ? '定义不清' :
+                           issue.type === 'misleading_phrasing' ? '易误导表述' :
+                           issue.type === 'freshness_concern' ? '时效性存疑' : issue.type}
+                        </span>
+                        <span className="text-[13px] text-foreground">{issue.text}</span>
+                        <p className="text-[12px] text-dimmed mt-1">{issue.detail}</p>
+                        {issue.action && (
+                          <p className="text-[12px] text-accent mt-0.5">→ {issue.action}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <p className="text-[13px] text-dimmed">正在进行下一步验证...</p>
+            </div>
+          )
+        }
+        // ── 状态 B: 验证中（有进度文本无报告）──
         if (factChecking && !currentFactCheckContent && factCheckProgress?.text) {
           return (
             <div className="max-w-[720px] mx-auto px-10 py-8">
-              <p className="text-[14px] font-medium text-dimmed mb-4">正在验证...</p>
-              <pre className="text-[12px] text-muted whitespace-pre-wrap font-mono">{factCheckProgress.text}</pre>
+              <p className="text-[14px] font-medium text-dimmed mb-4">🔍 正在验证...</p>
+              <p className="text-[13px] text-muted">{factCheckProgress.text}</p>
             </div>
           )
         }
         if (isViewProcessing(activeView)) return processingPlaceholder
+        // ── 状态 C: 无报告，显示引导 ──
         if (!currentFactCheckContent) {
           return (
             <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
-              <p className="text-[15px] text-dimmed mb-3">尚无事实核查报告</p>
+              <p className="text-[15px] text-dimmed mb-3">AI 报告审核</p>
               <p className="text-[13px] text-disabled mb-6">
-                对生成内容中的关键事实断言进行网络交叉验证，返回可信度标注和来源引用
+                自动提取事实断言，检查引用完整性和逻辑一致性，标注高风险内容并给出可操作的修改建议
               </p>
               <button
                 onClick={() => handleFactCheck(currentDocId!)}
                 disabled={factChecking || !currentDocId}
                 className="px-5 py-2.5 bg-accent text-white text-[14px] font-medium rounded-lg hover:bg-accent-hover active:scale-[0.97] transition-all disabled:opacity-40"
               >
-                {factChecking ? '验证中...' : '开始验证'}
+                {factChecking ? '审核中...' : '开始审核'}
               </button>
             </div>
           )
         }
-        // 过期检测：验证源版本 < 该模式最新版本
+        // ── 状态 D: 有报告 ──
         const sourceMode = factCheckMeta?.source_mode
         const sourceVer = factCheckMeta?.source_version ?? 0
         const isStale = sourceMode && sourceMode !== 'transcript' && sourceVer > 0
-        // simplified: check if markdownVersions has any version > sourceVer
         const hasNewer = markdownVersions.some(v => v.version > sourceVer)
+        const tw = factCheckMeta?.trustworthiness
+        const twLabel = factCheckMeta?.trustworthiness_label
+        const deductions = factCheckMeta?.deductions || []
         return (
           <div className="max-w-[720px] mx-auto px-10 py-8">
-            {/* 验证上下文条 */}
+            {/* 审核上下文 + 可信度 */}
             {factCheckMeta && (
-              <div className="mb-5 p-3 bg-surface rounded-lg border border-border-light">
-                <div className="flex items-center gap-2 text-[12px] text-dimmed">
-                  <span>验证源: {sourceMode === 'transcript' ? '原始转录' : sourceMode === 'notes' ? '笔记' : sourceMode === 'polished' ? '整理版原文' : sourceMode}</span>
-                  {sourceVer > 0 && <span>v{sourceVer}</span>}
-                  {factCheckMeta.verified_at && (
-                    <span>· {new Date(factCheckMeta.verified_at).toLocaleString('zh-CN', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })}</span>
-                  )}
+              <div className="mb-5 p-4 bg-surface rounded-lg border border-border-light">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2 text-[12px] text-dimmed">
+                    <span>审核源: {sourceMode === 'transcript' ? '原始转录' : sourceMode === 'notes' ? '笔记' : sourceMode === 'polished' ? '整理版原文' : sourceMode || '未知'}</span>
+                    {sourceVer > 0 && <span>v{sourceVer}</span>}
+                    {factCheckMeta.verified_at && (
+                      <span>· {new Date(factCheckMeta.verified_at).toLocaleString('zh-CN', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })}</span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => handleFactCheck(currentDocId!)}
+                    disabled={factChecking}
+                    className="px-3 py-1.5 text-[12px] text-accent border border-accent/30 rounded-lg hover:bg-accent/5 disabled:opacity-40 transition-colors"
+                  >
+                    {factChecking ? '审核中...' : '重新审核'}
+                  </button>
                 </div>
+                {tw != null && (
+                  <div className="flex items-center gap-3">
+                    <div className={`text-[13px] font-medium px-2 py-1 rounded ${
+                      twLabel === '较高' ? 'bg-success/10 text-success' :
+                      twLabel === '中等' ? 'bg-warning/10 text-warning' :
+                      'bg-error/10 text-error'
+                    }`}>
+                      报告可信度: {twLabel}（{tw}）
+                    </div>
+                    {deductions.length > 0 && (
+                      <div className="text-[11px] text-dimmed">
+                        扣分: {deductions.join(' · ')}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {isStale && hasNewer && (
-                  <p className="text-[11px] text-warning mt-1">⚠️ 内容已更新，当前验证报告可能过时</p>
+                  <p className="text-[11px] text-warning mt-2">⚠️ 内容已更新，当前审核报告可能过时</p>
                 )}
               </div>
             )}
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                {factCheckMeta?.verified_count != null && (
-                  <span className="text-[12px] text-dimmed">
-                    通过 {factCheckMeta.verified_count} · 争议 {factCheckMeta.disputed_count ?? 0} · 无法验证 {factCheckMeta.unverifiable_count ?? 0}
-                  </span>
-                )}
-              </div>
-              <button
-                onClick={() => handleFactCheck(currentDocId!)}
-                disabled={factChecking}
-                className="px-3 py-1.5 text-[12px] text-accent border border-accent/30 rounded-lg hover:bg-accent/5 disabled:opacity-40 transition-colors"
-              >
-                {factChecking ? '验证中...' : '重新验证'}
-              </button>
-            </div>
             <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={currentFactCheckContent}
               meta={factCheckMeta
                 ? { style: 'detailed', mode: 'fact_check', version: 1 }

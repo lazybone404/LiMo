@@ -236,32 +236,111 @@ async def _searxng_search(query: str, max_results: int, base_url: str, proxy: st
         return json.dumps({"results": results, "source": "searxng"}, ensure_ascii=False)
 
 
-# ── DuckDuckGo ──
+# ── DuckDuckGo（真实网页搜索）──
 
 async def _ddg_search(query: str, max_results: int, proxy: str) -> str:
-    client_kwargs: dict = {"timeout": 10.0}
-    if proxy:
-        client_kwargs["proxy"] = proxy
-    async with httpx.AsyncClient(**client_kwargs) as c:
-        r = await c.get("https://api.duckduckgo.com/",
-                         params={"q": query, "format": "json", "no_html": 1})
-        r.raise_for_status()
-        data = r.json()
-        results = []
-        for item in data.get("RelatedTopics", [])[:max_results]:
-            text = item.get("Text", "")
-            url = item.get("FirstURL", "")
-            if text and url:
-                title = text.split(" - ")[0] if " - " in text else text[:80]
-                results.append({"title": title, "url": url, "snippet": text[:300]})
-        if not results and data.get("AbstractText"):
-            results.append({
-                "title": data.get("Heading", query),
-                "url": data.get("AbstractURL", ""),
-                "snippet": data["AbstractText"][:300],
+    """使用 duckduckgo_search 库进行真实网页搜索（替代废弃的 Instant Answer API）"""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _ddg_search_sync, query, max_results, proxy)
+
+
+def _ddg_search_sync(query: str, max_results: int, proxy: str) -> str:
+    """同步 DDG 搜索，在 executor 中运行"""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS(proxy=proxy or None) as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+        items = []
+        for r in results:
+            items.append({
+                "title": r.get("title", ""),
+                "url": r.get("href", ""),
+                "snippet": (r.get("body", "") or "")[:300],
             })
-        logger.info("DDG: %d 条结果", len(results))
-        return json.dumps({"results": results, "source": "duckduckgo"}, ensure_ascii=False)
+        logger.info("DDG: %d 条结果", len(items))
+        return json.dumps({"results": items, "source": "duckduckgo"}, ensure_ascii=False)
+    except Exception as e:
+        logger.warning("DDG 搜索失败: %s", str(e)[:80])
+        return json.dumps({"results": [], "source": "duckduckgo_error"}, ensure_ascii=False)
+
+
+# ── 官方来源搜索 ──
+
+async def search_official(domain: str, query: str, max_results: int = 5) -> str:
+    """定向搜索特定域名，用 site: 操作符拼接。"""
+    full_query = f"site:{domain} {query}"
+    return await search_web(full_query, max_results)
+
+
+# ── URL 元信息 ──
+
+async def get_url_metadata(url: str) -> str:
+    """获取 URL 的元信息（标题、发布时间、域名、作者），不抓全文"""
+    from urllib.parse import urlparse
+    domain = urlparse(url).hostname or ""
+
+    try:
+        client_kwargs: dict = {"timeout": 10.0, "follow_redirects": True}
+        async with httpx.AsyncClient(**client_kwargs) as c:
+            r = await c.get(url)
+            html = r.text[:50000]  # 只取前面部分
+    except Exception:
+        return json.dumps({"title": "", "domain": domain, "published": "", "author": ""}, ensure_ascii=False)
+
+    title = ""
+    import re as _re
+    m = _re.search(r'<title[^>]*>(.*?)</title>', html, _re.IGNORECASE | _re.DOTALL)
+    if m:
+        title = m.group(1).strip()[:200]
+
+    # 尝试提取发布时间
+    published = ""
+    for pattern in [
+        r'<meta[^>]+property="article:published_time"[^>]+content="([^"]+)"',
+        r'<meta[^>]+name="[^"]*date[^"]*"[^>]+content="([^"]+)"',
+        r'<time[^>]*datetime="([^"]+)"',
+    ]:
+        m = _re.search(pattern, html, _re.IGNORECASE)
+        if m:
+            published = m.group(1)[:30]
+            break
+
+    # 尝试提取作者
+    author = ""
+    for pattern in [
+        r'<meta[^>]+name="author"[^>]+content="([^"]+)"',
+        r'<meta[^>]+property="article:author"[^>]+content="([^"]+)"',
+    ]:
+        m = _re.search(pattern, html, _re.IGNORECASE)
+        if m:
+            author = m.group(1)[:100]
+            break
+
+    return json.dumps({
+        "title": title, "domain": domain,
+        "published": published, "author": author,
+    }, ensure_ascii=False)
+
+
+# ── 日期工具 ──
+
+async def today() -> str:
+    """返回今天的日期"""
+    from datetime import date
+    return date.today().isoformat()
+
+
+async def is_recent(date_str: str, days: int = 365) -> str:
+    """判断给定日期是否在最近 N 天内。date_str 格式：YYYY-MM-DD"""
+    from datetime import date, timedelta
+    try:
+        d = date.fromisoformat(date_str[:10])
+        recent = d >= (date.today() - timedelta(days=days))
+        return json.dumps({"date": date_str[:10], "is_recent": recent,
+                          "threshold_days": days}, ensure_ascii=False)
+    except Exception:
+        return json.dumps({"date": date_str, "is_recent": False, "error": "日期解析失败"},
+                         ensure_ascii=False)
 
 
 # ── 网页抓取 ──

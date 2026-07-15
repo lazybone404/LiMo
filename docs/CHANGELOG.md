@@ -6,6 +6,66 @@
 
 ---
 
+## 2026-07-15（下午）— mode 过滤修复 + 打包兼容
+
+### mode 精确匹配修复
+
+`GET /markdown/{id}` 之前用 `(mode == "polished") == want_polished` 布尔技巧筛选，导致 `notes` 和 `fact_check` 两个模式被混在"非 polished"条目里一起返回。审核报告保存为 `fact_check` 模式后，前端加载笔记版本列表时也会把审核报告版本混进去展示。
+
+**修复 3 处**：
+- `generate.py:664` — `GET /markdown/{id}` 改为 `mode == mode` 精确匹配
+- `generate.py:325` — 生成续写 partial 匹配改为 `mode == stream_mode` 精确匹配
+- `export.py:1060` — summary tab 导出改为 `mode == "notes"` 精确匹配
+
+### 打包兼容修复
+
+- `review.py` 函数内 `from app.agent.evidence import format_evidence` 提升到模块顶部（PyInstaller 不追踪函数内导入）
+- `LiMoBackend.spec` 新增 `app.generation.review` / `app.agent.evidence` 到 hiddenimports
+- `LiMoBackend.spec` 新增 `duckduckgo_search` 到 collect_all（依赖 primp Rust 原生库）
+
+### 默认搜索方案切换
+
+`agent_tools.search.provider` 默认值从 `searxng` 改为 `duckduckgo`。DDG Instant Answer API 替换为 `duckduckgo_search` 库（真实网页搜索）。新用户无需配置即可使用搜索验证。
+
+---
+
+## 2026-07-15 — 事实验证重构为 AI Review（AI 报告审核系统）
+
+### 做了什么
+
+将原有 Search-First 的 FactCheckEngine 重构为四阶段 AI Review Engine：
+
+**① Static Review（不联网）**: 提取可核查断言（Fact/Data/Opinion），检查内部一致性问题（缺少引用、绝对化表述、推理跳跃、逻辑冲突），双维度风险评分（Risk + Priority）。
+**② Verification Planning**: 一次 LLM 批量决定每条 claim 的验证策略（LLM 已知/需联网/无法验证/观点跳过），为需搜索的 claim 生成 Query + Intent。
+**③ Evidence Collection + Review**: 按需搜索（规则过滤域名优先权威来源），多维度评估（Evidence Strength + 事实一致性 + 来源可信度 + 时效性 + 引用充分性 + 推理合理性）。
+**④ AI Review Report（流式）**: 红黄绿报告（🔴 需要立即修改 / 🟡 建议修改 / 🟢 可接受）+ 每个问题带 Action + 报告可信度 + 扣分项。
+
+### 为什么
+
+- DDG Instant Answer API 不是真正的网页搜索（只返回 Wikipedia 摘要），大量查询返回空结果
+- Search-First 流程把搜索当目的，实际上搜索只是审核的手段之一
+- 逐条串行验证极慢（30-90s），批量 LLM 调用可减少 80% 时间
+- 输出只是 verified/disputed 二元标签，对用户帮助有限
+- 新增全局设计原则：**审核结果必须可解释（Explainable by Design）**
+
+### 影响范围
+
+| 文件 | 动作 | 说明 |
+|------|------|------|
+| `backend/app/generation/review.py` | 新建 | ReviewEngine 四阶段管道 |
+| `backend/app/generation/prompt.py` | 新增 4 prompt | STATIC_REVIEW / VERIFICATION_PLANNER / EVIDENCE_REVIEWER / AI_REVIEW_REPORT |
+| `backend/app/routers/fact_check.py` | 修改 | 路由切换到 ReviewEngine（URL 不变） |
+| `backend/app/generation/fact_check.py` | 保留 | 旧 FactCheckEngine 不动 |
+| `backend/app/agent/tools.py` | 重写 DDG + 新增工具 | DDG Instant Answer API → `duckduckgo_search` 库；新增 `search_official` / `get_url_metadata` / `today` / `is_recent` |
+| `backend/app/agent/evidence.py` | 新建 | Evidence Manager：统一证据格式 + 缓存（TTL 24h）+ URL 去重 |
+| `frontend/src/store/index.ts` | 扩展 | 新增 reviewIssues / reviewSummary / trustworthiness 等字段 |
+| `frontend/src/api/client.ts` | 扩展 | SSE 事件解析适配新格式（static_review / verify / review） |
+| `frontend/src/components/preview/PreviewArea.tsx` | 重写 | fact_check tab 改为红黄绿审核报告 + 静态审核摘要 + 可信度展示 |
+| `frontend/src/components/gen-panel/constants.ts` | 文案 | "事实核查" → "AI 审核" |
+| `CLAUDE.md` / `CHANGELOG.md` | 更新 | 文档同步 |
+
+---
+
 ## 2026-07-13 — 全面修复：8 项增强 + Bcut ASR + KaTeX + 公式渲染 + 引擎语义修正 + 打包
 
 ### 本轮追加修复（同日）

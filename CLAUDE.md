@@ -20,6 +20,7 @@ LiMo — 知识管理系统。输入 URL/文本/文件 → 适配器提取正文
 | [system-design-spec.md](docs/system-design-spec.md) | 原始设计蓝图（历史参考） | 理解早期设计意图 |
 | [engine-standards.md](design/engine-standards.md) | 引擎评审标准+实测数据 | 添加/修改引擎 |
 | [doc-transcript-design.md](docs/doc-transcript-design.md) | Doc 转录原始提案（部分仍有效） | 理解 Word/PPT/EPUB 早期设计意图 |
+| [prompts-inventory.md](docs/prompts-inventory.md) | 全部 LLM 提示词清单 + 15 个审视点 + 温度参数速查 | 审视/优化 prompt、新增管道需要参考 prompt 风格 |
 
 ## 常用命令
 
@@ -129,12 +130,15 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 - 历史上下文近 40 条消息
 - 5 个工具：search_docs / lookup_doc / list_docs / search_web / fetch_url
 
-**事实验证管道**（独立于生成管道，Agent 网络能力驱动）：
-- 端点 `POST /fact-check/{id}` + SSE 流式 `GET /fact-check/{id}/stream`
-- 三阶段：提取事实断言(LLM) → 逐条搜索验证(web search + fetch) → LLM 交叉核查 → Markdown 报告
+**AI 审核管道**（AI Review Engine，2026-07-15 从 FactCheck 重构而来）：
+- 端点 `POST /fact-check/{id}` + SSE 流式 `GET /fact-check/{id}/stream`（URL 不变）
+- 四阶段：Static Review（提取 Claim + 分类 Fact/Data/Opinion + 内部一致性 + 风险评分）→ Verification Planning（LLM 批量决策验证策略）→ Evidence Collection + Review（按需搜索 + 多维度评估）→ AI Review Report（红黄绿报告 + 可信度 + Action）
 - 验证源 fallback：已有 notes → 已有 polished → 原始转录
 - 存储为 MarkdownView（mode=FACT_CHECK），前端 PreviewArea fact_check tab
-- `FactCheckEngine`（`app/generation/fact_check.py`）— 复用 agent/tools.py 的 search_web/fetch_url
+- `ReviewEngine`（`app/generation/review.py`）— 复用 agent/tools.py 的 search_web/fetch_url
+- 工具层：废弃 DDG Instant Answer API → `duckduckgo_search` 库；新增 `search_official` / `get_url_metadata` / `today` / `is_recent`
+- Evidence Manager（`app/agent/evidence.py`）— 统一证据格式 + 缓存（TTL 24h）+ URL 去重
+- 旧 `FactCheckEngine`（`app/generation/fact_check.py`）保留不动
 
 ### 适配器注册
 
@@ -379,15 +383,19 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | SSE 流式 + 持久化 | 逐 token 推送 + 自动保存对话 + 40 条历史上下文 |
 | ✅ | 对话 CRUD | 新建/重命名/删除/追加消息 |
 
-### ✅ 事实验证
+### ✅ AI 审核（原事实验证）
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| ✅ | 三阶段管道 | 提取事实断言 (LLM) → 搜索验证 (web) → 交叉核查 (LLM) |
-| ✅ | SSE 流式进度 | extract → verify (逐条) → report (流式) |
-| ✅ | 前端 tab | PreviewArea fact_check tab + 进度指示 + Markdown 报告渲染 |
+| ✅ | 四阶段管道 | Static Review → Verification Planning → Evidence Collection → Report |
+| ✅ | SSE 流式进度 | static_review → verify → review → done |
+| ✅ | 前端 tab | PreviewArea fact_check tab + 静态审核摘要 + 红黄绿报告 + 可信度 |
 | ✅ | 验证源 fallback | notes → polished → transcript |
+| ✅ | Evidence Manager | 统一证据格式 + 缓存（TTL 24h）+ URL 去重 |
+| ✅ | 工具增强 | DDG 真实搜索（duckduckgo_search 库）+ Official Search + 日期工具 + URL 元信息 |
 | ❌ | 报告可交互 | 点击来源链接查看原文，批量验证多文档 |
+| ❌ | Chunk 提取 | 长文档分片提取（当前仅取前 8000 字符） |
+| ❌ | 专业模式 | 学术/法律/医疗专用搜索源 |
 
 ### 📤 导出
 
@@ -438,8 +446,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✨ LLM 生成 | 7 | 7 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 5 | 5 | 100% |
-| ✅ 事实验证 | 4 | 5 | 80% |
+| ✅ AI 审核 | 5 | 7 | 71% |
 | 📤 导出 | 7 | 8 | 88% |
 | 🎨 前端 UI/UX | 8 | 8 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **59** | **63** | **94%** |
+| **合计** | **60** | **65** | **92%** |

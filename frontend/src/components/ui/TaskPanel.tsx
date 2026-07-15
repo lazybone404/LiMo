@@ -8,7 +8,7 @@ const KIND_META: Record<string, { label: string; Icon: typeof FileText; color: s
   retranscribe:{ label: '重转录', Icon: RefreshCw, color: 'text-warning', bg: 'bg-warning/10' },
   generate:   { label: '生成',    Icon: FileText,   color: 'text-indigo-500', bg: 'bg-indigo-50' },
   'process': { label: '图片处理', Icon: Image, color: 'text-success', bg: 'bg-success/10' },
-  fact_check: { label: '事实验证', Icon: ListTodo, color: 'text-success', bg: 'bg-success/10' },
+  fact_check: { label: 'AI 审核', Icon: ListTodo, color: 'text-success', bg: 'bg-success/10' },
 }
 
 export function TaskPanel() {

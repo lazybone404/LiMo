@@ -112,7 +112,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "engine_auto_fallback": False,
     # Agent 工具配置 — 网络搜索 + 网页抓取
     "agent_tools": {
-        "search": {"provider": "searxng", "searxng_url": "http://127.0.0.1:18080", "tavily_api_key": ""},
+        "search": {"provider": "duckduckgo", "searxng_url": "http://127.0.0.1:18080", "tavily_api_key": ""},
         "fetch":  {"provider": "trafilatura"},
     },
     "data_dir": str(Path.home() / ".mybigwork"),

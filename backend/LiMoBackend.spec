@@ -41,7 +41,8 @@ hiddenimports = [
     'app.utils.video_reader', 'app.downloaders.douyin_downloader',
     'app.downloaders.douyin_helper',
     'app.llm', 'app.llm.service', 'app.llm.agent', 'app.llm.errors',
-    'app.agent', 'app.agent.tools',
+    'app.agent', 'app.agent.tools', 'app.agent.evidence',
+    'app.generation.review',
 ]
 
 # 引擎相关
@@ -74,7 +75,7 @@ hiddenimports += [
 ]
 
 # collect-all 处理有复杂原生扩展的包
-for pkg in ['faster_whisper', 'pymupdf', 'pymupdf4llm', 'dashscope',
+for pkg in ['duckduckgo_search', 'faster_whisper', 'pymupdf', 'pymupdf4llm', 'dashscope',
             'youtube_transcript_api', 'trafilatura', 'av', 'ctranslate2',
             'onnxruntime', 'tokenizers', 'tiktoken',
             'huggingface_hub', 'markitdown', 'pytesseract', 'lxml',

@@ -557,11 +557,29 @@ export function streamGenerate(
     })
 }
 
-// -- stream fact check --
+// -- stream fact check / AI Review --
+
+export interface ReviewChunk {
+  text?: string
+  phase?: string           // static_review | verify | review
+  strategy?: string        // llm | web
+  summary?: { claims_count: number; facts: number; data: number; opinion: number }
+  issues?: { type: string; text: string; detail: string; action?: string }[]
+  claim?: number; total?: number; claim_id?: string
+  verdict?: string; evidence_strength?: string; basis?: string; action?: string
+}
+
+export interface ReviewDoneResult {
+  id?: string
+  verified_count?: number; disputed_count?: number; unverifiable_count?: number
+  trustworthiness?: number; trustworthiness_label?: string
+  deductions?: string[]; has_content?: boolean
+}
 
 export interface FactCheckCallbacks {
   onChunk: (text: string, phase?: string) => void
-  onDone: (result?: { id?: string; verified_count?: number; disputed_count?: number; unverifiable_count?: number; overall_score?: number }) => void
+  onProgress: (data: ReviewChunk) => void
+  onDone: (result?: ReviewDoneResult) => void
   onError: (message: string) => void
 }
 
@@ -574,7 +592,6 @@ export function streamFactCheck(
   const params = new URLSearchParams()
   if (options.model_id) params.set('model_id', String(options.model_id))
   const qs = params.toString()
-  // 追踪 SSE 是否正常结束（收到 done/error/cancelled 事件）
   let receivedDoneOrError = false
   const origOnDone = callbacks.onDone
   const origOnError = callbacks.onError
@@ -606,16 +623,21 @@ export function streamFactCheck(
             try {
               const data = JSON.parse(line.slice(6))
               if (data.type === 'done') {
-                // 跳过引擎内部 done（带 mode），只响应顶层 done
                 if (!data.mode) callbacks.onDone(data)
               } else if (data.type === 'error') {
                 callbacks.onError(data.message || '事实验证失败')
               } else if (data.type === 'cancelled') {
                 callbacks.onError('验证已取消')
-              } else if (data.phase === 'report' && data.text) {
-                callbacks.onChunk(data.text, 'report')
-              } else if (data.phase === 'verify' && data.text) {
-                callbacks.onChunk(data.text, 'verify')
+              } else if (data.phase === 'review' && data.text) {
+                // 新：审核报告流式输出
+                callbacks.onChunk(data.text, 'review')
+              } else if (data.phase === 'static_review') {
+                // 新：静态审核结果（summary + issues）
+                callbacks.onProgress(data)
+              } else if (data.phase === 'verify') {
+                // 新旧兼容：验证进度
+                if (data.text) callbacks.onChunk(data.text, 'verify')
+                if (data.verdict) callbacks.onProgress(data)
               } else if (data.text) {
                 callbacks.onChunk(data.text, data.phase || '')
               }
@@ -623,7 +645,6 @@ export function streamFactCheck(
           }
         }
       }
-      // 循环退出但没有 done/error 事件 → 连接异常断开
       if (!receivedDoneOrError) {
         callbacks.onError('连接意外断开，请重试')
       }

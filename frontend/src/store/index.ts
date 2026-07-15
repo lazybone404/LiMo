@@ -44,13 +44,22 @@ interface Store {
   setMarkdownMeta: (meta: { id: string; style: string; mode: string; version: number; status?: string } | null) => void
   setMarkdownVersions: (versions: { version: number; id: string; createdAt: string; status?: string }[]) => void
 
-  // 事实验证
+  // 事实验证 / AI 审核
   currentFactCheckContent: string | null
-  factCheckMeta: { id: string; verified_count?: number; disputed_count?: number; unverifiable_count?: number; overall_score?: number; source_mode?: string; source_version?: number; verified_at?: string } | null
-  factCheckProgress: { phase: string; text: string } | null
+  factCheckMeta: {
+    id: string; verified_count?: number; disputed_count?: number; unverifiable_count?: number
+    overall_score?: number; trustworthiness?: number; trustworthiness_label?: string
+    deductions?: string[]; has_content?: boolean
+    source_mode?: string; source_version?: number; verified_at?: string
+  } | null
+  factCheckProgress: {
+    phase: string; text: string
+    summary?: { claims_count: number; facts: number; data: number; opinion: number }
+    issues?: { type: string; text: string; detail: string; action?: string }[]
+  } | null
   setCurrentFactCheckContent: (c: string | null) => void
-  setFactCheckMeta: (m: { id: string; verified_count?: number; disputed_count?: number; unverifiable_count?: number; overall_score?: number; source_mode?: string; source_version?: number; verified_at?: string } | null) => void
-  setFactCheckProgress: (p: { phase: string; text: string } | null) => void
+  setFactCheckMeta: (m: Store['factCheckMeta']) => void
+  setFactCheckProgress: (p: Store['factCheckProgress']) => void
 
   // 流式生成
   streamingContent: string | null       // 当前正在流式生成的内容
