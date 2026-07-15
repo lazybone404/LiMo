@@ -2,6 +2,7 @@ export interface GenPrefs {
   style: string
   selectedCore: string[]               // ["notes","polished"] — 生成产物的复选框
   formatToc: boolean; formatLink: boolean; formatSummary: boolean; formatScreenshot: boolean
+  /** @deprecated replaced by target_language — kept for old data compat */
   formatTranslate: boolean; formatFormulas: boolean; formatReferences: boolean; formatImages: boolean
   imageAnalyze: boolean; imageOptimize: boolean
   selectedModelId: number | null

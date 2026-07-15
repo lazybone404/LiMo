@@ -17,6 +17,7 @@ from app.core.errors import AppError
 from app.core.types import ChatMessage, Conversation
 from app.core import logging as log
 from app.agent.tools import search_web, fetch_url
+from app.core.text_utils import smart_truncate
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -158,7 +159,7 @@ async def chat(req: ChatRequest, request: Request) -> dict[str, object]:
         for did in req.doc_ids:
             tx = store.get_transcript(did)
             if tx:
-                context_parts.append(f"[{tx['title']}]\n{tx['rawText'][:1000]}")
+                context_parts.append(f"[{tx['title']}]\n{smart_truncate(tx['rawText'], 1000)}")
     context = "\n\n".join(context_parts) if context_parts else "（未选中文档，可用 list_docs 查看可用文档）"
 
     system = SYSTEM_PROMPT + f"\n\n--- 当前文档 ---\n{context}"
@@ -226,7 +227,7 @@ async def chat_stream(
     for did in doc_list:
         tx = store.get_transcript(did)
         if tx:
-            context_parts.append(f"[{tx['title']}]\n{tx['rawText'][:1000]}")
+            context_parts.append(f"[{tx['title']}]\n{smart_truncate(tx['rawText'], 1000)}")
     context = "\n\n".join(context_parts) if context_parts else "（未选中文档）"
     system = SYSTEM_PROMPT + f"\n\n--- 当前文档 ---\n{context}"
 

@@ -36,7 +36,8 @@ class PromptBuilder:
         """
         if source_type == "xlsx":
             # Excel 只生成数据摘要（LLM 无法做真正的数值分析）
-            return build_excel_summary_prompt(clean_text, style, user_notes=user_notes)
+            return build_excel_summary_prompt(clean_text, style, user_notes=user_notes,
+                                               target_language=self.target_language)
 
         if mode == "polished":
             return build_polish_prompt(
@@ -66,7 +67,8 @@ class PromptBuilder:
         """
         if source_type == "xlsx":
             # Excel 只有数据摘要一个产物（分析报告已移除——LLM 无法做真正的数值分析）
-            sp = build_excel_summary_prompt(clean_text, style, user_notes=user_notes)
+            sp = build_excel_summary_prompt(clean_text, style, user_notes=user_notes,
+                                             target_language=self.target_language)
             return sp, sp  # 双产物接口兼容，两份相同
 
         polished_prompt = build_polish_prompt(

@@ -11,12 +11,75 @@ import asyncio
 import json
 import logging
 from typing import Any, Callable, AsyncGenerator
+from urllib.parse import urlparse
 
 from app.llm.errors import CancelledError
 
 logger = logging.getLogger(__name__)
 
 ToolFn = Callable[..., str]
+
+
+def _tool_display(tool_name: str, args: dict) -> str:
+    """生成工具调用的安全展示文案（不暴露本地路径/完整 URL）"""
+    if tool_name == "search_web":
+        q = args.get("query", "")
+        return f"正在搜索网络: {q}" if q else "正在搜索网络..."
+    if tool_name == "fetch_url":
+        url = args.get("url", "")
+        try:
+            domain = urlparse(url).netloc or url[:60]
+        except Exception:
+            domain = url[:60]
+        return f"正在读取: {domain}"
+    if tool_name == "search_docs":
+        q = args.get("query", "")
+        return f"正在搜索知识库: {q}" if q else "正在搜索知识库..."
+    if tool_name == "lookup_doc":
+        return "正在读取文档..."
+    if tool_name == "list_docs":
+        return "正在列出可用文档..."
+    return f"正在执行: {tool_name}"
+
+
+def _tool_summary(tool_name: str, result: str) -> str:
+    """生成工具执行结果的安全摘要（C 端不暴露完整内容）"""
+    try:
+        data = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        data = result
+
+    if tool_name == "search_web":
+        if isinstance(data, list):
+            return f"找到 {len(data)} 条相关结果"
+        if isinstance(data, dict) and data.get("results"):
+            return f"找到 {len(data['results'])} 条相关结果"
+        return "搜索完成"
+
+    if tool_name == "fetch_url":
+        text = result if isinstance(result, str) else str(result)
+        return f"已读取网页，约 {len(text)} 字"
+
+    if tool_name == "search_docs":
+        if isinstance(data, dict):
+            return f"找到 {data.get('found', 0)} 个相关文档"
+        return "搜索完成"
+
+    if tool_name == "lookup_doc":
+        if isinstance(data, dict):
+            title = data.get("title", "")
+            length = data.get("totalLength", len(result))
+            if title:
+                return f"已读取「{title}」，约 {length} 字"
+            return f"已读取文档，约 {length} 字"
+        return "已读取文档"
+
+    if tool_name == "list_docs":
+        if isinstance(data, list):
+            return f"共 {len(data)} 个可用文档"
+        return "已列出可用文档"
+
+    return "工具执行完成"
 
 
 class AgentRunner:
@@ -114,6 +177,7 @@ class AgentRunner:
                 return
 
             # 有工具 → 先用非流式判定是否需要工具调用
+            yield {"type": "agent_status", "message": "正在分析问题..."}
             try:
                 response = await self.llm.client.chat.completions.create(
                     model=self.llm.model,
@@ -136,11 +200,25 @@ class AgentRunner:
 
             # 有工具调用 → 执行
             messages.append(msg)
-            yield {
-                "type": "tool_start",
-                "tool": msg.tool_calls[0].function.name,
-                "count": len(msg.tool_calls),
-            }
+            # 收集所有工具调用的 display 和 args
+            tool_displays = []
+            for tc in msg.tool_calls:
+                try:
+                    tc_args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    tc_args = {}
+                tool_displays.append({
+                    "tool": tc.function.name,
+                    "args": tc_args,
+                    "display": _tool_display(tc.function.name, tc_args),
+                })
+            for td in tool_displays:
+                yield {
+                    "type": "tool_start",
+                    "tool": td["tool"],
+                    "args": td["args"],
+                    "display": td["display"],
+                }
 
             for tc in msg.tool_calls:
                 fn_name = tc.function.name
@@ -172,7 +250,14 @@ class AgentRunner:
                     "content": result,
                 })
 
+                yield {
+                    "type": "tool_result",
+                    "tool": fn_name,
+                    "summary": _tool_summary(fn_name, result),
+                }
+
         # 达到最大轮数 → 带完整消息历史的流式最终回答
+        yield {"type": "agent_status", "message": "正在整理回答..."}
         messages.append({
             "role": "user",
             "content": "请基于以上对话和工具调用结果给出最终回答（使用中文）。",

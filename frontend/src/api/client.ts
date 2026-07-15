@@ -674,7 +674,9 @@ export async function chat(
 export interface StreamChatCallbacks {
   onMeta: (conversationId: string) => void
   onText: (text: string) => void
-  onToolStart: (tool: string) => void
+  onToolStart: (display: string) => void
+  onStatus?: (message: string) => void
+  onToolResult?: (tool: string, summary: string) => void
   onDone: () => void
   onError: (message: string) => void
 }
@@ -718,7 +720,9 @@ export function streamChat(
               const data = JSON.parse(line.slice(6))
               if (data.type === 'meta') callbacks.onMeta(data.conversation_id)
               else if (data.type === 'text') callbacks.onText(data.text)
-              else if (data.type === 'tool_start') callbacks.onToolStart(data.tool)
+              else if (data.type === 'agent_status') callbacks.onStatus?.(data.message)
+              else if (data.type === 'tool_start') callbacks.onToolStart(data.display)
+              else if (data.type === 'tool_result') callbacks.onToolResult?.(data.tool, data.summary)
               else if (data.type === 'done') callbacks.onDone()
               else if (data.type === 'error') callbacks.onError(data.message)
             } catch { /* broken JSON */ }

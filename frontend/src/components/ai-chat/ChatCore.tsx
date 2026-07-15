@@ -132,9 +132,14 @@ export function ChatCore({
           useStore.setState({ chatMessages: updated })
         }
       },
-      onToolStart(tool) {
-        const label = tool === 'search_web' ? '搜索网络' : tool === 'fetch_url' ? '抓取网页' : '查询文档'
-        setToolStatus(`正在${label}...`)
+      onToolStart(display) {
+        setToolStatus(display)
+      },
+      onStatus(message) {
+        setToolStatus(message)
+      },
+      onToolResult(_tool, summary) {
+        setToolStatus(prev => prev ? `${prev}\n${summary}` : summary)
       },
       onDone() {
         setToolStatus(''); setChatLoading(false)
@@ -257,7 +262,7 @@ export function ChatCore({
               </div>
             ))}
             {chatLoading && !chatMessages.some(m => m.role === 'assistant' && m.content === '') && (
-              <div className="flex gap-2"><div className={`${s.avatar} rounded-full bg-surface-hover flex items-center justify-center shrink-0`}><Bot size={s.icon} className="text-dimmed" /></div><div className="px-4 py-2.5 bg-surface rounded-2xl rounded-bl-md">{toolStatus ? <span className={`${s.msg} text-dimmed`}>{toolStatus}</span> : <span className="inline-flex gap-1"><span className="w-1.5 h-1.5 rounded-full bg-disabled animate-bounce" style={{ animationDelay: '0ms' }} /><span className="w-1.5 h-1.5 rounded-full bg-disabled animate-bounce" style={{ animationDelay: '150ms' }} /><span className="w-1.5 h-1.5 rounded-full bg-disabled animate-bounce" style={{ animationDelay: '300ms' }} /></span>}</div></div>
+              <div className="flex gap-2"><div className={`${s.avatar} rounded-full bg-surface-hover flex items-center justify-center shrink-0`}><Bot size={s.icon} className="text-dimmed" /></div><div className="px-4 py-2.5 bg-surface rounded-2xl rounded-bl-md">{toolStatus ? <span className={`${s.msg} text-dimmed whitespace-pre-wrap`}>{toolStatus}</span> : <span className="inline-flex gap-1"><span className="w-1.5 h-1.5 rounded-full bg-disabled animate-bounce" style={{ animationDelay: '0ms' }} /><span className="w-1.5 h-1.5 rounded-full bg-disabled animate-bounce" style={{ animationDelay: '150ms' }} /><span className="w-1.5 h-1.5 rounded-full bg-disabled animate-bounce" style={{ animationDelay: '300ms' }} /></span>}</div></div>
             )}
           </div>
 

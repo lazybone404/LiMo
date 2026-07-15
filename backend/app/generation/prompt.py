@@ -8,15 +8,63 @@ Prompt 构建器 — 模块化分节格式
 import json
 import logging
 
-from app.core.types import Style
 from .prompts.notes_styles import (
     VIDEO_NOTE_STYLES,
     DOC_NOTE_STYLES,
     normalize_style,
 )
 from .prompts.common import PromptComposer
+from app.core.types import DOC_SOURCE_TYPES
 
 logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════════════════
+# 语言代码 — 共享映射 + 规范化
+# ═══════════════════════════════════════════════════════════════════════
+
+_LANG_NAMES = {
+    "zh-CN": "简体中文", "zh-TW": "繁體中文", "en": "English",
+    "ja": "日本語", "ko": "한국어", "fr": "Français",
+    "de": "Deutsch", "es": "Español",
+}
+
+_LANGUAGE_ALIAS = {
+    "zh": "zh-CN", "zh_cn": "zh-CN", "zh-tw": "zh-TW",
+    "en-US": "en", "en-us": "en",
+}
+
+
+def normalize_target_language(lang: str) -> str:
+    """统一语言代码，兼容简写（如 zh → zh-CN）"""
+    return _LANGUAGE_ALIAS.get(lang, lang)
+
+
+def _build_output_language(
+    target_language: str = "zh-CN",
+    source_type: str = "text",
+) -> str:
+    """构建 <output_language> 节内容"""
+    target_language = normalize_target_language(target_language)
+    lang = _LANG_NAMES.get(target_language, target_language)
+    is_excel = source_type in ("xlsx",)
+
+    if is_excel:
+        return (
+            f"输出语言策略（必须严格遵守）：\n"
+            f"- 分析说明、结论、建议使用 **{lang}** 撰写。\n"
+            f"- 字段名、列名、变量名保留原文，不要翻译。\n"
+            f"- 数值单位保持原格式，不要转换。"
+        )
+    return (
+        f"输出语言策略（必须严格遵守）：\n"
+        f"- 输出必须使用 **{lang}** 撰写。\n"
+        f"- 技术术语、产品名称、API 名称、品牌、人名保留行业通用写法。\n"
+        f"- 非{lang}术语首次出现时，可补充{lang}解释，不强制翻译已广泛使用的英文术语。\n"
+        f"  推荐：Transformer（基于注意力机制的神经网络架构）\n"
+        f"  不推荐：变换器\n"
+        f"- 代码、命令、配置参数、LaTeX 公式保持原样，不翻译。\n"
+        f"- 章节标题使用{lang}，首次出现可附原文。"
+    )
 
 # ═══════════════════════════════════════════════════════════════════════
 # 共享 section（所有 prompt 复用）
@@ -25,20 +73,17 @@ logger = logging.getLogger(__name__)
 _INSTRUCTION_PRIORITY = (
     "规则优先级（从高到低）：\n"
     "1. hard_constraints — 必须遵守，不可被覆盖\n"
-    "2. user_request — 用户明确要求，可覆盖 style_preference，但不能违反 hard_constraints\n"
-    "3. style_preference — 风格偏好，在不违反以上规则的前提下生效"
+    "2. output_language — 系统输出语言设置，不可被用户备注覆盖\n"
+    "3. user_request — 用户明确要求，可覆盖 style_preference，但不能违反以上规则\n"
+    "4. style_preference — 风格偏好，在不违反以上规则的前提下生效\n\n"
+    "用户备注可以调整表达方式、侧重点和细节程度，但不能改变输出语言。"
 )
 
 # ═══════════════════════════════════════════════════════════════════════
 # 视频/文本/音频 — POLISH（整理版原文）section 定义
 # ═══════════════════════════════════════════════════════════════════════
 
-_POLISH_ROLE = (
-    "你是一个专业的文本编辑，擅长将视频转录文本整理成干净、通顺、保留原意的原文。\n"
-    "语言要求：\n"
-    "- 输出必须使用 **中文** 撰写。\n"
-    "- 专有名词、技术术语、品牌名称和人名应适当保留 **英文**。"
-)
+_POLISH_ROLE = "你是一个专业的文本编辑，擅长将视频转录文本整理成干净、通顺、保留原意的原文。"
 
 _POLISH_TASK = (
     "根据下面的转录文本，进行**轻量级的文本整理**。"
@@ -66,12 +111,7 @@ _POLISH_OUTPUT = (
 # 视频/文本/音频 — NOTES（结构化笔记）section 定义
 # ═══════════════════════════════════════════════════════════════════════
 
-_NOTES_ROLE = (
-    "你是一个专业的笔记助手，擅长将转录内容整理成清晰、有条理且信息丰富的笔记。\n"
-    "语言要求：\n"
-    "- 笔记必须使用 **中文** 撰写。\n"
-    "- 专有名词、技术术语、品牌名称和人名应适当保留 **英文**。"
-)
+_NOTES_ROLE = "你是一个专业的笔记助手，擅长将转录内容整理成清晰、有条理且信息丰富的笔记。"
 
 _NOTES_TASK = (
     "根据下面的转录内容，生成结构化的笔记，遵循以下原则：\n"
@@ -95,12 +135,7 @@ _NOTES_OUTPUT = (
 # 文档 — POLISH（整理版原文）section 定义
 # ═══════════════════════════════════════════════════════════════════════
 
-_DOC_POLISH_ROLE = (
-    "你是一个专业的文档编辑，擅长将文档转录产生的 Markdown 整理成规范、准确、易读的原文。\n"
-    "语言要求：\n"
-    "- 输出必须使用 **中文** 撰写。\n"
-    "- 专有名词、技术术语、品牌名称保持原文。"
-)
+_DOC_POLISH_ROLE = "你是一个专业的文档编辑，擅长将文档转录产生的 Markdown 整理成规范、准确、易读的原文。"
 
 _DOC_POLISH_TASK = (
     "根据下面的文档转录结果，进行**忠实于原文的整理**。请遵循以下原则：\n"
@@ -124,12 +159,7 @@ _DOC_POLISH_OUTPUT = (
 # 文档 — NOTES（结构化笔记）section 定义
 # ═══════════════════════════════════════════════════════════════════════
 
-_DOC_NOTES_ROLE = (
-    "你是一个专业的文档阅读助手，擅长将文档转录内容整理成清晰、有条理且信息丰富的笔记。\n"
-    "语言要求：\n"
-    "- 笔记的语言应与原文保持一致（中文文档 → 中文笔记，英文文档 → 英文笔记）。\n"
-    "- 专有名词、技术术语保持原文。"
-)
+_DOC_NOTES_ROLE = "你是一个专业的文档阅读助手，擅长将文档转录内容整理成清晰、有条理且信息丰富的笔记。"
 
 _DOC_NOTES_TASK = (
     "根据下面的文档内容，生成结构化的笔记，遵循以下原则：\n"
@@ -159,8 +189,7 @@ _EXCEL_TASK = (
     "1. 📊 **数据规模**: 几行几列、几个 sheet、各字段数据类型\n"
     "2. 🔢 **核心指标**: 基于样品数据，提取 3-5 个值得关注的数值特征\n"
     "3. 📈 **关键发现**: 2-4 句话总结数据中透露的关键信息\n"
-    "4. ⚠️ **需注意**: 缺失值、格式不一致等数据质量问题\n\n"
-    "语言要求：输出必须使用 **中文** 撰写，简洁有力，控制字数。"
+    "4. ⚠️ **需注意**: 缺失值、格式不一致等数据质量问题"
 )
 
 _EXCEL_HARD_CONSTRAINTS = (
@@ -297,7 +326,8 @@ EXCEL_STYLE_KEYS = list(EXCEL_STYLE_MAP.keys())
 
 
 def build_excel_summary_prompt(data_text: str, style: str = "detailed",
-                                user_notes: str = "") -> str:
+                                user_notes: str = "",
+                                target_language: str = "zh-CN") -> str:
     """构建 Excel 数据摘要 prompt（模块化格式）"""
     style = normalize_style(style)
     style_text = EXCEL_STYLE_MAP.get(style, "") if style and style != "none" else ""
@@ -316,6 +346,7 @@ def build_excel_summary_prompt(data_text: str, style: str = "detailed",
         ("task", _EXCEL_TASK),
         ("source_content", source_content),
         ("instruction_priority", _INSTRUCTION_PRIORITY),
+        ("output_language", _build_output_language(target_language, "xlsx")),
         ("hard_constraints", _EXCEL_HARD_CONSTRAINTS),
         ("style_preference", style_text),
         ("output_format", _EXCEL_OUTPUT),
@@ -324,18 +355,7 @@ def build_excel_summary_prompt(data_text: str, style: str = "detailed",
     return PromptComposer.compose(sections)
 
 
-# ── PDF 专用格式选项 ──
-
-def get_translate_format(target_language: str = "zh-CN") -> str:
-    lang_names = {"zh-CN": "简体中文", "zh-TW": "繁體中文", "en": "English", "ja": "日本語",
-                  "ko": "한국어", "fr": "Français", "de": "Deutsch", "es": "Español"}
-    lang = lang_names.get(target_language, target_language)
-    return (
-        f"**翻译为{lang}（必须执行）**: 将全文内容翻译为{lang}。"
-        f"翻译要求：保留 LaTeX 公式原文不动；保留 Markdown 表格结构；"
-        f"专有名词保留原文并在首次出现时括号标注{lang}翻译；引用编号照原样保留。"
-        f"如果原文已经是{lang}，则只需修正翻译腔或不通顺的表达。"
-    )
+# ── 文档专用格式选项 ──
 
 def get_formulas_format() -> str:
     return (
@@ -366,7 +386,7 @@ AVAILABLE_OPTIONS = {
     "video": ["toc", "link", "screenshot", "summary"],
     "audio": ["toc", "summary"],
     "webpage": ["toc", "summary"],
-    "pdf": ["toc", "translate", "formulas", "references", "summary", "images"],
+    "pdf": ["toc", "formulas", "references", "summary", "images"],
     "docx": ["toc", "summary", "images"],
     "pptx": ["toc", "summary", "images"],
     "xlsx": [],
@@ -381,7 +401,6 @@ _ALL_FORMAT_FNS = {
     "link": get_link_format,
     "screenshot": get_screenshot_format,
     "summary": get_summary_format,
-    "translate": get_translate_format,
     "formulas": get_formulas_format,
     "references": get_references_format,
     "images": get_images_format,
@@ -391,7 +410,6 @@ _ALL_FORMAT_FNS = {
 
 _POLISH_FORMAT_FNS = {
     "toc": get_toc_format,
-    "translate": get_translate_format,
     "formulas": get_formulas_format,
     "references": get_references_format,
     "images": get_images_format,
@@ -420,7 +438,6 @@ def _format_segments(raw_text: str) -> str:
 def _build_hard_constraints(
     formats: list[str] | None,
     format_fns: dict,
-    target_language: str = "zh-CN",
     video_understanding: bool = False,
 ) -> str:
     """构建 hard_constraints 节文本：仅包含该 prompt 类型允许的格式选项"""
@@ -431,9 +448,7 @@ def _build_hard_constraints(
         fn = format_fns.get(f)
         if not fn:
             continue
-        if f == "translate":
-            parts.append(fn(target_language))
-        elif f == "screenshot":
+        if f == "screenshot":
             parts.append(fn(has_visual=video_understanding))
         else:
             parts.append(fn())
@@ -451,7 +466,6 @@ def build_polish_prompt(
     video_understanding: bool = False,
 ) -> str:
     """构建整理版原文 prompt（模块化格式，无 style 节）"""
-    from app.core.types import DOC_SOURCE_TYPES
     is_doc = source_type in DOC_SOURCE_TYPES
 
     # ── Polish 不再注入 style 指令 —— 固定忠实整理策略 ──
@@ -471,13 +485,14 @@ def build_polish_prompt(
     source_content = f"{source_label}：\n{source}"
 
     constraints = _build_hard_constraints(
-        formats, _POLISH_FORMAT_FNS, target_language, video_understanding)
+        formats, _POLISH_FORMAT_FNS, video_understanding)
 
     sections = [
         ("role", role),
         ("task", task),
         ("source_content", source_content),
         ("instruction_priority", _INSTRUCTION_PRIORITY),
+        ("output_language", _build_output_language(target_language, source_type)),
         ("hard_constraints", constraints),
         ("output_format", output),
         ("user_request", user_notes.strip()),
@@ -494,7 +509,6 @@ def build_notes_prompt(
     video_understanding: bool = False,
 ) -> str:
     """构建结构化笔记 prompt（模块化格式，含 style 节）"""
-    from app.core.types import DOC_SOURCE_TYPES
     is_doc = source_type in DOC_SOURCE_TYPES
 
     if is_doc:
@@ -519,13 +533,14 @@ def build_notes_prompt(
     available = AVAILABLE_OPTIONS.get(source_type, AVAILABLE_OPTIONS.get("text", []))
     format_fns = {f: _ALL_FORMAT_FNS[f] for f in available if f in _ALL_FORMAT_FNS}
     constraints = _build_hard_constraints(
-        formats, format_fns, target_language, video_understanding)
+        formats, format_fns, video_understanding)
 
     sections = [
         ("role", role),
         ("task", task),
         ("source_content", source_content),
         ("instruction_priority", _INSTRUCTION_PRIORITY),
+        ("output_language", _build_output_language(target_language, source_type)),
         ("hard_constraints", constraints),
         ("style_preference", style_text),
         ("output_format", output),

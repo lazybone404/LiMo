@@ -449,7 +449,7 @@ export function GenPanel() {
     setActiveView('summary')
 
     const formatStr = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
-      formatSummary && 'summary', formatTranslate && 'translate',
+      formatSummary && 'summary',
       formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
     ].filter(Boolean).join(',')
 
@@ -687,7 +687,6 @@ export function GenPanel() {
                   formatLink={formatLink} setFormatLink={setFormatLink}
                   formatSummary={formatSummary} setFormatSummary={setFormatSummary}
                   formatScreenshot={formatScreenshot} setFormatScreenshot={setFormatScreenshot}
-                  formatTranslate={formatTranslate} setFormatTranslate={setFormatTranslate}
                   formatFormulas={formatFormulas} setFormatFormulas={setFormatFormulas}
                   formatReferences={formatReferences} setFormatReferences={setFormatReferences}
                   formatImages={formatImages} setFormatImages={setFormatImages}

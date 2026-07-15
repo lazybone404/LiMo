@@ -20,7 +20,6 @@ interface Props {
   formatSummary: boolean; setFormatSummary: (v: boolean) => void
   formatScreenshot: boolean; setFormatScreenshot: (v: boolean) => void
   // PDF 专属格式
-  formatTranslate: boolean; setFormatTranslate: (v: boolean) => void
   formatFormulas: boolean; setFormatFormulas: (v: boolean) => void
   formatReferences: boolean; setFormatReferences: (v: boolean) => void
   // 文档图片
@@ -129,10 +128,6 @@ export function GenerateOptions(props: Props) {
             <input type="checkbox" checked={p.formatToc} onChange={e => p.setFormatToc(e.target.checked)} className="w-4 h-4 accent-accent" />
             <span className="text-[13px]">目录</span></label>
           {p.typeMeta.isPDF && <>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={p.formatTranslate} onChange={e => p.setFormatTranslate(e.target.checked)} className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">翻译</span>
-              <span className="text-[10px] text-disabled">中↔英，保留公式和引用</span></label>
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={p.formatFormulas} onChange={e => p.setFormatFormulas(e.target.checked)} className="w-4 h-4 accent-accent" />
               <span className="text-[13px]">公式集</span>
