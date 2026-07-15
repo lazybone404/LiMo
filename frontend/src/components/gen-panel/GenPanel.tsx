@@ -9,7 +9,7 @@ import { EngineSelect, type EngineOption } from './EngineSelect'
 import { ImportSection } from './ImportSection'
 import { GenerateOptions } from './GenerateOptions'
 import { ImageModeCards } from './ImageModeCards'
-import { DOC_ENGINE_NAMES, EXT_TO_SUBTYPE, SUB_SCENARIO, getTypeMeta } from './constants'
+import { DOC_ENGINE_NAMES, EXT_TO_SUBTYPE, SUB_SCENARIO, getTypeMeta, normalizeStyle } from './constants'
 
 const _EMPTY_OBJ: Record<string, any> = {}
 
@@ -478,7 +478,7 @@ export function GenPanel() {
     }
 
     streamGenerate(capturedId, {
-      mode: streamMode, style,
+      mode: streamMode, style: normalizeStyle(style),
       formats: formatStr || undefined,
       model_id: selectedModelId || undefined,
       user_notes: userNotes || undefined,

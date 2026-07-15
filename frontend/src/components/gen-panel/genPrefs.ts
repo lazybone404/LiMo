@@ -60,6 +60,10 @@ export function loadGenPrefs(): GenPrefs {
         delete raw.selectedCore
       }
     }
+    // 迁移旧风格 key：meeting_minutes → meeting
+    if (raw.style === 'meeting_minutes') {
+      raw.style = 'meeting'
+    }
     return { ...DEFAULTS, ...raw }
   } catch { return { ...DEFAULTS } }
 }

@@ -1,5 +1,5 @@
 import { ChevronDown, Camera } from 'lucide-react'
-import { STYLE_LABELS, type TypeMeta } from './constants'
+import { STYLE_LABELS, normalizeStyle, type TypeMeta } from './constants'
 
 export interface EnabledModel {
   id: number; provider_id: string; model_name: string
@@ -53,6 +53,11 @@ interface Props {
 export function GenerateOptions(props: Props) {
   const p = props
   const currentModel = p.enabledModels.find(m => m.id === p.selectedModelId)
+  const isPolishedOnly = p.selectedCore.includes('polished') && !p.selectedCore.includes('notes')
+  const isBoth = p.selectedCore.includes('notes') && p.selectedCore.includes('polished')
+
+  // style 参数 normalize（兼容旧 meeting_minutes key）
+  const normalizedStyle = normalizeStyle(p.style)
 
   return <>
     {/* 模型 */}
@@ -257,17 +262,22 @@ export function GenerateOptions(props: Props) {
       </div>
     )}
 
-    {/* 风格 — 链接/文本/文档（图片不需要风格） */}
-    {(p.typeMeta.isMedia || p.typeMeta.sourceType === 'text' || p.typeMeta.isDoc) && (
+    {/* 风格 — 仅 notes / both 模式显示；polished only 隐藏 */}
+    {!isPolishedOnly && (p.typeMeta.isMedia || p.typeMeta.sourceType === 'text' || p.typeMeta.isDoc) && (
       <div className="pt-3 border-t border-border-light">
-        <span className="text-[12px] font-medium text-dimmed mb-2 block">风格</span>
+        <span className="text-[12px] font-medium text-dimmed mb-2 block">
+          {isBoth ? '笔记风格（整理版固定忠实整理）' : '风格'}
+        </span>
         <div className="flex gap-1 flex-wrap">
           {p.styleKeys.map(s => (
-            <button key={s} onClick={() => p.setStyle(s)}
-              className={`px-3 py-1.5 text-[13px] rounded-full font-medium transition-colors ${s === p.style ? 'bg-accent text-white' : 'text-dimmed hover:bg-surface-hover'}`}>
+            <button key={s} onClick={() => p.setStyle(normalizeStyle(s))}
+              className={`px-3 py-1.5 text-[13px] rounded-full font-medium transition-colors ${normalizedStyle === normalizeStyle(s) ? 'bg-accent text-white' : 'text-dimmed hover:bg-surface-hover'}`}>
               {STYLE_LABELS[s] || s}</button>
           ))}
         </div>
+        {isBoth && (
+          <p className="text-[11px] text-dimmed mt-1.5">风格选择仅影响「笔记」产物，「整理版」固定为忠实原文整理。</p>
+        )}
       </div>
     )}
 

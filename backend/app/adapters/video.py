@@ -180,7 +180,7 @@ class VideoAdapter(PipelineAdapter):
             pg("downloading", "running", "正在提取抖音音频...", 10)
             try:
                 from app.downloaders.douyin_downloader import download_audio as dy_download
-                dy_result = dy_download(url, cookie)
+                dy_result = await asyncio.to_thread(dy_download, url, cookie)
                 audio_path = Path(dy_result["file_path"])
                 if audio_path.exists() and audio_path.stat().st_size > 0:
                     pg("downloading", "done", "音频提取完成", 50)
@@ -225,7 +225,8 @@ class VideoAdapter(PipelineAdapter):
         else:
             cookie_domain = ".bilibili.com"
         try:
-            video_path, video_info = self._download(url, cookie, cookie_domain)
+            video_path, video_info = await asyncio.to_thread(
+                self._download, url, cookie, cookie_domain)
         except FatalError as e:
             logger.error("下载致命错误: %s", e)
             raise FatalError(f"视频下载失败: {str(e)[:100]}")
@@ -245,7 +246,7 @@ class VideoAdapter(PipelineAdapter):
         else:
             pg("extracting_audio", "running", "提取音频...", 40)
             try:
-                audio_path = self._extract_audio(video_path)
+                audio_path = await asyncio.to_thread(self._extract_audio, video_path)
                 pg("extracting_audio", "done", "音频提取完成", 50)
             except Exception as e:
                 raise FatalError(f"音频提取失败: {e}")
@@ -501,7 +502,7 @@ class VideoAdapter(PipelineAdapter):
             logger.info("本地音频: %s，跳过 ffmpeg", video_path.name)
         else:
             try:
-                audio_path = self._extract_audio(video_path)
+                audio_path = await asyncio.to_thread(self._extract_audio, video_path)
             except Exception as e:
                 pg("extracting_audio", "error", f"音频提取失败: {e}", 50)
                 raise FatalError(f"音频提取失败: {e}")

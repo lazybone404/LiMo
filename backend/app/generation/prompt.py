@@ -1,377 +1,272 @@
 """
-Prompt 构建器 — 照搬 BiliNote app/gpt/prompt.py + prompt_builder.py
+Prompt 构建器 — 模块化分节格式
+
+每个 prompt 由独立的 section 字符串组成，通过 PromptComposer 组装为 XML 标签格式。
+风格体系已迁移至 prompts/notes_styles.py。
 """
+
 import json
+import logging
 
 from app.core.types import Style
+from .prompts.notes_styles import (
+    VIDEO_NOTE_STYLES,
+    DOC_NOTE_STYLES,
+    normalize_style,
+)
+from .prompts.common import PromptComposer
 
+logger = logging.getLogger(__name__)
 
-# ── 整理版原文 (POLISH_PROMPT) — 照搬 BiliNote prompt.py:81-129 ──
+# ═══════════════════════════════════════════════════════════════════════
+# 共享 section（所有 prompt 复用）
+# ═══════════════════════════════════════════════════════════════════════
 
-POLISH_PROMPT = """你是一个专业的文本编辑，擅长将视频转录文本整理成干净、通顺、保留原意的原文。
+_INSTRUCTION_PRIORITY = (
+    "规则优先级（从高到低）：\n"
+    "1. hard_constraints — 必须遵守，不可被覆盖\n"
+    "2. user_request — 用户明确要求，可覆盖 style_preference，但不能违反 hard_constraints\n"
+    "3. style_preference — 风格偏好，在不违反以上规则的前提下生效"
+)
 
-语言要求：
-- 输出必须使用 **中文** 撰写。
-- 专有名词、技术术语、品牌名称和人名应适当保留 **英文**。
+# ═══════════════════════════════════════════════════════════════════════
+# 视频/文本/音频 — POLISH（整理版原文）section 定义
+# ═══════════════════════════════════════════════════════════════════════
 
-视频标题：
-{video_title}
+_POLISH_ROLE = (
+    "你是一个专业的文本编辑，擅长将视频转录文本整理成干净、通顺、保留原意的原文。\n"
+    "语言要求：\n"
+    "- 输出必须使用 **中文** 撰写。\n"
+    "- 专有名词、技术术语、品牌名称和人名应适当保留 **英文**。"
+)
 
-原始转录文本：
----
-{segment_text}
----
+_POLISH_TASK = (
+    "根据下面的转录文本，进行**轻量级的文本整理**。"
+    "请注意：你的任务是**整理原文**，不是总结，不是提炼，不是做笔记。"
+    "请保持原文的完整信息和叙述风格。\n\n"
+    "具体要求：\n"
+    "1. **去除无关内容**：删除广告植入、填充词（如\"嗯\"\"啊\"\"那个\"\"就是说\"\"然后呢\"）、无意义的重复、问候寒暄和不相关的闲聊\n"
+    "2. **合并相关内容**：将同一话题下相邻的多个片段自然合并成连贯的段落，保持叙述的流畅性\n"
+    "3. **修正明显错别字**：根据上下文修正转录过程中产生的明显错别字或同音字错误（如\"在\"→\"再\"，\"的\"→\"得\"等），但不要改变说话人的用词习惯\n"
+    "4. **保持原文风格与信息**：保留说话人的表达方式、语气和叙述顺序。所有事实、数据、例子、结论、观点都必须完整保留。**不要改写或总结**，这是最重要的一点\n"
+    "5. **适度分段与标题**：根据话题的自然转换进行分段，为每个主题添加恰当的二级标题（`## 标题`）。标题应简洁反映该段的主题\n"
+    "6. **去除时间戳**：转录文本中的时间戳（如 `00:00 - ` 格式）不需要保留在最终输出中"
+)
 
-你的任务：
-根据上面的转录文本，进行**轻量级的文本整理**。请注意：你的任务是**整理原文**，不是总结，不是提炼，不是做笔记。请保持原文的完整信息和叙述风格。
+_POLISH_OUTPUT = (
+    "仅返回最终的 **Markdown 内容**。\n"
+    "- **不要**将输出包裹在代码块中（例如：```markdown ```）\n"
+    "- 这是一份\"整理版原文\"，不是\"笔记总结\"，请保持原汁原味的内容\n"
+    "- 输出篇幅应接近原文长度（允许因去除无关内容而适度缩短）\n"
+    "输出格式：第一行必须是文档标题（用 # 开头）。"
+    "如果原文没有明确标题，请根据内容概括一个简洁标题（15字以内，不要「笔记」「整理」后缀）。"
+)
 
-具体要求：
+# ═══════════════════════════════════════════════════════════════════════
+# 视频/文本/音频 — NOTES（结构化笔记）section 定义
+# ═══════════════════════════════════════════════════════════════════════
 
-1. **去除无关内容**：删除广告植入、填充词（如"嗯""啊""那个""就是说""然后呢"）、无意义的重复、问候寒暄和不相关的闲聊
+_NOTES_ROLE = (
+    "你是一个专业的笔记助手，擅长将转录内容整理成清晰、有条理且信息丰富的笔记。\n"
+    "语言要求：\n"
+    "- 笔记必须使用 **中文** 撰写。\n"
+    "- 专有名词、技术术语、品牌名称和人名应适当保留 **英文**。"
+)
 
-2. **合并相关内容**：将同一话题下相邻的多个片段自然合并成连贯的段落，保持叙述的流畅性
+_NOTES_TASK = (
+    "根据下面的转录内容，生成结构化的笔记，遵循以下原则：\n"
+    "1. **完整信息**：记录尽可能多的相关细节，确保内容全面。\n"
+    "2. **去除无关内容**：省略广告、填充词、问候语和不相关的言论。\n"
+    "3. **保留关键细节**：保留重要事实、示例、结论和建议。\n"
+    "4. **可读布局**：必要时使用项目符号，并保持段落简短，增强可读性。\n"
+    "5. 数学公式必须保留，并以 LaTeX 语法形式呈现，适合 Markdown 渲染。"
+)
 
-3. **修正明显错别字**：根据上下文修正转录过程中产生的明显错别字或同音字错误（如"在"→"再"，"的"→"得"等），但不要改变说话人的用词习惯
+_NOTES_OUTPUT = (
+    "仅返回最终的 **Markdown 内容**。\n"
+    "- **不要**将输出包裹在代码块中（例如：```markdown ```）\n"
+    "- 避免将编号标题（如\"1. **内容**\"）写成有序列表的格式，以免解析错误\n"
+    "- 如果要加粗并保留编号，应使用 `1\\. **内容**`（加反斜杠），防止被误解析为有序列表\n"
+    "输出格式：第一行必须是笔记标题（用 # 开头）。"
+    "请根据内容概括一个简洁标题（15字以内，不要「笔记」后缀）。"
+)
 
-4. **保持原文风格与信息**：
-   - 保留说话人的表达方式、语气和叙述顺序
-   - 所有事实、数据、例子、结论、观点都必须完整保留
-   - **不要改写或总结**，这是最重要的一点
+# ═══════════════════════════════════════════════════════════════════════
+# 文档 — POLISH（整理版原文）section 定义
+# ═══════════════════════════════════════════════════════════════════════
 
-5. **适度分段与标题**：
-   - 根据话题的自然转换进行分段
-   - 为每个主题添加恰当的二级标题（`## 标题`）
-   - 标题应简洁反映该段的主题
+_DOC_POLISH_ROLE = (
+    "你是一个专业的文档编辑，擅长将文档转录产生的 Markdown 整理成规范、准确、易读的原文。\n"
+    "语言要求：\n"
+    "- 输出必须使用 **中文** 撰写。\n"
+    "- 专有名词、技术术语、品牌名称保持原文。"
+)
 
-6. **去除时间戳**：转录文本中的时间戳（如 `00:00 - ` 格式）不需要保留在最终输出中
+_DOC_POLISH_TASK = (
+    "根据下面的文档转录结果，进行**忠实于原文的整理**。请遵循以下原则：\n"
+    "1. **修正表格错误**：pymupdf 识别的表格可能存在合并单元格错位、行列缺漏、内容错位等问题。请比对上下文修正表格结构，使其准确反映原文内容。输出规范的 Markdown 表格。\n"
+    "2. **修正 OCR 错误**：纯图片或扫描页的 OCR 文字可能存在错别字（同音字、形近字）、乱序行、漏行等问题。请根据上下文推断修正，补全不完整的句子和段落。\n"
+    "3. **公式规范化**：将文档中的数学公式转为准确的 LaTeX 格式（行内公式用 `$...$`，块级公式用 `$$...$$`）。公式编号保留。\n"
+    "4. **保留图片引用**：转录中的 `![...](data:image/...)` 图像引用必须完整保留，不要删除或修改。\n"
+    "5. **保持结构**：保留原文的章节结构、标题层级和编号体系。适度调整不合理的分段，合并 OCR 导致的碎片行。"
+)
 
-输出说明：
-- 仅返回最终的 **Markdown 内容**
-- **不要**将输出包裹在代码块中（例如：```markdown ```）
-- 这是一份"整理版原文"，不是"笔记总结"，请保持原汁原味的内容
-- 输出篇幅应接近原文长度（允许因去除无关内容而适度缩短）
+_DOC_POLISH_OUTPUT = (
+    "仅返回最终的 **Markdown 内容**。\n"
+    "- **不要**将输出包裹在代码块中（例如：```markdown ```）\n"
+    "- 这是一份\"整理版原文\"，不是总结或笔记\n"
+    "- 输出篇幅应接近原文长度\n"
+    "输出格式：第一行必须是文档标题（用 # 开头）。"
+    "如果原文没有明确标题，请根据内容概括一个简洁标题（15字以内，不要「笔记」「整理」后缀）。"
+)
 
-请始终遵循此规则。"""
+# ═══════════════════════════════════════════════════════════════════════
+# 文档 — NOTES（结构化笔记）section 定义
+# ═══════════════════════════════════════════════════════════════════════
 
+_DOC_NOTES_ROLE = (
+    "你是一个专业的文档阅读助手，擅长将文档转录内容整理成清晰、有条理且信息丰富的笔记。\n"
+    "语言要求：\n"
+    "- 笔记的语言应与原文保持一致（中文文档 → 中文笔记，英文文档 → 英文笔记）。\n"
+    "- 专有名词、技术术语保持原文。"
+)
 
-# ── 结构化笔记 (BASE_PROMPT) — 照搬 BiliNote prompt.py:1-48 ──
+_DOC_NOTES_TASK = (
+    "根据下面的文档内容，生成结构化的笔记，遵循以下原则：\n"
+    "1. **完整信息**：记录文档中的所有重要信息、论点、数据和结论。\n"
+    "2. **层次结构**：使用标题层级（## → ###）组织内容，反映原文的逻辑结构。\n"
+    "3. **关键细节**：保留重要事实、示例、数据表格和结论。表格数据应整理为 Markdown 表格。\n"
+    "4. **可读性**：适度使用项目符号，保持段落简短，增强可读性。\n"
+    "5. **公式保留**：文档中的数学公式必须以 LaTeX 语法形式呈现（行内 `$...$`，块级 `$$...$$`）。"
+)
 
-BASE_PROMPT = """你是一个专业的笔记助手，擅长将视频转录内容整理成清晰、有条理且信息丰富的笔记。
+_DOC_NOTES_OUTPUT = (
+    "仅返回最终的 **Markdown 内容**。\n"
+    "- **不要**将输出包裹在代码块中\n"
+    "- 避免将编号标题写成有序列表格式，如需加粗保留编号应使用 `N\\. **内容**`\n"
+    "输出格式：第一行必须是笔记标题（用 # 开头）。"
+    "请根据内容概括一个简洁标题（15字以内，不要「笔记」后缀）。"
+)
 
-语言要求：
-- 笔记必须使用 **中文** 撰写。
-- 专有名词、技术术语、品牌名称和人名应适当保留 **英文**。
+# ═══════════════════════════════════════════════════════════════════════
+# Excel — 数据摘要 section 定义
+# ═══════════════════════════════════════════════════════════════════════
 
-视频标题：
-{video_title}
+_EXCEL_ROLE = "你是一个专业的数据分析师，擅长提炼核心数据指标。"
 
-视频转录（格式：开始时间 - 内容）：
+_EXCEL_TASK = (
+    "基于下面的数据摘要和样品，生成一份**数据摘要**。遵循以下原则：\n"
+    "1. 📊 **数据规模**: 几行几列、几个 sheet、各字段数据类型\n"
+    "2. 🔢 **核心指标**: 基于样品数据，提取 3-5 个值得关注的数值特征\n"
+    "3. 📈 **关键发现**: 2-4 句话总结数据中透露的关键信息\n"
+    "4. ⚠️ **需注意**: 缺失值、格式不一致等数据质量问题\n\n"
+    "语言要求：输出必须使用 **中文** 撰写，简洁有力，控制字数。"
+)
 
----
-{segment_text}
----
+_EXCEL_HARD_CONSTRAINTS = (
+    "⚠️ 严禁事项：\n"
+    "- **严禁**重复输出完整数据 — 摘要不是数据副本\n"
+    "- **严禁**逐行罗列每条记录"
+)
 
-你的任务：
-根据上面的分段转录内容，生成结构化的笔记，遵循以下原则：
+_EXCEL_OUTPUT = (
+    "仅返回最终的 **Markdown 内容**。\n"
+    "- 使用简洁的列表和指标卡片风格\n"
+    "- **不要**将输出包裹在代码块中"
+)
 
-1. **完整信息**：记录尽可能多的相关细节，确保内容全面。
-2. **去除无关内容**：省略广告、填充词、问候语和不相关的言论。
-3. **保留关键细节**：保留重要事实、示例、结论和建议。
-4. **可读布局**：必要时使用项目符号，并保持段落简短，增强可读性。
-5. 视频中提及的数学公式必须保留，并以 LaTeX 语法形式呈现，适合 Markdown 渲染。
-
-输出说明：
-- 仅返回最终的 **Markdown 内容**。
-- **不要**将输出包裹在代码块中（例如：```markdown ```）。
-- 避免将编号标题（如"1. **内容**"）写成有序列表的格式，以免解析错误。
-- 如果要加粗并保留编号，应使用 `1\\. **内容**`（加反斜杠），防止被误解析为有序列表。
-
-请始终遵循此规则。
-
-额外重要的任务如下（每一个都必须严格完成）："""
-
-
-# ── 格式选项 — 照搬 BiliNote prompt_builder.py:91-115 ──
+# ═══════════════════════════════════════════════════════════════════════
+# 格式选项（生成 hard_constraints 节内容）
+# ═══════════════════════════════════════════════════════════════════════
 
 def get_toc_format() -> str:
-    return """\n9. **目录**: 自动生成一个基于 `##` 级标题的目录。目录只列标题文本，不包含任何时间戳或标记。"""
+    return "**目录**: 自动生成一个基于 `##` 级标题的目录。目录只列标题文本，不包含任何时间戳或标记。"
 
 def get_link_format() -> str:
-    return """\n10. **原片跳转**: 在每个 ## 章节正文第一行插入时间戳标记 `*Content-[mm:ss]`，表示该章节对应的视频时间点。不要将标记放在标题行中，不要在目录中加此标记。"""
+    return "**原片跳转**: 在每个 ## 章节正文第一行插入时间戳标记 `*Content-[mm:ss]`，表示该章节对应的视频时间点。不要将标记放在标题行中，不要在目录中加此标记。"
 
 def get_screenshot_format(has_visual: bool = False) -> str:
     if has_visual:
-        return """\n11. **原片截图（必须执行）**: 每个 ## 章节末尾必须插入截图占位符 `*Screenshot-[mm:ss]`，时间戳从你看到的网格图左上角黄色数字中选取最相关的帧。即使某章节无明显的视觉内容，也应选取该时间段最接近的画面。"""
-    return """\n11. **原片截图（必须执行）**: 每个 ## 章节末尾必须插入截图占位符 `*Screenshot-[mm:ss]`，时间戳从转写文本中该章节对应的讲话时间中选取。选择最能代表该章节内容的时刻。"""
+        return "**原片截图（必须执行）**: 每个 ## 章节末尾必须插入截图占位符 `*Screenshot-[mm:ss]`，时间戳从你看到的网格图左上角黄色数字中选取最相关的帧。即使某章节无明显的视觉内容，也应选取该时间段最接近的画面。"
+    return "**原片截图（必须执行）**: 每个 ## 章节末尾必须插入截图占位符 `*Screenshot-[mm:ss]`，时间戳从转写文本中该章节对应的讲话时间中选取。选择最能代表该章节内容的时刻。"
 
 def get_summary_format() -> str:
-    return """\n🧠 Final Touch:
-在笔记末尾添加一个专业的 **AI 总结** 段落（## AI 总结），简要概括整个视频的核心内容。"""
+    return "在笔记末尾添加一个专业的 **AI 总结** 段落（## AI 总结），简要概括整个视频的核心内容。"
 
 
 # ── 风格指令 ──
-# 引导性约束，帮助 LLM 理解输出方向，但保留灵活度
+# ⚠️ 风格体系已迁移至 prompts/notes_styles.py
 
 _STYLE_HEADER = "## 输出风格\n"
 
-STYLE_MAP = {
-    Style.MINIMAL: _STYLE_HEADER + "\n".join([
-        "**精简模式**：",
-        "- 只记录核心论点和关键结论，大胆省略细节",
-        "- 倾向使用短列表而非长段落，简洁优先",
-        "- 每个章节只保留最重要的几个要点",
-        "- 例子、背景铺垫、次要论证可以跳过",
-    ]),
-    Style.DETAILED: _STYLE_HEADER + "\n".join([
-        "**详细模式**：",
-        "- 尽可能覆盖原文的全部主要内容",
-        "- 保留重要的事实、数据、例子和论证过程",
-        "- 每个话题充分展开，不因篇幅删减有价值的信息",
-    ]),
-    Style.ACADEMIC: _STYLE_HEADER + "\n".join([
-        "**学术风格**：",
-        "- 使用正式的学术用语，结构清晰严谨",
-        "- 适合按 背景→方法→论证→结论 的逻辑组织",
-        "- 保留专业术语、引用和理论框架",
-        "- 避免 emoji、感叹号等非正式表达",
-    ]),
-    Style.TUTORIAL: _STYLE_HEADER + "\n".join([
-        "**教程笔记**：",
-        "- 按操作顺序组织，步骤清晰",
-        "- 关键步骤写出具体命令、配置或参数",
-        "- 补充必要的上下文（为什么这样做、常见错误）",
-        "- 代码、公式、关键数值必须保留",
-    ]),
-    Style.BUSINESS: _STYLE_HEADER + "\n".join([
-        "**商业风格**：",
-        "- 结论先行，再展开论据",
-        "- 突出关键数据和行动建议",
-        "- 语言简洁精准，区分事实与观点",
-    ]),
-    Style.MEETING_MINUTES: _STYLE_HEADER + "\n".join([
-        "**会议纪要**：",
-        "- 按议题归类组织讨论内容",
-        "- 明确标注决议和待办事项",
-        "- 结构建议：议题 → 讨论要点 → 决议 → 待办",
-    ]),
-    Style.TASK_ORIENTED: _STYLE_HEADER + "\n".join([
-        "**任务导向**：",
-        "- 以可执行的任务为单位组织内容",
-        "- 每条任务包含：做什么 + 简要说明",
-        "- 按优先级或时间线排列",
-    ]),
-    Style.LIFE: _STYLE_HEADER + "\n".join([
-        "**生活向**：",
-        "- 保持原文的个人语气和情感色彩",
-        "- 突出个人感悟和生活细节",
-        "- 语言温暖自然，避免冷冰冰的总结",
-    ]),
-    Style.XIAOHONGSHU: _STYLE_HEADER + "\n".join([
-        "**小红书风格**：",
-        "- 口语化、有网感，短句为主",
-        "- 多用 emoji ✨🔥💯 和爆款关键词",
-        "- 标题用二极管法（正面刺激/负面刺激）营造紧迫感",
-        "- 参考关键词：好用到哭、宝藏、绝绝子、YYDS、建议收藏、手把手、吹爆、打工人、吐血整理、家人们",
-    ]),
-}
+# DEPRECATED: 使用 VIDEO_NOTE_STYLES 代替
+STYLE_MAP = VIDEO_NOTE_STYLES
 
-# 整理版原文风格 — 精简版的约束（polish 场景下不需要太激进）
-POLISH_MINIMAL = "## 输出风格\n**精简整理**：删除冗余内容，保留核心信息和主要论证，适度缩短。"
-POLISH_DETAILED = "## 输出风格\n**完整整理**：保留原文的完整信息，仅删除填充词和无关内容。"
+# DEPRECATED: 使用 DOC_NOTE_STYLES 代替
+DOC_STYLE_MAP = DOC_NOTE_STYLES
 
-STYLE_MAP_POLISH = {
-    Style.MINIMAL: POLISH_MINIMAL,
-    Style.DETAILED: POLISH_DETAILED,
-}
-# 其余风格 fallback 到 STYLE_MAP 对应值（在 build_polish_prompt 中处理）
+# 保留别名兼容
+PDF_STYLE_MAP = DOC_NOTE_STYLES
 
-# ── PDF 专用 Prompt ──
-
-PDF_POLISH_PROMPT = """你是一个专业的文档编辑，擅长将文档转录产生的 Markdown 整理成规范、准确、易读的原文。
-
-语言要求：
-- 输出必须使用 **中文** 撰写。
-- 专有名词、技术术语、品牌名称保持原文。
-
-原始转录文本（来自 PDF 导入）：
----
-{document_text}
----
-
-你的任务：
-根据上面的 PDF 转录结果，进行**忠实于原文的整理**。请遵循以下原则：
-
-1. **修正表格错误**：pymupdf 识别的表格可能存在合并单元格错位、行列缺漏、内容错位等问题。请比对上下文修正表格结构，使其准确反映原文内容。输出规范的 Markdown 表格。
-
-2. **修正 OCR 错误**：纯图片或扫描页的 OCR 文字可能存在错别字（同音字、形近字）、乱序行、漏行等问题。请根据上下文推断修正，补全不完整的句子和段落。
-
-3. **公式规范化**：将文档中的数学公式转为准确的 LaTeX 格式（行内公式用 `$...$`，块级公式用 `$$...$$`）。公式编号保留。
-
-4. **保留图片引用**：转录中的 `![...](data:image/...)` 图像引用必须完整保留，不要删除或修改。
-
-5. **保持结构**：保留原文的章节结构、标题层级和编号体系。适度调整不合理的分段，合并 OCR 导致的碎片行。
-
-输出说明：
-- 仅返回最终的 **Markdown 内容**
-- **不要**将输出包裹在代码块中（例如：```markdown ```）
-- 这是一份"整理版原文"，不是总结或笔记
-- 输出篇幅应接近原文长度
-
-请始终遵循此规则。"""
-
-PDF_NOTES_PROMPT = """你是一个专业的文档阅读助手，擅长将文档转录内容整理成清晰、有条理且信息丰富的笔记。
-
-语言要求：
-- 笔记的语言应与原文保持一致（中文文档 → 中文笔记，英文文档 → 英文笔记）。
-- 专有名词、技术术语保持原文。
-
-文档标题：
-{title}
-
-文档转录内容：
----
-{document_text}
----
-
-你的任务：
-根据上面的文档内容，生成结构化的笔记，遵循以下原则：
-
-1. **完整信息**：记录文档中的所有重要信息、论点、数据和结论。
-2. **层次结构**：使用标题层级（## → ###）组织内容，反映原文的逻辑结构。
-3. **关键细节**：保留重要事实、示例、数据表格和结论。表格数据应整理为 Markdown 表格。
-4. **可读性**：适度使用项目符号，保持段落简短，增强可读性。
-5. **公式保留**：文档中的数学公式必须以 LaTeX 语法形式呈现（行内 `$...$`，块级 `$$...$$`）。
-
-输出说明：
-- 仅返回最终的 **Markdown 内容**
-- **不要**将输出包裹在代码块中
-- 避免将编号标题写成有序列表格式，如需加粗保留编号应使用 `N\\. **内容**`
-
-请始终遵循此规则。
-
-额外重要的任务如下（每一个都必须严格完成）："""
-
-# ── 文档风格（通用 + 垂直场景）──
-
-# 文档风格 — 与视频风格共享通用键 + 文档独有的垂直场景
-_DOC_HEADER = "## 输出风格\n"
-
-_DOC_MINIMAL = _DOC_HEADER + "\n".join([
-    "**精简模式**：",
-    "- 只提取文档最核心的论点和结论",
-    "- 大胆省略例子、详细论证、背景铺垫",
-    "- 用短列表代替长段落",
-    "- 只为最重要的主题创建章节标题",
-])
-
-DOC_STYLE_MAP = {
-    # 通用 — 与视频风格共用核心约束
-    "detailed":   STYLE_MAP[Style.DETAILED],
-    "minimal":    _DOC_MINIMAL,
-    "academic":   STYLE_MAP[Style.ACADEMIC],
-    "business":   STYLE_MAP[Style.BUSINESS],
-    "tutorial":   STYLE_MAP[Style.TUTORIAL],
-    "task_oriented": STYLE_MAP[Style.TASK_ORIENTED],
-    # 文档独有垂直场景
-    "imrad": _DOC_HEADER + "\n".join([
-        "**学术精读（IMRaD）**：",
-        "- 按学术论文结构组织：背景 → 方法 → 结果 → 讨论 → 结论",
-        "- 每节独立完整，条理清晰",
-    ]),
-    "meeting": STYLE_MAP[Style.MEETING_MINUTES],
-}
-
-PDF_STYLE_MAP = DOC_STYLE_MAP
-
-DOC_STYLE_MAP_POLISH = {
-    k: (v.replace("笔记", "原文整理") if "笔记" in v else v)
-    for k, v in DOC_STYLE_MAP.items()
-}
-PDF_STYLE_MAP_POLISH = DOC_STYLE_MAP_POLISH
+# ── 风格键列表（供 capabilities 端点 + 旧代码引用）──
+VIDEO_STYLE_KEYS = list(VIDEO_NOTE_STYLES.keys())
+PDF_STYLE_KEYS = list(DOC_NOTE_STYLES.keys())
 
 # ── Excel 数据摘要辅助函数 ──
 
 def _parse_markdown_table(data_text: str) -> dict:
-    """从 Markdown 表格文本中提取结构化摘要，减少 LLM token 消耗并引导分析。
-
-    返回 dict：sheets 列表，每个 sheet 含 name/rows/cols/columns/sample_rows。
-    sample_rows 最多取首尾各 3 行。
-    """
+    """从 Markdown 表格文本中提取结构化摘要"""
     import re
     sheets: list[dict] = []
-    current_sheet = None
-    current_rows: list[list[str]] = []
-    header: list[str] = []
-    in_table = False
-
-    # 无显式 Sheet 标题时视为一个匿名 sheet
     current_sheet = {"name": "Sheet1"}
     sheets = [current_sheet]
+    current_rows: list[list[str]] = []
+    header: list[str] = []
 
     for line in data_text.split("\n"):
-        # 匹配 sheet 标题
         m = re.match(r"^##\s+Sheet:\s*(.+)", line)
         if m:
             if header:
                 current_sheet["rows"] = len(current_rows)
                 current_sheet["cols"] = len(header)
                 current_sheet["columns"] = header[:20]
-                # 首尾各取最多 3 行
                 current_sheet["sample_rows"] = current_rows[:3] + (
-                    current_rows[-3:] if len(current_rows) > 6 else []
-                )
+                    current_rows[-3:] if len(current_rows) > 6 else [])
             current_sheet = {"name": m.group(1).strip()}
             sheets.append(current_sheet)
             current_rows = []
             header = []
-            in_table = False
             continue
-
-        # 非表格行（空行/普通文本）— 结束当前表格
         if not line.startswith("|") and not line.startswith("##"):
-            if in_table and header:
+            if header:
                 current_sheet["rows"] = len(current_rows)
                 current_sheet["cols"] = len(header)
                 current_sheet["columns"] = header[:20]
                 current_sheet["sample_rows"] = current_rows[:3] + (
-                    current_rows[-3:] if len(current_rows) > 6 else []
-                )
-            in_table = False
+                    current_rows[-3:] if len(current_rows) > 6 else [])
             continue
-
-        # 检测表格分隔行（|---|---|）
         if re.match(r"^\|[\s\-:|]+\|$", line):
             if current_rows and not header:
                 header = current_rows.pop()
-            in_table = True
             continue
-
-        # 表格数据行（包括分隔行之前的表头行）
         if line.startswith("|"):
             cells = [c.strip() for c in line.split("|")[1:-1]]
             current_rows.append(cells)
-            continue
 
-    # 最后一个 sheet
     if current_sheet and header:
         current_sheet["rows"] = len(current_rows)
         current_sheet["cols"] = len(header)
         current_sheet["columns"] = header[:20]
         current_sheet["sample_rows"] = current_rows[:3] + (
-            current_rows[-3:] if len(current_rows) > 6 else []
-        )
+            current_rows[-3:] if len(current_rows) > 6 else [])
 
     return {"total_sheets": len(sheets), "sheets": sheets}
 
 
 def _build_data_summary(data_text: str) -> str:
-    """将 Markdown 表格替换为结构化摘要 + 仅保留首尾各 3 行样品。
-
-    大幅减少 token 消耗并防止 LLM 直接复制原表。
-    """
+    """将 Markdown 表格替换为结构化摘要"""
     info = _parse_markdown_table(data_text)
     parts: list[str] = []
-
     for sh in info["sheets"]:
         cols_str = ", ".join(sh.get("columns", [])[:20])
         parts.append(
@@ -381,73 +276,21 @@ def _build_data_summary(data_text: str) -> str:
         )
         if sh.get("sample_rows"):
             parts.append("数据样品（首尾各 3 行）：")
-            # 构建微型 Markdown 表格展示样品
             cols = sh.get("columns", [])
             parts.append("| " + " | ".join(cols[:8]) + " |")
             parts.append("| " + " | ".join(["---"] * min(len(cols), 8)) + " |")
             for row in sh["sample_rows"]:
                 parts.append("| " + " | ".join(row[:8]) + " |")
         parts.append("")
-
     return "\n".join(parts)
-
-
-# ── Excel 专用 Prompt ──
-
-EXCEL_SUMMARY_PROMPT = """你是一个专业的数据分析师，擅长提炼核心数据指标。
-
-语言要求：
-- 输出必须使用 **中文** 撰写。
-- 简洁有力，控制字数。
-
-{data_section}
-
-你的任务：
-基于以上数据摘要和样品，生成一份**数据摘要**。遵循以下原则：
-
-1. 📊 **数据规模**: 几行几列、几个 sheet、各字段数据类型
-2. 🔢 **核心指标**: 基于样品数据，提取 3-5 个值得关注的数值特征
-3. 📈 **关键发现**: 2-4 句话总结数据中透露的关键信息
-4. ⚠️ **需注意**: 缺失值、格式不一致等数据质量问题
-
-{style_text}
-
-⚠️ 严禁事项：
-- **严禁**重复输出完整数据 — 摘要不是数据副本
-- **严禁**逐行罗列每条记录
-
-输出说明：
-- 仅返回最终的 **Markdown 内容**
-- 使用简洁的列表和指标卡片风格
-- **不要**将输出包裹在代码块中"""
-
-# ── PDF 专用格式 ──
-
-def get_translate_format(target_language: str = "zh-CN") -> str:
-    lang_names = {"zh-CN": "简体中文", "zh-TW": "繁體中文", "en": "English", "ja": "日本語",
-                  "ko": "한국어", "fr": "Français", "de": "Deutsch", "es": "Español"}
-    lang = lang_names.get(target_language, target_language)
-    return f"""\n10. **翻译为{lang}（必须执行）**: 将全文内容翻译为{lang}。翻译要求：保留 LaTeX 公式原文不动；保留 Markdown 表格结构；专有名词保留原文并在首次出现时括号标注{lang}翻译；引用编号照原样保留。如果原文已经是{lang}，则只需修正翻译腔或不通顺的表达。"""
-
-def get_formulas_format() -> str:
-    return """\n11. **公式集（必须执行）**: 在笔记末尾添加 ## 公式汇总 章节，将文档中出现的所有数学公式整理为独立列表。每个公式独立编号，附带简短说明（公式用途/含义）。行内公式用 `$...$`，块级公式用 `$$...$$`。"""
-
-def get_references_format() -> str:
-    return """\n12. **参考文献表（必须执行）**: 在笔记末尾添加 ## 参考文献 章节，提取文档中引用的所有文献。
-- 将全部引用放入一个 BibTeX 代码块（```bibtex ... ```）中，每个条目包含：作者、标题、期刊/会议、年份、DOI（如有）。
-- 代码块后可附一个简短的阅读列表（1-3 句话概括主要引用方向即可）。
-- **严禁**为每条引用单独创建子标题（###），也不要为每个条目单独分段。保持参考文献章节紧凑。"""
-
-def get_images_format() -> str:
-    return """\n13. **文档图片（必须执行）**: 文档中的图片引用 `![描述](/api/files/...)` 必须保留在笔记中。为每张有信息量的图片（图表、示意图、照片）添加简要的文字描述（1-2 句），说明图片展示的内容。纯装饰性图片可以省略描述但保留引用。"""
 
 
 # ── Excel 风格 ──
 
 EXCEL_STYLE_MAP = {
-    "detailed":   "1. **详细分析**: 完整的数据分析报告，包含所有维度的深入分析。",
-    "minimal":    "2. **简洁摘要**: 仅记录最重要的数据洞察和关键指标。",
-    "business":   "3. **商务报告**: 提炼商业价值、趋势和行动建议，适合汇报。",
+    "detailed": "**详细分析**: 完整的数据分析报告，包含所有维度的深入分析。",
+    "minimal": "**简洁摘要**: 仅记录最重要的数据洞察和关键指标。",
+    "business": "**商务报告**: 提炼商业价值、趋势和行动建议，适合汇报。",
 }
 
 EXCEL_STYLE_KEYS = list(EXCEL_STYLE_MAP.keys())
@@ -455,20 +298,66 @@ EXCEL_STYLE_KEYS = list(EXCEL_STYLE_MAP.keys())
 
 def build_excel_summary_prompt(data_text: str, style: str = "detailed",
                                 user_notes: str = "") -> str:
-    """构建 Excel 数据摘要 prompt —— 数据摘要替代原始表格，用户备注作为分析指引放开头"""
-    style_text = "" if style == 'none' else EXCEL_STYLE_MAP.get(style, "")
-    try:
-        data_section = _build_data_summary(data_text)
-    except Exception:
-        data_section = f"数据内容（Markdown 表格）：\n---\n{data_text}\n---"
-    prompt = EXCEL_SUMMARY_PROMPT.format(data_section=data_section, style_text=style_text)
+    """构建 Excel 数据摘要 prompt（模块化格式）"""
+    style = normalize_style(style)
+    style_text = EXCEL_STYLE_MAP.get(style, "") if style and style != "none" else ""
 
-    if user_notes.strip():
-        prompt = (
-            f"## 分析要求（用户指定，优先遵循）\n{user_notes.strip()}\n\n---\n\n"
-            + prompt
-        )
-    return prompt
+    try:
+        data_summary = _build_data_summary(data_text)
+    except Exception:
+        data_summary = f"数据内容（Markdown 表格）：\n---\n{data_text}\n---"
+
+    source_content = (
+        f"数据摘要和样品：\n\n{data_summary}"
+    )
+
+    sections = [
+        ("role", _EXCEL_ROLE),
+        ("task", _EXCEL_TASK),
+        ("source_content", source_content),
+        ("instruction_priority", _INSTRUCTION_PRIORITY),
+        ("hard_constraints", _EXCEL_HARD_CONSTRAINTS),
+        ("style_preference", style_text),
+        ("output_format", _EXCEL_OUTPUT),
+        ("user_request", user_notes.strip()),
+    ]
+    return PromptComposer.compose(sections)
+
+
+# ── PDF 专用格式选项 ──
+
+def get_translate_format(target_language: str = "zh-CN") -> str:
+    lang_names = {"zh-CN": "简体中文", "zh-TW": "繁體中文", "en": "English", "ja": "日本語",
+                  "ko": "한국어", "fr": "Français", "de": "Deutsch", "es": "Español"}
+    lang = lang_names.get(target_language, target_language)
+    return (
+        f"**翻译为{lang}（必须执行）**: 将全文内容翻译为{lang}。"
+        f"翻译要求：保留 LaTeX 公式原文不动；保留 Markdown 表格结构；"
+        f"专有名词保留原文并在首次出现时括号标注{lang}翻译；引用编号照原样保留。"
+        f"如果原文已经是{lang}，则只需修正翻译腔或不通顺的表达。"
+    )
+
+def get_formulas_format() -> str:
+    return (
+        "**公式集（必须执行）**: 在笔记末尾添加 ## 公式汇总 章节，"
+        "将文档中出现的所有数学公式整理为独立列表。每个公式独立编号，附带简短说明。"
+        "行内公式用 `$...$`，块级公式用 `$$...$$`。"
+    )
+
+def get_references_format() -> str:
+    return (
+        "**参考文献表（必须执行）**: 在笔记末尾添加 ## 参考文献 章节，提取文档中引用的所有文献。\n"
+        "- 将全部引用放入一个 BibTeX 代码块（```bibtex ... ```）中，每个条目包含：作者、标题、期刊/会议、年份、DOI（如有）。\n"
+        "- 代码块后可附一个简短的阅读列表（1-3 句话概括主要引用方向即可）。\n"
+        "- **严禁**为每条引用单独创建子标题（###），也不要为每个条目单独分段。保持参考文献章节紧凑。"
+    )
+
+def get_images_format() -> str:
+    return (
+        "**文档图片（必须执行）**: 文档中的图片引用 `![描述](/api/files/...)` 必须保留在笔记中。"
+        "为每张有信息量的图片（图表、示意图、照片）添加简要的文字描述（1-2 句），说明图片展示的内容。"
+        "纯装饰性图片可以省略描述但保留引用。"
+    )
 
 
 # ── 可用选项（供 capabilities 端点 + 前端渲染）──
@@ -485,7 +374,7 @@ AVAILABLE_OPTIONS = {
     "epub": ["toc", "summary", "images"],
 }
 
-# ── 格式函数映射（所有 format 名 → builder 的统一入口）──
+# ── 格式函数映射 ──
 
 _ALL_FORMAT_FNS = {
     "toc": get_toc_format,
@@ -498,14 +387,15 @@ _ALL_FORMAT_FNS = {
     "images": get_images_format,
 }
 
-# PDF 风格键列表
-PDF_STYLE_KEYS = list(PDF_STYLE_MAP.keys())
+# ── Polish 允许的格式选项（仅结构增强和编辑行为）──
 
-# 视频风格键列表
-VIDEO_STYLE_KEYS = list(STYLE_MAP.keys())
-
-# Excel 风格键列表
-_EXCEL_STYLE_KEYS = list(EXCEL_STYLE_MAP.keys())
+_POLISH_FORMAT_FNS = {
+    "toc": get_toc_format,
+    "translate": get_translate_format,
+    "formulas": get_formulas_format,
+    "references": get_references_format,
+    "images": get_images_format,
+}
 
 # ── 构建函数 ──
 
@@ -527,111 +417,126 @@ def _format_segments(raw_text: str) -> str:
     return raw_text
 
 
-def build_polish_prompt(raw_text: str, title: str = "", style: str = "detailed",
-                        source_type: str = "text",
-                        formats: list[str] | None = None,
-                        user_notes: str = "",
-                        target_language: str = "zh-CN",
-                        video_understanding: bool = False) -> str:
-    """构建整理版原文 prompt"""
+def _build_hard_constraints(
+    formats: list[str] | None,
+    format_fns: dict,
+    target_language: str = "zh-CN",
+    video_understanding: bool = False,
+) -> str:
+    """构建 hard_constraints 节文本：仅包含该 prompt 类型允许的格式选项"""
+    if not formats:
+        return ""
+    parts = []
+    for f in formats:
+        fn = format_fns.get(f)
+        if not fn:
+            continue
+        if f == "translate":
+            parts.append(fn(target_language))
+        elif f == "screenshot":
+            parts.append(fn(has_visual=video_understanding))
+        else:
+            parts.append(fn())
+    if not parts:
+        return ""
+    return "\n".join(parts)
+
+
+def build_polish_prompt(
+    raw_text: str, title: str = "", style: str = "detailed",
+    source_type: str = "text",
+    formats: list[str] | None = None,
+    user_notes: str = "",
+    target_language: str = "zh-CN",
+    video_understanding: bool = False,
+) -> str:
+    """构建整理版原文 prompt（模块化格式，无 style 节）"""
+    from app.core.types import DOC_SOURCE_TYPES
+    is_doc = source_type in DOC_SOURCE_TYPES
+
+    # ── Polish 不再注入 style 指令 —— 固定忠实整理策略 ──
+    if style and style not in ("detailed", "none"):
+        logger.warning(
+            "Polish style 参数已废弃，当前固定为忠实整理策略，忽略: %s", style)
+
+    if is_doc:
+        role, task, output = _DOC_POLISH_ROLE, _DOC_POLISH_TASK, _DOC_POLISH_OUTPUT
+        source = raw_text
+        source_label = "文档转录内容"
+    else:
+        role, task, output = _POLISH_ROLE, _POLISH_TASK, _POLISH_OUTPUT
+        source = _format_segments(raw_text)
+        source_label = f"视频标题：{title or '未命名'}\n转录文本"
+
+    source_content = f"{source_label}：\n{source}"
+
+    constraints = _build_hard_constraints(
+        formats, _POLISH_FORMAT_FNS, target_language, video_understanding)
+
+    sections = [
+        ("role", role),
+        ("task", task),
+        ("source_content", source_content),
+        ("instruction_priority", _INSTRUCTION_PRIORITY),
+        ("hard_constraints", constraints),
+        ("output_format", output),
+        ("user_request", user_notes.strip()),
+    ]
+    return PromptComposer.compose(sections)
+
+
+def build_notes_prompt(
+    raw_text: str, title: str = "", style: str = "detailed",
+    source_type: str = "text",
+    formats: list[str] | None = None,
+    user_notes: str = "",
+    target_language: str = "zh-CN",
+    video_understanding: bool = False,
+) -> str:
+    """构建结构化笔记 prompt（模块化格式，含 style 节）"""
     from app.core.types import DOC_SOURCE_TYPES
     is_doc = source_type in DOC_SOURCE_TYPES
 
     if is_doc:
-        prompt = PDF_POLISH_PROMPT.format(
-            document_text=raw_text,
-        )
+        role, task, output = _DOC_NOTES_ROLE, _DOC_NOTES_TASK, _DOC_NOTES_OUTPUT
+        source = raw_text
+        source_label = f"文档标题：{title or '未命名'}\n文档转录内容"
     else:
-        # 视频/网页/文本：去口语 + 合并段落
-        prompt = POLISH_PROMPT.format(
-            video_title=title or "未命名",
-            segment_text=_format_segments(raw_text),
-        )
+        role, task, output = _NOTES_ROLE, _NOTES_TASK, _NOTES_OUTPUT
+        source = _format_segments(raw_text)
+        source_label = f"标题：{title or '未命名'}\n转录内容"
 
-    # 格式选项 — 翻译/公式/参考文献/图片对整理版同样适用
-    polish_format_fns = {
-        "translate": get_translate_format,
-        "formulas": get_formulas_format,
-        "references": get_references_format,
-        "toc": get_toc_format,
-        "images": get_images_format,
-        "screenshot": get_screenshot_format,
-        "link": get_link_format,
-    }
-    if formats:
-        for f in formats:
-            if f in polish_format_fns:
-                if f == "screenshot":
-                    prompt += polish_format_fns[f](has_visual=video_understanding)
-                else:
-                    prompt += polish_format_fns[f]()
+    source_content = f"{source_label}：\n{source}"
 
-    # 风格指令 — polish 场景用轻量约束
+    # 风格指令
+    style_text = ""
     if style and style != 'none':
-        if is_doc:
-            style_text = DOC_STYLE_MAP_POLISH.get(style, DOC_STYLE_MAP.get(style, ""))
-        else:
-            style_text = STYLE_MAP_POLISH.get(style, STYLE_MAP.get(style, ""))
-        if style_text:
-            prompt += f"\n{style_text}"
+        style = normalize_style(style)
+        lookup = DOC_NOTE_STYLES if is_doc else VIDEO_NOTE_STYLES
+        style_text = lookup.get(style, "")
 
-    if user_notes.strip():
-        prompt += f"\n\n## 用户备注\n以下是用户提供的额外上下文和备注，请在整理原文时参考这些信息，适当融入相关内容：\n{user_notes.strip()}"
-    prompt += "\n\n输出格式：第一行必须是文档标题（用 #  开头）。如果原文没有明确标题，请根据内容概括一个简洁标题（15字以内，不要「笔记」「整理」后缀）。"
-    return prompt
-
-
-def build_notes_prompt(raw_text: str, title: str = "", style: str = "detailed",
-                       source_type: str = "text",
-                       formats: list[str] | None = None,
-                       user_notes: str = "",
-                       target_language: str = "zh-CN",
-                       video_understanding: bool = False) -> str:
-    """构建结构化笔记 prompt"""
-    from app.core.types import DOC_SOURCE_TYPES
-    is_doc = source_type in DOC_SOURCE_TYPES
-
-    if is_doc:
-        prompt = PDF_NOTES_PROMPT.format(
-            title=title or "未命名",
-            document_text=raw_text,
-        )
-    else:
-        prompt = BASE_PROMPT.format(
-            video_title=title or "未命名",
-            segment_text=_format_segments(raw_text),
-        )
-
-    # 风格指令 — 全局约束，放在格式之前以提升 LLM 注意力权重
-    if style and style != 'none':
-        if is_doc:
-            style_text = DOC_STYLE_MAP.get(style, "")
-        else:
-            style_text = STYLE_MAP.get(style, "")
-        if style_text:
-            prompt += f"\n{style_text}"
-
-    # 附加格式选项 — 从 AVAILABLE_OPTIONS 查该类型支持哪些 format，统一映射
+    # 格式选项
     available = AVAILABLE_OPTIONS.get(source_type, AVAILABLE_OPTIONS.get("text", []))
     format_fns = {f: _ALL_FORMAT_FNS[f] for f in available if f in _ALL_FORMAT_FNS}
-    if formats:
-        for f in formats:
-            if f in format_fns:
-                if f == "translate":
-                    prompt += format_fns[f](target_language)
-                elif f == "screenshot":
-                    prompt += format_fns[f](has_visual=video_understanding)
-                else:
-                    prompt += format_fns[f]()
+    constraints = _build_hard_constraints(
+        formats, format_fns, target_language, video_understanding)
 
-    if user_notes.strip():
-        prompt += f"\n\n## 用户备注\n以下是用户提供的额外上下文和备注，请在生成笔记时参考这些信息，适当融入相关内容：\n{user_notes.strip()}"
+    sections = [
+        ("role", role),
+        ("task", task),
+        ("source_content", source_content),
+        ("instruction_priority", _INSTRUCTION_PRIORITY),
+        ("hard_constraints", constraints),
+        ("style_preference", style_text),
+        ("output_format", output),
+        ("user_request", user_notes.strip()),
+    ]
+    return PromptComposer.compose(sections)
 
-    prompt += "\n\n输出格式：第一行必须是笔记标题（用 #  开头）。请根据内容概括一个简洁标题（15字以内，不要「笔记」后缀）。"
-    return prompt
 
-
-# ── 事实验证 Prompt ──
+# ═══════════════════════════════════════════════════════════════
+# 事实验证 Prompt（未改）
+# ═══════════════════════════════════════════════════════════════
 
 CLAIM_EXTRACTION_PROMPT = """你是一个事实核查助手。你的任务是从文本中提取**可通过公开网络搜索验证**的事实断言。
 
@@ -780,7 +685,7 @@ FACT_CHECK_REPORT_PROMPT = """你是一个专业的事实核查报告撰写人�
 
 
 # ═══════════════════════════════════════════════════════════════
-# AI Review — 四阶段审核 Prompt（替代旧 Fact Check）
+# AI Review — 四阶段审核 Prompt（不变）
 # ═══════════════════════════════════════════════════════════════
 
 STATIC_REVIEW_PROMPT = """你是一个专业的文本审核助手。请对以下内容进行静态审核（不联网，仅基于文本分析）。

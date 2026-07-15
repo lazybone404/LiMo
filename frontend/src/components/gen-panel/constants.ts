@@ -134,6 +134,17 @@ export const STYLE_LABELS: Record<string, string> = {
   none: '无',
   minimal: '精简', detailed: '全文精要', academic: '学术', life: '生活',
   tutorial: '教程', xiaohongshu: '小红书', business: '商务',
-  meeting_minutes: '会议', task_oriented: '任务',
-  imrad: 'IMRaD 精读', meeting: '会议纪要',
+  meeting: '会议纪要',
+  task_oriented: '任务',
+  imrad: 'IMRaD 精读',
+}
+
+/** 旧风格 key → 新 key 兼容映射 */
+const STYLE_ALIAS: Record<string, string> = {
+  meeting_minutes: 'meeting',
+}
+
+/** 统一风格键名，兼容历史数据 */
+export function normalizeStyle(s: string): string {
+  return STYLE_ALIAS[s] || s
 }
