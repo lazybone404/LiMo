@@ -268,7 +268,12 @@ def _ddg_search_sync(query: str, max_results: int, proxy: str) -> str:
 
 async def search_official(domain: str, query: str, max_results: int = 5) -> str:
     """定向搜索特定域名，用 site: 操作符拼接。"""
-    full_query = f"site:{domain} {query}"
+    # 清理域名：仅保留字母数字和点号，防止注入搜索操作符
+    import re as _re
+    clean_domain = _re.sub(r'[^a-zA-Z0-9.\-]', '', domain.strip()).strip('.')
+    if not clean_domain:
+        return await search_web(query, max_results)
+    full_query = f"site:{clean_domain} {query}"
     return await search_web(full_query, max_results)
 
 
@@ -277,6 +282,12 @@ async def search_official(domain: str, query: str, max_results: int = 5) -> str:
 async def get_url_metadata(url: str) -> str:
     """获取 URL 的元信息（标题、发布时间、域名、作者），不抓全文"""
     from urllib.parse import urlparse
+    from app.utils.url_security import validate_url
+    try:
+        validate_url(url)
+    except ValueError as e:
+        return json.dumps({"error": f"URL 安全校验失败: {str(e)[:120]}"}, ensure_ascii=False)
+
     domain = urlparse(url).hostname or ""
 
     try:

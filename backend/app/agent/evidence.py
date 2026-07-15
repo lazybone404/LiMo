@@ -17,8 +17,12 @@ logger = logging.getLogger(__name__)
 
 # ── 内存缓存（进程生命周期内有效）──
 
+import threading as _threading
+
 _cache: dict[str, dict[str, Any]] = {}
+_cache_lock = _threading.Lock()
 _url_seen: set[str] = set()
+_url_seen_lock = _threading.Lock()
 CACHE_TTL = 24 * 3600  # 24 小时
 
 
@@ -30,36 +34,56 @@ def _cache_key(claim_text: str) -> str:
 def lookup_evidence(claim_text: str) -> list[dict] | None:
     """查找缓存的证据。返回 None 表示缓存未命中或已过期。"""
     key = _cache_key(claim_text)
-    entry = _cache.get(key)
-    if entry and (time.time() - entry["cached_at"] < CACHE_TTL):
-        logger.debug("Evidence cache hit: %s", claim_text[:60])
-        return entry["evidence"]
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry and (time.time() - entry["cached_at"] < CACHE_TTL):
+            logger.debug("Evidence cache hit: %s", claim_text[:60])
+            return entry["evidence"]
     return None
 
 
 def store_evidence(claim_text: str, evidence: list[dict]) -> None:
     """缓存证据"""
     key = _cache_key(claim_text)
-    _cache[key] = {"evidence": evidence, "cached_at": time.time()}
+    with _cache_lock:
+        _cache[key] = {"evidence": evidence, "cached_at": time.time()}
+        # 定期清理过期缓存（每 100 次写入清理一次）
+        if len(_cache) % 100 == 0:
+            _gc_cache()
     logger.debug("Evidence cached: %s (%d items)", claim_text[:60], len(evidence))
+
+
+def _gc_cache() -> None:
+    """清理过期的缓存条目"""
+    now = time.time()
+    expired = [k for k, v in _cache.items()
+               if now - v["cached_at"] >= CACHE_TTL]
+    for k in expired:
+        del _cache[k]
+    if expired:
+        logger.debug("Evidence cache GC: removed %d expired entries", len(expired))
 
 
 def is_url_fetched(url: str) -> bool:
     """检查 URL 是否已被抓取"""
     url_hash = hashlib.sha256(url.encode()).hexdigest()
-    return url_hash in _url_seen
+    with _url_seen_lock:
+        return url_hash in _url_seen
 
 
 def mark_url_fetched(url: str) -> None:
     """标记 URL 已抓取"""
     url_hash = hashlib.sha256(url.encode()).hexdigest()
-    _url_seen.add(url_hash)
+    with _url_seen_lock:
+        _url_seen.add(url_hash)
 
 
 def clear_cache() -> None:
     """清空所有缓存"""
-    _cache.clear()
-    _url_seen.clear()
+    with _cache_lock:
+        _cache.clear()
+    with _url_seen_lock:
+        _url_seen.clear()
 
 
 # ── 统一证据格式 ──

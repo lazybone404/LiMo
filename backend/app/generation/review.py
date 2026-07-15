@@ -525,41 +525,48 @@ class ReviewEngine:
                     else:
                         result = await self._review_llm_only(claim, plan, cancel_event)
                     await result_queue.put((idx, result))
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 await result_queue.put((idx, self._empty_review(claim)))
 
         tasks = [asyncio.create_task(_verify_item(i)) for i in range(total)]
         results_by_idx: dict[int, dict] = {}
         completed = 0
 
-        while completed < total:
+        try:
+            while completed < total:
+                if cancel_event and cancel_event.is_set():
+                    break
+                idx, result = await result_queue.get()
+                completed += 1
+                if result:
+                    results_by_idx[idx] = result
+                    verdict_icon = {
+                        "基本可信": "✅", "存疑": "⚠️",
+                        "证据不足": "❓", "证据矛盾": "🚫",
+                        "观点不验证": "💬",
+                    }.get(result.get("verdict", ""), "?")
+
+                    basis_label = {
+                        "need_web": "🌐", "llm_known": "🧠",
+                        "skip_opinion": "📏", "cannot_verify": "❓",
+                    }.get(result.get("strategy", ""), "?")
+
+                    yield {
+                        "mode": "fact_check", "phase": "verify",
+                        "claim": completed, "total": total,
+                        "claim_id": result["id"],
+                        "verdict": result.get("verdict", ""),
+                        "evidence_strength": result.get("evidence_strength", ""),
+                        "basis": result.get("strategy", ""),
+                        "action": result.get("action"),
+                        "text": f"{verdict_icon} {basis_label} {result.get('text', '')[:80]}",
+                    }
+        finally:
+            # 取消/异常时清理所有后台任务
             if cancel_event and cancel_event.is_set():
-                break
-            idx, result = await result_queue.get()
-            completed += 1
-            if result:
-                results_by_idx[idx] = result
-                verdict_icon = {
-                    "基本可信": "✅", "存疑": "⚠️",
-                    "证据不足": "❓", "证据矛盾": "🚫",
-                    "观点不验证": "💬",
-                }.get(result.get("verdict", ""), "?")
-
-                basis_label = {
-                    "need_web": "🌐", "llm_known": "🧠",
-                    "skip_opinion": "📏", "cannot_verify": "❓",
-                }.get(result.get("strategy", ""), "?")
-
-                yield {
-                    "mode": "fact_check", "phase": "verify",
-                    "claim": completed, "total": total,
-                    "claim_id": result["id"],
-                    "verdict": result.get("verdict", ""),
-                    "evidence_strength": result.get("evidence_strength", ""),
-                    "basis": result.get("strategy", ""),
-                    "action": result.get("action"),
-                    "text": f"{verdict_icon} {basis_label} {result.get('text', '')[:80]}",
-                }
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
         reviews = [results_by_idx[i] for i in range(total) if i in results_by_idx]
 
