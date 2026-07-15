@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useStore } from '../../store'
-import { X, Download, FileText, Globe, File, Archive, Search, ChevronUp, ChevronDown } from 'lucide-react'
+import { X, Download, FileText, Globe, File, Archive, Search, ChevronUp, ChevronDown, Film, PenLine, Image, BarChart3, BookOpen } from 'lucide-react'
 import { getTypeMeta } from '../gen-panel/constants'
 import { downloadFromUrl, downloadBlob } from '../../lib/download'
 import { apiUrl } from '../../api/client'
@@ -16,6 +16,11 @@ const FORMAT_META: Record<Format, { icon: typeof FileText; label: string }> = {
 const TYPE_LABELS: Record<string, string> = {
   video: '视频', webpage: '网页', text: '文本', image: '图片',
   pdf: 'PDF', docx: 'Word', pptx: 'PPT', xlsx: 'Excel', epub: '电子书', document: '文档',
+}
+
+const TYPE_ICON: Record<string, typeof FileText> = {
+  video: Film, webpage: Globe, text: PenLine, image: Image,
+  pdf: FileText, docx: FileText, pptx: FileText, xlsx: BarChart3, epub: BookOpen,
 }
 
 export function ExportPanel({ onClose }: { onClose: () => void }) {
@@ -115,8 +120,8 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
     typeGroups.forEach(g => {
       const tabs = groupTabs[g.type] || []
       if (tabs.length === 0) return
-      const icon = TYPE_LABELS[g.type] || '📄'
-      lines.push(`${icon} ${g.type} (${g.docs.length}篇) → ${tabs.length} 产物`)
+      const label = TYPE_LABELS[g.type] || g.type || '文件'
+      lines.push(`${label} ${g.type} (${g.docs.length}篇) → ${tabs.length} 产物`)
       totalFiles += tabs.length * g.docs.length * formats.length
     })
     if (totalFiles === 0) { lines.push('未选择导出内容'); return lines }
@@ -185,12 +190,12 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
               <p className="text-[10px] text-disabled -mt-1 mb-2">仅导出已生成的产物，未生成的内容会被自动跳过</p>
               <div className="space-y-2">
                 {typeGroups.map(g => {
-                  const icon = TYPE_LABELS[g.type] || '📄'
+                  const IconComp = TYPE_ICON[g.type] || FileText
                   const tabs = groupTabs[g.type] || []
                   return (
                     <div key={g.type} className="bg-surface rounded-xl p-2.5">
-                      <div className="text-[11px] font-medium text-dimmed mb-1.5 px-1">
-                        {icon} ({g.docs.length}篇)
+                      <div className="text-[11px] font-medium text-dimmed mb-1.5 px-1 flex items-center gap-1">
+                        <IconComp size={13} /> ({g.docs.length}篇)
                       </div>
                       <div className="flex flex-wrap gap-1.5">
                         {g.tabs.map(t => {
@@ -309,7 +314,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
             ) : (
               <div className="bg-surface rounded-xl p-3 space-y-0.5">
                 {previewLines.map((line, i) => (
-                  <p key={i} className={`text-[11px] text-dimmed font-mono ${line.startsWith('📹') || line.startsWith('🌐') || line.startsWith('📄') || line.startsWith('📝') || line.startsWith('🖼') || line.startsWith('📊') || line.startsWith('📚') ? 'mt-1.5' : ''}`}>
+                  <p key={i} className={`text-[11px] text-dimmed font-mono ${Object.values(TYPE_LABELS).some(label => line.startsWith(label)) ? 'mt-1.5' : ''}`}>
                     {line || ' '}
                   </p>
                 ))}

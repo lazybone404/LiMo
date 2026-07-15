@@ -398,7 +398,7 @@ export function PreviewArea() {
           if (contentLoadError) {
             return (
               <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
-                <p className="text-[15px] text-warning mb-3">⚠️ 内容加载失败</p>
+                <p className="text-[15px] text-warning mb-3"><AlertTriangle size={16} className="inline mr-1" />内容加载失败</p>
                 <p className="text-[13px] text-disabled mb-4">请检查后端是否正常运行，然后刷新页面重试</p>
                 <button onClick={() => window.location.reload()} className="px-4 py-1.5 bg-accent text-white text-[12px] rounded-full hover:bg-accent-hover">刷新页面</button>
               </div>
@@ -467,7 +467,7 @@ export function PreviewArea() {
             digitize: { icon: <ScanLine size={40} />, desc: '将文档扫描件转为可编辑文本' },
             understand: { icon: <Eye size={40} />, desc: '描述并解读图片中的视觉信息' },
           }
-          const meta = modeMeta[activeView] || { icon: '📄', desc: '' }
+          const meta = modeMeta[activeView] || { icon: <FileText size={40} />, desc: '' }
           return (
             <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
               <div className="text-5xl mb-6 opacity-20">{meta.icon}</div>
@@ -555,7 +555,7 @@ export function PreviewArea() {
           const issues = factCheckProgress!.issues || []
           return (
             <div className="max-w-[720px] mx-auto px-10 py-8">
-              <p className="text-[14px] font-medium text-dimmed mb-5">📋 静态审核</p>
+              <p className="text-[14px] font-medium text-dimmed mb-5"><ClipboardList size={16} className="inline mr-1.5" />静态审核</p>
               {/* Claims 统计 */}
               <div className="grid grid-cols-3 gap-3 mb-5">
                 <div className="p-3 bg-surface rounded-lg text-center">
@@ -608,7 +608,7 @@ export function PreviewArea() {
         if (factChecking && !currentFactCheckContent && factCheckProgress?.text) {
           return (
             <div className="max-w-[720px] mx-auto px-10 py-8">
-              <p className="text-[14px] font-medium text-dimmed mb-4">🔍 正在验证...</p>
+              <p className="text-[14px] font-medium text-dimmed mb-4"><Search size={16} className="inline mr-1.5" />正在验证...</p>
               <p className="text-[13px] text-muted">{factCheckProgress.text}</p>
             </div>
           )
@@ -678,7 +678,7 @@ export function PreviewArea() {
                   </div>
                 )}
                 {isStale && hasNewer && (
-                  <p className="text-[11px] text-warning mt-2">⚠️ 内容已更新，当前审核报告可能过时</p>
+                  <p className="text-[11px] text-warning mt-2"><AlertTriangle size={12} className="inline mr-1" />内容已更新，当前审核报告可能过时</p>
                 )}
               </div>
             )}

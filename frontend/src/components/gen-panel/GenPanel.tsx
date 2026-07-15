@@ -420,7 +420,7 @@ export function GenPanel() {
       setActiveView(imageMode)
       // 降级提醒
       if (result.degraded?.length) {
-        result.degraded.forEach(note => addToast(`⚠️ ${note}`, 'success'))
+        result.degraded.forEach(note => addToast(`${note}`, 'success'))
       }
       addToast('处理完成')
     } catch (e: unknown) {
