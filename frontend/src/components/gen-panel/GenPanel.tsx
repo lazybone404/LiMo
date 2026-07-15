@@ -48,7 +48,8 @@ export function GenPanel() {
   const [formatLink, setFormatLink] = useState(saved.formatLink)
   const [formatSummary, setFormatSummary] = useState(saved.formatSummary)
   const [formatScreenshot, setFormatScreenshot] = useState(saved.formatScreenshot)
-  const [formatTranslate, setFormatTranslate] = useState(saved.formatTranslate ?? false)
+  // @deprecated formatTranslate 保留用于旧数据持久化，不再用于 UI
+  const [formatTranslate] = useState(saved.formatTranslate ?? false)
   const [formatFormulas, setFormatFormulas] = useState(saved.formatFormulas ?? false)
   const [formatReferences, setFormatReferences] = useState(saved.formatReferences ?? false)
   const [formatImages, setFormatImages] = useState(saved.formatImages ?? false)

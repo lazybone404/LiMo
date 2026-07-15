@@ -2,7 +2,7 @@
 
 > 完整记录项目中所有 LLM 提示词，供审视和优化。
 > 生成日期：2026-07-15
-> 最后更新：2026-07-15（P0-2 统一语言策略：output_language 节 + 删除 translate）
+> 最后更新：2026-07-15（P0-3 Agent 工具调用可见性 + 文档智能截断）
 
 ---
 
@@ -535,9 +535,23 @@ POST /process/{id}
 
 ### 9.2 运行时扩充
 
-对话上下文注入 `rawText[:1000]`，通过 `search_docs` / `lookup_doc` / `list_docs` 三个工具访问知识库。
+对话上下文注入 `smart_truncate(rawText, 1000)`（按句子边界截断，不再硬切），通过 `search_docs` / `lookup_doc` / `list_docs` 三个工具访问知识库。
 
-### 9.3 工具描述
+### 9.3 Agent SSE 事件流（P0-3 新增）
+
+```
+agent_status  → "正在分析问题..."    ← 工具判定前
+tool_start    → display: "正在搜索网络: xxx"
+tool_result   → summary: "找到 5 条结果"
+  （可能多轮）
+agent_status  → "正在整理回答..."
+text          → 流式 token
+done
+```
+
+**C 端隐私**：`tool_result` 仅推送摘要（计数/长度），完整结果只传给 LLM 不出现在前端 UI。`tool_start` 的 `display` 由后端 `_tool_display()` 生成安全文案。
+
+### 9.4 工具描述
 
 | 工具 | 描述 |
 |------|------|
@@ -570,6 +584,8 @@ POST /process/{id}
 | ✅ 5 | Prompt 扁平拼接，LLM 分辨不出约束优先级 | 改为 XML 分节 + `<instruction_priority>` 声明三层优先级 |
 | ✅ 6 | Agent prompt 过简，容易幻觉 | 上次已修复（5 条防幻觉原则） |
 | ✅ 7 | 语言策略不一致（4 个 role 硬编码矛盾语言策略） | P0-2 统一为 `<output_language>` 节，随 target_language 动态生成 |
+| ✅ 8 | Agent 工具调用不可见性 | P0-3 新增 `agent_status` 事件 + `tool_start` display + `tool_result` summary |
+| ✅ 9 | 对话文档注入截断 | P0-3 `rawText[:1000]` → `smart_truncate(rawText, 1000)` 按句子边界截断 |
 
 ### 11.2 未修复（P1 或更低优先级）
 
@@ -582,9 +598,7 @@ POST /process/{id}
 | 5 | **续写指令单一** | 低 | 只有一个字"继续" |
 | 6 | **小红书风格适用场景** | 低 | "标题用二极管法"更适合标题而非正文 |
 | 7 | **Process 管道的 temperature** | 低 | 所有 4 种模式统一 0.1 |
-| 8 | **Agent 工具调用不可见性** | 中 | 工具调用回合非流式 |
-| 9 | **对话文档注入截断** | 低 | `rawText[:1000]` 硬截断 |
-| 10 | **事实验证关键词提取** | 低 | 纯正则启发式 |
+| 8 | **事实验证关键词提取** | 低 | 纯正则启发式 |
 
 ### 11.3 已确认 OK 的设计
 
@@ -616,8 +630,9 @@ POST /process/{id}
 | [backend/app/routers/process.py](backend/app/routers/process.py) | IMAGE_PROMPTS — 4 种图片处理模式（与 ocr.py 重复） |
 | [backend/app/engines/ocr.py](backend/app/engines/ocr.py) | DashScopeOCREngine — 4 种图片处理模式（与 process.py 重复） |
 | [backend/app/routers/chat.py](backend/app/routers/chat.py) | SYSTEM_PROMPT + 5 个工具描述 |
-| [backend/app/llm/agent.py](backend/app/llm/agent.py) | AgentRunner — max_rounds 后的最终提示 |
+| [backend/app/llm/agent.py](backend/app/llm/agent.py) | AgentRunner — SSE 事件流（agent_status / tool_start / tool_result / text / done） |
 | [backend/app/llm/service.py](backend/app/llm/service.py) | LLMService — 续写机制 |
+| [backend/app/core/text_utils.py](backend/app/core/text_utils.py) | `smart_truncate()` — 按句子边界截断 |
 
 ## 附录 B: 温度参数速查
 

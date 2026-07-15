@@ -20,7 +20,7 @@ LiMo — 知识管理系统。输入 URL/文本/文件 → 适配器提取正文
 | [system-design-spec.md](docs/system-design-spec.md) | 原始设计蓝图（历史参考） | 理解早期设计意图 |
 | [engine-standards.md](design/engine-standards.md) | 引擎评审标准+实测数据 | 添加/修改引擎 |
 | [doc-transcript-design.md](docs/doc-transcript-design.md) | Doc 转录原始提案（部分仍有效） | 理解 Word/PPT/EPUB 早期设计意图 |
-| [prompts-inventory.md](docs/prompts-inventory.md) | 全部 LLM 提示词清单 + 审视点清单（6 已修复/11 待处理）+ 温度参数速查 + PromptComposer 标签速查 | 审视/优化 prompt、新增管道需要参考 prompt 风格 |
+| [prompts-inventory.md](docs/prompts-inventory.md) | 全部 LLM 提示词清单 + 审视点清单（9 已修复/8 待处理）+ 温度参数速查 + PromptComposer 标签速查 + Agent SSE 事件流 | 审视/优化 prompt、新增管道需要参考 prompt 风格 |
 
 ## 常用命令
 
@@ -211,6 +211,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **Prompt XML 分节**：`PromptComposer.section()` + `compose()` 组装 8 个标签（role/task/source_content/instruction_priority/hard_constraints/style_preference/output_format/user_request），空节自动跳过。`_INSTRUCTION_PRIORITY` 声明三层优先级：hard_constraints > user_request > style_preference
 - **Polish/Notes 风格隔离**：Polish 固定忠实整理策略（无 `<style_preference>` 节），格式白名单 `_POLISH_FORMAT_FNS`（toc/translate/formulas/references/images）。Notes 有 `<style_preference>` 节，风格从 `VIDEO_NOTE_STYLES`（9 种）或 `DOC_NOTE_STYLES`（8 种）查找。`normalize_style()` 兼容旧 `meeting_minutes` key
 - **风格定义位置**：`app/generation/prompts/notes_styles.py`（COMMON_NOTE_STYLES → VIDEO_NOTE_STYLES / DOC_NOTE_STYLES），旧 `STYLE_MAP`/`DOC_STYLE_MAP` 保留为 deprecated 别名
+- **Agent SSE 事件流**：`agent_status`（判定前）→ `tool_start`（带 `display` 安全文案，后端 `_tool_display()` 生成）→ `tool_result`（仅 `summary` 摘要，完整结果只传 LLM）→ `text` 流式 token。C 端不暴露完整工具结果到前端 UI
+- **对话文档注入**：`smart_truncate(rawText, 1000)` 按句子边界截断（优先级：`。` > `. ` > `\n\n` > `\n`），不再硬截 `[:1000]`
 
 ### 并发与安全
 - **并发控制**：`ExecutionGuard` 双层信号量 — `cloud_semaphore(5)` 给生成/处理/云端引擎，`local_semaphore(2)` 给本地 CPU 引擎（faster-whisper）。本地慢操作不抢占云端快操作的槽位。

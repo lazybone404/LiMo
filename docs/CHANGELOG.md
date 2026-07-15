@@ -6,6 +6,54 @@
 
 ---
 
+## 2026-07-15（晚间）— P0-1~P0-3 Prompt 体系重构 + 语言策略统一 + Agent 体验
+
+### P0-1: Polish/Notes 风格边界重设计 + Prompt XML 模块化
+
+**问题**：`STYLE_MAP` 被 Polish 和 Notes 共用，Polish + business → "保持原文" vs "结论先行" 矛盾。
+
+**修复**：
+- 风格体系解耦：`COMMON_NOTE_STYLES` → `VIDEO_NOTE_STYLES` / `DOC_NOTE_STYLES`（`prompts/notes_styles.py`）
+- Polish 固定忠实整理策略（无 `<style_preference>` 节），格式白名单 `_POLISH_FORMAT_FNS`
+- Prompt 从扁平拼接改为 XML 分节：`<role>` → `<task>` → `<source_content>` → `<instruction_priority>` → `<hard_constraints>` → `<style_preference>` → `<output_format>` → `<user_request>`
+- `PromptComposer` 分节组装器（`prompts/common.py`）
+- `meeting_minutes` → `meeting` alias（`normalize_style()` 前后端兼容）
+- 前端：polished only 模式隐藏风格选择器，both 模式标注"风格仅影响笔记"
+
+**影响**：`prompt.py` 重写（986→650 行），`prompt_builder.py` / 前端 `GenerateOptions.tsx` / `GenPanel.tsx` / `genPrefs.ts` / `constants.ts` 适配。
+
+### P0-2: 统一语言策略 — 输出语言 = target_language
+
+**问题**：4 个 role 硬编码矛盾语言策略（视频强制中文、文档跟随原文、Excel 强制中文）。
+
+**修复**：
+- 所有 role 瘦身为纯角色定义（各 1 行），语言要求提取为动态 `<output_language>` 节
+- `_build_output_language(target_language, source_type)` — 术语保留行业通用写法 + 不强制翻译
+- Excel 独立规则：字段名保留原文，分析文字用目标语言
+- `normalize_target_language()` — zh→zh-CN 等 5 个 alias
+- `_INSTRUCTION_PRIORITY` 扩展为四层：hard_constraints > output_language > user_request > style_preference
+- 删除 `translate` 格式选项（全链路清理：后端 5 处 + 前端 2 处，genPrefs 保留 deprecated 字段）
+- 删除 `get_translate_format()` 函数
+- `_build_hard_constraints()` 移除 `target_language` 参数
+
+**影响**：`prompt.py` / `prompt_builder.py` / 前端 `GenerateOptions.tsx` / `GenPanel.tsx` / `genPrefs.ts`。
+
+### P0-3: Agent 工具调用可见性 + 文档注入智能截断
+
+**问题**：Agent 工具判定回合无任何反馈，用户干等；`rawText[:1000]` 硬截断可能切在句子中间。
+
+**修复**：
+- 新增 `agent_status` SSE 事件（工具判定前推送"正在分析问题..."）
+- `tool_start` 增加 `display` 字段（后端 `_tool_display()` 生成安全文案，C 端不暴露路径）
+- `tool_result` 改为 `summary` 摘要（仅计数/长度，完整结果只传 LLM 不出现在前端 UI）
+- 新增 `smart_truncate()` — 按句子边界截断（`app/core/text_utils.py`），优先级：`。` > `. ` > `\n\n` > `\n`
+- 前端 `streamChat()` 增加 `onStatus` / `onToolResult` 回调，`ChatCore.tsx` 适配新事件流
+- spec hiddenimports 防御性添加 `app.core.text_utils`
+
+**影响**：`agent.py` / `chat.py` / `text_utils.py`（新增）/ `client.ts` / `ChatCore.tsx` / `LiMoBackend.spec`。
+
+---
+
 ## 2026-07-15（下午）— mode 过滤修复 + 打包兼容
 
 ### mode 精确匹配修复
