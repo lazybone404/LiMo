@@ -21,6 +21,8 @@ LiMo — 知识管理系统。输入 URL/文本/文件 → 适配器提取正文
 | [engine-standards.md](design/engine-standards.md) | 引擎评审标准+实测数据 | 添加/修改引擎 |
 | [doc-transcript-design.md](docs/doc-transcript-design.md) | Doc 转录原始提案（部分仍有效） | 理解 Word/PPT/EPUB 早期设计意图 |
 | [prompts-inventory.md](docs/prompts-inventory.md) | 全部 LLM 提示词清单 + 审视点清单（9 已修复/8 待处理）+ 温度参数速查 + PromptComposer 标签速查 + Agent SSE 事件流 | 审视/优化 prompt、新增管道需要参考 prompt 风格 |
+| [BUILD.md](docs/BUILD.md) | PyInstaller + Tauri 完整打包流程，常见陷阱 | 打包/发布 |
+| [components.md](design/components.md) | Apple HIG 风格组件规格，布局+颜色+字体+组件 | 改 UI 组件/设计系统 |
 
 ## 常用命令
 
@@ -398,6 +400,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 验证源 fallback | notes → polished → transcript |
 | ✅ | Evidence Manager | 统一证据格式 + 缓存（TTL 24h）+ URL 去重 |
 | ✅ | 工具增强 | DDG 真实搜索（duckduckgo_search 库）+ Official Search + 日期工具 + URL 元信息 |
+| ✅ | verify_mode 设置 | LLM（默认，模型知识）和 Web（联网搜索）两种验证方式，设置页可选 |
 | ❌ | 报告可交互 | 点击来源链接查看原文，批量验证多文档 |
 | ❌ | Chunk 提取 | 长文档分片提取（当前仅取前 8000 字符） |
 | ❌ | 专业模式 | 学术/法律/医疗专用搜索源 |
@@ -451,8 +454,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✨ LLM 生成 | 7 | 7 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 5 | 5 | 100% |
-| ✅ AI 审核 | 5 | 7 | 71% |
+| ✅ AI 审核 | 7 | 10 | 70% |
 | 📤 导出 | 7 | 8 | 88% |
 | 🎨 前端 UI/UX | 8 | 8 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **60** | **65** | **92%** |
+| **合计** | **62** | **68** | **91%** |

@@ -585,12 +585,13 @@ export interface FactCheckCallbacks {
 
 export function streamFactCheck(
   transcriptId: string,
-  options: { model_id?: number },
+  options: { model_id?: number; verify_mode?: string },
   callbacks: FactCheckCallbacks,
   signal?: AbortSignal,
 ): void {
   const params = new URLSearchParams()
   if (options.model_id) params.set('model_id', String(options.model_id))
+  if (options.verify_mode) params.set('verify_mode', options.verify_mode)
   const qs = params.toString()
   let receivedDoneOrError = false
   const origOnDone = callbacks.onDone

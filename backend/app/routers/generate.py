@@ -294,6 +294,11 @@ async def generate_stream(transcript_id: str, request: Request,
     if not tx:
         raise AppError("GEN_NOT_FOUND", "文档不存在，请先导入内容")
 
+    # 校验 style 有效性（Polish only 模式可能传 "none"）
+    _valid_styles = {s.value for s in Style}
+    if style not in _valid_styles:
+        style = "detailed"
+
     # ── 解析 mode 为产物列表（逗号分隔）──
     _raw_mode = mode if mode else ""
     # "both" → "notes,polished"（向后兼容）

@@ -111,15 +111,15 @@ async def fact_check_stream(transcript_id: str, request: Request,
 
     async def merged_stream():
         await guard.semaphore.acquire()
-        # 客户端断连检测
-        async def _watch():
-            while True:
-                if await request.is_disconnected():
-                    cancel_event.set()
-                    return
-                await asyncio.sleep(0.5)
-        disconnect_task = asyncio.create_task(_watch())
         try:
+            # 客户端断连检测
+            async def _watch():
+                while True:
+                    if await request.is_disconnected():
+                        cancel_event.set()
+                        return
+                    await asyncio.sleep(0.5)
+            disconnect_task = asyncio.create_task(_watch())
             engine = ReviewEngine(llm)
             fc_id = None
             fc_report = ""

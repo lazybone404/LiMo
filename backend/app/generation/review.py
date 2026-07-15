@@ -401,8 +401,9 @@ class ReviewEngine:
 
     async def run(
         self, content: str, cancel_event: asyncio.Event | None = None,
+        verify_mode: str = "llm",
     ) -> dict:
-        """非流式端到端审核"""
+        """非流式端到端审核。verify_mode: llm（默认）| web（联网）"""
         review_id = f"rv_{uuid.uuid4().hex[:12]}"
 
         # Phase 1: Static Review
@@ -441,8 +442,9 @@ class ReviewEngine:
 
     async def run_streaming(
         self, content: str, cancel_event: asyncio.Event | None = None,
+        verify_mode: str = "llm",
     ):
-        """流式端到端审核：yield SSE 事件"""
+        """流式端到端审核：yield SSE 事件。verify_mode: llm（默认）| web（联网）"""
         review_id = f"rv_{uuid.uuid4().hex[:12]}"
 
         # ── Phase 1: Static Review ──

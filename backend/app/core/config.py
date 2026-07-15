@@ -114,6 +114,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "agent_tools": {
         "search": {"provider": "duckduckgo", "searxng_url": "http://127.0.0.1:18080", "tavily_api_key": ""},
         "fetch":  {"provider": "trafilatura"},
+        "verify_mode": "llm",  # AI 审核默认验证方式: llm（模型知识）| web（联网搜索）
     },
     "data_dir": str(Path.home() / ".mybigwork"),
     "log_level": "INFO",

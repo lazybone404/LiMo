@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useStore } from '../../store'
-import { getTranscript, getMarkdown, fetchProcessResults, streamFactCheck, apiUrl, ApiErrorException } from '../../api/client'
+import { getTranscript, getMarkdown, fetchProcessResults, streamFactCheck, getConfig, apiUrl, ApiErrorException } from '../../api/client'
 import { loadGenPrefs } from '../gen-panel/genPrefs'
 import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle, Copy, Check } from 'lucide-react'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle, Copy, Check, FileText, ClipboardList, Search } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -232,9 +232,13 @@ export function PreviewArea() {
     st.setProcessing(docId + '__fact_check', { kind: 'fact_check', title: st.docs.find(d => d.id === docId)?.title || '' })
     st.setCurrentFactCheckContent(null)
     st.setFactCheckProgress(null)
-    streamFactCheck(docId, {
-      model_id: loadGenPrefs().selectedModelId || undefined,
-    }, {
+    // 读取设置页面保存的验证方式偏好
+    getConfig().then(cfg => {
+      const verifyMode = cfg?.agent_tools?.verify_mode || 'llm'
+      streamFactCheck(docId, {
+        model_id: loadGenPrefs().selectedModelId || undefined,
+        verify_mode: verifyMode,
+      }, {
       onChunk(text, phase) {
         if (!isSame()) return
         if (phase === 'review') {
@@ -298,6 +302,7 @@ export function PreviewArea() {
         useStore.getState().addToast(msg, 'error')
       },
     })
+  })  // getConfig().then(...) close
   }
 
   /** 判断某个 view tab 是否正在处理中 */
