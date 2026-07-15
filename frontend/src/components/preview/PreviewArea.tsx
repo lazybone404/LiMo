@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../../store'
 import { getTranscript, getMarkdown, fetchProcessResults, streamFactCheck, getConfig, apiUrl, ApiErrorException } from '../../api/client'
 import { loadGenPrefs } from '../gen-panel/genPrefs'
 import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle, Copy, Check, FileText, ClipboardList, Search } from 'lucide-react'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle, Copy, Check, FileText, ClipboardList, Search, Columns, AlignCenter, Maximize2 } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -75,6 +75,30 @@ export function PreviewArea() {
   const currentFactCheckContent = useStore(s => s.currentFactCheckContent)
   const factCheckMeta = useStore(s => s.factCheckMeta)
   const factCheckProgress = useStore(s => s.factCheckProgress)
+  const contentWidth = useStore(s => s.contentWidth)
+  const cycleContentWidth = useStore(s => s.cycleContentWidth)
+
+  const WIDTH_RATIO: Record<string, { label: string; icon: typeof Columns; ratio: number }> = {
+    narrow: { label: '紧凑', icon: AlignCenter, ratio: 0.80 },
+    normal: { label: '标准', icon: Columns, ratio: 0.90 },
+    wide:   { label: '宽屏', icon: Maximize2, ratio: 0.97 },
+  }
+
+  // ResizeObserver 追踪预览面板实际宽度
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [containerWidth, setContainerWidth] = useState(800)
+  useEffect(() => {
+    const el = containerRef.current?.parentElement
+    if (!el) return
+    const ro = new ResizeObserver(([entry]) => {
+      setContainerWidth(entry.contentRect.width)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const contentMaxW = `${Math.min(containerWidth * WIDTH_RATIO[contentWidth].ratio, 1100)}px`
+  const fontSizeScale: Record<string, number> = { narrow: 0.92, normal: 1.0, wide: 1.06 }
   const factChecking = useStore(s => s.factChecking)
   const setCurrentContent = useStore(s => s.setCurrentContent)
   const setCurrentPolishedContent = useStore(s => s.setCurrentPolishedContent)
@@ -108,7 +132,7 @@ export function PreviewArea() {
     const docId = useStore.getState().currentDocId
     if (!docId || versionLoading) return
     setVersionLoading(true)
-    const mdMode = mode === 'polished' ? 'polished' : ''
+    const mdMode = mode === 'polished' ? 'polished' : 'notes'
     getMarkdown(docId, mdMode || undefined, version > 0 ? version : undefined).then(md => {
       if (!md || docId !== useStore.getState().currentDocId) return
       if (mode === 'polished') {
@@ -145,7 +169,7 @@ export function PreviewArea() {
     getTranscript(capturedId).then(tx => {
       if (tx && isSame()) setCurrentRawText(tx.rawText ?? '')
     }).catch(err => { handleLoadError('加载转录失败', err) })
-    getMarkdown(capturedId).then(md => {
+    getMarkdown(capturedId, 'notes').then(md => {
       if (!isSame()) return
       if (md) {
         setCurrentContent(md.content)
@@ -346,7 +370,7 @@ export function PreviewArea() {
   const renderContent = () => {
     if (!currentDocId || !currentDoc) {
       return (
-        <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
+        <div className="mx-auto px-10 py-16 text-center">
           <Package size={50} className="text-disabled mb-6 mx-auto opacity-20" />
           <h1 className="text-[30px] font-semibold mb-1">欢迎使用 LiMo</h1>
           <p className="text-[13px] text-disabled mb-8">把任何来源变成可读、可搜索的文字</p>
@@ -368,7 +392,7 @@ export function PreviewArea() {
         if (isViewProcessing(activeView) && !isStreaming) return processingPlaceholder
         if (!currentRawText) {
           return (
-            <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
+            <div className="mx-auto px-10 py-16 text-center">
               <p className="text-[15px] text-dimmed mb-3">数据预览不可用</p>
               <p className="text-[13px] text-disabled">请重新转录后再试</p>
             </div>
@@ -382,7 +406,7 @@ export function PreviewArea() {
           // Excel: 仅数据摘要（分析报告已移除）
           if (!currentContent) {
             return (
-              <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
+              <div className="mx-auto px-10 py-16 text-center">
                 <p className="text-[15px] text-dimmed mb-3">尚未生成</p>
                 <p className="text-[13px] text-disabled mb-6">点击左侧「生成数据摘要」按钮</p>
               </div>
@@ -397,7 +421,7 @@ export function PreviewArea() {
           if (isStreaming) return processingPlaceholder
           if (contentLoadError) {
             return (
-              <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
+              <div className="mx-auto px-10 py-16 text-center">
                 <p className="text-[15px] text-warning mb-3"><AlertTriangle size={16} className="inline mr-1" />内容加载失败</p>
                 <p className="text-[13px] text-disabled mb-4">请检查后端是否正常运行，然后刷新页面重试</p>
                 <button onClick={() => window.location.reload()} className="px-4 py-1.5 bg-accent text-white text-[12px] rounded-full hover:bg-accent-hover">刷新页面</button>
@@ -405,7 +429,7 @@ export function PreviewArea() {
             )
           }
           return (
-            <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
+            <div className="mx-auto px-10 py-16 text-center">
               <p className="text-[15px] text-dimmed mb-3">尚未生成</p>
               <p className="text-[13px] text-disabled mb-6">点击左侧「生成」按钮为本文档生成 Markdown 笔记</p>
             </div>
@@ -421,7 +445,7 @@ export function PreviewArea() {
         if (isViewProcessing(activeView)) return processingPlaceholder
         // 图片默认 OCR 文字（尚未处理时显示引导）
         return (
-          <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
+          <div className="mx-auto px-10 py-16 text-center">
             <Image size={50} className="text-disabled mb-6 mx-auto opacity-20" />
             <h2 className="text-[18px] font-semibold mb-2">{currentDoc.title}</h2>
             <p className="text-[13px] text-disabled mb-3">图片已导入，选择一个处理模式开始提取</p>
@@ -469,7 +493,7 @@ export function PreviewArea() {
           }
           const meta = modeMeta[activeView] || { icon: <FileText size={40} />, desc: '' }
           return (
-            <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
+            <div className="mx-auto px-10 py-16 text-center">
               <div className="text-5xl mb-6 opacity-20">{meta.icon}</div>
               <h2 className="text-[18px] font-semibold mb-2">{modeLabels[activeView] || activeView}</h2>
               <p className="text-[13px] text-disabled mb-3">{meta.desc}</p>
@@ -479,7 +503,7 @@ export function PreviewArea() {
         }
 
         return (
-          <div className="max-w-[720px] mx-auto px-10 py-8">
+          <div className="mx-auto px-10 py-8">
             <VideoBanner
               title={currentDoc?.title}
               coverUrl={currentDoc?.coverUrl}
@@ -520,7 +544,7 @@ export function PreviewArea() {
       case 'transcript':
         if (isViewProcessing(activeView)) return processingPlaceholder
         return (
-          <div className="max-w-[720px] mx-auto px-10 py-8">
+          <div className="mx-auto px-10 py-8">
             {videoBanner}
             {currentRawText ? (
               <>
@@ -554,7 +578,7 @@ export function PreviewArea() {
           const s = factCheckProgress!.summary!
           const issues = factCheckProgress!.issues || []
           return (
-            <div className="max-w-[720px] mx-auto px-10 py-8">
+            <div className="mx-auto px-10 py-8">
               <p className="text-[14px] font-medium text-dimmed mb-5"><ClipboardList size={16} className="inline mr-1.5" />静态审核</p>
               {/* Claims 统计 */}
               <div className="grid grid-cols-3 gap-3 mb-5">
@@ -607,7 +631,7 @@ export function PreviewArea() {
         // ── 状态 B: 验证中（有进度文本无报告）──
         if (factChecking && !currentFactCheckContent && factCheckProgress?.text) {
           return (
-            <div className="max-w-[720px] mx-auto px-10 py-8">
+            <div className="mx-auto px-10 py-8">
               <p className="text-[14px] font-medium text-dimmed mb-4"><Search size={16} className="inline mr-1.5" />正在验证...</p>
               <p className="text-[13px] text-muted">{factCheckProgress.text}</p>
             </div>
@@ -617,7 +641,7 @@ export function PreviewArea() {
         // ── 状态 C: 无报告，显示引导 ──
         if (!currentFactCheckContent) {
           return (
-            <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
+            <div className="mx-auto px-10 py-16 text-center">
               <p className="text-[15px] text-dimmed mb-3">AI 报告审核</p>
               <p className="text-[13px] text-disabled mb-6">
                 自动提取事实断言，检查引用完整性和逻辑一致性，标注高风险内容并给出可操作的修改建议
@@ -641,7 +665,7 @@ export function PreviewArea() {
         const twLabel = factCheckMeta?.trustworthiness_label
         const deductions = factCheckMeta?.deductions || []
         return (
-          <div className="max-w-[720px] mx-auto px-10 py-8">
+          <div className="mx-auto px-10 py-8">
             {/* 审核上下文 + 可信度 */}
             {factCheckMeta && (
               <div className="mb-5 p-4 bg-surface rounded-lg border border-border-light">
@@ -694,7 +718,7 @@ export function PreviewArea() {
         if (isViewProcessing(activeView)) return processingPlaceholder
         if (!currentContent) {
           return (
-            <div className="max-w-[720px] mx-auto px-10 py-16 text-center">
+            <div className="mx-auto px-10 py-16 text-center">
               <p className="text-[15px] text-dimmed mb-3">暂无可视化内容</p>
               <p className="text-[13px] text-disabled">点击左侧「生成」按钮为本文档生成 Markdown 笔记后，可在此查看思维导图</p>
             </div>
@@ -749,6 +773,14 @@ export function PreviewArea() {
             currentFactCheckContent={currentFactCheckContent}
           />
           <ExportMenu />
+          {/* 阅读宽度切换 */}
+          <button
+            onClick={cycleContentWidth}
+            className="w-7 h-7 flex items-center justify-center text-dimmed hover:bg-surface-hover rounded-lg transition-colors"
+            title={`阅读宽度：${WIDTH_RATIO[contentWidth].label}（Ctrl+W）`}
+          >
+            {contentWidth === 'narrow' ? <AlignCenter size={15} /> : contentWidth === 'wide' ? <Maximize2 size={15} /> : <Columns size={15} />}
+          </button>
           <button
             onClick={() => setShowLogs(!showLogs)}
             className={`px-3 py-1.5 text-[12px] rounded-full transition-colors ${showLogs ? 'bg-accent/10 text-accent' : 'text-dimmed hover:bg-surface-hover'}`}
@@ -781,7 +813,11 @@ export function PreviewArea() {
             </>
           )
         )}
-        <div className={`flex-1 flex flex-col ${activeView === 'mindmap' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+        <div
+          ref={containerRef}
+          className={`flex-1 flex flex-col ${activeView === 'mindmap' ? 'overflow-hidden' : 'overflow-y-scroll'} mx-auto w-full ${contentWidth === 'wide' ? 'px-1 md:px-2 lg:px-4 xl:px-6' : contentWidth === 'normal' ? 'px-3 md:px-6 lg:px-10 xl:px-16' : 'px-4 md:px-12 lg:px-20 xl:px-32'}`}
+          style={{ maxWidth: contentMaxW, fontSize: `${fontSizeScale[contentWidth]}em`, transition: 'max-width 350ms ease-out, padding 350ms ease-out, font-size 350ms ease-out' }}
+        >
           {renderContent()}
         </div>
       </div>

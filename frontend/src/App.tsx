@@ -87,6 +87,7 @@ export default function App() {
             }
             break
           case 'i': e.preventDefault(); useStore.getState().toggleAI(); break
+          case 'w': e.preventDefault(); useStore.getState().cycleContentWidth(); break
         }
       }
     }} tabIndex={-1}>

@@ -78,8 +78,8 @@ assert 'AI 总结' not in p, 'Polish 应禁止 summary 格式'
 print('PASS: polish blocks summary')
 
 p = build_polish_prompt('测试', formats=['link'])
-assert 'Content-[mm:ss]' not in p, 'Polish 应禁止 link 格式'
-print('PASS: polish blocks link')
+assert 'Content-[mm:ss]' in p, 'Polish 应允许 link 格式（截图+跳转对整理版同样适用）'
+print('PASS: polish allows link')
 
 # ── 文档 Polish 独有硬约束 ──
 p = build_polish_prompt('测试', source_type='pdf')

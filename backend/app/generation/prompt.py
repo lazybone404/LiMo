@@ -410,6 +410,8 @@ _ALL_FORMAT_FNS = {
 
 _POLISH_FORMAT_FNS = {
     "toc": get_toc_format,
+    "link": get_link_format,
+    "screenshot": get_screenshot_format,
     "formulas": get_formulas_format,
     "references": get_references_format,
     "images": get_images_format,

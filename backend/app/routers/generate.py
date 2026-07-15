@@ -182,6 +182,23 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
             prompt_builder = PromptBuilder(target_language=config.get("target_language", "zh-CN"))
             gen = Generator(llm, preparer, prompt_builder)
 
+            # ── 截图用视频下载（非流式端点也需要，对标流式端点 line 376-396）──
+            screenshot_video_path: str | None = None
+            if "screenshot" in req.formats and source_type == "video" and not req.video_understanding:
+                source_url = tx.get("sourceUrl", "")
+                if source_url:
+                    logger.info("原片截图：开始下载视频 %s", source_url[:80])
+                    cookies = ""
+                    auth = config.get("auth", {})
+                    url_lower = source_url.lower()
+                    if "bilibili" in url_lower:
+                        cookies = auth.get("bilibili", "")
+                    elif "youtube" in url_lower or "youtu.be" in url_lower:
+                        cookies = auth.get("youtube", "")
+                    loop = asyncio.get_event_loop()
+                    screenshot_video_path = await loop.run_in_executor(
+                        None, ContentPreparer._download_video, source_url, cookies)
+
             # ── 按产物列表分发 ──
             notes_mv: MarkdownView | None = None
             polished_mv: MarkdownView | None = None
@@ -193,6 +210,13 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     vl_config=vl_config, user_notes=req.user_notes,
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                 )
+                # 非流式端点截图后处理（generator 内部 video_path 可能为 None，此处补处理）
+                if screenshot_video_path:
+                    store_root = str(request.app.state.store.root)
+                    polished_mv.content = _post_process_screenshots(
+                        polished_mv.content, screenshot_video_path, store_root=store_root)
+                    notes_mv.content = _post_process_screenshots(
+                        notes_mv.content, screenshot_video_path, store_root=store_root)
                 polished_mv.transcript_id = transcript_id
                 notes_mv.transcript_id = transcript_id
                 store.save_markdown(polished_mv)
@@ -204,9 +228,13 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 polished_mv = await gen.generate(
                     raw_text=epub_text, title=tx.get("title", ""), style=req.style,
                     source_type=tx.get("sourceType", "text"), mode="polished",
-                    vl_config=vl_config, user_notes=req.user_notes,
+                    formats=req.formats, vl_config=vl_config, user_notes=req.user_notes,
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                 )
+                if screenshot_video_path:
+                    polished_mv.content = _post_process_screenshots(
+                        polished_mv.content, screenshot_video_path,
+                        store_root=str(request.app.state.store.root))
                 polished_mv.transcript_id = transcript_id
                 store.save_markdown(polished_mv)
                 _auto_title(store, transcript_id, polished_mv.content)
@@ -219,6 +247,10 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     user_notes=req.user_notes,
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                 )
+                if screenshot_video_path:
+                    notes_mv.content = _post_process_screenshots(
+                        notes_mv.content, screenshot_video_path,
+                        store_root=str(request.app.state.store.root))
                 notes_mv.transcript_id = transcript_id
                 store.save_markdown(notes_mv)
                 log.info("Generate done", tx_id=transcript_id, mode="notes", chars=len(notes_mv.content))

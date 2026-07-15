@@ -2,7 +2,9 @@
 
 一次完整的打包流程：PyInstaller → 复制 ffmpeg → Tauri。
 
-产物在 `frontend/src-tauri/target/release/bundle/`：NSIS ~374MB，MSI ~514MB。
+产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)：
+- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.1.0_x64-setup.exe`，~374MB）
+- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.1.0_x64_en-US.msi`，~514MB）
 
 ---
 

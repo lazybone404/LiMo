@@ -6,6 +6,59 @@
 
 ---
 
+## 2026-07-16 — 截图修复 + 版本显示修复 + 内容宽度自适应 + 预览栏 UI 优化
+
+### 原片截图修复（4 处）
+
+视频笔记「原片截图」开启后标记不替换为图片的根因分析 & 修复：
+
+| 问题 | 修复 |
+|------|------|
+| `_POLISH_FORMAT_FNS` 缺 `screenshot`/`link` → polished 产物不生成截图 | 加入格式白名单 |
+| `generator.py` `_post_process_screenshots` 不传 `store_root` → 截图写入 CWD 而非 data_dir | 传入 `self._prep.store_root` |
+| 非流式端点缺截图视频下载 → `video_path=None` 导致后处理跳过 | 补下载逻辑 + 后处理 |
+| 非流式端点 `want_polished` 漏传 `formats=req.formats` | 补传 |
+
+### 版本显示修复
+
+`loadVersion` 对 notes 模式传空字符串 `''`，后端不做 mode 过滤，版本列表混入 fact_check/polished 条目。改为传 `'notes'`。
+
+### 内容宽度自适应切换
+
+预览栏工具栏新增宽度切换按钮（`Ctrl+W`），三档基于面板实际宽度的百分比（ResizeObserver 实时追踪）：紧凑 80% / 标准 90% / 宽屏 97%，上限 1100px。切换时宽度+字体+padding 平滑过渡 350ms。
+
+### 预览栏 UI 优化
+
+- 外层 wrapper `overflow-y-scroll` 固定滚动条位置
+- 响应式水平间距：`px-4 md:px-12 lg:px-20 xl:px-32`（紧凑/标准），宽屏特小间距
+
+---
+
+## 2026-07-15（深夜·二）— 前端 emoji → lucide 图标全量替换
+
+### 改动
+
+UI 中所有 emoji 替换为 lucide-react 开源图标，保持语义一致、风格统一。
+
+| 位置 | 原 emoji | 替换图标 | 语义 |
+|------|---------|---------|------|
+| PreviewArea 错误/警告 | ⚠️ | `AlertTriangle` | 警告/注意 |
+| PreviewArea modeMeta fallback | 📄 | `FileText` | 文档 |
+| PreviewArea 静态审核标题 | 📋 | `ClipboardList` | 审核清单 |
+| PreviewArea 验证中标题 | 🔍 | `Search` | 搜索/查找 |
+| ExportPanel 类型分组标题 | 📄(fallback) | `TYPE_ICON` 映射 | 各类型对应图标 |
+| ExportPanel 预览行前缀检测 | 📹🌐📄📝🖼📊📚 | `TYPE_LABELS` 中文检测 | 死代码修复 |
+| GenPanel Toast 前缀 | ⚠️ | 移除 | Toast 组件已有图标 |
+
+### 影响范围
+
+- `PreviewArea.tsx` — 新增 FileText/ClipboardList/Search 导入
+- `ExportPanel.tsx` — 新增 TYPE_ICON 映射 + Film/PenLine/Image/BarChart3/BookOpen 导入
+- `GenPanel.tsx` — 移除 Toast ⚠️ 前缀
+- 纯 UI 层改动，不影响 API/后端/打包
+
+---
+
 ## 2026-07-15（深夜）— 安全漏洞修复 + 视频阻塞修复 + verify_mode
 
 ### 安全漏洞扫描与修复（6 项）

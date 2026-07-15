@@ -14,6 +14,8 @@ export interface ProgressEvent {
 
 export type { Capabilities } from '../api/client'
 
+export type ContentWidth = 'narrow' | 'normal' | 'wide'
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
@@ -131,6 +133,10 @@ interface Store {
   setActiveView: (v: string) => void
   setPanelWidth: (panel: string, w: number) => void
   setPanelCollapsed: (panel: string, v: boolean) => void
+
+  // 内容阅读宽度
+  contentWidth: ContentWidth
+  cycleContentWidth: () => void
 
   // 能力
   capabilities: Capabilities | null
@@ -271,6 +277,17 @@ export const useStore = create<Store>((set) => ({
   setPanelCollapsed: (panel, v) => set(s => ({
     panelsCollapsed: { ...s.panelsCollapsed, [panel]: v },
   })),
+
+  contentWidth: ((typeof localStorage !== 'undefined' && localStorage.getItem('mbw_contentWidth')) || 'normal') as ContentWidth,
+  cycleContentWidth: () => {
+    const order: ContentWidth[] = ['normal', 'wide', 'narrow']
+    set(s => {
+      const i = order.indexOf(s.contentWidth)
+      const next = order[(i + 1) % order.length]
+      try { localStorage.setItem('mbw_contentWidth', next) } catch { /* quota */ }
+      return { contentWidth: next }
+    })
+  },
 
   capabilities: null,
   setCapabilities: (c) => set({ capabilities: c }),

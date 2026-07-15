@@ -116,7 +116,7 @@ class Generator:
             )
             content = _post_process_content_markers(content)
             if formats and "screenshot" in formats:
-                content = _post_process_screenshots(content, video_path)
+                content = _post_process_screenshots(content, video_path, store_root=self._prep.store_root)
         finally:
             self._cleanup_video(video_path)
 
@@ -197,8 +197,8 @@ class Generator:
             content_a = _post_process_content_markers(content_a)
             content_b = _post_process_content_markers(content_b)
             if formats and "screenshot" in formats:
-                content_a = _post_process_screenshots(content_a, video_path)
-                content_b = _post_process_screenshots(content_b, video_path)
+                content_a = _post_process_screenshots(content_a, video_path, store_root=self._prep.store_root)
+                content_b = _post_process_screenshots(content_b, video_path, store_root=self._prep.store_root)
         finally:
             self._cleanup_video(video_path)
 
