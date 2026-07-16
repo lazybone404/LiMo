@@ -10,7 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 def save_config(cfg: dict) -> None:
-    """写回 YAML 文件（原子写入：先写临时文件再替换，防止中断损坏）"""
+    """写回 YAML 文件（原子写入：先写临时文件再替换，防止中断损坏）
+
+    防御性校验：拒绝写入明显损坏的配置（关键字段为 None/空）。
+    """
     import yaml
 
     from pathlib import Path
@@ -18,6 +21,27 @@ def save_config(cfg: dict) -> None:
         "MYBIGWORK_CONFIG",
         str(Path.home() / ".mybigwork" / "config.yaml"),
     )
+
+    # ── 防御性校验：关键字段不得被意外清空 ──
+    llm = cfg.get("llm")
+    if llm is None:
+        logger.error("save_config 拒绝写入：cfg.llm 为 None，可能存在内存污染。跳过保存。")
+        return
+    if not isinstance(llm, dict):
+        logger.error("save_config 拒绝写入：cfg.llm 类型异常 (%s)，跳过保存。", type(llm).__name__)
+        return
+
+    # llm_presets / engine_providers 是 list，不得为 None
+    for list_key in ("llm_presets", "llm_models", "engine_providers", "engine_models"):
+        if cfg.get(list_key) is None:
+            logger.warning("save_config：cfg.%s 为 None，已自动修复为 []", list_key)
+            cfg[list_key] = []
+
+    # engine_bindings 是 dict，不得为 None
+    if cfg.get("engine_bindings") is None:
+        logger.warning("save_config：cfg.engine_bindings 为 None，已自动修复为 {}")
+        cfg["engine_bindings"] = {}
+
     # 确保目录存在
     Path(config_path).parent.mkdir(parents=True, exist_ok=True)
     tmp_path = config_path + ".tmp"

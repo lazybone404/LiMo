@@ -27,6 +27,7 @@ dist/
 # ── 本地工具配置 ──
 .claude/
 .codegraph/
+.ua/
 
 # ── 测试数据 / 临时文件 ──
 backend/data/

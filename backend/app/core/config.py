@@ -137,6 +137,14 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
             user_config = yaml.safe_load(f) or {}
         _deep_merge(config, user_config)
 
+        # 启动时自动备份 — 防止后续写入损坏后可恢复
+        backup_path = path.with_suffix(".yaml.bak")
+        try:
+            import shutil
+            shutil.copy2(path, backup_path)
+        except Exception:
+            pass  # 备份失败不影响启动
+
     # 向后兼容：engine_bindings 旧格式 int → [int], None → []
     bindings = config.get("engine_bindings", {})
     for cat in ("asr", "ocr", "doc"):
