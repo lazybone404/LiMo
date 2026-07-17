@@ -20,6 +20,10 @@
 
 video/audio 保持原有转录整理 prompt，doc 保持文档整理 prompt。
 
+### Notes 提示词同步独立化
+
+`build_notes_prompt` 原先也是 binary dispatch（`is_doc ? doc : video`），webpage/text/image 共用视频 NOTES prompt（含"填充词"等视频专属指令）。新增 3 个独立 NOTES prompt（`_WEB_NOTES`/`_TEXT_NOTES`/`_IMAGE_NOTES`），分发逻辑对齐 Polish。
+
 ### 公式显示修复
 
 `AVAILABLE_OPTIONS` 中 video/audio/webpage/text/docx/pptx/epub 缺少 `formulas` 选项 → LLM 未收到 `$...$`/`$$...$$` 指令 → 自行用 `[ ... ]` 包裹 → KaTeX 不识别。全部 7 种类型补上。
