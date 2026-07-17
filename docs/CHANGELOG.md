@@ -22,36 +22,42 @@ video/audio 保持原有转录整理 prompt，doc 保持文档整理 prompt。
 
 ### Notes 提示词同步独立化
 
-`build_notes_prompt` 原先也是 binary dispatch（`is_doc ? doc : video`），webpage/text/image 共用视频 NOTES prompt（含"填充词"等视频专属指令）。新增 3 个独立 NOTES prompt（`_WEB_NOTES`/`_TEXT_NOTES`/`_IMAGE_NOTES`），分发逻辑对齐 Polish。
+`build_notes_prompt` 原先也是 binary dispatch，webpage/text/image 共用视频 NOTES prompt（含"填充词"等视频专属指令）。新增 3 个独立 NOTES prompt，分发逻辑对齐 Polish。
 
-### 公式显示修复
+### 版本显示修复
 
-`AVAILABLE_OPTIONS` 中 video/audio/webpage/text/docx/pptx/epub 缺少 `formulas` 选项 → LLM 未收到 `$...$`/`$$...$$` 指令 → 自行用 `[ ... ]` 包裹 → KaTeX 不识别。全部 7 种类型补上。
+两种竞态导致版本列表错乱：
+- 流式 onDone / 取消续写：notes 版本用 `setMarkdownVersions` 直接替换，若返回晚于 polished 则抹掉后者
+- 重新转录：只取 notes.versions，polished 版本完全丢弃
 
-### 视频封面即时显示
-
-摄入 SSE 完成事件不返回 `coverUrl`/`sourceUrl`，前端 `addDoc` 也不传 → 封面需刷新才显示。修复：后端响应补两字段，前端 8 处 `addDoc` 全补传。
-
-### 其他
-
-- `.gitignore` 添加 `.ua/`
-- 配置防丢失：`save_config` 防御性校验 + 启动自动备份 `config.yaml.bak`
+修复：按 mode 过滤合并而非替换。同时版本切换器按当前 tab 过滤——polished tab 只显示 polished 版本，notes tab 只显示 notes 版本，互不污染。
 
 ---
 
-## 2026-07-16 — 配置防丢失 + 截图修复 + 版本显示修复 + 内容宽度自适应 + UI 优化
+## 2026-07-16（早前）— 配置防丢失 + 截图修复 + 内容宽度自适应 + UI 优化
 
-### 视频产物公式不显示
+从 MyBigWork 移植。
 
-`AVAILABLE_OPTIONS` 中 video/audio/webpage/text/docx/pptx/epub 缺少 `formulas` 选项，LLM 未收到 `$...$`/`$$...$$` 格式指令，自行用 `[ ... ]` 包裹 → KaTeX 不识别。全部 7 种类型补上。
+### 配置防丢失（防御性加固）
 
-### 视频封面即时显示
+- `save_config` 拒绝写入 `llm=None` 的损坏配置
+- `save_config` 自动修复 None 列表字段为 `[]`
+- `load_config` 启动时创建 `config.yaml.bak` 备份
 
-视频导入完成后封面需刷新才显示。根因：摄入 SSE 完成事件不返回 `coverUrl`/`sourceUrl`，前端 `addDoc` 也不传。修复：后端响应补两字段，前端 8 处 `addDoc` 全补传。
+### 原片截图修复
 
-### 其他
+- `_POLISH_FORMAT_FNS` 缺 `screenshot`/`link` → polished 产物不生成截图
+- `_post_process_screenshots` 不传 `store_root` → 截图写入错误路径
+- 非流式端点缺截图视频下载 + `want_polished` 漏传 `formats`
 
-- `.gitignore` 添加 `.ua/`（外部分析工具产物）
+### 内容宽度自适应
+
+`ResizeObserver` + 百分比三档（80%/90%/97%），上限 1100px。`Ctrl+W` 循环切换，字体联动缩放。
+
+### UI 优化
+
+- 前端 emoji → lucide 图标全量替换
+- 预览栏响应式间距 + 固定滚动条
 
 ---
 

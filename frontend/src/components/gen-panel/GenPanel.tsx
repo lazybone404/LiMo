@@ -293,11 +293,11 @@ export function GenPanel() {
         if (notes) {
           setCurrentContent(notes.content)
           setMarkdownMeta({ id: notes.id, style: notes.style, mode: notes.mode, version: notes.version })
-          setMarkdownVersions(notes.versions || [])
+          setMarkdownVersions([...(notes.versions || []), ...(polished?.versions || [])])
         } else {
           setCurrentContent(null)
           setMarkdownMeta(null)
-          setMarkdownVersions([])
+          setMarkdownVersions(polished?.versions || [])
         }
         if (polished && polished.content) {
           setCurrentPolishedContent(polished.content)
@@ -536,18 +536,24 @@ export function GenPanel() {
           }
           setStreamingContent(null)
         }
-        // 刷新版本列表
+        // 刷新版本列表 — 两个 mode 合并而非替换，避免竞态互相覆盖
         getMarkdown(capturedId, 'notes').then(md => {
           if (isSameDoc(capturedId)) {
             setMarkdownMeta(md ? { id: md.id, style: md.style, mode: md.mode, version: md.version } : null)
-            setMarkdownVersions(md?.versions || [])
+            if (md) {
+              const prev = useStore.getState().markdownVersions
+              const others = prev.filter(v => v.mode !== 'notes')
+              setMarkdownVersions([...(md.versions || []), ...others])
+            } else {
+              setMarkdownVersions([])
+            }
           }
         })
         getMarkdown(capturedId, 'polished').then(md => {
           if (isSameDoc(capturedId) && md) {
             const prev = useStore.getState().markdownVersions
-            const existing = prev.filter(v => v.id !== md.id)
-            setMarkdownVersions([...existing, ...(md.versions || [])])
+            const others = prev.filter(v => v.mode !== 'polished')
+            setMarkdownVersions([...(md.versions || []), ...others])
           }
         })
         addToast(continueFrom ? '续写完成' : '生成完成')
@@ -578,13 +584,17 @@ export function GenPanel() {
         if (savedPartial) {
           addToast('生成已取消，残缺内容已保留，可稍后继续生成', 'success')
           getMarkdown(capturedId, 'notes').then(md => {
-            if (isSameDoc(capturedId)) setMarkdownVersions(md?.versions || [])
+            if (isSameDoc(capturedId) && md) {
+              const prevN = useStore.getState().markdownVersions
+              const othersN = prevN.filter(v => v.mode !== 'notes')
+              setMarkdownVersions([...(md.versions || []), ...othersN])
+            }
           })
           getMarkdown(capturedId, 'polished').then(md => {
             if (isSameDoc(capturedId) && md) {
-              const prev2 = useStore.getState().markdownVersions
-              const existing2 = prev2.filter(v => v.id !== md.id)
-              setMarkdownVersions([...existing2, ...(md.versions || [])])
+              const prevP = useStore.getState().markdownVersions
+              const othersP = prevP.filter(v => v.mode !== 'polished')
+              setMarkdownVersions([...(md.versions || []), ...othersP])
             }
           })
         }

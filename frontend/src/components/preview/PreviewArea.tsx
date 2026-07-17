@@ -745,24 +745,31 @@ export function PreviewArea() {
               >{t.label}</button>
             ))}
           </div>
-          {/* 版本切换器 */}
-          {(activeView === 'polished' || activeView === 'summary') && Array.isArray(markdownVersions) && markdownVersions.length > 1 && (
+          {/* 版本切换器 — 仅显示当前 tab 对应 mode 的版本 */}
+          {(() => {
+            const currentMode = activeView === 'polished' ? 'polished' : 'notes'
+            const modeVersions = (markdownVersions || []).filter(v => v.mode === currentMode)
+            if (!(activeView === 'polished' || activeView === 'summary') || modeVersions.length <= 1) return null
+            // 高亮：优先匹配 markdownMeta（同 mode），否则匹配最新版本
+            const activeVersion = markdownMeta?.mode === currentMode ? markdownMeta.version : modeVersions[0]?.version
+            return (
             <div className="flex items-center gap-1">
               <span className="text-[10px] text-disabled">版本</span>
               {versionLoading && <Loader2 size={10} className="animate-spin text-accent" />}
-              {markdownVersions.map(v => (
+              {modeVersions.map(v => (
                 <button key={v.id}
-                  onClick={() => loadVersion(v.version, activeView === 'polished' ? 'polished' : 'notes')}
+                  onClick={() => loadVersion(v.version, currentMode)}
                   disabled={versionLoading}
                   className={`px-2 py-0.5 rounded text-[11px] font-mono transition-all disabled:opacity-40 ${
-                    markdownMeta?.version === v.version
+                    activeVersion === v.version
                       ? 'bg-accent text-white'
                       : 'text-muted hover:bg-surface-hover'
                   }`}
                 >v{v.version}</button>
               ))}
             </div>
-          )}
+            )
+          })()}
         </div>
         <div className="flex items-center gap-1.5">
           <CopyContentBtn
