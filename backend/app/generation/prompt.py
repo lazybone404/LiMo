@@ -383,15 +383,15 @@ def get_images_format() -> str:
 # ── 可用选项（供 capabilities 端点 + 前端渲染）──
 
 AVAILABLE_OPTIONS = {
-    "video": ["toc", "link", "screenshot", "summary"],
-    "audio": ["toc", "summary"],
-    "webpage": ["toc", "summary"],
+    "video": ["toc", "link", "screenshot", "summary", "formulas"],
+    "audio": ["toc", "summary", "formulas"],
+    "webpage": ["toc", "summary", "formulas"],
     "pdf": ["toc", "formulas", "references", "summary", "images"],
-    "docx": ["toc", "summary", "images"],
-    "pptx": ["toc", "summary", "images"],
+    "docx": ["toc", "summary", "images", "formulas"],
+    "pptx": ["toc", "summary", "images", "formulas"],
     "xlsx": [],
-    "text": ["toc", "summary"],
-    "epub": ["toc", "summary", "images"],
+    "text": ["toc", "summary", "formulas"],
+    "epub": ["toc", "summary", "images", "formulas"],
 }
 
 # ── 格式函数映射 ──

@@ -331,11 +331,11 @@ export function GenPanel() {
         const existing = useStore.getState().docs.find(d => d.id === doc.id)
         if (isDup) {
           if (existing) { selectDoc(doc.id) }
-          else { addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || inputType, sourceFileName: doc.sourceFileName || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() }); selectDoc(doc.id) }
+          else { addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || inputType, sourceFileName: doc.sourceFileName || '', sourceUrl: doc.sourceUrl || '', coverUrl: doc.coverUrl || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() }); selectDoc(doc.id) }
           setImportProgress(`已导入过，帮你选中了 · ${doc.title}`)
           setTimeout(() => setImportProgress(''), 3000)
         } else if (!existing) {
-          addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || inputType, sourceFileName: doc.sourceFileName || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() })
+          addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || inputType, sourceFileName: doc.sourceFileName || '', sourceUrl: doc.sourceUrl || '', coverUrl: doc.coverUrl || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() })
           selectDoc(doc.id)
           if (inputType !== 'image') setActiveView('transcript')
           addToast('导入完成')
@@ -383,11 +383,11 @@ export function GenPanel() {
       const existing = useStore.getState().docs.find(d => d.id === doc.id)
       if (isDup) {
         if (existing) { selectDoc(doc.id) }
-        else { addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || 'webpage', sourceFileName: doc.sourceFileName || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() }); selectDoc(doc.id) }
+        else { addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || 'webpage', sourceFileName: doc.sourceFileName || '', sourceUrl: doc.sourceUrl || '', coverUrl: doc.coverUrl || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() }); selectDoc(doc.id) }
         setImportProgress(`已导入过，帮你选中了 · ${doc.title}`)
         setTimeout(() => setImportProgress(''), 3000)
       } else if (!existing) {
-        addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || 'webpage', sourceFileName: doc.sourceFileName || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() })
+        addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || 'webpage', sourceFileName: doc.sourceFileName || '', sourceUrl: doc.sourceUrl || '', coverUrl: doc.coverUrl || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() })
         selectDoc(doc.id)
         setActiveView('transcript')
         addToast('导入完成')

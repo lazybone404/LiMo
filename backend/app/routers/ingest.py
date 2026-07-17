@@ -279,6 +279,8 @@ async def _persist_ingest_result(
         "id": tx.id, "title": tx.title,
         "sourceType": tx.source_type.value if hasattr(tx.source_type, 'value') else tx.source_type,
         "sourceFileName": tx.source_file_name,
+        "sourceUrl": tx.source_url,
+        "coverUrl": tx.metadata.cover_url if tx.metadata else "",
         "engine": tx.engine, "count": store.count,
     }
 
