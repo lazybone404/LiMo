@@ -6,7 +6,36 @@
 
 ---
 
-## 2026-07-16 — 公式显示修复 + 封面即时显示 + 配置防御
+## 2026-07-16 — Polish 提示词分类型重写 + 公式修复 + 封面即时显示
+
+### Polish 提示词按文件类型独立化
+
+`build_polish_prompt` 原先只区分「文档 / 非文档」，webpage/text/image 被错误分到视频转录 prompt。新增 3 个独立 Polish prompt：
+
+| 类型 | 新 prompt | 核心指令 |
+|------|-----------|---------|
+| webpage | `_WEB_POLISH` | 清导航/侧边栏残留、规范化标题层级、保留图片/表格/引用 |
+| text | `_TEXT_POLISH` | 保留原文风格、适度格式化、修正错别字 |
+| image | `_IMAGE_POLISH` | 修正 OCR 同音字/形近字、重组段落、重建表格、公式转 LaTeX |
+
+video/audio 保持原有转录整理 prompt，doc 保持文档整理 prompt。
+
+### 公式显示修复
+
+`AVAILABLE_OPTIONS` 中 video/audio/webpage/text/docx/pptx/epub 缺少 `formulas` 选项 → LLM 未收到 `$...$`/`$$...$$` 指令 → 自行用 `[ ... ]` 包裹 → KaTeX 不识别。全部 7 种类型补上。
+
+### 视频封面即时显示
+
+摄入 SSE 完成事件不返回 `coverUrl`/`sourceUrl`，前端 `addDoc` 也不传 → 封面需刷新才显示。修复：后端响应补两字段，前端 8 处 `addDoc` 全补传。
+
+### 其他
+
+- `.gitignore` 添加 `.ua/`
+- 配置防丢失：`save_config` 防御性校验 + 启动自动备份 `config.yaml.bak`
+
+---
+
+## 2026-07-16 — 配置防丢失 + 截图修复 + 版本显示修复 + 内容宽度自适应 + UI 优化
 
 ### 视频产物公式不显示
 
