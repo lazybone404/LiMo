@@ -452,7 +452,7 @@ export function GenPanel() {
     const formatStr = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
       formatSummary && 'summary',
       formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
-    ].filter(Boolean).join(',')
+    ].filter(Boolean).filter(f => typeMeta.availableFormats.includes(f as string)).join(',')
 
     // mode = 勾选的产物列表，逗号分隔传给后端
     const streamMode = selectedCore.join(',')

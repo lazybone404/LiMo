@@ -440,7 +440,7 @@ export async function generateMarkdown(
   return r.json()
 }
 
-export async function getMarkdown(transcriptId: string, mode?: string, version?: number): Promise<(MarkdownView & { versions?: { version: number; id: string; createdAt: string; status?: string }[] }) | null> {
+export async function getMarkdown(transcriptId: string, mode?: string, version?: number): Promise<(MarkdownView & { versions?: { version: number; id: string; createdAt: string; status?: string; mode?: string }[] }) | null> {
   const params = new URLSearchParams()
   if (mode) params.set('mode', mode)
   if (version) params.set('version', String(version))

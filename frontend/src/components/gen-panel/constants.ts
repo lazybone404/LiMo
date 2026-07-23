@@ -51,6 +51,7 @@ export interface TypeMeta {
   hasVL: boolean          // 是否支持 VL 视觉理解
   hasImages: boolean      // 是否支持保留文档图片（PDF/Word/PPT）
   hasFactCheck: boolean    // 是否支持事实验证（仅 PreviewArea tab 显示用）
+  availableFormats: string[]  // 当前类型可用的格式选项（来自后端 AVAILABLE_OPTIONS）
   coreProducts: { name: string; label: string; description: string }[]  // 生成面板的产物复选框
   generateLabel: string   // 生成按钮文案
   /** PreviewArea tabs */
@@ -58,7 +59,7 @@ export interface TypeMeta {
 }
 
 /** 根据 sourceType 推导全部类型元数据，一处定义处处复用 */
-export function getTypeMeta(sourceType: string, _genOptions: Record<string, string[]> = {}): TypeMeta {
+export function getTypeMeta(sourceType: string, genOptions: Record<string, string[]> = {}): TypeMeta {
   const st = sourceType || 'webpage'
   const isVideo = st === 'video'
   const isImage = st === 'image'
@@ -125,6 +126,7 @@ export function getTypeMeta(sourceType: string, _genOptions: Record<string, stri
       { name: 'polished', label: '整理版原文', description: '去噪音、修正错别字、合并段落' },
     ],
     generateLabel: isExcel ? '生成数据摘要' : '生成',
+    availableFormats: genOptions[st] || [],
     tabs,
   }
 }

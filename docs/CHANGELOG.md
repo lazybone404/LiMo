@@ -6,7 +6,11 @@
 
 ---
 
-## 2026-07-16 — Polish 提示词分类型重写 + 公式修复 + 封面即时显示
+## 2026-07-16 — Polish/Notes 提示词分类型重写 + 前端格式泄露修复 + 版本显示修复
+
+### 前端格式指令跨类型泄露修复
+
+`GenPanel.formatStr` 未按 sourceType 过滤 → 用户在 PDF 勾选"公式集"后切到视频，`formatFormulas=true` 仍发送 → 后端给视频 prompt 加入 `get_formulas_format()` 指令。修复：`TypeMeta` 新增 `availableFormats`（来自 API 的 `genOptions`），`formatStr` 按当前类型可用的格式过滤。
 
 ### Polish 提示词按文件类型独立化
 

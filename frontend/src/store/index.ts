@@ -39,7 +39,7 @@ interface Store {
   currentPolishedContent: string | null
   currentRawText: string | null
   markdownMeta: { id: string; style: string; mode: string; version: number; status?: string } | null
-  markdownVersions: { version: number; id: string; createdAt: string; status?: string }[]
+  markdownVersions: { version: number; id: string; createdAt: string; status?: string; mode?: string }[]
   setCurrentContent: (content: string | null) => void
   setCurrentPolishedContent: (content: string | null) => void
   setCurrentRawText: (text: string | null) => void
