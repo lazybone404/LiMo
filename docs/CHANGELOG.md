@@ -6,11 +6,26 @@
 
 ---
 
-## 2026-07-16 — Polish/Notes 提示词分类型重写 + 前端格式泄露修复 + 版本显示修复
+## 2026-07-16 — AI 对话架构重构（参照 Pi）+ 提示词分类型重写 + 公式修复
+
+### AI 对话架构重构
+
+参照 Pi 的分层架构重构 `chat.py`（286 行全耦合 → 5 个独立模块）：
+
+| 模块 | 职责 |
+|------|------|
+| `agent/prompts/` | 分层 System Prompt：`base.md`（角色）+ `rules.md`（硬约束）+ 动态文档注入 |
+| `agent/tool_registry.py` | 工具注册中心：`ToolDef` 标准化，`ToolRegistry.apply_to()` 替代硬编码注册 |
+| `agent/session.py` | 对话会话管理：`SessionManager` 封装 CRUD + 历史提取 |
+| `routers/chat.py` | HTTP 调度（~220 行），只做组装 |
+
+AgentRunner 核心循环不动，前端 API 零改动。加新工具只需创建 ToolDef 并 register。
 
 ### 前端格式指令跨类型泄露修复
 
-`GenPanel.formatStr` 未按 sourceType 过滤 → 用户在 PDF 勾选"公式集"后切到视频，`formatFormulas=true` 仍发送 → 后端给视频 prompt 加入 `get_formulas_format()` 指令。修复：`TypeMeta` 新增 `availableFormats`（来自 API 的 `genOptions`），`formatStr` 按当前类型可用的格式过滤。
+`GenPanel.formatStr` 未按 sourceType 过滤 → 用户在 PDF 勾选"公式集"后切到视频，`formatFormulas=true` 仍发送 → 后端给视频 prompt 加入 `get_formulas_format()` 指令。修复：`TypeMeta` 新增 `availableFormats`（来自 API 的 `genOptions`），`formatStr` 按当前类型可用格式过滤。
+
+同时修正视频产物公式策略：`formulas` 格式从 video AVAILABLE_OPTIONS 移除（不再强制"公式汇总"章节），改为在 `_POLISH_TASK` 中加轻量提示（"如有公式用 LaTeX，没有则忽略"）。网页 Polish task 同步补上。
 
 ### Polish 提示词按文件类型独立化
 

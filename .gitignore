@@ -29,6 +29,9 @@ dist/
 .codegraph/
 .ua/
 
+# ── 外部分析产物 ──
+pi-docs/
+
 # ── 测试数据 / 临时文件 ──
 backend/data/
 backend/test_images/

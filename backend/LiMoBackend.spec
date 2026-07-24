@@ -4,6 +4,7 @@ from PyInstaller.utils.hooks import collect_all
 datas = [
     ('bin', 'bin'),
     ('static', 'static'),  # KaTeX + markmap/d3 离线资源
+    ('app/agent/prompts', 'app/agent/prompts'),  # 分层 system prompt
 ]
 # tiktoken_ext / dateparser_data — namespace package，collect_all 不会自动收集
 # PyInstaller 对 namespace package 的处理不可靠，显式添加每个文件
