@@ -17,10 +17,11 @@ def save_config(cfg: dict) -> None:
     import yaml
 
     from pathlib import Path
-    config_path = os.environ.get(
-        "LIMO_CONFIG",
-        os.environ.get("MYBIGWORK_CONFIG", ""),
-    ) or str(Path.home() / ".limo" / "config.yaml")
+    config_path = (
+        os.environ.get("LIMO_CONFIG") or
+        os.environ.get("MYBIGWORK_CONFIG") or
+        str(Path(cfg.get("data_dir", str(Path.home() / ".limo"))) / "config.yaml")
+    )
 
     # ── 防御性校验：关键字段不得被意外清空 ──
     llm = cfg.get("llm")

@@ -121,6 +121,46 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+def _resolve_data_dir() -> str:
+    """确定数据目录，优先 ~/.limo，不可写则降级到 %LOCALAPPDATA%/LiMo"""
+    import os as _os
+
+    primary = Path.home() / ".limo"
+    # 尝试创建 primary，成功则使用
+    try:
+        primary.mkdir(parents=True, exist_ok=True)
+        # 写入探针验证权限
+        (primary / ".write_test").touch()
+        (primary / ".write_test").unlink()
+        return str(primary)
+    except OSError:
+        pass
+
+    # 降级 1: %LOCALAPPDATA%/LiMo（Windows 上始终可写）
+    localappdata = _os.environ.get("LOCALAPPDATA", "")
+    if localappdata:
+        fallback = Path(localappdata) / "LiMo"
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+            return str(fallback)
+        except OSError:
+            pass
+
+    # 降级 2: %APPDATA%/LiMo
+    appdata = _os.environ.get("APPDATA", "")
+    if appdata:
+        fallback = Path(appdata) / "LiMo"
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+            return str(fallback)
+        except OSError:
+            pass
+
+    # 最终降级：临时目录
+    import tempfile
+    return str(Path(tempfile.gettempdir()) / "LiMo")
+
+
 def _migrate_legacy_dir(old: Path, new: Path) -> None:
     """从旧数据目录迁移到新目录"""
     if old.exists() and not new.exists():
@@ -134,20 +174,20 @@ def _migrate_legacy_dir(old: Path, new: Path) -> None:
 
 def load_config(config_path: str | None = None) -> dict[str, Any]:
     """加载配置，优先从文件，缺省用默认值"""
-    if config_path is None:
-        # 环境变量 LIMO_CONFIG 可覆盖；向后兼容 MYBIGWORK_CONFIG
-        config_path = os.environ.get(
-            "LIMO_CONFIG",
-            os.environ.get("MYBIGWORK_CONFIG", ""),
-        ) or str(Path.home() / ".limo" / "config.yaml")
-
     # 旧目录迁移: ~/.mybigwork → ~/.limo
     _migrate_legacy_dir(Path.home() / ".mybigwork", Path.home() / ".limo")
 
-    # 旧环境变量迁移: MYBIGWORK_CONFIG → LIMO_CONFIG（已在上面兼容读取）
-    # 旧 data_dir 迁移: 如果用户之前的 config 中写的是 .mybigwork，自动改为 .limo
-    if (Path.home() / ".limo").exists():
-        DEFAULT_CONFIG["data_dir"] = str(Path.home() / ".limo")
+    # 智能选择数据目录（~/.limo 不可写时降级到 %LOCALAPPDATA%/LiMo）
+    resolved_dir = _resolve_data_dir()
+    DEFAULT_CONFIG["data_dir"] = resolved_dir
+
+    # config.yaml 路径：环境变量优先，否则放在数据目录
+    if config_path is None:
+        config_path = (
+            os.environ.get("LIMO_CONFIG") or
+            os.environ.get("MYBIGWORK_CONFIG") or
+            str(Path(resolved_dir) / "config.yaml")
+        )
 
     config = copy.deepcopy(DEFAULT_CONFIG)
 
