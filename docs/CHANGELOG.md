@@ -84,6 +84,20 @@ video/audio 保持原有转录整理 prompt，doc 保持文档整理 prompt。
 
 ---
 
+## 2026-07-25 — 路由错误体系统一迁移
+
+将 config/model/files 路由中 15 处旧格式 `return {"error":"..."}` 全部迁移为 `raise AppError("CODE", "...")`，完成错误体系的统一。
+
+| 路由 | 旧格式数 | 新旧 |
+|------|---------|------|
+| config.py | 7 | `DETECT_NO_API_KEY` / `DETECT_NO_BASE_URL` / `DETECT_BAD_SCHEME` / `DETECT_BAD_URL` / `DETECT_REQUEST_FAILED` / `DETECT_FAILED` |
+| files.py | 3 | `COVER_BAD_ID` / `COVER_NOT_FOUND` |
+| model.py | 5 | `PROVIDER_NOT_FOUND` / `PROVIDER_BUILTIN` / `MODEL_NOT_FOUND` |
+
+影响：前端 `apiFetch` 的统一错误拦截现在可以正确捕获这些端点的错误。
+
+---
+
 ## 2026-07-25 — AI 审核报告来源链接后处理注入
 
 ### 问题

@@ -181,9 +181,9 @@ def delete_provider(provider_id: str, request: Request):
         providers = cfg.get("providers", [])
         target = next((p for p in providers if p["id"] == provider_id), None)
         if not target:
-            return {"error": "厂商不存在", "status": "not_found"}
+            raise AppError("PROVIDER_NOT_FOUND", "厂商不存在")
         if target.get("type") == "built-in":
-            return {"error": "不能删除内置厂商", "status": "forbidden"}
+            raise AppError("PROVIDER_BUILTIN", "不能删除内置厂商")
         cfg["providers"] = [p for p in providers if p["id"] != provider_id]
         _save_cfg(cfg)
     return {"status": "deleted"}
@@ -245,7 +245,7 @@ def refresh_models(provider_id: str, request: Request):
         eng_provs = {p["id"]: p for p in cfg.get("engine_providers", [])}
         prov = eng_provs.get(provider_id)
     if not prov:
-        return {"error": "Provider not found"}
+        raise AppError("PROVIDER_NOT_FOUND", "Provider not found")
 
     # Engine provider → 从 builtin_models 返回已知模型列表
     if not is_llm:
@@ -369,7 +369,7 @@ def update_model(model_id: int, data: UpdateModelData, request: Request):
                     m["capabilities"] = data.capabilities
                 _save_cfg(cfg)
                 return {"status": "ok", "id": model_id, "capabilities": m.get("capabilities", ["text"])}
-    return {"error": "模型不存在"}
+    raise AppError("MODEL_NOT_FOUND", "模型不存在")
 
 
 @router.delete("/models/{model_id}")
@@ -488,7 +488,7 @@ def delete_engine_provider(provider_id: str, request: Request):
         # 只允许删自定义的
         builtins = {"bcut", "dashscope", "faster-whisper", "pymupdf"}
         if provider_id in builtins:
-            return {"error": "不能删除内置引擎厂商"}
+            raise AppError("PROVIDER_BUILTIN", "不能删除内置引擎厂商")
         cfg["engine_providers"] = [p for p in cfg.get("engine_providers", []) if p["id"] != provider_id]
         cfg["engine_models"] = [m for m in cfg.get("engine_models", []) if m["provider_id"] != provider_id]
         _save_cfg(cfg)

@@ -8,6 +8,8 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, model_validator
 from typing import Optional, Any
 
+from app.core.errors import AppError
+
 from app.core.cookie_parser import auto_parse
 from app.core.config_io import save_config as _save_config, mask_sensitive, merge_sensitive
 
@@ -182,7 +184,7 @@ async def detect_models(data: dict, request: Request):
     base_url = data.get("base_url", "")
 
     if not api_key:
-        return {"error": "请先填写 API Key"}
+        raise AppError("DETECT_NO_API_KEY", "请先填写 API Key")
 
     # 构建 base_url
     if not base_url:
@@ -195,17 +197,17 @@ async def detect_models(data: dict, request: Request):
         base_url = defaults.get(provider, "")
 
     if not base_url:
-        return {"error": "无法确定 API 地址"}
+        raise AppError("DETECT_NO_BASE_URL", "无法确定 API 地址")
 
     # URL 安全校验：只允许 http/https，必须有有效 hostname
     from urllib.parse import urlparse
     parsed = urlparse(base_url)
     if parsed.scheme not in ("http", "https"):
-        return {"error": "API 地址必须以 http:// 或 https:// 开头"}
+        raise AppError("DETECT_BAD_SCHEME", "API 地址必须以 http:// 或 https:// 开头")
     if not parsed.hostname:
-        return {"error": "API 地址格式无效（缺少主机名）"}
+        raise AppError("DETECT_BAD_URL", "API 地址格式无效（缺少主机名）")
     if "@" in parsed.hostname:
-        return {"error": "API 地址格式无效"}
+        raise AppError("DETECT_BAD_URL", "API 地址格式无效")
 
     # 确保 URL 以 /v1 结尾
     url = base_url.rstrip("/")
@@ -217,7 +219,7 @@ async def detect_models(data: dict, request: Request):
         import requests as req
         resp = req.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=15)
         if resp.status_code != 200:
-            return {"error": f"请求失败 ({resp.status_code}): {resp.text[:200]}"}
+            raise AppError("DETECT_REQUEST_FAILED", f"请求失败 ({resp.status_code}): {resp.text[:200]}")
 
         data = resp.json()
         items = data.get("data", [])
@@ -243,4 +245,4 @@ async def detect_models(data: dict, request: Request):
         logger.info(f"Detected {len(unique)} models from {provider}")
         return {"models": unique[:50]}  # 最多50个
     except Exception as e:
-        return {"error": f"检测失败: {str(e)[:200]}"}
+        raise AppError("DETECT_FAILED", f"检测失败: {str(e)[:200]}")

@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from app.core.dependencies import get_store
+from app.core.errors import AppError
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +57,11 @@ def get_cover_image(transcript_id: str, store=Depends(get_store)):
     {data_dir}/files/{tx_id}/cover.{jpg,png,webp}。
     """
     if not _check_tx_id(transcript_id):
-        return {"error": "无效的文档 ID"}
+        raise AppError("COVER_BAD_ID", "无效的文档 ID")
 
     tx = store.get_transcript(transcript_id)
     if not tx:
-        return {"error": "文档不存在"}
+        raise AppError("COVER_NOT_FOUND", "文档不存在")
 
     for ext in (".jpg", ".png", ".webp"):
         path = _safe_local_path(store.root, transcript_id, f"cover{ext}")
@@ -84,4 +85,4 @@ def get_cover_image(transcript_id: str, store=Depends(get_store)):
             return RedirectResponse(url=cover_url)
         logger.warning("封面重定向域名不在白名单: %s", domain)
 
-    return {"error": "没有封面"}
+    raise AppError("COVER_NOT_FOUND", "没有封面")
