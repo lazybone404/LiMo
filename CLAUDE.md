@@ -278,7 +278,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **markmap 离线化**：`markmap.ts` 不调用 `markmap-common` 的 `loadCSS`/`loadJS`（动态 CDN 加载会被 Edge WebView2 跟踪防护拦截），KaTeX CSS 在 PreviewArea 中静态 import，hljs 由 react-syntax-highlighter 内联
 - **设置持久化**：`ProviderSettings.tsx` 中引擎/LLM Key 的保存不能仅靠 `onBlur`（组件卸载时不触发），需加 `useEffect` cleanup 用 ref 兜底保存
 - **上下文窗口可配置**：`addModel()` API 支持 `context_window` 参数，ProviderSettings 中展示（如 "1M ctx"），前端按模型粒度配置
-- **路由异常标准化**：ingest / fact_check / chat / process / generate / conversations 路由全部使用 AppError 体系。config / model / files 路由仍有 15 处 `return {"error":"..."}` 旧格式待迁移（config.py:7, model.py:5, files.py:3）
+- **路由异常标准化**：全部 11 个路由模块已统一使用 AppError 体系（2026-07-25 完成 config/model/files 最后 15 处迁移）
 - **Content-Disposition 中文文件名**：必须用 RFC 5987 `filename*=UTF-8''` 编码，否则 Starlette 会尝试 latin-1 编码 → UnicodeEncodeError
 - **日志函数签名**：`app.core.logging.warning(msg, **kwargs)` 只接受 1 个位置参数 + kwargs，不能用 `%s` 占位符多参数调用。多参数用 f-string
 - **空文本去重碰撞**：空字符串 SHA256 固定为 `e3b0c44...`，两个空导入会误判为重复。TextAdapter 需检查 `text.strip()` 非空
@@ -396,12 +396,12 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 |------|------|------|
 | ✅ | 四阶段管道 | Static Review → Verification Planning → Evidence Collection → Report |
 | ✅ | SSE 流式进度 | static_review → verify → review → done |
-| ✅ | 前端 tab | PreviewArea fact_check tab + 静态审核摘要 + 红黄绿报告 + 可信度 |
+| ✅ | 前端 tab | PreviewArea fact_check tab + 纯 Markdown 流式展示（和其他产物一致） |
 | ✅ | 验证源 fallback | notes → polished → transcript |
 | ✅ | Evidence Manager | 统一证据格式 + 缓存（TTL 24h）+ URL 去重 |
 | ✅ | 工具增强 | DDG 真实搜索（duckduckgo_search 库）+ Official Search + 日期工具 + URL 元信息 |
 | ✅ | verify_mode 设置 | LLM（默认，模型知识）和 Web（联网搜索）两种验证方式，设置页可选 |
-| ❌ | 报告可交互 | 点击来源链接查看原文，批量验证多文档 |
+| ✅ | 报告可交互 | 参考来源链接后处理注入 + 前端纯 Markdown 流式展示 |
 | ❌ | Chunk 提取 | 长文档分片提取（当前仅取前 8000 字符） |
 | ❌ | 专业模式 | 学术/法律/医疗专用搜索源 |
 
@@ -443,7 +443,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 并发控制 | `ExecutionGuard` Semaphore(3)，generate/process/retranscribe 已接入 |
 | ✅ | 上下文窗口可配置 | `addModel()` API + ProviderSettings 展示 |
 | ✅ | 日志全链路追踪 | `contextvars.ContextVar` 注入 `request_id`，前端日志面板 |
-| 🟡 | 旧格式错误迁移 | conversations/generate 已迁移为 AppError，config/model/files 剩余 15 处 |
+| ✅ | 旧格式错误迁移 | 全部 11 个路由模块统一 AppError 体系，0 处旧格式残留 |
 
 ### 📊 汇总
 
@@ -454,8 +454,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✨ LLM 生成 | 7 | 7 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 5 | 5 | 100% |
-| ✅ AI 审核 | 7 | 10 | 70% |
+| ✅ AI 审核 | 8 | 10 | 80% |
 | 📤 导出 | 7 | 8 | 88% |
 | 🎨 前端 UI/UX | 8 | 8 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **62** | **68** | **91%** |
+| **合计** | **63** | **68** | **93%** |
