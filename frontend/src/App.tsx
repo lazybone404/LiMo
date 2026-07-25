@@ -38,11 +38,12 @@ export default function App() {
   const setAiFloating = useStore(s => s.setAiFloating)
 
   useEffect(() => {
-    fetchCapabilities().then(setCapabilities).catch(err => {
-      console.error('加载能力配置失败:', err)
-      useStore.getState().addToast('加载能力配置失败，请检查后端是否运行', 'error')
-    })
-    listTranscripts().then(docs => {
+    const init = () => {
+      fetchCapabilities().then(setCapabilities).catch(err => {
+        console.error('加载能力配置失败:', err)
+        useStore.getState().addToast('加载能力配置失败，请检查后端是否运行', 'error')
+      })
+      listTranscripts().then(docs => {
       setDocs(docs)
       // 恢复上次选中的文档和视图
       try {
@@ -57,6 +58,24 @@ export default function App() {
       console.error('加载文档列表失败:', err)
       useStore.getState().addToast('加载文档列表失败，请检查后端是否运行', 'error')
     })
+  }
+
+    // Tauri 模式：等 backend-ready 事件后才加载数据
+    if ((window as any).__TAURI_INTERNALS__) {
+      let cancelled = false
+      const timeout = setTimeout(() => {
+        if (!cancelled) { console.warn('Backend ready timeout, forcing load'); init() }
+      }, 45000)
+      import('@tauri-apps/api/event').then(({ listen }) => {
+        const unlisten = listen('backend-ready', () => {
+          if (!cancelled) { console.log('Backend ready'); clearTimeout(timeout); init() }
+        })
+        return unlisten
+      }).catch(() => init()) // 导入失败则直接加载
+      return () => { cancelled = true; clearTimeout(timeout) }
+    }
+    // 浏览器/开发模式：直接加载
+    init()
   }, [])
 
   // 面板拖拽回调 — 用 getState() 读最新宽度，避免 stale closure
