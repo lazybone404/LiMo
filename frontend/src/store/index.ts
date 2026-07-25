@@ -50,8 +50,7 @@ interface Store {
   currentFactCheckContent: string | null
   factCheckMeta: {
     id: string; verified_count?: number; disputed_count?: number; unverifiable_count?: number
-    overall_score?: number; trustworthiness?: number; trustworthiness_label?: string
-    deductions?: string[]; has_content?: boolean
+    has_content?: boolean
     source_mode?: string; source_version?: number; verified_at?: string
   } | null
   factCheckProgress: {

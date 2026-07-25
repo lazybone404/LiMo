@@ -331,6 +331,36 @@ class ReviewEngine:
     # Phase 4: Report 生成
     # ═══════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _build_references_section(review_results: list[dict]) -> str:
+        """从验证结果中提取所有证据 URL，构建参考来源 section。
+
+        程序化注入，不依赖 LLM 是否按格式输出 URL。
+        去重 + 按域名分组，方便用户点击查看原始来源。
+        """
+        seen: set[str] = set()
+        items: list[dict] = []
+        for r in review_results:
+            for ev in r.get("evidence_items", []) or []:
+                url = ev.get("url", "").strip()
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                items.append(ev)
+
+        if not items:
+            return ""
+
+        lines = ["\n---\n\n## 📎 参考来源\n"]
+        for i, ev in enumerate(items, 1):
+            title = ev.get("title", "").strip() or "未命名来源"
+            url = ev.get("url", "").strip()
+            domain = ev.get("domain", "").strip()
+            domain_str = f" ({domain})" if domain else ""
+            lines.append(f"{i}. [{title}]({url}){domain_str}")
+
+        return "\n".join(lines) + "\n"
+
     async def generate_report(
         self, static_result: dict, review_results: list[dict],
         cancel_event: asyncio.Event | None = None,
@@ -355,10 +385,13 @@ class ReviewEngine:
         ).replace("{verify_methods}", "、".join(verify_methods))
 
         try:
-            return await self._llm.call(
+            report = await self._llm.call(
                 prompt, max_tokens=4096, temperature=0.5,
                 max_continuations=0, cancel_event=cancel_event,
             )
+            # 后处理注入参考来源（不依赖 LLM 是否按格式输出 URL）
+            refs = self._build_references_section(review_results)
+            return report + refs
         except Exception as e:
             logger.warning("生成审核报告失败: %s", e)
             return f"# AI 审核报告\n\n报告生成失败: {e}"
@@ -391,6 +424,10 @@ class ReviewEngine:
                 max_continuations=0, cancel_event=cancel_event,
             ):
                 yield chunk
+            # 后处理注入参考来源（不依赖 LLM 是否按格式输出 URL）
+            refs = self._build_references_section(review_results)
+            if refs:
+                yield refs
         except Exception as e:
             logger.warning("生成审核报告失败: %s", e)
             yield f"\n\n报告生成失败: {e}"

@@ -6,6 +6,37 @@
 
 ---
 
+## 2026-07-25 — AI 审核前端显示简化 + 参考来源后处理注入
+
+### 问题
+
+AI 审核（fact_check）前端用复杂状态机（4 种状态 A/B/C/D）+ 阶段指示器 + 仪表盘 + AI 评分，和其他产物（notes/polished）的流式 Markdown 体验完全不同。
+
+更关键的是：AI 评分（"可信度 7.5/10"）让用户误以为这是客观裁定——实际上是用 AI 来审核 AI 生成的内容，评分本身可能不准确。我们只应该做能做到的（静态分析 + 联网验证），不做能力边界之外的事（给内容打分）。
+
+### 改动
+
+**后端** — 参考来源后处理注入（`review.py`）：
+- 新增 `_build_references_section()`，从 `review_results[].evidence_items` 中提取所有证据 URL
+- `generate_report()` 和 `generate_report_streaming()` 在 LLM 报告后程序化追加「参考来源」section
+- 不依赖 LLM 是否按格式输出 URL，由系统保证
+
+**前端** — fact_check tab 简化为纯 Markdown 流式展示（`PreviewArea.tsx`）：
+- 从 ~280 行状态机（阶段指示器 + 仪表盘 + 4 种状态）→ ~35 行三态（Markdown / 加载 / 引导）
+- `onProgress` 阶段结果以 Markdown blockquote 拼接到内容区，和生成笔记体验一致
+- `onChunk` 处理所有 phase 的 text（修复 verify 阶段 text 被吞的 bug）
+- 去掉 AI 评分/仪表盘/阶段指示器，能力边界在引导页用纯文本说明
+- 删除未使用图标导入 `ClipboardList`、`Search`
+
+**Store** — `factCheckMeta` 移除 `overall_score`、`trustworthiness`、`trustworthiness_label`、`deductions` 字段
+
+### 影响范围
+- `backend/app/generation/review.py`（+39 行）
+- `frontend/src/components/preview/PreviewArea.tsx`（-161/+122 行）
+- `frontend/src/store/index.ts`（类型精简）
+
+---
+
 ## 2026-07-16 — AI 对话架构重构（参照 Pi）+ 提示词分类型重写 + 公式修复
 
 ### AI 对话架构重构
@@ -50,6 +81,25 @@ video/audio 保持原有转录整理 prompt，doc 保持文档整理 prompt。
 - 重新转录：只取 notes.versions，polished 版本完全丢弃
 
 修复：按 mode 过滤合并而非替换。同时版本切换器按当前 tab 过滤——polished tab 只显示 polished 版本，notes tab 只显示 notes 版本，互不污染。
+
+---
+
+## 2026-07-25 — AI 审核报告来源链接后处理注入
+
+### 问题
+
+LLM 在生成审核报告时经常不写出可点击的 `[标题](URL)` 格式链接——prompt 已明确要求，但 LLM 执行不稳定。用户在 fact_check tab 看到"来源：相关网页"却无法点击查看原文。
+
+### 修复
+
+在 `review.py` 中新增 `_build_references_section()` 方法，**程序化地**从 `review_results[].evidence_items` 中提取所有证据 URL，按域名去重后在报告末尾追加「📎 参考来源」section。
+
+- `generate_report()`：LLM 生成完成后拼接参考来源 section
+- `generate_report_streaming()`：LLM 流结束后续传参考来源 section（一个 chunk）
+
+这样 URL 的呈现不依赖 LLM 是否听话，由系统保证。
+
+修改文件：[`backend/app/generation/review.py`](../backend/app/generation/review.py)（+35 行）
 
 ---
 
