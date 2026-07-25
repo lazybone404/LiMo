@@ -63,6 +63,8 @@ export function GenerateOptions(props: Props) {
     <div>
       <span className="text-[12px] font-medium text-dimmed mb-2 block">模型</span>
       {(() => {
+        // 图片类型：仅显示有多模态能力的模型
+        // 文档类型：显示全部模型（用户可能想用多模态模型处理图片密集型 PDF）
         const filtered = p.typeMeta.isImage
           ? p.enabledModels.filter(m => m.capabilities?.includes('image'))
           : p.enabledModels
@@ -70,15 +72,21 @@ export function GenerateOptions(props: Props) {
           return <p className="text-[12px] text-warning">请先在设置中启用多模态模型（如 GPT-4o、Qwen-VL 等），并绑定到「图片处理」用途</p>
         }
         if (filtered.length === 0) {
-          return <p className="text-[12px] text-warning">请在设置中启用模型</p>
+          return <p className="text-[12px] text-dimmed">暂无可用模型，请在设置中启用并绑定到对应用途</p>
         }
+        // 文档类型也会列出多模态模型（用「视觉」标记），方便用户选用
         return (
           <select value={p.selectedModelId || ''} onChange={e => p.setSelectedModelId(e.target.value ? Number(e.target.value) : null)}
             className="w-full px-3 py-2 bg-surface border border-border-default rounded-[10px] text-[13px] outline-none">
             <option value="">场景默认</option>
-            {filtered.map(m => (
-              <option key={m.id} value={m.id}>{p.providerName(m.provider_id)} · {m.model_name}</option>
-            ))}
+            {filtered.map(m => {
+              const isImage = m.capabilities?.includes('image')
+              return (
+                <option key={m.id} value={m.id}>
+                  {p.providerName(m.provider_id)} · {m.model_name}{isImage ? ' (视觉)' : ''}
+                </option>
+              )
+            })}
           </select>
         )
       })()}
