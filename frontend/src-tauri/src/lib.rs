@@ -137,25 +137,16 @@ fn spawn_backend(exe_dir: &Path) -> Result<Child, String> {
         let log_path = log_dir.join("limo_backend_stderr.log");
         app_log(exe_dir, &format!("spawning {} -> {}", backend_exe.display(), log_path.display()));
 
-        // 尝试创建 stderr 日志文件；若失败（权限/磁盘满）则丢弃输出
-        let stderr_file = std::fs::File::create(&log_path).ok();
-        let (stdout_target, stderr_target) = if let Some(ref f) = stderr_file {
-            (f.try_clone().ok(), None::<std::fs::File>)
-        } else {
-            (None, None)
-        };
-
+        // 尝试创建日志文件并重定向 stdout/stderr；失败则丢弃输出
+        let log_file = std::fs::File::create(&log_path).ok();
         let mut cmd = Command::new(&backend_exe);
         cmd.current_dir(exe_dir);
-        if let Some(f) = stdout_target {
-            cmd.stdout(f);
-        } else {
-            cmd.stdout(Stdio::null());
-        }
-        if let Some(f) = stderr_target {
-            cmd.stderr(f);
-        } else {
-            cmd.stderr(Stdio::null());
+        match log_file {
+            Some(f) => match f.try_clone() {
+                Ok(stdout_f) => { cmd.stdout(stdout_f); cmd.stderr(f); }
+                Err(_) => { cmd.stdout(Stdio::null()); cmd.stderr(Stdio::null()); }
+            },
+            None => { cmd.stdout(Stdio::null()); cmd.stderr(Stdio::null()); }
         }
 
         let current_path = env::var("PATH").unwrap_or_default();
