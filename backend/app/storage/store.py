@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.core.types import RawTranscript, MarkdownView, ProcessResult, Style, GenerateMode
-from app.core.errors import StoreError
+from app.core.errors import AppError, StoreError
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,16 @@ class Store:
 
     def __init__(self, data_dir: str):
         self.root = Path(data_dir)
-        self.root.mkdir(parents=True, exist_ok=True)
-        (self.root / "logs").mkdir(exist_ok=True)
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            (self.root / "logs").mkdir(exist_ok=True)
+        except OSError as e:
+            raise AppError(
+                "STORE_CREATE_DIR_FAILED",
+                f"无法创建数据目录（权限不足或磁盘满）",
+                detail=str(self.root),
+                recoverable=False,
+            ) from e
         self._index: dict = _empty_index()
         self._index_path = self.root / "index.json"
         self._lock = threading.Lock()

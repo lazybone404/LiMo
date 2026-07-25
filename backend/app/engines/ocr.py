@@ -186,13 +186,20 @@ class TesseractEngine(Engine):
         if found:
             return found
 
-        # 4. 项目内置便携版
+        # 4. PyInstaller 打包版内置路径（sys._MEIPASS）
+        if getattr(sys, 'frozen', False):
+            import sys as _sys
+            frozen_bin = os.path.join(_sys._MEIPASS, "bin", "tesseract", "tesseract.exe")
+            if os.path.isfile(frozen_bin):
+                return frozen_bin
+
+        # 5. 项目内置便携版（开发环境）
         project_bin = os.path.join(os.path.dirname(__file__), "..", "..", "bin", "tesseract", "tesseract.exe")
         project_bin = os.path.abspath(project_bin)
         if os.path.isfile(project_bin):
             return project_bin
 
-        # 5. Windows 常见路径自动检测
+        # 6. Windows 常见路径自动检测
         if os.name == "nt":
             candidates = [
                 os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Tesseract-OCR", "tesseract.exe"),

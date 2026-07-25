@@ -153,9 +153,15 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
 
     path = Path(config_path)
     if path.exists():
-        with open(path, encoding="utf-8") as f:
-            user_config = yaml.safe_load(f) or {}
-        _deep_merge(config, user_config)
+        try:
+            with open(path, encoding="utf-8") as f:
+                user_config = yaml.safe_load(f) or {}
+            _deep_merge(config, user_config)
+        except (OSError, yaml.YAMLError, PermissionError) as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "无法加载 config.yaml (%s)，使用默认配置: %s", path, e
+            )
 
         # 自动修正旧 data_dir
         if ".mybigwork" in config.get("data_dir", ""):

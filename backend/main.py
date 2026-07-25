@@ -3,6 +3,7 @@ LiMo — FastAPI 入口
 """
 
 import logging
+import os as _os
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
@@ -108,7 +109,9 @@ def _init_logging(config: dict) -> None:
     root.setLevel(level)
 
     # 控制台格式：HH:MM:SS LEVEL    module  message
-    console = logging.StreamHandler(sys.stdout)
+    # PyInstaller console=False 时 stdout/stderr 可能为 None
+    _out = sys.stdout or open(_os.devnull, "w")
+    console = logging.StreamHandler(_out)
     console.setLevel(level)
     console.addFilter(RequestIDFilter())
     console.setFormatter(logging.Formatter(
@@ -254,5 +257,11 @@ async def view_logs(request: Request):
 
 
 if __name__ == "__main__":
+    import os as _os
+    # PyInstaller console=False 时 sys.stderr 为 None，uvicorn logging 会崩溃
+    if sys.stderr is None:
+        sys.stderr = open(_os.devnull, "w")
+    if sys.stdout is None:
+        sys.stdout = open(_os.devnull, "w")
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=7413)

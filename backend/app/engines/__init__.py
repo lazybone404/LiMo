@@ -294,5 +294,8 @@ def init_engines(config: dict | None = None):
     if asr_changed or models_changed or doc_bindings_changed or ocr_bound:
         logger.info("init_engines: 引擎绑定/模型变更，持久化到 config.yaml (asr=%s models=%s doc_bindings=%s ocr=%s)",
                     asr_changed, models_changed, doc_bindings_changed, ocr_bound)
-        from app.core.config_io import save_config
-        save_config(config)
+        try:
+            from app.core.config_io import save_config
+            save_config(config)
+        except OSError as e:
+            logger.warning("init_engines: 无法保存配置（%s），继续运行", e)
