@@ -1,7 +1,7 @@
 use std::env;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -12,8 +12,22 @@ const BACKEND_PORT: u16 = 7413;
 
 struct SidecarHandle(Mutex<Option<Child>>);
 
-fn app_log(dir: &Path, msg: &str) {
-    let log_path = dir.join("limo_startup.log");
+/// 用户数据目录 — 有写入权限（Program Files 只读）
+fn user_data_dir() -> PathBuf {
+    // 优先 LOCALAPPDATA（C:\Users\xxx\AppData\Local），
+    // 回退 APPDATA（C:\Users\xxx\AppData\Roaming）
+    let base = env::var("LOCALAPPDATA")
+        .or_else(|_| env::var("APPDATA"))
+        .unwrap_or_else(|_| {
+            env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())
+        });
+    PathBuf::from(base).join("LiMo").join("logs")
+}
+
+fn app_log(_dir: &Path, msg: &str) {
+    let log_dir = user_data_dir();
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("limo_startup.log");
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
     let line = format!("[{}] {}\n", ts, msg);
@@ -118,16 +132,31 @@ fn spawn_backend(exe_dir: &Path) -> Result<Child, String> {
             .unwrap_or(plain_exe)
     };
     if backend_exe.exists() {
-        let log_path = exe_dir.join("limo_backend_stderr.log");
+        let log_dir = user_data_dir();
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join("limo_backend_stderr.log");
         app_log(exe_dir, &format!("spawning {} -> {}", backend_exe.display(), log_path.display()));
 
-        let stderr_file = std::fs::File::create(&log_path)
-            .map_err(|e| format!("日志创建失败: {}", e))?;
+        // 尝试创建 stderr 日志文件；若失败（权限/磁盘满）则丢弃输出
+        let stderr_file = std::fs::File::create(&log_path).ok();
+        let (stdout_target, stderr_target) = if let Some(ref f) = stderr_file {
+            (f.try_clone().ok(), None::<std::fs::File>)
+        } else {
+            (None, None)
+        };
 
         let mut cmd = Command::new(&backend_exe);
-        cmd.current_dir(exe_dir)
-            .stdout(stderr_file.try_clone().map_err(|e| format!("{}", e))?)
-            .stderr(stderr_file);
+        cmd.current_dir(exe_dir);
+        if let Some(f) = stdout_target {
+            cmd.stdout(f);
+        } else {
+            cmd.stdout(Stdio::null());
+        }
+        if let Some(f) = stderr_target {
+            cmd.stderr(f);
+        } else {
+            cmd.stderr(Stdio::null());
+        }
 
         let current_path = env::var("PATH").unwrap_or_default();
         cmd.env("PATH", &enhance_path(&current_path));
