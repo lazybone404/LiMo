@@ -340,7 +340,7 @@ class ExecutionGuard:
 
 ### 配置系统
 
-- **存储位置**：`~/.mybigwork/config.yaml`（绝对路径，自动创建目录）
+- **存储位置**：`~/.limo/config.yaml`（绝对路径，自动创建目录）
 - **读写入口**：`config_io.py` → `load_config()` / `save_config()`
 - **原子写入**：`tmp_path` → `os.replace(tmp_path, config_path)`
 

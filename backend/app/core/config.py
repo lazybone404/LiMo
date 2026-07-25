@@ -116,18 +116,38 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "fetch":  {"provider": "trafilatura"},
         "verify_mode": "llm",  # AI 审核默认验证方式: llm（模型知识）| web（联网搜索）
     },
-    "data_dir": str(Path.home() / ".mybigwork"),
+    "data_dir": str(Path.home() / ".limo"),
     "log_level": "INFO",
 }
+
+
+def _migrate_legacy_dir(old: Path, new: Path) -> None:
+    """从旧数据目录迁移到新目录"""
+    if old.exists() and not new.exists():
+        try:
+            old.rename(new)
+            import logging
+            logging.getLogger(__name__).info("数据目录已迁移: %s → %s", old, new)
+        except OSError:
+            pass  # 跨盘符等无法 rename，保留旧目录
 
 
 def load_config(config_path: str | None = None) -> dict[str, Any]:
     """加载配置，优先从文件，缺省用默认值"""
     if config_path is None:
+        # 环境变量 LIMO_CONFIG 可覆盖；向后兼容 MYBIGWORK_CONFIG
         config_path = os.environ.get(
-            "MYBIGWORK_CONFIG",
-            str(Path.home() / ".mybigwork" / "config.yaml"),
-        )
+            "LIMO_CONFIG",
+            os.environ.get("MYBIGWORK_CONFIG", ""),
+        ) or str(Path.home() / ".limo" / "config.yaml")
+
+    # 旧目录迁移: ~/.mybigwork → ~/.limo
+    _migrate_legacy_dir(Path.home() / ".mybigwork", Path.home() / ".limo")
+
+    # 旧环境变量迁移: MYBIGWORK_CONFIG → LIMO_CONFIG（已在上面兼容读取）
+    # 旧 data_dir 迁移: 如果用户之前的 config 中写的是 .mybigwork，自动改为 .limo
+    if (Path.home() / ".limo").exists():
+        DEFAULT_CONFIG["data_dir"] = str(Path.home() / ".limo")
 
     config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -136,6 +156,10 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
         with open(path, encoding="utf-8") as f:
             user_config = yaml.safe_load(f) or {}
         _deep_merge(config, user_config)
+
+        # 自动修正旧 data_dir
+        if ".mybigwork" in config.get("data_dir", ""):
+            config["data_dir"] = str(Path.home() / ".limo")
 
         # 启动时自动备份 — 防止后续写入损坏后可恢复
         backup_path = path.with_suffix(".yaml.bak")

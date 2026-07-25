@@ -535,7 +535,7 @@ type UserPreferences = {
 }
 ```
 
-存储为 `~/.mybigwork/preferences.yaml`。打开生成面板时预设，用户随时可改。没有条件表达式，没有自动触发。
+存储为 `~/.limo/preferences.yaml`。打开生成面板时预设，用户随时可改。没有条件表达式，没有自动触发。
 
 ## 4.4 不存什么
 
@@ -853,7 +853,7 @@ Tools: lookup_document(id, query)   — 深入查某篇原文/笔记
 记住用户的习惯。打开生成面板时预设，不是自动化规则。
 
 ```yaml
-# ~/.mybigwork/preferences.yaml
+# ~/.limo/preferences.yaml
 defaults:
   style: detailed
   format: [toc, summary]

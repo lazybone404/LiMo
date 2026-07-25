@@ -535,7 +535,7 @@ video.py 两处 `self._transcribe(...)` 改为 `async def` 后漏 `await`，返�
 
 - 后端生成：`os.getcwd()/data/screenshots/` → `{store_root}/screenshots/`
 - StaticFiles 挂载：模块级相对路径 → startup 内 `{data_dir}/screenshots/`
-- 打包端和网页端统一到 `~/.mybigwork/screenshots/`
+- 打包端和网页端统一到 `~/.limo/screenshots/`
 
 ### 文件日志
 

@@ -217,7 +217,7 @@ Zustand `persist` middleware 只持久化 3 个字段到 localStorage：
 | `mbw_lastView` | activeView | 恢复上次的预览 tab |
 | `mbw_lastConvId` | currentConversationId | 恢复上次的对话 |
 
-LLM 设置、provider、引擎配置都在后端 `~/.mybigwork/config.yaml`，不由前端持久化。
+LLM 设置、provider、引擎配置都在后端 `~/.limo/config.yaml`，不由前端持久化。
 
 ---
 

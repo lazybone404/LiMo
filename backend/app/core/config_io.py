@@ -18,9 +18,9 @@ def save_config(cfg: dict) -> None:
 
     from pathlib import Path
     config_path = os.environ.get(
-        "MYBIGWORK_CONFIG",
-        str(Path.home() / ".mybigwork" / "config.yaml"),
-    )
+        "LIMO_CONFIG",
+        os.environ.get("MYBIGWORK_CONFIG", ""),
+    ) or str(Path.home() / ".limo" / "config.yaml")
 
     # ── 防御性校验：关键字段不得被意外清空 ──
     llm = cfg.get("llm")
