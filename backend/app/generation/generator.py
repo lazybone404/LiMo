@@ -9,6 +9,7 @@ prompt 构建已下沉到 PromptBuilder。
 import asyncio
 import logging
 import os
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -45,8 +46,8 @@ def _post_process_screenshots(markdown: str, video_path: str | None, store_root:
             return markdown
 
         logger.info("原片截图：找到 %d 个标记，开始 ffmpeg 抽帧", len(matches))
-        # 使用 store_root 而非 os.getcwd()——打包后 CWD 不可靠
-        output_dir = os.path.join(store_root or os.getcwd(), "screenshots")
+        # 使用 store_root——打包后 CWD 指向安装目录（Program Files），无写权限
+        output_dir = os.path.join(store_root or tempfile.mkdtemp(prefix="limo_ss_"), "screenshots")
         for idx, (marker, ts) in enumerate(matches):
             try:
                 img_path = generate_screenshot(video_path, output_dir, ts, idx)
