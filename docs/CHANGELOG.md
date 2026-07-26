@@ -6,6 +6,37 @@
 
 ---
 
+## 2026-07-26 — OCR 预处理管线 + 千问模型集成
+
+### OCR 预处理管线
+
+适用于 PDF/Word/PPT/EPUB 等所有文档类型。在生成笔记前，先用廉价 OCR 模型（如 qwen-vl-ocr-latest ¥0.3/M）提取图片中的文字，塞回原文，再交给文本 LLM 生成。无需多模态模型也能"看到"图片内容，成本降低 5-10 倍。
+
+**后端**：
+- `ocr_preprocessor.py`（新建）：正则匹配 `/api/files/{tx_id}/img_NNNN.png` 图片引用 → 读文件 base64 → `LLMService.call(prompt, image_urls=[...])` → OCR 文字插入原文
+- `Generator.generate/generate_both`：在 `ContentPreparer.prepare()` 之前执行 OCR（需要原始图片路径）
+- `generate.py`：接收 `ocr_enabled` / `ocr_model_id` 参数，流式和非流式端点均已接入
+- `config.py`：DEFAULT_CONFIG 加 qwen-vl-ocr-latest、qwen3-vl-flash、qwen3.7-flash、qwen-plus、qwen-turbo 等模型
+
+**前端**：
+- OCR 开关 + OCR 模型下拉（仅 Document 类型显示，从 enabledModels 中筛选 vision 能力模型）
+- OCR 与 imageAnalyze 互斥：开启 OCR 时隐藏 imageAnalyze
+- genPrefs 持久化 ocrEnabled / ocrModelId
+
+### 千问平台模型文档
+
+新增 `docs/qianwen-models.md`，涵盖文本生成、OCR/视觉、ASR 三类 LiMo 适用模型，含价格、上下文、调用方式。
+
+### 影响范围
+- `backend/app/generation/ocr_preprocessor.py`（新建，111 行）
+- `backend/app/generation/generator.py`（+22 行）
+- `backend/app/routers/generate.py`（+27 行）
+- `backend/app/core/config.py`（+15 行）
+- `frontend/src/components/gen-panel/`（+41 行）
+- `frontend/src/api/client.ts`（+4 行）
+
+---
+
 ## 2026-07-25 — AI 审核前端显示简化 + 参考来源后处理注入
 
 ### 问题

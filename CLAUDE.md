@@ -22,6 +22,7 @@ LiMo — 知识管理系统。输入 URL/文本/文件 → 适配器提取正文
 | [doc-transcript-design.md](docs/doc-transcript-design.md) | Doc 转录原始提案（部分仍有效） | 理解 Word/PPT/EPUB 早期设计意图 |
 | [prompts-inventory.md](docs/prompts-inventory.md) | 全部 LLM 提示词清单 + 审视点清单（9 已修复/8 待处理）+ 温度参数速查 + PromptComposer 标签速查 + Agent SSE 事件流 | 审视/优化 prompt、新增管道需要参考 prompt 风格 |
 | [BUILD.md](docs/BUILD.md) | PyInstaller + Tauri 完整打包流程，常见陷阱 | 打包/发布 |
+| [qianwen-models.md](docs/qianwen-models.md) | 千问平台模型速查（文本/OCR/ASR）含价格+调用方式 | 配模型/选引擎 |
 | [components.md](design/components.md) | Apple HIG 风格组件规格，布局+颜色+字体+组件 | 改 UI 组件/设计系统 |
 
 ## 常用命令
@@ -115,6 +116,7 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 **生成管道**（视频/网页/文本/文档 → LLM 创作）：
 - 输入 `rawText`，触发 `POST /generate/{id}`
 - 双产物并行（notes + polished），`source_type` 派发不同 prompt 模板
+- OCR 预处理（可选）：文档图片先用廉价 OCR 模型提取文字塞回原文，再用文本 LLM 生成
 - 同 mode 保留最近 2 版，前端 v2/v1 切换器
 - 存储：`markdown/` + `markdown_index.json`
 
