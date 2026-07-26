@@ -5,6 +5,7 @@ export interface GenPrefs {
   /** @deprecated replaced by target_language — kept for old data compat */
   formatTranslate: boolean; formatFormulas: boolean; formatReferences: boolean; formatImages: boolean
   imageAnalyze: boolean; imageOptimize: boolean
+  ocrEnabled: boolean; ocrModelId: number | null
   selectedModelId: number | null
   videoUnderstanding: boolean; videoInterval: number
   gridCols: number; gridRows: number
@@ -21,6 +22,7 @@ const DEFAULTS: GenPrefs = {
   formatToc: true, formatLink: true, formatSummary: true, formatScreenshot: false,
   formatTranslate: false, formatFormulas: false, formatReferences: false, formatImages: false,
   imageAnalyze: false, imageOptimize: true,
+  ocrEnabled: false, ocrModelId: null,
   selectedModelId: null,
   videoUnderstanding: false, videoInterval: 6,
   gridCols: 2, gridRows: 2,

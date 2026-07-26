@@ -55,6 +55,8 @@ export function GenPanel() {
   const [formatImages, setFormatImages] = useState(saved.formatImages ?? false)
   const [imageAnalyze, setImageAnalyze] = useState(saved.imageAnalyze ?? false)
   const [imageOptimize, setImageOptimize] = useState(saved.imageOptimize ?? true)
+  const [ocrEnabled, setOcrEnabled] = useState(saved.ocrEnabled ?? false)
+  const [ocrModelId, setOcrModelId] = useState<number | null>(saved.ocrModelId ?? null)
   const [selectedModelId, setSelectedModelId] = useState<number | null>(saved.selectedModelId)
   const [videoUnderstanding, setVideoUnderstanding] = useState(saved.videoUnderstanding)
   const [videoInterval, setVideoInterval] = useState(saved.videoInterval)
@@ -196,7 +198,9 @@ export function GenPanel() {
       dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter,
       imageMode, userNotes, notesExpanded, streamDisplay })
   }, [style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot,
-      formatTranslate, formatFormulas, formatReferences, formatImages, imageAnalyze, imageOptimize, selectedModelId,
+      formatTranslate, formatFormulas, formatReferences, formatImages, imageAnalyze, imageOptimize,
+      ocrEnabled, ocrModelId,
+      selectedModelId,
       videoUnderstanding, videoInterval, gridCols, gridRows, streamDisplay,
       dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter, userNotes, imageMode, notesExpanded])
 
@@ -496,6 +500,9 @@ export function GenPanel() {
       image_analyze: isVideo ? videoUnderstanding : (formatImages ? imageAnalyze : undefined),
       // 图片预处理：视频从 VL 参数取，文档从嵌套选项取
       image_optimize: isVideo ? (videoUnderstanding ? imageOptimize : undefined) : ((formatImages && imageAnalyze) ? imageOptimize : undefined),
+      // OCR 预处理：仅文档类型，与 image_analyze 互斥
+      ocr_enabled: isVideo ? undefined : (ocrEnabled || undefined),
+      ocr_model_id: isVideo ? undefined : (ocrEnabled ? ocrModelId ?? undefined : undefined),
       continue_from: continueFrom || undefined,
     }, {
       onChunk(text, mode) {
@@ -703,6 +710,8 @@ export function GenPanel() {
                   formatImages={formatImages} setFormatImages={setFormatImages}
                   imageAnalyze={imageAnalyze} setImageAnalyze={setImageAnalyze}
                   imageOptimize={imageOptimize} setImageOptimize={setImageOptimize}
+                  ocrEnabled={ocrEnabled} setOcrEnabled={setOcrEnabled}
+                  ocrModelId={ocrModelId} setOcrModelId={setOcrModelId}
                   hasImageModel={hasImageModel}
                   style={style} setStyle={setStyle} styleKeys={styleKeysWithNone}
                   selectedCore={selectedCore} setSelectedCore={setSelectedCore}

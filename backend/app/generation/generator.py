@@ -92,14 +92,23 @@ class Generator:
         user_notes: str = "",
         image_analyze: bool = False,
         image_optimize: bool = False,
+        ocr_enabled: bool = False,
+        ocr_model_id: int | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> MarkdownView:
         """生成单个产物（notes 或 polished）。"""
         keep_refs = formats is not None and "images" in formats
         send_to_llm = bool(image_analyze)
 
+        # OCR 预处理：图片→文字→塞回原文（prepare 之前，需要原始图片路径）
+        processed_text = raw_text
+        if ocr_enabled and ocr_model_id:
+            from app.generation.ocr_preprocessor import OCRPreprocessor
+            ocr = OCRPreprocessor(self.config, ocr_model_id)
+            processed_text = await ocr.process(raw_text, self._prep.store_root)
+
         clean_text, image_urls, video_path = await self._prep.prepare(
-            raw_text, vl_config, keep_refs,
+            processed_text, vl_config, keep_refs,
             send_to_llm=send_to_llm, optimize_images=image_optimize,
         )
 
@@ -139,14 +148,23 @@ class Generator:
         user_notes: str = "",
         image_analyze: bool = False,
         image_optimize: bool = False,
+        ocr_enabled: bool = False,
+        ocr_model_id: int | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> tuple[MarkdownView, MarkdownView]:
         """并行生成双产物（polished + notes）。Excel 生成 report + summary。"""
         keep_refs = formats is not None and "images" in formats
         send_to_llm = bool(image_analyze)
 
+        # OCR 预处理：图片→文字→塞回原文（prepare 之前，需要原始图片路径）
+        processed_text = raw_text
+        if ocr_enabled and ocr_model_id:
+            from app.generation.ocr_preprocessor import OCRPreprocessor
+            ocr = OCRPreprocessor(self.config, ocr_model_id)
+            processed_text = await ocr.process(raw_text, self._prep.store_root)
+
         clean_text, image_urls, video_path = await self._prep.prepare(
-            raw_text, vl_config, keep_refs,
+            processed_text, vl_config, keep_refs,
             send_to_llm=send_to_llm, optimize_images=image_optimize,
         )
 

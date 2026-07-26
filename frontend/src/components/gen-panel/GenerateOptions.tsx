@@ -26,6 +26,8 @@ interface Props {
   formatImages: boolean; setFormatImages: (v: boolean) => void
   imageAnalyze: boolean; setImageAnalyze: (v: boolean) => void
   imageOptimize: boolean; setImageOptimize: (v: boolean) => void
+  ocrEnabled: boolean; setOcrEnabled: (v: boolean) => void
+  ocrModelId: number | null; setOcrModelId: (v: number | null) => void
   hasImageModel: boolean  // 当前模型是否支持多模态
   // 风格
   style: string; setStyle: (v: string) => void
@@ -156,6 +158,32 @@ export function GenerateOptions(props: Props) {
                 <span className="text-[13px]">保留文档图片</span>
                 <span className="text-[10px] text-disabled">保留 ![](/api/files/...) 引用</span></label>
               {p.formatImages && (
+                <label className={`flex items-center gap-2 ml-5 cursor-pointer`}>
+                  <input type="checkbox" checked={p.ocrEnabled} onChange={e => p.setOcrEnabled(e.target.checked)}
+                    className="w-3.5 h-3.5 accent-accent" />
+                  <span className="text-[12px]">OCR 预处理</span>
+                  <span className="text-[10px] text-disabled">廉价 OCR 提取图片文字→塞回原文→文本 LLM</span>
+                </label>
+              )}
+              {p.formatImages && p.ocrEnabled && (
+                <div className="ml-10">
+                  <span className="text-[11px] text-dimmed mb-1 block">OCR 模型</span>
+                  {(() => {
+                    const ocrModels = p.enabledModels.filter(m => m.capabilities?.includes('image'))
+                    if (ocrModels.length === 0) return <p className="text-[12px] text-warning">暂无可用 OCR 模型，请在设置中启用视觉模型</p>
+                    return (
+                      <select value={p.ocrModelId || ''} onChange={e => p.setOcrModelId(e.target.value ? Number(e.target.value) : null)}
+                        className="w-full px-3 py-1.5 bg-surface border border-border-default rounded-[10px] text-[12px] outline-none">
+                        <option value="">选择 OCR 模型</option>
+                        {ocrModels.map(m => (
+                          <option key={m.id} value={m.id}>{p.providerName(m.provider_id)} · {m.model_name}</option>
+                        ))}
+                      </select>
+                    )
+                  })()}
+                </div>
+              )}
+              {p.formatImages && !p.ocrEnabled && (
                 <label className={`flex items-center gap-2 ml-5 ${p.hasImageModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
                   <input type="checkbox" checked={p.imageAnalyze} onChange={e => p.setImageAnalyze(e.target.checked)}
                     disabled={!p.hasImageModel} className="w-3.5 h-3.5 accent-accent disabled:opacity-30" />

@@ -44,7 +44,7 @@ hiddenimports = [
     'app.downloaders.douyin_helper',
     'app.llm', 'app.llm.service', 'app.llm.agent', 'app.llm.errors',
     'app.agent', 'app.agent.tools', 'app.agent.evidence',
-    'app.generation.review',
+    'app.generation.review', 'app.generation.ocr_preprocessor',
 ]
 
 # 引擎相关

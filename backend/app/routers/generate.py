@@ -73,6 +73,9 @@ class GenerateRequest(BaseModel):
     # 文档图片参数（source_type=document 专属）
     image_analyze: bool = False
     image_optimize: bool = False
+    # OCR 预处理（source_type=document 专属，与 image_analyze 互斥）
+    ocr_enabled: bool = False
+    ocr_model_id: int | None = None
     # EPUB 参数（source_type=epub 专属）
     use_skeleton: bool = False
     chapter_indices: list[int] = []
@@ -209,6 +212,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     source_type=tx.get("sourceType", "text"), formats=req.formats,
                     vl_config=vl_config, user_notes=req.user_notes,
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
+                    ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
                 )
                 # 非流式端点截图后处理（generator 内部 video_path 可能为 None，此处补处理）
                 if screenshot_video_path:
@@ -230,6 +234,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     source_type=tx.get("sourceType", "text"), mode="polished",
                     formats=req.formats, vl_config=vl_config, user_notes=req.user_notes,
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
+                    ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
                 )
                 if screenshot_video_path:
                     polished_mv.content = _post_process_screenshots(
@@ -246,6 +251,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     formats=req.formats, vl_config=vl_config,
                     user_notes=req.user_notes,
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
+                    ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
                 )
                 if screenshot_video_path:
                     notes_mv.content = _post_process_screenshots(
@@ -313,6 +319,8 @@ async def generate_stream(transcript_id: str, request: Request,
                           use_skeleton: bool = False, chapter_indices: str = "",
                           image_analyze: bool = False,
                           image_optimize: bool = False,
+                          ocr_enabled: bool = False,
+                          ocr_model_id: int | None = None,
                           continue_from: str = ""):
     """流式生成笔记——SSE 响应，实时推送每个 chunk。
 
@@ -450,9 +458,16 @@ async def generate_stream(transcript_id: str, request: Request,
                 # 前端已保证门控：视频=videoUnderstanding，文档=formatImages&&imageAnalyze
                 send_to_llm = bool(image_analyze)
 
+                # OCR 预处理：图片→文字→塞回原文（在 prepare 之前）
+                processed_text = epub_text
+                if ocr_enabled and ocr_model_id:
+                    from app.generation.ocr_preprocessor import OCRPreprocessor
+                    ocr_engine = OCRPreprocessor(config, ocr_model_id)
+                    processed_text = await ocr_engine.process(epub_text, str(store.root))
+
                 # 预处理（VL + 图片剥离 + 截断）
                 clean_text, image_urls, video_path = await preparer.prepare(
-                    epub_text, vl_config, keep_refs, send_to_llm=send_to_llm, optimize_images=image_optimize)
+                    processed_text, vl_config, keep_refs, send_to_llm=send_to_llm, optimize_images=image_optimize)
 
                 polished_prompt = build_polish_prompt(
                     clean_text, tx.get("title", ""), style, source_type,
@@ -574,8 +589,16 @@ async def generate_stream(transcript_id: str, request: Request,
             # ── 单产物 ──
             keep_refs = "images" in format_list
             send_to_llm = bool(image_analyze)
+
+            # OCR 预处理
+            processed_text = epub_text
+            if ocr_enabled and ocr_model_id:
+                from app.generation.ocr_preprocessor import OCRPreprocessor
+                ocr_engine = OCRPreprocessor(config, ocr_model_id)
+                processed_text = await ocr_engine.process(epub_text, str(store.root))
+
             clean_text, image_urls, video_path = await preparer.prepare(
-                epub_text, vl_config, keep_refs, send_to_llm=send_to_llm, optimize_images=image_optimize)
+                processed_text, vl_config, keep_refs, send_to_llm=send_to_llm, optimize_images=image_optimize)
 
             if stream_mode == "polished":
                 prompt = build_polish_prompt(

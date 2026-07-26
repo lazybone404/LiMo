@@ -413,6 +413,8 @@ export interface VideoGenOptions extends BaseGenOptions {
 export interface DocGenOptions extends BaseGenOptions {
   image_analyze?: boolean
   image_optimize?: boolean
+  ocr_enabled?: boolean
+  ocr_model_id?: number
 }
 
 /** source_type=epub 专属（继承 DocGenOptions） */
@@ -487,6 +489,8 @@ export function streamGenerate(
   if (options.continue_from) params.set('continue_from', options.continue_from)
   if (opts.image_analyze !== undefined) params.set('image_analyze', String(opts.image_analyze))
   if (opts.image_optimize !== undefined) params.set('image_optimize', String(opts.image_optimize))
+  if (opts.ocr_enabled !== undefined) params.set('ocr_enabled', String(opts.ocr_enabled))
+  if (opts.ocr_model_id !== undefined) params.set('ocr_model_id', String(opts.ocr_model_id))
 
   const qs = params.toString()
   // 追踪 SSE 是否正常结束（收到 done/error/cancelled 事件）
