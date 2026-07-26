@@ -56,8 +56,12 @@
 | 场景 | 推荐模型 | 理由 |
 |------|---------|------|
 | 生成笔记 | qwen3.7-plus | 1M 上下文，多模态，高性价比 |
-| 省钱方案 | qwen-plus / qwen-turbo | 纯文本够用 |
-| 图片 OCR | qwen-vl-ocr-latest | ¥0.3/M 极低价 |
+| 省钱纯文本 | qwen-flash | ¥0.15/M，最便宜，1M 上下文 |
+| 低成本 OCR | qwen3-vl-flash | ¥0.15/M，小尺寸视觉，最快最便宜 |
+| 文档 OCR | qwen-vl-ocr-latest | ¥0.3/M，文档/表格/公式 |
 | 图片理解 | qwen3.7-plus | 视觉+文本一体化 |
 | 语音转写 | paraformer-realtime-v2 | 方言支持最全 |
-| 复杂推理 | deepseek-v4-pro | 第三方最强 |
+| 代码生成 | qwen3-coder-plus | 1M 上下文，代码专用 |
+
+> **能力标注说明**：LiMo 预设中已为所有已知模型内置 `capabilities`（text/image），
+> 添加模型时优先使用预设标签。API 拉取到的新模型默认纯文本，可在设置页手动调整。

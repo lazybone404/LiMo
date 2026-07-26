@@ -269,11 +269,25 @@ def refresh_models(provider_id: str, request: Request):
             data = resp.json()
             items = data.get("data", [])
             skip_words = ["embedding", "moderation", "dall-e", "babbage", "davinci", "omni"]
+            # 阿里云 DashScope 平台托管了第三方模型（DeepSeek/Kimi/GLM 等），
+            # 这些第三方模型有自己的官方渠道，混在阿里云模型列表里会让用户困惑
+            dashscope_third_party = [
+                "deepseek-", "deepseek/", "kimi-", "glm-", "minimax-",
+                "vanchin/", "chatglm", "baichuan", "llama",
+                "mistral", "mixtral", "yi-",
+            ]
             models = []
             for m in items:
                 mid = m.get("id", "")
                 if any(w in mid.lower() for w in skip_words):
                     continue
+                # DashScope：过滤托管第三方模型，仅保留千问系
+                if provider_id == "dashscope":
+                    owned_by = m.get("owned_by", "").lower()
+                    if owned_by and owned_by not in ("dashscope", "qwen", "alibaba", ""):
+                        continue
+                    if any(mid.lower().startswith(p) for p in dashscope_third_party):
+                        continue
                 models.append({"id": mid, "owned_by": m.get("owned_by", "")})
             if models:
                 return {"models": models[:50]}
@@ -293,8 +307,9 @@ def refresh_models(provider_id: str, request: Request):
 _PROVIDER_IMAGE_RULES: dict[str, dict] = {
     "openai":     {"include": ["gpt-4o", "gpt-4.1", "o1", "o3", "o4"]},
     "anthropic":  {"include": ["claude"], "exclude": ["haiku"]},  # Claude 全系除 Haiku
-    # Qwen3.5+ 统一多模态（plus/flash/开源全系），旧 VL/Omni/QVQ 也支持视觉
-    "dashscope":  {"include": ["qwen-vl", "qwen-omni", "qvq", "qwen3.7-plus", "qwen3.6", "qwen3.5", "qwen3-vl"],
+    # 仅标记名称中明确含视觉标识的模型（qwen-vl / qwen-omni / qvq 等）
+    # qwen3.x 系列命名规则模糊（同系列有纯文本也有多模态），不自动猜测，靠预设声明
+    "dashscope":  {"include": ["qwen-vl", "qwen-omni", "qvq", "qwen3-vl"],
                    "exclude": ["coder"]},
     "google":     {"include": ["*"]},
     "deepseek":   {"include": ["vl", "vision"]},
@@ -327,6 +342,18 @@ def _detect_capabilities(provider_id: str, model_name: str) -> list[str]:
     return caps
 
 
+def _lookup_preset_capabilities(cfg: dict, provider_id: str, model_name: str) -> list[str] | None:
+    """从 llm_models 预设查找已知模型的能力标签。
+    预设中声明的能力是确定可靠的，优先于自动检测规则。
+    返回 None 表示预设中无此模型，调用方应回退到 _detect_capabilities()。
+    """
+    preset = cfg.get("llm_models", {}).get(provider_id, [])
+    for m in preset:
+        if m["id"] == model_name:
+            return m.get("capabilities")
+    return None
+
+
 @router.post("/models")
 def add_model(data: AddModelData, request: Request):
     """启用一个模型"""
@@ -340,7 +367,8 @@ def add_model(data: AddModelData, request: Request):
                 return {"status": "ok", "id": m["id"]}
 
         new_id = int(hashlib.md5(f"{data.provider_id}:{data.model_name}".encode()).hexdigest()[:8], 16)
-        caps = _detect_capabilities(data.provider_id, data.model_name)
+        caps = _lookup_preset_capabilities(cfg, data.provider_id, data.model_name) \
+               or _detect_capabilities(data.provider_id, data.model_name)
         entry = {
             "id": new_id, "provider_id": data.provider_id,
             "model_name": data.model_name, "capabilities": caps,

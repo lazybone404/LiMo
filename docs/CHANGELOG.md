@@ -6,6 +6,43 @@
 
 ---
 
+## 2026-07-26 — DashScope 模型体系加固
+
+### 问题
+
+1. **第三方模型混入**：DashScope API `/v1/models` 返回阿里云平台上托管的所有模型（含 DeepSeek/Kimi/GLM 等第三方），刷新模型列表时混在千问模型中间，用户困惑。
+2. **能力检测依赖命名规则**：`_PROVIDER_IMAGE_RULES` 用字符串前缀猜测模型能力（如 `qwen3.6` → image），但同系列下有纯文本也有多模态（qwen3.6-flash 实为纯文本），规则不可靠。
+3. **低成本模型缺失**：`qwen-flash`（¥0.15/M 最便宜文本）、`qwen3.5-flash`（¥0.2/M 视觉 Flash）、`qwen3.5-ocr`（卡证票据 OCR）未在预设中。
+4. **模型描述冗长**：含价格、上下文等信息，用户真正需要的是快速判断"能不能处理图片"。
+
+### 解决方案
+
+**能力标注策略**：`预设声明（确定可靠） > 用户手动标记 > 自动检测规则（仅明确视觉前缀）`
+
+### 改动
+
+**模型列表净化**（`routers/model.py`）：
+- `refresh_models`：DashScope API 结果按 `owned_by` + ID 前缀双重过滤，排除 `deepseek-`/`kimi-`/`glm-`/`minimax-` 等第三方模型
+- 新增 `_lookup_preset_capabilities()`：`add_model` 时优先从 `llm_models` 预设查能力标签，预设无此模型才回退到自动检测
+- `_PROVIDER_IMAGE_RULES` dashscope 收紧：去掉模糊的 `qwen3.7-plus`/`qwen3.6`/`qwen3.5`，仅保留 `qwen-vl`/`qwen-omni`/`qvq`/`qwen3-vl` 四种明确视觉前缀
+
+**模型预设加固**（`core/config.py`）：
+- `llm_models.dashscope` 全部 13 个模型内置 `capabilities` 字段 — 5 个 `["text"]`，8 个 `["text", "image"]`
+- 新增 3 个低成本模型：`qwen-flash`、`qwen3.5-flash`、`qwen3.5-ocr`
+- 描述统一为 `能力类型 · 一句话定位`（去掉价格/上下文等冗余信息）
+- `engine_providers.dashscope.builtin_models` 新增 3 个 OCR 引擎模型（`qwen-vl-ocr-latest`/`qwen3-vl-flash`/`qwen3.5-ocr`）
+
+### 影响范围
+- `backend/app/core/config.py`（DashScope 预设段重写，+3 模型，+13 capabilities）
+- `backend/app/routers/model.py`（+50 行：过滤逻辑 + 预设查表 + 规则收紧）
+
+### 设计决策
+
+- **预设覆盖已知，规则兜底未知**：不会出现"预设遗漏 → 自动检测误判"的夹缝。已知模型的能力是人工声明的事实，不依赖命名规则猜测。
+- **新模型交给用户判断**：API 拉取到不在预设中的模型时，仅名称含 `qwen-vl`/`qwen-omni`/`qvq`/`qwen3-vl` 的自动标视觉，其他默认纯文本。用户可在设置页手动调整。
+
+---
+
 ## 2026-07-26 — OCR 预处理管线 + 千问模型集成
 
 ### OCR 预处理管线
