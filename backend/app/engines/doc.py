@@ -40,7 +40,7 @@ class PyMuPDFEngine(Engine):
 
         media_dir = kwargs.get("media_dir", "")  # 指定则写文件引用，否则 fallback base64
 
-        doc = fitz.open(str(file_path))
+        doc = fitz.Document(str(file_path))
         parts: list[str] = []
         scanned_pages = 0
         img_idx = 0
@@ -133,7 +133,7 @@ class PyMuPDF4LLMEngine(Engine):
             dpi=150,
         )
 
-        doc = fitz.open(str(file_path))
+        doc = fitz.Document(str(file_path))
         pages = doc.page_count
         doc.close()
 
@@ -619,7 +619,7 @@ class PDFOCREngine(Engine):
 
         from app.core.registry import EngineRegistry
 
-        doc = fitz.open(str(file_path))
+        doc = fitz.Document(str(file_path))
         parts: list[str] = []
         success = 0
 

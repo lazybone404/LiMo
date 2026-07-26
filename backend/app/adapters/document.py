@@ -299,7 +299,7 @@ class DocumentAdapter(PipelineAdapter):
         产物：每页包含原图（150dpi）和 OCR 识别的文字，方便对照确认。
         按优先级依次尝试 OCR 引擎，失败或空结果自动降级到下一个。
         """
-        doc = fitz.open(str(path))
+        doc = fitz.Document(str(path))
         pages = doc.page_count
         parts: list[str] = []
         success = 0
