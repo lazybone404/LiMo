@@ -12,7 +12,10 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-import fitz  # PyMuPDF
+try:
+    import pymupdf as fitz  # PyMuPDF ≥1.24
+except ImportError:
+    import fitz  # 旧版兼容
 
 from app.core.errors import FatalError
 from app.core.types import PipelineInput, AdapterOutput, RawMetadata, InputType, ProgressEvent

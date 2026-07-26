@@ -36,7 +36,10 @@ class PyMuPDFEngine(Engine):
         self.capabilities = ["text", "table", "image", "pdf"] if not text_only else ["text", "table", "pdf"]
 
     def execute(self, file_path: str, **kwargs) -> DocResult:
-        import fitz
+        try:
+            import pymupdf as fitz
+        except ImportError:
+            import fitz
 
         media_dir = kwargs.get("media_dir", "")  # 指定则写文件引用，否则 fallback base64
 
@@ -121,7 +124,10 @@ class PyMuPDF4LLMEngine(Engine):
 
     def execute(self, file_path: str, **kwargs) -> DocResult:
         import pymupdf4llm
-        import fitz
+        try:
+            import pymupdf as fitz
+        except ImportError:
+            import fitz
 
         media_dir = kwargs.get("media_dir", "")
 
@@ -614,7 +620,10 @@ class PDFOCREngine(Engine):
         self.capabilities = ["ocr", "image", "pdf"]
 
     def execute(self, file_path: str) -> DocResult:
-        import fitz
+        try:
+            import pymupdf as fitz
+        except ImportError:
+            import fitz
         import tempfile
 
         from app.core.registry import EngineRegistry
