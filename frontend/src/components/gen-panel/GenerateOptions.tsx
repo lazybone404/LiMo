@@ -161,8 +161,8 @@ export function GenerateOptions(props: Props) {
                 <label className={`flex items-center gap-2 ml-5 cursor-pointer`}>
                   <input type="checkbox" checked={p.ocrEnabled} onChange={e => p.setOcrEnabled(e.target.checked)}
                     className="w-3.5 h-3.5 accent-accent" />
-                  <span className="text-[12px]">OCR 预处理</span>
-                  <span className="text-[10px] text-disabled">廉价 OCR 提取图片文字→塞回原文→文本 LLM</span>
+                  <span className="text-[12px]">OCR 提取图中文字</span>
+                  <span className="text-[10px] text-disabled">先用 OCR 模型识别图片内容插入原文，再交给文本模型生成</span>
                 </label>
               )}
               {p.formatImages && p.ocrEnabled && (
