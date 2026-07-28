@@ -84,19 +84,31 @@ export default function App() {
     })
   }
 
-    // Tauri 模式：等 backend-ready 事件后才加载数据
+    // Tauri 模式：主动轮询 /health + 监听 backend-ready 事件，双保险
     if ((window as any).__TAURI_INTERNALS__) {
-      let cancelled = false
-      const timeout = setTimeout(() => {
-        if (!cancelled) { console.warn('Backend ready timeout, forcing load'); init() }
-      }, 45000)
+      let done = false
+      const initOnce = () => { if (!done) { done = true; init() } }
+
+      // 主动健康检查：后端刷新前可能已在运行，event 已错过
+      const healthCheck = async () => {
+        for (let i = 0; i < 90; i++) {  // 90 × 500ms = 45s
+          if (done) return
+          try {
+            const r = await fetch('http://127.0.0.1:7413/health')
+            if (r.ok) { console.log('Backend health OK'); initOnce(); return }
+          } catch { /* 后端未就绪，继续轮询 */ }
+          await new Promise(r => setTimeout(r, 500))
+        }
+        if (!done) { console.warn('Backend ready timeout, forcing load'); initOnce() }
+      }
+      healthCheck()
+
+      // 同时监听 backend-ready 事件（后端重启等场景）
       import('@tauri-apps/api/event').then(({ listen }) => {
-        const unlisten = listen('backend-ready', () => {
-          if (!cancelled) { console.log('Backend ready'); clearTimeout(timeout); init() }
-        })
-        return unlisten
-      }).catch(() => init()) // 导入失败则直接加载
-      return () => { cancelled = true; clearTimeout(timeout) }
+        listen('backend-ready', () => { console.log('Backend ready event'); initOnce() })
+      }).catch(() => {}) // 导入失败无所谓，health check 已覆盖
+
+      return () => { done = true }
     }
     // 浏览器/开发模式：直接加载
     init()
