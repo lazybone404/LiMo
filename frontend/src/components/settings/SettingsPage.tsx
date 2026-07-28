@@ -184,6 +184,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                 {tab === 'auth' && '配置各平台的认证 Cookie'}
                 {tab === 'proxy' && '网络代理与访问控制'}
                 {tab === 'agent' && '配置 AI 对话中网络搜索和网页抓取的方案'}
+                {tab === 'appearance' && '主题模式与主色调配色方案'}
               </p>
             </div>
             <button onClick={handleSave}
