@@ -146,12 +146,20 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 
 ### 适配器注册
 
-`app/adapters/__init__.py` → `AdapterRegistry.register()`。新增管道只需实现 `accept()` + `adapt()` 并注册即生效。注册顺序决定路由优先级：Video（含 BilibiliSubtitle / YouTubeSubtitle 字幕优先提取）→ Document → Image → Webpage → Text（兜底）。共 7 个适配器。
+`app/adapters/__init__.py` → `AdapterRegistry.register()`。新增管道只需实现 `accept()` + `adapt()` 并注册即生效。注册顺序决定路由优先级：Video（含 BilibiliSubtitle / YouTubeSubtitle 字幕优先提取）→ Document → Image → Webpage → Text（兜底）。共 5 个适配器。
+
+### 其他注册表
+
+同类插件化模式还用在两处：
+- **ProductRegistry**（`app/generation/product_registry.py`）— 产物注册表，定义 notes/polished/fact_check 及其依赖拓扑。新增产物类型只需加一个 `ProductDef` 即可，无需改分发逻辑或前端 UI。
+- **ToolRegistry**（`app/agent/tool_registry.py`）— Agent 工具注册中心，替代硬编码的 `_register_chat_tools()`。每个工具是独立 `ToolDef`，注册后自动被发现和调用。
+
+FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` 四个依赖，消除路由函数中 `request.app.state.xxx` 样板代码。conversations / capabilities / files 路由已迁移，其余可逐步迁移。
 
 ### 引擎系统
 
 `app/engines/__init__.py` → `EngineRegistry.register()`。三类引擎：
-- **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端）→ faster-whisper（本地）
+- **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）→ faster-whisper-small / faster-whisper-medium（本地，CTranslate2）
 - **OCR**：dashscope-ocr（云端）→ Tesseract（本地便携版，`backend/bin/tesseract/`）
 - **Doc**：pymupdf4llm / pymupdf / pymupdf-text / pdf-ocr / python-docx / python-docx-text / python-pptx / python-pptx-text / openpyxl / markitdown / ebooklib
 
@@ -351,7 +359,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端) + faster-whisper small/medium/large-v3 (本地) |
+| ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端) + faster-whisper small/medium (本地) |
 | ✅ | OCR 引擎 | dashscope VL (云端) + Tesseract 便携版 (内置 `backend/bin/tesseract/`) |
 | ✅ | Doc 引擎 | PyMuPDF (PDF) + python-docx/pptx/xlsx + openpyxl + markitdown + ebooklib |
 | ✅ | 引擎绑定 | `engine_bindings` 按子场景配置，doc 拆为 text+image / text-only / scan-ocr / word / ppt / excel / epub |
