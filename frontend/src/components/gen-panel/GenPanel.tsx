@@ -318,7 +318,8 @@ export function GenPanel() {
       const msg = getErrorMessage(e)
       setError(msg); addToast(msg, 'error')
     } finally {
-      if (isSameDoc(capturedId)) { setRetranscribing(false); setProcessing(capturedId + '__retranscribe', null) }
+      setProcessing(capturedId + '__retranscribe', null)
+      if (isSameDoc(capturedId)) { setRetranscribing(false) }
     }
   }
 
@@ -433,7 +434,8 @@ export function GenPanel() {
       const msg = getErrorMessage(e)
       setError(msg); addToast(msg, 'error')
     } finally {
-      if (isSameDoc(capturedId)) { setImageProcessing(false); setProcessing(capturedId + '__process', null) }
+      setProcessing(capturedId + '__process', null)
+      if (isSameDoc(capturedId)) { setImageProcessing(false) }
     }
   }
 
@@ -520,9 +522,14 @@ export function GenPanel() {
         }
       },
       onDone(_result) {
+        // 清理本条目（必须在 isSameDoc 之前，防泄漏）
+        setProcessing(capturedId + '__generate', null)
+        // 全局 flag 仅在无其他文档生成时复位——防并发场景误关其他文档的流式状态
+        const tasks = useStore.getState().processingTasks
+        if (!Object.keys(tasks).some(k => k.endsWith('__generate'))) {
+          setGenerating(false); setIsStreaming(false)
+        }
         if (!isSameDoc(capturedId)) return
-        setGenerating(false); setProcessing(capturedId + '__generate', null)
-        setIsStreaming(false)
         // 内容整理 — 从内部缓冲区读取，streamDisplay=false 时也不会丢
         if (!isBoth) {
           const hasCore = selectedCore.includes('notes') || selectedCore.includes('polished')
@@ -566,15 +573,19 @@ export function GenPanel() {
         addToast(continueFrom ? '续写完成' : '生成完成')
       },
       onError(msg) {
+        setProcessing(capturedId + '__generate', null)
+        if (!Object.keys(useStore.getState().processingTasks).some(k => k.endsWith('__generate'))) {
+          setGenerating(false); setIsStreaming(false)
+        }
         if (!isSameDoc(capturedId)) return
         setError(msg); addToast(msg, 'error')
-        setGenerating(false); setProcessing(capturedId + '__generate', null)
-        setIsStreaming(false)
       },
       onCancelled(savedPartial) {
+        setProcessing(capturedId + '__generate', null)
+        if (!Object.keys(useStore.getState().processingTasks).some(k => k.endsWith('__generate'))) {
+          setGenerating(false); setIsStreaming(false)
+        }
         if (!isSameDoc(capturedId)) return
-        setGenerating(false); setProcessing(capturedId + '__generate', null)
-        setIsStreaming(false)
         // 单产物模式：把已生成的 buffer 存到最终内容中
         if (!isBoth) {
           const finalContent = useStore.getState().streamingContent

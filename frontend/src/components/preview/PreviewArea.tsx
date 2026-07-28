@@ -239,11 +239,14 @@ export function PreviewArea() {
     ? streamingContent
     : activeView === 'polished' ? currentPolishedContent : currentContent
   const processingTasks = useStore(s => s.processingTasks)
-  const importTask = Object.entries(processingTasks).find(([k, v]) => k.startsWith('__import__') && v.kind === 'import')
-  // key 格式为 `${docId}__${kind}`，查找当前文档的任一活跃任务
-  const activeTask = currentDocId
-    ? (Object.entries(processingTasks).find(([k]) => k.startsWith(currentDocId + '__'))?.[1] || null)
-    : (importTask?.[1] || null)
+  // key 格式为 `${docId}__${kind}`，收集当前文档所有活跃任务
+  const activeTasks = currentDocId
+    ? Object.entries(processingTasks)
+        .filter(([k]) => k.startsWith(currentDocId + '__'))
+        .map(([, v]) => v)
+    : (Object.entries(processingTasks)
+        .filter(([k, v]) => k.startsWith('__import__') && v.kind === 'import')
+        .map(([, v]) => v))
 
   /** 触发事实验证 */
   const handleFactCheck = (docId: string) => {
@@ -310,10 +313,10 @@ export function PreviewArea() {
         })
       },
       onDone(result) {
-        if (!isSame()) return
         useStore.getState().setFactChecking(false)
         useStore.getState().setProcessing(docId + '__fact_check', null)
         useStore.getState().setFactCheckProgress(null)
+        if (!isSame()) return
         if (result) {
           useStore.getState().setFactCheckMeta({
             id: result.id || '',
@@ -332,32 +335,33 @@ export function PreviewArea() {
         }
       },
       onError(msg) {
-        if (!isSame()) return
         useStore.getState().setFactChecking(false)
         useStore.getState().setProcessing(docId + '__fact_check', null)
+        if (!isSame()) return
         useStore.getState().addToast(msg, 'error')
       },
     })
   })  // getConfig().then(...) close
   }
 
-  /** 判断某个 view tab 是否正在处理中 */
+  /** 判断某个 view tab 是否正在处理中（支持多任务并发） */
   const isViewProcessing = (view: string) => {
-    if (!activeTask) return false
-    // import / retranscribe 是文档级别，影响所有 tab
-    if (activeTask.kind === 'import' || activeTask.kind === 'retranscribe') return true
-    // generate 影响笔记/分析报告/数据摘要
-    if (activeTask.kind === 'generate') return view === 'summary' || view === 'polished' || view === 'data_preview'
-    // fact_check 有自己的进度 UI（静态审核 → 验证中 → 报告），不由通用转圈处理
-    if (activeTask.kind === 'fact_check') return false
-    // process-image 只影响对应 mode 的 tab
-    if (activeTask.kind === 'process') return view === activeTask.mode
-    return false
+    return activeTasks.some(task => {
+      // import / retranscribe 是文档级别，影响所有 tab
+      if (task.kind === 'import' || task.kind === 'retranscribe') return true
+      // generate 影响笔记/分析报告/数据摘要
+      if (task.kind === 'generate') return view === 'summary' || view === 'polished' || view === 'data_preview'
+      // fact_check 有自己的进度 UI，不由通用转圈处理
+      if (task.kind === 'fact_check') return false
+      // process-image 只影响对应 mode 的 tab
+      if (task.kind === 'process') return view === task.mode
+      return false
+    })
   }
 
-  /** 处理进度占位组件（从 renderContent 中提出来，避免每次渲染重建组件类型） */
+  /** 处理进度占位组件（支持多任务并发——显示第一个匹配的任务） */
   const processingPlaceholder = useMemo(() => {
-    const task = activeTask
+    const task = activeTasks[0]
     if (!task) {
       return <div className="flex flex-col items-center justify-center h-64 gap-3">
         <Loader2 className="animate-spin text-accent" size={28} />
@@ -378,7 +382,8 @@ export function PreviewArea() {
         <p className="text-[12px] text-disabled">请耐心等待，AI 处理中...</p>
       </div>
     )
-  }, [activeTask])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTasks.length, activeTasks[0]?.kind, activeTasks[0]?.mode])
 
   const renderContent = () => {
     if (!currentDocId || !currentDoc) {

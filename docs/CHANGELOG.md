@@ -6,6 +6,43 @@
 
 ---
 
+## 2026-07-26 — 多任务状态泄漏修复 + 刷新内容恢复
+
+### 问题
+
+两个打包端 bug，根因相同——SSE 回调中的 `isSameDoc()` 守卫拦住了任务清理逻辑。
+
+**Bug 1 — 切换文档后产物预览永远加载中**：用户在文档 A 点生成 → 切换到文档 B → 文档 A 的 `onDone` 被 `isSameDoc` 拦截 → `setProcessing(key, null)` 永不调用 → 任务条目泄漏 → 切回 A 时 `isViewProcessing` 返回 true → 永远显示加载中。
+
+**Bug 2 — 刷新后内容不同步**：`processingTasks` 纯内存，刷新后 = `{}`。App.tsx `init()` 只恢复文档列表，不预加载已有内容 → 用户看到空预览区。
+
+### 修复
+
+**任务清理脱离 isSameDoc 守卫**（`GenPanel.tsx` + `PreviewArea.tsx`）：
+- 原则：`isSameDoc` 仅保护内容更新（setContent），不保护生命周期清理（setProcessing null）
+- `handleGenerate` onDone/onError/onCancelled、`handleRetranscribe` finally、`handleProcessImage` finally、`handleFactCheck` onDone/onError — 7 处 `setProcessing(key, null)` 移到守卫前
+- 全局 flag（`generating`/`isStreaming`）仅在 `processingTasks` 中无其他文档生成任务时才复位，防并发场景误关
+
+**刷新后预加载内容**（`App.tsx`）：
+- `init()` 恢复文档后，主动调 `getTranscript()` + `getMarkdown()` 预加载 rawText/notes/polished → 已有的生成结果立即可见
+
+**向前兼容加固**（`PreviewArea.tsx`）：
+- `activeTask`（单值 `find()`）→ `activeTasks`（数组 `filter()`）
+- `isViewProcessing` 改用 `some()` — 未来同文档多任务并发时不漏检
+
+### 影响范围
+- `frontend/src/components/gen-panel/GenPanel.tsx`（+27/-7 行，7 处守卫调整）
+- `frontend/src/components/preview/PreviewArea.tsx`（+47/-16 行，数组重构 + 守卫调整）
+- `frontend/src/App.tsx`（+26/-1 行，预加载逻辑）
+
+### 设计决策
+
+- **清理与内容更新解耦** — 清理是文档级操作（key 含 docId），内容更新是视图级操作（需 isSameDoc）。两者不应共用同一个守卫。
+- **全局 flag 防御式复位** — 检查 `processingTasks` 中所有文档而非仅当前文档，确保未来并发场景不会出现"一个完成→全部复位"的 bug。
+- **不持久化 processingTasks** — 任务状态是 SSE 连接绑定的临时数据，持久化后会引入僵尸条目恢复问题。替代方案是主动从服务端加载已保存的内容。
+
+---
+
 ## 2026-07-26 — DashScope 模型体系加固
 
 ### 问题

@@ -13,7 +13,7 @@ import { SetupWizard } from './components/ui/SetupWizard'
 import { ResizeHandle } from './components/ui/ResizeHandle'
 import { PanelStrip } from './components/ui/PanelStrip'
 import { ThemeToggle } from './components/ui/ThemeToggle'
-import { fetchCapabilities, listTranscripts } from './api/client'
+import { fetchCapabilities, listTranscripts, getMarkdown, getTranscript } from './api/client'
 import { Settings, PanelLeft, Library, MessageSquare, PenLine, Bot, Archive } from 'lucide-react'
 
 export default function App() {
@@ -52,6 +52,30 @@ export default function App() {
         if (lastId && docs.some(d => d.id === lastId)) {
           useStore.getState().selectDoc(lastId)
           if (lastView) useStore.getState().setActiveView(lastView)
+        }
+      } catch { /* ignore */ }
+      // 刷新后 processingTasks 丢失是预期的（SSE 连接已断开），
+      // 但服务器上已生成的内容应立即可见——主动预加载
+      try {
+        const restoredId = useStore.getState().currentDocId
+        if (restoredId) {
+          getTranscript(restoredId).then(tx => {
+            if (tx && useStore.getState().currentDocId === restoredId) {
+              useStore.getState().setCurrentRawText(tx.rawText ?? '')
+            }
+          }).catch(() => {})
+          getMarkdown(restoredId, 'notes').then(md => {
+            if (md && useStore.getState().currentDocId === restoredId) {
+              useStore.getState().setCurrentContent(md.content)
+              useStore.getState().setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version })
+              useStore.getState().setMarkdownVersions(md.versions || [])
+            }
+          }).catch(() => {})
+          getMarkdown(restoredId, 'polished').then(md => {
+            if (useStore.getState().currentDocId === restoredId) {
+              useStore.getState().setCurrentPolishedContent(md?.content || null)
+            }
+          }).catch(() => {})
         }
       } catch { /* ignore */ }
     }).catch(err => {
