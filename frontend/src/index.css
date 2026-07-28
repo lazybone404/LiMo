@@ -5,6 +5,31 @@
    Three-layer: Primitives → Tailwind @theme → Markdown vars
    ══════════════════════════════════════════════════════════ */
 
+/* ── Layer 0: Accent Theme Presets (data-accent driven) ────── */
+
+/*
+ * 每个主题包装4个 HSL 原语，其余颜色通过 hsl() 动态派生。
+ * 15 条紧凑规则，添加新主题只需在此加一行。
+ */
+
+/* 现代 */
+[data-accent="sky"]       { --accent-hue: 211; --accent-sat: 100; --second-hue: 195; --second-sat: 80;  }
+[data-accent="ocean"]     { --accent-hue: 225; --accent-sat: 60;  --second-hue: 210; --second-sat: 50;  }
+[data-accent="sunset"]    { --accent-hue: 30;  --accent-sat: 100; --second-hue: 345; --second-sat: 70;  }
+[data-accent="forest"]    { --accent-hue: 145; --accent-sat: 60;  --second-hue: 160; --second-sat: 45;  }
+[data-accent="lavender"]  { --accent-hue: 272; --accent-sat: 60;  --second-hue: 340; --second-sat: 50;  }
+[data-accent="slate"]     { --accent-hue: 220; --accent-sat: 15;  --second-hue: 215; --second-sat: 25;  }
+/* 国风 */
+[data-accent="dunhuang"]  { --accent-hue: 2;   --accent-sat: 80;  --second-hue: 40;  --second-sat: 75;  }
+[data-accent="porcelain"] { --accent-hue: 225; --accent-sat: 50;  --second-hue: 215; --second-sat: 22;  }
+[data-accent="ink"]       { --accent-hue: 30;  --accent-sat: 10;  --second-hue: 125; --second-sat: 30;  }
+[data-accent="rouge"]     { --accent-hue: 350; --accent-sat: 70;  --second-hue: 285; --second-sat: 25;  }
+[data-accent="celadon"]   { --accent-hue: 170; --accent-sat: 30;  --second-hue: 215; --second-sat: 20;  }
+[data-accent="osmanthus"] { --accent-hue: 40;  --accent-sat: 75;  --second-hue: 5;   --second-sat: 50;  }
+
+/* 默认 = 天际蓝 (data-accent 未设置时) */
+:root:not([data-accent]) { --accent-hue: 211; --accent-sat: 100; --second-hue: 195; --second-sat: 80; }
+
 /* ── Layer 1: Primitives (Apple System Palette) ─────────── */
 
 :root {
@@ -48,8 +73,12 @@
   --tk-muted: #8E8E93;
   --tk-dimmed: #636366;
   --tk-disabled: #AEAEB2;
-  --tk-accent: #007AFF;
-  --tk-accent-hover: #0066D6;
+  /* 主色 — 从 HSL 原语动态派生 */
+  --tk-accent: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 50%);
+  --tk-accent-hover: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 42%);
+  /* 辅色 — 标题、引用（新增） */
+  --tk-secondary: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 44%);
+  --tk-secondary-hover: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 36%);
   --tk-border: #D2D2D7;
   --tk-border-light: #E8E8ED;
   --tk-success: #34C759;
@@ -66,8 +95,12 @@
   --tk-muted: #A0A0A8;
   --tk-dimmed: #888892;
   --tk-disabled: #6A6A74;
-  --tk-accent: #3B9EFF;
-  --tk-accent-hover: #5AAFFF;
+  /* 主色 — dark 下 lightness 更高 */
+  --tk-accent: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 62%);
+  --tk-accent-hover: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 72%);
+  /* 辅色 — dark 下同样抬高 lightness */
+  --tk-secondary: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 56%);
+  --tk-secondary-hover: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 66%);
   --tk-border: #3A3A40;
   --tk-border-light: #2E2E34;
   --tk-success: #30D158;
@@ -87,6 +120,8 @@
   --color-disabled: var(--tk-disabled);
   --color-accent: var(--tk-accent);
   --color-accent-hover: var(--tk-accent-hover);
+  --color-secondary: var(--tk-secondary);
+  --color-secondary-hover: var(--tk-secondary-hover);
   --color-border-default: var(--tk-border);
   --color-border-light: var(--tk-border-light);
   --color-success: var(--tk-success);
@@ -152,33 +187,35 @@ body {
 
 /* ── Markdown Color Variables ───────────────────────────── */
 
+/* Light — 标题/引用用辅色，链接/代码/加粗用主色 */
 :root {
-  --md-h1: #1E3A5F;
-  --md-h2: #1D4ED8;
-  --md-h3: #2563EB;
-  --md-h4: #3B82F6;
-  --md-strong: #1E40AF;
-  --md-link: #2563EB;
-  --md-blockquote-bg: #EFF6FF;
-  --md-blockquote-border: #3B82F6;
-  --md-code-bg: #F0F4FF;
-  --md-code-color: #1D4ED8;
+  --md-h1: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 22%);
+  --md-h2: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 30%);
+  --md-h3: hsl(var(--second-hue), calc(var(--second-sat) * 0.8 * 1%), 38%);
+  --md-h4: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 46%);
+  --md-strong: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.8 * 1%), 36%);
+  --md-link: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 46%);
+  --md-blockquote-bg: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 95%);
+  --md-blockquote-border: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 48%);
+  --md-code-bg: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 96%);
+  --md-code-color: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.7 * 1%), 38%);
   --md-table-border: #D2D2D7;
   --md-table-header-bg: #F5F5F7;
   --md-hr: #D2D2D7;
 }
 
+/* Dark — 降低 sat 避免荧光感，提高 lightness */
 [data-theme="dark"] {
-  --md-h1: #93C5FD;
-  --md-h2: #60A5FA;
-  --md-h3: #3B82F6;
-  --md-h4: #2563EB;
-  --md-strong: #93C5FD;
-  --md-link: #60A5FA;
-  --md-blockquote-bg: rgba(59,130,246,0.1);
-  --md-blockquote-border: #3B82F6;
-  --md-code-bg: rgba(59,130,246,0.12);
-  --md-code-color: #93C5FD;
+  --md-h1: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 78%);
+  --md-h2: hsl(var(--second-hue), calc(var(--second-sat) * 0.65 * 1%), 68%);
+  --md-h3: hsl(var(--second-hue), calc(var(--second-sat) * 0.7 * 1%), 60%);
+  --md-h4: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 52%);
+  --md-strong: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.65 * 1%), 72%);
+  --md-link: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.8 * 1%), 65%);
+  --md-blockquote-bg: hsl(var(--second-hue), calc(var(--second-sat) * 0.5 * 1%), 10%);
+  --md-blockquote-border: hsl(var(--second-hue), calc(var(--second-sat) * 0.8 * 1%), 54%);
+  --md-code-bg: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.5 * 1%), 10%);
+  --md-code-color: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.55 * 1%), 72%);
   --md-table-border: var(--color-border-default);
   --md-table-header-bg: var(--color-surface-hover);
   --md-hr: var(--color-border-default);

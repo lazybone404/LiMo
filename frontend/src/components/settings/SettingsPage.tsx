@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { getConfig, updateConfig, getErrorMessage } from '../../api/client'
 import { useStore } from '../../store'
-import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2 } from 'lucide-react'
+import { ACCENT_GROUPS, ACCENT_SWATCH } from '../../lib/accent'
+import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette } from 'lucide-react'
 import { ProviderSettings } from './ProviderSettings'
 
 /** BiliNote 式设置布局 — 左侧菜单导航 + 右侧内容区 */
@@ -12,6 +13,7 @@ const MENU = [
   { key: 'proxy', label: '代理', icon: Globe },
   { key: 'agent', label: 'Agent 工具', icon: Wrench },
   { key: 'general', label: '通用', icon: Settings },
+  { key: 'appearance', label: '外观', icon: Palette },
 ] as const
 
 const LANG_OPTIONS = [
@@ -42,6 +44,9 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const [verifyMode, setVerifyMode] = useState('llm')
   const [targetLanguage, setTargetLanguage] = useState('zh-CN')
   const [loading, setLoading] = useState(true)
+
+  const accent = useStore(s => s.accent)
+  const setAccent = useStore(s => s.setAccent)
 
   useEffect(() => {
     getConfig().then(cfg => {
@@ -239,6 +244,56 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
           )}
 
           {/* 通用 */}
+          {/* 外观 */}
+          {tab === 'appearance' && (
+            <div className="space-y-6">
+              {/* 主色调 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
+                <div>
+                  <label className="text-[15px] font-medium mb-1 block">主色调</label>
+                  <p className="text-[12px] text-muted mb-5">
+                    更改应用的整体配色，影响按钮、链接和 Markdown 内容的颜色
+                  </p>
+                  {ACCENT_GROUPS.map(group => (
+                    <div key={group.label} className="mb-5 last:mb-0">
+                      <h4 className="text-[11px] text-dimmed font-medium mb-3 uppercase tracking-wide">
+                        {group.label}
+                      </h4>
+                      <div className="grid grid-cols-6 gap-3">
+                        {group.accents.map(a => {
+                          const sw = ACCENT_SWATCH[a.key]
+                          const selected = accent === a.key
+                          return (
+                            <button
+                              key={a.key}
+                              onClick={() => setAccent(a.key)}
+                              title={a.label}
+                              className="flex flex-col items-center gap-1.5 group"
+                            >
+                              <div
+                                className={`w-10 h-10 rounded-full transition-all ${
+                                  selected
+                                    ? 'ring-2 ring-offset-2 ring-accent ring-offset-surface scale-110'
+                                    : 'hover:scale-105'
+                                }`}
+                                style={{
+                                  background: `conic-gradient(${sw.primary} 0deg 180deg, ${sw.secondary} 180deg 360deg)`,
+                                }}
+                              />
+                              <span className={`text-[11px] ${
+                                selected ? 'text-accent font-medium' : 'text-muted group-hover:text-dimmed'
+                              }`}>{a.label}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           {tab === 'general' && (
             <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-4">
               <p className="text-[13px] text-muted">翻译目标语言及界面显示语言。</p>

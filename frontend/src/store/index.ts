@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { type ThemeMode, getSavedTheme, resolveTheme, applyTheme, saveTheme } from '../lib/theme'
+import { type AccentColor, getSavedAccent, applyAccent, saveAccent } from '../lib/accent'
 import type { Capabilities } from '../api/client'
 
 export interface DocEntry {
@@ -145,6 +146,10 @@ interface Store {
   theme: ThemeMode
   resolvedTheme: 'light' | 'dark'
   setTheme: (t: ThemeMode) => void
+
+  // 主色调
+  accent: AccentColor
+  setAccent: (a: AccentColor) => void
 
   // Toast
   toasts: { id: number; message: string; type: 'success' | 'error' | 'info' }[]
@@ -301,6 +306,13 @@ export const useStore = create<Store>((set) => ({
     set({ theme: mode, resolvedTheme: resolved })
   },
 
+  accent: getSavedAccent(),
+  setAccent: (accent) => {
+    saveAccent(accent)
+    applyAccent(accent)
+    set({ accent })
+  },
+
   toasts: [],
   addToast: (message, type = 'success') => {
     const id = ++msgCounter
@@ -318,6 +330,7 @@ export const useStore = create<Store>((set) => ({
 
 // Apply initial theme on store creation
 applyTheme(resolveTheme(getSavedTheme()))
+applyAccent(getSavedAccent())
 
 // Listen for system theme changes when in "system" mode
 const sysMq = window.matchMedia('(prefers-color-scheme: dark)')
