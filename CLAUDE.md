@@ -161,7 +161,12 @@ FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_co
 `app/engines/__init__.py` → `EngineRegistry.register()`。三类引擎：
 - **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）→ faster-whisper-small / faster-whisper-medium（本地，CTranslate2）
 - **OCR**：dashscope-ocr（云端）→ Tesseract（本地便携版，`backend/bin/tesseract/`）
-- **Doc**：pymupdf4llm / pymupdf / pymupdf-text / pdf-ocr / python-docx / python-docx-text / python-pptx / python-pptx-text / openpyxl / markitdown / ebooklib
+- **Doc**（全 MIT/BSD，已移除 AGPL 引擎）：
+  - **pypdfium2**（BSD-3，默认）：C 引擎直读文字 + 嵌入原图，毫秒级。pdfplumber (MIT) 辅助表格提取
+  - **docling** / **docling-text**（MIT）：ONNX 布局模型，精准标题/表格/矢量图
+  - **markitdown**（MIT）：Office/EPUB 转 Markdown
+  - **python-docx** / **python-pptx** / **openpyxl** / **ebooklib**：各格式专用引擎
+- 旧 pymupdf/pymupdf4llm/pdf-ocr（AGPL）代码保留在 `doc.py` 中但不注册
 
 引擎绑定通过 `engine_bindings` 动态 key 分配，doc 拆为子场景（`doc:text+image` / `doc:text-only` / `doc:scan-ocr` / `doc:word` / `doc:ppt` / `doc:excel` / `doc:epub` 等），设置页可独立配置。
 
@@ -208,6 +213,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **引擎映射唯一入口**：`_resolve_doc_engine` 用 `model_name` 查找（非 `provider_id`），支持字符串/数字/列表三种绑定格式
 - **引擎绑定保存合并**：`set_engine_bindings` 合并而非替换 — 保存 OCR 绑定不会删除 ASR 绑定。`cfg["engine_bindings"] = stored`（全量替换）→ `existing.update(stored)`（增量合并）
 - **LLM Key 双向同步**：`update_provider` 自动同步到 `llm.api_key`；generate router 在 `llm.api_key` 为空时从 providers 回退
+- **引擎前端后端驱动**：`GET /api/capabilities` 返回 `fileTypeMap`/`scenarioLabels`/`engineLabels`/`styleLabels` 等完整元数据，前端 `constants.ts` 不再硬编码引擎名/文件类型。新增引擎只需后端注册 + `config.py` builtin_models 加一行 desc，前端自动发现
 
 ### 导入与去重
 - **唯一导入入口**：GenPanel 是唯一导入入口，DocLibrary 只负责搜索/筛选/列表
@@ -236,7 +242,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **PreviewArea 按 sourceType 分派 tab**：视频 3tab / 文档 3tab / Excel 3tab / 图片 5tab / 网页 3tab / 文本 3tab + 思维导图
 - **Transcript 视图分派**：JSON+segments → 时间轴（视频）；否则 → 完整 Markdown 渲染
 - **处理进度按 tab 粒度**：生成笔记只影响 summary/polished tab，图片处理只影响对应 mode tab
-- **主题系统**：双机制 — CSS 变量（`--tk-*` 14 个语义令牌）+ Tailwind v4 `@theme` 引用。Light/Dark/System 三模式，`data-theme` 属性驱动。Markdown 用 12 个 `--md-*` 变量
+- **主题系统**：四轴独立 — `data-theme`(明暗) × `data-accent`(12套配色) × `data-texture`(6种纹理) × `data-font`(5种字体)。CSS 变量（`--tk-*` 全暖调）+ Tailwind v4 `@theme` 引用。`data-theme` 属性驱动明暗，`data-accent` 驱动 HSL 主辅色。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，无硬编码色值）
+- **⚠️ github-markdown-light.css 覆盖**：`main.tsx` 导入的第三方 CSS 硬编码 `.markdown-body { background-color: #ffffff }` 和 `#f6f8fa` 等冷灰色。`index.css` 中用 `!important` + `--tk-*` 变量覆盖。新增 markdown 背景样式时必须同步检查此文件
 
 ### 导出系统
 
