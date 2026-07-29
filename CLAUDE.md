@@ -406,7 +406,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 |------|------|------|
 | ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端) + faster-whisper small/medium (本地) |
 | ✅ | OCR 引擎 | dashscope VL (云端) + Tesseract 便携版 (内置 `backend/bin/tesseract/`) |
-| ✅ | Doc 引擎 | PyMuPDF (PDF) + python-docx/pptx/xlsx + openpyxl + markitdown + ebooklib |
+| ✅ | Doc 引擎 | pypdfium2 (PDF默认,BSD-3) + docling (PDF布局,MIT) + pdfplumber (表格,MIT) + python-docx/pptx/xlsx + openpyxl + markitdown + ebooklib |
 | ✅ | 引擎绑定 | `engine_bindings` 按子场景配置，doc 拆为 text+image / text-only / scan-ocr / word / ppt / excel / epub |
 | ✅ | 引擎降级开关 | `engine_auto_fallback`，失败直接报错，不再静默 fallback |
 | ✅ | 视频帧提取 | OpenCV 抽帧 + 网格拼接 + 去重 |
@@ -481,7 +481,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 四栏布局 | GenPanel \| DocLibrary \| PreviewArea \| AIPanel，可拖拽 resize |
 | ✅ | PanelStrip | <80px 自动折叠为图标条 |
 | ✅ | 快捷键 | `Ctrl+G` 生成面板，`Ctrl+I` AI 面板 |
-| ✅ | 主题系统 | 14 个 CSS 令牌 + Tailwind v4 + Light/Dark/System + 12 个 `--md-*` 变量 |
+| ✅ | 主题系统 | 六轴独立 — `data-theme`(明暗) × `data-accent`(12套配色) × `data-base`(6种基调) × `data-texture`(6种纹理) × `data-font`(5种字体) × 强度滑条。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（书香/简净/复古/青竹）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值） |
 | ✅ | GenPanel 类型门控 | 5 类型 × 5 子标签，逐类型显隐选项 |
 | ✅ | EPUB 骨架面板 | EpubSkeletonPanel 章节树 + 选中章节/全书切换 |
 | ✅ | 事实验证 UI | fact_check tab + 流式进度指示 + 报告渲染 |
