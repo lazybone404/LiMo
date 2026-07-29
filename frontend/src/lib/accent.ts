@@ -9,10 +9,13 @@
 export type AccentColor =
   // 现代
   | 'sky' | 'ocean' | 'sunset' | 'forest' | 'lavender' | 'slate'
+  | 'coral' | 'spearmint' | 'plum'
   // 国风
   | 'dunhuang' | 'porcelain' | 'ink' | 'rouge' | 'celadon' | 'osmanthus'
+  | 'vermillion' | 'indigo' | 'sandalwood'
   // 自然
-  | 'matcha' | 'cherry' | 'pine'
+  | 'matcha' | 'cherry' | 'pine' | 'olive' | 'teal' | 'blossom'
+  | 'peony' | 'rosegold'
 
 interface AccentEntry {
   key: AccentColor
@@ -34,6 +37,9 @@ export const ACCENT_GROUPS: AccentGroup[] = [
       { key: 'forest',   label: '森林' },
       { key: 'lavender', label: '薰衣草' },
       { key: 'slate',    label: '岩板' },
+      { key: 'coral',     label: '珊瑚' },
+      { key: 'spearmint', label: '薄荷绿' },
+      { key: 'plum',      label: '李紫' },
     ],
   },
   {
@@ -45,6 +51,9 @@ export const ACCENT_GROUPS: AccentGroup[] = [
       { key: 'rouge',      label: '胭脂' },
       { key: 'celadon',    label: '青瓷' },
       { key: 'osmanthus',  label: '金桂' },
+      { key: 'vermillion', label: '朱砂' },
+      { key: 'indigo',     label: '靛蓝' },
+      { key: 'sandalwood', label: '檀' },
     ],
   },
   {
@@ -53,6 +62,11 @@ export const ACCENT_GROUPS: AccentGroup[] = [
       { key: 'matcha',    label: '抹茶' },
       { key: 'cherry',    label: '樱' },
       { key: 'pine',      label: '松' },
+      { key: 'olive',     label: '橄榄' },
+      { key: 'teal',      label: '水鸭' },
+      { key: 'blossom',   label: '杏' },
+      { key: 'peony',     label: '牡丹' },
+      { key: 'rosegold',  label: '玫瑰金' },
     ],
   },
 ]
@@ -74,6 +88,17 @@ export const ACCENT_SWATCH: Record<AccentColor, { primary: string; secondary: st
   matcha:     { primary: 'hsl(135,35%,38%)', secondary: 'hsl(155,25%,42%)' },
   cherry:     { primary: 'hsl(355,75%,60%)', secondary: 'hsl(340,55%,55%)' },
   pine:       { primary: 'hsl(130,25%,32%)', secondary: 'hsl(150,20%,38%)' },
+  coral:      { primary: 'hsl(12,85%,55%)',  secondary: 'hsl(25,70%,50%)' },
+  spearmint:  { primary: 'hsl(150,40%,40%)', secondary: 'hsl(170,30%,44%)' },
+  plum:       { primary: 'hsl(290,45%,45%)', secondary: 'hsl(320,40%,48%)' },
+  vermillion: { primary: 'hsl(10,70%,48%)',  secondary: 'hsl(30,60%,45%)' },
+  indigo:     { primary: 'hsl(240,35%,40%)', secondary: 'hsl(260,30%,44%)' },
+  sandalwood: { primary: 'hsl(25,40%,42%)',  secondary: 'hsl(45,35%,46%)' },
+  olive:      { primary: 'hsl(80,35%,35%)',  secondary: 'hsl(100,28%,40%)' },
+  teal:       { primary: 'hsl(175,45%,38%)', secondary: 'hsl(195,35%,42%)' },
+  blossom:    { primary: 'hsl(348,60%,58%)', secondary: 'hsl(8,50%,55%)' },
+  peony:      { primary: 'hsl(340,65%,52%)', secondary: 'hsl(355,55%,55%)' },
+  rosegold:   { primary: 'hsl(20,55%,48%)',  secondary: 'hsl(345,50%,52%)' },
 }
 
 const STORAGE_KEY = 'mbw_accent'

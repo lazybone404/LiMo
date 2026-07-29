@@ -477,9 +477,11 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                       )
                     }
                     const groups = [
-                      { label: '护眼', presets: ['roulv', 'nuanyang', 'zhenzhu'] },
+                      { label: '护眼', presets: ['roulv', 'nuanyang', 'zhenzhu', 'bohe'] },
                       { label: '经典', presets: ['shuxiang', 'jianjing', 'fugu', 'qingzhu'] },
-                      { label: '雅致', presets: ['yingchui', 'songyan', 'mailang'] },
+                      { label: '粉色', presets: ['yingchui', 'taoyao', 'dingxiang', 'mudan'] },
+                      { label: '雅致', presets: ['songyan', 'tanxiang', 'yunxiu', 'shazhou'] },
+                      { label: '国风', presets: ['zhusha', 'dianlan', 'mailang', 'meigui'] },
                     ]
                     return groups.map(g => (
                       <div key={g.label}>

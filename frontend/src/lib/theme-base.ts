@@ -5,7 +5,7 @@
  * data-base 独立于 existing 四轴 (theme × accent × texture × font)
  */
 
-export type BasePreset = 'warm' | 'neutral' | 'cream' | 'cool' | 'rose' | 'sage' | 'jade' | 'amber' | 'pearl'
+export type BasePreset = 'warm' | 'neutral' | 'cream' | 'cool' | 'rose' | 'sage' | 'jade' | 'amber' | 'pearl' | 'mint' | 'sand' | 'lilac' | 'cloud' | 'blush'
 
 interface BaseEntry {
   key: BasePreset
@@ -26,6 +26,11 @@ export const BASE_OPTIONS: BaseEntry[] = [
   { key: 'jade',    label: '柔绿',   surface: '#EEF2ED', elevated: '#F5F8F4', hover: '#E4EAE3', border: '#CED4CD' },
   { key: 'amber',   label: '琥珀',   surface: '#F9F4EA', elevated: '#FEFBF5', hover: '#F2EBDE', border: '#E0D6C4' },
   { key: 'pearl',   label: '珍珠白', surface: '#F7F6F3', elevated: '#FDFCFB', hover: '#EEEDEA', border: '#DEDCD8' },
+  { key: 'mint',    label: '薄荷',   surface: '#EDF4EF', elevated: '#F4FAF6', hover: '#E3EDE6', border: '#CDD8D0' },
+  { key: 'sand',    label: '沙色',   surface: '#F6F2EA', elevated: '#FCF9F3', hover: '#EFE9DD', border: '#DDD5C5' },
+  { key: 'lilac',   label: '丁香',   surface: '#F3F0F6', elevated: '#FAF8FC', hover: '#ECE7F0', border: '#D6D0DC' },
+  { key: 'cloud',   label: '云白',   surface: '#F3F4F8', elevated: '#FAFBFC', hover: '#EAEBF0', border: '#D4D6DC' },
+  { key: 'blush',   label: '腮红',   surface: '#F7F1F2', elevated: '#FDF9FA', hover: '#F1E8EA', border: '#DDD0D4' },
 ]
 
 const STORAGE_KEY = 'mbw_base'

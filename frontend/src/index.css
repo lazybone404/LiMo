@@ -40,6 +40,17 @@
 [data-accent="matcha"]   { --accent-hue: 135; --accent-sat: 35;  --second-hue: 155; --second-sat: 25;  }
 [data-accent="cherry"]   { --accent-hue: 355; --accent-sat: 75;  --second-hue: 340; --second-sat: 55;  }
 [data-accent="pine"]     { --accent-hue: 130; --accent-sat: 25;  --second-hue: 150; --second-sat: 20;  }
+[data-accent="coral"]    { --accent-hue: 12;  --accent-sat: 85;  --second-hue: 25;  --second-sat: 70;  }
+[data-accent="spearmint"]{ --accent-hue: 150; --accent-sat: 40;  --second-hue: 170; --second-sat: 30;  }
+[data-accent="plum"]     { --accent-hue: 290; --accent-sat: 45;  --second-hue: 320; --second-sat: 40;  }
+[data-accent="vermillion"]{--accent-hue: 10;  --accent-sat: 70;  --second-hue: 30;  --second-sat: 60;  }
+[data-accent="indigo"]   { --accent-hue: 240; --accent-sat: 35;  --second-hue: 260; --second-sat: 30;  }
+[data-accent="sandalwood"]{--accent-hue: 25;  --accent-sat: 40;  --second-hue: 45;  --second-sat: 35;  }
+[data-accent="olive"]    { --accent-hue: 80;  --accent-sat: 35;  --second-hue: 100; --second-sat: 28;  }
+[data-accent="teal"]     { --accent-hue: 175; --accent-sat: 45;  --second-hue: 195; --second-sat: 35;  }
+[data-accent="blossom"]  { --accent-hue: 348; --accent-sat: 60;  --second-hue: 8;   --second-sat: 50;  }
+[data-accent="peony"]    { --accent-hue: 340; --accent-sat: 65;  --second-hue: 355; --second-sat: 55;  }
+[data-accent="rosegold"] { --accent-hue: 20;  --accent-sat: 55;  --second-hue: 345; --second-sat: 50;  }
 
 /* 默认 = 天际蓝 (data-accent 未设置时) */
 :root:not([data-accent]) { --accent-hue: 211; --accent-sat: 100; --second-hue: 195; --second-sat: 80; }
@@ -55,6 +66,11 @@
 [data-base="jade"]    { --tk-surface: #EEF2ED; --tk-elevated: #F5F8F4; --tk-hover: #E4EAE3; --tk-border: #CED4CD; --tk-border-light: #DEE4DD; }
 [data-base="amber"]   { --tk-surface: #F9F4EA; --tk-elevated: #FEFBF5; --tk-hover: #F2EBDE; --tk-border: #E0D6C4; --tk-border-light: #EDE6D8; }
 [data-base="pearl"]   { --tk-surface: #F7F6F3; --tk-elevated: #FDFCFB; --tk-hover: #EEEDEA; --tk-border: #DEDCD8; --tk-border-light: #EBE9E5; }
+[data-base="mint"]    { --tk-surface: #EDF4EF; --tk-elevated: #F4FAF6; --tk-hover: #E3EDE6; --tk-border: #CDD8D0; --tk-border-light: #DDE8E0; }
+[data-base="sand"]    { --tk-surface: #F6F2EA; --tk-elevated: #FCF9F3; --tk-hover: #EFE9DD; --tk-border: #DDD5C5; --tk-border-light: #EBE5D8; }
+[data-base="lilac"]   { --tk-surface: #F3F0F6; --tk-elevated: #FAF8FC; --tk-hover: #ECE7F0; --tk-border: #D6D0DC; --tk-border-light: #E6E0EC; }
+[data-base="cloud"]   { --tk-surface: #F3F4F8; --tk-elevated: #FAFBFC; --tk-hover: #EAEBF0; --tk-border: #D4D6DC; --tk-border-light: #E3E5EB; }
+[data-base="blush"]   { --tk-surface: #F7F1F2; --tk-elevated: #FDF9FA; --tk-hover: #F1E8EA; --tk-border: #DDD0D4; --tk-border-light: #EDE0E4; }
 
 /* ── Layer 1: Semantic Variables (data-theme driven) ──────── */
 /* 两轴驱动：data-theme(明暗) + data-accent(配色)           */
