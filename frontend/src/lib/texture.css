@@ -5,10 +5,9 @@
    强度通过 --texture-intensity (0-1) 控制
    ══════════════════════════════════════════════════════════ */
 
-/* ── 纹理公共属性 ──────────────────────────────────── */
+/* ── 公共属性 ────────────────────────────────────── */
 
 [data-texture]:not([data-texture="plain"]) .preview-area {
-  background-attachment: fixed;
   position: relative;
 }
 
@@ -18,9 +17,13 @@
   position: absolute;
   inset: 0;
   background: var(--tk-surface);
-  z-index: -1;
   opacity: var(--texture-opacity, 0.5);
   pointer-events: none;
+}
+
+/* 子元素在叠加层之上 */
+[data-texture]:not([data-texture="plain"]) .preview-area > * {
+  position: relative;
 }
 
 /* ── 暗模式：清除所有纹理 ────────────────────────────── */
