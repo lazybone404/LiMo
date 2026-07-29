@@ -215,38 +215,33 @@ class PyPdfium2Engine(Engine):
 
     @staticmethod
     def _extract_tables(pdf_path: str, page_idx: int, tp) -> tuple[str | None, tuple | None]:
-        """pdfplumber 优先提取表格，失败时回退 pypdfium2 坐标推断。
-        返回 (markdown_table, bbox)"""
-        # ── 尝试 pdfplumber ──
+        """pdfplumber 提取表格（精准单元格文字），返回 (markdown, bbox)"""
         try:
             import pdfplumber
             with pdfplumber.open(pdf_path) as pp:
                 if page_idx < len(pp.pages):
-                    found = pp.pages[page_idx].find_tables()
-                    if found:
-                        for t in found:
+                    tables = pp.pages[page_idx].find_tables()
+                    if tables:
+                        all_md_parts: list[str] = []
+                        for t in tables:
                             rows = t.extract()
-                            if not rows or not rows[0]:
+                            if not rows or not rows[0] or len(rows[0]) < 2:
                                 continue
-                            # 过滤全空行
                             rows = [[c or "" for c in r] for r in rows]
                             cols = len(rows[0])
-                            if cols < 2:
-                                continue
                             lines: list[str] = []
                             for ri, row in enumerate(rows):
-                                cells = [str(c).strip().replace("\n", " ")[:60] for c in row[:cols]]
-                                if any(c for c in cells):  # 至少有一个非空格
-                                    lines.append("| " + " | ".join(cells) + " |")
-                                    if ri == 0:
-                                        lines.append("| " + " | ".join(["---"] * cols) + " |")
+                                cells = [str(c).strip().replace("\n", " ")[:80] for c in row[:cols]]
+                                lines.append("| " + " | ".join(cells) + " |")
+                                if ri == 0:
+                                    lines.append("| " + " | ".join(["---"] * cols) + " |")
                             if len(lines) > 2:
-                                return "\n".join(lines), None  # bbox not needed for pdfplumber
+                                all_md_parts.append("\n".join(lines))
+                        if all_md_parts:
+                            return "\n\n".join(all_md_parts), None
         except Exception:
             pass
-
-        # ── 回退 pypdfium2 坐标推断 ──
-        return PyPdfium2Engine._detect_tables_fallback(tp)
+        return None, None
 
     @staticmethod
     def _detect_tables_fallback(tp) -> tuple[str | None, tuple | None]:
