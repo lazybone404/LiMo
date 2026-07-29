@@ -221,6 +221,21 @@ body {
 [data-font="wenkai"] .preview-area,
 [data-font="wenkai"] .markdown-body   { font-family: 'LXGW WenKai', 'KaiTi', serif; }
 
+/* ── GitHub Markdown Overrides (覆盖 github-markdown-light 硬编码) ── */
+
+.markdown-body {
+  background-color: transparent !important;
+  color: var(--tk-foreground);
+}
+.markdown-body table tr { background-color: transparent; }
+.markdown-body table tr:nth-child(2n) { background-color: var(--tk-surface-hover); }
+.markdown-body code { background-color: var(--md-code-bg); }
+.markdown-body pre { background-color: var(--tk-surface-hover); }
+.markdown-body th { background-color: var(--md-table-header-bg); }
+.markdown-body blockquote { background-color: var(--md-blockquote-bg); }
+.markdown-body kbd { background-color: var(--tk-surface-hover); }
+.markdown-body img { background-color: transparent; }
+
 /* ── GitHub Markdown Overrides (blue hierarchy) ─────────── */
 
 .preview-area {
@@ -256,26 +271,17 @@ body {
    our manual data-theme toggle. These mirror GitHub's dark palette. */
 [data-theme="dark"] .markdown-body {
   color: var(--tk-foreground);
-  background-color: transparent;
 }
 [data-theme="dark"] .markdown-body table tr {
-  background-color: transparent;
   border-color: var(--color-border-default);
 }
 [data-theme="dark"] .markdown-body table tr:nth-child(2n) {
-  background-color: rgba(255,255,255,0.03);
-}
-[data-theme="dark"] .markdown-body img {
-  background-color: transparent;
-}
-[data-theme="dark"] .markdown-body pre {
-  background-color: var(--color-surface-hover);
+  background-color: var(--tk-surface-hover);
 }
 [data-theme="dark"] .markdown-body summary {
   color: var(--color-muted);
 }
 [data-theme="dark"] .markdown-body kbd {
-  background-color: var(--color-surface-hover);
   border-color: var(--color-border-default);
   color: var(--color-muted);
   box-shadow: inset 0 -1px 0 var(--color-border-default);
