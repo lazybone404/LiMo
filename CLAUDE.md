@@ -43,6 +43,9 @@ data-font="system|kaiti|wenkai|…"← 阅读字体（5种，4系统+1web）
 | `cool` | 冷灰 | 蓝灰 | `#F2F3F5` |
 | `rose` | 玫瑰 | 微粉红 | `#F5F1F2` |
 | `sage` | 鼠尾草 | 微绿 | `#F2F4F0` |
+| `jade` | 柔绿 | 微绿（护眼） | `#EEF2ED` |
+| `amber` | 琥珀 | 暖黄（护眼） | `#F9F4EA` |
+| `pearl` | 珍珠白 | 柔和中性 | `#F7F6F3` |
 
 ## 文档索引
 
