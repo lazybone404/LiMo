@@ -12,7 +12,8 @@
 
 /* ══════════════════════════════════════════════════════════
    LiMo — Design Tokens & Theme System
-   Three-layer: Primitives → Tailwind @theme → Markdown vars
+   Two-layer: Semantic Variables → Tailwind @theme → Markdown vars
+   data-theme(明暗) × data-accent(配色) 驱动所有颜色
    ══════════════════════════════════════════════════════════ */
 
 /* ── Layer 0: Accent Theme Presets (data-accent driven) ────── */
@@ -40,60 +41,36 @@
 /* 默认 = 天际蓝 (data-accent 未设置时) */
 :root:not([data-accent]) { --accent-hue: 211; --accent-sat: 100; --second-hue: 195; --second-sat: 80; }
 
-/* ── Layer 1: Primitives (Apple System Palette) ─────────── */
-
-:root {
-  /* Grays */
-  --apple-gray-50:  #F5F5F7;
-  --apple-gray-100: #E8E8ED;
-  --apple-gray-200: #D2D2D7;
-  --apple-gray-300: #AEAEB2;
-  --apple-gray-400: #8E8E93;
-  --apple-gray-500: #636366;
-  --apple-gray-600: #48484A;
-  --apple-gray-700: #363639;
-  --apple-gray-800: #2C2C2E;
-  --apple-gray-900: #1C1C1E;
-  --apple-gray-950: #0D0D0F;
-
-  /* Accent */
-  --apple-blue:       #007AFF;
-  --apple-blue-hover: #0066D6;
-
-  /* Functional */
-  --apple-green:   #34C759;
-  --apple-orange:  #FF9500;
-  --apple-red:     #FF3B30;
-  --apple-pink:    #FF375F;
-  --apple-purple:  #AF52DE;
-  --apple-teal:    #5AC8FA;
-
-  /* Animation */
-  --ease-apple: cubic-bezier(0.25, 0.1, 0.25, 1);
-}
-
-/* ── Layer 2: Semantic Variables (data-theme driven) ─────── */
+/* ── Layer 1: Semantic Variables (data-theme driven) ──────── */
+/* 两轴驱动：data-theme(明暗) + data-accent(配色)           */
+/* 所有颜色统一在此定义，无废弃 Apple Primitives 层          */
 
 /* Light defaults */
 :root {
+  /* 底色 — 暖白阶 */
   --tk-surface: #F4F1EE;
   --tk-elevated: #FAF8F5;
   --tk-hover: #EDEAE6;
+  /* 文本 — 暖灰阶，从 foreground 明度递减 */
   --tk-foreground: #1C1C1E;
-  --tk-muted: #8E8E93;
-  --tk-dimmed: #636366;
-  --tk-disabled: #AEAEB2;
+  --tk-dimmed: #5E5C5A;
+  --tk-muted: #8A8886;
+  --tk-disabled: #AEACA9;
+  /* 边框 */
+  --tk-border: #D6D3CE;
+  --tk-border-light: #EBE7E2;
   /* 主色 — 从 HSL 原语动态派生 */
   --tk-accent: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 50%);
   --tk-accent-hover: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 42%);
-  /* 辅色 — 标题、引用（新增） */
+  /* 辅色 — 标题、引用 */
   --tk-secondary: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 44%);
   --tk-secondary-hover: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 36%);
-  --tk-border: #D6D3CE;
-  --tk-border-light: #EBE7E2;
+  /* 功能性 */
   --tk-success: #34C759;
   --tk-warning: #FF9500;
   --tk-error: #FF3B30;
+  /* 动画 */
+  --ease-apple: cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
 /* Dark overrides */
@@ -101,10 +78,10 @@
   --tk-surface: #161618;
   --tk-elevated: #222226;
   --tk-hover: #1C1C20;
-  --tk-foreground: #E8E8ED;
-  --tk-muted: #A0A0A8;
-  --tk-dimmed: #888892;
-  --tk-disabled: #6A6A74;
+  --tk-foreground: #E6E3E0;
+  --tk-dimmed: #8A8884;
+  --tk-muted: #6A6864;
+  --tk-disabled: #504E4B;
   /* 主色 — dark 下 lightness 更高 */
   --tk-accent: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 62%);
   --tk-accent-hover: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 72%);
@@ -205,13 +182,13 @@ body {
   --md-h4: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 46%);
   --md-strong: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.8 * 1%), 36%);
   --md-link: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 46%);
-  --md-blockquote-bg: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 95%);
+  --md-blockquote-bg: var(--tk-surface-hover);
   --md-blockquote-border: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 48%);
-  --md-code-bg: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 96%);
+  --md-code-bg: var(--tk-surface-hover);
   --md-code-color: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.7 * 1%), 38%);
-  --md-table-border: #D2D2D7;
-  --md-table-header-bg: #F5F5F7;
-  --md-hr: #D2D2D7;
+  --md-table-border: var(--tk-border);
+  --md-table-header-bg: var(--tk-surface-hover);
+  --md-hr: var(--tk-border);
 }
 
 /* Dark — 降低 sat 避免荧光感，提高 lightness */
@@ -222,9 +199,9 @@ body {
   --md-h4: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 52%);
   --md-strong: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.65 * 1%), 72%);
   --md-link: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.8 * 1%), 65%);
-  --md-blockquote-bg: hsl(var(--second-hue), calc(var(--second-sat) * 0.5 * 1%), 10%);
+  --md-blockquote-bg: var(--tk-surface-hover);
   --md-blockquote-border: hsl(var(--second-hue), calc(var(--second-sat) * 0.8 * 1%), 54%);
-  --md-code-bg: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.5 * 1%), 10%);
+  --md-code-bg: var(--tk-surface-hover);
   --md-code-color: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.55 * 1%), 72%);
   --md-table-border: var(--color-border-default);
   --md-table-header-bg: var(--color-surface-hover);
@@ -251,10 +228,6 @@ body {
   transform: translateZ(0);
 }
 
-.preview-content {
-  /* 与全局底色统一，避免色块分裂感 */
-  background: var(--tk-surface);
-}
 
 .markdown-body h1 { color: var(--md-h1); }
 .markdown-body h2 { color: var(--md-h2); }

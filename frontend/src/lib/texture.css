@@ -83,4 +83,5 @@
 
 [data-texture-reset] {
   background-image: none !important;
+  background-color: transparent !important;
 }

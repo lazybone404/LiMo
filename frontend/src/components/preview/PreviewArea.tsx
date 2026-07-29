@@ -561,6 +561,14 @@ export function PreviewArea() {
 
       case 'transcript':
         if (isViewProcessing(activeView)) return processingPlaceholder
+        // 文档类转录（PDF/Word等）→ 统一用 MarkdownPreview 渲染
+        if (currentDoc?.sourceType && !['video', 'image', 'webpage', 'text'].includes(currentDoc.sourceType) && currentRawText) {
+          let isJson = false
+          try { JSON.parse(currentRawText); isJson = true } catch {}
+          if (!isJson) {
+            return <MarkdownPreview content={currentRawText} meta={markdownMeta} sourceUrl={sourceUrl} isVideo={false} />
+          }
+        }
         return (
           <div className="mx-auto px-10 py-8">
             {videoBanner}

@@ -112,7 +112,7 @@ async def capabilities(config=Depends(get_config)):
 
     # ── 文件类型 → 可用引擎白名单（动态，根据已注册引擎推导）──
     _DOC_SUBTYPES = {
-        "pdf": ["docling", "docling-text"],
+        "pdf": ["docling", "docling-text", "pypdfium2"],
         "word": ["python-docx", "python-docx-text", "markitdown"],
         "ppt": ["python-pptx", "python-pptx-text", "markitdown"],
         "excel": ["openpyxl", "markitdown"],

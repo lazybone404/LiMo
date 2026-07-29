@@ -162,14 +162,43 @@ def init_engines(config: dict | None = None):
     # Doc（MIT/BSD 协议，无 AGPL 风险）
     from .doc import MarkItDownEngine, DocxEngine, PptxEngine, ExcelEngine
 
-    # Docling — MIT 协议，默认 PDF 引擎
-    from .docling import DoclingEngine
+    # Doc — MIT/BSD 协议引擎组
+    from .docling import DoclingEngine, PyPdfium2Engine
+
     docling_eng = DoclingEngine()
     docling_eng.name = "docling"
     EngineRegistry.register("doc", "docling", docling_eng)
     docling_text = DoclingEngine(text_only=True)
     docling_text.name = "docling-text"
     EngineRegistry.register("doc", "docling-text", docling_text)
+
+    pypdfium2_eng = PyPdfium2Engine()
+    pypdfium2_eng.name = "pypdfium2"
+    EngineRegistry.register("doc", "pypdfium2", pypdfium2_eng)
+
+    # 后台预热 Docling ONNX 模型，避免首次导入 PDF 时冷启动等 30s+
+    import threading as _th, tempfile as _tf, os as _os
+    _MIN_PDF = (
+        b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+        b"3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+        b"4 0 obj<</Length 44>>stream\nBT /F1 12 Tf 100 700 Td (Hello) Tj ET\nendstream\nendobj\n"
+        b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+        b"xref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n0000000266 00000 n \n0000000360 00000 n \n"
+        b"trailer<</Size 6/Root 1 0 R>>\nstartxref\n423\n%%EOF"
+    )
+    def _warmup_docling():
+        try:
+            logger.info("Docling warmup: loading ONNX models in background...")
+            _tmp = _tf.NamedTemporaryFile(suffix=".pdf", delete=False)
+            _tmp.write(_MIN_PDF); _tmp.close()
+            from docling.document_converter import DocumentConverter
+            DocumentConverter().convert(_tmp.name)
+            _os.unlink(_tmp.name)
+            logger.info("Docling warmup: models loaded and ready")
+        except Exception as e:
+            logger.info("Docling warmup: %s (models may load on first use)", str(e)[:80])
+    _th.Thread(target=_warmup_docling, daemon=True, name="docling-warmup").start()
 
     markit = MarkItDownEngine()
     markit.name = "markitdown"
@@ -211,8 +240,8 @@ def init_engines(config: dict | None = None):
     # 子场景 → 默认引擎的确定性 MD5 id
     # provider_id 必须和 build_engine_models() 的哈希键一致（engine:{provider}:{model}）
     _DOC_DEFAULTS: list[tuple[str, str, str]] = [
-        ("doc:text+image", "pymupdf", "docling"),      # PDF 文字+图片（Docling MIT 协议）
-        ("doc:text-only", "pymupdf", "docling-text"),   # PDF 纯文字
+        ("doc:text+image", "pymupdf", "pypdfium2"),    # PDF 快速转录（文字+嵌入原图）
+        ("doc:text-only", "pymupdf", "pypdfium2"),      # PDF 纯文字
         ("doc:scan-ocr", "pymupdf", "docling"),         # 扫描件 → Docling（含 OCR 能力）
         ("doc:word", "pymupdf", "python-docx"),          # Word
         ("doc:ppt", "pymupdf", "python-pptx"),            # PPT

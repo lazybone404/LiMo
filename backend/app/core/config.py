@@ -97,8 +97,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
          ]},
         {"id": "pymupdf", "name": "Docling + MarkItDown", "type": "local", "base_url": "", "api_key": "", "capabilities": ["doc"],
          "builtin_models": [
-             {"model_name": "docling", "category": "doc", "desc": "PDF 文字+表格+图片（MIT，推荐）"},
+             {"model_name": "docling", "category": "doc", "desc": "PDF 完整布局（MIT，推荐）"},
              {"model_name": "docling-text", "category": "doc", "desc": "PDF 仅文字（无图片）"},
+             {"model_name": "pypdfium2", "category": "doc", "desc": "PDF 极速纯文字（BSD-3）"},
              {"model_name": "markitdown", "category": "doc", "desc": "Office/EPUB 转 Markdown"},
              {"model_name": "python-docx", "category": "doc", "desc": "Word .docx 文字+表格+图片"},
              {"model_name": "python-docx-text", "category": "doc", "desc": "Word .docx 仅文字（无图片）"},
