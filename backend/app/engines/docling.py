@@ -64,23 +64,48 @@ class PyPdfium2Engine(Engine):
             if table_md:
                 page_parts.insert(0, table_md)
 
-            # ── 3. 嵌入图 ──
+            # ── 3. 嵌入图（收集 Y 坐标）──
+            page_imgs: list[tuple[float, str]] = []
             for obj in page.get_objects():
                 if not isinstance(obj, pdfium.PdfImage): continue
                 try:
                     bmp = obj.get_bitmap(render=True)
                     pil_img = bmp.to_pil()
                     if pil_img.size[0] <= 10 or pil_img.size[1] <= 10: continue
+                    bounds = obj.get_bounds()
+                    img_y = bounds[1]  # TOPLEFT Y
                     if media_dir:
                         fname = f"img_{img_idx:04d}.png"
                         pil_img.save(str(Path(media_dir) / fname), format="PNG")
-                        page_parts.append(f"![img_{img_idx}]({fname})")
+                        md_ref = f"![img_{img_idx}]({fname})"
                     else:
                         buf = io.BytesIO(); pil_img.save(buf, format="PNG")
-                        page_parts.append(f"![img_{img_idx}](data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()})")
+                        md_ref = f"![img_{img_idx}](data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()})"
+                    page_imgs.append((img_y, md_ref))
                     img_idx += 1
                 except Exception:
                     pass
+
+            # 按 Y 坐标将图片锚入段落之间
+            if page_imgs and len(page_parts) > 1:
+                page_imgs.sort(key=lambda x: x[0])
+                # 从 text rects 获取段落分界 Y 值
+                para_ys = self._paragraph_boundaries(tp, len(page_parts))
+                anchored: list[str] = []
+                img_idx_inner = 0
+                for pi, p in enumerate(page_parts):
+                    # 插入所有 Y 小于当前段落底部的图片
+                    boundary = para_ys[pi] if pi < len(para_ys) else ph
+                    while img_idx_inner < len(page_imgs) and page_imgs[img_idx_inner][0] < boundary:
+                        anchored.append(page_imgs[img_idx_inner][1])
+                        img_idx_inner += 1
+                    anchored.append(p)
+                while img_idx_inner < len(page_imgs):
+                    anchored.append(page_imgs[img_idx_inner][1])
+                    img_idx_inner += 1
+                page_parts = anchored
+            elif page_imgs:
+                page_parts.extend(md for _, md in page_imgs)
 
             if page_parts:
                 parts.append("\n\n".join(page_parts))
@@ -113,6 +138,25 @@ class PyPdfium2Engine(Engine):
             if title.strip():
                 lines.append(f"{'#' * min(level + 1, 4)} {title.strip()}")
         return "\n".join(lines) if lines else None
+
+    @staticmethod
+    def _paragraph_boundaries(tp, n_paras: int) -> list[float]:
+        """从 text rects 估算段落分界 Y 值（TOPLEFT），用于图片锚入"""
+        try:
+            n = tp.count_rects()
+            if n < n_paras: return []
+            rects = [tp.get_rect(i) for i in range(n) if tp.get_rect(i)[3] - tp.get_rect(i)[1] > 0]
+            if not rects: return []
+            rects.sort(key=lambda r: r[1])  # sort by Y
+            # 按 Y 间距分组，找段落间隙
+            gaps = []
+            for i in range(1, len(rects)):
+                gap = rects[i][1] - rects[i-1][3]
+                if gap > 10:  # 段落间隙 > 10pt
+                    gaps.append((rects[i-1][3] + rects[i][1]) / 2)
+            return sorted(gaps)[:n_paras - 1]
+        except Exception:
+            return []
 
     @staticmethod
     def _extract_tables(pp, page_idx: int) -> str | None:
