@@ -18,9 +18,9 @@
   position: absolute;
   inset: 0;
   background: var(--tk-surface);
+  z-index: -1;
   opacity: var(--texture-opacity, 0.5);
   pointer-events: none;
-  transition: opacity 0.2s;
 }
 
 /* ── 暗模式：清除所有纹理 ────────────────────────────── */
