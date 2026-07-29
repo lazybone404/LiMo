@@ -9,8 +9,11 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
+from app.core.dependencies import get_store, get_config, get_guard
 from fastapi.responses import StreamingResponse
+
+from app.core.disconnect import disconnect_watcher
 from pydantic import BaseModel
 
 from app.core.types import MarkdownView, Style, GenerateMode
@@ -30,12 +33,9 @@ class FactCheckRequest(BaseModel):
 
 
 @router.post("/fact-check/{transcript_id}")
-async def fact_check(transcript_id: str, req: FactCheckRequest, request: Request) -> dict:
+async def fact_check(transcript_id: str, req: FactCheckRequest, request: Request, store=Depends(get_store), config=Depends(get_config), guard=Depends(get_guard)) -> dict:
     """非流式事实验证"""
-    guard = request.app.state.guard
     async with guard.semaphore:
-        store = request.app.state.store
-        config = request.app.state.config
 
         tx = store.get_transcript(transcript_id)
         if not tx:
@@ -88,12 +88,10 @@ async def fact_check(transcript_id: str, req: FactCheckRequest, request: Request
 
 
 @router.get("/fact-check/{transcript_id}/stream")
-async def fact_check_stream(transcript_id: str, request: Request,
+async def fact_check_stream(transcript_id: str, request: Request, store=Depends(get_store), config=Depends(get_config), guard=Depends(get_guard),
                             model_id: int | None = None,
                             verify_mode: str = "llm"):
     """SSE 流式事实验证。verify_mode: llm（默认，基于模型知识）| web（联网搜索）"""
-    store = request.app.state.store
-    config = request.app.state.config
 
     tx = store.get_transcript(transcript_id)
     if not tx:
@@ -106,69 +104,57 @@ async def fact_check_stream(transcript_id: str, request: Request,
         raise AppError("FC_NO_API_KEY", "LLM API Key 未配置", recoverable=False)
     llm = LLMService(config, model_id=model_id)
 
-    guard = request.app.state.guard
     cancel_event = asyncio.Event()
 
     async def merged_stream():
         await guard.semaphore.acquire()
         try:
             # 客户端断连检测
-            async def _watch():
-                while True:
-                    if await request.is_disconnected():
-                        cancel_event.set()
-                        return
-                    await asyncio.sleep(0.5)
-            disconnect_task = asyncio.create_task(_watch())
-            engine = ReviewEngine(llm)
-            fc_id = None
-            fc_report = ""
-            fc_verified = fc_disputed = fc_unverifiable = 0
-            fc_trustworthiness = 0
-            fc_trustworthiness_label = ""
-            fc_has_content = True
-            async for event in engine.run_streaming(ctx["content"], cancel_event, verify_mode=verify_mode):
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                if event.get("type") == "done":
-                    fc_id = event.get("id", "")
-                    fc_verified = event.get("verified_count", 0)
-                    fc_disputed = event.get("disputed_count", 0)
-                    fc_unverifiable = event.get("unverifiable_count", 0)
-                    fc_trustworthiness = event.get("trustworthiness", 0)
-                    fc_trustworthiness_label = event.get("trustworthiness_label", "")
-                    fc_has_content = event.get("has_content", True)
-                elif event.get("phase") == "review" and "text" in event:
-                    fc_report += event["text"]
-            if fc_id and fc_has_content:
-                from datetime import datetime
-                fc_mv = MarkdownView(
-                    id=fc_id, transcript_id=transcript_id,
-                    content=fc_report, style=Style.DETAILED,
-                    mode=GenerateMode.FACT_CHECK, fact_check=True,
-                )
-                store.save_markdown(fc_mv, extra={
-                    "verified_count": fc_verified,
-                    "disputed_count": fc_disputed,
-                    "unverifiable_count": fc_unverifiable,
-                    "trustworthiness": fc_trustworthiness,
-                    "trustworthiness_label": fc_trustworthiness_label,
-                    "source_mode": ctx["source_mode"],
-                    "source_version": ctx["source_version"],
-                    "verified_at": datetime.now().isoformat(),
-                })
-            yield f"data: {json.dumps({'type': 'done', 'source_mode': ctx['source_mode'], 'source_version': ctx['source_version']}, ensure_ascii=False)}\n\n"
+            async with disconnect_watcher(request, cancel_event):
+                engine = ReviewEngine(llm)
+                fc_id = None
+                fc_report = ""
+                fc_verified = fc_disputed = fc_unverifiable = 0
+                fc_trustworthiness = 0
+                fc_trustworthiness_label = ""
+                fc_has_content = True
+                async for event in engine.run_streaming(ctx["content"], cancel_event, verify_mode=verify_mode):
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    if event.get("type") == "done":
+                        fc_id = event.get("id", "")
+                        fc_verified = event.get("verified_count", 0)
+                        fc_disputed = event.get("disputed_count", 0)
+                        fc_unverifiable = event.get("unverifiable_count", 0)
+                        fc_trustworthiness = event.get("trustworthiness", 0)
+                        fc_trustworthiness_label = event.get("trustworthiness_label", "")
+                        fc_has_content = event.get("has_content", True)
+                    elif event.get("phase") == "review" and "text" in event:
+                        fc_report += event["text"]
+                if fc_id and fc_has_content:
+                    from datetime import datetime
+                    fc_mv = MarkdownView(
+                        id=fc_id, transcript_id=transcript_id,
+                        content=fc_report, style=Style.DETAILED,
+                        mode=GenerateMode.FACT_CHECK, fact_check=True,
+                    )
+                    store.save_markdown(fc_mv, extra={
+                        "verified_count": fc_verified,
+                        "disputed_count": fc_disputed,
+                        "unverifiable_count": fc_unverifiable,
+                        "trustworthiness": fc_trustworthiness,
+                        "trustworthiness_label": fc_trustworthiness_label,
+                        "source_mode": ctx["source_mode"],
+                        "source_version": ctx["source_version"],
+                        "verified_at": datetime.now().isoformat(),
+                    })
+                yield f"data: {json.dumps({'type': 'done', 'source_mode': ctx['source_mode'], 'source_version': ctx['source_version']}, ensure_ascii=False)}\n\n"
         except CancelledError:
-            yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
         except Exception as e:
-            log.exception("Fact check stream failed", tx_id=transcript_id)
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
+                log.exception("Fact check stream failed", tx_id=transcript_id)
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
         finally:
-            disconnect_task.cancel()
-            try:
-                await disconnect_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            guard.semaphore.release()
+                guard.semaphore.release()
 
     return StreamingResponse(
         merged_stream(),
@@ -187,17 +173,17 @@ def _resolve_content(store, tx: dict, transcript_id: str) -> dict:
     if notes_md:
         content = store.get_markdown(notes_md["id"])
         if content:
-            return {"content": content, "source_mode": "notes",
-                    "source_version": notes_md.get("version", 1), "source_id": notes_md["id"]}
+                return {"content": content, "source_mode": "notes",
+                        "source_version": notes_md.get("version", 1), "source_id": notes_md["id"]}
     if polished_md:
         content = store.get_markdown(polished_md["id"])
         if content:
-            return {"content": content, "source_mode": "polished",
-                    "source_version": polished_md.get("version", 1), "source_id": polished_md["id"]}
+                return {"content": content, "source_mode": "polished",
+                        "source_version": polished_md.get("version", 1), "source_id": polished_md["id"]}
 
     raw = tx.get("rawText", "")
     if raw and len(raw) > 200:
         return {"content": raw, "source_mode": "transcript",
-                "source_version": 0, "source_id": transcript_id}
+                    "source_version": 0, "source_id": transcript_id}
 
     raise AppError("FC_NO_CONTENT", "没有可验证的内容，请先生成笔记或整理版原文", recoverable=False)

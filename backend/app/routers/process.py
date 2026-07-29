@@ -14,7 +14,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel
 
 from app.core.errors import AppError, TranscribeError
@@ -22,6 +22,7 @@ from app.core import logging as log
 
 from app.core.registry import EngineRegistry
 from app.core.config import build_engine_models
+from app.core.dependencies import get_store, get_config, get_guard
 from app.core.types import ProcessResult
 from app.llm import LLMService
 
@@ -81,13 +82,10 @@ class ProcessRequest(BaseModel):
 
 
 @router.post("/process/{transcript_id}")
-async def process_document(transcript_id: str, data: ProcessRequest, request: Request):
+async def process_document(transcript_id: str, data: ProcessRequest, request: Request, store=Depends(get_store), config=Depends(get_config), guard=Depends(get_guard)):
     """处理已导入的文档：OCR / 表格 / 数字化 / 内容理解。
     当前支持图片，未来扩展到 PDF Layer 2。"""
-    guard = request.app.state.guard
     async with guard.semaphore:
-        store = request.app.state.store
-        config = request.app.state.config
 
         # 客户端断连监听（LLM 调用会检查 cancel_event 停止 token 消耗）
         cancel_event = asyncio.Event()
@@ -304,9 +302,8 @@ async def process_image_legacy(transcript_id: str, data: ProcessRequest, request
 
 
 @router.get("/process-results/{transcript_id}")
-async def get_process_results(transcript_id: str, request: Request):
+async def get_process_results(transcript_id: str, request: Request, store=Depends(get_store)):
     """获取某个 transcript 的所有处理结果（含内容）"""
-    store = request.app.state.store
     results = store.get_process_results(transcript_id)
 
     items = []

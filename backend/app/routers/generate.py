@@ -16,6 +16,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.core.types import MarkdownView, Style, GenerateMode
+from app.core.dependencies import get_store, get_config, get_guard
+from app.core.disconnect import disconnect_watcher
 from app.core.errors import GenerateError, AppError
 from app.core import logging as log
 from app.core.model_resolver import resolve_model as _resolve_model, resolve_llm_config
@@ -181,7 +183,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                  style=req.style, source_type=source_type,
                  model=llm_config.get("provider", "?"))
         try:
-            preparer = ContentPreparer(str(request.app.state.store.root), llm_config)
+            preparer = ContentPreparer(str(store.root), llm_config)
             prompt_builder = PromptBuilder(target_language=config.get("target_language", "zh-CN"))
             gen = Generator(llm, preparer, prompt_builder)
 
@@ -216,7 +218,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 )
                 # 非流式端点截图后处理（generator 内部 video_path 可能为 None，此处补处理）
                 if screenshot_video_path:
-                    store_root = str(request.app.state.store.root)
+                    store_root = str(store.root)
                     polished_mv.content = _post_process_screenshots(
                         polished_mv.content, screenshot_video_path, store_root=store_root)
                     notes_mv.content = _post_process_screenshots(
@@ -239,7 +241,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 if screenshot_video_path:
                     polished_mv.content = _post_process_screenshots(
                         polished_mv.content, screenshot_video_path,
-                        store_root=str(request.app.state.store.root))
+                        store_root=str(store.root))
                 polished_mv.transcript_id = transcript_id
                 store.save_markdown(polished_mv)
                 _auto_title(store, transcript_id, polished_mv.content)
@@ -256,7 +258,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 if screenshot_video_path:
                     notes_mv.content = _post_process_screenshots(
                         notes_mv.content, screenshot_video_path,
-                        store_root=str(request.app.state.store.root))
+                        store_root=str(store.root))
                 notes_mv.transcript_id = transcript_id
                 store.save_markdown(notes_mv)
                 log.info("Generate done", tx_id=transcript_id, mode="notes", chars=len(notes_mv.content))
@@ -440,17 +442,10 @@ async def generate_stream(transcript_id: str, request: Request,
 
     async def merged_stream():
         await guard.semaphore.acquire()
-        disconnect_task = None
         try:
             # 后台监听客户端断连 → 设置 cancel_event
-            async def _watch_disconnect():
-                while True:
-                    if await request.is_disconnected():
-                        cancel_event.set()
-                        return
-                    await asyncio.sleep(0.5)
-            disconnect_task = asyncio.create_task(_watch_disconnect())
-            all_chunks: list[str] = []
+            async with disconnect_watcher(request, cancel_event):
+                all_chunks: list[str] = []
 
             # ── 双产物并行 ──
             if stream_mode == "both":
@@ -671,12 +666,6 @@ async def generate_stream(transcript_id: str, request: Request,
             log.exception("Generate stream failed", tx_id=transcript_id)
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
         finally:
-            if disconnect_task is not None:
-                disconnect_task.cancel()
-                try:
-                    await disconnect_task
-                except (asyncio.CancelledError, Exception):
-                    pass
             guard.semaphore.release()
 
     return StreamingResponse(

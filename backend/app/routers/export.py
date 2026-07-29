@@ -21,8 +21,9 @@ except ImportError:
     _PYGMENTS_OK = False
 from urllib.parse import quote
 from pathlib import Path
-from fastapi import APIRouter, Request, Query, HTTPException
+from fastapi import APIRouter, Request, Query, HTTPException, Depends
 from fastapi.responses import Response, StreamingResponse
+from app.core.dependencies import get_store
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -97,11 +98,11 @@ def _restore_latex(html: str, placeholders: list[str]) -> str:
 async def export_content(
     tx_id: str,
     request: Request,
+    store=Depends(get_store),
     format: str = Query("md", description="导出格式: md / html"),
     mode: str = Query("", description="产物模式: polished / notes / transcript"),
 ):
     """导出文档为 MD 或 HTML"""
-    store = request.app.state.store
 
     if mode == "transcript":
         tx = store.get_transcript(tx_id)
@@ -214,9 +215,8 @@ def _collect_doc_products(store, tx_id: str) -> dict[str, str]:
 
 
 @router.get("/export/{tx_id}/all")
-async def export_all_products(tx_id: str, request: Request):
+async def export_all_products(tx_id: str, request: Request, store=Depends(get_store)):
     """导出单个文档的全部产物为自包含 ZIP（含 images/ 目录）"""
-    store = request.app.state.store
     products = _collect_doc_products(store, tx_id)
     if not products:
         raise HTTPException(status_code=404, detail="无可导出内容")
@@ -251,7 +251,7 @@ async def export_all_products(tx_id: str, request: Request):
 
 
 @router.post("/export/batch")
-async def export_batch(data: dict, request: Request):
+async def export_batch(data: dict, request: Request, store=Depends(get_store)):
     """批量导出多个文档的产物为 ZIP（每文档独立子文件夹 + images/）"""
     import re as _re
     ids = data.get("ids", [])
@@ -262,7 +262,6 @@ async def export_batch(data: dict, request: Request):
         if not isinstance(tid, str) or not _re.match(r'^[a-zA-Z0-9_\-]+$', tid) or len(tid) > 64:
             return Response(f"invalid id: {tid}", status_code=400)
 
-    store = request.app.state.store
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for tid in ids:
@@ -299,9 +298,8 @@ async def export_batch(data: dict, request: Request):
 # ── 对话导出 ──
 
 @router.get("/export/{tx_id}/mindmap")
-async def export_mindmap(tx_id: str, request: Request):
+async def export_mindmap(tx_id: str, request: Request, store=Depends(get_store)):
     """导出思维导图为自包含交互式 HTML（d3.js tree layout）"""
-    store = request.app.state.store
     mds = store.get_markdowns_by_transcript(tx_id)
     # 优先取笔记（非 polished、非 fact_check），与 custom 导出 mindmap tab 一致
     content = ""
@@ -333,7 +331,6 @@ async def export_mindmap(tx_id: str, request: Request):
 
 @router.get("/export/conversation/{conv_id}")
 def export_conversation(conv_id: str, format: str = "md", request: Request = None):
-    store = request.app.state.store
     conv = store.get_conversation(conv_id)
     if not conv:
         raise HTTPException(status_code=404, detail="对话不存在")
@@ -362,8 +359,7 @@ def export_conversation(conv_id: str, format: str = "md", request: Request = Non
 
 
 @router.post("/export/conversations/batch")
-async def export_conversations(data: dict, request: Request):
-    store = request.app.state.store
+async def export_conversations(data: dict, request: Request, store=Depends(get_store)):
     ids = data.get("ids", [])
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1022,7 +1018,6 @@ class ExportCustomRequest(BaseModel):
 
 @router.post("/export/custom")
 def export_custom(data: ExportCustomRequest, request: Request):
-    store = request.app.state.store
     buf = io.BytesIO()
     total_files = 0
 

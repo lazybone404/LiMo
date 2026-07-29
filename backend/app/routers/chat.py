@@ -10,6 +10,9 @@ import logging
 import asyncio
 
 from fastapi import APIRouter, Request, Query
+from app.core.dependencies import get_store, get_config
+
+from app.core.disconnect import disconnect_watcher
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -129,8 +132,6 @@ def _build_doc_context(store: object, doc_ids: list[str]) -> str:
 
 @router.post("/chat")
 async def chat(req: ChatRequest, request: Request) -> dict[str, object]:
-    store = request.app.state.store
-    config = request.app.state.config
 
     model_id = req.model_id
     if not model_id:
@@ -166,8 +167,6 @@ async def chat_stream(
     conversation_id: str = Query(""),
 ):
     """SSE 流式对话 — 实时推送回答 + 工具调用进度 + 自动持久化"""
-    store = request.app.state.store
-    config = request.app.state.config
 
     doc_list = [d.strip() for d in doc_ids.split(",") if d.strip()]
 
@@ -197,14 +196,7 @@ async def chat_stream(
 
     async def sse_stream():
         full_answer: list[str] = []
-        async def _watch_disconnect():
-            while not cancel_event.is_set():
-                if await request.is_disconnected():
-                    cancel_event.set()
-                    return
-                await asyncio.sleep(0.5)
-        disconnect_task = asyncio.create_task(_watch_disconnect())
-        try:
+        async with disconnect_watcher(request, cancel_event):
             yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
 
             async for event in agent.stream_run(system, question, history, cancel_event=cancel_event):
@@ -213,11 +205,6 @@ async def chat_stream(
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
             sessions.append_assistant_message(conversation_id, "".join(full_answer))
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
-        finally:
-            if not disconnect_task.done():
-                disconnect_task.cancel()
 
     return StreamingResponse(
         sse_stream(),

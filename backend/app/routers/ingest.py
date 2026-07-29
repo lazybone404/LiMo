@@ -18,8 +18,10 @@ from pydantic import BaseModel
 
 from app.core.types import PipelineInput, InputType, RawTranscript, ProgressEvent
 from app.core.registry import AdapterRegistry
+from app.core.dependencies import get_store, get_config, get_guard
 from app.core.errors import AppError
 from app.core.config import build_engine_models
+from app.core.disconnect import disconnect_watcher
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -47,8 +49,7 @@ class UpdateTranscriptRequest(BaseModel):
     tags: Optional[list[str]] = None
 
 @router.get("/transcripts")
-async def list_transcripts(request: Request, q: str = "", sourceType: str = "", tag: str = "") -> list[dict[str, Any]]:
-    store = request.app.state.store
+async def list_transcripts(request: Request, store=Depends(get_store), q: str = "", sourceType: str = "", tag: str = "") -> list[dict[str, Any]]:
     filters = {}
     if q:
         filters["query"] = q
@@ -60,9 +61,8 @@ async def list_transcripts(request: Request, q: str = "", sourceType: str = "", 
 
 
 @router.get("/transcripts/{tx_id}")
-async def get_transcript(tx_id: str, request: Request) -> dict[str, Any]:
+async def get_transcript(tx_id: str, request: Request, store=Depends(get_store)) -> dict[str, Any]:
     """获取单个 RawTranscript 完整内容（含 rawText）"""
-    store = request.app.state.store
     tx = store.get_transcript(tx_id)
     if not tx:
         raise HTTPException(status_code=404, detail="文档不存在")
@@ -84,9 +84,8 @@ async def get_transcript(tx_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.patch("/transcripts/{tx_id}")
-async def update_transcript(tx_id: str, request: Request) -> dict[str, Any]:
+async def update_transcript(tx_id: str, request: Request, store=Depends(get_store)) -> dict[str, Any]:
     """更新文档标题/标签"""
-    store = request.app.state.store
     tx = store.get_transcript(tx_id)
     if not tx:
         raise HTTPException(status_code=404, detail="文档不存在")
@@ -108,9 +107,8 @@ async def update_transcript(tx_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.delete("/transcripts/{tx_id}")
-async def delete_transcript(tx_id: str, request: Request) -> dict[str, Any]:
+async def delete_transcript(tx_id: str, request: Request, store=Depends(get_store)) -> dict[str, Any]:
     """删除文档（同时删除关联的 Markdown）"""
-    store = request.app.state.store
     tx = store.get_transcript(tx_id)
     if not tx:
         raise HTTPException(status_code=404, detail="文档不存在")
@@ -500,7 +498,6 @@ async def ingest(
     file: Optional[UploadFile] = File(None),
     force: bool = Form(False),
 ):
-    store = request.app.state.store
 
     # 构造 PipelineInput
     if file:
@@ -548,7 +545,6 @@ async def ingest(
                        detail=", ".join(a.name for a in AdapterRegistry.all()), recoverable=False)
 
     # 注入平台 Cookie + URL 去重
-    config = request.app.state.config
     _inject_cookies(adapter, inp, config)
 
     # URL 去重（force=true 时跳过）
@@ -580,17 +576,14 @@ async def ingest(
 
 
 @router.post("/transcripts/{tx_id}/retranscribe")
-async def retranscribe(tx_id: str, request: Request) -> dict[str, Any]:
+async def retranscribe(tx_id: str, request: Request, store=Depends(get_store), config=Depends(get_config), guard=Depends(get_guard)) -> dict[str, Any]:
     """重新转录 — 用当前引擎绑定重新处理原始来源
 
     - URL 导入：重新下载 + 转录
     - 本地文件：直接引用存储的路径（不复制），重新转录
     """
-    guard = request.app.state.guard
     # 重转录用本地信号量（不抢占生成/处理的云端槽位）
     async with guard.local_semaphore:
-        store = request.app.state.store
-        config = request.app.state.config
         tx = store.get_transcript(tx_id)
         if not tx:
             raise AppError("RETX_NOT_FOUND", "文档不存在", recoverable=False)
@@ -618,30 +611,18 @@ async def retranscribe(tx_id: str, request: Request) -> dict[str, Any]:
 
         # 后台监听客户端断连 → 取消长时间操作
         cancel_event = asyncio.Event()
-        async def _watch_disconnect():
-            while not cancel_event.is_set():
-                if await request.is_disconnected():
-                    cancel_event.set()
-                    return
-                await asyncio.sleep(0.5)
-        disconnect_task = asyncio.create_task(_watch_disconnect())
-
-        try:
-            engine_cfg = _build_engine_config(config, media_dir)
-            engine_cfg["cancel_event"] = cancel_event
-            output = await adapter.adapt(inp, engine_config=engine_cfg)
-        except asyncio.CancelledError:
-            raise AppError("RETX_CANCELLED", "操作已取消", recoverable=True)
-        except AppError:
-            raise
-        except Exception as e:
-            logger.exception("Re-transcribe failed")
-            raise AppError("RETX_FAILED", f"重新转录失败: {str(e)[:200]}") from e
-        finally:
-            cancel_event.set()
-            disconnect_task.cancel()
-            try: await disconnect_task
-            except asyncio.CancelledError: pass
+        async with disconnect_watcher(request, cancel_event):
+            try:
+                engine_cfg = _build_engine_config(config, media_dir)
+                engine_cfg["cancel_event"] = cancel_event
+                output = await adapter.adapt(inp, engine_config=engine_cfg)
+            except asyncio.CancelledError:
+                raise AppError("RETX_CANCELLED", "操作已取消", recoverable=True)
+            except AppError:
+                raise
+            except Exception as e:
+                logger.exception("Re-transcribe failed")
+                raise AppError("RETX_FAILED", f"重新转录失败: {str(e)[:200]}") from e
 
         # 持久化引擎提取的图片，重写 rawText 中的路径
         output.raw_text = _persist_media_images(store, output.raw_text, media_dir, tx_id)
@@ -691,13 +672,14 @@ async def retranscribe(tx_id: str, request: Request) -> dict[str, Any]:
 @router.post("/ingest/stream")
 async def ingest_stream(
     request: Request,
+    store=Depends(get_store),
+    config=Depends(get_config),
     url: Optional[str] = Form(None),
     text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     force: bool = Form(False),
 ):
     """SSE 流式导入 — 实时推送进度"""
-    store = request.app.state.store
 
     if file:
         try:
@@ -718,7 +700,6 @@ async def ingest_stream(
                        detail=", ".join(a.name for a in AdapterRegistry.all()), recoverable=False)
 
     # 注入平台 Cookie + URL 去重
-    config = request.app.state.config
     _inject_cookies(adapter, inp, config)
 
     if inp.url and not force:
@@ -806,7 +787,7 @@ async def ingest_stream(
 # ══════════════════════════════════════════════════════════════════
 
 @router.get("/files/{tx_id}/{filename}")
-async def serve_media_file(tx_id: str, filename: str, request: Request):
+async def serve_media_file(tx_id: str, filename: str, request: Request, store=Depends(get_store)):
     """访问转录文档的内嵌图片。
 
     安全约束：
@@ -824,7 +805,6 @@ async def serve_media_file(tx_id: str, filename: str, request: Request):
     if ext not in ("png", "jpg", "jpeg", "gif", "webp", "svg"):
         raise HTTPException(status_code=400, detail=f"Unsupported format: {ext}")
 
-    store = request.app.state.store
     file_path = Path(store.root) / "files" / tx_id / filename
 
     # 防路径遍历

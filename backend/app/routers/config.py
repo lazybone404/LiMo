@@ -28,8 +28,7 @@ def _mask_agent_tools(agent_tools: dict) -> dict:
 
 
 @router.get("/config")
-async def get_config(request: Request):
-    cfg = request.app.state.config
+async def get_config(request: Request, cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
     llm_key = cfg.get("llm", {}).get("api_key", "")
     return {
         "llm": {
@@ -77,8 +76,7 @@ class ConfigUpdate(BaseModel):
 @router.post("/config")
 async def update_config(data: ConfigUpdate, request: Request):
     """保存配置，自动解析 Cookie"""
-    with request.app.state.config_lock:
-        cfg = request.app.state.config
+    with cfg_lock:
 
         # LLM 配置
         if data.llm:
@@ -188,8 +186,7 @@ async def detect_models(data: dict, request: Request):
 
     # 构建 base_url
     if not base_url:
-        config = request.app.state.config
-        base_url = config.get("llm", {}).get("base_url", {}).get(provider, "")
+            base_url = config.get("llm", {}).get("base_url", {}).get(provider, "")
 
     if not base_url:
         # 默认地址
