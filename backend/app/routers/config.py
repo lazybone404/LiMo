@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel, model_validator
 from typing import Optional, Any
 
+from app.core.dependencies import get_config as get_config_dep, get_config_lock
 from app.core.errors import AppError
 
 from app.core.cookie_parser import auto_parse

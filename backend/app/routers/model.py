@@ -9,6 +9,7 @@ import requests
 from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel
 
+from app.core.dependencies import get_config as get_cfg, get_config_lock
 from app.core.errors import AppError
 
 from app.core.config_io import merge_sensitive, mask_sensitive
