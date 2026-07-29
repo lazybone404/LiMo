@@ -283,7 +283,7 @@ export default function App() {
 
       {/* 设置 — overlay，不卸载主界面 */}
       {showSettings && (
-        <div className="fixed inset-0 z-[10000] flex flex-col bg-surface">
+        <div className="fixed inset-0 z-[10000] flex flex-col bg-surface/85 backdrop-blur-xl">
           <SettingsPage onBack={() => setShowSettings(false)} />
         </div>
       )}
