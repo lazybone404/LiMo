@@ -49,8 +49,10 @@ export function EngineSelect({ category, label, options, binding, onChange, extr
           ))}
         </select>
       </div>
-      {selectedOpt && selectedOpt.desc && isSection && (
-        <p className="text-[10px] text-disabled px-1">{selectedOpt.desc}</p>
+      {selectedOpt && isSection && (
+        <p className="text-[10px] text-accent/70 mt-0.5 ml-[5rem]">
+          当前引擎: {selectedOpt.name}
+        </p>
       )}
       {extraHint && <p className="text-[10px] text-warning px-1">{extraHint}</p>}
     </div>

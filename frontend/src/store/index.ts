@@ -6,6 +6,8 @@ import { type BasePreset, getSavedBase, applyBase, saveBase } from '../lib/theme
 import { THEME_PRESETS } from '../lib/theme-presets'
 import type { Capabilities } from '../api/client'
 
+// ── 导出类型 ──
+
 export interface DocEntry {
   id: string; title: string; sourceType: string; sourceFileName?: string; sourceUrl?: string;
   engine: string; language?: string; duration?: number; coverUrl?: string; contentHash: string;
@@ -26,8 +28,14 @@ export interface ChatMessage {
   id: string
 }
 
+export interface ToastItem {
+  id: number; message: string; type: 'success' | 'error' | 'info'
+}
+
+// ── Store 接口（所有字段按域组织）──
+
 interface Store {
-  // 文档库
+  // ── 文档库 ──
   docs: DocEntry[]
   currentDocId: string | null
   searchQuery: string
@@ -38,7 +46,7 @@ interface Store {
   setSearchQuery: (q: string) => void
   setActiveTag: (tag: string) => void
 
-  // 预览区
+  // ── 预览内容 ──
   currentContent: string | null
   currentPolishedContent: string | null
   currentRawText: string | null
@@ -50,7 +58,7 @@ interface Store {
   setMarkdownMeta: (meta: { id: string; style: string; mode: string; version: number; status?: string } | null) => void
   setMarkdownVersions: (versions: { version: number; id: string; createdAt: string; status?: string }[]) => void
 
-  // 事实验证 / AI 审核
+  // ── AI 审核 ──
   currentFactCheckContent: string | null
   factCheckMeta: {
     id: string; verified_count?: number; disputed_count?: number; unverifiable_count?: number
@@ -66,35 +74,34 @@ interface Store {
   setFactCheckMeta: (m: Store['factCheckMeta']) => void
   setFactCheckProgress: (p: Store['factCheckProgress']) => void
 
-  // 流式生成
-  streamingContent: string | null       // 当前正在流式生成的内容
-  isStreaming: boolean                  // 是否正在流式生成
+  // ── 流式生成 ──
+  streamingContent: string | null
+  isStreaming: boolean
   setStreamingContent: (c: string | null) => void
   setIsStreaming: (v: boolean) => void
 
-  // 导入进度
+  // ── 导入进度 ──
   importProgress: ProgressEvent | null
   importStages: { phase: string; status: 'done' | 'running' | 'pending' | 'error'; message: string }[]
   setImportProgress: (ev: ProgressEvent | null) => void
   setImportStages: (stages: { phase: string; status: 'done' | 'running' | 'pending' | 'error'; message: string }[]) => void
 
-  // 图片处理结果: docId → mode → { text, engine, id }
+  // ── 图片处理结果: docId → mode → { text, engine, id } ──
   imageResults: Record<string, Record<string, { text: string; engine: string; id: string }>>
   setImageResult: (docId: string, mode: string, result: { text: string; engine: string; id: string }) => void
   loadImageResults: (docId: string, results: { mode: string; text: string; engine: string; id: string }[]) => void
 
-  // 处理任务追踪（供 PreviewArea 渲染进度 + TaskPanel 展示）
+  // ── 处理任务追踪 ──
   processingTasks: Record<string, { kind: string; mode?: string; title: string }>
-  /** key = `${docId}__${kind}`, null task = 清除该文档所有任务 */
+  /** taskKey = `${docId}__${task.kind}` */
   setProcessing: (taskKey: string, task: { kind: string; mode?: string; title?: string } | null) => void
-  /** 清除指定文档的所有处理任务 */
   clearDocTasks: (docId: string) => void
 
-  // 任务面板
+  // ── 任务面板 ──
   taskPanelOpen: boolean
   setTaskPanelOpen: (v: boolean) => void
 
-  // 对话管理
+  // ── 对话管理 ──
   conversations: { id: string; title: string; model_id?: number | null; created_at?: string; updated_at?: string }[]
   currentConversationId: string | null
   setConversations: (list: { id: string; title: string; model_id?: number | null; created_at?: string; updated_at?: string }[]) => void
@@ -103,14 +110,13 @@ interface Store {
   renameConversation: (id: string, title: string) => void
   setCurrentConversationId: (id: string | null) => void
 
-  // 生成中
+  // ── 生成状态 ──
   generating: boolean
   setGenerating: (v: boolean) => void
-  // 事实验证中
   factChecking: boolean
   setFactChecking: (v: boolean) => void
 
-  // AI 对话
+  // ── AI 浮动对话 ──
   chatMessages: ChatMessage[]
   chatLoading: boolean
   aiFloating: boolean
@@ -123,7 +129,7 @@ interface Store {
   setAiFloatingPos: (pos: { x: number; y: number }) => void
   setAiFloatingSize: (size: { width: number; height: number }) => void
 
-  // UI 布局
+  // ── UI 布局 ──
   genPanelOpen: boolean
   aiVisible: boolean
   activeView: 'polished' | 'summary' | 'transcript' | 'skeleton' | 'report' | 'data_preview' | 'original' | 'ocr' | 'extract' | 'table' | 'digitize' | 'understand' | 'mindmap' | 'fact_check'
@@ -137,57 +143,64 @@ interface Store {
   setPanelWidth: (panel: string, w: number) => void
   setPanelCollapsed: (panel: string, v: boolean) => void
 
-  // 内容阅读宽度
+  // ── 内容阅读宽度 ──
   contentWidth: ContentWidth
   cycleContentWidth: () => void
 
-  // 能力
+  // ── 后端能力 ──
   capabilities: Capabilities | null
   setCapabilities: (c: Capabilities) => void
 
-  // 主题
+  // ── 主题 ──
   theme: ThemeMode
   resolvedTheme: 'light' | 'dark'
   setTheme: (t: ThemeMode) => void
 
-  // 主色调
+  // ── 主色调 ──
   accent: AccentColor
   setAccent: (a: AccentColor) => void
 
-  // 预览区纹理
+  // ── 预览区纹理 ──
   texture: TexturePreset
   setTexture: (t: TexturePreset) => void
 
-  // 阅读字体
+  // ── 阅读字体 ──
   font: FontPreset
   setFont: (f: FontPreset) => void
 
-  // 界面基调
+  // ── 界面基调 ──
   base: BasePreset
   setBase: (b: BasePreset) => void
 
-  // 一键主题包
+  // ── 一键主题包 ──
   applyPreset: (name: string) => void
 
-  // Toast
-  toasts: { id: number; message: string; type: 'success' | 'error' | 'info' }[]
+  // ── Toast ──
+  toasts: ToastItem[]
   addToast: (message: string, type?: 'success' | 'error' | 'info') => void
   dismissToast: (id: number) => void
 }
 
-export interface ToastItem { id: number; message: string; type: 'success' | 'error' | 'info' }
+// ── 模块级状态 ──
 
 let msgCounter = 0
 
+// ── Store 创建（按域分节，便于导航）──
+
 export const useStore = create<Store>((set) => ({
+  // ═══════════════════════════════════════════
+  // 文档库
+  // ═══════════════════════════════════════════
   docs: [], currentDocId: null, searchQuery: '', activeTag: '',
   setDocs: (docs) => set({ docs }),
   addDoc: (doc) => set(s => ({ docs: [doc, ...s.docs] })),
   selectDoc: (id) => { try { localStorage.setItem('mbw_lastDocId', id) } catch { /* quota exceeded */ } set({ currentDocId: id }) },
-  setActiveView: (v) => { try { localStorage.setItem('mbw_lastView', v) } catch { /* quota exceeded */ } set({ activeView: v as Store['activeView'] }) },
   setSearchQuery: (q) => set({ searchQuery: q }),
   setActiveTag: (tag) => set({ activeTag: tag }),
 
+  // ═══════════════════════════════════════════
+  // 预览内容
+  // ═══════════════════════════════════════════
   currentContent: null, currentPolishedContent: null, currentRawText: null, markdownMeta: null, markdownVersions: [],
   setCurrentContent: (content) => set({ currentContent: content }),
   setCurrentPolishedContent: (content) => set({ currentPolishedContent: content }),
@@ -195,15 +208,24 @@ export const useStore = create<Store>((set) => ({
   setMarkdownMeta: (meta) => set({ markdownMeta: meta }),
   setMarkdownVersions: (versions) => set({ markdownVersions: versions }),
 
+  // ═══════════════════════════════════════════
+  // AI 审核
+  // ═══════════════════════════════════════════
   currentFactCheckContent: null, factCheckMeta: null, factCheckProgress: null,
   setCurrentFactCheckContent: (c) => set({ currentFactCheckContent: c }),
   setFactCheckMeta: (m) => set({ factCheckMeta: m }),
   setFactCheckProgress: (p) => set({ factCheckProgress: p }),
 
+  // ═══════════════════════════════════════════
+  // 流式生成
+  // ═══════════════════════════════════════════
   streamingContent: null, isStreaming: false,
   setStreamingContent: (c) => set({ streamingContent: c }),
   setIsStreaming: (v) => set({ isStreaming: v }),
 
+  // ═══════════════════════════════════════════
+  // 导入进度
+  // ═══════════════════════════════════════════
   importProgress: null,
   importStages: [],
   setImportProgress: (ev) => set(s => {
@@ -221,6 +243,9 @@ export const useStore = create<Store>((set) => ({
   }),
   setImportStages: (stages) => set({ importStages: stages }),
 
+  // ═══════════════════════════════════════════
+  // 图片处理结果
+  // ═══════════════════════════════════════════
   imageResults: {},
   setImageResult: (docId, mode, result) => set(s => ({
     imageResults: {
@@ -236,20 +261,20 @@ export const useStore = create<Store>((set) => ({
     return { imageResults: { ...s.imageResults, [docId]: byMode } }
   }),
 
+  // ═══════════════════════════════════════════
+  // 处理任务追踪 + 任务面板
+  // ═══════════════════════════════════════════
   processingTasks: {},
-  /** taskKey = `${docId}__${task.kind}` — 同一文档的不同操作不会互相覆盖 */
   setProcessing: (taskKey, task) => set(s => {
     const tasks = { ...s.processingTasks }
     if (task) tasks[taskKey] = { ...task, title: task.title || '' }
     else {
-      // null → 清除该文档该类型的所有任务（匹配前缀）
       Object.keys(tasks).forEach(k => {
         if (k.startsWith(taskKey + '__') || k === taskKey) delete tasks[k]
       })
     }
     return { processingTasks: tasks }
   }),
-  /** 清除指定文档的所有处理任务 */
   clearDocTasks: (docId) => set(s => {
     const tasks = { ...s.processingTasks }
     const prefix = docId + '__'
@@ -262,6 +287,9 @@ export const useStore = create<Store>((set) => ({
   taskPanelOpen: false,
   setTaskPanelOpen: (v) => set({ taskPanelOpen: v }),
 
+  // ═══════════════════════════════════════════
+  // 对话管理
+  // ═══════════════════════════════════════════
   conversations: [], currentConversationId: null,
   setConversations: (list) => set({ conversations: list }),
   addConversation: (conv) => set(s => ({ conversations: [conv, ...s.conversations] })),
@@ -269,11 +297,17 @@ export const useStore = create<Store>((set) => ({
   renameConversation: (id, title) => set(s => ({ conversations: s.conversations.map(c => c.id === id ? { ...c, title } : c) })),
   setCurrentConversationId: (id) => { if (id) try { localStorage.setItem('mbw_lastConvId', id) } catch {/*quota*/} else try { localStorage.removeItem('mbw_lastConvId') } catch {/*quota*/}; set({ currentConversationId: id }) },
 
+  // ═══════════════════════════════════════════
+  // 生成状态
+  // ═══════════════════════════════════════════
   generating: false,
   setGenerating: (v) => set({ generating: v }),
   factChecking: false,
   setFactChecking: (v) => set({ factChecking: v }),
 
+  // ═══════════════════════════════════════════
+  // AI 浮动对话
+  // ═══════════════════════════════════════════
   chatMessages: [], chatLoading: false,
   aiFloating: false,
   aiFloatingPos: { x: window.innerWidth - 500, y: window.innerHeight - 560 },
@@ -285,6 +319,9 @@ export const useStore = create<Store>((set) => ({
   setAiFloatingPos: (pos) => set({ aiFloatingPos: pos }),
   setAiFloatingSize: (size) => set({ aiFloatingSize: size }),
 
+  // ═══════════════════════════════════════════
+  // UI 布局
+  // ═══════════════════════════════════════════
   genPanelOpen: true, aiVisible: false, activeView: 'polished',
   panelWidths: { genPanel: 260, docLib: 260, aiPanel: 340, toc: 160 },
   panelsCollapsed: { genPanel: false, docLib: false, aiPanel: false, toc: false },
@@ -292,6 +329,7 @@ export const useStore = create<Store>((set) => ({
   toggleAI: () => set(s => ({ aiVisible: !s.aiVisible })),
   setGenPanelOpen: (v) => set({ genPanelOpen: v }),
   setAiVisible: (v) => set({ aiVisible: v }),
+  setActiveView: (v) => { try { localStorage.setItem('mbw_lastView', v) } catch { /* quota exceeded */ } set({ activeView: v as Store['activeView'] }) },
   setPanelWidth: (panel, w) => set(s => ({
     panelWidths: { ...s.panelWidths, [panel]: w },
     panelsCollapsed: { ...s.panelsCollapsed, [panel]: w < 80 },
@@ -300,6 +338,9 @@ export const useStore = create<Store>((set) => ({
     panelsCollapsed: { ...s.panelsCollapsed, [panel]: v },
   })),
 
+  // ═══════════════════════════════════════════
+  // 内容阅读宽度
+  // ═══════════════════════════════════════════
   contentWidth: ((typeof localStorage !== 'undefined' && localStorage.getItem('mbw_contentWidth')) || 'normal') as ContentWidth,
   cycleContentWidth: () => {
     const order: ContentWidth[] = ['normal', 'wide', 'narrow']
@@ -311,10 +352,15 @@ export const useStore = create<Store>((set) => ({
     })
   },
 
+  // ═══════════════════════════════════════════
+  // 后端能力
+  // ═══════════════════════════════════════════
   capabilities: null,
   setCapabilities: (c) => set({ capabilities: c }),
 
-  // 主题
+  // ═══════════════════════════════════════════
+  // 主题六轴
+  // ═══════════════════════════════════════════
   theme: getSavedTheme(),
   resolvedTheme: resolveTheme(getSavedTheme()),
   setTheme: (mode) => {
@@ -362,10 +408,12 @@ export const useStore = create<Store>((set) => ({
     set({ base: p.base, accent: p.accent, texture: p.texture, font: p.font })
   },
 
+  // ═══════════════════════════════════════════
+  // Toast
+  // ═══════════════════════════════════════════
   toasts: [],
   addToast: (message, type = 'success') => {
     const id = ++msgCounter
-    // M6: 错误提示 6 秒，成功 3 秒，最多保留 5 条
     const duration = type === 'error' ? 6000 : 3000
     set(s => {
       const next = [...s.toasts, { id, message, type }]

@@ -1,5 +1,7 @@
 # 引擎评审记录
 
+> **2026-07-30 更新**：引擎已从 AGPL（pymupdf4llm/pymupdf）迁移到 MIT/BSD（docling/pypdfium2），PDF 引擎已全部替换。以下 PDF 引擎章节（7/6 原始评审）保留为历史参考。
+
 ## 评判标准
 
 2026-07-06 讨论确定：判断引擎好坏的唯一标准是**职责是否兑现**。
@@ -12,9 +14,12 @@
 
 宣称了就**必须做到**，做不到就该从 capabilities 里移除。这是及格线。
 
-## PDF 引擎评审
+## PDF 引擎评审（⚠️ 历史记录 — 引擎已全部替换）
 
-引擎注册名称：`pymupdf4llm` `pymupdf` `pymupdf-text` `pdf-ocr` `markitdown`
+> 以下为 2026-07-06 原始评审。pymupdf4llm/pymupdf/pdf-ocr 已从注册表中移除（AGPL 协议风险 + 代码死沉），由 docling/docling-text/pypdfium2（全部 MIT/BSD）替代。
+> 当前活跃引擎见 [STATUS.md](../docs/STATUS.md)。
+
+引擎注册名称：~~`pymupdf4llm` `pymupdf` `pymupdf-text` `pdf-ocr`~~ → 现为 `docling` `docling-text` `pypdfium2` `markitdown`
 
 ### 测试数据
 
@@ -39,11 +44,10 @@ DSpark_paper.pdf（学术论文，33 页，双栏 + 矢量图 Figure 1 + 嵌入�
 
 **markitdown → 保留兜底**。PDF 场景不作为主力。
 
-### 代码变更
+### 代码变更（历史）
 
-- 删除 `doc.py` 中 `PyMuPDFEngine.execute()` 内的矢量图截取代码块（原 134-161 行）
-- 删除不再需要的 `_cluster_rects` / `_merge_rects` 辅助函数
-- `config.yaml`: `doc:text+image = pymupdf4llm`, `doc:text-only = pymupdf4llm`
+- ~~删除 `doc.py` 中 `PyMuPDFEngine.execute()` 内的矢量图截取代码块~~ → `doc.py` 已于 2026-07-30 完全删除，拆分为 `doc_types.py` + `doc_markitdown.py` + `doc_docx.py` + `doc_pptx.py` + `doc_excel.py`
+- `config.yaml`: ~~`doc:text+image = pymupdf4llm`~~ → 现为 `doc:text+image = pypdfium2`（docling 作为重试回退）
 
 ---
 
@@ -220,17 +224,23 @@ XLSX 引擎只做一件事：打开文件，把表格数据完整转成 MD table
 
 ## 当前默认绑定
 
+> 2026-07-30 最新，详见 `__init__.py` 中 `_DOC_DEFAULTS`。
+
 ```
-doc:text+image: pymupdf4llm
-doc:text-only:  pymupdf4llm
-doc:word:       markitdown
-doc:ppt:        markitdown
+doc:text+image: pypdfium2 (回退: docling)
+doc:text-only:  pypdfium2
+doc:scan-ocr:   docling
+doc:word:       python-docx
+doc:ppt:        python-pptx
+doc:excel:      openpyxl
+doc:epub:       ebooklib
+asr:            bcut-asr
 ocr:            tesseract
 ```
 
-引擎讨论覆盖了全部 4 种文档格式（PDF/DOCX/PPTX/XLSX），剩下 EPUB/ASR/OCR 需补充测试后继续。
+引擎讨论覆盖了全部 5 种文档格式（PDF/DOCX/PPTX/XLSX/EPUB）。
 
 ## 待实施
 
-- [ ] VL 帧过滤（PaddleOCR 检测）
 - [ ] EPUB 引擎测试（需补充测试文件）
+- [ ] VL 帧过滤（成本/收益不成正比 — 暂不做，见 CLAUDE.md）

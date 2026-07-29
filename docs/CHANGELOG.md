@@ -6,6 +6,78 @@
 
 ---
 
+## 2026-07-30 — 深度评估后续改进（四合一）
+
+### 做了什么
+
+基于 [04-深度评估报告](../pi-docs/04-深度评估报告.md) 的 4 个剩余改进项，一次性完成：
+
+**1. doc.py 拆分为独立文件** — `backend/app/engines/doc.py`（756 行）拆为 5 个文件：`doc_types.py`（共享 DocResult）+ `doc_markitdown.py` + `doc_docx.py` + `doc_pptx.py` + `doc_excel.py`。3 个未注册死代码引擎（PyMuPDFEngine/PyMuPDF4LLMEngine/PDFOCREngine）随文件删除。`docling.py` 和 `__init__.py` 的 import 路径同步更新。
+
+**2. Zustand Store 领域分节** — `frontend/src/store/index.ts` 用分节注释（`════ 域名称 ════`）清晰划分 11 个逻辑域，保持单一 `create()` 调用的零类型错误优势。接口完全不变，所有 `useStore(s => s.field)` 选择器兼容。
+
+**3. 前端测试基础设施** — 从零搭建：vitest + @testing-library/react + jsdom。3 个测试文件，32 个测试用例（store 19 + theme 9 + api 4）。`npm test` / `npm run test:watch` 脚本。
+
+**4. 引擎配置 UX 优化** — EngineSelect 加"当前引擎"标签，ProviderSettings 加"恢复默认"按钮。附带修复 `EngineBindData` Pydantic 类型 bug（`int|str|None` → `int|str|list|None`，后台代码已有 `isinstance(val, list)` 处理但类型拒绝）。
+
+### 为什么
+
+报告指出这 4 项是不影响主线使用的结构性优化，但修完让项目更完整。实际耗时约 1.2 小时。
+
+### 影响范围
+
+- `backend/app/engines/` — 5 新建 + 2 修改 + 1 删除
+- `frontend/src/store/index.ts` — 重构为 11 域分节
+- `frontend/src/test/` — 4 新建（vitest.config + setup + 3 tests）
+- `frontend/package.json` — test scripts
+- `frontend/src/components/gen-panel/EngineSelect.tsx` — "当前引擎"标签
+- `frontend/src/components/settings/ProviderSettings.tsx` — "恢复默认"按钮
+- `backend/app/routers/model.py` — Pydantic 类型修复
+- `frontend/src/api/client.ts` — saveEngineBindings 类型同步
+
+### 验证
+
+- 后端: `from app.engines import init_engines` + `test_engines.py` 全部通过
+- 前端: `tsc -b --noEmit` 零错误 + `vitest run` 32/32 通过
+
+---
+
+## 2026-07-29 — 工程质量系统性提升（disconnect_watcher + Depends + 审核分片 + 导出进度）
+
+### 做了什么
+
+**Part 1: disconnect_watcher 公共工具** — 将 5 个路由中 ~45 行重复的 `_watch_disconnect` 实现提取为 `@asynccontextmanager`。同时修复 2 个 bug：`process.py` 资源泄漏（disconnect_task 从不 cancel）和 `chat.py` 缺 await（Task destroyed but pending）。
+
+**Part 2: FastAPI Depends 全量迁移** — 8 个路由模块全部从 `request.app.state.xxx` 迁移到 `Depends(get_store/config/guard/config_lock)`。共修复 5 个文件缺失 `Depends` 导入的错误。
+
+**Part 3: AI 审核长文档分片** — `split_into_chunks()` 按句子边界分片 + `asyncio.gather` 并行 LLM 提取 + `SequenceMatcher` 去重（>0.85 相似度），最多32块。
+
+**Part 4: 导出进度反馈** — `POST /export/custom/stream` SSE 流式进度 + `GET /export/download/{temp_id}` 临时下载，复用 ingest.py 已验证的 queue + background task 模式。
+
+### 为什么
+
+对话中明确：工程质量全部做完，审核分片+导出进度作为功能增强。前两项消除重复代码并统一路由风格，后两项填补功能空白。
+
+### 影响范围
+
+- `backend/app/core/disconnect.py` — 新建（公共工具）
+- `backend/app/routers/generate.py, ingest.py, chat.py, process.py, fact_check.py` — disconnect_watcher 替换
+- `backend/app/routers/export.py, chat.py, process.py, fact_check.py, config.py, ingest.py, generate.py, model.py` — Depends 迁移
+- `backend/app/core/text_utils.py` — `split_into_chunks()`
+- `backend/app/generation/review.py` — `static_review()` 分片化
+- `backend/app/routers/export.py` — 2 新端点
+- `frontend/src/api/client.ts` — `streamExportProgress()`
+- `frontend/src/components/ui/ExportPanel.tsx` — 进度 UI
+
+### 验证
+
+- `grep -r "request\.app\.state" backend/app/routers/` → generate.py 仅 7 处无害闭包残留
+- `grep -r "return {\"error\"" backend/app/routers/` → 0 处旧格式
+- 6 个后端测试全部通过
+- Tauri + PyInstaller 打包成功（MSI 569MB / NSIS 404MB）
+
+---
+
 ## 2026-07-26 — 多任务状态泄漏修复 + 刷新内容恢复
 
 ### 问题

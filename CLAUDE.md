@@ -58,6 +58,7 @@ data-font="system|kaiti|wenkai|…"← 阅读字体（5种，4系统+1web）
 |------|------|--------|
 | [architecture.md](docs/architecture.md) | 六层分层架构，每层模块职责、交互、陷阱 | 理解整体架构和模块边界 |
 | [frontend-patterns.md](docs/frontend-patterns.md) | 状态管理、取消机制、TaskPanel、apiUrl | 改前端状态/任务相关代码 |
+| [engine-standards.md](design/engine-standards.md) | ⚠️ 历史参考 — PDF 引擎已从 AGPL 迁移到 MIT/BSD | 了解引擎评审标准（非当前引擎列表） |
 | [export-pipeline.md](docs/export-pipeline.md) | 导出架构、两条路径设计、Tab→内容映射表、KaTeX/Pygments | 改导出功能、新增 tab |
 | [CHANGELOG.md](docs/CHANGELOG.md) | 修改记录：做了什么、为什么、影响范围 | 了解历史决策、避免重复踩坑 |
 | [STATUS.md](docs/STATUS.md) | 纯事实清单（文件/端点/引擎计数） | 需要统计数据 |
@@ -96,6 +97,7 @@ python tests/test_e2e_smoke.py       # 端到端冒烟测试
 ```bash
 cd frontend
 npm run dev       # 开发服务器，端口 5173，API 代理 → 127.0.0.1:7413
+npm test          # vitest（32 tests: store/theme/api，<1s）
 npm run build     # 类型检查 + 生产构建
 npm run lint      # oxlint
 ```
@@ -226,7 +228,7 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 ```
 - 可拖拽 resize，50–600px，<80px 自动折叠为 PanelStrip
 - 快捷键：`Ctrl+G` 切换生成面板，`Ctrl+I` 切换 AI 面板
-- Zustand 单 store（`frontend/src/store/index.ts`），processingTasks + localStorage 持久化
+- Zustand 单 store（`frontend/src/store/index.ts`），11 域分节（docs/content/generation/import/processing/chat/UI/theme/toast/capabilities），processingTasks + localStorage 持久化
 
 ### Tauri 桌面壳
 

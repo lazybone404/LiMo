@@ -183,6 +183,23 @@ export function ProviderSettings() {
     addToast('引擎绑定已更新')
   }
 
+  const handleRestoreDefaults = async () => {
+    if (!window.confirm('确定恢复所有引擎绑定为系统默认？当前自定义配置将丢失。')) return
+    // 收集所有已知 binding key → 全部置空（后端 [] = 清除，下次启动恢复默认）
+    const clearAll: Record<string, any[]> = {}
+    for (const cat of Object.keys(CAT_LABELS)) {
+      clearAll[cat] = []
+    }
+    const allDocSubs = Object.keys(caps?.scenarioLabels || {})
+    for (const key of allDocSubs) {
+      clearAll[key] = []
+    }
+    await saveEngineBindings(clearAll)
+    setEngineBindings({})
+    await loadAll()
+    addToast('引擎绑定已恢复为系统默认')
+  }
+
   // 组件卸载时兜底保存未提交的 Key（用户输入后直接关设置不丢）
   const refSaveLlm = useRef(handleSaveLlmKey); refSaveLlm.current = handleSaveLlmKey
   const refSaveEngine = useRef(handleSaveEngineKey); refSaveEngine.current = handleSaveEngineKey
@@ -426,8 +443,18 @@ export function ProviderSettings() {
 
       {/* ======== 引擎用途 ======== */}
       <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-3">
-        <h3 className="text-[17px] font-semibold">引擎用途</h3>
-        <p className="text-[13px] text-muted">为每种场景选择默认引擎。</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-[17px] font-semibold">引擎用途</h3>
+            <p className="text-[13px] text-muted">为每种场景选择默认引擎。</p>
+          </div>
+          <button
+            onClick={handleRestoreDefaults}
+            className="px-3 py-1.5 text-[12px] text-accent hover:bg-accent/5 rounded-lg border border-accent/20 shrink-0"
+          >
+            恢复默认
+          </button>
+        </div>
 
         {/* asr / ocr — 简单类别，每个一个下拉框 */}
         {Object.entries(CAT_LABELS).map(([cat, label]) => {

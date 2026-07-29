@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 from app.core.protocols import Engine
-from app.engines.doc import DocResult
+from app.engines.doc_types import DocResult
 
 logger = logging.getLogger(__name__)
 

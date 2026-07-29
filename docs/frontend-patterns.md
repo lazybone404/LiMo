@@ -27,11 +27,18 @@ Zustand store `processingTasks: Record<string, ProcessingTask>` 的键统一为�
 
 ### 查找 activeTask
 
+> **已更新（2026-07-26）**：从单值 `activeTask`（`find()`）改为数组 `activeTasks`（`filter()`），支持同文档多任务并发。
+
 ```typescript
 // PreviewArea.tsx — 找当前文档的进行中任务
-const activeTask = currentDocId
-  ? Object.entries(processingTasks).find(([k]) => k.startsWith(currentDocId + '__'))?.[1]
-  : importTask?.[1]
+const activeTasks = currentDocId
+  ? Object.entries(processingTasks).filter(([k]) => k.startsWith(currentDocId + '__'))
+  : importTask ? [[importKey, importTask]] : []
+
+// PreviewArea.tsx — 判断视图是否在加载中
+const isViewProcessing = activeTasks.some(([, t]) => {
+  // 根据 tab 类型匹配对应的 kind
+})
 
 // GenPanel.tsx — 同步 TaskPanel 外部取消
 useEffect(() => {

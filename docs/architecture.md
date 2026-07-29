@@ -14,7 +14,7 @@
 ├─────────────────────────────────────────────────────┤
 │ Layer 1: 转录层                                      │
 │ Engine.bind() → Engine.transcribe() / .process()    │
-│ 15 个引擎：ASR×4 / OCR×2 / Doc×9                    │
+│ 17 个引擎：ASR×4 / OCR×2 / Doc×11                   │
 ├─────────────────────────────────────────────────────┤
 │ Layer 2: 存储层                                      │
 │ Store — 文件系统 + JSON 索引                        │
@@ -98,20 +98,19 @@ EngineRegistry.register("ocr", "tesseract", TesseractEngine(...))
 | **ASR** | dashscope-asr | 云端 | text |
 | ASR | faster-whisper-small | 本地 | text |
 | ASR | faster-whisper-medium | 本地 | text |
-| ASR | faster-whisper-large-v3 | 本地 | text |
+| ASR | bcut-asr | 免费云 | text |
 | **OCR** | dashscope-ocr | 云端 | text |
 | OCR | tesseract | 本地(便携版 `bin/tesseract/`) | text |
-| **Doc** | pymupdf4llm | 本地 | text, table, **image**, pdf |
-| Doc | pymupdf | 本地 | text, table, image, pdf |
-| Doc | pymupdf-text | 本地 | text, table, pdf |
-| Doc | pdf-ocr | 本地+云端 | text (扫描件) |
-| Doc | python-docx | 本地 | text, office |
-| Doc | python-docx-text | 本地 | text, office |
-| Doc | python-pptx | 本地 | text, office |
-| Doc | python-pptx-text | 本地 | text, office |
-| Doc | openpyxl | 本地 | text, office |
-| Doc | markitdown | 本地 | text, pdf, office |
+| **Doc** | docling / docling-text | 本地 | text, table, image, pdf |
+| Doc | pypdfium2 | 本地 | text, table, image, pdf |
+| Doc | pdfplumber | 本地 | text, table |
+| Doc | python-docx / python-docx-text | 本地 | text, table, image, office |
+| Doc | python-pptx / python-pptx-text | 本地 | text, table, office |
+| Doc | openpyxl | 本地 | text, table, office |
+| Doc | markitdown | 本地 | text, table, image, office |
 | Doc | ebooklib | 本地 | text (EPUB章节) |
+
+> Doc 引擎源码已拆分为独立文件：`doc_types.py`、`doc_markitdown.py`、`doc_docx.py`、`doc_pptx.py`、`doc_excel.py`、`docling.py`（含 PyPdfium2Engine）、`epub.py`。已移除 AGPL 引擎（pymupdf4llm/pymupdf）和未注册的死代码（pdf-ocr）。
 
 ### 引擎绑定
 
@@ -121,9 +120,9 @@ EngineRegistry.register("ocr", "tesseract", TesseractEngine(...))
 engine_bindings:
   asr: dashscope-asr
   ocr: tesseract
-  doc:text+image: pymupdf4llm
-  doc:text-only: pymupdf-text
-  doc:scan-ocr: pdf-ocr
+  doc:text+image: docling
+  doc:text-only: pypdfium2
+  doc:scan-ocr: docling
   doc:word: python-docx
   doc:ppt: python-pptx
   doc:excel: openpyxl
@@ -138,12 +137,12 @@ engine_bindings:
 
 | 扩展名 | 子场景 | 引擎优先级 |
 |--------|--------|-----------|
-| .pdf | `doc:text+image` | pymupdf4llm → pymupdf → ... |
-| .pdf (扫描件) | `doc:scan-ocr` | pdf-ocr |
-| .docx | `doc:word` | python-docx → python-docx-text |
-| .pptx | `doc:ppt` | python-pptx → python-pptx-text |
-| .xlsx | `doc:excel` | openpyxl |
-| .epub | `doc:epub` | ebooklib |
+| .pdf | `doc:text+image` | docling → pypdfium2 → ... |
+| .pdf (扫描件) | `doc:scan-ocr` | docling（文字+OCR 双模） |
+| .docx | `doc:word` | python-docx → markitdown |
+| .pptx | `doc:ppt` | markitdown → python-pptx |
+| .xlsx | `doc:excel` | openpyxl → markitdown |
+| .epub | `doc:epub` | ebooklib → markitdown |
 
 ### 降级开关
 

@@ -160,7 +160,10 @@ def init_engines(config: dict | None = None):
                 break
 
     # Doc（MIT/BSD 协议，无 AGPL 风险）
-    from .doc import MarkItDownEngine, DocxEngine, PptxEngine, ExcelEngine
+    from .doc_markitdown import MarkItDownEngine
+    from .doc_docx import DocxEngine
+    from .doc_pptx import PptxEngine
+    from .doc_excel import ExcelEngine
 
     # Doc — MIT/BSD 协议引擎组
     from .docling import DoclingEngine, PyPdfium2Engine

@@ -1008,7 +1008,7 @@ export async function deleteEngineModel(id: number) {
 export async function getEngineBindings(): Promise<Record<string, number | null>> {
   return (await apiFetch(`${BASE}/engine-bindings`)).json()
 }
-export async function saveEngineBindings(data: Record<string, number | null>) {
+export async function saveEngineBindings(data: Record<string, number | null | any[]>) {
   return (await apiFetch(`${BASE}/engine-bindings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bindings: data }) })).json()
 }
 
