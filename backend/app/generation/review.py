@@ -15,8 +15,10 @@ import json
 import logging
 import re
 import uuid
+from difflib import SequenceMatcher
 
 from app.agent.tools import search_web, fetch_url
+from app.core.text_utils import split_into_chunks
 from app.agent.evidence import (
     lookup_evidence, store_evidence, is_url_fetched, mark_url_fetched,
     format_evidence_from_search, format_evidence,
@@ -56,17 +58,84 @@ class ReviewEngine:
     ) -> dict:
         """不联网的静态审核：提取 Claim + 分类 + Issues + 风险评分。
 
+        短文本（≤MAX_CHUNK_CHARS）直接单次提取。
+        长文本切分为重叠块，并行提取后合并去重。
+
         返回: {has_content, claims: [...], issues: [...]}
         """
-        # 简单 chunk：取前 MAX_CHUNK_CHARS，后续可扩展为滑动窗口
-        chunk = content[:MAX_CHUNK_CHARS]
-        prompt = STATIC_REVIEW_PROMPT.replace("{content}", chunk)
+        chunks = split_into_chunks(content, MAX_CHUNK_CHARS, overlap=200)
+        max_chunks = 32  # 安全上限，防止失控
+        if len(chunks) > max_chunks:
+            logger.warning("内容过长 (%d chars, %d chunks), 截断为 %d chunks",
+                          len(content), len(chunks), max_chunks)
+            chunks = chunks[:max_chunks]
 
-        raw = await self._llm.call(
-            prompt, max_tokens=4096, temperature=0.3,
-            max_continuations=0, cancel_event=cancel_event,
-        )
-        result = self._parse_json_object(raw)
+        if len(chunks) == 1:
+            # 短文本 — 单次提取
+            prompt = STATIC_REVIEW_PROMPT.replace("{content}", chunks[0])
+            raw = await self._llm.call(
+                prompt, max_tokens=4096, temperature=0.3,
+                max_continuations=0, cancel_event=cancel_event,
+            )
+            result = self._parse_json_object(raw)
+        else:
+            # 长文本 — 分片并行提取
+            logger.info("Static review: %d chars → %d chunks, parallel extraction",
+                       len(content), len(chunks))
+
+            async def extract_one(i: int, chunk: str) -> dict:
+                if cancel_event and cancel_event.is_set():
+                    return {"has_content": False, "claims": [], "issues": []}
+                prompt = STATIC_REVIEW_PROMPT.replace("{content}", chunk)
+                raw = await self._llm.call(
+                    prompt, max_tokens=4096, temperature=0.3,
+                    max_continuations=0, cancel_event=cancel_event,
+                )
+                r = self._parse_json_object(raw)
+                # 标注 chunk 索引用于调试
+                for c in r.get("claims", []):
+                    c["_chunk"] = i
+                return r
+
+            tasks = [extract_one(i, chunk) for i, chunk in enumerate(chunks)]
+            chunk_results = await asyncio.gather(*tasks)
+
+            # 合并 claims — 去重
+            all_claims = []
+            all_issues = []
+            has_content = False
+            for r in chunk_results:
+                if r.get("has_content"):
+                    has_content = True
+                all_claims.extend(r.get("claims", []))
+                all_issues.extend(r.get("issues", []))
+
+            # 去重：精确匹配 + 文本相似度 > 0.85
+            deduped = []
+            for claim in all_claims:
+                claim_text = (claim.get("claim") or "").strip().lower()
+                if not claim_text:
+                    continue
+                is_dup = False
+                for existing in deduped:
+                    existing_text = (existing.get("claim") or "").strip().lower()
+                    if claim_text == existing_text:
+                        is_dup = True
+                        break
+                    if len(claim_text) > 20 and len(existing_text) > 20:
+                        ratio = SequenceMatcher(None, claim_text, existing_text).ratio()
+                        if ratio > 0.85:
+                            is_dup = True
+                            break
+                if not is_dup:
+                    deduped.append(claim)
+
+            # 截断到 MAX_CLAIMS
+            claims = deduped[:MAX_CLAIMS]
+            # 清理内部 _chunk 标记
+            for c in claims:
+                c.pop("_chunk", None)
+            result = {"has_content": has_content, "claims": claims, "issues": all_issues}
 
         if not result.get("has_content"):
             return {"has_content": False, "claims": [], "issues": []}
