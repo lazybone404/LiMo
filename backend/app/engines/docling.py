@@ -36,11 +36,13 @@ class PyPdfium2Engine(Engine):
         img_idx = 0
         scanned_pages = 0
 
-        # pdfplumber 实例复用
-        import pdfplumber as _pl
+        # pdfplumber 实例复用（可选依赖）
         _pp = None
-        try: _pp = _pl.open(file_path_str)
-        except Exception: pass
+        try:
+            import pdfplumber as _pl
+            _pp = _pl.open(file_path_str)
+        except Exception:
+            pass
 
         # PDF 内置目录
         toc = self._extract_toc(pdf)
