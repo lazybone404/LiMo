@@ -41,6 +41,7 @@ export const TEXTURE_SWATCH: Record<TexturePreset, string> = {
 
 const TEXTURE_KEY = 'mbw_texture'
 const FONT_KEY = 'mbw_font'
+const INTENSITY_KEY = 'mbw_texture_intensity'
 
 // ── Texture ──────────────────────────────────────────────
 
@@ -58,6 +59,25 @@ export function applyTexture(t: TexturePreset): void {
 
 export function saveTexture(t: TexturePreset): void {
   try { localStorage.setItem(TEXTURE_KEY, t) } catch { /* quota */ }
+}
+
+// ── Texture Intensity (0-100, 默认 50) ──────────────────
+
+export function getSavedIntensity(): number {
+  try {
+    const v = localStorage.getItem(INTENSITY_KEY)
+    if (v != null) return Math.max(0, Math.min(100, parseInt(v) || 50))
+  } catch { /* quota */ }
+  return 50
+}
+
+export function applyIntensity(value: number): void {
+  // value: 10-100, 反转: 10→0.9(弱) 100→0(强)
+  document.documentElement.style.setProperty('--texture-opacity', String((100 - value) / 100))
+}
+
+export function saveIntensity(value: number): void {
+  try { localStorage.setItem(INTENSITY_KEY, String(value)) } catch { /* quota */ }
 }
 
 // ── Font ─────────────────────────────────────────────────

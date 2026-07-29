@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { getConfig, updateConfig, getErrorMessage } from '../../api/client'
 import { useStore } from '../../store'
 import { ACCENT_GROUPS, ACCENT_SWATCH } from '../../lib/accent'
-import { TEXTURE_OPTIONS, TEXTURE_SWATCH, FONT_OPTIONS } from '../../lib/texture'
+import { TEXTURE_OPTIONS, TEXTURE_SWATCH, FONT_OPTIONS, getSavedIntensity, applyIntensity, saveIntensity } from '../../lib/texture'
 import { BASE_OPTIONS } from '../../lib/theme-base'
 import { THEME_PRESETS } from '../../lib/theme-presets'
 import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette } from 'lucide-react'
@@ -57,6 +57,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const base = useStore(s => s.base)
   const setBase = useStore(s => s.setBase)
   const applyPreset = useStore(s => s.applyPreset)
+  const [intensity, setIntensity] = useState(getSavedIntensity())
 
   useEffect(() => {
     getConfig().then(cfg => {
@@ -407,6 +408,26 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                       )
                     })}
                   </div>
+                  {/* 纹理强度 */}
+                  {texture !== 'plain' && (
+                    <div className="mt-4">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[12px] text-dimmed">纹理强度</span>
+                        <span className="text-[11px] text-disabled">{intensity}%</span>
+                      </div>
+                      <input
+                        type="range" min="10" max="100" value={intensity}
+                        onChange={e => {
+                          const v = parseInt(e.target.value)
+                          setIntensity(v)
+                          saveIntensity(v)
+                          applyIntensity(v)
+                        }}
+                        className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
+                        style={{ accentColor: 'var(--tk-accent)' }}
+                      />
+                    </div>
+                  )}
                 </div>
 
                 {/* 阅读字体 */}
