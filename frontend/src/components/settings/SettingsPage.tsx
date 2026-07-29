@@ -259,47 +259,6 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
           {/* 外观 */}
           {tab === 'appearance' && (
             <div className="space-y-6">
-              {/* 推荐搭配 */}
-              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
-                <div>
-                  <label className="text-[15px] font-medium mb-1 block">推荐搭配</label>
-                  <p className="text-[12px] text-muted mb-4">
-                    一键设定全局基调、配色、纹理和字体，也可单独微调
-                  </p>
-                  <div className="grid grid-cols-2 gap-3">
-                    {THEME_PRESETS.map(p => {
-                      const baseColor = BASE_OPTIONS.find(b => b.key === p.base)
-                      const accentColors = ACCENT_SWATCH[p.accent]
-                      const fontLabel = FONT_OPTIONS.find(f => f.key === p.font)
-                      const textureLabel = TEXTURE_OPTIONS.find(t => t.key === p.texture)
-                      return (
-                        <button
-                          key={p.name}
-                          onClick={() => applyPreset(p.name)}
-                          className="flex items-center gap-4 p-4 rounded-xl transition-all hover:bg-surface-hover border border-border-light text-left"
-                        >
-                          {/* 双色圆点：基底色 + 主色调 */}
-                          <div className="shrink-0">
-                            <div
-                              className="w-12 h-12 rounded-full border-2 border-border-light"
-                              style={{
-                                background: `conic-gradient(${accentColors?.primary || '#007AFF'} 0deg 180deg, ${baseColor?.surface || '#F4F1EE'} 180deg 360deg)`,
-                              }}
-                            />
-                          </div>
-                          <div className="min-w-0">
-                            <span className="text-[14px] font-medium block">{p.label}</span>
-                            <span className="text-[11px] text-disabled block leading-relaxed">
-                              {fontLabel?.label || p.font} · {textureLabel?.label || p.texture}
-                            </span>
-                          </div>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              </div>
-
               {/* 界面基调 */}
               <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
                 <div>
@@ -410,22 +369,25 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                   </div>
                   {/* 纹理强度 */}
                   {texture !== 'plain' && (
-                    <div className="mt-4">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-[12px] text-dimmed">纹理强度</span>
-                        <span className="text-[11px] text-disabled">{intensity}%</span>
+                    <div className="mt-5 pt-4 border-t border-border-light">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-[13px] font-medium">纹理强度</span>
+                        <span className="text-[12px] text-accent font-medium bg-accent/10 px-2 py-0.5 rounded-full">{intensity}%</span>
                       </div>
-                      <input
-                        type="range" min="10" max="100" value={intensity}
-                        onChange={e => {
-                          const v = parseInt(e.target.value)
-                          setIntensity(v)
-                          saveIntensity(v)
-                          applyIntensity(v)
-                        }}
-                        className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
-                        style={{ accentColor: 'var(--tk-accent)' }}
-                      />
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-disabled w-8 text-right">淡</span>
+                        <input
+                          type="range" min="10" max="100" value={intensity}
+                          onChange={e => {
+                            const v = parseInt(e.target.value)
+                            setIntensity(v)
+                            saveIntensity(v)
+                            applyIntensity(v)
+                          }}
+                          className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer accent-[var(--tk-accent)]"
+                        />
+                        <span className="text-[10px] text-disabled w-8">浓</span>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -453,6 +415,46 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                           <span className="text-[11px] text-disabled">
                             {f.category === 'web' ? '需加载' : '系统内置'}
                           </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* 推荐搭配 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
+                <div>
+                  <label className="text-[15px] font-medium mb-1 block">推荐搭配</label>
+                  <p className="text-[12px] text-muted mb-4">
+                    一键设定全局基调、配色、纹理和字体，也可单独微调
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    {THEME_PRESETS.map(p => {
+                      const baseColor = BASE_OPTIONS.find(b => b.key === p.base)
+                      const accentColors = ACCENT_SWATCH[p.accent]
+                      const fontLabel = FONT_OPTIONS.find(f => f.key === p.font)
+                      const textureLabel = TEXTURE_OPTIONS.find(t => t.key === p.texture)
+                      return (
+                        <button
+                          key={p.name}
+                          onClick={() => applyPreset(p.name)}
+                          className="flex items-center gap-4 p-4 rounded-xl transition-all hover:bg-surface-hover border border-border-light text-left"
+                        >
+                          <div className="shrink-0">
+                            <div
+                              className="w-12 h-12 rounded-full border-2 border-border-light"
+                              style={{
+                                background: `conic-gradient(${accentColors?.primary || '#007AFF'} 0deg 180deg, ${baseColor?.surface || '#F4F1EE'} 180deg 360deg)`,
+                              }}
+                            />
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-[14px] font-medium block">{p.label}</span>
+                            <span className="text-[11px] text-disabled block leading-relaxed">
+                              {fontLabel?.label || p.font} · {textureLabel?.label || p.texture}
+                            </span>
+                          </div>
                         </button>
                       )
                     })}
