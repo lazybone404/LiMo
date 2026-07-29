@@ -2,12 +2,16 @@
 导出端点 — Markdown → HTML / 原始 MD 下载 / 批量 zip
 对标 BiliNote export.py: markdown→HTML（含表格/代码块/LaTeX）→ 浏览器下载
 """
+import asyncio
 import base64
 import io
 import json
 import logging
+import os
 import re
 import shutil
+import tempfile
+import uuid as _uuid
 import zipfile
 from datetime import datetime
 
@@ -24,6 +28,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request, Query, HTTPException, Depends
 from fastapi.responses import Response, StreamingResponse
 from app.core.dependencies import get_store
+from app.core.disconnect import disconnect_watcher
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -1178,3 +1183,258 @@ def export_custom(data: ExportCustomRequest, request: Request):
     encoded = quote(zipname.encode('utf-8'), safe='')
     return StreamingResponse(buf, media_type="application/zip",
                              headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"})
+
+
+# ═══════════════════════════════════════════════════════════════
+# 导出进度 SSE 端点 + 临时文件下载
+# ═══════════════════════════════════════════════════════════════
+
+_TEMP_DIR = os.path.join(tempfile.gettempdir(), "limo_exports")
+_TEMP_TTL = 600  # 10分钟
+
+
+async def _build_export_zip(
+    data: ExportCustomRequest,
+    store,
+    queue: asyncio.Queue | None = None,
+    cancel_event: asyncio.Event | None = None,
+) -> tuple[io.BytesIO, int]:
+    """构建导出 ZIP，可选通过 queue 推送进度事件。
+    返回 (buffer, total_files)。"""
+    buf = io.BytesIO()
+    total_files = 0
+
+    def _check_cancel():
+        if cancel_event and cancel_event.is_set():
+            raise asyncio.CancelledError()
+
+    def _push(phase: str, doc: int, total: int, message: str = ""):
+        if queue:
+            queue.put_nowait({
+                "type": "progress", "phase": phase,
+                "doc": doc, "total": total, "message": message,
+            })
+
+    doc_ids = data.doc_ids
+    total_docs = len(doc_ids)
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for idx, doc_id in enumerate(doc_ids):
+            _check_cancel()
+            _push("collecting", idx + 1, total_docs, f"正在处理文档 {idx + 1}/{total_docs}...")
+
+            tx = store.get_transcript(doc_id)
+            if not tx:
+                continue
+            doc_title = _safe_filename(tx.get("title", doc_id))
+            mds = store.get_markdowns_by_transcript(doc_id)
+
+            # 收集 tab 内容
+            tab_contents: dict[str, str] = {}
+            for tab in data.content_tabs:
+                content = _resolve_tab_content(store, tx, mds, tab)
+                if content and content.strip():
+                    tab_contents[tab] = content
+
+            # 图片
+            _check_cancel()
+            imgs: dict[str, bytes] = {}
+            name_map: dict[str, str] = {}
+            if data.image_md != "none":
+                all_refs: list[tuple[str, str]] = []
+                for content in tab_contents.values():
+                    all_refs.extend(_find_image_refs(content))
+                if all_refs:
+                    _push("images", idx + 1, total_docs, f"正在收集图片 ({len(all_refs)} 引用)...")
+                    imgs, name_map = _collect_images(all_refs, store.root)
+
+            # 写入
+            _push("zipping", idx + 1, total_docs, f"正在打包...")
+            for tab, content in tab_contents.items():
+                if tab == "mindmap":
+                    safe_tab = tab.replace("/", "-")
+                    zf.writestr(f"{doc_title}/{doc_title}_{safe_tab}.html", content)
+                    total_files += 1
+                    continue
+                for fmt in data.formats:
+                    processed = content
+                    ext = fmt
+
+                    if data.image_md == "inline" and imgs:
+                        processed = _inline_images(processed, imgs, name_map, store.root)
+                    elif data.image_md == "separate" and imgs:
+                        processed = _rewrite_image_paths(processed, name_map, prefix="images/")
+
+                    if fmt == "md":
+                        if data.formula_md == "render":
+                            processed = _render_formulas_to_images(processed)
+                        elif data.formula_md == "remove":
+                            processed = _remove_formulas(processed)
+                    elif fmt == "html":
+                        if data.formula_md == "render":
+                            processed = _render_formulas_to_images(processed)
+                        processed = _build_selfcontained_html(processed, tx.get("title", doc_title), data.html_theme)
+                        ext = "html"
+                    elif fmt == "plain":
+                        processed = _remove_formulas(processed) if data.formula_plain == "remove" else _unicode_formulas(processed)
+                        ext = "txt"
+
+                    safe_tab = tab.replace("/", "-")
+                    zf.writestr(f"{doc_title}/{doc_title}_{safe_tab}.{ext}", processed)
+                    total_files += 1
+
+            # 图片文件
+            if data.image_md == "separate" and imgs:
+                _push("images", idx + 1, total_docs, f"正在写入图片...")
+                for img_name, data_bytes in imgs.items():
+                    zf.writestr(f"{doc_title}/images/{img_name}", data_bytes)
+
+        _push("done", total_docs, total_docs, f"导出完成，共 {total_files} 个文件")
+
+    buf.seek(0)
+    return buf, total_files
+
+
+def _resolve_tab_content(store, tx: dict, mds: list[dict], tab: str) -> str:
+    """解析单个 tab 的内容。与 export_custom 内联逻辑一致。"""
+    content = ""
+    if tab == "summary":
+        for md in mds:
+            if md.get("mode", "") == "notes":
+                content = store.get_markdown(md["id"]) or ""
+                break
+    elif tab == "polished":
+        for md in mds:
+            if md.get("mode", "") == "polished":
+                content = store.get_markdown(md["id"]) or ""
+                break
+    elif tab == "transcript":
+        content = tx.get("rawText", "")
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict) and "full_text" in parsed:
+                content = parsed["full_text"]
+            elif isinstance(parsed, dict) and "segments" in parsed:
+                content = "\n\n".join(
+                    f"{s.get('start', 0):.0f}s: {s.get('text', '')}"
+                    for s in parsed["segments"]
+                )
+        except (json.JSONDecodeError, TypeError):
+            pass
+    elif tab == "data_preview":
+        content = tx.get("rawText", "")
+    elif tab == "report":
+        for md in mds:
+            if md.get("mode", "") == "polished":
+                content = store.get_markdown(md["id"]) or ""
+                break
+    elif tab == "fact_check":
+        for md in mds:
+            if md.get("mode", "") == "fact_check":
+                content = store.get_markdown(md["id"]) or ""
+                break
+    elif tab == "mindmap":
+        mindmap_src = ""
+        for md in mds:
+            if md.get("mode", "") not in ("polished", "fact_check"):
+                mindmap_src = store.get_markdown(md["id"]) or ""
+                if mindmap_src: break
+        if not mindmap_src:
+            mindmap_src = tx.get("rawText", "")
+        content = _build_mindmap_html(mindmap_src, tx.get("title", _safe_filename(tx.get("title", "Untitled"))) or "Untitled")
+        return content  # mindmap is self-contained, skip further processing
+    elif tab == "skeleton":
+        content = tx.get("rawText", "")
+    else:
+        results = store.get_process_results(tx.get("id", ""))
+        for r in results:
+            if r.get("mode") == tab:
+                content = store.get_process_result(r["id"]) or ""
+                break
+        if not content:
+            content = tx.get("rawText", "")
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, dict) and "full_text" in parsed:
+                    content = parsed["full_text"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+    return content
+
+
+@router.post("/export/custom/stream")
+async def export_custom_stream(
+    data: ExportCustomRequest,
+    request: Request,
+    store=Depends(get_store),
+):
+    """SSE 流式导出进度 — 后台构建 ZIP，前端实时看进度，完成后下载"""
+    queue: asyncio.Queue = asyncio.Queue()
+    cancel_event = asyncio.Event()
+
+    async def event_generator():
+        async def run_build():
+            try:
+                buf, total_files = await _build_export_zip(data, store, queue, cancel_event)
+                if cancel_event.is_set():
+                    return
+                # 保存到临时文件
+                os.makedirs(_TEMP_DIR, exist_ok=True)
+                temp_id = _uuid.uuid4().hex[:16]
+                temp_path = os.path.join(_TEMP_DIR, f"{temp_id}.zip")
+                with open(temp_path, "wb") as f:
+                    f.write(buf.getvalue())
+                queue.put_nowait({
+                    "type": "done",
+                    "download_url": f"/api/export/download/{temp_id}",
+                    "total_files": total_files,
+                })
+            except asyncio.CancelledError:
+                queue.put_nowait({"type": "cancelled"})
+            except Exception as e:
+                logger.exception("Export stream build failed")
+                queue.put_nowait({"type": "error", "message": str(e)[:200]})
+
+        async with disconnect_watcher(request, cancel_event):
+            build_task = asyncio.create_task(run_build())
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=30)
+                    except asyncio.TimeoutError:
+                        yield ": heartbeat\n\n"
+                        continue
+                    if event.get("type") in ("done", "cancelled", "error"):
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        break
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            finally:
+                if not build_task.done():
+                    build_task.cancel()
+                    try: await build_task
+                    except: pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/export/download/{temp_id}")
+async def export_download(temp_id: str):
+    """下载预构建的临时 ZIP 文件"""
+    temp_path = os.path.join(_TEMP_DIR, f"{temp_id}.zip")
+    if not os.path.exists(temp_path):
+        raise HTTPException(status_code=404, detail="文件不存在或已过期，请重新导出")
+
+    def cleanup_after():
+        try: os.remove(temp_path)
+        except OSError: pass
+
+    return StreamingResponse(
+        open(temp_path, "rb"),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=export-{temp_id[:8]}.zip"},
+        background=cleanup_after,
+    )
