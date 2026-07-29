@@ -38,6 +38,14 @@ class PyPdfium2Engine(Engine):
         img_idx = 0
         scanned_pages = 0
 
+        # ── pdfplumber 实例（复用，避免每页重复打开）──
+        import pdfplumber as _pl
+        _pp = None
+        try:
+            _pp = _pl.open(file_path_str)
+        except Exception:
+            pass
+
         # ── PDF 内置目录 ──
         toc = self._extract_toc(pdf)
         if toc:
@@ -49,7 +57,7 @@ class PyPdfium2Engine(Engine):
             page_imgs: list[tuple[float, str]] = []
 
             page_objs = list(page.get_objects())
-            txt_n, img_n, other_n = self._classify_objs(page_objs)
+            pw, ph = page.get_size()
 
             tp = page.get_textpage()
             text = tp.get_text_bounded()
@@ -60,7 +68,7 @@ class PyPdfium2Engine(Engine):
                 scanned_pages += 1
 
             # ── 2. 表格：pdfplumber 优先（精准），回退坐标推断 ──
-            table_md, table_bbox = self._extract_tables(file_path_str, i, tp)
+            table_md, table_bbox = self._extract_tables(_pp, i) if _pp else (None, None)
             if table_md:
                 page_parts.append(table_md)
 
@@ -69,59 +77,29 @@ class PyPdfium2Engine(Engine):
                 if not self._overlaps_table(p, table_bbox, tp):
                     page_parts.append(p)
 
-            # ── 3. 矢量图聚类渲染（排除表格包围盒内对象）──
-            if other_n > 3 and other_n > txt_n * 0.15:
-                other_rects = self._collect_other_rects(page_objs)
-                # 排除与表格重叠的 rects
-                if table_bbox:
-                    tx0, ty0, tx1, ty1 = table_bbox
-                    other_rects = [r for r in other_rects
-                                   if not (r[0] >= tx0 and r[1] >= ty0 and r[2] <= tx1 and r[3] <= ty1)]
-                clusters = self._cluster_rects(other_rects, gap=30) if other_rects else []
-                pw, ph = page.get_size()
-                page_area = pw * ph
-                for cx0, cy0, cx1, cy1 in clusters:
-                    # 聚类级别质量检查
-                    cl_w, cl_h = cx1 - cx0, cy1 - cy0
-                    if cl_w < 40 or cl_h < 40:
-                        continue
-                    # 统计簇内对象覆盖密度
-                    cl_area = cl_w * cl_h
-                    inner_area = sum((r[2]-r[0])*(r[3]-r[1]) for r in other_rects
-                                     if r[0]>=cx0 and r[1]>=cy0 and r[2]<=cx1 and r[3]<=cy1)
-                    density = inner_area / max(cl_area, 1)
-                    # 密度太低 = 稀疏装饰，不是图表
-                    if density < 0.03 and cl_area < page_area * 0.4:
-                        continue
-                    if cx1 - cx0 < 30 or cy1 - cy0 < 30:
-                        continue
-                    cl, cr, ct, cb = cx0, pw - cx1, cy0, ph - cy1
-                    if cl < 0 or cr < 0 or ct < 0 or cb < 0:
-                        continue
-                    rw, rh = pw - cl - cr, ph - ct - cb
-                    if rw < 30 or rh < 30:
-                        continue
-                    ratio = rw / max(rh, 1)
-                    if (rw * rh) < page_area * 0.08 and (rw * rh) < 20000:
-                        continue
-                    if ratio > 15 or ratio < 0.07:
-                        continue
-                    try:
-                        bitmap = page.render(scale=2.5, crop=(cl, cb, cr, ct))
-                        pil = bitmap.to_pil()
-                        alt = f"fig_{img_idx}"
-                        if media_dir:
-                            fname = f"fig_{img_idx:04d}.png"
-                            pil.save(str(Path(media_dir) / fname), format="PNG")
-                            page_parts.append(f"![{alt}]({fname})")
-                        else:
-                            buf = io.BytesIO()
-                            pil.save(buf, format="PNG")
-                            b64 = base64.b64encode(buf.getvalue()).decode()
-                            page_parts.append(f"![{alt}](data:image/png;base64,{b64})")
-                        img_idx += 1
-                    except Exception:
-                        pass
+            # ── 3. 矢量图：pdfplumber curves/rects 精准定位 ──
+            fig_regions = self._detect_figure_regions_pdfplumber(_pp, i, pw, ph) if _pp else []
+            for rx0, ry0, rx1, ry1 in fig_regions:
+                cl, cr, ct, cb = rx0, pw - rx1, ry0, ph - ry1
+                if cl < 0 or cr < 0 or ct < 0 or cb < 0:
+                    continue
+                if (pw - cl - cr) < 30 or (ph - ct - cb) < 30:
+                    continue
+                try:
+                    bitmap = page.render(scale=3.5, crop=(cl, cb, cr, ct))
+                    pil = bitmap.to_pil()
+                    alt = f"fig_{img_idx}"
+                    if media_dir:
+                        fname = f"fig_{img_idx:04d}.png"
+                        pil.save(str(Path(media_dir) / fname), format="PNG")
+                        page_parts.append(f"![{alt}]({fname})")
+                    else:
+                        buf = io.BytesIO(); pil.save(buf, format="PNG")
+                        b64 = base64.b64encode(buf.getvalue()).decode()
+                        page_parts.append(f"![{alt}](data:image/png;base64,{b64})")
+                    img_idx += 1
+                except Exception:
+                    pass
 
             # ── 嵌入图片（收集位置后按锚点插入）──
             for obj in page_objs:
@@ -159,6 +137,9 @@ class PyPdfium2Engine(Engine):
                 parts.append("\n\n".join(page_parts))
 
         pdf.close()
+        if _pp:
+            try: _pp.close()
+            except Exception: pass
         full_text = "\n\n".join(parts)
         is_scanned = len(parts) > 0 and scanned_pages > len(parts) * 0.5
 
@@ -214,31 +195,29 @@ class PyPdfium2Engine(Engine):
         return result
 
     @staticmethod
-    def _extract_tables(pdf_path: str, page_idx: int, tp) -> tuple[str | None, tuple | None]:
+    def _extract_tables(pp, page_idx: int) -> tuple[str | None, tuple | None]:
         """pdfplumber 提取表格（精准单元格文字），返回 (markdown, bbox)"""
         try:
-            import pdfplumber
-            with pdfplumber.open(pdf_path) as pp:
-                if page_idx < len(pp.pages):
-                    tables = pp.pages[page_idx].find_tables()
-                    if tables:
-                        all_md_parts: list[str] = []
-                        for t in tables:
-                            rows = t.extract()
-                            if not rows or not rows[0] or len(rows[0]) < 2:
-                                continue
-                            rows = [[c or "" for c in r] for r in rows]
-                            cols = len(rows[0])
-                            lines: list[str] = []
-                            for ri, row in enumerate(rows):
-                                cells = [str(c).strip().replace("\n", " ")[:80] for c in row[:cols]]
-                                lines.append("| " + " | ".join(cells) + " |")
-                                if ri == 0:
-                                    lines.append("| " + " | ".join(["---"] * cols) + " |")
-                            if len(lines) > 2:
-                                all_md_parts.append("\n".join(lines))
-                        if all_md_parts:
-                            return "\n\n".join(all_md_parts), None
+            if pp and page_idx < len(pp.pages):
+                tables = pp.pages[page_idx].find_tables()
+                if tables:
+                    all_md_parts: list[str] = []
+                    for t in tables:
+                        rows = t.extract()
+                        if not rows or not rows[0] or len(rows[0]) < 2:
+                            continue
+                        rows = [[c or "" for c in r] for r in rows]
+                        cols = len(rows[0])
+                        lines: list[str] = []
+                        for ri, row in enumerate(rows):
+                            cells = [str(c).strip().replace("\n", " ")[:80] for c in row[:cols]]
+                            lines.append("| " + " | ".join(cells) + " |")
+                            if ri == 0:
+                                lines.append("| " + " | ".join(["---"] * cols) + " |")
+                        if len(lines) > 2:
+                            all_md_parts.append("\n".join(lines))
+                    if all_md_parts:
+                        return "\n\n".join(all_md_parts), None
         except Exception:
             pass
         return None, None
@@ -373,63 +352,60 @@ class PyPdfium2Engine(Engine):
         return (x0, y0, x1, y1)
 
     @staticmethod
-    def _classify_objs(objs) -> tuple[int, int, int]:
-        import pypdfium2 as pdfium
-        texts = images = others = 0
-        for obj in objs:
-            if isinstance(obj, pdfium.PdfTextObj):
-                texts += 1
-            elif isinstance(obj, pdfium.PdfImage):
-                images += 1
-            else:
-                others += 1
-        return texts, images, others
+    def _detect_figure_regions_pdfplumber(pp, page_idx: int, pw: float, ph: float) -> list[tuple]:
+        """用 pdfplumber 的 curves+rects 精准定位矢量图区域"""
+        try:
+            if not pp or page_idx >= len(pp.pages):
+                return []
+            page = pp.pages[page_idx]
+            curves = page.curves or []
+            rects = page.rects or []
 
-    @staticmethod
-    def _collect_other_rects(objs) -> list[tuple[float, float, float, float]]:
-        import pypdfium2 as pdfium
-        rects: list[tuple[float, float, float, float]] = []
-        for obj in objs:
-            if isinstance(obj, (pdfium.PdfTextObj, pdfium.PdfImage)):
-                continue
-            try:
-                b = obj.get_bounds()
-                w, h = b[2] - b[0], b[3] - b[1]
-                if w < 2 or h < 2:
+                # 收集显著矢量元素（过滤微线条/装饰）
+            # 只用 fill=True 的矩形作为图表锚点（charts 有填充柱/背景），
+            # 纯 curves(线条/边框)太容易混入文字装饰
+            elements: list[tuple[float,float,float,float]] = []
+            for r in rects:
+                if (r.get('fill') and r['width'] > 15 and r['height'] > 8
+                        and r['width'] < pw * 0.7):  # 排除横幅/页眉
+                    elements.append((r['x0'], r['y0'], r['x1'], r['y1']))
+            # 只在有 fill rects 的区域纳入附近 curves
+            if elements:
+                for c in curves:
+                    w, h = abs(c['x1']-c['x0']), abs(c['y1']-c['y0'])
+                    if w > 5 or h > 5:
+                        cx, cy = (c['x0']+c['x1'])/2, (c['y0']+c['y1'])/2
+                        # 只保留靠近 fill rects 的 curves
+                        if any(r[0]-10 <= cx <= r[2]+10 and r[1]-10 <= cy <= r[3]+10 for r in elements):
+                            elements.append((min(c['x0'],c['x1']), min(c['y0'],c['y1']),
+                                             max(c['x0'],c['x1']), max(c['y0'],c['y1'])))
+
+            if len(elements) < 10:
+                return []
+
+            elements.sort(key=lambda e: e[1])
+            clusters: list[list] = []
+            cur = [elements[0]]
+            for e in elements[1:]:
+                prev = cur[-1]
+                if abs(e[1] - prev[1]) < 30 or abs(e[1] - prev[3]) < 30:
+                    cur.append(e)
+                else:
+                    clusters.append(cur); cur = [e]
+            clusters.append(cur)
+
+            regions = []
+            for cl in clusters:
+                if len(cl) < 5:
                     continue
-                rects.append((b[0], b[1], b[2], b[3]))
-            except Exception:
-                pass
-        return rects
-
-    @staticmethod
-    def _cluster_rects(rects: list[tuple], gap: float = 20) -> list[tuple]:
-        """将空间相邻的矩形聚类，返回每个簇的包围盒"""
-        if not rects:
+                x0 = min(e[0] for e in cl); y0 = min(e[1] for e in cl)
+                x1 = max(e[2] for e in cl); y1 = max(e[3] for e in cl)
+                area = (x1-x0)*(y1-y0)
+                if area > pw * ph * 0.05:
+                    regions.append((x0-3, y0-3, x1+3, y1+3))
+            return regions
+        except Exception:
             return []
-        # 按 Y 排序
-        sorted_rects = sorted(rects, key=lambda r: r[1])
-        clusters: list[list[tuple]] = []
-        current: list[tuple] = [sorted_rects[0]]
-        for r in sorted_rects[1:]:
-            # 和前一个比较：Y 间距 < gap → 同一簇
-            prev = current[-1]
-            if abs(r[1] - prev[1]) < gap or abs(r[1] - prev[3]) < gap:
-                current.append(r)
-            else:
-                clusters.append(current)
-                current = [r]
-        clusters.append(current)
-        # 合并每簇的包围盒
-        result: list[tuple] = []
-        for cluster in clusters:
-            x0 = min(r[0] for r in cluster)
-            y0 = min(r[1] for r in cluster)
-            x1 = max(r[2] for r in cluster)
-            y1 = max(r[3] for r in cluster)
-            # 加少量 padding
-            result.append((x0 - 2, y0 - 2, x1 + 2, y1 + 2))
-        return result
 
 class DoclingEngine(Engine):
     """基于 Docling（IBM, MIT）+ pypdfium2（BSD-3）的 PDF → Markdown 引擎。"""
