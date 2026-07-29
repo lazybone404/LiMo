@@ -3,6 +3,8 @@ import { getConfig, updateConfig, getErrorMessage } from '../../api/client'
 import { useStore } from '../../store'
 import { ACCENT_GROUPS, ACCENT_SWATCH } from '../../lib/accent'
 import { TEXTURE_OPTIONS, TEXTURE_SWATCH, FONT_OPTIONS } from '../../lib/texture'
+import { BASE_OPTIONS } from '../../lib/theme-base'
+import { THEME_PRESETS } from '../../lib/theme-presets'
 import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette } from 'lucide-react'
 import { ProviderSettings } from './ProviderSettings'
 
@@ -52,6 +54,9 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const setTexture = useStore(s => s.setTexture)
   const font = useStore(s => s.font)
   const setFont = useStore(s => s.setFont)
+  const base = useStore(s => s.base)
+  const setBase = useStore(s => s.setBase)
+  const applyPreset = useStore(s => s.applyPreset)
 
   useEffect(() => {
     getConfig().then(cfg => {
@@ -253,6 +258,66 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
           {/* 外观 */}
           {tab === 'appearance' && (
             <div className="space-y-6">
+              {/* 推荐搭配 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
+                <div>
+                  <label className="text-[15px] font-medium mb-1 block">推荐搭配</label>
+                  <p className="text-[12px] text-muted mb-4">
+                    一键设定全局基调、配色、纹理和字体，也可单独微调
+                  </p>
+                  <div className="grid grid-cols-4 gap-3">
+                    {THEME_PRESETS.map(p => (
+                      <button
+                        key={p.name}
+                        onClick={() => applyPreset(p.name)}
+                        className="flex flex-col items-center gap-1.5 p-3 rounded-xl transition-all hover:bg-surface-hover border border-border-light"
+                      >
+                        <div
+                          className="w-10 h-10 rounded-full"
+                          style={{ background: BASE_OPTIONS.find(b => b.key === p.base)?.surface || '#F4F1EE' }}
+                        />
+                        <span className="text-[13px] font-medium">{p.label}</span>
+                        <span className="text-[10px] text-disabled">{p.accent} · {p.texture}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* 界面基调 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
+                <div>
+                  <label className="text-[15px] font-medium mb-1 block">界面基调</label>
+                  <p className="text-[12px] text-muted mb-4">
+                    控制全局底色和边框颜色，影响整个应用界面
+                  </p>
+                  <div className="grid grid-cols-3 gap-3">
+                    {BASE_OPTIONS.map(b => {
+                      const selected = base === b.key
+                      return (
+                        <button
+                          key={b.key}
+                          onClick={() => setBase(b.key)}
+                          className={`flex flex-col items-center gap-1.5 p-2 rounded-xl transition-all ${
+                            selected
+                              ? 'ring-2 ring-accent ring-offset-2 ring-offset-surface'
+                              : 'hover:bg-surface-hover'
+                          }`}
+                        >
+                          <div
+                            className="w-full h-10 rounded-lg border border-border-light"
+                            style={{ background: b.surface }}
+                          />
+                          <span className={`text-[12px] ${
+                            selected ? 'text-accent font-medium' : 'text-muted'
+                          }`}>{b.label}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+
               {/* 主色调 */}
               <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
                 <div>

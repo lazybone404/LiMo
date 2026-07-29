@@ -2,6 +2,8 @@ import { create } from 'zustand'
 import { type ThemeMode, getSavedTheme, resolveTheme, applyTheme, saveTheme } from '../lib/theme'
 import { type AccentColor, getSavedAccent, applyAccent, saveAccent } from '../lib/accent'
 import { type TexturePreset, type FontPreset, getSavedTexture, getSavedFont, applyTexture, applyFont, saveTexture, saveFont } from '../lib/texture'
+import { type BasePreset, getSavedBase, applyBase, saveBase } from '../lib/theme-base'
+import { THEME_PRESETS } from '../lib/theme-presets'
 import type { Capabilities } from '../api/client'
 
 export interface DocEntry {
@@ -159,6 +161,13 @@ interface Store {
   // 阅读字体
   font: FontPreset
   setFont: (f: FontPreset) => void
+
+  // 界面基调
+  base: BasePreset
+  setBase: (b: BasePreset) => void
+
+  // 一键主题包
+  applyPreset: (name: string) => void
 
   // Toast
   toasts: { id: number; message: string; type: 'success' | 'error' | 'info' }[]
@@ -336,6 +345,23 @@ export const useStore = create<Store>((set) => ({
     set({ font })
   },
 
+  base: getSavedBase(),
+  setBase: (base) => {
+    saveBase(base)
+    applyBase(base)
+    set({ base })
+  },
+
+  applyPreset: (name) => {
+    const p = THEME_PRESETS.find(pr => pr.name === name)
+    if (!p) return
+    applyBase(p.base); saveBase(p.base)
+    applyAccent(p.accent); saveAccent(p.accent)
+    applyTexture(p.texture); saveTexture(p.texture)
+    applyFont(p.font); saveFont(p.font)
+    set({ base: p.base, accent: p.accent, texture: p.texture, font: p.font })
+  },
+
   toasts: [],
   addToast: (message, type = 'success') => {
     const id = ++msgCounter
@@ -356,6 +382,7 @@ applyTheme(resolveTheme(getSavedTheme()))
 applyAccent(getSavedAccent())
 applyTexture(getSavedTexture())
 applyFont(getSavedFont())
+applyBase(getSavedBase())
 
 // Listen for system theme changes when in "system" mode
 const sysMq = window.matchMedia('(prefers-color-scheme: dark)')

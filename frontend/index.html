@@ -22,6 +22,8 @@
           document.documentElement.setAttribute('data-texture', tx);
           var fn = localStorage.getItem('mbw_font') || 'system';
           document.documentElement.setAttribute('data-font', fn);
+          var b = localStorage.getItem('mbw_base') || 'warm';
+          document.documentElement.setAttribute('data-base', b);
         } catch(e) {}
       })();
     </script>

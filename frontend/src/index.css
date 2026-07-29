@@ -41,9 +41,18 @@
 /* 默认 = 天际蓝 (data-accent 未设置时) */
 :root:not([data-accent]) { --accent-hue: 211; --accent-sat: 100; --second-hue: 195; --second-sat: 80; }
 
+/* ── Layer 0: Base Tone Presets (data-base driven) ────────── */
+/* warm 为默认，无需额外规则 */
+
+[data-base="neutral"] { --tk-surface: #F5F5F5; --tk-elevated: #FCFCFC; --tk-hover: #ECECEC; --tk-border: #D8D8D8; --tk-border-light: #E8E8E8; }
+[data-base="cream"]   { --tk-surface: #F9F6F0; --tk-elevated: #FEFCF8; --tk-hover: #F2EDE4; --tk-border: #E0D8CA; --tk-border-light: #EDE6DA; }
+[data-base="cool"]    { --tk-surface: #F2F3F5; --tk-elevated: #F8F9FC; --tk-hover: #E8EAEE; --tk-border: #D4D6DA; --tk-border-light: #E4E6EA; }
+[data-base="rose"]    { --tk-surface: #F5F1F2; --tk-elevated: #FBF8F9; --tk-hover: #EEE6E8; --tk-border: #D8CED2; --tk-border-light: #E8DEE2; }
+[data-base="sage"]    { --tk-surface: #F2F4F0; --tk-elevated: #F8FAF7; --tk-hover: #E8ECE6; --tk-border: #D0D6CE; --tk-border-light: #E0E6DE; }
+
 /* ── Layer 1: Semantic Variables (data-theme driven) ──────── */
 /* 两轴驱动：data-theme(明暗) + data-accent(配色)           */
-/* 所有颜色统一在此定义，无废弃 Apple Primitives 层          */
+/* 底色变量由 data-base 覆盖，其余在此定义                  */
 
 /* Light defaults */
 :root {
