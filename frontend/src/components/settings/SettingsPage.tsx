@@ -374,8 +374,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                         <span className="text-[13px] font-medium">纹理强度</span>
                         <span className="text-[12px] text-accent font-medium bg-accent/10 px-2 py-0.5 rounded-full">{intensity}%</span>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-disabled w-8 text-right">淡</span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-[11px] text-disabled shrink-0">淡</span>
                         <input
                           type="range" min="10" max="100" value={intensity}
                           onChange={e => {
@@ -384,9 +384,13 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                             saveIntensity(v)
                             applyIntensity(v)
                           }}
-                          className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer accent-[var(--tk-accent)]"
+                          className="flex-1 h-2 rounded-full appearance-none cursor-pointer
+                            [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:rounded-full
+                            [&::-webkit-slider-thumb]:bg-accent [&::-webkit-slider-thumb]:shadow-md
+                            [&::-webkit-slider-thumb]:appearance-none
+                            bg-surface-hover"
                         />
-                        <span className="text-[10px] text-disabled w-8">浓</span>
+                        <span className="text-[11px] text-disabled shrink-0">浓</span>
                       </div>
                     </div>
                   )}
