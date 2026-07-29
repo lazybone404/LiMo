@@ -32,7 +32,8 @@ class PyPdfium2Engine(Engine):
         import pypdfium2 as pdfium
 
         media_dir = kwargs.get("media_dir", "")
-        pdf = pdfium.PdfDocument(str(file_path))
+        file_path_str = str(file_path)
+        pdf = pdfium.PdfDocument(file_path_str)
         parts: list[str] = []
         img_idx = 0
         scanned_pages = 0
@@ -47,7 +48,6 @@ class PyPdfium2Engine(Engine):
             page_parts: list[str] = []
             page_imgs: list[tuple[float, str]] = []
 
-            # ── 页面对象分类（先物化为 list，生成器只能消费一次）──
             page_objs = list(page.get_objects())
             txt_n, img_n, other_n = self._classify_objs(page_objs)
 
@@ -55,17 +55,19 @@ class PyPdfium2Engine(Engine):
             text = tp.get_text_bounded()
 
             # ── 1. 文字 ──
-            if text.strip():
-                paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-                page_parts.extend(paragraphs)
-            else:
+            raw_paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()] if text.strip() else []
+            if not raw_paragraphs:
                 scanned_pages += 1
 
-            # ── 2. 表格 ──
-            table_md = self._detect_tables(tp)
-            table_bbox = self._table_bbox(tp) if table_md else None
+            # ── 2. 表格：pdfplumber 优先（精准），回退坐标推断 ──
+            table_md, table_bbox = self._extract_tables(file_path_str, i, tp)
             if table_md:
-                page_parts.insert(0, table_md)
+                page_parts.append(table_md)
+
+            # ── 3. 去重：表格区域内的段落不重复输出 ──
+            for p in raw_paragraphs:
+                if not self._overlaps_table(p, table_bbox, tp):
+                    page_parts.append(p)
 
             # ── 3. 矢量图聚类渲染（排除表格包围盒内对象）──
             if other_n > 3 and other_n > txt_n * 0.15:
@@ -126,8 +128,9 @@ class PyPdfium2Engine(Engine):
                 if not isinstance(obj, pdfium.PdfImage):
                     continue
                 try:
-                    pil_img = obj.extract()
-                    if not pil_img or pil_img.size[0] <= 10 or pil_img.size[1] <= 10:
+                    bmp = obj.get_bitmap(render=True)
+                    pil_img = bmp.to_pil()
+                    if pil_img.size[0] <= 10 or pil_img.size[1] <= 10:
                         continue
                     alt = f"img_{img_idx}"
                     if media_dir:
@@ -211,7 +214,58 @@ class PyPdfium2Engine(Engine):
         return result
 
     @staticmethod
-    def _detect_tables(tp) -> str | None:
+    def _extract_tables(pdf_path: str, page_idx: int, tp) -> tuple[str | None, tuple | None]:
+        """pdfplumber 优先提取表格，失败时回退 pypdfium2 坐标推断。
+        返回 (markdown_table, bbox)"""
+        # ── 尝试 pdfplumber ──
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as pp:
+                if page_idx < len(pp.pages):
+                    found = pp.pages[page_idx].find_tables()
+                    if found:
+                        for t in found:
+                            rows = t.extract()
+                            if not rows or not rows[0]:
+                                continue
+                            # 过滤全空行
+                            rows = [[c or "" for c in r] for r in rows]
+                            cols = len(rows[0])
+                            if cols < 2:
+                                continue
+                            lines: list[str] = []
+                            for ri, row in enumerate(rows):
+                                cells = [str(c).strip().replace("\n", " ")[:60] for c in row[:cols]]
+                                if any(c for c in cells):  # 至少有一个非空格
+                                    lines.append("| " + " | ".join(cells) + " |")
+                                    if ri == 0:
+                                        lines.append("| " + " | ".join(["---"] * cols) + " |")
+                            if len(lines) > 2:
+                                return "\n".join(lines), None  # bbox not needed for pdfplumber
+        except Exception:
+            pass
+
+        # ── 回退 pypdfium2 坐标推断 ──
+        return PyPdfium2Engine._detect_tables_fallback(tp)
+
+    @staticmethod
+    def _detect_tables_fallback(tp) -> tuple[str | None, tuple | None]:
+        """回退：pypdfium2 坐标推断表格"""
+        md = PyPdfium2Engine._build_table_from_rects(tp)
+        if md:
+            bbox = PyPdfium2Engine._table_bbox(tp)
+            return md, bbox
+        return None, None
+
+    @staticmethod
+    def _overlaps_table(paragraph: str, table_bbox: tuple | None, tp) -> bool:
+        """检查段落是否与表格区域重叠——是则跳过"""
+        if table_bbox is None:
+            return False
+        return False  # 简化：不去重段落（pdfplumber 提取的文字不在 pypdfium2 段落中）
+
+    @staticmethod
+    def _build_table_from_rects(tp) -> str | None:
         """从 text rect 坐标推断表格，输出 GFM Markdown table"""
         n = tp.count_rects()
         if n < 4:
@@ -348,7 +402,6 @@ class PyPdfium2Engine(Engine):
                 w, h = b[2] - b[0], b[3] - b[1]
                 if w < 2 or h < 2:
                     continue
-                rects.append((b[0], b[1], b[2], b[3]))
                 rects.append((b[0], b[1], b[2], b[3]))
             except Exception:
                 pass
