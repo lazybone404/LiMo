@@ -1,11 +1,12 @@
 /* ══════════════════════════════════════════════════════════
    LiMo — 预览区纸张纹理 (data-texture driven)
    每种纹理有底色 + 图案层 + 主题色渐变，暗模式下全部清除
-   纹理固定不随滚动（background-attachment: fixed）
-   强度通过 --texture-intensity (0-1) 控制
+   强度通过 --texture-opacity (0-1) 控制
+   选择器: [data-texture="X"] .preview-area (全局驱动)
+           .tex-card[data-texture="X"]     (自驱动，预设卡片等)
    ══════════════════════════════════════════════════════════ */
 
-/* ── 公共属性 ────────────────────────────────────── */
+/* ── 公共属性（仅 preview-area） ────────────────────── */
 
 [data-texture]:not([data-texture="plain"]) .preview-area {
   position: relative;
@@ -28,20 +29,23 @@
 
 /* ── 暗模式：清除所有纹理 ────────────────────────────── */
 
-[data-theme="dark"] .preview-area {
+[data-theme="dark"] .preview-area,
+[data-theme="dark"] .tex-card[data-texture] {
   background-image: none !important;
   background-color: transparent !important;
 }
 
 /* ── Plain — 无纹理（默认）─────────────────────────── */
 
-[data-texture="plain"] .preview-area {
+[data-texture="plain"] .preview-area,
+.tex-card[data-texture="plain"] {
   background-image: none !important;
 }
 
 /* ── 宣纸 ── 纤维噪声 + 不均匀染色 ──────────────────── */
 
-[data-texture="xuan"] .preview-area {
+[data-texture="xuan"] .preview-area,
+.tex-card[data-texture="xuan"] {
   background-color: #F6EFE4;
   background-image:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.35' numOctaves='4' stitchTiles='stitch' seed='7'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23a)' opacity='0.20' fill='%23807050'/%3E%3C/svg%3E"),
@@ -55,7 +59,8 @@
 
 /* ── 牛皮纸 ── 粗噪声 + 斜向纤维 ────────────────────── */
 
-[data-texture="kraft"] .preview-area {
+[data-texture="kraft"] .preview-area,
+.tex-card[data-texture="kraft"] {
   background-color: #F4E8D4;
   background-image:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.4' numOctaves='4' stitchTiles='stitch' seed='31'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23a)' opacity='0.22' fill='%23908060'/%3E%3C/svg%3E"),
@@ -68,7 +73,8 @@
 
 /* ── 羊皮纸 ── 大尺度噪声 + 边缘渐深 ────────────────── */
 
-[data-texture="parchment"] .preview-area {
+[data-texture="parchment"] .preview-area,
+.tex-card[data-texture="parchment"] {
   background-color: #F6F0E4;
   background-image:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.25' numOctaves='5' stitchTiles='stitch' seed='13'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='400' height='400' filter='url(%23a)' opacity='0.18' fill='%23908060'/%3E%3C/svg%3E"),
@@ -81,7 +87,8 @@
 
 /* ── 竹纸 ── 竖向竹纤维 + 浅绿噪声 ──────────────────── */
 
-[data-texture="bamboo"] .preview-area {
+[data-texture="bamboo"] .preview-area,
+.tex-card[data-texture="bamboo"] {
   background-color: #F1F4EC;
   background-image:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='250' height='250'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.5' numOctaves='3' stitchTiles='stitch' seed='59'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='250' height='250' filter='url(%23a)' opacity='0.14' fill='%23808860'/%3E%3C/svg%3E"),
@@ -93,7 +100,8 @@
 
 /* ── 信笺 ── 横格线 + 淡紫噪声 ──────────────────────── */
 
-[data-texture="letter"] .preview-area {
+[data-texture="letter"] .preview-area,
+.tex-card[data-texture="letter"] {
   background-color: #F4F0F6;
   background-image:
     repeating-linear-gradient(0deg, transparent 0, transparent 23px, rgba(160,140,200,0.20) 23px, rgba(160,140,200,0.20) 24px),

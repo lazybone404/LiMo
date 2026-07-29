@@ -441,19 +441,25 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                   <p className="text-[12px] text-muted mb-4">
                     一键设定全局基调、配色、纹理和字体，也可单独微调
                   </p>
-                  <div className="grid grid-cols-2 gap-3">
-                    {THEME_PRESETS.map(p => {
+                  {(() => {
+                    const renderCard = (p: typeof THEME_PRESETS[number]) => {
                       const baseColor = BASE_OPTIONS.find(b => b.key === p.base)
                       const accentColors = ACCENT_SWATCH[p.accent]
                       const fontLabel = FONT_OPTIONS.find(f => f.key === p.font)
                       const textureLabel = TEXTURE_OPTIONS.find(t => t.key === p.texture)
+                      const fontFamily = p.font === 'system' ? undefined
+                        : p.font === 'kaiti' ? "'KaiTi', 'STKaiti', serif"
+                        : p.font === 'songti' ? "'Songti SC', 'SimSun', 'STSong', serif"
+                        : p.font === 'fangsong' ? "'FangSong', 'STFangsong', serif"
+                        : "'LXGW WenKai', 'KaiTi', serif"
                       return (
                         <button
                           key={p.name}
                           onClick={() => applyPreset(p.name)}
-                          className="flex items-center gap-4 p-4 rounded-xl transition-all hover:bg-surface-hover border border-border-light text-left"
+                          data-texture={p.texture}
+                          className="tex-card flex items-center gap-4 p-4 rounded-xl transition-all border border-border-light text-left overflow-hidden relative hover:brightness-[0.97]"
                         >
-                          <div className="shrink-0">
+                          <div className="shrink-0 relative z-10">
                             <div
                               className="w-12 h-12 rounded-full border-2 border-border-light"
                               style={{
@@ -461,16 +467,29 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                               }}
                             />
                           </div>
-                          <div className="min-w-0">
-                            <span className="text-[14px] font-medium block">{p.label}</span>
-                            <span className="text-[11px] text-disabled block leading-relaxed">
+                          <div className="min-w-0 relative z-10">
+                            <span className="text-[15px] font-medium block" style={fontFamily ? { fontFamily } : undefined}>{p.label}</span>
+                            <span className="text-[11px] text-dimmed block leading-relaxed">
                               {fontLabel?.label || p.font} · {textureLabel?.label || p.texture}
                             </span>
                           </div>
                         </button>
                       )
-                    })}
-                  </div>
+                    }
+                    const groups = [
+                      { label: '护眼', presets: ['roulv', 'nuanyang', 'zhenzhu'] },
+                      { label: '经典', presets: ['shuxiang', 'jianjing', 'fugu', 'qingzhu'] },
+                      { label: '雅致', presets: ['yingchui', 'songyan', 'mailang'] },
+                    ]
+                    return groups.map(g => (
+                      <div key={g.label}>
+                        <span className="text-[11px] font-medium text-disabled uppercase tracking-wide block mb-2">{g.label}</span>
+                        <div className="grid grid-cols-2 gap-3">
+                          {g.presets.map(name => renderCard(THEME_PRESETS.find(p => p.name === name)!))}
+                        </div>
+                      </div>
+                    ))
+                  })()}
                 </div>
               </div>
             </div>

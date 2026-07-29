@@ -116,7 +116,11 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['torch', 'torchvision', 'torchaudio', 'triton',
+        'nvidia', 'nvidia_cublas', 'nvidia_cuda_cupti', 'nvidia_cuda_nvrtc',
+        'nvidia_cuda_runtime', 'nvidia_cudnn', 'nvidia_cufft', 'nvidia_curand',
+        'nvidia_cusolver', 'nvidia_cusparse', 'nvidia_nccl', 'nvidia_nvtx',
+        'nvidia_nvjitlink'],
     noarchive=False,
     optimize=0,
 )

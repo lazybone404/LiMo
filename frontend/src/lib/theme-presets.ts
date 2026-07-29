@@ -19,6 +19,20 @@ export interface ThemePreset {
 }
 
 export const THEME_PRESETS: ThemePreset[] = [
+  // ── 护眼系列 ──
+  {
+    name: 'roulv', label: '柔绿',
+    base: 'jade', accent: 'matcha', texture: 'bamboo', font: 'system',
+  },
+  {
+    name: 'nuanyang', label: '暖阳',
+    base: 'amber', accent: 'osmanthus', texture: 'kraft', font: 'system',
+  },
+  {
+    name: 'zhenzhu', label: '珍珠',
+    base: 'pearl', accent: 'slate', texture: 'plain', font: 'system',
+  },
+  // ── 经典系列 ──
   {
     name: 'shuxiang', label: '书香',
     base: 'warm', accent: 'ink', texture: 'xuan', font: 'wenkai',
@@ -34,5 +48,18 @@ export const THEME_PRESETS: ThemePreset[] = [
   {
     name: 'qingzhu', label: '青竹',
     base: 'warm', accent: 'forest', texture: 'bamboo', font: 'fangsong',
+  },
+  // ── 雅致系列 ──
+  {
+    name: 'yingchui', label: '樱吹',
+    base: 'rose', accent: 'cherry', texture: 'plain', font: 'kaiti',
+  },
+  {
+    name: 'songyan', label: '松烟',
+    base: 'sage', accent: 'pine', texture: 'xuan', font: 'songti',
+  },
+  {
+    name: 'mailang', label: '麦浪',
+    base: 'cream', accent: 'sunset', texture: 'kraft', font: 'system',
   },
 ]

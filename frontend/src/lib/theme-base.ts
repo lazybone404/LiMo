@@ -5,7 +5,7 @@
  * data-base 独立于 existing 四轴 (theme × accent × texture × font)
  */
 
-export type BasePreset = 'warm' | 'neutral' | 'cream' | 'cool' | 'rose' | 'sage'
+export type BasePreset = 'warm' | 'neutral' | 'cream' | 'cool' | 'rose' | 'sage' | 'jade' | 'amber' | 'pearl'
 
 interface BaseEntry {
   key: BasePreset
@@ -23,6 +23,9 @@ export const BASE_OPTIONS: BaseEntry[] = [
   { key: 'cool',    label: '冷灰',   surface: '#F2F3F5', elevated: '#F8F9FC', hover: '#E8EAEE', border: '#D4D6DA' },
   { key: 'rose',    label: '玫瑰',   surface: '#F5F1F2', elevated: '#FBF8F9', hover: '#EEE6E8', border: '#D8CED2' },
   { key: 'sage',    label: '鼠尾草', surface: '#F2F4F0', elevated: '#F8FAF7', hover: '#E8ECE6', border: '#D0D6CE' },
+  { key: 'jade',    label: '柔绿',   surface: '#EEF2ED', elevated: '#F5F8F4', hover: '#E4EAE3', border: '#CED4CD' },
+  { key: 'amber',   label: '琥珀',   surface: '#F9F4EA', elevated: '#FEFBF5', hover: '#F2EBDE', border: '#E0D6C4' },
+  { key: 'pearl',   label: '珍珠白', surface: '#F7F6F3', elevated: '#FDFCFB', hover: '#EEEDEA', border: '#DEDCD8' },
 ]
 
 const STORAGE_KEY = 'mbw_base'

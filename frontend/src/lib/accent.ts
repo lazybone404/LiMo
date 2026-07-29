@@ -11,6 +11,8 @@ export type AccentColor =
   | 'sky' | 'ocean' | 'sunset' | 'forest' | 'lavender' | 'slate'
   // 国风
   | 'dunhuang' | 'porcelain' | 'ink' | 'rouge' | 'celadon' | 'osmanthus'
+  // 自然
+  | 'matcha' | 'cherry' | 'pine'
 
 interface AccentEntry {
   key: AccentColor
@@ -45,6 +47,14 @@ export const ACCENT_GROUPS: AccentGroup[] = [
       { key: 'osmanthus',  label: '金桂' },
     ],
   },
+  {
+    label: '自然',
+    accents: [
+      { key: 'matcha',    label: '抹茶' },
+      { key: 'cherry',    label: '樱' },
+      { key: 'pine',      label: '松' },
+    ],
+  },
 ]
 
 /** 色块预览色 — 主色和辅色的代表性 hsl 值 */
@@ -61,6 +71,9 @@ export const ACCENT_SWATCH: Record<AccentColor, { primary: string; secondary: st
   rouge:      { primary: 'hsl(350,70%,52%)',  secondary: 'hsl(285,25%,48%)' },
   celadon:    { primary: 'hsl(170,30%,38%)',  secondary: 'hsl(215,20%,50%)' },
   osmanthus:  { primary: 'hsl(40,75%,45%)',   secondary: 'hsl(5,50%,48%)' },
+  matcha:     { primary: 'hsl(135,35%,38%)', secondary: 'hsl(155,25%,42%)' },
+  cherry:     { primary: 'hsl(355,75%,60%)', secondary: 'hsl(340,55%,55%)' },
+  pine:       { primary: 'hsl(130,25%,32%)', secondary: 'hsl(150,20%,38%)' },
 }
 
 const STORAGE_KEY = 'mbw_accent'

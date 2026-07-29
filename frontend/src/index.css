@@ -37,6 +37,9 @@
 [data-accent="rouge"]     { --accent-hue: 350; --accent-sat: 70;  --second-hue: 285; --second-sat: 25;  }
 [data-accent="celadon"]   { --accent-hue: 170; --accent-sat: 30;  --second-hue: 215; --second-sat: 20;  }
 [data-accent="osmanthus"] { --accent-hue: 40;  --accent-sat: 75;  --second-hue: 5;   --second-sat: 50;  }
+[data-accent="matcha"]   { --accent-hue: 135; --accent-sat: 35;  --second-hue: 155; --second-sat: 25;  }
+[data-accent="cherry"]   { --accent-hue: 355; --accent-sat: 75;  --second-hue: 340; --second-sat: 55;  }
+[data-accent="pine"]     { --accent-hue: 130; --accent-sat: 25;  --second-hue: 150; --second-sat: 20;  }
 
 /* 默认 = 天际蓝 (data-accent 未设置时) */
 :root:not([data-accent]) { --accent-hue: 211; --accent-sat: 100; --second-hue: 195; --second-sat: 80; }
@@ -49,6 +52,9 @@
 [data-base="cool"]    { --tk-surface: #F2F3F5; --tk-elevated: #F8F9FC; --tk-hover: #E8EAEE; --tk-border: #D4D6DA; --tk-border-light: #E4E6EA; }
 [data-base="rose"]    { --tk-surface: #F5F1F2; --tk-elevated: #FBF8F9; --tk-hover: #EEE6E8; --tk-border: #D8CED2; --tk-border-light: #E8DEE2; }
 [data-base="sage"]    { --tk-surface: #F2F4F0; --tk-elevated: #F8FAF7; --tk-hover: #E8ECE6; --tk-border: #D0D6CE; --tk-border-light: #E0E6DE; }
+[data-base="jade"]    { --tk-surface: #EEF2ED; --tk-elevated: #F5F8F4; --tk-hover: #E4EAE3; --tk-border: #CED4CD; --tk-border-light: #DEE4DD; }
+[data-base="amber"]   { --tk-surface: #F9F4EA; --tk-elevated: #FEFBF5; --tk-hover: #F2EBDE; --tk-border: #E0D6C4; --tk-border-light: #EDE6D8; }
+[data-base="pearl"]   { --tk-surface: #F7F6F3; --tk-elevated: #FDFCFB; --tk-hover: #EEEDEA; --tk-border: #DEDCD8; --tk-border-light: #EBE9E5; }
 
 /* ── Layer 1: Semantic Variables (data-theme driven) ──────── */
 /* 两轴驱动：data-theme(明暗) + data-accent(配色)           */
@@ -220,15 +226,20 @@ body {
 /* ── Reading Fonts (data-font driven) ───────────────────── */
 
 [data-font="system"] .preview-area,
-[data-font="system"] .markdown-body   { font-family: var(--font-sans), -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+[data-font="system"] .markdown-body,
+[data-font="system"] .tex-card        { font-family: var(--font-sans), -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
 [data-font="kaiti"] .preview-area,
-[data-font="kaiti"] .markdown-body    { font-family: 'KaiTi', 'STKaiti', serif; }
+[data-font="kaiti"] .markdown-body,
+[data-font="kaiti"] .tex-card         { font-family: 'KaiTi', 'STKaiti', serif; }
 [data-font="songti"] .preview-area,
-[data-font="songti"] .markdown-body   { font-family: 'Songti SC', 'SimSun', 'STSong', serif; }
+[data-font="songti"] .markdown-body,
+[data-font="songti"] .tex-card        { font-family: 'Songti SC', 'SimSun', 'STSong', serif; }
 [data-font="fangsong"] .preview-area,
-[data-font="fangsong"] .markdown-body { font-family: 'FangSong', 'STFangsong', serif; }
+[data-font="fangsong"] .markdown-body,
+[data-font="fangsong"] .tex-card      { font-family: 'FangSong', 'STFangsong', serif; }
 [data-font="wenkai"] .preview-area,
-[data-font="wenkai"] .markdown-body   { font-family: 'LXGW WenKai', 'KaiTi', serif; }
+[data-font="wenkai"] .markdown-body,
+[data-font="wenkai"] .tex-card        { font-family: 'LXGW WenKai', 'KaiTi', serif; }
 
 /* ── GitHub Markdown Overrides (覆盖 github-markdown-light 硬编码) ── */
 
