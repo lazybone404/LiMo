@@ -256,14 +256,27 @@ class PyPdfium2Engine(Engine):
         if max(col_counts) < 2 or multi_col_rows < len(rows) * 0.7:
             return None
 
-        # 用中位数列数
+        # 用中位数列数，中心点定位提取每格实际文字
         cols = sorted(col_counts)[len(col_counts) // 2]
         lines: list[str] = []
         for ri, row in enumerate(rows):
-            cells = [f"[{r[0]:.0f},{r[1]:.0f}]" for r in row]
-            # 补齐到中位数列数
-            cells += [""] * max(0, cols - len(cells))
-            lines.append("| " + " | ".join(cells[:cols]) + " |")
+            cells: list[str] = []
+            for ci in range(cols):
+                if ci < len(row):
+                    r = row[ci]
+                    # 用格子中心点定位文字
+                    cx, cy = (r[0] + r[2]) / 2, (r[1] + r[3]) / 2
+                    idx = tp.get_index(cx, cy, 20, 10)
+                    if idx is not None and idx >= 0:
+                        text = tp.get_text_range(index=idx, count=100).strip()
+                        # 取到下一个格子开始处或换行处
+                        text = text.split("\n")[0].strip()[:80]
+                        cells.append(text)
+                    else:
+                        cells.append("")
+                else:
+                    cells.append("")
+            lines.append("| " + " | ".join(cells) + " |")
             if ri == 0:
                 lines.append("| " + " | ".join(["---"] * cols) + " |")
 
