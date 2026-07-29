@@ -332,6 +332,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 ### 其他
 - **数学公式**：全局 `remark-math` + `rehype-katex`，LaTeX `$$` 块自动排版
 - **日志系统**：`contextvars.ContextVar` 注入 `request_id` → ASGI middleware，全链路追踪。`MemoryHandler`（`main.py` 中配置）缓存最近 1000 条日志供前端 LogPanel 轮询（`GET /api/logs`），重启后清空
+- **客户端断连监测**：`app/core/disconnect.py` — `@asynccontextmanager` 封装，5 个 SSE 端点复用，新增端点直接 `async with disconnect_watcher(request, cancel_event):`
 - **引擎自动降级开关**：`engine_auto_fallback` 配置项（默认 `False`），设置页一键切换。6 个引擎解析点全部尊重此开关，关闭时引擎失败直接报错，不再静默降级
 - **Tesseract 便携版**：`backend/bin/tesseract/` 内置，启动自动注册并绑定 OCR，开箱即用
 - **EPUB**：ebooklib 章节+骨架提取，前端 EpubSkeletonPanel 章节树，支持选中章节/全书生成
@@ -390,7 +391,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 27. **remark 插件顺序**：`remarkMath` 必须在 `remarkGfm` 之前。否则公式内的 `_`（下标）和 `<`（`x_{<k}`）会被 GFM 先解释为斜体/HTML 标签 → `$$` 定界符破裂 → KaTeX 渲染失败。**本次已修复**：markdown-plugins.ts。
 28. **`engine_auto_fallback` 语义**：该开关仅控制**引擎失败后是否重试下一个**，不控制扩展名兜底（pdf→pymupdf 等）。扩展名兜底是默认行为，新用户无绑定时必须可用。**本次已修复**：document.py adapt() 中扩展名兜底移出 auto_fallback 条件块。
 29. **`init_engines` 禁止每次启动覆盖配置**：引擎初始化中的 `save_config` 会写全量配置到 config.yaml。若此调用在每次启动都触发，一旦内存中的 config 对象缺失敏感字段（API Key 等），这些字段将永久丢失。**本次已修复**：ASR 绑定逻辑从「强制先删后插重排」改为「仅空列表初始化」，确保后续启动 asr_changed=False。新增引擎/绑定变更时才保存。
-30. **FastAPI Depends 依赖注入**：用 `store=Depends(get_store)` 替代函数体内 `request.app.state.store`，消除样板代码。**本次已建**：`app/core/dependencies.py` 提供 `get_store/config/guard/config_lock` 四个依赖。conversations/capabilities/files 三个路由已迁移，其余路由可逐步迁移。
+30. **FastAPI Depends 依赖注入**：用 `store=Depends(get_store)` 替代函数体内 `request.app.state.store`，消除样板代码。`app/core/dependencies.py` 提供 `get_store/config/guard/config_lock` 四个依赖。全部 11 个路由已迁移完成（2026-07-30）。
+31. **disconnect_watcher 客户端断连监测**：`app/core/disconnect.py` 提供 `@asynccontextmanager` 封装的 `disconnect_watcher(request, cancel_event)`。替换了 5 个路由中 ~45 行重复的 `_watch_disconnect` 实现，修复了 process.py 资源泄漏和 chat.py 缺 await 两个 bug。新增长时端点时复用此工具。
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始
@@ -419,8 +421,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 引擎降级开关 | `engine_auto_fallback`，失败直接报错，不再静默 fallback |
 | ✅ | 视频帧提取 | OpenCV 抽帧 + 网格拼接 + 去重 |
 | ✅ | 模糊帧过滤 | Laplacian 方差 + 熵 + 边缘密度评分，丢弃低质量帧 |
-| ❌ | VL 帧过滤 | PaddleOCR 文字区域检测，区分 PPT/演讲者帧（`ocr.py:264` 仅有注释占位） |
-| ❌ | PDF Layer 2 | 表格修正/数字化/理解（基于转录 MD + 原页面截图），引擎链路已有，需编排 LLM 调用 |
+| ❌ | PDF Layer 2 | 表格数字化/理解（pdfplumber 已成熟提取表格，本项取消） |
 
 ### ✨ LLM 生成
 
@@ -465,8 +466,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 工具增强 | DDG 真实搜索（duckduckgo_search 库）+ Official Search + 日期工具 + URL 元信息 |
 | ✅ | verify_mode 设置 | LLM（默认，模型知识）和 Web（联网搜索）两种验证方式，设置页可选 |
 | ✅ | 报告可交互 | 参考来源链接后处理注入 + 前端纯 Markdown 流式展示 |
-| ❌ | Chunk 提取 | 长文档分片提取（当前仅取前 8000 字符） |
-| ❌ | 专业模式 | 学术/法律/医疗专用搜索源 |
+| ✅ | Chunk 提取 | `split_into_chunks()` 按句子边界分片 + 并行 LLM 提取 + 去重（`SequenceMatcher` 相似度>0.85），最多32块 |
+| ❌ | 专业模式 | 学术/法律/医疗专用搜索源（暂不实施） |
 
 ### 📤 导出
 
@@ -479,8 +480,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | ZIP 批量 | 全部产物打包，图片独立文件夹 |
 | ✅ | 思维导图 | SVG 下载 + markmap 交互式 HTML (~980KB，暗色自适应) |
 | ✅ | 对话导出 | Markdown + JSON，支持批量 ZIP |
+| ✅ | 导出进度反馈 | `POST /export/custom/stream` SSE 流式进度 + `GET /export/download/{temp_id}` 临时下载 |
 | ❌ | 图片预处理复用 | 导入时已 optimize_images，导出 ZIP 未复用压缩后图片 |
-| ❌ | 导出进度反馈 | 大文档导出无进度提示 |
 
 ### 🎨 前端 UI/UX
 
@@ -513,12 +514,12 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 域 | 完成 | 总计 | 进度 |
 |----|------|------|------|
 | 📥 内容导入 | 8 | 8 | 100% |
-| 📝 转录 & 引擎 | 8 | 10 | 80% |
+| 📝 转录 & 引擎 | 8 | 9 | 89% |
 | ✨ LLM 生成 | 7 | 7 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 5 | 5 | 100% |
-| ✅ AI 审核 | 8 | 10 | 80% |
-| 📤 导出 | 7 | 8 | 88% |
+| ✅ AI 审核 | 9 | 10 | 90% |
+| 📤 导出 | 8 | 9 | 89% |
 | 🎨 前端 UI/UX | 8 | 8 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **63** | **68** | **93%** |
+| **合计** | **65** | **68** | **96%** |
