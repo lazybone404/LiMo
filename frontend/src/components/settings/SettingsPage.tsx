@@ -265,21 +265,36 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                   <p className="text-[12px] text-muted mb-4">
                     一键设定全局基调、配色、纹理和字体，也可单独微调
                   </p>
-                  <div className="grid grid-cols-4 gap-3">
-                    {THEME_PRESETS.map(p => (
-                      <button
-                        key={p.name}
-                        onClick={() => applyPreset(p.name)}
-                        className="flex flex-col items-center gap-1.5 p-3 rounded-xl transition-all hover:bg-surface-hover border border-border-light"
-                      >
-                        <div
-                          className="w-10 h-10 rounded-full"
-                          style={{ background: BASE_OPTIONS.find(b => b.key === p.base)?.surface || '#F4F1EE' }}
-                        />
-                        <span className="text-[13px] font-medium">{p.label}</span>
-                        <span className="text-[10px] text-disabled">{p.accent} · {p.texture}</span>
-                      </button>
-                    ))}
+                  <div className="grid grid-cols-2 gap-3">
+                    {THEME_PRESETS.map(p => {
+                      const baseColor = BASE_OPTIONS.find(b => b.key === p.base)
+                      const accentColors = ACCENT_SWATCH[p.accent]
+                      const fontLabel = FONT_OPTIONS.find(f => f.key === p.font)
+                      const textureLabel = TEXTURE_OPTIONS.find(t => t.key === p.texture)
+                      return (
+                        <button
+                          key={p.name}
+                          onClick={() => applyPreset(p.name)}
+                          className="flex items-center gap-4 p-4 rounded-xl transition-all hover:bg-surface-hover border border-border-light text-left"
+                        >
+                          {/* 双色圆点：基底色 + 主色调 */}
+                          <div className="shrink-0">
+                            <div
+                              className="w-12 h-12 rounded-full border-2 border-border-light"
+                              style={{
+                                background: `conic-gradient(${accentColors?.primary || '#007AFF'} 0deg 180deg, ${baseColor?.surface || '#F4F1EE'} 180deg 360deg)`,
+                              }}
+                            />
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-[14px] font-medium block">{p.label}</span>
+                            <span className="text-[11px] text-disabled block leading-relaxed">
+                              {fontLabel?.label || p.font} · {textureLabel?.label || p.texture}
+                            </span>
+                          </div>
+                        </button>
+                      )
+                    })}
                   </div>
                 </div>
               </div>
