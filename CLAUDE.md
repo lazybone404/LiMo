@@ -7,6 +7,43 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 LiMo — 知识管理系统。输入 URL/文本/文件 → 适配器提取正文 → LLM 生成结构化 Markdown。
 设计哲学：**复杂性不是设计进去的，而是后续插件化长出来的**。
 
+## 设计语言
+
+LiMo 采用六轴主题系统，所有视觉元素通过 CSS 变量驱动，零硬编码色值：
+
+```
+data-theme="light|dark"           ← 明暗极性
+data-accent="sky|ocean|…"        ← 主辅配色（12套，HSL动态派生）
+data-base="warm|neutral|cool|…"  ← 界面基调（6种，覆盖冷暖偏色）
+data-texture="plain|xuan|kraft|…" ← 预览区纹理（6种纸张质感）
+data-font="system|kaiti|wenkai|…"← 阅读字体（5种，4系统+1web）
+```
+
+### 色板架构（两层）
+
+| 层 | 说明 | 例子 |
+|----|------|------|
+| `--tk-*` 语义令牌 | 由 `data-theme` + `data-base` 联合驱动，所有组件引用此层 | `--tk-surface`, `--tk-elevated`, `--tk-border` |
+| `--md-*` Markdown 变量 | 全部从 `--tk-*` 或 accent/secondary HSL 派生，无独立硬编码 | `--md-h1`, `--md-code-bg`, `--md-blockquote-bg` |
+
+**关键约束：**
+
+- **禁止硬编码色值**：任何 CSS/TSX 不得出现 `#FFFFFF`, `#F5F5F7`, `#E8E8ED` 等裸 hex。全部通过 `--tk-*` 或 Tailwind token 引用。
+- **github-markdown-light.css 覆盖**：`main.tsx` 导入的第三方 CSS 硬编码了 `.markdown-body { background-color: #ffffff }` 和 `#f6f8fa` 等冷灰色。`index.css` 用 `!important` + `--tk-*` 变量全部覆盖。**新增 markdown 背景样式时必须同步检查此文件。**
+- **基调切换一致性**：`data-base` 切换时所有 `--tk-*` 变量同步变化，`--md-*` 通过 `var()` 引用自动跟随。
+- **一键主题包**：`THEME_PRESETS` 提供 书香/简净/复古/青竹 四个预设，一键设置 base+accent+texture+font 四轴。
+
+### 六种界面基调
+
+| key | 名称 | 色调偏向 | surface |
+|-----|------|---------|---------|
+| `warm` | 暖灰 | 微红黄（默认） | `#F4F1EE` |
+| `neutral` | 中性白 | 无偏色 | `#F5F5F5` |
+| `cream` | 奶油 | 暖黄 | `#F9F6F0` |
+| `cool` | 冷灰 | 蓝灰 | `#F2F3F5` |
+| `rose` | 玫瑰 | 微粉红 | `#F5F1F2` |
+| `sage` | 鼠尾草 | 微绿 | `#F2F4F0` |
+
 ## 文档索引
 
 | 文档 | 内容 | 何时读 |
@@ -242,8 +279,9 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **PreviewArea 按 sourceType 分派 tab**：视频 3tab / 文档 3tab / Excel 3tab / 图片 5tab / 网页 3tab / 文本 3tab + 思维导图
 - **Transcript 视图分派**：JSON+segments → 时间轴（视频）；否则 → 完整 Markdown 渲染
 - **处理进度按 tab 粒度**：生成笔记只影响 summary/polished tab，图片处理只影响对应 mode tab
-- **主题系统**：四轴独立 — `data-theme`(明暗) × `data-accent`(12套配色) × `data-texture`(6种纹理) × `data-font`(5种字体)。CSS 变量（`--tk-*` 全暖调）+ Tailwind v4 `@theme` 引用。`data-theme` 属性驱动明暗，`data-accent` 驱动 HSL 主辅色。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，无硬编码色值）
-- **⚠️ github-markdown-light.css 覆盖**：`main.tsx` 导入的第三方 CSS 硬编码 `.markdown-body { background-color: #ffffff }` 和 `#f6f8fa` 等冷灰色。`index.css` 中用 `!important` + `--tk-*` 变量覆盖。新增 markdown 背景样式时必须同步检查此文件
+- **主题系统**：六轴独立 — `data-theme`(明暗) × `data-accent`(12套配色) × `data-base`(6种基调) × `data-texture`(6种纹理) × `data-font`(5种字体)。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（书香/简净/复古/青竹）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值）
+- **主题模块**：`lib/accent.ts` / `lib/texture.ts` / `lib/theme-base.ts` / `lib/theme-presets.ts` / `lib/theme.ts` — 各轴独立管理，Store 统一分发
+- **⚠️ github-markdown-light.css 覆盖**：`main.tsx` 导入的第三方 CSS 硬编码 `.markdown-body { background-color: #ffffff }` 和 `#f6f8fa` 等冷灰色。`index.css` 中用 `!important` + `--tk-*` 变量覆盖。新增 markdown 背景样式时必须同步检查此文件。提交前 `grep` 确认零硬编码色值泄露
 
 ### 导出系统
 
