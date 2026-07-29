@@ -9,7 +9,7 @@ import json
 import logging
 import asyncio
 
-from fastapi import APIRouter, Request, Query
+from fastapi import APIRouter, Request, Query, Depends
 from app.core.dependencies import get_store, get_config
 
 from app.core.disconnect import disconnect_watcher
@@ -131,7 +131,7 @@ def _build_doc_context(store: object, doc_ids: list[str]) -> str:
 
 
 @router.post("/chat")
-async def chat(req: ChatRequest, request: Request) -> dict[str, object]:
+async def chat(req: ChatRequest, request: Request, store=Depends(get_store), config=Depends(get_config)) -> dict[str, object]:
 
     model_id = req.model_id
     if not model_id:
@@ -165,6 +165,8 @@ async def chat_stream(
     doc_ids: str = Query(""),
     model_id: int | None = None,
     conversation_id: str = Query(""),
+    store=Depends(get_store),
+    config=Depends(get_config),
 ):
     """SSE 流式对话 — 实时推送回答 + 工具调用进度 + 自动持久化"""
 

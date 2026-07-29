@@ -6,7 +6,7 @@ import hashlib
 import logging
 
 import requests
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel
 
 from app.core.errors import AppError

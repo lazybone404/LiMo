@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 

@@ -11,7 +11,7 @@ import os
 import re
 import uuid
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 

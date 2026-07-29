@@ -4,7 +4,7 @@
 
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel, model_validator
 from typing import Optional, Any
 
