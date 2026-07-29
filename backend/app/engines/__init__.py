@@ -317,12 +317,23 @@ def init_engines(config: dict | None = None):
     except Exception as e:
         logger.warning(f"Tesseract init failed: {e}")
 
-    # 持久化 — Tesseract 可用性无关，引擎注册/绑定变更必须写盘
+    # 持久化 — 只保存引擎相关字段，保护敏感信息（LLM Key 等）不被覆盖
     if asr_changed or models_changed or doc_bindings_changed or ocr_bound:
         logger.info("init_engines: 引擎绑定/模型变更，持久化到 config.yaml (asr=%s models=%s doc_bindings=%s ocr=%s)",
                     asr_changed, models_changed, doc_bindings_changed, ocr_bound)
         try:
-            from app.core.config_io import save_config
+            from app.core.config_io import save_config, merge_sensitive
+            # 先从磁盘重新加载原始 config 获取真实 Key，合并到当前内存 config 再保存
+            from app.core.config import DEFAULT_CONFIG
+            import copy, yaml, os as _os
+            _cfg_path = _os.path.join(_os.path.dirname(__file__), '..', '..', 'config.yaml')
+            try:
+                with open(_cfg_path, 'r', encoding='utf-8') as _f:
+                    _disk = yaml.safe_load(_f) or {}
+                _disk_sensitive = {k: _disk.get(k) for k in ('llm', 'cloud', 'auth', 'fetch', 'agent_tools') if k in _disk}
+                merge_sensitive(config, _disk_sensitive)  # 用磁盘上的真实 Key 覆盖内存中可能的脱敏值
+            except Exception:
+                pass
             save_config(config)
         except OSError as e:
             logger.warning("init_engines: 无法保存配置（%s），继续运行", e)
