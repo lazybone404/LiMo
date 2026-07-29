@@ -102,7 +102,7 @@ def _get_providers(cfg: dict) -> list[dict]:
 # ── Provider ──
 
 @router.get("/providers")
-def list_providers(request: Request):
+def list_providers(request: Request, config=Depends(get_cfg)):
     providers = _get_providers(_get_cfg(config))
     # 返回脱敏副本，不污染原始 config（否则 save_config 会把脱敏值写回 config.yaml）
     result = []
@@ -115,7 +115,7 @@ def list_providers(request: Request):
 
 
 @router.post("/providers")
-def add_provider(data: ProviderData, request: Request):
+def add_provider(data: ProviderData, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     with cfg_lock:
         cfg = _get_cfg(config)
         providers = cfg.get("providers", [])
@@ -135,7 +135,7 @@ def add_provider(data: ProviderData, request: Request):
 
 
 @router.put("/providers/{provider_id}")
-def update_provider(provider_id: str, data: ProviderUpdateData, request: Request):
+def update_provider(provider_id: str, data: ProviderUpdateData, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     with cfg_lock:
         cfg = _get_cfg(config)
         providers = cfg.get("providers", [])
@@ -175,7 +175,7 @@ def update_provider(provider_id: str, data: ProviderUpdateData, request: Request
 
 
 @router.delete("/providers/{provider_id}")
-def delete_provider(provider_id: str, request: Request):
+def delete_provider(provider_id: str, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     """删除 LLM 厂商（仅允许自定义厂商，内置厂商拒绝删除）"""
     with cfg_lock:
         cfg = _get_cfg(config)
@@ -191,7 +191,7 @@ def delete_provider(provider_id: str, request: Request):
 
 
 @router.post("/providers/{provider_id}/test")
-def test_connection(provider_id: str, request: Request):
+def test_connection(provider_id: str, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     """测试连通性 — 尝试 GET /v1/models 验证 key 和 base_url"""
     cfg = _get_cfg(config)
     providers = {p["id"]: p for p in _get_providers(cfg)}
@@ -228,14 +228,14 @@ def test_connection(provider_id: str, request: Request):
 # ── Model ──
 
 @router.get("/models")
-def list_enabled_models(request: Request):
+def list_enabled_models(request: Request, config=Depends(get_cfg)):
     """已启用的模型列表"""
     cfg = _get_cfg(config)
     return cfg.get("enabled_models", [])
 
 
 @router.get("/models/refresh/{provider_id}")
-def refresh_models(provider_id: str, request: Request):
+def refresh_models(provider_id: str, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     """从供应商 API 拉取可用模型列表（LLM + 引擎通用）"""
     cfg = _get_cfg(config)
     # 先尝试 LLM providers，再尝试 engine providers
@@ -356,7 +356,7 @@ def _lookup_preset_capabilities(cfg: dict, provider_id: str, model_name: str) ->
 
 
 @router.post("/models")
-def add_model(data: AddModelData, request: Request):
+def add_model(data: AddModelData, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     """启用一个模型"""
     with cfg_lock:
         cfg = _get_cfg(config)
@@ -387,7 +387,7 @@ class UpdateModelData(BaseModel):
 
 
 @router.put("/models/{model_id}")
-def update_model(model_id: int, data: UpdateModelData, request: Request):
+def update_model(model_id: int, data: UpdateModelData, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     """更新已启用模型（如手动标记多模态能力）"""
     with cfg_lock:
         cfg = _get_cfg(config)
@@ -402,7 +402,7 @@ def update_model(model_id: int, data: UpdateModelData, request: Request):
 
 
 @router.delete("/models/{model_id}")
-def delete_model(model_id: int, request: Request):
+def delete_model(model_id: int, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     """删除一个已启用模型"""
     with cfg_lock:
         cfg = _get_cfg(config)
@@ -415,13 +415,13 @@ def delete_model(model_id: int, request: Request):
 # ── Scene bindings ──
 
 @router.get("/scene-models")
-def get_scene_models(request: Request):
+def get_scene_models(request: Request, config=Depends(get_cfg)):
     cfg = _get_cfg(config)
     return cfg.get("scene_models", {"generate": None, "chat": None, "image_process": None})
 
 
 @router.post("/scene-models")
-def set_scene_models(data: SceneBindData, request: Request):
+def set_scene_models(data: SceneBindData, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     with cfg_lock:
         cfg = _get_cfg(config)
         cfg["scene_models"] = {"generate": data.generate, "chat": data.chat, "image_process": data.image_process}
@@ -447,7 +447,7 @@ class AddEngineModelData(BaseModel):
 
 
 @router.get("/engine-providers")
-def list_engine_providers(request: Request):
+def list_engine_providers(request: Request, config=Depends(get_cfg)):
     """内置 + 用户自定义引擎厂商（返回副本，不污染原始 config）"""
     cfg = _get_cfg(config)
     providers = [dict(p) for p in cfg.get("engine_providers", [])]
@@ -463,7 +463,7 @@ def list_engine_providers(request: Request):
 
 
 @router.post("/engine-providers")
-def add_engine_provider(data: EngineProviderData, request: Request):
+def add_engine_provider(data: EngineProviderData, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     with cfg_lock:
         cfg = _get_cfg(config)
         providers = cfg.get("engine_providers", [])
@@ -487,7 +487,7 @@ class UpdateEngineProviderBody(BaseModel):
     name: str | None = None
 
 @router.put("/engine-providers/{provider_id}")
-def update_engine_provider(provider_id: str, data: UpdateEngineProviderBody, request: Request):
+def update_engine_provider(provider_id: str, data: UpdateEngineProviderBody, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     with cfg_lock:
         cfg = _get_cfg(config)
         updated = False
@@ -511,7 +511,7 @@ def update_engine_provider(provider_id: str, data: UpdateEngineProviderBody, req
 
 
 @router.delete("/engine-providers/{provider_id}")
-def delete_engine_provider(provider_id: str, request: Request):
+def delete_engine_provider(provider_id: str, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     with cfg_lock:
         cfg = _get_cfg(config)
         # 只允许删自定义的
@@ -527,7 +527,7 @@ def delete_engine_provider(provider_id: str, request: Request):
 # ── Engine Model ──
 
 @router.get("/engine-models")
-def list_engine_models(request: Request):
+def list_engine_models(request: Request, config=Depends(get_cfg)):
     """列出所有引擎模型（builtin 自动注册 + 用户自定义），不修改全局 config"""
     cfg = _get_cfg(config)
     models = [dict(m) for m in cfg.get("engine_models", [])]  # 深拷贝每一项，不污染全局
@@ -563,7 +563,7 @@ def list_engine_models(request: Request):
 
 
 @router.post("/engine-models")
-def add_engine_model(data: AddEngineModelData, request: Request):
+def add_engine_model(data: AddEngineModelData, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     with cfg_lock:
         cfg = _get_cfg(config)
         models = cfg.get("engine_models", [])
@@ -579,7 +579,7 @@ def add_engine_model(data: AddEngineModelData, request: Request):
 
 
 @router.delete("/engine-models/{model_id}")
-def delete_engine_model(model_id: int, request: Request):
+def delete_engine_model(model_id: int, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     with cfg_lock:
         cfg = _get_cfg(config)
         cfg["engine_models"] = [m for m in cfg.get("engine_models", []) if m["id"] != model_id]
@@ -594,7 +594,7 @@ class EngineBindData(BaseModel):
     bindings: dict[str, int | str | None] = {}
 
 @router.get("/engine-bindings")
-def get_engine_bindings(request: Request):
+def get_engine_bindings(request: Request, config=Depends(get_cfg)):
     cfg = _get_cfg(config)
     raw = cfg.get("engine_bindings", {})
 
@@ -626,7 +626,7 @@ def get_engine_bindings(request: Request):
     return result
 
 @router.post("/engine-bindings")
-def set_engine_bindings(data: EngineBindData, request: Request):
+def set_engine_bindings(data: EngineBindData, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     with cfg_lock:
         cfg = _get_cfg(config)
         def _wrap(v: int | str) -> list:
@@ -649,12 +649,12 @@ def set_engine_bindings(data: EngineBindData, request: Request):
 
 
 @router.get("/engine-auto-fallback")
-def get_engine_auto_fallback(request: Request):
+def get_engine_auto_fallback(request: Request, config=Depends(get_cfg)):
     """获取引擎自动降级开关状态"""
     return {"enabled": _get_cfg(config).get("engine_auto_fallback", True)}
 
 @router.post("/engine-auto-fallback")
-def set_engine_auto_fallback(data: EngineFallbackData, request: Request):
+def set_engine_auto_fallback(data: EngineFallbackData, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     """设置引擎自动降级开关"""
     with cfg_lock:
         cfg = _get_cfg(config)
@@ -664,7 +664,7 @@ def set_engine_auto_fallback(data: EngineFallbackData, request: Request):
 
 
 @router.get("/resolve-model/{model_id}")
-def resolve_model(model_id: int, request: Request):
+def resolve_model(model_id: int, request: Request, config=Depends(get_cfg)):
     """根据 enabled_models id 解析出 provider + api_key + model_name"""
     cfg = _get_cfg(config)
     models = cfg.get("enabled_models", [])
