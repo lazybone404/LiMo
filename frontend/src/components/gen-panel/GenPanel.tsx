@@ -9,7 +9,7 @@ import { EngineSelect, type EngineOption } from './EngineSelect'
 import { ImportSection } from './ImportSection'
 import { GenerateOptions } from './GenerateOptions'
 import { ImageModeCards } from './ImageModeCards'
-import { DOC_ENGINE_NAMES, EXT_TO_SUBTYPE, SUB_SCENARIO, getTypeMeta, normalizeStyle } from './constants'
+import { EXT_TO_SUBTYPE, getSubScenario, getTypeMeta, normalizeStyle } from './constants'
 
 const _EMPTY_OBJ: Record<string, any> = {}
 
@@ -87,7 +87,7 @@ export function GenPanel() {
   const [importPercent, setImportPercent] = useState<number | null>(null)
   const [inputType, setInputType] = useState<'link' | 'video' | 'text' | 'file' | 'image'>('link')
   const [fileObj, setFileObj] = useState<File | null>(null)
-  const [fileSubType, setFileSubType] = useState<'pdf' | 'word' | 'ppt' | 'excel' | 'epub'>('pdf')
+  const [fileSubType, setFileSubType] = useState('pdf')
   const [preOcr, setPreOcr] = useState(false)  // 导入图片时同时提取文字
 
   // ── 引擎配置 ──
@@ -109,7 +109,7 @@ export function GenPanel() {
   })()
   const filteredDocEngines = (() => {
     const all = engineOptions.doc || []
-    const names = DOC_ENGINE_NAMES[effectiveFileSubType] || []
+    const names = caps?.fileTypeMap?.[effectiveFileSubType] || []
     return names.length ? all.filter(e => names.includes(e.name)) : all
   })()
 
@@ -171,7 +171,7 @@ export function GenPanel() {
     const docOptions = caps.engineOptions['doc'] || []
     // 所有需要检查的 key：已有的 + doc 子场景（即使后端还没返回）
     const allKeys = new Set(Object.keys(bindings))
-    for (const sk of ['doc:text+image','doc:text-only','doc:scan-ocr','doc:word','doc:ppt','doc:excel','doc:epub']) {
+    for (const sk of Object.keys(caps?.scenarioLabels || {})) {
       allKeys.add(sk)
     }
     for (const cat of allKeys) {
@@ -421,7 +421,7 @@ export function GenPanel() {
       const result = await processImage(capturedId, imageMode, selectedModelId ?? undefined, signal)
       if (!isSameDoc(capturedId)) return
       if ('error' in result) { setError(result.error); addToast(result.error, 'error'); return }
-      setImageResult(capturedId, imageMode, { text: result.text, engine: result.engine || 'dashscope-ocr', id: result.result_id || '' })
+      setImageResult(capturedId, imageMode, { text: result.text, engine: result.engine || caps?.engineOptions?.ocr?.[0]?.name || 'ocr', id: result.result_id || '' })
       setActiveView(imageMode)
       // 降级提醒
       if (result.degraded?.length) {
@@ -693,7 +693,7 @@ export function GenPanel() {
                       binding={engineBindings.asr ?? null} onChange={handleEngineChange} variant="section" />
                   )}
                   {typeMeta.isDoc && filteredDocEngines.length > 0 && (() => {
-                    const cat = SUB_SCENARIO[effectiveFileSubType] || 'doc:word'
+                    const cat = getSubScenario(effectiveFileSubType)
                     return (
                       <EngineSelect category={cat} label="转录方案" options={filteredDocEngines}
                         binding={engineBindings[cat] ?? null} onChange={handleEngineChange} variant="section" />

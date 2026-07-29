@@ -89,6 +89,14 @@ export interface Capabilities {
   products: { name: string; label: string; category: string; description: string }[]
   llmModels: Record<string, { id: string; name: string; desc: string }[]>
   version: string
+  /** 文件类型→可用引擎名称白名单（后端动态推导） */
+  fileTypeMap: Record<string, string[]>
+  /** 子场景 key→中文标签 */
+  scenarioLabels: Record<string, string>
+  /** 引擎能力标签→中文 */
+  engineLabels: Record<string, string>
+  /** 风格 key→中文标签 */
+  styleLabels: Record<string, string>
 }
 
 export interface DocEntry {
@@ -936,6 +944,11 @@ export async function getEngineBindings(): Promise<Record<string, number | null>
 }
 export async function saveEngineBindings(data: Record<string, number | null>) {
   return (await apiFetch(`${BASE}/engine-bindings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bindings: data }) })).json()
+}
+
+/** 引擎注册表 — 所有已注册引擎按 category 分组 */
+export async function getEngineRegistry(): Promise<Record<string, string[]>> {
+  return (await apiFetch(`${BASE}/engine-registry`)).json()
 }
 
 /** 引擎自动降级开关 */

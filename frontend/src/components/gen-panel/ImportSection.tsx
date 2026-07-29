@@ -1,26 +1,10 @@
 import { useMemo, useState, useCallback } from 'react'
 import { Plus, Link, FileText, Image, Upload, Loader2, X, Film, Paperclip } from 'lucide-react'
 import { EngineSelect, type EngineOption } from './EngineSelect'
-import { DOC_ENGINE_NAMES, SUB_SCENARIO } from './constants'
+import { getSubScenario, DROP_ACCEPT, INPUT_TYPE_LABELS, IMPORTING_LABELS } from './constants'
+import { useStore } from '../../store'
 
-type FileSubType = 'pdf' | 'word' | 'ppt' | 'excel' | 'epub'
-
-const LABELS: Record<FileSubType, string> = { pdf: 'PDF', word: 'Word', ppt: 'PPT', excel: 'Excel', epub: 'EPUB' }
-const TYPES = ['pdf', 'word', 'ppt', 'excel', 'epub'] as const
-
-/** 导入中按钮文案 */
-const IMPORTING_LABELS: Record<string, string> = {
-  video: '转写中...', image: '导入中...', file: '文档解析中...', link: '导入中...', text: '导入中...',
-}
-/** 有文件或 URL 时需要特殊处理的类型 */
 const MEDIA_INPUT_TYPES = ['video', 'image', 'file']
-
-/** 文件扩展名 → MIME 类型验证（拖拽上传用） */
-const DROP_ACCEPT: Record<string, string[]> = {
-  video: ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv'],
-  image: ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.gif'],
-  file:  ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.epub'],
-}
 
 function validateDropFile(file: File, inputType: string): boolean {
   const exts = DROP_ACCEPT[inputType]
@@ -32,7 +16,7 @@ function validateDropFile(file: File, inputType: string): boolean {
 interface Props {
   inputType: string; setInputType: (t: 'link' | 'video' | 'text' | 'file' | 'image') => void
   fileObj: File | null; setFileObj: (f: File | null) => void
-  fileSubType: FileSubType; setFileSubType: (t: FileSubType) => void
+  fileSubType: string; setFileSubType: (t: string) => void
   importInput: string; setImportInput: (v: string) => void
   importing: boolean; importError: string; importProgress: string
   importPercent: number | null
@@ -70,12 +54,18 @@ export function ImportSection(props: Props) {
   const dropZoneClass = (base: string) =>
     `${base} ${dragOver ? '!border-accent !bg-accent/10' : ''}`
 
+  // 动态文件子类型：从 capabilities 获取
+  const caps = useStore(s => s.capabilities)
+  const fileTypes = useMemo(() => {
+    return Object.keys(caps?.fileTypeMap || {})
+  }, [caps])
+
   // 导入区始终基于用户选择的子标签过滤引擎，不受已选中文档影响
   const filteredDocEngines = useMemo(() => {
     const all = p.engineOptions.doc || []
-    const names = DOC_ENGINE_NAMES[p.fileSubType] || []
+    const names = caps?.fileTypeMap?.[p.fileSubType] || []
     return all.filter(e => names.includes(e.name))
-  }, [p.engineOptions.doc, p.fileSubType])
+  }, [p.engineOptions.doc, p.fileSubType, caps])
 
   return <>
     {/* ── 类型选择器 ── */}
@@ -89,7 +79,7 @@ export function ImportSection(props: Props) {
           {t === 'text' && <FileText size={12} />}
           {t === 'file' && <Upload size={12} />}
           {t === 'image' && <Image size={12} />}
-          {{ link: '网页', video: '视频', text: '文本', file: '文件', image: '图片' }[t]}
+          {INPUT_TYPE_LABELS[t]}
         </button>
       ))}
     </div>
@@ -110,26 +100,25 @@ export function ImportSection(props: Props) {
             <div className="space-y-1">
               {/* 子类型标签 */}
               <div className="flex bg-surface-hover rounded-[7px] p-0.5">
-                {TYPES.map(st => (
+                {fileTypes.map(st => (
                   <button key={st} onClick={() => p.setFileSubType(st)}
                     className={`flex-1 py-1 rounded-[5px] text-[10px] font-medium transition-all
                       ${p.fileSubType === st ? 'bg-elevated text-foreground shadow-[0_1px_2px_rgba(0,0,0,.06)]' : 'text-muted hover:text-dimmed'}`}>
-                    {LABELS[st]}
+                    {st.toUpperCase()}
                   </button>
                 ))}
               </div>
               {filteredDocEngines.length > 0 && (() => {
-                const cat = SUB_SCENARIO[p.fileSubType] || 'doc:word'
+                const cat = getSubScenario(p.fileSubType)
                 return (
                   <EngineSelect category={cat} label="转录方案" options={filteredDocEngines}
                     binding={p.engineBindings[cat] ?? null} onChange={p.handleEngineChange}
-                    extraHint={{
-                      pdf: 'PDF 推荐 pymupdf4llm · 文字+图片+矢量图',
-                      word: 'Word 推荐 python-docx · 文字+表格+图片',
-                      ppt: 'PPT 推荐 python-pptx · 文字+表格+图片+备注',
-                      excel: 'Excel 推荐 openpyxl · 表格数据提取+图表标签',
-                      epub: 'EPUB 推荐 ebooklib · 章节结构+图片保留',
-                    }[p.fileSubType]} />
+                    extraHint={(() => {
+                      const names = caps?.fileTypeMap?.[p.fileSubType] || []
+                      const first = names[0]
+                      const desc = first ? (caps?.engineOptions?.doc || []).find(e => e.name === first)?.desc : ''
+                      return desc || `为 ${p.fileSubType.toUpperCase()} 选择合适的转录引擎`
+                    })()} />
                 )
               })()}
             </div>

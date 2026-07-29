@@ -30,7 +30,7 @@ hiddenimports = [
     'urllib3', 'charset_normalizer', 'idna',
     'tqdm', 'click',
     # 直接使用的包
-    'pymupdf4llm', 'tiktoken', 'ffmpeg',
+    'tiktoken', 'ffmpeg',
     'dateparser_data',
     'markdown', 'pygments', 'pygments.lexers', 'pygments.formatters', 'pygments.styles',
     # app 模块（函数内动态 import，PyInstaller 静态分析遗漏）
@@ -49,7 +49,6 @@ hiddenimports = [
 
 # 引擎相关
 hiddenimports += [
-    'pymupdf', 'fitz',
     'cv2', 'numpy',
     'docx', 'pptx', 'openpyxl',
     'markitdown', 'ebooklib',
@@ -72,18 +71,17 @@ hiddenimports += [
 hiddenimports += [
     'yaml',       # pyyaml import 名
     'cv2',        # opencv
-    'fitz',       # pymupdf
     'yt_dlp',     # 视频下载
 ]
 
 # collect-all 处理有复杂原生扩展的包
-for pkg in ['duckduckgo_search', 'faster_whisper', 'pymupdf', 'pymupdf4llm', 'dashscope',
+for pkg in ['duckduckgo_search', 'faster_whisper', 'dashscope',
             'youtube_transcript_api', 'trafilatura', 'av', 'ctranslate2',
             'onnxruntime', 'tokenizers', 'tiktoken',
             'huggingface_hub', 'markitdown', 'pytesseract', 'lxml',
             'courlan', 'justext', 'htmldate', 'magika', 'babel',
             'cffi', 'cryptography', 'aiohttp', 'httpx', 'openai',
-            'certifi', 'requests']:
+            'certifi', 'requests', 'docling', 'pypdfium2']:
     try:
         tmp_ret = collect_all(pkg)
         datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

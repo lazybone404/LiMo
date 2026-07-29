@@ -159,32 +159,30 @@ def init_engines(config: dict | None = None):
                 dashscope_ocr_key = ep.get("api_key", "")
                 break
 
-    # Doc
-    from .doc import PyMuPDFEngine, PyMuPDF4LLMEngine, MarkItDownEngine, PDFOCREngine, DocxEngine, PptxEngine, ExcelEngine
-    pymupdf = PyMuPDFEngine()                    # 文字+图片
-    pymupdf.name = "pymupdf"
-    pymupdf_text = PyMuPDFEngine(text_only=True)  # 仅文字
-    pymupdf_text.name = "pymupdf-text"
-    pymupdf4llm = PyMuPDF4LLMEngine()             # pymupdf4llm：文字+图片+矢量图
-    pymupdf4llm.name = "pymupdf4llm"
+    # Doc（MIT/BSD 协议，无 AGPL 风险）
+    from .doc import MarkItDownEngine, DocxEngine, PptxEngine, ExcelEngine
+
+    # Docling — MIT 协议，默认 PDF 引擎
+    from .docling import DoclingEngine
+    docling_eng = DoclingEngine()
+    docling_eng.name = "docling"
+    EngineRegistry.register("doc", "docling", docling_eng)
+    docling_text = DoclingEngine(text_only=True)
+    docling_text.name = "docling-text"
+    EngineRegistry.register("doc", "docling-text", docling_text)
+
     markit = MarkItDownEngine()
     markit.name = "markitdown"
-    pdf_ocr = PDFOCREngine(api_key=dashscope_ocr_key)
-    pdf_ocr.name = "pdf-ocr"
-    docx = DocxEngine()                          # 文字+图片（默认）
-    docx.name = "python-docx"
-    docx_text = DocxEngine(text_only=True)        # 仅文字
-    docx_text.name = "python-docx-text"
-    EngineRegistry.register("doc", "pymupdf", pymupdf)
-    EngineRegistry.register("doc", "pymupdf-text", pymupdf_text)
-    EngineRegistry.register("doc", "pymupdf4llm", pymupdf4llm)
     EngineRegistry.register("doc", "markitdown", markit)
-    EngineRegistry.register("doc", "pdf-ocr", pdf_ocr)
+    docx = DocxEngine()
+    docx.name = "python-docx"
+    docx_text = DocxEngine(text_only=True)
+    docx_text.name = "python-docx-text"
     EngineRegistry.register("doc", "python-docx", docx)
     EngineRegistry.register("doc", "python-docx-text", docx_text)
-    pptx = PptxEngine()                          # 文字+图片+备注（默认）
+    pptx = PptxEngine()
     pptx.name = "python-pptx"
-    pptx_text = PptxEngine(text_only=True)        # 仅文字+备注
+    pptx_text = PptxEngine(text_only=True)
     pptx_text.name = "python-pptx-text"
     EngineRegistry.register("doc", "python-pptx", pptx)
     EngineRegistry.register("doc", "python-pptx-text", pptx_text)
@@ -202,7 +200,7 @@ def init_engines(config: dict | None = None):
         logger.warning(f"EPUB engine (ebooklib) unavailable: {e}")
     except Exception as e:
         logger.warning(f"EPUB engine init failed: {e}")
-    logger.info("Doc engines: pymupdf + pymupdf-text + python-docx + python-docx-text + python-pptx + python-pptx-text + openpyxl + markitdown + pdf-ocr (ocr key={'configured' if dashscope_ocr_key else 'NOT SET'})")
+    logger.info("Doc engines: docling + docling-text + markitdown + python-docx + python-docx-text + python-pptx + python-pptx-text + openpyxl")
 
     # Doc 引擎自动注册到 engine_models + engine_bindings，用户开箱即用
     # 对标 ASR 和 OCR 的自动注册逻辑
@@ -213,13 +211,13 @@ def init_engines(config: dict | None = None):
     # 子场景 → 默认引擎的确定性 MD5 id
     # provider_id 必须和 build_engine_models() 的哈希键一致（engine:{provider}:{model}）
     _DOC_DEFAULTS: list[tuple[str, str, str]] = [
-        ("doc:text+image", "pymupdf", "pymupdf4llm"),    # PDF 文字+图片（pymupdf4llm 效果最好）
-        ("doc:text-only", "pymupdf", "pymupdf-text"),     # PDF 纯文字
-        ("doc:scan-ocr", "pymupdf", "pdf-ocr"),          # 扫描件 OCR
-        ("doc:word", "pymupdf", "python-docx"),           # Word
-        ("doc:ppt", "pymupdf", "python-pptx"),             # PPT（python-pptx 图片提取稳定）
-        ("doc:excel", "pymupdf", "openpyxl"),             # Excel
-        ("doc:epub", "pymupdf", "ebooklib"),              # EPUB
+        ("doc:text+image", "pymupdf", "docling"),      # PDF 文字+图片（Docling MIT 协议）
+        ("doc:text-only", "pymupdf", "docling-text"),   # PDF 纯文字
+        ("doc:scan-ocr", "pymupdf", "docling"),         # 扫描件 → Docling（含 OCR 能力）
+        ("doc:word", "pymupdf", "python-docx"),          # Word
+        ("doc:ppt", "pymupdf", "python-pptx"),            # PPT
+        ("doc:excel", "pymupdf", "openpyxl"),            # Excel
+        ("doc:epub", "pymupdf", "ebooklib"),             # EPUB
     ]
     for sub_scene, prov_id, model_name in _DOC_DEFAULTS:
         mid = int(_hl.md5(f"engine:{prov_id}:{model_name}".encode()).hexdigest()[:8], 16)

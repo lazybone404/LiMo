@@ -6,35 +6,21 @@ import {
   listEngineProviders, addEngineProvider, deleteEngineProvider,
   listEngineModels, deleteEngineModel,
   getEngineBindings, saveEngineBindings,
-  getEngineAutoFallback, setEngineAutoFallback,
+  getEngineAutoFallback, setEngineAutoFallback, getEngineRegistry,
   type Provider, type EnabledModel, type SceneModels,
   type EngineProviderConfig as EngineProv, type EngineModel,
   apiUrl, apiFetch,
 } from '../../api/client'
 import { useStore } from '../../store'
 import { EngineSelect, type EngineOption } from '../gen-panel/EngineSelect'
-import { DOC_ENGINE_NAMES } from '../gen-panel/constants'
 import { Plus, X, Trash2, RefreshCw, Wifi, CheckCircle, ChevronDown, ChevronRight } from 'lucide-react'
 
 const CAT_LABELS: Record<string, string> = { asr: '语音转文字', ocr: '图片文字识别', doc: '文档解析' }
 const CATEGORIES = ['asr', 'ocr', 'doc'] as const
 
 // PDF + Office 平级子场景，每种类型可独立绑定引擎
-const DOC_SCENARIOS: Record<string, string> = {
-  'doc:text+image': 'PDF 文字+图片',
-  'doc:text-only': 'PDF 仅文字',
-  'doc:scan-ocr': 'PDF 扫描OCR',
-  'doc:word': 'Word 文字+图片',
-  'doc:word-text': 'Word 仅文字',
-  'doc:word-convert': 'Word 文档转换',
-  'doc:ppt': 'PPT 文字+图片',
-  'doc:ppt-text': 'PPT 仅文字',
-  'doc:ppt-convert': 'PPT 文档转换',
-  'doc:excel': 'Excel',
-  'doc:epub': 'EPUB',
-}
-
 export function ProviderSettings() {
+  const caps = useStore(s => s.capabilities)
   const addToast = useStore(s => s.addToast)
 
   // LLM
@@ -208,9 +194,10 @@ export function ProviderSettings() {
   const allLlmNames = new Set(refreshResult.map(r => r.id))
   enabledModels.filter(m => m.provider_id === selectedLlmId).forEach(m => allLlmNames.add(m.model_name))
 
-  const engineBuiltins = selectedEngineId === 'bcut' ? ['bcut'] :
-    selectedEngineId === 'faster-whisper' ? ['medium', 'small'] :
-    selectedEngineId === 'pymupdf' ? ['pymupdf4llm', 'pymupdf', 'markitdown'] : []
+  // 从 EngineRegistry 动态获取已注册引擎列表，不再硬编码
+  const [engineRegistry, setEngineRegistry] = useState<Record<string, string[]>>({})
+  useEffect(() => { getEngineRegistry().then(setEngineRegistry).catch(() => {}) }, [])
+  const engineBuiltins = engineRegistry[engineModels.find(m => m.provider_id === selectedEngineId)?.category || ''] || []
   const allEngineNames = new Set(engineBuiltins)
   engineRefreshResult.forEach(r => allEngineNames.add(r.id))
   engineModels.filter(m => m.provider_id === selectedEngineId).forEach(m => allEngineNames.add(m.model_name))
@@ -465,10 +452,9 @@ export function ProviderSettings() {
             <div className="pt-2 mt-1 border-t border-border-light">
               <span className="text-[11px] text-disabled uppercase tracking-wider">文档解析方案</span>
             </div>
-            {Object.entries(DOC_SCENARIOS).map(([key, label]) => {
+            {Object.entries(caps?.scenarioLabels || {}).map(([key, label]) => {
               const allDoc = engineByCat['doc'] || []
-              // 按子场景过滤可用引擎
-              const engineNames = DOC_ENGINE_NAMES[key.replace('doc:', '')] || []
+              const engineNames = caps?.fileTypeMap?.[key.replace('doc:', '')] || []
               const filtered = allDoc.filter(m => engineNames.includes(m.model_name))
               if (filtered.length === 0) return null
               const options: EngineOption[] = filtered.map(m => ({

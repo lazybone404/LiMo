@@ -20,8 +20,6 @@ dependencies = [
     "openai>=2.44",
     "tiktoken>=0.10",
     # 文档引擎（7 种格式）
-    "pymupdf>=1.28",
-    "pymupdf4llm>=0.0.24",
     "markitdown>=0.0.1",
     "python-docx>=1.1",
     "python-pptx>=1.0",
@@ -48,6 +46,8 @@ dependencies = [
     "gmssl>=3.2",
     "html2text>=2025.4.15",
     "duckduckgo-search>=8.1.1",
+    "docling>=2.115.0",
+    "pypdfium2>=5.12.1",
 ]
 
 [dependency-groups]

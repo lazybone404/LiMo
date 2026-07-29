@@ -12,11 +12,6 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-try:
-    import pymupdf as fitz  # PyMuPDF ≥1.24
-except ImportError:
-    import fitz  # 旧版兼容
-
 from app.core.errors import FatalError
 from app.core.types import PipelineInput, AdapterOutput, RawMetadata, InputType, ProgressEvent
 from app.core.protocols import PipelineAdapter
@@ -104,7 +99,7 @@ class DocumentAdapter(PipelineAdapter):
         if not engine_chain:
             # 未绑定 → 按扩展名兜底（不受 auto_fallback 控制：这是默认行为，不是降级）
             if ext == ".pdf":
-                eng_name = "pymupdf"
+                eng_name = "docling"
             elif ext in (".docx", ".doc"):
                 eng_name = "python-docx"
             elif ext in (".pptx", ".ppt"):
@@ -114,7 +109,7 @@ class DocumentAdapter(PipelineAdapter):
             elif ext == ".epub":
                 eng_name = "ebooklib"
             else:
-                eng_name = "pymupdf"
+                eng_name = "docling"
             engine = EngineRegistry.get("doc", eng_name)
             if engine:
                 engine_chain = [(eng_name, engine)]
@@ -302,25 +297,30 @@ class DocumentAdapter(PipelineAdapter):
         产物：每页包含原图（150dpi）和 OCR 识别的文字，方便对照确认。
         按优先级依次尝试 OCR 引擎，失败或空结果自动降级到下一个。
         """
-        doc = fitz.Document(str(path))
-        pages = doc.page_count
+        import pypdfium2 as pdfium
+
+        pdf = pdfium.PdfDocument(str(path))
+        pages = len(pdf)
         parts: list[str] = []
         success = 0
 
         ocr_chain = self._resolve_ocr_engine_chain()
         dashscope_key = self._get_dashscope_key()
 
-        for i, page in enumerate(doc):
+        for i in range(pages):
             page_num = i + 1
             logger.info("OCR 处理第 %d/%d 页...", page_num, pages)
 
-            # 渲染页面为图片
-            pix = page.get_pixmap(dpi=150)
-            img_b64 = base64.b64encode(pix.tobytes("png")).decode()
+            # 渲染页面为图片 (150 DPI ≈ scale 2.08)
+            page = pdf[i]
+            bitmap = page.render(scale=2.0)
+            pil_img = bitmap.to_pil()
+            img_bytes = pil_img.tobytes() if pil_img.mode == 'RGB' else pil_img.convert('RGB').tobytes()
+            img_b64 = base64.b64encode(img_bytes).decode()
 
             # OCR 识别 — 按优先级链依次尝试
             tmp_path = Path(tempfile.mktemp(suffix=f"_p{page_num}.png"))
-            tmp_path.write_bytes(pix.tobytes("png"))
+            pil_img.save(str(tmp_path), format="PNG")
 
             ocr_text = ""
             ocr_used = ""

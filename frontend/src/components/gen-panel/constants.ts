@@ -1,32 +1,4 @@
-/** 文件子类型 → 可用引擎名列表（GenPanel / ImportSection / ProviderSettings 共用） */
-export const DOC_ENGINE_NAMES: Record<string, string[]> = {
-  pdf: ['pymupdf4llm', 'pymupdf', 'pymupdf-text', 'pdf-ocr'],  // pymupdf4llm 排第一 = 推荐默认
-  word: ['python-docx', 'python-docx-text', 'markitdown'],
-  ppt: ['python-pptx', 'python-pptx-text', 'markitdown'],
-  excel: ['openpyxl', 'markitdown'],
-  epub: ['ebooklib', 'markitdown'],
-  // PDF 子场景（Settings 页面独立行，引擎列表同 pdf）
-  'text+image': ['pymupdf4llm', 'pymupdf'],
-  'text-only': ['pymupdf-text'],
-  'scan-ocr': ['pdf-ocr'],
-  // Word 子场景
-  'word-text': ['python-docx-text'],
-  'word-convert': ['markitdown'],
-  // PPT 子场景
-  'ppt-text': ['python-pptx-text'],
-  'ppt-convert': ['markitdown'],
-}
-
-/** 文件子类型 → 引擎绑定子场景 key */
-export const SUB_SCENARIO: Record<string, string> = {
-  pdf: 'doc:text+image',
-  word: 'doc:word',
-  ppt: 'doc:ppt',
-  excel: 'doc:excel',
-  epub: 'doc:epub',
-}
-
-/** 文件扩展名 → 子类型（用于从 sourceFileName 推断） */
+/** 文件扩展名 → 子类型（纯静态，不会变） */
 export const EXT_TO_SUBTYPE: Record<string, string> = {
   '.pdf': 'pdf', '.doc': 'word', '.docx': 'word',
   '.ppt': 'ppt', '.pptx': 'ppt',
@@ -34,8 +6,28 @@ export const EXT_TO_SUBTYPE: Record<string, string> = {
   '.epub': 'epub', '.mobi': 'epub',
 }
 
-/** 所有文档类 sourceType */
-export const ALL_DOC_TYPES = ['pdf', 'docx', 'pptx', 'xlsx', 'epub', 'document', 'file']
+/** 拖拽验证：每种类型的有效扩展名（纯静态） */
+export const DROP_ACCEPT: Record<string, string[]> = {
+  video: ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv'],
+  image: ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.gif'],
+  file:  ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.epub'],
+}
+
+/** 输入类型标签（纯静态，在 ImportSection 内联 JSX 中引用） */
+export const INPUT_TYPE_LABELS: Record<string, string> = {
+  link: '网页', video: '视频', text: '文本', file: '文件', image: '图片',
+}
+
+/** 导入中状态标签 */
+export const IMPORTING_LABELS: Record<string, string> = {
+  video: '转写中...', image: '导入中...', file: '文档解析中...', link: '导入中...', text: '导入中...',
+}
+
+/** 文件子类型 → 引擎绑定子场景 key */
+export function getSubScenario(subtype: string): string {
+  if (subtype === 'pdf') return 'doc:text+image'
+  return `doc:${subtype}`
+}
 
 // ── 类型元数据（GenPanel / GenerateOptions / PreviewArea 共用）──
 
@@ -46,29 +38,28 @@ export interface TypeMeta {
   isPDF: boolean
   isImage: boolean
   isExcel: boolean
-  isMedia: boolean       // 视频/网页等媒体类型
-  hasPolish: boolean      // 是否有整理版原文（Excel 没有）
-  hasVL: boolean          // 是否支持 VL 视觉理解
-  hasImages: boolean      // 是否支持保留文档图片（PDF/Word/PPT）
-  hasFactCheck: boolean    // 是否支持事实验证（仅 PreviewArea tab 显示用）
-  availableFormats: string[]  // 当前类型可用的格式选项（来自后端 AVAILABLE_OPTIONS）
-  coreProducts: { name: string; label: string; description: string }[]  // 生成面板的产物复选框
-  generateLabel: string   // 生成按钮文案
-  /** PreviewArea tabs */
+  isMedia: boolean
+  hasPolish: boolean
+  hasVL: boolean
+  hasImages: boolean
+  hasFactCheck: boolean
+  availableFormats: string[]
+  coreProducts: { name: string; label: string; description: string }[]
+  generateLabel: string
   tabs: { key: string; label: string }[]
 }
 
-/** 根据 sourceType 推导全部类型元数据，一处定义处处复用 */
+const _ALL_DOC_TYPES = ['pdf', 'docx', 'pptx', 'xlsx', 'epub', 'document', 'file']
+
 export function getTypeMeta(sourceType: string, genOptions: Record<string, string[]> = {}): TypeMeta {
   const st = sourceType || 'webpage'
   const isVideo = st === 'video'
   const isImage = st === 'image'
   const isExcel = st === 'xlsx'
   const isPDF = st === 'pdf'
-  const isDoc = ALL_DOC_TYPES.includes(st)
+  const isDoc = _ALL_DOC_TYPES.includes(st)
   const isMedia = isVideo || st === 'webpage' || st === 'link'
 
-  // tabs
   let tabs: { key: string; label: string }[]
   if (isImage) {
     tabs = [
@@ -131,22 +122,10 @@ export function getTypeMeta(sourceType: string, genOptions: Record<string, strin
   }
 }
 
-/** 风格标签 */
-export const STYLE_LABELS: Record<string, string> = {
-  none: '无',
-  minimal: '精简', detailed: '全文精要', academic: '学术', life: '生活',
-  tutorial: '教程', xiaohongshu: '小红书', business: '商务',
-  meeting: '会议纪要',
-  task_oriented: '任务',
-  imrad: 'IMRaD 精读',
-}
-
-/** 旧风格 key → 新 key 兼容映射 */
 const STYLE_ALIAS: Record<string, string> = {
   meeting_minutes: 'meeting',
 }
 
-/** 统一风格键名，兼容历史数据 */
 export function normalizeStyle(s: string): string {
   return STYLE_ALIAS[s] || s
 }

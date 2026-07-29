@@ -77,8 +77,8 @@
 /* Light defaults */
 :root {
   --tk-surface: #F4F1EE;
-  --tk-elevated: #FFFFFF;
-  --tk-hover: #E8E8ED;
+  --tk-elevated: #FAF8F5;
+  --tk-hover: #EDEAE6;
   --tk-foreground: #1C1C1E;
   --tk-muted: #8E8E93;
   --tk-dimmed: #636366;
@@ -89,8 +89,8 @@
   /* 辅色 — 标题、引用（新增） */
   --tk-secondary: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 44%);
   --tk-secondary-hover: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 36%);
-  --tk-border: #D2D2D7;
-  --tk-border-light: #E8E8ED;
+  --tk-border: #D6D3CE;
+  --tk-border-light: #EBE7E2;
   --tk-success: #34C759;
   --tk-warning: #FF9500;
   --tk-error: #FF3B30;
@@ -252,8 +252,8 @@ body {
 }
 
 .preview-content {
-  /* 极轻微的半透明背景：隔离纹理噪点，保持文字干净 */
-  background: color-mix(in srgb, var(--tk-elevated) 97%, transparent);
+  /* 与全局底色统一，避免色块分裂感 */
+  background: var(--tk-surface);
 }
 
 .markdown-body h1 { color: var(--md-h1); }

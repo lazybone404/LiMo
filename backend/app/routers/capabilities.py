@@ -55,15 +55,24 @@ async def capabilities(config=Depends(get_config)):
         for name, eng in store.items():
             engine_caps[cat][name] = getattr(eng, "capabilities", [])
 
+    # 从 builtin_models 构建 desc 查找表
+    _desc_map: dict[str, dict[str, str]] = {}
+    for prov in config.get("engine_providers", []):
+        _desc_map[prov["id"]] = {}
+        for bm in prov.get("builtin_models", []):
+            _desc_map[prov["id"]][bm["model_name"]] = bm.get("desc", "")
+
     engine_options: dict[str, list[dict]] = {}
     for m in engine_models:
         cat = m["category"]
         if cat not in engine_options:
             engine_options[cat] = []
         caps = engine_caps.get(cat, {}).get(m["model_name"], [])
+        desc = _desc_map.get(m["provider_id"], {}).get(m["model_name"], "")
         engine_options[cat].append({
             "id": m["id"], "provider": m["provider_id"],
-            "name": m["model_name"], "desc": "",
+            "name": m["model_name"],
+            "desc": desc,
             "capabilities": caps,
         })
 
@@ -101,6 +110,31 @@ async def capabilities(config=Depends(get_config)):
         else:
             engine_bindings[cat] = None
 
+    # ── 文件类型 → 可用引擎白名单（动态，根据已注册引擎推导）──
+    _DOC_SUBTYPES = {
+        "pdf": ["docling", "docling-text"],
+        "word": ["python-docx", "python-docx-text", "markitdown"],
+        "ppt": ["python-pptx", "python-pptx-text", "markitdown"],
+        "excel": ["openpyxl", "markitdown"],
+        "epub": ["ebooklib", "markitdown"],
+    }
+    file_type_map: dict[str, list[str]] = {}
+    for st, wanted in _DOC_SUBTYPES.items():
+        available = [n for n in wanted if EngineRegistry.get("doc", n)]
+        if available:
+            file_type_map[st] = available
+
+    # ── 子场景 key → 中文标签 ──────────────────────────────
+    scenario_labels = {
+        "doc:text+image": "PDF 文字+图片",
+        "doc:text-only": "PDF 仅文字",
+        "doc:scan-ocr": "PDF 扫描件",
+        "doc:word": "Word 文字+图片",
+        "doc:ppt": "PPT 文字+图片",
+        "doc:excel": "Excel",
+        "doc:epub": "EPUB",
+    }
+
     return {
         "adapters": [a.name for a in AdapterRegistry.all()],
         "engines": engine_details,
@@ -123,7 +157,7 @@ async def capabilities(config=Depends(get_config)):
                 "capabilities": ["asr"],
             },
             "pymupdf": {
-                "name": "PyMuPDF（本地）",
+                "name": "Docling + MarkItDown（本地）",
                 "type": "local",
                 "capabilities": ["doc"],
             },
@@ -142,4 +176,32 @@ async def capabilities(config=Depends(get_config)):
         "llmModels": config.get("llm_models", {}),
         "products": to_capability_list(),
         "version": "0.1.0",
+        # ── 新增：前端去硬编码元数据 ────────────────────────
+        "fileTypeMap": file_type_map,
+        "scenarioLabels": scenario_labels,
+        "engineLabels": {
+            "text": "文字", "table": "表格", "image": "图片",
+            "ocr": "OCR", "pdf": "PDF", "office": "文档", "asr": "语音",
+        },
+        "styleLabels": {
+            "none": "无",
+            "minimal": "精简", "detailed": "全文精要", "academic": "学术", "life": "生活",
+            "tutorial": "教程", "xiaohongshu": "小红书", "business": "商务",
+            "meeting": "会议纪要",
+            "task_oriented": "任务",
+            "imrad": "IMRaD 精读",
+        },
     }
+
+
+@router.get("/engine-registry")
+async def engine_registry():
+    """返回 EngineRegistry 中所有已注册引擎的名称列表（按 category 分组）。
+    前端据此动态渲染引擎选择器，不再硬编码引擎名称。
+    新增引擎只需后端注册，前端自动发现。
+    """
+    cats = ["asr", "ocr", "doc"]
+    result: dict[str, list[str]] = {}
+    for cat in cats:
+        result[cat] = sorted(EngineRegistry.list_category(cat))
+    return result

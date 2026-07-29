@@ -1,5 +1,6 @@
 import { ChevronDown, Camera } from 'lucide-react'
-import { STYLE_LABELS, normalizeStyle, type TypeMeta } from './constants'
+import { normalizeStyle, type TypeMeta } from './constants'
+import { useStore } from '../../store'
 
 export interface EnabledModel {
   id: number; provider_id: string; model_name: string
@@ -53,6 +54,7 @@ interface Props {
 
 export function GenerateOptions(props: Props) {
   const p = props
+  const caps = useStore(s => s.capabilities)
   const currentModel = p.enabledModels.find(m => m.id === p.selectedModelId)
   const isPolishedOnly = p.selectedCore.includes('polished') && !p.selectedCore.includes('notes')
   const isBoth = p.selectedCore.includes('notes') && p.selectedCore.includes('polished')
@@ -303,7 +305,7 @@ export function GenerateOptions(props: Props) {
           {p.styleKeys.map(s => (
             <button key={s} onClick={() => p.setStyle(normalizeStyle(s))}
               className={`px-3 py-1.5 text-[13px] rounded-full font-medium transition-colors ${normalizedStyle === normalizeStyle(s) ? 'bg-accent text-white' : 'text-dimmed hover:bg-surface-hover'}`}>
-              {STYLE_LABELS[s] || s}</button>
+              {caps?.styleLabels?.[s] || s}</button>
           ))}
         </div>
         {isBoth && (
