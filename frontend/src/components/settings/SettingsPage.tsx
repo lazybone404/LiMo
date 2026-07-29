@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { getConfig, updateConfig, getErrorMessage } from '../../api/client'
 import { useStore } from '../../store'
 import { ACCENT_GROUPS, ACCENT_SWATCH } from '../../lib/accent'
+import { TEXTURE_OPTIONS, TEXTURE_SWATCH, FONT_OPTIONS } from '../../lib/texture'
 import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette } from 'lucide-react'
 import { ProviderSettings } from './ProviderSettings'
 
@@ -47,6 +48,10 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
 
   const accent = useStore(s => s.accent)
   const setAccent = useStore(s => s.setAccent)
+  const texture = useStore(s => s.texture)
+  const setTexture = useStore(s => s.setTexture)
+  const font = useStore(s => s.font)
+  const setFont = useStore(s => s.setFont)
 
   useEffect(() => {
     getConfig().then(cfg => {
@@ -290,6 +295,67 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                       </div>
                     </div>
                   ))}
+                </div>
+
+                {/* 背景纹理 */}
+                <div>
+                  <label className="text-[15px] font-medium mb-1 block">背景纹理</label>
+                  <p className="text-[12px] text-muted mb-5">
+                    为 Markdown 预览区添加纸张质感纹理，不影响 UI 组件
+                  </p>
+                  <div className="grid grid-cols-3 gap-3">
+                    {TEXTURE_OPTIONS.map(t => {
+                      const selected = texture === t.key
+                      return (
+                        <button
+                          key={t.key}
+                          onClick={() => setTexture(t.key)}
+                          className={`flex flex-col items-center gap-1.5 p-2 rounded-xl transition-all ${
+                            selected
+                              ? 'ring-2 ring-accent ring-offset-2 ring-offset-surface'
+                              : 'hover:bg-surface-hover'
+                          }`}
+                        >
+                          <div
+                            className="w-full h-12 rounded-lg border border-border-light"
+                            style={{ background: TEXTURE_SWATCH[t.key] }}
+                          />
+                          <span className={`text-[12px] ${
+                            selected ? 'text-accent font-medium' : 'text-muted'
+                          }`}>{t.label}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                {/* 阅读字体 */}
+                <div>
+                  <label className="text-[15px] font-medium mb-1 block">阅读字体</label>
+                  <p className="text-[12px] text-muted mb-4">
+                    选择 Markdown 预览区的正文字体。web 字体会在首次使用时加载
+                  </p>
+                  <div className="space-y-1">
+                    {FONT_OPTIONS.map(f => {
+                      const selected = font === f.key
+                      return (
+                        <button
+                          key={f.key}
+                          onClick={() => setFont(f.key)}
+                          className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[14px] transition-colors ${
+                            selected
+                              ? 'bg-accent/10 text-accent font-medium'
+                              : 'text-dimmed hover:bg-surface-hover'
+                          }`}
+                        >
+                          <span>{f.label}</span>
+                          <span className="text-[11px] text-disabled">
+                            {f.category === 'web' ? '需加载' : '系统内置'}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
               </div>
             </div>

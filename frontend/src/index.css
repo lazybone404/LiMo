@@ -1,4 +1,14 @@
 @import "tailwindcss";
+@import "./lib/texture.css";
+
+/* ── Web Fonts ─────────────────────────────────────────── */
+
+@font-face {
+  font-family: 'LXGW WenKai';
+  src: url('./fonts/LXGWWenKai-Regular.ttf') format('truetype');
+  font-display: swap;
+  font-weight: 400;
+}
 
 /* ══════════════════════════════════════════════════════════
    LiMo — Design Tokens & Theme System
@@ -66,7 +76,7 @@
 
 /* Light defaults */
 :root {
-  --tk-surface: #F5F5F7;
+  --tk-surface: #F4F1EE;
   --tk-elevated: #FFFFFF;
   --tk-hover: #E8E8ED;
   --tk-foreground: #1C1C1E;
@@ -221,7 +231,30 @@ body {
   --md-hr: var(--color-border-default);
 }
 
+/* ── Reading Fonts (data-font driven) ───────────────────── */
+
+[data-font="system"] .preview-area,
+[data-font="system"] .markdown-body   { font-family: var(--font-sans), -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+[data-font="kaiti"] .preview-area,
+[data-font="kaiti"] .markdown-body    { font-family: 'KaiTi', 'STKaiti', serif; }
+[data-font="songti"] .preview-area,
+[data-font="songti"] .markdown-body   { font-family: 'Songti SC', 'SimSun', 'STSong', serif; }
+[data-font="fangsong"] .preview-area,
+[data-font="fangsong"] .markdown-body { font-family: 'FangSong', 'STFangsong', serif; }
+[data-font="wenkai"] .preview-area,
+[data-font="wenkai"] .markdown-body   { font-family: 'LXGW WenKai', 'KaiTi', serif; }
+
 /* ── GitHub Markdown Overrides (blue hierarchy) ─────────── */
+
+.preview-area {
+  /* 提升为合成层，避免 feTurbulence 纹理触发父级重绘 */
+  transform: translateZ(0);
+}
+
+.preview-content {
+  /* 极轻微的半透明背景：隔离纹理噪点，保持文字干净 */
+  background: color-mix(in srgb, var(--tk-elevated) 97%, transparent);
+}
 
 .markdown-body h1 { color: var(--md-h1); }
 .markdown-body h2 { color: var(--md-h2); }

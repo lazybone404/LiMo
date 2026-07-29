@@ -18,6 +18,10 @@
           document.documentElement.style.colorScheme = r;
           var a = localStorage.getItem('mbw_accent') || 'sky';
           document.documentElement.setAttribute('data-accent', a);
+          var tx = localStorage.getItem('mbw_texture') || 'plain';
+          document.documentElement.setAttribute('data-texture', tx);
+          var fn = localStorage.getItem('mbw_font') || 'system';
+          document.documentElement.setAttribute('data-font', fn);
         } catch(e) {}
       })();
     </script>

@@ -392,7 +392,7 @@ export function PreviewArea() {
           <Package size={50} className="text-disabled mb-6 mx-auto opacity-20" />
           <h1 className="text-[30px] font-semibold mb-1">欢迎使用 LiMo</h1>
           <p className="text-[13px] text-disabled mb-8">把任何来源变成可读、可搜索的文字</p>
-          <div className="markdown-body max-w-[480px] mx-auto text-left">
+          <div className="markdown-body max-w-[480px] mx-auto text-left" data-texture-reset="true">
             <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
               {`## 快速开始\n\n1. **导入内容** — 粘贴网页链接、B站/YouTube 视频链接，或拖入 PDF/Office 文档\n2. **自动转录** — 系统会自动提取正文、转写音频、识别画面\n3. **生成 Markdown** — 在左侧生成面板选择风格，一键生成\n\n---\n\n> 把任何来源变成可读、可搜索的文字`}
             </ReactMarkdown>
@@ -644,7 +644,7 @@ export function PreviewArea() {
 
   return (
     <>
-    <main className="flex-1 flex flex-col overflow-hidden bg-elevated">
+    <main className="flex-1 flex flex-col overflow-hidden bg-surface rounded-2xl">
       {/* 工具栏 — 对齐 BiliNote MarkdownHeader */}
       <div className="flex items-center justify-between px-6 py-2.5 border-b border-border-light shrink-0">
         <div className="flex items-center gap-3">
@@ -712,12 +712,12 @@ export function PreviewArea() {
       </div>
 
       {/* 内容 + TOC */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="preview-area flex-1 flex overflow-hidden">
         {(activeView === 'polished' || activeView === 'summary') && (
           tocCollapsed ? (
             <div
               onClick={() => setPanelCollapsed('toc', false)}
-              className="flex flex-col items-center justify-center shrink-0 bg-elevated/40 hover:bg-elevated/60 transition-colors cursor-pointer border-r border-border-light"
+              className="flex flex-col items-center justify-center shrink-0 bg-elevated hover:bg-surface-hover transition-colors cursor-pointer border-r border-border-light"
               style={{ width: 28 }}
               title="展开目录"
             >
@@ -733,7 +733,7 @@ export function PreviewArea() {
         )}
         <div
           ref={containerRef}
-          className={`flex-1 flex flex-col ${activeView === 'mindmap' ? 'overflow-hidden' : 'overflow-y-scroll'} ${activeView === 'mindmap' ? '' : 'mx-auto w-full'} ${activeView === 'mindmap' ? '' : contentWidth === 'wide' ? 'px-1 md:px-2 lg:px-4 xl:px-6' : contentWidth === 'normal' ? 'px-3 md:px-6 lg:px-10 xl:px-16' : 'px-4 md:px-12 lg:px-20 xl:px-32'}`}
+          className={`preview-content flex-1 flex flex-col ${activeView === 'mindmap' ? 'overflow-hidden' : 'overflow-y-scroll'} ${activeView === 'mindmap' ? '' : 'mx-auto w-full'} ${activeView === 'mindmap' ? '' : contentWidth === 'wide' ? 'px-1 md:px-2 lg:px-4 xl:px-6' : contentWidth === 'normal' ? 'px-3 md:px-6 lg:px-10 xl:px-16' : 'px-4 md:px-12 lg:px-20 xl:px-32'}`}
           style={activeView === 'mindmap' ? {} : { maxWidth: contentMaxW, fontSize: `${fontSizeScale[contentWidth]}em`, transition: 'max-width 350ms ease-out, padding 350ms ease-out, font-size 350ms ease-out' }}
         >
           {renderContent()}

@@ -60,7 +60,7 @@ export function TOC({ width = 160 }: { width?: number }) {
   if (items.length === 0) return null
 
   return (
-    <aside className="border-r border-border-light shrink-0 overflow-y-auto px-3 py-4 bg-elevated/60 backdrop-blur-[20px]" style={{ width, minWidth: 120, maxWidth: 400 }}>
+    <aside className="border-r border-border-light shrink-0 overflow-y-auto px-3 py-4 bg-elevated" style={{ width, minWidth: 120, maxWidth: 400 }}>
       <div className="flex items-center justify-between mb-2">
         <span className="text-[11px] font-medium text-disabled tracking-wide uppercase">目录</span>
         <button

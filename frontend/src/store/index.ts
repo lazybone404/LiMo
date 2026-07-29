@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { type ThemeMode, getSavedTheme, resolveTheme, applyTheme, saveTheme } from '../lib/theme'
 import { type AccentColor, getSavedAccent, applyAccent, saveAccent } from '../lib/accent'
+import { type TexturePreset, type FontPreset, getSavedTexture, getSavedFont, applyTexture, applyFont, saveTexture, saveFont } from '../lib/texture'
 import type { Capabilities } from '../api/client'
 
 export interface DocEntry {
@@ -150,6 +151,14 @@ interface Store {
   // 主色调
   accent: AccentColor
   setAccent: (a: AccentColor) => void
+
+  // 预览区纹理
+  texture: TexturePreset
+  setTexture: (t: TexturePreset) => void
+
+  // 阅读字体
+  font: FontPreset
+  setFont: (f: FontPreset) => void
 
   // Toast
   toasts: { id: number; message: string; type: 'success' | 'error' | 'info' }[]
@@ -313,6 +322,20 @@ export const useStore = create<Store>((set) => ({
     set({ accent })
   },
 
+  texture: getSavedTexture(),
+  setTexture: (texture) => {
+    saveTexture(texture)
+    applyTexture(texture)
+    set({ texture })
+  },
+
+  font: getSavedFont(),
+  setFont: (font) => {
+    saveFont(font)
+    applyFont(font)
+    set({ font })
+  },
+
   toasts: [],
   addToast: (message, type = 'success') => {
     const id = ++msgCounter
@@ -331,6 +354,8 @@ export const useStore = create<Store>((set) => ({
 // Apply initial theme on store creation
 applyTheme(resolveTheme(getSavedTheme()))
 applyAccent(getSavedAccent())
+applyTexture(getSavedTexture())
+applyFont(getSavedFont())
 
 // Listen for system theme changes when in "system" mode
 const sysMq = window.matchMedia('(prefers-color-scheme: dark)')
