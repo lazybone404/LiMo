@@ -45,6 +45,10 @@ hiddenimports = [
     'app.llm', 'app.llm.service', 'app.llm.agent', 'app.llm.errors',
     'app.agent', 'app.agent.tools', 'app.agent.evidence',
     'app.generation.review', 'app.generation.ocr_preprocessor',
+    'app.core.disconnect',
+    # 引擎模块（init_engines() 函数内动态导入，PyInstaller 无法静态追踪）
+    'app.engines.doc_types', 'app.engines.doc_markitdown',
+    'app.engines.doc_docx', 'app.engines.doc_pptx', 'app.engines.doc_excel',
 ]
 
 # 引擎相关

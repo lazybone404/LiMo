@@ -497,6 +497,8 @@ async def ingest(
     text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     force: bool = Form(False),
+    store=Depends(get_store),
+    config=Depends(get_config),
 ):
 
     # 构造 PipelineInput

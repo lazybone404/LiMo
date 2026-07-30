@@ -335,7 +335,7 @@ async def export_mindmap(tx_id: str, request: Request, store=Depends(get_store))
 
 
 @router.get("/export/conversation/{conv_id}")
-def export_conversation(conv_id: str, format: str = "md", request: Request = None):
+def export_conversation(conv_id: str, format: str = "md", request: Request = None, store=Depends(get_store)):
     conv = store.get_conversation(conv_id)
     if not conv:
         raise HTTPException(status_code=404, detail="对话不存在")
@@ -1022,7 +1022,7 @@ class ExportCustomRequest(BaseModel):
 
 
 @router.post("/export/custom")
-def export_custom(data: ExportCustomRequest, request: Request):
+def export_custom(data: ExportCustomRequest, request: Request, store=Depends(get_store)):
     buf = io.BytesIO()
     total_files = 0
 

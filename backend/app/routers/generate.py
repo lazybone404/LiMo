@@ -17,7 +17,6 @@ from pydantic import BaseModel
 
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.core.dependencies import get_store, get_config, get_guard
-from app.core.disconnect import disconnect_watcher
 from app.core.errors import GenerateError, AppError
 from app.core import logging as log
 from app.core.model_resolver import resolve_model as _resolve_model, resolve_llm_config
@@ -29,6 +28,15 @@ from app.generation.prompt import build_polish_prompt, build_notes_prompt
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def _watch_disconnect(request: Request, cancel_event: asyncio.Event, interval: float = 0.5) -> None:
+    """后台轮询客户端断连，断开时 set cancel_event"""
+    while not cancel_event.is_set():
+        if await request.is_disconnected():
+            cancel_event.set()
+            return
+        await asyncio.sleep(interval)
 
 
 # ── 类型门控：哪些字段属于哪种 source_type ──
@@ -442,10 +450,11 @@ async def generate_stream(transcript_id: str, request: Request,
 
     async def merged_stream():
         await guard.semaphore.acquire()
+        # 启动断连监听（后台轮询，客户端断开时 set cancel_event）
+        _disconnect_task = asyncio.create_task(
+            _watch_disconnect(request, cancel_event))
         try:
-            # 后台监听客户端断连 → 设置 cancel_event
-            async with disconnect_watcher(request, cancel_event):
-                all_chunks: list[str] = []
+            all_chunks: list[str] = []
 
             # ── 双产物并行 ──
             if stream_mode == "both":
@@ -666,6 +675,12 @@ async def generate_stream(transcript_id: str, request: Request,
             log.exception("Generate stream failed", tx_id=transcript_id)
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
         finally:
+            # 清理断连监听
+            _disconnect_task.cancel()
+            try:
+                await _disconnect_task
+            except (asyncio.CancelledError, Exception):
+                pass
             guard.semaphore.release()
 
     return StreamingResponse(

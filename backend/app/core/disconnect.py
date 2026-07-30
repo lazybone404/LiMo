@@ -45,7 +45,8 @@ async def disconnect_watcher(
     try:
         yield
     finally:
-        cancel_event.set()  # help the polling loop exit
+        # 不在此处 set cancel_event —— 只有客户端真正断开时才应取消
+        # cancel_event 由 _watch 循环在 is_disconnected() 返回 True 时置位
         task.cancel()
         try:
             await task

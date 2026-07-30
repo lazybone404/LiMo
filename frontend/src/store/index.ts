@@ -143,6 +143,10 @@ interface Store {
   setPanelWidth: (panel: string, w: number) => void
   setPanelCollapsed: (panel: string, v: boolean) => void
 
+  // 后端就绪（Tauri 冷启动保护）
+  backendReady: boolean
+  setBackendReady: (v: boolean) => void
+
   // ── 内容阅读宽度 ──
   contentWidth: ContentWidth
   cycleContentWidth: () => void
@@ -341,6 +345,9 @@ export const useStore = create<Store>((set) => ({
   // ═══════════════════════════════════════════
   // 内容阅读宽度
   // ═══════════════════════════════════════════
+  backendReady: true,  // 浏览器模式默认 true，Tauri 模式在 App.tsx useEffect 中重置
+  setBackendReady: (v) => set({ backendReady: v }),
+
   contentWidth: ((typeof localStorage !== 'undefined' && localStorage.getItem('mbw_contentWidth')) || 'normal') as ContentWidth,
   cycleContentWidth: () => {
     const order: ContentWidth[] = ['normal', 'wide', 'narrow']

@@ -36,6 +36,8 @@ export default function App() {
   const toggleGenPanel = useStore(s => s.toggleGenPanel)
   const toggleAI = useStore(s => s.toggleAI)
   const setAiFloating = useStore(s => s.setAiFloating)
+  const backendReady = useStore(s => s.backendReady)
+  const setBackendReady = useStore(s => s.setBackendReady)
 
   useEffect(() => {
     const init = () => {
@@ -86,8 +88,9 @@ export default function App() {
 
     // Tauri 模式：主动轮询 /health + 监听 backend-ready 事件，双保险
     if ((window as any).__TAURI_INTERNALS__) {
+      setBackendReady(false)  // 阻止 UI 提前渲染，避免 CONNECTION_REFUSED
       let done = false
-      const initOnce = () => { if (!done) { done = true; init() } }
+      const initOnce = () => { if (!done) { done = true; setBackendReady(true); init() } }
 
       // 主动健康检查：后端刷新前可能已在运行，event 已错过
       const healthCheck = async () => {
@@ -110,7 +113,7 @@ export default function App() {
 
       return () => { done = true }
     }
-    // 浏览器/开发模式：直接加载
+    // 浏览器/开发模式：直接加载（backendReady 默认 true）
     init()
   }, [])
 
@@ -127,6 +130,17 @@ export default function App() {
     const w = useStore.getState().panelWidths.aiPanel
     setPanelWidth('aiPanel', Math.max(50, Math.min(600, w + (-dx))))
   }, [setPanelWidth])
+
+  // Tauri 冷启动：后端未就绪时显示加载屏，避免组件提前发请求导致 CONNECTION_REFUSED
+  if (!backendReady) {
+    return (
+      <div className="h-screen flex flex-col items-center justify-center gap-4 bg-surface">
+        <img src="/logo.png" className="w-16 h-16 rounded-xl object-cover animate-pulse" alt="LiMo" />
+        <div className="text-[15px] font-medium text-dimmed">正在启动后端服务…</div>
+        <div className="text-[13px] text-muted">首次启动可能需要 10-30 秒</div>
+      </div>
+    )
+  }
 
   return (
     <div className="h-screen flex flex-col overflow-hidden" onKeyDown={(e) => {

@@ -75,7 +75,7 @@ class ConfigUpdate(BaseModel):
 
 
 @router.post("/config")
-async def update_config(data: ConfigUpdate, request: Request):
+async def update_config(data: ConfigUpdate, request: Request, cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
     """保存配置，自动解析 Cookie"""
     with cfg_lock:
 
@@ -176,7 +176,7 @@ async def update_config(data: ConfigUpdate, request: Request):
 
 
 @router.post("/llm/models")
-async def detect_models(data: dict, request: Request):
+async def detect_models(data: dict, request: Request, cfg=Depends(get_config_dep)):
     """从厂商 API 动态检测可用模型列表"""
     provider = data.get("provider", "")
     api_key = data.get("api_key", "")
@@ -187,7 +187,7 @@ async def detect_models(data: dict, request: Request):
 
     # 构建 base_url
     if not base_url:
-            base_url = config.get("llm", {}).get("base_url", {}).get(provider, "")
+            base_url = cfg.get("llm", {}).get("base_url", {}).get(provider, "")
 
     if not base_url:
         # 默认地址

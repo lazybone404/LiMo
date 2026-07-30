@@ -32,28 +32,43 @@ async def add_request_id(request, call_next):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=".*",   # 回显具体 origin，兼容 credentials（* 与 credentials 互斥）
+    allow_credentials=True,    # Tauri WebView2 需要
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 兜底：有些 FastAPI 版本 CORSMiddleware 对 tauri:// 协议不生效
-# 用纯 ASGI 中间件强制加 CORS 头
+# 兜底：强制 CORS 头 — CORSMiddleware 可能因版本/协议差异漏加
+# 用纯 ASGI 中间件在响应外层确保 origin 回显
 from starlette.types import ASGIApp, Scope, Receive, Send
 class _ForceCORSMiddleware:
     def __init__(self, app: ASGIApp):
         self.app = app
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] == "http":
+            # 从请求中提取 origin
+            req_origin = b"*"
+            for k, v in scope.get("headers", []) or []:
+                if k == b"origin":
+                    req_origin = v
+                    break
             async def _send(message):
                 if message["type"] == "http.response.start":
-                    headers = dict(message.get("headers", []))
-                    origin = [v for k, v in (scope.get("headers", []) or []) if k == b"origin"]
-                    headers[b"access-control-allow-origin"] = origin[0] if origin else b"*"
-                    headers[b"access-control-allow-credentials"] = b"true"
-                    headers[b"access-control-allow-methods"] = b"*"
-                    headers[b"access-control-allow-headers"] = b"*"
-                    message["headers"] = list(headers.items())
+                    # 保留已有 header，追加/覆盖 CORS header
+                    headers: list[tuple[bytes, bytes]] = []
+                    has_origin = False
+                    for k, v in message.get("headers", []):
+                        if k == b"access-control-allow-origin":
+                            has_origin = True
+                            headers.append((k, req_origin))  # 覆盖为具体 origin
+                        else:
+                            headers.append((k, v))
+                    if not has_origin:
+                        headers.append((b"access-control-allow-origin", req_origin))
+                    headers.append((b"access-control-allow-credentials", b"true"))
+                    headers.append((b"access-control-allow-methods", b"*"))
+                    headers.append((b"access-control-allow-headers", b"*"))
+                    message["headers"] = headers
                 await send(message)
             await self.app(scope, receive, _send)
         else:
