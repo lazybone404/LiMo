@@ -1,5 +1,7 @@
 // Tauri 环境检测：生产模式用完整 URL，开发/Vite 模式用相对路径走 proxy
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+import { parseSSEStream } from './sse'
+
 const BASE = isTauri ? 'http://127.0.0.1:7413/api' : '/api'
 
 /** 拼接 API 完整 URL（Tauri 补全域名，浏览器用相对路径走 Vite proxy） */
@@ -265,6 +267,7 @@ function fetchSSE(
       onDone(data)
     })
     .catch(err => {
+      if ((err as Error).name === 'AbortError') return  // 用户主动取消，不回退
       console.error('Ingest error (will retry with non-stream):', err)
       // 回退：非流式端点
       fetch(url, {
@@ -343,6 +346,7 @@ function fetchFileSSE(
       onDone(data)
     })
     .catch(err => {
+      if ((err as Error).name === 'AbortError') return  // 用户主动取消，不回退
       console.error('Ingest file error (will retry with non-stream):', err)
       fetch(url, { method: 'POST', body })
         .then(r => r.json())
@@ -517,48 +521,23 @@ export function streamGenerate(
         return
       }
 
-      // SSE 解析（与现有的 ingest/stream 模式一致）
       const reader = response.body?.getReader()
       if (!reader) { callbacks.onError('无法读取响应流'); return }
 
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        // 归一化 \r\n → \n，部分 LLM API 返回 CRLF 换行
-        buffer = buffer.replace(/\r\n/g, '\n')
-        const parts = buffer.split('\n\n')
-        buffer = parts.pop() || ''
-
-        for (const part of parts) {
-          const lines = part.split('\n')
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue
-            try {
-              const data = JSON.parse(line.slice(6))
-              if (data.type === 'done') {
-                // 双产物模式下单个产物的 done（如 {"mode":"polished","type":"done"}）不触发 onDone
-                if (!data.mode) {
-                  callbacks.onDone(data)
-                }
-              } else if (data.type === 'error') {
-                callbacks.onError(data.message || '未知错误')
-              } else if (data.type === 'cancelled') {
-                callbacks.onCancelled(data.saved_partial || false)
-              } else if (data.mode) {
-                // 双产物模式：带 mode 标签的 chunk
-                callbacks.onChunk(data.text || '', data.mode)
-              } else if (data.text) {
-                callbacks.onChunk(data.text)
-              }
-            } catch { /* broken JSON, skip */ }
-          }
+      await parseSSEStream(reader, (data) => {
+        if (data.type === 'done') {
+          if (!data.mode) { callbacks.onDone(data) }
+        } else if (data.type === 'error') {
+          callbacks.onError(data.message || '未知错误')
+        } else if (data.type === 'cancelled') {
+          callbacks.onCancelled(data.saved_partial || false)
+        } else if (data.mode) {
+          callbacks.onChunk(data.text || '', data.mode)
+        } else if (data.text) {
+          callbacks.onChunk(data.text)
         }
-      }
-      // 循环退出但没有 done/error 事件 → 连接异常断开
+      })
+
       if (!receivedDoneOrError) {
         callbacks.onError('连接意外断开，请重试')
       }
@@ -620,44 +599,26 @@ export function streamFactCheck(
       }
       const reader = response.body?.getReader()
       if (!reader) { callbacks.onError('无法读取响应流'); return }
-      const decoder = new TextDecoder()
-      let buffer = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        buffer = buffer.replace(/\r\n/g, '\n')
-        const parts = buffer.split('\n\n')
-        buffer = parts.pop() || ''
-        for (const part of parts) {
-          const lines = part.split('\n')
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue
-            try {
-              const data = JSON.parse(line.slice(6))
-              if (data.type === 'done') {
-                if (!data.mode) callbacks.onDone(data)
-              } else if (data.type === 'error') {
-                callbacks.onError(data.message || '事实验证失败')
-              } else if (data.type === 'cancelled') {
-                callbacks.onError('验证已取消')
-              } else if (data.phase === 'review' && data.text) {
-                // 新：审核报告流式输出
-                callbacks.onChunk(data.text, 'review')
-              } else if (data.phase === 'static_review') {
-                // 新：静态审核结果（summary + issues）
-                callbacks.onProgress(data)
-              } else if (data.phase === 'verify') {
-                // 新旧兼容：验证进度
-                if (data.text) callbacks.onChunk(data.text, 'verify')
-                if (data.verdict) callbacks.onProgress(data)
-              } else if (data.text) {
-                callbacks.onChunk(data.text, data.phase || '')
-              }
-            } catch { /* broken JSON */ }
-          }
+
+      await parseSSEStream(reader, (data) => {
+        if (data.type === 'done') {
+          if (!data.mode) callbacks.onDone(data)
+        } else if (data.type === 'error') {
+          callbacks.onError(data.message || '事实验证失败')
+        } else if (data.type === 'cancelled') {
+          callbacks.onError('验证已取消')
+        } else if (data.phase === 'review' && data.text) {
+          callbacks.onChunk(data.text, 'review')
+        } else if (data.phase === 'static_review') {
+          callbacks.onProgress(data)
+        } else if (data.phase === 'verify') {
+          if (data.text) callbacks.onChunk(data.text, 'verify')
+          if (data.verdict) callbacks.onProgress(data)
+        } else if (data.text) {
+          callbacks.onChunk(data.text, data.phase || '')
         }
-      }
+      })
+
       if (!receivedDoneOrError) {
         callbacks.onError('连接意外断开，请重试')
       }
@@ -721,37 +682,14 @@ export function streamExportProgress(
       const reader = response.body?.getReader()
       if (!reader) { callbacks.onError?.('无法读取响应流'); return }
 
-      const decoder = new TextDecoder()
-      let buffer = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        buffer = buffer.replace(/\r\n/g, '\n')
-        const parts = buffer.split('\n\n')
-        buffer = parts.pop() || ''
-        for (const part of parts) {
-          const line = part.trim()
-          if (!line.startsWith('data: ')) continue
-          try {
-            const event = JSON.parse(line.slice(6))
-            switch (event.type) {
-              case 'progress':
-                callbacks.onProgress?.(event)
-                break
-              case 'done':
-                callbacks.onDone?.(event.download_url, event.total_files)
-                break
-              case 'error':
-                callbacks.onError?.(event.message)
-                break
-              case 'cancelled':
-                callbacks.onError?.('导出已取消')
-                break
-            }
-          } catch { /* skip malformed */ }
+      await parseSSEStream(reader, (event) => {
+        switch (event.type) {
+          case 'progress': (callbacks.onProgress as any)?.(event); break
+          case 'done': callbacks.onDone?.(event.download_url, event.total_files); break
+          case 'error': callbacks.onError?.(event.message); break
+          case 'cancelled': callbacks.onError?.('导出已取消'); break
         }
-      }
+      })
     })
     .catch((err) => {
       if ((err as Error).name !== 'AbortError') {
@@ -782,32 +720,15 @@ export function streamChat(
       const reader = response.body?.getReader()
       if (!reader) { callbacks.onError('无法读取响应流'); return }
 
-      const decoder = new TextDecoder()
-      let buffer = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        buffer = buffer.replace(/\r\n/g, '\n')
-        const parts = buffer.split('\n\n')
-        buffer = parts.pop() || ''
-        for (const part of parts) {
-          const lines = part.split('\n')
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue
-            try {
-              const data = JSON.parse(line.slice(6))
-              if (data.type === 'meta') callbacks.onMeta(data.conversation_id)
-              else if (data.type === 'text') callbacks.onText(data.text)
-              else if (data.type === 'agent_status') callbacks.onStatus?.(data.message)
-              else if (data.type === 'tool_start') callbacks.onToolStart(data.display)
-              else if (data.type === 'tool_result') callbacks.onToolResult?.(data.tool, data.summary)
-              else if (data.type === 'done') callbacks.onDone()
-              else if (data.type === 'error') callbacks.onError(data.message)
-            } catch { /* broken JSON */ }
-          }
-        }
-      }
+      await parseSSEStream(reader, (data) => {
+        if (data.type === 'meta') callbacks.onMeta(data.conversation_id)
+        else if (data.type === 'text') callbacks.onText(data.text)
+        else if (data.type === 'agent_status') callbacks.onStatus?.(data.message)
+        else if (data.type === 'tool_start') callbacks.onToolStart(data.display)
+        else if (data.type === 'tool_result') callbacks.onToolResult?.(data.tool, data.summary)
+        else if (data.type === 'done') callbacks.onDone()
+        else if (data.type === 'error') callbacks.onError(data.message)
+      })
     })
     .catch(err => {
       if ((err as Error).name === 'AbortError') return
