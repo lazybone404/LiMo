@@ -6,11 +6,34 @@
 const katex = require('../../frontend/node_modules/katex');
 const readline = require('readline');
 
+/**
+ * 将 LaTeX 分隔符归一化为 remark-math 兼容格式。
+ * \[...\] → $$...$$, \(...\) → $...$
+ * 跳过 fenced code blocks (```) 和 inline code (`) 内的内容。
+ */
+function normalizeLatexDelimiters(md) {
+  if (typeof md !== 'string') return md;
+  const parts = md.split(/(```[\s\S]*?```|`[^`\n]+`)/g);
+  return parts.map((part, i) => {
+    if (i % 2 === 1) return part;  // code block, skip
+    part = part.replace(/\\\[([\s\S]*?)\\\]/g, (_, latex) => {
+      const trimmed = latex.trim();
+      if (trimmed.includes('\n') || trimmed.length > 60) {
+        return '$$\n' + trimmed + '\n$$';
+      }
+      return '$$' + trimmed + '$$';
+    });
+    part = part.replace(/\\\(([\s\S]*?)\\\)/g, (_, latex) => '$' + latex.trim() + '$');
+    return part;
+  }).join('');
+}
+
 let input = '';
 const rl = readline.createInterface({ input: process.stdin, terminal: false });
 rl.on('line', (line) => input += line + '\n');
 rl.on('close', () => {
-  let result = input;
+  // 先归一化 LaTeX 分隔符（支持 \[...\] / \(...\)）
+  let result = normalizeLatexDelimiters(input);
 
   // 渲染 $$...$$ 块级公式（含换行）
   result = result.replace(/\$\$\s*([\s\S]+?)\s*\$\$/g, (_, latex) => {

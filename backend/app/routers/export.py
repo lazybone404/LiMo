@@ -38,8 +38,51 @@ router = APIRouter()
 
 _KATEX_SCRIPT = Path(__file__).resolve().parent.parent.parent / "scripts" / "render_math.js"
 
+# ── LaTeX 分隔符归一化 ──
+
+def _normalize_latex_delimiters(md: str) -> str:
+    """将 LaTeX 分隔符归一化为 remark-math 兼容格式。
+
+    remark-math 只识别 $ (inline) 和 $$ (display)，学术论文常用
+    \\(...\\) (inline) 和 \\[...\\] (display)。此函数将后者转换为前者。
+    保护 fenced code blocks 和 inline code 内的内容不被修改。
+    """
+    if not md or not isinstance(md, str):
+        return md
+    # 分割出代码块和普通文本，仅处理普通文本
+    parts = re.split(r'(```[\s\S]*?```|`[^`\n]+`)', md)
+    result = []
+    for idx, part in enumerate(parts):
+        if idx % 2 == 1:
+            result.append(part)  # 代码块，保留
+            continue
+        # \\[...\\] → $$...$$
+        part = re.sub(
+            r'\\\[([\s\S]*?)\\\]',
+            lambda m: _fmt_display(m.group(1)),
+            part,
+        )
+        # \\(...\\) → $...$
+        part = re.sub(
+            r'\\\(([\s\S]*?)\\\)',
+            lambda m: f'${m.group(1).strip()}$',
+            part,
+        )
+        result.append(part)
+    return ''.join(result)
+
+
+def _fmt_display(latex: str) -> str:
+    """格式化块级公式，多行或长公式加换行"""
+    trimmed = latex.strip()
+    if '\n' in trimmed or len(trimmed) > 60:
+        return f'$$\n{trimmed}\n$$'
+    return f'$${trimmed}$$'
+
+
 def _render_formulas_katex(md: str) -> str:
-    """调用 Node.js KaTeX 脚本将 $$...$$ 和 $...$ 预渲染为 HTML"""
+    """调用 Node.js KaTeX 脚本将公式预渲染为 HTML"""
+    md = _normalize_latex_delimiters(md)
     import subprocess, shutil
     # Node.js 或脚本不存在 → 静默回退（打包环境很常见）
     if not shutil.which("node") or not _KATEX_SCRIPT.exists():
@@ -64,8 +107,9 @@ def _render_formulas_katex(md: str) -> str:
 # ── LaTeX 保护：在 markdown→HTML 转换前保护公式，转换后还原 ──
 
 def _protect_latex(md: str) -> tuple[str, list[str]]:
-    """将 $$...$$ 和 $...$ 公式替换为占位符，防止 markdown 转换器破坏公式。
+    """将公式替换为占位符，防止 markdown 转换器破坏公式。
     返回 (protected_md, placeholders) — 调用方需将 placeholders 传给 _restore_latex。"""
+    md = _normalize_latex_delimiters(md)
     placeholders: list[str] = []
     i = 0
 
@@ -408,9 +452,9 @@ table { border-collapse: collapse; width: 100%; margin: 16px 0; }
 th, td { border: 1px solid #d0d7de; padding: 8px 12px; }
 th { background: #f6f8fa; font-weight: 600; }
 blockquote { border-left: 4px solid #007AFF; padding: 0 1em; color: #636366; }
-pre { background: #f6f8fa; border-radius: 8px; padding: 16px; }
+pre { background: #282C34; border-radius: 8px; padding: 16px; color: #ABB2BF; }
 code { font-family: "SF Mono", monospace; font-size: 0.9em; }
-:not(pre) > code { background: #f6f8fa; padding: 2px 6px; border-radius: 4px; color: #FF2D55; }""",
+:not(pre) > code { background: #F0F4FF; padding: 2px 6px; border-radius: 4px; color: #1D4ED8; }""",
     "minimal": """body { font-family: -apple-system, "PingFang SC", sans-serif; max-width: 720px; margin: 80px auto; padding: 0 24px; line-height: 1.8; color: #333; background: #fff; }
 h1 { font-weight: 300; font-size: 2.2em; margin-bottom: 0.3em; color: #000; }
 h2 { font-weight: 400; font-size: 1.5em; margin-top: 2em; color: #111; }
@@ -419,7 +463,7 @@ del { text-decoration: line-through; }
 table { border-collapse: collapse; width: 100%; margin: 16px 0; }
 th, td { border-bottom: 1px solid #e8e8e8; padding: 10px 14px; text-align: left; }
 th { font-weight: 500; color: #888; font-size: 0.85em; text-transform: uppercase; }
-pre { background: #fafafa; border-radius: 4px; padding: 20px; }
+pre { background: #282C34; border-radius: 4px; padding: 20px; color: #ABB2BF; }
 code { font-family: "SF Mono", monospace; font-size: 0.9em; }
 :not(pre) > code { background: #fafafa; padding: 1px 5px; border-radius: 3px; }""",
     "limo": """body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.75; color: #1C1C1E; background: #fff; }
@@ -431,7 +475,7 @@ strong { color: #1E40AF; }
 a { color: #2563EB; }
 del { text-decoration: line-through; }
 blockquote { border-left: 4px solid #3B82F6; background: #EFF6FF; margin: 0; padding: 0 1em; color: #636366; border-radius: 0 8px 8px 0; }
-pre { background: #f6f8fa; border-radius: 8px; padding: 16px; overflow-x: auto; }
+pre { background: #282C34; border-radius: 8px; padding: 16px; overflow-x: auto; color: #ABB2BF; }
 code { font-family: "SF Mono", "Fira Code", monospace; font-size: 0.9em; }
 :not(pre) > code { background: #F0F4FF; color: #1D4ED8; padding: 2px 6px; border-radius: 4px; }
 table { border-collapse: collapse; width: 100%; margin: 16px 0; }
@@ -448,8 +492,8 @@ hr { border-color: #D2D2D7; }
   strong { color: #93C5FD; }
   a { color: #60A5FA; }
   blockquote { background: rgba(59,130,246,0.08); border-left-color: #60A5FA; color: #AEAEB2; }
-  pre { background: #2C2C2E; }
-  code { color: #E5E5EA; }
+  pre { background: #21252B; color: #ABB2BF; }
+  code { color: #ABB2BF; }
   :not(pre) > code { background: rgba(59,130,246,0.12); color: #93C5FD; }
   table th { background: #2C2C2E; }
   table td, table th { border-color: #48484A; }
@@ -467,9 +511,17 @@ def _preprocess_gfm(md: str) -> str:
                r'\1\n\n\2', md, flags=re.MULTILINE)
     # 删除线 ~~text~~ → <del>text</del>
     md = re.sub(r'~~(.+?)~~', r'<del>\1</del>', md)
-    # 任务列表 - [ ] → ☐, - [x] → ☑
-    md = re.sub(r'^- \[ \] (.+)$', r'- ☐ \1', md, flags=re.MULTILINE)
-    md = re.sub(r'^- \[x\] (.+)$', r'- ☑ \1', md, flags=re.MULTILINE)
+    # 任务列表 - [ ] → disabled checkbox, - [x] → checked disabled checkbox
+    md = re.sub(
+        r'^- \[ \] (.+)$',
+        r'- <input type="checkbox" disabled style="margin-right:6px;vertical-align:middle"> \1',
+        md, flags=re.MULTILINE,
+    )
+    md = re.sub(
+        r'^- \[x\] (.+)$',
+        r'- <input type="checkbox" checked disabled style="margin-right:6px;vertical-align:middle"> \1',
+        md, flags=re.MULTILINE,
+    )
     # 时间戳 badge — Content-[mm:ss] → 蓝色, Screenshot-[mm:ss] → 橙色
     md = re.sub(
         r'Content-\[(\d{2}:\d{2})\]',
@@ -533,17 +585,17 @@ def _add_heading_ids(html: str) -> str:
 
 
 def _get_pygments_css() -> str:
-    """生成 Pygments 代码高亮 CSS（匹配预览的 oneLight 风格）"""
+    """生成 Pygments 代码高亮 CSS（暗色 one-dark 风格，适合程序员阅读）"""
     if not _PYGMENTS_OK:
         return ""
     try:
-        formatter = HtmlFormatter(style="default", noclasses=False)
-        # 精简：只保留 .codehilite 相关规则
+        formatter = HtmlFormatter(style="one-dark", noclasses=False)
         css = formatter.get_style_defs('.codehilite')
-        # 追加语言标签样式
+        # 追加代码块容器样式（暗色）和语言标签
         css += """
-.codehilite { background: #f6f8fa; border-radius: 8px; padding: 16px; overflow-x: auto; margin: 16px 0; }
-.codehilite .lang-label { display: block; font-size: 0.75em; color: #636366; margin-bottom: 8px; font-weight: 600; }
+.codehilite { background: #282C34; border-radius: 8px; padding: 16px; overflow-x: auto; margin: 16px 0; }
+.codehilite .lang-label { display: block; font-size: 0.75em; color: #ABB2BF; margin-bottom: 8px; font-weight: 600; }
+.codehilite pre { background: #282C34; }
 """
         return css
     except Exception:
@@ -561,7 +613,8 @@ def _get_badge_css() -> str:
 
 
 def _render_formulas_to_images(md: str) -> str:
-    """将 Markdown 中的 $$...$$ 和 $...$ 公式渲染为 base64 PNG 嵌入"""
+    """将 Markdown 中的公式渲染为 base64 PNG 嵌入"""
+    md = _normalize_latex_delimiters(md)
     import base64
     try:
         import matplotlib
@@ -914,6 +967,7 @@ def _build_mindmap_html(md: str, title: str) -> str:
     import html as html_mod
 
     safe_title = html_mod.escape(title or "思维导图")
+    md = _normalize_latex_delimiters(md)
     assets = _get_markmap_assets()
     d3_js = assets.get("d3", "")
     mv_js = assets.get("markmap_view", "")
