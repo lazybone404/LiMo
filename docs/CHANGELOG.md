@@ -6,6 +6,34 @@
 
 ---
 
+## 2026-07-31 — 公式渲染修复（`\[...\]`/`\(...\)` 分隔符支持）
+
+### 做了什么
+
+**问题**：导入学术论文（arXiv 等）后，公式在预览中不渲染，显示为原始 LaTeX 代码。
+
+**根因**：`remark-math` 只识别 `$`/`$$` 分隔符，不识别 LaTeX 标准的 `\(...\)`（行内）和 `\[...\]`（块级）分隔符。学术论文普遍使用后者。
+
+**修复 — 双管齐下**：
+
+1. **前端预处理兜底**（治标）— `markdown-plugins.ts` 新增 `normalizeLatexDelimiters()` 函数，在 Markdown 解析前将 `\[...\]` → `$$...$$`、`\(...\)` → `$...$`。保护代码块内的内容不被修改。6 个 ReactMarkdown 渲染入口全部接入。新增 11 个测试用例。
+
+2. **Prompt 约束**（治本）— Notes 的 `_NOTES_TASK` 之前只说"LaTeX 语法形式"，未指定分隔符格式。现明确要求使用 `$...$`/`$$...$$`，禁止 `\(...\)`/`\[...\]`。其他 prompt（Polished、文档、Excel 等）早有此约束，仅这一处遗漏。
+
+### 为什么
+
+前端预处理解决非 LLM 生成内容的渲染（粘贴文本、网页原始内容），Prompt 约束确保 LLM 产出的格式天生正确。两者互补。
+
+### 影响范围
+
+- `frontend/src/lib/markdown-plugins.ts` — 新增 `normalizeLatexDelimiters` 函数（~40 行）
+- `frontend/src/components/preview/{MarkdownPreview,TranscriptView,PreviewArea,EpubSkeletonPanel}.tsx` — 5 文件，各 1 行调用
+- `frontend/src/components/ai-chat/ChatCore.tsx` — 1 处调用
+- `frontend/src/test/normalize-latex.test.ts` — 新增 11 个测试用例
+- `backend/app/generation/prompt.py` — `_NOTES_TASK` 1 行修改
+
+---
+
 ## 2026-07-30 — 深度评估后续改进（四合一）
 
 ### 做了什么

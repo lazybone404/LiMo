@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useMemo, type ReactNode } from 'react'
 import { useStore, nextMsgId } from '../../store'
 import { streamChat, listConversations, getConversation, deleteConversation, renameConversation } from '../../api/client'
-import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
+import { REMARK_PLUGINS, REHYPE_PLUGINS, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
 import ReactMarkdown from 'react-markdown'
 import { Search, Plus, Trash2, Pencil, Download, Send, Bot, User, MessageSquare, ChevronRight, ChevronLeft } from 'lucide-react'
 import { ContextMenu } from '../ui/ContextMenu'
@@ -254,7 +254,7 @@ export function ChatCore({
                   {msg.role === 'assistant' ? (
                     <div className={`markdown-chat ${s.msg}`}>
                       <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
-                        {msg.content || (chatLoading && msg.id === chatMessages[chatMessages.length - 1]?.id ? '...' : '')}
+                        {normalizeLatexDelimiters(msg.content || (chatLoading && msg.id === chatMessages[chatMessages.length - 1]?.id ? '...' : ''))}
                       </ReactMarkdown>
                     </div>
                   ) : <div className="whitespace-pre-wrap">{msg.content}</div>}

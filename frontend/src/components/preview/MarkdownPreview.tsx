@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
+import { REMARK_PLUGINS, REHYPE_PLUGINS, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
 
 export function MarkdownPreview({ content, meta: _meta, sourceUrl, isVideo }: { content: string | null; meta: { style: string; mode: string; version: number } | null; sourceUrl?: string; isVideo?: boolean }) {
@@ -13,7 +13,7 @@ export function MarkdownPreview({ content, meta: _meta, sourceUrl, isVideo }: { 
   return (
     <div className="markdown-body">
       <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
-        {content}
+        {normalizeLatexDelimiters(content)}
       </ReactMarkdown>
     </div>
   )

@@ -3,7 +3,7 @@ import { useStore } from '../../store'
 import { getTranscript, getMarkdown, fetchProcessResults, streamFactCheck, getConfig, apiUrl, ApiErrorException } from '../../api/client'
 import { loadGenPrefs } from '../gen-panel/genPrefs'
 import ReactMarkdown from 'react-markdown'
-import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
+import { REMARK_PLUGINS, REHYPE_PLUGINS, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
 import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle, Copy, Check, FileText, Columns, AlignCenter, Maximize2 } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
@@ -542,7 +542,7 @@ export function PreviewArea() {
             </div>
             <div className="markdown-body">
               <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={imageMarkdownComponents}>
-                {result.text}
+                {normalizeLatexDelimiters(result.text)}
               </ReactMarkdown>
             </div>
           </div>

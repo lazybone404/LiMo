@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-07-30 | **版本**: 0.1.0
+**更新**: 2026-07-31 | **版本**: 0.1.0
 
 ---
 
@@ -13,7 +13,7 @@
 |------|------|
 | 后端 Python 文件 | 83 |
 | 前端 TS/TSX/CSS 文件 | 47 |
-| 前端测试文件 | 3（32 个测试用例） |
+| 前端测试文件 | 4（43 个测试用例） |
 | API 路由模块 | 11 |
 | API 端点 | 63 |
 | 适配器 | 5 |
@@ -113,7 +113,7 @@
 | FastAPI Depends 依赖注入 | ✅ 8/8 路由迁移完成 |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 11 路由，0 处旧格式残留 |
-| 前端测试 | ✅ vitest + 32 tests（store/theme/api） |
+| 前端测试 | ✅ vitest + 43 tests（store/theme/api/latex） |
 | 引擎文件拆分 | ✅ doc.py → 5 文件 + 删死代码 |
 | Store 领域分节 | ✅ 11 域清晰分节 |
 | 引擎配置 UX | ✅ "当前引擎"标签 + "恢复默认"按钮 |

@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { REMARK_PLUGINS, REHYPE_PLUGINS, REMARK_PLUGINS_PLAIN, REHYPE_PLUGINS_PLAIN } from '../../lib/markdown-plugins'
+import { REMARK_PLUGINS, REHYPE_PLUGINS, REMARK_PLUGINS_PLAIN, REHYPE_PLUGINS_PLAIN, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
 import { EpubChapterView } from './EpubSkeletonPanel'
 
@@ -65,7 +65,7 @@ export function TranscriptView({ rawText, sourceType }: { rawText: string; sourc
   return (
     <div className="markdown-body">
       <ReactMarkdown remarkPlugins={remark} rehypePlugins={rehype} components={components}>
-        {rawText}
+        {normalizeLatexDelimiters(rawText)}
       </ReactMarkdown>
     </div>
   )

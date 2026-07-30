@@ -2,6 +2,43 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 
+/**
+ * 将 LaTeX 分隔符转换为 remark-math 可识别的格式。
+ *
+ * remark-math 只识别 $ (inline) 和 $$ (display)，但学术论文常使用
+ * \(...\) (inline) 和 \[...\] (display)。此函数预处理 Markdown 文本，
+ * 将后者转换为前者，使公式能在 KaTeX 中正确渲染。
+ *
+ * 保护 fenced code blocks (```) 和 inline code (`) 内的内容不被修改。
+ */
+export function normalizeLatexDelimiters(md: string): string {
+  if (!md || typeof md !== 'string') return md
+  // 分割出代码块和普通文本，仅处理普通文本
+  const parts = md.split(/(```[\s\S]*?```|`[^`\n]+`)/g)
+  return parts.map((part, i) => {
+    // 奇数索引 = 代码块内容，跳过
+    if (i % 2 === 1) return part
+
+    // \[...\] → $$...$$ (display math, 可能跨行)
+    part = part.replace(/\\\[([\s\S]*?)\\\]/g, (_: string, latex: string) => {
+      // 移除首尾多余空白，保留公式内部结构
+      const trimmed = latex.trim()
+      // 单行短公式 → 保持紧凑；多行或长公式 → 换行
+      if (trimmed.includes('\n') || trimmed.length > 60) {
+        return `$$\n${trimmed}\n$$`
+      }
+      return `$$${trimmed}$$`
+    })
+
+    // \(...\) → $...$ (inline math)
+    part = part.replace(/\\\(([\s\S]*?)\\\)/g, (_: string, latex: string) => {
+      return `$${latex.trim()}$`
+    })
+
+    return part
+  }).join('')
+}
+
 /** 全文插件（含 KaTeX 数学公式） — 用于视频/文档等可能含公式的内容 */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 // remarkMath 必须在 remarkGfm 之前：公式内的 _（下标）/<（x_{<k}）等字符

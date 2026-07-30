@@ -3,7 +3,7 @@ import { useStore } from '../../store'
 import { listEnabledModels, listProviders, getErrorMessage, apiUrl, type EnabledModel, type Provider } from '../../api/client'
 import { createMarkdownComponents } from '../../lib/markdown-components'
 import ReactMarkdown from 'react-markdown'
-import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
+import { REMARK_PLUGINS, REHYPE_PLUGINS, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
 
 export type EpubChapter = {
   index: number; title: string; sections: EpubSection[]
@@ -301,7 +301,7 @@ export function EpubChapterView({ rawText, showSkeleton, selectedSections, onTog
             rehypePlugins={REHYPE_PLUGINS}
             components={components}
           >
-            {content || '*（无内容）*'}
+            {normalizeLatexDelimiters(content || '*（无内容）*')}
           </ReactMarkdown>
         </div>
       </div>
