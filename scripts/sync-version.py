@@ -26,7 +26,7 @@ def write_version(version: str) -> None:
 def replace_in_file(path: Path, pattern: str, replacement: str, count: int = 0) -> int:
     """用正则替换文件内容。返回替换次数。"""
     text = path.read_text(encoding="utf-8")
-    new_text, n = re.subn(pattern, replacement, text, count=count)
+    new_text, n = re.subn(pattern, replacement, text, count=count, flags=re.MULTILINE)
     if n > 0:
         path.write_text(new_text, encoding="utf-8")
     return n

@@ -6,9 +6,11 @@
 
 ---
 
-## 2026-07-31 — 公式渲染修复（`\[...\]`/`\(...\)` 分隔符支持）
+## 2026-07-31 — 公式渲染 + 导出管线全面修复
 
 ### 做了什么
+
+**A. 公式 `\[...\]`/`\(...\)` 分隔符支持**
 
 **问题**：导入学术论文（arXiv 等）后，公式在预览中不渲染，显示为原始 LaTeX 代码。
 
@@ -20,17 +22,33 @@
 
 2. **Prompt 约束**（治本）— Notes 的 `_NOTES_TASK` 之前只说"LaTeX 语法形式"，未指定分隔符格式。现明确要求使用 `$...$`/`$$...$$`，禁止 `\(...\)`/`\[...\]`。其他 prompt（Polished、文档、Excel 等）早有此约束，仅这一处遗漏。
 
+3. **后端导出管线补充**（遗漏修复）— `render_math.js`、`_protect_latex`、`_render_formulas_katex`、`_render_formulas_to_images`、`_build_mindmap_html` 共 5 处原先也只识别 `$$`/`$`，现已全部接入归一化预处理。
+
+**B. 导出 HTML 渲染对齐前端预览**
+
+排查前端预览与后端导出 HTML 的渲染差异，修复 3 项不一致：
+
+1. **代码高亮配色** — Pygments style: `default` → `one-dark`（暗色程序员风格）。代码块背景 `#f6f8fa`（冷灰）→ `#282C34`（one-dark 暗色）。4 套 HTML 主题 `pre`/`code` 背景同步更新。
+
+2. **GFM 任务列表** — `- [ ]` → `<input type="checkbox" disabled>`（替代 Unicode ☐），`- [x]` → `<input type="checkbox" checked disabled>`（替代 Unicode ☑）。视觉对齐前端 remark-gfm 的真实 checkbox。
+
+3. **代码块统一暗色** — 无论导出主题明暗，代码块始终保持暗色底色，匹配程序员阅读习惯。
+
 ### 为什么
 
-前端预处理解决非 LLM 生成内容的渲染（粘贴文本、网页原始内容），Prompt 约束确保 LLM 产出的格式天生正确。两者互补。
+前端预处理解决非 LLM 内容的渲染（粘贴文本、网页原始内容），Prompt 约束确保 LLM 产出天生正确，后端管线补漏覆盖导出场景。三者互补，形成完整闭环。
+
+导出对齐让用户"看到什么导出什么"，消除信任摩擦。
 
 ### 影响范围
 
-- `frontend/src/lib/markdown-plugins.ts` — 新增 `normalizeLatexDelimiters` 函数（~40 行）
-- `frontend/src/components/preview/{MarkdownPreview,TranscriptView,PreviewArea,EpubSkeletonPanel}.tsx` — 5 文件，各 1 行调用
+- `frontend/src/lib/markdown-plugins.ts` — 新增 `normalizeLatexDelimiters`（~40行）
+- `frontend/src/components/preview/` — 5 文件，各 1 行调用
 - `frontend/src/components/ai-chat/ChatCore.tsx` — 1 处调用
 - `frontend/src/test/normalize-latex.test.ts` — 新增 11 个测试用例
-- `backend/app/generation/prompt.py` — `_NOTES_TASK` 1 行修改
+- `backend/app/generation/prompt.py` — `_NOTES_TASK` 1 行
+- `backend/app/routers/export.py` — `_normalize_latex_delimiters` + 4 处接入 + Pygments 配色 + GFM 任务列表 + 4 主题代码背景
+- `backend/scripts/render_math.js` — 新增 `normalizeLatexDelimiters` + 调用
 
 ---
 
