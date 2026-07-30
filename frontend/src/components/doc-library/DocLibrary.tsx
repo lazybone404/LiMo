@@ -224,7 +224,7 @@ export function DocLibrary() {
                 <CheckSquare size={14} />
               </button>
               <button
-                onClick={() => useStore.getState().setPanelCollapsed('docLib', true)}
+                onClick={() => useStore.getState().setSlot('docLib', { collapsed: true })}
                 className="w-6 h-6 rounded-md hover:bg-surface-hover flex items-center justify-center"
                 title="收起面板"
               >

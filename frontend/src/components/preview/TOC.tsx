@@ -16,7 +16,7 @@ export function TOC({ width = 160 }: { width?: number }) {
   const activeView = useStore(s => s.activeView)
   const notesContent = useStore(s => s.currentContent)
   const polishedContent = useStore(s => s.currentPolishedContent)
-  const setPanelCollapsed = useStore(s => s.setPanelCollapsed)
+  const setSlot = useStore(s => s.setSlot)
   const content = activeView === 'polished' ? polishedContent : notesContent
   const [activeId, setActiveId] = useState<string | null>(null)
   const observerRef = useRef<IntersectionObserver | null>(null)
@@ -64,7 +64,7 @@ export function TOC({ width = 160 }: { width?: number }) {
       <div className="flex items-center justify-between mb-2">
         <span className="text-[11px] font-medium text-disabled tracking-wide uppercase">目录</span>
         <button
-          onClick={() => setPanelCollapsed('toc', true)}
+          onClick={() => setSlot('toc', { collapsed: true })}
           className="w-5 h-5 rounded hover:bg-surface-hover flex items-center justify-center"
           title="收起目录"
         >

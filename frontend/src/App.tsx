@@ -17,22 +17,16 @@ import { fetchCapabilities, listTranscripts, getMarkdown, getTranscript } from '
 import { Settings, PanelLeft, Library, MessageSquare, PenLine, Bot, Archive } from 'lucide-react'
 
 export default function App() {
-  const genPanelOpen = useStore(s => s.genPanelOpen)
-  const aiVisible = useStore(s => s.aiVisible)
+  const slots = useStore(s => s.slots)
+  const setSlot = useStore(s => s.setSlot)
   const aiFloating = useStore(s => s.aiFloating)
   const setCapabilities = useStore(s => s.setCapabilities)
   const setDocs = useStore(s => s.setDocs)
   const [showSettings, setShowSettings] = useState(false)
   const [showExport, setShowExport] = useState(false)
   const [showSetup, setShowSetup] = useState(() => {
-    // 首次启动检测（localStorage 标记）
     try { return !localStorage.getItem('limo_setup_done') } catch { return false }
   })
-
-  const panelWidths = useStore(s => s.panelWidths)
-  const panelsCollapsed = useStore(s => s.panelsCollapsed)
-  const setPanelWidth = useStore(s => s.setPanelWidth)
-  const setPanelCollapsed = useStore(s => s.setPanelCollapsed)
   const toggleGenPanel = useStore(s => s.toggleGenPanel)
   const toggleAI = useStore(s => s.toggleAI)
   const setAiFloating = useStore(s => s.setAiFloating)
@@ -119,17 +113,20 @@ export default function App() {
 
   // 面板拖拽回调 — 用 getState() 读最新宽度，避免 stale closure
   const resizeGen = useCallback((dx: number) => {
-    const w = useStore.getState().panelWidths.genPanel
-    setPanelWidth('genPanel', Math.max(50, Math.min(600, w + dx)))
-  }, [setPanelWidth])
+    const st = useStore.getState()
+    const w = st.slots.genPanel.width
+    st.setSlot('genPanel', { width: Math.max(50, Math.min(600, w + dx)) })
+  }, [])
   const resizeDocLib = useCallback((dx: number) => {
-    const w = useStore.getState().panelWidths.docLib
-    setPanelWidth('docLib', Math.max(50, Math.min(600, w + dx)))
-  }, [setPanelWidth])
+    const st = useStore.getState()
+    const w = st.slots.docLib.width
+    st.setSlot('docLib', { width: Math.max(50, Math.min(600, w + dx)) })
+  }, [])
   const resizeAI = useCallback((dx: number) => {
-    const w = useStore.getState().panelWidths.aiPanel
-    setPanelWidth('aiPanel', Math.max(50, Math.min(600, w + (-dx))))
-  }, [setPanelWidth])
+    const st = useStore.getState()
+    const w = st.slots.aiPanel.width
+    st.setSlot('aiPanel', { width: Math.max(50, Math.min(600, w + (-dx))) })
+  }, [])
 
   // Tauri 冷启动：后端未就绪时显示加载屏，避免组件提前发请求导致 CONNECTION_REFUSED
   if (!backendReady) {
@@ -177,23 +174,22 @@ export default function App() {
         <div className="flex items-center gap-0.5 ml-6 bg-surface rounded-lg p-0.5">
           <button
             onClick={toggleGenPanel}
-            className={`px-2.5 py-1 rounded-md text-[12px] transition-all flex items-center gap-1.5 ${genPanelOpen ? 'bg-elevated font-medium shadow-sm text-foreground' : 'text-muted hover:text-dimmed'}`}
-            title={genPanelOpen ? '收起生成面板' : '展开生成面板'}
+            className={`px-2.5 py-1 rounded-md text-[12px] transition-all flex items-center gap-1.5 ${slots.genPanel.visible ? 'bg-elevated font-medium shadow-sm text-foreground' : 'text-muted hover:text-dimmed'}`}
+            title={slots.genPanel.visible ? '收起生成面板' : '展开生成面板'}
           >
             <PanelLeft size={13} />
             <span>生成</span>
           </button>
           <button
             onClick={() => {
-              if (panelsCollapsed.docLib) {
-                setPanelCollapsed('docLib', false)
-                setPanelWidth('docLib', 260)
+              if (slots.docLib.collapsed) {
+                setSlot('docLib', { collapsed: false, width: 260 })
               } else {
-                setPanelCollapsed('docLib', true)
+                setSlot('docLib', { collapsed: true })
               }
             }}
-            className={`px-2.5 py-1 rounded-md text-[12px] transition-all flex items-center gap-1.5 ${!panelsCollapsed.docLib ? 'bg-elevated font-medium shadow-sm text-foreground' : 'text-muted hover:text-dimmed'}`}
-            title={!panelsCollapsed.docLib ? '收起文档库' : '展开文档库'}
+            className={`px-2.5 py-1 rounded-md text-[12px] transition-all flex items-center gap-1.5 ${!slots.docLib.collapsed ? 'bg-elevated font-medium shadow-sm text-foreground' : 'text-muted hover:text-dimmed'}`}
+            title={!slots.docLib.collapsed ? '收起文档库' : '展开文档库'}
           >
             <Library size={13} />
             <span>文档库</span>
@@ -206,8 +202,8 @@ export default function App() {
                 toggleAI()
               }
             }}
-            className={`px-2.5 py-1 rounded-md text-[12px] transition-all flex items-center gap-1.5 ${aiVisible && !aiFloating ? 'bg-elevated font-medium shadow-sm text-foreground' : 'text-muted hover:text-dimmed'}`}
-            title={aiVisible && !aiFloating ? '收起 AI 面板' : '展开 AI 面板'}
+            className={`px-2.5 py-1 rounded-md text-[12px] transition-all flex items-center gap-1.5 ${slots.aiPanel.visible && !aiFloating ? 'bg-elevated font-medium shadow-sm text-foreground' : 'text-muted hover:text-dimmed'}`}
+            title={slots.aiPanel.visible && !aiFloating ? '收起 AI 面板' : '展开 AI 面板'}
           >
             <MessageSquare size={13} />
             <span>AI</span>
@@ -231,32 +227,30 @@ export default function App() {
       {/* 主体 — 可拖拽四栏 */}
       <div className="flex flex-1 overflow-hidden">
         {/* 生成面板 */}
-        {genPanelOpen && !panelsCollapsed.genPanel ? (
-          <div style={{ width: panelWidths.genPanel, minWidth: 80, maxWidth: 600 }} className="shrink-0">
+        {slots.genPanel.visible && !slots.genPanel.collapsed ? (
+          <div style={{ width: slots.genPanel.width, minWidth: 80, maxWidth: 600 }} className="shrink-0">
             <GenPanel />
           </div>
-        ) : genPanelOpen ? (
+        ) : slots.genPanel.visible ? (
           <PanelStrip label="生成" side="left" icon={PenLine} onClick={() => {
-            setPanelCollapsed('genPanel', false)
-            setPanelWidth('genPanel', 260)
+            setSlot('genPanel', { collapsed: false, width: 260 })
           }} />
         ) : null}
-        {genPanelOpen && !panelsCollapsed.genPanel && (
+        {slots.genPanel.visible && !slots.genPanel.collapsed && (
           <ResizeHandle onResize={resizeGen} />
         )}
 
         {/* 文档库 */}
-        {!panelsCollapsed.docLib ? (
-          <div style={{ width: panelWidths.docLib, minWidth: 80, maxWidth: 600 }} className="shrink-0">
+        {!slots.docLib.collapsed ? (
+          <div style={{ width: slots.docLib.width, minWidth: 80, maxWidth: 600 }} className="shrink-0">
             <DocLibrary />
           </div>
         ) : (
           <PanelStrip label="文档库" side="left" icon={Library} onClick={() => {
-            setPanelCollapsed('docLib', false)
-            setPanelWidth('docLib', 260)
+            setSlot('docLib', { collapsed: false, width: 260 })
           }} />
         )}
-        {!panelsCollapsed.docLib && (
+        {!slots.docLib.collapsed && (
           <ResizeHandle onResize={resizeDocLib} />
         )}
 
@@ -266,17 +260,16 @@ export default function App() {
         </div>
 
         {/* AI 面板 — 停靠模式 */}
-        {aiVisible && !aiFloating && (
+        {slots.aiPanel.visible && !aiFloating && (
           <>
             <ResizeHandle onResize={resizeAI} />
-            {!panelsCollapsed.aiPanel ? (
-              <div style={{ width: panelWidths.aiPanel, minWidth: 80, maxWidth: 600 }} className="shrink-0">
+            {!slots.aiPanel.collapsed ? (
+              <div style={{ width: slots.aiPanel.width, minWidth: 80, maxWidth: 600 }} className="shrink-0">
                 <AIPanel />
               </div>
             ) : (
               <PanelStrip label="AI" side="right" icon={Bot} onClick={() => {
-                setPanelCollapsed('aiPanel', false)
-                setPanelWidth('aiPanel', 340)
+                setSlot('aiPanel', { collapsed: false, width: 340 })
               }} />
             )}
           </>
@@ -284,7 +277,7 @@ export default function App() {
       </div>
 
       {/* AI 浮窗 */}
-      {aiVisible && aiFloating && <FloatingAI />}
+      {slots.aiPanel.visible && aiFloating && <FloatingAI />}
 
       {/* Toast */}
       <Toast />

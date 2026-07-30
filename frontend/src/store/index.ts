@@ -30,6 +30,12 @@ export type { Capabilities } from '../api/client'
 
 export type ContentWidth = 'narrow' | 'normal' | 'wide'
 
+export interface SlotState {
+  width: number
+  collapsed: boolean
+  visible: boolean
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
@@ -138,19 +144,18 @@ interface Store {
   setAiFloatingPos: (pos: { x: number; y: number }) => void
   setAiFloatingSize: (size: { width: number; height: number }) => void
 
-  // ── UI 布局 ──
-  genPanelOpen: boolean
-  aiVisible: boolean
-  activeView: 'polished' | 'summary' | 'transcript' | 'skeleton' | 'report' | 'data_preview' | 'original' | 'ocr' | 'extract' | 'table' | 'digitize' | 'understand' | 'mindmap' | 'fact_check'
-  panelWidths: { genPanel: number; docLib: number; aiPanel: number; toc: number }
-  panelsCollapsed: { genPanel: boolean; docLib: boolean; aiPanel: boolean; toc: boolean }
+  // ── UI 布局（插槽系统） ──
+  /** 统一的面板状态：{ genPanel, docLib, aiPanel, toc } */
+  slots: Record<string, SlotState>
+  /** 通用：更新一个 slot 的任意字段 */
+  setSlot: (id: string, patch: Partial<SlotState>) => void
+  // 保留以下设置为兼容别名（内部委托到 slots）：
   toggleGenPanel: () => void
   toggleAI: () => void
   setGenPanelOpen: (v: boolean) => void
   setAiVisible: (v: boolean) => void
+  activeView: 'polished' | 'summary' | 'transcript' | 'skeleton' | 'report' | 'data_preview' | 'original' | 'ocr' | 'extract' | 'table' | 'digitize' | 'understand' | 'mindmap' | 'fact_check'
   setActiveView: (v: string) => void
-  setPanelWidth: (panel: string, w: number) => void
-  setPanelCollapsed: (panel: string, v: boolean) => void
 
   // 后端就绪（Tauri 冷启动保护）
   backendReady: boolean
@@ -354,23 +359,31 @@ export const useStore = create<Store>((set) => ({
   setAiFloatingSize: (size) => set({ aiFloatingSize: size }),
 
   // ═══════════════════════════════════════════
-  // UI 布局
+  // UI 布局（插槽系统 — Phase 2）
   // ═══════════════════════════════════════════
-  genPanelOpen: true, aiVisible: false, activeView: 'polished',
-  panelWidths: { genPanel: 260, docLib: 260, aiPanel: 340, toc: 160 },
-  panelsCollapsed: { genPanel: false, docLib: false, aiPanel: false, toc: false },
-  toggleGenPanel: () => set(s => ({ genPanelOpen: !s.genPanelOpen })),
-  toggleAI: () => set(s => ({ aiVisible: !s.aiVisible })),
-  setGenPanelOpen: (v) => set({ genPanelOpen: v }),
-  setAiVisible: (v) => set({ aiVisible: v }),
+  activeView: 'polished',
+  slots: {
+    genPanel: { width: 260, collapsed: false, visible: true },
+    docLib:   { width: 260, collapsed: false, visible: true },
+    aiPanel:  { width: 340, collapsed: false, visible: false },
+    toc:      { width: 160, collapsed: false, visible: true },
+  },
+  setSlot: (id, patch) => set(s => {
+    const prev = s.slots[id]
+    if (!prev) return s
+    const next = { ...prev, ...patch }
+    // 自动折叠：宽度 < 80 时标记为折叠
+    if (patch.width !== undefined && patch.width < 80) {
+      next.collapsed = true
+    }
+    return { slots: { ...s.slots, [id]: next } }
+  }),
+  // 兼容别名（保持旧 API 可用，避免大面积改 call site）
+  toggleGenPanel: () => set(s => ({ slots: { ...s.slots, genPanel: { ...s.slots.genPanel, visible: !s.slots.genPanel.visible } } })),
+  toggleAI: () => set(s => ({ slots: { ...s.slots, aiPanel: { ...s.slots.aiPanel, visible: !s.slots.aiPanel.visible } } })),
+  setGenPanelOpen: (v) => set(s => ({ slots: { ...s.slots, genPanel: { ...s.slots.genPanel, visible: v } } })),
+  setAiVisible: (v) => set(s => ({ slots: { ...s.slots, aiPanel: { ...s.slots.aiPanel, visible: v } } })),
   setActiveView: (v) => { try { localStorage.setItem('mbw_lastView', v) } catch { /* quota exceeded */ } set({ activeView: v as Store['activeView'] }) },
-  setPanelWidth: (panel, w) => set(s => ({
-    panelWidths: { ...s.panelWidths, [panel]: w },
-    panelsCollapsed: { ...s.panelsCollapsed, [panel]: w < 80 },
-  })),
-  setPanelCollapsed: (panel, v) => set(s => ({
-    panelsCollapsed: { ...s.panelsCollapsed, [panel]: v },
-  })),
 
   // ═══════════════════════════════════════════
   // 内容阅读宽度

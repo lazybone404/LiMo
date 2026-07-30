@@ -611,7 +611,7 @@ export function GenPanel() {
               <XCircle size={12} />取消
             </button>
           )}
-          <button onClick={() => useStore.getState().setPanelCollapsed('genPanel', true)}
+          <button onClick={() => useStore.getState().setSlot('genPanel', { collapsed: true })}
             className="w-6 h-6 rounded-md hover:bg-surface-hover flex items-center justify-center"
             title="收起面板"
           ><PanelLeftClose size={14} className="text-muted" /></button>

@@ -4,7 +4,7 @@ import { ChatCore } from './ChatCore'
 import { PanelLeftClose, ExternalLink } from 'lucide-react'
 
 export function AIPanel() {
-  const width = useStore(s => s.panelWidths.aiPanel)
+  const width = useStore(s => s.slots.aiPanel.width)
   const setAiFloating = useStore(s => s.setAiFloating)
   const setConversations = useStore(s => s.setConversations)
   const setCurrentConversationId = useStore(s => s.setCurrentConversationId)
@@ -27,7 +27,7 @@ export function AIPanel() {
         onListCollapsedChange={setListCollapsed}
         titleRight={
           <>
-            <button onClick={() => useStore.getState().setPanelCollapsed('aiPanel', true)} className="w-6 h-6 rounded-md hover:bg-surface-hover flex items-center justify-center" title="收起面板"><PanelLeftClose size={14} className="text-muted" /></button>
+            <button onClick={() => useStore.getState().setSlot('aiPanel', { collapsed: true })} className="w-6 h-6 rounded-md hover:bg-surface-hover flex items-center justify-center" title="收起面板"><PanelLeftClose size={14} className="text-muted" /></button>
             <button onClick={() => setAiFloating(true)} className="w-6 h-6 rounded-md hover:bg-surface-hover flex items-center justify-center" title="弹出浮窗"><ExternalLink size={14} className="text-muted" /></button>
           </>
         }

@@ -117,10 +117,9 @@ export function PreviewArea() {
   const docs = useStore(s => s.docs)
   const imageResults = useStore(s => s.imageResults)
   const loadImageResults = useStore(s => s.loadImageResults)
-  const tocWidth = useStore(s => s.panelWidths.toc)
-  const tocCollapsed = useStore(s => s.panelsCollapsed.toc)
-  const setPanelWidth = useStore(s => s.setPanelWidth)
-  const setPanelCollapsed = useStore(s => s.setPanelCollapsed)
+  const tocWidth = useStore(s => s.slots.toc.width)
+  const tocCollapsed = useStore(s => s.slots.toc.collapsed)
+  const setSlot = useStore(s => s.setSlot)
 
   const currentDoc = docs.find(d => d.id === currentDocId)
   const sourceUrl = currentDoc?.sourceUrl
@@ -129,9 +128,9 @@ export function PreviewArea() {
 
   // TOC 拖拽回调
   const resizeToc = useCallback((dx: number) => {
-    const w = useStore.getState().panelWidths.toc
-    setPanelWidth('toc', Math.max(60, w + dx))
-  }, [setPanelWidth])
+    const w = useStore.getState().slots.toc.width
+    setSlot('toc', { width: Math.max(60, w + dx) })
+  }, [setSlot])
 
   // 加载指定版本的 markdown
   const [versionLoading, setVersionLoading] = useState(false)
@@ -736,7 +735,7 @@ export function PreviewArea() {
         {activeTabDef?.showTOC && (
           tocCollapsed ? (
             <div
-              onClick={() => setPanelCollapsed('toc', false)}
+              onClick={() => setSlot('toc', { collapsed: false })}
               className="flex flex-col items-center justify-center shrink-0 bg-elevated hover:bg-surface-hover transition-colors cursor-pointer border-r border-border-light"
               style={{ width: 28 }}
               title="展开目录"
