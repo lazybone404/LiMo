@@ -86,17 +86,30 @@ data-font="system|kaiti|wenkai|…"← 阅读字体（5种，4系统+1web）
 | `backend/app/routers/capabilities.py` | capabilities API 返回 |
 | `docs/STATUS.md` | 文档版本号 |
 
+**遵循 SemVer 语义化版本**：`MAJOR.MINOR.PATCH`
+
 ```bash
 # 查看当前版本
 cat VERSION
 
-# 升级版本号并同步所有位置
+# 自动升级（SemVer）
+python scripts/sync-version.py patch     # 0.1.0 → 0.1.1（Bug 修复）
+python scripts/sync-version.py minor     # 0.1.0 → 0.2.0（新功能）
+python scripts/sync-version.py major     # 0.1.0 → 1.0.0（破坏性变更）
+
+# 手动指定版本号
 python scripts/sync-version.py 0.2.0
+
+# 升级 + 打 Git tag
+python scripts/sync-version.py patch --tag
+
+# 升级 + tag + 推送
+python scripts/sync-version.py minor --tag --push
 
 # CI 检查一致性（不一致时 exit 1）
 python scripts/sync-version.py --check
 
-# 打包前强制同步（防止忘记）
+# 打包前强制同步
 python scripts/sync-version.py && bash scripts/build.sh
 ```
 

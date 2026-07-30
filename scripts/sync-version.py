@@ -118,17 +118,55 @@ def check_sync(version: str) -> bool:
     return True
 
 
+def bump_version(version: str, level: str) -> str:
+    """升级语义化版本号。level: major | minor | patch"""
+    parts = version.split(".")
+    if len(parts) != 3:
+        raise ValueError(f"Invalid semver: {version}")
+    major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
+
+    if level == "major":
+        return f"{major + 1}.0.0"
+    elif level == "minor":
+        return f"{major}.{minor + 1}.0"
+    elif level == "patch":
+        return f"{major}.{minor}.{patch + 1}"
+    else:
+        raise ValueError(f"Unknown bump level: {level} (use major/minor/patch)")
+
+
+def git_tag(version: str, push: bool = False) -> None:
+    """创建并推送 Git tag。"""
+    import subprocess
+    tag = f"v{version}"
+    subprocess.run(["git", "tag", "-a", tag, "-m", f"Release {tag}"], check=True)
+    print(f"Git tag: {tag}")
+    if push:
+        subprocess.run(["git", "push", "origin", tag], check=True)
+        print(f"Pushed {tag} to origin")
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--check":
         ok = check_sync(read_version())
         sys.exit(0 if ok else 1)
 
-    if len(sys.argv) > 1:
-        new_version = sys.argv[1]
+    current = read_version()
+    arg = sys.argv[1] if len(sys.argv) > 1 else ""
+
+    if arg in ("patch", "minor", "major"):
+        # 语义化版本升级
+        new_version = bump_version(current, arg)
+        print(f"{current} → {new_version}  ({arg})")
         write_version(new_version)
-        print(f"VERSION → {new_version}")
+    elif arg and arg != current:
+        # 手动指定版本号
+        new_version = arg
+        write_version(new_version)
+        print(f"VERSION: {current} → {new_version}")
     else:
-        new_version = read_version()
+        # 仅同步（不修改版本号）
+        new_version = current
 
     changed = sync_all(new_version)
     if changed:
@@ -137,6 +175,14 @@ def main():
             print(f"  OK {f}")
     else:
         print("All files up to date.")
+
+    # 版本变更时打 tag
+    if new_version != current:
+        do_tag = "--tag" in sys.argv
+        if do_tag:
+            git_tag(new_version, push="--push" in sys.argv)
+        else:
+            print(f"Hint: add --tag to create git tag v{new_version}")
 
 
 if __name__ == "__main__":
