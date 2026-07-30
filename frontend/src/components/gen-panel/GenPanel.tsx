@@ -343,7 +343,7 @@ export function GenPanel() {
           addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || inputType, sourceFileName: doc.sourceFileName || '', sourceUrl: doc.sourceUrl || '', coverUrl: doc.coverUrl || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() })
           selectDoc(doc.id)
           if (inputType !== 'image') setActiveView('transcript')
-          addToast('导入完成')
+          addToast(inputType === 'image' ? '导入完成' : '导入完成，点击左侧「生成」按钮生成笔记')
         } else {
           // M10: 已存在但非重复标记 → 直接选中
           selectDoc(doc.id)

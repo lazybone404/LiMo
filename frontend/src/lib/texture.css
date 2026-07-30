@@ -27,12 +27,41 @@
   position: relative;
 }
 
-/* ── 暗模式：清除所有纹理 ────────────────────────────── */
+/* ── 暗模式：极淡纹理（ 2-3% 透明度） ────────────────── */
 
-[data-theme="dark"] .preview-area,
+[data-theme="dark"] .preview-area {
+  position: relative;
+}
+[data-theme="dark"] .preview-area::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--tk-surface);
+  opacity: 0.97;
+  pointer-events: none;
+  z-index: 0;
+}
+[data-theme="dark"] .preview-area > * {
+  position: relative;
+  z-index: 1;
+}
+
 [data-theme="dark"] .tex-card[data-texture] {
-  background-image: none !important;
-  background-color: transparent !important;
+  position: relative;
+}
+[data-theme="dark"] .tex-card[data-texture]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--tk-elevated);
+  opacity: 0.97;
+  pointer-events: none;
+  z-index: 0;
+  border-radius: inherit;
+}
+[data-theme="dark"] .tex-card[data-texture] > * {
+  position: relative;
+  z-index: 1;
 }
 
 /* ── Plain — 无纹理（默认）─────────────────────────── */

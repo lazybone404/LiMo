@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../../store'
-import { getTranscript, getMarkdown, fetchProcessResults, streamFactCheck, getConfig, apiUrl, ApiErrorException } from '../../api/client'
+import { getTranscript, getMarkdown, fetchProcessResults, streamFactCheck, getConfig, apiUrl, ApiErrorException, ingestURL, ingestText, ingestFile } from '../../api/client'
 import { loadGenPrefs } from '../gen-panel/genPrefs'
 import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle, Copy, Check, FileText, Columns, AlignCenter, Maximize2 } from 'lucide-react'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle, Copy, Check, FileText, Columns, AlignCenter, Maximize2, Upload } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -101,6 +101,47 @@ export function PreviewArea() {
   const factChecking = useStore(s => s.factChecking)
   const setCurrentContent = useStore(s => s.setCurrentContent)
   const setCurrentPolishedContent = useStore(s => s.setCurrentPolishedContent)
+
+  // ── 拖放导入状态 ──
+  const [dragOver, setDragOver] = useState(false)
+  const [importUrl, setImportUrl] = useState('')
+  const [importing, setImporting] = useState(false)
+  const addDoc = useStore(s => s.addDoc)
+  const selectDoc = useStore(s => s.selectDoc)
+  const addToast = useStore(s => s.addToast)
+
+  const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); setDragOver(true) }, [])
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false)
+  }, [])
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); setDragOver(false)
+    const f = e.dataTransfer.files?.[0]
+    if (!f) return
+    setImporting(true)
+    const abort = new AbortController()
+    ingestFile(f,
+      () => {},
+      (doc) => { addDoc(doc); selectDoc(doc.id); setImporting(false); addToast('导入完成') },
+      (err) => { setImporting(false); addToast(`导入失败: ${err}`, 'error') },
+      abort.signal,
+    )
+  }, [addDoc, selectDoc, addToast])
+
+  const handleUrlImport = useCallback(() => {
+    const url = importUrl.trim()
+    if (!url || importing) return
+    setImporting(true)
+    const abort = new AbortController()
+    const fn = url.startsWith('http://') || url.startsWith('https://')
+      ? ingestURL : ingestText
+    fn(url,
+      () => {},
+      (doc) => { addDoc(doc); selectDoc(doc.id); setImportUrl(''); setImporting(false); addToast('导入完成') },
+      (err) => { setImporting(false); addToast(`导入失败: ${err}`, 'error') },
+      abort.signal,
+    )
+  }, [importUrl, importing, addDoc, selectDoc, addToast])
   const setCurrentRawText = useStore(s => s.setCurrentRawText)
   const setMarkdownMeta = useStore(s => s.setMarkdownMeta)
   const setMarkdownVersions = useStore(s => s.setMarkdownVersions)
@@ -204,11 +245,23 @@ export function PreviewArea() {
       getMarkdown(capturedId, 'polished'),
     ]).then(([notes, polished]) => {
       if (!isSame()) return
-      const hasContent = notes || polished?.content
-      const st = useStore.getState()
-      if (!hasContent && ['document', 'pdf', 'docx', 'pptx', 'xlsx', 'epub', 'video'].includes(st.docs.find(d => d.id === capturedId)?.sourceType || '')) {
-        const sourceType = st.docs.find(d => d.id === capturedId)?.sourceType
-        setActiveView(sourceType === 'epub' ? 'skeleton' : 'transcript')
+      const hasContent = !!(notes || polished?.content)
+      const st = useStore.getState().docs.find(d => d.id === capturedId)?.sourceType || ''
+      // 已有生成内容时，按文档类型选最佳默认 Tab
+      if (hasContent) {
+        if (['pdf', 'docx', 'pptx', 'document'].includes(st)) {
+          setActiveView('polished')
+        } else if (st === 'video') {
+          setActiveView('transcript')
+        } else if (st === 'image') {
+          setActiveView('original')
+        } else if (st === 'xlsx') {
+          setActiveView('data_preview')
+        } else {
+          setActiveView('summary')
+        }
+      } else if (['document', 'pdf', 'docx', 'pptx', 'xlsx', 'epub', 'video'].includes(st)) {
+        setActiveView(st === 'epub' ? 'skeleton' : 'transcript')
       }
     }).catch(err => { handleLoadError('加载文档内容失败', err) })
     // 加载已持久化的处理结果
@@ -392,7 +445,43 @@ export function PreviewArea() {
           <Package size={50} className="text-disabled mb-6 mx-auto opacity-20" />
           <h1 className="text-[30px] font-semibold mb-1">欢迎使用 LiMo</h1>
           <p className="text-[13px] text-disabled mb-8">把任何来源变成可读、可搜索的文字</p>
-          <div className="markdown-body max-w-[480px] mx-auto text-left" data-texture-reset="true">
+
+          {/* 拖放区 */}
+          <div
+            className={`max-w-[520px] mx-auto px-14 py-12 border-2 border-dashed rounded-2xl transition-all cursor-pointer ${
+              dragOver ? 'border-accent bg-accent/5 scale-[1.02]' : 'border-border-default'
+            } ${importing ? 'opacity-50 pointer-events-none' : ''}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {importing
+              ? <><Loader2 size={32} className="text-accent mx-auto mb-3 animate-spin" /><p className="text-[14px] text-dimmed">导入中…</p></>
+              : <><Upload size={36} className="text-disabled mx-auto mb-3" /><p className="text-[15px] text-dimmed font-medium">拖拽文件到这里</p><p className="text-[12px] text-disabled mt-1.5">支持网页链接、B站/YouTube 视频、PDF/Office 文档、图片</p></>
+            }
+          </div>
+
+          {/* 链接/文本输入 */}
+          <div className="max-w-[520px] mx-auto mt-4 flex gap-2">
+            <input
+              type="text"
+              value={importUrl}
+              onChange={e => setImportUrl(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleUrlImport() }}
+              placeholder="或粘贴链接…"
+              disabled={importing}
+              className="flex-1 h-10 px-4 rounded-xl bg-surface border border-border-light text-[14px] text-foreground placeholder:text-disabled outline-none focus:border-accent transition-colors disabled:opacity-50"
+            />
+            <button
+              onClick={handleUrlImport}
+              disabled={!importUrl.trim() || importing}
+              className="h-10 px-5 rounded-xl bg-accent text-white text-[14px] font-medium hover:bg-accent-hover disabled:opacity-30 transition-colors shrink-0"
+            >
+              {importing ? <Loader2 size={16} className="animate-spin" /> : '导入'}
+            </button>
+          </div>
+
+          <div className="markdown-body max-w-[480px] mx-auto text-left mt-10" data-texture-reset="true">
             <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
               {`## 快速开始\n\n1. **导入内容** — 粘贴网页链接、B站/YouTube 视频链接，或拖入 PDF/Office 文档\n2. **自动转录** — 系统会自动提取正文、转写音频、识别画面\n3. **生成 Markdown** — 在左侧生成面板选择风格，一键生成\n\n---\n\n> 把任何来源变成可读、可搜索的文字`}
             </ReactMarkdown>

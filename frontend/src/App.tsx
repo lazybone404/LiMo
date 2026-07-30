@@ -9,7 +9,7 @@ import { PreviewArea } from './components/preview/PreviewArea'
 import { AIPanel } from './components/ai-chat/AIPanel'
 import { FloatingAI } from './components/ai-chat/FloatingAI'
 import { SettingsPage } from './components/settings/SettingsPage'
-import { SetupWizard } from './components/ui/SetupWizard'
+import { OnboardingWizard } from './components/ui/OnboardingWizard'
 import { ResizeHandle } from './components/ui/ResizeHandle'
 import { PanelStrip } from './components/ui/PanelStrip'
 import { ThemeToggle } from './components/ui/ThemeToggle'
@@ -162,7 +162,7 @@ export default function App() {
     }} tabIndex={-1}>
       {/* 首次启动向导 */}
       {showSetup && (
-        <SetupWizard onDone={() => {
+        <OnboardingWizard onDone={() => {
           try { localStorage.setItem('limo_setup_done', '1') } catch {}
           setShowSetup(false)
         }} />
