@@ -8,6 +8,20 @@ from typing import Optional
 import asyncio
 import json
 import os
+from contextlib import asynccontextmanager
+
+# ── 活跃生成任务追踪（用于 get_markdown 返回 has_active_task）──
+_active_generations: set[str] = set()
+
+
+@asynccontextmanager
+async def _track_generation(transcript_id: str):
+    """追踪活跃的生成任务，get_markdown 据此返回 has_active_task"""
+    _active_generations.add(transcript_id)
+    try:
+        yield
+    finally:
+        _active_generations.discard(transcript_id)
 import re
 import uuid
 
@@ -190,6 +204,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         log.info("Generate start", tx_id=transcript_id, mode=mode_list,
                  style=req.style, source_type=source_type,
                  model=llm_config.get("provider", "?"))
+        _active_generations.add(transcript_id)
         try:
             preparer = ContentPreparer(str(store.root), llm_config)
             prompt_builder = PromptBuilder(target_language=config.get("target_language", "zh-CN"))
@@ -288,6 +303,8 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         except Exception as e:
             log.exception("Generate failed", tx_id=transcript_id, error=str(e)[:200])
             raise GenerateError.api_error(detail=str(e)[:200]) from e
+        finally:
+            _active_generations.discard(transcript_id)
 
 
 # ── 流式 SSE 端点 ──
@@ -450,6 +467,7 @@ async def generate_stream(transcript_id: str, request: Request,
 
     async def merged_stream():
         await guard.semaphore.acquire()
+        _active_generations.add(transcript_id)
         # 启动断连监听（后台轮询，客户端断开时 set cancel_event）
         _disconnect_task = asyncio.create_task(
             _watch_disconnect(request, cancel_event))
@@ -681,6 +699,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 await _disconnect_task
             except (asyncio.CancelledError, Exception):
                 pass
+            _active_generations.discard(transcript_id)
             guard.semaphore.release()
 
     return StreamingResponse(
@@ -717,6 +736,9 @@ async def get_markdown(transcript_id: str, mode: str = "", version: int = 0, req
     store = request.app.state.store
     mds = store.get_markdowns_by_transcript(transcript_id)
     if not mds:
+        # 如果正在生成中，返回 has_active_task 让前端轮询
+        if transcript_id in _active_generations:
+            return {"has_active_task": True, "content": None, "versions": []}
         raise AppError("MD_NOT_FOUND", "尚未生成，请先点击生成按钮", status_code=404)
 
     # 按模式精确筛选（notes / polished / fact_check 各自独立，不混在一起）

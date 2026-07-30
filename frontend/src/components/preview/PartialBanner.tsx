@@ -19,7 +19,7 @@ export function PartialBanner({ versions, isStreaming }: { versions: { version: 
         <p className="text-[11px] text-dimmed mt-0.5">
           {isStreaming
             ? '实时显示生成内容，完成后自动保存'
-            : '可在左侧生成面板点击「继续」基于残缺内容续写'}
+            : '此版本生成被中断，内容可能不完整'}
         </p>
       </div>
     </div>

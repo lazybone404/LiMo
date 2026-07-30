@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../../store'
-import { getTranscript, getMarkdown, fetchProcessResults, streamFactCheck, getConfig, apiUrl, ApiErrorException, ingestURL, ingestText, ingestFile } from '../../api/client'
+import { getTranscript, getMarkdown, fetchProcessResults, streamFactCheck, getConfig, apiUrl, ApiErrorException } from '../../api/client'
 import { loadGenPrefs } from '../gen-panel/genPrefs'
 import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle, Copy, Check, FileText, Columns, AlignCenter, Maximize2, Upload } from 'lucide-react'
+import { getStreamBuffer } from '../../store/streamBuffers'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle, Copy, Check, FileText, Columns, AlignCenter, Maximize2 } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -70,8 +71,12 @@ export function PreviewArea() {
   const currentRawText = useStore(s => s.currentRawText)
   const markdownMeta = useStore(s => s.markdownMeta)
   const markdownVersions = useStore(s => s.markdownVersions)
-  const streamingContent = useStore(s => s.streamingContent)
-  const isStreaming = useStore(s => s.isStreaming)
+  // 订阅 streamTick 以在 flush 时重读 getStreamBuffer（Module Map 非响应式）
+  useStore(s => s.streamTick)
+  const isStreaming = useStore(s => {
+    if (!s.currentDocId) return false
+    return !!s.processingTasks[s.currentDocId + '__generate']
+  })
   const currentFactCheckContent = useStore(s => s.currentFactCheckContent)
   const factCheckProgress = useStore(s => s.factCheckProgress)
   const contentWidth = useStore(s => s.contentWidth)
@@ -102,46 +107,6 @@ export function PreviewArea() {
   const setCurrentContent = useStore(s => s.setCurrentContent)
   const setCurrentPolishedContent = useStore(s => s.setCurrentPolishedContent)
 
-  // ── 拖放导入状态 ──
-  const [dragOver, setDragOver] = useState(false)
-  const [importUrl, setImportUrl] = useState('')
-  const [importing, setImporting] = useState(false)
-  const addDoc = useStore(s => s.addDoc)
-  const selectDoc = useStore(s => s.selectDoc)
-  const addToast = useStore(s => s.addToast)
-
-  const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); setDragOver(true) }, [])
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false)
-  }, [])
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault(); setDragOver(false)
-    const f = e.dataTransfer.files?.[0]
-    if (!f) return
-    setImporting(true)
-    const abort = new AbortController()
-    ingestFile(f,
-      () => {},
-      (doc) => { addDoc(doc); selectDoc(doc.id); setImporting(false); addToast('导入完成') },
-      (err) => { setImporting(false); addToast(`导入失败: ${err}`, 'error') },
-      abort.signal,
-    )
-  }, [addDoc, selectDoc, addToast])
-
-  const handleUrlImport = useCallback(() => {
-    const url = importUrl.trim()
-    if (!url || importing) return
-    setImporting(true)
-    const abort = new AbortController()
-    const fn = url.startsWith('http://') || url.startsWith('https://')
-      ? ingestURL : ingestText
-    fn(url,
-      () => {},
-      (doc) => { addDoc(doc); selectDoc(doc.id); setImportUrl(''); setImporting(false); addToast('导入完成') },
-      (err) => { setImporting(false); addToast(`导入失败: ${err}`, 'error') },
-      abort.signal,
-    )
-  }, [importUrl, importing, addDoc, selectDoc, addToast])
   const setCurrentRawText = useStore(s => s.setCurrentRawText)
   const setMarkdownMeta = useStore(s => s.setMarkdownMeta)
   const setMarkdownVersions = useStore(s => s.setMarkdownVersions)
@@ -287,10 +252,14 @@ export function PreviewArea() {
   }, [currentDocId, sourceType])
 
   // 当前显示的内容
-  // 流式生成中 → 优先显示流式内容；否则显示已保存内容
-  const displayContent = isStreaming && streamingContent != null
-    ? streamingContent
-    : activeView === 'polished' ? currentPolishedContent : currentContent
+  // 流式生成中 → 优先读缓冲区（Map 由 streamTick 驱动重渲染）；否则显示已保存内容
+  const _streamBuf = isStreaming && currentDocId
+    ? (activeView === 'polished'
+      ? getStreamBuffer(currentDocId + '__generate_polished')
+      : getStreamBuffer(currentDocId + '__generate_notes'))
+    : null
+  const displayContent = _streamBuf
+    || (activeView === 'polished' ? currentPolishedContent : currentContent)
   const processingTasks = useStore(s => s.processingTasks)
   // key 格式为 `${docId}__${kind}`，收集当前文档所有活跃任务
   const activeTasks = currentDocId
@@ -444,42 +413,7 @@ export function PreviewArea() {
         <div className="mx-auto px-10 py-16 text-center">
           <Package size={50} className="text-disabled mb-6 mx-auto opacity-20" />
           <h1 className="text-[30px] font-semibold mb-1">欢迎使用 LiMo</h1>
-          <p className="text-[13px] text-disabled mb-8">把任何来源变成可读、可搜索的文字</p>
-
-          {/* 拖放区 */}
-          <div
-            className={`max-w-[520px] mx-auto px-14 py-12 border-2 border-dashed rounded-2xl transition-all cursor-pointer ${
-              dragOver ? 'border-accent bg-accent/5 scale-[1.02]' : 'border-border-default'
-            } ${importing ? 'opacity-50 pointer-events-none' : ''}`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-          >
-            {importing
-              ? <><Loader2 size={32} className="text-accent mx-auto mb-3 animate-spin" /><p className="text-[14px] text-dimmed">导入中…</p></>
-              : <><Upload size={36} className="text-disabled mx-auto mb-3" /><p className="text-[15px] text-dimmed font-medium">拖拽文件到这里</p><p className="text-[12px] text-disabled mt-1.5">支持网页链接、B站/YouTube 视频、PDF/Office 文档、图片</p></>
-            }
-          </div>
-
-          {/* 链接/文本输入 */}
-          <div className="max-w-[520px] mx-auto mt-4 flex gap-2">
-            <input
-              type="text"
-              value={importUrl}
-              onChange={e => setImportUrl(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleUrlImport() }}
-              placeholder="或粘贴链接…"
-              disabled={importing}
-              className="flex-1 h-10 px-4 rounded-xl bg-surface border border-border-light text-[14px] text-foreground placeholder:text-disabled outline-none focus:border-accent transition-colors disabled:opacity-50"
-            />
-            <button
-              onClick={handleUrlImport}
-              disabled={!importUrl.trim() || importing}
-              className="h-10 px-5 rounded-xl bg-accent text-white text-[14px] font-medium hover:bg-accent-hover disabled:opacity-30 transition-colors shrink-0"
-            >
-              {importing ? <Loader2 size={16} className="animate-spin" /> : '导入'}
-            </button>
-          </div>
+          <p className="text-[13px] text-disabled mb-8">在左侧面板导入内容，开始你的知识管理</p>
 
           <div className="markdown-body max-w-[480px] mx-auto text-left mt-10" data-texture-reset="true">
             <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>

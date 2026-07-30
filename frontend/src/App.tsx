@@ -149,7 +149,7 @@ export default function App() {
           case 'g':
             e.preventDefault()
             // 操作进行中时拦截，防止面板卸载导致任务变僵尸
-            if (useStore.getState().generating || Object.keys(useStore.getState().processingTasks).length > 0) {
+            if (Object.keys(useStore.getState().processingTasks).length > 0) {
               useStore.getState().addToast('操作进行中，请完成或取消后再切换面板', 'info')
             } else {
               toggleGenPanel()

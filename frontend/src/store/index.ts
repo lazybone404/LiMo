@@ -74,11 +74,9 @@ interface Store {
   setFactCheckMeta: (m: Store['factCheckMeta']) => void
   setFactCheckProgress: (p: Store['factCheckProgress']) => void
 
-  // ── 流式生成 ──
-  streamingContent: string | null
-  isStreaming: boolean
-  setStreamingContent: (c: string | null) => void
-  setIsStreaming: (v: boolean) => void
+  // ── 流式生成（缓冲区见 store/streamBuffers.ts）──
+  streamTick: number
+  bumpStreamTick: () => void
 
   // ── 导入进度 ──
   importProgress: ProgressEvent | null
@@ -96,6 +94,7 @@ interface Store {
   /** taskKey = `${docId}__${task.kind}` */
   setProcessing: (taskKey: string, task: { kind: string; mode?: string; title?: string } | null) => void
   clearDocTasks: (docId: string) => void
+  cancelOneTask: (taskKey: string) => void
 
   // ── 任务面板 ──
   taskPanelOpen: boolean
@@ -221,11 +220,10 @@ export const useStore = create<Store>((set) => ({
   setFactCheckProgress: (p) => set({ factCheckProgress: p }),
 
   // ═══════════════════════════════════════════
-  // 流式生成
+  // 流式生成（缓冲区见 store/streamBuffers.ts）
   // ═══════════════════════════════════════════
-  streamingContent: null, isStreaming: false,
-  setStreamingContent: (c) => set({ streamingContent: c }),
-  setIsStreaming: (v) => set({ isStreaming: v }),
+  streamTick: 0,
+  bumpStreamTick: () => set(s => ({ streamTick: s.streamTick + 1 })),
 
   // ═══════════════════════════════════════════
   // 导入进度
@@ -285,6 +283,12 @@ export const useStore = create<Store>((set) => ({
     Object.keys(tasks).forEach(k => {
       if (k === docId || k.startsWith(prefix)) delete tasks[k]
     })
+    return { processingTasks: tasks }
+  }),
+  /** 取消单个任务（精确 key 匹配，用于 TaskPanel 逐任务取消） */
+  cancelOneTask: (taskKey) => set(s => {
+    const tasks = { ...s.processingTasks }
+    delete tasks[taskKey]
     return { processingTasks: tasks }
   }),
 

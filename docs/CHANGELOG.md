@@ -6,6 +6,52 @@
 
 ---
 
+## 2026-07-31 — 多任务并发重构
+
+### 做了什么
+
+将生成/转录/图片处理/导入 4 种异步操作从全局单槽改为按文档+任务粒度隔离：
+
+**统一状态来源** — 所有操作状态从 `processingTasks`（per-doc per-kind）推导，移除 7 个全局单槽：`generating`、`isStreaming`、`streamingContent`、`retranscribing`（useState）、`imageProcessing`（useState）、`importing`（useState）+ 3 个 GenPanel ref 缓冲区。
+
+**双层流式缓冲** — 新建 `store/streamBuffers.ts`：模块级 Map（高速写入，无 React re-render）+ Store `streamTick`（120ms 节流驱动 PreviewArea 重读）。替代之前 ref 缓冲区的方案。
+
+**操作互斥 per-doc** — `lockOtherOps` 从全局改为只看当前文档。Doc A 转录中不再阻止 Doc B 生成。
+
+**并发上限** — 生成最多 2 个同时、导入最多 3 个同时，超限 Toast 提示。确保 LLM API 限流 + 文件 I/O 可控。
+
+**逐任务取消** — 新增 `cancelOneTask` store action。TaskPanel 取消 Doc A 的生成不影响 Doc B。
+
+**移除续写功能** — LLM 续写没有上文上下文，容易重复/风格断裂。模型输出长度已足够（4K-128K）。保留取消时 partial 保存，PartialBanner 简化为纯信息展示。
+
+**切换文档不丢流式内容** — 切回正在生成的文档时显示已累积 buffer + 继续实时追加，而非空白加载。
+
+**后端 `has_active_task`** — `GET /api/markdown/{id}` 在文档有活跃生成任务时返回 `has_active_task: true`，前端据此 3s 轮询直到完成（刷新恢复）。
+
+**移除 PreviewArea 欢迎页导入栏** — 拖放区 + URL 输入框与 GenPanel ImportSection 功能重复，违反"唯一导入入口"原则。空状态回归简洁引导。
+
+### 为什么
+
+之前每个异步操作各有一套管状态的方法（store 字段、组件 useState、闭包 ref），代码里散布着 `setGenerating(true/false)`、`setRetranscribing(true/false)` 等调用。切换文档时状态管理完全靠 `isSameDoc(capturedId)` 检查，稍有不慎就串数据。扩展新产物类型需要加新变量。
+
+现在所有操作状态统一从 `processingTasks` 推导——它是一个 key 为 `${docId}__${kind}` 的字典，天然支持多文档多任务。新增操作类型只需 `setProcessing(key, {kind})` 一行。
+
+### 影响范围
+
+| 文件 | 变更 |
+|------|------|
+| `store/index.ts` | +`streamTick`/`bumpStreamTick`/`cancelOneTask`，-`streamingContent`/`isStreaming`/setters |
+| `store/streamBuffers.ts` | **新建** — 模块级 Map + 节流 flush |
+| `GenPanel.tsx` | -4 个 useState，-3 个 ref，+processingTasks 推导，+并发限制 |
+| `PreviewArea.tsx` | displayContent 改用 streamBuffer + tick，移除欢迎页拖放区 |
+| `PartialBanner.tsx` | 移除续写按钮 |
+| `App.tsx` | `generating` → `processingTasks` |
+| `generate.py` | +`_active_generations` 追踪，`get_markdown` 返回 `has_active_task` |
+| `store.test.ts` | +多任务并发/取消/tick 测试 |
+| `streamBuffers.test.ts` | **新建** — 21 个缓冲区单元测试 |
+
+---
+
 ## 2026-07-31 — 6 项体验优化
 
 ### 做了什么

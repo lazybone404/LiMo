@@ -3,6 +3,7 @@ import { useStore } from '../../store'
 import { streamGenerate, getMarkdown, listEnabledModels, listProviders, ingestURL, ingestText, ingestFile, processImage, saveEngineBindings, retranscribe, getTranscript, getErrorMessage, type EnabledModel, type Provider } from '../../api/client'
 import { registerAbort } from '../../api/taskManager'
 import { cancelTask } from '../../api/taskManager'
+import { getStreamBuffer, appendStreamBuffer, setStreamBuffer, deleteStreamBuffer, scheduleFlush, flushImmediate } from '../../store/streamBuffers'
 import { PanelLeftClose, XCircle, Plus } from 'lucide-react'
 import { loadGenPrefs, saveGenPrefs } from './genPrefs'
 import { EngineSelect, type EngineOption } from './EngineSelect'
@@ -17,17 +18,13 @@ export function GenPanel() {
   const caps = useStore(s => s.capabilities)
   const currentDocId = useStore(s => s.currentDocId)
   const processingTasks = useStore(s => s.processingTasks)
-  const generating = useStore(s => s.generating)
-  const setGenerating = useStore(s => s.setGenerating)
   const setCurrentContent = useStore(s => s.setCurrentContent)
   const setCurrentPolishedContent = useStore(s => s.setCurrentPolishedContent)
   const setMarkdownMeta = useStore(s => s.setMarkdownMeta)
   const markdownVersions = useStore(s => s.markdownVersions)
   const setMarkdownVersions = useStore(s => s.setMarkdownVersions)
-  const currentContent = useStore(s => s.currentContent)
-  const currentPolishedContent = useStore(s => s.currentPolishedContent)
-  const setIsStreaming = useStore(s => s.setIsStreaming)
-  const setStreamingContent = useStore(s => s.setStreamingContent)
+  const bumpStreamTick = useStore(s => s.bumpStreamTick)
+  const clearDocTasks = useStore(s => s.clearDocTasks)
   const imageResults = useStore(s => s.imageResults)
   const setImageResult = useStore(s => s.setImageResult)
   const setActiveView = useStore(s => s.setActiveView)
@@ -74,17 +71,29 @@ export function GenPanel() {
     (['extract', 'table', 'digitize', 'understand'].includes(saved.imageMode) ? saved.imageMode : null) || 'extract'
   )
   const [error, setError] = useState('')
-  const [imageProcessing, setImageProcessing] = useState(false)
-  const [retranscribing, setRetranscribing] = useState(false)
+
+  // ── 从 processingTasks 推导当前文档的活跃任务（per-doc，支持多任务并发）──
+  const docTasks = useMemo(() => {
+    if (!currentDocId) return []
+    return Object.entries(processingTasks)
+      .filter(([k]) => k.startsWith(currentDocId + '__'))
+      .map(([, v]) => v)
+  }, [currentDocId, processingTasks])
+  const isGenerating = docTasks.some(t => t.kind === 'generate')
+  const isRetranscribing = docTasks.some(t => t.kind === 'retranscribe')
+  const isImageProcessing = docTasks.some(t => t.kind === 'process')
+  const isImporting = docTasks.some(t => t.kind === 'import')
 
   // 导入
   const addDoc = useStore(s => s.addDoc)
   const selectDoc = useStore(s => s.selectDoc)
   const [importInput, setImportInput] = useState('')
-  const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState('')
   const [importProgress, setImportProgress] = useState('')
   const [importPercent, setImportPercent] = useState<number | null>(null)
+  const activeImportKeyRef = useRef<string | null>(null)  // 当前显示的导入 key
+  const MAX_CONCURRENT_IMPORTS = 3
+  const MAX_CONCURRENT_GENERATES = 2
   const [inputType, setInputType] = useState<'link' | 'video' | 'text' | 'file' | 'image'>('link')
   const [fileObj, setFileObj] = useState<File | null>(null)
   const [fileSubType, setFileSubType] = useState('pdf')
@@ -229,43 +238,26 @@ export function GenPanel() {
     if (ev.percent != null) setImportPercent(ev.percent)
   }
 
-  // ── C2: AbortController 管理（用 taskManager 注册，TaskPanel 可取消）──
+  // ── C2: AbortController 管理（按完整 task key 注册，支持逐任务取消）──
   const importSeqRef = useRef(0)  // 导入计数器，确保每次导入用独立 key
-  // 流式内容累积缓冲区 — streamDisplay=false 时 UI 不更新但数据不丢
-  const accNotesRef = useRef('')
-  const accPolishedRef = useRef('')
-  const accSingleRef = useRef('')
 
-  const createAbort = useCallback((docId: string) => {
+  const createAbort = useCallback((taskKey: string) => {
     const ctrl = new AbortController()
-    registerAbort(docId, ctrl)
+    registerAbort(taskKey, ctrl)
     return ctrl.signal
   }, [])
 
-  // TaskPanel 外部取消 → 同步重置本地 busy 状态
-  useEffect(() => {
-    if (currentDocId && !Object.keys(processingTasks).some(k => k.startsWith(currentDocId + '__'))) {
-      setGenerating(false); setRetranscribing(false); setImageProcessing(false)
-      setIsStreaming(false)
-    }
-    if (!Object.keys(processingTasks).some(k => k.startsWith('__import__'))) {
-      setImporting(false); setImportProgress(''); setImportPercent(null)
-    }
-    // setGenerating/setIsStreaming 等是稳定的 useState setter，无需列入 deps
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [processingTasks, currentDocId])
-
   const cancelOp = () => {
-    const { clearDocTasks, processingTasks } = useStore.getState()
+    const { processingTasks } = useStore.getState()
     // 取消导入任务 — 控制器注册 key 固定为 '__import__'
     if (Object.keys(processingTasks).some(k => k.startsWith('__import__'))) {
       cancelTask('__import__')
     }
-    // 取消当前文档的操作 — abort 网络请求
-    if (currentDocId) cancelTask(currentDocId)
-    // 清除当前文档的所有任务 state
-    if (currentDocId) clearDocTasks(currentDocId)
-    setImporting(false); setRetranscribing(false); setGenerating(false); setImageProcessing(false)
+    // 取消当前文档的所有操作 — abort 网络请求 + 清除 state
+    if (currentDocId) {
+      cancelTask(currentDocId)
+      clearDocTasks(currentDocId)
+    }
     setImportProgress(''); setImportPercent(null); setImportError(''); setError('')
     addToast('已取消', 'info')
   }
@@ -277,9 +269,10 @@ export function GenPanel() {
   const handleRetranscribe = async () => {
     if (!currentDocId) return
     const capturedId = currentDocId
-    const signal = createAbort(capturedId)
-    setRetranscribing(true); setError(''); setImportError('')
-    setProcessing(capturedId + '__retranscribe', { kind: 'retranscribe' })
+    const taskKey = capturedId + '__retranscribe'
+    const signal = createAbort(taskKey)
+    setError(''); setImportError('')
+    setProcessing(taskKey, { kind: 'retranscribe' })
     try {
       const result = await retranscribe(capturedId, signal)
       if (!isSameDoc(capturedId)) return
@@ -318,19 +311,28 @@ export function GenPanel() {
       const msg = getErrorMessage(e)
       setError(msg); addToast(msg, 'error')
     } finally {
-      setProcessing(capturedId + '__retranscribe', null)
-      if (isSameDoc(capturedId)) { setRetranscribing(false) }
+      setProcessing(taskKey, null)
     }
   }
 
   const handleImport = () => {
+    // ── 并发上限检查 ──
+    const activeImports = Object.keys(useStore.getState().processingTasks)
+      .filter(k => k.startsWith('__import__'))
+    if (activeImports.length >= MAX_CONCURRENT_IMPORTS) {
+      addToast(`同时最多 ${MAX_CONCURRENT_IMPORTS} 个导入任务，请等待完成后再试`, 'info')
+      return
+    }
+
     if (inputType === 'file' || inputType === 'image' || inputType === 'video') {
       const url = importInput.trim()
       if (!fileObj && !url) return
-      setImportError(''); setError(''); setImporting(true)
+      setImportError(''); setError('')
       const importTitle = fileObj?.name || importInput.slice(0, 40) || '导入'
       const importKey = `__import__${importSeqRef.current++}`
-      setProcessing(importKey + '__import', { kind: 'import', title: importTitle })
+      const taskKey = importKey + '__import'
+      activeImportKeyRef.current = importKey
+      setProcessing(taskKey, { kind: 'import', title: importTitle })
       const onDone = async (doc: any) => {
         const isDup = doc.status === 'duplicate_url' || doc.status === 'duplicate_content'
         const existing = useStore.getState().docs.find(d => d.id === doc.id)
@@ -349,9 +351,9 @@ export function GenPanel() {
           selectDoc(doc.id)
           addToast('已存在，已帮你选中')
         }
-        setImporting(false); setFileObj(null)
+        /* importing derived from processingTasks */; setFileObj(null)
         if (!isDup) setImportProgress('')
-        setProcessing(importKey + '__import', null)
+        setProcessing(taskKey, null)
         if (!isDup && preOcr && inputType === 'image' && doc.id) {
           setProcessing(doc.id + '__process', { kind: 'process', mode: 'extract' })
           try {
@@ -365,23 +367,26 @@ export function GenPanel() {
         }
       }
       // C3: 移除误吞错误守卫，始终重置状态
-      const onError = (err: string) => { setImportError(err); setImporting(false); setImportProgress(''); setProcessing(importKey + '__import', null) }
+      const onError = (err: string) => { setImportError(err); /* importing derived from processingTasks */; setImportProgress(''); setProcessing(taskKey, null) }
       if (fileObj) {
-        const signal = createAbort('__import__')
+        const signal = createAbort(taskKey)
         setImportProgress(inputType === 'video' ? '语音转写中...' : inputType === 'image' ? '导入中...' : '文档解析中...')
         ingestFile(fileObj, ev => updateImportProgress(ev), onDone, onError, signal)
       } else {
-        const signal = createAbort('__import__')
+        const signal = createAbort(taskKey)
         setImportProgress('下载中...')
         ingestURL(url, ev => updateImportProgress(ev), onDone, onError, signal)
       }
       return
     }
     if (!importInput.trim()) return
-    setImportError(''); setError(''); setImporting(true)
-    const signal = createAbort('__import__')
-    const importKey = `__import__${importSeqRef.current++}`
+    setImportError(''); setError('')
     const text = importInput.trim()
+    const importKey = `__import__${importSeqRef.current++}`
+    const taskKey = importKey + '__import'
+    activeImportKeyRef.current = importKey
+    setProcessing(taskKey, { kind: 'import', title: text.slice(0, 40) })
+    const signal = createAbort(taskKey)
     const isURL = text.startsWith('http://') || text.startsWith('https://')
     const onDone = (doc: any) => {
       const isDup = doc.status === 'duplicate_url' || doc.status === 'duplicate_content'
@@ -401,12 +406,12 @@ export function GenPanel() {
         selectDoc(doc.id)
         addToast('已存在，已帮你选中')
       }
-      setImporting(false); setImportInput('')
+      /* importing derived from processingTasks */; setImportInput('')
       if (!isDup) setImportProgress('')
-      setProcessing(importKey + '__import', null)
+      setProcessing(taskKey, null)
     }
     // C3: 移除误吞错误守卫
-    const onError = (err: string) => { setImportError(err); setImporting(false); setImportProgress(''); setProcessing(importKey + '__import', null) }
+    const onError = (err: string) => { setImportError(err); /* importing derived from processingTasks */; setImportProgress(''); setProcessing(taskKey, null) }
     if (isURL) { setImportProgress('下载中...'); ingestURL(text, ev => updateImportProgress(ev), onDone, onError, signal) }
     else { setImportProgress('导入中...'); ingestText(text, ev => updateImportProgress(ev), onDone, onError, signal) }
   }
@@ -414,9 +419,10 @@ export function GenPanel() {
   const handleProcessImage = async () => {
     if (!currentDocId) return
     const capturedId = currentDocId
-    const signal = createAbort(capturedId)
-    setImageProcessing(true); setError(''); setImportError('')
-    setProcessing(capturedId + '__process', { kind: 'process', mode: imageMode })
+    const taskKey = capturedId + '__process'
+    const signal = createAbort(taskKey)
+    setError(''); setImportError('')
+    setProcessing(taskKey, { kind: 'process', mode: imageMode })
     try {
       const result = await processImage(capturedId, imageMode, selectedModelId ?? undefined, signal)
       if (!isSameDoc(capturedId)) return
@@ -434,25 +440,42 @@ export function GenPanel() {
       const msg = getErrorMessage(e)
       setError(msg); addToast(msg, 'error')
     } finally {
-      setProcessing(capturedId + '__process', null)
-      if (isSameDoc(capturedId)) { setImageProcessing(false) }
+      setProcessing(taskKey, null)
     }
   }
 
-  const handleGenerate = (continueFrom?: string) => {
+  const handleGenerate = () => {
     if (!currentDocId) { setError('请先选择文档'); return }
+
+    // ── 全局并发上限检查 ──
+    const activeGenerates = Object.keys(useStore.getState().processingTasks)
+      .filter(k => k.endsWith('__generate'))
+    if (activeGenerates.length >= MAX_CONCURRENT_GENERATES) {
+      addToast(`同时最多 ${MAX_CONCURRENT_GENERATES} 个生成任务，请等待完成后再试`, 'info')
+      return
+    }
+
+    // ── 操作冲突检查（per-doc）──
+    if (isRetranscribing) { addToast('当前文档正在转录中，请等待完成后再生成', 'info'); return }
+    if (isImageProcessing) { addToast('当前文档正在图片处理中，请等待完成后再生成', 'info'); return }
+
     const rawText = useStore.getState().currentRawText
     if (!rawText || rawText.startsWith('[转录失败') || rawText === '[转录结果为空]' || rawText === '[无可用转录引擎，请在设置中配置文档引擎]') {
       setError('当前文档无有效转录内容，请先导入或重新转录后再生成')
       return
     }
     const capturedId = currentDocId
-    const signal = createAbort(capturedId)
-    setError(''); setImportError(''); setGenerating(true)
+    const taskKey = capturedId + '__generate'
+    const signal = createAbort(taskKey)
+    setError(''); setImportError('')
     const doc = useStore.getState().docs.find(d => d.id === capturedId)
-    setProcessing(capturedId + '__generate', { kind: 'generate', title: doc?.title || '' })
-    accNotesRef.current = ''; accPolishedRef.current = ''; accSingleRef.current = ''
-    setIsStreaming(true)
+    setProcessing(taskKey, { kind: 'generate', title: doc?.title || '' })
+
+    // 初始化流式缓冲区（按产物隔离）
+    const notesKey = taskKey + '_notes'
+    const polishedKey = taskKey + '_polished'
+    setStreamBuffer(notesKey, '')
+    setStreamBuffer(polishedKey, '')
     setActiveView('summary')
 
     const formatStr = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
@@ -460,28 +483,19 @@ export function GenPanel() {
       formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
     ].filter(Boolean).filter(f => typeMeta.availableFormats.includes(f as string)).join(',')
 
-    // mode = 勾选的产物列表，逗号分隔传给后端
     const streamMode = selectedCore.join(',')
-
     const isBoth = selectedCore.includes('notes') && selectedCore.includes('polished')
     const isPolishedOnly = selectedCore.includes('polished') && !selectedCore.includes('notes')
 
-    // 新写/重写：设置流式缓冲区；续写：从残缺内容开始
-    if (continueFrom) {
-      // 续写：单产物从残缺内容起跑；双产物不清空（partial 已在 current 中）
-      if (!isBoth) {
-        setStreamingContent((isPolishedOnly ? currentPolishedContent : currentContent) || '')
-      }
+    // 双产物新写：清空两个 tab（chunk 直接 append 到 current）
+    if (!isBoth) {
+      // 单产物新写：清空对应 tab
+      if (isPolishedOnly) setCurrentPolishedContent(null)
+      else setCurrentContent(null)
     } else {
-      if (selectedCore.includes('notes') && selectedCore.includes('polished')) {
-        // 双产物新写：清空两个 tab（chunk 直接 append 到 current）
-        setCurrentContent(null)
-        setCurrentPolishedContent(null)
-        useStore.getState().setCurrentFactCheckContent(null)
-      } else {
-        // 单产物新写：用 streamingContent 缓冲，不清旧内容（等完成再替换）
-        setStreamingContent('')
-      }
+      setCurrentContent(null)
+      setCurrentPolishedContent(null)
+      useStore.getState().setCurrentFactCheckContent(null)
     }
 
     streamGenerate(capturedId, {
@@ -498,121 +512,82 @@ export function GenPanel() {
       unit_height: isVideo ? unitHeight : undefined,
       save_quality: isVideo ? saveQuality : undefined,
       frame_quality_filter: isVideo ? frameQualityFilter : undefined,
-      // 视频：AI 画面理解开启 = 直接发给 LLM；文档：formatImages 勾选后才可选发送
       image_analyze: isVideo ? videoUnderstanding : (formatImages ? imageAnalyze : undefined),
-      // 图片预处理：视频从 VL 参数取，文档从嵌套选项取
       image_optimize: isVideo ? (videoUnderstanding ? imageOptimize : undefined) : ((formatImages && imageAnalyze) ? imageOptimize : undefined),
-      // OCR 预处理：仅文档类型，与 image_analyze 互斥
       ocr_enabled: isVideo ? undefined : (ocrEnabled || undefined),
       ocr_model_id: isVideo ? undefined : (ocrEnabled ? ocrModelId ?? undefined : undefined),
-      continue_from: continueFrom || undefined,
     }, {
       onChunk(text, mode) {
         if (!isSameDoc(capturedId)) return
-        // 始终累积到内部缓冲区（streamDisplay=false 时 UI 不更新但数据不丢）
+        // 写入模块级高速缓冲区
         if (mode === 'polished') {
-          accPolishedRef.current += text
-          if (streamDisplay) setCurrentPolishedContent(accPolishedRef.current)
+          appendStreamBuffer(polishedKey, text)
+          if (streamDisplay) setCurrentPolishedContent(getStreamBuffer(polishedKey))
         } else if (mode === 'notes') {
-          accNotesRef.current += text
-          if (streamDisplay) setCurrentContent(accNotesRef.current)
+          appendStreamBuffer(notesKey, text)
+          if (streamDisplay) setCurrentContent(getStreamBuffer(notesKey))
         } else {
-          accSingleRef.current += text
-          if (streamDisplay) setStreamingContent(accSingleRef.current)
+          // 单产物：按选中项决定写入哪个 key
+          const singleKey = isPolishedOnly ? polishedKey : notesKey
+          appendStreamBuffer(singleKey, text)
+          if (streamDisplay) {
+            if (isPolishedOnly) setCurrentPolishedContent(getStreamBuffer(singleKey))
+            else setCurrentContent(getStreamBuffer(singleKey))
+          }
         }
+        // 节流 flush 到 store（驱动 PreviewArea 重读 Map）
+        scheduleFlush(() => bumpStreamTick())
       },
       onDone(_result) {
-        // 清理本条目（必须在 isSameDoc 之前，防泄漏）
-        setProcessing(capturedId + '__generate', null)
-        // 全局 flag 仅在无其他文档生成时复位——防并发场景误关其他文档的流式状态
-        const tasks = useStore.getState().processingTasks
-        if (!Object.keys(tasks).some(k => k.endsWith('__generate'))) {
-          setGenerating(false); setIsStreaming(false)
-        }
+        // 立即 flush 最终内容
+        flushImmediate(() => bumpStreamTick())
+        setProcessing(taskKey, null)
+        deleteStreamBuffer(notesKey)
+        deleteStreamBuffer(polishedKey)
         if (!isSameDoc(capturedId)) return
-        // 内容整理 — 从内部缓冲区读取，streamDisplay=false 时也不会丢
-        if (!isBoth) {
-          const hasCore = selectedCore.includes('notes') || selectedCore.includes('polished')
-          if (hasCore) {
-            const finalContent = accSingleRef.current || useStore.getState().streamingContent || ''
-            if (isPolishedOnly) {
-              setCurrentPolishedContent(finalContent)
-            } else {
-              setCurrentContent(finalContent)
-            }
-          }
-          setStreamingContent(null)
-        } else {
-          // 双产物模式：确保最终内容从缓冲区写入 store
-          if (!streamDisplay) {
-            if (accPolishedRef.current) setCurrentPolishedContent(accPolishedRef.current)
-            if (accNotesRef.current) setCurrentContent(accNotesRef.current)
-          }
-          setStreamingContent(null)
-        }
-        // 刷新版本列表 — 两个 mode 合并而非替换，避免竞态互相覆盖
+        // 刷新版本列表
         getMarkdown(capturedId, 'notes').then(md => {
           if (isSameDoc(capturedId)) {
             setMarkdownMeta(md ? { id: md.id, style: md.style, mode: md.mode, version: md.version } : null)
             if (md) {
               const prev = useStore.getState().markdownVersions
-              const others = prev.filter(v => v.mode !== 'notes')
-              setMarkdownVersions([...(md.versions || []), ...others])
-            } else {
-              setMarkdownVersions([])
-            }
+              setMarkdownVersions([...(md.versions || []), ...prev.filter(v => v.mode !== 'notes')])
+            } else { setMarkdownVersions([]) }
           }
         })
         getMarkdown(capturedId, 'polished').then(md => {
           if (isSameDoc(capturedId) && md) {
             const prev = useStore.getState().markdownVersions
-            const others = prev.filter(v => v.mode !== 'polished')
-            setMarkdownVersions([...(md.versions || []), ...others])
+            setMarkdownVersions([...(md.versions || []), ...prev.filter(v => v.mode !== 'polished')])
           }
         })
-        addToast(continueFrom ? '续写完成' : '生成完成')
+        addToast('生成完成')
       },
       onError(msg) {
-        setProcessing(capturedId + '__generate', null)
-        if (!Object.keys(useStore.getState().processingTasks).some(k => k.endsWith('__generate'))) {
-          setGenerating(false); setIsStreaming(false)
-        }
+        setProcessing(taskKey, null)
+        deleteStreamBuffer(notesKey)
+        deleteStreamBuffer(polishedKey)
         if (!isSameDoc(capturedId)) return
         setError(msg); addToast(msg, 'error')
       },
       onCancelled(savedPartial) {
-        setProcessing(capturedId + '__generate', null)
-        if (!Object.keys(useStore.getState().processingTasks).some(k => k.endsWith('__generate'))) {
-          setGenerating(false); setIsStreaming(false)
-        }
+        setProcessing(taskKey, null)
         if (!isSameDoc(capturedId)) return
-        // 单产物模式：把已生成的 buffer 存到最终内容中
+        // 将缓冲区内容写入 store（保留 partial，不提供续写入口）
         if (!isBoth) {
-          const finalContent = useStore.getState().streamingContent
-          const hasCore = selectedCore.includes('notes') || selectedCore.includes('polished')
-          if (hasCore) {
-            if (isPolishedOnly) {
-              setCurrentPolishedContent(finalContent)
-            } else {
-              setCurrentContent(finalContent)
-            }
-          }
-          setStreamingContent(null)
+          const singleKey = isPolishedOnly ? polishedKey : notesKey
+          const buf = getStreamBuffer(singleKey)
+          if (isPolishedOnly) setCurrentPolishedContent(buf)
+          else setCurrentContent(buf)
         }
+        deleteStreamBuffer(notesKey)
+        deleteStreamBuffer(polishedKey)
         if (savedPartial) {
-          addToast('生成已取消，残缺内容已保留，可稍后继续生成', 'success')
+          addToast('生成已取消，已生成的内容已保留', 'success')
           getMarkdown(capturedId, 'notes').then(md => {
             if (isSameDoc(capturedId) && md) {
-              const prevN = useStore.getState().markdownVersions
-              const othersN = prevN.filter(v => v.mode !== 'notes')
-              setMarkdownVersions([...(md.versions || []), ...othersN])
-            }
-          })
-          getMarkdown(capturedId, 'polished').then(md => {
-            if (isSameDoc(capturedId) && md) {
-              const prevP = useStore.getState().markdownVersions
-              const othersP = prevP.filter(v => v.mode !== 'polished')
-              setMarkdownVersions([...(md.versions || []), ...othersP])
+              const prev = useStore.getState().markdownVersions
+              setMarkdownVersions([...(md.versions || []), ...prev.filter(v => v.mode !== 'notes')])
             }
           })
         }
@@ -621,9 +596,9 @@ export function GenPanel() {
   }
 
   // ── Render ──
-  const isBusy = importing || generating || retranscribing || imageProcessing
-  // 操作互斥：转录/图片处理中 → 禁生成；反向（生成 → 禁转录）见下方按钮 disabled 中的 generating 条件
-  const lockOtherOps = retranscribing || imageProcessing
+  const isBusy = isImporting || isGenerating || isRetranscribing || isImageProcessing
+  // 操作互斥（per-doc）：转录/图片处理中 → 禁生成
+  const lockOtherOps = isRetranscribing || isImageProcessing
   return (
     <aside className="w-full border-r border-border-light flex flex-col shrink-0 bg-elevated/60 backdrop-blur-[20px] overflow-y-auto overflow-x-hidden h-full">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border-light shrink-0">
@@ -667,7 +642,7 @@ export function GenPanel() {
             fileObj={fileObj} setFileObj={setFileObj}
             fileSubType={fileSubType} setFileSubType={setFileSubType}
             importInput={importInput} setImportInput={setImportInput}
-            importing={importing} importError={importError} importProgress={importProgress} importPercent={importPercent}
+            importing={isImporting} importError={importError} importProgress={importProgress} importPercent={importPercent}
             engineOptions={engineOptions} engineBindings={engineBindings}
             handleEngineChange={handleEngineChange} handleImport={handleImport}
             isImageType={inputType === 'image'}
@@ -699,9 +674,9 @@ export function GenPanel() {
                         binding={engineBindings[cat] ?? null} onChange={handleEngineChange} variant="section" />
                     )
                   })()}
-                  <button onClick={handleRetranscribe} disabled={retranscribing || generating}
+                  <button onClick={handleRetranscribe} disabled={isRetranscribing || isGenerating}
                     className="w-full py-2 text-[11px] font-medium text-warning bg-warning/10 rounded-lg hover:bg-warning/20 disabled:opacity-40 transition-colors">
-                    {retranscribing ? '转录中...' : '⟳ 重新转录'}
+                    {isRetranscribing ? '转录中...' : '⟳ 重新转录'}
                   </button>
                 </div>
               )}
@@ -776,36 +751,23 @@ export function GenPanel() {
 
               {/* 操作按钮 */}
               {typeMeta.isImage ? (
-                <button onClick={handleProcessImage} disabled={imageProcessing || !currentDocId}
+                <button onClick={handleProcessImage} disabled={isImageProcessing || !currentDocId}
                   className="w-full py-2.5 bg-success text-white text-[15px] font-medium rounded-full hover:bg-success/80 active:scale-[0.97] transition-all disabled:opacity-40">
-                  {imageProcessing ? '处理中...' : `处理 — ${({ extract: '提取文字', table: '表格数据', digitize: '文档数字化', understand: '理解内容' })[imageMode]}`}
+                  {isImageProcessing ? '处理中...' : `处理 — ${({ extract: '提取文字', table: '表格数据', digitize: '文档数字化', understand: '理解内容' })[imageMode]}`}
                 </button>
               ) : (
                 <div className="flex gap-2">
                   {(() => {
-                    const hasPartial = (Array.isArray(markdownVersions) && markdownVersions.some(v => v.status === 'partial'))
                     const hasComplete = (Array.isArray(markdownVersions) && markdownVersions.some(v => v.status !== 'partial'))
-                    if (hasPartial) {
-                      return <>
-                        <button onClick={() => handleGenerate('partial')} disabled={generating || lockOtherOps || !currentDocId || selectedCore.length === 0}
-                          className="flex-1 py-2.5 bg-accent text-white text-[15px] font-medium rounded-lg hover:bg-accent-hover active:scale-[0.97] transition-all disabled:opacity-40">
-                          {generating ? '生成中...' : '继续生成'}
-                        </button>
-                        <button onClick={() => handleGenerate()} disabled={generating || lockOtherOps || !currentDocId || selectedCore.length === 0}
-                          className="px-4 py-2.5 text-dimmed text-[13px] font-medium rounded-lg hover:bg-surface-hover active:scale-[0.97] transition-all disabled:opacity-40 border border-border-default">
-                          重新生成
-                        </button>
-                      </>
-                    }
                     if (hasComplete) {
-                      return <button onClick={() => handleGenerate()} disabled={generating || lockOtherOps || !currentDocId || selectedCore.length === 0}
+                      return <button onClick={() => handleGenerate()} disabled={isGenerating || lockOtherOps || !currentDocId || selectedCore.length === 0}
                         className="flex-1 py-2.5 bg-accent text-white text-[15px] font-medium rounded-lg hover:bg-accent-hover active:scale-[0.97] transition-all disabled:opacity-40">
-                        {generating ? '生成中...' : '重新生成'}
+                        {isGenerating ? '生成中...' : '重新生成'}
                       </button>
                     }
-                    return <button onClick={() => handleGenerate()} disabled={generating || lockOtherOps || !currentDocId || selectedCore.length === 0}
+                    return <button onClick={() => handleGenerate()} disabled={isGenerating || lockOtherOps || !currentDocId || selectedCore.length === 0}
                       className="flex-1 py-2.5 bg-accent text-white text-[15px] font-medium rounded-lg hover:bg-accent-hover active:scale-[0.97] transition-all disabled:opacity-40">
-                      {generating ? '生成中...' : typeMeta.generateLabel}
+                      {isGenerating ? '生成中...' : typeMeta.generateLabel}
                     </button>
                   })()}
                 </div>

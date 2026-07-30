@@ -8,7 +8,7 @@ beforeEach(() => {
     currentContent: null, currentPolishedContent: null, currentRawText: null,
     markdownMeta: null, markdownVersions: [],
     currentFactCheckContent: null, factCheckMeta: null, factCheckProgress: null,
-    streamingContent: null, isStreaming: false,
+    streamTick: 0,
     importProgress: null, importStages: [],
     imageResults: {}, processingTasks: {}, taskPanelOpen: false,
     conversations: [], currentConversationId: null,
@@ -184,5 +184,61 @@ describe('addDoc + selectDoc', () => {
   it('selectDoc sets currentDocId', () => {
     useStore.getState().selectDoc('abc')
     expect(useStore.getState().currentDocId).toBe('abc')
+  })
+})
+
+// ── 多任务并发 ──
+
+describe('cancelOneTask — 逐任务取消', () => {
+  it('removes exact task key only', () => {
+    const { setProcessing } = useStore.getState()
+    setProcessing('docA__generate', { kind: 'generate', title: 'GenA' })
+    setProcessing('docA__retranscribe', { kind: 'retranscribe', title: 'ReA' })
+    setProcessing('docB__generate', { kind: 'generate', title: 'GenB' })
+    expect(Object.keys(useStore.getState().processingTasks)).toHaveLength(3)
+
+    useStore.getState().cancelOneTask('docA__generate')
+    const tasks = useStore.getState().processingTasks
+    expect(Object.keys(tasks)).toHaveLength(2)
+    expect(tasks['docA__retranscribe']).toBeDefined()
+    expect(tasks['docB__generate']).toBeDefined()
+  })
+})
+
+describe('processingTasks — 多任务状态推导', () => {
+  it('同一文档可同时有 generate + retranscribe + process 任务', () => {
+    const { setProcessing } = useStore.getState()
+    setProcessing('docA__generate', { kind: 'generate', title: 'Gen' })
+    setProcessing('docA__retranscribe', { kind: 'retranscribe', title: 'ReT' })
+    setProcessing('docA__process', { kind: 'process', mode: 'extract', title: 'Proc' })
+
+    const tasks = useStore.getState().processingTasks
+    expect(Object.keys(tasks)).toHaveLength(3)
+  })
+
+  it('不同文档的任务完全独立', () => {
+    const { setProcessing } = useStore.getState()
+    setProcessing('docA__generate', { kind: 'generate', title: 'GenA' })
+    setProcessing('docB__generate', { kind: 'generate', title: 'GenB' })
+
+    // docA 任务存在
+    const tasksA = Object.entries(useStore.getState().processingTasks)
+      .filter(([k]) => k.startsWith('docA__'))
+    expect(tasksA).toHaveLength(1)
+
+    // docB 任务独立
+    const tasksB = Object.entries(useStore.getState().processingTasks)
+      .filter(([k]) => k.startsWith('docB__'))
+    expect(tasksB).toHaveLength(1)
+  })
+})
+
+describe('bumpStreamTick — 流式 tick', () => {
+  it('increments streamTick on each call', () => {
+    useStore.setState({ streamTick: 0 })
+    useStore.getState().bumpStreamTick()
+    expect(useStore.getState().streamTick).toBe(1)
+    useStore.getState().bumpStreamTick()
+    expect(useStore.getState().streamTick).toBe(2)
   })
 })
