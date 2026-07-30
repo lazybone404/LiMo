@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
 import { getStreamBuffer } from '../../store/streamBuffers'
+import { TabRegistry, type TabDef } from '../../lib/tabRegistry'
 import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle, Copy, Check, FileText, Columns, AlignCenter, Maximize2 } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
@@ -32,13 +33,16 @@ function CopyContentBtn({ activeView, currentContent, currentPolishedContent, cu
   const [copied, setCopied] = useState(false)
   const addToast = useStore(s => s.addToast)
 
+  // 从 TabDef 推导内容源（替代 switch/case）
   const getContent = () => {
-    switch (activeView) {
+    const def = TabRegistry.get(activeView)
+    if (!def) return null
+    switch (def.contentSource) {
       case 'polished': return currentPolishedContent
-      case 'fact_check': return currentFactCheckContent
-      case 'data_preview':
-      case 'transcript': return currentRawText
-      default: return currentContent
+      case 'rawText': return currentRawText
+      case 'factCheck': return currentFactCheckContent
+      case 'notes': return currentContent
+      default: return null
     }
   }
 
@@ -212,19 +216,10 @@ export function PreviewArea() {
       if (!isSame()) return
       const hasContent = !!(notes || polished?.content)
       const st = useStore.getState().docs.find(d => d.id === capturedId)?.sourceType || ''
-      // 已有生成内容时，按文档类型选最佳默认 Tab
+      // 已有生成内容时，按文档类型选最佳默认 Tab（由 TabDef.defaultFor 驱动）
       if (hasContent) {
-        if (['pdf', 'docx', 'pptx', 'document'].includes(st)) {
-          setActiveView('polished')
-        } else if (st === 'video') {
-          setActiveView('transcript')
-        } else if (st === 'image') {
-          setActiveView('original')
-        } else if (st === 'xlsx') {
-          setActiveView('data_preview')
-        } else {
-          setActiveView('summary')
-        }
+        const defKey = TabRegistry.defaultFor(st)
+        if (defKey) setActiveView(defKey)
       } else if (['document', 'pdf', 'docx', 'pptx', 'xlsx', 'epub', 'video'].includes(st)) {
         setActiveView(st === 'epub' ? 'skeleton' : 'transcript')
       }
@@ -241,7 +236,17 @@ export function PreviewArea() {
 
   const sourceType = currentDoc?.sourceType || 'webpage'
   const typeMeta = getTypeMeta(sourceType)
-  const tabs = typeMeta.tabs
+
+  // 从 TabRegistry 获取当前 sourceType 下的可见 tab 列表
+  const tabs = useMemo(() => {
+    return TabRegistry.forSourceType(sourceType, {
+      currentContent,
+      imageResults,
+    })
+  }, [sourceType, currentContent, imageResults])
+
+  // 当前 activeView 对应的 TabDef
+  const activeTabDef: TabDef | undefined = TabRegistry.get(activeView)
 
   // 切换文档时，如果当前 activeView 不在新文档的 Tab 列表中，回退到第一个 Tab
   useEffect(() => {
@@ -366,18 +371,14 @@ export function PreviewArea() {
   })  // getConfig().then(...) close
   }
 
-  /** 判断某个 view tab 是否正在处理中（支持多任务并发） */
+  /** 判断某个 view tab 是否正在处理中（从 TabDef.processingKinds 推导） */
   const isViewProcessing = (view: string) => {
+    const def = TabRegistry.get(view)
+    if (!def?.processingKinds) return false
     return activeTasks.some(task => {
-      // import / retranscribe 是文档级别，影响所有 tab
-      if (task.kind === 'import' || task.kind === 'retranscribe') return true
-      // generate 影响笔记/分析报告/数据摘要
-      if (task.kind === 'generate') return view === 'summary' || view === 'polished' || view === 'data_preview'
-      // fact_check 有自己的进度 UI，不由通用转圈处理
-      if (task.kind === 'fact_check') return false
-      // process-image 只影响对应 mode 的 tab
-      if (task.kind === 'process') return view === task.mode
-      return false
+      // process kind 需要额外匹配 mode（图片处理 tab）
+      if (task.kind === 'process') return def.processingKinds!.includes('process') && view === task.mode
+      return def.processingKinds!.includes(task.kind)
     })
   }
 
@@ -674,20 +675,21 @@ export function PreviewArea() {
               >{t.label}</button>
             ))}
           </div>
-          {/* 版本切换器 — 仅显示当前 tab 对应 mode 的版本 */}
+          {/* 版本切换器 — 由 TabDef.showVersionSwitcher 驱动 */}
           {(() => {
-            const currentMode = activeView === 'polished' ? 'polished' : 'notes'
-            const modeVersions = (markdownVersions || []).filter(v => v.mode === currentMode)
-            if (!(activeView === 'polished' || activeView === 'summary') || modeVersions.length <= 1) return null
+            const vsMode = activeTabDef?.showVersionSwitcher
+            if (!vsMode) return null
+            const modeVersions = (markdownVersions || []).filter(v => v.mode === vsMode)
+            if (modeVersions.length <= 1) return null
             // 高亮：优先匹配 markdownMeta（同 mode），否则匹配最新版本
-            const activeVersion = markdownMeta?.mode === currentMode ? markdownMeta.version : modeVersions[0]?.version
+            const activeVersion = (markdownMeta?.mode === vsMode ? markdownMeta?.version : undefined) ?? modeVersions[0]?.version
             return (
             <div className="flex items-center gap-1">
               <span className="text-[10px] text-disabled">版本</span>
               {versionLoading && <Loader2 size={10} className="animate-spin text-accent" />}
               {modeVersions.map(v => (
                 <button key={v.id}
-                  onClick={() => loadVersion(v.version, currentMode)}
+                  onClick={() => loadVersion(v.version, vsMode)}
                   disabled={versionLoading}
                   className={`px-2 py-0.5 rounded text-[11px] font-mono transition-all disabled:opacity-40 ${
                     activeVersion === v.version
@@ -731,7 +733,7 @@ export function PreviewArea() {
 
       {/* 内容 + TOC */}
       <div className="preview-area flex-1 flex overflow-hidden">
-        {(activeView === 'polished' || activeView === 'summary') && (
+        {activeTabDef?.showTOC && (
           tocCollapsed ? (
             <div
               onClick={() => setPanelCollapsed('toc', false)}
@@ -750,15 +752,11 @@ export function PreviewArea() {
           )
         )}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          {/* VideoBanner 在 scroll 容器外，不受滚动条遮挡，全宽显示 */}
-          {(() => {
-            const bannerViews = ['summary', 'polished', 'transcript', 'extract', 'table', 'digitize', 'understand']
-            if (bannerViews.includes(activeView) && (currentDoc?.sourceType === 'video' || currentDoc?.coverUrl)) {
-              return <VideoBanner title={currentDoc.title} coverUrl={currentDoc.coverUrl}
-                sourceUrl={currentDoc.sourceUrl} sourceType={currentDoc.sourceType} createdAt={currentDoc.createdAt} />
-            }
-            return null
-          })()}
+          {/* VideoBanner — 由 TabDef.showBanner 驱动 */}
+          {activeTabDef?.showBanner && (currentDoc?.sourceType === 'video' || currentDoc?.coverUrl) && (
+            <VideoBanner title={currentDoc.title} coverUrl={currentDoc.coverUrl}
+              sourceUrl={currentDoc.sourceUrl} sourceType={currentDoc.sourceType} createdAt={currentDoc.createdAt} />
+          )}
           <div
             ref={containerRef}
             className={`preview-content flex-1 flex flex-col ${activeView === 'mindmap' ? 'overflow-hidden' : 'overflow-y-scroll'} ${activeView === 'mindmap' ? '' : 'mx-auto w-full'} ${activeView === 'mindmap' ? '' : contentWidth === 'wide' ? 'px-1 md:px-2 lg:px-4 xl:px-6' : contentWidth === 'normal' ? 'px-3 md:px-6 lg:px-10 xl:px-16' : 'px-4 md:px-12 lg:px-20 xl:px-32'}`}

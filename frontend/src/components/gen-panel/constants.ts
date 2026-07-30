@@ -1,3 +1,5 @@
+import { TabRegistry } from '../../lib/tabRegistry'
+
 /** 文件扩展名 → 子类型（纯静态，不会变） */
 export const EXT_TO_SUBTYPE: Record<string, string> = {
   '.pdf': 'pdf', '.doc': 'word', '.docx': 'word',
@@ -60,48 +62,8 @@ export function getTypeMeta(sourceType: string, genOptions: Record<string, strin
   const isDoc = _ALL_DOC_TYPES.includes(st)
   const isMedia = isVideo || st === 'webpage' || st === 'link'
 
-  let tabs: { key: string; label: string }[]
-  if (isImage) {
-    tabs = [
-      { key: 'original', label: '原图' },
-      { key: 'extract', label: '提取文字' },
-      { key: 'table', label: '表格数据' },
-      { key: 'digitize', label: '文档数字化' },
-      { key: 'understand', label: '理解内容' },
-    ]
-  } else if (isExcel) {
-    tabs = [
-      { key: 'data_preview', label: '数据预览' },
-      { key: 'summary', label: '数据摘要' },
-    ]
-  } else if (isDoc) {
-    if (st === 'epub') {
-      tabs = [
-        { key: 'skeleton', label: '骨架' },
-        { key: 'summary', label: '笔记' },
-        { key: 'polished', label: '整理版原文' },
-        { key: 'transcript', label: '转录' },
-        { key: 'fact_check', label: 'AI 审核' },
-        { key: 'mindmap', label: '思维导图' },
-      ]
-    } else {
-      tabs = [
-        { key: 'summary', label: '笔记' },
-        { key: 'polished', label: '整理版原文' },
-        { key: 'transcript', label: '转录' },
-        { key: 'fact_check', label: 'AI 审核' },
-        { key: 'mindmap', label: '思维导图' },
-      ]
-    }
-  } else {
-    tabs = [
-      { key: 'summary', label: '笔记' },
-      { key: 'polished', label: '整理版原文' },
-      { key: 'transcript', label: '原始转录' },
-      { key: 'fact_check', label: 'AI 审核' },
-      { key: 'mindmap', label: '思维导图' },
-    ]
-  }
+  // tabs 从 TabRegistry 自动生成 — 零硬编码，新增 tab 只需注册 TabDef
+  const tabs = TabRegistry.forSourceType(st).map(t => ({ key: t.key, label: t.label }))
 
   return {
     sourceType: st,

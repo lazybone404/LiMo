@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Download, Copy, FileText, Globe, Archive, Share2, Box, Loader2 } from 'lucide-react'
 import { useStore } from '../../store'
 import { getTypeMeta } from '../gen-panel/constants'
+import { TabRegistry } from '../../lib/tabRegistry'
 import { downloadText, downloadFromUrl } from '../../lib/download'
 
 /**
@@ -47,30 +48,21 @@ interface TabExportConfig {
   label: string
 }
 
-const TAB_EXPORT: Record<string, TabExportConfig> = {
-  // —— 通用文本类 ——
-  summary:     { contentKey: 'notes',      htmlMode: 'notes',      suffix: '',              label: '笔记' },
-  polished:    { contentKey: 'polished',   htmlMode: 'polished',   suffix: '-整理版原文',     label: '整理版原文' },
-  transcript:  { contentKey: 'rawText',    htmlMode: 'transcript', suffix: '-转录',           label: '转录' },
-  fact_check:  { contentKey: 'factCheck',  htmlMode: 'fact_check', suffix: '-事实验证',       label: '事实验证' },
-  // —— Excel 专属 ——
-  data_preview:{ contentKey: 'rawText',    htmlMode: 'transcript', suffix: '',              label: '数据预览' },
-  // —— EPUB 专属 ——
-  skeleton:    { contentKey: 'rawText',    htmlMode: 'transcript', suffix: '-骨架',           label: '章节骨架' },
-  // —— 思维导图 ——
-  // MD/复制：导出脑图的源文本（笔记 markdown）
-  // HTML：走 /export/{id}/mindmap 专用端点，生成交互式脑图 HTML
-  mindmap:     { contentKey: 'notes',      htmlMode: '__mindmap__',suffix: '',              label: '思维导图' },
-  // —— 图片处理 ——
-  // MD/复制：客户端直读 imageResults store，无需后端
-  // HTML：后端 GET /export/{id}?mode=extract 等 → 找不到 markdown → 回退到 process results
-  extract:     { contentKey: 'imageResult',htmlMode: 'extract',    suffix: '-提取文字',       label: '提取文字' },
-  table:       { contentKey: 'imageResult',htmlMode: 'table',      suffix: '-表格数据',       label: '表格数据' },
-  digitize:    { contentKey: 'imageResult',htmlMode: 'digitize',   suffix: '-文档数字化',     label: '文档数字化' },
-  understand:  { contentKey: 'imageResult',htmlMode: 'understand', suffix: '-理解内容',       label: '理解内容' },
-  // —— 无导出内容 ——
-  original:    { contentKey: 'none',        htmlMode: '',           suffix: '',              label: '原图' },
-}
+// TAB_EXPORT 从 TabRegistry 自动生成，不再手动维护
+// contentKey 映射：TabDef.contentSource → TabExportConfig.contentKey
+const TAB_EXPORT: Record<string, TabExportConfig> = Object.fromEntries(
+  TabRegistry.all().map(t => [t.key, {
+    contentKey: t.contentSource === 'none' ? 'none'
+      : t.contentSource === 'imageResult' ? 'imageResult'
+      : t.contentSource === 'polished' ? 'polished'
+      : t.contentSource === 'rawText' ? 'rawText'
+      : t.contentSource === 'factCheck' ? 'factCheck'
+      : 'notes',
+    htmlMode: t.htmlMode,
+    suffix: t.exportSuffix,
+    label: t.exportLabel,
+  } as TabExportConfig])
+)
 
 /**
  * 导出菜单 — MD/HTML/复制
