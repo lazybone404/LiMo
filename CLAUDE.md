@@ -71,6 +71,37 @@ data-font="system|kaiti|wenkai|…"← 阅读字体（5种，4系统+1web）
 | [qianwen-models.md](docs/qianwen-models.md) | 千问平台模型速查（文本/OCR/ASR）含价格+调用方式 | 配模型/选引擎 |
 | [components.md](design/components.md) | Apple HIG 风格组件规格，布局+颜色+字体+组件 | 改 UI 组件/设计系统 |
 
+## 版本号管理
+
+全局版本号定义在根目录 [`VERSION`](VERSION) 文件中，通过 [`scripts/sync-version.py`](scripts/sync-version.py) 同步到 7 处：
+
+| 位置 | 说明 |
+|------|------|
+| `VERSION` | **单一版本源** |
+| `frontend/package.json` | npm 版本 |
+| `frontend/src-tauri/tauri.conf.json` | Tauri app 版本 |
+| `frontend/src-tauri/Cargo.toml` | Rust crate 版本 |
+| `backend/pyproject.toml` | Python 包版本 |
+| `backend/main.py` | FastAPI + /health 版本 |
+| `backend/app/routers/capabilities.py` | capabilities API 返回 |
+| `docs/STATUS.md` | 文档版本号 |
+
+```bash
+# 查看当前版本
+cat VERSION
+
+# 升级版本号并同步所有位置
+python scripts/sync-version.py 0.2.0
+
+# CI 检查一致性（不一致时 exit 1）
+python scripts/sync-version.py --check
+
+# 打包前强制同步（防止忘记）
+python scripts/sync-version.py && bash scripts/build.sh
+```
+
+> **禁止手动修改任何文件的版本号**，一律通过 `sync-version.py` 更新。
+
 ## 常用命令
 
 ### 后端（Python/FastAPI）
