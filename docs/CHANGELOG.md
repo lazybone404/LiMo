@@ -6,6 +6,38 @@
 
 ---
 
+## 2026-07-31 — 6 项体验优化
+
+### 做了什么
+
+基于 [03-质感主题系统设计方案](../pi-docs/03-质感主题系统设计方案.md)，实施 6 项 UX 改进：
+
+**P0 空状态拖放区** — PreviewArea 欢迎页从静态文字改为交互式拖放区 + 链接输入框。新用户第一眼就能"丢东西进来"，而非阅读说明书。复用 GenPanel ImportSection 的拖放逻辑，直接调用 ingest API。
+
+**P2 默认 Tab 按文档类型** — PDF/文档切换后默认打开「整理版原文」，视频默认「转录」，图片默认「原图」，Excel 默认「数据预览」，网页默认「笔记」。包含「已有生成内容」和「尚无内容」两种场景。
+
+**P3 暗色模式极淡纹理** — 之前暗色模式完全清除纹理（`background-image: none !important`），现改用 `::after` 遮罩方案，让纹理以 2-3% 透明度透过，恢复暗色下的纸张质感。
+
+**首次启动向导（三屏）** — 新建 `OnboardingWizard`，替代旧 `SetupWizard`：
+- 屏 1：阅读氛围选择 — 展示经典系列 4 张预设卡片（书香/简净/复古/青竹），点击即实时预览背景
+- 屏 2：系统组件检测 — 复用旧 SetupWizard 的 ffmpeg/SearXNG 检测逻辑
+
+**转录完成提示** — 非图片导入完成后 Toast 明确提示"点击生成按钮生成笔记"，解决用户不知道下一步做什么的问题。
+
+### 为什么
+
+旧 SetupWizard 只检测系统组件，缺乏情感化的首次体验。空状态是用户对产品的第一印象，拖放区比文字说明更有引导力。Tab 默认值和转录提示消除用户的操作困惑。
+
+### 影响范围
+
+- `frontend/src/components/ui/OnboardingWizard.tsx` — 新建（225 行）
+- `frontend/src/components/preview/PreviewArea.tsx` — 拖放区 + 默认 Tab
+- `frontend/src/lib/texture.css` — 暗色纹理 ::after 方案
+- `frontend/src/components/gen-panel/GenPanel.tsx` — Toast 提示优化
+- `frontend/src/App.tsx` — SetupWizard → OnboardingWizard
+
+---
+
 ## 2026-07-31 — 公式渲染 + 导出管线全面修复
 
 ### 做了什么

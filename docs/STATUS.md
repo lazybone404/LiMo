@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-07-31 | **版本**: 0.1.1
+**更新**: 2026-07-31 | **版本**: 0.1.2
 
 ---
 
@@ -12,7 +12,7 @@
 | 指标 | 数量 |
 |------|------|
 | 后端 Python 文件 | 83 |
-| 前端 TS/TSX/CSS 文件 | 47 |
+| 前端 TS/TSX/CSS 文件 | 48 |
 | 前端测试文件 | 4（43 个测试用例） |
 | API 路由模块 | 11 |
 | API 端点 | 63 |
@@ -83,7 +83,7 @@
 | ExportPanel | 自定义导出（tab选择/格式/主题）+ SSE 进度反馈 |
 | EngineSelect | 引擎绑定下拉（含"当前引擎"标签） |
 | LogPanel | 实时日志查看 |
-| SetupWizard | 首次启动向导 |
+| OnboardingWizard | 首次启动向导（三屏） |
 
 ## 进度
 
@@ -119,6 +119,11 @@
 | 引擎配置 UX | ✅ "当前引擎"标签 + "恢复默认"按钮 |
 | 公式 LaTeX 分隔符 | ✅ `\[...\]`/`\(...\)` 前端预处理 + Prompt 约束 + 后端管线 |
 | 导出 HTML 对齐预览 | ✅ one-dark 代码高亮 + checkbox 任务列表 + 暗色代码块 |
+| 首次启动向导 | ✅ 三屏引导（氛围选择 + 组件检测），替代旧 SetupWizard |
+| 空状态拖放区 | ✅ PreviewArea 交互式拖放 + 链接输入 |
+| 默认 Tab 优化 | ✅ PDF→整理版原文 / 视频→转录 / 图片→原图 |
+| 暗色纹理 | ✅ ::after 遮罩 2-3% 透明度保留质感 |
+| 转录完成提示 | ✅ Toast 引导用户点击生成按钮 |
 
 ## 目录结构
 
@@ -136,7 +141,7 @@ frontend/src/
   components/    UI 组件
   store/         Zustand 状态
   api/           API 客户端
-  test/          前端测试（3 个文件）
+  test/          前端测试（4 个文件）
 docs/            设计文档（8 份）
 design/          引擎实测标准
 tests/           集成测试（6 个文件）
