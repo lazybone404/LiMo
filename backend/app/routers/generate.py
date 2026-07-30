@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.core.dependencies import get_store, get_config, get_guard
 from app.core.errors import GenerateError, AppError
+from app.core.disconnect import disconnect_watcher  # 用于重构: 替换下方的 _watch_disconnect
 from app.core import logging as log
 from app.core.model_resolver import resolve_model as _resolve_model, resolve_llm_config
 from app.llm import LLMService, CancelledError
