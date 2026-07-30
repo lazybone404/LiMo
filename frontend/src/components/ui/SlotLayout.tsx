@@ -40,15 +40,15 @@ export function SlotLayout({ hideSlots }: { hideSlots?: string[] }) {
     return { def, state: s }
   }).filter(Boolean) as Array<{ def: typeof allDefs[number]; state: typeof slots[string] }>
 
-  // 方向感知 resize（right 侧 dx 取反）
-  const makeResize = useCallback((slotId: string, side: string) => {
+  // 方向感知 resize（right 侧 dx 取反），限制取自 SlotDef
+  const makeResize = useCallback((def: typeof allDefs[number]) => {
     return (dx: number) => {
       const st = useStore.getState()
-      const s = st.slots[slotId]
+      const s = st.slots[def.id]
       if (!s || s.collapsed) return
-      const adjusted = side === 'right' ? -dx : dx
-      const w = Math.max(50, Math.min(600, s.width + adjusted))
-      st.setSlot(slotId, { width: w })
+      const adjusted = def.side === 'right' ? -dx : dx
+      const w = Math.max(def.minWidth, Math.min(def.maxWidth, s.width + adjusted))
+      st.setSlot(def.id, { width: w })
     }
   }, [])
 
@@ -63,9 +63,8 @@ export function SlotLayout({ hideSlots }: { hideSlots?: string[] }) {
             collapsed={state.collapsed}
             width={state.width}
             needsResize={needsResize}
-            onResize={makeResize(def.id, def.side)}
+            onResize={makeResize(def)}
             onExpand={() => setSlot(def.id, { collapsed: false, width: def.defaultWidth })}
-            onCollapse={() => setSlot(def.id, { collapsed: true })}
           />
         )
       })}
@@ -77,13 +76,12 @@ export function SlotLayout({ hideSlots }: { hideSlots?: string[] }) {
 function PanelItem({ def, collapsed, width, needsResize, onResize, onExpand }: {
   def: typeof SlotRegistry extends { all(): (infer T)[] } ? T : any
   collapsed: boolean; width: number; needsResize: boolean
-  onResize: (dx: number) => void; onExpand: () => void; onCollapse?: () => void
+  onResize: (dx: number) => void; onExpand: () => void
 }) {
   const Comp = COMPONENTS[def.id]
   if (!Comp) return null
   const isCenter = def.side === 'center'
 
-  // 中心面板：始终可见，不折叠
   if (isCenter) {
     return (
       <div className="flex-1 flex overflow-hidden min-w-[200px]">
@@ -102,7 +100,7 @@ function PanelItem({ def, collapsed, width, needsResize, onResize, onExpand }: {
           onClick={onExpand}
         />
       ) : (
-        <div style={{ width, minWidth: 80, maxWidth: 600 }} className="shrink-0">
+        <div style={{ width, minWidth: def.minWidth, maxWidth: def.maxWidth }} className="shrink-0">
           <Comp />
         </div>
       )}
