@@ -6,6 +6,42 @@
 
 ---
 
+## 2026-07-31 — Bug 修复 + SSE 重构
+
+### 做了什么
+
+**Cancel 按钮无效** — 多任务重构将 `createAbort` 改为 per-task key（如 `doc123__generate`），但 `cancelTask` / `cancelOp` 仍用 base docId（`doc123`）查找 → 永不命中。用户每次取消都浪费了 LLM token（HTTP 连接未断开）。修复：`registerAbort` 内部归一化 key，doc 任务按 base docId 存储，导入任务独立 Map 支持多导入并发。
+
+**导入取消后仍继续运行** — `fetchSSE` / `fetchFileSSE` 的 catch 块未检查 `AbortError`，取消后回退到非流式端点继续请求。用户以为取消了，实际后端还在处理。修复：catch 开头加 `if (err.name === 'AbortError') return`。
+
+**SSE 解析提取公共函数** — 新建 `api/sse.ts`，提取 `parseSSEStream()`。`streamGenerate` / `streamFactCheck` / `streamExportProgress` / `streamChat` 4 个函数的 SSE 解析循环统一为一个调用。消除 130+ 行重复代码。
+
+**废弃 types 替换** — 移除 `@types/react-syntax-highlighter`（v15 类型与 v16 不匹配），新建最小类型声明文件 `src/types/react-syntax-highlighter.d.ts`。
+
+**VideoBanner 阅读宽度适配** — 将 VideoBanner 从 `preview-content` 的 `maxWidth` 约束容器内移到外面，不受阅读宽度（narrow/normal/wide）切换影响。
+
+**console.log 清理** — App.tsx 两处残留移除。
+
+### 为什么
+
+Cancel bug 是真实生效的——Map key 存 `doc123__generate`，查 `doc123`，永远匹配不上。多任务重构带来的 regression。
+
+导入 AbortError 漏查和 SSE 重复解析是代码质量债——之前 6 个函数各自 copy 一份几乎一样的 SSE 解析逻辑。
+
+### 影响范围
+
+| 文件 | 变更 |
+|------|------|
+| `api/taskManager.ts` | registerAbort 归一化 key，导入独立 Map |
+| `api/client.ts` | fetchSSE/fetchFileSSE +AbortError 检查，4 函数改用 parseSSEStream |
+| `api/sse.ts` | **新建** — 公共 SSE 流解析器 |
+| `types/react-syntax-highlighter.d.ts` | **新建** — 替代废弃 @types 包 |
+| `PreviewArea.tsx` | VideoBanner 移出约束容器 |
+| `App.tsx` | console.log 清理 |
+| `generate.py` | 导入 disconnect_watcher 标注 |
+
+---
+
 ## 2026-07-31 — 多任务并发重构
 
 ### 做了什么
