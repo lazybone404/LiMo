@@ -84,9 +84,12 @@ function PanelItem({ def, collapsed, width, needsResize, onResize, onExpand }: {
 
   if (isCenter) {
     return (
-      <div className="flex-1 flex overflow-hidden min-w-[200px]">
-        <Comp />
-      </div>
+      <>
+        <div className="flex-1 flex overflow-hidden min-w-[200px]">
+          <Comp />
+        </div>
+        {needsResize && <ResizeHandle onResize={onResize} />}
+      </>
     )
   }
 

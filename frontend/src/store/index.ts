@@ -365,6 +365,7 @@ export const useStore = create<Store>((set) => ({
   slots: {
     genPanel: { width: 260, collapsed: false, visible: true },
     docLib:   { width: 260, collapsed: false, visible: true },
+    preview:  { width: 0,   collapsed: false, visible: true },
     aiPanel:  { width: 340, collapsed: false, visible: false },
     toc:      { width: 160, collapsed: false, visible: true },
   },
