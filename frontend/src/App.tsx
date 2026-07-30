@@ -1,20 +1,15 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore } from './store'
-import { GenPanel } from './components/gen-panel/GenPanel'
 import { Toast } from './components/ui/Toast'
 import { TaskPanel, TaskPanelToggle } from './components/ui/TaskPanel'
 import { ExportPanel } from './components/ui/ExportPanel'
-import { DocLibrary } from './components/doc-library/DocLibrary'
-import { PreviewArea } from './components/preview/PreviewArea'
-import { AIPanel } from './components/ai-chat/AIPanel'
 import { FloatingAI } from './components/ai-chat/FloatingAI'
 import { SettingsPage } from './components/settings/SettingsPage'
 import { OnboardingWizard } from './components/ui/OnboardingWizard'
-import { ResizeHandle } from './components/ui/ResizeHandle'
-import { PanelStrip } from './components/ui/PanelStrip'
+import { SlotLayout } from './components/ui/SlotLayout'
 import { ThemeToggle } from './components/ui/ThemeToggle'
 import { fetchCapabilities, listTranscripts, getMarkdown, getTranscript } from './api/client'
-import { Settings, PanelLeft, Library, MessageSquare, PenLine, Bot, Archive } from 'lucide-react'
+import { Settings, PanelLeft, Library, MessageSquare, Archive } from 'lucide-react'
 
 export default function App() {
   const slots = useStore(s => s.slots)
@@ -109,23 +104,6 @@ export default function App() {
     }
     // 浏览器/开发模式：直接加载（backendReady 默认 true）
     init()
-  }, [])
-
-  // 面板拖拽回调 — 用 getState() 读最新宽度，避免 stale closure
-  const resizeGen = useCallback((dx: number) => {
-    const st = useStore.getState()
-    const w = st.slots.genPanel.width
-    st.setSlot('genPanel', { width: Math.max(50, Math.min(600, w + dx)) })
-  }, [])
-  const resizeDocLib = useCallback((dx: number) => {
-    const st = useStore.getState()
-    const w = st.slots.docLib.width
-    st.setSlot('docLib', { width: Math.max(50, Math.min(600, w + dx)) })
-  }, [])
-  const resizeAI = useCallback((dx: number) => {
-    const st = useStore.getState()
-    const w = st.slots.aiPanel.width
-    st.setSlot('aiPanel', { width: Math.max(50, Math.min(600, w + (-dx))) })
   }, [])
 
   // Tauri 冷启动：后端未就绪时显示加载屏，避免组件提前发请求导致 CONNECTION_REFUSED
@@ -224,56 +202,9 @@ export default function App() {
         <div className="flex-1" />
       </header>
 
-      {/* 主体 — 可拖拽四栏 */}
+      {/* 主体 — 插槽布局引擎 */}
       <div className="flex flex-1 overflow-hidden">
-        {/* 生成面板 */}
-        {slots.genPanel.visible && !slots.genPanel.collapsed ? (
-          <div style={{ width: slots.genPanel.width, minWidth: 80, maxWidth: 600 }} className="shrink-0">
-            <GenPanel />
-          </div>
-        ) : slots.genPanel.visible ? (
-          <PanelStrip label="生成" side="left" icon={PenLine} onClick={() => {
-            setSlot('genPanel', { collapsed: false, width: 260 })
-          }} />
-        ) : null}
-        {slots.genPanel.visible && !slots.genPanel.collapsed && (
-          <ResizeHandle onResize={resizeGen} />
-        )}
-
-        {/* 文档库 */}
-        {!slots.docLib.collapsed ? (
-          <div style={{ width: slots.docLib.width, minWidth: 80, maxWidth: 600 }} className="shrink-0">
-            <DocLibrary />
-          </div>
-        ) : (
-          <PanelStrip label="文档库" side="left" icon={Library} onClick={() => {
-            setSlot('docLib', { collapsed: false, width: 260 })
-          }} />
-        )}
-        {!slots.docLib.collapsed && (
-          <ResizeHandle onResize={resizeDocLib} />
-        )}
-
-        {/* 预览区 */}
-        <div className="flex-1 flex overflow-hidden min-w-[200px]">
-          <PreviewArea />
-        </div>
-
-        {/* AI 面板 — 停靠模式 */}
-        {slots.aiPanel.visible && !aiFloating && (
-          <>
-            <ResizeHandle onResize={resizeAI} />
-            {!slots.aiPanel.collapsed ? (
-              <div style={{ width: slots.aiPanel.width, minWidth: 80, maxWidth: 600 }} className="shrink-0">
-                <AIPanel />
-              </div>
-            ) : (
-              <PanelStrip label="AI" side="right" icon={Bot} onClick={() => {
-                setSlot('aiPanel', { collapsed: false, width: 340 })
-              }} />
-            )}
-          </>
-        )}
+        <SlotLayout hideSlots={aiFloating ? ['aiPanel'] : undefined} />
       </div>
 
       {/* AI 浮窗 */}
