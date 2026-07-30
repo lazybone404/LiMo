@@ -423,10 +423,6 @@ export function PreviewArea() {
         </div>
       )
     }
-    // VideoBanner props 在 5 个 case 中完全一致，提取复用
-    const videoBanner = <VideoBanner title={currentDoc.title} coverUrl={currentDoc.coverUrl}
-      sourceUrl={currentDoc.sourceUrl} sourceType={currentDoc.sourceType} createdAt={currentDoc.createdAt} />
-
     switch (activeView) {
       // Excel 数据预览 — 直接用 Markdown 渲染表格
       case 'data_preview':
@@ -454,7 +450,6 @@ export function PreviewArea() {
             )
           }
           return <>
-            {videoBanner}
             <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={currentContent} meta={markdownMeta} />
           </>
         }
@@ -478,7 +473,6 @@ export function PreviewArea() {
         }
         return <>
           <PartialBanner versions={markdownVersions} isStreaming={isStreaming} />
-          {videoBanner}
           <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
         </>
 
@@ -545,12 +539,6 @@ export function PreviewArea() {
 
         return (
           <div className="mx-auto px-10 py-8">
-            <VideoBanner
-              title={currentDoc?.title}
-              coverUrl={currentDoc?.coverUrl}
-              sourceType={currentDoc?.sourceType}
-              createdAt={currentDoc?.createdAt}
-            />
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-[20px] font-semibold">{currentDoc?.title}</h2>
               <span className="text-[12px] text-success font-medium">
@@ -594,7 +582,6 @@ export function PreviewArea() {
         }
         return (
           <div className="mx-auto px-10 py-8">
-            {videoBanner}
             {currentRawText ? (
               <>
                 <TranscriptView rawText={currentRawText} sourceType={currentDoc?.sourceType} />
@@ -762,6 +749,15 @@ export function PreviewArea() {
             </>
           )
         )}
+        {/* VideoBanner 不受阅读宽度约束 — 渲染在 maxWidth 容器外部 */}
+        {(() => {
+          const bannerViews = ['summary', 'polished', 'transcript', 'extract', 'table', 'digitize', 'understand']
+          if (bannerViews.includes(activeView) && (currentDoc?.sourceType === 'video' || currentDoc?.coverUrl)) {
+            return <VideoBanner title={currentDoc.title} coverUrl={currentDoc.coverUrl}
+              sourceUrl={currentDoc.sourceUrl} sourceType={currentDoc.sourceType} createdAt={currentDoc.createdAt} />
+          }
+          return null
+        })()}
         <div
           ref={containerRef}
           className={`preview-content flex-1 flex flex-col ${activeView === 'mindmap' ? 'overflow-hidden' : 'overflow-y-scroll'} ${activeView === 'mindmap' ? '' : 'mx-auto w-full'} ${activeView === 'mindmap' ? '' : contentWidth === 'wide' ? 'px-1 md:px-2 lg:px-4 xl:px-6' : contentWidth === 'normal' ? 'px-3 md:px-6 lg:px-10 xl:px-16' : 'px-4 md:px-12 lg:px-20 xl:px-32'}`}

@@ -98,7 +98,7 @@ export default function App() {
           if (done) return
           try {
             const r = await fetch('http://127.0.0.1:7413/health')
-            if (r.ok) { console.log('Backend health OK'); initOnce(); return }
+            if (r.ok) { initOnce(); return }
           } catch { /* 后端未就绪，继续轮询 */ }
           await new Promise(r => setTimeout(r, 500))
         }
@@ -108,7 +108,7 @@ export default function App() {
 
       // 同时监听 backend-ready 事件（后端重启等场景）
       import('@tauri-apps/api/event').then(({ listen }) => {
-        listen('backend-ready', () => { console.log('Backend ready event'); initOnce() })
+        listen('backend-ready', () => { initOnce() })
       }).catch(() => {}) // 导入失败无所谓，health check 已覆盖
 
       return () => { done = true }
