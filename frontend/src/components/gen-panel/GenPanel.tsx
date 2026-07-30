@@ -30,6 +30,7 @@ export function GenPanel() {
   const setActiveView = useStore(s => s.setActiveView)
   const setCurrentRawText = useStore(s => s.setCurrentRawText)
   const setProcessing = useStore(s => s.setProcessing)
+  const failTask = useStore(s => s.failTask)
   const addToast = useStore(s => s.addToast)
   const docs = useStore(s => s.docs)
   const currentDoc = docs.find(d => d.id === currentDocId)
@@ -367,7 +368,7 @@ export function GenPanel() {
         }
       }
       // C3: 移除误吞错误守卫，始终重置状态
-      const onError = (err: string) => { setImportError(err); /* importing derived from processingTasks */; setImportProgress(''); setProcessing(taskKey, null) }
+      const onError = (err: string) => { setImportError(err); setImportProgress(''); failTask(taskKey, err) }
       if (fileObj) {
         const signal = createAbort(taskKey)
         setImportProgress(inputType === 'video' ? '语音转写中...' : inputType === 'image' ? '导入中...' : '文档解析中...')
@@ -411,7 +412,7 @@ export function GenPanel() {
       setProcessing(taskKey, null)
     }
     // C3: 移除误吞错误守卫
-    const onError = (err: string) => { setImportError(err); /* importing derived from processingTasks */; setImportProgress(''); setProcessing(taskKey, null) }
+    const onError = (err: string) => { setImportError(err); setImportProgress(''); failTask(taskKey, err) }
     if (isURL) { setImportProgress('下载中...'); ingestURL(text, ev => updateImportProgress(ev), onDone, onError, signal) }
     else { setImportProgress('导入中...'); ingestText(text, ev => updateImportProgress(ev), onDone, onError, signal) }
   }
@@ -564,7 +565,7 @@ export function GenPanel() {
         addToast('生成完成')
       },
       onError(msg) {
-        setProcessing(taskKey, null)
+        failTask(taskKey, msg)
         deleteStreamBuffer(notesKey)
         deleteStreamBuffer(polishedKey)
         if (!isSameDoc(capturedId)) return

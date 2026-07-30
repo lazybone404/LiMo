@@ -69,6 +69,15 @@ function CodeBlock({ inline, className, children, ...props }: any) {
           style={syntaxStyle}
           language={match[1]}
           PreTag="div"
+          showLineNumbers
+          wrapLongLines
+          lineNumberStyle={{
+            minWidth: '2.25em',
+            paddingRight: '1em',
+            color: 'var(--color-disabled)',
+            textAlign: 'right',
+            userSelect: 'none',
+          }}
           customStyle={{ margin: 0, padding: '1rem', background: 'var(--color-surface)', fontSize: '0.85rem' }}
           {...props}
         >

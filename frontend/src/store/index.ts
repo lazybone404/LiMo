@@ -14,6 +14,14 @@ export interface DocEntry {
   tags: string[]; createdAt: string;
 }
 
+export interface TaskInfo {
+  kind: string
+  mode?: string
+  title?: string
+  status?: 'running' | 'failed'
+  error?: string  // 失败原因，保留 5 秒后自动清除
+}
+
 export interface ProgressEvent {
   phase: string; status: string; percent?: number; message?: string;
 }
@@ -90,9 +98,11 @@ interface Store {
   loadImageResults: (docId: string, results: { mode: string; text: string; engine: string; id: string }[]) => void
 
   // ── 处理任务追踪 ──
-  processingTasks: Record<string, { kind: string; mode?: string; title: string }>
-  /** taskKey = `${docId}__${task.kind}` */
-  setProcessing: (taskKey: string, task: { kind: string; mode?: string; title?: string } | null) => void
+  processingTasks: Record<string, TaskInfo>
+  /** taskKey = `${docId}__${task.kind}` 或裸 docId（导入） */
+  setProcessing: (taskKey: string, task: TaskInfo | null) => void
+  /** 将任务标记为失败并保留 error 信息 */
+  failTask: (taskKey: string, error: string) => void
   clearDocTasks: (docId: string) => void
   cancelOneTask: (taskKey: string) => void
 
@@ -269,12 +279,28 @@ export const useStore = create<Store>((set) => ({
   processingTasks: {},
   setProcessing: (taskKey, task) => set(s => {
     const tasks = { ...s.processingTasks }
-    if (task) tasks[taskKey] = { ...task, title: task.title || '' }
+    if (task) tasks[taskKey] = { status: 'running', ...task, title: task.title || '' }
     else {
       Object.keys(tasks).forEach(k => {
         if (k.startsWith(taskKey + '__') || k === taskKey) delete tasks[k]
       })
     }
+    return { processingTasks: tasks }
+  }),
+  /** 将任务标记为失败，5 秒后自动清除 */
+  failTask: (taskKey, error) => set(s => {
+    const tasks = { ...s.processingTasks }
+    if (tasks[taskKey]) {
+      tasks[taskKey] = { ...tasks[taskKey], status: 'failed', error }
+    }
+    // 5 秒后自动清除
+    setTimeout(() => {
+      set(s2 => {
+        const t = { ...s2.processingTasks }
+        if (t[taskKey]?.status === 'failed') delete t[taskKey]
+        return { processingTasks: t }
+      })
+    }, 5000)
     return { processingTasks: tasks }
   }),
   clearDocTasks: (docId) => set(s => {

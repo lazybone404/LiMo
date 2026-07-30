@@ -64,7 +64,7 @@ export function TaskPanel() {
 
   if (!open) return null
 
-  const getTitle = (docId: string, task: { title: string }) =>
+  const getTitle = (docId: string, task: { title?: string }) =>
     task.title || docs.find((d: DocEntry) => d.id === docId)?.title || docId.slice(0, 16) + '…'
 
   return (
@@ -107,30 +107,45 @@ export function TaskPanel() {
           {entries.map(([docId, task]) => {
             const meta = KIND_META[task.kind] || { label: task.kind, Icon: FileText, color: 'text-dimmed', bg: 'bg-surface-hover' }
             const title = getTitle(docId, task)
+            const isFailed = task.status === 'failed'
             return (
               <div key={docId}
-                className="group flex items-center gap-3 px-4 py-2.5 border-b border-black/[0.04] hover:bg-surface-hover transition-colors last:border-b-0">
-                <div className={`shrink-0 flex items-center justify-center w-8 h-8 rounded-xl ${meta.bg}`}>
-                  <meta.Icon size={15} className={meta.color} />
+                className={`group flex items-center gap-3 px-4 py-2.5 border-b border-black/[0.04] transition-colors last:border-b-0 ${isFailed ? 'bg-error/[0.04]' : 'hover:bg-surface-hover'}`}>
+                <div className={`shrink-0 flex items-center justify-center w-8 h-8 rounded-xl ${isFailed ? 'bg-error/10' : meta.bg}`}>
+                  {isFailed ? <AlertTriangle size={15} className="text-error" /> : <meta.Icon size={15} className={meta.color} />}
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-[12px] font-medium text-foreground truncate leading-tight">{title}</p>
-                  <p className="text-[11px] text-disabled mt-0.5 flex items-center gap-1">
-                    <span className="inline-block w-1 h-1 rounded-full bg-success animate-pulse" />
-                    {meta.label}{task.mode ? ` · ${task.mode}` : ''}
+                  <p className="text-[11px] mt-0.5">
+                    {isFailed ? (
+                      <span className="text-error">{task.error || '未知错误'}</span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-disabled">
+                        <span className="inline-block w-1 h-1 rounded-full bg-success animate-pulse" />
+                        {meta.label}{task.mode ? ` · ${task.mode}` : ''}
+                      </span>
+                    )}
                   </p>
                 </div>
-                <button
-                  onClick={() => {
-                    // 提取基础 key：import 任务固定用 '__import__'，doc 任务取第一个 '__' 前的部分
-                    const baseKey = docId.startsWith('__import__') ? '__import__' : docId.includes('__') ? docId.slice(0, docId.indexOf('__')) : docId
-                    cancelTask(baseKey)
-                    setProcessing(docId, null)
-                  }}
-                  className="shrink-0 opacity-50 group-hover:opacity-100 p-1 rounded-md hover:bg-error/10 text-disabled hover:text-error transition-all"
-                  title="取消任务">
-                  <X size={14} />
-                </button>
+                {isFailed ? (
+                  <button
+                    onClick={() => setProcessing(docId, null)}
+                    className="shrink-0 opacity-50 group-hover:opacity-100 p-1 rounded-md hover:bg-surface-hover text-disabled hover:text-foreground transition-all"
+                    title="关闭">
+                    <X size={14} />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      const baseKey = docId.startsWith('__import__') ? '__import__' : docId.includes('__') ? docId.slice(0, docId.indexOf('__')) : docId
+                      cancelTask(baseKey)
+                      setProcessing(docId, null)
+                    }}
+                    className="shrink-0 opacity-50 group-hover:opacity-100 p-1 rounded-md hover:bg-error/10 text-disabled hover:text-error transition-all"
+                    title="取消任务">
+                    <X size={14} />
+                  </button>
+                )}
               </div>
             )
           })}
