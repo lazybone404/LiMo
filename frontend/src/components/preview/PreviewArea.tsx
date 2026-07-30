@@ -749,21 +749,23 @@ export function PreviewArea() {
             </>
           )
         )}
-        {/* VideoBanner 不受阅读宽度约束 — 渲染在 maxWidth 容器外部 */}
-        {(() => {
-          const bannerViews = ['summary', 'polished', 'transcript', 'extract', 'table', 'digitize', 'understand']
-          if (bannerViews.includes(activeView) && (currentDoc?.sourceType === 'video' || currentDoc?.coverUrl)) {
-            return <VideoBanner title={currentDoc.title} coverUrl={currentDoc.coverUrl}
-              sourceUrl={currentDoc.sourceUrl} sourceType={currentDoc.sourceType} createdAt={currentDoc.createdAt} />
-          }
-          return null
-        })()}
-        <div
-          ref={containerRef}
-          className={`preview-content flex-1 flex flex-col ${activeView === 'mindmap' ? 'overflow-hidden' : 'overflow-y-scroll'} ${activeView === 'mindmap' ? '' : 'mx-auto w-full'} ${activeView === 'mindmap' ? '' : contentWidth === 'wide' ? 'px-1 md:px-2 lg:px-4 xl:px-6' : contentWidth === 'normal' ? 'px-3 md:px-6 lg:px-10 xl:px-16' : 'px-4 md:px-12 lg:px-20 xl:px-32'}`}
-          style={activeView === 'mindmap' ? {} : { maxWidth: contentMaxW, fontSize: `${fontSizeScale[contentWidth]}em`, transition: 'max-width 350ms ease-out, padding 350ms ease-out, font-size 350ms ease-out' }}
-        >
-          {renderContent()}
+        <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+          {/* VideoBanner 在 scroll 容器外，不受滚动条遮挡，全宽显示 */}
+          {(() => {
+            const bannerViews = ['summary', 'polished', 'transcript', 'extract', 'table', 'digitize', 'understand']
+            if (bannerViews.includes(activeView) && (currentDoc?.sourceType === 'video' || currentDoc?.coverUrl)) {
+              return <VideoBanner title={currentDoc.title} coverUrl={currentDoc.coverUrl}
+                sourceUrl={currentDoc.sourceUrl} sourceType={currentDoc.sourceType} createdAt={currentDoc.createdAt} />
+            }
+            return null
+          })()}
+          <div
+            ref={containerRef}
+            className={`preview-content flex-1 flex flex-col ${activeView === 'mindmap' ? 'overflow-hidden' : 'overflow-y-scroll'} ${activeView === 'mindmap' ? '' : 'mx-auto w-full'} ${activeView === 'mindmap' ? '' : contentWidth === 'wide' ? 'px-1 md:px-2 lg:px-4 xl:px-6' : contentWidth === 'normal' ? 'px-3 md:px-6 lg:px-10 xl:px-16' : 'px-4 md:px-12 lg:px-20 xl:px-32'}`}
+            style={activeView === 'mindmap' ? {} : { maxWidth: contentMaxW, fontSize: `${fontSizeScale[contentWidth]}em`, transition: 'max-width 350ms ease-out, padding 350ms ease-out, font-size 350ms ease-out' }}
+          >
+            {renderContent()}
+          </div>
         </div>
       </div>
     </main>
