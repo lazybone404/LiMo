@@ -97,6 +97,7 @@ class _PluginEngineAdapter:
         # 从插件复制必要的 Engine 属性
         self.supported_modes = getattr(plugin, 'supported_modes', [])
         self.capabilities = getattr(plugin, 'capabilities', [])
+        self.file_types = plugin.file_types  # capabilities fileTypeMap 动态归入依赖此属性
 
     def accept(self, file_path: str) -> bool:
         return self._plugin.accept(file_path)
@@ -156,7 +157,11 @@ def init_plugins(config: dict):
         return
 
     loaded = 0
-    for py_file in sorted(plugins_dir.glob("*.py")):
+    # 扫描范围：plugins/ 顶层 *.py + 一层子目录 *.py
+    # 子目录支持 git clone 仓库布局（plugins/<repo>/<plugin>.py），
+    # 排除 __pycache__ 等点开头目录
+    py_files = sorted(plugins_dir.glob("*.py")) + sorted(plugins_dir.glob("*/[!.]*.py"))
+    for py_file in py_files:
         try:
             spec = importlib.util.spec_from_file_location(
                 f"_limo_plugin_{py_file.stem}", py_file

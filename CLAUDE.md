@@ -65,6 +65,7 @@ data-font="system|kaiti|wenkai|…"← 阅读字体（5种，4系统+1web）
 | [user-scenarios.md](docs/user-scenarios.md) | 10 个用户场景及实现状态 | 理解产品需求 |
 | [system-design-spec.md](docs/system-design-spec.md) | 原始设计蓝图（历史参考） | 理解早期设计意图 |
 | [engine-standards.md](design/engine-standards.md) | 引擎评审标准+实测数据 | 添加/修改引擎 |
+| [plugins.md](docs/plugins.md) | 插件系统标准 — 开发 API + GitHub 安装流程 + 安全声明 | 开发/安装/调试插件 |
 | [doc-transcript-design.md](docs/doc-transcript-design.md) | Doc 转录原始提案（部分仍有效） | 理解 Word/PPT/EPUB 早期设计意图 |
 | [prompts-inventory.md](docs/prompts-inventory.md) | 全部 LLM 提示词清单 + 审视点清单（9 已修复/8 待处理）+ 温度参数速查 + PromptComposer 标签速查 + Agent SSE 事件流 | 审视/优化 prompt、新增管道需要参考 prompt 风格 |
 | [BUILD.md](docs/BUILD.md) | PyInstaller + Tauri 完整打包流程，常见陷阱 | 打包/发布 |
