@@ -79,8 +79,10 @@ class SearchEngine:
         """全文搜索，返回 [{id, title, snippet}, ...]，按相关性排序"""
         if not query.strip():
             return []
+        # 预处理：CJK 字符间插入空格（FTS5 unicode61 不处理 CJK 分词）
+        prepared = _prepare_query(query)
         # 转义 FTS5 特殊字符
-        safe = _escape_fts5(query)
+        safe = _escape_fts5(prepared)
         with self._lock, self._conn() as conn:
             try:
                 rows = conn.execute(
@@ -113,7 +115,7 @@ class SearchEngine:
 # ── 工具函数 ──
 
 def _clean_for_search(text: str) -> str:
-    """清洗文本：去 Markdown 语法、归一化空白、截断至合理长度"""
+    """清洗文本：去 Markdown 语法、CJK 逐字分割、归一化空白、截断"""
     if not text:
         return ""
     # 去代码块
@@ -130,8 +132,45 @@ def _clean_for_search(text: str) -> str:
     text = re.sub(r'[*_~`>|#\-]+', ' ', text)
     # 归一化空白
     text = re.sub(r'\s+', ' ', text).strip()
+    # CJK 字符间插入空格 — FTS5 unicode61 不处理 CJK 分词
+    text = _insert_cjk_spaces(text)
     # 截断（FTS5 不需要全文，前 50000 字符足够）
     return text[:50000]
+
+
+def _insert_cjk_spaces(text: str) -> str:
+    """在 CJK 字符之间插入空格，非 CJK 部分保持原样。
+    '机器学习Python' → '机 器 学 习 Python'
+    """
+    result: list[str] = []
+    prev_cjk = False
+    for ch in text:
+        is_cjk = '一' <= ch <= '鿿' or '㐀' <= ch <= '䶿'
+        if is_cjk:
+            if prev_cjk:
+                result.append(' ')
+            result.append(ch)
+            result.append(' ')
+        else:
+            result.append(ch)
+        prev_cjk = is_cjk
+    return re.sub(r'\s+', ' ', ''.join(result)).strip()
+
+
+def _prepare_query(query: str) -> str:
+    """预处理查询：CJK 字符间插入空格，让 FTS5 unicode61 能逐字匹配。
+    '机器学习 Python' → '机 器 学 习 Python'
+    """
+    result: list[str] = []
+    for ch in query:
+        if '一' <= ch <= '鿿' or '㐀' <= ch <= '䶿':
+            result.append(' ')
+            result.append(ch)
+            result.append(' ')
+        else:
+            result.append(ch)
+    # 归并多余空格
+    return re.sub(r'\s+', ' ', ''.join(result)).strip()
 
 
 def _escape_fts5(query: str) -> str:
