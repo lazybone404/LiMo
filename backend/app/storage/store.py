@@ -25,12 +25,16 @@ logger = logging.getLogger(__name__)
 INDEX_VERSION = 3
 
 # ── 资产 URL 改写 ──
+# 注意：此函数仅用于路由层（content API 返回前改写）。
+# Store CRUD 方法（get_markdown/get_transcript 等）不调此函数，
+# 原因：导出需要原始相对路径（从 {doc_dir}/assets/ 读盘），续写需要原文。
 
 _RE_ASSET_REF = re.compile(r'!\[([^\]]*)\]\((assets/[^\s)]+)\)')
 
 
 def rewrite_asset_urls(content: str, tx_id: str) -> str:
-    """将磁盘相对路径 assets/xxx 改写为绝对 API URL，供前端渲染。"""
+    """将磁盘相对路径 assets/xxx 改写为绝对 API URL，供前端渲染。
+    应在路由层调用，不在 Store CRUD 内部调用。"""
     if not content:
         return content
     return _RE_ASSET_REF.sub(rf'![\1](/api/assets/{tx_id}/\2)', content)
@@ -280,23 +284,28 @@ class Store:
         return None
 
     def _get_or_create_doc_dir(self, tx_id: str, title: str) -> Path:
-        """获取已有或创建新文档目录。返回目录 Path。"""
+        """获取已有或创建新文档目录。冲突时循环重试（追加序号）。"""
         existing = self._get_doc_dir(tx_id)
         if existing:
             return existing
-        # 计算目录名，冲突时加长后缀
-        dir_name = self._compute_dir_name(title, tx_id)
+        sanitized = re.sub(r'[<>:"/\\|?*]', '', title)
+        sanitized = sanitized.strip('. ')[:30].rstrip('. ') or "Untitled"
+        base = f"{sanitized}-{tx_id[-6:]}"
+        dir_name = base
         d = self.root / dir_name
-        if d.exists():
-            # 冲突兜底：后缀加长到 8 位
-            suffix = tx_id[-8:]
-            dir_name = re.sub(r'-[a-f0-9]{6}$', f'-{suffix}',
-                              self._compute_dir_name(title, tx_id))
+        for i in range(5):
+            try:
+                d.mkdir(parents=True)
+                break
+            except FileExistsError:
+                dir_name = f"{base}_{i + 1}"
+                d = self.root / dir_name
+        else:
+            dir_name = f"{sanitized}-{tx_id[-12:]}"
             d = self.root / dir_name
-        d.mkdir(parents=True, exist_ok=True)
+            d.mkdir(parents=True, exist_ok=True)
         (d / "assets").mkdir(exist_ok=True)
         (d / "process").mkdir(exist_ok=True)
-        # 更新 index 中的 dir_name
         with self._lock:
             for entry in self._index["transcripts"]:
                 if entry["id"] == tx_id:
@@ -539,23 +548,40 @@ class Store:
         return True
 
     def get_markdown(self, id: str) -> Optional[str]:
-        """按 id 查找 markdown 条目 → 解析 mode → 读磁盘文件。"""
+        """按 id 查找 markdown 条目 -> 判断是否最新版 -> 读 .md 或 .prev.md。"""
+        target_entry = None
         for entries in self._index["markdowns"].values():
             for entry in entries if isinstance(entries, list) else [entries]:
                 if entry.get("id") == id:
-                    tx_id = entry.get("transcriptId", "")
-                    mode = entry.get("mode", "")
-                    doc_dir = self._get_doc_dir(tx_id)
-                    if not doc_dir:
-                        return None
-                    path = doc_dir / f"{mode}.md"
-                    if path.exists():
-                        return path.read_text(encoding="utf-8")
+                    target_entry = entry
+                    break
+            if target_entry:
+                break
+        if not target_entry:
+            return None
+
+        tx_id = target_entry.get("transcriptId", "")
+        mode = target_entry.get("mode", "")
+        doc_dir = self._get_doc_dir(tx_id)
+        if not doc_dir:
+            return None
+
+        all_for_tx = self._index["markdowns"].get(tx_id, [])
+        same_mode = [e for e in all_for_tx if e.get("mode") == mode]
+        max_version = max((e.get("version", 0) for e in same_mode), default=0)
+        if target_entry.get("version", 0) < max_version:
+            path = doc_dir / f"{mode}.prev.md"
+        else:
+            path = doc_dir / f"{mode}.md"
+        if path.exists():
+            return path.read_text(encoding="utf-8")
         return None
 
     def get_markdowns_by_transcript(self, transcript_id: str,
                                      mode: str = "", version: int | None = None) -> list[dict]:
-        """获取指定 transcript 的 Markdown，支持 mode/version 过滤。"""
+        """获取指定 transcript 的 Markdown，支持 mode/version 过滤。
+        按版本判断：最新版读 {mode}.md，上一版读 {mode}.prev.md。
+        """
         entries = self._index["markdowns"].get(transcript_id, [])
         if isinstance(entries, dict):
             entries = [entries]
@@ -568,14 +594,23 @@ class Store:
         if not doc_dir:
             return []
 
+        all_for_tx = self._index["markdowns"].get(transcript_id, [])
+        mode_max = {}
+        for e in all_for_tx:
+            m = e.get("mode", "")
+            v = e.get("version", 0)
+            if v > mode_max.get(m, 0):
+                mode_max[m] = v
+
         result = []
         for meta in entries:
             md_mode = meta.get("mode", "")
-            # 读取对应文件
-            path = doc_dir / f"{md_mode}.md"
+            is_latest = meta.get("version", 0) >= mode_max.get(md_mode, 0)
+            suffix = "" if is_latest else ".prev"
+            path = doc_dir / f"{md_mode}{suffix}.md"
             if path.exists():
-                content = path.read_text(encoding="utf-8")
-                result.append({**meta, "content": content})
+                text = path.read_text(encoding="utf-8")
+                result.append({**meta, "content": text})
         return sorted(result, key=lambda e: e.get("version", 0), reverse=True)
 
     # ── ProcessResult CRUD ──
