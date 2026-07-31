@@ -501,7 +501,7 @@ export function PreviewArea() {
           <div className="flex-1 flex items-center justify-center bg-surface-hover p-6">
             <Zoom>
               <img
-                src={apiUrl(`/files/${currentDocId}/original.png`)}
+                src={apiUrl(`/assets/${currentDocId}/original.png`)}
                 alt={currentDoc?.title || '原图'}
                 className="max-w-full max-h-[calc(100vh-140px)] object-contain rounded-xl shadow-lg cursor-zoom-in"
               />

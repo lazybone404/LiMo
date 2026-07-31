@@ -64,8 +64,9 @@ def _optimize_image_data(data_uri: str, max_dim: int = 1024, quality: int = 80) 
 class ContentPreparer:
     """生成前的内容准备器。"""
 
-    def __init__(self, store_root: str = "", llm_config: dict | None = None):
+    def __init__(self, store_root: str = "", llm_config: dict | None = None, doc_dir: str = ""):
         self.store_root = store_root
+        self.doc_dir = doc_dir
         self.llm_config = llm_config or {}
 
     # ── 公开接口 ──
@@ -110,7 +111,7 @@ class ContentPreparer:
         # --- 剥离转录图片（线程池执行，避免读文件+编码阻塞事件循环）---
         clean_text, doc_image_urls = await loop.run_in_executor(
             None, self._extract_and_strip_data_uris,
-            raw_text, self.store_root, keep_refs, send_to_llm, optimize_images)
+            raw_text, self.store_root, self.doc_dir, keep_refs, send_to_llm, optimize_images)
         if vl_text_inline:
             clean_text = clean_text + "\n\n" + vl_text_inline
 
@@ -261,7 +262,7 @@ class ContentPreparer:
 
     @staticmethod
     def _extract_and_strip_data_uris(
-        raw_text: str, store_root: str = "",
+        raw_text: str, store_root: str = "", doc_dir: str = "",
         keep_refs: bool = False,
         send_to_llm: bool = False,
         optimize_images: bool = False,
@@ -273,9 +274,11 @@ class ContentPreparer:
         image_urls: list[str] = []
         data_uri_pat = r'!\[([^\]]*)\]\((data:image/[^;]+;base64,[^)]+)\)'
         file_ref_pat = r'!\[([^\]]*)\]\((/api/files/([a-zA-Z0-9_\-]+)/([a-zA-Z0-9_\-.]+))\)'
+        asset_ref_pat = r'!\[([^\]]*)\]\((assets/[^\s)]+)\)'
 
         data_uri_re = re.compile(data_uri_pat)
         file_ref_re = re.compile(file_ref_pat)
+        asset_ref_re = re.compile(asset_ref_pat)
 
         def _replacer(m):
             alt = m.group(1)
@@ -285,9 +288,27 @@ class ContentPreparer:
                     if optimize_images:
                         uri = _optimize_image_data(uri)
                     image_urls.append(uri)
-                # 剥离 base64 后用文本占位符（非 ![]() 语法，避免渲染空 src）
                 return f'[📷 {alt}]' if alt else '[📷 图片]'
-            elif store_root:
+            elif m.re is asset_ref_re and doc_dir:
+                # 新格式：assets/xxx → 从 {doc_dir}/assets/ 读取
+                fname = m.group(2)  # e.g. "assets/img_0001.png"
+                file_path = Path(doc_dir) / fname
+                if file_path.exists():
+                    if send_to_llm:
+                        import base64
+                        ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else "png"
+                        mime = f"image/{ext}"
+                        b64 = base64.b64encode(file_path.read_bytes()).decode()
+                        data_uri = f"data:{mime};base64,{b64}"
+                        if optimize_images:
+                            data_uri = _optimize_image_data(data_uri)
+                        image_urls.append(data_uri)
+                    if keep_refs:
+                        return f'![{alt}]({fname})'
+                    else:
+                        return f'[📷 {alt}]' if alt else '[📷 图片]'
+            elif m.re is file_ref_re and store_root:
+                # 旧格式兼容：/api/files/{tx_id}/{filename}
                 full_path = m.group(2)
                 tx_id = m.group(3)
                 fname = m.group(4)
@@ -310,6 +331,7 @@ class ContentPreparer:
 
         clean_text = data_uri_re.sub(_replacer, raw_text)
         clean_text = file_ref_re.sub(_replacer, clean_text)
+        clean_text = asset_ref_re.sub(_replacer, clean_text)
 
         stripped = len(image_urls)
         if stripped:

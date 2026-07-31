@@ -51,11 +51,7 @@ def _safe_local_path(store_root: str, transcript_id: str, filename: str) -> Path
 
 @router.get("/files/{transcript_id}/cover")
 def get_cover_image(transcript_id: str, store=Depends(get_store)):
-    """返回文档的本地封面缩略图。
-
-    视频导入时由 _persist_cover_image 下载到
-    {data_dir}/files/{tx_id}/cover.{jpg,png,webp}。
-    """
+    """返回文档的本地封面缩略图。新路径优先 doc_dir/assets/。"""
     if not _check_tx_id(transcript_id):
         raise AppError("COVER_BAD_ID", "无效的文档 ID")
 
@@ -63,6 +59,15 @@ def get_cover_image(transcript_id: str, store=Depends(get_store)):
     if not tx:
         raise AppError("COVER_NOT_FOUND", "文档不存在")
 
+    # 新路径：{doc_dir}/assets/cover.ext
+    doc_dir = store._get_doc_dir(transcript_id)
+    for ext in (".jpg", ".png", ".webp"):
+        if doc_dir:
+            new_path = doc_dir / "assets" / f"cover{ext}"
+            if new_path.exists():
+                media_type = MIME_MAP.get(ext, "image/jpeg")
+                return FileResponse(str(new_path), media_type=media_type, filename=f"cover{ext}")
+    # 旧路径兼容
     for ext in (".jpg", ".png", ".webp"):
         path = _safe_local_path(store.root, transcript_id, f"cover{ext}")
         if path and path.exists():

@@ -213,11 +213,6 @@ async def startup():
     # 存储
     app.state.store = Store(config.get("data_dir", "data"))
 
-    # 截图静态文件 — 基于 data_dir 而非 CWD（打包后 CWD 不可靠）
-    _ss_dir = Path(config.get("data_dir", "data")) / "screenshots"
-    _ss_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/static/screenshots", StaticFiles(directory=str(_ss_dir)), name="screenshots")
-
     # 适配器
     from app.adapters import init_adapters
     init_adapters()

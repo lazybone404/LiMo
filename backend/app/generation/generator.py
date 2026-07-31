@@ -30,8 +30,8 @@ def _post_process_content_markers(markdown: str) -> str:
     return re.sub(r'\*(Content-\[\d{1,2}:\d{1,2}\])', r'\1', markdown)
 
 
-def _post_process_screenshots(markdown: str, video_path: str | None, store_root: str = "") -> str:
-    """将 *Screenshot-[mm:ss] 标记替换为实际截图 URL"""
+def _post_process_screenshots(markdown: str, video_path: str | None, doc_dir: str = "") -> str:
+    """将 *Screenshot-[mm:ss] 标记替换为 assets/xxx 相对路径截图引用"""
     if not video_path or not os.path.exists(video_path):
         logger.info("原片截图：无视频文件，跳过（video_path=%s）", video_path)
         return markdown
@@ -46,13 +46,13 @@ def _post_process_screenshots(markdown: str, video_path: str | None, store_root:
             return markdown
 
         logger.info("原片截图：找到 %d 个标记，开始 ffmpeg 抽帧", len(matches))
-        # 使用 store_root——打包后 CWD 指向安装目录（Program Files），无写权限
-        output_dir = os.path.join(store_root or tempfile.mkdtemp(prefix="limo_ss_"), "screenshots")
+        output_dir = os.path.join(doc_dir or tempfile.mkdtemp(prefix="limo_ss_"), "assets")
+        os.makedirs(output_dir, exist_ok=True)
         for idx, (marker, ts) in enumerate(matches):
             try:
                 img_path = generate_screenshot(video_path, output_dir, ts, idx)
                 filename = Path(img_path).name
-                img_url = f"/static/screenshots/{filename}"
+                img_url = f"assets/{filename}"
                 markdown = markdown.replace(marker, f"![]({img_url})", 1)
                 logger.info("原片截图：%s → %s", marker, filename)
             except Exception as e:
@@ -126,7 +126,7 @@ class Generator:
             )
             content = _post_process_content_markers(content)
             if formats and "screenshot" in formats:
-                content = _post_process_screenshots(content, video_path, store_root=self._prep.store_root)
+                content = _post_process_screenshots(content, video_path, doc_dir=self._prep.doc_dir)
         finally:
             self._cleanup_video(video_path)
 
@@ -216,8 +216,8 @@ class Generator:
             content_a = _post_process_content_markers(content_a)
             content_b = _post_process_content_markers(content_b)
             if formats and "screenshot" in formats:
-                content_a = _post_process_screenshots(content_a, video_path, store_root=self._prep.store_root)
-                content_b = _post_process_screenshots(content_b, video_path, store_root=self._prep.store_root)
+                content_a = _post_process_screenshots(content_a, video_path, doc_dir=self._prep.doc_dir)
+                content_b = _post_process_screenshots(content_b, video_path, doc_dir=self._prep.doc_dir)
         finally:
             self._cleanup_video(video_path)
 

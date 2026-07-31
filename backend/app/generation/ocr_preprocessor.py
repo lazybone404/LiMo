@@ -1,7 +1,7 @@
 """
 OCR 预处理 — 对文档中嵌入的图片做 OCR，文字塞回原文
 
-仅处理 /api/files/{tx_id}/img_NNNN.png 格式的本地图片引用。
+处理 assets/img_NNNN.png（新格式，相对路径）和旧格式 /api/files/{tx_id}/img_NNNN.png。
 外部 URL 和 base64 data URI 不处理（前者需要下载，后者临时性）。
 """
 
@@ -15,8 +15,12 @@ from app.llm.service import LLMService
 
 logger = logging.getLogger(__name__)
 
-# 本地图片引用: ![alt](/api/files/{tx_id}/img_NNNN.png)
+# 新格式: ![alt](assets/img_NNNN.png)
 _RE_IMG_REF = re.compile(
+    r'!\[([^\]]*)\]\((assets/(img_\d{4}\.[a-z]+))\)'
+)
+# 旧格式兼容
+_RE_IMG_REF_OLD = re.compile(
     r'!\[([^\]]*)\]\(/api/files/([a-zA-Z0-9_-]+)/(img_\d{4}\.[a-z]+)\)'
 )
 
@@ -39,27 +43,33 @@ class OCRPreprocessor:
         self._config = config
         self._ocr_model_id = ocr_model_id
 
-    async def process(self, raw_text: str, store_root: str) -> str:
-        """匹配图片引用 → 逐一 OCR → 插入原文。无匹配则直接返回。"""
-        matches = _RE_IMG_REF.findall(raw_text)
-        if not matches:
+    async def process(self, raw_text: str, store_root: str, doc_dir: str = "") -> str:
+        """匹配图片引用 → 逐一 OCR → 插入原文。支持新旧两种路径格式。"""
+        new_matches = _RE_IMG_REF.findall(raw_text)       # (alt, "assets/img_NNNN.png", "img_NNNN.png")
+        old_matches = _RE_IMG_REF_OLD.findall(raw_text)    # (alt, tx_id, filename)
+
+        all_matches = new_matches + old_matches
+        if not all_matches:
             return raw_text
 
-        if len(matches) > MAX_IMAGES:
-            skipped = len(matches) - MAX_IMAGES
+        if len(all_matches) > MAX_IMAGES:
+            skipped = len(all_matches) - MAX_IMAGES
             logger.warning("图片过多 (%d)，只 OCR 前 %d 张，跳过 %d 张",
-                           len(matches), MAX_IMAGES, skipped)
-            matches = matches[:MAX_IMAGES]
+                           len(all_matches), MAX_IMAGES, skipped)
+            all_matches = all_matches[:MAX_IMAGES]
 
-        # 建立 (alt, tx_id, filename) → OCR 结果的映射
         sem = asyncio.Semaphore(OCR_CONCURRENCY)
         ocr_llm: LLMService | None = None
 
-        async def ocr_one(alt: str, tx_id: str, filename: str) -> str:
+        async def ocr_one(alt: str, arg2: str, filename: str) -> str:
             nonlocal ocr_llm
             async with sem:
                 try:
-                    img_path = Path(store_root) / "files" / tx_id / filename
+                    # arg2 is either full asset path ("assets/img_NNNN.png") or tx_id
+                    if doc_dir and arg2.startswith("assets/"):
+                        img_path = Path(doc_dir) / arg2
+                    else:
+                        img_path = Path(store_root) / "files" / arg2 / filename
                     if not img_path.exists():
                         logger.warning("OCR: 图片不存在 %s", img_path)
                         return f"[图片缺失: {filename}]"
@@ -72,7 +82,6 @@ class OCRPreprocessor:
                     b64 = base64.b64encode(img_data).decode()
                     data_uri = f"data:{mime};base64,{b64}"
 
-                    # 延迟创建 LLMService（复用同一个实例）
                     if ocr_llm is None:
                         ocr_llm = LLMService(self._config, model_id=self._ocr_model_id)
 
@@ -83,29 +92,37 @@ class OCRPreprocessor:
                         temperature=OCR_TEMPERATURE,
                         max_continuations=0,
                     )
-                    logger.info("OCR: %s/%s (%s) → %d chars",
-                                tx_id[:8], filename, alt, len(result))
+                    logger.info("OCR: %s (%s) → %d chars",
+                                filename, alt, len(result))
                     return result.strip() or "[OCR 结果为空]"
 
                 except Exception as e:
-                    logger.warning("OCR 失败: %s/%s: %s", tx_id[:8], filename, str(e)[:120])
+                    logger.warning("OCR 失败: %s: %s", filename, str(e)[:120])
                     return f"[OCR 失败: {filename}]"
 
         # 并行 OCR 所有图片
-        tasks = [ocr_one(alt, tx_id, filename)
-                 for alt, tx_id, filename in matches]
+        tasks = [ocr_one(alt, arg2, filename)
+                 for alt, arg2, filename in all_matches]
         results = await asyncio.gather(*tasks)
 
-        # 用正则替换：在原图片引用后追加 OCR 结果
-        result_map = {key: text for key, text in zip(matches, results)}
-        idx = [0]
+        # 替换：新格式
+        result_map_new = {key: text for key, text in zip(new_matches, results[:len(new_matches)])}
+        result_map_old = {key: text for key, text in zip(old_matches, results[len(new_matches):])}
 
-        def replacer(m: re.Match) -> str:
+        def replacer_new(m: re.Match) -> str:
             key = (m.group(1), m.group(2), m.group(3))
-            ocr_text = result_map.get(key, "")
+            ocr_text = result_map_new.get(key, "")
             if ocr_text:
-                return (f"{m.group(0)}\n\n"
-                        f"[图片文字]\n{ocr_text}\n[/图片文字]\n")
+                return f"{m.group(0)}\n\n[图片文字]\n{ocr_text}\n[/图片文字]\n"
             return m.group(0)
 
-        return _RE_IMG_REF.sub(replacer, raw_text)
+        def replacer_old(m: re.Match) -> str:
+            key = (m.group(1), m.group(2), m.group(3))
+            ocr_text = result_map_old.get(key, "")
+            if ocr_text:
+                return f"{m.group(0)}\n\n[图片文字]\n{ocr_text}\n[/图片文字]\n"
+            return m.group(0)
+
+        raw_text = _RE_IMG_REF.sub(replacer_new, raw_text)
+        raw_text = _RE_IMG_REF_OLD.sub(replacer_old, raw_text)
+        return raw_text

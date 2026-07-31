@@ -80,7 +80,7 @@ async def get_transcript(tx_id: str, request: Request, store=Depends(get_store))
         "contentHash": tx.get("contentHash", ""),
         "tags": tx.get("tags", []),
         "createdAt": tx.get("createdAt", ""),
-        "rawText": tx.get("rawText", ""),
+        "rawText": rewrite_asset_urls(tx.get("rawText", ""), tx_id),
     }
 
 
@@ -246,22 +246,10 @@ async def _persist_ingest_result(
         }
 
     tx_id = f"tr_{uuid.uuid4().hex[:12]}"
-    output.raw_text = _persist_media_images(store, output.raw_text, media_dir, tx_id)
-    _persist_original_image(store, output.raw_text, tx_id)
 
-    # 图片类型：原图就是封面
-    if adapter_name == "image" and output.metadata and not output.metadata.cover_url:
-        output.metadata.cover_url = f"/api/files/{tx_id}/original.png"
-
-    # 视频类型：封面缩略图下载到本地（几十KB，去外部CDN依赖）
-    if output.metadata and output.metadata.cover_url:
-        output.metadata.cover_url = _persist_cover_image(
-            store, output.metadata.cover_url, tx_id)
-
+    # 提前计算标题（图片持久化需要 doc_dir）
     title = (output.metadata.source_title if output.metadata and output.metadata.source_title
              else _build_title(inp))
-    # 如果标题看起来像自动生成的（含协议/哈希/全是技术名），从内容提取
-    # URL 输入的标题始终尝试从正文提取（正文首行标题通常比 URL 路径段更可读）
     if (not output.metadata or not output.metadata.source_title) and (
         title.startswith("http") or re.match(r'^[a-f0-9]{32}', title) or
         "_" in title or len(title) > 40 or bool(inp.url)
@@ -269,6 +257,22 @@ async def _persist_ingest_result(
         extracted = _extract_title_from_rawtext(output.raw_text)
         if extracted:
             title = extracted
+
+    # 创建文档目录（在图片持久化之前）
+    doc_dir = store._get_or_create_doc_dir(tx_id, title)
+
+    output.raw_text = _persist_media_images(output.raw_text, media_dir, doc_dir)
+    _persist_original_image(output.raw_text, doc_dir)
+
+    # 图片类型：原图就是封面
+    if adapter_name == "image" and output.metadata and not output.metadata.cover_url:
+        output.metadata.cover_url = f"/api/assets/{tx_id}/original.png"
+
+    # 视频类型：封面缩略图下载到 doc_dir/assets/
+    if output.metadata and output.metadata.cover_url:
+        output.metadata.cover_url = _persist_cover_image(
+            output.metadata.cover_url, doc_dir, tx_id)
+
     tx = RawTranscript(
         id=tx_id, title=title,
         source_type=_adapter_to_source_type(adapter_name, inp.file_path or ""),
@@ -356,38 +360,34 @@ def _persist_media_file(store: object, raw_text: str) -> str:
     return json.dumps(meta, ensure_ascii=False)
 
 
-def _persist_media_images(store: object, raw_text: str, media_dir: str, tx_id: str) -> str:
-    """将引擎提取的图片从临时目录迁移到永久目录，改写 rawText 中路径。
+def _persist_media_images(raw_text: str, media_dir: str, doc_dir: Path) -> str:
+    """将引擎提取的图片从临时目录迁移到文档目录，改写 rawText 中路径。
 
-    引擎写入 `![alt](img_0001.png)` → 改写为 `![alt](/api/files/{tx_id}/img_0001.png)`
+    引擎写入 `![alt](img_0001.png)` → 改写为 `![alt](assets/img_0001.png)`（相对路径）
     无图片时直接返回原文。
     """
     media = Path(media_dir)
     if not media.exists() or not any(media.iterdir()):
-        return raw_text  # 无图片，无需处理
+        return raw_text
 
-    dest_dir = Path(store.root) / "files" / tx_id
+    dest_dir = doc_dir / "assets"
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     import re
     count = 0
     all_imgs = set(media.glob("img_*")) | set(media.glob("*.png")) | set(media.glob("*.jpg")) | set(media.glob("*.jpeg"))
     for img_file in sorted(all_imgs):
-        # 统一重命名为 img_NNNN 格式
         new_name = f"img_{count:04d}{img_file.suffix}"
         dest = dest_dir / new_name
         shutil.copy2(img_file, dest)
-        # 替换 Markdown：匹配 ![](任意路径/文件名) → ![](/api/files/{tx_id}/new_name)
-        escaped = re.escape(img_file.name)       # 匹配纯文件名
-        escaped_full = re.escape(str(img_file))  # 匹配绝对/相对路径
+        escaped = re.escape(img_file.name)
         raw_text = re.sub(
             rf'!\[([^\]]*)\]\s*\([^)]*{escaped}\)',
-            rf'![\1](/api/files/{tx_id}/{new_name})',
+            rf'![\1](assets/{new_name})',
             raw_text,
         )
         count += 1
 
-    # 清理临时目录
     try:
         shutil.rmtree(media)
     except OSError:
@@ -398,14 +398,10 @@ def _persist_media_images(store: object, raw_text: str, media_dir: str, tx_id: s
     return raw_text
 
 
-def _persist_cover_image(store: object, cover_url: str, tx_id: str) -> str:
-    """下载视频封面缩略图到本地存储，返回本地 URL。
-
-    视频封面通常几十KB，存本地消除外部 CDN 依赖。
-    已有的本地路径（如 /api/files/...）不做处理直接返回。
-    """
-    if not cover_url or cover_url.startswith("/api/files/"):
-        return cover_url  # 已是本地路径或为空
+def _persist_cover_image(cover_url: str, doc_dir: Path, tx_id: str) -> str:
+    """下载视频封面缩略图到 {doc_dir}/assets/，返回 /api/assets/{tx_id}/cover URL。"""
+    if not cover_url or cover_url.startswith("/api/assets/"):
+        return cover_url
     from app.utils.url_security import validate_url
     try:
         validate_url(cover_url)
@@ -413,7 +409,7 @@ def _persist_cover_image(store: object, cover_url: str, tx_id: str) -> str:
         logger.warning("封面 URL 安全校验失败: %s — %s", cover_url[:80], str(e)[:80])
         return cover_url
     try:
-        dest_dir = Path(store.root) / "files" / tx_id
+        dest_dir = doc_dir / "assets"
         dest_dir.mkdir(parents=True, exist_ok=True)
         ext = ".jpg"
         url_lower = cover_url.lower()
@@ -423,27 +419,23 @@ def _persist_cover_image(store: object, cover_url: str, tx_id: str) -> str:
             ext = ".webp"
         dest = dest_dir / f"cover{ext}"
         if dest.exists():
-            return f"/api/files/{tx_id}/cover"
+            return f"/api/assets/{tx_id}/cover"
         import requests as req
         resp = req.get(cover_url, headers={"User-Agent": "LiMo/1.0"}, timeout=15)
         if resp.status_code == 200:
             dest.write_bytes(resp.content)
             logger.info("封面下载: %s → %s (%d bytes)", cover_url[:80], dest.name, len(resp.content))
-            return f"/api/files/{tx_id}/cover"
+            return f"/api/assets/{tx_id}/cover"
         else:
             logger.warning("封面下载失败 HTTP %d: %s", resp.status_code, cover_url[:80])
-            return cover_url  # 回退，保留外部 URL
+            return cover_url
     except Exception as e:
         logger.warning("封面下载异常: %s — %s", cover_url[:80], str(e)[:80])
-        return cover_url  # 下载失败不影响导入流程，保留外部 URL
+        return cover_url
 
 
-def _persist_original_image(store: object, raw_text: str, tx_id: str) -> None:
-    """图片导入：将原图从持久化位置拷贝到 {tx_id}/original.ext，前端原图 tab 直达。
-
-    ImageAdapter 输出 JSON {"type":"image","file_path":"/store/files/hash/img.png"}，
-    _persist_media_file 已将文件拷到永久目录。此处再拷一份到可预测的 URL 路径。
-    """
+def _persist_original_image(raw_text: str, doc_dir: Path) -> None:
+    """图片导入：将原图拷贝到 doc_dir/assets/original.png。"""
     try:
         meta = json.loads(raw_text)
     except (json.JSONDecodeError, TypeError):
@@ -457,7 +449,7 @@ def _persist_original_image(store: object, raw_text: str, tx_id: str) -> None:
         logger.warning("原图拷贝跳过: 源文件不存在 %s", src)
         return
 
-    dest_dir = Path(store.root) / "files" / tx_id
+    dest_dir = doc_dir / "assets"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / "original.png"
     if not dest.exists():
@@ -591,9 +583,9 @@ async def ingest(
         raise AppError("INGEST_FAILED", f"导入失败: {str(e)[:200]}") from e
 
     result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir)
-if result.get("status") == "done" and "id" in result:
-    _index_for_search(request, result["id"], result.get("title", ""), output.raw_text)
-return result
+    if result.get("status") == "done" and "id" in result:
+        _index_for_search(request, result["id"], result.get("title", ""), output.raw_text)
+    return result
 
 
 
@@ -811,13 +803,7 @@ async def ingest_stream(
 
 @router.get("/files/{tx_id}/{filename}")
 async def serve_media_file(tx_id: str, filename: str, request: Request, store=Depends(get_store)):
-    """访问转录文档的内嵌图片。
-
-    安全约束：
-    - tx_id / filename 只允许字母数字 + 下划线 + 点 + 连字符
-    - 文件必须在 store.root/files/{tx_id}/ 目录下
-    - 只允许常见图片格式
-    """
+    """Access document images. Priority: doc_dir/assets/ > files/{tx_id}/."""
     import re
     if not re.match(r'^[a-zA-Z0-9_\-]+$', tx_id):
         raise HTTPException(status_code=400, detail="Invalid tx_id")
@@ -828,33 +814,81 @@ async def serve_media_file(tx_id: str, filename: str, request: Request, store=De
     if ext not in ("png", "jpg", "jpeg", "gif", "webp", "svg"):
         raise HTTPException(status_code=400, detail=f"Unsupported format: {ext}")
 
-    file_path = Path(store.root) / "files" / tx_id / filename
+    data_root = Path(store.root).resolve()
 
-    # 防路径遍历
+    # 1. New: {doc_dir}/assets/{filename}
+    doc_dir = store._get_doc_dir(tx_id)
+    if doc_dir:
+        asset_path = (doc_dir / "assets" / filename).resolve()
+        try:
+            asset_path.relative_to(data_root)
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Path traversal denied")
+        if asset_path.exists():
+            return FileResponse(str(asset_path))
+
+    # 2. Legacy: files/{tx_id}/{filename}
+    legacy_path = (Path(store.root) / "files" / tx_id / filename).resolve()
     try:
-        file_path.resolve().relative_to((Path(store.root) / "files").resolve())
+        legacy_path.relative_to(data_root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Path traversal denied")
+    if legacy_path.exists():
+        return FileResponse(str(legacy_path))
+
+    # 3. Fallback: sourceFilePath from index (image imports)
+    for entry in store._index.get("transcripts", []):
+        if entry.get("id") == tx_id:
+            src = entry.get("sourceFilePath", "")
+            if src:
+                src_path = Path(src).resolve()
+                try:
+                    src_path.relative_to(data_root)
+                except ValueError:
+                    raise HTTPException(status_code=403, detail="Path traversal denied")
+                if src_path.exists():
+                    return FileResponse(str(src_path))
+            break
+
+    raise HTTPException(status_code=404, detail="File not found")
+
+
+# Asset file serving endpoint
+@router.get("/assets/{tx_id}/{filename}")
+async def serve_asset(tx_id: str, filename: str, store=Depends(get_store)):
+    """Serve from {doc_dir}/assets/ — screenshots, covers, embedded images."""
+    import re
+    if not re.match(r'^[a-zA-Z0-9_\-]+$', tx_id):
+        raise HTTPException(status_code=400, detail="Invalid tx_id")
+    if not re.match(r'^[a-zA-Z0-9_\-./]+$', filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in ("png", "jpg", "jpeg", "gif", "webp", "svg"):
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {ext}")
+
+    data_root = Path(store.root).resolve()
+    doc_dir = store._get_doc_dir(tx_id)
+    if not doc_dir:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_path = (doc_dir / "assets" / filename).resolve()
+    try:
+        file_path.relative_to(data_root)
     except ValueError:
         raise HTTPException(status_code=403, detail="Path traversal denied")
 
     if file_path.exists():
         return FileResponse(str(file_path))
 
-    # 文件不在本地副本目录 — 回退：从 rawText 的 file_path 读取源文件
-    tx = store.get_transcript(tx_id)
-    if tx:
-        try:
-            meta = json.loads(tx.get("rawText", "{}"))
-        except (json.JSONDecodeError, TypeError):
-            meta = {}
-        src = meta.get("file_path", "")
-        if src:
-            src_path = Path(src).resolve()
-            data_root = Path(store.root).resolve()
-            try:
-                src_path.relative_to(data_root)
-            except ValueError:
-                raise HTTPException(status_code=403, detail="Path traversal denied")
-            if src_path.exists():
-                return FileResponse(str(src_path))
+    # Fallback: files/{tx_id}/{filename} (legacy)
+    legacy = (Path(store.root) / "files" / tx_id / filename).resolve()
+    try:
+        legacy.relative_to(data_root)
+    except ValueError:
+        raise HTTPException(status_code=403)
+    if legacy.exists():
+        return FileResponse(str(legacy))
 
     raise HTTPException(status_code=404, detail="File not found")
+

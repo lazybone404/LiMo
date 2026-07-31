@@ -158,7 +158,7 @@ export function GenerateOptions(props: Props) {
                 <input type="checkbox" checked={p.formatImages} onChange={e => p.setFormatImages(e.target.checked)}
                   className="w-4 h-4 accent-accent" />
                 <span className="text-[13px]">保留文档图片</span>
-                <span className="text-[10px] text-disabled">保留 ![](/api/files/...) 引用</span></label>
+                <span className="text-[10px] text-disabled">保留 ![](assets/xxx) 相对路径引用</span></label>
               {p.formatImages && (
                 <label className={`flex items-center gap-2 ml-5 cursor-pointer`}>
                   <input type="checkbox" checked={p.ocrEnabled} onChange={e => p.setOcrEnabled(e.target.checked)}

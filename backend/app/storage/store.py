@@ -9,6 +9,9 @@ v2: 统一索引 — transcripts / markdowns / processes / conversations
 import hashlib
 import json
 import logging
+import os
+import re
+import shutil
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +22,18 @@ from app.core.errors import AppError, StoreError
 
 logger = logging.getLogger(__name__)
 
-INDEX_VERSION = 2
+INDEX_VERSION = 3
+
+# ── 资产 URL 改写 ──
+
+_RE_ASSET_REF = re.compile(r'!\[([^\]]*)\]\((assets/[^\s)]+)\)')
+
+
+def rewrite_asset_urls(content: str, tx_id: str) -> str:
+    """将磁盘相对路径 assets/xxx 改写为绝对 API URL，供前端渲染。"""
+    if not content:
+        return content
+    return _RE_ASSET_REF.sub(rf'![\1](/api/assets/{tx_id}/\2)', content)
 
 
 def _serialize_metadata(meta) -> dict:
@@ -66,76 +80,23 @@ class Store:
     # ── 索引加载 / 保存 / 迁移 ──
 
     def _load_index(self):
-        """加载统一索引。无文件或旧格式 → 自动迁移。"""
+        """加载统一索引。v2 及以下 → 自动初始化为空（新架构不兼容）。"""
         if self._index_path.exists():
             try:
                 data = json.loads(self._index_path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
-                logger.warning("index.json 损坏，尝试从旧文件恢复...")
+                logger.warning("index.json 损坏，初始化为空索引")
                 data = None
-            if data and isinstance(data, dict) and data.get("version", 0) >= 2:
-                # v2 格式：补全缺失的子键（向前兼容）
+            if data and isinstance(data, dict) and data.get("version", 0) >= 3:
                 default = _empty_index()
                 for key in default:
                     if key not in data:
                         data[key] = default[key]
                 self._index = data
                 return
-            # 旧格式（v1 list）或损坏 → 迁移
-            logger.info("检测到 v1 索引格式，自动迁移到 v2...")
-            if data and isinstance(data, list):
-                self._index = {"version": INDEX_VERSION, "transcripts": data}
-            else:
-                self._index = _empty_index()
-        else:
-            self._index = _empty_index()
-
-        # 尝试从旧 4 文件加载剩余子索引
-        migrated = self._migrate_from_v1()
-        if migrated:
-            self._save_index()
-            logger.info("v1 → v2 迁移完成，共 %d transcripts, %d conversations",
-                        len(self._index["transcripts"]), len(self._index["conversations"]))
-
-    def _migrate_from_v1(self) -> bool:
-        """从 v1 的 4 个独立 JSON 文件加载并合并到统一索引。返回 True 表示有数据迁移。"""
-        migrated = False
-
-        # markdown_index.json
-        md_path = self.root / "markdown_index.json"
-        if md_path.exists():
-            try:
-                md_data = json.loads(md_path.read_text(encoding="utf-8"))
-                if md_data:
-                    self._index["markdowns"] = md_data
-                    migrated = True
-            except (json.JSONDecodeError, OSError):
-                logger.warning("markdown_index.json 损坏，跳过")
-
-        # process_index.json
-        pr_path = self.root / "process_index.json"
-        if pr_path.exists():
-            try:
-                pr_data = json.loads(pr_path.read_text(encoding="utf-8"))
-                if pr_data:
-                    self._index["processes"] = pr_data
-                    migrated = True
-            except (json.JSONDecodeError, OSError):
-                logger.warning("process_index.json 损坏，跳过")
-
-        # conversations_index.json
-        conv_path = self.root / "conversations_index.json"
-        if conv_path.exists():
-            try:
-                conv_data = json.loads(conv_path.read_text(encoding="utf-8"))
-                if conv_data:
-                    self._index["conversations"] = conv_data
-                    migrated = True
-            except (json.JSONDecodeError, OSError):
-                logger.warning("conversations_index.json 损坏，跳过")
-
-        # 如果旧 index.json 是 list 格式，已在 _load_index 中处理
-        return migrated
+            logger.info("检测到旧索引格式 (v%s)，初始化 v3 空索引",
+                        data.get("version", 0) if data else "?")
+        self._index = _empty_index()
 
     def _save_index(self):
         """原子写入统一 index.json"""
@@ -145,63 +106,79 @@ class Store:
         )
 
     def _rebuild_index(self):
-        """遍历所有数据目录重建索引（故障恢复）"""
+        """遍历所有文档目录重建索引（故障恢复）。
+        识别规则：根目录下含 transcript.md 的子目录视为文档目录。
+        从目录名反推 dir_name，从文件推断 index 条目。
+        """
+        import re as _re
         self._index = _empty_index()
-        transcripts_dir = self.root / "transcripts"
-        markdown_dir = self.root / "markdown"
-        process_dir = self.root / "process"
-        conversations_dir = self.root / "conversations"
 
-        # 重建 transcripts
-        if transcripts_dir.exists():
-            for bucket in transcripts_dir.iterdir():
-                if bucket.is_dir():
-                    for f in bucket.iterdir():
-                        if f.suffix == ".json":
-                            try:
-                                data = json.loads(f.read_text(encoding="utf-8"))
-                                self._index["transcripts"].append(
-                                    self._transcript_index_entry(data))
-                            except (json.JSONDecodeError, OSError):
-                                logger.warning("跳过损坏文件: %s", f.name)
+        for d in sorted(self.root.iterdir()):
+            if not d.is_dir():
+                continue
+            if d.name.startswith(".") or d.name in ("logs", "tmp", "files",
+                                                      "conversations", "cache"):
+                continue
+            tx_md = d / "transcript.md"
+            if not tx_md.exists():
+                continue
 
-        # 重建 markdowns（从磁盘文件反推 index 条目）
-        if markdown_dir.exists():
-            md_entries: dict[str, list[dict]] = {}
-            for bucket in markdown_dir.iterdir():
-                if bucket.is_dir():
-                    for f in bucket.iterdir():
-                        if f.suffix == ".md":
-                            md_id = f.stem
-                            content = f.read_text(encoding="utf-8")
-                            # 尽可能从内容推断（保守估计 version=1, status="complete"）
-                            tx_id = ""  # 无法从文件反推 transcript_id
-                            md_entries.setdefault(tx_id, []).append({
-                                "id": md_id, "transcriptId": tx_id,
-                                "style": "detailed", "mode": "notes",
-                                "version": 1, "createdAt": "",
-                                "status": "complete",
-                            })
+            # 这是文档目录
+            dir_name = d.name
+            tx_id = ""
+
+            # 从 transcript.md 内容推断 tx_id（无可靠方法，生成新 ID）
+            raw_text = tx_md.read_text(encoding="utf-8")
+            tx_id = f"tr_{hashlib.sha256(raw_text.encode()).hexdigest()[:12]}"
+
+            # 构建 transcript index 条目
+            tx_entry = {
+                "id": tx_id, "title": dir_name.rsplit("-", 1)[0],
+                "sourceType": "", "sourceUrl": "", "sourceFileName": "",
+                "sourceFilePath": "", "engine": "", "engineVersion": "",
+                "language": "", "duration": None, "coverUrl": "",
+                "sourceTitle": "", "contentHash": hashlib.sha256(raw_text.encode()).hexdigest(),
+                "metadata": {}, "tags": [], "createdAt": "",
+                "dir_name": dir_name,
+            }
+            self._index["transcripts"].append(tx_entry)
+
+            # 重建 markdown 条目
+            md_entries = []
+            for md_file in sorted(d.glob("*.md")):
+                if md_file.name == "transcript.md":
+                    continue
+                mode = md_file.stem
+                if mode.endswith(".prev"):
+                    mode = mode[:-5]  # notes.prev → notes
+                # 只处理主文件，.prev 由 get_markdowns_by_transcript 检测
+                if md_file.suffix == ".md" and not md_file.stem.endswith(".prev"):
+                    md_id = f"md_{hashlib.sha256(str(md_file).encode()).hexdigest()[:12]}"
+                    md_entries.append({
+                        "id": md_id, "transcriptId": tx_id,
+                        "style": "detailed", "mode": mode,
+                        "version": 1, "createdAt": "",
+                        "status": "complete",
+                    })
             if md_entries:
-                self._index["markdowns"] = md_entries
+                self._index["markdowns"][tx_id] = md_entries
 
-        # 重建 processes（从磁盘文件反推）
-        if process_dir.exists():
-            pr_entries: dict[str, list[dict]] = {}
-            for bucket in process_dir.iterdir():
-                if bucket.is_dir():
-                    for f in bucket.iterdir():
-                        if f.suffix == "":  # process 文件无扩展名
-                            pr_id = f.name
-                            pr_entries.setdefault("", []).append({
-                                "id": pr_id, "transcriptId": "",
-                                "mode": "unknown", "engine": "",
-                                "createdAt": "",
-                            })
-            if pr_entries:
-                self._index["processes"] = pr_entries
+            # 重建 process 条目
+            proc_dir = d / "process"
+            if proc_dir.exists():
+                pr_entries = []
+                for pr_file in sorted(proc_dir.glob("*.md")):
+                    pr_id = f"pr_{hashlib.sha256(str(pr_file).encode()).hexdigest()[:12]}"
+                    pr_entries.append({
+                        "id": pr_id, "transcriptId": tx_id,
+                        "mode": pr_file.stem, "engine": "",
+                        "createdAt": "",
+                    })
+                if pr_entries:
+                    self._index["processes"][tx_id] = pr_entries
 
-        # 重建 conversations
+        # 重建 conversations（不变）
+        conversations_dir = self.root / "conversations"
         if conversations_dir.exists():
             for bucket in conversations_dir.iterdir():
                 if bucket.is_dir():
@@ -235,20 +212,27 @@ class Store:
 
     @staticmethod
     def _transcript_index_entry(data: dict) -> dict:
+        meta = data.get("metadata", {})
+        if not isinstance(meta, dict):
+            meta = {}
         return {
             "id": data["id"],
             "title": data.get("title", ""),
             "sourceType": data.get("sourceType", ""),
             "sourceUrl": data.get("sourceUrl", ""),
             "sourceFileName": data.get("sourceFileName", ""),
+            "sourceFilePath": data.get("sourceFilePath", ""),
             "engine": data.get("engine", ""),
-            "language": data.get("metadata", {}).get("language", ""),
-            "duration": data.get("metadata", {}).get("duration"),
-            "coverUrl": data.get("metadata", {}).get("cover_url", ""),
-            "sourceTitle": data.get("metadata", {}).get("source_title", ""),
+            "engineVersion": data.get("engineVersion", ""),
+            "language": meta.get("language", ""),
+            "duration": meta.get("duration"),
+            "coverUrl": meta.get("cover_url", ""),
+            "sourceTitle": meta.get("source_title", ""),
             "contentHash": data.get("contentHash", ""),
+            "metadata": meta,
             "tags": data.get("tags", []),
             "createdAt": data.get("createdAt", ""),
+            "dir_name": data.get("dir_name", "") if "dir_name" in data else "",
         }
 
     @staticmethod
@@ -270,17 +254,79 @@ class Store:
             logger.warning("JSON 文件损坏: %s — %s", path.name, str(e)[:120])
             return default
 
-    def _path_for_id(self, id: str, kind: str = "transcripts") -> Path:
-        safe_id = self._sanitize_id(id)
-        prefix = safe_id[:2]
-        if "/" in prefix or "\\" in prefix:
-            prefix = "xx"
-        d = self.root / kind / prefix
+    # ── 文档目录管理（per-document directory）──
+
+    @staticmethod
+    def _compute_dir_name(title: str, tx_id: str) -> str:
+        """从标题和 ID 计算目录名: {sanitized_title}-{6位hex后缀}"""
+        sanitized = re.sub(r'[<>:"/\\|?*]', '', title)
+        sanitized = sanitized.strip('. ')
+        if len(sanitized) > 30:
+            sanitized = sanitized[:30].rstrip('. ')
+        if not sanitized:
+            sanitized = "Untitled"
+        suffix = tx_id[-6:]  # 末 6 位 hex（16M 空间）
+        return f"{sanitized}-{suffix}"
+
+    def _get_doc_dir(self, tx_id: str) -> Optional[Path]:
+        """从 index 查找文档目录。返回 None 表示不存在。"""
+        for entry in self._index["transcripts"]:
+            if entry["id"] == tx_id:
+                dir_name = entry.get("dir_name", "")
+                if dir_name:
+                    d = self.root / dir_name
+                    if d.exists():
+                        return d
+        return None
+
+    def _get_or_create_doc_dir(self, tx_id: str, title: str) -> Path:
+        """获取已有或创建新文档目录。返回目录 Path。"""
+        existing = self._get_doc_dir(tx_id)
+        if existing:
+            return existing
+        # 计算目录名，冲突时加长后缀
+        dir_name = self._compute_dir_name(title, tx_id)
+        d = self.root / dir_name
+        if d.exists():
+            # 冲突兜底：后缀加长到 8 位
+            suffix = tx_id[-8:]
+            dir_name = re.sub(r'-[a-f0-9]{6}$', f'-{suffix}',
+                              self._compute_dir_name(title, tx_id))
+            d = self.root / dir_name
         d.mkdir(parents=True, exist_ok=True)
-        ext = ".json" if kind in ("transcripts", "conversations") else ".md"
-        if kind == "process":
-            ext = ""  # process 文件无扩展名
-        return d / f"{safe_id}{ext}"
+        (d / "assets").mkdir(exist_ok=True)
+        (d / "process").mkdir(exist_ok=True)
+        # 更新 index 中的 dir_name
+        with self._lock:
+            for entry in self._index["transcripts"]:
+                if entry["id"] == tx_id:
+                    entry["dir_name"] = dir_name
+                    self._save_index()
+                    break
+        return d
+
+    def _rename_doc_dir(self, tx_id: str, new_title: str) -> Optional[Path]:
+        """标题变更时重命名文档目录。返回新 Path 或 None。"""
+        old_dir = self._get_doc_dir(tx_id)
+        if not old_dir:
+            return None
+        new_dir_name = self._compute_dir_name(new_title, tx_id)
+        new_dir = self.root / new_dir_name
+        if old_dir == new_dir:
+            return old_dir
+        if new_dir.exists():
+            return old_dir  # 目标已存在，保持旧名
+        try:
+            os.replace(old_dir, new_dir)
+        except OSError:
+            return old_dir  # 重命名失败，保持旧名
+        with self._lock:
+            for entry in self._index["transcripts"]:
+                if entry["id"] == tx_id:
+                    entry["dir_name"] = new_dir_name
+                    self._save_index()
+                    break
+        return new_dir
 
     # ── RawTranscript CRUD ──
 
@@ -292,6 +338,10 @@ class Store:
             logger.info(f"内容重复，拒绝写入: {tx.title} == {existing.get('title')}")
             return False
 
+        doc_dir = self._get_or_create_doc_dir(tx.id, tx.title)
+        # 写入 transcript.md（纯 rawText）
+        self._atomic_write(doc_dir / "transcript.md", tx.raw_text)
+
         data = {
             "id": tx.id,
             "title": tx.title,
@@ -301,54 +351,70 @@ class Store:
             "sourceFilePath": tx.source_file_path,
             "engine": tx.engine,
             "engineVersion": tx.engine_version,
-            "rawText": tx.raw_text,
             "contentHash": tx.content_hash,
             "metadata": _serialize_metadata(tx.metadata),
             "tags": tx.tags,
             "createdAt": tx.created_at or datetime.now().isoformat(),
         }
-        path = self._path_for_id(tx.id, "transcripts")
-        self._atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2))
         with self._lock:
-            self._index["transcripts"].append(self._transcript_index_entry(data))
+            entry = self._transcript_index_entry(data)
+            entry["dir_name"] = doc_dir.name
+            self._index["transcripts"].append(entry)
             self._save_index()
         return True
 
     def get_transcript(self, id: str) -> Optional[dict]:
-        path = self._path_for_id(id, "transcripts")
-        if not path.exists():
+        """从 index 读元数据 + 从 transcript.md 读 rawText。"""
+        entry = None
+        for e in self._index["transcripts"]:
+            if e["id"] == id:
+                entry = e
+                break
+        if not entry:
             return None
-        return self._safe_load_json(path)
+        dir_name = entry.get("dir_name", "")
+        if not dir_name:
+            return None
+        doc_dir = self.root / dir_name
+        if not doc_dir.exists():
+            return None
+        tx_path = doc_dir / "transcript.md"
+        if not tx_path.exists():
+            return None
+        raw_text = tx_path.read_text(encoding="utf-8")
+
+        # 从 index entry 重建完整 dict（保持调用方兼容）
+        meta = entry.get("metadata", {})
+        return {
+            "id": entry["id"],
+            "title": entry.get("title", ""),
+            "sourceType": entry.get("sourceType", ""),
+            "sourceUrl": entry.get("sourceUrl", ""),
+            "sourceFileName": entry.get("sourceFileName", ""),
+            "sourceFilePath": entry.get("sourceFilePath", ""),
+            "engine": entry.get("engine", ""),
+            "engineVersion": entry.get("engineVersion", ""),
+            "rawText": raw_text,
+            "contentHash": entry.get("contentHash", ""),
+            "metadata": meta if isinstance(meta, dict) else {},
+            "tags": entry.get("tags", []),
+            "createdAt": entry.get("createdAt", ""),
+        }
 
     def delete_transcript(self, id: str) -> bool:
-        path = self._path_for_id(id, "transcripts")
-        if path.exists():
-            path.unlink()
+        """删除文档目录 + index 清理。"""
+        doc_dir = self._get_doc_dir(id)
+        if doc_dir and doc_dir.exists():
+            try:
+                shutil.rmtree(doc_dir)
+            except OSError as e:
+                logger.warning("删除文档目录失败: %s — %s", doc_dir, e)
         with self._lock:
             self._index["transcripts"] = [
                 e for e in self._index["transcripts"] if e["id"] != id
             ]
-            # 清理关联 markdown
-            mds = self._index["markdowns"].get(id, [])
-            if isinstance(mds, dict):
-                mds = [mds]
-            for md in mds:
-                md_path = self._path_for_id(md["id"], "markdown")
-                if md_path.exists():
-                    md_path.unlink()
             self._index["markdowns"].pop(id, None)
-            # 清理关联 process
-            processes = self._index["processes"].pop(id, [])
-            for pr in processes:
-                pr_path = self._path_for_id(pr["id"], "process")
-                if pr_path.exists():
-                    pr_path.unlink()
-            # 清理文档图片目录（files/{tx_id}/）
-            files_dir = self.root / "files" / self._sanitize_id(id)
-            if files_dir.exists():
-                for f in files_dir.iterdir():
-                    f.unlink()
-                files_dir.rmdir()
+            self._index["processes"].pop(id, None)
             self._save_index()
         return True
 
@@ -357,11 +423,11 @@ class Store:
             dirty = False
             valid = []
             for entry in self._index["transcripts"]:
-                path = self._path_for_id(entry["id"], "transcripts")
-                if path.exists():
+                dir_name = entry.get("dir_name", "")
+                if dir_name and (self.root / dir_name / "transcript.md").exists():
                     valid.append(entry)
                 else:
-                    logger.warning(f"索引条目 {entry['id']} 对应文件不存在，已移除")
+                    logger.warning(f"索引条目 {entry['id']} 对应目录不存在，已移除")
                     dirty = True
             if dirty:
                 self._index["transcripts"] = valid
@@ -392,16 +458,32 @@ class Store:
                 return e
         return None
 
-    # ── MarkdownView CRUD ──
+    # ── Transcript 完整保存（更新）──
 
     def save_transcript_full(self, tx_data: dict) -> bool:
-        """保存完整 transcript（文件 + 索引），用于已有文档的更新。
-        覆盖同 id 的 transcript 文件和索引条目。"""
+        """保存完整 transcript — 覆盖 transcript.md + 更新 index。
+        用于已有文档的更新（retranscribe, title/tag PATCH, _auto_title）。
+        """
         tx_id = tx_data["id"]
-        path = self._path_for_id(tx_id, "transcripts")
-        self._atomic_write(path, json.dumps(tx_data, ensure_ascii=False, indent=2))
+        doc_dir = self._get_doc_dir(tx_id)
+        if not doc_dir:
+            return False
+
+        # 标题变更 → 重命名目录
+        new_title = tx_data.get("title", "")
+        if new_title:
+            new_dir_name = self._compute_dir_name(new_title, tx_id)
+            if new_dir_name != doc_dir.name:
+                doc_dir = self._rename_doc_dir(tx_id, new_title) or doc_dir
+
+        # 写入 transcript.md
+        raw_text = tx_data.get("rawText", "")
+        if raw_text:
+            self._atomic_write(doc_dir / "transcript.md", raw_text)
+
         with self._lock:
             new_entry = self._transcript_index_entry(tx_data)
+            new_entry["dir_name"] = doc_dir.name
             for i, entry in enumerate(self._index["transcripts"]):
                 if entry["id"] == tx_id:
                     self._index["transcripts"][i] = new_entry
@@ -412,13 +494,30 @@ class Store:
     # ── MarkdownView CRUD ──
 
     def save_markdown(self, mv: MarkdownView, extra: dict | None = None) -> bool:
-        path = self._path_for_id(mv.id, "markdown")
-        self._atomic_write(path, mv.content)
+        """两版制：{mode}.md → 降级为 {mode}.prev.md → 写新版。"""
+        doc_dir = self._get_doc_dir(mv.transcript_id)
+        if not doc_dir:
+            logger.warning("save_markdown: 文档目录不存在 tx=%s", mv.transcript_id)
+            return False
+
+        mode = mv.mode.value if hasattr(mv.mode, 'value') else mv.mode
+        latest = doc_dir / f"{mode}.md"
+
+        # 两版制：最新版降级为 .prev.md
+        if latest.exists():
+            prev = doc_dir / f"{mode}.prev.md"
+            try:
+                os.replace(latest, prev)
+            except OSError:
+                pass  # 降级失败不阻塞，直接覆盖写
+
+        self._atomic_write(latest, mv.content)
+
         with self._lock:
             entry = {
                 "id": mv.id, "transcriptId": mv.transcript_id,
                 "style": mv.style.value if hasattr(mv.style, 'value') else mv.style,
-                "mode": mv.mode.value if hasattr(mv.mode, 'value') else mv.mode,
+                "mode": mode,
                 "version": mv.version, "createdAt": mv.created_at,
                 "status": getattr(mv, 'status', 'complete'),
                 **(extra or {}),
@@ -426,30 +525,37 @@ class Store:
             existing = self._index["markdowns"].get(mv.transcript_id, [])
             if isinstance(existing, dict):
                 existing = [existing]
-            same_mode = [e for e in existing if e.get("mode") == entry["mode"]]
+            same_mode = [e for e in existing if e.get("mode") == mode]
             top = max((e.get("version", 0) for e in same_mode), default=0)
             entry["version"] = top + 1
             existing.append(entry)
-            same_mode = [e for e in existing if e.get("mode") == entry["mode"]]
+            # 保留最近 2 版（清理超出两版的旧 index 条目）
+            same_mode = [e for e in existing if e.get("mode") == mode]
             same_mode.sort(key=lambda e: e.get("version", 0), reverse=True)
             for old in same_mode[2:]:
-                old_path = self._path_for_id(old["id"], "markdown")
-                if old_path.exists():
-                    old_path.unlink()
                 existing.remove(old)
             self._index["markdowns"][mv.transcript_id] = existing
             self._save_index()
         return True
 
     def get_markdown(self, id: str) -> Optional[str]:
-        path = self._path_for_id(id, "markdown")
-        if not path.exists():
-            return None
-        return path.read_text(encoding="utf-8")
+        """按 id 查找 markdown 条目 → 解析 mode → 读磁盘文件。"""
+        for entries in self._index["markdowns"].values():
+            for entry in entries if isinstance(entries, list) else [entries]:
+                if entry.get("id") == id:
+                    tx_id = entry.get("transcriptId", "")
+                    mode = entry.get("mode", "")
+                    doc_dir = self._get_doc_dir(tx_id)
+                    if not doc_dir:
+                        return None
+                    path = doc_dir / f"{mode}.md"
+                    if path.exists():
+                        return path.read_text(encoding="utf-8")
+        return None
 
     def get_markdowns_by_transcript(self, transcript_id: str,
                                      mode: str = "", version: int | None = None) -> list[dict]:
-        """获取指定 transcript 的所有 Markdown，可按 mode/version 过滤"""
+        """获取指定 transcript 的 Markdown，支持 mode/version 过滤。"""
         entries = self._index["markdowns"].get(transcript_id, [])
         if isinstance(entries, dict):
             entries = [entries]
@@ -457,18 +563,32 @@ class Store:
             entries = [e for e in entries if e.get("mode") == mode]
         if version is not None:
             entries = [e for e in entries if e.get("version") == version]
+
+        doc_dir = self._get_doc_dir(transcript_id)
+        if not doc_dir:
+            return []
+
         result = []
         for meta in entries:
-            content = self.get_markdown(meta["id"])
-            if content:
+            md_mode = meta.get("mode", "")
+            # 读取对应文件
+            path = doc_dir / f"{md_mode}.md"
+            if path.exists():
+                content = path.read_text(encoding="utf-8")
                 result.append({**meta, "content": content})
         return sorted(result, key=lambda e: e.get("version", 0), reverse=True)
 
     # ── ProcessResult CRUD ──
 
     def save_process_result(self, pr: ProcessResult) -> str:
-        """保存处理结果。同 transcript + 同 mode 覆盖旧结果。返回 id。"""
-        path = self._path_for_id(pr.id, "process")
+        """保存处理结果到 {doc_dir}/process/{mode}.md，同 mode 覆盖。"""
+        doc_dir = self._get_doc_dir(pr.transcript_id)
+        if not doc_dir:
+            logger.warning("save_process_result: 文档目录不存在 tx=%s", pr.transcript_id)
+            return pr.id
+        proc_dir = doc_dir / "process"
+        proc_dir.mkdir(exist_ok=True)
+        path = proc_dir / f"{pr.mode}.md"
         self._atomic_write(path, pr.content)
         with self._lock:
             entry = {
@@ -489,11 +609,19 @@ class Store:
         return self._index["processes"].get(transcript_id, [])
 
     def get_process_result(self, id: str) -> Optional[str]:
-        """获取单个处理结果的内容"""
-        path = self._path_for_id(id, "process")
-        if not path.exists():
-            return None
-        return path.read_text(encoding="utf-8")
+        """获取单个处理结果的内容 — 从 index 查 mode → 读磁盘。"""
+        for entries in self._index["processes"].values():
+            for entry in entries if isinstance(entries, list) else [entries]:
+                if entry.get("id") == id:
+                    tx_id = entry.get("transcriptId", "")
+                    mode = entry.get("mode", "")
+                    doc_dir = self._get_doc_dir(tx_id)
+                    if not doc_dir:
+                        return None
+                    path = doc_dir / "process" / f"{mode}.md"
+                    if path.exists():
+                        return path.read_text(encoding="utf-8")
+        return None
 
     # ── 缓存（按 contentHash） ──
 

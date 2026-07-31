@@ -187,9 +187,10 @@ async def export_content(
         # 图片 base64 内嵌 → 自包含单文件 HTML
         refs = _find_image_refs(content)
         if refs:
-            imgs, name_map = _collect_images(refs, store.root)
+            doc_dir = str(store._get_doc_dir(tx_id) or '')
+            imgs, name_map = _collect_images(refs, store.root, doc_dir=doc_dir)
             if imgs:
-                content = _inline_images(content, imgs, name_map, store.root)
+                content = _inline_images(content, imgs, name_map, store.root, doc_dir=doc_dir)
         # 用 limo 主题匹配应用内预览样式
         export_theme = request.query_params.get("theme", "limo")
         html = _build_selfcontained_html(content, title, theme=export_theme)
@@ -201,10 +202,11 @@ async def export_content(
         )
 
     # MD: 将图片路径重写为绝对 URL，外部查看时不裂图
-    # 使用请求的 base_url 拼接完整路径（开发模式走 Vite proxy，打包模式直连 127.0.0.1:7413）
     base = str(request.base_url).rstrip('/')
+    content = re.sub(r'\(assets/', f'({base}/api/assets/{tx_id}/', content)
     content = re.sub(r'\(/api/files/', f'({base}/api/files/', content)
     content = re.sub(r'\(/static/screenshots/', f'({base}/static/screenshots/', content)
+    content = re.sub(r'\(/api/assets/', f'({base}/api/assets/', content)
     safe_name = _safe_filename(title)
     suffix = f"-{mode}" if mode else ""
     encoded_name = quote(f"{safe_name}{suffix}.md", safe='')
@@ -277,7 +279,8 @@ async def export_all_products(tx_id: str, request: Request, store=Depends(get_st
     all_refs: list[tuple[str, str]] = []
     for content in products.values():
         all_refs.extend(_find_image_refs(content))
-    imgs, name_map = _collect_images(all_refs, store.root)
+    doc_dir = str(store._get_doc_dir(tx_id) or '')
+    imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -324,7 +327,8 @@ async def export_batch(data: dict, request: Request, store=Depends(get_store)):
             all_refs: list[tuple[str, str]] = []
             for content in products.values():
                 all_refs.extend(_find_image_refs(content))
-            imgs, name_map = _collect_images(all_refs, store.root)
+            doc_dir = str(store._get_doc_dir(tx_id) or '')
+            imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
 
             for fname, content in products.items():
                 if imgs:
@@ -672,57 +676,62 @@ def _render_formulas_to_images(md: str) -> str:
 
 # ── 图片收集/重写（导出自包含核心）──
 
+# 新格式：assets/xxx（磁盘相对路径）
+_ASSET_RE = re.compile(r'!\[([^\]]*)\]\((assets/[^\s)]+)\)')
+# 旧格式兼容
 _IMG_RE = re.compile(r'!\[([^\]]*)\]\(/api/files/([a-zA-Z0-9_\-]+)/([a-zA-Z0-9_\-.]{1,}[^\s)]*)\)')
-# 截图图片（/static/screenshots/filename.jpg）
 _SS_RE  = re.compile(r'!\[([^\]]*)\]\(/static/screenshots/([a-zA-Z0-9_\-.]{1,}[^\s)]*)\)')
+_API_ASSET_RE = re.compile(r'!\[([^\]]*)\]\(/api/assets/([a-zA-Z0-9_\-]+)/([a-zA-Z0-9_\-.]{1,}[^\s)]*)\)')
 
 
-def _find_image_refs(text: str) -> list[tuple[str, str, str | None]]:
-    """扫描文本中所有图片引用 → [(tx_id, filename, source), ...]。
-    source='files' 表示文档内嵌图；source='screenshots' 表示视频截图。
-    按首次出现顺序排列并去重。
-    """
+def _find_image_refs(text: str) -> list[tuple[str, str, str]]:
     seen: set[str] = set()
-    refs: list[tuple[str, str, str | None]] = []
+    refs: list[tuple[str, str, str]] = []
+    for m in _ASSET_RE.finditer(text):
+        full = m.group(0)
+        if full not in seen:
+            seen.add(full)
+            filename = m.group(2).split("/", 1)[1] if "/" in m.group(2) else m.group(2)
+            refs.append((filename, m.group(2), "assets"))
     for m in _IMG_RE.finditer(text):
         full = m.group(0)
         if full not in seen:
             seen.add(full)
-            refs.append((m.group(2), m.group(3), "files"))
+            refs.append((m.group(3), m.group(2), "files"))
     for m in _SS_RE.finditer(text):
         full = m.group(0)
         if full not in seen:
             seen.add(full)
-            refs.append(("", m.group(2), "screenshots"))
+            refs.append((m.group(2), "", "screenshots"))
+    for m in _API_ASSET_RE.finditer(text):
+        full = m.group(0)
+        if full not in seen:
+            seen.add(full)
+            refs.append((m.group(3), m.group(2), "api_assets"))
     return refs
 
 
-def _collect_images(refs: list[tuple[str, str, str | None]], store_root: str
+def _collect_images(refs: list[tuple[str, str, str]], store_root: str,
+                    doc_dir: str = ""
                      ) -> tuple[dict[str, bytes], dict[str, str]]:
-    """从磁盘读取所有引用图片。
-    返回 (image_data, name_map):
-      - image_data: {final_filename: bytes}
-      - name_map: {original_filename: final_filename}（供 _rewrite_image_paths 用）
-    重名冲突自动加 _N 后缀；文件缺失跳过并 log.warning。
-    """
     image_data: dict[str, bytes] = {}
     name_map: dict[str, str] = {}
     seen_names: set[str] = set()
 
-    for tx_id, filename, source in refs:
-        if source == "screenshots":
+    for filename, arg2, source in refs:
+        if source == "assets" and doc_dir:
+            src = Path(doc_dir) / arg2
+        elif source == "screenshots":
             src = Path(store_root) / "screenshots" / filename
+        elif source == "api_assets" and doc_dir:
+            src = Path(doc_dir) / "assets" / filename
         else:
-            src = Path(store_root) / "files" / tx_id / filename
+            src = Path(store_root) / "files" / arg2 / filename
         if not src.exists():
             logger.warning("导出图片缺失: %s", src)
             continue
-
-        # 同文件已处理过 → 直接用已分配的名字
         if filename in name_map:
             continue
-
-        # 重名处理
         final_name = filename
         parts = filename.rsplit(".", 1)
         base = parts[0]
@@ -731,64 +740,77 @@ def _collect_images(refs: list[tuple[str, str, str | None]], store_root: str
         while final_name in seen_names:
             final_name = f"{base}_{counter}.{ext}" if ext else f"{base}_{counter}"
             counter += 1
-
         seen_names.add(final_name)
         name_map[filename] = final_name
         image_data[final_name] = src.read_bytes()
-
     return image_data, name_map
 
 
 def _rewrite_image_paths(text: str, name_map: dict[str, str],
                          prefix: str = "images/") -> str:
-    """将 /api/files/{tx_id}/{old_name} 和 /static/screenshots/{old_name} → {prefix}{new_name}。
-    name_map: {出现在原始文本中的完整文件名: 最终文件名}（来自 _collect_images 的去重结果）。
-    """
-
-    def _replace(m: re.Match) -> str:
+    def _replace_asset(m: re.Match) -> str:
         alt = m.group(1)
-        filename = m.group(3) if m.re is _IMG_RE else m.group(2)
-        new_name = name_map.get(filename, filename)
-        return f"![{alt}]({prefix}{new_name})"
-
-    text = _IMG_RE.sub(_replace, text)
-    text = _SS_RE.sub(_replace, text)
+        asset_path = m.group(2)
+        filename = asset_path.split("/", 1)[1] if "/" in asset_path else asset_path
+        return f"![{alt}]({prefix}{name_map.get(filename, filename)})"
+    def _replace_img(m: re.Match) -> str:
+        return f"![{m.group(1)}]({prefix}{name_map.get(m.group(3), m.group(3))})"
+    def _replace_ss(m: re.Match) -> str:
+        return f"![{m.group(1)}]({prefix}{name_map.get(m.group(2), m.group(2))})"
+    def _replace_api(m: re.Match) -> str:
+        return f"![{m.group(1)}]({prefix}{name_map.get(m.group(3), m.group(3))})"
+    text = _ASSET_RE.sub(_replace_asset, text)
+    text = _IMG_RE.sub(_replace_img, text)
+    text = _SS_RE.sub(_replace_ss, text)
+    text = _API_ASSET_RE.sub(_replace_api, text)
     return text
 
 
 def _inline_images(text: str, image_data: dict[str, bytes],
-                   name_map: dict[str, str], store_root: str) -> str:
-    """将图片引用替换为 base64 data URI。
-    name_map: {original_filename: final_filename}（来自 _collect_images）。
-    image_data: {final_filename: bytes}。
-    """
-
-    # 构建 final_name → data 的快速查找
+                   name_map: dict[str, str], store_root: str,
+                   doc_dir: str = "") -> str:
+    def _data_uri(data: bytes, filename: str) -> str:
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
+        mime_map = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png",
+                    "gif": "gif", "webp": "webp", "svg": "svg+xml"}
+        import base64
+        b64 = base64.b64encode(data).decode()
+        return f"data:image/{mime_map.get(ext, 'png')};base64,{b64}"
+    def _resolve(src: Path) -> bytes | None:
+        return src.read_bytes() if src.exists() else None
     def _replace(m: re.Match) -> str:
         alt = m.group(1)
-        is_ss = m.re is _SS_RE
-        filename = m.group(2) if is_ss else m.group(3)
-        final_name = name_map.get(filename, filename)
-        data = image_data.get(final_name)
-        if not data:
-            if is_ss:
-                src = Path(store_root) / "screenshots" / filename
-            else:
-                src = Path(store_root) / "files" / m.group(2) / filename
-            if src.exists():
-                data = src.read_bytes()
+        if m.re is _ASSET_RE:
+            filename = m.group(2).split("/", 1)[1]
+            fn = name_map.get(filename, filename)
+            data = image_data.get(fn)
+            if not data and doc_dir:
+                data = _resolve(Path(doc_dir) / m.group(2))
+        elif m.re is _SS_RE:
+            filename = m.group(2)
+            fn = name_map.get(filename, filename)
+            data = image_data.get(fn)
+            if not data:
+                data = _resolve(Path(store_root) / "screenshots" / filename)
+        elif m.re is _API_ASSET_RE:
+            filename = m.group(3)
+            fn = name_map.get(filename, filename)
+            data = image_data.get(fn)
+            if not data and doc_dir:
+                data = _resolve(Path(doc_dir) / "assets" / filename)
+        else:
+            filename = m.group(3)
+            fn = name_map.get(filename, filename)
+            data = image_data.get(fn)
+            if not data:
+                data = _resolve(Path(store_root) / "files" / m.group(2) / filename)
         if data:
-            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
-            mime_map = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png",
-                        "gif": "gif", "webp": "webp", "svg": "svg+xml"}
-            mime = f"image/{mime_map.get(ext, 'png')}"
-            import base64
-            b64 = base64.b64encode(data).decode()
-            return f"![{alt}](data:{mime};base64,{b64})"
+            return f"![{alt}]({_data_uri(data, filename)})"
         return m.group(0)
-
+    text = _ASSET_RE.sub(_replace, text)
     text = _IMG_RE.sub(_replace, text)
     text = _SS_RE.sub(_replace, text)
+    text = _API_ASSET_RE.sub(_replace, text)
     return text
 
 
@@ -1185,7 +1207,8 @@ def export_custom(data: ExportCustomRequest, request: Request, store=Depends(get
                 for content in tab_contents.values():
                     all_refs.extend(_find_image_refs(content))
                 if all_refs:
-                    imgs, name_map = _collect_images(all_refs, store.root)
+                    doc_dir = str(store._get_doc_dir(tx_id) or '')
+                    imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
 
             # 写入各 tab 内容
             for tab, content in tab_contents.items():
@@ -1300,7 +1323,8 @@ async def _build_export_zip(
                     all_refs.extend(_find_image_refs(content))
                 if all_refs:
                     _push("images", idx + 1, total_docs, f"正在收集图片 ({len(all_refs)} 引用)...")
-                    imgs, name_map = _collect_images(all_refs, store.root)
+                    doc_dir = str(store._get_doc_dir(tx_id) or '')
+                    imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
 
             # 写入
             _push("zipping", idx + 1, total_docs, f"正在打包...")

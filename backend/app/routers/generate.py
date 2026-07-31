@@ -207,7 +207,8 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                  model=llm_config.get("provider", "?"))
         _active_generations.add(transcript_id)
         try:
-            preparer = ContentPreparer(str(store.root), llm_config)
+            preparer = ContentPreparer(str(store.root), llm_config,
+                                       doc_dir=str(store._get_doc_dir(transcript_id) or ""))
             prompt_builder = PromptBuilder(target_language=config.get("target_language", "zh-CN"))
             gen = Generator(llm, preparer, prompt_builder)
 
@@ -242,11 +243,11 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 )
                 # 非流式端点截图后处理（generator 内部 video_path 可能为 None，此处补处理）
                 if screenshot_video_path:
-                    store_root = str(store.root)
+                    doc_dir = str(store._get_doc_dir(transcript_id))
                     polished_mv.content = _post_process_screenshots(
-                        polished_mv.content, screenshot_video_path, store_root=store_root)
+                        polished_mv.content, screenshot_video_path, doc_dir=doc_dir)
                     notes_mv.content = _post_process_screenshots(
-                        notes_mv.content, screenshot_video_path, store_root=store_root)
+                        notes_mv.content, screenshot_video_path, doc_dir=doc_dir)
                 polished_mv.transcript_id = transcript_id
                 notes_mv.transcript_id = transcript_id
                 store.save_markdown(polished_mv)
@@ -265,7 +266,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 if screenshot_video_path:
                     polished_mv.content = _post_process_screenshots(
                         polished_mv.content, screenshot_video_path,
-                        store_root=str(store.root))
+                        doc_dir=str(store.root))
                 polished_mv.transcript_id = transcript_id
                 store.save_markdown(polished_mv)
                 _auto_title(store, transcript_id, polished_mv.content)
@@ -282,7 +283,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 if screenshot_video_path:
                     notes_mv.content = _post_process_screenshots(
                         notes_mv.content, screenshot_video_path,
-                        store_root=str(store.root))
+                        doc_dir=str(store.root))
                 notes_mv.transcript_id = transcript_id
                 store.save_markdown(notes_mv)
                 log.info("Generate done", tx_id=transcript_id, mode="notes", chars=len(notes_mv.content))
@@ -408,7 +409,8 @@ async def generate_stream(transcript_id: str, request: Request,
         "base_url": {llm.provider: llm.base_url},
         "capabilities": llm.capabilities,
     }
-    preparer = ContentPreparer(str(store.root), prep_cfg)
+    preparer = ContentPreparer(str(store.root), prep_cfg,
+                               doc_dir=str(store._get_doc_dir(transcript_id) or ""))
     prompt_builder = PromptBuilder(target_language=target_language)
 
     # VL 配置
@@ -486,7 +488,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 if ocr_enabled and ocr_model_id:
                     from app.generation.ocr_preprocessor import OCRPreprocessor
                     ocr_engine = OCRPreprocessor(config, ocr_model_id)
-                    processed_text = await ocr_engine.process(epub_text, str(store.root))
+                    processed_text = await ocr_engine.process(epub_text, str(store.root), doc_dir=str(store._get_doc_dir(transcript_id) or ""))
 
                 # 预处理（VL + 图片剥离 + 截断）
                 clean_text, image_urls, video_path = await preparer.prepare(
@@ -618,7 +620,7 @@ async def generate_stream(transcript_id: str, request: Request,
             if ocr_enabled and ocr_model_id:
                 from app.generation.ocr_preprocessor import OCRPreprocessor
                 ocr_engine = OCRPreprocessor(config, ocr_model_id)
-                processed_text = await ocr_engine.process(epub_text, str(store.root))
+                processed_text = await ocr_engine.process(epub_text, str(store.root), doc_dir=str(store._get_doc_dir(transcript_id) or ""))
 
             clean_text, image_urls, video_path = await preparer.prepare(
                 processed_text, vl_config, keep_refs, send_to_llm=send_to_llm, optimize_images=image_optimize)
@@ -723,11 +725,11 @@ def _build_continue_prompt(original_prompt: str, partial_content: str) -> str:
 
 
 def _post_process(content: str, formats: list[str],
-                  video_path, source_type: str, store_root: str = "") -> str:
+                  video_path, source_type: str, doc_dir: str = "") -> str:
     """后处理（对齐原有 Generator 行为）"""
     content = _post_process_content_markers(content)
     if "screenshot" in formats and video_path:
-        content = _post_process_screenshots(content, str(video_path), store_root=store_root)
+        content = _post_process_screenshots(content, str(video_path), doc_dir=doc_dir)
     return content
 
 
@@ -758,12 +760,17 @@ async def get_markdown(transcript_id: str, mode: str = "", version: int = 0, req
                 selected = md
                 break
 
-    return {
+    # 改写磁盘相对路径 assets/xxx → 绝对 API URL
+    from app.storage.store import rewrite_asset_urls
+    result = {
         **selected,
         "versions": [{"version": m.get("version", 1), "id": m.get("id"),
                        "createdAt": m.get("createdAt"), "status": m.get("status", "complete")}
                       for m in mode_mds],
     }
+    if result.get("content"):
+        result["content"] = rewrite_asset_urls(result["content"], transcript_id)
+    return result
 
 
 def _extract_title(content: str) -> str | None:
