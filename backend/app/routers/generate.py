@@ -542,7 +542,20 @@ async def generate_stream(transcript_id: str, request: Request,
                 notes_error: str | None = None
 
                 while done_count < 2:
-                    data = await queue.get()
+                    # 超时兜底：LLM 流式调用可能挂起（无返回无异常），queue 永久阻塞
+                    # → 前端 isStreaming 卡死显示"加载中"。180s 无事件强制结束。
+                    try:
+                        data = await asyncio.wait_for(queue.get(), timeout=180)
+                    except asyncio.TimeoutError:
+                        logger.error("双产物生成超时（180s 无事件），强制结束: %s", transcript_id)
+                        for t in tasks:
+                            t.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                        if not polished_chunks and polished_error is None:
+                            polished_error = "生成超时（180s 无响应）"
+                        if not notes_chunks and notes_error is None:
+                            notes_error = "生成超时（180s 无响应）"
+                        break
                     etype = data.get("type", "")
                     if etype in ("done", "error", "cancelled"):
                         done_count += 1
@@ -683,11 +696,40 @@ async def generate_stream(transcript_id: str, request: Request,
             if partial_content:
                 prompt = _build_continue_prompt(prompt, partial_content)
 
-            async for chunk in llm.stream(
-                prompt, image_urls=image_urls, cancel_event=cancel_event,
-            ):
-                all_chunks.append(chunk)
-                yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+            try:
+                async with asyncio.timeout(300):
+                    async for chunk in llm.stream(
+                        prompt, image_urls=image_urls, cancel_event=cancel_event,
+                    ):
+                        all_chunks.append(chunk)
+                        yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+            except TimeoutError:
+                # LLM 流式调用挂起（无返回无异常）→ 强制结束，避免前端 isStreaming 卡死
+                logger.error("单产物生成超时（300s 无 chunk），强制结束: %s", transcript_id)
+                if all_chunks:
+                    content = _post_process("".join(all_chunks), format_list,
+                                            video_path or screenshot_video_path, source_type, store.root)
+                    mv_mode = GenerateMode.POLISHED if stream_mode == "polished" else GenerateMode.NOTES
+                    mv = MarkdownView(
+                        id=f"md_{uuid.uuid4().hex[:12]}",
+                        transcript_id=transcript_id, content=content,
+                        mode=mv_mode, style=Style(style), status="partial",
+                    )
+                    store.save_markdown(mv)
+                    yield f"data: {json.dumps({'type': 'cancelled', 'saved_partial': True, 'id': mv.id}, ensure_ascii=False)}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'message': '生成超时（300s 无响应），请重试'}, ensure_ascii=False)}\n\n"
+                if video_path and os.path.exists(video_path):
+                    try:
+                        os.remove(video_path)
+                    except OSError:
+                        pass
+                if screenshot_video_path and os.path.exists(screenshot_video_path):
+                    try:
+                        os.remove(screenshot_video_path)
+                    except OSError:
+                        pass
+                return
 
             # 完成后保存
             content = _post_process("".join(all_chunks), format_list,
