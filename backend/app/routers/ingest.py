@@ -864,32 +864,39 @@ async def serve_asset(tx_id: str, filename: str, store=Depends(get_store)):
     if not re.match(r'^[a-zA-Z0-9_\-./]+$', filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext not in ("png", "jpg", "jpeg", "gif", "webp", "svg"):
-        raise HTTPException(status_code=400, detail=f"Unsupported format: {ext}")
+    # 封面 URL 无扩展名（/api/assets/{tx_id}/cover，_persist_cover_image 返回格式）
+    # → 兜底查找 cover.{jpg,png,webp}
+    candidates = [filename]
+    if "." not in filename and filename == "cover":
+        candidates = [f"cover{e}" for e in (".jpg", ".png", ".webp")]
 
     data_root = Path(store.root).resolve()
     doc_dir = store._get_doc_dir(tx_id)
     if not doc_dir:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    file_path = (doc_dir / "assets" / filename).resolve()
-    try:
-        file_path.relative_to(data_root)
-    except ValueError:
-        raise HTTPException(status_code=403, detail="Path traversal denied")
+    for cand in candidates:
+        ext = cand.rsplit(".", 1)[-1].lower() if "." in cand else ""
+        if ext not in ("png", "jpg", "jpeg", "gif", "webp", "svg"):
+            raise HTTPException(status_code=400, detail=f"Unsupported format: {ext}")
 
-    if file_path.exists():
-        return FileResponse(str(file_path))
+        file_path = (doc_dir / "assets" / cand).resolve()
+        try:
+            file_path.relative_to(data_root)
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Path traversal denied")
 
-    # Fallback: files/{tx_id}/{filename} (legacy)
-    legacy = (Path(store.root) / "files" / tx_id / filename).resolve()
-    try:
-        legacy.relative_to(data_root)
-    except ValueError:
-        raise HTTPException(status_code=403)
-    if legacy.exists():
-        return FileResponse(str(legacy))
+        if file_path.exists():
+            return FileResponse(str(file_path))
+
+        # Fallback: files/{tx_id}/{filename} (legacy)
+        legacy = (Path(store.root) / "files" / tx_id / cand).resolve()
+        try:
+            legacy.relative_to(data_root)
+        except ValueError:
+            raise HTTPException(status_code=403)
+        if legacy.exists():
+            return FileResponse(str(legacy))
 
     raise HTTPException(status_code=404, detail="File not found")
 

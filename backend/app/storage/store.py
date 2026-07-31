@@ -29,7 +29,9 @@ INDEX_VERSION = 3
 # Store CRUD 方法（get_markdown/get_transcript 等）不调此函数，
 # 原因：导出需要原始相对路径（从 {doc_dir}/assets/ 读盘），续写需要原文。
 
-_RE_ASSET_REF = re.compile(r'!\[([^\]]*)\]\((assets/[^\s)]+)\)')
+# assets/ 前缀移出捕获组：\2 只取文件名，避免改写后 URL 重复 assets/ 段
+# （修复：/api/assets/{tx_id}/assets/img_0000.png → /api/assets/{tx_id}/img_0000.png）
+_RE_ASSET_REF = re.compile(r'!\[([^\]]*)\]\(assets/([^\s)]+)\)')
 
 
 def rewrite_asset_urls(content: str, tx_id: str) -> str:

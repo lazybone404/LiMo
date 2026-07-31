@@ -561,6 +561,38 @@ async def generate_stream(transcript_id: str, request: Request,
 
                 await asyncio.gather(*tasks, return_exceptions=True)
 
+                # 偶发空响应重试：LLM 可能对某个产物返回 0 chars（finish=stop 但内容空）。
+                # 非取消、无错误、但产物为空 → 单独重试一次该产物。
+                if not was_cancelled:
+                    if not polished_chunks and polished_error is None:
+                        logger.warning("polished 空响应，重试一次")
+                        retry: list[str] = []
+                        try:
+                            async for chunk in llm.stream(
+                                polished_prompt, image_urls=image_urls,
+                                cancel_event=cancel_event,
+                            ):
+                                retry.append(chunk)
+                        except CancelledError:
+                            pass
+                        except Exception as e:
+                            polished_error = str(e)[:200]
+                        polished_chunks = retry
+                    if not notes_chunks and notes_error is None:
+                        logger.warning("notes 空响应，重试一次")
+                        retry = []
+                        try:
+                            async for chunk in llm.stream(
+                                notes_prompt, image_urls=image_urls,
+                                cancel_event=cancel_event,
+                            ):
+                                retry.append(chunk)
+                        except CancelledError:
+                            pass
+                        except Exception as e:
+                            notes_error = str(e)[:200]
+                        notes_chunks = retry
+
                 # 保存双产物（取消时 status=partial，完成时 status=complete）
                 status = "partial" if was_cancelled else "complete"
                 if polished_chunks:
@@ -600,9 +632,18 @@ async def generate_stream(transcript_id: str, request: Request,
                 # 根据双产物结果决定最终事件
                 both_failed = polished_error is not None and notes_error is not None
                 one_failed = polished_error is not None or notes_error is not None
+                # 重试后仍为空的产物（非取消）→ warning，前端 Toast 提示
+                empty_products = [
+                    p for p, chunks in (("polished", polished_chunks), ("notes", notes_chunks))
+                    if not chunks and not was_cancelled
+                ]
 
                 if both_failed and not was_cancelled:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Both polished and notes generation failed'}, ensure_ascii=False)}\n\n"
+                elif empty_products and not was_cancelled:
+                    for p in empty_products:
+                        yield f"data: {json.dumps({'type': 'warning', 'mode': p, 'message': f'{p} 生成结果为空（已重试一次）'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                 elif one_failed and not was_cancelled:
                     failed_product = "polished" if polished_error else "notes"
                     error_msg = polished_error or notes_error

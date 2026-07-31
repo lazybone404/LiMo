@@ -565,6 +565,10 @@ export function GenPanel() {
         if (!isSameDoc(capturedId)) return
         setError(msg); addToast(msg, 'error')
       },
+      onWarning(msg) {
+        if (!isSameDoc(capturedId)) return
+        addToast(msg, 'error')
+      },
       onCancelled(savedPartial) {
         setProcessing(taskKey, null)
         if (!isSameDoc(capturedId)) return

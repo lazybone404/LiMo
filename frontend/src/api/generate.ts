@@ -80,6 +80,8 @@ export interface StreamGenerateCallbacks {
   onDone: (result?: { id?: string }) => void
   onError: (message: string) => void
   onCancelled: (savedPartial: boolean) => void
+  /** 部分产物失败/为空（另一产物成功）——用于 Toast 提示，不终止流程 */
+  onWarning?: (message: string) => void
 }
 
 export function streamGenerate(
@@ -136,6 +138,8 @@ export function streamGenerate(
           if (!data.mode) { callbacks.onDone(data) }
         } else if (data.type === 'error') {
           callbacks.onError(data.message || '未知错误')
+        } else if (data.type === 'warning') {
+          callbacks.onWarning?.(data.message || '部分产物生成失败')
         } else if (data.type === 'cancelled') {
           callbacks.onCancelled(data.saved_partial || false)
         } else if (data.mode) {
