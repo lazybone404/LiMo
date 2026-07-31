@@ -116,6 +116,24 @@ python scripts/sync-version.py && bash scripts/build.sh
 
 > **禁止手动修改任何文件的版本号**，一律通过 `sync-version.py` 更新。
 
+## 发行规则（2026-08-01 起）
+
+**核心原则：打包 ≠ 发布。** 每次打包完成后，**只有用户主动提出"上传发行版/发布"才能执行上传**。打包是本地动作，上传是对外动作（GitHub Release，不可逆）。
+
+### 发布门禁（全部通过才允许发布）
+
+| # | 门禁 | 检查方式 |
+|---|------|---------|
+| 1 | 版本门禁 | `python scripts/sync-version.py --check`（7 处一致）；产物文件名匹配 VERSION |
+| 2 | 验证门禁 | 后端测试全绿 + 前端测试全绿 + exe 启动 health 200 + 核心链路冒烟（导入→生成→导出） |
+| 3 | 文档同步 | CHANGELOG 有对应版本记录；STATUS 版本号已同步 |
+| 4 | Tag + Notes + 校验 | 打 `v{VERSION}` tag；Release notes 从 CHANGELOG 提取；附安装包 SHA256 校验和 |
+
+### 发布动作
+
+用户提出发布后 → **先展示门禁清单**（版本/验证/文档/tag 状态）→ 用户确认 → 才执行：
+`git tag v{VERSION}` → `gh release create v{VERSION}`（notes 从 CHANGELOG）→ 上传 NSIS/MSI 安装包 + SHA256。
+
 ## 常用命令
 
 ### 后端（Python/FastAPI）
