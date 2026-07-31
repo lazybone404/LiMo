@@ -751,10 +751,10 @@ export function PreviewArea() {
           )
         )}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          {/* VideoBanner — 由 TabDef.showBanner 驱动 */}
-          {activeTabDef?.showBanner && (currentDoc?.sourceType === 'video' || currentDoc?.coverUrl) && (
-            <VideoBanner title={currentDoc.title} coverUrl={currentDoc.coverUrl}
-              sourceUrl={currentDoc.sourceUrl} sourceType={currentDoc.sourceType} createdAt={currentDoc.createdAt} />
+          {/* VideoBanner — 窄条，由 TabDef.showBanner 驱动 */}
+          {activeTabDef?.showBanner && currentDoc?.sourceType === 'video' && (
+            <VideoBanner title={currentDoc.title}
+              sourceUrl={currentDoc.sourceUrl} sourceType={currentDoc.sourceType} />
           )}
           <div
             ref={containerRef}
