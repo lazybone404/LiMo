@@ -72,6 +72,8 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
 export interface EngineOption {
   id: number; provider: string; name: string; desc: string
   capabilities?: string[]  // 从 EngineRegistry 注入的能力标签
+  license?: string         // SPDX 许可证标识（插件引擎）
+  plugin?: boolean         // 是否为用户安装的插件引擎
 }
 /** Capabilities 响应中的引擎厂商简要信息 */
 export interface EngineProviderInfo {

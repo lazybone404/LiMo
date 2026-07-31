@@ -226,6 +226,9 @@ async def startup():
     # 引擎
     from app.engines import init_engines
     init_engines(config)
+    # 加载用户插件（在 init_engines 之后，允许插件覆盖内置引擎）
+    from app.engines.plugin_loader import init_plugins
+    init_plugins(config)
     app.state.engines_ready = True
 
     # Config 写入锁 — 防止并发 RMW 损坏 config.yaml

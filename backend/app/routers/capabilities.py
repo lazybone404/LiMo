@@ -69,11 +69,16 @@ async def capabilities(config=Depends(get_config)):
             engine_options[cat] = []
         caps = engine_caps.get(cat, {}).get(m["model_name"], [])
         desc = _desc_map.get(m["provider_id"], {}).get(m["model_name"], "")
+        # 插件引擎的许可证信息
+        _eng = EngineRegistry.get(cat, m["model_name"])
+        _license = getattr(_eng, "license", None) if _eng else None
         engine_options[cat].append({
             "id": m["id"], "provider": m["provider_id"],
             "name": m["model_name"],
             "desc": desc,
             "capabilities": caps,
+            "license": _license,
+            "plugin": bool(_license),
         })
 
     # 引擎详情：名称 → { supported_modes, capabilities, ... }

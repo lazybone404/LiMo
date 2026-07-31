@@ -1,6 +1,8 @@
 export interface EngineOption {
   id: number; provider: string; name: string; desc: string
   capabilities?: string[]
+  license?: string   // SPDX: "Apache-2.0" | "AGPL-3.0" | ... (插件引擎)
+  plugin?: boolean    // 是否为用户安装的插件引擎
 }
 
 interface Props {
@@ -13,10 +15,20 @@ interface Props {
   variant?: 'card' | 'section'
 }
 
-/** 选项文本：引擎名 · 能力标签 — 描述（描述由后端提供，不再硬编码） */
+/** 许可证标签颜色 */
+function licenseBadge(license: string): { bg: string; text: string } {
+  const risky = ['AGPL', 'GPL', 'AGPL-3.0', 'GPL-3.0', 'GPL-2.0']
+  const isRisky = risky.some(r => license.includes(r))
+  return isRisky
+    ? { bg: 'bg-warning/10', text: 'text-warning' }
+    : { bg: 'bg-surface-hover', text: 'text-dimmed' }
+}
+
+/** 选项文本：引擎名 · 能力标签 — 描述 */
 function optionLabel(opt: EngineOption) {
   const caps = opt.capabilities?.join(' ') || ''
   let text = opt.name
+  if (opt.license) text += ` [${opt.license}]`
   if (caps) text += ` · ${caps}`
   if (opt.desc) text += ` — ${opt.desc}`
   return text
@@ -31,6 +43,8 @@ export function EngineSelect({ category, label, options, binding, onChange, extr
   const selectClass = isSection
     ? 'bg-surface border border-border-default rounded-[10px]'
     : 'bg-elevated border border-border-default rounded-lg'
+
+  const licBadge = selectedOpt?.license ? licenseBadge(selectedOpt.license) : null
 
   return (
     <div className="space-y-1">
@@ -50,8 +64,13 @@ export function EngineSelect({ category, label, options, binding, onChange, extr
         </select>
       </div>
       {selectedOpt && isSection && (
-        <p className="text-[10px] text-accent/70 mt-0.5 ml-[5rem]">
+        <p className="text-[10px] text-accent/70 mt-0.5 ml-[5rem] flex items-center gap-2">
           当前引擎: {selectedOpt.name}
+          {licBadge && (
+            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium ${licBadge.bg} ${licBadge.text}`}>
+              {selectedOpt.license}
+            </span>
+          )}
         </p>
       )}
       {extraHint && <p className="text-[10px] text-warning px-1">{extraHint}</p>}
