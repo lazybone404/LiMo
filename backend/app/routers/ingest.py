@@ -10,6 +10,7 @@ import re
 import shutil
 import uuid
 from pathlib import Path
+from typing import Any
 from typing import Any, Optional
 
 from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException, Depends
@@ -102,6 +103,7 @@ async def update_transcript(tx_id: str, request: Request, store=Depends(get_stor
 
     # 写回磁盘 + 更新索引
     store.save_transcript_full(tx)
+    _index_for_search(request, tx_id, tx.get("title", ""), tx.get("rawText", ""))
 
     return {"status": "ok", "title": tx.get("title", ""), "tags": tx.get("tags", [])}
 
@@ -114,7 +116,22 @@ async def delete_transcript(tx_id: str, request: Request, store=Depends(get_stor
         raise HTTPException(status_code=404, detail="文档不存在")
 
     store.delete_transcript(tx_id)
+    # 从全文索引中移除
+    try:
+        _engine = getattr(request.app.state, 'search_engine', None)
+        if _engine: _engine.delete(tx_id)
+    except Exception: pass
     return {"status": "deleted", "id": tx_id}
+
+
+def _index_for_search(request: Request, tx_id: str, title: str, raw_text: str):
+    """向全文搜索引擎添加/更新索引（静默失败，不影响主流程）"""
+    try:
+        engine = getattr(request.app.state, 'search_engine', None)
+        if engine:
+            engine.index(tx_id, title, raw_text)
+    except Exception:
+        pass  # 索引失败不阻塞摄入
 
 
 _ADAPTER_SOURCE_MAP = {
@@ -573,7 +590,10 @@ async def ingest(
         logger.exception("Ingest failed")
         raise AppError("INGEST_FAILED", f"导入失败: {str(e)[:200]}") from e
 
-    return await _persist_ingest_result(store, output, adapter.name, inp, media_dir)
+    result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir)
+if result.get("status") == "done" and "id" in result:
+    _index_for_search(request, result["id"], result.get("title", ""), output.raw_text)
+return result
 
 
 
@@ -661,6 +681,7 @@ async def retranscribe(tx_id: str, request: Request, store=Depends(get_store), c
 
         # 写回（同 id 覆盖文件，更新索引中的条目）
         store.save_transcript_full(tx)
+        _index_for_search(request, tx_id, tx.get("title", ""), output.raw_text)
 
         logger.info("重新转录完成: %s engine=%s (%d chars)",
                     tx.get("title", tx_id)[:40], output.engine, len(output.raw_text))

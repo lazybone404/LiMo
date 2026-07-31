@@ -234,6 +234,19 @@ async def startup():
     # 全局并发控制 — 限制 LLM/引擎并发数，超限自动排队
     app.state.guard = ExecutionGuard(cloud_max=5, local_max=2)
 
+    # 全文搜索引擎 — 从已有转录重建索引（后台不阻塞启动）
+    from app.core.search import SearchEngine
+    _search_engine = SearchEngine(config.get("data_dir", "data"))
+    app.state.search_engine = _search_engine
+    try:
+        _transcripts = app.state.store.list_transcripts()
+        _search_engine.rebuild(_transcripts, lambda tx_id: app.state.store.get_transcript(tx_id).get("rawText", ""))
+        import logging
+        logging.getLogger(__name__).info("Search index ready (%d docs)", len(_transcripts))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Search index rebuild failed: %s", e)
+
 
 @app.get("/health")
 async def health():
@@ -253,6 +266,8 @@ app.include_router(model.router, prefix="/api")
 app.include_router(process.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
 app.include_router(conversations.router, prefix="/api")
+from app.routers import search
+app.include_router(search.router, prefix="/api")
 
 # ── 日志查看端点 ──
 

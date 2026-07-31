@@ -7,6 +7,7 @@ import { FloatingAI } from './components/ai-chat/FloatingAI'
 import { SettingsPage } from './components/settings/SettingsPage'
 import { OnboardingWizard } from './components/ui/OnboardingWizard'
 import { SlotLayout } from './components/ui/SlotLayout'
+import { SearchBar } from './components/ui/SearchBar'
 import { ThemeToggle } from './components/ui/ThemeToggle'
 import { fetchCapabilities, listTranscripts, getMarkdown, getTranscript } from './api/client'
 import { Settings, PanelLeft, Library, MessageSquare, Archive } from 'lucide-react'
@@ -199,6 +200,7 @@ export default function App() {
           <ThemeToggle />
           <button onClick={() => setShowExport(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-surface-hover text-muted hover:text-dimmed transition-colors" title="批量导出 · 侧边面板"><Archive size={15} /><span className="text-[12px]">导出</span></button>
         </div>
+        <SearchBar />
         <div className="flex-1" />
       </header>
 
