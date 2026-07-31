@@ -327,7 +327,7 @@ async def export_batch(data: dict, request: Request, store=Depends(get_store)):
             all_refs: list[tuple[str, str]] = []
             for content in products.values():
                 all_refs.extend(_find_image_refs(content))
-            doc_dir = str(store._get_doc_dir(tx_id) or '')
+            doc_dir = str(store._get_doc_dir(tid) or '')
             imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
 
             for fname, content in products.items():
@@ -614,6 +614,24 @@ def _get_badge_css() -> str:
 .ts-content { background: rgba(0,122,255,0.1); color: #007aff; }
 .ts-screenshot { background: rgba(255,149,0,0.1); color: #ff9500; }
 """
+
+
+def _remove_formulas(md: str) -> str:
+    """移除 LaTeX 公式：块级（可跨行）→ [公式]，行内 → [公式]"""
+    # 先处理块级 $$...$$（DOTALL 跨行）
+    md = re.sub(r'\$\$[\s\S]*?\$\$', '[公式]', md)
+    # 再处理行内 $...$
+    md = re.sub(r'\$[^$\n]+?\$', '[公式]', md)
+    return md
+
+
+def _unicode_formulas(md: str) -> str:
+    """LaTeX 公式 → Unicode 近似：块级公式保留内容去 $，行内公式去 $"""
+    # $$...$$ → 保留内容，去 $$
+    md = re.sub(r'\$\$\s*(.+?)\s*\$\$', r'\1', md, flags=re.DOTALL)
+    # $...$ → 去 $（TeX 惯例：$ 前后不邻数字或空白）
+    md = re.sub(r'(?<!\d)\$(?=\S)(.+?)(?<=\S)\$(?!\d)', r'\1', md)
+    return md
 
 
 def _render_formulas_to_images(md: str) -> str:
@@ -1102,23 +1120,6 @@ def export_custom(data: ExportCustomRequest, request: Request, store=Depends(get
     buf = io.BytesIO()
     total_files = 0
 
-    # 工具函数
-    def _remove_formulas(md: str) -> str:
-        """移除 LaTeX 公式：块级（可跨行）→ [公式]，行内 → [公式]"""
-        # 先处理块级 $$...$$（DOTALL 跨行）
-        md = re.sub(r'\$\$[\s\S]*?\$\$', '[公式]', md)
-        # 再处理行内 $...$
-        md = re.sub(r'\$[^$\n]+?\$', '[公式]', md)
-        return md
-
-    def _unicode_formulas(md: str) -> str:
-        """LaTeX 公式 → Unicode 近似：块级公式保留内容去 $，行内公式去 $"""
-        # $$...$$ → 保留内容，去 $$
-        md = re.sub(r'\$\$\s*(.+?)\s*\$\$', r'\1', md, flags=re.DOTALL)
-        # $...$ → 去 $（TeX 惯例：$ 前后不邻数字或空白）
-        md = re.sub(r'(?<!\d)\$(?=\S)(.+?)(?<=\S)\$(?!\d)', r'\1', md)
-        return md
-
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for doc_id in data.doc_ids:
             tx = store.get_transcript(doc_id)
@@ -1207,7 +1208,7 @@ def export_custom(data: ExportCustomRequest, request: Request, store=Depends(get
                 for content in tab_contents.values():
                     all_refs.extend(_find_image_refs(content))
                 if all_refs:
-                    doc_dir = str(store._get_doc_dir(tx_id) or '')
+                    doc_dir = str(store._get_doc_dir(doc_id) or '')
                     imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
 
             # 写入各 tab 内容
@@ -1323,7 +1324,7 @@ async def _build_export_zip(
                     all_refs.extend(_find_image_refs(content))
                 if all_refs:
                     _push("images", idx + 1, total_docs, f"正在收集图片 ({len(all_refs)} 引用)...")
-                    doc_dir = str(store._get_doc_dir(tx_id) or '')
+                    doc_dir = str(store._get_doc_dir(doc_id) or '')
                     imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
 
             # 写入

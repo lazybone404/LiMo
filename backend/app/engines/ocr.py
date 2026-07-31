@@ -7,6 +7,8 @@ OCR 引擎 — 图片文字提取
 
 import base64
 import logging
+import os
+import sys
 from dataclasses import dataclass
 
 from app.core.protocols import Engine
@@ -188,8 +190,7 @@ class TesseractEngine(Engine):
 
         # 4. PyInstaller 打包版内置路径（sys._MEIPASS）
         if getattr(sys, 'frozen', False):
-            import sys as _sys
-            frozen_bin = os.path.join(_sys._MEIPASS, "bin", "tesseract", "tesseract.exe")
+            frozen_bin = os.path.join(sys._MEIPASS, "bin", "tesseract", "tesseract.exe")
             if os.path.isfile(frozen_bin):
                 return frozen_bin
 

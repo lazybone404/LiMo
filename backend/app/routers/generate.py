@@ -40,6 +40,7 @@ from app.generation.generator import Generator, _post_process_content_markers, _
 from app.generation.content_preparer import ContentPreparer
 from app.generation.prompt_builder import PromptBuilder
 from app.generation.prompt import build_polish_prompt, build_notes_prompt
+from app.storage.store import rewrite_asset_urls
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -761,7 +762,6 @@ async def get_markdown(transcript_id: str, mode: str = "", version: int = 0, req
                 break
 
     # 改写磁盘相对路径 assets/xxx → 绝对 API URL
-    from app.storage.store import rewrite_asset_urls
     result = {
         **selected,
         "versions": [{"version": m.get("version", 1), "id": m.get("id"),

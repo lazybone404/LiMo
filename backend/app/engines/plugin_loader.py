@@ -20,6 +20,7 @@ MVP 范围（个人自用，不防恶意代码）：
 import importlib.util
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -132,6 +133,7 @@ class _PluginEngineAdapter:
                 encoding="utf-8",
                 cwd=str(self._plugin_dir),
                 timeout=self._plugin.timeout,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except subprocess.TimeoutExpired:
             raise RuntimeError(

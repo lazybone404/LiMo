@@ -357,6 +357,6 @@ class DocumentAdapter(PipelineAdapter):
             except OSError:
                 pass
 
-        doc.close()
+        pdf.close()
         logger.info("扫描件 OCR 完成: %d/%d 页成功 [%s]", success, pages, ocr_used or "none")
         return "\n\n---\n\n".join(parts), pages

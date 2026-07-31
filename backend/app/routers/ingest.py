@@ -23,6 +23,7 @@ from app.core.dependencies import get_store, get_config, get_guard
 from app.core.errors import AppError
 from app.core.config import build_engine_models
 from app.core.disconnect import disconnect_watcher
+from app.storage.store import rewrite_asset_urls
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
