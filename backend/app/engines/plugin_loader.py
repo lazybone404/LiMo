@@ -1,10 +1,14 @@
 """
 引擎插件加载器 — 从 {data_dir}/plugins/*.py 自动发现并注册第三方引擎。
 
+支持两种模式：
+  进程内（默认）: 直接 import，依赖主 venv。适合简单插件。
+  进程外（command 字段）: subprocess 调用独立 venv，依赖隔离。适合重依赖/协议敏感插件。
+
 MVP 范围（个人自用，不防恶意代码）：
-  - 扫描 ~/.limo/plugins/ 目录
-  - import 每个 .py 文件
-  - 找到 EnginePlugin 子类 → 注册到 EngineRegistry
+  - 扫描 ~/.limo/plugins/ 顶层 *.py
+  - import 找到 EnginePlugin 子类 → 注册到 EngineRegistry
+  - command 字段 → 走 subprocess，自带 venv
   - 许可证字段用于前端显示（黄色=AGPL/GPL, 灰色=安全）
 
 不做的（等有第三方开发者时再评估）：
@@ -14,7 +18,9 @@ MVP 范围（个人自用，不防恶意代码）：
 """
 
 import importlib.util
+import json
 import logging
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -50,6 +56,15 @@ class EnginePlugin:
 
     fallback: Optional[Engine] = None
 
+    # ── 进程外模式 ──
+
+    command: Optional[list[str]] = None
+    # 进程外模式：相对于插件 .py 所在目录的路径（cwd 即 plugins/）
+    # 例：["pymupdf4llm_heavy/.venv/Scripts/python.exe", "pymupdf4llm_heavy/engine.py"]
+    # 设为 None → 进程内模式（默认），走 process()
+
+    timeout: int = 300  # 子进程超时秒数（仅进程外模式）
+
     # ── Engine 协议适配 ──
 
     def accept(self, file_path: str) -> bool:
@@ -65,12 +80,17 @@ class EnginePlugin:
 
 class _PluginEngineAdapter:
     """将 EnginePlugin 适配为 EngineRegistry 兼容的 Engine 协议。
-    Engine.execute 签名为 (*args, **kwargs)，我们取第一个位置参数为 file_path，
+    Engine.execute 签名为 (*args, **kwargs)，取第一个位置参数为 file_path，
     其余 kwargs（media_dir, cancel_event 等）合并进 config 传给插件。
+
+    支持双模式：
+      - 进程内（command=None）：直接调用 plugin.process()
+      - 进程外（command 非空）：subprocess 调用独立 venv
     """
 
-    def __init__(self, plugin: EnginePlugin):
+    def __init__(self, plugin: EnginePlugin, plugin_dir: Path):
         self._plugin = plugin
+        self._plugin_dir = plugin_dir
         self.name = plugin.name
         self.license = plugin.license
         self.description = plugin.description
@@ -81,9 +101,40 @@ class _PluginEngineAdapter:
     def accept(self, file_path: str) -> bool:
         return self._plugin.accept(file_path)
 
+    def run(self, file_path: str, **kwargs) -> str:
+        """Engine 协议入口 — 带降级（当前直接委托 execute）"""
+        return self.execute(file_path, **kwargs)
+
     def execute(self, file_path: str, **kwargs) -> str:
-        """适配：将 media_dir 等 kwargs 合并到 config 传给 plugin.process()"""
+        if self._plugin.command:
+            return self._run_external(file_path, kwargs)
         return self._plugin.process(file_path, kwargs)
+
+    def _run_external(self, file_path: str, config: dict) -> str:
+        """进程外执行：subprocess 调用独立 venv，stdin 传 JSON config"""
+        # 过滤不可 JSON 序列化的值（cancel_event 等）
+        safe = {
+            k: v for k, v in config.items()
+            if isinstance(v, (str, int, float, bool, list, dict, type(None)))
+        }
+        try:
+            result = subprocess.run(
+                self._plugin.command + ["--input", file_path],
+                input=json.dumps(safe),
+                capture_output=True, text=True,
+                encoding="utf-8",
+                cwd=str(self._plugin_dir),
+                timeout=self._plugin.timeout,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"Plugin {self.name} timed out after {self._plugin.timeout}s"
+            )
+        if result.returncode != 0:
+            raise RuntimeError(
+                result.stderr.strip() or f"Plugin exited with code {result.returncode}"
+            )
+        return result.stdout
 
 
 # ── 加载入口 ──
@@ -126,7 +177,7 @@ def init_plugins(config: dict):
                         )
                         continue
 
-                    adapter = _PluginEngineAdapter(instance)
+                    adapter = _PluginEngineAdapter(instance, py_file.parent)
                     EngineRegistry.register(instance.category, instance.name, adapter)
                     logger.info(
                         "Plugin loaded: %s/%s (%s) [%s]",
