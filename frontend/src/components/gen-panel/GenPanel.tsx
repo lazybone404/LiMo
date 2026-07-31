@@ -479,7 +479,6 @@ export function GenPanel() {
     const polishedKey = taskKey + '_polished'
     setStreamBuffer(notesKey, '')
     setStreamBuffer(polishedKey, '')
-    setActiveView('summary')
 
     const formatStr = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
       formatSummary && 'summary',
@@ -489,6 +488,9 @@ export function GenPanel() {
     const streamMode = selectedCore.join(',')
     const isBoth = selectedCore.includes('notes') && selectedCore.includes('polished')
     const isPolishedOnly = selectedCore.includes('polished') && !selectedCore.includes('notes')
+    // 跳转到能实时看到流式的 tab：polished-only → 整理版 tab；否则 → 笔记 tab
+    // （此前强制跳 summary——polished-only 用户看不到整理版流式，误以为"一直在加载"）
+    setActiveView(isPolishedOnly ? 'polished' : 'summary')
 
     // 双产物新写：清空两个 tab（chunk 直接 append 到 current）
     if (!isBoth) {
@@ -563,23 +565,28 @@ export function GenPanel() {
         if (!isSameDoc(capturedId)) return
         // 刷新版本列表 + 以服务器保存的最终内容为准刷新预览
         // （此前只刷 versions 不刷内容：streamDisplay=false 或流式丢失时产物 tab 永远空白）
-        getMarkdown(capturedId, 'notes').then(md => {
-          if (isSameDoc(capturedId)) {
-            setMarkdownMeta(md ? { id: md.id, style: md.style, mode: md.mode, version: md.version } : null)
-            if (md) {
-              setCurrentContent(md.content)
+        const refreshSaved = (mode: 'notes' | 'polished') => {
+          getMarkdown(capturedId, mode).then(md => {
+            if (!isSameDoc(capturedId)) return
+            // 防竞态：用户已重新生成（processingTasks 重新激活）→ 放弃旧响应，
+            // 否则旧产物会覆盖新流式内容、污染版本列表
+            if (useStore.getState().processingTasks[taskKey]) return
+            if (mode === 'notes') {
+              setMarkdownMeta(md ? { id: md.id, style: md.style, mode: md.mode, version: md.version } : null)
+              if (md) {
+                setCurrentContent(md.content)
+                const prev = useStore.getState().markdownVersions
+                setMarkdownVersions([...(md.versions || []), ...prev.filter(v => v.mode !== 'notes')])
+              } else { setMarkdownVersions([]) }
+            } else if (md) {
+              setCurrentPolishedContent(md.content)
               const prev = useStore.getState().markdownVersions
-              setMarkdownVersions([...(md.versions || []), ...prev.filter(v => v.mode !== 'notes')])
-            } else { setMarkdownVersions([]) }
-          }
-        })
-        getMarkdown(capturedId, 'polished').then(md => {
-          if (isSameDoc(capturedId) && md) {
-            setCurrentPolishedContent(md.content)
-            const prev = useStore.getState().markdownVersions
-            setMarkdownVersions([...(md.versions || []), ...prev.filter(v => v.mode !== 'polished')])
-          }
-        })
+              setMarkdownVersions([...(md.versions || []), ...prev.filter(v => v.mode !== 'polished')])
+            }
+          })
+        }
+        refreshSaved('notes')
+        refreshSaved('polished')
         addToast('生成完成')
       },
       onError(msg) {
@@ -596,19 +603,28 @@ export function GenPanel() {
       onCancelled(savedPartial) {
         setProcessing(taskKey, null)
         if (!isSameDoc(capturedId)) return
-        // 将缓冲区内容写入 store（保留 partial，不提供续写入口）
+        // 将缓冲区内容写入 store（保留 partial）——双产物也保留
+        // （此前 both 模式丢弃 buffer → 取消后产物 tab 空白，尽管后端保存了 partial）
         if (!isBoth) {
           const singleKey = isPolishedOnly ? polishedKey : notesKey
           const buf = getStreamBuffer(singleKey)
           if (isPolishedOnly) setCurrentPolishedContent(buf)
           else setCurrentContent(buf)
+        } else {
+          const nb = getStreamBuffer(notesKey)
+          const pb = getStreamBuffer(polishedKey)
+          if (nb) setCurrentContent(nb)
+          if (pb) setCurrentPolishedContent(pb)
         }
         deleteStreamBuffer(notesKey)
         deleteStreamBuffer(polishedKey)
         if (savedPartial) {
           addToast('生成已取消，已生成的内容已保留', 'success')
+          // 刷新版本列表（后端双产物取消时保存已完成产物，status=partial）
           getMarkdown(capturedId, 'notes').then(md => {
-            if (isSameDoc(capturedId) && md) {
+            if (!isSameDoc(capturedId)) return
+            if (useStore.getState().processingTasks[taskKey]) return  // 已重新生成，放弃旧响应
+            if (md) {
               const prev = useStore.getState().markdownVersions
               setMarkdownVersions([...(md.versions || []), ...prev.filter(v => v.mode !== 'notes')])
             }

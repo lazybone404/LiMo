@@ -572,7 +572,7 @@ export function PreviewArea() {
               mode={activeTabDef.showVersionSwitcher}
               versions={markdownVersions || []}
               activeMeta={markdownMeta}
-              loading={versionLoading}
+              loading={versionLoading || isStreaming}
               onSelect={(v) => loadVersion(v, activeTabDef.showVersionSwitcher!)}
             />
           )}

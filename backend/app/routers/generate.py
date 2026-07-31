@@ -542,7 +542,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 ):
                     if cancel_event and cancel_event.is_set():
                         was_cancelled = True
-                        yield f"data: {json.dumps({'mode': label, 'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'mode': label, 'type': 'cancelled', 'saved_partial': bool(notes_chunks or polished_chunks)}, ensure_ascii=False)}\n\n"
                         break
                     # 每个产物最多 2 次尝试：首次 + 1 次重试（空响应 / 连接中断 / 挂起）
                     err_msg: str | None = None
@@ -586,7 +586,7 @@ async def generate_stream(transcript_id: str, request: Request,
                             else:
                                 break  # 已有部分内容，不重试
                     if was_cancelled:
-                        yield f"data: {json.dumps({'mode': label, 'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'mode': label, 'type': 'cancelled', 'saved_partial': bool(notes_chunks or polished_chunks)}, ensure_ascii=False)}\n\n"
                         break
                     if err_msg:
                         if label == "polished":

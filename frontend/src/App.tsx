@@ -125,7 +125,7 @@ export default function App() {
     // 浏览器/开发模式：直接加载（backendReady 默认 true）
     init()
     return unsubConfig
-  }, [])
+  }, [refreshCapabilities])
 
   // Tauri 冷启动：后端未就绪时显示加载屏，避免组件提前发请求导致 CONNECTION_REFUSED
   if (!backendReady) {
