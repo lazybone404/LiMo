@@ -14,7 +14,7 @@
 ├─────────────────────────────────────────────────────┤
 │ Layer 1: 转录层                                      │
 │ Engine.bind() → Engine.transcribe() / .process()    │
-│ 17 个引擎：ASR×4 / OCR×2 / Doc×11                   │
+│ 13 个内置引擎：ASR×4 / OCR×2 / Doc×7（+插件引擎）    │
 ├─────────────────────────────────────────────────────┤
 │ Layer 2: 存储层                                      │
 │ Store — 文件系统 + JSON 索引                        │
@@ -85,9 +85,11 @@ class PipelineAdapter(Protocol):
 
 ```python
 EngineRegistry.register("asr", "faster-whisper-small", FasterWhisperEngine(...))
-EngineRegistry.register("doc", "pymupdf", PyMuPDFEngine(...))
+EngineRegistry.register("doc", "docling", DoclingEngine(...))
 EngineRegistry.register("ocr", "tesseract", TesseractEngine(...))
 ```
+
+插件引擎（AGPL 隔离）：`plugin_loader.py` 从 `~/.limo/plugins/` 加载 `EnginePlugin` 声明，进程外 subprocess 模式（command 指向子目录 venv）动态注册进 EngineRegistry，capabilities 的 `fileTypeMap` 按插件 `file_types` 自动追加。
 
 `self.capabilities` 声明引擎能做什么：`text`, `table`, `image`, `pdf`, `office`。
 
@@ -101,16 +103,16 @@ EngineRegistry.register("ocr", "tesseract", TesseractEngine(...))
 | ASR | bcut-asr | 免费云 | text |
 | **OCR** | dashscope-ocr | 云端 | text |
 | OCR | tesseract | 本地(便携版 `bin/tesseract/`) | text |
-| **Doc** | docling / docling-text | 本地 | text, table, image, pdf |
+| **Doc** | docling | 本地 | text, table, image, pdf |
 | Doc | pypdfium2 | 本地 | text, table, image, pdf |
-| Doc | pdfplumber | 本地 | text, table |
-| Doc | python-docx / python-docx-text | 本地 | text, table, image, office |
-| Doc | python-pptx / python-pptx-text | 本地 | text, table, office |
-| Doc | openpyxl | 本地 | text, table, office |
 | Doc | markitdown | 本地 | text, table, image, office |
+| Doc | python-docx | 本地 | text, table, image, office |
+| Doc | python-pptx | 本地 | text, table, office |
+| Doc | openpyxl | 本地 | text, table, office |
 | Doc | ebooklib | 本地 | text (EPUB章节) |
+| Doc (插件) | pymupdf4llm | 进程外 | text, table, image, pdf |
 
-> Doc 引擎源码已拆分为独立文件：`doc_types.py`、`doc_markitdown.py`、`doc_docx.py`、`doc_pptx.py`、`doc_excel.py`、`docling.py`（含 PyPdfium2Engine）、`epub.py`。已移除 AGPL 引擎（pymupdf4llm/pymupdf）和未注册的死代码（pdf-ocr）。
+> Doc 引擎源码已拆分为独立文件：`doc_types.py`、`doc_markitdown.py`、`doc_docx.py`、`doc_pptx.py`、`doc_excel.py`、`docling.py`（含 PyPdfium2Engine）、`epub.py`。pdfplumber 为 pypdfium2 的表格辅助，不单独注册。text_only 变体引擎（docling-text/python-docx-text/python-pptx-text）已删除（与完整版重复无意义）。AGPL 引擎不内置，pymupdf4llm 以插件形式加载。
 
 ### 引擎绑定
 
@@ -120,9 +122,7 @@ EngineRegistry.register("ocr", "tesseract", TesseractEngine(...))
 engine_bindings:
   asr: dashscope-asr
   ocr: tesseract
-  doc:text+image: docling
-  doc:text-only: pypdfium2
-  doc:scan-ocr: docling
+  doc:pdf: docling
   doc:word: python-docx
   doc:ppt: python-pptx
   doc:excel: openpyxl
@@ -137,12 +137,13 @@ engine_bindings:
 
 | 扩展名 | 子场景 | 引擎优先级 |
 |--------|--------|-----------|
-| .pdf | `doc:text+image` | docling → pypdfium2 → ... |
-| .pdf (扫描件) | `doc:scan-ocr` | docling（文字+OCR 双模） |
+| .pdf | `doc:pdf` | 绑定链 → 扩展名兜底 docling |
 | .docx | `doc:word` | python-docx → markitdown |
-| .pptx | `doc:ppt` | markitdown → python-pptx |
+| .pptx | `doc:ppt` | python-pptx → markitdown |
 | .xlsx | `doc:excel` | openpyxl → markitdown |
 | .epub | `doc:epub` | ebooklib → markitdown |
+
+> 绑定值支持三种格式：字符串（`"pymupdf4llm"` 直接查注册表）、整数（engine_models id）、列表（旧格式，取首个）。`init_engines` 启动时清理失效 key 与无效 id（回退默认引擎）。扩展名兜底是默认行为，不受 `engine_auto_fallback` 控制。
 
 ### 降级开关
 
@@ -162,48 +163,54 @@ engine_bindings:
 
 ## Layer 2：存储层
 
-### 目录结构
+### 目录结构（v3 按文档聚合）
 
 ```
 data/
-├── transcripts/          # 原始转录 JSON
-│   └── {tx_id}.json
-├── transcripts_index.json
-├── markdown/             # 生成物 Markdown
-│   └── {md_id}.md
-├── markdown_index.json
-├── process/              # 处理结果
-│   └── {id}.txt
-├── process_index.json
-├── conversations/        # AI 对话
-│   └── {conv_id}.json
-├── conversations_index.json
-└── files/                # 上传文件
-    └── {tx_id}/
-        ├── original.png
-        └── ...
+├── index.json                  # v3 索引（transcripts 含 dir_name + source_file_path）
+├── config.yaml / config.yaml.bak
+├── files/                      # 原始文件按 hash 存，不变
+│   └── {hash12}/{filename}
+├── conversations/              # AI 对话，不变
+│   └── {prefix}/{id}.json
+└── {title}-{6位hex}/           # ★ 一文档一目录
+    ├── transcript.md           # rawText（Markdown 或 image JSON）
+    ├── notes.md                # 笔记最新版
+    ├── notes.prev.md           # 笔记上一版
+    ├── polished.md / polished.prev.md
+    ├── fact_check.md / fact_check.prev.md
+    ├── process/                # 图片处理结果
+    │   └── {mode}.md           # extract/table/digitize/understand
+    └── assets/                 # 图片资源（img_*.png / cover / original / screenshot_*）
 ```
+
+- 目录命名 `{sanitized_title}-{6位hex}`（标题变更时重命名目录），冲突时循环追加序号
+- md 文件用**相对路径** `assets/xxx` 引用图片，Typora/Obsidian 直接打开可渲染
+- 磁盘相对路径 → API 绝对 URL 由 `rewrite_asset_urls(content, tx_id)` 统一改写（`app/storage/store.py`），所有内容类 API 返回前调用
+- 删除文档 = `rmtree(doc_dir)`，自然清理所有产物
 
 ### Store 接口
 
 ```python
 class Store:
-    # Transcript
+    # Transcript（rawText 在 {doc_dir}/transcript.md，元数据在 index.json）
     get_transcript(tx_id) -> dict | None
-    save_transcript(tx) -> str          # 返回 tx_id，含去重检查
-    find_by_url(url) -> dict | None     # URL 去重
+    save_transcript(tx) -> bool           # 含去重检查
+    save_transcript_full(tx_data) -> bool # 覆盖 + 标题变更时重命名目录
+    find_by_url(url) -> dict | None       # URL 去重
+    delete_transcript(id) -> bool         # rmtree(doc_dir)
 
-    # Markdown
-    get_markdown(md_id) -> str | None
+    # Markdown（两版制：{mode}.md + {mode}.prev.md）
+    get_markdown(id) -> str | None        # 按 index 查 mode → 判断版本读 .md 或 .prev.md
     get_markdowns_by_transcript(tx_id, mode="") -> list
-    save_markdown(mv: MarkdownView) -> str
+    save_markdown(mv: MarkdownView) -> bool
 
-    # Process
+    # Process（{doc_dir}/process/{mode}.md）
     get_process_result(id) -> str | None
     get_process_results(tx_id) -> list
     save_process_result(result) -> str
 
-    # Conversation
+    # Conversation（不变）
     get_conversation(conv_id) -> dict | None
     list_conversations() -> list
     save_conversation(conv) -> str
@@ -215,9 +222,10 @@ class Store:
 
 ### 关键决策
 
-- **版本管理**：生成物同 mode 保留最近 2 版，前端 v2/v1 切换器
+- **版本管理**：同 mode 保留最近 2 版（`.md` + `.prev.md`），前端 v2/v1 切换器
 - **处理结果覆盖**：同 mode 覆盖不版本化（OCR 确定性的）
-- **去重两层**：URL 去重 + SHA256 contentHash 去重
+- **去重两层**：URL 去重 + SHA256 contentHash 去重（空文本固定 hash 需在 TextAdapter 层防碰撞）
+- **索引重建**：`_rebuild_index` 扫描根目录含 `transcript.md` 的目录反推
 
 ---
 
@@ -365,7 +373,7 @@ class GenerateError(AppError): ...   # 生成特定
 
 前端 `apiFetch` 自动解析非 2xx 响应为 `ApiErrorException`。
 
-**迁移状态**：18 处 `return {"error":"..."}` 旧格式中，conversations.py 和 generate.py 已迁移为 AppError。config/model/files 路由仍有 16 处。
+**迁移状态**：✅ 全部 11 个路由模块已统一 AppError 体系（2026-07-25 完成 config/model/files 最后迁移），0 处旧格式残留。
 
 ### 安全
 
@@ -417,9 +425,10 @@ App
 详见 [frontend-patterns.md](frontend-patterns.md)。
 
 关键点：
-- Zustand 单 store，`processingTasks` 用 `${docId}__${kind}` 键格式
-- `persist` middleware 仅持久化 `currentDocId`/`activeView`/`currentConversationId`
-- LLM/引擎配置存在后端 `config.yaml`，不由前端持久化
+- Zustand store 按域拆 7 slices（`store/themeSlice.ts` 等），`store/index.ts` 只剩组合层，类型在 `store/types.ts`（`Store` 为交集）
+- `processingTasks` 用 `${docId}__${kind}` 键格式，`setProcessing(key, null)` 前缀树形删除
+- 持久化为手写 localStorage（`mbw_*` 9 个 key），**无 persist 中间件**；LLM/引擎配置在后端 `config.yaml`，不由前端持久化
+- API 客户端按域拆分（`api/core.ts` + 7 域文件，`client.ts` 是 barrel）；内容源统一走 `lib/contentSources.ts`（`TabDef.contentSource` 驱动）
 
 ### 设计决策
 

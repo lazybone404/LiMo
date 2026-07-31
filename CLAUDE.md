@@ -209,7 +209,7 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 - 双产物并行（notes + polished），`source_type` 派发不同 prompt 模板
 - OCR 预处理（可选）：文档图片先用廉价 OCR 模型提取文字塞回原文，再用文本 LLM 生成
 - 同 mode 保留最近 2 版，前端 v2/v1 切换器
-- 存储：`markdown/` + `markdown_index.json`
+- 存储：按文档聚合 `{doc_dir}/{mode}.md` + `{mode}.prev.md`（两版制），图片用相对路径 `assets/xxx` 引用，API 返回前统一 `rewrite_asset_urls` 改写为绝对 URL
 
 **处理管道**（图片/Document → LLM 优先 → Engine 回退）：
 - 输入 `file_path`（原始文件），触发 `POST /process/{id}`
@@ -217,7 +217,7 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 - 旧端点 `/process-image/{id}` 已废弃，保留兼容
 - 同 mode 覆盖（不版本化，OCR 是确定性的）
 - 调度：请求 `model_id` → `scene_models.image_process` → `scene_models.generate` → Engine
-- 存储：`process/` + `process_index.json`
+- 存储：`{doc_dir}/process/{mode}.md`
 
 **对话管道**（Agent 工具循环）：
 - `search_web`（Tavily → SearXNG → DDG 三级降级）+ `fetch_url`（trafilatura/Jina）
@@ -252,14 +252,14 @@ FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_co
 `app/engines/__init__.py` → `EngineRegistry.register()`。三类引擎：
 - **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）→ faster-whisper-small / faster-whisper-medium（本地，CTranslate2）
 - **OCR**：dashscope-ocr（云端）→ Tesseract（本地便携版，`backend/bin/tesseract/`）
-- **Doc**（全 MIT/BSD，已移除 AGPL 引擎）：
+- **Doc**（全 MIT/BSD，AGPL 引擎不内置）：
   - **pypdfium2**（BSD-3，默认）：C 引擎直读文字 + 嵌入原图，毫秒级。pdfplumber (MIT) 辅助表格提取
-  - **docling** / **docling-text**（MIT）：ONNX 布局模型，精准标题/表格/矢量图
+  - **docling**（MIT）：ONNX 布局模型，精准标题/表格/矢量图
   - **markitdown**（MIT）：Office/EPUB 转 Markdown
   - **python-docx** / **python-pptx** / **openpyxl** / **ebooklib**：各格式专用引擎
-- 旧 pymupdf/pymupdf4llm/pdf-ocr（AGPL）代码保留在 `doc.py` 中但不注册
+- **插件引擎**：AGPL 引擎（pymupdf4llm）以插件形式进程外加载（`~/.limo/plugins/`，command 指向子目录 venv 隔离依赖），`plugin_loader.py` 动态注册进 EngineRegistry，capabilities 的 fileTypeMap 自动追加
 
-引擎绑定通过 `engine_bindings` 动态 key 分配，doc 拆为子场景（`doc:text+image` / `doc:text-only` / `doc:scan-ocr` / `doc:word` / `doc:ppt` / `doc:excel` / `doc:epub` 等），设置页可独立配置。
+引擎绑定通过 `engine_bindings` 动态 key 分配，doc 拆为子场景（`doc:pdf` / `doc:word` / `doc:ppt` / `doc:excel` / `doc:epub`，text 变体引擎已删除无意义），设置页可独立配置。绑定值支持字符串/数字/列表三种格式，`init_engines` 启动时清理失效 key 与无效 id。
 
 ### 模型管理
 
@@ -272,7 +272,7 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 ```
 - 可拖拽 resize，50–600px，<80px 自动折叠为 PanelStrip
 - 快捷键：`Ctrl+G` 切换生成面板，`Ctrl+I` 切换 AI 面板
-- Zustand 单 store（`frontend/src/store/index.ts`），11 域分节（docs/content/generation/import/processing/chat/UI/theme/toast/capabilities），processingTasks + localStorage 持久化
+- Zustand store 按域拆 7 slices（`store/themeSlice.ts` / `docsSlice` / `contentSlice` / `tasksSlice` / `chatSlice` / `uiSlice` / `toastSlice`），`store/index.ts` 只剩组合层 + 模块副作用，共享类型在 `store/types.ts`（`Store` 为各 slice 交集）。**action 零跨域引用**，新增域 = 新建 slice 文件，消费方 API 零改动。持久化为手写 localStorage（`mbw_*` 9 个 key），无 persist 中间件。`setProcessing(key, null)` 是前缀树形删除语义（删 key 本身 + `key__` 前缀子任务），`clearDocTasks`/`cancelOneTask`/`failTask` 是兄弟函数
 
 ### Tauri 桌面壳
 

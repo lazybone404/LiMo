@@ -6,6 +6,87 @@
 
 ---
 
+## 2026-08-01 — 前端工程质量重构（五项，可维护性视角）
+
+### 做了什么
+
+**store 拆 slices** — `store/index.ts`（497 行单文件）拆为 `types.ts` + 7 个 slice（theme/docs/content/tasks/chat/ui/toast），`index.ts` 只剩组合层 + 模块副作用。探索确认 action 层零跨域引用（每个 action 只读自己域字段），84% 字段是单字段单 setter 纯状态，拆 slice 无行为风险。`Store[...]` 自引用类型抽为具名类型（`ActiveView`/`MarkdownMeta` 等），`msgCounter` 归 toastSlice，apply 五主题轴 + matchMedia 监听留在 index.ts（避免运行时循环依赖）。39 字段 53 action API 零变化，22 个消费方零改动。
+
+**client.ts 按域拆分** — 967 行拆为 `core.ts`（共享核心）+ 7 个域文件（capabilities/transcripts/ingest/generate/chat/settings/export），`client.ts` 变纯 barrel（15 个 import 方零改动），`BASE` 保持模块私有不泄漏。顺带合并 `fetchSSE`/`fetchFileSSE`（154 行近逐行重复）为 `ingestStream` + `fallbackJson`，手写 SSE 解析统一走 `sse.ts` 的 `parseSSEStream`（消除第三份重复）。
+
+**contentSource 类型绑定** — `TabDef.contentSource` 的取值逻辑此前在 3 处独立维护（PreviewArea displayContent 硬编码 `activeView === 'polished'` 三元、CopyContentBtn switch、ExportMenu contentKey 中间层），且 `displayContent` 根本没走 contentSource。新建 `lib/contentSources.ts`：`CONTENT_GETTERS: Record<ContentSource, getter>`（新增枚举值编译器强制补实现）+ `getContentForView` 统一入口，ExportMenu 冗余中间层整层删除。
+
+**PreviewArea 展示拆分** — 773 → 646 行。6 个 props 驱动组件（`EmptyState` 替代 8 处重复空态、`ProcessingPlaceholder`/`VersionSwitcher`/`TranscriptQualityNote`/`ImageResultView`/`CopyContentBtn`），全部无 store 依赖。新增**首个组件测试**（`CopyContentBtn.test.tsx` 3 用例，@testing-library/react 此前已装未用）。
+
+**useTaskRunner hook** — `handleRetranscribe`/`handleProcessImage` 逐字重复的 ~20 行样板（capturedId → taskKey → abort → setProcessing → await → stale 检查 → 错误处理 → finally 清理）抽取为 `hooks/useTaskRunner.ts`。AbortError 静默返回，finally 用 `setProcessing(key, null)` 前缀树形删除，onSuccess 内部多段 await 后的 stale 检查逐字保留。`handleGenerate`/`handleImport` 结构不同不强行套用。
+
+### 为什么
+
+用户收到前端工程质量报告（可维护性视角）：God Store 单文件、组件与 store 强耦合、字符串字面量隐式约定（contentSource 映射 3 处独立维护、漏改不报错）、client.ts 长文件、handler 模板重复。决策：P0-P2 全部五项 + store 一次全拆（探索确认 action 零跨域引用，全拆行为风险低）。
+
+### 两处有意的行为变更（重构附带修正）
+
+1. **复制按钮**：extract/table/digitize/understand 四 tab 有处理结果时复制按钮新出现（与 ExportMenu 复制行为对齐）
+2. **流式期间非 notes/polished tab**：原逻辑任何非 polished tab 一律读 notes 缓冲（fact_check tab 显示笔记流式内容的 bug 语义）→ 现在读各自内容源
+
+### 影响范围
+
+| 文件 | 变更 |
+|------|------|
+| `store/index.ts` | 重写为组合层（~60 行） |
+| `store/types.ts` + 7 个 slice | **新建** — 39 字段 53 action 按域拆分 |
+| `api/client.ts` | 重写为 barrel |
+| `api/core.ts` + 7 个域文件 | **新建** — 按域拆分，ingestStream 合并 |
+| `lib/contentSources.ts` | **新建** — Record<ContentSource> getter |
+| `lib/tabRegistry.ts` | contentSource 抽具名类型 |
+| `components/preview/` 6 个组件 | **新建** — 展示拆分 |
+| `components/preview/PreviewArea.tsx` | 773 → 646 行，getter 化 + 组件化 |
+| `components/ui/ExportMenu.tsx` | 删除 contentKey 中间层 |
+| `components/gen-panel/GenPanel.tsx` | 两个 handler 改 useTaskRunner |
+| `hooks/useTaskRunner.ts` | **新建** |
+| `test/CopyContentBtn.test.tsx` | **新建** — 首个组件测试 |
+
+验证：82 tests 全绿（79 + 3 新组件测试），`npm run build`（tsc + vite）+ `npm run lint` 通过。
+
+---
+
+## 2026-07-31 — 存储重构 v3 + 插件引擎 + 引擎审计（补记）
+
+### 做了什么
+
+**存储重构（v3 按文档聚合）** — 存储从"类型分桶 + 随机 ID"重构为"一文档一目录"：`{sanitized_title}-{6位hex}/`，内含 `transcript.md`（纯文本 rawText）、`{mode}.md` + `{mode}.prev.md`（两版制）、`process/{mode}.md`、`assets/`（图片统一入文档目录）。md 文件用**相对路径** `assets/xxx` 引用图片，Typora/Obsidian 直接打开可渲染；磁盘相对路径 → API 绝对 URL 由 `rewrite_asset_urls(content, tx_id)` 统一改写（所有内容类 API 返回前调用）。删除文档 = `rmtree(doc_dir)`。目录名冲突循环追加序号，标题变更时重命名目录。INDEX_VERSION 3。软件未投产，测试数据直接删，零迁移负担。
+
+**插件引擎（进程外加载）** — AGPL 引擎 pymupdf4llm 以插件形式加载：`~/.limo/plugins/` 下 `EnginePlugin` 声明（`command` 指向子目录 venv 隔离依赖），`plugin_loader.py` 动态注册进 EngineRegistry，capabilities 的 `fileTypeMap` 按插件 `file_types` 自动追加。Windows 修复：command 解析为绝对路径 + `sys.stdout.reconfigure(encoding="utf-8")` 防 GBK 乱码。
+
+**引擎 UI 一致性审计** — 删除 3 个 text_only 变体引擎（docling-text/python-docx-text/python-pptx-text，与完整版重复无意义）；子场景统一为 `doc:pdf`/`doc:word`/`doc:ppt`/`doc:excel`/`doc:epub`（旧 `doc:text+image`/`doc:text-only`/`doc:scan-ocr` 清理）；engineProviders `pymupdf` → `doc-local`；engine_models 残留清理（21 → 9 条）；`_sync_builtin_models` 改为保守方案（只补不删，清理废弃 provider 整组）。
+
+**体积优化** — 移除 opencv-python 死依赖（app 代码零引用，视频抽帧用 ffmpeg，帧质量用 PIL+numpy），节省 ~90MB 打包体积。
+
+### 为什么
+
+存储重构：类型分桶时代一个文档的产物散落在 6 个目录，只有 index.json 知道关系，打开数据目录无法看出哪个文件属于哪个文档。用户强调"尽早做，等以后真的有用户再改就麻了"。
+
+插件引擎：pymupdf4llm 是 AGPL 许可证，内置会污染整体许可证；进程外 subprocess 模式 + 独立 venv 彻底隔离。
+
+引擎审计：用户反馈"导入面板的快捷选择栏与设置页不一致，有些引擎是重复的没有意义"——text 变体引擎与完整版行为重复，UI 出现无意义选项。
+
+### 影响范围
+
+| 文件 | 变更 |
+|------|------|
+| `backend/app/storage/store.py` | v3 重构（doc_dir/两版制/rewrite_asset_urls/_rebuild_index） |
+| `backend/app/routers/ingest.py` | 图片持久化入 doc_dir + 时序修复 + `/api/assets/` 端点 |
+| `backend/app/engines/__init__.py` | 删 text 变体注册 + 失效绑定清理 |
+| `backend/app/engines/plugin_loader.py` | 进程外插件加载（Windows 路径修复） |
+| `backend/app/core/config.py` | `_sync_builtin_models` 保守化 + doc-local |
+| `backend/app/routers/capabilities.py` | fileTypeMap 动态追加插件引擎 + scenarioLabels 统一 |
+| `backend/app/adapters/document.py` | `_ext_to_sub_scenario` → doc:pdf |
+| `backend/pyproject.toml` + `LiMoBackend.spec` | 移除 opencv-python |
+| `frontend/` 多处 | 引擎场景 key、assets URL、文案同步 |
+| `~/.limo/plugins/` | **新增** pymupdf4llm 插件（AGPL 隔离） |
+
+---
+
 ## 2026-07-31 — Bug 修复 + SSE 重构
 
 ### 做了什么

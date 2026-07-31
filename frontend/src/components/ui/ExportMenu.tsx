@@ -13,7 +13,7 @@ import { downloadText, downloadFromUrl } from '../../lib/download'
  * ## 设计原则
  *
  * 1. **预览一致**：用户在预览栏看到什么，导出就应该得到什么。
- *    每个 tab 的内容源 → 导出行为的映射集中在 TAB_EXPORT 表中。
+ *    每个 tab 的内容源 → 导出行为的映射见 lib/contentSources.ts（TabDef.contentSource 驱动）。
  * 2. **两条路径分工明确**：
  *    - ExportMenu（本组件）：快捷单文件导出，上下文跟随当前预览 tab
  *    - ExportPanel（侧边面板）：批量多文档导出，用户自选 tab/格式/主题

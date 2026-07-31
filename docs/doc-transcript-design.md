@@ -4,8 +4,8 @@
 
 ## 当前状态（2026-07-08）
 
-✅ 已实现：5 种文档类型各有独立的引擎和子场景拆分（`doc:text+image`/`doc:word`/`doc:ppt`/`doc:excel`/`doc:epub`）。
-实际引擎选型见 [engine-standards.md](../design/engine-standards.md)，非本文档中的提案。
+✅ 已实现：5 种文档类型各有独立的引擎和子场景拆分（`doc:pdf`/`doc:word`/`doc:ppt`/`doc:excel`/`doc:epub`，2026-07-31 起旧 `doc:text+image` 等 key 已统一）。
+实际引擎选型见 [engine-standards.md](../design/engine-standards.md) 与 [architecture.md](architecture.md) Layer 1，非本文档中的提案。
 
 本文档中仍有效的部分：Word/PPT 的提取策略（document-flow / slide-by-slide）、EPUB 章节处理方案。
 
