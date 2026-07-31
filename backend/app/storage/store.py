@@ -312,6 +312,15 @@ class Store:
                     entry["dir_name"] = dir_name
                     self._save_index()
                     break
+            else:
+                # 目录已创建但 entry 尚未写入（ingest 流程先建目录、后 save_transcript）：
+                # 立即占位记录 dir_name，防止后续 _get_or_create_doc_dir 重复创建空壳目录。
+                # 其余字段由 save_transcript 的 upsert 补全。
+                self._index["transcripts"].append({
+                    "id": tx_id, "dir_name": dir_name,
+                    "createdAt": datetime.now().isoformat(),
+                })
+                self._save_index()
         return d
 
     def _rename_doc_dir(self, tx_id: str, new_title: str) -> Optional[Path]:
@@ -368,7 +377,13 @@ class Store:
         with self._lock:
             entry = self._transcript_index_entry(data)
             entry["dir_name"] = doc_dir.name
-            self._index["transcripts"].append(entry)
+            # upsert：占位 entry（_get_or_create_doc_dir 创建）已存在时原地补全，避免重复 append
+            for i, e in enumerate(self._index["transcripts"]):
+                if e["id"] == tx.id:
+                    self._index["transcripts"][i] = entry
+                    break
+            else:
+                self._index["transcripts"].append(entry)
             self._save_index()
         return True
 
