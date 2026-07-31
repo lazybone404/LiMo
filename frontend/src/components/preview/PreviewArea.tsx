@@ -3,11 +3,12 @@ import { useStore } from '../../store'
 import { getTranscript, getMarkdown, fetchProcessResults, streamFactCheck, getConfig, apiUrl, ApiErrorException } from '../../api/client'
 import { loadGenPrefs } from '../gen-panel/genPrefs'
 import ReactMarkdown from 'react-markdown'
-import { REMARK_PLUGINS, REHYPE_PLUGINS, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
+import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
 import { getStreamBuffer } from '../../store/streamBuffers'
 import { TabRegistry, type TabDef } from '../../lib/tabRegistry'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, Lightbulb, MessageSquare, Package, AlertTriangle, Copy, Check, FileText, Columns, AlignCenter, Maximize2 } from 'lucide-react'
+import { getContentForView } from '../../lib/contentSources'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, MessageSquare, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2 } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -21,49 +22,13 @@ import { EpubSkeletonPanel } from './EpubSkeletonPanel'
 import { TranscriptView } from './TranscriptView'
 import { MarkdownPreview } from './MarkdownPreview'
 import { PartialBanner } from './PartialBanner'
+import { EmptyState } from './EmptyState'
+import { ProcessingPlaceholder } from './ProcessingPlaceholder'
+import { VersionSwitcher } from './VersionSwitcher'
+import { TranscriptQualityNote } from './TranscriptQualityNote'
+import { ImageResultView } from './ImageResultView'
+import { CopyContentBtn } from './CopyContentBtn'
 import 'katex/dist/katex.min.css'
-
-function CopyContentBtn({ activeView, currentContent, currentPolishedContent, currentRawText, currentFactCheckContent }: {
-  activeView: string
-  currentContent: string | null
-  currentPolishedContent: string | null
-  currentRawText: string | null
-  currentFactCheckContent: string | null
-}) {
-  const [copied, setCopied] = useState(false)
-  const addToast = useStore(s => s.addToast)
-
-  // 从 TabDef 推导内容源（替代 switch/case）
-  const getContent = () => {
-    const def = TabRegistry.get(activeView)
-    if (!def) return null
-    switch (def.contentSource) {
-      case 'polished': return currentPolishedContent
-      case 'rawText': return currentRawText
-      case 'factCheck': return currentFactCheckContent
-      case 'notes': return currentContent
-      default: return null
-    }
-  }
-
-  const handleCopy = () => {
-    const text = getContent()
-    if (!text) { addToast('没有可复制的内容', 'error'); return }
-    navigator.clipboard.writeText(text).then(
-      () => { setCopied(true); addToast('已复制到剪贴板'); setTimeout(() => setCopied(false), 1500) },
-      () => addToast('复制失败', 'error'),
-    )
-  }
-
-  if (!getContent()) return null
-
-  return (
-    <button onClick={handleCopy}
-      className="px-3 py-1.5 text-[12px] rounded-full transition-colors text-dimmed hover:bg-surface-hover"
-      title="复制内容"
-    >{copied ? <Check size={14} className="text-success" /> : <Copy size={14} />}</button>
-  )
-}
 
 /** PreviewArea 主组件 — 内容预览 + Tab 切换 + 工具栏 */
 export function PreviewArea() {
@@ -255,15 +220,22 @@ export function PreviewArea() {
     }
   }, [currentDocId, sourceType])
 
-  // 当前显示的内容
-  // 流式生成中 → 优先读缓冲区（Map 由 streamTick 驱动重渲染）；否则显示已保存内容
-  const _streamBuf = isStreaming && currentDocId
-    ? (activeView === 'polished'
-      ? getStreamBuffer(currentDocId + '__generate_polished')
-      : getStreamBuffer(currentDocId + '__generate_notes'))
-    : null
-  const displayContent = _streamBuf
-    || (activeView === 'polished' ? currentPolishedContent : currentContent)
+  // 当前显示的内容 — 由 TabDef.contentSource 决定从哪个字段读（lib/contentSources.ts）
+  // 流式生成中 → notes/polished 优先读缓冲区（Map 由 streamTick 驱动重渲染）；否则显示已保存内容
+  // 注：非 notes/polished tab 不再读 notes 缓冲（原硬编码 bug 语义，fact_check/transcript 等
+  // 在生成期间应显示各自内容源——有意的修正，勿"恢复"）
+  const displayContent = activeTabDef
+    ? getContentForView(activeView, {
+        currentDocId, activeView,
+        currentContent, currentPolishedContent, currentRawText, currentFactCheckContent,
+        imageResults,
+        readStreamBuffer: (mode) => {
+          if (!isStreaming || !currentDocId) return null
+          const b = getStreamBuffer(currentDocId + '__generate_' + mode)
+          return b || null    // '' → null，触发 getter 的 ?? 回退到已保存内容
+        },
+      })
+    : currentContent
   const processingTasks = useStore(s => s.processingTasks)
   // key 格式为 `${docId}__${kind}`，收集当前文档所有活跃任务
   const activeTasks = currentDocId
@@ -381,32 +353,6 @@ export function PreviewArea() {
     })
   }
 
-  /** 处理进度占位组件（支持多任务并发——显示第一个匹配的任务） */
-  const processingPlaceholder = useMemo(() => {
-    const task = activeTasks[0]
-    if (!task) {
-      return <div className="flex flex-col items-center justify-center h-64 gap-3">
-        <Loader2 className="animate-spin text-accent" size={28} />
-        <p className="text-[14px] font-medium text-foreground">处理中...</p>
-      </div>
-    }
-    const modeLabels: Record<string, string> = { extract: '提取文字', table: '表格数据', digitize: '文档数字化', understand: '理解内容' }
-    const labels: Record<string, string> = {
-      'generate': '正在生成...',
-      'process': `处理中 — ${modeLabels[task.mode || ''] || task.mode || ''}`,
-      'retranscribe': '重新转录中...',
-      'import': '导入中...',
-    }
-    return (
-      <div className="flex flex-col items-center justify-center h-64 gap-3">
-        <Loader2 className="animate-spin text-accent" size={28} />
-        <p className="text-[14px] font-medium text-foreground">{labels[task.kind] || '处理中...'}</p>
-        <p className="text-[12px] text-disabled">请耐心等待，AI 处理中...</p>
-      </div>
-    )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTasks.length, activeTasks[0]?.kind, activeTasks[0]?.mode])
-
   const renderContent = () => {
     if (!currentDocId || !currentDoc) {
       return (
@@ -426,50 +372,29 @@ export function PreviewArea() {
     switch (activeView) {
       // Excel 数据预览 — 直接用 Markdown 渲染表格
       case 'data_preview':
-        if (isViewProcessing(activeView) && !isStreaming) return processingPlaceholder
+        if (isViewProcessing(activeView) && !isStreaming) return <ProcessingPlaceholder task={activeTasks[0]} />
         if (!currentRawText) {
-          return (
-            <div className="mx-auto px-10 py-16 text-center">
-              <p className="text-[15px] text-dimmed mb-3">数据预览不可用</p>
-              <p className="text-[13px] text-disabled">请重新转录后再试</p>
-            </div>
-          )
+          return <EmptyState title="数据预览不可用" description="请重新转录后再试" />
         }
         return <TranscriptView rawText={currentRawText} sourceType={currentDoc?.sourceType} />
       case 'polished':
       case 'summary':
-        if (isViewProcessing(activeView) && !isStreaming) return processingPlaceholder
+        if (isViewProcessing(activeView) && !isStreaming) return <ProcessingPlaceholder task={activeTasks[0]} />
         if (typeMeta.isExcel) {
           // Excel: 仅数据摘要（分析报告已移除）
           if (!currentContent) {
-            return (
-              <div className="mx-auto px-10 py-16 text-center">
-                <p className="text-[15px] text-dimmed mb-3">尚未生成</p>
-                <p className="text-[13px] text-disabled mb-6">点击左侧「生成数据摘要」按钮</p>
-              </div>
-            )
+            return <EmptyState title="尚未生成" description="点击左侧「生成数据摘要」按钮" />
           }
           return <>
             <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={currentContent} meta={markdownMeta} />
           </>
         }
         if (!displayContent) {
-          if (isStreaming) return processingPlaceholder
+          if (isStreaming) return <ProcessingPlaceholder task={activeTasks[0]} />
           if (contentLoadError) {
-            return (
-              <div className="mx-auto px-10 py-16 text-center">
-                <p className="text-[15px] text-warning mb-3"><AlertTriangle size={16} className="inline mr-1" />内容加载失败</p>
-                <p className="text-[13px] text-disabled mb-4">请检查后端是否正常运行，然后刷新页面重试</p>
-                <button onClick={() => window.location.reload()} className="px-4 py-1.5 bg-accent text-white text-[12px] rounded-full hover:bg-accent-hover">刷新页面</button>
-              </div>
-            )
+            return <EmptyState icon={<AlertTriangle size={16} className="text-warning" />} title="内容加载失败" description="请检查后端是否正常运行，然后刷新页面重试" action={<button onClick={() => window.location.reload()} className="px-4 py-1.5 bg-accent text-white text-[12px] rounded-full hover:bg-accent-hover">刷新页面</button>} />
           }
-          return (
-            <div className="mx-auto px-10 py-16 text-center">
-              <p className="text-[15px] text-dimmed mb-3">尚未生成</p>
-              <p className="text-[13px] text-disabled mb-6">点击左侧「生成」按钮为本文档生成 Markdown 笔记</p>
-            </div>
-          )
+          return <EmptyState title="尚未生成" description="点击左侧「生成」按钮为本文档生成 Markdown 笔记" />
         }
         return <>
           <PartialBanner versions={markdownVersions} isStreaming={isStreaming} />
@@ -477,24 +402,24 @@ export function PreviewArea() {
         </>
 
       case 'ocr':
-        if (isViewProcessing(activeView)) return processingPlaceholder
+        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
         // 图片默认 OCR 文字（尚未处理时显示引导）
         return (
-          <div className="mx-auto px-10 py-16 text-center">
-            <Image size={50} className="text-disabled mb-6 mx-auto opacity-20" />
-            <h2 className="text-[18px] font-semibold mb-2">{currentDoc.title}</h2>
-            <p className="text-[13px] text-disabled mb-3">图片已导入，选择一个处理模式开始提取</p>
-            <div className="flex items-center justify-center gap-3 text-[12px] text-muted">
+          <EmptyState
+            icon={<Image size={50} className="text-disabled mx-auto opacity-20" />}
+            title={<h2 className="text-[18px] font-semibold">{currentDoc.title}</h2>}
+            description="图片已导入，选择一个处理模式开始提取"
+            action={<div className="flex items-center justify-center gap-3 text-[12px] text-muted">
               <span className="flex items-center gap-1"><ScanText size={14} /> 提取文字</span>
               <span className="flex items-center gap-1"><Table size={14} /> 表格数据</span>
               <span className="flex items-center gap-1"><ScanLine size={14} /> 文档数字化</span>
               <span className="flex items-center gap-1"><Eye size={14} /> 理解内容</span>
-            </div>
-          </div>
+            </div>}
+          />
         )
 
       case 'original':
-        if (isViewProcessing(activeView)) return processingPlaceholder
+        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
         // 非图片类型不应该看到此 tab（切换文档时 activeView 可能滞后一帧）
         if (!typeMeta.isImage) return null
         return (
@@ -518,7 +443,7 @@ export function PreviewArea() {
         const result = imageResults[currentDocId || '']?.[activeView]
         // 全部用 Markdown 渲染：VL 模型可能在任意模式下输出表格/公式
 
-        if (isViewProcessing(activeView)) return processingPlaceholder
+        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
         if (!result) {
           const modeMeta: Record<string, { icon: React.ReactNode; desc: string }> = {
             extract: { icon: <ScanText size={40} />, desc: '提取图片中的全部文字，保留段落结构' },
@@ -528,40 +453,28 @@ export function PreviewArea() {
           }
           const meta = modeMeta[activeView] || { icon: <FileText size={40} />, desc: '' }
           return (
-            <div className="mx-auto px-10 py-16 text-center">
-              <div className="text-5xl mb-6 opacity-20">{meta.icon}</div>
-              <h2 className="text-[18px] font-semibold mb-2">{modeLabels[activeView] || activeView}</h2>
-              <p className="text-[13px] text-disabled mb-3">{meta.desc}</p>
-              <p className="text-[12px] text-disabled">点击左侧处理卡片开始</p>
-            </div>
+            <EmptyState
+              icon={<div className="text-5xl opacity-20">{meta.icon}</div>}
+              title={<h2 className="text-[18px] font-semibold">{modeLabels[activeView] || activeView}</h2>}
+              description={meta.desc}
+              hint="点击左侧处理卡片开始"
+            />
           )
         }
 
         return (
-          <div className="mx-auto px-10 py-8">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-[20px] font-semibold">{currentDoc?.title}</h2>
-              <span className="text-[12px] text-success font-medium">
-                {result.engine} · {modeLabels[activeView] || activeView}
-              </span>
-            </div>
-            <div className="text-[12px] text-disabled mb-4 flex items-center gap-3">
-              <span>{modeLabels[activeView]}</span>
-              {currentDoc?.createdAt && (
-                <><span>·</span><span>{new Date(currentDoc.createdAt).toLocaleDateString('zh-CN')}</span></>
-              )}
-            </div>
-            <div className="markdown-body">
-              <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={imageMarkdownComponents}>
-                {normalizeLatexDelimiters(result.text)}
-              </ReactMarkdown>
-            </div>
-          </div>
+          <ImageResultView
+            result={result}
+            mode={activeView}
+            title={currentDoc?.title}
+            createdAt={currentDoc?.createdAt}
+            markdownComponents={imageMarkdownComponents}
+          />
         )
       }
 
       case 'skeleton':
-        if (isViewProcessing(activeView)) return processingPlaceholder
+        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
         if (currentRawText === null) return <p className="text-[13px] text-disabled p-8">加载中...</p>
         return (
           <EpubSkeletonPanel
@@ -571,7 +484,7 @@ export function PreviewArea() {
         )
 
       case 'transcript':
-        if (isViewProcessing(activeView)) return processingPlaceholder
+        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
         // 文档类转录（PDF/Word等）→ 统一用 MarkdownPreview 渲染
         if (currentDoc?.sourceType && !['video', 'image', 'webpage', 'text'].includes(currentDoc.sourceType) && currentRawText) {
           let isJson = false
@@ -585,20 +498,8 @@ export function PreviewArea() {
             {currentRawText ? (
               <>
                 <TranscriptView rawText={currentRawText} sourceType={currentDoc?.sourceType} />
-                {/* H3: 转录质量指示 */}
-                {(() => {
-                  const len = currentRawText.length
-                  const warnStart = currentRawText.startsWith('[转录失败') || currentRawText === '[转录结果为空]'
-                  const shortThreshold = 500
-                  const isShort = !warnStart && len < shortThreshold && currentDoc?.sourceType === 'pdf'
-                  if (warnStart) {
-                    return <p className="mt-3 text-[11px] text-error bg-error/10 rounded-lg px-3 py-2 flex items-center gap-1"><AlertTriangle size={12} /> 转录失败 — 请尝试在左侧「生成选项」中切换引擎后点「重新转录」</p>
-                  }
-                  if (isShort) {
-                    return <p className="mt-3 text-[11px] text-warning bg-warning/10 rounded-lg px-3 py-2 flex items-center gap-1"><Lightbulb size={12} /> 转录仅 {len} 字符，对 PDF/Document 来说偏短。建议尝试切换为「扫描件（逐页 OCR）」引擎后点「重新转录」</p>
-                  }
-                  return <p className="mt-3 text-[11px] text-disabled">{len.toLocaleString()} 字符</p>
-                })()}
+                {/* 转录质量指示 */}
+                <TranscriptQualityNote rawText={currentRawText} sourceType={currentDoc?.sourceType} />
               </>
             ) : (
               <p className="text-[13px] text-disabled">加载中...</p>
@@ -624,34 +525,25 @@ export function PreviewArea() {
           )
         }
         return (
-          <div className="mx-auto px-10 py-16 text-center">
-            <p className="text-[15px] text-dimmed mb-3">AI 辅助审核</p>
-            <p className="text-[13px] text-disabled mb-2 max-w-md mx-auto">
-              自动提取事实断言，检查引用完整性和逻辑一致性
-            </p>
-            <p className="text-[11px] text-disabled mb-6 max-w-md mx-auto">
-              审核基于 AI 模型知识，不能替代人工事实核查。结果仅供辅助参考。
-            </p>
-            <button
+          <EmptyState
+            title="AI 辅助审核"
+            description="自动提取事实断言，检查引用完整性和逻辑一致性"
+            hint="审核基于 AI 模型知识，不能替代人工事实核查。结果仅供辅助参考。"
+            action={<button
               onClick={() => handleFactCheck(currentDocId!)}
               disabled={factChecking || !currentDocId}
               className="px-5 py-2.5 bg-accent text-white text-[14px] font-medium rounded-lg hover:bg-accent-hover active:scale-[0.97] transition-all disabled:opacity-40"
             >
               开始审核
-            </button>
-          </div>
+            </button>}
+          />
         )
       }
 
       case 'mindmap':
-        if (isViewProcessing(activeView)) return processingPlaceholder
+        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
         if (!currentContent) {
-          return (
-            <div className="mx-auto px-10 py-16 text-center">
-              <p className="text-[15px] text-dimmed mb-3">暂无可视化内容</p>
-              <p className="text-[13px] text-disabled">点击左侧「生成」按钮为本文档生成 Markdown 笔记后，可在此查看思维导图</p>
-            </div>
-          )
+          return <EmptyState title="暂无可视化内容" description="点击左侧「生成」按钮为本文档生成 Markdown 笔记后，可在此查看思维导图" />
         }
         return <div id="mindmap" className="relative flex-1 min-h-0"><MindmapView value={currentContent} /></div>
 
@@ -675,40 +567,22 @@ export function PreviewArea() {
             ))}
           </div>
           {/* 版本切换器 — 由 TabDef.showVersionSwitcher 驱动 */}
-          {(() => {
-            const vsMode = activeTabDef?.showVersionSwitcher
-            if (!vsMode) return null
-            const modeVersions = (markdownVersions || []).filter(v => v.mode === vsMode)
-            if (modeVersions.length <= 1) return null
-            // 高亮：优先匹配 markdownMeta（同 mode），否则匹配最新版本
-            const activeVersion = (markdownMeta?.mode === vsMode ? markdownMeta?.version : undefined) ?? modeVersions[0]?.version
-            return (
-            <div className="flex items-center gap-1">
-              <span className="text-[10px] text-disabled">版本</span>
-              {versionLoading && <Loader2 size={10} className="animate-spin text-accent" />}
-              {modeVersions.map(v => (
-                <button key={v.id}
-                  onClick={() => loadVersion(v.version, vsMode)}
-                  disabled={versionLoading}
-                  className={`px-2 py-0.5 rounded text-[11px] font-mono transition-all disabled:opacity-40 ${
-                    activeVersion === v.version
-                      ? 'bg-accent text-white'
-                      : 'text-muted hover:bg-surface-hover'
-                  }`}
-                >v{v.version}</button>
-              ))}
-            </div>
-            )
-          })()}
+          {activeTabDef?.showVersionSwitcher && (
+            <VersionSwitcher
+              mode={activeTabDef.showVersionSwitcher}
+              versions={markdownVersions || []}
+              activeMeta={markdownMeta}
+              loading={versionLoading}
+              onSelect={(v) => loadVersion(v, activeTabDef.showVersionSwitcher!)}
+            />
+          )}
         </div>
         <div className="flex items-center gap-1.5">
-          <CopyContentBtn
-            activeView={activeView}
-            currentContent={currentContent}
-            currentPolishedContent={currentPolishedContent}
-            currentRawText={currentRawText}
-            currentFactCheckContent={currentFactCheckContent}
-          />
+          <CopyContentBtn ctx={{
+            currentDocId, activeView,
+            currentContent, currentPolishedContent, currentRawText, currentFactCheckContent,
+            imageResults,
+          }} />
           <ExportMenu />
           {/* 阅读宽度切换 */}
           <button

@@ -11,6 +11,9 @@
 
 // ── Tab 数据定义 ──
 
+/** 内容来源 — 决定内容从哪个字段读（getter 实现见 lib/contentSources.ts） */
+export type ContentSource = 'notes' | 'polished' | 'rawText' | 'factCheck' | 'imageResult' | 'none'
+
 export interface TabDef {
   /** 唯一标识，对应 store.activeView */
   key: string
@@ -40,7 +43,7 @@ export interface TabDef {
    * - 'imageResult': imageResults[docId][activeView].text
    * - 'none':      无内容（原图 tab）
    */
-  contentSource: 'notes' | 'polished' | 'rawText' | 'factCheck' | 'imageResult' | 'none'
+  contentSource: ContentSource
 
   /** 是否为"标准 Markdown 渲染"tab（summary/polished 路径，含流式 + PartialBanner） */
   isStandardMarkdown?: boolean

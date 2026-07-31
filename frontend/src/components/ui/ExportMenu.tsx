@@ -3,6 +3,7 @@ import { Download, Copy, FileText, Globe, Archive, Share2, Box, Loader2 } from '
 import { useStore } from '../../store'
 import { getTypeMeta } from '../gen-panel/constants'
 import { TabRegistry } from '../../lib/tabRegistry'
+import { getContentForView } from '../../lib/contentSources'
 import { downloadText, downloadFromUrl } from '../../lib/download'
 
 /**
@@ -24,45 +25,9 @@ import { downloadText, downloadFromUrl } from '../../lib/download'
  *    对应按钮 disabled，不会发送注定失败的请求。
  */
 
-// ── Tab → 导出行为配置 ──
-// 新增 tab 时只需在此表加一行，无需修改其他逻辑。
-
-interface TabExportConfig {
-  /**
-   * 内容来源 — 决定 getExportContent() 从 store 的哪个字段读
-   * - 'notes':     currentContent（笔记 / 数据摘要）
-   * - 'polished':  currentPolishedContent（整理版原文 / 分析报告）
-   * - 'rawText':   currentRawText（原始转录 / 骨架数据）
-   * - 'factCheck': currentFactCheckContent（事实验证报告）
-   * - 'imageResult': imageResults[docId][mode].text（图片处理结果）
-   * - 'none':      无内容可导出（如 original 原图 tab）
-   */
-  contentKey: 'notes' | 'polished' | 'rawText' | 'factCheck' | 'imageResult' | 'none'
-  /** HTML 导出时传给后端 GET /export/{id}?mode= 的值。
-   *  '__mindmap__' 表示走 /export/{id}/mindmap 专用端点。
-   *  空字符串表示 HTML 导出不可用。 */
-  htmlMode: string
-  /** 文件名后缀，如 '-整理版原文' */
-  suffix: string
-  /** 该 tab 的导出内容的人类可读标签，用于无产物时的 Toast 提示 */
-  label: string
-}
-
-// TAB_EXPORT 从 TabRegistry 自动生成，不再手动维护
-// contentKey 映射：TabDef.contentSource → TabExportConfig.contentKey
-const TAB_EXPORT: Record<string, TabExportConfig> = Object.fromEntries(
-  TabRegistry.all().map(t => [t.key, {
-    contentKey: t.contentSource === 'none' ? 'none'
-      : t.contentSource === 'imageResult' ? 'imageResult'
-      : t.contentSource === 'polished' ? 'polished'
-      : t.contentSource === 'rawText' ? 'rawText'
-      : t.contentSource === 'factCheck' ? 'factCheck'
-      : 'notes',
-    htmlMode: t.htmlMode,
-    suffix: t.exportSuffix,
-    label: t.exportLabel,
-  } as TabExportConfig])
-)
+// ── Tab → 导出行为 ──
+// 内容来源统一走 lib/contentSources.ts 的 CONTENT_GETTERS（TabDef.contentSource 驱动），
+// 新增 tab 只需在 tabRegistry 注册一行，导出/复制自动跟随。
 
 /**
  * 导出菜单 — MD/HTML/复制
@@ -85,21 +50,17 @@ export function ExportMenu() {
   const typeMeta = getTypeMeta(currentDoc?.sourceType || 'webpage')
   const addToast = useStore(s => s.addToast)
 
-  const tabCfg = TAB_EXPORT[activeView] || null
+  const tabDef = TabRegistry.get(activeView) || null
 
   // ── 按 tab 确定导出内容 ──
   // 返回 null 表示当前 tab 没有可导出内容（如还没生成笔记、图片未处理等）
   const getExportContent = (): string | null => {
-    if (!currentDocId || !tabCfg) return null
-    switch (tabCfg.contentKey) {
-      case 'polished':   return currentPolishedContent
-      case 'rawText':    return currentRawText
-      case 'factCheck':  return currentFactCheckContent
-      case 'notes':      return currentContent
-      case 'imageResult':return imageResults[currentDocId]?.[activeView]?.text || null
-      case 'none':       return null
-      default:           return null
-    }
+    if (!currentDocId || !tabDef) return null
+    return getContentForView(activeView, {
+      currentDocId, activeView,
+      currentContent, currentPolishedContent, currentRawText, currentFactCheckContent,
+      imageResults,
+    })
   }
 
   const exportContent = getExportContent()
@@ -108,7 +69,7 @@ export function ExportMenu() {
   // 主按钮（MD/HTML/复制）：依赖当前 tab 的导出内容
   const canExportMD = !!exportContent
   // HTML 导出：需要有 htmlMode 配置 + 有可导出内容
-  const canExportHTML = !!(tabCfg?.htmlMode && exportContent)
+  const canExportHTML = !!(tabDef?.htmlMode && exportContent)
   // ZIP 全部产物：只要有任意产物就可用（不限于当前 tab）
   const hasExportableContent = !!(
     currentContent || currentPolishedContent || currentFactCheckContent || currentRawText ||
@@ -120,7 +81,7 @@ export function ExportMenu() {
     const title = currentDoc?.title || 'export'
     const safe = title.replace(/[\\/:*?"<>|]/g, '').slice(0, 60)
     const date = new Date().toISOString().slice(0, 10)
-    const suffix = tabCfg?.suffix || ''
+    const suffix = tabDef?.exportSuffix || ''
     return `${safe}${suffix}-${date}.${ext}`
   }
 
@@ -150,11 +111,11 @@ export function ExportMenu() {
   }
 
   const handleExportHTML = async () => {
-    if (!currentDocId || !tabCfg?.htmlMode) return
+    if (!currentDocId || !tabDef?.htmlMode) return
     setOpen(false)
 
     // mindmap tab：走专用端点，生成交互式脑图 HTML
-    if (tabCfg.htmlMode === '__mindmap__') {
+    if (tabDef.htmlMode === '__mindmap__') {
       const result = await downloadFromUrl(
         `/export/${currentDocId}/mindmap`,
         makeFileName('html').replace('.html', '_mindmap.html'),
@@ -164,7 +125,7 @@ export function ExportMenu() {
       return
     }
 
-    const params = new URLSearchParams({ format: 'html', mode: tabCfg.htmlMode })
+    const params = new URLSearchParams({ format: 'html', mode: tabDef.htmlMode })
     const result = await downloadFromUrl(`/export/${currentDocId}?${params.toString()}`, makeFileName('html'))
     if (result.ok) {
       addToast('HTML 已导出，请查看下载文件夹')
@@ -228,7 +189,7 @@ export function ExportMenu() {
         onClick={() => setOpen(!open)}
         disabled={!canExportMD}
         className="px-3 py-1.5 text-[12px] text-dimmed hover:bg-surface-hover rounded-full disabled:opacity-30 disabled:cursor-not-allowed"
-        title={!canExportMD && tabCfg ? `尚未生成${tabCfg.label}` : '导出'}
+        title={!canExportMD && tabDef ? `尚未生成${tabDef.exportLabel}` : '导出'}
       >
         <Download size={14} />
       </button>
