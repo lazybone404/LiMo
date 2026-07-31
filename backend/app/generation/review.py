@@ -764,7 +764,11 @@ class ReviewEngine:
 
     @staticmethod
     def _parse_json_object(raw: str) -> dict:
+        """解析 LLM JSON 输出。空响应或全部解析失败 → raise（让调用方失败可见，
+        而非静默返回 {} 导致审核流程空跑无提示）。单 claim 评估等降级场景由调用方 except 处理。"""
         raw = raw.strip()
+        if not raw:
+            raise ValueError("LLM 返回空响应，无法解析审核结果")
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
@@ -781,12 +785,14 @@ class ReviewEngine:
                 return json.loads(m.group(0))
             except json.JSONDecodeError:
                 pass
-        logger.warning("无法解析 JSON object: %s", raw[:200])
-        return {}
+        raise ValueError(f"无法解析 LLM JSON 输出: {raw[:200]}")
 
     @staticmethod
     def _parse_json_array(raw: str) -> list[dict]:
+        """解析 LLM JSON 数组。空响应或全部解析失败 → raise（同上）。"""
         raw = raw.strip()
+        if not raw:
+            raise ValueError("LLM 返回空响应，无法解析审核结果")
         try:
             result = json.loads(raw)
             if isinstance(result, list):
@@ -805,5 +811,4 @@ class ReviewEngine:
                 return json.loads(m.group(0))
             except json.JSONDecodeError:
                 pass
-        logger.warning("无法解析 JSON array: %s", raw[:200])
-        return []
+        raise ValueError(f"无法解析 LLM JSON 数组输出: {raw[:200]}")
