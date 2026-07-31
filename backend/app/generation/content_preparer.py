@@ -12,7 +12,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-MAX_TOKENS = 65536
+MAX_TOKENS = 16384
 _PROMPT_OVERHEAD = 2000
 
 # 各厂商默认上下文窗口（token）

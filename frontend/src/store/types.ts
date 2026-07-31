@@ -27,6 +27,8 @@ export interface TaskInfo {
   title?: string
   status?: 'running' | 'failed'
   error?: string  // 失败原因，保留 5 秒后自动清除
+  /** 生成任务：各产物已生成字符数（进度显示） */
+  progress?: { notes?: number; polished?: number }
 }
 
 export interface ProgressEvent {

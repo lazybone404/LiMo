@@ -14,6 +14,34 @@ from app.generation.product_registry import to_capability_list
 router = APIRouter()
 
 
+def _scan_interrupted_generations(config: dict) -> list[dict]:
+    """扫描所有文档目录的 .generating 标记（生成中断残留）→ 前端提示。
+
+    生成开始时 generate.py 写 marker，正常结束/取消/超时删除；
+    应用重启/崩溃时残留 → 前端启动 Toast「上次生成未完成」。
+    """
+    import json as _json
+    from pathlib import Path
+    data_dir = Path(config.get("data_dir", ""))
+    results = []
+    if not data_dir.exists():
+        return results
+    for doc_dir in data_dir.iterdir():
+        marker = doc_dir / ".generating"
+        if not marker.is_file():
+            continue
+        try:
+            meta = _json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, _json.JSONDecodeError):
+            meta = {}
+        results.append({
+            "tx_id": meta.get("tx_id", ""),
+            "started_at": meta.get("started_at", ""),
+            "dir_name": doc_dir.name,
+        })
+    return results
+
+
 @router.get("/capabilities")
 async def capabilities(config=Depends(get_config)):
     has_dashscope = bool(config.get("cloud", {}).get("dashscope", ""))
@@ -206,6 +234,8 @@ async def capabilities(config=Depends(get_config)):
             "task_oriented": "任务",
             "imrad": "IMRaD 精读",
         },
+        # ── 未完成生成标记（应用重启/崩溃时残留，前端启动提示）──
+        "interruptedGenerations": _scan_interrupted_generations(config),
     }
 
 

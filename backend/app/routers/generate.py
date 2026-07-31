@@ -8,6 +8,7 @@ from typing import Optional
 import asyncio
 import json
 import os
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 # ── 活跃生成任务追踪（用于 get_markdown 返回 has_active_task）──
@@ -28,6 +29,7 @@ import uuid
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from datetime import datetime
 
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.core.dependencies import get_store, get_config, get_guard
@@ -472,6 +474,18 @@ async def generate_stream(transcript_id: str, request: Request,
     async def merged_stream():
         await guard.semaphore.acquire()
         _active_generations.add(transcript_id)
+        # 未完成标记：生成中断（应用重启/崩溃）时残留，capabilities 检测后前端提示
+        marker_path: Path | None = None
+        _doc_dir = store._get_doc_dir(transcript_id)
+        if _doc_dir:
+            marker_path = _doc_dir / ".generating"
+            try:
+                marker_path.write_text(
+                    json.dumps({"tx_id": transcript_id,
+                                "started_at": datetime.now().isoformat()}),
+                    encoding="utf-8")
+            except OSError:
+                marker_path = None
         # 启动断连监听（后台轮询，客户端断开时 set cancel_event）
         _disconnect_task = asyncio.create_task(
             _watch_disconnect(request, cancel_event))
@@ -511,100 +525,77 @@ async def generate_stream(transcript_id: str, request: Request,
                     polished_prompt = _build_continue_prompt(polished_prompt, partial_content)
                     notes_prompt = _build_continue_prompt(notes_prompt, partial_content)
 
-                queue: asyncio.Queue = asyncio.Queue()
-
-                async def stream_one(label: str, prompt: str):
-                    try:
-                        async for chunk in llm.stream(
-                            prompt, image_urls=image_urls,
-                            cancel_event=cancel_event,
-                        ):
-                            await queue.put({"mode": label, "text": chunk})
-                        await queue.put({"mode": label, "type": "done"})
-                    except CancelledError:
-                        await queue.put({"mode": label, "type": "cancelled"})
-                    except Exception as e:
-                        await queue.put({
-                            "mode": label, "type": "error",
-                            "message": str(e)[:200],
-                        })
-
-                tasks = [
-                    asyncio.create_task(stream_one("polished", polished_prompt)),
-                    asyncio.create_task(stream_one("notes", notes_prompt)),
-                ]
-
-                done_count = 0
-                polished_chunks: list[str] = []
-                notes_chunks: list[str] = []
+                # ── 串行生成（notes → polished）──
+                # 原因：deepseek 对并发请求排队严重（并行时第二个响应 108s+）。
+                # 串行时每个请求独占连接（~30s/个），且前端先看到笔记、再看到整理版，
+                # 渐进反馈（用户旧版本体验：生成完一个紧接着下一个）。
+                # 每个产物独立 300s 超时 + 空响应重试一次。
                 was_cancelled = False
                 polished_error: str | None = None
                 notes_error: str | None = None
+                polished_chunks: list[str] = []
+                notes_chunks: list[str] = []
 
-                while done_count < 2:
-                    # 超时兜底：LLM 流式调用可能挂起（无返回无异常），queue 永久阻塞
-                    # → 前端 isStreaming 卡死显示"加载中"。180s 无事件强制结束。
-                    try:
-                        data = await asyncio.wait_for(queue.get(), timeout=180)
-                    except asyncio.TimeoutError:
-                        logger.error("双产物生成超时（180s 无事件），强制结束: %s", transcript_id)
-                        for t in tasks:
-                            t.cancel()
-                        await asyncio.gather(*tasks, return_exceptions=True)
-                        if not polished_chunks and polished_error is None:
-                            polished_error = "生成超时（180s 无响应）"
-                        if not notes_chunks and notes_error is None:
-                            notes_error = "生成超时（180s 无响应）"
+                for label, prompt, chunks in (
+                    ("notes", notes_prompt, notes_chunks),
+                    ("polished", polished_prompt, polished_chunks),
+                ):
+                    if cancel_event and cancel_event.is_set():
+                        was_cancelled = True
+                        yield f"data: {json.dumps({'mode': label, 'type': 'cancelled'}, ensure_ascii=False)}\n\n"
                         break
-                    etype = data.get("type", "")
-                    if etype in ("done", "error", "cancelled"):
-                        done_count += 1
-                        if etype == "cancelled":
+                    # 每个产物最多 2 次尝试：首次 + 1 次重试（空响应 / 连接中断 / 挂起）
+                    err_msg: str | None = None
+                    for attempt in range(2):
+                        try:
+                            # 总超时 300s + chunk 间隔超时 90s：
+                            # deepseek 流式中途断流时 httpx 静默等 EOF（不抛异常）→ 前端
+                            # 永远"加载中"。90s 无新 chunk 视为挂起 → 重试/报错。
+                            async with asyncio.timeout(300):
+                                _it = llm.stream(
+                                    prompt, image_urls=image_urls, cancel_event=cancel_event,
+                                )
+                                while True:
+                                    try:
+                                        chunk = await asyncio.wait_for(anext(_it), timeout=90)
+                                    except StopAsyncIteration:
+                                        break
+                                    chunks.append(chunk)
+                                    yield f"data: {json.dumps({'mode': label, 'text': chunk}, ensure_ascii=False)}\n\n"
+                            if chunks:
+                                break  # 成功
+                            # 空响应（LLM finish=stop 但 0 chars）→ 重试
+                            logger.warning("%s 空响应（第 %d 次），重试", label, attempt + 1)
+                        except asyncio.TimeoutError:
+                            err_msg = f"{label} 生成超时（90s 无响应），已中断"
+                            if not chunks and attempt == 0:
+                                # 首次挂起（chunk 未到就断流）→ 重试一次
+                                logger.warning("%s 挂起（第 %d 次），重试", label, attempt + 1)
+                                err_msg = None
+                            else:
+                                break
+                        except CancelledError:
                             was_cancelled = True
-                        elif etype == "error":
-                            if data.get("mode") == "polished":
-                                polished_error = data.get("message", "")
-                            elif data.get("mode") == "notes":
-                                notes_error = data.get("message", "")
-                    if data.get("mode") == "polished" and "text" in data:
-                        polished_chunks.append(data["text"])
-                    elif data.get("mode") == "notes" and "text" in data:
-                        notes_chunks.append(data["text"])
-                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-                await asyncio.gather(*tasks, return_exceptions=True)
-
-                # 偶发空响应重试：LLM 可能对某个产物返回 0 chars（finish=stop 但内容空）。
-                # 非取消、无错误、但产物为空 → 单独重试一次该产物。
-                if not was_cancelled:
-                    if not polished_chunks and polished_error is None:
-                        logger.warning("polished 空响应，重试一次")
-                        retry: list[str] = []
-                        try:
-                            async for chunk in llm.stream(
-                                polished_prompt, image_urls=image_urls,
-                                cancel_event=cancel_event,
-                            ):
-                                retry.append(chunk)
-                        except CancelledError:
-                            pass
+                            break
                         except Exception as e:
-                            polished_error = str(e)[:200]
-                        polished_chunks = retry
-                    if not notes_chunks and notes_error is None:
-                        logger.warning("notes 空响应，重试一次")
-                        retry = []
-                        try:
-                            async for chunk in llm.stream(
-                                notes_prompt, image_urls=image_urls,
-                                cancel_event=cancel_event,
-                            ):
-                                retry.append(chunk)
-                        except CancelledError:
-                            pass
-                        except Exception as e:
-                            notes_error = str(e)[:200]
-                        notes_chunks = retry
+                            err_msg = str(e)[:200]
+                            if not chunks:
+                                # 连接中断且无内容（deepseek 流式不稳定）→ 重试
+                                logger.warning("%s 连接中断（第 %d 次）: %s", label, attempt + 1, err_msg)
+                                err_msg = None
+                            else:
+                                break  # 已有部分内容，不重试
+                    if was_cancelled:
+                        yield f"data: {json.dumps({'mode': label, 'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+                        break
+                    if err_msg:
+                        if label == "polished":
+                            polished_error = err_msg
+                        else:
+                            notes_error = err_msg
+                        yield f"data: {json.dumps({'mode': label, 'type': 'error', 'message': err_msg}, ensure_ascii=False)}\n\n"
+                        break
+                    yield f"data: {json.dumps({'mode': label, 'type': 'done'}, ensure_ascii=False)}\n\n"
 
                 # 保存双产物（取消时 status=partial，完成时 status=complete）
                 status = "partial" if was_cancelled else "complete"
@@ -786,6 +777,12 @@ async def generate_stream(transcript_id: str, request: Request,
                 await _disconnect_task
             except (asyncio.CancelledError, Exception):
                 pass
+            # 生成结束（完成/取消/超时/客户端断开）→ 删除未完成标记
+            if marker_path and marker_path.exists():
+                try:
+                    marker_path.unlink()
+                except OSError:
+                    pass
             _active_generations.discard(transcript_id)
             guard.semaphore.release()
 
