@@ -11,6 +11,7 @@ import { ImportSection } from './ImportSection'
 import { GenerateOptions } from './GenerateOptions'
 import { ImageModeCards } from './ImageModeCards'
 import { EXT_TO_SUBTYPE, getSubScenario, getTypeMeta, normalizeStyle } from './constants'
+import { useTaskRunner } from '../../hooks/useTaskRunner'
 
 const _EMPTY_OBJ: Record<string, any> = {}
 
@@ -266,54 +267,52 @@ export function GenPanel() {
   // ── C1: 防切文档串数据 —— stale-check 辅助函数 ──
   const isSameDoc = (capturedId: string | null) => capturedId === useStore.getState().currentDocId
 
+  // ── C3: 任务执行公共骨架（retranscribe/process 复用，见 hooks/useTaskRunner.ts）──
+  const { runTask } = useTaskRunner()
+
   // ── Handlers ──
-  const handleRetranscribe = async () => {
+  const handleRetranscribe = () => {
     if (!currentDocId) return
     const capturedId = currentDocId
-    const taskKey = capturedId + '__retranscribe'
-    const signal = createAbort(taskKey)
-    setError(''); setImportError('')
-    setProcessing(taskKey, { kind: 'retranscribe' })
-    try {
-      const result = await retranscribe(capturedId, signal)
-      if (!isSameDoc(capturedId)) return
-      if ('error' in result) { setError(result.error); addToast(result.error, 'error'); return }
-      const tx = await getTranscript(capturedId)
-      if (!isSameDoc(capturedId)) return
-      if (tx) {
-        setCurrentRawText(tx.rawText)
-        // 重新加载已有的笔记产物（重新转录不影响已生成的 markdown）
-        const [notes, polished] = await Promise.all([
-          getMarkdown(capturedId),
-          getMarkdown(capturedId, 'polished'),
-        ])
+    void runTask({
+      taskKey: capturedId + '__retranscribe',
+      taskInfo: { kind: 'retranscribe' },
+      prepareAbort: createAbort,
+      onStart: () => { setError(''); setImportError('') },
+      run: (signal) => retranscribe(capturedId, signal),
+      onSuccess: async (result) => {
+        if ('error' in result) { setError(result.error); addToast(result.error, 'error'); return }
+        const tx = await getTranscript(capturedId)
         if (!isSameDoc(capturedId)) return
-        if (notes) {
-          setCurrentContent(notes.content)
-          setMarkdownMeta({ id: notes.id, style: notes.style, mode: notes.mode, version: notes.version })
-          setMarkdownVersions([...(notes.versions || []), ...(polished?.versions || [])])
-        } else {
-          setCurrentContent(null)
-          setMarkdownMeta(null)
-          setMarkdownVersions(polished?.versions || [])
+        if (tx) {
+          setCurrentRawText(tx.rawText)
+          // 重新加载已有的笔记产物（重新转录不影响已生成的 markdown）
+          const [notes, polished] = await Promise.all([
+            getMarkdown(capturedId),
+            getMarkdown(capturedId, 'polished'),
+          ])
+          if (!isSameDoc(capturedId)) return
+          if (notes) {
+            setCurrentContent(notes.content)
+            setMarkdownMeta({ id: notes.id, style: notes.style, mode: notes.mode, version: notes.version })
+            setMarkdownVersions([...(notes.versions || []), ...(polished?.versions || [])])
+          } else {
+            setCurrentContent(null)
+            setMarkdownMeta(null)
+            setMarkdownVersions(polished?.versions || [])
+          }
+          if (polished && polished.content) {
+            setCurrentPolishedContent(polished.content)
+          } else {
+            setCurrentPolishedContent(null)
+          }
+          // 有产物就显示笔记，没有就显示转录
+          setActiveView(notes ? 'summary' : 'transcript')
         }
-        if (polished && polished.content) {
-          setCurrentPolishedContent(polished.content)
-        } else {
-          setCurrentPolishedContent(null)
-        }
-        // 有产物就显示笔记，没有就显示转录
-        setActiveView(notes ? 'summary' : 'transcript')
-      }
-      addToast('重新转录完成')
-    } catch (e: unknown) {
-      if ((e instanceof Error) && e.name === 'AbortError') return
-      if (!isSameDoc(capturedId)) return
-      const msg = getErrorMessage(e)
-      setError(msg); addToast(msg, 'error')
-    } finally {
-      setProcessing(taskKey, null)
-    }
+        addToast('重新转录完成')
+      },
+      onFail: (msg) => { setError(msg); addToast(msg, 'error') },
+    })
   }
 
   const handleImport = () => {
@@ -417,32 +416,27 @@ export function GenPanel() {
     else { setImportProgress('导入中...'); ingestText(text, ev => updateImportProgress(ev), onDone, onError, signal) }
   }
 
-  const handleProcessImage = async () => {
+  const handleProcessImage = () => {
     if (!currentDocId) return
     const capturedId = currentDocId
-    const taskKey = capturedId + '__process'
-    const signal = createAbort(taskKey)
-    setError(''); setImportError('')
-    setProcessing(taskKey, { kind: 'process', mode: imageMode })
-    try {
-      const result = await processImage(capturedId, imageMode, selectedModelId ?? undefined, signal)
-      if (!isSameDoc(capturedId)) return
-      if ('error' in result) { setError(result.error); addToast(result.error, 'error'); return }
-      setImageResult(capturedId, imageMode, { text: result.text, engine: result.engine || caps?.engineOptions?.ocr?.[0]?.name || 'ocr', id: result.result_id || '' })
-      setActiveView(imageMode)
-      // 降级提醒
-      if (result.degraded?.length) {
-        result.degraded.forEach(note => addToast(`${note}`, 'success'))
-      }
-      addToast('处理完成')
-    } catch (e: unknown) {
-      if ((e instanceof Error) && e.name === 'AbortError') return
-      if (!isSameDoc(capturedId)) return
-      const msg = getErrorMessage(e)
-      setError(msg); addToast(msg, 'error')
-    } finally {
-      setProcessing(taskKey, null)
-    }
+    void runTask({
+      taskKey: capturedId + '__process',
+      taskInfo: { kind: 'process', mode: imageMode },
+      prepareAbort: createAbort,
+      onStart: () => { setError(''); setImportError('') },
+      run: (signal) => processImage(capturedId, imageMode, selectedModelId ?? undefined, signal),
+      onSuccess: (result) => {
+        if ('error' in result) { setError(result.error); addToast(result.error, 'error'); return }
+        setImageResult(capturedId, imageMode, { text: result.text, engine: result.engine || caps?.engineOptions?.ocr?.[0]?.name || 'ocr', id: result.result_id || '' })
+        setActiveView(imageMode)
+        // 降级提醒
+        if (result.degraded?.length) {
+          result.degraded.forEach(note => addToast(`${note}`, 'success'))
+        }
+        addToast('处理完成')
+      },
+      onFail: (msg) => { setError(msg); addToast(msg, 'error') },
+    })
   }
 
   const handleGenerate = () => {
