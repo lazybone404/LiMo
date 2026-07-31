@@ -64,19 +64,26 @@ class EnginePlugin:
 # ── Plugin adapter: wraps EnginePlugin into Engine protocol ──
 
 class _PluginEngineAdapter:
-    """将 EnginePlugin 适配为 EngineRegistry 兼容的 Engine 协议"""
+    """将 EnginePlugin 适配为 EngineRegistry 兼容的 Engine 协议。
+    Engine.execute 签名为 (*args, **kwargs)，我们取第一个位置参数为 file_path，
+    其余 kwargs（media_dir, cancel_event 等）合并进 config 传给插件。
+    """
 
     def __init__(self, plugin: EnginePlugin):
         self._plugin = plugin
         self.name = plugin.name
         self.license = plugin.license
         self.description = plugin.description
+        # 从插件复制必要的 Engine 属性
+        self.supported_modes = getattr(plugin, 'supported_modes', [])
+        self.capabilities = getattr(plugin, 'capabilities', [])
 
     def accept(self, file_path: str) -> bool:
         return self._plugin.accept(file_path)
 
-    def execute(self, file_path: str, config: dict) -> str:
-        return self._plugin.process(file_path, config)
+    def execute(self, file_path: str, **kwargs) -> str:
+        """适配：将 media_dir 等 kwargs 合并到 config 传给 plugin.process()"""
+        return self._plugin.process(file_path, kwargs)
 
 
 # ── 加载入口 ──

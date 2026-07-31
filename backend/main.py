@@ -243,7 +243,10 @@ async def startup():
     app.state.search_engine = _search_engine
     try:
         _transcripts = app.state.store.list_transcripts()
-        _search_engine.rebuild(_transcripts, lambda tx_id: app.state.store.get_transcript(tx_id).get("rawText", ""))
+        def _get_content(tx_id: str) -> str:
+            tx = app.state.store.get_transcript(tx_id)
+            return tx.get("rawText", "") if tx else ""
+        _search_engine.rebuild(_transcripts, _get_content)
         import logging
         logging.getLogger(__name__).info("Search index ready (%d docs)", len(_transcripts))
     except Exception as e:
