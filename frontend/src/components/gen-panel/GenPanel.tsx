@@ -248,7 +248,8 @@ export function GenPanel() {
 
   // ── C2: AbortController 管理（按完整 task key 注册，支持逐任务取消）──
   const importSeqRef = useRef(0)  // 导入计数器，确保每次导入用独立 key
-  const productChars = useRef<Record<'notes' | 'polished', number>>({ notes: 0, polished: 0 })  // 产物级进度计数
+  // 产物级进度计数：per-taskKey Map（并发生成时互不干扰——单 useRef + 每次生成重置会互踩）
+  const productChars = useRef<Map<string, { notes: number; polished: number }>>(new Map())
 
   const createAbort = useCallback((taskKey: string) => {
     const ctrl = new AbortController()
@@ -470,7 +471,7 @@ export function GenPanel() {
     const taskKey = capturedId + '__generate'
     const signal = createAbort(taskKey)
     setError(''); setImportError('')
-    productChars.current = { notes: 0, polished: 0 }  // 新生成从 0 开始计数
+    productChars.current.set(taskKey, { notes: 0, polished: 0 })  // 新生成从 0 开始计数
     const doc = useStore.getState().docs.find(d => d.id === capturedId)
     setProcessing(taskKey, { kind: 'generate', title: doc?.title || '' })
 
@@ -523,35 +524,35 @@ export function GenPanel() {
       ocr_model_id: isVideo ? undefined : (ocrEnabled ? ocrModelId ?? undefined : undefined),
     }, {
       onChunk(text, mode) {
-        if (!isSameDoc(capturedId)) return
-        // 产物级进度：mode 标记当前产物 + 字符数累加（节流 ~300 字符更新一次）
-        // ProcessingPlaceholder 显示「正在生成整理版原文...（已生成 N 字符）」
+        // 1. 无条件写 buffer（key 按 docId 隔离——切走期间流式内容不丢，切回显示完整）
+        if (mode === 'polished') appendStreamBuffer(polishedKey, text)
+        else if (mode === 'notes') appendStreamBuffer(notesKey, text)
+        else appendStreamBuffer(isPolishedOnly ? polishedKey : notesKey, text)
+        // 2. 无条件累加进度（节流 ~300 字符更新一次）——保留 `if (cur && ...)` 守卫，
+        //    防止已取消任务（task=null）被迟到的 chunk 用 setProcessing 复活
+        //    ProcessingPlaceholder 显示「正在生成整理版原文...（已生成 N 字符）」
         if (mode === 'polished' || mode === 'notes') {
-          productChars.current[mode] = (productChars.current[mode] || 0) + (text?.length || 0)
+          const pc = productChars.current.get(taskKey) || { notes: 0, polished: 0 }
+          pc[mode] = (pc[mode] || 0) + (text?.length || 0)
+          productChars.current.set(taskKey, pc)
           const cur = useStore.getState().processingTasks[taskKey]
           const curChars = cur?.progress?.[mode] || 0
-          if (cur && (cur.mode !== mode || productChars.current[mode] - curChars >= 300)) {
+          if (cur && (cur.mode !== mode || pc[mode] - curChars >= 300)) {
             setProcessing(taskKey, {
               kind: 'generate', mode, title: doc?.title || '',
-              progress: { notes: productChars.current.notes || 0, polished: productChars.current.polished || 0 },
+              progress: { notes: pc.notes || 0, polished: pc.polished || 0 },
             })
           }
         }
-        // 写入模块级高速缓冲区
+        // 3. 仅当前文档才写 store（驱动预览显示）+ flush
+        if (!isSameDoc(capturedId)) return
         if (mode === 'polished') {
-          appendStreamBuffer(polishedKey, text)
           if (streamDisplay) setCurrentPolishedContent(getStreamBuffer(polishedKey))
         } else if (mode === 'notes') {
-          appendStreamBuffer(notesKey, text)
           if (streamDisplay) setCurrentContent(getStreamBuffer(notesKey))
-        } else {
-          // 单产物：按选中项决定写入哪个 key
-          const singleKey = isPolishedOnly ? polishedKey : notesKey
-          appendStreamBuffer(singleKey, text)
-          if (streamDisplay) {
-            if (isPolishedOnly) setCurrentPolishedContent(getStreamBuffer(singleKey))
-            else setCurrentContent(getStreamBuffer(singleKey))
-          }
+        } else if (streamDisplay) {
+          if (isPolishedOnly) setCurrentPolishedContent(getStreamBuffer(polishedKey))
+          else setCurrentContent(getStreamBuffer(notesKey))
         }
         // 节流 flush 到 store（驱动 PreviewArea 重读 Map）
         scheduleFlush(() => bumpStreamTick())
@@ -560,6 +561,7 @@ export function GenPanel() {
         // 立即 flush 最终内容
         flushImmediate(() => bumpStreamTick())
         setProcessing(taskKey, null)
+        productChars.current.delete(taskKey)
         deleteStreamBuffer(notesKey)
         deleteStreamBuffer(polishedKey)
         if (!isSameDoc(capturedId)) return
@@ -591,6 +593,7 @@ export function GenPanel() {
       },
       onError(msg) {
         failTask(taskKey, msg)
+        productChars.current.delete(taskKey)
         deleteStreamBuffer(notesKey)
         deleteStreamBuffer(polishedKey)
         if (!isSameDoc(capturedId)) return
@@ -602,7 +605,13 @@ export function GenPanel() {
       },
       onCancelled(savedPartial) {
         setProcessing(taskKey, null)
-        if (!isSameDoc(capturedId)) return
+        productChars.current.delete(taskKey)
+        if (!isSameDoc(capturedId)) {
+          // 切走时取消：不保留（切回时 effect 从服务器加载），只清理 buffer
+          deleteStreamBuffer(notesKey)
+          deleteStreamBuffer(polishedKey)
+          return
+        }
         // 将缓冲区内容写入 store（保留 partial）——双产物也保留
         // （此前 both 模式丢弃 buffer → 取消后产物 tab 空白，尽管后端保存了 partial）
         if (!isBoth) {

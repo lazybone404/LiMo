@@ -130,6 +130,8 @@ export function PreviewArea() {
     setContentLoadError(false)
     useStore.getState().setCurrentFactCheckContent(null)
     useStore.getState().setFactCheckMeta(null)
+    useStore.getState().setFactCheckProgress(null)  // F5：漏清进度 → A 的审核 spinner 残留在 B
+    useStore.getState().setFactChecking(false)      // F5：漏清全局标志（A 的流式仍在跑，其 onDone 会再置 false，无害）
     if (!currentDocId) return
     const capturedId = currentDocId
     const isSame = () => capturedId === useStore.getState().currentDocId
@@ -144,6 +146,10 @@ export function PreviewArea() {
     }).catch(err => { handleLoadError('加载转录失败', err) })
     getMarkdown(capturedId, 'notes').then(md => {
       if (!isSame()) return
+      // F4：生成中切回（生成快结束时）→ 跳过——此 GET 可能返回保存前的旧版本 V0，
+      // 网络慢时会在 onDone 的 refreshSaved(V1) 之后 resolve → V0 覆盖 V1。
+      // 跳过安全：流式 buffer 会遮蔽 store 值
+      if (useStore.getState().processingTasks[capturedId + '__generate']) return
       if (md) {
         setCurrentContent(md.content)
         setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version })
@@ -155,10 +161,16 @@ export function PreviewArea() {
       }
     }).catch(err => { handleLoadError('加载笔记失败', err) })
     getMarkdown(capturedId, 'polished').then(md => {
-      if (isSame()) setCurrentPolishedContent(md && md.content ? md.content : null)
+      if (!isSame()) return
+      // F4：同上——生成中跳过，防旧版本覆盖 onDone 刷新结果
+      if (useStore.getState().processingTasks[capturedId + '__generate']) return
+      setCurrentPolishedContent(md && md.content ? md.content : null)
     }).catch(err => { handleLoadError('加载整理版原文失败', err) })
     getMarkdown(capturedId, 'fact_check').then(md => {
       if (!isSame()) return
+      // N2：fact_check 流式中切回 → 跳过——否则旧版本 V0 成为 onChunk 的
+      // 恢复起点，V0 + 新 chunk 混合错乱
+      if (useStore.getState().processingTasks[capturedId + '__fact_check']) return
       if (md?.content) {
         useStore.getState().setCurrentFactCheckContent(md.content)
         useStore.getState().setFactCheckMeta({
@@ -381,12 +393,13 @@ export function PreviewArea() {
       case 'summary':
         if (isViewProcessing(activeView) && !isStreaming) return <ProcessingPlaceholder task={activeTasks[0]} />
         if (typeMeta.isExcel) {
-          // Excel: 仅数据摘要（分析报告已移除）
-          if (!currentContent) {
+          // Excel: 仅数据摘要（分析报告已移除）——用 displayContent（含流式 buffer 回退，
+          // F6：生成中切走再切回能显示流式内容，而非直读 currentContent 的空态"尚未生成"）
+          if (!displayContent) {
             return <EmptyState title="尚未生成" description="点击左侧「生成数据摘要」按钮" />
           }
           return <>
-            <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={currentContent} meta={markdownMeta} />
+            <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
           </>
         }
         if (!displayContent) {
