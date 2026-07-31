@@ -117,9 +117,15 @@ class _PluginEngineAdapter:
             k: v for k, v in config.items()
             if isinstance(v, (str, int, float, bool, list, dict, type(None)))
         }
+        # command 相对路径 → 基于插件目录解析为绝对路径
+        # Windows CreateProcess 对带子目录的相对路径参数解析不可靠
+        cmd = [
+            str(self._plugin_dir / part) if not Path(part).is_absolute() else part
+            for part in self._plugin.command
+        ]
         try:
             result = subprocess.run(
-                self._plugin.command + ["--input", file_path],
+                cmd + ["--input", file_path],
                 input=json.dumps(safe),
                 capture_output=True, text=True,
                 encoding="utf-8",

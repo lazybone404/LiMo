@@ -2,6 +2,9 @@
 
 把 `.py` 文件放入 `~/.limo/plugins/` 目录，LiMo 启动时自动加载。
 
+> ✅ 本机已部署：pymupdf4llm 进程外插件（`~/.limo/plugins/pymupdf4llm_heavy*`）
+> 已实测：DSpark 论文 PDF → 109K 字符 + 32 张图片，启动自动加载。
+
 ## 两种模式
 
 | 模式 | 适用场景 | 依赖位置 |

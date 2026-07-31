@@ -53,7 +53,7 @@ hiddenimports = [
 
 # 引擎相关
 hiddenimports += [
-    'cv2', 'numpy',
+    'numpy',
     'docx', 'pptx', 'openpyxl',
     'markitdown', 'ebooklib',
     'faster_whisper', 'faster_whisper.assets',
@@ -74,7 +74,6 @@ hiddenimports += [
 # 格式别名
 hiddenimports += [
     'yaml',       # pyyaml import 名
-    'cv2',        # opencv
     'yt_dlp',     # 视频下载
 ]
 
