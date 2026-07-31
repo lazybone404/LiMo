@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-08-01 — E2E 验证 + 空壳目录 bug 修复
+
+### 做了什么
+
+**端到端验证 14 项清单**（存储重构 + 前端重构后首次全链路实测）：文本/图片导入 → `{标题}-{6位hex}/` 目录 → 双产物生成 → 两版制（notes.md + notes.prev.md）→ v1/v2 版本切换（内容对比不同）→ HTML 导出（自包含零 CDN）→ ZIP 导出（中文文件名数据正确）→ assets 服务端点 → OCR 处理链路（`process/extract.md`）→ coverUrl v3 格式 → 删除 rmtree + index 清理。
+
+**修复：导入重复创建空壳目录** — `_get_or_create_doc_dir` 在 index 无 entry 时创建目录但不记录，`save_transcript` 再次调用时 index miss → 重复创建 + `_1` 序号 → 空壳目录永久残留（实测一次导入产生两个目录）。修复：创建目录后立即占位记录 dir_name 到 index，`save_transcript` 改为 upsert 补全字段。修复后实测只产生一个目录。
+
+**排除 ZIP 中文名乱码假警报** — 验证中发现 ZIP 文件名显示乱码（`ת¼ԭ��`），深度排查到 zipfile 源码层确认是 GBK 终端显示假象：Python 3.12.13 的 zipfile 写文件名时 ASCII 编码失败自动回退 UTF-8 + 设 flag 0x800，布尔比较 `names[0] == '测试文档/测试笔记.md'` 为 True，跨平台解压正常。**export.py 无改动**。
+
+### 为什么
+
+单元测试全绿只证明单层正确，跨层链路（导入→目录→生成→版本→导出→删除）此前从未端到端确认过。验证即发现存储重构的核心路径存在重复创建目录缺陷——这正是清单验证的价值。
+
+### 影响范围
+
+| 文件 | 变更 |
+|------|------|
+| `backend/app/storage/store.py` | `_get_or_create_doc_dir` 占位 entry + `save_transcript` upsert（16 行） |
+
+---
+
 ## 2026-08-01 — 前端工程质量重构（五项，可维护性视角）
 
 ### 做了什么
