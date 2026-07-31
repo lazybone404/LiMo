@@ -159,12 +159,17 @@ def init_plugins(config: dict):
     loaded = 0
     # 扫描范围：plugins/ 顶层 *.py + 一层子目录 *.py
     # 子目录支持 git clone 仓库布局（plugins/<repo>/<plugin>.py），
-    # 排除 __pycache__ 等点开头目录
-    py_files = sorted(plugins_dir.glob("*.py")) + sorted(plugins_dir.glob("*/[!.]*.py"))
+    # 排除 __pycache__ 等点开头目录 + 常见非插件基础设施文件
+    _SKIP = {"setup.py", "conftest.py", "__init__.py"}
+    py_files = [
+        p for p in sorted(plugins_dir.glob("*.py")) + sorted(plugins_dir.glob("*/[!.]*.py"))
+        if p.name not in _SKIP and not (p.name.startswith("test_") or p.name.endswith("_test.py"))
+    ]
     for py_file in py_files:
         try:
+            # 模块名带 parent（顶层="plugins"，子目录=仓库名）——同名 stem 不冲突
             spec = importlib.util.spec_from_file_location(
-                f"_limo_plugin_{py_file.stem}", py_file
+                f"_limo_plugin_{py_file.parent.name}_{py_file.stem}", py_file
             )
             if spec is None or spec.loader is None:
                 logger.warning("Cannot load plugin %s: invalid spec", py_file.name)

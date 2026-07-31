@@ -1,6 +1,6 @@
 # 引擎插件系统 — 开发与安装标准
 
-> 插件 = 第三方引擎，以进程外（默认推荐）或进程内模式加载进 LiMo。
+> 插件 = 第三方引擎，以进程外（推荐：依赖隔离）或进程内（默认：零配置）模式加载进 LiMo。
 > 加载器：[plugin_loader.py](../backend/app/engines/plugin_loader.py)，启动时 `init_plugins()` 自动扫描。
 
 ---
@@ -33,6 +33,8 @@ your-plugin-repo/                  ← git clone 到 ~/.limo/plugins/your-plugin
 └── README.md                      ← 必写：安装命令 + 用法 + 许可证
 ```
 
+**⚠️ 仓库根一层只放声明文件**：加载器会 `exec` 仓库根一层的所有 `.py`（`setup.py`/`conftest.py`/`test_*.py`/`__init__.py` 已自动跳过，其余会被执行）。引擎本体代码必须放子目录/子包，不要在根一层放无关 `.py`——顶层 import 副作用可能被执行，甚至误定义 `EnginePlugin` 子类被意外注册。
+
 ### 平铺布局（简单插件，进程内模式）
 
 ```
@@ -59,7 +61,7 @@ class MyEngine(EnginePlugin):
     description = "一句话描述"      # 前端下拉展示
     file_types = [".pdf"]          # 支持扩展名 → capabilities fileTypeMap 自动归入
 
-    # ── 进程外模式（推荐，重依赖/协议敏感引擎）──
+    # ── 进程外模式（推荐用于重依赖/协议敏感引擎；依赖隔离，但取消信号不传递）──
     command = ["my_plugin/.venv/Scripts/python.exe",   # Windows
                "my_plugin/engine.py"]
     # Linux/macOS: ["my_plugin/.venv/bin/python3", "my_plugin/engine.py"]
@@ -67,7 +69,7 @@ class MyEngine(EnginePlugin):
 
     timeout = 300                  # 子进程超时（秒）
 
-    # ── 进程内模式（轻量插件，直接实现 process）──
+    # ── 进程内模式（默认，零配置；command 保持 None）──
     # command = None
     # def process(self, file_path: str, config: dict) -> str:
     #     ...return markdown
