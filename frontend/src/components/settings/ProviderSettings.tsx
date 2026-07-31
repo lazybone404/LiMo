@@ -13,6 +13,7 @@ import {
 } from '../../api/client'
 import { useStore } from '../../store'
 import { EngineSelect, type EngineOption } from '../gen-panel/EngineSelect'
+import { notifyConfigChanged } from '../../lib/configEvents'
 import { Plus, X, Trash2, RefreshCw, Wifi, CheckCircle, ChevronDown, ChevronRight } from 'lucide-react'
 
 const CAT_LABELS: Record<string, string> = { asr: '语音转文字', ocr: '图片文字识别', doc: '文档解析' }
@@ -68,6 +69,9 @@ export function ProviderSettings() {
       setLlmProviders(p as Provider[]); setEnabledModels(m as EnabledModel[]); setScene(s as SceneModels)
       setEngineProviders(ep as EngineProv[]); setEngineModels(em as EngineModel[]); setEngineBindings(eb as Record<string, number | null>)
       setAutoFallback(af.enabled)
+      // 配置已变更 → 广播，让 GenPanel 模型/引擎下拉、store capabilities 实时刷新
+      // （挂在 loadAll 末尾：全部 14 个保存/增删改 handler 都 await loadAll()）
+      notifyConfigChanged()
     } catch (err) {
       console.error('加载设置失败:', err)
     }
@@ -105,6 +109,7 @@ export function ProviderSettings() {
   }
   const handleSceneBind = async (scene: 'generate' | 'chat' | 'image_process', mid: number | null) => {
     const u = { ...sceneModels, [scene]: mid }; setScene(u); await setSceneModels(u)
+    notifyConfigChanged()  // 场景绑定不经过 loadAll，单独广播
   }
   const handleSaveLlmKey = async () => {
     const current = llmProviders.find(p => p.id === selectedLlmId)?.api_key || ''

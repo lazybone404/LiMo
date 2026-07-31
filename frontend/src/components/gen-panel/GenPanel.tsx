@@ -4,6 +4,7 @@ import { streamGenerate, getMarkdown, listEnabledModels, listProviders, ingestUR
 import { registerAbort } from '../../api/taskManager'
 import { cancelTask } from '../../api/taskManager'
 import { getStreamBuffer, appendStreamBuffer, setStreamBuffer, deleteStreamBuffer, scheduleFlush, flushImmediate } from '../../store/streamBuffers'
+import { onConfigChanged } from '../../lib/configEvents'
 import { PanelLeftClose, XCircle, Plus } from 'lucide-react'
 import { loadGenPrefs, saveGenPrefs } from './genPrefs'
 import { EngineSelect, type EngineOption } from './EngineSelect'
@@ -217,7 +218,7 @@ export function GenPanel() {
 
   const [enabledModels, setEnabledModels] = useState<EnabledModel[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
-  useEffect(() => {
+  const reloadModelLists = useCallback(() => {
     listEnabledModels().then(models => {
       setEnabledModels(models)
       if (saved.selectedModelId && !models.some(m => m.id === saved.selectedModelId)) {
@@ -225,7 +226,12 @@ export function GenPanel() {
       }
     }).catch(e => addToast(getErrorMessage(e), 'error'))
     listProviders().then(setProviders).catch(e => addToast(getErrorMessage(e), 'error'))
-    // 仅在挂载时运行一次
+  }, [saved.selectedModelId])  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    reloadModelLists()
+    // 设置页保存配置后自动刷新（无需手动刷新页面）
+    return onConfigChanged(reloadModelLists)
+    // 仅在挂载时订阅一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -242,6 +248,7 @@ export function GenPanel() {
 
   // ── C2: AbortController 管理（按完整 task key 注册，支持逐任务取消）──
   const importSeqRef = useRef(0)  // 导入计数器，确保每次导入用独立 key
+  const productChars = useRef<Record<'notes' | 'polished', number>>({ notes: 0, polished: 0 })  // 产物级进度计数
 
   const createAbort = useCallback((taskKey: string) => {
     const ctrl = new AbortController()
@@ -463,6 +470,7 @@ export function GenPanel() {
     const taskKey = capturedId + '__generate'
     const signal = createAbort(taskKey)
     setError(''); setImportError('')
+    productChars.current = { notes: 0, polished: 0 }  // 新生成从 0 开始计数
     const doc = useStore.getState().docs.find(d => d.id === capturedId)
     setProcessing(taskKey, { kind: 'generate', title: doc?.title || '' })
 
@@ -514,6 +522,19 @@ export function GenPanel() {
     }, {
       onChunk(text, mode) {
         if (!isSameDoc(capturedId)) return
+        // 产物级进度：mode 标记当前产物 + 字符数累加（节流 ~300 字符更新一次）
+        // ProcessingPlaceholder 显示「正在生成整理版原文...（已生成 N 字符）」
+        if (mode === 'polished' || mode === 'notes') {
+          productChars.current[mode] = (productChars.current[mode] || 0) + (text?.length || 0)
+          const cur = useStore.getState().processingTasks[taskKey]
+          const curChars = cur?.progress?.[mode] || 0
+          if (cur && (cur.mode !== mode || productChars.current[mode] - curChars >= 300)) {
+            setProcessing(taskKey, {
+              kind: 'generate', mode, title: doc?.title || '',
+              progress: { notes: productChars.current.notes || 0, polished: productChars.current.polished || 0 },
+            })
+          }
+        }
         // 写入模块级高速缓冲区
         if (mode === 'polished') {
           appendStreamBuffer(polishedKey, text)
@@ -540,11 +561,13 @@ export function GenPanel() {
         deleteStreamBuffer(notesKey)
         deleteStreamBuffer(polishedKey)
         if (!isSameDoc(capturedId)) return
-        // 刷新版本列表
+        // 刷新版本列表 + 以服务器保存的最终内容为准刷新预览
+        // （此前只刷 versions 不刷内容：streamDisplay=false 或流式丢失时产物 tab 永远空白）
         getMarkdown(capturedId, 'notes').then(md => {
           if (isSameDoc(capturedId)) {
             setMarkdownMeta(md ? { id: md.id, style: md.style, mode: md.mode, version: md.version } : null)
             if (md) {
+              setCurrentContent(md.content)
               const prev = useStore.getState().markdownVersions
               setMarkdownVersions([...(md.versions || []), ...prev.filter(v => v.mode !== 'notes')])
             } else { setMarkdownVersions([]) }
@@ -552,6 +575,7 @@ export function GenPanel() {
         })
         getMarkdown(capturedId, 'polished').then(md => {
           if (isSameDoc(capturedId) && md) {
+            setCurrentPolishedContent(md.content)
             const prev = useStore.getState().markdownVersions
             setMarkdownVersions([...(md.versions || []), ...prev.filter(v => v.mode !== 'polished')])
           }

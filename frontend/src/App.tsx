@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useStore } from './store'
+import { onConfigChanged } from './lib/configEvents'
 import { Toast } from './components/ui/Toast'
 import { TaskPanel, TaskPanelToggle } from './components/ui/TaskPanel'
 import { ExportPanel } from './components/ui/ExportPanel'
@@ -29,12 +30,30 @@ export default function App() {
   const backendReady = useStore(s => s.backendReady)
   const setBackendReady = useStore(s => s.setBackendReady)
 
+  // 刷新 capabilities（引擎下拉/场景标签/文件类型的数据源）。
+  // checkInterrupted：仅初始化时检查未完成生成标记，配置刷新不重复提示
+  const refreshCapabilities = useCallback((checkInterrupted: boolean) => {
+    fetchCapabilities().then(caps => {
+      setCapabilities(caps)
+      if (checkInterrupted) {
+        // 未完成生成标记（应用重启/崩溃残留）→ 提示
+        const interrupted = (caps as any).interruptedGenerations
+        if (Array.isArray(interrupted) && interrupted.length > 0) {
+          useStore.getState().addToast(`检测到 ${interrupted.length} 个未完成的生成（上次应用中断），请重新生成`, 'info')
+        }
+      }
+    }).catch(err => {
+      console.error('加载能力配置失败:', err)
+      useStore.getState().addToast('加载能力配置失败，请检查后端是否运行', 'error')
+    })
+  }, [setCapabilities])
+
   useEffect(() => {
+    // 订阅设置页配置变更 → 刷新 capabilities（保存后无需手动刷新页面）
+    const unsubConfig = onConfigChanged(() => refreshCapabilities(false))
+
     const init = () => {
-      fetchCapabilities().then(setCapabilities).catch(err => {
-        console.error('加载能力配置失败:', err)
-        useStore.getState().addToast('加载能力配置失败，请检查后端是否运行', 'error')
-      })
+      refreshCapabilities(true)
       listTranscripts().then(docs => {
       setDocs(docs)
       // 恢复上次选中的文档和视图
@@ -101,10 +120,11 @@ export default function App() {
         listen('backend-ready', () => { initOnce() })
       }).catch(() => {}) // 导入失败无所谓，health check 已覆盖
 
-      return () => { done = true }
+      return () => { done = true; unsubConfig() }
     }
     // 浏览器/开发模式：直接加载（backendReady 默认 true）
     init()
+    return unsubConfig
   }, [])
 
   // Tauri 冷启动：后端未就绪时显示加载屏，避免组件提前发请求导致 CONNECTION_REFUSED

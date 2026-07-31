@@ -19,7 +19,14 @@ const LABELS: Record<string, string> = {
 export function ProcessingPlaceholder({ task }: { task?: TaskInfo }) {
   let label = '处理中...'
   if (task) {
-    if (task.kind === 'process' && task.mode) {
+    if (task.kind === 'generate' && task.mode) {
+      // 产物级进度：串行生成时 mode 标记当前产物（GenPanel onChunk 更新）
+      const n = (task.mode === 'polished' || task.mode === 'notes')
+        ? task.progress?.[task.mode] || 0 : 0
+      label = task.mode === 'polished'
+        ? `正在生成整理版原文...（已生成 ${n} 字符）`
+        : `正在生成笔记...（已生成 ${n} 字符）`
+    } else if (task.kind === 'process' && task.mode) {
       label = `处理中 — ${MODE_LABELS[task.mode] || task.mode}`
     } else {
       label = LABELS[task.kind] || '处理中...'
