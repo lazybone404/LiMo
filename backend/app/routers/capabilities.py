@@ -115,27 +115,37 @@ async def capabilities(config=Depends(get_config)):
         else:
             engine_bindings[cat] = None
 
-    # ── 文件类型 → 可用引擎白名单（动态，根据已注册引擎推导）──
+    # ── 文件类型 → 可用引擎白名单（内置 + 插件动态追加）──
+    # 内置引擎按名列出；插件引擎（EnginePlugin）通过 file_types 扩展名自动归入
     _DOC_SUBTYPES = {
-        "pdf": ["docling", "docling-text", "pypdfium2"],
-        "word": ["python-docx", "python-docx-text", "markitdown"],
-        "ppt": ["python-pptx", "python-pptx-text", "markitdown"],
+        "pdf": ["docling", "pypdfium2"],
+        "word": ["python-docx", "markitdown"],
+        "ppt": ["python-pptx", "markitdown"],
         "excel": ["openpyxl", "markitdown"],
         "epub": ["ebooklib", "markitdown"],
     }
+    # 扩展名 → 子类型（与 _ext_to_sub_scenario 对齐）
+    _SUB_EXT = {"pdf": [".pdf"], "word": [".doc", ".docx"], "ppt": [".ppt", ".pptx"],
+                "excel": [".xls", ".xlsx"], "epub": [".epub"]}
     file_type_map: dict[str, list[str]] = {}
     for st, wanted in _DOC_SUBTYPES.items():
         available = [n for n in wanted if EngineRegistry.get("doc", n)]
+        # 动态追加插件引擎：EnginePlugin 暴露 file_types，匹配扩展名则归入
+        for doc_name in EngineRegistry.list_category("doc"):
+            if doc_name in available:
+                continue
+            eng = EngineRegistry.get("doc", doc_name)
+            file_types = getattr(eng, "file_types", []) or []
+            if file_types and any(ext in _SUB_EXT[st] for ext in file_types):
+                available.append(doc_name)
         if available:
             file_type_map[st] = available
 
-    # ── 子场景 key → 中文标签 ──────────────────────────────
+    # ── 子场景 key → 中文标签（与 fileTypeMap 子类型一一对应）──
     scenario_labels = {
-        "doc:text+image": "PDF 文字+图片",
-        "doc:text-only": "PDF 仅文字",
-        "doc:scan-ocr": "PDF 扫描件",
-        "doc:word": "Word 文字+图片",
-        "doc:ppt": "PPT 文字+图片",
+        "doc:pdf": "PDF",
+        "doc:word": "Word",
+        "doc:ppt": "PPT",
         "doc:excel": "Excel",
         "doc:epub": "EPUB",
     }
@@ -161,8 +171,8 @@ async def capabilities(config=Depends(get_config)):
                 "type": "local",
                 "capabilities": ["asr"],
             },
-            "pymupdf": {
-                "name": "Docling + MarkItDown（本地）",
+            "doc-local": {
+                "name": "本地文档引擎组（Docling + PyPdfium2 + MarkItDown 等）",
                 "type": "local",
                 "capabilities": ["doc"],
             },

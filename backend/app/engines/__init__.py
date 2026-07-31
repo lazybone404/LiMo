@@ -168,12 +168,11 @@ def init_engines(config: dict | None = None):
     # Doc — MIT/BSD 协议引擎组
     from .docling import DoclingEngine, PyPdfium2Engine
 
+    # 注：text_only 变体引擎（docling-text/python-docx-text/python-pptx-text）
+    # 已删除 — 与完整版重复无意义。需要纯文字时由场景/用户自行选择，不拆引擎。
     docling_eng = DoclingEngine()
     docling_eng.name = "docling"
     EngineRegistry.register("doc", "docling", docling_eng)
-    docling_text = DoclingEngine(text_only=True)
-    docling_text.name = "docling-text"
-    EngineRegistry.register("doc", "docling-text", docling_text)
 
     pypdfium2_eng = PyPdfium2Engine()
     pypdfium2_eng.name = "pypdfium2"
@@ -184,16 +183,10 @@ def init_engines(config: dict | None = None):
     EngineRegistry.register("doc", "markitdown", markit)
     docx = DocxEngine()
     docx.name = "python-docx"
-    docx_text = DocxEngine(text_only=True)
-    docx_text.name = "python-docx-text"
     EngineRegistry.register("doc", "python-docx", docx)
-    EngineRegistry.register("doc", "python-docx-text", docx_text)
     pptx = PptxEngine()
     pptx.name = "python-pptx"
-    pptx_text = PptxEngine(text_only=True)
-    pptx_text.name = "python-pptx-text"
     EngineRegistry.register("doc", "python-pptx", pptx)
-    EngineRegistry.register("doc", "python-pptx-text", pptx_text)
     xlsx = ExcelEngine()
     xlsx.name = "openpyxl"
     EngineRegistry.register("doc", "openpyxl", xlsx)
@@ -208,7 +201,7 @@ def init_engines(config: dict | None = None):
         logger.warning(f"EPUB engine (ebooklib) unavailable: {e}")
     except Exception as e:
         logger.warning(f"EPUB engine init failed: {e}")
-    logger.info("Doc engines: docling + docling-text + markitdown + python-docx + python-docx-text + python-pptx + python-pptx-text + openpyxl")
+    logger.info("Doc engines: docling + pypdfium2 + markitdown + python-docx + python-pptx + openpyxl + ebooklib")
 
     # Doc 引擎自动注册到 engine_models + engine_bindings，用户开箱即用
     # 对标 ASR 和 OCR 的自动注册逻辑
@@ -219,13 +212,11 @@ def init_engines(config: dict | None = None):
     # 子场景 → 默认引擎的确定性 MD5 id
     # provider_id 必须和 build_engine_models() 的哈希键一致（engine:{provider}:{model}）
     _DOC_DEFAULTS: list[tuple[str, str, str]] = [
-        ("doc:text+image", "pymupdf", "pypdfium2"),    # PDF 快速转录（文字+嵌入原图）
-        ("doc:text-only", "pymupdf", "pypdfium2"),      # PDF 纯文字
-        ("doc:scan-ocr", "pymupdf", "docling"),         # 扫描件 → Docling（含 OCR 能力）
-        ("doc:word", "pymupdf", "python-docx"),          # Word
-        ("doc:ppt", "pymupdf", "python-pptx"),            # PPT
-        ("doc:excel", "pymupdf", "openpyxl"),            # Excel
-        ("doc:epub", "pymupdf", "ebooklib"),             # EPUB
+        ("doc:pdf", "doc-local", "pypdfium2"),    # PDF 快速转录（文字+嵌入原图）
+        ("doc:word", "doc-local", "python-docx"),  # Word
+        ("doc:ppt", "doc-local", "python-pptx"),   # PPT
+        ("doc:excel", "doc-local", "openpyxl"),    # Excel
+        ("doc:epub", "doc-local", "ebooklib"),     # EPUB
     ]
     for sub_scene, prov_id, model_name in _DOC_DEFAULTS:
         mid = int(_hl.md5(f"engine:{prov_id}:{model_name}".encode()).hexdigest()[:8], 16)
@@ -245,6 +236,40 @@ def init_engines(config: dict | None = None):
     if doc_bindings_changed:
         logger.info("Auto-bound default doc engines: %s",
                     {k: v for k, v in doc_bindings.items() if k.startswith("doc:")})
+
+    # 清理失效的 doc 绑定：不存在的子场景 key + id 解析不到模型的条目
+    _VALID_DOC_SCENES = {s for s, _, _ in _DOC_DEFAULTS}
+    emap = {m["id"]: m for m in engine_models}
+    for key in list(doc_bindings.keys()):
+        if not (key == "doc" or key.startswith("doc:")):
+            continue
+        # 扁平 doc 绑定也是可选的，但无效 id 必须修复
+        if key not in _VALID_DOC_SCENES and key != "doc":
+            doc_bindings.pop(key, None)
+            doc_bindings_changed = True
+            logger.info("清理失效 doc 绑定 key: %s", key)
+            continue
+        # id 解析校验：字符串直接查注册表，整数查 engine_models（兼容旧 list 格式）
+        val = doc_bindings[key]
+        if isinstance(val, list) and val:
+            val = val[0]
+        if isinstance(val, str):
+            ok = EngineRegistry.get("doc", val) is not None
+        else:
+            bm = emap.get(val)
+            ok = bm is not None and EngineRegistry.get("doc", bm.get("model_name", "")) is not None
+        if not ok:
+            # 回退到该子场景的默认引擎（扁平 doc 回退到 pypdfium2）
+            fallback = "pypdfium2"
+            for s, _, m in _DOC_DEFAULTS:
+                if s == key:
+                    fallback = m
+                    break
+            fallback_id = int(_hl.md5(
+                f"engine:doc-local:{fallback}".encode()).hexdigest()[:8], 16)
+            doc_bindings[key] = fallback_id
+            doc_bindings_changed = True
+            logger.info("修复失效 doc 绑定: %s → %s", key, fallback)
 
     # OCR — 云端 VL 提取文字，本地 Tesseract 轻量兜底
     try:

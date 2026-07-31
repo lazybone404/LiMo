@@ -25,9 +25,8 @@ export const IMPORTING_LABELS: Record<string, string> = {
   video: '转写中...', image: '导入中...', file: '文档解析中...', link: '导入中...', text: '导入中...',
 }
 
-/** 文件子类型 → 引擎绑定子场景 key */
+/** 文件子类型 → 引擎绑定子场景 key（与后端 _ext_to_sub_scenario 对齐） */
 export function getSubScenario(subtype: string): string {
-  if (subtype === 'pdf') return 'doc:text+image'
   return `doc:${subtype}`
 }
 

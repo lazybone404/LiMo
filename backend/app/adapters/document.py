@@ -188,7 +188,7 @@ class DocumentAdapter(PipelineAdapter):
     def _ext_to_sub_scenario(ext: str) -> str | None:
         """文件扩展名 → 子场景 key"""
         if ext == ".pdf":
-            return "doc:text+image"
+            return "doc:pdf"
         if ext in (".docx", ".doc"):
             return "doc:word"
         if ext in (".pptx", ".ppt"):
@@ -204,7 +204,7 @@ class DocumentAdapter(PipelineAdapter):
         """根据 engine_bindings 解析文档引擎优先级链。
 
         优先级：sub_scenario key → 扁平 doc key → 返回空（由扩展名兜底）
-        sub_scenario 如 "doc:text+image"、"doc:office" 等。
+        sub_scenario 如 "doc:pdf"、"doc:word" 等。
 
         支持三种绑定值格式：
         - 字符串: "pymupdf4llm" → 直接用名称查找 EngineRegistry

@@ -588,7 +588,7 @@ def delete_engine_model(model_id: int, request: Request, config=Depends(get_cfg)
 
 
 # ── Engine bindings ──
-# key: "asr" | "ocr" | "doc:text+image" | "doc:text-only" | ...
+# key: "asr" | "ocr" | "doc:pdf" | "doc:word" | ...
 
 class EngineBindData(BaseModel):
     bindings: dict[str, int | str | list | None] = {}

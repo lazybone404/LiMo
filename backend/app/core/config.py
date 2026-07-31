@@ -95,16 +95,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
              {"model_name": "medium", "category": "asr", "desc": "1.5GB · CPU"},
              {"model_name": "large-v3", "category": "asr", "desc": "3GB · GPU"},
          ]},
-        {"id": "pymupdf", "name": "Docling + MarkItDown", "type": "local", "base_url": "", "api_key": "", "capabilities": ["doc"],
+        {"id": "doc-local", "name": "本地文档引擎组", "type": "local", "base_url": "", "api_key": "", "capabilities": ["doc"],
          "builtin_models": [
              {"model_name": "docling", "category": "doc", "desc": "PDF 完整布局（MIT，推荐）"},
-             {"model_name": "docling-text", "category": "doc", "desc": "PDF 仅文字（无图片）"},
              {"model_name": "pypdfium2", "category": "doc", "desc": "PDF 极速纯文字（BSD-3）"},
              {"model_name": "markitdown", "category": "doc", "desc": "Office/EPUB 转 Markdown"},
              {"model_name": "python-docx", "category": "doc", "desc": "Word .docx 文字+表格+图片"},
-             {"model_name": "python-docx-text", "category": "doc", "desc": "Word .docx 仅文字（无图片）"},
              {"model_name": "python-pptx", "category": "doc", "desc": "PPT .pptx 文字+图片+备注"},
-             {"model_name": "python-pptx-text", "category": "doc", "desc": "PPT .pptx 仅文字+备注"},
              {"model_name": "openpyxl", "category": "doc", "desc": "Excel .xlsx 表格数据提取"},
              {"model_name": "ebooklib", "category": "doc", "desc": "EPUB 电子书 · 章节+图片+元数据"},
              {"model_name": "tesseract", "category": "ocr", "desc": "本地 Tesseract OCR · 文字提取"},
@@ -273,16 +270,17 @@ def _deep_merge(base: dict, override: dict):
 
 
 def _sync_builtin_models(config: dict):
-    """将 DEFAULT_CONFIG 中新增的 builtin_models 增量同步到已有配置。
+    """将 DEFAULT_CONFIG 的 builtin_models 增量同步到已有配置（只补不删）。
 
-    _deep_merge 对列表是整段替换，用户已有 config.yaml 的 engine_providers
-    会完全覆盖 DEFAULT_CONFIG，导致新增的引擎模型（如 python-docx）丢失。
-    此函数按 provider_id 匹配，补入 DEFAULT_CONFIG 中有而用户配置中没有的条目。
+    只做两件保守的事，不碰用户自定义模型：
+    1. 补入 DEFAULT 中有而用户没有的 builtin 模型（新增引擎自动出现）
+    2. 移除已废弃的旧 provider 整组（pymupdf — AGPL 引擎组，id 已迁移为 doc-local）
+       其 builtin_models 与 engine_models 条目随 provider 一起清理。
     """
     default_provs = DEFAULT_CONFIG.get("engine_providers", [])
     user_provs = config.get("engine_providers", [])
-
     default_by_id = {p["id"]: p for p in default_provs}
+
     for up in user_provs:
         dp = default_by_id.get(up["id"])
         if not dp:
@@ -295,6 +293,21 @@ def _sync_builtin_models(config: dict):
             if key not in existing:
                 user_builtins.append(dbm)
                 logger.info("配置同步: 新增引擎模型 %s/%s", up["id"], dbm["model_name"])
+
+    # ── 旧 provider 清理：pymupdf（AGPL 引擎组）已迁移为 doc-local ──
+    _DEPRECATED_PROVIDERS = {"pymupdf"}
+    config["engine_providers"] = [
+        p for p in user_provs if p.get("id") not in _DEPRECATED_PROVIDERS
+    ]
+
+    # engine_models 残留清理：provider 已不存在的条目移除（含 pymupdf 全部引擎）
+    engine_models = config.get("engine_models", [])
+    live_prov_ids = {p.get("id") for p in config.get("engine_providers", [])}
+    kept = [m for m in engine_models if m.get("provider_id") in live_prov_ids]
+    dropped = len(engine_models) - len(kept)
+    if dropped:
+        logger.info("配置同步: 移除 %d 个失效引擎模型（provider 已废弃）", dropped)
+    config["engine_models"] = kept
 
 
 import hashlib as _hashlib
