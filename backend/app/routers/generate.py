@@ -536,9 +536,10 @@ async def generate_stream(transcript_id: str, request: Request,
                 notes_error: str | None = None
                 _queue: asyncio.Queue[dict] = asyncio.Queue()
 
-                async def _run_product(label: str, prompt: str) -> tuple[list[str], bool, str | None]:
+                async def _run_product(label: str, prompt: str, reasoning_effort: str | None = None) -> tuple[list[str], bool, str | None]:
                     """单产物：最多 2 次尝试（首试 + 1 次重试），事件经 queue 汇合。
-                    返回 (chunks, cancelled, error_msg)。"""
+                    返回 (chunks, cancelled, error_msg)。reasoning_effort：思考强度
+                    （deepseek-v4 专用，polished 传 low）。"""
                     chunks: list[str] = []
                     err_msg: str | None = None
                     cancelled = False
@@ -562,6 +563,7 @@ async def generate_stream(transcript_id: str, request: Request,
                                 _it = llm.stream(
                                     prompt, image_urls=image_urls, cancel_event=cancel_event,
                                     on_reasoning=_reasoning_cb,
+                                    reasoning_effort=reasoning_effort,
                                 )
                                 while True:
                                     try:
@@ -604,7 +606,9 @@ async def generate_stream(transcript_id: str, request: Request,
 
                 _tasks = [
                     asyncio.create_task(_run_product("notes", notes_prompt)),
-                    asyncio.create_task(_run_product("polished", polished_prompt)),
+                    # 整理版原文是忠实整理任务，无需深度思考——effort=low 大幅缩短
+                    # deepseek-v4 思考静默期（默认 high：复杂任务思考 90s+ 零数据）
+                    asyncio.create_task(_run_product("polished", polished_prompt, reasoning_effort="low")),
                 ]
                 # 汇合两路事件流（done/error/cancelled 各 1 个后退出）
                 _remaining = 2
@@ -718,6 +722,8 @@ async def generate_stream(transcript_id: str, request: Request,
                     _it = llm.stream(
                         prompt, image_urls=image_urls, cancel_event=cancel_event,
                         on_reasoning=_reasoning_cb,
+                        # 整理版原文：忠实整理任务，思考强度 low（缩短 deepseek 思考静默期）
+                        reasoning_effort="low" if stream_mode == "polished" else None,
                     )
                     while True:
                         try:

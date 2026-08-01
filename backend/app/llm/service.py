@@ -112,6 +112,7 @@ class LLMService:
         max_continuations: int = 3,
         cancel_event: asyncio.Event | None = None,
         on_reasoning: AwaitableCallable | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """流式 LLM 调用，每个 chunk 间检查 cancel_event。
 
@@ -119,6 +120,11 @@ class LLMService:
 
         on_reasoning：思考模型（deepseek-v4 等）的 reasoning_content 回调——
         推理链不混入正文，单独逐段回调，供前端展示"模型思考中"。
+
+        reasoning_effort：思考强度（'low'/'high'/'max'，deepseek-v4 专用）。
+        仅对支持该参数的模型生效（qwen 等忽略 extra_body 未知字段）。
+        文档：thinking 默认开启且 effort 默认 high——简单任务传 'low'
+        可大幅缩短思考静默期（polished 整理是忠实转录任务，无需深度思考）。
         """
 
         # ── 构建消息 ──
@@ -150,12 +156,17 @@ class LLMService:
 
             for attempt in range(_RETRY_COUNT + 1):
                 try:
+                    _extra: dict = {}
+                    if reasoning_effort:
+                        # deepseek-v4 思考强度（extra_body 兼容 OpenAI SDK 未声明参数）
+                        _extra["reasoning_effort"] = reasoning_effort
                     stream = await self.client.chat.completions.create(
                         model=self.model,
                         messages=messages,
                         max_tokens=max_tokens,
                         temperature=temperature,
                         stream=True,
+                        extra_body=_extra or None,
                     )
                     break
                 except Exception as e:
