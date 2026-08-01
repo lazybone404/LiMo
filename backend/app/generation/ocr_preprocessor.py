@@ -15,13 +15,15 @@ from app.llm.service import LLMService
 
 logger = logging.getLogger(__name__)
 
-# 新格式: ![alt](assets/img_NNNN.png)
+# 新格式: ![alt](assets/img_NNNN.png) / ![alt](assets/fig_NNNN.png)
+# 前缀同时容纳 pypdfium2（img_）与 docling（fig_）引擎的图片命名
+# 捕获组 3 个：alt / assets路径 / 文件名（findall 解包 (alt, arg2, filename) 依赖此结构）
 _RE_IMG_REF = re.compile(
-    r'!\[([^\]]*)\]\((assets/(img_\d{4}\.[a-z]+))\)'
+    r'!\[([^\]]*)\]\((assets/((?:img|fig)_\d{4}\.[a-z]+))\)'
 )
 # 旧格式兼容
 _RE_IMG_REF_OLD = re.compile(
-    r'!\[([^\]]*)\]\(/api/files/([a-zA-Z0-9_-]+)/(img_\d{4}\.[a-z]+)\)'
+    r'!\[([^\]]*)\]\(/api/files/([a-zA-Z0-9_-]+)/((?:img|fig)_\d{4}\.[a-z]+)\)'
 )
 
 OCR_PROMPT = (

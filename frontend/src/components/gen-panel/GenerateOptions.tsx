@@ -154,20 +154,20 @@ export function GenerateOptions(props: Props) {
             <span className="text-[13px]">AI 总结</span></label>
           {(p.typeMeta.hasImages) && (
             <>
+              {/* 三个正交维度，独立组合，互不依赖：
+                  保留图片引用 / OCR 提取文字 / AI 分析图片 可任意搭配 */}
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={p.formatImages} onChange={e => p.setFormatImages(e.target.checked)}
                   className="w-4 h-4 accent-accent" />
                 <span className="text-[13px]">保留文档图片</span>
-                <span className="text-[10px] text-disabled">保留 ![](assets/xxx) 相对路径引用</span></label>
-              {p.formatImages && (
-                <label className={`flex items-center gap-2 ml-5 cursor-pointer`}>
-                  <input type="checkbox" checked={p.ocrEnabled} onChange={e => p.setOcrEnabled(e.target.checked)}
-                    className="w-3.5 h-3.5 accent-accent" />
-                  <span className="text-[12px]">OCR 提取图中文字</span>
-                  <span className="text-[10px] text-disabled">先用 OCR 模型识别图片内容插入原文，再交给文本模型生成</span>
-                </label>
-              )}
-              {p.formatImages && p.ocrEnabled && (
+                <span className="text-[10px] text-disabled">笔记中保留 ![](assets/xxx) 图片引用</span></label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={p.ocrEnabled} onChange={e => p.setOcrEnabled(e.target.checked)}
+                  className="w-4 h-4 accent-accent" />
+                <span className="text-[13px]">OCR 提取图中文字</span>
+                <span className="text-[10px] text-disabled">先用 OCR 模型识别图片内容插入原文，再交给文本模型生成</span>
+              </label>
+              {p.ocrEnabled && (
                 <div className="ml-10">
                   <span className="text-[11px] text-dimmed mb-1 block">OCR 模型</span>
                   {(() => {
@@ -185,16 +185,14 @@ export function GenerateOptions(props: Props) {
                   })()}
                 </div>
               )}
-              {p.formatImages && !p.ocrEnabled && (
-                <label className={`flex items-center gap-2 ml-5 ${p.hasImageModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
-                  <input type="checkbox" checked={p.imageAnalyze} onChange={e => p.setImageAnalyze(e.target.checked)}
-                    disabled={!p.hasImageModel} className="w-3.5 h-3.5 accent-accent disabled:opacity-30" />
-                  <span className={`text-[12px] ${!p.hasImageModel ? 'text-disabled' : ''}`}>AI 分析图片</span>
-                  <span className="text-[10px] text-disabled">
-                    {p.hasImageModel ? '图片发给多模态 LLM 做视觉理解' : '需多模态模型（当前模型不支持图片）'}
-                  </span></label>
-              )}
-              {p.formatImages && p.imageAnalyze && (
+              <label className={`flex items-center gap-2 ${p.hasImageModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                <input type="checkbox" checked={p.imageAnalyze} onChange={e => p.setImageAnalyze(e.target.checked)}
+                  disabled={!p.hasImageModel} className="w-4 h-4 accent-accent disabled:opacity-30" />
+                <span className={`text-[13px] ${!p.hasImageModel ? 'text-disabled' : ''}`}>AI 分析图片</span>
+                <span className="text-[10px] text-disabled">
+                  {p.hasImageModel ? '图片发给多模态 LLM 做视觉理解' : '需多模态模型（当前模型不支持图片）'}
+                </span></label>
+              {p.imageAnalyze && (
                 <label className="flex items-center gap-2 cursor-pointer ml-10">
                   <input type="checkbox" checked={p.imageOptimize} onChange={e => p.setImageOptimize(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
                   <span className="text-[12px]">图片预处理</span>

@@ -17,7 +17,7 @@ from app.core.concurrency import ExecutionGuard
 from app.core.logging import request_id, init_request_id_logging, RequestIDFilter
 from app.storage.store import Store
 
-app = FastAPI(title="LiMo", version="0.1.4")
+app = FastAPI(title="LiMo", version="0.1.5")
 
 @app.middleware("http")
 async def add_request_id(request, call_next):
@@ -250,7 +250,7 @@ async def startup():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.1.4", "started_at": app.state.started_at}
+    return {"status": "ok", "version": "0.1.5", "started_at": app.state.started_at}
 
 
 # 路由（files 在 ingest 之前——/files/{id}/original 比 /files/{id}/{name} 更具体，必须先匹配）

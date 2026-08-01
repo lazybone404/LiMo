@@ -70,7 +70,7 @@ export function ImportSection(props: Props) {
   return <>
     {/* ── 类型选择器 ── */}
     <div className="flex bg-surface rounded-[10px] p-0.5">
-      {(['link', 'video', 'text', 'file', 'image'] as const).map(t => (
+      {(['video', 'file', 'link', 'text', 'image'] as const).map(t => (
         <button key={t} onClick={() => { p.setInputType(t); p.setImportInput(''); p.setFileObj(null) }}
           className={`flex-1 flex items-center justify-center gap-1 py-1.5 rounded-[8px] text-[11px] font-medium transition-all
             ${p.inputType === t ? 'bg-elevated text-foreground shadow-[0_1px_3px_rgba(0,0,0,.08)]' : 'text-muted hover:text-dimmed'}`}>

@@ -6,6 +6,41 @@
 
 ---
 
+## 2026-08-02 — v0.1.5：docling 打包崩溃 + 文档图片三开关链路修复
+
+### 做了什么
+
+**1. 打包版 docling 引擎崩溃（pdf_resources 缺失）** — v0.1.4 打包版导入 PDF（绑定 docling）报 `RuntimeError: no existing pdf_resources_dir: C:\Program Files\LiMo\_internal\docling_parse\pdf_resources/` → FatalError。
+
+- 根因：`docling_parse`（docling 的 Rust 解析后端，独立包）含数据目录 `pdf_resources/`（440 文件，24MB）+ 3 个依赖 DLL（`libgcc_s_seh-1.dll`/`libstdc++-6.dll`/`libwinpthread-1.dll`）。spec 中 `collect_all` 列表只有 `'docling'`，不会递归收集依赖包 `docling_parse` 的数据文件 → 打包版 `_internal\docling_parse\` 只有 .py/.pyd，`pdf_resources` 缺失。docling 初始化 `DoclingPdfParser`（编译进 `pdf_parsers.pyd`）按 `Path(__file__).parent / "pdf_resources"` 定位失败
+- 修复：spec `collect_all` 列表加 `'docling_parse'`（实测 datas 448 条含 440 条 pdf_resources + 3 DLLs + 4 hiddenimports）
+- ⚠️ 教训：`collect_all('docling')` 不递归收集依赖包数据文件，PyInstaller 下必须逐个显式收集有数据目录的依赖包
+
+**2. 文档图片三开关（保留/OCR/AI分析）正交化** — 原前端把三个开关做成嵌套依赖，多组合不可达：
+
+- 前端 [GenerateOptions.tsx](frontend/src/components/gen-panel/GenerateOptions.tsx)：`AI 分析图片` 曾依赖 `formatImages && !ocrEnabled`（OCR 勾上后 AI 分析选项消失，人为互斥）；`OCR`/`AI 分析` 都依赖 `formatImages`。改为三个平铺独立开关，任意组合
+- 前端 [GenPanel.tsx](frontend/src/components/gen-panel/GenPanel.tsx)：`image_analyze`/`image_optimize` 曾被 `formatImages` 门控（不勾保留图片则 AI 分析静默失效），改为独立传递
+- 后端 [generator.py](backend/app/generation/generator.py)：非流式端点两处 OCR 调用漏传 `doc_dir` → 新格式 `assets/img_NNNN.png` 定位到错误路径 `{store_root}/files/assets/...`，OCR 全部 `[图片缺失]`。流式端点原本正确，前端走流式所以未暴露
+- 后端 [ocr_preprocessor.py](backend/app/generation/ocr_preprocessor.py)：正则只匹配 `img_NNNN`，docling 引擎产出 `fig_NNNN` 被跳过。放宽为 `(?:img|fig)_\d{4}`（捕获组结构保持 3 元素解包不变）
+
+**3. 笔记 prompt 加 Markdown 排版引导** — 5 个笔记变体（视频/网页/文本/图片/文档）统一加一句：「充分利用 Markdown 排版：不要只用列表平铺内容。按内容形态选样式——对比/条目用表格、论断/名言用引用块、原始文本用代码块、章节用分割线、重点加粗」。（通用版，按内容形态给判据而非列举式）
+
+**4. GenPanel 类型选择器顺序调整** — `link → video → text → file → image` 改为 `video → file → link → text → image`，视频和文档（file）靠前。
+
+### 影响范围
+
+| 文件 | 变更 |
+|------|------|
+| `backend/LiMoBackend.spec` | `collect_all` 加 `'docling_parse'` |
+| `backend/app/generation/generator.py` | OCR 调用补传 doc_dir（2 处） |
+| `backend/app/generation/ocr_preprocessor.py` | 正则容纳 img_/fig_ |
+| `backend/app/generation/prompt.py` | 5 个笔记 prompt 加 Markdown 排版引导 |
+| `frontend/src/components/gen-panel/GenerateOptions.tsx` | 三开关平铺独立 |
+| `frontend/src/components/gen-panel/GenPanel.tsx` | image_analyze 独立传递 |
+| `frontend/src/components/gen-panel/ImportSection.tsx` | 类型选择器顺序 |
+
+---
+
 ## 2026-08-01 — 发布前修复：换行标题目录崩溃 + e2e_smoke 健壮化
 
 ### 做了什么

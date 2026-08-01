@@ -84,7 +84,11 @@ for pkg in ['duckduckgo_search', 'faster_whisper', 'dashscope',
             'huggingface_hub', 'markitdown', 'pytesseract', 'lxml',
             'courlan', 'justext', 'htmldate', 'magika', 'babel',
             'cffi', 'cryptography', 'aiohttp', 'httpx', 'openai',
-            'certifi', 'requests', 'docling', 'pypdfium2']:
+            'certifi', 'requests', 'docling', 'pypdfium2',
+            # docling_parse：docling 的 Rust 解析后端（独立包）。collect_all('docling')
+            # 不会递归收集依赖包数据，缺了它打包版 docling 初始化 DoclingPdfParser 时
+            # 报 "no existing pdf_resources_dir"（pdf_resources 440 文件 + 依赖 DLL）
+            'docling_parse']:
     try:
         tmp_ret = collect_all(pkg)
         datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

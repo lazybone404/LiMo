@@ -529,8 +529,8 @@ export function GenPanel() {
       unit_height: isVideo ? unitHeight : undefined,
       save_quality: isVideo ? saveQuality : undefined,
       frame_quality_filter: isVideo ? frameQualityFilter : undefined,
-      image_analyze: isVideo ? videoUnderstanding : (formatImages ? imageAnalyze : undefined),
-      image_optimize: isVideo ? (videoUnderstanding ? imageOptimize : undefined) : ((formatImages && imageAnalyze) ? imageOptimize : undefined),
+      image_analyze: isVideo ? videoUnderstanding : (imageAnalyze || undefined),
+      image_optimize: isVideo ? (videoUnderstanding ? imageOptimize : undefined) : (imageAnalyze ? imageOptimize : undefined),
       ocr_enabled: isVideo ? undefined : (ocrEnabled || undefined),
       ocr_model_id: isVideo ? undefined : (ocrEnabled ? ocrModelId ?? undefined : undefined),
     }, {

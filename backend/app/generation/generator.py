@@ -106,7 +106,8 @@ class Generator:
         if ocr_enabled and ocr_model_id:
             from app.generation.ocr_preprocessor import OCRPreprocessor
             ocr = OCRPreprocessor(self.config, ocr_model_id)
-            processed_text = await ocr.process(raw_text, self._prep.store_root)
+            processed_text = await ocr.process(
+                raw_text, self._prep.store_root, doc_dir=self._prep.doc_dir)
 
         clean_text, image_urls, video_path = await self._prep.prepare(
             processed_text, vl_config, keep_refs,
@@ -162,7 +163,8 @@ class Generator:
         if ocr_enabled and ocr_model_id:
             from app.generation.ocr_preprocessor import OCRPreprocessor
             ocr = OCRPreprocessor(self.config, ocr_model_id)
-            processed_text = await ocr.process(raw_text, self._prep.store_root)
+            processed_text = await ocr.process(
+                raw_text, self._prep.store_root, doc_dir=self._prep.doc_dir)
 
         clean_text, image_urls, video_path = await self._prep.prepare(
             processed_text, vl_config, keep_refs,
