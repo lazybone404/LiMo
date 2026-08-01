@@ -331,7 +331,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **导入区纯粹化**：ImportSection 不受 currentDoc 影响，按钮永远是「导入」
 
 ### 生成与处理
-- **双产物并行**：`generate_both()` 通过 `asyncio.gather` 并行产出 notes + polished。source_type 派发 prompt（视频/网页→通用，PDF/Document→文档 prompt，Excel→分析报告+数据摘要）
+- **双产物并行**：非流式端点走 `generate_both()`（`asyncio.gather`）；流式端点（`/generate/{id}/stream`）用 `_run_product` 协程 ×2 + `asyncio.Queue` 汇合事件（chunk 交错到达 SSE 顺序安全）+ `asyncio.gather` 收拢。⚠️ **gather 返回顺序 = 任务创建顺序，解包变量名必须同序**（曾解包反了 → notes/polished 内容互换写进对方文件）。source_type 派发 prompt（视频/网页→通用，PDF/Document→文档 prompt，Excel→分析报告+数据摘要）
+- **思考链（deepseek-v4）**：`reasoning_content` 逐段回调（`on_reasoning`，不混入正文）→ SSE `type=reasoning` → 前端 ProcessingPlaceholder"模型思考中"。思考链是临时展示，正式文本流式后直接替换。**思考强度**：`reasoning_effort` 经 `extra_body` 传递（qwen 忽略未知字段兼容）。polished 是忠实整理任务传 `"low"`（默认 high 思考静默 90s+）；chunk 间隔超时 120s 容忍长思考（推理链 chunk 到达时 anext 正常返回不触发超时）
 - **图片→LLM 双轨制**：视频和文档走不同路径。视频：「AI 画面理解」一键开关 = VL 管线 + 网格图发 LLM（对标 BiliNote），网格图不嵌入笔记。文档：保留文档图片→AI 分析图片→图片预处理三级，文档图片嵌入文章有价值。`send_to_llm = bool(image_analyze)`，前端保证门控。
 - **目标语言**：config.yaml `target_language` + prompt 参数化，8 语言可选
 - **LLM 续写**：`finish=length` → 自动续写 3 轮，temperature 递减

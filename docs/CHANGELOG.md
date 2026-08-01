@@ -6,6 +6,50 @@
 
 ---
 
+## 2026-08-01 — 生成并行化（推翻串行）+ 思考链展示 + 产物写反修复
+
+### 做了什么
+
+**服务端（generate.py / service.py / prompt.py）**：
+- **双产物改回并行（推翻上一条目的串行决策）**：上一条记录"串行"原因是 deepseek 并发排队（第二个响应 108s+），用户实测后确认排队结论证伪——108s+ 实为 **thinking 阶段思考时间长**（服务端静默不推流）。并行时两路同时开始，总耗时 = max 而非叠加，且 notes 先出、体验渐进。两路事件经 `asyncio.Queue` 汇合（chunk 交错到达）→ SSE 顺序安全，最终 `asyncio.gather` 收拢结果
+- **思考链回调**（`LLMService.stream` 加 `on_reasoning`）：deepseek-v4 的 `reasoning_content` 逐段回调，不混入正文——`getattr(delta, "reasoning_content", None)` 防护 qwen 等无此字段的模型；单产物路径收集后统一带出（回调累积 → anext 返回 → 发 SSE）
+- **思考强度控制**（`reasoning_effort` 经 OpenAI SDK `extra_body` 传递）：deepseek-v4 文档确认 thinking 默认开启且 effort 默认 high——复杂任务思考 90s+ 零数据（用户感知"慢到诡异"）。**polished 专用 `reasoning_effort="low"`**：整理版原文是忠实转录整理任务，无需深度思考，思考静默期大幅缩短（用户实测"生成速度得到极大提升"）。qwen 忽略 extra_body 未知字段，天然兼容
+- **chunk 间隔超时 90s → 120s**：45s/90s 判定曾把正常长思考误判为挂起触发重试；推理链 chunk 到达时 anext 正常返回（有 reasoning 也在推流），不触发超时
+- **prompt 模糊约束**：三个 polish task（_POLISH_TASK / _DOC_POLISH_TASK / _IMAGE_POLISH_TASK）加"转录不清处不强行推理、忠实呈现"，减少过度思考诱因
+- **⚠️ 产物写反修复（gather 解包顺序错位）**：`asyncio.gather(*_tasks)` 返回顺序 = 任务创建顺序，但解包时 notes 任务的结果被赋给 `polished_chunks` → notes_prompt 的笔记内容存进 polished.md、polished_prompt 的整理版原文存进 notes.md（前端显示层忠实读取磁盘，两边都显示"对的文件、错的内容"）。实测铁证：notes.md 43KB 流水账 vs polished.md 14KB 结构化要点。修复：解包顺序与任务创建顺序对齐
+
+**前端（GenPanel / PreviewArea / ProcessingPlaceholder）**：
+- **思考链展示**：SSE `type=reasoning` → `onReasoning` 回调 → `TaskInfo.reasoning {notes, polished}`（与 progress 同构，并行双产物 task.mode 来回跳也不串台）→ ProcessingPlaceholder 渲染"模型思考中..."滚动区。思考链是临时展示（打消用户不耐心），正式文本流式生成后直接替换
+- **reasoningBuf per-taskKey Map**：双文档并发生成思考链不互踩（此前单 ref 污染 + 节流负数冻结）
+- **genOutcomeRef 状态机**（ok/error/partial）：修复"超时报错 + 生成成功双 Toast 矛盾"——部分失败只报对应产物的 warning，不再同时报超时错误 + done
+- **cancelledHandled ref**：并行两路 cancelled 事件去重（此前双产物取消会触发两次取消 Toast）
+- **onDone refreshSaved 防竞态**：done 后立刻重新生成 → 旧 getMarkdown 响应不再覆盖新流式内容
+- **taskForView（占位按 tab 匹配任务）**：替换 9 处 `activeTasks[0]`——多文档/多产物并行时占位符选错任务（"正在生成笔记"但实际在生成整理版）
+- **F4 守卫 / F5 fact_check 清理 / N2 fact_check 生成中守卫 / F6 Excel displayContent**：生成中切文档/切产物竞态全面加固
+- **mindmap 有内容直接渲染**：笔记生成完成后思维导图不再显示"正在生成中"
+- **版本切换器 isStreaming 禁用**：生成期间禁止切换 v1/v2（防止读到生成中的半成品）
+
+### 为什么
+
+上一条目"串行"决策基于"deepseek 并发排队"的错误归因。用户贴日志（20:01:39 两条 LLM 流式同时开始，5265 + 14776 chars 完成，无排队）证明并发本身没问题；`polished 挂起（第 1 次），重试` 日志实为 120s 内无 chunk 的 thinking 静默。根因链：thinking 默认 high → 复杂任务思考 90s+ 静默 → 被 45s/90s 判定误判挂起重试 → 用户感知"慢到诡异"。解法四件套：思考链展示（等待有反馈）+ 120s 容忍 + effort=low（polished 专用）+ prompt 模糊约束（减少过度思考诱因）+ 并行（总耗时 max）。
+
+产物写反是并行化引入的回归：gather 收拢结果的解包顺序与任务创建顺序不一致，notes/polished 内容互换。用户"笔记预览栏生成的是整理版原文"的报障由此而来。
+
+### 影响范围
+
+| 文件 | 变更 |
+|------|------|
+| `backend/app/llm/service.py` | on_reasoning 回调 + reasoning_effort extra_body |
+| `backend/app/routers/generate.py` | queue 汇合并行 / 120s 超时 / saved_partial / **gather 解包顺序修复** |
+| `backend/app/generation/prompt.py` | 三个 polish task 模糊约束 |
+| `frontend/src/api/generate.ts` | onReasoning + type=reasoning 分发 |
+| `frontend/src/store/types.ts` | TaskInfo.reasoning |
+| `frontend/src/components/gen-panel/GenPanel.tsx` | onReasoning / Map 化 / genOutcomeRef / cancelledHandled / refreshSaved |
+| `frontend/src/components/preview/PreviewArea.tsx` | taskForView / F4-F6 / N2 / mindmap / 版本切换器禁用 |
+| `frontend/src/components/preview/ProcessingPlaceholder.tsx` | 思考链渲染 + mode prop |
+
+---
+
 ## 2026-08-01 — 生成链路全面修复（服务端串行 + 前端产物接收 + 切换竞态）
 
 ### 做了什么

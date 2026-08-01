@@ -617,8 +617,10 @@ async def generate_stream(transcript_id: str, request: Request,
                     if _evt.get("type") in ("done", "error", "cancelled"):
                         _remaining -= 1
                     yield f"data: {json.dumps(_evt, ensure_ascii=False)}\n\n"
-                (polished_chunks, polished_cancelled, polished_error), \
-                    (notes_chunks, notes_cancelled, notes_error) = await asyncio.gather(*_tasks)
+                # gather 返回顺序 = 任务创建顺序（_tasks[0]=notes, _tasks[1]=polished）。
+                # 解包必须同序，否则 notes/polished 内容互换（此前解包反了 → 产物写反）
+                (notes_chunks, notes_cancelled, notes_error), \
+                    (polished_chunks, polished_cancelled, polished_error) = await asyncio.gather(*_tasks)
                 was_cancelled = polished_cancelled or notes_cancelled
 
                 # 保存双产物（取消时 status=partial，完成时 status=complete）
