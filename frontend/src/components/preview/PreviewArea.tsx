@@ -554,8 +554,11 @@ export function PreviewArea() {
       }
 
       case 'mindmap':
-        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
+        // 思维导图只依赖笔记内容——笔记已有内容（含流式 partial）就直接渲染，
+        // 不被"正在生成中"拦截（串行生成中 notes 已完成但 polished 还在跑，
+        // __generate 任务未结束 → isViewProcessing 会误拦）
         if (!currentContent) {
+          if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
           return <EmptyState title="暂无可视化内容" description="点击左侧「生成」按钮为本文档生成 Markdown 笔记后，可在此查看思维导图" />
         }
         return <div id="mindmap" className="relative flex-1 min-h-0"><MindmapView value={currentContent} /></div>
