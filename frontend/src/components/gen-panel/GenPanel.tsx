@@ -252,6 +252,9 @@ export function GenPanel() {
   const productChars = useRef<Map<string, { notes: number; polished: number }>>(new Map())
   // 并行双产物取消去重：两路各自发 cancelled 事件，只处理第一次
   const cancelledHandled = useRef(false)
+  // 生成结果状态：error（onError 已报过，onDone 不重复报）/ partial（部分失败，
+  // onDone 报"部分失败"而非"生成完成"）/ ok（全部成功）
+  const genOutcomeRef = useRef<'ok' | 'error' | 'partial'>('ok')
   // 思考链累积：per-taskKey Map（双文档并发生成互不干扰——单 ref + 每次生成重置会
   // 清掉另一文档的思考链，且节流判断产生负数冻结更新）
   const reasoningBuf = useRef<Map<string, { notes: string; polished: string }>>(new Map())
@@ -479,6 +482,7 @@ export function GenPanel() {
     productChars.current.set(taskKey, { notes: 0, polished: 0 })  // 新生成从 0 开始计数
     reasoningBuf.current.set(taskKey, { notes: '', polished: '' })  // 思考链清零（per-taskKey）
     cancelledHandled.current = false  // 并行双产物两路 cancelled 事件去重
+    genOutcomeRef.current = 'ok'  // 生成结果状态重置
     const doc = useStore.getState().docs.find(d => d.id === capturedId)
     setProcessing(taskKey, { kind: 'generate', title: doc?.title || '' })
 
@@ -618,9 +622,19 @@ export function GenPanel() {
         }
         refreshSaved('notes')
         refreshSaved('polished')
-        addToast('生成完成')
+        // 按结果状态报 Toast——部分失败（polished 超时但 notes 成功）时报
+        // "部分失败"而非"生成完成"（此前 warning + done 两个事件 → 双 Toast 矛盾）
+        if (genOutcomeRef.current === 'partial') {
+          addToast('部分产物生成失败，已完成的部分已保存', 'error')
+        } else if (genOutcomeRef.current === 'error') {
+          // error 已 Toast，不重复报"生成完成"
+        } else {
+          addToast('生成完成')
+        }
+        genOutcomeRef.current = 'ok'
       },
       onError(msg) {
+        genOutcomeRef.current = 'error'
         failTask(taskKey, msg)
         productChars.current.delete(taskKey)
         reasoningBuf.current.delete(taskKey)
@@ -630,6 +644,7 @@ export function GenPanel() {
         setError(msg); addToast(msg, 'error')
       },
       onWarning(msg) {
+        if (genOutcomeRef.current === 'ok') genOutcomeRef.current = 'partial'
         if (!isSameDoc(capturedId)) return
         addToast(msg, 'error')
       },
