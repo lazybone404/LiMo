@@ -250,6 +250,8 @@ export function GenPanel() {
   const importSeqRef = useRef(0)  // 导入计数器，确保每次导入用独立 key
   // 产物级进度计数：per-taskKey Map（并发生成时互不干扰——单 useRef + 每次生成重置会互踩）
   const productChars = useRef<Map<string, { notes: number; polished: number }>>(new Map())
+  // 并行双产物取消去重：两路各自发 cancelled 事件，只处理第一次
+  const cancelledHandled = useRef(false)
 
   const createAbort = useCallback((taskKey: string) => {
     const ctrl = new AbortController()
@@ -472,6 +474,7 @@ export function GenPanel() {
     const signal = createAbort(taskKey)
     setError(''); setImportError('')
     productChars.current.set(taskKey, { notes: 0, polished: 0 })  // 新生成从 0 开始计数
+    cancelledHandled.current = false  // 并行双产物两路 cancelled 事件去重
     const doc = useStore.getState().docs.find(d => d.id === capturedId)
     setProcessing(taskKey, { kind: 'generate', title: doc?.title || '' })
 
@@ -604,6 +607,9 @@ export function GenPanel() {
         addToast(msg, 'error')
       },
       onCancelled(savedPartial) {
+        // 并行双产物：两路各自发 cancelled 事件 → 只处理第一次（第二次 buffer 已清理）
+        if (cancelledHandled.current) return
+        cancelledHandled.current = true
         setProcessing(taskKey, null)
         productChars.current.delete(taskKey)
         if (!isSameDoc(capturedId)) {

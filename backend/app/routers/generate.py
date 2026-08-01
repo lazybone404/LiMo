@@ -525,27 +525,27 @@ async def generate_stream(transcript_id: str, request: Request,
                     polished_prompt = _build_continue_prompt(polished_prompt, partial_content)
                     notes_prompt = _build_continue_prompt(notes_prompt, partial_content)
 
-                # ── 串行生成（notes → polished）──
-                # 原因：deepseek 对并发请求排队严重（并行时第二个响应 108s+）。
-                # 串行时每个请求独占连接（~30s/个），且前端先看到笔记、再看到整理版，
-                # 渐进反馈（用户旧版本体验：生成完一个紧接着下一个）。
-                # 每个产物独立 300s 超时 + 空响应重试一次。
+                # ── 并行生成（notes ∥ polished）──
+                # 历史：曾改串行，因 deepseek 对并发请求排队（并行时第二个响应 108s+）。
+                # 用户实测 notes 快（~35s）、polished 慢（deepseek 长输出断流，服务端
+                # 稳定性问题，与串/并行无关）——并行时两路同时开始，总耗时 = max 而非
+                # 叠加，且 notes 先出、体验渐进。45s 断流判定 + 2 次尝试保留。
+                # 两路事件经 asyncio.Queue 汇合（chunk 交错到达），保证 SSE 顺序安全。
                 was_cancelled = False
                 polished_error: str | None = None
                 notes_error: str | None = None
-                polished_chunks: list[str] = []
-                notes_chunks: list[str] = []
+                _queue: asyncio.Queue[dict] = asyncio.Queue()
 
-                for label, prompt, chunks in (
-                    ("notes", notes_prompt, notes_chunks),
-                    ("polished", polished_prompt, polished_chunks),
-                ):
-                    if cancel_event and cancel_event.is_set():
-                        was_cancelled = True
-                        yield f"data: {json.dumps({'mode': label, 'type': 'cancelled', 'saved_partial': bool(notes_chunks or polished_chunks)}, ensure_ascii=False)}\n\n"
-                        break
-                    # 每个产物最多 2 次尝试：首次 + 1 次重试（空响应 / 连接中断 / 挂起）
+                async def _run_product(label: str, prompt: str) -> tuple[list[str], bool, str | None]:
+                    """单产物：最多 2 次尝试（首试 + 1 次重试），事件经 queue 汇合。
+                    返回 (chunks, cancelled, error_msg)。"""
+                    chunks: list[str] = []
                     err_msg: str | None = None
+                    cancelled = False
+                    if cancel_event and cancel_event.is_set():
+                        cancelled = True
+                        await _queue.put({"mode": label, "type": "cancelled", "saved_partial": False})
+                        return chunks, cancelled, None
                     for attempt in range(2):
                         try:
                             # 总超时 300s + chunk 间隔超时 45s：
@@ -563,7 +563,7 @@ async def generate_stream(transcript_id: str, request: Request,
                                     except StopAsyncIteration:
                                         break
                                     chunks.append(chunk)
-                                    yield f"data: {json.dumps({'mode': label, 'text': chunk}, ensure_ascii=False)}\n\n"
+                                    await _queue.put({"mode": label, "text": chunk})
                             if chunks:
                                 break  # 成功
                             # 空响应（LLM finish=stop 但 0 chars）→ 重试
@@ -577,7 +577,7 @@ async def generate_stream(transcript_id: str, request: Request,
                             else:
                                 break
                         except CancelledError:
-                            was_cancelled = True
+                            cancelled = True
                             break
                         except Exception as e:
                             err_msg = str(e)[:200]
@@ -587,17 +587,29 @@ async def generate_stream(transcript_id: str, request: Request,
                                 err_msg = None
                             else:
                                 break  # 已有部分内容，不重试
-                    if was_cancelled:
-                        yield f"data: {json.dumps({'mode': label, 'type': 'cancelled', 'saved_partial': bool(notes_chunks or polished_chunks)}, ensure_ascii=False)}\n\n"
-                        break
+                    if cancelled:
+                        await _queue.put({"mode": label, "type": "cancelled", "saved_partial": bool(chunks)})
+                        return chunks, True, None
                     if err_msg:
-                        if label == "polished":
-                            polished_error = err_msg
-                        else:
-                            notes_error = err_msg
-                        yield f"data: {json.dumps({'mode': label, 'type': 'error', 'message': err_msg}, ensure_ascii=False)}\n\n"
-                        break
-                    yield f"data: {json.dumps({'mode': label, 'type': 'done'}, ensure_ascii=False)}\n\n"
+                        await _queue.put({"mode": label, "type": "error", "message": err_msg})
+                        return chunks, False, err_msg
+                    await _queue.put({"mode": label, "type": "done"})
+                    return chunks, False, None
+
+                _tasks = [
+                    asyncio.create_task(_run_product("notes", notes_prompt)),
+                    asyncio.create_task(_run_product("polished", polished_prompt)),
+                ]
+                # 汇合两路事件流（done/error/cancelled 各 1 个后退出）
+                _remaining = 2
+                while _remaining:
+                    _evt = await _queue.get()
+                    if _evt.get("type") in ("done", "error", "cancelled"):
+                        _remaining -= 1
+                    yield f"data: {json.dumps(_evt, ensure_ascii=False)}\n\n"
+                (polished_chunks, polished_cancelled, polished_error), \
+                    (notes_chunks, notes_cancelled, notes_error) = await asyncio.gather(*_tasks)
+                was_cancelled = polished_cancelled or notes_cancelled
 
                 # 保存双产物（取消时 status=partial，完成时 status=complete）
                 status = "partial" if was_cancelled else "complete"
