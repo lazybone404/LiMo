@@ -20,7 +20,7 @@ export function ProcessingPlaceholder({ task }: { task?: TaskInfo }) {
   let label = '处理中...'
   if (task) {
     if (task.kind === 'generate' && task.mode) {
-      // 产物级进度：串行生成时 mode 标记当前产物（GenPanel onChunk 更新）
+      // 产物级进度：mode 标记当前产物（GenPanel onChunk 更新）
       const n = (task.mode === 'polished' || task.mode === 'notes')
         ? task.progress?.[task.mode] || 0 : 0
       label = task.mode === 'polished'
@@ -32,11 +32,21 @@ export function ProcessingPlaceholder({ task }: { task?: TaskInfo }) {
       label = LABELS[task.kind] || '处理中...'
     }
   }
+  // 思考链（deepseek-v4 reasoning_content）：临时展示打消等待焦虑——
+  // 正式 content 一开始流式，displayContent 有值 → 本占位自动被正式内容替换
+  const reasoning = task?.reasoning?.trim()
   return (
-    <div className="flex flex-col items-center justify-center h-64 gap-3">
+    <div className="flex flex-col items-center justify-center h-64 gap-3 px-8">
       <Loader2 className="animate-spin text-accent" size={28} />
       <p className="text-[14px] font-medium text-foreground">{label}</p>
-      {task && <p className="text-[12px] text-disabled">请耐心等待，AI 处理中...</p>}
+      {reasoning ? (
+        <div className="w-full max-w-md max-h-36 overflow-y-auto text-[11px] text-dimmed leading-relaxed bg-surface/60 rounded-lg p-3">
+          <span className="text-[10px] text-disabled block mb-1">模型思考中：</span>
+          {reasoning}
+        </div>
+      ) : (
+        <p className="text-[12px] text-disabled">请耐心等待，AI 处理中...</p>
+      )}
     </div>
   )
 }

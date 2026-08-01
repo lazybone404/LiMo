@@ -82,6 +82,8 @@ export interface StreamGenerateCallbacks {
   onCancelled: (savedPartial: boolean) => void
   /** 部分产物失败/为空（另一产物成功）——用于 Toast 提示，不终止流程 */
   onWarning?: (message: string) => void
+  /** 思考链（deepseek-v4 reasoning_content）——ProcessingPlaceholder 展示"模型思考中" */
+  onReasoning?: (text: string, mode?: string) => void
 }
 
 export function streamGenerate(
@@ -142,6 +144,9 @@ export function streamGenerate(
           callbacks.onWarning?.(data.message || '部分产物生成失败')
         } else if (data.type === 'cancelled') {
           callbacks.onCancelled(data.saved_partial || false)
+        } else if (data.type === 'reasoning') {
+          // 思考链（带 mode 也不走 onChunk——必须在 data.mode 判断之前）
+          callbacks.onReasoning?.(data.text || '', data.mode)
         } else if (data.mode) {
           callbacks.onChunk(data.text || '', data.mode)
         } else if (data.text) {

@@ -252,6 +252,8 @@ export function GenPanel() {
   const productChars = useRef<Map<string, { notes: number; polished: number }>>(new Map())
   // 并行双产物取消去重：两路各自发 cancelled 事件，只处理第一次
   const cancelledHandled = useRef(false)
+  // 思考链累积（deepseek-v4 reasoning_content，截断 2000 字符防 store 膨胀）
+  const reasoningBuf = useRef<Record<'notes' | 'polished', string>>({ notes: '', polished: '' })
 
   const createAbort = useCallback((taskKey: string) => {
     const ctrl = new AbortController()
@@ -474,6 +476,7 @@ export function GenPanel() {
     const signal = createAbort(taskKey)
     setError(''); setImportError('')
     productChars.current.set(taskKey, { notes: 0, polished: 0 })  // 新生成从 0 开始计数
+    reasoningBuf.current = { notes: '', polished: '' }  // 思考链清零
     cancelledHandled.current = false  // 并行双产物两路 cancelled 事件去重
     const doc = useStore.getState().docs.find(d => d.id === capturedId)
     setProcessing(taskKey, { kind: 'generate', title: doc?.title || '' })
@@ -544,6 +547,7 @@ export function GenPanel() {
             setProcessing(taskKey, {
               kind: 'generate', mode, title: doc?.title || '',
               progress: { notes: pc.notes || 0, polished: pc.polished || 0 },
+              reasoning: reasoningBuf.current[mode] || undefined,  // 保留思考链（全量替换语义）
             })
           }
         }
@@ -559,6 +563,22 @@ export function GenPanel() {
         }
         // 节流 flush 到 store（驱动 PreviewArea 重读 Map）
         scheduleFlush(() => bumpStreamTick())
+      },
+      onReasoning(text, mode) {
+        // 思考链（deepseek-v4 reasoning_content）——临时展示打消等待焦虑，
+        // 正式 content 一开始流式，ProcessingPlaceholder 自动被正式内容替换
+        const m = mode === 'polished' ? 'polished' : (mode === 'notes' ? 'notes' : (isPolishedOnly ? 'polished' : 'notes'))
+        reasoningBuf.current[m] = (reasoningBuf.current[m] + text).slice(-2000)
+        const r = reasoningBuf.current[m]
+        const cur = useStore.getState().processingTasks[taskKey]
+        // 节流 ~200 字符更新一次（思考链到达频繁，避免 store 高频快照）
+        if (cur && cur.mode === m && cur.reasoning && r.length - cur.reasoning.length < 200) return
+        const pc = productChars.current.get(taskKey) || { notes: 0, polished: 0 }
+        setProcessing(taskKey, {
+          kind: 'generate', mode: m, title: doc?.title || '',
+          progress: { notes: pc.notes || 0, polished: pc.polished || 0 },
+          reasoning: r,
+        })
       },
       onDone(_result) {
         // 立即 flush 最终内容

@@ -7,7 +7,7 @@ LLMService — 统一的 LLM 通信层
 
 import asyncio
 import logging
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Awaitable, Callable
 
 from openai import AsyncOpenAI
 
@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 MAX_TOKENS = 65536
 _RETRY_COUNT = 2  # 网络错误重试次数
+
+# 思考链回调签名：async (text: str) -> None
+AwaitableCallable = Callable[[str], Awaitable[None]]
 
 
 class LLMService:
@@ -108,10 +111,14 @@ class LLMService:
         temperature: float = 0.7,
         max_continuations: int = 3,
         cancel_event: asyncio.Event | None = None,
+        on_reasoning: AwaitableCallable | None = None,
     ) -> AsyncGenerator[str, None]:
         """流式 LLM 调用，每个 chunk 间检查 cancel_event。
 
         finish=length 时自动续写（追加"继续"→再请求）。
+
+        on_reasoning：思考模型（deepseek-v4 等）的 reasoning_content 回调——
+        推理链不混入正文，单独逐段回调，供前端展示"模型思考中"。
         """
 
         # ── 构建消息 ──
@@ -177,9 +184,17 @@ class LLMService:
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]
-                if choice.delta and choice.delta.content:
-                    round_parts.append(choice.delta.content)
-                    yield choice.delta.content
+                delta = choice.delta
+                # 思考链（deepseek-v4 reasoning_content）：不混入正文，单独回调供前端展示。
+                # 注意：思考 chunk 无 content——若忽略它，anext 仍返回（连接活着），
+                # 外层 chunk 间隔超时不会误判（仅"完全无任何 chunk"才超时）
+                if delta and getattr(delta, "reasoning_content", None):
+                    if on_reasoning is not None:
+                        await on_reasoning(delta.reasoning_content)
+                    continue
+                if delta and delta.content:
+                    round_parts.append(delta.content)
+                    yield delta.content
 
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
