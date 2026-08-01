@@ -548,7 +548,7 @@ export function GenPanel() {
             setProcessing(taskKey, {
               kind: 'generate', mode, title: doc?.title || '',
               progress: { notes: pc.notes || 0, polished: pc.polished || 0 },
-              reasoning: reasoningBuf.current[mode] || undefined,  // 保留思考链（全量替换语义）
+              reasoning: reasoningBuf.current.get(taskKey)?.[mode] || undefined,  // 保留思考链（全量替换语义）
             })
           }
         }
