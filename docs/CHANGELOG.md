@@ -6,6 +6,51 @@
 
 ---
 
+## 2026-08-01 — 生成链路全面修复（服务端串行 + 前端产物接收 + 切换竞态）
+
+### 做了什么
+
+**服务端（generate.py）**：
+- **双产物改串行**（notes → polished）：deepseek 对并发请求排队严重（并行时第二个响应 108s+），串行时每个请求独占连接（~30s/个），前端先看到笔记再看到整理版，渐进反馈符合旧版体验
+- **chunk 间隔超时**（90s）：deepseek 长输出流式中途断流时 httpx 静默等 EOF（不抛异常）→ 前端永远"加载中"。`asyncio.wait_for + anext` 判定挂起 → 重试/报错
+- **空响应重试**：LLM finish=stop 但 0 chars → 重试一次，仍空 → warning 事件（前端 Toast，另一产物不受影响）
+- **未完成 marker**：`.generating` 标记 + `capabilities.interruptedGenerations` 上报，前端启动提示"上次应用中断"
+- **双产物取消补 `saved_partial`**：此前 cancelled 事件缺字段 → 前端无"已保留"提示
+
+**前端产物接收（GenPanel/PreviewArea）**：
+- **配置变更事件总线**（`lib/configEvents.ts`）：设置页保存后广播 `limo:config-changed`，GenPanel 重新拉取模型/厂商列表、App 刷新 capabilities —— 修复"设置保存后导入面板需手动刷新页面才显示"
+- **onDone 以服务器内容刷新产物**：此前只刷 versions 不刷内容 → `streamDisplay=false` 或流式丢失时产物 tab 永远空白"尚未生成"
+- **onDone 防竞态**：done 后立即重新生成 → 旧 getMarkdown 响应覆盖新流式内容（`processingTasks[taskKey]` 重新激活检查）
+- **取消保留 partial**：双产物取消时 buffer 写入 store（此前 both 模式丢弃）
+- **polished-only 视图跳转**：生成后直接跳整理版 tab（此前强制 summary，看不到整理版流式）
+- **产物级进度**：ProcessingPlaceholder 显示「正在生成整理版原文...（已生成 N 字符）」（TaskInfo.progress）
+
+**切换链路（生成中切文档/切产物）**：
+- **onChunk 顺序重构**（核心）：isSameDoc 检查后置——切走期间流式内容无条件写入 docId 隔离的 buffer，切回显示完整（此前第一行 return 丢弃全部 chunk → 流式断裂）
+- **productChars per-taskKey Map**：双文档并发生成（MAX=2）进度不互踩
+- **切文档 effect 竞态守卫**：生成快结束时切回 → 旧版本 V0 不再覆盖 onDone 的 V1（notes/polished/fact_check 三处）
+- **切文档状态清理**：补 `factCheckProgress`/`factChecking`（A 审核中切到 B 不再残留 spinner）
+- **Excel 分支改用 displayContent**：生成中切走切回显示流式而非"尚未生成"
+- 生成期间禁用版本切换器
+
+### 为什么
+
+用户实测发现：整理版原文生成慢/挂起（deepseek 流式断流——服务端问题，换 qwen 走同一代码路径 33s 完成证明链路本身正常）、产物 tab"尚未生成"（onDone 不刷新内容）、设置保存后下拉不更新（无事件通知）、生成中切换文档后流式断裂（onChunk 提前 return）。逐条复现后按「服务端事件契约 → 前端接收 → 切换竞态」三层修复。
+
+### 影响范围
+
+| 文件 | 变更 |
+|------|------|
+| `backend/app/routers/generate.py` | 串行生成 + chunk 超时 + 重试 + marker + saved_partial |
+| `backend/app/routers/capabilities.py` | interruptedGenerations 扫描 |
+| `frontend/src/lib/configEvents.ts` | 新建：配置变更事件总线 |
+| `frontend/src/components/gen-panel/GenPanel.tsx` | onChunk 重构 / Map 化 / onDone 刷新 / 防竞态 / 视图跳转 |
+| `frontend/src/components/preview/PreviewArea.tsx` | 守卫 / factCheck 清理 / Excel displayContent / 版本切换器禁用 |
+| `frontend/src/components/settings/ProviderSettings.tsx` | 保存后广播配置变更 |
+| `frontend/src/App.tsx` | 订阅配置变更刷新 capabilities |
+
+---
+
 ## 2026-08-01 — E2E 验证 + 空壳目录 bug 修复
 
 ### 做了什么
