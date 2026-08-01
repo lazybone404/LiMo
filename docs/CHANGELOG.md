@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-08-01 — 发布前修复：换行标题目录崩溃 + e2e_smoke 健壮化
+
+### 做了什么
+
+**标题含换行/控制字符 → 目录创建崩溃（SSE 永不完成）** — `_get_or_create_doc_dir` 的清洗正则 `[<>:"/\\|?*]` 漏掉控制字符。标题含 `\n`（如 `_extract_title_from_rawtext` 从多行文本提取标题）时 `Path.mkdir` 抛 `WinError 123`（文件名语法不正确）→ `run_pipeline` 崩溃（`Task exception was never retrieved`）→ **done 事件永不发** → 客户端（前端/测试）无限等待。
+
+- 根因：`re.sub(r'[<>:"/\\|?*]', '', title)` 未覆盖 `\x00-\x1f`（换行/回车/TAB 等 Windows 非法控制符）
+- 修复：两处（查找/创建）清洗正则补 `\x00-\x1f`
+- 触发面：任何标题含换行的文本/文档导入；e2e_smoke 的 text 用例（`# Hello World\n\nTest...`）恰好触发——**发布门禁价值：不跑全量测试就发现不了**
+
+**e2e_smoke SSE 读取健壮化** — `_post_form` 改用逐行读 + done 事件 break，不依赖连接关闭（uvicorn StreamingResponse 结束后保持 keep-alive，`read()` 可能等 EOF 超时）。timeout 15→30s。
+
+### 影响范围
+
+| 文件 | 变更 |
+|------|------|
+| `backend/app/storage/store.py` | `_get_or_create_doc_dir` / `_get_doc_dir` 清洗补控制字符 |
+| `backend/tests/test_e2e_smoke.py` | SSE 逐行读取 + timeout 30s |
+
+---
+
 ## 2026-08-01 — 生成并行化（推翻串行）+ 思考链展示 + 产物写反修复
 
 ### 做了什么
