@@ -38,19 +38,26 @@ def _post_form(path, fields):
     req = urllib.request.Request(f"{BASE}{path}", data=data, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=30) as r:
             ct = r.headers.get("content-type", "")
-            raw = r.read()
             if "text/event-stream" in ct:
-                for line in raw.decode().split("\n"):
-                    if line.startswith("data: "):
+                # SSE：逐行读直到 done/error 事件，然后 break 关闭连接。
+                # ⚠️ 不能用 r.read()——uvicorn 的 StreamingResponse 结束后不发送
+                # 终止 chunk 且保持 keep-alive，read() 会一直等 EOF 直到 socket 超时。
+                ev = None
+                while True:
+                    line = r.readline()
+                    if not line:
+                        break
+                    if line.startswith(b"data: "):
                         try:
                             ev = json.loads(line[6:])
                             if ev.get("type") in ("done", "error"):
-                                return r.status, ev
+                                break
                         except: pass
-                return r.status, {"raw": raw.decode()[:500]}
-            return r.status, json.loads(raw)
+                return r.status, ev or {}
+            raw = r.read()
+            return r.status, json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
         body = {}
         try: body = json.loads(e.read())

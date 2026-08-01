@@ -265,7 +265,9 @@ class Store:
     @staticmethod
     def _compute_dir_name(title: str, tx_id: str) -> str:
         """从标题和 ID 计算目录名: {sanitized_title}-{6位hex后缀}"""
-        sanitized = re.sub(r'[<>:"/\\|?*]', '', title)
+        # 清洗 Windows 非法字符 + 控制字符（\n \r \t \x00 等）——标题含换行时
+        # mkdir 抛 WinError 123（"文件名...语法不正确"），管道崩溃、SSE done 永不发
+        sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', title)
         sanitized = sanitized.strip('. ')
         if len(sanitized) > 30:
             sanitized = sanitized[:30].rstrip('. ')
@@ -290,7 +292,9 @@ class Store:
         existing = self._get_doc_dir(tx_id)
         if existing:
             return existing
-        sanitized = re.sub(r'[<>:"/\\|?*]', '', title)
+        # 清洗 Windows 非法字符 + 控制字符（\n \r \t \x00 等）——标题含换行时
+        # mkdir 抛 WinError 123（"文件名...语法不正确"），管道崩溃、SSE done 永不发
+        sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', title)
         sanitized = sanitized.strip('. ')[:30].rstrip('. ') or "Untitled"
         base = f"{sanitized}-{tx_id[-6:]}"
         dir_name = base
