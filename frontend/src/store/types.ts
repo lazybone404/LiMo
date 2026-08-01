@@ -29,8 +29,9 @@ export interface TaskInfo {
   error?: string  // 失败原因，保留 5 秒后自动清除
   /** 生成任务：各产物已生成字符数（进度显示） */
   progress?: { notes?: number; polished?: number }
-  /** 当前产物模型的思考链（reasoning_content，截断 ~2000 字符）——ProcessingPlaceholder 展示 */
-  reasoning?: string
+  /** 各产物模型的思考链（reasoning_content，截断 ~2000 字符）——与 progress 同构，
+   *  并行双产物各存各的，ProcessingPlaceholder 按当前 tab 读取对应产物 */
+  reasoning?: { notes?: string; polished?: string }
 }
 
 export interface ProgressEvent {

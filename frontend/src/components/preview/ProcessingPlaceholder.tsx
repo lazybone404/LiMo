@@ -16,16 +16,21 @@ const LABELS: Record<string, string> = {
   'import': '导入中...',
 }
 
-export function ProcessingPlaceholder({ task }: { task?: TaskInfo }) {
+export function ProcessingPlaceholder({ task, mode }: { task?: TaskInfo; mode?: string }) {
   let label = '处理中...'
+  let reasoning = ''
   if (task) {
-    if (task.kind === 'generate' && task.mode) {
-      // 产物级进度：mode 标记当前产物（GenPanel onChunk 更新）
-      const n = (task.mode === 'polished' || task.mode === 'notes')
-        ? task.progress?.[task.mode] || 0 : 0
-      label = task.mode === 'polished'
-        ? `正在生成整理版原文...（已生成 ${n} 字符）`
-        : `正在生成笔记...（已生成 ${n} 字符）`
+    if (task.kind === 'generate' && (task.mode || mode)) {
+      // 产物级进度：mode 优先用调用方传入（与当前 tab 匹配）——并行双产物时
+      // task.mode 是最后到达事件的产品，会在两路间来回跳，不能依赖它定位产物
+      const m = mode || task.mode
+      if (m === 'polished' || m === 'notes') {
+        const n = task.progress?.[m] || 0
+        label = m === 'polished'
+          ? `正在生成整理版原文...（已生成 ${n} 字符）`
+          : `正在生成笔记...（已生成 ${n} 字符）`
+        reasoning = task.reasoning?.[m]?.trim() || ''
+      }
     } else if (task.kind === 'process' && task.mode) {
       label = `处理中 — ${MODE_LABELS[task.mode] || task.mode}`
     } else {
@@ -34,7 +39,6 @@ export function ProcessingPlaceholder({ task }: { task?: TaskInfo }) {
   }
   // 思考链（deepseek-v4 reasoning_content）：临时展示打消等待焦虑——
   // 正式 content 一开始流式，displayContent 有值 → 本占位自动被正式内容替换
-  const reasoning = task?.reasoning?.trim()
   return (
     <div className="flex flex-col items-center justify-center h-64 gap-3 px-8">
       <Loader2 className="animate-spin text-accent" size={28} />

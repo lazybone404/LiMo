@@ -548,7 +548,7 @@ export function GenPanel() {
             setProcessing(taskKey, {
               kind: 'generate', mode, title: doc?.title || '',
               progress: { notes: pc.notes || 0, polished: pc.polished || 0 },
-              reasoning: reasoningBuf.current.get(taskKey)?.[mode] || undefined,  // 保留思考链（全量替换语义）
+              reasoning: reasoningBuf.current.get(taskKey),  // 完整 {notes,polished}（全量替换语义）
             })
           }
         }
@@ -574,13 +574,15 @@ export function GenPanel() {
         reasoningBuf.current.set(taskKey, rb)
         const r = rb[m]
         const cur = useStore.getState().processingTasks[taskKey]
-        // 节流 ~200 字符更新一次（思考链到达频繁，避免 store 高频快照）
-        if (cur && cur.mode === m && cur.reasoning && r.length - cur.reasoning.length < 200) return
+        // 节流 ~200 字符更新一次（思考链到达频繁，避免 store 高频快照）。
+        // 注意：并行双产物时 cur.mode 可能是另一产物（两路交替 setProcessing），
+        // 节流判断只看当前产物的 reasoning 长度差
+        if (cur && cur.reasoning?.[m] && r.length - (cur.reasoning?.[m]?.length || 0) < 200) return
         const pc = productChars.current.get(taskKey) || { notes: 0, polished: 0 }
         setProcessing(taskKey, {
           kind: 'generate', mode: m, title: doc?.title || '',
           progress: { notes: pc.notes || 0, polished: pc.polished || 0 },
-          reasoning: r,
+          reasoning: reasoningBuf.current.get(taskKey),
         })
       },
       onDone(_result) {

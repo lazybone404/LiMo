@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
 import { getStreamBuffer } from '../../store/streamBuffers'
+import type { TaskInfo } from '../../store/types'
 import { TabRegistry, type TabDef } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
 import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, MessageSquare, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2 } from 'lucide-react'
@@ -365,6 +366,17 @@ export function PreviewArea() {
     })
   }
 
+  /** 与当前 tab 匹配的活跃任务（多任务并发时占位显示最相关的那个，
+   *  而不是 activeTasks[0]——generate + process + fact_check 同时跑时会选错） */
+  const taskForView = (view: string): TaskInfo | undefined => {
+    const def = TabRegistry.get(view)
+    if (!def?.processingKinds) return undefined
+    return activeTasks.find(task => {
+      if (task.kind === 'process') return def.processingKinds!.includes('process') && view === task.mode
+      return def.processingKinds!.includes(task.kind)
+    })
+  }
+
   const renderContent = () => {
     if (!currentDocId || !currentDoc) {
       return (
@@ -384,14 +396,15 @@ export function PreviewArea() {
     switch (activeView) {
       // Excel 数据预览 — 直接用 Markdown 渲染表格
       case 'data_preview':
-        if (isViewProcessing(activeView) && !isStreaming) return <ProcessingPlaceholder task={activeTasks[0]} />
+        if (isViewProcessing(activeView) && !isStreaming) return <ProcessingPlaceholder task={taskForView(activeView)} />
         if (!currentRawText) {
           return <EmptyState title="数据预览不可用" description="请重新转录后再试" />
         }
         return <TranscriptView rawText={currentRawText} sourceType={currentDoc?.sourceType} />
       case 'polished':
       case 'summary':
-        if (isViewProcessing(activeView) && !isStreaming) return <ProcessingPlaceholder task={activeTasks[0]} />
+        // placeholder 按当前 tab 定位产物（并行双产物时 task.mode 会来回跳）
+        if (isViewProcessing(activeView) && !isStreaming) return <ProcessingPlaceholder task={taskForView(activeView)} mode={activeView === 'polished' ? 'polished' : 'notes'} />
         if (typeMeta.isExcel) {
           // Excel: 仅数据摘要（分析报告已移除）——用 displayContent（含流式 buffer 回退，
           // F6：生成中切走再切回能显示流式内容，而非直读 currentContent 的空态"尚未生成"）
@@ -403,7 +416,7 @@ export function PreviewArea() {
           </>
         }
         if (!displayContent) {
-          if (isStreaming) return <ProcessingPlaceholder task={activeTasks[0]} />
+          if (isStreaming) return <ProcessingPlaceholder task={taskForView(activeView)} mode={activeView === 'polished' ? 'polished' : 'notes'} />
           if (contentLoadError) {
             return <EmptyState icon={<AlertTriangle size={16} className="text-warning" />} title="内容加载失败" description="请检查后端是否正常运行，然后刷新页面重试" action={<button onClick={() => window.location.reload()} className="px-4 py-1.5 bg-accent text-white text-[12px] rounded-full hover:bg-accent-hover">刷新页面</button>} />
           }
@@ -415,7 +428,7 @@ export function PreviewArea() {
         </>
 
       case 'ocr':
-        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
+        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={taskForView(activeView)} />
         // 图片默认 OCR 文字（尚未处理时显示引导）
         return (
           <EmptyState
@@ -432,7 +445,7 @@ export function PreviewArea() {
         )
 
       case 'original':
-        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
+        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={taskForView(activeView)} />
         // 非图片类型不应该看到此 tab（切换文档时 activeView 可能滞后一帧）
         if (!typeMeta.isImage) return null
         return (
@@ -456,7 +469,7 @@ export function PreviewArea() {
         const result = imageResults[currentDocId || '']?.[activeView]
         // 全部用 Markdown 渲染：VL 模型可能在任意模式下输出表格/公式
 
-        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
+        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={taskForView(activeView)} />
         if (!result) {
           const modeMeta: Record<string, { icon: React.ReactNode; desc: string }> = {
             extract: { icon: <ScanText size={40} />, desc: '提取图片中的全部文字，保留段落结构' },
@@ -487,7 +500,7 @@ export function PreviewArea() {
       }
 
       case 'skeleton':
-        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
+        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={taskForView(activeView)} />
         if (currentRawText === null) return <p className="text-[13px] text-disabled p-8">加载中...</p>
         return (
           <EpubSkeletonPanel
@@ -497,7 +510,7 @@ export function PreviewArea() {
         )
 
       case 'transcript':
-        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
+        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={taskForView(activeView)} />
         // 文档类转录（PDF/Word等）→ 统一用 MarkdownPreview 渲染
         if (currentDoc?.sourceType && !['video', 'image', 'webpage', 'text'].includes(currentDoc.sourceType) && currentRawText) {
           let isJson = false
@@ -558,7 +571,7 @@ export function PreviewArea() {
         // 不被"正在生成中"拦截（串行生成中 notes 已完成但 polished 还在跑，
         // __generate 任务未结束 → isViewProcessing 会误拦）
         if (!currentContent) {
-          if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={activeTasks[0]} />
+          if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={taskForView(activeView)} />
           return <EmptyState title="暂无可视化内容" description="点击左侧「生成」按钮为本文档生成 Markdown 笔记后，可在此查看思维导图" />
         }
         return <div id="mindmap" className="relative flex-1 min-h-0"><MindmapView value={currentContent} /></div>
