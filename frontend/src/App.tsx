@@ -36,11 +36,13 @@ export default function App() {
     fetchCapabilities().then(caps => {
       setCapabilities(caps)
       if (checkInterrupted) {
-        // 未完成生成标记（应用重启/崩溃残留）→ 提示
-        const interrupted = (caps as any).interruptedGenerations
-        if (Array.isArray(interrupted) && interrupted.length > 0) {
-          useStore.getState().addToast(`检测到 ${interrupted.length} 个未完成的生成（上次应用中断），请重新生成`, 'info')
-        }
+        // ⚠️ 暂时禁用：未完成生成提示对已完成文档误报过多（marker 残留误判）。
+        // 后端 _scan_interrupted_generations 已加「产物已生成 → 自愈清理」，
+        // 待确认无残留后再启用以下提示逻辑。
+        // const interrupted = (caps as any).interruptedGenerations
+        // if (Array.isArray(interrupted) && interrupted.length > 0) {
+        //   useStore.getState().addToast(`检测到 ${interrupted.length} 个未完成的生成（上次应用中断），请重新生成`, 'info')
+        // }
       }
     }).catch(err => {
       console.error('加载能力配置失败:', err)

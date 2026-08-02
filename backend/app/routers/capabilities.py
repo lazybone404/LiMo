@@ -15,10 +15,15 @@ router = APIRouter()
 
 
 def _scan_interrupted_generations(config: dict) -> list[dict]:
-    """扫描所有文档目录的 .generating 标记（生成中断残留）→ 前端提示。
+    """扫描文档目录的 .generating 标记（生成中断残留）→ 前端提示。
 
     生成开始时 generate.py 写 marker，正常结束/取消/超时删除；
     应用重启/崩溃时残留 → 前端启动 Toast「上次生成未完成」。
+
+    **判断收紧（防误报）**：仅当该文档**确实没有产物**（notes/polished 均不存在）
+    才判为真正的中断；产物已生成但 marker 残留（清理失败 / 旧版遗留）是
+    「假中断」——直接清理 marker，不提示。否则每次启动都会对已完成的
+    文档重复弹「未完成生成」。
     """
     import json as _json
     from pathlib import Path
@@ -29,6 +34,14 @@ def _scan_interrupted_generations(config: dict) -> list[dict]:
     for doc_dir in data_dir.iterdir():
         marker = doc_dir / ".generating"
         if not marker.is_file():
+            continue
+        # 假中断自愈：产物已生成（生成实际完成）→ marker 是残留，清理不提示
+        has_product = (doc_dir / "notes.md").is_file() or (doc_dir / "polished.md").is_file()
+        if has_product:
+            try:
+                marker.unlink()
+            except OSError:
+                pass
             continue
         try:
             meta = _json.loads(marker.read_text(encoding="utf-8"))
@@ -193,11 +206,6 @@ async def capabilities(config=Depends(get_config)):
                 "type": "cloud",
                 "keyConfigured": has_dashscope,
                 "capabilities": ["asr", "ocr"],
-            },
-            "faster-whisper": {
-                "name": "faster-whisper（本地）",
-                "type": "local",
-                "capabilities": ["asr"],
             },
             "doc-local": {
                 "name": "本地文档引擎组（Docling + PyPdfium2 + MarkItDown 等）",
