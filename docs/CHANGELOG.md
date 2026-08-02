@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-08-02 — 卸载时可选移除个人配置与数据
+
+### 做了什么
+
+**自定义 NSIS 模板**（`frontend/src-tauri/nsis/installer.nsi`，基于 Tauri 内置模板 + Handlebars 占位符），扩展 Tauri 卸载器「删除应用数据」复选框的行为：
+
+- 勾选时除 Tauri 框架数据（`%APPDATA%\com.limo.app` / `%LOCALAPPDATA%\com.limo.app`）外，**一并删除 LiMo 业务数据目录** `~/.limo`（知识库/配置/文档）及降级目录（`%LOCALAPPDATA%\LiMo`、`%APPDATA%\LiMo`）
+- `tauri.conf.json` 加 `bundle.windows.nsis.template` 指向自定义模板
+- **默认不勾选** → 卸载重装保留数据；勾选 → 完全移除（含个人配置与知识库）
+
+### 影响范围
+
+- 打包配置（NSIS 模板 + tauri.conf.json），代码零改动
+- 验证：`npx tauri build` 渲染成功，生成的 installer.nsi 确认含 `RmDir /r "$PROFILE\.limo"` 及降级目录
+
+---
+
 ## 2026-08-02 — 全面漏洞排查与修复（P0 高危 8 项 + 关键 P1 10 项）
 
 ### 做了什么
