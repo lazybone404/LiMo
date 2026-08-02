@@ -171,10 +171,3 @@ export async function getEngineRegistry(): Promise<Record<string, string[]>> {
   return (await apiFetch(`${BASE}/engine-registry`)).json()
 }
 
-/** 引擎自动降级开关 */
-export async function getEngineAutoFallback(): Promise<{ enabled: boolean }> {
-  return (await apiFetch(`${BASE}/engine-auto-fallback`)).json()
-}
-export async function setEngineAutoFallback(enabled: boolean): Promise<{ status: string; enabled: boolean }> {
-  return (await apiFetch(`${BASE}/engine-auto-fallback`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })).json()
-}

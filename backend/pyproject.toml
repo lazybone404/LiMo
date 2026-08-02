@@ -28,9 +28,8 @@ dependencies = [
     # 适配器
     "trafilatura>=2.1",
     "youtube-transcript-api>=0.6",
-    # ASR 引擎
+    # ASR 引擎（faster-whisper 已从内置移除，需用户自行安装插件）
     "dashscope>=0.0.1",
-    "faster-whisper>=1.0",
     # OCR
     "pytesseract>=0.3",
     "pillow>=12.0",

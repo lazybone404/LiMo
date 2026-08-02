@@ -132,9 +132,7 @@ class VideoAdapter(PipelineAdapter):
                     )
             except Exception as e:
                 warnings.append(f"B站字幕拉取失败: {e}")
-                if not (self._engine_config or {}).get("engine_auto_fallback", True):
-                    raise FatalError(f"B站字幕拉取失败（自动降级已关闭）: {e}") from e
-                logger.warning("B站字幕拉取失败，回退下载: %s", e)
+                logger.debug("B站字幕拉取失败，回退下载: %s", e)
 
         if is_youtube:
             pg("fetching_subtitles", "running", "正在拉取YouTube字幕...", 10)
@@ -171,9 +169,7 @@ class VideoAdapter(PipelineAdapter):
                     )
             except Exception as e:
                 warnings.append(f"YouTube字幕拉取失败: {e}")
-                if not (self._engine_config or {}).get("engine_auto_fallback", True):
-                    raise FatalError(f"YouTube字幕拉取失败（自动降级已关闭）: {e}") from e
-                logger.warning("YouTube字幕拉取失败，回退下载: %s", e)
+                logger.debug("YouTube字幕拉取失败，回退下载: %s", e)
 
         # ── 抖音 API 优先路径（直接获取音频 URL，无需下载视频）──
         if is_douyin:
@@ -210,9 +206,7 @@ class VideoAdapter(PipelineAdapter):
                     pg("downloading", "error", "音频文件为空", 50)
             except Exception as e:
                 warnings.append(f"抖音API提取失败: {e}")
-                if not (self._engine_config or {}).get("engine_auto_fallback", True):
-                    raise FatalError(f"抖音API提取失败（自动降级已关闭）: {e}") from e
-                logger.warning("抖音API提取失败，回退 yt-dlp: %s", e)
+                logger.debug("抖音API提取失败，回退 yt-dlp: %s", e)
 
         # ── Step 1: 下载 ──
         pg("downloading", "running", "下载音频中...", 20)
@@ -355,7 +349,7 @@ class VideoAdapter(PipelineAdapter):
                     pass
 
     def _extract_audio(self, video_path: Path) -> Path:
-        """用 ffmpeg 提取/转换为 MP3（比 WAV 小 ~10×，DashScope / faster-whisper 均支持）"""
+        """用 ffmpeg 提取/转换为 MP3（比 WAV 小 ~10×，云端 ASR 均支持）"""
         audio_path = video_path.with_suffix(".mp3")
         subprocess.run([
             "ffmpeg", "-y", "-i", str(video_path),
@@ -375,7 +369,7 @@ class VideoAdapter(PipelineAdapter):
         return ""
 
     def _resolve_asr_engine(self, cfg: dict | None = None):
-        """根据 engine_bindings.asr 解析优先级链，返回第一个可用引擎"""
+        """根据 engine_bindings.asr 解析第一个可用引擎（不再自动降级）"""
         cfg = cfg or self._engine_config or {}
         bindings = cfg.get("engine_bindings", {})
         engine_models = cfg.get("engine_models", [])
@@ -396,8 +390,6 @@ class VideoAdapter(PipelineAdapter):
 
             if provider_id == "dashscope":
                 eng_name = "dashscope-asr"
-            elif provider_id == "faster-whisper":
-                eng_name = f"faster-whisper-{model_name}" if model_name in ("small", "medium", "large-v3") else "faster-whisper-small"
             elif provider_id == "bcut":
                 eng_name = "bcut-asr"
             else:
@@ -406,22 +398,8 @@ class VideoAdapter(PipelineAdapter):
             if engine:
                 return eng_name, engine, model_name
 
-        # 所有绑定均不可用 → 检查是否允许自动降级
-        auto_fallback = cfg.get("engine_auto_fallback", True)
-        if not auto_fallback:
-            logger.error("ASR 绑定链为空或全部失败，自动降级已关闭")
-            return "", None, ""
-
-        # 尝试任意已注册的 ASR 引擎
-        fallback_engines = EngineRegistry.list_category("asr")
-        for eng_name in fallback_engines:
-            engine = EngineRegistry.get("asr", eng_name)
-            if engine:
-                default_model = "paraformer-v2" if "dashscope" in eng_name else "small"
-                logger.warning("ASR 绑定链为空或全部失败，降级使用: %s (model=%s)", eng_name, default_model)
-                return eng_name, engine, default_model
-
-        logger.error("无可用 ASR 引擎")
+        # 所有绑定均不可用 → 不降级，返回空（调用方报错）
+        logger.error("ASR 绑定链为空或全部失败，请在设置中更换 ASR 引擎")
         return "", None, ""
 
     async def _transcribe(self, audio_path: Path, warnings: list) -> dict:
@@ -441,48 +419,36 @@ class VideoAdapter(PipelineAdapter):
                 engine.api_key = dashscope_key
                 logger.info("ASR: 动态注入 DashScope API Key")
 
-        # 带降级链的执行（同步引擎放入 asyncio.to_thread 避免阻塞事件循环）
+        # 单引擎执行（同步引擎放入 asyncio.to_thread 避免阻塞事件循环）
         # 这样客户端断连检测 _watch_disconnect 可以正常运行并 set cancel_event，
         # 后台线程中的引擎在逐段检查 cancel_event 后立即停止 CPU 消耗。
+        # 不再有多引擎尝试/降级链：绑定只取第一个，失败直接报错。
         cancel_event = (self._engine_config or {}).get("cancel_event")
-        tried = []
-        current = engine
-        current_name = eng_name
-        while current is not None:
-            if cancel_event and cancel_event.is_set():
-                raise FatalError("操作已取消")
-            logger.info("ASR: 尝试 %s (model=%s)", current_name, model_name)
-            try:
-                result = await asyncio.to_thread(current.run, str(audio_path), cancel_event=cancel_event)
-                if result and result.segments:
-                    logger.info("ASR: %s 成功 (%d段, %s)", current_name, len(result.segments), result.language)
-                    return {
-                        "segments": [
-                            {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text}
-                            for s in result.segments
-                        ],
-                        "language": result.language,
-                        "duration": result.duration,
-                        "full_text": result.full_text,
-                        "engine_used": current_name,
-                    }
-                warnings.append(f"ASR {current_name} 返回空结果")
-            except FatalError:
-                raise  # 取消或其他致命错误，不降级，直接抛出
-            except Exception as e:
-                warnings.append(f"ASR {current_name} 失败: {e}")
-                logger.warning("ASR %s 失败: %s", current_name, str(e)[:120])
+        if cancel_event and cancel_event.is_set():
+            raise FatalError("操作已取消")
+        logger.info("ASR: 尝试 %s (model=%s)", eng_name, model_name)
+        try:
+            result = await asyncio.to_thread(engine.run, str(audio_path), cancel_event=cancel_event)
+            if result and result.segments:
+                logger.info("ASR: %s 成功 (%d段, %s)", eng_name, len(result.segments), result.language)
+                return {
+                    "segments": [
+                        {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text}
+                        for s in result.segments
+                    ],
+                    "language": result.language,
+                    "duration": result.duration,
+                    "full_text": result.full_text,
+                    "engine_used": eng_name,
+                }
+            warnings.append(f"ASR {eng_name} 返回空结果")
+        except FatalError:
+            raise  # 取消或其他致命错误，直接抛出
+        except Exception as e:
+            warnings.append(f"ASR {eng_name} 失败: {e}")
+            logger.warning("ASR %s 失败: %s", eng_name, str(e)[:120])
 
-            tried.append(current_name)
-            # 走降级链
-            fallback = getattr(current, 'fallback', None)
-            if fallback:
-                current_name = getattr(fallback, 'name', 'unknown')
-                current = fallback
-            else:
-                break
-
-        warnings.insert(0, f"所有 ASR 引擎失败 ({', '.join(tried)})")
+        warnings.insert(0, f"ASR 引擎失败: {eng_name}")
         return {"segments": [], "language": "unknown"}
 
     async def _adapt_local(self, input: PipelineInput, on_progress=None) -> AdapterOutput:

@@ -20,20 +20,7 @@ logger = logging.getLogger(__name__)
 # 模型名缓存：video.py 在调用前注入（_transcribe → engine._model_name = xxx）
 # SDK 的 async_call 根据 model 自动路由到正确的 API
 
-
-class TranscriptSegment:
-    def __init__(self, start: float, end: float, text: str):
-        self.start = start
-        self.end = end
-        self.text = text
-
-
-class TranscriptResult:
-    def __init__(self, language: str, duration: float, segments: list, full_text: str = ""):
-        self.language = language
-        self.duration = duration
-        self.segments = segments
-        self.full_text = full_text
+from app.engines.transcript import TranscriptResult, TranscriptSegment
 
 
 class DashScopeASREngine(Engine):

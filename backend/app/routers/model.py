@@ -46,10 +46,6 @@ class SceneBindData(BaseModel):
     chat: int | None = None
     image_process: int | None = None
 
-class EngineFallbackData(BaseModel):
-    enabled: bool = True
-
-
 # ── Helpers ──
 
 def _get_cfg(cfg: dict) -> dict:
@@ -515,7 +511,7 @@ def delete_engine_provider(provider_id: str, request: Request, config=Depends(ge
     with cfg_lock:
         cfg = _get_cfg(config)
         # 只允许删自定义的
-        builtins = {"bcut", "dashscope", "faster-whisper", "pymupdf"}
+        builtins = {"bcut", "dashscope", "pymupdf"}
         if provider_id in builtins:
             raise AppError("PROVIDER_BUILTIN", "不能删除内置引擎厂商")
         cfg["engine_providers"] = [p for p in cfg.get("engine_providers", []) if p["id"] != provider_id]
@@ -646,21 +642,6 @@ def set_engine_bindings(data: EngineBindData, request: Request, config=Depends(g
         cfg["engine_bindings"] = existing
         _save_cfg(cfg)
     return {"status": "ok"}
-
-
-@router.get("/engine-auto-fallback")
-def get_engine_auto_fallback(request: Request, config=Depends(get_cfg)):
-    """获取引擎自动降级开关状态"""
-    return {"enabled": _get_cfg(config).get("engine_auto_fallback", True)}
-
-@router.post("/engine-auto-fallback")
-def set_engine_auto_fallback(data: EngineFallbackData, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
-    """设置引擎自动降级开关"""
-    with cfg_lock:
-        cfg = _get_cfg(config)
-        cfg["engine_auto_fallback"] = data.enabled
-        _save_cfg(cfg)
-    return {"status": "ok", "enabled": data.enabled}
 
 
 @router.get("/resolve-model/{model_id}")

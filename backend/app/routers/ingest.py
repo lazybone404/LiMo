@@ -148,7 +148,6 @@ def _build_engine_config(config: dict, media_dir: str) -> dict:
         "engine_bindings": config.get("engine_bindings", {}),
         "engine_models": build_engine_models(config),
         "engine_providers": config.get("engine_providers", []),
-        "engine_auto_fallback": config.get("engine_auto_fallback", True),
         "media_dir": media_dir,
     }
 
@@ -640,8 +639,9 @@ async def retranscribe(tx_id: str, request: Request, store=Depends(get_store), c
                 raise AppError("RETX_FAILED", f"重新转录失败: {str(e)[:200]}") from e
 
         # 持久化引擎提取的图片，重写 rawText 中的路径
-        output.raw_text = _persist_media_images(store, output.raw_text, media_dir, tx_id)
-        _persist_original_image(store, output.raw_text, tx_id)
+        doc_dir = store._get_doc_dir(tx_id)
+        output.raw_text = _persist_media_images(output.raw_text, media_dir, doc_dir)
+        _persist_original_image(output.raw_text, doc_dir)
 
         # 图片类型：原图就是封面（retranscribe 补上）
         if not tx.get("metadata", {}).get("cover_url") and adapter.name == "image":
@@ -650,7 +650,7 @@ async def retranscribe(tx_id: str, request: Request, store=Depends(get_store), c
         # 视频类型：封面下载到本地（新数据或旧数据首次转本地）
         cover_url = tx.get("metadata", {}).get("cover_url", "")
         if cover_url and not cover_url.startswith("/api/files/"):
-            cover_url = _persist_cover_image(store, cover_url, tx_id)
+            cover_url = _persist_cover_image(cover_url, doc_dir, tx_id)
             tx.setdefault("metadata", {})["cover_url"] = cover_url
 
         # 覆盖 rawText（保留已有 markdown 生成结果）

@@ -74,7 +74,7 @@ class ImageAdapter(PipelineAdapter):
         return ""
 
     def _resolve_ocr_engine(self):
-        """根据 engine_bindings.ocr 解析第一个可用引擎"""
+        """根据 engine_bindings.ocr 解析第一个可用引擎（不再自动降级）"""
         cfg = self._engine_config or {}
         bindings = cfg.get("engine_bindings", {})
         engine_models = cfg.get("engine_models", [])
@@ -84,17 +84,7 @@ class ImageAdapter(PipelineAdapter):
         if isinstance(model_ids, int):
             model_ids = [model_ids]
         if not model_ids:
-            auto_fallback = cfg.get("engine_auto_fallback", True)
-            if not auto_fallback:
-                logger.error("OCR 引擎未绑定，自动降级已关闭")
-                return "", None, ""
-            # 遍历所有已注册 OCR 引擎，找第一个可用的
-            for eng_name in EngineRegistry.list_category("ocr"):
-                engine = EngineRegistry.get("ocr", eng_name)
-                if engine:
-                    default_model = "qwen-vl-max" if "dashscope" in eng_name else "default"
-                    logger.info("OCR: 未绑定引擎，使用第一个可用: %s", eng_name)
-                    return eng_name, engine, default_model
+            logger.error("OCR 引擎未绑定，请在设置中配置 OCR 引擎")
             return "", None, ""
 
         emap = {m["id"]: m for m in engine_models}
@@ -114,21 +104,8 @@ class ImageAdapter(PipelineAdapter):
                 if engine:
                     return model_name, engine, model_name
 
-        # 所有绑定均不可用
-        auto_fallback = cfg.get("engine_auto_fallback", True)
-        if not auto_fallback:
-            logger.error("OCR 绑定链全部失败，自动降级已关闭")
-            return "", None, ""
-
-        # 尝试任意已注册的 OCR 引擎
-        for eng_name in EngineRegistry.list_category("ocr"):
-            engine = EngineRegistry.get("ocr", eng_name)
-            if engine:
-                default_model = "qwen-vl-max" if "dashscope" in eng_name else "default"
-                logger.warning("OCR 绑定链全部失败，降级使用: %s", eng_name)
-                return eng_name, engine, default_model
-
-        logger.error("无可用 OCR 引擎")
+        # 所有绑定均不可用 → 不降级，返回空（调用方报错）
+        logger.error("OCR 绑定链全部失败，请在设置中更换 OCR 引擎")
         return "", None, ""
 
     def _ocr(self, file_path: str) -> str:

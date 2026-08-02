@@ -81,7 +81,7 @@ A: 可以。视频转写、图片 OCR（本地引擎）开箱即用；生成笔�
 
 **Q: 视频转写花钱吗？**
 
-A: 默认的 bcut-asr 免费云转写无需 Key；faster-whisper 本地转写同样免费。
+A: 默认的 bcut-asr 免费云转写无需 Key；本地转写引擎（faster-whisper 等）需自行安装。
 
 **Q: 可以离线使用吗？**
 

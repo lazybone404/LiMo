@@ -12,15 +12,13 @@ for cat in ["asr", "doc"]:
     engines = EngineRegistry.list_category(cat)
     print(f'{cat}: {engines}')
 
-# 降级链
-asr_small = EngineRegistry.get("asr", "faster-whisper-small")
-asr_medium = EngineRegistry.get("asr", "faster-whisper-medium")
-print(f'asr-medium fallback: {asr_medium.fallback.name if asr_medium.fallback else "None"}')
-print(f'asr-small fallback: {asr_small.fallback.name if asr_small.fallback else "None"}')
+# 引擎注册验证（无降级链：绑定只取第一个，失败直接报错）
+asr_bcut = EngineRegistry.get("asr", "bcut-asr")
+print(f'bcut-asr registered: {asr_bcut is not None}')
+print(f'bcut-asr fallback: {asr_bcut.fallback.name if asr_bcut and asr_bcut.fallback else "None"}')
 
 doc_md = EngineRegistry.get("doc", "markitdown")
-doc_pdf = EngineRegistry.get("doc", "pymupdf")
-print(f'markitdown fallback: {doc_md.fallback.name if doc_md.fallback else "None"}')
+print(f'markitdown fallback: {doc_md.fallback.name if doc_md and doc_md.fallback else "None"}')
 
 # 降级链触发测试（用不存在的文件）
 import tempfile

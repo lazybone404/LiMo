@@ -1,6 +1,6 @@
 """
 引擎注册入口
-应用启动时调用 init_engines() 注册并设置降级链
+应用启动时调用 init_engines() 注册引擎
 """
 
 import logging
@@ -10,23 +10,49 @@ from app.core.registry import EngineRegistry
 logger = logging.getLogger(__name__)
 
 
+def _migrate_remove_faster_whisper(config: dict) -> bool:
+    """启动迁移：清理旧版 faster-whisper 引擎残留。
+
+    faster-whisper 已从内置移除（CPU 慢 / GPU 依赖笨重，需自行安装）。
+    用户旧 config.yaml 可能残留：
+    - engine_providers 中的 faster-whisper 整组（含 builtin_models）
+    - engine_models 中 provider_id == "faster-whisper" 的条目
+    - engine_auto_fallback 残留键（配置项已删除，磁盘 false 会误伤回退逻辑）
+
+    返回是否有变更（供调用方计入 save_config 判定，确保迁移落盘）。
+    """
+    changed = False
+
+    provs = config.get("engine_providers", [])
+    before = len(provs)
+    provs = [p for p in provs if p.get("id") != "faster-whisper"]
+    if len(provs) != before:
+        config["engine_providers"] = provs
+        changed = True
+        logger.info("迁移: 移除 faster-whisper engine_provider（已内置移除，需插件）")
+
+    models = config.get("engine_models", [])
+    before = len(models)
+    models = [m for m in models if m.get("provider_id") != "faster-whisper"]
+    if len(models) != before:
+        config["engine_models"] = models
+        changed = True
+        logger.info("迁移: 移除 %d 个 faster-whisper engine_model 条目", before - len(models))
+
+    if "engine_auto_fallback" in config:
+        config.pop("engine_auto_fallback", None)
+        changed = True
+        logger.info("迁移: 移除 engine_auto_fallback 残留键")
+
+    return changed
+
+
 def init_engines(config: dict | None = None):
-    """注册所有引擎 + 降级链"""
+    """注册所有引擎"""
     config = config or {}
 
-    # ASR — 云端优先，本地兜底
-    from .asr import FasterWhisperEngine
-
-    small = FasterWhisperEngine(model_size="small")
-    small.name = "faster-whisper-small"
-
-    medium = FasterWhisperEngine(model_size="medium")
-    medium.name = "faster-whisper-medium"
-
-    small.fallback = None
-
-    EngineRegistry.register("asr", "faster-whisper-small", small)
-    EngineRegistry.register("asr", "faster-whisper-medium", medium)
+    # 启动迁移：清理旧版 faster-whisper 残留（变更计入末尾 save_config 判定）
+    migrated_changed = _migrate_remove_faster_whisper(config)
 
     # 千问 DashScope ASR（云端，中文最佳）
     # Key 来源：cloud.dashscope → engine_providers[dashscope].api_key → cloud.alibaba
@@ -45,7 +71,7 @@ def init_engines(config: dict | None = None):
         dashscope_asr.name = "dashscope-asr"
         dashscope_asr.fallback = None  # 云端失败直接报错，不降级本地
         EngineRegistry.register("asr", "dashscope-asr", dashscope_asr)
-        logger.info(f"ASR engines: dashscope-asr + faster-whisper-medium + small (key={'configured' if dashscope_key else 'NOT SET'})")
+        logger.info(f"ASR engines: dashscope-asr (key={'configured' if dashscope_key else 'NOT SET'})")
     except ImportError as e:
         logger.warning(f"DashScope ASR unavailable: {e}")
     except Exception as e:
@@ -93,32 +119,6 @@ def init_engines(config: dict | None = None):
         models_changed = True
         logger.info("Auto-added bcut-asr to engine_models (id=%d)", mid_bcut)
 
-    # faster-whisper-small（本地免费，兜底）
-    mid_whisper_small = int(hashlib.md5(b"engine:faster-whisper:small").hexdigest()[:8], 16)
-    if mid_whisper_small not in existing_ids:
-        engine_models.append({
-            "id": mid_whisper_small,
-            "provider_id": "faster-whisper",
-            "model_name": "small",
-            "category": "asr",
-        })
-        existing_ids.add(mid_whisper_small)
-        models_changed = True
-        logger.info("Auto-added faster-whisper-small to engine_models (id=%d)", mid_whisper_small)
-
-    # faster-whisper-medium（本地，更大模型）
-    mid_whisper_medium = int(hashlib.md5(b"engine:faster-whisper:medium").hexdigest()[:8], 16)
-    if mid_whisper_medium not in existing_ids:
-        engine_models.append({
-            "id": mid_whisper_medium,
-            "provider_id": "faster-whisper",
-            "model_name": "medium",
-            "category": "asr",
-        })
-        existing_ids.add(mid_whisper_medium)
-        models_changed = True
-        logger.info("Auto-added faster-whisper-medium to engine_models (id=%d)", mid_whisper_medium)
-
     # DashScope ASR（云端，需 API Key）
     if dashscope_key:
         mid_dashscope = int(hashlib.md5(b"engine:dashscope:paraformer-v2").hexdigest()[:8], 16)
@@ -133,17 +133,17 @@ def init_engines(config: dict | None = None):
             models_changed = True
             logger.info("Auto-added dashscope-asr to engine_models (id=%d)", mid_dashscope)
 
-    # 自动绑定：仅在列表为空时初始化默认（bcut→whisper），不强制重排已有绑定
+    # 自动绑定：仅在列表为空时初始化默认（bcut），不强制重排已有绑定
     # 修复：之前强制先删后插 bcut/whisper 导致每次启动 asr_changed=True → save_config 覆盖用户 key
     bindings = config.setdefault("engine_bindings", {})
     asr_list: list = bindings.get("asr", [])
     asr_old = list(asr_list)
-    # 清理失效的绑定（ID 在 engine_models 中不存在）
+    # 清理失效的绑定（ID 在 engine_models 中不存在，含已迁移移除的 faster-whisper id）
     asr_list = [mid for mid in asr_list if mid in existing_ids]
     # 仅在绑定列表为空时初始化默认绑定，尊重用户手动调整的顺序
     if not asr_list:
-        asr_list = [mid_bcut, mid_whisper_small]
-        logger.info("Auto-initialized ASR bindings: bcut (default) + faster-whisper-small (fallback)")
+        asr_list = [mid_bcut]
+        logger.info("Auto-initialized ASR bindings: bcut (default)")
 
     bindings["asr"] = asr_list
     asr_changed = models_changed or (asr_list != asr_old)
@@ -325,9 +325,10 @@ def init_engines(config: dict | None = None):
         logger.warning(f"Tesseract init failed: {e}")
 
     # 持久化 — 只保存引擎相关字段，保护敏感信息（LLM Key 等）不被覆盖
-    if asr_changed or models_changed or doc_bindings_changed or ocr_bound:
-        logger.info("init_engines: 引擎绑定/模型变更，持久化到 config.yaml (asr=%s models=%s doc_bindings=%s ocr=%s)",
-                    asr_changed, models_changed, doc_bindings_changed, ocr_bound)
+    # migrated_changed 计入判定：faster-whisper 迁移清理有真实变更时必须落盘
+    if asr_changed or models_changed or doc_bindings_changed or ocr_bound or migrated_changed:
+        logger.info("init_engines: 引擎绑定/模型变更，持久化到 config.yaml (asr=%s models=%s doc_bindings=%s ocr=%s migrate=%s)",
+                    asr_changed, models_changed, doc_bindings_changed, ocr_bound, migrated_changed)
         try:
             from app.core.config_io import save_config, merge_sensitive
             # 先从磁盘重新加载原始 config 获取真实 Key，合并到当前内存 config 再保存

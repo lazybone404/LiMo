@@ -43,7 +43,7 @@ class BcutASREngine(Engine):
 
     def execute(self, audio_path: str, cancel_event=None, **kwargs):
         """执行转写，返回 TranscriptResult"""
-        from app.engines.asr import TranscriptResult, TranscriptSegment
+        from app.engines.transcript import TranscriptResult, TranscriptSegment
 
         file_path = Path(audio_path)
         if not file_path.exists():

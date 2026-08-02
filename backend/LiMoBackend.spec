@@ -58,12 +58,12 @@ hiddenimports += [
     'numpy',
     'docx', 'pptx', 'openpyxl',
     'markitdown', 'ebooklib',
-    'faster_whisper', 'faster_whisper.assets',
+    # faster_whisper/ctranslate2/av/tokenizers 已移除（faster-whisper 不再内置）
     'trafilatura',
     'dashscope', 'dashscope.audio.asr',
     'youtube_transcript_api',
     'pytesseract', 'pytesseract.pytesseract',
-    'av', 'ctranslate2', 'onnxruntime', 'tokenizers',
+    'onnxruntime',  # magika/rapidocr 依赖，必须保留
     'huggingface_hub', 'filelock', 'fsspec',
     'lxml', 'courlan', 'htmldate', 'justext', 'tld',
     'babel', 'dateparser', 'regex', 'tzlocal',
@@ -72,6 +72,9 @@ hiddenimports += [
     'cffi', 'cryptography',
     'rich', 'pygments',
     'sympy', 'mpmath',
+    # rapidocr 的第三方依赖（rapidocr 由 docling auto_ocr 函数内动态导入，
+    # PyInstaller 静态分析可能断链，显式收集 omegaconf——加载 default_models.yaml 需要）
+    'omegaconf',
 ]
 # 格式别名
 hiddenimports += [
@@ -80,9 +83,9 @@ hiddenimports += [
 ]
 
 # collect-all 处理有复杂原生扩展的包
-for pkg in ['duckduckgo_search', 'faster_whisper', 'dashscope',
-            'youtube_transcript_api', 'trafilatura', 'av', 'ctranslate2',
-            'onnxruntime', 'tokenizers', 'tiktoken',
+for pkg in ['duckduckgo_search', 'dashscope',
+            'youtube_transcript_api', 'trafilatura',
+            'onnxruntime', 'tiktoken',
             'huggingface_hub', 'markitdown', 'pytesseract', 'lxml',
             'courlan', 'justext', 'htmldate', 'magika', 'babel',
             'cffi', 'cryptography', 'aiohttp', 'httpx', 'openai',
@@ -90,7 +93,12 @@ for pkg in ['duckduckgo_search', 'faster_whisper', 'dashscope',
             # docling_parse：docling 的 Rust 解析后端（独立包）。collect_all('docling')
             # 不会递归收集依赖包数据，缺了它打包版 docling 初始化 DoclingPdfParser 时
             # 报 "no existing pdf_resources_dir"（pdf_resources 440 文件 + 依赖 DLL）
-            'docling_parse']:
+            'docling_parse',
+            # rapidocr：docling 内置 OCR（auto_ocr_model 强依赖）。StandardPdfPipeline
+            # 初始化时从 rapidocr 导入并 omegaconf.load('rapidocr/default_models.yaml')，
+            # 缺数据文件直接 FileNotFoundError（打包版 docling 处理 PDF 即崩）。
+            # collect_all 收集 yaml/config + 3 个 ONNX 模型（约 32MB），扫描版 PDF OCR 可用
+            'rapidocr']:
     try:
         tmp_ret = collect_all(pkg)
         datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

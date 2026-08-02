@@ -187,26 +187,14 @@ try:
           binds2.get("asr") == old_asr or binds2.get("asr") is not None,
           f"before={old_asr} after={binds2.get('asr')}")
 
-    # ---- 8. Auto-Fallback Toggle ----
-    print("\n-- 8. Auto-Fallback Toggle --")
-    st, fb, _ = _get("/api/engine-auto-fallback")
-    current = fb.get("enabled", True)
-    st, _ = _json_req("POST", "/api/engine-auto-fallback",
-                      {"enabled": not current})
-    check("toggle -> 200", st == 200)
-    st, fb2, _ = _get("/api/engine-auto-fallback")
-    check(f"value changed to {not current}",
-          fb2.get("enabled") == (not current))
-    _json_req("POST", "/api/engine-auto-fallback", {"enabled": current})
-
-    # ---- 9. Logs ----
-    print("\n-- 9. Logs --")
+    # ---- 8. Logs ----
+    print("\n-- 8. Logs --")
     st, logs, _ = _get("/api/logs")
     check("GET /api/logs -> 200", st == 200)
     check("log entries > 0", logs.get("total", 0) > 0, f"total={logs.get('total')}")
 
-    # ---- 10. Export ----
-    print("\n-- 10. Export --")
+    # ---- 9. Export ----
+    print("\n-- 9. Export --")
     if tx_id2:
         for fmt in ("md", "html"):
             st, content = _get_raw(
@@ -215,8 +203,8 @@ try:
         st, html = _get_raw(f"/api/export/{tx_id2}?format=html&mode=transcript")
         check("HTML contains <html>", b"<html" in html)
 
-    # ---- 11. Config + Masking ----
-    print("\n-- 11. Config Masking --")
+    # ---- 10. Config + Masking ----
+    print("\n-- 10. Config Masking --")
     st, cfg, _ = _get("/api/config")
     check("GET /api/config -> 200", st == 200)
     providers = cfg.get("providers", [])
@@ -225,8 +213,8 @@ try:
     check("sensitive keys masked", is_masked or not has_keys,
           "OK if no keys configured")
 
-    # ---- 12. Conversations ----
-    print("\n-- 12. Conversations --")
+    # ---- 11. Conversations ----
+    print("\n-- 11. Conversations --")
     st, convs, _ = _get("/api/conversations")
     check("GET /api/conversations -> 200", st == 200)
 

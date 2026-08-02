@@ -97,7 +97,7 @@ class DocumentAdapter(PipelineAdapter):
         sub_scenario = self._ext_to_sub_scenario(ext)
         engine_chain = self._resolve_doc_engine_chain(cfg, sub_scenario=sub_scenario)
         if not engine_chain:
-            # 未绑定 → 按扩展名兜底（不受 auto_fallback 控制：这是默认行为，不是降级）
+            # 未绑定 → 按扩展名兜底（默认行为，非引擎降级）
             if ext == ".pdf":
                 eng_name = "docling"
             elif ext in (".docx", ".doc"):
@@ -122,7 +122,7 @@ class DocumentAdapter(PipelineAdapter):
                 engine="none",
             )
 
-        # 2. 按优先级依次尝试转录引擎
+        # 2. 执行绑定的第一个引擎（不再多引擎降级：失败直接报错）
         raw_text = ""
         pages = 1
         is_scanned = False
@@ -132,7 +132,6 @@ class DocumentAdapter(PipelineAdapter):
         # 转录图片输出目录（引擎写文件用）
         media_dir = cfg.get("media_dir", "") if cfg else ""
 
-        auto_fallback = cfg.get("engine_auto_fallback", True) if cfg else True
         for eng_name, engine in engine_chain:
             # 深拷贝防并发竞态
             engine = copy.copy(engine)
@@ -146,22 +145,18 @@ class DocumentAdapter(PipelineAdapter):
                     is_scanned = getattr(result, 'is_scanned', False)
                     logger.info("Doc 引擎 %s 成功: %d chars, %d pages", eng_name, len(raw_text), pages)
                     break
-                logger.warning("Doc 引擎 %s 返回空结果", eng_name)
-                if not auto_fallback:
-                    raise FatalError(f"Doc 引擎 {eng_name} 返回空结果（自动降级已关闭）")
+                raise FatalError(f"Doc 引擎 {eng_name} 返回空结果，请检查引擎配置或更换引擎")
             except FatalError:
                 raise
             except Exception as e:
                 logger.warning("Doc 引擎 %s 失败: %s", eng_name, str(e)[:120])
-                if not auto_fallback:
-                    raise FatalError(f"Doc 引擎 {eng_name} 失败（自动降级已关闭）: {str(e)[:100]}") from e
-                continue
+                raise FatalError(f"Doc 引擎 {eng_name} 失败: {str(e)[:100]}") from e
 
         if not raw_text:
             from app.core.errors import TranscribeError
             raise TranscribeError.empty(
                 detail=f"已尝试 {len(tried)} 个引擎 ({', '.join(tried)})，全部返回空结果。"
-                       f"请检查引擎配置或在设置中开启引擎自动降级。"
+                       f"请检查引擎配置或更换引擎。"
             )
 
         # 3. 扫描件 PDF → OCR 叠加（嵌入页面原图 + OCR 文字）
@@ -249,8 +244,8 @@ class DocumentAdapter(PipelineAdapter):
         return ""
 
     def _resolve_ocr_engine_chain(self) -> list[tuple[str, "Engine", str]]:
-        """根据 engine_bindings.ocr 解析 OCR 引擎优先级链。
-        空绑定或全部失败时，遍历已注册引擎作为降级。"""
+        """根据 engine_bindings.ocr 解析 OCR 引擎链（不再自动降级）。
+        绑定链为空或全部失败时返回空链（调用方报错）。"""
         cfg = self._engine_config or {}
         bindings = cfg.get("engine_bindings", {})
         engine_models = cfg.get("engine_models", [])
@@ -273,20 +268,6 @@ class DocumentAdapter(PipelineAdapter):
             engine = EngineRegistry.get("ocr", eng_name)
             if engine:
                 chain.append((eng_name, engine, model_name))
-
-        # 绑定链为空或全部失败
-        if not chain:
-            auto_fallback = cfg.get("engine_auto_fallback", True)
-            if not auto_fallback:
-                logger.error("OCR 引擎链为空，自动降级已关闭")
-                return chain
-
-            for eng_name in EngineRegistry.list_category("ocr"):
-                engine = EngineRegistry.get("ocr", eng_name)
-                if engine:
-                    logger.warning("OCR 引擎链为空，降级使用: %s", eng_name)
-                    chain.append((eng_name, engine, "default"))
-                    break
         return chain
 
     # ── Scanned PDF OCR ──

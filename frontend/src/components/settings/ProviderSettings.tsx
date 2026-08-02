@@ -6,7 +6,7 @@ import {
   listEngineProviders, addEngineProvider, deleteEngineProvider,
   listEngineModels, deleteEngineModel,
   getEngineBindings, saveEngineBindings,
-  getEngineAutoFallback, setEngineAutoFallback, getEngineRegistry,
+  getEngineRegistry,
   type Provider, type EnabledModel, type SceneModels,
   type EngineProviderConfig as EngineProv, type EngineModel,
   apiUrl, apiFetch,
@@ -37,7 +37,6 @@ export function ProviderSettings() {
   const [engineProviders, setEngineProviders] = useState<EngineProv[]>([])
   const [engineModels, setEngineModels] = useState<EngineModel[]>([])
   const [engineBindings, setEngineBindings] = useState<Record<string, number | null>>({})
-  const [autoFallback, setAutoFallback] = useState(true)
   const [selectedEngineId, setSelectedEngineId] = useState('dashscope')
   const [engineApiKeys, setEngineApiKeys] = useState<Record<string, string>>({})
   const [engineRefreshing, setEngineRefreshing] = useState(false)
@@ -61,14 +60,12 @@ export function ProviderSettings() {
 
   const loadAll = async () => {
     try {
-      const [p, m, s, ep, em, eb, af] = await Promise.all([
+      const [p, m, s, ep, em, eb] = await Promise.all([
         listProviders(), listEnabledModels(), getSceneModels(),
         listEngineProviders(), listEngineModels(), getEngineBindings(),
-        getEngineAutoFallback(),
       ])
       setLlmProviders(p as Provider[]); setEnabledModels(m as EnabledModel[]); setScene(s as SceneModels)
       setEngineProviders(ep as EngineProv[]); setEngineModels(em as EngineModel[]); setEngineBindings(eb as Record<string, number | null>)
-      setAutoFallback(af.enabled)
       // 配置已变更 → 广播，让 GenPanel 模型/引擎下拉、store capabilities 实时刷新
       // （挂在 loadAll 末尾：全部 14 个保存/增删改 handler 都 await loadAll()）
       notifyConfigChanged()
@@ -394,7 +391,7 @@ export function ProviderSettings() {
                     </button>
                   </div>
                 )}
-                {selectedEngineId !== 'bcut' && selectedEngineId !== 'dashscope' && selectedEngineId !== 'faster-whisper' && selectedEngineId !== 'doc-local' && (
+                {selectedEngineId !== 'bcut' && selectedEngineId !== 'dashscope' && selectedEngineId !== 'doc-local' && (
                   <button onClick={() => handleDeleteEngineProv(selectedEngineId)}
                     className="flex items-center gap-1 text-[11px] text-error hover:underline"><Trash2 size={11} />删除</button>
                 )}
@@ -503,24 +500,6 @@ export function ProviderSettings() {
             })}
           </>
         )}
-
-        {/* 引擎自动降级开关 */}
-        <div className="pt-3 mt-1 border-t border-border-light flex items-center justify-between">
-          <div>
-            <span className="text-[13px] font-medium">引擎自动降级</span>
-            <p className="text-[11px] text-disabled mt-0.5">LLM 不可用时自动切换为本地引擎</p>
-          </div>
-          <button
-            onClick={async () => {
-              const next = !autoFallback
-              setAutoFallback(next)
-              try { await setEngineAutoFallback(next) } catch { setAutoFallback(!next); addToast('切换失败，请检查网络连接', 'error') }
-            }}
-            className={`w-10 h-5 rounded-full transition-colors relative ${autoFallback ? 'bg-success' : 'bg-surface-hover'}`}
-          >
-            <span className={`absolute top-0.5 w-4 h-4 bg-elevated rounded-full shadow-sm transition-transform ${autoFallback ? 'left-[22px]' : 'left-0.5'}`} />
-          </button>
-        </div>
       </div>
     </div>
   )

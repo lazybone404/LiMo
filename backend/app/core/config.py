@@ -89,12 +89,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
          "builtin_models": [
              {"model_name": "bcut", "category": "asr", "desc": "免费云转写 · 中文优化"},
          ]},
-        {"id": "faster-whisper", "name": "faster-whisper", "type": "local", "base_url": "", "api_key": "", "capabilities": ["asr"],
-         "builtin_models": [
-             {"model_name": "small", "category": "asr", "desc": "464MB · CPU"},
-             {"model_name": "medium", "category": "asr", "desc": "1.5GB · CPU"},
-             {"model_name": "large-v3", "category": "asr", "desc": "3GB · GPU"},
-         ]},
         {"id": "doc-local", "name": "本地文档引擎组", "type": "local", "base_url": "", "api_key": "", "capabilities": ["doc"],
          "builtin_models": [
              {"model_name": "docling", "category": "doc", "desc": "PDF 完整布局（MIT，推荐）"},
@@ -109,15 +103,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     ],
     # 已启用的引擎模型（id → provider_id + model_name + category）
     "engine_models": [],
-    # 引擎分配 — 绑定 engine_models 的 id（优先级列表，依次尝试直到成功）
+    # 引擎分配 — 绑定 engine_models 的 id（只取第一个可用，失败直接报错，不再降级）
     "engine_bindings": {
         "asr": [],
         "ocr": [],
         "doc": [],
         "doc:epub": [],
     },
-    # LLM 不可用时是否自动降级为本地引擎（用户可在设置中关闭）
-    "engine_auto_fallback": False,
     # Agent 工具配置 — 网络搜索 + 网页抓取
     "agent_tools": {
         "search": {"provider": "duckduckgo", "searxng_url": "http://127.0.0.1:18080", "tavily_api_key": ""},
@@ -294,8 +286,9 @@ def _sync_builtin_models(config: dict):
                 user_builtins.append(dbm)
                 logger.info("配置同步: 新增引擎模型 %s/%s", up["id"], dbm["model_name"])
 
-    # ── 旧 provider 清理：pymupdf（AGPL 引擎组）已迁移为 doc-local ──
-    _DEPRECATED_PROVIDERS = {"pymupdf"}
+    # ── 旧 provider 清理 ──
+    # pymupdf（AGPL 引擎组）已迁移为 doc-local；faster-whisper 已从内置移除（需自行安装插件）
+    _DEPRECATED_PROVIDERS = {"pymupdf", "faster-whisper"}
     config["engine_providers"] = [
         p for p in user_provs if p.get("id") not in _DEPRECATED_PROVIDERS
     ]

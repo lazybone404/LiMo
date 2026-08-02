@@ -177,12 +177,8 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
         if llm_result:
             text = llm_result["text"]
             engine_name = llm_result["engine"]
-        elif llm_degraded and not config.get("engine_auto_fallback", True):
-            raise AppError("PROC_NO_FALLBACK",
-                          "多模态 LLM 不可用，自动降级已关闭（可在设置中开启引擎自动降级）",
-                          recoverable=False)
         else:
-            # ── Engine 回退（组合调度，按 engine_bindings.ocr 优先级链） ──
+            # ── Engine 回退（LLM 不可用 → 无条件回退 OCR 引擎；不再有引擎降级链） ──
             engine_models = build_engine_models(config)
             engine_providers = config.get("engine_providers", [])
             bindings = config.get("engine_bindings", {})
@@ -203,17 +199,13 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
                 if provider_id == "dashscope" and not eng_name.startswith("dashscope"):
                     eng_name = "dashscope-ocr"
                 engine_priority.append((eng_name, provider_id, model_name))
+                break  # 只取绑定第一个可用引擎，不构成多引擎尝试链
 
-            # 绑定链为空
+            # 绑定链为空 → 直接报错（不再自动降级）
             if not engine_priority:
-                if not config.get("engine_auto_fallback", True):
-                    raise AppError("PROC_NO_OCR_ENGINE",
-                                  "未绑定 OCR 引擎，自动降级已关闭（可在设置中开启）",
-                                  recoverable=False)
-                for eng_name in EngineRegistry.list_category("ocr"):
-                    engine_priority.append((eng_name, "", "default"))
-                    logger.warning("OCR 引擎链为空，降级使用: %s", eng_name)
-                    break
+                raise AppError("PROC_NO_OCR_ENGINE",
+                              "未绑定 OCR 引擎，请在设置中配置",
+                              recoverable=False)
 
             text = ""
             engine_name = ""
@@ -268,8 +260,6 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
 
             if llm_degraded:
                 degradation_notes.append(f"多模态 LLM → {engine_name}")
-            if len(tried) > 1:
-                degradation_notes.append(f"引擎降级：{tried[0]} → {engine_name}")
 
         # 持久化到 Store
         pr = ProcessResult(
