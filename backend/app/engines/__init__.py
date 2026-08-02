@@ -251,13 +251,16 @@ def init_engines(config: dict | None = None):
             continue
         # id 解析校验：字符串直接查注册表，整数查 engine_models（兼容旧 list 格式）
         val = doc_bindings[key]
-        if isinstance(val, list) and val:
-            val = val[0]
+        if isinstance(val, list):
+            # 空 list（DEFAULT_CONFIG 初始值 / 用户清空）视为无效，走修复分支
+            val = val[0] if val else None
         if isinstance(val, str):
             ok = EngineRegistry.get("doc", val) is not None
-        else:
+        elif isinstance(val, int):
             bm = emap.get(val)
             ok = bm is not None and EngineRegistry.get("doc", bm.get("model_name", "")) is not None
+        else:
+            ok = False
         if not ok:
             # 回退到该子场景的默认引擎（扁平 doc 回退到 pypdfium2）
             fallback = "pypdfium2"

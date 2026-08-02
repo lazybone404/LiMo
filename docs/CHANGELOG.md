@@ -6,6 +6,34 @@
 
 ---
 
+## 2026-08-02 — 预置示例文档「✨ 使用说明」+ 修复全新安装启动崩溃
+
+### 做了什么
+
+**1. DocLibrary 首启自带「✨ 使用说明（示例）」文档** — 面向新用户的示例/欢迎文档，作者写给用户的应用说明 + 免责声明，同时演示 LiMo 的 Markdown 排版能力。
+
+- 内容分层三 tab：
+  - **「笔记」** — 面向大众：一分钟了解 / 核心功能 / 痛点场景对照 / 开始使用 / 名字与理念（沥墨）/ 常见问题 QA
+  - **「整理版原文」** — 深度说明：处理链路 / 转换引擎详解（Doc/ASR/OCR 三张表格）/ 大模型选择与场景绑定 / 自定义大模型接入（图形界面 + config.yaml）/ 数据与隐私 / 免责声明
+  - **「转录」** — 简短欢迎语
+- **内容源为独立 md 文件**（`app/core/sample_docs/notes.md` + `polished.md`）—— 改 md 即更新，无需改代码；PyInstaller datas 同步打包
+- **内容指纹同步机制**（marker 存 notes+polished 联合哈希）：
+  - 改 md → 下次启动自动同步
+  - 内容更新 → 即使被删除也重建（**兼作更新说明**，让用户知道新内容）
+  - 内容无更新 + 已删除 → 尊重删除不打扰
+  - 重新安装（数据目录清空）→ 自然重建
+- 实现：[sample_doc.py](backend/app/core/sample_doc.py) + [main.py](backend/main.py) startup 挂载（置于 init_engines 之后）+ [LiMoBackend.spec](backend/LiMoBackend.spec) datas
+
+**2. 修复全新安装启动崩溃（严重）** — `DEFAULT_CONFIG` 的 `engine_bindings` 中 `doc`/`doc:epub` 为**空 list**，[engines/__init__.py](backend/app/engines/__init__.py) 清理失效绑定循环 `emap.get([])` 抛 `TypeError: unhashable type: 'list'` → 全新安装（无 `~/.limo/config.yaml`）启动必崩；打包版能跑只因用户 config 绑定已非空。修复：空 list 视为无效绑定，自动回填该子场景默认引擎（doc→pypdfium2、doc:epub→ebooklib 等）。
+
+### 影响范围
+
+- 后端：新增 `app/core/sample_doc.py` + `app/core/sample_docs/`（首次启动自动创建示例文档，不影响已有数据；marker 幂等）
+- 修复启动崩溃 → 新用户开箱即用
+- 前端零改动
+
+---
+
 ## 2026-08-02 — v0.1.5：docling 打包崩溃 + 文档图片三开关链路修复
 
 ### 做了什么

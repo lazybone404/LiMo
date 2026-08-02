@@ -5,6 +5,8 @@ datas = [
     ('bin', 'bin'),
     ('static', 'static'),  # KaTeX + markmap/d3 离线资源
     ('app/agent/prompts', 'app/agent/prompts'),  # 分层 system prompt
+    # 示例文档内容（笔记 + 整理版原文），seed_sample_doc 启动时读取
+    ('app/core/sample_docs', 'app/core/sample_docs'),
 ]
 # tiktoken_ext / dateparser_data — namespace package，collect_all 不会自动收集
 # PyInstaller 对 namespace package 的处理不可靠，显式添加每个文件

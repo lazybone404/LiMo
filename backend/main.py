@@ -225,6 +225,11 @@ async def startup():
     init_plugins(config)
     app.state.engines_ready = True
 
+    # 预置示例文档（首次启动创建一次，用户删除后不再复活；置于引擎初始化之后，
+    # 避免引擎初始化失败时 marker 已写导致示例文档永不创建）
+    from app.core.sample_doc import seed_sample_doc
+    seed_sample_doc(app.state.store)
+
     # Config 写入锁 — 防止并发 RMW 损坏 config.yaml
     app.state.config_lock = threading.Lock()
 
