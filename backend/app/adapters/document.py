@@ -99,7 +99,7 @@ class DocumentAdapter(PipelineAdapter):
         if not engine_chain:
             # 未绑定 → 按扩展名兜底（默认行为，非引擎降级）
             if ext == ".pdf":
-                eng_name = "docling"
+                eng_name = "pypdfium2"
             elif ext in (".docx", ".doc"):
                 eng_name = "python-docx"
             elif ext in (".pptx", ".ppt"):
@@ -109,7 +109,7 @@ class DocumentAdapter(PipelineAdapter):
             elif ext == ".epub":
                 eng_name = "ebooklib"
             else:
-                eng_name = "docling"
+                eng_name = "pypdfium2"
             engine = EngineRegistry.get("doc", eng_name)
             if engine:
                 engine_chain = [(eng_name, engine)]

@@ -93,13 +93,59 @@ def _migrate_remove_tesseract(config: dict) -> bool:
     return changed
 
 
+def _migrate_remove_docling(config: dict) -> bool:
+    """启动迁移：清理 docling 引擎残留（内置移除 2026-08-02，依赖 torch ~2GB 无法打包）。
+
+    旧 config.yaml 可能残留：
+    - engine_providers 的 builtin_models 中 model_name=="docling"
+    - engine_models 中 model_name=="docling" 的条目
+    - engine_bindings 指向 docling 的条目（字符串或 id）→ 置 None 让 init_engines 回退默认 pypdfium2
+
+    返回是否有变更（供调用方计入 save_config 判定，确保迁移落盘）。
+    """
+    import hashlib
+    changed = False
+
+    # 1. builtin_models 移除 docling
+    for prov in config.get("engine_providers", []):
+        bms = prov.get("builtin_models", [])
+        before = len(bms)
+        bms = [bm for bm in bms if bm.get("model_name") != "docling"]
+        if len(bms) != before:
+            prov["builtin_models"] = bms
+            changed = True
+            logger.info("迁移: 从 %s 移除 %d 个 docling builtin_model", prov.get("id"), before - len(bms))
+
+    # 2. engine_models 移除 docling
+    models = config.get("engine_models", [])
+    before = len(models)
+    models = [m for m in models if m.get("model_name") != "docling"]
+    if len(models) != before:
+        config["engine_models"] = models
+        changed = True
+        logger.info("迁移: 移除 %d 个 docling engine_model 条目", before - len(models))
+
+    # 3. 绑定中指向 docling 的条目 → 置 None（让 init_engines 回退默认 pypdfium2）
+    docling_id = int(hashlib.md5(b"engine:doc-local:docling").hexdigest()[:8], 16)
+    bindings = config.get("engine_bindings", {})
+    for key in list(bindings.keys()):
+        val = bindings[key]
+        if val == "docling" or val == docling_id:
+            bindings[key] = None
+            changed = True
+            logger.info("迁移: 清除 %s 的 docling 绑定（回退默认）", key)
+
+    return changed
+
+
 def init_engines(config: dict | None = None):
     """注册所有引擎"""
     config = config or {}
 
-    # 启动迁移：清理旧版 faster-whisper / tesseract 残留（变更计入末尾 save_config 判定）
+    # 启动迁移：清理旧版 faster-whisper / tesseract / docling 残留（变更计入末尾 save_config 判定）
     migrated_changed = _migrate_remove_faster_whisper(config)
     migrated_changed = _migrate_remove_tesseract(config) or migrated_changed
+    migrated_changed = _migrate_remove_docling(config) or migrated_changed
 
     # 千问 DashScope ASR（云端，中文最佳）
     # Key 来源：cloud.dashscope → engine_providers[dashscope].api_key → cloud.alibaba
@@ -213,13 +259,11 @@ def init_engines(config: dict | None = None):
     from .doc_excel import ExcelEngine
 
     # Doc — MIT/BSD 协议引擎组
-    from .docling import DoclingEngine, PyPdfium2Engine
+    from .docling import PyPdfium2Engine
 
     # 注：text_only 变体引擎（docling-text/python-docx-text/python-pptx-text）
     # 已删除 — 与完整版重复无意义。需要纯文字时由场景/用户自行选择，不拆引擎。
-    docling_eng = DoclingEngine()
-    docling_eng.name = "docling"
-    EngineRegistry.register("doc", "docling", docling_eng)
+    # DoclingEngine 已移除（2026-08-02，依赖 torch ~2GB 无法打包，docling 打包版不可用）
 
     pypdfium2_eng = PyPdfium2Engine()
     pypdfium2_eng.name = "pypdfium2"
@@ -248,7 +292,7 @@ def init_engines(config: dict | None = None):
         logger.warning(f"EPUB engine (ebooklib) unavailable: {e}")
     except Exception as e:
         logger.warning(f"EPUB engine init failed: {e}")
-    logger.info("Doc engines: docling + pypdfium2 + markitdown + python-docx + python-pptx + openpyxl + ebooklib")
+    logger.info("Doc engines: pypdfium2 + markitdown + python-docx + python-pptx + openpyxl + ebooklib")
 
     # Doc 引擎自动注册到 engine_models + engine_bindings，用户开箱即用
     # 对标 ASR 和 OCR 的自动注册逻辑

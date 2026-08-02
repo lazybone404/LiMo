@@ -164,7 +164,7 @@ async def capabilities(config=Depends(get_config)):
     # ── 文件类型 → 可用引擎白名单（内置 + 插件动态追加）──
     # 内置引擎按名列出；插件引擎（EnginePlugin）通过 file_types 扩展名自动归入
     _DOC_SUBTYPES = {
-        "pdf": ["docling", "pypdfium2"],
+        "pdf": ["pypdfium2"],
         "word": ["python-docx", "markitdown"],
         "ppt": ["python-pptx", "markitdown"],
         "excel": ["openpyxl", "markitdown"],
@@ -213,7 +213,7 @@ async def capabilities(config=Depends(get_config)):
                 "capabilities": ["asr", "ocr"],
             },
             "doc-local": {
-                "name": "本地文档引擎组（Docling + PyPdfium2 + MarkItDown 等）",
+                "name": "本地文档引擎组（PyPdfium2 + MarkItDown + python-docx 等）",
                 "type": "local",
                 "capabilities": ["doc"],
             },

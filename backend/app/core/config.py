@@ -91,8 +91,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
          ]},
         {"id": "doc-local", "name": "本地文档引擎组", "type": "local", "base_url": "", "api_key": "", "capabilities": ["doc"],
          "builtin_models": [
-             {"model_name": "docling", "category": "doc", "desc": "PDF 完整布局（MIT，推荐）"},
-             {"model_name": "pypdfium2", "category": "doc", "desc": "PDF 极速纯文字（BSD-3）"},
+             {"model_name": "pypdfium2", "category": "doc", "desc": "PDF 极速纯文字+表格+图片（BSD-3）"},
              {"model_name": "markitdown", "category": "doc", "desc": "Office/EPUB 转 Markdown"},
              {"model_name": "python-docx", "category": "doc", "desc": "Word .docx 文字+表格+图片"},
              {"model_name": "python-pptx", "category": "doc", "desc": "PPT .pptx 文字+图片+备注"},
