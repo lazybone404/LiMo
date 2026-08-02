@@ -40,7 +40,7 @@ class AdapterRegistry:
 # 未来 adapter:video / tool:search 命名空间插件到达时再扩展键空间（v1 仅 engine 命名空间生效）。
 
 class EngineRegistry:
-    """按类型分组，每引擎可声明 fallback"""
+    """按类型分组（无引擎降级链：失败直接报错）"""
 
     _stores: dict[str, dict[str, Engine]] = {}
 

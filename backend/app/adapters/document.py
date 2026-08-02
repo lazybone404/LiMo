@@ -122,42 +122,27 @@ class DocumentAdapter(PipelineAdapter):
                 engine="none",
             )
 
-        # 2. 执行绑定的第一个引擎（不再多引擎降级：失败直接报错）
-        raw_text = ""
-        pages = 1
-        is_scanned = False
-        eng_name = ""
-        tried: list[str] = []
-
+        # 2. 执行绑定的第一个引擎（无引擎降级链：失败直接报错）
         # 转录图片输出目录（引擎写文件用）
         media_dir = cfg.get("media_dir", "") if cfg else ""
 
-        for eng_name, engine in engine_chain:
-            # 深拷贝防并发竞态
-            engine = copy.copy(engine)
-            tried.append(eng_name)
-            logger.info("Doc 引擎尝试: %s", eng_name)
-            try:
-                result = await asyncio.to_thread(engine.run, str(path), media_dir=media_dir)
-                if result and result.text:
-                    raw_text = result.text
-                    pages = getattr(result, 'pages', 1)
-                    is_scanned = getattr(result, 'is_scanned', False)
-                    logger.info("Doc 引擎 %s 成功: %d chars, %d pages", eng_name, len(raw_text), pages)
-                    break
-                raise FatalError(f"Doc 引擎 {eng_name} 返回空结果，请检查引擎配置或更换引擎")
-            except FatalError:
-                raise
-            except Exception as e:
-                logger.warning("Doc 引擎 %s 失败: %s", eng_name, str(e)[:120])
-                raise FatalError(f"Doc 引擎 {eng_name} 失败: {str(e)[:100]}") from e
-
-        if not raw_text:
-            from app.core.errors import TranscribeError
-            raise TranscribeError.empty(
-                detail=f"已尝试 {len(tried)} 个引擎 ({', '.join(tried)})，全部返回空结果。"
-                       f"请检查引擎配置或更换引擎。"
-            )
+        eng_name, engine = engine_chain[0]
+        # 深拷贝防并发竞态
+        engine = copy.copy(engine)
+        logger.info("Doc 引擎执行: %s", eng_name)
+        try:
+            result = await asyncio.to_thread(engine.run, str(path), media_dir=media_dir)
+        except FatalError:
+            raise
+        except Exception as e:
+            logger.warning("Doc 引擎 %s 失败: %s", eng_name, str(e)[:120])
+            raise FatalError(f"Doc 引擎 {eng_name} 失败: {str(e)[:100]}") from e
+        if not (result and result.text):
+            raise FatalError(f"Doc 引擎 {eng_name} 返回空结果，请检查引擎配置或更换引擎")
+        raw_text = result.text
+        pages = getattr(result, 'pages', 1)
+        is_scanned = getattr(result, 'is_scanned', False)
+        logger.info("Doc 引擎 %s 成功: %d chars, %d pages", eng_name, len(raw_text), pages)
 
         # 3. 扫描件 PDF → OCR 叠加（嵌入页面原图 + OCR 文字）
         if is_scanned and ext == ".pdf":
@@ -243,9 +228,10 @@ class DocumentAdapter(PipelineAdapter):
                 return ep.get("api_key", "")
         return ""
 
-    def _resolve_ocr_engine_chain(self) -> list[tuple[str, "Engine", str]]:
-        """根据 engine_bindings.ocr 解析 OCR 引擎链（不再自动降级）。
-        绑定链为空或全部失败时返回空链（调用方报错）。"""
+    def _resolve_ocr_engine(self) -> tuple[str, "Engine", str] | None:
+        """根据 engine_bindings.ocr 解析第一个可用 OCR 引擎（无引擎降级链）。
+
+        绑定第一个可用引擎；绑定为空或不可用 → 返回 None（调用方报错/占位）。"""
         cfg = self._engine_config or {}
         bindings = cfg.get("engine_bindings", {})
         engine_models = cfg.get("engine_models", [])
@@ -255,7 +241,6 @@ class DocumentAdapter(PipelineAdapter):
             model_ids = [model_ids]
 
         emap = {m["id"]: m for m in engine_models}
-        chain: list[tuple[str, "Engine", str]] = []
         for mid in model_ids:
             bm = emap.get(mid)
             if not bm:
@@ -267,8 +252,8 @@ class DocumentAdapter(PipelineAdapter):
                 eng_name = "dashscope-ocr"
             engine = EngineRegistry.get("ocr", eng_name)
             if engine:
-                chain.append((eng_name, engine, model_name))
-        return chain
+                return (eng_name, engine, model_name)
+        return None
 
     # ── Scanned PDF OCR ──
 
@@ -276,7 +261,7 @@ class DocumentAdapter(PipelineAdapter):
         """扫描件 PDF → 逐页渲染为图片 → OCR 提取文字 → 嵌入原图 + OCR 文字
 
         产物：每页包含原图（150dpi）和 OCR 识别的文字，方便对照确认。
-        按优先级依次尝试 OCR 引擎，失败或空结果自动降级到下一个。
+        只用绑定第一个 OCR 引擎（无引擎降级链）；失败/空 → 占位（原图 + 失败原因）。
         """
         import pypdfium2 as pdfium
 
@@ -285,7 +270,7 @@ class DocumentAdapter(PipelineAdapter):
         parts: list[str] = []
         success = 0
 
-        ocr_chain = self._resolve_ocr_engine_chain()
+        ocr_engine_info = self._resolve_ocr_engine()
         dashscope_key = self._get_dashscope_key()
 
         for i in range(pages):
@@ -299,13 +284,14 @@ class DocumentAdapter(PipelineAdapter):
             img_bytes = pil_img.tobytes() if pil_img.mode == 'RGB' else pil_img.convert('RGB').tobytes()
             img_b64 = base64.b64encode(img_bytes).decode()
 
-            # OCR 识别 — 按优先级链依次尝试
+            # OCR 识别 — 只用绑定第一个引擎（无引擎降级链）
             tmp_path = Path(tempfile.mktemp(suffix=f"_p{page_num}.png"))
             pil_img.save(str(tmp_path), format="PNG")
 
             ocr_text = ""
-            ocr_used = ""
-            for eng_name, ocr_engine, ocr_model in ocr_chain:
+            ocr_fail = ""
+            if ocr_engine_info:
+                eng_name, ocr_engine, ocr_model = ocr_engine_info
                 ocr_engine = copy.copy(ocr_engine)
                 if hasattr(ocr_engine, 'api_key') and not ocr_engine.api_key:
                     if dashscope_key:
@@ -314,16 +300,15 @@ class DocumentAdapter(PipelineAdapter):
                     ocr_result = ocr_engine.run(str(tmp_path), model_name=ocr_model)
                     if ocr_result and ocr_result.text:
                         ocr_text = ocr_result.text
-                        ocr_used = eng_name
                         success += 1
-                        break
-                    logger.warning("OCR 引擎 %s 返回空结果，尝试下一个", eng_name)
+                    else:
+                        ocr_fail = "OCR 引擎返回空结果"
                 except Exception as e:
                     logger.warning("OCR 引擎 %s 第 %d 页失败: %s", eng_name, page_num, str(e)[:120])
-                    continue
+                    ocr_fail = str(e)[:80]
 
             if not ocr_text:
-                ocr_text = "_(所有 OCR 引擎均失败)_"
+                ocr_text = f"_(OCR 失败: {ocr_fail or '无可用 OCR 引擎'})_"
 
             # 嵌入原图 + OCR 文字
             parts.append(
@@ -339,5 +324,5 @@ class DocumentAdapter(PipelineAdapter):
                 pass
 
         pdf.close()
-        logger.info("扫描件 OCR 完成: %d/%d 页成功 [%s]", success, pages, ocr_used or "none")
+        logger.info("扫描件 OCR 完成: %d/%d 页成功", success, pages)
         return "\n\n---\n\n".join(parts), pages

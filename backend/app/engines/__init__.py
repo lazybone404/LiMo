@@ -162,7 +162,6 @@ def init_engines(config: dict | None = None):
         from .asr_cloud import DashScopeASREngine
         dashscope_asr = DashScopeASREngine(api_key=dashscope_key)
         dashscope_asr.name = "dashscope-asr"
-        dashscope_asr.fallback = None  # 云端失败直接报错，不降级本地
         EngineRegistry.register("asr", "dashscope-asr", dashscope_asr)
         logger.info(f"ASR engines: dashscope-asr (key={'configured' if dashscope_key else 'NOT SET'})")
     except ImportError as e:
@@ -175,7 +174,6 @@ def init_engines(config: dict | None = None):
         from .asr_bcut import BcutASREngine
         bcut = BcutASREngine()
         bcut.name = "bcut-asr"
-        bcut.fallback = None
         EngineRegistry.register("asr", "bcut-asr", bcut)
         # 确保 engine_providers 中有 bcut（旧 config.yaml 可能缺）
         engine_provs = config.setdefault("engine_providers", [])

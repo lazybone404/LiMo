@@ -32,7 +32,6 @@ class PipelineAdapter(ABC):
 
 class Engine(ABC):
     name: str = ""
-    fallback: "Engine | None" = None
     supported_modes: list[str] = []  # 该引擎支持的处理模式，空列表=需运行时判断
     capabilities: list[str] = []  # 引擎能力标签：text / table / image / ocr / office / pdf / asr
 
@@ -42,13 +41,5 @@ class Engine(ABC):
         ...
 
     def run(self, *args, **kwargs):
-        """带降级的执行"""
-        try:
-            return self.execute(*args, **kwargs)
-        except Exception as e:
-            if self.fallback:
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.warning(f"{self.name} failed, → {self.fallback.name}")
-                return self.fallback.run(*args, **kwargs)
-            raise
+        """执行（无引擎降级链：失败直接抛出，绑定只取第一个是调用方职责）"""
+        return self.execute(*args, **kwargs)

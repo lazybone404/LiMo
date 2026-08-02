@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-08-03 — 彻底移除引擎降级链
+
+### 做了什么
+
+用户要求**引擎不应有降级链，彻底移除**；大模型降级链 + 用户可配置降级链留后面再做。
+
+- **Engine 协议层删 fallback**（protocols.py）：删 `fallback` 字段 + `run()` 失败时委托 `fallback.run()` 的分支——`run()` 直接 `execute()`，失败抛出
+- **init_engines 删 fallback 赋值**（dashscope-asr / bcut 的 `fallback = None`）
+- **扫描件 OCR 移除多引擎降级链**（document.py）：`_resolve_ocr_engine_chain` → `_resolve_ocr_engine()` 返回单个（绑定第一个可用）；`_ocr_pdf_with_images` 逐页不再尝试多个引擎，只用第一个，失败 → **占位带原因** `_(OCR 失败: <原因>)_`（不再「所有 OCR 引擎均失败」）
+- **Doc 主循环简化**：`for`+`break` → 取 `engine_chain[0]` 直接执行；删不可达 `if not raw_text` 分支；保留链空处理（扩展名兜底 → 占位 AdapterOutput）
+- test_engines.py 删 fallback 检查，降级链测试改为「引擎失败直接报错测试」；registry.py 注释同步
+
+### 行为变更
+
+- 引擎失败不再自动切换其他引擎（绑定只取第一个是既有语义，本次彻底移除协议层 fallback 兜底）
+- 扫描件 OCR 无可用引擎 / 无 API Key → 占位文本**带失败原因**（利于排查），不再尝试下一个引擎
+
+### 保留（非引擎降级链，不动）
+
+- 扩展名兜底（未绑定时的默认引擎）、绑定修复回退（config 迁移）
+- process.py LLM→OCR 回退、agent 搜索降级（Tavily→SearXNG→DDG）、webpage 提取回退——均属大模型降级链 / 非引擎，留后置
+
+### 验证
+
+- 后端 7 测试全绿（test_engines 无 fallback 报错）
+- 冒烟：capabilities 正常（doc: pypdfium2 等、ocr: dashscope 系列）+ 导入 PDF 走 pypdfium2 成功
+- 扫描件 OCR mock 验证：单引擎失败 → 占位带原因
+
+---
+
 ## 2026-08-03 — 移除 DoclingEngine + 体积二次修剪
 
 ### 做了什么
