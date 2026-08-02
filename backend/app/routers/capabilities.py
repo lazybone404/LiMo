@@ -217,11 +217,6 @@ async def capabilities(config=Depends(get_config)):
                 "type": "local",
                 "capabilities": ["doc"],
             },
-            "tesseract": {
-                "name": "Tesseract（本地）",
-                "type": "local",
-                "capabilities": ["ocr"],
-            },
         },
         "engineOptions": engine_options,
         "engineBindings": engine_bindings,

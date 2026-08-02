@@ -2,7 +2,6 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas = [
-    ('bin', 'bin'),
     ('static', 'static'),  # KaTeX + markmap/d3 离线资源
     ('app/agent/prompts', 'app/agent/prompts'),  # 分层 system prompt
     # 示例文档内容（笔记 + 整理版原文），seed_sample_doc 启动时读取
@@ -62,7 +61,6 @@ hiddenimports += [
     'trafilatura',
     'dashscope', 'dashscope.audio.asr',
     'youtube_transcript_api',
-    'pytesseract', 'pytesseract.pytesseract',
     'onnxruntime',  # magika/rapidocr 依赖，必须保留
     'huggingface_hub', 'filelock', 'fsspec',
     'lxml', 'courlan', 'htmldate', 'justext', 'tld',
@@ -86,7 +84,7 @@ hiddenimports += [
 for pkg in ['duckduckgo_search', 'dashscope',
             'youtube_transcript_api', 'trafilatura',
             'onnxruntime', 'tiktoken',
-            'huggingface_hub', 'markitdown', 'pytesseract', 'lxml',
+            'huggingface_hub', 'markitdown', 'lxml',
             'courlan', 'justext', 'htmldate', 'magika', 'babel',
             'cffi', 'cryptography', 'aiohttp', 'httpx', 'openai',
             'certifi', 'requests', 'docling', 'pypdfium2',
@@ -139,7 +137,10 @@ a = Analysis(
         'nvidia_cusolver', 'nvidia_cusparse', 'nvidia_nccl', 'nvidia_nvtx',
         'nvidia_nvjitlink',
         # cv2/opencv：backend 零使用（无 opencv 依赖），仅被依赖链意外拖入，排除省 ~112MB
-        'cv2', 'opencv', 'cv2.data'],
+        'cv2', 'opencv', 'cv2.data',
+        # av(PyAV)/faker：docling 运行时主链路不加载（transformers 视频模型静态 import av /
+        # polyfactory 收集 faker），排除省 ~12MB
+        'av', 'faker'],
     noarchive=False,
     optimize=0,
 )

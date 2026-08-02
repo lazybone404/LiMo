@@ -267,7 +267,7 @@ FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_co
 
 `app/engines/__init__.py` → `EngineRegistry.register()`。三类引擎：
 - **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）。faster-whisper 已从内置移除（本地转写需自行安装）
-- **OCR**：dashscope-ocr（云端）→ Tesseract（本地便携版，`backend/bin/tesseract/`）
+- **OCR**：dashscope-ocr（云端，需 API Key）。**Tesseract 已从内置移除**（2026-08-02，体积修剪 + 插件化方向）——无 dashscope key 时本地 OCR 能力消失，扫描件出占位文本；需本地 OCR 请装三方插件参考模板 `backend/plugins/examples/tesseract_plugin.py`
 - **Doc**（全 MIT/BSD，AGPL 引擎不内置）：
   - **pypdfium2**（BSD-3，默认）：C 引擎直读文字 + 嵌入原图，毫秒级。pdfplumber (MIT) 辅助表格提取
   - **docling**（MIT）：ONNX 布局模型，精准标题/表格/矢量图
@@ -396,7 +396,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **数学公式**：全局 `remark-math` + `rehype-katex`，LaTeX `$$` 块自动排版
 - **日志系统**：`contextvars.ContextVar` 注入 `request_id` → ASGI middleware，全链路追踪。`MemoryHandler`（`main.py` 中配置）缓存最近 1000 条日志供前端 LogPanel 轮询（`GET /api/logs`），重启后清空
 - **客户端断连监测**：`app/core/disconnect.py` — `@asynccontextmanager` 封装，5 个 SSE 端点复用，新增端点直接 `async with disconnect_watcher(request, cancel_event):`
-- **Tesseract 便携版**：`backend/bin/tesseract/` 内置，启动自动注册并绑定 OCR，开箱即用
+- **Tesseract 移除**：本地 OCR 已从内置移除（2026-08-02），`backend/bin/tesseract/` 不再随包分发。**行为变更**：无 dashscope key 时扫描件 OCR 从「本地可用」变「占位文本（原图 + _所有 OCR 引擎均失败_）」，直到用户装三方插件模板
 - **EPUB**：ebooklib 章节+骨架提取，前端 EpubSkeletonPanel 章节树，支持选中章节/全书生成
 - **模糊帧过滤**：`frame_quality.py` — Laplacian 方差 + 熵 + 边缘密度评分，视频抽帧时自动丢弃低质量帧
 - **KaTeX 离线缓存**：`_get_katex_assets()` 从 node_modules/static 加载 CSS/JS/字体，CSS 中 `url(fonts/...)` 替换为 base64 data URI（60 个字体），导出 HTML 完全自包含（零 CDN，断网可用）
@@ -479,7 +479,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 状态 | 功能 | 说明 |
 |------|------|------|
 | ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端)。faster-whisper 已从内置移除（本地转写需自行安装） |
-| ✅ | OCR 引擎 | dashscope VL (云端) + Tesseract 便携版 (内置 `backend/bin/tesseract/`) |
+| ✅ | OCR 引擎 | dashscope VL (云端)。Tesseract 已从内置移除（需三方插件 `examples/tesseract_plugin.py`） |
 | ✅ | Doc 引擎 | pypdfium2 (PDF默认,BSD-3) + docling (PDF布局,MIT) + pdfplumber (表格,MIT) + python-docx/pptx/xlsx + openpyxl + markitdown + ebooklib |
 | ✅ | 引擎绑定 | `engine_bindings` 按子场景配置，doc 拆为 pdf / word / ppt / excel / epub |
 | ✅ | 引擎绑定只取第一个 | 绑定解析首个可用引擎，失败直接报错，不再静默降级 |

@@ -98,7 +98,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
              {"model_name": "python-pptx", "category": "doc", "desc": "PPT .pptx 文字+图片+备注"},
              {"model_name": "openpyxl", "category": "doc", "desc": "Excel .xlsx 表格数据提取"},
              {"model_name": "ebooklib", "category": "doc", "desc": "EPUB 电子书 · 章节+图片+元数据"},
-             {"model_name": "tesseract", "category": "ocr", "desc": "本地 Tesseract OCR · 文字提取"},
          ]},
     ],
     # 已启用的引擎模型（id → provider_id + model_name + category）

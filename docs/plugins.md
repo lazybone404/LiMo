@@ -1,7 +1,7 @@
 # 插件系统 — 契约 · 安装 · 发布（EnginePlugin v1）
 
 > 加载器：[plugin_loader.py](../backend/app/engines/plugin_loader.py)，启动时 `init_plugins()` 自动扫描 `~/.limo/plugins/`。
-> 参考模板：[backend/plugins/examples/](../backend/plugins/examples/README.md)（照抄即用，非官方插件）。
+> 参考模板：[backend/plugins/examples/](../backend/plugins/examples/README.md)（照抄即用，非官方插件；含 pymupdf4llm PDF / tesseract 本地 OCR / trusted 进程内 三种形态）。
 
 ## 定位
 

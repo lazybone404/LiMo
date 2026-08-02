@@ -3,11 +3,13 @@ OCR 引擎 — 图片文字提取
 
 云端引擎走 OpenAI 兼容接口 + VL 模型（零新依赖），
 后续可扩展 PaddleOCR / 百度 OCR 等专用 API。
+
+本地 Tesseract 已从内置移除（2026-08-02，体积修剪 + 插件化方向），
+需本地 OCR 请使用三方插件参考模板：backend/plugins/examples/tesseract_plugin.py
 """
 
 import base64
 import logging
-import os
 import sys
 from dataclasses import dataclass
 
@@ -145,130 +147,7 @@ class DashScopeOCREngine(Engine):
             raise RuntimeError(f"OCR API 调用失败: {str(e)[:200]}") from e
 
 
-class TesseractEngine(Engine):
-    """本地 Tesseract OCR — pip install pytesseract + 系统安装 tesseract
-
-    轻量级（~90MB 含中文包），仅支持文字提取模式。
-    安装：
-      Windows: choco install tesseract  或  https://github.com/UB-Mannheim/tesseract/wiki
-      macOS:   brew install tesseract tesseract-lang
-      Linux:   sudo apt install tesseract-ocr tesseract-ocr-chi-sim
-
-    路径优先级：tesseract_cmd 参数 → TESSERACT_CMD 环境变量 → PATH 自动查找
-    """
-
-    name = "tesseract"
-    supported_modes = ["extract"]
-    capabilities = ["text", "ocr"]
-
-    # Tesseract 预设配置：识别模式 + 页面分割
-    DEFAULT_CONFIG = "--psm 3"      # 自动页面分割
-    TABLE_CONFIG = "--psm 6"        # 统一文本块
-
-    def __init__(self, lang: str = "chi_sim+eng", tesseract_cmd: str = ""):
-        self.lang = lang
-        self._tesseract_cmd = tesseract_cmd
-
-    def _resolve_tesseract_cmd(self) -> str:
-        """解析 tesseract 可执行文件路径"""
-        import os
-        import shutil
-
-        # 1. 显式传入
-        if self._tesseract_cmd:
-            return self._tesseract_cmd
-
-        # 2. 环境变量
-        env_cmd = os.environ.get("TESSERACT_CMD", "")
-        if env_cmd:
-            return env_cmd
-
-        # 3. PATH 查找
-        found = shutil.which("tesseract")
-        if found:
-            return found
-
-        # 4. PyInstaller 打包版内置路径（sys._MEIPASS）
-        if getattr(sys, 'frozen', False):
-            frozen_bin = os.path.join(sys._MEIPASS, "bin", "tesseract", "tesseract.exe")
-            if os.path.isfile(frozen_bin):
-                return frozen_bin
-
-        # 5. 项目内置便携版（开发环境）
-        project_bin = os.path.join(os.path.dirname(__file__), "..", "..", "bin", "tesseract", "tesseract.exe")
-        project_bin = os.path.abspath(project_bin)
-        if os.path.isfile(project_bin):
-            return project_bin
-
-        # 6. Windows 常见路径自动检测
-        if os.name == "nt":
-            candidates = [
-                os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Tesseract-OCR", "tesseract.exe"),
-                os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"), "Tesseract-OCR", "tesseract.exe"),
-            ]
-            # 用户的 Downloads 目录（便携版解压后）
-            downloads = os.path.join(os.path.expanduser("~"), "Downloads")
-            if os.path.isdir(downloads):
-                for name in os.listdir(downloads):
-                    if "tesseract-ocr" in name.lower():
-                        exe = os.path.join(downloads, name, "tesseract.exe")
-                        if os.path.isfile(exe):
-                            candidates.append(exe)
-            for p in candidates:
-                if os.path.isfile(p):
-                    return p
-
-        return "tesseract"  # 回退默认值，让 pytesseract 自己报错
-
-    def execute(self, file_path: str, model_name: str = "", mode: str = "default") -> OCRResult:
-        """Tesseract OCR 文字提取
-
-        mode 自动映射：
-          - extract / default: 保留段落结构 (psm 3)
-          - table: 统一文本块便于表格提取 (psm 6)
-        """
-        try:
-            import pytesseract
-            from PIL import Image
-        except ImportError:
-            raise RuntimeError(
-                "Tesseract 引擎需要安装 pytesseract: pip install pytesseract Pillow"
-            )
-
-        # 设置 tesseract 路径
-        tesseract_cmd = self._resolve_tesseract_cmd()
-        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-
-        img = Image.open(file_path)
-        psm = self.TABLE_CONFIG if mode == "table" else self.DEFAULT_CONFIG
-
-        logger.info(
-            "Tesseract: file=%s size=%s lang=%s psm=%s cmd=%s",
-            file_path, img.size, self.lang, psm, tesseract_cmd
-        )
-
-        try:
-            text = pytesseract.image_to_string(img, lang=self.lang, config=psm)
-        except pytesseract.TesseractNotFoundError:
-            raise RuntimeError(
-                "Tesseract 未安装或未找到。\n"
-                "  下载: https://github.com/UB-Mannheim/tesseract/releases\n"
-                "  便携版: 解压后设置环境变量 TESSERACT_CMD=路径/tesseract.exe\n"
-                "  Windows: winget install UB-Mannheim.tesseract-ocr\n"
-                "  macOS:   brew install tesseract\n"
-                "  Linux:   sudo apt install tesseract-ocr\n"
-                "中文支持需 chi_sim.traineddata 放入 tessdata 目录"
-            )
-
-        if not text or not text.strip():
-            logger.info("Tesseract: 未检测到文字")
-            return OCRResult(text="", engine="tesseract", confidence=0.0)
-
-        logger.info("Tesseract: %d chars", len(text))
-        return OCRResult(text=text.strip(), engine="tesseract", confidence=0.0)
-
-
-# 后续扩展示例：
+# 后续扩展示例（可作为三方插件发布，参考 backend/plugins/examples/）：
 # class PaddleOCREngine(Engine):
 #     """本地 PaddleOCR — pip install paddlepaddle paddleocr
 #     仅支持文字提取，不支持表格/数字化/理解（这些需要 VL 模型）。

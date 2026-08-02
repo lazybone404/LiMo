@@ -47,12 +47,59 @@ def _migrate_remove_faster_whisper(config: dict) -> bool:
     return changed
 
 
+def _migrate_remove_tesseract(config: dict) -> bool:
+    """启动迁移：清理 tesseract 引擎残留（内置移除 2026-08-02，需三方插件）。
+
+    旧 config.yaml 可能残留：
+    - engine_providers 的 builtin_models 中 model_name=="tesseract"（doc-local 里曾内置）
+    - engine_models 中 model_name=="tesseract" 的条目（provider pymupdf 已由
+      config._sync_builtin_models 清理，此处兜底）
+    - engine_bindings.ocr 指向已不存在 model 的悬空 id（如 tesseract）
+
+    返回是否有变更（供调用方计入 save_config 判定，确保迁移落盘）。
+    """
+    changed = False
+
+    # 1. engine_providers 的 builtin_models 中移除 tesseract（DEFAULT_CONFIG 删条目不自动清已持久化配置）
+    for prov in config.get("engine_providers", []):
+        bms = prov.get("builtin_models", [])
+        before = len(bms)
+        bms = [bm for bm in bms if bm.get("model_name") != "tesseract"]
+        if len(bms) != before:
+            prov["builtin_models"] = bms
+            changed = True
+            logger.info("迁移: 从 %s 移除 %d 个 tesseract builtin_model", prov.get("id"), before - len(bms))
+
+    models = config.get("engine_models", [])
+    before = len(models)
+    models = [m for m in models if m.get("model_name") != "tesseract"]
+    if len(models) != before:
+        config["engine_models"] = models
+        changed = True
+        logger.info("迁移: 移除 %d 个 tesseract engine_model 条目", before - len(models))
+
+    # 清理 ocr 绑定中悬空 id（指向已不存在的 model）
+    bindings = config.setdefault("engine_bindings", {})
+    ocr_list = bindings.get("ocr", [])
+    if isinstance(ocr_list, int):
+        ocr_list = [ocr_list]
+    emap = {m["id"] for m in models}
+    new_ocr = [mid for mid in ocr_list if mid in emap]
+    if len(new_ocr) != len(ocr_list):
+        bindings["ocr"] = new_ocr
+        changed = True
+        logger.info("迁移: 清理 %d 个悬空 ocr 绑定（tesseract）", len(ocr_list) - len(new_ocr))
+
+    return changed
+
+
 def init_engines(config: dict | None = None):
     """注册所有引擎"""
     config = config or {}
 
-    # 启动迁移：清理旧版 faster-whisper 残留（变更计入末尾 save_config 判定）
+    # 启动迁移：清理旧版 faster-whisper / tesseract 残留（变更计入末尾 save_config 判定）
     migrated_changed = _migrate_remove_faster_whisper(config)
+    migrated_changed = _migrate_remove_tesseract(config) or migrated_changed
 
     # 千问 DashScope ASR（云端，中文最佳）
     # Key 来源：cloud.dashscope → engine_providers[dashscope].api_key → cloud.alibaba
@@ -286,49 +333,14 @@ def init_engines(config: dict | None = None):
     except Exception as e:
         logger.warning(f"DashScope OCR init failed: {e}")
 
-    # Tesseract — 本地 OCR，无云降级（失败应明确报错而非偷偷走云端）
-    # 自动注册到 engine_models + engine_bindings.ocr，用户无需手动设置
-    ocr_bound = False
-    try:
-        from .ocr import TesseractEngine
-        tesseract = TesseractEngine()
-        tesseract.name = "tesseract"
-        EngineRegistry.register("ocr", "tesseract", tesseract)
-        logger.info("OCR engines: tesseract (local)")
-
-        # 自动写入 engine_models（如果尚未添加）
-        import hashlib
-        mid = int(hashlib.md5(b"engine:pymupdf:tesseract").hexdigest()[:8], 16)
-        engine_models = config.get("engine_models", [])
-        existing_ids = {m["id"] for m in engine_models}
-        if mid not in existing_ids:
-            engine_models.append({
-                "id": mid,
-                "provider_id": "pymupdf",
-                "model_name": "tesseract",
-                "category": "ocr",
-            })
-            logger.info("Auto-added tesseract to engine_models (id=%d)", mid)
-
-        # 自动绑定到 OCR 兜底
-        bindings = config.setdefault("engine_bindings", {})
-        ocr_list: list = bindings.get("ocr", [])
-        ocr_bound = mid not in ocr_list
-        if ocr_bound:
-            ocr_list.append(mid)
-            bindings["ocr"] = ocr_list
-            logger.info("Auto-bound tesseract to engine_bindings.ocr")
-
-    except ImportError as e:
-        logger.info(f"Tesseract not available: {e}")
-    except Exception as e:
-        logger.warning(f"Tesseract init failed: {e}")
+    # Tesseract 已从内置移除（2026-08-02，体积修剪 + 插件化方向）。
+    # 需本地 OCR 请使用三方插件参考模板：backend/plugins/examples/tesseract_plugin.py
 
     # 持久化 — 只保存引擎相关字段，保护敏感信息（LLM Key 等）不被覆盖
-    # migrated_changed 计入判定：faster-whisper 迁移清理有真实变更时必须落盘
-    if asr_changed or models_changed or doc_bindings_changed or ocr_bound or migrated_changed:
-        logger.info("init_engines: 引擎绑定/模型变更，持久化到 config.yaml (asr=%s models=%s doc_bindings=%s ocr=%s migrate=%s)",
-                    asr_changed, models_changed, doc_bindings_changed, ocr_bound, migrated_changed)
+    # migrated_changed 计入判定：faster-whisper/tesseract 迁移清理有真实变更时必须落盘
+    if asr_changed or models_changed or doc_bindings_changed or migrated_changed:
+        logger.info("init_engines: 引擎绑定/模型变更，持久化到 config.yaml (asr=%s models=%s doc_bindings=%s migrate=%s)",
+                    asr_changed, models_changed, doc_bindings_changed, migrated_changed)
         try:
             from app.core.config_io import save_config, merge_sensitive
             # 先从磁盘重新加载原始 config 获取真实 Key，合并到当前内存 config 再保存

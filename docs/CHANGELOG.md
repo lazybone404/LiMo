@@ -6,6 +6,30 @@
 
 ---
 
+## 2026-08-02 — 移除内置 Tesseract + 打包体积修剪
+
+### 做了什么
+
+**移除内置 Tesseract OCR**（体积修剪 + 插件化方向，与 faster-whisper 同模式）：
+- 删除 `TesseractEngine`（ocr.py）、init_engines 注册块、config/capabilities 的 tesseract 条目、spec 的 pytesseract（datas/hiddenimports/collect_all）
+- 删除 `backend/bin/tesseract/`（280M，含 ~60M 训练工具 + 57M tessdata + DLL）+ setup.exe + zip
+- 新增 `_migrate_remove_tesseract` 启动迁移（清理 engine_models 的 tesseract 条目 + engine_bindings.ocr 悬空 id）
+- **体积节省**：tesseract 整链 ~378M（bin 280M + PyInstaller 顶层重复 libtesseract-5.dll 97M + pytesseract 1M）+ spec excludes `av`/`faker` ~12M（docling 运行时主链路不加载，静态收集冗余）
+
+### 行为变更
+
+- **本地无 key OCR 从「可用」变「占位」**：无 dashscope API Key 时扫描件 OCR 逐页输出「原图 + `_(所有 OCR 引擎均失败)_`」占位文本（之前 Tesseract 是本地兜底）。需本地 OCR 请装三方插件参考模板 [examples/tesseract_plugin.py](../backend/plugins/examples/tesseract_plugin.py)（含 tesseract 便携版自备说明 + chi_sim 排查）
+- 前端引擎下拉自动不再显示 Tesseract（全动态渲染，零改动）
+
+### 影响范围
+
+- 代码：`ocr.py` / `engines/__init__.py` / `config.py` / `capabilities.py` / `LiMoBackend.spec`
+- 模板：`examples/tesseract_plugin.py` + `tesseract/{engine.py, README.md, requirements.txt}`
+- 文档：`plugins.md` / `CLAUDE.md` / `STATUS.md`（引擎计数 11→10）
+- 验证：后端测试全绿 + capabilities 冒烟 + 前端 82 tests + 重新打包体积对比
+
+---
+
 ## 2026-08-02 — 插件系统完整正式化（EnginePlugin v1 · pymupdf4llm 首例）
 
 ### 做了什么
