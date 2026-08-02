@@ -12,11 +12,12 @@ LiMo — 知识管理系统。输入 URL/文本/文件 → 适配器提取正文
 LiMo 采用六轴主题系统，所有视觉元素通过 CSS 变量驱动，零硬编码色值：
 
 ```
-data-theme="light|dark"           ← 明暗极性
-data-accent="sky|ocean|…"        ← 主辅配色（26套: 现代9+国风9+自然8，HSL动态派生）
-data-base="warm|neutral|cool|…"  ← 界面基调（13种，覆盖冷暖偏色+护眼）
+data-theme="light|dark"            ← 明暗极性
+data-accent="sky|ocean|…"         ← 主辅配色（26套: 现代9+国风9+自然8，HSL动态派生）
+data-base="warm|neutral|cool|…"   ← 界面基调（13种，覆盖冷暖偏色+护眼）
 data-texture="plain|xuan|kraft|…" ← 预览区纹理（6种纸张质感）
-data-font="system|kaiti|wenkai|…"← 阅读字体（5种，4系统+1web）
+data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
+--texture-opacity（强度滑条 10-100）← 纹理强度，反转映射到 opacity
 ```
 
 ### 色板架构（两层）
@@ -58,15 +59,11 @@ data-font="system|kaiti|wenkai|…"← 阅读字体（5种，4系统+1web）
 |------|------|--------|
 | [architecture.md](docs/architecture.md) | 六层分层架构，每层模块职责、交互、陷阱 | 理解整体架构和模块边界 |
 | [frontend-patterns.md](docs/frontend-patterns.md) | 状态管理、取消机制、TaskPanel、apiUrl | 改前端状态/任务相关代码 |
-| [engine-standards.md](design/engine-standards.md) | ⚠️ 历史参考 — PDF 引擎已从 AGPL 迁移到 MIT/BSD | 了解引擎评审标准（非当前引擎列表） |
 | [export-pipeline.md](docs/export-pipeline.md) | 导出架构、两条路径设计、Tab→内容映射表、KaTeX/Pygments | 改导出功能、新增 tab |
 | [CHANGELOG.md](docs/CHANGELOG.md) | 修改记录：做了什么、为什么、影响范围 | 了解历史决策、避免重复踩坑 |
 | [STATUS.md](docs/STATUS.md) | 纯事实清单（文件/端点/引擎计数） | 需要统计数据 |
 | [user-scenarios.md](docs/user-scenarios.md) | 10 个用户场景及实现状态 | 理解产品需求 |
-| [system-design-spec.md](docs/system-design-spec.md) | 原始设计蓝图（历史参考） | 理解早期设计意图 |
-| [engine-standards.md](design/engine-standards.md) | 引擎评审标准+实测数据 | 添加/修改引擎 |
 | [plugins.md](docs/plugins.md) | 插件系统标准 — 开发 API + GitHub 安装流程 + 安全声明 | 开发/安装/调试插件 |
-| [doc-transcript-design.md](docs/doc-transcript-design.md) | Doc 转录原始提案（部分仍有效） | 理解 Word/PPT/EPUB 早期设计意图 |
 | [prompts-inventory.md](docs/prompts-inventory.md) | 全部 LLM 提示词清单 + 审视点清单（9 已修复/8 待处理）+ 温度参数速查 + PromptComposer 标签速查 + Agent SSE 事件流 | 审视/优化 prompt、新增管道需要参考 prompt 风格 |
 | [BUILD.md](docs/BUILD.md) | PyInstaller + Tauri 完整打包流程，常见陷阱 | 打包/发布 |
 | [qianwen-models.md](docs/qianwen-models.md) | 千问平台模型速查（文本/OCR/ASR）含价格+调用方式 | 配模型/选引擎 |
@@ -160,7 +157,7 @@ python tests/test_e2e_smoke.py       # 端到端冒烟测试
 ```bash
 cd frontend
 npm run dev       # 开发服务器，端口 5173，API 代理 → 127.0.0.1:7413
-npm test          # vitest（32 tests: store/theme/api，<1s）
+npm test          # vitest（82 tests: store/theme/api/contentSources 等，<3s）
 npm run build     # 类型检查 + 生产构建
 npm run lint      # oxlint
 ```
@@ -269,7 +266,7 @@ FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_co
 ### 引擎系统
 
 `app/engines/__init__.py` → `EngineRegistry.register()`。三类引擎：
-- **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）→ faster-whisper-small / faster-whisper-medium（本地，CTranslate2）
+- **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）。faster-whisper 已从内置移除（本地转写需自行安装）
 - **OCR**：dashscope-ocr（云端）→ Tesseract（本地便携版，`backend/bin/tesseract/`）
 - **Doc**（全 MIT/BSD，AGPL 引擎不内置）：
   - **pypdfium2**（BSD-3，默认）：C 引擎直读文字 + 嵌入原图，毫秒级。pdfplumber (MIT) 辅助表格提取
@@ -344,7 +341,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **对话文档注入**：`smart_truncate(rawText, 1000)` 按句子边界截断（优先级：`。` > `. ` > `\n\n` > `\n`），不再硬截 `[:1000]`
 
 ### 并发与安全
-- **并发控制**：`ExecutionGuard` 双层信号量 — `cloud_semaphore(5)` 给生成/处理/云端引擎，`local_semaphore(2)` 给本地 CPU 引擎（faster-whisper）。本地慢操作不抢占云端快操作的槽位。
+- **并发控制**：`ExecutionGuard` 双层信号量 — `cloud_semaphore(5)` 给生成/处理/云端引擎，`local_semaphore(2)` 给本地 CPU 引擎（文档解析等）。本地慢操作不抢占云端快操作的槽位。
 - **并发安全**：Store `threading.Lock` 防 RMW 竞态；engine `copy.copy()` 防 api_key 串用
 - **安全加固**：path traversal 防护、上传 2GB 预检、SSRF 防护（`url_security` 共享校验，5 个下载入口全部加固）
 
@@ -399,7 +396,6 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **数学公式**：全局 `remark-math` + `rehype-katex`，LaTeX `$$` 块自动排版
 - **日志系统**：`contextvars.ContextVar` 注入 `request_id` → ASGI middleware，全链路追踪。`MemoryHandler`（`main.py` 中配置）缓存最近 1000 条日志供前端 LogPanel 轮询（`GET /api/logs`），重启后清空
 - **客户端断连监测**：`app/core/disconnect.py` — `@asynccontextmanager` 封装，5 个 SSE 端点复用，新增端点直接 `async with disconnect_watcher(request, cancel_event):`
-- **引擎自动降级开关**：`engine_auto_fallback` 配置项（默认 `False`），设置页一键切换。6 个引擎解析点全部尊重此开关，关闭时引擎失败直接报错，不再静默降级
 - **Tesseract 便携版**：`backend/bin/tesseract/` 内置，启动自动注册并绑定 OCR，开箱即用
 - **EPUB**：ebooklib 章节+骨架提取，前端 EpubSkeletonPanel 章节树，支持选中章节/全书生成
 - **模糊帧过滤**：`frame_quality.py` — Laplacian 方差 + 熵 + 边缘密度评分，视频抽帧时自动丢弃低质量帧
@@ -417,9 +413,9 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **设置页 overlay**：`App.tsx` 中设置页用条件渲染 overlay 而非替换整个 render tree，避免 GenPanel 卸载丢失进行中的任务状态
 - **SSE 断开保护**：`streamGenerate` 追踪 `receivedDoneOrError` 标志，连接异常断开时触发 `onError('连接意外断开')` 防止 `generating` 永不复位
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
-- **取消机制**：6 个端点全部覆盖 — generate/ingest/retranscribe/fact_check/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎（faster-whisper）用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐 segment 检查 `cancel_event.is_set()` 立即停止 CPU
+- **取消机制**：6 个端点全部覆盖 — generate/ingest/retranscribe/fact_check/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（2026-07-10 审查沉淀，2026-07-11 追加）
+## 关键模式（2026-07-10 起持续沉淀，现 31 条）
 
 以下模式是实现中易错的关键约束，新增代码必须遵守。
 
@@ -441,8 +437,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 11. **引擎绑定合并**：保存用增量合并，`null`=不修改，`[]`=清除绑定。
 12. **适配器错误**：失败必须 `raise FatalError`，不要 `return AdapterOutput(engine="none")`。
 13. **markdown→HTML 导出**：移除 `nl2br` 扩展，GFM 特性（删除线/任务列表/表格前空行）用 `_preprocess_gfm()` 正则预处理，Pygments 可选依赖。详见 [export-pipeline.md](docs/export-pipeline.md)。
-14. **引擎图片双模式**：所有 Doc 引擎必须支持 `media_dir` 非空（写文件引用 `![alt](img_0001.png)`）和 `media_dir` 为空（内嵌 base64 `![alt](data:image/...;base64,...)`）两种模式。不可用 `if media_dir` 守卫静默跳过图片提取。已统一：PyMuPDF / PyMuPDF4LLM / MarkItDown / DocxEngine / PptxEngine / EpubEngine。
-15. **本地引擎异步化**：耗时引擎（faster-whisper 等）必须通过 `asyncio.to_thread` 调用以释放事件循环，否则 `_watch_disconnect` 协程被卡死无法 set cancel_event。引擎 `execute()` 内需逐段检查 `cancel_event.is_set()` 并在取消时抛 `FatalError`。新增耗时本地引擎时遵守此模式。
+14. **引擎图片双模式**：所有 Doc 引擎必须支持 `media_dir` 非空（写文件引用 `![alt](img_0001.png)`）和 `media_dir` 为空（内嵌 base64 `![alt](data:image/...;base64,...)`）两种模式。不可用 `if media_dir` 守卫静默跳过图片提取。已统一：Docling / PyPdfium2 / MarkItDown / DocxEngine / PptxEngine / ExcelEngine / EpubEngine。
+15. **本地引擎异步化**：耗时引擎必须通过 `asyncio.to_thread` 调用以释放事件循环，否则 `_watch_disconnect` 协程被卡死无法 set cancel_event。引擎 `execute()` 内需逐段检查 `cancel_event.is_set()` 并在取消时抛 `FatalError`。新增耗时本地引擎时遵守此模式。
 16. **prepare() 参数对称**：`ContentPreparer.prepare()` 的 `send_to_llm` 和 `optimize_images` 参数在双产物路径和单产物路径必须保持一致。**本次已修复**：单产物路径此前漏传，导致「AI 分析图片」在只选 notes 或只选 polished 时静默失效。
 17. **图片优化覆盖率**：`ContentPreparer` 中新增图片路径时，必须确保 `optimize_images` 同时覆盖「嵌入文本」和「发给 LLM」两个方向。**本次已修复**：VL 图片和文档 data URI 发给 LLM 时此前不走优化。
 18. **图片剥离占位符**：base64 剥离后不能用 `![alt]`（Markdown 渲染成 `<img src="">`），改用 `[📷 alt]` 纯文本占位符。否则空 src 触发浏览器重载整页。
@@ -455,7 +451,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 25. **`_watch_disconnect` 标准取消模式**：5 个端点（generate/ingest/retranscribe/chat/process）均使用相同的 `_watch_disconnect` 闭包 + `cancel_event` + `disconnect_task` 模式。新增支持取消的 SSE/长时端点时复用此模式，保持 0.5s 检测间隔和 `finally` 清理逻辑一致。未来可提取为 `app/core/disconnect.py` 公共工具。
 26. **禁止函数内重复导入**：不要在函数内部写已存在于模块顶部的 `from X import Y`。Python 解析到函数内的赋值语句后会将 `Y` 视为整个函数的局部变量——若函数内导入在条件分支中且条件未命中，函数内其他引用会抛出 `UnboundLocalError`。**本次已修复**：process.py:215、model.py:578 的 `EngineRegistry` 阴影导入。新增代码时：函数内仅导入模块级不存在的名称（如打破循环导入），且放在函数顶部无条件路径上。
 27. **remark 插件顺序**：`remarkMath` 必须在 `remarkGfm` 之前。否则公式内的 `_`（下标）和 `<`（`x_{<k}`）会被 GFM 先解释为斜体/HTML 标签 → `$$` 定界符破裂 → KaTeX 渲染失败。**本次已修复**：markdown-plugins.ts。
-28. **`engine_auto_fallback` 语义**：该开关仅控制**引擎失败后是否重试下一个**，不控制扩展名兜底（pdf→pymupdf 等）。扩展名兜底是默认行为，新用户无绑定时必须可用。**本次已修复**：document.py adapt() 中扩展名兜底移出 auto_fallback 条件块。
+28. **引擎绑定只取第一个**：`engine_bindings` 列表只解析第一个可用引擎，失败直接报错（不再多引擎降级尝试）。扩展名兜底（pdf→docling 等）是默认行为，新用户无绑定时必须可用。引擎自动降级开关（`engine_auto_fallback`）已移除，用户换引擎去设置页手动改。LLM 降级（备用模型）是独立语义，仅 process.py 的 LLM→OCR 回退保留。
 29. **`init_engines` 禁止每次启动覆盖配置**：引擎初始化中的 `save_config` 会写全量配置到 config.yaml。若此调用在每次启动都触发，一旦内存中的 config 对象缺失敏感字段（API Key 等），这些字段将永久丢失。**本次已修复**：ASR 绑定逻辑从「强制先删后插重排」改为「仅空列表初始化」，确保后续启动 asr_changed=False。新增引擎/绑定变更时才保存。
 30. **FastAPI Depends 依赖注入**：用 `store=Depends(get_store)` 替代函数体内 `request.app.state.store`，消除样板代码。`app/core/dependencies.py` 提供 `get_store/config/guard/config_lock` 四个依赖。全部 11 个路由已迁移完成（2026-07-30）。
 31. **disconnect_watcher 客户端断连监测**：`app/core/disconnect.py` 提供 `@asynccontextmanager` 封装的 `disconnect_watcher(request, cancel_event)`。替换了 5 个路由中 ~45 行重复的 `_watch_disconnect` 实现，修复了 process.py 资源泄漏和 chat.py 缺 await 两个 bug。新增长时端点时复用此工具。
@@ -480,14 +476,13 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端) + faster-whisper small/medium (本地) |
+| ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端)。faster-whisper 已从内置移除（本地转写需自行安装） |
 | ✅ | OCR 引擎 | dashscope VL (云端) + Tesseract 便携版 (内置 `backend/bin/tesseract/`) |
 | ✅ | Doc 引擎 | pypdfium2 (PDF默认,BSD-3) + docling (PDF布局,MIT) + pdfplumber (表格,MIT) + python-docx/pptx/xlsx + openpyxl + markitdown + ebooklib |
-| ✅ | 引擎绑定 | `engine_bindings` 按子场景配置，doc 拆为 text+image / text-only / scan-ocr / word / ppt / excel / epub |
-| ✅ | 引擎降级开关 | `engine_auto_fallback`，失败直接报错，不再静默 fallback |
-| ✅ | 视频帧提取 | OpenCV 抽帧 + 网格拼接 + 去重 |
+| ✅ | 引擎绑定 | `engine_bindings` 按子场景配置，doc 拆为 pdf / word / ppt / excel / epub |
+| ✅ | 引擎绑定只取第一个 | 绑定解析首个可用引擎，失败直接报错，不再静默降级 |
+| ✅ | 视频帧提取 | ffmpeg 抽帧 + 网格拼接 + 去重（无 opencv 依赖） |
 | ✅ | 模糊帧过滤 | Laplacian 方差 + 熵 + 边缘密度评分，丢弃低质量帧 |
-| ❌ | PDF Layer 2 | 表格数字化/理解（pdfplumber 已成熟提取表格，本项取消） |
 
 ### ✨ LLM 生成
 
@@ -570,17 +565,34 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 路径遍历防护 | `_safe_filename()` + `resolve().relative_to()` 双重校验 |
 | ✅ | 敏感信息脱敏 | LLM Key / Cookie / Tavily Key 统一 `mask_sensitive` + `merge_sensitive` |
 | ✅ | XSS 防护 | Markdown `<a>` 拒绝 `javascript:`/`data:` 协议 |
-| ✅ | 并发控制 | `ExecutionGuard` Semaphore(3)，generate/process/retranscribe 已接入 |
+| ✅ | 并发控制 | `ExecutionGuard` 双层信号量（云端 5 + 本地 2），generate/process/retranscribe 已接入 |
 | ✅ | 上下文窗口可配置 | `addModel()` API + ProviderSettings 展示 |
 | ✅ | 日志全链路追踪 | `contextvars.ContextVar` 注入 `request_id`，前端日志面板 |
 | ✅ | 旧格式错误迁移 | 全部 11 个路由模块统一 AppError 体系，0 处旧格式残留 |
+
+### 🚀 规划中
+
+> 合并自原 pi-docs/08-待做列表 + 09-设计提案（已归档删除）。需求驱动，不预建大教堂。
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ❌ | 语义搜索 | embedding 向量化 + 相似度搜索，「搜意思不搜字」 |
+| ❌ | 更多导入源 | RSS / 播客转录 / 学术论文(arXiv)，复用现有管线 |
+| ❌ | 知识图谱 / 反向链接 | 文档间引用关系可视化，依赖 `#标签` 语法先落地 |
+| ❌ | Markdown 渲染风格预设 | 多套 CSS 变量集（行高/间距/标题比例），与主题六轴正交 |
+| ❌ | remark-tag 标签插件 | `#标签` 语法在笔记中可点击（纯前端） |
+| ❌ | 沉浸阅读模式 | 需参考成熟设计再动手 |
+| ❌ | 组件/功能挂载插件系统 | 有第三方开发者时再做 |
+| ❌ | 后台任务队列 | 批量任务性能遇瓶颈时（arq/Redis） |
+| ❌ | Controller→Service→Repository 分层 | generate.py 继续膨胀时 |
+| ❌ | UI 大重构 | VSCode 式面板，有明确多工作流需求时 |
 
 ### 📊 汇总
 
 | 域 | 完成 | 总计 | 进度 |
 |----|------|------|------|
 | 📥 内容导入 | 8 | 8 | 100% |
-| 📝 转录 & 引擎 | 8 | 9 | 89% |
+| 📝 转录 & 引擎 | 8 | 8 | 100% |
 | ✨ LLM 生成 | 7 | 7 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 5 | 5 | 100% |
@@ -588,4 +600,4 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 📤 导出 | 8 | 9 | 89% |
 | 🎨 前端 UI/UX | 8 | 8 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **65** | **68** | **96%** |
+| **合计** | **65** | **67** | **97%** |

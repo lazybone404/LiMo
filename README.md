@@ -20,9 +20,9 @@
 
 ### 转录引擎
 
-系统内置了 17 个转录引擎，不用装任何东西：
+系统内置多种转录引擎，不用装任何东西：
 
-语音转文字（ASR）：bcut-asr（B 站免费，无需 Key）、dashscope-asr（阿里云）、faster-whisper（本地模型，断网也能用）
+语音转文字（ASR）：bcut-asr（B 站免费，无需 Key）、dashscope-asr（阿里云）
 
 文档提取（Doc）：pymupdf4llm（PDF 推荐，文字+图片+矢量图）、pymupdf（PDF 直读）、python-docx/pptx（Word/PPT）、openpyxl（Excel）、ebooklib（EPUB 章节提取）、pdf-ocr（扫描件）
 

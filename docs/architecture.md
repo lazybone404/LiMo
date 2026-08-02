@@ -14,7 +14,7 @@
 ├─────────────────────────────────────────────────────┤
 │ Layer 1: 转录层                                      │
 │ Engine.bind() → Engine.transcribe() / .process()    │
-│ 13 个内置引擎：ASR×4 / OCR×2 / Doc×7（+插件引擎）    │
+│ 11 个内置引擎：ASR×2 / OCR×2 / Doc×7（+插件引擎）    │
 ├─────────────────────────────────────────────────────┤
 │ Layer 2: 存储层                                      │
 │ Store — 文件系统 + JSON 索引                        │
@@ -84,7 +84,7 @@ class PipelineAdapter(Protocol):
 ### 引擎注册表
 
 ```python
-EngineRegistry.register("asr", "faster-whisper-small", FasterWhisperEngine(...))
+EngineRegistry.register("asr", "bcut-asr", BcutASREngine(...))
 EngineRegistry.register("doc", "docling", DoclingEngine(...))
 EngineRegistry.register("ocr", "tesseract", TesseractEngine(...))
 ```
@@ -98,8 +98,6 @@ EngineRegistry.register("ocr", "tesseract", TesseractEngine(...))
 | 类别 | 引擎 | 类型 | capabilities |
 |------|------|------|-------------|
 | **ASR** | dashscope-asr | 云端 | text |
-| ASR | faster-whisper-small | 本地 | text |
-| ASR | faster-whisper-medium | 本地 | text |
 | ASR | bcut-asr | 免费云 | text |
 | **OCR** | dashscope-ocr | 云端 | text |
 | OCR | tesseract | 本地(便携版 `bin/tesseract/`) | text |
@@ -143,15 +141,30 @@ engine_bindings:
 | .xlsx | `doc:excel` | openpyxl → markitdown |
 | .epub | `doc:epub` | ebooklib → markitdown |
 
-> 绑定值支持三种格式：字符串（`"pymupdf4llm"` 直接查注册表）、整数（engine_models id）、列表（旧格式，取首个）。`init_engines` 启动时清理失效 key 与无效 id（回退默认引擎）。扩展名兜底是默认行为，不受 `engine_auto_fallback` 控制。
+> 绑定值支持三种格式：字符串（`"pymupdf4llm"` 直接查注册表）、整数（engine_models id）、列表（旧格式，取首个）。`init_engines` 启动时清理失效 key 与无效 id（回退默认引擎）。**绑定只取第一个可用引擎，失败直接报错**（引擎自动降级已移除）。扩展名兜底是默认行为。
 
-### 降级开关
+### 五类文档差异总览
 
-`engine_auto_fallback` 控制引擎失败时是否静默降级：
-- `true`（默认）：引擎失败 → 尝试下一个
-- **`false`**：引擎失败 → 直接报错 `FatalError`
+> 合并自原 doc-transcript-design.md（已归档删除）。Word/PPT/Excel/EPUB 的提取策略与产物差异。
 
-6 个解析点全部尊重此开关。
+| 维度 | PDF | Word | PPT | Excel | EPUB |
+|------|-----|------|-----|-------|------|
+| 转录引擎 | docling/pypdfium2 | **python-docx** | python-pptx | openpyxl | ebooklib |
+| 转录产物形态 | 文字+表格+图片 MD | 文字+表格+图片 MD（文档流） | 按 Slide N 要点 MD | 按 sheet 表格 MD | 按章节 MD |
+| 转录主要问题 | OCR错字/表格错位 | 断段/标题层级不准 | 要点碎片化 | 纯数据无叙述 | 内容量巨大 |
+| 内容组织 | 按 Page N | 按文档流（标题层级） | 按 Slide N | 按 sheet | 按章节 |
+| 笔记风格 | IMRaD/商务/教程/会议 | 商务/会议/精要 | 商务/教程/精要 | 数据摘要/详细 | 精要/教程/精简 |
+| 整理版原文重点 | 表格修正+OCR修正+公式 | 段落还原+标题修正+表格格式化 | 要点合并+备注 | 表格规范化 | 章节保留+去噪音 |
+| 特殊格式选项 | 公式集/参考文献 | toc/summary | — | — | 天然TOC |
+| 上下文超限风险 | 低 | 低 | 低 | 中（大表格） | 高 |
+
+**提取策略要点**：Word 按**文档流顺序**组织（无「页」概念，标题层级分段，合并单元格用 `colspan`/`rowspan` 标注，文本框加 `**[文本框]**` 前缀）；PPT 天然页结构，每页标题+要点，演讲者备注是额外上下文；Excel 每 sheet 一张 MD table，笔记本质是数据分析结果；EPUB 内容量大需分章处理。
+
+### 引擎评判标准
+
+> 合并自原 design/engine-standards.md（已归档删除）。判断引擎好坏的唯一标准是**职责是否兑现**。
+
+每个引擎通过 `self.capabilities` 声明自己能做什么：`text`（提取文字按阅读顺序、标题层级保留）、`table`（表格正确转 MD）、`image`（嵌入位图全量提取）、`pdf`/`office`（对应格式支持）。**宣称了就必须做到**，做不到就从 capabilities 里移除——这是及格线。引擎实例 `copy.copy()` 防 api_key 串用（多请求并发时各用各的）。
 
 ### 关键决策
 
@@ -296,23 +309,23 @@ model_id → scene_models.image_process → scene_models.generate → Engine 回
 
 即：LLM 优先（多模态 VL），不可用时降级到引擎（OCR）。
 
-### 事实验证（FactCheck）
+### AI 审核（原事实验证）
 
-三阶段管道：
+四阶段管道（`ReviewEngine`，`app/generation/review.py`）：
 ```
-1. 提取事实断言（LLM 从内容中抽取 claim 列表）
-2. 逐条搜索验证（web search + fetch → 找证据）
-3. LLM 交叉核查（证据 vs 断言 → 真/假/不确定）
-4. 生成 Markdown 报告（FactCheckEngine）
+1. Static Review — 提取 Claim + 分类 Fact/Data/Opinion + 内部一致性 + 风险评分
+2. Verification Planning — LLM 批量决策验证策略
+3. Evidence Collection + Review — 按需搜索 + 多维度评估
+4. AI Review Report — 红黄绿报告 + 可信度 + Action
 ```
 
 验证源优先级：已有 notes → 已有 polished → 原始转录
 
-SSE 流式：`extract → verify (逐条) → report (流式)`
+SSE 流式：`static_review → verify → review → done`
 
 ### 陷阱
 
-- Process 端点无取消机制（应加 `cancel_event`）
+- 全部长时端点（generate/ingest/retranscribe/fact_check/chat/process）复用 `disconnect_watcher` + `cancel_event`（见 `app/core/disconnect.py`）
 - verify 阶段限速（每条搜索间隔 1s）
 
 ---
@@ -332,10 +345,10 @@ SSE 流式：`extract → verify (逐条) → report (流式)`
 ```python
 class ExecutionGuard:
     cloud_semaphore = Semaphore(5)   # generate/process/cloud engines
-    local_semaphore = Semaphore(2)   # local ASR (faster-whisper)
+    local_semaphore = Semaphore(2)   # local CPU engines (doc etc.)
 ```
 
-**设计意图**：本地慢操作（CPU 密集的 faster-whisper）不抢占云端快操作（API 调用）的槽位。
+**设计意图**：本地慢操作（CPU 密集的文档解析）不抢占云端快操作（API 调用）的槽位。
 
 | 操作 | 端点 | 使用信号量 |
 |------|------|-----------|

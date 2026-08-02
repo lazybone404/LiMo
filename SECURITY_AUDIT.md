@@ -1,12 +1,13 @@
 # LiMo 安全漏洞检查报告
 
 > 检查日期：2026-07-08 | 范围：全栈（后端 FastAPI + 前端 React/TypeScript）
+> ⚠️ **时点审计报告**：以下问题多数已修复（标注 ✅），保留用于追溯。当前安全状态见 [CLAUDE.md](CLAUDE.md)「安全」章节。
 
 ---
 
 ## 🔴 HIGH — 敏感信息泄露
 
-### H1. Tavily API Key 未经脱敏返回前端
+### H1. Tavily API Key 未经脱敏返回前端 ✅ 已修复
 
 **文件**: [config.py:41](backend/app/core/config.py#L41)
 
@@ -44,7 +45,7 @@ if data.agent_tools:
 
 ## 🟡 MEDIUM
 
-### M1. Markdown 渲染中 `javascript:` 协议未过滤
+### M1. Markdown 渲染中 `javascript:` 协议未过滤 ✅ 已修复
 
 **文件**: [markdown-components.tsx:123](frontend/src/lib/markdown-components.tsx#L123)
 
@@ -92,7 +93,7 @@ if domain in _COVER_DOMAINS or domain.endswith(".hdslb.com"):
 
 ## 🟢 LOW
 
-### L1. HTML 导出引用外部 CDN 资源
+### L1. HTML 导出引用外部 CDN 资源 ✅ 已修复（统一自包含内联）
 
 **文件**: [export.py:432-437](backend/app/routers/export.py#L432-L437)
 

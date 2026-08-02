@@ -6,6 +6,71 @@
 
 ---
 
+## 2026-08-02 — 文档全面整理：清理过时文档 + 合并有效内容
+
+### 做了什么
+
+**1. 删除 10 个过时/无参考价值文档**（约 3000 行）：
+
+- `docs/system-design-spec.md`（1146 行）— 原始设计蓝图，已标注「实际实现见 CLAUDE.md/STATUS」，技术选型（FunASR/MinerU/PaddleOCR）全部被实际实现取代
+- `docs/doc-transcript-design.md`（256 行）— Doc 转录原始提案，有效部分（五类文档差异总览）已合并进 architecture.md
+- `design/engine-standards.md`（246 行）— 历史引擎评审（pymupdf/faster-whisper 均已移除、绑定 key 已拆分子场景），有效部分（评判标准）已合并进 architecture.md
+- `pi-docs/` 下 7 个文件（竞品分析 FlyMD/memos/immich、架构图、待做列表、设计提案、计划审阅）— 借鉴点已沉淀到 CLAUDE.md；**pi-docs/ 目录保留**（作为 agent 评审文档存档处）
+- 注：删除的架构图/待做列表/设计提案中有价值的**待做项已并入 CLAUDE.md「🚀 规划中」**
+
+**2. 合并有效内容到 [architecture.md](docs/architecture.md)**：
+- 追加「五类文档差异总览」表 + 提取策略要点（Word 文档流 / PPT 按页 / Excel 按 sheet / EPUB 分章）
+- 追加「引擎评判标准」（职责兑现：capabilities 宣称必须做到）
+- 更新过时内容：引擎计数 13→11（ASR×4→×2）、AI 审核三阶段→四阶段（Static Review→Verification→Evidence→Report）、Process 取消陷阱（已全部接入 disconnect_watcher）
+
+**3. CLAUDE.md 更新**：
+- 新增「🚀 规划中」节（语义搜索 / 更多导入源 / 知识图谱 / 渲染风格预设 / remark-tag / 沉浸阅读 / 插件挂载 / 后台队列 / 分层重构 / UI 重构，合并自被删的 08/09）
+- 文档索引移除 4 个被删文档条目（system-design-spec / doc-transcript-design / engine-standards ×2）
+
+**4. 其余文档过时内容清理**：
+- `design/components.md`：faster-whisper/Groq/PaddleOCR/TrOCR 引擎 mockup → bcut-asr/dashscope-asr/tesseract（当前实际引擎）
+- `docs/STATUS.md`：引擎计数 13→11
+- `docs/prompts-inventory.md`：「pymupdf 合并单元格错位」→「引擎合并单元格错位」（pymupdf 已移除）
+- `SECURITY_AUDIT.md`：标注时点审计性质 + H1/M1/L1 已修复状态（追溯用，避免误读为当前漏洞）
+
+### 影响范围
+
+- 纯文档维护，零代码改动
+- 保留文档：CLAUDE.md / README.md / SECURITY_AUDIT.md / docs（architecture/frontend-patterns/export-pipeline/plugins/prompts-inventory/STATUS/BUILD/qianwen-models/user-scenarios/CHANGELOG）/ design（components.md + tokens.css）/ pi-docs（空目录）
+
+---
+
+## 2026-08-02 — 移除 faster-whisper 内置 ASR + 移除引擎自动降级
+
+### 做了什么
+
+**1. faster-whisper 彻底移出内置** — 体积大（模型 464MB~3GB）、CPU 推理慢、GPU 又依赖笨重的 CUDA/cuDNN/cuBLAS 运行时，不适合随安装包分发。移除后默认 ASR 只剩 **bcut-asr**（免费云，无需 Key）+ **dashscope-asr**（需 Key）。
+
+- 抽取 `TranscriptResult` / `TranscriptSegment` 到独立 [transcript.py](backend/app/engines/transcript.py)（原定义在 asr.py 里，删除后 bcut/asr_cloud 的 import 不破）
+- 删除 `FasterWhisperEngine` 注册 + [asr.py](backend/app/engines/asr.py) 整文件
+- 打包清理：spec 移除 `faster_whisper`/`ctranslate2`/`av`/`tokenizers`（保留 `onnxruntime`——magika/rapidocr 依赖）、pyproject 移除 `faster-whisper` 依赖
+- **用户 config.yaml 残留迁移**（防启动后设置页仍有 whisper 条目、绑定后无引擎报错）：`init_engines` 开头清理 `engine_providers` 的 faster-whisper 整组 + `engine_models` 相关条目 + 残留 `engine_auto_fallback` 键，变更计入 save_config 判定落盘；`config.py` 的 `_sync_builtin_models` 废弃 provider 集合加入 faster-whisper（双保险）
+- 示例文档 ASR 表格 / QA 同步更新（本地转写引擎标注「需自行安装」）
+
+**2. 移除引擎自动降级**（`engine_auto_fallback`）— 内置引擎官方测试稳定，绑定列表改为**只取第一个可用引擎，失败直接报错**；用户换引擎去设置页手动改。降级链分工：
+- **引擎**（内置，稳定）→ 移除多引擎尝试循环（image/video/document/process 四个解析点）
+- **LLM**（外部服务，中转站不稳定需常换）→ **保留**备用模型降级语义，独立于引擎体系。process.py 的 LLM 不可用 → OCR 引擎回退**无条件保留**（大模型降级有价值，计划中的「备用模型配置」本次不实现，仅记录方向）
+- **视频字幕回退**（字幕失败 → 下载转写）→ 属网络获取策略回退，**默认执行、不向用户暴露**：去掉 `engine_auto_fallback` 条件无条件回退，warning 弱化为 **debug 日志**
+- `_transcribe` 的 fallback 链循环（`while current is not None`）一并简化：单引擎执行，防未来插件设置 fallback 复活降级行为
+- 报错文案清理：document.py「或在设置中开启引擎自动降级」→「请检查引擎配置或更换引擎」；process.py「自动降级已关闭」文案随分支删除
+- 前端：删除 `getEngineAutoFallback`/`setEngineAutoFallback` API + ProviderSettings 的「引擎自动降级」开关 UI + faster-whisper 删除按钮保护引用
+
+**3. LLM 自动降级列入计划（本次不实现）** — 设计方向：`resolve_model()` 或 `LLMService.call` 层捕获 provider 失败 → 自动切换到配置的备用 provider/模型（如 deepseek 中转失败 → 切 openai 直连）。备用模型是**独立 provider 级配置，不参与 engine_bindings 体系**。需要设置页「备用模型」配置 + 失败判定（网络/429/5xx）+ 切换不重试死循环。
+
+### 影响范围
+
+- 后端：新增 `engines/transcript.py`（数据类抽取）；删除 `engines/asr.py`；改 `engines/__init__.py`（迁移 + 删 whisper 注册）、`adapters/{image,video,document}.py`（绑定只取第一个）、`routers/process.py`（LLM 回退无条件 + 单引擎）、`routers/{model,capabilities,ingest}.py`（删降级 API / provider / 注入）、`core/config.py`（删配置项 + provider + 废弃集合）
+- 前端：`api/settings.ts` + `components/settings/ProviderSettings.tsx`（删降级开关）
+- 测试：`tests/test_engines.py`（删 whisper 断言）、`tests/test_e2e_smoke.py`（删第 8 节降级 toggle）
+- 文档：CLAUDE.md / architecture.md / plugins.md / README.md / STATUS.md / sample_docs 同步
+
+---
+
 ## 2026-08-02 — 预置示例文档「✨ 使用说明」+ 修复全新安装启动崩溃
 
 ### 做了什么

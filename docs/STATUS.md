@@ -41,8 +41,6 @@
 |------|------|------|
 | ASR | bcut-asr | 免费云 |
 | ASR | dashscope-asr | 云端 |
-| ASR | faster-whisper-small | 本地 |
-| ASR | faster-whisper-medium | 本地 |
 | Doc | docling | 本地（ONNX 布局模型） |
 | Doc | pypdfium2 | 本地（BSD-3 C 引擎） |
 | Doc | markitdown | 本地 |
@@ -56,7 +54,7 @@
 
 > Doc 引擎源码已拆分为独立文件：[doc_types.py](../backend/app/engines/doc_types.py)（共享类型）、[doc_markitdown.py](../backend/app/engines/doc_markitdown.py)、[doc_docx.py](../backend/app/engines/doc_docx.py)、[doc_pptx.py](../backend/app/engines/doc_pptx.py)、[doc_excel.py](../backend/app/engines/doc_excel.py)、[docling.py](../backend/app/engines/docling.py)（含 PyPdfium2Engine）、[epub.py](../backend/app/engines/epub.py)。pdfplumber 为 pypdfium2 的表格辅助（不单独注册）。text_only 变体引擎已删除。
 >
-> 引擎计数方式：`EngineRegistry.register()` 调用次数。ASR 4 + Doc 7 + OCR 2 = 13 内置（插件 pymupdf4llm 动态注册，不计数）。
+> 引擎计数方式：`EngineRegistry.register()` 调用次数。ASR 2 + Doc 7 + OCR 2 = 11 内置（插件 pymupdf4llm 动态注册，不计数）。faster-whisper 已从内置移除（本地转写需自行安装）。
 
 ## 管道
 
@@ -137,7 +135,7 @@
 ```
 backend/app/
   adapters/      5 个适配器
-  engines/       13 个内置引擎 + 插件加载器（12 个 .py 文件）
+  engines/       11 个内置引擎 + 插件加载器
   routers/       11 个路由模块
   generation/    生成/处理/AI审核
   agent/         LLM Agent 工具

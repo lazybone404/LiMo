@@ -177,7 +177,7 @@ cd ~/.limo/plugins/<repo>
 
 - **覆盖**：插件与内置引擎同名（category + name）时，插件覆盖内置（用户优先）
 - **绑定**：`engine_bindings` 三种格式都支持插件——字符串（插件名直接查注册表）/ 整数（engine_models id）/ 列表（旧格式）
-- **降级**：`engine_auto_fallback` 同样作用于插件（失败 → 尝试下一个引擎）
+- **失败语义**：绑定只取第一个可用引擎，插件失败直接报错（引擎自动降级已移除，无多引擎尝试链）
 - **fileTypeMap**：插件按 `file_types` 扩展名自动归入对应文件类型下拉，无需改 capabilities 代码
 
 ---
