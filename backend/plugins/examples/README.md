@@ -1,123 +1,51 @@
-# LiMo 引擎插件
+# LiMo 插件参考模板（非官方插件）
 
-把 `.py` 文件放入 `~/.limo/plugins/` 目录，LiMo 启动时自动加载。
+> 定位：**参考实现**，照抄即用。主程序只维护「契约 + 加载机制 + 文档」。
+> 插件由三方开源发布（GitHub 等），用户拷贝到 `~/.limo/plugins/` 自装。
+> **主程序不做任何插件协议判断**（license 仅前端展示）。
 
-> ✅ 本机已部署：pymupdf4llm 进程外插件（`~/.limo/plugins/pymupdf4llm_heavy*`）
-> 已实测：DSpark 论文 PDF → 109K 字符 + 32 张图片，启动自动加载。
+## 两个模板
 
-## 两种模式
+| 模板 | 形态 | 适用 |
+|------|------|------|
+| `pymupdf4llm_plugin.py` + `pymupdf4llm/` | 进程外（`command` + 独立 venv） | 重依赖、长任务（默认主体） |
+| `simple_trusted_plugin.py` | 进程内（`trusted=true`） | 轻量、无重依赖自研代码 |
 
-| 模式 | 适用场景 | 依赖位置 |
-|------|---------|---------|
-| **进程内**（默认） | 简单插件，依赖少 | 主 venv |
-| **进程外**（command 字段） | 重依赖/协议敏感 | 插件自带 `.venv` |
-
----
-
-## 进程内插件示例
-
-### pymupdf4llm_engine.py — ⭐ 推荐，效果最好
-
-**许可证**: AGPL-3.0 ⚠️
+## 安装（进程外模板为例）
 
 ```bash
-pip install pymupdf4llm pymupdf
-cp pymupdf4llm_engine.py ~/.limo/plugins/
-```
+# 1. 拷贝声明文件 + 子目录到 ~/.limo/plugins/
+cp -r pymupdf4llm_plugin.py pymupdf4llm ~/.limo/plugins/
 
-### pymupdf_engine.py — 轻量版
-
-**许可证**: AGPL-3.0 ⚠️
-
-```bash
-pip install pymupdf
-cp pymupdf_engine.py ~/.limo/plugins/
-```
-
----
-
-## 进程外插件示例（依赖隔离）
-
-重依赖的插件推荐用独立 venv，避免污染主环境。
-
-### 目录结构
-
-```
-~/.limo/plugins/
-├── pymupdf4llm_heavy.py              # 顶层声明文件
-└── pymupdf4llm_heavy/                # 子目录
-    ├── engine.py                     # 真正执行的脚本
-    ├── requirements.txt
-    └── .venv/                        # python -m venv .venv
-```
-
-### engine.py
-
-```python
-import sys, json
-
-def main():
-    file_path = sys.argv[sys.argv.index("--input") + 1]
-    config = json.load(sys.stdin)  # {"media_dir": "/tmp/..."}
-    # 用自己 venv 里的库处理...
-    import pymupdf4llm
-    md = pymupdf4llm.to_markdown(file_path,
-        write_images=True,
-        image_path=config.get("media_dir", ""),
-        image_format="png", dpi=150)
-    print(md)
-
-if __name__ == "__main__":
-    main()
-```
-
-### 顶层声明文件（pymupdf4llm_heavy.py）
-
-```python
-from app.engines.plugin_loader import EnginePlugin
-
-class PyMuPDF4LLMHeavy(EnginePlugin):
-    name = "pymupdf4llm"
-    category = "doc"
-    license = "AGPL-3.0"
-    description = "PyMuPDF4LLM 进程外引擎"
-    file_types = [".pdf"]
-
-    # 进程外模式：command 指向子目录的 venv 和 engine.py
-    command = ["pymupdf4llm_heavy/.venv/Scripts/python.exe",
-               "pymupdf4llm_heavy/engine.py"]
-    # Windows: .venv/Scripts/python.exe
-    # Linux/macOS: .venv/bin/python3
-```
-
-### 安装
-
-```bash
-cp pymupdf4llm_heavy.py ~/.limo/plugins/
-mkdir -p ~/.limo/plugins/pymupdf4llm_heavy
-cp engine.py ~/.limo/plugins/pymupdf4llm_heavy/
-cd ~/.limo/plugins/pymupdf4llm_heavy
+# 2. 进入子目录建独立 venv + 装依赖
+cd ~/.limo/plugins/pymupdf4llm
 python -m venv .venv
-.venv/Scripts/pip install pymupdf4llm pymupdf  # Windows
-# .venv/bin/pip install pymupdf4llm pymupdf    # Linux/macOS
+.venv/Scripts/pip install -r requirements.txt    # Windows
+# .venv/bin/pip install -r requirements.txt      # Linux/macOS
+
+# 3. 重启后端（插件只在启动时扫描）
 ```
 
-### 协议
+**验证**：启动日志出现 `Plugin loaded: doc/pymupdf4llm (external)`。
+
+## 进程外契约速查
+
+- **stdin JSON**：`{"file": <路径>, "cancel_file": <取消标记绝对路径>, "config": <插件自身配置>, ...}`（`media_dir` 等消费方参数也会传入）
+- **stdout JSON**：doc/ocr → `{"text", "pages", "is_scanned", ...}`；asr → `{"segments": [{"start","end","text"}]}`
+- **v0 兼容**：argv 仍带 `--input <path>`；stdout 非 JSON 按纯文本处理
+- **取消**：子进程轮询 `cancel_file` 是否出现，出现即退出；主进程宽限 3s 后强杀，`timeout` 兜底
+
+## 发布指南（插件作者）
+
+1. **写插件**：声明文件（`EnginePlugin` 子类）+ 引擎本体（子目录 `engine.py` 或 `process()`），参考上面模板
+2. **开源发布**：推到 GitHub（README 写：安装命令 + 配置说明 + venv 步骤 + 契约版本）
+3. **用户自装**：clone/拷贝到 `~/.limo/plugins/` + 建 venv + 重启
+4. **契约版本**：`PLUGIN_API_VERSION`（当前 `1`），插件声明 `api_version` 对齐
+
+## 门控速查
 
 ```
-LiMo 进程 ──subprocess──→ .venv/python engine.py --input file.pdf
-                          stdin ← {"media_dir": "/tmp/..."}
-                          stdout → Markdown 文本
+command 有值          → 进程外（默认主体）
+trusted=true          → 进程内（显式信任例外，风险自担）
+无 command 且未 trusted → 拒绝加载（日志 WARNING）
 ```
-
----
-
-## 许可证标签
-
-| 颜色 | 含义 | 许可证 |
-|------|------|--------|
-| **黄色** | ⚠️ 有风险 | AGPL-3.0, GPL-3.0, GPL-2.0 |
-| **灰色** | 安全 | MIT, BSD, ISC |
-| **绿色** | 宽松 | Apache-2.0
-
-**注意**: AGPL 插件商用需购买授权，或使用 LiMo 内置的 MIT/BSD 引擎（pypdfium2、docling）。
