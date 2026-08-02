@@ -7,6 +7,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 LiMo — 知识管理系统。输入 URL/文本/文件 → 适配器提取正文 → LLM 生成结构化 Markdown。
 设计哲学：**复杂性不是设计进去的，而是后续插件化长出来的**。
 
+## 设计哲学
+
+### 口子原则（Keep core lean）
+
+**核心系统只保留轻量、稳定、可控的能力；一切重依赖、协议风险、难维护、法律风险的能力通过插件口子接入，官方零维护。**
+
+- **判断「内置 vs 插件」四标准**：依赖重（打爆体积/难迭代）· 有协议问题（AGPL 污染核心）· 跨平台难维护（CPU/GPU/版本）· 有法律风险（平台 ToS/合规）→ **插件化**
+- **已落地实例**：whisper（CUDA 依赖）、Tesseract（280M 便携版 + tessdata）、docling（torch 2GB 无法打包）移出核心；pymupdf4llm（AGPL）进程外插件；核心只留 pypdfium2 / markitdown / dashscope 等轻量稳定引擎
+- **插件口子**：`~/.limo/plugins/` + EnginePlugin v1（默认进程外 + trusted 例外），官方只维护契约 + 加载 + 文档
+
+### 配套：失败显式化（No silent degradation）
+
+口子原则在核心**内部**的延伸——核心不仅外延轻，内在语义也干净：
+- **引擎绑定只取第一个，失败直接报错**（无引擎降级链，2026-08-03 彻底移除）
+- **扫描件 OCR 失败占位带原因**（不做静默妥协）
+- 不做隐式降级是原则；显式重试/备用是独立语义（大模型降级链、用户可配置降级链：后置）
+
 ## 设计语言
 
 LiMo 采用六轴主题系统，所有视觉元素通过 CSS 变量驱动，零硬编码色值：
