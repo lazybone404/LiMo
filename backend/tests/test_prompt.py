@@ -201,4 +201,39 @@ assert '翻译为' not in p, 'translate 选项应已移除'
 assert '全文内容翻译' not in p, 'translate 内容不应出现'
 print('PASS: translate format removed')
 
+# ═══════════════════════════════════════════════════════════════
+# Reference Text：参考文件注入（仅 notes，Excel/polished 不注入）
+# ═══════════════════════════════════════════════════════════════
+
+refs = [{"name": "评论区观点.txt", "content": "观众认为第 3 章讲得很清楚"}]
+
+# ── notes 注入 ──
+p = build_notes_prompt('测试内容', source_type='video', user_notes='参考评论区',
+                       reference_texts=refs)
+assert '<reference_texts>' in p, 'Notes 应注入 reference_texts 节'
+assert '评论区观点.txt' in p, 'reference 节应含来源名'
+assert '仅供背景参考' in p, 'reference 节应声明背景参考语义'
+assert 0 < p.find('<reference_texts>') < p.find('<user_request>'), (
+    'reference_texts 应在 user_request 之前')
+print('PASS: notes injects reference_texts before user_request')
+
+# ── 空 reference_texts → 无该节 ──
+p = build_notes_prompt('测试内容')
+assert '<reference_texts>' not in p, '空 reference_texts 不应产生该节'
+print('PASS: empty reference_texts no section')
+
+# ── polished 不注入（build_polish_prompt 无 reference 参数，天然无该节）──
+p = build_polish_prompt('测试内容', source_type='video')
+assert '<reference_texts>' not in p, 'Polish 不应有 reference_texts 节'
+print('PASS: polish has no reference_texts')
+
+# ── 多段分隔 ──
+p = build_notes_prompt('测试', reference_texts=[
+    {"name": "a.txt", "content": "AAA"},
+    {"name": "b.md", "content": "BBB"},
+])
+assert 'AAA' in p and 'BBB' in p
+assert '---' in p, '多段参考文件应用分隔符'
+print('PASS: multi-reference separated')
+
 print('\nAll prompt tests PASS')

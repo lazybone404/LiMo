@@ -29,6 +29,7 @@ class PromptBuilder:
         style: str = "detailed",
         formats: list[str] | None = None,
         user_notes: str = "",
+        reference_texts: list[dict] | None = None,
     ) -> str:
         """构建单个 prompt。
 
@@ -50,6 +51,7 @@ class PromptBuilder:
                 clean_text, title, style, source_type,
                 formats, user_notes=user_notes,
                 target_language=self.target_language,
+                reference_texts=reference_texts,
             )
 
     def build_both(
@@ -60,6 +62,7 @@ class PromptBuilder:
         style: str = "detailed",
         formats: list[str] | None = None,
         user_notes: str = "",
+        reference_texts: list[dict] | None = None,
     ) -> tuple[str, str]:
         """构建双产物 prompt：(polished_prompt, notes_prompt)。
 
@@ -80,5 +83,6 @@ class PromptBuilder:
             clean_text, title, style, source_type,
             formats, user_notes=user_notes,
             target_language=self.target_language,
+            reference_texts=reference_texts,
         )
         return polished_prompt, notes_prompt

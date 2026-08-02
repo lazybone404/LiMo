@@ -69,6 +69,8 @@ export function GenPanel() {
   const [frameQualityFilter, setFrameQualityFilter] = useState(saved.frameQualityFilter)
   const [userNotes, setUserNotes] = useState(saved.userNotes)
   const [notesExpanded, setNotesExpanded] = useState(saved.notesExpanded ?? false)
+  // 参考文件（仅会话内，不持久化；内容已暂存后端，前端只持 id + 元信息）
+  const [refFile, setRefFile] = useState<{ id: string; name: string; size: number } | null>(null)
   const [streamDisplay, setStreamDisplay] = useState(saved.streamDisplay ?? true)
   const [imageMode, setImageMode] = useState<'extract' | 'table' | 'digitize' | 'understand'>(
     (['extract', 'table', 'digitize', 'understand'].includes(saved.imageMode) ? saved.imageMode : null) || 'extract'
@@ -458,6 +460,18 @@ export function GenPanel() {
   const handleGenerate = () => {
     if (!currentDocId) { setError('请先选择文档'); return }
 
+    // ── 参考文件意图缺失提醒（不强制；确认 → 降级为背景材料）──
+    if (refFile && !userNotes.trim()) {
+      const ok = window.confirm(
+        '已选择参考文件但未填写备注。建议在备注中说明用途（如：请参考其中的观点），否则参考文件将作为背景材料处理。是否继续？',
+      )
+      if (!ok) {
+        setNotesExpanded(true)
+        addToast('请在备注中说明参考文件来源与用途', 'info')
+        return
+      }
+    }
+
     // ── 全局并发上限检查 ──
     const activeGenerates = Object.keys(useStore.getState().processingTasks)
       .filter(k => k.endsWith('__generate'))
@@ -520,6 +534,7 @@ export function GenPanel() {
       formats: formatStr || undefined,
       model_id: selectedModelId || undefined,
       user_notes: userNotes || undefined,
+      reference_ids: refFile ? [refFile.id] : undefined,
       video_understanding: isVideo ? videoUnderstanding : undefined,
       video_interval: isVideo ? videoInterval : undefined,
       grid_cols: isVideo ? gridCols : undefined,
@@ -809,6 +824,7 @@ export function GenPanel() {
                   frameQualityFilter={frameQualityFilter} setFrameQualityFilter={setFrameQualityFilter}
                   userNotes={userNotes} setUserNotes={setUserNotes}
                   notesExpanded={notesExpanded} setNotesExpanded={setNotesExpanded}
+                  refFile={refFile} setRefFile={setRefFile}
                   typeMeta={typeMeta}
                 />
               )}

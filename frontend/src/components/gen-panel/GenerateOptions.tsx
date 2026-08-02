@@ -1,6 +1,9 @@
-import { ChevronDown, Camera } from 'lucide-react'
+import { useState, type ChangeEvent } from 'react'
+import { ChevronDown, Camera, Upload, FileText, X } from 'lucide-react'
 import { normalizeStyle, type TypeMeta } from './constants'
 import { useStore } from '../../store'
+import { saveReference } from '../../api/references'
+import { getErrorMessage } from '../../api/core'
 
 export interface EnabledModel {
   id: number; provider_id: string; model_name: string
@@ -48,13 +51,46 @@ interface Props {
   // 用户备注
   userNotes: string; setUserNotes: (v: string) => void
   notesExpanded: boolean; setNotesExpanded: (v: boolean) => void
+  // 参考文件（内容已暂存后端，前端只持 id + 元信息；仅会话内）
+  refFile: { id: string; name: string; size: number } | null
+  setRefFile: (v: { id: string; name: string; size: number } | null) => void
   // 类型元数据（替代原来 7 个散落的布尔值）
   typeMeta: TypeMeta
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`
+  return `${(bytes / 1024).toFixed(1)}KB`
 }
 
 export function GenerateOptions(props: Props) {
   const p = props
   const caps = useStore(s => s.capabilities)
+  const addToast = useStore(s => s.addToast)
+  const [refExpanded, setRefExpanded] = useState(false)
+  const [refLoading, setRefLoading] = useState(false)
+
+  const handleRefFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    e.target.value = ''  // 允许重复选同一文件
+    if (!f) return
+    if (f.size > 200 * 1024) {
+      addToast('参考文件超过 200KB，请精简后重试', 'error')
+      return
+    }
+    setRefLoading(true)
+    try {
+      const content = await f.text()
+      const { id } = await saveReference(f.name, content)
+      p.setRefFile({ id, name: f.name, size: f.size })
+      addToast(`已选择参考文件 ${f.name}`, 'success')
+    } catch (err) {
+      addToast(`参考文件暂存失败: ${getErrorMessage(err)}`, 'error')
+    } finally {
+      setRefLoading(false)
+    }
+  }
+
   const currentModel = p.enabledModels.find(m => m.id === p.selectedModelId)
   const isPolishedOnly = p.selectedCore.includes('polished') && !p.selectedCore.includes('notes')
   const isBoth = p.selectedCore.includes('notes') && p.selectedCore.includes('polished')
@@ -312,6 +348,40 @@ export function GenerateOptions(props: Props) {
       </div>
     )}
 
+    {/* 参考文件 — 非图片类型均可（内容暂存后端，仅 notes 注入） */}
+    {!p.typeMeta.isImage && <div className="pt-3 border-t border-border-light">
+      <button onClick={() => setRefExpanded(!refExpanded)}
+        className="flex items-center gap-1.5 text-[12px] font-medium text-dimmed hover:text-foreground transition-colors">
+        <ChevronDown size={12} className={`transition-transform ${refExpanded ? '' : '-rotate-90'}`} />
+        <span>参考文件</span>
+        {p.refFile && <span className="w-1.5 h-1.5 rounded-full bg-accent" />}
+      </button>
+      {refExpanded && (
+        <div className="mt-2 space-y-2">
+          <label className="flex items-center justify-center gap-1.5 py-2 px-3 border border-dashed border-border-default rounded-lg cursor-pointer
+            hover:border-accent hover:bg-accent/10 transition-colors text-[11px] text-muted">
+            <Upload size={12} />
+            <span>{refLoading ? '暂存中...' : '选择参考文件（txt / md，≤200KB）'}</span>
+            <input type="file" className="hidden" accept=".txt,.md,.markdown" onChange={handleRefFile} />
+          </label>
+          <p className="text-[10px] text-disabled leading-relaxed">
+            参考资料作为背景注入笔记生成（仅 notes），与原文冲突时以原文/模型判断为准。
+          </p>
+          {p.refFile && (
+            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-surface border border-border-default rounded-lg text-[12px]">
+              <FileText size={12} className="shrink-0 text-muted" />
+              <span className="flex-1 min-w-0 truncate text-dimmed">{p.refFile.name}</span>
+              <span className="text-[10px] text-disabled shrink-0">{formatSize(p.refFile.size)}</span>
+              <button onClick={() => p.setRefFile(null)} aria-label="移除参考文件"
+                className="text-muted hover:text-red-500 shrink-0">
+                <X size={12} />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>}
+
     {/* 用户备注 / 分析指引 — 非图片类型均可 */}
     {!p.typeMeta.isImage && <div className="pt-3 border-t border-border-light">
       <button onClick={() => p.setNotesExpanded(!p.notesExpanded)}
@@ -324,7 +394,9 @@ export function GenerateOptions(props: Props) {
         <textarea value={p.userNotes} onChange={e => p.setUserNotes(e.target.value)}
           placeholder={p.typeMeta.isExcel
             ? '输入你的分析要求：关注哪些指标？需要什么对比维度？有什么假设需要验证？…'
-            : '输入你的备注、上下文或特殊要求，AI 生成时会参考这些信息…'}
+            : p.refFile
+              ? '说明参考文件来源与用途，如：来自视频评论区，请参考其中的讨论角度'
+              : '输入你的备注、上下文或特殊要求，AI 生成时会参考这些信息…'}
           rows={3}
           className="w-full mt-2 px-2.5 py-2 bg-surface border border-border-default rounded-lg text-[12px] outline-none resize-none placeholder:text-disabled" />
       )}

@@ -716,6 +716,26 @@ def build_polish_prompt(
     return PromptComposer.compose(sections)
 
 
+def _format_reference_texts(reference_texts: list[dict] | None) -> str:
+    """参考文件列表 → reference section 文本。逐项标来源，多段用分隔符；空返回 ""。
+
+    注入语义：参考资料仅作背景（来源 + 内容），与原文冲突时以原文/模型判断为准。
+    """
+    if not reference_texts:
+        return ""
+    parts = []
+    for ref in reference_texts:
+        name = ref.get("name", "未命名") if isinstance(ref, dict) else "未命名"
+        content = ref.get("content", "") if isinstance(ref, dict) else ""
+        if not content.strip():
+            continue
+        parts.append(
+            f"用户提供的参考资料（来源：{name}；仅供背景参考，"
+            f"与原文冲突时以原文/模型判断为准）：\n{content}"
+        )
+    return "\n\n---\n\n".join(parts)
+
+
 def build_notes_prompt(
     raw_text: str, title: str = "", style: str = "detailed",
     source_type: str = "text",
@@ -723,6 +743,7 @@ def build_notes_prompt(
     user_notes: str = "",
     target_language: str = "zh-CN",
     video_understanding: bool = False,
+    reference_texts: list[dict] | None = None,
 ) -> str:
     """构建结构化笔记 prompt（模块化格式，含 style 节）"""
     is_doc = source_type in DOC_SOURCE_TYPES
@@ -773,6 +794,7 @@ def build_notes_prompt(
         ("hard_constraints", constraints),
         ("style_preference", style_text),
         ("output_format", output),
+        ("reference_texts", _format_reference_texts(reference_texts)),
         ("user_request", user_notes.strip()),
     ]
     return PromptComposer.compose(sections)

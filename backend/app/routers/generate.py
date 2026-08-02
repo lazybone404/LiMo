@@ -34,6 +34,7 @@ from datetime import datetime
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.core.dependencies import get_store, get_config, get_guard
 from app.core.errors import GenerateError, AppError
+from app.core.reference_store import get_references
 from app.core.disconnect import disconnect_watcher  # 用于重构: 替换下方的 _watch_disconnect
 from app.core import logging as log
 from app.core.model_resolver import resolve_model as _resolve_model, resolve_llm_config
@@ -87,6 +88,7 @@ class GenerateRequest(BaseModel):
     formats: list[str] = []  # ["toc", "link", "screenshot", "summary", "images"]
     model_id: int | None = None
     user_notes: str = ""  # 用户备注
+    reference_ids: list[str] = []  # 参考文件暂存 id（POST /api/references 取得，仅 notes 注入）
     source_type: str = ""  # 文档类型，用于校验字段。空字符串 = 不校验
     # VL 视觉理解参数（source_type=video 专属）
     video_understanding: bool = False
@@ -107,6 +109,11 @@ class GenerateRequest(BaseModel):
     # EPUB 参数（source_type=epub 专属）
     use_skeleton: bool = False
     chapter_indices: list[int] = []
+
+
+def _resolve_reference_texts(ids: list[str]) -> list[dict]:
+    """参考文件暂存 id → [{name, content}]（TTL 内有效；失效/不存在的 id 跳过，不注入）。"""
+    return get_references([r for r in ids if r])
 
 
 def _prepare_epub_text(raw_text: str, use_skeleton: bool, chapter_indices: list[int]) -> str:
@@ -241,6 +248,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     raw_text=epub_text, title=tx.get("title", ""), style=req.style,
                     source_type=tx.get("sourceType", "text"), formats=req.formats,
                     vl_config=vl_config, user_notes=req.user_notes,
+                    reference_texts=_resolve_reference_texts(req.reference_ids),
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                     ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
                 )
@@ -280,6 +288,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     source_type=tx.get("sourceType", "text"), mode="notes",
                     formats=req.formats, vl_config=vl_config,
                     user_notes=req.user_notes,
+                    reference_texts=_resolve_reference_texts(req.reference_ids),
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                     ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
                 )
@@ -342,7 +351,7 @@ class GenerateStreamRequest(BaseModel):
 async def generate_stream(transcript_id: str, request: Request,
                           mode: str = "both", style: str = "detailed",
                           formats: str = "", model_id: int | None = None,
-                          user_notes: str = "",
+                          user_notes: str = "", reference_ids: str = "",
                           video_understanding: bool = False,
                           video_interval: int = 6, grid_cols: int = 2,
                           grid_rows: int = 2, dedupe_enabled: bool = True,
@@ -361,6 +370,9 @@ async def generate_stream(transcript_id: str, request: Request,
     """
     store = request.app.state.store
     config = request.app.state.config
+
+    # 参考文件：逗号分隔的暂存 id → 内容（仅 notes 注入；失效 id 自动跳过）
+    ref_texts = _resolve_reference_texts(reference_ids.split(",") if reference_ids else [])
 
     tx = store.get_transcript(transcript_id)
     if not tx:
@@ -519,7 +531,8 @@ async def generate_stream(transcript_id: str, request: Request,
                     clean_text, tx.get("title", ""), style, source_type,
                     formats=format_list, user_notes=user_notes,
                     target_language=target_language,
-                    video_understanding=video_understanding)
+                    video_understanding=video_understanding,
+                    reference_texts=ref_texts)
 
                 # 续写：把残缺内容加进去
                 if partial_content:
@@ -709,7 +722,8 @@ async def generate_stream(transcript_id: str, request: Request,
                     clean_text, tx.get("title", ""), style, source_type,
                     formats=format_list, user_notes=user_notes,
                     target_language=target_language,
-                    video_understanding=video_understanding)
+                    video_understanding=video_understanding,
+                    reference_texts=ref_texts)
 
             if partial_content:
                 prompt = _build_continue_prompt(prompt, partial_content)

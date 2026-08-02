@@ -94,6 +94,7 @@ class Generator:
         formats: list[str] | None = None,
         vl_config: dict | None = None,
         user_notes: str = "",
+        reference_texts: list[dict] | None = None,
         image_analyze: bool = False,
         image_optimize: bool = False,
         ocr_enabled: bool = False,
@@ -119,6 +120,7 @@ class Generator:
 
         prompt = self._prompts.build(
             source_type, mode, clean_text, title, style, formats, user_notes,
+            reference_texts=reference_texts,
         )
 
         logger.info("Generating %s...", mode)
@@ -151,6 +153,7 @@ class Generator:
         formats: list[str] | None = None,
         vl_config: dict | None = None,
         user_notes: str = "",
+        reference_texts: list[dict] | None = None,
         image_analyze: bool = False,
         image_optimize: bool = False,
         ocr_enabled: bool = False,
@@ -176,6 +179,7 @@ class Generator:
 
         prompt_a, prompt_b = self._prompts.build_both(
             source_type, clean_text, title, style, formats, user_notes,
+            reference_texts=reference_texts,
         )
 
         # Excel 只需一个数据摘要产物（分析报告已移除——LLM 无法做数值分析）

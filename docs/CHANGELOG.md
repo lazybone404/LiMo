@@ -6,6 +6,48 @@
 
 ---
 
+## 2026-08-03 — 生成参考文件（Reference Text）：参考资料注入笔记生成
+
+### 功能
+
+生成笔记时注入参考资料（如视频评论区观点、用户提供的审阅材料）。**官方不内置任何抓取能力**（评论区爬取有法律风险），只做中性能力：接收参考文本 → 注入生成 prompt。依据 [pi-docs/reference-text-建议.md](../../pi-docs/reference-text-建议.md)。
+
+### 设计：暂存 id（评审 P0）
+
+流式 generate 是 **GET**（query string），参考文件 ≤200KB 直接 JSON 进 URL 会数百 KB（代理默认 4-8KB 直接 414）。改为**暂存**：
+
+- `POST /api/references`（`routers/references.py` + `core/reference_store.py`）→ 内存 dict + **TTL 20 分钟**惰性清理 → 返回短 id（`secrets.token_hex(8)`）
+- 生成时传 `reference_ids`（流式 query 逗号分隔 / 非流式 body 数组），后端按 id 取内容注入
+- 进程内存 → 重启自动清空 = **仅会话内不持久化** ✓
+
+### prompt 注入（用户决策：仅 notes）
+
+- 新增 `<reference_texts>` section（置于 `<user_request>` 之前，空则 compose 跳过），文本带「来源 + 仅供背景参考，与原文冲突时以原文/模型判断为准」
+- **仅 `build_notes_prompt` 注入**；polished（忠实整理）与 Excel 摘要**不注入**（用户决策）
+- 两条独立路径都打点：非流式（GenerateRequest → Generator → PromptBuilder）与流式（generate_stream 直接调 build_notes_prompt）
+
+### 前端
+
+- 生成面板「参考文件」区块（用户备注上方）：txt/md 选择器（复用 ImportSection 虚线框样式）、≤200KB 校验、已选展示 + 移除、备注 placeholder 引导
+- **意图缺失确认框**：选文件未填备注 → window.confirm 两路径（确认降级背景 / 取消展开备注）
+- `api/references.ts` + `BaseGenOptions.reference_ids`；参考文件 state 仅会话内（不写 localStorage）
+
+### 涉及
+
+新增 `core/reference_store.py` / `routers/references.py` / `frontend/src/api/references.ts`；修改 generate.py / generator.py / prompt_builder.py / prompt.py / main.py / api/generate.ts / GenPanel.tsx / GenerateOptions.tsx / tests/test_prompt.py
+
+### 范围外（文档 4 确认）
+
+chat 链路参考 · JSON 格式 · 评论爬取（法律风险）· process/fact_check/export · polished/Excel 注入
+
+### 验证
+
+- 后端 6 测试全绿（test_prompt 新增 reference 注入断言：notes 含 section / polished 无 / 空跳过 / 多段分隔）
+- references 冒烟：暂存 id / 存取 / 无效 id 跳过 / TTL 惰性清理
+- 前端 82 测试全绿 + `tsc -b` 类型检查通过
+
+---
+
 ## 2026-08-03 — pymupdf4llm 插件内嵌图片统一 PNG
 
 参考实现 `examples/pymupdf4llm` 去掉 `image_format` 配置项（原可选 png/jpeg），内嵌图片统一 PNG（嵌入式最常见格式）。`engine.py` 固定 `image_format="png"`，与核心引擎 pypdfium2 / 用户侧 heavy 版一致，确保 `_persist_media_images` 的 glob 覆盖无缺口。

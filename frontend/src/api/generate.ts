@@ -13,6 +13,8 @@ export interface BaseGenOptions {
   formats?: string
   model_id?: number
   user_notes?: string
+  /** 参考文件暂存 id（POST /api/references 取得；后端仅 notes 注入） */
+  reference_ids?: string[]
 }
 
 /** source_type=video 专属 */
@@ -99,6 +101,8 @@ export function streamGenerate(
   if (opts.formats) params.set('formats', opts.formats as string)
   if (opts.model_id) params.set('model_id', String(opts.model_id))
   if (opts.user_notes) params.set('user_notes', opts.user_notes as string)
+  const refIds = opts.reference_ids as string[] | undefined
+  if (refIds?.length) params.set('reference_ids', refIds.join(','))
   // 使用 !== undefined 而非 truthiness，确保 false / 0 也能正确传输
   if (opts.video_understanding !== undefined) params.set('video_understanding', String(opts.video_understanding))
   if (opts.video_interval !== undefined) params.set('video_interval', String(opts.video_interval))
