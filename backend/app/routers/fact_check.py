@@ -49,42 +49,49 @@ async def fact_check(transcript_id: str, req: FactCheckRequest, request: Request
 
         llm = LLMService(config, model_id=req.model_id)
 
-        engine = ReviewEngine(llm)
-        fc_res = await engine.run(ctx["content"], verify_mode=req.verify_mode)
+        try:
+            engine = ReviewEngine(llm)
+            fc_res = await engine.run(ctx["content"], verify_mode=req.verify_mode)
 
-        fc_mv = MarkdownView(
-            id=fc_res["id"], transcript_id=transcript_id,
-            content=fc_res["content"], style=Style.DETAILED,
-            mode=GenerateMode.FACT_CHECK, fact_check=True,
-        )
-        from datetime import datetime
-        store.save_markdown(fc_mv, extra={
-            "verified_count": fc_res.get("verified_count", 0),
-            "disputed_count": fc_res.get("disputed_count", 0),
-            "unverifiable_count": fc_res.get("unverifiable_count", 0),
-            "trustworthiness": fc_res.get("trustworthiness", 0),
-            "trustworthiness_label": fc_res.get("trustworthiness_label", ""),
-            "source_mode": ctx["source_mode"],
-            "source_version": ctx["source_version"],
-            "verified_at": datetime.now().isoformat(),
-        })
+            fc_mv = MarkdownView(
+                id=fc_res["id"], transcript_id=transcript_id,
+                content=fc_res["content"], style=Style.DETAILED,
+                mode=GenerateMode.FACT_CHECK, fact_check=True,
+            )
+            from datetime import datetime
+            store.save_markdown(fc_mv, extra={
+                "verified_count": fc_res.get("verified_count", 0),
+                "disputed_count": fc_res.get("disputed_count", 0),
+                "unverifiable_count": fc_res.get("unverifiable_count", 0),
+                "trustworthiness": fc_res.get("trustworthiness", 0),
+                "trustworthiness_label": fc_res.get("trustworthiness_label", ""),
+                "source_mode": ctx["source_mode"],
+                "source_version": ctx["source_version"],
+                "verified_at": datetime.now().isoformat(),
+            })
 
-        log.info("AI Review done", tx_id=transcript_id,
-                 claims=len(fc_res.get("claims", [])),
-                 issues=len(fc_res.get("issues", [])),
-                 trustworthiness=fc_res.get("trustworthiness", 0))
-        return {
-            "id": fc_mv.id, "transcriptId": transcript_id,
-            "content": fc_mv.content,
-            "verified_count": fc_res.get("verified_count", 0),
-            "disputed_count": fc_res.get("disputed_count", 0),
-            "unverifiable_count": fc_res.get("unverifiable_count", 0),
-            "trustworthiness": fc_res.get("trustworthiness", 0),
-            "trustworthiness_label": fc_res.get("trustworthiness_label", ""),
-            "has_content": fc_res.get("has_content", True),
-            "source_mode": ctx["source_mode"],
-            "source_version": ctx["source_version"],
-        }
+            log.info("AI Review done", tx_id=transcript_id,
+                     claims=len(fc_res.get("claims", [])),
+                     issues=len(fc_res.get("issues", [])),
+                     trustworthiness=fc_res.get("trustworthiness", 0))
+            return {
+                "id": fc_mv.id, "transcriptId": transcript_id,
+                "content": fc_mv.content,
+                "verified_count": fc_res.get("verified_count", 0),
+                "disputed_count": fc_res.get("disputed_count", 0),
+                "unverifiable_count": fc_res.get("unverifiable_count", 0),
+                "trustworthiness": fc_res.get("trustworthiness", 0),
+                "trustworthiness_label": fc_res.get("trustworthiness_label", ""),
+                "has_content": fc_res.get("has_content", True),
+                "source_mode": ctx["source_mode"],
+                "source_version": ctx["source_version"],
+            }
+        finally:
+            # 关闭 LLM 连接池（防 httpx client 常驻累积）
+            try:
+                await llm.aclose()
+            except Exception:
+                pass
 
 
 @router.get("/fact-check/{transcript_id}/stream")
@@ -155,6 +162,11 @@ async def fact_check_stream(transcript_id: str, request: Request, store=Depends(
                 yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
         finally:
                 guard.semaphore.release()
+                # 关闭 LLM 连接池（防 httpx client 常驻累积）
+                try:
+                    await llm.aclose()
+                except Exception:
+                    pass
 
     return StreamingResponse(
         merged_stream(),

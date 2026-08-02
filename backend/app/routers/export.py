@@ -1463,6 +1463,17 @@ async def export_custom_stream(
                 temp_path = os.path.join(_TEMP_DIR, f"{temp_id}.zip")
                 with open(temp_path, "wb") as f:
                     f.write(buf.getvalue())
+                # 清理过期临时 ZIP（_TEMP_TTL 此前从未使用 → 未下载/取消的 ZIP 永久残留）
+                try:
+                    _now_ts = datetime.now().timestamp()
+                    for _old in Path(_TEMP_DIR).glob("*.zip"):
+                        try:
+                            if _now_ts - _old.stat().st_mtime > _TEMP_TTL:
+                                _old.unlink()
+                        except OSError:
+                            pass
+                except OSError:
+                    pass
                 queue.put_nowait({
                     "type": "done",
                     "download_url": f"/api/export/download/{temp_id}",
@@ -1503,7 +1514,15 @@ async def export_custom_stream(
 @router.get("/export/download/{temp_id}")
 async def export_download(temp_id: str):
     """下载预构建的临时 ZIP 文件"""
+    # ⚠️ temp_id 直接拼路径：先校验字符集，再 resolve 后限定在 _TEMP_DIR 内，
+    # 否则构造 ..%2F 可路径穿越读取/删除 _TEMP_DIR 外任意 .zip
+    if not re.match(r'^[a-zA-Z0-9_-]+$', temp_id):
+        raise HTTPException(status_code=404, detail="文件不存在或已过期，请重新导出")
     temp_path = os.path.join(_TEMP_DIR, f"{temp_id}.zip")
+    try:
+        Path(temp_path).resolve().relative_to(Path(_TEMP_DIR).resolve())
+    except ValueError:
+        raise HTTPException(status_code=404, detail="文件不存在或已过期，请重新导出")
     if not os.path.exists(temp_path):
         raise HTTPException(status_code=404, detail="文件不存在或已过期，请重新导出")
 

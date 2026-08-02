@@ -4,6 +4,7 @@ LiMo — FastAPI 入口
 
 import logging
 import os as _os
+import re
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
@@ -29,16 +30,26 @@ async def add_request_id(request, call_next):
     request_id.reset(token)
     return response
 
+# CORS Origin 白名单 — 只允许本机与 Tauri 壳来源，阻隔任意网页跨站访问本地后端。
+# - Tauri v2 Windows WebView2: tauri://localhost；macOS/Linux: https://tauri.localhost
+# - 开发 Vite devUrl: http://localhost:<任意端口>（端口通配）
+# - 不加入 Tauri v1 的 http://tauri.localhost（本项目是 v2，加了白名单更宽）
+_CORS_ALLOWED_ORIGIN_RE = re.compile(
+    r'^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://localhost|https://tauri\.localhost)$'
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=".*",   # 回显具体 origin，兼容 credentials（* 与 credentials 互斥）
-    allow_credentials=True,    # Tauri WebView2 需要
+    allow_origin_regex=_CORS_ALLOWED_ORIGIN_RE.pattern,
+    allow_credentials=True,    # Tauri WebView2 需要（仅在白名单 origin 时生效）
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # 兜底：强制 CORS 头 — CORSMiddleware 可能因版本/协议差异漏加
-# 用纯 ASGI 中间件在响应外层确保 origin 回显
+# 用纯 ASGI 中间件在响应外层确保 origin 回显。
+# ⚠️ 仅当 Origin 命中白名单才回显凭证；非白名单 origin 不返回任何 CORS 头，
+# 浏览器据此拦截跨域响应（阻断恶意网页读取本地后端）。
 from starlette.types import ASGIApp, Scope, Receive, Send
 class _ForceCORSMiddleware:
     def __init__(self, app: ASGIApp):
@@ -51,8 +62,10 @@ class _ForceCORSMiddleware:
                 if k == b"origin":
                     req_origin = v
                     break
+            origin_str = req_origin.decode(errors="ignore")
+            allowed = bool(_CORS_ALLOWED_ORIGIN_RE.match(origin_str))
             async def _send(message):
-                if message["type"] == "http.response.start":
+                if message["type"] == "http.response.start" and allowed:
                     # 保留已有 header，追加/覆盖 CORS header
                     headers: list[tuple[bytes, bytes]] = []
                     has_origin = False

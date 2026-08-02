@@ -156,6 +156,12 @@ async def chat(req: ChatRequest, request: Request, store=Depends(get_store), con
     except Exception as e:
         log.exception("Chat failed", error=str(e)[:200])
         raise AppError("CHAT_FAILED", f"对话失败: {str(e)[:200]}") from e
+    finally:
+        # 关闭 LLM 连接池（防 httpx client 常驻累积）
+        try:
+            await llm.aclose()
+        except Exception:
+            pass
 
 
 @router.get("/chat/stream")
@@ -199,14 +205,21 @@ async def chat_stream(
     async def sse_stream():
         full_answer: list[str] = []
         async with disconnect_watcher(request, cancel_event):
-            yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+            try:
+                yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
 
-            async for event in agent.stream_run(system, question, history, cancel_event=cancel_event):
-                if event["type"] == "text":
-                    full_answer.append(event["text"])
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                async for event in agent.stream_run(system, question, history, cancel_event=cancel_event):
+                    if event["type"] == "text":
+                        full_answer.append(event["text"])
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
-            sessions.append_assistant_message(conversation_id, "".join(full_answer))
+                sessions.append_assistant_message(conversation_id, "".join(full_answer))
+            finally:
+                # 关闭 LLM 连接池（防 httpx client 常驻累积）
+                try:
+                    await llm.aclose()
+                except Exception:
+                    pass
 
     return StreamingResponse(
         sse_stream(),

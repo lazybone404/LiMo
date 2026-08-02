@@ -2,6 +2,7 @@
 网页适配器 — URL → 正文提取（trafilatura 主 + html2text 回退）
 """
 
+import asyncio
 import logging
 import re
 
@@ -132,27 +133,30 @@ class WebpageAdapter(PipelineAdapter):
         from app.utils.url_security import validate_url
         validate_url(url)
 
-        # 下载（使用 requests 而非 trafilatura.fetch_url，后者编码处理不稳定）
+        # 下载（to_thread 释放事件循环，否则 requests 最长 30s 阻塞整个后端）
+        # 使用 requests 而非 trafilatura.fetch_url，后者编码处理不稳定
         import requests as _requests
-        try:
-            resp = _requests.get(
-                url,
-                timeout=30,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "zh-CN,zh;q=0.9",
-                    "Accept-Encoding": "gzip, deflate",
-                },
-            )
-            resp.raise_for_status()
-            # 优先使用响应头声明的编码，回退到 UTF-8
-            resp.encoding = resp.apparent_encoding or "utf-8"
-            downloaded = resp.text
-        except Exception as e:
-            # 回退到 trafilatura.fetch_url
-            logger.warning("requests 下载失败 (%s)，回退到 trafilatura.fetch_url", str(e)[:80])
-            downloaded = trafilatura.fetch_url(url)
+        async def _download() -> str:
+            try:
+                resp = _requests.get(
+                    url,
+                    timeout=30,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "zh-CN,zh;q=0.9",
+                        "Accept-Encoding": "gzip, deflate",
+                    },
+                )
+                resp.raise_for_status()
+                # 优先使用响应头声明的编码，回退到 UTF-8
+                resp.encoding = resp.apparent_encoding or "utf-8"
+                return resp.text
+            except Exception as e:
+                # 回退到 trafilatura.fetch_url
+                logger.warning("requests 下载失败 (%s)，回退到 trafilatura.fetch_url", str(e)[:80])
+                return trafilatura.fetch_url(url)
+        downloaded = await asyncio.to_thread(_download)
 
         if not downloaded:
             raise TranscribeError.empty(detail=f"无法下载: {url}")

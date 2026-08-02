@@ -41,6 +41,14 @@ export function streamChat(
   if (docIds.length > 0) params.set('doc_ids', docIds.join(','))
   if (conversationId) params.set('conversation_id', conversationId)
 
+  // 追踪 SSE 是否正常结束（收到 done/error）— 对齐 generate.ts。
+  // 断连时 onDone/onError 都不会触发，若不追踪则聊天 UI 永久卡加载
+  let receivedDoneOrError = false
+  const origOnDone = callbacks.onDone
+  const origOnError = callbacks.onError
+  callbacks.onDone = () => { receivedDoneOrError = true; origOnDone() }
+  callbacks.onError = (msg) => { receivedDoneOrError = true; origOnError(msg) }
+
   fetch(`${BASE}/chat/stream?${params}`, { signal })
     .then(async (response) => {
       if (!response.ok) {
@@ -61,6 +69,10 @@ export function streamChat(
         else if (data.type === 'done') callbacks.onDone()
         else if (data.type === 'error') callbacks.onError(data.message)
       })
+
+      if (!receivedDoneOrError) {
+        callbacks.onError('连接意外断开，请重试')
+      }
     })
     .catch(err => {
       if ((err as Error).name === 'AbortError') return

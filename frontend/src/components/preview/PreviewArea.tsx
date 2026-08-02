@@ -352,7 +352,12 @@ export function PreviewArea() {
         useStore.getState().addToast(msg, 'error')
       },
     })
-  })  // getConfig().then(...) close
+    }).catch(() => {
+      // 配置接口失败 → 必须复位审核状态，否则 factChecking 永久 true、spinner 卡死
+      useStore.getState().setFactChecking(false)
+      useStore.getState().setProcessing(docId + '__fact_check', null)
+      useStore.getState().addToast('配置加载失败，请检查后端是否运行', 'error')
+    })
   }
 
   /** 判断某个 view tab 是否正在处理中（从 TabDef.processingKinds 推导） */
@@ -503,7 +508,9 @@ export function PreviewArea() {
         if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={taskForView(activeView)} />
         if (currentRawText === null) return <p className="text-[13px] text-disabled p-8">加载中...</p>
         return (
+          // key={currentDocId}：切换文档时重置组件内部章节选中状态，防串到新文档
           <EpubSkeletonPanel
+            key={currentDocId || ''}
             rawText={currentRawText}
             transcriptId={currentDocId || ''}
           />

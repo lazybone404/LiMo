@@ -101,6 +101,15 @@ class LLMService:
     def supports_vision(self) -> bool:
         return any("image" in (c or "") for c in self.capabilities)
 
+    async def aclose(self) -> None:
+        """关闭底层 AsyncOpenAI/httpx 连接池 — 每请求新建的 LLMService 用完调用，防常驻累积"""
+        if self._client is not None:
+            try:
+                await self._client.close()
+            except Exception:
+                pass
+            self._client = None
+
     # ── 核心方法 ──
 
     async def stream(

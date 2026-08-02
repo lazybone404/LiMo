@@ -74,10 +74,13 @@ class Generator:
         llm_service: LLMService,
         content_preparer,   # ContentPreparer
         prompt_builder,     # PromptBuilder
+        config: dict | None = None,
     ):
         self._llm = llm_service
         self._prep = content_preparer
         self._prompts = prompt_builder
+        # OCRPreprocessor 需要完整 config（LLM Key / 引擎配置）— 之前未初始化导致 OCR 路径 AttributeError
+        self.config = config or {}
 
     # ── 公开接口 ──
 

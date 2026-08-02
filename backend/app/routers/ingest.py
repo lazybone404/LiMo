@@ -268,10 +268,10 @@ async def _persist_ingest_result(
     if adapter_name == "image" and output.metadata and not output.metadata.cover_url:
         output.metadata.cover_url = f"/api/assets/{tx_id}/original.png"
 
-    # 视频类型：封面缩略图下载到 doc_dir/assets/
+    # 视频类型：封面缩略图下载到 doc_dir/assets/（to_thread 释放事件循环）
     if output.metadata and output.metadata.cover_url:
-        output.metadata.cover_url = _persist_cover_image(
-            output.metadata.cover_url, doc_dir, tx_id)
+        output.metadata.cover_url = await asyncio.to_thread(
+            _persist_cover_image, output.metadata.cover_url, doc_dir, tx_id)
 
     tx = RawTranscript(
         id=tx_id, title=title,
@@ -355,6 +355,12 @@ def _persist_media_file(store: object, raw_text: str) -> str:
         shutil.copy2(src, dest)
         logger.info("持久化: %s → %s (%.1fKB)", src.name, dest, dest.stat().st_size / 1024)
 
+    # 复制完成后删除临时源文件（上传到 store.root/tmp 的副本，防累积）
+    try:
+        src.unlink()
+    except OSError:
+        pass
+
     # 更新 JSON 中的路径
     meta["file_path"] = str(dest)
     return json.dumps(meta, ensure_ascii=False)
@@ -368,6 +374,11 @@ def _persist_media_images(raw_text: str, media_dir: str, doc_dir: Path) -> str:
     """
     media = Path(media_dir)
     if not media.exists() or not any(media.iterdir()):
+        # 无图片 → 清理空临时目录（此前直接 return，每次导入残留一个 mbw_img_* 空目录）
+        try:
+            shutil.rmtree(media, ignore_errors=True)
+        except OSError:
+            pass
         return raw_text
 
     dest_dir = doc_dir / "assets"
@@ -647,10 +658,10 @@ async def retranscribe(tx_id: str, request: Request, store=Depends(get_store), c
         if not tx.get("metadata", {}).get("cover_url") and adapter.name == "image":
             tx.setdefault("metadata", {})["cover_url"] = f"/api/files/{tx_id}/original.png"
 
-        # 视频类型：封面下载到本地（新数据或旧数据首次转本地）
+        # 视频类型：封面下载到本地（新数据或旧数据首次转本地；to_thread 释放事件循环）
         cover_url = tx.get("metadata", {}).get("cover_url", "")
         if cover_url and not cover_url.startswith("/api/files/"):
-            cover_url = _persist_cover_image(cover_url, doc_dir, tx_id)
+            cover_url = await asyncio.to_thread(_persist_cover_image, cover_url, doc_dir, tx_id)
             tx.setdefault("metadata", {})["cover_url"] = cover_url
 
         # 覆盖 rawText（保留已有 markdown 生成结果）
@@ -880,19 +891,22 @@ async def serve_asset(tx_id: str, filename: str, store=Depends(get_store)):
         if ext not in ("png", "jpg", "jpeg", "gif", "webp", "svg"):
             raise HTTPException(status_code=400, detail=f"Unsupported format: {ext}")
 
+        # ⚠️ 校验必须限定在本文档的 assets/ 内，而非整个 data_root —
+        # filename 允许含 / 与 ..，只限 data_root 时越出 doc_dir/assets 可读任意文档图片
         file_path = (doc_dir / "assets" / cand).resolve()
         try:
-            file_path.relative_to(data_root)
+            file_path.relative_to((doc_dir / "assets").resolve())
         except ValueError:
             raise HTTPException(status_code=403, detail="Path traversal denied")
 
         if file_path.exists():
             return FileResponse(str(file_path))
 
-        # Fallback: files/{tx_id}/{filename} (legacy)
-        legacy = (Path(store.root) / "files" / tx_id / cand).resolve()
+        # Fallback: files/{tx_id}/{filename} (legacy) — 同样限定在 {tx_id} 子目录内
+        legacy_base = (Path(store.root) / "files" / tx_id).resolve()
+        legacy = (legacy_base / cand).resolve()
         try:
-            legacy.relative_to(data_root)
+            legacy.relative_to(legacy_base)
         except ValueError:
             raise HTTPException(status_code=403)
         if legacy.exists():

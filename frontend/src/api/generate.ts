@@ -143,6 +143,7 @@ export function streamGenerate(
         } else if (data.type === 'warning') {
           callbacks.onWarning?.(data.message || '部分产物生成失败')
         } else if (data.type === 'cancelled') {
+          receivedDoneOrError = true  // cancelled 是终态 — 否则流结束后误报「连接意外断开」
           callbacks.onCancelled(data.saved_partial || false)
         } else if (data.type === 'reasoning') {
           // 思考链（带 mode 也不走 onChunk——必须在 data.mode 判断之前）

@@ -644,7 +644,12 @@ class ReviewEngine:
             while completed < total:
                 if cancel_event and cancel_event.is_set():
                     break
-                idx, result = await result_queue.get()
+                # ⚠️ get() 无超时 + 等 sem 的任务在 cancel 瞬间直接 return 不放队列
+                # → completed 到不了 total，SSE 永久挂起。加超时每轮重查 cancel_event
+                try:
+                    idx, result = await asyncio.wait_for(result_queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
                 completed += 1
                 if result:
                     results_by_idx[idx] = result

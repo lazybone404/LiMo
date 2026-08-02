@@ -3,6 +3,7 @@
 支持 URL 输入（下载后 OCR）
 """
 
+import asyncio
 import copy
 import json
 import logging
@@ -144,9 +145,9 @@ class ImageAdapter(PipelineAdapter):
 
         path: Path
 
-        # URL → 先下载
+        # URL → 先下载（to_thread 释放事件循环，否则 requests.get 最长 60s 阻塞整个后端）
         if input.type == InputType.URL and input.url:
-            path = self._download_url(input.url, on_progress)
+            path = await asyncio.to_thread(self._download_url, input.url, on_progress)
         else:
             path = Path(input.file_path or "")
 

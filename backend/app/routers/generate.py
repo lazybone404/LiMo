@@ -213,7 +213,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
             preparer = ContentPreparer(str(store.root), llm_config,
                                        doc_dir=str(store._get_doc_dir(transcript_id) or ""))
             prompt_builder = PromptBuilder(target_language=config.get("target_language", "zh-CN"))
-            gen = Generator(llm, preparer, prompt_builder)
+            gen = Generator(llm, preparer, prompt_builder, config=config)
 
             # ── 截图用视频下载（非流式端点也需要，对标流式端点 line 376-396）──
             screenshot_video_path: str | None = None
@@ -246,7 +246,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 )
                 # 非流式端点截图后处理（generator 内部 video_path 可能为 None，此处补处理）
                 if screenshot_video_path:
-                    doc_dir = str(store._get_doc_dir(transcript_id))
+                    doc_dir = str(store._get_doc_dir(transcript_id) or "")
                     polished_mv.content = _post_process_screenshots(
                         polished_mv.content, screenshot_video_path, doc_dir=doc_dir)
                     notes_mv.content = _post_process_screenshots(
@@ -269,7 +269,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 if screenshot_video_path:
                     polished_mv.content = _post_process_screenshots(
                         polished_mv.content, screenshot_video_path,
-                        doc_dir=str(store.root))
+                        doc_dir=str(store._get_doc_dir(transcript_id) or ""))
                 polished_mv.transcript_id = transcript_id
                 store.save_markdown(polished_mv)
                 _auto_title(store, transcript_id, polished_mv.content)
@@ -286,7 +286,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 if screenshot_video_path:
                     notes_mv.content = _post_process_screenshots(
                         notes_mv.content, screenshot_video_path,
-                        doc_dir=str(store.root))
+                        doc_dir=str(store._get_doc_dir(transcript_id) or ""))
                 notes_mv.transcript_id = transcript_id
                 store.save_markdown(notes_mv)
                 log.info("Generate done", tx_id=transcript_id, mode="notes", chars=len(notes_mv.content))
@@ -440,7 +440,8 @@ async def generate_stream(transcript_id: str, request: Request,
 
     epub_text = tx["rawText"]
     if use_skeleton or chapter_indices:
-        ch_list = [int(x.strip()) for x in chapter_indices.split(",") if x.strip()]
+        # ⚠️ 只取数字章节号：含非数字（如 "1,2,abc"）会 int() ValueError → 500
+        ch_list = [int(x.strip()) for x in chapter_indices.split(",") if x.strip().isdigit()]
         epub_text = _prepare_epub_text(tx["rawText"], use_skeleton, ch_list)
 
     format_list = [f.strip() for f in formats.split(",") if f.strip()]
@@ -828,6 +829,11 @@ async def generate_stream(transcript_id: str, request: Request,
                 except OSError:
                     pass
             _active_generations.discard(transcript_id)
+            # 关闭 LLM 连接池（每请求一 LLMService，防 httpx client 常驻累积）
+            try:
+                await llm.aclose()
+            except Exception:
+                pass
             guard.semaphore.release()
 
     return StreamingResponse(

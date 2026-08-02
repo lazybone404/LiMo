@@ -213,6 +213,11 @@ class ContentPreparer:
             )
             image_urls = reader.run()
             logger.info("VL: 生成 %d 张网格图", len(image_urls))
+            # 清理截帧临时目录（帧图 + 网格图可能数百张/数百 MB，防磁盘泄漏）
+            import shutil as _sh
+            for _d in (getattr(reader, 'frame_dir', None), getattr(reader, 'grid_dir', None)):
+                if _d:
+                    _sh.rmtree(_d, ignore_errors=True)
             return image_urls, video_path
         except Exception as e:
             logger.warning("VL: VideoReader 失败: %s，回退纯文本生成", e)
@@ -292,7 +297,13 @@ class ContentPreparer:
             elif m.re is asset_ref_re and doc_dir:
                 # 新格式：assets/xxx → 从 {doc_dir}/assets/ 读取
                 fname = m.group(2)  # e.g. "assets/img_0001.png"
-                file_path = Path(doc_dir) / fname
+                file_path = (Path(doc_dir) / fname).resolve()
+                # ⚠️ 防路径穿越：rawText 来自用户导入内容，可构造 assets/../../config.yaml
+                # 读取 doc_dir 外任意文件 base64 发给 LLM / 写入导出包 — 越界则跳过不读
+                try:
+                    file_path.relative_to(Path(doc_dir).resolve())
+                except ValueError:
+                    return f'[📷 {alt}]' if alt else '[📷 图片]'
                 if file_path.exists():
                     if send_to_llm:
                         import base64

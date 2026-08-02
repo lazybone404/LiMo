@@ -108,7 +108,7 @@ class VideoAdapter(PipelineAdapter):
             pg("fetching_subtitles", "running", "正在拉取B站字幕...", 10)
             try:
                 from .bilibili_subtitle import fetch_subtitles
-                sub = fetch_subtitles(url, cookie)
+                sub = await asyncio.to_thread(fetch_subtitles, url, cookie)
                 if sub and sub.get("segments"):
                     pg("fetching_subtitles", "done", f"字幕获取成功 ({len(sub['segments'])}段)", 30)
                     raw_text = json.dumps({
@@ -138,14 +138,14 @@ class VideoAdapter(PipelineAdapter):
             pg("fetching_subtitles", "running", "正在拉取YouTube字幕...", 10)
             try:
                 from .youtube_subtitle import fetch_subtitles as fetch_yt_subtitles, get_video_info, _extract_video_id
-                # 字幕 + 元数据（传入 cookie + proxy）
+                # 字幕 + 元数据（传入 cookie + proxy；to_thread 释放事件循环）
                 yt_proxy = self._get_proxy()
-                sub = fetch_yt_subtitles(url, cookie, yt_proxy)
+                sub = await asyncio.to_thread(fetch_yt_subtitles, url, cookie, yt_proxy)
                 # 获取视频元数据（用 oEmbed API，零成本，失败不阻塞）
                 vid = _extract_video_id(url)
                 info = {}
                 if vid:
-                    info = get_video_info(vid, yt_proxy)
+                    info = await asyncio.to_thread(get_video_info, vid, yt_proxy)
                 if sub and sub.get("segments"):
                     pg("fetching_subtitles", "done", f"字幕获取成功 ({len(sub['segments'])}段)", 30)
                     raw_text = json.dumps({
@@ -263,6 +263,14 @@ class VideoAdapter(PipelineAdapter):
             if p and p.exists():
                 try: p.unlink()
                 except OSError: pass
+        # 清理下载临时目录（_download 用 mkdtemp 创建，视频已消费 → 删空目录防残留）
+        if video_path:
+            try:
+                _vdir = video_path.parent
+                if _vdir.exists() and not list(_vdir.iterdir()):
+                    _vdir.rmdir()
+            except OSError:
+                pass
 
         # 确定平台
         platform = ""

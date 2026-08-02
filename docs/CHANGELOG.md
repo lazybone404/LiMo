@@ -6,6 +6,49 @@
 
 ---
 
+## 2026-08-02 — 全面漏洞排查与修复（P0 高危 8 项 + 关键 P1 10 项）
+
+### 做了什么
+
+3 个排查 agent 分区扫描（后端逻辑/并发安全/前端）共 55 项发现，去重分级后本次修复 **P0 高危 8 项 + 关键 P1 10 项**；P2 低危（信号量 acquire 在 try 外、mktemp 废弃、死代码、前端次要项、SSRF 重定向加固）记录不修。
+
+**P0 安全（4 项）**：
+- **CORS Origin 白名单**（main.py）— 从 `allow_origin_regex=".*"` 收紧为 `tauri://localhost`/`https://tauri.localhost`/本机 localhost 端口白名单，`_ForceCORSMiddleware` 仅白名单 origin 回显凭证 → 阻隔任意恶意网页跨站读取本地后端（含 `/api/config` 的 Cookie 明文、文档、日志）与 POST 篡改配置
+- **serve_asset 路径遍历**（ingest.py）— 校验收紧到 `doc_dir/assets/`（原只限 data_root，filename 含 `..` 可越出读任意文档图片）
+- **导出 temp_id 路径穿越**（export.py）— 校验字符集 + resolve 后限定 `_TEMP_DIR`（原 `os.path.join` 直拼，`..%2F` 可读/删任意 .zip）
+- **content_preparer asset_ref 任意读** — `assets/../../config.yaml` 越界校验（原未限目录，可读任意文件 base64 发 LLM/导出包）
+
+**P0 必崩（3 项）**：
+- **Generator.config 未初始化**（generator.py）— `__init__` 不设 `self.config`，非流式 `POST /generate` 开 OCR → AttributeError（修复：`__init__` 加 config 参数，generate.py 传参）
+- **process_image_legacy 500**（process.py）— 废弃端点直接调用带 `Depends` 的函数拿到未解析对象（修复：注入 store/config/guard 后转发）
+- **chapter_indices 强转 int**（generate.py）— 非数字章节号 ValueError → 500（修复：`isdigit()` 过滤）
+
+**P0 竞态（2 项）**：
+- **适配器单例竞态**（registry.py + adapters/__init__.py）— `AdapterRegistry` 改存**类**，`route()` 命中前实例化 → 一请求一实例，并发导入的 `cookies`/`_engine_config`/`cancel_event` 不再互相污染
+- **/process 断连任务泄漏**（process.py）— 手写 `_watch_disconnect` 从不 cancel，改复用 `disconnect_watcher` 自动清理
+
+**P0 前端卡死（3 项）**：
+- **streamChat 永久卡加载**（chat.ts）— 缺终态追踪，断连后 onDone/onError 不触发（对齐 generate.ts 的 `receivedDoneOrError`）
+- **handleFactCheck 卡死**（PreviewArea.tsx）— `getConfig().then` 无 `.catch`，配置失败时 `factChecking` 永不复位
+- **streamGenerate 取消误报**（generate.ts）— `cancelled` 不置终态标志 → 取消后误弹「连接意外断开」
+
+**关键 P1（10 项）**：
+- 非流式单产物截图写 `store.root` 错误目录 → 修正为文档目录 + 防御 None
+- review 流式验证死锁（`queue.get()` 无超时 + cancel 瞬间等 sem 任务不放队列）→ 加 `wait_for` 超时
+- EPUB 章节选择串文档 → PreviewArea 渲染加 `key={currentDocId}`
+- 事件循环阻塞：image/webpage 适配器、封面下载、bilibili/youtube 字幕的同步 `requests.get` → 统一 `asyncio.to_thread`
+- 临时资源泄漏：VL 截帧目录（数百 MB）、视频下载临时目录、上传临时源文件、空 media_dir、导出 ZIP 激活 `_TEMP_TTL` 过期清理
+- LLMService.aclose()：generate 流式/chat（流式+非流式）/process/fact_check（流式+非流式）主端点关闭 httpx 连接池
+
+### 影响范围
+
+- 后端：`main.py` · `registry.py` · `adapters/{__init__,video,image,webpage}.py` · `routers/{generate,process,ingest,export,chat,fact_check}.py` · `generation/{generator,review,content_preparer}.py` · `llm/service.py`
+- 前端：`api/{chat,generate}.ts` · `components/preview/{PreviewArea,EpubSkeletonPanel}.tsx`
+- 验证：后端 5 单测全绿 + TestClient 7 项端到端（CORS 白名单/遍历拒绝/temp_id/legacy 不再 500）+ Generator.config + 前端 build + 82 测试全绿
+- 记录不修：P2 低危（见计划文末）
+
+---
+
 ## 2026-08-02 — 整理版原文适度利用 Markdown 排版
 
 ### 做了什么
