@@ -36,6 +36,8 @@ class AdapterRegistry:
 
 
 # -- 引擎注册表 --
+# 统一注册表 + 类别命名空间：EngineRegistry 按 category 分组（doc/ocr/asr…），
+# 未来 adapter:video / tool:search 命名空间插件到达时再扩展键空间（v1 仅 engine 命名空间生效）。
 
 class EngineRegistry:
     """按类型分组，每引擎可声明 fallback"""

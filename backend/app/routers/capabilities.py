@@ -64,6 +64,7 @@ async def capabilities(config=Depends(get_config)):
     existing = {(m["provider_id"], m["model_name"], m["category"]) for m in engine_models}
     seen_names = {(m["category"], m["model_name"]) for m in engine_models}  # 跨来源去重
     import hashlib
+    # 扩展点：新增插件类别在此追加（加载机制本身类别无关，分派骨架按 category 查表）
     ENGINE_CATS = {"asr", "ocr", "doc"}
     for prov in config.get("engine_providers", []):
         for bm in prov.get("builtin_models", []):
@@ -110,16 +111,20 @@ async def capabilities(config=Depends(get_config)):
             engine_options[cat] = []
         caps = engine_caps.get(cat, {}).get(m["model_name"], [])
         desc = _desc_map.get(m["provider_id"], {}).get(m["model_name"], "")
-        # 插件引擎的许可证信息
+        # 插件引擎元数据（is_plugin 判定，不用 bool(_license) — 内置引擎也可能带 license 误标）
         _eng = EngineRegistry.get(cat, m["model_name"])
         _license = getattr(_eng, "license", None) if _eng else None
+        _is_plugin = bool(getattr(_eng, "is_plugin", False)) if _eng else False
         engine_options[cat].append({
             "id": m["id"], "provider": m["provider_id"],
             "name": m["model_name"],
             "desc": desc,
             "capabilities": caps,
             "license": _license,
-            "plugin": bool(_license),
+            "plugin": _is_plugin,
+            "displayName": (getattr(_eng, "display_name", "") or m["model_name"]) if _eng else m["model_name"],
+            "userDesc": getattr(_eng, "user_desc", "") if _eng else "",
+            "configSchema": getattr(_eng, "config_schema", []) if _is_plugin else [],
         })
 
     # 引擎详情：名称 → { supported_modes, capabilities, ... }
