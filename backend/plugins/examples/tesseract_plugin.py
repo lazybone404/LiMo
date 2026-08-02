@@ -1,4 +1,4 @@
-"""Tesseract 本地 OCR 插件 — 参考实现（非官方插件）。
+"""Tesseract 本地 OCR 插件 — 参考实现。
 
 进程外模式：command 指向子目录独立 venv + engine.py，
 engine.py 通过 subprocess 调用插件目录自带的 tesseract.exe（便携版）。

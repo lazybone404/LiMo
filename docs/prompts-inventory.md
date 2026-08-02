@@ -494,7 +494,7 @@ POST /process/{id}
   │     └─ LLMService.call(prompt, image_urls=[data_url], temperature=0.1)
   │
   └─ 3. Engine 回退（LLM 不可用或失败）
-        └─ DashScopeOCREngine → Tesseract 优先级链
+        └─ DashScopeOCREngine（Tesseract 已移除，需三方插件）
 ```
 
 **审视点**（未修复）：

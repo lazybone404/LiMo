@@ -1,11 +1,22 @@
 # 插件系统 — 契约 · 安装 · 发布（EnginePlugin v1）
 
 > 加载器：[plugin_loader.py](../backend/app/engines/plugin_loader.py)，启动时 `init_plugins()` 自动扫描 `~/.limo/plugins/`。
-> 参考模板：[backend/plugins/examples/](../backend/plugins/examples/README.md)（照抄即用，非官方插件；含 pymupdf4llm PDF / tesseract 本地 OCR / trusted 进程内 三种形态）。
+> 参考模板：[backend/plugins/examples/](../backend/plugins/examples/README.md)（照抄即用；含 pymupdf4llm PDF / tesseract 本地 OCR / trusted 进程内 三种形态）。
+
+## 设计初衷
+
+**核心动机：依赖重但效果好的东西，做进核心系统维护难，不如做成插件。**
+
+- **依赖重**：whisper 的 CUDA 运行时、tesseract 便携版、模型文件——打进安装包体积爆炸，还要跟着上游版本迭代维护
+- **协议问题**：AGPL 等协议的工具不能内置，内置就污染核心（license 仅展示，主程序不判断、不管理、不提示）
+- **维护难**：平台差异、用户硬件差异（CPU/GPU）、版本升级——单人维护背不起，插件由用户按需自装，零维护
+- **法律风险**：爬虫/网页抓取类能力（如视频平台数据获取）存在平台 ToS、数据合规等法律风险——**核心系统不做过分的事**（不内置过度抓取能力），用户需要可自行通过插件实现，责任自担
+
+本项目由单人维护，无组织/官方概念。插件系统 = **口子**：核心系统保持轻、稳、可控，留一个接口给有想法、有技术的贡献者——好东西通过插件口子进来。
 
 ## 定位
 
-**插件系统 = 口子**：官方只维护「契约 + 加载机制 + 文档」。不做官方插件、不建市场、不做热重载/签名/失败恢复。
+**插件系统 = 口子**：主程序只维护「契约 + 加载机制 + 文档」。插件不内置、不建市场、不做热重载/签名/失败恢复。
 
 - 插件一律由**三方开源发布**（GitHub 等），用户 clone/拷贝到 `~/.limo/plugins/` 自装
 - **主程序不判断、不管理、不提示任何插件协议**（license 字段仅前端展示，无警告语义）

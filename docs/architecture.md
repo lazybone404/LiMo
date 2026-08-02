@@ -85,8 +85,8 @@ class PipelineAdapter(Protocol):
 
 ```python
 EngineRegistry.register("asr", "bcut-asr", BcutASREngine(...))
-EngineRegistry.register("doc", "docling", DoclingEngine(...))
-EngineRegistry.register("ocr", "tesseract", TesseractEngine(...))
+EngineRegistry.register("doc", "pypdfium2", PyPdfium2Engine(...))
+EngineRegistry.register("ocr", "dashscope-ocr", DashScopeOCREngine(...))
 ```
 
 插件引擎（AGPL 隔离）：`plugin_loader.py` 从 `~/.limo/plugins/` 加载 `EnginePlugin` 声明，进程外 subprocess 模式（command 指向子目录 venv）动态注册进 EngineRegistry，capabilities 的 `fileTypeMap` 按插件 `file_types` 自动追加。
@@ -100,9 +100,7 @@ EngineRegistry.register("ocr", "tesseract", TesseractEngine(...))
 | **ASR** | dashscope-asr | 云端 | text |
 | ASR | bcut-asr | 免费云 | text |
 | **OCR** | dashscope-ocr | 云端 | text |
-| OCR | tesseract | 本地(便携版 `bin/tesseract/`) | text |
-| **Doc** | docling | 本地 | text, table, image, pdf |
-| Doc | pypdfium2 | 本地 | text, table, image, pdf |
+| **Doc** | pypdfium2 | 本地 | text, table, image, pdf |
 | Doc | markitdown | 本地 | text, table, image, office |
 | Doc | python-docx | 本地 | text, table, image, office |
 | Doc | python-pptx | 本地 | text, table, office |
@@ -110,7 +108,7 @@ EngineRegistry.register("ocr", "tesseract", TesseractEngine(...))
 | Doc | ebooklib | 本地 | text (EPUB章节) |
 | Doc (插件) | pymupdf4llm | 进程外 | text, table, image, pdf |
 
-> Doc 引擎源码已拆分为独立文件：`doc_types.py`、`doc_markitdown.py`、`doc_docx.py`、`doc_pptx.py`、`doc_excel.py`、`docling.py`（含 PyPdfium2Engine）、`epub.py`。pdfplumber 为 pypdfium2 的表格辅助，不单独注册。text_only 变体引擎（docling-text/python-docx-text/python-pptx-text）已删除（与完整版重复无意义）。AGPL 引擎不内置，pymupdf4llm 以插件形式加载。
+> Doc 引擎源码已拆分为独立文件：`doc_types.py`、`doc_markitdown.py`、`doc_docx.py`、`doc_pptx.py`、`doc_excel.py`、`docling.py`（含 PyPdfium2Engine）、`epub.py`。pdfplumber 为 pypdfium2 的表格辅助，不单独注册。**DoclingEngine 已移除（2026-08-03，依赖 torch ~2GB 无法打包，打包版一直不可用）**；text_only 变体引擎（docling-text/python-docx-text/python-pptx-text）也已删除（与完整版重复无意义）。AGPL 引擎不内置，pymupdf4llm / tesseract 以插件形式加载。
 
 ### 引擎绑定
 
@@ -119,8 +117,8 @@ EngineRegistry.register("ocr", "tesseract", TesseractEngine(...))
 ```yaml
 engine_bindings:
   asr: dashscope-asr
-  ocr: tesseract
-  doc:pdf: docling
+  ocr: dashscope-ocr
+  doc:pdf: pypdfium2
   doc:word: python-docx
   doc:ppt: python-pptx
   doc:excel: openpyxl
@@ -135,7 +133,7 @@ engine_bindings:
 
 | 扩展名 | 子场景 | 引擎优先级 |
 |--------|--------|-----------|
-| .pdf | `doc:pdf` | 绑定链 → 扩展名兜底 docling |
+| .pdf | `doc:pdf` | 绑定链 → 扩展名兜底 pypdfium2 |
 | .docx | `doc:word` | python-docx → markitdown |
 | .pptx | `doc:ppt` | python-pptx → markitdown |
 | .xlsx | `doc:excel` | openpyxl → markitdown |
@@ -149,7 +147,7 @@ engine_bindings:
 
 | 维度 | PDF | Word | PPT | Excel | EPUB |
 |------|-----|------|-----|-------|------|
-| 转录引擎 | docling/pypdfium2 | **python-docx** | python-pptx | openpyxl | ebooklib |
+| 转录引擎 | pypdfium2 | **python-docx** | python-pptx | openpyxl | ebooklib |
 | 转录产物形态 | 文字+表格+图片 MD | 文字+表格+图片 MD（文档流） | 按 Slide N 要点 MD | 按 sheet 表格 MD | 按章节 MD |
 | 转录主要问题 | OCR错字/表格错位 | 断段/标题层级不准 | 要点碎片化 | 纯数据无叙述 | 内容量巨大 |
 | 内容组织 | 按 Page N | 按文档流（标题层级） | 按 Slide N | 按 sheet | 按章节 |
@@ -169,7 +167,7 @@ engine_bindings:
 ### 关键决策
 
 - **线程安全**：引擎实例 `copy.copy()` 防 api_key 串用（多请求并发时各用各的）
-- **Tesseract 便携版**：`backend/bin/tesseract/` 内置，启动自动注册
+- **Tesseract 移除**：本地 OCR 已从内置移除（2026-08-03，体积修剪 + 插件化），需本地 OCR 走三方插件模板 `examples/tesseract_plugin.py`
 - **模糊帧过滤**：`frame_quality.py` — Laplacian 方差 + 熵 + 边缘密度，丢弃低质量帧
 
 ---

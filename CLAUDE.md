@@ -192,6 +192,7 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 - `COLLECT` 模式（one-dir）：生成 `LiMoBackend.exe` + `_internal/` 目录
 - Tauri `externalBin` 只打包 exe，`resources` 负责 `_internal/`
 - Tauri v2 `externalBin` 自动加平台后缀（如 `-x86_64-pc-windows-msvc.exe`），PyInstaller 输出的 exe 需重命名匹配
+- ⚠️ **PyInstaller `--noconfirm` 重建整个 `bin/LiMoBackend/` 目录**（会删除手动复制的 ffmpeg / externalBin 后缀 exe）——ffmpeg 与带后缀 exe 必须在 PyInstaller 之后、Tauri 之前重新复制
 - 新增 Python 依赖后需同步更新 spec 的 `hiddenimports` 和 `collect_all` 列表
 - **certifi 必须加入 spec**：PyInstaller 打包后 SSL 证书路径丢失，启动时需设 `SSL_CERT_FILE` 环境变量
 - **searxng .git 目录必须清理**：PyInstaller 收集 `bin/searxng/.git` 后 Tauri 构建会因权限错误(os error 5)失败
@@ -269,8 +270,7 @@ FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_co
 - **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）。faster-whisper 已从内置移除（本地转写需自行安装）
 - **OCR**：dashscope-ocr（云端，需 API Key）。**Tesseract 已从内置移除**（2026-08-02，体积修剪 + 插件化方向）——无 dashscope key 时本地 OCR 能力消失，扫描件出占位文本；需本地 OCR 请装三方插件参考模板 `backend/plugins/examples/tesseract_plugin.py`
 - **Doc**（全 MIT/BSD，AGPL 引擎不内置）：
-  - **pypdfium2**（BSD-3，默认）：C 引擎直读文字 + 嵌入原图，毫秒级。pdfplumber (MIT) 辅助表格提取
-  - **docling**（MIT）：ONNX 布局模型，精准标题/表格/矢量图
+  - **pypdfium2**（BSD-3，默认）：C 引擎直读文字 + 嵌入原图，毫秒级。pdfplumber (MIT) 辅助表格提取。**docling 已移除**（2026-08-03，依赖 torch ~2GB 无法打包，打包版一直不可用）
   - **markitdown**（MIT）：Office/EPUB 转 Markdown
   - **python-docx** / **python-pptx** / **openpyxl** / **ebooklib**：各格式专用引擎
 - **插件引擎**：AGPL 引擎（pymupdf4llm）以插件形式进程外加载（`~/.limo/plugins/`，command 指向子目录 venv 隔离依赖），`plugin_loader.py` 动态注册进 EngineRegistry，capabilities 的 fileTypeMap 自动追加
@@ -437,7 +437,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 11. **引擎绑定合并**：保存用增量合并，`null`=不修改，`[]`=清除绑定。
 12. **适配器错误**：失败必须 `raise FatalError`，不要 `return AdapterOutput(engine="none")`。
 13. **markdown→HTML 导出**：移除 `nl2br` 扩展，GFM 特性（删除线/任务列表/表格前空行）用 `_preprocess_gfm()` 正则预处理，Pygments 可选依赖。详见 [export-pipeline.md](docs/export-pipeline.md)。
-14. **引擎图片双模式**：所有 Doc 引擎必须支持 `media_dir` 非空（写文件引用 `![alt](img_0001.png)`）和 `media_dir` 为空（内嵌 base64 `![alt](data:image/...;base64,...)`）两种模式。不可用 `if media_dir` 守卫静默跳过图片提取。已统一：Docling / PyPdfium2 / MarkItDown / DocxEngine / PptxEngine / ExcelEngine / EpubEngine。
+14. **引擎图片双模式**：所有 Doc 引擎必须支持 `media_dir` 非空（写文件引用 `![alt](img_0001.png)`）和 `media_dir` 为空（内嵌 base64 `![alt](data:image/...;base64,...)`）两种模式。不可用 `if media_dir` 守卫静默跳过图片提取。已统一：PyPdfium2 / MarkItDown / DocxEngine / PptxEngine / ExcelEngine / EpubEngine。
 15. **本地引擎异步化**：耗时引擎必须通过 `asyncio.to_thread` 调用以释放事件循环，否则 `_watch_disconnect` 协程被卡死无法 set cancel_event。引擎 `execute()` 内需逐段检查 `cancel_event.is_set()` 并在取消时抛 `FatalError`。新增耗时本地引擎时遵守此模式。
 16. **prepare() 参数对称**：`ContentPreparer.prepare()` 的 `send_to_llm` 和 `optimize_images` 参数在双产物路径和单产物路径必须保持一致。**本次已修复**：单产物路径此前漏传，导致「AI 分析图片」在只选 notes 或只选 polished 时静默失效。
 17. **图片优化覆盖率**：`ContentPreparer` 中新增图片路径时，必须确保 `optimize_images` 同时覆盖「嵌入文本」和「发给 LLM」两个方向。**本次已修复**：VL 图片和文档 data URI 发给 LLM 时此前不走优化。
@@ -451,7 +451,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 25. **`_watch_disconnect` 标准取消模式**：5 个端点（generate/ingest/retranscribe/chat/process）均使用相同的 `_watch_disconnect` 闭包 + `cancel_event` + `disconnect_task` 模式。新增支持取消的 SSE/长时端点时复用此模式，保持 0.5s 检测间隔和 `finally` 清理逻辑一致。未来可提取为 `app/core/disconnect.py` 公共工具。
 26. **禁止函数内重复导入**：不要在函数内部写已存在于模块顶部的 `from X import Y`。Python 解析到函数内的赋值语句后会将 `Y` 视为整个函数的局部变量——若函数内导入在条件分支中且条件未命中，函数内其他引用会抛出 `UnboundLocalError`。**本次已修复**：process.py:215、model.py:578 的 `EngineRegistry` 阴影导入。新增代码时：函数内仅导入模块级不存在的名称（如打破循环导入），且放在函数顶部无条件路径上。
 27. **remark 插件顺序**：`remarkMath` 必须在 `remarkGfm` 之前。否则公式内的 `_`（下标）和 `<`（`x_{<k}`）会被 GFM 先解释为斜体/HTML 标签 → `$$` 定界符破裂 → KaTeX 渲染失败。**本次已修复**：markdown-plugins.ts。
-28. **引擎绑定只取第一个**：`engine_bindings` 列表只解析第一个可用引擎，失败直接报错（不再多引擎降级尝试）。扩展名兜底（pdf→docling 等）是默认行为，新用户无绑定时必须可用。引擎自动降级开关（`engine_auto_fallback`）已移除，用户换引擎去设置页手动改。LLM 降级（备用模型）是独立语义，仅 process.py 的 LLM→OCR 回退保留。
+28. **引擎绑定只取第一个**：`engine_bindings` 列表只解析第一个可用引擎，失败直接报错（不再多引擎降级尝试）。扩展名兜底（pdf→pypdfium2 等）是默认行为，新用户无绑定时必须可用。引擎自动降级开关（`engine_auto_fallback`）已移除，用户换引擎去设置页手动改。LLM 降级（备用模型）是独立语义，仅 process.py 的 LLM→OCR 回退保留。
 29. **`init_engines` 禁止每次启动覆盖配置**：引擎初始化中的 `save_config` 会写全量配置到 config.yaml。若此调用在每次启动都触发，一旦内存中的 config 对象缺失敏感字段（API Key 等），这些字段将永久丢失。**本次已修复**：ASR 绑定逻辑从「强制先删后插重排」改为「仅空列表初始化」，确保后续启动 asr_changed=False。新增引擎/绑定变更时才保存。
 30. **FastAPI Depends 依赖注入**：用 `store=Depends(get_store)` 替代函数体内 `request.app.state.store`，消除样板代码。`app/core/dependencies.py` 提供 `get_store/config/guard/config_lock` 四个依赖。全部 11 个路由已迁移完成（2026-07-30）。
 31. **disconnect_watcher 客户端断连监测**：`app/core/disconnect.py` 提供 `@asynccontextmanager` 封装的 `disconnect_watcher(request, cancel_event)`。替换了 5 个路由中 ~45 行重复的 `_watch_disconnect` 实现，修复了 process.py 资源泄漏和 chat.py 缺 await 两个 bug。新增长时端点时复用此工具。
@@ -480,7 +480,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 |------|------|------|
 | ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端)。faster-whisper 已从内置移除（本地转写需自行安装） |
 | ✅ | OCR 引擎 | dashscope VL (云端)。Tesseract 已从内置移除（需三方插件 `examples/tesseract_plugin.py`） |
-| ✅ | Doc 引擎 | pypdfium2 (PDF默认,BSD-3) + docling (PDF布局,MIT) + pdfplumber (表格,MIT) + python-docx/pptx/xlsx + openpyxl + markitdown + ebooklib |
+| ✅ | Doc 引擎 | pypdfium2 (PDF默认,BSD-3) + pdfplumber (表格,MIT) + python-docx/pptx/xlsx + openpyxl + markitdown + ebooklib（docling 已移除：依赖 torch 无法打包） |
 | ✅ | 引擎绑定 | `engine_bindings` 按子场景配置，doc 拆为 pdf / word / ppt / excel / epub |
 | ✅ | 引擎绑定只取第一个 | 绑定解析首个可用引擎，失败直接报错，不再静默降级 |
 | ✅ | 视频帧提取 | ffmpeg 抽帧 + 网格拼接 + 去重（无 opencv 依赖） |

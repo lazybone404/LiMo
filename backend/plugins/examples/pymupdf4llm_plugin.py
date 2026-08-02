@@ -1,4 +1,4 @@
-"""PyMuPDF4LLM 插件 — 参考实现（非官方插件）。
+"""PyMuPDF4LLM 插件 — 参考实现。
 
 进程外模式：command 指向子目录的独立 venv（依赖隔离）。
 照抄即用：把本文件 + 同名子目录（engine.py + requirements.txt）拷贝到 ~/.limo/plugins/，

@@ -6,6 +6,38 @@
 
 ---
 
+## 2026-08-03 — 移除 DoclingEngine + 体积二次修剪
+
+### 做了什么
+
+**移除 DoclingEngine**（打包版 docling 依赖 torch ~2GB 无法内置，实际一直不可用）：
+- `docling.py` 删 DoclingEngine，保留 PyPdfium2Engine（独立于 docling 包，默认 PDF 引擎不受影响）
+- `init_engines` 删注册 + `_migrate_remove_docling` 迁移（清 builtin_models / engine_models / 指向 docling 的绑定）
+- config / capabilities / document 兜底引擎 docling → pypdfium2
+- spec 移除 docling/docling_parse/rapidocr/huggingface_hub 收集；onnxruntime 保留（magika 文件类型检测需要）
+- `.venv` 卸载 docling 依赖链（torch/transformers/scipy/pandas/sympy/rapidocr/cv2/av/ctranslate2 等 ~1.3G → 398M）
+
+### 行为变更
+
+- **docling 引擎不再提供**（无论打包版还是开发版）。PDF 布局解析回归 pypdfium2（文字+表格+嵌入原图，毫秒级）；需要 docling 式布局/矢量图解析的用户可装三方插件（参考 pymupdf4llm 模板）
+
+### 打包体积累计（本次 + 上次 tesseract 修剪）
+
+| 指标 | 原始 | 现在 | 节省 |
+|------|------|------|------|
+| PyInstaller `_internal` | 955M | 222M | **733M（77%）** |
+| 后端 exe | 67M | 27.6M | 39M |
+| `.venv` 依赖 | ~1.3G | 398M | ~900M |
+| NSIS 安装包 | 345M | 待 tauri build 确认 | — |
+
+### 影响范围
+
+- 代码：`docling.py` / `engines/__init__.py` / `config.py` / `capabilities.py` / `document.py` / `LiMoBackend.spec`
+- 文档：architecture / STATUS（引擎计数 10→9）/ CLAUDE.md / plugins.md
+- 验证：后端 7 测试全绿 + 打包产物冒烟（导入 PDF 走 pypdfium2 正常）+ 关键包保留（numpy/onnxruntime/magika）
+
+---
+
 ## 2026-08-02 — 移除内置 Tesseract + 打包体积修剪
 
 ### 做了什么
