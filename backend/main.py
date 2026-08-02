@@ -31,11 +31,11 @@ async def add_request_id(request, call_next):
     return response
 
 # CORS Origin 白名单 — 只允许本机与 Tauri 壳来源，阻隔任意网页跨站访问本地后端。
-# - Tauri v2 Windows WebView2: tauri://localhost；macOS/Linux: https://tauri.localhost
+# - Tauri v2 生产 WebView2 实际 origin: http://tauri.localhost（Windows 实测）、https://tauri.localhost（macOS/Linux）
+# - 部分平台/custom protocol 用 tauri://localhost
 # - 开发 Vite devUrl: http://localhost:<任意端口>（端口通配）
-# - 不加入 Tauri v1 的 http://tauri.localhost（本项目是 v2，加了白名单更宽）
 _CORS_ALLOWED_ORIGIN_RE = re.compile(
-    r'^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://localhost|https://tauri\.localhost)$'
+    r'^(https?://(localhost|127\.0\.0\.1)(:\d+)?|https?://tauri\.localhost|tauri://localhost)$'
 )
 
 app.add_middleware(
