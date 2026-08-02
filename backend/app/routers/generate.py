@@ -568,12 +568,12 @@ async def generate_stream(transcript_id: str, request: Request,
 
                     for attempt in range(2):
                         try:
-                            # 总超时 300s + chunk 间隔超时 120s：
+                            # 总超时 330s + chunk 间隔超时 150s：
                             # deepseek-v4 思考模式（文档：默认启用，effort=high）思考阶段
                             # 服务端静默不推流（实测首 chunk 后 90s 零数据）——45s 判定会
-                            # 把正常长思考误判为挂起。120s 容忍长思考；推理链 chunk 到达
+                            # 把正常长思考误判为挂起。150s 容忍长思考；推理链 chunk 到达
                             # 时 anext 正常返回（有 reasoning 也在推流），不触发超时。
-                            async with asyncio.timeout(300):
+                            async with asyncio.timeout(330):
                                 _it = llm.stream(
                                     prompt, image_urls=image_urls, cancel_event=cancel_event,
                                     on_reasoning=_reasoning_cb,
@@ -581,7 +581,7 @@ async def generate_stream(transcript_id: str, request: Request,
                                 )
                                 while True:
                                     try:
-                                        chunk = await asyncio.wait_for(anext(_it), timeout=120)
+                                        chunk = await asyncio.wait_for(anext(_it), timeout=150)
                                     except StopAsyncIteration:
                                         break
                                     chunks.append(chunk)
@@ -591,7 +591,7 @@ async def generate_stream(transcript_id: str, request: Request,
                             # 空响应（LLM finish=stop 但 0 chars）→ 重试
                             logger.warning("%s 空响应（第 %d 次），重试", label, attempt + 1)
                         except asyncio.TimeoutError:
-                            err_msg = f"{label} 生成超时（120s 无响应），已中断"
+                            err_msg = f"{label} 生成超时（150s 无响应），已中断"
                             if not chunks and attempt == 0:
                                 # 首次挂起（chunk 未到就断流）→ 重试一次
                                 logger.warning("%s 挂起（第 %d 次），重试", label, attempt + 1)
@@ -735,7 +735,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 async def _reasoning_cb(text: str):
                     _pending_reasoning.append(text)
 
-                async with asyncio.timeout(300):
+                async with asyncio.timeout(330):
                     _it = llm.stream(
                         prompt, image_urls=image_urls, cancel_event=cancel_event,
                         on_reasoning=_reasoning_cb,
@@ -744,7 +744,7 @@ async def generate_stream(transcript_id: str, request: Request,
                     )
                     while True:
                         try:
-                            chunk = await asyncio.wait_for(anext(_it), timeout=120)
+                            chunk = await asyncio.wait_for(anext(_it), timeout=150)
                         except StopAsyncIteration:
                             break
                         if _pending_reasoning:
@@ -753,9 +753,9 @@ async def generate_stream(transcript_id: str, request: Request,
                         all_chunks.append(chunk)
                         yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
             except TimeoutError:
-                # LLM 流式调用挂起（120s 无新 chunk）→ 强制结束，避免前端 isStreaming 卡死。
-                # （与双产物路径的 chunk 间隔判定一致——此前 async for 断流要等满 300s）
-                logger.error("单产物生成超时（120s 无 chunk），强制结束: %s", transcript_id)
+                # LLM 流式调用挂起（150s 无新 chunk）→ 强制结束，避免前端 isStreaming 卡死。
+                # （与双产物路径的 chunk 间隔判定一致——此前 async for 断流要等满 330s）
+                logger.error("单产物生成超时（150s 无 chunk），强制结束: %s", transcript_id)
                 if all_chunks:
                     content = _post_process("".join(all_chunks), format_list,
                                             video_path or screenshot_video_path, source_type, store.root)

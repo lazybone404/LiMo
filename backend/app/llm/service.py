@@ -88,7 +88,7 @@ class LLMService:
                     f"缺少 API Key: provider={self.provider}",
                     provider=self.provider, model=self.model,
                 )
-            kwargs = {"api_key": self.api_key, "timeout": 300.0, "max_retries": 0}
+            kwargs = {"api_key": self.api_key, "timeout": 330.0, "max_retries": 0}
             if self.base_url:
                 kwargs["base_url"] = self.base_url
             self._client = AsyncOpenAI(**kwargs)
