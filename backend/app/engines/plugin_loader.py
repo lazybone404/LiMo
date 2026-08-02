@@ -17,7 +17,9 @@ import importlib.util
 import json
 import logging
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -395,6 +397,124 @@ def init_plugins(config: dict):
 
 # ── 管理 API 辅助（Phase 4 使用）──
 
+# ── 一键安装依赖（进程外插件）──
+
+# 国内镜像源（pip 默认直连 PyPI 慢/易失败；项目全局偏好）
+PIP_MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+
+def _plugin_subdir(adapter) -> Path:
+    """插件执行子目录（声明文件同名的子目录，含 engine.py / requirements.txt / .venv）"""
+    return adapter._plugin_dir / adapter.name
+
+
+def _venv_python(pkg_dir: Path) -> Path:
+    """venv 内 python 可执行文件路径（平台相关）"""
+    if os.name == "nt":
+        return pkg_dir / ".venv" / "Scripts" / "python.exe"
+    return pkg_dir / ".venv" / "bin" / "python3"
+
+
+def _venv_pip(pkg_dir: Path) -> Path:
+    if os.name == "nt":
+        return pkg_dir / ".venv" / "Scripts" / "pip.exe"
+    return pkg_dir / ".venv" / "bin" / "pip"
+
+
+def _deps_installed(adapter) -> bool:
+    """依赖是否已安装（venv python 存在即视为已尝试安装；装没装全由运行时暴露）"""
+    return _venv_python(_plugin_subdir(adapter)).exists()
+
+
+def _has_requirements(adapter) -> bool:
+    """插件子目录是否存在 requirements.txt（进程外插件一键安装的前提）"""
+    return (_plugin_subdir(adapter) / "requirements.txt").exists()
+
+
+def _resolve_venv_base_python() -> Optional[str]:
+    """建 venv 用的 base python 路径。
+
+    源码运行 → 当前后端 python（sys.executable，版本与后端一致）。
+    PyInstaller 打包 → sys.executable 是主程序 exe（不支持 -m venv），改试系统 python：
+      Windows 优先 py launcher（官方安装自带），次选 python——均用 `-V` 验证可执行，
+      防 Microsoft Store 别名（假 python.exe 启动会打开商店，建出损坏 venv）。
+    都不可用 → None（调用方降级引导，不静默失败）。
+    """
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    candidates = ["py", "python"] if os.name == "nt" else ["python3", "python"]
+    for cand in candidates:
+        path = shutil.which(cand)
+        if not path:
+            continue
+        try:
+            subprocess.run(
+                [path, "-V"], check=True, capture_output=True, text=True, encoding="utf-8",
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            return path
+        except (subprocess.CalledProcessError, OSError):
+            continue
+    return None
+
+
+def install_plugin_deps(name: str) -> dict:
+    """一键安装插件依赖：建 venv + pip install（国内镜像源）。
+
+    耗时操作（建 venv + 下载安装），调用方用 asyncio.to_thread 放线程池。
+    失败显式化：返回 {status: "error", error: 原因}，不静默降级。
+    """
+    from app.core.errors import AppError
+
+    entry = PLUGIN_REGISTRY.get(name)
+    if not entry:
+        raise AppError("PLUGIN_NOT_FOUND", f"插件不存在: {name}")
+    adapter = entry["adapter"]
+    pkg_dir = _plugin_subdir(adapter)
+    req = pkg_dir / "requirements.txt"
+    if not req.exists():
+        return {"status": "no-requirements", "python": ""}
+
+    venv_py = _venv_python(pkg_dir)
+    pip = _venv_pip(pkg_dir)
+
+    try:
+        # 1. 建 venv（base python 解析：源码=当前后端 / 打包=系统 python；已存在则跳过）
+        if not venv_py.exists():
+            base_py = _resolve_venv_base_python()
+            if not base_py:
+                return {
+                    "status": "no-python", "python": "",
+                    "error": "未检测到可用的 Python，无法自动创建虚拟环境",
+                    "hint": ("请先安装 Python（python.org/downloads），或手动执行：\n"
+                             "cd ~/.limo/plugins/{name} && python -m venv .venv && "
+                             ".venv/Scripts/pip install -r requirements.txt".format(name=name)),
+                }
+            logger.info("Plugin %s: creating venv (base=%s) at %s", name, base_py, pkg_dir / ".venv")
+            subprocess.run(
+                [base_py, "-m", "venv", str(pkg_dir / ".venv")],
+                check=True, capture_output=True, text=True, encoding="utf-8",
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+        # 2. pip install（镜像源）
+        logger.info("Plugin %s: pip install -r %s (mirror=%s)", name, req.name, PIP_MIRROR)
+        proc = subprocess.run(
+            [str(pip), "install", "-i", PIP_MIRROR, "-r", str(req)],
+            capture_output=True, text=True, encoding="utf-8",
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout or "").strip()[-500:]
+            logger.warning("Plugin %s deps install failed: %s", name, tail[:200])
+            return {"status": "error", "python": str(venv_py),
+                    "error": tail or "pip install 失败，请查看日志"}
+        logger.info("Plugin %s deps installed via %s", name, str(venv_py))
+        return {"status": "ok", "python": str(venv_py)}
+    except Exception as e:
+        logger.warning("Plugin %s deps install exception: %s", name, e)
+        return {"status": "error", "python": str(venv_py), "error": str(e)[:300]}
+
+
 def set_plugin_config(name: str, config: dict) -> None:
     """更新插件配置到内存（下次执行 stdin 即含新 config；落盘由 router 负责）"""
     entry = PLUGIN_REGISTRY.get(name)
@@ -438,6 +558,9 @@ def enumerate_plugins() -> list[dict]:
             "config": adapter.plugin_config,
             "reason": entry.get("reason", ""),
             "execMode": adapter._exec_mode,
+            # 依赖一键安装状态（进程外插件）：requirements.txt 存在？venv 已建？
+            "hasRequirements": _has_requirements(adapter),
+            "depsInstalled": _deps_installed(adapter),
         })
     result.sort(key=lambda p: (p["category"], p["name"]))
     return result

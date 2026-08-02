@@ -6,6 +6,7 @@
 主程序不处理任何插件协议维度（license 仅前端展示）。
 """
 
+import asyncio
 import logging
 from typing import Any
 
@@ -17,6 +18,7 @@ from app.core.errors import AppError
 from app.engines.plugin_loader import (
     PLUGIN_REGISTRY,
     enumerate_plugins,
+    install_plugin_deps,
     set_plugin_config,
     set_plugin_enabled,
     uninstall_plugin,
@@ -86,6 +88,17 @@ async def delete_plugin(name: str, cfg=Depends(get_config_dep), cfg_lock=Depends
         save_config(cfg)
     logger.info("Plugin uninstalled: %s (%s)", name, ", ".join(removed))
     return {"status": "ok", "removed": removed}
+
+
+@router.post("/plugins/{name}/install-deps")
+async def install_deps(name: str):
+    """一键安装插件依赖 — 建 venv + pip install（国内镜像源）。
+
+    耗时操作放线程池（模式 15）；失败显式化：返回 status=error/no-python + 原因/引导。
+    打包版无系统 Python → no-python 降级引导（不静默失败）。
+    """
+    _require_plugin(name)
+    return await asyncio.to_thread(install_plugin_deps, name)
 
 
 @router.put("/plugins/{name}/config")

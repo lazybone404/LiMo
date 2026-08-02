@@ -4,7 +4,7 @@
  */
 import { useState, useEffect, useCallback } from 'react'
 import {
-  listPlugins, setPluginEnabled, deletePlugin, savePluginConfig, restartBackend,
+  listPlugins, setPluginEnabled, deletePlugin, savePluginConfig, restartBackend, installPluginDeps,
   type PluginInfo,
 } from '../../api/plugins'
 import { getErrorMessage } from '../../api/core'
@@ -105,6 +105,28 @@ function ConfigForm({ plugin }: { plugin: PluginInfo }) {
 function PluginCard({ plugin, onChanged }: { plugin: PluginInfo; onChanged: () => void }) {
   const addToast = useStore(s => s.addToast)
   const [busy, setBusy] = useState(false)
+  const [installing, setInstalling] = useState(false)
+  const [installError, setInstallError] = useState<string | null>(null)
+
+  const handleInstallDeps = async () => {
+    setInstalling(true)
+    setInstallError(null)
+    try {
+      const res = await installPluginDeps(plugin.name)
+      if (res.status === 'ok') {
+        addToast('依赖安装成功，重启后端生效', 'success')
+        onChanged()  // 重拉 → depsInstalled 变 true
+      } else if (res.status === 'no-python') {
+        setInstallError(`${res.error}\n${res.hint || ''}`)
+      } else if (res.status === 'error') {
+        setInstallError(`${res.error || '安装失败'}\n\n手动安装：cd ~/.limo/plugins/${plugin.name} && python -m venv .venv && .venv/Scripts/pip install -r requirements.txt`)
+      }
+    } catch (e) {
+      setInstallError(getErrorMessage(e))
+    } finally {
+      setInstalling(false)
+    }
+  }
 
   const toggle = async (enabled: boolean) => {
     setBusy(true)
@@ -183,6 +205,32 @@ function PluginCard({ plugin, onChanged }: { plugin: PluginInfo; onChanged: () =
         </div>
       </div>
       {plugin.enabled && <ConfigForm plugin={plugin} />}
+
+      {/* 依赖一键安装 — 进程外 + 有 requirements.txt */}
+      {plugin.execMode === 'external' && plugin.hasRequirements && (
+        <div className="flex items-start gap-2 pt-3 mt-3 border-t border-border-light">
+          <div className="flex-1 min-w-0">
+            {!plugin.depsInstalled ? (
+              <p className="text-[11px] text-warning leading-relaxed">依赖未安装（venv 未创建），安装后才能使用该引擎。</p>
+            ) : (
+              <p className="text-[11px] text-muted">依赖已安装，可重新安装以修复/升级。</p>
+            )}
+            {installError && (
+              <p className="text-[11px] text-red-500 mt-1 whitespace-pre-line leading-relaxed">{installError}</p>
+            )}
+          </div>
+          <button
+            onClick={handleInstallDeps} disabled={installing}
+            className={`px-3 py-1.5 text-[12px] font-medium rounded-lg border shrink-0 disabled:opacity-40 ${
+              plugin.depsInstalled
+                ? 'text-muted border-border-default hover:bg-surface-hover'
+                : 'bg-warning/15 text-warning border-warning/30 hover:bg-warning/25'
+            }`}
+          >
+            {installing ? '安装中...' : plugin.depsInstalled ? '重新安装' : '一键安装'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

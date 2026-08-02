@@ -48,6 +48,18 @@ chat 链路参考 · JSON 格式 · 评论爬取（法律风险）· process/fac
 
 ---
 
+## 2026-08-03 — 插件依赖一键安装（建 venv + pip 镜像源 + 失败显式化）
+
+用户拖插件到 `~/.limo/plugins/` 后不再需要手动建 venv。前端插件页对「进程外 + 有 requirements.txt」的插件显示「一键安装」：
+
+- **后端**：`install_plugin_deps()`（plugin_loader.py）——建 venv（base python：源码=当前后端 / **PyInstaller 打包=系统 python，Windows 优先 `py` launcher 防 Store 别名**）+ `pip install -i 清华镜像` + `CREATE_NO_WINDOW`；返回 ok / error（stderr 尾部）/ **no-python**（打包版无系统 Python → 降级引导，不静默失败）。enumerate 加 `hasRequirements`/`depsInstalled`
+- **路由**：`POST /api/plugins/{name}/install-deps`（`asyncio.to_thread` 放线程池，模式 15）
+- **前端**：插件卡片依赖状态 + 一键安装/重新安装按钮（失败后半截 venv 不再卡死——depsInstalled=true 时显示「重新安装」灰字）+ 失败原因/手动命令/引导提示
+
+验证：真实安装（requests 镜像源装成功）+ 失败显式（不存在的包 → error + 原因）+ 打包降级三态（frozen 下命中 py launcher / 无 python → no-python）。
+
+---
+
 ## 2026-08-03 — 发布 pymupdf4llm 三方插件仓库（v1.0.0）
 
 首个公开插件仓库 [lazybone404/limo-pymupdf4llm-plugin](https://github.com/lazybone404/limo-pymupdf4llm-plugin)（Public，MIT 插件代码 + AGPL 底层依赖声明，README/Release v1.0.0）。plugins.md 新增「已知三方插件」小节——明确标注发布身份为**三方（非官方维护）**，遵循口子原则：主程序只维护契约 + 加载 + 文档，插件生态由三方发布。

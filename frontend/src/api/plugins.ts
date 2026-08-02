@@ -21,6 +21,10 @@ export interface PluginInfo {
   config: Record<string, unknown>
   reason?: string
   execMode: string | null
+  /** 进程外插件：子目录是否有 requirements.txt（一键安装前提） */
+  hasRequirements: boolean
+  /** 进程外插件：venv 是否已创建（依赖是否已尝试安装） */
+  depsInstalled: boolean
 }
 
 export interface PluginListResponse {
@@ -54,6 +58,21 @@ export async function savePluginConfig(name: string, config: Record<string, unkn
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
+  })
+  return r.json()
+}
+
+export interface InstallDepsResult {
+  status: 'ok' | 'no-requirements' | 'error' | 'no-python'
+  python?: string
+  error?: string
+  hint?: string
+}
+
+/** 一键安装插件依赖（建 venv + pip install 国内镜像源）— 耗时，前端需 loading */
+export async function installPluginDeps(name: string): Promise<InstallDepsResult> {
+  const r = await apiFetch(`${BASE}/plugins/${encodeURIComponent(name)}/install-deps`, {
+    method: 'POST',
   })
   return r.json()
 }
