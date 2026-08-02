@@ -92,8 +92,16 @@ function CodeBlock({ inline, className, children, ...props }: any) {
 
 /** 图片组件 — 加载失败时显示占位符，而非静默隐藏 */
 function MarkdownImage({ src, alt, ...props }: any) {
+  const currentDocId = useStore(s => s.currentDocId)
   const [broken, setBroken] = useState(false)
-  const imgSrc = (typeof src === 'string') ? appUrl(src) : src
+  let imgSrc = (typeof src === 'string') ? appUrl(src) : src
+
+  // 流式 buffer / 转录等未经过后端 rewrite_asset_urls 的内容，图片是
+  // assets/xxx 相对路径 → 补全为 /api/assets/{tx_id}/xxx 才能加载。
+  // 已 rewrite 的 /api/assets/... 与外部 http URL 不受影响。
+  if (typeof imgSrc === 'string' && imgSrc.startsWith('assets/') && currentDocId) {
+    imgSrc = appUrl(`/api/assets/${currentDocId}/${imgSrc.slice('assets/'.length)}`)
+  }
 
   // 空 src 会导致浏览器重新加载整页，不渲染该元素
   if (!imgSrc || imgSrc === '') return null
