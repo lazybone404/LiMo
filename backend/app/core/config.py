@@ -116,6 +116,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "fetch":  {"provider": "trafilatura"},
         "verify_mode": "llm",  # AI 审核默认验证方式: llm（模型知识）| web（联网搜索）
     },
+    # 插件系统（EnginePlugin v1）
+    "plugin_states": {},    # name → bool（false=禁用，重启后生效；未配置默认 enabled）
+    "plugin_configs": {},   # name → dict（插件自身配置，经进程外 stdin JSON config 传给引擎）
     "data_dir": str(Path.home() / ".limo"),
     "log_level": "INFO",
 }

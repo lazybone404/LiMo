@@ -272,7 +272,8 @@ async def health():
 
 
 # 路由（files 在 ingest 之前——/files/{id}/original 比 /files/{id}/{name} 更具体，必须先匹配）
-from app.routers import ingest, generate, fact_check, config as config_router, capabilities, chat, model, process, files, export, conversations
+from app.routers import ingest, generate, fact_check, config as config_router, capabilities, chat, model, process, files, export, conversations, plugins
+app.include_router(plugins.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
 app.include_router(ingest.router, prefix="/api")
 app.include_router(generate.router, prefix="/api")
