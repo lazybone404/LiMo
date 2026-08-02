@@ -48,6 +48,12 @@ chat 链路参考 · JSON 格式 · 评论爬取（法律风险）· process/fac
 
 ---
 
+## 2026-08-03 — 发布 pymupdf4llm 三方插件仓库（v1.0.0）
+
+首个公开插件仓库 [lazybone404/limo-pymupdf4llm-plugin](https://github.com/lazybone404/limo-pymupdf4llm-plugin)（Public，MIT 插件代码 + AGPL 底层依赖声明，README/Release v1.0.0）。plugins.md 新增「已知三方插件」小节——明确标注发布身份为**三方（非官方维护）**，遵循口子原则：主程序只维护契约 + 加载 + 文档，插件生态由三方发布。
+
+---
+
 ## 2026-08-03 — 笔记生成超时各 +30s（chunk 间隔 120→150 / 总超时 300→330）
 
 用户反馈笔记生成挂起时间需延长。三处同步 +30s：
