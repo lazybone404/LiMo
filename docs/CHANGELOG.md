@@ -48,6 +48,12 @@ chat 链路参考 · JSON 格式 · 评论爬取（法律风险）· process/fac
 
 ---
 
+## 2026-08-03 — 参考文件意图缺失提醒防重复：会话内只弹一次
+
+「选文件未填备注」的确认框此前每次生成都弹（每次都点确认的用户被反复打扰，违背文档 2.3「不烦人」）。修复：GenPanel 模块级标记 `refNoNotesPrompted`，**首次**弹（无论确认/取消都先置位），本次会话内不再重复；刷新页面清空（与 refFile 仅会话内不持久化一致）。
+
+---
+
 ## 2026-08-03 — pymupdf4llm 插件内嵌图片统一 PNG
 
 参考实现 `examples/pymupdf4llm` 去掉 `image_format` 配置项（原可选 png/jpeg），内嵌图片统一 PNG（嵌入式最常见格式）。`engine.py` 固定 `image_format="png"`，与核心引擎 pypdfium2 / 用户侧 heavy 版一致，确保 `_persist_media_images` 的 glob 覆盖无缺口。

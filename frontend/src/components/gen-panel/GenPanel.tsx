@@ -14,6 +14,10 @@ import { ImageModeCards } from './ImageModeCards'
 import { EXT_TO_SUBTYPE, getSubScenario, getTypeMeta, normalizeStyle } from './constants'
 import { useTaskRunner } from '../../hooks/useTaskRunner'
 
+// 会话级标记：参考文件意图缺失提醒只弹一次（无论确认/取消，用户已理解机制）
+// 模块级变量 → 刷新页面清空（与 refFile 仅会话内不持久化一致）
+let refNoNotesPrompted = false
+
 const _EMPTY_OBJ: Record<string, any> = {}
 
 export function GenPanel() {
@@ -460,8 +464,9 @@ export function GenPanel() {
   const handleGenerate = () => {
     if (!currentDocId) { setError('请先选择文档'); return }
 
-    // ── 参考文件意图缺失提醒（不强制；确认 → 降级为背景材料）──
-    if (refFile && !userNotes.trim()) {
+    // ── 参考文件意图缺失提醒（会话内只弹一次；确认 → 降级为背景材料）──
+    if (refFile && !userNotes.trim() && !refNoNotesPrompted) {
+      refNoNotesPrompted = true  // 先标记再弹——无论确认/取消，本次会话不再重复打扰
       const ok = window.confirm(
         '已选择参考文件但未填写备注。建议在备注中说明用途（如：请参考其中的观点），否则参考文件将作为背景材料处理。是否继续？',
       )
