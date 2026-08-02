@@ -6,6 +6,43 @@
 
 ---
 
+## 2026-08-03 — 插件管理反馈修复：开关即时翻转 + 待重启徽章 + 重启后端按钮
+
+### 问题
+
+设置页插件**启用/禁用开关点击后完全无变化**，用户不知道是否已生效。
+
+### 根因
+
+`enable/disable` 路由只写 config（`plugin_states`）到磁盘，**未同步 `PLUGIN_REGISTRY` 内存态**——前端点完开关重拉列表，`enabled` 仍是启动时固化的旧值 → 开关视觉纹丝不动。
+
+### 修复
+
+- **后端**：新增 `set_plugin_enabled()` 同步内存态（enable/disable 路由调用），开关即时翻转
+- **后端**：`PLUGIN_REGISTRY` 加 `loaded` 字段（运行时是否已注册进 `EngineRegistry`，仅启动时决定）；`enumerate_plugins()` 返回 `pendingRestart`（`enabled != loaded`）
+- **前端**：卡片显示「待重启」徽章（`重启后生效` / `重启后停用`）——明确告知"期望状态已改，引擎在下次启动时注册/注销"
+- **前端**：设置页加「重启后端」按钮——Tauri 生产调用 Rust `restart_backend_sidecar` + 轮询 `/health` 就绪后重拉插件列表；浏览器 dev 模式提示手动重启
+
+### 决策：不做热加载
+
+用户确认**不做热加载**，保留「重启后生效」干净语义。理由：
+
+1. 进程外插件每次调用都是 spawn 独立子进程，没有"热/冷"之分，热加载只省一个重启
+2. 禁用正在被使用的引擎 → 新请求绑定解析立即失败（隐性），违背「失败显式化」
+3. 热加载 = config / PLUGIN_REGISTRY / EngineRegistry 三方运行时同步 + 竞态，复杂度与收益不成正比
+4. 真实痛点是反馈缺失（开关无变化），已由本次三项增强解决
+
+### 影响范围
+
+`plugin_loader.py` / `routers/plugins.py` / `frontend/src/api/plugins.ts` / `frontend/src/components/settings/PluginSettings.tsx`
+
+### 验证
+
+- 后端 6 个测试全绿；`set_plugin_enabled` + `enumerate` 联动单测通过（enable→True / disable→False / pendingRestart 四场景）
+- 前端 82 测试全绿 + `tsc -b` 类型检查通过
+
+---
+
 ## 2026-08-03 — 设计哲学沉淀：口子原则 + 失败显式化
 
 确立两条设计哲学（写入 [CLAUDE.md](../CLAUDE.md) 与 [architecture.md](../docs/architecture.md)）：

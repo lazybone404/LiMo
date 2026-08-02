@@ -277,7 +277,9 @@ class _PluginEngineAdapter:
 
 
 # ── 插件注册表（Phase 4 管理 API 的数据基础）──
-# name → {adapter, meta, path, source, enabled}
+# name → {adapter, meta, path, source, enabled, loaded}
+#   enabled — config 期望状态（运行时 enable/disable 同步；前端开关位置）
+#   loaded  — 是否已注册进 EngineRegistry（仅启动时决定；enabled != loaded → 待重启生效）
 PLUGIN_REGISTRY: dict[str, dict] = {}
 
 
@@ -347,6 +349,7 @@ def init_plugins(config: dict):
                             "path": str(py_file),
                             "source": "user",
                             "enabled": False,
+                            "loaded": False,
                             "reason": "no-command-no-trusted",
                         }
                         logger.warning(
@@ -362,6 +365,8 @@ def init_plugins(config: dict):
                         "path": str(py_file),
                         "source": "user",
                         "enabled": enabled,
+                        # loaded = 是否已注册进 EngineRegistry（仅在启动时决定；运行时 enable/disable 不改变它）
+                        "loaded": enabled,
                     }
                     if enabled:
                         EngineRegistry.register(instance.category, instance.name, adapter)
@@ -397,6 +402,17 @@ def set_plugin_config(name: str, config: dict) -> None:
         entry["adapter"].plugin_config = dict(config)
 
 
+def set_plugin_enabled(name: str, enabled: bool) -> None:
+    """同步插件启用状态到内存（enable/disable 路由调用）。
+
+    枚举结果立即反映期望状态（前端开关即时翻转）；引擎注册需重启生效。
+    config 落盘由 router 负责。
+    """
+    entry = PLUGIN_REGISTRY.get(name)
+    if entry:
+        entry["enabled"] = bool(enabled)
+
+
 def enumerate_plugins() -> list[dict]:
     """枚举所有已发现插件（含门控拒绝/禁用的），按 name 排序。
 
@@ -416,6 +432,9 @@ def enumerate_plugins() -> list[dict]:
             "configSchema": adapter.config_schema,
             "path": entry.get("path", ""),
             "enabled": entry.get("enabled", False),
+            # loaded = 运行时是否已注册；enabled != loaded → 需重启才生效（前端显示待重启徽章）
+            "loaded": entry.get("loaded", False),
+            "pendingRestart": entry.get("enabled", False) != entry.get("loaded", False),
             "config": adapter.plugin_config,
             "reason": entry.get("reason", ""),
             "execMode": adapter._exec_mode,

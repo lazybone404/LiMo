@@ -14,6 +14,10 @@ export interface PluginInfo {
   configSchema: ConfigField[]
   path: string
   enabled: boolean
+  /** 运行时是否已注册进引擎表（仅启动时决定）；enabled !== loaded → 需重启生效 */
+  loaded: boolean
+  /** enabled !== loaded：开关已改但引擎未注册/未注销，需重启后端 */
+  pendingRestart: boolean
   config: Record<string, unknown>
   reason?: string
   execMode: string | null
@@ -52,4 +56,14 @@ export async function savePluginConfig(name: string, config: Record<string, unkn
     body: JSON.stringify(config),
   })
   return r.json()
+}
+
+/** 重启后端 — 生产 Tauri 调 Rust `restart_backend_sidecar`；浏览器 dev 模式不可用（抛错） */
+export async function restartBackend(): Promise<void> {
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('restart_backend_sidecar')
+  } else {
+    throw new Error('开发模式无法重启后端，请手动重启 uvicorn 进程')
+  }
 }

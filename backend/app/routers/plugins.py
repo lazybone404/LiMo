@@ -18,6 +18,7 @@ from app.engines.plugin_loader import (
     PLUGIN_REGISTRY,
     enumerate_plugins,
     set_plugin_config,
+    set_plugin_enabled,
     uninstall_plugin,
 )
 
@@ -39,21 +40,23 @@ async def list_plugins():
 
 @router.post("/plugins/{name}/enable")
 async def enable_plugin(name: str, cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
-    """启用插件 — 写 plugin_states，重启后生效"""
+    """启用插件 — 写 plugin_states + 同步内存态，重启后引擎注册生效"""
     _require_plugin(name)
     with cfg_lock:
         cfg.setdefault("plugin_states", {})[name] = True
         save_config(cfg)
+    set_plugin_enabled(name, True)
     return {"status": "ok", "restart_required": True}
 
 
 @router.post("/plugins/{name}/disable")
 async def disable_plugin(name: str, cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
-    """禁用插件 — 写 plugin_states，重启后生效"""
+    """禁用插件 — 写 plugin_states + 同步内存态，重启后引擎注销生效"""
     _require_plugin(name)
     with cfg_lock:
         cfg.setdefault("plugin_states", {})[name] = False
         save_config(cfg)
+    set_plugin_enabled(name, False)
     return {"status": "ok", "restart_required": True}
 
 

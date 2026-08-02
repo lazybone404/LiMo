@@ -4,12 +4,12 @@
  */
 import { useState, useEffect, useCallback } from 'react'
 import {
-  listPlugins, setPluginEnabled, deletePlugin, savePluginConfig,
+  listPlugins, setPluginEnabled, deletePlugin, savePluginConfig, restartBackend,
   type PluginInfo,
 } from '../../api/plugins'
 import { getErrorMessage } from '../../api/core'
 import { useStore } from '../../store'
-import { Puzzle, Trash2, Loader2 } from 'lucide-react'
+import { Puzzle, Trash2, Loader2, RefreshCw } from 'lucide-react'
 
 const CAT_LABELS: Record<string, string> = {
   doc: '文档引擎', ocr: '图片识别', asr: '语音转写',
@@ -145,6 +145,11 @@ function PluginCard({ plugin, onChanged }: { plugin: PluginInfo; onChanged: () =
             {plugin.license && (
               <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-surface-hover text-dimmed">{plugin.license}</span>
             )}
+            {plugin.pendingRestart && (
+              <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-warning/15 text-warning">
+                {plugin.enabled ? '重启后生效' : '重启后停用'}
+              </span>
+            )}
             <span className="text-[10px] text-disabled font-mono">{plugin.name}</span>
             {plugin.execMode === 'inproc' && (
               <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-accent/10 text-accent">进程内</span>
@@ -185,6 +190,7 @@ function PluginCard({ plugin, onChanged }: { plugin: PluginInfo; onChanged: () =
 export function PluginSettings() {
   const [plugins, setPlugins] = useState<PluginInfo[]>([])
   const [loading, setLoading] = useState(true)
+  const [restarting, setRestarting] = useState(false)
   const addToast = useStore(s => s.addToast)
 
   const load = useCallback(async () => {
@@ -198,6 +204,31 @@ export function PluginSettings() {
   }, [addToast])
 
   useEffect(() => { load() }, [load])
+
+  /** 重启后端（仅生产 Tauri）：Rust 杀旧进程 spawn 新进程，轮询 /health 就绪后重拉插件列表 */
+  const restart = async () => {
+    setRestarting(true)
+    try {
+      await restartBackend()
+      addToast('后端重启中，等待就绪...', 'info')
+      for (let i = 0; i < 90; i++) {  // 90 × 500ms = 45s（与 App.tsx healthCheck 一致）
+        try {
+          const r = await fetch('http://127.0.0.1:7413/health')
+          if (r.ok) {
+            addToast('后端已重启，插件状态生效', 'success')
+            await load()
+            return
+          }
+        } catch { /* 后端未就绪，继续轮询 */ }
+        await new Promise(res => setTimeout(res, 500))
+      }
+      addToast('后端重启超时，请检查进程', 'info')
+    } catch (e) {
+      addToast(`重启失败: ${getErrorMessage(e)}`, 'error')
+    } finally {
+      setRestarting(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -231,7 +262,14 @@ export function PluginSettings() {
     <div className="space-y-6">
       <div className="flex items-center gap-2 px-3 py-2 rounded-[10px] bg-accent/5 text-[12px] text-dimmed">
         <Puzzle size={14} className="shrink-0 mt-0.5 text-accent" />
-        <span>插件由三方发布，主程序只维护契约与加载。启用/禁用重启后生效；卸载删除插件目录（含 venv/模型），不可恢复。</span>
+        <span className="flex-1">插件由三方发布，主程序只维护契约与加载。启用/禁用重启后生效；卸载删除插件目录（含 venv/模型），不可恢复。</span>
+        <button
+          onClick={restart} disabled={restarting}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-white rounded-lg bg-accent hover:bg-accent-hover disabled:opacity-40 shrink-0"
+        >
+          <RefreshCw size={12} className={restarting ? 'animate-spin' : ''} />
+          {restarting ? '重启中...' : '重启后端'}
+        </button>
       </div>
       {Object.entries(groups).map(([cat, items]) => (
         <div key={cat}>
