@@ -462,10 +462,15 @@ export function ProviderSettings() {
         {Object.entries(CAT_LABELS).map(([cat, label]) => {
           const opts = engineByCat[cat] || []
           if (opts.length === 0) return null
-          const options: EngineOption[] = opts.map(m => ({
-            id: m.id, provider: m.provider_id, name: m.model_name,
-            desc: m.desc || '', capabilities: m.capabilities,
-          }))
+          const options: EngineOption[] = opts.map(m => {
+            const co = (caps?.engineOptions?.[cat] || []).find(o => o.name === m.model_name)
+            return {
+              id: m.id, provider: m.provider_id, name: m.model_name,
+              desc: co?.desc || m.desc || '', capabilities: m.capabilities,
+              license: co?.license, plugin: co?.plugin,
+              displayName: co?.displayName || m.model_name,
+            }
+          })
           return (
             <EngineSelect key={cat}
               category={cat} label={label} options={options}
@@ -486,10 +491,15 @@ export function ProviderSettings() {
               const engineNames = caps?.fileTypeMap?.[key.replace('doc:', '')] || []
               const filtered = allDoc.filter(m => engineNames.includes(m.model_name))
               if (filtered.length === 0) return null
-              const options: EngineOption[] = filtered.map(m => ({
-                id: m.id, provider: m.provider_id, name: m.model_name,
-                desc: m.desc || '', capabilities: m.capabilities,
-              }))
+              const options: EngineOption[] = filtered.map(m => {
+                const co = (caps?.engineOptions?.['doc'] || []).find(o => o.name === m.model_name)
+                return {
+                  id: m.id, provider: m.provider_id, name: m.model_name,
+                  desc: co?.desc || m.desc || '', capabilities: m.capabilities,
+                  license: co?.license, plugin: co?.plugin,
+                  displayName: co?.displayName || m.model_name,
+                }
+              })
               return (
                 <EngineSelect key={key}
                   category={key} label={label} options={options}

@@ -5,13 +5,15 @@ import { ACCENT_GROUPS, ACCENT_SWATCH } from '../../lib/accent'
 import { TEXTURE_OPTIONS, TEXTURE_SWATCH, FONT_OPTIONS, getSavedIntensity, applyIntensity, saveIntensity } from '../../lib/texture'
 import { BASE_OPTIONS } from '../../lib/theme-base'
 import { THEME_PRESETS } from '../../lib/theme-presets'
-import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette } from 'lucide-react'
+import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette, Puzzle } from 'lucide-react'
 import { ProviderSettings } from './ProviderSettings'
+import { PluginSettings } from './PluginSettings'
 
 /** BiliNote 式设置布局 — 左侧菜单导航 + 右侧内容区 */
 
 const MENU = [
   { key: 'model', label: '模型 & 引擎', icon: Cpu },
+  { key: 'plugins', label: '插件', icon: Puzzle },
   { key: 'auth', label: '平台认证', icon: Key },
   { key: 'proxy', label: '代理', icon: Globe },
   { key: 'agent', label: 'Agent 工具', icon: Wrench },
@@ -192,6 +194,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
               </h1>
               <p className="text-[13px] text-muted mt-1">
                 {tab === 'model' && '管理 LLM 厂商、引擎厂商及模型用途分配'}
+                {tab === 'plugins' && '管理第三方插件：启停 / 卸载 / 配置'}
                 {tab === 'auth' && '配置各平台的认证 Cookie'}
                 {tab === 'proxy' && '网络代理与访问控制'}
                 {tab === 'agent' && '配置 AI 对话中网络搜索和网页抓取的方案'}
@@ -206,6 +209,9 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
 
           {/* 模型 & 引擎 */}
           {tab === 'model' && <ProviderSettings />}
+
+          {/* 插件 */}
+          {tab === 'plugins' && <PluginSettings />}
 
           {/* 平台认证 */}
           {tab === 'auth' && (

@@ -1,8 +1,9 @@
 export interface EngineOption {
   id: number; provider: string; name: string; desc: string
   capabilities?: string[]
-  license?: string   // SPDX: "Apache-2.0" | "AGPL-3.0" | ... (插件引擎)
+  license?: string   // SPDX: "Apache-2.0" | "AGPL-3.0" | ... (插件引擎，仅展示)
   plugin?: boolean    // 是否为用户安装的插件引擎
+  displayName?: string  // 插件展示名（缺省回退 name）
 }
 
 interface Props {
@@ -15,19 +16,15 @@ interface Props {
   variant?: 'card' | 'section'
 }
 
-/** 许可证标签颜色 */
-function licenseBadge(license: string): { bg: string; text: string } {
-  const risky = ['AGPL', 'GPL', 'AGPL-3.0', 'GPL-3.0', 'GPL-2.0']
-  const isRisky = risky.some(r => license.includes(r))
-  return isRisky
-    ? { bg: 'bg-warning/10', text: 'text-warning' }
-    : { bg: 'bg-surface-hover', text: 'text-dimmed' }
+/** 许可证徽章 — 仅展示（v2：主程序不判断插件协议，无警告语义） */
+function licenseBadge(): { bg: string; text: string } {
+  return { bg: 'bg-surface-hover', text: 'text-dimmed' }
 }
 
-/** 选项文本：引擎名 · 能力标签 — 描述 */
+/** 选项文本：展示名 · 能力标签 — 描述 */
 function optionLabel(opt: EngineOption) {
   const caps = opt.capabilities?.join(' ') || ''
-  let text = opt.name
+  let text = opt.displayName || opt.name
   if (opt.license) text += ` [${opt.license}]`
   if (caps) text += ` · ${caps}`
   if (opt.desc) text += ` — ${opt.desc}`
@@ -44,7 +41,7 @@ export function EngineSelect({ category, label, options, binding, onChange, extr
     ? 'bg-surface border border-border-default rounded-[10px]'
     : 'bg-elevated border border-border-default rounded-lg'
 
-  const licBadge = selectedOpt?.license ? licenseBadge(selectedOpt.license) : null
+  const licBadge = selectedOpt?.license ? licenseBadge() : null
 
   return (
     <div className="space-y-1">

@@ -76,11 +76,24 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
 
 // ── 共享类型 ──
 
+/** 插件 config_schema 字段（简版配置声明，前端渲染表单） */
+export interface ConfigField {
+  name: string
+  type: 'string' | 'int' | 'number' | 'bool' | 'select' | 'textarea'
+  label?: string
+  default?: unknown
+  hint?: string
+  options?: string[]
+}
+
 export interface EngineOption {
   id: number; provider: string; name: string; desc: string
   capabilities?: string[]  // 从 EngineRegistry 注入的能力标签
-  license?: string         // SPDX 许可证标识（插件引擎）
+  license?: string         // SPDX 许可证标识（插件引擎，仅展示，无警告语义）
   plugin?: boolean         // 是否为用户安装的插件引擎
+  displayName?: string     // 插件展示名（缺省回退 name）
+  userDesc?: string        // 插件一句话能力描述
+  configSchema?: ConfigField[]  // 插件配置声明
 }
 /** Capabilities 响应中的引擎厂商简要信息 */
 export interface EngineProviderInfo {
