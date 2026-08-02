@@ -215,7 +215,7 @@ export function PluginSettings() {
         try {
           const r = await fetch('http://127.0.0.1:7413/health')
           if (r.ok) {
-            addToast('后端已重启，插件状态生效', 'success')
+            addToast('后端已重启，插件状态生效；若插件异常请完全退出 LiMo 重开', 'success')
             await load()
             return
           }
@@ -262,7 +262,7 @@ export function PluginSettings() {
     <div className="space-y-6">
       <div className="flex items-center gap-2 px-3 py-2 rounded-[10px] bg-accent/5 text-[12px] text-dimmed">
         <Puzzle size={14} className="shrink-0 mt-0.5 text-accent" />
-        <span className="flex-1">插件由三方发布，主程序只维护契约与加载。启用/禁用重启后生效；卸载删除插件目录（含 venv/模型），不可恢复。</span>
+        <span className="flex-1">插件由三方发布，主程序只维护契约与加载。启用/禁用重启后生效；卸载删除插件目录（含 venv/模型），不可恢复。若点「重启后端」后插件仍异常（如进程外 venv 加载失败），请完全退出 LiMo 后重新打开。</span>
         <button
           onClick={restart} disabled={restarting}
           className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-white rounded-lg bg-accent hover:bg-accent-hover disabled:opacity-40 shrink-0"
