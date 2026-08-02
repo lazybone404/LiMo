@@ -112,7 +112,7 @@ if __name__ == "__main__":
 
 **v0 兼容**：旧插件（纯文本 stdout、仅读 `--input`）零改动可用；升级到 JSON 契约可获得 `pages`/`is_scanned`/`segments` 元数据。
 
-## 管理 API（Phase 4 起）
+## 管理 API
 
 | 端点 | 方法 | 说明 |
 |------|------|------|

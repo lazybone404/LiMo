@@ -6,6 +6,51 @@
 
 ---
 
+## 2026-08-02 — 插件系统完整正式化（EnginePlugin v1 · pymupdf4llm 首例）
+
+### 做了什么
+
+按 `pi-docs/12-插件系统设计建议` + 用户定稿 v2（删除协议维度）完整正式化插件系统：
+
+**核心 bug 修复（驱动本计划的硬伤）**：
+- `_PluginEngineAdapter.execute()` 原返回纯 `str`，消费方（document.py `.text` / video.py `.segments` / image.py `.text`）访问结构化字段**必崩 AttributeError** → pymupdf4llm 插件一直不可用
+- 修复：`_dispatch_result(category, payload, name)` 按 category 分派返回 `DocResult`/`OCRResult`/`TranscriptResult`，消费方零改动
+
+**EnginePlugin v1 契约**（`plugin_loader.py`）：
+- 默认进程外 + trusted 例外门控：`command` 有值→external；`trusted=true`→inproc（全类别统一，引擎不特殊）；无 command 且未 trusted→拒绝加载
+- **trusted 为纯技术声明**（可进程内 import，崩溃/依赖风险自担），不涉及任何协议判断；主程序不判断/不警告/不声明插件协议，license 仅前端展示
+- 元数据字段位：`display_name`/`user_desc`/`config_schema`/`namespace`/`permissions`/`api_version`(PLUGIN_API_VERSION)
+
+**进程外契约 JSON 化**：
+- stdin JSON：`{file, cancel_file(绝对路径), config(插件自身配置), ...}`；argv 保留 `--input`（v0 兼容）
+- stdout JSON：doc/ocr→`{text,pages,is_scanned}`、asr→`{segments}`；**非 JSON 回退 v0 纯文本** → 用户旧 `pymupdf4llm_heavy` 零改动恢复可用
+- `subprocess.run`→`Popen` + cancel 标记文件（监视线程写标记→宽限 3s→kill，timeout 兜底）
+
+**管理 API + 前端**：
+- 新增 `routers/plugins.py`：GET 列表（含禁用）· POST enable|disable（写 `plugin_states`，重启生效）· DELETE 卸载（resolve 路径校验 + 清理残留键 + Windows 占用反馈）· PUT config（写 `plugin_configs` + `set_plugin_config` 内存即时生效，**stdin 即含新 config**）
+- `PLUGIN_REGISTRY`（Phase 1 建立）登记全部插件（含门控拒绝/禁用），管理 API 数据基础
+- 设置页新增「插件」tab（PluginSettings.tsx）：按 category 分组卡片 + 启用开关 + 卸载二次确认 + config_schema 简版表单
+- capabilities：插件判定 `bool(_license)`→`is_plugin` 标志；engineOptions 增 `displayName/userDesc/configSchema`
+- EngineSelect：license 徽章去警告语义（v2：仅展示）；optionLabel 优先 displayName；ProviderSettings 修复丢 license/plugin 徽章
+
+**参考模板 + 文档**：
+- `backend/plugins/examples/` 重构：`pymupdf4llm_plugin.py`+`pymupdf4llm/{engine.py,requirements.txt}`（进程外参考）+ `simple_trusted_plugin.py`（trusted 进程内参考），删旧进程内示例；**不随包分发**（spec 不加 datas）
+- `docs/plugins.md` 按 v1 契约重写（契约/门控/安装/发布指南）；新增 `test_plugin_loader.py`（14 用例）
+
+### 为什么
+
+whisper 已移除且不插件化；pymupdf4llm 作为 AGPL 引擎走插件通道，但插件返回类型不匹配导致不可用。按 12 号文档完整正式化插件系统，pymupdf4llm 为首个参考实现。
+
+### 影响范围
+
+- 后端：`plugin_loader.py` / `capabilities.py` / 新增 `plugins.py` / `config.py` / `main.py` / `registry.py`（命名空间注释）
+- 前端：新增 `plugins.ts` / `PluginSettings.tsx` / `SettingsPage` 插件 tab / `ProviderSettings` / `EngineSelect` / `core.ts`
+- 模板/文档：`examples/` / `plugins.md` / 新增 `test_plugin_loader.py`
+- 验证：后端 7 测试全绿 + 前端 82 tests 全绿 + 启动冒烟（`/api/plugins` 返回用户已部署 pymupdf4llm_heavy）+
+  端到端（旧纯文本插件走 subprocess → DocResult，文本提取成功）
+
+---
+
 ## 2026-08-02 — 卸载时可选移除个人配置与数据
 
 ### 做了什么
