@@ -278,6 +278,10 @@ polished_mv, notes_mv = await gen.generate_both(
 # 内部 asyncio.gather 并行跑 polished + notes
 ```
 
+### 参考文件（Reference Text）
+
+生成笔记时可注入参考资料（如评论区观点）。流式 GET 无法传大 JSON → `POST /api/references` 内存暂存（TTL 20 分钟）+ 短 id，生成时传 `reference_ids`，路由层 `_resolve_reference_texts` 转回内容 → **仅 notes** 注入 `<reference_texts>` section（user_request 前）。标签清单见 [prompts-inventory.md](prompts-inventory.md)。
+
 ### Prompt 派发
 
 | source_type | notes prompt | polished prompt |

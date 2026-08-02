@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-08-01 | **版本**: 0.2.0
+**更新**: 2026-08-03 | **版本**: 0.2.0
 
 ---
 
@@ -11,13 +11,13 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 83 |
-| 前端 TS/TSX/CSS 文件 | 51 |
+| 后端 Python 文件 | 87 |
+| 前端 TS/TSX/CSS 文件 | 91（89 ts/tsx + 2 css） |
 | 前端测试文件 | 7（82 个测试用例） |
-| API 路由模块 | 11 |
-| API 端点 | 63 |
+| API 路由模块 | 14 |
+| API 端点 | 70 |
 | 适配器 | 5 |
-| 引擎 (ASR/Doc/OCR) | 9 内置（+1 插件） |
+| 引擎 (ASR/Doc/OCR) | 9 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 8 |
 
@@ -47,7 +47,7 @@
 | Doc | python-pptx | 本地 |
 | Doc | openpyxl | 本地 |
 | Doc | ebooklib | 本地 |
-| Doc (插件) | pymupdf4llm | 进程外（AGPL 隔离） |
+| Doc (三方插件) | pymupdf4llm | 进程外（AGPL 隔离，[仓库](https://github.com/lazybone404/limo-pymupdf4llm-plugin)，非官方维护） |
 | OCR | dashscope-ocr | 云端 |
 
 > Doc 引擎源码已拆分为独立文件：[doc_types.py](../backend/app/engines/doc_types.py)（共享类型）、[doc_markitdown.py](../backend/app/engines/doc_markitdown.py)、[doc_docx.py](../backend/app/engines/doc_docx.py)、[doc_pptx.py](../backend/app/engines/doc_pptx.py)、[doc_excel.py](../backend/app/engines/doc_excel.py)、[docling.py](../backend/app/engines/docling.py)（含 PyPdfium2Engine）、[epub.py](../backend/app/engines/epub.py)。pdfplumber 为 pypdfium2 的表格辅助（不单独注册）。text_only 变体引擎已删除。

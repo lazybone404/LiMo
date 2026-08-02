@@ -662,4 +662,5 @@ done
 | `<hard_constraints>` | 硬约束（格式选项） | 生成/Excel | Polish 用 `_POLISH_FORMAT_FNS` 白名单，Notes 用 `_ALL_FORMAT_FNS` |
 | `<style_preference>` | 软偏好（风格指令） | Notes/Excel | **Polish 无此节** |
 | `<output_format>` | 输出格式要求 | 所有 prompt | 离末尾近，权重高 |
+| `<reference_texts>` | 参考资料（来源 + 内容，仅供背景） | Notes | **仅 notes 注入**（user_request 前），polished/Excel 无；空则整节跳过 |
 | `<user_request>` | 用户备注 | 生成/Excel | 最后，权重最高但不覆盖 hard_constraints 和 output_language |

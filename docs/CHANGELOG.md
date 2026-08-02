@@ -48,6 +48,21 @@ chat 链路参考 · JSON 格式 · 评论爬取（法律风险）· process/fac
 
 ---
 
+## 2026-08-03 — v0.2.0 发布
+
+LiMo 0.2.0 正式发布（NSIS + MSI 安装包 + GitHub Release）。
+
+自 0.1.6 以来的主要变化（详见下方各功能条目）：
+
+- **插件系统正式化**：EnginePlugin v1 进程外（默认）/trusted 例外 + 管理页（启停/卸载/配置）+ 一键安装依赖 + 首个三方插件仓库发布（pymupdf4llm）
+- **参考文件（Reference Text）**：参考资料注入笔记生成（暂存 id 传递，仅 notes）
+- **打包体积修剪**：移除 Tesseract / docling / faster-whisper（~57% 体积，147.8M）
+- **引擎降级链彻底移除**（失败显式化：绑定只取第一个，失败直接报错）
+- **设计哲学**：口子原则（Keep core lean）+ 失败显式化
+- **生成超时调整**（chunk 间隔 150s / 总超时 330s）+ 若干反馈/提示修复
+
+---
+
 ## 2026-08-03 — 插件依赖一键安装（建 venv + pip 镜像源 + 失败显式化）
 
 用户拖插件到 `~/.limo/plugins/` 后不再需要手动建 venv。前端插件页对「进程外 + 有 requirements.txt」的插件显示「一键安装」：
