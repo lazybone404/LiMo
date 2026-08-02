@@ -63,7 +63,7 @@ class PipelineAdapter(Protocol):
 
 ### 路由
 
-注册顺序决定优先级：Video → Document → Image → Webpage → Text（兜底）。`AdapterRegistry.register()` 一行注册，`AdapterRegistry.find(input, config)` 返回第一个 accept 的适配器。
+注册顺序决定优先级：Video → Document → Image → Webpage → Text（兜底）。`AdapterRegistry.register()` 一行注册（存**类**），`AdapterRegistry.route(input)` 命中前实例化返回**一请求一实例**——防止并发导入共享 `cookies`/`_engine_config`/`cancel_event` 互相污染（2026-08-02 从单例改为存类实例化）。
 
 ### 关键决策
 

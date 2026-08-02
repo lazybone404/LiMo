@@ -2,6 +2,7 @@
 
 > 检查日期：2026-07-08 | 范围：全栈（后端 FastAPI + 前端 React/TypeScript）
 > ⚠️ **时点审计报告**：以下问题多数已修复（标注 ✅），保留用于追溯。当前安全状态见 [CLAUDE.md](CLAUDE.md)「安全」章节。
+> 2026-08-02 追加修复（全面漏洞排查）：**CORS Origin 白名单**（阻断任意网页跨站读本地后端/Cookie 泄漏）、serve_asset 路径遍历收紧到 `doc_dir/assets`、导出 `temp_id` 穿越校验、content_preparer `assets/../../` 任意文件读取校验。
 
 ---
 

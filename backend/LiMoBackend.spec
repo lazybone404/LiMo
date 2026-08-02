@@ -137,7 +137,9 @@ a = Analysis(
         'nvidia', 'nvidia_cublas', 'nvidia_cuda_cupti', 'nvidia_cuda_nvrtc',
         'nvidia_cuda_runtime', 'nvidia_cudnn', 'nvidia_cufft', 'nvidia_curand',
         'nvidia_cusolver', 'nvidia_cusparse', 'nvidia_nccl', 'nvidia_nvtx',
-        'nvidia_nvjitlink'],
+        'nvidia_nvjitlink',
+        # cv2/opencv：backend 零使用（无 opencv 依赖），仅被依赖链意外拖入，排除省 ~112MB
+        'cv2', 'opencv', 'cv2.data'],
     noarchive=False,
     optimize=0,
 )
