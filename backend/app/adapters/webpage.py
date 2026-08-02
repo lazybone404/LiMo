@@ -136,7 +136,7 @@ class WebpageAdapter(PipelineAdapter):
         # 下载（to_thread 释放事件循环，否则 requests 最长 30s 阻塞整个后端）
         # 使用 requests 而非 trafilatura.fetch_url，后者编码处理不稳定
         import requests as _requests
-        async def _download() -> str:
+        def _download() -> str:  # 同步函数（asyncio.to_thread 期望同步；async def 会返回未 await 的 coroutine）
             try:
                 resp = _requests.get(
                     url,
