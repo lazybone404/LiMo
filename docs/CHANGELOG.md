@@ -6,6 +6,12 @@
 
 ---
 
+## 2026-08-03 — pymupdf4llm 插件内嵌图片统一 PNG
+
+参考实现 `examples/pymupdf4llm` 去掉 `image_format` 配置项（原可选 png/jpeg），内嵌图片统一 PNG（嵌入式最常见格式）。`engine.py` 固定 `image_format="png"`，与核心引擎 pypdfium2 / 用户侧 heavy 版一致，确保 `_persist_media_images` 的 glob 覆盖无缺口。
+
+---
+
 ## 2026-08-03 — 插件管理反馈修复：开关即时翻转 + 待重启徽章 + 重启后端按钮
 
 ### 问题

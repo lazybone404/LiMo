@@ -30,7 +30,7 @@ def main():
         str(file_path),
         write_images=bool(cfg.get("write_images", True)),
         image_path=config.get("media_dir") or None,
-        image_format=cfg.get("image_format", "png"),
+        image_format="png",  # 内嵌统一 PNG（嵌入式最常见格式）
         dpi=int(cfg.get("dpi", 150)),
     )
 

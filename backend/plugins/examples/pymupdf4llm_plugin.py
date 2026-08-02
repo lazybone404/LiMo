@@ -22,8 +22,8 @@ class PyMuPDF4LLMPlugin(EnginePlugin):
     timeout = 600
 
     # config_schema 简版：前端设置页渲染表单 → 保存后经 stdin JSON config 传给引擎
+    # 内嵌图片统一 PNG（嵌入式最常见格式），不提供格式选择
     config_schema = [
         {"name": "dpi",          "type": "int",    "label": "图片分辨率", "default": 150, "hint": "嵌入图片 DPI（72-300）"},
         {"name": "write_images", "type": "bool",   "label": "嵌入图片",   "default": True},
-        {"name": "image_format", "type": "select", "label": "图片格式",   "default": "png", "options": ["png", "jpeg"]},
     ]
