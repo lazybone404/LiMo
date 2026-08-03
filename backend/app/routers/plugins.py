@@ -7,10 +7,15 @@
 """
 
 import asyncio
+import io
 import logging
+import shutil
+import tempfile
+import zipfile
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, UploadFile
 
 from app.core.dependencies import get_config as get_config_dep, get_config_lock
 from app.core.config_io import save_config
@@ -38,6 +43,84 @@ def _require_plugin(name: str) -> None:
 async def list_plugins():
     """插件列表（含禁用/门控拒绝的，按 category+name 排序）"""
     return {"plugins": enumerate_plugins()}
+
+
+@router.post("/plugins/install")
+async def install_plugin_zip(file: UploadFile = File(...),
+                             cfg=Depends(get_config_dep)):
+    """从 zip 插件包安装插件 — 解压到 ~/.limo/plugins/，重启后端后生效。
+
+    安全：zip slip 防护（条目路径必须落在解压目录内）+ 大小上限 50MB。
+    插件声明 .py 是用户主动选择的第三方代码（固有风险自担），但解压路径安全由本端保证。
+    返回 hasRequirements 供前端提示「重启后一键安装依赖」。
+    """
+    fname = (file.filename or "").lower()
+    if not fname.endswith(".zip"):
+        raise AppError("PLUGIN_ZIP_REQUIRED", "请上传 .zip 插件包（从插件仓库 Release 下载）", recoverable=True)
+
+    data = await file.read()
+    if len(data) > 50 * 1024 * 1024:
+        raise AppError("PLUGIN_ZIP_TOO_LARGE", "插件包超过 50MB 上限", recoverable=True)
+
+    plugins_dir = Path(cfg.get("data_dir", "")) / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    plugins_root = plugins_dir.resolve()
+
+    tmp = Path(tempfile.mkdtemp(prefix="plugin_install_"))
+    try:
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile:
+            raise AppError("PLUGIN_ZIP_INVALID", "无效的 zip 插件包", recoverable=True)
+
+        with zf:
+            names = zf.namelist()
+            if not names:
+                raise AppError("PLUGIN_ZIP_EMPTY", "插件包为空", recoverable=True)
+            # zip slip 防护：所有条目解压后必须落在 tmp 内（拒绝 ../ 与绝对路径）
+            for info in zf.infolist():
+                target = (tmp / info.filename).resolve()
+                if not target.is_relative_to(tmp.resolve()):
+                    raise AppError("PLUGIN_ZIP_PATH", "插件包包含非法路径，已拒绝解压", recoverable=True)
+            zf.extractall(tmp)
+
+        # 智能 strip 单一顶层目录（GitHub source zip 带仓库名目录）
+        src = tmp
+        top_names = {n.split("/")[0] for n in names if n}
+        if len(top_names) == 1:
+            top = next(iter(top_names))
+            if (tmp / top).is_dir():
+                src = tmp / top
+
+        # 必须有 EnginePlugin 声明 .py（顶层）
+        py_files = [p for p in src.glob("*.py") if p.name not in ("__init__.py", "setup.py")]
+        if not py_files:
+            raise AppError("PLUGIN_NO_DECL", "插件包缺少 EnginePlugin 声明 .py 文件", recoverable=True)
+
+        # 拷贝到 plugins/（覆盖同名）；Windows 下已装插件 venv 文件占用时 rmtree 抛 OSError → 明确提示
+        try:
+            for item in src.iterdir():
+                dest = plugins_root / item.name
+                if dest.exists():
+                    if dest.is_dir():
+                        shutil.rmtree(dest)
+                    else:
+                        dest.unlink()
+                shutil.move(str(item), str(dest))
+        except OSError:
+            raise AppError(
+                "PLUGIN_IN_USE",
+                "同名插件正在使用（可能依赖/venv 被占用），请重启后端后重试安装",
+                recoverable=True,
+            )
+
+        has_req = any((plugins_root / p.stem / "requirements.txt").exists() for p in py_files)
+        names_installed = [p.stem for p in py_files]
+        logger.info("Plugin installed from zip: %s (has_req=%s)", names_installed, has_req)
+        return {"status": "ok", "plugins": names_installed,
+                "hasRequirements": has_req, "restart_required": True}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 @router.post("/plugins/{name}/enable")

@@ -77,6 +77,23 @@ export async function installPluginDeps(name: string): Promise<InstallDepsResult
   return r.json()
 }
 
+export interface InstallZipResult {
+  status?: string
+  plugins?: string[]
+  hasRequirements?: boolean
+  restart_required?: boolean
+  code?: string      // AppError 时
+  message?: string   // AppError 时
+}
+
+/** 从 zip 插件包安装插件（解压到 ~/.limo/plugins/，重启后端后生效） */
+export async function installPluginZip(file: File): Promise<InstallZipResult> {
+  const fd = new FormData()
+  fd.append('file', file)
+  const r = await apiFetch(`${BASE}/plugins/install`, { method: 'POST', body: fd })
+  return r.json()
+}
+
 /** 重启后端 — 生产 Tauri 调 Rust `restart_backend_sidecar`；浏览器 dev 模式不可用（抛错） */
 export async function restartBackend(): Promise<void> {
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {

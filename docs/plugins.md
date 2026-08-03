@@ -57,6 +57,8 @@ cd <repo> && python -m venv .venv
 
 **验证**：启动日志出现 `Plugin loaded: doc/<name> (external)`；或 `curl http://127.0.0.1:7413/api/plugins`。
 
+**zip 安装**（推荐）：插件页点「安装插件」→ 选插件 zip 包（声明 `.py` + 子目录，或 GitHub Release 下载的 source zip）→ 自动解压到 `~/.limo/plugins/` → 提示重启生效。**zip slip 防护**：非法路径条目（`../`/绝对路径）拒绝解压。
+
 **一键安装依赖**：子目录含 `requirements.txt` 的进程外插件，前端插件页显示「一键安装」——自动建 venv + `pip install`（国内镜像源），失败显式反馈 + 手动命令兜底。桌面打包版无系统 Python 时降级引导（先装 Python 或手动执行）。
 
 **卸载**：删除 `~/.limo/plugins/` 下对应文件/目录 + 重启；或前端插件页「卸载」。

@@ -2,14 +2,15 @@
  * 插件管理页 — 设置页「插件」tab（EnginePlugin v1）
  * 按 category 分组渲染（类别无关），卡片含展示名/能力描述/license 徽章/启用开关/卸载/config_schema 表单。
  */
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, type ChangeEvent } from 'react'
 import {
-  listPlugins, setPluginEnabled, deletePlugin, savePluginConfig, restartBackend, installPluginDeps,
+  listPlugins, setPluginEnabled, deletePlugin, savePluginConfig, restartBackend,
+  installPluginDeps, installPluginZip,
   type PluginInfo,
 } from '../../api/plugins'
 import { getErrorMessage } from '../../api/core'
 import { useStore } from '../../store'
-import { Puzzle, Trash2, Loader2, RefreshCw } from 'lucide-react'
+import { Puzzle, Trash2, Loader2, RefreshCw, Upload } from 'lucide-react'
 
 const CAT_LABELS: Record<string, string> = {
   doc: '文档引擎', ocr: '图片识别', asr: '语音转写',
@@ -239,6 +240,7 @@ export function PluginSettings() {
   const [plugins, setPlugins] = useState<PluginInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [restarting, setRestarting] = useState(false)
+  const [installingZip, setInstallingZip] = useState(false)
   const addToast = useStore(s => s.addToast)
 
   const load = useCallback(async () => {
@@ -278,6 +280,28 @@ export function PluginSettings() {
     }
   }
 
+  /** 从 zip 插件包安装插件（解压到 ~/.limo/plugins/，重启后端后生效） */
+  const handleInstallZip = async (e: ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]
+    e.target.value = ''  // 允许重复选同一文件
+    if (!f) return
+    setInstallingZip(true)
+    try {
+      const res = await installPluginZip(f)
+      if (res.status === 'ok') {
+        addToast(`插件 ${res.plugins?.join(', ') || ''} 安装成功，重启后端生效`, 'success')
+        if (res.hasRequirements) addToast('重启后可「一键安装」依赖', 'info')
+        await load()
+      } else {
+        addToast(res.message || '安装失败', 'error')
+      }
+    } catch (e) {
+      addToast(`安装失败: ${getErrorMessage(e)}`, 'error')
+    } finally {
+      setInstallingZip(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20 text-disabled">
@@ -311,6 +335,11 @@ export function PluginSettings() {
       <div className="flex items-center gap-2 px-3 py-2 rounded-[10px] bg-accent/5 text-[12px] text-dimmed">
         <Puzzle size={14} className="shrink-0 mt-0.5 text-accent" />
         <span className="flex-1">插件由三方发布，主程序只维护契约与加载。启用/禁用重启后生效；卸载删除插件目录（含 venv/模型），不可恢复。若点「重启后端」后插件仍异常（如进程外 venv 加载失败），请完全退出 LiMo 后重新打开。</span>
+        <label className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-dimmed rounded-lg border border-border-default hover:bg-surface-hover cursor-pointer shrink-0">
+          <Upload size={12} />
+          <span>{installingZip ? '安装中...' : '安装插件'}</span>
+          <input type="file" className="hidden" accept=".zip" onChange={handleInstallZip} disabled={installingZip} />
+        </label>
         <button
           onClick={restart} disabled={restarting}
           className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-white rounded-lg bg-accent hover:bg-accent-hover disabled:opacity-40 shrink-0"

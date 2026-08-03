@@ -48,6 +48,18 @@ chat 链路参考 · JSON 格式 · 评论爬取（法律风险）· process/fac
 
 ---
 
+## 2026-08-03 — 插件 zip 安装器：设置页选文件安装插件
+
+补全插件安装闭环（此前需手动拷贝到 `~/.limo/plugins/`）：
+
+- **后端** `POST /api/plugins/install`：multipart zip 上传 → **zip slip 防护**（条目路径必须落在解压目录内，拒绝 `../`/绝对路径）→ strip 单一顶层目录（GitHub source zip）→ 校验 EnginePlugin 声明 `.py` → 解压到 `~/.limo/plugins/`（覆盖同名）→ 返回 `hasRequirements` 提示「重启后一键装依赖」。覆盖安装 OSError（venv 占用）→ 明确 AppError 而非 500
+- **前端**：插件页 banner 加「安装插件」按钮（`.zip` 文件选择）→ 上传 → 成功 toast + 重启提示；AppError 明确反馈
+- 安全：zip 大小 ≤ 50MB；插件 `.py` 为用户主动选择的第三方代码（固有风险自担），解压路径安全由后端保证
+
+验证：正常 zip / GitHub source zip strip / **zip slip 攻击拒绝** / 覆盖安装 / 非 zip 与无声明明确提示——5 场景全过。
+
+---
+
 ## 2026-08-03 — .xls 旧格式支持 + .doc/.ppt 明确提示
 
 - **.xls**：ExcelEngine 加 **xlrd** 分支（openpyxl 不支持旧二进制格式），逐 sheet → MD 表格（数字/日期规范化），与 .xlsx 产物一致。新增依赖 xlrd + spec hiddenimports
