@@ -353,7 +353,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **流式 + 取消**：SSE 端点，cancel_event 真正中断 token 消耗，取消保存 partial 可续写
 - **Prompt XML 分节**：`PromptComposer.section()` + `compose()` 组装 10 个标签（role/task/source_content/instruction_priority/hard_constraints/output_language/style_preference/output_format/reference_texts/user_request），空节自动跳过。`_INSTRUCTION_PRIORITY` 声明三层优先级：hard_constraints > user_request > style_preference
 - **参考文件（Reference Text）**：生成时注入参考资料（如评论区观点），仅 notes 注入 `<reference_texts>` section（user_request 前），polished/Excel 不注入。流式 GET 无法传大 JSON → `POST /api/references` 内存暂存（TTL 20 分钟）+ 短 id，生成传 `reference_ids`。前端参考文件 state 仅会话内不持久化
-- **Polish/Notes 风格隔离**：Polish 固定忠实整理策略（无 `<style_preference>` 节），格式白名单 `_POLISH_FORMAT_FNS`（toc/translate/formulas/references/images）。Notes 有 `<style_preference>` 节，风格从 `VIDEO_NOTE_STYLES`（9 种）或 `DOC_NOTE_STYLES`（8 种）查找。`normalize_style()` 兼容旧 `meeting_minutes` key
+- **Polish/Notes 风格隔离**：Polish 固定忠实整理策略（无 `<style_preference>` 节 + **不接受 user_notes 备注**，参数保留兼容但内部忽略不注入 `<user_request>`），格式白名单 `_POLISH_FORMAT_FNS`（toc/translate/formulas/references/images）。Notes 有 `<style_preference>` 节，风格从 `VIDEO_NOTE_STYLES`（9 种）或 `DOC_NOTE_STYLES`（8 种）查找。`normalize_style()` 兼容旧 `meeting_minutes` key
 - **风格定义位置**：`app/generation/prompts/notes_styles.py`（COMMON_NOTE_STYLES → VIDEO_NOTE_STYLES / DOC_NOTE_STYLES），旧 `STYLE_MAP`/`DOC_STYLE_MAP` 保留为 deprecated 别名
 - **Agent SSE 事件流**：`agent_status`（判定前）→ `tool_start`（带 `display` 安全文案，后端 `_tool_display()` 生成）→ `tool_result`（仅 `summary` 摘要，完整结果只传 LLM）→ `text` 流式 token。C 端不暴露完整工具结果到前端 UI
 - **对话文档注入**：`smart_truncate(rawText, 1000)` 按句子边界截断（优先级：`。` > `. ` > `\n\n` > `\n`），不再硬截 `[:1000]`

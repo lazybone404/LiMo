@@ -663,4 +663,4 @@ done
 | `<style_preference>` | 软偏好（风格指令） | Notes/Excel | **Polish 无此节** |
 | `<output_format>` | 输出格式要求 | 所有 prompt | 离末尾近，权重高 |
 | `<reference_texts>` | 参考资料（来源 + 内容，仅供背景） | Notes | **仅 notes 注入**（user_request 前），polished/Excel 无；空则整节跳过 |
-| `<user_request>` | 用户备注 | 生成/Excel | 最后，权重最高但不覆盖 hard_constraints 和 output_language |
+| `<user_request>` | 用户备注 | 生成/Excel（Notes） | 最后，权重最高但不覆盖 hard_constraints 和 output_language；**Polish 无此节**（忠实整理不接受备注） |

@@ -358,14 +358,13 @@ export function GenerateOptions(props: Props) {
       </button>
       {refExpanded && (
         <div className="mt-2 space-y-2">
-          <label className="flex items-center justify-center gap-1.5 py-2 px-3 border border-dashed border-border-default rounded-lg cursor-pointer
-            hover:border-accent hover:bg-accent/10 transition-colors text-[11px] text-muted">
+          <label className={`flex items-center justify-center gap-1.5 py-2 px-3 border border-dashed border-border-default rounded-lg text-[11px] text-muted transition-colors ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-accent hover:bg-accent/10'}`}>
             <Upload size={12} />
-            <span>{refLoading ? '暂存中...' : '选择参考文件（txt / md，≤200KB）'}</span>
-            <input type="file" className="hidden" accept=".txt,.md,.markdown" onChange={handleRefFile} />
+            <span>{isPolishedOnly ? '整理版原文不支持参考文件' : (refLoading ? '暂存中...' : '选择参考文件（txt / md，≤200KB）')}</span>
+            <input type="file" className="hidden" accept=".txt,.md,.markdown" onChange={handleRefFile} disabled={isPolishedOnly} />
           </label>
           <p className="text-[10px] text-disabled leading-relaxed">
-            参考资料作为背景注入笔记生成（仅 notes），与原文冲突时以原文/模型判断为准。
+            {isPolishedOnly ? '整理版原文为忠实整理，不注入参考资料。' : '参考资料作为背景注入笔记生成（仅 notes），与原文冲突时以原文/模型判断为准。'}
           </p>
           {p.refFile && (
             <div className="flex items-center gap-2 px-2.5 py-1.5 bg-surface border border-border-default rounded-lg text-[12px]">
@@ -391,14 +390,18 @@ export function GenerateOptions(props: Props) {
         {p.userNotes.trim() && <span className="w-1.5 h-1.5 rounded-full bg-accent" />}
       </button>
       {p.notesExpanded && (
-        <textarea value={p.userNotes} onChange={e => p.setUserNotes(e.target.value)}
+        <textarea value={p.userNotes}
+          onChange={e => { if (!isPolishedOnly) p.setUserNotes(e.target.value) }}
+          disabled={isPolishedOnly}
           placeholder={p.typeMeta.isExcel
             ? '输入你的分析要求：关注哪些指标？需要什么对比维度？有什么假设需要验证？…'
-            : p.refFile
-              ? '说明参考文件来源与用途，如：来自视频评论区，请参考其中的讨论角度'
-              : '输入你的备注、上下文或特殊要求，AI 生成时会参考这些信息…'}
+            : isPolishedOnly
+              ? '整理版原文不接受备注（仅「笔记」生成时可填）'
+              : p.refFile
+                ? '说明参考文件来源与用途，如：来自视频评论区，请参考其中的讨论角度'
+                : '输入你的备注、上下文或特殊要求，AI 生成时会参考这些信息…'}
           rows={3}
-          className="w-full mt-2 px-2.5 py-2 bg-surface border border-border-default rounded-lg text-[12px] outline-none resize-none placeholder:text-disabled" />
+          className="w-full mt-2 px-2.5 py-2 bg-surface border border-border-default rounded-lg text-[12px] outline-none resize-none placeholder:text-disabled disabled:opacity-50" />
       )}
     </div>}
   </>

@@ -88,6 +88,12 @@ assert '修正表格错误' in p, '文档 Polish 应保留表格修正约束'
 assert '修正 OCR 错误' in p, '文档 Polish 应保留 OCR 修正约束'
 print('PASS: doc polish preserves all 5 constraints')
 
+# ── Polish 不接受用户备注（忠实整理，不注入 user_request 节）──
+p = build_polish_prompt('测试', source_type='video', user_notes='请加个结论')
+assert '<user_request>' not in p, 'Polish 不应有 user_request 节（不接受备注）'
+assert '请加个结论' not in p, 'Polish 不应注入备注内容'
+print('PASS: polish ignores user_notes')
+
 # ── Notes 风格隔离 ──
 p = build_notes_prompt('测试', style='business')
 assert '<style_preference>' in p, 'Notes 应有 style_preference 节'

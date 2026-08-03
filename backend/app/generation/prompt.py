@@ -676,6 +676,10 @@ def build_polish_prompt(
         logger.warning(
             "Polish style 参数已废弃，当前固定为忠实整理策略，忽略: %s", style)
 
+    # ── Polish 不接受用户备注 —— 忠实整理任务，不受意图/指令干扰 ──
+    # user_notes 参数保留仅作 API 兼容（调用方统一传），内部忽略不注入 <user_request> 节。
+    _ = user_notes
+
     if source_type == "webpage":
         role, task, output = _WEB_POLISH_ROLE, _WEB_POLISH_TASK, _WEB_POLISH_OUTPUT
         source = raw_text
@@ -711,7 +715,7 @@ def build_polish_prompt(
         ("output_language", _build_output_language(target_language, source_type)),
         ("hard_constraints", constraints),
         ("output_format", output),
-        ("user_request", user_notes.strip()),
+        # 无 user_request —— Polish 不接受用户备注（忠实整理）
     ]
     return PromptComposer.compose(sections)
 
