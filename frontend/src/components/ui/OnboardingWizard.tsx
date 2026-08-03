@@ -83,22 +83,32 @@ export function OnboardingWizard({ onDone }: Props) {
             <p className="text-[14px] text-dimmed">之后可在设置中随时更改</p>
           </div>
 
-          {/* 预设卡片 */}
+          {/* 预设卡片 — tex-card 自驱动视觉预览（颜色/底色/纹理/字体） */}
           <div className="grid grid-cols-2 gap-3">
             {VIBE_PRESETS.map(p => (
               <button
                 key={p.name}
                 onClick={() => handlePresetClick(p.name)}
                 className="text-left p-4 rounded-xl border border-border-light hover:border-accent hover:bg-accent/5 transition-all group"
+                data-font={p.font}
               >
-                <div className="flex items-center gap-2 mb-2">
-                  <div
-                    className="w-5 h-5 rounded-full shrink-0 ring-2 ring-offset-1 ring-border-light group-hover:ring-accent/30"
-                    style={{ background: `var(--accent-primary)`, borderRadius: '999px' }}
-                  />
-                  <span className="text-[15px] font-semibold">{p.label}</span>
+                {/* 视觉预览块：data-* 局部派生 CSS 变量 → 真实颜色/底色/纹理/字体 */}
+                <div
+                  className="tex-card rounded-lg p-3 mb-3 border border-border-light"
+                  data-accent={p.accent}
+                  data-base={p.base}
+                  data-texture={p.texture}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="w-4 h-4 rounded-full shrink-0" style={{ background: 'var(--tk-accent)' }} />
+                    <span className="text-[13px] font-semibold" style={{ color: 'var(--tk-accent)' }}>{p.label}</span>
+                    <span className="ml-auto w-5 h-5 rounded border border-black/10 shrink-0"
+                      style={{ background: 'var(--tk-surface)' }} title="底色" />
+                  </div>
+                  <div className="text-[11px] mt-1.5 text-dimmed">字体预览 — 阅读体验示例</div>
                 </div>
-                <div className="text-[12px] text-dimmed space-y-0.5 ml-7">
+                {/* 文字描述：底色/字体/纹理 key */}
+                <div className="text-[12px] text-dimmed space-y-0.5 ml-1">
                   <div className="flex gap-2">
                     <span className="text-disabled w-8 shrink-0">底色</span>
                     <span>{p.base}</span>
