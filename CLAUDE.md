@@ -475,6 +475,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 31. **disconnect_watcher 客户端断连监测**：`app/core/disconnect.py` 提供 `@asynccontextmanager` 封装的 `disconnect_watcher(request, cancel_event)`。替换了 5 个路由中 ~45 行重复的 `_watch_disconnect` 实现，修复了 process.py 资源泄漏和 chat.py 缺 await 两个 bug。新增长时端点时复用此工具。
 32. **适配器一请求一实例**：`AdapterRegistry` 存**类**（`register(VideoAdapter)`），`route()` 命中前 `cls()` 实例化——单例实例的 `cookies`/`_engine_config`（含 `cancel_event`）会被并发导入互相覆盖。适配器 `accept()` 是纯输入判断（无实例状态），`name` 是类属性。**本次已修复**：registry.py + adapters/__init__.py。
 33. **CORS Origin 白名单**：本地后端**禁止** `allow_origin_regex=".*"`（任意网页可跨站读本地数据）。白名单必须含 Tauri v2 生产的 **`http://tauri.localhost`**（Windows WebView2 实测 origin）+ `https://tauri.localhost` + `tauri://localhost` + 本机 localhost 任意端口；`_ForceCORSMiddleware` 仅对白名单 origin 回显凭证。**本次已修复**：main.py（2026-08-02 曾漏 `http://tauri.localhost` 导致打包版全接口 CORS 拦截）。
+34. **app 内置欢迎文档同步**：PreviewArea 空态欢迎页（「欢迎使用 LiMo」Markdown 快速开始，`frontend/src/components/preview/PreviewArea.tsx` 的 `renderContent` 空态分支）**在新增/移除功能时必须同步更新**——它面向新用户展示当前能力，曾因未同步而过时（如缺失插件系统/参考文件）。判断标准：改动影响「导入/转录/生成/导出/插件」任一能力时，检查此文档。
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始

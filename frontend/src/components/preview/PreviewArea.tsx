@@ -392,7 +392,7 @@ export function PreviewArea() {
 
           <div className="markdown-body max-w-[480px] mx-auto text-left mt-10" data-texture-reset="true">
             <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
-              {`## 快速开始\n\n1. **导入内容** — 粘贴网页链接、B站/YouTube 视频链接，或拖入 PDF/Office 文档\n2. **自动转录** — 系统会自动提取正文、转写音频、识别画面\n3. **生成 Markdown** — 在左侧生成面板选择风格，一键生成\n\n---\n\n> 把任何来源变成可读、可搜索的文字`}
+              {`## 快速开始\n\n1. **导入内容** — 粘贴网页/视频链接，或拖入 PDF、Word、PPT、Excel、EPUB、图片、视频\n2. **自动转录** — 自动提取正文、语音转文字、OCR 识别；视频可开启「画面理解」\n3. **生成笔记** — 一键生成「笔记」+「整理版原文」两份 Markdown，可附参考资料\n4. **更多能力** — 对话 AI 查资料、事实验证、导出 HTML/MD/ZIP/思维导图\n\n---\n\n> 把任何来源变成可读、可搜索的文字。需要更强的能力？可安装三方插件扩展。`}
             </ReactMarkdown>
           </div>
         </div>
