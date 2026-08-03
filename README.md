@@ -28,7 +28,7 @@
 
 图片识别（OCR）：dashscope-ocr（阿里云，需 Key）
 
-需要更强的 PDF 解析（文字+图片+矢量图完整提取）？可装**三方插件** pymupdf4llm——从[插件仓库](https://github.com/lazybone404/limo-pymupdf4llm-plugin)拷贝到 `~/.limo/plugins/`，设置页「插件」卡片**一键安装**依赖即可。
+需要更强的 PDF 解析（文字+图片+矢量图完整提取）？装**三方插件** pymupdf4llm：从[插件仓库](https://github.com/lazybone404/limo-pymupdf4llm-plugin)下载 zip → 设置页「插件」→「**安装插件**」选 zip → 重启 → **一键安装**依赖即可。
 
 引擎可以在设置里换，每种文件类型独立绑定。切换后点「重新转录」重新提取。
 
@@ -69,7 +69,7 @@
 
 ### Windows 桌面版
 
-从 [Releases](https://github.com/lazybone404/LiMo/releases) 下载安装包，双击安装。自带 ffmpeg、OCR 引擎、搜索引擎，不需要装 Python。
+从 [Releases](https://github.com/lazybone404/LiMo/releases) 下载安装包，双击安装。自带 ffmpeg、SearXNG 搜索引擎，不需要装 Python。OCR 用阿里云 dashscope（云端，需 API Key）；更强的 PDF 解析可装三方插件。
 
 ### 开发环境
 
@@ -87,4 +87,4 @@ bash start.sh
 
 打开设置，在「模型 & 引擎」→「LLM 厂商」里填 API Key——DeepSeek、OpenAI、DashScope 都行。然后导入内容试试。
 
-转录引擎是内置的，不需要配 Key 就能用。搜索引擎第一次用会自动启动。
+转录引擎内置：bcut-asr（B 站免费）与 pypdfium2（PDF 解析）无需 Key；dashscope（云端 OCR/ASR）需 API Key。搜索引擎第一次用会自动启动。
