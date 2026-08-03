@@ -498,7 +498,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 |------|------|------|
 | ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端)。faster-whisper 已从内置移除（本地转写需自行安装） |
 | ✅ | OCR 引擎 | dashscope VL (云端)。Tesseract 已从内置移除（需三方插件 `examples/tesseract_plugin.py`） |
-| ✅ | Doc 引擎 | pypdfium2 (PDF默认,BSD-3) + pdfplumber (表格,MIT) + python-docx/pptx/xlsx + openpyxl + markitdown + ebooklib（docling 已移除：依赖 torch 无法打包） |
+| ✅ | Doc 引擎 | pypdfium2 (PDF默认,BSD-3) + pdfplumber (表格,MIT) + python-docx/pptx/xlsx + openpyxl/.xls(xlrd) + markitdown + ebooklib（docling 已移除；.doc/.ppt 旧格式明确提示转 .docx/.pptx） |
 | ✅ | 引擎绑定 | `engine_bindings` 按子场景配置，doc 拆为 pdf / word / ppt / excel / epub |
 | ✅ | 引擎绑定只取第一个 | 绑定解析首个可用引擎，失败直接报错，不再静默降级 |
 | ✅ | 视频帧提取 | ffmpeg 抽帧 + 网格拼接 + 去重（无 opencv 依赖） |

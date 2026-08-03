@@ -89,6 +89,12 @@ class DocumentAdapter(PipelineAdapter):
 
         ext = path.suffix.lower()
 
+        # 旧二进制格式明确提示（失败显式化，不静默）：python-docx/pptx 只支持 OpenXML
+        if ext == ".doc":
+            raise FatalError("暂不支持旧版 .doc 格式，请用 Word/WPS 另存为 .docx 后导入")
+        if ext == ".ppt":
+            raise FatalError("暂不支持旧版 .ppt 格式，请用 PowerPoint 另存为 .pptx 后导入")
+
         if on_progress:
             on_progress(ProgressEvent(phase="transcribe", status="running",
                                       message="转录中..."))

@@ -48,6 +48,13 @@ chat 链路参考 · JSON 格式 · 评论爬取（法律风险）· process/fac
 
 ---
 
+## 2026-08-03 — .xls 旧格式支持 + .doc/.ppt 明确提示
+
+- **.xls**：ExcelEngine 加 **xlrd** 分支（openpyxl 不支持旧二进制格式），逐 sheet → MD 表格（数字/日期规范化），与 .xlsx 产物一致。新增依赖 xlrd + spec hiddenimports
+- **.doc / .ppt**（Word/PPT 旧二进制格式）：python-docx/pptx 只支持 OpenXML → DocumentAdapter 明确提示「请另存为 .docx/.pptx 后导入」（失败显式化，不静默）
+
+---
+
 ## 2026-08-03 — v0.2.0 发布
 
 LiMo 0.2.0 正式发布（NSIS + MSI 安装包 + GitHub Release）。
