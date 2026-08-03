@@ -55,7 +55,7 @@ hiddenimports = [
 # 引擎相关
 hiddenimports += [
     'numpy',
-    'docx', 'pptx', 'openpyxl',
+    'docx', 'pptx', 'openpyxl', 'xlrd',
     'markitdown', 'ebooklib',
     # faster_whisper/ctranslate2/av/tokenizers 已移除（faster-whisper 不再内置）
     'trafilatura',
