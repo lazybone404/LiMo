@@ -10,6 +10,12 @@ import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+# PyInstaller 打包版：Python 原生崩溃（segfault/abort）时 dump 线程栈到 stderr
+# （Tauri 重定向到 limo_backend_stderr.log）——否则静默退出无法定位。
+if getattr(sys, "frozen", False):
+    import faulthandler
+    faulthandler.enable()
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
