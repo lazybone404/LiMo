@@ -110,6 +110,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "doc": [],
         "doc:epub": [],
     },
+    # 对话上下文管理（C2-C4）— 预算档位 / 历史上限 / 文档引用模式
+    "chat_context": {
+        "budget_ratio": "auto",   # auto（窗口×0.7）| 0.5 | 0.7 | 0.85（context_window 用于输入的比例）
+        "history_limit": 0,        # 历史轮数上限（0 = 不限制，按预算自动裁剪）
+        "doc_mode": "auto",        # auto | full | summary（文档引用模式）
+    },
     # Agent 工具配置 — 网络搜索 + 网页抓取
     "agent_tools": {
         "search": {"provider": "duckduckgo", "searxng_url": "http://127.0.0.1:18080", "tavily_api_key": ""},

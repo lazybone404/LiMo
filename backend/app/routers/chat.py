@@ -19,7 +19,8 @@ from pydantic import BaseModel
 from app.llm import LLMService, AgentRunner
 from app.core.errors import AppError
 from app.core import logging as log
-from app.core.text_utils import smart_truncate
+from app.core.chat_context import compute_budget, build_doc_context, trim_history
+from app.core.token import estimate_tokens
 from app.agent.tools import search_web, fetch_url
 from app.agent.tool_registry import ToolRegistry, ToolDef
 from app.agent.session import SessionManager
@@ -120,18 +121,6 @@ def _build_registry(store: object) -> ToolRegistry:
     return reg
 
 
-def _build_doc_context(store: object, doc_ids: list[str]) -> str:
-    """构建文档上下文摘要（注入 system prompt）"""
-    if not doc_ids:
-        return "（未选中文档，可用 list_docs 查看可用文档）"
-    parts = []
-    for did in doc_ids:
-        tx = store.get_transcript(did)
-        if tx:
-            parts.append(f"[{tx['title']}]\n{smart_truncate(tx['rawText'], 1000)}")
-    return "\n\n".join(parts) if parts else "（未选中文档）"
-
-
 # ── 路由 ──
 
 
@@ -146,14 +135,19 @@ async def chat(req: ChatRequest, request: Request, store=Depends(get_store), con
     if not llm.api_key:
         raise AppError("CHAT_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
-    system = prompt_loader.build(_build_doc_context(store, req.doc_ids))
+    # 上下文预算组装（C2）
+    _, budget = compute_budget(config, model_id)
+    cc = config.get("chat_context") or {}
+    doc_text, _ = build_doc_context(store, req.doc_ids, budget, cc.get("doc_mode", "auto"))
+    system = prompt_loader.build(doc_text)
+    history = trim_history(req.history or [], budget, history_limit=cc.get("history_limit", 0))
 
     agent = AgentRunner(llm, max_rounds=3)
     _build_registry(store).apply_to(agent)
 
     log.info("Chat start", question_len=len(req.question), docs=len(req.doc_ids))
     try:
-        answer = await agent.run(system, req.question, req.history)
+        answer = await agent.run(system, req.question, history)
         log.info("Chat done", answer_len=len(answer))
         return {"answer": answer}
     except AppError:
@@ -198,7 +192,6 @@ async def chat_stream(
     sessions = SessionManager(store)
     conv = sessions.load_or_create(conversation_id, question, model_id, doc_list)
     conversation_id = conv["id"]
-    history = sessions.get_history(conv)
 
     # ── 模型 ──
     if not model_id:
@@ -208,10 +201,20 @@ async def chat_stream(
     if not llm.api_key:
         raise AppError("CHAT_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
-    # ── System prompt + 工具注册 ──
-    system = prompt_loader.build(_build_doc_context(store, doc_list))
+    # ── 工具注册 + 上下文预算组装（C2：预算 = 窗口×0.7，分配 system→doc→history）──
     agent = AgentRunner(llm, max_rounds=3)
     _build_registry(store).apply_to(agent)
+
+    window, budget = compute_budget(config, model_id)
+    cc = config.get("chat_context") or {}
+    doc_text, _ = build_doc_context(store, doc_list, budget, cc.get("doc_mode", "auto"))
+    system = prompt_loader.build(doc_text)
+    tool_defs = agent._tool_defs
+    used = estimate_tokens(system) + sum(estimate_tokens(json.dumps(t, ensure_ascii=False)) for t in tool_defs)
+    hist_budget = max(0, budget - used)
+    raw_history = trim_history(conv.get("messages", []), hist_budget,
+                               history_limit=cc.get("history_limit", 0))
+    history = [{"role": m["role"], "content": m["content"]} for m in raw_history]
 
     # ── 保存用户消息（刷新不丢）──
     sessions.append_user_message(conversation_id, question, doc_refs=doc_ref_list or None)
@@ -225,7 +228,7 @@ async def chat_stream(
         thinking_parts: list[str] = []
         async with disconnect_watcher(request, cancel_event):
             try:
-                yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id, 'context_window': window, 'budget': budget}, ensure_ascii=False)}\n\n"
 
                 async for event in agent.stream_run(system, question, history, cancel_event=cancel_event):
                     if event["type"] == "text":

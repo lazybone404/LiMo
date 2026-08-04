@@ -181,7 +181,8 @@ class AgentRunner:
         """
         messages: list[dict] = [{"role": "system", "content": system_prompt}]
         if history:
-            messages.extend(history[-20:])
+            # 已由 chat.py 预算引擎裁剪（token 预算），不再二次截断
+            messages.extend(history)
         messages.append({"role": "user", "content": user_message})
 
         for round_i in range(self.max_rounds):
