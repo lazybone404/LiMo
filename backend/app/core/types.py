@@ -193,9 +193,20 @@ class ChatMessage:
     role: str          # user | assistant | system
     content: str
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    # 扩展字段（可选，旧数据缺失时前端默认空）：
+    doc_refs: list | None = None      # user @ 的文档 / assistant 引用的文档 [{docId,title}]
+    tool_calls: list | None = None    # assistant 工具调用气泡 [{tool,display,summary}]
+    thinking: str | None = None       # assistant 思考段
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "role": self.role, "content": self.content, "timestamp": self.timestamp}
+        d: dict = {"id": self.id, "role": self.role, "content": self.content, "timestamp": self.timestamp}
+        if self.doc_refs:
+            d["doc_refs"] = self.doc_refs
+        if self.tool_calls:
+            d["tool_calls"] = self.tool_calls
+        if self.thinking:
+            d["thinking"] = self.thinking
+        return d
 
 
 @dataclass

@@ -25,6 +25,15 @@ class RenameRequest(BaseModel):
     title: str
 
 
+class PatchRequest(BaseModel):
+    archived: bool | None = None
+
+
+class RebuildRequest(BaseModel):
+    """全量重建消息列表 — 编辑/删除/分支截断统一走此接口（前端算好新消息数组）"""
+    messages: list[dict]
+
+
 @router.get("/conversations")
 def list_conversations(store=Depends(get_store)):
     return store.list_conversations()
@@ -75,6 +84,30 @@ def append_message(conv_id: str, data: AppendRequest, store=Depends(get_store)):
 def rename_conversation(conv_id: str, data: RenameRequest, store=Depends(get_store)):
     ok = store.rename_conversation(conv_id, data.title)
     return {"status": "ok" if ok else "not found"}
+
+
+@router.patch("/conversations/{conv_id}")
+def patch_conversation(conv_id: str, data: PatchRequest, store=Depends(get_store)):
+    """归档/取消归档 — archived 字段"""
+    conv = store.get_conversation(conv_id)
+    if not conv:
+        raise AppError("CONV_NOT_FOUND", "对话不存在", status_code=404)
+    if data.archived is not None:
+        conv["archived"] = data.archived
+    store.save_conversation(conv)
+    return {"status": "ok"}
+
+
+@router.put("/conversations/{conv_id}/messages")
+def rebuild_messages(conv_id: str, data: RebuildRequest, store=Depends(get_store)):
+    """全量重建消息列表 — 前端编辑/删除/分支截断统一走此接口，避免逐条改动的上下文错乱"""
+    conv = store.get_conversation(conv_id)
+    if not conv:
+        raise AppError("CONV_NOT_FOUND", "对话不存在", status_code=404)
+    conv["messages"] = data.messages
+    conv["updated_at"] = datetime.now().isoformat()
+    store.save_conversation(conv)
+    return {"status": "ok", "count": len(data.messages)}
 
 
 @router.delete("/conversations/{conv_id}")

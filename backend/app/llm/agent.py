@@ -82,6 +82,25 @@ def _tool_summary(tool_name: str, result: str) -> str:
     return "工具执行完成"
 
 
+def _extract_refs(tool_name: str, result: str) -> list[dict]:
+    """从工具结果中提取引用的文档（docId/title），供前端渲染 assistant 引用块"""
+    try:
+        data = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if tool_name == "search_docs":
+        results = (data or {}).get("results", []) if isinstance(data, dict) else []
+        return [{"docId": r["id"], "title": r.get("title", "")} for r in results if r.get("id")][:5]
+    if tool_name == "lookup_doc":
+        if isinstance(data, dict) and data.get("docId"):
+            return [{"docId": data["docId"], "title": data.get("title", "")}]
+        return []
+    if tool_name == "list_docs":
+        return [{"docId": r["id"], "title": r.get("title", "")}
+                for r in data if isinstance(r, dict) and r.get("id")][:5]
+    return []
+
+
 class AgentRunner:
     """通用 Agent 循环：LLM + Tools，支持流式输出。
 
@@ -254,6 +273,7 @@ class AgentRunner:
                     "type": "tool_result",
                     "tool": fn_name,
                     "summary": _tool_summary(fn_name, result),
+                    "refs": _extract_refs(fn_name, result),
                 }
 
         # 达到最大轮数 → 带完整消息历史的流式最终回答
@@ -280,6 +300,9 @@ class AgentRunner:
                 if cancel_event and cancel_event.is_set():
                     raise CancelledError()
                 delta = chunk.choices[0].delta
+                # deepseek 系列思考链：reasoning_content 单独事件，前端折叠展示
+                if getattr(delta, "reasoning_content", None):
+                    yield {"type": "thinking", "text": delta.reasoning_content}
                 if delta.content:
                     yield {"type": "text", "text": delta.content}
         except CancelledError:

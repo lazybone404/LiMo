@@ -15,7 +15,7 @@
  *  - 删除/编辑/分支截断本地更新，P5 走 PUT /conversations/{id}/messages 全量 rebuild 同步后端
  */
 import { create } from 'zustand'
-import { streamChat, listConversations, getConversation } from '../api/chat'
+import { streamChat, listConversations, getConversation, rebuildConversationMessages } from '../api/chat'
 import { useStore } from './index'
 import { nextMsgId } from './toastSlice'
 
@@ -85,6 +85,16 @@ export interface ChatStoreState {
   editMessage: (msgId: string, content: string) => void
   refreshConversations: () => Promise<void>
 }
+
+/** ChatMsg → 后端 message dict（rebuild 用，保留扩展字段；timestamp 由后端覆盖） */
+const toBackendMsg = (m: ChatMsg) => ({
+  id: m.id,
+  role: m.role,
+  content: m.content,
+  ...(m.docRefs && m.docRefs.length ? { doc_refs: m.docRefs } : {}),
+  ...(m.toolCalls && m.toolCalls.length ? { tool_calls: m.toolCalls.map(tc => ({ tool: tc.tool, display: tc.display, summary: tc.summary })) } : {}),
+  ...(m.thinking ? { thinking: m.thinking } : {}),
+})
 
 /** 当前活跃流式请求的 AbortController（同一时刻只允许一条流式） */
 let activeController: AbortController | null = null
@@ -187,7 +197,7 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
         updateLastBot(bot => ({ ...bot, content: bot.content || msg, isError: true, streaming: false }))
         endStreaming()
       },
-    }, controller.signal, convId)
+    }, controller.signal, convId, docRefs)
   }
 
   return {
@@ -220,6 +230,11 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
           role: m.role === 'user' || m.role === 'assistant' ? m.role : 'system',
           content: m.content,
           date: m.timestamp || new Date().toLocaleString(),
+          docRefs: m.doc_refs?.length ? m.doc_refs : undefined,
+          toolCalls: m.tool_calls?.length
+            ? m.tool_calls.map(tc => ({ id: nextMsgId(), tool: tc.tool, display: tc.display, summary: tc.summary, status: 'done' as const }))
+            : undefined,
+          thinking: m.thinking || undefined,
         }))
         set({ currentId: id, topic: c.title, messages, streaming: false, generating: false, statusText: '' })
       } catch { /* 组件层 toast */ }
@@ -252,14 +267,20 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       while (ui >= 0 && msgs[ui].role !== 'user') ui--
       if (ui < 0) return
       const userMsg = msgs[ui]
-      // 截断到 ui（含 ui 及之后的回复全部删除）
+      // 后端先截断到 ui（rebuild），再本地重发（流式 append 新消息）
+      if (s.currentId) {
+        rebuildConversationMessages(s.currentId, msgs.slice(0, ui).map(toBackendMsg)).catch(() => { /* 组件层忽略 */ })
+      }
       dispatchSend(userMsg.content, userMsg.docRefs, ui)
     },
 
     deleteMessage: (msgId) => {
       const s = get()
-      set({ messages: s.messages.filter(m => m.id !== msgId) })
-      // TODO(P5): 后端 PUT /conversations/{id}/messages 全量 rebuild 同步
+      const next = s.messages.filter(m => m.id !== msgId)
+      set({ messages: next })
+      if (s.currentId) {
+        rebuildConversationMessages(s.currentId, next.map(toBackendMsg)).catch(() => { /* 组件层忽略 */ })
+      }
     },
 
     editMessage: (msgId, content) => {
@@ -272,14 +293,19 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       const trimmed = content.trim()
       if (!trimmed) return
       if (msg.role === 'user') {
-        // 分支语义：截断该条及之后 → 立即以新内容重发
+        // 分支语义：后端先截断到 idx（rebuild），再本地以新内容重发（流式 append）
+        if (s.currentId) {
+          rebuildConversationMessages(s.currentId, msgs.slice(0, idx).map(toBackendMsg)).catch(() => { /* 组件层忽略 */ })
+        }
         dispatchSend(trimmed, msg.docRefs, idx)
       } else {
-        // assistant：本地覆盖文本（不重发）
+        // assistant：本地覆盖文本（不重发），同步 rebuild
         const next = [...msgs]
         next[idx] = { ...msg, content: trimmed, isError: false }
         set({ messages: next })
-        // TODO(P5): 后端 rebuild 同步
+        if (s.currentId) {
+          rebuildConversationMessages(s.currentId, next.map(toBackendMsg)).catch(() => { /* 组件层忽略 */ })
+        }
       }
     },
 

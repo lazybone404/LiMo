@@ -63,10 +63,15 @@ def _make_lookup_doc(store: object):
             matched = [l for l in lines if query.lower() in l.lower()][:10]
             return json.dumps({
                 "title": tx.get("title", ""),
+                "docId": id,
                 "matches": matched,
                 "totalLength": len(raw),
             }, ensure_ascii=False)
-        return json.dumps({"title": tx["title"], "content": raw[:2000]}, ensure_ascii=False)
+        return json.dumps({
+            "title": tx["title"],
+            "docId": id,
+            "content": raw[:2000],
+        }, ensure_ascii=False)
     return lookup_doc
 
 
@@ -169,6 +174,7 @@ async def chat_stream(
     request: Request,
     question: str = Query(...),
     doc_ids: str = Query(""),
+    doc_refs: str = Query(""),
     model_id: int | None = None,
     conversation_id: str = Query(""),
     store=Depends(get_store),
@@ -177,6 +183,16 @@ async def chat_stream(
     """SSE 流式对话 — 实时推送回答 + 工具调用进度 + 自动持久化"""
 
     doc_list = [d.strip() for d in doc_ids.split(",") if d.strip()]
+
+    # 本条消息 @ 引用的文档（JSON 数组 [{docId,title}]）→ 存 user 消息供展示
+    doc_ref_list: list[dict] = []
+    if doc_refs.strip():
+        try:
+            doc_ref_list = json.loads(doc_refs)
+            if not isinstance(doc_ref_list, list):
+                doc_ref_list = []
+        except json.JSONDecodeError:
+            doc_ref_list = []
 
     # ── 会话管理 ──
     sessions = SessionManager(store)
@@ -198,12 +214,15 @@ async def chat_stream(
     _build_registry(store).apply_to(agent)
 
     # ── 保存用户消息（刷新不丢）──
-    sessions.append_user_message(conversation_id, question)
+    sessions.append_user_message(conversation_id, question, doc_refs=doc_ref_list or None)
 
     cancel_event = asyncio.Event()
 
     async def sse_stream():
         full_answer: list[str] = []
+        tool_calls: list[dict] = []
+        refs: list[dict] = []
+        thinking_parts: list[str] = []
         async with disconnect_watcher(request, cancel_event):
             try:
                 yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
@@ -211,9 +230,21 @@ async def chat_stream(
                 async for event in agent.stream_run(system, question, history, cancel_event=cancel_event):
                     if event["type"] == "text":
                         full_answer.append(event["text"])
+                    elif event["type"] == "tool_start":
+                        tool_calls.append({"tool": event["tool"], "display": event["display"]})
+                    elif event["type"] == "tool_result":
+                        refs.extend(event.get("refs", []) or [])
+                    elif event["type"] == "thinking":
+                        thinking_parts.append(event.get("text", ""))
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
-                sessions.append_assistant_message(conversation_id, "".join(full_answer))
+                sessions.append_assistant_message(
+                    conversation_id,
+                    "".join(full_answer),
+                    doc_refs=refs or None,
+                    tool_calls=tool_calls or None,
+                    thinking="".join(thinking_parts) or None,
+                )
             finally:
                 # 关闭 LLM 连接池（防 httpx client 常驻累积）
                 try:

@@ -40,10 +40,12 @@ export function streamChat(
   callbacks: StreamChatCallbacks,
   signal?: AbortSignal,
   conversationId?: string,
+  docRefs?: { docId: string; title: string }[],
 ): void {
   const params = new URLSearchParams({ question })
   if (docIds.length > 0) params.set('doc_ids', docIds.join(','))
   if (conversationId) params.set('conversation_id', conversationId)
+  if (docRefs && docRefs.length > 0) params.set('doc_refs', JSON.stringify(docRefs))
 
   // 追踪 SSE 是否正常结束（收到 done/error）— 对齐 generate.ts。
   // 断连时 onDone/onError 都不会触发，若不追踪则聊天 UI 永久卡加载
@@ -98,8 +100,15 @@ export interface ConvEntry {
   created_at: string; updated_at: string
 }
 
+export interface ConvMessage {
+  id: string; role: string; content: string; timestamp: string
+  doc_refs?: { docId: string; title: string }[]
+  tool_calls?: { tool: string; display: string; summary?: string }[]
+  thinking?: string
+}
+
 export interface ConvFull extends ConvEntry {
-  messages: { id: string; role: string; content: string; timestamp: string }[]
+  messages: ConvMessage[]
   doc_ids: string[]
 }
 
@@ -122,5 +131,22 @@ export async function renameConversation(id: string, title: string) {
   return (await apiFetch(`${BASE}/conversations/${id}/rename`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title }),
+  })).json()
+}
+
+export async function archiveConversation(id: string, archived: boolean) {
+  return (await apiFetch(`${BASE}/conversations/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ archived }),
+  })).json()
+}
+
+export async function rebuildConversationMessages(
+  id: string,
+  messages: { id: string; role: string; content: string; doc_refs?: unknown; tool_calls?: unknown; thinking?: string }[],
+) {
+  return (await apiFetch(`${BASE}/conversations/${id}/messages`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages }),
   })).json()
 }

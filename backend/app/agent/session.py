@@ -51,8 +51,13 @@ class SessionManager:
         messages = conv.get("messages", [])[-MAX_HISTORY_MESSAGES:]
         return [{"role": m["role"], "content": m["content"]} for m in messages]
 
-    def append_user_message(self, conv_id: str, question: str) -> None:
-        """追加用户消息到对话（立即保存，刷新不丢）"""
+    def append_user_message(
+        self,
+        conv_id: str,
+        question: str,
+        doc_refs: list[dict] | None = None,
+    ) -> None:
+        """追加用户消息到对话（立即保存，刷新不丢）。doc_refs = 本条 @ 的文档"""
         conv = self._store.get_conversation(conv_id)
         if not conv:
             return
@@ -60,6 +65,7 @@ class SessionManager:
             id=f"msg_{uuid.uuid4().hex[:12]}",
             role="user",
             content=question,
+            doc_refs=doc_refs,
         )
         conv.setdefault("messages", []).append(msg.to_dict())
         conv["updated_at"] = datetime.now().isoformat()
@@ -71,8 +77,15 @@ class SessionManager:
 
         self._store.save_conversation(conv)
 
-    def append_assistant_message(self, conv_id: str, answer: str) -> None:
-        """追加 AI 回复到对话"""
+    def append_assistant_message(
+        self,
+        conv_id: str,
+        answer: str,
+        doc_refs: list[dict] | None = None,
+        tool_calls: list[dict] | None = None,
+        thinking: str | None = None,
+    ) -> None:
+        """追加 AI 回复到对话。扩展字段：doc_refs（引用文档）/ tool_calls（工具气泡）/ thinking（思考段）"""
         conv = self._store.get_conversation(conv_id)
         if not conv:
             return
@@ -80,6 +93,9 @@ class SessionManager:
             id=f"msg_{uuid.uuid4().hex[:12]}",
             role="assistant",
             content=answer,
+            doc_refs=doc_refs,
+            tool_calls=tool_calls,
+            thinking=thinking,
         )
         conv.setdefault("messages", []).append(msg.to_dict())
         conv["updated_at"] = datetime.now().isoformat()

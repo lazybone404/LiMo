@@ -716,6 +716,7 @@ class Store:
                 "id": data["id"], "title": data["title"],
                 "model_id": data.get("model_id"),
                 "created_at": data["created_at"], "updated_at": data["updated_at"],
+                "archived": bool(data.get("archived", False)),
             })
             existing.sort(key=lambda e: e.get("updated_at", ""), reverse=True)
             self._index["conversations"] = existing

@@ -34,6 +34,7 @@ vi.mock('../api/chat', () => ({
   },
   listConversations: vi.fn(async () => listResult),
   getConversation: vi.fn(async () => null),
+  rebuildConversationMessages: vi.fn(async () => ({ status: 'ok' })),
 }))
 
 beforeEach(() => {
