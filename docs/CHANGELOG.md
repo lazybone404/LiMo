@@ -6,6 +6,37 @@
 
 ---
 
+## 2026-08-04 — 对话模块全量重写（P1-P6 · 依 pi-docs/对话重写方案.md）
+
+> 用户确认「放开手脚做完（无实际用户）」。LiMo 对话 UI 原本简陋（ChatCore 360 行 = 消息列表 + Markdown + 导出），本次按建议稿全量重写，对标 NextChat 的对话管理核心。
+
+### 前端：独立 chatStore + 消息层组件树
+
+- **独立 `store/chatStore.ts`**（不并入主 useStore）：流式 delta 高频更新隔离；ChatMsg 消息模型（`streaming`/`isError`/`toolCalls`/`docRefs`/`thinking`）+ 流式状态机（send/stop/regenerate/edit 分支语义/delete）
+- **chatSlice 瘦身**：对话管理字段迁至 chatStore，只留 generating/factChecking + AI 浮窗 UI
+- **组件树重写**：MessageItem（气泡/打字机 key 技巧/消息操作栏/工具气泡三态/引用 chips/思考折叠）、ChatInput（textarea 多行 + IME 修复 + 停止按钮 + @ 引用浮层）、MessageList（stick-to-bottom + 长会话分页窗口）、ChatSidebar（搜索/归档折叠/右键菜单）、ChatCore 整合
+- **打字机**：streaming 时 ReactMarkdown `key='loading'` 增量重渲染，结束切 `'done'` 强制重挂载（对齐 NextChat）
+- **消息操作**：复制 / 编辑（user 分支语义：截断+重发；assistant 本地覆盖）/ 重新生成 / 删除；流式中停止生成
+
+### 后端：SSE 8 事件 + 会话 API 增强
+
+- `agent.py`：tool_result 带 `refs`（从 search_docs/lookup_doc/list_docs 结果提取 docId/title）；`_stream_response` 探测 `reasoning_content` → **thinking 事件**（deepseek 思考链折叠展示）
+- `chat.py`：lookup_doc 结果补 docId；chat_stream 加 `doc_refs` 参数；sse_stream 收集 tool_calls/refs/thinking 持久化
+- `conversations.py`：`PATCH /conversations/{id}`（archived 归档）+ `PUT /conversations/{id}/messages`（全量 rebuild——编辑/删除/分支截断统一入口）
+- `session.py` append 透传 doc_refs/tool_calls/thinking；`types.py` ChatMessage 扩展字段；store.py 会话 index 带 archived
+- 新 `docs/对话协议.md`：SSE 事件流全量文档化
+
+### 关键行为确定
+
+- **中断持久化**：stopGenerating → abort → 后端 cancel_event → `done+cancelled`，部分回复**也会保存**（前端标「已停止」+ 保留部分内容）
+- **docIds 上下文策略**：「当前选中文档 + 本条 @ 引用」（每轮动态组合去重），比建议稿的「会话内引用集合」更省 token（对齐用户 token 敏感）；已同步方案文档
+
+### 验证
+
+前端 100 tests（含 chatStore 18 用例）+ tsc 零错误；后端 5 测试 + e2e 36 全绿。
+
+---
+
 ## 2026-08-03 — 视频笔记 prompt 过滤规则补「下集/续集预告」
 
 用户审阅生成的视频笔记时发现「下集预告」被做成独立章节——纯吊胃口套话（"我知道你很急但你先别急，咱们下个视频见"）零信息量。根因：`_NOTES_TASK` 的广告/无关内容过滤规则只覆盖硬/软广告与填充词，**漏掉「下集预告/续集引流/催更」**这类视频片尾常见套话。修复：过滤规则补明确类别——纯吊胃口套话必须省略；若预告带实质信息（如下集主题）最多一句带过，不作为独立章节。

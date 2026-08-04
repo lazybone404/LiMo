@@ -253,11 +253,13 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 - 调度：请求 `model_id` → `scene_models.image_process` → `scene_models.generate` → Engine
 - 存储：`{doc_dir}/process/{mode}.md`
 
-**对话管道**（Agent 工具循环）：
+**对话管道**（Agent 工具循环，2026-08-04 前端全量重写）：
 - `search_web`（Tavily → SearXNG → DDG 三级降级）+ `fetch_url`（trafilatura/Jina）
 - 流式 SSE 端点 + 对话持久化（`conversations/` + CRUD）
 - 历史上下文近 40 条消息
 - 5 个工具：search_docs / lookup_doc / list_docs / search_web / fetch_url
+- 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留生成状态 + 浮窗 UI
+- **消息级文档引用**：docIds = 当前选中文档 + 本条 @ 引用（chatStore 组合去重），不绑定会话
 
 **AI 审核管道**（AI Review Engine，2026-07-15 从 FactCheck 重构而来）：
 - 端点 `POST /fact-check/{id}` + SSE 流式 `GET /fact-check/{id}/stream`（URL 不变）
@@ -306,6 +308,7 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 - 可拖拽 resize，50–600px，<80px 自动折叠为 PanelStrip
 - 快捷键：`Ctrl+G` 切换生成面板，`Ctrl+I` 切换 AI 面板
 - Zustand store 按域拆 7 slices（`store/themeSlice.ts` / `docsSlice` / `contentSlice` / `tasksSlice` / `chatSlice` / `uiSlice` / `toastSlice`），`store/index.ts` 只剩组合层 + 模块副作用，共享类型在 `store/types.ts`（`Store` 为各 slice 交集）。**action 零跨域引用**，新增域 = 新建 slice 文件，消费方 API 零改动。持久化为手写 localStorage（`mbw_*` 9 个 key），无 persist 中间件。`setProcessing(key, null)` 是前缀树形删除语义（删 key 本身 + `key__` 前缀子任务），`clearDocTasks`/`cancelOneTask`/`failTask` 是兄弟函数
+- **对话独立 chatStore**（`store/chatStore.ts`，2026-08-04）：对话状态**不并入主 store**——流式 delta 高频更新隔离（主 store 订阅者不受波及）。chatSlice 只留 generating/factChecking + AI 浮窗 UI。对话组件树：`ChatCore`（容器）→ `ChatSidebar`（会话列表/归档折叠）/ `MessageList`（分页窗口）/ `MessageItem`（气泡/打字机/操作栏/工具气泡）/ `ChatInput`（textarea/IME/@引用）。消息模型 ChatMsg 在 chatStore.ts 定义，**勿与主 store types.ts 的 ChatMessage 混淆**
 
 ### Tauri 桌面壳
 
@@ -355,7 +358,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **参考文件（Reference Text）**：生成时注入参考资料（如评论区观点），仅 notes 注入 `<reference_texts>` section（user_request 前），polished/Excel 不注入。流式 GET 无法传大 JSON → `POST /api/references` 内存暂存（TTL 20 分钟）+ 短 id，生成传 `reference_ids`。前端参考文件 state 仅会话内不持久化
 - **Polish/Notes 风格隔离**：Polish 固定忠实整理策略（无 `<style_preference>` 节 + **不接受 user_notes 备注**，参数保留兼容但内部忽略不注入 `<user_request>`），格式白名单 `_POLISH_FORMAT_FNS`（toc/translate/formulas/references/images）。Notes 有 `<style_preference>` 节，风格从 `VIDEO_NOTE_STYLES`（9 种）或 `DOC_NOTE_STYLES`（8 种）查找。`normalize_style()` 兼容旧 `meeting_minutes` key
 - **风格定义位置**：`app/generation/prompts/notes_styles.py`（COMMON_NOTE_STYLES → VIDEO_NOTE_STYLES / DOC_NOTE_STYLES），旧 `STYLE_MAP`/`DOC_STYLE_MAP` 保留为 deprecated 别名
-- **Agent SSE 事件流**：`agent_status`（判定前）→ `tool_start`（带 `display` 安全文案，后端 `_tool_display()` 生成）→ `tool_result`（仅 `summary` 摘要，完整结果只传 LLM）→ `text` 流式 token。C 端不暴露完整工具结果到前端 UI
+- **Agent SSE 事件流（8 事件）**：`agent_status`（判定前）→ `tool_start`（带 `tool`/`display`，`_tool_display()` 生成安全文案）→ `tool_result`（`summary` 摘要 + `refs` 引用文档 docId/title，完整结果只传 LLM）→ `ref`/`thinking`（思考段，`reasoning_content`）→ `text` 流式 token。C 端不暴露完整工具结果到前端 UI。协议详见 docs/对话协议.md
 - **对话文档注入**：`smart_truncate(rawText, 1000)` 按句子边界截断（优先级：`。` > `. ` > `\n\n` > `\n`），不再硬截 `[:1000]`
 
 ### 并发与安全
@@ -536,7 +539,10 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 搜索多级降级 | Tavily API → SearXNG 自动启动 → DuckDuckGo |
 | ✅ | SearXNG 便携版 | 自动检测 `.exe` 启动，asyncio.Lock 防并发 |
 | ✅ | SSE 流式 + 持久化 | 逐 token 推送 + 自动保存对话 + 40 条历史上下文 |
-| ✅ | 对话 CRUD | 新建/重命名/删除/追加消息 |
+| ✅ | 对话 CRUD | 新建/重命名/删除/追加消息 + 归档（archived）+ 消息 rebuild（编辑/删除/分支截断） |
+| ✅ | UI 全量重写 | 独立 chatStore 状态机 + 流式打字机 + 消息操作（复制/编辑/重新生成/删除/停止）+ 工具气泡三态 + 思考段折叠 + 长会话分页窗口 |
+| ✅ | 消息级文档引用 | 输入区 @ 选文档 → docRefs chips；docIds = 当前选中 + 本条引用（动态组合）；引用 chips 点击跳转预览区 |
+| ✅ | assistant 引用块 | tool_result.refs → assistant 消息引用文档 chips（点击跳转） |
 
 ### ✅ AI 审核（原事实验证）
 

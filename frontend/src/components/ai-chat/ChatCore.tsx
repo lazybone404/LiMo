@@ -76,10 +76,11 @@ export function ChatCore({
     try { localStorage.removeItem('mbw_lastConvId') } catch { /* quota */ }
   }
 
-  // 用户问题导航
+  // 用户问题导航（只列最近 10 个，保证落在 MessageList 分页窗口内）
   const userQuestions = useMemo(
     () => messages
       .filter(m => m.role === 'user')
+      .slice(-10)
       .map((m, i) => ({ id: m.id, text: m.content.slice(0, 30) + (m.content.length > 30 ? '...' : ''), index: i + 1 })),
     [messages],
   )
