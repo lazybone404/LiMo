@@ -6,8 +6,6 @@ import { PanelLeftClose, ExternalLink } from 'lucide-react'
 export function AIPanel() {
   const width = useStore(s => s.slots.aiPanel.width)
   const setAiFloating = useStore(s => s.setAiFloating)
-  const setConversations = useStore(s => s.setConversations)
-  const setCurrentConversationId = useStore(s => s.setCurrentConversationId)
 
   const [listCollapsed, setListCollapsed] = useState(false)
 
@@ -31,8 +29,6 @@ export function AIPanel() {
             <button onClick={() => setAiFloating(true)} className="w-6 h-6 rounded-md hover:bg-surface-hover flex items-center justify-center" title="弹出浮窗"><ExternalLink size={14} className="text-muted" /></button>
           </>
         }
-        onConversationsChange={setConversations}
-        onCurrentConvChange={setCurrentConversationId}
       />
     </aside>
   )

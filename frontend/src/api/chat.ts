@@ -23,9 +23,13 @@ export async function chat(
 export interface StreamChatCallbacks {
   onMeta: (conversationId: string) => void
   onText: (text: string) => void
-  onToolStart: (display: string) => void
+  onToolStart: (tool: string, display: string) => void
   onStatus?: (message: string) => void
   onToolResult?: (tool: string, summary: string) => void
+  /** assistant 回答引用文档（P5 后端 ref 事件） */
+  onRef?: (docId: string, title: string) => void
+  /** 思考段流式（P5 后端 thinking 事件） */
+  onThinking?: (text: string) => void
   onDone: () => void
   onError: (message: string) => void
 }
@@ -64,8 +68,10 @@ export function streamChat(
         if (data.type === 'meta') callbacks.onMeta(data.conversation_id)
         else if (data.type === 'text') callbacks.onText(data.text)
         else if (data.type === 'agent_status') callbacks.onStatus?.(data.message)
-        else if (data.type === 'tool_start') callbacks.onToolStart(data.display)
+        else if (data.type === 'tool_start') callbacks.onToolStart(data.tool ?? '', data.display)
         else if (data.type === 'tool_result') callbacks.onToolResult?.(data.tool, data.summary)
+        else if (data.type === 'ref') callbacks.onRef?.(data.docId, data.title)
+        else if (data.type === 'thinking') callbacks.onThinking?.(data.text)
         else if (data.type === 'done') callbacks.onDone()
         else if (data.type === 'error') callbacks.onError(data.message)
       })
@@ -75,7 +81,12 @@ export function streamChat(
       }
     })
     .catch(err => {
-      if ((err as Error).name === 'AbortError') return
+      if ((err as Error).name === 'AbortError') {
+        // 用户主动停止（AbortController.abort）：复位 UI。
+        // 后端通过 cancel_event → done+cancelled 保存部分回复，前端保留已收到内容。
+        if (!receivedDoneOrError) callbacks.onDone()
+        return
+      }
       callbacks.onError(getErrorMessage(err))
     })
 }

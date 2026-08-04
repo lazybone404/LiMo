@@ -11,9 +11,7 @@ beforeEach(() => {
     streamTick: 0,
     importProgress: null, importStages: [],
     imageResults: {}, processingTasks: {}, taskPanelOpen: false,
-    conversations: [], currentConversationId: null,
     generating: false, factChecking: false,
-    chatMessages: [], chatLoading: false,
     aiFloating: false,
     toasts: [],
   })
