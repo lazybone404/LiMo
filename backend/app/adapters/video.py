@@ -220,7 +220,7 @@ class VideoAdapter(PipelineAdapter):
             cookie_domain = ".bilibili.com"
         try:
             video_path, video_info = await asyncio.to_thread(
-                self._download, url, cookie, cookie_domain)
+                self._download, url, cookie, cookie_domain, on_progress)
         except FatalError as e:
             logger.error("下载致命错误: %s", e)
             raise FatalError(f"视频下载失败: {str(e)[:100]}")
@@ -299,10 +299,62 @@ class VideoAdapter(PipelineAdapter):
         return proxy
 
     @retry(max_attempts=3, base_delay=2.0)
-    def _download(self, url: str, cookie: str = "", cookie_domain: str = ".bilibili.com") -> tuple[Path | None, dict]:
-        """下载视频/音频，返回 (文件路径, 视频元数据)"""
+    def _download(self, url: str, cookie: str = "", cookie_domain: str = ".bilibili.com",
+                  on_progress=None) -> tuple[Path | None, dict]:
+        """下载视频/音频，返回 (文件路径, 视频元数据)。
+
+        按视频大小适配网络读超时（视频越大容忍网络卡顿越久）+ 前端提示大小/预计耗时。
+        """
         import yt_dlp
         tmp_dir = Path(tempfile.mkdtemp())
+
+        # 抖音反爬严格，需要更真实的浏览器 UA（覆盖默认的 yt-dlp UA）
+        headers = dict(_HEADERS)
+        if "douyin" in url:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Referer": "https://www.douyin.com/",
+            }
+        cf = _cookie_to_file(cookie, cookie_domain) if cookie else None
+        # 代理优先级：config.yaml > 环境变量
+        proxy = self._get_proxy()
+
+        # ── 预取视频大小（快速元数据请求，不下载）→ 决定超时 + 前端提示 ──
+        filesize = 0
+        try:
+            # format 必须与正式下载一致——否则 download=False 默认返回完整视频大小（含视频轨），
+            # bestaudio 实际只下载音频轨（如 391MB vs 1285MB）
+            probe_opts = {"quiet": True, "no_warnings": True, "noplaylist": True,
+                          "format": "bestaudio[ext=m4a]/bestaudio/best",
+                          "http_headers": headers}
+            if cf:
+                probe_opts["cookiefile"] = cf
+            if proxy:
+                probe_opts["proxy"] = proxy
+            with yt_dlp.YoutubeDL(probe_opts) as ydl:
+                info_p = ydl.extract_info(url, download=False)
+            filesize = int(info_p.get("filesize") or info_p.get("filesize_approx") or 0)
+        except Exception:
+            pass  # 预取失败不阻塞，走默认超时
+
+        # 按大小分档网络读超时（越大容忍越久；下载持续有数据，此超时只在网络卡死时触发）
+        size_mb = filesize / (1024 * 1024)
+        if size_mb >= 500:
+            socket_timeout = 300
+        elif size_mb >= 200:
+            socket_timeout = 180
+        elif size_mb >= 50:
+            socket_timeout = 120
+        else:
+            socket_timeout = 60
+
+        # 前端提示：视频大小 + 预计耗时（参考实测下载 ~3MB/s）
+        if on_progress and filesize > 0:
+            est_min = max(1, round(size_mb / 3 / 60))
+            on_progress(ProgressEvent(
+                phase="downloading", status="running",
+                message=f"视频约 {size_mb:.0f}MB，预计下载约 {est_min} 分钟", percent=15))
+
         ydl_opts = {
             "format": "bestaudio[ext=m4a]/bestaudio/best",
             "outtmpl": str(tmp_dir / "video.%(ext)s"),
@@ -310,23 +362,14 @@ class VideoAdapter(PipelineAdapter):
             "quiet": True, "no_warnings": True,
             # 对齐「导入最大 2GB」：200MB 会静默拒绝常见 B 站/YouTube 视频（390MB+），yt-dlp 超限只返回 info 不报错
             "max_filesize": 2 * 1024 * 1024 * 1024,
-            "socket_timeout": 60,
+            "socket_timeout": socket_timeout,
             "extractor_retries": 1,
             "fragment_retries": 1,
             "retries": 1,
-            "http_headers": _HEADERS,
+            "http_headers": headers,
         }
-        # 抖音反爬严格，需要更真实的浏览器 UA（覆盖默认的 yt-dlp UA）
-        if "douyin" in url:
-            ydl_opts["http_headers"] = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                "Referer": "https://www.douyin.com/",
-            }
-        cf = _cookie_to_file(cookie, cookie_domain) if cookie else None
         if cf:
             ydl_opts["cookiefile"] = cf
-        # 代理优先级：config.yaml > 环境变量
-        proxy = self._get_proxy()
         if proxy:
             ydl_opts["proxy"] = proxy
             logger.info("下载代理: %s", proxy)
