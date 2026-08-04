@@ -256,7 +256,7 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 **对话管道**（Agent 工具循环，2026-08-04 前端全量重写）：
 - `search_web`（Tavily → SearXNG → DDG 三级降级）+ `fetch_url`（trafilatura/Jina）
 - 流式 SSE 端点 + 对话持久化（`conversations/` + CRUD）
-- 历史上下文近 40 条消息
+- **上下文管理**（2026-08-04 C1-C5）：`context_window` 四层解析（用户自定义 > 预设 > provider 默认表 > 保守 32k）→ 预算 = 窗口×0.7；`core/chat_context.py` 历史按 token 反向裁剪 + 文档引用分级截断（替代固定 40 条）；`agent/compress.py` 超阈值 LLM 摘要早期消息（fallback：deepseek-chat→当前模型→跳过不阻塞）；SSE 事件：meta 带 budget/price、compressed、done 带 usage；前端 token 占用进度条 + clearContext + 压缩/隐私提示
 - 5 个工具：search_docs / lookup_doc / list_docs / search_web / fetch_url
 - 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留生成状态 + 浮窗 UI
 - **消息级文档引用**：docIds = 当前选中文档 + 本条 @ 引用（chatStore 组合去重），不绑定会话
@@ -543,6 +543,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | UI 全量重写 | 独立 chatStore 状态机 + 流式打字机 + 消息操作（复制/编辑/重新生成/删除/停止）+ 工具气泡三态 + 思考段折叠 + 长会话分页窗口 |
 | ✅ | 消息级文档引用 | 输入区 @ 选文档 → docRefs chips；docIds = 当前选中 + 本条引用（动态组合）；引用 chips 点击跳转预览区 |
 | ✅ | assistant 引用块 | tool_result.refs → assistant 消息引用文档 chips（点击跳转） |
+| ✅ | 上下文管理 | 模型窗口感知预算（context_window 四层解析）+ 历史 token 反向裁剪 + 长对话 LLM 压缩 + 前端 token 占用进度/费用显示 + clearContext + 429 重试 |
 
 ### ✅ AI 审核（原事实验证）
 
