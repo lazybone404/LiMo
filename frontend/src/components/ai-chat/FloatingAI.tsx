@@ -3,11 +3,15 @@
  *
  * 优化：位置/尺寸持久化（uiSlice aiPos/aiSize → localStorage）、拖拽边界钳制
  * （标题栏不脱屏）、resize 不超视口、会话列表默认折叠（浮窗优先对话内容）。
+ *
+ * 内部栏（会话列表 / 导航侧栏）可拖拽调宽 + 直接折叠：宽度/折叠状态在此受控，
+ * ChatCore 用 ResizeHandle 驱动 onResizeList/onResizeNav，拖到 <80 自动折叠。
  */
 import { useState, useCallback } from 'react'
 import { useStore } from '../../store'
 import { ChatCore } from './ChatCore'
 import { X } from 'lucide-react'
+import type { ChatScale } from './scale'
 
 export function FloatingAI() {
   const toggleAI = useStore(s => s.toggleAI)
@@ -16,15 +20,45 @@ export function FloatingAI() {
   const setPos = useStore(s => s.setAiPos)
   const setSize = useStore(s => s.setAiSize)
 
-  // 会话列表默认折叠 — 浮窗优先展示对话内容，需要时点窄条展开
-  const [listCollapsed, setListCollapsed] = useState(true)
-
   const W = size.width
-  const listWidth = listCollapsed ? 0 : Math.max(80, W * 0.3)
+  const scale: ChatScale = W < 420 ? 'sm' : W < 700 ? 'md' : 'lg'
+
+  // ── 会话列表：默认折叠，宽度可拖拽（范围 80 ~ 60% 容器宽）──
+  const [listCollapsed, setListCollapsed] = useState(true)
+  const [listWidth, setListWidth] = useState(() => Math.round(W * 0.3))
+  // ── 导航侧栏：默认折叠，宽度可拖拽 ──
+  const [navCollapsed, setNavCollapsed] = useState(true)
+  const [navWidth, setNavWidth] = useState(() => Math.round(W * 0.18))
+
   const showNav = !listCollapsed && W > 400
-  const navWidth = showNav ? Math.max(80, W * 0.18) : 0
-  const compact = listWidth < 80
-  const scale = W < 420 ? 'sm' : W < 700 ? 'md' : 'lg' as 'sm' | 'md' | 'lg'
+
+  // 会话列表拖拽：右拖变宽；<80 自动折叠（重置为默认宽，展开时恢复）
+  const onResizeList = useCallback((dx: number) => {
+    setListWidth(prev => {
+      const w = prev + dx
+      if (w < 80) { setListCollapsed(true); return Math.round(size.width * 0.3) }
+      return Math.min(w, Math.round(size.width * 0.6))
+    })
+  }, [size.width])
+  const onToggleList = () => {
+    if (listCollapsed) { setListCollapsed(false); setListWidth(Math.round(size.width * 0.3)) }
+    else setListCollapsed(true)
+  }
+  const onExpandList = () => { setListCollapsed(false); setListWidth(Math.round(size.width * 0.3)) }
+
+  // 导航拖拽：右拖变窄（导航在右）；<80 自动折叠
+  const onResizeNav = useCallback((dx: number) => {
+    setNavWidth(prev => {
+      const w = prev - dx
+      if (w < 80) { setNavCollapsed(true); return Math.round(size.width * 0.18) }
+      return Math.min(w, Math.round(size.width * 0.3))
+    })
+  }, [size.width])
+  const onToggleNav = () => {
+    if (navCollapsed) { setNavCollapsed(false); setNavWidth(Math.round(size.width * 0.18)) }
+    else setNavCollapsed(true)
+  }
+  const onExpandNav = () => { setNavCollapsed(false); setNavWidth(Math.round(size.width * 0.18)) }
 
   // 标题栏拖拽 + 边界钳制：标题栏（顶部 40px）始终留在屏幕内，防拖丢
   const handleTitleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -58,17 +92,20 @@ export function FloatingAI() {
     <aside className="fixed z-[100] flex flex-col overflow-hidden rounded-2xl border border-border-default bg-elevated/95 shadow-2xl backdrop-blur-[20px] animate-[fadeIn_0.2s_ease-out]"
       style={{ left: pos.x, top: pos.y, width: size.width, height: size.height, minWidth: 360, minHeight: 300 }}>
       <ChatCore
-        compact={compact}
-        listWidth={listWidth}
-        navWidth={navWidth}
-        showNav={showNav}
-        listCollapsed={listCollapsed}
-        onListCollapsedChange={setListCollapsed}
         scale={scale}
         onTitleMouseDown={handleTitleMouseDown}
-        titleRight={
-          <button onClick={toggleAI} className="p-0.5 rounded-md hover:bg-surface-hover text-muted" title="关闭"><X size={13} /></button>
-        }
+        titleRight={<button onClick={toggleAI} className="p-0.5 rounded-md hover:bg-surface-hover text-muted" title="关闭"><X size={13} /></button>}
+        listCollapsed={listCollapsed}
+        listWidth={listWidth}
+        onToggleList={onToggleList}
+        onResizeList={onResizeList}
+        onExpandList={onExpandList}
+        showNav={showNav}
+        navCollapsed={navCollapsed}
+        navWidth={navWidth}
+        onToggleNav={onToggleNav}
+        onResizeNav={onResizeNav}
+        onExpandNav={onExpandNav}
       />
 
       {/* Resize 手柄 */}

@@ -1,38 +1,46 @@
 /**
- * ChatCore — 对话模块容器（插槽面板 / 浮窗共用，纯组件）。
+ * ChatCore — 对话模块容器（纯组件，状态来自 chatStore）。
  *
- * 状态全部来自独立 chatStore（消息/会话/流式）+ 主 store 的 currentDocId/docs。
- * 结构：标题栏 + [ChatSidebar 会话列表 | 文档badge+MessageList+ChatInput | 用户问题导航侧栏]。
+ * 结构：标题栏 + [ChatSidebar 会话列表 | 消息区 | 用户问题导航侧栏]
+ * 内部栏可拖拽调宽（ResizeHandle）+ 直接折叠（拖 <80 自动折叠 / 窄条展开），
+ * 宽度/折叠状态由容器（FloatingAI）受控——与主界面插槽面板交互一致。
  */
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, type ReactNode } from 'react'
 import { useStore } from '../../store'
 import { useChatStore } from '../../store/chatStore'
 import { MessageSquare, ChevronRight, ChevronLeft, Plus } from 'lucide-react'
 import { ChatSidebar } from './ChatSidebar'
 import { MessageList } from './MessageList'
 import { ChatInput } from './ChatInput'
+import { ResizeHandle } from '../ui/ResizeHandle'
 import type { ChatScale } from './scale'
 
 interface ChatCoreProps {
-  compact: boolean
-  listWidth: number
-  navWidth: number
-  showNav: boolean
-  listCollapsed: boolean
-  onListCollapsedChange: (v: boolean) => void
   scale?: ChatScale
   titleLeft?: ReactNode
   titleRight?: ReactNode
-  /** 浮窗模式的标题栏拖拽（插槽面板已移除，仅 FloatingAI 使用） */
+  /** 浮窗模式的标题栏拖拽 */
   onTitleMouseDown?: (e: React.MouseEvent) => void
+  // ── 会话列表（受控）──
+  listCollapsed: boolean
+  listWidth: number
+  onToggleList: () => void
+  onResizeList: (dx: number) => void
+  onExpandList: () => void
+  // ── 导航侧栏（受控）──
+  showNav: boolean
+  navCollapsed: boolean
+  navWidth: number
+  onToggleNav: () => void
+  onResizeNav: (dx: number) => void
+  onExpandNav: () => void
 }
 
 export function ChatCore({
-  compact, listWidth, navWidth, showNav,
-  listCollapsed, onListCollapsedChange,
   scale = 'md',
-  titleLeft, titleRight,
-  onTitleMouseDown,
+  titleLeft, titleRight, onTitleMouseDown,
+  listCollapsed, listWidth, onToggleList, onResizeList, onExpandList,
+  showNav, navCollapsed, navWidth, onToggleNav, onResizeNav, onExpandNav,
 }: ChatCoreProps) {
   // ── chatStore 状态 ──
   const conversations = useChatStore(st => st.conversations)
@@ -48,7 +56,7 @@ export function ChatCore({
   const currentDocId = useStore(st => st.currentDocId)
   const docs = useStore(st => st.docs)
 
-  const [navCollapsed, setNavCollapsed] = useState(false)
+  const compact = listWidth < 80
 
   // 初始加载 + 恢复上次会话
   useEffect(() => {
@@ -95,7 +103,7 @@ export function ChatCore({
           <div className="flex items-center gap-2">
             {titleLeft}
             {!compact && (
-              <button onClick={() => onListCollapsedChange(!listCollapsed)} className="rounded p-0.5 text-muted hover:bg-surface-hover">
+              <button onClick={onToggleList} className="rounded p-0.5 text-muted hover:bg-surface-hover">
                 {listCollapsed ? <ChevronRight size={scale === 'sm' ? 12 : 14} /> : <ChevronLeft size={scale === 'sm' ? 12 : 14} />}
               </button>
             )}
@@ -103,23 +111,26 @@ export function ChatCore({
           </div>
           <div className="flex items-center gap-0.5">
             <button onClick={newConv} className="rounded-md p-1 text-muted hover:bg-surface-hover" title="新建对话"><Plus size={14} /></button>
-            {compact && <button onClick={() => onListCollapsedChange(!listCollapsed)} className="rounded-md p-1 text-muted hover:bg-surface-hover" title="对话列表"><MessageSquare size={14} /></button>}
+            {compact && <button onClick={onToggleList} className="rounded-md p-1 text-muted hover:bg-surface-hover" title="对话列表"><MessageSquare size={14} /></button>}
             {titleRight}
           </div>
         </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden" style={{ minHeight: 0 }}>
-        {/* 会话列表 */}
+        {/* 会话列表（可拖拽调宽 / 拖窄自动折叠） */}
         {listCollapsed ? (
           <div className="flex w-8 shrink-0 flex-col items-center gap-2 border-r border-border-light px-1 py-2">
-            <button onClick={() => onListCollapsedChange(false)} className="rounded p-1 text-muted hover:bg-surface-hover" title="展开列表"><ChevronRight size={14} /></button>
+            <button onClick={onExpandList} className="rounded p-1 text-muted hover:bg-surface-hover" title="展开列表"><ChevronRight size={14} /></button>
             <button onClick={newConv} className="rounded p-1 text-muted hover:bg-surface-hover" title="新建"><Plus size={14} /></button>
           </div>
         ) : (
-          <div style={{ width: listWidth, minWidth: compact ? 0 : 80 }} className="flex shrink-0 flex-col border-r border-border-light">
-            <ChatSidebar conversations={conversations} currentId={currentId} compact={compact} scale={scale} onSwitch={switchConv} onNew={newConv} />
-          </div>
+          <>
+            <div style={{ width: listWidth, minWidth: compact ? 0 : 80 }} className="flex shrink-0 flex-col border-r border-border-light">
+              <ChatSidebar conversations={conversations} currentId={currentId} compact={compact} scale={scale} onSwitch={switchConv} onNew={newConv} />
+            </div>
+            <ResizeHandle onResize={onResizeList} />
+          </>
         )}
 
         {/* 消息区 */}
@@ -137,23 +148,26 @@ export function ChatCore({
           <ChatInput scale={scale} />
         </div>
 
-        {/* 导航侧栏 */}
+        {/* 导航侧栏（可拖拽调宽 / 拖窄自动折叠） */}
         {showNav && userQuestions.length > 0 && (
           navCollapsed ? (
             <div className="flex w-6 shrink-0 flex-col items-center border-l border-border-light py-2">
-              <button onClick={() => setNavCollapsed(false)} className="rounded p-0.5 text-muted hover:bg-surface-hover" title="展开导航"><ChevronLeft size={12} /></button>
+              <button onClick={onExpandNav} className="rounded p-0.5 text-muted hover:bg-surface-hover" title="展开导航"><ChevronLeft size={12} /></button>
             </div>
           ) : (
-            <div style={{ width: navWidth }} className="shrink-0 overflow-y-auto border-l border-border-light px-2 py-2">
-              <div className="mb-1 flex items-center justify-between">
-                <span className="px-1 text-[10px] uppercase text-disabled">导航</span>
-                <button onClick={() => setNavCollapsed(true)} className="rounded p-0.5 text-muted hover:bg-surface-hover" title="折叠导航"><ChevronRight size={12} /></button>
+            <>
+              <ResizeHandle onResize={onResizeNav} />
+              <div style={{ width: navWidth }} className="shrink-0 overflow-y-auto border-l border-border-light px-2 py-2">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="px-1 text-[10px] uppercase text-disabled">导航</span>
+                  <button onClick={onToggleNav} className="rounded p-0.5 text-muted hover:bg-surface-hover" title="折叠导航"><ChevronRight size={12} /></button>
+                </div>
+                {userQuestions.map(q => (
+                  <button key={q.id} onClick={() => document.getElementById(`msg-${q.id}`)?.scrollIntoView({ behavior: 'smooth' })}
+                    className="w-full truncate rounded px-2 py-1 text-left text-[11px] text-dimmed transition-colors hover:bg-surface">#{q.index} {q.text}</button>
+                ))}
               </div>
-              {userQuestions.map(q => (
-                <button key={q.id} onClick={() => document.getElementById(`msg-${q.id}`)?.scrollIntoView({ behavior: 'smooth' })}
-                  className="w-full truncate rounded px-2 py-1 text-left text-[11px] text-dimmed transition-colors hover:bg-surface">#{q.index} {q.text}</button>
-              ))}
-            </div>
+            </>
           )
         )}
       </div>
