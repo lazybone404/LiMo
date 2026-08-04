@@ -12,7 +12,7 @@ beforeEach(() => {
     importProgress: null, importStages: [],
     imageResults: {}, processingTasks: {}, taskPanelOpen: false,
     generating: false, factChecking: false,
-    aiFloating: false,
+    aiVisible: false,
     toasts: [],
   })
 })

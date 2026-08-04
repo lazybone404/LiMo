@@ -16,7 +16,7 @@ import { Settings, PanelLeft, Library, MessageSquare, Archive } from 'lucide-rea
 export default function App() {
   const slots = useStore(s => s.slots)
   const setSlot = useStore(s => s.setSlot)
-  const aiFloating = useStore(s => s.aiFloating)
+  const aiVisible = useStore(s => s.aiVisible)
   const setCapabilities = useStore(s => s.setCapabilities)
   const setDocs = useStore(s => s.setDocs)
   const [showSettings, setShowSettings] = useState(false)
@@ -26,7 +26,6 @@ export default function App() {
   })
   const toggleGenPanel = useStore(s => s.toggleGenPanel)
   const toggleAI = useStore(s => s.toggleAI)
-  const setAiFloating = useStore(s => s.setAiFloating)
   const backendReady = useStore(s => s.backendReady)
   const setBackendReady = useStore(s => s.setBackendReady)
 
@@ -196,15 +195,9 @@ export default function App() {
             <span>文档库</span>
           </button>
           <button
-            onClick={() => {
-              if (aiFloating) {
-                setAiFloating(false)
-              } else {
-                toggleAI()
-              }
-            }}
-            className={`px-2.5 py-1 rounded-md text-[12px] transition-all flex items-center gap-1.5 ${slots.aiPanel.visible && !aiFloating ? 'bg-elevated font-medium shadow-sm text-foreground' : 'text-muted hover:text-dimmed'}`}
-            title={slots.aiPanel.visible && !aiFloating ? '收起 AI 面板' : '展开 AI 面板'}
+            onClick={toggleAI}
+            className={`px-2.5 py-1 rounded-md text-[12px] transition-all flex items-center gap-1.5 ${aiVisible ? 'bg-elevated font-medium shadow-sm text-foreground' : 'text-muted hover:text-dimmed'}`}
+            title={aiVisible ? '关闭 AI 浮窗' : '打开 AI 浮窗'}
           >
             <MessageSquare size={13} />
             <span>AI</span>
@@ -228,11 +221,11 @@ export default function App() {
 
       {/* 主体 — 插槽布局引擎 */}
       <div className="flex flex-1 overflow-hidden">
-        <SlotLayout hideSlots={aiFloating ? ['aiPanel'] : undefined} />
+        <SlotLayout />
       </div>
 
-      {/* AI 浮窗 */}
-      {slots.aiPanel.visible && aiFloating && <FloatingAI />}
+      {/* AI 浮窗（唯一形态，2026-08-04 移除插槽面板） */}
+      {aiVisible && <FloatingAI />}
 
       {/* Toast */}
       <Toast />

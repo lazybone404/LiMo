@@ -23,7 +23,7 @@ interface ChatCoreProps {
   scale?: ChatScale
   titleLeft?: ReactNode
   titleRight?: ReactNode
-  /** Floating 模式的标题栏拖拽，AIPanel 不传 */
+  /** 浮窗模式的标题栏拖拽（插槽面板已移除，仅 FloatingAI 使用） */
   onTitleMouseDown?: (e: React.MouseEvent) => void
 }
 

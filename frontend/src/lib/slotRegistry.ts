@@ -10,7 +10,7 @@
  */
 
 import type { FC } from 'react'
-import { PenLine, Library, Bot } from 'lucide-react'
+import { PenLine, Library } from 'lucide-react'
 
 // ── 类型 ──
 
@@ -34,7 +34,7 @@ export interface SlotDef {
   /** 是否可关闭（preview 区不可关闭） */
   closable?: boolean
   /** store 中控制可见性的字段路径。留空 = 始终可见 */
-  visibleKey?: 'genPanel' | 'aiPanel'
+  visibleKey?: 'genPanel'
 }
 
 // ── 注册表 ──
@@ -105,16 +105,4 @@ SlotRegistry.register({
   defaultWidth: 0,
   minWidth: 200,
   maxWidth: Infinity,
-})
-
-SlotRegistry.register({
-  id: 'aiPanel',
-  side: 'right',
-  label: 'AI',
-  icon: Bot,
-  defaultWidth: 340,
-  minWidth: 50,
-  maxWidth: 600,
-  closable: true,
-  visibleKey: 'aiPanel',
 })

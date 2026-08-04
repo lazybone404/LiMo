@@ -10,10 +10,9 @@ import { PanelStrip } from './PanelStrip'
 import { GenPanel } from '../gen-panel/GenPanel'
 import { DocLibrary } from '../doc-library/DocLibrary'
 import { PreviewArea } from '../preview/PreviewArea'
-import { AIPanel } from '../ai-chat/AIPanel'
 
 const COMPONENTS: Record<string, React.FC> = {
-  genPanel: GenPanel, docLib: DocLibrary, preview: PreviewArea, aiPanel: AIPanel,
+  genPanel: GenPanel, docLib: DocLibrary, preview: PreviewArea,
 }
 
 /**
