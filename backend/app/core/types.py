@@ -219,10 +219,17 @@ class Conversation:
     doc_ids: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    # 历史压缩（C3）：早期消息 LLM 摘要 + 已压缩到的消息索引
+    summary: str = ""
+    last_compress_index: int = 0
+    # clearContext（C4）：清除上下文边界（该索引前的消息既不携带也不参与压缩）
+    clear_context_at: int = 0
 
     def to_dict(self) -> dict:
         return {
             "id": self.id, "title": self.title, "model_id": self.model_id,
             "messages": self.messages, "doc_ids": self.doc_ids,
             "created_at": self.created_at, "updated_at": self.updated_at,
+            "summary": self.summary, "last_compress_index": self.last_compress_index,
+            "clear_context_at": self.clear_context_at,
         }

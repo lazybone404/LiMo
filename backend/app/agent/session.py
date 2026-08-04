@@ -51,6 +51,19 @@ class SessionManager:
         messages = conv.get("messages", [])[-MAX_HISTORY_MESSAGES:]
         return [{"role": m["role"], "content": m["content"]} for m in messages]
 
+    def set_clear_context(self, conv_id: str, index: int) -> bool:
+        """清除上下文边界（C4 clearContext）— 该索引前的消息不再携带进上下文、不参与压缩。
+        同时把压缩基准 last_compress_index 重置到 clear 点（避免摘要残留被清空的旧上下文）。"""
+        conv = self._store.get_conversation(conv_id)
+        if not conv:
+            return False
+        conv["clear_context_at"] = index
+        if conv.get("last_compress_index", 0) < index:
+            conv["last_compress_index"] = index
+        conv["updated_at"] = datetime.now().isoformat()
+        self._store.save_conversation(conv)
+        return True
+
     def append_user_message(
         self,
         conv_id: str,

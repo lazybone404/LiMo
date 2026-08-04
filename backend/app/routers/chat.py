@@ -24,6 +24,7 @@ from app.core.token import estimate_tokens
 from app.agent.tools import search_web, fetch_url
 from app.agent.tool_registry import ToolRegistry, ToolDef
 from app.agent.session import SessionManager
+from app.agent.compress import should_compress, compress_history
 from app.agent.prompts import loader as prompt_loader
 
 logger = logging.getLogger(__name__)
@@ -207,13 +208,28 @@ async def chat_stream(
 
     window, budget = compute_budget(config, model_id)
     cc = config.get("chat_context") or {}
+
+    # C3 历史压缩：超阈值 LLM 摘要早期消息（压缩模型不可用/失败 → 跳过，不阻塞对话）
+    compressed_count = 0
+    try:
+        if should_compress(conv, budget):
+            _new_summary, compressed_count = await compress_history(config, store, conv, model_id, budget)
+    except Exception as e:
+        logger.warning("压缩检查异常，跳过: %s", str(e)[:120])
+        compressed_count = 0
+
     doc_text, _ = build_doc_context(store, doc_list, budget, cc.get("doc_mode", "auto"))
-    system = prompt_loader.build(doc_text)
+    summary = conv.get("summary") or ""
+    system_text = "\n\n".join(
+        x for x in [doc_text, f"[历史摘要]\n{summary}" if summary else None] if x)
+    system = prompt_loader.build(system_text)
     tool_defs = agent._tool_defs
     used = estimate_tokens(system) + sum(estimate_tokens(json.dumps(t, ensure_ascii=False)) for t in tool_defs)
     hist_budget = max(0, budget - used)
-    raw_history = trim_history(conv.get("messages", []), hist_budget,
-                               history_limit=cc.get("history_limit", 0))
+    # clear 点：该索引前的消息不再携带（C4 clearContext 语义）
+    clear_at = conv.get("clear_context_at") or 0
+    msgs = conv.get("messages", [])[clear_at:]
+    raw_history = trim_history(msgs, hist_budget, history_limit=cc.get("history_limit", 0))
     history = [{"role": m["role"], "content": m["content"]} for m in raw_history]
 
     # ── 保存用户消息（刷新不丢）──
@@ -228,6 +244,8 @@ async def chat_stream(
         thinking_parts: list[str] = []
         async with disconnect_watcher(request, cancel_event):
             try:
+                if compressed_count:
+                    yield f"data: {json.dumps({'type': 'compressed', 'count': compressed_count}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id, 'context_window': window, 'budget': budget}, ensure_ascii=False)}\n\n"
 
                 async for event in agent.stream_run(system, question, history, cancel_event=cancel_event):
