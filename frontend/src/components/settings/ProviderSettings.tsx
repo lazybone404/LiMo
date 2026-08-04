@@ -3,6 +3,7 @@ import {
   listProviders, updateProvider, addProvider, deleteProvider, testProviderConnection,
   listEnabledModels, refreshModels, addModel, deleteModel, updateModel,
   getSceneModels, setSceneModels,
+  getConfig, updateConfig,
   listEngineProviders, addEngineProvider, deleteEngineProvider,
   listEngineModels, deleteEngineModel,
   getEngineBindings, saveEngineBindings,
@@ -126,6 +127,30 @@ export function ProviderSettings() {
     setEditingModel(null)
     await loadAll()
     addToast(`已更新 ${editingModel.model_name} 元数据`)
+  }
+
+  // 对话上下文设置（C4）：预算档位 / 历史上限 / 文档引用模式（存 cfg.chat_context）
+  const [chatCtx, setChatCtx] = useState<{ budget_ratio: string; history_limit: string; doc_mode: string }>({ budget_ratio: 'auto', history_limit: '0', doc_mode: 'auto' })
+  useEffect(() => {
+    getConfig().then((c: any) => {
+      const cc = c?.chat_context || {}
+      setChatCtx({
+        budget_ratio: cc.budget_ratio ?? 'auto',
+        history_limit: String(cc.history_limit ?? 0),
+        doc_mode: cc.doc_mode ?? 'auto',
+      })
+    }).catch(() => {})
+  }, [])
+  const saveChatCtx = async () => {
+    await updateConfig({
+      chat_context: {
+        budget_ratio: chatCtx.budget_ratio,
+        history_limit: parseInt(chatCtx.history_limit, 10) || 0,
+        doc_mode: chatCtx.doc_mode,
+      },
+    })
+    notifyConfigChanged()
+    addToast('对话上下文设置已保存')
   }
   const handleSceneBind = async (scene: 'generate' | 'chat' | 'image_process', mid: number | null) => {
     const u = { ...sceneModels, [scene]: mid }; setScene(u); await setSceneModels(u)
@@ -537,6 +562,42 @@ export function ProviderSettings() {
             })}
           </>
         )}
+      </div>
+
+      {/* ======== 对话上下文（C4 用户覆盖设置） ======== */}
+      <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-3">
+        <div>
+          <h3 className="text-[17px] font-semibold">对话上下文</h3>
+          <p className="text-[13px] text-muted">预算 = 模型窗口 × 比例（留输出空间）。token 敏感可调低。</p>
+        </div>
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <label className="w-28 shrink-0 text-[13px] text-dimmed">预算档位</label>
+            <select value={chatCtx.budget_ratio} onChange={e => setChatCtx(s => ({ ...s, budget_ratio: e.target.value }))}
+              className="flex-1 px-2.5 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none">
+              <option value="auto">自动（窗口 × 0.7）</option>
+              <option value="0.85">高（× 0.85）</option>
+              <option value="0.7">中（× 0.7）</option>
+              <option value="0.5">低（× 0.5）</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="w-28 shrink-0 text-[13px] text-dimmed">历史轮数上限</label>
+            <input value={chatCtx.history_limit} onChange={e => setChatCtx(s => ({ ...s, history_limit: e.target.value }))}
+              placeholder="0 = 按预算自动"
+              className="flex-1 px-2.5 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none" />
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="w-28 shrink-0 text-[13px] text-dimmed">文档引用</label>
+            <select value={chatCtx.doc_mode} onChange={e => setChatCtx(s => ({ ...s, doc_mode: e.target.value }))}
+              className="flex-1 px-2.5 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none">
+              <option value="auto">自动（预算富余全文）</option>
+              <option value="full">全文（放宽截断）</option>
+              <option value="summary">摘要（1000 字符）</option>
+            </select>
+          </div>
+          <button onClick={saveChatCtx} className="px-3 py-1.5 text-[12px] font-medium bg-accent text-white rounded-lg hover:bg-accent-hover">保存</button>
+        </div>
       </div>
 
       {/* 模型元数据编辑弹窗（上下文窗口 / 价格 —— 对话预算与费用显示数据源） */}

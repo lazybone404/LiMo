@@ -15,7 +15,7 @@
  *  - 删除/编辑/分支截断本地更新，P5 走 PUT /conversations/{id}/messages 全量 rebuild 同步后端
  */
 import { create } from 'zustand'
-import { streamChat, listConversations, getConversation, rebuildConversationMessages } from '../api/chat'
+import { streamChat, listConversations, getConversation, rebuildConversationMessages, clearConversationContext } from '../api/chat'
 import { useStore } from './index'
 import { nextMsgId } from './toastSlice'
 
@@ -74,6 +74,23 @@ export interface ChatStoreState {
   /** agent_status / 工具状态文本 */
   statusText: string
 
+  // ── 上下文管理（C2-C4）──
+  /** 模型上下文窗口（meta 事件，后端算好） */
+  contextWindow: number | null
+  /** 输入预算 = 窗口 × ratio（meta 事件，后端算好） */
+  budget: number | null
+  /** 本轮 token 用量（done 事件；provider 拿不到则 null） */
+  lastUsage: { prompt: number; completion: number } | null
+  /** 会话累计用量 */
+  totalUsage: { prompt: number; completion: number }
+  /** 历史压缩提示（compressed 事件） */
+  compressedHint: string | null
+  /** clearContext 边界（该索引前消息不再携带上下文） */
+  clearContextIndex: number | null
+  /** 模型价格（meta 事件；未配置则 null，费用显示隐藏） */
+  priceIn: number | null
+  priceOut: number | null
+
   // ── actions ──
   loadConversations: () => Promise<void>
   openConversation: (id: string | null) => Promise<void>
@@ -84,6 +101,10 @@ export interface ChatStoreState {
   deleteMessage: (msgId: string) => void
   editMessage: (msgId: string, content: string) => void
   refreshConversations: () => Promise<void>
+  /** 清除上下文：不删消息，停止携带该索引前历史（后端 clear_context_at） */
+  clearContext: () => Promise<void>
+  /** 关闭压缩提示条 */
+  dismissCompressedHint: () => void
 }
 
 /** ChatMsg → 后端 message dict（rebuild 用，保留扩展字段；timestamp 由后端覆盖） */
@@ -140,8 +161,14 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
     const convId = s.currentId || undefined
 
     streamChat(text, docIds, {
-      onMeta(convId) {
+      onMeta(convId, meta) {
         const cur = get()
+        if (meta?.budget || meta?.context_window) {
+          set({ contextWindow: meta.context_window ?? null, budget: meta.budget ?? null })
+        }
+        if (meta?.price_in != null || meta?.price_out != null) {
+          set({ priceIn: meta.price_in ?? null, priceOut: meta.price_out ?? null })
+        }
         if (!cur.currentId) {
           const item: ChatListItem = {
             id: convId,
@@ -181,7 +208,17 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       onText(chunk) {
         updateLastBot(msg => ({ ...msg, content: msg.content + chunk }))
       },
-      onDone() {
+      onCompressed(count) {
+        set({ compressedHint: `更早的 ${count} 条消息已摘要（节省上下文）` })
+      },
+      onDone(usage) {
+        // 每轮 token 用量（provider 拿不到则不带，费用显示随之隐藏）
+        const p = usage?.prompt_tokens ?? 0
+        const c = usage?.completion_tokens ?? 0
+        if (p || c) set(s => ({
+          lastUsage: { prompt: p, completion: c },
+          totalUsage: { prompt: s.totalUsage.prompt + p, completion: s.totalUsage.completion + c },
+        }))
         // 标记最后一条结束流式，其余状态收敛
         const cur = get()
         const msgs = cur.messages
@@ -208,6 +245,14 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
     streaming: false,
     generating: false,
     statusText: '',
+    contextWindow: null,
+    budget: null,
+    lastUsage: null,
+    totalUsage: { prompt: 0, completion: 0 },
+    compressedHint: null,
+    clearContextIndex: null,
+    priceIn: null,
+    priceOut: null,
 
     loadConversations: async () => {
       try {
@@ -314,5 +359,17 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
         set({ conversations: await listConversations() })
       } catch { /* 忽略，下次自动刷新 */ }
     },
+
+    clearContext: async () => {
+      const s = get()
+      if (!s.currentId || s.messages.length === 0) return
+      const index = s.messages.length  // 边界：该索引前消息不再携带（不清除消息）
+      try {
+        await clearConversationContext(s.currentId, index)
+        set({ clearContextIndex: index })
+      } catch { /* 组件层 toast */ }
+    },
+
+    dismissCompressedHint: () => set({ compressedHint: null }),
   }
 })

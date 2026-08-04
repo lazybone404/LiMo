@@ -232,6 +232,14 @@ async def chat_stream(
     raw_history = trim_history(msgs, hist_budget, history_limit=cc.get("history_limit", 0))
     history = [{"role": m["role"], "content": m["content"]} for m in raw_history]
 
+    # 模型价格（C4 费用显示；未配置则 None，前端不显示费用）
+    price_in = price_out = None
+    for m in config.get("enabled_models", []):
+        if m.get("id") == model_id:
+            price_in = m.get("price_in")
+            price_out = m.get("price_out")
+            break
+
     # ── 保存用户消息（刷新不丢）──
     sessions.append_user_message(conversation_id, question, doc_refs=doc_ref_list or None)
 
@@ -246,7 +254,7 @@ async def chat_stream(
             try:
                 if compressed_count:
                     yield f"data: {json.dumps({'type': 'compressed', 'count': compressed_count}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id, 'context_window': window, 'budget': budget}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id, 'context_window': window, 'budget': budget, 'price_in': price_in, 'price_out': price_out}, ensure_ascii=False)}\n\n"
 
                 async for event in agent.stream_run(system, question, history, cancel_event=cancel_event):
                     if event["type"] == "text":

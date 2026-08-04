@@ -21,7 +21,7 @@ export async function chat(
 }
 
 export interface StreamChatCallbacks {
-  onMeta: (conversationId: string) => void
+  onMeta: (conversationId: string, meta?: { context_window?: number; budget?: number; price_in?: number | null; price_out?: number | null }) => void
   onText: (text: string) => void
   onToolStart: (tool: string, display: string) => void
   onStatus?: (message: string) => void
@@ -30,7 +30,11 @@ export interface StreamChatCallbacks {
   onRef?: (docId: string, title: string) => void
   /** 思考段流式（P5 后端 thinking 事件） */
   onThinking?: (text: string) => void
-  onDone: () => void
+  /** 历史压缩通知（C3）：更早 N 条已摘要 */
+  onCompressed?: (count: number) => void
+  /** 每轮 token 用量（C4，done 事件携带；拿不到则不带） */
+  onUsage?: (usage: { prompt_tokens?: number; completion_tokens?: number }) => void
+  onDone: (usage?: { prompt_tokens?: number; completion_tokens?: number }) => void
   onError: (message: string) => void
 }
 
@@ -67,14 +71,15 @@ export function streamChat(
       if (!reader) { callbacks.onError('无法读取响应流'); return }
 
       await parseSSEStream(reader, (data) => {
-        if (data.type === 'meta') callbacks.onMeta(data.conversation_id)
+        if (data.type === 'meta') callbacks.onMeta(data.conversation_id, { context_window: data.context_window, budget: data.budget, price_in: data.price_in, price_out: data.price_out })
         else if (data.type === 'text') callbacks.onText(data.text)
         else if (data.type === 'agent_status') callbacks.onStatus?.(data.message)
         else if (data.type === 'tool_start') callbacks.onToolStart(data.tool ?? '', data.display)
         else if (data.type === 'tool_result') callbacks.onToolResult?.(data.tool, data.summary)
         else if (data.type === 'ref') callbacks.onRef?.(data.docId, data.title)
         else if (data.type === 'thinking') callbacks.onThinking?.(data.text)
-        else if (data.type === 'done') callbacks.onDone()
+        else if (data.type === 'compressed') callbacks.onCompressed?.(data.count)
+        else if (data.type === 'done') { callbacks.onUsage?.(data.usage); callbacks.onDone(data.usage) }
         else if (data.type === 'error') callbacks.onError(data.message)
       })
 
@@ -148,5 +153,13 @@ export async function rebuildConversationMessages(
   return (await apiFetch(`${BASE}/conversations/${id}/messages`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages }),
+  })).json()
+}
+
+/** 清除上下文边界（C4）— 不删消息，停止携带该索引前历史；索引前消息也不再参与压缩 */
+export async function clearConversationContext(id: string, index: number) {
+  return (await apiFetch(`${BASE}/conversations/${id}/clear-context`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ index }),
   })).json()
 }

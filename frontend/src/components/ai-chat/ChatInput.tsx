@@ -12,6 +12,7 @@ import { Send, Square, AtSign, FileText, X } from 'lucide-react'
 import { useChatStore, type DocRef } from '../../store/chatStore'
 import { useStore, type DocEntry } from '../../store'
 import { SCALES, type ChatScale } from './scale'
+import { estimateTokenLength, formatTokens } from '../../utils/token'
 
 interface ChatInputProps {
   scale: ChatScale
@@ -30,6 +31,21 @@ export function ChatInput({ scale }: ChatInputProps) {
   const [refOpen, setRefOpen] = useState(false)
   const [refSearch, setRefSearch] = useState('')
   const taRef = useRef<HTMLTextAreaElement>(null)
+
+  // 上下文占用进度（C4）— 前端字符估算仅供参考，实际裁剪以后端 tiktoken 为准
+  const messages = useChatStore(st => st.messages)
+  const budget = useChatStore(st => st.budget)
+  const contextTokens = messages.reduce((acc, m) => acc + estimateTokenLength(m.content), 0)
+  const inputTokens = estimateTokenLength(value)
+  const ctxRatio = budget && budget > 0 ? Math.min(1, contextTokens / budget) : 0
+
+  // 每轮 token 用量 + 费用估算（C4；未配价格则不显示费用）
+  const lastUsage = useChatStore(st => st.lastUsage)
+  const priceIn = useChatStore(st => st.priceIn)
+  const priceOut = useChatStore(st => st.priceOut)
+  const cost = lastUsage && (priceIn != null || priceOut != null)
+    ? ((lastUsage.prompt * (priceIn ?? 0)) + (lastUsage.completion * (priceOut ?? 0))) / 1e6
+    : null
 
   const autoGrow = () => {
     const el = taRef.current
@@ -127,6 +143,21 @@ export function ChatInput({ scale }: ChatInputProps) {
           </button>
         )}
       </div>
+
+      {/* 上下文占用进度 + 输入 token（C4：估算仅供参考，实际裁剪以后端 tiktoken 为准） */}
+      {(budget != null || value.trim() || messages.length > 0) && (
+        <div className="mt-1 flex items-center gap-2">
+          <div className="h-1 flex-1 overflow-hidden rounded-full bg-surface-hover">
+            <div className="h-full rounded-full bg-accent/50 transition-all" style={{ width: `${ctxRatio * 100}%` }} />
+          </div>
+          <span className="shrink-0 text-[10px] text-disabled">
+            {formatTokens(contextTokens)}{budget ? `/${formatTokens(budget)}` : ''}
+            {inputTokens > 0 && ` · 本条 ${formatTokens(inputTokens)}`}
+            {lastUsage && ` · 本轮 ${formatTokens(lastUsage.prompt)}→${formatTokens(lastUsage.completion)}`}
+            {cost != null && ` ≈¥${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}`}
+          </span>
+        </div>
+      )}
     </div>
   )
 }

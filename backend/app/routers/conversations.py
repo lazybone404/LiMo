@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from app.core.errors import AppError
 from app.core.dependencies import get_store
 from app.core.types import Conversation, ChatMessage
+from app.agent.session import SessionManager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -32,6 +33,11 @@ class PatchRequest(BaseModel):
 class RebuildRequest(BaseModel):
     """全量重建消息列表 — 编辑/删除/分支截断统一走此接口（前端算好新消息数组）"""
     messages: list[dict]
+
+
+class ClearContextRequest(BaseModel):
+    """清除上下文边界（C4）：该索引前的消息不再携带进上下文、不参与压缩"""
+    index: int
 
 
 @router.get("/conversations")
@@ -96,6 +102,13 @@ def patch_conversation(conv_id: str, data: PatchRequest, store=Depends(get_store
         conv["archived"] = data.archived
     store.save_conversation(conv)
     return {"status": "ok"}
+
+
+@router.post("/conversations/{conv_id}/clear-context")
+def clear_context(conv_id: str, data: ClearContextRequest, store=Depends(get_store)):
+    """清除上下文边界 — 不删消息，停止携带该索引前历史（对齐 NextChat clearContextIndex）"""
+    ok = SessionManager(store).set_clear_context(conv_id, data.index)
+    return {"status": "ok" if ok else "not found"}
 
 
 @router.put("/conversations/{conv_id}/messages")

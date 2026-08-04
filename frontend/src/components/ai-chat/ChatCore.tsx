@@ -5,10 +5,10 @@
  * 内部栏可拖拽调宽（ResizeHandle）+ 直接折叠（拖 <80 自动折叠 / 窄条展开），
  * 宽度/折叠状态由容器（FloatingAI）受控——与主界面插槽面板交互一致。
  */
-import { useEffect, useMemo, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useStore } from '../../store'
 import { useChatStore } from '../../store/chatStore'
-import { MessageSquare, ChevronRight, ChevronLeft, Plus } from 'lucide-react'
+import { MessageSquare, ChevronRight, ChevronLeft, Plus, Eraser, X } from 'lucide-react'
 import { ChatSidebar } from './ChatSidebar'
 import { MessageList } from './MessageList'
 import { ChatInput } from './ChatInput'
@@ -51,12 +51,25 @@ export function ChatCore({
   const loadConversations = useChatStore(st => st.loadConversations)
   const openConversation = useChatStore(st => st.openConversation)
   const newChat = useChatStore(st => st.newChat)
+  const clearContext = useChatStore(st => st.clearContext)
+  const compressedHint = useChatStore(st => st.compressedHint)
+  const dismissCompressedHint = useChatStore(st => st.dismissCompressedHint)
 
   // ── 主 store 状态（跨域）──
   const currentDocId = useStore(st => st.currentDocId)
   const docs = useStore(st => st.docs)
+  const addToast = useStore(st => st.addToast)
 
   const compact = listWidth < 80
+
+  // 隐私提示：首次使用对话提示内容发送至模型服务（localStorage 可关）
+  const [privacyDismissed, setPrivacyDismissed] = useState(() => {
+    try { return !!localStorage.getItem('limo_chat_privacy_seen') } catch { return false }
+  })
+  const dismissPrivacy = () => {
+    setPrivacyDismissed(true)
+    try { localStorage.setItem('limo_chat_privacy_seen', '1') } catch { /* quota */ }
+  }
 
   // 初始加载 + 恢复上次会话
   useEffect(() => {
@@ -111,6 +124,10 @@ export function ChatCore({
           </div>
           <div className="flex items-center gap-0.5">
             <button onClick={newConv} className="rounded-md p-1 text-muted hover:bg-surface-hover" title="新建对话"><Plus size={14} /></button>
+            {currentId && messages.length > 0 && (
+              <button onClick={() => { clearContext(); addToast('已清除上下文，之后的对话不再携带之前历史', 'info') }}
+                className="rounded-md p-1 text-muted hover:bg-surface-hover" title="清除上下文（不删消息，停止携带之前历史）"><Eraser size={14} /></button>
+            )}
             {compact && <button onClick={onToggleList} className="rounded-md p-1 text-muted hover:bg-surface-hover" title="对话列表"><MessageSquare size={14} /></button>}
             {titleRight}
           </div>
@@ -143,6 +160,22 @@ export function ChatCore({
             )}
             <span className="ml-auto truncate text-disabled">{currentTitle.slice(0, 24)}</span>
           </div>
+
+          {/* 压缩提示（C3：更早消息已摘要） */}
+          {compressedHint && (
+            <div className="flex shrink-0 items-center justify-between border-b border-border-light bg-accent/5 px-3 py-1 text-[11px] text-dimmed">
+              <span>{compressedHint}</span>
+              <button onClick={dismissCompressedHint} className="text-disabled hover:text-dimmed" title="关闭"><X size={11} /></button>
+            </div>
+          )}
+
+          {/* 隐私提示（C4：内容发送至模型服务，可关闭） */}
+          {!privacyDismissed && (
+            <div className="flex shrink-0 items-center justify-between border-b border-border-light bg-surface-hover/60 px-3 py-1 text-[11px] text-dimmed">
+              <span>对话内容将发送至模型服务，请勿输入敏感信息</span>
+              <button onClick={dismissPrivacy} className="shrink-0 text-disabled hover:text-dimmed">知道了</button>
+            </div>
+          )}
 
           <MessageList scale={scale} />
           <ChatInput scale={scale} />
