@@ -308,7 +308,8 @@ class VideoAdapter(PipelineAdapter):
             "outtmpl": str(tmp_dir / "video.%(ext)s"),
             "noplaylist": True,
             "quiet": True, "no_warnings": True,
-            "max_filesize": 200 * 1024 * 1024,
+            # 对齐「导入最大 2GB」：200MB 会静默拒绝常见 B 站/YouTube 视频（390MB+），yt-dlp 超限只返回 info 不报错
+            "max_filesize": 2 * 1024 * 1024 * 1024,
             "socket_timeout": 60,
             "extractor_retries": 1,
             "fragment_retries": 1,
@@ -337,12 +338,18 @@ class VideoAdapter(PipelineAdapter):
                 info = ydl.extract_info(url, download=True)
                 logger.info("yt-dlp 下载完成: %s", info.get("title", url[:40]))
             # 在临时目录中查找实际下载的文件（yt-dlp 可能改变扩展名）
-            files = list(tmp_dir.iterdir())
+            # 排除 .part/.ytdl 等下载临时文件；完成时这些后缀会被清理
+            files = [p for p in tmp_dir.iterdir()
+                     if p.is_file() and p.suffix not in (".part", ".ytdl")]
             path = files[0] if files else None
             # fallback: 用 info 中的 ext 构造
             if not path:
                 ext = info.get("ext", "m4a")
                 path = tmp_dir / f"video.{ext}"
+            # 下载结果校验：文件必须真实存在且非空（失败显式化，不把不存在的路径抛给 ASR）
+            if not path.exists() or path.stat().st_size == 0:
+                raise FatalError(
+                    "视频下载失败：文件未生成（可能被大小限制拦截或网络中断），请重试")
             return path, info
         except Exception as e:
             msg = str(e).lower()
