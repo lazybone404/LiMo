@@ -20,6 +20,10 @@ DOC_SUMMARY_LIMIT = 1000          # 预算紧张时文档引用截断（字符�
 RICH_BUDGET = 200_000             # 视为「预算富余」的阈值（token）
 DEFAULT_HISTORY_LIMIT = 0         # 0 = 不限制，按预算自动
 
+# 文档上下文缓存（C5）：docId:limit → (contentHash, text)，内容变则失效，超上限防膨胀
+_doc_ctx_cache: dict[str, tuple[str, str]] = {}
+_DOC_CACHE_MAX = 200
+
 
 def compute_budget(config: dict, model_id: int | None) -> tuple[int, int]:
     """返回 (context_window, budget)。budget = context_window × ratio。
@@ -61,7 +65,17 @@ def build_doc_context(store: object, doc_ids: list[str], budget: int,
         tx = store.get_transcript(did)
         if not tx:
             continue
-        text = smart_truncate(tx.get("rawText", ""), limit)
+        # 缓存截断结果（内容 hash 变则失效），同文档多次对话不重复处理
+        ck = f"{did}:{limit}"
+        h = str(tx.get("contentHash") or tx.get("createdAt") or "")
+        cached = _doc_ctx_cache.get(ck)
+        if cached and cached[0] == h:
+            text = cached[1]
+        else:
+            text = smart_truncate(tx.get("rawText", ""), limit)
+            if len(_doc_ctx_cache) >= _DOC_CACHE_MAX:
+                _doc_ctx_cache.clear()
+            _doc_ctx_cache[ck] = (h, text)
         parts.append(f"[{tx.get('title', did)}]\n{text}")
         tokens += estimate_tokens(text)
     return ("\n\n".join(parts) if parts else "（未选中文档）"), tokens

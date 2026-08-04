@@ -6,6 +6,41 @@
 
 ---
 
+## 2026-08-04 — 对话上下文管理（C1-C5 · 依 pi-docs/对话上下文管理计划.md）
+
+> 用户确认「C1-C5 全量」。对话重写后上下文管理未实现：历史固定 40 条 + agent 二次截 20 条、文档引用每篇 1000 截断——无模型感知、无 token 预算。用户 token 敏感，不同模型窗口/价格不同需适配。
+
+### C1 模型元数据
+- `core/token.py`（新）：公共 tiktoken 估算（从 content_preparer 抽出复用）
+- `config.py` llm_models 加结构化 `context_window`（deepseek 1M / qwen 128k / gpt 128k / claude 200k / gemini 1M）
+- `model_resolver.resolve_context_window` 四层：用户自定义 > 预设（合并 DEFAULT，兼容旧 config 缺字段）> provider 默认表 > 保守 32k
+- `model.py` addModel/updateModel 支持 context_window/price_in/price_out；ProviderSettings 模型元数据编辑弹窗
+- price 预设不填（None），用户配了才启用费用显示——避免错误价格误导
+
+### C2 预算引擎
+- `core/chat_context.py`（新）：compute_budget（窗口×0.7 留输出）、trim_history（反向裁剪跳 isError）、build_doc_context（富余 2000 / 紧张 1000 截断）
+- chat.py 按预算组装（system→doc→history 分配），meta 事件带 context_window/budget；agent.py 移除 `history[-20:]` 二次截断
+- 修正 NextChat 缺陷：其 max_tokens 同时当输入预算和输出上限，本引擎预算=窗口×0.7 留输出空间
+
+### C3 历史压缩
+- `agent/compress.py`（新）：超阈值（未压缩历史 > 预算×60%）LLM 摘要早期消息；压缩模型 fallback：deepseek-chat → 当前模型 → 跳过本轮不阻塞
+- Conversation 加 summary/last_compress_index/clear_context_at；session.set_clear_context（压缩基准重置）
+- chat.py 压缩检查 + summary 进 system + SSE `compressed` 事件
+
+### C4 前端上下文感知
+- `utils/token.ts`（新）：estimateTokenLength（NextChat 同款字符启发式）+ formatTokens
+- ChatInput：上下文占用进度条 + 输入 token + 每轮 in→out + 费用估算（配 price 才显示）
+- chatStore：meta 存 budget/price、done 存 usage、compressed 提示、clearContext action
+- ChatCore：清除上下文按钮 + 压缩/隐私提示条；ProviderSettings「对话上下文」区块（预算档位/历史上限/文档引用模式）
+- conversations.py `POST /conversations/{id}/clear-context`
+
+### C5 打磨
+- agent.py `_create_with_retry`：create 阶段 429/5xx 退避重试（1s/3s），stream 中途失败不重试（避免重复输出）
+- build_doc_context 按 docId+limit 缓存（contentHash 失效），同文档多次对话不重复处理
+- 协议文档补 compressed / meta budget·price / done usage / clear-context
+
+---
+
 ## 2026-08-04 — 对话模块全量重写（P1-P6 · 依 pi-docs/对话重写方案.md）
 
 > 用户确认「放开手脚做完（无实际用户）」。LiMo 对话 UI 原本简陋（ChatCore 360 行 = 消息列表 + Markdown + 导出），本次按建议稿全量重写，对标 NextChat 的对话管理核心。

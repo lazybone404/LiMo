@@ -13,11 +13,32 @@ import logging
 from typing import Any, Callable, AsyncGenerator
 from urllib.parse import urlparse
 
+import openai
+
 from app.llm.errors import CancelledError
 
 logger = logging.getLogger(__name__)
 
 ToolFn = Callable[..., str]
+
+
+async def _create_with_retry(coro_factory: Callable[[], Any], retries: int = 2) -> Any:
+    """create 阶段（请求发起前）429/5xx 退避重试（C5）。
+
+    边界：仅 create 前重试——stream 流式中途失败不重试（已输出部分重试会重复输出），
+    直接由调用方转 error 事件，前端可手动重新生成。
+    仅重试 RateLimitError(429) / InternalServerError(5xx) / APITimeoutError / APIConnectionError；
+    鉴权/参数等其他错误直接抛。
+    """
+    for attempt in range(retries + 1):
+        try:
+            return await coro_factory()
+        except (openai.RateLimitError, openai.InternalServerError,
+                openai.APITimeoutError, openai.APIConnectionError) as e:
+            if attempt >= retries:
+                raise
+            logger.warning("LLM create 第 %d 次重试（%s）", attempt + 1, str(e)[:100])
+            await asyncio.sleep(1 + attempt * 2)  # 退避：1s / 3s
 
 
 def _tool_display(tool_name: str, args: dict) -> str:
@@ -199,12 +220,13 @@ class AgentRunner:
             # 有工具 → 先用非流式判定是否需要工具调用
             yield {"type": "agent_status", "message": "正在分析问题..."}
             try:
-                response = await self.llm.client.chat.completions.create(
-                    model=self.llm.model,
-                    messages=messages,
-                    tools=self._tool_defs,
-                    temperature=0.7,
-                )
+                response = await _create_with_retry(
+                    lambda: self.llm.client.chat.completions.create(
+                        model=self.llm.model,
+                        messages=messages,
+                        tools=self._tool_defs,
+                        temperature=0.7,
+                    ))
             except Exception as e:
                 yield {"type": "error", "message": f"LLM 调用失败: {str(e)[:200]}"}
                 return
@@ -291,12 +313,14 @@ class AgentRunner:
     ) -> AsyncGenerator[dict, None]:
         """用完整消息历史流式输出最终回答"""
         try:
-            stream = await self.llm.client.chat.completions.create(
-                model=self.llm.model,
-                messages=messages,
-                temperature=0.7,
-                stream=True,
-            )
+            # create 阶段可重试；stream 中途失败不重试（下方 except 直接 error）
+            stream = await _create_with_retry(
+                lambda: self.llm.client.chat.completions.create(
+                    model=self.llm.model,
+                    messages=messages,
+                    temperature=0.7,
+                    stream=True,
+                ))
             async for chunk in stream:
                 if cancel_event and cancel_event.is_set():
                     raise CancelledError()
