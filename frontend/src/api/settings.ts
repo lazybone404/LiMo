@@ -41,7 +41,9 @@ export interface Provider {
 export interface EnabledModel {
   id: number; provider_id: string; model_name: string
   capabilities?: string[]  // ["text", "image"]
-  context_window?: number
+  context_window?: number  // 上下文窗口（token），对话预算数据源
+  price_in?: number        // 每百万 token 输入价格（元）
+  price_out?: number       // 每百万 token 输出价格（元）
 }
 
 export interface SceneModels {
@@ -93,12 +95,14 @@ export async function refreshModels(providerId: string): Promise<{
   return r.json()
 }
 
-export async function addModel(providerId: string, modelName: string, contextWindow?: number) {
+export async function addModel(providerId: string, modelName: string, contextWindow?: number, priceIn?: number, priceOut?: number) {
   const r = await apiFetch(`${BASE}/models`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ provider_id: providerId, model_name: modelName,
-      ...(contextWindow ? { context_window: contextWindow } : {}) }),
+      ...(contextWindow ? { context_window: contextWindow } : {}),
+      ...(priceIn ? { price_in: priceIn } : {}),
+      ...(priceOut ? { price_out: priceOut } : {}) }),
   })
   return r.json()
 }
@@ -108,11 +112,17 @@ export async function deleteModel(modelId: number) {
   return r.json()
 }
 
-export async function updateModelCapabilities(modelId: number, capabilities: string[]) {
+/** 更新已启用模型：能力标签 / 上下文窗口 / 价格 */
+export async function updateModel(modelId: number, data: {
+  capabilities?: string[]
+  context_window?: number
+  price_in?: number
+  price_out?: number
+}) {
   const r = await apiFetch(`${BASE}/models/${modelId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ capabilities }),
+    body: JSON.stringify(data),
   })
   return r.json()
 }

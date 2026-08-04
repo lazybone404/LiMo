@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import {
   listProviders, updateProvider, addProvider, deleteProvider, testProviderConnection,
-  listEnabledModels, refreshModels, addModel, deleteModel, updateModelCapabilities,
+  listEnabledModels, refreshModels, addModel, deleteModel, updateModel,
   getSceneModels, setSceneModels,
   listEngineProviders, addEngineProvider, deleteEngineProvider,
   listEngineModels, deleteEngineModel,
@@ -14,7 +14,7 @@ import {
 import { useStore } from '../../store'
 import { EngineSelect, type EngineOption } from '../gen-panel/EngineSelect'
 import { notifyConfigChanged } from '../../lib/configEvents'
-import { Plus, X, Trash2, RefreshCw, Wifi, CheckCircle, ChevronDown, ChevronRight } from 'lucide-react'
+import { Plus, X, Trash2, RefreshCw, Wifi, CheckCircle, ChevronDown, ChevronRight, Pencil } from 'lucide-react'
 
 const CAT_LABELS: Record<string, string> = { asr: '语音转文字', ocr: '图片文字识别', doc: '文档解析' }
 const CATEGORIES = ['asr', 'ocr', 'doc'] as const
@@ -100,9 +100,32 @@ export function ProviderSettings() {
     const newCaps = hasImage
       ? (m.capabilities || ['text']).filter(c => c !== 'image')
       : [...(m.capabilities || ['text']), 'image']
-    await updateModelCapabilities(m.id, newCaps)
+    await updateModel(m.id, { capabilities: newCaps })
     await loadAll()
     addToast(hasImage ? '已标记为纯文本' : '已标记为多模态')
+  }
+
+  // 模型元数据编辑（上下文窗口 / 价格 —— 中转/自定义模型修正，未填回退厂商默认）
+  const [editingModel, setEditingModel] = useState<EnabledModel | null>(null)
+  const [editCtx, setEditCtx] = useState('')
+  const [editPriceIn, setEditPriceIn] = useState('')
+  const [editPriceOut, setEditPriceOut] = useState('')
+  const openModelEdit = (m: EnabledModel) => {
+    setEditingModel(m)
+    setEditCtx(m.context_window ? String(m.context_window) : '')
+    setEditPriceIn(m.price_in ? String(m.price_in) : '')
+    setEditPriceOut(m.price_out ? String(m.price_out) : '')
+  }
+  const saveModelEdit = async () => {
+    if (!editingModel) return
+    const data: { context_window?: number; price_in?: number; price_out?: number } = {}
+    if (editCtx.trim()) data.context_window = parseInt(editCtx, 10)
+    if (editPriceIn.trim()) data.price_in = parseFloat(editPriceIn)
+    if (editPriceOut.trim()) data.price_out = parseFloat(editPriceOut)
+    await updateModel(editingModel.id, data)
+    setEditingModel(null)
+    await loadAll()
+    addToast(`已更新 ${editingModel.model_name} 元数据`)
   }
   const handleSceneBind = async (scene: 'generate' | 'chat' | 'image_process', mid: number | null) => {
     const u = { ...sceneModels, [scene]: mid }; setScene(u); await setSceneModels(u)
@@ -303,8 +326,12 @@ export function ProviderSettings() {
                             {model?.capabilities && <span className="text-[10px] text-disabled ml-1">{model.capabilities.join(' · ')}</span>}
                             {model?.context_window != null && <span className="text-[10px] text-accent ml-1">{model.context_window >= 1000 ? `${Math.round(model.context_window / 1000)}K` : `${model.context_window}`} ctx</span>}
                           </span>
-                          {enabled && model ? <button onClick={() => handleDeleteLlmModel(model.id)} className="text-[11px] text-success flex items-center gap-1 shrink-0 hover:text-error transition-colors"><CheckCircle size={10} />已启用</button>
-                            : <button onClick={() => handleEnableModel(name)} className="text-[11px] text-accent hover:underline shrink-0"><Plus size={10} />启用</button>}
+                          {enabled && model ? (
+                            <span className="flex items-center gap-1 shrink-0">
+                              <button onClick={() => openModelEdit(model)} className="text-[11px] text-muted hover:text-dimmed" title="编辑上下文窗口/价格"><Pencil size={10} /></button>
+                              <button onClick={() => handleDeleteLlmModel(model.id)} className="text-[11px] text-success flex items-center gap-1 hover:text-error transition-colors"><CheckCircle size={10} />已启用</button>
+                            </span>
+                          ) : <button onClick={() => handleEnableModel(name)} className="text-[11px] text-accent hover:underline shrink-0"><Plus size={10} />启用</button>}
                         </div>
                       )
                     })}
@@ -511,6 +538,39 @@ export function ProviderSettings() {
           </>
         )}
       </div>
+
+      {/* 模型元数据编辑弹窗（上下文窗口 / 价格 —— 对话预算与费用显示数据源） */}
+      {editingModel && (
+        <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => setEditingModel(null)}>
+          <div className="bg-elevated rounded-2xl shadow-2xl border border-border-light p-6 max-w-[420px] w-full mx-4" onClick={e => e.stopPropagation()}>
+            <h3 className="text-[15px] font-semibold mb-1">模型元数据</h3>
+            <p className="text-[11px] text-disabled mb-4">{editingModel.model_name} · 留空则回退厂商默认/保守值（对话预算与费用用）</p>
+            <div className="space-y-3">
+              <div>
+                <label className="text-[11px] text-dimmed">上下文窗口（token）</label>
+                <input value={editCtx} onChange={e => setEditCtx(e.target.value)} placeholder="如 128000 或 1000000"
+                  className="w-full px-3 py-2 bg-surface border border-border-default rounded-lg text-[12px] outline-none mt-1" />
+              </div>
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label className="text-[11px] text-dimmed">输入价 ¥/百万 token</label>
+                  <input value={editPriceIn} onChange={e => setEditPriceIn(e.target.value)} placeholder="如 2"
+                    className="w-full px-3 py-2 bg-surface border border-border-default rounded-lg text-[12px] outline-none mt-1" />
+                </div>
+                <div className="flex-1">
+                  <label className="text-[11px] text-dimmed">输出价 ¥/百万 token</label>
+                  <input value={editPriceOut} onChange={e => setEditPriceOut(e.target.value)} placeholder="如 8"
+                    className="w-full px-3 py-2 bg-surface border border-border-default rounded-lg text-[12px] outline-none mt-1" />
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end mt-5">
+              <button onClick={() => setEditingModel(null)} className="px-4 py-2 text-[13px] text-dimmed hover:bg-surface rounded-lg">取消</button>
+              <button onClick={saveModelEdit} className="px-4 py-2 bg-accent text-white text-[13px] font-medium rounded-lg">保存</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

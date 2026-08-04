@@ -10,27 +10,12 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from app.core.token import estimate_tokens as _estimate_tokens, DEFAULT_CONTEXT as _DEFAULT_CONTEXT
+
 logger = logging.getLogger(__name__)
 
 MAX_TOKENS = 16384
 _PROMPT_OVERHEAD = 2000
-
-# 各厂商默认上下文窗口（token）
-_DEFAULT_CONTEXT = {
-    "deepseek": 1_000_000,
-    "openai": 128_000,
-    "anthropic": 200_000,
-    "dashscope": 1_000_000,
-}
-
-try:
-    import tiktoken
-    _TIK_ENCODER = tiktoken.get_encoding("cl100k_base")
-    def _estimate_tokens(text: str) -> int:
-        return len(_TIK_ENCODER.encode(text))
-except (ImportError, AttributeError):
-    def _estimate_tokens(text: str) -> int:
-        return len(text) // 2
 
 
 def _optimize_image_data(data_uri: str, max_dim: int = 1024, quality: int = 80) -> str:

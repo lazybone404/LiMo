@@ -39,6 +39,8 @@ class AddModelData(BaseModel):
     provider_id: str
     model_name: str
     context_window: int | None = None  # 用户自定义上下文窗口（token），为空则使用厂商默认
+    price_in: float | None = None      # 每百万 token 输入价格（元）
+    price_out: float | None = None     # 每百万 token 输出价格（元）
 
 
 class SceneBindData(BaseModel):
@@ -372,6 +374,10 @@ def add_model(data: AddModelData, request: Request, config=Depends(get_cfg), cfg
         }
         if data.context_window is not None:
             entry["context_window"] = data.context_window
+        if data.price_in is not None:
+            entry["price_in"] = data.price_in
+        if data.price_out is not None:
+            entry["price_out"] = data.price_out
         models.append(entry)
         cfg["enabled_models"] = models
         _save_cfg(cfg)
@@ -379,12 +385,15 @@ def add_model(data: AddModelData, request: Request, config=Depends(get_cfg), cfg
 
 
 class UpdateModelData(BaseModel):
-    capabilities: list[str] | None = None  # 手动覆写能力标签
+    capabilities: list[str] | None = None   # 手动覆写能力标签
+    context_window: int | None = None       # 上下文窗口（token），对话预算数据源
+    price_in: float | None = None           # 每百万 token 输入价格（元）
+    price_out: float | None = None          # 每百万 token 输出价格（元）
 
 
 @router.put("/models/{model_id}")
 def update_model(model_id: int, data: UpdateModelData, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
-    """更新已启用模型（如手动标记多模态能力）"""
+    """更新已启用模型（能力标签 / 上下文窗口 / 价格——中转/自定义模型修正）"""
     with cfg_lock:
         cfg = _get_cfg(config)
         models = cfg.get("enabled_models", [])
@@ -392,8 +401,20 @@ def update_model(model_id: int, data: UpdateModelData, request: Request, config=
             if m["id"] == model_id:
                 if data.capabilities is not None:
                     m["capabilities"] = data.capabilities
+                if data.context_window is not None:
+                    m["context_window"] = data.context_window
+                if data.price_in is not None:
+                    m["price_in"] = data.price_in
+                if data.price_out is not None:
+                    m["price_out"] = data.price_out
                 _save_cfg(cfg)
-                return {"status": "ok", "id": model_id, "capabilities": m.get("capabilities", ["text"])}
+                return {
+                    "status": "ok", "id": model_id,
+                    "capabilities": m.get("capabilities", ["text"]),
+                    "context_window": m.get("context_window"),
+                    "price_in": m.get("price_in"),
+                    "price_out": m.get("price_out"),
+                }
     raise AppError("MODEL_NOT_FOUND", "模型不存在")
 
 

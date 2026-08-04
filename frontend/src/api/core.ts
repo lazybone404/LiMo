@@ -111,7 +111,8 @@ export interface Capabilities {
   excelStyles: string[]
   genOptions: Record<string, string[]>
   products: { name: string; label: string; category: string; description: string }[]
-  llmModels: Record<string, { id: string; name: string; desc: string }[]>
+  /** LLM 预设表（config.py llm_models）— context_window 结构化窗口，供对话预算展示 */
+  llmModels: Record<string, { id: string; name: string; desc: string; capabilities?: string[]; context_window?: number }[]>
   version: string
   /** 文件类型→可用引擎名称白名单（后端动态推导） */
   fileTypeMap: Record<string, string[]>
