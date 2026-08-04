@@ -258,7 +258,7 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 - 流式 SSE 端点 + 对话持久化（`conversations/` + CRUD）
 - **上下文管理**（2026-08-04 C1-C5）：`context_window` 四层解析（用户自定义 > 预设 > provider 默认表 > 保守 32k）→ 预算 = 窗口×0.7；`core/chat_context.py` 历史按 token 反向裁剪 + 文档引用分级截断（替代固定 40 条）；`agent/compress.py` 超阈值 LLM 摘要早期消息（fallback：deepseek-chat→当前模型→跳过不阻塞）；SSE 事件：meta 带 budget/price、compressed、done 带 usage；前端 token 占用进度条 + clearContext + 压缩/隐私提示
 - 5 个工具：search_docs / lookup_doc / list_docs / search_web / fetch_url
-- 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留生成状态 + 浮窗 UI
+- 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留 generating/factChecking，AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice
 - **消息级文档引用**：docIds = 当前选中文档 + 本条 @ 引用（chatStore 组合去重），不绑定会话
 
 **AI 审核管道**（AI Review Engine，2026-07-15 从 FactCheck 重构而来）：
@@ -300,15 +300,16 @@ FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_co
 
 Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat` / `image_process`）。`resolve_model()`（`app/core/model_resolver.py`）是唯一模型解析入口，generate/chat/process 统一调用。多模态能力通过 `_PROVIDER_IMAGE_RULES` 按厂商 include/exclude 规则自动检测。
 
-### 前端四栏布局
+### 前端布局（三栏插槽 + AI 浮窗）
 
 ```
-[GenPanel] | [DocLibrary] | [PreviewArea] | [AIPanel]
+[GenPanel] | [DocLibrary] | [PreviewArea]
 ```
 - 可拖拽 resize，50–600px，<80px 自动折叠为 PanelStrip
-- 快捷键：`Ctrl+G` 切换生成面板，`Ctrl+I` 切换 AI 面板
+- 快捷键：`Ctrl+G` 切换生成面板，`Ctrl+I` 开关 AI 浮窗
+- **AI 对话为浮窗（唯一形态，2026-08-04 移除插槽面板）**：`FloatingAI` 覆盖式浮窗，可拖拽（边界钳制）/resize（不超视口），位置/大小持久化 localStorage（`mbw_aiPos`/`mbw_aiSize`），内部栏（会话列表/导航）可拖拽调宽 + 拖 <80px 自动折叠
 - Zustand store 按域拆 7 slices（`store/themeSlice.ts` / `docsSlice` / `contentSlice` / `tasksSlice` / `chatSlice` / `uiSlice` / `toastSlice`），`store/index.ts` 只剩组合层 + 模块副作用，共享类型在 `store/types.ts`（`Store` 为各 slice 交集）。**action 零跨域引用**，新增域 = 新建 slice 文件，消费方 API 零改动。持久化为手写 localStorage（`mbw_*` 9 个 key），无 persist 中间件。`setProcessing(key, null)` 是前缀树形删除语义（删 key 本身 + `key__` 前缀子任务），`clearDocTasks`/`cancelOneTask`/`failTask` 是兄弟函数
-- **对话独立 chatStore**（`store/chatStore.ts`，2026-08-04）：对话状态**不并入主 store**——流式 delta 高频更新隔离（主 store 订阅者不受波及）。chatSlice 只留 generating/factChecking + AI 浮窗 UI。对话组件树：`ChatCore`（容器）→ `ChatSidebar`（会话列表/归档折叠）/ `MessageList`（分页窗口）/ `MessageItem`（气泡/打字机/操作栏/工具气泡）/ `ChatInput`（textarea/IME/@引用）。消息模型 ChatMsg 在 chatStore.ts 定义，**勿与主 store types.ts 的 ChatMessage 混淆**
+- **对话独立 chatStore**（`store/chatStore.ts`，2026-08-04）：对话状态**不并入主 store**——流式 delta 高频更新隔离（主 store 订阅者不受波及）。chatSlice 只留 generating/factChecking；AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice。对话组件树：`ChatCore`（容器，内部栏受控拖拽调宽）→ `ChatSidebar`（会话列表/归档折叠）/ `MessageList`（分页窗口）/ `MessageItem`（气泡/打字机/操作栏/工具气泡/思考折叠）/ `ChatInput`（textarea/IME/@引用/token 进度）。消息模型 ChatMsg 在 chatStore.ts 定义，**勿与主 store types.ts 的 ChatMessage 混淆**
 
 ### Tauri 桌面壳
 
@@ -424,7 +425,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **KaTeX 服务端渲染**：`_render_formulas_katex()` 调 Node.js 脚本预渲染公式。打包环境无 Node.js → 先 `shutil.which("node")` 预检，不存则静默回退客户端渲染
 - **markmap 离线化**：`markmap.ts` 不调用 `markmap-common` 的 `loadCSS`/`loadJS`（动态 CDN 加载会被 Edge WebView2 跟踪防护拦截），KaTeX CSS 在 PreviewArea 中静态 import，hljs 由 react-syntax-highlighter 内联
 - **设置持久化**：`ProviderSettings.tsx` 中引擎/LLM Key 的保存不能仅靠 `onBlur`（组件卸载时不触发），需加 `useEffect` cleanup 用 ref 兜底保存
-- **上下文窗口可配置**：`addModel()` API 支持 `context_window` 参数，ProviderSettings 中展示（如 "1M ctx"），前端按模型粒度配置
+- **上下文窗口四层解析**（2026-08-04 C1）：`resolve_context_window()`（`model_resolver.py`）——用户自定义（`enabled_models.context_window`，设置页可编辑）> llm_models 预设 > provider 默认表（`core/token.py` `DEFAULT_CONTEXT`）> 保守 32k。对话预算 `budget = context_window × 0.7`（`core/chat_context.py`），历史按 token 反向裁剪 + 文档分级截断
 - **路由异常标准化**：全部 11 个路由模块已统一使用 AppError 体系（2026-07-25 完成 config/model/files 最后 15 处迁移）
 - **Content-Disposition 中文文件名**：必须用 RFC 5987 `filename*=UTF-8''` 编码，否则 Starlette 会尝试 latin-1 编码 → UnicodeEncodeError
 - **日志函数签名**：`app.core.logging.warning(msg, **kwargs)` 只接受 1 个位置参数 + kwargs，不能用 `%s` 占位符多参数调用。多参数用 f-string
@@ -538,7 +539,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 5 个工具 | search_docs / lookup_doc / list_docs / search_web / fetch_url |
 | ✅ | 搜索多级降级 | Tavily API → SearXNG 自动启动 → DuckDuckGo |
 | ✅ | SearXNG 便携版 | 自动检测 `.exe` 启动，asyncio.Lock 防并发 |
-| ✅ | SSE 流式 + 持久化 | 逐 token 推送 + 自动保存对话 + 40 条历史上下文 |
+| ✅ | SSE 流式 + 持久化 | 逐 token 推送 + 自动保存对话 + 历史按 token 预算裁剪（替代固定 40 条） |
 | ✅ | 对话 CRUD | 新建/重命名/删除/追加消息 + 归档（archived）+ 消息 rebuild（编辑/删除/分支截断） |
 | ✅ | UI 全量重写 | 独立 chatStore 状态机 + 流式打字机 + 消息操作（复制/编辑/重新生成/删除/停止）+ 工具气泡三态 + 思考段折叠 + 长会话分页窗口 |
 | ✅ | 消息级文档引用 | 输入区 @ 选文档 → docRefs chips；docIds = 当前选中 + 本条引用（动态组合）；引用 chips 点击跳转预览区 |
@@ -578,7 +579,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| ✅ | 四栏布局 | GenPanel \| DocLibrary \| PreviewArea \| AIPanel，可拖拽 resize |
+| ✅ | 三栏布局 + AI 浮窗 | GenPanel \| DocLibrary \| PreviewArea 可拖拽 resize；AI 对话统一浮窗（位置/尺寸记忆、内部栏拖拽调宽） |
 | ✅ | PanelStrip | <80px 自动折叠为图标条 |
 | ✅ | 快捷键 | `Ctrl+G` 生成面板，`Ctrl+I` AI 面板 |
 | ✅ | 主题系统 | 六轴独立 — `data-theme`(明暗) × `data-accent`(26套配色) × `data-base`(13种基调) × `data-texture`(6种纹理) × `data-font`(5种字体) × 强度滑条。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（20个: 护眼/经典/粉色/雅致/国风各4）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值） |
@@ -625,9 +626,9 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 📝 转录 & 引擎 | 9 | 9 | 100% |
 | ✨ LLM 生成 | 8 | 8 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
-| 💬 AI 对话 | 5 | 5 | 100% |
+| 💬 AI 对话 | 6 | 6 | 100% |
 | ✅ AI 审核 | 9 | 10 | 90% |
 | 📤 导出 | 8 | 9 | 89% |
 | 🎨 前端 UI/UX | 8 | 8 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **67** | **69** | **97%** |
+| **合计** | **68** | **70** | **97%** |

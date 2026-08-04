@@ -432,8 +432,8 @@ App
 │   ├── TranscriptView  # 时间轴/转录
 │   ├── EpubSkeletonPanel # EPUB 章节树
 │   └── MindmapView     # 思维导图
-├── AIPanel             # AI 对话
-│   └── ChatCore        # 对话核心
+├── FloatingAI          # AI 对话浮窗（唯一形态，2026-08-04 移除插槽面板）
+│   └── ChatCore        # 对话核心（会话列表/消息/输入，内部栏可拖拽调宽）
 ├── TaskPanel           # 浮动任务管理
 ├── ExportMenu          # 快捷导出按钮
 ├── ExportPanel         # 自定义导出面板

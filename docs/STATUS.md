@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-08-03 | **版本**: 0.2.0
+**更新**: 2026-08-04 | **版本**: 0.3.0
 
 ---
 
@@ -13,7 +13,7 @@
 |------|------|
 | 后端 Python 文件 | 87 |
 | 前端 TS/TSX/CSS 文件 | 91（89 ts/tsx + 2 css） |
-| 前端测试文件 | 7（82 个测试用例） |
+| 前端测试文件 | 8（100 个测试用例） |
 | API 路由模块 | 14 |
 | API 端点 | 70 |
 | 适配器 | 5 |
@@ -72,8 +72,8 @@
 | GenPanel | 导入 + 生成选项 |
 | DocLibrary | 文档列表/搜索/筛选 |
 | PreviewArea | 预览 + 多 tab |
-| AIPanel | AI 对话面板 |
-| SettingsPage | 模型/引擎/配置（overlay） |
+| FloatingAI | AI 对话浮窗（唯一形态；位置/尺寸记忆、内部栏拖拽调宽；含 ChatCore/ChatSidebar/MessageList/MessageItem/ChatInput） |
+| SettingsPage | 模型/引擎/配置（overlay，含对话上下文设置 + 模型元数据编辑） |
 | TaskPanel | 浮动任务管理（可拖拽、可取消） |
 | ExportMenu | 快捷导出（MD/HTML/ZIP/复制） |
 | ExportPanel | 自定义导出（tab选择/格式/主题）+ SSE 进度反馈 |
@@ -89,12 +89,12 @@
 | 转录 & 引擎 | 8 | 8 | 100% |
 | LLM 生成 | 7 | 7 | 100% |
 | 图片处理 | 4 | 4 | 100% |
-| AI 对话 | 5 | 5 | 100% |
+| AI 对话 | 6 | 6 | 100% |
 | AI 审核 | 9 | 10 | 90% |
 | 导出 | 8 | 9 | 89% |
 | 前端 UI/UX | 8 | 8 | 100% |
 | 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **65** | **67** | **97%** |
+| **合计** | **66** | **68** | **97%** |
 
 > 进度说明：
 > - AI 审核：9/10 — 专业模式（学术/法律/医疗专用搜索源）暂不实施
@@ -108,7 +108,10 @@
 | FastAPI Depends 依赖注入 | ✅ 8/8 路由迁移完成 |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 11 路由，0 处旧格式残留 |
-| 前端测试 | ✅ vitest + 82 tests（store/theme/api/latex/streamBuffers/tabRegistry/组件） |
+| 前端测试 | ✅ vitest + 100 tests（store/theme/api/latex/streamBuffers/tabRegistry/chatStore/组件） |
+| 对话重写 | ✅ 独立 chatStore + 消息层组件树 + 工具气泡/引用/思考折叠（2026-08-04） |
+| 对话上下文管理 | ✅ context_window 四层解析 + 预算引擎 + 历史压缩 + token 进度/费用（2026-08-04 C1-C5） |
+| AI 浮窗 | ✅ 移除插槽，统一浮窗（位置记忆/边界钳制/内部栏拖拽） |
 | 多任务并发 | ✅ processingTasks 统一推导，双层流式缓冲，per-doc 操作互斥，逐任务取消 |
 | 并发控制 | ✅ 生成上限 2、导入上限 3，超限 Toast 提示 |
 | 引擎文件拆分 | ✅ doc.py → 5 文件 + 删死代码 |

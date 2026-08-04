@@ -15,8 +15,9 @@
 | `docsSlice.ts` | 文档库（docs/currentDocId/searchQuery/activeTag） |
 | `contentSlice.ts` | 预览内容 + AI 审核 + streamTick |
 | `tasksSlice.ts` | importProgress/importStages/imageResults/processingTasks/taskPanelOpen |
-| `chatSlice.ts` | 对话管理 + 生成状态 + AI 浮动对话 |
-| `uiSlice.ts` | slots/activeView/backendReady/contentWidth/capabilities |
+| `chatSlice.ts` | 生成状态（generating/factChecking）——对话管理在独立 chatStore |
+| `chatStore.ts` | **独立对话状态机**（不并入主 store）：ChatMsg 模型 + 流式状态机 + 会话 CRUD + 上下文管理（budget/usage/压缩提示/clearContext） |
+| `uiSlice.ts` | slots/activeView/backendReady/contentWidth/capabilities + AI 浮窗（aiVisible/aiPos/aiSize，位置/尺寸持久化） |
 | `toastSlice.ts` | toasts + `nextMsgId`（模块级 msgCounter） |
 | `index.ts` | 组合层：`create<Store>()((...a) => ({...createXSlice(...a)}))` + 模块副作用（apply 主题轴 + matchMedia 监听） |
 
@@ -267,7 +268,8 @@ export function apiUrl(path: string): string {
 | `mbw_base` | lib/theme-base.ts | 界面基调 |
 | `mbw_lastDocId` | docsSlice selectDoc | 恢复上次选中的文档 |
 | `mbw_lastView` | uiSlice setActiveView | 恢复上次的预览 tab |
-| `mbw_lastConvId` | chatSlice setCurrentConversationId | 恢复上次的对话 |
+| `mbw_lastConvId` | ChatCore 切换会话时 | 恢复上次的对话（chatStore 内存不持久化，组件层读写） |
+| `mbw_aiPos` / `mbw_aiSize` | uiSlice setAiPos/setAiSize | AI 浮窗位置/大小记忆 |
 | `mbw_contentWidth` | uiSlice cycleContentWidth | 阅读宽度 |
 
 **规则**：lib 层的持久化在 slice 的 setter 中调用（如 `setTheme` → `saveTheme` → `applyTheme` → `set`）；action 内的 localStorage 读写需 try/catch（quota）。LLM 设置、provider、引擎配置都在后端 `~/.limo/config.yaml`，不由前端持久化。
