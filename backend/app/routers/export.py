@@ -68,6 +68,13 @@ def _normalize_latex_delimiters(md: str) -> str:
             lambda m: f'${m.group(1).strip()}$',
             part,
         )
+        # 含 \tag 的内联公式 → 提升为 display（KaTeX 的 \tag 仅 display 支持，
+        # inline 渲染会报 "\tag works only in display equations"）
+        part = re.sub(
+            r'\$([^$\n]+?\\tag\s*\{[^}]*\}[^$\n]*?)\$',
+            lambda m: _fmt_display(m.group(1)),
+            part,
+        )
         result.append(part)
     return ''.join(result)
 

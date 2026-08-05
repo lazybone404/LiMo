@@ -81,4 +81,12 @@ describe('normalizeLatexDelimiters', () => {
     expect(result).toContain('{<k}')
     expect(result).toContain('$$')
   })
+
+  it('upgrades inline $...\\tag{...}$ to display (KaTeX \\tag display-only)', () => {
+    const input = '公式 $w_i = \\frac{\\exp(g_i(X))}{\\sum_{j=1}^{E} \\exp(g_j(X))} \\tag{1}$ 后续'
+    const result = normalizeLatexDelimiters(input)
+    expect(result).toContain('$$')
+    expect(result).toContain('\\tag{1}')
+    expect(result).not.toContain('$w_i')  // 不再被当 inline（避免 KaTeX \tag 报错）
+  })
 })

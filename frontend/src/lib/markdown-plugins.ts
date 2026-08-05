@@ -35,6 +35,12 @@ export function normalizeLatexDelimiters(md: string): string {
       return `$${latex.trim()}$`
     })
 
+    // 含 \tag 的内联公式 → 提升为 display（KaTeX 的 \tag 仅 display 支持，
+    // inline 渲染会报 "\tag works only in display equations" 显示红色 katex-error）
+    part = part.replace(/\$([^$\n]+?\\tag\s*\{[^}]*\}[^$\n]*?)\$/g, (_: string, latex: string) => {
+      return `$$\n${latex.trim()}\n$$`
+    })
+
     return part
   }).join('')
 }

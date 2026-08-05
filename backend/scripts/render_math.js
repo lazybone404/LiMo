@@ -24,6 +24,8 @@ function normalizeLatexDelimiters(md) {
       return '$$' + trimmed + '$$';
     });
     part = part.replace(/\\\(([\s\S]*?)\\\)/g, (_, latex) => '$' + latex.trim() + '$');
+    // 含 \tag 的内联公式 → 提升为 display（KaTeX 的 \tag 仅 display 支持）
+    part = part.replace(/\$([^$\n]+?\\tag\s*\{[^}]*\}[^$\n]*?)\$/g, (_, latex) => '$$\n' + latex.trim() + '\n$$');
     return part;
   }).join('');
 }

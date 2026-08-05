@@ -46,6 +46,29 @@ def _optimize_image_data(data_uri: str, max_dim: int = 1024, quality: int = 80) 
     return f"data:image/jpeg;base64,{new_b64}"
 
 
+def _sanitize_image_uri(uri: str, optimize: bool) -> str | None:
+    """校验 data URI 图片（PIL 可识别）；optimize 时缩放。坏图返回 None（调用方跳过）。
+
+    2026-08-04：修复 PIL.UnidentifiedImageError 导致整个生成流崩溃——
+    损坏/截断的图片 data URI 跳过而非中断（失败显式化的边界：单图损坏不影响整体生成）。
+    """
+    import base64
+    import io as _io
+    from PIL import Image
+    try:
+        _header, b64 = uri.split(",", 1)
+        img_bytes = base64.b64decode(b64)
+        with Image.open(_io.BytesIO(img_bytes)) as img:
+            if not optimize:
+                img.verify()  # 不优化也校验完整性
+        if optimize:
+            return _optimize_image_data(uri)
+        return uri
+    except Exception:
+        logger.warning("跳过无法识别的图片（data URI 损坏），不影响生成")
+        return None
+
+
 class ContentPreparer:
     """生成前的内容准备器。"""
 
@@ -275,9 +298,9 @@ class ContentPreparer:
             if m.re is data_uri_re:
                 uri = m.group(2)
                 if send_to_llm:
-                    if optimize_images:
-                        uri = _optimize_image_data(uri)
-                    image_urls.append(uri)
+                    cleaned = _sanitize_image_uri(uri, optimize_images)
+                    if cleaned:
+                        image_urls.append(cleaned)
                 return f'[📷 {alt}]' if alt else '[📷 图片]'
             elif m.re is asset_ref_re and doc_dir:
                 # 新格式：assets/xxx → 从 {doc_dir}/assets/ 读取
@@ -296,9 +319,9 @@ class ContentPreparer:
                         mime = f"image/{ext}"
                         b64 = base64.b64encode(file_path.read_bytes()).decode()
                         data_uri = f"data:{mime};base64,{b64}"
-                        if optimize_images:
-                            data_uri = _optimize_image_data(data_uri)
-                        image_urls.append(data_uri)
+                        cleaned = _sanitize_image_uri(data_uri, optimize_images)
+                        if cleaned:
+                            image_urls.append(cleaned)
                     if keep_refs:
                         return f'![{alt}]({fname})'
                     else:
@@ -316,9 +339,9 @@ class ContentPreparer:
                         mime = f"image/{ext}"
                         b64 = base64.b64encode(file_path.read_bytes()).decode()
                         data_uri = f"data:{mime};base64,{b64}"
-                        if optimize_images:
-                            data_uri = _optimize_image_data(data_uri)
-                        image_urls.append(data_uri)
+                        cleaned = _sanitize_image_uri(data_uri, optimize_images)
+                        if cleaned:
+                            image_urls.append(cleaned)
                     if keep_refs:
                         return f'![{alt}]({full_path})'
                     else:
