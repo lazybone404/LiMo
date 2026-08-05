@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-08-06 — 插件 venv 健壮性修复
+
+> 用户报告：pymupdf4llm 插件导入失败 `No Python at "C:\Users\...\uv\python\...\python.exe"`——插件 venv 的 base python（uv 管理的 python）路径失效。
+
+- **`_plugin_subdir` 修复**：用声明文件 stem（而非 `adapter.name`）解析插件子目录——`pymupdf4llm_heavy.py` 里 `name=pymupdf4llm` 但子目录是 `pymupdf4llm_heavy/`，此前按 name 解析到错误路径导致 requirements/venv 找不到（`install_plugin_deps` 误报 no-requirements）
+- **`_venv_valid` 新增**：校验 venv python 存在 + `pyvenv.cfg` 的 base python（home）可用——失效 venv（base python 被 uv 升级/清理）视为未安装，前端显示「一键安装依赖」
+- **`install_plugin_deps` 自愈**：检测到失效 venv → 删除重建（用当前可用 base python），不再因 venv 存在而跳过
+- 插件 venv base 策略：源码模式用后端 python（sys.executable）；打包版用系统 python（PyInstaller 无法用自身 exe 跑 `-m venv`）；都不可用 → 失败显式引导手动（`no-python` + hint）
+
+---
+
 ## 2026-08-04 — PDF 链路优化 + 两个生成 bug 修复
 
 > 用户诉求：PDF 整体转图片（供 OCR/多模态）+ OCR 引擎可选图片转文字小模型（不只多模态大模型）。

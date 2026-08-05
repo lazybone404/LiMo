@@ -158,9 +158,12 @@ class _PluginEngineAdapter:
     消费方（document/video/image）已按结构化字段消费，零改动。
     """
 
-    def __init__(self, plugin: EnginePlugin, plugin_dir: Path):
+    def __init__(self, plugin: EnginePlugin, plugin_dir: Path, source_file: Path | None = None):
         self._plugin = plugin
         self._plugin_dir = plugin_dir
+        # 声明文件（plugins/xxx.py）——子目录命名规范「声明文件同名的子目录」，
+        # 依赖它解析子目录（name 可能与声明文件 stem 不同，如 pymupdf4llm_heavy.py 里 name=pymupdf4llm）
+        self._source_file = source_file
         self.name = plugin.name
         self.license = plugin.license
         self.description = plugin.description
@@ -341,7 +344,7 @@ def init_plugins(config: dict):
                         )
                         continue
 
-                    adapter = _PluginEngineAdapter(instance, py_file.parent)
+                    adapter = _PluginEngineAdapter(instance, py_file.parent, py_file)
 
                     # 门控：无 command 且未 trusted → 拒绝（登记但不注册）
                     if adapter._exec_mode is None:
@@ -404,8 +407,13 @@ PIP_MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
 
 def _plugin_subdir(adapter) -> Path:
-    """插件执行子目录（声明文件同名的子目录，含 engine.py / requirements.txt / .venv）"""
-    return adapter._plugin_dir / adapter.name
+    """插件执行子目录（声明文件同名的子目录，含 engine.py / requirements.txt / .venv）。
+
+    用声明文件 stem（而非 adapter.name）——name 可与声明文件名不同
+    （如 pymupdf4llm_heavy.py 里 name=pymupdf4llm，子目录却是 pymupdf4llm_heavy/）。
+    """
+    stem = adapter._source_file.stem if adapter._source_file else adapter.name
+    return adapter._plugin_dir / stem
 
 
 def _venv_python(pkg_dir: Path) -> Path:
@@ -421,9 +429,37 @@ def _venv_pip(pkg_dir: Path) -> Path:
     return pkg_dir / ".venv" / "bin" / "pip"
 
 
+def _venv_valid(pkg_dir: Path) -> bool:
+    """venv 是否可用：python 存在 + pyvenv.cfg 的 base python（home）存在。
+
+    venv 的 python.exe 存在不等于可用——若 base python 路径失效（如 uv 管理的
+    python 被升级/清理），启动 venv python 会报 "No Python at ..."。
+    2026-08-06：修复——失效 venv 视为未安装（前端显示「一键安装依赖」可自愈）。
+    """
+    venv_py = _venv_python(pkg_dir)
+    if not venv_py.exists():
+        return False
+    cfg = pkg_dir / ".venv" / "pyvenv.cfg"
+    if not cfg.exists():
+        return False
+    home = None
+    try:
+        for line in cfg.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s.startswith("home ="):
+                home = s.split("=", 1)[1].strip()
+                break
+    except OSError:
+        return False
+    if not home:
+        return False
+    base_py = Path(home) / ("python.exe" if os.name == "nt" else "python3")
+    return base_py.exists()
+
+
 def _deps_installed(adapter) -> bool:
-    """依赖是否已安装（venv python 存在即视为已尝试安装；装没装全由运行时暴露）"""
-    return _venv_python(_plugin_subdir(adapter)).exists()
+    """依赖是否已安装（venv python 存在且 base python 有效；失效 venv 视为未装）"""
+    return _venv_valid(_plugin_subdir(adapter))
 
 
 def _has_requirements(adapter) -> bool:
@@ -479,8 +515,14 @@ def install_plugin_deps(name: str) -> dict:
     pip = _venv_pip(pkg_dir)
 
     try:
-        # 1. 建 venv（base python 解析：源码=当前后端 / 打包=系统 python；已存在则跳过）
-        if not venv_py.exists():
+        # 1. 建 venv（base python 解析：源码=当前后端 / 打包=系统 python）
+        if not _venv_valid(pkg_dir):
+            # 失效 venv（base python 不可用，如 uv 管理的 python 被清理）→ 删除重建，
+            # 用当前可用的 base python，避免「No Python at ...」无法自愈
+            if venv_py.exists():
+                import shutil
+                shutil.rmtree(pkg_dir / ".venv", ignore_errors=True)
+                logger.warning("Plugin %s: 失效 venv（base python 不可用）已删除，重建中", name)
             base_py = _resolve_venv_base_python()
             if not base_py:
                 return {
