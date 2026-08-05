@@ -287,9 +287,10 @@ FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_co
 
 `app/engines/__init__.py` → `EngineRegistry.register()`。三类引擎：
 - **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）。faster-whisper 已从内置移除（本地转写需自行安装）
-- **OCR**：dashscope-ocr（云端，需 API Key）。**Tesseract 已从内置移除**（2026-08-02，体积修剪 + 插件化方向）——无 dashscope key 时本地 OCR 能力消失，扫描件出占位文本；需本地 OCR 请装三方插件参考模板 `backend/plugins/examples/tesseract_plugin.py`
+- **OCR**：dashscope-ocr（云端，需 API Key，model_name 透传——`engine_bindings.ocr` 可绑 OCR 专用模型）。**OCR 名称检测**（2026-08-04）：`_PROVIDER_IMAGE_RULES` dashscope 匹配 `ocr` → qwen3.5-ocr 等自动标 image（生成时「OCR 模型」可选到图片转文字小模型）；检测结果用户可手动取消/标记（updateModel capabilities）。**默认绑定**：未绑定时自动绑 `qwen-vl-ocr-latest`（图片转文字专用）。**Tesseract 已从内置移除**（2026-08-02，体积修剪 + 插件化方向）——无 dashscope key 时本地 OCR 能力消失，扫描件出占位文本；需本地 OCR 请装三方插件参考模板 `backend/plugins/examples/tesseract_plugin.py`
 - **Doc**（全 MIT/BSD，AGPL 引擎不内置）：
   - **pypdfium2**（BSD-3，默认）：C 引擎直读文字 + 嵌入原图，毫秒级。pdfplumber (MIT) 辅助表格提取。**docling 已移除**（2026-08-03，依赖 torch ~2GB 无法打包，打包版一直不可用）
+  - **pdf-image**（2026-08-04）：整体转图片——渲染每页为 PNG 嵌入 markdown（供 OCR/多模态），绑定 `doc:pdf` 替代文字提取，对纯图片/扫描 PDF 更稳（绕开提取嵌入图的坏图问题）；document.py 跳过其重复渲染+OCR
   - **markitdown**（MIT）：Office/EPUB 转 Markdown
   - **python-docx** / **python-pptx** / **openpyxl** / **ebooklib**：各格式专用引擎
 - **插件引擎**：AGPL 引擎（pymupdf4llm）以插件形式进程外加载（`~/.limo/plugins/`，command 指向子目录 venv 隔离依赖），`plugin_loader.py` 动态注册进 EngineRegistry，capabilities 的 fileTypeMap 自动追加
@@ -503,7 +504,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 |------|------|------|
 | ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端)。faster-whisper 已从内置移除（本地转写需自行安装） |
 | ✅ | OCR 引擎 | dashscope VL (云端)。Tesseract 已从内置移除（需三方插件 `examples/tesseract_plugin.py`） |
-| ✅ | Doc 引擎 | pypdfium2 (PDF默认,BSD-3) + pdfplumber (表格,MIT) + python-docx/pptx/xlsx + openpyxl/.xls(xlrd) + markitdown + ebooklib（docling 已移除；.doc/.ppt 旧格式明确提示转 .docx/.pptx） |
+| ✅ | Doc 引擎 | pypdfium2 (PDF默认,BSD-3) + pdfplumber (表格,MIT) + **pdf-image（整体转图片→OCR/多模态）** + python-docx/pptx/xlsx + openpyxl/.xls(xlrd) + markitdown + ebooklib（docling 已移除；.doc/.ppt 旧格式明确提示转 .docx/.pptx） |
 | ✅ | 引擎绑定 | `engine_bindings` 按子场景配置，doc 拆为 pdf / word / ppt / excel / epub |
 | ✅ | 引擎绑定只取第一个 | 绑定解析首个可用引擎，失败直接报错，不再静默降级 |
 | ✅ | 视频帧提取 | ffmpeg 抽帧 + 网格拼接 + 去重（无 opencv 依赖） |

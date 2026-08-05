@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-08-04 — PDF 链路优化 + 两个生成 bug 修复
+
+> 用户诉求：PDF 整体转图片（供 OCR/多模态）+ OCR 引擎可选图片转文字小模型（不只多模态大模型）。
+
+### pdf-image 引擎 + OCR 引擎名称检测
+- **pdf-image Doc 引擎**（`doc_pdf_image.py` 新）：pypdfium2 渲染每页为 PNG（media_dir 写 `page_NNNN.png` / data URI），标记 is_scanned；绑定 `doc:pdf` 后可替代 pypdfium2 文字提取，对纯图片/扫描 PDF 更稳（绕开 pypdfium2 提取嵌入图的坏图问题）；document.py 对 pdf-image 跳过重复渲染+OCR（产物本身是图片转录）
+- **OCR 名称检测**：`_PROVIDER_IMAGE_RULES` dashscope include 加 `ocr` → `qwen3.5-ocr` 等自动标 image，生成时「OCR 模型」下拉可选到图片转文字专用小模型；检测结果用户可手动取消/标记（`updateModel` capabilities 已支持）
+- **OCR 默认绑定**：`engine_bindings.ocr` 未绑定且 dashscope 有 key → 默认绑 `qwen-vl-ocr-latest`（图片转文字专用，比 VL 大模型便宜），避免「无可用 OCR 引擎」
+
+### 生成 bug 修复
+- **PIL 坏图崩溃**：`_sanitize_image_uri` 校验 data URI（PIL 可识别 + 可选优化），损坏/截断图片跳过不中断生成流（`content_preparer`，根因是扫描/图片层 PDF 提取的坏图）
+- **公式 `\tag` 渲染**：含 `\tag` 的内联公式被当 inline 渲染 → KaTeX 报 `\tag works only in display equations` 红色 katex-error；前端 `markdown-plugins.ts` + 后端 `export.py` + `render_math.js` 三处同步把含 `\tag` 内联公式提升为 display（导出 HTML 一直正常因为走 display）
+
+---
+
 ## 2026-08-04 — 对话上下文管理（C1-C5 · 依 pi-docs/对话上下文管理计划.md）
 
 > 用户确认「C1-C5 全量」。对话重写后上下文管理未实现：历史固定 40 条 + agent 二次截 20 条、文档引用每篇 1000 截断——无模型感知、无 token 预算。用户 token 敏感，不同模型窗口/价格不同需适配。

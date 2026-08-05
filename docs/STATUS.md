@@ -17,7 +17,7 @@
 | API 路由模块 | 14 |
 | API 端点 | 70 |
 | 适配器 | 5 |
-| 引擎 (ASR/Doc/OCR) | 9 内置（+三方插件 pymupdf4llm） |
+| 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 8 |
 
@@ -42,6 +42,7 @@
 | ASR | bcut-asr | 免费云 |
 | ASR | dashscope-asr | 云端 |
 | Doc | pypdfium2 | 本地（BSD-3 C 引擎） |
+| Doc | pdf-image | 本地（整体转图片，供 OCR/多模态） |
 | Doc | markitdown | 本地 |
 | Doc | python-docx | 本地 |
 | Doc | python-pptx | 本地 |
@@ -52,7 +53,7 @@
 
 > Doc 引擎源码已拆分为独立文件：[doc_types.py](../backend/app/engines/doc_types.py)（共享类型）、[doc_markitdown.py](../backend/app/engines/doc_markitdown.py)、[doc_docx.py](../backend/app/engines/doc_docx.py)、[doc_pptx.py](../backend/app/engines/doc_pptx.py)、[doc_excel.py](../backend/app/engines/doc_excel.py)、[docling.py](../backend/app/engines/docling.py)（含 PyPdfium2Engine）、[epub.py](../backend/app/engines/epub.py)。pdfplumber 为 pypdfium2 的表格辅助（不单独注册）。text_only 变体引擎已删除。
 >
-> 引擎计数方式：`EngineRegistry.register()` 调用次数。ASR 2 + Doc 6 + OCR 1 = 9 内置（插件 pymupdf4llm 动态注册，不计数）。faster-whisper 与 tesseract 已从内置移除（分别需自行安装 / 三方插件模板 `examples/tesseract_plugin.py`）；docling 已移除（2026-08-03，依赖 torch ~2GB 无法打包）。
+> 引擎计数方式：`EngineRegistry.register()` 调用次数。ASR 2 + Doc 7 + OCR 1 = 10 内置（插件 pymupdf4llm 动态注册，不计数）。faster-whisper 与 tesseract 已从内置移除（分别需自行安装 / 三方插件模板 `examples/tesseract_plugin.py`）；docling 已移除（2026-08-03，依赖 torch ~2GB 无法打包）。
 
 ## 管道
 
