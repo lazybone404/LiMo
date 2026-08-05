@@ -642,7 +642,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 if polished_chunks:
                     polished_content = _post_process(
                         "".join(polished_chunks), format_list,
-                        video_path or screenshot_video_path, source_type, store.root)
+                        video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""))
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
                         transcript_id=transcript_id, content=polished_content,
@@ -653,7 +653,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 if notes_chunks:
                     notes_content = _post_process(
                         "".join(notes_chunks), format_list,
-                        video_path or screenshot_video_path, source_type, store.root)
+                        video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""))
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
                         transcript_id=transcript_id, content=notes_content,
@@ -758,7 +758,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 logger.error("单产物生成超时（150s 无 chunk），强制结束: %s", transcript_id)
                 if all_chunks:
                     content = _post_process("".join(all_chunks), format_list,
-                                            video_path or screenshot_video_path, source_type, store.root)
+                                            video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""))
                     mv_mode = GenerateMode.POLISHED if stream_mode == "polished" else GenerateMode.NOTES
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
@@ -783,7 +783,7 @@ async def generate_stream(transcript_id: str, request: Request,
 
             # 完成后保存
             content = _post_process("".join(all_chunks), format_list,
-                                    video_path or screenshot_video_path, source_type, store.root)
+                                    video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""))
             mv_mode = GenerateMode.POLISHED if stream_mode == "polished" else GenerateMode.NOTES
             mv = MarkdownView(
                 id=f"md_{uuid.uuid4().hex[:12]}",
@@ -869,12 +869,38 @@ def _build_continue_prompt(original_prompt: str, partial_content: str) -> str:
     )
 
 
+def _normalize_generated_images(content: str, doc_dir: str) -> str:
+    """规范化生成产物图片引用为相对 assets/ 路径（存储规范）。
+
+    LLM 生成时可能把转录里的 assets/img_xxx.png 幻觉改写成 /api/files/... 或
+    /api/assets/{tx_id}/... 绝对 URL（如 DSpark 笔记出现 /api/files/assets/img_0003.png
+    → 前端 404）。存储需统一为相对 assets/xxx（文件在 {doc_dir}/assets/ 下）；
+    data URI / 外部 http / 已是 assets/ 的相对路径保留。
+    """
+    if not doc_dir:
+        return content
+
+    def _repl(m):
+        alt, url = m.group(1), m.group(2)
+        if url.startswith('data:') or url.startswith('http') or url.startswith('assets/'):
+            return m.group(0)
+        # 绝对 API 路径（/api/files/... / /api/assets/{tx}/...）→ 提取文件名，校验在本文档 assets/ 下
+        fname = url.rsplit('/', 1)[-1]
+        if fname and (Path(doc_dir) / 'assets' / fname).exists():
+            return f'![{alt}](assets/{fname})'
+        return m.group(0)  # 无法确认 → 保留原文，不破坏
+
+    return re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', _repl, content)
+
+
 def _post_process(content: str, formats: list[str],
                   video_path, source_type: str, doc_dir: str = "") -> str:
     """后处理（对齐原有 Generator 行为）"""
     content = _post_process_content_markers(content)
     if "screenshot" in formats and video_path:
         content = _post_process_screenshots(content, str(video_path), doc_dir=doc_dir)
+    # LLM 可能把 assets/ 图片幻觉改写成 /api/... 绝对 URL → 规范化回相对 assets/（存储规范）
+    content = _normalize_generated_images(content, doc_dir)
     return content
 
 

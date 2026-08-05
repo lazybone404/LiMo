@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-08-06 — PDF 笔记图片显示修复
+
+> 用户反馈：PDF 笔记（DSpark，pymupdf4llm 插件导出）图片显示有问题，生成完成后需刷新才正常。
+
+- **根因 1（图片 404）**：LLM 生成 notes 时把转录里的 `assets/img_xxx.png` 幻觉改写成 `/api/files/assets/img_0003.png`（错误绝对 URL → 前端 404）。transcript/polished 保留相对路径正确，notes 错。
+- **修复**：generate.py `_post_process` 加 `_normalize_generated_images`——把 `/api/files/...` / `/api/assets/{tx}/...` 绝对 URL 规范化回相对 `assets/{filename}`（仅当文件在本文档 `{doc_dir}/assets/` 存在）；data URI / 外部 http / 已是相对路径保留。顺带修复 `_post_process` 传 `store.root` 当 doc_dir 的隐藏 bug（改传文档目录）
+- **根因 2（需刷新才显示）**：前端 `MarkdownImage` 加载失败后 `broken` 永久，文件就绪不自动恢复 → 需手动刷新
+- **修复**：`MarkdownImage` 加「src 变化重置 broken」+「加载失败 2s 自动重试」——生成完成后图片文件就绪自动显示，无需刷新
+
+---
+
 ## 2026-08-06 — 插件 venv 健壮性修复
 
 > 用户报告：pymupdf4llm 插件导入失败 `No Python at "C:\Users\...\uv\python\...\python.exe"`——插件 venv 的 base python（uv 管理的 python）路径失效。

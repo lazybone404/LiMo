@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Copy, Check, Play, Camera, Link2 } from 'lucide-react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { appUrl } from '../api/client'
@@ -105,6 +105,17 @@ function MarkdownImage({ src, alt, ...props }: any) {
 
   // 空 src 会导致浏览器重新加载整页，不渲染该元素
   if (!imgSrc || imgSrc === '') return null
+
+  // src 变化（生成中 URL 可能从相对 → 绝对 / 文件就绪）→ 重置失败状态
+  useEffect(() => { setBroken(false) }, [imgSrc])
+
+  // 加载失败自动重试（2026-08-06 修复）：生成完成前图片文件可能未就绪
+  // （URL 已出现但 404），成功后自动显示，无需手动刷新
+  useEffect(() => {
+    if (!broken) return
+    const t = setTimeout(() => setBroken(false), 2000)
+    return () => clearTimeout(t)
+  }, [broken])
 
   if (broken) {
     return (
