@@ -151,7 +151,8 @@ class DocumentAdapter(PipelineAdapter):
         logger.info("Doc 引擎 %s 成功: %d chars, %d pages", eng_name, len(raw_text), pages)
 
         # 3. 扫描件 PDF → OCR 叠加（嵌入页面原图 + OCR 文字）
-        if is_scanned and ext == ".pdf":
+        # pdf-image 引擎产物本身就是「每页图片」转录，跳过重复渲染+OCR（避免二次渲染）
+        if is_scanned and ext == ".pdf" and eng_name != "pdf-image":
             if on_progress:
                 on_progress(ProgressEvent(
                     phase="transcribe", status="running",

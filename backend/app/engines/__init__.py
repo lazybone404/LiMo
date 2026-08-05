@@ -267,6 +267,13 @@ def init_engines(config: dict | None = None):
     pypdfium2_eng.name = "pypdfium2"
     EngineRegistry.register("doc", "pypdfium2", pypdfium2_eng)
 
+    # PDF 整体转图片（2026-08-04）— 渲染每页为 PNG，供 OCR/多模态后续处理。
+    # 绑定 doc:pdf 后替代 pypdfium2 文字提取（对纯图片/扫描 PDF 更稳）
+    from .doc_pdf_image import PdfImageEngine
+    pdf_image_eng = PdfImageEngine()
+    pdf_image_eng.name = "pdf-image"
+    EngineRegistry.register("doc", "pdf-image", pdf_image_eng)
+
     markit = MarkItDownEngine()
     markit.name = "markitdown"
     EngineRegistry.register("doc", "markitdown", markit)
@@ -374,6 +381,21 @@ def init_engines(config: dict | None = None):
         logger.warning(f"DashScope OCR unavailable: {e}")
     except Exception as e:
         logger.warning(f"DashScope OCR init failed: {e}")
+
+    # OCR 默认绑定（2026-08-04）：未绑定且 dashscope 有 key → 默认 qwen-vl-ocr-latest
+    # （图片转文字专用模型，比 VL 大模型便宜）。避免「无可用 OCR 引擎」
+    # （扫描件 OCR / 图片处理回退）。用户可在设置页改绑。
+    if dashscope_ocr_key and not doc_bindings.get("ocr"):
+        ocr_mid = int(_hl.md5("engine:dashscope:qwen-vl-ocr-latest".encode()).hexdigest()[:8], 16)
+        if ocr_mid not in existing_ids:
+            engine_models.append({
+                "id": ocr_mid, "provider_id": "dashscope",
+                "model_name": "qwen-vl-ocr-latest", "category": "ocr",
+            })
+            existing_ids.add(ocr_mid)
+            models_changed = True
+        doc_bindings["ocr"] = ocr_mid
+        logger.info("Auto-bound OCR default: qwen-vl-ocr-latest (id=%d)", ocr_mid)
 
     # Tesseract 已从内置移除（2026-08-02，体积修剪 + 插件化方向）。
     # 需本地 OCR 请使用三方插件参考模板：backend/plugins/examples/tesseract_plugin.py

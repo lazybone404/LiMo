@@ -308,8 +308,8 @@ _PROVIDER_IMAGE_RULES: dict[str, dict] = {
     "anthropic":  {"include": ["claude"], "exclude": ["haiku"]},  # Claude 全系除 Haiku
     # 仅标记名称中明确含视觉标识的模型（qwen-vl / qwen-omni / qvq 等）
     # qwen3.x 系列命名规则模糊（同系列有纯文本也有多模态），不自动猜测，靠预设声明
-    "dashscope":  {"include": ["qwen-vl", "qwen-omni", "qvq", "qwen3-vl"],
-                   "exclude": ["coder"]},
+    "dashscope":  {"include": ["qwen-vl", "qwen-omni", "qvq", "qwen3-vl", "ocr"],
+                   "exclude": ["coder"]},  # ocr：OCR 专用模型（qwen3.5-ocr 等）本质是视觉识别，标 image 供 OCR 选择
     "google":     {"include": ["*"]},
     "deepseek":   {"include": ["vl", "vision"]},
     "zhipu":      {"include": ["glm-4v", "vl", "vision"]},
