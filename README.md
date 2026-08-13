@@ -85,6 +85,10 @@ bash start.sh
 
 ## 首次使用
 
+第一次启动会弹出**三屏引导向导**：① 选阅读氛围（主题一键包）→ ② 系统组件检测（ffmpeg/后端就绪）→ ③ AI 配置（填 LLM / DashScope Key，已配好的步骤自动跳过，可整屏跳过）。之后可随时在设置里改。
+
 打开设置，在「模型 & 引擎」→「LLM 厂商」里填 API Key——DeepSeek、OpenAI、DashScope 都行。然后导入内容试试。
+
+**缺 key 会主动提醒**：导入图片/视频缺 DashScope 时，导入区会出现可关闭的内联提示条；发对话前缺 LLM Key 会先弹一次提示。不再「点了没反应」。
 
 转录引擎内置：bcut-asr（B 站免费）与 pypdfium2（PDF 解析）无需 Key；dashscope（云端 OCR/ASR）需 API Key。搜索引擎第一次用会自动启动。

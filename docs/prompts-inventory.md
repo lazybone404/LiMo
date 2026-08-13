@@ -27,15 +27,16 @@
 ### 1.1 视频/网页/文本/音频 Polish
 
 **文件**：[backend/app/generation/prompt.py:36-63](backend/app/generation/prompt.py#L36-L63)（section 定义）
-**构建函数**：`build_polish_prompt()` → [backend/app/generation/prompt.py:445-485](backend/app/generation/prompt.py#L445-L485)
+**构建函数**：`build_polish_prompt()` → [backend/app/generation/prompt.py:664-721](backend/app/generation/prompt.py#L664-L721)
 **触发场景**：sourceType ∈ {video, webpage, text, audio} + mode=polished
 **调参**：temperature=0.7, max_tokens=65536, max_continuations=3
 
 **架构要点**：
 - 通过 `PromptComposer.compose()` 组装为 XML 分节格式
 - **无 `<style_preference>` 节** — Polish 固定忠实整理策略，不接受风格参数
-- 格式白名单（`_POLISH_FORMAT_FNS`）：toc / translate / formulas / references / images（禁止 summary / link / screenshot）
+- 格式白名单（`_POLISH_FORMAT_FNS`）：toc / link / screenshot / formulas / references / images（仅禁止 summary）
 - `style` 参数保留但废弃（非 "detailed"/"none" 时 logger.warning 提示）
+- **无 `<user_request>` 节** — Polish 不接受用户备注（`_ = user_notes` 参数保留仅作 API 兼容，内部忽略）
 
 **实际发送的 XML 结构**：
 
@@ -132,14 +133,15 @@
 ### 2.1 视频/网页/文本/音频 Notes
 
 **文件**：[backend/app/generation/prompt.py:69-92](backend/app/generation/prompt.py#L69-L92)（section 定义）
-**构建函数**：`build_notes_prompt()` → [backend/app/generation/prompt.py:488-534](backend/app/generation/prompt.py#L488-L534)
+**构建函数**：`build_notes_prompt()` → [backend/app/generation/prompt.py:744-820](backend/app/generation/prompt.py#L744-L820)
 **触发场景**：sourceType ∈ {video, webpage, text, audio} + mode=notes
 **调参**：temperature=0.7, max_tokens=65536, max_continuations=3
 
 **架构要点**：
 - 通过 `PromptComposer.compose()` 组装
 - **有 `<style_preference>` 节** — 通过 `normalize_style()` 查找 `VIDEO_NOTE_STYLES`
-- 格式选项从 `AVAILABLE_OPTIONS` 动态过滤，使用 `_ALL_FORMAT_FNS`（全部 8 种格式可用）
+- 格式选项从 `AVAILABLE_OPTIONS` 动态过滤，使用 `_ALL_FORMAT_FNS`（全部 7 种格式可用）
+- **参考文件**：仅 Notes 注入 `<reference_texts>` 节（user_request 前）；polished/Excel 不注入
 - `_INSTRUCTION_PRIORITY` 声明了三层优先级
 
 ```xml
@@ -223,7 +225,7 @@
 
 ## 4. 生成管道 — 格式选项
 
-**文件**：[backend/app/generation/prompt.py:182-398](backend/app/generation/prompt.py#L182-L398)
+**文件**：[backend/app/generation/prompt.py:562-620](backend/app/generation/prompt.py#L562-L620)
 
 格式选项通过 `_build_hard_constraints()` 函数统一构建，放入 `<hard_constraints>` 节。
 
@@ -231,29 +233,31 @@
 
 | 选项 | 函数 | 适用类型 | Polish | Notes |
 |------|------|---------|--------|-------|
-| `toc` | `get_toc_format()` | 所有 | ✅ | ✅ |
-| `link` | `get_link_format()` | video/audio | ❌ | ✅ |
-| `screenshot` | `get_screenshot_format(has_visual)` | video | ❌ | ✅ |
-| `summary` | `get_summary_format()` | 所有 | ❌ | ✅ |
-| `formulas` | `get_formulas_format()` | pdf | ✅ | ✅ |
+| `toc` | `get_toc_format()` | 所有（除 xlsx） | ✅ | ✅ |
+| `link` | `get_link_format()` | video | ✅ | ✅ |
+| `screenshot` | `get_screenshot_format(has_visual)` | video | ✅ | ✅ |
+| `summary` | `get_summary_format()` | 所有（除 xlsx） | ❌ | ✅ |
+| `formulas` | `get_formulas_format()` | audio/webpage/pdf/docx/pptx/text/epub | ✅ | ✅ |
 | `references` | `get_references_format()` | pdf | ✅ | ✅ |
 | `images` | `get_images_format()` | pdf/docx/pptx/epub | ✅ | ✅ |
 
-**Polish 白名单规则**：toc/formulas/references/images 是"编辑/结构增强"行为，允许；summary/link/screenshot 是"创作/笔记"行为，禁止。白名单由 `_POLISH_FORMAT_FNS` 控制。
+**Polish 白名单规则**：toc/link/screenshot/formulas/references/images 是"编辑/结构增强"行为，允许；仅 summary 是"创作/笔记"行为，禁止。白名单由 `_POLISH_FORMAT_FNS` 控制。
+
+> `translate` 已从格式体系移除（2026-08-14）：不在 `_ALL_FORMAT_FNS` 也不在 `AVAILABLE_OPTIONS`，前端不再出现翻译选项。
 
 ### 4.2 各类型可用选项
 
 ```python
 AVAILABLE_OPTIONS = {
     "video":    ["toc", "link", "screenshot", "summary"],
-    "audio":    ["toc", "summary"],
-    "webpage":  ["toc", "summary"],
+    "audio":    ["toc", "summary", "formulas"],
+    "webpage":  ["toc", "summary", "formulas"],
     "pdf":      ["toc", "formulas", "references", "summary", "images"],
-    "docx":     ["toc", "summary", "images"],
-    "pptx":     ["toc", "summary", "images"],
+    "docx":     ["toc", "summary", "images", "formulas"],
+    "pptx":     ["toc", "summary", "images", "formulas"],
     "xlsx":     [],
-    "text":     ["toc", "summary"],
-    "epub":     ["toc", "summary", "images"],
+    "text":     ["toc", "summary", "formulas"],
+    "epub":     ["toc", "summary", "images", "formulas"],
 }
 ```
 
@@ -268,9 +272,10 @@ _ALL_FORMAT_FNS = {
     "images": get_images_format,
 }
 
-# Polish 使用（白名单 4 种）
+# Polish 使用（白名单 6 种：仅排除 summary）
 _POLISH_FORMAT_FNS = {
     "toc": get_toc_format,
+    "link": get_link_format, "screenshot": get_screenshot_format,
     "formulas": get_formulas_format, "references": get_references_format,
     "images": get_images_format,
 }
@@ -351,7 +356,7 @@ PDF_STYLE_MAP = DOC_NOTE_STYLES        # deprecated
 **文件**：
 - [backend/app/generation/prompts/common.py](backend/app/generation/prompts/common.py) — `PromptComposer` 工具类
 - [backend/app/generation/prompts/notes_styles.py](backend/app/generation/prompts/notes_styles.py) — 风格定义
-- [backend/app/generation/prompt.py:445-534](backend/app/generation/prompt.py#L445-L534) — `build_polish_prompt()` / `build_notes_prompt()`
+- [backend/app/generation/prompt.py:664-820](backend/app/generation/prompt.py#L664-L820) — `build_polish_prompt()` / `build_notes_prompt()`
 - [backend/app/generation/prompt_builder.py](backend/app/generation/prompt_builder.py) — `PromptBuilder` 调度层
 
 ### 6.1 PromptComposer
@@ -504,52 +509,77 @@ POST /process/{id}
 
 ---
 
-## 8. 事实验证 — 三阶段 Prompt
+## 8. AI 审核 / 事实验证 — Prompt（两条管道）
 
-**文件**：[backend/app/generation/prompt.py:541-684](backend/app/generation/prompt.py#L541-L684)
-**调用方**：[backend/app/generation/fact_check.py](backend/app/generation/fact_check.py)
+### 8.0 两条管道并存
 
-（本节内容与 P0-1 无关，保持不变。3 个 prompt 使用传统的格式化字符串，未迁移到 XML 分节格式。）
+| | 旧 FactCheckEngine | 新 ReviewEngine（AI 审核，2026-07-15 起） |
+|--|-------------------|----------------------------------------|
+| 调用方 | [fact_check.py](../backend/app/generation/fact_check.py) | [review.py](../backend/app/generation/review.py) |
+| Prompt 数 | 3（在 prompt.py 定义） | 4（在 prompt.py 定义） |
+| 状态 | **保留不动**（遗留） | 端点走 `/fact-check/{id}` + `/stream` |
 
-### 8.1 Phase 1: 断言提取 — `CLAIM_EXTRACTION_PROMPT`
+### 8.1 旧 FactCheckEngine — 三阶段（保留）
 
-调参：temperature=0.3, max_tokens=2048, max_continuations=0
+**文件**：[backend/app/generation/prompt.py](backend/app/generation/prompt.py)
 
-### 8.2 Phase 2: 交叉验证 — `VERIFICATION_PROMPT`
+3 个 prompt 使用传统格式化字符串，未迁移到 XML 分节格式：
 
-调参：temperature=0.3, max_tokens=1024, max_continuations=0
+- **Phase 1 断言提取** `CLAIM_EXTRACTION_PROMPT` — temperature=0.3, max_tokens=2048, max_continuations=0
+- **Phase 2 交叉验证** `VERIFICATION_PROMPT` — temperature=0.3, max_tokens=1024, max_continuations=0
+- **Phase 3 报告生成** `FACT_CHECK_REPORT_PROMPT` — temperature=0.5, max_tokens=4096, max_continuations=0
 
-### 8.3 Phase 3: 报告生成 — `FACT_CHECK_REPORT_PROMPT`
+### 8.2 新 ReviewEngine — AI 审核四阶段
 
-调参：temperature=0.5, max_tokens=4096, max_continuations=0
+**文件**：[backend/app/generation/review.py](backend/app/generation/review.py)（imports 自 prompt.py 4 个常量）
+
+| # | Prompt | 阶段 | 调参 |
+|---|--------|------|------|
+| 1 | `STATIC_REVIEW_PROMPT` | Static Review（提取 Claim + 分类 + 内部一致性 + 风险评分） | 0.3 / 4096 |
+| 2 | `VERIFICATION_PLANNER_PROMPT` | Verification Planning（LLM 批量决策验证策略） | 0.3 / 2048 |
+| 3 | `EVIDENCE_REVIEWER_PROMPT` | Evidence Collection + Review（按需搜索 + 多维度评估） | 0.3 / 2048 |
+| 4 | `AI_REVIEW_REPORT_PROMPT` | AI Review Report（红黄绿报告 + 可信度 + Action） | 0.5 / 8192 |
+
+验证源 fallback：notes → polished → transcript。验证方式 `verify_mode`：LLM（默认）/ Web（联网搜索）。
 
 ---
 
 ## 9. AI 对话 — Agent Prompt
 
-### 9.1 `SYSTEM_PROMPT`
+### 9.1 分层 System Prompt（`app/agent/prompts/`）
 
-**文件**：[backend/app/routers/chat.py:33-60](backend/app/routers/chat.py#L33-L60)
-**调参**：temperature=0.7, max_rounds=3
-**最后更新**：2026-07-15（防幻觉加强，5 条防幻觉原则）
+**文件**：`app/agent/prompts/base.md`（角色定义）+ `rules.md`（硬约束）+ `__init__.py`（`PromptLoader`）
+
+不再用 chat.py 内联 `SYSTEM_PROMPT` 字符串——三层叠加（参照 AGENTS.md 模式）：
+
+```python
+loader = PromptLoader()          # 模块级单例
+system = loader.build(doc_context)  # base + rules + 动态注入的当前文档摘要
+```
+
+- `base.md` → 角色定义
+- `rules.md` → 硬约束（禁止编造、先查再答…）
+- `doc_context` → 运行时注入的文档内容（`smart_truncate(rawText, 1000)` 按句子边界截断）
 
 ### 9.2 运行时扩充
 
-对话上下文注入 `smart_truncate(rawText, 1000)`（按句子边界截断，不再硬切），通过 `search_docs` / `lookup_doc` / `list_docs` 三个工具访问知识库。
+对话上下文通过 `search_docs` / `lookup_doc` / `list_docs` 三个工具访问知识库；`search_web`（Tavily → SearXNG → DDG 降级）+ `fetch_url`（trafilatura/Jina）联网。
 
-### 9.3 Agent SSE 事件流（P0-3 新增）
+### 9.3 Agent SSE 事件流
 
 ```
-agent_status  → "正在分析问题..."    ← 工具判定前
-tool_start    → display: "正在搜索网络: xxx"
-tool_result   → summary: "找到 5 条结果"
+meta        → budget/price 等上下文元信息（对话预算 = 窗口×0.7）
+agent_status→ "正在分析问题..."              ← 工具判定前
+tool_start  → tool + display（安全文案）
+tool_result → summary + refs（引用文档 docId/title，完整结果只传 LLM）
   （可能多轮）
-agent_status  → "正在整理回答..."
-text          → 流式 token
-done
+thinking    → reasoning_content（思考段，流式）
+text        → 流式 token
+done        → 结束（不带 usage；token/费用统计依赖 meta.price 前端估算）
+compressed  → 长对话 LLM 压缩通知（agent.py 发）
 ```
 
-**C 端隐私**：`tool_result` 仅推送摘要（计数/长度），完整结果只传给 LLM 不出现在前端 UI。`tool_start` 的 `display` 由后端 `_tool_display()` 生成安全文案。
+**C 端隐私**：`tool_result` 仅推送摘要（计数/长度），完整结果只传给 LLM 不出现在前端 UI。`tool_start` 的 `display` 由后端 `_tool_display()` 生成安全文案。无独立 `ref` 事件——引用随 `tool_result.refs` 携带。
 
 ### 9.4 工具描述
 
@@ -593,12 +623,12 @@ done
 |---|--------|--------|------|
 | 1 | **图片处理 prompt 重复** | 中 | `process.py` 和 `ocr.py` 两处重复定义 |
 | 2 | **Excel 数据预处理信息损失** | 中 | `_build_data_summary()` 只给首尾各 3 行 |
-| 3 | **事实验证 prompt 截断** | 中 | Phase 1 截断 8000 chars、Phase 3 截断 2000 chars |
-| 4 | **事实验证未迁移到 XML 分节** | 低 | 3 个 prompt 仍用传统格式化字符串 |
+| 3 | **旧 FactCheckEngine prompt 截断** | 中 | 旧 3 阶段 Phase 1 截断 8000 chars、Phase 3 截断 2000 chars（新 ReviewEngine 无此问题） |
+| 4 | **旧 FactCheckEngine 未迁移 XML 分节** | 低 | 旧 3 个 prompt 仍用传统格式化字符串（新 ReviewEngine 四阶段 prompt 已模块化） |
 | 5 | **续写指令单一** | 低 | 只有一个字"继续" |
 | 6 | **小红书风格适用场景** | 低 | "标题用二极管法"更适合标题而非正文 |
 | 7 | **Process 管道的 temperature** | 低 | 所有 4 种模式统一 0.1 |
-| 8 | **事实验证关键词提取** | 低 | 纯正则启发式 |
+| 8 | **旧 FactCheckEngine 关键词提取** | 低 | 纯正则启发式 |
 
 ### 11.3 已确认 OK 的设计
 
@@ -610,7 +640,7 @@ done
 | 4 | 事实验证 source fallback | notes → polished → transcript |
 | 5 | process 调度 LLM 优先 → Engine 回退 | 符合"LLM 能力更强但更贵"的设计理念 |
 | 6 | Engine 绑定空列表 vs null | `[]`=清除绑定，`null`=不修改 |
-| 7 | Polish 格式白名单 | toc/translate/formulas/references/images 是编辑行为，summary/link/screenshot 是创作行为 |
+| 7 | Polish 格式白名单 | toc/link/screenshot/formulas/references/images 是编辑行为，仅 summary 是创作行为（translate 已移除） |
 | 8 | `_POLISH_FORMAT_FNS` vs `_ALL_FORMAT_FNS` | 两套映射表，白名单由传入的 `format_fns` 参数控制 |
 
 ---
@@ -619,18 +649,21 @@ done
 
 | 文件 | 包含的 Prompt / 模块 |
 |------|---------------------|
-| [backend/app/generation/prompt.py](backend/app/generation/prompt.py) | 全部 section 定义 + `build_polish_prompt()` / `build_notes_prompt()` / `build_excel_summary_prompt()` + 事实验证 3 prompt + AI Review 5 prompt |
+| [backend/app/generation/prompt.py](backend/app/generation/prompt.py) | 全部 section 定义 + `build_polish_prompt()` / `build_notes_prompt()` / `build_excel_summary_prompt()` + 旧 FactCheck 3 prompt + AI Review 4 prompt |
 | [backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) | 包入口，导出 COMMON_NOTE_STYLES / VIDEO_NOTE_STYLES / DOC_NOTE_STYLES / normalize_style |
 | [backend/app/generation/prompts/common.py](backend/app/generation/prompts/common.py) | `PromptComposer` — 分节组装工具类 |
 | [backend/app/generation/prompts/notes_styles.py](backend/app/generation/prompts/notes_styles.py) | 风格定义：COMMON_NOTE_STYLES + VIDEO_NOTE_STYLES + DOC_NOTE_STYLES + STYLE_ALIAS + normalize_style |
-| [backend/app/generation/prompt_builder.py](backend/app/generation/prompt_builder.py) | `PromptBuilder` 调度层 |
-| [backend/app/generation/fact_check.py](backend/app/generation/fact_check.py) | 引用 prompt.py 中的事实验证 prompt（旧 FactCheckEngine） |
-| [backend/app/generation/review.py](backend/app/generation/review.py) | 引用 prompt.py 中的 AI Review 5 prompt（新 ReviewEngine） |
+| [backend/app/generation/prompt_builder.py](backend/app/generation/prompt_builder.py) | `PromptBuilder` 调度层（source_type + mode → 正确 prompt 函数） |
+| [backend/app/generation/fact_check.py](backend/app/generation/fact_check.py) | 引用 prompt.py 中的事实验证 prompt（旧 FactCheckEngine，保留） |
+| [backend/app/generation/review.py](backend/app/generation/review.py) | 引用 prompt.py 中的 AI Review 4 prompt（新 ReviewEngine，四阶段） |
 | [backend/app/generation/generator.py](backend/app/generation/generator.py) | LLM 调用编排，无独立 prompt |
 | [backend/app/routers/process.py](backend/app/routers/process.py) | IMAGE_PROMPTS — 4 种图片处理模式（与 ocr.py 重复） |
 | [backend/app/engines/ocr.py](backend/app/engines/ocr.py) | DashScopeOCREngine — 4 种图片处理模式（与 process.py 重复） |
-| [backend/app/routers/chat.py](backend/app/routers/chat.py) | SYSTEM_PROMPT + 5 个工具描述 |
-| [backend/app/llm/agent.py](backend/app/llm/agent.py) | AgentRunner — SSE 事件流（agent_status / tool_start / tool_result / text / done） |
+| [backend/app/agent/prompts/base.md](backend/app/agent/prompts/base.md) | Agent 角色定义层（分层 System Prompt 第一层） |
+| [backend/app/agent/prompts/rules.md](backend/app/agent/prompts/rules.md) | Agent 硬约束层（禁止编造、先查再答…第二层） |
+| [backend/app/agent/prompts/__init__.py](backend/app/agent/prompts/__init__.py) | `PromptLoader` — 组装 base + rules + 动态 doc_context（chat.py 的旧内联 SYSTEM_PROMPT 已迁移至此） |
+| [backend/app/agent/tools.py](backend/app/agent/tools.py) | 5 个工具 ToolDef + 工具描述（search_docs / lookup_doc / list_docs / search_web / fetch_url） |
+| [backend/app/llm/agent.py](backend/app/llm/agent.py) | AgentRunner — SSE 事件流（agent_status / tool_start / tool_result / thinking / text / done） |
 | [backend/app/llm/service.py](backend/app/llm/service.py) | LLMService — 续写机制 |
 | [backend/app/core/text_utils.py](backend/app/core/text_utils.py) | `smart_truncate()` — 按句子边界截断 |
 
@@ -641,9 +674,9 @@ done
 | 生成 | notes / polished | 0.7 | 65536 | 3 |
 | 生成 | Excel summary | 0.7 | 65536 | 3 |
 | 处理 | extract / table / digitize / understand | 0.1 | 4096 | 0 |
-| 事实验证 | Phase 1 提取 | 0.3 | 2048 | 0 |
-| 事实验证 | Phase 2 验证 | 0.3 | 1024 | 0 |
-| 事实验证 | Phase 3 报告 | 0.5 | 4096 | 0 |
+| 事实验证（旧 FactCheckEngine） | Phase 1 提取 | 0.3 | 2048 | 0 |
+| 事实验证（旧 FactCheckEngine） | Phase 2 验证 | 0.3 | 1024 | 0 |
+| 事实验证（旧 FactCheckEngine） | Phase 3 报告 | 0.5 | 4096 | 0 |
 | AI 审核 | Static Review | 0.3 | 4096 | 0 |
 | AI 审核 | Verification Planner | 0.3 | 2048 | 0 |
 | AI 审核 | Evidence Reviewer | 0.3 | 2048 | 0 |

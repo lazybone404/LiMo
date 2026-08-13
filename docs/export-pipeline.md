@@ -22,11 +22,15 @@ PreviewArea 工具栏             ExportMenu（下拉菜单）        GET /expor
 
 顶部工具栏 Download 按钮       ExportPanel（侧边面板）       POST /export/custom
   ├─ 导出全部产物      →      downloadFromUrl() / fetch →  GET /export/{id}/all 或 POST /export/batch
-  └─ 详细导出 (ZIP)    →      fetch() + downloadBlob() →   POST /export/custom
+  └─ 详细导出 (ZIP)    →      进度反馈                  →     POST /export/custom/stream（SSE 进度）
+                                                        →     GET /export/download/{temp_id}（临时下载）
 
 AI 对话右键菜单                 ChatCore                     GET /export/conversation/{id}
-  └─ 导出 Markdown     →      downloadFromUrl()      →     GET /export/conversation/{id}?format=md
+  ├─ 导出 Markdown     →      downloadFromUrl()      →     GET /export/conversation/{id}?format=md
+  └─ 批量导出 ZIP      →      downloadFromUrl()      →     POST /export/conversations/batch
 ```
+
+> **9 个导出端点**：`GET /export/{id}`（单文件）、`GET /export/{id}/all`（全产物）、`POST /export/batch`（多文档）、`GET /export/{id}/mindmap`、`GET /export/conversation/{id}`、`POST /export/conversations/batch`、`POST /export/custom`、`POST /export/custom/stream`（SSE 进度）、`GET /export/download/{temp_id}`。
 
 ### 设计意图
 
@@ -95,34 +99,46 @@ Tabs: `original`, `extract`, `table`, `digitize`, `understand`
 - **HTML 导出**：后端先查 markdown → 未找到 → 回退到 `get_process_results()` ✅
 - **自定义导出**：后端 `export_custom` 中未知 tab 统一走 `get_process_results()` 查找 ✅
 
-### 2.5 前端 ExportMenu 集中式配置
+### 2.5 前端 Tab 注册表 + 内容源（2026-08-14 重写）
 
-`frontend/src/components/ui/ExportMenu.tsx` 中 `TAB_EXPORT` 表是前端唯一的 tab→导出行为映射。新增 tab 时只需在此表加一行：
+旧的 `TAB_EXPORT` 集中表已移除，重构为**注册表 + getter 绑定**两层（替代散落在 5 处的 switch/case / 映射表）：
+
+1. **`lib/tabRegistry.ts`** — 纯数据元注册：`TabRegistry.register(TabDef)` 一处注册，零改动其他文件。`TabDef` 含 `contentSource`/`htmlMode`/`exportSuffix`/`exportLabel` 导出相关字段：
 
 ```typescript
-const TAB_EXPORT: Record<string, TabExportConfig> = {
-  summary:     { contentKey: 'notes',       htmlMode: 'notes',       suffix: '',              label: '笔记' },
-  polished:    { contentKey: 'polished',    htmlMode: 'polished',    suffix: '-整理版原文',     label: '整理版原文' },
-  transcript:  { contentKey: 'rawText',     htmlMode: 'transcript',  suffix: '-转录',           label: '转录' },
-  data_preview:{ contentKey: 'rawText',     htmlMode: 'transcript',  suffix: '',              label: '数据预览' },
-  report:      { contentKey: 'polished',    htmlMode: 'polished',    suffix: '-分析报告',       label: '分析报告' },
-  fact_check:  { contentKey: 'factCheck',   htmlMode: 'fact_check',  suffix: '-事实验证',       label: '事实验证' },
-  mindmap:     { contentKey: 'notes',       htmlMode: '__mindmap__', suffix: '',              label: '思维导图' },
-  skeleton:    { contentKey: 'rawText',     htmlMode: 'transcript',  suffix: '-骨架',           label: '章节骨架' },
-  extract:     { contentKey: 'imageResult', htmlMode: 'extract',     suffix: '-提取文字',       label: '提取文字' },
-  table:       { contentKey: 'imageResult', htmlMode: 'table',       suffix: '-表格数据',       label: '表格数据' },
-  digitize:    { contentKey: 'imageResult', htmlMode: 'digitize',    suffix: '-文档数字化',     label: '文档数字化' },
-  understand:  { contentKey: 'imageResult', htmlMode: 'understand',  suffix: '-理解内容',       label: '理解内容' },
-  original:    { contentKey: 'none',        htmlMode: '',            suffix: '',              label: '原图' },
-  ocr:         { contentKey: 'none',        htmlMode: '',            suffix: '',              label: 'OCR' },
+export type ContentSource = 'notes' | 'polished' | 'rawText' | 'factCheck' | 'imageResult' | 'none'
+
+TabRegistry.register({
+  key: 'summary', label: '笔记',
+  sourceTypes: ['video', 'webpage', 'text', 'link', 'pdf', 'docx', 'pptx', 'document', 'epub', 'xlsx'],
+  priority: 10,
+  contentSource: 'notes', htmlMode: 'notes', exportSuffix: '', exportLabel: '笔记',
+  isStandardMarkdown: true, showTOC: true, showVersionSwitcher: 'notes',
+  processingKinds: ['import', 'retranscribe', 'generate'],
+})
+// 已注册 14 个内置 tab（summary/polished/transcript/data_preview/skeleton/fact_check/mindmap
+//   /original/extract/table/digitize/understand/ocr）
+```
+
+2. **`lib/contentSources.ts`** — 内容取值绑定：`CONTENT_GETTERS: Record<ContentSource, getter>` 用 **Record 类型约束强制补 getter**（新增 contentSource 枚举 → 编译期缺一即错）。三处消费统一走 `getContentForView(view, ctx)`：PreviewArea `displayContent` / CopyContentBtn / ExportMenu：
+
+```typescript
+export const CONTENT_GETTERS: Record<ContentSource, (ctx) => string | null> = {
+  notes:      (ctx) => ctx.readStreamBuffer?.('notes') ?? ctx.currentContent,
+  polished:   (ctx) => ctx.readStreamBuffer?.('polished') ?? ctx.currentPolishedContent,
+  rawText:    (ctx) => ctx.currentRawText,
+  factCheck:  (ctx) => ctx.currentFactCheckContent,
+  imageResult:(ctx) => ctx.imageResults[ctx.currentDocId || '']?.[ctx.activeView]?.text || null,
+  none:       () => null,
 }
+// ⚠️ readStreamBuffer 必须返回 null（非 ''）表示无缓冲——用 `??` 回退已保存内容
 ```
 
 **字段说明**：
-- `contentKey`：决定 `getExportContent()` 从 store 读哪个字段。`'none'` 表示无内容可导出
-- `htmlMode`：传给后端 `GET /export/{id}?mode=` 的值。`'__mindmap__'` 表示走 `/export/{id}/mindmap` 专用端点。空字符串表示 HTML 导出不可用
-- `suffix`：文件名后缀
-- `label`：人类可读标签，用于无产物时的 tooltip
+- `contentSource`：决定内容从哪个字段读（`contentKey` 的替代，getter 化）。`'none'` = 无内容可导出（原图/OCR tab）
+- `htmlMode`：传给后端 `GET /export/{id}?mode=` 的值；`'__mindmap__'` = 走 `/export/{id}/mindmap` 专用端点；空字符串 = HTML 导出不可用
+- `exportSuffix` / `exportLabel`：文件名后缀 / 人类可读标签
+- `visible` 回调：处理动态显隐（如 mindmap 需已有 notes）
 
 ### 2.6 无产物处理
 
@@ -188,13 +204,24 @@ def _preprocess_gfm(md: str) -> str:
                r'\1\n\n\2', md, flags=re.MULTILINE)
     # ~~text~~ → <del>text</del>
     md = re.sub(r'~~(.+?)~~', r'<del>\1</del>', md)
-    # - [ ] task → ☐ task / - [x] task → ☑ task
-    md = re.sub(r'^- \[ \] (.+)$', r'- ☐ \1', md, flags=re.MULTILINE)
-    md = re.sub(r'^- \[x\] (.+)$', r'- ☑ \1', md, flags=re.MULTILINE)
+    # 任务列表 → 静态 checkbox（disabled 不可交互，视觉对齐前端预览）
+    md = re.sub(r'^- \[ \] (.+)$',
+                r'- <input type="checkbox" disabled style="margin-right:6px;vertical-align:middle"> \1',
+                md, flags=re.MULTILINE)
+    md = re.sub(r'^- \[x\] (.+)$',
+                r'- <input type="checkbox" checked disabled style="margin-right:6px;vertical-align:middle"> \1',
+                md, flags=re.MULTILINE)
+    # 时间戳 badge — Content-[mm:ss] → 蓝, Screenshot-[mm:ss] → 橙（对齐前端 ts-badge）
+    md = re.sub(r'Content-\[(\d{2}:\d{2})\]',
+                r'<span class="ts-badge ts-content">▶ \1</span>', md)
+    md = re.sub(r'Screenshot-\[(\d{2}:\d{2})\]',
+                r'<span class="ts-badge ts-screenshot">📷 \1</span>', md)
     return md
 ```
 
-**局限**：任务列表用 Unicode 字符 ☐/☑ 而非 `<input type="checkbox">`，因为静态 HTML 无法交互。
+**说明**：
+- 任务列表用 `<input type="checkbox" disabled>` 而非 Unicode ☐/☑——静态 HTML 无法交互，`disabled` 保证视觉对齐预览（checkbox 可勾选）但不响应点击
+- 时间戳 badge 依赖 `_get_badge_css()` 注入的 CSS（Content 蓝 `#007aff` / Screenshot 橙 `#ff9500`），由 `_markdown_to_html` 统一调用
 
 ---
 
@@ -241,9 +268,20 @@ html = _restore_latex(html, placeholders)
 
 `_render_formulas_katex()` 调用 Node.js 脚本预渲染 `$$...$$` / `$...$` → HTML。Node.js 不可用时静默回退，公式保留原样。
 
+### 资源加载（`_get_katex_assets`）
+
+双路径搜索，**完全自包含零 CDN**：
+1. `frontend/node_modules/katex/dist/`（开发环境优先，取最新版）
+2. `backend/static/katex/`（打包环境回退，PyInstaller `datas` 打进 `_internal/`）
+
+加载后处理：
+- CSS 中 `@font-face` 的 `url(fonts/xxx.woff2)` 全部替换为 base64 data URI（60 个字体）——`_inline_font` 按 MIME 内联
+- JS 拼接 `contrib/auto-render.min.js`
+- 首次加载后内存缓存 `_KATEX_CACHE`，后续导出零磁盘 IO
+
 ### 客户端回退
 
-HTML 中嵌入 KaTeX auto-render 脚本，CDN 回退。但已优先使用服务端预渲染 + 内联 CSS/JS。
+打包版无 Node.js → `_render_formulas_katex()` 先 `shutil.which("node")` 预检，不存在则静默回退客户端渲染（嵌入 auto-render 脚本）。开发环境有 Node 时服务端预渲染优先。
 
 ### 已知陷阱
 
@@ -331,18 +369,20 @@ mindmap tab 始终输出为完整 `.html` 文件（跳过 markdown→HTML 转换
 
 | 功能 | 预览（react-markdown） | 导出（Python markdown） | 差距 |
 |------|----------------------|------------------------|------|
-| 代码高亮 | Prism (oneDark/oneLight) | Pygments (default) | 颜色方案不同 |
+| 代码高亮 | Prism (oneDark/oneLight) | Pygments (one-dark) | 颜色一致（2026-08-04 对齐） |
 | 语言标签 | ✅ `<span>` | ✅ `_add_lang_labels` 生成 | 一致 |
 | 复制按钮 | ✅ `<button>` | ❌ | 静态 HTML 限制 |
 | 删除线 | ✅ `remark-gfm` | ✅ `_preprocess_gfm` → `<del>` + CSS | 一致 |
-| 任务列表 | ✅ `<input checkbox>` | ✅ Unicode ☐/☑ | 视觉不同 |
-| 标题锚点 | ✅ `id` + `<Link2>` | ❌ | 导出无 |
-| 时间戳 badge | ✅ `<Play>` 图标 | ❌ | 导出无 |
-| KaTeX | remark-math + rehype-katex | Node.js 预渲染 + CDN | 一致 |
+| 任务列表 | ✅ `<input checkbox>` | ✅ `<input checkbox disabled>` | 一致（不可交互） |
+| 标题锚点 | ✅ `id` + `<Link2>` | ✅ `_add_heading_ids` 生成 `id` | 一致 |
+| 时间戳 badge | ✅ `<Play>` 图标（Content 蓝/Shot 橙） | ✅ `.ts-badge ts-content/ts-screenshot` | 一致 |
+| KaTeX | remark-math + rehype-katex | Node 预渲染 + 内联 CSS/JS/字体 | 一致（零 CDN） |
 | $ 误匹配 | ✅ TeX 惯例 | ✅ 已修复 | 一致 |
 | 图片 | apiUrl() 路径 | base64 内联（HTML）/ 保持原样（MD） | HTML 自包含 |
 | 暗色模式 | ✅ CSS 变量 + data-theme | ✅ limo 主题支持 | 默认主题支持 |
 | 图片缩放 | ✅ react-medium-image-zoom | ❌ | 导出无交互 |
+
+> 差距收敛进度：2026-07-10 修图片收集/重写/内联 → 2026-08-04 对齐代码高亮 one-dark + checkbox 任务列表 + 暗色代码块。当前仅剩复制按钮 / 图片缩放两项导出无法复现（静态 HTML 本质限制）。
 
 ---
 
@@ -365,7 +405,7 @@ mindmap tab 始终输出为完整 `.html` 文件（跳过 markdown→HTML 转换
 
 ### 为什么 ExportMenu 和 ExportPanel 不共享内容映射？
 
-ExportMenu 从客户端 store 读数据（即时），ExportPanel 把 tab 名发给后端从磁盘读（可批量）。两者数据源不同，用同一套映射反而会引入耦合。但两者必须映射到**相同的内容**——这就是本文档第 2 节映射表的作用。
+ExportMenu 从客户端 store 读数据（即时），ExportPanel 把 tab 名发给后端从磁盘读（可批量）。两者数据源不同，用同一套映射反而会引入耦合。但两者必须映射到**相同的内容**——这就是本文档第 2 节映射表的作用。前端取值层统一由 `getContentForView(view, ctx)`（`lib/contentSources.ts`）提供，PreviewArea 预览、复制、快捷导出三处消费同一 getter，保证「预览看到什么导出就得到什么」。
 
 ### 为什么 mindmap HTML 导出走独立端点？
 
@@ -379,8 +419,9 @@ ExportMenu 从客户端 store 读数据（即时），ExportPanel 把 tab 名发
 
 ## 14. 新增导出模式操作指南
 
-1. **后端 `export_custom`**（第 933 行起）：在 `tab_contents` 收集循环中添加新的 `elif tab == "xxx":` 分支
-2. **后端 `export_content`**（第 92 行起）：如果新模式不是 markdown/transcript，添加内容源回退逻辑
-3. **前端 `ExportMenu.tsx`**：在 `TAB_EXPORT` 表中添加一行，指定 `contentKey`、`htmlMode`、`suffix`、`label`
-4. **前端 `constants.ts`**：如果是新文档类型的新 tab，更新 `getTypeMeta()` 中的 tabs 数组
-5. **本文档第 2 节**：更新映射表
+1. **前端 `lib/tabRegistry.ts`**：`TabRegistry.register(TabDef)` 注册新 tab，指定 `contentSource`（→ §2.5 字段说明）、`htmlMode`、`exportSuffix`、`exportLabel`。零改动其他文件
+2. **前端 `lib/contentSources.ts`**：若新 tab 的内容源不是已有的 6 个 `ContentSource` 枚举之一，加枚举 + `CONTENT_GETTERS` 补 getter（`Record` 类型约束编译期强制），三处消费（PreviewArea/CopyContentBtn/ExportMenu）自动生效
+3. **后端 `export_content`**（`GET /export/{id}`，第 92 行起）：确认 `htmlMode` 走 content 回退链（markdown → process_results → transcript → 404）
+4. **后端 `export_custom`**（`POST /api/export/custom`，第 933 行起）：如需批量/自定义导出，在 `tab_contents` 收集循环加 `elif tab == "xxx":` 分支
+5. **后端 `_markdown_to_html`**：若新内容引入新的 GFM 风格语法，在 `_preprocess_gfm` 补对应预处理（删除线/任务列表/时间戳 badge 模式）
+6. **本文档第 2 节**：更新内容源映射表

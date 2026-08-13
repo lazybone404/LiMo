@@ -1,12 +1,12 @@
 #!/bin/bash
-# DeepDraft 一键启动
+# LiMo 一键启动
 # 用法: bash start.sh
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 PORT=7413
 
 echo "========================================"
-echo "  DeepDraft"
+echo "  LiMo"
 echo "========================================"
 
 # ── 温和关闭旧进程 ──

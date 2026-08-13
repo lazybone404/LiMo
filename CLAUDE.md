@@ -85,6 +85,8 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [BUILD.md](docs/BUILD.md) | PyInstaller + Tauri 完整打包流程，常见陷阱 | 打包/发布 |
 | [qianwen-models.md](docs/qianwen-models.md) | 千问平台模型速查（文本/OCR/ASR）含价格+调用方式 | 配模型/选引擎 |
 | [components.md](design/components.md) | Apple HIG 风格组件规格，布局+颜色+字体+组件 | 改 UI 组件/设计系统 |
+| [对话协议.md](docs/对话协议.md) | 对话 SSE 事件协议 + 会话 CRUD API + 前端映射 | 改对话流式/会话管理代码 |
+| [AGENT-ONBOARDING.md](docs/AGENT-ONBOARDING.md) | 上手教程：从零跑通 → 架构 → 注册表 → 数据流 → How-to → 打包发布 → 测试门禁 → 调试速查 | 新 agent 快速上手、打包/发布 |
 
 ## 版本号管理
 
@@ -124,8 +126,8 @@ python scripts/sync-version.py minor --tag --push
 # CI 检查一致性（不一致时 exit 1）
 python scripts/sync-version.py --check
 
-# 打包前强制同步
-python scripts/sync-version.py && bash scripts/build.sh
+# 打包前强制同步（打包步骤见 docs/BUILD.md：PyInstaller → 重命名 exe → 复制 ffmpeg → Tauri）
+python scripts/sync-version.py
 ```
 
 > **禁止手动修改任何文件的版本号**，一律通过 `sync-version.py` 更新。
@@ -160,13 +162,15 @@ uv run uvicorn main:app --host 127.0.0.1 --port 7413 --reload
 # 注意：--reload 只重载代码变更，不重跑 startup event。
 # 修改 config.yaml / 适配器注册 / 引擎注册后需手动重启。
 
-# 运行测试（6 个测试）
+# 运行测试（8 个测试文件）
 python tests/test_prompt.py          # Prompt 构建验证
 python tests/test_adapters.py        # 适配器注册 + 路由
 python tests/test_engines.py         # 引擎注册 + 查找
 python tests/test_store.py           # Store CRUD + 并发安全
 python tests/test_url_security.py    # URL SSRF 防护
 python tests/test_e2e_smoke.py       # 端到端冒烟测试
+python tests/test_capabilities.py    # capabilities API 结构
+python tests/test_plugin_loader.py   # 插件加载器
 ```
 
 ### 前端（React/TypeScript/Vite）
@@ -174,7 +178,7 @@ python tests/test_e2e_smoke.py       # 端到端冒烟测试
 ```bash
 cd frontend
 npm run dev       # 开发服务器，端口 5173，API 代理 → 127.0.0.1:7413
-npm test          # vitest（82 tests: store/theme/api/contentSources 等，<3s）
+npm test          # vitest（101 tests: store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore 等，<3s）
 npm run build     # 类型检查 + 生产构建
 npm run lint      # oxlint
 ```
@@ -256,7 +260,7 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 **对话管道**（Agent 工具循环，2026-08-04 前端全量重写）：
 - `search_web`（Tavily → SearXNG → DDG 三级降级）+ `fetch_url`（trafilatura/Jina）
 - 流式 SSE 端点 + 对话持久化（`conversations/` + CRUD）
-- **上下文管理**（2026-08-04 C1-C5）：`context_window` 四层解析（用户自定义 > 预设 > provider 默认表 > 保守 32k）→ 预算 = 窗口×0.7；`core/chat_context.py` 历史按 token 反向裁剪 + 文档引用分级截断（替代固定 40 条）；`agent/compress.py` 超阈值 LLM 摘要早期消息（fallback：deepseek-chat→当前模型→跳过不阻塞）；SSE 事件：meta 带 budget/price、compressed、done 带 usage；前端 token 占用进度条 + clearContext + 压缩/隐私提示
+- **上下文管理**（2026-08-04 C1-C5）：`context_window` 四层解析（用户自定义 > 预设 > provider 默认表 > 保守 32k）→ 预算 = 窗口×0.7；`core/chat_context.py` 历史按 token 反向裁剪 + 文档引用分级截断（替代固定 40 条）；`agent/compress.py` 超阈值 LLM 摘要早期消息（fallback：deepseek-chat→当前模型→跳过不阻塞）；SSE 事件：`meta` 带 budget/price、`compressed` 事件（压缩后）、`done` 不带 usage（token/费用由前端基于 meta.price 估算）；前端 token 占用进度条 + clearContext + 压缩/隐私提示
 - 5 个工具：search_docs / lookup_doc / list_docs / search_web / fetch_url
 - 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留 generating/factChecking，AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice
 - **消息级文档引用**：docIds = 当前选中文档 + 本条 @ 引用（chatStore 组合去重），不绑定会话
@@ -309,7 +313,8 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 - 可拖拽 resize，50–600px，<80px 自动折叠为 PanelStrip
 - 快捷键：`Ctrl+G` 切换生成面板，`Ctrl+I` 开关 AI 浮窗
 - **AI 对话为浮窗（唯一形态，2026-08-04 移除插槽面板）**：`FloatingAI` 覆盖式浮窗，可拖拽（边界钳制）/resize（不超视口），位置/大小持久化 localStorage（`mbw_aiPos`/`mbw_aiSize`），内部栏（会话列表/导航）可拖拽调宽 + 拖 <80px 自动折叠
-- Zustand store 按域拆 7 slices（`store/themeSlice.ts` / `docsSlice` / `contentSlice` / `tasksSlice` / `chatSlice` / `uiSlice` / `toastSlice`），`store/index.ts` 只剩组合层 + 模块副作用，共享类型在 `store/types.ts`（`Store` 为各 slice 交集）。**action 零跨域引用**，新增域 = 新建 slice 文件，消费方 API 零改动。持久化为手写 localStorage（`mbw_*` 9 个 key），无 persist 中间件。`setProcessing(key, null)` 是前缀树形删除语义（删 key 本身 + `key__` 前缀子任务），`clearDocTasks`/`cancelOneTask`/`failTask` 是兄弟函数
+- Zustand store 按域拆 7 slices（`store/themeSlice.ts` / `docsSlice` / `contentSlice` / `tasksSlice` / `chatSlice` / `uiSlice` / `toastSlice`），`store/index.ts` 只剩组合层 + 模块副作用，共享类型在 `store/types.ts`（`Store` 为各 slice 交集）。**action 零跨域引用**，新增域 = 新建 slice 文件，消费方 API 零改动。持久化为手写 localStorage（`mbw_*` 14 个 key），无 persist 中间件。`setProcessing(key, null)` 是前缀树形删除语义（删 key 本身 + `key__` 前缀子任务），`clearDocTasks`/`cancelOneTask`/`failTask` 是兄弟函数
+- **Slot 插槽注册表**（`lib/slotRegistry.ts`）：`SlotDef`（位置 left/right/center + 渲染组件 + 折叠行为）注册即得可拖拽面板，`SlotLayout.tsx` 是布局引擎（50–600px，<80px 折叠为 PanelStrip，`uiSlice.slots` 驱动宽度）。与 AI 浮窗（FloatingAI 覆盖式唯一形态）正交——插槽管内容面板，浮窗管对话
 - **对话独立 chatStore**（`store/chatStore.ts`，2026-08-04）：对话状态**不并入主 store**——流式 delta 高频更新隔离（主 store 订阅者不受波及）。chatSlice 只留 generating/factChecking；AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice。对话组件树：`ChatCore`（容器，内部栏受控拖拽调宽）→ `ChatSidebar`（会话列表/归档折叠）/ `MessageList`（分页窗口）/ `MessageItem`（气泡/打字机/操作栏/工具气泡/思考折叠）/ `ChatInput`（textarea/IME/@引用/token 进度）。消息模型 ChatMsg 在 chatStore.ts 定义，**勿与主 store types.ts 的 ChatMessage 混淆**
 
 ### Tauri 桌面壳
@@ -360,7 +365,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **参考文件（Reference Text）**：生成时注入参考资料（如评论区观点），仅 notes 注入 `<reference_texts>` section（user_request 前），polished/Excel 不注入。流式 GET 无法传大 JSON → `POST /api/references` 内存暂存（TTL 20 分钟）+ 短 id，生成传 `reference_ids`。前端参考文件 state 仅会话内不持久化
 - **Polish/Notes 风格隔离**：Polish 固定忠实整理策略（无 `<style_preference>` 节 + **不接受 user_notes 备注**，参数保留兼容但内部忽略不注入 `<user_request>`），格式白名单 `_POLISH_FORMAT_FNS`（toc/translate/formulas/references/images）。Notes 有 `<style_preference>` 节，风格从 `VIDEO_NOTE_STYLES`（9 种）或 `DOC_NOTE_STYLES`（8 种）查找。`normalize_style()` 兼容旧 `meeting_minutes` key
 - **风格定义位置**：`app/generation/prompts/notes_styles.py`（COMMON_NOTE_STYLES → VIDEO_NOTE_STYLES / DOC_NOTE_STYLES），旧 `STYLE_MAP`/`DOC_STYLE_MAP` 保留为 deprecated 别名
-- **Agent SSE 事件流（8 事件）**：`agent_status`（判定前）→ `tool_start`（带 `tool`/`display`，`_tool_display()` 生成安全文案）→ `tool_result`（`summary` 摘要 + `refs` 引用文档 docId/title，完整结果只传 LLM）→ `ref`/`thinking`（思考段，`reasoning_content`）→ `text` 流式 token。C 端不暴露完整工具结果到前端 UI。协议详见 docs/对话协议.md
+- **Agent SSE 事件流**：`meta`（conversation_id/budget/price）→ `compressed`（历史压缩）→ `agent_status`（状态条）→ `tool_start`（`tool`/`display`，`_tool_display()` 生成安全文案）→ `tool_result`（`summary` 摘要 + `refs` 引用文档 docId/title，完整结果只传 LLM）→ `thinking`（思考段，`reasoning_content`）→ `text` 流式 token → `done`（cancelled?）。**引用不独立成事件**，随 `tool_result.refs` 携带。C 端不暴露完整工具结果到前端 UI。协议详见 docs/对话协议.md
 - **对话文档注入**：`smart_truncate(rawText, 1000)` 按句子边界截断（优先级：`。` > `. ` > `\n\n` > `\n`），不再硬截 `[:1000]`
 
 ### 并发与安全
@@ -385,7 +390,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 **核心约束**：
 - 用户在预览栏看到什么，导出就应该得到什么。禁止导出与预览不一致的内容
-- 前端 `ExportMenu.tsx` 中 `TAB_EXPORT` 表是 tab→导出行为的**唯一映射入口**。新增 tab 时在此表加一行即可，无需改其他逻辑
+- 前端预览 tab → 内容映射走 `lib/tabRegistry.ts`（`TabDef` 纯数据注册：id/标签/`contentSource`/processingKinds）+ `lib/contentSources.ts`（`CONTENT_GETTERS`：`Record<ContentSource>` getter）。新增 tab = 注册一个 TabDef + 一个 getter，无需改分发逻辑（旧 `TAB_EXPORT` 表已移除）
 - 后端 `GET /export/{id}` 内容源回退链：markdown（notes/polished/fact_check）→ process_results（图片 extract/table 等）→ transcript（rawText）→ 404
 - HTML 导出已对齐预览：Pygments 代码高亮 + 语言标签、GFM 删除线/任务列表、时间戳 badge（Content 蓝色/Screenshot 橙色）、标题锚点 id
 - MD 导出自动将图片路径重写为绝对 URL（基于 `request.base_url`），外部查看不再裂图
@@ -427,18 +432,18 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **markmap 离线化**：`markmap.ts` 不调用 `markmap-common` 的 `loadCSS`/`loadJS`（动态 CDN 加载会被 Edge WebView2 跟踪防护拦截），KaTeX CSS 在 PreviewArea 中静态 import，hljs 由 react-syntax-highlighter 内联
 - **设置持久化**：`ProviderSettings.tsx` 中引擎/LLM Key 的保存不能仅靠 `onBlur`（组件卸载时不触发），需加 `useEffect` cleanup 用 ref 兜底保存
 - **上下文窗口四层解析**（2026-08-04 C1）：`resolve_context_window()`（`model_resolver.py`）——用户自定义（`enabled_models.context_window`，设置页可编辑）> llm_models 预设 > provider 默认表（`core/token.py` `DEFAULT_CONTEXT`）> 保守 32k。对话预算 `budget = context_window × 0.7`（`core/chat_context.py`），历史按 token 反向裁剪 + 文档分级截断
-- **路由异常标准化**：全部 11 个路由模块已统一使用 AppError 体系（2026-07-25 完成 config/model/files 最后 15 处迁移）
+- **路由异常标准化**：12/14 个路由模块已统一使用 AppError 体系（2026-07-25 完成 config/model/files 最后 15 处迁移）。**残留**：export.py / ingest.py 仍直接 `raise HTTPException`（历史遗留，见 [architecture.md](docs/architecture.md)）
 - **Content-Disposition 中文文件名**：必须用 RFC 5987 `filename*=UTF-8''` 编码，否则 Starlette 会尝试 latin-1 编码 → UnicodeEncodeError
 - **日志函数签名**：`app.core.logging.warning(msg, **kwargs)` 只接受 1 个位置参数 + kwargs，不能用 `%s` 占位符多参数调用。多参数用 f-string
 - **空文本去重碰撞**：空字符串 SHA256 固定为 `e3b0c44...`，两个空导入会误判为重复。TextAdapter 需检查 `text.strip()` 非空
-- **前端 apiUrl() 辅助函数**：`client.ts` 导出 `apiUrl(path)`，Tauri 下拼接 `http://127.0.0.1:7413/api`，浏览器下保持相对路径。所有 HTTP 请求必须走这个函数或 `apiFetch`
+- **前端 apiUrl() 辅助函数**：`api/core.ts` 导出 `apiUrl(path)`（Tauri 下拼接 `http://127.0.0.1:7413/api`，浏览器下保持相对路径）与 `appUrl(path)`（图片/静态资源转绝对 URL，Tauri 必需）。所有 HTTP 请求必须走 `apiUrl` 或 `apiFetch`
 - **processingTasks key 粒度**：`${docId}__${kind}` — 同一文档的不同操作（retranscribe/generate/process）不互相覆盖，store 提供 `clearDocTasks(docId)` 批量清除
 - **设置页 overlay**：`App.tsx` 中设置页用条件渲染 overlay 而非替换整个 render tree，避免 GenPanel 卸载丢失进行中的任务状态
 - **SSE 断开保护**：`streamGenerate` 追踪 `receivedDoneOrError` 标志，连接异常断开时触发 `onError('连接意外断开')` 防止 `generating` 永不复位
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：6 个端点全部覆盖 — generate/ingest/retranscribe/fact_check/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（2026-07-10 起持续沉淀，现 31 条）
+## 关键模式（2026-07-10 起持续沉淀，现 34 条）
 
 以下模式是实现中易错的关键约束，新增代码必须遵守。
 
@@ -602,7 +607,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 并发控制 | `ExecutionGuard` 双层信号量（云端 5 + 本地 2），generate/process/retranscribe 已接入 |
 | ✅ | 上下文窗口可配置 | `addModel()` API + ProviderSettings 展示 |
 | ✅ | 日志全链路追踪 | `contextvars.ContextVar` 注入 `request_id`，前端日志面板 |
-| ✅ | 旧格式错误迁移 | 全部 11 个路由模块统一 AppError 体系，0 处旧格式残留 |
+| ✅ | 旧格式错误迁移 | 12/14 个路由模块统一 AppError 体系（export/ingest 残留 `raise HTTPException`，2026-08-14 核实） |
 
 ### 🚀 规划中
 
@@ -610,7 +615,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| ❌ | 语义搜索 | embedding 向量化 + 相似度搜索，「搜意思不搜字」 |
+| ❌ | embedding 语义搜索 | 关键词全文搜索（FTS5，`GET /api/search` + SearchBar）**已实现**（2026-08-04）；embedding 向量化 + 相似度搜索「搜意思不搜字」未做 |
 | ❌ | 更多导入源 | RSS / 播客转录 / 学术论文(arXiv)，复用现有管线 |
 | ❌ | 知识图谱 / 反向链接 | 文档间引用关系可视化，依赖 `#标签` 语法先落地 |
 | ❌ | Markdown 渲染风格预设 | 多套 CSS 变量集（行高/间距/标题比例），与主题六轴正交 |
@@ -626,12 +631,12 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 域 | 完成 | 总计 | 进度 |
 |----|------|------|------|
 | 📥 内容导入 | 8 | 8 | 100% |
-| 📝 转录 & 引擎 | 9 | 9 | 100% |
+| 📝 转录 & 引擎 | 8 | 8 | 100% |
 | ✨ LLM 生成 | 8 | 8 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
-| 💬 AI 对话 | 6 | 6 | 100% |
+| 💬 AI 对话 | 9 | 9 | 100% |
 | ✅ AI 审核 | 9 | 10 | 90% |
 | 📤 导出 | 8 | 9 | 89% |
-| 🎨 前端 UI/UX | 8 | 8 | 100% |
+| 🎨 前端 UI/UX | 10 | 10 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **68** | **70** | **97%** |
+| **合计** | **72** | **74** | **97%** |

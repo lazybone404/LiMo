@@ -1,6 +1,6 @@
 # 分层架构
 
-> 写于 2026-07-10。每一层是什么、有哪些模块、模块之间怎么交互、关键设计决策和已知陷阱。
+> 写于 2026-07-10（2026-08-14 更新：引擎计数/路由计数/配置入口/错误残留 + 补齐 FTS5 搜索、Slot 注册表、启动时序等零文档模块）。每一层是什么、有哪些模块、模块之间怎么交互、关键设计决策和已知陷阱。
 
 ---
 
@@ -21,7 +21,7 @@
 ├─────────────────────────────────────────────────────┤
 │ Layer 1: 转录层                                      │
 │ Engine.bind() → Engine.transcribe() / .process()    │
-│ 9 个内置引擎：ASR×2 / OCR×1 / Doc×6（+插件引擎）     │
+│ 10 个内置引擎：ASR×2 / OCR×1 / Doc×7（+插件引擎）    │
 ├─────────────────────────────────────────────────────┤
 │ Layer 2: 存储层                                      │
 │ Store — 文件系统 + JSON 索引                        │
@@ -33,7 +33,7 @@
 ├─────────────────────────────────────────────────────┤
 │ Layer 4: 处理层                                      │
 │ Process (图片 OCR/表格/数字化/理解)                   │
-│ FactCheck (三阶段：提取→搜索验证→交叉核查)             │
+│ AI 审核 (静态分析→验证规划→证据收集→报告)             │
 ├─────────────────────────────────────────────────────┤
 │ Layer 5: 导出层                                      │
 │ Markdown → HTML / MD / ZIP / Mindmap                │
@@ -113,9 +113,33 @@ EngineRegistry.register("ocr", "dashscope-ocr", DashScopeOCREngine(...))
 | Doc | python-pptx | 本地 | text, table, office |
 | Doc | openpyxl | 本地 | text, table, office |
 | Doc | ebooklib | 本地 | text (EPUB章节) |
+| Doc | pdf-image | 本地 | image（每页渲染 PNG 嵌入 MD，供 OCR/多模态） |
 | Doc (插件) | pymupdf4llm | 进程外 | text, table, image, pdf |
 
 > Doc 引擎源码已拆分为独立文件：`doc_types.py`、`doc_markitdown.py`、`doc_docx.py`、`doc_pptx.py`、`doc_excel.py`、`docling.py`（含 PyPdfium2Engine）、`epub.py`。pdfplumber 为 pypdfium2 的表格辅助，不单独注册。**DoclingEngine 已移除（2026-08-03，依赖 torch ~2GB 无法打包，打包版一直不可用）**；text_only 变体引擎（docling-text/python-docx-text/python-pptx-text）也已删除（与完整版重复无意义）。AGPL 引擎不内置，pymupdf4llm / tesseract 以插件形式加载。
+>
+> **pdf-image 引擎（2026-08-04 新增）**：绑定 `doc:pdf` 替代文字提取——用 pypdfium2 渲染每页为 PNG 嵌入 markdown（供 OCR/多模态），对纯图片/扫描 PDF 更稳（绕开「提取嵌入图的坏图」问题）。`document.py` 会跳过其重复渲染 + OCR（图片已内嵌）。
+
+### TranscriptResult 契约（engines/transcript.py）
+
+**ASR 引擎统一返回类型**（bcut-asr / dashscope-asr 复用，从已移除的 faster-whisper 抽离）：
+
+```python
+@dataclass
+class TranscriptSegment:
+    start: float
+    end: float
+    text: str
+
+@dataclass
+class TranscriptResult:
+    language: str
+    duration: float
+    segments: list[TranscriptSegment]   # 时间轴（视频）
+    full_text: str = ""                 # 拼接全文
+```
+
+Doc 引擎**没有**统一数据类——各引擎直接产出 Markdown 字符串 + 媒体清单（图片），由 `_resolve_doc_engine` 分发后进入 `save_transcript`。
 
 ### 引擎绑定
 
@@ -187,6 +211,7 @@ engine_bindings:
 data/
 ├── index.json                  # v3 索引（transcripts 含 dir_name + source_file_path）
 ├── config.yaml / config.yaml.bak
+├── search.db                   # SQLite FTS5 全文索引（见下方「全文搜索」）
 ├── files/                      # 原始文件按 hash 存，不变
 │   └── {hash12}/{filename}
 ├── conversations/              # AI 对话，不变
@@ -201,6 +226,15 @@ data/
     │   └── {mode}.md           # extract/table/digitize/understand
     └── assets/                 # 图片资源（img_*.png / cover / original / screenshot_*）
 ```
+
+### 全文搜索（FTS5，2026-08-04）
+
+`core/search.py` 的 `SearchEngine` 用 SQLite FTS5 虚拟表 `transcripts_fts(id, title, content, tokenize='unicode61')` 建全文索引，`search.db` 与文件系统存储互补（关键词全文搜索已实现；**embedding 语义搜索未做**）。
+
+- **写入**：摄入/重转录时 `engine.index(tx_id, title, raw_text)` 增量更新（先删后插）；删除文档调 `delete`；启动时 `rebuild()` 从零重建
+- **CJK 处理**：FTS5 `unicode61` 不处理中文分词 → 索引/查询均对 CJK 逐字插空格（「机器学习」→「机 器 学 习」），查询词加前缀通配符 + `AND` 组合；`sqlite3.OperationalError`（查询语法错）回退 `LIKE`
+- **结果**：`snippet()` 生成 `<mark>` 高亮上下文片段，按 `rank` 相关性排序
+- **端点**：`GET /api/search?q=&limit=`（`routers/search.py`），前端 DocLibrary 顶栏 `SearchBar.tsx`「搜意思不搜字」之外的**关键词全文搜索**入口
 
 - 目录命名 `{sanitized_title}-{6位hex}`（标题变更时重命名目录），冲突时循环追加序号
 - md 文件用**相对路径** `assets/xxx` 引用图片，Typora/Obsidian 直接打开可渲染
@@ -311,6 +345,8 @@ polished_mv, notes_mv = await gen.generate_both(
 
 `POST /process/{id}` — 4 种模式：extract / table / digitize / understand
 
+**OCR 预处理（`generation/ocr_preprocessor.py`）**：文档图片生成前可选——先用廉价 OCR 模型（dashscope `scene_models.image_process`）提取图片文字**塞回原文**，再用文本 LLM 生成。与「AI 分析图片」（VL 多模态整图理解）是两条独立路径。
+
 调度优先级：
 ```
 model_id → scene_models.image_process → scene_models.generate → Engine 回退
@@ -332,7 +368,12 @@ model_id → scene_models.image_process → scene_models.generate → Engine 回
 
 SSE 流式：`static_review → verify → review → done`
 
-### 陷阱
+### 对话管道（Agent + Chat）
+
+- **端点**：`POST /api/chat` + `GET /api/chat/stream`（SSE 8 事件：meta → compressed → agent_status → tool_start → tool_result → thinking → text → done/error；引用不独立成事件，随 `tool_result.refs` 携带）。完整协议见 [对话协议.md](对话协议.md)
+- **Agent 循环**：`llm/agent.py`（`stream_run`）+ `agent/tools.py` 5 工具（search_docs/lookup_doc/list_docs/search_web/fetch_url），`tool_registry.py` ToolDef 注册
+- **会话管理**：`agent/session.py` 的 `SessionManager`——会话 CRUD + `append_user_message`/`append_assistant_message` + 上下文边界（clear-context）
+- **上下文预算**：`core/chat_context.py`（compute_budget/trim_history/build_doc_context）+ `agent/compress.py`（超阈值 LLM 摘要早期消息）
 
 - 全部长时端点（generate/ingest/retranscribe/fact_check/chat/process）复用 `disconnect_watcher` + `cancel_event`（见 `app/core/disconnect.py`）
 - verify 阶段限速（每条搜索间隔 1s）
@@ -370,13 +411,31 @@ class ExecutionGuard:
 ### 配置系统
 
 - **存储位置**：`~/.limo/config.yaml`（绝对路径，自动创建目录）
-- **读写入口**：`config_io.py` → `load_config()` / `save_config()`
+- **读入口**：`core/config.py:184` → `load_config()`；**写入口**：`core/config_io.py:12` → `save_config()`（**唯一写入口**，业务模块禁止直接 `yaml.dump`）
 - **原子写入**：`tmp_path` → `os.replace(tmp_path, config_path)`
+- **启动同步**（`config.py`）：`_sync_missing_providers`（补齐 providers 中缺失的内置模型，保证 `llm.api_key`/provider 从旧配置自动迁移）、`_migrate_legacy_dir`（旧数据目录迁移）
 
 **陷阱**：
 1. `DEFAULT_CONFIG.copy()` 是浅拷贝，必须用 `copy.deepcopy()`（已修复）
 2. `merge_sensitive` 保护 `***` 不被当作真实值覆盖
 3. 保存失败时 in-memory state 与文件不一致（极端情况）
+4. **`init_engines` 禁止每次启动覆盖配置**：引擎初始化中的 `save_config` 只在「引擎绑定为空」等变更时触发，否则启动会写全量配置、缺失敏感字段（API Key）将永久丢失（2026-08-04 已修复）
+
+### 启动时序（main.py）
+
+```
+启动 → 加载配置（load_config）→ 代理注入（HTTP_PROXY/HTTPS_PROXY）
+     → SSL 证书（certifi.where() → SSL_CERT_FILE/REQUESTS_CA_BUNDLE，PyInstaller 打包必需）
+     → init_engines()（引擎注册 + 绑定清理，仅变更时保存配置）
+     → sample_doc（无文档时生成首启示例）
+     → SearchEngine.rebuild()（FTS5 索引重建）
+     → StaticFiles 挂载（store.root 动态路径）
+     → uvicorn :7413
+```
+
+### Cookie 解析（core/cookie_parser.py）
+
+平台认证 Cookie 注入：解析 Netscape 格式/JSON/header 字符串三种输入，B 站提取 5 字段、YouTube 提取 7 字段，`_engine_config.cookies` 供下载器/适配器使用。
 
 ### 错误体系
 
@@ -395,7 +454,7 @@ class GenerateError(AppError): ...   # 生成特定
 
 前端 `apiFetch` 自动解析非 2xx 响应为 `ApiErrorException`。
 
-**迁移状态**：✅ 全部 11 个路由模块已统一 AppError 体系（2026-07-25 完成 config/model/files 最后迁移），0 处旧格式残留。
+**迁移状态**：✅ 12/14 个路由模块统一 AppError 体系（2026-07-25 完成 config/model/files 最后迁移）。**仍有残留**：`export.py`（9 处）+ `ingest.py`（17 处）直接 `raise HTTPException`（历史遗留，2026-08-14 核实时点）。新增代码统一用 AppError。
 
 ### 安全
 
@@ -428,6 +487,7 @@ App
 │   ├── GenerateOptions # 模型/格式/风格/产物
 │   └── ImageModeCards  # 图片处理模式选择
 ├── DocLibrary          # 文档列表/搜索/筛选
+│   └── SearchBar        # FTS5 关键词全文搜索（GET /api/search）
 ├── PreviewArea         # 预览 + 多 tab（按 sourceType 分派）
 │   ├── TranscriptView  # 时间轴/转录
 │   ├── EpubSkeletonPanel # EPUB 章节树
@@ -438,6 +498,7 @@ App
 ├── ExportMenu          # 快捷导出按钮
 ├── ExportPanel         # 自定义导出面板
 ├── LogPanel            # 日志查看
+├── OnboardingWizard    # 首次启动向导（三屏：氛围 → 组件检测 → AI 配置）
 └── SettingsPage        # 设置（overlay）
     └── ProviderSettings # LLM/引擎配置
 ```
@@ -447,10 +508,18 @@ App
 详见 [frontend-patterns.md](frontend-patterns.md)。
 
 关键点：
-- Zustand store 按域拆 7 slices（`store/themeSlice.ts` 等），`store/index.ts` 只剩组合层，类型在 `store/types.ts`（`Store` 为交集）
+- Zustand store 按域拆 7 slices + 独立 `chatStore` + 独立 `streamBuffers.ts`（模块级 Map，非 slice），`store/index.ts` 只剩组合层，类型在 `store/types.ts`（`Store` 为交集）
 - `processingTasks` 用 `${docId}__${kind}` 键格式，`setProcessing(key, null)` 前缀树形删除
-- 持久化为手写 localStorage（`mbw_*` 9 个 key），**无 persist 中间件**；LLM/引擎配置在后端 `config.yaml`，不由前端持久化
-- API 客户端按域拆分（`api/core.ts` + 7 域文件，`client.ts` 是 barrel）；内容源统一走 `lib/contentSources.ts`（`TabDef.contentSource` 驱动）
+- 持久化为手写 localStorage（`mbw_*` 14 个 key），**无 persist 中间件**；LLM/引擎配置在后端 `config.yaml`，不由前端持久化
+- API 客户端按域拆分（`api/` 13 文件，`core.ts` 提供 `apiUrl()`/`appUrl()`/`apiFetch`，`client.ts` 是 barrel）；内容源统一走 `lib/contentSources.ts`（`TabDef.contentSource` 驱动）
+
+### Slot 插槽注册表（lib/slotRegistry.ts）
+
+三栏插槽引擎：`SlotDef`（位置 left/right/center + 渲染组件 + 折叠行为）注册即得可拖拽面板：
+
+- **`slotRegistry.ts`**：SlotDef 注册表（`registerSlot()`/`getSlotDef()`），新增插槽面板 = 注册一个 SlotDef，无需改布局组件
+- **`SlotLayout.tsx`**：布局引擎（可拖拽 resize，50–600px，<80px 自动折叠为 PanelStrip，`uiSlice.slots` 驱动宽度状态）
+- 与 AI 浮窗（FloatingAI，覆盖式唯一形态）正交：插槽管内容面板，浮窗管对话
 
 ### 设计决策
 

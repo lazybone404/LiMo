@@ -140,6 +140,8 @@ if __name__ == "__main__":
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/api/plugins` | GET | 插件列表（含禁用，按 category 分组） |
+| `/api/plugins/install` | POST | 上传 zip 安装（解压到 `~/.limo/plugins/`，zip slip 防护） |
+| `/api/plugins/{name}/install-deps` | POST | 一键安装依赖（子目录 `requirements.txt` → 建 venv + pip install 镜像源） |
 | `/api/plugins/{name}/enable` / `disable` | POST | 写 `plugin_states`，**重启后生效** |
 | `/api/plugins/{name}` | DELETE | 卸载（删 `~/.limo/plugins/` 下声明文件 + 同名目录含 venv/模型） |
 | `/api/plugins/{name}/config` | PUT | 保存插件配置（`plugin_configs`，落盘 + 内存即时生效，下次执行 stdin 即含新 config） |

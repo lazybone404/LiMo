@@ -11,15 +11,15 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 87 |
+| 后端 Python 文件 | 91（10 子目录：adapters 8 / agent 7 / core 19 / downloaders 4 / engines 14 / generation 12 / llm 4 / routers 15 / storage 2 / utils 6） |
 | 前端 TS/TSX/CSS 文件 | 91（89 ts/tsx + 2 css） |
 | 前端测试文件 | 8（101 个测试用例） |
 | API 路由模块 | 14 |
-| API 端点 | 70 |
+| API 端点 | 74（`@router.` 装饰器计数） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
-| 设计文档 | 8 |
+| 设计文档 | 12（docs/ 目录，含对话协议.md + AGENT-ONBOARDING.md；design/ 另计） |
 
 ---
 
@@ -64,7 +64,7 @@
 | 处理 | `POST /api/process/{id}` | 图片 OCR |
 | 对话 | `POST /api/chat` + `/chat/stream` | AI Agent |
 | 事实验证 | `POST /api/fact-check/{id}` + `/stream` | LLM 验证 |
-| 导出 | 7 端点：单文件/全产物/批量/思维导图/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/ZIP(3模式)/思维导图(交互版+SVG) |
+| 导出 | 9 端点：单文件/全产物/批量/思维导图/对话单篇/对话批量/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/ZIP(3模式)/思维导图(交互版+SVG) |
 
 ## 前端组件
 
@@ -88,21 +88,21 @@
 |----|------|------|------|
 | 内容导入 | 8 | 8 | 100% |
 | 转录 & 引擎 | 8 | 8 | 100% |
-| LLM 生成 | 7 | 7 | 100% |
+| LLM 生成 | 8 | 8 | 100% |
 | 图片处理 | 4 | 4 | 100% |
-| AI 对话 | 6 | 6 | 100% |
+| AI 对话 | 9 | 9 | 100% |
 | AI 审核 | 9 | 10 | 90% |
 | 导出 | 8 | 9 | 89% |
-| 前端 UI/UX | 8 | 8 | 100% |
+| 前端 UI/UX | 10 | 10 | 100% |
 | 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **66** | **68** | **97%** |
+| **合计** | **72** | **74** | **97%** |
 
 > 进度说明：
 > - AI 审核：9/10 — 专业模式（学术/法律/医疗专用搜索源）暂不实施
 > - 导出：8/9 — 待完成图片预处理复用（ZIP 导出复用导入时的 optimize_images 结果）
 > - 不做的项目：PDF Layer 2（pdfplumber 已成熟提取表格）、VL 帧过滤（成本/收益不成正比）
 
-## 工程质量（2026-07-31 状态）
+## 工程质量（2026-08-14 状态）
 
 | 指标 | 状态 |
 |------|:--:|
@@ -138,22 +138,24 @@
 
 ```
 backend/app/
-  adapters/      5 个适配器
-  engines/       9 个内置引擎 + 插件加载器
-  routers/       11 个路由模块
-  generation/    生成/处理/AI审核
-  agent/         LLM Agent 工具
-  llm/           LLMService
-  core/          配置/类型/注册/错误/disconnect
+  adapters/      5 个适配器（8 个 py 文件，含 BilibiliSubtitle/YouTubeSubtitle）
+  engines/       10 个内置引擎 + 插件加载器 + transcript 契约
+  routers/       14 个路由模块（含 plugins/references/search）
+  generation/    生成/处理/OCR预处理/AI审核
+  agent/         LLM Agent 工具 + 会话管理（tools/tool_registry/evidence/compress/session）
+  downloaders/   平台下载器（yt-dlp/douyin + abogus 签名）
+  llm/           LLMService + agent 循环
+  core/          配置/类型/注册/错误/disconnect/搜索/cookie/sample_doc
+  utils/         视频管线（video_reader/video_helper/screenshot_marker/frame_quality）
   storage/       文件系统存储
 frontend/src/
   components/    UI 组件（preview/ 下 6 个展示组件拆分）
-  store/         Zustand 状态（types.ts + 7 slices + index.ts 组合层）
-  api/           API 客户端（core + 7 域文件 + client.ts barrel）
+  store/         Zustand 状态（types.ts + 7 slices + chatStore + streamBuffers）
+  api/           API 客户端（13 文件：core + 域文件 + client.ts barrel + sse/taskManager）
   hooks/         useTaskRunner 等自定义 hook
-  lib/           tabRegistry / contentSources / 主题模块
+  lib/           tabRegistry / contentSources / slotRegistry / 主题模块 / health / download
   test/          前端测试（8 个文件，含 1 个组件测试）
-docs/            设计文档（8 份）
+docs/            设计文档（12 份）
 design/          引擎实测标准
 tests/           集成测试（8 个文件）
 ```

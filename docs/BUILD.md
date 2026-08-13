@@ -2,9 +2,9 @@
 
 一次完整的打包流程：PyInstaller → 复制 ffmpeg → Tauri。
 
-产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)：
-- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.1.0_x64-setup.exe`，~374MB）
-- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.1.0_x64_en-US.msi`，~514MB）
+产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)（当前版本 0.3.1）：
+- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.3.1_x64-setup.exe`，~265MB）
+- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.3.1_x64_en-US.msi`，~366MB）
 
 ---
 
@@ -31,6 +31,8 @@ cp /path/to/ffprobe.exe ffmpeg/
 
 Tauri v2 的 `externalBin` 自动加平台后缀，所以需要重命名。
 
+> **⚠️ 顺序铁律**：步骤 1 的 `--noconfirm` 会重建整个 `bin/LiMoBackend/` 目录——**删除**手动复制的带后缀 exe 和 `ffmpeg/`。因此「重命名 exe + 复制 ffmpeg」必须在 PyInstaller 之后、Tauri 之前重新执行，绝不能只在第一次做。新增/更新依赖后重跑打包时必须完整走一遍步骤 1→2→3。
+
 ### 3. Tauri
 
 ```bash
@@ -53,7 +55,14 @@ npx tauri build
 rg "^\s+from app\.\S+ import" --glob '*.py' app/
 ```
 
-已固化在 spec 中的（不要重复加）：`app.generation.*`、`app.core.model_resolver`、`app.core.cookie_parser`、`app.utils.url_security`、`app.utils.screenshot_marker`、`app.utils.video_helper`、`app.utils.video_reader`、`app.downloaders.douyin_downloader`、`app.llm.*`、`app.agent.*`。
+已固化在 spec 中的（不要重复加）：
+- `app.generation.*`（generator/content_preparer/prompt_builder/prompt/fact_check/**review**/**ocr_preprocessor**）
+- `app.core.model_resolver`、`app.core.cookie_parser`、`app.core.text_utils`、`app.core.disconnect`
+- `app.utils.url_security`、`app.utils.screenshot_marker`、`app.utils.video_helper`、`app.utils.video_reader`
+- `app.downloaders.douyin_downloader`、`app.downloaders.douyin_helper`
+- `app.llm`、`app.llm.service`、`app.llm.agent`、`app.llm.errors`
+- `app.agent`、`app.agent.tools`、`app.agent.evidence`
+- `app.engines.*`（doc_types/doc_markitdown/doc_docx/doc_pptx/doc_excel/epub 等，`init_engines()` 动态导入）
 
 ### 验证 exe 能启动
 

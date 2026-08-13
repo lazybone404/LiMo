@@ -1,6 +1,6 @@
 # 前端状态管理模式
 
-> 写于 2026-07-10 整体审查后（2026-08-01 更新 store 拆分）。记录 GenPanel 任务生命周期、取消机制、状态同步的关键模式和已知陷阱。
+> 写于 2026-07-10 整体审查后（2026-08-01 更新 store 拆分；2026-08-14 更新 store 表/api 域文件/mbw key/探活与缺 key 提示）。记录 GenPanel 任务生命周期、取消机制、状态同步的关键模式和已知陷阱。
 
 ---
 
@@ -17,7 +17,8 @@
 | `tasksSlice.ts` | importProgress/importStages/imageResults/processingTasks/taskPanelOpen |
 | `chatSlice.ts` | 生成状态（generating/factChecking）——对话管理在独立 chatStore |
 | `chatStore.ts` | **独立对话状态机**（不并入主 store）：ChatMsg 模型 + 流式状态机 + 会话 CRUD + 上下文管理（budget/usage/压缩提示/clearContext） |
-| `uiSlice.ts` | slots/activeView/backendReady/contentWidth/capabilities + AI 浮窗（aiVisible/aiPos/aiSize，位置/尺寸持久化） |
+| `streamBuffers.ts` | **流式高速缓冲区**（独立模块级 Map，非 slice）：LLM token 高频写入（20-50/s）→ `scheduleFlush` 120ms 去抖 → `bumpStreamTick` 驱动 PreviewArea 重读。避免高频写 store 产生大量快照 |
+| `uiSlice.ts` | slots/activeView/backendReady/**backendStatus**/contentWidth/capabilities + AI 浮窗（aiVisible/aiPos/aiSize，位置/尺寸持久化） |
 | `toastSlice.ts` | toasts + `nextMsgId`（模块级 msgCounter） |
 | `index.ts` | 组合层：`create<Store>()((...a) => ({...createXSlice(...a)}))` + 模块副作用（apply 主题轴 + matchMedia 监听） |
 
@@ -26,6 +27,11 @@
 - **action 零跨域引用**——新增域 = 新建 slice 文件，`index.ts` 加一行组合，消费方零改动
 - 模块初始化副作用（apply 五主题轴 + matchMedia 监听）**必须留在 index.ts**，不可移入 slice（监听器需 `useStore.getState()`，移入会制造运行时循环依赖）
 - 持久化是手写 localStorage（见 §7），无 persist 中间件
+
+### 探活与缺 key 提示（2026-08-13 新增）
+
+- **`lib/health.ts` 持续探活**：`startHealthPoll()`（App 挂载时调用）10s 轮询 `/api/health` → 状态写 `uiSlice.backendStatus`（`ready`/`down`/`crashed` 三态）。连续 2 次失败 → `down`（「后端服务异常，正在重试」）；连续失败超 30s → `crashed`（「后端已崩溃，请重启应用」）。与启动探活（App.tsx 的「后端未就绪加载屏」）职责分离。
+- **缺 key 检测**：基于 `capabilities.missingKeys`（后端返回缺失的 LLM/DashScope key），ImportSection 导入图片/视频时内联提示条（`mbw_dashscope_hint_dismissed` 记忆已关），chatStore 首条消息发送前 toast 提示 LLM key（`mbw_llm_hint_dismissed`）。OnboardingWizard 第三屏基于 missingKeys 自动跳过已配项。
 
 ---
 
@@ -239,38 +245,63 @@ if (!receivedDoneOrError) {
 
 ---
 
-## 6. apiUrl 模式
+## 6. apiUrl / appUrl 模式
+
+`api/` 目录 13 个文件（2026-08-01 按域拆分）：
+
+| 文件 | 职责 |
+|------|------|
+| `core.ts` | `BASE`/`apiUrl()`/`appUrl()`/`apiFetch`/错误处理 —— **不经过 barrel**，域文件从 `./core` import |
+| `client.ts` | barrel，显式 re-export 公共符号（禁止直接用 `BASE`） |
+| `capabilities.ts` | 能力元数据（fileTypeMap/引擎/模型/missingKeys），驱动前端自动发现与缺 key 检测 |
+| `transcripts.ts` / `settings.ts` | 转录结果 / 配置读写 |
+| `ingest.ts` / `generate.ts` | 导入（含 SSE 进度）/ 生成（流式 + 取消） |
+| `chat.ts` / `export.ts` / `references.ts` / `plugins.ts` | 对话（SSE）/ 导出 / 参考文件 / 插件管理 |
+| `taskManager.ts` | `registerAbort`/`cancelTask` 全局 AbortController Map |
+| `sse.ts` | `parseSSEStream` 统一 SSE 解析（fetch → ReadableStream → 事件回调），各流式端点复用 |
 
 ```typescript
-// api/core.ts（2026-08-01 按域拆分：core + capabilities/transcripts/ingest/generate/chat/settings/export）
+// api/core.ts
 export function apiUrl(path: string): string {
   return path.startsWith('http') ? path : `${BASE}${path}`
 }
 // Tauri: BASE = 'http://127.0.0.1:7413/api'
 // Browser: BASE = '/api'
+
+// 应用内图片/静态资源 URL（MarkdownImage / DocLibrary / VideoBanner 必须用它）
+export function appUrl(path: string): string {
+  if (!path || path.startsWith('http')) return path
+  if (!isTauri) return path
+  if (path.startsWith('/api/')) return apiUrl(path.slice(4))
+  return `http://127.0.0.1:7413${path}`   // /static/ 等 → 绝对 URL
+}
 ```
 
-**规则**：所有 HTTP 请求必须走 `apiUrl()` 或 `apiFetch`（内部走 `apiUrl`）。裸 `fetch('/api/...')` 在 Tauri WebView2 下会失败。
-
-**注意**：`BASE` 在 core.ts 导出但**不经过 barrel**（`client.ts` 显式 re-export 公共符号）——域文件从 `./core` import，外部禁止直接用 `BASE`。
+**规则**：
+- 所有 **HTTP 请求** 必须走 `apiUrl()` 或 `apiFetch`（内部走 `apiUrl`）。裸 `fetch('/api/...')` 在 Tauri WebView2 下会失败。
+- 所有**图片/静态资源**（`<img src>`、封面）必须走 `appUrl()`——打包端无 Vite proxy，`/api/` 和 `/static/` 路径需转绝对 URL。
+- `BASE` 在 core.ts 导出但**不经过 barrel**——域文件从 `./core` import，外部禁止直接用 `BASE`。
 
 ---
 
 ## 7. Store 持久化
 
-**无 persist 中间件**——手写 localStorage，`mbw_*` 前缀共 9 个 key：
+**无 persist 中间件**——手写 localStorage，`mbw_*` 前缀共 14 个 key：
 
 | key | 写入位置 | 用途 |
 |-----|---------|------|
 | `mbw_theme` | lib/theme.ts | 明暗模式（getSaved*/save* 模式） |
 | `mbw_accent` | lib/accent.ts | 主色调 |
 | `mbw_texture` / `mbw_font` | lib/texture.ts | 纹理 / 字体 |
+| `mbw_texture_intensity` | lib/texture.ts | 纹理强度（滑条 10-100） |
 | `mbw_base` | lib/theme-base.ts | 界面基调 |
 | `mbw_lastDocId` | docsSlice selectDoc | 恢复上次选中的文档 |
 | `mbw_lastView` | uiSlice setActiveView | 恢复上次的预览 tab |
 | `mbw_lastConvId` | ChatCore 切换会话时 | 恢复上次的对话（chatStore 内存不持久化，组件层读写） |
 | `mbw_aiPos` / `mbw_aiSize` | uiSlice setAiPos/setAiSize | AI 浮窗位置/大小记忆 |
 | `mbw_contentWidth` | uiSlice cycleContentWidth | 阅读宽度 |
+| `mbw_llm_hint_dismissed` | chatStore | 缺 LLM key 首提 toast 已关闭 |
+| `mbw_dashscope_hint_dismissed` | ImportSection | 缺 dashscope 内联提示条已关闭 |
 
 **规则**：lib 层的持久化在 slice 的 setter 中调用（如 `setTheme` → `saveTheme` → `applyTheme` → `set`）；action 内的 localStorage 读写需 try/catch（quota）。LLM 设置、provider、引擎配置都在后端 `~/.limo/config.yaml`，不由前端持久化。
 

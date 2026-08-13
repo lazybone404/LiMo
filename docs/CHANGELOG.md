@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-08-14 — 文档全面更新 + AGENT-ONBOARDING 上手文档
+
+> 用户要求三件事：① 全面更新所有文档；② 写一份面向其他 AI agent 快速上手/接手开发的文档（打包章节要详细）；③ 清理和合并不必要/过时的文档。用 3 个 Explore agent 逐份对比文档与代码 + Plan agent 交叉验证，产出偏差清单后逐份对齐。**所有计数以代码实测为准。**
+
+### 文档更新（10 份 docs + design + 根目录；docs/ 由 11 → 12 份）
+- **大改**：export-pipeline.md（TAB_EXPORT → tabRegistry/contentSources 机制、GFM checkbox/时间戳 badge/标题锚点、KaTeX 双路径、补 3 导出端点、行号）；design/components.md（品牌名 MyBigWork→LiMo、ResizablePanelGroup→SlotLayout 插槽引擎、生成面板左插槽、AI 浮窗唯一形态、设置页 7 tab、快捷键）；prompts-inventory.md（Polish 白名单 +link/screenshot 移 translate、AVAILABLE_OPTIONS 补 formulas、SYSTEM_PROMPT→agent/prompts 分层、SSE 事件、AI 审核四阶段、prompt 计数）；user-scenarios.md（场景 9b 跨多篇已实现、6/7 状态修正、主动提醒部分落地）
+- **中改**：architecture.md（引擎 10、路由 14、load_config 位置、格式残留修正 + 补零文档模块 FTS5 搜索/Slot 注册表/download/sse/transcript 契约/SessionManager/ocr_preprocessor/cookie_parser/视频 utils/sample_doc/config 同步/启动时序/protocols）；STATUS.md（91 py/74 端点/72-74 进度 + 目录结构）；CLAUDE.md（文档索引 + 对话协议、测试 8 文件/101 tests、关键模式 34 条、导出系统描述、待办 72/74、语义搜索措辞）
+- **小改**：frontend-patterns.md（streamBuffers/backendStatus/appUrl/mbw 14 key）；对话协议.md（done 无 usage、ref 随 tool_result 携带）；qianwen-models.md（context_window/推荐模型）；BUILD.md（产物 0.3.1/hiddenimports 清单）；plugins.md（管理 API 补两行）
+- **修正 2 处隐藏文档 bug**：CLAUDE.md 引用不存在的 `scripts/build.sh`（改指向 BUILD.md）；start.sh 品牌名 DeepDraft → LiMo
+
+### 新文档
+- **docs/AGENT-ONBOARDING.md**（新）：课本式上手教程——从零跑通 → 架构全景 → 六大注册表 → 数据流横切 → How-to 8 任务 → **打包发布（最详细：命令级步骤 + 顺序铁律 + 陷阱排查对照表 + 新增依赖 checklist + 发布门禁）** → 测试门禁 → 调试速查 → 上手练习
+
+### 清理（温和清理，用户确认）
+- 删除 `pi-docs/`（3 份已完成功能的规划稿，CHANGELOG 有完整记录）；删除 `frontend/README.md`（Vite 模板残留）；删除 `frontend/src/components/ui/SetupWizard.tsx`（死代码，OnboardingWizard 替代）；修正 `backend/plugins/examples/README.md`「两个模板」→「三个模板」
+- SECURITY_AUDIT.md / backend/tests/TEST_REPORT.md 历史时点报告保留原样（用户确认）
+
+### 验证
+- 前端 `tsc -b` + vite build ✓、oxlint 无新增 error ✓、vitest 101/101 ✓；后端 8 测试脚本全绿（含 e2e_smoke 36/36）✓
+- grep 抽查：文档新引用的 14 个文件/端点全部真实存在（slotRegistry/tabRegistry/contentSources/streamBuffers/search.py/transcripts_fts/agent/prompts/…）
+
+---
+
 ## 2026-08-13 — 首次体验与健壮性（P1-P3 实施）
 
 > 用户提交「首次体验与健壮性计划」。深度现状核验修正 4 处偏差：中转站后端已存在（0 新工作）、OnboardingWizard 已存在（改扩展）、启动探活已存在（补持续探活）、OCR/ASR 缺 key 已基本显式（补唯一缺口）。

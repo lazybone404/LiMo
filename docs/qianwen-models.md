@@ -55,13 +55,14 @@
 
 | 场景 | 推荐模型 | 理由 |
 |------|---------|------|
-| 生成笔记 | qwen3.7-plus | 1M 上下文，多模态，高性价比 |
-| 省钱纯文本 | qwen-flash | ¥0.15/M，最便宜，1M 上下文 |
+| 生成笔记（默认） | **deepseek-v4-flash** | 默认 LLM（`llm.model.deepseek`），¥1/2/M 高性价比，1M 上下文 |
+| 生成笔记（dashscope 生态） | qwen3.7-plus | 多模态 · 日常推荐，标称 1M 上下文 |
+| 省钱纯文本 | qwen-flash | ¥0.15/M，最便宜 |
 | 低成本 OCR | qwen3-vl-flash | ¥0.15/M，小尺寸视觉，最快最便宜 |
-| 文档 OCR | qwen-vl-ocr-latest | ¥0.3/M，文档/表格/公式 |
+| 文档 OCR | qwen-vl-ocr-latest | ¥0.3/M，文档/表格/公式（**OCR 默认绑定**） |
 | 图片理解 | qwen3.7-plus | 视觉+文本一体化 |
 | 语音转写 | paraformer-realtime-v2 | 方言支持最全 |
-| 代码生成 | qwen3-coder-plus | 1M 上下文，代码专用 |
+| 代码生成 | qwen3-coder-plus | 代码专用 |
 
-> **能力标注说明**：LiMo 预设中已为所有已知模型内置 `capabilities`（text/image），
-> 添加模型时优先使用预设标签。API 拉取到的新模型默认纯文本，可在设置页手动调整。
+> **能力标注说明**：LiMo 内置预设覆盖 qwen 系（dashscope）、deepseek、gpt、claude、gemini、glm、kimi 的部分模型，均内置 `capabilities`（text/image）与 `context_window`。
+> **内置预设 `context_window` 保守设为 131072**（≈131K，qwen 系平台标称 1M/262K 以平台为准，对话预算按保守值计算）；deepseek / gemini / glm-5.2 等设 1M。MiniMax、kimi-k3 等未内置预设的模型需手动添加，优先复用预设标签，API 拉取到的新模型默认纯文本，可在设置页调整。
