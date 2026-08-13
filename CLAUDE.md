@@ -202,13 +202,14 @@ cargo check         # 仅 Rust 类型检查（不完整编译）
 #### PyInstaller 构建后端
 
 ```bash
-cd backend
+cd /c/WorkPlace/Tool/LiMo/LiMo-C   # ⚠️ 必须在项目根执行（spec 的 pathex=['backend'] 和 datas 相对 CWD）
 # ⚠️ 必须指定 --distpath，否则输出到 dist/ 而 Tauri 打包的是 bin/ 里的旧文件
-uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
+# ⚠️ 必须用 venv python -m 方式：uv run（根目录无 pyproject）/ pyinstaller.exe trampoline 都会 canonicalize 失败
+backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMoBackend.spec --distpath frontend/src-tauri/bin
 ```
 
 **常见陷阱**：
-- spec 文件 `pathex=['backend']` 是相对于项目根目录的，在 `backend/` 目录下执行需注意
+- ⚠️ **必须在项目根执行**：spec 的 `pathex=['backend']` 和 `datas`（`static/`、`app/agent/prompts/`）都是相对 CWD，在 `backend/` 目录下执行会找不到 datas
 - `console=False` 避免黑框闪烁
 - `COLLECT` 模式（one-dir）：生成 `LiMoBackend.exe` + `_internal/` 目录
 - Tauri `externalBin` 只打包 exe，`resources` 负责 `_internal/`
@@ -219,7 +220,7 @@ uv run pyinstaller LiMoBackend.spec --distpath ../frontend/src-tauri/bin
 - **searxng .git 目录必须清理**：PyInstaller 收集 `bin/searxng/.git` 后 Tauri 构建会因权限错误(os error 5)失败
 - **PyInstaller 必须在项目根目录执行**：spec 中 `pathex=['backend']` 和 `datas` 相对路径依赖 CWD
 - **KaTeX + markmap/d3 离线资源**：PyInstaller 通过 `datas` 打包 `backend/static/`（含 katex + markmap子目录）。打包前需确保字体完整（从 `frontend/node_modules/katex/dist/fonts/` 复制 60 字体到 `backend/static/katex/fonts/`），否则导出的 HTML 公式碎掉。HTML 导出中 CSS 的 `url(fonts/...)` 会被 base64 内联，完全自包含
-- **ffmpeg 内置**：将系统 ffmpeg.exe + ffprobe.exe 复制到 `frontend/src-tauri/bin/LiMoBackend/ffmpeg/`（PyInstaller 之后、Tauri 之前），Tauri `resources` 自动打包。Rust `enhance_path()` 启动时追加到 PATH + 设 `FFMPEG_BIN_PATH` 环境变量
+- **ffmpeg 内置**：将精简版 ffmpeg.exe + ffprobe.exe（gyan.dev essentials 8.1.1，194M，分发源 `~/.limo/ffmpeg-portable/`；2026-08-14 起从 434M full build 精简）复制到 `frontend/src-tauri/bin/LiMoBackend/ffmpeg/`（PyInstaller 之后、Tauri 之前），Tauri `resources` 自动打包。Rust `enhance_path()` 启动时追加到 PATH + 设 `FFMPEG_BIN_PATH` 环境变量
 - **OpenSSL DLL 版本冲突**：`cryptography` 包携带的 `libcrypto-3-x64.dll`（~5MB）会覆盖 Python 原生的（~8MB），导致 `_ssl.pyd` 加载失败（`ImportError: DLL load failed`），最终使后端无法启动。spec 中需排除 cryptography 的 DLL 并显式添加 `sys.base_prefix/DLLs/` 下的原始版本。**每次新增依赖后验证**：直接运行 `LiMoBackend.exe` 确认能输出 `Uvicorn running on http://127.0.0.1:7413`
 - **PyInstaller binaries 格式**：`collect_all` 返回 `(dest_name, src_path)`，`Analysis(binaries=[])` 期望 `(src_path, dest_dir)`。追加 binaries 时用 `(abs_src_path, '.')` 格式
 

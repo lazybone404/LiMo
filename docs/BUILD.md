@@ -2,9 +2,11 @@
 
 一次完整的打包流程：PyInstaller → 复制 ffmpeg → Tauri。
 
-产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)（当前版本 0.3.1）：
-- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.3.1_x64-setup.exe`，~265MB）
-- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.3.1_x64_en-US.msi`，~366MB）
+产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)（当前版本 0.3.1，2026-08-14 体积优化后）：
+- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.3.1_x64-setup.exe`，~148MB）
+- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.3.1_x64_en-US.msi`，~195MB）
+
+> **体积优化（2026-08-14）**：docling/pytesseract 依赖残留清理 + ffmpeg 换精简版后，安装包从 ~265M/~366M 降到 ~148M/~195M。详见 [CHANGELOG.md](CHANGELOG.md)（2026-08-14 打包体积优化条目）。
 
 ---
 
@@ -13,11 +15,11 @@
 ### 1. 清理 + PyInstaller
 
 ```bash
+# ⚠️ 必须在项目根目录执行（spec 的 pathex=['backend'] 和 datas 相对 CWD）
+# ⚠️ 必须用 venv python -m 方式：uv run（根目录无 pyproject）/ pyinstaller.exe trampoline 都会 canonicalize 失败
 rm -rf frontend/src-tauri/bin/LiMoBackend
-uv run pyinstaller backend/LiMoBackend.spec --distpath frontend/src-tauri/bin
+backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMoBackend.spec --distpath frontend/src-tauri/bin
 ```
-
-必须在项目根目录执行。spec 里 `pathex=['backend']` 依赖 CWD。
 
 ### 2. 重命名 + 复制 ffmpeg
 
@@ -25,11 +27,13 @@ uv run pyinstaller backend/LiMoBackend.spec --distpath frontend/src-tauri/bin
 cd frontend/src-tauri/bin/LiMoBackend
 cp LiMoBackend.exe LiMoBackend-x86_64-pc-windows-msvc.exe
 mkdir -p ffmpeg
-cp /path/to/ffmpeg.exe ffmpeg/
-cp /path/to/ffprobe.exe ffmpeg/
+cp ~/.limo/ffmpeg-portable/ffmpeg.exe ffmpeg/
+cp ~/.limo/ffmpeg-portable/ffprobe.exe ffmpeg/
 ```
 
 Tauri v2 的 `externalBin` 自动加平台后缀，所以需要重命名。
+
+> **ffmpeg 精简版（2026-08-14 起）**：内置 ffmpeg 已从 gyan.dev full build（434M）换成 **gyan.dev essentials 8.1.1**（194M，`~/.limo/ffmpeg-portable/`，已验证含 libmp3lame/pcm_s16le/mjpeg + h264/hevc/av1/aac/mp3/opus 解码 + mp4/mkv/webm/avi/flv 容器）。旧完整版备份在 `~/.limo/ffmpeg-backup-full/`（434M）。若精简版对某些输入失败，用备份回退并在 [CHANGELOG.md](CHANGELOG.md) 记录支持范围。
 
 > **⚠️ 顺序铁律**：步骤 1 的 `--noconfirm` 会重建整个 `bin/LiMoBackend/` 目录——**删除**手动复制的带后缀 exe 和 `ffmpeg/`。因此「重命名 exe + 复制 ffmpeg」必须在 PyInstaller 之后、Tauri 之前重新执行，绝不能只在第一次做。新增/更新依赖后重跑打包时必须完整走一遍步骤 1→2→3。
 

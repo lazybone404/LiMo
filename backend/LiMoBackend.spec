@@ -62,7 +62,6 @@ hiddenimports += [
     'dashscope', 'dashscope.audio.asr',
     'youtube_transcript_api',
     'onnxruntime',  # magika 文件类型检测依赖（markitdown），必须保留
-    'filelock',
     'lxml', 'courlan', 'htmldate', 'justext', 'tld',
     'babel', 'dateparser', 'regex', 'tzlocal',
     'soupsieve', 'bs4',

@@ -31,7 +31,6 @@ dependencies = [
     # ASR 引擎（faster-whisper 已从内置移除，需用户自行安装插件）
     "dashscope>=0.0.1",
     # OCR
-    "pytesseract>=0.3",
     "pillow>=12.0",
     # 视频处理（抽帧走 ffmpeg，帧质量走 PIL+numpy，无需 opencv）
     "numpy>=2.0",
@@ -44,7 +43,7 @@ dependencies = [
     "gmssl>=3.2",
     "html2text>=2025.4.15",
     "duckduckgo-search>=8.1.1",
-    "docling>=2.115.0",
+    # docling 已移除（2026-08-03，依赖 torch ~2GB 无法打包），此处删依赖防 venv 残留拖入打包
     "pypdfium2>=5.12.1",
     "pdfplumber>=0.11.10",
     "xlrd>=2.0.2",

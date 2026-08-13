@@ -324,28 +324,32 @@ async def my_stream(request: Request):
 
 Tauri v2 `externalBin` 自动加平台后缀 → PyInstaller 产物 exe 需重命名匹配。
 
-### 6.2 产物位置与体积（0.3.1 实测）
+### 6.2 产物位置与体积（0.3.1 实测，2026-08-14 体积优化后）
 
 | 产物 | 路径 | 大小 |
 |------|------|------|
-| NSIS 安装包 | `frontend/src-tauri/target/release/bundle/nsis/LiMo_0.3.1_x64-setup.exe` | ~265MB |
-| MSI 安装包 | `frontend/src-tauri/target/release/bundle/msi/LiMo_0.3.1_x64_en-US.msi` | ~366MB |
+| NSIS 安装包 | `frontend/src-tauri/target/release/bundle/nsis/LiMo_0.3.1_x64-setup.exe` | ~148MB |
+| MSI 安装包 | `frontend/src-tauri/target/release/bundle/msi/LiMo_0.3.1_x64_en-US.msi` | ~195MB |
+
+> 体积优化（2026-08-14）：docling/pytesseract 依赖残留清理 + ffmpeg 换精简版后，安装包从 ~265M/~366M 降到 ~148M/~195M。详见 [CHANGELOG.md](CHANGELOG.md)（2026-08-14 打包体积优化条目）。
 
 ### 6.3 打包步骤（顺序铁律）
 
 ```bash
 # ⚠️ 全部在项目根目录执行（spec 的 pathex 依赖 CWD）
+# ⚠️ ① 必须用 venv python -m 方式：uv run（根目录无 pyproject）/ pyinstaller.exe trampoline 都会 canonicalize 失败
 
 # ① 清理 + PyInstaller（--noconfirm 会重建整个 bin/LiMoBackend/，删掉手动复制的东西）
 rm -rf frontend/src-tauri/bin/LiMoBackend
-uv run pyinstaller backend/LiMoBackend.spec --distpath frontend/src-tauri/bin
+backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMoBackend.spec --distpath frontend/src-tauri/bin
 
 # ② 重命名 exe + 复制 ffmpeg（必须在 ① 之后重新做！）
+#    ffmpeg 精简版分发源在 ~/.limo/ffmpeg-portable/（gyan.dev essentials 8.1.1，194M）
 cd frontend/src-tauri/bin/LiMoBackend
 cp LiMoBackend.exe LiMoBackend-x86_64-pc-windows-msvc.exe
 mkdir -p ffmpeg
-cp /path/to/ffmpeg.exe ffmpeg/
-cp /path/to/ffprobe.exe ffmpeg/
+cp ~/.limo/ffmpeg-portable/ffmpeg.exe ffmpeg/
+cp ~/.limo/ffmpeg-portable/ffprobe.exe ffmpeg/
 cd ../../../..
 
 # ③ 前端构建 + Tauri 打包

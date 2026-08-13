@@ -6,6 +6,38 @@
 
 ---
 
+## 2026-08-14 — 打包体积优化（docling 清理 + ffmpeg 精简）
+
+> 用户 @ `pi-docs/打包体积优化计划.md` 要求执行打包体积优化。实测确认现状比计划记录更极端（ffmpeg 实际 434M 而非 194M）。执行 P1 + P2b，安装包从 ~265M/~366M 降到 **~148M/~195M**。
+
+### P1 docling 依赖残留清理
+- `backend/pyproject.toml` 删 `docling>=2.115.0`（docling 引擎 2026-08-03 已移除但依赖没删，spec 早清干净但 venv 全家残留）+ 顺带删 `pytesseract>=0.3`（Tesseract 已移除的残留，代码零引用）
+- `uv sync` 移除 docling/torch/torchvision/transformers/scipy/rapidocr/tree-sitter/pywin32 等全家（venv 原 ~250M+）
+- `LiMoBackend.spec` 删 hiddenimports 残留 `filelock`（docling 传递依赖时代产物，代码零引用）
+- 后端 8 测试全绿（e2e_smoke 36/36）+ 打包版 exe health 200
+
+### P2b ffmpeg 精简 build 替换
+- gyan.dev full build（434M：ffmpeg 227M + ffprobe 227M）→ **gyan.dev essentials 8.1.1（194M）**
+- 下载走 **ghfast.top GitHub 加速代理**（gyan.dev 官网 ~48KB/s 太慢；ghproxy.com 已失效）
+- 验证：libmp3lame/pcm_s16le/mjpeg 编码器 + h264/hevc/av1/aac/mp3/opus 解码 + mp4/mkv/webm/avi/flv 容器 + ffprobe 探测；4 个调用点回归通过（video.py MP3 提取 / asr_cloud.py WAV / video_reader.py+video_helper.py 截帧）
+- 完整版备份 `~/.limo/ffmpeg-backup-full/`；精简版分发源 `~/.limo/ffmpeg-portable/`
+
+### P3 markitdown
+- **保留**（用户决策，保守）。onnxruntime 39M 大头是 capi 34M 必需 DLL，tools/transformers 纯 py 仅 ~3.5M 不值得优化
+
+### 体积结果（实测）
+
+| 项 | 前 | 后 | 变化 |
+|---|---|---|---|
+| PyInstaller 产物（含 ffmpeg） | 918M | 443M | 省 475M（-52%） |
+| NSIS 安装包 | ~265M | **148M** | 省 ~117M（-44%） |
+| MSI 安装包 | ~366M | **195M** | 省 ~171M（-47%） |
+
+### 文档
+- `pi-docs/打包体积优化计划.md` 更新为已执行（实测数据 + 下载坑）；`docs/BUILD.md` 产物体积 + 精简 ffmpeg 源说明；`CLAUDE.md` ffmpeg 内置描述
+
+---
+
 ## 2026-08-14 — 文档全面更新 + AGENT-ONBOARDING 上手文档
 
 > 用户要求三件事：① 全面更新所有文档；② 写一份面向其他 AI agent 快速上手/接手开发的文档（打包章节要详细）；③ 清理和合并不必要/过时的文档。用 3 个 Explore agent 逐份对比文档与代码 + Plan agent 交叉验证，产出偏差清单后逐份对齐。**所有计数以代码实测为准。**
