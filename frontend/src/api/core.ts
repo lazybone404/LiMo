@@ -122,6 +122,11 @@ export interface Capabilities {
   engineLabels: Record<string, string>
   /** 风格 key→中文标签 */
   styleLabels: Record<string, string>
+  /** 缺 key 项（P2.1 主动提示）：llm 未配 key 的厂商 + 未配 key 的引擎（dashscope） */
+  missingKeys: {
+    llm: { id: string; name: string }[]
+    engine: string[]
+  }
 }
 
 export interface DocEntry {

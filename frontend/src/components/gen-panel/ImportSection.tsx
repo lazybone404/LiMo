@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback } from 'react'
-import { Plus, Link, FileText, Image, Upload, Loader2, X, Film, Paperclip } from 'lucide-react'
+import { Plus, Link, FileText, Image, Upload, Loader2, X, Film, Paperclip, KeyRound } from 'lucide-react'
 import { EngineSelect, type EngineOption } from './EngineSelect'
 import { getSubScenario, DROP_ACCEPT, INPUT_TYPE_LABELS, IMPORTING_LABELS } from './constants'
 import { useStore } from '../../store'
@@ -60,6 +60,14 @@ export function ImportSection(props: Props) {
     return Object.keys(caps?.fileTypeMap || {})
   }, [caps])
 
+  // ── P2.2：DashScope 缺 key 提示（图片 OCR / 视频识别需要，前端主动前置）──
+  // 内联提示条（非 toast——切类型时不会重复打扰），可 X 关闭（localStorage 记忆）
+  const [hintDismissed, setHintDismissed] = useState(() => {
+    try { return localStorage.getItem('mbw_dashscope_hint_dismissed') === '1' } catch { return false }
+  })
+  const needsDashScope = (caps?.missingKeys?.engine?.includes('dashscope') ?? false)
+  const showDashScopeHint = needsDashScope && !hintDismissed && (p.inputType === 'video' || p.isImageType)
+
   // 导入区始终基于用户选择的子标签过滤引擎，不受已选中文档影响
   const filteredDocEngines = useMemo(() => {
     const all = p.engineOptions.doc || []
@@ -89,6 +97,19 @@ export function ImportSection(props: Props) {
       {/* 转录方案 — 视频/文件/图片专属 */}
       {(p.inputType === 'video' || p.inputType === 'file' || p.isImageType) && (
         <>
+          {/* P2.2：DashScope 缺 key 前置提示（图片 OCR / 视频识别需要） */}
+          {showDashScopeHint && (
+            <div className="flex items-start gap-2 p-2.5 rounded-lg bg-warning/10 text-warning text-[11px] leading-relaxed">
+              <KeyRound size={13} className="mt-0.5 shrink-0" />
+              <span className="flex-1">图片 OCR 与视频语音识别需要 DashScope API Key（设置 → 引擎 → 阿里云 DashScope 填入 Key）</span>
+              <button
+                onClick={() => { setHintDismissed(true); try { localStorage.setItem('mbw_dashscope_hint_dismissed', '1') } catch {} }}
+                className="shrink-0 text-warning/70 hover:text-warning transition-colors" aria-label="关闭提示">
+                <X size={12} />
+              </button>
+            </div>
+          )}
+
           {/* 视频 ASR */}
           {p.inputType === 'video' && p.engineOptions.asr?.length > 0 && (
             <EngineSelect category="asr" label="语音转写" options={p.engineOptions.asr}

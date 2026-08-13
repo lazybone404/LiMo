@@ -28,13 +28,47 @@ app = FastAPI(title="LiMo", version="0.3.1")
 
 @app.middleware("http")
 async def add_request_id(request, call_next):
-    """每个 HTTP 请求注入唯一 request_id 到日志上下文"""
+    """每个 HTTP 请求注入唯一 request_id 到日志上下文 + 记录请求耗时/状态（P1.2 请求级日志）"""
+    import time as _time
     import uuid
     token = request_id.set(request.headers.get("X-Request-ID", uuid.uuid4().hex[:16]))
-    response = await call_next(request)
+    start = _time.perf_counter()
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        duration_ms = (_time.perf_counter() - start) * 1000
+    except Exception:
+        # 响应异常（无 response 对象）：记录 500 后向上抛（ServerErrorMiddleware 兜底返回 500）
+        _log_request(request, 500, (_time.perf_counter() - start) * 1000)
+        request_id.reset(token)
+        raise
     response.headers["X-Request-ID"] = request_id.get()
+    _log_request(request, status, duration_ms, response_headers=response.headers)
     request_id.reset(token)
     return response
+
+
+def _log_request(request, status: int, duration_ms: float, response_headers=None):
+    """请求级日志：method/path/status/duration_ms。慢请求 WARN，SSE 长连接不判慢。
+
+    - SSE 识别按响应头 content-type: text/event-stream（通用，非路径白名单——
+      路径判断会漏新增流式端点）
+    - 跳过高频噪音：health 探活 / static 静态资源 / assets 图片渲染
+    """
+    from app.core import logging as log
+    path = request.url.path
+    if path == "/health" or path == "/api/health" or path.startswith("/static") or path.startswith("/api/assets"):
+        return
+    is_sse = bool(response_headers) and "text/event-stream" in response_headers.get("content-type", "")
+    kw = {"method": request.method, "path": path, "status": status, "duration_ms": round(duration_ms, 1)}
+    if is_sse:
+        kw["stream"] = "sse"
+        log.info("HTTP", **kw)  # SSE 长连接不判慢：只记录不 WARN
+    elif duration_ms >= 2000:
+        kw["slow"] = True
+        log.warning("HTTP", **kw)
+    else:
+        log.info("HTTP", **kw)
 
 # CORS Origin 白名单 — 只允许本机与 Tauri 壳来源，阻隔任意网页跨站访问本地后端。
 # - Tauri v2 生产 WebView2 实际 origin: http://tauri.localhost（Windows 实测）、https://tauri.localhost（macOS/Linux）
@@ -273,6 +307,7 @@ async def startup():
 
 
 @app.get("/health")
+@app.get("/api/health")
 async def health():
     return {"status": "ok", "version": "0.3.1", "started_at": app.state.started_at}
 

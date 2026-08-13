@@ -6,6 +6,31 @@
 
 ---
 
+## 2026-08-13 — 首次体验与健壮性（P1-P3 实施）
+
+> 用户提交「首次体验与健壮性计划」。深度现状核验修正 4 处偏差：中转站后端已存在（0 新工作）、OnboardingWizard 已存在（改扩展）、启动探活已存在（补持续探活）、OCR/ASR 缺 key 已基本显式（补唯一缺口）。
+
+### P1 健壮性 + 可观测性
+- **前端持续探活**（`lib/health.ts` 新 + `uiSlice.backendStatus`）：10s 轮询 `/api/health`，连续 2 次失败 → `down`（顶部横幅「后端服务异常，正在重试…」），连续失败超 30s → `crashed`（「后端已崩溃，请重启应用」），恢复自动消失。与启动探活（只管「后端未就绪加载屏」）职责分离共存
+- **`/api/health` 别名**：`/health` 是根路径（无 `/api` 前缀）且 Vite proxy 只代理 `/api`、`/static`（浏览器下走 SPA fallback）→ 后端加 `/api/health` 别名，前端 `apiUrl('/health')` 双环境通
+- **请求级日志**（`main.py` middleware 扩展）：`call_next` 前后计时记录 `method/path/status/duration_ms`，慢请求（>2s）WARN、正常 INFO；**SSE 按响应头 `content-type: text/event-stream` 判定不判慢**（非路径白名单——新增流式端点不漏）；跳过高频噪音（health / static / assets 图片渲染）
+
+### P2 首次体验
+- **配置向导第三屏**（OnboardingWizard 扩展）：阅读氛围 → 系统组件 → **AI 配置**（数据源 `capabilities.missingKeys`）——LLM 厂商卡填 key + `testProviderConnection` 连通验证（复用已有 API）；DashScope 引擎卡填 key（`PUT /engine-providers/dashscope` 后端自动双向同步 `cloud.dashscope`）；已配项保存后从列表消失；可整屏跳过；老用户 missingKeys 全空自动跳过不打扰
+- **`capabilities.missingKeys`**：后端 `_compute_missing_keys` **复用 `model._get_providers`**（含全局 `llm.api_key` 同步 + sk-ws/sk-ant 防错配）——llm 遍历 `llm_models` 厂商查 provider.api_key 为空，engine 复用 `cloud.dashscope` 检测
+- **缺 key 主动提示**：ImportSection 图片/视频区**内联提示条**（X 关闭 + localStorage `mbw_dashscope_hint_dismissed`；非 toast——切类型不重复打扰）；chatStore `dispatchSend` 首次发送缺 LLM key toast（localStorage `mbw_llm_hint_dismissed`）
+- **后端 OCR/ASR 可见化补缺**：video.py `_adapt_local`（本地视频）FatalError 原写死「未获取到转写结果」→ 汇总 warnings 带原因（对齐 URL 路径，如「ASR dashscope-asr 失败: DashScope API key 未配置」）。其余路径已显式无需改（document 扫描件占位带原因 / process 图片 AppError·TranscribeError 带 detail / URL 视频 FatalError）；image.py `_ocr` 为无调用方死代码不改
+
+### 范围外
+- P3（32-bit / 按需下载）后置；日志分级/轮转体系重构（只补请求级）；tavily 配置向导步骤
+
+### 影响范围
+- **后端**：main.py（health 别名 + 请求日志）· capabilities.py（missingKeys）· video.py（本地 ASR detail）+ tests/test_capabilities.py（新，6 用例）
+- **前端**：lib/health.ts（新）· uiSlice.ts（backendStatus）· App.tsx（横幅 + 探活）· OnboardingWizard.tsx（第三屏）· api/core.ts（Capabilities 类型）· ImportSection.tsx / chatStore.ts（缺 key 提示）
+- **验证**：前端 `tsc -b` + vitest 101/101；后端 6 脚本 + e2e_smoke 36/36；实测 `/api/health` 200 + 请求日志输出 + missingKeys 字段
+
+---
+
 ## 2026-08-06 — PDF 笔记图片显示修复
 
 > 用户反馈：PDF 笔记（DSpark，pymupdf4llm 插件导出）图片显示有问题，生成完成后需刷新才正常。

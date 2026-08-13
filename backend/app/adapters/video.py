@@ -538,7 +538,11 @@ class VideoAdapter(PipelineAdapter):
 
         if not asr_result.get("segments"):
             pg("transcribing", "error", "转写失败", 90)
-            raise FatalError(f"语音转写失败：未获取到转写结果")
+            # 汇总 ASR 失败原因（对齐 URL 路径）：warnings 里带「失败/不可用」的原因
+            # （如「ASR dashscope-asr 失败: DashScope API key 未配置」），让用户看到具体原因
+            fail_reasons = [w for w in warnings if "失败" in w or "不可用" in w]
+            detail = "; ".join(fail_reasons) if fail_reasons else "所有语音识别引擎均失败"
+            raise FatalError(f"语音转写失败: {detail}")
 
         pg("transcribing", "done", f"转写完成 ({len(asr_result.get('segments', []))}段)", 95)
         pg("done", "done", "导入完成", 100)

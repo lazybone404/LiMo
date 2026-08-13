@@ -11,6 +11,7 @@ import { SlotLayout } from './components/ui/SlotLayout'
 import { SearchBar } from './components/ui/SearchBar'
 import { ThemeToggle } from './components/ui/ThemeToggle'
 import { fetchCapabilities, listTranscripts, getMarkdown, getTranscript } from './api/client'
+import { startHealthPoll } from './lib/health'
 import { Settings, PanelLeft, Library, MessageSquare, Archive } from 'lucide-react'
 
 export default function App() {
@@ -28,6 +29,7 @@ export default function App() {
   const toggleAI = useStore(s => s.toggleAI)
   const backendReady = useStore(s => s.backendReady)
   const setBackendReady = useStore(s => s.setBackendReady)
+  const backendStatus = useStore(s => s.backendStatus)
 
   // 刷新 capabilities（引擎下拉/场景标签/文件类型的数据源）。
   // checkInterrupted：仅初始化时检查未完成生成标记，配置刷新不重复提示
@@ -48,6 +50,10 @@ export default function App() {
       useStore.getState().addToast('加载能力配置失败，请检查后端是否运行', 'error')
     })
   }, [setCapabilities])
+
+  // 运行期持续探活（P1.1）— 独立于启动探活（后者只管「未就绪加载屏」）：
+  // 后端运行中异常断开 → backendStatus=down/crashed → 顶部横幅；恢复自动消失。
+  useEffect(() => startHealthPoll(), [])
 
   useEffect(() => {
     // 订阅设置页配置变更 → 刷新 capabilities（保存后无需手动刷新页面）
@@ -218,6 +224,16 @@ export default function App() {
         <SearchBar />
         <div className="flex-1" />
       </header>
+
+      {/* 后端断开横幅（P1.1 持续探活）— 运行中断开提示，恢复自动消失 */}
+      {backendStatus !== 'ready' && (
+        <div className={`flex items-center gap-2 px-4 py-1.5 text-[12px] font-medium border-b border-border-light shrink-0 z-10 ${backendStatus === 'crashed' ? 'bg-error/10 text-error' : 'bg-warning/10 text-warning'}`}>
+          <span className={`w-2 h-2 rounded-full animate-pulse ${backendStatus === 'crashed' ? 'bg-error' : 'bg-warning'}`} />
+          {backendStatus === 'crashed'
+            ? '后端已崩溃，请重启应用'
+            : '后端服务异常，已断开，正在重试…'}
+        </div>
+      )}
 
       {/* 主体 — 插槽布局引擎 */}
       <div className="flex flex-1 overflow-hidden">

@@ -10,8 +10,42 @@ from app.core.registry import AdapterRegistry, EngineRegistry
 from app.core.dependencies import get_config
 from app.generation.prompt import STYLE_MAP, DOC_STYLE_MAP, EXCEL_STYLE_MAP, AVAILABLE_OPTIONS, VIDEO_STYLE_KEYS
 from app.generation.product_registry import to_capability_list
+from app.routers.model import _get_providers
 
 router = APIRouter()
+
+# 内置厂商名映射兜底（llm_models 有 key 但 providers 无该条时用；正常由 _get_providers 补全 name）
+_LLM_PROVIDER_NAMES = {
+    "deepseek": "DeepSeek",
+    "dashscope": "阿里云 DashScope",
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "google": "Google Gemini",
+    "zhipu": "智谱 GLM",
+    "moonshot": "Moonshot Kimi",
+}
+
+
+def _compute_missing_keys(config: dict) -> dict:
+    """计算缺 key 项（P2.1 主动提示数据源）。
+
+    - llm：llm_models 的厂商，对应 provider.api_key 为空（复用 model._get_providers——
+      已含全局 llm.api_key 同步与 sk-ws/sk-ant 防错配；全局 key 非空会同步进 provider → 判已配）
+    - engine：dashscope（cloud.dashscope 空 → OCR/ASR 云端引擎不可用）
+    """
+    providers_map = {p["id"]: p for p in _get_providers(config)}
+    missing_llm = []
+    for pid in config.get("llm_models", {}):
+        p = providers_map.get(pid)
+        if not p or not p.get("api_key"):
+            missing_llm.append({
+                "id": pid,
+                "name": (p or {}).get("name") or _LLM_PROVIDER_NAMES.get(pid, pid),
+            })
+    missing_engine = []
+    if not bool(config.get("cloud", {}).get("dashscope", "")):
+        missing_engine.append("dashscope")
+    return {"llm": missing_llm, "engine": missing_engine}
 
 
 def _scan_interrupted_generations(config: dict) -> list[dict]:
@@ -244,6 +278,8 @@ async def capabilities(config=Depends(get_config)):
         },
         # ── 未完成生成标记（应用重启/崩溃时残留，前端启动提示）──
         "interruptedGenerations": _scan_interrupted_generations(config),
+        # ── 缺 key 项（P2.1 主动提示：配置向导第三屏 + 操作前 toast）──
+        "missingKeys": _compute_missing_keys(config),
     }
 
 

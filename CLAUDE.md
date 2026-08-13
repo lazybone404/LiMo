@@ -583,11 +583,13 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 三栏布局 + AI 浮窗 | GenPanel \| DocLibrary \| PreviewArea 可拖拽 resize；AI 对话统一浮窗（位置/尺寸记忆、内部栏拖拽调宽） |
 | ✅ | PanelStrip | <80px 自动折叠为图标条 |
 | ✅ | 快捷键 | `Ctrl+G` 生成面板，`Ctrl+I` AI 面板 |
+| ✅ | 后端持续探活 | `lib/health.ts` 10s 轮询 `/api/health`，运行中断开顶部横幅（down「正在重试」/ crashed「请重启」分级，超 30s 判崩溃），恢复自动消失；与启动探活职责分离 |
+| ✅ | 缺 key 主动提示 | 导入图片/视频缺 dashscope（内联提示条可 X 关）、发送对话缺 LLM key（toast 首次）前置提示，localStorage 记忆 |
 | ✅ | 主题系统 | 六轴独立 — `data-theme`(明暗) × `data-accent`(26套配色) × `data-base`(13种基调) × `data-texture`(6种纹理) × `data-font`(5种字体) × 强度滑条。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（20个: 护眼/经典/粉色/雅致/国风各4）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值） |
 | ✅ | GenPanel 类型门控 | 5 类型 × 5 子标签，逐类型显隐选项 |
 | ✅ | EPUB 骨架面板 | EpubSkeletonPanel 章节树 + 选中章节/全书切换 |
 | ✅ | 事实验证 UI | fact_check tab + 流式进度指示 + 报告渲染 |
-| ✅ | 首次启动向导 | SetupWizard 检测 ffmpeg/SearXNG 等系统依赖 |
+| ✅ | 首次启动向导 | OnboardingWizard 三屏：阅读氛围 → 系统组件检测 → AI 配置（LLM/DashScope key，基于 missingKeys 自动跳过已配项，可整屏跳过） |
 
 ### 🛡️ 安全 & 运维
 

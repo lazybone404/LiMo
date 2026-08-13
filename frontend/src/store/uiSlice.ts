@@ -47,6 +47,10 @@ export interface UiSlice {
   backendReady: boolean
   setBackendReady: (v: boolean) => void
 
+  // 后端运行状态（P1.1 持续探活）：ready=正常 / down=断开重试中 / crashed=长时间无响应（重启应用）
+  backendStatus: 'ready' | 'down' | 'crashed'
+  setBackendStatus: (v: 'ready' | 'down' | 'crashed') => void
+
   // ── 内容阅读宽度 ──
   contentWidth: ContentWidth
   cycleContentWidth: () => void
@@ -91,6 +95,9 @@ export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set) => ({
 
   backendReady: true,  // 浏览器模式默认 true，Tauri 模式在 App.tsx useEffect 中重置
   setBackendReady: (v) => set({ backendReady: v }),
+
+  backendStatus: 'ready',  // 持续探活（lib/health.ts）更新：down→crashed 分级
+  setBackendStatus: (v) => set({ backendStatus: v }),
 
   contentWidth: ((typeof localStorage !== 'undefined' && localStorage.getItem('mbw_contentWidth')) || 'normal') as ContentWidth,
   cycleContentWidth: () => {

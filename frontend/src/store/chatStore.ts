@@ -143,6 +143,13 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
   const dispatchSend = (text: string, docRefs: DocRef[] | undefined, trimToIndex: number | null) => {
     const s = get()
     if (s.streaming) return
+
+    // P2.2：缺 LLM key 前置提示（首次发送提示一次，localStorage 记忆关闭）
+    const missKeys = useStore.getState().capabilities?.missingKeys
+    if (missKeys && missKeys.llm.length > 0 && !localStorage.getItem('mbw_llm_hint_dismissed')) {
+      try { localStorage.setItem('mbw_llm_hint_dismissed', '1') } catch {}
+      useStore.getState().addToast('尚未配置 LLM API Key，对话功能可能不可用。可在引导向导或设置页中配置', 'info')
+    }
     const now = new Date().toLocaleString()
     const userMsg: ChatMsg = { id: nextMsgId(), role: 'user', content: text, date: now, docRefs: docRefs?.length ? docRefs : undefined }
     const botMsg: ChatMsg = { id: nextMsgId(), role: 'assistant', content: '', date: now, streaming: true }

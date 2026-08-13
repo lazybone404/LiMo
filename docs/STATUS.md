@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-08-04 | **版本**: 0.3.1
+**更新**: 2026-08-13 | **版本**: 0.3.1
 
 ---
 
@@ -13,7 +13,7 @@
 |------|------|
 | 后端 Python 文件 | 87 |
 | 前端 TS/TSX/CSS 文件 | 91（89 ts/tsx + 2 css） |
-| 前端测试文件 | 8（100 个测试用例） |
+| 前端测试文件 | 8（101 个测试用例） |
 | API 路由模块 | 14 |
 | API 端点 | 70 |
 | 适配器 | 5 |
@@ -109,7 +109,7 @@
 | FastAPI Depends 依赖注入 | ✅ 8/8 路由迁移完成 |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 11 路由，0 处旧格式残留 |
-| 前端测试 | ✅ vitest + 100 tests（store/theme/api/latex/streamBuffers/tabRegistry/chatStore/组件） |
+| 前端测试 | ✅ vitest + 101 tests（store/theme/api/latex/streamBuffers/tabRegistry/chatStore/组件） |
 | 对话重写 | ✅ 独立 chatStore + 消息层组件树 + 工具气泡/引用/思考折叠（2026-08-04） |
 | 对话上下文管理 | ✅ context_window 四层解析 + 预算引擎 + 历史压缩 + token 进度/费用（2026-08-04 C1-C5） |
 | AI 浮窗 | ✅ 移除插槽，统一浮窗（位置记忆/边界钳制/内部栏拖拽） |
@@ -125,11 +125,14 @@
 | 引擎配置 UX | ✅ "当前引擎"标签 + "恢复默认"按钮 |
 | 公式 LaTeX 分隔符 | ✅ `\[...\]`/`\(...\)` 前端预处理 + Prompt 约束 + 后端管线 |
 | 导出 HTML 对齐预览 | ✅ one-dark 代码高亮 + checkbox 任务列表 + 暗色代码块 |
-| 首次启动向导 | ✅ 三屏引导（氛围选择 + 组件检测），替代旧 SetupWizard |
+| 首次启动向导 | ✅ 三屏引导（氛围 + 组件检测 + AI 配置），基于 missingKeys 跳过已配项（2026-08-13 扩展第三屏） |
 | 空状态拖放区 | ✅ PreviewArea 交互式拖放 + 链接输入 |
 | 默认 Tab 优化 | ✅ PDF→整理版原文 / 视频→转录 / 图片→原图 |
 | 暗色纹理 | ✅ ::after 遮罩 2-3% 透明度保留质感 |
 | 转录完成提示 | ✅ Toast 引导用户点击生成按钮 |
+| 请求级日志 | ✅ middleware 计时 + status/duration_ms + SSE 长连接不判慢（2026-08-13） |
+| 前端持续探活 | ✅ 10s 轮询 /api/health + down/crashed 分级横幅（2026-08-13） |
+| 缺 key 主动提示 | ✅ missingKeys 检测 + ImportSection 内联提示条 + chatStore 首提 toast（2026-08-13） |
 
 ## 目录结构
 
@@ -149,8 +152,8 @@ frontend/src/
   api/           API 客户端（core + 7 域文件 + client.ts barrel）
   hooks/         useTaskRunner 等自定义 hook
   lib/           tabRegistry / contentSources / 主题模块
-  test/          前端测试（7 个文件，含 1 个组件测试）
+  test/          前端测试（8 个文件，含 1 个组件测试）
 docs/            设计文档（8 份）
 design/          引擎实测标准
-tests/           集成测试（6 个文件）
+tests/           集成测试（8 个文件）
 ```
