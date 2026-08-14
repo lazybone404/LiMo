@@ -33,7 +33,7 @@
 | 引擎 | 协议 | 用途 | 说明 |
 |------|------|------|------|
 | **pypdfium2** | BSD-3 | PDF（默认） | C 引擎直读文字 + 嵌入原图，毫秒级 |
-| **docling** | MIT | PDF 布局 | ONNX 布局模型，精准识别标题 / 表格 / 矢量图 |
+| **pdf-image** | BSD-3 | 扫描 PDF | 整体转图片：渲染每页 PNG 嵌入 MD，供 OCR / 多模态 |
 | **pdfplumber** | MIT | PDF 表格 | 辅助提取表格结构 |
 | **markitdown** | MIT | Office / EPUB | 一键转 Markdown |
 | **python-docx** | MIT | Word | 文字 + 表格 + 图片 |
@@ -57,8 +57,9 @@
 | 引擎 | 类型 | 需要 Key | 说明 |
 |------|------|---------|------|
 | **dashscope-ocr** | 云端 VL | ✅ DashScope | 视觉大模型提取，支持复杂版面 |
-| **tesseract** | 本地 | ❌ | 便携版内置，开箱即用 |
 
+> Tesseract 已从内置移除（2026-08-02）——无 DashScope key 时扫描件 OCR 出占位文本；需要本地 OCR 请安装三方插件（参考模板 `backend/plugins/examples/tesseract_plugin.py`）。
+>
 > 引擎绑定只取第一个可用引擎，失败直接报错（换引擎请在设置页手动切换）。文档生成时还能用 OCR 把图片里的文字塞回原文。
 
 ---
