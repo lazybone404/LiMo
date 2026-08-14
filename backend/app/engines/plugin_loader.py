@@ -435,26 +435,31 @@ def _venv_valid(pkg_dir: Path) -> bool:
     venv 的 python.exe 存在不等于可用——若 base python 路径失效（如 uv 管理的
     python 被升级/清理），启动 venv python 会报 "No Python at ..."。
     2026-08-06：修复——失效 venv 视为未安装（前端显示「一键安装依赖」可自愈）。
+    2026-08-14：修复——路径遍历失败（WinError 448 不受信任装入点，如
+    AppData 下 uv 托管 python）同样视为不可用，抛给上层会变成 /api/plugins 500。
     """
-    venv_py = _venv_python(pkg_dir)
-    if not venv_py.exists():
-        return False
-    cfg = pkg_dir / ".venv" / "pyvenv.cfg"
-    if not cfg.exists():
-        return False
-    home = None
     try:
+        venv_py = _venv_python(pkg_dir)
+        if not venv_py.exists():
+            return False
+        cfg = pkg_dir / ".venv" / "pyvenv.cfg"
+        if not cfg.exists():
+            return False
+        home = None
         for line in cfg.read_text(encoding="utf-8").splitlines():
             s = line.strip()
             if s.startswith("home ="):
                 home = s.split("=", 1)[1].strip()
                 break
-    except OSError:
+        if not home:
+            return False
+        base_py = Path(home) / ("python.exe" if os.name == "nt" else "python3")
+        return base_py.exists()
+    except OSError as e:
+        # WinError 448（不受信任装入点）等路径遍历异常 → 视为不可用，
+        # 前端显示「一键安装依赖」可自愈（重建 venv 会用可访问的 base python）
+        logger.warning("Plugin %s venv 检查失败（视为未安装）: %s", pkg_dir.name, e)
         return False
-    if not home:
-        return False
-    base_py = Path(home) / ("python.exe" if os.name == "nt" else "python3")
-    return base_py.exists()
 
 
 def _deps_installed(adapter) -> bool:

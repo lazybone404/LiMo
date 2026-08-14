@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-08-14 — 插件 venv 检查路径遍历异常修复
+
+> `GET /api/plugins` 500：`_venv_valid()` 里 `base_py.exists()` 对 AppData 下 uv 托管 python（`C:\Users\...\AppData\Roaming\uv\python\...\python.exe`）做 `stat()` 时抛 `OSError: [WinError 448] 不受信任装入点`。此前 `except OSError` 只保护读 pyvenv.cfg（L452），`base_py.exists()` 在 try 外，异常一路冒泡到 router 变 500。
+
+- **修复**：`_venv_valid()` 整个检查包进 `try/except OSError`——路径遍历失败（含 WinError 448）视为 venv 不可用返回 `False`（而非抛 500），并 `logger.warning` 记录原因（不静默）。语义与既有「失效 venv 视为未安装」一致：前端显示「一键安装依赖」，重建 venv 会用可访问的 base python 自愈
+- **验证**：模拟 WinError 448（monkeypatch `Path.exists` 抛 OSError 448）→ `_venv_valid` 返回 `False` + warning 日志；后端 8 测试全绿
+- 影响范围：仅 `backend/app/engines/plugin_loader.py` `_venv_valid()`；`enumerate_plugins`/路由无改动
+
+---
+
 ## 2026-08-14 — 打包体积优化（docling 清理 + ffmpeg 精简）
 
 > 用户 @ `pi-docs/打包体积优化计划.md` 要求执行打包体积优化。实测确认现状比计划记录更极端（ffmpeg 实际 434M 而非 194M）。执行 P1 + P2b，安装包从 ~265M/~366M 降到 **~148M/~195M**。
