@@ -148,6 +148,8 @@ export interface GenerateResult {
 export interface MarkdownView {
   id: string; transcriptId: string; content: string
   style: string; mode: string; version: number; createdAt: string
+  /** 已手动编辑标记（GET /api/markdown 透传 index entry；生成版无此字段） */
+  edited?: boolean
 }
 
 export interface ChatResult {

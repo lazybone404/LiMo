@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS, REMARK_PLUGINS_PLAIN, REHYPE_PLUGINS_PLAIN, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
-import { EpubChapterView } from './EpubSkeletonPanel'
+import { EpubChapterView } from './EpubChapterView'
 
 export function TranscriptView({ rawText, sourceType }: { rawText: string; sourceType?: string }) {
   const components = useMemo(() => createMarkdownComponents(), [])

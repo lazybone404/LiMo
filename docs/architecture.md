@@ -485,12 +485,12 @@ App
 │   ├── ImportSection   # URL/文本/文件输入
 │   ├── EngineSelect    # 引擎绑定
 │   ├── GenerateOptions # 模型/格式/风格/产物
+│   ├── EpubInterpretPanel # EPUB 一键解读（三态：进度条/继续上次/一键解读，epub 专属替代生成区）
 │   └── ImageModeCards  # 图片处理模式选择
 ├── DocLibrary          # 文档列表/搜索/筛选
 │   └── SearchBar        # FTS5 关键词全文搜索（GET /api/search）
 ├── PreviewArea         # 预览 + 多 tab（按 sourceType 分派）
-│   ├── TranscriptView  # 时间轴/转录
-│   ├── EpubSkeletonPanel # EPUB 章节树
+│   ├── TranscriptView  # 时间轴/转录（epub 内嵌 EpubChapterView 章节浏览）
 │   └── MindmapView     # 思维导图
 ├── FloatingAI          # AI 对话浮窗（唯一形态，2026-08-04 移除插槽面板）
 │   └── ChatCore        # 对话核心（会话列表/消息/输入，内部栏可拖拽调宽）

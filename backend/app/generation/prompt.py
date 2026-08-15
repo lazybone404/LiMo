@@ -593,7 +593,6 @@ AVAILABLE_OPTIONS = {
     "pptx": ["toc", "summary", "images", "formulas"],
     "xlsx": [],
     "text": ["toc", "summary", "formulas"],
-    "epub": ["toc", "summary", "images", "formulas"],
 }
 
 # ── 格式函数映射 ──

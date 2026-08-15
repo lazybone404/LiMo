@@ -64,7 +64,6 @@ _TYPE_FIELDS: dict[str, set[str]] = {
               "dedupe_enabled", "unit_width", "unit_height", "save_quality",
               "frame_quality_filter", "image_analyze", "image_optimize"},
     "document": {"image_analyze", "image_optimize"},  # PDF/Word/PPT 共享
-    "epub": {"use_skeleton", "chapter_indices"},
 }
 
 # 不属于该类型的字段会被静默忽略（向后兼容）
@@ -106,50 +105,11 @@ class GenerateRequest(BaseModel):
     # OCR 预处理（source_type=document 专属，与 image_analyze 互斥）
     ocr_enabled: bool = False
     ocr_model_id: int | None = None
-    # EPUB 参数（source_type=epub 专属）
-    use_skeleton: bool = False
-    chapter_indices: list[int] = []
 
 
 def _resolve_reference_texts(ids: list[str]) -> list[dict]:
     """参考文件暂存 id → [{name, content}]（TTL 内有效；失效/不存在的 id 跳过，不注入）。"""
     return get_references([r for r in ids if r])
-
-
-def _prepare_epub_text(raw_text: str, use_skeleton: bool, chapter_indices: list[int]) -> str:
-    """EPUB 章节 JSON → 提取骨架或选中章节全文"""
-    import json
-    try:
-        data = json.loads(raw_text)
-        chapters = data.get("chapters", [])
-    except (json.JSONDecodeError, TypeError):
-        return raw_text
-
-    if not chapters:
-        return raw_text
-
-    parts: list[str] = []
-    for ch in chapters:
-        sections = ch.get("sections", [])
-        for sec in sections:
-            idx = sec.get("index", -1)
-            if chapter_indices and idx not in chapter_indices:
-                continue
-            if use_skeleton:
-                text = sec.get("skeleton", "")
-            else:
-                text = sec.get("text", "")
-            if text:
-                title = ch.get("title", "")
-                sec_title = sec.get("title", "")
-                if sec_title:
-                    parts.append(f"## {title} — {sec_title}\n\n{text}")
-                else:
-                    parts.append(f"## {title}\n\n{text}")
-
-    if parts:
-        return "\n\n---\n\n".join(parts)
-    return raw_text
 
 
 @router.post("/generate/{transcript_id}")
@@ -195,10 +155,8 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 "cookies": cookies,
             }
 
-        # EPUB 章节预处理：骨架模式/选中章节
+        # epub 一键解读走独立路由（/api/epub/generate），此处直传 rawText
         epub_text = tx["rawText"]
-        if req.use_skeleton or req.chapter_indices:
-            epub_text = _prepare_epub_text(tx["rawText"], req.use_skeleton, req.chapter_indices)
 
         source_type = tx.get("sourceType", "text")
         if req.source_type:
@@ -340,9 +298,6 @@ class GenerateStreamRequest(BaseModel):
     unit_height: int = 540
     save_quality: int = 90
     frame_quality_filter: bool = True
-    # EPUB 参数
-    use_skeleton: bool = False
-    chapter_indices: str = ""  # 逗号分隔的数字
     # 续写参数
     continue_from: str = ""  # "" = 新生成, "partial" = 续写最新残缺产物
 
@@ -357,7 +312,6 @@ async def generate_stream(transcript_id: str, request: Request,
                           grid_rows: int = 2, dedupe_enabled: bool = True,
                           unit_width: int = 960, unit_height: int = 540,
                           save_quality: int = 90, frame_quality_filter: bool = True,
-                          use_skeleton: bool = False, chapter_indices: str = "",
                           image_analyze: bool = False,
                           image_optimize: bool = False,
                           ocr_enabled: bool = False,
@@ -451,10 +405,6 @@ async def generate_stream(transcript_id: str, request: Request,
         }
 
     epub_text = tx["rawText"]
-    if use_skeleton or chapter_indices:
-        # ⚠️ 只取数字章节号：含非数字（如 "1,2,abc"）会 int() ValueError → 500
-        ch_list = [int(x.strip()) for x in chapter_indices.split(",") if x.strip().isdigit()]
-        epub_text = _prepare_epub_text(tx["rawText"], use_skeleton, ch_list)
 
     format_list = [f.strip() for f in formats.split(",") if f.strip()]
     source_type = tx.get("sourceType", "text")

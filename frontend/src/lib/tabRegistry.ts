@@ -125,7 +125,7 @@ export const TabRegistry = new TabRegistryImpl()
 // ═══════════════════════════════════════════
 
 // 优先级规划：
-//   1-9:   文档结构（skeleton）
+//   1-9:   （已移除 skeleton——epub 一键解读后无章节树面板）
 //   10-19: 文档类（summary, polished, transcript, data_preview）
 //   20-29: AI 工具（fact_check, mindmap）
 //   30-39: 图片类（original, extract, table, digitize, understand）
@@ -138,7 +138,7 @@ const ALL_TEXT = ['video', 'webpage', 'text', 'link', ...DOC_TYPES]
 TabRegistry.register({
   key: 'summary', label: '笔记',
   sourceTypes: ['video', 'webpage', 'text', 'link', 'pdf', 'docx', 'pptx', 'document', 'epub', 'xlsx'],
-  defaultFor: ['video', 'webpage', 'text', 'link'],
+  defaultFor: ['video', 'webpage', 'text', 'link', 'epub'],
   priority: 10,
   contentSource: 'notes', htmlMode: 'notes', exportSuffix: '', exportLabel: '笔记',
   isStandardMarkdown: true, showBanner: true, showTOC: true, showVersionSwitcher: 'notes',
@@ -174,16 +174,6 @@ TabRegistry.register({
   priority: 9,
   contentSource: 'rawText', htmlMode: 'transcript', exportSuffix: '', exportLabel: '数据预览',
   processingKinds: ['import', 'retranscribe', 'generate'],
-})
-
-// ── 骨架（EPUB） ──
-TabRegistry.register({
-  key: 'skeleton', label: '骨架',
-  sourceTypes: ['epub'],
-  defaultFor: ['epub'],
-  priority: 9,
-  contentSource: 'rawText', htmlMode: 'transcript', exportSuffix: '-骨架', exportLabel: '章节骨架',
-  processingKinds: ['import', 'retranscribe'],
 })
 
 // ── AI 审核 ──

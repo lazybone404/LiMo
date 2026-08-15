@@ -679,6 +679,95 @@ class Store:
                         return path.read_text(encoding="utf-8")
         return None
 
+    # ── EPUB 解读（一键全解读 — 独立于 save_markdown 本体的片段/任务读写）──
+
+    def _epub_chapters_dir(self, tx_id: str) -> Optional[Path]:
+        """EPUB 章节解读片段目录（文档不存在返回 None）"""
+        doc_dir = self._get_doc_dir(tx_id)
+        if not doc_dir:
+            return None
+        return doc_dir / "epub_chapters"
+
+    def save_epub_chapter(self, tx_id: str, chapter_index: int,
+                          title: str, content: str) -> bool:
+        """保存单章解读片段到 {doc_dir}/epub_chapters/{index}.md（含标题头）。
+
+        每章成功即落盘，是逐章解读的唯一写点；阶段 2 归并和最终 polished
+        组装都通过 list_epub_chapters 从这里读回（不做额外中间文件）。
+        """
+        d = self._epub_chapters_dir(tx_id)
+        if not d:
+            logger.warning("save_epub_chapter: 文档目录不存在 tx=%s", tx_id)
+            return False
+        d.mkdir(parents=True, exist_ok=True)
+        body = content.strip()
+        if not body:
+            return False
+        # LLM 输出未自带**一级**标题头时补一章标题。判断用 "# "（# + 空格）而非
+        # startswith("#")——LLM 输出常以 "## 本章概述"（二级标题）开头，会被误判为已带标题
+        if title and not body.startswith("# "):
+            body = f"# {title}\n\n{body}"
+        self._atomic_write(d / f"{chapter_index}.md", body)
+        return True
+
+    def list_epub_chapters(self, tx_id: str) -> list[str]:
+        """按 index 升序读回全部解读片段（阶段 2 归并输入 + 最终 polished 组装）。"""
+        d = self._epub_chapters_dir(tx_id)
+        if not d or not d.exists():
+            return []
+        items = []
+        for p in d.glob("*.md"):
+            try:
+                items.append((int(p.stem), p))
+            except ValueError:
+                continue
+        items.sort(key=lambda x: x[0])
+        return [p.read_text(encoding="utf-8") for _, p in items]
+
+    def clear_epub_chapters(self, tx_id: str) -> bool:
+        """清空解读片段目录（整轮重跑 / 全新开始时调用）。"""
+        d = self._epub_chapters_dir(tx_id)
+        if not d or not d.exists():
+            return False
+        try:
+            shutil.rmtree(d)
+            return True
+        except OSError as e:
+            logger.warning("清空 epub_chapters 失败: %s — %s", d, e)
+            return False
+
+    def save_epub_task(self, tx_id: str, state: dict) -> bool:
+        """保存 epub 任务状态到 {doc_dir}/epub_task.json。"""
+        doc_dir = self._get_doc_dir(tx_id)
+        if not doc_dir:
+            return False
+        self._atomic_write(doc_dir / "epub_task.json",
+                           json.dumps(state, ensure_ascii=False, indent=2))
+        return True
+
+    def load_epub_task(self, tx_id: str) -> Optional[dict]:
+        """读取 epub 任务状态（不存在返回 None，不误报损坏；损坏时 _safe_load_json 兜底）。"""
+        doc_dir = self._get_doc_dir(tx_id)
+        if not doc_dir:
+            return None
+        path = doc_dir / "epub_task.json"
+        if not path.exists():
+            return None
+        return self._safe_load_json(path)
+
+    def clear_epub_task(self, tx_id: str) -> bool:
+        """删除 epub 任务状态文件。"""
+        doc_dir = self._get_doc_dir(tx_id)
+        if not doc_dir:
+            return False
+        p = doc_dir / "epub_task.json"
+        try:
+            if p.exists():
+                p.unlink()
+            return True
+        except OSError:
+            return False
+
     # ── 缓存（按 contentHash） ──
 
     def cache_put(self, content_hash: str, data: dict):

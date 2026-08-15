@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../../store'
-import { getTranscript, getMarkdown, fetchProcessResults, streamFactCheck, getConfig, apiUrl, ApiErrorException } from '../../api/client'
+import { getTranscript, getMarkdown, saveMarkdownContent, fetchProcessResults, streamFactCheck, getConfig, apiUrl, getErrorMessage, ApiErrorException } from '../../api/client'
 import { loadGenPrefs } from '../gen-panel/genPrefs'
 import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
@@ -9,7 +9,7 @@ import { getStreamBuffer } from '../../store/streamBuffers'
 import type { TaskInfo } from '../../store/types'
 import { TabRegistry, type TabDef } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, MessageSquare, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2 } from 'lucide-react'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, MessageSquare, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Pencil } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -19,9 +19,9 @@ import { ExportMenu } from '../ui/ExportMenu'
 import { ResizeHandle } from '../ui/ResizeHandle'
 import { TOC } from './TOC'
 import MindmapView from './MindmapView'
-import { EpubSkeletonPanel } from './EpubSkeletonPanel'
 import { TranscriptView } from './TranscriptView'
 import { MarkdownPreview } from './MarkdownPreview'
+import { TextareaMarkdownEditor } from './TextareaMarkdownEditor'
 import { PartialBanner } from './PartialBanner'
 import { EmptyState } from './EmptyState'
 import { ProcessingPlaceholder } from './ProcessingPlaceholder'
@@ -102,6 +102,76 @@ export function PreviewArea() {
   const [versionLoading, setVersionLoading] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [contentLoadError, setContentLoadError] = useState(false)
+
+  // ── 产物编辑状态（notes/polished 手动编辑，见 pi-docs/产物编辑方案.md）──
+  const [editing, setEditing] = useState<{ mode: 'notes' | 'polished' } | null>(null)
+  const [editValue, setEditValue] = useState('')
+  const [editDirty, setEditDirty] = useState(false)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const setMarkdownEdited = useStore(s => s.setMarkdownEdited)
+  const markdownEdited = useStore(s => s.markdownEdited)
+  // 切文档防丢：记录上一次文档 id（取消切换时回退）
+  const prevDocIdRef = useRef<string | null>(null)
+
+  /** 进入编辑模式（summary tab → notes；polished tab → polished） */
+  const startEditing = () => {
+    if (!currentDocId || !displayContent) return
+    const mode: 'notes' | 'polished' = activeView === 'polished' ? 'polished' : 'notes'
+    setEditValue(displayContent)
+    setEditDirty(false)
+    setEditing({ mode })
+  }
+
+  const cancelEditing = () => {
+    setEditing(null)
+    setEditDirty(false)
+  }
+
+  /** 保存编辑：PUT /api/markdown → 更新内容/meta/versions + 置 edited 标记（生成版自动降 prev） */
+  const handleSaveEdit = async () => {
+    if (!editing || !currentDocId || !editDirty || savingEdit) return
+    setSavingEdit(true)
+    try {
+      const md = await saveMarkdownContent(currentDocId, editing.mode, editValue)
+      if (editing.mode === 'polished') {
+        setCurrentPolishedContent(md.content)
+      } else {
+        setCurrentContent(md.content)
+      }
+      setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version, edited: true })
+      setMarkdownVersions(md.versions || [])
+      setMarkdownEdited(editing.mode, true)
+      setEditing(null)
+      setEditDirty(false)
+      useStore.getState().addToast('已保存', 'success')
+    } catch (err) {
+      useStore.getState().addToast(getErrorMessage(err), 'error')
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
+  /** 切换 tab：编辑中且有未保存修改 → 两态 confirm（方案确认，非三态弹窗） */
+  const handleTabSwitch = (key: string) => {
+    if (key === activeView) return
+    if (editing && editDirty) {
+      if (!window.confirm('有未保存的修改，离开将丢失？')) return
+    }
+    if (editing) { setEditing(null); setEditDirty(false) }
+    setActiveView(key)
+  }
+
+  // beforeunload：编辑中且有未保存修改时拦截关页（Tauri 关窗为边缘情况，见计划已知限制）
+  useEffect(() => {
+    if (!editing || !editDirty) return
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [editing, editDirty])
+
   const loadVersion = (version: number, mode: string) => {
     const docId = useStore.getState().currentDocId
     if (!docId || versionLoading) return
@@ -114,7 +184,7 @@ export function PreviewArea() {
       } else {
         setCurrentContent(md.content)
       }
-      setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version })
+      setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version, edited: !!md.edited })
       setMarkdownVersions(md.versions || [])
     }).catch(err => console.error('加载版本失败:', err))
      .finally(() => setVersionLoading(false))
@@ -122,6 +192,16 @@ export function PreviewArea() {
 
   // 选中文档时加载内容
   useEffect(() => {
+    // 切文档防丢：编辑中且有未保存修改 → 两态 confirm；取消则回退旧文档并跳过清理（保留旧内容）
+    const prevId = prevDocIdRef.current
+    prevDocIdRef.current = currentDocId
+    if (prevId && prevId !== currentDocId && editing && editDirty) {
+      if (!window.confirm('有未保存的修改，离开将丢失？')) {
+        prevDocIdRef.current = prevId
+        useStore.getState().selectDoc(prevId)
+        return
+      }
+    }
     // 切换文档时清除所有旧内容
     setCurrentContent(null)
     setCurrentPolishedContent(null)
@@ -129,6 +209,11 @@ export function PreviewArea() {
     setMarkdownMeta(null)
     setMarkdownVersions([])
     setContentLoadError(false)
+    // 编辑状态按文档生命周期重置 + 跨文档隔离 edited 标记（防 A 的标记误判 B 的覆盖确认）
+    setEditing(null)
+    setEditDirty(false)
+    useStore.getState().setMarkdownEdited('notes', false)
+    useStore.getState().setMarkdownEdited('polished', false)
     useStore.getState().setCurrentFactCheckContent(null)
     useStore.getState().setFactCheckMeta(null)
     useStore.getState().setFactCheckProgress(null)  // F5：漏清进度 → A 的审核 spinner 残留在 B
@@ -153,19 +238,21 @@ export function PreviewArea() {
       if (useStore.getState().processingTasks[capturedId + '__generate']) return
       if (md) {
         setCurrentContent(md.content)
-        setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version })
+        setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version, edited: !!md.edited })
         setMarkdownVersions(md.versions || [])
       } else {
         setCurrentContent(null)
         setMarkdownMeta(null)
         setMarkdownVersions([])
       }
+      useStore.getState().setMarkdownEdited('notes', !!md?.edited)
     }).catch(err => { handleLoadError('加载笔记失败', err) })
     getMarkdown(capturedId, 'polished').then(md => {
       if (!isSame()) return
       // F4：同上——生成中跳过，防旧版本覆盖 onDone 刷新结果
       if (useStore.getState().processingTasks[capturedId + '__generate']) return
       setCurrentPolishedContent(md && md.content ? md.content : null)
+      useStore.getState().setMarkdownEdited('polished', !!md?.edited)
     }).catch(err => { handleLoadError('加载整理版原文失败', err) })
     getMarkdown(capturedId, 'fact_check').then(md => {
       if (!isSame()) return
@@ -198,7 +285,7 @@ export function PreviewArea() {
         const defKey = TabRegistry.defaultFor(st)
         if (defKey) setActiveView(defKey)
       } else if (['document', 'pdf', 'docx', 'pptx', 'xlsx', 'epub', 'video'].includes(st)) {
-        setActiveView(st === 'epub' ? 'skeleton' : 'transcript')
+        setActiveView('transcript')  // epub 无产物时默认转录浏览（章节视图），骨架面板已砍
       }
     }).catch(err => { handleLoadError('加载文档内容失败', err) })
     // 加载已持久化的处理结果
@@ -392,7 +479,7 @@ export function PreviewArea() {
 
           <div className="markdown-body max-w-[480px] mx-auto text-left mt-10" data-texture-reset="true">
             <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
-              {`## 快速开始\n\n1. **导入内容** — 粘贴网页/视频链接，或拖入 PDF、Word、PPT、Excel、EPUB、图片、视频\n2. **自动转录** — 自动提取正文、语音转文字、OCR 识别；视频可开启「画面理解」\n3. **生成笔记** — 一键生成「笔记」+「整理版原文」两份 Markdown，可附参考资料\n4. **更多能力** — 对话 AI 查资料、事实验证、导出 HTML/MD/ZIP/思维导图\n\n---\n\n> 把任何来源变成可读、可搜索的文字。需要更强的能力？可安装三方插件扩展。`}
+              {`## 快速开始\n\n1. **导入内容** — 粘贴网页/视频链接，或拖入 PDF、Word、PPT、Excel、EPUB、图片、视频\n2. **自动转录** — 自动提取正文、语音转文字、OCR 识别；视频可开启「画面理解」\n3. **生成笔记** — 一键生成「笔记」+「整理版原文」两份 Markdown，可附参考资料\n4. **编辑产物** — 笔记/整理版可手动编辑（源码 + 分屏预览），保存覆盖并保留上一版，重新生成前有确认保护\n5. **更多能力** — 对话 AI 查资料、事实验证、导出 HTML/MD/ZIP/思维导图\n\n---\n\n> 把任何来源变成可读、可搜索的文字。需要更强的能力？可安装三方插件扩展。`}
             </ReactMarkdown>
           </div>
         </div>
@@ -427,9 +514,39 @@ export function PreviewArea() {
           }
           return <EmptyState title="尚未生成" description="点击左侧「生成」按钮为本文档生成 Markdown 笔记" />
         }
+        // 编辑模式判定：summary tab 编辑 notes；polished tab 编辑 polished
+        const editMode = activeView === 'polished' ? 'polished' : 'notes'
+        const inEditing = editing?.mode === editMode
         return <>
           <PartialBanner versions={markdownVersions} isStreaming={isStreaming} />
-          <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
+          {inEditing ? (
+            <TextareaMarkdownEditor
+              value={editValue}
+              onChange={(v) => { setEditValue(v); setEditDirty(v !== displayContent) }}
+              onSave={handleSaveEdit}
+              onCancel={cancelEditing}
+              dirty={editDirty}
+              saving={savingEdit}
+              sourceUrl={sourceUrl}
+              isVideo={isVideo}
+            />
+          ) : (
+            <>
+              {/* 内容区工具条：已编辑徽章 + 编辑按钮（Excel 数据摘要走 summary 内容源但不可编辑，方案范围表） */}
+              <div className="flex items-center justify-end gap-2 mb-1 px-1 -mt-0.5">
+                {markdownEdited[editMode] && (
+                  <span className="text-[11px] text-warning flex items-center gap-1"><Pencil size={11} /> 已手动编辑</span>
+                )}
+                <button
+                  onClick={startEditing}
+                  disabled={isStreaming || isViewProcessing(activeView)}
+                  className="px-2.5 py-1 text-[11px] text-dimmed hover:text-foreground hover:bg-surface-hover rounded-md transition-colors disabled:opacity-40 disabled:pointer-events-none flex items-center gap-1"
+                  title="编辑产物（源码 + 分屏预览）"
+                ><Pencil size={12} /> 编辑</button>
+              </div>
+              <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
+            </>
+          )}
         </>
 
       case 'ocr':
@@ -503,18 +620,6 @@ export function PreviewArea() {
           />
         )
       }
-
-      case 'skeleton':
-        if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={taskForView(activeView)} />
-        if (currentRawText === null) return <p className="text-[13px] text-disabled p-8">加载中...</p>
-        return (
-          // key={currentDocId}：切换文档时重置组件内部章节选中状态，防串到新文档
-          <EpubSkeletonPanel
-            key={currentDocId || ''}
-            rawText={currentRawText}
-            transcriptId={currentDocId || ''}
-          />
-        )
 
       case 'transcript':
         if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={taskForView(activeView)} />
@@ -597,13 +702,13 @@ export function PreviewArea() {
           <div className="flex items-center gap-1 bg-surface rounded-lg p-0.5">
             {tabs.map(t => (
               <button key={t.key}
-                onClick={() => setActiveView(t.key)}
+                onClick={() => handleTabSwitch(t.key)}
                 className={`px-3 py-1.5 rounded-md text-[12px] transition-all ${activeView === t.key ? 'bg-elevated font-medium shadow-sm' : 'text-dimmed hover:text-foreground'}`}
               >{t.label}</button>
             ))}
           </div>
-          {/* 版本切换器 — 由 TabDef.showVersionSwitcher 驱动 */}
-          {activeTabDef?.showVersionSwitcher && (
+          {/* 版本切换器 — 由 TabDef.showVersionSwitcher 驱动；编辑中隐藏（编辑态与切版本冲突） */}
+          {activeTabDef?.showVersionSwitcher && !editing && (
             <VersionSwitcher
               mode={activeTabDef.showVersionSwitcher}
               versions={markdownVersions || []}

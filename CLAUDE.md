@@ -402,7 +402,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 **已修复的关键问题**（2026-07-10）：
 - `/api/api/` 路径重复 → 6 处修复
 - data_preview tab HTML 导出 fallthrough 到 notes → 修复为 transcript
-- skeleton tab 导出笔记而非骨架 → 修复为 rawText
+- skeleton tab 导出笔记而非骨架 → 修复为 rawText（skeleton tab 已于 2026-08-15 随骨架面板移除）
 - mindmap tab HTML 导出笔记 → 修复为走 mindmap 端点
 - 图片 tab HTML 导出 404 → 后端增加 process result 回退
 - ExportPanel 预览显示无关文档 → 限制为仅当选中=当前文档时显示
@@ -426,7 +426,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **日志系统**：`contextvars.ContextVar` 注入 `request_id` → ASGI middleware，全链路追踪。`MemoryHandler`（`main.py` 中配置）缓存最近 1000 条日志供前端 LogPanel 轮询（`GET /api/logs`），重启后清空
 - **客户端断连监测**：`app/core/disconnect.py` — `@asynccontextmanager` 封装，5 个 SSE 端点复用，新增端点直接 `async with disconnect_watcher(request, cancel_event):`
 - **Tesseract 移除**：本地 OCR 已从内置移除（2026-08-02），`backend/bin/tesseract/` 不再随包分发。**行为变更**：无 dashscope key 时扫描件 OCR 从「本地可用」变「占位文本（原图 + _所有 OCR 引擎均失败_）」，直到用户装三方插件模板
-- **EPUB**：ebooklib 章节+骨架提取，前端 EpubSkeletonPanel 章节树，支持选中章节/全书生成
+- **EPUB 一键解读**：ebooklib 章节提取；生成走独立管道（`app/services/epub_pipeline.py` + `app/routers/epub.py`）——阶段 1 逐章解读落盘 → 阶段 2 归并全书总结（notes=总结 / polished=逐章），全部章处理过即触发归并（失败章跳过并在 polished 按序插失败标注），中断续跑 + 软取消（`cancel_event`），产物必定落盘。三端点 `/api/epub/generate|task|cancel/{doc_id}`，前端 GenPanel epub 专属入口三态 UI（进度条 / 继续上次解读 / 一键解读）
 - **模糊帧过滤**：`frame_quality.py` — Laplacian 方差 + 熵 + 边缘密度评分，视频抽帧时自动丢弃低质量帧
 - **KaTeX 离线缓存**：`_get_katex_assets()` 从 node_modules/static 加载 CSS/JS/字体，CSS 中 `url(fonts/...)` 替换为 base64 data URI（60 个字体），导出 HTML 完全自包含（零 CDN，断网可用）
 - **KaTeX 服务端渲染**：`_render_formulas_katex()` 调 Node.js 脚本预渲染公式。打包环境无 Node.js → 先 `shutil.which("node")` 预检，不存则静默回退客户端渲染
@@ -593,7 +593,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 缺 key 主动提示 | 导入图片/视频缺 dashscope（内联提示条可 X 关）、发送对话缺 LLM key（toast 首次）前置提示，localStorage 记忆 |
 | ✅ | 主题系统 | 六轴独立 — `data-theme`(明暗) × `data-accent`(26套配色) × `data-base`(13种基调) × `data-texture`(6种纹理) × `data-font`(5种字体) × 强度滑条。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（20个: 护眼/经典/粉色/雅致/国风各4）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值） |
 | ✅ | GenPanel 类型门控 | 5 类型 × 5 子标签，逐类型显隐选项 |
-| ✅ | EPUB 骨架面板 | EpubSkeletonPanel 章节树 + 选中章节/全书切换 |
+| ✅ | EPUB 一键解读 | 逐章解读 + 归并全书总结 + 中断续跑 + 三态 UI（进度条/继续上次/一键解读），GenPanel epub 专属入口 |
 | ✅ | 事实验证 UI | fact_check tab + 流式进度指示 + 报告渲染 |
 | ✅ | 首次启动向导 | OnboardingWizard 三屏：阅读氛围 → 系统组件检测 → AI 配置（LLM/DashScope key，基于 missingKeys 自动跳过已配项，可整屏跳过） |
 

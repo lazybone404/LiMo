@@ -12,11 +12,15 @@ export interface ContentSlice {
   currentRawText: string | null
   markdownMeta: MarkdownMeta | null
   markdownVersions: MarkdownVersion[]
+  /** 两产物的「已手动编辑」标记（独立于 markdownMeta——后者只存当前 tab 的；
+   *  重新生成确认需同时知道 notes/polished 两状态） */
+  markdownEdited: { notes: boolean; polished: boolean }
   setCurrentContent: (content: string | null) => void
   setCurrentPolishedContent: (content: string | null) => void
   setCurrentRawText: (text: string | null) => void
   setMarkdownMeta: (meta: MarkdownMeta | null) => void
   setMarkdownVersions: (versions: MarkdownVersion[]) => void
+  setMarkdownEdited: (mode: 'notes' | 'polished', edited: boolean) => void
 
   // ── AI 审核 ──
   currentFactCheckContent: string | null
@@ -33,11 +37,13 @@ export interface ContentSlice {
 
 export const createContentSlice: StateCreator<Store, [], [], ContentSlice> = (set) => ({
   currentContent: null, currentPolishedContent: null, currentRawText: null, markdownMeta: null, markdownVersions: [],
+  markdownEdited: { notes: false, polished: false },
   setCurrentContent: (content) => set({ currentContent: content }),
   setCurrentPolishedContent: (content) => set({ currentPolishedContent: content }),
   setCurrentRawText: (text) => set({ currentRawText: text }),
   setMarkdownMeta: (meta) => set({ markdownMeta: meta }),
   setMarkdownVersions: (versions) => set({ markdownVersions: versions }),
+  setMarkdownEdited: (mode, edited) => set(s => ({ markdownEdited: { ...s.markdownEdited, [mode]: edited } })),
 
   currentFactCheckContent: null, factCheckMeta: null, factCheckProgress: null,
   setCurrentFactCheckContent: (c) => set({ currentFactCheckContent: c }),

@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-08-13 | **版本**: 0.3.1
+**更新**: 2026-08-15 | **版本**: 0.3.1
 
 ---
 
@@ -11,11 +11,11 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 91（10 子目录：adapters 8 / agent 7 / core 19 / downloaders 4 / engines 14 / generation 12 / llm 4 / routers 15 / storage 2 / utils 6） |
-| 前端 TS/TSX/CSS 文件 | 91（89 ts/tsx + 2 css） |
-| 前端测试文件 | 8（101 个测试用例） |
-| API 路由模块 | 14 |
-| API 端点 | 74（`@router.` 装饰器计数） |
+| 后端 Python 文件 | 95（11 子目录：adapters 8 / agent 7 / core 19 / downloaders 4 / engines 14 / generation 12 / llm 4 / routers 17 / storage 2 / utils 6 / services 2） |
+| 前端 TS/TSX/CSS 文件 | 101（99 ts/tsx + 2 css） |
+| 前端测试文件 | 8（103 个测试用例） |
+| API 路由模块 | 16 |
+| API 端点 | 78（`@router.` 装饰器计数） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
@@ -64,13 +64,14 @@
 | 处理 | `POST /api/process/{id}` | 图片 OCR |
 | 对话 | `POST /api/chat` + `/chat/stream` | AI Agent |
 | 事实验证 | `POST /api/fact-check/{id}` + `/stream` | LLM 验证 |
+| EPUB 解读 | `POST /api/epub/generate/{id}` + `GET /api/epub/task/{id}` + `POST /api/epub/cancel/{id}` | EPUB 一键解读（阶段1 逐章 + 阶段2 归并总结 + 中断续跑 + 失败章跳过标注） |
 | 导出 | 9 端点：单文件/全产物/批量/思维导图/对话单篇/对话批量/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/ZIP(3模式)/思维导图(交互版+SVG) |
 
 ## 前端组件
 
 | 组件 | 说明 |
 |------|------|
-| GenPanel | 导入 + 生成选项 |
+| GenPanel | 导入 + 生成选项（epub 专属一键解读入口 EpubInterpretPanel，三态 UI） |
 | DocLibrary | 文档列表/搜索/筛选 |
 | PreviewArea | 预览 + 多 tab |
 | FloatingAI | AI 对话浮窗（唯一形态；位置/尺寸记忆、内部栏拖拽调宽；含 ChatCore/ChatSidebar/MessageList/MessageItem/ChatInput） |
@@ -109,7 +110,7 @@
 | FastAPI Depends 依赖注入 | ✅ 8/8 路由迁移完成 |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 11 路由，0 处旧格式残留 |
-| 前端测试 | ✅ vitest + 101 tests（store/theme/api/latex/streamBuffers/tabRegistry/chatStore/组件） |
+| 前端测试 | ✅ vitest + 103 tests（store/theme/api/latex/streamBuffers/tabRegistry/chatStore/组件） |
 | 对话重写 | ✅ 独立 chatStore + 消息层组件树 + 工具气泡/引用/思考折叠（2026-08-04） |
 | 对话上下文管理 | ✅ context_window 四层解析 + 预算引擎 + 历史压缩 + token 进度/费用（2026-08-04 C1-C5） |
 | AI 浮窗 | ✅ 移除插槽，统一浮窗（位置记忆/边界钳制/内部栏拖拽） |
@@ -140,7 +141,7 @@
 backend/app/
   adapters/      5 个适配器（8 个 py 文件，含 BilibiliSubtitle/YouTubeSubtitle）
   engines/       10 个内置引擎 + 插件加载器 + transcript 契约
-  routers/       14 个路由模块（含 plugins/references/search）
+  routers/       16 个路由模块（含 plugins/references/search/epub/markdown_edit）
   generation/    生成/处理/OCR预处理/AI审核
   agent/         LLM Agent 工具 + 会话管理（tools/tool_registry/evidence/compress/session）
   downloaders/   平台下载器（yt-dlp/douyin + abogus 签名）
@@ -157,5 +158,5 @@ frontend/src/
   test/          前端测试（8 个文件，含 1 个组件测试）
 docs/            设计文档（12 份）
 design/          引擎实测标准
-tests/           集成测试（8 个文件）
+tests/           集成测试（10 个文件）
 ```

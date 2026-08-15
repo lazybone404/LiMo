@@ -59,13 +59,15 @@ export interface ToastItem {
 // ── 具名类型（原 Store 接口内联类型抽离，解除 Store['xxx'] 自引用）──
 
 export type ActiveView =
-  | 'polished' | 'summary' | 'transcript' | 'skeleton' | 'report'
+  | 'polished' | 'summary' | 'transcript' | 'report'
   | 'data_preview' | 'original' | 'ocr'
   | 'extract' | 'table' | 'digitize' | 'understand'
   | 'mindmap' | 'fact_check'
 
 export interface MarkdownMeta {
   id: string; style: string; mode: string; version: number; status?: string
+  /** 已手动编辑标记（重新生成前确认用） */
+  edited?: boolean
 }
 
 export interface MarkdownVersion {

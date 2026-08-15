@@ -38,14 +38,8 @@ export interface DocGenOptions extends BaseGenOptions {
   ocr_model_id?: number
 }
 
-/** source_type=epub 专属（继承 DocGenOptions） */
-export interface EpubGenOptions extends DocGenOptions {
-  use_skeleton?: boolean
-  chapter_indices?: string
-}
-
 /** 所有生成选项的联合类型 */
-export type GenOptions = BaseGenOptions | VideoGenOptions | DocGenOptions | EpubGenOptions
+export type GenOptions = BaseGenOptions | VideoGenOptions | DocGenOptions
 
 // -- generate --
 
@@ -73,6 +67,20 @@ export async function getMarkdown(transcriptId: string, mode?: string, version?:
   // 兼容旧格式（data.error）和新 AppError 格式（data.code + data.recoverable）
   if (data.error || data.code) return null
   return data
+}
+
+/** 保存 notes/polished 手动编辑 — 覆盖当前版本（两版制自动保留生成版为 prev），返回对齐 GET /api/markdown */
+export async function saveMarkdownContent(
+  docId: string,
+  mode: 'notes' | 'polished',
+  content: string,
+): Promise<MarkdownView & { edited?: boolean; versions?: { version: number; id: string; createdAt: string; status?: string; mode?: string }[] }> {
+  const r = await apiFetch(`${BASE}/markdown/${docId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode, content }),
+  })
+  return r.json()
 }
 
 // -- stream generate --

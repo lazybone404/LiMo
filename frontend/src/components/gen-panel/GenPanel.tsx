@@ -3,6 +3,7 @@ import { useStore } from '../../store'
 import { streamGenerate, getMarkdown, listEnabledModels, listProviders, ingestURL, ingestText, ingestFile, processImage, saveEngineBindings, retranscribe, getTranscript, getErrorMessage, type EnabledModel, type Provider } from '../../api/client'
 import { registerAbort } from '../../api/taskManager'
 import { cancelTask } from '../../api/taskManager'
+import { cancelEpubInterpret } from '../../api/epub'
 import { getStreamBuffer, appendStreamBuffer, setStreamBuffer, deleteStreamBuffer, scheduleFlush, flushImmediate } from '../../store/streamBuffers'
 import { onConfigChanged } from '../../lib/configEvents'
 import { PanelLeftClose, XCircle, Plus } from 'lucide-react'
@@ -11,6 +12,7 @@ import { EngineSelect, type EngineOption } from './EngineSelect'
 import { ImportSection } from './ImportSection'
 import { GenerateOptions } from './GenerateOptions'
 import { ImageModeCards } from './ImageModeCards'
+import { EpubInterpretPanel } from '../preview/EpubInterpretPanel'
 import { EXT_TO_SUBTYPE, getSubScenario, getTypeMeta, normalizeStyle } from './constants'
 import { useTaskRunner } from '../../hooks/useTaskRunner'
 
@@ -41,6 +43,7 @@ export function GenPanel() {
   const docs = useStore(s => s.docs)
   const currentDoc = docs.find(d => d.id === currentDocId)
   const isVideo = currentDoc?.sourceType === 'video'
+  const isEpub = currentDoc?.sourceType === 'epub'
 
   // ── 从 localStorage 恢复 ──
   const saved = loadGenPrefs()
@@ -282,6 +285,10 @@ export function GenPanel() {
       cancelTask(currentDocId)
       clearDocTasks(currentDocId)
     }
+    // epub 一键解读：任务状态在后端（不走 processingTasks/abort），软取消
+    if (isEpub && currentDocId) {
+      cancelEpubInterpret(currentDocId).catch(() => {})
+    }
     setImportProgress(''); setImportPercent(null); setImportError(''); setError('')
     addToast('已取消', 'info')
   }
@@ -477,6 +484,13 @@ export function GenPanel() {
       }
     }
 
+    // ── 覆盖保护：重新生成会覆盖已手动编辑的产物 → 两态 confirm（方案 5.2；生成完成后标记自动清除）──
+    const editedState = useStore.getState().markdownEdited
+    if ((selectedCore.includes('notes') && editedState.notes) ||
+        (selectedCore.includes('polished') && editedState.polished)) {
+      if (!window.confirm('重新生成将覆盖你手动编辑的内容（生成版自动保留为上一版可回退），继续？')) return
+    }
+
     // ── 全局并发上限检查 ──
     const activeGenerates = Object.keys(useStore.getState().processingTasks)
       .filter(k => k.endsWith('__generate'))
@@ -626,8 +640,10 @@ export function GenPanel() {
             // 防竞态：用户已重新生成（processingTasks 重新激活）→ 放弃旧响应，
             // 否则旧产物会覆盖新流式内容、污染版本列表
             if (useStore.getState().processingTasks[taskKey]) return
+            // 生成完成 → 新 entry 无 edited → 标记自动清除（方案 5.3）
+            useStore.getState().setMarkdownEdited(mode, !!md?.edited)
             if (mode === 'notes') {
-              setMarkdownMeta(md ? { id: md.id, style: md.style, mode: md.mode, version: md.version } : null)
+              setMarkdownMeta(md ? { id: md.id, style: md.style, mode: md.mode, version: md.version, edited: !!md.edited } : null)
               if (md) {
                 setCurrentContent(md.content)
                 const prev = useStore.getState().markdownVersions
@@ -798,8 +814,8 @@ export function GenPanel() {
                 </div>
               )}
 
-              {/* 生成选项 — 仅非图片类型（图片用下面的 ImageModeCards） */}
-              {!typeMeta.isImage && (
+              {/* 生成选项 — 仅非图片类型（图片用 ImageModeCards；epub 用一键解读 EpubInterpretPanel） */}
+              {!typeMeta.isImage && !isEpub && (
                 <GenerateOptions
                   selectedModelId={selectedModelId} setSelectedModelId={setSelectedModelId}
                   enabledModels={enabledModels}
@@ -859,16 +875,18 @@ export function GenPanel() {
               {/* 错误提示 */}
               {error && <div className="px-3 py-2 rounded-[10px] bg-error/10 text-[12px] text-error border border-error/30">{error}</div>}
 
-              {/* 流式显示开关 */}
-              {!typeMeta.isImage && (
+              {/* 流式显示开关 — epub 一键解读不走流式 generate，隐藏 */}
+              {!typeMeta.isImage && !isEpub && (
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input type="checkbox" checked={streamDisplay} onChange={e => setStreamDisplay(e.target.checked)} className="w-4 h-4 accent-accent" />
                   <span className="text-[12px] text-dimmed">实时流式显示（低性能电脑可关闭）</span>
                 </label>
               )}
 
-              {/* 操作按钮 */}
-              {typeMeta.isImage ? (
+              {/* 操作按钮 — epub 走一键解读（三态：进度条 / 继续 / 一键解读） */}
+              {isEpub ? (
+                <EpubInterpretPanel docId={currentDocId!} modelId={selectedModelId} />
+              ) : typeMeta.isImage ? (
                 <button onClick={handleProcessImage} disabled={isImageProcessing || !currentDocId}
                   className="w-full py-2.5 bg-success text-white text-[15px] font-medium rounded-full hover:bg-success/80 active:scale-[0.97] transition-all disabled:opacity-40">
                   {isImageProcessing ? '处理中...' : `处理 — ${({ extract: '提取文字', table: '表格数据', digitize: '文档数字化', understand: '理解内容' })[imageMode]}`}

@@ -107,7 +107,7 @@
 ### 1.2 PDF/文档 Polish
 
 **文件**：[backend/app/generation/prompt.py:98-121](backend/app/generation/prompt.py#L98-L121)（section 定义）
-**触发场景**：sourceType ∈ {pdf, docx, pptx, epub} + mode=polished
+**触发场景**：sourceType ∈ {pdf, docx, pptx} + mode=polished（epub 已走独立一键解读管道，不经过 generate prompt 构建）
 **与视频版的差异**：角色定位"文档编辑"，任务包含 5 条文档特有约束
 
 **文档 Polish 独有硬约束**（全部在 `<task>` 节中）：
@@ -197,7 +197,7 @@
 ### 2.2 PDF/文档 Notes
 
 **文件**：[backend/app/generation/prompt.py:127-149](backend/app/generation/prompt.py#L127-L149)（section 定义）
-**触发场景**：sourceType ∈ {pdf, docx, pptx, epub} + mode=notes
+**触发场景**：sourceType ∈ {pdf, docx, pptx} + mode=notes（epub 已走独立一键解读管道，不经过 generate prompt 构建）
 **与视频版的差异**：
 - 角色定位"文档阅读助手"
 - 语言策略：跟随原文语言（而非强制中文）
@@ -237,9 +237,9 @@
 | `link` | `get_link_format()` | video | ✅ | ✅ |
 | `screenshot` | `get_screenshot_format(has_visual)` | video | ✅ | ✅ |
 | `summary` | `get_summary_format()` | 所有（除 xlsx） | ❌ | ✅ |
-| `formulas` | `get_formulas_format()` | audio/webpage/pdf/docx/pptx/text/epub | ✅ | ✅ |
+| `formulas` | `get_formulas_format()` | audio/webpage/pdf/docx/pptx/text | ✅ | ✅ |
 | `references` | `get_references_format()` | pdf | ✅ | ✅ |
-| `images` | `get_images_format()` | pdf/docx/pptx/epub | ✅ | ✅ |
+| `images` | `get_images_format()` | pdf/docx/pptx | ✅ | ✅ |
 
 **Polish 白名单规则**：toc/link/screenshot/formulas/references/images 是"编辑/结构增强"行为，允许；仅 summary 是"创作/笔记"行为，禁止。白名单由 `_POLISH_FORMAT_FNS` 控制。
 
@@ -257,7 +257,6 @@ AVAILABLE_OPTIONS = {
     "pptx":     ["toc", "summary", "images", "formulas"],
     "xlsx":     [],
     "text":     ["toc", "summary", "formulas"],
-    "epub":     ["toc", "summary", "images", "formulas"],
 }
 ```
 

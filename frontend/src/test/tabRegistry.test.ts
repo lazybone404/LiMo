@@ -48,9 +48,10 @@ describe('TabRegistry', () => {
   it('should return epub tabs', () => {
     const tabs = TabRegistry.forSourceType('epub')
     const keys = tabs.map(t => t.key)
-    expect(keys).toContain('skeleton')
+    expect(keys).not.toContain('skeleton')  // 骨架面板已砍（一键解读）
     expect(keys).toContain('summary')
     expect(keys).toContain('polished')
+    expect(keys).toContain('transcript')
   })
 
   it('should sort by priority', () => {
@@ -65,7 +66,7 @@ describe('TabRegistry', () => {
     expect(TabRegistry.defaultFor('video')).toBe('summary')
     expect(TabRegistry.defaultFor('image')).toBe('original')
     expect(TabRegistry.defaultFor('xlsx')).toBe('data_preview')
-    expect(TabRegistry.defaultFor('epub')).toBe('skeleton')
+    expect(TabRegistry.defaultFor('epub')).toBe('summary')  // 有产物默认 summary（一键解读）
     expect(TabRegistry.defaultFor('webpage')).toBe('summary')
   })
 

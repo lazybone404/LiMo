@@ -6,6 +6,44 @@
 
 ---
 
+## 2026-08-15 — 产物编辑能力（notes/polished 手动编辑 + 覆盖保护）
+
+> 用户 @ `pi-docs/产物编辑方案.md` 要求实施产物编辑。此前产物（notes/polished）纯只读，用户无法修正 AI 错误、补充内容、导出前润色。零新依赖起步（textarea 版），组件抽象预留 ByteMD 增强路径。
+
+### 后端（最小面：零改 store.py / generate.py）
+- 新增 `PUT /api/markdown/{transcript_id}`（`app/routers/markdown_edit.py`）：校验 mode ∈ {notes, polished} / doc 存在 / 内容非空；**复用 `save_markdown(mv, extra={"edited": True})` 写 edited 标记**（`**(extra or {})` 零改 store 本体）；两版制自动保留生成版为 prev 可回退
+- **style 保留**：编辑保存继承当前最新 entry 的 style，不因编辑丢失排版语义
+- **图片 URL 反转**：GET 返回时 `rewrite_asset_urls` 把 `assets/` → `/api/assets/{tx}/`；编辑保存前 `_unrewrite_asset_urls` 反向转回，绝对 URL 不写回磁盘污染导出/二次渲染。形态对称（只处理 `![alt]()` 一种，用户手动输入的 `<img>` 不反转），`re.escape(tx_id)` 防注入
+- **清除语义**：重新生成链路 `save_markdown` 不传 edited → 新 entry 无该字段 → 标记自动消失（零改 generate.py）
+
+### 前端
+- 新增 `TextareaMarkdownEditor.tsx`（`MarkdownEditor` 接口第一实现）：工具栏（B/I/S｜H1-3｜列表/引用/代码块/表格｜链接｜撤销/重做）+ 左源码右分屏实时预览（debounce 300ms，复用现有 REMARK/REHYPE + normalizeLatexDelimiters）+ 快捷键 Ctrl+B/I/S、Ctrl+Z/Y（手动历史栈 cap 100）+ 选区包裹/行级操作
+- **内容区工具条**（用户确认入口位置）：summary/polished tab 的 MarkdownPreview 上方窄条，含「已手动编辑」徽章 + 铅笔编辑按钮；显示条件排除 Excel（其 summary 走 notes 内容源但数据摘要不可编辑）；生成中/任务中置灰；fact_check/transcript 等 tab 不渲染
+- 保存 = PUT → 更新 currentContent/currentPolishedContent + meta（含 edited）+ versions + toast「已保存」；未保存防丢：切 tab / 切文档两态 `window.confirm`（用户确认）+ beforeunload 拦截（Tauri 关窗为边缘情况，已知限制标注）
+- **覆盖保护**：`markdownEdited` store 状态（独立于 markdownMeta，两产物同时记录）——GenPanel 重新生成前检测 → confirm「将覆盖手动编辑内容」；EpubInterpretPanel 解读/继续/重跑同样确认；生成完成/解读完成自动清除标记
+
+### 已知限制（评审确认）
+- **两版制 × 连续编辑**：连续编辑 2 次会把编辑版 1 顶为 prev、生成版被挤出两版制（无法回退生成版）。接受——两版制本为「生成版 + 最近编辑」语义，不为此改 save_markdown 版本逻辑（会牵连生成链路）
+
+### 测试
+- 新增 `backend/tests/test_markdown_edit.py`（11 用例：保存成功/URL 反转/prev 保留/polished/mode 校验/不存在/空内容/清除语义/style 保留/无产物拒绝/超限拒绝）全绿
+- 前端 `store.test.ts` 加 `setMarkdownEdited` 单测（103 tests 全过）；`tsc -b` + vite build 通过；oxlint 无新增 error
+- 后端 10 测试文件全绿（含 e2e_smoke 36/36）
+
+### 健壮性维护（同日，用户要求「健壮性代码维护 + 从用户角度修复漏洞」）
+- **覆盖确认不再被「查看旧版」清除**：`loadVersion` 曾用 `!!md.edited` 覆盖文档级 `markdownEdited`——编辑保存 v2 后切到 v1 查看会把标记清成 false，之后重新生成不再弹确认。现 `markdownEdited` 只在「保存编辑 / 生成完成 / 切文档」时变化（查看版本不影响），确认语义与两版制回退一致
+- **编辑徽章跨 tab 串扰修复**：徽章原读单槽 `markdownMeta.edited`（切 tab 不更新）→ 编辑 notes 后切到 polished tab 会错误显示「已手动编辑」。改读两产物独立的 `markdownEdited[editMode]`
+- **编辑器历史栈 ref 化**（`TextareaMarkdownEditor`）：`undo`/`redo` 原在 setState updater 内调副作用（`setFuture` + `onChange`）——React 18+ 不保证 updater 只执行一次（StrictMode dev 下必然双调用），会导致 future 栈重复记录 + onChange 双发；改为 ref 历史栈 + 长度 state 驱动按钮 disabled，撤销/重做读即时状态，连按 Ctrl+Z 也正确
+- **后端 PUT 加固**：`MD_EDIT_TOO_LARGE`（>5M 字符拒绝）+ `MD_EDIT_NO_PRODUCT`（transcript 存在但该 mode 无产物时拒绝——前端无产物不显示编辑入口，此为 API 层防御防直接调用创建无源产物）
+- **e2e Windows PIPE 缓冲死锁修复**：`test_e2e_smoke.py` 后端 subprocess 用 `stdout/stderr=PIPE` 但从不读取 → Windows 匿名管道 ~4KB 缓冲被 uvicorn 日志填满后 `write()` 阻塞事件循环 → `GET /api/config` 间歇超时（4 次复现 3 次失败，曾误判为端口冲突 flaky）。改为写入临时日志文件（不阻塞 + 保留后端日志供诊断）
+
+### 影响范围
+- 后端：新增 `routers/markdown_edit.py` + `main.py` 注册；store.py / generate.py 零改动
+- 前端：`api/generate.ts`（saveMarkdownContent）、`api/core.ts`（MarkdownView.edited）、`store/types.ts` + `contentSlice.ts`（markdownEdited）、`PreviewArea.tsx`、`GenPanel.tsx`、`EpubInterpretPanel.tsx`、新增 `TextareaMarkdownEditor.tsx`；欢迎页快速开始同步（模式 34）
+- 只读预览零变化（不点编辑 = 原样）；fact_check/transcript/Excel 均不可编辑
+
+---
+
 ## 2026-08-14 — 插件 venv 检查路径遍历异常修复
 
 > `GET /api/plugins` 500：`_venv_valid()` 里 `base_py.exists()` 对 AppData 下 uv 托管 python（`C:\Users\...\AppData\Roaming\uv\python\...\python.exe`）做 `stat()` 时抛 `OSError: [WinError 448] 不受信任装入点`。此前 `except OSError` 只保护读 pyvenv.cfg（L452），`base_py.exists()` 在 try 外，异常一路冒泡到 router 变 500。

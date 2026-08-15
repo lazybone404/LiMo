@@ -7,6 +7,7 @@ beforeEach(() => {
     docs: [], currentDocId: null, searchQuery: '', activeTag: '',
     currentContent: null, currentPolishedContent: null, currentRawText: null,
     markdownMeta: null, markdownVersions: [],
+    markdownEdited: { notes: false, polished: false },
     currentFactCheckContent: null, factCheckMeta: null, factCheckProgress: null,
     streamTick: 0,
     importProgress: null, importStages: [],
@@ -228,6 +229,24 @@ describe('processingTasks — 多任务状态推导', () => {
     const tasksB = Object.entries(useStore.getState().processingTasks)
       .filter(([k]) => k.startsWith('docB__'))
     expect(tasksB).toHaveLength(1)
+  })
+})
+
+// ── 产物已编辑标记（覆盖保护）──
+
+describe('setMarkdownEdited — 产物已手动编辑标记', () => {
+  it('默认两产物均未编辑', () => {
+    expect(useStore.getState().markdownEdited).toEqual({ notes: false, polished: false })
+  })
+
+  it('只更新指定产物，不影响另一产物', () => {
+    useStore.getState().setMarkdownEdited('notes', true)
+    expect(useStore.getState().markdownEdited).toEqual({ notes: true, polished: false })
+    useStore.getState().setMarkdownEdited('polished', true)
+    expect(useStore.getState().markdownEdited).toEqual({ notes: true, polished: true })
+    // 重新生成后清除
+    useStore.getState().setMarkdownEdited('notes', false)
+    expect(useStore.getState().markdownEdited).toEqual({ notes: false, polished: true })
   })
 })
 

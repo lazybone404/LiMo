@@ -75,12 +75,11 @@ Tabs: `data_preview`, `report`, `summary`
 
 ### 2.3 EPUB 文档
 
-Tabs: `skeleton`, `summary`, `polished`, `transcript`, `fact_check`, `mindmap`
+Tabs: `summary`, `polished`, `transcript`, `fact_check`, `mindmap`（同文本类——skeleton 已随骨架面板移除，epub 一键解读产物走 summary/polished）
 
 | Tab | 预览内容 | store 字段 | 后端 mode | 后端内容源 |
 |-----|---------|-----------|----------|-----------|
-| skeleton | EpubSkeletonPanel(currentRawText) | currentRawText | transcript | `tx["rawText"]`（骨架 JSON） |
-| 其余同文本类 | — | — | — | — |
+| 同文本类 | — | — | — | — |
 
 ### 2.4 图片文档
 
@@ -116,8 +115,8 @@ TabRegistry.register({
   isStandardMarkdown: true, showTOC: true, showVersionSwitcher: 'notes',
   processingKinds: ['import', 'retranscribe', 'generate'],
 })
-// 已注册 14 个内置 tab（summary/polished/transcript/data_preview/skeleton/fact_check/mindmap
-//   /original/extract/table/digitize/understand/ocr）
+// 已注册 12 个内置 tab（summary/polished/transcript/data_preview/fact_check/mindmap
+//   /original/extract/table/digitize/understand/ocr；skeleton 已随骨架面板移除）
 ```
 
 2. **`lib/contentSources.ts`** — 内容取值绑定：`CONTENT_GETTERS: Record<ContentSource, getter>` 用 **Record 类型约束强制补 getter**（新增 contentSource 枚举 → 编译期缺一即错）。三处消费统一走 `getContentForView(view, ctx)`：PreviewArea `displayContent` / CopyContentBtn / ExportMenu：

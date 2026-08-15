@@ -3,7 +3,7 @@ LiMo Eagle Eye Test - startup smoke + core endpoint verification.
 Usage: uv run python tests/test_e2e_smoke.py
 No external LLM API dependencies.
 """
-import subprocess, sys, time, json, os, urllib.request, urllib.parse, urllib.error
+import subprocess, sys, time, json, os, tempfile, urllib.request, urllib.parse, urllib.error
 
 BASE = "http://127.0.0.1:7413"
 PASSED = 0
@@ -80,10 +80,15 @@ def check(label, condition, detail=""):
         FAILED += 1; print(f"  FAIL: {label}  --  {detail}")
 
 def start_server():
+    # ⚠️ Windows 匿名管道缓冲仅 ~4KB：uvicorn 的 stdout/stderr 若用 PIPE 且无人读取，
+    # 日志量累计填满缓冲后写阻塞 → 阻塞 uvicorn 事件循环 → 后续请求全部超时（间歇性 flaky）。
+    # 改为写入临时文件：不阻塞 + 保留后端日志供 e2e 失败时诊断。
+    logf = tempfile.NamedTemporaryFile(suffix=".log", delete=False)
+    print(f"backend log -> {logf.name}")
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "7413"],
         cwd=os.path.join(os.path.dirname(__file__), ".."),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdout=logf, stderr=logf,
     )
     for _ in range(30):
         time.sleep(0.5)
