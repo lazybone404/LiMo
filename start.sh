@@ -46,7 +46,8 @@ trap cleanup EXIT INT TERM
 # ── 启动后端（后台）──
 echo ">>> 后端: 127.0.0.1:$PORT"
 cd "$ROOT/backend"
-python -m uvicorn main:app --host 127.0.0.1 --port $PORT --reload &
+# 显式用项目 venv 的 python（PATH 里的系统 python 可能缺项目依赖，如 resvg_py → 图表渲染失败）
+.venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port $PORT --reload &
 BACKEND_PID=$!
 
 # 等后端就绪

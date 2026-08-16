@@ -29,8 +29,9 @@ PNG = b'\x89PNG\r\n\x1a\n' + b'fake-png-bytes'
 # ── P0-2：width/height 属性绕过校验 ──
 
 # 合法 viewBox + 超大 width 属性 → 校验必须失败（resvg 按属性输出画布，防 40GB OOM）
+# 带 text：隔离「画布超限」维度（2026-08-16 起校验链要求图必须有文字）
 big_svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100" width="50000" height="50000">
-  <rect x="10" y="10" width="80" height="50" fill="#4A90D9"/>
+  <rect x="10" y="10" width="80" height="50" fill="#4A90D9"/><text x="50" y="40" font-size="14">节点</text>
 </svg>'''
 ok, reason = _validate_svg(big_svg)
 assert not ok, f'超大 width 应校验失败，实际通过: {reason}'
@@ -39,7 +40,7 @@ print('PASS: P0-2 超大 width 属性被拦截')
 
 # 正常尺寸（width + viewBox 均 ≤640）→ 通过
 good_svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100" width="400" height="300">
-  <rect x="10" y="10" width="80" height="50" fill="#4A90D9"/>
+  <rect x="10" y="10" width="80" height="50" fill="#4A90D9"/><text x="50" y="40" font-size="14" fill="#1f2937">节点 A</text>
 </svg>'''
 ok, reason = _validate_svg(good_svg)
 assert ok, f'正常尺寸应通过校验: {reason}'
@@ -47,11 +48,47 @@ print('PASS: P0-2 正常尺寸校验通过')
 
 # 仅 viewBox、无 width/height（属性缺失 → 回退 viewBox 校验）→ 通过
 vb_only_svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">
-  <rect x="10" y="10" width="80" height="50" fill="#4A90D9"/>
+  <rect x="10" y="10" width="80" height="50" fill="#4A90D9"/><text x="50" y="40" font-size="14">节点 A</text>
 </svg>'''
 ok, reason = _validate_svg(vb_only_svg)
 assert ok, f'仅 viewBox 应回退校验并通过: {reason}'
 print('PASS: P0-2 仅 viewBox 回退校验')
+
+# ── 2026-08-16：图表必须有文字（用户反馈「图表里没有文字」）──
+
+# 有形状但零 <text> → 校验失败（LLM 只画框不写字的图对读者无意义）
+no_text_svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100" width="200" height="100">
+  <rect x="10" y="10" width="80" height="50" fill="#4A90D9"/><line x1="95" y1="35" x2="110" y2="35" stroke="#999"/>
+</svg>'''
+ok, reason = _validate_svg(no_text_svg)
+assert not ok, f'零文字图应校验失败，实际通过: {reason}'
+assert '无文字' in reason, reason
+print('PASS: 零文字图校验失败（无文字说明）')
+
+# 空 <text></text> / 自闭合 <text/> → 有标签但零文字内容，同样失败
+empty_text_svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100" width="200" height="100">
+  <rect x="10" y="10" width="80" height="50" fill="#4A90D9"/><text x="50" y="40" font-size="14"></text>
+</svg>'''
+ok, reason = _validate_svg(empty_text_svg)
+assert not ok, f'空 text 标签应校验失败，实际通过: {reason}'
+assert '无文字' in reason, reason
+
+self_closed_text_svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100" width="200" height="100">
+  <rect x="10" y="10" width="80" height="50" fill="#4A90D9"/><text x="50" y="40" font-size="14"/>
+</svg>'''
+ok, reason = _validate_svg(self_closed_text_svg)
+assert not ok, f'自闭合 text 应校验失败，实际通过: {reason}'
+assert '无文字' in reason, reason
+print('PASS: 空 text / 自闭合 text 校验失败（无文字说明）')
+
+with tempfile.TemporaryDirectory() as tmp:
+    with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+        out = render_charts('```chart\n' + no_text_svg + '\n```', tmp)
+    assert '📊 图表生成失败' in out, f'零文字图应替换为失败文本: {out}'
+    assert '无文字说明' in out, f'失败文本应说明原因: {out}'
+    assert '![图表](assets/' not in out, f'零文字图不应产生图片引用: {out}'
+    assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png')), '零文字图不应写 chart 文件'
+print('PASS: 零文字图围栏替换为失败文本（无文字说明）')
 
 # ── chart 围栏正常渲染（mock resvg，不依赖打包环境）──
 
@@ -64,7 +101,11 @@ with tempfile.TemporaryDirectory() as tmp:
     assert '![图表](assets/chart_1.png)' in out, out
     assert '```chart' not in out, f'围栏应被替换消失（零残留）: {out}'
     assert os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png'))
-print('PASS: chart 围栏渲染 PNG 并替换引用')
+    # 2026-08-16：渲染成功时同步保存 SVG 源码片段（调试 + 导出矢量图）
+    assert os.path.exists(os.path.join(tmp, 'assets', 'chart_1.svg')), '应保存 chart_1.svg 源码片段'
+    with open(os.path.join(tmp, 'assets', 'chart_1.svg'), encoding='utf-8') as f:
+        assert '<svg' in f.read(), 'SVG 片段应为 LLM 原始输出'
+print('PASS: chart 围栏渲染 PNG 并替换引用（同步保存 SVG 片段）')
 
 # ── P0-3：图表只入 notes —— _post_process 的 render_chart 门控 ──
 # 双产物若各调一次 render_charts，counter 每次重置为 0 → 写同名 chart_1.png 互踩。
@@ -156,5 +197,111 @@ with tempfile.TemporaryDirectory() as tmp:
     assert '![图表](assets/chart_1.png)' in out, out
     assert 'svg 文件说明' in out, f'跨行 svg 单词不应被误清理: {out}'
 print('PASS: 跨行 svg 单词不被误清理')
+
+# ── 2026-08-16 resvg→PIL 真实渲染回归：文字 + 连接线（path 虚线）必须渲染 ──
+# resvg 全系在 Windows 无法渲染 SVG 文字（上游 bug：usvg "No match for <font>"），
+# PIL 自绘渲染器接管后必须保证：① 中文文字渲染 ② path 虚线（粘连命令 M60 70 V120）
+# 画出来。不 mock _render_png，走真实渲染（PIL 是硬依赖，测试环境可用）。
+from io import BytesIO
+from PIL import Image
+from app.services.chart_renderer import _render_png
+
+real_svg = '''<svg viewBox="0 0 320 200" width="320" height="200">
+<rect width="100%" height="100%" fill="#f5f5f5"/>
+<rect x="10" y="20" width="100" height="50" rx="6" fill="#ffffff" stroke="#2d3142"/>
+<text x="60" y="50" font-size="16" text-anchor="middle" fill="#2d3142">文档</text>
+<path d="M60 70 V120 H160" fill="none" stroke="#4f5d75" stroke-dasharray="4 4"/>
+<rect x="160" y="120" width="100" height="50" rx="6" fill="#ffffff" stroke="#2d3142"/>
+<text x="210" y="150" font-size="16" text-anchor="middle" fill="#2d3142">检索</text>
+</svg>'''
+data = _render_png(real_svg)
+assert data and data.startswith(b'\x89PNG'), f'真实渲染应返回 PNG bytes，实际 {type(data)}'
+im = Image.open(BytesIO(data)).convert('RGB')
+px = im.load()
+w, h = im.size
+# 文字条带（2x：rect1 y∈[40,180]，文字基线 y=50→100，取节点内避框线）
+text_dark = sum(1 for xx in range(40, 200) for yy in range(60, 110)
+                if sum(px[xx, yy]) < 300)
+assert text_dark > 0, f'PIL 渲染应画出文字（用户实测 resvg 全系为 0），实际 {text_dark} == 0'
+# path 虚线竖线（2x：M60 70 V120 → x=120→240, y=140..240；粘连命令 tokenizer 必须解析）
+path_dark = sum(1 for xx in range(230, 250) for yy in range(140, 250)
+                if sum(px[xx, yy]) < 300)
+assert path_dark > 0, f'path 虚线（粘连 M60 70 V120）应画出竖线，实际 {path_dark} == 0'
+print(f'PASS: PIL 真实渲染 — 文字 {text_dark}px + path 虚线竖线 {path_dark}px')
+
+# ── 2026-08-16 贝塞尔曲线（C/S/Q/T）必须渲染 ──
+# 此前曲线命令跳过参数漏画（图表连接线用曲线时消失）。补齐：C/S 三次采样、
+# Q/T 二次采样（S/T 控制点反射），虚线按弧长分段。用户实际 SVG 曲线连线已验。
+curve_svg = '''<svg viewBox="0 0 320 160" width="320" height="160">
+<rect width="100%" height="100%" fill="#f5f5f5"/>
+<path d="M20 80 C 60 40, 120 120, 160 80" stroke="#eb6c36" stroke-width="2" fill="none"/>
+<path d="M180 80 Q 210 50, 240 80" stroke="#eb6c36" stroke-width="2" fill="none"/>
+<path d="M20 130 S 60 100, 90 130 T 140 130" stroke="#4f5d75" stroke-width="2" fill="none"/>
+<text x="160" y="150" font-size="12" fill="#2d3142">曲线</text>
+</svg>'''
+data = _render_png(curve_svg)
+assert data and data.startswith(b'\x89PNG'), f'曲线渲染应返回 PNG bytes，实际 {type(data)}'
+im3 = Image.open(BytesIO(data)).convert('RGB')
+px3 = im3.load()
+# 曲线条带：C x∈[40,160] y∈[60,120] + Q x∈[180,240] + S/T x∈[20,140] y∈[100,135]（×2 后）
+# 文字在 (160,150)→(320,300)，不在本区域；阈值 600 含强调色 #eb6c36(397) 与主色 #4f5d75(289)
+curve_dark = sum(1 for xx in range(40, 480) for yy in range(80, 272)
+                 if sum(px3[xx, yy]) < 600)
+assert curve_dark > 100, f'贝塞尔曲线（C/Q/S/T）应渲染出折线，实际 {curve_dark}px'
+print(f'PASS: 贝塞尔曲线 C/Q/S/T 渲染 — 有色 {curve_dark}px')
+
+# ── 2026-08-16 polygon 描边闭合（用户实测「流程图错位和边框缺失」）──
+# draw.line 不自动闭合 polygon——此前菱形/箭头描边缺「最后一点回起点」的边
+# （流程图菱形只剩 3 条边，视觉残缺）。回归：菱形闭合边（左顶点→顶顶点）
+# 必须画出。文字放菱形下方避免污染检测区域。
+poly_svg = '''<svg viewBox="0 0 120 140" width="120" height="140">
+<rect width="100%" height="100%" fill="#f5f5f5"/>
+<polygon points="60,20 100,60 60,100 20,60" fill="#ffffff" stroke="#eb6c36"/>
+<text x="60" y="128" font-size="12" text-anchor="middle" fill="#2d3142">判断</text>
+</svg>'''
+data = _render_png(poly_svg)
+assert data and data.startswith(b'\x89PNG'), f'polygon 渲染应返回 PNG bytes，实际 {type(data)}'
+im4 = Image.open(BytesIO(data)).convert('RGB')
+px4 = im4.load()
+# 闭合边 = 左顶点(20,60)→顶顶点(60,20) 的斜边；区域 [26,56]×[26,56]（SVG）×2
+# 只含这条斜带（顶→右 x≥60、底→左 y≥60 不在区域内；文字 y=128 下方）
+close_dark = sum(1 for xx in range(52, 112) for yy in range(52, 112)
+                 if sum(px4[xx, yy]) < 600)
+assert close_dark > 0, f'polygon 闭合边（左顶点→顶顶点）应画出，实际 {close_dark} == 0'
+print(f'PASS: polygon 描边闭合 — 闭合边 {close_dark}px')
+
+# ── 2026-08-17 transform + dominant-baseline 补齐（用户实测「图表错位/缺内容」）──
+# ① <g transform="translate(...)"> 内元素此前整块不画（_svg_to_pil 直接跳过 g）；
+# ② 文字默认当基线画，dominant-baseline=middle（节点内垂直居中）被忽略 → 偏下。
+# 回归：平移后的连线/标签出现在移动区、原位为空；居中文字中线贴近节点中线。
+from app.services.chart_renderer import _svg_to_pil, _detect_chinese_font
+
+tr_svg = '''<svg viewBox="0 0 640 300" width="640" height="300">
+<rect width="100%" height="100%" fill="#f5f5f5"/>
+<g transform="translate(120,60)">
+  <line x1="0" y1="0" x2="180" y2="6" stroke="#4f5d75" stroke-width="2"/>
+  <text x="90" y="14" font-size="16" text-anchor="middle" fill="#4f5d75">WRITE / API</text>
+</g>
+<rect x="60" y="170" width="150" height="60" rx="6" fill="#ffffff" stroke="#2d3142"/>
+<text x="135" y="200" font-size="16" text-anchor="middle" fill="#2d3142"
+      dominant-baseline="middle">用户 请求</text>
+</svg>'''
+im5 = _svg_to_pil(tr_svg, 2.0, _detect_chinese_font())
+px5 = im5.load()
+# translate 生效：标签/连线画在平移后（SVG x∈[120,300]→像素 x∈[240,600]）；原位（x<120，SVG）空
+tr_shift = sum(1 for xx in range(240, 620) for yy in range(110, 170)
+               if sum(px5[xx, yy]) < 600)
+tr_origin = sum(1 for xx in range(0, 160) for yy in range(110, 170)
+                if sum(px5[xx, yy]) < 600)
+assert tr_shift > 50, f'transform translate 后区域应画出连线/标签，实际 {tr_shift}px'
+assert tr_origin < 5, f'transform 未生效，内容画回原位: {tr_origin}px'
+# dominant-baseline=middle 生效：节点 rect y∈[170,230]→像素[340,460] 中线=400，
+# 文字 bbox 中线应在 400 附近（基线画法会偏 ~20px）
+ys = [yy for xx in range(120, 300) for yy in range(360, 470) if sum(px5[xx, yy]) < 300]
+assert ys, '节点内应检出文字像素'
+mid = (min(ys) + max(ys)) / 2
+assert abs(mid - 400) < 16, f'dominant-baseline 文字中线 {mid:.0f} 应贴近节点中线 400（偏 {abs(mid-400):.0f}px）'
+print(f'PASS: transform translate — 平移区 {tr_shift}px / 原位 {tr_origin}px')
+print(f'PASS: dominant-baseline middle — 文字中线 {mid:.0f}（节点中线 400）')
 
 print('Chart renderer tests done')

@@ -544,11 +544,23 @@ export function GenPanel() {
       formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
     ].filter(Boolean).filter(f => typeMeta.availableFormats.includes(f as string)).join(',')
 
-    // P1-5：被 availableFormats 静默过滤的格式一次性 toast 提示（不静默丢弃）
-    const droppedFormats = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
+    // P1-5：被 availableFormats 静默过滤的格式一次性 toast 提示（不静默丢弃）。
+    // 只提示「当前类型 UI 可见」的格式（镜像 GenerateOptions 显示条件）——UI 不可见的
+    // 是 genPrefs 跨类型持久化残留（如 PDF 勾过「保留文档图片」→ 切到文本/视频），
+    // 该类型本就不支持、用户无法在 UI 上操作，静默忽略即可，避免每次生成都弹骚扰。
+    const droppedAll = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
       formatSummary && 'summary', formatChart && 'chart',
       formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
     ].filter(Boolean).map(String).filter(f => !typeMeta.availableFormats.includes(f))
+    if (droppedAll.length > 0) console.warn('[GenPanel] 生成格式被当前类型过滤:', droppedAll, 'sourceType=', typeMeta.sourceType)
+    const formatVisible = (f: string): boolean => {
+      if (f === 'link' || f === 'screenshot') return typeMeta.isVideo
+      if (f === 'formulas' || f === 'references') return typeMeta.isPDF
+      if (f === 'images') return typeMeta.hasImages
+      return !typeMeta.isExcel && !typeMeta.isImage && typeMeta.sourceType !== 'epub' &&
+        (typeMeta.isMedia || typeMeta.sourceType === 'text' || typeMeta.isDoc)
+    }
+    const droppedFormats = droppedAll.filter(formatVisible)
     if (droppedFormats.length > 0) {
       const fmtNames: Record<string, string> = { toc: '目录', link: '原片跳转', screenshot: '原片截图', summary: 'AI 总结', chart: '图表', formulas: '公式集', references: '参考文献', images: '保留文档图片' }
       addToast(`当前内容类型不支持：${droppedFormats.map(f => fmtNames[f] || f).join('、')}`, 'info')

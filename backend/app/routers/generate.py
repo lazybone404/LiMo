@@ -395,6 +395,7 @@ async def generate_stream(transcript_id: str, request: Request,
 
     format_list = [f.strip() for f in formats.split(",") if f.strip()]
     source_type = tx.get("sourceType", "text")
+    log.info("生成开始", source_type=source_type, formats=",".join(format_list))
 
     # ── 截图用视频下载（不开启画面理解时也支持"插入原片截图"）──
     screenshot_video_path: str | None = None
@@ -622,7 +623,10 @@ async def generate_stream(transcript_id: str, request: Request,
                     # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出 ```chart 围栏
                     # （旧习惯 svg 围栏 / 裸内联 / 没画）→ warning 提示重新生成
                     if "chart" in format_list and "```chart" not in raw_notes:
-                        yield f"data: {json.dumps({'type': 'warning', 'kind': 'chart_missing', 'message': '图表未生成：LLM 未输出图表围栏（```chart），请重新生成'}, ensure_ascii=False)}\n\n"
+                        _judged_unsuitable = "图表说明" in raw_notes or "不适合图表化" in raw_notes
+                        _reason = "模型判断内容不适合图表化" if _judged_unsuitable else "LLM 未输出图表围栏"
+                        log.warning("图表未生成", source_type=source_type, reason=_reason)
+                        yield f"data: {json.dumps({'type': 'warning', 'kind': 'chart_missing', 'message': f'图表未生成：{_reason}，请重新生成'}, ensure_ascii=False)}\n\n"
 
                 if video_path and os.path.exists(video_path):
                     try:
@@ -774,7 +778,10 @@ async def generate_stream(transcript_id: str, request: Request,
             _auto_title(store, transcript_id, mv.content)
             # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出 ```chart 围栏 → warning
             if "chart" in format_list and stream_mode != "polished" and "```chart" not in raw_content:
-                yield f"data: {json.dumps({'type': 'warning', 'kind': 'chart_missing', 'message': '图表未生成：LLM 未输出图表围栏（```chart），请重新生成'}, ensure_ascii=False)}\n\n"
+                _judged_unsuitable = "图表说明" in raw_content or "不适合图表化" in raw_content
+                _reason = "模型判断内容不适合图表化" if _judged_unsuitable else "LLM 未输出图表围栏"
+                log.warning("图表未生成", source_type=source_type, reason=_reason)
+                yield f"data: {json.dumps({'type': 'warning', 'kind': 'chart_missing', 'message': f'图表未生成：{_reason}，请重新生成'}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'id': mv.id}, ensure_ascii=False)}\n\n"
 
             # 视频清理统一在 finally（P0-5）：正常/取消/异常路径都删，防磁盘泄漏

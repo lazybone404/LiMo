@@ -267,12 +267,13 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - **消息级文档引用**：docIds = 当前选中文档 + 本条 @ 引用（chatStore 组合去重），不绑定会话
 
 **图表管道**（2026-08-16，方案：图表功能与 fact_check 移除）：
-- 生成笔记勾选「图表」（formats=chart）→ prompt 按需注入图表规范（`get_chart_format(source_type)` 基础规范 + 来源差异段）。**分层约束**：prompt 硬性规范优先（viewBox+width/height 双写一致 ≤640×640、单图 ≤300 行、安全红线清单、防重叠规则），代码校验链只做兜底（LLM 失控时拦截，见下）→ LLM 输出 ```chart 围栏 → `app/services/chart_renderer.py` 校验链 → resvg 渲染 PNG(2x) 存 `assets/chart_N.png` → 替换为 `![图表](assets/chart_N.png)`
+- 生成笔记勾选「图表」（formats=chart）→ prompt 按需注入图表规范（`get_chart_format(source_type)` 基础规范 + 来源差异段）。**分层约束**：prompt 硬性规范优先（viewBox+width/height 双写一致 ≤640×640、**正常显示硬规则**（2026-08-16 从原仓库 diagram-design 提取：背景不透明铺满 rect / 元素不越界留 ≥16px 边距 / 相邻节点不重叠 / 每个节点必须文字·字号 ≥12·深字浅底 / 文字节点内居中）；**样式复用原仓库**（用户要求）：背景 `paper #f5f5f5` / 主文字描边 `ink #2d3142` / 连线 `muted #4f5d75` / 强调 `accent #eb6c36`（≤2 焦点）/ 节点白底 rx=6 圆角 + ink 描边 1px / 节点名 `sans-serif` 12-14px 600 居中（Google 字体 Geist 换系统 sans-serif）、安全红线清单；2026-08-16 精简——移除防重叠 6 条/≤300 行/4px 网格等**质量**硬规则（回归原仓库建议层），改「最小可行动例模板」降低 fast 模型创作门槛，详见 CHANGELOG），代码校验链只做兜底（LLM 失控时拦截，见下）→ LLM 输出 ```chart 围栏 → `app/services/chart_renderer.py` 校验链 → PIL 渲染 PNG(2x) 存 `assets/chart_N.png` → 替换为 `![图表](assets/chart_N.png)`
 - **只入 notes**：`_POLISH_FORMAT_FNS` 白名单无 chart，polish 不注入；`AVAILABLE_OPTIONS` 按 source_type 控制勾选（video/webpage/pdf/docx/pptx/text 有，xlsx/audio 无）；前端排除 epub（走独立解读管道）
 - **协议收紧**（2026-08-16，见 [pi-docs/图表围栏内部协议设计说明.md](pi-docs/图表围栏内部协议设计说明.md)）：只认 ```chart 专用围栏（内容须含 `<svg` 根元素）；svg/xml 围栏、裸内联 `<svg>` 一律不碰（用户内容零触碰）。取舍：误伤用户内容（静默改写用户数据）> LLM 偶尔不遵循围栏约定（warning 重新生成）
-- **校验链**：XML 良构 → viewBox ≤640×640 → 有形状元素 → resvg 渲染（失败重试 1 次）；任一失败**替换为** `📊 图表生成失败（{reason}）` 文本（零残留——产物永不含围栏，内部协议不外泄）。勾选图表但 LLM 未输出 chart 围栏 → 完成时 warning「图表未生成：请重新生成」
+- **校验链**：XML 良构 → viewBox ≤640×640 → 有形状元素 → **有非空文字内容（2026-08-16 起：<text 标签必须含非空白文字——空 `<text></text>` / 自闭合 `<text/>` 与零文字图一并拦截，防 LLM 只画框不写字产出无字图）** → PIL 渲染（失败重试 1 次）；任一失败**替换为** `📊 图表生成失败（{reason}）` 文本（零残留——产物永不含围栏，内部协议不外泄）。勾选图表但 LLM 未输出 chart 围栏 → 完成时 warning「图表未生成：请重新生成」
+- **字体实测定案 + SVG 片段保存（2026-08-16）**：resvg→PIL 切换（见下）。`_detect_chinese_font()` 探测系统第一个中文字体**文件路径**（`ImageFont.truetype` 加载成功即可用，候选 msyh.ttc/msyh.ttf/simhei/simsun/PingFang/Noto/WenQuanYi，进程内缓存探测结果 + 按 `(path,size)` 缓存字体对象），PIL 用该路径渲染中文；**prompt 不再约束 font-family**。**SVG 源码片段同步保存** `assets/chart_N.svg`（与 PNG 并列，用户提议）：不用于展示（assets 白名单无 svg），供①调试——文字没渲染时查看 LLM 原始输出②用户深度使用时导出矢量图
 - **安全过滤**：`<script>` / `on*` 事件属性 / `xlink:href`·外部 URL 引用按不可信内容剥离（纵深防御——最终产物是 PNG 不执行脚本）
-- **resvg-py 打包**：`_render_png` 函数内惰性 import（避免模块级 import 失败波及生成链路），spec 必须 collect_all('resvg_py') + hiddenimports 加 'app.services.chart_renderer'
+- **PIL 自绘渲染器（2026-08-16 resvg→PIL 切换）**：resvg 全系（py 绑定 0.4.0 + CLI v0.47/v0.48 官方二进制）在 **Windows 无法渲染 SVG 文字**——fontdb 加载系统字体正常（`--list-fonts` 可见 Arial），但 usvg text 解析一律 `No match for "<font-family>"` → 跳过 text（上游普遍 bug，非绑定/配置问题，实测 v0.46-v0.48 全系列 + cargo 编译 v0.48.1 + 官方 v0.47 win64 二进制皆复现；v0.48.1 无 Windows 发布即 Windows CI 失败佐证）。改 **PIL 自绘 SVG 子集渲染器**（`_svg_to_pil`）：覆盖 rect（rounded_rectangle）/text（`anchor` 基线锚——SVG y 即基线）/line/path/circle/ellipse/polygon/polyline，非子集元素（image 等）忽略（漏画优于画错）。**path 用正则 tokenizer 分离命令与数字**（`_path_polylines`，兼容粘连写法 `M470 90 V130`——此前 split() 解析漏命令导致虚线不画，用户实测反馈）；**贝塞尔曲线补齐**（2026-08-16）：C/S 三次 + Q/T 二次采样为密集折线（`_bezier3`/`_bezier2`，S/T 控制点反射 `_reflect`，Z 闭合回子路径起点），A 椭圆弧跳过——此前曲线命令跳过参数漏画，图表曲线连线消失，三张手写示例图（line/虚线/折线/曲线/箭头/S-T 平滑/相对命令）实测全渲染；**polygon 描边闭合**（2026-08-16）：SVG 语义 polygon 最后一点回起点，draw.line 不自动闭合——此前菱形/箭头描边缺最后一条边（用户实测「流程图错位和边框缺失」），`_draw_poly` 对 polygon 追加首点闭合、polyline 保持不闭合；**transform 支持**（2026-08-17）：`<g transform>` 此前整块不画/画错位（用户实测「图表错位/缺内容」头号来源——原仓库 diagram-design 规范大量用 `<g transform>` 定位 + `dominant-baseline=middle` 节点居中），`_parse_transform` 2x3 affine 解析 translate/scale/rotate/matrix 组合 + `_svg_to_pil` 递归遍历 `<g>` 累计变换至子元素 + `_map(x,y,m)` 统一映射；**text 组合锚**：text-anchor（start/middle/end）× dominant-baseline（middle→中线 m / hanging→ascender / text-after-edge→descender，默认基线 s）组合成 PIL 双字母 anchor，`dominant-baseline="middle"` 节点内文字真正垂直居中；含旋转/斜切时 rect/ellipse 退化多边形近似（漏画圆角优于画错位置），字号/笔宽按 transform 局部缩放因子自适应（`tots = scale * lscale`）；`stroke-dasharray` 虚线按弧长分段绘制。零新依赖（PIL 已随图片优化打包，spec 无需额外收集；resvg_py 收集已从 spec 移除）。校验链/安全过滤/SVG 片段保存/失败标注逻辑不变
 - **后处理挂载**：generator.py `generate()`/`generate_both()` + generate.py `_post_process`（在 `_normalize_generated_images` 之前，先替换 assets 相对路径再统一 URL 规范化）
 
 ### 适配器注册
@@ -560,10 +561,10 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 |------|------|------|
 | ✅ | 笔记可选组件 | 生成笔记勾选「图表」（默认不勾选），prompt 按需注入 `get_chart_format(source_type)` 规范 |
 | ✅ | 来源差异提示 | DOC 类型→架构图/层级树；网页→流程/结构树；视频→流程步骤图/时间线；其他→自行判断 |
-| ✅ | resvg 渲染嵌入 | LLM 输出 ```chart 围栏 → 校验链 → resvg 渲染 PNG(2x) → `assets/chart_N.png` → `![图表](...)` 引用 |
+| ✅ | PIL 渲染嵌入 | LLM 输出 ```chart 围栏 → 校验链 → PIL 渲染 PNG(2x) → `assets/chart_N.png` → `![图表](...)` 引用（resvg 全系 Windows 无法渲染 SVG 文字，2026-08-16 切换） |
 | ✅ | 校验链 + 安全过滤 | 只认 ```chart 围栏/XML 良构/viewBox ≤640×640/有形状元素 + script·on*·外部引用剥离；失败替换为 📊 失败文本（零残留）；无 chart 围栏 → 完成 warning |
 | ✅ | 只入 notes | polish 白名单无 chart；xlsx/audio 无勾选；前端排除 epub |
-| ❌ | 更多图表类型 | 当前为 SVG 通用渲染（resvg），无 echarts/mermaid 等专业图库（插件化方向，暂不实施） |
+| ❌ | 更多图表类型 | 当前为 SVG 通用渲染（PIL 自绘子集），无 echarts/mermaid 等专业图库（插件化方向，暂不实施） |
 
 ### 📤 导出
 

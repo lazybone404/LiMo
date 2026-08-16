@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-08-16 | **版本**: 0.4.1
+**更新**: 2026-08-16 | **版本**: 0.4.2
 
 ---
 
@@ -63,7 +63,7 @@
 | 生成 | `POST /api/generate/{id}` + `/stream` | LLM 生成笔记 |
 | 处理 | `POST /api/process/{id}` | 图片 OCR |
 | 对话 | `POST /api/chat` + `/chat/stream` | AI Agent |
-| 图表 | `POST /api/generate/{id}`（formats=chart）| 生成笔记勾选「图表」→ AI 输出 SVG → resvg 本地渲染 PNG 嵌入（`app/services/chart_renderer.py`） |
+| 图表 | `POST /api/generate/{id}`（formats=chart）| 生成笔记勾选「图表」→ AI 输出 SVG → PIL 本地自绘渲染 PNG 嵌入（`app/services/chart_renderer.py`；resvg 已切换，Windows 文字 bug） |
 | EPUB 解读 | `POST /api/epub/generate/{id}` + `GET /api/epub/task/{id}` + `POST /api/epub/cancel/{id}` | EPUB 一键解读（阶段1 逐章 + 阶段2 归并总结 + 中断续跑 + 失败章跳过标注） |
 | 导出 | 9 端点：单文件/全产物/批量/思维导图/对话单篇/对话批量/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/ZIP(3模式)/思维导图(交互版+SVG) |
 

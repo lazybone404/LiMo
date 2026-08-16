@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
+import glob as _glob
 
 datas = [
     ('static', 'static'),  # KaTeX + markmap/d3 离线资源
@@ -47,7 +48,7 @@ hiddenimports = [
     'app.agent', 'app.agent.tools',
     'app.generation.ocr_preprocessor',
     'app.core.disconnect',
-    'app.services.chart_renderer',  # 图表渲染（resvg_py 函数内惰性 import）
+    'app.services.chart_renderer',  # 图表渲染（PIL 自绘；PIL 已随图片优化收集）
     # 引擎模块（init_engines() 函数内动态导入，PyInstaller 无法静态追踪）
     'app.engines.doc_types', 'app.engines.doc_markitdown',
     'app.engines.doc_docx', 'app.engines.doc_pptx', 'app.engines.doc_excel',
@@ -84,13 +85,15 @@ for pkg in ['duckduckgo_search', 'dashscope',
             'markitdown', 'lxml',
             'courlan', 'justext', 'htmldate', 'magika', 'babel',
             'cffi', 'cryptography', 'aiohttp', 'httpx', 'openai',
-            'certifi', 'requests', 'pypdfium2',
-            'resvg_py']:
+            'certifi', 'requests', 'pypdfium2']:
     try:
         tmp_ret = collect_all(pkg)
         datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
     except Exception:
         pass
+
+# resvg_py 已移除（2026-08-16 resvg→PIL 切换：resvg 全系在 Windows 无法渲染 SVG 文字
+# —— usvg text 解析 "No match for <font>"，fontdb 加载正常但匹配不上，上游 bug）
 
 # ⚠️ cryptography 携带的 libcrypto-3-x64.dll 版本与 Python 原生 _ssl.pyd 不兼容，
 # 必须排除并用 Python 基础安装的版本替换

@@ -23,4 +23,5 @@ fi
 # 启动
 echo ">>> Starting backend on port $PORT ..."
 cd "$ROOT/backend"
-python -m uvicorn main:app --host 127.0.0.1 --port $PORT --reload 2>&1
+# 显式用项目 venv 的 python（PATH 里的系统 python 可能缺项目依赖，如 resvg_py）
+.venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port $PORT --reload 2>&1

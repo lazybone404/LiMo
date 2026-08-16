@@ -6,6 +6,164 @@
 
 ---
 
+## 2026-08-17 — 图表「错位/缺内容」头号根因：transform 完全不解析 + dominant-baseline 缺失
+
+> 用户：「图片还是有错位之类的东西」。上一轮多边形闭合是皮外伤，这轮深挖到两个**系统性**渲染缺陷：**`<g transform>` 元素整块不画 / 画错位** + **节点内文字垂直不居中**。这是「看起来错位、缺东西、不如原仓库好看」的主要来源（原仓库 diagram-design 的规范大量用 `<g transform>` 定位 + `dominant-baseline=middle` 让文字在节点内居中）。纯 PIL 内补齐，不引入外部依赖。
+
+### 根因
+- **`_svg_to_pil` 遍历时直接跳过 `<g>`**：`transform="translate(...)"` 完全不被解析，g 内子元素（连线/标签/分组节点）要么整块不画、要么画在原始坐标 → 视觉错位/缺内容。qwen-vl 实测：`<g transform="translate(120,60)">` 内的连线+标签整体不可见
+- **`_draw_text` 把 SVG 文字 y 一律当基线**：`dominant-baseline="middle"`（节点内垂直居中的标准写法）被忽略，文字按基线画偏下 → 节点标签下方偏移感
+
+### 修复
+- **`_parse_transform` + `_mat_mul`**：SVG transform（translate/scale/rotate/matrix，空格或逗号分隔组合）→ 2×3 affine 矩阵；矩阵按文本顺序从左到右复合（SVG 语义）
+- **`_svg_to_pil` 改递归遍历**：`<g>` 滚入子元素并累计 transform；`_map(x,y,m)` 用户坐标（含变换）→ 像素统一映射。全部绘制函数（rect/text/line/path/circle/ellipse/polygon/polyline）坐标改走 `_map`
+- **旋转/斜切兜底**：rect/ellipse 在含旋转/斜切时退化为多边形近似（`draw.line` 闭合描边；漏画圆角优于画错位置），无旋转保持原 PIL 绘制（rounded_rectangle/ellipse 观感不变）；字号/笔宽按 transform 局部缩放因子自适应（`tots = scale * lscale`）
+- **`_draw_text` 支持组合锚**：`text-anchor`（start/middle/end → PIL l/m/r）× `dominant-baseline`（middle/central → 中线 m、hanging/top → ascender、text-after-edge → descender，默认基线 s）组合成 PIL 双字母 anchor——`text-anchor="middle" dominant-baseline="middle"` 真正水平+垂直居中
+
+### 验证
+- 像素断言：`<g transform="translate(120,60)">` 内连线+标签出现在平移后区域 2356px / 原位 0px（修复前原位也空 = 整块丢失）；`dominant-baseline=middle` 文字 bbox 中线 410 vs 节点中线 400（基线画法偏 ~20px）
+- **qwen-vl 识图复验**：标签位于预定位置（不在原点）、盒内文字居中、无缺元素无错位
+- test_chart_renderer.py 追加 transform translate + dominant-baseline middle 两项回归断言；9 个后端测试文件全绿
+
+### 影响
+- 补上 SVG 子集最常用的定位手段（transform），LLM 按原仓库规范输出 `<g transform>` 时节点/标签不再消失或错位；节点内居中文字对齐
+- 仍不解析的 SVG 特性（transform 内的复杂元素、A 椭圆弧、defs/marker 等）退回「忽略或近似」（漏画优于画错）；临时验证文件 `_transform_demo.png` 留存供查看
+
+---
+
+> 用户在类型示例图（`_type_demo_flowchart.png`）中发现流程图错位、边框缺失。定位到渲染器 bug：**`_draw_poly` 的 polygon 描边用 `draw.line(pts)` 不闭合**——SVG 语义中 polygon 最后一点要回到起点，draw.line 只画点间连线，导致菱形/多边形缺「最后一点→首点」那条边（流程图菱形只剩 3 条边，视觉上既缺框又像错位）。用 qwen-vl-max 识图复验：5 个节点边框全部完整、文字居中、连线无断头。
+
+### 修复
+- **`_draw_poly` polygon 描边闭合**：`closed = pts + [pts[0]]`，polyline 保持不闭合（SVG 语义区分）。菱形/箭头等带 stroke 的 polygon 四条边完整
+- 示例流程图 SVG 自身漏画两条流程线（开始→输入数据、输入数据→菱形）——VL 识图抓出，补全（非渲染器问题）
+
+### 验证
+- 像素分析：菱形 4 边 402/393/480/442px（修复前左上边仅 146px）
+- **qwen-vl-max 识图**（新增临时工具 `_vision_check.py`，dashscope 多模态看图代替人工像素）：4 张类型示例图（流程图/时间线/结构树/架构图）全部识别出正确类型、元素与连接，无缺边框无错位
+- test_chart_renderer.py 追加 polygon 闭合回归（闭合边 171px）；9 个后端测试全绿
+
+### 影响
+- 带描边的多边形（决策菱形、箭头、分组框）完整闭合，图表不再出现「缺边残缺」
+- 新增 `_vision_check.py` 临时识图工具（qwen-vl 看图描述），可复用验证渲染效果
+
+---
+
+## 2026-08-16 — 图表连线补齐：贝塞尔曲线（C/S/Q/T）采样渲染 + 手写示例图全类型实测
+
+> 用户：「各种连线可以正常生成吗我们手写的，你最好再搞几个示例图片看看」。构造 10 种连线类型示例图实测，暴露 PIL 自绘渲染器短板：**曲线命令此前跳过参数漏画**（图表连接线用曲线时整条消失），其余（line 直线/虚线、path 折线/虚线、polyline、polygon 箭头、相对命令）均正常。
+
+### 补齐
+- **`_path_polylines` 增加 C/S/Q/T 贝塞尔采样**：C/S 三次（`_bezier3`）+ Q/T 二次（`_bezier2`）各采样 24 段为密集折线点（虚线按弧长分段自然兼容）；S/T 平滑曲线的控制点用上一控制点反射（`_reflect`，无上一控制点时用当前点）；Z 闭合回子路径起点。A（椭圆弧）保持跳过——图表基本不用，漏画优于画错
+- 相对曲线命令（c/s/q/t）一并支持（参数相对命令起点偏移）
+
+### 验证
+- 三张手写示例图存 `backend/_line_demo_{1,2,3}.png`（临时文件，用户判别后删）：① 连线类型总览（line/虚线/折线/C 曲线/Q 曲线/polyline/箭头/C 虚线）② S/T 平滑 + 相对 q/t + Z 闭合三角形 + C 虚线 ③ 模拟 LLM 真实流程图（节点 + 竖直线/水平折线/虚线/C 竖线/贝塞尔曲线 + 箭头），像素分析全部画到预期区域
+- 初测用强调色 #eb6c36（RGB 和 397）时深色阈值 300 误判漏画——曲线其实已画出，检测阈值放宽到 600 复测全过
+- test_chart_renderer.py 追加曲线渲染回归（C/Q/S/T 真实渲染断言，2192px）；9 个后端测试文件全绿
+
+### 影响
+- 图表曲线连线不再消失；A 椭圆弧仍不画（图表未用到，漏画优于画错）
+
+---
+
+## 2026-08-16 — 图表渲染 resvg→PIL 切换：resvg 全系在 Windows 无法渲染 SVG 文字（实测定案）
+
+> 用户用两条路径生成对比图判别：「后端生成的没有文字，PIL 有文字」——此前的「resvg 有系统字体 fallback 链」结论被彻底推翻。深挖 resvg-py 与 resvg CLI（cargo 编译 + 官方二进制）实测：**根因是 resvg/usvg 在 Windows 的 text 渲染 bug，不是字体配置问题**。
+
+### 根因（实测证据链）
+- **resvg-py 0.4.0**（Python 3.12 唯一可用版本）：`font_dirs`/`font_files` 传真实字体路径全部无效，连英文字符都渲染为 0px，日志 `No match for "Times New Roman"/"Arial"`——fontdb 匹配不上
+- **resvg CLI v0.48.1**（cargo 编译 + `system-fonts` feature）：`--list-fonts` 正常列出 Arial 等系统字体（fontdb 加载成功），但 usvg 渲染一律 `No match for "<font-family>"`——默认 / `--font-family` / `--use-fonts-dir` / `--use-font-file` 四种方式全试均失败
+- **resvg CLI v0.47.0**（官方 Windows 二进制）：同样 `No match`，文字 0 深色像素
+- 佐证：v0.48.1 release **无 Windows 二进制**（Windows CI 构建失败；v0.47 及更早有）——resvg 在 Windows 的 text 问题是上游普遍 bug，非个别绑定缺陷
+
+### 方案：PIL 自绘 SVG 子集渲染器（`chart_renderer.py`）
+- **`_render_png` 从 resvg 切 PIL**：新增 `_svg_to_pil`（rect/text/line/path/circle/ellipse/polygon/polyline 子集），非子集元素忽略（漏画优于画错）；text 用系统探测中文字体文件路径渲染（PIL `anchor` 基线锚——SVG text 的 y 即基线）
+- **修复 path 虚线不画**（用户实测「PIL 的没有一些连接线」）：SVG path 命令与数字粘连（`M470 90 V130`），此前 split() 解析漏命令 → pts 全空 → 不画。改正则 tokenizer（`_path_polylines`）分离命令/数字，支持 M/L/H/V/Z + 相对命令 + 隐式 L，曲线命令跳过；`stroke-dasharray` 虚线按弧长分段绘制
+- **`_detect_chinese_font` 改返回字体文件路径**（PIL 需要；此前返回 resvg 注册名）+ 按 `(path,size)` 缓存字体对象
+- **零新依赖**：PIL 已随图片优化打包；**resvg_py 收集已从 LiMoBackend.spec 移除**（此前需显式 glob `resvg_py/*.pyd` 进 binaries + hiddenimports）
+- 校验链 / 安全过滤 / SVG 片段保存 / 失败标注逻辑**全部不变**
+
+### 验证
+- 用户实际 SVG（`7 分钟了解 10 种 RAG 策略` chart_1.svg）渲染：文字条带深色 2951/3844 + path 虚线竖线/横线 248/562（resvg 全系为 0）
+- test_chart_renderer.py 新增**真实 PIL 渲染回归用例**（不 mock `_render_png`：文字 + path 虚线必须渲染）；全部 9 个后端测试文件全绿
+- 中文字体探测成功（msyh.ttc）
+
+### 影响
+- 图表渲染不再依赖 resvg_py（打包体积略减，去掉一个 .pyd + 收集配置）
+- 取舍：PIL 只覆盖 prompt 约束的 SVG 子集；LLM 若输出超子集元素（image 等）→ 忽略该元素（漏画优于画错）
+
+---
+
+## 2026-08-16 — 图表文字问题定案：字体非根因 + 保存 SVG 片段 + 约束精简（修正上一条）
+
+> 上一条「resvg 不跨字体 fallback 字形」的根因结论**被实测推翻**。用户连续反馈"图表没文字"后实测：resvg fontdb **有系统字体 fallback 链**——`sans-serif`/不指定字体都能渲染中文（文字中心深墨 1032px），显式 YaHei 或渲染参数映射更清晰（1568px）。字体不是"没文字"的根因。
+
+### 修正
+- **移除脆弱的字符串替换 `_ensure_chinese_font`**：正则只匹配双引号 `font-family="..."`，LLM 用单引号/style 内联/CSS 类写法全部漏掉——即使字体是根因也覆盖不全。删除该函数与 `_FONT_FAMILY_RE`
+- **改 resvg 渲染参数**：`svg_to_bytes(sans_serif_family=font, font_family=font)`（`_detect_chinese_font` 保留，探测失败用 resvg 默认，仍有 fallback）——不修改 SVG 内容，所有字体写法全覆盖
+- **prompt 去掉 font-family 约束**（用户"不需要指定字体"）+ **图表约束精简压缩**（用户反馈"生成太久"）：样式/节点/显示规则合并为 ~5 行核心 + 最小示例（去 font-family），**强制只画 1 张最有代表性的图**（原 1-2 张 → 图表 SVG 输出 token 减半，最大提速点）；注入段从 ~1488 字符压到 ~826 字符
+- **保存 SVG 源码片段**（用户提议）：`_process_svg` 渲染成功同步写 `assets/chart_{n}.svg`——①调试：文字没渲染时能查看 LLM 原始输出（产物零残留设计此前把 SVG 直接丢了，无从取证）②用户深度使用时导出矢量图。不用于展示（assets 白名单无 svg）
+
+### 真正的"没文字"根因（尚未定位）
+- 既然 resvg 渲染中文没问题，"没文字"指向 **LLM 输出的具体 SVG**（文字 fill 与背景同色 / 文字被 rect 覆盖 / 字号或位置异常 / visibility 等）。保存 SVG 片段后重新生成即可取证定位
+
+### 验证
+- 真实 resvg 端到端冒烟：```chart 围栏 → `![图表](assets/chart_1.png)` 引用 + chart_1.png（640x320，中文深墨 3761px）+ chart_1.svg（含中文源码）三通
+- test_chart_renderer.py（新增 SVG 保存断言）+ test_prompt.py 全绿
+
+---
+
+## 2026-08-16 — 图表文字无法显示根因定位 + 渲染层中文字体兜底（未打包）
+
+> 用户反馈：生成的图表"没有文字/文字无法正常显示"。与上一条「LLM 没写 `<text>`」是两码事——本次**文字其实画了但渲染不出来**。
+
+### 根因（resvg 不跨字体 fallback 字形）
+- resvg 的 fontdb 按 `font-family` **精确匹配**，找不到时不回退到其他字体补字形。prompt 用 `sans-serif` → Windows 上 resvg 映射到 **Arial**（无中文字形）→ 所有中文渲染成空白/豆腐块。批量字体对比实测：sans-serif 中文深墨仅 147px（稀疏/豆腐块），Microsoft YaHei 492px（正常）
+- 与「LLM 没写 `<text>`」叠加：即便 LLM 认真写了文字节点，渲染层也画不出来——这就是用户反复看到无字图的完整链条
+
+### 修复
+- **渲染层中文字体兜底**（chart_renderer.py）：`_render_png` 渲染前调 `_ensure_chinese_font()`——把 `<text>` 的泛型/西文 `font-family` 替换为系统探测的中文字体。跨平台候选：Windows `Microsoft YaHei/SimHei/SimSun`、macOS `PingFang SC`、Linux `Noto Sans CJK SC/WenQuanYi`；PIL `ImageFont.truetype(path)` 探测 + 进程内缓存（每进程只探测一次）
+- **尊重 LLM 明确指定**：`font-family` 已含中文字体名（YaHei/SimHei/PingFang/Noto 等）则原样保留，不二次替换；探测失败回退原样渲染不崩溃
+- **校验链加强**（同批）：`<text` 打开标签后必须有**非空白文字内容**——空 `<text></text>` / 自闭合 `<text/>` 与零文字图一并拦截（此前只查标签存在，空 text 会通过校验却渲染出无字图）
+- **prompt 不动**：用户要求「通用简单字体」→ prompt 保持 `font-family="sans-serif"`，具体字体由渲染层兜底决定（LLM 无需知道平台字体名）
+
+### 验证
+- 实测修复效果：文字区域深墨像素 1255→2104px（1.7x，全图统计被节点描边稀释故取文字区域对比）
+- test_chart_renderer.py 新增 3 组用例（mock 字体探测，跨环境稳定）：泛型 sans-serif 替换 / 明确中文字体保留 / 探测失败原样返回 + 空 text/自闭合 text 校验失败
+- 后端 9 个测试文件全绿，无回归
+
+### 待用户验证
+- 当前用户环境 7414 是旧后端（缺 resvg_py）+ 5173 被 file-viewer 项目占用。需处理残留进程后 `bash start.sh`（7413 + reload + `.venv`）重新生成图表，确认文字正常显示
+
+---
+
+## 2026-08-16 — 生成警告弹窗修复（未打包，0.4.1 基础上追加）
+
+> 用户反馈：每次生成都弹「当前内容类型不支持：保留文档图片」+「图表未生成」两个警告，且日志无记录。
+
+### 修复
+- **「当前内容类型不支持」不再被跨类型残留骚扰**：`formatImages`/`formatLink`/`formatScreenshot`/`formatReferences` 等被 genPrefs 跨文档类型持久化，切到 UI 不支持该格式的类型（如 PDF 勾过「保留文档图片」→ 文本/视频）时，`droppedFormats` 检测到残留 → **每次生成都弹 toast**。修复：只对「当前类型 UI 可见」的格式弹提示（镜像 GenerateOptions 显示条件），UI 不可见的残留静默忽略（该类型本就不支持、用户无法操作）；全量被过滤格式 `console.warn` 记录便于排查（GenPanel.tsx）
+- **图表约束强化**：`get_chart_format` 从「可选生成…不适合则明确说不画」改「内容适合时必须生成；判断不适合时**不得静默跳过**，须输出 `> 图表说明：内容不适合图表化`」——消除 LLM 合法跳过路径，让「跳过」显式化（prompt.py）
+- **图表约束二次精简**（同日下午）：实测 flash 模型（deepseek-v4-flash）多次不画——28 行质量硬规则（防重叠 6 条/复杂度预算/布局约定/≤300 行）创作成本过高，模型宁可跳过。移除质量硬规则，压缩到 8 行核心（必须生成/chart 围栏/viewBox 一致/安全红线）+ **最小可行动例模板**（2 节点流程图，模型照抄门槛极低）。质量略降但产出率大幅提升；防重叠/4px 网格等**质量**规则回归原仓库建议层（参考仓库 `C:\WorkPlace\_pi\explore\diagram-design\`）；但「正常显示」底线约束保留——二次精简删过头，见下条
+- **warning 补日志**：generate.py 生成开始记录 `source_type/formats`；两处「图表未生成」warning 加 `log.warning` 并区分「模型判断内容不适合图表化」（检测到声明）vs「LLM 未输出图表围栏」，warning 消息同步区分——前端不再收到笼统的「LLM 未输出围栏」
+- **加回「正常显示」必要约束**（当日下午，用户反馈「图表里没有文字」）：二次精简删过头，模型产出纯框线无文字图。先用 `.venv` resvg 实测**能正常渲染中英文**（排除缺字体论）——根因是 LLM 没写 `<text>` + 校验链只查形状不查文字。从原仓库 diagram-design（`C:\WorkPlace\_pi\explore\diagram-design\`）提取「至少能正常显示」必要约束回注 prompt：① 背景不透明（铺满 `<rect width="100%" height="100%" fill="#ffffff"/>`，透明底深色主题下看不清）② 元素不越界、四周留 ≥16px 边距、文字不超节点边界（超出被裁剪）③ 相邻节点间距 ≥16px 不重叠 ④ 每个节点必须有文字、字号 ≥12、深字浅底、节点内居中。校验链加**「无文字说明」兜底**（有形状但零 `<text>` → 校验失败替换为失败文本，不渲染无字图）。
+- **复用原仓库样式系统**（用户要求，同日）：不只提取约束，把参考仓库 editorial 视觉语言整体注入 prompt——背景 `paper #f5f5f5`（不透明铺满）、主文字/描边 `ink #2d3142`、次要文字/连线 `muted #4f5d75`、强调 `accent #eb6c36`（≤2 焦点）、节点=白底 `#ffffff` + `rx=6` 圆角 + ink 描边 1px、节点名 `sans-serif` 12-14px 600 字重居中（Geist/Instrument Serif 换系统 sans-serif——resvg 无 Google 字体）。示例模板整体升级为该样式。实测渲染 640x320 PNG：文字像素 1.44%、角落 (245,245,245) 背景不透明。注入后 ~1488 字符，仍是单条短规范；只搬视觉样式，不搬 4px 网格/正交连接器/复杂度预算——未重蹈 28 行覆辙
+
+### 诊断结论（约束是否有问题）
+- 注入链路完整（前端序列化 → 后端 format_list → hard_constraints 注入）；**约束本身没有 bug**，但「可选生成」措辞给了 LLM 合法跳过路径 + 用户用 deepseek-v4-flash（fast 模型）画复杂 SVG 遵循度低——3 次生成零图表输出（连 svg 围栏都没有）。建议图表功能用更强模型（deepseek-v4 / qwen 大模型）
+
+### resvg_py 缺失（用户实测日志 `No module named 'resvg_py'` 暴露）
+- 用户日志实锤 **LLM 其实输出了 chart 围栏**，问题断在渲染链路。双根因：
+  1. **start.sh / restart-backend.sh 用裸 `python`**（PATH 里的系统 Python，缺 backend/.venv 的项目依赖）——开发模式后端进程 import 不到 resvg_py。修复：两脚本显式用 `.venv/Scripts/python.exe -m uvicorn`（start.sh + restart-backend.sh）
+  2. **PyInstaller spec 收集不到 resvg_py**——Rust 编译的 `resvg_py.pyd`（2.3MB）在包内，`collect_all` 的 `collect_dynamic_libs` 识别不到（实测 binaries=0），打包产物 `_internal/` 无 resvg_py。修复：spec 显式 `glob('resvg_py/*.pyd')` 进 binaries + hiddenimports 加 `resvg_py`/`resvg_py.resvg_py`
+- 渲染链路验证：`.venv` 下示例 SVG 渲染出 `chart_1.png` ✓；已跑 PyInstaller 打包确认含 resvg_py（本次**未打包发布**，用户开发模式测试中）
+- **待用户验证**：重新 `bash start.sh` 重启后端后再测图表
+
+### 验证
+- 后端 11 测试文件 + 前端 98 tests + build + lint 全绿（lint 仅存量 exhaustive-deps warnings）
+
+---
+
 ## 2026-08-16 — 图表围栏内部协议收紧（对齐协议设计说明定稿）· 本次打包 0.4.1
 
 > 依据 `pi-docs/图表围栏内部协议设计说明.md`（设计定稿）收紧图表识别协议。核心取舍：**误伤用户内容（静默改写用户数据）不可接受 > LLM 偶尔不遵循围栏约定（warning 重新生成）可接受**——识别从「启发式猜测（双条件/svg 根）」改「协议显式匹配」。
