@@ -130,7 +130,6 @@ npx tauri dev
 - **生成管道**（视频/网页/文本/文档 → 笔记）：`POST /generate/{id}` + `/stream`，双产物并行 `asyncio.gather`
 - **处理管道**（图片/文档 → OCR）：`POST /process/{id}`，4 mode（extract/table/digitize/understand）
 - **对话管道**（Agent 工具循环）：`POST /chat` + `/chat/stream`，5 工具，SSE 流式
-- **AI 审核管道**：`POST /fact-check/{id}` + `/stream`，四阶段（Static Review → Planning → Evidence → Report）
 
 ### 2.2 后端目录（`backend/app/`）
 
@@ -139,8 +138,8 @@ npx tauri dev
 | `adapters/` | 5 适配器（Video/Document/Image/Webpage/Text） | `__init__.py` 注册顺序决定路由优先级 |
 | `engines/` | 10 内置引擎 + 插件加载器 + ASR 契约 | `transcript.py`（TranscriptResult 契约） |
 | `routers/` | 14 个路由模块 | `ingest/generate/process/chat/export/files/conversations/capabilities/...` |
-| `generation/` | 生成/处理/OCR 预处理/prompt/AI 审核 | `prompt_builder.py`、`review.py`、`ocr_preprocessor.py` |
-| `agent/` | LLM Agent 工具 + 会话管理 | `tools.py`、`tool_registry.py`、`evidence.py`、`compress.py`、`session.py`、`prompts/` |
+| `generation/` | 生成/处理/OCR 预处理/prompt | `prompt_builder.py`、`ocr_preprocessor.py` |
+| `agent/` | LLM Agent 工具 + 会话管理 | `tools.py`、`tool_registry.py`、`compress.py`、`session.py`、`prompts/` |
 | `llm/` | LLMService + AgentRunner | `service.py`、`agent.py` |
 | `core/` | 配置/类型/注册表/错误/断连/FTS5 搜索/cookie | `config_io.py`、`model_resolver.py`、`search.py`、`protocols.py` |
 | `downloaders/` | 平台下载器 | yt-dlp/douyin + abogus 签名 |
@@ -324,12 +323,12 @@ async def my_stream(request: Request):
 
 Tauri v2 `externalBin` 自动加平台后缀 → PyInstaller 产物 exe 需重命名匹配。
 
-### 6.2 产物位置与体积（0.3.1 实测，2026-08-14 体积优化后）
+### 6.2 产物位置与体积（0.4.1 实测，2026-08-16 图表围栏协议收紧后）
 
 | 产物 | 路径 | 大小 |
 |------|------|------|
-| NSIS 安装包 | `frontend/src-tauri/target/release/bundle/nsis/LiMo_0.3.1_x64-setup.exe` | ~148MB |
-| MSI 安装包 | `frontend/src-tauri/target/release/bundle/msi/LiMo_0.3.1_x64_en-US.msi` | ~195MB |
+| NSIS 安装包 | `frontend/src-tauri/target/release/bundle/nsis/LiMo_0.4.1_x64-setup.exe` | ~149MB |
+| MSI 安装包 | `frontend/src-tauri/target/release/bundle/msi/LiMo_0.4.1_x64_en-US.msi` | ~196MB |
 
 > 体积优化（2026-08-14）：docling/pytesseract 依赖残留清理 + ffmpeg 换精简版后，安装包从 ~265M/~366M 降到 ~148M/~195M。详见 [CHANGELOG.md](CHANGELOG.md)（2026-08-14 打包体积优化条目）。
 
@@ -364,10 +363,10 @@ npx tauri build
 ```bash
 # 版本号 7 处同步（VERSION 单一源）——禁止手动改任何版本文件
 python scripts/sync-version.py --check          # CI 一致性检查
-python scripts/sync-version.py patch            # 0.3.1 → 0.3.2（Bug 修复）
-python scripts/sync-version.py minor            # 0.3.1 → 0.4.0（新功能）
-python scripts/sync-version.py 0.4.0            # 手动指定
-python scripts/sync-version.py minor --tag      # 升级 + 打 git tag v0.4.0
+python scripts/sync-version.py patch            # 0.4.0 → 0.4.1（Bug 修复）
+python scripts/sync-version.py minor            # 0.4.0 → 0.5.0（新功能）
+python scripts/sync-version.py 0.5.0            # 手动指定
+python scripts/sync-version.py minor --tag      # 升级 + 打 git tag v0.5.0
 ```
 
 ### 6.5 产物验证清单（打包后必查）

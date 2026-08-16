@@ -2,15 +2,9 @@
  * 任务 slice — 导入进度 + 图片处理结果 + 处理任务追踪 + 任务面板。
  */
 import type { StateCreator } from 'zustand'
-import type { Store, ProgressEvent, ImportStage, ImageResult, TaskInfo } from './types'
+import type { Store, ImageResult, TaskInfo } from './types'
 
 export interface TasksSlice {
-  // ── 导入进度 ──
-  importProgress: ProgressEvent | null
-  importStages: ImportStage[]
-  setImportProgress: (ev: ProgressEvent | null) => void
-  setImportStages: (stages: ImportStage[]) => void
-
   // ── 图片处理结果: docId → mode → { text, engine, id } ──
   imageResults: Record<string, Record<string, ImageResult>>
   setImageResult: (docId: string, mode: string, result: ImageResult) => void
@@ -31,23 +25,6 @@ export interface TasksSlice {
 }
 
 export const createTasksSlice: StateCreator<Store, [], [], TasksSlice> = (set) => ({
-  importProgress: null,
-  importStages: [],
-  setImportProgress: (ev) => set(s => {
-    if (!ev) return { importProgress: null, importStages: [] }
-    const stages = [...s.importStages]
-    const existingIdx = stages.findIndex(st => st.phase === ev.phase)
-    const stage = {
-      phase: ev.phase,
-      status: (ev.status === 'error' ? 'error' : ev.status === 'done' ? 'done' : ev.status === 'running' ? 'running' : 'pending') as 'done' | 'running' | 'pending' | 'error',
-      message: ev.message || ev.phase,
-    }
-    if (existingIdx >= 0) stages[existingIdx] = stage
-    else stages.push(stage)
-    return { importProgress: ev, importStages: stages }
-  }),
-  setImportStages: (stages) => set({ importStages: stages }),
-
   imageResults: {},
   setImageResult: (docId, mode, result) => set(s => ({
     imageResults: {

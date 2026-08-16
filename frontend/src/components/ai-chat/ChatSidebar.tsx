@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useChatStore, type ChatListItem } from '../../store/chatStore'
 import { useStore } from '../../store'
 import { deleteConversation, renameConversation, archiveConversation } from '../../api/client'
+import { getErrorMessage } from '../../api/core'
 import { Search, Trash2, Pencil, Download, Archive, ArchiveRestore, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react'
 import { ContextMenu } from '../ui/ContextMenu'
 import { SCALES, type ChatScale } from './scale'
@@ -81,7 +82,8 @@ export function ChatSidebar({ conversations, currentId, compact, scale, onSwitch
         if (result.ok) addToast('对话已导出，请查看下载文件夹')
         else addToast(`导出失败: ${result.error}`, 'error')
       } catch (e) {
-        addToast('导出失败: ' + (e instanceof Error ? e.message : String(e)), 'error')
+        // P2-13：走 getErrorMessage 保留结构化中文消息（ApiErrorException.message），而非裸 err.message
+        addToast('导出失败: ' + getErrorMessage(e), 'error')
       }
     })()
   }

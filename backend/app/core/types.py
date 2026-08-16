@@ -49,7 +49,6 @@ class GenerateMode(StrEnum):
     POLISHED = "polished"
     NOTES = "notes"
     BOTH = "both"
-    FACT_CHECK = "fact_check"
 
 # -- Pipeline --
 
@@ -138,40 +137,9 @@ class MarkdownView:
         "screenshot_replace": False, "link_replace": False,
     })
     more_options: list[str] = field(default_factory=list)
-    fact_check: bool = False
     generation_model: str = ""
     version: int = 1
     status: str = "complete"  # "complete" | "partial" — 取消时保存 partial，续写后变 complete
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-
-
-@dataclass
-class FactCheckClaim:
-    """单条事实主张的验证结果"""
-    id: str                              # "claim_01"
-    text: str                            # 主张原文
-    category: str                        # "statistical" | "historical" | "scientific" | "quote" | "general"
-    status: str                          # "verified" | "disputed" | "unverifiable" | "inconclusive"
-    confidence: float = 0.0              # 0.0 - 1.0
-    sources: list[dict] = field(default_factory=list)  # [{title, url, snippet, relevance}]
-    analysis: str = ""                   # LLM 推理过程
-    correction: str | None = None        # 若 disputed，给出修正文本
-
-
-@dataclass
-class FactCheckResult:
-    """完整事实验证报告"""
-    id: str                              # "fc_xxxx"
-    transcript_id: str                   # 关联的 RawTranscript
-    source_content_id: str               # 被核查的 MarkdownView.id
-    source_mode: str                     # "notes" | "polished"
-    verified_count: int = 0
-    disputed_count: int = 0
-    unverifiable_count: int = 0
-    overall_score: float = 0.0           # 0.0 - 1.0 加权可信度
-    claims: list[FactCheckClaim] = field(default_factory=list)
-    summary: str = ""                    # LLM 生成的总体评估段落
-    content: str = ""                    # 完整 Markdown 报告（供 MarkdownView 存储）
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
 

@@ -34,13 +34,6 @@ PRODUCTS: dict[str, ProductDef] = {
         inputs=[],
         description="整理版原文：去噪音、修正错别字、合并段落，保留完整信息",
     ),
-    "fact_check": ProductDef(
-        name="fact_check",
-        label="事实验证",
-        category="衍生",
-        inputs=["notes"],
-        description="对关键事实断言进行网络交叉验证，返回可信度标注和来源引用",
-    ),
 }
 
 # 为了减少 GC 和快速查找
@@ -55,8 +48,7 @@ def get_product(name: str) -> ProductDef | None:
 def resolve_order(requested: list[str]) -> list[list[str]]:
     """拓扑排序，返回执行批次。同批次内可并行，批次间必须串行。
 
-    ["notes", "polished", "fact_check"] → [["notes","polished"], ["fact_check"]]
-    ["fact_check"] → [["notes"], ["fact_check"]]  （自动补齐依赖）
+    ["notes", "polished"] → [["notes", "polished"]]
     """
     if not requested:
         return []
@@ -66,8 +58,7 @@ def resolve_order(requested: list[str]) -> list[list[str]]:
     if not valid:
         return []
 
-    # 自动补齐依赖：如果用户请求了 fact_check 但没有 notes，
-    # 检查是否有已有的 notes 产物可用（由调用方判断），
+    # 自动补齐依赖：检查是否有已有产物可用（由调用方判断），
     # 这里只做拓扑排序，补齐逻辑由 generate.py 处理
     seen: set[str] = set()
     batches: list[list[str]] = []

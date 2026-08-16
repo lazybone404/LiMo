@@ -2,9 +2,9 @@
 
 一次完整的打包流程：PyInstaller → 复制 ffmpeg → Tauri。
 
-产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)（当前版本 0.3.1，2026-08-14 体积优化后）：
-- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.3.1_x64-setup.exe`，~148MB）
-- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.3.1_x64_en-US.msi`，~195MB）
+产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)（当前版本 0.4.1，2026-08-16 图表围栏协议收紧后）：
+- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.4.1_x64-setup.exe`，~149MB）
+- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.4.1_x64_en-US.msi`，~196MB）
 
 > **体积优化（2026-08-14）**：docling/pytesseract 依赖残留清理 + ffmpeg 换精简版后，安装包从 ~265M/~366M 降到 ~148M/~195M。详见 [CHANGELOG.md](CHANGELOG.md)（2026-08-14 打包体积优化条目）。
 
@@ -60,12 +60,12 @@ rg "^\s+from app\.\S+ import" --glob '*.py' app/
 ```
 
 已固化在 spec 中的（不要重复加）：
-- `app.generation.*`（generator/content_preparer/prompt_builder/prompt/fact_check/**review**/**ocr_preprocessor**）
+- `app.generation.*`（generator/content_preparer/prompt_builder/prompt/ocr_preprocessor）
 - `app.core.model_resolver`、`app.core.cookie_parser`、`app.core.text_utils`、`app.core.disconnect`
 - `app.utils.url_security`、`app.utils.screenshot_marker`、`app.utils.video_helper`、`app.utils.video_reader`
 - `app.downloaders.douyin_downloader`、`app.downloaders.douyin_helper`
 - `app.llm`、`app.llm.service`、`app.llm.agent`、`app.llm.errors`
-- `app.agent`、`app.agent.tools`、`app.agent.evidence`
+- `app.agent`、`app.agent.tools`
 - `app.engines.*`（doc_types/doc_markitdown/doc_docx/doc_pptx/doc_excel/epub 等，`init_engines()` 动态导入）
 
 ### 验证 exe 能启动

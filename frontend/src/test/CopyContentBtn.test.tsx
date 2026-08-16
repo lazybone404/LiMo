@@ -13,7 +13,6 @@ const baseCtx: ContentGetterCtx = {
   currentContent: null,
   currentPolishedContent: 'polished text',
   currentRawText: null,
-  currentFactCheckContent: null,
   imageResults: {},
 }
 

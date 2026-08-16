@@ -263,18 +263,17 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - 流式 SSE 端点 + 对话持久化（`conversations/` + CRUD）
 - **上下文管理**（2026-08-04 C1-C5）：`context_window` 四层解析（用户自定义 > 预设 > provider 默认表 > 保守 32k）→ 预算 = 窗口×0.7；`core/chat_context.py` 历史按 token 反向裁剪 + 文档引用分级截断（替代固定 40 条）；`agent/compress.py` 超阈值 LLM 摘要早期消息（fallback：deepseek-chat→当前模型→跳过不阻塞）；SSE 事件：`meta` 带 budget/price、`compressed` 事件（压缩后）、`done` 不带 usage（token/费用由前端基于 meta.price 估算）；前端 token 占用进度条 + clearContext + 压缩/隐私提示
 - 5 个工具：search_docs / lookup_doc / list_docs / search_web / fetch_url
-- 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留 generating/factChecking，AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice
+- 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留 generating，AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice
 - **消息级文档引用**：docIds = 当前选中文档 + 本条 @ 引用（chatStore 组合去重），不绑定会话
 
-**AI 审核管道**（AI Review Engine，2026-07-15 从 FactCheck 重构而来）：
-- 端点 `POST /fact-check/{id}` + SSE 流式 `GET /fact-check/{id}/stream`（URL 不变）
-- 四阶段：Static Review（提取 Claim + 分类 Fact/Data/Opinion + 内部一致性 + 风险评分）→ Verification Planning（LLM 批量决策验证策略）→ Evidence Collection + Review（按需搜索 + 多维度评估）→ AI Review Report（红黄绿报告 + 可信度 + Action）
-- 验证源 fallback：已有 notes → 已有 polished → 原始转录
-- 存储为 MarkdownView（mode=FACT_CHECK），前端 PreviewArea fact_check tab
-- `ReviewEngine`（`app/generation/review.py`）— 复用 agent/tools.py 的 search_web/fetch_url
-- 工具层：废弃 DDG Instant Answer API → `duckduckgo_search` 库；新增 `search_official` / `get_url_metadata` / `today` / `is_recent`
-- Evidence Manager（`app/agent/evidence.py`）— 统一证据格式 + 缓存（TTL 24h）+ URL 去重
-- 旧 `FactCheckEngine`（`app/generation/fact_check.py`）保留不动
+**图表管道**（2026-08-16，方案：图表功能与 fact_check 移除）：
+- 生成笔记勾选「图表」（formats=chart）→ prompt 按需注入图表规范（`get_chart_format(source_type)` 基础规范 + 来源差异段）。**分层约束**：prompt 硬性规范优先（viewBox+width/height 双写一致 ≤640×640、单图 ≤300 行、安全红线清单、防重叠规则），代码校验链只做兜底（LLM 失控时拦截，见下）→ LLM 输出 ```chart 围栏 → `app/services/chart_renderer.py` 校验链 → resvg 渲染 PNG(2x) 存 `assets/chart_N.png` → 替换为 `![图表](assets/chart_N.png)`
+- **只入 notes**：`_POLISH_FORMAT_FNS` 白名单无 chart，polish 不注入；`AVAILABLE_OPTIONS` 按 source_type 控制勾选（video/webpage/pdf/docx/pptx/text 有，xlsx/audio 无）；前端排除 epub（走独立解读管道）
+- **协议收紧**（2026-08-16，见 [pi-docs/图表围栏内部协议设计说明.md](pi-docs/图表围栏内部协议设计说明.md)）：只认 ```chart 专用围栏（内容须含 `<svg` 根元素）；svg/xml 围栏、裸内联 `<svg>` 一律不碰（用户内容零触碰）。取舍：误伤用户内容（静默改写用户数据）> LLM 偶尔不遵循围栏约定（warning 重新生成）
+- **校验链**：XML 良构 → viewBox ≤640×640 → 有形状元素 → resvg 渲染（失败重试 1 次）；任一失败**替换为** `📊 图表生成失败（{reason}）` 文本（零残留——产物永不含围栏，内部协议不外泄）。勾选图表但 LLM 未输出 chart 围栏 → 完成时 warning「图表未生成：请重新生成」
+- **安全过滤**：`<script>` / `on*` 事件属性 / `xlink:href`·外部 URL 引用按不可信内容剥离（纵深防御——最终产物是 PNG 不执行脚本）
+- **resvg-py 打包**：`_render_png` 函数内惰性 import（避免模块级 import 失败波及生成链路），spec 必须 collect_all('resvg_py') + hiddenimports 加 'app.services.chart_renderer'
+- **后处理挂载**：generator.py `generate()`/`generate_both()` + generate.py `_post_process`（在 `_normalize_generated_images` 之前，先替换 assets 相对路径再统一 URL 规范化）
 
 ### 适配器注册
 
@@ -283,7 +282,7 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 ### 其他注册表
 
 同类插件化模式还用在两处：
-- **ProductRegistry**（`app/generation/product_registry.py`）— 产物注册表，定义 notes/polished/fact_check 及其依赖拓扑。新增产物类型只需加一个 `ProductDef` 即可，无需改分发逻辑或前端 UI。
+- **ProductRegistry**（`app/generation/product_registry.py`）— 产物注册表，定义 notes/polished 及其依赖拓扑。新增产物类型只需加一个 `ProductDef` 即可，无需改分发逻辑或前端 UI。
 - **ToolRegistry**（`app/agent/tool_registry.py`）— Agent 工具注册中心，替代硬编码的 `_register_chat_tools()`。每个工具是独立 `ToolDef`，注册后自动被发现和调用。
 
 FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` 四个依赖，消除路由函数中 `request.app.state.xxx` 样板代码。conversations / capabilities / files 路由已迁移，其余可逐步迁移。
@@ -316,7 +315,7 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 - **AI 对话为浮窗（唯一形态，2026-08-04 移除插槽面板）**：`FloatingAI` 覆盖式浮窗，可拖拽（边界钳制）/resize（不超视口），位置/大小持久化 localStorage（`mbw_aiPos`/`mbw_aiSize`），内部栏（会话列表/导航）可拖拽调宽 + 拖 <80px 自动折叠
 - Zustand store 按域拆 7 slices（`store/themeSlice.ts` / `docsSlice` / `contentSlice` / `tasksSlice` / `chatSlice` / `uiSlice` / `toastSlice`），`store/index.ts` 只剩组合层 + 模块副作用，共享类型在 `store/types.ts`（`Store` 为各 slice 交集）。**action 零跨域引用**，新增域 = 新建 slice 文件，消费方 API 零改动。持久化为手写 localStorage（`mbw_*` 14 个 key），无 persist 中间件。`setProcessing(key, null)` 是前缀树形删除语义（删 key 本身 + `key__` 前缀子任务），`clearDocTasks`/`cancelOneTask`/`failTask` 是兄弟函数
 - **Slot 插槽注册表**（`lib/slotRegistry.ts`）：`SlotDef`（位置 left/right/center + 渲染组件 + 折叠行为）注册即得可拖拽面板，`SlotLayout.tsx` 是布局引擎（50–600px，<80px 折叠为 PanelStrip，`uiSlice.slots` 驱动宽度）。与 AI 浮窗（FloatingAI 覆盖式唯一形态）正交——插槽管内容面板，浮窗管对话
-- **对话独立 chatStore**（`store/chatStore.ts`，2026-08-04）：对话状态**不并入主 store**——流式 delta 高频更新隔离（主 store 订阅者不受波及）。chatSlice 只留 generating/factChecking；AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice。对话组件树：`ChatCore`（容器，内部栏受控拖拽调宽）→ `ChatSidebar`（会话列表/归档折叠）/ `MessageList`（分页窗口）/ `MessageItem`（气泡/打字机/操作栏/工具气泡/思考折叠）/ `ChatInput`（textarea/IME/@引用/token 进度）。消息模型 ChatMsg 在 chatStore.ts 定义，**勿与主 store types.ts 的 ChatMessage 混淆**
+- **对话独立 chatStore**（`store/chatStore.ts`，2026-08-04）：对话状态**不并入主 store**——流式 delta 高频更新隔离（主 store 订阅者不受波及）。chatSlice 只留 generating；AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice。对话组件树：`ChatCore`（容器，内部栏受控拖拽调宽）→ `ChatSidebar`（会话列表/归档折叠）/ `MessageList`（分页窗口）/ `MessageItem`（气泡/打字机/操作栏/工具气泡/思考折叠）/ `ChatInput`（textarea/IME/@引用/token 进度）。消息模型 ChatMsg 在 chatStore.ts 定义，**勿与主 store types.ts 的 ChatMessage 混淆**
 
 ### Tauri 桌面壳
 
@@ -392,7 +391,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 **核心约束**：
 - 用户在预览栏看到什么，导出就应该得到什么。禁止导出与预览不一致的内容
 - 前端预览 tab → 内容映射走 `lib/tabRegistry.ts`（`TabDef` 纯数据注册：id/标签/`contentSource`/processingKinds）+ `lib/contentSources.ts`（`CONTENT_GETTERS`：`Record<ContentSource>` getter）。新增 tab = 注册一个 TabDef + 一个 getter，无需改分发逻辑（旧 `TAB_EXPORT` 表已移除）
-- 后端 `GET /export/{id}` 内容源回退链：markdown（notes/polished/fact_check）→ process_results（图片 extract/table 等）→ transcript（rawText）→ 404
+- 后端 `GET /export/{id}` 内容源回退链：markdown（notes/polished）→ process_results（图片 extract/table 等）→ transcript（rawText）→ 404
 - HTML 导出已对齐预览：Pygments 代码高亮 + 语言标签、GFM 删除线/任务列表、时间戳 badge（Content 蓝色/Screenshot 橙色）、标题锚点 id
 - MD 导出自动将图片路径重写为绝对 URL（基于 `request.base_url`），外部查看不再裂图
 - 图片文档没有 markdown 条目，HTML 导出依赖 `get_process_results()` 回退
@@ -410,7 +409,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 - 图片收集/重写/内联三个核心函数 → 4 端点改造
 - HTML 自包含（KaTeX 预渲染·内联 CSS·零 CDN·4 主题），默认 `limo` 匹配应用内预览的 `--md-*` CSS 变量
-- ZIP 三种图片模式（独立文件夹/base64 内嵌/不包含）+ 多产物标签（笔记/整理版原文/事实验证/提取文字等）
+- ZIP 三种图片模式（独立文件夹/base64 内嵌/不包含）+ 多产物标签（笔记/整理版原文/提取文字等）
 - 思维导图：SVG 下载 + markmap 交互式 HTML（~980KB·暗色自适应）
 
 ### 安全
@@ -442,7 +441,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **设置页 overlay**：`App.tsx` 中设置页用条件渲染 overlay 而非替换整个 render tree，避免 GenPanel 卸载丢失进行中的任务状态
 - **SSE 断开保护**：`streamGenerate` 追踪 `receivedDoneOrError` 标志，连接异常断开时触发 `onError('连接意外断开')` 防止 `generating` 永不复位
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
-- **取消机制**：6 个端点全部覆盖 — generate/ingest/retranscribe/fact_check/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
+- **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
 ## 关键模式（2026-07-10 起持续沉淀，现 34 条）
 
@@ -486,7 +485,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 31. **disconnect_watcher 客户端断连监测**：`app/core/disconnect.py` 提供 `@asynccontextmanager` 封装的 `disconnect_watcher(request, cancel_event)`。替换了 5 个路由中 ~45 行重复的 `_watch_disconnect` 实现，修复了 process.py 资源泄漏和 chat.py 缺 await 两个 bug。新增长时端点时复用此工具。
 32. **适配器一请求一实例**：`AdapterRegistry` 存**类**（`register(VideoAdapter)`），`route()` 命中前 `cls()` 实例化——单例实例的 `cookies`/`_engine_config`（含 `cancel_event`）会被并发导入互相覆盖。适配器 `accept()` 是纯输入判断（无实例状态），`name` 是类属性。**本次已修复**：registry.py + adapters/__init__.py。
 33. **CORS Origin 白名单**：本地后端**禁止** `allow_origin_regex=".*"`（任意网页可跨站读本地数据）。白名单必须含 Tauri v2 生产的 **`http://tauri.localhost`**（Windows WebView2 实测 origin）+ `https://tauri.localhost` + `tauri://localhost` + 本机 localhost 任意端口；`_ForceCORSMiddleware` 仅对白名单 origin 回显凭证。**本次已修复**：main.py（2026-08-02 曾漏 `http://tauri.localhost` 导致打包版全接口 CORS 拦截）。
-34. **app 内置欢迎文档同步**：PreviewArea 空态欢迎页（「欢迎使用 LiMo」Markdown 快速开始，`frontend/src/components/preview/PreviewArea.tsx` 的 `renderContent` 空态分支）**在新增/移除功能时必须同步更新**——它面向新用户展示当前能力，曾因未同步而过时（如缺失插件系统/参考文件）。判断标准：改动影响「导入/转录/生成/导出/插件」任一能力时，检查此文档。
+34. **app 内置欢迎文档同步**：PreviewArea 空态欢迎页（2026-08-16 改造为 **LiMo 三产物形态**：`WELCOME_NOTES`=笔记（欢迎简介）/ `WELCOME_POLISHED`=整理版原文（开发者功能）/ `WELCOME_TRANSCRIPT`=转录（更新记录），`frontend/src/components/preview/PreviewArea.tsx` 模块级常量 + `welcomeTab` 三 tab 切换）**在新增/移除功能时必须同步更新**——它面向新用户展示当前能力，曾因未同步而过时（如缺失插件系统/参考文件）。判断标准：改动影响「导入/转录/生成/导出/插件」任一能力时，检查此文档。
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始
@@ -553,20 +552,18 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | assistant 引用块 | tool_result.refs → assistant 消息引用文档 chips（点击跳转） |
 | ✅ | 上下文管理 | 模型窗口感知预算（context_window 四层解析）+ 历史 token 反向裁剪 + 长对话 LLM 压缩 + 前端 token 占用进度/费用显示 + clearContext + 429 重试 |
 
-### ✅ AI 审核（原事实验证）
+### 📊 图表生成（2026-08-16，替代原 AI 审核域）
+
+> AI 审核（原事实验证）已随方案「图表功能与 fact_check 移除」下架转历史——后端 fact_check/review/evidence 删除、前端 fact_check tab 移除，历史 fact_check.md 产物保留不删（无读取入口）。旧实现记录见 CHANGELOG 2026-07-15 起条目。
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| ✅ | 四阶段管道 | Static Review → Verification Planning → Evidence Collection → Report |
-| ✅ | SSE 流式进度 | static_review → verify → review → done |
-| ✅ | 前端 tab | PreviewArea fact_check tab + 纯 Markdown 流式展示（和其他产物一致） |
-| ✅ | 验证源 fallback | notes → polished → transcript |
-| ✅ | Evidence Manager | 统一证据格式 + 缓存（TTL 24h）+ URL 去重 |
-| ✅ | 工具增强 | DDG 真实搜索（duckduckgo_search 库）+ Official Search + 日期工具 + URL 元信息 |
-| ✅ | verify_mode 设置 | LLM（默认，模型知识）和 Web（联网搜索）两种验证方式，设置页可选 |
-| ✅ | 报告可交互 | 参考来源链接后处理注入 + 前端纯 Markdown 流式展示 |
-| ✅ | Chunk 提取 | `split_into_chunks()` 按句子边界分片 + 并行 LLM 提取 + 去重（`SequenceMatcher` 相似度>0.85），最多32块 |
-| ❌ | 专业模式 | 学术/法律/医疗专用搜索源（暂不实施） |
+| ✅ | 笔记可选组件 | 生成笔记勾选「图表」（默认不勾选），prompt 按需注入 `get_chart_format(source_type)` 规范 |
+| ✅ | 来源差异提示 | DOC 类型→架构图/层级树；网页→流程/结构树；视频→流程步骤图/时间线；其他→自行判断 |
+| ✅ | resvg 渲染嵌入 | LLM 输出 ```chart 围栏 → 校验链 → resvg 渲染 PNG(2x) → `assets/chart_N.png` → `![图表](...)` 引用 |
+| ✅ | 校验链 + 安全过滤 | 只认 ```chart 围栏/XML 良构/viewBox ≤640×640/有形状元素 + script·on*·外部引用剥离；失败替换为 📊 失败文本（零残留）；无 chart 围栏 → 完成 warning |
+| ✅ | 只入 notes | polish 白名单无 chart；xlsx/audio 无勾选；前端排除 epub |
+| ❌ | 更多图表类型 | 当前为 SVG 通用渲染（resvg），无 echarts/mermaid 等专业图库（插件化方向，暂不实施） |
 
 ### 📤 导出
 
@@ -594,8 +591,12 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 主题系统 | 六轴独立 — `data-theme`(明暗) × `data-accent`(26套配色) × `data-base`(13种基调) × `data-texture`(6种纹理) × `data-font`(5种字体) × 强度滑条。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（20个: 护眼/经典/粉色/雅致/国风各4）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值） |
 | ✅ | GenPanel 类型门控 | 5 类型 × 5 子标签，逐类型显隐选项 |
 | ✅ | EPUB 一键解读 | 逐章解读 + 归并全书总结 + 中断续跑 + 三态 UI（进度条/继续上次/一键解读），GenPanel epub 专属入口 |
-| ✅ | 事实验证 UI | fact_check tab + 流式进度指示 + 报告渲染 |
+| ✅ | 图表生成 UI | GenerateOptions 笔记格式区「图表」勾选（视频/网页/PDF/文档/文本显示；Excel/图片/电子书排除），默认不勾选 |
 | ✅ | 首次启动向导 | OnboardingWizard 三屏：阅读氛围 → 系统组件检测 → AI 配置（LLM/DashScope key，基于 missingKeys 自动跳过已配项，可整屏跳过） |
+| ✅ | 阅读宽度自适应 | 内容上限 `max(1100, 面板宽−160)`，折叠侧栏后阅读区利用空白（2026-08-16） |
+| ✅ | 编辑器分屏拖拽 | 产物编辑器 源码\|预览 分隔条可拖拽调宽（25-75%，对齐三栏交互，2026-08-16） |
+| ✅ | 编辑/输入 mono 字体 | 对话输入框 + 文本/链接/图片/文件 URL 粘贴框统一等宽字体（2026-08-16） |
+| ✅ | 欢迎文档三产物 | 空态示例文档 = 笔记（欢迎简介）/整理版原文（开发者功能）/转录（更新记录，2026-08-16） |
 
 ### 🛡️ 安全 & 运维
 
@@ -636,8 +637,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✨ LLM 生成 | 8 | 8 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 9 | 9 | 100% |
-| ✅ AI 审核 | 9 | 10 | 90% |
+| 📊 图表生成 | 5 | 6 | 83% |
 | 📤 导出 | 8 | 9 | 89% |
-| 🎨 前端 UI/UX | 10 | 10 | 100% |
+| 🎨 前端 UI/UX | 14 | 14 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
 | **合计** | **72** | **74** | **97%** |

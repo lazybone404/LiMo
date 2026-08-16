@@ -231,13 +231,6 @@ def _safe_filename(title: str) -> str:
     return name[:80] if len(name) > 80 else name
 
 
-# DEPRECATED: unused, kept for future use
-def _export_filename(title: str, label: str, ext: str) -> str:
-    """统一的导出文件名：{label}-{safe_title}.{ext}"""
-    safe = _safe_filename(title)
-    return f"{label}-{safe}.{ext}"
-
-
 def _collect_doc_products(store, tx_id: str) -> dict[str, str]:
     """收集单个文档的所有产物 → {文件名: 内容}"""
     products = {}
@@ -255,7 +248,6 @@ def _collect_doc_products(store, tx_id: str) -> dict[str, str]:
     for md in store.get_markdowns_by_transcript(tx_id):
         md_mode = md.get("mode", "")
         if md_mode == "polished": mode_label = "整理版原文"
-        elif md_mode == "fact_check": mode_label = "事实验证"
         else: mode_label = "笔记"
         ver = f"_v{md['version']}" if md.get("version", 1) > 1 else ""
         products[f"{title}-{mode_label}{ver}.md"] = md["content"]
@@ -361,10 +353,10 @@ async def export_batch(data: dict, request: Request, store=Depends(get_store)):
 async def export_mindmap(tx_id: str, request: Request, store=Depends(get_store)):
     """导出思维导图为自包含交互式 HTML（d3.js tree layout）"""
     mds = store.get_markdowns_by_transcript(tx_id)
-    # 优先取笔记（非 polished、非 fact_check），与 custom 导出 mindmap tab 一致
+    # 优先取笔记（非 polished），与 custom 导出 mindmap tab 一致
     content = ""
     for md in mds:
-        if md.get("mode", "") not in ("polished", "fact_check"):
+        if md.get("mode", "") not in ("polished",):
             content = md.get("content", "")
             break
     # 回退：没有 notes 时取任意第一个
@@ -1170,16 +1162,11 @@ def export_custom(data: ExportCustomRequest, request: Request, store=Depends(get
                         if md.get("mode", "") == "polished":
                             content = store.get_markdown(md["id"]) or ""
                             break
-                elif tab == "fact_check":
-                    for md in mds:
-                        if md.get("mode", "") == "fact_check":
-                            content = store.get_markdown(md["id"]) or ""
-                            break
                 elif tab == "mindmap":
                     # 取笔记内容作为思维导图源
                     mindmap_src = ""
                     for md in mds:
-                        if md.get("mode", "") not in ("polished", "fact_check"):
+                        if md.get("mode", "") not in ("polished",):
                             mindmap_src = store.get_markdown(md["id"]) or ""
                             if mindmap_src: break
                     if not mindmap_src:
@@ -1414,15 +1401,10 @@ def _resolve_tab_content(store, tx: dict, mds: list[dict], tab: str) -> str:
             if md.get("mode", "") == "polished":
                 content = store.get_markdown(md["id"]) or ""
                 break
-    elif tab == "fact_check":
-        for md in mds:
-            if md.get("mode", "") == "fact_check":
-                content = store.get_markdown(md["id"]) or ""
-                break
     elif tab == "mindmap":
         mindmap_src = ""
         for md in mds:
-            if md.get("mode", "") not in ("polished", "fact_check"):
+            if md.get("mode", "") not in ("polished",):
                 mindmap_src = store.get_markdown(md["id"]) or ""
                 if mindmap_src: break
         if not mindmap_src:

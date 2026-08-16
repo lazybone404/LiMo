@@ -38,7 +38,6 @@ export function ExportMenu() {
   const [exportingZip, setExportingZip] = useState(false)
   const currentContent = useStore(s => s.currentContent)
   const currentPolishedContent = useStore(s => s.currentPolishedContent)
-  const currentFactCheckContent = useStore(s => s.currentFactCheckContent)
   const currentRawText = useStore(s => s.currentRawText)
   const currentDocId = useStore(s => s.currentDocId)
   const activeView = useStore(s => s.activeView)
@@ -58,7 +57,7 @@ export function ExportMenu() {
     if (!currentDocId || !tabDef) return null
     return getContentForView(activeView, {
       currentDocId, activeView,
-      currentContent, currentPolishedContent, currentRawText, currentFactCheckContent,
+      currentContent, currentPolishedContent, currentRawText,
       imageResults,
     })
   }
@@ -72,7 +71,7 @@ export function ExportMenu() {
   const canExportHTML = !!(tabDef?.htmlMode && exportContent)
   // ZIP 全部产物：只要有任意产物就可用（不限于当前 tab）
   const hasExportableContent = !!(
-    currentContent || currentPolishedContent || currentFactCheckContent || currentRawText ||
+    currentContent || currentPolishedContent || currentRawText ||
     (typeMeta.isImage && Object.keys(imageResults[currentDocId || ''] || {}).length > 0)
   )
 

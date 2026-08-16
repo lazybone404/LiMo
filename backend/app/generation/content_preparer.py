@@ -6,6 +6,7 @@ ContentPreparer — 生成前的内容准备：VL 管线 + 图片剥离/优化 +
 """
 
 import logging
+import os
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -167,6 +168,7 @@ class ContentPreparer:
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             },
         }
+        cf = None
         if cookies:
             try:
                 from app.adapters.video import _cookie_to_file
@@ -191,6 +193,13 @@ class ContentPreparer:
             import shutil
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return None
+        finally:
+            # P1-11：Cookie 临时文件（Netscape 格式，供 yt-dlp 读取）用后删除，防残留
+            if cf:
+                try:
+                    os.remove(cf)
+                except OSError:
+                    pass
 
     @staticmethod
     def _run_vl_pipeline(vl_config: dict, source_url: str) -> tuple[list[str] | None, str | None]:

@@ -55,8 +55,7 @@ export function GenPanel() {
   const [formatLink, setFormatLink] = useState(saved.formatLink)
   const [formatSummary, setFormatSummary] = useState(saved.formatSummary)
   const [formatScreenshot, setFormatScreenshot] = useState(saved.formatScreenshot)
-  // @deprecated formatTranslate 保留用于旧数据持久化，不再用于 UI
-  const [formatTranslate] = useState(saved.formatTranslate ?? false)
+  const [formatChart, setFormatChart] = useState(saved.formatChart ?? false)
   const [formatFormulas, setFormatFormulas] = useState(saved.formatFormulas ?? false)
   const [formatReferences, setFormatReferences] = useState(saved.formatReferences ?? false)
   const [formatImages, setFormatImages] = useState(saved.formatImages ?? false)
@@ -212,14 +211,14 @@ export function GenPanel() {
 
   // 持久化
   useEffect(() => {
-    saveGenPrefs({ style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot,
-      formatTranslate, formatFormulas, formatReferences, formatImages,
+    saveGenPrefs({ style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot, formatChart,
+      formatFormulas, formatReferences, formatImages,
       imageAnalyze, imageOptimize,
       selectedModelId, videoUnderstanding, videoInterval, gridCols, gridRows,
       dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter,
       imageMode, userNotes, notesExpanded, streamDisplay })
-  }, [style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot,
-      formatTranslate, formatFormulas, formatReferences, formatImages, imageAnalyze, imageOptimize,
+  }, [style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot, formatChart,
+      formatFormulas, formatReferences, formatImages, imageAnalyze, imageOptimize,
       ocrEnabled, ocrModelId,
       selectedModelId,
       videoUnderstanding, videoInterval, gridCols, gridRows, streamDisplay,
@@ -276,9 +275,9 @@ export function GenPanel() {
 
   const cancelOp = () => {
     const { processingTasks } = useStore.getState()
-    // 取消导入任务 — 控制器注册 key 固定为 '__import__'
-    if (Object.keys(processingTasks).some(k => k.startsWith('__import__'))) {
-      cancelTask('__import__')
+    // 取消导入任务 — P2-7：只取消当前 active 那条（并发导入各自独立，不误伤其他）
+    if (Object.keys(processingTasks).some(k => k.startsWith('__import__')) && activeImportKeyRef.current) {
+      cancelTask(activeImportKeyRef.current)
     }
     // 取消当前文档的所有操作 — abort 网络请求 + 清除 state
     if (currentDocId) {
@@ -353,6 +352,16 @@ export function GenPanel() {
       return
     }
 
+    // P1-20：同源防重入——同一来源（文件名/URL/文本）已有导入任务在跑则忽略，
+    // 防连按 Enter/连点按钮产生重复任务；不同来源的并发导入仍受 MAX_CONCURRENT_IMPORTS 约束
+    const pendingTitle = fileObj?.name || importInput.trim().slice(0, 40) || '导入'
+    const sameSourceRunning = Object.values(useStore.getState().processingTasks)
+      .some(t => t.kind === 'import' && t.title === pendingTitle)
+    if (sameSourceRunning) {
+      addToast('该内容正在导入中，请稍候', 'info')
+      return
+    }
+
     if (inputType === 'file' || inputType === 'image' || inputType === 'video') {
       const url = importInput.trim()
       if (!fileObj && !url) return
@@ -368,8 +377,9 @@ export function GenPanel() {
         if (isDup) {
           if (existing) { selectDoc(doc.id) }
           else { addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || inputType, sourceFileName: doc.sourceFileName || '', sourceUrl: doc.sourceUrl || '', coverUrl: doc.coverUrl || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() }); selectDoc(doc.id) }
-          setImportProgress(`已导入过，帮你选中了 · ${doc.title}`)
-          setTimeout(() => setImportProgress(''), 3000)
+          // P2-2：去重提示改 toast——3s 静默小字不可见，toast 明确告知已选中
+          addToast(`该内容已导入，已为你选中 · ${doc.title}`, 'info')
+          setImportProgress('')
         } else if (!existing) {
           addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || inputType, sourceFileName: doc.sourceFileName || '', sourceUrl: doc.sourceUrl || '', coverUrl: doc.coverUrl || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() })
           selectDoc(doc.id)
@@ -468,7 +478,11 @@ export function GenPanel() {
     })
   }
 
-  const handleGenerate = () => {
+  // P2-1：continueFrom='partial' → 续写最新残缺产物（后端 continue_from=partial 加载 partial
+  // 版本作为 assistant 已有输出从断点续写，完成后合并标记 complete）
+  const handleGenerate = (continueFrom: '' | 'partial' = '') => {
+    // P1-20：防重入（按钮 disabled 之外的事件路径——快捷键/双击兜底）
+    if (isGenerating) return
     if (!currentDocId) { setError('请先选择文档'); return }
 
     // ── 参考文件意图缺失提醒（会话内只弹一次；确认 → 降级为背景材料）──
@@ -526,9 +540,19 @@ export function GenPanel() {
     setStreamBuffer(polishedKey, '')
 
     const formatStr = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
-      formatSummary && 'summary',
+      formatSummary && 'summary', formatChart && 'chart',
       formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
     ].filter(Boolean).filter(f => typeMeta.availableFormats.includes(f as string)).join(',')
+
+    // P1-5：被 availableFormats 静默过滤的格式一次性 toast 提示（不静默丢弃）
+    const droppedFormats = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
+      formatSummary && 'summary', formatChart && 'chart',
+      formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
+    ].filter(Boolean).map(String).filter(f => !typeMeta.availableFormats.includes(f))
+    if (droppedFormats.length > 0) {
+      const fmtNames: Record<string, string> = { toc: '目录', link: '原片跳转', screenshot: '原片截图', summary: 'AI 总结', chart: '图表', formulas: '公式集', references: '参考文献', images: '保留文档图片' }
+      addToast(`当前内容类型不支持：${droppedFormats.map(f => fmtNames[f] || f).join('、')}`, 'info')
+    }
 
     const streamMode = selectedCore.join(',')
     const isBoth = selectedCore.includes('notes') && selectedCore.includes('polished')
@@ -545,7 +569,6 @@ export function GenPanel() {
     } else {
       setCurrentContent(null)
       setCurrentPolishedContent(null)
-      useStore.getState().setCurrentFactCheckContent(null)
     }
 
     streamGenerate(capturedId, {
@@ -554,6 +577,7 @@ export function GenPanel() {
       model_id: selectedModelId || undefined,
       user_notes: userNotes || undefined,
       reference_ids: refFile ? [refFile.id] : undefined,
+      continue_from: continueFrom || undefined,
       video_understanding: isVideo ? videoUnderstanding : undefined,
       video_interval: isVideo ? videoInterval : undefined,
       grid_cols: isVideo ? gridCols : undefined,
@@ -679,7 +703,14 @@ export function GenPanel() {
         if (!isSameDoc(capturedId)) return
         setError(msg); addToast(msg, 'error')
       },
-      onWarning(msg) {
+      onWarning(msg, kind) {
+        // 图表未生成（kind=chart_missing，可选组件缺失）：产物本身成功，仅 info 提示
+        // 不标 partial——避免 onDone 误报「部分产物生成失败」（协议收紧的语义区分）
+        if (kind === 'chart_missing') {
+          if (!isSameDoc(capturedId)) return
+          addToast(msg, 'info')
+          return
+        }
         if (genOutcomeRef.current === 'ok') genOutcomeRef.current = 'partial'
         if (!isSameDoc(capturedId)) return
         addToast(msg, 'error')
@@ -714,19 +745,36 @@ export function GenPanel() {
         deleteStreamBuffer(polishedKey)
         if (savedPartial) {
           addToast('生成已取消，已生成的内容已保留', 'success')
-          // 刷新版本列表（后端双产物取消时保存已完成产物，status=partial）
-          getMarkdown(capturedId, 'notes').then(md => {
+          // P1-21：取消时 notes + polished 都可能已保存 partial——两路都刷新版本
+          // （此前只刷 notes，polished 的 partial 不可见；getMarkdown 404 返回 null 不 throw）
+          Promise.all([getMarkdown(capturedId, 'notes'), getMarkdown(capturedId, 'polished')]).then(([nmd, pmd]) => {
             if (!isSameDoc(capturedId)) return
             if (useStore.getState().processingTasks[taskKey]) return  // 已重新生成，放弃旧响应
-            if (md) {
+            const fresh = [...(nmd?.versions || []), ...(pmd?.versions || [])]
+            if (fresh.length > 0) {
               const prev = useStore.getState().markdownVersions
-              setMarkdownVersions([...(md.versions || []), ...prev.filter(v => v.mode !== 'notes')])
+              setMarkdownVersions([...fresh, ...prev.filter(v => !fresh.some(f => f.mode === v.mode))])
             }
-          })
+          }).catch(() => {})  // 网络异常忽略，取消态不阻塞 UI
         }
       },
     }, signal)
   }
+
+  // P2-1：监听「继续生成」事件——PreviewArea 的 PartialBanner「继续生成」按钮
+  // dispatch limo:continue-generate → 触发 handleGenerate('partial') 续写残缺产物。
+  // ref 保存最新 handleGenerate，effect 只绑定一次（避免 deps 里函数每次重建重绑）。
+  const handleGenerateRef = useRef(handleGenerate)
+  handleGenerateRef.current = handleGenerate
+  useEffect(() => {
+    const onContinue = () => {
+      const st = useStore.getState()
+      if (!st.currentDocId || st.processingTasks[st.currentDocId + '__generate']) return
+      handleGenerateRef.current('partial')
+    }
+    window.addEventListener('limo:continue-generate', onContinue)
+    return () => window.removeEventListener('limo:continue-generate', onContinue)
+  }, [])
 
   // ── Render ──
   const isBusy = isImporting || isGenerating || isRetranscribing || isImageProcessing
@@ -824,6 +872,7 @@ export function GenPanel() {
                   formatLink={formatLink} setFormatLink={setFormatLink}
                   formatSummary={formatSummary} setFormatSummary={setFormatSummary}
                   formatScreenshot={formatScreenshot} setFormatScreenshot={setFormatScreenshot}
+                  formatChart={formatChart} setFormatChart={setFormatChart}
                   formatFormulas={formatFormulas} setFormatFormulas={setFormatFormulas}
                   formatReferences={formatReferences} setFormatReferences={setFormatReferences}
                   formatImages={formatImages} setFormatImages={setFormatImages}

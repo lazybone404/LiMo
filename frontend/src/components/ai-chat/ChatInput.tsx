@@ -128,7 +128,7 @@ export function ChatInput({ scale }: ChatInputProps) {
           }}
           placeholder="输入问题… (Enter 发送，Shift+Enter 换行)"
           disabled={streaming}
-          className={`flex-1 resize-none rounded-xl border border-border-default bg-surface px-3 py-2 ${s.input} outline-none placeholder:text-disabled disabled:opacity-50`}
+          className={`flex-1 resize-none rounded-xl border border-border-default bg-surface px-3 py-2 font-mono ${s.input} outline-none placeholder:text-disabled disabled:opacity-50`}
           style={{ maxHeight: 160 }}
         />
         {streaming ? (

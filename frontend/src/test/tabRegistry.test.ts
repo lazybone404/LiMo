@@ -11,7 +11,6 @@ describe('TabRegistry', () => {
     expect(keys).toContain('summary')
     expect(keys).toContain('polished')
     expect(keys).toContain('transcript')
-    expect(keys).toContain('fact_check')
     // mindmap depends on content visibility, so not in default list
   })
 

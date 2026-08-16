@@ -5,6 +5,7 @@
 
 import json
 import logging
+import os
 import time
 from http import HTTPStatus
 from pathlib import Path
@@ -55,7 +56,10 @@ class DashScopeASREngine(Engine):
         # Recognition API 通常要求 WAV/PCM，非 WAV 文件用 ffmpeg 转一下
         call_path = file_path
         if audio_fmt not in ("wav", "pcm"):
-            tmp_wav = Path(tempfile.mktemp(suffix=".wav"))
+            # P1-10：mktemp 不安全（TOCTOU 竞态）→ mkstemp（关闭 fd 防句柄泄漏）
+            _fd, _tmp_wav_name = tempfile.mkstemp(suffix=".wav")
+            os.close(_fd)
+            tmp_wav = Path(_tmp_wav_name)
             logger.info("DashScope Recognition: 转换 %s → wav", audio_fmt)
             import os as _os
             subprocess.run([

@@ -44,17 +44,3 @@ export async function parseSSEStream(
   }
 }
 
-/**
- * 与 parseSSEStream 相同，但支持 AbortSignal。
- * signal 被 abort 时停止读取（不抛异常）。
- */
-export async function parseSSEStreamWithAbort(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  onEvent: SSEEventHandler,
-  signal?: AbortSignal,
-): Promise<void> {
-  if (!signal) return parseSSEStream(reader, onEvent)
-  return parseSSEStream(reader, onEvent)
-  // AbortError 由调用方在 fetch.catch 中处理
-  // reader 在 signal aborted 时会自动释放（浏览器行为）
-}

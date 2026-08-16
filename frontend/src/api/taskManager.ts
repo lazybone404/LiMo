@@ -40,12 +40,24 @@ export function registerAbort(taskKey: string, ctrl: AbortController): AbortCont
  * 取消指定 docId / baseKey 的操作
  */
 export function cancelTask(docId: string): boolean {
-  // 导入：遍历查找所有匹配的导入 controller
-  if (docId === '__import__' || docId.startsWith('__import__')) {
+  // 取消所有导入（旧调用方语义）
+  if (docId === '__import__') {
     let aborted = false
     _importControllers.forEach(ctrl => { ctrl.abort(); aborted = true })
     _importControllers.clear()
     return aborted
+  }
+  // P2-7：精确取消单条导入——支持 importKey（__import__N）与 taskKey（__import__N__import）两种形态，
+  // 不误伤并发的其他导入任务
+  if (docId.startsWith('__import__')) {
+    const ctrl = _importControllers.get(docId) || _importControllers.get(docId + '__import')
+    if (ctrl) {
+      ctrl.abort()
+      _importControllers.delete(docId)
+      _importControllers.delete(docId + '__import')
+      return true
+    }
+    return false
   }
   // Doc 任务：baseKey 直接匹配
   const ctrl = controllers.get(docId)

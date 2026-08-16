@@ -3,27 +3,15 @@
 对齐 BiliNote: 默认生成结构化笔记，可选额外生成整理版原文，两产物独立
 """
 
-import logging
-from typing import Optional
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
-from contextlib import asynccontextmanager
 
 # ── 活跃生成任务追踪（用于 get_markdown 返回 has_active_task）──
 _active_generations: set[str] = set()
 
-
-@asynccontextmanager
-async def _track_generation(transcript_id: str):
-    """追踪活跃的生成任务，get_markdown 据此返回 has_active_task"""
-    _active_generations.add(transcript_id)
-    try:
-        yield
-    finally:
-        _active_generations.discard(transcript_id)
-import re
 import uuid
 
 from fastapi import APIRouter, Request, Depends
@@ -35,17 +23,16 @@ from app.core.types import MarkdownView, Style, GenerateMode
 from app.core.dependencies import get_store, get_config, get_guard
 from app.core.errors import GenerateError, AppError
 from app.core.reference_store import get_references
-from app.core.disconnect import disconnect_watcher  # 用于重构: 替换下方的 _watch_disconnect
 from app.core import logging as log
-from app.core.model_resolver import resolve_model as _resolve_model, resolve_llm_config
+from app.core.model_resolver import resolve_llm_config
 from app.llm import LLMService, CancelledError
 from app.generation.generator import Generator, _post_process_content_markers, _post_process_screenshots
+from app.services.chart_renderer import render_charts
 from app.generation.content_preparer import ContentPreparer
 from app.generation.prompt_builder import PromptBuilder
 from app.generation.prompt import build_polish_prompt, build_notes_prompt
 from app.storage.store import rewrite_asset_urls
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -185,7 +172,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
             if "screenshot" in req.formats and source_type == "video" and not req.video_understanding:
                 source_url = tx.get("sourceUrl", "")
                 if source_url:
-                    logger.info("原片截图：开始下载视频 %s", source_url[:80])
+                    log.info("原片截图：开始下载视频", url=source_url[:80])
                     cookies = ""
                     auth = config.get("auth", {})
                     url_lower = source_url.lower()
@@ -414,7 +401,7 @@ async def generate_stream(transcript_id: str, request: Request,
     if "screenshot" in format_list and source_type == "video" and not video_understanding:
         source_url = tx.get("sourceUrl", "")
         if source_url:
-            logger.info("原片截图：开始下载视频 %s", source_url[:80])
+            log.info("原片截图：开始下载视频", url=source_url[:80])
             cookies = ""
             auth = config.get("auth", {})
             url_lower = source_url.lower()
@@ -427,9 +414,9 @@ async def generate_stream(transcript_id: str, request: Request,
             screenshot_video_path = await loop.run_in_executor(
                 None, ContentPreparer._download_video, source_url, cookies)
             if screenshot_video_path:
-                logger.info("原片截图：视频下载完成 %s", screenshot_video_path)
+                log.info("原片截图：视频下载完成", path=screenshot_video_path)
             else:
-                logger.warning("原片截图：视频下载失败，截图将不可用")
+                log.warning("原片截图：视频下载失败，截图将不可用")
 
     guard = request.app.state.guard
     cancel_event = asyncio.Event()
@@ -454,6 +441,9 @@ async def generate_stream(transcript_id: str, request: Request,
             _watch_disconnect(request, cancel_event))
         try:
             all_chunks: list[str] = []
+            video_path: str | None = None  # P0-5：finally 统一清理（prepare 失败时未定义，需预初始化）
+            # P1-8：双产物协程引用（断连/异常时 finally 取消，防孤儿任务继续烧 token）
+            _tasks: list[asyncio.Task] = []
 
             # ── 双产物并行 ──
             if stream_mode == "both":
@@ -524,27 +514,36 @@ async def generate_stream(transcript_id: str, request: Request,
                             # 把正常长思考误判为挂起。150s 容忍长思考；推理链 chunk 到达
                             # 时 anext 正常返回（有 reasoning 也在推流），不触发超时。
                             async with asyncio.timeout(330):
-                                _it = llm.stream(
-                                    prompt, image_urls=image_urls, cancel_event=cancel_event,
-                                    on_reasoning=_reasoning_cb,
-                                    reasoning_effort=reasoning_effort,
-                                )
-                                while True:
-                                    try:
-                                        chunk = await asyncio.wait_for(anext(_it), timeout=150)
-                                    except StopAsyncIteration:
-                                        break
-                                    chunks.append(chunk)
-                                    await _queue.put({"mode": label, "text": chunk})
+                                _it = None
+                                try:
+                                    _it = llm.stream(
+                                        prompt, image_urls=image_urls, cancel_event=cancel_event,
+                                        on_reasoning=_reasoning_cb,
+                                        reasoning_effort=reasoning_effort,
+                                    )
+                                    while True:
+                                        try:
+                                            chunk = await asyncio.wait_for(anext(_it), timeout=150)
+                                        except StopAsyncIteration:
+                                            break
+                                        chunks.append(chunk)
+                                        await _queue.put({"mode": label, "text": chunk})
+                                finally:
+                                    # P1-6：关闭流式生成器（正常/超时/异常路径均执行，防 httpx 连接泄漏）
+                                    if _it is not None:
+                                        try:
+                                            await _it.aclose()
+                                        except Exception:
+                                            pass
                             if chunks:
                                 break  # 成功
                             # 空响应（LLM finish=stop 但 0 chars）→ 重试
-                            logger.warning("%s 空响应（第 %d 次），重试", label, attempt + 1)
+                            log.warning(f"{label} 空响应（第 {attempt + 1} 次），重试")
                         except asyncio.TimeoutError:
                             err_msg = f"{label} 生成超时（150s 无响应），已中断"
                             if not chunks and attempt == 0:
                                 # 首次挂起（chunk 未到就断流）→ 重试一次
-                                logger.warning("%s 挂起（第 %d 次），重试", label, attempt + 1)
+                                log.warning(f"{label} 挂起（第 {attempt + 1} 次），重试")
                                 err_msg = None
                             else:
                                 break
@@ -555,7 +554,7 @@ async def generate_stream(transcript_id: str, request: Request,
                             err_msg = str(e)[:200]
                             if not chunks:
                                 # 连接中断且无内容（deepseek 流式不稳定）→ 重试
-                                logger.warning("%s 连接中断（第 %d 次）: %s", label, attempt + 1, err_msg)
+                                log.warning(f"{label} 连接中断（第 {attempt + 1} 次）: {err_msg}")
                                 err_msg = None
                             else:
                                 break  # 已有部分内容，不重试
@@ -563,7 +562,10 @@ async def generate_stream(transcript_id: str, request: Request,
                         await _queue.put({"mode": label, "type": "cancelled", "saved_partial": bool(chunks)})
                         return chunks, True, None
                     if err_msg:
-                        await _queue.put({"mode": label, "type": "error", "message": err_msg})
+                        # P0-9：per-product 失败改发 warning——前端 onWarning 只标 partial + toast，
+                        # 不清双产物 buffer（原 error 事件 → onError 清空两路 + failTask，一半已保存被误报整体失败）
+                        await _queue.put({"mode": label, "type": "warning",
+                                          "message": f"{label} 生成失败: {err_msg}"})
                         return chunks, False, err_msg
                     await _queue.put({"mode": label, "type": "done"})
                     return chunks, False, None
@@ -574,11 +576,12 @@ async def generate_stream(transcript_id: str, request: Request,
                     # deepseek-v4 思考静默期（默认 high：复杂任务思考 90s+ 零数据）
                     asyncio.create_task(_run_product("polished", polished_prompt, reasoning_effort="low")),
                 ]
-                # 汇合两路事件流（done/error/cancelled 各 1 个后退出）
+                # 汇合两路事件流（done/warning/cancelled 各 1 个后退出）。
+                # warning 是 per-product 失败终态（P0-9：原 error 误触发前端 onError 清空双产物 buffer）
                 _remaining = 2
                 while _remaining:
                     _evt = await _queue.get()
-                    if _evt.get("type") in ("done", "error", "cancelled"):
+                    if _evt.get("type") in ("done", "warning", "cancelled"):
                         _remaining -= 1
                     yield f"data: {json.dumps(_evt, ensure_ascii=False)}\n\n"
                 # gather 返回顺序 = 任务创建顺序（_tasks[0]=notes, _tasks[1]=polished）。
@@ -590,9 +593,12 @@ async def generate_stream(transcript_id: str, request: Request,
                 # 保存双产物（取消时 status=partial，完成时 status=complete）
                 status = "partial" if was_cancelled else "complete"
                 if polished_chunks:
-                    polished_content = _post_process(
+                    # P1-1：后处理（截图 ffmpeg + 图表 resvg）放线程池，释放事件循环
+                    polished_content = await asyncio.to_thread(
+                        _post_process,
                         "".join(polished_chunks), format_list,
-                        video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""))
+                        video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""),
+                        render_chart=False)  # 图表只入 notes（P0-3）
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
                         transcript_id=transcript_id, content=polished_content,
@@ -601,8 +607,10 @@ async def generate_stream(transcript_id: str, request: Request,
                     store.save_markdown(mv)
                     _auto_title(store, transcript_id, mv.content)
                 if notes_chunks:
-                    notes_content = _post_process(
-                        "".join(notes_chunks), format_list,
+                    # P1-1：后处理（截图 ffmpeg + 图表 resvg）放线程池，释放事件循环
+                    raw_notes = "".join(notes_chunks)
+                    notes_content = await asyncio.to_thread(
+                        _post_process, raw_notes, format_list,
                         video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""))
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
@@ -611,6 +619,10 @@ async def generate_stream(transcript_id: str, request: Request,
                     )
                     store.save_markdown(mv)
                     _auto_title(store, transcript_id, mv.content)
+                    # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出 ```chart 围栏
+                    # （旧习惯 svg 围栏 / 裸内联 / 没画）→ warning 提示重新生成
+                    if "chart" in format_list and "```chart" not in raw_notes:
+                        yield f"data: {json.dumps({'type': 'warning', 'kind': 'chart_missing', 'message': '图表未生成：LLM 未输出图表围栏（```chart），请重新生成'}, ensure_ascii=False)}\n\n"
 
                 if video_path and os.path.exists(video_path):
                     try:
@@ -633,15 +645,14 @@ async def generate_stream(transcript_id: str, request: Request,
                 ]
 
                 if both_failed and not was_cancelled:
-                    yield f"data: {json.dumps({'type': 'error', 'message': 'Both polished and notes generation failed'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'error', 'message': '生成失败：笔记与整理版均未成功，请重试'}, ensure_ascii=False)}\n\n"
                 elif empty_products and not was_cancelled:
                     for p in empty_products:
                         yield f"data: {json.dumps({'type': 'warning', 'mode': p, 'message': f'{p} 生成结果为空（已重试一次）'}, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                 elif one_failed and not was_cancelled:
-                    failed_product = "polished" if polished_error else "notes"
-                    error_msg = polished_error or notes_error
-                    yield f"data: {json.dumps({'type': 'warning', 'mode': failed_product, 'message': f'{failed_product} generation failed: {error_msg}'}, ensure_ascii=False)}\n\n"
+                    # P0-9：单路失败详情已由 per-product warning 推送（前端 onWarning 标 partial + toast），
+                    # 这里只发 done 收尾——避免重复 warning toast；onDone 据 genOutcomeRef 报「部分产物失败」
                     yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
@@ -686,29 +697,41 @@ async def generate_stream(transcript_id: str, request: Request,
                     _pending_reasoning.append(text)
 
                 async with asyncio.timeout(330):
-                    _it = llm.stream(
-                        prompt, image_urls=image_urls, cancel_event=cancel_event,
-                        on_reasoning=_reasoning_cb,
-                        # 整理版原文：忠实整理任务，思考强度 low（缩短 deepseek 思考静默期）
-                        reasoning_effort="low" if stream_mode == "polished" else None,
-                    )
-                    while True:
-                        try:
-                            chunk = await asyncio.wait_for(anext(_it), timeout=150)
-                        except StopAsyncIteration:
-                            break
-                        if _pending_reasoning:
-                            yield f"data: {json.dumps({'type': 'reasoning', 'text': ''.join(_pending_reasoning)}, ensure_ascii=False)}\n\n"
-                            _pending_reasoning.clear()
-                        all_chunks.append(chunk)
-                        yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+                    _it = None
+                    try:
+                        _it = llm.stream(
+                            prompt, image_urls=image_urls, cancel_event=cancel_event,
+                            on_reasoning=_reasoning_cb,
+                            # 整理版原文：忠实整理任务，思考强度 low（缩短 deepseek 思考静默期）
+                            reasoning_effort="low" if stream_mode == "polished" else None,
+                        )
+                        while True:
+                            try:
+                                chunk = await asyncio.wait_for(anext(_it), timeout=150)
+                            except StopAsyncIteration:
+                                break
+                            if _pending_reasoning:
+                                yield f"data: {json.dumps({'type': 'reasoning', 'text': ''.join(_pending_reasoning)}, ensure_ascii=False)}\n\n"
+                                _pending_reasoning.clear()
+                            all_chunks.append(chunk)
+                            yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+                    finally:
+                        # P1-6：关闭流式生成器（正常/超时/异常路径均执行，防 httpx 连接泄漏）
+                        if _it is not None:
+                            try:
+                                await _it.aclose()
+                            except Exception:
+                                pass
             except TimeoutError:
                 # LLM 流式调用挂起（150s 无新 chunk）→ 强制结束，避免前端 isStreaming 卡死。
                 # （与双产物路径的 chunk 间隔判定一致——此前 async for 断流要等满 330s）
-                logger.error("单产物生成超时（150s 无 chunk），强制结束: %s", transcript_id)
+                log.error("单产物生成超时（150s 无 chunk），强制结束", transcript_id=transcript_id)
                 if all_chunks:
-                    content = _post_process("".join(all_chunks), format_list,
-                                            video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""))
+                    # P1-1：后处理放线程池，释放事件循环
+                    content = await asyncio.to_thread(
+                        _post_process, "".join(all_chunks), format_list,
+                        video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""),
+                        render_chart=stream_mode != "polished")  # 图表只入 notes（P0-3）
                     mv_mode = GenerateMode.POLISHED if stream_mode == "polished" else GenerateMode.NOTES
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
@@ -731,9 +754,12 @@ async def generate_stream(transcript_id: str, request: Request,
                         pass
                 return
 
-            # 完成后保存
-            content = _post_process("".join(all_chunks), format_list,
-                                    video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""))
+            # 完成后保存（P1-1：后处理放线程池，释放事件循环）
+            raw_content = "".join(all_chunks)
+            content = await asyncio.to_thread(
+                _post_process, raw_content, format_list,
+                video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""),
+                render_chart=stream_mode != "polished")  # 图表只入 notes（P0-3）
             mv_mode = GenerateMode.POLISHED if stream_mode == "polished" else GenerateMode.NOTES
             mv = MarkdownView(
                 id=f"md_{uuid.uuid4().hex[:12]}",
@@ -746,18 +772,12 @@ async def generate_stream(transcript_id: str, request: Request,
                 mv.content = partial_content.rstrip() + "\n\n" + content
             store.save_markdown(mv)
             _auto_title(store, transcript_id, mv.content)
+            # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出 ```chart 围栏 → warning
+            if "chart" in format_list and stream_mode != "polished" and "```chart" not in raw_content:
+                yield f"data: {json.dumps({'type': 'warning', 'kind': 'chart_missing', 'message': '图表未生成：LLM 未输出图表围栏（```chart），请重新生成'}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'id': mv.id}, ensure_ascii=False)}\n\n"
 
-            if video_path and os.path.exists(video_path):
-                try:
-                    os.remove(video_path)
-                except OSError:
-                    pass
-            if screenshot_video_path and os.path.exists(screenshot_video_path):
-                try:
-                    os.remove(screenshot_video_path)
-                except OSError:
-                    pass
+            # 视频清理统一在 finally（P0-5）：正常/取消/异常路径都删，防磁盘泄漏
 
         except CancelledError:
             # 取消 → 保存残缺产物
@@ -780,6 +800,21 @@ async def generate_stream(transcript_id: str, request: Request,
             log.exception("Generate stream failed", tx_id=transcript_id)
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"
         finally:
+            # P0-5：统一清理下载的视频文件（正常/取消/异常路径均执行，防每次取消泄漏 ~500MB）
+            for _vp in (video_path, screenshot_video_path):
+                if _vp and os.path.exists(_vp):
+                    try:
+                        os.remove(_vp)
+                    except OSError:
+                        pass
+                    # P1-11：视频文件删后清空 VL 下载临时目录（vl_video_*），防目录泄漏。
+                    # rmdir 只删空目录，非空（如残留）则跳过，安全。
+                    _parent = os.path.dirname(_vp)
+                    if os.path.basename(_parent).startswith("vl_video_"):
+                        try:
+                            os.rmdir(_parent)
+                        except OSError:
+                            pass
             # 清理断连监听
             _disconnect_task.cancel()
             try:
@@ -793,12 +828,27 @@ async def generate_stream(transcript_id: str, request: Request,
                 except OSError:
                     pass
             _active_generations.discard(transcript_id)
+            # P1-8：断连/异常时取消双产物协程并收拢——否则孤儿任务继续烧 token
+            # 直到流自然结束（结果被丢弃，资源空耗）。正常完成时 tasks 已 done，cancel 无害。
+            for _t in _tasks:
+                if not _t.done():
+                    _t.cancel()
+            if _tasks:
+                try:
+                    await asyncio.gather(*_tasks, return_exceptions=True)
+                except Exception:
+                    pass
             # 关闭 LLM 连接池（每请求一 LLMService，防 httpx client 常驻累积）
             try:
                 await llm.aclose()
             except Exception:
                 pass
-            guard.semaphore.release()
+            # P1-12：信号量释放绝不能被异常/二次取消逃逸——否则槽位永久丢失
+            #（此前 release 在 finally 末尾，finally 内 await 若被取消会跳过它）
+            try:
+                guard.semaphore.release()
+            except Exception:
+                pass
 
     return StreamingResponse(
         merged_stream(),
@@ -844,11 +894,18 @@ def _normalize_generated_images(content: str, doc_dir: str) -> str:
 
 
 def _post_process(content: str, formats: list[str],
-                  video_path, source_type: str, doc_dir: str = "") -> str:
-    """后处理（对齐原有 Generator 行为）"""
+                  video_path, source_type: str, doc_dir: str = "",
+                  render_chart: bool = True) -> str:
+    """后处理（对齐原有 Generator 行为）
+
+    render_chart=False 用于 polished——图表只入 notes，双产物同调渲染会写
+    同名 chart_N.png 互相覆盖（P0-3：counter 每次调用重置）。
+    """
     content = _post_process_content_markers(content)
     if "screenshot" in formats and video_path:
         content = _post_process_screenshots(content, str(video_path), doc_dir=doc_dir)
+    if "chart" in formats and render_chart:
+        content = render_charts(content, doc_dir)
     # LLM 可能把 assets/ 图片幻觉改写成 /api/... 绝对 URL → 规范化回相对 assets/（存储规范）
     content = _normalize_generated_images(content, doc_dir)
     return content
@@ -865,7 +922,7 @@ async def get_markdown(transcript_id: str, mode: str = "", version: int = 0, req
             return {"has_active_task": True, "content": None, "versions": []}
         raise AppError("MD_NOT_FOUND", "尚未生成，请先点击生成按钮", status_code=404)
 
-    # 按模式精确筛选（notes / polished / fact_check 各自独立，不混在一起）
+    # 按模式精确筛选（notes / polished 各自独立，不混在一起）
     if mode:
         mode_mds = [md for md in mds if md.get("mode", "") == mode]
         if not mode_mds:
@@ -923,4 +980,4 @@ def _auto_title(store: object, tx_id: str, content: str) -> None:
     if new_title:
         tx["title"] = new_title
         store.save_transcript_full(tx)
-        logger.info("自动标题: %s → %s", old_title[:30], new_title)
+        log.info(f"自动标题: {old_title[:30]} → {new_title}")

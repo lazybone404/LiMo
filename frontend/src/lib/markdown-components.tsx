@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Copy, Check, Play, Camera, Link2 } from 'lucide-react'
+import { Copy, Check, Play, Camera, Link2, ChevronDown, ChevronUp, Code } from 'lucide-react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { appUrl } from '../api/client'
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
@@ -38,6 +38,61 @@ function cleanHeading(children: any): { clean: React.ReactNode; text: string } {
   return { clean: children, text: str }
 }
 
+/** chart 围栏源码块 — 默认折叠为占位条。
+ * chart 是图表内部协议标记（LLM 与后端的握手，pi-docs/图表围栏内部协议设计说明.md），
+ * 最终会被后端 render_charts 替换为 PNG 图片；流式/预览期间展示数百行源码既卡顿
+ * 又无阅读价值，默认只显示一行占位 + 可展开查看源码。
+ * svg/xml 是用户内容空间，不走此组件（普通代码块展示）。
+ */
+function SvgCodeBlock({ lang, codeContent }: { lang: string; codeContent: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const lineCount = codeContent.split('\n').length
+  const copy = () => {
+    navigator.clipboard.writeText(codeContent).then(
+      () => setCopied(true),
+      () => useStore.getState().addToast('复制失败，请手动复制', 'error'),
+    )
+    setTimeout(() => setCopied(false), 2000)
+  }
+  return (
+    <div className="group relative my-4 overflow-hidden rounded-lg border border-border-light">
+      <div className="flex items-center justify-between bg-surface px-4 py-1.5 border-b border-border-light">
+        <span className="text-[11px] font-medium text-dimmed">图表</span>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="flex items-center gap-1 text-[11px] text-dimmed hover:text-foreground transition-colors"
+          >
+            {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            {expanded ? '收起源码' : '展开源码'}
+          </button>
+          <button
+            onClick={copy}
+            className="flex items-center gap-1 text-[11px] text-dimmed hover:text-foreground transition-colors"
+          >
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+            {copied ? '已复制' : '复制'}
+          </button>
+        </div>
+      </div>
+      {expanded ? (
+        <pre
+          style={{ margin: 0, padding: '1rem', background: 'var(--color-surface)', fontSize: '0.85rem', overflowX: 'auto' }}
+          className="font-mono"
+        >
+          <code className={`language-${lang}`}>{codeContent}</code>
+        </pre>
+      ) : (
+        <div className="flex items-center gap-2 bg-surface/50 px-4 py-2.5 text-[12px] text-dimmed select-none">
+          <Code size={13} />
+          图表源码（{lineCount} 行，保存后渲染为图片）
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** 独立代码块组件 — 提取以满足 React hooks 命名规则 */
 function CodeBlock({ inline, className, children, ...props }: any) {
   const match = /language-(\w+)/.exec(className || '')
@@ -47,10 +102,16 @@ function CodeBlock({ inline, className, children, ...props }: any) {
   const syntaxStyle = resolvedTheme === 'dark' ? oneDark : oneLight
 
   if (!inline && match) {
+    const lang = match[1]
+    // chart 围栏（图表内部协议标记）默认折叠为占位条：最终会被后端渲染成图片，
+    // 流式期间展示数百行源码既卡顿又无阅读价值。svg/xml 是用户内容空间，不折叠。
+    if (lang === 'chart') {
+      return <SvgCodeBlock lang={lang} codeContent={codeContent} />
+    }
     return (
       <div className="group relative my-4 overflow-hidden rounded-lg border border-border-light">
         <div className="flex items-center justify-between bg-surface px-4 py-1.5 border-b border-border-light">
-          <span className="text-[11px] font-medium text-dimmed">{match[1]}</span>
+          <span className="text-[11px] font-medium text-dimmed">{lang}</span>
           <button
             onClick={() => {
               navigator.clipboard.writeText(codeContent).then(
@@ -67,7 +128,7 @@ function CodeBlock({ inline, className, children, ...props }: any) {
         </div>
         <SyntaxHighlighter
           style={syntaxStyle}
-          language={match[1]}
+          language={lang}
           PreTag="div"
           showLineNumbers
           wrapLongLines
@@ -103,9 +164,6 @@ function MarkdownImage({ src, alt, ...props }: any) {
     imgSrc = appUrl(`/api/assets/${currentDocId}/${imgSrc.slice('assets/'.length)}`)
   }
 
-  // 空 src 会导致浏览器重新加载整页，不渲染该元素
-  if (!imgSrc || imgSrc === '') return null
-
   // src 变化（生成中 URL 可能从相对 → 绝对 / 文件就绪）→ 重置失败状态
   useEffect(() => { setBroken(false) }, [imgSrc])
 
@@ -116,6 +174,12 @@ function MarkdownImage({ src, alt, ...props }: any) {
     const t = setTimeout(() => setBroken(false), 2000)
     return () => clearTimeout(t)
   }, [broken])
+
+  // 空 src 会导致浏览器重新加载整页，不渲染该元素。放在两个 useEffect 之后——
+  // 提前 return 会让 hook 数量随 imgSrc 空/非空在 2↔4 间变化，React 抛
+  // 「Rendered more hooks than during the previous render」崩溃（P0-1）。
+  // 空 src 时两个 effect 均无害：setBroken(false) 幂等，重试 effect 早退。
+  if (!imgSrc || imgSrc === '') return null
 
   if (broken) {
     return (
@@ -152,6 +216,26 @@ export function createMarkdownComponents(sourceUrl?: string, isVideo?: boolean) 
     if (u.includes('bilibili.com')) return `${u.replace(/[?&]spm_id_from=.*/, '').replace(/\/\?.*$/, '')}?t=${totalSec}`
     if (u.includes('youtube.com') || u.includes('youtu.be')) return `${u.split('?')[0]}?t=${totalSec}`
     return `${u}#t=${totalSec}`
+  }
+  // p/li 共用的时间戳徽章处理：Content-[mm:ss] → 跳转 badge / Screenshot-[mm:ss] → 截图标。
+  // baseKey 由调用组件传入（useId），避免两处重复的徽章渲染逻辑。
+  const renderTimestampBadges = (text: string, baseKey: string): React.ReactNode => {
+    const parts = text.split(/(\*?(?:Content|Screenshot)-\[\d{2}:\d{2}\])/g)
+    return parts.map((part, i) => {
+      const time = part.match(/\[(\d{1,2}):(\d{1,2})\]/)
+      const mm = time?.[1] || ''
+      const ss = time?.[2] || ''
+      const timeText = time ? `${mm}:${ss}` : ''
+      const link = time && sourceUrl ? makeTimeLink(mm, ss) : null
+      if (part.includes('Content-[')) {
+        const badge = <span className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{timeText}</span>
+        return link ? <a key={`${baseKey}-${i}`} href={link} target="_blank" rel="noopener noreferrer" className="no-underline">{badge}</a> : <span key={`${baseKey}-${i}`}>{badge}</span>
+      }
+      if (part.includes('Screenshot-[')) {
+        return <span key={`${baseKey}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-warning/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Camera size={9} className="text-warning" />{timeText}</span>
+      }
+      return part
+    })
   }
   return {
     h2: ({ children, ...props }: any) => {
@@ -215,56 +299,19 @@ export function createMarkdownComponents(sourceUrl?: string, isVideo?: boolean) 
       return <a href={href} target={href?.startsWith('http') ? '_blank' : undefined} rel="noopener noreferrer" {...props}>{children}</a>
     },
     img: MarkdownImage,
-    p({ children, ...props }: any) {
+    p: function MarkdownParagraph({ children, ...props }: any) {
       const pid = React.useId()
-      function renderContent(text: unknown): React.ReactNode {
-        if (typeof text !== 'string') return text as React.ReactNode
-        const parts = text.split(/(\*?(?:Content|Screenshot)-\[\d{2}:\d{2}\])/g)
-        return parts.map((part, i) => {
-          const time = part.match(/\[(\d{1,2}):(\d{1,2})\]/)
-          const mm = time?.[1] || ''
-          const ss = time?.[2] || ''
-          const timeText = time ? `${mm}:${ss}` : ''
-          const link = time && sourceUrl ? makeTimeLink(mm, ss) : null
-          if (part.includes('Content-[')) {
-            const badge = <span className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{timeText}</span>
-            return link ? <a key={`${pid}-${i}`} href={link} target="_blank" rel="noopener noreferrer" className="no-underline">{badge}</a> : <span key={`${pid}-${i}`}>{badge}</span>
-          }
-          if (part.includes('Screenshot-[')) {
-            return <span key={`${pid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-warning/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Camera size={9} className="text-warning" />{timeText}</span>
-          }
-          return part
-        })
-      }
-      const processed = React.Children.map(children, child => renderContent(child))
+      const processed = React.Children.map(children, child =>
+        typeof child === 'string' ? renderTimestampBadges(child, pid) : child)
       const hasBlockChild = React.Children.toArray(children).some(
         c => React.isValidElement(c) && typeof c.type === 'function'
       )
       return hasBlockChild ? <div {...props}>{processed}</div> : <p {...props}>{processed}</p>
     },
-    li({ children, ...props }: any) {
+    li: function MarkdownListItem({ children, ...props }: any) {
       const lid = React.useId()
-      const processed = React.Children.map(children, child => {
-        if (typeof child === 'string') {
-          const parts = child.split(/(\*?(?:Content|Screenshot)-\[\d{2}:\d{2}\])/g)
-          return parts.map((part, i) => {
-            const time = part.match(/\[(\d{1,2}):(\d{1,2})\]/)
-            const mm = time?.[1] || ''
-            const ss = time?.[2] || ''
-            const timeText = time ? `${mm}:${ss}` : ''
-            const link = time && sourceUrl ? makeTimeLink(mm, ss) : null
-            if (part.includes('Content-[')) {
-              const badge = <span className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{timeText}</span>
-              return link ? <a key={`${lid}-${i}`} href={link} target="_blank" rel="noopener noreferrer" className="no-underline">{badge}</a> : <span key={`${lid}-${i}`}>{badge}</span>
-            }
-            if (part.includes('Screenshot-[')) {
-              return <span key={`${lid}-${i}`} className="inline-flex items-center gap-0.5 rounded-full bg-warning/10 px-2 py-0.5 text-[12px] font-medium text-foreground align-middle select-none"><Camera size={9} className="text-warning" />{timeText}</span>
-            }
-            return part
-          })
-        }
-        return child
-      })
+      const processed = React.Children.map(children, child =>
+        typeof child === 'string' ? renderTimestampBadges(child, lid) : child)
       return <li {...props}>{processed}</li>
     },
     table: ({ children }: any) => (

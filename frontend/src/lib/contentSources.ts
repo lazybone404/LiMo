@@ -14,7 +14,6 @@ export interface ContentGetterCtx {
   currentContent: string | null
   currentPolishedContent: string | null
   currentRawText: string | null
-  currentFactCheckContent: string | null
   imageResults: Record<string, Record<string, ImageResult>>
   /**
    * 流式缓冲读取器（undefined = 不读缓冲，导出/复制场景读已保存内容）。
@@ -29,7 +28,6 @@ export const CONTENT_GETTERS: Record<ContentSource, (ctx: ContentGetterCtx) => s
   notes:    (ctx) => ctx.readStreamBuffer?.('notes') ?? ctx.currentContent,
   polished: (ctx) => ctx.readStreamBuffer?.('polished') ?? ctx.currentPolishedContent,
   rawText:  (ctx) => ctx.currentRawText,
-  factCheck: (ctx) => ctx.currentFactCheckContent,
   imageResult: (ctx) => ctx.imageResults[ctx.currentDocId || '']?.[ctx.activeView]?.text || null,
   none:     () => null,
 }

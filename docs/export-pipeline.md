@@ -53,14 +53,13 @@ AI 对话右键菜单                 ChatCore                     GET /export/c
 
 ### 2.1 文本/视频/网页类文档
 
-Tabs: `summary`, `polished`, `transcript`, `fact_check`, `mindmap`
+Tabs: `summary`, `polished`, `transcript`, `mindmap`
 
 | Tab | 预览内容 | store 字段 | 后端 mode | 后端内容源 |
 |-----|---------|-----------|----------|-----------|
 | summary | MarkdownPreview(currentContent) | currentContent | notes | `get_markdowns_by_transcript(mode="notes")` |
 | polished | MarkdownPreview(currentPolishedContent) | currentPolishedContent | polished | `get_markdowns_by_transcript(mode="polished")` |
 | transcript | TranscriptView(currentRawText) | currentRawText | transcript | `tx["rawText"]`，JSON 格式解析为文本 |
-| fact_check | MarkdownPreview(currentFactCheckContent) | currentFactCheckContent | fact_check | `get_markdowns_by_transcript(mode="fact_check")` |
 | mindmap | MindmapView(currentContent) | currentContent | — (专用端点) | 笔记 markdown → `_build_mindmap_html()` |
 
 ### 2.2 Excel 文档
@@ -75,7 +74,7 @@ Tabs: `data_preview`, `report`, `summary`
 
 ### 2.3 EPUB 文档
 
-Tabs: `summary`, `polished`, `transcript`, `fact_check`, `mindmap`（同文本类——skeleton 已随骨架面板移除，epub 一键解读产物走 summary/polished）
+Tabs: `summary`, `polished`, `transcript`, `mindmap`（同文本类——skeleton 已随骨架面板移除，epub 一键解读产物走 summary/polished）
 
 | Tab | 预览内容 | store 字段 | 后端 mode | 后端内容源 |
 |-----|---------|-----------|----------|-----------|
@@ -105,7 +104,7 @@ Tabs: `original`, `extract`, `table`, `digitize`, `understand`
 1. **`lib/tabRegistry.ts`** — 纯数据元注册：`TabRegistry.register(TabDef)` 一处注册，零改动其他文件。`TabDef` 含 `contentSource`/`htmlMode`/`exportSuffix`/`exportLabel` 导出相关字段：
 
 ```typescript
-export type ContentSource = 'notes' | 'polished' | 'rawText' | 'factCheck' | 'imageResult' | 'none'
+export type ContentSource = 'notes' | 'polished' | 'rawText' | 'imageResult' | 'none'
 
 TabRegistry.register({
   key: 'summary', label: '笔记',
@@ -115,7 +114,7 @@ TabRegistry.register({
   isStandardMarkdown: true, showTOC: true, showVersionSwitcher: 'notes',
   processingKinds: ['import', 'retranscribe', 'generate'],
 })
-// 已注册 12 个内置 tab（summary/polished/transcript/data_preview/fact_check/mindmap
+// 已注册 11 个内置 tab（summary/polished/transcript/data_preview/mindmap
 //   /original/extract/table/digitize/understand/ocr；skeleton 已随骨架面板移除）
 ```
 
@@ -126,7 +125,6 @@ export const CONTENT_GETTERS: Record<ContentSource, (ctx) => string | null> = {
   notes:      (ctx) => ctx.readStreamBuffer?.('notes') ?? ctx.currentContent,
   polished:   (ctx) => ctx.readStreamBuffer?.('polished') ?? ctx.currentPolishedContent,
   rawText:    (ctx) => ctx.currentRawText,
-  factCheck:  (ctx) => ctx.currentFactCheckContent,
   imageResult:(ctx) => ctx.imageResults[ctx.currentDocId || '']?.[ctx.activeView]?.text || null,
   none:       () => null,
 }
@@ -147,7 +145,6 @@ export const CONTENT_GETTERS: Record<ContentSource, (ctx) => string | null> = {
 |------|----------------|-----------------|
 | 无笔记（summary tab） | 按钮 disabled，tooltip 显示"尚未生成笔记" | 勾选 summary tab → 后端查不到内容 → 跳过，不写入 ZIP |
 | 无整理版（polished tab） | 按钮 disabled | 同上 |
-| 无事实验证 | 按钮 disabled | 同上 |
 | 图片未处理（extract 等） | 按钮 disabled | 同上 |
 | 图片 original tab | 按钮 disabled（无文本内容可导出） | tab 可选但后端无内容 → 跳过 |
 
@@ -309,7 +306,7 @@ html = _restore_latex(html, placeholders)
 
 ### 端点：`GET /export/{id}/mindmap`
 
-调用 `_build_mindmap_html(md, title)` 生成自包含 HTML。内容源优先取笔记 markdown（非 polished、非 fact_check），回退到 rawText。
+调用 `_build_mindmap_html(md, title)` 生成自包含 HTML。内容源优先取笔记 markdown（非 polished），回退到 rawText。
 
 ### 资源内联策略
 
@@ -333,7 +330,7 @@ d3.js、markmap-view、markmap-lib 三个库优先从本地 `node_modules/` / `s
 {
   "doc_ids": ["..."],
   "formats": ["md", "html", "plain"],
-  "content_tabs": ["summary", "polished", "transcript", "fact_check", "mindmap"],
+  "content_tabs": ["summary", "polished", "transcript", "mindmap"],
   "html_theme": "limo",
   "formula_md": "keep",
   "image_md": "separate",

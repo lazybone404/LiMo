@@ -8,6 +8,7 @@ import asyncio
 import base64
 import copy
 import logging
+import os
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
@@ -292,7 +293,10 @@ class DocumentAdapter(PipelineAdapter):
             img_b64 = base64.b64encode(img_bytes).decode()
 
             # OCR 识别 — 只用绑定第一个引擎（无引擎降级链）
-            tmp_path = Path(tempfile.mktemp(suffix=f"_p{page_num}.png"))
+            # P1-10：mktemp 不安全（TOCTOU 竞态）→ mkstemp（关闭 fd 防句柄泄漏）
+            _fd, _tmp_name = tempfile.mkstemp(suffix=f"_p{page_num}.png")
+            os.close(_fd)
+            tmp_path = Path(_tmp_name)
             pil_img.save(str(tmp_path), format="PNG")
 
             ocr_text = ""

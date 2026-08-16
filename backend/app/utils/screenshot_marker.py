@@ -30,6 +30,10 @@ def extract_screenshot_timestamps(markdown: str) -> List[Tuple[str, int]]:
         # 解析时间戳：带括号版 (group 1,2) 或不带括号版 (group 3,4)
         mm = match.group(1) or match.group(3)
         ss = match.group(2) or match.group(4)
+        # P1-15：\d{1,2} 可匹配到 99 分钟 → 5940s，LLM 幻觉超长时间戳浪费 ffmpeg 调用。
+        # 过滤 >60 分钟或 >59 秒的非法时间戳。
+        if int(mm) > 60 or int(ss) > 59:
+            continue
         total_seconds = int(mm) * 60 + int(ss)
         # 返回完整匹配文本，确保替换时不留残留字符
         results.append((match.group(0), total_seconds))

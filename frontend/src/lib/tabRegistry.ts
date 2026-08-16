@@ -12,7 +12,7 @@
 // ── Tab 数据定义 ──
 
 /** 内容来源 — 决定内容从哪个字段读（getter 实现见 lib/contentSources.ts） */
-export type ContentSource = 'notes' | 'polished' | 'rawText' | 'factCheck' | 'imageResult' | 'none'
+export type ContentSource = 'notes' | 'polished' | 'rawText' | 'imageResult' | 'none'
 
 export interface TabDef {
   /** 唯一标识，对应 store.activeView */
@@ -39,7 +39,6 @@ export interface TabDef {
    * - 'notes':     currentContent
    * - 'polished':  currentPolishedContent（同时流式缓冲用 generate_polished）
    * - 'rawText':   currentRawText
-   * - 'factCheck': currentFactCheckContent
    * - 'imageResult': imageResults[docId][activeView].text
    * - 'none':      无内容（原图 tab）
    */
@@ -127,7 +126,7 @@ export const TabRegistry = new TabRegistryImpl()
 // 优先级规划：
 //   1-9:   （已移除 skeleton——epub 一键解读后无章节树面板）
 //   10-19: 文档类（summary, polished, transcript, data_preview）
-//   20-29: AI 工具（fact_check, mindmap）
+//   20-29: AI 工具（mindmap）
 //   30-39: 图片类（original, extract, table, digitize, understand）
 //   40+:   其他（ocr）
 
@@ -174,15 +173,6 @@ TabRegistry.register({
   priority: 9,
   contentSource: 'rawText', htmlMode: 'transcript', exportSuffix: '', exportLabel: '数据预览',
   processingKinds: ['import', 'retranscribe', 'generate'],
-})
-
-// ── AI 审核 ──
-TabRegistry.register({
-  key: 'fact_check', label: 'AI 审核',
-  sourceTypes: ALL_TEXT,
-  priority: 20,
-  contentSource: 'factCheck', htmlMode: 'fact_check', exportSuffix: '-事实验证', exportLabel: '事实验证',
-  processingKinds: ['import', 'retranscribe'],
 })
 
 // ── 思维导图 ──

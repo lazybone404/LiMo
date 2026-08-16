@@ -1,8 +1,9 @@
 import { useState, useMemo, useCallback } from 'react'
 import { useStore } from '../../store'
-import { deleteTranscript, updateTranscript, appUrl } from '../../api/client'
+import { deleteTranscript, updateTranscript, appUrl, getErrorMessage } from '../../api/client'
+import { cancelTask } from '../../api/taskManager'
 import { ContextMenu } from '../ui/ContextMenu'
-import { Search, X, CheckCircle2, Loader2, Circle, PanelLeftClose, Pencil, Trash2, Film, Globe, FileText, PenLine, BarChart3, TrendingUp, BookOpen, Paperclip, MessageSquare, Image as ImageIcon, Download, Music, Mic, Bot, Eye, Settings, RefreshCw, Tag, Clipboard, Archive, CheckSquare, Square } from 'lucide-react'
+import { Search, X, CheckCircle2, PanelLeftClose, Pencil, Trash2, Film, Globe, FileText, PenLine, BarChart3, TrendingUp, BookOpen, Paperclip, MessageSquare, Image as ImageIcon, Download, Music, Mic, Bot, Eye, Settings, RefreshCw, Tag, Clipboard, Archive, CheckSquare, Square } from 'lucide-react'
 import { exportBatch } from '../../api/client'
 
 const TAG_FILTERS = [
@@ -40,12 +41,6 @@ const TYPE_COLORS: Record<string, { bg: string; text: string; dot: string }> = {
   chat:     { bg: 'rgba(90,200,250,0.12)', text: '#5AC8FA', dot: '#5AC8FA' },
 }
 
-const STAGE_ICONS: Record<string, string> = {
-  fetching_subtitles: 'FileText', downloading: 'Download', extracting_audio: 'Music',
-  transcribing: 'Mic', done: 'CheckCircle2', summarizing: 'Bot',
-  ocr: 'Eye', preprocess: 'Settings', import: 'Download',
-}
-
 /** 根据名称渲染对应的 lucide 图标（替代 emoji） */
 function IconByName({ name, size = 14 }: { name: string; size?: number }) {
   switch (name) {
@@ -69,19 +64,12 @@ function IconByName({ name, size = 14 }: { name: string; size?: number }) {
     default: return <FileText size={size} />
   }
 }
-const STAGE_LABELS: Record<string, string> = {
-  fetching_subtitles: '拉取字幕', downloading: '下载音频',
-  extracting_audio: '提取音频', transcribing: '语音转写',
-  summarizing: 'AI生成', done: '完成',
-}
 
 export function DocLibrary() {
   const docs = useStore(s => s.docs)
   const currentId = useStore(s => s.currentDocId)
   const selectDoc = useStore(s => s.selectDoc)
   const setDocs = useStore(s => s.setDocs)
-  const progress = useStore(s => s.importProgress)
-  const importStages = useStore(s => s.importStages)
   const searchQuery = useStore(s => s.searchQuery)
   const setSearchQuery = useStore(s => s.setSearchQuery)
   const activeTag = useStore(s => s.activeTag)
@@ -178,26 +166,48 @@ export function DocLibrary() {
       addToast('标题不能为空', 'error')
       return
     }
-    await updateTranscript(id, { title: editTitle.trim() })
-    setDocs(docs.map(d => d.id === id ? { ...d, title: editTitle.trim() } : d))
-    setEditingId(null)
-    addToast('标题已更新')
+    try {
+      await updateTranscript(id, { title: editTitle.trim() })
+      setDocs(docs.map(d => d.id === id ? { ...d, title: editTitle.trim() } : d))
+      setEditingId(null)
+      addToast('标题已更新')
+    } catch (err) {
+      // P1-18：保存失败不再静默假成功
+      addToast(getErrorMessage(err), 'error')
+    }
   }
 
   // 保存标签
   const saveTags = async (id: string) => {
     const tags = editTags.split(/[,，]/).map(t => t.trim()).filter(Boolean)
-    await updateTranscript(id, { tags })
-    setDocs(docs.map(d => d.id === id ? { ...d, tags } : d))
-    setEditingTagsId(null)
+    try {
+      await updateTranscript(id, { tags })
+      setDocs(docs.map(d => d.id === id ? { ...d, tags } : d))
+      setEditingTagsId(null)
+    } catch (err) {
+      // P1-18：保存失败不再静默假成功
+      addToast(getErrorMessage(err), 'error')
+    }
   }
 
-  // 删除
+  // 删除（P0-8：删除前先取消该文档的进行中任务——后台生成/导入继续运行会
+  // 为已删除的 docId 落盘，产生孤儿记录/文档「复活」。须先 cancelTask 再 clearDocTasks）
   const confirmDelete = async (id: string) => {
-    await deleteTranscript(id)
-    setDocs(docs.filter(d => d.id !== id))
-    if (currentId === id) selectDoc('')
-    setDeleteConfirmId(null)
+    const s = useStore.getState()
+    const hasActive = Object.keys(s.processingTasks).some(k => k === id || k.startsWith(id + '__'))
+    if (hasActive) {
+      cancelTask(id)          // abort 后端请求（generate/ingest/process 共用 taskManager）
+      s.clearDocTasks(id)     // 清 store 任务状态（须在 cancelTask 之后）
+    }
+    try {
+      await deleteTranscript(id)
+      setDocs(docs.filter(d => d.id !== id))
+      if (currentId === id) selectDoc('')
+      setDeleteConfirmId(null)
+    } catch (err) {
+      // P1-18：删除失败不再静默（任务已取消，但文档仍在库中，告知用户）
+      addToast(getErrorMessage(err), 'error')
+    }
   }
 
   return (
@@ -257,7 +267,7 @@ export function DocLibrary() {
 
       {/* 文档列表 */}
       <div className="flex-1 overflow-y-auto px-2.5 space-y-1.5">
-        {filteredDocs.length === 0 && !progress && (
+        {filteredDocs.length === 0 && (
           <p className="text-[12px] text-disabled text-center py-8">
             {searchQuery || activeTag ? '没有匹配的文档' : '还没有文档\n粘贴链接或文字开始'}
           </p>
@@ -371,45 +381,6 @@ export function DocLibrary() {
         )})}
       </div>
 
-      {/* 进度 — BiliNote风格步骤指示器 */}
-      {progress && (
-        <div className="px-4 py-3 border-t border-border-light bg-elevated/80">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-              <span className="text-[12px] font-medium text-dimmed">任务进度</span>
-            </div>
-            {progress.percent != null && (
-              <span className="text-[11px] font-medium text-accent">{Math.round(progress.percent)}%</span>
-            )}
-          </div>
-          <div className="h-1 rounded-full bg-surface-hover overflow-hidden mb-2.5">
-            <div className="h-full rounded-full bg-accent transition-all duration-500"
-              style={{ width: `${progress.percent ?? (importStages.length > 0 ? Math.min(95, importStages.filter(s => s.status === 'done').length / Math.max(1, importStages.length) * 100) : 50)}%` }} />
-          </div>
-          {importStages.length > 0 && (
-            <div className="space-y-1.5">
-              {importStages.map((st, i) => (
-                <div key={st.phase} className="flex items-center gap-2 text-[11px]">
-                  <span className="w-4 text-center text-[10px] text-disabled">{i + 1}</span>
-                  {st.status === 'done' ? <CheckCircle2 size={13} className="text-success shrink-0" />
-                    : st.status === 'running' ? <Loader2 size={13} className="text-accent animate-spin shrink-0" />
-                    : st.status === 'error' ? <X size={13} className="text-error shrink-0" />
-                    : <Circle size={13} className="text-disabled shrink-0" />}
-                  <span className={
-                    st.status === 'done' ? 'text-success font-medium' :
-                    st.status === 'running' ? 'text-accent font-medium' :
-                    st.status === 'error' ? 'text-error' : 'text-disabled'
-                  }>
-                    <IconByName name={STAGE_ICONS[st.phase] || 'FileText'} size={13} /> {STAGE_LABELS[st.phase] || st.message || st.phase}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* 右键菜单 */}
       {ctxMenu && (
         <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={ctxItems} onClose={() => setCtxMenu(null)} />
@@ -421,7 +392,10 @@ export function DocLibrary() {
           <div className="bg-elevated rounded-2xl shadow-2xl border border-border-light p-6 max-w-[320px] w-full mx-4 animate-[fadeIn_0.15s_ease-out]" onClick={e => e.stopPropagation()}>
             <h3 className="text-[17px] font-semibold mb-2">删除文档</h3>
             <p className="text-[13px] text-dimmed mb-6">
-              确定要删除「{docs.find(d => d.id === deleteConfirmId)?.title}」吗？关联的 Markdown 也会被删除。此操作不可撤销。
+              确定要删除「{docs.find(d => d.id === deleteConfirmId)?.title}」吗？关联的 Markdown 也会被删除。
+              {Object.keys(useStore.getState().processingTasks).some(k => k === deleteConfirmId || k.startsWith(deleteConfirmId + '__'))
+                ? <span className="text-warning mt-1 block">该文档有进行中的任务，删除将同时取消。</span>
+                : '此操作不可撤销。'}
             </p>
             <div className="flex gap-2 justify-end">
               <button onClick={() => setDeleteConfirmId(null)}

@@ -56,7 +56,20 @@ export function getErrorMessage(err: unknown): string {
 
 // 统一 HTTP 状态检查 + 结构化错误解析
 export async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
-  const r = await fetch(url, init)
+  let r: Response
+  try {
+    r = await fetch(url, init)
+  } catch (err) {
+    // P1-16：瞬时网络抖动/后端未启动 → fetch 抛 TypeError（Failed to fetch）。
+    // 归一为可恢复错误：用户看到中文提示 + 可重试，而非全屏「内容加载失败」红屏。
+    throw new ApiErrorException({
+      code: 'NETWORK_ERROR',
+      message: '网络连接失败，请检查后端是否运行',
+      detail: err instanceof Error ? err.message : String(err),
+      recoverable: true,
+      status: 0,
+    })
+  }
   if (!r.ok) {
     let body: Partial<ApiError> = {}
     try { body = await r.json() } catch { /* body 非 JSON */ }

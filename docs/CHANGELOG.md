@@ -6,6 +6,121 @@
 
 ---
 
+## 2026-08-16 — 图表围栏内部协议收紧（对齐协议设计说明定稿）· 本次打包 0.4.1
+
+> 依据 `pi-docs/图表围栏内部协议设计说明.md`（设计定稿）收紧图表识别协议。核心取舍：**误伤用户内容（静默改写用户数据）不可接受 > LLM 偶尔不遵循围栏约定（warning 重新生成）可接受**——识别从「启发式猜测（双条件/svg 根）」改「协议显式匹配」。
+
+### 协议变化
+- **只认 ````chart ```` 专用围栏**：删 chart/svg/xml 三选 + 双条件检测——svg/xml 是通用语言标记，用户内容出现概率高；chart 是专有标记，概率≈0，零误伤
+- **删裸内联 `<svg>` 兜底**：围栏外裸 svg 不再渲染——处理面收敛到协议内，用户自己粘贴的 SVG 示例/富文本复制不再被静默改写
+- **失败态零残留**：校验/渲染失败由「保留原代码块 + ⚠️ 标注」改为「**替换为** `📊 图表生成失败（原因）` 文本」——产物（存储/展示/导出 MD/HTML）永不含围栏，内部协议不外泄
+- **prompt 收紧**：`get_chart_format` 明示「必须用 ````chart ```` 围栏；不要用 svg/xml 围栏，不要在围栏外输出裸 `<svg>`」
+- **prompt 硬性规范前移**（质量检查延伸，2026-08-16）：代码校验链保留为兜底，另把 3 处「LLM 产出质量」约束前移到 prompt——① viewBox 与 width/height 必须同时给出且一致 ≤640×640（收窄 P0-2 尺寸绕过面，超限直接失败）② 单图源码 ≤300 行（减少 P1-2 长度上限触达）③ 安全红线显式清单（script/on* 事件/外部 URL 引用/animation/foreignObject——后端会过滤，含此类可能渲染失败）+ 围栏内只放 svg、图后不残留代码（减少 `_IMG_SVG_GARBAGE_RE` 触达）
+- **前端只折叠 chart**：`SvgCodeBlock` 仅对 ````chart ```` 围栏折叠（协议围栏防流式卡顿）；svg/xml 恢复普通代码块（用户内容空间不折叠）
+- **「图表未生成」warning**：勾选图表但 LLM 未输出 ````chart ```` 围栏（旧习惯 svg 围栏/裸内联/没画）→ 完成时 warning「图表未生成：请重新生成」（双产物 + 单产物 notes 路径）
+- **保留不变**：校验链（XML 良构/尺寸双校验 ≤640/64KB/有内容/渲染重试）、安全过滤、`_IMG_SVG_GARBAGE_RE` 垃圾清理（只作用于图片引用后粘连字面量，不触碰用户内容）、P0-3 只入 notes
+
+### 验证
+- `tests/test_chart_renderer.py` 重写对齐新协议（12 用例）：svg 围栏/裸内联不处理、失败零残留、混合场景只处理 chart、垃圾清理
+- 后端 11 测试文件 + 前端 98 tests + build + lint 全绿
+
+### 影响
+- LLM 输出 ````svg ```` 围栏（旧习惯）→ 不再处理，用户看到 svg 代码块 + 完成 warning 提示重新生成（过渡期成本，prompt 已引导 chart）
+- 用户内容含 svg/xml 代码块或裸内联 `<svg>` → 不再被图表链路触碰（原可能被静默渲染成图改写）
+
+---
+
+## 2026-08-16 — 全面健壮性/代码质量/用户视角优化（45 项）+ UI 体验升级（4 项）
+
+> 用户要求「全面进行代码健壮性以及代码质量优化以及从用户的角度来再做一些」。3 个 Explore agent（后端健壮性 / 前端用户视角 / 代码质量）+ 人工自查共发现约 60 项问题，分 **P0（崩溃/安全/数据正确性 10 项）→ P1（图表链路/资源泄漏/UX 竞态 21 项）→ P2（中断恢复/死代码清理 14 项）** 三批全部修复，每批独立回归。本次打包 **0.4.0**（新功能 → minor）。
+
+### P0 崩溃/安全/数据正确性（10 项）
+- **React hooks 崩溃修复**：`MarkdownImage` 条件 `return null` 移到两个 useEffect 之后（imgSrc 空→非空时 hook 数量 2→4 曾抛「Rendered more hooks」）
+- **图表尺寸校验绕过（OOM）**：`_parse_viewbox` 同时解析 `width`/`height` 并入 `MAX_CANVAS` 校验——`width="50000"` + 合法 viewBox 不再绕过（曾 ×2 zoom ≈ 40GB 内存）
+- **chart 文件名冲突**：图表**只入 notes**——generate_both 只对 notes 调 render_charts；`_post_process` 加 `render_chart` 参数，polished 三处调用传 `False`，双产物不再互踩 `chart_N.png`
+- **asyncio.gather 异常泄漏**：`return_exceptions=True` 逐路处理 + 任一路异常时 cancel 另一任务再 `await gather(...)` 收尾，`_cleanup_video` 不再在另一路运行时提前删视频
+- **流式取消/异常路径不删下载视频**：`video_path`/`screenshot_video_path` 删除挪进 `finally`（原每次取消泄漏单次最大 500MB）
+- **process 大图 OOM**：LLM 路径前 `stat().st_size` 校验 ≤20MB，超限跳过 LLM 直接走引擎回退（Engine 路径不读 base64 不误拦）
+- **assets 服务剔除 svg**：白名单仅留 png/jpg/jpeg/gif/webp——svg 经 FileResponse 直接返回时浏览器导航 URL 同源执行脚本（存储型 XSS 面）；数据目录实测 0 存量
+- **删除文档不取消进行中任务**：confirmDelete 前检查 `processingTasks` 有该 doc 任务 → 弹确认 + `cancelTask` + `clearDocTasks` 再删（防孤儿落盘/文档复活）
+- **per-product 失败误报整体失败**：后端单产物错误 `{"type":"error"}` → 改发 `warning`（带 mode）——前端 onWarning 只标 partial + toast，不清双产物 buffer、不 failTask（polished 超时但 notes 成功 = 单 warning + notes 保留完整）
+- **ingestStream 无终态兜底**：`receivedDoneOrError` 追踪，流结束未收终态 → 「连接意外断开，请重试」（原导入永久卡死）
+
+### P1 图表链路 + 资源泄漏 + UX 竞态（21 项）
+- **图表链路**：resvg 渲染/ffmpeg 抽帧改 `asyncio.to_thread`（不阻塞事件循环）；SVG 围栏 >64KB 直接失败标注不渲染；图表勾选能力门控（polished-only 时禁用 + tooltip）+ 被过滤格式一次性 toast + 后端对「勾 chart 但产物无任何 ```svg」发 warning；文案改「AI 生成 SVG，本地渲染为 PNG 嵌入」
+- **资源泄漏**：LLM 流式生成器超时/异常后 finally `_it.aclose()`（httpx 连接不再泄漏）；process.py `llm.aclose()` 进 finally；双产物断连时 finally 取消 `_tasks` 孤儿任务；`mkdtemp("limo_ss_")` 永久泄漏修复（doc_dir 空跳过截图替换）+ `tempfile.mktemp`→`mkstemp`（TOCTOU）+ 下载视频父目录/`_cookie_to_file` 临时文件用后清理；双重取消 `except BaseException` 防 `semaphore.release()` 跳过（槽位永久丢失）；上传临时文件 adapter 失败时清理；LLM 重试退避补 `cancel_event` 检查；screenshot_marker 时间戳 ≤60min
+- **UX 竞态**：apiFetch 包 try/catch 网络错误归一化（`ApiErrorException('网络连接失败，请检查后端是否运行', recoverable)`，全屏「内容加载失败」不再被瞬时抖动触发）；import fallback 前检查 `signal.aborted` + fallback 传同一 signal + 已收进度时提示「网络恢复重试中」；DocLibrary 改名/标签/删除 try/catch + toast（原静默假成功）；chatStore 4 处同步失败 catch 加 toast；同源导入防重入（相同 title 检查，保留不同源并发）；取消生成同时刷 polished versions（原只刷 notes）
+
+### P2 中断恢复 + 死代码清理（14 项）
+- **中断生成恢复（用户确认恢复）**：PartialBanner 加「继续生成」入口 → `limo:continue-generate` 自定义事件 → GenPanel 监听 → `handleGenerate('partial')` 以 `continue_from=partial` 续写残缺产物（与 epub 计划隔离，状态源不同）
+- **去重提示改 toast**：「该内容已导入，已为你选中 · title」（原 3s 静默小字）
+- **图片处理结果加载失败 toast**（原误显示「点击处理卡片」）
+- **DocLibrary 底部任务进度死面板删除** + store `importProgress`/`importStages`/`setImportProgress`/`setImportStages` 字段 + `ImportStage` 接口 + 5 个死字段测试（生产恒 null 的死 UI）
+- **formatSize 公共工具**：B/KB/MB/GB 智能单位，图片/文件/视频三处统一（原永远按 KB 显示）
+- **主导入大小预检**：pickFile 统一入口（2GB 拒绝 + 1GB 警告）
+- **取消单条导入精确匹配**：taskManager 按完整 `__import__N` key 精确取消（原归一成 `__import__` 前缀误取消全部）
+- **ingest.py 图片服务去重**：`_validate_tx_id`/`_check_asset_ext`/`_check_asset_within` 三个公共 helper 消除 serve_media_file/serve_asset 重复 + 全中文化错误（无效的文档 ID/不支持的文件格式/路径穿越已拒绝/文件不存在）
+- **generate.py 日志风格收敛**：9 处 `logger.%s` → `app.core.logging` kwargs/f-string，删未用 `import logging`
+- **死代码清理**：`parseSSEStreamWithAbort`（两分支相同）、`Conversation` 接口、`formatTranslate` 死状态、`_export_filename`、`/process-image/{id}` 废弃路由、generate.py `Optional`/`_resolve_model`/`_track_generation`、prompt.py `_STYLE_HEADER`/`PDF_STYLE_MAP`/`VIDEO_STYLE_KEYS`/`EXCEL_STYLE_KEYS`（`STYLE_MAP`/`DOC_STYLE_MAP` 被 capabilities.py 使用保留）、capabilities.py `VIDEO_STYLE_KEYS`
+- **ChatSidebar 裸错误处理**：改 `getErrorMessage(e)`（丢结构化 message）
+
+### UI 体验升级（4 项）
+- **阅读宽度动态跟随面板**：内容上限 `max(1100, 面板宽 - 160)`——折叠 GenPanel/DocLibrary 后面板变宽 → 阅读内容同步放宽（最高 ~1440px，两侧各留 ~80px 边距）利用空白空间
+- **编辑/输入统一 mono 字体**：对话输入框 + 文本/链接/图片/文件 URL 粘贴框改 `font-mono`（产物编辑器源码区/代码块本就是等宽）
+- **编辑器分屏可拖拽调宽**：TextareaMarkdownEditor 源码 | 预览 之间加 ResizeHandle 分隔条（默认 50%，clamp 25%–75%）
+- **欢迎文档三产物化**：欢迎文档（空态示例文档）改造成 LiMo 三产物形态——**笔记**（欢迎/简介+快速开始）/ **整理版原文**（面向开发者的全面功能总览）/ **转录**（CHANGELOG 更新记录），tab 样式对齐主工具栏，内容提为模块级常量便于同步
+
+### 文档同步
+- CLAUDE.md：待办 UI/UX 域新增 4 项；前端模式更新（欢迎文档三产物 = 模式 34 扩展、mono 输入字体、分屏拖拽、动态阅读宽度）
+- STATUS.md：版本 0.4.0、前端测试 103→98、工程质量表更新
+- BUILD.md：产物文件名 0.3.1 → 0.4.0
+
+### 测试
+- 后端 **11 个测试文件全绿**（含 P0 新增 `tests/test_chart_renderer.py`：OOM 尺寸校验回归 + `render_chart=False` polished 不渲染 + 同 doc_dir 双产物文件名不互踩）
+- 前端 `npm test`（**98 tests**）+ `npm run build` + `npm run lint`（0 error）全绿
+
+---
+
+## 2026-08-16 — 图表作为笔记可选组件 + AI 审核（fact_check）移除转历史
+
+> 用户 @ `pi-docs/图表功能与fact_check移除方案.md`（2026-08-15 评审定型）要求实施。两块：① 移除 AI 审核（事实核查产品无强需求、验证链路重），② 图表作为生成笔记的可选组件（对齐「AI 输出意图 → 本地确定性工具收口 → Markdown + assets 引用」的截图模式）。
+
+### ① AI 审核（fact_check）移除转历史
+
+**后端**：
+- 删除 `routers/fact_check.py`、`generation/fact_check.py`（旧 FactCheckEngine）、`generation/review.py`（ReviewEngine）、`agent/evidence.py`（Evidence Manager）+ main.py/spec 注册；`types.py` 删 GenerateMode.FACT_CHECK / MarkdownView.fact_check / FactCheckClaim / FactCheckResult
+- `product_registry.py` 删 fact_check ProductDef；`export.py` 6 处（mode_label / 内容源回退链 / fact_check 分支）；`prompt.py` 删 7 个事实验证 prompt（旧 FactCheck 3 + AI Review 4）+ 相关温度速查；`tools.py` 删 4 个死工具（search_official/get_url_metadata/today/is_recent，仅被 review.py 用）
+- 模型解析注释 `（generate / chat / process 共用）`
+- **历史保留**：已生成的 `fact_check.md` 文件保留不删（转历史，无读取入口；export 内容源回退链不再含 fact_check → 旧文件 404，前端无 tab 展示）
+
+**前端**：删 tabRegistry fact_check tab + contentSources factCheck getter + store types/contentSlice/chatSlice 字段（factChecking 一并移除）+ api `streamFactCheck`/`ReviewChunk` 类型 + PreviewArea `handleFactCheck`/case 分支 + ExportMenu/TaskPanel/GenPanel/constants 相关行 + genPrefs 防御性迁移（旧 `fact_check`/`factCheck` localStorage 清理）
+
+**测试**：CopyContentBtn/tabRegistry/store 测试删 fact_check 断言；`test_markdown_edit.py` 的 `('summary','fact_check','transcript')` 非法 mode 用例保留（fact_check 仍是非法模式）
+
+### ② 图表作为笔记可选组件
+
+**后端**：
+- 新建 `app/services/chart_renderer.py`：检测 ` ```svg/```xml ` 代码块（双条件：围栏语言∈{svg,xml} 且含 `<svg` 根元素）→ 安全过滤（script/on*/外部引用剥离）→ 校验链（XML 良构 → viewBox ≤640×640 → 有形状元素）→ resvg 渲染 PNG(2x) → `assets/chart_N.png` → `![图表](assets/chart_N.png)`；失败保留原代码块 + `> ⚠️ 图表生成失败（{reason}）` 标注，不阻塞整体生成；`_render_png` 惰性 import resvg_py（spec 需 collect_all）
+- `prompt.py` 新增 `get_chart_format(source_type)`（基础规范 + 来源差异段：DOC→架构图/层级树、网页→流程/结构树、视频→流程步骤图/时间线）；`AVAILABLE_OPTIONS` 加 chart（video/webpage/pdf/docx/pptx/text，xlsx/audio 无）；`_ALL_FORMAT_FNS["chart"]` + `_build_hard_constraints` 加 source_type 参数注入
+- **只入 notes**：`_POLISH_FORMAT_FNS` 无 chart，polish 不注入；后处理挂载 generator.py generate/generate_both + generate.py `_post_process`（在 `_normalize_generated_images` 之前）
+- `LiMoBackend.spec`：hiddenimports 加 `app.services.chart_renderer` + collect_all 加 `resvg_py`
+- 依赖：`uv add resvg-py`（清华镜像，resvg-py==0.4.0；API 为 `svg_to_bytes(svg, zoom=2.0)`，无 scale 参数）
+
+**前端**：
+- GenerateOptions 两区块（视频/网页、文本/文档）各加「图表」勾选（默认不勾选），排除 epub（独立解读管道）；xlsx/图片本就无笔记格式区
+- genPrefs 加 `formatChart` 持久化；GenPanel state/saveGenPrefs/formatStr（chart 进 formats，availableFormats 过滤自动生效——capabilities genOptions 直引 AVAILABLE_OPTIONS）
+- 欢迎文档第 3/5 条：加图表说明、删事实验证
+
+### 文档同步
+- CLAUDE.md：AI 审核管道 section → 图表管道 section；待办 AI 审核域 → 图表生成域；合计 72/74→68/70；chatSlice 只留 generating；取消机制 5 端点
+- STATUS.md：端点 78→76、后端 py 95→92（agent 6/generation 10/services 3）、管道表事实验证→图表、进度删 AI 审核（72/74→63/64）、目录结构更新
+
+### 测试
+- 后端全量（prompt/adapters/engines/store/url_security/capabilities/plugin_loader/markdown_edit + e2e 冒烟 36）全绿
+- 前端 `npm run build` + `npm test`（103 tests）全绿
+
+---
+
 ## 2026-08-15 — 产物编辑能力（notes/polished 手动编辑 + 覆盖保护）
 
 > 用户 @ `pi-docs/产物编辑方案.md` 要求实施产物编辑。此前产物（notes/polished）纯只读，用户无法修正 AI 错误、补充内容、导出前润色。零新依赖起步（textarea 版），组件抽象预留 ByteMD 增强路径。

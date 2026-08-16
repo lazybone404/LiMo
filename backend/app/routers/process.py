@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["process"])
 
+# P0-6：LLM 图片处理最大字节数——超限跳过 LLM（整图 base64 ×1.33 可达数 GB 内存峰值）直走 Engine
+MAX_LLM_IMAGE_BYTES = 20 * 1024 * 1024  # 20MB
+
 # 图片处理 prompt — 按模式选择
 IMAGE_PROMPTS = {
     "default": (
@@ -74,6 +77,16 @@ IMAGE_PROMPTS = {
         "5. 用 Markdown 格式输出，不要添加对话"
     ),
 }
+
+
+async def _close_llm(llm) -> None:
+    """关闭 LLM 连接池（防 httpx client 常驻累积）。幂等，异常吞掉。
+    P1-7：LLM 路径失败回退 Engine 后的 raise 会跳过 return 前的 aclose，
+    统一用此 helper 在各出口调用。"""
+    try:
+        await llm.aclose()
+    except Exception:
+        pass
 
 
 class ProcessRequest(BaseModel):
@@ -145,24 +158,31 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
                         mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                                     ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp"}
                         mime = mime_map.get(ext, "image/png")
-                        image_b64 = base64.b64encode(path.read_bytes()).decode()
-                        data_url = f"data:{mime};base64,{image_b64}"
-
-                        text = await llm.call(
-                            prompt_text,
-                            image_urls=[data_url],
-                            max_tokens=4096, temperature=0.1,
-                            max_continuations=0,
-                            cancel_event=cancel_event,
-                        )
-
-                        if text and text.strip():
-                            llm_result = {"text": text.strip(), "engine": f"{llm.provider}:{llm.model}"}
-                            logger.info("LLM 图片处理完成: %d 字, engine=%s", len(text), llm_result["engine"])
-                        else:
-                            logger.warning("LLM 返回空内容，回退 Engine")
-                            llm_error = "LLM 返回空内容"
+                        # P0-6：超大图片不读进内存 base64（整图 ×1.33 可达数 GB 峰值）——跳过 LLM 直走 Engine
+                        if path.stat().st_size > MAX_LLM_IMAGE_BYTES:
+                            logger.warning("图片过大（%.0fMB > %dMB），跳过 LLM 直走 Engine",
+                                           path.stat().st_size / (1024 * 1024), MAX_LLM_IMAGE_BYTES // (1024 * 1024))
+                            llm_error = f"图片过大（>{MAX_LLM_IMAGE_BYTES // (1024 * 1024)}MB）"
                             llm_degraded = True
+                        else:
+                            image_b64 = base64.b64encode(path.read_bytes()).decode()
+                            data_url = f"data:{mime};base64,{image_b64}"
+
+                            text = await llm.call(
+                                prompt_text,
+                                image_urls=[data_url],
+                                max_tokens=4096, temperature=0.1,
+                                max_continuations=0,
+                                cancel_event=cancel_event,
+                            )
+
+                            if text and text.strip():
+                                llm_result = {"text": text.strip(), "engine": f"{llm.provider}:{llm.model}"}
+                                logger.info("LLM 图片处理完成: %d 字, engine=%s", len(text), llm_result["engine"])
+                            else:
+                                logger.warning("LLM 返回空内容，回退 Engine")
+                                llm_error = "LLM 返回空内容"
+                                llm_degraded = True
                     except Exception as e:
                         logger.warning("LLM 图片处理失败，回退到 Engine: %s", e)
                         llm_error = str(e)[:200]
@@ -197,6 +217,8 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
 
                 # 绑定链为空 → 直接报错（不再自动降级）
                 if not engine_priority:
+                    if "llm" in locals():
+                        await _close_llm(llm)  # P1-7：raise 路径也要关连接池
                     raise AppError("PROC_NO_OCR_ENGINE",
                                   "未绑定 OCR 引擎，请在设置中配置",
                                   recoverable=False)
@@ -249,6 +271,8 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
                         continue
 
                 if not text:
+                    if "llm" in locals():
+                        await _close_llm(llm)  # P1-7：raise 路径也要关连接池
                     detail = "; ".join(tried_errors) if tried_errors else "无可用 OCR 引擎，请检查配置"
                     raise TranscribeError.empty(detail=detail)
 
@@ -267,10 +291,7 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
 
             # 关闭 LLM 连接池（若本请求创建过 LLMService，防 httpx client 常驻累积）
             if "llm" in locals():
-                try:
-                    await llm.aclose()
-                except Exception:
-                    pass
+                await _close_llm(llm)
 
             return {
                 "status": "ok",
@@ -280,19 +301,6 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
                 "engine": engine_name,
                 "degraded": degradation_notes if degradation_notes else None,
             }
-
-
-@router.post("/process-image/{transcript_id}", include_in_schema=False)
-async def process_image_legacy(transcript_id: str, data: ProcessRequest, request: Request,
-                               store=Depends(get_store), config=Depends(get_config), guard=Depends(get_guard)):
-    """[已废弃] 重定向到 /process/{id}。保留以兼容旧前端。"""
-    logger.warning(
-        "DeprecationWarning: /process-image/%s is deprecated, use /process/%s instead",
-        transcript_id, transcript_id,
-    )
-    # ⚠️ 直接调用 process_document 时必须注入 store/config/guard —
-    # 否则拿到未解析的 Depends 对象，store.get_transcript 抛 AttributeError（500）
-    return await process_document(transcript_id, data, request, store, config, guard)
 
 
 @router.get("/process-results/{transcript_id}")

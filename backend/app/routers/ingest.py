@@ -588,8 +588,20 @@ async def ingest(
     try:
         output = await adapter.adapt(inp, engine_config=_build_engine_config(config, media_dir))
     except AppError:
+        # P1-13：上传的临时源文件（可达 2GB）在适配器失败时清理。
+        # 成功路径被 _persist_ingest_result 持久化为 source_file_path 保留，不能删。
+        if file:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
         raise
     except Exception as e:
+        if file:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
         logger.exception("Ingest failed")
         raise AppError("INGEST_FAILED", f"导入失败: {str(e)[:200]}") from e
 
@@ -813,67 +825,83 @@ async def ingest_stream(
 # 图片文件服务 — 转录引擎提取的图片，按 tx_id 隔离
 # ══════════════════════════════════════════════════════════════════
 
+# ── 公共资产服务 helper（P2-12：serve_media_file / serve_asset 去重）──
+
+# 图片服务白名单。P0-7：剔除 svg——FileResponse 以 image/svg+xml 直接返回，
+# 浏览器导航 URL 时脚本同源执行（存储型 XSS）。数据目录实测 0 存量 svg；
+# chart 产物是 PNG 不受影响；网页嵌入 svg 图 <img> 渲染本不执行脚本。
+_ALLOWED_IMAGE_EXTS = ("png", "jpg", "jpeg", "gif", "webp")
+
+
+def _validate_tx_id(tx_id: str) -> None:
+    """tx_id 只能由安全字符组成（防路径注入）。违规抛 400。"""
+    if not re.match(r'^[a-zA-Z0-9_\-]+$', tx_id):
+        raise HTTPException(status_code=400, detail="无效的文档 ID")
+
+
+def _check_asset_ext(filename: str) -> str:
+    """校验扩展名在白名单内。返回小写扩展名；非法（含 svg）抛 400。"""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in _ALLOWED_IMAGE_EXTS:
+        raise HTTPException(status_code=400, detail=f"不支持的文件格式: {ext or '无扩展名'}")
+    return ext
+
+
+def _check_asset_within(path: Path, base_dir: Path) -> FileResponse | None:
+    """防穿越校验（resolve + relative_to）→ 存在则返回 FileResponse，否则 None。"""
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(base_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="路径穿越已拒绝")
+    if resolved.exists():
+        return FileResponse(str(resolved))
+    return None
+
+
 @router.get("/files/{tx_id}/{filename}")
 async def serve_media_file(tx_id: str, filename: str, request: Request, store=Depends(get_store)):
-    """Access document images. Priority: doc_dir/assets/ > files/{tx_id}/."""
-    import re
-    if not re.match(r'^[a-zA-Z0-9_\-]+$', tx_id):
-        raise HTTPException(status_code=400, detail="Invalid tx_id")
+    """访问文档图片。优先级: doc_dir/assets/ > files/{tx_id}/ > sourceFilePath。"""
+    _validate_tx_id(tx_id)
     if not re.match(r'^[a-zA-Z0-9_\-.]+$', filename):
-        raise HTTPException(status_code=400, detail="Invalid filename")
-
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext not in ("png", "jpg", "jpeg", "gif", "webp", "svg"):
-        raise HTTPException(status_code=400, detail=f"Unsupported format: {ext}")
+        raise HTTPException(status_code=400, detail="无效的文件名")
+    _check_asset_ext(filename)
 
     data_root = Path(store.root).resolve()
 
-    # 1. New: {doc_dir}/assets/{filename}
+    # 1. {doc_dir}/assets/{filename}
     doc_dir = store._get_doc_dir(tx_id)
     if doc_dir:
-        asset_path = (doc_dir / "assets" / filename).resolve()
-        try:
-            asset_path.relative_to(data_root)
-        except ValueError:
-            raise HTTPException(status_code=403, detail="Path traversal denied")
-        if asset_path.exists():
-            return FileResponse(str(asset_path))
+        r = _check_asset_within(doc_dir / "assets" / filename, data_root)
+        if r:
+            return r
 
-    # 2. Legacy: files/{tx_id}/{filename}
-    legacy_path = (Path(store.root) / "files" / tx_id / filename).resolve()
-    try:
-        legacy_path.relative_to(data_root)
-    except ValueError:
-        raise HTTPException(status_code=403, detail="Path traversal denied")
-    if legacy_path.exists():
-        return FileResponse(str(legacy_path))
+    # 2. files/{tx_id}/{filename}
+    r = _check_asset_within(Path(store.root) / "files" / tx_id / filename, data_root)
+    if r:
+        return r
 
     # 3. Fallback: sourceFilePath from index (image imports)
     for entry in store._index.get("transcripts", []):
         if entry.get("id") == tx_id:
             src = entry.get("sourceFilePath", "")
             if src:
-                src_path = Path(src).resolve()
-                try:
-                    src_path.relative_to(data_root)
-                except ValueError:
-                    raise HTTPException(status_code=403, detail="Path traversal denied")
-                if src_path.exists():
-                    return FileResponse(str(src_path))
+                r = _check_asset_within(Path(src), data_root)
+                if r:
+                    return r
             break
 
-    raise HTTPException(status_code=404, detail="File not found")
+    raise HTTPException(status_code=404, detail="文件不存在")
 
 
 # Asset file serving endpoint
 @router.get("/assets/{tx_id}/{filename}")
 async def serve_asset(tx_id: str, filename: str, store=Depends(get_store)):
     """Serve from {doc_dir}/assets/ — screenshots, covers, embedded images."""
-    import re
-    if not re.match(r'^[a-zA-Z0-9_\-]+$', tx_id):
-        raise HTTPException(status_code=400, detail="Invalid tx_id")
+    _validate_tx_id(tx_id)
+    # filename 允许含 / 与 ..（图片在 assets 子目录中），仅限安全字符
     if not re.match(r'^[a-zA-Z0-9_\-./]+$', filename):
-        raise HTTPException(status_code=400, detail="Invalid filename")
+        raise HTTPException(status_code=400, detail="无效的文件名")
 
     # 封面 URL 无扩展名（/api/assets/{tx_id}/cover，_persist_cover_image 返回格式）
     # → 兜底查找 cover.{jpg,png,webp}
@@ -881,36 +909,23 @@ async def serve_asset(tx_id: str, filename: str, store=Depends(get_store)):
     if "." not in filename and filename == "cover":
         candidates = [f"cover{e}" for e in (".jpg", ".png", ".webp")]
 
-    data_root = Path(store.root).resolve()
     doc_dir = store._get_doc_dir(tx_id)
     if not doc_dir:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail="文档不存在")
 
     for cand in candidates:
-        ext = cand.rsplit(".", 1)[-1].lower() if "." in cand else ""
-        if ext not in ("png", "jpg", "jpeg", "gif", "webp", "svg"):
-            raise HTTPException(status_code=400, detail=f"Unsupported format: {ext}")
+        _check_asset_ext(cand)
 
         # ⚠️ 校验必须限定在本文档的 assets/ 内，而非整个 data_root —
         # filename 允许含 / 与 ..，只限 data_root 时越出 doc_dir/assets 可读任意文档图片
-        file_path = (doc_dir / "assets" / cand).resolve()
-        try:
-            file_path.relative_to((doc_dir / "assets").resolve())
-        except ValueError:
-            raise HTTPException(status_code=403, detail="Path traversal denied")
-
-        if file_path.exists():
-            return FileResponse(str(file_path))
+        r = _check_asset_within(doc_dir / "assets" / cand, doc_dir / "assets")
+        if r:
+            return r
 
         # Fallback: files/{tx_id}/{filename} (legacy) — 同样限定在 {tx_id} 子目录内
-        legacy_base = (Path(store.root) / "files" / tx_id).resolve()
-        legacy = (legacy_base / cand).resolve()
-        try:
-            legacy.relative_to(legacy_base)
-        except ValueError:
-            raise HTTPException(status_code=403)
-        if legacy.exists():
-            return FileResponse(str(legacy))
+        r = _check_asset_within(Path(store.root) / "files" / tx_id / cand, Path(store.root) / "files" / tx_id)
+        if r:
+            return r
 
-    raise HTTPException(status_code=404, detail="File not found")
+    raise HTTPException(status_code=404, detail="文件不存在")
 

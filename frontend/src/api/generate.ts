@@ -1,5 +1,5 @@
 /**
- * generate 域 — 生成 / 图片处理 / AI 审核（流式端点）。
+ * generate 域 — 生成 / 图片处理（流式端点）。
  */
 import { apiFetch, getErrorMessage, BASE, type GenerateResult, type MarkdownView } from './core'
 import { parseSSEStream } from './sse'
@@ -90,8 +90,10 @@ export interface StreamGenerateCallbacks {
   onDone: (result?: { id?: string }) => void
   onError: (message: string) => void
   onCancelled: (savedPartial: boolean) => void
-  /** 部分产物失败/为空（另一产物成功）——用于 Toast 提示，不终止流程 */
-  onWarning?: (message: string) => void
+  /** 部分产物失败/为空（另一产物成功）——用于 Toast 提示，不终止流程。
+   * kind='chart_missing' 为图表未生成（可选组件缺失，产物本身成功），
+   * 前端不标 partial——避免误报「部分产物生成失败」。 */
+  onWarning?: (message: string, kind?: string) => void
   /** 思考链（deepseek-v4 reasoning_content）——ProcessingPlaceholder 展示"模型思考中" */
   onReasoning?: (text: string, mode?: string) => void
 }
@@ -153,7 +155,7 @@ export function streamGenerate(
         } else if (data.type === 'error') {
           callbacks.onError(data.message || '未知错误')
         } else if (data.type === 'warning') {
-          callbacks.onWarning?.(data.message || '部分产物生成失败')
+          callbacks.onWarning?.(data.message || '部分产物生成失败', data.kind)
         } else if (data.type === 'cancelled') {
           receivedDoneOrError = true  // cancelled 是终态 — 否则流结束后误报「连接意外断开」
           callbacks.onCancelled(data.saved_partial || false)
@@ -202,83 +204,3 @@ export async function fetchProcessResults(transcriptId: string): Promise<Process
   return data.results || []
 }
 
-// -- stream fact check / AI Review --
-
-export interface ReviewChunk {
-  text?: string
-  phase?: string           // static_review | verify | review
-  strategy?: string        // llm | web
-  summary?: { claims_count: number; facts: number; data: number; opinion: number }
-  issues?: { type: string; text: string; detail: string; action?: string }[]
-  claim?: number; total?: number; claim_id?: string
-  verdict?: string; evidence_strength?: string; basis?: string; action?: string
-}
-
-export interface ReviewDoneResult {
-  id?: string
-  verified_count?: number; disputed_count?: number; unverifiable_count?: number
-  trustworthiness?: number; trustworthiness_label?: string
-  deductions?: string[]; has_content?: boolean
-}
-
-export interface FactCheckCallbacks {
-  onChunk: (text: string, phase?: string) => void
-  onProgress: (data: ReviewChunk) => void
-  onDone: (result?: ReviewDoneResult) => void
-  onError: (message: string) => void
-}
-
-export function streamFactCheck(
-  transcriptId: string,
-  options: { model_id?: number; verify_mode?: string },
-  callbacks: FactCheckCallbacks,
-  signal?: AbortSignal,
-): void {
-  const params = new URLSearchParams()
-  if (options.model_id) params.set('model_id', String(options.model_id))
-  if (options.verify_mode) params.set('verify_mode', options.verify_mode)
-  const qs = params.toString()
-  let receivedDoneOrError = false
-  const origOnDone = callbacks.onDone
-  const origOnError = callbacks.onError
-  callbacks.onDone = (...args) => { receivedDoneOrError = true; origOnDone(...args) }
-  callbacks.onError = (msg) => { receivedDoneOrError = true; origOnError(msg) }
-  fetch(`${BASE}/fact-check/${transcriptId}/stream${qs ? '?' + qs : ''}`, { signal })
-    .then(async (response) => {
-      if (!response.ok) {
-        let body: any = {}
-        try { body = await response.json() } catch { /* */ }
-        callbacks.onError(body.detail || body.message || `请求失败 (${response.status})`)
-        return
-      }
-      const reader = response.body?.getReader()
-      if (!reader) { callbacks.onError('无法读取响应流'); return }
-
-      await parseSSEStream(reader, (data) => {
-        if (data.type === 'done') {
-          if (!data.mode) callbacks.onDone(data)
-        } else if (data.type === 'error') {
-          callbacks.onError(data.message || '事实验证失败')
-        } else if (data.type === 'cancelled') {
-          callbacks.onError('验证已取消')
-        } else if (data.phase === 'review' && data.text) {
-          callbacks.onChunk(data.text, 'review')
-        } else if (data.phase === 'static_review') {
-          callbacks.onProgress(data)
-        } else if (data.phase === 'verify') {
-          if (data.text) callbacks.onChunk(data.text, 'verify')
-          if (data.verdict) callbacks.onProgress(data)
-        } else if (data.text) {
-          callbacks.onChunk(data.text, data.phase || '')
-        }
-      })
-
-      if (!receivedDoneOrError) {
-        callbacks.onError('连接意外断开，请重试')
-      }
-    })
-    .catch(err => {
-      if ((err as Error).name === 'AbortError') return
-      callbacks.onError(getErrorMessage(err))
-    })
-}

@@ -63,6 +63,9 @@ async function ingestStream(
   const headers = body instanceof URLSearchParams
     ? { 'Content-Type': 'application/x-www-form-urlencoded' }
     : undefined
+  // P1-17：终态/进度标志提升到函数级——catch 里做网络恢复提示需要知道是否已收进度
+  let receivedDoneOrError = false
+  let receivedProgress = false
   try {
     // 优先尝试 SSE 流式端点
     const response = await fetch(url + '/stream', { method: 'POST', body, headers, signal })
@@ -70,16 +73,25 @@ async function ingestStream(
     if (contentType.includes('text/event-stream')) {
       const reader = response.body?.getReader()
       if (!reader) throw new Error('No reader')
+      // 终态兜底（对齐 generate.ts）：SSE 连接被干净关闭但无 done/error →
+      // 导入会永久卡死、TaskPanel 挂死。EOF 后未收终态 → 报「连接意外断开」。
       await parseSSEStream(reader, (data) => {
         if (data.type === 'progress') {
+          receivedProgress = true
           onProgress(data)
         } else if (data.type === 'done') {
+          receivedDoneOrError = true
           onDone(data)
         } else if (data.type === 'error') {
+          receivedDoneOrError = true
           onProgress({ phase: 'error', status: 'error', message: data.message || '未知错误' })
           onError?.(data.message || '未知错误')
         }
       })
+      if (!receivedDoneOrError) {
+        onProgress({ phase: 'error', status: 'error', message: '连接意外断开，请重试' })
+        onError?.('连接意外断开，请重试')
+      }
       return
     }
     // 回退：普通 JSON 响应
@@ -90,10 +102,15 @@ async function ingestStream(
     }
     onDone(data)
   } catch (err) {
-    if ((err as Error).name === 'AbortError') return  // 用户主动取消，不回退
+    // P1-17：用户取消（AbortError 或 signal 已标记）→ 不回退、不提示；网络抖动才走重试
+    if ((err as Error).name === 'AbortError' || signal?.aborted) return
     console.error('Ingest error (will retry with non-stream):', err)
-    // 回退：非流式端点
-    await fallbackJson(url, body, onDone, onError)
+    // 已收部分进度 → 流中途断网，提示用户正在重试而非静默重传
+    if (receivedProgress) {
+      onProgress({ phase: 'retrying', status: '网络恢复重试中', message: '网络恢复重试中' })
+    }
+    // 回退：非流式端点（传同一 signal，用户取消可中断回退请求）
+    await fallbackJson(url, body, onDone, onError, signal)
   }
 }
 
@@ -103,12 +120,13 @@ async function fallbackJson(
   body: URLSearchParams | FormData,
   onDone: DoneCb,
   onError?: ErrorCb,
+  signal?: AbortSignal,
 ) {
   try {
     const headers = body instanceof URLSearchParams
       ? { 'Content-Type': 'application/x-www-form-urlencoded' }
       : undefined
-    const r = await fetch(url, { method: 'POST', body, headers })
+    const r = await fetch(url, { method: 'POST', body, headers, signal })
     const data = await r.json()
     if (data.error) {
       onError?.(data.error)

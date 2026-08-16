@@ -43,7 +43,6 @@ export interface TypeMeta {
   hasPolish: boolean
   hasVL: boolean
   hasImages: boolean
-  hasFactCheck: boolean
   availableFormats: string[]
   coreProducts: { name: string; label: string; description: string }[]
   generateLabel: string
@@ -70,7 +69,6 @@ export function getTypeMeta(sourceType: string, genOptions: Record<string, strin
     hasPolish: !isExcel && !isImage,
     hasVL: isVideo,
     hasImages: st === 'pdf' || st === 'docx' || st === 'pptx' || st === 'epub',
-    hasFactCheck: !isImage && !isExcel,
     coreProducts: isImage ? [] : isExcel ? [
       { name: 'both', label: '数据摘要', description: '概况·关键指标·字段解读' },
     ] : [

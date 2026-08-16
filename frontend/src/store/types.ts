@@ -62,7 +62,7 @@ export type ActiveView =
   | 'polished' | 'summary' | 'transcript' | 'report'
   | 'data_preview' | 'original' | 'ocr'
   | 'extract' | 'table' | 'digitize' | 'understand'
-  | 'mindmap' | 'fact_check'
+  | 'mindmap'
 
 export interface MarkdownMeta {
   id: string; style: string; mode: string; version: number; status?: string
@@ -74,28 +74,8 @@ export interface MarkdownVersion {
   version: number; id: string; createdAt: string; status?: string; mode?: string
 }
 
-export interface FactCheckMeta {
-  id: string; verified_count?: number; disputed_count?: number; unverifiable_count?: number
-  has_content?: boolean
-  source_mode?: string; source_version?: number; verified_at?: string
-}
-
-export interface FactCheckProgress {
-  phase: string; text: string
-  summary?: { claims_count: number; facts: number; data: number; opinion: number }
-  issues?: { type: string; text: string; detail: string; action?: string }[]
-}
-
-export interface ImportStage {
-  phase: string; status: 'done' | 'running' | 'pending' | 'error'; message: string
-}
-
 export interface ImageResult {
   text: string; engine: string; id: string
-}
-
-export interface Conversation {
-  id: string; title: string; model_id?: number | null; created_at?: string; updated_at?: string
 }
 
 // ── Store 交集（各 slice 合并）──

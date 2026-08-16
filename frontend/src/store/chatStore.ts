@@ -321,7 +321,10 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       const userMsg = msgs[ui]
       // 后端先截断到 ui（rebuild），再本地重发（流式 append 新消息）
       if (s.currentId) {
-        rebuildConversationMessages(s.currentId, msgs.slice(0, ui).map(toBackendMsg)).catch(() => { /* 组件层忽略 */ })
+        rebuildConversationMessages(s.currentId, msgs.slice(0, ui).map(toBackendMsg)).catch(() => {
+          // P1-19：后端同步失败不再静默吞错——本地已更新但可能未持久化
+          useStore.getState().addToast('同步失败，操作可能未保存', 'error')
+        })
       }
       dispatchSend(userMsg.content, userMsg.docRefs, ui)
     },
@@ -331,7 +334,10 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       const next = s.messages.filter(m => m.id !== msgId)
       set({ messages: next })
       if (s.currentId) {
-        rebuildConversationMessages(s.currentId, next.map(toBackendMsg)).catch(() => { /* 组件层忽略 */ })
+        rebuildConversationMessages(s.currentId, next.map(toBackendMsg)).catch(() => {
+          // P1-19：后端同步失败不再静默吞错——本地已更新但可能未持久化
+          useStore.getState().addToast('同步失败，操作可能未保存', 'error')
+        })
       }
     },
 
@@ -347,7 +353,10 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       if (msg.role === 'user') {
         // 分支语义：后端先截断到 idx（rebuild），再本地以新内容重发（流式 append）
         if (s.currentId) {
-          rebuildConversationMessages(s.currentId, msgs.slice(0, idx).map(toBackendMsg)).catch(() => { /* 组件层忽略 */ })
+          rebuildConversationMessages(s.currentId, msgs.slice(0, idx).map(toBackendMsg)).catch(() => {
+            // P1-19：后端同步失败不再静默吞错——本地已更新但可能未持久化
+            useStore.getState().addToast('同步失败，操作可能未保存', 'error')
+          })
         }
         dispatchSend(trimmed, msg.docRefs, idx)
       } else {
@@ -356,7 +365,10 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
         next[idx] = { ...msg, content: trimmed, isError: false }
         set({ messages: next })
         if (s.currentId) {
-          rebuildConversationMessages(s.currentId, next.map(toBackendMsg)).catch(() => { /* 组件层忽略 */ })
+          rebuildConversationMessages(s.currentId, next.map(toBackendMsg)).catch(() => {
+          // P1-19：后端同步失败不再静默吞错——本地已更新但可能未持久化
+          useStore.getState().addToast('同步失败，操作可能未保存', 'error')
+        })
         }
       }
     },

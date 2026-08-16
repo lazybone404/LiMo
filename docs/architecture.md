@@ -33,7 +33,6 @@
 ├─────────────────────────────────────────────────────┤
 │ Layer 4: 处理层                                      │
 │ Process (图片 OCR/表格/数字化/理解)                   │
-│ AI 审核 (静态分析→验证规划→证据收集→报告)             │
 ├─────────────────────────────────────────────────────┤
 │ Layer 5: 导出层                                      │
 │ Markdown → HTML / MD / ZIP / Mindmap                │
@@ -221,7 +220,6 @@ data/
     ├── notes.md                # 笔记最新版
     ├── notes.prev.md           # 笔记上一版
     ├── polished.md / polished.prev.md
-    ├── fact_check.md / fact_check.prev.md
     ├── process/                # 图片处理结果
     │   └── {mode}.md           # extract/table/digitize/understand
     └── assets/                 # 图片资源（img_*.png / cover / original / screenshot_*）
@@ -354,19 +352,7 @@ model_id → scene_models.image_process → scene_models.generate → Engine 回
 
 即：LLM 优先（多模态 VL），不可用时降级到引擎（OCR）。
 
-### AI 审核（原事实验证）
-
-四阶段管道（`ReviewEngine`，`app/generation/review.py`）：
-```
-1. Static Review — 提取 Claim + 分类 Fact/Data/Opinion + 内部一致性 + 风险评分
-2. Verification Planning — LLM 批量决策验证策略
-3. Evidence Collection + Review — 按需搜索 + 多维度评估
-4. AI Review Report — 红黄绿报告 + 可信度 + Action
-```
-
-验证源优先级：已有 notes → 已有 polished → 原始转录
-
-SSE 流式：`static_review → verify → review → done`
+> AI 审核（fact_check）已随 2026-08-16 方案移除转历史。
 
 ### 对话管道（Agent + Chat）
 
@@ -375,8 +361,7 @@ SSE 流式：`static_review → verify → review → done`
 - **会话管理**：`agent/session.py` 的 `SessionManager`——会话 CRUD + `append_user_message`/`append_assistant_message` + 上下文边界（clear-context）
 - **上下文预算**：`core/chat_context.py`（compute_budget/trim_history/build_doc_context）+ `agent/compress.py`（超阈值 LLM 摘要早期消息）
 
-- 全部长时端点（generate/ingest/retranscribe/fact_check/chat/process）复用 `disconnect_watcher` + `cancel_event`（见 `app/core/disconnect.py`）
-- verify 阶段限速（每条搜索间隔 1s）
+- 全部长时端点（generate/ingest/retranscribe/chat/process）复用 `disconnect_watcher` + `cancel_event`（见 `app/core/disconnect.py`）
 
 ---
 

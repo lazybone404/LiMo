@@ -37,16 +37,17 @@ hiddenimports = [
     # app 模块（函数内动态 import，PyInstaller 静态分析遗漏）
     'app.generation.generator', 'app.generation.content_preparer',
     'app.generation.prompt_builder', 'app.generation.prompt',
-    'app.generation.fact_check', 'app.core.model_resolver',
+    'app.core.model_resolver',
     'app.core.cookie_parser', 'app.core.text_utils',
     'app.utils.url_security',
     'app.utils.screenshot_marker', 'app.utils.video_helper',
     'app.utils.video_reader', 'app.downloaders.douyin_downloader',
     'app.downloaders.douyin_helper',
     'app.llm', 'app.llm.service', 'app.llm.agent', 'app.llm.errors',
-    'app.agent', 'app.agent.tools', 'app.agent.evidence',
-    'app.generation.review', 'app.generation.ocr_preprocessor',
+    'app.agent', 'app.agent.tools',
+    'app.generation.ocr_preprocessor',
     'app.core.disconnect',
+    'app.services.chart_renderer',  # 图表渲染（resvg_py 函数内惰性 import）
     # 引擎模块（init_engines() 函数内动态导入，PyInstaller 无法静态追踪）
     'app.engines.doc_types', 'app.engines.doc_markitdown',
     'app.engines.doc_docx', 'app.engines.doc_pptx', 'app.engines.doc_excel',
@@ -83,7 +84,8 @@ for pkg in ['duckduckgo_search', 'dashscope',
             'markitdown', 'lxml',
             'courlan', 'justext', 'htmldate', 'magika', 'babel',
             'cffi', 'cryptography', 'aiohttp', 'httpx', 'openai',
-            'certifi', 'requests', 'pypdfium2']:
+            'certifi', 'requests', 'pypdfium2',
+            'resvg_py']:
     try:
         tmp_ret = collect_all(pkg)
         datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

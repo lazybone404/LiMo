@@ -13,9 +13,9 @@
 | `types.ts` | 全部共享类型 + 具名类型（`ActiveView`/`MarkdownMeta`/`ImageResult` 等）+ `Store` 交集 |
 | `themeSlice.ts` | 主题六轴（theme/accent/texture/font/base/applyPreset），完全自包含 |
 | `docsSlice.ts` | 文档库（docs/currentDocId/searchQuery/activeTag） |
-| `contentSlice.ts` | 预览内容 + AI 审核 + streamTick |
+| `contentSlice.ts` | 预览内容 + streamTick |
 | `tasksSlice.ts` | importProgress/importStages/imageResults/processingTasks/taskPanelOpen |
-| `chatSlice.ts` | 生成状态（generating/factChecking）——对话管理在独立 chatStore |
+| `chatSlice.ts` | 生成状态（generating）——对话管理在独立 chatStore |
 | `chatStore.ts` | **独立对话状态机**（不并入主 store）：ChatMsg 模型 + 流式状态机 + 会话 CRUD + 上下文管理（budget/usage/压缩提示/clearContext） |
 | `streamBuffers.ts` | **流式高速缓冲区**（独立模块级 Map，非 slice）：LLM token 高频写入（20-50/s）→ `scheduleFlush` 120ms 去抖 → `bumpStreamTick` 驱动 PreviewArea 重读。避免高频写 store 产生大量快照 |
 | `uiSlice.ts` | slots/activeView/backendReady/**backendStatus**/contentWidth/capabilities + AI 浮窗（aiVisible/aiPos/aiSize，位置/尺寸持久化） |
@@ -48,7 +48,6 @@ Zustand store `processingTasks: Record<string, ProcessingTask>` 的键统一为�
 | 重转录 | docId | `retranscribe` | `abc123__retranscribe` |
 | 生成 | docId | `generate` | `abc123__generate` |
 | 图片处理 | docId | `process` | `abc123__process` |
-| 事实验证 | docId | `fact_check` | `abc123__fact_check` |
 | 导入 | `__import__{seq}` | `import` | `__import__0__import` |
 
 **规则**：

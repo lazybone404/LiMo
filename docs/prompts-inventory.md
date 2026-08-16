@@ -15,7 +15,6 @@
 - [5. 生成管道 — 风格指令](#5-生成管道--风格指令)
 - [6. 生成管道 — Prompt 构建流程](#6-生成管道--prompt-构建流程)
 - [7. 图片处理 — LLM / OCR Prompt](#7-图片处理--llm--ocr-prompt)
-- [8. 事实验证 — 三阶段 Prompt](#8-事实验证--三阶段-prompt)
 - [9. AI 对话 — Agent Prompt](#9-ai-对话--agent-prompt)
 - [10. LLM 续写机制](#10-llm-续写机制)
 - [11. 审视点清单](#11-审视点清单)
@@ -510,36 +509,7 @@ POST /process/{id}
 
 ## 8. AI 审核 / 事实验证 — Prompt（两条管道）
 
-### 8.0 两条管道并存
-
-| | 旧 FactCheckEngine | 新 ReviewEngine（AI 审核，2026-07-15 起） |
-|--|-------------------|----------------------------------------|
-| 调用方 | [fact_check.py](../backend/app/generation/fact_check.py) | [review.py](../backend/app/generation/review.py) |
-| Prompt 数 | 3（在 prompt.py 定义） | 4（在 prompt.py 定义） |
-| 状态 | **保留不动**（遗留） | 端点走 `/fact-check/{id}` + `/stream` |
-
-### 8.1 旧 FactCheckEngine — 三阶段（保留）
-
-**文件**：[backend/app/generation/prompt.py](backend/app/generation/prompt.py)
-
-3 个 prompt 使用传统格式化字符串，未迁移到 XML 分节格式：
-
-- **Phase 1 断言提取** `CLAIM_EXTRACTION_PROMPT` — temperature=0.3, max_tokens=2048, max_continuations=0
-- **Phase 2 交叉验证** `VERIFICATION_PROMPT` — temperature=0.3, max_tokens=1024, max_continuations=0
-- **Phase 3 报告生成** `FACT_CHECK_REPORT_PROMPT` — temperature=0.5, max_tokens=4096, max_continuations=0
-
-### 8.2 新 ReviewEngine — AI 审核四阶段
-
-**文件**：[backend/app/generation/review.py](backend/app/generation/review.py)（imports 自 prompt.py 4 个常量）
-
-| # | Prompt | 阶段 | 调参 |
-|---|--------|------|------|
-| 1 | `STATIC_REVIEW_PROMPT` | Static Review（提取 Claim + 分类 + 内部一致性 + 风险评分） | 0.3 / 4096 |
-| 2 | `VERIFICATION_PLANNER_PROMPT` | Verification Planning（LLM 批量决策验证策略） | 0.3 / 2048 |
-| 3 | `EVIDENCE_REVIEWER_PROMPT` | Evidence Collection + Review（按需搜索 + 多维度评估） | 0.3 / 2048 |
-| 4 | `AI_REVIEW_REPORT_PROMPT` | AI Review Report（红黄绿报告 + 可信度 + Action） | 0.5 / 8192 |
-
-验证源 fallback：notes → polished → transcript。验证方式 `verify_mode`：LLM（默认）/ Web（联网搜索）。
+> AI 审核（fact_check）已随 2026-08-16 方案移除转历史。详见 CHANGELOG 2026-07-15 起条目。
 
 ---
 
@@ -622,12 +592,9 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 |---|--------|--------|------|
 | 1 | **图片处理 prompt 重复** | 中 | `process.py` 和 `ocr.py` 两处重复定义 |
 | 2 | **Excel 数据预处理信息损失** | 中 | `_build_data_summary()` 只给首尾各 3 行 |
-| 3 | **旧 FactCheckEngine prompt 截断** | 中 | 旧 3 阶段 Phase 1 截断 8000 chars、Phase 3 截断 2000 chars（新 ReviewEngine 无此问题） |
-| 4 | **旧 FactCheckEngine 未迁移 XML 分节** | 低 | 旧 3 个 prompt 仍用传统格式化字符串（新 ReviewEngine 四阶段 prompt 已模块化） |
 | 5 | **续写指令单一** | 低 | 只有一个字"继续" |
 | 6 | **小红书风格适用场景** | 低 | "标题用二极管法"更适合标题而非正文 |
 | 7 | **Process 管道的 temperature** | 低 | 所有 4 种模式统一 0.1 |
-| 8 | **旧 FactCheckEngine 关键词提取** | 低 | 纯正则启发式 |
 
 ### 11.3 已确认 OK 的设计
 
@@ -636,7 +603,6 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 | 1 | Excel 双产物返回相同内容 | LLM 无法做真正的数值分析，合理 |
 | 2 | screenshot 格式的 has_visual 双模式 | VL 开启时从网格图选帧，关闭时从转写时间推断 |
 | 3 | 续写时 temperature 递减 | 越往后越确定，防止随机游走 |
-| 4 | 事实验证 source fallback | notes → polished → transcript |
 | 5 | process 调度 LLM 优先 → Engine 回退 | 符合"LLM 能力更强但更贵"的设计理念 |
 | 6 | Engine 绑定空列表 vs null | `[]`=清除绑定，`null`=不修改 |
 | 7 | Polish 格式白名单 | toc/link/screenshot/formulas/references/images 是编辑行为，仅 summary 是创作行为（translate 已移除） |
@@ -648,13 +614,11 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 
 | 文件 | 包含的 Prompt / 模块 |
 |------|---------------------|
-| [backend/app/generation/prompt.py](backend/app/generation/prompt.py) | 全部 section 定义 + `build_polish_prompt()` / `build_notes_prompt()` / `build_excel_summary_prompt()` + 旧 FactCheck 3 prompt + AI Review 4 prompt |
+| [backend/app/generation/prompt.py](backend/app/generation/prompt.py) | 全部 section 定义 + `build_polish_prompt()` / `build_notes_prompt()` / `build_excel_summary_prompt()` |
 | [backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) | 包入口，导出 COMMON_NOTE_STYLES / VIDEO_NOTE_STYLES / DOC_NOTE_STYLES / normalize_style |
 | [backend/app/generation/prompts/common.py](backend/app/generation/prompts/common.py) | `PromptComposer` — 分节组装工具类 |
 | [backend/app/generation/prompts/notes_styles.py](backend/app/generation/prompts/notes_styles.py) | 风格定义：COMMON_NOTE_STYLES + VIDEO_NOTE_STYLES + DOC_NOTE_STYLES + STYLE_ALIAS + normalize_style |
 | [backend/app/generation/prompt_builder.py](backend/app/generation/prompt_builder.py) | `PromptBuilder` 调度层（source_type + mode → 正确 prompt 函数） |
-| [backend/app/generation/fact_check.py](backend/app/generation/fact_check.py) | 引用 prompt.py 中的事实验证 prompt（旧 FactCheckEngine，保留） |
-| [backend/app/generation/review.py](backend/app/generation/review.py) | 引用 prompt.py 中的 AI Review 4 prompt（新 ReviewEngine，四阶段） |
 | [backend/app/generation/generator.py](backend/app/generation/generator.py) | LLM 调用编排，无独立 prompt |
 | [backend/app/routers/process.py](backend/app/routers/process.py) | IMAGE_PROMPTS — 4 种图片处理模式（与 ocr.py 重复） |
 | [backend/app/engines/ocr.py](backend/app/engines/ocr.py) | DashScopeOCREngine — 4 种图片处理模式（与 process.py 重复） |
@@ -673,13 +637,6 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 | 生成 | notes / polished | 0.7 | 65536 | 3 |
 | 生成 | Excel summary | 0.7 | 65536 | 3 |
 | 处理 | extract / table / digitize / understand | 0.1 | 4096 | 0 |
-| 事实验证（旧 FactCheckEngine） | Phase 1 提取 | 0.3 | 2048 | 0 |
-| 事实验证（旧 FactCheckEngine） | Phase 2 验证 | 0.3 | 1024 | 0 |
-| 事实验证（旧 FactCheckEngine） | Phase 3 报告 | 0.5 | 4096 | 0 |
-| AI 审核 | Static Review | 0.3 | 4096 | 0 |
-| AI 审核 | Verification Planner | 0.3 | 2048 | 0 |
-| AI 审核 | Evidence Reviewer | 0.3 | 2048 | 0 |
-| AI 审核 | Report | 0.5 | 8192 | 0 |
 | 对话 | 工具调用 / 最终回答 | 0.7 | — | — |
 
 ## 附录 C: PromptComposer 标签速查

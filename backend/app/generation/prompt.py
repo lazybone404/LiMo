@@ -425,23 +425,60 @@ def get_summary_format() -> str:
     return "在笔记末尾添加一个专业的 **AI 总结** 段落（## AI 总结），简要概括整个视频的核心内容。"
 
 
+def get_chart_format(source_type: str) -> str:
+    """图表格式指令：基础规范 + 来源差异段。仅 notes 注入（chart 不在 _POLISH_FORMAT_FNS）。
+
+    协议定位（pi-docs/图表围栏内部协议设计说明.md）：内容适合图表化时 LLM 必须用
+    ```chart 专用围栏输出，由后端 post-process 渲染为 PNG 嵌入（chart_renderer.py）。
+    """
+    base = (
+        "**图表（可选生成）**: 判断内容是否适合图表化——流程/时序/时间线/架构/层级/关系适合；"
+        "列表用表格、一句话用文字，不适合则明确说不画。\n"
+        "- 适合时在对应小节生成 1-N 张图，每张图 = 一个**完整独立的图表围栏代码块**"
+        "（用 ```chart 作围栏语言、内容是 <svg>...</svg> 根元素——chart 是图表专用标记，"
+        "后端只识别 chart 围栏，其他形式一律不处理）；图上方加图标题和一句图说明。\n"
+        "- **必须用 ```chart 围栏输出图表**；不要用 svg/xml 围栏，不要在围栏外输出裸 <svg> 代码。\n"
+        "- 类型自选：流程图/时序图/时间线/架构图/结构树/关系图。\n"
+        "- 复杂度预算：节点 ≤9、连线 ≤12、强调色焦点 ≤2（其余统一浅色系）、"
+        "画布 ≤640×640、字号 ≥12px；内容放不下拆多图。\n"
+        "- **防重叠硬规则**（违反则图会重叠、不美观）：\n"
+        "  ① 坐标/尺寸/间距取 4 的倍数，节点宽用 80/96/120/144/160 档位，同层节点中心线对齐；\n"
+        "  ② 相邻节点间距 ≥48px（挤就缩小节点或拆图）；多层架构每层 1-4 个节点，行间距 ≥64px；\n"
+        "  ③ 连线必须正交（先水平后垂直、拐角用圆角），**禁止对角线斜连**；两条连线不得重叠/共路径，"
+        "平行同向间距 ≥12px，同一节点同一边的多条线连接点错开 ≥12px；\n"
+        "  ④ 连线标签 ≤10 字，必须有浅色背景衬底、与连线留 ≥6px 空隙、落在两节点间空白处，不得压到节点；\n"
+        "  ⑤ 先画连线再画节点（节点盖住线头），箭头指向节点边缘；\n"
+        "  ⑥ 主链节点一字排开、从属节点按层纵向分布，避免连线交叉。\n"
+        "- 布局约定：流程图用形状区分（椭圆=起止/矩形=步骤/菱形=决策，分支标注）；"
+        "结构树连接线必须正交；时间线时间刻度要诚实；所有连线标注含义。\n"
+        "- SVG 硬性规范：viewBox 与 width/height 必须同时给出、数值一致且 ≤640×640"
+        "（后端按此渲染，超限直接失败）；单根 <svg>、标准 XML、viewBox 开头。\n"
+        "- 安全红线：禁止 script / on* 事件 / 外部 URL 引用 / animation / foreignObject"
+        "（后端会过滤，含此类内容可能渲染失败）。\n"
+        "- 源码精简：单张图 ≤300 行，只保留必要元素与坐标；围栏内只放 <svg>，"
+        "图块之间及图后不要输出多余代码或文字。\n"
+        "- 观感：背景浅色、文字深色。"
+    )
+    # 来源差异段：视频是时间序列（先做什么/发生了什么）；文档是空间结构（谁包含谁/谁连接谁）
+    if source_type in DOC_SOURCE_TYPES:
+        diff = "文档来源：优先架构图/层级树；从章节标题和文档结构提取组件与层级，体现包含/连接关系"
+    elif source_type in ("webpage", "link"):
+        diff = "网页/文章：教程类优先流程图；概念类优先结构树；按体裁自适应"
+    elif source_type == "video":
+        diff = "视频：教程/课程优先流程步骤图（把讲解步骤流程化）；纪录片/电影优先时间线/剧情线；从章节结构和讲解顺序提取步骤与事件"
+    else:
+        diff = "文本/其他：按内容自行判断适合的图表类型"
+    return f"{base}\n- 来源引导：{diff}"
+
+
 # ── 风格指令 ──
 # ⚠️ 风格体系已迁移至 prompts/notes_styles.py
 
-_STYLE_HEADER = "## 输出风格\n"
-
-# DEPRECATED: 使用 VIDEO_NOTE_STYLES 代替
+# DEPRECATED: 使用 VIDEO_NOTE_STYLES 代替（capabilities.py 仍消费）
 STYLE_MAP = VIDEO_NOTE_STYLES
 
-# DEPRECATED: 使用 DOC_NOTE_STYLES 代替
+# DEPRECATED: 使用 DOC_NOTE_STYLES 代替（capabilities.py 仍消费）
 DOC_STYLE_MAP = DOC_NOTE_STYLES
-
-# 保留别名兼容
-PDF_STYLE_MAP = DOC_NOTE_STYLES
-
-# ── 风格键列表（供 capabilities 端点 + 旧代码引用）──
-VIDEO_STYLE_KEYS = list(VIDEO_NOTE_STYLES.keys())
-PDF_STYLE_KEYS = list(DOC_NOTE_STYLES.keys())
 
 # ── Excel 数据摘要辅助函数 ──
 
@@ -524,9 +561,6 @@ EXCEL_STYLE_MAP = {
     "business": "**商务报告**: 提炼商业价值、趋势和行动建议，适合汇报。",
 }
 
-EXCEL_STYLE_KEYS = list(EXCEL_STYLE_MAP.keys())
-
-
 def build_excel_summary_prompt(data_text: str, style: str = "detailed",
                                 user_notes: str = "",
                                 target_language: str = "zh-CN") -> str:
@@ -585,14 +619,14 @@ def get_images_format() -> str:
 # ── 可用选项（供 capabilities 端点 + 前端渲染）──
 
 AVAILABLE_OPTIONS = {
-    "video": ["toc", "link", "screenshot", "summary"],
+    "video": ["toc", "link", "screenshot", "summary", "chart"],
     "audio": ["toc", "summary", "formulas"],
-    "webpage": ["toc", "summary", "formulas"],
-    "pdf": ["toc", "formulas", "references", "summary", "images"],
-    "docx": ["toc", "summary", "images", "formulas"],
-    "pptx": ["toc", "summary", "images", "formulas"],
+    "webpage": ["toc", "summary", "formulas", "chart"],
+    "pdf": ["toc", "formulas", "references", "summary", "images", "chart"],
+    "docx": ["toc", "summary", "images", "formulas", "chart"],
+    "pptx": ["toc", "summary", "images", "formulas", "chart"],
     "xlsx": [],
-    "text": ["toc", "summary", "formulas"],
+    "text": ["toc", "summary", "formulas", "chart"],
 }
 
 # ── 格式函数映射 ──
@@ -605,6 +639,7 @@ _ALL_FORMAT_FNS = {
     "formulas": get_formulas_format,
     "references": get_references_format,
     "images": get_images_format,
+    "chart": get_chart_format,
 }
 
 # ── Polish 允许的格式选项（仅结构增强和编辑行为）──
@@ -642,6 +677,7 @@ def _build_hard_constraints(
     formats: list[str] | None,
     format_fns: dict,
     video_understanding: bool = False,
+    source_type: str = "text",
 ) -> str:
     """构建 hard_constraints 节文本：仅包含该 prompt 类型允许的格式选项"""
     if not formats:
@@ -653,6 +689,8 @@ def _build_hard_constraints(
             continue
         if f == "screenshot":
             parts.append(fn(has_visual=video_understanding))
+        elif f == "chart":
+            parts.append(fn(source_type))
         else:
             parts.append(fn())
     if not parts:
@@ -705,7 +743,7 @@ def build_polish_prompt(
     source_content = f"{source_label}：\n{source}"
 
     constraints = _build_hard_constraints(
-        formats, _POLISH_FORMAT_FNS, video_understanding)
+        formats, _POLISH_FORMAT_FNS, video_understanding, source_type)
 
     sections = [
         ("role", role),
@@ -787,7 +825,7 @@ def build_notes_prompt(
     available = AVAILABLE_OPTIONS.get(source_type, AVAILABLE_OPTIONS.get("text", []))
     format_fns = {f: _ALL_FORMAT_FNS[f] for f in available if f in _ALL_FORMAT_FNS}
     constraints = _build_hard_constraints(
-        formats, format_fns, video_understanding)
+        formats, format_fns, video_understanding, source_type)
 
     sections = [
         ("role", role),
@@ -803,443 +841,3 @@ def build_notes_prompt(
     ]
     return PromptComposer.compose(sections)
 
-
-# ═══════════════════════════════════════════════════════════════
-# 事实验证 Prompt（未改）
-# ═══════════════════════════════════════════════════════════════
-
-CLAIM_EXTRACTION_PROMPT = """你是一个事实核查助手。你的任务是从文本中提取**可通过公开网络搜索验证**的事实断言。
-
-## 能力边界
-我们只能通过搜索引擎检索公开网页信息。以下类型的断言**超出我们的验证能力，应跳过**：
-- 学术论文中的实验数据、研究结论（通常在付费墙后）
-- 企业内部数据（营收、用户数等未公开披露的数字）
-- 小众领域的专业知识或冷门事实
-- 个人经历、主观评价、推测性陈述
-
-## 优先选择（符合能力边界的可验证断言）
-- 知名新闻报道中的事件（时间、地点、涉事方）
-- 政府/国际组织公开发布的统计数据
-- 知名人物在公开场合的可查证言论
-- 产品发布、公司公告等公开商业信息
-- 广为人知的历史事件日期和细节
-
-## 输出格式
-以 JSON 数组返回，最多 5 条。每条包含：
-- `id`: 编号（"claim_01" ~ "claim_05"）
-- `text`: 断言原文（直接从原文引用）
-- `category`: "event"（事件）| "statistic"（统计）| "claim"（声明）| "date_figure"（日期/数字）
-
-如果原文中没有符合上述标准的、可通过网络搜索验证的断言，返回空数组 `[]`。
-
-只返回 JSON 数组，不要任何额外文本。
-{content_placeholder}"""
-
-VERIFICATION_PROMPT = """你是一个事实核查裁判。请根据提供的网络搜索结果，判断一条事实主张的可靠性。
-
-## 你的核查方法（按序执行）
-
-**第 1 步：意图拆解**
-这条主张到底在说什么？
-- 事实陈述（客观发生的事件）
-- 数据声称（数字、百分比、金额）
-- 引用/声明（某人说过的话）
-- 观点/推测（主观判断，无法验证 → 直接判 unverifiable）
-- 操作步骤/方法描述（通常无法通过网络搜索验证）
-
-**第 2 步：关键词提取**
-从主张中提取 3-5 个核心实体，用于判断搜索结果的相关性：
-- 人名、地名、机构名
-- 专业术语、产品名、事件名
-- 时间点、数字范围
-如果搜索结果中出现了这些核心实体，说明相关；否则不相关。
-
-**第 3 步：权威性排序**
-对找到的来源逐条评估可信度：
-
-| 权威等级 | 示例 |
-|----------|------|
-| 高 | 知名新闻机构（路透社/新华社/BBC）、政府网站（.gov）、学术机构官网（.edu）、维基百科 |
-| 中 | 行业媒体、公司官网公告、知名科技博客 |
-| 低 | 个人博客、论坛帖子、内容农场、自媒体、社交平台 |
-| 不可用 | 404 页面、与主张无关的内容、纯广告页 |
-
-**判定时优先采信高权威来源。低权威来源即使匹配也不足以支撑 verified。**
-
-## 验证方法说明
-我们使用搜索引擎检索公开网页，并抓取了部分页面的正文。以下因素会影响验证质量：
-- 搜索结果可能不完整、不相关或偏向特定立场
-- 抓取到的页面内容可能只是片段，缺少完整上下文
-- 付费墙后的内容（学术论文、专业报告）无法访问
-- 我们没有能力进行实地调查或访问数据库
-
-## 待验证主张
-{claim_text}
-
-## 网络搜索结果
-{sources_text}
-
-## 判断标准
-请根据以上三步方法，综合评估搜索结果的质量和一致性：
-
-- `verified`: **多个独立、高权威来源**明确支持该主张。
-- `disputed`: 有来源明确修正或否定该主张，或不同高权威来源给出了显著不同的数字/事实。
-- `unverifiable`: 搜索结果不相关、来源权威性过低、或完全找不到相关信息。**这是最常见的判定，不必勉强给出 verified/disputed。**
-- `inconclusive`: 有部分相关来源但不足以确认或否定，信息模糊或互相矛盾。
-
-## 输出
-返回 JSON：
-- `status`: "verified" | "disputed" | "unverifiable" | "inconclusive"
-- `confidence`: 0.0-1.0 的置信度（综合来源权威性和一致性）
-- `intent`: 主张的意图类型（"fact" | "data" | "quote" | "opinion" | "procedure"）
-- `keywords`: 你提取的核心关键词列表
-- `analysis`: 2-4 句话的推理过程，包括对最佳来源的权威性评述（中文）
-- `correction`: 仅 status="disputed" 时给出修正文本，其余为 null
-
-只返回 JSON，不要任何额外文本。"""
-
-FACT_CHECK_REPORT_PROMPT = """你是一个专业的事实核查报告撰写人。请根据核查结果撰写一份格式规范、内容诚实的报告。
-
-## 原始内容（被核查的文本）
-{original_content}
-
-## 核查结果（JSON）
-{claims_json}
-
-## 格式要求
-
-严格按照以下 Markdown 模板输出。报告应与笔记/整理版原文保持一致的排版风格：清晰的标题层级、简洁的列表、规范的链接格式。
-
----
-
-# 事实核查报告
-
-> 验证方法：通过搜索引擎检索公开网页，交叉比对多个来源后综合判定。
-> 局限性：仅检索公开网页，未访问付费或学术数据库内容；来源质量参差不齐，结论仅供参考。
-
-## 核查总览
-
-| 指标 | 数值 |
-|------|------|
-| 核查断言数 | N 条 |
-| 基本可信 | N 条 |
-| 存在争议 | N 条 |
-| 无法验证 | N 条 |
-| 综合可信度 | X.X / 10 |
-
-**概要**：（一句话概述：本次核查发现 X 条断言可信，Y 条存在争议或无法验证。总体可信度 XX/10。）
-
-## 逐条核查
-
-### N. 断言原文
-
-> （引述被核查的断言原文，用 blockquote 展示）
-
-**判定**：✅ 基本可信 | ⚠️ 有争议 | ❓ 无法验证 | 🔍 存疑（置信度 XX%）
-
-**依据**：（2-3 句话，说明找到了什么证据、或者为什么找不到、来源质量如何）
-
-**参考来源**：
-- [来源网站名](https://完整URL) — 一句话说明该来源提供了什么信息
-- （如无可用来源，写「未找到相关公开来源」）
-
-（对每条断言重复以上格式）
-
-## 说明
-
-- 本报告基于公开网页搜索生成，验证范围和深度有限。
-- 「无法验证」不等于内容错误，仅表示在公开网页中未找到支持或否定的证据。
-- 标记为「有争议」或「存疑」的内容建议进一步核实。
-
-只返回最终的 Markdown 内容，不要包裹在代码块中。"""
-
-
-# ═══════════════════════════════════════════════════════════════
-# AI Review — 四阶段审核 Prompt（不变）
-# ═══════════════════════════════════════════════════════════════
-
-STATIC_REVIEW_PROMPT = """你是一个专业的文本审核助手。请对以下内容进行静态审核（不联网，仅基于文本分析）。
-
-## 内容
-{content}
-
-## 任务
-
-### 1. 提取可核查断言（Claims）
-从内容中提取具体的、可核查的事实断言。不要提取：
-- 主观观点或推测（"我认为""预计""可能"）
-- 纯推理链（"因此""所以"引导的因果推断）
-- 寒暄/过渡语句
-
-对每条 Claim 分类：
-- `fact`: 可验证的事实陈述（事件、人物、地点）
-- `data`: 包含具体数字、百分比、金额、日期的声称
-- `opinion`: 主观评价或预测
-
-对每条 Claim 给出 confidence（0.0-1.0）——你对这条断言"是否正确"的初始把握度。
-
-### 2. 发现内容问题（Issues）
-检查以下问题类型，并给出 impact（Critical / Major / Minor / Info）：
-
-**事实类**：
-- `fact_error`: 明显的事实错误（如"GPT-5 于 2019 年发布"）
-- `data_inaccurate`: 数据近似但不精确（如"1 token ≈ 0.75 words"），这不是错误，是精度问题
-
-**引用类**：
-- `citation_missing`: "研究表明""专家认为""数据显示"等没有给出具体来源
-- `source_weak`: 有引用但来源权威性不足
-
-**逻辑类**：
-- `reasoning_gap`: 从前提跳跃到结论，缺少中间推理步骤
-- `logic_conflict`: 文中两个地方的说法互相矛盾
-
-**表达类**：
-- `overclaim`: "一定""绝不""所有""完全""显然""毫无疑问"等过度确定化表达
-- `vague_definition`: 关键概念没有清晰定义
-- `misleading_phrasing`: 容易被误解的表述方式
-
-**时效类**：
-- `freshness_concern`: 信息可能因版本/时间而过时（如"最新版本""截至目前"没有标注时间）
-
-### 3. 风险评估
-对每条 Claim 评估两个维度：
-- `risk`（事实风险）: high / medium / low
-- `priority`（审核优先级）: critical / high / medium / low
-  注意：风险和优先级是独立的。
-
-## 输出格式
-返回 JSON：
-```json
-{
-  "has_content": true,
-  "claims": [
-    {
-      "id": "c1",
-      "text": "断言原文",
-      "category": "fact|data|opinion",
-      "risk": "high|medium|low",
-      "priority": "critical|high|medium|low",
-      "confidence": 0.0-1.0,
-      "note": "简短说明（10字以内）"
-    }
-  ],
-  "issues": [
-    {
-      "type": "fact_error|data_inaccurate|citation_missing|source_weak|reasoning_gap|logic_conflict|overclaim|vague_definition|misleading_phrasing|freshness_concern",
-      "impact": "Critical|Major|Minor|Info",
-      "text": "涉及的原文片段",
-      "detail": "具体问题说明（1句话）",
-      "suggestion": "建议修改为..."
-    }
-  ]
-}
-```
-
-如果内容中没有可核查的断言，设置 `"has_content": false` 并返回空的 claims 和 issues 数组。
-
-只返回 JSON，不要任何额外文本。"""
-
-VERIFICATION_PLANNER_PROMPT = """你是一个验证策略规划助手。请为每条待核查的断言决定验证策略。
-
-## 待核查断言
-{claims_json}
-
-## 任务
-
-对每条断言，判断验证策略：
-
-### 策略选项
-- `llm_known`: 你基于训练知识有较高把握判断（如常识、教科书知识、广泛报道的事件）
-- `need_web`: 需要联网搜索确认（如具体数字、最新动态、小众领域知识）
-- `cannot_verify`: 超出知识范围且难以通过公开网络搜索验证
-- `skip_opinion`: 主观观点/预测，不做事实验证
-
-### 对于 `need_web` 的断言
-生成 1-3 个搜索查询，每条带 intent：
-
-Intent 类型：
-- `official`: 官方文档、官网、政府公告 → 优先搜索 .gov / 官方域名
-- `product`: 产品发布、参数、版本 → 优先搜索官网 + 评测站
-- `news`: 新闻事件、媒体报道 → 多家媒体交叉验证
-- `academic`: 学术论文、研究数据 → 优先搜索学术数据库
-- `general`: 通用网页搜索
-
-### 可选：推荐搜索域名
-对于 `official` 和 `product` intent，可指定推荐域名（如 "openai.com" / "python.org"）。
-如不确定，留空。
-
-## 输出格式
-返回 JSON 数组，每条对应一个输入断言：
-```json
-[
-  {
-    "id": "c1",
-    "strategy": "llm_known|need_web|cannot_verify|skip_opinion",
-    "confidence": 0.0-1.0,
-    "reasoning": "1句话说明为什么选这个策略",
-    "queries": [
-      {"query": "搜索查询", "intent": "official|product|news|academic|general", "domain": "可选推荐域名"}
-    ]
-  }
-]
-```
-
-只返回 JSON 数组，不要任何额外文本。"""
-
-EVIDENCE_REVIEWER_PROMPT = """你是一个证据评估助手。请根据收集到的证据，对一条事实断言进行多维度评估。
-
-## 待评估断言
-{claim_json}
-
-## 收集到的证据
-{evidence_json}
-
-## 评估维度
-
-对每个维度给出判断：
-
-### 1. 事实一致性（factual_consistency）
-- `consistent`: 多个独立来源一致支持该断言
-- `partial`: 部分支持，存在细微差异（如数字略有不同）
-- `uncertain`: 证据不足以判断
-- `contradictory`: 证据之间存在明显矛盾
-
-### 2. 来源可信度（source_credibility）
-综合来源的权威性、独立性、数量：
-- `strong`: 多个高权威独立来源
-- `moderate`: 有权威来源但数量不足，或中等权威来源
-- `weak`: 只有低权威来源（个人博客、论坛、自媒体）
-- `none`: 无可用来源
-
-### 3. 时效性（timeliness）
-- `current`: 证据时间与断言时间一致
-- `outdated`: 证据明显过时
-- `unknown`: 无法判断时间
-
-### 4. 引用充分性（citation_sufficiency）
-是否有足够的公开来源支撑：
-- `sufficient`: 多个独立来源可引证
-- `insufficient`: 来源不足或单一
-- `none`: 找不到任何公开来源
-
-### 5. 推理合理性（reasoning_validity）（仅适用于推理型断言）
-- `valid`: 推理成立
-- `questionable`: 推理有漏洞或跳跃
-- `not_applicable`: 非推理型断言
-
-### 综合评估
-- `evidence_strength`: Strong / Moderate / Weak / None
-- `verdict`: 基本可信 / 存疑 / 证据不足 / 证据矛盾 / 观点不验证
-- `summary`: 2-3 句话总结评估结论
-- `action`: 给用户的建议（如"建议核实官方来源""建议补充最新数据"等，如无则 null）
-
-## 输出格式
-返回 JSON，不要任何额外文本。"""
-
-AI_REVIEW_REPORT_PROMPT = """你是一个 AI 内容评审员。请根据审核结果撰写一份**内容质量评审报告**。
-
-## 核心定位
-**你不是在找错，而是在评估内容质量。** 目标不是列出所有错误，而是帮助用户理解：这篇内容整体质量如何、哪些部分值得信任、哪些需要人工确认、哪些需要修改。
-
-## 静态审核结果
-{static_review_json}
-
-## 验证结果
-{verification_results_json}
-
-## 报告结构
-
----
-
-# AI 内容审核报告
-
-> 审核方式：文本静态分析 + {verify_methods}
-> （1 句简述本次审核的范围和局限）
-
----
-
-## Executive Summary
-
-（2-3 句话的整体评价，像论文审稿意见。概括：总体质量如何、主要优点、主要问题集中在哪些方面。用户一分钟就能了解全貌。）
-
----
-
-## 质量维度评分
-
-| 维度 | 评分 | 说明 |
-|------|------|------|
-| 事实准确性 | X/10 | （一句话：是否有事实错误、过时信息、虚构内容） |
-| 证据质量 | X/10 | （一句话：来源是否可靠、引用是否充分） |
-| 逻辑一致性 | X/10 | （一句话：推理是否合理、是否存在自相矛盾） |
-| 表达质量 | X/10 | （一句话：是否有绝对化措辞、易误导表述、定义不清） |
-| 时效性 | X/10 | （一句话：信息是否可能因版本更新而失效） |
-| **综合** | **X/10** | （加权综合评分） |
-
----
-
-## 需要关注的问题
-
-按影响程度（Critical > Major > Minor）排列：
-
-**{问题标题}** `[Critical|Major|Minor]`
-
-- **原文**: {原文片段}
-- **问题类型**: 事实错误 / 数据不精确 / 缺少引用 / 推理跳跃 / 逻辑冲突 / 过度确定化 / 时效性存疑
-- **说明**: {1-2 句话说明为什么这是问题}
-- **依据**: {基于模型知识判断（未联网）/ 联网证据：{来源URL} / 规则检测}
-- **建议**: {具体怎么改}
-
-（对每条问题重复。如果某级别没有问题，写"无。"）
-
----
-
-## 断言评估
-
-（逐条列出审核的断言及其评估结果：）
-
-**{断言原文}**
-
-- 判定: ✅ 基本可信 / 💡 大概率正确 / ❓ 存疑 / ⚠️ 证据不足 / 🚫 可能错误 / 💬 观点不验证
-- 置信度: {0.0-1.0}
-- 依据: {基于模型知识判断（未联网）/ 联网证据 / 规则检测}
-- 证据: {如有联网来源，列出具体 URL 和标题；如无则写"无联网来源"}
-- 说明: {1-2 句话}
-
----
-
-## 需要人工确认
-
-（列出 AI 无法做出高置信度判断、建议用户自行核实的内容：）
-
-- {断言} — 原因：{为什么 AI 判断不了}
-- ...
-
-（如无需人工确认的内容，写"本次审核的所有断言均有较高置信度，无需额外人工确认。"）
-
----
-
-## 总体评估
-
-**综合可信度**: {较高 / 中等 / 偏低}（{分数}）
-
-**评分构成**:
-- 事实准确性 {score}/10（权重 35%）
-- 证据质量 {score}/10（权重 25%）
-- 逻辑一致性 {score}/10（权重 20%）
-- 表达质量 {score}/10（权重 10%）
-- 时效性 {score}/10（权重 10%）
-
-**主要扣分项**:
-- （列出拉低总分的最主要因素）
-
----
-
-## 说明
-
-- 🧠 = 基于模型知识判断（未联网），仅供参考
-- 🌐 = 联网证据，附来源链接
-- 📏 = 基于规则检测（如过度确定化表达、缺少引用等文本特征）
-- 「证据不足」不等于内容错误，仅表示公开来源中缺乏足够信息
-- 标记为「存疑」的内容建议在使用前通过权威来源核实
-
-只返回 Markdown，不要包裹在代码块中。"""

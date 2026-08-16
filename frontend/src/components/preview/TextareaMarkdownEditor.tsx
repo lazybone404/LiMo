@@ -16,6 +16,7 @@ import {
   Bold, Italic, Strikethrough, Heading1, Heading2, Heading3,
   List, Quote, Code, Table, Link, Undo2, Redo2, Save, X, Loader2,
 } from 'lucide-react'
+import { ResizeHandle } from '../ui/ResizeHandle'
 
 export interface MarkdownEditorProps {
   /** 受控 Markdown 源码（PreviewArea 持有 editValue，保证保存/防丢能拿到最新值） */
@@ -37,6 +38,14 @@ export function TextareaMarkdownEditor({
   value, onChange, onSave, onCancel, dirty, saving, sourceUrl, isVideo,
 }: MarkdownEditorProps) {
   const taRef = useRef<HTMLTextAreaElement>(null)
+  // 分屏拖拽：源码区宽度百分比（预览占剩余）。clamp [25,75] 防止过度挤压任一侧
+  const splitRef = useRef<HTMLDivElement>(null)
+  const [splitPct, setSplitPct] = useState(50)
+  const resizeSplit = useCallback((dx: number) => {
+    const w = splitRef.current?.offsetWidth
+    if (!w) return
+    setSplitPct(p => Math.min(75, Math.max(25, p + (dx / w) * 100)))
+  }, [])
   // 历史栈用 ref 保存：撤销/重做读取即时状态（不依赖 render 闭包，连按 Ctrl+Z 也正确），
   // 且不在 setState updater 内调副作用（React 18+ 不保证 updater 只执行一次）。
   // state 长度仅驱动撤销/重做按钮的 disabled 显示。
@@ -215,17 +224,19 @@ export function TextareaMarkdownEditor({
         <span className="text-[11px] text-disabled mr-1 hidden lg:inline">Ctrl+B 加粗 · Ctrl+I 斜体 · Ctrl+Z/Y 撤销重做 · Ctrl+S 保存</span>
       </div>
 
-      {/* 分屏：左源码 / 右实时预览 */}
-      <div className="flex flex-1 min-h-0">
+      {/* 分屏：左源码 / 右实时预览，中间分隔条可拖拽调宽（对齐三栏布局交互） */}
+      <div ref={splitRef} className="flex flex-1 min-h-0">
         <textarea
           ref={taRef}
           value={value}
           onChange={handleChange}
           spellCheck={false}
-          className="flex-1 w-1/2 min-w-0 h-full resize-none outline-none bg-surface text-foreground font-mono text-[13px] leading-relaxed p-4 border-r border-border-light"
+          className="min-w-0 h-full resize-none outline-none bg-surface text-foreground font-mono text-[13px] leading-relaxed p-4"
+          style={{ flex: `0 0 ${splitPct}%` }}
           placeholder="在此编辑 Markdown 源码..."
         />
-        <div className="flex-1 w-1/2 min-w-0 h-full overflow-y-auto bg-surface">
+        <ResizeHandle direction="horizontal" onResize={resizeSplit} />
+        <div className="flex-1 min-w-0 h-full overflow-y-auto bg-surface">
           <div className="markdown-body p-4">
             <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
               {normalizeLatexDelimiters(previewValue)}

@@ -4,6 +4,7 @@ import { normalizeStyle, type TypeMeta } from './constants'
 import { useStore } from '../../store'
 import { saveReference } from '../../api/references'
 import { getErrorMessage } from '../../api/core'
+import { formatSize } from '../../lib/format'
 
 export interface EnabledModel {
   id: number; provider_id: string; model_name: string
@@ -23,6 +24,7 @@ interface Props {
   formatLink: boolean; setFormatLink: (v: boolean) => void
   formatSummary: boolean; setFormatSummary: (v: boolean) => void
   formatScreenshot: boolean; setFormatScreenshot: (v: boolean) => void
+  formatChart: boolean; setFormatChart: (v: boolean) => void
   // PDF 专属格式
   formatFormulas: boolean; setFormatFormulas: (v: boolean) => void
   formatReferences: boolean; setFormatReferences: (v: boolean) => void
@@ -56,11 +58,6 @@ interface Props {
   setRefFile: (v: { id: string; name: string; size: number } | null) => void
   // 类型元数据（替代原来 7 个散落的布尔值）
   typeMeta: TypeMeta
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`
-  return `${(bytes / 1024).toFixed(1)}KB`
 }
 
 export function GenerateOptions(props: Props) {
@@ -163,12 +160,18 @@ export function GenerateOptions(props: Props) {
           <label className="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" checked={p.formatSummary} onChange={e => p.setFormatSummary(e.target.checked)} className="w-4 h-4 accent-accent" />
             <span className="text-[13px]">AI 总结</span></label>
+          <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+            <input type="checkbox" checked={p.formatChart} onChange={e => p.setFormatChart(e.target.checked)} disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
+            <span className="text-[13px]">图表</span>
+            {isPolishedOnly
+              ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
+              : <span className="text-[10px] text-disabled">AI 生成 SVG → 本地渲染为 PNG 嵌入</span>}</label>
         </div>
       </div>
     )}
 
-    {/* 文本/文件：简化格式（Excel 不适用） */}
-    {!p.typeMeta.isExcel && (p.typeMeta.sourceType === 'text' || p.typeMeta.isDoc) && (
+    {/* 文本/文件：简化格式（Excel 不适用）；epub 走独立解读管道，无图表勾选 */}
+    {!p.typeMeta.isExcel && p.typeMeta.sourceType !== 'epub' && (p.typeMeta.sourceType === 'text' || p.typeMeta.isDoc) && (
       <div className="pt-3 border-t border-border-light">
         <span className="text-[12px] font-medium text-dimmed mb-2 block">笔记格式</span>
         <div className="space-y-1.5">
@@ -188,6 +191,12 @@ export function GenerateOptions(props: Props) {
           <label className="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" checked={p.formatSummary} onChange={e => p.setFormatSummary(e.target.checked)} className="w-4 h-4 accent-accent" />
             <span className="text-[13px]">AI 总结</span></label>
+          <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+            <input type="checkbox" checked={p.formatChart} onChange={e => p.setFormatChart(e.target.checked)} disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
+            <span className="text-[13px]">图表</span>
+            {isPolishedOnly
+              ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
+              : <span className="text-[10px] text-disabled">AI 生成 SVG → 本地渲染为 PNG 嵌入</span>}</label>
           {(p.typeMeta.hasImages) && (
             <>
               {/* 三个正交维度，独立组合，互不依赖：

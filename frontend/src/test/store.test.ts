@@ -8,58 +8,11 @@ beforeEach(() => {
     currentContent: null, currentPolishedContent: null, currentRawText: null,
     markdownMeta: null, markdownVersions: [],
     markdownEdited: { notes: false, polished: false },
-    currentFactCheckContent: null, factCheckMeta: null, factCheckProgress: null,
     streamTick: 0,
-    importProgress: null, importStages: [],
     imageResults: {}, processingTasks: {}, taskPanelOpen: false,
-    generating: false, factChecking: false,
+    generating: false,
     aiVisible: false,
     toasts: [],
-  })
-})
-
-// ── Import progress merging ──
-
-describe('setImportProgress — import progress merging', () => {
-  it('adds a new stage for a new phase', () => {
-    useStore.getState().setImportProgress({ phase: 'download', status: 'done', message: 'Done' })
-    const stages = useStore.getState().importStages
-    expect(stages).toHaveLength(1)
-    expect(stages[0].phase).toBe('download')
-    expect(stages[0].status).toBe('done')
-    expect(stages[0].message).toBe('Done')
-  })
-
-  it('updates existing stage when phase matches', () => {
-    const { setImportProgress } = useStore.getState()
-    setImportProgress({ phase: 'extract', status: 'running', message: 'Working...' })
-    setImportProgress({ phase: 'extract', status: 'done', message: 'Done!' })
-    const stages = useStore.getState().importStages
-    expect(stages).toHaveLength(1) // still 1, not 2
-    expect(stages[0].status).toBe('done')
-    expect(stages[0].message).toBe('Done!')
-  })
-
-  it('accumulates multiple different phases', () => {
-    const { setImportProgress } = useStore.getState()
-    setImportProgress({ phase: 'download', status: 'done', message: 'Downloaded' })
-    setImportProgress({ phase: 'extract', status: 'done', message: 'Extracted' })
-    setImportProgress({ phase: 'transcribe', status: 'running' })
-    expect(useStore.getState().importStages).toHaveLength(3)
-  })
-
-  it('clears stages when event is null', () => {
-    const { setImportProgress } = useStore.getState()
-    setImportProgress({ phase: 'download', status: 'done' })
-    setImportProgress(null)
-    expect(useStore.getState().importProgress).toBeNull()
-    expect(useStore.getState().importStages).toEqual([])
-  })
-
-  it('marks error status correctly', () => {
-    useStore.getState().setImportProgress({ phase: 'fetch', status: 'error', message: 'Network error' })
-    const stages = useStore.getState().importStages
-    expect(stages[0].status).toBe('error')
   })
 })
 

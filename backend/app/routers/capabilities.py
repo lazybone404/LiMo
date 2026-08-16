@@ -8,7 +8,7 @@
 from fastapi import APIRouter, Depends
 from app.core.registry import AdapterRegistry, EngineRegistry
 from app.core.dependencies import get_config
-from app.generation.prompt import STYLE_MAP, DOC_STYLE_MAP, EXCEL_STYLE_MAP, AVAILABLE_OPTIONS, VIDEO_STYLE_KEYS
+from app.generation.prompt import STYLE_MAP, DOC_STYLE_MAP, EXCEL_STYLE_MAP, AVAILABLE_OPTIONS
 from app.generation.product_registry import to_capability_list
 from app.routers.model import _get_providers
 
@@ -260,7 +260,7 @@ async def capabilities(config=Depends(get_config)):
         "genOptions": AVAILABLE_OPTIONS,
         "llmModels": config.get("llm_models", {}),
         "products": to_capability_list(),
-        "version": "0.3.1",
+        "version": "0.4.1",
         # ── 新增：前端去硬编码元数据 ────────────────────────
         "fileTypeMap": file_type_map,
         "scenarioLabels": scenario_labels,

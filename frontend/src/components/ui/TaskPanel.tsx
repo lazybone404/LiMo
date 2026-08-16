@@ -8,7 +8,6 @@ const KIND_META: Record<string, { label: string; Icon: typeof FileText; color: s
   retranscribe:{ label: '重转录', Icon: RefreshCw, color: 'text-warning', bg: 'bg-warning/10' },
   generate:   { label: '生成',    Icon: FileText,   color: 'text-indigo-500', bg: 'bg-indigo-50' },
   'process': { label: '图片处理', Icon: Image, color: 'text-success', bg: 'bg-success/10' },
-  fact_check: { label: 'AI 审核', Icon: ListTodo, color: 'text-success', bg: 'bg-success/10' },
 }
 
 export function TaskPanel() {
@@ -137,7 +136,8 @@ export function TaskPanel() {
                 ) : (
                   <button
                     onClick={() => {
-                      const baseKey = docId.startsWith('__import__') ? '__import__' : docId.includes('__') ? docId.slice(0, docId.indexOf('__')) : docId
+                      // P2-7：导入任务按完整 taskKey 精确取消（不再归一成 __import__ 前缀），并发导入只取消本条
+                      const baseKey = docId.startsWith('__import__') ? docId : docId.includes('__') ? docId.slice(0, docId.indexOf('__')) : docId
                       cancelTask(baseKey)
                       setProcessing(docId, null)
                     }}
@@ -158,7 +158,8 @@ export function TaskPanel() {
           <span className="text-[10px] text-disabled">拖拽移动</span>
           <button
             onClick={() => { entries.forEach(([id]) => {
-              const baseKey = id.startsWith('__import__') ? '__import__' : id.includes('__') ? id.slice(0, id.indexOf('__')) : id
+              // P2-7：逐条精确取消（导入用完整 taskKey，不归一成 __import__ 前缀）
+              const baseKey = id.startsWith('__import__') ? id : id.includes('__') ? id.slice(0, id.indexOf('__')) : id
               cancelTask(baseKey)
               setProcessing(id, null)
             }); }}

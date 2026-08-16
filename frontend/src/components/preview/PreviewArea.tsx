@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../../store'
-import { getTranscript, getMarkdown, saveMarkdownContent, fetchProcessResults, streamFactCheck, getConfig, apiUrl, getErrorMessage, ApiErrorException } from '../../api/client'
-import { loadGenPrefs } from '../gen-panel/genPrefs'
+import { getTranscript, getMarkdown, saveMarkdownContent, fetchProcessResults, apiUrl, getErrorMessage, ApiErrorException } from '../../api/client'
 import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
@@ -9,7 +8,7 @@ import { getStreamBuffer } from '../../store/streamBuffers'
 import type { TaskInfo } from '../../store/types'
 import { TabRegistry, type TabDef } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Loader2, Terminal, Image, MessageSquare, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Pencil } from 'lucide-react'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, MessageSquare, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Pencil } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -31,6 +30,83 @@ import { ImageResultView } from './ImageResultView'
 import { CopyContentBtn } from './CopyContentBtn'
 import 'katex/dist/katex.min.css'
 
+// ── 欢迎文档（空态示例文档）内容 ──
+// 对齐 LiMo 双产物 + 转录结构：笔记（欢迎/简介）· 整理版原文（开发者全面功能）· 转录（更新记录）。
+// 新增/移除功能时同步更新（模式 34：欢迎文档面向新用户展示当前能力）。
+const WELCOME_TABS: { key: 'notes' | 'polished' | 'transcript'; label: string }[] = [
+  { key: 'notes', label: '笔记' },
+  { key: 'polished', label: '整理版原文' },
+  { key: 'transcript', label: '转录' },
+]
+
+const WELCOME_NOTES = `## 欢迎使用 LiMo
+
+> 知识管理系统：把任何来源（网页、视频、PDF、Word、图片…）变成**可读、可搜索、可复用的结构化知识**。
+
+### 快速开始
+
+1. **导入内容** — 粘贴网页/视频链接，或拖入 PDF、Word、PPT、Excel、EPUB、图片、视频
+2. **自动转录** — 自动提取正文、语音转文字、OCR 识别；视频可开启「画面理解」
+3. **生成笔记** — 一键生成「笔记」+「整理版原文」两份 Markdown，可附参考资料；勾选「图表」让 AI 输出流程图/架构图，本地渲染 PNG 嵌入
+4. **编辑产物** — 笔记/整理版可手动编辑（源码 + 分屏预览），保存覆盖并保留上一版
+5. **更多能力** — 对话 AI 查资料、导出 HTML/MD/ZIP/思维导图
+
+> 切换到「整理版原文」查看面向开发者的完整功能；切到「转录」查看最近更新记录。`
+
+const WELCOME_POLISHED = `## LiMo 功能总览（开发者向）
+
+### 内容导入
+- **多源输入**：网页 / 视频 / 纯文本 / Markdown / 本地文件（PDF、Word、PPT、Excel、EPUB、图片、视频，≤2GB）
+- **URL 导入**：粘贴链接自动提取正文；B站/YouTube Cookie 注入支持平台认证
+- **双层去重**：URL 级拦截 + 内容 SHA256 校验，重复导入自动选中已有文档
+
+### 转录与引擎
+- **ASR**：bcut（B站必剪免费云转写）+ DashScope Paraformer（云端）；本地 whisper 可经插件接入
+- **OCR**：DashScope 云端（图片转文字、扫描件提取）；Tesseract 本地 OCR 经插件模板扩展
+- **文档引擎**：pypdfium2（PDF 毫秒级）+ pdf-image（扫描件整页转图）+ MarkItDown / python-docx / python-pptx / openpyxl / ebooklib；AGPL 引擎（如 pymupdf4llm）以插件进程外接入
+- **视频处理**：ffmpeg 抽帧 + 网格拼接 + 模糊帧过滤（Laplacian 方差 + 熵 + 边缘密度）
+
+### LLM 生成
+- **双产物并行**：notes（结构化笔记）+ polished（整理版原文），asyncio 并发 + SSE 逐 token 流式
+- **按类型派发**：视频/网页/文档/Excel 走不同 prompt 模板；9+8 种笔记风格可选
+- **思考链**：deepseek-v4 reasoning_content 逐段展示「模型思考中」
+- **自动续写**：length 截断自动续写 3 轮，temperature 递减
+- **参考文件**：注入参考资料（如评论区观点）提升生成质量
+- **图表**：勾选后 AI 输出 SVG → 本地 resvg 渲染 PNG 嵌入笔记
+
+### 图片处理
+- 4 种模式：文字提取 / 表格识别 / 文档数字化 / 内容理解，LLM 优先 → 引擎回退
+
+### 对话 AI
+- 5 个工具：文档检索 / 文档查询 / 文档列表 / 网页搜索（Tavily → SearXNG → DDG 三级降级）/ 网页抓取
+- 上下文感知预算 + 长对话 LLM 压缩 + 消息级文档引用（@ 选文档）
+
+### 插件系统
+- EnginePlugin v1（默认进程外 + trusted 例外），官方零维护，一键安装依赖
+
+### 导出
+- MD / HTML（KaTeX 预渲染、零 CDN、自包含）/ ZIP 批量 / 思维导图（SVG + 交互式 HTML）/ 对话导出
+
+### 体验与安全
+- 六轴主题系统（明暗/配色/基调/纹理/字体）+ 一键主题预设
+- 多语言输出、SSRF/路径遍历/XSS 防护、并发信号量控制、全链路请求日志追踪
+
+> 完整架构与设计决策见项目 docs/ 目录（architecture.md、AGENT-ONBOARDING.md 等）。`
+
+const WELCOME_TRANSCRIPT = `## 更新记录
+
+> 按时间倒序，最近更新在最前。完整记录见项目 docs/CHANGELOG.md。
+
+- **2026-08-16** — 图表作为笔记可选组件 + AI 审核（fact_check）移除转历史
+- **2026-08-15** — 产物编辑能力：笔记/整理版手动编辑（源码 + 分屏预览 + 覆盖保护）
+- **2026-08-14** — 插件 venv 检查路径遍历异常修复
+- **2026-08-14** — 打包体积优化：docling 清理 + ffmpeg 精简（安装包 -44%）
+- **2026-08-14** — 文档全面更新 + AGENT-ONBOARDING 上手文档
+- **2026-08-13** — 首次体验与健壮性：持续探活 + 请求日志 + 配置向导 + 缺 key 提示
+- **2026-08-06** — PDF 笔记图片显示修复 + 插件 venv 健壮性修复
+- **2026-08-04** — 对话上下文管理（C1-C5）+ 对话模块全量重写（P1-P6）
+- **2026-08-03** — 视频笔记 prompt 过滤规则补充`
+
 /** PreviewArea 主组件 — 内容预览 + Tab 切换 + 工具栏 */
 export function PreviewArea() {
   const activeView = useStore(s => s.activeView)
@@ -47,8 +123,6 @@ export function PreviewArea() {
     if (!s.currentDocId) return false
     return !!s.processingTasks[s.currentDocId + '__generate']
   })
-  const currentFactCheckContent = useStore(s => s.currentFactCheckContent)
-  const factCheckProgress = useStore(s => s.factCheckProgress)
   const contentWidth = useStore(s => s.contentWidth)
   const cycleContentWidth = useStore(s => s.cycleContentWidth)
 
@@ -71,9 +145,11 @@ export function PreviewArea() {
     return () => ro.disconnect()
   }, [])
 
-  const contentMaxW = `${Math.min(containerWidth * WIDTH_RATIO[contentWidth].ratio, 1100)}px`
+  // 内容上限动态跟随面板宽度：小窗口保底 1100px；折叠 GenPanel/DocLibrary 后面板变宽 →
+  // 内容同步放宽（两侧各留 ~80px 边距）利用空白，而不是被固定 1100 钳制
+  const contentCap = Math.max(1100, containerWidth - 160)
+  const contentMaxW = `${Math.min(containerWidth * WIDTH_RATIO[contentWidth].ratio, contentCap)}px`
   const fontSizeScale: Record<string, number> = { narrow: 0.92, normal: 1.0, wide: 1.06 }
-  const factChecking = useStore(s => s.factChecking)
   const setCurrentContent = useStore(s => s.setCurrentContent)
   const setCurrentPolishedContent = useStore(s => s.setCurrentPolishedContent)
 
@@ -102,6 +178,8 @@ export function PreviewArea() {
   const [versionLoading, setVersionLoading] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [contentLoadError, setContentLoadError] = useState(false)
+  // 欢迎文档（空态示例文档）内部 tab：笔记 / 整理版原文 / 转录 —— 对齐真实文档的双产物 + 转录结构
+  const [welcomeTab, setWelcomeTab] = useState<'notes' | 'polished' | 'transcript'>('notes')
 
   // ── 产物编辑状态（notes/polished 手动编辑，见 pi-docs/产物编辑方案.md）──
   const [editing, setEditing] = useState<{ mode: 'notes' | 'polished' } | null>(null)
@@ -186,8 +264,11 @@ export function PreviewArea() {
       }
       setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version, edited: !!md.edited })
       setMarkdownVersions(md.versions || [])
-    }).catch(err => console.error('加载版本失败:', err))
-     .finally(() => setVersionLoading(false))
+    }).catch(err => {
+      // P1-16：版本加载失败不再静默——toast 告知（含瞬时网络故障归一化后的中文消息）
+      console.error('加载版本失败:', err)
+      useStore.getState().addToast(getErrorMessage(err), 'error')
+    }).finally(() => setVersionLoading(false))
   }
 
   // 选中文档时加载内容
@@ -214,10 +295,6 @@ export function PreviewArea() {
     setEditDirty(false)
     useStore.getState().setMarkdownEdited('notes', false)
     useStore.getState().setMarkdownEdited('polished', false)
-    useStore.getState().setCurrentFactCheckContent(null)
-    useStore.getState().setFactCheckMeta(null)
-    useStore.getState().setFactCheckProgress(null)  // F5：漏清进度 → A 的审核 spinner 残留在 B
-    useStore.getState().setFactChecking(false)      // F5：漏清全局标志（A 的流式仍在跑，其 onDone 会再置 false，无害）
     if (!currentDocId) return
     const capturedId = currentDocId
     const isSame = () => capturedId === useStore.getState().currentDocId
@@ -254,24 +331,6 @@ export function PreviewArea() {
       setCurrentPolishedContent(md && md.content ? md.content : null)
       useStore.getState().setMarkdownEdited('polished', !!md?.edited)
     }).catch(err => { handleLoadError('加载整理版原文失败', err) })
-    getMarkdown(capturedId, 'fact_check').then(md => {
-      if (!isSame()) return
-      // N2：fact_check 流式中切回 → 跳过——否则旧版本 V0 成为 onChunk 的
-      // 恢复起点，V0 + 新 chunk 混合错乱
-      if (useStore.getState().processingTasks[capturedId + '__fact_check']) return
-      if (md?.content) {
-        useStore.getState().setCurrentFactCheckContent(md.content)
-        useStore.getState().setFactCheckMeta({
-          id: md.id,
-          verified_count: (md as any).verified_count,
-          disputed_count: (md as any).disputed_count,
-          unverifiable_count: (md as any).unverifiable_count,
-          source_mode: (md as any).source_mode,
-          source_version: (md as any).source_version,
-          verified_at: (md as any).verified_at,
-        })
-      }
-    }).catch(err => { handleLoadError('加载事实验证失败', err) })
     // 文档/视频/PDF — 若无笔记则自动显示转录
     Promise.all([
       getMarkdown(capturedId),
@@ -295,7 +354,11 @@ export function PreviewArea() {
           mode: r.mode, text: r.content, engine: r.engine, id: r.id,
         })))
       }
-    }).catch(err => console.error('加载处理结果失败:', err))
+    }).catch(err => {
+      // P2-3：处理结果加载失败不再静默——图片 tab 会误显示「点击处理卡片」，toast 告知
+      console.error('加载处理结果失败:', err)
+      useStore.getState().addToast(getErrorMessage(err), 'error')
+    })
   }, [currentDocId])
 
   const sourceType = currentDoc?.sourceType || 'webpage'
@@ -322,12 +385,12 @@ export function PreviewArea() {
 
   // 当前显示的内容 — 由 TabDef.contentSource 决定从哪个字段读（lib/contentSources.ts）
   // 流式生成中 → notes/polished 优先读缓冲区（Map 由 streamTick 驱动重渲染）；否则显示已保存内容
-  // 注：非 notes/polished tab 不再读 notes 缓冲（原硬编码 bug 语义，fact_check/transcript 等
+  // 注：非 notes/polished tab 不再读 notes 缓冲（原硬编码 bug 语义，transcript 等
   // 在生成期间应显示各自内容源——有意的修正，勿"恢复"）
   const displayContent = activeTabDef
     ? getContentForView(activeView, {
         currentDocId, activeView,
-        currentContent, currentPolishedContent, currentRawText, currentFactCheckContent,
+        currentContent, currentPolishedContent, currentRawText,
         imageResults,
         readStreamBuffer: (mode) => {
           if (!isStreaming || !currentDocId) return null
@@ -346,107 +409,6 @@ export function PreviewArea() {
         .filter(([k, v]) => k.startsWith('__import__') && v.kind === 'import')
         .map(([, v]) => v))
 
-  /** 触发事实验证 */
-  const handleFactCheck = (docId: string) => {
-    if (!docId) return
-    const isSame = () => docId === useStore.getState().currentDocId
-    const st = useStore.getState()
-    st.setFactChecking(true)
-    st.setProcessing(docId + '__fact_check', { kind: 'fact_check', title: st.docs.find(d => d.id === docId)?.title || '' })
-    st.setCurrentFactCheckContent('')
-    st.setFactCheckProgress(null)
-
-    const appendMarkdown = (s: string) => {
-      if (!isSame()) return
-      const prev = useStore.getState().currentFactCheckContent || ''
-      useStore.getState().setCurrentFactCheckContent(prev + s)
-    }
-
-    getConfig().then(cfg => {
-      const verifyMode = cfg?.agent_tools?.verify_mode || 'llm'
-      streamFactCheck(docId, {
-        model_id: loadGenPrefs().selectedModelId || undefined,
-        verify_mode: verifyMode,
-      }, {
-      onChunk(text, phase) {
-        if (!isSame()) return
-        const prev = useStore.getState().currentFactCheckContent || ''
-        if (phase === 'verify') {
-          // verify 阶段文本 → blockquote
-          useStore.getState().setCurrentFactCheckContent(prev + `> ${text}\n`)
-        } else {
-          // review 流式报告及其他 → 直接拼接
-          useStore.getState().setCurrentFactCheckContent(prev + text)
-        }
-      },
-      onProgress(data) {
-        if (!isSame()) return
-        const st = useStore.getState()
-        const prev = st.factCheckProgress
-        // 静态审核完成 → 拼接结构化摘要
-        if (data.phase === 'static_review' && data.summary) {
-          const s = data.summary
-          const issues = data.issues || []
-          let md = `\n> 静态审核完成：${s.claims_count} 条断言（${s.facts + s.data} 事实/数据，${s.opinion} 观点）\n`
-          if (issues.length > 0) {
-            const labels: Record<string, string> = {
-              fact_error: '事实错误', data_inaccurate: '数据近似', citation_missing: '缺少引用',
-              source_weak: '来源偏弱', reasoning_gap: '推理跳跃', logic_conflict: '逻辑冲突',
-              overclaim: '过度确定化', vague_definition: '定义不清', misleading_phrasing: '易误导表述',
-              freshness_concern: '时效性存疑',
-            }
-            md += '> 发现问题：' + issues.map((i: any) =>
-              `${labels[i.type] || i.type}${i.action ? '（' + i.action + '）' : ''}`
-            ).join('、') + '\n'
-          }
-          md += '\n---\n\n'
-          appendMarkdown(md)
-        }
-        // 同步更新进度供加载态使用
-        st.setFactCheckProgress({
-          phase: data.phase || '',
-          text: data.text || '',
-          summary: data.summary || prev?.summary,
-          issues: data.issues || prev?.issues,
-        })
-      },
-      onDone(result) {
-        useStore.getState().setFactChecking(false)
-        useStore.getState().setProcessing(docId + '__fact_check', null)
-        useStore.getState().setFactCheckProgress(null)
-        if (!isSame()) return
-        if (result) {
-          useStore.getState().setFactCheckMeta({
-            id: result.id || '',
-            verified_count: result.verified_count,
-            disputed_count: result.disputed_count,
-            unverifiable_count: result.unverifiable_count,
-            source_mode: (result as any).source_mode,
-            source_version: (result as any).source_version,
-            verified_at: new Date().toISOString(),
-          })
-        }
-        if (result?.has_content === false) {
-          useStore.getState().addToast('未发现可审核的事实性内容', 'info')
-        } else {
-          useStore.getState().addToast('AI 审核完成', 'success')
-        }
-      },
-      onError(msg) {
-        useStore.getState().setFactChecking(false)
-        useStore.getState().setProcessing(docId + '__fact_check', null)
-        if (!isSame()) return
-        useStore.getState().addToast(msg, 'error')
-      },
-    })
-    }).catch(() => {
-      // 配置接口失败 → 必须复位审核状态，否则 factChecking 永久 true、spinner 卡死
-      useStore.getState().setFactChecking(false)
-      useStore.getState().setProcessing(docId + '__fact_check', null)
-      useStore.getState().addToast('配置加载失败，请检查后端是否运行', 'error')
-    })
-  }
-
   /** 判断某个 view tab 是否正在处理中（从 TabDef.processingKinds 推导） */
   const isViewProcessing = (view: string) => {
     const def = TabRegistry.get(view)
@@ -459,7 +421,7 @@ export function PreviewArea() {
   }
 
   /** 与当前 tab 匹配的活跃任务（多任务并发时占位显示最相关的那个，
-   *  而不是 activeTasks[0]——generate + process + fact_check 同时跑时会选错） */
+   *  而不是 activeTasks[0]——generate + process 同时跑时会选错） */
   const taskForView = (view: string): TaskInfo | undefined => {
     const def = TabRegistry.get(view)
     if (!def?.processingKinds) return undefined
@@ -477,9 +439,19 @@ export function PreviewArea() {
           <h1 className="text-[30px] font-semibold mb-1">欢迎使用 LiMo</h1>
           <p className="text-[13px] text-disabled mb-8">在左侧面板导入内容，开始你的知识管理</p>
 
-          <div className="markdown-body max-w-[480px] mx-auto text-left mt-10" data-texture-reset="true">
+          {/* 欢迎文档 = 示例文档：笔记 / 整理版原文 / 转录 三产物形态（tab 样式对齐 PreviewArea 工具栏） */}
+          <div className="mt-2 mb-6 inline-flex items-center gap-1 bg-surface rounded-lg p-0.5 border border-border-light">
+            {WELCOME_TABS.map(t => (
+              <button key={t.key}
+                onClick={() => setWelcomeTab(t.key)}
+                className={`px-3 py-1.5 rounded-md text-[12px] transition-all ${welcomeTab === t.key ? 'bg-elevated font-medium shadow-sm' : 'text-dimmed hover:text-foreground'}`}
+              >{t.label}</button>
+            ))}
+          </div>
+
+          <div className="markdown-body max-w-160 mx-auto text-left" data-texture-reset="true">
             <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
-              {`## 快速开始\n\n1. **导入内容** — 粘贴网页/视频链接，或拖入 PDF、Word、PPT、Excel、EPUB、图片、视频\n2. **自动转录** — 自动提取正文、语音转文字、OCR 识别；视频可开启「画面理解」\n3. **生成笔记** — 一键生成「笔记」+「整理版原文」两份 Markdown，可附参考资料\n4. **编辑产物** — 笔记/整理版可手动编辑（源码 + 分屏预览），保存覆盖并保留上一版，重新生成前有确认保护\n5. **更多能力** — 对话 AI 查资料、事实验证、导出 HTML/MD/ZIP/思维导图\n\n---\n\n> 把任何来源变成可读、可搜索的文字。需要更强的能力？可安装三方插件扩展。`}
+              {welcomeTab === 'notes' ? WELCOME_NOTES : welcomeTab === 'polished' ? WELCOME_POLISHED : WELCOME_TRANSCRIPT}
             </ReactMarkdown>
           </div>
         </div>
@@ -518,7 +490,9 @@ export function PreviewArea() {
         const editMode = activeView === 'polished' ? 'polished' : 'notes'
         const inEditing = editing?.mode === editMode
         return <>
-          <PartialBanner versions={markdownVersions} isStreaming={isStreaming} />
+          {/* P2-1：继续生成入口——通知 GenPanel 以 continue_from=partial 续写残缺产物 */}
+          <PartialBanner versions={markdownVersions} isStreaming={isStreaming}
+            onContinue={() => window.dispatchEvent(new CustomEvent('limo:continue-generate'))} />
           {inEditing ? (
             <TextareaMarkdownEditor
               value={editValue}
@@ -645,39 +619,6 @@ export function PreviewArea() {
           </div>
         )
 
-      case 'fact_check': {
-        if (currentFactCheckContent) {
-          return (
-            <div className="mx-auto px-10 py-8">
-              <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={currentFactCheckContent}
-                meta={{ style: 'detailed', mode: 'fact_check', version: 1 }} />
-            </div>
-          )
-        }
-        if (factChecking) {
-          return (
-            <div className="mx-auto px-10 py-16 text-center">
-              <Loader2 size={20} className="animate-spin mx-auto mb-3 text-accent" />
-              <p className="text-[13px] text-dimmed">{factCheckProgress?.text || '正在准备审核...'}</p>
-            </div>
-          )
-        }
-        return (
-          <EmptyState
-            title="AI 辅助审核"
-            description="自动提取事实断言，检查引用完整性和逻辑一致性"
-            hint="审核基于 AI 模型知识，不能替代人工事实核查。结果仅供辅助参考。"
-            action={<button
-              onClick={() => handleFactCheck(currentDocId!)}
-              disabled={factChecking || !currentDocId}
-              className="px-5 py-2.5 bg-accent text-white text-[14px] font-medium rounded-lg hover:bg-accent-hover active:scale-[0.97] transition-all disabled:opacity-40"
-            >
-              开始审核
-            </button>}
-          />
-        )
-      }
-
       case 'mindmap':
         // 思维导图只依赖笔记内容——笔记已有内容（含流式 partial）就直接渲染，
         // 不被"正在生成中"拦截（串行生成中 notes 已完成但 polished 还在跑，
@@ -721,7 +662,7 @@ export function PreviewArea() {
         <div className="flex items-center gap-1.5">
           <CopyContentBtn ctx={{
             currentDocId, activeView,
-            currentContent, currentPolishedContent, currentRawText, currentFactCheckContent,
+            currentContent, currentPolishedContent, currentRawText,
             imageResults,
           }} />
           <ExportMenu />

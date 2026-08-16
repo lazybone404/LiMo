@@ -46,7 +46,6 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const [searxngUrl, setSearxngUrl] = useState('http://127.0.0.1:18080')
   const [tavilyApiKey, setTavilyApiKey] = useState('')
   const [fetchProvider, setFetchProvider] = useState('trafilatura')
-  const [verifyMode, setVerifyMode] = useState('llm')
   const [targetLanguage, setTargetLanguage] = useState('zh-CN')
   const [loading, setLoading] = useState(true)
 
@@ -87,9 +86,6 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
         if (cfg.agent_tools.fetch) {
           setFetchProvider(cfg.agent_tools.fetch.provider || 'trafilatura')
         }
-        if (cfg.agent_tools.verify_mode) {
-          setVerifyMode(cfg.agent_tools.verify_mode)
-        }
       }
     }).catch(err => console.error('加载配置失败:', err))
     .finally(() => setLoading(false))
@@ -104,7 +100,6 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
         agent_tools: {
           search: { provider: searchProvider, searxng_url: searxngUrl, tavily_api_key: tavilyApiKey },
           fetch: { provider: fetchProvider },
-          verify_mode: verifyMode,
         },
       })
       setSaved(true)
@@ -545,20 +540,6 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                       placeholder="http://127.0.0.1:18080"
                       className="w-full mt-2 px-3 py-2 bg-surface border border-border-default rounded-[10px] text-[14px] outline-none font-mono" />
                   )}
-                </div>
-
-                {/* AI 审核验证方式 */}
-                <div>
-                  <label className="text-[15px] font-medium mb-2 block">AI 审核验证方式</label>
-                  <select value={verifyMode} onChange={e => setVerifyMode(e.target.value)}
-                    className="w-full px-3 py-2.5 bg-surface border border-border-default rounded-[10px] text-[14px] outline-none">
-                    <option value="llm">基于模型知识（默认，快速，无需搜索引擎）</option>
-                    <option value="web">联网搜索验证（更可靠但较慢，需配置搜索方案）</option>
-                  </select>
-                  <p className="text-[12px] text-disabled mt-1.5 leading-relaxed">
-                    LLM 模式基于模型训练知识批量验证，几秒内完成。联网模式会搜索网页交叉验证，结果更可靠但耗时较长。
-                    可在上述「网络搜索」中切换搜索引擎。
-                  </p>
                 </div>
 
                 {/* 抓取方案 */}

@@ -2,6 +2,7 @@ export interface GenPrefs {
   style: string
   selectedCore: string[]               // ["notes","polished"] — 生成产物的复选框
   formatToc: boolean; formatLink: boolean; formatSummary: boolean; formatScreenshot: boolean
+  formatChart: boolean
   /** @deprecated replaced by target_language — kept for old data compat */
   formatTranslate: boolean; formatFormulas: boolean; formatReferences: boolean; formatImages: boolean
   imageAnalyze: boolean; imageOptimize: boolean
@@ -19,7 +20,7 @@ export interface GenPrefs {
 
 const DEFAULTS: GenPrefs = {
   style: 'detailed', selectedCore: ['notes', 'polished'],
-  formatToc: true, formatLink: true, formatSummary: true, formatScreenshot: false,
+  formatToc: true, formatLink: true, formatSummary: true, formatScreenshot: false, formatChart: false,
   formatTranslate: false, formatFormulas: false, formatReferences: false, formatImages: false,
   imageAnalyze: false, imageOptimize: true,
   ocrEnabled: false, ocrModelId: null,

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.llm.service import LLMService
+from app.services.chart_renderer import render_charts
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,11 @@ def _post_process_screenshots(markdown: str, video_path: str | None, doc_dir: st
     if not video_path or not os.path.exists(video_path):
         logger.info("原片截图：无视频文件，跳过（video_path=%s）", video_path)
         return markdown
+    if not doc_dir:
+        # P1-9：无目标目录时跳过——写入随机 mkdtemp 会永久泄漏目录，且截图引用
+        # （assets/xxx 相对路径）必然 404。宁可跳过替换也不写孤儿目录。
+        logger.info("原片截图：无 doc_dir，跳过截图替换")
+        return markdown
 
     try:
         from app.utils.screenshot_marker import extract_screenshot_timestamps
@@ -46,7 +52,7 @@ def _post_process_screenshots(markdown: str, video_path: str | None, doc_dir: st
             return markdown
 
         logger.info("原片截图：找到 %d 个标记，开始 ffmpeg 抽帧", len(matches))
-        output_dir = os.path.join(doc_dir or tempfile.mkdtemp(prefix="limo_ss_"), "assets")
+        output_dir = os.path.join(doc_dir, "assets")
         os.makedirs(output_dir, exist_ok=True)
         for idx, (marker, ts) in enumerate(matches):
             try:
@@ -132,7 +138,12 @@ class Generator:
             )
             content = _post_process_content_markers(content)
             if formats and "screenshot" in formats:
-                content = _post_process_screenshots(content, video_path, doc_dir=self._prep.doc_dir)
+                # P1-1：ffmpeg 抽帧放线程池，释放事件循环
+                content = await asyncio.to_thread(
+                    _post_process_screenshots, content, video_path, doc_dir=self._prep.doc_dir)
+            if formats and "chart" in formats:
+                # P1-1：resvg 渲染放线程池，释放事件循环
+                content = await asyncio.to_thread(render_charts, content, self._prep.doc_dir)
         finally:
             self._cleanup_video(video_path)
 
@@ -220,13 +231,27 @@ class Generator:
                 max_tokens=MAX_TOKENS, temperature=0.7,
                 max_continuations=3, cancel_event=cancel_event,
             )
-            content_a, content_b = await asyncio.gather(task_a, task_b)
+            # P0-4：gather 默认遇单路异常立即传播 → 另一路成孤儿 task（烧 token 结果被丢弃 +
+            # unhandled exception），finally 的 _cleanup_video 也可能在另一路运行时删视频。
+            # return_exceptions 等两路全部完成（结果不孤立、不提前删视频），有异常则重抛首个。
+            results = await asyncio.gather(task_a, task_b, return_exceptions=True)
+            exc = next((r for r in results if isinstance(r, BaseException)), None)
+            if exc is not None:
+                raise exc
+            content_a, content_b = results
 
             content_a = _post_process_content_markers(content_a)
             content_b = _post_process_content_markers(content_b)
             if formats and "screenshot" in formats:
-                content_a = _post_process_screenshots(content_a, video_path, doc_dir=self._prep.doc_dir)
-                content_b = _post_process_screenshots(content_b, video_path, doc_dir=self._prep.doc_dir)
+                # P1-1：ffmpeg 抽帧放线程池（两路并行），释放事件循环
+                content_a, content_b = await asyncio.gather(
+                    asyncio.to_thread(_post_process_screenshots, content_a, video_path, doc_dir=self._prep.doc_dir),
+                    asyncio.to_thread(_post_process_screenshots, content_b, video_path, doc_dir=self._prep.doc_dir),
+                )
+            if formats and "chart" in formats:
+                # 图表只入 notes（content_b）——polished 也渲染会写同名 chart_N.png 覆盖 notes 图（P0-3）
+                # P1-1：resvg 渲染放线程池，释放事件循环
+                content_b = await asyncio.to_thread(render_charts, content_b, self._prep.doc_dir)
         finally:
             self._cleanup_video(video_path)
 
@@ -251,3 +276,10 @@ class Generator:
                 os.remove(video_path)
             except OSError:
                 pass
+            # P1-11：删视频后清空 VL 下载临时目录（vl_video_*），防目录泄漏
+            _parent = os.path.dirname(video_path)
+            if os.path.basename(_parent).startswith("vl_video_"):
+                try:
+                    os.rmdir(_parent)
+                except OSError:
+                    pass

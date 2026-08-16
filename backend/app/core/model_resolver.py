@@ -44,7 +44,7 @@ def resolve_model(config: dict, model_id: int) -> dict | None:
 
 def resolve_llm_config(config: dict, model_id: int | None = None,
                        scene: str = "generate") -> dict:
-    """解析 LLM 配置（generate / fact_check 共用）。
+    """解析 LLM 配置（generate / chat / process 共用）。
 
     返回 llm_config dict，包含 provider, model, api_key, base_url 等。
     调用方只需用返回的 config 构造 LLMService。

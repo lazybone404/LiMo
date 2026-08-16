@@ -180,9 +180,14 @@ class LLMService:
                     break
                 except Exception as e:
                     if attempt < _RETRY_COUNT:
+                        # P1-14：重试退避期间检查取消——用户取消时不再多等 1~3s 退避
+                        if cancel_event and cancel_event.is_set():
+                            raise CancelledError()
                         logger.warning("LLM 流式连接失败（%d/%d），重试...: %s",
                                       attempt + 1, _RETRY_COUNT, str(e)[:80])
                         await asyncio.sleep(1.0 * (attempt + 1))
+                        if cancel_event and cancel_event.is_set():
+                            raise CancelledError()
                     else:
                         raise LLMError(
                             f"LLM 调用失败: {str(e)[:200]}",

@@ -3,6 +3,7 @@ import { Plus, Link, FileText, Image, Upload, Loader2, X, Film, Paperclip, KeyRo
 import { EngineSelect, type EngineOption } from './EngineSelect'
 import { getSubScenario, DROP_ACCEPT, INPUT_TYPE_LABELS, IMPORTING_LABELS } from './constants'
 import { useStore } from '../../store'
+import { formatSize } from '../../lib/format'
 
 const MEDIA_INPUT_TYPES = ['video', 'image', 'file']
 
@@ -34,6 +35,7 @@ export function ImportSection(props: Props) {
 
   // ── 拖拽上传 ──
   const [dragOver, setDragOver] = useState(false)
+  const addToast = useStore(s => s.addToast)
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setDragOver(true)
   }, [])
@@ -42,13 +44,27 @@ export function ImportSection(props: Props) {
     // 只在真正离开拖拽区时取消高亮（子元素触发的不算）
     if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false)
   }, [])
+  // P2-6：文件大小预检——后端上传硬上限 2GB；接近上限（>1GB）警告但不拦截。
+  // 拖拽 / 文件选择 / 视频选择统一走这里，避免各自为政。
+  const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
+  const WARN_FILE_BYTES = 1 * 1024 * 1024 * 1024
+  const pickFile = useCallback((f: File) => {
+    if (f.size > MAX_FILE_BYTES) {
+      addToast('文件超过 2GB 上传上限，请压缩后重试', 'error')
+      return
+    }
+    if (f.size > WARN_FILE_BYTES) {
+      addToast(`文件较大（${formatSize(f.size)}），上传与解析可能较慢`, 'info')
+    }
+    p.setFileObj(f); p.setImportInput('')
+  }, [addToast, p.setFileObj, p.setImportInput])
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setDragOver(false)
     const f = e.dataTransfer.files?.[0]
     if (f && validateDropFile(f, p.inputType)) {
-      p.setFileObj(f); p.setImportInput('')
+      pickFile(f)
     }
-  }, [p.inputType, p.setFileObj, p.setImportInput])
+  }, [p.inputType, pickFile])
   const dropHandlers = { onDragOver: handleDragOver, onDragLeave: handleDragLeave, onDrop: handleDrop }
 
   const dropZoneClass = (base: string) =>
@@ -171,7 +187,7 @@ export function ImportSection(props: Props) {
             onKeyDown={e => e.key === 'Enter' && p.handleImport()}
             placeholder={p.inputType === 'link' ? 'https://example.com/article/...' : '粘贴聊天记录、文章、笔记...'}
             disabled={false}
-            className="w-full px-2.5 py-2 bg-elevated border border-border-default rounded-lg text-[13px] outline-none placeholder:text-disabled disabled:opacity-50" />
+            className="w-full px-2.5 py-2 bg-elevated border border-border-default rounded-lg text-[13px] font-mono outline-none placeholder:text-disabled disabled:opacity-50" />
           {/* 文本类型：支持上传 MD/TXT 文件 */}
           {p.inputType === 'text' && (
             <label className="flex items-center justify-center gap-1.5 py-2 px-3 border border-dashed border-border-default rounded-lg cursor-pointer
@@ -202,7 +218,7 @@ export function ImportSection(props: Props) {
                 onKeyDown={e => e.key === 'Enter' && p.handleImport()}
                 placeholder="https://www.bilibili.com/video/... 或 YouTube 链接"
                 disabled={false}
-                className="w-full px-2.5 py-2 bg-elevated border border-border-default rounded-lg text-[13px] outline-none placeholder:text-disabled disabled:opacity-50" />
+                className="w-full px-2.5 py-2 bg-elevated border border-border-default rounded-lg text-[13px] font-mono outline-none placeholder:text-disabled disabled:opacity-50" />
               <div className="flex items-center gap-2">
                 <div className="flex-1 h-px bg-border-default" />
                 <span className="text-[10px] text-disabled">或上传本地视频</span>
@@ -217,7 +233,7 @@ export function ImportSection(props: Props) {
                 <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center"><Film size={18} className="text-dimmed" /></div>
                 <div>
                   <div className="text-[12px] font-medium text-foreground truncate max-w-full">{p.fileObj.name}</div>
-                  <div className="text-[10px] text-disabled">{(p.fileObj.size / 1024 / 1024).toFixed(1)} MB · 点击更换</div>
+                  <div className="text-[10px] text-disabled">{formatSize(p.fileObj.size)} · 点击更换</div>
                 </div>
               </>
             ) : (
@@ -231,7 +247,7 @@ export function ImportSection(props: Props) {
             )}
             <input type="file" className="hidden"
               accept=".mp4,.mkv,.avi,.mov,.webm,.flv,.wmv"
-              onChange={e => { const f = e.target.files?.[0]; if (f) { p.setFileObj(f); p.setImportInput('') } }} />
+              onChange={e => { const f = e.target.files?.[0]; if (f) pickFile(f) }} />
           </label>
           {p.fileObj && (
             <button onClick={() => p.setFileObj(null)}
@@ -252,7 +268,7 @@ export function ImportSection(props: Props) {
                 </div>
                 <div>
                   <div className="text-[12px] font-medium text-foreground truncate max-w-full">{p.fileObj.name}</div>
-                  <div className="text-[10px] text-disabled">{(p.fileObj.size / 1024).toFixed(0)} KB · 点击更换</div>
+                  <div className="text-[10px] text-disabled">{formatSize(p.fileObj.size)} · 点击更换</div>
                 </div>
               </>
             ) : (
@@ -268,7 +284,7 @@ export function ImportSection(props: Props) {
             )}
             <input type="file" className="hidden"
               accept={p.inputType === 'image' ? '.png,.jpg,.jpeg,.webp,.bmp,.tiff,.gif' : '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.epub'}
-              onChange={e => { const f = e.target.files?.[0]; if (f) { p.setFileObj(f); p.setImportInput('') } }} />
+              onChange={e => { const f = e.target.files?.[0]; if (f) pickFile(f) }} />
           </label>
           {p.fileObj && (
             <button onClick={() => p.setFileObj(null)}
