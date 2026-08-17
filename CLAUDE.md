@@ -304,7 +304,7 @@ FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_co
 
 ### 模型管理
 
-Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat` / `image_process`）。`resolve_model()`（`app/core/model_resolver.py`）是唯一模型解析入口，generate/chat/process 统一调用。多模态能力通过 `_PROVIDER_IMAGE_RULES` 按厂商 include/exclude 规则自动检测。
+Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat` / `image_process`）。`resolve_model()`（`app/core/model_resolver.py`）是唯一模型解析入口，generate/chat/process 统一调用。多模态能力通过 `_PROVIDER_IMAGE_RULES` 按厂商 include/exclude 规则自动检测。**内置厂商 OpenCode Go（2026-08-17）**：OpenAI 兼容网关（`https://opencode.ai/go/v1`，chat/completions，`OPENCODE_API_KEY`，Go 订阅/ Zen 按量共用 key）——`PROVIDER_DEFAULTS` 注册 + `llm_models.opencode` 预置 chat-completions 系模型（GPT/Grok 走 Responses API 不互通不预置），Qwen/GLM 高版本标 image 供图片处理/OCR；该网关不实现 `GET /v1/models`，`test_connection` 对 404/405 用最小 chat 请求兜底验证，模型刷新失败回退预置列表。
 
 ### 前端布局（三栏插槽 + AI 浮窗）
 

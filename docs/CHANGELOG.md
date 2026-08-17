@@ -6,7 +6,22 @@
 
 ---
 
-## 2026-08-17 — 图表「错位/缺内容」头号根因：transform 完全不解析 + dominant-baseline 缺失
+## 2026-08-17 — 新增内置厂商 OpenCode Go（OpenAI 兼容网关）
+
+> 用户要求在设置页「大模型厂商 / 引擎厂商」支持 OpenCode Go。阅读官方文档确认：**OpenCode Go 不是引擎服务，而是 OpenAI 兼容的 LLM 网关**（`opencode.ai/go/v1`、`/chat/completions`、Bearer Key，与 OpenCode Zen 同平台共用 `OPENCODE_API_KEY`，Go 固定订阅 5h/$12·周/$30·月/$60，Zen 按量付费）。定位为**内置 LLM 厂商 + 图片处理（image_process 场景）可用视觉模型**。
+
+### 新增
+- **`PROVIDER_DEFAULTS` 注册 `opencode` 内置厂商**（`https://opencode.ai/go/v1`）——设置页 LLM 厂商区自动出现，前端零改动（providers 由 `_get_providers` 自动补全内置）
+- **`llm_models` 预置 chat-completions 系模型**（官方 docs/go 清单，GPT/Grok 走 Responses API 与 LiMo 的 chat.completions 不互通，不进预置）：
+  DeepSeek V4 Pro/Flash、Qwen3.8/3.7/3.6 Max/Plus、GLM-5.1/5.2/5.3、Kimi K3/K2.7 Code/K2.6、MiniMax M3/M2.7、MiMo-V2.5
+- **图片处理可用**：Qwen/GLM 高版本预置标 `["text","image"]`——图片处理/OCR 场景可选（网关实际能力以调用结果为准，不支持时在设置页取消「多模态」标记；未知模型默认 text 可手动标）
+- **连接测试兜底**：`test_connection` 对不实现 `GET /v1/models` 的网关（OpenCode 等）改用最小 `chat/completions` 请求真正验证 key/base（404/405 → POST 探活）；模型刷新失败自动回退预置 list（原逻辑保留）
+
+### 影响
+- 生成/对话/图片处理三个场景均可选 OpenCode Go 模型；Key 在设置页填写后立即生效
+- 订阅制有请求限额（5h/周/月三级），超限后网关返回错误，属服务方限制
+
+---
 
 > 用户：「图片还是有错位之类的东西」。上一轮多边形闭合是皮外伤，这轮深挖到两个**系统性**渲染缺陷：**`<g transform>` 元素整块不画 / 画错位** + **节点内文字垂直不居中**。这是「看起来错位、缺东西、不如原仓库好看」的主要来源（原仓库 diagram-design 的规范大量用 `<g transform>` 定位 + `dominant-baseline=middle` 让文字在节点内居中）。纯 PIL 内补齐，不引入外部依赖。
 

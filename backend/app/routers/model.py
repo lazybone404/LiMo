@@ -67,6 +67,9 @@ PROVIDER_DEFAULTS = {
     "google": {"name": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta", "type": "built-in"},
     "zhipu": {"name": "智谱 GLM", "base_url": "https://open.bigmodel.cn/api/paas/v4", "type": "built-in"},
     "moonshot": {"name": "Moonshot Kimi", "base_url": "https://api.moonshot.cn/v1", "type": "built-in"},
+    # OpenCode Go — OpenAI 兼容网关（chat/completions，Go 固定订阅 / Zen 按量，共用 OPENCODE_API_KEY）。
+    # 官方 Endpoint https://opencode.ai/go/v1；网关不实现 GET /v1/models（刷新回退 llm_models 预置）。
+    "opencode": {"name": "OpenCode Go", "base_url": "https://opencode.ai/go/v1", "type": "built-in"},
 }
 
 
@@ -214,6 +217,27 @@ def test_connection(provider_id: str, request: Request, config=Depends(get_cfg),
         if resp.status_code in (200, 401):
             # 401 = key 有效但无权限列出模型，也算连通
             return {"ok": True, "status": resp.status_code}
+        if resp.status_code in (404, 405):
+            # 部分网关（OpenCode Go/Zen 等）不实现 GET /v1/models → 用最小对话请求真正验证 key/base
+            try:
+                probe_model = (cfg.get("llm_models", {}).get(provider_id, [{"id": "gpt-4o-mini"}])[0] or {}).get("id", "gpt-4o-mini")
+                r2 = requests.post(
+                    f"{base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={"model": probe_model, "max_tokens": 1,
+                          "messages": [{"role": "user", "content": "ping"}]},
+                    timeout=15,
+                )
+                if r2.status_code in (200, 401, 400):
+                    # 400 = model 名非法但 key/路由可达（网关已鉴权并通过路由），视为连通
+                    return {"ok": True, "status": f"models-{resp.status_code} chat-{r2.status_code}"}
+                return {"ok": False, "error": f"chat HTTP {r2.status_code}: {r2.text[:200]}"}
+            except requests.Timeout:
+                return {"ok": False, "error": "连接超时（15s）"}
+            except requests.ConnectionError:
+                return {"ok": False, "error": f"无法连接 {base_url}"}
+            except Exception as e:
+                return {"ok": False, "error": f"chat 验证失败: {str(e)[:200]}"}
         return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
     except requests.Timeout:
         return {"ok": False, "error": "连接超时（15s）"}

@@ -72,6 +72,28 @@ DEFAULT_CONFIG: dict[str, Any] = {
             {"id": "kimi-k2.6",       "name": "Kimi K2.6",       "desc": "编程+智能体", "context_window": 131072},
             {"id": "kimi-k2-thinking", "name": "Kimi K2 Thinking", "desc": "深度推理",     "context_window": 131072},
         ],
+        # OpenCode Go — OpenAI 兼容网关（opencode.ai/go/v1，chat/completions），
+        # 与 OpenCode Zen 共用 OPENCODE_API_KEY（Go 固定订阅 / Zen 按量）。订阅制：5h $12 / 周 $30 / 月 $60。
+        # 模型清单来自官方 docs/go 的 openai-compatible 系（GPT/Grok 走 Responses API，与 LiMo chat.completions 不互通，
+        # 不进预置，若有需求在设置页手动添加）。Qwen/GLM 高版本暂标 image 供图片处理/OCR 场景可选，
+        # 以网关实际能力为准，不支持时在设置页取消「多模态」标记。
+        "opencode": [
+            {"id": "deepseek-v4-pro",   "name": "DeepSeek V4 Pro",   "desc": "推理更强",            "context_window": 131072},
+            {"id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash", "desc": "快速便宜",            "context_window": 131072},
+            {"id": "qwen3.8-max",       "name": "Qwen3.8 Max",       "desc": "旗舰 · 可图片",       "capabilities": ["text", "image"], "context_window": 131072},
+            {"id": "qwen3.7-max",       "name": "Qwen3.7 Max",       "desc": "旗舰推理 · 可图片",   "capabilities": ["text", "image"], "context_window": 131072},
+            {"id": "qwen3.7-plus",      "name": "Qwen3.7 Plus",      "desc": "日常推荐 · 可图片",   "capabilities": ["text", "image"], "context_window": 131072},
+            {"id": "qwen3.6-plus",      "name": "Qwen3.6 Plus",      "desc": "低配 · 可图片",       "capabilities": ["text", "image"], "context_window": 131072},
+            {"id": "glm-5.3",           "name": "GLM-5.3",           "desc": "旗舰 · 可图片",       "capabilities": ["text", "image"], "context_window": 131072},
+            {"id": "glm-5.2",           "name": "GLM-5.2",           "desc": "推理 · 可图片",       "capabilities": ["text", "image"], "context_window": 131072},
+            {"id": "glm-5.1",           "name": "GLM-5.1",           "desc": "轻量推理",            "context_window": 131072},
+            {"id": "kimi-k3",           "name": "Kimi K3",           "desc": "深度推理",            "context_window": 131072},
+            {"id": "kimi-k2.7-code",    "name": "Kimi K2.7 Code",    "desc": "编程优化",            "context_window": 131072},
+            {"id": "kimi-k2.6",         "name": "Kimi K2.6",         "desc": "编程+智能体",         "context_window": 131072},
+            {"id": "minimax-m3",        "name": "MiniMax M3",        "desc": "通用",               "context_window": 131072},
+            {"id": "minimax-m2.7",      "name": "MiniMax M2.7",      "desc": "通用",               "context_window": 131072},
+            {"id": "mimo-v2.5",         "name": "MiMo-V2.5",         "desc": "高性价比",            "context_window": 131072},
+        ],
     },
     "fetch": {"proxy": ""},
     "auth": {"bilibili": "", "youtube": "", "douyin": ""},
