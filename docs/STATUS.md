@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-08-16 | **版本**: 0.4.2
+**更新**: 2026-08-16 | **版本**: 0.4.3
 
 ---
 
