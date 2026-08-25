@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 import openai
 
+from app.core import logging as log
 from app.llm.errors import CancelledError
 
 logger = logging.getLogger(__name__)
@@ -235,12 +236,15 @@ class AgentRunner:
 
             # 无工具调用 → 直接返回（已有答案，不需要额外流式调用）
             if not msg.tool_calls:
+                log.info("Agent 直接回答（LLM 判定无需工具）",
+                         round=round_i + 1, chars=len(msg.content or ""))
                 if msg.content:
                     yield {"type": "text", "text": msg.content}
                 yield {"type": "done"}
                 return
 
             # 有工具调用 → 执行
+            log.info("Agent 工具轮次", round=round_i + 1, tools=len(msg.tool_calls))
             messages.append(msg)
             # 收集所有工具调用的 display 和 args
             tool_displays = []
@@ -269,8 +273,8 @@ class AgentRunner:
                 except json.JSONDecodeError:
                     fn_args = {}
 
-                logger.info("Tool [%d/%d]: %s(%s)",
-                           round_i + 1, self.max_rounds, fn_name, fn_args)
+                log.info("Tool 调用", round=round_i + 1, max_rounds=self.max_rounds,
+                         tool=fn_name, args=fn_args)
 
                 fn = self._tool_fns.get(fn_name)
                 try:
@@ -284,7 +288,7 @@ class AgentRunner:
                             {"error": f"unknown tool: {fn_name}"}, ensure_ascii=False)
                 except Exception as e:
                     result = json.dumps({"error": str(e)}, ensure_ascii=False)
-                    logger.warning("Tool %s 执行失败: %s", fn_name, str(e)[:120])
+                    log.warning("Tool 执行失败", tool=fn_name, error=str(e)[:120])
 
                 messages.append({
                     "role": "tool",
@@ -300,6 +304,7 @@ class AgentRunner:
                 }
 
         # 达到最大轮数 → 带完整消息历史的流式最终回答
+        log.warning("Agent 达到最大轮数，强制整理回答", max_rounds=self.max_rounds)
         yield {"type": "agent_status", "message": "正在整理回答..."}
         messages.append({
             "role": "user",

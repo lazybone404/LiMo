@@ -10,7 +10,6 @@ import asyncio
 import base64
 import copy
 import json
-import logging
 import uuid
 from pathlib import Path
 
@@ -27,8 +26,7 @@ from app.core.disconnect import disconnect_watcher
 from app.core.types import ProcessResult
 from app.llm import LLMService
 
-logger = logging.getLogger(__name__)
-
+router = APIRouter()
 router = APIRouter(tags=["process"])
 
 # P0-6：LLM 图片处理最大字节数——超限跳过 LLM（整图 base64 ×1.33 可达数 GB 内存峰值）直走 Engine
@@ -125,7 +123,7 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
                 raise AppError("PROC_FILE_MISSING", "图片文件不存在，请重新导入")
 
             mode = data.mode
-            logger.info("图片处理: %s mode=%s", Path(file_path).name, mode)
+            log.info("图片处理", file=Path(file_path).name, mode=mode)
 
             # ── 解析 model_id：请求参数 → image_process 场景 → generate 场景 ──
             model_id = data.model_id
@@ -142,10 +140,10 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
             if model_id:
                 llm = LLMService(config, model_id=model_id)
                 if not llm.api_key:
-                    logger.warning("图片处理: model_id=%s 缺少 API Key，回退 Engine", model_id)
+                    log.warning("图片处理: 模型缺少 API Key，回退 Engine", model_id=model_id)
                     llm_degraded = True
                 elif not llm.supports_vision:
-                    logger.info("图片处理: model=%s 不支持图片，回退 Engine", llm.model)
+                    log.info("图片处理: 模型不支持图片，回退 Engine", model=llm.model)
                     llm_degraded = True
                 else:
                     try:
@@ -160,8 +158,9 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
                         mime = mime_map.get(ext, "image/png")
                         # P0-6：超大图片不读进内存 base64（整图 ×1.33 可达数 GB 峰值）——跳过 LLM 直走 Engine
                         if path.stat().st_size > MAX_LLM_IMAGE_BYTES:
-                            logger.warning("图片过大（%.0fMB > %dMB），跳过 LLM 直走 Engine",
-                                           path.stat().st_size / (1024 * 1024), MAX_LLM_IMAGE_BYTES // (1024 * 1024))
+                            log.warning("图片过大，跳过 LLM 直走 Engine",
+                                        size_mb=round(path.stat().st_size / (1024 * 1024), 1),
+                                        limit_mb=MAX_LLM_IMAGE_BYTES // (1024 * 1024))
                             llm_error = f"图片过大（>{MAX_LLM_IMAGE_BYTES // (1024 * 1024)}MB）"
                             llm_degraded = True
                         else:
@@ -178,13 +177,13 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
 
                             if text and text.strip():
                                 llm_result = {"text": text.strip(), "engine": f"{llm.provider}:{llm.model}"}
-                                logger.info("LLM 图片处理完成: %d 字, engine=%s", len(text), llm_result["engine"])
+                                log.info("LLM 图片处理完成", chars=len(text), engine=llm_result["engine"])
                             else:
-                                logger.warning("LLM 返回空内容，回退 Engine")
+                                log.warning("LLM 返回空内容，回退 Engine")
                                 llm_error = "LLM 返回空内容"
                                 llm_degraded = True
                     except Exception as e:
-                        logger.warning("LLM 图片处理失败，回退到 Engine: %s", e)
+                        log.warning("LLM 图片处理失败，回退到 Engine", error=str(e)[:120])
                         llm_error = str(e)[:200]
                         llm_degraded = True
 
@@ -235,7 +234,7 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
 
                     if hasattr(engine, 'supported_modes') and engine.supported_modes:
                         if mode not in engine.supported_modes and mode != "extract":
-                            logger.info("Engine %s 不支持 mode=%s，跳过", eng_name, mode)
+                            log.info("Engine 跳过: 不支持该 mode", engine=eng_name, mode=mode)
                             continue
 
                     api_key = ""
@@ -253,20 +252,20 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
                         engine.base_url = base_url
 
                     tried.append(eng_name)
-                    logger.info("Engine 尝试: %s (mode=%s key=%s)", eng_name, mode,
-                               "configured" if api_key else "MISSING")
+                    log.info("Engine 尝试", engine=eng_name, mode=mode,
+                             key="configured" if api_key else "MISSING")
 
                     try:
                         result = engine.run(file_path, model_name=model_name or "", mode=mode)
                         if result and result.text:
                             text = result.text
                             engine_name = f"{eng_name}"
-                            logger.info("Engine %s 成功: %d 字", eng_name, len(text))
+                            log.info("Engine 成功", engine=eng_name, chars=len(text))
                             break
-                        logger.warning("Engine %s 返回空结果", eng_name)
+                        log.warning("Engine 返回空结果", engine=eng_name)
                         tried_errors.append(f"{eng_name}: 返回空结果")
                     except Exception as e:
-                        logger.warning("Engine %s 失败: %s", eng_name, str(e)[:120])
+                        log.warning("Engine 失败", engine=eng_name, error=str(e)[:120])
                         tried_errors.append(f"{eng_name}: {str(e)[:80]}")
                         continue
 

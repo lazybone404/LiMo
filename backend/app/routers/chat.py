@@ -6,7 +6,6 @@ AgentRunner 核心循环不动，前端 API 完全兼容。
 """
 
 import json
-import logging
 import asyncio
 
 from fastapi import APIRouter, Request, Query, Depends
@@ -27,7 +26,6 @@ from app.agent.session import SessionManager
 from app.agent.compress import should_compress, compress_history
 from app.agent.prompts import loader as prompt_loader
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -208,17 +206,21 @@ async def chat_stream(
 
     window, budget = compute_budget(config, model_id)
     cc = config.get("chat_context") or {}
+    log.debug("Chat 预算分配", window=window, budget=budget, doc_mode=cc.get("doc_mode", "auto"))
 
     # C3 历史压缩：超阈值 LLM 摘要早期消息（压缩模型不可用/失败 → 跳过，不阻塞对话）
     compressed_count = 0
     try:
         if should_compress(conv, budget):
+            log.info("Chat 触发历史压缩", conversation_id=conversation_id,
+                     msgs=len(conv.get("messages", [])), budget=budget)
             _new_summary, compressed_count = await compress_history(config, store, conv, model_id, budget)
     except Exception as e:
-        logger.warning("压缩检查异常，跳过: %s", str(e)[:120])
+        log.warning("压缩检查异常，跳过", error=str(e)[:120])
         compressed_count = 0
 
     doc_text, _ = build_doc_context(store, doc_list, budget, cc.get("doc_mode", "auto"))
+    log.debug("Chat 文档注入", docs=len(doc_list), chars=len(doc_text), mode=cc.get("doc_mode", "auto"))
     summary = conv.get("summary") or ""
     system_text = "\n\n".join(
         x for x in [doc_text, f"[历史摘要]\n{summary}" if summary else None] if x)
@@ -231,6 +233,8 @@ async def chat_stream(
     msgs = conv.get("messages", [])[clear_at:]
     raw_history = trim_history(msgs, hist_budget, history_limit=cc.get("history_limit", 0))
     history = [{"role": m["role"], "content": m["content"]} for m in raw_history]
+    log.debug("Chat 历史裁剪", raw=len(msgs), kept=len(raw_history),
+              hist_budget=hist_budget, limit=cc.get("history_limit", 0))
 
     # 模型价格（C4 费用显示；未配置则 None，前端不显示费用）
     price_in = price_out = None
@@ -274,6 +278,9 @@ async def chat_stream(
                     tool_calls=tool_calls or None,
                     thinking="".join(thinking_parts) or None,
                 )
+                log.info("Chat SSE 完成", conversation_id=conversation_id,
+                         answer_len=len("".join(full_answer)),
+                         tools=len(tool_calls), refs=len(refs), saved=True)
             finally:
                 # 关闭 LLM 连接池（防 httpx client 常驻累积）
                 try:

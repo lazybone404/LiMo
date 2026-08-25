@@ -21,6 +21,7 @@ export function LogPanel({ onClose }: { onClose: () => void }) {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [levelFilter, setLevelFilter] = useState('all')
+  const [search, setSearch] = useState('')
   const addToast = useStore(s => s.addToast)
   const scrollRef = useRef<HTMLDivElement>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
@@ -30,7 +31,9 @@ export function LogPanel({ onClose }: { onClose: () => void }) {
 
   const fetchLogs = async () => {
     try {
-      const r = await apiFetch(apiUrl(`/logs?lines=300&level=${levelFilter}`))
+      const q = `/logs?lines=300&level=${levelFilter}` +
+        (search.trim() ? `&search=${encodeURIComponent(search.trim())}` : '')
+      const r = await apiFetch(apiUrl(q))
       const data = await r.json()
       const entries = data.logs || []
       setLogs(entries)
@@ -42,14 +45,14 @@ export function LogPanel({ onClose }: { onClose: () => void }) {
     finally { setLoading(false) }
   }
 
-  // 首次加载 + 每 3 秒刷新
+  // 首次加载 + 每 3 秒刷新（level/search 变化时立即刷新）
   useEffect(() => {
     setLoading(true)
     setErrorCount(0)
     fetchLogs()
     intervalRef.current = setInterval(fetchLogs, 3000)
     return () => clearInterval(intervalRef.current)
-  }, [levelFilter])
+  }, [levelFilter, search])
 
   // 新日志自动滚底
   useEffect(() => {
@@ -80,6 +83,12 @@ export function LogPanel({ onClose }: { onClose: () => void }) {
             <h2 className="text-[15px] font-semibold">系统日志</h2>
           </div>
           <div className="flex items-center gap-1">
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="搜索关键字 / request_id"
+              className="w-36 px-2 py-1 bg-surface border border-border-default rounded-md text-[11px] outline-none focus:border-accent placeholder:text-disabled"
+            />
             <select value={levelFilter} onChange={e => setLevelFilter(e.target.value)}
               className="px-2 py-1 bg-surface border border-border-default rounded-md text-[11px] outline-none">
               <option value="all">全部</option>

@@ -6,6 +6,35 @@
 
 ---
 
+## 2026-08-25 — 日志/错误系统全面修复（P0/P1/P2）
+
+> 用户：「检查一下我们目前的日志系统以及错误系统是否足够全面尤其是日志方面」「我建议全部做完」。审查发现：export/ingest 残留 20 处 `HTTPException`（未统一 AppError 体系）、epub 路由零日志、日志风格混用（仅 4 文件用 log. helper，49 文件 stdlib）、chat.py 仅 3 条日志、LogPanel 无搜索。分 P0/P1/P2 三批修完，全部验证通过。
+
+### P0 — 错误体系统一 + 清理
+- **export.py 9 处 + ingest.py 11 处 `HTTPException` → `AppError`**（EXPORT_DOC_NOT_FOUND/EXPORT_NO_CONTENT/EXPORT_MISSING_IDS/EXPORT_CONV_NOT_FOUND/EXPORT_TEMP_EXPIRED/INGEST_DOC_NOT_FOUND/INGEST_INVALID_TX_ID/INGEST_UNSUPPORTED_EXT/INGEST_PATH_TRAVERSAL/INGEST_INVALID_FILENAME/INGEST_FILE_NOT_FOUND），移除 `HTTPException` import
+- **epub 链路补日志**：路由三端点（generate/task/cancel）+ `epub_pipeline.py`（跳过已成功章、空章节占位、阶段 2 归并开始、map-reduce 分组进度）
+- **print 清理核查**：abogus.py 三处 + agent.py 一处 print 均在 `__main__` 自测块/docstring 示例（非业务路径），保留
+
+### P1 — 关键链路日志结构化
+- **logging.py helper 增强**：`_emit` 用 `inspect` 取**调用者模块名**注入 logger——此前所有 helper 日志 name 固定 `app.core.logging`，来源模块信息丢失，迁移 stdlib→helper 反而退化。现在每条 helper 日志 name 即来源模块（如 `app.routers.ingest`），配合 rid 可精确定位
+- **ingest.py（21 处）/ process.py（14 处）** stdlib logger → `log.` helper 结构化 kwargs（cookie 注入、持久化、封面下载、流式写入、重转录、LLM/Engine 图片处理、Engine 回退链）
+- **chat.py 补对话链路日志**：预算分配（C2）、历史压缩触发（C3）、文档注入、历史裁剪、SSE 完成统计（answer_len/tools/refs）；移除不再使用的 stdlib logger
+- **agent.py 补工具循环日志**：无工具直接回答、工具轮次、达到 max_rounds 强制整理（warning）、Tool 调用/失败结构化
+
+### P2 — LogPanel 可检索
+- **后端 `/api/logs` 加 `search` 参数**：在切片前对全量 1000 条 buffer 过滤（msg 子串，覆盖 request_id/关键字），非最近 N 条
+- **前端 LogPanel 加搜索框**：关键字 / request_id 检索，输入变化即时刷新
+
+### 附带修复 — AppError recoverable 与 status_code 解耦（P0 引入的 404 回归）
+- **根因**：P0 迁移把 `HTTPException(404)` 改成 `AppError(status_code=404, recoverable=True)`，但 main.py 异常处理器用一维映射 `200 if recoverable else status_code` 把显式 404 也压成 200 → 删除文档后 GET 返回 200 而非 404，e2e「deleted doc -> 404」失败
+- **修复**：处理器改为「显式 status_code（≠默认 400）优先尊重，未显式时 recoverable→200」。recoverable（是否预期业务状态）与 status_code（HTTP 语义）是两维独立概念，不再耦合。前端 `isRecoverable` 对 recoverable 404 仍静默处理，行为兼容
+
+### 验证
+- 后端 9 个测试文件全绿（重点 test_e2e_smoke 36/36，含 deleted doc -> 404）
+- 前端 tsc 通过 + lint 零 error（存量 exhaustive-deps warning）+ vitest 98/98
+
+---
+
 ## 2026-08-17 — 新增内置厂商 OpenCode Go（OpenAI 兼容网关）
 
 > 用户要求在设置页「大模型厂商 / 引擎厂商」支持 OpenCode Go。阅读官方文档确认：**OpenCode Go 不是引擎服务，而是 OpenAI 兼容的 LLM 网关**（`opencode.ai/go/v1`、`/chat/completions`、Bearer Key，与 OpenCode Zen 同平台共用 `OPENCODE_API_KEY`，Go 固定订阅 5h/$12·周/$30·月/$60，Zen 按量付费）。定位为**内置 LLM 厂商 + 图片处理（image_process 场景）可用视觉模型**。

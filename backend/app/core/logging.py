@@ -8,6 +8,7 @@
 """
 
 import contextvars
+import inspect
 import json
 import logging
 import uuid
@@ -39,29 +40,56 @@ def init_request_id_logging():
         _logger.warning("Failed to add RequestIDFilter to handler", exc_info=True)
 
 
+def _caller_name() -> str:
+    """取调用 helper 的模块名（跳过本模块内部帧）。
+
+    保证结构化日志的 name 字段仍是来源模块（如 app.routers.ingest），
+    否则所有 helper 日志 name 固定为 app.core.logging，无法区分来源。
+    """
+    try:
+        f = inspect.currentframe()
+        # 帧栈: _caller_name → _emit → log.info/... → 业务调用者
+        f = f.f_back.f_back.f_back if f and f.f_back else None
+        if f is None:
+            return "-"
+        mod = f.f_globals.get("__name__", "")
+        if mod == __name__ or not mod:
+            return "-"
+        return mod
+    except Exception:
+        return "-"
+
+
+def _emit(level: str, msg: str, kwargs: dict):
+    """按调用者模块名取 logger 发日志（子 logger 无 handler → propagate 到 root）。"""
+    name = _caller_name()
+    target = logging.getLogger(name) if name and name != "-" else _logger
+    getattr(target, level)(_format(msg, kwargs))
+
+
 def info(msg: str, **kwargs):
     """INFO 级别 + 结构化 key=value 后缀"""
-    _logger.info(_format(msg, kwargs))
+    _emit("info", msg, kwargs)
 
 
 def warning(msg: str, **kwargs):
     """WARNING 级别"""
-    _logger.warning(_format(msg, kwargs))
+    _emit("warning", msg, kwargs)
 
 
 def error(msg: str, **kwargs):
     """ERROR 级别"""
-    _logger.error(_format(msg, kwargs))
+    _emit("error", msg, kwargs)
 
 
 def debug(msg: str, **kwargs):
     """DEBUG 级别"""
-    _logger.debug(_format(msg, kwargs))
+    _emit("debug", msg, kwargs)
 
 
 def exception(msg: str, **kwargs):
     """EXCEPTION 级别（自动附带 traceback）"""
-    _logger.exception(_format(msg, kwargs))
+    _emit("exception", msg, kwargs)
 
 
 def _format(msg: str, kwargs: dict) -> str:

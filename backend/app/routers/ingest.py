@@ -5,7 +5,6 @@
 import asyncio
 import hashlib
 import json
-import logging
 import re
 import shutil
 import uuid
@@ -13,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from typing import Any, Optional
 
-from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException, Depends
+from fastapi import APIRouter, Request, UploadFile, File, Form, Depends
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 
@@ -23,9 +22,9 @@ from app.core.dependencies import get_store, get_config, get_guard
 from app.core.errors import AppError
 from app.core.config import build_engine_models
 from app.core.disconnect import disconnect_watcher
+from app.core import logging as log
 from app.storage.store import rewrite_asset_urls
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # 上传文件最大 2GB（适应大视频文件）
@@ -67,7 +66,8 @@ async def get_transcript(tx_id: str, request: Request, store=Depends(get_store))
     """获取单个 RawTranscript 完整内容（含 rawText）"""
     tx = store.get_transcript(tx_id)
     if not tx:
-        raise HTTPException(status_code=404, detail="文档不存在")
+        raise AppError("INGEST_DOC_NOT_FOUND", "文档不存在",
+                        status_code=404, recoverable=True)
     # 不返回 rawText 全文（太大），仅返回元数据+前2000字符预览
     return {
         "id": tx["id"],
@@ -90,7 +90,8 @@ async def update_transcript(tx_id: str, request: Request, store=Depends(get_stor
     """更新文档标题/标签"""
     tx = store.get_transcript(tx_id)
     if not tx:
-        raise HTTPException(status_code=404, detail="文档不存在")
+        raise AppError("INGEST_DOC_NOT_FOUND", "文档不存在",
+                        status_code=404, recoverable=True)
 
     body = json.loads(await request.body())
     title = body.get("title")
@@ -114,7 +115,8 @@ async def delete_transcript(tx_id: str, request: Request, store=Depends(get_stor
     """删除文档（同时删除关联的 Markdown）"""
     tx = store.get_transcript(tx_id)
     if not tx:
-        raise HTTPException(status_code=404, detail="文档不存在")
+        raise AppError("INGEST_DOC_NOT_FOUND", "文档不存在",
+                        status_code=404, recoverable=True)
 
     store.delete_transcript(tx_id)
     # 从全文索引中移除
@@ -163,10 +165,10 @@ def _inject_cookies(adapter: object, inp: PipelineInput, config: dict) -> None:
     douyin_cookie = auth.get("douyin", "")
     if "bilibili" in url_domain and bili_cookie:
         adapter.cookies = bili_cookie.strip().strip("'\"").strip()
-        logger.info("注入 B站 Cookie")
+        log.info("注入 B站 Cookie", domain="bilibili")
     elif ("youtube" in url_domain or "youtu.be" in url_domain) and youtube_cookie:
         adapter.cookies = youtube_cookie
-        logger.info("注入 YouTube Cookie")
+        log.info("注入 YouTube Cookie", domain="youtube")
     elif "douyin" in url_domain and douyin_cookie:
         # 兼容多种格式：直接粘贴的 key=value、Chrome 表格、Netscape
         from app.core.cookie_parser import auto_parse
@@ -178,7 +180,7 @@ def _inject_cookies(adapter: object, inp: PipelineInput, config: dict) -> None:
             )
         else:
             adapter.cookies = douyin_cookie.strip().strip("'\"").strip()
-        logger.info("注入抖音 Cookie (%d 条)", len(parsed.get("cookies", {})))
+        log.info("注入抖音 Cookie", count=len(parsed.get("cookies", {})))
     # 注入代理设置（用于 yt-dlp 下载 + oEmbed API）
     proxy = config.get("fetch", {}).get("proxy", "")
     if proxy and hasattr(adapter, 'cookies'):
@@ -339,7 +341,7 @@ def _persist_media_file(store: object, raw_text: str) -> str:
 
     src = Path(file_path)
     if not src.exists():
-        logger.warning("持久化跳过: 临时文件已不存在 %s", src)
+        log.warning("持久化跳过: 临时文件已不存在", src=str(src))
         return raw_text
 
     # 目标：store.root/files/{hash}/{filename}
@@ -350,10 +352,10 @@ def _persist_media_file(store: object, raw_text: str) -> str:
 
     # 避免重复复制
     if dest.exists() and dest.stat().st_size == src.stat().st_size:
-        logger.info("持久化跳过: 文件已存在 %s", dest)
+        log.info("持久化跳过: 文件已存在", dest=str(dest))
     else:
         shutil.copy2(src, dest)
-        logger.info("持久化: %s → %s (%.1fKB)", src.name, dest, dest.stat().st_size / 1024)
+        log.info("持久化", src=src.name, dest=str(dest), size_kb=round(dest.stat().st_size / 1024, 1))
 
     # 复制完成后删除临时源文件（上传到 store.root/tmp 的副本，防累积）
     try:
@@ -405,7 +407,7 @@ def _persist_media_images(raw_text: str, media_dir: str, doc_dir: Path) -> str:
         pass
 
     if count:
-        logger.info("图片持久化: %d 个 → %s", count, dest_dir)
+        log.info("图片持久化", count=count, dest=str(dest_dir))
     return raw_text
 
 
@@ -417,7 +419,7 @@ def _persist_cover_image(cover_url: str, doc_dir: Path, tx_id: str) -> str:
     try:
         validate_url(cover_url)
     except ValueError as e:
-        logger.warning("封面 URL 安全校验失败: %s — %s", cover_url[:80], str(e)[:80])
+        log.warning("封面 URL 安全校验失败", url=cover_url[:80], error=str(e)[:80])
         return cover_url
     try:
         dest_dir = doc_dir / "assets"
@@ -435,13 +437,13 @@ def _persist_cover_image(cover_url: str, doc_dir: Path, tx_id: str) -> str:
         resp = req.get(cover_url, headers={"User-Agent": "LiMo/1.0"}, timeout=15)
         if resp.status_code == 200:
             dest.write_bytes(resp.content)
-            logger.info("封面下载: %s → %s (%d bytes)", cover_url[:80], dest.name, len(resp.content))
+            log.info("封面下载", url=cover_url[:80], dest=dest.name, bytes=len(resp.content))
             return f"/api/assets/{tx_id}/cover"
         else:
-            logger.warning("封面下载失败 HTTP %d: %s", resp.status_code, cover_url[:80])
+            log.warning("封面下载失败", http=resp.status_code, url=cover_url[:80])
             return cover_url
     except Exception as e:
-        logger.warning("封面下载异常: %s — %s", cover_url[:80], str(e)[:80])
+        log.warning("封面下载异常", url=cover_url[:80], error=str(e)[:80])
         return cover_url
 
 
@@ -457,7 +459,7 @@ def _persist_original_image(raw_text: str, doc_dir: Path) -> None:
     file_path = meta.get("file_path", "")
     src = Path(file_path)
     if not src.exists():
-        logger.warning("原图拷贝跳过: 源文件不存在 %s", src)
+        log.warning("原图拷贝跳过: 源文件不存在", src=str(src))
         return
 
     dest_dir = doc_dir / "assets"
@@ -465,7 +467,7 @@ def _persist_original_image(raw_text: str, doc_dir: Path) -> None:
     dest = dest_dir / "original.png"
     if not dest.exists():
         shutil.copy2(src, dest)
-        logger.info("原图拷贝: %s → %s", src.name, dest)
+        log.info("原图拷贝", src=src.name, dest=str(dest))
 
 
 class _FileTooLarge(Exception):
@@ -501,7 +503,7 @@ async def _handle_file_upload(file: UploadFile, content_length: str | None, stor
                     except OSError: pass
                     raise _FileTooLarge(MAX_UPLOAD_BYTES)
                 f.write(chunk)
-        logger.info("流式写入完成: %s (%.1f MB)", safe_name, total / (1024 * 1024))
+        log.info("流式写入完成", name=safe_name, mb=round(total / (1024 * 1024), 1))
     else:
         data = await file.read()
         if len(data) > MAX_UPLOAD_BYTES:
@@ -546,7 +548,7 @@ async def ingest(
                         except OSError: pass
                         raise AppError("INGEST_FILE_TOO_LARGE", f"文件过大（最大 {MAX_UPLOAD_BYTES // (1024*1024)}MB）", recoverable=False)
                     f.write(chunk)
-            logger.info("流式写入完成: %s (%.1f MB)", safe_name, total / (1024*1024))
+            log.info("流式写入完成", name=safe_name, mb=round(total / (1024 * 1024), 1))
         else:
             data = await file.read()
             if len(data) > MAX_UPLOAD_BYTES:
@@ -602,7 +604,7 @@ async def ingest(
                 tmp_path.unlink()
             except OSError:
                 pass
-        logger.exception("Ingest failed")
+        log.exception("Ingest failed", error=str(e)[:200])
         raise AppError("INGEST_FAILED", f"导入失败: {str(e)[:200]}") from e
 
     result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir)
@@ -658,7 +660,7 @@ async def retranscribe(tx_id: str, request: Request, store=Depends(get_store), c
             except AppError:
                 raise
             except Exception as e:
-                logger.exception("Re-transcribe failed")
+                log.exception("Re-transcribe failed", error=str(e)[:200])
                 raise AppError("RETX_FAILED", f"重新转录失败: {str(e)[:200]}") from e
 
         # 持久化引擎提取的图片，重写 rawText 中的路径
@@ -699,8 +701,8 @@ async def retranscribe(tx_id: str, request: Request, store=Depends(get_store), c
         store.save_transcript_full(tx)
         _index_for_search(request, tx_id, tx.get("title", ""), output.raw_text)
 
-        logger.info("重新转录完成: %s engine=%s (%d chars)",
-                    tx.get("title", tx_id)[:40], output.engine, len(output.raw_text))
+        log.info("重新转录完成", title=tx.get("title", tx_id)[:40],
+                 engine=output.engine, chars=len(output.raw_text))
         return {
             "status": "ok",
             "id": tx_id,
@@ -769,7 +771,7 @@ async def ingest_stream(
             })
         # 客户端断开/Slow Consumer 导致 queue 满属于预期行为，仅记 warning 不抛异常
         except asyncio.QueueFull:
-            logger.warning("SSE queue full, dropping progress event (client may have disconnected)")
+            log.warning("SSE queue full, dropping progress event (client may have disconnected)")
 
     async def run_pipeline():
         """在后台运行适配器管道"""
@@ -780,7 +782,7 @@ async def ingest_stream(
             queue.put_nowait({"type": "error", "message": e.message, "code": e.code})
             return
         except Exception as e:
-            logger.exception("Ingest stream failed")
+            log.exception("Ingest stream failed", error=str(e)[:200])
             queue.put_nowait({"type": "error", "message": str(e)})
             return
 
@@ -812,7 +814,7 @@ async def ingest_stream(
             # 客户端断开 → 取消后台任务，释放信号量
             if not task.done():
                 task.cancel()
-                logger.info("客户端断开，已取消后台管线任务")
+                log.info("客户端断开，已取消后台管线任务")
 
     return StreamingResponse(
         event_generator(),
@@ -836,14 +838,16 @@ _ALLOWED_IMAGE_EXTS = ("png", "jpg", "jpeg", "gif", "webp")
 def _validate_tx_id(tx_id: str) -> None:
     """tx_id 只能由安全字符组成（防路径注入）。违规抛 400。"""
     if not re.match(r'^[a-zA-Z0-9_\-]+$', tx_id):
-        raise HTTPException(status_code=400, detail="无效的文档 ID")
+        raise AppError("INGEST_INVALID_TX_ID", "无效的文档 ID",
+                        status_code=400, recoverable=False)
 
 
 def _check_asset_ext(filename: str) -> str:
     """校验扩展名在白名单内。返回小写扩展名；非法（含 svg）抛 400。"""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in _ALLOWED_IMAGE_EXTS:
-        raise HTTPException(status_code=400, detail=f"不支持的文件格式: {ext or '无扩展名'}")
+        raise AppError("INGEST_UNSUPPORTED_EXT", f"不支持的文件格式: {ext or '无扩展名'}",
+                        status_code=400, recoverable=False)
     return ext
 
 
@@ -853,7 +857,8 @@ def _check_asset_within(path: Path, base_dir: Path) -> FileResponse | None:
     try:
         resolved.relative_to(base_dir.resolve())
     except ValueError:
-        raise HTTPException(status_code=403, detail="路径穿越已拒绝")
+        raise AppError("INGEST_PATH_TRAVERSAL", "路径穿越已拒绝",
+                        status_code=403, recoverable=False)
     if resolved.exists():
         return FileResponse(str(resolved))
     return None
@@ -864,7 +869,8 @@ async def serve_media_file(tx_id: str, filename: str, request: Request, store=De
     """访问文档图片。优先级: doc_dir/assets/ > files/{tx_id}/ > sourceFilePath。"""
     _validate_tx_id(tx_id)
     if not re.match(r'^[a-zA-Z0-9_\-.]+$', filename):
-        raise HTTPException(status_code=400, detail="无效的文件名")
+        raise AppError("INGEST_INVALID_FILENAME", "无效的文件名",
+                        status_code=400, recoverable=False)
     _check_asset_ext(filename)
 
     data_root = Path(store.root).resolve()
@@ -891,7 +897,8 @@ async def serve_media_file(tx_id: str, filename: str, request: Request, store=De
                     return r
             break
 
-    raise HTTPException(status_code=404, detail="文件不存在")
+    raise AppError("INGEST_FILE_NOT_FOUND", "文件不存在",
+                    status_code=404, recoverable=True)
 
 
 # Asset file serving endpoint
@@ -901,7 +908,8 @@ async def serve_asset(tx_id: str, filename: str, store=Depends(get_store)):
     _validate_tx_id(tx_id)
     # filename 允许含 / 与 ..（图片在 assets 子目录中），仅限安全字符
     if not re.match(r'^[a-zA-Z0-9_\-./]+$', filename):
-        raise HTTPException(status_code=400, detail="无效的文件名")
+        raise AppError("INGEST_INVALID_FILENAME", "无效的文件名",
+                        status_code=400, recoverable=False)
 
     # 封面 URL 无扩展名（/api/assets/{tx_id}/cover，_persist_cover_image 返回格式）
     # → 兜底查找 cover.{jpg,png,webp}
@@ -911,7 +919,8 @@ async def serve_asset(tx_id: str, filename: str, store=Depends(get_store)):
 
     doc_dir = store._get_doc_dir(tx_id)
     if not doc_dir:
-        raise HTTPException(status_code=404, detail="文档不存在")
+        raise AppError("INGEST_DOC_NOT_FOUND", "文档不存在",
+                        status_code=404, recoverable=True)
 
     for cand in candidates:
         _check_asset_ext(cand)
@@ -927,5 +936,6 @@ async def serve_asset(tx_id: str, filename: str, store=Depends(get_store)):
         if r:
             return r
 
-    raise HTTPException(status_code=404, detail="文件不存在")
+    raise AppError("INGEST_FILE_NOT_FOUND", "文件不存在",
+                    status_code=404, recoverable=True)
 

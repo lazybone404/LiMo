@@ -25,10 +25,11 @@ except ImportError:
     _PYGMENTS_OK = False
 from urllib.parse import quote
 from pathlib import Path
-from fastapi import APIRouter, Request, Query, HTTPException, Depends
+from fastapi import APIRouter, Request, Query, Depends
 from fastapi.responses import Response, StreamingResponse
 from app.core.dependencies import get_store
 from app.core.disconnect import disconnect_watcher
+from app.core.errors import AppError
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -163,7 +164,8 @@ async def export_content(
     if mode == "transcript":
         tx = store.get_transcript(tx_id)
         if not tx:
-            raise HTTPException(status_code=404, detail="文档不存在")
+            raise AppError("EXPORT_DOC_NOT_FOUND", "文档不存在",
+                            status_code=404, recoverable=True)
         content = tx.get("rawText", "")
         title = tx.get("title", "transcript")
     else:
@@ -188,7 +190,8 @@ async def export_content(
         title = tx.get("title", "export") if tx else "export"
 
     if not content:
-        raise HTTPException(status_code=404, detail="无可导出内容")
+        raise AppError("EXPORT_NO_CONTENT", "无可导出内容",
+                        status_code=404, recoverable=True)
 
     if format == "html":
         # 图片 base64 内嵌 → 自包含单文件 HTML
@@ -269,7 +272,8 @@ async def export_all_products(tx_id: str, request: Request, store=Depends(get_st
     """导出单个文档的全部产物为自包含 ZIP（含 images/ 目录）"""
     products = _collect_doc_products(store, tx_id)
     if not products:
-        raise HTTPException(status_code=404, detail="无可导出内容")
+        raise AppError("EXPORT_NO_CONTENT", "无可导出内容",
+                        status_code=404, recoverable=True)
 
     tx = store.get_transcript(tx_id)
     title = _safe_filename(tx.get("title", tx_id)) if tx else tx_id
@@ -307,7 +311,8 @@ async def export_batch(data: dict, request: Request, store=Depends(get_store)):
     import re as _re
     ids = data.get("ids", [])
     if not ids or not isinstance(ids, list):
-        raise HTTPException(status_code=400, detail="缺少 ids 参数或格式错误")
+        raise AppError("EXPORT_MISSING_IDS", "缺少 ids 参数或格式错误",
+                        status_code=400, recoverable=False)
 
     for tid in ids:
         if not isinstance(tid, str) or not _re.match(r'^[a-zA-Z0-9_\-]+$', tid) or len(tid) > 64:
@@ -385,7 +390,8 @@ async def export_mindmap(tx_id: str, request: Request, store=Depends(get_store))
 def export_conversation(conv_id: str, format: str = "md", request: Request = None, store=Depends(get_store)):
     conv = store.get_conversation(conv_id)
     if not conv:
-        raise HTTPException(status_code=404, detail="对话不存在")
+        raise AppError("EXPORT_CONV_NOT_FOUND", "对话不存在",
+                        status_code=404, recoverable=True)
 
     title = _safe_filename(conv.get("title", conv_id))
     date = datetime.now().strftime("%Y-%m-%d")
@@ -1249,7 +1255,8 @@ def export_custom(data: ExportCustomRequest, request: Request, store=Depends(get
 
     buf.seek(0)
     if total_files == 0:
-        raise HTTPException(status_code=400, detail="无可导出内容")
+        raise AppError("EXPORT_NO_CONTENT", "无可导出内容",
+                        status_code=400, recoverable=True)
 
     zipname = f"{data.filename}.zip"
     encoded = quote(zipname.encode('utf-8'), safe='')
@@ -1506,14 +1513,17 @@ async def export_download(temp_id: str):
     # ⚠️ temp_id 直接拼路径：先校验字符集，再 resolve 后限定在 _TEMP_DIR 内，
     # 否则构造 ..%2F 可路径穿越读取/删除 _TEMP_DIR 外任意 .zip
     if not re.match(r'^[a-zA-Z0-9_-]+$', temp_id):
-        raise HTTPException(status_code=404, detail="文件不存在或已过期，请重新导出")
+        raise AppError("EXPORT_TEMP_EXPIRED", "文件不存在或已过期，请重新导出",
+                        status_code=404, recoverable=True)
     temp_path = os.path.join(_TEMP_DIR, f"{temp_id}.zip")
     try:
         Path(temp_path).resolve().relative_to(Path(_TEMP_DIR).resolve())
     except ValueError:
-        raise HTTPException(status_code=404, detail="文件不存在或已过期，请重新导出")
+        raise AppError("EXPORT_TEMP_EXPIRED", "文件不存在或已过期，请重新导出",
+                        status_code=404, recoverable=True)
     if not os.path.exists(temp_path):
-        raise HTTPException(status_code=404, detail="文件不存在或已过期，请重新导出")
+        raise AppError("EXPORT_TEMP_EXPIRED", "文件不存在或已过期，请重新导出",
+                        status_code=404, recoverable=True)
 
     def cleanup_after():
         try: os.remove(temp_path)

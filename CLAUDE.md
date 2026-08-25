@@ -224,6 +224,14 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - **OpenSSL DLL 版本冲突**：`cryptography` 包携带的 `libcrypto-3-x64.dll`（~5MB）会覆盖 Python 原生的（~8MB），导致 `_ssl.pyd` 加载失败（`ImportError: DLL load failed`），最终使后端无法启动。spec 中需排除 cryptography 的 DLL 并显式添加 `sys.base_prefix/DLLs/` 下的原始版本。**每次新增依赖后验证**：直接运行 `LiMoBackend.exe` 确认能输出 `Uvicorn running on http://127.0.0.1:7413`
 - **PyInstaller binaries 格式**：`collect_all` 返回 `(dest_name, src_path)`，`Analysis(binaries=[])` 期望 `(src_path, dest_dir)`。追加 binaries 时用 `(abs_src_path, '.')` 格式
 
+### 临时调试脚本约定
+
+后端/前端根目录允许存在 `_` 前缀的一次性验证脚本（如 `backend/_chart_verify.py`），用于逐点排查（渲染验证、像素体检、API 探活）：
+- **命名**：一律 `_` 前缀（`backend/_*.py`），git status 一眼可辨
+- **用完即删**：验证结论得出后立即删除，不留残骸。少数用户明确要求保留的（如 `_type_demo_gen.py`）例外，但**绝不提交 git**
+- **绝不进打包**：PyInstaller/`tsc` 不收集 `_` 前缀文件；`git add` 时显式排除
+- **结论沉淀**：有价值的排查结论写回 CHANGELOG 或对应模块注释，脚本本身不保留
+
 ## 架构
 
 ### 三层管道
@@ -487,6 +495,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 32. **适配器一请求一实例**：`AdapterRegistry` 存**类**（`register(VideoAdapter)`），`route()` 命中前 `cls()` 实例化——单例实例的 `cookies`/`_engine_config`（含 `cancel_event`）会被并发导入互相覆盖。适配器 `accept()` 是纯输入判断（无实例状态），`name` 是类属性。**本次已修复**：registry.py + adapters/__init__.py。
 33. **CORS Origin 白名单**：本地后端**禁止** `allow_origin_regex=".*"`（任意网页可跨站读本地数据）。白名单必须含 Tauri v2 生产的 **`http://tauri.localhost`**（Windows WebView2 实测 origin）+ `https://tauri.localhost` + `tauri://localhost` + 本机 localhost 任意端口；`_ForceCORSMiddleware` 仅对白名单 origin 回显凭证。**本次已修复**：main.py（2026-08-02 曾漏 `http://tauri.localhost` 导致打包版全接口 CORS 拦截）。
 34. **app 内置欢迎文档同步**：PreviewArea 空态欢迎页（2026-08-16 改造为 **LiMo 三产物形态**：`WELCOME_NOTES`=笔记（欢迎简介）/ `WELCOME_POLISHED`=整理版原文（开发者功能）/ `WELCOME_TRANSCRIPT`=转录（更新记录），`frontend/src/components/preview/PreviewArea.tsx` 模块级常量 + `welcomeTab` 三 tab 切换）**在新增/移除功能时必须同步更新**——它面向新用户展示当前能力，曾因未同步而过时（如缺失插件系统/参考文件）。判断标准：改动影响「导入/转录/生成/导出/插件」任一能力时，检查此文档。
+35. **log. helper 自动带来源模块**：`app/core/logging.py` 的 `_emit` 用 `inspect.currentframe()` 取**调用者模块名**注入 logger——所有走 `from app.core import logging as log; log.info(msg, key=value)` 的日志 name 即来源模块（非固定的 `app.core.logging`），配合 rid 精确定位。新增日志一律用 `log.` helper 结构化 kwargs（`log.warning` 只接受 1 位置参数 + kwargs），**勿再新增 stdlib `logging.getLogger(__name__)`**——混用导致风格分裂。函数内 import 规则（#26）仍适用。
+36. **AppError recoverable 与 status_code 两维独立**：recoverable = 是否预期业务状态（决定日志级别 + 前端 `isRecoverable` 是否静默），status_code = HTTP 语义。main.py 异常处理器**尊重显式 status_code（≠默认 400）**，未显式时 recoverable→200。迁移 HTTPException 时：真 404/403 必须显式传 status_code，**禁止用 recoverable=True 压掉真 404**——删除后 GET 必须 404（e2e「deleted doc -> 404」断言），前端 `isRecoverable` 已兼容 recoverable 404。
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始

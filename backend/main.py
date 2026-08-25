@@ -147,9 +147,11 @@ async def app_error_handler(request, exc: AppError):
         log.warning("AppError", code=exc.code, message=exc.message,
                     path=request.url.path)
     from fastapi.responses import JSONResponse
-    # recoverable 错误返回 200，避免浏览器 DevTools 显示网络错误
-    # （如 "尚未生成" 是预期业务状态，不是真的 HTTP 错误）
-    http_status = 200 if exc.recoverable else exc.status_code
+    # status_code 显式指定（≠默认 400）时尊重——如 404 资源不存在（删除后 GET）、
+    # 403 权限拒绝；未显式指定时 recoverable 业务状态返回 200，避免浏览器
+    # DevTools 显示网络错误（如 "尚未生成" 是预期业务状态，不是真的 HTTP 错误）
+    http_status = exc.status_code if exc.status_code != 400 else (
+        200 if exc.recoverable else exc.status_code)
     return JSONResponse(status_code=http_status, content=exc.to_dict())
 
 
@@ -337,13 +339,20 @@ from fastapi.responses import JSONResponse as _JSONResponse
 
 @app.get("/api/logs")
 async def view_logs(request: Request):
-    """返回内存中的日志缓冲区（最近 N 条），供前端日志面板调用"""
+    """返回内存中的日志缓冲区（最近 N 条），供前端日志面板调用
+
+    支持 level（error/warning/info/debug/all）与 search（msg 关键字/request_id 子串）过滤。
+    search 在切片前过滤——对全量 1000 条 buffer 搜索，而非最近 N 条。
+    """
     lines = int(request.query_params.get("lines", 200))
     level = request.query_params.get("level", "all")
+    search = request.query_params.get("search", "").strip().lower()
     buf = getattr(request.app.state, 'log_buffer', [])
     entries = list(buf)
     if level != "all":
         entries = [e for e in entries if e["level"] == level]
+    if search:
+        entries = [e for e in entries if search in e["msg"].lower()]
     entries = entries[-lines:]
     return _JSONResponse({"logs": entries, "total": len(buf), "returned": len(entries)})
 

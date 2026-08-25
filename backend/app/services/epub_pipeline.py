@@ -229,6 +229,7 @@ async def _run_epub_task(store, llm, doc_id: str, chapters: list, book_title: st
             if cancel_event.is_set():
                 break
             if i in state["chapters_done"]:
+                logger.debug("epub 跳过已成功章 %d（续跑恢复）", i + 1)
                 continue
             state["current_title"] = ch.get("title", "")
             _persist(store, doc_id, state)
@@ -253,6 +254,8 @@ async def _run_epub_task(store, llm, doc_id: str, chapters: list, book_title: st
 
         # ── 阶段 2：全部章处理完 → 归并全书总结 → 一次性落盘 ──
         state["stage"] = "summary"
+        logger.info("epub 进入阶段 2 归并: done=%d failed=%d",
+                    len(state["chapters_done"]), len(state["chapters_failed"]))
         _persist(store, doc_id, state)
         await _finalize(store, llm, doc_id, chapters, book_title, state, cancel_event)
     except Exception as e:
@@ -268,6 +271,7 @@ async def _interpret_chapter(store, llm, doc_id: str, i: int, ch: dict,
     prompt = _build_chapter_prompt(book_title, ch, state.get("deep", False))
     if prompt is None:
         # 章节无可用文字 → 占位片段（记成功，不消耗 LLM），保证阶段 2 可推进
+        logger.info("epub 第 %d 章无可用文字，写入占位片段", i + 1)
         store.save_epub_chapter(doc_id, i, ch.get("title", ""), EMPTY_CHAPTER_PLACEHOLDER)
         return True
 
@@ -361,6 +365,7 @@ async def _summarize_book(llm, book_title: str, done_parts: list[str],
             return await _llm_retry(llm, _build_summary_prompt(book_title, source), cancel_event)
         # 超限：分组子总结 → 归并（map-reduce）
         chunks = split_into_chunks(source, max_chars=SUMMARY_BUDGET_CHARS)
+        logger.info("epub 阶段 2 超长归并: %d chars → %d 组子总结", len(source), len(chunks))
         subs = []
         for i, chunk in enumerate(chunks, start=1):
             if cancel_event.is_set():
@@ -370,6 +375,7 @@ async def _summarize_book(llm, book_title: str, done_parts: list[str],
             if sub is None:
                 return None
             subs.append(sub)
+            logger.debug("epub 阶段 2 第 %d/%d 组子总结完成 (%d chars)", i, len(chunks), len(sub))
         merged = "\n\n".join(subs)
         return await _llm_retry(llm, _build_summary_prompt(book_title, merged, is_reduce=True),
                                 cancel_event)
