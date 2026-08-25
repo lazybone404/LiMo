@@ -65,6 +65,32 @@
 
 ---
 
+## 2026-08-25 — 编辑未保存保护：三态弹窗（保存并离开/不保存/取消）
+
+> 产物编辑（2026-08-15 textarea 版）原有 `window.confirm` 覆盖保护，但同步阻塞模态掩盖了「弹窗期间 Ctrl+S / 切文档」的危险出口。改 React 异步三态弹窗 + 编辑态绑定来源 docId，根治跨文档错存。
+
+### 实现
+- **三态弹窗**（`UnsavedChangesDialog`）：编辑中未保存离开 tab/文档 → 「保存并离开 / 不保存 / 取消」；保存失败留在当前可重试
+- **编辑态绑定来源 docId**（`{mode, docId}`）：所有无参保存（Ctrl+S/保存按钮）用 `editing.docId` 而非 `currentDocId`，弹窗打开时拒绝无参保存——根治切文档弹窗期间 Ctrl+S 把 A 的内容存进 B
+- **弹窗期间二次切文档**（经 AI 浮窗）：prevDocId 用 `editing.docId`，保存/回退不错指中间文档
+- `beforeunload` 拦截关页；三态弹窗为 PreviewArea 独立组件
+
+---
+
+## 2026-08-25 — 视频直传模型 阶段 A（Qwen 打通，DashScope SDK 原生通道）
+
+> 主流模型原生支持视频输入，服务端抽帧比本地 ffmpeg 截帧更稳定（自动选帧），省截帧调参/拼图/质量依赖。方案 [pi-docs/视频直传模型方案.md](pi-docs/视频直传模型方案.md) 已定稿。本地视频 >7MB 无法走 OpenAI 兼容（base64 不实用），必须走 DashScope SDK `MultiModalConversation` 原生通道（file:// ≤100MB）。
+
+### 实现（增量，不替代）
+- **视频直传 = 独立「视频画面理解」预处理**，不混入生成调用：视频(≤100MB) → SDK 视频理解 → 描述文本注入 `clean_text` → 生成调用照常（流式保留）
+- 触发条件：开关开启 ∧ 模型 capabilities 含 `video` ∧ 本地视频 ≤100MB；失败/超限 → **回退截帧链路（原封不动）**
+- 新增 `app/services/video_understand.py`（`understand_video_direct`，同步函数 `asyncio.to_thread`，fps 0.1-10 SDK 硬约束，>1280s 长视频尽力而为）
+- config 增量标注 dashscope 视频模型（qwen3.7-plus/qwen-vl-max/qwen3-vl-flash 加 `video`；新增 qwen3.8-max）；opencode 网关不标（第三方 video_url 支持未知）
+- 前端：GenPanel 视频区块「视频直传模型处理」勾选（无 video 能力禁用 + tooltip），截图间隔/拼图/质量参数置灰；模型选择能力标记「视频」
+- LLMService / generator / 流式 SSE / 截帧链路 / ASR **零改动**（直传是 prepare 阶段一次非流式理解）
+
+---
+
 ## 2026-08-17 — 新增内置厂商 OpenCode Go（OpenAI 兼容网关）
 
 > 用户要求在设置页「大模型厂商 / 引擎厂商」支持 OpenCode Go。阅读官方文档确认：**OpenCode Go 不是引擎服务，而是 OpenAI 兼容的 LLM 网关**（`opencode.ai/go/v1`、`/chat/completions`、Bearer Key，与 OpenCode Zen 同平台共用 `OPENCODE_API_KEY`，Go 固定订阅 5h/$12·周/$30·月/$60，Zen 按量付费）。定位为**内置 LLM 厂商 + 图片处理（image_process 场景）可用视觉模型**。

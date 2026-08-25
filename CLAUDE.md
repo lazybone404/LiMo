@@ -78,7 +78,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [frontend-patterns.md](docs/frontend-patterns.md) | 状态管理、取消机制、TaskPanel、apiUrl | 改前端状态/任务相关代码 |
 | [export-pipeline.md](docs/export-pipeline.md) | 导出架构、两条路径设计、Tab→内容映射表、KaTeX/Pygments | 改导出功能、新增 tab |
 | [CHANGELOG.md](docs/CHANGELOG.md) | 修改记录：做了什么、为什么、影响范围 | 了解历史决策、避免重复踩坑 |
-| [STATUS.md](docs/STATUS.md) | 纯事实清单（文件/端点/引擎计数） | 需要统计数据 |
+| [STATUS.md](docs/STATUS.md) | 纯事实清单（文件/端点/引擎计数/代码行数） | 需要统计数据 |
 | [user-scenarios.md](docs/user-scenarios.md) | 10 个用户场景及实现状态 | 理解产品需求 |
 | [plugins.md](docs/plugins.md) | 插件系统标准 — 开发 API + GitHub 安装流程 + 安全声明 | 开发/安装/调试插件 |
 | [prompts-inventory.md](docs/prompts-inventory.md) | 全部 LLM 提示词清单 + 审视点清单（9 已修复/8 待处理）+ 温度参数速查 + PromptComposer 标签速查 + Agent SSE 事件流 | 审视/优化 prompt、新增管道需要参考 prompt 风格 |
@@ -539,6 +539,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 模型解析 | `resolve_model()` 唯一入口，多模态能力自动检测 |
 | ✅ | 目标语言 | config `target_language`，8 语言可选 |
 | ✅ | 参考文件 | 参考资料（如评论区观点）注入笔记生成，仅 notes；暂存 id 传递（`POST /api/references`） |
+| ✅ | 视频直传 | 阶段 A Qwen 打通（2026-08-25）：DashScope SDK `MultiModalConversation` 原生通道（file:// ≤100MB 服务端抽帧），生成链路零改动（直传为 prepare 阶段一次非流式理解注入 clean_text），本地截帧链路保留为降级 |
 
 ### 🔍 图片处理
 
@@ -608,6 +609,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 编辑器分屏拖拽 | 产物编辑器 源码\|预览 分隔条可拖拽调宽（25-75%，对齐三栏交互，2026-08-16） |
 | ✅ | 编辑/输入 mono 字体 | 对话输入框 + 文本/链接/图片/文件 URL 粘贴框统一等宽字体（2026-08-16） |
 | ✅ | 欢迎文档三产物 | 空态示例文档 = 笔记（欢迎简介）/整理版原文（开发者功能）/转录（更新记录，2026-08-16） |
+| ✅ | 产物编辑保护 | notes/polished 手动编辑（源码\|预览分屏）+ 未保存离开三态弹窗（保存并离开/不保存/取消）+ 编辑态绑定来源 docId（弹窗期间切文档不错存）+ 编辑中未保存 × 重新生成拦截（`dirtyEditingDocId` 轻量桥，2026-08-25） |
 
 ### 🛡️ 安全 & 运维
 
@@ -645,11 +647,11 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 |----|------|------|------|
 | 📥 内容导入 | 8 | 8 | 100% |
 | 📝 转录 & 引擎 | 8 | 8 | 100% |
-| ✨ LLM 生成 | 8 | 8 | 100% |
+| ✨ LLM 生成 | 9 | 9 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 9 | 9 | 100% |
 | 📊 图表生成 | 5 | 6 | 83% |
 | 📤 导出 | 8 | 9 | 89% |
-| 🎨 前端 UI/UX | 14 | 14 | 100% |
+| 🎨 前端 UI/UX | 15 | 15 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **72** | **74** | **97%** |
+| **合计** | **74** | **76** | **97%** |

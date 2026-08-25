@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-08-16 | **版本**: 0.4.3
+**更新**: 2026-08-25 | **版本**: 0.4.3
 
 ---
 
@@ -11,15 +11,16 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 92（11 子目录：adapters 8 / agent 6 / core 19 / downloaders 4 / engines 14 / generation 10 / llm 4 / routers 16 / storage 2 / utils 6 / services 3） |
-| 前端 TS/TSX/CSS 文件 | 101（99 ts/tsx + 2 css） |
-| 前端测试文件 | 8（98 个测试用例） |
+| 后端 Python 文件 | 93（11 子目录：adapters 8 / agent 6 / core 19 / downloaders 4 / engines 14 / generation 10 / llm 4 / routers 16 / storage 2 / utils 6 / services 4） |
+| 前端 TS/TSX/CSS 文件 | 103（101 ts/tsx + 2 css；业务 94，排除 test 9） |
+| 前端测试文件 | 8（98 个测试用例，vitest 全绿） |
 | API 路由模块 | 16 |
-| API 端点 | 76（`@router.` 装饰器计数） |
+| API 端点 | 78（`@router.` 装饰器计数） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 12（docs/ 目录，含对话协议.md + AGENT-ONBOARDING.md；design/ 另计） |
+| 代码行数 | 后端 app 19,946 / 前端业务 13,438 / 前端测试 1,021 |
 
 ---
 
@@ -73,7 +74,7 @@
 |------|------|
 | GenPanel | 导入 + 生成选项（epub 专属一键解读入口 EpubInterpretPanel，三态 UI） |
 | DocLibrary | 文档列表/搜索/筛选 |
-| PreviewArea | 预览 + 多 tab（空态欢迎文档三产物：笔记/整理版原文/转录） |
+| PreviewArea | 预览 + 多 tab（空态欢迎文档三产物：笔记/整理版原文/转录；产物编辑三态弹窗保护 + 编辑中未保存拦截） |
 | FloatingAI | AI 对话浮窗（唯一形态；位置/尺寸记忆、内部栏拖拽调宽；含 ChatCore/ChatSidebar/MessageList/MessageItem/ChatInput） |
 | SettingsPage | 模型/引擎/配置（overlay，含对话上下文设置 + 模型元数据编辑） |
 | TaskPanel | 浮动任务管理（可拖拽、可取消） |
@@ -103,7 +104,7 @@
 > - 导出：8/9 — 待完成图片预处理复用（ZIP 导出复用导入时的 optimize_images 结果）
 > - 不做的项目：PDF Layer 2（pdfplumber 已成熟提取表格）、VL 帧过滤（成本/收益不成正比）
 
-## 工程质量（2026-08-14 状态）
+## 工程质量（2026-08-25 状态）
 
 | 指标 | 状态 |
 |------|:--:|
@@ -139,6 +140,11 @@
 | 编辑器分屏拖拽 | ✅ 产物编辑器 源码\|预览 分隔条可拖拽调宽（25-75%，2026-08-16） |
 | 编辑/输入 mono 字体 | ✅ ChatInput + ImportSection 输入框统一等宽字体（2026-08-16） |
 | 欢迎文档三产物 | ✅ 空态示例文档 = 笔记（欢迎简介）/整理版原文（开发者功能）/转录（更新记录，2026-08-16） |
+| 视频直传模型 | ✅ 阶段 A Qwen 打通——DashScope SDK `MultiModalConversation` 原生通道（file:// ≤100MB 服务端抽帧），生成链路零改动（直传为 prepare 阶段一次非流式理解），截帧链路保留为降级（2026-08-25） |
+| 日志/错误系统全面修复 | ✅ P0/P1/P2 三批（AppError 全局迁移 + 请求级日志 + `/api/logs` 防御 + log. helper 来源模块注入 + 45 项健壮性优化，2026-08-25） |
+| 错误体系 sentinel 语义 | ✅ AppError `_UNSET` 哨兵区分「未显式指定」/「显式传 400」——显式 400 + recoverable 不再被压 200（评审 H1：export_custom 前端曾下载损坏 zip，2026-08-25） |
+| 编辑态绑定来源 docId | ✅ 编辑态 `{mode, docId}`，无参保存（Ctrl+S）永远写回编辑内容归属文档，弹窗期间切文档不错存/不错回退（评审 H2/H3，2026-08-25） |
+| 编辑中未保存 × 重新生成拦截 | ✅ `dirtyEditingDocId` 轻量桥（uiSlice 标记，不提升编辑态）+ GenPanel 生成入口两态 confirm，放弃编辑后 PreviewArea 自关闭编辑态（评审遗留①，2026-08-25） |
 
 ## 目录结构
 
@@ -153,7 +159,7 @@ backend/app/
   llm/           LLMService + agent 循环
   core/          配置/类型/注册/错误/disconnect/搜索/cookie/sample_doc
   utils/         视频管线（video_reader/video_helper/screenshot_marker/frame_quality）
-  services/      图表渲染（chart_renderer）+ epub 解读 + 错误体系
+  services/      视频直传理解（video_understand）+ 图表渲染（chart_renderer）+ epub 解读 + 错误体系
   storage/       文件系统存储
 frontend/src/
   components/    UI 组件（preview/ 下 6 个展示组件拆分）
