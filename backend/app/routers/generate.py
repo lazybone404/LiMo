@@ -269,6 +269,12 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
             raise GenerateError.api_error(detail=str(e)[:200]) from e
         finally:
             _active_generations.discard(transcript_id)
+            # 关闭 LLM 连接池（每请求一 LLMService，防 httpx client 常驻累积——
+            # 对齐流式端点 P1-7 出口规范，非流式端点此前漏 aclose）
+            try:
+                await llm.aclose()
+            except Exception:
+                pass
 
 
 # ── 流式 SSE 端点 ──
@@ -683,7 +689,8 @@ async def generate_stream(transcript_id: str, request: Request,
                 processed_text = await ocr_engine.process(epub_text, str(store.root), doc_dir=str(store._get_doc_dir(transcript_id) or ""))
 
             clean_text, image_urls, video_path = await preparer.prepare(
-                processed_text, vl_config, keep_refs, send_to_llm=send_to_llm, optimize_images=image_optimize)
+                processed_text, vl_config, keep_refs, send_to_llm=send_to_llm,
+                optimize_images=image_optimize, video_direct=video_direct)
 
             if stream_mode == "polished":
                 prompt = build_polish_prompt(

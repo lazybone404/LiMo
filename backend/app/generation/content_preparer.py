@@ -252,7 +252,7 @@ class ContentPreparer:
             desc = await asyncio.wait_for(
                 loop.run_in_executor(
                     None, understand_video_direct, model, video_path,
-                    "", api_key, ""),
+                    None, api_key, None),
                 timeout=90,
             )
         except asyncio.TimeoutError:

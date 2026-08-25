@@ -183,7 +183,10 @@ export function PreviewArea() {
   const [welcomeTab, setWelcomeTab] = useState<'notes' | 'polished' | 'transcript'>('notes')
 
   // ── 产物编辑状态（notes/polished 手动编辑，见 pi-docs/产物编辑方案.md）──
-  const [editing, setEditing] = useState<{ mode: 'notes' | 'polished' } | null>(null)
+  // 编辑态绑定来源文档 id：所有无参保存路径（Ctrl+S / 保存按钮）必须以编辑内容的
+  // 真实归属文档为目标，而非 currentDocId——弹窗打开时 currentDocId 已被 selectDoc 切成
+  // 新文档，用 currentDocId 会把 A 的编辑内容错存进 B（评审发现的数据污染根因）。
+  const [editing, setEditing] = useState<{ mode: 'notes' | 'polished'; docId: string } | null>(null)
   const [editValue, setEditValue] = useState('')
   const [editDirty, setEditDirty] = useState(false)
   const [savingEdit, setSavingEdit] = useState(false)
@@ -203,7 +206,7 @@ export function PreviewArea() {
     const mode: 'notes' | 'polished' = activeView === 'polished' ? 'polished' : 'notes'
     setEditValue(displayContent)
     setEditDirty(false)
-    setEditing({ mode })
+    setEditing({ mode, docId: currentDocId })
   }
 
   const cancelEditing = () => {
@@ -217,10 +220,15 @@ export function PreviewArea() {
    * saveDocId：覆盖保存目标文档。切文档「保存并离开」时 currentDocId 已变为新文档，
    *   必须传入原文档 id（prevDocId）否则内容会存到错误文档。注意不要求 editDirty——
    *   弹窗「保存并离开」即使内容与原文一致也应保存。
+   * 目标文档优先级：显式 saveDocId > 编辑态来源 editing.docId > currentDocId——
+   *   编辑态来源保证 Ctrl+S/保存按钮永远写回编辑内容的真正归属文档。
    */
   const handleSaveEdit = async (saveDocId?: string): Promise<boolean> => {
-    const docId = saveDocId || currentDocId
+    const docId = saveDocId || editing?.docId || currentDocId
     if (!editing || !docId || savingEdit) return false
+    // 弹窗打开时拒绝无参保存：弹窗遮罩覆盖编辑器，Ctrl+S 属编辑器快捷键不应生效；
+    // 「保存并离开」走 handleDialogSave 显式传 saveDocId，不受此拦截。
+    if (!saveDocId && unsavedDialog) return false
     setSavingEdit(true)
     try {
       const md = await saveMarkdownContent(docId, editing.mode, editValue)
@@ -261,8 +269,10 @@ export function PreviewArea() {
     const dlg = unsavedDialog
     if (!dlg) return
     setDialogSaving(true)
-    // 文档切换时 currentDocId 已是新文档——保存必须针对原文档（prevDocId）
-    const saveDocId = dlg.type === 'doc' ? dlg.prevDocId : currentDocId
+    // 文档切换时 currentDocId 已是新文档——保存必须针对编辑内容真正归属的文档。
+    // 优先 editing.docId（编辑态来源，弹窗可能被二次切文档覆盖成中间文档）；
+    // 兜底弹窗记录的 prevDocId。
+    const saveDocId = dlg.type === 'doc' ? (editing?.docId || dlg.prevDocId) : currentDocId
     const ok = await handleSaveEdit(saveDocId ?? undefined)
     if (!ok) { setDialogSaving(false); return }
     const { type, target } = dlg
@@ -282,14 +292,16 @@ export function PreviewArea() {
     if (type === 'tab') setActiveView(target!)
     else loadDocContent(target!)
   }
-  // 取消：留在当前。文档切换场景回退到原文档，并跳过下一次 effect 的清理（保留编辑态与未保存内容）
+  // 取消：留在当前。文档切换场景回退到编辑内容的归属文档（编辑态来源优先，
+  // 弹窗可能被二次切文档覆盖成中间文档——回退目标必须是编辑内容真正所属的 A）
   const handleDialogCancel = () => {
     const dlg = unsavedDialog
     if (!dlg) return
     setUnsavedDialog(null)
-    if (dlg.type === 'doc' && dlg.prevDocId) {
+    const backDocId = (dlg.type === 'doc' && (editing?.docId || dlg.prevDocId)) || undefined
+    if (backDocId) {
       skipDocLoadRef.current = true
-      useStore.getState().selectDoc(dlg.prevDocId)
+      useStore.getState().selectDoc(backDocId)
     }
   }
 
@@ -417,9 +429,11 @@ export function PreviewArea() {
       skipDocLoadRef.current = false
       return
     }
-    // 切文档防丢：编辑中且有未保存修改 → 三态弹窗（保存并离开 / 不保存 / 取消）
+    // 切文档防丢：编辑中且有未保存修改 → 三态弹窗（保存并离开 / 不保存 / 取消）。
+    // prevDocId 用编辑态来源（editing.docId）而非 prevId——弹窗打开期间若再经
+    // AI 浮窗切文档，prevId 会变成中间文档，用 prevId 会把编辑内容错存/错回退。
     if (prevId && prevId !== currentDocId && editing && editDirty) {
-      setUnsavedDialog({ type: 'doc', target: currentDocId, prevDocId: prevId })
+      setUnsavedDialog({ type: 'doc', target: currentDocId, prevDocId: editing.docId })
       return
     }
     loadDocContent(currentDocId)

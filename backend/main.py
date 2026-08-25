@@ -147,10 +147,12 @@ async def app_error_handler(request, exc: AppError):
         log.warning("AppError", code=exc.code, message=exc.message,
                     path=request.url.path)
     from fastapi.responses import JSONResponse
-    # status_code 显式指定（≠默认 400）时尊重——如 404 资源不存在（删除后 GET）、
-    # 403 权限拒绝；未显式指定时 recoverable 业务状态返回 200，避免浏览器
-    # DevTools 显示网络错误（如 "尚未生成" 是预期业务状态，不是真的 HTTP 错误）
-    http_status = exc.status_code if exc.status_code != 400 else (
+    # status_code 显式指定（_explicit_status，含显式 400）时尊重；未显式时
+    # recoverable → 200（避免浏览器 DevTools 显示网络错误，如 "尚未生成" 是预期
+    # 业务状态，不是真的 HTTP 错误）。显式 400 必须返回 400——此前用「≠默认 400」
+    # 判断，显式传 status_code=400 + recoverable=True 会被误压成 200，前端下载
+    # 到损坏 zip（评审 H1）。
+    http_status = exc.status_code if exc._explicit_status else (
         200 if exc.recoverable else exc.status_code)
     return JSONResponse(status_code=http_status, content=exc.to_dict())
 
@@ -344,7 +346,10 @@ async def view_logs(request: Request):
     支持 level（error/warning/info/debug/all）与 search（msg 关键字/request_id 子串）过滤。
     search 在切片前过滤——对全量 1000 条 buffer 搜索，而非最近 N 条。
     """
-    lines = int(request.query_params.get("lines", 200))
+    try:
+        lines = int(request.query_params.get("lines", 200))
+    except ValueError:
+        lines = 200  # 非数字参数防御（此前裸 int() 抛 ValueError → 500）
     level = request.query_params.get("level", "all")
     search = request.query_params.get("search", "").strip().lower()
     buf = getattr(request.app.state, 'log_buffer', [])

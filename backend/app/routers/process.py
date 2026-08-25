@@ -26,7 +26,6 @@ from app.core.disconnect import disconnect_watcher
 from app.core.types import ProcessResult
 from app.llm import LLMService
 
-router = APIRouter()
 router = APIRouter(tags=["process"])
 
 # P0-6：LLM 图片处理最大字节数——超限跳过 LLM（整图 base64 ×1.33 可达数 GB 内存峰值）直走 Engine

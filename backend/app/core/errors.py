@@ -9,6 +9,10 @@ import time
 
 _log = logging.getLogger(__name__)
 
+# AppError status_code 的默认值哨兵——区分「未显式指定（默认 400）」与「显式传 400」。
+# main.py 异常处理器：未显式指定且 recoverable → 200；显式指定则必须尊重（含 400）。
+_UNSET = object()
+
 
 # ── 重试策略标记（对齐 BiliNote demo/pipeline.py）──
 
@@ -49,12 +53,21 @@ def retry(max_attempts: int = 3, base_delay: float = 2.0):
 class AppError(Exception):
     """所有异常的基类"""
     def __init__(self, code: str, message: str, detail: str = "",
-                 recoverable: bool = True, status_code: int = 400):
+                 recoverable: bool = True, status_code: int | object = _UNSET):
         self.code = code
         self.message = message
         self.detail = detail
         self.recoverable = recoverable
-        self.status_code = status_code
+        # 区分「显式指定 status_code」与「默认 400」——main.py 异常处理器据此决定
+        # recoverable 时是否压成 200。用 sentinel 而非「≠400」判断，否则显式传
+        # status_code=400 + recoverable=True（如 export_custom）会被误压成 200
+        # （评审 H1：前端 `if (!r.ok)` 把 200 当成功 → 下载损坏 zip）。
+        if status_code is _UNSET:
+            self.status_code = 400
+            self._explicit_status = False
+        else:
+            self.status_code = int(status_code)
+            self._explicit_status = True
         super().__init__(message)
 
     def to_dict(self) -> dict:

@@ -9,7 +9,6 @@ AgentRunner — 工具调用循环，内部使用 LLMService
 
 import asyncio
 import json
-import logging
 from typing import Any, Callable, AsyncGenerator
 from urllib.parse import urlparse
 
@@ -17,8 +16,6 @@ import openai
 
 from app.core import logging as log
 from app.llm.errors import CancelledError
-
-logger = logging.getLogger(__name__)
 
 ToolFn = Callable[..., str]
 
@@ -38,7 +35,7 @@ async def _create_with_retry(coro_factory: Callable[[], Any], retries: int = 2) 
                 openai.APITimeoutError, openai.APIConnectionError) as e:
             if attempt >= retries:
                 raise
-            logger.warning("LLM create 第 %d 次重试（%s）", attempt + 1, str(e)[:100])
+            log.warning("LLM create 重试", attempt=attempt + 1, error=str(e)[:100])
             await asyncio.sleep(1 + attempt * 2)  # 退避：1s / 3s
 
 

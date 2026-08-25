@@ -17,12 +17,11 @@ ffmpeg 截帧链路。方案见 pi-docs/视频直传模型方案.md。
 
 from __future__ import annotations
 
-import logging
 import os
 import re
 import subprocess
 
-logger = logging.getLogger(__name__)
+from app.core import logging as log
 
 # 本地视频直传上限（DashScope SDK file:// 通道 ≤100MB，方案 §2.1）
 VIDEO_MAX_BYTES = 100 * 1024 * 1024
@@ -42,7 +41,7 @@ VIDEO_UNDERSTAND_PROMPT = (
 
 
 def _to_file_uri(path: str) -> str:
-    """Windows 本地路径 → file:// URI（反斜杠转正斜杠，官方格式 file://D:/xxx）。"""
+    """Windows 本地路径 → file:// URI（反斜杠转正斜杠，官方格式 file:///D:/xxx）。"""
     p = path.replace("\\", "/")
     if not p.startswith("/"):
         p = "/" + p
@@ -61,16 +60,25 @@ def _video_duration_s(video_path: str) -> float | None:
         if r.returncode == 0:
             return float(r.stdout.strip())
     except Exception as e:
-        logger.warning("ffprobe 读取视频时长失败: %s", str(e)[:80])
+        log.warning("ffprobe 读取视频时长失败", error=str(e)[:80])
     return None
 
 
 def effective_fps(video_path: str, max_frames: int = MAX_FRAMES) -> float:
-    """按视频时长自适应 fps，使总抽帧数 ≤ max_frames（防长视频帧数爆炸）。"""
+    """按视频时长自适应 fps，使总抽帧数 ≤ max_frames（防长视频帧数爆炸）。
+
+    注意：DashScope 的 fps 有 0.1 下限（官方支持 0.1-10）。视频时长 > max_frames/0.1
+    （即 >1280s，约 21 分钟）时，即使 fps=0.1 总帧数也会超过 max_frames——这是
+    SDK 硬约束下的尽力而为，超限时记 warning 供排查（不阻断直传）。
+    """
     dur = _video_duration_s(video_path)
     if dur and dur > 0:
         fps = min(DEFAULT_FPS, max_frames / dur)
-        return max(0.1, fps)
+        if fps < 0.1:
+            log.warning("视频过长，fps 触 0.1 下限", duration_s=round(dur, 1),
+                        max_frames=max_frames)
+            return 0.1
+        return fps
     return DEFAULT_FPS
 
 
@@ -104,23 +112,29 @@ def understand_video_direct(
     返回画面理解描述文本；失败/超限/无结果 → None（调用方降级截帧）。
     仅支持 DashScope（Qwen 视频模型）；其他 provider 返回 None。
 
-    base_url 参数：dashscope SDK 原生通道走官方 API 端点（OpenAI 兼容的
-    compatible-mode/v1 不同），一般用 SDK 默认即可；自定义域名由调用方评估。
+    base_url 参数：dashscope SDK 原生通道无 per-call base_url（官方端点走全局
+    `dashscope.base_http_api_url`，改它会影响进程内所有 dashscope 调用）——
+    此参数保留签名供调用方评估，当前不向 SDK 传递（走官方端点）。
     """
+    # 空串防御：调用方可能误传 ""（此前 content_preparer 传空串覆盖默认 prompt），
+    # 一律回退默认画面理解指令，保证模型收到有效指令。
+    if not prompt:
+        prompt = VIDEO_UNDERSTAND_PROMPT
     try:
         size = os.path.getsize(video_path)
         if size > VIDEO_MAX_BYTES:
-            logger.warning("视频直传超限: %dMB > %dMB → 降级截帧",
-                           size // (1024 * 1024), VIDEO_MAX_BYTES // (1024 * 1024))
+            log.warning("视频直传超限，降级截帧",
+                        size_mb=size // (1024 * 1024),
+                        limit_mb=VIDEO_MAX_BYTES // (1024 * 1024))
             return None
     except OSError as e:
-        logger.warning("视频直传文件读取失败: %s → 降级截帧", str(e)[:80])
+        log.warning("视频直传文件读取失败，降级截帧", error=str(e)[:80])
         return None
 
     try:
         import dashscope
     except ImportError:
-        logger.warning("dashscope SDK 未安装，视频直传不可用 → 降级截帧")
+        log.warning("dashscope SDK 未安装，视频直传不可用，降级截帧")
         return None
 
     # 本地文件引用（file:// 官方格式，Windows 反斜杠转正斜杠）
@@ -134,8 +148,9 @@ def understand_video_direct(
         ],
     }]
 
-    logger.info("视频直传理解: model=%s size=%dMB fps=%.1f",
-                model, os.path.getsize(video_path) // (1024 * 1024), fps)
+    log.info("视频直传理解", model=model,
+             size_mb=os.path.getsize(video_path) // (1024 * 1024),
+             fps=round(fps, 1))
     try:
         resp = dashscope.MultiModalConversation.call(
             model=model,
@@ -146,11 +161,11 @@ def understand_video_direct(
         choice = resp.output.choices[0]
         text = _extract_text(choice.message.content)
     except Exception as e:
-        logger.warning("视频直传调用失败: %s → 降级截帧", str(e)[:100])
+        log.warning("视频直传调用失败，降级截帧", error=str(e)[:100])
         return None
 
     if not text or not text.strip():
-        logger.warning("视频直传无文本结果 → 降级截帧")
+        log.warning("视频直传无文本结果，降级截帧")
         return None
-    logger.info("视频直传理解成功: %d chars", len(text))
+    log.info("视频直传理解成功", chars=len(text))
     return text.strip()

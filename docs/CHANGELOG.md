@@ -35,6 +35,36 @@
 
 ---
 
+## 2026-08-25 — 提交后代码质量/健壮性审查（开发者视角）
+
+> 用户：「提交然后再进行一次代码质量和健壮性审查，我们需要从开发者的角度去看」。审查覆盖 5 个域：视频直传、编辑未保存保护、日志系统、错误体系、全局模式（并发/取消/资源/边界）。两个并行审查 agent（编辑保护 / 日志错误）+ 主线程人工核查，共确认并修复 3 个高危数据污染/损坏 bug + 若干中低项。
+
+### 🔴 高危修复
+- **H1 export_custom 显式 400 被压成 200 → 前端下载损坏 zip**（export.py:1258 `status_code=400, recoverable=True`）：main.py 处理器用「≠默认 400」判断是否显式指定，显式 400 落入 `recoverable→200` 分支 → 前端 ExportPanel `if (!r.ok)` 把 200 当成功 → `r.blob()` 拿到 AppError JSON → 下载损坏 zip + 成功 toast。**根治**：AppError 默认 status_code 改用哨兵 `_UNSET` 并记录 `_explicit_status` 标记，处理器只对「未显式指定且 recoverable」压 200，显式 400 必须返回 400。这是「≠默认值」判断法的设计盲区（M1），未来新增显式 400 不会再踩
+- **H2 切文档弹窗打开时 Ctrl+S 把原文档编辑内容保存进新文档**（PreviewArea）：旧实现 window.confirm 是同步模态阻塞事件循环，弹窗期间 Ctrl+S 不派发；改 React 异步弹窗后该出口暴露——`selectDoc(B)` 把 `currentDocId` 切成 B，但编辑态仍属 A，Ctrl+S 无参保存用 `currentDocId=B` 把 A 的内容写入 B。**根治**：编辑态 `editing` 绑定来源 `docId`（`{mode, docId}`），所有无参保存目标 = `editing.docId`（非 currentDocId），弹窗打开时拒绝无参保存（Ctrl+S 属编辑器快捷键，弹窗「保存并离开」显式传参不受影响）
+- **H3 编辑态不绑定来源文档 id，弹窗期间二次切文档错存**（PreviewArea）：弹窗 `prevDocId` 来自 `prevDocIdRef`（上一次文档 id），弹窗打开期间经 AI 浮窗（z-index 同级且 DOM 后渲染）再切文档 C 时，effect 用「中间文档 B」覆盖弹窗 → 保存/回退错指。**根治**：弹窗 `prevDocId` 用 `editing.docId`，保存目标 = `editing.docId || prevDocId`，取消回退也用编辑来源
+- **H4 视频直传 prompt="" bug**（content_preparer.py:254 传空串覆盖默认画面理解指令 → 模型收到空指令）：`understand_video_direct` 加 `prompt or VIDEO_UNDERSTAND_PROMPT` 防御 + 调用方改传 None
+- **H5 视频直传流式单产物路径静默失效**（generate.py 流式端点单产物分支漏传 `video_direct` → 只选 notes/polished 时直传失效走截帧，模式 #16「prepare 参数对称」同类复发）：补 `video_direct=video_direct`
+
+### 🟡 中低项修复
+- **非流式生成端点漏 `llm.aclose()`**：每请求新建 LLMService，请求结束不关 AsyncOpenAI client → httpx 连接池常驻累积（流式端点 P1-7 已覆盖，非流式遗漏）。finally 补 aclose
+- **`effective_fps` 长视频帧数超限**：DashScope fps 有 0.1 下限，视频 >1280s 时 `max(0.1, ...)` 使总帧数超 MAX_FRAMES——SDK 硬约束下的尽力而为，注释澄清 + 超限 warning
+- **`/api/logs` lines 非数字 500**：裸 `int()` 抛 ValueError，try 兜底默认 200
+- **video_understand.py stdlib logger → log. helper**（新文件违反模式 #35）；agent.py 残余 stdlib logger 混用清理
+- **process.py 重复 `router = APIRouter()` 声明**清理；`_to_file_uri` 注释笔误（实现 `file:///D:/` 三斜杠，注释两斜杠）
+
+### 审查确认无问题的项（未改动）
+- AppError 子类（TranscribeError/GenerateError 等）默认 400 + recoverable 语义不受 sentinel 影响；e2e「deleted doc -> 404」保持通过
+- 视频下载/截帧临时目录清理、Cookie 临时文件删除、LLM 连接池关闭（process.py 全出口）、流式双产物 gather 顺序解包、信号量释放逃逸防护均正确
+- dashscope `MultiModalConversation.call` 无 per-call base_url（走全局 `dashscope.base_http_api_url`），video_understand 的 base_url 参数是合理的防御设计
+
+### 遗留建议（未实施，需方向确认）
+- 【中】GenPanel 重新生成覆盖确认只查 `markdownEdited`（已保存标记），不查「编辑中未保存」——编辑中未保存点重新生成会覆盖 currentContent 但编辑框仍开旧值，保存会覆盖新产物。需跨组件（编辑态提升 store / PreviewArea 拦截刷新）实现
+- 【低】「取消」回退后 activeView 可能被 tab 有效性 effect 跳走，点回原 tab 再弹窗（跨 sourceType 切文档才触发）
+- 【低】logging._val 对 dict/list 不截断（`agent.py` Tool 调用 args 可能夹带长文本/隐私）；`_caller_name` 帧栈遍历开销建议长期改用 LoggerAdapter 注入
+
+---
+
 ## 2026-08-17 — 新增内置厂商 OpenCode Go（OpenAI 兼容网关）
 
 > 用户要求在设置页「大模型厂商 / 引擎厂商」支持 OpenCode Go。阅读官方文档确认：**OpenCode Go 不是引擎服务，而是 OpenAI 兼容的 LLM 网关**（`opencode.ai/go/v1`、`/chat/completions`、Bearer Key，与 OpenCode Zen 同平台共用 `OPENCODE_API_KEY`，Go 固定订阅 5h/$12·周/$30·月/$60，Zen 按量付费）。定位为**内置 LLM 厂商 + 图片处理（image_process 场景）可用视觉模型**。
