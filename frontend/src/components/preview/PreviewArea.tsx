@@ -22,6 +22,7 @@ import { TranscriptView } from './TranscriptView'
 import { MarkdownPreview } from './MarkdownPreview'
 import { TextareaMarkdownEditor } from './TextareaMarkdownEditor'
 import { PartialBanner } from './PartialBanner'
+import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { EmptyState } from './EmptyState'
 import { ProcessingPlaceholder } from './ProcessingPlaceholder'
 import { VersionSwitcher } from './VersionSwitcher'
@@ -186,10 +187,15 @@ export function PreviewArea() {
   const [editValue, setEditValue] = useState('')
   const [editDirty, setEditDirty] = useState(false)
   const [savingEdit, setSavingEdit] = useState(false)
+  // 未保存离开三态弹窗：type='tab' → target=目标 tab；type='doc' → target=目标文档 id，prevDocId=原文档 id
+  const [unsavedDialog, setUnsavedDialog] = useState<{ type: 'tab' | 'doc'; target?: string; prevDocId?: string } | null>(null)
+  const [dialogSaving, setDialogSaving] = useState(false)
   const setMarkdownEdited = useStore(s => s.setMarkdownEdited)
   const markdownEdited = useStore(s => s.markdownEdited)
   // 切文档防丢：记录上一次文档 id（取消切换时回退）
   const prevDocIdRef = useRef<string | null>(null)
+  // 弹窗「取消」回退后，下一次 effect 需跳过清理+加载（保留原文档编辑态与未保存内容）
+  const skipDocLoadRef = useRef(false)
 
   /** 进入编辑模式（summary tab → notes；polished tab → polished） */
   const startEditing = () => {
@@ -205,12 +211,19 @@ export function PreviewArea() {
     setEditDirty(false)
   }
 
-  /** 保存编辑：PUT /api/markdown → 更新内容/meta/versions + 置 edited 标记（生成版自动降 prev） */
-  const handleSaveEdit = async () => {
-    if (!editing || !currentDocId || !editDirty || savingEdit) return
+  /**
+   * 保存编辑：PUT /api/markdown → 更新内容/meta/versions + 置 edited 标记（生成版自动降 prev）。
+   * 返回 boolean（是否保存成功）——「保存并离开」需据此决定是否放行离开。
+   * saveDocId：覆盖保存目标文档。切文档「保存并离开」时 currentDocId 已变为新文档，
+   *   必须传入原文档 id（prevDocId）否则内容会存到错误文档。注意不要求 editDirty——
+   *   弹窗「保存并离开」即使内容与原文一致也应保存。
+   */
+  const handleSaveEdit = async (saveDocId?: string): Promise<boolean> => {
+    const docId = saveDocId || currentDocId
+    if (!editing || !docId || savingEdit) return false
     setSavingEdit(true)
     try {
-      const md = await saveMarkdownContent(currentDocId, editing.mode, editValue)
+      const md = await saveMarkdownContent(docId, editing.mode, editValue)
       if (editing.mode === 'polished') {
         setCurrentPolishedContent(md.content)
       } else {
@@ -222,21 +235,62 @@ export function PreviewArea() {
       setEditing(null)
       setEditDirty(false)
       useStore.getState().addToast('已保存', 'success')
+      return true
     } catch (err) {
       useStore.getState().addToast(getErrorMessage(err), 'error')
+      return false
     } finally {
       setSavingEdit(false)
     }
   }
 
-  /** 切换 tab：编辑中且有未保存修改 → 两态 confirm（方案确认，非三态弹窗） */
+  /** 切换 tab：编辑中且有未保存修改 → 三态弹窗（保存并离开 / 不保存 / 取消） */
   const handleTabSwitch = (key: string) => {
     if (key === activeView) return
     if (editing && editDirty) {
-      if (!window.confirm('有未保存的修改，离开将丢失？')) return
+      setUnsavedDialog({ type: 'tab', target: key })
+      return
     }
     if (editing) { setEditing(null); setEditDirty(false) }
     setActiveView(key)
+  }
+
+  // ── 未保存离开三态弹窗回调 ──
+  // 保存并离开：保存成功才放行（失败留在当前，弹窗保持可重试）
+  const handleDialogSave = async () => {
+    const dlg = unsavedDialog
+    if (!dlg) return
+    setDialogSaving(true)
+    // 文档切换时 currentDocId 已是新文档——保存必须针对原文档（prevDocId）
+    const saveDocId = dlg.type === 'doc' ? dlg.prevDocId : currentDocId
+    const ok = await handleSaveEdit(saveDocId ?? undefined)
+    if (!ok) { setDialogSaving(false); return }
+    const { type, target } = dlg
+    setUnsavedDialog(null)
+    setDialogSaving(false)
+    if (type === 'tab') setActiveView(target!)
+    else loadDocContent(target!)   // 文档切换：拦截时 currentDocId 已变为新 id，直接加载
+  }
+  // 不保存：丢弃未保存修改，直接离开
+  const handleDialogDiscard = () => {
+    const dlg = unsavedDialog
+    if (!dlg) return
+    setEditing(null)
+    setEditDirty(false)
+    const { type, target } = dlg
+    setUnsavedDialog(null)
+    if (type === 'tab') setActiveView(target!)
+    else loadDocContent(target!)
+  }
+  // 取消：留在当前。文档切换场景回退到原文档，并跳过下一次 effect 的清理（保留编辑态与未保存内容）
+  const handleDialogCancel = () => {
+    const dlg = unsavedDialog
+    if (!dlg) return
+    setUnsavedDialog(null)
+    if (dlg.type === 'doc' && dlg.prevDocId) {
+      skipDocLoadRef.current = true
+      useStore.getState().selectDoc(dlg.prevDocId)
+    }
   }
 
   // beforeunload：编辑中且有未保存修改时拦截关页（Tauri 关窗为边缘情况，见计划已知限制）
@@ -271,18 +325,11 @@ export function PreviewArea() {
     }).finally(() => setVersionLoading(false))
   }
 
-  // 选中文档时加载内容
-  useEffect(() => {
-    // 切文档防丢：编辑中且有未保存修改 → 两态 confirm；取消则回退旧文档并跳过清理（保留旧内容）
-    const prevId = prevDocIdRef.current
-    prevDocIdRef.current = currentDocId
-    if (prevId && prevId !== currentDocId && editing && editDirty) {
-      if (!window.confirm('有未保存的修改，离开将丢失？')) {
-        prevDocIdRef.current = prevId
-        useStore.getState().selectDoc(prevId)
-        return
-      }
-    }
+  /**
+   * 加载文档内容（选中文档 effect 的公共逻辑，抽出供「未保存离开」确认后放行复用）。
+   * docId 为 null → 仅清理旧内容（无选中文档）。
+   */
+  const loadDocContent = useCallback((docId: string | null) => {
     // 切换文档时清除所有旧内容
     setCurrentContent(null)
     setCurrentPolishedContent(null)
@@ -295,8 +342,8 @@ export function PreviewArea() {
     setEditDirty(false)
     useStore.getState().setMarkdownEdited('notes', false)
     useStore.getState().setMarkdownEdited('polished', false)
-    if (!currentDocId) return
-    const capturedId = currentDocId
+    if (!docId) return
+    const capturedId = docId
     const isSame = () => capturedId === useStore.getState().currentDocId
     // recoverable 错误（"尚未生成"等）是预期状态，静默处理
     const isRecoverable = (err: unknown) => err instanceof ApiErrorException && err.apiError.recoverable
@@ -359,7 +406,24 @@ export function PreviewArea() {
       console.error('加载处理结果失败:', err)
       useStore.getState().addToast(getErrorMessage(err), 'error')
     })
-  }, [currentDocId])
+  }, [setCurrentContent, setCurrentPolishedContent, setCurrentRawText, setMarkdownMeta, setMarkdownVersions, setContentLoadError, setActiveView, loadImageResults])
+
+  // 选中文档时加载内容
+  useEffect(() => {
+    const prevId = prevDocIdRef.current
+    prevDocIdRef.current = currentDocId
+    // 弹窗「取消」回退：跳过本次清理+加载，保留原文档编辑态与未保存内容
+    if (skipDocLoadRef.current) {
+      skipDocLoadRef.current = false
+      return
+    }
+    // 切文档防丢：编辑中且有未保存修改 → 三态弹窗（保存并离开 / 不保存 / 取消）
+    if (prevId && prevId !== currentDocId && editing && editDirty) {
+      setUnsavedDialog({ type: 'doc', target: currentDocId, prevDocId: prevId })
+      return
+    }
+    loadDocContent(currentDocId)
+  }, [currentDocId, loadDocContent])
 
   const sourceType = currentDoc?.sourceType || 'webpage'
   const typeMeta = getTypeMeta(sourceType)
@@ -723,6 +787,14 @@ export function PreviewArea() {
       </div>
     </main>
     {showLogs && <LogPanel onClose={() => setShowLogs(false)} />}
+    {unsavedDialog && (
+      <UnsavedChangesDialog
+        saving={dialogSaving}
+        onSave={handleDialogSave}
+        onDiscard={handleDialogDiscard}
+        onCancel={handleDialogCancel}
+      />
+    )}
     </>
   )
 }
