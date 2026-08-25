@@ -195,6 +195,10 @@ export function PreviewArea() {
   const [dialogSaving, setDialogSaving] = useState(false)
   const setMarkdownEdited = useStore(s => s.setMarkdownEdited)
   const markdownEdited = useStore(s => s.markdownEdited)
+  // 编辑中未保存 → 暴露到 store（GenPanel 重新生成入口拦截用）。只暴露归属文档 id，
+  // 不提升编辑态本身。外部（重新生成放弃编辑）清空标记时由下方 effect 自关闭编辑态。
+  const dirtyEditingDocId = useStore(s => s.dirtyEditingDocId)
+  const setDirtyEditingDocId = useStore(s => s.setDirtyEditingDocId)
   // 切文档防丢：记录上一次文档 id（取消切换时回退）
   const prevDocIdRef = useRef<string | null>(null)
   // 弹窗「取消」回退后，下一次 effect 需跳过清理+加载（保留原文档编辑态与未保存内容）
@@ -315,6 +319,21 @@ export function PreviewArea() {
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [editing, editDirty])
+
+  // 编辑中未保存 → 同步 store 标记（GenPanel 重新生成入口可感知；无跨组件状态提升）
+  useEffect(() => {
+    setDirtyEditingDocId(editing && editDirty ? editing.docId : null)
+  }, [editing, editDirty, setDirtyEditingDocId])
+
+  // 外部清空标记（GenPanel 重新生成「放弃编辑继续」）→ 本地仍在编辑 → 自关闭编辑态，
+  // 防生成完成后编辑框还开着旧值、保存覆盖新产物（评审遗留①）。
+  // 本地自己清（保存/取消/切文档）时 editing 已先置 null，此分支不命中。
+  useEffect(() => {
+    if (!dirtyEditingDocId && editing && editDirty) {
+      setEditing(null)
+      setEditDirty(false)
+    }
+  }, [dirtyEditingDocId])
 
   const loadVersion = (version: number, mode: string) => {
     const docId = useStore.getState().currentDocId

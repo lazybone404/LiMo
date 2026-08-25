@@ -58,8 +58,8 @@
 - 视频下载/截帧临时目录清理、Cookie 临时文件删除、LLM 连接池关闭（process.py 全出口）、流式双产物 gather 顺序解包、信号量释放逃逸防护均正确
 - dashscope `MultiModalConversation.call` 无 per-call base_url（走全局 `dashscope.base_http_api_url`），video_understand 的 base_url 参数是合理的防御设计
 
-### 遗留建议（未实施，需方向确认）
-- 【中】GenPanel 重新生成覆盖确认只查 `markdownEdited`（已保存标记），不查「编辑中未保存」——编辑中未保存点重新生成会覆盖 currentContent 但编辑框仍开旧值，保存会覆盖新产物。需跨组件（编辑态提升 store / PreviewArea 拦截刷新）实现
+### 遗留建议
+- ✅【中】**编辑中未保存 × 重新生成拦截**（已实施 2026-08-25）：GenPanel `handleGenerate`（全部生成/重新生成/继续生成入口的唯一汇聚点）检查 `dirtyEditingDocId`（PreviewArea 将编辑态暴露的归属文档 id，仅标记不提升编辑态）→ 匹配当前文档时两态 confirm「放弃编辑并重新生成？（可先保存后再生成）」，确定 → 清标记 → PreviewArea effect 自关闭编辑态（生成完成后编辑框不再开着旧值，杜绝旧编辑静默写回新产物）。轻量桥方案：uiSlice 加 `dirtyEditingDocId` 字段 + PreviewArea 两个同步 effect + GenPanel 一处拦截，零跨组件状态提升
 - 【低】「取消」回退后 activeView 可能被 tab 有效性 effect 跳走，点回原 tab 再弹窗（跨 sourceType 切文档才触发）
 - 【低】logging._val 对 dict/list 不截断（`agent.py` Tool 调用 args 可能夹带长文本/隐私）；`_caller_name` 帧栈遍历开销建议长期改用 LoggerAdapter 注入
 

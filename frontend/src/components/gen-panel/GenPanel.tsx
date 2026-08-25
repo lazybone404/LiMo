@@ -503,6 +503,17 @@ export function GenPanel() {
       }
     }
 
+    // ── 编辑中未保存 × 重新生成拦截（评审遗留①）：产物编辑中未保存就重新生成，
+    // 产物被覆盖后编辑框还开着旧值，保存会把旧编辑写回新产物——比「覆盖确认」更危险
+    // （覆盖确认至少是显式的，此路径旧值静默污染新产物）。轻量桥：PreviewArea 将
+    // 编辑态暴露为 dirtyEditingDocId（仅文档 id，不提升编辑态到 store），确认放弃 →
+    // 清标记，PreviewArea effect 自关闭编辑态。优先于下方 markdownEdited 覆盖保护。
+    const dirtyEditingDocId = useStore.getState().dirtyEditingDocId
+    if (dirtyEditingDocId && dirtyEditingDocId === currentDocId) {
+      if (!window.confirm('当前文档正在编辑且未保存，重新生成将丢失未保存的修改。确定放弃编辑并重新生成？（可先保存后再生成）')) return
+      useStore.getState().setDirtyEditingDocId(null)
+    }
+
     // ── 覆盖保护：重新生成会覆盖已手动编辑的产物 → 两态 confirm（方案 5.2；生成完成后标记自动清除）──
     const editedState = useStore.getState().markdownEdited
     if ((selectedCore.includes('notes') && editedState.notes) ||

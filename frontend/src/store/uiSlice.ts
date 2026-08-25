@@ -58,6 +58,14 @@ export interface UiSlice {
   // ── 后端能力 ──
   capabilities: Capabilities | null
   setCapabilities: (c: Capabilities) => void
+
+  // ── 产物编辑中未保存标记 ──
+  // PreviewArea 编辑态（editing + editDirty）的轻量桥：编辑内容归属文档 id。
+  // 供 GenPanel「重新生成」入口检查「编辑中未保存 × 重新生成」拦截（评审遗留①）——
+  // 重新生成会覆盖产物，但编辑框还开着旧值，保存会把旧编辑写回新产物。
+  // 只暴露布尔/文档 id 标记，不提升编辑态（editValue 等）本身到 store。
+  dirtyEditingDocId: string | null
+  setDirtyEditingDocId: (docId: string | null) => void
 }
 
 export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set) => ({
@@ -112,4 +120,7 @@ export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set) => ({
 
   capabilities: null,
   setCapabilities: (c) => set({ capabilities: c }),
+
+  dirtyEditingDocId: null,
+  setDirtyEditingDocId: (docId) => set({ dirtyEditingDocId: docId }),
 })
