@@ -79,6 +79,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [export-pipeline.md](docs/export-pipeline.md) | 导出架构、两条路径设计、Tab→内容映射表、KaTeX/Pygments | 改导出功能、新增 tab |
 | [CHANGELOG.md](docs/CHANGELOG.md) | 修改记录：做了什么、为什么、影响范围 | 了解历史决策、避免重复踩坑 |
 | [STATUS.md](docs/STATUS.md) | 纯事实清单（文件/端点/引擎计数/代码行数） | 需要统计数据 |
+| [ACKNOWLEDGMENTS.md](docs/ACKNOWLEDGMENTS.md) | 开源致谢与合规声明（借鉴项目 + 第三方依赖许可证） | 新增/移除依赖、借鉴新开源项目时更新 |
 | [user-scenarios.md](docs/user-scenarios.md) | 10 个用户场景及实现状态 | 理解产品需求 |
 | [plugins.md](docs/plugins.md) | 插件系统标准 — 开发 API + GitHub 安装流程 + 安全声明 | 开发/安装/调试插件 |
 | [prompts-inventory.md](docs/prompts-inventory.md) | 全部 LLM 提示词清单 + 审视点清单（9 已修复/8 待处理）+ 温度参数速查 + PromptComposer 标签速查 + Agent SSE 事件流 | 审视/优化 prompt、新增管道需要参考 prompt 风格 |

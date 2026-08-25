@@ -19,7 +19,7 @@
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
-| 设计文档 | 12（docs/ 目录，含对话协议.md + AGENT-ONBOARDING.md；design/ 另计） |
+| 设计文档 | 13（docs/ 目录，含对话协议.md + AGENT-ONBOARDING.md + ACKNOWLEDGMENTS.md；design/ 另计） |
 | 代码行数 | 后端 app 19,946 / 前端业务 13,438 / 前端测试 1,021 |
 
 ---
@@ -168,7 +168,7 @@ frontend/src/
   hooks/         useTaskRunner 等自定义 hook
   lib/           tabRegistry / contentSources / slotRegistry / 主题模块 / health / download
   test/          前端测试（8 个文件，含 1 个组件测试）
-docs/            设计文档（12 份）
+docs/            设计文档（13 份）
 design/          引擎实测标准
 tests/           集成测试（10 个文件）
 ```
