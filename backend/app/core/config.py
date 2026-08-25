@@ -33,10 +33,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "deepseek": [
             {"id": "deepseek-v4-flash", "name": "V4 Flash", "desc": "1M上下文", "context_window": 1000000},
             {"id": "deepseek-v4-pro",   "name": "V4 Pro",   "desc": "1M上下文", "context_window": 1000000},
+            # V4 Flash Vision（实验性，2026-08-21 上线）：图片理解，纯文本能力与 V4 Flash 相当；
+            # 已知限制：API 端会把传入图片强制缩放至 ~800×800 量级（小图放大到 ~384×384），
+            # 单张图片最多计 384 token（沿用 V4 Flash 定价）。OCR/细节提取场景注意分辨率损失。
+            {"id": "deepseek-v4-flash-vision-exp", "name": "V4 Flash Vision", "desc": "视觉实验 · 图片理解(强制800×800)", "capabilities": ["text", "image"], "context_window": 1000000},
         ],
         "dashscope": [
+            {"id": "qwen3.8-max",         "name": "Qwen3.8 Max",         "desc": "视觉+视频 · 旗舰",              "capabilities": ["text", "image", "video"], "context_window": 131072},
             {"id": "qwen3.7-max",         "name": "Qwen3.7 Max",         "desc": "纯文本 · 旗舰推理",              "capabilities": ["text"],                 "context_window": 131072},
-            {"id": "qwen3.7-plus",        "name": "Qwen3.7 Plus",        "desc": "多模态 · 日常推荐",              "capabilities": ["text", "image"],          "context_window": 131072},
+            {"id": "qwen3.7-plus",        "name": "Qwen3.7 Plus",        "desc": "多模态+视频 · 日常推荐",        "capabilities": ["text", "image", "video"], "context_window": 131072},
             {"id": "qwen3.7-flash",       "name": "Qwen3.7 Flash",       "desc": "纯文本 · 极速响应",              "capabilities": ["text"],                 "context_window": 131072},
             {"id": "qwen3.6-flash",       "name": "Qwen3.6 Flash",       "desc": "纯文本 · 轻量快速",              "capabilities": ["text"],                 "context_window": 131072},
             {"id": "qwen-flash",          "name": "Qwen Flash",          "desc": "纯文本 · 最便宜",               "capabilities": ["text"],                 "context_window": 131072},
@@ -45,9 +50,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
             {"id": "qwen-vl-ocr-latest",  "name": "Qwen VL OCR",         "desc": "视觉 · 纯OCR识别",              "capabilities": ["text", "image"],          "context_window": 131072},
             {"id": "qwen3.5-ocr",         "name": "Qwen3.5 OCR",         "desc": "视觉 · 卡证票据OCR",            "capabilities": ["text", "image"],          "context_window": 131072},
             {"id": "qwen3.5-flash",       "name": "Qwen3.5 Flash",       "desc": "视觉 · Flash多模态",            "capabilities": ["text", "image"],          "context_window": 131072},
-            {"id": "qwen3-vl-flash",      "name": "Qwen3 VL Flash",      "desc": "视觉 · 最快最便宜",              "capabilities": ["text", "image"],          "context_window": 131072},
+            {"id": "qwen3-vl-flash",      "name": "Qwen3 VL Flash",      "desc": "视觉+视频 · 最快最便宜（视频 2秒-1小时）", "capabilities": ["text", "image", "video"], "context_window": 131072},
             {"id": "qwen3-coder-plus",    "name": "Qwen3 Coder Plus",    "desc": "纯文本 · 代码生成",              "capabilities": ["text"],                 "context_window": 131072},
-            {"id": "qwen-vl-max",         "name": "Qwen-VL Max",          "desc": "视觉 · 旗舰图片理解",            "capabilities": ["text", "image"],          "context_window": 131072},
+            {"id": "qwen-vl-max",         "name": "Qwen-VL Max",          "desc": "视觉+视频 · 旗舰图片理解（视频 2秒-20分）", "capabilities": ["text", "image", "video"], "context_window": 131072},
         ],
         "openai": [
             {"id": "gpt-4o",        "name": "GPT-4o",        "desc": "文本+视觉", "context_window": 128000},
@@ -259,8 +264,49 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
     # 增量同步：DEFAULT_CONFIG 新增的 builtin_models + provider 条目自动补入已有配置
     _sync_missing_providers(config)
     _sync_builtin_models(config)
+    _sync_llm_model_caps(config)
 
     return config
+
+
+def _sync_llm_model_caps(config: dict):
+    """将 DEFAULT_CONFIG 的 llm_models 增量同步到已有配置（只补不删）。
+
+    _deep_merge 对列表是整段替换，旧 config.yaml 的 llm_models 不包含新增
+    模型（如 dashscope qwen3.8-max）与新增能力（如视频模型的 video 标注）。
+    此函数按 provider 匹配：
+    1. 补入 DEFAULT 有而用户没有的模型条目（新增官方模型自动出现）
+    2. 把 DEFAULT 已声明的能力补入用户配置对应模型（如 text → text+image+video），
+       不碰用户自定义模型与手动覆写（只补 DEFAULT 明确有的）。
+    """
+    default_models = DEFAULT_CONFIG.get("llm_models", {})
+    user_models = config.get("llm_models", {})
+    for prov_id, def_list in default_models.items():
+        if not isinstance(def_list, list):
+            continue
+        user_list = user_models.get(prov_id)
+        if not isinstance(user_list, list):
+            continue
+        # 1) 补入 DEFAULT 有而用户没有的模型条目（新增模型自动出现）
+        user_by_id = {m.get("id") for m in user_list if m.get("id")}
+        for dm in def_list:
+            if dm.get("id") and dm["id"] not in user_by_id:
+                user_list.append(dict(dm))  # 深拷贝，不共享 DEFAULT 引用
+                logger.info("配置同步: 新增 LLM 模型 %s/%s", prov_id, dm["id"])
+        # 2) 能力补全（只补 DEFAULT 明确有的，不动用户已有标记）
+        def_by_id = {m.get("id"): m.get("capabilities") for m in def_list if m.get("id")}
+        for um in user_list:
+            mid = um.get("id")
+            if not mid:
+                continue
+            def_caps = def_by_id.get(mid)
+            if not def_caps:
+                continue
+            user_caps = um.get("capabilities") or []
+            missing = [c for c in def_caps if c not in user_caps]
+            if missing:
+                um["capabilities"] = user_caps + missing
+                logger.info("配置同步: 模型 %s/%s 能力补全 %s", prov_id, mid, missing)
 
 
 def _sync_missing_providers(config: dict):

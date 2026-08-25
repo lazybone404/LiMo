@@ -47,7 +47,7 @@ async def _watch_disconnect(request: Request, cancel_event: asyncio.Event, inter
 
 # ── 类型门控：哪些字段属于哪种 source_type ──
 _TYPE_FIELDS: dict[str, set[str]] = {
-    "video": {"video_understanding", "video_interval", "grid_cols", "grid_rows",
+    "video": {"video_understanding", "video_direct", "video_interval", "grid_cols", "grid_rows",
               "dedupe_enabled", "unit_width", "unit_height", "save_quality",
               "frame_quality_filter", "image_analyze", "image_optimize"},
     "document": {"image_analyze", "image_optimize"},  # PDF/Word/PPT 共享
@@ -78,6 +78,7 @@ class GenerateRequest(BaseModel):
     source_type: str = ""  # 文档类型，用于校验字段。空字符串 = 不校验
     # VL 视觉理解参数（source_type=video 专属）
     video_understanding: bool = False
+    video_direct: bool = False  # 视频直传模型（DashScope SDK，模型支持 video 时）
     video_interval: int = 6
     grid_cols: int = 2
     grid_rows: int = 2
@@ -130,6 +131,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
 
             vl_config = {
                 "video_understanding": True,
+                "video_direct": req.video_direct,
                 "video_interval": req.video_interval,
                 "grid_cols": req.grid_cols,
                 "grid_rows": req.grid_rows,
@@ -196,6 +198,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     reference_texts=_resolve_reference_texts(req.reference_ids),
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                     ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
+                    video_direct=req.video_direct,
                 )
                 # 非流式端点截图后处理（generator 内部 video_path 可能为 None，此处补处理）
                 if screenshot_video_path:
@@ -218,6 +221,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     formats=req.formats, vl_config=vl_config, user_notes=req.user_notes,
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                     ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
+                    video_direct=req.video_direct,
                 )
                 if screenshot_video_path:
                     polished_mv.content = _post_process_screenshots(
@@ -236,6 +240,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     reference_texts=_resolve_reference_texts(req.reference_ids),
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                     ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
+                    video_direct=req.video_direct,
                 )
                 if screenshot_video_path:
                     notes_mv.content = _post_process_screenshots(
@@ -277,6 +282,7 @@ class GenerateStreamRequest(BaseModel):
     user_notes: str = ""
     # VL 参数
     video_understanding: bool = False
+    video_direct: bool = False  # 视频直传模型（DashScope SDK，模型支持 video 时）
     video_interval: int = 6
     grid_cols: int = 2
     grid_rows: int = 2
@@ -295,6 +301,7 @@ async def generate_stream(transcript_id: str, request: Request,
                           formats: str = "", model_id: int | None = None,
                           user_notes: str = "", reference_ids: str = "",
                           video_understanding: bool = False,
+                          video_direct: bool = False,
                           video_interval: int = 6, grid_cols: int = 2,
                           grid_rows: int = 2, dedupe_enabled: bool = True,
                           unit_width: int = 960, unit_height: int = 540,
@@ -382,6 +389,7 @@ async def generate_stream(transcript_id: str, request: Request,
             cookies = auth.get("youtube", "")
         vl_config = {
             "video_understanding": True,
+            "video_direct": video_direct,
             "video_interval": video_interval,
             "grid_cols": grid_cols, "grid_rows": grid_rows,
             "dedupe_enabled": dedupe_enabled,
@@ -461,7 +469,8 @@ async def generate_stream(transcript_id: str, request: Request,
 
                 # 预处理（VL + 图片剥离 + 截断）
                 clean_text, image_urls, video_path = await preparer.prepare(
-                    processed_text, vl_config, keep_refs, send_to_llm=send_to_llm, optimize_images=image_optimize)
+                    processed_text, vl_config, keep_refs, send_to_llm=send_to_llm,
+                    optimize_images=image_optimize, video_direct=video_direct)
 
                 polished_prompt = build_polish_prompt(
                     clean_text, tx.get("title", ""), style, source_type,

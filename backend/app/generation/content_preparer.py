@@ -87,10 +87,13 @@ class ContentPreparer:
         keep_refs: bool = False,
         send_to_llm: bool = False,
         optimize_images: bool = False,
+        video_direct: bool = False,
     ) -> tuple[str, list[str] | None, str | None]:
         """准备生成上下文：VL管线 → 剥离转录图片 → 截断 → 合并。
 
         返回 (clean_text, image_urls, video_path)。
+        video_direct：视频直传模式（DashScope SDK 视频理解 → 描述文本注入，
+        替代截帧网格图；失败/超限自动降级截帧——现有链路原封不动）。
         """
         import asyncio
         loop = asyncio.get_event_loop()
@@ -98,6 +101,7 @@ class ContentPreparer:
         # --- VL 管线：截帧 → 网格图（始终执行，结果按 keep_refs/send_to_llm 分流）---
         vl_image_urls = None
         video_path = None
+        vl_text_inline = ""
         if vl_config:
             logger.info("VL config: interval=%ds grid=%dx%d",
                         vl_config.get("video_interval", 6),
@@ -105,14 +109,29 @@ class ContentPreparer:
                         vl_config.get("grid_rows", 2))
             source_url = vl_config.get("source_url", "")
             if source_url:
-                vl_image_urls, video_path = await loop.run_in_executor(
-                    None, self._run_vl_pipeline, vl_config, source_url)
+                # 视频直传：模型支持 video 时 SDK 直传理解（服务端抽帧）→ 描述文本
+                has_video_cap = any("video" in (c or "")
+                                    for c in self.llm_config.get("capabilities", []))
+                if video_direct and has_video_cap:
+                    desc, vp = await self._run_video_direct(vl_config, source_url)
+                    if desc:
+                        vl_text_inline = f"\n\n【视频画面理解（直传）】\n{desc}"
+                    if vp:
+                        video_path = vp
+                    # 直传失败/超限 → 降级截帧（已下载视频直接截帧，不重复下载）
+                    if not desc:
+                        if vp:
+                            vl_image_urls, _ = await loop.run_in_executor(
+                                None, self._run_frames_from_path, vl_config, vp)
+                        # vp None = 下载失败 → 纯文本生成（与截帧链路下载失败一致）
+                else:
+                    vl_image_urls, video_path = await loop.run_in_executor(
+                        None, self._run_vl_pipeline, vl_config, source_url)
 
         # VL 截帧图的处理（对标文档图片的 keep_refs / send_to_llm / optimize 三层）：
         # - keep_refs: 截帧图嵌入为 Markdown ![](...) 引用
         # - send_to_llm: 截帧图作为 base64 发给 LLM
         # - optimize_images: 截帧图 PIL 缩放 ≤1024px
-        vl_text_inline = ""
         if vl_image_urls and keep_refs:
             vl_text_inline = self._format_vl_images(vl_image_urls,
                                                      optimize=optimize_images)
@@ -201,6 +220,49 @@ class ContentPreparer:
                 except OSError:
                     pass
 
+    async def _run_video_direct(self, vl_config: dict, source_url: str) -> tuple[str | None, str | None]:
+        """视频直传理解：下载视频 → DashScope SDK 视频理解 → 描述文本。
+
+        返回 (desc, video_path)：desc=None = 直传失败（调用方降级截帧）；
+        video_path=None = 下载失败（纯文本生成）。SDK 上传+处理可能数十秒，
+        包 90s 超时防 prepare 卡死（评审反馈）。
+        """
+        import asyncio
+        loop = asyncio.get_event_loop()
+        cookies = vl_config.get("cookies", "")
+        video_path = await loop.run_in_executor(
+            None, ContentPreparer._download_video, source_url, cookies)
+        if not video_path:
+            logger.warning("视频直传: 视频下载失败，回退纯文本生成")
+            return None, None
+
+        # 视频直传仅 dashscope 视频模型（其他 provider 前端已禁用，后端兜底降级截帧）
+        provider = self.llm_config.get("provider", "")
+        if provider != "dashscope":
+            logger.warning("视频直传: provider=%s 非 dashscope，降级截帧", provider)
+            return None, video_path
+        model = (self.llm_config.get("model") or {}).get(provider, "")
+        if not model:
+            logger.warning("视频直传: 无 dashscope 模型名，降级截帧")
+            return None, video_path
+        api_key = self.llm_config.get("api_key", "")
+
+        from app.services.video_understand import understand_video_direct
+        try:
+            desc = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, understand_video_direct, model, video_path,
+                    "", api_key, ""),
+                timeout=90,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("视频直传超时（>90s）→ 降级截帧")
+            return None, video_path
+        if not desc:
+            logger.warning("视频直传失败/超限 → 降级截帧")
+            return None, video_path
+        return desc, video_path
+
     @staticmethod
     def _run_vl_pipeline(vl_config: dict, source_url: str) -> tuple[list[str] | None, str | None]:
         """执行 VL 管线：下载视频 → 抽帧拼网格 → base64 编码。返回 (image_urls, video_path)"""
@@ -215,7 +277,12 @@ class ContentPreparer:
         if not video_path:
             logger.warning("VL: 视频下载失败，回退纯文本生成")
             return None, None
+        image_urls, _ = ContentPreparer._run_frames_from_path(vl_config, video_path)
+        return image_urls, video_path
 
+    @staticmethod
+    def _run_frames_from_path(vl_config: dict, video_path: str) -> tuple[list[str] | None, str | None]:
+        """对已下载视频执行截帧拼网格（直传降级复用，不重复下载）。返回 (image_urls, video_path)"""
         try:
             from app.utils.video_reader import VideoReader
             reader = VideoReader(

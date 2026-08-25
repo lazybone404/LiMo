@@ -340,9 +340,17 @@ _PROVIDER_IMAGE_RULES: dict[str, dict] = {
     "moonshot":   {"include": []},
 }
 
+# 视频直传能力 — 精确模型列表（评审必改：不能用 "qwen-vl" 前缀匹配——
+# 会误标 qwen-vl-ocr-latest，它是 OCR 引擎不是视频模型）。dashscope 视频
+# 模型见方案校准表；预设声明优先，此处兜底自动标注。
+_PROVIDER_VIDEO_RULES: dict[str, list[str]] = {
+    "dashscope": ["qwen3.8-max", "qwen3.7-plus", "qwen3-vl-flash",
+                  "qwen-vl-max", "qwen3.5-omni-plus"],
+}
+
 
 def _detect_capabilities(provider_id: str, model_name: str) -> list[str]:
-    """根据厂商约定检测模型能力标签（多模态/纯文本）
+    """根据厂商约定检测模型能力标签（多模态/纯文本/视频直传）
 
     已知厂商按规则表自动检测；自定义/未知 provider 默认只标 text，
     用户可在 Settings 页面手动切换「多模态」标记。
@@ -360,6 +368,10 @@ def _detect_capabilities(provider_id: str, model_name: str) -> list[str]:
         elif any(p in name for p in include):
             if not exclude or not any(e in name for e in exclude):
                 caps.append("image")
+    # 视频直传能力：精确模型名匹配（不使用前缀——避免误标 qwen-vl-ocr-latest 等）
+    video_list = _PROVIDER_VIDEO_RULES.get(prov)
+    if video_list and model_name in video_list:
+        caps.append("video")
     # 其他 provider 不猜测 — 用户自行标记
 
     return caps

@@ -105,6 +105,7 @@ class Generator:
         image_optimize: bool = False,
         ocr_enabled: bool = False,
         ocr_model_id: int | None = None,
+        video_direct: bool = False,
         cancel_event: asyncio.Event | None = None,
     ) -> MarkdownView:
         """生成单个产物（notes 或 polished）。"""
@@ -122,6 +123,7 @@ class Generator:
         clean_text, image_urls, video_path = await self._prep.prepare(
             processed_text, vl_config, keep_refs,
             send_to_llm=send_to_llm, optimize_images=image_optimize,
+            video_direct=video_direct,
         )
 
         prompt = self._prompts.build(
@@ -169,6 +171,7 @@ class Generator:
         image_optimize: bool = False,
         ocr_enabled: bool = False,
         ocr_model_id: int | None = None,
+        video_direct: bool = False,
         cancel_event: asyncio.Event | None = None,
     ) -> tuple[MarkdownView, MarkdownView]:
         """并行生成双产物（polished + notes）。Excel 生成 report + summary。"""
@@ -186,6 +189,7 @@ class Generator:
         clean_text, image_urls, video_path = await self._prep.prepare(
             processed_text, vl_config, keep_refs,
             send_to_llm=send_to_llm, optimize_images=image_optimize,
+            video_direct=video_direct,
         )
 
         prompt_a, prompt_b = self._prompts.build_both(

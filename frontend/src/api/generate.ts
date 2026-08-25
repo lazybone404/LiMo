@@ -20,6 +20,7 @@ export interface BaseGenOptions {
 /** source_type=video 专属 */
 export interface VideoGenOptions extends BaseGenOptions {
   video_understanding?: boolean
+  video_direct?: boolean  // 视频直传模型处理（DashScope SDK，服务端抽帧）
   video_interval?: number
   grid_cols?: number
   grid_rows?: number
@@ -115,6 +116,7 @@ export function streamGenerate(
   if (refIds?.length) params.set('reference_ids', refIds.join(','))
   // 使用 !== undefined 而非 truthiness，确保 false / 0 也能正确传输
   if (opts.video_understanding !== undefined) params.set('video_understanding', String(opts.video_understanding))
+  if (opts.video_direct !== undefined) params.set('video_direct', String(opts.video_direct))
   if (opts.video_interval !== undefined) params.set('video_interval', String(opts.video_interval))
   if (opts.grid_cols !== undefined) params.set('grid_cols', String(opts.grid_cols))
   if (opts.grid_rows !== undefined) params.set('grid_rows', String(opts.grid_rows))

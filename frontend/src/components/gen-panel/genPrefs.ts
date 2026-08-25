@@ -9,6 +9,7 @@ export interface GenPrefs {
   ocrEnabled: boolean; ocrModelId: number | null
   selectedModelId: number | null
   videoUnderstanding: boolean; videoInterval: number
+  videoDirect: boolean  // 视频直传模型处理（DashScope SDK，服务端抽帧；默认关 + 记忆）
   gridCols: number; gridRows: number
   dedupeEnabled: boolean; unitWidth: number; unitHeight: number
   saveQuality: number; frameQualityFilter: boolean
@@ -26,6 +27,7 @@ const DEFAULTS: GenPrefs = {
   ocrEnabled: false, ocrModelId: null,
   selectedModelId: null,
   videoUnderstanding: false, videoInterval: 6,
+  videoDirect: false,
   gridCols: 2, gridRows: 2,
   dedupeEnabled: true, unitWidth: 960, unitHeight: 540,
   saveQuality: 90, frameQualityFilter: true,

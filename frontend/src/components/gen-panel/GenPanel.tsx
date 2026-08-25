@@ -65,6 +65,7 @@ export function GenPanel() {
   const [ocrModelId, setOcrModelId] = useState<number | null>(saved.ocrModelId ?? null)
   const [selectedModelId, setSelectedModelId] = useState<number | null>(saved.selectedModelId)
   const [videoUnderstanding, setVideoUnderstanding] = useState(saved.videoUnderstanding)
+  const [videoDirect, setVideoDirect] = useState(saved.videoDirect)
   const [videoInterval, setVideoInterval] = useState(saved.videoInterval)
   const [gridCols, setGridCols] = useState(saved.gridCols)
   const [gridRows, setGridRows] = useState(saved.gridRows)
@@ -214,14 +215,14 @@ export function GenPanel() {
     saveGenPrefs({ style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot, formatChart,
       formatFormulas, formatReferences, formatImages,
       imageAnalyze, imageOptimize,
-      selectedModelId, videoUnderstanding, videoInterval, gridCols, gridRows,
+      selectedModelId, videoUnderstanding, videoDirect, videoInterval, gridCols, gridRows,
       dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter,
       imageMode, userNotes, notesExpanded, streamDisplay })
   }, [style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot, formatChart,
       formatFormulas, formatReferences, formatImages, imageAnalyze, imageOptimize,
       ocrEnabled, ocrModelId,
       selectedModelId,
-      videoUnderstanding, videoInterval, gridCols, gridRows, streamDisplay,
+      videoUnderstanding, videoDirect, videoInterval, gridCols, gridRows, streamDisplay,
       dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter, userNotes, imageMode, notesExpanded])
 
   const [enabledModels, setEnabledModels] = useState<EnabledModel[]>([])
@@ -247,6 +248,10 @@ export function GenPanel() {
   const hasImageModel = selectedModelId
     ? (enabledModels.find(m => m.id === selectedModelId)?.capabilities?.includes('image') ?? false)
     : enabledModels.some(m => m.capabilities?.includes('image'))
+  // 视频直传：选中模型 capabilities 含 video（未选中模型时看任一启用模型，对齐 hasImageModel）
+  const hasVideoModel = selectedModelId
+    ? (enabledModels.find(m => m.id === selectedModelId)?.capabilities?.includes('video') ?? false)
+    : enabledModels.some(m => m.capabilities?.includes('video'))
 
   // ── 导入进度辅助 ──
   const updateImportProgress = (ev: { phase?: string; status?: string; percent?: number; message?: string }) => {
@@ -591,6 +596,7 @@ export function GenPanel() {
       reference_ids: refFile ? [refFile.id] : undefined,
       continue_from: continueFrom || undefined,
       video_understanding: isVideo ? videoUnderstanding : undefined,
+      video_direct: isVideo && videoUnderstanding ? (videoDirect || undefined) : undefined,
       video_interval: isVideo ? videoInterval : undefined,
       grid_cols: isVideo ? gridCols : undefined,
       grid_rows: isVideo ? gridRows : undefined,
@@ -893,9 +899,11 @@ export function GenPanel() {
                   ocrEnabled={ocrEnabled} setOcrEnabled={setOcrEnabled}
                   ocrModelId={ocrModelId} setOcrModelId={setOcrModelId}
                   hasImageModel={hasImageModel}
+                  hasVideoModel={hasVideoModel}
                   style={style} setStyle={setStyle} styleKeys={styleKeysWithNone}
                   selectedCore={selectedCore} setSelectedCore={setSelectedCore}
                   videoUnderstanding={videoUnderstanding} setVideoUnderstanding={setVideoUnderstanding}
+                  videoDirect={videoDirect} setVideoDirect={setVideoDirect}
                   videoInterval={videoInterval} setVideoInterval={setVideoInterval}
                   gridCols={gridCols} setGridCols={setGridCols}
                   gridRows={gridRows} setGridRows={setGridRows}

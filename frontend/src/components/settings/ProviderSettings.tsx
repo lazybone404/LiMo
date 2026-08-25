@@ -383,6 +383,11 @@ export function ProviderSettings() {
                   title={isImage ? '点击移除多模态标记' : '点击标记为多模态模型'}>
                   {isImage ? '多模态' : '文本'}
                 </button>
+                {/* 视频直传能力标记（capabilities 含 video，方案 §5.2：自动显示，无需配置） */}
+                {m.capabilities?.includes('video') && (
+                  <span className="px-1 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent"
+                    title="支持视频直传（视频文件直接传给模型，服务端抽帧）">视频</span>
+                )}
                 <button onClick={() => handleDeleteLlmModel(m.id)} className="hover:text-error"><X size={11} /></button>
               </span>
               )

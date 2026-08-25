@@ -35,6 +35,7 @@ interface Props {
   ocrEnabled: boolean; setOcrEnabled: (v: boolean) => void
   ocrModelId: number | null; setOcrModelId: (v: number | null) => void
   hasImageModel: boolean  // 当前模型是否支持多模态
+  hasVideoModel: boolean  // 当前模型是否支持视频直传（capabilities 含 video）
   // 风格
   style: string; setStyle: (v: string) => void
   styleKeys: string[]
@@ -42,6 +43,7 @@ interface Props {
   selectedCore: string[]; setSelectedCore: (v: string[]) => void
   // VL 参数
   videoUnderstanding: boolean; setVideoUnderstanding: (v: boolean) => void
+  videoDirect: boolean; setVideoDirect: (v: boolean) => void
   videoInterval: number; setVideoInterval: (v: number) => void
   gridCols: number; setGridCols: (v: number) => void
   gridRows: number; setGridRows: (v: number) => void
@@ -287,8 +289,20 @@ export function GenerateOptions(props: Props) {
           <Camera size={13} className="text-muted" />
           <span className={`text-[13px] ${!p.hasImageModel ? 'text-disabled' : ''}`}>启用</span>
         </label>
+        {/* 视频直传模型处理：选中模型支持 video 时才可选（方案 §5.1） */}
+        <label className={`flex items-center gap-2 mb-2 ${p.hasVideoModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+          title={!p.hasVideoModel ? '当前模型不支持视频直传' : '视频直接传给模型（服务端抽帧），无需本地截帧'}>
+          <input type="checkbox" checked={p.videoDirect} onChange={e => p.setVideoDirect(e.target.checked)}
+            disabled={!p.hasVideoModel || !p.videoUnderstanding} className="w-4 h-4 accent-accent disabled:opacity-30" />
+          <Upload size={13} className="text-muted" />
+          <span className={`text-[13px] ${!p.hasVideoModel || !p.videoUnderstanding ? 'text-disabled' : ''}`}>视频直传模型处理</span>
+          <span className="text-[10px] text-disabled">（服务端抽帧，无需本地截帧）</span>
+        </label>
+        {p.videoUnderstanding && p.hasVideoModel && !p.videoDirect && (
+          <p className="text-[11px] text-disabled -mt-1 mb-2">直传开启时无需本地截帧，下方截图参数将置灰</p>
+        )}
         {p.videoUnderstanding && (
-          <div className="space-y-2 pl-6 border-l-2 border-accent/20">
+          <div className={`space-y-2 pl-6 border-l-2 border-accent/20 ${p.videoDirect ? 'opacity-40 pointer-events-none' : ''}`} aria-disabled={p.videoDirect}>
             <div>
               <label className="text-[11px] text-muted block mb-0.5">截图间隔（秒）</label>
               <input type="number" value={p.videoInterval} onChange={e => p.setVideoInterval(Math.max(1, Math.min(30, +e.target.value)))}
