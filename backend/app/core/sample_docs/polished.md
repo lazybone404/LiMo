@@ -39,7 +39,7 @@
 | **python-docx** | MIT | Word | 文字 + 表格 + 图片 |
 | **python-pptx** | MIT | PPT | 文字 + 图片 + 备注 |
 | **openpyxl** | MIT | Excel | 表格数据提取 |
-| **ebooklib** | MIT | EPUB | 章节 + 图片 + 元数据 |
+| **epub-container** | 自研 | EPUB | 章节 + 图片 + 元数据（纯标准库） |
 
 > AGPL 协议引擎（如 PyMuPDF4LLM）以**插件**形式提供：从 GitHub 仓库安装后，在独立进程的虚拟环境中运行，与主程序隔离。
 

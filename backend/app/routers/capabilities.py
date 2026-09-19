@@ -202,7 +202,7 @@ async def capabilities(config=Depends(get_config)):
         "word": ["python-docx", "markitdown"],
         "ppt": ["python-pptx", "markitdown"],
         "excel": ["openpyxl", "markitdown"],
-        "epub": ["ebooklib", "markitdown"],
+        "epub": ["epub-container", "markitdown"],
     }
     # 扩展名 → 子类型（与 _ext_to_sub_scenario 对齐）
     _SUB_EXT = {"pdf": [".pdf"], "word": [".doc", ".docx"], "ppt": [".ppt", ".pptx"],

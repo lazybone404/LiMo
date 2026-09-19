@@ -125,7 +125,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
              {"model_name": "python-docx", "category": "doc", "desc": "Word .docx 文字+表格+图片"},
              {"model_name": "python-pptx", "category": "doc", "desc": "PPT .pptx 文字+图片+备注"},
              {"model_name": "openpyxl", "category": "doc", "desc": "Excel .xlsx 表格数据提取"},
-             {"model_name": "ebooklib", "category": "doc", "desc": "EPUB 电子书 · 章节+图片+元数据"},
+             {"model_name": "epub-container", "category": "doc", "desc": "EPUB 电子书 · 章节+图片+元数据（自研）"},
          ]},
     ],
     # 已启用的引擎模型（id → provider_id + model_name + category）

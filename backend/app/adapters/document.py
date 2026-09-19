@@ -114,7 +114,7 @@ class DocumentAdapter(PipelineAdapter):
             elif ext in (".xlsx", ".xls"):
                 eng_name = "openpyxl"
             elif ext == ".epub":
-                eng_name = "ebooklib"
+                eng_name = "epub-container"
             else:
                 eng_name = "pypdfium2"
             engine = EngineRegistry.get("doc", eng_name)

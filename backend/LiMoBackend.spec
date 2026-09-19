@@ -7,6 +7,10 @@ datas = [
     ('app/agent/prompts', 'app/agent/prompts'),  # 分层 system prompt
     # 示例文档内容（笔记 + 整理版原文），seed_sample_doc 启动时读取
     ('app/core/sample_docs', 'app/core/sample_docs'),
+    # 许可证全文（GPL/Apache/MIT + 说明），随包附带满足再分发义务
+    # ⚠️ PyInstaller 6.x 的 datas 相对路径按 spec 所在目录（backend/）解析，
+    #    故 licenses 在项目根需用 ../licenses 回退（其余三项恰好在 backend/ 下）
+    ('../licenses', 'licenses'),
 ]
 # tiktoken_ext / dateparser_data — namespace package，collect_all 不会自动收集
 # PyInstaller 对 namespace package 的处理不可靠，显式添加每个文件
@@ -52,13 +56,14 @@ hiddenimports = [
     # 引擎模块（init_engines() 函数内动态导入，PyInstaller 无法静态追踪）
     'app.engines.doc_types', 'app.engines.doc_markitdown',
     'app.engines.doc_docx', 'app.engines.doc_pptx', 'app.engines.doc_excel',
+    'app.engines.epub', 'app.engines.epub_container',  # EPUB 自研解析器（2026-08-26）
 ]
 
 # 引擎相关
 hiddenimports += [
     'numpy',
     'docx', 'pptx', 'openpyxl', 'xlrd',
-    'markitdown', 'ebooklib',
+    'markitdown',
     # faster_whisper/ctranslate2/av/tokenizers 已移除（faster-whisper 不再内置）
     'trafilatura',
     'dashscope', 'dashscope.audio.asr',
@@ -67,7 +72,7 @@ hiddenimports += [
     'lxml', 'courlan', 'htmldate', 'justext', 'tld',
     'babel', 'dateparser', 'regex', 'tzlocal',
     'soupsieve', 'bs4',
-    'magika', 'markdownify', 'html2text',
+    'magika', 'markdownify',
     'cffi', 'cryptography',
     'rich', 'pygments',
 ]

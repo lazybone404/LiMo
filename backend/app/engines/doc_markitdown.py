@@ -1,7 +1,7 @@
 """
 MarkItDown 引擎 — 微软开源，DOCX/PPTX/XLSX/EPUB 转 Markdown
 全自动处理文字+表格+嵌入图片，输出带内嵌图片的 Markdown。
-PDF 用 docling/pypdfium2，EPUB 章节提取用 ebooklib（EpubEngine）。
+PDF 用 docling/pypdfium2，EPUB 章节提取用 epub-container（自研 EpubEngine）。
 """
 
 import base64
@@ -19,7 +19,7 @@ class MarkItDownEngine(Engine):
     """MarkItDown（微软开源）— DOCX / PPTX / XLSX / EPUB 转 Markdown
 
     全自动处理文字+表格+嵌入图片，输出带内嵌图片的 Markdown。
-    PDF 用 pymupdf4llm，EPUB 章节提取用 ebooklib（EpubEngine）。
+    PDF 用 pymupdf4llm，EPUB 章节提取用 epub-container（自研 EpubEngine）。
     """
 
     capabilities = ["text", "table", "image", "office"]

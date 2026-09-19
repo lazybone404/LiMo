@@ -138,14 +138,61 @@ def _migrate_remove_docling(config: dict) -> bool:
     return changed
 
 
+def _migrate_remove_ebooklib(config: dict) -> bool:
+    """启动迁移：清理 ebooklib 引擎残留（2026-08-26 起自研 epub-container 替代，AGPL 移除）。
+
+    旧 config.yaml 可能残留：
+    - engine_providers 的 builtin_models 中 model_name=="ebooklib"
+    - engine_models 中 model_name=="ebooklib" 的条目
+    - engine_bindings 指向 ebooklib 的条目（字符串 "ebooklib" 或旧 MD5 id）→ 置 None
+      让 init_engines 回退默认 epub-container
+
+    返回是否有变更（供调用方计入 save_config 判定，确保迁移落盘）。
+    """
+    import hashlib
+    changed = False
+
+    # 1. builtin_models 移除 ebooklib
+    for prov in config.get("engine_providers", []):
+        bms = prov.get("builtin_models", [])
+        before = len(bms)
+        bms = [bm for bm in bms if bm.get("model_name") != "ebooklib"]
+        if len(bms) != before:
+            prov["builtin_models"] = bms
+            changed = True
+            logger.info("迁移: 从 %s 移除 %d 个 ebooklib builtin_model", prov.get("id"), before - len(bms))
+
+    # 2. engine_models 移除 ebooklib
+    models = config.get("engine_models", [])
+    before = len(models)
+    models = [m for m in models if m.get("model_name") != "ebooklib"]
+    if len(models) != before:
+        config["engine_models"] = models
+        changed = True
+        logger.info("迁移: 移除 %d 个 ebooklib engine_model 条目", before - len(models))
+
+    # 3. 绑定中指向 ebooklib 的条目 → 置 None（让 init_engines 回退默认 epub-container）
+    old_id = int(hashlib.md5(b"engine:doc-local:ebooklib").hexdigest()[:8], 16)
+    bindings = config.get("engine_bindings", {})
+    for key in list(bindings.keys()):
+        val = bindings[key]
+        if val == "ebooklib" or val == old_id:
+            bindings[key] = None
+            changed = True
+            logger.info("迁移: 清除 %s 的 ebooklib 绑定（回退默认 epub-container）", key)
+
+    return changed
+
+
 def init_engines(config: dict | None = None):
     """注册所有引擎"""
     config = config or {}
 
-    # 启动迁移：清理旧版 faster-whisper / tesseract / docling 残留（变更计入末尾 save_config 判定）
+    # 启动迁移：清理旧版 faster-whisper / tesseract / docling / ebooklib 残留（变更计入末尾 save_config 判定）
     migrated_changed = _migrate_remove_faster_whisper(config)
     migrated_changed = _migrate_remove_tesseract(config) or migrated_changed
     migrated_changed = _migrate_remove_docling(config) or migrated_changed
+    migrated_changed = _migrate_remove_ebooklib(config) or migrated_changed
 
     # 千问 DashScope ASR（云端，中文最佳）
     # Key 来源：cloud.dashscope → engine_providers[dashscope].api_key → cloud.alibaba
@@ -286,18 +333,18 @@ def init_engines(config: dict | None = None):
     xlsx = ExcelEngine()
     xlsx.name = "openpyxl"
     EngineRegistry.register("doc", "openpyxl", xlsx)
-    # EPUB
+    # EPUB（自研解析器，纯标准库，替代 ebooklib AGPL-3.0）
     try:
         from .epub import EpubEngine
         epub_engine = EpubEngine()
-        epub_engine.name = "ebooklib"
-        EngineRegistry.register("doc", "ebooklib", epub_engine)
-        logger.info("Doc engines: + ebooklib (EPUB)")
+        epub_engine.name = "epub-container"
+        EngineRegistry.register("doc", "epub-container", epub_engine)
+        logger.info("Doc engines: + epub-container (EPUB, 自研)")
     except ImportError as e:
-        logger.warning(f"EPUB engine (ebooklib) unavailable: {e}")
+        logger.warning(f"EPUB engine (epub-container) unavailable: {e}")
     except Exception as e:
         logger.warning(f"EPUB engine init failed: {e}")
-    logger.info("Doc engines: pypdfium2 + markitdown + python-docx + python-pptx + openpyxl + ebooklib")
+    logger.info("Doc engines: pypdfium2 + markitdown + python-docx + python-pptx + openpyxl + epub-container")
 
     # Doc 引擎自动注册到 engine_models + engine_bindings，用户开箱即用
     # 对标 ASR 和 OCR 的自动注册逻辑
@@ -308,11 +355,11 @@ def init_engines(config: dict | None = None):
     # 子场景 → 默认引擎的确定性 MD5 id
     # provider_id 必须和 build_engine_models() 的哈希键一致（engine:{provider}:{model}）
     _DOC_DEFAULTS: list[tuple[str, str, str]] = [
-        ("doc:pdf", "doc-local", "pypdfium2"),    # PDF 快速转录（文字+嵌入原图）
-        ("doc:word", "doc-local", "python-docx"),  # Word
-        ("doc:ppt", "doc-local", "python-pptx"),   # PPT
-        ("doc:excel", "doc-local", "openpyxl"),    # Excel
-        ("doc:epub", "doc-local", "ebooklib"),     # EPUB
+        ("doc:pdf", "doc-local", "pypdfium2"),      # PDF 快速转录（文字+嵌入原图）
+        ("doc:word", "doc-local", "python-docx"),   # Word
+        ("doc:ppt", "doc-local", "python-pptx"),    # PPT
+        ("doc:excel", "doc-local", "openpyxl"),     # Excel
+        ("doc:epub", "doc-local", "epub-container"),  # EPUB（自研，替代 ebooklib AGPL）
     ]
     for sub_scene, prov_id, model_name in _DOC_DEFAULTS:
         mid = int(_hl.md5(f"engine:{prov_id}:{model_name}".encode()).hexdigest()[:8], 16)

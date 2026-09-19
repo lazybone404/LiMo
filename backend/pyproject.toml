@@ -20,11 +20,11 @@ dependencies = [
     "openai>=2.44",
     "tiktoken>=0.10",
     # 文档引擎（7 种格式）
+    # ebooklib 已移除（2026-08-26，AGPL-3.0 → 自研 epub-container 纯标准库替代）
     "markitdown>=0.0.1",
     "python-docx>=1.1",
     "python-pptx>=1.0",
     "openpyxl>=3.1",
-    "ebooklib>=0.18",
     # 适配器
     "trafilatura>=2.1",
     "youtube-transcript-api>=0.6",
@@ -41,7 +41,6 @@ dependencies = [
     "markdown>=3.10.2",
     # 其他
     "gmssl>=3.2",
-    "html2text>=2025.4.15",
     "duckduckgo-search>=8.1.1",
     # docling 已移除（2026-08-03，依赖 torch ~2GB 无法打包），此处删依赖防 venv 残留拖入打包
     "pypdfium2>=5.12.1",

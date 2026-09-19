@@ -78,7 +78,7 @@ def _make_store(n_chapters=3, title="测试书", doc_id="tr_epubtest") -> Store:
     } for i in range(n_chapters)]
     raw = json.dumps({"chapters": chapters, "metadata": {}, "total_sections": n_chapters})
     tx = RawTranscript(id=doc_id, title=title, source_type=SourceType.EPUB,
-                       engine="ebooklib", raw_text=raw,
+                       engine="epub-container", raw_text=raw,
                        content_hash="h" + doc_id + str(int(time.time() * 1000)))
     assert store.save_transcript(tx)
     return store

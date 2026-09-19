@@ -1,5 +1,5 @@
 """
-网页适配器 — URL → 正文提取（trafilatura 主 + html2text 回退）
+网页适配器 — URL → 正文提取（trafilatura 主 + bs4 回退）
 """
 
 import asyncio
@@ -46,20 +46,20 @@ def _extract_with_trafilatura(html: str) -> str | None:
 
 
 def _extract_fallback(html: str) -> str:
-    """回退方案：html2text → 纯文本提取（兜底，宁可少不可乱）"""
-    try:
-        import html2text
-        h = html2text.HTML2Text()
-        h.ignore_links = True
-        h.ignore_images = True
-        h.ignore_emphasis = True
-        h.body_width = 0
-        text = h.handle(html)
-        text = _clean_extracted(text)
-        if text and len(text) >= 10:
-            return text
-    except ImportError:
-        pass
+    """回退方案：bs4 纯文本提取（兜底，宁可少不可乱）
+
+    原用 html2text（GPL-3.0），2026-08-26 改为 bs4（项目已有依赖），
+    消除主 exe 中的 GPL 依赖。
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, 'html.parser')
+    for tag in soup(['script', 'style']):
+        tag.decompose()
+    text = soup.get_text(separator='\n')
+    text = _clean_extracted(text)
+    if text and len(text) >= 10:
+        return text
 
     # 终极回退：正则去标签
     text = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
@@ -164,10 +164,10 @@ class WebpageAdapter(PipelineAdapter):
         if on_progress:
             on_progress(ProgressEvent(phase="extract", status="running", message="提取正文..."))
 
-        # 提取：trafilatura 主 → html2text 回退 → 正则去标签兜底
+        # 提取：trafilatura 主 → bs4 回退 → 正则去标签兜底
         extracted = _extract_with_trafilatura(downloaded)
         if not extracted:
-            logger.info("trafilatura 失败，尝试 html2text 回退")
+            logger.info("trafilatura 失败，尝试 bs4 回退")
             extracted = _extract_fallback(downloaded)
         if not extracted or len(extracted) < 10:
             raise TranscribeError.empty(detail=f"正文提取为空: {url}")

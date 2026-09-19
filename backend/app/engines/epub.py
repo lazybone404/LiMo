@@ -1,5 +1,7 @@
 """
-EPUB 电子书引擎 — ebooklib 提取章节+图片+元数据
+EPUB 电子书引擎 — 自研容器（epub_container，纯标准库）提取章节+图片+元数据
+
+2026-08-26 起：ebooklib（AGPL-3.0）已彻底移除，仅用自研解析器（失败显式报错）。
 
 转录层：将 EPUB 转为结构化 Markdown（章节层级 + 图片文件引用 + 机械骨架）
 对标 PyMuPDF/DocxEngine，遵循 Engine → DocResult 协议。
@@ -189,7 +191,7 @@ def _resolve_image(src: str, manifest_items: dict) -> dict | None:
 
 
 class EpubEngine(Engine):
-    """ebooklib — EPUB 电子书 → 结构化 Markdown
+    """epub-container（自研）— EPUB 电子书 → 结构化 Markdown
 
     提取章节层级（TOC/spine）、章节全文（text）、机械骨架（skeleton）。
     骨架 = 标题 + 首段 + 末段 + 加粗/斜体 + 列表/表格 + 图片引用。
@@ -199,13 +201,12 @@ class EpubEngine(Engine):
     capabilities = ["text", "image", "office"]
 
     def execute(self, file_path: str, **kwargs) -> EpubResult:
-        try:
-            from ebooklib import epub
-        except ImportError:
-            raise ImportError("ebooklib 未安装，请执行: pip install ebooklib")
-
         media_dir = kwargs.get("media_dir", "")
-        book = epub.read_epub(str(file_path))
+
+        # 自研 EPUB 容器解析层（纯标准库 zipfile+xml，替代 ebooklib AGPL-3.0）
+        # 失败显式化：解析失败直接报错，不做隐式降级（引擎绑定只取第一个）
+        from app.engines.epub_container import EpubContainer
+        book = EpubContainer(str(file_path))
 
         # 1. 元数据
         metadata = _extract_metadata(book)
@@ -216,7 +217,7 @@ class EpubEngine(Engine):
             # 记录所有图片项，供后续查找
             mt = item.get_type()
             if mt in (
-                # ebooklib 图片类型常量
+                # 图片类型常量（对齐自研容器 / ebooklib 历史）
                 5,  # ITEM_IMAGE
                 7,  # ITEM_RASTER (from EPUB3)
             ) or (isinstance(mt, int) and mt in (5, 7)):
@@ -234,8 +235,8 @@ class EpubEngine(Engine):
                 if isinstance(mt, int) and mt in (5, 7):
                     manifest_items[href] = item
 
-        # 3. 构建 TOC → 章节映射
-        toc_map = _build_toc_map(book)
+        # 3. 构建 TOC → 章节映射（自研容器直接提供）
+        toc_map = book.get_toc_map()
 
         # 4. 遍历 spine，提取每章
         chapters: list[dict] = []
@@ -268,8 +269,11 @@ class EpubEngine(Engine):
                     continue
 
             # 查找此 spine 对应的 TOC 标题
+            # TOC 项可能带 #fragment（同文件多锚点）——先精确匹配，miss 时按去锚匹配
             href = item.get_name()
-            toc_info = toc_map.get(href, {})
+            toc_info = toc_map.get(href) or next(
+                (v for k, v in toc_map.items() if k.split('#')[0] == href), {}
+            )
             chapter_title = toc_info.get('title', '')
             chapter_level = toc_info.get('level', 1)
 
@@ -343,10 +347,12 @@ class EpubEngine(Engine):
             metadata.get('title', 'Unknown'),
         )
 
+        book.close()  # 自研容器释放 zip 句柄（幂等，异常路径 __del__ 兜底）
+
         return EpubResult(
             text=result_json,
             pages=len(all_sections) or 1,
-            engine="ebooklib",
+            engine="epub-container",
             epub_metadata=metadata,
         )
 
@@ -370,39 +376,6 @@ def _extract_metadata(book) -> dict:
     return meta
 
 
-def _build_toc_map(book) -> dict[str, dict]:
-    """遍历 EPUB TOC，返回 {href: {title, level}} 映射"""
-    toc_map: dict[str, dict] = {}
-
-    def _walk_toc(items, level=1):
-        for item in items:
-            if isinstance(item, tuple):
-                title, href = item[0], item[1] if len(item) > 1 else ''
-                if href:
-                    toc_map[href] = {'title': str(title), 'level': level}
-            elif isinstance(item, list) and len(item) >= 2:
-                _walk_toc(item[1], level + 1)
-            elif hasattr(item, 'title') and hasattr(item, 'href'):
-                if item.href:
-                    toc_map[item.href] = {
-                        'title': str(item.title),
-                        'level': level,
-                    }
-            # epub.Link 对象
-            elif hasattr(item, 'href'):
-                # 可能是 Section/Link 类
-                pass
-
-    try:
-        toc = book.toc
-        if toc:
-            _walk_toc(toc)
-    except Exception:
-        logger.warning("Failed to build EPUB TOC map", exc_info=True)
-
-    return toc_map
-
-
 def _detect_sections(html_content: str) -> list[dict]:
     """从 HTML 中检测 h1-h4 标题，按标题切分为 section 列表"""
     try:
@@ -418,6 +391,9 @@ def _detect_sections(html_content: str) -> list[dict]:
 
     body = soup.find('body') or soup
     for child in body.children:
+        # 跳过纯空白文本节点（换行/缩进），否则产生空 section
+        if not str(child).strip():
+            continue
         if hasattr(child, 'name') and child.name in ('h1', 'h2', 'h3', 'h4'):
             # 保存上一个 section
             if current_parts:
