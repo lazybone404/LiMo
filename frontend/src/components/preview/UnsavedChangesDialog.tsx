@@ -10,7 +10,6 @@
  * 替代原先的 window.confirm 两态确认（确认=丢弃离开，无法"保存后离开"）。
  * 样式走主题变量（--tk-* → Tailwind token），零硬编码色值。
  */
-import React from 'react'
 import { AlertTriangle, Loader2, Save } from 'lucide-react'
 
 interface UnsavedChangesDialogProps {
@@ -56,17 +55,17 @@ export function UnsavedChangesDialog({
         </div>
         <div className="flex items-center justify-end gap-2 mt-5">
           <button
-            onClick={onCancel}
+            onClick={() => onCancel()}
             disabled={saving}
             className="px-3 py-1.5 text-[12px] text-dimmed hover:bg-surface-hover rounded-lg transition-colors disabled:opacity-40"
           >取消</button>
           <button
-            onClick={onDiscard}
+            onClick={() => onDiscard()}
             disabled={saving}
             className="px-3 py-1.5 text-[12px] text-warning hover:bg-warning/10 rounded-lg transition-colors disabled:opacity-40"
           >不保存</button>
           <button
-            onClick={onSave}
+            onClick={() => onSave()}
             disabled={saving}
             className="px-3 py-1.5 text-[12px] bg-accent text-white rounded-lg hover:bg-accent-hover disabled:opacity-40 transition-colors flex items-center gap-1"
           >

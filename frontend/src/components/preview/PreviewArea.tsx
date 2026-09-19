@@ -64,7 +64,7 @@ const WELCOME_POLISHED = `## LiMo 功能总览（开发者向）
 ### 转录与引擎
 - **ASR**：bcut（B站必剪免费云转写）+ DashScope Paraformer（云端）；本地 whisper 可经插件接入
 - **OCR**：DashScope 云端（图片转文字、扫描件提取）；Tesseract 本地 OCR 经插件模板扩展
-- **文档引擎**：pypdfium2（PDF 毫秒级）+ pdf-image（扫描件整页转图）+ MarkItDown / python-docx / python-pptx / openpyxl / ebooklib；AGPL 引擎（如 pymupdf4llm）以插件进程外接入
+- **文档引擎**：pypdfium2（PDF 毫秒级）+ pdf-image（扫描件整页转图）+ MarkItDown / python-docx / python-pptx / openpyxl / epub-container（自研 EPUB）；AGPL 引擎（如 pymupdf4llm）以插件进程外接入
 - **视频处理**：ffmpeg 抽帧 + 网格拼接 + 模糊帧过滤（Laplacian 方差 + 熵 + 边缘密度）
 
 ### LLM 生成
@@ -73,7 +73,7 @@ const WELCOME_POLISHED = `## LiMo 功能总览（开发者向）
 - **思考链**：deepseek-v4 reasoning_content 逐段展示「模型思考中」
 - **自动续写**：length 截断自动续写 3 轮，temperature 递减
 - **参考文件**：注入参考资料（如评论区观点）提升生成质量
-- **图表**：勾选后 AI 输出 SVG → 本地 resvg 渲染 PNG 嵌入笔记
+- **图表**：勾选后 AI 只输出语义 JSON（9 种结构：流程/层级/时间线/依赖/分类树/判定流/状态机/时序/四象限）→ 本地算坐标绘制 PNG 嵌入笔记
 
 ### 图片处理
 - 4 种模式：文字提取 / 表格识别 / 文档数字化 / 内容理解，LLM 优先 → 引擎回退
@@ -228,11 +228,13 @@ export function PreviewArea() {
    *   编辑态来源保证 Ctrl+S/保存按钮永远写回编辑内容的真正归属文档。
    */
   const handleSaveEdit = async (saveDocId?: string): Promise<boolean> => {
-    const docId = saveDocId || editing?.docId || currentDocId
+    // 防御：onClick 等 React 事件处理器可能把 MouseEvent 当首个参数传入（TS 无参函数
+    // 赋给 onClick 逆变兼容不报错）——saveDocId 必须为 string 才视为显式目标，否则回退编辑态归属文档。
+    const docId = typeof saveDocId === 'string' ? saveDocId : (editing?.docId || currentDocId)
     if (!editing || !docId || savingEdit) return false
     // 弹窗打开时拒绝无参保存：弹窗遮罩覆盖编辑器，Ctrl+S 属编辑器快捷键不应生效；
     // 「保存并离开」走 handleDialogSave 显式传 saveDocId，不受此拦截。
-    if (!saveDocId && unsavedDialog) return false
+    if (typeof saveDocId !== 'string' && unsavedDialog) return false
     setSavingEdit(true)
     try {
       const md = await saveMarkdownContent(docId, editing.mode, editValue)
@@ -452,7 +454,7 @@ export function PreviewArea() {
     // prevDocId 用编辑态来源（editing.docId）而非 prevId——弹窗打开期间若再经
     // AI 浮窗切文档，prevId 会变成中间文档，用 prevId 会把编辑内容错存/错回退。
     if (prevId && prevId !== currentDocId && editing && editDirty) {
-      setUnsavedDialog({ type: 'doc', target: currentDocId, prevDocId: editing.docId })
+      setUnsavedDialog({ type: 'doc', target: currentDocId ?? undefined, prevDocId: editing.docId })
       return
     }
     loadDocContent(currentDocId)
