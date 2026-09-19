@@ -426,31 +426,74 @@ def get_summary_format() -> str:
 
 
 def get_chart_format(source_type: str) -> str:
-    """图表格式指令：基础规范 + 来源差异段。仅 notes 注入（chart 不在 _POLISH_FORMAT_FNS）。
+    """图表格式指令：语义 JSON 规范 + 来源差异段。仅 notes 注入（chart 不在 _POLISH_FORMAT_FNS）。
 
-    协议定位（pi-docs/图表围栏内部协议设计说明.md）：内容适合图表化时 LLM 必须用
-    ```chart 专用围栏输出，由后端 post-process 渲染为 PNG 嵌入（chart_renderer.py）。
+    协议（2026-09-19 起）：LLM 只写「有哪些节点、怎么排」的语义 JSON，坐标/宽度/
+    连线/标签位置全部由后端 chart_layout 算出来 —— 几何错误从结构上不可能发生，
+    所以这里**不需要**任何坐标/样式/SVG 教学。这条减负方向正是 2026-08-16 的教训
+    要求的：往 prompt 堆 28 行质量硬规则后，fast 模型（deepseek-v4-flash）宁可跳过
+    不画，精简到 8 行才恢复产出率——**堆规则与出图率是直接 trade-off**。
+
+    围栏：```fig（语义 JSON，本函数引导）/ ```chart（手写 SVG，legacy 兜底保留）。
+
+    **九种全展开**（2026-09-19，用户明确接受 prompt 变长的代价）：9 种结构各给
+    一行「适用场景 + 可直接改的最小 JSON」。只列名字不够——flash 模型对没见过的
+    结构不会自己拼 schema，最后仍然全用示例里最眼熟的 hchain，「扩展类型」也就
+    没达成。示例一律取**最小可用**（tree 只到两层、state 只含一条回环），
+    够模型照改即可，不堆字段。
+
+    ⚠️ 2026-08-16 的教训是「堆规则 ↔ 出图率是 trade-off」，故本题唯一的取舍
+    是长度而非规则数：9 行示例是**引导**（告诉它有什么可画），不是**约束**
+    （要求它必须画成什么样）。约束仍只有 4 条。
     """
     base = (
-        "**图表**：有流程/层级/时间线等结构时，**必须**画 **1 张最有代表性**的图，用 ```chart 围栏包 <svg>（viewBox 与 width/height 一致 ≤640×640）。\n"
-        "- 样式：背景 `#f5f5f5`；文字/描边 `#2d3142`；连线 `#4f5d75`；强调 `#eb6c36`（≤2 节点）。节点=白底圆角矩形 `rx=\"6\"` + 深色描边，文字居中。\n"
-        "- **每个节点必须有文字**；元素不越界；无合适结构时输出 `> 图表说明：内容不适合图表化`。\n"
-        "- 示例（照改节点文字）：\n"
-        "```chart\n"
-        "<svg viewBox=\"0 0 320 160\" width=\"320\" height=\"160\"><rect width=\"100%\" height=\"100%\" fill=\"#f5f5f5\"/><rect x=\"20\" y=\"50\" width=\"120\" height=\"60\" rx=\"6\" fill=\"#ffffff\" stroke=\"#2d3142\"/><text x=\"80\" y=\"85\" font-size=\"12\" text-anchor=\"middle\" fill=\"#2d3142\">步骤 A</text><rect x=\"180\" y=\"50\" width=\"120\" height=\"60\" rx=\"6\" fill=\"#ffffff\" stroke=\"#2d3142\"/><text x=\"240\" y=\"85\" font-size=\"12\" text-anchor=\"middle\" fill=\"#2d3142\">步骤 B</text><line x1=\"140\" y1=\"80\" x2=\"180\" y2=\"80\" stroke=\"#4f5d75\"/></svg>\n"
+        "**图表**：有流程/层级/时间线/依赖关系时，用 ```fig 围栏输出语义 JSON"
+        "（后端自动算坐标画图，**你不需要写任何坐标、尺寸或 SVG**）。"
+        "每个围栏 = 1 张图，可按内容需要输出 1~N 张。\n"
+        "- 九种结构，选最贴合的一种：\n"
+        '  · 流程/步骤 → {"layout":"hchain","nodes":[{"label":"输入"},{"label":"清洗","focus":true}]}\n'
+        '  · 层级/包含 → {"layout":"layers","layers":[{"name":"前端","nodes":[{"label":"UI"}]}]}\n'
+        '  · 时间线/阶段 → {"layout":"timeline","nodes":[{"label":"开场","sub":"00:30"}]}\n'
+        '  · 依赖/调用 → {"layout":"grid","rows":[["前端"],["接口层"]],'
+        '"edges":[{"from":[0,0],"to":[1,0],"label":"调用"}]}\n'
+        '  · 分类/组织/目录 → {"layout":"tree","root":{"label":"产品",'
+        '"children":[{"label":"设计"},{"label":"研发"}]}}\n'
+        '  · 带判定的流程 → {"layout":"flowchart","nodes":['
+        '{"id":"a","label":"提交","type":"start"},{"id":"b","label":"通过?","type":"decision"}],'
+        '"edges":[{"from":"a","to":"b"}]}（type: start/process/decision/end）\n'
+        '  · 状态与回环 → {"layout":"state","states":['
+        '{"id":"a","label":"新建","type":"start"},{"id":"b","label":"完成","type":"end"}],'
+        '"transitions":[{"from":"a","to":"b"},{"from":"b","to":"a","label":"重来"}]}\n'
+        '  · 交互时序 → {"layout":"sequence","actors":['
+        '{"id":"u","label":"用户"},{"id":"s","label":"服务端"}],"messages":['
+        '{"from":"u","to":"s","text":"请求"},{"from":"s","to":"u","text":"响应","dashed":true}]}'
+        '（参与者 ≤5）\n'
+        '  · 二维评估/优先级 → {"layout":"quadrant","x":["低","高"],"y":["低","高"],'
+        '"quadrants":[{"name":"重要紧急","items":[{"label":"修故障"}]},{},{},{}]}'
+        '（4 个象限按左上/右上/左下/右下顺序）\n'
+        "- 约束：label ≤8 字；单个围栏的节点 ≤9 个，超过就拆成多个围栏；focus 最多 2 个；"
+        "grid 的 [行号,列号] 从 0 起且必须指向 rows 里真实存在的节点；"
+        "flowchart / state / sequence 一律用**字符串 id** 互相引用（不要用下标）。\n"
+        "- 示例（照改文字）：\n"
+        "```fig\n"
+        '{"layout":"hchain","nodes":[{"label":"输入"},{"label":"清洗","focus":true},{"label":"输出"}]}\n'
         "```\n"
-        "- 禁止 script/on* 事件/外部 URL。"
+        "```fig\n"
+        '{"layout":"tree","root":{"label":"产品","children":[{"label":"设计"},{"label":"研发"}]}}\n'
+        "```\n"
+        "- 无合适结构时输出 `> 图表说明：内容不适合图表化`。禁止输出坐标、像素或 SVG。"
     )
-    # 来源差异段：视频是时间序列（先做什么/发生了什么）；文档是空间结构（谁包含谁/谁连接谁）
+    # 来源差异段：视频是时间序列（先做什么/发生了什么）；文档是空间结构（谁包含谁/谁连接谁）。
+    # 9 种全展开后它从「决定展开哪几种」变成「在九种里优先推荐哪几种」。
     if source_type in DOC_SOURCE_TYPES:
-        diff = "文档来源：优先架构图/层级树（章节标题 → 组件与层级）"
+        diff = "tree（章节层级）· flowchart（处理流程）· layers · grid"
     elif source_type in ("webpage", "link"):
-        diff = "网页/文章：教程类优先流程步骤图；概念类优先结构树"
+        diff = "hchain（操作步骤）· flowchart · grid"
     elif source_type == "video":
-        diff = "视频：教程/课程优先流程步骤图；纪录片/电影优先时间线/剧情线"
+        diff = "timeline（时间点分阶段）· sequence（对话往来）· hchain"
     else:
-        diff = "文本/其他：按内容自行判断"
-    return f"{base}\n- 来源引导：{diff}"
+        diff = "hchain · tree · grid"
+    return f"{base}\n- 来源引导（优先这几类，其余按内容自选）：{diff}"
 
 
 # ── 风格指令 ──

@@ -1,24 +1,32 @@
 """
-图表渲染器 — 把 LLM 生成的 ```chart 围栏渲染为 PNG 嵌入笔记。
+图表渲染器 — 把 LLM 生成的图表围栏渲染为 PNG 嵌入笔记。
 
 协议定位（pi-docs/图表围栏内部协议设计说明.md）：
-- 图表只用 ```chart 专用围栏（不属于任何通用语言，用户内容出现概率≈0，零误伤）
-- 只处理 ```chart 围栏；用户自己的 svg/xml 代码块、裸内联 <svg> 一律不碰
+- 图表只用专用围栏（不属于任何通用语言，用户内容出现概率≈0，零误伤）
+- 只处理专用围栏；用户自己的 svg/xml 代码块、裸内联 <svg> 一律不碰
 - 围栏必然被替换：成功 → ![图表](assets/chart_N.png)；失败 → 「📊 图表生成失败」文本
 - 产物（存储/展示/导出）永不含围栏，内部协议不外泄
 
-处理链：```chart 围栏 → 提取 <svg> 根元素 → 安全过滤 → 校验链 → PIL 渲染 PNG(2x)
-→ 替换为图片引用（成功）或失败提示文本（失败）。
+两条围栏路径（2026-09-19 起并存）：
+- ```fig  — **语义 JSON**（推荐）：LLM 只答「有哪些节点、怎么排」，坐标由
+  chart_layout 算、chart_svg 出图。几何错误从结构上不可能发生，几何规则
+  也就不必进 prompt（绕开 2026-08-16「堆规则 → fast 模型宁可跳过不画」的教训）。
+- ```chart — **手写 SVG**（legacy 兜底）：原链路完全不变，模型习惯性输出
+  SVG 时仍能出图；回滚只需改 prompt 的 `get_chart_format` 一个函数。
+
+处理链：```fig/```chart 围栏 → （语义 JSON → 布局 → SVG）/（提取 <svg> 根元素）
+→ 安全过滤 → 校验链 → PIL 渲染 PNG(2x) → 替换为图片引用（成功）或失败提示文本（失败）。
 
 校验链（提取出的 SVG 按不可信内容处理）：
-- 检测：只认 ```chart 围栏，内容须含 <svg 根元素
+- 检测：只认专用围栏；chart 内容须含 <svg 根元素，fig 内容须是 JSON 对象
 - 安全过滤：<script> / on* 事件属性 / xlink:href·外部 URL 引用
 - 校验：XML 良构 → viewBox + width/height 双尺寸 ≤640×640 → 有实际内容 → 渲染（失败重试 1 次）
-- 多图编号：按出现顺序 chart_1 / chart_2 / …
+- 多图编号：按出现顺序 chart_1 / chart_2 / …（两条围栏共用计数器，失败不跳号）
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -27,10 +35,16 @@ import xml.etree.ElementTree as ET
 
 from PIL import Image, ImageDraw, ImageFont  # PIL 已随图片优化打包，是硬依赖
 
+from app.services import chart_layout, chart_svg  # 语义围栏链路（chart_layout 零依赖）
+
 logger = logging.getLogger(__name__)
 
-# 围栏：只认 chart 专用标记（协议空间与用户内容空间隔离；svg/xml 是通用语言，不碰）
-_FENCE_RE = re.compile(r"```chart\s*\n(.*?)\n```", re.DOTALL)
+# 围栏：只认 chart/fig 专用标记（协议空间与用户内容空间隔离；svg/xml 是通用语言，不碰）
+# ⚠️ 两个分组：group(1)=kind（chart|fig），group(2)=body。改动时所有 group 引用要同步。
+_FENCE_RE = re.compile(r"```(chart|fig)\s*\n(.*?)\n```", re.DOTALL)
+
+# 专用围栏标记（供路由层判定「选了图表但没出图」用）
+CHART_FENCE_MARKS = ("```chart", "```fig")
 
 # 画布上限（逻辑像素，方案 §2.4：≤640×640 上限，非固定值）
 MAX_CANVAS = 640.0
@@ -110,14 +124,14 @@ def _detect_chinese_font() -> str | None:
 
 
 def render_charts(markdown: str, doc_dir: str = "") -> str:
-    """提取生成内容中的 ```chart 围栏，渲染 PNG 嵌入笔记。
+    """提取生成内容中的 ```fig / ```chart 围栏，渲染 PNG 嵌入笔记。
 
-    - 无 chart 围栏或 doc_dir 为空时原样返回（不写临时目录导致引用失效）
+    - 无专用围栏或 doc_dir 为空时原样返回（不写临时目录导致引用失效）
     - 任一校验/渲染环节失败 → 替换为「📊 图表生成失败」提示文本（零残留，
       围栏/源码消失——内部协议不外泄）
-    - 只处理 ```chart 专用围栏；用户自己的 svg/xml 代码块、裸内联 <svg> 一律不碰
+    - 只处理专用围栏；用户自己的 svg/xml 代码块、裸内联 <svg> 一律不碰
     """
-    if "```chart" not in markdown:
+    if not any(mark in markdown for mark in CHART_FENCE_MARKS):
         return markdown
     if not doc_dir:
         return markdown
@@ -129,12 +143,18 @@ def render_charts(markdown: str, doc_dir: str = "") -> str:
 
     def _replace(match: re.Match) -> str:
         nonlocal counter
-        body = match.group(1)
-        svg = _extract_svg_root(body)
-        if not svg:
-            # 围栏语言是 chart 但内容不含 <svg 根元素 → 不是图表代码块，不处理
-            return match.group(0)
-        out, counter, reason = _process_svg(svg, assets_dir, counter)
+        kind, body = match.group(1), match.group(2)
+        # ```fig 围栏里写 <svg> 时按 chart 路径处理：模型改用 fig 后 legacy chart
+        # 兜底就自然失效了，JSON 一错就是白丢一张图。按**内容形态**（而非围栏名）
+        # 分流，兜底重新生效——成本一行判断。
+        if kind == "fig" and "<svg" not in body:
+            out, counter, reason = _process_fig(body, assets_dir, counter)
+        else:
+            svg = _extract_svg_root(body)
+            if not svg:
+                # chart 围栏但内容不含 <svg 根元素 → 不是图表代码块，不处理
+                return match.group(0)
+            out, counter, reason = _process_svg(svg, assets_dir, counter)
         if reason is not None:
             # 失败：替换为失败提示文本（围栏/源码消失，产物零残留）
             return _fail_note(reason)
@@ -147,7 +167,64 @@ def render_charts(markdown: str, doc_dir: str = "") -> str:
     return md
 
 
-def _process_svg(svg: str, assets_dir: str, counter: int) -> tuple[str, int, str | None]:
+def _font_measure(text: str, size: float) -> float:
+    """用**渲染同源**字体对象测宽，供布局器使用。
+
+    布局器的node_min_w 据此定节点宽度。不能硬编码「CJK 13px/字」——LiMo 的中文
+    字体是运行时探测的（msyh/simhei/Noto…），不同字体字宽可差 10–20%，
+    低估即「文字超框」，而本方案不新增几何 linter，没有兜底。
+    """
+    return _load_font(_detect_chinese_font(), int(size)).getlength(text)
+
+
+def _parse_json_object(body: str):
+    """从围栏内容里取第一个完整 JSON 对象。
+
+    容忍模型多包一层 ```json、加前后说明文字——逐个 ``{`` 尝试 ``raw_decode``，
+    比手写括号计数稳。取不到返回 None。
+    """
+    for i, ch in enumerate(body):
+        if ch != "{":
+            continue
+        try:
+            return json.JSONDecoder().raw_decode(body[i:])[0]
+        except ValueError:
+            continue
+    return None
+
+
+def _process_fig(body: str, assets_dir: str, counter: int) -> tuple[str, int, str | None]:
+    """语义 JSON → 布局 → SVG → 复用 _process_svg 的校验/渲染/落盘。
+
+    与 chart 分支有意不同的一点：chart 内非 SVG **原样保留**（可能是协议外内容），
+    而 fig 是毫无歧义的协议标记 → 任何失败都**必须零残留替换**。
+    """
+    obj = _parse_json_object(body)
+    if not isinstance(obj, dict):
+        logger.info("图表 fig 围栏 JSON 解析失败 → 替换为失败文本")
+        return None, counter, "图表数据格式错误"
+
+    try:
+        spec = chart_layout.expand(obj, width=int(MAX_CANVAS), height_cap=int(MAX_CANVAS),
+                                   measure=_font_measure)
+    except chart_layout.LayoutError as e:
+        logger.info("图表布局失败（%s）→ 替换为失败文本", e)
+        return None, counter, f"布局失败：{e}"
+
+    try:
+        svg = chart_svg.render_spec_svg(spec)
+    except chart_svg.RenderSpecError as e:
+        # 生成器自身的 bug（产出了 PIL 子集外的元素）——用户看不懂，只记日志
+        logger.warning("图表 SVG 生成器 bug：%s", e)
+        return None, counter, "图表绘制失败"
+
+    # source_json 落盘为 chart_N.json：只在走通 fig 分支时出现，
+    # 是「模型确实切到新协议」的确定性证据（只看 PNG 张数区分不了新旧路径）
+    return _process_svg(svg, assets_dir, counter, source_json=obj)
+
+
+def _process_svg(svg: str, assets_dir: str, counter: int,
+                 source_json: dict | None = None) -> tuple[str, int, str | None]:
     """校验 + 渲染单个 SVG。返回 (输出, 新计数器, 失败原因)。
 
     成功：counter +1 并写 chart_{counter}.png，返回图片引用、原因 None。
@@ -180,6 +257,14 @@ def _process_svg(svg: str, assets_dir: str, counter: int) -> tuple[str, int, str
         with open(os.path.join(assets_dir, fname.replace(".png", ".svg")),
                   "w", encoding="utf-8") as f:
             f.write(svg)
+        # 语义源同步保存（仅 fig 路径）：与 .svg 一样是纯落盘旁路文件——
+        # 不写进 markdown、不被服务、不进任何导出产物（导出只按 markdown 引用收集图片）。
+        # 用途：① 调试布局 ② 「这次走的是新 fig 路径还是被容错接住的旧 SVG 路径」的
+        # 确定性信号（两条路都出 PNG 且张数可能一样，只有 .json 能区分）
+        if source_json is not None:
+            with open(os.path.join(assets_dir, fname.replace(".png", ".json")),
+                      "w", encoding="utf-8") as f:
+                json.dump(source_json, f, ensure_ascii=False)
     except OSError as e:
         logger.warning("图表写入失败: %s", str(e)[:120])
         return None, counter, "写入失败"

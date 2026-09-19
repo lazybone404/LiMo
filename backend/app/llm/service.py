@@ -32,7 +32,12 @@ class LLMService:
             yield chunk
     """
 
-    def __init__(self, config: dict, model_id: int | None = None):
+    # 单次 LLM 请求的默认超时（秒）。调用方可按场景覆盖——例如勾选图表生成时
+    # 输出更多（多张语义 JSON），需要更长的窗口，见 routers/generate.py 的 _gen_timeout。
+    DEFAULT_REQUEST_TIMEOUT = 330.0
+
+    def __init__(self, config: dict, model_id: int | None = None,
+                 request_timeout: float = DEFAULT_REQUEST_TIMEOUT):
         # ── 模型解析（以前三个路由各自调 resolve_model）──
         llm_cfg = dict(config.get("llm", {}))
         if model_id:
@@ -58,6 +63,10 @@ class LLMService:
         # ── Key 格式检测：防止 DashScope Key 错配到 DeepSeek 等 ──
         self._warn_key_mismatch()
 
+        # ⚠️ 这个值真正生效的地方是下面的 client property —— AsyncOpenAI 是**惰性构造**的，
+        # 只改 __init__ 会「存了不用」（值进了实例属性但 property 里写死 330.0），
+        # 超时一点没变且单测照样 PASS，只有端到端才暴露。两处必须同步。
+        self._request_timeout = float(request_timeout)
         self._client: AsyncOpenAI | None = None
 
     def _warn_key_mismatch(self):
@@ -88,7 +97,8 @@ class LLMService:
                     f"缺少 API Key: provider={self.provider}",
                     provider=self.provider, model=self.model,
                 )
-            kwargs = {"api_key": self.api_key, "timeout": 330.0, "max_retries": 0}
+            kwargs = {"api_key": self.api_key, "timeout": self._request_timeout,
+                      "max_retries": 0}
             if self.base_url:
                 kwargs["base_url"] = self.base_url
             self._client = AsyncOpenAI(**kwargs)

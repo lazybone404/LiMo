@@ -167,7 +167,7 @@ export function GenerateOptions(props: Props) {
             <span className="text-[13px]">图表</span>
             {isPolishedOnly
               ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
-              : <span className="text-[10px] text-disabled">AI 生成 SVG → 本地渲染为 PNG 嵌入</span>}</label>
+              : <span className="text-[10px] text-disabled">AI 选结构（9 种）→ 本地绘制 PNG 嵌入</span>}</label>
         </div>
       </div>
     )}
@@ -198,7 +198,7 @@ export function GenerateOptions(props: Props) {
             <span className="text-[13px]">图表</span>
             {isPolishedOnly
               ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
-              : <span className="text-[10px] text-disabled">AI 生成 SVG → 本地渲染为 PNG 嵌入</span>}</label>
+              : <span className="text-[10px] text-disabled">AI 选结构（9 种）→ 本地绘制 PNG 嵌入</span>}</label>
           {(p.typeMeta.hasImages) && (
             <>
               {/* 三个正交维度，独立组合，互不依赖：

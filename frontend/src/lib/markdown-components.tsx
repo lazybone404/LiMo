@@ -42,9 +42,10 @@ function cleanHeading(children: any): { clean: React.ReactNode; text: string } {
  * chart 是图表内部协议标记（LLM 与后端的握手，pi-docs/图表围栏内部协议设计说明.md），
  * 最终会被后端 render_charts 替换为 PNG 图片；流式/预览期间展示数百行源码既卡顿
  * 又无阅读价值，默认只显示一行占位 + 可展开查看源码。
- * svg/xml 是用户内容空间，不走此组件（普通代码块展示）。
+ * 只用于图表内部协议围栏（```fig / ```chart）；svg/xml/json 是用户内容空间，
+ * 不走此组件（普通代码块展示）。
  */
-function SvgCodeBlock({ lang, codeContent }: { lang: string; codeContent: string }) {
+function ChartCodeBlock({ lang, codeContent }: { lang: string; codeContent: string }) {
   const [expanded, setExpanded] = useState(false)
   const [copied, setCopied] = useState(false)
   const lineCount = codeContent.split('\n').length
@@ -86,7 +87,7 @@ function SvgCodeBlock({ lang, codeContent }: { lang: string; codeContent: string
       ) : (
         <div className="flex items-center gap-2 bg-surface/50 px-4 py-2.5 text-[12px] text-dimmed select-none">
           <Code size={13} />
-          图表源码（{lineCount} 行，保存后渲染为图片）
+          图表数据（{lineCount} 行，保存后渲染为图片）
         </div>
       )}
     </div>
@@ -103,10 +104,12 @@ function CodeBlock({ inline, className, children, ...props }: any) {
 
   if (!inline && match) {
     const lang = match[1]
-    // chart 围栏（图表内部协议标记）默认折叠为占位条：最终会被后端渲染成图片，
-    // 流式期间展示数百行源码既卡顿又无阅读价值。svg/xml 是用户内容空间，不折叠。
-    if (lang === 'chart') {
-      return <SvgCodeBlock lang={lang} codeContent={codeContent} />
+    // 图表围栏（内部协议标记）默认折叠为占位条：最终会被后端渲染成图片，
+    // 流式期间展示源码既卡顿又无阅读价值。两种围栏都要折叠——
+    // fig（语义 JSON，现行协议）/ chart（手写 SVG，legacy 兜底）。
+    // svg/xml/json 是用户内容空间，不折叠。
+    if (lang === 'chart' || lang === 'fig') {
+      return <ChartCodeBlock lang={lang} codeContent={codeContent} />
     }
     return (
       <div className="group relative my-4 overflow-hidden rounded-lg border border-border-light">

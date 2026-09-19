@@ -242,4 +242,47 @@ assert 'AAA' in p and 'BBB' in p
 assert '---' in p, '多段参考文件应用分隔符'
 print('PASS: multi-reference separated')
 
+# ── 2026-09-19 图表协议切到 ```fig 语义 JSON，布局类型 4 → 9 全展开 ──
+# 坐标由后端 chart_layout 算，所以 prompt 里不该再有坐标/样式/SVG 教学；
+# 9 种全部展开是用户明确决策（接受 prompt 变长的代价）：只列名字不够——fast
+# 模型对没见过的结构不会自己拼 schema，最后仍然全用示例里最眼熟的 hchain，
+# 「扩展类型」就白做了。约束仍只有 4 条（是引导变长，不是规则变多）。
+# branch 已实现但仍不暴露，防止模型用上未文档化的算子。
+from app.generation.prompt import get_chart_format
+from app.generation.prompt import _ALL_FORMAT_FNS, _POLISH_FORMAT_FNS
+from app.services.chart_layout import _LAYOUTS
+
+cf = get_chart_format('video')
+assert '```fig' in cf, '图表指令应引导 fig 围栏'
+assert '```chart' not in cf, '不应再引导手写 SVG 的 chart 围栏'
+# 断言与 _LAYOUTS 同源：将来加算子若忘了改 prompt，这里立刻挂（不是等模型不用）
+_exposed = [lay for lay in _LAYOUTS if lay != 'branch']
+assert len(_exposed) == 9, f'暴露给模型的布局应为 9 种，实际 {_exposed}'
+assert '九种结构' in cf, 'prompt 的「九种结构」文案须与 _LAYOUTS 规模同步'
+for lay in _exposed:
+    assert f'"{lay}"' in cf, f'缺少 layout {lay} 的说明'
+assert '"branch"' not in cf, 'branch 已实现但不暴露给模型（防用上未文档化算子）'
+assert '1~N' in cf, '应说明可输出多张（1~N）'
+assert '禁止输出坐标' in cf, '应禁止模型自写坐标'
+assert '不需要写任何坐标' in cf, '应明确减负：不写坐标/尺寸/SVG'
+assert '不适合图表化' in cf, '逃生口必须保留（chart_missing 的 _judged_unsuitable 依赖它）'
+assert '#f5f5f5' not in cf and '#2d3142' not in cf, 'skin 由 chart_svg 固定，不该再教模型配色'
+assert '<svg' not in cf, 'prompt 里不该再出现 SVG 教学样板'
+assert '拆成多个围栏' in cf, '节点超限要引导拆图（多图触发条件）'
+assert '字符串 id' in cf, 'flowchart/state/sequence 用 id 引用是它们最易写错的点，必须点名'
+# 来源引导按 source_type 分流，且落到具体 layout 建议
+assert 'grid' in get_chart_format('pdf') or 'layers' in get_chart_format('pdf')
+assert 'hchain' in get_chart_format('webpage')
+assert 'timeline' in get_chart_format('video')
+print(f'PASS: get_chart_format — fig 协议 / {len(_exposed)} 种 layout 全展开 / 1~N / 禁坐标 / 无 branch')
+
+# 两条围栏路径都在 _ALL_FORMAT_FNS 里挂着（chart 是 format key，与围栏名同源）
+assert 'chart' in _ALL_FORMAT_FNS, 'chart 格式函数应已注册'
+assert 'chart' not in _POLISH_FORMAT_FNS, '图表只入 notes，polish 白名单必须无 chart'
+# 实际注入：勾选 chart 时 notes prompt 含指令，polish prompt 不含
+assert '```fig' in build_notes_prompt('测试', source_type='video', formats=['chart'])
+assert '```fig' not in build_notes_prompt('测试', source_type='video', formats=['toc'])
+assert '```fig' not in build_polish_prompt('测试', source_type='video', formats=['chart'])
+print('PASS: 图表指令按 formats 门控 — notes 注入 / 未勾选不注入 / polished 永不注入')
+
 print('\nAll prompt tests PASS')

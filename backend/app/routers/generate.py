@@ -27,7 +27,7 @@ from app.core import logging as log
 from app.core.model_resolver import resolve_llm_config
 from app.llm import LLMService, CancelledError
 from app.generation.generator import Generator, _post_process_content_markers, _post_process_screenshots
-from app.services.chart_renderer import render_charts
+from app.services.chart_renderer import render_charts, CHART_FENCE_MARKS
 from app.generation.content_preparer import ContentPreparer
 from app.generation.prompt_builder import PromptBuilder
 from app.generation.prompt import build_polish_prompt, build_notes_prompt
@@ -54,6 +54,42 @@ _TYPE_FIELDS: dict[str, set[str]] = {
 }
 
 # 不属于该类型的字段会被静默忽略（向后兼容）
+# ── 生成超时（按是否勾选图表分档）──
+# 图表任务的输出明显更长（1~N 张语义 JSON + 必要时拆图），需要更长的总超时窗口。
+# 渲染本身**不在**这个窗口内 —— asyncio.timeout 只包住流式循环，render_charts 在其
+# 退出之后经 asyncio.to_thread 执行。
+#
+# 定值依据（2026-09-19 实测，deepseek-v4-flash，约 900 字文档）：
+#   勾选图表 → 输出 6 张图（hchain×3 / grid×2 / layers×1）/ 2890 字符 / **9.8s**
+# 注意 **不要**按「P95 × 1.5」套用：该公式假设多图会显著拉长生成，而实测推翻了
+# 这个前提——新协议下模型只写语义 JSON（每张 130~240 字符），不再手写数百行 SVG，
+# 出图几乎不增加成本（按公式算得 15s，比基础档还短，显然无意义）。
+# 真正的耗时主导项是**正文字符数**（长文档的笔记本身），图表只在其上叠加约 18%
+# 的输出增量。故取基础档线性外推 + 安全余量：330 × 1.21 ≈ 400。
+# 放宽只影响最坏等待时长，不影响正常路径；单 chunk 静默期的 150s 上限
+# （下方 wait_for）独立生效，不随此值变化。
+_GEN_TIMEOUT_BASE = 330.0
+_GEN_TIMEOUT_CHART = 400.0
+
+
+def _gen_timeout(formats) -> float:
+    """按 formats 选总超时。format 可传 list 或逗号分隔字符串。"""
+    if isinstance(formats, str):
+        fmts = [f.strip() for f in formats.split(",") if f.strip()]
+    else:
+        fmts = list(formats or [])
+    return _GEN_TIMEOUT_CHART if "chart" in fmts else _GEN_TIMEOUT_BASE
+
+
+def _has_chart_fence(text: str) -> bool:
+    """产物里是否含图表围栏（```fig 语义 JSON 或 ```chart 手写 SVG）。
+
+    抽成函数是为了可测——此前是两处内联的 `"```chart" not in ...` 字符串判断，
+    新增 fig 协议后必须两处同步改，漏一处就变成「明明出了图却报未生成」。
+    """
+    return any(mark in (text or "") for mark in CHART_FENCE_MARKS)
+
+
 def _warn_mismatched_fields(source_type: str, values: dict):
     own_fields = _TYPE_FIELDS.get(source_type, set())
     for st, fields in _TYPE_FIELDS.items():
@@ -109,7 +145,10 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         config = request.app.state.config
         llm_config = resolve_llm_config(config, req.model_id)
         # ── LLMService ──
-        llm = LLMService(config, model_id=req.model_id)
+        # 非流式路径没有 asyncio.timeout 包壳，SDK 的 httpx 超时是唯一闸门，
+        # 所以多图场景必须在这里就放宽，否则照样撞 330。
+        llm = LLMService(config, model_id=req.model_id,
+                         request_timeout=_gen_timeout(req.formats))
 
         tx = store.get_transcript(transcript_id)
         if not tx:
@@ -366,7 +405,10 @@ async def generate_stream(transcript_id: str, request: Request,
                     break
 
     # ── LLMService ──
-    llm = LLMService(config, model_id=model_id)
+    # format_list 上移到构造之前：request_timeout 要按是否含 chart 分档。
+    format_list = [f.strip() for f in formats.split(",") if f.strip()]
+    llm = LLMService(config, model_id=model_id,
+                     request_timeout=_gen_timeout(format_list))
     if not llm.api_key:
         raise AppError("GEN_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
@@ -407,7 +449,6 @@ async def generate_stream(transcript_id: str, request: Request,
 
     epub_text = tx["rawText"]
 
-    format_list = [f.strip() for f in formats.split(",") if f.strip()]
     source_type = tx.get("sourceType", "text")
     log.info("生成开始", source_type=source_type, formats=",".join(format_list))
 
@@ -524,12 +565,14 @@ async def generate_stream(transcript_id: str, request: Request,
 
                     for attempt in range(2):
                         try:
-                            # 总超时 330s + chunk 间隔超时 150s：
+                            # 总超时按 formats 分档（_gen_timeout：勾选图表时放宽到
+                            # _GEN_TIMEOUT_CHART）+ chunk 间隔超时 150s：
                             # deepseek-v4 思考模式（文档：默认启用，effort=high）思考阶段
                             # 服务端静默不推流（实测首 chunk 后 90s 零数据）——45s 判定会
                             # 把正常长思考误判为挂起。150s 容忍长思考；推理链 chunk 到达
                             # 时 anext 正常返回（有 reasoning 也在推流），不触发超时。
-                            async with asyncio.timeout(330):
+                            # 两个超时互相独立：总超时管整体，150s 管单 chunk 静默期。
+                            async with asyncio.timeout(_gen_timeout(format_list)):
                                 _it = None
                                 try:
                                     _it = llm.stream(
@@ -635,9 +678,9 @@ async def generate_stream(transcript_id: str, request: Request,
                     )
                     store.save_markdown(mv)
                     _auto_title(store, transcript_id, mv.content)
-                    # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出 ```chart 围栏
+                    # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出图表围栏
                     # （旧习惯 svg 围栏 / 裸内联 / 没画）→ warning 提示重新生成
-                    if "chart" in format_list and "```chart" not in raw_notes:
+                    if "chart" in format_list and not _has_chart_fence(raw_notes):
                         _judged_unsuitable = "图表说明" in raw_notes or "不适合图表化" in raw_notes
                         _reason = "模型判断内容不适合图表化" if _judged_unsuitable else "LLM 未输出图表围栏"
                         log.warning("图表未生成", source_type=source_type, reason=_reason)
@@ -716,7 +759,8 @@ async def generate_stream(transcript_id: str, request: Request,
                 async def _reasoning_cb(text: str):
                     _pending_reasoning.append(text)
 
-                async with asyncio.timeout(330):
+                # 总超时按 formats 分档（同双产物分支：勾选图表时放宽）
+                async with asyncio.timeout(_gen_timeout(format_list)):
                     _it = None
                     try:
                         _it = llm.stream(
@@ -792,8 +836,8 @@ async def generate_stream(transcript_id: str, request: Request,
                 mv.content = partial_content.rstrip() + "\n\n" + content
             store.save_markdown(mv)
             _auto_title(store, transcript_id, mv.content)
-            # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出 ```chart 围栏 → warning
-            if "chart" in format_list and stream_mode != "polished" and "```chart" not in raw_content:
+            # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出图表围栏 → warning
+            if "chart" in format_list and stream_mode != "polished" and not _has_chart_fence(raw_content):
                 _judged_unsuitable = "图表说明" in raw_content or "不适合图表化" in raw_content
                 _reason = "模型判断内容不适合图表化" if _judged_unsuitable else "LLM 未输出图表围栏"
                 log.warning("图表未生成", source_type=source_type, reason=_reason)

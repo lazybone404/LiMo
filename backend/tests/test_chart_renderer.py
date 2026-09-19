@@ -304,4 +304,159 @@ assert abs(mid - 400) < 16, f'dominant-baseline 文字中线 {mid:.0f} 应贴近
 print(f'PASS: transform translate — 平移区 {tr_shift}px / 原位 {tr_origin}px')
 print(f'PASS: dominant-baseline middle — 文字中线 {mid:.0f}（节点中线 400）')
 
+# ── 2026-09-19 fig 语义围栏（LLM 只写语义 JSON，坐标由 chart_layout 算）──
+# 与 chart 分支的关键差异：fig 是毫无歧义的协议标记 → 任何失败都必须零残留替换
+# （chart 内非 SVG 是原样保留的，两者有意不同）。
+
+import json as _json
+
+FIG_HCHAIN = '{"layout":"hchain","title":"流程","nodes":[{"label":"输入"},{"label":"输出"}]}'
+FIG_GRID = ('{"layout":"grid","title":"依赖","rows":[["前端"],["接口层"]],'
+            '"edges":[{"from":[0,0],"to":[1,0],"label":"调用"}]}')
+
+
+def _fig(body):
+    return '```fig\n' + body + '\n```'
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+        out = render_charts(_fig(FIG_HCHAIN), tmp)
+    assert '![图表](assets/chart_1.png)' in out, out
+    assert '```fig' not in out, f'围栏应被替换消失（零残留）: {out}'
+    assert '{' not in out, f'语义 JSON 不应残留在产物里: {out}'
+    ads = os.path.join(tmp, 'assets')
+    assert os.path.exists(os.path.join(ads, 'chart_1.png'))
+    assert os.path.exists(os.path.join(ads, 'chart_1.svg')), 'fig 也应保存 SVG 片段'
+    # chart_N.json 只在走通 fig 分支时落盘 —— 是「模型确实切到新协议」的确定性证据
+    # （两条路径都出 PNG 且张数可能一样，只有 .json 能区分）
+    jp = os.path.join(ads, 'chart_1.json')
+    assert os.path.exists(jp), 'fig 路径应落 chart_N.json'
+    with open(jp, encoding='utf-8') as f:
+        assert _json.load(f)['layout'] == 'hchain', 'json 应为原始语义源'
+print('PASS: fig 语义围栏 → PNG + SVG + JSON 三落盘，围栏/JSON 零残留')
+
+
+# 带 edges 的 grid（v1 唯一任意拓扑连线能力）走通全链
+with tempfile.TemporaryDirectory() as tmp:
+    with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+        out = render_charts(_fig(FIG_GRID), tmp)
+    assert '![图表](assets/chart_1.png)' in out, out
+    assert '```fig' not in out, out
+print('PASS: fig grid（含 edges 拓扑连线）全链通过')
+
+# 容错：模型改用 fig 围栏却仍写 SVG → 按**内容形态**分流到 chart 路径
+# （围栏名与内容解耦，legacy 兜底重新生效；代价是这张图不落 .json）
+with tempfile.TemporaryDirectory() as tmp:
+    with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+        out = render_charts(_fig(good_svg), tmp)
+    ads = os.path.join(tmp, 'assets')
+    assert '![图表](assets/chart_1.png)' in out, f'fig 内嵌 SVG 应按 chart 路径出图: {out}'
+    assert os.path.exists(os.path.join(ads, 'chart_1.svg'))
+    assert not os.path.exists(os.path.join(ads, 'chart_1.json')), \
+        '走 chart 容错路径时不应落 .json（这正是区分两条路径的信号）'
+print('PASS: fig 围栏内嵌 <svg> → 按 chart 路径处理（容错兜底生效，不落 .json）')
+
+# JSON 损坏 / 未知 layout → 失败文本，零残留不写文件
+for label, body in (('JSON 语法错', '{这不是 JSON'), ('未知 layout', '{"layout":"tree","nodes":[{"label":"x"}]}'),
+                    ('空对象', '{}'), ('非对象', '[1,2,3]')):
+    with tempfile.TemporaryDirectory() as tmp:
+        with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+            out = render_charts(_fig(body), tmp)
+        assert '```fig' not in out, f'{label}: 围栏应零残留: {out}'
+        assert body[:6] not in out, f'{label}: 原始 JSON 不应残留: {out}'
+        assert '📊 图表生成失败' in out, f'{label}: 应替换为失败文本: {out}'
+        assert '![图表](assets/' not in out, f'{label}: 不应产生图片引用: {out}'
+        assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png')), \
+            f'{label}: 失败不应写任何文件'
+print('PASS: fig 的 JSON 损坏 / 未知 layout / 空对象 / 非对象 → 失败文本零残留')
+
+# 未选图表 / 不是专用围栏 → 仍不处理（协议隔离不因新增 fig 而放松）
+with tempfile.TemporaryDirectory() as tmp:
+    with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+        out = render_charts('```json\n' + FIG_HCHAIN + '\n```', tmp)
+    assert '```json' in out and 'layout' in out, f'通用 json 围栏不该被碰: {out}'
+    assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png'))
+print('PASS: 通用 ```json 围栏不被处理（协议隔离保持）')
+
+# 多图：fig / chart 交替 → 按文档顺序编号 1/2/3（两条路径共用计数器）
+multi = '\n\n'.join([_fig(FIG_HCHAIN), '```chart\n' + good_svg + '\n```', _fig(FIG_GRID)])
+with tempfile.TemporaryDirectory() as tmp:
+    with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+        out = render_charts(multi, tmp)
+    ads = os.path.join(tmp, 'assets')
+    for i in (1, 2, 3):
+        assert os.path.exists(os.path.join(ads, f'chart_{i}.png')), f'缺 chart_{i}.png'
+    assert not os.path.exists(os.path.join(ads, 'chart_4.png'))
+    assert out.count('![图表](assets/chart_') == 3, f'应产生 3 个图片引用: {out}'
+    assert os.path.exists(os.path.join(ads, 'chart_1.json'))     # fig
+    assert not os.path.exists(os.path.join(ads, 'chart_2.json'))  # chart
+    assert os.path.exists(os.path.join(ads, 'chart_3.json'))     # fig
+    assert '```fig' not in out and '```chart' not in out, '两种围栏都应零残留'
+print('PASS: fig/chart 交替多图 → chart_1/2/3 顺序编号，.json 精确标记各图来源路径')
+
+# 中间一张失败 → 编号不跳号（失败不占位）
+with tempfile.TemporaryDirectory() as tmp:
+    with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+        out = render_charts('\n\n'.join([_fig(FIG_HCHAIN), _fig('{坏 JSON'), _fig(FIG_GRID)]), tmp)
+    ads = os.path.join(tmp, 'assets')
+    assert os.path.exists(os.path.join(ads, 'chart_1.png'))
+    assert os.path.exists(os.path.join(ads, 'chart_2.png')), '失败不占号，第三张应为 chart_2'
+    assert not os.path.exists(os.path.join(ads, 'chart_3.png'))
+    assert out.count('图表生成失败') == 1
+print('PASS: fig 失败不跳号（1 成功 / 2 失败 / 3 成功 → chart_1 + chart_2）')
+
+# render_chart=False（polished 侧）对 fig 同样不渲染
+with tempfile.TemporaryDirectory() as tmp:
+    out = _post_process(_fig(FIG_HCHAIN), ['chart'], None, 'text', tmp, render_chart=False)
+    assert '```fig' in out, 'polished 侧应保留原围栏不动'
+    assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.json'))
+print('PASS: render_chart=False 对 fig 同样不渲染（双产物门控一致）')
+
+# ── _has_chart_fence：两种协议都算「已出图」──
+from app.routers.generate import _has_chart_fence
+
+assert _has_chart_fence('```fig\n{}')
+assert _has_chart_fence('```chart\n<svg/>')
+assert _has_chart_fence(_fig(FIG_HCHAIN))
+assert not _has_chart_fence('```svg\n<svg/>')
+assert not _has_chart_fence('```json\n{}')
+assert not _has_chart_fence('')
+assert not _has_chart_fence(None)
+assert not _has_chart_fence('> 图表说明：内容不适合图表化')
+print('PASS: _has_chart_fence — fig/chart 皆判为已出图，svg/json/空/逃生口皆不误判')
+
+# ── _gen_timeout：勾选图表放宽总超时（Phase 4）──
+from app.routers.generate import _gen_timeout, _GEN_TIMEOUT_BASE, _GEN_TIMEOUT_CHART
+
+assert _GEN_TIMEOUT_CHART > _GEN_TIMEOUT_BASE, '图表档必须比基础档宽'
+assert _gen_timeout(['chart']) == _GEN_TIMEOUT_CHART
+assert _gen_timeout(['chart', 'toc']) == _GEN_TIMEOUT_CHART
+assert _gen_timeout('toc,chart') == _GEN_TIMEOUT_CHART, '流式入口传的是逗号分隔串，必须同样放宽'
+assert _gen_timeout(['toc']) == _GEN_TIMEOUT_BASE
+assert _gen_timeout('toc,summary') == _GEN_TIMEOUT_BASE
+assert _gen_timeout(None) == _GEN_TIMEOUT_BASE
+assert _gen_timeout([]) == _GEN_TIMEOUT_BASE
+assert _gen_timeout('') == _GEN_TIMEOUT_BASE
+assert _gen_timeout(['chartboard']) == _GEN_TIMEOUT_BASE, '必须精确匹配 format key，不能子串误判'
+print('PASS: _gen_timeout 按 formats 分档（list/逗号串/None/空/子串）')
+
+# ⚠️ AsyncOpenAI 是**惰性构造**的：超时值真正生效的地方是 client property，不是 __init__。
+# 只改 __init__ 会「存了不用」——值进了实例属性，property 里仍写死 330，超时一点没变，
+# 而上面那组 _gen_timeout 断言照样全 PASS。所以这里直接盯住构造实参。
+from unittest import mock as _mock
+from app.llm.service import LLMService as _LLMService
+
+with _mock.patch('app.llm.service.AsyncOpenAI') as _oa:
+    _svc = _LLMService({'llm': {'api_key': 'sk-test-000', 'provider': 'deepseek'}},
+                       request_timeout=_GEN_TIMEOUT_CHART)
+    _ = _svc.client
+    assert _oa.call_args.kwargs['timeout'] == _GEN_TIMEOUT_CHART, (
+        'client property 未读取实例上的 request_timeout（惰性构造处写死了默认值）')
+
+with _mock.patch('app.llm.service.AsyncOpenAI') as _oa:
+    _ = _LLMService({'llm': {'api_key': 'sk-test-000', 'provider': 'deepseek'}}).client
+    assert _oa.call_args.kwargs['timeout'] == _GEN_TIMEOUT_BASE, '不传时仍是基础档（其余 9 处调用点零影响）'
+print('PASS: request_timeout 落到 client 构造实参（惰性 property 未写死）')
+
 print('Chart renderer tests done')
