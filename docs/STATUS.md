@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-08-25 | **版本**: 0.4.3
+**更新**: 2026-09-19 | **版本**: 0.4.3
 
 ---
 
@@ -11,16 +11,16 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 93（11 子目录：adapters 8 / agent 6 / core 19 / downloaders 4 / engines 14 / generation 10 / llm 4 / routers 16 / storage 2 / utils 6 / services 4） |
+| 后端 Python 文件 | 96（11 子目录：adapters 8 / agent 6 / core 19 / downloaders 4 / engines 15 / generation 10 / llm 4 / routers 16 / storage 2 / utils 6 / services 6） |
 | 前端 TS/TSX/CSS 文件 | 103（101 ts/tsx + 2 css；业务 94，排除 test 9） |
 | 前端测试文件 | 8（98 个测试用例，vitest 全绿） |
-| API 路由模块 | 16 |
+| API 路由模块 | 15 业务模块（+ `__init__.py`，共 16 个 .py） |
 | API 端点 | 78（`@router.` 装饰器计数） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 13（docs/ 目录，含对话协议.md + AGENT-ONBOARDING.md + ACKNOWLEDGMENTS.md；design/ 另计） |
-| 代码行数 | 后端 app 19,946 / 前端业务 13,438 / 前端测试 1,021 |
+| 代码行数 | 后端 app 22,822 / 前端业务 13,442 / 前端测试 1,021 |
 
 ---
 
@@ -48,7 +48,7 @@
 | Doc | python-docx | 本地 |
 | Doc | python-pptx | 本地 |
 | Doc | openpyxl | 本地 |
-| Doc | ebooklib | 本地 |
+| Doc | epub-container | 本地 |
 | Doc (三方插件) | pymupdf4llm | 进程外（AGPL 隔离，[仓库](https://github.com/lazybone404/limo-pymupdf4llm-plugin)，非官方维护） |
 | OCR | dashscope-ocr | 云端 |
 
@@ -64,7 +64,7 @@
 | 生成 | `POST /api/generate/{id}` + `/stream` | LLM 生成笔记 |
 | 处理 | `POST /api/process/{id}` | 图片 OCR |
 | 对话 | `POST /api/chat` + `/chat/stream` | AI Agent |
-| 图表 | `POST /api/generate/{id}`（formats=chart）| 生成笔记勾选「图表」→ AI 输出 SVG → PIL 本地自绘渲染 PNG 嵌入（`app/services/chart_renderer.py`；resvg 已切换，Windows 文字 bug） |
+| 图表 | `POST /api/generate/{id}`（formats=chart）| 生成笔记勾选「图表」→ AI 输出 ```fig 语义 JSON（1~N 张、**9 种布局**、不写坐标）→ `chart_layout` 算几何 → `chart_svg` 生成 → PIL 本地自绘渲染 PNG 嵌入（`app/services/chart_layout/` 包 + `chart_svg.py` + `chart_renderer.py`；resvg 已切换，Windows 文字 bug；legacy ```chart 手写 SVG 路径保留为回退） |
 | EPUB 解读 | `POST /api/epub/generate/{id}` + `GET /api/epub/task/{id}` + `POST /api/epub/cancel/{id}` | EPUB 一键解读（阶段1 逐章 + 阶段2 归并总结 + 中断续跑 + 失败章跳过标注） |
 | 导出 | 9 端点：单文件/全产物/批量/思维导图/对话单篇/对话批量/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/ZIP(3模式)/思维导图(交互版+SVG) |
 
@@ -93,24 +93,24 @@
 | LLM 生成 | 8 | 8 | 100% |
 | 图片处理 | 4 | 4 | 100% |
 | AI 对话 | 9 | 9 | 100% |
-| 图表生成 | 5 | 6 | 83% |
+| 图表生成 | 11 | 12 | 92% |
 | 导出 | 8 | 9 | 89% |
-| 前端 UI/UX | 14 | 14 | 100% |
+| 前端 UI/UX | 15 | 15 | 100% |
 | 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **72** | **74** | **97%** |
+| **合计** | **80** | **82** | **98%** |
 
 > 进度说明：
 > - AI 审核域已移除（2026-08-16，方案：图表功能与 fact_check 移除）——事实核查产物转历史，历史 fact_check.md 保留不删
 > - 导出：8/9 — 待完成图片预处理复用（ZIP 导出复用导入时的 optimize_images 结果）
 > - 不做的项目：PDF Layer 2（pdfplumber 已成熟提取表格）、VL 帧过滤（成本/收益不成正比）
 
-## 工程质量（2026-08-25 状态）
+## 工程质量（2026-09-19 状态）
 
 | 指标 | 状态 |
 |------|:--:|
-| FastAPI Depends 依赖注入 | ✅ 8/8 路由迁移完成 |
+| FastAPI Depends 依赖注入 | ✅ 12/15 路由迁移完成（未迁：generate/search/references） |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
-| 错误体系统一（AppError） | ✅ 11 路由，0 处旧格式残留 |
+| 错误体系统一（AppError） | ✅ 15/15 路由全量完成，0 处 `raise HTTPException`（2026-09-19 核实） |
 | 前端测试 | ✅ vitest + 98 tests（store/theme/api/latex/streamBuffers/tabRegistry/chatStore/组件） |
 | 对话重写 | ✅ 独立 chatStore + 消息层组件树 + 工具气泡/引用/思考折叠（2026-08-04） |
 | 对话上下文管理 | ✅ context_window 四层解析 + 预算引擎 + 历史压缩 + token 进度/费用（2026-08-04 C1-C5） |
@@ -145,6 +145,8 @@
 | 错误体系 sentinel 语义 | ✅ AppError `_UNSET` 哨兵区分「未显式指定」/「显式传 400」——显式 400 + recoverable 不再被压 200（评审 H1：export_custom 前端曾下载损坏 zip，2026-08-25） |
 | 编辑态绑定来源 docId | ✅ 编辑态 `{mode, docId}`，无参保存（Ctrl+S）永远写回编辑内容归属文档，弹窗期间切文档不错存/不错回退（评审 H2/H3，2026-08-25） |
 | 编辑中未保存 × 重新生成拦截 | ✅ `dirtyEditingDocId` 轻量桥（uiSlice 标记，不提升编辑态）+ GenPanel 生成入口两态 confirm，放弃编辑后 PreviewArea 自关闭编辑态（评审遗留①，2026-08-25） |
+| 图表语义化布局 | ✅ 出图从「模型手写 SVG 坐标」改为「模型填语义 JSON + 后端算几何」——9 种 layout（tree/flowchart/state/sequence/quadrant 新增 + 形状层 + `shapes` 通道）/ 1~N 张图 / 自然尺寸 + 等比缩放 / 超时分档 / `chart_N.json` 协议切换证据（2026-09-19） |
+| 图表几何缺陷六修 | ✅ 同行跨列边穿节点 / 走廊边叠同一 y / 隔行边穿中间行 / edges·shapes 不参与 bbox / 报错文案误导（「节点过多」掩盖「有环」）/ **窄节点文字被压成纯省略号**（`_fit_labels` 与 `_shape_inner_w` 余量不同源）+ `assert_layout` 补三条不变量 + `title` 渲染（2026-09-19 续） |
 
 ## 目录结构
 
@@ -159,7 +161,7 @@ backend/app/
   llm/           LLMService + agent 循环
   core/          配置/类型/注册/错误/disconnect/搜索/cookie/sample_doc
   utils/         视频管线（video_reader/video_helper/screenshot_marker/frame_quality）
-  services/      视频直传理解（video_understand）+ 图表渲染（chart_renderer）+ epub 解读 + 错误体系
+  services/      视频直传理解（video_understand）+ 图表（chart_layout/ 包：geometry 几何 + layouts 算子 + engine 校验 / chart_svg 生成 / chart_renderer 渲染）+ epub 解读 + 错误体系
   storage/       文件系统存储
 frontend/src/
   components/    UI 组件（preview/ 下 6 个展示组件拆分）

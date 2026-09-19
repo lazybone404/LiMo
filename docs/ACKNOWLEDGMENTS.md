@@ -36,7 +36,7 @@
 | pydantic / python-dateutil / python-multipart | MIT / BSD-3 / Apache-2.0 | 基础工具 |
 | markitdown（微软） | MIT | Office/EPUB → Markdown |
 | python-docx / python-pptx / openpyxl | MIT ×3 | Word/PPT/Excel 解析 |
-| ebooklib | AGPL-3.0 | EPUB 章节提取 |
+| epub-container | 自研（纯标准库） | EPUB 章节/图片/元数据提取（2026-08-26 起替代 ebooklib） |
 | pdfplumber | MIT | PDF 表格提取 |
 | pypdfium2 | BSD-3-Clause / Apache-2.0 | PDF 文字直读 + 原图嵌入 |
 | xlrd | BSD-3 | 旧版 Excel (.xls) |
@@ -45,9 +45,9 @@
 | numpy | BSD-3 | 数值计算/模糊帧过滤 |
 | trafilatura | Apache-2.0 | 网页正文提取 |
 | yt-dlp | Unlicense | 视频/网页下载 |
-| ffmpeg / ffmpeg-python | LGPL-2.1+ / Apache-2.0 | 视频抽帧/处理 |
+| ffmpeg（gyan.dev essentials 构建） | **GPLv3**（[gyan.dev 官方](https://www.gyan.dev/ffmpeg/builds/)声明 "All builds are ... licensed as GPLv3"） | 视频抽帧/处理（独立进程调用，无传染；全文见 `licenses/GPL-3.0.txt`） |
+| ffmpeg-python | Apache-2.0 | ffmpeg Python 绑定 |
 | youtube-transcript-api | MIT | YouTube 字幕提取 |
-| html2text | GPL-3.0 | HTML → 纯文本 |
 | Pygments | BSD-2 | 代码高亮 |
 | python-markdown | BSD-3 | Markdown 渲染 |
 | gmssl | BSD | 国密工具 |
@@ -101,6 +101,8 @@ LiMo 的「口子原则」要求重依赖、AGPL/协议风险项目**进程外�
 | pymupdf4llm | AGPL-3.0 | **进程外插件**（`~/.limo/plugins/`） | AGPL 隔离模式，官方只维护契约 + 加载 + 文档 |
 | resvg | MPL-2.0 | 已切换 PIL 自绘 | Windows 无法渲染 SVG 文字（上游普遍 bug）→ 自研子集渲染器 |
 | SearXNG | AGPL-3.0 | 便携版进程外 | 搜索降级链 + AGPL 进程外启动 |
+| html2text | GPL-3.0 | 已移除（2026-08-26，webpage.py 改用 bs4 get_text） | GPL 库进主 exe 是「合并作品」→ 替换优于附全文 |
+| ebooklib | AGPL-3.0 | 已移除（2026-08-26，自研 epub-container 纯标准库替代） | AGPL 库进主 exe 是风险点 → 自研零依赖解析器，达成主 exe 零 AGPL/GPL |
 
 ---
 
@@ -123,12 +125,12 @@ LiMo 是模型无关的知识工具，接入多家模型/服务（非开源代�
 
 1. **版权归属**：所有第三方代码的版权归原作者所有；本文件仅记录使用与借鉴，不主张任何归属。
 2. **许可证合规**：
-   - AGPL-3.0 / GPL-3.0 类（pymupdf4llm、ebooklib、html2text、SearXNG）：如可能产生派生分发，LiMo 遵守对应许可证的源码公开义务；AGPL 引擎默认**进程外插件隔离**，不并入核心、不随主包分发。
+   - AGPL/GPL 类：ebooklib、html2text 已于 2026-08-26 彻底移除（**主 exe 零 AGPL/GPL 库**）；pymupdf4llm（AGPL）为**进程外插件**、SearXNG（AGPL）不随主包、ffmpeg（GPLv3）为**独立进程**且随包附全文——均不并入核心主程序。
    - 其余依赖按各自许可证（MIT/BSD/Apache/MPL/ISC 等）自由使用。
 3. **不擦除声明**：任何分发/修改都不会剥离源码或二进制中的版权与许可证声明。
 4. **完整许可证文本**：各依赖的完整许可证文本随其包发布（pip / npm / cargo），本文件不重复粘贴全文；如需逐条核对，以官方仓库 LICENSE 为准。
 
-> 本文件的许可证标注已按本地安装包元数据核对（2026-08-25，`pip/npm/cargo` 实际安装版本）；个别包同时含核心与绑定两层许可（如 resvg 核心 MPL-2.0 / resvg-py 绑定 MIT），已分别标注。任何出入以官方仓库为准。
+> 本文件的许可证标注已按本地安装包元数据核对（2026-08-25，`pip/npm/cargo` 实际安装版本）；个别包同时含核心与绑定两层许可（如 resvg 核心 MPL-2.0 / resvg-py 绑定 MIT），已分别标注。ffmpeg 已按 gyan.dev 官方页面核实为 GPLv3（2026-08-26）。任何出入以官方仓库为准。
 
 ---
 

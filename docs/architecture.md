@@ -111,7 +111,7 @@ EngineRegistry.register("ocr", "dashscope-ocr", DashScopeOCREngine(...))
 | Doc | python-docx | 本地 | text, table, image, office |
 | Doc | python-pptx | 本地 | text, table, office |
 | Doc | openpyxl | 本地 | text, table, office |
-| Doc | ebooklib | 本地 | text (EPUB章节) |
+| Doc | epub-container | 本地 | text (EPUB章节) |
 | Doc | pdf-image | 本地 | image（每页渲染 PNG 嵌入 MD，供 OCR/多模态） |
 | Doc (插件) | pymupdf4llm | 进程外 | text, table, image, pdf |
 
@@ -152,7 +152,7 @@ engine_bindings:
   doc:word: python-docx
   doc:ppt: python-pptx
   doc:excel: openpyxl
-  doc:epub: ebooklib
+  doc:epub: epub-container
 ```
 
 **保存机制**：增量合并 — 保存 OCR 绑定不会删除 ASR 绑定。`null` = 不修改，`[]` = 清除绑定。
@@ -167,7 +167,7 @@ engine_bindings:
 | .docx | `doc:word` | python-docx → markitdown |
 | .pptx | `doc:ppt` | python-pptx → markitdown |
 | .xlsx | `doc:excel` | openpyxl → markitdown |
-| .epub | `doc:epub` | ebooklib → markitdown |
+| .epub | `doc:epub` | epub-container → markitdown |
 
 > 绑定值支持三种格式：字符串（`"pymupdf4llm"` 直接查注册表）、整数（engine_models id）、列表（旧格式，取首个）。`init_engines` 启动时清理失效 key 与无效 id（回退默认引擎）。**绑定只取第一个可用引擎，失败直接报错**（引擎自动降级已移除）。扩展名兜底是默认行为。
 
@@ -177,7 +177,7 @@ engine_bindings:
 
 | 维度 | PDF | Word | PPT | Excel | EPUB |
 |------|-----|------|-----|-------|------|
-| 转录引擎 | pypdfium2 | **python-docx** | python-pptx | openpyxl | ebooklib |
+| 转录引擎 | pypdfium2 | **python-docx** | python-pptx | openpyxl | epub-container |
 | 转录产物形态 | 文字+表格+图片 MD | 文字+表格+图片 MD（文档流） | 按 Slide N 要点 MD | 按 sheet 表格 MD | 按章节 MD |
 | 转录主要问题 | OCR错字/表格错位 | 断段/标题层级不准 | 要点碎片化 | 纯数据无叙述 | 内容量巨大 |
 | 内容组织 | 按 Page N | 按文档流（标题层级） | 按 Slide N | 按 sheet | 按章节 |
@@ -439,7 +439,7 @@ class GenerateError(AppError): ...   # 生成特定
 
 前端 `apiFetch` 自动解析非 2xx 响应为 `ApiErrorException`。
 
-**迁移状态**：✅ 12/14 个路由模块统一 AppError 体系（2026-07-25 完成 config/model/files 最后迁移）。**仍有残留**：`export.py`（9 处）+ `ingest.py`（17 处）直接 `raise HTTPException`（历史遗留，2026-08-14 核实时点）。新增代码统一用 AppError。
+**迁移状态**：✅ **15/15 个路由模块已全部统一 AppError 体系**（2026-09-19 核实：全仓 `grep "raise HTTPException"` 结果为空，export.py / ingest.py 残留已清零）。新增代码统一用 AppError，真 404/403 必须显式传 `status_code`（见 CLAUDE.md 关键模式 #36）。
 
 ### 安全
 

@@ -28,7 +28,7 @@ LiMo（沥墨）——知识管理系统。输入 URL/文本/文件 → 适配�
 
 | 文档 | 内容 | 什么时候读 |
 |------|------|-----------|
-| [CLAUDE.md](../CLAUDE.md) | 全部事实：命令/架构/34 条关键模式/待办 | 改任何代码前 |
+| [CLAUDE.md](../CLAUDE.md) | 全部事实：命令/架构/37 条关键模式/待办 | 改任何代码前 |
 | [architecture.md](architecture.md) | 六层分层架构 + 每层模块职责 | 理解模块边界 |
 | [frontend-patterns.md](frontend-patterns.md) | 前端状态管理/取消机制/TaskPanel | 改前端状态/任务 |
 | [export-pipeline.md](export-pipeline.md) | 导出两路径 + tabRegistry/contentSources | 改导出/tab |

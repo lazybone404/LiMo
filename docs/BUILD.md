@@ -84,6 +84,6 @@ rg "^\s+from app\.\S+ import" --glob '*.py' app/
 - **SSL 证书**：certifi + 启动时设 `SSL_CERT_FILE`
 - **OpenSSL DLL 冲突**：排除 cryptography 的 DLL，用 Python 原生版本
 - **KaTeX 字体**：`datas` 打包 `backend/static/`，字体从 node_modules 复制到 static 后就不用再管
-- **searxng .git**：已清理，除非更新 searxng 版本
+- **searxng**：不随包（AGPL-3.0，tauri resources 未配置）。如需手动部署到安装目录 `searxng/`：清理 `.git` 目录 + 附 AGPL-3.0 全文（从 [searxng 官方仓库](https://github.com/searxng/searxng) 获取；主包已零 AGPL 库，`licenses/` 不再附带 AGPL 全文）
 - **console=False**：PyInstaller 不弹黑框
 - **Tauri resources**：`_internal/` 和 `ffmpeg/` 已在 tauri.conf.json 配置

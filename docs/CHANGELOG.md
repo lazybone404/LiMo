@@ -6,6 +6,213 @@
 
 ---
 
+## 2026-09-19（续） — 图表：六个几何缺陷修复 + 图表类型 4 → 9
+
+> 用户诉求：「我准备给我们的图片要生成增加更多的图表类型选择」——方向限定为**关系/结构图**（不做统计图表），**只扩展 LLM 自动选型的类型池，不加前端 UI**。
+
+### 第一部分：压测暴露的五个真实几何缺陷
+
+上一轮落地的语义化布局器用「更复杂的图」压测后，实测暴露五个缺陷。前四个是**算法画错了**，第五个是**报错文案把人带偏**；第六个是**打包验证时看真实产物才发现的静默降级**（单测、压测、断言全过）：
+
+| # | 缺陷 | 根因 | 修法 |
+|---|------|------|------|
+| 1 | **同行跨列边横穿中间节点** | `[0,2]→[0,0]` 只判 `a.x < b.x`，不看中间隔着谁 | 跨列时改走绕行 `M acx V(out) H bcx V(in)`；绕行侧选择必须保证走廊在画布内（首行不能向上绕、末行不能向下绕） |
+| 2 | **走廊里的边全叠在同一个 y** | 水平段 y 恒为两行中线 `(a底+b顶)/2`，7 条边画成一条长横线、3 个标签叠在一起 | 走廊**分道**：按走廊聚类成车道池，同走廊内按序分配车道 y（间距 8px、4px 网格对齐）；**只有一条时仍走中线**，不无谓偏移 |
+| 3 | **隔行边穿节点** | `[0,0]→[2,0]` 的中线 y 落在**中间那一行**上 | `validate_spec` 直接拒绝隔行边。⚠️ 文案**不能**写「请改为逐行连接」——那会诱导模型补一个不存在的中间节点搭桥，把「图难看」升级成「图画错了」 |
+| 4 | **state 回边沟槽被裁掉** | bbox 只扫 `nodes + labels`，edges/shapes 的横向延伸不参与 | 新增 `_path_bbox(d)`（解析自产的受限路径，只含 M/H/V）；`_snapshot` 与 `_trim_width` 统一按 **nodes + labels + shapes + edges 四类元素**求 bbox |
+| 5 | **报错文案误导** | `expand` 的三轮「压行距重试」把**结构性错误**（有环）也当成「高度放不下」重试，最后包装成「节点过多，图过高」 | `best is None` 时**直抛算子给的原因**——压缩行距只会改变高度，改变不了结构。实测：3 个节点带环的 flowchart 曾报「节点过多」 |
+| 6 | **窄节点文字被压成纯省略号**（空壳图） | `_fit_labels` 用写死的 `avail - 32` 算可用宽，与 `_shape_inner_w` 的 `<64 → w-8` 分支**不同源**——tree 等比收缩到 `_MIN_NODE_W=48` 时按 16px 算，连「一个中文 13px + 省略号 11px」都塞不下 | `_fit_labels` 的余量改为调 `_shape_inner_w`（两处必须严格同值，这是 `_shape_inner_w` docstring 早就写明的约束）；`_shrink_labels` 补**前置**空壳检查 |
+
+**缺陷 6 的教训（比缺陷本身更值钱）**：tree 带 8 个子节点时 9 个节点**全部**变成 `…`——图渲染成功、几何全对、`assert_layout` 全过、17 个压测用例全过，用户拿到的却是一张一个字都没有的图。**为什么所有验证都没抓到**：① 压测用例的 tree 只有 3 个子节点，没触发收缩到下限的路径；② 第一版修法是给 `_shrink_labels` 加「截断后是否为空壳」的判据——**写了但没生效**，因为 `_fit_labels` 在更上游就已经把 label 截成 `…`，等 `_shrink_labels` 拿到手时 `_measure("…")=11 < 可用宽 40`，**判据的截断分支根本进不去**。这与「1.6 可选参数不传 = 断言不执行」是同一类错误：**判据存在 ≠ 判据有效**。故修复后补了两条正式用例：窄节点不再出空壳 + 造「上游已截空」的输入确认前置判据真能抛错（54 PASS）
+
+**缺陷 1 与 2 必须一次设计**：绕行段向下时进入的正是下一行上方的走廊，两者抢同一片垂直空间，共用一个车道池才不会互相打架。
+
+### `title` 终于渲染了 + 三条新不变量
+
+- **`title` 此前解析了但从不绘制**（`expand` 放进返回值，`chart_svg` 从没画过）。修法：`TITLE_H = 24` **在 `expand` 里计入**（非空则全部节点 `y += TITLE_H`、`height += TITLE_H`）——高度/缩放/断言三处自动一致
+- **已决策：接受 3.75% 容量损失（640 → 616），不动 `_MIN_SCALE`**。0.65 对应 13px × 0.65 ≈ 8.5px 已到可读性边缘；标题是**内容而非装饰**，占高度预算语义合理。测试覆盖不减反增：保留 18 节点用例（改后 scale ≈ 0.6504 仍通过），**新增**「同规模 + 带标题 → LayoutError」负向用例
+- **`assert_layout` 补三条不变量**：边折线段不穿非端点节点 / 标签遮罩互不重叠 / 标签遮罩不压节点（顺带 edges·shapes bbox 也在画布内）
+- **⚠️ 可选参数的陷阱**：`assert_layout(nodes, W, height, edges=None, labels=None, shapes=None)` —— 若 `expand()` 内部那**两处**调用不传全量，新加的三条**永远不会执行**。「断言存在」≠「断言有效」，故额外造了故意违规输入验证它真能抛错
+
+### 第二部分：`chart_layout.py` → 包 + 5 个新算子
+
+**模块重组**（648 行 → 约 1150 行，拆成包，`app.services.chart_layout` 这个 import 路径**完全不变**，测试与 chart_renderer 一字未改）：
+
+```
+app/services/chart_layout/
+  __init__.py   # 公开契约：显式 re-export（不靠 import *）
+  geometry.py   # 常量 · 文本测量 · 网格分布 · 形状几何 · 路径与箭头 · 标签遮罩 · _path_bbox
+  layouts.py    # 10 个算子 + _NODES_RUNNERS/_SPEC_RUNNERS/_ROW_GAP
+  engine.py     # validate_spec / assert_layout / expand
+```
+
+- **节点形状层**：新增可选字段 `shape ∈ {rect, diamond, stadium, circle, bar}` 与 `decor`。`{x,y,w,h}` 始终是**外接矩形**，所有形状内切于它 → **AABB 不重叠断言无需改写**（对外接矩形判不重叠比判形状不重叠更强，对 diamond/circle 依然充分）
+- **形状感知文字宽度**：`_shape_inner_w(n)` 取代硬编码的 `inner = w - 32`（rect 分支与原来完全等价）。菱形内接矩形是 `w/2 × h/2`，故 `_shape_min_w` 对 diamond 取 `2 × 节点最小宽`——**用公式保证菱形文字不溢出**，而非靠调参
+- **`shapes` 通用通道**：算子可选返回第 4 项，`chart_svg` 在**背景之后、连线之前**渲染。统一原则：**有几何范围但不属于「内容主体」的一律走 shapes**（不占节点数、不进 `_count_nodes`、不参与重叠校验）——象限轴线框、sequence 生命线、分组框全按此归类
+- **两张注册表**：`_NODES_RUNNERS = {hchain, timeline, branch}`（入参 nodes）/ `_SPEC_RUNNERS = {tree, flowchart, state, sequence, quadrant}`（入参整份 spec）
+
+**五个新算子**（全部正交路径、零曲线，守住「连线只含 M/H/V」不变量）：
+
+| 算子 | 要点 |
+|---|---|
+| `tree` | 父子语义**内嵌在结构里**，不需要 `id`/`parent`/`edges`——对 LLM 少一个字段就少一类出错面。新增 `_elbow` 总线连线（`M 父底 V bus H 子心 V 子顶`），tree 默认无箭头 |
+| `flowchart` | **字符串 id 而非 grid 的 `[行,列]`**——判定会跳转/汇合，行列索引正是最易写错的字段；id 让越界错误精确定位到 `edges[2].to`。Kahn 最长路径分层 → 可产生跳层边 → 走右侧纵向沟槽 `_GUTTER_W = 20` 绕行 |
+| `state` | BFS 分层 + **允许环与自环**。回边走右侧沟槽；自环走右缘 `_LOOP_W × _LOOP_H` 环路。`type=="start"/"end"` 在上下各插一个空 label 的 `circle` 圆点 |
+| `sequence` | 参与者等宽同行（解 `avail ≥ n·w + 12(n−1)` 定 cap，超了就报「参与者过多，请拆图」）；生命线/分组框走 `shapes`；消息即时间顺序，自动加序号 |
+| `quadrant` | `quadrants` **固定 4 个、按 TL→TR→BL→BR 顺序**（唯一零字段且无歧义的方案）；十字轴线与象限框走 `shapes`——**靠 shapes 参与 bbox 保住了全宽**，不再需要「轴标签贴死右边界」那个一改就失效的 workaround |
+
+**一个设计修正**：`_grid_edge_label` 新增 `nodes` 参数。它默认的「按两心跨度钳制」是给**同层内水平相邻**的边用的近似；state 的前向边是**上下层**，两心 x 常只差十几像素、跨度判据直接判死，而它的水平段其实落在走廊里（周围根本没有节点）。传了 `nodes` 就跳过跨度启发式、改用 `_overlap` 逐个查真实节点——**用事实判断代替几何近似**（实测：state 的三个边标签从只放下 1 个变成 3 个全放下）。
+
+### 第三部分：prompt 从 4 种 → 9 种全展开
+
+`get_chart_format` 由「4 行 schema + 2 个示例」扩成**九行一类型、各带可直接改的最小 JSON**（tree 只到两层、state 只含一条回环）。
+
+**为什么不只是列名字**：flash 模型对没见过的结构**不会自己拼 schema**，最后仍然全用示例里最眼熟的 `hchain`——「扩展类型」也就白做了。示例取**最小可用**即可，够照改就行，不堆字段。
+
+- **约束仍只有 4 条**：是**引导**变长（告诉它有什么可画），不是**约束**变多（要求它必须画成什么样）。2026-08-16 的教训是「堆规则 ↔ 出图率是 trade-off」，本次刻意保持约束面不变
+- **来源差异段语义变化**：从「决定展开哪几种」变成「在九种里优先推荐哪几种」
+- **新增一句关键约束**：`flowchart / state / sequence 一律用字符串 id 互相引用（不要用下标）`
+
+### A/B 门禁实验（这是本次唯一预设了回退条件的决策）
+
+样本 5 份真实文档（论文 PDF ×1 + 视频转录 ×4，各取前 8000 字符）× 2 组 × 3 次 = 30 次调用（deepseek-flash）：
+
+| 组 | 出图率 | 类型分布 | 平均 prompt |
+|---|---|---|---|
+| old（4 种） | **11/11 = 100%** | `chart(手写SVG)` × 11 —— **fig 布局 0 次** | 4377 tok |
+| new（9 种） | **13/13 = 100%** | hchain 12 / tree 11 / layers 6 / timeline 5 / grid 4 / sequence 2 / flowchart 1 = **7 种** | 4825 tok |
+
+**结论：不触发回退**——出图率零下降（100% → 100%），types 从 1 种扩到 7 种，prompt 只贵了约 450 token（+10%，远小于字符数 +108% 的增幅，因为新增的主要是短 JSON 行）。
+
+**⚠️ 实验副产物（比主结论更值得记）**：旧 prompt 组 **11/11 全部输出手写 SVG 围栏，一次都没走 `fig`**——即旧 prompt 在这一模型上「语义 JSON」协议实际遵守率为 **0**。新 prompt 的九行 JSON 示例反而把「输出 JSON 而不是 SVG」这件事强化了。这是单模型单次实验（且与上一轮「6 张图」实测走 fig 的观察不一致，可能是模型版本/采样差异），记为观察而非定论，但足以说明**示例的具体程度直接决定协议遵守率**。
+
+**实验设计踩坑（记下来免得重蹈）**：首版实验设 `max_tokens=4000`，得出「出图率 7%」——**纯属截断假象**。deepseek-flash 是推理模型，思考段先吃 token，4000 时 `finish=length` 且**正文一个字都没吐**。改为 16000 后 `finish=stop`。统计时按 `finish_reason` 剔除截断样本。
+
+### 影响范围与验证
+
+- ✅ `test_chart_layout.py` **54 PASS**（新增 flowchart / state / sequence / quadrant 四段 + 形状层段 + 空壳图回归段）+ `test_chart_renderer.py` + `test_prompt.py` 全绿；`test_prompt.py` 的布局断言改为**与 `_LAYOUTS` 同源**（将来加算子忘了改 prompt 会立刻挂）
+- ✅ 端到端压测 17 个用例（9 类型正常路径 + 8 个边界：有环 / 隔行边 / 参与者超标 / 空象限 / 树太宽 / 超长 label / 未知 layout / 坏 JSON）：**零失败、零围栏残留**，失败路径全部给出可操作中文提示
+- ✅ 渲染图肉眼核对：flowchart 菱形文字居中、state 回边与自环绕行、sequence 生命线对齐、tree 总线、象限轴线
+- ✅ 缺陷 6 修复前后实测（同一份打包版产出的 `chart_2.json`）：`['…', '…', '…', '…', '…', '…', '…', '…', '…']` → `['大模…', '材料…', '邮件', '笔记…', '注释', '目录', '格式', '参考…', '图表']`——节点压到 48px 仍保留至少一个字，母线连接与等宽对齐正常
+- ✅ 打包验证（`chart_layout` 单模块变包后 PyInstaller 模块发现路径变化）：PYZ 归档含 `app.services.chart_layout` / `.engine` / `.geometry` / `.layouts` 四模块；exe 启动 `/health` 200 + `/api/capabilities` 200；**真实生成产出 3 张图**（hchain / tree / state 三布局，`.json` 旁路文件存在即证明走的是 fig 语义路径而非 legacy 手写 SVG）
+
+### 已知遗留（未处理）
+
+- **`_trim_width` 只裁右不裁左**：布局阶段按 640 宽居中，裁剪后画布变窄而**内容坐标不变** → 窄图内容整体偏右、左侧留大空白。实测 flowchart 案例留白 232px（画布 412px，节点中心 312 vs 画布中心 206）。这是**既有行为**（grid/layers 同样，只是新算子内容更窄所以更刺眼）；修法是在裁剪后把内容整体平移回居中，但会改变既有 4 算子的全部产物坐标，未纳入本轮范围
+- `quadrant` 与 `state` 在 A/B 实验中一次未被模型选中（样本里没有「二维评估」「状态机」语义，属内容驱动，非缺陷）
+- flow chart **拒绝任何环**（含「退回修改 → 重新提交」这种真实流程极常见的形态），需改用 `state` 布局
+
+---
+
+## 2026-09-19 — 图表生成优化：语义化布局 + 多图 + 自然尺寸缩放
+
+> 用户诉求：「画图其实还可以再优化一下，也可以不仅限于只有一张图片。不过多张图片的话生成时间肯定会延后，那么假如是有多张图片必须得考虑适当的延长生成时间」。
+
+### 核心：把「画图」从生成问题变成渲染问题
+
+旧协议让 LLM **手写 SVG**（含坐标、样式、引号），几何错误（重叠/越界/斜线/文字超框）只能靠 prompt 堆规则压制——而 2026-08-16 的教训是：**堆规则与出图率是直接 trade-off**（28 行硬规则让 deepseek-v4-flash 宁可跳过不画）。
+
+新协议让 LLM 只答**语义 JSON**（有哪些节点、怎么排），坐标/宽度/连线/标签遮罩全由后端确定性布局器算——**几何错误从结构上不可能发生**，几何规则也就不必进 prompt。
+
+- **`app/services/chart_layout.py`**（新增，纯几何零依赖）：4px 网格对齐 / 文字宽度注入测量 / 正交路径（禁斜线）/ 掩码定位 / 5 种算子（hchain 内置自动折行 / layers / timeline / grid / branch）。`grid` 是唯一能表达「谁连谁」的算子，故必须保留；`branch` 已实现并单测但**不写进 prompt**（防用上未文档化算子）
+- **`app/services/chart_svg.py`**（新增）：面向 PIL 自绘子集生成 SVG，箭头用 `<polygon>` 手绘（PIL 不支持 `<marker>`）。**出口 `_FORBIDDEN_RE` 自检**——`<marker>`/`class=`/`url(#)`/`<defs>` 不是被校验拦住的而是被**静默忽略**的（用了它们照样通过校验、照样落盘，只是箭头无声消失），所以防线在工具内而非测试里
+- **⚠️ 字体宽度必须注入**：布局器不可硬编码「CJK 13px/字」——LiMo 的字体是**运行时探测**的（`_detect_chinese_font`），不同字体字宽差 10–20%，硬编码会系统性低估 → 文字超框。解法是 `measure` 参数注入 `_load_font(...).getlength`，与渲染用同一个字体对象
+
+### 多图支持（不再限一张）
+
+- 旧 prompt 明写「**必须**画 1 张最有代表性的图」——硬性 1 张。渲染链路本无数量上限，**瓶颈纯粹在措辞**
+- 新 prompt：每个 ` ```fig ` 围栏 = 1 张图，可按需输出 **1~N 张**；单个围栏节点 ≤9，超过**必须拆成多个围栏**
+- **协议并存**：` ```fig `（语义 JSON，现行）/ ` ```chart `（手写 SVG，legacy 兜底）。并存三理由：协议隔离原则不变 / legacy 是**免费回退路径**（回滚只需改 `get_chart_format` 一个函数）/ 已落盘的 `chart_N.png` 不受影响
+- **按内容形态容错分流**：fig 围栏内若含 `<svg`，直接按 chart 分支处理——模型改用 fig 后 legacy 兜底会自然失效，JSON 一错就是白丢一张图
+- **`chart_N.json` 是协议切换的确定性信号**：两条路径都出 PNG 且张数可能一样，只有 `.json`（仅 fig 分支解析成功时落盘）能区分走的是哪条路
+
+### 实测数据（推翻计划的定值公式）
+
+计划原要求「跑 3 图场景实测，取 P95×1.5 定超时常量」。实测（deepseek-v4-flash，约 900 字文档）：
+
+| 指标 | 实测值 |
+|---|---|
+| 总耗时 | **9.8s** |
+| 首 chunk | 5.7s |
+| 输出 | 2890 字符 / 1315 chunks |
+| **fig 围栏数** | **6 张**（hchain×3 / grid×2 / layers×1）|
+
+**6 张图只用 9.8 秒**，比基础超时 330s 小 33 倍——**P95×1.5 公式的前提（多图显著拉长生成）被推翻**（按公式算得 15s，比基础档还短，显然无意义）。真实原因：新协议下模型只写语义 JSON（每张 130~240 字符），不再手写数百行 SVG，出图几乎不增加成本。真正的耗时主导项是**正文字符数**，图表只在其上叠加约 18% 输出增量。
+
+- 故 `_GEN_TIMEOUT_CHART = 400`（`330 × 1.21`，基础档线性外推 + 安全余量），非实测直接命中值
+- **两个入口都要放宽**：`generate()`（非流式，无 `asyncio.timeout`，只受 SDK 约束）与 `generate_stream()`（流式）
+- **⚠️ `request_timeout` 必须改两处**：`AsyncOpenAI` 是**惰性构造**的（`__init__` 只置 `self._client = None`，真正构造在 `client` property 里），只改 `__init__` 会「存了没用」——值进了实例属性但 property 里仍写死 330，**超时一点没变且单测照样 PASS**，只有端到端才暴露。已加测试直接盯住 client 构造实参
+- 单 chunk 静默期的 `wait_for(anext, 150)` 是**独立**保护，不随此值变化（「330+150」式的推导没有物理意义）
+
+### 实测中发现并修复的两处真实缺陷
+
+- **grid 同行边标签 100% 显示不出来**：列间距固定 `GAP_X=48`，而边标签遮罩需要「文字宽+20+12 间隙」，连 2 字标签都刚好卡住 → 4 字以上**整条消失**（`_grid_edge_label` 返回 None）。prompt 引导模型写的 edge label 白写。修复：`_grid` 用剩余宽度把列间距撑到 `_GRID_GAP_MAX=120`（顺带让网格图铺开，不再挤在画布中间）
+- **边标签截断无提示**：截到 8 字后「很长的边标签会被」读起来像模型没写完，而非渲染器截的 → 补省略号
+
+### 用户提议落地：自然尺寸绘制 + 等比缩放
+
+用户中途提议：「我们可以把图片完整的绘制出来然后再缩放到对应的比例」。
+
+- **高度**：超 640 时不再直接失败报「请拆图」，改为按**自然高度**定稿 + 返回 `scale`，由 `render_spec_svg` 落到根 `<g transform="scale(k)">`。原来只能压缩行距然后失败（24 节点 timeline 自然高 960px，改造前直接 LayoutError）
+- **`_MIN_SCALE = 0.65` 下限**：缩放会让字号同步变小（13px × 0.65 ≈ 8.5px 已是可读性边缘），低于下限宁可报错让模型拆图，也不画一张糊的
+- **宽度也按内容裁剪**（`_trim_width`）：timeline/layers 内容只占画布左侧，只缩高度等于「把空白一起等比缩小」。裁剪后 timeline 640→196px、layers 640→356px。**边标签必须计入裁剪边界**，否则只按节点裁会把标签切出界
+- **背景必须画在 scale 组之外**：`width="100%"` 的语义是「铺满画布」，放进组内会被缩成 100%×k，四边留出未填充空白带
+
+### 影响范围与验证
+
+- **导出零影响**：所有导出路径都**只按 markdown 引用收集图片**（`_find_image_refs` → `_collect_images`），从不扫描 assets 目录 → 多图 = 多个 `![](assets/chart_N.png)` 自然带多张；`chart_N.json` / `chart_N.svg` 是纯旁路文件，不写进 markdown、不被收集、不进任何产物（已实测复核）
+- ✅ 后端 11 个测试文件全绿（新增 `test_chart_layout.py` 22 断言 / `test_chart_svg.py` 12 断言，扩展 `test_chart_renderer.py` / `test_prompt.py`）
+- ✅ 五种 layout **真实渲染**（不 mock）肉眼核对：文字/箭头/蛇形折行/边标签遮罩/缩放后清晰度
+- ✅ 前端 `npm run lint` 无 error、`npm run build` exit 0
+- ✅ 后端启动 health 200 + capabilities 200
+
+### 既有缺口（本次未动，备查）
+
+`chart_N.svg` **用户实际够不到**：渲染器写它，但 ① 资产白名单 `_ALLOWED_IMAGE_EXTS` 明确拒绝 svg（`/api/assets` 返回 400）② 导出不扫目录所以不会打包。CLAUDE.md 记它「供深度使用时导出矢量图」，但链路上没有入口。若今后要做矢量图导出，是在 `export.py` 加一个「图表源码」选项，与本次正交。
+
+---
+
+## 2026-08-26 — 打包合规 + AGPL/GPL 许可证替换（主 exe 零 AGPL/GPL 库）
+
+> 用户：「打包合规 + AGPL/GPL 许可证替换计划」。核心诉求：**不想源码被公开** → 消除主 exe（PyInstaller PYZ「合并作品」灰色地带）中的 AGPL/GPL 库。义务边界：ffmpeg 等 subprocess 独立进程无传染（附全文即可）；AGPL/GPL 库进主 exe 是风险点 → 替换。分三阶段全部完成。
+
+### 阶段 1 — 合规补文件（零风险）
+- **审计发现**：ffmpeg 实为 **GPLv3**（gyan.dev 官方声明，原文档误标 LGPL）；ebooklib（AGPL-3.0）与 html2text（GPL-3.0）全文未随包；magika/markitdown wheel 无 LICENSE；static/katex + markmap 无 LICENSE；前端无 NOTICES
+- **新增 `licenses/`**（随包 `_internal/licenses/`）：GPL-3.0.txt（ffmpeg 用）+ Apache-2.0.txt（magika）+ MIT-markitdown.txt（markitdown）+ README；spec `datas` 收集
+- **`bin/ffmpeg/` 补** GPL-3.0.txt + README-ffmpeg.txt（gyan.dev essentials 8.1.1 GPLv3、独立进程无传染、源码 ffmpeg.org）
+- **`static/licenses/`**：KaTeX（MIT）+ markmap-lib/view（MIT）+ d3（ISC）LICENSE 复制随包
+- **根目录 `THIRD-PARTY-NOTICES.md`**：后端 Python 组件 + 前端 16 个运行时依赖 + 离线静态资源 + 独立进程组件四类清单
+- **文档修正**：ACKNOWLEDGMENTS ffmpeg 改 GPLv3、CLAUDE/BUILD searxng 明确不随包（AGPL，Rust launcher 检测到安装目录才启用）
+
+### 阶段 2 — html2text（GPL-3.0）替换
+- **webpage.py 兜底提取** html2text → **bs4 `get_text()`**（bs4 已是依赖，零新增）：剥离 script/style 后取纯文本，长度 <10 才回退正则去标签
+- pyproject.toml + spec hiddenimports/collect_all 移除 html2text
+
+### 阶段 3 — ebooklib（AGPL-3.0）自研替换
+- **新增 `app/engines/epub_container.py`**（纯标准库 zipfile + xml.etree + posixpath，~260 行）：
+  - container.xml → OPF（metadata/manifest/spine）→ 资源；TOC 优先 EPUB3 nav（properties=nav）回退 EPUB2 NCX
+  - `_norm_href` 相对 OPF 目录规范化；**TOC 锚点 key 冲突修复**（keep_fragment 保留 #fragment，同文件多锚点不互相覆盖）
+  - **`_parse_nav` 只遍历根 ol**（`_find_first_ol`），修复 nav.iter() 嵌套重复 + level 覆盖 bug
+  - EpubItem/EpubContainer 对齐 ebooklib 接口子集（get_metadata/get_items/spine/get_item_with_id/get_toc_map）
+- **`epub.py` 改单解析器**：移除 ebooklib fallback（失败显式报错，符合「引擎绑定只取第一个」）；删除 `_build_toc_map` 死代码
+- **`_detect_sections` 跳过空白文本节点**：body.children 首 child 是换行缩进 → 每章前产生空 section（修复：`not str(child).strip()` continue）
+- **引擎重命名 ebooklib → `epub-container`**：注册表 + `_DOC_DEFAULTS` + config.py builtin_models + capabilities fileTypeMap + 引擎 ID（DocResult.engine）全量替换
+- **`_migrate_remove_ebooklib` 启动迁移**：清理旧 config 残留（builtin_models/engine_models/绑定指向旧 MD5）→ 回退默认 epub-container
+- pyproject.toml + spec + uv.lock 移除 ebooklib；删除 `licenses/AGPL-3.0.txt`
+
+### 终态
+- **主 exe 零 AGPL/GPL 库**；GPL 仅剩独立进程的 ffmpeg（随包附全文合规）；AGPL 仅剩进程外插件 pymupdf4llm + 不随包的 SearXNG
+- 验证：自研容器 EPUB3/EPUB2 全链路 ALL_PASS（章节/图片/元数据/TOC）+ 后端 8 个测试文件全绿 + test_epub_pipeline 全通过
+
+### 修复 — 保存编辑产物 bug（打包版实测发现）
+- **现象**：点击编辑器「保存」按钮，请求路径变成 `/api/markdown/[object Object]`，后端返回 `MD_EDIT_NOT_FOUND`（文档不存在）
+- **根因**：TextareaMarkdownEditor 保存按钮 `onClick={onSave}` **把 MouseEvent 注入** `handleSaveEdit(saveDocId?: string)`——React 调用 onClick 处理器时总是传事件对象，`saveDocId` 收到 truthy 的 MouseEvent → `docId = saveDocId` 变对象 → 模板字符串 `${docId}` 得 `[object Object]`。TS 无参函数（`() => void`）赋给 `onClick` 逆变兼容不报错，静态检查无法发现（同类风险：UnsavedChangesDialog 三个按钮同样直接绑定 props）
+- **修复**：① TextareaMarkdownEditor + UnsavedChangesDialog 按钮改 `onClick={() => onSave()}`（不传 event）；② `handleSaveEdit` 加 `typeof saveDocId === 'string'` 守卫（纵深防御，未来任何非 string 注入直接回退编辑态归属文档，不再拼脏 URL）
+- **全量排查**：前端 74 处 `onClick={标识符}` 绑定逐一核对签名——仅此一处「handler 第一参数是可选业务参数」，其余均为无参 handler（注入的 event 被忽略，无数据污染风险）
+- 影响：编辑产物保存正确落到归属文档（含切文档「保存并离开」路径）
+
+---
+
 ## 2026-08-25 — 日志/错误系统全面修复（P0/P1/P2）
 
 > 用户：「检查一下我们目前的日志系统以及错误系统是否足够全面尤其是日志方面」「我建议全部做完」。审查发现：export/ingest 残留 20 处 `HTTPException`（未统一 AppError 体系）、epub 路由零日志、日志风格混用（仅 4 文件用 log. helper，49 文件 stdlib）、chat.py 仅 3 条日志、LogPanel 无搜索。分 P0/P1/P2 三批修完，全部验证通过。

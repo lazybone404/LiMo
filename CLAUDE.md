@@ -163,15 +163,19 @@ uv run uvicorn main:app --host 127.0.0.1 --port 7413 --reload
 # 注意：--reload 只重载代码变更，不重跑 startup event。
 # 修改 config.yaml / 适配器注册 / 引擎注册后需手动重启。
 
-# 运行测试（8 个测试文件）
+# 运行测试（12 个测试文件）
 python tests/test_prompt.py          # Prompt 构建验证
 python tests/test_adapters.py        # 适配器注册 + 路由
 python tests/test_engines.py         # 引擎注册 + 查找
 python tests/test_store.py           # Store CRUD + 并发安全
 python tests/test_url_security.py    # URL SSRF 防护
-python tests/test_e2e_smoke.py       # 端到端冒烟测试
+python tests/test_e2e_smoke.py       # 端到端冒烟测试（36 断言，需后端已启动）
 python tests/test_capabilities.py    # capabilities API 结构
 python tests/test_plugin_loader.py   # 插件加载器
+python tests/test_chart_renderer.py  # 图表校验链 + PIL 自绘渲染
+python tests/test_epub_pipeline.py   # EPUB 一键解读（逐章/归并/取消）
+python tests/test_markdown_edit.py   # 产物编辑保存（PUT /api/markdown/{id}）
+python tests/test_video_understand.py # 视频直传（DashScope SDK）
 ```
 
 ### 前端（React/TypeScript/Vite）
@@ -179,7 +183,7 @@ python tests/test_plugin_loader.py   # 插件加载器
 ```bash
 cd frontend
 npm run dev       # 开发服务器，端口 5173，API 代理 → 127.0.0.1:7413
-npm test          # vitest（101 tests: store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore 等，<3s）
+npm test          # vitest（98 tests: store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore 等，<3s）
 npm run build     # 类型检查 + 生产构建
 npm run lint      # oxlint
 ```
@@ -203,23 +207,23 @@ cargo check         # 仅 Rust 类型检查（不完整编译）
 #### PyInstaller 构建后端
 
 ```bash
-cd /c/WorkPlace/Tool/LiMo/LiMo-C   # ⚠️ 必须在项目根执行（spec 的 pathex=['backend'] 和 datas 相对 CWD）
+cd /c/WorkPlace/Tool/LiMo/LiMo-C   # ⚠️ 必须在项目根执行（spec 的 pathex=['backend'] 相对 CWD；datas 相对 spec 目录 backend/）
 # ⚠️ 必须指定 --distpath，否则输出到 dist/ 而 Tauri 打包的是 bin/ 里的旧文件
 # ⚠️ 必须用 venv python -m 方式：uv run（根目录无 pyproject）/ pyinstaller.exe trampoline 都会 canonicalize 失败
 backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMoBackend.spec --distpath frontend/src-tauri/bin
 ```
 
 **常见陷阱**：
-- ⚠️ **必须在项目根执行**：spec 的 `pathex=['backend']` 和 `datas`（`static/`、`app/agent/prompts/`）都是相对 CWD，在 `backend/` 目录下执行会找不到 datas
+- ⚠️ **必须在项目根执行**：spec 的 `pathex=['backend']` 相对 CWD（在 `backend/` 目录下执行会找不到 backend 模块）；**datas 在 PyInstaller 6.x 相对 spec 所在目录（`backend/`）解析**——`static/`、`app/agent/prompts/` 等恰好在 `backend/` 下可直接用相对名，但项目根的 `licenses/` 必须写 `('../licenses', 'licenses')`（2026-08-26 实测 6.21 报 `Unable to find backend\licenses`）
 - `console=False` 避免黑框闪烁
 - `COLLECT` 模式（one-dir）：生成 `LiMoBackend.exe` + `_internal/` 目录
 - Tauri `externalBin` 只打包 exe，`resources` 负责 `_internal/`
 - Tauri v2 `externalBin` 自动加平台后缀（如 `-x86_64-pc-windows-msvc.exe`），PyInstaller 输出的 exe 需重命名匹配
-- ⚠️ **PyInstaller `--noconfirm` 重建整个 `bin/LiMoBackend/` 目录**（会删除手动复制的 ffmpeg / externalBin 后缀 exe）——ffmpeg 与带后缀 exe 必须在 PyInstaller 之后、Tauri 之前重新复制
+- ⚠️ **PyInstaller `--noconfirm` 重建整个 `bin/LiMoBackend/` 目录**（会删除手动复制的 ffmpeg / externalBin 后缀 exe）——ffmpeg 与带后缀 exe 必须在 PyInstaller 之后、Tauri 之前重新复制。**ffmpeg 许可证文件（`GPL-3.0.txt` + `README-ffmpeg.txt`，见 `licenses/`）同样会被删，需一并重新复制**——gyan.dev 全系为 **GPLv3**（非 LGPL，官方页面声明 "All builds are ... licensed as GPLv3"，含 libx264/x265 等 GPL 库；独立进程调用无传染，但必须附全文）
 - 新增 Python 依赖后需同步更新 spec 的 `hiddenimports` 和 `collect_all` 列表
 - **certifi 必须加入 spec**：PyInstaller 打包后 SSL 证书路径丢失，启动时需设 `SSL_CERT_FILE` 环境变量
-- **searxng .git 目录必须清理**：PyInstaller 收集 `bin/searxng/.git` 后 Tauri 构建会因权限错误(os error 5)失败
-- **PyInstaller 必须在项目根目录执行**：spec 中 `pathex=['backend']` 和 `datas` 相对路径依赖 CWD
+- **searxng 不随包（2026-08-26 起）**：SearXNG（AGPL-3.0）为可选部署——`tauri.conf.json` resources 未配置 searxng，Rust launcher（[lib.rs](frontend/src-tauri/src/lib.rs)）检测到安装目录 `searxng/` 才设 `SEARXNG_BIN_PATH` 启用。如手动部署到安装目录：必须清理 `.git`（PyInstaller/Tauri 收集 `.git` 会因权限错误 os error 5 失败）并附 AGPL-3.0 全文（从 [searxng 官方仓库](https://github.com/searxng/searxng) 获取——主包已零 AGPL 库，`licenses/` 不再附带 AGPL 全文）
+- **PyInstaller 必须在项目根目录执行**：spec 中 `pathex=['backend']` 依赖 CWD（datas 相对 spec 目录 `backend/`，见上）
 - **KaTeX + markmap/d3 离线资源**：PyInstaller 通过 `datas` 打包 `backend/static/`（含 katex + markmap子目录）。打包前需确保字体完整（从 `frontend/node_modules/katex/dist/fonts/` 复制 60 字体到 `backend/static/katex/fonts/`），否则导出的 HTML 公式碎掉。HTML 导出中 CSS 的 `url(fonts/...)` 会被 base64 内联，完全自包含
 - **ffmpeg 内置**：将精简版 ffmpeg.exe + ffprobe.exe（gyan.dev essentials 8.1.1，194M，分发源 `~/.limo/ffmpeg-portable/`；2026-08-14 起从 434M full build 精简）复制到 `frontend/src-tauri/bin/LiMoBackend/ffmpeg/`（PyInstaller 之后、Tauri 之前），Tauri `resources` 自动打包。Rust `enhance_path()` 启动时追加到 PATH + 设 `FFMPEG_BIN_PATH` 环境变量
 - **OpenSSL DLL 版本冲突**：`cryptography` 包携带的 `libcrypto-3-x64.dll`（~5MB）会覆盖 Python 原生的（~8MB），导致 `_ssl.pyd` 加载失败（`ImportError: DLL load failed`），最终使后端无法启动。spec 中需排除 cryptography 的 DLL 并显式添加 `sys.base_prefix/DLLs/` 下的原始版本。**每次新增依赖后验证**：直接运行 `LiMoBackend.exe` 确认能输出 `Uvicorn running on http://127.0.0.1:7413`
@@ -275,12 +279,26 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留 generating，AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice
 - **消息级文档引用**：docIds = 当前选中文档 + 本条 @ 引用（chatStore 组合去重），不绑定会话
 
-**图表管道**（2026-08-16，方案：图表功能与 fact_check 移除）：
-- 生成笔记勾选「图表」（formats=chart）→ prompt 按需注入图表规范（`get_chart_format(source_type)` 基础规范 + 来源差异段）。**分层约束**：prompt 硬性规范优先（viewBox+width/height 双写一致 ≤640×640、**正常显示硬规则**（2026-08-16 从原仓库 diagram-design 提取：背景不透明铺满 rect / 元素不越界留 ≥16px 边距 / 相邻节点不重叠 / 每个节点必须文字·字号 ≥12·深字浅底 / 文字节点内居中）；**样式复用原仓库**（用户要求）：背景 `paper #f5f5f5` / 主文字描边 `ink #2d3142` / 连线 `muted #4f5d75` / 强调 `accent #eb6c36`（≤2 焦点）/ 节点白底 rx=6 圆角 + ink 描边 1px / 节点名 `sans-serif` 12-14px 600 居中（Google 字体 Geist 换系统 sans-serif）、安全红线清单；2026-08-16 精简——移除防重叠 6 条/≤300 行/4px 网格等**质量**硬规则（回归原仓库建议层），改「最小可行动例模板」降低 fast 模型创作门槛，详见 CHANGELOG），代码校验链只做兜底（LLM 失控时拦截，见下）→ LLM 输出 ```chart 围栏 → `app/services/chart_renderer.py` 校验链 → PIL 渲染 PNG(2x) 存 `assets/chart_N.png` → 替换为 `![图表](assets/chart_N.png)`
+**图表管道**（2026-08-16 建立，2026-09-19 改为语义化布局 + 多图 + 类型 4→9）：
+
+**双协议并存**：```fig（语义 JSON，现行）/ ```chart（手写 SVG，legacy 兜底）
+- **fig 路径**：LLM 只输出「有哪些节点、怎么排」的语义 JSON（**不写任何坐标/尺寸/SVG**）→ `app/services/chart_layout/`（拆包：`geometry.py` 几何底层 / `layouts.py` 10 个算子 / `engine.py` 校验与 expand；纯几何零依赖，算坐标/宽度/正交连线/标签遮罩，字体宽度经 `measure` 参数注入以保证与渲染同源）→ `app/services/chart_svg.py`（面向 PIL 子集生成；出口 `_FORBIDDEN_RE` 自检——`<marker>`/`class=`/`url(#)`/`<defs>` 是**被静默忽略**而非被校验拦住的）→ 现有校验链 → PIL 渲染 PNG(2x)。**几何错误从结构上不可能发生**，几何规则也就不必进 prompt（绕开 2026-08-16「堆 28 行硬规则 → fast 模型宁可跳过不画」的教训）
+- **九种布局**（prompt 层面；`_LAYOUTS` 有 10 个，`branch` 已实现但**不上 prompt**）：`hchain` 流程 / `layers` 层级 / `timeline` 时间线 / `grid` 依赖（唯一能表达「谁连谁」的 row×col 算子）/ `tree` 组织分类（父子内嵌结构，不需要 id/edges）/ `flowchart` 带判定流程（字符串 id + Kahn 分层，**拒绝任何环**）/ `state` 状态机（BFS 分层，**允许环与自环**）/ `sequence` 时序（参与者 ≤5，消息即时间顺序）/ `quadrant` 四象限（**固定 4 个、按 TL→TR→BL→BR**，唯一零字段无歧义方案）。两张注册表：`_NODES_RUNNERS`（入参 nodes）/ `_SPEC_RUNNERS`（入参整份 spec），`grid`/`layers` 在 `expand` 内特判
+- **形状层 + `shapes` 通道**（2026-09-19）：节点可选 `shape ∈ {rect, diamond, stadium, circle, bar}`（`{x,y,w,h}` 始终是**外接矩形**，故 AABB 不重叠断言无需改写）。算子可选返回第 4 项 `shapes`（`kind: line|rect`），在**背景之后、连线之前**渲染——**有几何范围但不属于内容主体的一律走它**（不占节点数、不进 `_count_nodes`）：象限轴线框 / sequence 生命线与分组框全按此归类
+- **`title` 渲染**：`TITLE_H = 24` 在 `expand` 里计入（`y += TITLE_H`、`height += TITLE_H`，高度/缩放/断言三处自动一致）。**已决策接受 3.75% 容量损失（640 → 616），不动 `_MIN_SCALE`**——0.65 对应 13px×0.65≈8.5px 已是可读性边缘，标题是内容而非装饰
+- **标签截断两级 + 空壳判据**（2026-09-19）：`_fit_labels`（节点定稿时按该节点最终宽度截）→ `_shrink_labels`（布局收尾保险——`_distribute` 的收缩发生在 `_fit_labels` **之后**）。⚠️ **可用宽必须走 `_shape_inner_w` 同一个函数**：`_fit_labels` 曾写死 `avail - 32`，与后者的 `<64 → w-8` 分支**不同源**，tree 等比收缩到 `_MIN_NODE_W=48` 时按 16px 算 → 连「一个中文 13px + 省略号 11px」都塞不下，9 个节点全被截成纯 `…`（**空壳图**：渲染成功、几何全对、断言全过、压测全过，用户拿到一张一个字都没有的图）。判据：截到「整个字都不剩」直接抛 `LayoutError`；且 `_shrink_labels` 必须**前置**检查「进来时是否已是空壳」——空壳测宽 11px 远小于可用宽，只看测量值的判据**进不去截断分支，会静默失效**（第一版修法正是栽在这里）
+- **chart 路径**（legacy，全链零改动）：LLM 手写 SVG → 现有 `_render_png` 全链，**免费回退路径**——回滚只需改 `get_chart_format` 一个函数
+- **按内容形态容错分流**：fig 围栏内若含 `<svg` → 按 chart 分支处理（模型改用 fig 后 legacy 兜底会自然失效，JSON 一错就白丢一张图）
+- **多图**：每个围栏 = 1 张图，prompt 允许 **1~N 张**（旧 prompt 硬性「必须 1 张最有代表性的图」，渲染链路本无上限，瓶颈纯粹在措辞）；单围栏节点 ≤9，超过必须拆围栏。编号 `chart_N` 按文档顺序递增，失败不跳号
+- **自然尺寸 + 等比缩放**（2026-09-19，用户提议「先完整绘制再缩放到对应比例」）：布局按**自然尺寸**定稿；高度超 640 不再直接失败，返回 `scale` → 落到根 `<g transform="scale(k)">`；`_MIN_SCALE=0.65` 下限（再小字号就糊，宁可报错让模型拆图）。**宽度按内容裁剪**（`_trim_width`，**四类元素 nodes+labels+shapes+edges 全部计入边界**——只按节点裁会把 state 回边沟槽切出界）消除窄图右侧留白（timeline 640→196px）。⚠️ 背景 rect 必须在 scale 组**之外**，否则 `100%` 被缩成 `100%×k` 留出空白带。⚠️ **已知遗留**：`_trim_width` **只裁右不裁左**——布局阶段按 640 宽居中，裁剪后画布变窄而内容坐标不变 → 窄图内容整体偏右、左侧留大空白（实测 flowchart 留白 232px / 画布 412px）。修法是裁剪后把内容平移回居中，但会改变既有 4 算子的全部产物坐标，未纳入本轮
+- **超时分档**：`_gen_timeout(formats)` → 勾选图表 `_GEN_TIMEOUT_CHART=400` / 其余 `330`。**两入口都要传**（非流式 `generate()` 无 `asyncio.timeout`，只受 SDK 约束）。⚠️ `request_timeout` 必须同时改 `LLMService.__init__` **和** `client` property——`AsyncOpenAI` 是惰性构造的，只改前者会「存了没用」（值进了实例属性但 property 里写死 330），**超时一点没变且单测照样 PASS**
+- **`chart_N.json` 是协议切换的确定性信号**：两条路径都出 PNG 且张数可能一样，只有 `.json`（仅 fig 分支解析成功时落盘）能区分走的哪条路
+- 实测（2026-09-19，约 900 字文档）：**6 张图 9.8s / 2890 字符**——新协议下出图几乎不增加成本，「多图会显著拉长生成」的前提不成立，故 `_GEN_TIMEOUT_CHART` 由基础档线性外推（330×1.21）而非按 P95×1.5 套用
+- 生成笔记勾选「图表」（formats=chart）→ prompt 按需注入图表规范（`get_chart_format(source_type)` 基础规范 + 来源差异段）。**以下为 legacy chart 路径的历史约束**（2026-09-19 起 prompt 不再教这些——fig 路径的坐标/宽度/遮罩全在 `chart_layout`/`chart_svg`，保留备查）：prompt 硬性规范优先（viewBox+width/height 双写一致 ≤640×640、**正常显示硬规则**（2026-08-16 从原仓库 diagram-design 提取：背景不透明铺满 rect / 元素不越界留 ≥16px 边距 / 相邻节点不重叠 / 每个节点必须文字·字号 ≥12·深字浅底 / 文字节点内居中）；**样式复用原仓库**（用户要求）：背景 `paper #f5f5f5` / 主文字描边 `ink #2d3142` / 连线 `muted #4f5d75` / 强调 `accent #eb6c36`（≤2 焦点）/ 节点白底 rx=6 圆角 + ink 描边 1px / 节点名 `sans-serif` 12-14px 600 居中（Google 字体 Geist 换系统 sans-serif）、安全红线清单；2026-08-16 精简——移除防重叠 6 条/≤300 行/4px 网格等**质量**硬规则（回归原仓库建议层），改「最小可行动例模板」降低 fast 模型创作门槛，详见 CHANGELOG），代码校验链只做兜底（LLM 失控时拦截，见下）→ LLM 输出 ```chart 围栏 → `app/services/chart_renderer.py` 校验链 → PIL 渲染 PNG(2x) 存 `assets/chart_N.png` → 替换为 `![图表](assets/chart_N.png)`
 - **只入 notes**：`_POLISH_FORMAT_FNS` 白名单无 chart，polish 不注入；`AVAILABLE_OPTIONS` 按 source_type 控制勾选（video/webpage/pdf/docx/pptx/text 有，xlsx/audio 无）；前端排除 epub（走独立解读管道）
-- **协议收紧**（2026-08-16，见 [pi-docs/图表围栏内部协议设计说明.md](pi-docs/图表围栏内部协议设计说明.md)）：只认 ```chart 专用围栏（内容须含 `<svg` 根元素）；svg/xml 围栏、裸内联 `<svg>` 一律不碰（用户内容零触碰）。取舍：误伤用户内容（静默改写用户数据）> LLM 偶尔不遵循围栏约定（warning 重新生成）
-- **校验链**：XML 良构 → viewBox ≤640×640 → 有形状元素 → **有非空文字内容（2026-08-16 起：<text 标签必须含非空白文字——空 `<text></text>` / 自闭合 `<text/>` 与零文字图一并拦截，防 LLM 只画框不写字产出无字图）** → PIL 渲染（失败重试 1 次）；任一失败**替换为** `📊 图表生成失败（{reason}）` 文本（零残留——产物永不含围栏，内部协议不外泄）。勾选图表但 LLM 未输出 chart 围栏 → 完成时 warning「图表未生成：请重新生成」
-- **字体实测定案 + SVG 片段保存（2026-08-16）**：resvg→PIL 切换（见下）。`_detect_chinese_font()` 探测系统第一个中文字体**文件路径**（`ImageFont.truetype` 加载成功即可用，候选 msyh.ttc/msyh.ttf/simhei/simsun/PingFang/Noto/WenQuanYi，进程内缓存探测结果 + 按 `(path,size)` 缓存字体对象），PIL 用该路径渲染中文；**prompt 不再约束 font-family**。**SVG 源码片段同步保存** `assets/chart_N.svg`（与 PNG 并列，用户提议）：不用于展示（assets 白名单无 svg），供①调试——文字没渲染时查看 LLM 原始输出②用户深度使用时导出矢量图
+- **协议收紧**（2026-08-16，见 [pi-docs/图表围栏内部协议设计说明.md](pi-docs/图表围栏内部协议设计说明.md)）：只认**专用围栏**——```chart（内容须含 `<svg` 根元素）与 ```fig（语义 JSON）；svg/xml/json 围栏、裸内联 `<svg>` 一律不碰（用户内容零触碰）。取舍：误伤用户内容（静默改写用户数据）> LLM 偶尔不遵循围栏约定（warning 重新生成）。⚠️ **fig 与 chart 有意不同**：chart 内非 SVG 原样保留（可能是协议外内容），而 fig 是毫无歧义的协议标记，解析失败**必须零残留替换**为失败文本
+- **校验链**：XML 良构 → viewBox ≤640×640 → 有形状元素 → **有非空文字内容（2026-08-16 起：<text 标签必须含非空白文字——空 `<text></text>` / 自闭合 `<text/>` 与零文字图一并拦截，防 LLM 只画框不写字产出无字图）** → PIL 渲染（失败重试 1 次）；任一失败**替换为** `📊 图表生成失败（{reason}）` 文本（零残留——产物永不含围栏，内部协议不外泄）。勾选图表但 LLM 未输出图表围栏 → 完成时 warning「图表未生成：请重新生成」（`_has_chart_fence()` 判定，两种围栏都算「已出图」）。**fig 路径的失败前置**：JSON 解析失败 → 「图表数据格式错误」；`LayoutError` → 「布局失败：{原因}」（节点超限/缩放下限/索引越界均带定位信息）；同样零残留、不写任何文件
+- **字体实测定案 + SVG 片段保存（2026-08-16）**：resvg→PIL 切换（见下）。`_detect_chinese_font()` 探测系统第一个中文字体**文件路径**（`ImageFont.truetype` 加载成功即可用，候选 msyh.ttc/msyh.ttf/simhei/simsun/PingFang/Noto/WenQuanYi，进程内缓存探测结果 + 按 `(path,size)` 缓存字体对象），PIL 用该路径渲染中文；**prompt 不再约束 font-family**。**SVG 源码片段同步保存** `assets/chart_N.svg`（与 PNG 并列，用户提议）：不用于展示（assets 白名单无 svg），供①调试——文字没渲染时查看 LLM 原始输出②用户深度使用时导出矢量图。⚠️ **这个「导出矢量图」的用途目前用户实际够不到**：资产白名单 `_ALLOWED_IMAGE_EXTS` 拒绝 svg（`/api/assets` 返回 400），导出也只按 markdown 引用收集、不扫目录。另 **fig 路径额外落盘 `assets/chart_N.json`**（语义源，同上纯旁路）；两者都在 `_collect_images` 实测复核中确认**零外泄**
 - **安全过滤**：`<script>` / `on*` 事件属性 / `xlink:href`·外部 URL 引用按不可信内容剥离（纵深防御——最终产物是 PNG 不执行脚本）
 - **PIL 自绘渲染器（2026-08-16 resvg→PIL 切换）**：resvg 全系（py 绑定 0.4.0 + CLI v0.47/v0.48 官方二进制）在 **Windows 无法渲染 SVG 文字**——fontdb 加载系统字体正常（`--list-fonts` 可见 Arial），但 usvg text 解析一律 `No match for "<font-family>"` → 跳过 text（上游普遍 bug，非绑定/配置问题，实测 v0.46-v0.48 全系列 + cargo 编译 v0.48.1 + 官方 v0.47 win64 二进制皆复现；v0.48.1 无 Windows 发布即 Windows CI 失败佐证）。改 **PIL 自绘 SVG 子集渲染器**（`_svg_to_pil`）：覆盖 rect（rounded_rectangle）/text（`anchor` 基线锚——SVG y 即基线）/line/path/circle/ellipse/polygon/polyline，非子集元素（image 等）忽略（漏画优于画错）。**path 用正则 tokenizer 分离命令与数字**（`_path_polylines`，兼容粘连写法 `M470 90 V130`——此前 split() 解析漏命令导致虚线不画，用户实测反馈）；**贝塞尔曲线补齐**（2026-08-16）：C/S 三次 + Q/T 二次采样为密集折线（`_bezier3`/`_bezier2`，S/T 控制点反射 `_reflect`，Z 闭合回子路径起点），A 椭圆弧跳过——此前曲线命令跳过参数漏画，图表曲线连线消失，三张手写示例图（line/虚线/折线/曲线/箭头/S-T 平滑/相对命令）实测全渲染；**polygon 描边闭合**（2026-08-16）：SVG 语义 polygon 最后一点回起点，draw.line 不自动闭合——此前菱形/箭头描边缺最后一条边（用户实测「流程图错位和边框缺失」），`_draw_poly` 对 polygon 追加首点闭合、polyline 保持不闭合；**transform 支持**（2026-08-17）：`<g transform>` 此前整块不画/画错位（用户实测「图表错位/缺内容」头号来源——原仓库 diagram-design 规范大量用 `<g transform>` 定位 + `dominant-baseline=middle` 节点居中），`_parse_transform` 2x3 affine 解析 translate/scale/rotate/matrix 组合 + `_svg_to_pil` 递归遍历 `<g>` 累计变换至子元素 + `_map(x,y,m)` 统一映射；**text 组合锚**：text-anchor（start/middle/end）× dominant-baseline（middle→中线 m / hanging→ascender / text-after-edge→descender，默认基线 s）组合成 PIL 双字母 anchor，`dominant-baseline="middle"` 节点内文字真正垂直居中；含旋转/斜切时 rect/ellipse 退化多边形近似（漏画圆角优于画错位置），字号/笔宽按 transform 局部缩放因子自适应（`tots = scale * lscale`）；`stroke-dasharray` 虚线按弧长分段绘制。零新依赖（PIL 已随图片优化打包，spec 无需额外收集；resvg_py 收集已从 spec 移除）。校验链/安全过滤/SVG 片段保存/失败标注逻辑不变
 - **后处理挂载**：generator.py `generate()`/`generate_both()` + generate.py `_post_process`（在 `_normalize_generated_images` 之前，先替换 assets 相对路径再统一 URL 规范化）
@@ -295,7 +313,7 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - **ProductRegistry**（`app/generation/product_registry.py`）— 产物注册表，定义 notes/polished 及其依赖拓扑。新增产物类型只需加一个 `ProductDef` 即可，无需改分发逻辑或前端 UI。
 - **ToolRegistry**（`app/agent/tool_registry.py`）— Agent 工具注册中心，替代硬编码的 `_register_chat_tools()`。每个工具是独立 `ToolDef`，注册后自动被发现和调用。
 
-FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` 四个依赖，消除路由函数中 `request.app.state.xxx` 样板代码。conversations / capabilities / files 路由已迁移，其余可逐步迁移。
+FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` 四个依赖，消除路由函数中 `request.app.state.xxx` 样板代码。**15 个路由中 12 个已迁移**（capabilities/chat/config/conversations/epub/export/files/ingest/markdown_edit/model/plugins/process）；未迁移 3 个：`generate.py`（7 处 `app.state`）、`search.py`、`references.py`。
 
 ### 引擎系统
 
@@ -306,7 +324,7 @@ FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_co
   - **pypdfium2**（BSD-3，默认）：C 引擎直读文字 + 嵌入原图，毫秒级。pdfplumber (MIT) 辅助表格提取。**docling 已移除**（2026-08-03，依赖 torch ~2GB 无法打包，打包版一直不可用）
   - **pdf-image**（2026-08-04）：整体转图片——渲染每页为 PNG 嵌入 markdown（供 OCR/多模态），绑定 `doc:pdf` 替代文字提取，对纯图片/扫描 PDF 更稳（绕开提取嵌入图的坏图问题）；document.py 跳过其重复渲染+OCR
   - **markitdown**（MIT）：Office/EPUB 转 Markdown
-  - **python-docx** / **python-pptx** / **openpyxl** / **ebooklib**：各格式专用引擎
+  - **python-docx** / **python-pptx** / **openpyxl** / **epub-container**（自研，2026-08-26 替代 ebooklib）：各格式专用引擎
 - **插件引擎**：AGPL 引擎（pymupdf4llm）以插件形式进程外加载（`~/.limo/plugins/`，command 指向子目录 venv 隔离依赖），`plugin_loader.py` 动态注册进 EngineRegistry，capabilities 的 fileTypeMap 自动追加
 
 引擎绑定通过 `engine_bindings` 动态 key 分配，doc 拆为子场景（`doc:pdf` / `doc:word` / `doc:ppt` / `doc:excel` / `doc:epub`，text 变体引擎已删除无意义），设置页可独立配置。绑定值支持字符串/数字/列表三种格式，`init_engines` 启动时清理失效 key 与无效 id。
@@ -435,14 +453,14 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **日志系统**：`contextvars.ContextVar` 注入 `request_id` → ASGI middleware，全链路追踪。`MemoryHandler`（`main.py` 中配置）缓存最近 1000 条日志供前端 LogPanel 轮询（`GET /api/logs`），重启后清空
 - **客户端断连监测**：`app/core/disconnect.py` — `@asynccontextmanager` 封装，5 个 SSE 端点复用，新增端点直接 `async with disconnect_watcher(request, cancel_event):`
 - **Tesseract 移除**：本地 OCR 已从内置移除（2026-08-02），`backend/bin/tesseract/` 不再随包分发。**行为变更**：无 dashscope key 时扫描件 OCR 从「本地可用」变「占位文本（原图 + _所有 OCR 引擎均失败_）」，直到用户装三方插件模板
-- **EPUB 一键解读**：ebooklib 章节提取；生成走独立管道（`app/services/epub_pipeline.py` + `app/routers/epub.py`）——阶段 1 逐章解读落盘 → 阶段 2 归并全书总结（notes=总结 / polished=逐章），全部章处理过即触发归并（失败章跳过并在 polished 按序插失败标注），中断续跑 + 软取消（`cancel_event`），产物必定落盘。三端点 `/api/epub/generate|task|cancel/{doc_id}`，前端 GenPanel epub 专属入口三态 UI（进度条 / 继续上次解读 / 一键解读）
+- **EPUB 一键解读**：epub-container（自研解析器，2026-08-26 起替代 ebooklib AGPL）章节提取；生成走独立管道（`app/services/epub_pipeline.py` + `app/routers/epub.py`）——阶段 1 逐章解读落盘 → 阶段 2 归并全书总结（notes=总结 / polished=逐章），全部章处理过即触发归并（失败章跳过并在 polished 按序插失败标注），中断续跑 + 软取消（`cancel_event`），产物必定落盘。三端点 `/api/epub/generate|task|cancel/{doc_id}`，前端 GenPanel epub 专属入口三态 UI（进度条 / 继续上次解读 / 一键解读）
 - **模糊帧过滤**：`frame_quality.py` — Laplacian 方差 + 熵 + 边缘密度评分，视频抽帧时自动丢弃低质量帧
 - **KaTeX 离线缓存**：`_get_katex_assets()` 从 node_modules/static 加载 CSS/JS/字体，CSS 中 `url(fonts/...)` 替换为 base64 data URI（60 个字体），导出 HTML 完全自包含（零 CDN，断网可用）
 - **KaTeX 服务端渲染**：`_render_formulas_katex()` 调 Node.js 脚本预渲染公式。打包环境无 Node.js → 先 `shutil.which("node")` 预检，不存则静默回退客户端渲染
 - **markmap 离线化**：`markmap.ts` 不调用 `markmap-common` 的 `loadCSS`/`loadJS`（动态 CDN 加载会被 Edge WebView2 跟踪防护拦截），KaTeX CSS 在 PreviewArea 中静态 import，hljs 由 react-syntax-highlighter 内联
 - **设置持久化**：`ProviderSettings.tsx` 中引擎/LLM Key 的保存不能仅靠 `onBlur`（组件卸载时不触发），需加 `useEffect` cleanup 用 ref 兜底保存
 - **上下文窗口四层解析**（2026-08-04 C1）：`resolve_context_window()`（`model_resolver.py`）——用户自定义（`enabled_models.context_window`，设置页可编辑）> llm_models 预设 > provider 默认表（`core/token.py` `DEFAULT_CONTEXT`）> 保守 32k。对话预算 `budget = context_window × 0.7`（`core/chat_context.py`），历史按 token 反向裁剪 + 文档分级截断
-- **路由异常标准化**：12/14 个路由模块已统一使用 AppError 体系（2026-07-25 完成 config/model/files 最后 15 处迁移）。**残留**：export.py / ingest.py 仍直接 `raise HTTPException`（历史遗留，见 [architecture.md](docs/architecture.md)）
+- **路由异常标准化**：**15/15 个路由模块已全部完成 AppError 迁移**（2026-09-19 核实：全仓 `grep "raise HTTPException"` 结果为空）。迁移时注意模式 #36 —— 真 404/403 必须显式传 `status_code`
 - **Content-Disposition 中文文件名**：必须用 RFC 5987 `filename*=UTF-8''` 编码，否则 Starlette 会尝试 latin-1 编码 → UnicodeEncodeError
 - **日志函数签名**：`app.core.logging.warning(msg, **kwargs)` 只接受 1 个位置参数 + kwargs，不能用 `%s` 占位符多参数调用。多参数用 f-string
 - **空文本去重碰撞**：空字符串 SHA256 固定为 `e3b0c44...`，两个空导入会误判为重复。TextAdapter 需检查 `text.strip()` 非空
@@ -453,7 +471,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（2026-07-10 起持续沉淀，现 34 条）
+## 关键模式（2026-07-10 起持续沉淀，现 39 条）
 
 以下模式是实现中易错的关键约束，新增代码必须遵守。
 
@@ -491,13 +509,17 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 27. **remark 插件顺序**：`remarkMath` 必须在 `remarkGfm` 之前。否则公式内的 `_`（下标）和 `<`（`x_{<k}`）会被 GFM 先解释为斜体/HTML 标签 → `$$` 定界符破裂 → KaTeX 渲染失败。**本次已修复**：markdown-plugins.ts。
 28. **引擎绑定只取第一个**：`engine_bindings` 列表只解析第一个可用引擎，失败直接报错（不再多引擎降级尝试）。扩展名兜底（pdf→pypdfium2 等）是默认行为，新用户无绑定时必须可用。引擎自动降级开关（`engine_auto_fallback`）已移除，用户换引擎去设置页手动改。LLM 降级（备用模型）是独立语义，仅 process.py 的 LLM→OCR 回退保留。
 29. **`init_engines` 禁止每次启动覆盖配置**：引擎初始化中的 `save_config` 会写全量配置到 config.yaml。若此调用在每次启动都触发，一旦内存中的 config 对象缺失敏感字段（API Key 等），这些字段将永久丢失。**本次已修复**：ASR 绑定逻辑从「强制先删后插重排」改为「仅空列表初始化」，确保后续启动 asr_changed=False。新增引擎/绑定变更时才保存。
-30. **FastAPI Depends 依赖注入**：用 `store=Depends(get_store)` 替代函数体内 `request.app.state.store`，消除样板代码。`app/core/dependencies.py` 提供 `get_store/config/guard/config_lock` 四个依赖。全部 11 个路由已迁移完成（2026-07-30）。
+30. **FastAPI Depends 依赖注入**：用 `store=Depends(get_store)` 替代函数体内 `request.app.state.store`，消除样板代码。`app/core/dependencies.py` 提供 `get_store/config/guard/config_lock` 四个依赖。15 个路由已迁移 12 个；未迁移 `generate.py` / `search.py` / `references.py`（新增路由一律用 Depends，勿再写 `request.app.state`）。
 31. **disconnect_watcher 客户端断连监测**：`app/core/disconnect.py` 提供 `@asynccontextmanager` 封装的 `disconnect_watcher(request, cancel_event)`。替换了 5 个路由中 ~45 行重复的 `_watch_disconnect` 实现，修复了 process.py 资源泄漏和 chat.py 缺 await 两个 bug。新增长时端点时复用此工具。
 32. **适配器一请求一实例**：`AdapterRegistry` 存**类**（`register(VideoAdapter)`），`route()` 命中前 `cls()` 实例化——单例实例的 `cookies`/`_engine_config`（含 `cancel_event`）会被并发导入互相覆盖。适配器 `accept()` 是纯输入判断（无实例状态），`name` 是类属性。**本次已修复**：registry.py + adapters/__init__.py。
 33. **CORS Origin 白名单**：本地后端**禁止** `allow_origin_regex=".*"`（任意网页可跨站读本地数据）。白名单必须含 Tauri v2 生产的 **`http://tauri.localhost`**（Windows WebView2 实测 origin）+ `https://tauri.localhost` + `tauri://localhost` + 本机 localhost 任意端口；`_ForceCORSMiddleware` 仅对白名单 origin 回显凭证。**本次已修复**：main.py（2026-08-02 曾漏 `http://tauri.localhost` 导致打包版全接口 CORS 拦截）。
 34. **app 内置欢迎文档同步**：PreviewArea 空态欢迎页（2026-08-16 改造为 **LiMo 三产物形态**：`WELCOME_NOTES`=笔记（欢迎简介）/ `WELCOME_POLISHED`=整理版原文（开发者功能）/ `WELCOME_TRANSCRIPT`=转录（更新记录），`frontend/src/components/preview/PreviewArea.tsx` 模块级常量 + `welcomeTab` 三 tab 切换）**在新增/移除功能时必须同步更新**——它面向新用户展示当前能力，曾因未同步而过时（如缺失插件系统/参考文件）。判断标准：改动影响「导入/转录/生成/导出/插件」任一能力时，检查此文档。
 35. **log. helper 自动带来源模块**：`app/core/logging.py` 的 `_emit` 用 `inspect.currentframe()` 取**调用者模块名**注入 logger——所有走 `from app.core import logging as log; log.info(msg, key=value)` 的日志 name 即来源模块（非固定的 `app.core.logging`），配合 rid 精确定位。新增日志一律用 `log.` helper 结构化 kwargs（`log.warning` 只接受 1 位置参数 + kwargs），**勿再新增 stdlib `logging.getLogger(__name__)`**——混用导致风格分裂。函数内 import 规则（#26）仍适用。
 36. **AppError recoverable 与 status_code 两维独立**：recoverable = 是否预期业务状态（决定日志级别 + 前端 `isRecoverable` 是否静默），status_code = HTTP 语义。main.py 异常处理器**尊重显式 status_code（含显式 400）**，未显式时 recoverable→200。显式与否由 AppError 的 `_explicit_status` 标记判定（默认值用哨兵 `_UNSET`，非「≠400」判断）——显式 `status_code=400 + recoverable=True`（如 EXPORT_NO_CONTENT）必须返回 400，否则前端 `!r.ok` 把 200 当成功，下载到损坏 zip（2026-08-25 评审 H1 修复）。迁移 HTTPException 时：真 404/403 必须显式传 status_code，**禁止用 recoverable=True 压掉真 404**——删除后 GET 必须 404（e2e「deleted doc -> 404」断言），前端 `isRecoverable` 已兼容 recoverable 404。
+37. **React `onClick={handler}` 会注入事件对象**：React 调用 onClick 处理器时**总是传 MouseEvent**，若 handler 首个参数是**可选业务参数**（如 `handleSave(saveDocId?: string)`），事件对象被当作业务值 → 模板字符串拼出 `[object Object]`（实测：保存编辑产物 → `PUT /api/markdown/[object Object]` → 后端 `MD_EDIT_NOT_FOUND`）。**TS 不报错**——`() => void` 赋给 `onClick` 属逆变兼容，静态检查无法发现。修复双管齐下：① 绑定处箭头包装 `onClick={() => onSave()}`；② handler 内加 `typeof x === 'string'` 守卫纵深防御。**新增 onClick 绑定时**：handler 首参为业务参数就必须箭头包装，勿裸传标识符。（2026-09-19 修复 TextareaMarkdownEditor / UnsavedChangesDialog）
+38. **可选参数入断言 = 默认不生效**：`assert_layout(nodes, W, height, edges=None, labels=None, shapes=None)` 这类「不变量检查靠可选参数喂数据」的设计，**内部调用点不传就等于没写**——代码里躺着断言、测试也全绿，运行时一条都没执行（「断言存在」≠「断言有效」）。新增此类不变量时：① `expand()` 内部两处调用**必须传全量**；② 必须造**故意违规**的输入直接调它、确认真能抛错，否则无法区分「检查通过」与「检查根本没跑」。（2026-09-19 图表 `assert_layout` 补三条不变量时修复）
+39. **成对余量必须同源，判据要防「输入已被上游改坏」**：`_shape_min_w`（文字→需要多宽）× `_shape_inner_w`（已有这么宽→能放多少）是同一余量的两个方向，**必须对同一宽度给出同值**——`_fit_labels` 曾写死 `avail-32` 与后者的 `<64 → w-8` 分支脱节，窄节点按 16px 算可用宽，文字在下游判据**看到它之前**就被截成纯 `…`。教训：① 新增成对常量/函数时，后来者**调用前者**而非各自重算；② 判据不能只看「自己算出来的值是否违规」，还要能识别「输入已被上游改坏」的形态（本例：`_shrink_labels` 补前置检查——空壳测宽 11px 远小于可用宽，只看测量值的截断分支根本进不去）。这是第 38 条的另一面：**判据跑到了，但它看的输入已经不是它以为的那个**。（2026-09-19 图表「空壳图」修复）
+
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始
@@ -521,7 +543,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 |------|------|------|
 | ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端)。faster-whisper 已从内置移除（本地转写需自行安装） |
 | ✅ | OCR 引擎 | dashscope VL (云端)。Tesseract 已从内置移除（需三方插件 `examples/tesseract_plugin.py`） |
-| ✅ | Doc 引擎 | pypdfium2 (PDF默认,BSD-3) + pdfplumber (表格,MIT) + **pdf-image（整体转图片→OCR/多模态）** + python-docx/pptx/xlsx + openpyxl/.xls(xlrd) + markitdown + ebooklib（docling 已移除；.doc/.ppt 旧格式明确提示转 .docx/.pptx） |
+| ✅ | Doc 引擎 | pypdfium2 (PDF默认,BSD-3) + pdfplumber (表格,MIT) + **pdf-image（整体转图片→OCR/多模态）** + python-docx/pptx/xlsx + openpyxl/.xls(xlrd) + markitdown + epub-container 自研 EPUB（ebooklib AGPL 已移除 2026-08-26；docling 已移除；.doc/.ppt 旧格式明确提示转 .docx/.pptx） |
 | ✅ | 引擎绑定 | `engine_bindings` 按子场景配置，doc 拆为 pdf / word / ppt / excel / epub |
 | ✅ | 引擎绑定只取第一个 | 绑定解析首个可用引擎，失败直接报错，不再静默降级 |
 | ✅ | 视频帧提取 | ffmpeg 抽帧 + 网格拼接 + 去重（无 opencv 依赖） |
@@ -565,18 +587,24 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | assistant 引用块 | tool_result.refs → assistant 消息引用文档 chips（点击跳转） |
 | ✅ | 上下文管理 | 模型窗口感知预算（context_window 四层解析）+ 历史 token 反向裁剪 + 长对话 LLM 压缩 + 前端 token 占用进度/费用显示 + clearContext + 429 重试 |
 
-### 📊 图表生成（2026-08-16，替代原 AI 审核域）
+### 📊 图表生成（2026-08-16 建立，2026-09-19 语义化布局 + 多图）
 
 > AI 审核（原事实验证）已随方案「图表功能与 fact_check 移除」下架转历史——后端 fact_check/review/evidence 删除、前端 fact_check tab 移除，历史 fact_check.md 产物保留不删（无读取入口）。旧实现记录见 CHANGELOG 2026-07-15 起条目。
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
 | ✅ | 笔记可选组件 | 生成笔记勾选「图表」（默认不勾选），prompt 按需注入 `get_chart_format(source_type)` 规范 |
-| ✅ | 来源差异提示 | DOC 类型→架构图/层级树；网页→流程/结构树；视频→流程步骤图/时间线；其他→自行判断 |
-| ✅ | PIL 渲染嵌入 | LLM 输出 ```chart 围栏 → 校验链 → PIL 渲染 PNG(2x) → `assets/chart_N.png` → `![图表](...)` 引用（resvg 全系 Windows 无法渲染 SVG 文字，2026-08-16 切换） |
-| ✅ | 校验链 + 安全过滤 | 只认 ```chart 围栏/XML 良构/viewBox ≤640×640/有形状元素 + script·on*·外部引用剥离；失败替换为 📊 失败文本（零残留）；无 chart 围栏 → 完成 warning |
+| ✅ | 来源差异提示 | 作用已变为「**优先推荐**哪几类」；DOC→tree/flowchart/layers/grid；网页→hchain/flowchart/grid；视频→timeline/sequence/hchain；其他→hchain/tree/grid |
+| ✅ | **语义化布局**（2026-09-19） | LLM 只输出 ` ```fig ` 语义 JSON（**不写任何坐标**）→ `chart_layout` 算几何 → `chart_svg` 生成 → PIL 渲染。几何错误从结构上不可能发生 |
+| ✅ | **类型 4 → 9**（2026-09-19 续） | 新增 tree/flowchart/state/sequence/quadrant + 形状层（diamond/stadium/circle）+ `shapes` 通道（轴线/生命线/分组框）。A/B 实测出图率零下降、类型从 1 种扩到 7 种 |
+| ✅ | **几何缺陷五修**（2026-09-19 续） | 同行跨列边穿节点 / 走廊边叠同一 y / 隔行边穿中间行 / edges·shapes 不参与 bbox（回边沟槽被裁）/ 报错文案误导（「节点过多」掩盖「有环」）。另补三条 `assert_layout` 不变量 |
+| ✅ | **`title` 渲染**（2026-09-19 续） | 此前解析了从不绘制；`TITLE_H=24` 在 `expand` 计入。**接受 3.75% 容量损失（640→616），不动 `_MIN_SCALE`** |
+| ✅ | **多图**（2026-09-19） | 每个围栏 = 1 张图，1~N 张；单围栏 ≤9 节点超出须拆图；编号按文档顺序递增、失败不跳号。实测 6 张图 9.8s |
+| ✅ | **自然尺寸 + 等比缩放**（2026-09-19） | 高度超 640 不再失败，按自然高度定稿 + `<g transform="scale(k)">`；`_MIN_SCALE=0.65` 下限；宽度按内容裁剪消除留白（⚠️ 只裁右不裁左，窄图左侧留白为已知遗留） |
+| ✅ | PIL 渲染嵌入 | 围栏 → 校验链 → PIL 渲染 PNG(2x) → `assets/chart_N.png` → `![图表](...)` 引用（resvg 全系 Windows 无法渲染 SVG 文字，2026-08-16 切换）；legacy ` ```chart ` 手写 SVG 路径完整保留为回退 |
+| ✅ | 校验链 + 安全过滤 | 只认 ```fig/```chart 专用围栏/XML 良构/viewBox ≤640×640/有形状元素 + script·on*·外部引用剥离；失败替换为 📊 失败文本（零残留）；无图表围栏 → 完成 warning |
 | ✅ | 只入 notes | polish 白名单无 chart；xlsx/audio 无勾选；前端排除 epub |
-| ❌ | 更多图表类型 | 当前为 SVG 通用渲染（PIL 自绘子集），无 echarts/mermaid 等专业图库（插件化方向，暂不实施） |
+| ❌ | 更多图表类型 | 当前 10 个算子（`branch` 已实现未上 prompt），无 echarts/mermaid 等专业图库（插件化方向，暂不实施） |
 
 ### 📤 导出
 
@@ -623,7 +651,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 并发控制 | `ExecutionGuard` 双层信号量（云端 5 + 本地 2），generate/process/retranscribe 已接入 |
 | ✅ | 上下文窗口可配置 | `addModel()` API + ProviderSettings 展示 |
 | ✅ | 日志全链路追踪 | `contextvars.ContextVar` 注入 `request_id`，前端日志面板 |
-| ✅ | 旧格式错误迁移 | 12/14 个路由模块统一 AppError 体系（export/ingest 残留 `raise HTTPException`，2026-08-14 核实） |
+| ✅ | 旧格式错误迁移 | 15/15 个路由模块统一 AppError 体系（2026-09-19 核实无 `raise HTTPException` 残留） |
 
 ### 🚀 规划中
 
@@ -651,8 +679,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✨ LLM 生成 | 9 | 9 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 9 | 9 | 100% |
-| 📊 图表生成 | 5 | 6 | 83% |
+| 📊 图表生成 | 11 | 12 | 92% |
 | 📤 导出 | 8 | 9 | 89% |
 | 🎨 前端 UI/UX | 15 | 15 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **74** | **76** | **97%** |
+| **合计** | **80** | **82** | **98%** |

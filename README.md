@@ -24,7 +24,7 @@
 
 语音转文字（ASR）：bcut-asr（B 站免费，无需 Key）、dashscope-asr（阿里云）
 
-文档提取（Doc）：pypdfium2（PDF 默认，BSD-3）、markitdown（Office/EPUB 通用）、python-docx/pptx（Word/PPT）、openpyxl（Excel）、ebooklib（EPUB 章节提取）
+文档提取（Doc）：pypdfium2（PDF 默认，BSD-3）、markitdown（Office/EPUB 通用）、python-docx/pptx（Word/PPT）、openpyxl（Excel）、epub-container（EPUB 章节提取，自研）
 
 图片识别（OCR）：dashscope-ocr（阿里云，需 Key）
 
