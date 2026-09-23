@@ -525,10 +525,15 @@ async def generate_stream(transcript_id: str, request: Request,
                 # 参考文件「原文 + 参考」超出模型上下文预算时先 LLM 摘要（装得下则原样
                 # 返回，零成本）。不压缩的话整份塞进 prompt → 请求直接超窗失败。
                 # 压缩可能耗时数十秒，先推 stage 事件，避免前端静默等待被误认为卡死。
-                if ref_texts and needs_compression(ref_texts, clean_text, llm, config):
+                # ⚠️ 必须落到局部名 refs，不可写回外层的 ref_texts：merged_stream 是
+                # 嵌套函数，内层一旦对它赋值，Python 就把 ref_texts 整段判定为内层
+                # 局部变量 —— 紧随其后的读取直接 UnboundLocalError（2026-09-23 首次
+                # 流式生成即炸）。压缩结果只给 notes 用，本就没有回传外层的必要。
+                refs = ref_texts
+                if refs and needs_compression(refs, clean_text, llm, config):
                     yield f"data: {json.dumps({'type': 'stage', 'message': '参考文件超出模型上下文，正在压缩…'}, ensure_ascii=False)}\n\n"
-                ref_texts = await compress_references_if_needed(
-                    ref_texts, clean_text, llm, config,
+                refs = await compress_references_if_needed(
+                    refs, clean_text, llm, config,
                     title=tx.get("title", ""), cancel_event=cancel_event)
 
                 polished_prompt = build_polish_prompt(
@@ -541,7 +546,7 @@ async def generate_stream(transcript_id: str, request: Request,
                     formats=format_list, user_notes=user_notes,
                     target_language=target_language,
                     video_understanding=video_understanding,
-                    reference_texts=ref_texts)
+                    reference_texts=refs)
 
                 # 续写：把残缺内容加进去
                 if partial_content:
@@ -749,11 +754,14 @@ async def generate_stream(transcript_id: str, request: Request,
 
             # 参考文件超出模型上下文预算时先摘要（同双产物分支）。
             # 参考文件只注入 notes —— 单产物 polished 时压缩纯属白花钱，直接跳过。
+            # ⚠️ 同双产物分支：用局部名 refs，绝不写回外层 ref_texts（嵌套函数内赋值
+            # 会让外层同名变量变成局部变量 → UnboundLocalError）。
             if stream_mode != "polished":
-                if ref_texts and needs_compression(ref_texts, clean_text, llm, config):
+                refs = ref_texts
+                if refs and needs_compression(refs, clean_text, llm, config):
                     yield f"data: {json.dumps({'type': 'stage', 'message': '参考文件超出模型上下文，正在压缩…'}, ensure_ascii=False)}\n\n"
-                ref_texts = await compress_references_if_needed(
-                    ref_texts, clean_text, llm, config,
+                refs = await compress_references_if_needed(
+                    refs, clean_text, llm, config,
                     title=tx.get("title", ""), cancel_event=cancel_event)
 
             if stream_mode == "polished":
@@ -768,7 +776,7 @@ async def generate_stream(transcript_id: str, request: Request,
                     formats=format_list, user_notes=user_notes,
                     target_language=target_language,
                     video_understanding=video_understanding,
-                    reference_texts=ref_texts)
+                    reference_texts=refs)
 
             if partial_content:
                 prompt = _build_continue_prompt(prompt, partial_content)

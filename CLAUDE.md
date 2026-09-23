@@ -163,7 +163,7 @@ uv run uvicorn main:app --host 127.0.0.1 --port 7413 --reload
 # 注意：--reload 只重载代码变更，不重跑 startup event。
 # 修改 config.yaml / 适配器注册 / 引擎注册后需手动重启。
 
-# 运行测试（18 个测试文件）
+# 运行测试（19 个测试文件）
 python tests/test_prompt.py          # Prompt 构建验证
 python tests/test_adapters.py        # 适配器注册 + 路由
 python tests/test_engines.py         # 引擎注册 + 查找
@@ -181,6 +181,7 @@ python tests/test_docx_export.py     # Word 导出（回读 docx 产物断言）
 python tests/test_export_print.py    # 导出 HTML 打印样式（CSS 顺序 + 分页约束）
 python tests/test_reference_compressor.py # 参考文件超窗压缩（预算判据/降级链/总量兜底/文件名清洗/摘要超时）
 python tests/test_reference_store.py # 参考文件暂存（全表过期清理/条目数闸门/总量闸门）
+python tests/test_closure_shadowing.py # 嵌套函数变量遮蔽静态检查（AST 扫描全库，整类 UnboundLocalError 防线）
 python tests/test_video_understand.py # 视频直传（DashScope SDK）
 ```
 
@@ -505,7 +506,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（2026-07-10 起持续沉淀，现 42 条）
+## 关键模式（2026-07-10 起持续沉淀，现 43 条）
 
 以下模式是实现中易错的关键约束，新增代码必须遵守。
 
@@ -557,6 +558,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 41. **「保底下限」会吃掉「收敛兜底」**：给截断/裁剪函数设「至少留 N 单位」的硬下限时，先问「调用方会不会要求比 N 更小」。参考文件压缩的总量兜底要把每份从 200 token 削到 10 token，而 `_truncate_to_tokens` 里 `cut = max(200, len*ratio)` 的「至少 200 字符」让每份**纹丝不动** → 兜底不收敛、请求照样超窗失败，而只断言「压缩函数被调用过」的单测完全看不出来。同一函数另两个配套坑：**必须幂等**（反复调用不能把截断标记叠成一串）、**目标值要先扣掉标记自身的 token 开销**（否则出现「削到 166、实际输出 186」的假收敛）。教训：兜底链的**最后一环必须用真实数字断言收敛**（本例：总量 ≤ 预算），验证「函数被调用了」等于没验证。另：兜底要认边界——原文自身超预算（`base ≥ budget`）时，把参考文件削成空也救不回请求，此时**不做兜底**才是对的。（2026-09-23 参考文件压缩，三个缺陷全部由测试抓到）
 
 42. **「按入参惰性清理」在换 id 的用法下等于不清理**：`get_references(ids)` 旧实现只 pop「入参里出现过且已过期」的条目。而前端一次只持有一个参考文件 id —— 用户换一次文件就换一个 id，**旧 id 从此再也不会出现在任何入参里**，那条记录会一直驻留到进程重启，20 分钟 TTL 形同虚设（1MB 上限把每次泄漏从 200KB 放大 5 倍）。改为**全表扫过期项**（`_purge_expired_locked()`）+ 双闸门（条目数/总量）。**教训**：写「惰性清理」前先问「触发清理的那次访问还会不会发生」——缓存淘汰里被换掉的那一半永远不会再被访问，正是最需要回收的部分。⚠️ **测试要断言的是内部条目数**（`len(_store)`），不是「取回的内容对不对」——按入参清理时内容完全正确，只有条目数能暴露泄漏；并且**必须自证用例有区分力**（把清理函数换成 no-op，确认用例真的会失败）。（2026-09-23 参考文件暂存）
+
+43. **嵌套函数内给外层变量赋值 = 该名在整个嵌套函数里变成局部变量**：`generate_stream` 顶层的 `ref_texts`，被嵌套函数 `merged_stream` 里的一句 `ref_texts = await compress_references_if_needed(...)` 拽成了后者的局部变量 → 上一行的 `if ref_texts` 在任何赋值之前读取它 → **UnboundLocalError（必然，非偶发）**。Python 的规则是「函数体内出现对该名的赋值 → 整个函数内它都是局部」，**与赋值语句在不在前面无关**。修法：嵌套函数内用局部名承接（`refs = ref_texts`），不要写回外层。**这是 #26（函数内重复 import 造成同名局部）的跨作用域版本**——同一根因；同一文件此前已在 `video_path` 上栽过一次（条件分支内赋值 + finally 引用，属同作用域变体）。⚠️ **测试测不到它**：不是逻辑错，而是运行时必炸、读代码与跑单测都正常的作用域错误，且流式端点的真实运行路径此前没有覆盖。已补 `tests/test_closure_shadowing.py`（AST 全库扫描，判据 = 外层赋值名 ∩ 嵌套赋值名 ∩ **嵌套内读早于写**）——**必须按执行顺序而非 AST 子节点顺序展开读写**（`ast.Assign._fields` 是 `('targets','value')` 而语义上 value 先求值，直接 `ast.walk` 会把 `x = x + 1` 判成「先写后读」，正好漏掉最该抓的一类；`AugAssign` 同为先读后写；形参算「进入即绑定」）。（2026-09-23 流式生成必炸修复）
 
 ## 待办事项
 

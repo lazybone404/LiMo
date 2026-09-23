@@ -89,6 +89,41 @@
 
 **前端小字提示**（用户明确要求）：`GenerateOptions.tsx` 参考文件区加一行 10px 说明「参考文件与原文合计超出所选模型上下文窗口时，会先自动压缩参考文件（保留要点）再生成」，仅在「不只是 polished」时显示（polished 不注入参考，提示无意义）。
 
+### 6. 修复流式生成必炸的作用域 bug（同日续，0.4.4 打包完成后首次生成即复现）
+
+```
+UnboundLocalError: cannot access local variable 'ref_texts' where it is not associated with a value
+  File "app\routers\generate.py", line 528, in merged_stream
+```
+
+**症状**：0.4.4 安装包打完后，点一次「生成笔记」立刻失败 —— 不是偶发，是**必然**。
+
+**根因**：这是第 3 条（超窗压缩）引入的。`generate_stream` 顶层有 `ref_texts = _resolve_reference_texts(...)`，而压缩逻辑写在**嵌套函数** `merged_stream` 里：
+
+```python
+async def merged_stream():          # generate_stream 内部的嵌套函数
+    ...
+    if ref_texts and needs_compression(...):   # ← 炸在这里
+        yield "…正在压缩…"
+    ref_texts = await compress_references_if_needed(ref_texts, ...)   # ← 这一句是元凶
+```
+
+Python 的规则是「**只要函数体内出现对某名的赋值，该名在整个函数里就是局部变量**」，与赋值语句在不在前面无关。`merged_stream` 里那句赋值让 `ref_texts` 成了它的局部变量 → 上一行的 `if ref_texts` 在任何赋值之前读取它 → `UnboundLocalError`。与「关键模式」#26（函数内重复 import 造成同名局部）同根因，只是这次跨了**函数作用域**。
+
+**为什么测试没抓到**：这不是逻辑错误，而是**运行时必炸、但读代码和跑单测都正常**的作用域问题 —— 而流式端点的真实运行路径此前完全没有测试覆盖（`test_e2e_smoke.py` 需后端启动 + 真实 LLM key，不覆盖流式生成）。
+
+**修法**：在嵌套函数内改用局部名 `refs = ref_texts` 承接，压缩结果只给 notes 用，本就没有回传外层的必要。两处（双产物 / 单产物分支）同改。
+
+**防线**：新增 `tests/test_closure_shadowing.py` —— 用 AST 静态扫描全库，判据为
+「外层函数赋值的名字 ∩ 嵌套函数赋值的名字 ∩ **嵌套函数内读早于写**」→ 违规。防的是**整类**而非这一个：
+
+- 按**执行顺序**而非 AST 子节点顺序展开读写（`ast.Assign._fields` 是 `('targets','value')`，而语义上 value 先求值 —— 直接 `ast.walk` 会把 `x = x + 1` 判成「先写后读」，正好漏掉最该抓的一类）；`AugAssign`（`x += 1`）同样先读后写
+- 形参视为「进入即绑定」（order 0），避免把「读形参」误判为先读；`nonlocal`/`global` 声明豁免
+- **判据自证有区分力**（模式 #38）：内嵌三种真实违规形态（先读后写 / 自增 / 自引用赋值）确认能抓到，三种安全写法（局部名承接 / 先写后读 / nonlocal）确认不误报；并**对真实代码自证** —— 把修复回滚成 bug 版本，确认检查立刻报出 `generate_stream() 的局部变量 'ref_texts' 在嵌套函数 merged_stream() 内先读后写`
+- 全库扫描确认其余 5 处同类「遮蔽」都是安全的（内层先赋值后使用，正是 `_it = None` / `chunks: list[str] = []` 这类预初始化防御写法）
+
+**教训**：新增的「外层变量 + 嵌套函数内加工」组合必须换局部名。同一文件里 `video_path` 也因「条件分支内赋值 + finally 引用」被预初始化过（503 行 P0-5 注释）——那是**同作用域内**的同类问题（UnboundLocalError 家族的另一个变体），本次这个是**跨作用域**版本，两者的共同点是「变量可能在任何赋值之前被读取」。同一文件两次栽在这上面，故补静态检查而非只修这一处。
+
 ---
 
 ## 2026-09-21 — 打印样式 + PDF 导出（WebView2 PrintToPdf / 打印对话框双路径）
