@@ -335,7 +335,9 @@ _PROVIDER_IMAGE_RULES: dict[str, dict] = {
     "dashscope":  {"include": ["qwen-vl", "qwen-omni", "qvq", "qwen3-vl", "ocr"],
                    "exclude": ["coder"]},  # ocr：OCR 专用模型（qwen3.5-ocr 等）本质是视觉识别，标 image 供 OCR 选择
     "google":     {"include": ["*"]},
-    "deepseek":   {"include": ["vl", "vision"]},
+    # deepseek：V4.1 起 flash 原生支持图像理解（旧 vl/vision 命名已下线，
+    # 靠名字匹配是彻底 no-op）。改为「默认全标 + 排除已知纯文本子系列」。
+    "deepseek":   {"include": ["*"], "exclude": ["pro", "reasoner", "coder", "embed"]},
     "zhipu":      {"include": ["glm-4v", "vl", "vision"]},
     "moonshot":   {"include": []},
 }
@@ -363,11 +365,11 @@ def _detect_capabilities(provider_id: str, model_name: str) -> list[str]:
     if rules:
         include = rules.get("include", rules) if isinstance(rules, list) else rules.get("include", [])
         exclude = rules.get("exclude", []) if isinstance(rules, dict) else []
-        if "*" in include:
+        # ⚠️ include 与 exclude 必须同时判，不能写成 if "*" in include / elif 前缀匹配 的互斥分支——
+        # 那样 "*" 分支会跳过 exclude，排除表变成死代码（google 恰无 exclude 所以一直没暴露）。
+        include_hit = ("*" in include) or any(p in name for p in include)
+        if include_hit and not any(e in name for e in exclude):
             caps.append("image")
-        elif any(p in name for p in include):
-            if not exclude or not any(e in name for e in exclude):
-                caps.append("image")
     # 视频直传能力：精确模型名匹配（不使用前缀——避免误标 qwen-vl-ocr-latest 等）
     video_list = _PROVIDER_VIDEO_RULES.get(prov)
     if video_list and model_name in video_list:

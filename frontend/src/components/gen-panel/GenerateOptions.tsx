@@ -5,6 +5,8 @@ import { useStore } from '../../store'
 import { saveReference } from '../../api/references'
 import { getErrorMessage } from '../../api/core'
 import { formatSize } from '../../lib/format'
+// 能力位徽标映射：与设置页共用一份（见 lib/modelCaps.ts 的文件头说明）
+import { capLabel } from '../../lib/modelCaps'
 
 export interface EnabledModel {
   id: number; provider_id: string; model_name: string
@@ -13,6 +15,13 @@ export interface EnabledModel {
 export interface Provider {
   id: string; name: string
 }
+
+/** 思考档位的三档定义（顺序即展示顺序；value 直接下发给后端） */
+const EFFORT_TIERS: { value: 'low' | 'high' | 'max'; label: string }[] = [
+  { value: 'low', label: '快速' },
+  { value: 'high', label: '标准' },
+  { value: 'max', label: '最强' },
+]
 
 interface Props {
   // 模型
@@ -36,6 +45,12 @@ interface Props {
   ocrModelId: number | null; setOcrModelId: (v: number | null) => void
   hasImageModel: boolean  // 当前模型是否支持多模态
   hasVideoModel: boolean  // 当前模型是否支持视频直传（capabilities 含 video）
+  hasDocumentModel: boolean  // 当前模型是否支持 PDF 直传（capabilities 含 document）
+  // PDF 直传（仅 PDF 且模型支持时可选）
+  docDirect: boolean; setDocDirect: (v: boolean) => void
+  // 思考强度（capabilities 含 reasoning 时才展示 —— 见下方渲染处的取舍说明）
+  reasoningSupported: boolean
+  reasoningEffort: 'low' | 'high' | 'max'; setReasoningEffort: (v: 'low' | 'high' | 'max') => void
   // 风格
   style: string; setStyle: (v: string) => void
   styleKeys: string[]
@@ -132,7 +147,7 @@ export function GenerateOptions(props: Props) {
       {currentModel?.capabilities && (
         <div className="flex gap-1 mt-1.5">
           {currentModel.capabilities.map(c => (
-            <span key={c} className="px-1.5 py-0.5 bg-surface-hover rounded-full text-[10px]">{c === 'text' ? '文本' : c === 'image' ? '图片' : c}</span>
+            <span key={c} className="px-1.5 py-0.5 bg-surface-hover rounded-full text-[10px]">{capLabel(c)}</span>
           ))}
         </div>
       )}
@@ -169,6 +184,29 @@ export function GenerateOptions(props: Props) {
               ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
               : <span className="text-[10px] text-disabled">AI 选结构（9 种）→ 本地绘制 PNG 嵌入</span>}</label>
         </div>
+      </div>
+    )}
+
+    {/* PDF 直传 — 仅 PDF 显示（Word/PPT/Excel/EPUB 的厂商支持未查证，不给假入口）。
+        它管的是**材料怎么给模型**（输入），故与下方「笔记格式」（输出）分开成块。 */}
+    {p.typeMeta.isPDF && (
+      <div className="pt-3 border-t border-border-light">
+        <span className="text-[12px] font-medium text-dimmed mb-2 block">材料输入方式</span>
+        <label className={`flex items-center gap-2 ${p.hasDocumentModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+          title={!p.hasDocumentModel ? '当前模型不支持 PDF 直传' : '把 PDF 原件直接发给模型阅读，本地抽取的文本不进提示词'}>
+          <input type="checkbox" checked={p.docDirect} onChange={e => p.setDocDirect(e.target.checked)}
+            disabled={!p.hasDocumentModel} className="w-4 h-4 accent-accent disabled:opacity-30" />
+          <Upload size={13} className="text-muted" />
+          <span className={`text-[13px] ${!p.hasDocumentModel ? 'text-disabled' : ''}`}>PDF 直传模型处理</span>
+          <span className="text-[10px] text-disabled">
+            {p.hasDocumentModel ? '（原件发给模型，本地文本不进提示词）' : '需支持 PDF 直传的模型'}
+          </span>
+        </label>
+        {p.docDirect && p.hasDocumentModel && (
+          <p className="text-[11px] text-disabled ml-6 mt-1">
+            转录 / 导出 / 搜索仍用本地抽取的文本，扫描件可能为空（生成不受影响）
+          </p>
+        )}
       </div>
     )}
 
@@ -272,6 +310,30 @@ export function GenerateOptions(props: Props) {
             )
           })}
         </div>
+      </div>
+    )}
+
+    {/* 思考强度 — 仅标注了 reasoning 能力的模型可见。
+        ⚠️ 取舍：不支持时**整块不渲染**，而不是像「AI 分析图片」那样灰掉加提示 ——
+        后者是用户主动要开的功能（他要的是「为什么不能开」），而档位是模型的固有属性，
+        给不支持的模型挂一个灰块只是噪音。 */}
+    {p.reasoningSupported && (
+      <div className="pt-3 border-t border-border-light">
+        <span className="text-[12px] font-medium text-dimmed mb-2 block">思考强度</span>
+        <div className="flex gap-1">
+          {EFFORT_TIERS.map(t => (
+            <button key={t.value} onClick={() => p.setReasoningEffort(t.value)}
+              className={`px-3 py-1.5 text-[13px] rounded-full font-medium transition-colors ${p.reasoningEffort === t.value ? 'bg-accent text-white' : 'text-dimmed hover:bg-surface-hover'}`}>
+              {t.label}</button>
+          ))}
+        </div>
+        <p className="text-[11px] text-disabled mt-1.5">
+          {p.reasoningEffort === 'max'
+            ? '笔记与整理版都用最高档（更慢）'
+            : isPolishedOnly
+              ? '整理版固定快速整理；选「最强」才会深度思考'
+              : '笔记深度思考；整理版保持快速'}
+        </p>
       </div>
     )}
 

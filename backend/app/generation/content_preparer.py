@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Optional
 
 from app.core.token import estimate_tokens as _estimate_tokens, DEFAULT_CONTEXT as _DEFAULT_CONTEXT
+# 文档直传（PDF file 块）：模块级导入——doc_understand 只依赖 app.core.logging，
+# 无循环导入风险（模式 #26：函数内导入是打破循环导入的手段，不是风格偏好）
+from app.services.doc_understand import build_pdf_document
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +83,10 @@ class ContentPreparer:
 
     # ── 公开接口 ──
 
+    # 文档直传模式下 source_content 节的正文：正文不进 prompt（只有原件进），
+    # 但 prompt 里必须有东西告诉模型「材料在哪」，否则它无从下手。
+    _DOC_DIRECT_PLACEHOLDER = "（待分析材料以 PDF 原件随本消息附上，请直接阅读附件内容。）"
+
     async def prepare(
         self,
         raw_text: str,
@@ -88,12 +95,20 @@ class ContentPreparer:
         send_to_llm: bool = False,
         optimize_images: bool = False,
         video_direct: bool = False,
-    ) -> tuple[str, list[str] | None, str | None]:
-        """准备生成上下文：VL管线 → 剥离转录图片 → 截断 → 合并。
+        doc_direct: bool = False,
+        doc_path: str = "",
+    ) -> tuple[str, list[str] | None, str | None, dict | None]:
+        """准备生成上下文：VL管线 → 剥离转录图片 → 文档直传 → 截断 → 合并。
 
-        返回 (clean_text, image_urls, video_path)。
+        返回 (clean_text, image_urls, video_path, document)。
         video_direct：视频直传模式（DashScope SDK 视频理解 → 描述文本注入，
         替代截帧网格图；失败/超限自动降级截帧——现有链路原封不动）。
+        doc_direct + doc_path：文档直传模式（PDF 原件随生成请求发给模型，
+        抽取文本**不进 prompt**）。失败/超限 → document=None 且保持文本模式。
+
+        ⚠️ 返回值是 **4 元组**——加了 document 后刻意用位置返回而非实例属性：
+        漏改调用点会立刻 ValueError，而不是静默拿到空 document（模式 #16：
+        参数只传了一处导致另一处静默失效，本项目已栽过）。
         """
         import asyncio
         loop = asyncio.get_event_loop()
@@ -143,6 +158,20 @@ class ContentPreparer:
         if vl_text_inline:
             clean_text = clean_text + "\n\n" + vl_text_inline
 
+        # --- 文档直传：原件随生成请求发给模型，抽取文本不进 prompt ---
+        # 位置有两处讲究：
+        #   ① 放在「剥离转录图片」**之后** —— 那一步会把文档内嵌图片写进 assets
+        #      （导出/预览依赖），直传只改「什么进 prompt」，不改「什么落盘」；
+        #   ② 放在 _truncate_text **之前** —— 直传成功后 clean_text 只剩一句占位，
+        #      顺序无实质影响，但摆在这里才看得出「正文被换掉了」这件事。
+        # ⚠️ 直传模式下 clean_text 被**替换**而非追加：追加等于同一份内容 token 双花
+        # （PDF 视觉计费 + Markdown 文本各占一遍），正是本模式要避免的。
+        document = None
+        if doc_direct and doc_path:
+            document = await loop.run_in_executor(None, self._run_doc_direct, doc_path)
+            if document:
+                clean_text = ContentPreparer._DOC_DIRECT_PLACEHOLDER
+
         # --- 截断过长文本 ---
         clean_text, _ = self._truncate_text(
             clean_text,
@@ -163,7 +192,12 @@ class ContentPreparer:
         has_image = any("image" in (c or "") for c in self.llm_config.get("capabilities", []))
         image_urls = merged_urls if (merged_urls and has_image) else None
 
-        return clean_text, image_urls, video_path
+        # 直传模式下 prompt 里没有正文，图片没有可嵌入的位置 —— 一律不发。
+        # （文件本身仍在 assets 里，导出/预览照常。）
+        if document:
+            image_urls = None
+
+        return clean_text, image_urls, video_path, document
 
     # ── VL 管线 ──
 
@@ -262,6 +296,24 @@ class ContentPreparer:
             logger.warning("视频直传失败/超限 → 降级截帧")
             return None, video_path
         return desc, video_path
+
+    def _run_doc_direct(self, doc_path: str) -> dict | None:
+        """文档直传准备：能力门 → 读原件 → 直传文档块 `{"filename","data_uri"}`。
+
+        ⚠️ 与 _run_video_direct 的形态差异（别照抄那边的超时包装）：视频直传是
+        「先理解成描述文本再注入 prompt」，故内部会发起 LLM 调用、需要自带超时；
+        文档直传是「原件随生成请求一起发」，**本函数不发起任何 LLM 调用**，
+        耗时只有读文件 + base64（百毫秒级）。真正的解析代价体现为生成调用的
+        首包静默，由 chunk_timeout（doc_understand.DOC_DIRECT_TIMEOUT）覆盖。
+
+        返回 None = **保持文本模式**（调用方 clean_text 原样不动），不是换链路。
+        具体失败原因（不可读/为空/超限/非 PDF）见 build_pdf_document 的日志。
+        """
+        caps = self.llm_config.get("capabilities", [])
+        if not any("document" in (c or "") for c in caps):
+            logger.warning("文档直传: 当前模型未标注 document 能力，改用文本模式")
+            return None
+        return build_pdf_document(doc_path)
 
     @staticmethod
     def _run_vl_pipeline(vl_config: dict, source_url: str) -> tuple[list[str] | None, str | None]:

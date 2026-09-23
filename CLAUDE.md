@@ -163,7 +163,7 @@ uv run uvicorn main:app --host 127.0.0.1 --port 7413 --reload
 # 注意：--reload 只重载代码变更，不重跑 startup event。
 # 修改 config.yaml / 适配器注册 / 引擎注册后需手动重启。
 
-# 运行测试（19 个测试文件）
+# 运行测试（25 个测试文件）
 python tests/test_prompt.py          # Prompt 构建验证
 python tests/test_adapters.py        # 适配器注册 + 路由
 python tests/test_engines.py         # 引擎注册 + 查找
@@ -183,6 +183,12 @@ python tests/test_reference_compressor.py # 参考文件超窗压缩（预算判
 python tests/test_reference_store.py # 参考文件暂存（全表过期清理/条目数闸门/总量闸门）
 python tests/test_closure_shadowing.py # 嵌套函数变量遮蔽静态检查（AST 扫描全库，整类 UnboundLocalError 防线）
 python tests/test_video_understand.py # 视频直传（DashScope SDK）
+python tests/test_folders.py         # 文件夹 store 层（重建索引不丢分类 / 删夹不删文档 / 悬空自愈 / 批量一次写盘）
+python tests/test_folders_api.py     # 文件夹 API + 批量端点（枚举校验 / failed 明细 / 全失败 400）
+python tests/test_search.py          # FTS 全文搜索（snippet 列号 / rank 排序）
+python tests/test_model_caps.py      # 多模态能力检测（"*" 分支 exclude 真在跑 + 对照实验）
+python tests/test_effort.py          # 思考档位真相表 + 调用点覆盖 + 无硬编码字面量
+python tests/test_doc_understand.py  # PDF 直传（闸门 14MiB 两侧 / 编码无损 / 能力门 / 零影响回归 / 超时链 / 调用点对称）
 ```
 
 ### 前端（React/TypeScript/Vite）
@@ -190,7 +196,7 @@ python tests/test_video_understand.py # 视频直传（DashScope SDK）
 ```bash
 cd frontend
 npm run dev       # 开发服务器，端口 5173，API 代理 → 127.0.0.1:7413
-npm test          # vitest（98 tests: store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore 等，<3s）
+npm test          # vitest（128 tests，12 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary 等，<3s）
 npm run build     # 类型检查 + 生产构建
 npm run lint      # oxlint
 ```
@@ -269,6 +275,7 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - OCR 预处理（可选）：文档图片先用廉价 OCR 模型提取文字塞回原文，再用文本 LLM 生成
 - 同 mode 保留最近 2 版，前端 v2/v1 切换器
 - 存储：按文档聚合 `{doc_dir}/{mode}.md` + `{mode}.prev.md`（两版制），图片用相对路径 `assets/xxx` 引用，API 返回前统一 `rewrite_asset_urls` 改写为绝对 URL
+- **PDF 直传（2026-09-23）**：材料怎么给模型由用户二选一——文本模式（默认，抽出 Markdown 进 prompt）/ **直传模式（PDF 原件以 `file` 块随生成请求发出，本地抽取的正文不进 prompt）**。语义是「**只发原文件**」，不是叠加（叠加 = 同一份内容 token 双花）。实现见 `services/doc_understand.py`（只编码不发起请求）+ `llm/service.py::supports_document`（**按模型标注，刻意不复用 `image` 位**——它 gate 着 AI 分析图片/OCR 模型选择/图片处理用途筛选三处入口）。⚠️ **双真相源**：直传下 rawText 仍是导出/搜索/预览的真相源但不是模型所见的真相源，扫描件上真分叉 → rawText < 100 字符时给完成期 warning。⚠️ **哪些渠道能用是逐家查官方文档得来的结论**（dashscope 只认 qwen3.8 系四个——**任何 qwen-vl / qwen3.5 视觉模型都不在名单**；openai/anthropic/google/zhipu/moonshot/opencode 各有硬理由不标）——**能力位只标查证过的，不要凭印象补标**，逐家结论与理由见 `doc_understand.py` 模块文档。⚠️ 详见「关键模式」#45/#46/#47/#48 与 CHANGELOG
 
 **处理管道**（图片/Document → LLM 优先 → Engine 回退）：
 - 输入 `file_path`（原始文件），触发 `POST /process/{id}`
@@ -285,6 +292,15 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - 5 个工具：search_docs / lookup_doc / list_docs / search_web / fetch_url
 - 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留 generating，AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice
 - **消息级文档引用**：docIds = 当前选中文档 + 本条 @ 引用（chatStore 组合去重），不绑定会话
+
+### 文档库（组织能力，2026-09-23）
+
+- **单层文件夹**（`routers/folders.py` + store 层）：**纯逻辑分类，永不映射为磁盘目录** —— 每个文档已有独立目录（含 `assets` 相对引用与两版制产物），做成目录会同时破坏三样东西。`index.json` 顶层 `folders` + transcript 条目 `folderId`（`""` = 未分类，**UI 派生视图而非实体**）；允许重名（id 是身份）；**悬空 folderId 双向容错**；`delete_folder` 同锁区内先搬移文档再删行，**绝不删文档**（返回 `moved`）。⚠️ 见「关键模式」#44（三处构造点）
+- **全文搜索**：内存过滤（0ms，边打边筛）**立刻**渲染 → 停手 250ms 打 `GET /api/search` → 合并。⚠️ `docs` 数组**没有正文**（白名单序列化器只存元数据），故正文搜索客户端**不可能**实现 —— FTS5 是唯一可行解不是优化。分组规则：标题+正文双命中只进主列表 + 「正文」角标；纯正文命中进「正文匹配（N）」分组按 rank 排（不参与用户排序）
+- **排序 + 标签筛选**：把**来源类型**与**用户标签**拆成两组独立筛选（此前 `activeTag` 过滤的其实是 `d.sourceType`）。排序纯前端（docs 全量在内存）
+- **大列表**：分批渲染 60 条 + `IntersectionObserver`，**全选 = 全部匹配项（跨分批）**，工具栏显示「含未显示项」
+- **批量操作**：`POST /api/transcripts/batch`（delete/tag/move）按 action **显式枚举校验**（不能静默 `affected:0`）；逐条收集 `failed` 明细；全部失败 → 400；store 侧**一次加锁一次写盘**（相对 N 次 PATCH = N 次全量写盘）
+- 前端拆 8 文件（`DocRow` / `FolderTree` / `BatchBar` / `useDocQuery` / `docLibraryPrefs` / `docMeta` / `entryDelay`），`filterDocs`/`sortDocs`/`mergeHits` 纯函数单独导出以便表驱动单测。拖拽用原生 HTML5 DnD（零新依赖）+ ContextMenu「移动到文件夹」子菜单兜底键盘用户
 
 **图表管道**（2026-08-16 建立，2026-09-19 改为语义化布局 + 多图 + 类型 4→9）：
 
@@ -506,7 +522,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（2026-07-10 起持续沉淀，现 43 条）
+## 关键模式（2026-07-10 起持续沉淀，现 48 条）
 
 以下模式是实现中易错的关键约束，新增代码必须遵守。
 
@@ -517,7 +533,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 3. **所有 HTTP 请求**：必须走 `apiUrl()` 或 `apiFetch()`。裸 `fetch('/api/...')` 在 Tauri 下失败。
 4. **API Key 保存**：`(val || undefined) ?? current` — 空字符串不是 nullish，会覆盖真实 key。
 5. **操作互斥**：`lockOtherOps = retranscribing || imageProcessing`。Ctrl+G 拦截检查 `generating || processingTasks > 0`。
-6. **query string 参数序列化**：`streamGenerate` 中新增参数时必须在 `client.ts` 加对应的 `params.set()`。布尔/数字参数用 `!== undefined` 而非 truthiness，否则 `false`/`0` 被当作 falsy 跳过，后端收到默认值。**本次已修复**：`dedupe_enabled`、`unit_width`、`unit_height`、`save_quality`、`frame_quality_filter` 此前因缺失序列化从未生效。
+6. **query string 参数序列化**：`streamGenerate` 中新增参数时必须在 **`frontend/src/api/generate.ts`** 加对应的 `params.set()`（⚠️ 早期版本这里写的是 `client.ts` —— 该文件已拆分，物理位置就是 `api/generate.ts`）。布尔/数字参数用 `!== undefined` 而非 truthiness，否则 `false`/`0` 被当作 falsy 跳过，后端收到默认值。**已修复**：`dedupe_enabled`、`unit_width`、`unit_height`、`save_quality`、`frame_quality_filter` 此前因缺失序列化从未生效。**断链检查**：`frontend/src/test/genParams.test.ts` 对新参数在 **URL 里**断言（不是断言「传了 options」——后者在漏 set 的实现下照样通过）。
 7. **React 列表 key 唯一性**：`React.Children.map` 会展平嵌套数组，若各子元素内部都用 `key={i}`（数组索引），展平后产生重复 key。使用 `React.useId()` 生成组件实例唯一前缀 `key={`${id}-${i}`}`。**本次已修复**：markdown-components 中 `p`/`li` 组件的时间戳 badge。
 8. **视频画面理解对标 BiliNote**：「AI 画面理解」一个开关 = VL 管线 + 网格图发 LLM。网格图不嵌入笔记（对读者无意义）。不要恢复 formatImages/imageAnalyze/imageOptimize 三级嵌套。
 
@@ -561,6 +577,16 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 43. **嵌套函数内给外层变量赋值 = 该名在整个嵌套函数里变成局部变量**：`generate_stream` 顶层的 `ref_texts`，被嵌套函数 `merged_stream` 里的一句 `ref_texts = await compress_references_if_needed(...)` 拽成了后者的局部变量 → 上一行的 `if ref_texts` 在任何赋值之前读取它 → **UnboundLocalError（必然，非偶发）**。Python 的规则是「函数体内出现对该名的赋值 → 整个函数内它都是局部」，**与赋值语句在不在前面无关**。修法：嵌套函数内用局部名承接（`refs = ref_texts`），不要写回外层。**这是 #26（函数内重复 import 造成同名局部）的跨作用域版本**——同一根因；同一文件此前已在 `video_path` 上栽过一次（条件分支内赋值 + finally 引用，属同作用域变体）。⚠️ **测试测不到它**：不是逻辑错，而是运行时必炸、读代码与跑单测都正常的作用域错误，且流式端点的真实运行路径此前没有覆盖。已补 `tests/test_closure_shadowing.py`（AST 全库扫描，判据 = 外层赋值名 ∩ 嵌套赋值名 ∩ **嵌套内读早于写**）——**必须按执行顺序而非 AST 子节点顺序展开读写**（`ast.Assign._fields` 是 `('targets','value')` 而语义上 value 先求值，直接 `ast.walk` 会把 `x = x + 1` 判成「先写后读」，正好漏掉最该抓的一类；`AugAssign` 同为先读后写；形参算「进入即绑定」）。（2026-09-23 流式生成必炸修复）
 
+44. **索引是「手工逐字段构造」的，新增字段必须三处同改**：`index.json` 的每条 transcript 由 `_empty_index()`（顶层键）/ `_transcript_index_entry()`（正常读写路径）/ **`_rebuild_index()`（删 index.json 后全盘重扫）** 三个地方分别构造，后者是手工写的字面量。只改前两处 → **一切正常，直到有人删了 index.json**，重建后全部分类丢失。凡给 transcript 条目加字段，必须同时改三处 + 补一条「删除 index.json 后重建，断言字段仍在」的测试（只改 `_transcript_index_entry` 的实现必失败）。（2026-09-23 文件夹功能）
+
+45. **data-uri 体积上限约束的是「base64 之后的字符串」，不是原始文件**：厂商报的字节数（或 20 MiB 这类上限）作用在编码后的 payload 上，PDF base64 膨胀 4/3。按 `len("data:<mime>;base64,") + 4*ceil(N/3) ≤ LIMIT` 反解原字节上限，**取整要向下留余量**——贴着理论边界取（15 MiB）算出来比上限多 25 字节，照样被拒。**贴边的常量等于一个随机失效的开关**：它不是「成功率低」，而是「取决于文件大小的最后几个字节」，测试与实测都可能恰好抽到通过的那一侧。（2026-09-23 PDF 直传）
+
+46. **同一个静默期的两个来源要用 `max()` 合并，不能互相覆盖**：直传模式下模型「解析原件」与思考模式「思考」是**两个正交的静默期来源**（前者 ≈10s/MB，后者随档位 150/180s），谁长不一定。用 `if doc_direct: return DOC_DIRECT_TIMEOUT` 覆盖掉档位值，会在哪天常量被调小时让直传**比普通档更早被判挂起**——一个「看起来更安全」的隐蔽回归（常量变小 = 更保守？不，是更早失败）。写出 `max(base, DOC_DIRECT_TIMEOUT)` 并**用测试钉住**（临时把常量调到比档位小，断言取的仍是档位值）。（2026-09-23 PDF 直传）
+
+47. **直传 = 双真相源，且分叉方向最坑**：把原件发给模型、本地仍照跑解析时，`rawText` 是**导出/搜索/预览的真相源，但不是模型所见的真相源**——扫描件上模型读懂了原件而 rawText 近乎空（或只剩 OCR 失败的**占位文本**约 50 字符）。这不是可修的 bug 而是模式固有代价，故必须让它可见：直传成功但 rawText 过短时给完成期 warning。⚠️ **判据不能是「空串」**——占位文本正好是那种「看起来有内容、实际没内容」的形态，只判空串会精准漏掉本提示要覆盖的头号场景。同理，本地解析**必须照跑**：它是本地库不花 token，跳过它 = 转录空白 + 导出丢内容。（2026-09-23 PDF 直传）
+
+48. **实测证明不了上界，上界只写在官方文档里**：超时/尺寸/限额这类常量，**不能由「实测样本 × 余量」推出来**——实测覆盖的永远是那几档样本，它给的是「至少能到这么大」，而不是「最大就这么大」。`DOC_DIRECT_TIMEOUT` 第一版按最大实测样本（149.3s）× 1.6 取 240，看着留了 60% 余量很稳妥，但官方明写「首包超时最长为 **300 秒**」→ 240 < 300，落在该区间的**正常请求会被自己的超时掐断**，且**只表现为静默降级**（日志里只有「超时」，看起来像厂商不配合）。正确姿势：**先去官方文档取上界，再乘余量**（330 = 300 × 1.1，不贴边是因为要避开「厂商超时」与「我们的超时」赛跑）。这是 #39 的又一形态——判据（实测数据）是真的，但它**不构成对「最大值」的证据**。配套：总超时必须跟着乘二而不是并列（330 → 660），两者改一个而不动另一个会让某一侧先到。（2026-09-23 文档能力调查）
+
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始
@@ -577,6 +603,16 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | SSE 流式导入 | 实时进度推送 + 心跳保活 + 客户端断开不丢结果 |
 | ✅ | 平台认证 | B站/YouTube Cookie 注入，自动解析 Netscape 格式 |
 | ✅ | 文件拖拽上传 | ImportSection `onDragOver`/`onDrop` + `validateDropFile` 扩展名校验，拖拽区高亮反馈 |
+
+### 📚 文档库（组织能力，2026-09-23）
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ✅ | 单层文件夹 | `routers/folders.py` 四端点；**纯逻辑分类不映射磁盘目录**；悬空 folderId 双向容错；删文件夹只搬移不删文档；拖拽移动 + 右键菜单兜底 |
+| ✅ | 全文搜索接入 | 内存过滤（0ms）即时渲染 + 消抖 250ms 打 FTS5 合并；「正文匹配」独立分组按 rank；双命中卡片加「正文」角标；摘要渲染抽 `SearchSnippet` 两处复用 |
+| ✅ | 排序 + 标签筛选 | 时间/标题/类型排序（纯前端）；**来源类型与用户标签拆成两组独立筛选**（此前混淆）；标签 facet 多选交叉 |
+| ✅ | 大列表分批渲染 | 前 60 条 + IntersectionObserver 每次 +60；**全选 = 全部匹配项（跨分批）**；⚠️ 顺带修 `animationDelay: i*50ms`（第 1000 篇要等 50 秒的**功能性错误**） |
+| ✅ | 批量操作 | `POST /api/transcripts/batch`（删除/打标签/移动）；按 action 显式枚举校验；`failed` 明细；全失败 → 400；store 侧一次加锁一次写盘 |
 
 ### 📝 转录 & 引擎
 
@@ -604,6 +640,9 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 目标语言 | config `target_language`，8 语言可选 |
 | ✅ | 参考文件 | 参考资料（如评论区观点）注入笔记生成，仅 notes；暂存 id 传递（`POST /api/references`）；上限 1MB；**超出模型上下文时自动先压缩**（`stage` 事件 + 前端小字提示，2026-09-23） |
 | ✅ | 视频直传 | 阶段 A Qwen 打通（2026-08-25）：DashScope SDK `MultiModalConversation` 原生通道（file:// ≤100MB 服务端抽帧），生成链路零改动（直传为 prepare 阶段一次非流式理解注入 clean_text），本地截帧链路保留为降级 |
+
+| ✅ | 思考档位可配 | `generation/effort.py` 全系统唯一真相（此前 `"low"` 散落四处）；能力位 `reasoning` 按模型标注；**整理版恒 low 除非选 max** 且 UI 明示；静默期分档 150/180（不改则「选最高档反而更容易失败」）；AST 断言钉住无硬编码档位字面量 |
+| ✅ | PDF 直传（2026-09-23） | 用户可选**二选一**（文本模式默认 / 直传模式只发原文件）；`file` 块随生成请求发送（**必须走 Chat Completions**）；闸门 14 MiB（由 data-uri 20 MiB 上限倒推）；能力位 `document` 标 dashscope 官方名单的三个（qwen3.8-max / flash / 27b），**其他渠道逐家查证后一律不标**（理由见下）；双真相源 + rawText 过短完成期 warning |
 
 ### 🔍 图片处理
 
@@ -719,12 +758,13 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 域 | 完成 | 总计 | 进度 |
 |----|------|------|------|
 | 📥 内容导入 | 8 | 8 | 100% |
+| 📚 文档库 | 5 | 5 | 100% |
 | 📝 转录 & 引擎 | 8 | 8 | 100% |
-| ✨ LLM 生成 | 9 | 9 | 100% |
+| ✨ LLM 生成 | 11 | 11 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 9 | 9 | 100% |
 | 📊 图表生成 | 11 | 12 | 92% |
 | 📤 导出 | 11 | 12 | 92% |
 | 🎨 前端 UI/UX | 15 | 15 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **83** | **85** | **98%** |
+| **合计** | **90** | **92** | **98%** |

@@ -6,6 +6,186 @@
 
 ---
 
+## 2026-09-23 — 文档库组织能力（文件夹 / 全文搜索接入 / 排序筛选 / 大列表 / 批量）+ DeepSeek 打磨 + PDF 直传
+
+> 三条用户诉求彼此独立：「文档多了你有时候要放半天这样也不好」（要组织能力）、查 DeepSeek 官方文档更新、以及「直传与经过我们链路是不是应该改成用户可选择式的」。
+> 分五阶段落地（0 独立小修 → 1 文档库后端 → 2 文档库前端 → 3 DeepSeek → 4 PDF 直传），本文按方向而非阶段组织。
+
+### 阶段 0：四项独立小修（零接口变更、零迁移风险，先落地）
+
+| 修的是什么 | 为什么 |
+|---|---|
+| `DocLibrary.tsx` 的 `animationDelay: ${i * 50}ms` | 第 1000 篇文档要**等 50 秒**才显示。这不是「性能不够」而是**功能性错误**（延迟随索引线性增长），不是优化项 |
+| `core/search.py` 的 `snippet(transcripts_fts, 1, ...)` 列号 1 → **2** | FTS 表列序是 `(id, title, content)`，列号 1 是**标题**。不修则正文命中的摘要显示的是标题 —— 功能一上线看起来就是坏的 |
+| `routers/model.py` 的 `"*"` 分支**跳过 exclude 检查** | `if "*" in include:` 与 `elif any(...)` 互斥，导致「默认全标 + 排除某几类」的规则里**排除表是死代码**。今天 google 用 `{"include":["*"]}` 且无 exclude 所以看不出来；照抄给 deepseek 配排除就会踩（模式 #39：判据存在但看错了输入） |
+| `core/token.py` `DEFAULT_CONTEXT` 补 4 家 | 缺 google / moonshot / opencode / zhipu。**zhipu 刻意取 131072 而不拉平 glm-5.2 的 1M**：provider 默认是第四层兜底，第二层预设已能给出 1M，兜底层取保守值才安全 |
+
+顺带修 `deepseek` 的图片检测规则为 `{"include": ["*"], "exclude": ["pro", "reasoner", "coder", "embed"]}` —— 旧规则 `{"include": ["vl","vision"]}` 对 `deepseek-flash` 是**彻底 no-op**（名字里没有这两个词），此前能识别为多模态**完全依赖预设里手写的 `capabilities`**。
+
+### 方向一：文档库组织能力
+
+**1. 单层文件夹**（新增 `routers/folders.py` + store 层 folders 段）
+
+**文件夹是纯逻辑分类，永不映射为磁盘目录。** 每个文档已有独立目录 `{title}-{hex6}/`（含 `transcript.md` / `assets` / `process` / 两版制产物），把文件夹做成目录会**同时**破坏目录命名规则、assets 相对引用与两版制三样东西。故 folders 只活在 `index.json` 里。
+
+- **三处必改**（漏一处即丢数据）：`_empty_index()` / `_transcript_index_entry()` / **`_rebuild_index()`**。最后一处是手工逐字段构造的字面量 —— 漏了会让「删 index.json 后重新扫描」丢掉**全部**分类，而正常读写路径完全看不出问题。
+- `INDEX_VERSION` 保持 3：`_load_index()` 对 v3 数据自动回填缺失顶层键，bump 反而让未来迁移分支误判格式。
+- 未分类**不是实体**（不存在哨兵文件夹），是 UI 派生视图。
+- 允许重名（id 是身份，名字只是标签）。
+- **悬空 `folderId` 双向容错**：读路径归化为未分类；`delete_folder` 在**同一锁区内先搬移文档再删行**（防崩溃留下悬空引用）。删除文件夹**绝不删文档**，返回 `moved` 供前端提示。
+
+**2. 全文搜索接入 —— 混用，不是二选一**
+
+`docs` 数组里**没有正文**（白名单序列化器只存元数据），所以正文搜索在客户端**不可能**实现 —— FTS5 不是优化而是唯一可行解。但内存那层也不能撤：标题/类型/语言的匹配是 0ms、无网络，是「边打边筛」的体验来源。故：内存结果**立刻**渲染 → 停手 250ms 后打 `GET /api/search` → 合并。
+
+**分组与排序的优先级必须明确定义**（否则行为不可预测）：
+
+| 区域 | 内容 | 排序 |
+|---|---|---|
+| 主列表 | 内存命中的文档 | 跟随用户选定排序（时间/标题/类型） |
+| 「正文匹配（N）」分组 | **仅**列表里没有的（纯正文命中） | 按 FTS `rank`，不参与用户排序，固定追加在下方 |
+
+**标题+正文都命中的文档只出现在主列表，但卡片加「正文」角标** —— 否则用户会以为「这篇正文没匹配」。
+
+顺带把 `<mark>` 摘要的 `dangerouslySetInnerHTML` 渲染抽成 `ui/SearchSnippet.tsx` 给两处复用（**不复制第二份**，否则两处 XSS 姿态会漂移）。
+
+**3. 排序 + 标签筛选**：此前 `activeTag` 过滤的其实是 `d.sourceType` —— 把**来源类型**与**用户标签**拆成两组独立筛选，标签行从 docs 聚合出频次 facet，多选可交叉。
+
+**4. 大列表**：只渲染前 60 条 + `IntersectionObserver` 哨兵每次 +60（**不引入新依赖**；真窗口化待「第二步后仍可感知卡顿」再做 —— 行高不固定，真窗口化易错）。**全选 = 当前筛选结果的全部匹配项（跨分批）**，工具栏始终显示「已选 N 项」，`N > 已渲染条数` 时追加「（含未显示项）」：分批渲染只是「少画 DOM」，不是「数据只有 60 条」。
+
+**5. 批量操作**（`POST /api/transcripts/batch`，delete/tag/move）：**按 action 做显式枚举校验**（未知 action / tag 缺 tags / move 缺 folderId 一律 400，不能静默返回 `affected:0`）；逐条 try/except 收集 `failed:[{id,error}]`（删文件无法原子回滚，失败必须显式化）；**全部失败 → 400**（避免前端把「一条没成」当成功）。store 侧 `set_transcripts_folder` / `update_transcripts_tags` **一次加锁一次 `_save_index()`** —— 相对 N 次 PATCH = N 次全量写盘，这是本设计的核心收益。批量删除复刻既有的顺序约束：**先 `cancelTask(id)` 再 `clearDocTasks(id)`，顺序不可颠倒**。
+
+前端拆为 8 文件（`DocLibrary` / `DocRow` / `FolderTree` / `BatchBar` / `useDocQuery` / `docLibraryPrefs` / `docMeta` / `entryDelay`），`useDocQuery` 的 `filterDocs`/`sortDocs`/`mergeHits` 单独导出以便表驱动单测。拖拽用原生 HTML5 DnD（零新依赖），**并配 ContextMenu「移动到文件夹 ▸」子菜单** —— 只做拖拽会让键盘用户无法移动文档。
+
+### 方向二：DeepSeek 打磨
+
+**1. 思考档位可配**（新增 `generation/effort.py` —— 全系统唯一真相）
+
+能力位新增 `reasoning`，**按模型标注，不按 provider**：写成 `provider_id === 'deepseek'` 会与「能力按模型标注」的原则自相矛盾，且将来加一个支持 reasoning 的渠道要改前后端两处。
+
+| user_tier | notes | polished |
+|---|---|---|
+| `""`（未指定/老客户端） | `None`（= 服务端默认） | `"low"` |
+| `"low"` / `"high"` | 跟随用户 | **`"low"`** |
+| `"max"` | `"max"` | `"max"` |
+
+- **整理版恒 `low`（除非选 max）**：它是忠实整理任务而非创作，深度思考换不来质量却要付 90s+ 静默期。**这条必须在 UI 上明示**（GenerateOptions 档位说明写了「整理版固定快速整理；选『最强』才会深度思考」），不能是隐规则。
+- **单独成文件**是因为此前 `"low"` 字面量散落在 generate.py / generator.py 四处 —— 正是「改一处漏一处」的现场。现在有 AST 结构断言把守：全库不得再出现硬编码档位字面量。
+- **静默期必须分档**（`chunk_timeout_for`）：max 档思考更久，仍用 150s 会让「**选最高档反而更容易失败**」。分档值必须严格小于生成总超时，否则总超时先到、分档成死代码。
+- 前端默认档 `'high'`（= 今日服务端默认行为，零回归），复用现有 `genPrefs` 键（`{...DEFAULTS, ...raw}` 展开，新字段自动向后兼容，无需迁移代码）。
+
+**2. 多模态检测修复 + 3. `DEFAULT_CONTEXT` 补 4 家**：见阶段 0。
+
+**4. 旧名清理**：判据是**改「会被当作值使用的字面量」，不改「解释历史的叙事」**。`deepseek-v4-flash` → `deepseek-flash` 等已在上一轮完成；本轮清理注释/文案里的旧模型名，保留「当时为什么这样设计」的理由。
+⚠️ **opencode 网关的两条同名模型名本轮不擅自改** —— `enabled_models` 的 id = `md5("{provider}:{model_name}")`，改名即改 id，会在模型下拉里留下新旧重名条目；而若该网关其实只认旧名，迁移等于**直接把可用模型改坏**。记入待查证项（`~/.limo/config.yaml` 里无 opencode 条目，本地无从验证）。
+
+### 方向三：PDF 直传（Qwen 优先）
+
+#### 探针先行（先实测再定值，顺序不能反）
+
+| 结论 | 数据 |
+|---|---|
+| **20 MiB 上限约束的是 base64 之后的字符串**，不是原始文件 | 实测 19MB PDF 被拒：`Exceeded limit on max bytes per data-uri item : 20971520`。按 `len("data:application/pdf;base64,") + 4*ceil(N/3) ≤ 20971520` 反解，原始字节上限 ≈ 15.0 MiB |
+| **闸门取 14 MiB 而非贴着理论边界** | 15 MiB（15728640 字节）算出的 data-uri 比上限**多 25 字节**，照样被拒 —— 贴边的常量等于一个随机失效的开关 |
+| **首包耗时次线性** | 12KB/1 页 → 3.4s · 4.4s · 4.7s；9.5MB/100 页 → 131.5s · 142.8s；13.7MB/140 页 → 149.3s。体积 ×1.44 只涨 6s —— 服务端逐页渲染，首包由**页数**主导而非字节数 |
+| **Chat Completions 与 Responses API 在 dashscope 兼容层上都能送达** | 与 OpenAI 官方「Responses API 返回 200 但文件不会传给模型」的记载**不同**。但仍锁定 Chat Completions：官方明写的那个失败模式**没有任何客户端可见信号**（产物是一篇看不出异常的泛泛而谈），而 Chat Completions 的 `file` 块是唯一逐次自证过的通道 |
+| **探针判据要宽松** | 造图片型 PDF（内容以像素承载、无文本层）+ 页内唯一随机串令模型复述：**能复述 = 文件真的到了**。⚠️ 模型 OCR 会把 `0` 读成 `O`、`1` 读成 `l`，逐字符严格比较会得到**假阴性**（首版就栽在这，险些把「已送达」误判成「不支持」）——随机串字符集须排除易混字符，比对前做归一化 |
+| **Files API 不作为本轮方案** | 它能突破体积限制，但**首包耗时才是真瓶颈**（≈10s/MB，**次线性、由页数主导**；官方给的最坏值是「首包最长 300 秒」——150MB 量级没有任何用户等得起） |
+
+#### 形态：用户可选的模式切换，不是叠加
+
+```
+本地 Doc 引擎照跑（本地库、不花 token）→ rawText，供预览/导出/搜索/两版制
+                          ↓
+   送进 prompt 的内容 ← 用户在这里二选一
+     ├─ 文本模式（默认）：抽出的 Markdown        ← 现状，零回归
+     └─ 直传模式：PDF 原文件（file 块）          ← 只发原文件
+```
+
+**为什么只发原文件**：叠加会让同一份内容 token **双花**（PDF 视觉计费 + Markdown 文本各占一遍），大 PDF 尤其明显。
+
+**为什么 Doc 引擎仍必须照跑**：`rawText` 是转录 tab 渲染、全部导出、FTS 索引、assets 引用与两版制的真相源，跳过它 = 转录 tab 空白 + 导出丢内容。好在它是本地库、**不花 token**，所以「照跑但不进 prompt」既不断链也不双花。
+
+#### ⚠️ 双真相源（本模式的固有代价，不是可修的 bug）
+
+| 场景 | 模型看到 | 转录 tab / 导出 / FTS 搜索看到 |
+|---|---|---|
+| 扫描版 PDF、本地无 OCR | 读懂了原件，笔记翔实 | rawText 近乎空 → 转录空白、搜不到、导出无内容 |
+| 图片型表格 / 图表 | 能看到 | rawText 里没有 |
+
+故直传成功但 `rawText` 过短（**< 100 字符**）时，生成完成时给一条**显式 warning**（复用图表「未生成」那条通道，前端走 info toast **不标 partial** —— 生成本身是成功的）。判据取 100 而非 0：扫描件 + 无 OCR 时 rawText 不是空串而是**占位文本**（原图 markdown + `_所有 OCR 引擎均失败_`，约 50 字符），只判空串会漏掉这种「看起来有内容、实际没内容」的典型形态。
+
+#### 超时：三层独立，且定位与原方案不同
+
+plan 原方案把 `DOC_DIRECT_TIMEOUT` 定位为「`prepare()` 内的直传调用超时」。**实现中改掉了这个定位**：既然语义是「只发原文件」（方案 B，文件块随生成消息发出），`prepare()` 内就**不发起任何 LLM 调用**（只读文件 + base64，百毫秒级），没有超时可包。真实的静默期是**模型解析原件、一个 chunk 都不推**的那段时间 —— 故 `DOC_DIRECT_TIMEOUT` 落在**生成调用的首个 chunk 静默超时**上（`effort.chunk_timeout_for`，与思考档位用 `max()` 合并而非覆盖：哪天它被调小，直传不该反而比普通档更早被判挂起）。
+
+- `DOC_DIRECT_TIMEOUT = 330s`、`DOC_DIRECT_GEN_TIMEOUT = 660s` —— **这两个值在同日续修中从 240/450 改过**，理由见「方向四」：240 是按实测样本 × 1.6 余量算的，而官方文档明写「首包超时时间最长为 **300 秒**」，240 < 300 会把该区间内的**正常请求**掐断（表现仍是静默降级，日志里只看到「超时」，看起来像厂商不配合）。**实测证明不了上界，上界只写在官方文档里。**
+- 最坏路径（直传 + 生成）≈ **11 分钟**，故流式路径先推 `stage` 事件「正在直传 PDF 原件给模型解析…」，否则看起来就是卡死。
+
+#### 实现要点
+
+- 新增 `services/doc_understand.py`：`build_pdf_document()` 只做「文件 → 消息块」，**不发起任何请求**；失败一律 `return None` + `log.warning` 带原因与尺寸。
+- `llm/service.py`：`stream()` 三路互斥消息分支（document / image_urls / 纯文本），新增 `supports_document` —— **刻意不复用 `image` 能力位**：`image` gate 着「AI 分析图片」「OCR 模型选择」「图片处理用途筛选」三处入口，拿它代指 file 块会把这些入口一起错误放开。
+- `prepare()` 返回 **4 元组**（`document` 放末位）：刻意用位置返回而非实例属性 —— 漏改调用点会立刻 `ValueError`，而不是静默拿到一个空的 document（模式 #16 的教训）。
+- 直传时**正文被替换**为一句占位说明（不是追加），且**不发图片**（prompt 里已无正文可供嵌入）；能力门 + 尺寸闸门 + 扩展名闸门（纵深防御：前端只在 isPDF 时显示开关，但 API 可直调）。
+- 前端：开关放在文档区块内、**仅 `isPDF` 时显示**（Word/PPT/Excel/EPUB 的厂商支持未查证，不给假入口），无 `document` 能力时禁用 + tooltip，`genPrefs` 默认关 + 记忆。
+- 能力位 `document` **只标查证过的**（见「方向四」：首版只标 `qwen3.8-max`，同日逐家查官方文档后扩到 dashscope 官方名单的另外两个）；`routers/model.py` **不做名字自动检测** —— 按名字猜 PDF 能力必然误标。
+
+### 方向四：其他渠道的文档能力 —— 逐家查官方文档（同日续修）
+
+起因：能力位 `document` 当时只标了 `qwen3.8-max` 一个，用户提出「其他模型的文档能力我们可能也需要去官网文档调查然后再进行针对性的修改」。**不实测**（成本高），只查官方文档。
+
+#### 结论表（唯一沉淀点，模块文档 [backend/app/services/doc_understand.py](backend/app/services/doc_understand.py) 有同一份）
+
+| 渠道 | 官方结论 | 标注 |
+|---|---|---|
+| **dashscope** | 《PDF 理解》页明列 **qwen3.8-max / qwen3.8-max-0902 / qwen3.8-flash / qwen3.8-27b** | **标**（后两个同轮新增预设） |
+| openai | Chat Completions **只支持 PDF**（`file_data`/`file_id`，不支持 `file_url`/`detail`）；但社区反复反馈 gpt-5 系**看不到文件**、Azure gpt-4o 直接报 `does not support file content types` | 不标（通道在、模型面不一致） |
+| anthropic | 原生用 `document` 块，**不是** OpenAI 的 `file` 块 —— 而 LiMo 所有 provider 共用 AsyncOpenAI，发出去的是后者 | 不标（格式不通，且无独立适配层） |
+| google | OpenAI 兼容层**不支持**文档理解（Google 官方 forum 确认） | 不标 |
+| zhipu | 文件能力走独立端点（`layout_parsing` / `files` + `purpose`），不是 message 内 file 块 | 不标 |
+| moonshot | `files.create(purpose="file-extract")` **抽文本**再塞进 messages；官方明确「不支持用 file_id 引用文件内容作为上下文」 | 不标（语义是抽文本，不是原件直传） |
+| opencode 网关 | 未查证能否把 file 块转发到上游；且官方明写该能力**仅限华北2（北京）地域**，网关转发到非北京地域必失败 | 不标 |
+
+⚠️ **dashscope 名单的坑**：官方 PDF 名单**只有 qwen3.8 系四个**，`qwen3-vl-flash` / `qwen-vl-max` / `qwen3.5-flash` 这些「视觉模型」**都不在名单里**（页面标题虽叫「PDF文件通过 VL 模型解析」，但支持列表是收窄的）。按「有视觉能力 → 大概也能传 PDF」去推，**会一次标错三个模型**。
+
+#### 针对性修改
+
+| 改的是什么 | 为什么 |
+|---|---|
+| 新增 `qwen3.8-flash` / `qwen3.8-27b` 两条 dashscope 预设（带 `document`） | 官方名单里的另外两个，原先只有 max |
+| `qwen3.8-max` 的 `context_window` **131072 → 1000000** | 官方模型页写的是 上下文 1000000 / 最大输出 131072 —— 此前**把后者当成了前者**。对话预算 = 窗口 × 0.7，填错会让可用的 700k 缩成 91k |
+| `DOC_DIRECT_TIMEOUT` **240 → 330**、`DOC_DIRECT_GEN_TIMEOUT` **450 → 660** | 240 是「实测 149.3s × 1.6 余量」算的，但官方明写首包最坏 **300s** —— 落在 240~300s 区间的正常请求会被自己的超时掐断，且**只表现为静默降级**。改为官方上限 × 1.1，总超时同步乘二（两者是乘二关系，不是并列关系） |
+| `generate.py` 流式端点构造 `LLMService` 时**漏传 `doc_direct`** | 非流式那侧是传的（模式 #16 的又一例）。不传则直传时 httpx 的 read timeout 不放宽，SDK 先于我们抛超时，异常被下游 `except Exception` 归到「连接中断」并按那条路重试 —— **文案与真相不符**（真正死因是「模型还在解析原件，我们等得不够久」） |
+
+#### 教训：实测证明不了上界
+
+`DOC_DIRECT_TIMEOUT` 的第一版是**照着实测数据算的**（149.3s 的最大样本 × 1.6），看起来还留了 60% 余量，很稳妥。但它是错的 —— 上界从来不在实测样本里，**上界只写在官方文档里**。这是模式 #39（判据跑到了，但它看的输入不是它以为的那个）的又一形态：判据（实测数据）是真的，但它**不构成对「最大值」的证据**，而错误取值只在特定体积区间才暴露，日志里还伪装成「厂商超时」。
+
+### 验证
+
+- **后端 25 个测试文件全绿**（新增 `test_doc_understand.py` / `test_effort.py` / `test_folders.py` / `test_folders_api.py` / `test_model_caps.py` / `test_search.py`；`test_e2e_smoke.py` 与 `test_video_understand.py` 需已启动的后端/真实模型调用，本轮跳过）
+- **前端 128 tests 全绿** + `tsc --noEmit` / `lint`（0 error）/ `build` 通过
+- **判据自证有区分力**（逐个做了对照实验，确认改坏后真的会红）：
+  - 直传调用点对称性：摘掉 `generate.py:586` 的 `doc_direct=` → 断言精确报出该行
+  - `doc_direct` 序列化：改成 truthiness 判断 → **只有「显式 false」那条**变红（其余 6 条照常绿）
+  - rawText 过短提示：判据是 100 字符而非空串，占位文本（36 字符）必须触发
+  - 体积闸门：断言 14 MiB **边界两侧**，不是「函数被调用了」
+  - 零影响回归：`doc_direct=False` 的输出与「该参数根本不存在」时**逐字节相同**（含「标了 document 能力但开关关着」的配置）
+  - **超时常量的官方下界**（方向四新增）：把 `DOC_DIRECT_TIMEOUT` 改回 `240.0` → 断言报出「240.0s 必须 > 官方承诺的首包上限 300.0s」；把流式端点的 `_gen_timeout(format_list, doc_direct=doc_direct)` 改回漏传 → 断言精确报出 `routers/generate.py:485`
+- ⚠️ **端到端冒烟（`test_e2e_smoke.py`）本轮未跑** —— 它需要已启动的后端 + 真实模型调用（产生费用）。直传链路的真机验证只做到「探针确认文件真的送达」这一层。
+- ⚠️ 两个测试文件（`test_docx_export.py` / `test_epub_pipeline.py`）在 GBK 控制台下会因末行 `print` 的 `☑`/`✅` 抛 `UnicodeEncodeError` —— **断言全过，只是打印炸**。跑全量时加 `PYTHONIOENCODING=utf-8`。
+
+### 待查证
+
+1. **opencode 网关的模型名**（见方向二第 4 条）：改名即改 `enabled_models` 的 id，未查证前不动。
+2. **qwen 等渠道是否支持 `reasoning_effort`**：未查证 → 未标 `reasoning` 能力位。
+3. **`qwen3.8-flash` / `qwen3.8-27b` 的直传是否真能跑通**：官方名单有（故已标），但 LiMo 侧**未实测** —— 探针只验过 `qwen3.8-max`。
+4. **老用户配置里的 `qwen3.8-max` 仍是 `context_window=131072`**：`_sync_llm_model_caps` 只补 `capabilities`、**不更新已有条目的其他字段**，故修正在新用户生效、老用户需在设置页手动改（或删掉该行让它按预设重建）。**没有做自动迁移** —— 那会改写用户配置。
+5. **`store.root/tmp/` 长期承担原件存储**：已知脆弱点（外部清理会让直传静默降级为文本模式），本轮不做「把原件复制进文档目录」（会让每文档多占一份原件体积，上限 2GB）。
+
+---
+
 ## 2026-09-23 — 参考文件三改（注入文案 / 上限 1MB / 超窗自动压缩）+ DeepSeek 模型名与思考模式参数对齐
 
 > 用户诉求：「参考文件这部分提示词可以优化以及参考文件大小的限制可以做宽一点」+「查一下 DeepSeek 官网对模型设置方面做更新」，中途追加「根据模型上下文窗口决定要不要先对参考文件先交给大模型压缩？」

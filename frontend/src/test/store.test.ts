@@ -4,7 +4,8 @@ import { useStore } from '../store'
 // Reset store to clean state before each test
 beforeEach(() => {
   useStore.setState({
-    docs: [], currentDocId: null, searchQuery: '', activeTag: '',
+    docs: [], folders: [], currentDocId: null, searchQuery: '',
+    activeType: '', activeTags: [], activeFolderId: null,
     currentContent: null, currentPolishedContent: null, currentRawText: null,
     markdownMeta: null, markdownVersions: [],
     markdownEdited: { notes: false, polished: false },

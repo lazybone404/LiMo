@@ -13,6 +13,8 @@ import re
 import threading
 from pathlib import Path
 
+from app.core import logging as log
+
 
 class SearchEngine:
     """SQLite FTS5 全文索引。每次摄入/重转录时增量更新。"""
@@ -83,12 +85,16 @@ class SearchEngine:
         prepared = _prepare_query(query)
         # 转义 FTS5 特殊字符
         safe = _escape_fts5(prepared)
+        # ⚠️ snippet() 第 2 个参数是列索引，按建表列序 (id, title, content) 数：
+        # 0=id 1=title 2=content。正文命中时摘要必须取自 content（2）——取 1 会让
+        # 「只在正文命中」的结果显示成标题，看起来像没匹配上。
+        # （注意：不要往下面的三引号里塞 # 注释，SQL 不认，会把整条语句变成语法错误）
         with self._lock, self._conn() as conn:
             try:
                 rows = conn.execute(
                     """
                     SELECT id, title,
-                           snippet(transcripts_fts, 1, '<mark>', '</mark>', '…', 40) AS snippet
+                           snippet(transcripts_fts, 2, '<mark>', '</mark>', '…', 40) AS snippet
                     FROM transcripts_fts
                     WHERE transcripts_fts MATCH ?
                     ORDER BY rank
@@ -96,8 +102,14 @@ class SearchEngine:
                     """,
                     (safe, limit),
                 ).fetchall()
-            except sqlite3.OperationalError:
-                # 查询语法错误时回退到 LIKE
+            except sqlite3.OperationalError as e:
+                # 查询语法错误时回退到 LIKE。
+                # ⚠️ 必须留痕：这里吞异常会把「SQL 写错」伪装成「没搜到」——
+                # 实测踩过（注释误写进 SQL 字符串导致全表 CJK 查询恒返回空，
+                # 无任何日志，排查方向被彻底带偏）。LIKE 也无法命中「CJK 逐字插空格」
+                # 形式的索引文本，故回退本身对中文查询几乎无效。
+                log.warning("FTS5 查询失败，回退 LIKE（中文查询回退后基本搜不到）",
+                            q=query[:50], err=str(e)[:120])
                 like = f"%{query.replace('%', '\\%').replace('_', '\\_')}%"
                 rows = conn.execute(
                     """

@@ -146,6 +146,17 @@ export interface DocEntry {
   id: string; title: string; sourceType: string; sourceFileName?: string; engine: string
   language?: string; duration?: number; contentHash: string
   tags: string[]; createdAt: string
+  /** 所属文件夹 id；"" = 未分类（后端一律返回字符串，不返回 undefined） */
+  folderId?: string
+}
+
+/** 单层文件夹（纯逻辑分类，不映射磁盘目录） */
+export interface FolderEntry {
+  id: string
+  name: string
+  createdAt: string
+  /** 该文件夹下文档数（后端现算） */
+  count: number
 }
 
 export interface TranscriptFull extends DocEntry {

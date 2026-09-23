@@ -431,7 +431,7 @@ def get_chart_format(source_type: str) -> str:
     协议（2026-09-19 起）：LLM 只写「有哪些节点、怎么排」的语义 JSON，坐标/宽度/
     连线/标签位置全部由后端 chart_layout 算出来 —— 几何错误从结构上不可能发生，
     所以这里**不需要**任何坐标/样式/SVG 教学。这条减负方向正是 2026-08-16 的教训
-    要求的：往 prompt 堆 28 行质量硬规则后，fast 模型（deepseek-v4-flash）宁可跳过
+    要求的：往 prompt 堆 28 行质量硬规则后，fast 模型（deepseek-flash）宁可跳过
     不画，精简到 8 行才恢复产出率——**堆规则与出图率是直接 trade-off**。
 
     围栏：```fig（语义 JSON，本函数引导）/ ```chart（手写 SVG，legacy 兜底保留）。

@@ -19,6 +19,13 @@ export interface DocEntry {
   id: string; title: string; sourceType: string; sourceFileName?: string; sourceUrl?: string;
   engine: string; language?: string; duration?: number; coverUrl?: string; contentHash: string;
   tags: string[]; createdAt: string;
+  /** 所属文件夹 id；"" = 未分类 */
+  folderId?: string;
+}
+
+/** 单层文件夹（纯逻辑分类，不映射磁盘目录） */
+export interface FolderEntry {
+  id: string; name: string; createdAt: string; count: number;
 }
 
 export interface TaskInfo {

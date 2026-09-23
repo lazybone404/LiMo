@@ -15,6 +15,8 @@ import {
 import { useStore } from '../../store'
 import { EngineSelect, type EngineOption } from '../gen-panel/EngineSelect'
 import { notifyConfigChanged } from '../../lib/configEvents'
+// 模型能力位徽标：与生成面板共用一份映射（见 lib/modelCaps.ts 的文件头说明）
+import { capLabel } from '../../lib/modelCaps'
 import { Plus, X, Trash2, RefreshCw, Wifi, CheckCircle, ChevronDown, ChevronRight, Pencil } from 'lucide-react'
 
 const CAT_LABELS: Record<string, string> = { asr: '语音转文字', ocr: '图片文字识别', doc: '文档解析' }
@@ -348,7 +350,7 @@ export function ProviderSettings() {
                         <div key={name} className="flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-surface-hover text-[13px]">
                           <span className="flex-1 min-w-0">
                             <span className="truncate">{name}</span>
-                            {model?.capabilities && <span className="text-[10px] text-disabled ml-1">{model.capabilities.join(' · ')}</span>}
+                            {model?.capabilities && <span className="text-[10px] text-disabled ml-1">{model.capabilities.map(capLabel).join(' · ')}</span>}
                             {model?.context_window != null && <span className="text-[10px] text-accent ml-1">{model.context_window >= 1000 ? `${Math.round(model.context_window / 1000)}K` : `${model.context_window}`} ctx</span>}
                           </span>
                           {enabled && model ? (
@@ -387,6 +389,19 @@ export function ProviderSettings() {
                 {m.capabilities?.includes('video') && (
                   <span className="px-1 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent"
                     title="支持视频直传（视频文件直接传给模型，服务端抽帧）">视频</span>
+                )}
+                {/* 思考档位能力标记（capabilities 含 reasoning）——同样是只读展示：
+                    该能力位来自预设标注（按模型，不按 provider），不提供手动开关 */}
+                {m.capabilities?.includes('reasoning') && (
+                  <span className="px-1 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent"
+                    title="支持思考强度设置（生成面板可选 快速 / 标准 / 最强）">思考档位</span>
+                )}
+                {/* PDF 直传能力标记（capabilities 含 document）——同样只读：能力位由预设
+                    按模型标注（不按 provider），无手动开关，也**刻意不复用「多模态」标记**
+                    （image 位 gate 着 AI 分析图片 / OCR 模型选择等入口，代指 file 块会误放开） */}
+                {m.capabilities?.includes('document') && (
+                  <span className="px-1 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent"
+                    title="支持 PDF 直传（原件随生成请求发给模型，本地抽取的文本不进提示词）">PDF 直传</span>
                 )}
                 <button onClick={() => handleDeleteLlmModel(m.id)} className="hover:text-error"><X size={11} /></button>
               </span>

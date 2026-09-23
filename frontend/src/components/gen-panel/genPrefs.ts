@@ -10,6 +10,21 @@ export interface GenPrefs {
   selectedModelId: number | null
   videoUnderstanding: boolean; videoInterval: number
   videoDirect: boolean  // 视频直传模型处理（DashScope SDK，服务端抽帧；默认关 + 记忆）
+  /**
+   * PDF 直传（仅对标注了 document 能力的模型可见，且仅 PDF）。
+   * 原件随生成请求发给模型，本地抽取的文本**不进 prompt** —— 这是「只发原文件」
+   * 的二选一，不是叠加（叠加会让同一份内容 token 双花）。
+   * ⚠️ 代价：转录/导出/搜索用的仍是本地 rawText，扫描件上两者会真分叉（见后端
+   * services/doc_understand.py 的「双真相源」段）。默认关 + 记忆）。
+   */
+  docDirect: boolean
+  /**
+   * 思考强度（仅对标注了 reasoning 能力的模型可见）。
+   * 实际下发值由后端 effort.py::effort_for 决定 —— **整理版恒为 low**（除非选 max），
+   * 这不是隐规则，GenerateOptions 里有对应文案。
+   * 默认 'high' = 服务端默认档，故对未升级的后端也是零行为变化。
+   */
+  reasoningEffort: 'low' | 'high' | 'max'
   gridCols: number; gridRows: number
   dedupeEnabled: boolean; unitWidth: number; unitHeight: number
   saveQuality: number; frameQualityFilter: boolean
@@ -28,6 +43,8 @@ const DEFAULTS: GenPrefs = {
   selectedModelId: null,
   videoUnderstanding: false, videoInterval: 6,
   videoDirect: false,
+  docDirect: false,
+  reasoningEffort: 'high',
   gridCols: 2, gridRows: 2,
   dedupeEnabled: true, unitWidth: 960, unitHeight: 540,
   saveQuality: 90, frameQualityFilter: true,

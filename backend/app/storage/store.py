@@ -16,6 +16,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from app.core.types import RawTranscript, MarkdownView, ProcessResult, Style, GenerateMode
 from app.core.errors import AppError, StoreError
@@ -57,6 +58,7 @@ def _empty_index() -> dict:
     return {
         "version": INDEX_VERSION,
         "transcripts": [],
+        "folders": [],
         "markdowns": {},
         "processes": {},
         "conversations": [],
@@ -145,6 +147,10 @@ class Store:
                 "language": "", "duration": None, "coverUrl": "",
                 "sourceTitle": "", "contentHash": hashlib.sha256(raw_text.encode()).hexdigest(),
                 "metadata": {}, "tags": [], "createdAt": "",
+                # 文件夹归属只存在于 index.json（文件夹是纯逻辑分类，不落磁盘），
+                # 故重建必然丢失分类——这里写空串是为保持条目 schema 完整，
+                # 让下游 e.get("folderId") 永远拿到字符串而非 KeyError 之外的意外。
+                "folderId": "",
                 "dir_name": dir_name,
             }
             self._index["transcripts"].append(tx_entry)
@@ -238,6 +244,10 @@ class Store:
             "metadata": meta,
             "tags": data.get("tags", []),
             "createdAt": data.get("createdAt", ""),
+            # 文件夹归属。"" = 未分类（用空串而非 null，与上方 data.get(k, "") 惯例一致）。
+            # ⚠️ 这个字段缺席时 save_transcript_full 会整体替换 index 条目——即「改标题
+            # 顺手抹掉分类」。故 get_transcript() 必须一并返回它（见下）。
+            "folderId": data.get("folderId", ""),
             "dir_name": data.get("dir_name", "") if "dir_name" in data else "",
         }
 
@@ -429,6 +439,9 @@ class Store:
             "metadata": meta if isinstance(meta, dict) else {},
             "tags": entry.get("tags", []),
             "createdAt": entry.get("createdAt", ""),
+            # ⚠️ 必须返回：PATCH /transcripts 读的就是这个 dict，改完标题/标签后整体
+            # save_transcript_full 回去；少了它，改标题就等于把文档移出文件夹。
+            "folderId": entry.get("folderId", ""),
         }
 
     def delete_transcript(self, id: str) -> bool:
@@ -472,6 +485,19 @@ class Store:
             if "query" in filters:
                 q = filters["query"].lower()
                 result = [e for e in result if q in e.get("title", "").lower()]
+            if "folderId" in filters:
+                # 用 `in` 判定而非 `is not None`：空串是**有效筛选值**（只看未分类），
+                # 与「不传该键 = 不过滤」必须区分开。路由层据此只在显式传参时塞进来。
+                #
+                # ⚠️ 悬空 folderId（文件夹已不存在，如手工改坏 index.json）必须**归化为未分类**。
+                # 直接拿原值比较的话，该文档既不属于任何文件夹、也不出现在「未分类」里——
+                # 等于从**所有筛选视图**中消失（只能在「全部」里找到），用户会以为文档丢了。
+                known = {f["id"] for f in self._index.get("folders", [])}
+                result = [
+                    e for e in result
+                    if (e.get("folderId", "") if e.get("folderId", "") in known else "")
+                    == filters["folderId"]
+                ]
         return sorted(result, key=lambda e: e.get("createdAt", ""), reverse=True)
 
     def find_by_url(self, url: str) -> Optional[dict]:
@@ -516,10 +542,129 @@ class Store:
             new_entry["dir_name"] = doc_dir.name
             for i, entry in enumerate(self._index["transcripts"]):
                 if entry["id"] == tx_id:
+                    # 这里是**整体替换** index 条目，故任何「新 entry 里没有、旧 entry 里
+                    # 有」的字段都会被静默抹掉。folderId 不属于「改标题/标签」的语义，
+                    # 调用方没显式传就保持原值（分类只由文件夹 API 改动）。
+                    if "folderId" not in tx_data:
+                        new_entry["folderId"] = entry.get("folderId", "")
                     self._index["transcripts"][i] = new_entry
                     self._save_index()
                     return True
         return False
+
+    # ── 文件夹（单层逻辑分类）──
+    #
+    # 设计约束：文件夹是**纯逻辑分类**，永不映射为磁盘目录。
+    # 每个文档已有独立目录 {sanitized_title}-{hex6}/（含 transcript.md / assets /
+    # process / 两版制产物），把文件夹做成目录会同时破坏目录命名规则、assets 相对
+    # 引用、两版制——移动文档要重写全部 index 路径。故 folders 只活在 index.json 里。
+
+    def list_folders(self) -> list[dict]:
+        """列出全部文件夹，附带各自文档数。count 现算（文件夹数远少于文档数）。"""
+        with self._lock:
+            folders = list(self._index.get("folders", []))
+            known = {f["id"] for f in folders}
+            counts: dict[str, int] = {}
+            for e in self._index["transcripts"]:
+                fid = e.get("folderId", "")
+                # 悬空 folderId 计入不了任何 count——这里的 `in known` 只是剪枝。
+                # 真正保证「悬空 = 未分类」的是 list_transcripts 里的归化（见那里）。
+                if fid in known:
+                    counts[fid] = counts.get(fid, 0) + 1
+        return [{**f, "count": counts.get(f["id"], 0)} for f in folders]
+
+    def folder_exists(self, folder_id: str) -> bool:
+        return any(f["id"] == folder_id for f in self._index.get("folders", []))
+
+    def create_folder(self, name: str) -> dict:
+        """新建文件夹。允许重名——id 是身份，名字只是给用户看的标签。"""
+        name = (name or "").strip()
+        if not name:
+            raise AppError("FOLDER_NAME_EMPTY", "文件夹名不能为空",
+                           recoverable=True, status_code=400)
+        entry = {
+            "id": f"fd_{uuid4().hex[:12]}",
+            "name": name,
+            "createdAt": datetime.now().isoformat(),
+        }
+        with self._lock:
+            self._index.setdefault("folders", []).append(entry)
+            self._save_index()
+        return entry
+
+    def rename_folder(self, folder_id: str, name: str) -> Optional[dict]:
+        """重命名。返回更新后的条目；文件夹不存在返回 None（由路由层转 404）。"""
+        name = (name or "").strip()
+        if not name:
+            raise AppError("FOLDER_NAME_EMPTY", "文件夹名不能为空",
+                           recoverable=True, status_code=400)
+        with self._lock:
+            for f in self._index.get("folders", []):
+                if f["id"] == folder_id:
+                    f["name"] = name
+                    self._save_index()
+                    return dict(f)
+        return None
+
+    def delete_folder(self, folder_id: str) -> Optional[int]:
+        """删除文件夹，其下文档回落未分类。返回迁走的文档数；不存在返回 None。
+
+        ⚠️ 绝不删文档——文件夹只是分类标签。搬移与删行在同一锁区内完成，
+        中途崩溃也不会留下悬空引用（读路径另有兜底，见 list_transcripts）。
+        """
+        with self._lock:
+            folders = self._index.get("folders", [])
+            idx = next((i for i, f in enumerate(folders) if f["id"] == folder_id), None)
+            if idx is None:
+                return None
+            moved = 0
+            for e in self._index["transcripts"]:
+                if e.get("folderId") == folder_id:
+                    e["folderId"] = ""
+                    moved += 1
+            del folders[idx]
+            self._save_index()
+        return moved
+
+    # ── 批量操作（一次加锁、一次写盘）──
+    #
+    # 相对「N 次 PATCH /transcripts/{id}」= N 次全量 index.json 写盘，
+    # 这里是本组端点的核心收益（500 个文档 = 1 次写盘而非 500 次）。
+
+    def set_transcripts_folder(self, ids: list[str], folder_id: str) -> int:
+        """批量移动文档到指定文件夹（""=移出到未分类）。返回命中数。"""
+        targets = set(ids)
+        with self._lock:
+            n = 0
+            for e in self._index["transcripts"]:
+                if e["id"] in targets:
+                    e["folderId"] = folder_id
+                    n += 1
+            if n:
+                self._save_index()
+        return n
+
+    def update_transcripts_tags(self, ids: list[str], tags: list[str],
+                               mode: str = "add") -> int:
+        """批量打标签。mode="add" 并入去重 / mode="replace" 整体替换。返回命中数。"""
+        targets = set(ids)
+        with self._lock:
+            n = 0
+            for e in self._index["transcripts"]:
+                if e["id"] not in targets:
+                    continue
+                if mode == "replace":
+                    e["tags"] = list(tags)
+                else:
+                    merged = list(e.get("tags", []))
+                    for t in tags:
+                        if t not in merged:
+                            merged.append(t)
+                    e["tags"] = merged
+                n += 1
+            if n:
+                self._save_index()
+        return n
 
     # ── MarkdownView CRUD ──
 

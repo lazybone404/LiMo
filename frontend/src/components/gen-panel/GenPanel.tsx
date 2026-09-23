@@ -66,6 +66,8 @@ export function GenPanel() {
   const [selectedModelId, setSelectedModelId] = useState<number | null>(saved.selectedModelId)
   const [videoUnderstanding, setVideoUnderstanding] = useState(saved.videoUnderstanding)
   const [videoDirect, setVideoDirect] = useState(saved.videoDirect)
+  const [docDirect, setDocDirect] = useState(saved.docDirect ?? false)
+  const [reasoningEffort, setReasoningEffort] = useState<'low' | 'high' | 'max'>(saved.reasoningEffort ?? 'high')
   const [videoInterval, setVideoInterval] = useState(saved.videoInterval)
   const [gridCols, setGridCols] = useState(saved.gridCols)
   const [gridRows, setGridRows] = useState(saved.gridRows)
@@ -216,6 +218,8 @@ export function GenPanel() {
       formatFormulas, formatReferences, formatImages,
       imageAnalyze, imageOptimize,
       selectedModelId, videoUnderstanding, videoDirect, videoInterval, gridCols, gridRows,
+      docDirect,
+      reasoningEffort,
       dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter,
       imageMode, userNotes, notesExpanded, streamDisplay })
   }, [style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot, formatChart,
@@ -223,6 +227,8 @@ export function GenPanel() {
       ocrEnabled, ocrModelId,
       selectedModelId,
       videoUnderstanding, videoDirect, videoInterval, gridCols, gridRows, streamDisplay,
+      docDirect,
+      reasoningEffort,
       dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter, userNotes, imageMode, notesExpanded])
 
   const [enabledModels, setEnabledModels] = useState<EnabledModel[]>([])
@@ -252,6 +258,17 @@ export function GenPanel() {
   const hasVideoModel = selectedModelId
     ? (enabledModels.find(m => m.id === selectedModelId)?.capabilities?.includes('video') ?? false)
     : enabledModels.some(m => m.capabilities?.includes('video'))
+  // 思考强度：能力位由**模型**标注（不按 provider 判断）——与 hasImageModel/hasVideoModel 同构。
+  // 未选中模型（走「场景默认」）时看任一启用模型是否支持，避免默认模型是 deepseek 却看不到档位。
+  const reasoningSupported = selectedModelId
+    ? (enabledModels.find(m => m.id === selectedModelId)?.capabilities?.includes('reasoning') ?? false)
+    : enabledModels.some(m => m.capabilities?.includes('reasoning'))
+  // PDF 直传：同上，能力位由模型标注（不按 provider 判断）。
+  // ⚠️ 刻意不复用 image 位——它 gate 着「AI 分析图片」「OCR 模型选择」等入口，
+  // 拿它代指 file 块会把这些入口一起错误放开（后端 supports_document 同此约定）。
+  const hasDocumentModel = selectedModelId
+    ? (enabledModels.find(m => m.id === selectedModelId)?.capabilities?.includes('document') ?? false)
+    : enabledModels.some(m => m.capabilities?.includes('document'))
 
   // ── 导入进度辅助 ──
   const updateImportProgress = (ev: { phase?: string; status?: string; percent?: number; message?: string }) => {
@@ -603,6 +620,8 @@ export function GenPanel() {
       mode: streamMode, style: normalizeStyle(style),
       formats: formatStr || undefined,
       model_id: selectedModelId || undefined,
+      // 只在模型支持时传：不支持还传只会让后端每次生成记一条「档位未生效」warning
+      reasoning_effort: reasoningSupported ? reasoningEffort : undefined,
       user_notes: userNotes || undefined,
       reference_ids: refFile ? [refFile.id] : undefined,
       continue_from: continueFrom || undefined,
@@ -620,6 +639,8 @@ export function GenPanel() {
       image_optimize: isVideo ? (videoUnderstanding ? imageOptimize : undefined) : (imageAnalyze ? imageOptimize : undefined),
       ocr_enabled: isVideo ? undefined : (ocrEnabled || undefined),
       ocr_model_id: isVideo ? undefined : (ocrEnabled ? ocrModelId ?? undefined : undefined),
+      // 仅 PDF 且模型支持时传（false 一律转 undefined = 不传 = 后端默认文本模式）
+      doc_direct: typeMeta.isPDF && hasDocumentModel && docDirect ? true : undefined,
     }, {
       onChunk(text, mode) {
         // 1. 无条件写 buffer（key 按 docId 隔离——切走期间流式内容不丢，切回显示完整）
@@ -744,7 +765,9 @@ export function GenPanel() {
       onWarning(msg, kind) {
         // 图表未生成（kind=chart_missing，可选组件缺失）：产物本身成功，仅 info 提示
         // 不标 partial——避免 onDone 误报「部分产物生成失败」（协议收紧的语义区分）
-        if (kind === 'chart_missing') {
+        // doc_direct_raw_short（直传成功但本地抽取近乎为空）同理：生成是成功的，
+        // 只是转录/导出/搜索会不完整——是提示不是失败。
+        if (kind === 'chart_missing' || kind === 'doc_direct_raw_short') {
           if (!isSameDoc(capturedId)) return
           addToast(msg, 'info')
           return
@@ -920,6 +943,10 @@ export function GenPanel() {
                   ocrModelId={ocrModelId} setOcrModelId={setOcrModelId}
                   hasImageModel={hasImageModel}
                   hasVideoModel={hasVideoModel}
+                  hasDocumentModel={hasDocumentModel}
+                  docDirect={docDirect} setDocDirect={setDocDirect}
+                  reasoningSupported={reasoningSupported}
+                  reasoningEffort={reasoningEffort} setReasoningEffort={setReasoningEffort}
                   style={style} setStyle={setStyle} styleKeys={styleKeysWithNone}
                   selectedCore={selectedCore} setSelectedCore={setSelectedCore}
                   videoUnderstanding={videoUnderstanding} setVideoUnderstanding={setVideoUnderstanding}

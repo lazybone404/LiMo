@@ -27,7 +27,9 @@ from app.core import logging as log
 from app.core.model_resolver import resolve_llm_config
 from app.llm import LLMService, CancelledError
 from app.generation.generator import Generator, _post_process_content_markers, _post_process_screenshots
+from app.generation.effort import effort_for, chunk_timeout_for
 from app.services.chart_renderer import render_charts, CHART_FENCE_MARKS
+from app.services.doc_understand import DOC_DIRECT_GEN_TIMEOUT, DOC_DIRECT_MIN_RAW_CHARS
 from app.generation.content_preparer import ContentPreparer
 from app.generation.prompt_builder import PromptBuilder
 from app.generation.prompt import build_polish_prompt, build_notes_prompt
@@ -62,7 +64,7 @@ _TYPE_FIELDS: dict[str, set[str]] = {
 # 渲染本身**不在**这个窗口内 —— asyncio.timeout 只包住流式循环，render_charts 在其
 # 退出之后经 asyncio.to_thread 执行。
 #
-# 定值依据（2026-09-19 实测，deepseek-v4-flash，约 900 字文档）：
+# 定值依据（2026-09-19 实测，deepseek-flash，约 900 字文档）：
 #   勾选图表 → 输出 6 张图（hchain×3 / grid×2 / layers×1）/ 2890 字符 / **9.8s**
 # 注意 **不要**按「P95 × 1.5」套用：该公式假设多图会显著拉长生成，而实测推翻了
 # 这个前提——新协议下模型只写语义 JSON（每张 130~240 字符），不再手写数百行 SVG，
@@ -75,13 +77,21 @@ _GEN_TIMEOUT_BASE = 330.0
 _GEN_TIMEOUT_CHART = 400.0
 
 
-def _gen_timeout(formats) -> float:
-    """按 formats 选总超时。format 可传 list 或逗号分隔字符串。"""
+def _gen_timeout(formats, doc_direct: bool = False) -> float:
+    """按 formats 选总超时。format 可传 list 或逗号分隔字符串。
+
+    doc_direct=True（PDF 直传）：总超时还要把「模型解析原件的首包静默」算进去
+    （≈10s/MB，见 doc_understand），否则首包一长就整段被掐断。
+    """
     if isinstance(formats, str):
         fmts = [f.strip() for f in formats.split(",") if f.strip()]
     else:
         fmts = list(formats or [])
-    return _GEN_TIMEOUT_CHART if "chart" in fmts else _GEN_TIMEOUT_BASE
+    base = _GEN_TIMEOUT_CHART if "chart" in fmts else _GEN_TIMEOUT_BASE
+    if doc_direct:
+        # 图表 + 直传同时开时取较大者（两者叠加不会同时达到各自峰值）
+        return max(base, DOC_DIRECT_GEN_TIMEOUT)
+    return base
 
 
 def _has_chart_fence(text: str) -> bool:
@@ -129,14 +139,41 @@ class GenerateRequest(BaseModel):
     # 文档图片参数（source_type=document 专属）
     image_analyze: bool = False
     image_optimize: bool = False
+    # 文档直传（source_type=document/PDF 专属）：原件随生成请求发给模型，
+    # 本地抽取的正文**不进 prompt**（见 services/doc_understand.py 的模块说明）。
+    doc_direct: bool = False
     # OCR 预处理（source_type=document 专属，与 image_analyze 互斥）
     ocr_enabled: bool = False
     ocr_model_id: int | None = None
+    # 思考强度：""（未指定，走服务端默认）/ "low" / "high" / "max"。
+    # ⚠️ 跨类型字段，**不进 _TYPE_FIELDS**（同 model_id / user_notes）。
+    # 实际下发值由 generation/effort.py::effort_for 决定，不在此处判档。
+    reasoning_effort: str = ""
 
 
 def _resolve_reference_texts(ids: list[str]) -> list[dict]:
     """参考文件暂存 id → [{name, content}]（TTL 内有效；失效/不存在的 id 跳过，不注入）。"""
     return get_references([r for r in ids if r])
+
+
+def _doc_direct_raw_warning(document: dict | None, raw_text: str) -> str | None:
+    """直传成功但本地抽取文本近乎为空 → 返回提示文案，否则 None。
+
+    这是**双真相源**唯一可观测的出口：模型读原件读到了内容，而转录 tab /
+    导出 / FTS 搜索用的是本地 rawText（扫描件 + 无 OCR 时近乎空）。不提示的话
+    「生成成功」会被当成「导出/搜索里也有」，直到导出时才发现是空的。
+
+    ⚠️ 不是错误：产物本身完全成功，故调用方用 kind 走 info 提示而非 error。
+    """
+    if not document:
+        return None
+    chars = len((raw_text or "").strip())
+    if chars >= DOC_DIRECT_MIN_RAW_CHARS:
+        return None
+    log.warning("文档直传: 本地抽取文本过短，转录/导出/搜索可能不完整",
+                raw_chars=chars, filename=document.get("filename", ""))
+    return ("本地未能从该文件抽取文本（直传模式下模型仍读到了原文件内容），"
+            "转录/导出/搜索可能不完整")
 
 
 @router.post("/generate/{transcript_id}")
@@ -151,13 +188,20 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         # 非流式路径没有 asyncio.timeout 包壳，SDK 的 httpx 超时是唯一闸门，
         # 所以多图场景必须在这里就放宽，否则照样撞 330。
         llm = LLMService(config, model_id=req.model_id,
-                         request_timeout=_gen_timeout(req.formats))
+                         request_timeout=_gen_timeout(req.formats,
+                                                      doc_direct=req.doc_direct))
 
         tx = store.get_transcript(transcript_id)
         if not tx:
             raise AppError("GEN_NOT_FOUND", "文档不存在，请先导入内容")
         if not llm_config.get("api_key"):
             raise AppError("GEN_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
+
+        # 文档直传的触发源（同流式端点的预检）：路径已是绝对路径（模式 #24）
+        doc_path = tx.get("sourceFilePath", "") if req.doc_direct else ""
+        if req.doc_direct and doc_path and not os.path.isfile(doc_path):
+            log.warning("文档直传: 原件已不存在，改用文本模式", path=doc_path)
+            doc_path = ""
 
         vl_config = None
         if req.video_understanding:
@@ -241,6 +285,8 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                     ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
                     video_direct=req.video_direct,
+                    doc_direct=req.doc_direct, doc_path=doc_path,
+                    reasoning_effort=req.reasoning_effort,
                 )
                 # 非流式端点截图后处理（generator 内部 video_path 可能为 None，此处补处理）
                 if screenshot_video_path:
@@ -264,6 +310,8 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                     ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
                     video_direct=req.video_direct,
+                    doc_direct=req.doc_direct, doc_path=doc_path,
+                    reasoning_effort=req.reasoning_effort,
                 )
                 if screenshot_video_path:
                     polished_mv.content = _post_process_screenshots(
@@ -283,6 +331,8 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                     ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
                     video_direct=req.video_direct,
+                    doc_direct=req.doc_direct, doc_path=doc_path,
+                    reasoning_effort=req.reasoning_effort,
                 )
                 if screenshot_video_path:
                     notes_mv.content = _post_process_screenshots(
@@ -356,8 +406,10 @@ async def generate_stream(transcript_id: str, request: Request,
                           save_quality: int = 90, frame_quality_filter: bool = True,
                           image_analyze: bool = False,
                           image_optimize: bool = False,
+                          doc_direct: bool = False,
                           ocr_enabled: bool = False,
                           ocr_model_id: int | None = None,
+                          reasoning_effort: str = "",
                           continue_from: str = ""):
     """流式生成笔记——SSE 响应，实时推送每个 chunk。
 
@@ -373,6 +425,19 @@ async def generate_stream(transcript_id: str, request: Request,
     tx = store.get_transcript(transcript_id)
     if not tx:
         raise AppError("GEN_NOT_FOUND", "文档不存在，请先导入内容")
+
+    # 文档直传的触发源：本地原件路径。文档没有 sourceUrl，只能用它。
+    # ⚠️ 该路径在 ingest 落盘时已是绝对路径（基于 store.root 拼接，模式 #24），
+    # 这里只做存在性预检——`store.root/tmp/` 被外部清理时**静默降级比报错合理**，
+    # 但必须留痕，否则「开了开关没反应」无从排查。
+    doc_path = tx.get("sourceFilePath", "") if doc_direct else ""
+    if doc_direct:
+        if not doc_path:
+            log.warning("文档直传: 该文档无本地原件路径，改用文本模式",
+                        transcript_id=transcript_id, source_type=tx.get("sourceType", ""))
+        elif not os.path.isfile(doc_path):
+            log.warning("文档直传: 原件已不存在，改用文本模式", path=doc_path)
+            doc_path = ""
 
     # 校验 style 有效性（Polish only 模式可能传 "none"）
     _valid_styles = {s.value for s in Style}
@@ -410,8 +475,14 @@ async def generate_stream(transcript_id: str, request: Request,
     # ── LLMService ──
     # format_list 上移到构造之前：request_timeout 要按是否含 chart 分档。
     format_list = [f.strip() for f in formats.split(",") if f.strip()]
+    # ⚠️ doc_direct 必须传（此前漏了，非流式那侧是传的）：request_timeout 是 httpx 的
+    # read timeout，必须 ≥ 单 chunk 静默超时，否则直传时 SDK 会先于我们的 wait_for
+    # 抛超时——异常被下游 except Exception 归到「连接中断」并按那条路重试，
+    # 文案与真相不符（真正的死因是「模型还在解析原件，我们等得不够久」）。
+    # 判据用 query 的**用户意图**而非 document 是否构造成功：后者在 prepare() 里才定，
+    # 此刻还拿不到；且闸门没过时多留的余量无害（放宽只影响最坏等待，不影响正常路径）。
     llm = LLMService(config, model_id=model_id,
-                     request_timeout=_gen_timeout(format_list))
+                     request_timeout=_gen_timeout(format_list, doc_direct=doc_direct))
     if not llm.api_key:
         raise AppError("GEN_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
@@ -517,10 +588,16 @@ async def generate_stream(transcript_id: str, request: Request,
                     ocr_engine = OCRPreprocessor(config, ocr_model_id)
                     processed_text = await ocr_engine.process(epub_text, str(store.root), doc_dir=str(store._get_doc_dir(transcript_id) or ""))
 
-                # 预处理（VL + 图片剥离 + 截断）
-                clean_text, image_urls, video_path = await preparer.prepare(
+                # 预处理（VL + 图片剥离 + 文档直传 + 截断）
+                clean_text, image_urls, video_path, document = await preparer.prepare(
                     processed_text, vl_config, keep_refs, send_to_llm=send_to_llm,
-                    optimize_images=image_optimize, video_direct=video_direct)
+                    optimize_images=image_optimize, video_direct=video_direct,
+                    doc_direct=doc_direct, doc_path=doc_path)
+                # 直传时模型要先解析原件才吐第一个 token（实测最长 ~150s，见
+                # doc_understand），这段没有任何 chunk——用 stage 事件让用户看得见，
+                # 否则最坏路径（直传 + 生成 ≈ 10 分钟）看起来就是卡死。
+                if document:
+                    yield f"data: {json.dumps({'type': 'stage', 'message': '正在直传 PDF 原件给模型解析，大文件可能需要 1~2 分钟…'}, ensure_ascii=False)}\n\n"
 
                 # 参考文件「原文 + 参考」超出模型上下文预算时先 LLM 摘要（装得下则原样
                 # 返回，零成本）。不压缩的话整份塞进 prompt → 请求直接超窗失败。
@@ -564,13 +641,18 @@ async def generate_stream(transcript_id: str, request: Request,
                 notes_error: str | None = None
                 _queue: asyncio.Queue[dict] = asyncio.Queue()
 
-                async def _run_product(label: str, prompt: str, reasoning_effort: str | None = None) -> tuple[list[str], bool, str | None]:
+                async def _run_product(label: str, prompt: str, effort: str | None = None) -> tuple[list[str], bool, str | None]:
                     """单产物：最多 2 次尝试（首试 + 1 次重试），事件经 queue 汇合。
-                    返回 (chunks, cancelled, error_msg)。reasoning_effort：思考强度
-                    （deepseek-v4 专用，polished 传 low）。"""
+                    返回 (chunks, cancelled, error_msg)。
+
+                    effort：**已决策好的**思考强度（None = 不传参数），由 effort_for
+                    按产物名算出——本函数不认识档位表，也不该认识。"""
                     chunks: list[str] = []
                     err_msg: str | None = None
                     cancelled = False
+                    # 静默期超时：按档位取（max 档思考更久）+ 直传时按原件解析耗时放宽
+                    _dd = document is not None
+                    chunk_timeout = chunk_timeout_for(effort, doc_direct=_dd)
                     if cancel_event and cancel_event.is_set():
                         cancelled = True
                         await _queue.put({"mode": label, "type": "cancelled", "saved_partial": False})
@@ -583,23 +665,23 @@ async def generate_stream(transcript_id: str, request: Request,
                     for attempt in range(2):
                         try:
                             # 总超时按 formats 分档（_gen_timeout：勾选图表时放宽到
-                            # _GEN_TIMEOUT_CHART）+ chunk 间隔超时 150s：
-                            # deepseek-v4 思考模式（文档：默认启用，effort=high）思考阶段
-                            # 服务端静默不推流（实测首 chunk 后 90s 零数据）——45s 判定会
-                            # 把正常长思考误判为挂起。150s 容忍长思考；推理链 chunk 到达
-                            # 时 anext 正常返回（有 reasoning 也在推流），不触发超时。
-                            # 两个超时互相独立：总超时管整体，150s 管单 chunk 静默期。
-                            async with asyncio.timeout(_gen_timeout(format_list)):
+                            # _GEN_TIMEOUT_CHART）+ chunk 间隔超时按 effort 分档（150/180）：
+                            # DeepSeek 思考模式思考阶段服务端静默不推流（实测首 chunk 后
+                            # 90s 零数据）——45s 判定会把正常长思考误判为挂起；推理链 chunk
+                            # 到达时 anext 正常返回（有 reasoning 也在推流），不触发超时。
+                            # 两个超时互相独立：总超时管整体，单 chunk 超时管静默期。
+                            async with asyncio.timeout(_gen_timeout(format_list, doc_direct=_dd)):
                                 _it = None
                                 try:
                                     _it = llm.stream(
-                                        prompt, image_urls=image_urls, cancel_event=cancel_event,
+                                        prompt, image_urls=image_urls, document=document,
+                                        cancel_event=cancel_event,
                                         on_reasoning=_reasoning_cb,
-                                        reasoning_effort=reasoning_effort,
+                                        reasoning_effort=effort,
                                     )
                                     while True:
                                         try:
-                                            chunk = await asyncio.wait_for(anext(_it), timeout=150)
+                                            chunk = await asyncio.wait_for(anext(_it), timeout=chunk_timeout)
                                         except StopAsyncIteration:
                                             break
                                         chunks.append(chunk)
@@ -616,7 +698,7 @@ async def generate_stream(transcript_id: str, request: Request,
                             # 空响应（LLM finish=stop 但 0 chars）→ 重试
                             log.warning(f"{label} 空响应（第 {attempt + 1} 次），重试")
                         except asyncio.TimeoutError:
-                            err_msg = f"{label} 生成超时（150s 无响应），已中断"
+                            err_msg = f"{label} 生成超时（{int(chunk_timeout)}s 无响应），已中断"
                             if not chunks and attempt == 0:
                                 # 首次挂起（chunk 未到就断流）→ 重试一次
                                 log.warning(f"{label} 挂起（第 {attempt + 1} 次），重试")
@@ -646,11 +728,18 @@ async def generate_stream(transcript_id: str, request: Request,
                     await _queue.put({"mode": label, "type": "done"})
                     return chunks, False, None
 
+                # ⚠️ effort 按**产物名**传，不按 a/b 位置传：本列表与下方解包同为
+                # [notes, polished] 顺序，而 generator.generate_both 的 a/b 是反的
+                # （a=polished）。位置一旦弄混，就是把笔记的档位配到整理版上。
                 _tasks = [
-                    asyncio.create_task(_run_product("notes", notes_prompt)),
-                    # 整理版原文是忠实整理任务，无需深度思考——effort=low 大幅缩短
-                    # deepseek-v4 思考静默期（默认 high：复杂任务思考 90s+ 零数据）
-                    asyncio.create_task(_run_product("polished", polished_prompt, reasoning_effort="low")),
+                    asyncio.create_task(_run_product(
+                        "notes", notes_prompt,
+                        effort_for("notes", reasoning_effort, llm.supports_reasoning))),
+                    # 整理版原文是忠实整理任务，无需深度思考——固定低档大幅缩短
+                    # DeepSeek 思考静默期（默认 high：复杂任务思考 90s+ 零数据）
+                    asyncio.create_task(_run_product(
+                        "polished", polished_prompt,
+                        effort_for("polished", reasoning_effort, llm.supports_reasoning))),
                 ]
                 # 汇合两路事件流（done/warning/cancelled 各 1 个后退出）。
                 # warning 是 per-product 失败终态（P0-9：原 error 误触发前端 onError 清空双产物 buffer）
@@ -703,6 +792,11 @@ async def generate_stream(transcript_id: str, request: Request,
                         log.warning("图表未生成", source_type=source_type, reason=_reason)
                         yield f"data: {json.dumps({'type': 'warning', 'kind': 'chart_missing', 'message': f'图表未生成：{_reason}，请重新生成'}, ensure_ascii=False)}\n\n"
 
+                # 直传成功但本地抽取近乎为空 → 显式提示（双真相源的可观测出口）
+                _raw_warn = _doc_direct_raw_warning(document, epub_text)
+                if _raw_warn:
+                    yield f"data: {json.dumps({'type': 'warning', 'kind': 'doc_direct_raw_short', 'message': _raw_warn}, ensure_ascii=False)}\n\n"
+
                 if video_path and os.path.exists(video_path):
                     try:
                         os.remove(video_path)
@@ -748,9 +842,12 @@ async def generate_stream(transcript_id: str, request: Request,
                 ocr_engine = OCRPreprocessor(config, ocr_model_id)
                 processed_text = await ocr_engine.process(epub_text, str(store.root), doc_dir=str(store._get_doc_dir(transcript_id) or ""))
 
-            clean_text, image_urls, video_path = await preparer.prepare(
+            clean_text, image_urls, video_path, document = await preparer.prepare(
                 processed_text, vl_config, keep_refs, send_to_llm=send_to_llm,
-                optimize_images=image_optimize, video_direct=video_direct)
+                optimize_images=image_optimize, video_direct=video_direct,
+                doc_direct=doc_direct, doc_path=doc_path)
+            if document:
+                yield f"data: {json.dumps({'type': 'stage', 'message': '正在直传 PDF 原件给模型解析，大文件可能需要 1~2 分钟…'}, ensure_ascii=False)}\n\n"
 
             # 参考文件超出模型上下文预算时先摘要（同双产物分支）。
             # 参考文件只注入 notes —— 单产物 polished 时压缩纯属白花钱，直接跳过。
@@ -781,6 +878,13 @@ async def generate_stream(transcript_id: str, request: Request,
             if partial_content:
                 prompt = _build_continue_prompt(prompt, partial_content)
 
+            # 档位决策与双产物分支同源（effort.py）——单产物 mode 就是 product 名。
+            # ⚠️ 必须放在 try **之外**：下面的 except TimeoutError 要拿 chunk_timeout
+            # 拼超时文案，定义在 try 内的话异常早于赋值时该名未绑定（UnboundLocalError）。
+            effort = effort_for(stream_mode, reasoning_effort, llm.supports_reasoning)
+            _dd = document is not None
+            chunk_timeout = chunk_timeout_for(effort, doc_direct=_dd)
+
             try:
                 # 思考链收集：回调只累积，anext 返回后统一带出（思考 chunk 到达 → anext 返回）
                 _pending_reasoning: list[str] = []
@@ -789,18 +893,18 @@ async def generate_stream(transcript_id: str, request: Request,
                     _pending_reasoning.append(text)
 
                 # 总超时按 formats 分档（同双产物分支：勾选图表时放宽）
-                async with asyncio.timeout(_gen_timeout(format_list)):
+                async with asyncio.timeout(_gen_timeout(format_list, doc_direct=_dd)):
                     _it = None
                     try:
                         _it = llm.stream(
-                            prompt, image_urls=image_urls, cancel_event=cancel_event,
+                            prompt, image_urls=image_urls, document=document,
+                            cancel_event=cancel_event,
                             on_reasoning=_reasoning_cb,
-                            # 整理版原文：忠实整理任务，思考强度 low（缩短 deepseek 思考静默期）
-                            reasoning_effort="low" if stream_mode == "polished" else None,
+                            reasoning_effort=effort,
                         )
                         while True:
                             try:
-                                chunk = await asyncio.wait_for(anext(_it), timeout=150)
+                                chunk = await asyncio.wait_for(anext(_it), timeout=chunk_timeout)
                             except StopAsyncIteration:
                                 break
                             if _pending_reasoning:
@@ -816,9 +920,12 @@ async def generate_stream(transcript_id: str, request: Request,
                             except Exception:
                                 pass
             except TimeoutError:
-                # LLM 流式调用挂起（150s 无新 chunk）→ 强制结束，避免前端 isStreaming 卡死。
+                # LLM 流式调用挂起（chunk_timeout 秒无新 chunk）→ 强制结束，避免前端 isStreaming 卡死。
                 # （与双产物路径的 chunk 间隔判定一致——此前 async for 断流要等满 330s）
-                log.error("单产物生成超时（150s 无 chunk），强制结束", transcript_id=transcript_id)
+                # ⚠️ 文案必须用 chunk_timeout（档位相关），写死数字会在 max 档下报错值
+                log.error("单产物生成超时（chunk 静默超时），强制结束",
+                          transcript_id=transcript_id, chunk_timeout=chunk_timeout,
+                          effort=effort or "default")
                 if all_chunks:
                     # P1-1：后处理放线程池，释放事件循环
                     content = await asyncio.to_thread(
@@ -834,7 +941,7 @@ async def generate_stream(transcript_id: str, request: Request,
                     store.save_markdown(mv)
                     yield f"data: {json.dumps({'type': 'cancelled', 'saved_partial': True, 'id': mv.id}, ensure_ascii=False)}\n\n"
                 else:
-                    yield f"data: {json.dumps({'type': 'error', 'message': '生成超时（45s 无响应），请重试'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'error', 'message': f'生成超时（{int(chunk_timeout)}s 无响应），请重试'}, ensure_ascii=False)}\n\n"
                 if video_path and os.path.exists(video_path):
                     try:
                         os.remove(video_path)
@@ -871,6 +978,10 @@ async def generate_stream(transcript_id: str, request: Request,
                 _reason = "模型判断内容不适合图表化" if _judged_unsuitable else "LLM 未输出图表围栏"
                 log.warning("图表未生成", source_type=source_type, reason=_reason)
                 yield f"data: {json.dumps({'type': 'warning', 'kind': 'chart_missing', 'message': f'图表未生成：{_reason}，请重新生成'}, ensure_ascii=False)}\n\n"
+            # 直传成功但本地抽取近乎为空 → 显式提示（双真相源的可观测出口）
+            _raw_warn = _doc_direct_raw_warning(document, epub_text)
+            if _raw_warn:
+                yield f"data: {json.dumps({'type': 'warning', 'kind': 'doc_direct_raw_short', 'message': _raw_warn}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'id': mv.id}, ensure_ascii=False)}\n\n"
 
             # 视频清理统一在 finally（P0-5）：正常/取消/异常路径都删，防磁盘泄漏

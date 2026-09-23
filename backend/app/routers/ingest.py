@@ -50,7 +50,7 @@ class UpdateTranscriptRequest(BaseModel):
     tags: Optional[list[str]] = None
 
 @router.get("/transcripts")
-async def list_transcripts(request: Request, store=Depends(get_store), q: str = "", sourceType: str = "", tag: str = "") -> list[dict[str, Any]]:
+async def list_transcripts(request: Request, store=Depends(get_store), q: str = "", sourceType: str = "", tag: str = "", folderId: Optional[str] = None) -> list[dict[str, Any]]:
     filters = {}
     if q:
         filters["query"] = q
@@ -58,6 +58,11 @@ async def list_transcripts(request: Request, store=Depends(get_store), q: str = 
         filters["sourceType"] = sourceType
     if tag:
         filters["tag"] = tag
+    # ⚠️ folderId 必须用 `is not None` 而非真值判断：空串是**有效筛选值**
+    # （只看未分类），与「参数缺席 = 不过滤」是两种语义。写成 `if folderId:`
+    # 会让「未分类」视图永远拿不到过滤条件（退化成看全部）。
+    if folderId is not None:
+        filters["folderId"] = folderId
     return store.list_transcripts(filters if filters else None)
 
 
@@ -96,18 +101,28 @@ async def update_transcript(tx_id: str, request: Request, store=Depends(get_stor
     body = json.loads(await request.body())
     title = body.get("title")
     tags = body.get("tags")
+    folder_id = body.get("folderId")
 
     # 更新字段
     if title is not None:
         tx["title"] = title
     if tags is not None:
         tx["tags"] = tags
+    if folder_id is not None:
+        # "" 是有效值（移出到未分类）；非空则目标文件夹必须存在
+        if folder_id and not store.folder_exists(folder_id):
+            raise AppError("FOLDER_NOT_FOUND", "目标文件夹不存在",
+                           status_code=404, recoverable=True)
+        tx["folderId"] = folder_id
 
     # 写回磁盘 + 更新索引
+    # ⚠️ save_transcript_full 是**整体替换** index 条目，故 tx 里必须带全字段——
+    # 这正是 get_transcript() 要返回 folderId 的原因（否则改标题=移出文件夹）。
     store.save_transcript_full(tx)
     _index_for_search(request, tx_id, tx.get("title", ""), tx.get("rawText", ""))
 
-    return {"status": "ok", "title": tx.get("title", ""), "tags": tx.get("tags", [])}
+    return {"status": "ok", "title": tx.get("title", ""), "tags": tx.get("tags", []),
+            "folderId": tx.get("folderId", "")}
 
 
 @router.delete("/transcripts/{tx_id}")
@@ -125,6 +140,97 @@ async def delete_transcript(tx_id: str, request: Request, store=Depends(get_stor
         if _engine: _engine.delete(tx_id)
     except Exception: pass
     return {"status": "deleted", "id": tx_id}
+
+
+# ── 批量操作 ──
+#
+# 相对「前端循环 N 次 PATCH/DELETE」的核心收益：tag/move 在 store 层是**一次加锁
+# 一次写盘**（500 个文档 = 1 次 index.json 全量写盘而非 500 次）。
+
+_BATCH_ACTIONS = ("delete", "tag", "move")
+
+
+class BatchTranscriptsRequest(BaseModel):
+    action: str
+    ids: list[str] = []
+    tags: list[str] = []
+    tagMode: str = "add"          # add=并入去重 / replace=整体替换
+    # ⚠️ Optional 而非默认 ""：move 时空串是有效值（移出到未分类），
+    # 用默认空串就无法区分「没传」与「明确要求移出未分类」。
+    folderId: Optional[str] = None
+
+
+@router.post("/transcripts/batch")
+async def batch_transcripts(data: BatchTranscriptsRequest, request: Request,
+                            store=Depends(get_store)) -> dict[str, Any]:
+    """批量删除 / 打标签 / 移动文件夹。
+
+    返回 {status, affected, failed:[{id,error}]}——**失败必须显式返回明细**
+    （删除无法原子回滚，静默吞掉会变成「用户以为全删了」）。
+    全部失败 → 400，避免前端把「一条没成」当成功。
+    """
+    # ① 按 action 做显式枚举校验，不静默返回 affected:0
+    if data.action not in _BATCH_ACTIONS:
+        raise AppError("BATCH_BAD_ACTION",
+                       f"未知批量操作：{data.action}（可选 {', '.join(_BATCH_ACTIONS)}）",
+                       status_code=400, recoverable=True)
+    if not data.ids:
+        raise AppError("BATCH_NO_IDS", "未指定任何文档",
+                       status_code=400, recoverable=True)
+    if data.action == "tag":
+        if not data.tags:
+            raise AppError("BATCH_NO_TAGS", "批量打标签必须提供 tags",
+                           status_code=400, recoverable=True)
+        if data.tagMode not in ("add", "replace"):
+            raise AppError("BATCH_BAD_TAG_MODE",
+                           f"未知 tagMode：{data.tagMode}（可选 add, replace）",
+                           status_code=400, recoverable=True)
+    if data.action == "move":
+        if data.folderId is None:
+            raise AppError("BATCH_NO_FOLDER",
+                           "批量移动必须提供 folderId（空串=移出到未分类）",
+                           status_code=400, recoverable=True)
+        if data.folderId and not store.folder_exists(data.folderId):
+            raise AppError("FOLDER_NOT_FOUND", "目标文件夹不存在",
+                           status_code=404, recoverable=True)
+
+    affected = 0
+    failed: list[dict] = []
+
+    if data.action == "delete":
+        engine = getattr(request.app.state, "search_engine", None)
+        for tx_id in data.ids:
+            try:
+                if not store.get_transcript(tx_id):
+                    failed.append({"id": tx_id, "error": "文档不存在"})
+                    continue
+                store.delete_transcript(tx_id)
+                # ⚠️ 漏掉这行 = 全文搜索留下幽灵命中（搜得到，点开 404）
+                if engine:
+                    engine.delete(tx_id)
+                affected += 1
+            except Exception as e:      # 单条失败不拖垮整批
+                failed.append({"id": tx_id, "error": str(e)[:120]})
+                log.warning("批量删除单条失败", tx_id=tx_id, err=str(e)[:120])
+    else:
+        # tag / move 是一次加锁一次写盘；不存在的 id 即「未命中」，报为失败并说明
+        present: list[str] = []
+        for tx_id in data.ids:
+            if store.get_transcript(tx_id):
+                present.append(tx_id)
+            else:
+                failed.append({"id": tx_id, "error": "文档不存在"})
+        if data.action == "tag":
+            affected = store.update_transcripts_tags(present, data.tags, data.tagMode)
+        else:
+            affected = store.set_transcripts_folder(present, data.folderId)
+
+    if affected == 0 and failed:
+        raise AppError("BATCH_ALL_FAILED", f"全部 {len(failed)} 条操作失败",
+                       status_code=400, recoverable=True)
+
+    log.info("批量操作", action=data.action, affected=affected, failed=len(failed))
+    return {"status": "ok", "affected": affected, "failed": failed}
 
 
 def _index_for_search(request: Request, tx_id: str, title: str, raw_text: str):

@@ -6,18 +6,13 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Search, X } from 'lucide-react'
 import { useStore } from '../../store'
-import { apiFetch, apiUrl } from '../../api/client'
-
-interface SearchResult {
-  id: string
-  title: string
-  snippet: string
-}
+import { searchDocs, type SearchHit } from '../../api/search'
+import { SearchSnippet } from './SearchSnippet'
 
 export function SearchBar() {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<SearchResult[]>([])
+  const [results, setResults] = useState<SearchHit[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -42,9 +37,7 @@ export function SearchBar() {
     const timer = setTimeout(async () => {
       setLoading(true)
       try {
-        const r = await apiFetch(`${apiUrl('')}/search?q=${encodeURIComponent(query)}&limit=10`)
-        const data = await r.json()
-        setResults(Array.isArray(data) ? data : [])
+        setResults(await searchDocs(query, 10))
         setSelectedIdx(0)
       } catch {
         setResults([])
@@ -138,10 +131,7 @@ export function SearchBar() {
                 }`}
               >
                 <p className="text-[13px] font-medium text-foreground truncate">{r.title}</p>
-                <p
-                  className="text-[11px] text-disabled mt-0.5 line-clamp-2"
-                  dangerouslySetInnerHTML={{ __html: r.snippet || '' }}
-                />
+                <SearchSnippet raw={r.snippet} className="block text-[11px] text-disabled mt-0.5 line-clamp-2" />
               </button>
             ))
           )}

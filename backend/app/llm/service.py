@@ -111,6 +111,23 @@ class LLMService:
     def supports_vision(self) -> bool:
         return any("image" in (c or "") for c in self.capabilities)
 
+    @property
+    def supports_document(self) -> bool:
+        """能否在消息里带 `file` 块（PDF 直传）。
+
+        **按模型能力标注，不按 provider 判断**——同 supports_reasoning。
+        ⚠️ 刻意不复用 `image` 位：它 gate 着「AI 分析图片」「OCR 模型选择」
+        「图片处理用途筛选」三处入口，拿它代指 file 块会错误放开这些入口。
+        """
+        return any("document" in (c or "") for c in self.capabilities)
+
+    @property
+    def supports_reasoning(self) -> bool:
+        """是否认 reasoning_effort 参数。**按模型能力标注，不按 provider 判断**——
+        provider 级硬编码会在新增支持该参数的渠道时前后端各改一处，
+        与「能力位由模型标注」的既有原则相悖。"""
+        return any("reasoning" in (c or "") for c in self.capabilities)
+
     async def aclose(self) -> None:
         """关闭底层 AsyncOpenAI/httpx 连接池 — 每请求新建的 LLMService 用完调用，防常驻累积"""
         if self._client is not None:
@@ -126,6 +143,7 @@ class LLMService:
         self,
         prompt: str, *,
         image_urls: list[str] | None = None,
+        document: dict | None = None,
         max_tokens: int = MAX_TOKENS,
         temperature: float = 0.7,
         max_continuations: int = 3,
@@ -150,17 +168,40 @@ class LLMService:
         **不报错但不生效**，而思考模式是默认开启的——故下方续写时的 temperature
         递减对 DeepSeek 实际是空操作（保留是为兼容非思考模式与其他厂商模型）。
         top_p 则相反：仅思考模式生效，且低于 0.95 的取值按 0.95 处理。
+
+        document：文档直传块（`{"filename", "data_uri"}`，见 services/doc_understand.py）。
+        有它时**原件随消息发给模型**，prompt 里只有一句引用说明——这是「只发原文件」
+        语义的落点，与 image_urls（图片走 image 能力）互不依赖。
+        ⚠️ 直传模式下模型解析原件期间**一个 chunk 都不会到**（首包实测按 ~10s/MB 增长），
+        调用方的 chunk 静默超时必须相应放宽，见 generate.py 的 chunk_timeout_for。
         """
 
         # ── 构建消息 ──
-        if image_urls and self.supports_vision:
+        # 三路互斥。**文档直传排在图片之前**：直传模式下 prompt 里没有正文，
+        # 图片无处可嵌（prepare 已保证此时 image_urls=None），谁优先都不会错，
+        # 但把「原件」放在前面语义更直白。
+        if document:
+            messages: list[dict] = [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "file",
+                    "file": {
+                        "filename": document.get("filename", "document.pdf"),
+                        "file_data": document.get("data_uri", ""),
+                    },
+                },
+            ]}]
+            logger.info("LLM 文档直传流式: provider=%s model=%s filename=%s data_uri_chars=%dK",
+                        self.provider, self.model, document.get("filename", ""),
+                        len(document.get("data_uri", "")) // 1000)
+        elif image_urls and self.supports_vision:
             content: list[dict] = [{"type": "text", "text": prompt}]
             for url in image_urls:
                 content.append({
                     "type": "image_url",
                     "image_url": {"url": url, "detail": "auto"},
                 })
-            messages: list[dict] = [{"role": "user", "content": content}]
+            messages = [{"role": "user", "content": content}]
             total_img_chars = sum(len(u) for u in image_urls)
             logger.info("LLM 多模态流式: provider=%s model=%s images=%d img_chars=%dK",
                         self.provider, self.model, len(image_urls), total_img_chars // 1000)
@@ -257,6 +298,7 @@ class LLMService:
         self,
         prompt: str, *,
         image_urls: list[str] | None = None,
+        document: dict | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.1,
         max_continuations: int = 0,
@@ -273,6 +315,7 @@ class LLMService:
         async for chunk in self.stream(
             prompt,
             image_urls=image_urls,
+            document=document,
             max_tokens=max_tokens,
             temperature=temperature,
             max_continuations=max_continuations,

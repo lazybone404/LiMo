@@ -15,6 +15,12 @@ export interface BaseGenOptions {
   user_notes?: string
   /** 参考文件暂存 id（POST /api/references 取得；后端仅 notes 注入） */
   reference_ids?: string[]
+  /**
+   * 思考强度（仅支持 reasoning 能力的模型）。跨类型字段，故在 Base 而非某个具体类型里。
+   * ⚠️ 实际下发值由后端 effort.py::effort_for 决定（**整理版恒 low**，除非 'max'）——
+   * 前端传的是「用户偏好」，不是「最终各产物用什么档」。
+   */
+  reasoning_effort?: 'low' | 'high' | 'max'
 }
 
 /** source_type=video 专属 */
@@ -37,6 +43,9 @@ export interface DocGenOptions extends BaseGenOptions {
   image_optimize?: boolean
   ocr_enabled?: boolean
   ocr_model_id?: number
+  /** PDF 直传：原件随生成请求发给模型，本地抽取的文本**不进 prompt**。
+   *  仅 PDF 且模型标注 `document` 能力时可开（见 services/doc_understand.py）。 */
+  doc_direct?: boolean
 }
 
 /** 所有生成选项的联合类型 */
@@ -115,6 +124,9 @@ export function streamGenerate(
   if (opts.formats) params.set('formats', opts.formats as string)
   if (opts.model_id) params.set('model_id', String(opts.model_id))
   if (opts.user_notes) params.set('user_notes', opts.user_notes as string)
+  // 模式 #6：新参数必须在此登记，且用 !== undefined 判断——漏掉这行则后端永远收默认值
+  // （reasoning_effort 的默认是 "" = 服务端 high，用户选 low/max 会静默无效）
+  if (opts.reasoning_effort !== undefined) params.set('reasoning_effort', String(opts.reasoning_effort))
   const refIds = opts.reference_ids as string[] | undefined
   if (refIds?.length) params.set('reference_ids', refIds.join(','))
   // 使用 !== undefined 而非 truthiness，确保 false / 0 也能正确传输
@@ -133,6 +145,9 @@ export function streamGenerate(
   if (opts.image_optimize !== undefined) params.set('image_optimize', String(opts.image_optimize))
   if (opts.ocr_enabled !== undefined) params.set('ocr_enabled', String(opts.ocr_enabled))
   if (opts.ocr_model_id !== undefined) params.set('ocr_model_id', String(opts.ocr_model_id))
+  // 模式 #6：同样必须用 !== undefined —— doc_direct 的 false 是默认态，
+  // 用 truthiness 判断的话用户「关掉直传」的意图根本传不出去（旧值可能还开着）
+  if (opts.doc_direct !== undefined) params.set('doc_direct', String(opts.doc_direct))
 
   const qs = params.toString()
   // 追踪 SSE 是否正常结束（收到 done/error/cancelled 事件）

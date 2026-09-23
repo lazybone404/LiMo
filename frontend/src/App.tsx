@@ -10,7 +10,7 @@ import { OnboardingWizard } from './components/ui/OnboardingWizard'
 import { SlotLayout } from './components/ui/SlotLayout'
 import { SearchBar } from './components/ui/SearchBar'
 import { ThemeToggle } from './components/ui/ThemeToggle'
-import { fetchCapabilities, listTranscripts, getMarkdown, getTranscript } from './api/client'
+import { fetchCapabilities, listTranscripts, listFolders, getMarkdown, getTranscript } from './api/client'
 import { startHealthPoll } from './lib/health'
 import { Settings, PanelLeft, Library, MessageSquare, Archive } from 'lucide-react'
 
@@ -20,6 +20,7 @@ export default function App() {
   const aiVisible = useStore(s => s.aiVisible)
   const setCapabilities = useStore(s => s.setCapabilities)
   const setDocs = useStore(s => s.setDocs)
+  const setFolders = useStore(s => s.setFolders)
   const [showSettings, setShowSettings] = useState(false)
   const [showExport, setShowExport] = useState(false)
   const [showSetup, setShowSetup] = useState(() => {
@@ -61,6 +62,10 @@ export default function App() {
 
     const init = () => {
       refreshCapabilities(true)
+      // 文件夹与文档列表并行拉取（两者互不依赖）。
+      // ⚠️ 文件夹失败不能拖垮文档列表——故单独 catch，退化为「没有文件夹」，
+      // 而不是整块进 catch 后连文档都加载不出来。
+      listFolders().then(setFolders).catch(() => {})
       listTranscripts().then(docs => {
       setDocs(docs)
       // 恢复上次选中的文档和视图

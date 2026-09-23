@@ -15,7 +15,7 @@ def _cfg(llm_api_key="", providers=None, llm_models=None, dashscope="", global_p
     return {
         "llm": {"api_key": llm_api_key, "provider": global_provider},
         "providers": providers or [],
-        "llm_models": llm_models or {"deepseek": [{"id": "deepseek-v4-flash"}]},
+        "llm_models": llm_models or {"deepseek": [{"id": "deepseek-flash"}]},
         "cloud": {"dashscope": dashscope},
     }
 

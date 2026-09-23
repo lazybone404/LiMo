@@ -40,11 +40,34 @@ DEFAULT_CONFIG: dict[str, Any] = {
             # 价格（元/百万 token，空闲/高峰）：flash 输入 1/2、输出 4/8；pro 输入 4.5/9、输出 13.5/27。
             # 两档差异达一倍且按北京时间工作日 9-12、14-18 分峰谷，预设不填单一价格以免误导。
             # 上下文 1M、最大输出 384K；并发限制 flash 2500 / pro 500。
-            {"id": "deepseek-flash",  "name": "V4.1 Flash", "desc": "1M上下文 · 原生多模态 · 快", "capabilities": ["text", "image"], "context_window": 1000000},
-            {"id": "deepseek-v4-pro", "name": "V4 Pro",     "desc": "1M上下文 · 纯文本 · 推理强", "capabilities": ["text"],          "context_window": 1000000},
+            # capabilities 的 "reasoning" = 认 reasoning_effort 参数（见 llm/service.py 的
+            # supports_reasoning）——它不按 provider 判断，故新渠道要显式标注才会放开档位选择器。
+            # ⚠️ 未标 ≠ 不支持，只表示「LiMo 未查证」：前端不展示档位选择器，后端拿到档位会
+            # 记一条 warning（失败显式化），而不是静默当没选。
+            {"id": "deepseek-flash",  "name": "V4.1 Flash", "desc": "1M上下文 · 原生多模态 · 快", "capabilities": ["text", "image", "reasoning"], "context_window": 1000000},
+            {"id": "deepseek-v4-pro", "name": "V4 Pro",     "desc": "1M上下文 · 纯文本 · 推理强", "capabilities": ["text", "reasoning"],          "context_window": 1000000},
         ],
+        # capabilities 的 "document" = 支持在消息里带 file 块（PDF 直传，见
+        # services/doc_understand.py 与 llm/service.py 的 supports_document）。
+        # **按模型精确标注，不做名字自动检测**——按名字猜 PDF 能力必然误标
+        # （routers/model.py 的 _PROVIDER_IMAGE_RULES 只管 image，刻意不管 document）。
+        # 标注依据 = 官方《PDF 理解》页的支持名单（2026-09-23 逐家查证），**只有四个**：
+        #   qwen3.8-max · qwen3.8-max-0902（快照版，不预设）· qwen3.8-flash · qwen3.8-27b
+        # ⚠️ 名单**不含**任何 qwen-vl / qwen3.5 视觉模型——页面标题写的是「通过 VL 模型
+        # 解析」，但支持列表是收窄的；按「有视觉能力 → 应该也能传 PDF」去推会一次错标三个。
+        # ⚠️ 官方另注：该功能**仅华北2（北京）地域**可用，且 Responses API 传 PDF 会返回
+        # 200 但不传文件（LiMo 走 Chat Completions，不受影响；见 doc_understand.py）。
+        # ⚠️ 其他渠道一律不标，各有硬理由（OpenAI 通道在但模型面不一致 / Anthropic 用
+        # document 块不是 file 块 / Gemini 兼容层不支持 / GLM·Kimi 是独立端点抽文本 /
+        # opencode 网关未查证且地域可能不符）——逐家结论见 doc_understand.py 的
+        # 「哪些渠道能用」表，**不要凭印象补标**。
         "dashscope": [
-            {"id": "qwen3.8-max",         "name": "Qwen3.8 Max",         "desc": "视觉+视频 · 旗舰",              "capabilities": ["text", "image", "video"], "context_window": 131072},
+            # context_window 取官方「上下文长度」而非「最大输出长度」——qwen3.8 系三个
+            # 模型页均写明 上下文 1000000 / 最大输出 131072，此前填的 131072 是把后者
+            # 当成了前者（对话预算 = 窗口 × 0.7，填错会让可用的 700k 缩成 91k）。
+            {"id": "qwen3.8-max",         "name": "Qwen3.8 Max",         "desc": "视觉+视频 · 旗舰 · PDF直传",    "capabilities": ["text", "image", "video", "document"], "context_window": 1000000},
+            {"id": "qwen3.8-flash",       "name": "Qwen3.8 Flash",       "desc": "视觉+视频 · PDF直传 · 快",     "capabilities": ["text", "image", "video", "document"], "context_window": 1000000},
+            {"id": "qwen3.8-27b",         "name": "Qwen3.8 27B",         "desc": "视觉+视频 · PDF直传 · 开源版", "capabilities": ["text", "image", "video", "document"], "context_window": 1000000},
             {"id": "qwen3.7-max",         "name": "Qwen3.7 Max",         "desc": "纯文本 · 旗舰推理",              "capabilities": ["text"],                 "context_window": 131072},
             {"id": "qwen3.7-plus",        "name": "Qwen3.7 Plus",        "desc": "多模态+视频 · 日常推荐",        "capabilities": ["text", "image", "video"], "context_window": 131072},
             {"id": "qwen3.7-flash",       "name": "Qwen3.7 Flash",       "desc": "纯文本 · 极速响应",              "capabilities": ["text"],                 "context_window": 131072},

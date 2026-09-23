@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from app.core.types import MarkdownView, Style, GenerateMode
+from app.generation.effort import effort_for
 from app.generation.reference_compressor import compress_references_if_needed
 from app.llm.service import LLMService
 from app.services.chart_renderer import render_charts
@@ -107,9 +108,17 @@ class Generator:
         ocr_enabled: bool = False,
         ocr_model_id: int | None = None,
         video_direct: bool = False,
+        doc_direct: bool = False,
+        doc_path: str = "",
+        reasoning_effort: str = "",
         cancel_event: asyncio.Event | None = None,
     ) -> MarkdownView:
-        """生成单个产物（notes 或 polished）。"""
+        """生成单个产物（notes 或 polished）。
+
+        reasoning_effort：用户档位（""/"low"/"high"/"max"），**原样透传**——
+        实际下发值由 effort_for 按产物名算出（polished 恒低档），本方法不判档。
+        doc_direct + doc_path：文档直传（PDF 原件随请求发给模型，本地正文不进 prompt）。
+        """
         keep_refs = formats is not None and "images" in formats
         send_to_llm = bool(image_analyze)
 
@@ -121,10 +130,11 @@ class Generator:
             processed_text = await ocr.process(
                 raw_text, self._prep.store_root, doc_dir=self._prep.doc_dir)
 
-        clean_text, image_urls, video_path = await self._prep.prepare(
+        clean_text, image_urls, video_path, document = await self._prep.prepare(
             processed_text, vl_config, keep_refs,
             send_to_llm=send_to_llm, optimize_images=image_optimize,
             video_direct=video_direct,
+            doc_direct=doc_direct, doc_path=doc_path,
         )
 
         # 参考文件「原文 + 参考」超出模型上下文预算时先 LLM 摘要（装得下则原样返回，零成本）。
@@ -140,11 +150,14 @@ class Generator:
         )
 
         logger.info("Generating %s...", mode)
+        # 档位按产物名决策（mode 即 product：notes/polished），与流式路径同源
+        effort = effort_for(mode, reasoning_effort, self._llm.supports_reasoning)
         try:
             content = await self._llm.call(
-                prompt, image_urls=image_urls, max_tokens=MAX_TOKENS,
+                prompt, image_urls=image_urls, document=document,
+                max_tokens=MAX_TOKENS,
                 temperature=0.7, max_continuations=3,
-                cancel_event=cancel_event,
+                cancel_event=cancel_event, reasoning_effort=effort,
             )
             content = _post_process_content_markers(content)
             if formats and "screenshot" in formats:
@@ -180,9 +193,17 @@ class Generator:
         ocr_enabled: bool = False,
         ocr_model_id: int | None = None,
         video_direct: bool = False,
+        doc_direct: bool = False,
+        doc_path: str = "",
+        reasoning_effort: str = "",
         cancel_event: asyncio.Event | None = None,
     ) -> tuple[MarkdownView, MarkdownView]:
-        """并行生成双产物（polished + notes）。Excel 生成 report + summary。"""
+        """并行生成双产物（polished + notes）。Excel 生成 report + summary。
+
+        reasoning_effort：用户档位（""/"low"/"high"/"max"），原样透传，实际下发值见
+        effort_for。⚠️ 本方法内 prompt_a 产出 **polished**、prompt_b 产出 **notes**
+        （与流式路径的 notes→polished 顺序相反）——档位**按产物名传，不按 a/b 位置传**。
+        """
         keep_refs = formats is not None and "images" in formats
         send_to_llm = bool(image_analyze)
 
@@ -194,10 +215,11 @@ class Generator:
             processed_text = await ocr.process(
                 raw_text, self._prep.store_root, doc_dir=self._prep.doc_dir)
 
-        clean_text, image_urls, video_path = await self._prep.prepare(
+        clean_text, image_urls, video_path, document = await self._prep.prepare(
             processed_text, vl_config, keep_refs,
             send_to_llm=send_to_llm, optimize_images=image_optimize,
             video_direct=video_direct,
+            doc_direct=doc_direct, doc_path=doc_path,
         )
 
         # 参考文件超出模型上下文预算时先摘要（同上）。双产物里 reference 只注入 notes，
@@ -217,11 +239,14 @@ class Generator:
         # Excel 只需一个数据摘要产物（分析报告已移除——LLM 无法做数值分析）
         if source_type == "xlsx":
             logger.info("Generating Excel summary...")
+            # Excel 摘要二者同源，按 notes 取档（与流式路径对 xlsx 的处理一致）
+            effort = effort_for("notes", reasoning_effort, self._llm.supports_reasoning)
             try:
                 content = await self._llm.call(
-                    prompt_a, image_urls=image_urls,
+                    prompt_a, image_urls=image_urls, document=document,
                     max_tokens=MAX_TOKENS, temperature=0.7,
                     max_continuations=3, cancel_event=cancel_event,
+                    reasoning_effort=effort,
                 )
                 content = _post_process_content_markers(content)
             finally:
@@ -241,16 +266,24 @@ class Generator:
             return polished, mv
 
         logger.info("Generating polished + notes in parallel...")
+        # ⚠️ 档位按**产物名**传，不按 a/b 位置传：本文件 prompt_a → polished、
+        # prompt_b → notes（与流式路径 [notes, polished] 的顺序相反）。位置一旦弄混，
+        # 就是把笔记的档位配到整理版上——而这里恰好有「曾解包反了导致两产物互换」的历史。
+        _supports_reasoning = self._llm.supports_reasoning
+        effort_a = effort_for("polished", reasoning_effort, _supports_reasoning)
+        effort_b = effort_for("notes", reasoning_effort, _supports_reasoning)
         try:
             task_a = self._llm.call(
-                prompt_a, image_urls=image_urls, max_tokens=MAX_TOKENS,
+                prompt_a, image_urls=image_urls, document=document,
+                max_tokens=MAX_TOKENS,
                 temperature=0.7, max_continuations=3,
-                cancel_event=cancel_event,
+                cancel_event=cancel_event, reasoning_effort=effort_a,
             )
             task_b = self._llm.call(
-                prompt_b, image_urls=image_urls,
+                prompt_b, image_urls=image_urls, document=document,
                 max_tokens=MAX_TOKENS, temperature=0.7,
                 max_continuations=3, cancel_event=cancel_event,
+                reasoning_effort=effort_b,
             )
             # P0-4：gather 默认遇单路异常立即传播 → 另一路成孤儿 task（烧 token 结果被丢弃 +
             # unhandled exception），finally 的 _cleanup_video 也可能在另一路运行时删视频。
