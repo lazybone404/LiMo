@@ -15,14 +15,6 @@ import uuid as _uuid
 import zipfile
 from datetime import datetime
 
-# ── Pygments 语法高亮（可选依赖）──
-try:
-    from pygments import highlight
-    from pygments.formatters import HtmlFormatter
-    from pygments.lexers import get_lexer_by_name, guess_lexer
-    _PYGMENTS_OK = True
-except ImportError:
-    _PYGMENTS_OK = False
 from urllib.parse import quote
 from pathlib import Path
 from fastapi import APIRouter, Request, Query, Depends
@@ -31,6 +23,21 @@ from app.core.dependencies import get_store
 from app.core.disconnect import disconnect_watcher
 from app.core.errors import AppError
 from pydantic import BaseModel
+
+# ── Markdown → HTML 公共渲染（2026-09-21 下沉到 services，Word 导出共用）──
+# 私有别名保持零行为变化：历史调用点与内部实现一律走同一个函数。
+from app.services.markdown_render import (  # noqa: E402
+    PYGMENTS_OK as _PYGMENTS_OK,
+    preprocess_gfm as _preprocess_gfm,
+    markdown_to_html as _markdown_to_html_impl,
+)
+from app.services.docx_export import markdown_to_docx  # noqa: E402
+
+# ── Pygments 语法高亮（可选依赖）──
+try:
+    from pygments.formatters import HtmlFormatter
+except ImportError:
+    HtmlFormatter = None
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -156,10 +163,11 @@ async def export_content(
     tx_id: str,
     request: Request,
     store=Depends(get_store),
-    format: str = Query("md", description="导出格式: md / html"),
+    format: str = Query("md", description="导出格式: md / html / docx"),
     mode: str = Query("", description="产物模式: polished / notes / transcript"),
+    inline: bool = Query(False, description="内联展示而非下载 —— PDF 导出窗口需渲染此页，见下"),
 ):
-    """导出文档为 MD 或 HTML"""
+    """导出文档为 MD / HTML / Word"""
 
     if mode == "transcript":
         tx = store.get_transcript(tx_id)
@@ -206,8 +214,28 @@ async def export_content(
         html = _build_selfcontained_html(content, title, theme=export_theme)
         safe_name = _safe_filename(title)
         encoded_name = quote(f"{safe_name}.html", safe='')
+        # ⚠️ disposition 必须是 attachment —— 点击「HTML」就该下载文件。但 PDF 导出
+        # （Tauri）是让 WebView2 **直接导航**到这个 URL 再 PrintToPdf，而 attachment
+        # 会让它去「下载」而不是渲染 → 打印出一张空白页（实测 876 字节 / 全白）。
+        # 故 PDF 路径带 inline=1 换回展示语义；浏览器那条打印路径走 fetch+srcdoc，
+        # 不受此头影响，带不带都对。
+        disposition = "inline" if inline else "attachment"
+        headers = {"Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_name}"}
+        return Response(html, media_type="text/html; charset=utf-8", headers=headers)
+
+    if format == "docx":
+        # Word：图片以原始字节内嵌进 docx（走后端收集，不落盘、不 base64）
+        imgs: dict[str, bytes] = {}
+        refs = _find_image_refs(content)
+        if refs:
+            doc_dir = str(store._get_doc_dir(tx_id) or '')
+            imgs, _name_map = _collect_images(refs, store.root, doc_dir=doc_dir)
+        data = markdown_to_docx(content, title, images=imgs)
+        safe_name = _safe_filename(title)
+        encoded_name = quote(f"{safe_name}.docx", safe='')
         return Response(
-            html, media_type="text/html; charset=utf-8",
+            data,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}"},
         )
 
@@ -508,93 +536,46 @@ hr { border-color: #D2D2D7; }
   table td, table th { border-color: #48484A; }
   img { opacity: 0.85; }
   hr { border-color: #48484A; }
+}
+@media print {
+  /* 打印必须消解上面的暗色段 —— 系统处于暗色偏好时两者会**同时匹配**，
+     而这些浅色文字（blockquote #AEAEB2、行内 code #93C5FD）落在白纸上几乎看不见。
+     `_PRINT_CSS` 的 !important 只管 body/代码容器这几条通用规则，管不到这里，
+     故由引入暗色段的主题**自己**在打印时还原成浅色段取值。 */
+  body { color: #1C1C1E; background: #fff; }
+  h1 { color: #1E3A5F; }
+  h2 { color: #1D4ED8; }
+  h3 { color: #2563EB; }
+  h4 { color: #3B82F6; }
+  strong { color: #1E40AF; }
+  a { color: #2563EB; }
+  blockquote { background: #EFF6FF; border-left-color: #3B82F6; color: #636366; }
+  pre { background: #fff; color: #1F2328; }
+  code { color: inherit; }
+  :not(pre) > code { background: #F0F4FF; color: #1D4ED8; }
+  table th { background: #F5F5F7; }
+  table td, table th { border-color: #D2D2D7; }
+  img { opacity: 1; }
+  hr { border-color: #D2D2D7; }
 }""",
 }
 
-def _preprocess_gfm(md: str) -> str:
-    """预处理 GFM 特性（Python markdown 不原生支持）"""
-    # 确保 GFM 表格前有空行 — Python markdown tables 扩展要求表格前有空行，
-    # 但 GFM 标准允许表格紧跟前导文字。不加此行会导致"[文字]\n|表头|\n|---|"
-    # 被当作段落文本输出（react-markdown + remark-gfm 可正常渲染）
-    md = re.sub(r'(^[^\n|][^\n]*)\n(\|[^\n]+\|[ \t]*\n\|[-: |]+\|)',
-               r'\1\n\n\2', md, flags=re.MULTILINE)
-    # 删除线 ~~text~~ → <del>text</del>
-    md = re.sub(r'~~(.+?)~~', r'<del>\1</del>', md)
-    # 任务列表 - [ ] → disabled checkbox, - [x] → checked disabled checkbox
-    md = re.sub(
-        r'^- \[ \] (.+)$',
-        r'- <input type="checkbox" disabled style="margin-right:6px;vertical-align:middle"> \1',
-        md, flags=re.MULTILINE,
-    )
-    md = re.sub(
-        r'^- \[x\] (.+)$',
-        r'- <input type="checkbox" checked disabled style="margin-right:6px;vertical-align:middle"> \1',
-        md, flags=re.MULTILINE,
-    )
-    # 时间戳 badge — Content-[mm:ss] → 蓝色, Screenshot-[mm:ss] → 橙色
-    md = re.sub(
-        r'Content-\[(\d{2}:\d{2})\]',
-        r'<span class="ts-badge ts-content">▶ \1</span>', md)
-    md = re.sub(
-        r'Screenshot-\[(\d{2}:\d{2})\]',
-        r'<span class="ts-badge ts-screenshot">📷 \1</span>', md)
-    return md
-
-
 def _markdown_to_html(md: str) -> str:
-    """统一的 Markdown → HTML 转换，含代码高亮（Pygments）+ 语言标签"""
-    md = _preprocess_gfm(md)
-    extensions = ["tables", "fenced_code", "sane_lists", "smarty", "md_in_html", "def_list", "abbr"]
-    if _PYGMENTS_OK:
-        extensions.append("codehilite")
-    try:
-        import markdown
-        html = markdown.markdown(md, extensions=extensions)
-    except ImportError:
-        html = f"<pre>{md}</pre>"
-    html = _add_lang_labels(html)
-    html = _add_heading_ids(html)
-    return html
-
-
-def _add_lang_labels(html: str) -> str:
-    """在代码块前插入语言标签 <span class=\"lang-label\">，匹配预览的代码语言栏"""
-    def _insert_label(m: re.Match) -> str:
-        lang = m.group(1)
-        label = f'<span class="lang-label">{lang}</span>\n'
-        return label + m.group(0)
-    # 匹配 <pre><code class="language-xxx"> 或 codehilite 包裹的 <code class="language-xxx">
-    return re.sub(
-        r'(?:<div class="codehilite">\s*)?<pre><code class="language-(\w+)"[^>]*>',
-        _insert_label,
-        html,
-    )
-
-
-def _add_heading_ids(html: str) -> str:
-    """给 <h2>/<h3>/<h4> 追加 id 属性（算法对齐前端 headingId），
-    使得 HTML 导出中的标题锚点链接可以定位"""
-    def _make_id(text: str) -> str:
-        # 先清除时间戳标记
-        text = re.sub(r'(?:▶ |\*?Content-\[)?\d{2}:\d{2}\]?', '', text)
-        text = re.sub(r'Screenshot-\[\d{2}:\d{2}\]', '', text)
-        # 转小写、空白→短横、保留字母/数字/CJK
-        text = text.lower().strip()
-        text = re.sub(r'\s+', '-', text)
-        text = re.sub(r'[^a-z0-9一-鿿\-]', '', text)
-        text = re.sub(r'-+', '-', text)
-        return text.strip('-')
-
-    def _repl(m: re.Match) -> str:
-        tag, inner = m.group(1), m.group(2)
-        id_ = _make_id(inner)
-        return f'<{tag} id="{id_}">{inner}</{tag}>'
-
-    return re.sub(r'<(h[234])>(.+?)</\1>', _repl, html)
+    """HTML 导出：保留 Pygments 逐 token 上色（实现已下沉到 services/markdown_render.py，
+    Word 导出走同一解析器的 codehilite=False 分支 —— 两条导出路径共用一份 markdown 理解）"""
+    return _markdown_to_html_impl(md, codehilite=True)
 
 
 def _get_pygments_css() -> str:
-    """生成 Pygments 代码高亮 CSS（暗色 one-dark 风格，适合程序员阅读）"""
+    """生成 Pygments 代码高亮 CSS。
+
+    屏幕用 one-dark（深底浅字）；**打印另配一套浅底配色**——浏览器打印默认不打印
+    背景色，深底一消失，one-dark 的浅色 token（注释 #7F848E 尤其）就落在白纸上，
+    对比度低到几乎看不见。容器背景改白还不够：token 是 `.codehilite .k` 这类
+    类选择器，改 `pre`/`code` 的 color 压不住它们，必须是**整份浅底主题的 defs**。
+
+    两套规则同特异性 → `@media print` 块在后，打印时后者胜出，屏幕样式零影响。
+    """
     if not _PYGMENTS_OK:
         return ""
     try:
@@ -605,6 +586,15 @@ def _get_pygments_css() -> str:
 .codehilite { background: #282C34; border-radius: 8px; padding: 16px; overflow-x: auto; margin: 16px 0; }
 .codehilite .lang-label { display: block; font-size: 0.75em; color: #ABB2BF; margin-bottom: 8px; font-weight: 600; }
 .codehilite pre { background: #282C34; }
+"""
+        # 打印：换成浅底主题（Pygments `default`），并把容器底改白
+        light = HtmlFormatter(style="default", noclasses=False).get_style_defs('.codehilite')
+        css += f"""
+@media print {{
+{light}
+.codehilite, .codehilite pre {{ background: #fff !important; }}
+.codehilite .lang-label {{ color: #57606A !important; }}
+}}
 """
         return css
     except Exception:
@@ -894,6 +884,42 @@ def _get_katex_assets() -> dict[str, str]:
 
 # ── 自包含 HTML 构建 ──
 
+# 打印样式（4 套主题共用）——导出的 HTML 用浏览器「打印 / 另存为 PDF」时生效。
+# 现有主题清一色是「屏幕布局」，直接打印有三处不适配：
+#   1. body 的 max-width + margin:auto 在纸上变成一圈古怪的窄边距；
+#   2. 长表格/代码块/图片会从中间被切断；
+#   3. ⚠️ 代码块是「浅字 + 深底」(one-dark #ABB2BF on #282C34)，而**浏览器打印默认
+#      不打印背景色** —— 不印背景就成浅灰字白纸，几乎不可读。
+# 故打印媒体下强制改「浅底 + 深字」。
+#
+# ⚠️ 代码块的**逐 token 配色**不在这里管 —— token 是 `.codehilite .k` 这类类选择器，
+# 靠 `pre`/`code` 的 color 压不住，必须在 _get_pygments_css() 里换一整套浅底主题。
+# 本文件负责的是容器（背景/边框）与版式。
+#
+# 插入位置在 style_block 末尾 —— 同特异性下后者胜，可覆盖主题与 katex 的屏幕样式
+# （本文件规则带 !important，也能压过 limo 主题的 prefers-color-scheme: dark 段）。
+_PRINT_CSS = """@page { size: A4; margin: 18mm 16mm; }
+@media print {
+  /* 解除屏幕布局；!important 同时覆盖 limo 主题的暗色媒体查询 */
+  body { max-width: none !important; margin: 0 !important; padding: 0 !important;
+         background: #fff !important; color: #000 !important; }
+  /* 代码容器改浅底深字（token 配色见 _get_pygments_css 的 @media print 段） */
+  .codehilite, .codehilite pre, pre { background: #fff !important;
+    border: 1px solid #D0D7DE !important; color: #1F2328 !important; }
+  .codehilite code, pre code { color: #1F2328 !important; }
+  /* 分页控制：标题不与后续正文分离 */
+  h1, h2, h3, h4, h5, h6 { break-after: avoid; page-break-after: avoid; }
+  /* ⚠️ pre / table **不能**加 break-inside:avoid —— 它们的长度无上界，一个 45 行的
+     代码块或长表格一旦装不进当前页剩余空间，就会被整体推到下页，留下一整页空白
+     （实测：3 页文档中间多出一页纯空白）。让它们自然跨页，只保证行/项级不断裂。 */
+  blockquote, figure, img, li, tr { break-inside: avoid; page-break-inside: avoid; }
+  thead { display: table-header-group; }  /* 长表格跨页时表头在每页重复 */
+  tfoot { display: table-footer-group; }
+  img { max-width: 100% !important; }
+  a { color: inherit !important; text-decoration: underline; }
+}"""
+
+
 def _build_selfcontained_html(md: str, title: str, theme: str = "limo") -> str:
     """构建完全自包含的 HTML 文档（图片已在上游处理完毕）。
 
@@ -937,6 +963,8 @@ def _build_selfcontained_html(md: str, title: str, theme: str = "limo") -> str:
         style_block += f"\n<style>{badge_css}</style>"
     if katex_css:
         style_block += f"\n<style>{katex_css}</style>"
+    # 打印样式放最末 —— 同特异性下后者胜
+    style_block += f"\n<style>{_PRINT_CSS}</style>"
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1111,9 +1139,9 @@ def _build_mindmap_html(md: str, title: str) -> str:
 
 class ExportCustomRequest(BaseModel):
     doc_ids: list[str] = []
-    formats: list[str] = ["md"]          # md, html, plain
+    formats: list[str] = ["md"]          # md, html, plain, docx
     content_tabs: list[str] = ["summary"]  # summary, polished, transcript, ...
-    formula_md: str = "keep"             # keep, render, remove
+    formula_md: str = "keep"             # keep, render, remove（docx 恒保留原文，见下）
     image_md: str = "separate"           # separate, inline, none
     formula_plain: str = "remove"         # remove, unicode
     html_theme: str = "limo"       # limo 匹配应用内预览
@@ -1243,6 +1271,13 @@ def export_custom(data: ExportCustomRequest, request: Request, store=Depends(get
                     elif fmt == "plain":
                         processed = _remove_formulas(processed) if data.formula_plain == "remove" else _unicode_formulas(processed)
                         ext = "txt"
+                    elif fmt == "docx":
+                        # Word：用**原始 content**（非 processed）——image_md=inline 已把图片
+                        # 换成 base64 data URI，那条路是给自包含 HTML 用的；docx 只要原始
+                        # `![alt](assets/x.png)` + 收集好的 imgs 字典即可内嵌。
+                        # 公式恒保留 LaTeX 原文（render 路径依赖 matplotlib，不在依赖内）。
+                        processed = markdown_to_docx(content, tx.get("title", doc_title), images=imgs)
+                        ext = "docx"
 
                     safe_tab = tab.replace("/", "-")
                     zf.writestr(f"{doc_title}/{doc_title}_{safe_tab}.{ext}", processed)
@@ -1358,6 +1393,13 @@ async def _build_export_zip(
                     elif fmt == "plain":
                         processed = _remove_formulas(processed) if data.formula_plain == "remove" else _unicode_formulas(processed)
                         ext = "txt"
+                    elif fmt == "docx":
+                        # Word：用**原始 content**（非 processed）——image_md=inline 已把图片
+                        # 换成 base64 data URI，那条路是给自包含 HTML 用的；docx 只要原始
+                        # `![alt](assets/x.png)` + 收集好的 imgs 字典即可内嵌。
+                        # 公式恒保留 LaTeX 原文（render 路径依赖 matplotlib，不在依赖内）。
+                        processed = markdown_to_docx(content, tx.get("title", doc_title), images=imgs)
+                        ext = "docx"
 
                     safe_tab = tab.replace("/", "-")
                     zf.writestr(f"{doc_title}/{doc_title}_{safe_tab}.{ext}", processed)

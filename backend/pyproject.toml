@@ -39,6 +39,9 @@ dependencies = [
     # 导出
     "pygments>=2.20.0",
     "markdown>=3.10.2",
+    # Word 导出（Markdown→HTML→docx）。bs4 此前是传递依赖（markitdown/trafilatura
+    # 带入），2026-09-21 起被 app/services/docx_export.py 直接 import → 提为显式依赖
+    "beautifulsoup4>=4.12",
     # 其他
     "gmssl>=3.2",
     "duckduckgo-search>=8.1.1",

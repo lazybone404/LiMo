@@ -1,10 +1,14 @@
 import { useState, useRef, useEffect } from 'react'
-import { Download, Copy, FileText, Globe, Archive, Share2, Box, Loader2 } from 'lucide-react'
+import { Download, Copy, FileText, Globe, Archive, Share2, Box, Loader2, FileType, FileDown } from 'lucide-react'
 import { useStore } from '../../store'
 import { getTypeMeta } from '../gen-panel/constants'
 import { TabRegistry } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
 import { downloadText, downloadFromUrl } from '../../lib/download'
+import { exportPdfFromUrl } from '../../lib/print'
+
+/** Tauri 环境检测 —— 决定 PDF 导出是「直接落文件」还是「退回打印对话框」 */
+const IN_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 /**
  * 导出菜单 — MD/HTML/ZIP/复制
@@ -36,6 +40,7 @@ import { downloadText, downloadFromUrl } from '../../lib/download'
 export function ExportMenu() {
   const [open, setOpen] = useState(false)
   const [exportingZip, setExportingZip] = useState(false)
+  const [exportingPdf, setExportingPdf] = useState(false)
   const currentContent = useStore(s => s.currentContent)
   const currentPolishedContent = useStore(s => s.currentPolishedContent)
   const currentRawText = useStore(s => s.currentRawText)
@@ -69,6 +74,12 @@ export function ExportMenu() {
   const canExportMD = !!exportContent
   // HTML 导出：需要有 htmlMode 配置 + 有可导出内容
   const canExportHTML = !!(tabDef?.htmlMode && exportContent)
+  // Word 导出：复用同一 mode，但思维导图无 Word 形态（交互脑图是 HTML 专有）
+  const docxBlocked = tabDef?.htmlMode === '__mindmap__'
+  const canExportDocx = !!(tabDef?.htmlMode && !docxBlocked && exportContent)
+  // PDF：喂给 WebView2 PrintToPdf 的就是 HTML 导出的那份自包含 HTML（已含 `_PRINT_CSS`），
+  // 故可用条件与 Word 相同；思维导图走专用端点，打印效果未验证，一并禁用
+  const canExportPdf = canExportDocx
   // ZIP 全部产物：只要有任意产物就可用（不限于当前 tab）
   const hasExportableContent = !!(
     currentContent || currentPolishedContent || currentRawText ||
@@ -130,6 +141,40 @@ export function ExportMenu() {
       addToast('HTML 已导出，请查看下载文件夹')
     } else {
       addToast(`导出失败: ${result.error}`, 'error')
+    }
+  }
+
+  const handleExportDocx = async () => {
+    if (!currentDocId || !tabDef?.htmlMode || docxBlocked) return
+    setOpen(false)
+    const params = new URLSearchParams({ format: 'docx', mode: tabDef.htmlMode })
+    const result = await downloadFromUrl(`/export/${currentDocId}?${params.toString()}`, makeFileName('docx'))
+    if (result.ok) addToast('Word 已导出，请查看下载文件夹')
+    else addToast(`导出失败: ${result.error}`, 'error')
+  }
+
+  const handleExportPdf = async () => {
+    if (!currentDocId || !tabDef?.htmlMode || docxBlocked || exportingPdf) return
+    setOpen(false)
+    setExportingPdf(true)
+    try {
+      const params = new URLSearchParams({ format: 'html', mode: tabDef.htmlMode })
+      const result = await exportPdfFromUrl(
+        `/export/${currentDocId}?${params.toString()}`,
+        makeFileName('pdf'),
+      )
+      if (result.ok) {
+        // Tauri：直接落盘，报出完整路径方便用户去找；浏览器：只是调起了对话框
+        addToast(
+          result.path
+            ? `PDF 已保存到 ${result.path}`
+            : '已调起打印，请在对话框中选择「另存为 PDF」',
+        )
+      } else {
+        addToast(`导出 PDF 失败: ${result.error}`, 'error')
+      }
+    } finally {
+      setExportingPdf(false)
     }
   }
 
@@ -213,6 +258,32 @@ export function ExportMenu() {
             <Globe size={14} className="text-muted" />
             导出 HTML
           </button>
+          {/* Word 导出 — 与 HTML 同门控，思维导图 tab 除外 */}
+          <button
+            onClick={handleExportDocx}
+            disabled={!canExportDocx}
+            title={docxBlocked ? '思维导图没有 Word 形态，请用 HTML 导出' : '导出为 Word 文档（.docx）'}
+            className="w-full text-left px-3 py-2 text-[13px] hover:bg-surface-hover flex items-center gap-2 transition-colors disabled:opacity-30"
+          >
+            <FileType size={14} className="text-muted" />
+            导出 Word
+          </button>
+          {/* 导出 PDF — 内容源是 HTML 导出的那份自包含 HTML（自带打印样式） */}
+          <button
+            onClick={handleExportPdf}
+            disabled={!canExportPdf || exportingPdf}
+            title={
+              docxBlocked
+                ? '思维导图请改用「导出交互版 (HTML)」'
+                : IN_TAURI
+                  ? '导出为 PDF，保存到系统下载目录'
+                  : '浏览器环境将调起打印，请在其中选择「另存为 PDF」'
+            }
+            className="w-full text-left px-3 py-2 text-[13px] hover:bg-surface-hover flex items-center gap-2 transition-colors disabled:opacity-30"
+          >
+            {exportingPdf ? <Loader2 size={14} className="text-accent animate-spin" /> : <FileDown size={14} className="text-muted" />}
+            {exportingPdf ? '导出中...' : '导出 PDF'}
+          </button>
           {/* ZIP 全部产物 — 只要有任意产物就可用 */}
           <button
             onClick={async () => {
@@ -222,7 +293,7 @@ export function ExportMenu() {
                 const result = await downloadFromUrl(`/export/${currentDocId}/all`, 'export.zip')
                 if (result.ok) addToast('ZIP 已导出，请查看下载文件夹')
                 else addToast(`导出失败: ${result.error}`, 'error')
-              } catch (e) { addToast('ZIP 导出失败', 'error') }
+              } catch { addToast('ZIP 导出失败', 'error') }
               finally { setExportingZip(false) }
             }}
             disabled={!hasExportableContent || exportingZip}

@@ -78,12 +78,14 @@ pub fn run() {
             }
 
             spawn_backend_ready_probe(app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_install_path_diagnostics,
             restart_backend_sidecar,
             detect_components,
+            export_pdf,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -371,6 +373,291 @@ fn detect_components() -> Vec<ComponentStatus> {
     });
 
     results
+}
+
+// ── PDF 导出（WebView2 PrintToPdf）──
+
+/// 把后端产出的**自包含 HTML** 渲染成 PDF 直接落盘，不弹打印对话框。
+///
+/// ## 为什么不用主窗口打印
+/// `ICoreWebView2::PrintToPdf` 只能打印**该 WebView2 实例的主文档**，而主窗口的文档
+/// 是应用 UI 本身。故新建屏幕外窗口加载 `/export/{id}?format=html&mode=…`，
+/// 打完即销毁 —— 喂给它的正是 HTML 导出那份自包含产物（自带 `_PRINT_CSS`），
+/// 于是「预览 / HTML 导出 / PDF 导出」三者同源，不会各自漂移。
+///
+/// ## 为什么屏幕外而非 `visible(false)`
+/// WebView2 对不可见窗口会推迟渲染，PrintToPdf 有概率拿到空白页。
+/// 窗口放到 (-32000, -32000) 并关掉装饰与任务栏按钮 —— 用户看不见，渲染照常。
+///
+/// ## 依赖脆弱点
+/// 本模块直接用 `webview2-com` 的 COM 类型，其版本必须与 tauri 内部的**同源**
+/// （见 Cargo.toml 注释）：COM 接口不跨 crate 实例，`.cast()` 会因「两个不相干的
+/// 类型」直接编译失败。升级 tauri 后此处报错先核对 Cargo.lock。
+#[cfg(windows)]
+mod pdf_export {
+    use super::*;
+    use std::sync::mpsc;
+    use tauri::{WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Environment6, ICoreWebView2_7,
+    };
+    use webview2_com::PrintToPdfCompletedHandler;
+    use windows::core::{Interface, HSTRING};
+
+    /// 导出窗口的 label —— 固定值（Tauri 要求窗口 label 唯一，故建窗前先清残窗）
+    const WINDOW_LABEL: &str = "pdf-export";
+
+    /// A4 = 210×297mm（英寸）。CSS 的 `@page { size: A4 }` 说的是同一张纸，
+    /// 但 PrintSettings 的默认值其实是 **Letter** —— 不显式设就会印出美式尺寸
+    const A4_WIDTH_IN: f64 = 8.2677;
+    const A4_HEIGHT_IN: f64 = 11.6929;
+
+    /// 与 `_PRINT_CSS` 的 `@page { margin: 18mm 16mm }` 取同值：
+    /// 两边一致则无论 CSS 与 PrintSettings 谁胜出，纸上都是这个边距
+    const MARGIN_V_IN: f64 = 18.0 / 25.4;
+    const MARGIN_H_IN: f64 = 16.0 / 25.4;
+
+    /// 打印超时 —— 正常文档几秒内完成，留足余量
+    const PRINT_TIMEOUT_SECS: u64 = 90;
+
+    pub async fn export(
+        app: &tauri::AppHandle,
+        url: String,
+        file_name: String,
+    ) -> Result<String, String> {
+        let out_path = resolve_output_path(app, &file_name)?;
+        let parsed = tauri::Url::parse(&url).map_err(|e| format!("导出地址无效: {}", e))?;
+        // 结果从 WebView2 的完成回调跨回本协程
+        let (tx, rx) = mpsc::channel::<Result<(), String>>();
+
+        let app_for_main = app.clone();
+        let out_for_main = out_path.clone();
+        app.run_on_main_thread(move || create_job(app_for_main, parsed, out_for_main, tx))
+            .map_err(|e| format!("调度导出任务失败: {}", e))?;
+
+        // recv 会阻塞线程，故放 blocking 池（async command 里直接 recv 会占死运行时）
+        let received = tauri::async_runtime::spawn_blocking(move || {
+            rx.recv_timeout(Duration::from_secs(PRINT_TIMEOUT_SECS))
+        })
+        .await
+        .map_err(|e| format!("等待导出结果失败: {}", e))?;
+
+        match received {
+            Ok(Ok(())) => Ok(out_path.to_string_lossy().to_string()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(format!("导出超时（{}s）", PRINT_TIMEOUT_SECS)),
+        }
+    }
+
+    /// 建窗口并挂载「页面加载完成 → 打印」的钩子（必须在主线程调用）
+    fn create_job(
+        app: tauri::AppHandle,
+        url: tauri::Url,
+        out_path: PathBuf,
+        tx: mpsc::Sender<Result<(), String>>,
+    ) {
+        // 上一轮可能残留（超时/崩溃）——label 必须唯一，先清掉
+        if let Some(stale) = app.get_webview_window(WINDOW_LABEL) {
+            let _ = stale.close();
+        }
+
+        let out_for_load = out_path.clone();
+        // 闭包是 `Fn` 可能多次调用，且会 move 捕获 —— 为它单独留一份，
+        // 免得把外层的 `tx` 一并卷走（下方 build 失败时还要用它报错）
+        let tx_for_load = tx.clone();
+        let builder = WebviewWindowBuilder::new(&app, WINDOW_LABEL, WebviewUrl::External(url))
+            .title("LiMo PDF 导出")
+            .inner_size(1024.0, 1400.0)
+            .position(-32000.0, -32000.0)
+            .decorations(false)
+            .shadow(false)
+            .skip_taskbar(true)
+            .on_page_load(move |window, payload| {
+                if payload.event() != tauri::webview::PageLoadEvent::Finished {
+                    return;
+                }
+                let win = window.clone();
+                let out = out_for_load.clone();
+                let tx = tx_for_load.clone();
+                // 换一个线程再抓 controller：本回调跑在 UI 线程，就地重入事件循环
+                // 有死锁风险；顺带留出图片解码/字体就绪的时间。
+                //
+                // ⚠️ 这个数字是实测值，不是推导值：Finished 只代表主文档加载完成，
+                // 而导出的 HTML 自包含（~1.8MB base64 字体 + 内联图片），字体解码
+                // 与 KaTeX 客户端渲染都还在其后。没有「更短也够」的成功样本，别调小。
+                // 代价：每次导出多等约 3s（离屏窗口，用户只感知为「慢一点」）。
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(3000));
+                    start_print(win, out, tx);
+                });
+            });
+
+        if let Err(e) = builder.build() {
+            let _ = tx.send(Err(format!("创建导出窗口失败: {}", e)));
+        }
+    }
+
+    fn start_print(
+        window: WebviewWindow,
+        out_path: PathBuf,
+        tx: mpsc::Sender<Result<(), String>>,
+    ) {
+        // 兜底：无论成败，超时后都关窗，免得用户看不见却占着资源
+        let guard = window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(PRINT_TIMEOUT_SECS + 5));
+            let _ = guard.close();
+        });
+
+        let win_for_print = window.clone();
+        let out_for_print = out_path.clone();
+        let err_win = window.clone();
+        let tx_outer = tx.clone();
+
+        let dispatched = window.with_webview(move |pw| {
+            if let Err(e) = print_now(&pw, &out_for_print, tx_outer.clone(), win_for_print) {
+                app_log(
+                    &env::current_exe().unwrap_or_default(),
+                    &format!("pdf export failed: {}", e),
+                );
+                let _ = tx_outer.send(Err(e));
+                let _ = err_win.close();
+            }
+        });
+
+        if let Err(e) = dispatched {
+            let _ = tx.send(Err(format!("获取 WebView2 句柄失败: {}", e)));
+            let _ = window.close();
+        }
+    }
+
+    /// 真正发起打印。**必须在 UI 线程执行**（`with_webview` 的约定）——
+    /// WebView2 是单线程 COM 组件，跨线程调用会失败或静默无输出。
+    fn print_now(
+        pw: &tauri::webview::PlatformWebview,
+        out_path: &Path,
+        tx: mpsc::Sender<Result<(), String>>,
+        window: WebviewWindow,
+    ) -> Result<(), String> {
+        let controller = pw.controller();
+        let core = unsafe { controller.CoreWebView2() }
+            .map_err(|e| format!("获取 WebView2 核心对象失败: {}", e))?;
+
+        // PrintToPdf 属于 ICoreWebView2_7（SDK 1.0.1108+），Win10/11 自带的运行时都满足
+        let core7: ICoreWebView2_7 = core
+            .cast()
+            .map_err(|e| format!("WebView2 运行时版本过旧，不支持 PDF 导出: {}", e))?;
+        let env6: ICoreWebView2Environment6 = pw
+            .environment()
+            .cast()
+            .map_err(|e| format!("WebView2 环境不支持打印设置: {}", e))?;
+        let settings = unsafe { env6.CreatePrintSettings() }
+            .map_err(|e| format!("创建打印设置失败: {}", e))?;
+
+        unsafe {
+            settings.SetPageWidth(A4_WIDTH_IN).map_err(err_msg)?;
+            settings.SetPageHeight(A4_HEIGHT_IN).map_err(err_msg)?;
+            settings.SetMarginTop(MARGIN_V_IN).map_err(err_msg)?;
+            settings.SetMarginBottom(MARGIN_V_IN).map_err(err_msg)?;
+            settings.SetMarginLeft(MARGIN_H_IN).map_err(err_msg)?;
+            settings.SetMarginRight(MARGIN_H_IN).map_err(err_msg)?;
+            // 保留代码块/引用的底色 —— 一键导出没有对话框让用户勾「背景图形」，
+            // 少了它代码块只剩一圈边框
+            settings.SetShouldPrintBackgrounds(true.into()).map_err(err_msg)?;
+            // 不要 URL/日期/页码（与浏览器「另存为 PDF」的默认一致）
+            settings
+                .SetShouldPrintHeaderAndFooter(false.into())
+                .map_err(err_msg)?;
+        }
+
+        let out_wide = HSTRING::from(out_path.to_string_lossy().as_ref());
+        let handler = PrintToPdfCompletedHandler::create(Box::new(move |result, succeeded| {
+            let outcome = match (result, succeeded) {
+                (Ok(()), true) => Ok(()),
+                (Ok(()), false) => Err("WebView2 报告打印未成功".to_string()),
+                (Err(e), _) => Err(format!("打印失败: {}", e)),
+            };
+            let _ = window.close();
+            let _ = tx.send(outcome);
+            Ok(())
+        }));
+
+        unsafe { core7.PrintToPdf(&out_wide, &settings, &handler) }
+            .map_err(|e| format!("发起打印失败: {}", e))?;
+        Ok(())
+    }
+
+    fn err_msg(e: windows::core::Error) -> String {
+        format!("打印设置失败: {}", e)
+    }
+
+    /// 落盘位置 = 系统「下载」目录（与其余导出行为一致），同名自动加序号
+    fn resolve_output_path(app: &tauri::AppHandle, file_name: &str) -> Result<PathBuf, String> {
+        let dir = app
+            .path()
+            .download_dir()
+            .map_err(|e| format!("找不到系统下载目录: {}", e))?;
+        let _ = std::fs::create_dir_all(&dir);
+
+        let stem = sanitize_stem(file_name);
+        let mut candidate = dir.join(format!("{}.pdf", stem));
+        let mut n = 1u32;
+        while candidate.exists() {
+            candidate = dir.join(format!("{} ({}).pdf", stem, n));
+            n += 1;
+            if n > 999 {
+                return Err("同名文件过多，请先清理下载目录".to_string());
+            }
+        }
+        Ok(candidate)
+    }
+
+    /// 文件名清洗。前端已过滤一轮，这里是**落盘前的最后一道** ——
+    /// 命令可被任意前端调用，Rust 侧不能假设调用方守规矩（Windows 文件名
+    /// 不允许 `\/:*?"<>|`，路径分隔符混进来就是路径穿越）
+    fn sanitize_stem(file_name: &str) -> String {
+        let stripped = file_name.strip_suffix(".pdf").unwrap_or(file_name);
+        let cleaned: String = stripped
+            .chars()
+            .map(|c| {
+                if matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control()
+                {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        // Windows 不允许文件名以点/空格结尾
+        let trimmed = cleaned.trim().trim_end_matches('.').trim();
+        let capped: String = trimmed.chars().take(80).collect();
+        let capped = capped.trim_end();
+        if capped.is_empty() {
+            "export".to_string()
+        } else {
+            capped.to_string()
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod pdf_export {
+    pub async fn export(
+        _app: &tauri::AppHandle,
+        _url: String,
+        _file_name: String,
+    ) -> Result<String, String> {
+        Err("当前平台不支持 PDF 直接导出（仅 Windows WebView2 可用）".to_string())
+    }
+}
+
+#[tauri::command]
+async fn export_pdf(
+    app: tauri::AppHandle,
+    url: String,
+    file_name: String,
+) -> Result<String, String> {
+    pdf_export::export(&app, url, file_name).await
 }
 
 // ── PATH 增强 ──

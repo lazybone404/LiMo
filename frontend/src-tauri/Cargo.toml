@@ -24,3 +24,12 @@ log = "0.4"
 tauri = { version = "2.11.3", features = ["devtools"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
+
+# ── PDF 导出（WebView2 PrintToPdf）──
+# ⚠️ 这两个版本**必须与 tauri 内部使用的一致**（见 Cargo.lock：tauri 2.11.x → wry 0.55
+# → webview2-com 0.38 / windows 0.61）。COM 接口类型不跨 crate 实例：版本不同源时
+# `ICoreWebView2` 会变成两个不相干的类型，`.cast()` 直接编译失败。
+# 升级 tauri 后若此处编译不过，先核对 Cargo.lock 里这两个 crate 的版本再改这里。
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows = "0.61"

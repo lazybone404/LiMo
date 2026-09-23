@@ -53,6 +53,8 @@ hiddenimports = [
     'app.generation.ocr_preprocessor',
     'app.core.disconnect',
     'app.services.chart_renderer',  # 图表渲染（PIL 自绘；PIL 已随图片优化收集）
+    'app.services.markdown_render', # Markdown→HTML 公共渲染（HTML/Word 导出共用）
+    'app.services.docx_export',     # Word 导出（python-docx + bs4）
     # 引擎模块（init_engines() 函数内动态导入，PyInstaller 无法静态追踪）
     'app.engines.doc_types', 'app.engines.doc_markitdown',
     'app.engines.doc_docx', 'app.engines.doc_pptx', 'app.engines.doc_excel',

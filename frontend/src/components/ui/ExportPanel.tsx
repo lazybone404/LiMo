@@ -1,15 +1,16 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useStore } from '../../store'
-import { X, Download, FileText, Globe, File, Archive, Search, ChevronUp, ChevronDown, Film, PenLine, Image, BarChart3, BookOpen } from 'lucide-react'
+import { X, Download, FileText, Globe, File, Archive, Search, ChevronUp, ChevronDown, Film, PenLine, Image, BarChart3, BookOpen, FileType } from 'lucide-react'
 import { getTypeMeta } from '../gen-panel/constants'
 import { downloadFromUrl, downloadBlob } from '../../lib/download'
 import { apiUrl } from '../../api/client'
 
-type Format = 'md' | 'html' | 'plain'
+type Format = 'md' | 'html' | 'plain' | 'docx'
 
 const FORMAT_META: Record<Format, { icon: typeof FileText; label: string }> = {
   md: { icon: FileText, label: 'Markdown' },
   html: { icon: Globe, label: 'HTML' },
+  docx: { icon: FileType, label: 'Word' },
   plain: { icon: File, label: '纯文本' },
 }
 
@@ -132,6 +133,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
     }
     if (formats.includes('md')) lines.push(`MD: 公式${formulaMd === 'keep' ? '保留' : formulaMd === 'render' ? '渲染图片' : '移除'} · 图片${imageMd === 'separate' ? '独立文件夹' : imageMd === 'inline' ? 'base64内嵌' : '不包含'}`)
     if (formats.includes('html')) lines.push(`HTML: ${htmlTheme === 'limo' ? 'LiMo 预览栏' : htmlTheme === 'paper' ? '学术论文' : htmlTheme === 'github' ? 'GitHub' : '极简'}样式`)
+    if (formats.includes('docx')) lines.push(`Word: 图片${imageMd === 'none' ? '不包含' : '内嵌'} · 公式保留 LaTeX 原文`)
     if (formats.includes('plain')) lines.push(`纯文本: 公式${formulaPlain === 'remove' ? '移除' : 'Unicode'}`)
     return lines
   }, [typeGroups, groupTabs, formats, formulaMd, imageMd, formulaPlain, htmlTheme])
@@ -220,7 +222,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
           <section>
             <h3 className="text-[13px] font-semibold text-foreground mb-2">导出格式</h3>
             <div className="flex gap-2">
-              {(['md', 'html', 'plain'] as Format[]).map(f => {
+              {(['md', 'html', 'docx', 'plain'] as Format[]).map(f => {
                 const active = formats.includes(f)
                 const meta = FORMAT_META[f]
                 return (
@@ -278,6 +280,18 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
                       <option value="github">样式：GitHub 风格</option>
                       <option value="minimal">样式：极简白底</option>
                     </select>
+                  </div>
+                )}
+                {formats.includes('docx') && (
+                  <div>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <FileType size={13} className="text-accent" />
+                      <span className="text-[12px] font-medium">Word</span>
+                    </div>
+                    <p className="text-[10px] text-disabled leading-relaxed">
+                      图片直接内嵌进文档（不产生文件夹）；公式保留 LaTeX 原文，可在 Word 中编辑。
+                      标题使用 Word 大纲级别，导航窗格可跳转。
+                    </p>
                   </div>
                 )}
                 {formats.includes('plain') && (
