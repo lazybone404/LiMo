@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useStore } from '../store'
 
 // Reset store to clean state before each test
@@ -211,5 +211,34 @@ describe('bumpStreamTick — 流式 tick', () => {
     expect(useStore.getState().streamTick).toBe(1)
     useStore.getState().bumpStreamTick()
     expect(useStore.getState().streamTick).toBe(2)
+  })
+})
+
+// ── backendReady 初值（Tauri 冷启动保护） ──
+//
+// ⚠️ 这条不变量很隐蔽：初值给 true 时**功能照常**（后端起来后一切正常），
+// 只表现为「首渲染闪一下完整 UI」+ 控制台一屏 ERR_CONNECTION_REFUSED ——
+// 因为 effect 在 render **之后**才跑，setBackendReady(false) 拦不住第一次渲染，
+// 而 GenPanel 一挂载就拉 /api/models、/api/providers，那一刻后端必然还没监听；
+// 那行报错还是 WebView 自动打印的，JS 抑制不掉。所以只能把「初值按环境同步判定」
+// 这件事本身钉住，否则改回 `backendReady: true`（看起来更直观）没有任何测试会红。
+//
+// ⚠️ 初值在模块求值时定稿，故必须 resetModules + 动态 import 才能改环境重取。
+// 本块放文件末尾：重置后拿到的是**另一个 store 实例**，不能与上面的静态实例混用。
+describe('backendReady 初值 — Tauri 冷启动保护', () => {
+  afterEach(() => { delete (window as any).__TAURI_INTERNALS__ })
+
+  it('Tauri 环境初值为 false（首渲染就必须是加载屏）', async () => {
+    vi.resetModules()
+    ;(window as any).__TAURI_INTERNALS__ = {}
+    const fresh = await import('../store')
+    expect(fresh.useStore.getState().backendReady).toBe(false)
+  })
+
+  it('浏览器环境初值为 true（没有后端启动过程，不必等）', async () => {
+    vi.resetModules()
+    delete (window as any).__TAURI_INTERNALS__
+    const fresh = await import('../store')
+    expect(fresh.useStore.getState().backendReady).toBe(true)
   })
 })

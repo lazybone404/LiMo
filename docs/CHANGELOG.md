@@ -6,6 +6,46 @@
 
 ---
 
+## 2026-09-23 — Tauri 冷启动的 ERR_CONNECTION_REFUSED 刷屏修复
+
+用户报打包版冷启动时控制台稳定刷出多条 `Failed to load resource: net::ERR_CONNECTION_REFUSED`（`/health`、`/api/models`、`/api/providers`，health 重复 6 次），要求定位。
+
+### 三条独立根因（都指向同一个窗口期：前端比后端早动手）
+
+| # | 根因 | 为什么会产生请求 |
+|---|---|---|
+| 1 | `uiSlice.backendReady` **初值为 `true`** | `useState`/store 初值在 render 时就生效，而 effect 在 render **之后**才跑。初值 `true` → **首渲染直接挂载完整 UI**，GenPanel 一挂载就拉 `/api/models` + `/api/providers`，那一刻后端必然还没监听；随后 `setBackendReady(false)` 才换回加载屏 —— 既刷一屏报错，界面还要闪一下 |
+| 2 | `startHealthPoll` **无门控** | 运行期探活（`lib/health.ts`，10s 间隔）在挂载时立刻 tick 一次，冷启动阶段同样打空 |
+| 3 | 前端 `healthCheck` **与 Rust 侧探测完全重复** | 原来是「90 × 500ms」的主动轮询，而 `lib.rs::spawn_backend_ready_probe` 早已在做同一件事（500ms 间隔、45s 超时、就绪 emit `backend-ready`）。**代价极不对等**：Rust 的探测在独立进程用裸 `TcpStream` 手写 HTTP，不碰 WebView 网络栈、零控制台日志；前端每失败一次就糊一行 |
+
+### ⚠️ 关键认识：WebView 里的失败请求日志**无法在 JS 层抑制**
+
+`fetch` 打到未监听端口产生的 `ERR_CONNECTION_REFUSED` 是**浏览器/WebView 自动打印**的，与是否 `catch`、是否 `console.error` 无关。因此「加 try/catch」「降日志级别」都无效 —— **唯一能消除它的办法就是那条请求根本不发出去**。这决定了修法方向不是「让失败安静」，而是「别在必然失败的时刻发」。
+
+（用户中途补充「可以前几次静默后面然后再」，正是这个方向：静默期内零请求，之后再探。）
+
+### 修法（纯前端，三处）
+
+1. `frontend/src/store/uiSlice.ts` —— `backendReady` 初值改为**同步**按环境判定：`!(typeof window !== 'undefined' && window.__TAURI_INTERNALS__)`。Tauri 环境首渲染即加载屏，浏览器环境没有后端启动过程直接 `true`。
+2. `frontend/src/App.tsx` —— `startHealthPoll` 加 `if (!backendReady) return` 门控。
+3. `frontend/src/App.tsx` —— Tauri 分支整体重写为**事件优先 + 静默期**：
+   - 新增 `BACKEND_PROBE_DELAY_MS = 2500`：静默期内**一条请求都不发**（后端实测 ~2s 就绪），由 Rust 的 `backend-ready` 事件唤醒；
+   - 监听 `backend-startup-timeout`（Rust 探测 45s 超时也会 emit，此前前端没监听、等于白发）；
+   - 静默期后**只探测一次**（覆盖「页面刷新时后端已在运行、`backend-ready` 早已错过」），**刻意不做循环轮询** —— 那正是噪音来源；
+   - 新增 `BACKEND_HARD_TIMEOUT_MS = 50_000` 硬兜底（窗口句柄取不到时 Rust 的 emit 会静默丢弃）。
+
+**为什么不动 Rust 侧**：Rust 的探测本就是无噪音的那一侧，问题全在前端重复轮询；改 Rust 要动 emit 时序与 launcher 逻辑，收益为零。
+
+### 影响范围与验证
+
+- 冷启动控制台从「一屏报错」变为 **0 条**；加载屏不再闪。
+- 新增守门测试 `frontend/src/test/store.test.ts`（+2）：`vi.resetModules()` + 动态 import 验证 Tauri / 浏览器两种环境下 `backendReady` 的初值。
+  **自证有区分力**：临时把初值改回 `true`，确认测试变红（`expected true to be false`），再还原。
+  这条测试有必要是因为**回归后功能完全正常**（后端起来后一切照旧），只表现为控制台红字 + UI 闪一下 —— 而 `backendReady: true` 恰恰是更「直观」的写法，很容易被改回去。
+- 前端 130 tests 全绿（128 → 130），`tsc -b` 通过。
+
+---
+
 ## 2026-09-23 — 文档库组织能力（文件夹 / 全文搜索接入 / 排序筛选 / 大列表 / 批量）+ DeepSeek 打磨 + PDF 直传
 
 > 三条用户诉求彼此独立：「文档多了你有时候要放半天这样也不好」（要组织能力）、查 DeepSeek 官方文档更新、以及「直传与经过我们链路是不是应该改成用户可选择式的」。

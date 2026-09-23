@@ -101,7 +101,12 @@ export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set) => ({
 
   setActiveView: (v) => { try { localStorage.setItem('mbw_lastView', v) } catch { /* quota exceeded */ } set({ activeView: v as ActiveView }) },
 
-  backendReady: true,  // 浏览器模式默认 true，Tauri 模式在 App.tsx useEffect 中重置
+  // ⚠️ Tauri 冷启动时后端要 ~2s 才就绪，而 effect 在 render **之后**才跑 ——
+  // 初值给 true 的话，首渲染就会挂载完整 UI（GenPanel 一挂载就拉 /api/models、
+  // /api/providers），必然失败，然后才被 setBackendReady(false) 换回加载屏：
+  // 既刷一屏 ERR_CONNECTION_REFUSED，界面还会闪一下。
+  // 故此处**同步**判定：Tauri 环境初值即 false，浏览器环境没有后端启动过程，直接 true。
+  backendReady: !(typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__),
   setBackendReady: (v) => set({ backendReady: v }),
 
   backendStatus: 'ready',  // 持续探活（lib/health.ts）更新：down→crashed 分级

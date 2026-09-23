@@ -196,7 +196,7 @@ python tests/test_doc_understand.py  # PDF 直传（闸门 14MiB 两侧 / 编码
 ```bash
 cd frontend
 npm run dev       # 开发服务器，端口 5173，API 代理 → 127.0.0.1:7413
-npm test          # vitest（128 tests，12 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary 等，<3s）
+npm test          # vitest（130 tests，12 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary 等，<3s）
 npm run build     # 类型检查 + 生产构建
 npm run lint      # oxlint
 ```
@@ -380,7 +380,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 - **开发模式**：Vite dev server (:5173) + 手动启动后端，Tauri 加载 `devUrl`
 - **生产模式**：`frontendDist` 静态文件 + `std::process::Command` 直接启动 PyInstaller 打包的 `LiMoBackend.exe`（非 Tauri sidecar()，避免 ACL 复杂度）
-- **就绪探测**：Rust 端 HTTP GET `/health` 轮询（500ms 间隔，45s 超时），就绪后 emit `backend-ready` 事件
+- **就绪探测**：Rust 端 HTTP GET `/health` 轮询（500ms 间隔，45s 超时），就绪后 emit `backend-ready` 事件（超时同理 emit `backend-startup-timeout`）。**前端以该事件为主要唤醒源，不再自己轮询 `/health`** —— 冷启动有 2.5s **静默期**（一条请求都不发，后端实测 ~2s 就绪），静默期后仅单次探测兜底「页面刷新时后端已在运行」的场景，另有 50s 硬兜底。⚠️ 前端轮询与 Rust 探测曾是**重复的**，而 WebView 里失败请求的报错 JS 抑制不掉 —— 详见「关键模式」#49
 - **进程管理**：`SidecarHandle(Mutex<Option<Child>>)` 持有进程句柄；窗口关闭 → `RunEvent::ExitRequested` → `child.kill()`
 - **重启命令**：`restart_backend_sidecar` Tauri command，kill 旧进程 → spawn 新进程 → 重新探测
 - **诊断**：`analyze_install_path()` 检查路径非 ASCII/空格/父目录可写性；`app_log()` 写 `limo_startup.log`；后端 stderr 重定向到 `limo_backend_stderr.log`
@@ -522,7 +522,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（2026-07-10 起持续沉淀，现 48 条）
+## 关键模式（2026-07-10 起持续沉淀，现 49 条）
 
 以下模式是实现中易错的关键约束，新增代码必须遵守。
 
@@ -586,6 +586,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 47. **直传 = 双真相源，且分叉方向最坑**：把原件发给模型、本地仍照跑解析时，`rawText` 是**导出/搜索/预览的真相源，但不是模型所见的真相源**——扫描件上模型读懂了原件而 rawText 近乎空（或只剩 OCR 失败的**占位文本**约 50 字符）。这不是可修的 bug 而是模式固有代价，故必须让它可见：直传成功但 rawText 过短时给完成期 warning。⚠️ **判据不能是「空串」**——占位文本正好是那种「看起来有内容、实际没内容」的形态，只判空串会精准漏掉本提示要覆盖的头号场景。同理，本地解析**必须照跑**：它是本地库不花 token，跳过它 = 转录空白 + 导出丢内容。（2026-09-23 PDF 直传）
 
 48. **实测证明不了上界，上界只写在官方文档里**：超时/尺寸/限额这类常量，**不能由「实测样本 × 余量」推出来**——实测覆盖的永远是那几档样本，它给的是「至少能到这么大」，而不是「最大就这么大」。`DOC_DIRECT_TIMEOUT` 第一版按最大实测样本（149.3s）× 1.6 取 240，看着留了 60% 余量很稳妥，但官方明写「首包超时最长为 **300 秒**」→ 240 < 300，落在该区间的**正常请求会被自己的超时掐断**，且**只表现为静默降级**（日志里只有「超时」，看起来像厂商不配合）。正确姿势：**先去官方文档取上界，再乘余量**（330 = 300 × 1.1，不贴边是因为要避开「厂商超时」与「我们的超时」赛跑）。这是 #39 的又一形态——判据（实测数据）是真的，但它**不构成对「最大值」的证据**。配套：总超时必须跟着乘二而不是并列（330 → 660），两者改一个而不动另一个会让某一侧先到。（2026-09-23 文档能力调查）
+
+49. **WebView 里失败请求的报错无法在 JS 层抑制，唯一解法是让那条请求别发出去**：`fetch` 打到未监听端口产生的 `ERR_CONNECTION_REFUSED` 由浏览器/WebView **自动打印**，`catch` 掉、降成 `console.debug` 一样照出。所以「冷启动时后端还没起」这类**必然失败**的时刻，正确做法是**静默期一条请求都不发**、由 Rust 侧就绪事件唤醒（Rust 的探测在独立进程用裸 `TcpStream` 手写 HTTP，不碰网络栈、零日志），而不是「让失败安静下来」。配套两个易错点：① **store/`useState` 初值在 render 时生效，而 effect 在 render 之后才跑** —— 「未就绪」标记初值给 `true` 会在**首渲染**就挂载业务组件（GenPanel 一挂载就拉 `/api/models`、`/api/providers`），后面那句 `setBackendReady(false)` 拦不住第一次渲染；初值必须**同步**按环境判定。② 与 Rust 探测重复的前端轮询要**删掉**而不是留作双保险 —— 一侧零成本、另一侧每条失败都留痕，二者代价极不对等。⚠️ 回归后**功能完全正常**（后端起来后一切照旧），只表现为控制台红字 + 加载屏闪一下，而 `backendReady: true` 恰恰是更直观的写法 → 必须用测试钉住（`vi.resetModules()` + 动态 import 改环境重取初值），并做对照实验确认改回 `true` 时真会变红。（2026-09-23 冷启动报错修复）
 
 ## 待办事项
 

@@ -13,7 +13,7 @@
 |------|------|
 | 后端 Python 文件 | 105（11 子目录：adapters 8 / agent 6 / core 19 / downloaders 4 / engines 15 / generation 12 / llm 4 / routers 17 / storage 2 / utils 6 / services 12） |
 | 前端 TS/TSX/CSS 文件 | 118（116 ts/tsx + 2 css；业务 105，排除 test 13） |
-| 前端测试文件 | 12（128 个测试用例，vitest 全绿） |
+| 前端测试文件 | 12（130 个测试用例，vitest 全绿） |
 | API 路由模块 | 16 业务模块（+ `__init__.py`，共 17 个 .py） |
 | API 端点 | 80（`@router.` 装饰器计数） |
 | 适配器 | 5 |
@@ -113,7 +113,7 @@
 | FastAPI Depends 依赖注入 | ✅ 12/15 路由迁移完成（未迁：generate/search/references） |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 15/15 路由全量完成，0 处 `raise HTTPException`（2026-09-19 核实） |
-| 前端测试 | ✅ vitest + 128 tests（12 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/组件） |
+| 前端测试 | ✅ vitest + 130 tests（12 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/组件） |
 | 对话重写 | ✅ 独立 chatStore + 消息层组件树 + 工具气泡/引用/思考折叠（2026-08-04） |
 | 对话上下文管理 | ✅ context_window 四层解析 + 预算引擎 + 历史压缩 + token 进度/费用（2026-08-04 C1-C5） |
 | AI 浮窗 | ✅ 移除插槽，统一浮窗（位置记忆/边界钳制/内部栏拖拽） |

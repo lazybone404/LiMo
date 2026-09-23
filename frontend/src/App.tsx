@@ -14,6 +14,17 @@ import { fetchCapabilities, listTranscripts, listFolders, getMarkdown, getTransc
 import { startHealthPoll } from './lib/health'
 import { Settings, PanelLeft, Library, MessageSquare, Archive } from 'lucide-react'
 
+// 冷启动静默期（ms）：后端实测 ~2s 就绪，这段窗口内**故意一条请求都不发** ——
+// 起步就探测的话，那一刻后端必然还没监听，会稳定产生一条无意义的失败；而 WebView 里
+// fetch 失败的 ERR_CONNECTION_REFUSED 是浏览器自动打印、JS 无法抑制的。
+// 静默期内由 Rust 侧的 backend-ready 事件唤醒（Rust 的探测在独立进程，不碰网络栈），
+// 只有「事件已错过」的场景（页面刷新时后端已在运行）才需要这次探测兜底。
+const BACKEND_PROBE_DELAY_MS = 2500
+
+// 硬兜底（ms）：万一 backend-ready 与 backend-startup-timeout 都没到达
+// （窗口句柄取不到时 Rust 的 emit 会静默丢弃），也不能让加载屏永远停住。
+const BACKEND_HARD_TIMEOUT_MS = 50_000
+
 export default function App() {
   const slots = useStore(s => s.slots)
   const setSlot = useStore(s => s.setSlot)
@@ -54,7 +65,12 @@ export default function App() {
 
   // 运行期持续探活（P1.1）— 独立于启动探活（后者只管「未就绪加载屏」）：
   // 后端运行中异常断开 → backendStatus=down/crashed → 顶部横幅；恢复自动消失。
-  useEffect(() => startHealthPoll(), [])
+  // ⚠️ 必须等 backendReady 再启动：冷启动阶段后端还没起，tick 的首次请求必然失败，
+  // 而那条失败会在控制台留下 ERR_CONNECTION_REFUSED（WebView 自动打印，JS 无法抑制）。
+  useEffect(() => {
+    if (!backendReady) return
+    return startHealthPoll()
+  }, [backendReady])
 
   useEffect(() => {
     // 订阅设置页配置变更 → 刷新 capabilities（保存后无需手动刷新页面）
@@ -107,32 +123,52 @@ export default function App() {
     })
   }
 
-    // Tauri 模式：主动轮询 /health + 监听 backend-ready 事件，双保险
+    // Tauri 模式：以 Rust 的就绪事件为主，前端不再自己轮询 /health。
+    //
+    // 此前这里是「90 × 500ms」的主动轮询，它与 Rust 侧的探测（lib.rs 的
+    // spawn_backend_ready_probe，500ms 间隔、45s 超时）完全重复，而代价极不对等：
+    // Rust 的探测在独立进程里，一条控制台日志都不产生；前端每失败一次就糊一行
+    // ERR_CONNECTION_REFUSED，且那是 WebView 自动打印、JS 无法抑制的。
     if ((window as any).__TAURI_INTERNALS__) {
-      setBackendReady(false)  // 阻止 UI 提前渲染，避免 CONNECTION_REFUSED
+      setBackendReady(false)  // 纵深防御：初值已按环境判定，这里再复位一次
       let done = false
       const initOnce = () => { if (!done) { done = true; setBackendReady(true); init() } }
 
-      // 主动健康检查：后端刷新前可能已在运行，event 已错过
-      const healthCheck = async () => {
-        for (let i = 0; i < 90; i++) {  // 90 × 500ms = 45s
-          if (done) return
-          try {
-            const r = await fetch('http://127.0.0.1:7413/health')
-            if (r.ok) { initOnce(); return }
-          } catch { /* 后端未就绪，继续轮询 */ }
-          await new Promise(r => setTimeout(r, 500))
-        }
-        if (!done) { console.warn('Backend ready timeout, forcing load'); initOnce() }
-      }
-      healthCheck()
-
-      // 同时监听 backend-ready 事件（后端重启等场景）
+      let unlistenReady = () => {}
+      let unlistenTimeout = () => {}
       import('@tauri-apps/api/event').then(({ listen }) => {
-        listen('backend-ready', () => { initOnce() })
-      }).catch(() => {}) // 导入失败无所谓，health check 已覆盖
+        // ① 主路径：后端就绪即唤醒（冷启动 2s 左右），此前一条请求都不用发
+        listen('backend-ready', () => initOnce()).then(un => { unlistenReady = un })
+        // ② Rust 探测 45s 超时同样会 emit（此前前端没监听，等于白发）
+        listen('backend-startup-timeout', () => {
+          console.warn('后端启动超时，强制加载')
+          initOnce()
+        }).then(un => { unlistenTimeout = un })
+      }).catch(() => {}) // 事件模块导入失败也不要紧：静默期探测 + 硬兜底仍能放行
 
-      return () => { done = true; unsubConfig() }
+      // ③ 静默期过后探测一次 —— 覆盖「页面刷新时后端已在运行、backend-ready 早已错过」。
+      //    刻意不做循环轮询：那正是控制台噪音的来源，而正常冷启动已被事件覆盖。
+      const probeTimer = setTimeout(async () => {
+        if (done) return
+        try {
+          const r = await fetch('http://127.0.0.1:7413/health')
+          if (r.ok) initOnce()
+        } catch { /* 仍未就绪 —— 继续等 backend-ready 事件 */ }
+      }, BACKEND_PROBE_DELAY_MS)
+
+      // ④ 硬兜底：两个事件都没到达时也不能永久停在加载屏
+      const hardTimer = setTimeout(() => {
+        if (!done) { console.warn('后端就绪信号超时，强制加载'); initOnce() }
+      }, BACKEND_HARD_TIMEOUT_MS)
+
+      return () => {
+        done = true
+        clearTimeout(probeTimer)
+        clearTimeout(hardTimer)
+        unlistenReady()
+        unlistenTimeout()
+        unsubConfig()
+      }
     }
     // 浏览器/开发模式：直接加载（backendReady 默认 true）
     init()
