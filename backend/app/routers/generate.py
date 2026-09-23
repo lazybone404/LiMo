@@ -31,6 +31,9 @@ from app.services.chart_renderer import render_charts, CHART_FENCE_MARKS
 from app.generation.content_preparer import ContentPreparer
 from app.generation.prompt_builder import PromptBuilder
 from app.generation.prompt import build_polish_prompt, build_notes_prompt
+from app.generation.reference_compressor import (
+    needs_compression, compress_references_if_needed,
+)
 from app.storage.store import rewrite_asset_urls
 
 router = APIRouter()
@@ -519,6 +522,15 @@ async def generate_stream(transcript_id: str, request: Request,
                     processed_text, vl_config, keep_refs, send_to_llm=send_to_llm,
                     optimize_images=image_optimize, video_direct=video_direct)
 
+                # 参考文件「原文 + 参考」超出模型上下文预算时先 LLM 摘要（装得下则原样
+                # 返回，零成本）。不压缩的话整份塞进 prompt → 请求直接超窗失败。
+                # 压缩可能耗时数十秒，先推 stage 事件，避免前端静默等待被误认为卡死。
+                if ref_texts and needs_compression(ref_texts, clean_text, llm, config):
+                    yield f"data: {json.dumps({'type': 'stage', 'message': '参考文件超出模型上下文，正在压缩…'}, ensure_ascii=False)}\n\n"
+                ref_texts = await compress_references_if_needed(
+                    ref_texts, clean_text, llm, config,
+                    title=tx.get("title", ""), cancel_event=cancel_event)
+
                 polished_prompt = build_polish_prompt(
                     clean_text, tx.get("title", ""), style, source_type,
                     formats=format_list, user_notes=user_notes,
@@ -734,6 +746,15 @@ async def generate_stream(transcript_id: str, request: Request,
             clean_text, image_urls, video_path = await preparer.prepare(
                 processed_text, vl_config, keep_refs, send_to_llm=send_to_llm,
                 optimize_images=image_optimize, video_direct=video_direct)
+
+            # 参考文件超出模型上下文预算时先摘要（同双产物分支）。
+            # 参考文件只注入 notes —— 单产物 polished 时压缩纯属白花钱，直接跳过。
+            if stream_mode != "polished":
+                if ref_texts and needs_compression(ref_texts, clean_text, llm, config):
+                    yield f"data: {json.dumps({'type': 'stage', 'message': '参考文件超出模型上下文，正在压缩…'}, ensure_ascii=False)}\n\n"
+                ref_texts = await compress_references_if_needed(
+                    ref_texts, clean_text, llm, config,
+                    title=tx.get("title", ""), cancel_event=cancel_event)
 
             if stream_mode == "polished":
                 prompt = build_polish_prompt(

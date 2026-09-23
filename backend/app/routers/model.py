@@ -724,7 +724,7 @@ def resolve_model(model_id: int, request: Request, config=Depends(get_cfg)):
     provider = llm.get("provider", "deepseek")
     return {
         "provider": provider,
-        "model_name": llm.get("model", {}).get(provider, "deepseek-v4-flash"),
+        "model_name": llm.get("model", {}).get(provider, "deepseek-flash"),
         "api_key": llm.get("api_key", ""),
         "base_url": llm.get("base_url", {}).get(provider, ""),
     }

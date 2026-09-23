@@ -46,7 +46,7 @@ class LLMService:
                 llm_cfg.update(resolved)
 
         self.provider = llm_cfg.get("provider", "deepseek")
-        self.model = llm_cfg.get("model", {}).get(self.provider, "deepseek-v4-flash")
+        self.model = llm_cfg.get("model", {}).get(self.provider, "deepseek-flash")
         self.api_key = llm_cfg.get("api_key", "")
         self.base_url = llm_cfg.get("base_url", {}).get(self.provider)
         self.capabilities = llm_cfg.get("capabilities", ["text"])
@@ -140,10 +140,16 @@ class LLMService:
         on_reasoning：思考模型（deepseek-v4 等）的 reasoning_content 回调——
         推理链不混入正文，单独逐段回调，供前端展示"模型思考中"。
 
-        reasoning_effort：思考强度（'low'/'high'/'max'，deepseek-v4 专用）。
+        reasoning_effort：思考强度（'low'/'high'/'max'，deepseek 专用）。
         仅对支持该参数的模型生效（qwen 等忽略 extra_body 未知字段）。
         文档：thinking 默认开启且 effort 默认 high——简单任务传 'low'
         可大幅缩短思考静默期（polished 整理是忠实转录任务，无需深度思考）。
+
+        ⚠️ temperature 的效力取决于模型（2026-09-23 依官方「思考模式」页补注）：
+        DeepSeek 思考模式下 temperature / presence_penalty / frequency_penalty
+        **不报错但不生效**，而思考模式是默认开启的——故下方续写时的 temperature
+        递减对 DeepSeek 实际是空操作（保留是为兼容非思考模式与其他厂商模型）。
+        top_p 则相反：仅思考模式生效，且低于 0.95 的取值按 0.95 处理。
         """
 
         # ── 构建消息 ──
@@ -255,10 +261,13 @@ class LLMService:
         temperature: float = 0.1,
         max_continuations: int = 0,
         cancel_event: asyncio.Event | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         """非流式 LLM 调用——内部收集 stream() 的全部输出。
 
         process-image 用这个：max_tokens=4096, temperature=0.1, max_continuations=0。
+        reasoning_effort：思考强度透传（参考文件摘要等忠实压缩类任务传 'low'，
+        避开 DeepSeek 思考模式默认 effort=high 的数十秒静默期）。
         """
         parts: list[str] = []
         async for chunk in self.stream(
@@ -268,6 +277,7 @@ class LLMService:
             temperature=temperature,
             max_continuations=max_continuations,
             cancel_event=cancel_event,
+            reasoning_effort=reasoning_effort,
         ):
             parts.append(chunk)
         return "".join(parts)

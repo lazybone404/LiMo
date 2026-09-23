@@ -19,7 +19,9 @@ const LABELS: Record<string, string> = {
 export function ProcessingPlaceholder({ task, mode }: { task?: TaskInfo; mode?: string }) {
   let label = '处理中...'
   let reasoning = ''
+  let stage = ''
   if (task) {
+    stage = task.stage || ''
     if (task.kind === 'generate' && (task.mode || mode)) {
       // 产物级进度：mode 优先用调用方传入（与当前 tab 匹配）——并行双产物时
       // task.mode 是最后到达事件的产品，会在两路间来回跳，不能依赖它定位产物
@@ -43,7 +45,11 @@ export function ProcessingPlaceholder({ task, mode }: { task?: TaskInfo; mode?: 
     <div className="flex flex-col items-center justify-center h-64 gap-3 px-8">
       <Loader2 className="animate-spin text-accent" size={28} />
       <p className="text-[14px] font-medium text-foreground">{label}</p>
-      {reasoning ? (
+      {/* 前置阶段提示（如参考文件超窗压缩）优先于思考链——两者不会同时存在
+          （压缩在 LLM 流式开始之前完成，正式 chunk 一到 stage 即被替换清除） */}
+      {stage ? (
+        <p className="text-[11px] text-dimmed">{stage}</p>
+      ) : reasoning ? (
         <div className="w-full max-w-md max-h-36 overflow-y-auto text-[11px] text-dimmed leading-relaxed bg-surface/60 rounded-lg p-3">
           <span className="text-[10px] text-disabled block mb-1">模型思考中：</span>
           {reasoning}

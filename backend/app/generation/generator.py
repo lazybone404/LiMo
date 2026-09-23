@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from app.core.types import MarkdownView, Style, GenerateMode
+from app.generation.reference_compressor import compress_references_if_needed
 from app.llm.service import LLMService
 from app.services.chart_renderer import render_charts
 
@@ -126,6 +127,13 @@ class Generator:
             video_direct=video_direct,
         )
 
+        # 参考文件「原文 + 参考」超出模型上下文预算时先 LLM 摘要（装得下则原样返回，零成本）。
+        # 参考文件只注入 notes —— polished 侧压缩纯属白花钱，直接跳过。
+        if mode != "polished":
+            reference_texts = await compress_references_if_needed(
+                reference_texts, clean_text, self._llm, self.config,
+                title=title, cancel_event=cancel_event)
+
         prompt = self._prompts.build(
             source_type, mode, clean_text, title, style, formats, user_notes,
             reference_texts=reference_texts,
@@ -191,6 +199,15 @@ class Generator:
             send_to_llm=send_to_llm, optimize_images=image_optimize,
             video_direct=video_direct,
         )
+
+        # 参考文件超出模型上下文预算时先摘要（同上）。双产物里 reference 只注入 notes，
+        # 但此路径必然包含 notes，故无需 mode 判断。
+        # ⚠️ xlsx 例外：build_both 对 Excel 走专属分支（只出数据摘要），**不注入
+        # reference_texts**（实测确认），压缩纯属白花钱——省掉一次几十秒的调用。
+        if source_type != "xlsx":
+            reference_texts = await compress_references_if_needed(
+                reference_texts, clean_text, self._llm, self.config,
+                title=title, cancel_event=cancel_event)
 
         prompt_a, prompt_b = self._prompts.build_both(
             source_type, clean_text, title, style, formats, user_notes,

@@ -676,6 +676,15 @@ export function GenPanel() {
           reasoning: reasoningBuf.current.get(taskKey),
         })
       },
+      onStage(message) {
+        // 生成前置阶段提示（参考文件超出上下文正在压缩等）——单值，由
+        // ProcessingPlaceholder 小字显示。setProcessing 是全量替换：正式 chunk
+        // 到达时不再携带 stage → 提示自动消失，无需手动清理。
+        // 已取消/已完成的任务不复活（同 onChunk 的 cur 守卫）
+        const cur = useStore.getState().processingTasks[taskKey]
+        if (!cur) return
+        setProcessing(taskKey, { ...cur, stage: message })
+      },
       onDone(_result) {
         // 立即 flush 最终内容
         flushImmediate(() => bumpStreamTick())

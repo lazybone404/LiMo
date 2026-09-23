@@ -97,6 +97,9 @@ export interface StreamGenerateCallbacks {
   onWarning?: (message: string, kind?: string) => void
   /** 思考链（deepseek-v4 reasoning_content）——ProcessingPlaceholder 展示"模型思考中" */
   onReasoning?: (text: string, mode?: string) => void
+  /** 生成前置阶段提示（如参考文件超出模型上下文正在压缩）——单条，不区分产物。
+   *  压缩可能耗时数十秒，用于打消「是不是卡死了」的疑虑 */
+  onStage?: (message: string) => void
 }
 
 export function streamGenerate(
@@ -161,6 +164,10 @@ export function streamGenerate(
         } else if (data.type === 'cancelled') {
           receivedDoneOrError = true  // cancelled 是终态 — 否则流结束后误报「连接意外断开」
           callbacks.onCancelled(data.saved_partial || false)
+        } else if (data.type === 'stage') {
+          // 生成前置阶段（参考文件超窗压缩等）——无 mode、无 text，必须在
+          // data.mode / data.text 判断之前，否则会误走 onChunk 被当作正文
+          callbacks.onStage?.(data.message || '')
         } else if (data.type === 'reasoning') {
           // 思考链（带 mode 也不走 onChunk——必须在 data.mode 判断之前）
           callbacks.onReasoning?.(data.text || '', data.mode)

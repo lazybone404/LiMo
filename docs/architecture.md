@@ -314,6 +314,10 @@ polished_mv, notes_mv = await gen.generate_both(
 
 生成笔记时可注入参考资料（如评论区观点）。流式 GET 无法传大 JSON → `POST /api/references` 内存暂存（TTL 20 分钟）+ 短 id，生成时传 `reference_ids`，路由层 `_resolve_reference_texts` 转回内容 → **仅 notes** 注入 `<reference_texts>` section（user_request 前）。标签清单见 [prompts-inventory.md](prompts-inventory.md)。
 
+**暂存**（`core/reference_store.py`）：进程内存 dict，**过期项全表清理**（不能按入参惰性清理——前端一次只持一个 id，换文件即换 id，旧 id 再不会被查询）+ 双闸门（条目 32 / 总量 32MB）。重启即清空，不落盘。
+
+**超上下文时先压缩**（`generation/reference_compressor.py`，2026-09-23）：单文件上限 1MB ≈ 35 万 token，塞进 128k 窗口的模型必然超窗。按 `原文 + 参考 > 窗口 × 0.7`（与对话预算同源）判断，超了才用当前生成模型逐份摘要（失败降级截断），装得下则原样返回零成本。只在 notes 侧做（参考本就不注入 polished）。流式路径先推 `stage` SSE 事件——压缩可能耗时数十秒，静默等待会被误认为卡死。摘要带**独立超时 180s**（压缩在生成总超时之外，不设它模型挂起要干等 SDK 的 330s）。
+
 ### Prompt 派发
 
 | source_type | notes prompt | polished prompt |

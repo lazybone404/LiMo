@@ -73,8 +73,8 @@ export function GenerateOptions(props: Props) {
     const f = e.target.files?.[0]
     e.target.value = ''  // 允许重复选同一文件
     if (!f) return
-    if (f.size > 200 * 1024) {
-      addToast('参考文件超过 200KB，请精简后重试', 'error')
+    if (f.size > 1024 * 1024) {  // 与后端 MAX_REF_BYTES 同值（1MB，routers/references.py）
+      addToast('参考文件超过 1MB，请精简后重试', 'error')
       return
     }
     setRefLoading(true)
@@ -383,12 +383,17 @@ export function GenerateOptions(props: Props) {
         <div className="mt-2 space-y-2">
           <label className={`flex items-center justify-center gap-1.5 py-2 px-3 border border-dashed border-border-default rounded-lg text-[11px] text-muted transition-colors ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-accent hover:bg-accent/10'}`}>
             <Upload size={12} />
-            <span>{isPolishedOnly ? '整理版原文不支持参考文件' : (refLoading ? '暂存中...' : '选择参考文件（txt / md，≤200KB）')}</span>
+            <span>{isPolishedOnly ? '整理版原文不支持参考文件' : (refLoading ? '暂存中...' : '选择参考文件（txt / md，≤1MB）')}</span>
             <input type="file" className="hidden" accept=".txt,.md,.markdown" onChange={handleRefFile} disabled={isPolishedOnly} />
           </label>
           <p className="text-[10px] text-disabled leading-relaxed">
             {isPolishedOnly ? '整理版原文为忠实整理，不注入参考资料。' : '参考资料作为背景注入笔记生成（仅 notes），与原文冲突时以原文/模型判断为准。'}
           </p>
+          {!isPolishedOnly && (
+            <p className="text-[10px] text-disabled leading-relaxed">
+              参考文件与原文合计超出所选模型上下文窗口时，会先自动压缩参考文件（保留要点）再生成。
+            </p>
+          )}
           {p.refFile && (
             <div className="flex items-center gap-2 px-2.5 py-1.5 bg-surface border border-border-default rounded-lg text-[12px]">
               <FileText size={12} className="shrink-0 text-muted" />

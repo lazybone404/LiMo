@@ -1,7 +1,7 @@
 """对话历史压缩 — 超阈值 LLM 摘要早期消息（借鉴 Pi / NextChat summarizeSession）
 
 触发：未压缩历史（_compress_start 之后）估算 token > 预算 × COMPRESS_RATIO
-压缩模型 fallback（必补）：deepseek-chat 可用 → 用之；否则当前对话模型；调用失败 → 跳过本轮（不阻塞对话）
+压缩模型 fallback（必补）：deepseek-flash 可用 → 用之；否则当前对话模型；调用失败 → 跳过本轮（不阻塞对话）
 clear_context_at 交互：该索引前的消息既不携带也不参与压缩（基准重置）
 """
 
@@ -57,8 +57,14 @@ def _plan_keep_start(messages: list[dict], start: int, budget: int) -> int:
 
 
 def _build_compress_llm(config: dict, model_id: int | None) -> LLMService | None:
-    """压缩模型 fallback：deepseek-chat（便宜）→ 当前对话模型 → None（跳过本轮）"""
-    # 1. deepseek-chat（deepseek provider 有 key 时）
+    """压缩模型 fallback：deepseek-flash（便宜）→ 当前对话模型 → None（跳过本轮）
+
+    ⚠️ 一级 fallback 原写死 deepseek-chat，而该模型名官方已于 **2026-07-24 停用**——
+    停用后这里每次构造都会失败并静默掉到二级「当前对话模型」，一级 fallback 名存实亡
+    （功能上被二级兜住，所以一直没暴露）。2026-09-23 改为 deepseek-flash（V4.1-Flash，
+    官方现役里最便宜的一档）。
+    """
+    # 1. deepseek-flash（deepseek provider 有 key 时）
     from app.routers.model import _get_providers
     ds = next((p for p in _get_providers(config)
                if p["id"] == "deepseek" and p.get("api_key")), None)
@@ -67,14 +73,14 @@ def _build_compress_llm(config: dict, model_id: int | None) -> LLMService | None
             "llm": {
                 "provider": "deepseek",
                 "api_key": ds["api_key"],
-                "model": {"deepseek": "deepseek-chat"},
+                "model": {"deepseek": "deepseek-flash"},
                 "base_url": {"deepseek": ds.get("base_url") or "https://api.deepseek.com"},
             }
         }
         try:
             return LLMService(compress_cfg)
         except Exception:
-            logger.warning("deepseek-chat 压缩模型构造失败，回退当前对话模型")
+            logger.warning("deepseek-flash 压缩模型构造失败，回退当前对话模型")
     # 2. 当前对话模型
     if model_id:
         try:

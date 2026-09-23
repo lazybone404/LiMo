@@ -252,7 +252,7 @@ POST /chat/stream
 1. `product_registry.py`：加 `ProductDef`（id/label/依赖拓扑）
 2. `generation/prompt.py` 或 `prompt_builder.py`：加 prompt 函数
 3. 前端：`tabRegistry.ts` 注册新 TabDef（contentSource 若需要新枚举，`contentSources.ts` 加 getter）
-4. `export-pipeline.md` §14 的操作指南：确认导出链路
+4. `export-pipeline.md` §16 的操作指南：确认导出链路
 
 ### 5.4 新增一个 API 端点（含 SSE）
 
@@ -469,7 +469,7 @@ npm run lint    # oxlint
 | 端口占用 | 幽灵 socket：温和 taskkill 失败，手动任务管理器结束 |
 | 前端 401/跨域 | 检查后端 Origin 白名单（CORS）：生产必须是 `http://tauri.localhost` |
 | API 404 | 前端禁止 `/api/api/`——`apiUrl()` 已拼接 BASE，传路径别带 `/api` |
-| 导出内容不对 | 看 `export-pipeline.md` §11 速查表（预览 vs 导出差异） |
+| 导出内容不对 | 看 `export-pipeline.md` §13 速查表（预览 vs 导出差异） |
 | 请求日志 | middleware 计时（status/duration_ms），SSE 长连接不判慢 |
 
 ### 8.2 模型/LLM 问题

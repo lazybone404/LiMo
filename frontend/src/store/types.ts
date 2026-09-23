@@ -32,6 +32,9 @@ export interface TaskInfo {
   /** 各产物模型的思考链（reasoning_content，截断 ~2000 字符）——与 progress 同构，
    *  并行双产物各存各的，ProcessingPlaceholder 按当前 tab 读取对应产物 */
   reasoning?: { notes?: string; polished?: string }
+  /** 生成前置阶段提示（如「参考文件超出模型上下文，正在压缩…」）——单值不区分产物。
+   *  setProcessing 是全量替换语义：正式 chunk 到达后不再携带本字段 → 提示自动消失 */
+  stage?: string
 }
 
 export interface ProgressEvent {

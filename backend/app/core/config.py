@@ -17,13 +17,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "llm": {
         "provider": "deepseek",
         "api_key": "",
-        "model": {"deepseek": "deepseek-v4-flash", "openai": "gpt-4o", "anthropic": "claude-sonnet-4-6"},
+        "model": {"deepseek": "deepseek-flash", "openai": "gpt-4o", "anthropic": "claude-sonnet-4-6"},
         "base_url": {"deepseek": "https://api.deepseek.com"},
     },
     # 模型预设 — 不同场景绑定不同预设
     # provider/model 为空时使用 llm 全局配置
     "llm_presets": [
-        {"id": "generate", "label": "生成笔记", "provider": "", "model": "", "desc": "V4 Flash — 快速便宜"},
+        {"id": "generate", "label": "生成笔记", "provider": "", "model": "", "desc": "V4.1 Flash — 快速便宜"},
         {"id": "chat",     "label": "AI 对话", "provider": "", "model": "", "desc": "V4 Pro — 推理更强"},
     ],
     # 可用模型列表 — 前端设置页动态渲染
@@ -31,12 +31,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # price_in/price_out：每百万 token 价格（元）——预设不填，用户在中转/自定义模型时于设置页填写后才启用费用显示
     "llm_models": {
         "deepseek": [
-            {"id": "deepseek-v4-flash", "name": "V4 Flash", "desc": "1M上下文", "context_window": 1000000},
-            {"id": "deepseek-v4-pro",   "name": "V4 Pro",   "desc": "1M上下文", "context_window": 1000000},
-            # V4 Flash Vision（实验性，2026-08-21 上线）：图片理解，纯文本能力与 V4 Flash 相当；
-            # 已知限制：API 端会把传入图片强制缩放至 ~800×800 量级（小图放大到 ~384×384），
-            # 单张图片最多计 384 token（沿用 V4 Flash 定价）。OCR/细节提取场景注意分辨率损失。
-            {"id": "deepseek-v4-flash-vision-exp", "name": "V4 Flash Vision", "desc": "视觉实验 · 图片理解(强制800×800)", "capabilities": ["text", "image"], "context_window": 1000000},
+            # 2026-09-10 官方发布 V4.1-Flash，模型名改为 deepseek-flash：旧名 deepseek-v4-flash 与
+            # deepseek-v4-flash-vision-exp 对应的模型均已下线（官方暂用路由兜着，勿再使用）。
+            # V4.1-Flash 原生支持图像理解，旧 vision 实验版已无存在必要，合并进 flash 一条。
+            # 参数约束（官方「思考模式」页）：思考模式**默认开启**且 effort 默认 high；该模式下
+            # temperature / presence_penalty / frequency_penalty **不报错但不生效**；top_p 仅思考
+            # 模式生效且范围 0.95–1.0（低于按 0.95）。effort 三档 low/high/max。
+            # 价格（元/百万 token，空闲/高峰）：flash 输入 1/2、输出 4/8；pro 输入 4.5/9、输出 13.5/27。
+            # 两档差异达一倍且按北京时间工作日 9-12、14-18 分峰谷，预设不填单一价格以免误导。
+            # 上下文 1M、最大输出 384K；并发限制 flash 2500 / pro 500。
+            {"id": "deepseek-flash",  "name": "V4.1 Flash", "desc": "1M上下文 · 原生多模态 · 快", "capabilities": ["text", "image"], "context_window": 1000000},
+            {"id": "deepseek-v4-pro", "name": "V4 Pro",     "desc": "1M上下文 · 纯文本 · 推理强", "capabilities": ["text"],          "context_window": 1000000},
         ],
         "dashscope": [
             {"id": "qwen3.8-max",         "name": "Qwen3.8 Max",         "desc": "视觉+视频 · 旗舰",              "capabilities": ["text", "image", "video"], "context_window": 131072},
