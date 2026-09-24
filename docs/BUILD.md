@@ -2,9 +2,9 @@
 
 一次完整的打包流程：PyInstaller → 复制 ffmpeg → Tauri。
 
-产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)（当前版本 0.4.1，2026-08-16 图表围栏协议收紧后）：
-- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.4.1_x64-setup.exe`，~149MB）
-- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.4.1_x64_en-US.msi`，~196MB）
+产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)（当前版本 0.4.6，2026-09-25 文档库前端交互重设计后）：
+- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.4.6_x64-setup.exe`，~148MB）
+- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.4.6_x64_en-US.msi`，~195MB）
 
 > **体积优化（2026-08-14）**：docling/pytesseract 依赖残留清理 + ffmpeg 换精简版后，安装包从 ~265M/~366M 降到 ~148M/~195M。详见 [CHANGELOG.md](CHANGELOG.md)（2026-08-14 打包体积优化条目）。
 
@@ -29,7 +29,13 @@ cp LiMoBackend.exe LiMoBackend-x86_64-pc-windows-msvc.exe
 mkdir -p ffmpeg
 cp ~/.limo/ffmpeg-portable/ffmpeg.exe ffmpeg/
 cp ~/.limo/ffmpeg-portable/ffprobe.exe ffmpeg/
+# ⚠️ ffmpeg 为 GPLv3 构建（gyan.dev 全系，含 libx264/x265）。独立进程调用无传染，
+#    但必须随附全文 + 构建说明——这两个文件同样被 --noconfirm 删掉，须一并重拷
+cp ../../../../licenses/GPL-3.0.txt ffmpeg/
+cp ../../../../licenses/README-ffmpeg.txt ffmpeg/
 ```
+
+> `licenses/` 目录本身由 spec 的 `datas` 打包进 `_internal/licenses/`（自动，无需手动）；上面两步是给 `ffmpeg/` 内**紧邻二进制**再放一份，合规上更明确。
 
 Tauri v2 的 `externalBin` 自动加平台后缀，所以需要重命名。
 
