@@ -86,13 +86,15 @@ export function BatchBar({
       </div>
 
       {open === 'move' && (
-        <div className="mt-1.5 py-1 rounded-md border border-border-light bg-elevated max-h-40 overflow-y-auto">
-          <button onClick={() => { setOpen(null); onMove('') }}
+        // ⚠️ 面板与按钮都带 `data-*`：文件夹**允许重名**（id 才是身份），
+        // 而分组头里会同时渲染同名的一行——按文本定位会命中多个元素。
+        <div data-batch-move-panel className="mt-1.5 py-1 rounded-md border border-border-light bg-elevated max-h-40 overflow-y-auto">
+          <button data-move-target="" onClick={() => { setOpen(null); onMove('') }}
             className="w-full text-left px-2 py-1 text-[12px] text-dimmed hover:bg-surface-hover">
             未分类（移出文件夹）
           </button>
           {folders.map(f => (
-            <button key={f.id} onClick={() => { setOpen(null); onMove(f.id) }}
+            <button key={f.id} data-move-target={f.id} onClick={() => { setOpen(null); onMove(f.id) }}
               className="w-full text-left px-2 py-1 text-[12px] text-dimmed hover:bg-surface-hover truncate">
               {f.name}
             </button>

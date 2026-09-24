@@ -106,6 +106,8 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 
 **遵循 SemVer 语义化版本**：`MAJOR.MINOR.PATCH`
 
+> ⚠️ **递增惯例：默认只推 patch**（`0.4.5` → `0.4.6`）。本项目的版本号实际承担「本地打包序号」的角色，**不因「本轮是新增功能」就升 minor**——只有用户明确要求推大版本时才升。要升 minor/major 先问，勿自行判断「这次改动够大」。（2026-09-25 用户明确：「版本号最好每次只推进小版本除非我要求推进大版本」；此前 `5c7c6a1` 按 SemVer 自行升到 0.5.0 随即被 `d50b175` 降回 0.4.5 再打包。）
+
 ```bash
 # 查看当前版本
 cat VERSION
@@ -293,14 +295,20 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留 generating，AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice
 - **消息级文档引用**：docIds = 当前选中文档 + 本条 @ 引用（chatStore 组合去重），不绑定会话
 
-### 文档库（组织能力，2026-09-23）
+### 文档库（组织能力 2026-09-23；前端交互重设计 2026-09-25）
 
 - **单层文件夹**（`routers/folders.py` + store 层）：**纯逻辑分类，永不映射为磁盘目录** —— 每个文档已有独立目录（含 `assets` 相对引用与两版制产物），做成目录会同时破坏三样东西。`index.json` 顶层 `folders` + transcript 条目 `folderId`（`""` = 未分类，**UI 派生视图而非实体**）；允许重名（id 是身份）；**悬空 folderId 双向容错**；`delete_folder` 同锁区内先搬移文档再删行，**绝不删文档**（返回 `moved`）。⚠️ 见「关键模式」#44（三处构造点）
-- **全文搜索**：内存过滤（0ms，边打边筛）**立刻**渲染 → 停手 250ms 打 `GET /api/search` → 合并。⚠️ `docs` 数组**没有正文**（白名单序列化器只存元数据），故正文搜索客户端**不可能**实现 —— FTS5 是唯一可行解不是优化。分组规则：标题+正文双命中只进主列表 + 「正文」角标；纯正文命中进「正文匹配（N）」分组按 rank 排（不参与用户排序）
-- **排序 + 标签筛选**：把**来源类型**与**用户标签**拆成两组独立筛选（此前 `activeTag` 过滤的其实是 `d.sourceType`）。排序纯前端（docs 全量在内存）
-- **大列表**：分批渲染 60 条 + `IntersectionObserver`，**全选 = 全部匹配项（跨分批）**，工具栏显示「含未显示项」
+- **排列 ⊥ 排序**（两个独立旋钮）：**排列**（`groupBy`：平铺 / 按文件夹 / 按类型 / 按时间）管**横向归类**，**排序**管**组内纵向顺序**。刻意**没有「筛选时退化成扁平」的特殊模式**——筛了 PDF 而排列仍是按文件夹时，列表按文件夹分组、每组只显 PDF、空组自动隐藏；那种退化正是「树和筛选打架」的来源。「按文件夹」= IDE 一体化树（文件夹是可折叠分组头）。分组头三维度共用（`GroupHeader`）但**增删改只对文件夹组开放**（`group.editable` 显式标志——「把 PDF 组改叫视频」没有语义）；文件夹组**保留空组**（它是拖拽放置目标），类型/时间组隐藏空组
+- **筛选区**：五个可折叠小节（文件夹范围 / 文件类型 / 标签 / 标题关键词 / 日期范围）+ **两级折叠**（整区 + 各小节），小节收起时标题行仍显示**激活摘要**（`文件类型 · PDF ×`——否则收起后不知道在筛什么）+ 区头「已激活 N 项 · 清除全部」。**文件夹刻意保留两个入口**：「文件夹范围」（**过滤**「只看这些」）与「排列：按文件夹」（**归类呈现**）——不采用「排列=folder 时隐藏该小节」，切换排列时筛选区突然多/少一节比多读一个词更困惑。**标签无 12 上限**（全量滚动 + 已选置顶）；**标题关键词纯内存零网络、不触发 FTS**，与搜索框的分工是「筛标题」vs「找内容」，二者可同时生效（AND）；**日期范围**「本周」= 本自然周（周一起），**不是**最近 7 天
+- **全文搜索**：内存过滤（0ms）**立刻**渲染 → 停手 250ms 打 `GET /api/search` → 合并。⚠️ `docs` 数组**没有正文**（白名单序列化器只存元数据），故正文搜索客户端**不可能**实现 —— FTS5 是唯一可行解不是优化。结果集**单一化**：`eligible`（类型/标签/文件夹/日期/标题，**不含关键词**）∩（关键词内存命中 ∪ FTS 命中）——命中行统一走 `DocRow`（有复选框/右键/拖拽，不再是不能选的裸按钮）且**受筛选约束**；标题类命中加「**原文**」角标（措辞非「正文」：FTS5 索引 title+content 两列，一次查询无法判定命中来自哪列），纯原文命中加 `SearchSnippet` 第二行。结果限 100 条，到顶时底部提示细化关键词（静默截断 = 用户以为「就这些」）
+- **⛔ 「正文匹配（N）」独立分组已取消**（2026-09-25）：它固定追加在下方、**不受筛选约束**（筛了 PDF 照样列出网页和视频）、行是裸 `<button>`、还与「排列」旋钮直接打架——是第三个维度的系统分组。三项缺陷都修，唯一值得保的性质（FTS 的 `ORDER BY rank` 相关性序）由**「相关度」排序键**承接：rank 取自 `hits` 的**数组索引**（零后端改动），非命中最末；搜索词从空变非空时自动切过去（= 原「最相关的在最前」的默认体验），用户手动改回后**本次搜索内不再回切**；无命中时该键**不出现**在选项里（所有 rank 都是 MAX，排序退化成保持原序，是个点不动的死键）
+- **单击行 = 打开文档，不动选择集**（2026-09-25 定死，此前语义未定义且与 `selectMode` 自相矛盾）：复选框**常驻**，Ctrl/Cmd 点击 toggle、Shift 点击区间（anchor 留组件本地——跨折叠退化为单点 toggle 可接受）、Ctrl+A 全选（**焦点在输入框内不劫持**，与 Ctrl+K 相反）、Esc 清空。**`selectMode` 已删除**——批量条由 `hasSelection = selectedIds.size > 0` 派生：要"原子修改"来防的漂移，因为漂移的载体本身没了。`active`（预览目标）与 `selected`（批量目标）是两个正交维度，视觉分离且可叠加
+- **密度**：详细（默认，卡片）/ **简略**（26px 单行，复选框常驻防标题横跳，筛选区收成一行入口 + 浮层复用同一批小节组件，排列旋钮与分隔条不渲染）。**简略模式 = IDE 文件树**：**固定按文件夹分组、无视「排列方式」偏好**（那个旋钮在简略下本就不渲染，也就没有跟随它的必要），分组头是父节点、其下子行缩进一层 + 一条 1px 缩进参考线（`treeIndent`，只给**有行的组**画）。⚠️ **分组头 26px 与文件行 26px 是成对常量**，改一处必须改另一处——否则父节点比子节点矮，树形就散了（`GroupHeader.compact` / `DocRow` 紧凑分支，两处都有注释指路）。⚠️ 曾设计为「简略一律平铺不分组」（省下分组头的高度），那样省掉的是**结构**：一个文件夹 30 篇时，平铺列表除了一列标题什么信息都不给
+- **大列表**：分批渲染 60 条 + `IntersectionObserver`（`root` 绑滚动容器），**全选 = 全部匹配项（跨分批）**，工具栏显示「含未显示项」。⚠️ `animationDelay: i*50ms` 在第 1000 篇要等 50 秒——是功能性错误不是动画偏好
 - **批量操作**：`POST /api/transcripts/batch`（delete/tag/move）按 action **显式枚举校验**（不能静默 `affected:0`）；逐条收集 `failed` 明细；全部失败 → 400；store 侧**一次加锁一次写盘**（相对 N 次 PATCH = N 次全量写盘）
-- 前端拆 8 文件（`DocRow` / `FolderTree` / `BatchBar` / `useDocQuery` / `docLibraryPrefs` / `docMeta` / `entryDelay`），`filterDocs`/`sortDocs`/`mergeHits` 纯函数单独导出以便表驱动单测。拖拽用原生 HTML5 DnD（零新依赖）+ ContextMenu「移动到文件夹」子菜单兜底键盘用户
+- **状态归属由「折叠即卸载」判定**（`SlotLayout` 是 `collapsed ? <PanelStrip/> : <Comp/>`，组件本地 state 收起即归零）：`selectedIds` / `listLimit` / `folderBusy` / `docsLoading` / `expandedFolders` / `titleFilter` / `dateFrom` / `dateTo` 在 `docsSlice`；`density` / `groupBy` / `sort` / `expandedSections` / `filterAreaHeight` 在 `docLibraryPrefs`（localStorage `mbw_docLibPrefs`）；`docLibSearchFocusNonce` 在 `uiSlice`（**自增 nonce 而非 boolean**——boolean 表达不了「已经是 true 时再按一次」）。**刻意不改 SlotLayout 为 CSS 隐藏**：本轮的 store 需求不止「折叠别丢」，还要跨组件共享 + 与筛选 setter 原子发生修改
+- **Ctrl+K / 顶栏搜索**：`SearchBar` 已退化为**纯按钮**，点它 = 展开文档库 + 聚焦搜索框，与 Ctrl+K 共用 `openDocLibSearch`（**唯一入口**——两处各写一遍必然漂移；宽度一并复位，折叠态宽度可能是 40px，只设 `collapsed: false` 会展开出一条缝）。⚠️ 它曾是**第二套搜索实现**（限 10 条、无 AbortController、自带一份 snippet 渲染分支）——「搜文档」被做了两遍
+- 前端拆 **17 文件**（编排 `DocLibrary` / `DocLibraryToolbar` / `SearchField` / `FilterArea` / `FilterSection` / `filters` / `FilterPopover` / `ListToolbar` / `DocList` / `GroupHeader` / `DocRow` / `BatchBar` / hook 层 `useDocQuery` / `useDocSelection` + `docLibraryPrefs` / `docMeta` / `entryDelay`）。纯函数单独导出以便表驱动单测：`filterDocs` / `sortDocs` / `buildResultSet` / `groupDocs` / `countByFolder` / `collectTagFacets`。**文件夹计数以 `countByFolder`（本地派生）为唯一来源**——不能读后端 `folder.count`，那是上次拉取的快照，而 `moveDocs` 是乐观更新，两边各读各的会在移动瞬间互相矛盾。拖拽用原生 HTML5 DnD（零新依赖）+ ContextMenu「移动到文件夹」子菜单兜底键盘用户
 
 **图表管道**（2026-08-16 建立，2026-09-19 改为语义化布局 + 多图 + 类型 4→9）：
 
@@ -522,7 +530,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（2026-07-10 起持续沉淀，现 49 条）
+## 关键模式（2026-07-10 起持续沉淀，现 50 条）
 
 以下模式是实现中易错的关键约束，新增代码必须遵守。
 
@@ -564,7 +572,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 31. **disconnect_watcher 客户端断连监测**：`app/core/disconnect.py` 提供 `@asynccontextmanager` 封装的 `disconnect_watcher(request, cancel_event)`。替换了 5 个路由中 ~45 行重复的 `_watch_disconnect` 实现，修复了 process.py 资源泄漏和 chat.py 缺 await 两个 bug。新增长时端点时复用此工具。
 32. **适配器一请求一实例**：`AdapterRegistry` 存**类**（`register(VideoAdapter)`），`route()` 命中前 `cls()` 实例化——单例实例的 `cookies`/`_engine_config`（含 `cancel_event`）会被并发导入互相覆盖。适配器 `accept()` 是纯输入判断（无实例状态），`name` 是类属性。**本次已修复**：registry.py + adapters/__init__.py。
 33. **CORS Origin 白名单**：本地后端**禁止** `allow_origin_regex=".*"`（任意网页可跨站读本地数据）。白名单必须含 Tauri v2 生产的 **`http://tauri.localhost`**（Windows WebView2 实测 origin）+ `https://tauri.localhost` + `tauri://localhost` + 本机 localhost 任意端口；`_ForceCORSMiddleware` 仅对白名单 origin 回显凭证。**本次已修复**：main.py（2026-08-02 曾漏 `http://tauri.localhost` 导致打包版全接口 CORS 拦截）。
-34. **app 内置欢迎文档同步**：PreviewArea 空态欢迎页（2026-08-16 改造为 **LiMo 三产物形态**：`WELCOME_NOTES`=笔记（欢迎简介）/ `WELCOME_POLISHED`=整理版原文（开发者功能）/ `WELCOME_TRANSCRIPT`=转录（更新记录），`frontend/src/components/preview/PreviewArea.tsx` 模块级常量 + `welcomeTab` 三 tab 切换）**在新增/移除功能时必须同步更新**——它面向新用户展示当前能力，曾因未同步而过时（如缺失插件系统/参考文件）。判断标准：改动影响「导入/转录/生成/导出/插件」任一能力时，检查此文档。
+34. **app 内置欢迎文档同步**：PreviewArea 空态欢迎页（2026-08-16 改造为 **LiMo 三产物形态**：`WELCOME_NOTES`=笔记（欢迎简介）/ `WELCOME_POLISHED`=整理版原文（开发者功能）/ `WELCOME_TRANSCRIPT`=转录（更新记录），`frontend/src/components/preview/PreviewArea.tsx` 模块级常量 + `welcomeTab` 三 tab 切换）**在新增/移除功能时必须同步更新**——它面向新用户展示当前能力，曾因未同步而过时（如缺失插件系统/参考文件）。判断标准：改动影响「导入/转录/生成/导出/插件」任一能力时，检查此文档。⚠️ 三份内容都是**模板字符串**——正文里写反引号会提前终止字符串，而报错发生在解析阶段（整个模块加载失败），症状与「你改的那句话」毫无关系（2026-09-25 在 Welcome 文案里写 `Ctrl+K` 踩过）。
 35. **log. helper 自动带来源模块**：`app/core/logging.py` 的 `_emit` 用 `inspect.currentframe()` 取**调用者模块名**注入 logger——所有走 `from app.core import logging as log; log.info(msg, key=value)` 的日志 name 即来源模块（非固定的 `app.core.logging`），配合 rid 精确定位。新增日志一律用 `log.` helper 结构化 kwargs（`log.warning` 只接受 1 位置参数 + kwargs），**勿再新增 stdlib `logging.getLogger(__name__)`**——混用导致风格分裂。函数内 import 规则（#26）仍适用。
 36. **AppError recoverable 与 status_code 两维独立**：recoverable = 是否预期业务状态（决定日志级别 + 前端 `isRecoverable` 是否静默），status_code = HTTP 语义。main.py 异常处理器**尊重显式 status_code（含显式 400）**，未显式时 recoverable→200。显式与否由 AppError 的 `_explicit_status` 标记判定（默认值用哨兵 `_UNSET`，非「≠400」判断）——显式 `status_code=400 + recoverable=True`（如 EXPORT_NO_CONTENT）必须返回 400，否则前端 `!r.ok` 把 200 当成功，下载到损坏 zip（2026-08-25 评审 H1 修复）。迁移 HTTPException 时：真 404/403 必须显式传 status_code，**禁止用 recoverable=True 压掉真 404**——删除后 GET 必须 404（e2e「deleted doc -> 404」断言），前端 `isRecoverable` 已兼容 recoverable 404。
 37. **React `onClick={handler}` 会注入事件对象**：React 调用 onClick 处理器时**总是传 MouseEvent**，若 handler 首个参数是**可选业务参数**（如 `handleSave(saveDocId?: string)`），事件对象被当作业务值 → 模板字符串拼出 `[object Object]`（实测：保存编辑产物 → `PUT /api/markdown/[object Object]` → 后端 `MD_EDIT_NOT_FOUND`）。**TS 不报错**——`() => void` 赋给 `onClick` 属逆变兼容，静态检查无法发现。修复双管齐下：① 绑定处箭头包装 `onClick={() => onSave()}`；② handler 内加 `typeof x === 'string'` 守卫纵深防御。**新增 onClick 绑定时**：handler 首参为业务参数就必须箭头包装，勿裸传标识符。（2026-09-19 修复 TextareaMarkdownEditor / UnsavedChangesDialog）
@@ -589,6 +597,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 49. **WebView 里失败请求的报错无法在 JS 层抑制，唯一解法是让那条请求别发出去**：`fetch` 打到未监听端口产生的 `ERR_CONNECTION_REFUSED` 由浏览器/WebView **自动打印**，`catch` 掉、降成 `console.debug` 一样照出。所以「冷启动时后端还没起」这类**必然失败**的时刻，正确做法是**静默期一条请求都不发**、由 Rust 侧就绪事件唤醒（Rust 的探测在独立进程用裸 `TcpStream` 手写 HTTP，不碰网络栈、零日志），而不是「让失败安静下来」。配套两个易错点：① **store/`useState` 初值在 render 时生效，而 effect 在 render 之后才跑** —— 「未就绪」标记初值给 `true` 会在**首渲染**就挂载业务组件（GenPanel 一挂载就拉 `/api/models`、`/api/providers`），后面那句 `setBackendReady(false)` 拦不住第一次渲染；初值必须**同步**按环境判定。② 与 Rust 探测重复的前端轮询要**删掉**而不是留作双保险 —— 一侧零成本、另一侧每条失败都留痕，二者代价极不对等。⚠️ 回归后**功能完全正常**（后端起来后一切照旧），只表现为控制台红字 + 加载屏闪一下，而 `backendReady: true` 恰恰是更直观的写法 → 必须用测试钉住（`vi.resetModules()` + 动态 import 改环境重取初值），并做对照实验确认改回 `true` 时真会变红。（2026-09-23 冷启动报错修复）
 
+50. **「集合非空」不等于「有内容」——分组渲染下前者恒真**：`DocList` 的骨架判据曾是 `docsLoading && !rendered.length && !groups?.length`，而**分组模式下 `groups` 永远非空**（按文件夹分组至少有一个 0 篇的「未分类」组）→ 这条判据在默认排列下**一次都没命中过**：冷启动不显示骨架，显示的是「未分类 0」+ 空列表，正是 #19 要杀的那种假空态。判据要写**语义**（`rendered.length > 0 || groups.some(g => g.docs.length > 0)`）。同一根因的另一处：`groups` 非空就照画分组头，会得到「还没有文档」旁边杵着「未分类 0」——空态下必须**连分组头一起跳过**（`!emptyText`）。**教训**：「容器里有元素」是结构事实，「用户能看到东西」是语义事实；一旦给渲染引入了**可以合法为空的中间层**（分组、分区、bucket），两者就分家了。写这类判据时先问一句「这个集合可能含 0 个有效项吗」。（2026-09-25 简略模式 IDE 树）
+
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始
@@ -606,15 +616,19 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 平台认证 | B站/YouTube Cookie 注入，自动解析 Netscape 格式 |
 | ✅ | 文件拖拽上传 | ImportSection `onDragOver`/`onDrop` + `validateDropFile` 扩展名校验，拖拽区高亮反馈 |
 
-### 📚 文档库（组织能力，2026-09-23）
+### 📚 文档库（组织能力 2026-09-23；交互重设计 2026-09-25）
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
 | ✅ | 单层文件夹 | `routers/folders.py` 四端点；**纯逻辑分类不映射磁盘目录**；悬空 folderId 双向容错；删文件夹只搬移不删文档；拖拽移动 + 右键菜单兜底 |
-| ✅ | 全文搜索接入 | 内存过滤（0ms）即时渲染 + 消抖 250ms 打 FTS5 合并；「正文匹配」独立分组按 rank；双命中卡片加「正文」角标；摘要渲染抽 `SearchSnippet` 两处复用 |
-| ✅ | 排序 + 标签筛选 | 时间/标题/类型排序（纯前端）；**来源类型与用户标签拆成两组独立筛选**（此前混淆）；标签 facet 多选交叉 |
-| ✅ | 大列表分批渲染 | 前 60 条 + IntersectionObserver 每次 +60；**全选 = 全部匹配项（跨分批）**；⚠️ 顺带修 `animationDelay: i*50ms`（第 1000 篇要等 50 秒的**功能性错误**） |
+| ✅ | 全文搜索接入 | 内存过滤（0ms）即时渲染 + 消抖 250ms 打 FTS5 合并；命中**并入主列表**（走 `DocRow`，受筛选约束）加「原文」角标 + `SearchSnippet` 摘要；相关度升格为一等排序键；限 100 条并提示截断 |
+| ✅ | 排列 ⊥ 排序 | **排列**（平铺/按文件夹/按类型/按时间）与**排序**（时间/标题/类型/相关度）是两个独立旋钮；**无「筛选时退化成扁平」的特殊模式**；IDE 式一体化树 |
+| ✅ | 可折叠筛选区 | 五小节（文件夹范围/文件类型/标签/标题关键词/日期范围）+ 两级折叠 + 收起显激活摘要 + 可拖分隔条；标签无 12 上限；标题关键词纯内存不触发 FTS；「本周」= 本自然周 |
+| ✅ | 常态多选 | 复选框常驻；**单击 = 打开文档且不动选择集**；Ctrl/Shift 区间/Ctrl+A（输入框内不劫持）/Esc；`selectMode` 已删除，批量条由 `selectedIds.size > 0` 派生 |
+| ✅ | 密度切换 | 详细（卡片）/ 简略（26px 单行 + 筛选浮层 + **IDE 文件树**：固定按文件夹分组、子行缩进 + 参考线、分组头与文件行同高） |
+| ✅ | 大列表分批渲染 | 前 60 条 + IntersectionObserver 每次 +60（`root` 绑滚动容器）；**全选 = 全部匹配项（跨分批）**；⚠️ 顺带修 `animationDelay: i*50ms`（第 1000 篇要等 50 秒的**功能性错误**） |
 | ✅ | 批量操作 | `POST /api/transcripts/batch`（删除/打标签/移动）；按 action 显式枚举校验；`failed` 明细；全失败 → 400；store 侧一次加锁一次写盘 |
+| ✅ | Ctrl+K 搜索入口 | 顶栏 `SearchBar` 退化为按钮，与 Ctrl+K 共用 `openDocLibSearch`（展开面板 + 聚焦搜索框 + 宽度复位） |
 
 ### 📝 转录 & 引擎
 
@@ -760,7 +774,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 域 | 完成 | 总计 | 进度 |
 |----|------|------|------|
 | 📥 内容导入 | 8 | 8 | 100% |
-| 📚 文档库 | 5 | 5 | 100% |
+| 📚 文档库 | 9 | 9 | 100% |
 | 📝 转录 & 引擎 | 8 | 8 | 100% |
 | ✨ LLM 生成 | 11 | 11 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
@@ -769,4 +783,4 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 📤 导出 | 11 | 12 | 92% |
 | 🎨 前端 UI/UX | 15 | 15 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **90** | **92** | **98%** |
+| **合计** | **94** | **96** | **98%** |

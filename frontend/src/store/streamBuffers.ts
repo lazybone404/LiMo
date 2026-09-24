@@ -39,6 +39,22 @@ export function deleteStreamBuffer(key: string): void {
   _buffers.delete(key)
 }
 
+/**
+ * 删除某文档的全部流式缓冲（key 形如 `${docId}__${kind}_${mode}`）。
+ *
+ * 缓冲的 key 由调用方自由拼接，这里只能按 `docId + '__'` **前缀**匹配——
+ * 前提是 docId 本身不含 `__`（文档 id 由后端生成，满足）。
+ * 用「取第一段」而不是前缀匹配会更精确，但两者都依赖同一前提，取前缀更简单。
+ */
+export function deleteStreamBuffersForDoc(docId: string): number {
+  const prefix = docId + '__'
+  let n = 0
+  for (const k of [..._buffers.keys()]) {
+    if (k.startsWith(prefix)) { _buffers.delete(k); n++ }
+  }
+  return n
+}
+
 /** 检查指定 session 是否存在 */
 export function hasStreamBuffer(key: string): boolean {
   return _buffers.has(key)

@@ -59,6 +59,20 @@ export interface UiSlice {
   capabilities: Capabilities | null
   setCapabilities: (c: Capabilities) => void
 
+  // ── 文档库搜索聚焦信号（Ctrl+K / 顶栏搜索按钮） ──
+  // ⚠️ 用**自增的 nonce** 而不是 boolean：触发器（App 快捷键、顶栏按钮）与接收方
+  // （SearchField）之间没有父子关系，只能靠 store 传话。boolean 表达不了「已经是 true 时
+  // 再按一次」—— 而用户第二次按 Ctrl+K 时依然预期「再聚焦一次」（比如刚点开筛选浮层、
+  // 焦点被抢走之后）。nonce 自增则每次都是新值，effect 必然重跑。
+  docLibSearchFocusNonce: number
+  /** 只发聚焦信号（不展开面板）——一般用下面的 `openDocLibSearch` */
+  focusDocLibSearch: () => void
+  /**
+   * 「打开文档库并聚焦搜索」—— Ctrl+K 与顶栏搜索按钮的**唯一**入口。
+   * 两处各写一遍必然会漂移（一处展开了没聚焦、另一处聚焦了但面板还是折叠的）。
+   */
+  openDocLibSearch: () => void
+
   // ── 产物编辑中未保存标记 ──
   // PreviewArea 编辑态（editing + editDirty）的轻量桥：编辑内容归属文档 id。
   // 供 GenPanel「重新生成」入口检查「编辑中未保存 × 重新生成」拦截（评审遗留①）——
@@ -68,11 +82,19 @@ export interface UiSlice {
   setDirtyEditingDocId: (docId: string | null) => void
 }
 
-export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set) => ({
+/**
+ * 文档库面板的默认宽度 —— 与 [slotRegistry.ts](../lib/slotRegistry.ts) 里
+ * `docLib.defaultWidth` 同值，但**不能直接 import 那份**：slotRegistry 引用了
+ * DocLibrary 组件，`uiSlice ← store ← DocLibrary ← slotRegistry` 会成环。故同值重写，
+ * 改一处必须改另一处（下面 slots 初值里的 260 也是这一份）。
+ */
+const DOC_LIB_DEFAULT_WIDTH = 260
+
+export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set, get) => ({
   activeView: 'polished',
   slots: {
     genPanel: { width: 260, collapsed: false, visible: true },
-    docLib:   { width: 260, collapsed: false, visible: true },
+    docLib:   { width: DOC_LIB_DEFAULT_WIDTH, collapsed: false, visible: true },
     preview:  { width: 0,   collapsed: false, visible: true },
     toc:      { width: 160, collapsed: false, visible: true },
   },
@@ -125,6 +147,22 @@ export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set) => ({
 
   capabilities: null,
   setCapabilities: (c) => set({ capabilities: c }),
+
+  docLibSearchFocusNonce: 0,
+  focusDocLibSearch: () => set(s => ({ docLibSearchFocusNonce: s.docLibSearchFocusNonce + 1 })),
+  openDocLibSearch: () => {
+    const s = get()
+    const slot = s.slots.docLib
+    // ⚠️ 宽度也要一起复位：折叠态下宽度可以是 40px 之类的小值（用户拖窄时 `setSlot`
+    // 会自动把它折叠，之后就再也不能拖了），这时只设 `collapsed: false` 会展开出一个
+    // 40px 宽的面板 —— 用户按 Ctrl+K 是要搜索，不是要一条缝。
+    // （SlotLayout 的 PanelStrip 展开按钮也是这么做的：`width: def.defaultWidth`。）
+    s.setSlot('docLib', {
+      visible: true, collapsed: false,
+      ...(slot.width < 80 ? { width: DOC_LIB_DEFAULT_WIDTH } : {}),
+    })
+    s.focusDocLibSearch()
+  },
 
   dirtyEditingDocId: null,
   setDirtyEditingDocId: (docId) => set({ dirtyEditingDocId: docId }),

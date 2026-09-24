@@ -44,9 +44,10 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
     }
   }, [onClose])
 
-  // 智能翻转：空间不够时菜单出现在鼠标另一侧
+  // 智能翻转：空间不够时菜单出现在鼠标另一侧。
+  // 分隔项比普通项矮得多，按同样高度累加会让多分隔的菜单过早翻转——逐项算实际高度。
   const menuWidth = 180
-  const menuHeight = items.length * 36 + 16
+  const menuHeight = items.reduce((h, it) => h + (it.divider ? 9 : 36), 16)
   const adjustedX = x + menuWidth > window.innerWidth ? x - menuWidth : x
   const adjustedY = y + menuHeight > window.innerHeight ? y - menuHeight : y
 
@@ -57,6 +58,11 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
       style={{ left: adjustedX, top: adjustedY }}
     >
       {items.map((item, i) => {
+        // ⚠️ 分隔项必须在这里短路：它只有一个 `divider: true` 和一个空 label，
+        // 落到下面的按钮分支会渲染成一个**空文案但可点**的菜单项（点击还会关菜单）。
+        if (item.divider) {
+          return <div key={i} role="separator" className="h-px my-1 mx-2 bg-border-light" />
+        }
         const rowClass = `w-full text-left px-3 py-2 text-[13px] transition-colors flex items-center gap-2 ${
           item.danger ? 'text-error hover:bg-error/5' : 'text-foreground hover:bg-surface-hover'
         }`

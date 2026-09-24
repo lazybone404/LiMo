@@ -260,7 +260,7 @@ async def capabilities(config=Depends(get_config)):
         "genOptions": AVAILABLE_OPTIONS,
         "llmModels": config.get("llm_models", {}),
         "products": to_capability_list(),
-        "version": "0.4.5",
+        "version": "0.4.6",
         # ── 新增：前端去硬编码元数据 ────────────────────────
         "fileTypeMap": file_type_map,
         "scenarioLabels": scenario_labels,

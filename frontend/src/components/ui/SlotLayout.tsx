@@ -71,7 +71,19 @@ export function SlotLayout({ hideSlots }: { hideSlots?: string[] }) {
   )
 }
 
-/** 单个面板 + 可选的 ResizeHandle */
+/**
+ * 单个面板 + 可选的 ResizeHandle。
+ *
+ * ⚠️ 折叠 = **卸载组件**（`collapsed ? <PanelStrip/> : <Comp/>`），不是 CSS 隐藏。
+ * 这条契约要求面板里「重开后不该重置」的状态一律离开组件本地 state——文档库的选择集、
+ * 分批深度、文件夹常驻禁用态、筛选条件等都是因此迁进 store 的（2026-09-25）。
+ *
+ * **为什么刻意不把这里改成 CSS 隐藏**（一处改动就能保住所有面板的本地 state）：那些状态
+ * 的需求不止「折叠后别丢」，还要跨组件共享（工具栏 / 批量条 / 每一行都要读选择集），
+ * 还要与筛选 setter **原子发生修改**（改筛选时清空选择必须同一个 `set` 内完成，否则
+ * 会露出「筛选已变、选择还是旧的」的中间帧）。纯 CSS 隐藏解决不了这些。
+ */
+
 function PanelItem({ def, collapsed, width, needsResize, onResize, onExpand }: {
   def: typeof SlotRegistry extends { all(): (infer T)[] } ? T : any
   collapsed: boolean; width: number; needsResize: boolean

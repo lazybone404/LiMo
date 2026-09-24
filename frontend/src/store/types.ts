@@ -88,6 +88,24 @@ export interface ImageResult {
   text: string; engine: string; id: string
 }
 
+// ── 跨 slice 编排（实现在 store/index.ts 组合层）──
+
+/**
+ * 单个 slice 内无法表达的 action —— 组合层是唯一被允许跨 slice 读写的位置。
+ * （slice 的 action 零跨域引用是本仓库的约定，新增跨域动作放这里，不要在 slice 里
+ *   `get()` 别的 slice 的字段。）
+ */
+export interface AppSlice {
+  /**
+   * 删除文档后清理它的产物残留：预览内容 / 图片处理结果 / 流式缓冲。
+   *
+   * ⚠️ 不清理的后果不是报错，而是**下一个文档看到上一个文档的残留**：删掉 A、再打开 B，
+   * B 的内容还没加载完的那一瞬，预览区先显示 A 的正文。流式缓冲尤其隐蔽——它根本不在
+   * store 里（`store/streamBuffers.ts` 是模块级 Map），漏清就永久驻留到刷新页面为止。
+   */
+  purgeDocArtifacts: (ids: string[]) => void
+}
+
 // ── Store 交集（各 slice 合并）──
 
-export type Store = ThemeSlice & DocsSlice & ContentSlice & TasksSlice & ChatSlice & UiSlice & ToastSlice
+export type Store = ThemeSlice & DocsSlice & ContentSlice & TasksSlice & ChatSlice & UiSlice & ToastSlice & AppSlice

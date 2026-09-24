@@ -1,32 +1,49 @@
 /**
- * 文档库面板 — 文件夹 / 筛选 / 排序 / 批量 / 全文搜索 / 分批渲染的**编排层**。
+ * 文档库面板 — **编排层**：只负责把各部件接起来并持有交互状态。
  *
- * 查询逻辑在 useDocQuery（纯函数可单测），卡片在 DocRow，文件夹树在 FolderTree，
- * 批量工具条在 BatchBar —— 本文件只负责把它们接起来并持有交互状态。
+ * 职责划分（改动时先看这里，别把逻辑写回本文件）：
+ * - 查询/纯函数  → `useDocQuery`（filterDocs / sortDocs / buildResultSet / groupDocs）
+ * - 行渲染       → `DocRow`（两种密度）
+ * - 列表与分组   → `DocList` + `GroupHeader`
+ * - 筛选区       → `FilterArea` / `filters.tsx` / `FilterPopover`
+ * - 多选         → `useDocSelection`（状态在 store）
+ * - 偏好         → `docLibraryPrefs`（localStorage）
+ *
+ * ⚠️ 本文件**不持有任何「重开后不该重置」的状态**：面板折叠会卸载组件
+ * （SlotLayout 是 `collapsed ? <PanelStrip/> : <Comp/>`），选择集、分批深度、
+ * 禁用态全在 store；偏好全在 localStorage。详见 plan「三、状态归属」。
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useStore } from '../../store'
 import {
   updateTranscript, exportBatch, getErrorMessage,
-  listFolders, createFolder, renameFolder, deleteFolder, batchTranscripts,
+  listFolders, listTranscripts, createFolder, renameFolder, deleteFolder, batchTranscripts,
+  getMarkdown,
 } from '../../api/client'
 import { cancelTask } from '../../api/taskManager'
 import { ContextMenu } from '../ui/ContextMenu'
-import { SearchSnippet } from '../ui/SearchSnippet'
 import {
-  Search, X, PanelLeftClose, Pencil, Trash2, BookOpen, MessageSquare,
-  RefreshCw, Tag, Clipboard, CheckSquare, FolderInput, ArrowUpDown,
+  Pencil, Trash2, BookOpen, MessageSquare, RefreshCw, Tag, Clipboard, FolderInput,
 } from 'lucide-react'
-import type { DocEntry, FolderEntry } from '../../store/types'
-import { FolderTree } from './FolderTree'
+import type { DocEntry } from '../../store/types'
 import { BatchBar } from './BatchBar'
 import { DocRow, type DocRowActions } from './DocRow'
-import { SOURCE_FILTERS, IconByName } from './docMeta'
-import { useDocQuery, collectTagFacets, SORT_OPTIONS, type SortKey } from './useDocQuery'
-import { loadDocLibraryPrefs, saveDocLibraryPrefs } from './docLibraryPrefs'
-
-/** 首次渲染的行数；到底部哨兵可见时每次追加这么多 */
-const PAGE_SIZE = 60
+import {
+  useDocQuery, countByFolder, groupDocs, type DocGroup, type SortKey,
+} from './useDocQuery'
+import {
+  loadDocLibraryPrefs, saveDocLibraryPrefs, DEFAULT_FILTER_AREA_HEIGHT,
+  FILTER_AREA_MAX, FILTER_AREA_MIN,
+  type Density, type DocLibraryPrefs, type SectionId,
+} from './docLibraryPrefs'
+import { useDocSelection } from './useDocSelection'
+import { DocList } from './DocList'
+import { ListToolbar } from './ListToolbar'
+import { FilterArea } from './FilterArea'
+import { FilterPopover } from './FilterPopover'
+import { SearchField } from './SearchField'
+import { DocLibraryToolbar } from './DocLibraryToolbar'
+import { PAGE_SIZE } from '../../store/docsSlice'
 
 /** 某文档是否有进行中的任务（键是 `${docId}__${kind}`，导入是裸 key） */
 function isDocBusy(id: string): boolean {
@@ -55,6 +72,48 @@ function cancelDocTasks(ids: string[]) {
 /** 内联编辑态：id + 草稿值。标题/标签两处同构 */
 interface EditState { id: string; value: string }
 
+/**
+ * 筛选区 / 列表区之间的可拖拽分隔条。
+ *
+ * ⚠️ 用 **mouse 事件 + document 级监听**而不是 pointer capture：
+ * 拖动时鼠标必然会移出这条 6px 高的细线，只挂在元素上的 `onMouseMove` 会在那一刻断掉。
+ * ⚠️ 起止高度在 `mousedown` 时**快照**进闭包（`startRef`）：拖动过程中 store 会不断
+ * 更新 `height`，若每帧都读最新值，delta 会被自己累积成平方级增长。
+ */
+function FilterSplitter({ height, onResize }: { height: number; onResize: (h: number) => void }) {
+  const startRef = useRef<{ y: number; h: number } | null>(null)
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()          // 不 preventDefault 的话拖动会顺带选中页面文本
+    startRef.current = { y: e.clientY, h: height }
+    const move = (ev: MouseEvent) => {
+      const s = startRef.current
+      if (s) onResize(s.h + (ev.clientY - s.y))
+    }
+    const up = () => {
+      startRef.current = null
+      document.removeEventListener('mousemove', move)
+      document.removeEventListener('mouseup', up)
+    }
+    document.addEventListener('mousemove', move)
+    document.addEventListener('mouseup', up)
+  }
+
+  return (
+    <div
+      data-filter-splitter
+      role="separator"
+      aria-orientation="horizontal"
+      onMouseDown={onMouseDown}
+      onDoubleClick={() => onResize(DEFAULT_FILTER_AREA_HEIGHT)}
+      title="拖动调整筛选区高度（双击复位）"
+      className="group/splitter shrink-0 h-2 cursor-row-resize flex items-center justify-center hover:bg-accent/5"
+    >
+      <span className="w-8 h-0.5 rounded-full bg-border-default group-hover/splitter:bg-accent/40" />
+    </div>
+  )
+}
+
 export function DocLibrary() {
   const docs = useStore(s => s.docs)
   const folders = useStore(s => s.folders)
@@ -63,17 +122,76 @@ export function DocLibrary() {
   const setDocs = useStore(s => s.setDocs)
   const setFolders = useStore(s => s.setFolders)
   const searchQuery = useStore(s => s.searchQuery)
-  const setSearchQuery = useStore(s => s.setSearchQuery)
   const activeType = useStore(s => s.activeType)
-  const setActiveType = useStore(s => s.setActiveType)
   const activeTags = useStore(s => s.activeTags)
-  const setActiveTags = useStore(s => s.setActiveTags)
   const activeFolderId = useStore(s => s.activeFolderId)
   const setActiveFolderId = useStore(s => s.setActiveFolderId)
+  const titleFilter = useStore(s => s.titleFilter)
+  const dateFrom = useStore(s => s.dateFrom)
+  const dateTo = useStore(s => s.dateTo)
   const addToast = useStore(s => s.addToast)
+  const docsLoading = useStore(s => s.docsLoading)
+  const purgeDocArtifacts = useStore(s => s.purgeDocArtifacts)
+  const folderBusy = useStore(s => s.folderBusy)
+  const setFolderBusy = useStore(s => s.setFolderBusy)
 
   const [prefs, setPrefs] = useState(loadDocLibraryPrefs)
-  const sort = prefs.sort
+  const { sort, density, groupBy, collapsedGroups } = prefs
+
+  /**
+   * 改一项偏好并**落盘** —— 读写必须成对出现在这里。
+   * 只 setState 不落盘 = 本次生效、下次归零；只落盘不 setState = 本次不生效、
+   * 下次突然冒出来。两种都很难自查（关了面板再打开才发现），故统一走这一个出口。
+   */
+  const patchPrefs = useCallback((patch: Partial<DocLibraryPrefs>) => {
+    setPrefs(p => ({ ...p, ...patch }))
+    saveDocLibraryPrefs(patch)
+  }, [])
+
+  const toggleFilterArea = useCallback(() => {
+    patchPrefs({ filterCollapsed: !prefs.filterCollapsed })
+  }, [prefs.filterCollapsed, patchPrefs])
+
+  const toggleSection = useCallback((id: SectionId) => {
+    const cur = prefs.expandedSections
+    patchPrefs({ expandedSections: cur.includes(id) ? cur.filter(s => s !== id) : [...cur, id] })
+  }, [prefs.expandedSections, patchPrefs])
+
+  const setFilterHeight = useCallback((h: number) => {
+    patchPrefs({ filterAreaHeight: Math.min(FILTER_AREA_MAX, Math.max(FILTER_AREA_MIN, h)) })
+  }, [patchPrefs])
+
+  const setSort = useCallback((key: SortKey) => patchPrefs({ sort: key }), [patchPrefs])
+
+  /**
+   * 搜索词**从空变为非空**的那一刻自动切到「相关度」。
+   *
+   * 这是用户对搜索的默认预期（「最相关的在最前」），且与改动前的行为一致 —— 那时
+   * FTS 命中被固定追加在最上方，用户从没选过排序。并入主列表后若不补这一下，
+   * 同样的搜索会按「时间」排，最相关的那篇可能沉到第三行。
+   *
+   * ⚠️ 只在「空 → 非空」这一跳切：此后用户在本次搜索里手动改成「时间」就不再回切 ——
+   * 每敲一个字都重置他的选择，比不自动切更烦人。
+   */
+  const wasSearching = useRef(false)
+  useEffect(() => {
+    const cur = searchQuery.trim() !== ''
+    if (cur && !wasSearching.current) setSort('relevance')
+    // 反向：搜索词清空后「相关度」不再有意义（rank 全空、排序退化成保持原序），
+    // 而那个按钮也从选项里消失了 —— 不切回去会留下「四个键都没高亮」的空档。
+    else if (!cur && sort === 'relevance') setSort('date')
+    wasSearching.current = cur
+  }, [searchQuery, sort, setSort])
+  const setDensity = useCallback((d: Density) => patchPrefs({ density: d }), [patchPrefs])
+  const setGroupBy = useCallback((g: DocLibraryPrefs['groupBy']) => patchPrefs({ groupBy: g }), [patchPrefs])
+
+  /**
+   * 分组头开合 —— 存的是**收起的**（见 docLibraryPrefs 的注释：新出现的组默认展开）。
+   */
+  const toggleGroup = useCallback((key: string) => {
+    const cur = prefs.collapsedGroups
+    patchPrefs({ collapsedGroups: cur.includes(key) ? cur.filter(k => k !== key) : [...cur, key] })
+  }, [prefs.collapsedGroups, patchPrefs])
 
   // 右键菜单
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; docId: string } | null>(null)
@@ -84,53 +202,160 @@ export function DocLibrary() {
   const titleEditRef = useRef<EditState | null>(null)
   const [tagsEdit, setTagsEdit] = useState<EditState | null>(null)
   const tagsEditRef = useRef<EditState | null>(null)
-  // 多选
-  const [selectMode, setSelectMode] = useState(false)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   // 删除确认（单条 = 长度为 1）
   const [deleteTargets, setDeleteTargets] = useState<string[] | null>(null)
   const [batchBusy, setBatchBusy] = useState(false)
-  // 拖拽 —— onDragOver 阶段读不到 payload，悬停高亮只能靠这个 state
+  // 拖拽 —— onDragOver 阶段读不到 payload，放置区的显隐/高亮只能靠这个 state
   const [draggingIds, setDraggingIds] = useState<Set<string>>(new Set())
-  const dragging = draggingIds.size > 0
 
-  const { visible, matchedIds, contentOnly, searching } = useDocQuery({
-    docs, query: searchQuery, type: activeType, tags: activeTags, folderId: activeFolderId, sort,
+  const { visible, matchedIds, snippetById, rankOf, searching, hitsTruncated } = useDocQuery({
+    docs, query: searchQuery, title: titleFilter, type: activeType, tags: activeTags,
+    folderId: activeFolderId, dateFrom, dateTo, sort,
   })
 
-  const tagFacets = useMemo(() => collectTagFacets(docs), [docs])
-  const uncategorizedCount = useMemo(() => docs.filter(d => !d.folderId).length, [docs])
+  /**
+   * 文件夹计数 —— **唯一来源**（筛选 chip、分组头、批量条全部读它）。
+   * ⚠️ 不读后端的 `folder.count`：那是上次拉取的快照，而 `moveDocs` 是乐观更新
+   * （改完立刻改本地 `docs`、不 refetch）。两边各读各的，移动那一瞬间计数就互相矛盾。
+   */
+  const counts = useMemo(() => countByFolder(docs, folders), [docs, folders])
+
+  /**
+   * 简略模式**固定按文件夹分组**（不管「排列方式」偏好是什么）——
+   * 它的形态是 **IDE 文件树**：文件夹是可折叠的父节点、文档缩进一层，
+   * 两者同高同构，一屏看更多靠的是行紧凑而不是「去掉层级」。
+   *
+   * ⚠️ 曾经这里是 `density === 'compact' ? 'folder' : groupBy`（简略一律平铺）——
+   * 那样确实更省纵向空间，但省掉的是**结构**：一个文件夹里有 30 篇时，平铺列表
+   * 除了一列标题什么信息都不给，用户在文件堆里翻找的成本远高于几行分组头的高度。
+   * 简略模式本来就不渲染「排列方式」旋钮，也就没有「跟随那个偏好」的必要。
+   */
+  const grouped: DocGroup[] | null = useMemo(() => {
+    const by = density === 'compact' ? 'folder' : groupBy
+    return by === 'none' ? null : groupDocs(visible, by, folders)
+  }, [density, groupBy, visible, folders])
+
+  /**
+   * 分组头徽标数字 —— 两种维度**语义不同且都有意如此**：
+   * - 文件夹组：该文件夹的**全量**文档数（跨筛选）。筛选到「PDF」时组里只有 2 行，
+   *   但删除这个文件夹会搬走全部 12 篇；徽标若是筛选后的数，删除确认就成了骗人的。
+   * - 类型/时间组：全量结果集里的条数（派生值，没有「删掉这个组」这回事）。
+   *   `groups` 由**未分批**的 `visible` 切出来，故 `g.docs.length` 就是全量。
+   */
+  const countOf = useCallback((g: DocGroup) =>
+    g.editable
+      ? (g.ref ? counts.byFolder.get(g.ref) || 0 : counts.uncategorized)
+      : g.docs.length,
+  [counts])
+
+  // 只有「拖着已归类的文档」时才需要「移出文件夹」这个落点，否则是无意义的目标
+  const draggingCategorized = useMemo(
+    () => docs.some(d => draggingIds.has(d.id) && d.folderId),
+    [docs, draggingIds],
+  )
+
+  // 当前结果集的顺序（Shift 区间靠它算）。⚠️ 必须 memo：hook 内用 effect 同步它，
+  // 每次渲染都给个新数组会让那个 effect 每帧都白跑一次。
+  const visibleIds = useMemo(() => visible.map(d => d.id), [visible])
+
+  const {
+    selectedIds, hasSelection, toggle: toggleSelect, setAll: setSelectionAll,
+    clear: clearSelection, handleRowClick, onListKeyDown,
+  } = useDocSelection(visibleIds, selectDoc)
 
   // ── 分批渲染 ──
-  const [limit, setLimit] = useState(PAGE_SIZE)
-  // 筛选/排序变化时重置——否则用户在新条件下看到的是「上次的加载深度」，像随机截断
-  useEffect(() => { setLimit(PAGE_SIZE) }, [searchQuery, activeType, activeTags, activeFolderId, sort])
+  // 深度活在 store 里：面板折叠会卸载组件，留在本地等于「收起再展开，滚到哪全忘了」。
+  const limit = useStore(s => s.listLimit)
+  const setLimit = useStore(s => s.setListLimit)
+  // 筛选/排序/排列变化时重置——否则用户在新条件下看到的是「上次的加载深度」，像随机截断
+  useEffect(() => {
+    setLimit(PAGE_SIZE)
+  }, [searchQuery, activeType, activeTags, activeFolderId, titleFilter, dateFrom, dateTo, sort, groupBy, setLimit])
   const rendered = visible.slice(0, limit)
   const hasMore = limit < visible.length
   const sentinelRef = useRef<HTMLDivElement>(null)
+  // ⚠️ 必须显式传 `root`：不传时以 **viewport** 为基准，而哨兵在一个 `overflow-y-auto`
+  // 的容器里 —— 容器内的滚动不会触发 viewport 交叉，判定只在页面级滚动时才对。
+  const scrollRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = sentinelRef.current
     if (!el || !hasMore) return
     const io = new IntersectionObserver(
-      entries => { if (entries[0].isIntersecting) setLimit(l => l + PAGE_SIZE) },
-      { rootMargin: '240px' },
+      entries => { if (entries[0].isIntersecting) setLimit(limit + PAGE_SIZE) },
+      { root: scrollRef.current, rootMargin: '240px' },
     )
     io.observe(el)
     return () => io.disconnect()
-  }, [hasMore, limit])
+  }, [hasMore, limit, setLimit])
 
-  // 筛选条件变化时清空选择——否则会选中用户看不见的文档
-  useEffect(() => { setSelectedIds(new Set()); setSelectMode(false) },
-    [searchQuery, activeType, activeTags, activeFolderId])
+  // 选择（常态多选，无模式开关）。⚠️ 「筛选变更清空选择」不在这里做 effect——那有一帧的
+  // 时序窗口（勾选还在、被勾的文档已不可见），改由 docsSlice 的筛选 setter 内联完成。
 
   const refreshFolders = useCallback(async () => {
     try { setFolders(await listFolders()) } catch { /* 计数刷新失败无碍主流程 */ }
   }, [setFolders])
 
-  const setSort = (key: SortKey) => {
-    setPrefs({ sort: key })
-    saveDocLibraryPrefs({ sort: key })
-  }
+  /**
+   * 给一次文件夹增删改标上「进行中」（key 为 `'create'` 或 folderId），
+   * 结束时（含抛错）清除。用来 disabled 入口按钮，避免重复点击发两次请求。
+   *
+   * ⚠️ 从 `useStore.getState()` 读当前值而不是闭包里的 `folderBusy`：闭包是上一帧的，
+   * 两个操作同时进（如新建 + 重命名）时后进的那个会把先进的 key 抹掉。
+   */
+  const withFolderBusy = useCallback(async (key: string, fn: () => Promise<void>) => {
+    const add = (set: Set<string>, id: string) => new Set(set).add(id)
+    const drop = (set: Set<string>, id: string) => { const n = new Set(set); n.delete(id); return n }
+    setFolderBusy(add(useStore.getState().folderBusy, key))
+    try { await fn() }
+    finally { setFolderBusy(drop(useStore.getState().folderBusy, key)) }
+  }, [setFolderBusy])
+
+  /** 重新拉全量文档列表 —— 只在「服务端行为与预期不符」时兜底用，不是常规路径 */
+  const refreshDocs = useCallback(async () => {
+    try { setDocs(await listTranscripts()) } catch { /* 保持本地视图，比清空好 */ }
+  }, [setDocs])
+
+  /** 文件夹 id → 展示名（toast 用；'' = 未分类） */
+  const folderLabel = useCallback((id: string) =>
+    id === '' ? '未分类' : (folders.find(f => f.id === id)?.name ?? '文件夹'), [folders])
+
+  // ── 文件夹增删改 ──
+
+  /** ⚠️ 返回是否成功：调用方（工具栏输入行）**成功才**清草稿，失败保留让用户重试 */
+  const createNewFolder = useCallback(async (name: string) => {
+    let ok = false
+    await withFolderBusy('create', async () => {
+      try { await createFolder(name); await refreshFolders(); ok = true }
+      catch (err) { addToast(getErrorMessage(err), 'error') }
+    })
+    return ok
+  }, [withFolderBusy, refreshFolders, addToast])
+
+  const renameFolderById = useCallback(async (id: string, name: string) => {
+    let ok = false
+    await withFolderBusy(id, async () => {
+      try { await renameFolder(id, name); await refreshFolders(); ok = true }
+      catch (err) { addToast(getErrorMessage(err), 'error') }
+    })
+    return ok
+  }, [withFolderBusy, refreshFolders, addToast])
+
+  const deleteFolderById = useCallback((id: string) => {
+    void withFolderBusy(id, async () => {
+      const name = folders.find(f => f.id === id)?.name ?? '文件夹'
+      try {
+        const r = await deleteFolder(id)
+        await refreshFolders()
+        // 文档回落未分类——本地同步，否则当前文件夹视图里还挂着已删文件夹的文档
+        setDocs(useStore.getState().docs.map(d =>
+          d.folderId === id ? { ...d, folderId: '' } : d))
+        if (activeFolderId === id) setActiveFolderId(null)
+        addToast(`已删除「${name}」，${r.moved} 个文档已移到未分类`)
+      } catch (err) {
+        addToast(getErrorMessage(err), 'error')
+      }
+    })
+  }, [folders, withFolderBusy, refreshFolders, setDocs, activeFolderId, setActiveFolderId, addToast])
 
   // ── 单条编辑 ──
 
@@ -178,14 +403,27 @@ export function DocLibrary() {
     setDocs(prev.map(d => ids.includes(d.id) ? { ...d, folderId } : d))
     try {
       const r = await batchTranscripts({ action: 'move', ids, folderId })
-      if (r.failed?.length) addToast(`已移动 ${r.affected} 个，${r.failed.length} 个失败`, 'error')
+      const failed = r.failed || []
+      if (failed.length) {
+        // ⚠️ **只回滚失败的**：整体 `setDocs(prev)` 会把已经成功移动的那些也退回原处，
+        // 而服务端明明改了 —— 用户下次刷新会看到文档「跳回去又跳回来」。
+        const failedIds = new Set(failed.map(f => f.id))
+        const before = new Map(prev.map(d => [d.id, d.folderId]))
+        setDocs(useStore.getState().docs.map(d =>
+          failedIds.has(d.id) ? { ...d, folderId: before.get(d.id) ?? '' } : d))
+        addToast(`已移动 ${r.affected} 个，${failed.length} 个失败`, 'error')
+      } else {
+        addToast(`已移动 ${r.affected} 个到「${folderLabel(folderId)}」`)
+      }
+      // 数量口径对不上 = 服务端行为与预期不符，本地乐观更新已不可信，拉真值
+      if (r.affected + failed.length !== ids.length) refreshDocs()
     } catch (err) {
-      setDocs(prev)
+      setDocs(prev)          // 整个请求失败 = 一条都没动，整体回滚是对的
       addToast(getErrorMessage(err), 'error')
       return
     }
     refreshFolders()
-  }, [addToast, setDocs, refreshFolders])
+  }, [addToast, setDocs, refreshFolders, refreshDocs, folderLabel])
 
   const handleDragStart = useCallback((e: React.DragEvent, doc: DocEntry) => {
     // 拖已选中的项 = 整批拖；拖未选中的项 = 只拖它自己
@@ -206,6 +444,9 @@ export function DocLibrary() {
     moveDocs(ids, folderId)
   }, [moveDocs])
 
+  const handleDropToUncategorized = useCallback(
+    (e: React.DragEvent) => handleFolderDrop('', e), [handleFolderDrop])
+
   // ── 删除 ──
 
   const runDelete = useCallback(async (ids: string[]) => {
@@ -218,38 +459,27 @@ export function DocLibrary() {
       const okIds = ids.filter(id => !failed.some(f => f.id === id))
       const s = useStore.getState()
       setDocs(s.docs.filter(d => !okIds.includes(d.id)))
-      if (s.currentDocId && okIds.includes(s.currentDocId)) selectDoc('')
+      if (s.currentDocId && okIds.includes(s.currentDocId)) selectDoc(null)
+      // 只清真正删掉的那些的产物残留（失败的还留着，清了等于把好数据丢了）
+      purgeDocArtifacts(okIds)
       if (failed.length) addToast(`已删除 ${r.affected} 个，${failed.length} 个失败`, 'error')
       else addToast(`已删除 ${r.affected} 个文档`)
     } catch (err) {
       addToast(getErrorMessage(err), 'error')
     } finally {
       setBatchBusy(false)
-      setSelectedIds(new Set())
-      setSelectMode(false)
+      clearSelection()
       refreshFolders()
     }
-  }, [addToast, setDocs, selectDoc, refreshFolders])
+  }, [addToast, setDocs, selectDoc, refreshFolders, purgeDocArtifacts, clearSelection])
 
   // ── 批量 ──
 
-  const toggleSelect = useCallback((id: string) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id); else next.add(id)
-      if (next.size === 0) setSelectMode(false)
-      return next
-    })
-  }, [])
-
   const allSelected = visible.length > 0 && visible.every(d => selectedIds.has(d.id))
   const toggleSelectAll = useCallback(() => {
-    setSelectedIds(prev => {
-      if (visible.length > 0 && visible.every(d => prev.has(d.id))) return new Set()
-      // 全选 = 当前筛选结果的**全部匹配项**，跨分批（不只是已渲染的 60 条）
-      return new Set(visible.map(d => d.id))
-    })
-  }, [visible])
+    // 全选 = 当前筛选结果的**全部匹配项**，跨分批（不只是已渲染的 60 条）
+    setSelectionAll(visibleIds, !allSelected)
+  }, [visibleIds, allSelected, setSelectionAll])
 
   const runBatch = useCallback(async (fn: () => Promise<void>) => {
     setBatchBusy(true)
@@ -260,7 +490,7 @@ export function DocLibrary() {
     const count = selectedIds.size
     if (!count) return
     const ids = [...selectedIds]
-    setSelectedIds(new Set()); setSelectMode(false)
+    clearSelection()
     try {
       const result = await exportBatch(ids)
       if (result.ok) addToast(`已导出 ${count} 个文档，请查看下载文件夹`)
@@ -268,7 +498,7 @@ export function DocLibrary() {
     } catch (e) {
       addToast('导出失败: ' + (e as Error).message, 'error')
     }
-  }), [selectedIds, runBatch, addToast])
+  }), [selectedIds, runBatch, addToast, clearSelection])
 
   const handleBatchTag = useCallback((tags: string[], mode: 'add' | 'replace') =>
     runBatch(async () => {
@@ -290,6 +520,25 @@ export function DocLibrary() {
 
   // ── 右键菜单 ──
 
+  /**
+   * 复制某文档的笔记 Markdown。
+   *
+   * ⚠️ 必须按传入的 docId **现取**，不能读全局 `currentContent`——那是「当前预览的
+   * 文档」的内容，右键 A 而预览停在 B 时会静默复制成 B 的正文，且成功的 toast
+   * 让用户以为复制对了。这是「拿当前状态冒充上下文」的典型翻车形态。
+   */
+  const copyMarkdown = useCallback(async (docId: string) => {
+    try {
+      const md = await getMarkdown(docId, 'notes')
+      const content = md?.content?.trim()
+      if (!content) { addToast('该文档暂无笔记内容', 'info'); return }
+      await navigator.clipboard.writeText(content)
+      addToast('已复制到剪贴板')
+    } catch (err) {
+      addToast(getErrorMessage(err), 'error')
+    }
+  }, [addToast])
+
   const ctxDoc = docs.find(d => d.id === ctxMenu?.docId)
   const ctxItems = useMemo(() => {
     if (!ctxDoc) return []
@@ -308,19 +557,11 @@ export function DocLibrary() {
       },
       { label: '编辑标题', icon: <Pencil size={14} />, onClick: () => applyTitleEdit({ id: ctxDoc.id, value: ctxDoc.title }) },
       { label: '编辑标签', icon: <Tag size={14} />, onClick: () => applyTagsEdit({ id: ctxDoc.id, value: (ctxDoc.tags || []).join(', ') }) },
-      { label: '复制 Markdown', icon: <Clipboard size={14} />, onClick: () => {
-        const content = useStore.getState().currentContent
-        if (content) {
-          navigator.clipboard.writeText(content).then(
-            () => addToast('已复制到剪贴板'),
-            () => addToast('复制失败，请手动复制', 'error'),
-          )
-        }
-      }},
+      { label: '复制 Markdown', icon: <Clipboard size={14} />, onClick: () => { void copyMarkdown(ctxDoc.id) } },
       { label: '', onClick: () => {}, divider: true },
       { label: '删除', icon: <Trash2 size={14} />, onClick: () => setDeleteTargets([ctxDoc.id]), danger: true },
     ]
-  }, [ctxDoc, folders, moveDocs, selectDoc, addToast, applyTitleEdit, applyTagsEdit])
+  }, [ctxDoc, folders, moveDocs, selectDoc, copyMarkdown, applyTitleEdit, applyTagsEdit])
 
   const onContextMenu = useCallback((e: React.MouseEvent, docId: string) => {
     e.preventDefault()
@@ -331,7 +572,7 @@ export function DocLibrary() {
 
   // ── DocRow 回调（引用稳定，让 React.memo 真的生效）──
   const rowActions: DocRowActions = useMemo(() => ({
-    onSelect: selectDoc,
+    onRowClick: handleRowClick,
     onToggleSelect: toggleSelect,
     onContextMenu,
     onEditTitle: d => applyTitleEdit({ id: d.id, value: d.title }),
@@ -357,18 +598,59 @@ export function DocLibrary() {
       if (cur) saveTags(cur.id, cur.value)
     },
     onTagsCancel: () => applyTagsEdit(null),
-  }), [selectDoc, toggleSelect, onContextMenu, applyTitleEdit, applyTagsEdit, handleRowDelete,
+  }), [handleRowClick, toggleSelect, onContextMenu, applyTitleEdit, applyTagsEdit, handleRowDelete,
        handleDragStart, handleDragEnd, saveTitle, saveTags])
 
-  const hasFilter = !!(searchQuery.trim() || activeType || activeTags.length || activeFolderId !== null)
+  /**
+   * 行渲染工厂 —— 交给 `DocList` 调。⚠️ 这里拼的是**每个值**（不是整个 DocRow props
+   * 对象），故 `DocRow` 的 `memo` 浅比较照常生效；本函数的引用变化不会让行重渲染。
+   */
+  const renderRow = useCallback((doc: DocEntry, index: number) => (
+    <DocRow
+      key={doc.id}
+      doc={doc}
+      index={index}
+      active={doc.id === currentId}
+      selected={selectedIds.has(doc.id)}
+      density={density}
+      matched={matchedIds.has(doc.id)}
+      snippet={snippetById.get(doc.id)}
+      titleDraft={titleEdit?.id === doc.id ? titleEdit.value : null}
+      tagsDraft={tagsEdit?.id === doc.id ? tagsEdit.value : null}
+      actions={rowActions}
+    />
+  ), [currentId, selectedIds, density, matchedIds, snippetById, titleEdit, tagsEdit, rowActions])
+
+  const hasFilter = !!(
+    searchQuery.trim() || activeType || activeTags.length || activeFolderId !== null ||
+    titleFilter.trim() || dateFrom !== null || dateTo !== null
+  )
+
+  const emptyText = visible.length === 0
+    ? (hasFilter ? '没有匹配的文档' : '还没有文档\n粘贴链接或文字开始')
+    : null
+
+  const listProps = {
+    collapsedGroups, countOf, folderBusy, docsLoading, hasMore,
+    emptyText, truncated: hitsTruncated,
+    draggingCategorized,
+    // 简略模式的形态是 IDE 文件树：分组子行缩进 + 缩进线，分组头当父节点（见 grouped）
+    treeIndent: density === 'compact',
+    onDropToUncategorized: handleDropToUncategorized,
+    onToggleGroup: toggleGroup,
+    onFolderRename: renameFolderById,
+    onFolderDelete: deleteFolderById,
+    onFolderDrop: handleFolderDrop,
+    renderRow, scrollRef, sentinelRef, onListKeyDown,
+  }
 
   return (
     <aside className="w-full h-full border-r border-border-light flex flex-col bg-elevated/60 backdrop-blur-[20px]">
       {/* 标题栏 / 批量工具条
-          ⚠️ 显示条件是 `selectMode || 有选中`，不能只判选中数：否则刚点开
-          「批量操作」时一条都还没勾，工具条不出现 —— 用户看得见「全选」按钮
-          之前必须先手动勾一条，而「全选」正是他本来想按的那个键。 */}
-      {selectMode || selectedIds.size > 0 ? (
+          ⚠️ 显隐**派生自 `hasSelection`**，没有「批量模式」开关：勾中任意一行，工具条
+          自己出现；取消到 0 条，自己消失。若要「一条没勾时也能点全选」，那条路径是
+          列表内的 Ctrl+A（见 useDocSelection），不是常驻一个模式按钮。 */}
+      {hasSelection ? (
         <BatchBar
           selectedCount={selectedIds.size}
           renderedCount={rendered.length}
@@ -378,154 +660,56 @@ export function DocLibrary() {
           allSelected={allSelected}
           onToggleSelectAll={toggleSelectAll}
           onExport={handleBatchExport}
-          onMove={fid => { setSelectMode(false); runBatch(() => moveDocs([...selectedIds], fid)) }}
+          onMove={fid => runBatch(() => moveDocs([...selectedIds], fid))}
           onTag={handleBatchTag}
           onDelete={() => setDeleteTargets([...selectedIds])}
-          onClear={() => { setSelectedIds(new Set()); setSelectMode(false) }}
+          onClear={clearSelection}
         />
       ) : (
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border-light shrink-0">
-          <span className="text-[12px] font-medium text-dimmed">文档库</span>
-          <div className="flex items-center gap-1">
-            <button onClick={() => setSelectMode(!selectMode)}
-              className={`w-6 h-6 rounded-md flex items-center justify-center ${selectMode ? 'bg-accent/10 text-accent' : 'hover:bg-surface-hover text-muted'}`}
-              title="批量操作">
-              <CheckSquare size={14} />
-            </button>
-            <button
-              onClick={() => useStore.getState().setSlot('docLib', { collapsed: true })}
-              className="w-6 h-6 rounded-md hover:bg-surface-hover flex items-center justify-center"
-              title="收起面板"
-            >
-              <PanelLeftClose size={14} className="text-muted" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* 搜索栏 */}
-      <div className="px-3 pt-2">
-        <div className="flex items-center gap-2 bg-surface rounded-lg px-2.5 py-1.5">
-          <Search size={14} className="text-disabled shrink-0" />
-          <input placeholder="搜索标题或正文…" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-            className="flex-1 bg-transparent text-[12px] outline-none placeholder:text-disabled" />
-          {searching && <span className="shrink-0 w-3 h-3 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />}
-          {searchQuery && !searching && (
-            <button onClick={() => setSearchQuery('')} className="shrink-0"><X size={12} className="text-disabled hover:text-dimmed" /></button>
-          )}
-        </div>
-      </div>
-
-      {/* 文件夹 */}
-      <div className="pt-2">
-        <FolderTree
-          folders={folders}
-          activeFolderId={activeFolderId}
-          totalCount={docs.length}
-          uncategorizedCount={uncategorizedCount}
-          dragging={dragging}
-          onSelect={setActiveFolderId}
-          onCreate={async (name) => {
-            try { await createFolder(name); await refreshFolders() }
-            catch (err) { addToast(getErrorMessage(err), 'error') }
-          }}
-          onRename={async (id, name) => {
-            try { await renameFolder(id, name); await refreshFolders() }
-            catch (err) { addToast(getErrorMessage(err), 'error') }
-          }}
-          onDelete={async (folder: FolderEntry) => {
-            try {
-              const r = await deleteFolder(folder.id)
-              await refreshFolders()
-              // 文档回落未分类——本地同步，否则当前文件夹视图里还挂着已删文件夹的文档
-              setDocs(useStore.getState().docs.map(d =>
-                d.folderId === folder.id ? { ...d, folderId: '' } : d))
-              if (activeFolderId === folder.id) setActiveFolderId(null)
-              addToast(`已删除「${folder.name}」，${r.moved} 个文档已移到未分类`)
-            } catch (err) {
-              addToast(getErrorMessage(err), 'error')
-            }
-          }}
-          onDrop={handleFolderDrop}
+        <DocLibraryToolbar
+          density={density}
+          onDensity={setDensity}
+          busy={folderBusy.has('create')}
+          onCreateFolder={createNewFolder}
         />
-      </div>
-
-      {/* 类型筛选 + 排序 */}
-      <div className="px-3 pb-1 flex items-center gap-1 flex-wrap">
-        {SOURCE_FILTERS.map(t => (
-          <button key={t.key} onClick={() => setActiveType(t.key)}
-            className={`px-2 py-0.5 rounded-full text-[11px] transition-colors ${activeType === t.key ? 'bg-accent/10 text-accent font-medium' : 'text-dimmed hover:bg-surface-hover cursor-pointer'}`}>
-            {t.icon && <IconByName name={t.icon} size={13} />} {t.label}
-          </button>
-        ))}
-        <div className="ml-auto flex items-center gap-0.5">
-          <ArrowUpDown size={11} className="text-disabled" />
-          {SORT_OPTIONS.map(o => (
-            <button key={o.key} onClick={() => setSort(o.key)}
-              className={`px-1.5 py-0.5 rounded text-[11px] ${sort === o.key ? 'text-accent font-medium' : 'text-disabled hover:text-dimmed'}`}>
-              {o.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* 用户标签筛选（facet，多选 AND） */}
-      {tagFacets.length > 0 && (
-        <div className="px-3 pb-2 flex items-center gap-1 flex-wrap">
-          <Tag size={11} className="text-disabled shrink-0" />
-          {tagFacets.slice(0, 12).map(({ tag, count }) => {
-            const on = activeTags.includes(tag)
-            return (
-              <button key={tag}
-                onClick={() => setActiveTags(on ? activeTags.filter(t => t !== tag) : [...activeTags, tag])}
-                className={`px-2 py-0.5 rounded-full text-[11px] transition-colors ${on ? 'bg-accent/10 text-accent font-medium' : 'text-dimmed hover:bg-surface-hover'}`}>
-                {tag} <span className="text-disabled">{count}</span>
-              </button>
-            )
-          })}
-          {activeTags.length > 0 && (
-            <button onClick={() => setActiveTags([])} className="text-[11px] text-muted hover:text-dimmed">清除</button>
-          )}
-        </div>
       )}
 
-      {/* 文档列表 */}
-      <div className="flex-1 overflow-y-auto px-2.5 space-y-1.5">
-        {visible.length === 0 && contentOnly.length === 0 && (
-          <p className="text-[12px] text-disabled text-center py-8 whitespace-pre-line">
-            {hasFilter ? '没有匹配的文档' : '还没有文档\n粘贴链接或文字开始'}
-          </p>
-        )}
-        {rendered.map((doc, i) => (
-          <DocRow
-            key={doc.id}
-            doc={doc}
-            index={i}
-            active={doc.id === currentId}
-            selected={selectedIds.has(doc.id)}
-            selectMode={selectMode}
-            matched={matchedIds.has(doc.id)}
-            titleDraft={titleEdit?.id === doc.id ? titleEdit.value : null}
-            tagsDraft={tagsEdit?.id === doc.id ? tagsEdit.value : null}
-            actions={rowActions}
-          />
-        ))}
-        {hasMore && <div ref={sentinelRef} className="h-6" />}
-
-        {/* 原文匹配分组 —— 只列内存过滤覆盖不到的命中，固定追加在下方（不参与用户排序） */}
-        {contentOnly.length > 0 && (
-          <div className="pt-2">
-            <p className="text-[11px] text-disabled px-1 pb-1">原文匹配（{contentOnly.length}）</p>
-            {contentOnly.map(h => (
-              <button key={h.id} onClick={() => selectDoc(h.id)}
-                className="w-full text-left rounded-xl border border-transparent hover:border-border-light hover:bg-surface-hover py-2 px-3 mb-1">
-                <p className="text-[13px] font-medium leading-snug line-clamp-1">{h.title}</p>
-                <SearchSnippet raw={h.snippet} className="block text-[11px] text-disabled mt-0.5 line-clamp-2" />
-              </button>
-            ))}
+      {density === 'compact' ? (
+        /* 简略模式：搜索 + 筛选入口收成一行，列表是**固定按文件夹分组的 IDE 文件树**
+           （见 `grouped`：不管「排列方式」偏好是什么，简略一律按文件夹）。
+           排列旋钮与分隔条**不渲染**——排列已被固定、筛选收进了浮层，
+           在「一屏看更多」的模式里这两样既没空间也没意义。 */
+        <>
+          <div className="px-3 pt-2 shrink-0 flex items-stretch gap-1.5">
+            <div className="flex-1 min-w-0"><SearchField searching={searching} /></div>
+            <FilterPopover />
           </div>
-        )}
-      </div>
+          <div className="h-2 shrink-0" />
+          <DocList {...listProps} groups={grouped} rendered={rendered} limit={limit} />
+        </>
+      ) : (
+        <>
+          <div className="px-3 pt-2 shrink-0"><SearchField searching={searching} /></div>
+          <div className="pt-2 shrink-0">
+            <FilterArea
+              collapsed={prefs.filterCollapsed}
+              height={prefs.filterAreaHeight}
+              expandedSections={prefs.expandedSections}
+              onToggleArea={toggleFilterArea}
+              onToggleSection={toggleSection}
+            />
+          </div>
+          {/* 分隔条只在筛选区展开时才有意义（收起后没有配比可调） */}
+          {!prefs.filterCollapsed && (
+            <FilterSplitter height={prefs.filterAreaHeight} onResize={setFilterHeight} />
+          )}
+          <div className="pt-1 shrink-0">
+            <ListToolbar groupBy={groupBy} sort={sort} onGroupBy={setGroupBy} onSort={setSort}
+              showRelevance={rankOf.size > 0} />
+          </div>
+          <DocList {...listProps} groups={grouped} rendered={rendered} limit={limit} />
+        </>
+      )}
 
       {ctxMenu && <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={ctxItems} onClose={() => setCtxMenu(null)} />}
 

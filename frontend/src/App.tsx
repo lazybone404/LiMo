@@ -25,6 +25,40 @@ const BACKEND_PROBE_DELAY_MS = 2500
 // （窗口句柄取不到时 Rust 的 emit 会静默丢弃），也不能让加载屏永远停住。
 const BACKEND_HARD_TIMEOUT_MS = 50_000
 
+// 文件夹加载失败的提示只发一次（模块级而非组件级：effect 在开发模式会跑两遍，
+// 且这只是降级能力——文档列表本身好着，重复弹窗比不弹更烦人）。
+let folderLoadWarned = false
+
+/**
+ * 全局快捷键 —— 抽成**具名导出的纯函数**：它只依赖事件对象与 store 快照，不碰组件树。
+ *
+ * 抽出来的理由是**可测**：渲染整个 App 来验一次按键，会连带拉起 GenPanel / PreviewArea /
+ * FloatingAI 及它们各自的网络请求，成本远高于这几行的价值；抽出来就能直接喂一个假事件，
+ * 断言「键盘确实接在这个动作上」—— 而这正是最容易漏测的一环（store action 测过了，
+ * 但没人验证按键绑没绑上去）。
+ */
+export function handleAppKeyDown(e: React.KeyboardEvent) {
+  if (!(e.metaKey || e.ctrlKey)) return
+  const s = useStore.getState()
+  switch (e.key) {
+    case 'g':
+      e.preventDefault()
+      // 操作进行中时拦截，防止面板卸载导致任务变僵尸
+      if (Object.keys(s.processingTasks).length > 0) {
+        s.addToast('操作进行中，请完成或取消后再切换面板', 'info')
+      } else {
+        s.toggleGenPanel()
+      }
+      break
+    case 'i': e.preventDefault(); s.toggleAI(); break
+    case 'w': e.preventDefault(); s.cycleContentWidth(); break
+    // 文档库搜索 —— 值得全局劫持：用户按 Ctrl+K 时想的是「去搜文档」，而不是
+    // 「搜我此刻正停着的这个输入框」。故这里**不做** activeElement 守卫
+    // （与 Ctrl+A 相反，那个必须让位给输入框内的全选）。
+    case 'k': e.preventDefault(); s.openDocLibSearch(); break
+  }
+}
+
 export default function App() {
   const slots = useStore(s => s.slots)
   const setSlot = useStore(s => s.setSlot)
@@ -78,10 +112,20 @@ export default function App() {
 
     const init = () => {
       refreshCapabilities(true)
+      // ⚠️ 置位必须**早于**发请求：否则首帧渲染的是空 docs，列表会先显示一次
+      // 「还没有文档」再被数据覆盖 —— 冷启动时用户真的能看到那句假空态。
+      useStore.getState().setDocsLoading(true)
       // 文件夹与文档列表并行拉取（两者互不依赖）。
       // ⚠️ 文件夹失败不能拖垮文档列表——故单独 catch，退化为「没有文件夹」，
-      // 而不是整块进 catch 后连文档都加载不出来。
-      listFolders().then(setFolders).catch(() => {})
+      // 而不是整块进 catch 后连文档都加载不出来。但**失败要可见**：静默吞掉会让
+      // 「文档全挤在未分类里」看起来像数据损坏，而不是一次加载失败。
+      listFolders().then(setFolders).catch(err => {
+        console.error('加载文件夹失败:', err)
+        if (!folderLoadWarned) {
+          folderLoadWarned = true
+          useStore.getState().addToast('加载文件夹失败，文档归类可能显示不完整', 'error')
+        }
+      })
       listTranscripts().then(docs => {
       setDocs(docs)
       // 恢复上次选中的文档和视图
@@ -120,6 +164,9 @@ export default function App() {
     }).catch(err => {
       console.error('加载文档列表失败:', err)
       useStore.getState().addToast('加载文档列表失败，请检查后端是否运行', 'error')
+    }).finally(() => {
+      // 成败都要落位，否则失败时列表永远停在骨架屏上，比显示空态更像卡死
+      useStore.getState().setDocsLoading(false)
     })
   }
 
@@ -187,23 +234,7 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden" onKeyDown={(e) => {
-      if (e.metaKey || e.ctrlKey) {
-        switch (e.key) {
-          case 'g':
-            e.preventDefault()
-            // 操作进行中时拦截，防止面板卸载导致任务变僵尸
-            if (Object.keys(useStore.getState().processingTasks).length > 0) {
-              useStore.getState().addToast('操作进行中，请完成或取消后再切换面板', 'info')
-            } else {
-              toggleGenPanel()
-            }
-            break
-          case 'i': e.preventDefault(); useStore.getState().toggleAI(); break
-          case 'w': e.preventDefault(); useStore.getState().cycleContentWidth(); break
-        }
-      }
-    }} tabIndex={-1}>
+    <div className="h-screen flex flex-col overflow-hidden" onKeyDown={handleAppKeyDown} tabIndex={-1}>
       {/* 首次启动向导 */}
       {showSetup && (
         <OnboardingWizard onDone={() => {

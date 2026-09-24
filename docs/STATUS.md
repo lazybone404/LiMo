@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-09-23 | **版本**: 0.4.5
+**更新**: 2026-09-25 | **版本**: 0.4.6
 
 ---
 
@@ -12,15 +12,15 @@
 | 指标 | 数量 |
 |------|------|
 | 后端 Python 文件 | 105（11 子目录：adapters 8 / agent 6 / core 19 / downloaders 4 / engines 15 / generation 12 / llm 4 / routers 17 / storage 2 / utils 6 / services 12） |
-| 前端 TS/TSX/CSS 文件 | 118（116 ts/tsx + 2 css；业务 105，排除 test 13） |
-| 前端测试文件 | 12（130 个测试用例，vitest 全绿） |
+| 前端 TS/TSX/CSS 文件 | 132（130 ts/tsx + 2 css；业务 114，排除 test 18） |
+| 前端测试文件 | 17（209 个测试用例，vitest 全绿） |
 | API 路由模块 | 16 业务模块（+ `__init__.py`，共 17 个 .py） |
 | API 端点 | 80（`@router.` 装饰器计数） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 13（docs/ 目录，含对话协议.md + AGENT-ONBOARDING.md + ACKNOWLEDGMENTS.md；design/ 另计） |
-| 代码行数 | 后端 app 24,891 / 前端业务 14,996 / 前端测试 1,437 |
+| 代码行数 | 后端 app 24,891 / 前端业务 16,655 / 前端测试 2,795 |
 
 ---
 
@@ -66,7 +66,7 @@
 | 对话 | `POST /api/chat` + `/chat/stream` | AI Agent |
 | 图表 | `POST /api/generate/{id}`（formats=chart）| 生成笔记勾选「图表」→ AI 输出 ```fig 语义 JSON（1~N 张、**9 种布局**、不写坐标）→ `chart_layout` 算几何 → `chart_svg` 生成 → PIL 本地自绘渲染 PNG 嵌入（`app/services/chart_layout/` 包 + `chart_svg.py` + `chart_renderer.py`；resvg 已切换，Windows 文字 bug；legacy ```chart 手写 SVG 路径保留为回退） |
 | EPUB 解读 | `POST /api/epub/generate/{id}` + `GET /api/epub/task/{id}` + `POST /api/epub/cancel/{id}` | EPUB 一键解读（阶段1 逐章 + 阶段2 归并总结 + 中断续跑 + 失败章跳过标注） |
-| 文档库 | `GET/POST/PATCH/DELETE /api/folders` + `POST /api/transcripts/batch` | 单层文件夹（**纯逻辑分类，不映射磁盘目录**）+ 批量删除/打标签/移动；`GET /api/transcripts?folderId=` 三态语义（不传=不过滤 / 空串=仅未分类 / id=该文件夹）；`GET /api/search` 全文检索（内存过滤即时 + FTS5 消抖合并，「正文匹配」独立分组） |
+| 文档库 | `GET/POST/PATCH/DELETE /api/folders` + `POST /api/transcripts/batch` | 单层文件夹（**纯逻辑分类，不映射磁盘目录**）+ 批量删除/打标签/移动；`GET /api/transcripts?folderId=` 三态语义（不传=不过滤 / 空串=仅未分类 / id=该文件夹）；`GET /api/search` 全文检索（内存过滤即时 + FTS5 消抖合并，命中并入主列表 + 「原文」角标 + 相关度排序键） |
 | 导出 | 9 端点：单文件/全产物/批量/思维导图/对话单篇/对话批量/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/Word(docx 图片内嵌+标题大纲级别)/ZIP(3模式)/思维导图(交互版+SVG)/**PDF**(复用 HTML 产物，无独立端点：Tauri 走 WebView2 PrintToPdf 直接落文件 / 浏览器走打印对话框) |
 
 ## 前端组件
@@ -74,7 +74,7 @@
 | 组件 | 说明 |
 |------|------|
 | GenPanel | 导入 + 生成选项（epub 专属一键解读入口 EpubInterpretPanel，三态 UI；思考档位三档 + PDF 直传开关，均由模型能力位门控） |
-| DocLibrary | 文档列表/搜索/筛选（拆分 8 文件：FolderTree 文件夹树 + DocRow 行 + BatchBar 批量条 + useDocQuery 纯函数过滤排序 + docLibraryPrefs 偏好 + docMeta 元信息 + entryDelay 动画延迟） |
+| DocLibrary | 文档列表/搜索/筛选（拆分 **17 文件**：编排 DocLibrary + DocLibraryToolbar + SearchField + FilterArea/FilterSection/filters/FilterPopover 筛选区 + ListToolbar 排列/排序旋钮 + DocList/GroupHeader/DocRow 列表 + BatchBar 批量条 + hook 层 useDocQuery/useDocSelection + docLibraryPrefs 偏好 + docMeta 元信息 + entryDelay 动画延迟） |
 | PreviewArea | 预览 + 多 tab（空态欢迎文档三产物：笔记/整理版原文/转录；产物编辑三态弹窗保护 + 编辑中未保存拦截） |
 | FloatingAI | AI 对话浮窗（唯一形态；位置/尺寸记忆、内部栏拖拽调宽；含 ChatCore/ChatSidebar/MessageList/MessageItem/ChatInput） |
 | SettingsPage | 模型/引擎/配置（overlay，含对话上下文设置 + 模型元数据编辑） |
@@ -90,7 +90,7 @@
 | 域 | 完成 | 总计 | 进度 |
 |----|------|------|------|
 | 内容导入 | 8 | 8 | 100% |
-| 文档库 | 5 | 5 | 100% |
+| 文档库 | 9 | 9 | 100% |
 | 转录 & 引擎 | 8 | 8 | 100% |
 | LLM 生成 | 11 | 11 | 100% |
 | 图片处理 | 4 | 4 | 100% |
@@ -99,7 +99,7 @@
 | 导出 | 11 | 12 | 92% |
 | 前端 UI/UX | 15 | 15 | 100% |
 | 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **90** | **92** | **98%** |
+| **合计** | **94** | **96** | **98%** |
 
 > 进度说明：
 > - AI 审核域已移除（2026-08-16，方案：图表功能与 fact_check 移除）——事实核查产物转历史，历史 fact_check.md 保留不删
@@ -113,7 +113,7 @@
 | FastAPI Depends 依赖注入 | ✅ 12/15 路由迁移完成（未迁：generate/search/references） |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 15/15 路由全量完成，0 处 `raise HTTPException`（2026-09-19 核实） |
-| 前端测试 | ✅ vitest + 130 tests（12 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/组件） |
+| 前端测试 | ✅ vitest + 209 tests（17 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 4 个新测试/contextMenu/组件） |
 | 对话重写 | ✅ 独立 chatStore + 消息层组件树 + 工具气泡/引用/思考折叠（2026-08-04） |
 | 对话上下文管理 | ✅ context_window 四层解析 + 预算引擎 + 历史压缩 + token 进度/费用（2026-08-04 C1-C5） |
 | AI 浮窗 | ✅ 移除插槽，统一浮窗（位置记忆/边界钳制/内部栏拖拽） |
@@ -159,6 +159,7 @@
 | PDF 直传 | ✅ 用户可选**二选一**（文本模式默认 / 直传模式将 PDF 原件以 `file` 块随生成请求发出，**只发原文件**防 token 双花）。**探针实测**：data-uri 20 MiB 上限约束的是 **base64 之后的字符串**（19MB 被拒）→ 反解原字节上限 ≈15.0 MiB，工程取 **14 MiB**（贴边的 15 MiB 算出 data-uri 恰多 25 字节，照样被拒）；首包**次线性**（12KB→3.4s、9.5MB→143s、13.7MB→149.3s，服务端逐页渲染故由页数主导）；**必须走 Chat Completions**（Responses API 官方记载会 200 但丢文件，且无客户端可见信号）。⚠️ **双真相源**：rawText 是导出/搜索/预览的真相源但不是模型所见的真相源（扫描件上真分叉）→ rawText < 100 字符时完成期 warning（判据取 100 而非空串：OCR 失败的**占位文本**约 50 字符「看起来有内容实际没内容」）。能力位 `document` **只标查证过的**：dashscope 官方名单的三个（`qwen3.8-max` / `qwen3.8-flash` / `qwen3.8-27b`，**任何 qwen-vl / qwen3.5 视觉模型都不在名单**）；`routers/model.py` 不做名字自动检测（2026-09-23） |
 | 文档能力逐家查证 | ✅ 同日续，用户要求「其他模型的文档能力去官网文档调查」。7 家结论：**仅 dashscope 标**（《PDF 理解》页明列 qwen3.8 系四个）；openai（通道在但 gpt-5 系社区反馈看不到文件/Azure gpt-4o 直接报错）、anthropic（用 `document` 块不是 `file` 块，而全线共用 AsyncOpenAI）、google（兼容层不支持）、zhipu / moonshot（独立端点抽文本，非原件直传）、opencode 网关（未查证 + 该能力仅限华北2 地域）**一律不标**。**结论表唯一沉淀点** = `services/doc_understand.py` 模块文档。配套修正三处：新增 flash/27b 预设；`qwen3.8-max` 的 `context_window` 131072→**1000000**（原把「最大输出」当成了「上下文」，对话预算 700k 缩成 91k）；`DOC_DIRECT_TIMEOUT` 240→**330** / `DOC_DIRECT_GEN_TIMEOUT` 450→**660**（240 按实测 ×1.6 算，而官方明写首包最坏 300s → 区间内正常请求被自己掐断且只表现为静默降级；**实测证明不了上界**，模式 #48）+ 修 `generate.py` 流式端点漏传 `doc_direct`（模式 #16）（2026-09-23） |
 | 阶段 0 四项独立小修 | ✅ ① `DocLibrary` 动画延迟 `i*50ms`（第 1000 篇要等 **50 秒**，是功能性错误不是性能问题）；② `search.py` snippet 列号 1→**2**（列序 `(id,title,content)`，列号 1 是标题 —— 不修则正文命中摘要显示标题）；③ `model.py` `"*"` 分支**跳过 exclude 检查**（`if`/`elif` 互斥使排除表成死代码）+ deepseek 规则改 `{"include":["*"],"exclude":[pro,reasoner,coder,embed]}`；④ `token.py` `DEFAULT_CONTEXT` 补 4 家（zhipu 刻意取 131072 不拉平 1M —— 兜底层取保守值才安全）（2026-09-23） |
+| 文档库交互重设计 | ✅ **三条「删除」是本轮核心**：① `selectMode` —— 批量选择从「模式」变常态，批量条由 `selectedIds.size > 0` **派生**（要原子修改来防的漂移，因为漂移的载体本身没了）；② **「正文匹配（N）」独立分组取消**（不受筛选约束 / 行是裸 `<button>` / 与排列旋钮打架），唯一值得保的性质由「**相关度**」排序键承接（rank 取 `hits` **数组索引**、**零后端改动**、搜索词从空变非空时自动切、无命中时不出现——否则是点不动的死键）；③ `FolderTree.tsx`（文件夹降为「排列方式」的一个取值，与类型/时间共用 `GroupHeader`，但增删改只对文件夹组开放）。**⚠️ 单击行 = 打开文档且不动选择集**（按「点即选中」实现则用户再也打不开文档），复选框常驻 + Ctrl/Shift 区间/Ctrl+A（输入框内不劫持）/Esc。**排列 ⊥ 排序**：排列（平铺/按文件夹/按类型/按时间）管横向归类，排序管组内顺序，**刻意无「筛选时退化成扁平」的特殊模式**（那正是「树和筛选打架」的来源）。筛选区五小节 + 两级折叠 + 收起仍显激活摘要 + 可拖分隔条（双击复位）；标题关键词纯内存不触发 FTS（「筛标题」vs 搜索框「找内容」）；「本周」= 本自然周。状态归属由「折叠即卸载」判定（`SlotLayout` 是 `collapsed ? PanelStrip : Comp`，本地 state 收起即归零）→ `selectedIds`/`listLimit`/`folderBusy`/`docsLoading`/`expandedFolders` 进 docsSlice，`density`/`groupBy`/`sort`/`expandedSections`/`filterAreaHeight` 进 prefs，非 boolean 的 **nonce** 进 uiSlice。`SearchBar` 从**第二套搜索实现**（限 10 条/无 AbortController/自带 snippet 分支）退化为入口按钮，与 Ctrl+K 共用 `openDocLibSearch`。顺手修 10 处真缺陷（右键复制复制的是**另一篇** / 首帧假空态 / 删文档不清产物 / `''` 哨兵写进 localStorage / ContextMenu divider 未渲染 / 哨兵 IO 未绑 root / 文件夹加载失败被静默吞 / 拖拽 `onDragOver` 读旧 state 致 drop 永不触发 / 新建失败丢草稿 / 部分失败整体回滚）。测试 130 → **209**（+5 文件），28 条对照实验自证（其中 3 条第一版判据没区分力，暴露的是判据本身）。**简略模式 = IDE 文件树**（同日续，用户看过实现后推翻原「平铺不分组」设计）：固定按文件夹分组、忽略「排列方式」偏好，子行缩进 + 缩进参考线（`treeIndent`，只给有行的组画），**分组头与文件行同高 26px（成对常量）**；顺带修掉一条从未命中的骨架判据——「分组模式下 `groups` 永远非空」，旧判据 `!groups?.length` 在默认排列下一次都没生效（冷启动显示的是「未分类 0」，正是 #19 要杀的假空态），沉淀为模式 #50。**后端零改动**（2026-09-25） |
 | PDF 导出 | ✅ 两条路径共用一份自包含 HTML。Tauri：Rust `export_pdf` → 屏幕外窗口 → `ICoreWebView2_7::PrintToPdf` **直接落文件**（A4+背景保留+无页眉页脚，存系统下载目录，同名加序号）；浏览器：屏幕外 iframe + 打印对话框。**Tauri 链已端到端实测** —— 真实文档导出 + PDF 读回断言（6 页全 209.9×297.0mm / 代码块底色·Pygments 三色高亮·表格·跨页表头·图表 PNG 逐页核对全对，2026-09-21）。⚠️ 加载 URL 必须带 `inline=1`：默认的 `Content-Disposition: attachment` 会让 WebView2 去「下载」而非渲染 → 打印出 876 字节白纸却报成功。**浏览器链只测到打印 CSS 层**（headless 4 套主题 + 暗色模拟），`printFromUrl` 的 iframe 交互路径未经真人点击验证 |
 
 ## 目录结构
@@ -177,12 +178,12 @@ backend/app/
   services/      视频直传理解（video_understand）+ 文档直传（doc_understand，PDF file 块）+ 图表（chart_layout/ 包：geometry 几何 + layouts 算子 + engine 校验 / chart_svg 生成 / chart_renderer 渲染）+ epub 解读 + markdown_render（HTML/Word 共用渲染）+ docx_export（Word 导出）+ 错误体系
   storage/       文件系统存储
 frontend/src/
-  components/    UI 组件（preview/ 下 6 个展示组件拆分；doc-library/ 8 文件拆分）
+  components/    UI 组件（preview/ 下 6 个展示组件拆分；doc-library/ 17 文件拆分）
   store/         Zustand 状态（types.ts + 7 slices + chatStore + streamBuffers）
   api/           API 客户端（15 文件：core + 域文件 + client.ts barrel + sse/taskManager）
   hooks/         useTaskRunner 等自定义 hook
   lib/           tabRegistry / contentSources / slotRegistry / modelCaps / 主题模块 / health / download / print
-  test/          前端测试（12 个文件，含 3 个组件测试）
+  test/          前端测试（17 个文件，含 7 个组件测试）
 docs/            设计文档（13 份）
 design/          引擎实测标准
 tests/           集成测试（25 个文件）
