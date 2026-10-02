@@ -263,6 +263,13 @@ export function ProviderSettings() {
   const allLlmNames = new Set(refreshResult.map(r => r.id))
   enabledModels.filter(m => m.provider_id === selectedLlmId).forEach(m => allLlmNames.add(m.model_name))
 
+  // 预设条目查询（取 `retired` / `retired_note`）——**从 caps.llmModels 查，不是 refreshResult**：
+  // refreshResult 走通厂商 API 时是 `{id, owned_by}` 裸条目（不含下线标记），只有 API 拉取
+  // **失败回退预设**时才带；而 caps.llmModels 是 config 预设，**永远带**，且能覆盖
+  // 「已启用但已下线」这个最该提醒的场景（用户正在用它，却不知道官方已下架）。
+  const presetOf = (name: string) =>
+    (caps?.llmModels?.[selectedLlmId] ?? []).find(p => p.id === name)
+
   // 从 EngineRegistry 动态获取已注册引擎列表，不再硬编码
   const [engineRegistry, setEngineRegistry] = useState<Record<string, string[]>>({})
   useEffect(() => { getEngineRegistry().then(setEngineRegistry).catch(() => {}) }, [])
@@ -346,10 +353,20 @@ export function ProviderSettings() {
                     {[...allLlmNames].map(name => {
                       const enabled = enabledModels.some(em => em.provider_id === selectedLlmId && em.model_name === name)
                       const model = enabledModels.find(em => em.provider_id === selectedLlmId && em.model_name === name)
+                      // 官方下线标记 —— 后端 `_SYNC_OPTIONAL_FLAGS` 保证 retired / retired_note
+                      // 成对下发，note 里已含「建议改用 X」，故整句直接展示，不另拼建议
+                      const preset = presetOf(name)
+                      const retiredTip = preset?.retired
+                        ? `已下线${preset.retired_note ? ` · ${preset.retired_note}` : ''}`
+                        : ''
                       return (
                         <div key={name} className="flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-surface-hover text-[13px]">
                           <span className="flex-1 min-w-0">
                             <span className="truncate">{name}</span>
+                            {retiredTip && (
+                              <span data-model-retired className="text-[10px] text-warning ml-1"
+                                title={`官方已下线（${preset?.retired}）`}>{retiredTip}</span>
+                            )}
                             {model?.capabilities && <span className="text-[10px] text-disabled ml-1">{model.capabilities.map(capLabel).join(' · ')}</span>}
                             {model?.context_window != null && <span className="text-[10px] text-accent ml-1">{model.context_window >= 1000 ? `${Math.round(model.context_window / 1000)}K` : `${model.context_window}`} ctx</span>}
                           </span>

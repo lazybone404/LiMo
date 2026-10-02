@@ -269,6 +269,37 @@ describe('DocLibrary — 合成预览：每篇 token / 处理方式（§17.4）'
     // ⚠️ 对照：去掉 canRun 里的 reject 分支 → 按钮可点 → 白等一次往返才被后端拒
     expect((container.querySelector('[data-confirm-synth]') as HTMLButtonElement).disabled).toBe(true)
   })
+
+  it('换模型推荐**排除已下线模型**（retired 非空不进推荐名单）', async () => {
+    // 两个模型窗口都够大，差别只在 retired —— 窗口够大**不构成**推荐理由：
+    // 推荐一个官方已下架的模型 = 让用户去设置页白配一趟（配完调不通，且提示里没线索）。
+    //
+    // ⚠️ 对照：去掉筛选里的 `!m.retired` → 「已下线大模型」出现在 banner 文本里 → 红。
+    previewData = {
+      ...previewData, mode: 'reject', reason: '当前模型窗口不足以做多文档综述',
+      stuff_window: 200000,
+    }
+    useStore.setState({
+      docs: twoDocs(),
+      capabilities: {
+        llmModels: {
+          deepseek: [
+            { id: 'y', name: '已下线大模型', desc: '', context_window: 1000000,
+              retired: '2026-10-02', retired_note: '已下架，建议改用 在线大模型' },
+            { id: 'x', name: '在线大模型', desc: '', context_window: 1000000 },
+          ],
+        },
+      } as unknown as Capabilities,
+    })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    await vi.waitFor(() => expect(container.querySelector('[data-synth-window-banner]')).toBeTruthy())
+    const banner = container.querySelector('[data-synth-window-banner]')!.textContent!
+    expect(banner).toContain('在线大模型')
+    expect(banner).not.toContain('已下线大模型')
+  })
 })
 
 describe('DocLibrary — 对比维度可控（§18）', () => {

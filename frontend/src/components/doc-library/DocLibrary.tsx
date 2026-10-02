@@ -917,13 +917,18 @@ export function DocLibrary() {
         const reject = synthPreview?.mode === 'reject'
         const showWindowBanner = reject || overWindow
         // 换模型推荐：**只提示，不提供切换**（设计 §17.7 明确不做对话框内换模型）
+        //
+        // ⚠️ 必须排除 `retired`（官方已下线）——这是本文件唯一一处「把预设模型名念给用户
+        //    听、让他去设置页配」的地方，推荐一个已下架的模型 = 让用户白跑一趟：
+        //    照着配完发现调不通，而提示里没有任何线索说明原因。窗口够大**不构成**
+        //    推荐理由（`glm-4v-plus` 的 131072 就够某些场景，但它已下架）。
         const stuffWindow = synthPreview?.stuff_window ?? 0
         const bigModels: string[] = []
         if (showWindowBanner && stuffWindow > 0) {
           const seen = new Set<string>()
           for (const list of Object.values(capabilities?.llmModels ?? {})) {
             for (const m of list) {
-              if ((m.context_window ?? 0) >= stuffWindow && !seen.has(m.name)) {
+              if ((m.context_window ?? 0) >= stuffWindow && !m.retired && !seen.has(m.name)) {
                 seen.add(m.name); bigModels.push(m.name)
               }
             }
@@ -937,7 +942,12 @@ export function DocLibrary() {
         return (
           <div className="fixed inset-0 z-300 flex items-center justify-center bg-black/20 backdrop-blur-sm"
             onClick={() => { if (!running) setSynthOpen(false) }}>
-            <div data-synth-dialog className="bg-elevated rounded-2xl shadow-2xl border border-border-light p-6 max-w-105 w-full mx-4 max-h-[85vh] overflow-y-auto animate-[fadeIn_0.15s_ease-out]"
+            {/* ⚠️ 宽度 720px 而非 420px（max-w-105）：本对话框是 fixed 居中，
+                **本来就不受文档库栏位宽度约束**，420px 是自己设窄了——而内容有
+                已选清单 / 标题 / 对比指引 / 逐篇 token 与处理方式 / 原料单选 /
+                维度预设下拉 + 维度列表（§17–§19 三补后更密）。
+                `w-full mx-4` 保证窄屏自动收缩，不需要额外的响应式分支。 */}
+            <div data-synth-dialog className="bg-elevated rounded-2xl shadow-2xl border border-border-light p-6 max-w-180 w-full mx-4 max-h-[85vh] overflow-y-auto animate-[fadeIn_0.15s_ease-out]"
               onClick={e => e.stopPropagation()}>
               <h3 className="text-[17px] font-semibold mb-2 flex items-center gap-2">
                 <Layers size={16} className="text-accent" />合成 {ids.length} 篇对比综述

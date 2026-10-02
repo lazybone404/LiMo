@@ -134,7 +134,13 @@ export interface Capabilities {
   genOptions: Record<string, string[]>
   products: { name: string; label: string; category: string; description: string }[]
   /** LLM 预设表（config.py llm_models）— context_window 结构化窗口，供对话预算展示 */
-  llmModels: Record<string, { id: string; name: string; desc: string; capabilities?: string[]; context_window?: number }[]>
+  llmModels: Record<string, {
+    id: string; name: string; desc: string; capabilities?: string[]; context_window?: number
+    /** 下线日期（如 "2026-10-02"）。非空 = 官方已下架，UI 须提示（不许当正常模型推荐） */
+    retired?: string
+    /** 下线说明（已含「建议改用 X」）。与 retired 成对出现，由后端 `_SYNC_OPTIONAL_FLAGS` 保证 */
+    retired_note?: string
+  }[]>
   version: string
   /** 文件类型→可用引擎名称白名单（后端动态推导） */
   fileTypeMap: Record<string, string[]>
