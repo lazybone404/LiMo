@@ -8,7 +8,7 @@ import { getStreamBuffer } from '../../store/streamBuffers'
 import type { TaskInfo } from '../../store/types'
 import { TabRegistry, type TabDef } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, MessageSquare, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Minimize2, Pencil } from 'lucide-react'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Minimize2, Pencil } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -768,7 +768,9 @@ export function PreviewArea() {
     <>
     <main className="flex-1 flex flex-col overflow-hidden bg-surface rounded-2xl">
       {/* 工具栏 — 对齐 BiliNote MarkdownHeader。
-          沉浸下整条不渲染：tab/复制/导出/宽度/日志/AI 全是**操作入口**，属去噪目标。
+          沉浸下整条不渲染：tab/复制/导出/宽度/日志全是**操作入口**，属去噪目标。
+          ⚠️ 这里**刻意没有 AI 按钮** —— 顶栏「AI」是唯一入口（同一个 toggleAI）。
+          曾两处都有，同屏两个 MessageSquare 图标，用户只会觉得「这图标是什么」。
           ⚠️ 它不在插槽系统里（`hideSlots` 管不到），必须显式控制。
           ⚠️ TOC **刻意保留** —— 它是阅读导航（长文跳章），与「操作噪音」性质不同，
           且本就能折叠成 28px 竖条，空间成本由用户自己控制。隐藏它 = 功能损失而非去噪。 */}
@@ -813,10 +815,6 @@ export function PreviewArea() {
             className={`px-3 py-1.5 text-[12px] rounded-full transition-colors ${showLogs ? 'bg-accent/10 text-accent' : 'text-dimmed hover:bg-surface-hover'}`}
             title="系统日志"
           ><Terminal size={14} /></button>
-          <button
-            onClick={() => useStore.getState().toggleAI()}
-            className="px-3 py-1.5 text-[12px] text-dimmed hover:bg-surface-hover rounded-lg"
-          ><MessageSquare size={14} /></button>
         </div>
       </div>}
 
