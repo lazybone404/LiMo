@@ -15,11 +15,13 @@ from app.core.token import estimate_tokens as _estimate_tokens, DEFAULT_CONTEXT 
 # 文档直传（PDF file 块）：模块级导入——doc_understand 只依赖 app.core.logging，
 # 无循环导入风险（模式 #26：函数内导入是打破循环导入的手段，不是风格偏好）
 from app.services.doc_understand import build_pdf_document
+from app.generation.budget import input_budget_for
 
 logger = logging.getLogger(__name__)
 
-MAX_TOKENS = 16384
-_PROMPT_OVERHEAD = 2000
+# 预算常量已统一到 app.generation.budget（原先在此定义的 MAX_TOKENS=16384 /
+# _PROMPT_OVERHEAD=2000 已移除）。⚠️ 不要在这里重新引入本地常量——创建侧与生成侧
+# 必须共用同一份预算函数，否则小窗口模型上会二次截断、后几篇凭空消失（设计 §4.4.5）。
 
 
 def _optimize_image_data(data_uri: str, max_dim: int = 1024, quality: int = 80) -> str:
@@ -76,10 +78,14 @@ def _sanitize_image_uri(uri: str, optimize: bool) -> str | None:
 class ContentPreparer:
     """生成前的内容准备器。"""
 
-    def __init__(self, store_root: str = "", llm_config: dict | None = None, doc_dir: str = ""):
+    def __init__(self, store_root: str = "", llm_config: dict | None = None,
+                 doc_dir: str = "", budget_profile: str = "single"):
         self.store_root = store_root
         self.doc_dir = doc_dir
         self.llm_config = llm_config or {}
+        # "single" = 普通单文档（与既有行为逐值等价）
+        # "multi"  = 合成文档（等式闭合，见 budget.multi_input_budget）
+        self.budget_profile = budget_profile
 
     # ── 公开接口 ──
 
@@ -178,6 +184,7 @@ class ContentPreparer:
             self.llm_config.get("provider", ""),
             self.llm_config.get("context_limits"),
             self.llm_config.get("model_context_window"),
+            self.budget_profile,
         )
 
         # --- 合并 VL 截图 + 文档图片 → 仅 send_to_llm 时发给 LLM ---
@@ -495,14 +502,27 @@ class ContentPreparer:
         text: str, provider: str,
         context_limits: dict | None = None,
         model_context_window: int | None = None,
+        profile: str = "single",
     ) -> tuple[str, bool]:
-        """如果文本超过模型上下文窗口 80%，截断并返回 (truncated_text, was_truncated)。"""
+        """如果文本超过可用输入预算，截断并返回 (truncated_text, was_truncated)。
+
+        预算由 `app.generation.budget.input_budget_for(context, profile)` 唯一决定
+        （本方法不再自持常量）。`profile`：
+        - `"single"` 普通单文档（与既有算法逐值等价）
+        - `"multi"`  合成文档（等式闭合，见 budget 模块）
+
+        ⚠️ **创建侧与生成侧必须传同一个 `profile` 与同一个 `context`**——合成文档的
+        rawText 是按 `multi` 预算恰好装满的，生成时若按 `single` 截断，用户会看到
+        「内容过长，已截断」。这正是设计 §4.4.5 要消灭的二次截断。
+
+        ⚠️ `model_context_window` 应由调用方从 `resolve_context_window(config, model_id)`
+        取好后传入（见 `routers/generate.py`）。此处退回 `provider` 兜底表只是**最末一层**，
+        与 `llm_models` 预设可差数倍（dashscope/qwen3.8-max：预设 131,072 / 兜底 1,000,000）。
+        """
         limits = {**_DEFAULT_CONTEXT, **(context_limits or {})}
         context = model_context_window or limits.get(provider, 128_000)
 
-        available = int(context * 0.8) - _PROMPT_OVERHEAD - MAX_TOKENS
-        if available <= 0:
-            available = context - MAX_TOKENS - _PROMPT_OVERHEAD
+        available = input_budget_for(context, profile)
 
         tokens = _estimate_tokens(text)
         if tokens <= available:

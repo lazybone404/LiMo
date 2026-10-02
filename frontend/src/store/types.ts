@@ -21,6 +21,17 @@ export interface DocEntry {
   tags: string[]; createdAt: string;
   /** 所属文件夹 id；"" = 未分类 */
   folderId?: string;
+  /**
+   * 合成文档的来源（`sourceType === 'composite'` 时非空）。
+   * ⚠️ 只有这三项 + metadataCorrupt 能判定「这份综述引用了哪几篇」——标题是**展示字段**，
+   * 重名与改名都会让它失效（设计 §4.2.2）。
+   */
+  sourceDocIds?: string[];
+  sourceTitles?: string[];
+  /** 各源 rawText 的 sha256 前 8 位。⚠️ 比 id 更可靠：id 由内容派生，重建索引会重推（§4.2.2） */
+  sourceHashes?: string[];
+  /** 出处头丢失/损坏 → 保留文档但**不猜**来源（§4.2.3） */
+  metadataCorrupt?: boolean;
 }
 
 /** 单层文件夹（纯逻辑分类，不映射磁盘目录） */

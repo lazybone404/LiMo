@@ -339,6 +339,21 @@ polished_mv, notes_mv = await gen.generate_both(
 - **模型解析唯一入口**：`resolve_model()` — generate/chat/process 统一调用
 - **流式+取消**：cancel_event 真正中断 token 消耗，取消保存 partial 可续写
 
+### 多篇合成（2026-10-01）
+
+`POST /api/synthesis/stream` —— 把 N 篇**已入库**文档合成一份跨文档对比综述的**正文**，落库为一个 `sourceType="composite"` 的**普通文档**。
+
+```
+transcript × N ──→ synthesis ──→ 新的 composite transcript ──→ 现成 /generate/{id}/stream
+```
+
+- **三条生命线**：合成产物 = 普通文档（文档库/搜索/标签/文件夹/导出/对话引用/版本管理全部免费获得）· 两步走（只建文档，生成复用现成端点，生成域零批量概念）· 单真相源（合成文档的 rawText **就是**模型输入）
+- **Step 0 分叉**（`generation/synthesis.py`）：`Σ token ≤ multi 预算` → **Stuff**（N 篇原样组装，零 LLM 调用）/ 超出 → **Map-Reduce**（维度发现 + 逐篇固定维度结构化抽取）。「篇数越多越慢」只在超窗时成立
+- **预算**（`generation/budget.py`）：`multi = min(int(cw×0.5), cw−65536−2000)`，`cw` 由调用方从 `resolve_context_window()` 取（⚠️ 生成路径此前**根本没调它**，实际落 provider 兜底表，与预设差 7.6 倍——已修）；窗口 `< 102,536` 显式拒绝
+- **出处头**（`core/transcript_meta.py`）：`<!-- limo-meta {json} -->` 写在 `transcript.md` **第一行**——删 `index.json` 重建时 id 会重推、`sourceType` 被写死空串，只有正文自身扛得住。⚠️ 头**不剥离**（三位一体）；`parse_meta` **只认第一行**；**无头 ≠ 损坏**
+- **降级落进产物**：被压缩/截断的篇在「## 来源文档」逐条标 `✓/⚠`（SSE 提示是一次性的）
+- 详见 [CHANGELOG](CHANGELOG.md) 2026-10-01 与 [CLAUDE.md](../CLAUDE.md)「合成管道」
+
 ---
 
 ## Layer 4：处理层
@@ -394,6 +409,7 @@ class ExecutionGuard:
 | Generate | `/generate/{id}` + `/stream` | cloud |
 | Process | `/process/{id}` | cloud |
 | Retranscribe | `/transcripts/{id}/retranscribe` | **local**（曾错误使用 cloud，已修复） |
+| Synthesis | `/synthesis/stream` | cloud（⚠️ 一次合成占 1/5 池子、持续 N+2 次调用 → 有 900s **整体超时**，显著紧于 `N×单篇超时` 的最坏值，见 `routers/synthesis.py`） |
 
 **陷阱**：`acquire()` 必须在 `try` 紧接之后，否则异常泄漏信号量（generate.py stream 已修复）。
 

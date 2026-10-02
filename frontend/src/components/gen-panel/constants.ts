@@ -40,6 +40,8 @@ export interface TypeMeta {
   isImage: boolean
   isExcel: boolean
   isMedia: boolean
+  /** 多篇合成的对比综述（sourceType === 'composite'）—— 唯一带「来源文档」的类型 */
+  isComposite: boolean
   hasPolish: boolean
   hasVL: boolean
   hasImages: boolean
@@ -59,23 +61,33 @@ export function getTypeMeta(sourceType: string, genOptions: Record<string, strin
   const isPDF = st === 'pdf'
   const isDoc = _ALL_DOC_TYPES.includes(st)
   const isMedia = isVideo || st === 'webpage' || st === 'link'
+  // ⚠️ composite **不在** `_ALL_DOC_TYPES` 里（它是二次产物，不是文档解析类型）——
+  // 故必须显式给分支。不给的话会落到最末的默认支：显示「整理版原文」选项，
+  // 而合成文档根本没有「原文」可整理（它的 rawText 本就是综述素材）。
+  // ⚠️ 这也意味着 `isDoc === false`：GenPanel 里所有以 `isDoc` 为门控的块
+  // （文档引擎选择、EPUB 解读等）对 composite 自动不渲染，不需要额外排除。
+  const isComposite = st === 'composite'
 
   // tabs 从 TabRegistry 自动生成 — 零硬编码，新增 tab 只需注册 TabDef
   const tabs = TabRegistry.forSourceType(st).map(t => ({ key: t.key, label: t.label }))
 
   return {
     sourceType: st,
-    isVideo, isDoc, isPDF, isImage, isExcel, isMedia,
-    hasPolish: !isExcel && !isImage,
+    isVideo, isDoc, isPDF, isImage, isExcel, isMedia, isComposite,
+    hasPolish: !isExcel && !isImage && !isComposite,
     hasVL: isVideo,
     hasImages: st === 'pdf' || st === 'docx' || st === 'pptx' || st === 'epub',
     coreProducts: isImage ? [] : isExcel ? [
       { name: 'both', label: '数据摘要', description: '概况·关键指标·字段解读' },
+    ] : isComposite ? [
+      // 只有笔记（= 对比综述）。⚠️ 后端 `build_both()` 对 composite 返回 (sp, sp)，
+      // 前端不给 polished 入口，两层一致
+      { name: 'notes', label: '对比综述', description: '总表·分维度对比·共识与分歧·综合评价' },
     ] : [
       { name: 'notes', label: '笔记', description: '结构化笔记：提取关键信息' },
       { name: 'polished', label: '整理版原文', description: '去噪音、修正错别字、合并段落' },
     ],
-    generateLabel: isExcel ? '生成数据摘要' : '生成',
+    generateLabel: isExcel ? '生成数据摘要' : isComposite ? '生成对比综述' : '生成',
     availableFormats: genOptions[st] || [],
     tabs,
   }

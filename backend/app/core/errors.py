@@ -117,6 +117,46 @@ class TranscribeError(AppError):
         return cls("TRANS_EMPTY", "正文提取为空，可查看原始文件", detail, recoverable=False)
 
 
+# -- 合成层（多篇文档 → 对比综述）--
+
+class SynthesisError(AppError):
+    """多篇文档合成异常。
+
+    全部是**预期业务状态**（用户选得太少 / 源被删 / 模型窗口不够），故一律
+    `recoverable=True` 且**不显式传 status_code**——按模式 #36，它们应走
+    200 + 结构化错误事件，而不是 500。
+    """
+
+    @classmethod
+    def window_too_small(cls, context_window: int, required: int, detail: str = ""):
+        return cls(
+            "SYNTH_WINDOW_TOO_SMALL",
+            f"当前模型上下文窗口（{context_window}）不足以做多文档综述，"
+            f"需要 {required} 以上。请换一个窗口更大的模型。",
+            detail,
+        )
+
+    @classmethod
+    def too_few_sources(cls, detail: str = ""):
+        return cls("SYNTH_TOO_FEW_SOURCES", "请至少选择 2 篇文档再合并", detail)
+
+    @classmethod
+    def source_missing(cls, missing: list[str], detail: str = ""):
+        return cls(
+            "SYNTH_SOURCE_MISSING",
+            f"有 {len(missing)} 篇源文档已不存在，请刷新文档库后重试",
+            detail or ", ".join(missing),
+        )
+
+    @classmethod
+    def source_empty(cls, titles: list[str], detail: str = ""):
+        return cls(
+            "SYNTH_SOURCE_EMPTY",
+            f"有 {len(titles)} 篇源文档正文为空，无法参与合成",
+            detail or ", ".join(titles),
+        )
+
+
 # -- 生成层 --
 
 class GenerateError(AppError):

@@ -165,7 +165,7 @@ uv run uvicorn main:app --host 127.0.0.1 --port 7413 --reload
 # 注意：--reload 只重载代码变更，不重跑 startup event。
 # 修改 config.yaml / 适配器注册 / 引擎注册后需手动重启。
 
-# 运行测试（25 个测试文件）
+# 运行测试（31 个测试文件）
 python tests/test_prompt.py          # Prompt 构建验证
 python tests/test_adapters.py        # 适配器注册 + 路由
 python tests/test_engines.py         # 引擎注册 + 查找
@@ -191,6 +191,12 @@ python tests/test_search.py          # FTS 全文搜索（snippet 列号 / rank 
 python tests/test_model_caps.py      # 多模态能力检测（"*" 分支 exclude 真在跑 + 对照实验）
 python tests/test_effort.py          # 思考档位真相表 + 调用点覆盖 + 无硬编码字面量
 python tests/test_doc_understand.py  # PDF 直传（闸门 14MiB 两侧 / 编码无损 / 能力门 / 零影响回归 / 超时链 / 调用点对称）
+python tests/test_transcript_meta.py # 出处头编解码（往返 / 标题含 --> 与换行 / 无头≠损坏 / 只认第一行）
+python tests/test_budget.py          # 统一预算（逐值等价 / 取小 / 窗口闸门 / single 不闭合的 xfail(strict) / cw 来源）
+python tests/test_store_composite.py # 合成文档存储（删 index.json 后重建字段仍在 / save_transcript_full 守卫 / 去重豁免 / 损坏标记）
+python tests/test_synthesis.py       # 合成管线（Step 0 分叉 / 预算收敛 / 资产搬运含路径穿越对照 / 降级显式化）
+python tests/test_generate_gate.py   # 生成闸门（产物裁剪 / 格式清空 / metadata_corrupt 提示 / 跳过 auto-title）
+python tests/test_synthesis_api.py   # 合成端点（SSE 协议 / 业务错误走事件 / 槽位归还 / 异常哨兵）
 ```
 
 ### 前端（React/TypeScript/Vite）
@@ -198,7 +204,7 @@ python tests/test_doc_understand.py  # PDF 直传（闸门 14MiB 两侧 / 编码
 ```bash
 cd frontend
 npm run dev       # 开发服务器，端口 5173，API 代理 → 127.0.0.1:7413
-npm test          # vitest（130 tests，12 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary 等，<3s）
+npm test          # vitest（232 tests，20 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/synthesis/getTypeMeta 等，<10s）
 npm run build     # 类型检查 + 生产构建
 npm run lint      # oxlint
 ```
@@ -254,7 +260,9 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 
 ## 架构
 
-### 三层管道
+### 管道总览（三条下游 + 合成回流）
+
+> 下图是「一份 transcript → 三条下游」。**合成管道**（见下）不在图里：它是 N 份 transcript → 一份新 transcript 的**回流**，其产物再走一遍生成管道。
 
 ```
 输入 → Adapter.adapt() → RawTranscript → 存 transcript
@@ -294,6 +302,25 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - 5 个工具：search_docs / lookup_doc / list_docs / search_web / fetch_url
 - 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留 generating，AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice
 - **消息级文档引用**：docIds = 当前选中文档 + 本条 @ 引用（chatStore 组合去重），不绑定会话
+
+**合成管道**（2026-10-01，N 篇已入库文档 → 一份跨文档对比综述；**下游回流进生成管道**）：
+
+```
+transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite transcript
+                    （只建文档，不生成）              ↓
+                                        用户核对「## 来源文档」后自行点生成
+                                              ↓
+                                    GET /generate/{id}/stream（现成端点）
+```
+
+- **三条生命线**：① **合成产物 = 普通文档**（`sourceType="composite"`）→ 文档库/搜索/标签/文件夹/导出/对话引用/版本管理**全部免费获得**；② **两步走**（只建文档，生成走现成端点）→ 生成域**零批量概念**；③ **单真相源**（合成文档的 rawText **就是**模型输入，生成时不许再读原文）
+- **出处头嵌进正文第一行**（`<!-- limo-meta {json} -->` + `## 来源文档` 列表）：删 `index.json` 重建时 id 由 sha256 重推、`sourceType` 被写死空串，只有正文自身能扛住。编解码收口在 `core/transcript_meta.py`（写方读方必须同源）。⚠️ **头不剥离**（三位一体）；`parse_meta` **只认第一行**（防正文级伪造）；**无头 ≠ 损坏**（判据写错会让所有历史文档被标 corrupt）
+- **Step 0 分叉**（`generation/synthesis.py`）：`Σ token ≤ multi 预算` → **Stuff**（N 篇原样组装，**零 LLM 调用**）/ 超出 → **Map-Reduce**（维度发现 1 次 + 逐篇**固定维度结构化抽取** N 次）。Map **不是自由摘要**——自由摘要 = 另一台模型在最终模型看到之前就决定性地筛掉了信息
+- **预算同源**（`generation/budget.py`）：`single` = `int(cw×0.8)−2000−16384`（与既有逐值等价，**含已知低估**，D8 保持现状 + `xfail(strict)` 钉住）；`multi` = `min(int(cw×0.5), cw−65536−2000)`（**必须闭合**）。`cw < 102,536` 显式拒绝（`min()` 会静默取负值）。⚠️ **`cw` 由调用方从 `resolve_context_window()` 取后传入**——生成路径此前**根本没走四层解析**（`resolve_llm_config` 只查第 1 层，实际落 provider 兜底表，与预设差 7.6 倍）
+- **降级落进产物**：被压缩/截断的篇在「## 来源文档」逐条标 `✓/⚠`——SSE 提示是一次性的
+- **资产搬运**：源 `assets/xxx` 复制到新文档并加源序号前缀（`d1_`/`d2_`），**引用必须同步改写**（只复制不改写 = 与不搬运完全一样，却零报错）；⚠️ **每个路径都要 `relative_to` 守卫**（现存同款正则已有 5 个副本，新副本不带守卫 = 新开一条任意文件读取通道）
+- **生成闸门**（`generate.py`）：composite → 不产 polished、清空 `format_list`、跳过 `_auto_title`；`metadataCorrupt` 推 warning 但不阻断
+- 前端入口在**文档库 BatchBar**（选中 ≥ 2 篇）而非 GenPanel——输入的 N 篇是已入库文档，Attention 在文档库。⚠️ `tabRegistry` **只**给 summary/transcript 加 composite，**绝不动 `DOC_TYPES`**（会被 `ALL_TEXT` 展开、白送 polished/mindmap）；`summary.defaultFor` 也要加（`forSourceType` 与 `defaultFor` 是两件事）。详见 CHANGELOG 2026-10-01
 
 ### 文档库（组织能力 2026-09-23；前端交互重设计 2026-09-25）
 
@@ -530,7 +557,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（2026-07-10 起持续沉淀，现 50 条）
+## 关键模式（2026-07-10 起持续沉淀，现 52 条）
 
 以下模式是实现中易错的关键约束，新增代码必须遵守。
 
@@ -599,6 +626,10 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 50. **「集合非空」不等于「有内容」——分组渲染下前者恒真**：`DocList` 的骨架判据曾是 `docsLoading && !rendered.length && !groups?.length`，而**分组模式下 `groups` 永远非空**（按文件夹分组至少有一个 0 篇的「未分类」组）→ 这条判据在默认排列下**一次都没命中过**：冷启动不显示骨架，显示的是「未分类 0」+ 空列表，正是 #19 要杀的那种假空态。判据要写**语义**（`rendered.length > 0 || groups.some(g => g.docs.length > 0)`）。同一根因的另一处：`groups` 非空就照画分组头，会得到「还没有文档」旁边杵着「未分类 0」——空态下必须**连分组头一起跳过**（`!emptyText`）。**教训**：「容器里有元素」是结构事实，「用户能看到东西」是语义事实；一旦给渲染引入了**可以合法为空的中间层**（分组、分区、bucket），两者就分家了。写这类判据时先问一句「这个集合可能含 0 个有效项吗」。（2026-09-25 简略模式 IDE 树）
 
+51. **「能力存在」≠「该路径在用它」——核实一条链要一路核到调用点**：`resolve_context_window()` 确实是四层解析（用户自定义 > 预设 > provider 表 > 32k），函数本身没问题；但**生成路径从头到尾没调用它**——全仓仅 2 个调用点（`chat_context.py` / `reference_compressor.py`），生成走的 `resolve_llm_config()` 只查第 1 层，第 2 层预设从不流入 → 实际落到 provider 兜底表。dashscope/qwen3.8-max 预设 **131,072** vs 兜底表 **1,000,000**，**同一请求两个预算差 7.6 倍**，而两处代码看起来都对。⚠️ **这个错误我自己犯过两次**：设计文档里我曾写「本项目早已是四层解析、按 model_id 优先」为项目辩护——我只核了**函数本身是不是四层**，没核**该路径调的是不是它**。所以「去核实一下」的正确粒度是：**打开调用点，看它用的是哪个函数、传的是哪个变量**——不是打开函数看它写得对不对。这是 #38/#39「断言存在 ≠ 断言有效」的**跨模块版本**：那条是「断言写了但没跑到」，这条是「函数写了但没人调」，两者都是「代码看着完美、行为完全不符」。同批还查出第二处：`single` 预算预留 `max_tokens` 写 16384、真实发出去的是 65536（相差 49152，两处注释都没提），128k 窗口下现有单文档路径**本身就可能超窗**。（2026-10-01 多篇合成 / cw 来源与输出预留）
+
+52. **「成对操作」漏掉任一半 = 结果与「完全没做」一模一样**：资产搬运要「复制文件」+「改写正文引用」两半；只做前一半，文件整齐躺在 `d1_chart_1.png`、正文仍写着 `chart_1.png`——**裂图依旧，且日志全绿**（复制成功、无异常、文件数正确）。这类「白做」比「做错」更难发现，因为没有任何异常信号。写法：测试必须断言**两半的对应关系**（逐条比对「新文件名 ↔ 正文引用」），而不是分别断言「文件复制了」「正文里有 assets/」。同族的还有 #14/#17（双模式必须都覆盖）、#19（双产物必须对称）——**凡是「A 改了，B 也得跟着改」的地方，测试要断的是 A 与 B 的一致性，不是各自的存在性**。（2026-10-01 合成资产搬运）
+
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始
@@ -629,6 +660,19 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 大列表分批渲染 | 前 60 条 + IntersectionObserver 每次 +60（`root` 绑滚动容器）；**全选 = 全部匹配项（跨分批）**；⚠️ 顺带修 `animationDelay: i*50ms`（第 1000 篇要等 50 秒的**功能性错误**） |
 | ✅ | 批量操作 | `POST /api/transcripts/batch`（删除/打标签/移动）；按 action 显式枚举校验；`failed` 明细；全失败 → 400；store 侧一次加锁一次写盘 |
 | ✅ | Ctrl+K 搜索入口 | 顶栏 `SearchBar` 退化为按钮，与 Ctrl+K 共用 `openDocLibSearch`（展开面板 + 聚焦搜索框 + 宽度复位） |
+
+### 🔗 多篇合成（2026-10-01）
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ✅ | 合成产物 = 普通文档 | `sourceType="composite"`，自动获得文档库/搜索/标签/文件夹/导出/对话引用/版本管理（**零链路分支**） |
+| ✅ | 出处头嵌进正文 | `<!-- limo-meta {json} -->` 第一行 + `## 来源文档` 列表；`core/transcript_meta.py` 收口编解码；删 index.json 重建后字段仍在；**无头 ≠ 损坏** |
+| ✅ | Step 0 分叉 | `Σ token ≤ 预算` → Stuff（**零 LLM 调用**）/ 超出 → Map-Reduce（维度发现 + 逐篇固定维度结构化抽取，**非自由摘要**） |
+| ✅ | 预算同源 | `generation/budget.py`：`single` 逐值等价（含已知低估 + `xfail(strict)` 钉住）/ `multi` 闭合；`cw` 由调用方从 `resolve_context_window()` 传入（**修正生成路径此前根本没走四层解析**）；窗口 < 102,536 显式拒绝 |
+| ✅ | 降级显式化 | 被压缩/截断的篇逐条标 `✓/⚠` 落进「## 来源文档」；抽取失败也显式标注，不静默跳过 |
+| ✅ | 资产搬运 | 源 `assets/` 复制 + **引用同步改写** + 源序号前缀防重名；⚠️ **每个路径都过 `relative_to` 守卫**（防路径穿越） |
+| ✅ | 生成闸门 | composite → 不产 polished / 清空 `format_list` / 跳过 `_auto_title`；`metadataCorrupt` 推 warning 不阻断 |
+| ✅ | 前端入口 | BatchBar 合成按钮（≥2 篇）+ 确认对话框（已选清单/标题/对比指引）；DocRow「N 合 1」徽章；「合成」筛选项；tab 只注册 summary/transcript + `defaultFor` |
 
 ### 📝 转录 & 引擎
 
@@ -738,6 +782,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 编辑/输入 mono 字体 | 对话输入框 + 文本/链接/图片/文件 URL 粘贴框统一等宽字体（2026-08-16） |
 | ✅ | 欢迎文档三产物 | 空态示例文档 = 笔记（欢迎简介）/整理版原文（开发者功能）/转录（更新记录，2026-08-16） |
 | ✅ | 产物编辑保护 | notes/polished 手动编辑（源码\|预览分屏）+ 未保存离开三态弹窗（保存并离开/不保存/取消）+ 编辑态绑定来源 docId（弹窗期间切文档不错存）+ 编辑中未保存 × 重新生成拦截（`dirtyEditingDocId` 轻量桥，2026-08-25） |
+| ✅ | 沉浸阅读 | 去噪容器（`Ctrl+\` 开关 / `Esc` 退出 / `hideSlots` 藏侧栏，进入复用 Ctrl+G 的 `processingTasks` 守卫）+ 阅读版式三旋钮（行高 / 每行字数 / 段落区隔，**默认值 = 改造前现状**故零回归）。⚠️ **导出不跟随**（用户决策，已知偏差）。详见 CHANGELOG 2026-10-02 |
 
 ### 🛡️ 安全 & 运维
 
@@ -763,7 +808,6 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ❌ | 知识图谱 / 反向链接 | 文档间引用关系可视化，依赖 `#标签` 语法先落地 |
 | ❌ | Markdown 渲染风格预设 | 多套 CSS 变量集（行高/间距/标题比例），与主题六轴正交 |
 | ❌ | remark-tag 标签插件 | `#标签` 语法在笔记中可点击（纯前端） |
-| ❌ | 沉浸阅读模式 | 需参考成熟设计再动手 |
 | ❌ | 组件/功能挂载插件系统 | 有第三方开发者时再做 |
 | ❌ | 后台任务队列 | 批量任务性能遇瓶颈时（arq/Redis） |
 | ❌ | Controller→Service→Repository 分层 | generate.py 继续膨胀时 |
@@ -775,12 +819,13 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 |----|------|------|------|
 | 📥 内容导入 | 8 | 8 | 100% |
 | 📚 文档库 | 9 | 9 | 100% |
+| 🔗 多篇合成 | 8 | 8 | 100% |
 | 📝 转录 & 引擎 | 8 | 8 | 100% |
 | ✨ LLM 生成 | 11 | 11 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 9 | 9 | 100% |
 | 📊 图表生成 | 11 | 12 | 92% |
 | 📤 导出 | 11 | 12 | 92% |
-| 🎨 前端 UI/UX | 15 | 15 | 100% |
+| 🎨 前端 UI/UX | 16 | 16 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **94** | **96** | **98%** |
+| **合计** | **103** | **105** | **98%** |

@@ -86,6 +86,11 @@ async def get_transcript(tx_id: str, request: Request, store=Depends(get_store))
         "contentHash": tx.get("contentHash", ""),
         "tags": tx.get("tags", []),
         "createdAt": tx.get("createdAt", ""),
+        # 合成来源身份（白名单序列化——store 返回了但这里不列，前端永远拿不到）
+        "sourceDocIds": tx.get("sourceDocIds", []),
+        "sourceTitles": tx.get("sourceTitles", []),
+        "sourceHashes": tx.get("sourceHashes", []),
+        "metadataCorrupt": tx.get("metadataCorrupt", False),
         "rawText": rewrite_asset_urls(tx.get("rawText", ""), tx_id),
     }
 

@@ -72,3 +72,21 @@ def smart_truncate(text: str | None, max_chars: int,
             return truncated[:idx + len(boundary)] + ellipsis
 
     return truncated + ellipsis
+
+
+def sanitize_reference_name(name: str | None, max_len: int = 80) -> str:
+    """结构标记名称清洗——把不可信的名称安全嵌进结构标记。
+
+    当前消费方两处：参考文件的 `来源="{name}"`（prompt.py）与合成文档的出处列表
+    （transcript_meta.py）。名称来自用户（上传文件名 / 文档标题），其中的换行可以
+    伪造成新的一行结构标记，双引号可以闭合属性引号，全角方括号可以让名字里出现与
+    结构标记逐字相同的串。这里只做**结构安全**处理，不做内容审查——内容本就是用户
+    自己的素材，语义层由 prompt 约束负责。
+
+    ⚠️ 本函数只防**名称**这一层。正文级注入（正文里写「忽略以上指令」）它完全无感，
+    不能视为安全边界。
+    """
+    n = " ".join((name or "").split())     # 换行/制表/连续空白 → 单空格
+    n = n.replace('"', "'")
+    n = n.replace('【', '[').replace('】', ']')   # 不与结构标记【参考资料 N】/【文档 i】共用字符
+    return n[:max_len] or "未命名"

@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from app.core.types import RawTranscript, MarkdownView, ProcessResult, Style, GenerateMode
 from app.core.errors import AppError, StoreError
+from app.core.transcript_meta import parse_meta
 
 logger = logging.getLogger(__name__)
 
@@ -151,8 +152,25 @@ class Store:
                 # 故重建必然丢失分类——这里写空串是为保持条目 schema 完整，
                 # 让下游 e.get("folderId") 永远拿到字符串而非 KeyError 之外的意外。
                 "folderId": "",
+                # 合成来源身份（模式 #44 的第三处构造点，必须与 _transcript_index_entry 同构）
+                "sourceDocIds": [], "sourceTitles": [], "sourceHashes": [],
+                "metadataCorrupt": False,
                 "dir_name": dir_name,
             }
+            # ── 出处头是重建后**唯一**能还原合成身份的来源 ──
+            # 重建时 id 由内容 sha256 重推、sourceType 被写死为空、非内容派生字段全丢，
+            # 只有 transcript.md 第一行还留着「我是哪几篇合成的」。解析失败不猜，标损坏。
+            _head, _corrupt = parse_meta(raw_text)
+            if _head:
+                tx_entry["sourceType"] = _head.get("sourceType", "")
+                tx_entry["sourceDocIds"] = list(_head.get("sourceDocIds") or [])
+                tx_entry["sourceTitles"] = list(_head.get("sourceTitles") or [])
+                tx_entry["sourceHashes"] = list(_head.get("sourceHashes") or [])
+            elif _corrupt:
+                tx_entry["metadataCorrupt"] = True
+            # ⚠️ 已知遗留：重建用 sha256(raw_text)[:12] 重推 id，**源文档重建后 id 也会变**
+            #    → sourceDocIds 会悬空。故过期检测只能用 sourceHashes 比对当前 contentHash，
+            #    不按 id 反查（§4.2.2「本项目根本没有稳定 id」）。
             self._index["transcripts"].append(tx_entry)
 
             # 重建 markdown 条目
@@ -248,6 +266,15 @@ class Store:
             # ⚠️ 这个字段缺席时 save_transcript_full 会整体替换 index 条目——即「改标题
             # 顺手抹掉分类」。故 get_transcript() 必须一并返回它（见下）。
             "folderId": data.get("folderId", ""),
+            # ── 合成文档（composite）的来源身份 ──
+            # ⚠️ 这四个字段必须**三处同构**：本函数 / `_rebuild_index` 的内联字面量 /
+            # `_get_or_create_doc_dir` 的占位条目（模式 #44）。只改前两处的实现一切正常，
+            # **直到有人删掉 index.json**——重建后分类与来源全部归零。
+            # 落库时由 `save_transcript` 从 rawText 的出处头解析后传入（正文是单一真相源）。
+            "sourceDocIds": data.get("sourceDocIds", []),
+            "sourceTitles": data.get("sourceTitles", []),
+            "sourceHashes": data.get("sourceHashes", []),
+            "metadataCorrupt": data.get("metadataCorrupt", False),
             "dir_name": data.get("dir_name", "") if "dir_name" in data else "",
         }
 
@@ -335,6 +362,11 @@ class Store:
                 self._index["transcripts"].append({
                     "id": tx_id, "dir_name": dir_name,
                     "createdAt": datetime.now().isoformat(),
+                    # 来源身份默认值（模式 #44 的第三处手工构造点）：占位条目在
+                    # ingest 期间可能被 list_transcripts 读到，缺键会让前端拿到 undefined。
+                    # 真实值由随后的 save_transcript upsert 覆盖。
+                    "sourceDocIds": [], "sourceTitles": [], "sourceHashes": [],
+                    "metadataCorrupt": False,
                 })
                 self._save_index()
         return d
@@ -364,22 +396,39 @@ class Store:
 
     # ── RawTranscript CRUD ──
 
-    def save_transcript(self, tx: RawTranscript) -> bool:
+    def save_transcript(self, tx: RawTranscript, skip_dedup: bool = False) -> bool:
+        """写入新文档（正文 + 索引条目）。返回 False 表示被内容去重拦下。
+
+        `skip_dedup=True`：**合成文档专用**。三条理由——
+        ① 去重是为「重复导入同一文件」设计的，合并 N 篇是用户的显式动作；
+        ② 同一批源重复合并会得到**逐字相同**的 rawText（含同一份出处头），
+           去重会静默复用旧文档——既违背「新建文档」的可见语义，又抛出陈旧快照；
+        ③ 出处头保证合成文档与任何普通文档不可能碰撞。
+        """
         if not tx.content_hash:
             tx.content_hash = hashlib.sha256(tx.raw_text.encode()).hexdigest()
-        existing = self.find_by_hash(tx.content_hash)
-        if existing:
-            logger.info(f"内容重复，拒绝写入: {tx.title} == {existing.get('title')}")
-            return False
+        if not skip_dedup:
+            existing = self.find_by_hash(tx.content_hash)
+            if existing:
+                logger.info(f"内容重复，拒绝写入: {tx.title} == {existing.get('title')}")
+                return False
 
         doc_dir = self._get_or_create_doc_dir(tx.id, tx.title)
         # 写入 transcript.md（纯 rawText）
         self._atomic_write(doc_dir / "transcript.md", tx.raw_text)
 
+        # 出处头（合成文档）：从 **rawText 本身**解析，而不是另开一个入参——
+        # 「rawText == 模型输入 == 用户所见」是本设计的前提，身份多一个来源就多一处漂移。
+        # 无头的普通文档走 (None, False) 分支，字段取默认值，零行为变化。
+        head, head_corrupt = parse_meta(tx.raw_text)
+        head = head or {}
+
         data = {
             "id": tx.id,
             "title": tx.title,
-            "sourceType": tx.source_type.value if hasattr(tx.source_type, 'value') else tx.source_type,
+            # header 优先：合成端点即使漏传 source_type，也不会让文档丢掉 composite 身份
+            "sourceType": head.get("sourceType") or (
+                tx.source_type.value if hasattr(tx.source_type, 'value') else tx.source_type),
             "sourceUrl": tx.source_url,
             "sourceFileName": tx.source_file_name,
             "sourceFilePath": tx.source_file_path,
@@ -389,6 +438,10 @@ class Store:
             "metadata": _serialize_metadata(tx.metadata),
             "tags": tx.tags,
             "createdAt": tx.created_at or datetime.now().isoformat(),
+            "sourceDocIds": list(head.get("sourceDocIds") or []),
+            "sourceTitles": list(head.get("sourceTitles") or []),
+            "sourceHashes": list(head.get("sourceHashes") or []),
+            "metadataCorrupt": head_corrupt,
         }
         with self._lock:
             entry = self._transcript_index_entry(data)
@@ -423,12 +476,20 @@ class Store:
             return None
         raw_text = tx_path.read_text(encoding="utf-8")
 
+        # ── 出处头**优先于 index**（设计 §4.2「transcript.md 是单一真相源」）──
+        # 索引重建后 id 会被重推、sourceType 被写死为空、非内容派生字段全丢；
+        # 只有 rawText 的第一行能还原合成文档的身份。故以 header 为准，index 兜底。
+        # ⚠️ 损坏时**不猜**（不按标题反查来源）——一份带着错误来源清单的文档
+        # 比一份标着 metadata_corrupt 的文档坏得多（项目「失败显式化」原则）。
+        head, head_corrupt = parse_meta(raw_text)
+        head = head or {}
+
         # 从 index entry 重建完整 dict（保持调用方兼容）
         meta = entry.get("metadata", {})
         return {
             "id": entry["id"],
             "title": entry.get("title", ""),
-            "sourceType": entry.get("sourceType", ""),
+            "sourceType": head.get("sourceType") or entry.get("sourceType", ""),
             "sourceUrl": entry.get("sourceUrl", ""),
             "sourceFileName": entry.get("sourceFileName", ""),
             "sourceFilePath": entry.get("sourceFilePath", ""),
@@ -442,6 +503,11 @@ class Store:
             # ⚠️ 必须返回：PATCH /transcripts 读的就是这个 dict，改完标题/标签后整体
             # save_transcript_full 回去；少了它，改标题就等于把文档移出文件夹。
             "folderId": entry.get("folderId", ""),
+            # 同理必须返回（同一个整体替换的坑），合成来源身份四条一并返回
+            "sourceDocIds": list(head.get("sourceDocIds") or entry.get("sourceDocIds") or []),
+            "sourceTitles": list(head.get("sourceTitles") or entry.get("sourceTitles") or []),
+            "sourceHashes": list(head.get("sourceHashes") or entry.get("sourceHashes") or []),
+            "metadataCorrupt": head_corrupt or bool(entry.get("metadataCorrupt", False)),
         }
 
     def delete_transcript(self, id: str) -> bool:
@@ -545,8 +611,17 @@ class Store:
                     # 这里是**整体替换** index 条目，故任何「新 entry 里没有、旧 entry 里
                     # 有」的字段都会被静默抹掉。folderId 不属于「改标题/标签」的语义，
                     # 调用方没显式传就保持原值（分类只由文件夹 API 改动）。
+                    #
+                    # ⚠️ 合成来源身份同理，且这里**是唯一的静默数据损坏入口**：
+                    # PATCH /transcripts、retranscribe、_auto_title 三个调用方都不会带
+                    # 这四个字段——漏守卫 = 改一次标题就把来源清单抹成 []，而**零报错**。
                     if "folderId" not in tx_data:
                         new_entry["folderId"] = entry.get("folderId", "")
+                    for _f in ("sourceDocIds", "sourceTitles", "sourceHashes"):
+                        if _f not in tx_data:
+                            new_entry[_f] = entry.get(_f, [])
+                    if "metadataCorrupt" not in tx_data:
+                        new_entry["metadataCorrupt"] = entry.get("metadataCorrupt", False)
                     self._index["transcripts"][i] = new_entry
                     self._save_index()
                     return True

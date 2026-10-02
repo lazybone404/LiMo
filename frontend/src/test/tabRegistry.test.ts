@@ -107,6 +107,22 @@ describe('TabRegistry', () => {
   })
 })
 
+describe('TabRegistry — composite（多篇合成）', () => {
+  // 对照实验（已验证有区分力）：把 'composite' 加进 `DOC_TYPES`（那会被 `ALL_TEXT`
+  // 展开给 polished），或给 mindmap 的 sourceTypes 也加上 → 本组两条**都会红**
+  // （多出 polished / mindmap）——这正是「顺手加进 DOC_TYPES 最省事」的代价。
+  it('composite 恰好只有 笔记 + 转录 两个 tab', () => {
+    expect(TabRegistry.forSourceType('composite').map(t => t.key)).toEqual(['summary', 'transcript'])
+  })
+
+  it('composite 的 defaultFor 是 summary', () => {
+    // ⚠️ 这条与上面那条**测的不是同一件事**：列出哪些 tab ≠ 生成完停在哪个 tab。
+    // 只加 `sourceTypes` 不加 `defaultFor` 时，上一条照样绿，而用户点完生成会停在
+    // 「转录」tab 上（得手动点一次「笔记」）。
+    expect(TabRegistry.defaultFor('composite')).toBe('summary')
+  })
+})
+
 describe('TabRegistry re-registration', () => {
   it('should override existing tab', () => {
     const before = TabRegistry.count

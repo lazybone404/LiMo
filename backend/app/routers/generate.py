@@ -24,7 +24,7 @@ from app.core.dependencies import get_store, get_config, get_guard
 from app.core.errors import GenerateError, AppError
 from app.core.reference_store import get_references
 from app.core import logging as log
-from app.core.model_resolver import resolve_llm_config
+from app.core.model_resolver import resolve_llm_config, resolve_context_window
 from app.llm import LLMService, CancelledError
 from app.generation.generator import Generator, _post_process_content_markers, _post_process_screenshots
 from app.generation.effort import effort_for, chunk_timeout_for
@@ -184,6 +184,13 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         store = request.app.state.store
         config = request.app.state.config
         llm_config = resolve_llm_config(config, req.model_id)
+        # ── 上下文窗口：四层解析后在生成路径上补全（2026-10-01）──
+        # `resolve_llm_config` 只查**第 1 层**（enabled_models.context_window，:62-65），
+        # `llm_models` 预设从不流入 → ContentPreparer 会落到 provider 兜底表。两者可差数倍
+        # （dashscope/qwen3.8-max：预设 131,072 / 兜底 1,000,000）。此处补上完整四层解析，
+        # 使创建侧（synthesis）与生成侧用的是同一个 cw。
+        # ⚠️ 副作用（已记录）：未知模型从 content_preparer 的 128k 兜底变为保守 32k。
+        llm_config["model_context_window"] = resolve_context_window(config, req.model_id)
         # ── LLMService ──
         # 非流式路径没有 asyncio.timeout 包壳，SDK 的 httpx 超时是唯一闸门，
         # 所以多图场景必须在这里就放宽，否则照样撞 330。
@@ -237,8 +244,20 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         if req.source_type:
             _warn_mismatched_fields(req.source_type, req.model_dump())
 
+        # ── 合成文档闸门（设计 §14.6，与流式端点同源）──
+        # 只有一个产物：对比综述（落 notes 槽）。它的 rawText 已是模型输入的最终形态
+        # （按 multi 预算恰好装满，§4.4.4 单真相源），polished 与任何格式处理都只会
+        # 在装配阶段改动它。改写 mode 的**源头**而非事后覆盖 want_*：
+        # 下游 `if want_notes and want_polished` / `elif want_polished` / `elif want_notes`
+        # 三分支全由它推导，改一处比打三个补丁清楚。
+        _is_composite = source_type == "composite"
+        # ⚠️ 上面 :198 的 `request_timeout` 仍按 `req.formats` 原样算，不随此处清空——
+        # 多留余量无害（与流式端点「闸门没过时多留余量无害」是同一取舍），
+        # 且非流式路径没有 asyncio 总超时，收紧它只会让长输入更容易撞死。
+        formats_list = [] if _is_composite else req.formats
+
         # ── 解析 mode 为产物列表（逗号分隔）──
-        _raw_mode = req.mode if req.mode else ""
+        _raw_mode = "notes" if _is_composite else (req.mode if req.mode else "")
         if _raw_mode == "both":
             _raw_mode = "notes,polished"
         mode_list = [m.strip() for m in _raw_mode.split(",") if m.strip()] if _raw_mode else []
@@ -250,14 +269,19 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                  model=llm_config.get("provider", "?"))
         _active_generations.add(transcript_id)
         try:
-            preparer = ContentPreparer(str(store.root), llm_config,
-                                       doc_dir=str(store._get_doc_dir(transcript_id) or ""))
+            preparer = ContentPreparer(
+                str(store.root), llm_config,
+                doc_dir=str(store._get_doc_dir(transcript_id) or ""),
+                # 合成文档的 rawText 是按 multi 预算**恰好装满**的，生成侧必须同 profile
+                # 同 cw —— 否则刚建好的综述会在生成时被二次截断（设计 §4.4.5 / §14.6）
+                budget_profile="multi" if source_type == "composite" else "single",
+            )
             prompt_builder = PromptBuilder(target_language=config.get("target_language", "zh-CN"))
             gen = Generator(llm, preparer, prompt_builder, config=config)
 
             # ── 截图用视频下载（非流式端点也需要，对标流式端点 line 376-396）──
             screenshot_video_path: str | None = None
-            if "screenshot" in req.formats and source_type == "video" and not req.video_understanding:
+            if "screenshot" in formats_list and source_type == "video" and not req.video_understanding:
                 source_url = tx.get("sourceUrl", "")
                 if source_url:
                     log.info("原片截图：开始下载视频", url=source_url[:80])
@@ -279,7 +303,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
             if want_notes and want_polished:
                 polished_mv, notes_mv = await gen.generate_both(
                     raw_text=epub_text, title=tx.get("title", ""), style=req.style,
-                    source_type=tx.get("sourceType", "text"), formats=req.formats,
+                    source_type=tx.get("sourceType", "text"), formats=formats_list,
                     vl_config=vl_config, user_notes=req.user_notes,
                     reference_texts=_resolve_reference_texts(req.reference_ids),
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
@@ -306,7 +330,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 polished_mv = await gen.generate(
                     raw_text=epub_text, title=tx.get("title", ""), style=req.style,
                     source_type=tx.get("sourceType", "text"), mode="polished",
-                    formats=req.formats, vl_config=vl_config, user_notes=req.user_notes,
+                    formats=formats_list, vl_config=vl_config, user_notes=req.user_notes,
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                     ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
                     video_direct=req.video_direct,
@@ -325,7 +349,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 notes_mv = await gen.generate(
                     raw_text=epub_text, title=tx.get("title", ""), style=req.style,
                     source_type=tx.get("sourceType", "text"), mode="notes",
-                    formats=req.formats, vl_config=vl_config,
+                    formats=formats_list, vl_config=vl_config,
                     user_notes=req.user_notes,
                     reference_texts=_resolve_reference_texts(req.reference_ids),
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
@@ -444,8 +468,19 @@ async def generate_stream(transcript_id: str, request: Request,
     if style not in _valid_styles:
         style = "detailed"
 
+    # ── source_type 上移到 mode 解析**之前**（合成文档闸门要按它改写 mode）──
+    source_type = tx.get("sourceType", "text")
+
     # ── 解析 mode 为产物列表（逗号分隔）──
     _raw_mode = mode if mode else ""
+    # ── 合成文档闸门（设计 §14.6）──
+    # 合成文档**只有一个产物**：对比综述（落 notes 槽）。理由不是"没人给它做 polished"，
+    # 而是它的 rawText 已经是模型输入的最终形态（按 multi 预算恰好装满，§4.4.4 单真相源）——
+    # polished 与任何格式处理都只会在**装配阶段改动它**，把一个刻意定稿的输入变成第二个版本。
+    # 在这里改写 `_raw_mode` 而不是事后覆盖 `stream_mode`：后面 want_notes / want_polished /
+    # stream_mode 三处全由 mode_list 自然推导，改一处源头比在下游打三个补丁清楚。
+    if source_type == "composite":
+        _raw_mode = "notes"
     # "both" → "notes,polished"（向后兼容）
     if _raw_mode == "both":
         _raw_mode = "notes,polished"
@@ -475,6 +510,11 @@ async def generate_stream(transcript_id: str, request: Request,
     # ── LLMService ──
     # format_list 上移到构造之前：request_timeout 要按是否含 chart 分档。
     format_list = [f.strip() for f in formats.split(",") if f.strip()]
+    # 合成文档不支持任何格式处理（图表只入 notes、截图要视频、目录/翻译会改写正文）。
+    # 清在这里而非 prompt 层：`format_list` 同时驱动 request_timeout 与 format 注入，
+    # 只清一处会让「超时按图表档放宽、实际不生成图表」这种对不上的状态存在。
+    if source_type == "composite":
+        format_list = []
     # ⚠️ doc_direct 必须传（此前漏了，非流式那侧是传的）：request_timeout 是 httpx 的
     # read timeout，必须 ≥ 单 chunk 静默超时，否则直传时 SDK 会先于我们的 wait_for
     # 抛超时——异常被下游 except Exception 归到「连接中断」并按那条路重试，
@@ -487,15 +527,24 @@ async def generate_stream(transcript_id: str, request: Request,
         raise AppError("GEN_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
     # ── 内容准备 + Prompt 构建 ──
+    # source_type 已在上方（mode 解析前）取好：ContentPreparer 要按它决定预算
+    # profile，而 profile 必须在构造时就定下来。
     target_language = config.get("target_language", "zh-CN")
     prep_cfg = {
         "provider": llm.provider, "api_key": llm.api_key,
         "model": {llm.provider: llm.model},
         "base_url": {llm.provider: llm.base_url},
         "capabilities": llm.capabilities,
+        # 上下文窗口：四层解析（同非流式端点）。prep_cfg 此前**不含**该字段，
+        # 于是 ContentPreparer 落到 provider 兜底表——与非流式端点的预算不同源。
+        "model_context_window": resolve_context_window(config, model_id),
     }
-    preparer = ContentPreparer(str(store.root), prep_cfg,
-                               doc_dir=str(store._get_doc_dir(transcript_id) or ""))
+    preparer = ContentPreparer(
+        str(store.root), prep_cfg,
+        doc_dir=str(store._get_doc_dir(transcript_id) or ""),
+        # 同非流式端点：合成文档必须用 multi profile，否则生成时二次截断（§4.4.5）
+        budget_profile="multi" if source_type == "composite" else "single",
+    )
     prompt_builder = PromptBuilder(target_language=target_language)
 
     # VL 配置
@@ -523,7 +572,6 @@ async def generate_stream(transcript_id: str, request: Request,
 
     epub_text = tx["rawText"]
 
-    source_type = tx.get("sourceType", "text")
     log.info("生成开始", source_type=source_type, formats=",".join(format_list))
 
     # ── 截图用视频下载（不开启画面理解时也支持"插入原片截图"）──
@@ -570,6 +618,14 @@ async def generate_stream(transcript_id: str, request: Request,
         _disconnect_task = asyncio.create_task(
             _watch_disconnect(request, cancel_event))
         try:
+            # ── 出处头损坏提示（设计 §4.2.3 / §14.6）──
+            # 合成文档的第一行 meta 若解析失败，`get_transcript` 会把它标为
+            # `metadataCorrupt` 并**不猜**来源。这里只是告知，**不阻断生成**：
+            # 正文还在，综述照样能写；坏掉的是「来源清单」，而用户正会拿它去核对。
+            # 用户不知道它不可信的后果，比生成失败严重——他会照着错的清单一篇篇核。
+            if tx.get("metadataCorrupt"):
+                yield f"data: {json.dumps({'type': 'warning', 'kind': 'metadata_corrupt', 'message': '本文档的来源信息已损坏，来源清单不可用于核对'}, ensure_ascii=False)}\n\n"
+
             all_chunks: list[str] = []
             video_path: str | None = None  # P0-5：finally 统一清理（prepare 失败时未定义，需预初始化）
             # P1-8：双产物协程引用（断连/异常时 finally 取消，防孤儿任务继续烧 token）
@@ -1169,6 +1225,13 @@ def _auto_title(store: object, tx_id: str, content: str) -> None:
     """如果文档标题是自动生成的（URL/哈希/未命名），用生成内容的第一行标题替换"""
     tx = store.get_transcript(tx_id)
     if not tx:
+        return
+    # ── 合成文档跳过（设计 §14.6）──
+    # 本函数的**前提**是「这个标题是机器凑出来的，可以覆盖」（URL / 哈希 / 未命名）。
+    # 而合成文档的标题是用户在对话框里输入的合并名——属**用户意图**。
+    # ⚠️ 不拦会被下面的 `is_auto` 判据误伤：合并名常含 `_`（多篇标题拼接）或超 40 字，
+    # 正好落在「技术名」「超长文本」两条里 → 用户起的名字被生成正文首行顶掉。
+    if tx.get("sourceType", "") == "composite":
         return
     old_title = tx.get("title", "")
     # 判断是否需要替换：URL 格式、纯哈希、未命名

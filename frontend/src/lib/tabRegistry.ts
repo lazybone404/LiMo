@@ -134,10 +134,15 @@ const DOC_TYPES = ['pdf', 'docx', 'pptx', 'document', 'epub']
 const ALL_TEXT = ['video', 'webpage', 'text', 'link', ...DOC_TYPES]
 
 // ── 笔记 ──
+// ⚠️ `composite` 只加在这个 tab 与 transcript 上，**绝不能加进 DOC_TYPES / ALL_TEXT**——
+// 那两处是 `polished` / `mindmap` 的 sourceTypes 展开源，加进去会让合成文档凭空多出
+// 「整理版原文」与「思维导图」（它是 N 篇的综述，没有「原文」可言）。见 M8 测试。
 TabRegistry.register({
   key: 'summary', label: '笔记',
-  sourceTypes: ['video', 'webpage', 'text', 'link', 'pdf', 'docx', 'pptx', 'document', 'epub', 'xlsx'],
-  defaultFor: ['video', 'webpage', 'text', 'link', 'epub'],
+  sourceTypes: ['video', 'webpage', 'text', 'link', 'pdf', 'docx', 'pptx', 'document', 'epub', 'xlsx', 'composite'],
+  // ⚠️ `defaultFor` 与上面的 `sourceTypes` 是**两件事**：前者决定「生成完自动停在哪个 tab」。
+  // 漏掉它 → 用户点完「生成对比综述」停在「转录」tab 上，得自己手动点「笔记」。
+  defaultFor: ['video', 'webpage', 'text', 'link', 'epub', 'composite'],
   priority: 10,
   contentSource: 'notes', htmlMode: 'notes', exportSuffix: '', exportLabel: '笔记',
   isStandardMarkdown: true, showBanner: true, showTOC: true, showVersionSwitcher: 'notes',
@@ -158,7 +163,9 @@ TabRegistry.register({
 // ── 转录 ──
 TabRegistry.register({
   key: 'transcript', label: '转录',
-  sourceTypes: ['video', 'webpage', 'text', 'link', 'pdf', 'docx', 'pptx', 'document', 'epub'],
+  // composite 的「转录」= 合成后的正文本身（含 `## 来源文档` 清单）——用户要能核对
+  // 到底选了哪几篇、有没有被截断，所以这个 tab 必须有，且是只读的查看入口
+  sourceTypes: ['video', 'webpage', 'text', 'link', 'pdf', 'docx', 'pptx', 'document', 'epub', 'composite'],
   priority: 12,
   contentSource: 'rawText', htmlMode: 'transcript', exportSuffix: '-转录', exportLabel: '转录',
   showBanner: true,

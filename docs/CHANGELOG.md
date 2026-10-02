@@ -6,6 +6,206 @@
 
 ---
 
+## 2026-10-02 — 沉浸阅读（去噪容器 + 阅读版式）
+
+用户的问题原话：「沉浸式阅读应该怎么做比较好，假如去网上看看各种开源项目最好拼的是哪一种，各种方案优缺点又如何，怎么适配到我们这个里面」。
+
+调研结论是**三类不拼**，**抄规范不抄代码**——依据是 W3C《中文排版需求》(clreq) 与 GB/T 15834-2011，不是某个库的实现：
+
+| 不拼的 | 代表 | 为什么 |
+|---|---|---|
+| Reader Mode 的**抽取层** | Readability.js / Trafilatura / Firefox 阅读视图 | 这些项目的主要工作量在「从混乱 HTML 里找正文」，而 LiMo 的正文**导入时已被适配器抽成结构化 Markdown**——这一层免费跳过。拼进来只剩它最不值钱的部分 |
+| 两个 **focus mode** 变体 | Obsidian Typewriter Mode / iA Writer 段落聚焦 | 业界的 focus mode 是三个东西：Zen Mode（藏 UI）/ Typewriter Scrolling（当前行钉中央）/ Paragraph Focus（当前段高亮）。**后两者是写作辅助**，依赖「光标定义的当前行/当前段」——LiMo 是**阅读**场景，没有光标，拼进来会得到一个**没有指针可跟随的高亮** |
+| **heti** 整体引入 | heti（赫蹏） | 优秀的全量中文排版库，但服务于「一篇连续的中文散文」，而 LiMo 产物是结构化技术笔记（标题/列表/表格/代码块/公式/图表），90% 与它无关；且它的 `autoSpacing()` 用 JS 遍历 DOM 插空格，与 React 重渲染打架 |
+
+分三层落地：**R0** 修既有 bug → **R1** 去噪容器 → **R2** 版式（「纸感」的实质）。
+
+### R0 — `--texture-opacity` 冷启动（既有 bug）
+
+六轴里唯独纹理**强度**不在 store 里，应用逻辑留在设置页组件的滑块 `onChange` 里，启动链从未调用它 → 冷启动时 `data-texture` 恢复了、强度却回落到 CSS 兜底 `0.5`。
+
+**零报错、零视觉异常**（0.5 是个完全合理的值），只有用户明确设过非 50 的强度并重启才看得出来。`store/index.ts` 启动链补 `applyIntensity(getSavedIntensity())`。
+
+> ⚠️ 这只是补了一行，**根因未除**（它仍是唯一不在 store 的主题轴）。并入 store 列为 R3。
+
+### R1 — 沉浸容器（3 个文件，零后端改动）
+
+`immersive` 状态 + 藏两侧面板/顶栏/预览工具条 + `Ctrl+\` 开关 + `Esc` 退出。
+
+| 决策 | 选择 | 理由 |
+|---|---|---|
+| 快捷键 | **`Ctrl+\`** | ❌ `Ctrl+Shift+F` 双重失效：`e.key` 在 Shift 下是**大写 `'F'`**（现有 case 全是小写，写 `'f'` **永不触发**）；且 Windows 上 `Ctrl+Shift` 是**默认的输入法切换前缀**，对中文用户会被输入法吞掉。`Ctrl+\` 与 LobeChat Zen Mode 同键 |
+| Esc 监听 | **独立 `useEffect` + 捕获阶段** | 它进不去 `handleAppKeyDown` —— 那里开头的 `if (!(e.metaKey \|\| e.ctrlKey)) return` 会把裸 Esc 直接吞掉。沉浸隐藏了**所有**可见出口，快捷键万一失效用户就被困住，故 Esc 是硬需求 |
+| 进入守卫 | **复用 Ctrl+G 的 `processingTasks` 判据** | `hideSlots` 是**真卸载**（SlotLayout 命中即 `return null`），不是 CSS 隐藏 —— 正在跑的任务会变僵尸。项目对同一件事早已做过选择，沉浸绕开它就是绕过保护 |
+| 退出方向 | **不设限** | 否则有任务时用户被永远困在沉浸里 —— 比僵尸任务更糟（看得见却出不去） |
+| TOC | **刻意保留**（偏离计划） | 计划原文写「工具条与 TOC 在沉浸下不渲染」。TOC 是**阅读导航**（长文跳章），与 tab/导出那些操作入口性质不同；且它本就能折叠成 28px 竖条，空间成本由用户自己控制。隐藏它是功能损失而非去噪 |
+| FloatingAI / ExportPanel | 隐藏 | 它们是操作入口 |
+| Toast / 后端 down 横幅 | **保留** | 瞬时反馈与关键系统状态，藏了会让操作变成无声 |
+
+### R2 — 阅读版式（「纸感」的实质）
+
+三个旋钮：**行高** / **每行字数** / **段落区隔**。
+
+⚠️ **默认值 = 改造前的现状**（行高 `1.5` = vendor `github-markdown-css` 现值；段落式 `web` = `text-indent:0 + margin-bottom:10px`；每行字数 `null` = 沿用比例制）。所以「用户不调」时渲染**逐值不变** —— 零回归是被 `test/readingPrefs.test.ts` 钉住的，不是靠自觉。
+
+**沉浸 ≠ 纸感**：沉浸只负责去噪，纸感来自用户主动调参，两者刻意解耦。
+
+- **段落区隔是二选一，不是两个旋钮**：clreq 明写「首行缩进」与「加大段距」是两套并行传统、**不建议混用**（又缩排又加大段距，两种区隔信号叠加不加乘，只显累赘）。做成两个自由旋钮就能拼出被禁止的组合
+- **版宽在 JS 里算，不做 CSS 变量**：`contentMaxW` 应用在带内联 `fontSize: fontSizeScale[…]em` 的 `.preview-content` 上，写成 `34em` 会随宽度档漂移（版宽跟着「紧凑/宽屏」变，**方向反了**）；且 `.markdown-body` 里 vendor 硬写 `font-size:16px`，是**另一个** em 基准。改用固定 16px 换算（`computeContentMaxW` 纯函数，可单测）
+- **不受 `THEME_PRESETS` 影响**：版式关乎阅读生理，不该被「换一个主题包」连带重置
+
+⚠️ **前置改动（不做会让整个 R2 静默半失效）**：`MarkdownParagraph` 有两个分支 —— `components.a` / `.code` / `.img` **都是函数**，所以**段落里只要有链接、行内代码或内联图片就渲染成 `<div>` 而不是 `<p>`**（技术笔记里这是绝大多数段落）。排版钩子必须挂在一个**两个分支都带**的类名（`md-para`）上；只给 `<p>` 挂的话会出现「纯文本段落缩进了、带行内代码的段落没缩进」的随机抖动，**看起来完全像渲染正常**。`>` 子选择器天然排除 `li > .md-para`、表格与引用内的段落，不需要 `:not()` 体操。
+
+⚠️ **`.md-para` 还顺带解决了一件事**：Prism 用的是 `PreTag="div"`，项目里代码块容器**根本不是 `<pre>`** —— 任何「排除 pre」的规则都会漏掉真实代码块。代码块靠「行高只下放到 `.md-para` / `li`、不下放到 `.markdown-body`」来保护。
+
+**未加 `text-autospace`**（计划 §16.2 的「块 C」）：MDN 记其 initial value 即 `normal`，很可能是 no-op；本机无法证实 WebView2 的实际行为，故**不加** —— 不加它不影响版式，加了却可能把既有行为当新功能交付。
+
+### 影响范围
+
+| 文件 | 改动 |
+|---|---|
+| `frontend/src/lib/reading-prefs.ts` | **新建**：三件套（getSaved / apply / save）+ `computeContentMaxW` 纯函数 + `CONTENT_WIDTH_RATIO`（与 PreviewArea 的 `WIDTH_RATIO` 单源） |
+| `frontend/src/store/themeSlice.ts` | `reading` 字段 + `setReading(patch)`（patch 形式，三个值合成一个 JSON key 落盘） |
+| `frontend/src/store/index.ts` | 启动链补 `applyIntensity`（R0）与 `applyReading`（R2） |
+| `frontend/src/store/uiSlice.ts` | `immersive` + `toggleImmersive` / `setImmersive`（进入过守卫、退出不设限） |
+| `frontend/src/lib/markdown-components.tsx` | `MarkdownParagraph` 两个分支都挂 `md-para`（保留 `props.className`） |
+| `frontend/src/index.css` | `:root` 的 `--read-line-height: 1.5` + `.md-para` 的段落式/行高规则 |
+| `frontend/src/App.tsx` | `Ctrl+\` / Esc 监听 / 顶栏与浮窗受 `immersive` 控制 / `hideSlots` |
+| `frontend/src/components/preview/PreviewArea.tsx` | 工具条隐藏 + 退出按钮 + 版宽改走 `computeContentMaxW` |
+| `frontend/src/components/settings/SettingsPage.tsx` | 外观节新增独立的「阅读版式」卡片（**不并入「推荐搭配」**） |
+
+### 已知代价（记录在案）
+
+- **进出沉浸会重新挂载 GenPanel**（`hideSlots` 是真卸载）→ 参考文件句柄（`refFile`，session-only 不持久化）与**导入中的文件/进度**会丢。守卫拦不住这个（用户没在跑任务也能进沉浸）。进出是低频操作，暂接受；若实测代价明显，R1.5 改「CSS 隐藏而非卸载」
+- **每次进出 2 个 API 调用**（GenPanel 挂载打 `/api/models` + `/api/providers`，无缓存）
+- **导出不跟随沉浸版式**（用户已决策「先不跟随」）→ 违反项目铁律「预览所见 = 导出所得」。导出件维持 `HTML_THEMES["limo"]` 的 `max-width:860px; line-height:1.75`。这是**已知偏差**，避开的是项目记录的「打印 CSS 三处落点不可合并」历史坑
+
+### 验证
+
+对照实验全部实测判红后恢复（每条判据都配了一个「看起来对、其实错」的实现）：
+
+| 判据 | 对照实现 | 结果 |
+|---|---|---|
+| 默认 = 现状（零回归） | 默认行高写成 1.7 | 红 |
+| `measurePx === null` 分支 | 分支漏掉返回 0 | 红（2 条） |
+| `measure` 的 `> 0` 判据 | 改成 `!= null`（0 被当有效值 → 版宽 0px） | 红 |
+| 单项坏字段只退该项 | 整包丢弃 | 红（2 条） |
+| `md-para` 覆盖富段落 | 只给 `<p>` 分支挂类 | 红 |
+| `text-indent` 不泄漏 | 挪到 `.markdown-body` | 红 |
+| 启动链应用版式 | 删掉 `applyReading` 那一行 | 红（2 条） |
+| 沉浸进入守卫 | 拿掉守卫 | 红 |
+
+前端 22 文件 / 265 测试全绿，`tsc --noEmit` 无输出，lint 无新增告警。
+
+---
+
+## 2026-10-01 — 多篇文档合成（跨文档对比综述）
+
+用户需求（原话）：「为什么要多个转入（转录）文章统一产出——根据我老师的实际需要，他有时候一次需要看多篇 PDF 论文。」即：**一次性把 N 篇论文交给模型读完，产出一份跨论文的对比 / 综述**，而不是自己逐篇读、逐篇做笔记。
+
+设计经三轮外部评审（V1 → V2.3），本节记录**落地了什么**，以及落地时**推翻了设计文档的哪几处说法**——后者比前者更值得留痕。
+
+### 三条生命线
+
+| # | 主张 | 落地后它换来了什么 |
+|---|---|---|
+| 1 | **合成产物 = 一个普通文档**（`sourceType="composite"`） | 文档库 / FTS 搜索 / 标签 / 文件夹 / 批量操作 / 导出 / 对话 `@` 引用 / 两版制版本管理 **全部免费获得**——每条链路都没有新增类型分支 |
+| 2 | **两步走** | `POST /api/synthesis/stream` 只建文档；综述由用户自行点「生成对比综述」走**现成的** `GET /generate/{id}/stream`。生成域**零批量概念** |
+| 3 | **单真相源** | 合成文档的 rawText **就是**模型输入（按 multi 预算恰好装满），生成时不许再读原文 |
+
+> **D7 已拍板：合成完成后不自动触发生成**。理由不是省事——用户需要先在预览区看到「## 来源文档」清单（选了哪几篇、哪几篇被压缩），确认之后再花 token。故合成后默认停在**转录 tab**（`:449` 的 `setActiveView('transcript')` 分支刻意含 `composite`），而不是自动跳到还没有内容的笔记 tab。
+
+### 出处头嵌进正文（抗「删了 index.json 就全丢」）
+
+出处（来源 id / 标题 / 各源内容 hash）写在 `transcript.md` 的**第一行**，而不是只存索引：
+
+```
+<!-- limo-meta {"v":1,"sourceType":"composite","sourceDocIds":[…],"sourceTitles":[…],"sourceHashes":[…],"sources":[…] } -->
+（空行）
+## 来源文档
+1. 论文A ✓ 完整输入
+```
+
+**为什么必须是第一行**：删掉 `index.json` 重建时，`_rebuild_index()` 会用 `sha256(rawText)` **重推 id**、把 `sourceType` 硬写成空串——一切非内容派生的字段都保不住。让正文自身成为身份的单一真相源，索引退化为缓存。
+
+新建 `app/core/transcript_meta.py` 收口编解码（`dump_meta` / `parse_meta` / `build_composite_raw_text` / `strip_meta`）。**单独成模块的理由是「写方读方必须同源」**——两处各自手拼 JSON 必然漂移。
+
+- ⚠️ **头不剥离**：`rawText == 模型输入 == 用户所见` 是三位一体前提，把头搬到索引或 sidecar 就等于制造第二个真相源
+- ⚠️ `parse_meta` **只认第一行**：否则正文里偶然出现的 `<!-- limo-meta` 就能伪造出处（正文级注入）
+- ⚠️ `dump_meta` 对标题复用 `sanitize_reference_name()` **并额外替换 `-->` 与换行**：否则标题能闭合 HTML 注释、伪造成第二行 meta
+- ⚠️ **无头 = 普通文档，不是损坏**：判据写错会让所有历史文档被标 `metadataCorrupt`。损坏（有头但 JSON 坏）与无头是**两种状态**，必须分开
+
+### Step 0 分叉：装得下就 Stuff，装不下才 Map-Reduce
+
+```
+total = Σ 各篇 rawText token
+  ├─ total ≤ multi 输入预算 ──→ 【Stuff】N 篇原样组装，**零 LLM 调用**
+  └─ total >  预算          ──→ 【Map-Reduce】维度发现(1) + 逐篇结构化抽取(N)
+```
+
+**「篇数越多越慢」这个直觉只在超窗时成立**：装得下时 N 篇与 1 篇的额外调用数都是 0（综合由后面的 notes 生成一次做完）。Map 阶段是**按固定维度结构化抽取**（研究问题 / 方法 / 数据 / 主要发现 / 局限），不是自由摘要——自由摘要 = 另一台 LLM 在最终模型看到之前就决定性地筛掉了信息。
+
+### 预算同源（`app/generation/budget.py`）——顺带查出两处既有缺陷
+
+| profile | 等式 | 状态 |
+|---|---|---|
+| `single` | `int(cw×0.8) − 2000 − 16384` | 与既有实现**逐值等价**，含一处**已知低估** |
+| `multi` | `min(int(cw×0.5), cw − 65536 − 2000)` | 新路径，等式**必须闭合** |
+
+两条上限取小：`int(cw×0.5)` 是可靠度上限（交叉文档对比比单篇摘要对长度更敏感），`cw − output − margin` 是输出预留上限。`cw < 65536+2000+35000`（≈102,536，实务上即「需要 128k 窗口」）时**显式拒绝**——`min()` 在窗口不足时会静默取到负值。
+
+**为什么必须抽出这个模块**：此前有两套互不相同的算法（对话/压缩 `×0.7`，`ContentPreparer` `int(cw×0.8)−2000−16384`）。创建侧按 A 装满、生成侧按 B 截断，会在小窗口模型上**二次截断、后几篇凭空消失**。
+
+**落地时查出的两处既有缺陷**（均已记录，只修了与本方案相关的那一处）：
+
+1. ⚠️ **`cw` 在生成路径上根本没走四层解析**。全仓 `resolve_context_window()` 只有 2 个调用点（`chat_context.py` / `reference_compressor.py`），生成路径走的 `resolve_llm_config()` **只查第 1 层**（用户自定义），第 2 层预设从不流入 → 实际落到 provider 兜底表。dashscope/qwen3.8-max 预设 **131,072** vs 兜底表 **1,000,000**，**同一请求两个预算差 7.6 倍**。→ **已修**：`generate.py` 两处构造 `ContentPreparer` 前先调 `resolve_context_window()` 并把 `cw` 传进去。不修的话，创建侧与生成侧会**再次不同源**（只是换了个位置复发）。
+2. ⚠️ **`single` 的输出预留是低估的**：真实 `max_tokens` 是 **65536**（`generator.py:24`），而 `content_preparer` 只预留 16384，相差 49152。128k 窗口下可用输入 86,473 + 实际可产出 65,536 = **152,009 > 131,072**——**现有单文档路径本身就可能超窗**。→ **D8 拍板：保持现状**（改成 65536 会让既有用户单文档可用输入从 86,473 掉到 37,321，**−57%**，是独立于本方案的行为变更），但用 `xfail(strict=True)` 把「不闭合」**钉成一条有名字的测试**——注释会烂，测试不会；哪天有人改对，它会立刻 XPASS 失败逼着反转断言。
+
+### 逐篇降级必须落进产物，不能只靠 SSE
+
+被压缩/截断的篇在「## 来源文档」列表里**逐条标注** `✓ 完整输入 / ⚠ 已压缩为摘要 / ⚠ 已截断`。SSE 提示是一次性的——「用户以为看到的是完整论文、其实是摘要」是知识系统里危害最大的误解。
+
+### 资产搬运：复制到新文档 `assets/` + 路径守卫
+
+源正文里的 `![图表](assets/chart_1.png)` 是**相对路径**，写进新文档后会指向新文档自己那个空的 `assets/`。故组装阶段把被引用的图片复制过去并按源序号加前缀（`d1_` / `d2_`——**两篇论文都可能有 `img_0001.png`**，不加前缀必然互相覆盖）。
+
+⚠️ **每个匹配路径都要做 `relative_to(源文档目录)` 守卫**，越界则跳过。现存同款正则已有 5 个副本，新副本不带守卫 = **新开一条读取任意文件的通道**（导入内容里写 `assets/../../../../.ssh/id_rsa` 会被复制进产物，再随预览 / 导出包 / 模型输入外泄）。
+
+⚠️ **最高危的失败模式是「复制了但忘了改写引用」**：文件躺在 `d1_chart_1.png`，正文仍写 `chart_1.png`——结果与完全不搬运一模一样（还是裂图），而日志里一切正常：复制成功、无异常、文件数正确。故测试**逐条断言引用与新文件名对应**。
+
+### 生成闸门（`generate.py`）
+
+composite 请求下：`want_polished=False`（后端 `build_both()` 对 composite 返回 `(sp, sp)`，前端也不给 polished 入口，两层一致）、`stream_mode="notes"`、`format_list=[]`（合成不支持图表/截图）、跳过 `_auto_title`（标题是用户给的合并名，不该被生成正文首行覆盖）、`metadataCorrupt` 时推 `warning` 但**不阻断生成**。
+
+### 前端
+
+- **入口在文档库而非 GenPanel**：输入的 N 篇是**已入库文档**，用户此刻的注意力在文档库；GenPanel 是「当前单篇」的工作台（`currentDocId` 单值语义），塞入多文档会污染单篇主线
+- `BatchBar` 加「合成」按钮（`disabled = busy || selectedCount < 2`，1 篇没有可对比的对象——**不是参数错误，是语义不成立**）；确认对话框含已选清单 / 标题 / 对比指引
+- ⚠️ **`onDone` 走 `useStore.getState()` 而非组件闭包**：合成可能持续数分钟，期间用户完全可能折叠文档库——而**折叠 = 卸载组件**（`SlotLayout`），卸载后组件回调全部失效，文档其实已落库、列表里却看不到，用户以为失败了
+- `tabRegistry`：**只**给 `summary` 与 `transcript` 加 `'composite'`，**绝不动 `DOC_TYPES`**（那会被 `ALL_TEXT` 展开，白送 polished / mindmap 给一个「没有原文可言」的 N 篇综述）；`summary.defaultFor` 也要加——`forSourceType` 与 `defaultFor` 是**两件事**（列出哪些 tab ≠ 生成完停在哪个 tab），只加前者会让用户点完生成停在「转录」tab
+- `getTypeMeta` 加 `isComposite` 分支：`coreProducts=[notes]`、`hasPolish=false`、按钮文案「生成对比综述」。⚠️ composite **不在** `_ALL_DOC_TYPES` 里，故 `isDoc === false`——GenPanel 里所有以 `isDoc` 门控的块（文档引擎选择 / EPUB 解读）对它自动不渲染
+- `DocRow` 加「N 合 1」胶囊（**判据是篇数 ≥ 2**，不是 `sourceType === 'composite'`——N=1 是噪音）+ 紧凑模式一个 Layers 图标；`docMeta` 加 `composite` 筛选项（靛蓝，与 11 个原始输入类型区分开）
+
+### ⚠️ 落地时推翻 / 修正设计文档的三处
+
+| 设计文档原话 | 落地改判 |
+|---|---|
+| §13.6「复用现有 compressor 的骨架、只替换 Map 的产出形态」 | **共享的是工具，不是骨架**。compressor 的输入是散文、产出是自由摘要；本模块 Map 产出是固定维度结构，控制流与形态都不同。真该共享的只有 `budget.py` 与 `estimate_tokens` / `sanitize_reference_name` 三个工具 |
+| §1.2「本项目早已是四层解析、按 model_id 优先」 | **对生成路径不成立**——它根本没调 `resolve_context_window()`（见上「预算同源」第 1 条）。该说法只对对话 / 压缩侧成立 |
+| §5.2.1「输出预留 = max(16384, …)」 | 真实 `max_tokens` 是 **65536**。初稿那句「产物体量大，高于单文档的固定 16384」在小窗口模型上是**反的** |
+
+> 三处的共同形态：**「函数存在」≠「该路径在用它」**、**「文档说的流程」≠「代码做的流程」**——与本项目「断言存在 ≠ 断言有效」同源。
+
+### 测试
+
+后端新增 6 个文件：`test_transcript_meta.py`（编解码往返 / 标题含 `-->` 与换行 / 无头≠损坏 / 只认第一行）、`test_budget.py`（逐值等价 / 取小 / 闸门 / **single 不闭合的 xfail(strict)** / cw 来源 / 构造点对称性）、`test_store_composite.py`（删 index.json 后重建字段仍在 / `save_transcript_full` 守卫 / 去重豁免 / 损坏标记）、`test_synthesis.py`（分叉与调用数 / 预算收敛 / 资产搬运含**路径穿越对照** / 降级显式化）、`test_generate_gate.py`（产物裁剪 / 格式清空 / corrupt 提示 / 跳过 auto-title）、`test_synthesis_api.py`（SSE 协议 / 业务错误走事件 / **五种结局后信号量均归还** / 异常哨兵）。
+
+前端新增 4 个文件：`synthesis.test.ts`（body 本体而非「传了 options」）、`getTypeMeta.test.ts`、`tabRegistry.test.ts` 的 composite 分组、`docLibrarySynthesis.test.tsx`（按钮门控 / body 的 doc_ids 逐项相等 / **done 之后零 `/generate/` 请求**）。
+
+**每条判据都配了「看起来对、其实错」的对照实现并实测判红**（项目铁律「断言存在 ≠ 断言有效」）。
+
+---
+
 ## 2026-09-25 — 文档库前端交互重设计（IDE 式）
 
 用户判断：「从用户角度看，我认为文档库的前端交互逻辑需要优化与重新设计」「可以参考编程 IDE 文件显示」。追问后锁定两个痛点——**搜索与筛选**、**文件夹的组织与移动**。

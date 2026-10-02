@@ -56,6 +56,11 @@ export function handleAppKeyDown(e: React.KeyboardEvent) {
     // 「搜我此刻正停着的这个输入框」。故这里**不做** activeElement 守卫
     // （与 Ctrl+A 相反，那个必须让位给输入框内的全选）。
     case 'k': e.preventDefault(); s.openDocLibSearch(); break
+    // 沉浸阅读 —— 用 Ctrl+\ 而**不是** Ctrl+Shift+F：后者的 e.key 在 Shift 下是大写
+    // 'F'（下面这些 case 全是小写，写 'f' 永远不触发），且 Windows 上 Ctrl+Shift 是
+    // 默认的输入法/键盘布局切换前缀，会被输入法吞掉。Ctrl+\ 与 LobeChat 的 Zen Mode 同键。
+    // 裸 Esc 退出的监听不在这里 —— L41 的 Ctrl/Meta 守卫会把它直接吞掉，见下面的独立 effect。
+    case '\\': e.preventDefault(); s.toggleImmersive(); break
   }
 }
 
@@ -76,6 +81,23 @@ export default function App() {
   const backendReady = useStore(s => s.backendReady)
   const setBackendReady = useStore(s => s.setBackendReady)
   const backendStatus = useStore(s => s.backendStatus)
+  const immersive = useStore(s => s.immersive)
+
+  // 沉浸阅读的**逃生口**。沉浸会隐藏所有可见出口（顶栏 / 预览工具条 / 两侧面板），
+  // 快捷键万一失效用户就被困住 —— 所以 Esc 退出是硬需求，不是锦上添花。
+  // ⚠️ 它**进不去** handleAppKeyDown：L41 的 `if (!(e.metaKey || e.ctrlKey)) return`
+  // 会把裸 Esc 直接吞掉。故单开一个 document 监听，仅在沉浸期间挂载；用捕获阶段，
+  // 抢在个别组件（如文档库的 Esc 清空选择集）消费掉之前。
+  useEffect(() => {
+    if (!immersive) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      useStore.getState().setImmersive(false)
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [immersive])
 
   // 刷新 capabilities（引擎下拉/场景标签/文件类型的数据源）。
   // checkInterrupted：仅初始化时检查未完成生成标记，配置刷新不重复提示
@@ -242,8 +264,8 @@ export default function App() {
           setShowSetup(false)
         }} />
       )}
-      {/* 顶部栏 */}
-      <header className="glass border-b border-border-light h-12 flex items-center px-4 shrink-0 z-10">
+      {/* 顶部栏（沉浸下不渲染 —— 它不在插槽系统里，`hideSlots` 管不到，必须显式控制） */}
+      {!immersive && <header className="glass border-b border-border-light h-12 flex items-center px-4 shrink-0 z-10">
         <div className="flex items-center gap-2.5">
           <img src="/logo.png" className="w-7 h-7 rounded-lg object-cover" alt="LiMo" />
           <span className="font-semibold text-[15px]">LiMo</span>
@@ -295,7 +317,7 @@ export default function App() {
         </div>
         <SearchBar />
         <div className="flex-1" />
-      </header>
+      </header>}
 
       {/* 后端断开横幅（P1.1 持续探活）— 运行中断开提示，恢复自动消失 */}
       {backendStatus !== 'ready' && (
@@ -309,11 +331,14 @@ export default function App() {
 
       {/* 主体 — 插槽布局引擎 */}
       <div className="flex flex-1 overflow-hidden">
-        <SlotLayout />
+        {/* hideSlots 是**真卸载**（SlotLayout 直接 return null），不是 CSS 隐藏 —— 故进入
+            沉浸前要过 processingTasks 守卫（见 uiSlice.toggleImmersive），否则正在跑的
+            任务会因 GenPanel 卸载变僵尸。预览区（center）不在隐藏名单里。 */}
+        <SlotLayout hideSlots={immersive ? ['genPanel', 'docLib'] : undefined} />
       </div>
 
-      {/* AI 浮窗（唯一形态，2026-08-04 移除插槽面板） */}
-      {aiVisible && <FloatingAI />}
+      {/* AI 浮窗（唯一形态，2026-08-04 移除插槽面板） — 沉浸下让位（位置/尺寸本就持久化，退出即恢复） */}
+      {aiVisible && !immersive && <FloatingAI />}
 
       {/* Toast */}
       <Toast />
@@ -321,8 +346,8 @@ export default function App() {
       {/* TaskPanel */}
       <TaskPanel />
 
-      {/* ExportPanel */}
-      {showExport && <ExportPanel onClose={() => setShowExport(false)} />}
+      {/* ExportPanel — 同样是「操作」入口，沉浸下让位 */}
+      {showExport && !immersive && <ExportPanel onClose={() => setShowExport(false)} />}
 
       {/* 设置 — overlay，不卸载主界面 */}
       {showSettings && (

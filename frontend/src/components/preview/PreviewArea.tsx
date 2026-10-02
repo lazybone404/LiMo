@@ -8,10 +8,11 @@ import { getStreamBuffer } from '../../store/streamBuffers'
 import type { TaskInfo } from '../../store/types'
 import { TabRegistry, type TabDef } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, MessageSquare, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Pencil } from 'lucide-react'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, MessageSquare, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Minimize2, Pencil } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
+import { CONTENT_WIDTH_RATIO, READING_BASE_FONT_PX, computeContentMaxW } from '../../lib/reading-prefs'
 import { VideoBanner } from './VideoBanner'
 import { LogPanel } from '../ui/LogPanel'
 import { ExportMenu } from '../ui/ExportMenu'
@@ -146,12 +147,19 @@ export function PreviewArea() {
   })
   const contentWidth = useStore(s => s.contentWidth)
   const cycleContentWidth = useStore(s => s.cycleContentWidth)
+  const immersive = useStore(s => s.immersive)
+  const reading = useStore(s => s.reading)
 
+  // ratio 取自 lib/reading-prefs 的 CONTENT_WIDTH_RATIO（单源）——本表只补 label/icon
   const WIDTH_RATIO: Record<string, { label: string; icon: typeof Columns; ratio: number }> = {
-    narrow: { label: '紧凑', icon: AlignCenter, ratio: 0.80 },
-    normal: { label: '标准', icon: Columns, ratio: 0.90 },
-    wide:   { label: '宽屏', icon: Maximize2, ratio: 0.97 },
+    narrow: { label: '紧凑', icon: AlignCenter, ratio: CONTENT_WIDTH_RATIO.narrow },
+    normal: { label: '标准', icon: Columns, ratio: CONTENT_WIDTH_RATIO.normal },
+    wide:   { label: '宽屏', icon: Maximize2, ratio: CONTENT_WIDTH_RATIO.wide },
   }
+
+  // 每行字数 → 版宽上限（px）。null = 不设上限（沿用比例制，零回归）。
+  // ⚠️ 乘的是 READING_BASE_FONT_PX（16），不是当前 fontSizeScale —— 见 reading-prefs.ts 的注释。
+  const measurePx = reading.measure ? reading.measure * READING_BASE_FONT_PX : null
 
   // ResizeObserver 追踪预览面板实际宽度
   const containerRef = useRef<HTMLDivElement>(null)
@@ -167,9 +175,10 @@ export function PreviewArea() {
   }, [])
 
   // 内容上限动态跟随面板宽度：小窗口保底 1100px；折叠 GenPanel/DocLibrary 后面板变宽 →
-  // 内容同步放宽（两侧各留 ~80px 边距）利用空白，而不是被固定 1100 钳制
-  const contentCap = Math.max(1100, containerWidth - 160)
-  const contentMaxW = `${Math.min(containerWidth * WIDTH_RATIO[contentWidth].ratio, contentCap)}px`
+  // 内容同步放宽（两侧各留 ~80px 边距）利用空白，而不是被固定 1100 钳制。
+  // 阅读版式另加一条**度量上限**（每行字数）：设置页调过时与比例值取小；没调过（null）
+  // 时逐值复现改造前的行为。数学见 lib/reading-prefs.ts 的 computeContentMaxW（纯函数、可单测）。
+  const contentMaxW = `${computeContentMaxW(containerWidth, WIDTH_RATIO[contentWidth].ratio, measurePx)}px`
   const fontSizeScale: Record<string, number> = { narrow: 0.92, normal: 1.0, wide: 1.06 }
   const setCurrentContent = useStore(s => s.setCurrentContent)
   const setCurrentPolishedContent = useStore(s => s.setCurrentPolishedContent)
@@ -443,7 +452,9 @@ export function PreviewArea() {
       if (hasContent) {
         const defKey = TabRegistry.defaultFor(st)
         if (defKey) setActiveView(defKey)
-      } else if (['document', 'pdf', 'docx', 'pptx', 'xlsx', 'epub', 'video'].includes(st)) {
+      } else if (['document', 'pdf', 'docx', 'pptx', 'xlsx', 'epub', 'video', 'composite'].includes(st)) {
+        // 无产物时默认转录。⚠️ composite 走这支是**刻意的**：合成文档刚建好、笔记还没生成，
+        // 用户此刻最该看到的是「## 来源文档」清单（选了哪几篇、哪几篇被压缩）
         setActiveView('transcript')  // epub 无产物时默认转录浏览（章节视图），骨架面板已砍
       }
     }).catch(err => { handleLoadError('加载文档内容失败', err) })
@@ -756,8 +767,12 @@ export function PreviewArea() {
   return (
     <>
     <main className="flex-1 flex flex-col overflow-hidden bg-surface rounded-2xl">
-      {/* 工具栏 — 对齐 BiliNote MarkdownHeader */}
-      <div className="flex items-center justify-between px-6 py-2.5 border-b border-border-light shrink-0">
+      {/* 工具栏 — 对齐 BiliNote MarkdownHeader。
+          沉浸下整条不渲染：tab/复制/导出/宽度/日志/AI 全是**操作入口**，属去噪目标。
+          ⚠️ 它不在插槽系统里（`hideSlots` 管不到），必须显式控制。
+          ⚠️ TOC **刻意保留** —— 它是阅读导航（长文跳章），与「操作噪音」性质不同，
+          且本就能折叠成 28px 竖条，空间成本由用户自己控制。隐藏它 = 功能损失而非去噪。 */}
+      {!immersive && <div className="flex items-center justify-between px-6 py-2.5 border-b border-border-light shrink-0">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1 bg-surface rounded-lg p-0.5">
             {tabs.map(t => (
@@ -803,7 +818,7 @@ export function PreviewArea() {
             className="px-3 py-1.5 text-[12px] text-dimmed hover:bg-surface-hover rounded-lg"
           ><MessageSquare size={14} /></button>
         </div>
-      </div>
+      </div>}
 
       {/* 内容 + TOC */}
       <div className="preview-area flex-1 flex overflow-hidden">
@@ -840,6 +855,19 @@ export function PreviewArea() {
           </div>
         </div>
       </div>
+      {/* 退出沉浸 —— 常驻可见的逃生口。**刻意不做鼠标空闲隐藏**：那是惩罚性设计
+          （用户想退出时找不到出口）。改用低透明度让位给正文，hover 变实。
+          Esc / Ctrl+\ 是同一动作的另两个入口，三者在 store 上收口于 setImmersive。 */}
+      {immersive && (
+        <button
+          onClick={() => useStore.getState().setImmersive(false)}
+          className="fixed top-4 right-4 z-30 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface/80 backdrop-blur-sm border border-border-light text-[12px] text-muted shadow-sm opacity-50 hover:opacity-100 hover:text-foreground hover:bg-elevated transition-all"
+          title="退出沉浸阅读（Esc）"
+        >
+          <Minimize2 size={13} />
+          <span>退出沉浸</span>
+        </button>
+      )}
     </main>
     {showLogs && <LogPanel onClose={() => setShowLogs(false)} />}
     {unsavedDialog && (

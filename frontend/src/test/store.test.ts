@@ -242,3 +242,119 @@ describe('backendReady 初值 — Tauri 冷启动保护', () => {
     expect(fresh.useStore.getState().backendReady).toBe(true)
   })
 })
+
+// ── 主题轴冷启动恢复：--texture-opacity ──
+//
+// ⚠️ 与上面 backendReady 同类：副作用发生在模块求值时的启动链里，故同样需要
+// resetModules + 动态 import 才能重跑一次「冷启动」。
+//
+// 这条不变量**看起来完全正常**，所以此前没人发现：纹理本身恢复了（data-texture 由
+// applyTexture 设），强度只是个「合理值」—— CSS 兜底 var(--texture-opacity, 0.5)
+// 恰好等于默认强度 50，零报错、零视觉异常。只有用户明确设过非 50 的强度并重启后
+// 才看得出来。根因是六轴里唯独 intensity 的应用逻辑留在设置页组件内（只在滑块
+// onChange 时跑），启动链从未调用它。这里钉的就是「启动链必须自己应用 intensity」。
+describe('主题轴冷启动恢复 — --texture-opacity', () => {
+  const KEY = 'mbw_texture_intensity'
+
+  afterEach(() => { localStorage.removeItem(KEY) })
+
+  it('写入已保存的强度（反转映射 80 → 0.2）', async () => {
+    const spy = vi.spyOn(document.documentElement.style, 'setProperty')
+    vi.resetModules()
+    localStorage.setItem(KEY, '80')
+    await import('../store')
+    // applyIntensity 做 (100-value)/100 的反转：80 → 0.2
+    expect(spy).toHaveBeenCalledWith('--texture-opacity', '0.2')
+    spy.mockRestore()
+  })
+
+  it('未保存时写入默认强度（50 → 0.5）', async () => {
+    const spy = vi.spyOn(document.documentElement.style, 'setProperty')
+    vi.resetModules()
+    localStorage.removeItem(KEY)
+    await import('../store')
+    expect(spy).toHaveBeenCalledWith('--texture-opacity', '0.5')
+    spy.mockRestore()
+  })
+})
+
+// ── 阅读版式冷启动：与 intensity 完全同款的风险 ──
+//
+// 同一条铁律：**值进了 store ≠ DOM 被写**。`reading` 字段在 themeSlice 的初值里
+// 就调了 getSavedReading()，所以「store 里有值」这条断言永远是绿的；真正把
+// --read-line-height / data-read-para 写到 documentElement 上的是 store/index.ts
+// 启动链里那一行 applyReading。删掉那一行 → 版式全部回落到 :root 的 1.5 与「无属性」
+// → 用户保存的偏好静默失效，且界面上看不出任何异常（1.5 是个完全合理的行高）。
+describe('主题轴冷启动恢复 — 阅读版式', () => {
+  const KEY = 'mbw_reading'
+
+  afterEach(() => { localStorage.removeItem(KEY) })
+
+  it('启动链把已保存的版式写进 DOM', async () => {
+    const setProp = vi.spyOn(document.documentElement.style, 'setProperty')
+    const setAttr = vi.spyOn(document.documentElement, 'setAttribute')
+    vi.resetModules()
+    localStorage.setItem(KEY, JSON.stringify({ lineHeight: 1.8, measure: 40, paraStyle: 'book' }))
+    await import('../store')
+    expect(setProp).toHaveBeenCalledWith('--read-line-height', '1.8')
+    expect(setAttr).toHaveBeenCalledWith('data-read-para', 'book')
+    setProp.mockRestore()
+    setAttr.mockRestore()
+  })
+
+  it('未保存时写入默认（1.5 / web = 改造前的现状）', async () => {
+    const setProp = vi.spyOn(document.documentElement.style, 'setProperty')
+    vi.resetModules()
+    localStorage.removeItem(KEY)
+    await import('../store')
+    expect(setProp).toHaveBeenCalledWith('--read-line-height', '1.5')
+    setProp.mockRestore()
+  })
+})
+
+// ── 沉浸阅读的进入守卫 ──
+//
+// ⚠️ 为什么守卫是**硬需求**而不是贴心提示：`SlotLayout` 的 `hideSlots` 是**真卸载**
+// （命中即 `return null`），不是 CSS 隐藏 —— 正在跑的生成/转录任务会因 GenPanel
+// 卸载而变成僵尸。项目对同一件事早已做过选择：Ctrl+G 在 processingTasks 非空时
+// 拦截 + toast（「操作进行中，请完成或取消后再切换面板」）。沉浸绕开它 = 绕过
+// 一个被明确选择过的保护。
+//
+// 退出方向**刻意不设限**：否则有任务在跑时用户被永远困在沉浸里 —— 那是比僵尸任务
+// 更糟的失败形态（用户看得见却出不去）。
+describe('沉浸阅读 — toggleImmersive 的守卫', () => {
+  beforeEach(() => {
+    useStore.setState({ immersive: false, toasts: [] })
+  })
+
+  it('无任务时正常进入', () => {
+    useStore.getState().toggleImmersive()
+    expect(useStore.getState().immersive).toBe(true)
+  })
+
+  it('有任务在跑时拒绝进入，并给出 toast', () => {
+    // 对照：只断言 store flag 的测试**看不见这个缺陷的另一半** —— 真正危险的是
+    // SlotLayout 卸载，而卸载发生在渲染层。所以 flag + toast 两条一起断。
+    useStore.getState().setProcessing('d1__generate', { kind: 'generate', title: 'T' })
+    useStore.getState().toggleImmersive()
+    expect(useStore.getState().immersive).toBe(false)
+    expect(useStore.getState().toasts.some(t => t.message.includes('进入沉浸阅读'))).toBe(true)
+  })
+
+  it('退出方向不受守卫限制（有任务时也能退出）', () => {
+    useStore.getState().setProcessing('d1__generate', { kind: 'generate', title: 'T' })
+    useStore.setState({ immersive: true })
+    useStore.getState().toggleImmersive()
+    expect(useStore.getState().immersive).toBe(false)
+  })
+
+  it('setImmersive(true) 同守卫，setImmersive(false) 不设限', () => {
+    useStore.getState().setProcessing('d1__generate', { kind: 'generate', title: 'T' })
+    useStore.getState().setImmersive(true)
+    expect(useStore.getState().immersive).toBe(false)
+
+    useStore.setState({ immersive: true })
+    useStore.getState().setImmersive(false)
+    expect(useStore.getState().immersive).toBe(false)
+  })
+})

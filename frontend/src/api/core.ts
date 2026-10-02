@@ -142,12 +142,25 @@ export interface Capabilities {
   }
 }
 
+/**
+ * 列表返回的文档条目。
+ *
+ * ⚠️ **store 侧另有一份同名定义**（`store/types.ts` 的 `DocEntry`），两者描述同一份
+ * 后端 JSON、由 `listTranscripts()` 直接喂给 `setDocs()`（结构兼容所以没有编译错误）。
+ * **改动必须两处同步**——否则会出现「类型上没这个字段，但运行时字段确实在」（或反过来
+ * 「类型说有、实际后端没返回」），而 TS 一声不吭。已存在字段集漂移（store 侧多
+ * `sourceUrl`），此处补 `source*` 时一并对齐。
+ */
 export interface DocEntry {
   id: string; title: string; sourceType: string; sourceFileName?: string; engine: string
   language?: string; duration?: number; contentHash: string
   tags: string[]; createdAt: string
   /** 所属文件夹 id；"" = 未分类（后端一律返回字符串，不返回 undefined） */
   folderId?: string
+  /** 合成文档的来源 id / 标题 / 各源内容 hash 前 8 位（非合成恒为 []） */
+  sourceDocIds?: string[]; sourceTitles?: string[]; sourceHashes?: string[]
+  /** 出处头丢失或损坏 → 保留文档但不猜来源（设计 §4.2.3） */
+  metadataCorrupt?: boolean
 }
 
 /** 单层文件夹（纯逻辑分类，不映射磁盘目录） */

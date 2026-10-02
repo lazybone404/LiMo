@@ -7,7 +7,7 @@
 import {
   Film, Globe, FileText, PenLine, BarChart3, TrendingUp, BookOpen,
   Paperclip, MessageSquare, Image as ImageIcon, Download, Music, Mic,
-  CheckCircle2, Bot, Eye, Settings,
+  CheckCircle2, Bot, Eye, Settings, Layers,
 } from 'lucide-react'
 
 /** 来源类型筛选行（原 TAG_FILTERS —— 它筛的一直是 sourceType，不是用户标签） */
@@ -24,6 +24,9 @@ export const SOURCE_FILTERS = [
   { key: 'chat', label: '聊天', icon: 'MessageSquare' },
   { key: 'image', label: '图片', icon: 'Image' },
   { key: 'text', label: '文本', icon: 'FileText' },
+  // 多篇合成的对比综述（sourceType === 'composite'）。排在最末：它是二次产物，
+  // 与上面 11 个「原始输入类型」不是同一层的东西
+  { key: 'composite', label: '合成', icon: 'Layers' },
 ]
 
 /** sourceType → 可读标签 */
@@ -44,6 +47,8 @@ export const TYPE_COLORS: Record<string, { bg: string; text: string; dot: string
   text:     { bg: 'rgba(142,142,147,0.12)',text: '#8E8E93', dot: '#8E8E93' },
   document: { bg: 'rgba(0,122,255,0.12)',  text: '#007AFF', dot: '#007AFF' },
   chat:     { bg: 'rgba(90,200,250,0.12)', text: '#5AC8FA', dot: '#5AC8FA' },
+  // 靛蓝：未被上面任何原始类型占用，与「合成」这个二次产物身份相称
+  composite:{ bg: 'rgba(88,86,214,0.12)',  text: '#5856D6', dot: '#5856D6' },
 }
 
 /** 根据名称渲染对应的 lucide 图标（替代 emoji） */
@@ -66,6 +71,7 @@ export function IconByName({ name, size = 14 }: { name: string; size?: number })
     case 'Bot': return <Bot size={size} />
     case 'Eye': return <Eye size={size} />
     case 'Settings': return <Settings size={size} />
+    case 'Layers': return <Layers size={size} />
     default: return <FileText size={size} />
   }
 }

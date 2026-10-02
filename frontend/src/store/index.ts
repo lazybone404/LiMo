@@ -5,8 +5,9 @@
 import { create } from 'zustand'
 import { applyTheme, resolveTheme, getSavedTheme } from '../lib/theme'
 import { applyAccent, getSavedAccent } from '../lib/accent'
-import { applyTexture, applyFont, getSavedTexture, getSavedFont } from '../lib/texture'
+import { applyTexture, applyFont, applyIntensity, getSavedTexture, getSavedFont, getSavedIntensity } from '../lib/texture'
 import { applyBase, getSavedBase } from '../lib/theme-base'
+import { applyReading, getSavedReading } from '../lib/reading-prefs'
 import { createThemeSlice } from './themeSlice'
 import { createDocsSlice } from './docsSlice'
 import { createContentSlice } from './contentSlice'
@@ -66,8 +67,10 @@ export const useStore = create<Store>()((...a) => {
 applyTheme(resolveTheme(getSavedTheme()))
 applyAccent(getSavedAccent())
 applyTexture(getSavedTexture())
+applyIntensity(getSavedIntensity())
 applyFont(getSavedFont())
 applyBase(getSavedBase())
+applyReading(getSavedReading())
 
 // Listen for system theme changes when in "system" mode
 // 模块副作用保持在此 — 监听器需要 useStore.getState()，移入 slice 会制造运行时循环依赖

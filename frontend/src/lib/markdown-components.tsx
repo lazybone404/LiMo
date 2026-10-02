@@ -306,10 +306,18 @@ export function createMarkdownComponents(sourceUrl?: string, isVideo?: boolean) 
       const pid = React.useId()
       const processed = React.Children.map(children, child =>
         typeof child === 'string' ? renderTimestampBadges(child, pid) : child)
+      // ⚠️ 段落含**链接 / 行内代码 / 内联图片**时（components.a / .code / .img 都是函数），
+      // `hasBlockChild` 为真 → 整段走 <div> 分支。技术笔记里这是**绝大多数**段落。
+      // 故阅读版式（首行缩进 / 段距 / 行高）必须挂在一个**两个分支都带**的类名上 ——
+      // 只给 <p> 挂的话，会出现「纯文本段落缩进了、带行内代码的段落没缩进」的随机抖动，
+      // 而且看起来完全像渲染正常。
       const hasBlockChild = React.Children.toArray(children).some(
         c => React.isValidElement(c) && typeof c.type === 'function'
       )
-      return hasBlockChild ? <div {...props}>{processed}</div> : <p {...props}>{processed}</p>
+      const cls = [props.className, 'md-para'].filter(Boolean).join(' ')
+      return hasBlockChild
+        ? <div {...props} className={cls}>{processed}</div>
+        : <p {...props} className={cls}>{processed}</p>
     },
     li: function MarkdownListItem({ children, ...props }: any) {
       const lid = React.useId()

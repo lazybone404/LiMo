@@ -55,6 +55,16 @@ export interface UiSlice {
   contentWidth: ContentWidth
   cycleContentWidth: () => void
 
+  // ── 沉浸阅读（去噪容器：藏两侧面板 + 顶栏 + 预览工具条/TOC） ──
+  // ⚠️ 进/出**不对称**：进入要过 processingTasks 守卫（与 Ctrl+G 同一判据），因为沉浸
+  // 会让 SlotLayout 真卸载 GenPanel（hideSlots 是卸载，不是 CSS 隐藏）——正在跑的任务
+  // 会变僵尸；退出绝不能设限，否则用户被困在沉浸里出不来。
+  // 版式（--read-*）**不在这里管**：它常驻生效，与沉浸刻意解耦（见计划 §16.0）。
+  // 不持久化 —— 沉浸是会话态，重启回到常规视图。
+  immersive: boolean
+  toggleImmersive: () => void
+  setImmersive: (v: boolean) => void
+
   // ── 后端能力 ──
   capabilities: Capabilities | null
   setCapabilities: (c: Capabilities) => void
@@ -89,6 +99,9 @@ export interface UiSlice {
  * 改一处必须改另一处（下面 slots 初值里的 260 也是这一份）。
  */
 const DOC_LIB_DEFAULT_WIDTH = 260
+
+/** 有任务在跑时拒绝进入沉浸 —— 与 App.tsx 里 Ctrl+G 的守卫同一语义（防 GenPanel 卸载致任务僵尸） */
+const IMMERSIVE_BUSY_MSG = '操作进行中，请完成或取消后再进入沉浸阅读'
 
 export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set, get) => ({
   activeView: 'polished',
@@ -143,6 +156,26 @@ export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set, get) =>
       try { localStorage.setItem('mbw_contentWidth', next) } catch { /* quota */ }
       return { contentWidth: next }
     })
+  },
+
+  immersive: false,
+  toggleImmersive: () => {
+    const s = get()
+    // 退出方向不检查 —— 进入才需要守卫（见 interface 上的注释）
+    if (s.immersive) { set({ immersive: false }); return }
+    if (Object.keys(s.processingTasks).length > 0) {
+      s.addToast(IMMERSIVE_BUSY_MSG, 'info')
+      return
+    }
+    set({ immersive: true })
+  },
+  setImmersive: (v) => {
+    const s = get()
+    if (v && Object.keys(s.processingTasks).length > 0) {
+      s.addToast(IMMERSIVE_BUSY_MSG, 'info')
+      return
+    }
+    set({ immersive: v })
   },
 
   capabilities: null,

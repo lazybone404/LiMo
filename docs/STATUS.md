@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-09-25 | **版本**: 0.4.6
+**更新**: 2026-10-01 | **版本**: 0.4.7
 
 ---
 
@@ -11,16 +11,17 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 105（11 子目录：adapters 8 / agent 6 / core 19 / downloaders 4 / engines 15 / generation 12 / llm 4 / routers 17 / storage 2 / utils 6 / services 12） |
-| 前端 TS/TSX/CSS 文件 | 132（130 ts/tsx + 2 css；业务 114，排除 test 18） |
-| 前端测试文件 | 17（209 个测试用例，vitest 全绿） |
-| API 路由模块 | 16 业务模块（+ `__init__.py`，共 17 个 .py） |
-| API 端点 | 80（`@router.` 装饰器计数） |
+| 后端 Python 文件 | 109（11 子目录：adapters 8 / agent 6 / core 20 / downloaders 4 / engines 15 / generation 14 / llm 4 / routers 18 / storage 2 / utils 6 / services 12） |
+| 前端 TS/TSX/CSS 文件 | 136（134 ts/tsx + 2 css；业务 115，排除 test 21） |
+| 前端测试文件 | 20（232 个测试用例，vitest 全绿） |
+| 后端测试文件 | 31 |
+| API 路由模块 | 17 业务模块（+ `__init__.py`，共 18 个 .py） |
+| API 端点 | 81（`@router.` 装饰器计数） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 13（docs/ 目录，含对话协议.md + AGENT-ONBOARDING.md + ACKNOWLEDGMENTS.md；design/ 另计） |
-| 代码行数 | 后端 app 24,891 / 前端业务 16,655 / 前端测试 2,795 |
+| 代码行数 | 后端 app 26,313 / 前端业务 17,020 / 前端测试 3,318 |
 
 ---
 
@@ -67,6 +68,7 @@
 | 图表 | `POST /api/generate/{id}`（formats=chart）| 生成笔记勾选「图表」→ AI 输出 ```fig 语义 JSON（1~N 张、**9 种布局**、不写坐标）→ `chart_layout` 算几何 → `chart_svg` 生成 → PIL 本地自绘渲染 PNG 嵌入（`app/services/chart_layout/` 包 + `chart_svg.py` + `chart_renderer.py`；resvg 已切换，Windows 文字 bug；legacy ```chart 手写 SVG 路径保留为回退） |
 | EPUB 解读 | `POST /api/epub/generate/{id}` + `GET /api/epub/task/{id}` + `POST /api/epub/cancel/{id}` | EPUB 一键解读（阶段1 逐章 + 阶段2 归并总结 + 中断续跑 + 失败章跳过标注） |
 | 文档库 | `GET/POST/PATCH/DELETE /api/folders` + `POST /api/transcripts/batch` | 单层文件夹（**纯逻辑分类，不映射磁盘目录**）+ 批量删除/打标签/移动；`GET /api/transcripts?folderId=` 三态语义（不传=不过滤 / 空串=仅未分类 / id=该文件夹）；`GET /api/search` 全文检索（内存过滤即时 + FTS5 消抖合并，命中并入主列表 + 「原文」角标 + 相关度排序键） |
+| 多篇合成 | `POST /api/synthesis/stream` | 选中 N 篇（≥2）→ 按 multi 预算组装正文 → 落库为 `sourceType="composite"` 新文档。**只建文档不生成**（综述由用户核对「## 来源文档」后自行点生成，走现成 `/generate/{id}/stream`）。Step 0 分叉：装得下 → Stuff（零 LLM 调用）/ 超出 → Map-Reduce（维度发现 + 逐篇固定维度结构化抽取）。业务失败（篇数不足 / 源已删 / 窗口不够 / 缺 Key）全走 SSE error 事件，HTTP 仍 200 |
 | 导出 | 9 端点：单文件/全产物/批量/思维导图/对话单篇/对话批量/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/Word(docx 图片内嵌+标题大纲级别)/ZIP(3模式)/思维导图(交互版+SVG)/**PDF**(复用 HTML 产物，无独立端点：Tauri 走 WebView2 PrintToPdf 直接落文件 / 浏览器走打印对话框) |
 
 ## 前端组件
@@ -74,7 +76,7 @@
 | 组件 | 说明 |
 |------|------|
 | GenPanel | 导入 + 生成选项（epub 专属一键解读入口 EpubInterpretPanel，三态 UI；思考档位三档 + PDF 直传开关，均由模型能力位门控） |
-| DocLibrary | 文档列表/搜索/筛选（拆分 **17 文件**：编排 DocLibrary + DocLibraryToolbar + SearchField + FilterArea/FilterSection/filters/FilterPopover 筛选区 + ListToolbar 排列/排序旋钮 + DocList/GroupHeader/DocRow 列表 + BatchBar 批量条 + hook 层 useDocQuery/useDocSelection + docLibraryPrefs 偏好 + docMeta 元信息 + entryDelay 动画延迟） |
+| DocLibrary | 文档列表/搜索/筛选（拆分 **17 文件**：编排 DocLibrary + DocLibraryToolbar + SearchField + FilterArea/FilterSection/filters/FilterPopover 筛选区 + ListToolbar 排列/排序旋钮 + DocList/GroupHeader/DocRow 列表 + BatchBar 批量条（**含多篇合成入口 + 确认对话框**）+ hook 层 useDocQuery/useDocSelection + docLibraryPrefs 偏好 + docMeta 元信息 + entryDelay 动画延迟） |
 | PreviewArea | 预览 + 多 tab（空态欢迎文档三产物：笔记/整理版原文/转录；产物编辑三态弹窗保护 + 编辑中未保存拦截） |
 | FloatingAI | AI 对话浮窗（唯一形态；位置/尺寸记忆、内部栏拖拽调宽；含 ChatCore/ChatSidebar/MessageList/MessageItem/ChatInput） |
 | SettingsPage | 模型/引擎/配置（overlay，含对话上下文设置 + 模型元数据编辑） |
@@ -91,6 +93,7 @@
 |----|------|------|------|
 | 内容导入 | 8 | 8 | 100% |
 | 文档库 | 9 | 9 | 100% |
+| 多篇合成 | 8 | 8 | 100% |
 | 转录 & 引擎 | 8 | 8 | 100% |
 | LLM 生成 | 11 | 11 | 100% |
 | 图片处理 | 4 | 4 | 100% |
@@ -99,7 +102,7 @@
 | 导出 | 11 | 12 | 92% |
 | 前端 UI/UX | 15 | 15 | 100% |
 | 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **94** | **96** | **98%** |
+| **合计** | **102** | **104** | **98%** |
 
 > 进度说明：
 > - AI 审核域已移除（2026-08-16，方案：图表功能与 fact_check 移除）——事实核查产物转历史，历史 fact_check.md 保留不删
@@ -113,7 +116,8 @@
 | FastAPI Depends 依赖注入 | ✅ 12/15 路由迁移完成（未迁：generate/search/references） |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 15/15 路由全量完成，0 处 `raise HTTPException`（2026-09-19 核实） |
-| 前端测试 | ✅ vitest + 209 tests（17 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 4 个新测试/contextMenu/组件） |
+| 前端测试 | ✅ vitest + 232 tests（20 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 4 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis） |
+| 后端测试 | ✅ 31 文件（含合成 6 个新文件：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api） |
 | 对话重写 | ✅ 独立 chatStore + 消息层组件树 + 工具气泡/引用/思考折叠（2026-08-04） |
 | 对话上下文管理 | ✅ context_window 四层解析 + 预算引擎 + 历史压缩 + token 进度/费用（2026-08-04 C1-C5） |
 | AI 浮窗 | ✅ 移除插槽，统一浮窗（位置记忆/边界钳制/内部栏拖拽） |

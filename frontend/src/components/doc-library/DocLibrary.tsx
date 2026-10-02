@@ -23,8 +23,9 @@ import {
 import { cancelTask } from '../../api/taskManager'
 import { ContextMenu } from '../ui/ContextMenu'
 import {
-  Pencil, Trash2, BookOpen, MessageSquare, RefreshCw, Tag, Clipboard, FolderInput,
+  Pencil, Trash2, BookOpen, MessageSquare, RefreshCw, Tag, Clipboard, FolderInput, Layers,
 } from 'lucide-react'
+import { streamSynthesis } from '../../api/synthesis'
 import type { DocEntry } from '../../store/types'
 import { BatchBar } from './BatchBar'
 import { DocRow, type DocRowActions } from './DocRow'
@@ -205,6 +206,12 @@ export function DocLibrary() {
   // 删除确认（单条 = 长度为 1）
   const [deleteTargets, setDeleteTargets] = useState<string[] | null>(null)
   const [batchBusy, setBatchBusy] = useState(false)
+  // 合成对话框 —— null = 关闭；打开中由 synthStage 区分「待确认」与「进行中」
+  // （非 null 即进行中，同时承载 stage 文案）
+  const [synthOpen, setSynthOpen] = useState(false)
+  const [synthTitle, setSynthTitle] = useState('')
+  const [synthNotes, setSynthNotes] = useState('')
+  const [synthStage, setSynthStage] = useState<string | null>(null)
   // 拖拽 —— onDragOver 阶段读不到 payload，放置区的显隐/高亮只能靠这个 state
   const [draggingIds, setDraggingIds] = useState<Set<string>>(new Set())
 
@@ -518,6 +525,61 @@ export function DocLibrary() {
       }
     }), [selectedIds, runBatch, addToast, setDocs])
 
+  // ── 合成对比综述（多篇 → 一个新文档） ──
+
+  /**
+   * 打开确认对话框。
+   *
+   * ⚠️ 合成**刻意不自动接一次生成**（设计 D7）。理由不是省事：用户需要先看到
+   * 「选了哪几篇、哪几篇被压缩成摘要」再花 token。合成文档建好后默认停在「转录」
+   * tab（= `## 来源文档` 清单），核对完再点「生成对比综述」。
+   */
+  const handleOpenSynthesize = useCallback(() => {
+    const ids = [...selectedIds]
+    if (ids.length < 2) return
+    const first = docs.find(d => d.id === ids[0])?.title || ''
+    setSynthTitle(first ? `${first} 等 ${ids.length} 篇对比` : `${ids.length} 篇对比`)
+    setSynthNotes('')
+    setSynthStage(null)
+    setSynthOpen(true)
+  }, [selectedIds, docs])
+
+  const runSynthesize = useCallback(() => {
+    const ids = [...selectedIds]
+    // `synthStage !== null` 防重复点击：这是计费调用，双击两次就是两份钱
+    if (ids.length < 2 || synthStage !== null) return
+    const title = synthTitle.trim()
+    setBatchBusy(true)
+    setSynthStage('准备中…')
+    streamSynthesis(ids, { title, userNotes: synthNotes.trim() }, {
+      onStage: setSynthStage,
+      onDone: (id, _mode, degraded) => {
+        setBatchBusy(false); setSynthOpen(false); setSynthStage(null)
+        // ⚠️ 必须走 `useStore.getState()` 而不是组件作用域里的闭包：合成可能持续数分钟，
+        // 期间用户完全可能折叠文档库 —— 而折叠 = **卸载组件**（SlotLayout）。
+        // 卸载后组件的回调全部失效：文档其实已经落库，列表里却看不到，用户以为失败了。
+        // store 层调用不受组件生命周期影响，这条是「产物已落库但 UI 没接上」的防线。
+        const s = useStore.getState()
+        s.addDoc({
+          id, title: title || '对比综述', sourceType: 'composite', engine: 'llm',
+          contentHash: '', tags: [], createdAt: new Date().toISOString(),
+          sourceDocIds: ids,
+          sourceTitles: ids.map(i => docs.find(d => d.id === i)?.title || ''),
+        })
+        s.selectDoc(id)
+        s.clearSelection()
+        // 降级可见（设计 §4.4.3）：SSE 一闪就没了，这里再提一次；主渠道是产物里的标注
+        if (degraded.length) addToast(`已合成 ${ids.length} 篇，其中 ${degraded.length} 篇为摘要输入`, 'info')
+        else addToast(`已合成 ${ids.length} 篇对比综述`)
+      },
+      onError: (_code, message, cancelled) => {
+        setBatchBusy(false); setSynthOpen(false); setSynthStage(null)
+        // 用户主动取消不该弹「错误」（与普通生成的取消语义一致）
+        if (!cancelled) addToast(message, 'error')
+      },
+    })
+  }, [selectedIds, synthTitle, synthNotes, synthStage, docs, addToast])
+
   // ── 右键菜单 ──
 
   /**
@@ -660,6 +722,7 @@ export function DocLibrary() {
           allSelected={allSelected}
           onToggleSelectAll={toggleSelectAll}
           onExport={handleBatchExport}
+          onSynthesize={handleOpenSynthesize}
           onMove={fid => runBatch(() => moveDocs([...selectedIds], fid))}
           onTag={handleBatchTag}
           onDelete={() => setDeleteTargets([...selectedIds])}
@@ -737,6 +800,64 @@ export function DocLibrary() {
           </div>
         </div>
       )}
+
+      {/* 合成确认 —— 进行中（synthStage 非 null）时同一层显示阶段文案，
+          不关窗：合成长则几分钟，用户需要看到它还在动 */}
+      {synthOpen && (() => {
+        const ids = [...selectedIds]
+        const running = synthStage !== null
+        return (
+          <div className="fixed inset-0 z-300 flex items-center justify-center bg-black/20 backdrop-blur-sm"
+            onClick={() => { if (!running) setSynthOpen(false) }}>
+            <div data-synth-dialog className="bg-elevated rounded-2xl shadow-2xl border border-border-light p-6 max-w-105 w-full mx-4 animate-[fadeIn_0.15s_ease-out]"
+              onClick={e => e.stopPropagation()}>
+              <h3 className="text-[17px] font-semibold mb-2 flex items-center gap-2">
+                <Layers size={16} className="text-accent" />合成 {ids.length} 篇对比综述
+              </h3>
+
+              {running ? (
+                <div className="py-4">
+                  <p className="text-[13px] text-dimmed flex items-center gap-2">
+                    <RefreshCw size={13} className="animate-spin text-accent" />{synthStage}
+                  </p>
+                  <p className="text-[11px] text-disabled mt-3">
+                    合成期间可以离开本面板，完成后文档会自动进库。
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {/* 已选清单 —— 用户在这里核对「选对了吗」，这是本对话框存在的主要理由 */}
+                  <p className="text-[11px] text-disabled mb-1">将按以下顺序合成：</p>
+                  <ul data-synth-sources className="mb-4 max-h-32 overflow-y-auto rounded-lg border border-border-light bg-surface px-3 py-2 space-y-0.5">
+                    {ids.map((id, i) => (
+                      <li key={id} className="text-[12px] text-dimmed truncate">
+                        <span className="text-disabled mr-1">{i + 1}.</span>
+                        {docs.find(d => d.id === id)?.title || id}
+                      </li>
+                    ))}
+                  </ul>
+
+                  <label className="text-[12px] font-medium text-dimmed block mb-1">标题</label>
+                  <input data-synth-title value={synthTitle} onChange={e => setSynthTitle(e.target.value)}
+                    className="w-full px-2 py-1.5 mb-3 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent" />
+
+                  <label className="text-[12px] font-medium text-dimmed block mb-1">对比指引（可选）</label>
+                  <textarea data-synth-notes value={synthNotes} onChange={e => setSynthNotes(e.target.value)}
+                    rows={2} placeholder="例如：重点比较各篇的方法差异与实验条件"
+                    className="w-full px-2 py-1.5 mb-4 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent resize-none" />
+
+                  <div className="flex gap-2 justify-end">
+                    <button onClick={() => setSynthOpen(false)}
+                      className="px-4 py-2 text-[13px] text-dimmed hover:bg-surface rounded-lg transition-colors">取消</button>
+                    <button data-confirm-synth onClick={runSynthesize}
+                      className="px-4 py-2 bg-accent text-white text-[13px] font-medium rounded-lg hover:bg-accent-hover transition-colors">合成</button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )
+      })()}
     </aside>
   )
 }

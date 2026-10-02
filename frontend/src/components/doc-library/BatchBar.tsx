@@ -6,7 +6,7 @@
  * 并在「选中数 > 已渲染条数」时补一句「含未显示项」，否则用户会以为只选中了看得见的那些。
  */
 import { useState } from 'react'
-import { Archive, FolderInput, Tag, Trash2, X, CheckSquare, Square } from 'lucide-react'
+import { Archive, FolderInput, Tag, Trash2, X, CheckSquare, Square, Layers } from 'lucide-react'
 import type { FolderEntry } from '../../store/types'
 
 export interface BatchBarProps {
@@ -19,6 +19,8 @@ export interface BatchBarProps {
   allSelected: boolean
   onToggleSelectAll: () => void
   onExport: () => void
+  /** 多篇合成对比综述（未选够 2 篇时按钮禁用，见下方 title） */
+  onSynthesize: () => void
   onMove: (folderId: string) => void
   onTag: (tags: string[], mode: 'add' | 'replace') => void
   onDelete: () => void
@@ -27,7 +29,7 @@ export interface BatchBarProps {
 
 export function BatchBar({
   selectedCount, renderedCount, totalMatches, folders, busy, allSelected,
-  onToggleSelectAll, onExport, onMove, onTag, onDelete, onClear,
+  onToggleSelectAll, onExport, onMove, onTag, onDelete, onClear, onSynthesize,
 }: BatchBarProps) {
   const [open, setOpen] = useState<'move' | 'tag' | null>(null)
   const [tagDraft, setTagDraft] = useState('')
@@ -61,6 +63,13 @@ export function BatchBar({
 
         <div className="flex-1" />
 
+        {/* 合成放最左（紧邻「全选」之后）：它是这里唯一**产出新内容**的动作，
+            其余四个都是对既有文档的整理操作 */}
+        <button onClick={onSynthesize} disabled={busy || selectedCount < 2}
+          title={selectedCount < 2 ? '至少选择 2 篇才能生成对比综述' : `把选中的 ${selectedCount} 篇合成一篇对比综述`}
+          className="w-6 h-6 rounded-md hover:bg-accent/10 flex items-center justify-center disabled:opacity-50 disabled:hover:bg-transparent">
+          <Layers size={13} className="text-accent" />
+        </button>
         <button onClick={onExport} disabled={busy} title="导出 ZIP"
           className="w-6 h-6 rounded-md hover:bg-surface-hover flex items-center justify-center disabled:opacity-50">
           <Archive size={13} className="text-muted" />

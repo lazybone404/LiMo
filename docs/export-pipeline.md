@@ -98,7 +98,20 @@ Tabs: `original`, `extract`, `table`, `digitize`, `understand`
 - **HTML 导出**：后端先查 markdown → 未找到 → 回退到 `get_process_results()` ✅
 - **自定义导出**：后端 `export_custom` 中未知 tab 统一走 `get_process_results()` 查找 ✅
 
-### 2.5 前端 Tab 注册表 + 内容源（2026-08-14 重写）
+### 2.5 合成文档（composite，2026-10-01）
+
+Tabs: `summary`, `transcript`（**恰好两个**）
+
+| Tab | 预览内容 | store 字段 | 后端 mode | 后端内容源 |
+|-----|---------|-----------|----------|-----------|
+| summary | MarkdownPreview(currentContent)（= 对比综述） | currentContent | notes | `get_markdowns_by_transcript(mode="notes")` |
+| transcript | TranscriptView(currentRawText)（= 合成正文 + `## 来源文档` 清单） | currentRawText | transcript | `tx["rawText"]` |
+
+**没有 polished**：它是 N 篇的综述，**没有「原文」可整理**——后端 `build_both()` 对 composite 返回 `(sp, sp)`，前端 `getTypeMeta` 也不给入口，两层一致。
+
+⚠️ **tab 注册是导出链路最容易漏的一环**：`sourceTypes` 不含新类型 → 预览区**一个 tab 都没有**（静默空屏，无报错），导出侧也就无从取材。故 composite **只**加在 `summary` 与 `transcript` 两处，**绝不可加进 `DOC_TYPES`**（它被 `ALL_TEXT` 展开，会把 polished / mindmap 一并送出）；`summary` 的 `defaultFor` 也要加（`forSourceType` 与 `defaultFor` 是两件事）。详见 CHANGELOG 2026-10-01。
+
+### 2.6 前端 Tab 注册表 + 内容源（2026-08-14 重写）
 
 旧的 `TAB_EXPORT` 集中表已移除，重构为**注册表 + getter 绑定**两层（替代散落在 5 处的 switch/case / 映射表）：
 
@@ -109,7 +122,7 @@ export type ContentSource = 'notes' | 'polished' | 'rawText' | 'imageResult' | '
 
 TabRegistry.register({
   key: 'summary', label: '笔记',
-  sourceTypes: ['video', 'webpage', 'text', 'link', 'pdf', 'docx', 'pptx', 'document', 'epub', 'xlsx'],
+  sourceTypes: ['video', 'webpage', 'text', 'link', 'pdf', 'docx', 'pptx', 'document', 'epub', 'xlsx', 'composite'],
   priority: 10,
   contentSource: 'notes', htmlMode: 'notes', exportSuffix: '', exportLabel: '笔记',
   isStandardMarkdown: true, showTOC: true, showVersionSwitcher: 'notes',

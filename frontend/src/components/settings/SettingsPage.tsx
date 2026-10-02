@@ -4,6 +4,7 @@ import { useStore } from '../../store'
 import { ACCENT_GROUPS, ACCENT_SWATCH } from '../../lib/accent'
 import { TEXTURE_OPTIONS, TEXTURE_SWATCH, FONT_OPTIONS, getSavedIntensity, applyIntensity, saveIntensity } from '../../lib/texture'
 import { BASE_OPTIONS } from '../../lib/theme-base'
+import { PARA_STYLE_OPTIONS, LINE_HEIGHT_RANGE, MEASURE_RANGE, MEASURE_DEFAULT_ON } from '../../lib/reading-prefs'
 import { THEME_PRESETS } from '../../lib/theme-presets'
 import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette, Puzzle } from 'lucide-react'
 import { ProviderSettings } from './ProviderSettings'
@@ -57,6 +58,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const setFont = useStore(s => s.setFont)
   const base = useStore(s => s.base)
   const setBase = useStore(s => s.setBase)
+  const reading = useStore(s => s.reading)
+  const setReading = useStore(s => s.setReading)
   const applyPreset = useStore(s => s.applyPreset)
   const [intensity, setIntensity] = useState(getSavedIntensity())
 
@@ -431,6 +434,100 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                         </button>
                       )
                     })}
+                  </div>
+                </div>
+              </div>
+
+              {/* 阅读版式 — 沉浸阅读的「纸感」实质（行高 / 每行字数 / 段落区隔）。
+                  ⚠️ 刻意做成独立卡片、且**不进「推荐搭配」主题包**：版式关乎阅读生理，
+                  不该被「换一个主题包」连带重置。默认值全部等于改造前的现状，
+                  所以「不动它」= 零变化（见 lib/reading-prefs.ts 的注释）。 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
+                <div>
+                  <label className="text-[15px] font-medium mb-1 block">阅读版式</label>
+                  <p className="text-[12px] text-muted mb-4">
+                    调整 Markdown 预览区的正文排版。默认与改造前一致，按需微调即可
+                  </p>
+
+                  {/* 段落区隔 —— clreq：首行缩进与加大段距是两套并行传统，不建议混用，
+                      故是二选一的单选，而不是两个可自由组合的旋钮 */}
+                  <div className="mb-5">
+                    <div className="text-[13px] font-medium mb-2">段落区隔</div>
+                    <div className="space-y-1">
+                      {PARA_STYLE_OPTIONS.map(o => {
+                        const selected = reading.paraStyle === o.key
+                        return (
+                          <button
+                            key={o.key}
+                            onClick={() => setReading({ paraStyle: o.key })}
+                            className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors ${selected ? 'bg-accent/10' : 'hover:bg-surface-hover'}`}
+                          >
+                            <div className={`text-[14px] ${selected ? 'text-accent font-medium' : 'text-dimmed'}`}>{o.label}</div>
+                            <div className="text-[11px] text-disabled mt-0.5">{o.hint}</div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* 行高 */}
+                  <div className="mb-5">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[13px] font-medium">行高</span>
+                      <span className="text-[12px] text-accent font-medium bg-accent/10 px-2 py-0.5 rounded-full">{reading.lineHeight.toFixed(2)}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-disabled shrink-0">紧凑</span>
+                      <input
+                        type="range"
+                        min={LINE_HEIGHT_RANGE.min} max={LINE_HEIGHT_RANGE.max} step={LINE_HEIGHT_RANGE.step}
+                        value={reading.lineHeight}
+                        onChange={e => setReading({ lineHeight: parseFloat(e.target.value) })}
+                        className="w-full h-2 rounded-full appearance-none cursor-pointer
+                          [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:rounded-full
+                          [&::-webkit-slider-thumb]:bg-accent [&::-webkit-slider-thumb]:shadow-md
+                          [&::-webkit-slider-thumb]:appearance-none
+                          bg-surface-hover"
+                      />
+                      <span className="text-[11px] text-disabled shrink-0">宽松</span>
+                    </div>
+                  </div>
+
+                  {/* 每行字数 —— 勾选框 + 条件滑条（不用魔法值表达「不限」，
+                      免得 0/负数在两处来回转换） */}
+                  <div>
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={reading.measure !== null}
+                        onChange={e => setReading({ measure: e.target.checked ? MEASURE_DEFAULT_ON : null })}
+                        className="accent-accent w-4 h-4 cursor-pointer"
+                      />
+                      <span className="text-[13px] font-medium">限制每行字数</span>
+                      <span className="text-[12px] text-muted">
+                        {reading.measure === null ? '不限，跟随面板宽度' : `约 ${reading.measure} 字／行`}
+                      </span>
+                    </label>
+                    {reading.measure !== null && (
+                      <div className="flex items-center gap-2 mt-3">
+                        <span className="text-[11px] text-disabled shrink-0">{MEASURE_RANGE.min}</span>
+                        <input
+                          type="range"
+                          min={MEASURE_RANGE.min} max={MEASURE_RANGE.max} step={MEASURE_RANGE.step}
+                          value={reading.measure}
+                          onChange={e => setReading({ measure: parseInt(e.target.value) })}
+                          className="w-full h-2 rounded-full appearance-none cursor-pointer
+                            [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:rounded-full
+                            [&::-webkit-slider-thumb]:bg-accent [&::-webkit-slider-thumb]:shadow-md
+                            [&::-webkit-slider-thumb]:appearance-none
+                            bg-surface-hover"
+                        />
+                        <span className="text-[11px] text-disabled shrink-0">{MEASURE_RANGE.max}</span>
+                      </div>
+                    )}
+                    <p className="text-[11px] text-muted mt-2">
+                      中文排版建议每行 30-40 字（约 550-640px）。行宽过宽时视线容易跳行
+                    </p>
                   </div>
                 </div>
               </div>

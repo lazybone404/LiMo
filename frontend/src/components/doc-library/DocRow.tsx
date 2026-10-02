@@ -17,7 +17,7 @@
  */
 import { memo } from 'react'
 import { appUrl } from '../../api/client'
-import { CheckSquare, Square, Pencil, Trash2, Search } from 'lucide-react'
+import { CheckSquare, Square, Pencil, Trash2, Search, Layers } from 'lucide-react'
 import { SearchSnippet } from '../ui/SearchSnippet'
 import type { DocEntry } from '../../store/types'
 import type { Density } from './docLibraryPrefs'
@@ -81,6 +81,10 @@ function DocRowImpl({
   doc, index, active, selected, density, matched, snippet, titleDraft, tagsDraft, actions,
 }: DocRowProps) {
   const colors = TYPE_COLORS[doc.sourceType] || TYPE_COLORS.text
+  // ⚠️ 判据是**篇数 ≥ 2**，不是 `sourceType === 'composite'`：1 篇「合成」没有可展示的
+  // 「N 合 1」语义（N=1 是噪音），而 2 篇以上才配得上这个徽章。两者同时成立才画。
+  const sourceCount = doc.sourceType === 'composite' ? (doc.sourceDocIds?.length ?? 0) : 0
+  const isMerged = sourceCount >= 2
   const selectedBox = (
     <button
       data-select-toggle
@@ -121,6 +125,8 @@ function DocRowImpl({
             {selectedBox}
             {/* 类型用 4×16 竖条而不是 16×16 方块：省 12px 横向空间，26px 行里这很值 */}
             <span aria-hidden className="w-1 h-4 rounded-full shrink-0" style={{ backgroundColor: colors.dot }} />
+            {/* 紧凑行里只放一个图标，不放「N 合 1」全称——26px 行的横向空间要留给标题 */}
+            {isMerged && <Layers size={11} className="text-accent/80 shrink-0" aria-label={`${sourceCount} 篇合成`} />}
             <span className="flex-1 min-w-0 text-[12px] truncate">{doc.title}</span>
             {matched && <Search size={11} className="text-accent/80 shrink-0" />}
             {/* ⚠️ 右侧固定 40px：日期与操作组**互斥显示**（hover 覆盖而非并排），
@@ -261,6 +267,14 @@ function DocRowImpl({
               style={{ backgroundColor: colors.bg, color: colors.text }}>
               {SRC_LABEL[doc.sourceType] || doc.sourceType}
             </span>
+            {/* 「N 合 1」——合成文档的**结构**属性（由几篇合成），与左侧的**类型**标签是
+                两回事，故并排显示而不是合并进类型标签文案 */}
+            {isMerged && (
+              <span title={`由 ${sourceCount} 篇文档合成`}
+                className="flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-accent/10 text-accent">
+                <Layers size={9} />{sourceCount} 合 1
+              </span>
+            )}
             {(doc.tags || []).slice(0, 2).map(t => (
               <button key={t} onClick={e => { e.stopPropagation(); actions.onEditTags(doc) }}
                 className="px-1.5 py-0.5 bg-surface-hover text-disabled rounded-full text-[10px] hover:text-dimmed">

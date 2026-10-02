@@ -302,6 +302,59 @@ body {
   background: var(--md-table-header-bg);
 }
 
+/* ── 阅读版式（沉浸阅读的「纸感」实质） ───────────────────
+   与上一组「GitHub Markdown Overrides」同性质，只是维度不同：那组覆盖**颜色**，
+   这组覆盖**排版**。vendor（github-markdown-light.css）硬写 `.markdown-body
+   { font-size:16px; line-height:1.5 }` 与 `p { margin-bottom:10px }`，全仓既无
+   text-indent、也无任何排版变量 —— 这一维此前完全空白。
+
+   `--read-line-height` 初值 1.5 与 vendor 同值、`web` 段落式的
+   (text-indent:0 + margin-bottom:10px) 也正是 vendor 现值 —— 故**用户没调过时
+   渲染逐值不变**（零回归是被 test/readingPrefs.test.ts 钉住的，不是靠自觉）。
+
+   驱动方式与 data-font / texture 同模式：属性与变量挂在 documentElement
+   （见 lib/reading-prefs.ts 的 applyReading），作用域限定 .preview-area。
+   全仓 6 个 .markdown-body 使用点都在 .preview-area 内，故此作用域
+   不排除任何阅读场景，只是让规则更精确。
+
+   ⚠️ **绝不把 text-indent 设在 .markdown-body / .preview-content 上**：它**会继承**，
+   标题、列表标记、代码、引用首行会被一起缩进。
+   ⚠️ **不要试图用 `:not(pre)` 保护代码块**：Prism 用的是 `PreTag="div"`
+   （markdown-components.tsx:135），项目里代码块容器根本不是 <pre>。
+   代码块靠「行高只下放到 .md-para / li，不下放到 .markdown-body」来保护。
+   ⚠️ **钩子是 `.md-para` 而不是 `p`**：MarkdownParagraph 里含链接 / 行内代码 /
+   内联图片的段落会渲染成 <div>（两个分支见 markdown-components.tsx），
+   只写 `p` 会让**技术笔记里绝大多数段落**静默不吃版式 —— 症状是「纯文本段落
+   缩进了、带行内代码的段落没缩进」的随机抖动，看起来完全像渲染正常。
+   ────────────────────────────────────────────────────── */
+
+:root {
+  /* 默认 = github-markdown-css 的 line-height 现值 → 零回归 */
+  --read-line-height: 1.5;
+}
+
+/* 段落区隔 —— clreq 明确「首行缩进」与「加大段距」是两套并行传统、不建议混用
+   （又缩排又加大段距 → 段落起点被拉太靠后，两种区隔信号叠加不加乘，只显累赘）。
+   故这里是二选一，而不是两个可自由组合的旋钮。 */
+[data-read-para="web"] .preview-area .markdown-body > .md-para {
+  text-indent: 0;
+  margin-bottom: 10px;   /* = vendor 现值 */
+}
+[data-read-para="book"] .preview-area .markdown-body > .md-para {
+  text-indent: 2em;
+  /* 段距 = 行距（0）：书籍式靠首行缩进区隔段落，不再叠加段间距 */
+  margin-bottom: 0;
+}
+
+/* 行高只作用于正文块。**不下放到 .markdown-body** —— 那会连带把代码块、表格行、
+   标题一起拉开。li 在这里是因为松列表项（<li><p>…</p></li>）里的段落不是
+   .md-para 的直接兄弟，只能靠继承 li 的行高（嵌套列表的后代 li 同样命中）。 */
+.preview-area .markdown-body > .md-para,
+.preview-area .markdown-body > ul li,
+.preview-area .markdown-body > ol li {
+  line-height: var(--read-line-height);
+}
+
 /* GitHub Markdown dark mode — manual overrides since GitHub CSS
    uses @media (prefers-color-scheme:dark) which won't fire with
    our manual data-theme toggle. These mirror GitHub's dark palette. */

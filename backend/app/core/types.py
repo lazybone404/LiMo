@@ -23,6 +23,8 @@ class SourceType(StrEnum):
     IMAGE = "image"
     TEXT = "text"
     DOCUMENT = "document"  # 通用文档兜底
+    # 多篇合成的对比综述产物（自身也是一篇文档，进库/可搜索/可导出/可被对话引用）
+    COMPOSITE = "composite"
 
 # 所有文档类 source_type（prompt 分派、格式选项等共用）
 DOC_SOURCE_TYPES: frozenset[str] = frozenset({"pdf", "docx", "pptx", "xlsx", "epub", "document"})

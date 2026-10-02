@@ -24,7 +24,7 @@ from app.core.concurrency import ExecutionGuard
 from app.core.logging import request_id, init_request_id_logging, RequestIDFilter
 from app.storage.store import Store
 
-app = FastAPI(title="LiMo", version="0.4.6")
+app = FastAPI(title="LiMo", version="0.4.7")
 
 @app.middleware("http")
 async def add_request_id(request, call_next):
@@ -313,15 +313,16 @@ async def startup():
 @app.get("/health")
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.4.6", "started_at": app.state.started_at}
+    return {"status": "ok", "version": "0.4.7", "started_at": app.state.started_at}
 
 
 # 路由（files 在 ingest 之前——/files/{id}/original 比 /files/{id}/{name} 更具体，必须先匹配）
-from app.routers import ingest, generate, config as config_router, capabilities, chat, model, process, files, export, conversations, plugins, references, epub, markdown_edit, folders
+from app.routers import ingest, generate, config as config_router, capabilities, chat, model, process, files, export, conversations, plugins, references, epub, markdown_edit, folders, synthesis
 app.include_router(folders.router, prefix="/api")
 app.include_router(markdown_edit.router, prefix="/api")
 app.include_router(references.router, prefix="/api")
 app.include_router(epub.router, prefix="/api")
+app.include_router(synthesis.router, prefix="/api")
 app.include_router(plugins.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
 app.include_router(ingest.router, prefix="/api")
