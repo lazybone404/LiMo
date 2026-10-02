@@ -13,6 +13,7 @@ from app.core.errors import AppError
 
 from app.core.cookie_parser import auto_parse
 from app.core.config_io import save_config as _save_config, mask_sensitive, merge_sensitive
+from app.core.url_utils import api_root
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -207,11 +208,12 @@ async def detect_models(data: dict, request: Request, cfg=Depends(get_config_dep
     if "@" in parsed.hostname:
         raise AppError("DETECT_BAD_URL", "API 地址格式无效")
 
-    # 确保 URL 以 /v1 结尾
-    url = base_url.rstrip("/")
-    if not url.endswith("/v1"):
-        url += "/v1"
-    url += "/models"
+    # 归一为可拼 /models 的根 —— 与 `routers/model.py` 的 test_connection / refresh_models
+    # **共用同一个函数**（此前是本文件里的第三份逐字副本，判据「是否以 /v1 结尾」对
+    # google（`.../v1beta/openai`）与 zhipu（`.../api/paas/v4`）都不成立）。
+    # ⚠️ 本端点目前**前端零调用**（`api/settings.ts` 的 detectModels 定义了但无调用方），
+    #    仍一并收敛——死代码若被复活，不该带着一份不一致的判据回来。
+    url = api_root(base_url) + "/models"
 
     try:
         import requests as req

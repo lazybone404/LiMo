@@ -81,6 +81,11 @@ class LLMService:
             mismatches.append(f"DashScope Key 通常以 sk-ws- 或 sk-ht- 开头，当前前缀 {pk_prefix}")
         if ("deepseek" in url or "api.deepseek" in url) and self.api_key.startswith("sk-ws-"):
             mismatches.append(f"疑似 DashScope Key（前缀 {pk_prefix}）被用于 DeepSeek，将导致 401")
+        # ⚠️ 已知文案偏差（2026-10-02 记录，**不改逻辑**）：google 的 base_url 自本次起是
+        #    OpenAI 兼容层 `.../v1beta/openai`，含 "openai" → 这条也会命中它，于是
+        #    「用 DashScope Key 配 Google」会报「被用于 **OpenAI**」。
+        #    触发条件是**真的配错了**（warning 的实质正确），只是厂商名说错；改判据为
+        #    `api.openai.com` 会连带漏掉用户自配的含 "openai" 的中转地址，得不偿失。
         if ("openai" in url or "api.openai" in url) and self.api_key.startswith("sk-ws-"):
             mismatches.append(f"疑似 DashScope Key（前缀 {pk_prefix}）被用于 OpenAI，格式不匹配")
         if ("anthropic" in url or "api.anthropic" in url) and not self.api_key.startswith("sk-ant-"):
