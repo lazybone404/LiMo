@@ -184,13 +184,12 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         store = request.app.state.store
         config = request.app.state.config
         llm_config = resolve_llm_config(config, req.model_id)
-        # ── 上下文窗口：四层解析后在生成路径上补全（2026-10-01）──
-        # `resolve_llm_config` 只查**第 1 层**（enabled_models.context_window，:62-65），
-        # `llm_models` 预设从不流入 → ContentPreparer 会落到 provider 兜底表。两者可差数倍
-        # （dashscope/qwen3.8-max：预设 131,072 / 兜底 1,000,000）。此处补上完整四层解析，
-        # 使创建侧（synthesis）与生成侧用的是同一个 cw。
-        # ⚠️ 副作用（已记录）：未知模型从 content_preparer 的 128k 兜底变为保守 32k。
-        llm_config["model_context_window"] = resolve_context_window(config, req.model_id)
+        # ── 上下文窗口：**不要再在这里手工赋值** ──
+        # `resolve_llm_config` 内部已填 `model_context_window`（完整四层解析，见
+        # model_resolver.py）。此处若再补一句 `resolve_context_window(config, req.model_id)`，
+        # 传的是**原始** req.model_id —— 用户用「场景默认模型」时它是 None，会把上面
+        # 已填好的正确值**覆盖成兜底值**（同一请求里模型 1M、预算却按兜底算）。
+        # 收口在唯一入口，避免成对逻辑两处各写一遍而漂移（CLAUDE.md #39）。
         # ── LLMService ──
         # 非流式路径没有 asyncio.timeout 包壳，SDK 的 httpx 超时是唯一闸门，
         # 所以多图场景必须在这里就放宽，否则照样撞 330。
@@ -535,8 +534,11 @@ async def generate_stream(transcript_id: str, request: Request,
         "model": {llm.provider: llm.model},
         "base_url": {llm.provider: llm.base_url},
         "capabilities": llm.capabilities,
-        # 上下文窗口：四层解析（同非流式端点）。prep_cfg 此前**不含**该字段，
-        # 于是 ContentPreparer 落到 provider 兜底表——与非流式端点的预算不同源。
+        # 上下文窗口：四层解析（与非流式端点同源）。
+        # ⚠️ prep_cfg 是**手工构造**的（从 llm 对象反取字段），不走 `resolve_llm_config`
+        #    ——所以这一行不能省，漏了就落到 provider 兜底表，两个端点的预算不同源。
+        # ⚠️ `model_id` 可能是 **None**（用户用「场景默认模型」）→ 靠 resolve_context_window
+        #    的第 0 层 scene 回退补上。别改成传 `llm.model` 之类的替代写法，那会绕过回退。
         "model_context_window": resolve_context_window(config, model_id),
     }
     preparer = ContentPreparer(

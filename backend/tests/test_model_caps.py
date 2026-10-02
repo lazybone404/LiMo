@@ -2,7 +2,7 @@
 
 运行：uv run python tests/test_model_caps.py
 覆盖：include/exclude 判据（含 "*" 分支必须仍走 exclude）/ deepseek 规则 / 视频精确匹配 /
-      DEFAULT_CONTEXT 覆盖完整性 / resolve_context_window 不落 32k 兜底
+      DEFAULT_CONTEXT 覆盖完整性 / resolve_context_window 不落兜底 / **scene 回退（第 0 层）**
 
 ⚠️ 每个用例都配了「对照实验」——先证明判据有区分力（把实现改回错误版本，用例确实会红），
    否则「测试通过」和「测试根本没在检查」无法区分（见 key-patterns #38/#39）。
@@ -20,8 +20,6 @@ from app.core.config import DEFAULT_CONFIG
 from app.core.model_resolver import resolve_context_window
 from app.core.token import DEFAULT_CONTEXT
 from app.routers.model import _PROVIDER_IMAGE_RULES, _detect_capabilities
-
-_32K_FALLBACK = 32000
 
 
 def _old_detect_image(include: list, exclude: list, name: str) -> bool:
@@ -112,27 +110,43 @@ def test_default_context_covers_all_providers():
     """不变式：llm_models 预设涉及的每个 provider 都必须在 DEFAULT_CONTEXT 里有兜底值。
 
     这道闸门抓的是「新增了 provider 预设却忘了补兜底表」——此时该 provider 的
-    未声明 context_window 的模型会静默落到保守 32k，对话预算被腰斩且无任何提示。
+    未声明 context_window 的模型会静默落到第 4 层兜底，预算与实际窗口不符且无提示。
     """
     preset_providers = set(DEFAULT_CONFIG.get("llm_models", {}).keys())
     missing = preset_providers - set(DEFAULT_CONTEXT.keys())
     assert not missing, f"这些 provider 缺 DEFAULT_CONTEXT 兜底值：{sorted(missing)}"
 
 
-def test_no_preset_model_falls_back_to_32k():
-    """行为断言：所有预设模型（含未声明 context_window 的）都不该落到 32k 兜底。
+def test_no_preset_model_silently_falls_back():
+    """行为断言：每个预设模型都能解析到**它应有的**窗口。
 
-    比只断言「表里有 key」更强——它同时覆盖「provider 有兜底值」与
-    「model_name 能正确解析到该 provider」两件事。
+    ⚠️ 判据必须按「模型 × 来源」**推导期望值**，不能比对第 4 层兜底常量的数值。
+    本测试的初版正是后者（`win == 32000`），它在常量改为 128k 后**必然失效**：
+    `moonshot` / `opencode` / `zhipu` 的 provider 兜底值恰好是 `131072`，与
+    `128 * 1024` **数值完全相同** → 「返回值 == 常量」无法区分「走第 3 层」与
+    「四层全落空」，且清单里会混进一批**根本没走兜底**的模型（模式 #50 的形态：
+    值相等 ≠ 路径相同——用值反推路径，一旦两个来源同值，判据就失去区分力）。
+
+    真正要守的两条性质：
+      ① 每个 provider 都有兜底来源——否则该 provider 的未声明模型会用到
+         「未知模型」的猜测值（这正是 #51「能力存在 ≠ 该路径在用它」的同族；
+         表里**有 key** 与**这个模型真的走到它**是两件事，故本条仍需逐模型跑）
+      ② 第 2 层查表能正确命中预设——预设值 ≠ provider 兜底值的模型（如
+         `qwen-vl-ocr-latest` 38192 / `glm-4.7` 200000 / `kimi-k2.6` 262144）
+         一旦静默落到兜底就会被本条抓住
     """
-    fallbacks = []
+    problems = []
     for prov, models in DEFAULT_CONFIG.get("llm_models", {}).items():
         for m in models:
+            mid = m["id"]
             win = resolve_context_window({"enabled_models": []},
-                                         provider_id=prov, model_name=m["id"])
-            if win == _32K_FALLBACK:
-                fallbacks.append(f"{prov}/{m['id']}")
-    assert not fallbacks, f"这些模型落到了 32k 保守兜底（缺预设上下文窗口或缺 provider 兜底）：{fallbacks}"
+                                         provider_id=prov, model_name=mid)
+            expected = m.get("context_window") or DEFAULT_CONTEXT.get(prov)
+            if expected is None:
+                problems.append(f"{prov}/{mid}: 无任何兜底来源，落到第 4 层 {win}")
+            elif win != expected:
+                problems.append(f"{prov}/{mid}: 解析 {win} ≠ 期望 {expected}")
+    assert not problems, "预设模型窗口解析异常：\n  " + "\n  ".join(problems)
 
 
 def test_context_window_value_matches_preset():
@@ -147,6 +161,79 @@ def test_user_custom_beats_preset():
     cfg = {"enabled_models": [{"id": 12345, "context_window": 65536}]}
     win = resolve_context_window(cfg, model_id=12345)
     assert win == 65536, f"用户自定义应生效，实际 {win}"
+
+
+# ── scene 回退（第 0 层）──
+#
+# ⚠️ 本轮修复的直接判据。调用方普遍传 `req.model_id`，而用户用「场景默认模型」时
+#    它是 **None** —— `resolve_llm_config` 会回退到 `scene_models[scene]`（LLMService
+#    因此用真模型），而本函数此前**没有这条回退** → 四层全落空 → 落到第 4 层兜底。
+#    后果：同一请求里模型与预算各说各话（1M 窗口的模型按 128k 算），且**零报错**。
+
+def test_scene_fallback_resolves_real_model():
+    """入参 model_id 为 None（调用方常态）→ 应回退到 scene_models 绑定模型的窗口。
+
+    对照实验：删掉 `resolve_context_window` 里第 0 层的回退 → 四层全落空 →
+    返回 DEFAULT_CONTEXT_WINDOW(131072) → 本断言红。
+    """
+    cfg = {
+        "scene_models": {"generate": 3628306387},
+        "enabled_models": [
+            {"id": 3628306387, "provider_id": "deepseek", "model_name": "deepseek-flash"},
+        ],
+    }
+    win = resolve_context_window(cfg, None)   # ← 调用方的真实形态：model_id=None
+    assert win == 1_000_000, \
+        f"scene 回退应解析到 deepseek-flash 的 1M 窗口，实际 {win}（落回第 4 层兜底了？）"
+
+
+def test_scene_fallback_respects_scene_arg():
+    """scene 参数要真的被用上——不同场景绑不同模型时各取各的。
+
+    刻意只用第 1 层（用户自定义值）做断言，不依赖任何厂商预设数值——
+    否则厂商改一次预设，这条测试就跟着红，红得与它要守的性质无关。
+    """
+    cfg = {
+        "scene_models": {"generate": 1, "chat": 2},
+        "enabled_models": [
+            {"id": 1, "context_window": 111111},
+            {"id": 2, "context_window": 222222},
+        ],
+    }
+    assert resolve_context_window(cfg, None, scene="generate") == 111111
+    assert resolve_context_window(cfg, None, scene="chat") == 222222
+
+
+def test_scene_fallback_not_used_when_provider_given():
+    """对照：显式给了 provider/model 的调用方不得被 scene 回退覆盖。
+
+    真实调用方 `reference_compressor` 按**实际在用的模型**查询（可能不是场景模型）。
+    判据写「两个来源都为空」而非「model_id 为空」，正是为了保住它。
+
+    对照实验：把判据改成 `if not model_id:` → model_id 回退成 1 → 第 1 层命中
+    `context_window=12345` → 返回 12345 → 本断言红。
+    """
+    cfg = {
+        "scene_models": {"generate": 1},
+        "enabled_models": [
+            {"id": 1, "provider_id": "deepseek",
+             "model_name": "deepseek-flash", "context_window": 12345},
+        ],
+    }
+    win = resolve_context_window(cfg, None, provider_id="anthropic", model_name="claude-opus-5")
+    assert win != 12345, \
+        f"显式 provider/model 被 scene 回退覆盖了（拿到 scene 模型的 12345），实际 {win}"
+
+
+def test_unknown_model_uses_128k_not_32k():
+    """第 4 层兜底值断言——用户明确要求「不默认搞成 32k 那小的」。
+
+    四层全部落空（连 provider 都未知，即用户自建中转模型）→ 128k。
+    对照实验：常量写回 `32 * 1024` → 红。这条把该决策钉成不可回归的性质。
+    """
+    win = resolve_context_window({"enabled_models": []},
+                                 provider_id="mystery-gateway", model_name="whatever")
+    assert win == 128 * 1024, f"未知模型兜底应为 128k，实际 {win}"
 
 
 if __name__ == "__main__":

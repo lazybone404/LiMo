@@ -194,39 +194,46 @@ print(f"PASS: single 现状自证 —— 已知不闭合（{_single} + 65536 + 2
 # 7. cw 来源 —— 预设窗口必须真的进得来（否则预算建立在错的窗口上）
 # ═══════════════════════════════════════════════════════════════
 #
-# 【事实】`resolve_llm_config()` 只查**第 1 层**（enabled_models.context_window），
-# `llm_models` 预设**从不流入** → 生成侧会落到 provider 兜底表。
-# 以 dashscope/qwen3.7-max 为例：预设 131,072 / 兜底 1,000,000 —— **7.6 倍**。
+# 【事实】`resolve_context_window` 是四层解析，但**第 2 层（llm_models 预设）只在
+# 调用方真的调它时才生效**。以 dashscope/qwen-vl-ocr-latest 为例：预设 38,192 /
+# provider 兜底表 1,000,000 —— **高估 26 倍**，按兜底算的预算必然超窗。
 #
-# 对照实验：删掉 generate.py 里的 `resolve_context_window(...)` 传参，生成侧会把
-# 1,000,000 当窗口 → 128k 模型上预算宽了 7.6 倍 → 请求超窗。而这**零报错**，
-# 只在模型开始截断/报超长时才看得出来。
+# 2026-10-02 的修法：把 `cw` 收口进 `resolve_llm_config`（它本来就已经做
+# 「model_id 为空则回退 scene_models[scene]」），调用方不再各写一遍 ——
+# 此前 generate.py 在调完 resolve_llm_config 之后**又**手工赋一次，
+# 传的是**原始** req.model_id（用户用「场景默认模型」时是 None）→ 把正确值覆盖成兜底值。
+#
+# 对照实验：删掉 model_resolver.py 里 `llm_config["model_context_window"] = ...`
+# 那一行 → 生成侧落到 provider 兜底表 → 本节红。
 
 from app.core.model_resolver import resolve_context_window, resolve_llm_config
 from app.core.token import DEFAULT_CONTEXT
 
 _CFG = {
     "enabled_models": [{"id": 7, "provider_id": "dashscope",
-                        "model_name": "qwen3.7-max", "capabilities": ["text"]}],
+                        "model_name": "qwen-vl-ocr-latest", "capabilities": ["text"]}],
     "providers": [{"id": "dashscope", "api_key": "sk-test", "base_url": ""}],
     "llm": {"provider": "dashscope", "api_key": "sk-test"},
 }
 
 _preset = resolve_context_window(_CFG, 7)
 _fallback = DEFAULT_CONTEXT["dashscope"]
-assert _preset == 131072, f"第 2 层预设应为 131,072，实际 {_preset}"
+assert _preset == 38192, f"第 2 层预设应为 38,192，实际 {_preset}"
 assert _fallback == 1000000, f"第 3 层兜底表应为 1,000,000，实际 {_fallback}"
 assert _preset != _fallback, "前置：这个样本必须让两层取值不同，否则下面的断言没有区分力"
 
-# 旧链路（只查第 1 层）拿不到预设 —— 这正是误差来源，也是必须显式传参的理由
-assert "model_context_window" not in resolve_llm_config(_CFG, 7), (
-    "resolve_llm_config 不该自行填预设窗口（它只查第 1 层）。"
-    "若它开始填了，请把 generate.py 的 resolve_context_window 传参重新评估一遍"
+# 收口后：`resolve_llm_config` **必须**把完整四层解析的结果填进来。
+# ⚠️ 断言是「等于 _preset」而非「字段存在」——只断言存在的话，填成兜底值也照样通过。
+_llm_cfg = resolve_llm_config(_CFG, 7)
+assert _llm_cfg.get("model_context_window") == _preset, (
+    f"resolve_llm_config 应填四层解析的 cw（{_preset}），"
+    f"实际 {_llm_cfg.get('model_context_window')} —— "
+    "填错或没填会让生成侧落到 provider 兜底表（本样本下高估 26 倍）"
 )
 
 # 传进去的 cw 必须真的被用（而不是被兜底表覆盖）
 assert single_input_budget(_preset) != single_input_budget(_fallback), \
-    "131,072 与 1,000,000 的预算必须不同（否则本节的判别无效）"
+    "38,192 与 1,000,000 的预算必须不同（否则本节的判别无效）"
 _verylong = _overlong(single_input_budget(_preset))
 _got_trunc, _ = ContentPreparer._truncate_text(_verylong, "dashscope", None, _preset)
 _m2 = re.search(r"约 (\d+) tokens", _got_trunc)
@@ -243,13 +250,20 @@ print(f"PASS: cw 来源 —— 预设 {_preset} 与兜底 {_fallback} 差 "
 #
 # ≥2 个 ContentPreparer 构造点（非流式 / 流式），两条都必须：
 #   ① 显式传 budget_profile=（漏传 → 合成文档按 single 截断，刚建好的综述被二次截断）
-#   ② 所在函数体内出现 resolve_context_window（漏传 → 预算落在兜底表上，见第 7 节）
+#   ② 所在函数体内出现 **cw 的来源**（漏了 → 预算落在 provider 兜底表上，见第 7 节）
+#
+# ⚠️ ② 接受**两种**合法来源（2026-10-02 收口后）：
+#      · `resolve_llm_config` —— 非流式路径：cw 已由它在内部填好，构造点直接复用
+#      · `resolve_context_window` —— 流式路径：prep_cfg 是手工构造的，必须自己填
+#    判据写成「二者之一」而非写死某一个——收口把「哪个函数」变成了实现细节，
+#    但「cw 必须来自四层解析」这条性质不变，这才是本节真正要守的东西。
 # 「漏改一处不报错、静默走默认值」正是这条要拦的形态。
 
 import ast, pathlib
 
 _APP = pathlib.Path(__file__).resolve().parent.parent / "app"
 _ctors, _bad_profile, _bad_cw = [], [], []
+_CW_SOURCES = {"resolve_llm_config", "resolve_context_window"}
 
 
 def _callee_name(node: ast.Call) -> str:
@@ -272,7 +286,7 @@ for _py in sorted(_APP.rglob("*.py")):
                 if "budget_profile" not in {k.arg for k in _n.keywords}:
                     _bad_profile.append(_where)
         if _ctor_lines and not any(
-            isinstance(_n, ast.Call) and _callee_name(_n) == "resolve_context_window"
+            isinstance(_n, ast.Call) and _callee_name(_n) in _CW_SOURCES
             for _n in _inner
         ):
             _bad_cw.append(f"{_py.relative_to(_APP.parent)}:{_fn.lineno} {_fn.name}")
@@ -280,12 +294,14 @@ for _py in sorted(_APP.rglob("*.py")):
 assert _ctors, "扫不到任何 ContentPreparer 构造点 —— 检查条件失效了（模式 #39）"
 assert len(_ctors) >= 2, f"构造点应 ≥2（流式 + 非流式），实际 {_ctors}"
 assert not _bad_profile, f"以下构造点漏传 budget_profile=，合成文档会被二次截断：{_bad_profile}"
-assert not _bad_cw, f"以下函数的构造点旁没有 resolve_context_window，预算会落在兜底表上：{_bad_cw}"
+assert not _bad_cw, f"以下函数的构造点旁没有 cw 来源（resolve_llm_config / resolve_context_window），预算会落在兜底表上：{_bad_cw}"
 print(f"PASS: ContentPreparer 构造点对称性（{_ctors}）")
 # ⚠️ 对照（可验证有区分力）：删掉 generate.py 流式端点 prep_cfg 里的
-#    "model_context_window" 行 → 本节不红（它扫的是函数体内是否有该调用）；
+#    "model_context_window" 行 → 本节不红（它扫的是函数体内是否有那个**调用**）；
 #    删掉**整行 resolve_context_window(...)** → 节 8 红。两者的差别正是本节的边界：
 #    它拦得住「整条链路没接」，拦不住「接了但没塞进传参的 dict」——后者由节 7 + 人工复核覆盖。
+#    ⚠️ 非流式路径的同类风险在 2026-10-02 收口后**变小**了：cw 由 resolve_llm_config
+#    直接写进 llm_config，而 llm_config 整个对象被传进构造点，没有「填了但没塞进去」这一步。
 
 # ═══════════════════════════════════════════════════════════════
 # 9. stuff_window —— 反解必须**恰好**（多一个 token 就装不下）

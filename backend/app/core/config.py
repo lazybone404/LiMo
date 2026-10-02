@@ -62,25 +62,36 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # opencode 网关未查证且地域可能不符）——逐家结论见 doc_understand.py 的
         # 「哪些渠道能用」表，**不要凭印象补标**。
         "dashscope": [
-            # context_window 取官方「上下文长度」而非「最大输出长度」——qwen3.8 系三个
-            # 模型页均写明 上下文 1000000 / 最大输出 131072，此前填的 131072 是把后者
-            # 当成了前者（对话预算 = 窗口 × 0.7，填错会让可用的 700k 缩成 91k）。
+            # ⚠️ 全段通则（2026-10-02 逐条打开官方模型页核对）：context_window 一律取官方
+            # 「上下文限制」表里的【上下文长度】，**不是**「最大输出长度」——两者在同页分列，
+            # 极易看错。此前 16 条里 11 条填的是 131072，那是把「最大输出」当成了窗口
+            # （对话预算 = 窗口 × 0.7，填错会让可用的 700k 缩成 91k）。
+            # 官方页形如 https://help.aliyun.com/zh/model-studio/<模型名小写、点号转连字符>
+            # 例：qwen3.7-max → /qwen3-7-max，qwen3-vl-flash → /qwen3-vl-flash（vl 不转）。
+            # 每条取值与抓取日期见行尾注释。**改这里的数值前请重新打开该页确认**。
             {"id": "qwen3.8-max",         "name": "Qwen3.8 Max",         "desc": "视觉+视频 · 旗舰 · PDF直传",    "capabilities": ["text", "image", "video", "document"], "context_window": 1000000},
             {"id": "qwen3.8-flash",       "name": "Qwen3.8 Flash",       "desc": "视觉+视频 · PDF直传 · 快",     "capabilities": ["text", "image", "video", "document"], "context_window": 1000000},
             {"id": "qwen3.8-27b",         "name": "Qwen3.8 27B",         "desc": "视觉+视频 · PDF直传 · 开源版", "capabilities": ["text", "image", "video", "document"], "context_window": 1000000},
-            {"id": "qwen3.7-max",         "name": "Qwen3.7 Max",         "desc": "纯文本 · 旗舰推理",              "capabilities": ["text"],                 "context_window": 131072},
-            {"id": "qwen3.7-plus",        "name": "Qwen3.7 Plus",        "desc": "多模态+视频 · 日常推荐",        "capabilities": ["text", "image", "video"], "context_window": 131072},
-            {"id": "qwen3.7-flash",       "name": "Qwen3.7 Flash",       "desc": "纯文本 · 极速响应",              "capabilities": ["text"],                 "context_window": 131072},
-            {"id": "qwen3.6-flash",       "name": "Qwen3.6 Flash",       "desc": "纯文本 · 轻量快速",              "capabilities": ["text"],                 "context_window": 131072},
-            {"id": "qwen-flash",          "name": "Qwen Flash",          "desc": "纯文本 · 最便宜",               "capabilities": ["text"],                 "context_window": 131072},
-            {"id": "qwen-plus",           "name": "Qwen Plus",           "desc": "纯文本 · 低成本推理",            "capabilities": ["text"],                 "context_window": 131072},
-            {"id": "qwen-turbo",          "name": "Qwen Turbo",          "desc": "纯文本 · 极低成本",              "capabilities": ["text"],                 "context_window": 131072},
-            {"id": "qwen-vl-ocr-latest",  "name": "Qwen VL OCR",         "desc": "视觉 · 纯OCR识别",              "capabilities": ["text", "image"],          "context_window": 131072},
-            {"id": "qwen3.5-ocr",         "name": "Qwen3.5 OCR",         "desc": "视觉 · 卡证票据OCR",            "capabilities": ["text", "image"],          "context_window": 131072},
-            {"id": "qwen3.5-flash",       "name": "Qwen3.5 Flash",       "desc": "视觉 · Flash多模态",            "capabilities": ["text", "image"],          "context_window": 131072},
-            {"id": "qwen3-vl-flash",      "name": "Qwen3 VL Flash",      "desc": "视觉+视频 · 最快最便宜（视频 2秒-1小时）", "capabilities": ["text", "image", "video"], "context_window": 131072},
-            {"id": "qwen3-coder-plus",    "name": "Qwen3 Coder Plus",    "desc": "纯文本 · 代码生成",              "capabilities": ["text"],                 "context_window": 131072},
-            {"id": "qwen-vl-max",         "name": "Qwen-VL Max",          "desc": "视觉+视频 · 旗舰图片理解（视频 2秒-20分）", "capabilities": ["text", "image", "video"], "context_window": 131072},
+            # 模态 Text（纯文本，官方页输入模态逐条写明）——qwen3.7-max-2026-06-08 快照版才是
+            # 「Image Text Video」，主线刻意只有文本，不要按快照版给它补能力位。
+            {"id": "qwen3.7-max",         "name": "Qwen3.7 Max",         "desc": "纯文本 · 旗舰推理",              "capabilities": ["text"],                 "context_window": 1000000},  # 官方 /qwen3-7-max：上下文 1000000，最大输出 131072（2026-10-02）
+            {"id": "qwen3.7-plus",        "name": "Qwen3.7 Plus",        "desc": "多模态+视频 · 日常推荐",        "capabilities": ["text", "image", "video"], "context_window": 1000000},  # 官方 /qwen3-7-plus：Image Text Video，1000000（2026-10-02）
+            # ⚠️ 以下三条此前标 capabilities=["text"]，官方页均写明是**原生视觉语言系列**：
+            # qwen3.7-flash = Image Text Video，qwen3.6-flash = Image Text Video。
+            # 漏标 image 会让「AI 分析图片」「OCR 模型选择」两处入口选不到它们。
+            {"id": "qwen3.7-flash",       "name": "Qwen3.7 Flash",       "desc": "视觉+视频 · 极速响应",          "capabilities": ["text", "image", "video"], "context_window": 1000000},  # 官方 /qwen3-7-flash：Image Text Video，1000000（2026-10-02）
+            {"id": "qwen3.6-flash",       "name": "Qwen3.6 Flash",       "desc": "视觉+视频 · 轻量快速",          "capabilities": ["text", "image", "video"], "context_window": 1000000},  # 官方 /qwen3-6-flash：Image Text Video，1000000（2026-10-02）
+            {"id": "qwen-flash",          "name": "Qwen Flash",          "desc": "纯文本 · 最便宜",               "capabilities": ["text"],                 "context_window": 1000000},  # 官方 /qwen-flash：1000000（2026-10-02）
+            {"id": "qwen-plus",           "name": "Qwen Plus",           "desc": "纯文本 · 低成本推理",            "capabilities": ["text"],                 "context_window": 1000000},  # 官方 /qwen-plus：1000000（快照版 -2025-07-28 页写的 131072 属旧口径，2026-10-02）
+            {"id": "qwen-turbo",          "name": "Qwen Turbo",          "desc": "纯文本 · 极低成本",              "capabilities": ["text"],                 "context_window": 131072},   # 官方 /qwen-turbo：131072（2026-10-02 复核无误）
+            # ⚠️ OCR 两条是**高估**，必须改小：默认绑定 qwen-vl-ocr-latest 的真实窗口只有 38192，
+            # 填 131072 会让对话/参考压缩按 3.4 倍于真实的预算切分，超窗在请求发出后才暴露。
+            {"id": "qwen-vl-ocr-latest",  "name": "Qwen VL OCR",         "desc": "视觉 · 纯OCR识别",              "capabilities": ["text", "image"],          "context_window": 38192},    # 官方 /qwenvl-ocr：最大输入 30000 + 最大输出 8192 = 上下文 38192（2026-10-02）
+            {"id": "qwen3.5-ocr",         "name": "Qwen3.5 OCR",         "desc": "视觉 · 卡证票据OCR",            "capabilities": ["text", "image"],          "context_window": 65536},    # 官方 /qwen3-5-ocr：最大输入 49152 + 最大输出 16384 = 上下文 65536（2026-10-02）
+            {"id": "qwen3.5-flash",       "name": "Qwen3.5 Flash",       "desc": "视觉+视频 · Flash多模态",       "capabilities": ["text", "image", "video"], "context_window": 1000000},  # 官方 /qwen3-5-flash：Text Image Video，1000000（2026-10-02）
+            {"id": "qwen3-vl-flash",      "name": "Qwen3 VL Flash",      "desc": "视觉+视频 · 最快最便宜（视频 2秒-1小时）", "capabilities": ["text", "image", "video"], "context_window": 262144},   # 官方 /qwen3-vl-flash：262144（2026-10-02）
+            {"id": "qwen3-coder-plus",    "name": "Qwen3 Coder Plus",    "desc": "纯文本 · 代码生成",              "capabilities": ["text"],                 "context_window": 1000000},  # 官方 /qwen3-coder-plus：1000000（2026-10-02）
+            {"id": "qwen-vl-max",         "name": "Qwen-VL Max",          "desc": "视觉+视频 · 旗舰图片理解（视频 2秒-20分）", "capabilities": ["text", "image", "video"], "context_window": 131072},   # 官方 /qwen-vl-max：131072（2026-10-02 复核无误）
         ],
         "openai": [
             {"id": "gpt-4o",        "name": "GPT-4o",        "desc": "文本+视觉", "context_window": 128000},
@@ -96,14 +107,34 @@ DEFAULT_CONFIG: dict[str, Any] = {
             {"id": "gemini-3.1-pro",   "name": "Gemini 3.1 Pro",   "desc": "文本+视觉", "context_window": 1000000},
             {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "desc": "文本+视觉", "context_window": 1000000},
         ],
+        # 智谱取值来自官方模型概览页（docs.bigmodel.cn，2026-10-02 抓取）：该页按「输入模态」
+        # 分表，每行给出「上下文窗口 / 最大输出 Tokens」两列——**同样要先分清是哪一列**。
         "zhipu": [
-            {"id": "glm-5.2",       "name": "GLM-5.2",     "desc": "1M上下文", "context_window": 1000000},
-            {"id": "glm-4.7",       "name": "GLM-4.7",     "desc": "推理+编程", "context_window": 131072},
-            {"id": "glm-4v-plus",   "name": "GLM-4V-Plus", "desc": "视觉理解",   "context_window": 131072},
+            {"id": "glm-5.2",       "name": "GLM-5.2",     "desc": "1M上下文", "context_window": 1000000},  # 官方：1M 上下文 / 128K 出（2026-10-02）
+            # ⚠️ 131072 → 200000：GLM-4.7 官方标 200K 上下文（最大输出 128K），此前填的是「输出」那列。
+            {"id": "glm-4.7",       "name": "GLM-4.7",     "desc": "推理+编程", "context_window": 200000},   # 官方：200K 上下文 / 128K 出（2026-10-02）
+            # ⚠️ glm-4v-plus 已从官方**在售**视觉模型表下架（2026-10-02 逐条核对：在售表中只剩
+            # GLM-5V-Turbo / GLM-4.6V / GLM-4.1V-Thinking-FlashX / GLM-4.6V-Flash /
+            # GLM-4.1V-Thinking-Flash / GLM-4V-Flash；glm-4v-plus 缺席，仅在**旧价格表**留有
+            # 「GLM-4V-Plus-0111 | 16K」的痕迹）。保留条目以免老用户已启用的配置凭空消失，
+            # 但标 retired 让前端可提示「已下线」——⚠️ 前端消费 retired 的 UI 尚未实现，
+            # 现在它只是一个**待消费的信号**（见 docs 中的模型下线机制方案）。
+            {"id": "glm-4v-plus",   "name": "GLM-4V-Plus", "desc": "视觉理解（官方已下架）", "context_window": 131072,
+             "retired": "2026-10-02", "retired_note": "已从官方在售视觉模型表移除，建议改用 GLM-4.6V"},
         ],
+        # Moonshot 取值来自官方模型文档 platform.moonshot.cn/docs/models（2026-10-02 抓取）。
+        # ⚠️ 该厂商的 /v1/models 端点会返回结构化元数据（context_length / supports_image_in /
+        # supports_video_in / supports_reasoning）——**是最值得自动核对的渠道之一**（需 API key）。
         "moonshot": [
-            {"id": "kimi-k2.6",       "name": "Kimi K2.6",       "desc": "编程+智能体", "context_window": 131072},
-            {"id": "kimi-k2-thinking", "name": "Kimi K2 Thinking", "desc": "深度推理",     "context_window": 131072},
+            # ⚠️ 131072 → 262144：官方标注 256k，且**支持视觉输入**（supports_image_in）。
+            {"id": "kimi-k2.6",       "name": "Kimi K2.6",       "desc": "编程+智能体 · 支持视觉", "capabilities": ["text", "image"], "context_window": 262144},  # 官方：256k（2026-10-02）
+            # ⚠️ kimi-k2-thinking 官方已于 2026-05-25 下线。同 glm-4v-plus：保留条目 + retired 标记，
+            # 不做静默删除（删除对老用户是 no-op，且会让已启用的配置凭空消失）。
+            {"id": "kimi-k2-thinking", "name": "Kimi K2 Thinking", "desc": "深度推理（官方已下线）", "context_window": 131072,
+             "retired": "2026-05-25", "retired_note": "官方已下线，建议改用 kimi-k3"},
+            # 补入官方在售且窗口显著更大的两条（此前预设缺失）
+            {"id": "kimi-k3",         "name": "Kimi K3",         "desc": "2.8万亿参数 · 原生视觉 · 1M", "capabilities": ["text", "image"], "context_window": 1000000},  # 官方：1M（2026-10-02）
+            {"id": "kimi-k2.7-code",  "name": "Kimi K2.7 Code",  "desc": "编程优化 · 256k",       "context_window": 262144},  # 官方：256k（2026-10-02）
         ],
         # OpenCode Go — OpenAI 兼容网关（opencode.ai/go/v1，chat/completions），
         # 与 OpenCode Zen 共用 OPENCODE_API_KEY（Go 固定订阅 / Zen 按量）。订阅制：5h $12 / 周 $30 / 月 $60。
@@ -297,15 +328,69 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
     return config
 
 
-def _sync_llm_model_caps(config: dict):
-    """将 DEFAULT_CONFIG 的 llm_models 增量同步到已有配置（只补不删）。
+# 权威字段白名单 —— DEFAULT_CONFIG 是 llm_models 的唯一权威来源，这些字段一律对齐。
+#
+# ⚠️ 依据（2026-10-02 全仓取证）：**llm_models 层没有任何编辑入口**。
+#   后端 6 处引用全为只读：capabilities.py:283（下发给前端）/ :60（判有无 key）/
+#   model.py:321（刷新失败回退）/ :387（建 enabled 时查预设能力）/
+#   config_io.py:36（None→[] 防御）/ model_resolver.py:110（解析上下文窗口）；
+#   前端 3 处亦只读：api/core.ts（类型定义）/ DocLibrary.tsx（换模型推荐）/ 测试。
+#   ⇒ 用户**不可能**在 llm_models 里表达任何自定义意图，对齐不会覆盖用户选择。
+#
+# ⚠️ 为什么必须做对齐（「只补不删」不够）：`_deep_merge` 对**列表是整段替换**，
+#   用户 config.yaml 里的 llm_models 是**导入那一刻的快照**，此后 DEFAULT 的任何
+#   修正（官方改名 / 窗口变更 / 下线标记）对老用户**全部无效**。实测用户配置：
+#   `llm_models.dashscope.qwen3.8-max.context_window = 131072`（冻结在旧值），
+#   **正压住** DEFAULT 的 1000000；同理 name/desc 永远停在旧文案。
+#
+# ⚠️ 本同步**只在内存生效、不落盘**（`load_config` 结束时不 save_config）——
+#   刻意为之：模式 #29 的教训是「startup 期间写全量配置会永久丢失敏感字段」。
+#   同步是幂等的，每次启动重算结果一致；用户日后自行改设置触发保存时会自然收敛。
+_SYNC_OVERRIDE_FIELDS = ("name", "desc", "context_window")
 
-    _deep_merge 对列表是整段替换，旧 config.yaml 的 llm_models 不包含新增
-    模型（如 dashscope qwen3.8-max）与新增能力（如视频模型的 video 标注）。
-    此函数按 provider 匹配：
+# 下线标记：**双向对齐**（DEFAULT 有则设、DEFAULT 无则删）。
+# ⚠️ 必须双向——只补不删的话，某模型官方恢复上架、DEFAULT 撤销了 retired 标记时，
+#   用户侧的残留标记会一直显示「已下线」，而用户没有任何办法清掉它。
+_SYNC_OPTIONAL_FLAGS = ("retired", "retired_note")
+
+# 点名墓碑表：(provider_id, model_id) → 下线信息。
+#
+# ⚠️ 与 llm_models 条目里的 retired 字段**分工不同，两者都要**：
+#   · llm_models 条目自带 retired —— 该模型**仍在 DEFAULT 预设里**（保留条目，免得
+#     老用户配置凭空消失），但官方已下架。例：zhipu/glm-4v-plus、moonshot/kimi-k2-thinking。
+#   · 本表 —— 该 id **已从 DEFAULT 预设里移除**（官方改名/下线），只活在**老用户
+#     config.yaml 的快照**里。DEFAULT 里没有这个 id，常规对齐（def_by_id 匹配）
+#     永远碰不到它，**只能靠本表点名**。
+#
+# ⚠️ 本表**只给已存在的用户条目标记，绝不新增条目**——新用户不该在模型下拉里
+#    看到一条「（旧名）· 官方已改名」（那是纯噪声）。老用户则必须看到：他正配着它。
+RETIRED_MODEL_IDS = {
+    ("deepseek", "deepseek-v4-flash"): {
+        "retired": "2026-09-10",
+        "retired_note": "官方改名，请改用 deepseek-flash",
+    },
+    ("deepseek", "deepseek-v4-flash-vision-exp"): {
+        "retired": "2026-09-10",
+        "retired_note": "原生多模态已并入 deepseek-flash",
+    },
+}
+
+
+def _sync_llm_model_caps(config: dict):
+    """将 DEFAULT_CONFIG 的 llm_models 对齐到已有配置（补新增 + 对齐权威字段）。
+
+    _deep_merge 对列表是整段替换，旧 config.yaml 的 llm_models 停留在导入时的快照，
+    不包含新增模型，也不吸收 DEFAULT 后续的任何修正。此函数按 provider 匹配做三件事：
+
     1. 补入 DEFAULT 有而用户没有的模型条目（新增官方模型自动出现）
-    2. 把 DEFAULT 已声明的能力补入用户配置对应模型（如 text → text+image+video），
-       不碰用户自定义模型与手动覆写（只补 DEFAULT 明确有的）。
+    2. **对齐权威字段** name / desc / context_window / retired —— 官方改名、窗口口径
+       修正、下线标记都靠这一步才能到达老用户；字段白名单的依据见上方注释
+       （llm_models 层零编辑入口 ⇒ DEFAULT 可安全覆盖）
+    3. 能力位**只补不删** —— capabilities 是这一层**唯一**有编辑入口的字段
+       （设置页可手动标记/取消 image 等），故只补 DEFAULT 明确有、用户没有的，
+       不动用户已有的标记。
+
+    不碰用户自建模型（DEFAULT 里没有的 id）。
     """
     default_models = DEFAULT_CONFIG.get("llm_models", {})
     user_models = config.get("llm_models", {})
@@ -315,19 +400,47 @@ def _sync_llm_model_caps(config: dict):
         user_list = user_models.get(prov_id)
         if not isinstance(user_list, list):
             continue
+
         # 1) 补入 DEFAULT 有而用户没有的模型条目（新增模型自动出现）
         user_by_id = {m.get("id") for m in user_list if m.get("id")}
         for dm in def_list:
             if dm.get("id") and dm["id"] not in user_by_id:
-                user_list.append(dict(dm))  # 深拷贝，不共享 DEFAULT 引用
+                # ⚠️ 必须 deepcopy：浅拷贝下 capabilities 是 list，与 DEFAULT_CONFIG
+                #    共享引用——后续任何 in-place 修改都会污染模块级全局，
+                #    波及所有新用户的默认配置
+                user_list.append(copy.deepcopy(dm))
                 logger.info("配置同步: 新增 LLM 模型 %s/%s", prov_id, dm["id"])
-        # 2) 能力补全（只补 DEFAULT 明确有的，不动用户已有标记）
-        def_by_id = {m.get("id"): m.get("capabilities") for m in def_list if m.get("id")}
+
+        def_by_id = {m.get("id"): m for m in def_list if m.get("id")}
         for um in user_list:
             mid = um.get("id")
-            if not mid:
-                continue
-            def_caps = def_by_id.get(mid)
+            dm = def_by_id.get(mid) if mid else None
+            if not dm:
+                continue  # 用户自建模型（DEFAULT 无此 id）→ 不碰
+
+            # 2) 权威字段对齐（DEFAULT 声明了才覆盖，未声明则保留用户值）
+            for fld in _SYNC_OVERRIDE_FIELDS:
+                if fld not in dm:
+                    continue
+                new_val = copy.deepcopy(dm[fld])
+                if um.get(fld) != new_val:
+                    um[fld] = new_val
+                    logger.info(
+                        "配置同步: 模型 %s/%s 字段 %s 对齐 %r → %r",
+                        prov_id, mid, fld, um.get(fld), new_val,
+                    )
+
+            # 2b) 下线标记双向对齐（DEFAULT 撤销则删除用户侧残留）
+            for fld in _SYNC_OPTIONAL_FLAGS:
+                if fld not in dm and fld in um:
+                    del um[fld]
+                    logger.info("配置同步: 模型 %s/%s 撤销 %s", prov_id, mid, fld)
+                elif fld in dm and um.get(fld) != dm[fld]:
+                    um[fld] = dm[fld]
+                    logger.info("配置同步: 模型 %s/%s 标记 %s=%s", prov_id, mid, fld, dm[fld])
+
+            # 3) 能力补全（只补 DEFAULT 明确有的，不动用户已有标记）
+            def_caps = dm.get("capabilities")
             if not def_caps:
                 continue
             user_caps = um.get("capabilities") or []
@@ -335,6 +448,23 @@ def _sync_llm_model_caps(config: dict):
             if missing:
                 um["capabilities"] = user_caps + missing
                 logger.info("配置同步: 模型 %s/%s 能力补全 %s", prov_id, mid, missing)
+
+    # B) 点名墓碑：DEFAULT 里**没有**的旧模型 id（官方改名/移除），只在老用户的
+    #    config.yaml 快照里存在 —— 上面的 def_by_id 匹配永远碰不到它们。
+    #    ⚠️ 只标记已存在的条目，**绝不新增**（`user_list` 不存在即跳过）。
+    for (prov_id, mid), info in RETIRED_MODEL_IDS.items():
+        user_list = user_models.get(prov_id)
+        if not isinstance(user_list, list):
+            continue
+        for um in user_list:
+            if um.get("id") != mid:
+                continue
+            for fld, val in info.items():
+                if um.get(fld) != val:
+                    um[fld] = val
+                    logger.info(
+                        "配置同步: 旧模型 %s/%s 标记 %s=%s", prov_id, mid, fld, val
+                    )
 
 
 def _sync_missing_providers(config: dict):

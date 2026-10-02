@@ -7,8 +7,20 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# 未知模型上下文窗口的保守默认（token）
-DEFAULT_CONTEXT_WINDOW = 32 * 1024
+# 未知模型上下文窗口的默认值（token）——第 4 层兜底，仅在**四层全部落空**时使用。
+#
+# ⚠️ 2026-10-02 由 32k 提高到 128k（用户判断）。理由与代价：
+#   · 32k 是「宁可截断也不超窗」的过度保守值。而现代模型窗口普遍 ≥128k，
+#     落到这里却按 32k 算 = 白扔 3/4 的上下文 —— 且**用户完全看不出来**，
+#     只表现为「内容莫名被截断」。
+#   · ⚠️ 触发面已被收窄：第 0 层 scene 回退补齐后，**必须 provider 与模型名都未知**
+#     才够得着第 4 层（已知 provider 走第 3 层兜底表）——未知的是「用户自建的中转/
+#     自定义模型」，这类今天基本都是 128k 起的模型。
+#   · 代价：若真有 32k 窗口的模型走到这里，会**超窗失败**（API 报 context length
+#     exceeded）而不是静默截断。选择接受——超窗是显式、可诊断的失败，且用户可在
+#     设置页为该模型填 `context_window` 一行修好；而静默截断没有任何信号。
+#     （与项目「失败显式化 / No silent degradation」一致。）
+DEFAULT_CONTEXT_WINDOW = 128 * 1024
 
 
 def resolve_model(config: dict, model_id: int) -> dict | None:
@@ -58,11 +70,18 @@ def resolve_llm_config(config: dict, model_id: int | None = None,
         resolved = resolve_model(config, model_id)
         if resolved:
             llm_config.update(resolved)
-        # 查找用户为该模型自定义的上下文窗口
-        for m in config.get("enabled_models", []):
-            if m.get("id") == model_id and m.get("context_window"):
-                llm_config["model_context_window"] = m["context_window"]
-                break
+        # 上下文窗口：**完整四层解析**（用户自定义 > llm_models 预设 > provider 表 > 兜底）。
+        #
+        # ⚠️ 此前这里只查第 1 层（`enabled_models.context_window` 且非空），而第 1 层为空
+        #    是常态 → 该字段大多数时候根本不出现，调用方各自再调一次
+        #    `resolve_context_window`，**传的却是入参 model_id（可能为 None）**：
+        #      · 本函数用的是**回退后**的 model_id（:55-56）→ LLMService 用真模型
+        #      · 调用方传 None → 四层全落空 → 落到第 4 层兜底
+        #    同一请求里模型是 1M 窗口、预算却按 32k 算，**差 31 倍且零报错**。
+        #    收口到此处：调用方无需、也不该再自行解析（成对逻辑写两遍必然漂移）。
+        llm_config["model_context_window"] = resolve_context_window(
+            config, model_id, scene=scene,
+        )
 
     # 回退 API key
     if not llm_config.get("api_key"):
@@ -79,16 +98,37 @@ def resolve_llm_config(config: dict, model_id: int | None = None,
 
 def resolve_context_window(config: dict, model_id: int | None = None,
                            provider_id: str | None = None,
-                           model_name: str | None = None) -> int:
+                           model_name: str | None = None,
+                           scene: str = "generate") -> int:
     """解析模型上下文窗口（token）— 四层优先级：
 
+    0. scene 回退（model_id 与 provider/model 都未给出时，取该场景绑定的模型）
     1. 用户自定义（enabled_models.context_window，设置页可编辑）
     2. llm_models 预设 context_window（config.py 结构化字段）
     3. provider 默认表（app.core.token.DEFAULT_CONTEXT）
-    4. 保守默认 32k（未知模型 + 日志提示）
+    4. DEFAULT_CONTEXT_WINDOW（128k，未知模型 + 日志提示）
 
     对话上下文预算（budget = context_window × 0.7）的唯一数据源。
+
+    ⚠️ 第 0 层不是四层之外的新来源，而是**让「解析哪个模型」这一步与
+    `resolve_llm_config` 同源**——否则四层全部落空，直接返回第 4 层兜底值。
     """
+    # 0. model_id 与 provider/model 都未给出 → 回退到该场景绑定的模型。
+    #
+    # ⚠️ 这条回退与 `resolve_llm_config`（:67-68 的 `scene_models[scene]`）**必须同源**。
+    #    调用方普遍直接传 `req.model_id`，而用户用「场景默认模型」时它是 **None**：
+    #      · resolve_llm_config 传 None → **回退到 scene_models** → LLMService 用真模型
+    #      · 本函数此前没有这条 → 四层全落空 → **落到第 4 层兜底**
+    #    后果是同一请求里**模型与预算各说各话**：deepseek-flash（1M 窗口）按兜底值算
+    #    （当时是 32k ⇒ 差 31 倍；现为 128k ⇒ 差 8 倍），**且零报错**——只是文档被
+    #    大量截断 / 合成被误判「窗口不足」。
+    #    实测触发面：generate 非流式 :193 / 流式 :540 / synthesis 两处 全部命中。
+    #
+    # ⚠️ 判据是「**两个来源都为空**」而非「model_id 为空」：给了 provider/model 的调用方
+    #    （reference_compressor 按**实际在用的模型**查询，可能不是场景模型）不能被覆盖。
+    if not model_id and not (provider_id and model_name):
+        model_id = config.get("scene_models", {}).get(scene)
+
     # 1. 用户自定义
     if model_id:
         for m in config.get("enabled_models", []):
@@ -117,7 +157,7 @@ def resolve_context_window(config: dict, model_id: int | None = None,
         if provider_id in DEFAULT_CONTEXT:
             return DEFAULT_CONTEXT[provider_id]
 
-    # 4. 保守默认
-    logger.info("模型未配置 context_window（provider=%s model=%s），使用保守默认 %d",
+    # 4. 兜底默认（连 provider 都未知——用户自建的中转/自定义模型）
+    logger.info("模型未配置 context_window（provider=%s model=%s），使用默认 %d",
                 provider_id, model_name, DEFAULT_CONTEXT_WINDOW)
     return DEFAULT_CONTEXT_WINDOW
