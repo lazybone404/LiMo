@@ -25,7 +25,7 @@
  *   C. 在 onDone 里补一行 `fetch('/api/generate/x/stream')` → 红（「无生成请求」）
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { render, fireEvent, cleanup } from '@testing-library/react'
 import { useStore } from '../store'
 import type { DocEntry } from '../store/types'
 

@@ -16,6 +16,7 @@
  *   C. CSS 里把 `text-indent` 挪到 `.markdown-body` → 最后一条用例红。
  *      该写法**会继承**：标题、列表标记、代码、引用首行被一起缩进。
  */
+/// <reference types="node" />
 import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
@@ -56,7 +57,16 @@ describe('MarkdownParagraph 的 md-para 钩子', () => {
 
 describe('index.css 的阅读版式规则', () => {
   /** 剥掉 /* … *\/ 注释再解析 —— 注释里出现 text-indent 字样是刻意的（说明为什么不能乱设）。
-   *  ⚠️ 用 process.cwd() 而非 import.meta.url：本文件跑在 jsdom 环境，import.meta.url 是
+   *
+   *  ⚠️ 这里必须读**源文件**，不能用 Vite 的 `?raw` 导入。实测：vitest 默认 stub 掉所有
+   *  CSS 导入，`?raw` 拿到的是**空字符串** —— 断言会整齐地「找不到规则」，看起来像
+   *  CSS 压根没写，从而把「测试环境的事」误诊成「实现的事」。
+   *
+   *  也正因为读文件用了 node API，本文件顶部有 `/// <reference types="node" />`：
+   *  tsconfig.app.json 的 types 只含 vite/client（刻意限制的），显式引用让**这一个文件**
+   *  拿到 node 类型，而不放开 `src/` 全体 —— 前端生产代码仍不该碰 Node API。
+   *
+   *  用 process.cwd() 而非 import.meta.url：本文件跑在 jsdom 环境，import.meta.url 是
    *  http(s) 协议（URL 构造会抛「The URL must be of scheme file」）。vitest 的 cwd 即 frontend/ */
   const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -85,7 +95,7 @@ describe('index.css 的阅读版式规则', () => {
   it('text-indent 只出现在 .md-para 规则上（绝不设在 .markdown-body / .preview-content）', () => {
     // 对照 C：设在 .markdown-body 会**继承**给标题/列表标记/代码/引用首行
     const blocks = css.match(/[^{}]+\{[^{}]*\}/g) ?? []
-    const withIndent = blocks.filter(b => /text-indent\s*:/.test(b))
+    const withIndent = blocks.filter((b: string) => /text-indent\s*:/.test(b))
     expect(withIndent.length).toBeGreaterThan(0)   // 自证：真找到了规则，而不是正则没匹配上
     for (const b of withIndent) {
       const selector = b.slice(0, b.indexOf('{'))
@@ -95,7 +105,7 @@ describe('index.css 的阅读版式规则', () => {
 
   it('行高不下放到 .markdown-body（否则代码块/表格行被一起拉开）', () => {
     const blocks = css.match(/[^{}]+\{[^{}]*\}/g) ?? []
-    const onBody = blocks.filter(b => {
+    const onBody = blocks.filter((b: string) => {
       const sel = b.slice(0, b.indexOf('{'))
       return /^\.markdown-body\s*$/.test(sel.trim()) && /line-height\s*:/.test(b)
     })
