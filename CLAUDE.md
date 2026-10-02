@@ -194,7 +194,7 @@ python tests/test_doc_understand.py  # PDF 直传（闸门 14MiB 两侧 / 编码
 python tests/test_transcript_meta.py # 出处头编解码（往返 / 标题含 --> 与换行 / 无头≠损坏 / 只认第一行）
 python tests/test_budget.py          # 统一预算（逐值等价 / 取小 / 窗口闸门 / single 不闭合的 xfail(strict) / cw 来源）
 python tests/test_store_composite.py # 合成文档存储（删 index.json 后重建字段仍在 / save_transcript_full 守卫 / 去重豁免 / 损坏标记）
-python tests/test_synthesis.py       # 合成管线（Step 0 分叉 / 预算收敛 / 资产搬运含路径穿越对照 / 降级显式化）
+python tests/test_synthesis.py       # 合成管线（Step 0 分叉 / 预算收敛 / 资产搬运含路径穿越对照 / 降级显式化 / 篇内分块 / 软 deadline / 维度可控 / 原料可选 / 预览同源）
 python tests/test_generate_gate.py   # 生成闸门（产物裁剪 / 格式清空 / metadata_corrupt 提示 / 跳过 auto-title）
 python tests/test_synthesis_api.py   # 合成端点（SSE 协议 / 业务错误走事件 / 槽位归还 / 异常哨兵）
 ```
@@ -204,7 +204,7 @@ python tests/test_synthesis_api.py   # 合成端点（SSE 协议 / 业务错误�
 ```bash
 cd frontend
 npm run dev       # 开发服务器，端口 5173，API 代理 → 127.0.0.1:7413
-npm test          # vitest（232 tests，20 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/synthesis/getTypeMeta 等，<10s）
+npm test          # vitest（274 tests，22 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/synthesis/getTypeMeta/readingPrefs/readingLayout 等，<15s）
 npm run build     # 类型检查 + 生产构建
 npm run lint      # oxlint
 ```
@@ -303,7 +303,7 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留 generating，AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice
 - **消息级文档引用**：docIds = 当前选中文档 + 本条 @ 引用（chatStore 组合去重），不绑定会话
 
-**合成管道**（2026-10-01，N 篇已入库文档 → 一份跨文档对比综述；**下游回流进生成管道**）：
+**合成管道**（2026-10-01 建立，2026-10-02 三补：超窗分层 / 维度可控 / 原料可选。N 篇已入库文档 → 一份跨文档对比综述；**下游回流进生成管道**）：
 
 ```
 transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite transcript
@@ -317,10 +317,14 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **出处头嵌进正文第一行**（`<!-- limo-meta {json} -->` + `## 来源文档` 列表）：删 `index.json` 重建时 id 由 sha256 重推、`sourceType` 被写死空串，只有正文自身能扛住。编解码收口在 `core/transcript_meta.py`（写方读方必须同源）。⚠️ **头不剥离**（三位一体）；`parse_meta` **只认第一行**（防正文级伪造）；**无头 ≠ 损坏**（判据写错会让所有历史文档被标 corrupt）
 - **Step 0 分叉**（`generation/synthesis.py`）：`Σ token ≤ multi 预算` → **Stuff**（N 篇原样组装，**零 LLM 调用**）/ 超出 → **Map-Reduce**（维度发现 1 次 + 逐篇**固定维度结构化抽取** N 次）。Map **不是自由摘要**——自由摘要 = 另一台模型在最终模型看到之前就决定性地筛掉了信息
 - **预算同源**（`generation/budget.py`）：`single` = `int(cw×0.8)−2000−16384`（与既有逐值等价，**含已知低估**，D8 保持现状 + `xfail(strict)` 钉住）；`multi` = `min(int(cw×0.5), cw−65536−2000)`（**必须闭合**）。`cw < 102,536` 显式拒绝（`min()` 会静默取负值）。⚠️ **`cw` 由调用方从 `resolve_context_window()` 取后传入**——生成路径此前**根本没走四层解析**（`resolve_llm_config` 只查第 1 层，实际落 provider 兜底表，与预设差 7.6 倍）
-- **降级落进产物**：被压缩/截断的篇在「## 来源文档」逐条标 `✓/⚠`——SSE 提示是一次性的
+- **降级落进产物**：被压缩/截断的篇在「## 来源文档」逐条标 `✓/⚠`——SSE 提示是一次性的。**状态 8 态**（`full` / `summarized` / `chunked` / `chunked_partial` / `truncated_over_window` / `truncated_timeout` / `truncated_llm_error`，原 `truncated` 是**垃圾桶**：三种失败的**该做的事完全不同**却共用一个标签）——**分类粒度按「用户能采取的行动」划分**，不按「哪行代码失败」（模式 #53）；查询走**基础状态回退**（`get(s) or get(s.split("_",1)[0])`），历史 `truncated` 与未知状态都不崩、不丢行
+- **超窗分层**（「窗口不够」是**四个问题**不是一个，详见 CHANGELOG 2026-10-02）：**单篇自身超窗** → **篇内分块归并**（关键洞察：分块**不增加该篇配额**，而是让它在配额内**覆盖全文**——头部截断会让后 78% 从未进模型；取 `q = ceil(quota/K)`，⚠️ **每块必须推 `stage`**，否则篇内静默 = Σ 各块耗时，K≥6 冲破 900s 让**正常路径被判挂死**）；**病态长文拖垮整次** → **软 deadline**（到点则剩余篇硬截断 + 标 `truncated_timeout`，正常走到落库，用户拿到「M 篇完整 + K 篇截断」而非空手）；⚠️ `SYNTH_QUIET_TIMEOUT` 与 `SYNTH_TOTAL_TIMEOUT` **曾同为 900**（两条错误同刻到期、由**竞态**决定用户收到哪条）→ 改 300 并把 `max(EXTRACT_TIMEOUT, CHUNK_EXTRACT_TIMEOUT) < SYNTH_QUIET_TIMEOUT < SYNTH_TOTAL_TIMEOUT` 写成**断言**
+- **预览端点** `POST /api/synthesis/preview`（**零 LLM 调用、零副作用**）：逐篇 token + 预计处理方式 + `stuff_window`。⚠️ 判据与执行**必须同源**（同一个 `_classify`）；`stuff_window` = 「让全部 N 篇**原样装下**（走 Stuff）所需的窗口」，**不是**「能做合成的最小窗口」（总量超了照样能做、只是走压缩）；banner 触发集**只含** `over_window` / `reject`（`chunked` 是设计认可的终态，若也触发就在「不用换」的路径上不断劝人换，模式 #53）
+- **维度可控**（2026-10-02）：维度**就是产物骨架**（「## 对比总表」= 行=维度 × 列=各篇）。`DIMENSION_PRESETS` 四套（论文/技术资料/产品评测/媒体内容）经 capabilities 下发（前端不硬编码）；用户给定则**跳过维度发现调用**；⚠️ **Stuff 路径也必须注入**（修复前它是**零注入**——而 Stuff 是多数情况，导致「维度发现」这个唯一的补救机制在最常见路径上根本不跑）。维度落**出处头 meta**（生成是第二次独立请求，落 index 会被重建丢失、落可见正文会与原始材料混淆）
+- **原料可选**（2026-10-02）：`raw`（默认）/ `notes`（最新版 `[0]`），**互斥不混合**——混合会同时打破等比配额前提、产物可解释性、降级语义（**整批同源 ⇒ 三个问题一并消失**）。⚠️ 前端拿不到「这篇有没有笔记」（`DocEntry` 无产物字段），**不新增字段/端点**——预览端点顺带返回 `hasNotes`；切模式**重调预览**（本地重算 = 复刻 `plan_synthesis`）；**后端执行时必须再校验**（预览与执行之间隔着用户操作）
 - **资产搬运**：源 `assets/xxx` 复制到新文档并加源序号前缀（`d1_`/`d2_`），**引用必须同步改写**（只复制不改写 = 与不搬运完全一样，却零报错）；⚠️ **每个路径都要 `relative_to` 守卫**（现存同款正则已有 5 个副本，新副本不带守卫 = 新开一条任意文件读取通道）
 - **生成闸门**（`generate.py`）：composite → 不产 polished、清空 `format_list`、跳过 `_auto_title`；`metadataCorrupt` 推 warning 但不阻断
-- 前端入口在**文档库 BatchBar**（选中 ≥ 2 篇）而非 GenPanel——输入的 N 篇是已入库文档，Attention 在文档库。⚠️ `tabRegistry` **只**给 summary/transcript 加 composite，**绝不动 `DOC_TYPES`**（会被 `ALL_TEXT` 展开、白送 polished/mindmap）；`summary.defaultFor` 也要加（`forSourceType` 与 `defaultFor` 是两件事）。详见 CHANGELOG 2026-10-01
+- 前端入口在**文档库 BatchBar**（选中 ≥ 2 篇）而非 GenPanel——输入的 N 篇是已入库文档，Attention 在文档库。**确认对话框消费预览端点**：逐篇 token + 处理方式（数据只有后端有——`docs` 是白名单序列化、**不含正文**）、窗口 banner、原料单选组、维度预设下拉 + 列表（textarea 每行一个，切换预设=覆盖）——**前端不本地重算 `plan`**（那是复刻 `plan_synthesis`，成对逻辑禁止）。⚠️ `tabRegistry` **只**给 summary/transcript 加 composite，**绝不动 `DOC_TYPES`**（会被 `ALL_TEXT` 展开、白送 polished/mindmap）；`summary.defaultFor` 也要加（`forSourceType` 与 `defaultFor` 是两件事）。详见 CHANGELOG 2026-10-01 / 2026-10-02
 
 ### 文档库（组织能力 2026-09-23；前端交互重设计 2026-09-25）
 
@@ -557,7 +561,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（2026-07-10 起持续沉淀，现 52 条）
+## 关键模式（2026-07-10 起持续沉淀，现 53 条）
 
 以下模式是实现中易错的关键约束，新增代码必须遵守。
 
@@ -630,6 +634,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 52. **「成对操作」漏掉任一半 = 结果与「完全没做」一模一样**：资产搬运要「复制文件」+「改写正文引用」两半；只做前一半，文件整齐躺在 `d1_chart_1.png`、正文仍写着 `chart_1.png`——**裂图依旧，且日志全绿**（复制成功、无异常、文件数正确）。这类「白做」比「做错」更难发现，因为没有任何异常信号。写法：测试必须断言**两半的对应关系**（逐条比对「新文件名 ↔ 正文引用」），而不是分别断言「文件复制了」「正文里有 assets/」。同族的还有 #14/#17（双模式必须都覆盖）、#19（双产物必须对称）——**凡是「A 改了，B 也得跟着改」的地方，测试要断的是 A 与 B 的一致性，不是各自的存在性**。（2026-10-01 合成资产搬运）
 
+53. **用户可见的信息要么能驱动行动，要么别出现**：两条判据同一精神的两面——① **提示的触发集**只该含「用户真该做个动作」的情形；② **降级标签的粒度**按「用户能采取的行动」划分，不按「实现里哪行代码失败」划分。合成本轮各踩一次：`chunked`（总量超窗、单篇都不超）是**设计认可的终态**（明说用户无需行动），却被列进「换大窗口模型吧」的 banner 触发集 → 一条设计说「不用换」的路径上会**每次弹**、不断劝人换；而超窗 / 超时 / 模型抽风三种失败共用 `truncated` 一个标签，三种**该做的事完全不同**（换模型 / 重试 / 检查 Key），用户看哪个标签都无从下手。⚠️ 判据要写**语义**而非**结构**——「存在某状态的篇」（#50 的「容器里有元素」同族）是结构事实，「用户看到它该做什么」才是判据；答不上来就不该出现，或该拆细。对照见 #51（能力存在 ≠ 该路径在用）：本条是它的**消费端**版本——**能力要被用上，且用在该用的地方**。（2026-10-02 合成预览）
+
 ## 待办事项
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始
@@ -661,7 +667,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 批量操作 | `POST /api/transcripts/batch`（删除/打标签/移动）；按 action 显式枚举校验；`failed` 明细；全失败 → 400；store 侧一次加锁一次写盘 |
 | ✅ | Ctrl+K 搜索入口 | 顶栏 `SearchBar` 退化为按钮，与 Ctrl+K 共用 `openDocLibSearch`（展开面板 + 聚焦搜索框 + 宽度复位） |
 
-### 🔗 多篇合成（2026-10-01）
+### 🔗 多篇合成（2026-10-01 建立，2026-10-02 三补）
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
@@ -672,7 +678,11 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 降级显式化 | 被压缩/截断的篇逐条标 `✓/⚠` 落进「## 来源文档」；抽取失败也显式标注，不静默跳过 |
 | ✅ | 资产搬运 | 源 `assets/` 复制 + **引用同步改写** + 源序号前缀防重名；⚠️ **每个路径都过 `relative_to` 守卫**（防路径穿越） |
 | ✅ | 生成闸门 | composite → 不产 polished / 清空 `format_list` / 跳过 `_auto_title`；`metadataCorrupt` 推 warning 不阻断 |
-| ✅ | 前端入口 | BatchBar 合成按钮（≥2 篇）+ 确认对话框（已选清单/标题/对比指引）；DocRow「N 合 1」徽章；「合成」筛选项；tab 只注册 summary/transcript + `defaultFor` |
+| ✅ | 前端入口 | BatchBar 合成按钮（≥2 篇）+ 确认对话框（已选清单/标题/对比指引 + **逐篇 token/处理方式 + 原料单选 + 维度列表**）；DocRow「N 合 1」徽章；「合成」筛选项；tab 只注册 summary/transcript + `defaultFor` |
+| ✅ | 超窗分层（2026-10-02） | 单篇超窗 → **篇内分块归并**（配额内覆盖全文）；病态长文 → **软 deadline**（剩余篇截断而非整次作废）；降级状态 **3 态 → 8 态**（原 `truncated` 是垃圾桶）+ 基础状态回退 |
+| ✅ | 预览端点（2026-10-02） | `POST /api/synthesis/preview`（零 LLM 调用/零副作用）：逐篇 token + 处理方式 + `stuff_window`；判据与执行**同源**（同一个 `_classify`）；banner 触发集只含 `over_window`/`reject` |
+| ✅ | 维度可控（2026-10-02） | `DIMENSION_PRESETS` 四套经 capabilities 下发；用户给定则跳过维度发现调用；**Stuff 路径也注入**（修复前为零）；维度落出处头 meta |
+| ✅ | 原料可选（2026-10-02） | `raw`（默认）/ `notes` 最新版，**互斥不混合**；预览顺带返回 `hasNotes`；后端执行时再校验；`sourceMode` 落 meta |
 
 ### 📝 转录 & 引擎
 
@@ -819,7 +829,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 |----|------|------|------|
 | 📥 内容导入 | 8 | 8 | 100% |
 | 📚 文档库 | 9 | 9 | 100% |
-| 🔗 多篇合成 | 8 | 8 | 100% |
+| 🔗 多篇合成 | 12 | 12 | 100% |
 | 📝 转录 & 引擎 | 8 | 8 | 100% |
 | ✨ LLM 生成 | 11 | 11 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
@@ -828,4 +838,4 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 📤 导出 | 11 | 12 | 92% |
 | 🎨 前端 UI/UX | 16 | 16 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **103** | **105** | **98%** |
+| **合计** | **107** | **109** | **98%** |

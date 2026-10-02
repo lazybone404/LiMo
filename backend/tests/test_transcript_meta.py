@@ -166,4 +166,98 @@ assert strip_meta("普通文档正文") == "普通文档正文", "无头时必�
 assert strip_meta("") == ""
 print("PASS: strip_meta 去掉头与紧随空行；无头时原样返回")
 
+# ═══════════════════════════════════════════════════════════════
+# 8. 对比维度 / 原料模式 —— 只进 meta，不进可见正文
+# ═══════════════════════════════════════════════════════════════
+#
+# ⚠️ 与 sourceTitles 的处理**刻意不同**：来源标题在 meta 与「## 来源文档」列表
+# **两处都有**（它需要人眼可读）；维度与原料模式**只在 meta**——前者是给模型的
+# 指令（混进可见正文后，用户在编辑正文时容易误删），后者是给三个月后的人看的
+# 自解释字段。故下面的断言要同时钉住「meta 里有」与「正文里没有」。
+
+DIMS = ["研究问题", "方法", "数据"]
+raw_d = build_composite_raw_text(
+    ["t1", "t2"], ["h1", "h2"],
+    [{"title": "论文A"}, {"title": "论文B"}],
+    BODY, dimensions=DIMS, source_mode="notes",
+)
+got_d, c_d = parse_meta(raw_d)
+assert not c_d and got_d is not None
+assert got_d["dimensions"] == DIMS, f"维度必须逐项往返：{got_d.get('dimensions')}"
+assert got_d["sourceMode"] == "notes", got_d.get("sourceMode")
+# 「只在 meta」这一半同样要断言——否则把维度也写进可见正文的实现照样通过
+assert "研究问题" not in strip_meta(raw_d), \
+    "维度是给模型的指令，不得混进可见正文（用户编辑正文时会误删）"
+print("PASS: dimensions / sourceMode 往返逐项相等，且不出现在可见正文里")
+
+# ── 缺省值：不传时维度是空表、原料是 raw（**不是**默认论文维度）──
+# 默认预设由 `synthesize` 决定并显式传入；本函数只负责忠实记录。
+# 若在这里偷偷填默认值，caller 传空 = 「用户清空了维度」的语义就没了。
+raw_def = build_composite_raw_text(["t1"], ["h1"], [{"title": "A"}], BODY)
+got_def, _ = parse_meta(raw_def)
+assert got_def["dimensions"] == [], got_def["dimensions"]
+assert got_def["sourceMode"] == "raw", got_def["sourceMode"]
+print("PASS: 不传时 dimensions=[] / sourceMode='raw'（默认值由调用方决定，本层不猜）")
+
+# ── 历史文档：meta 里**根本没有**这两个字段 —— 读方必须能容忍 ──
+# 这是最容易被漏掉的一类：新字段上线前写的产物。生成侧若直接取
+# `meta["dimensions"]` 会 KeyError，把一份正常的历史合成文档变成打不开的。
+_legacy_head = dump_meta({
+    "sourceType": "composite", "sourceDocIds": ["t1"], "sourceTitles": ["A"],
+    "sourceHashes": ["h1"],
+})
+_legacy, _lc = parse_meta(_legacy_head + "\n\n正文")
+assert not _lc and _legacy is not None, "老格式仍是合法的 composite 头"
+assert _legacy.get("dimensions") is None and _legacy.get("sourceMode") is None, \
+    "老文档没有这两个字段——调用方必须用 .get() 并回退，不能下标"
+print("PASS: 老格式出处头（无 dimensions/sourceMode）仍解析成功且字段为 None")
+
+# ── 维度里的脏值不得污染出处头（与标题同一把清洗刀）──
+raw_dirty = build_composite_raw_text(
+    ["t1"], ["h1"], [{"title": "A"}], BODY,
+    dimensions=["正常维度", "带 --> 箭头", "带\n换行"],
+)
+assert "\n" not in raw_dirty.split("\n", 1)[0], "维度里的换行不能撑破「第一行」约定"
+got_dirty, c_dirty = parse_meta(raw_dirty)
+assert not c_dirty, "维度脏值不得让整个出处头判损坏"
+assert got_dirty["dimensions"][0] == "正常维度"
+print("PASS: 维度里的换行/--> 被清洗，出处头仍是单行且可解析")
+
+# ═══════════════════════════════════════════════════════════════
+# 9. 降级状态八态可辨 + 基础状态回退
+# ═══════════════════════════════════════════════════════════════
+#
+# ⚠️ `truncated` 曾是**垃圾桶**：超窗 / 超时 / 模型抽风全标它。而用户能采取的
+# 行动完全不同（换大窗口模型 / 重试 / 检查 Key）——共用一个标签等于「知道出事了
+# 但不知道该做什么」（设计 §17.3）。
+
+from app.core.transcript_meta import status_label  # noqa: E402
+
+_SPECIFIC = ["truncated_over_window", "truncated_timeout", "truncated_llm_error"]
+_labels = [status_label(s) for s in _SPECIFIC]
+assert all(_labels), f"三个原因必须都有标注：{_labels}"
+assert len(set(_labels)) == 3, f"三种原因的文案必须互不相同（否则等于没细分）：{_labels}"
+assert all(l != status_label("truncated") for l in _labels), \
+    "细分状态不得与垃圾桶状态的文案相同"
+# 正常态也要各自可辨，且都不含「已截断」
+assert status_label("full") and status_label("summarized") and status_label("chunked")
+assert len({status_label(s) for s in ("full", "summarized", "chunked")}) == 3
+print(f"PASS: 八态文案互异（{_labels}）")
+
+# ── 基础状态回退：未知细分不崩、不丢行 ──
+# 对照实验：实现改成 `_STATUS_LABEL[status]` → KeyError，**整个来源列表渲染失败**；
+# 改成返回空串而不回退 → 用户看不到降级标注（比粗粒度标注更坏）。
+assert status_label("truncated_some_future_reason") == status_label("truncated"), \
+    "未知的 truncated_* 必须回退到基础状态 truncated（历史产物存的正是它）"
+assert status_label("") == "" and status_label(None) == "", "空/None 不该崩"
+assert status_label("完全不认识的状态") == "", "查不到就是空串——不崩、不编造"
+print("PASS: 基础状态回退（truncated_* → truncated；未知 → 空串，不崩不编造）")
+
+# 八态全表覆盖：每个 key 都必须有非空文案（防止某天加了状态忘了写 label）
+from app.core.transcript_meta import _STATUS_LABEL  # noqa: E402
+assert all(v for v in _STATUS_LABEL.values()), "存在没有文案的状态 key"
+for _k in _STATUS_LABEL:
+    assert status_label(_k) == _STATUS_LABEL[_k], f"{_k} 的查询路径与表不一致"
+print(f"PASS: {len(_STATUS_LABEL)} 个状态 key 全部有文案且查询路径一致")
+
 print("\n全部通过：transcript_meta 编解码")

@@ -113,6 +113,15 @@ export interface EngineProviderInfo {
   name: string; type: string; keyConfigured?: boolean; capabilities: string[]
 }
 
+/** 一套对比维度预设（合成对话框的预设下拉项） */
+export interface DimensionPreset {
+  key: string
+  /** 中文名，如「论文综述」 */
+  label: string
+  /** 该预设的维度列表（即「## 对比总表」的行标签） */
+  dimensions: string[]
+}
+
 export interface Capabilities {
   adapters: string[]
   engines: Record<string, Record<string, { supported_modes: string[] }>>
@@ -135,6 +144,14 @@ export interface Capabilities {
   engineLabels: Record<string, string>
   /** 风格 key→中文标签 */
   styleLabels: Record<string, string>
+  /**
+   * 多篇合成的对比维度预设（后端 `synthesis.DIMENSION_PRESETS` 下发）。
+   *
+   * ⚠️ **前端不硬编码预设名**——新增一套预设只改后端一处即可（同「引擎前端
+   * 后端驱动」原则）。可选是因为它有版本差：老后端不返回该字段时不该让
+   * 整个 capabilities 解析失败（消费处一律 `?? []`）。
+   */
+  dimensionPresets?: DimensionPreset[]
   /** 缺 key 项（P2.1 主动提示）：llm 未配 key 的厂商 + 未配 key 的引擎（dashscope） */
   missingKeys: {
     llm: { id: string; name: string }[]

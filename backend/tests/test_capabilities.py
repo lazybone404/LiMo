@@ -8,7 +8,10 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.routers.capabilities import _compute_missing_keys
+from app.routers.capabilities import _compute_missing_keys, _dimension_presets
+from app.generation.synthesis import (
+    DEFAULT_PAPER_DIMENSIONS, DIMENSION_PRESET_LABELS, DIMENSION_PRESETS,
+)
 
 
 def _cfg(llm_api_key="", providers=None, llm_models=None, dashscope="", global_provider="deepseek"):
@@ -64,6 +67,31 @@ def test_dashscope_configured_no_engine_missing():
     """dashscope 已配 → engine 不报缺"""
     mk = _compute_missing_keys(_cfg(dashscope="sk-ws-xxx"))
     assert mk["engine"] == []
+
+
+# ── dimensionPresets：与 synthesis 常量同源（前端不硬编码预设名）──
+# 对照实验：在 capabilities 里**手写一份**预设列表（图快、或只改了文案）→
+# 下面的逐值相等断言必红。这正是「引擎前端后端驱动」原则在维度上的落地。
+
+
+def test_dimension_presets_from_synthesis():
+    ps = _dimension_presets()
+    assert [p["key"] for p in ps] == list(DIMENSION_PRESETS), "键与顺序必须来自 synthesis"
+    for p in ps:
+        assert p["label"] == DIMENSION_PRESET_LABELS[p["key"]], f'{p["key"]} 文案来源不对'
+        assert p["dimensions"] == DIMENSION_PRESETS[p["key"]], f'{p["key"]} 维度值不同源'
+    assert all(p["label"] and p["dimensions"] for p in ps), "不得有空白标签或空维度"
+    # 默认套（paper）必须真在其中——生成侧回退用的就是它
+    paper = [p for p in ps if p["key"] == "paper"][0]
+    assert paper["dimensions"] == DEFAULT_PAPER_DIMENSIONS
+
+
+def test_dimension_presets_are_copies():
+    """返回值不得与模块常量共享可变对象——否则调用方一次 append 污染全局预设"""
+    ps = _dimension_presets()
+    ps[0]["dimensions"].append("污染项XYZ")
+    assert "污染项XYZ" not in DIMENSION_PRESETS[ps[0]["key"]]
+    assert _dimension_presets()[0]["dimensions"] == DIMENSION_PRESETS[ps[0]["key"]]
 
 
 if __name__ == "__main__":

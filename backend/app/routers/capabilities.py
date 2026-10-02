@@ -9,6 +9,9 @@ from fastapi import APIRouter, Depends
 from app.core.registry import AdapterRegistry, EngineRegistry
 from app.core.dependencies import get_config
 from app.generation.prompt import STYLE_MAP, DOC_STYLE_MAP, EXCEL_STYLE_MAP, AVAILABLE_OPTIONS
+# 对比维度预设随 capabilities 下发（同「引擎前端后端驱动」原则）：前端不硬编码预设名，
+# 新增一套预设只需改 synthesis.py 一处。⚠️ 单一真相源——不要在这里重写一份列表。
+from app.generation.synthesis import DIMENSION_PRESET_LABELS, DIMENSION_PRESETS
 from app.generation.product_registry import to_capability_list
 from app.routers.model import _get_providers
 
@@ -24,6 +27,25 @@ _LLM_PROVIDER_NAMES = {
     "zhipu": "智谱 GLM",
     "moonshot": "Moonshot Kimi",
 }
+
+
+def _dimension_presets() -> list[dict]:
+    """多篇合成的对比维度预设（键顺序 == 前端下拉顺序）。
+
+    结构是**列表**而非 dict：下拉的语义是「有序选项」，列表把这个意图写进类型
+    （dict 在 Python 3.7+ 与 JS 里也保序，但那要靠读者记得）。
+
+    ⚠️ **单一真相源**：值一律从 `synthesis.DIMENSION_PRESETS` 取，**不要在这里
+    手写一份列表**——那样改了合成侧、生成侧却按旧维度抽取，属静默错配。抽成
+    独立函数是为了让测试能直接断「它与 synthesis 常量同源」。
+
+    ⚠️ 每项 `list(v)` 拷贝：`DIMENSION_PRESETS` 是模块级常量，直接外泄同一对象
+    引用会让调用方的一次 append 污染全局预设。
+    """
+    return [
+        {"key": k, "label": DIMENSION_PRESET_LABELS[k], "dimensions": list(v)}
+        for k, v in DIMENSION_PRESETS.items()
+    ]
 
 
 def _compute_missing_keys(config: dict) -> dict:
@@ -276,6 +298,8 @@ async def capabilities(config=Depends(get_config)):
             "task_oriented": "任务",
             "imrad": "IMRaD 精读",
         },
+        # 多篇合成的对比维度预设（前端对话框下拉 + 维度 textarea 预填）
+        "dimensionPresets": _dimension_presets(),
         # ── 未完成生成标记（应用重启/崩溃时残留，前端启动提示）──
         "interruptedGenerations": _scan_interrupted_generations(config),
         # ── 缺 key 项（P2.1 主动提示：配置向导第三屏 + 操作前 toast）──

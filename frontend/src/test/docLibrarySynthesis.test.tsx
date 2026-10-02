@@ -28,6 +28,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, cleanup } from '@testing-library/react'
 import { useStore } from '../store'
 import type { DocEntry } from '../store/types'
+import type { Capabilities } from '../api/core'
+import type { SynthesisPreview } from '../api/synthesis'
 
 // jsdom 没有 IntersectionObserver —— 空实现正好让渲染深度停在首页
 class IO {
@@ -60,10 +62,28 @@ const { DocLibrary } = await import('../components/doc-library/DocLibrary')
 interface Captured { url: string; init: RequestInit }
 let captured: Captured[] = []
 
+/** 预览端点返回的 payload —— 各用例按需覆写（reject / chunked / notes 排除） */
+let previewData: SynthesisPreview = {
+  context_window: 131072, budget: 63536, total_tokens: 1200,
+  mode: 'stuff', reason: '', stuff_window: 2400, estimated_calls: 0,
+  docs: [
+    { id: 'tr_a', title: '论文 A', tokens: 600, plan: 'full', hasNotes: true, notesTokens: 200 },
+    { id: 'tr_b', title: '论文 B', tokens: 600, plan: 'full', hasNotes: true, notesTokens: 200 },
+  ],
+  excluded: [],
+}
+
+/** done 事件额外字段（如 excluded），由各用例覆写 */
+let streamExtra: Record<string, unknown> = {}
+
+function jsonResponse(body: unknown): Response {
+  return { ok: true, status: 200, json: async () => body } as unknown as Response
+}
+
 /** 一条 SSE：先回 done（合成成功），再正常结束流 */
 function sseDone(id: string): Response {
   const chunk = new TextEncoder().encode(
-    `data: ${JSON.stringify({ type: 'done', id, mode: 'stuff', degraded: [] })}\n\n`,
+    `data: ${JSON.stringify({ type: 'done', id, mode: 'stuff', degraded: [], ...streamExtra })}\n\n`,
   )
   let sent = false
   return {
@@ -78,15 +98,32 @@ function sseDone(id: string): Response {
   } as unknown as Response
 }
 
+/** 取出「发往合成端点的那个请求」——打开对话框会先打一次 /synthesis/preview，不能按序号取 */
+const streamCall = () => captured.find(c => c.url.includes('/synthesis/stream'))
+
 beforeEach(() => {
   captured = []
+  streamExtra = {}
+  previewData = {
+    context_window: 131072, budget: 63536, total_tokens: 1200,
+    mode: 'stuff', reason: '', stuff_window: 2400, estimated_calls: 0,
+    docs: [
+      { id: 'tr_a', title: '论文 A', tokens: 600, plan: 'full', hasNotes: true, notesTokens: 200 },
+      { id: 'tr_b', title: '论文 B', tokens: 600, plan: 'full', hasNotes: true, notesTokens: 200 },
+    ],
+    excluded: [],
+  }
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
     captured.push({ url: String(url), init })
+    // ⚠️ 预览是 JSON、合成是 SSE —— 混在一起会让「预览」拿到 SSE body，
+    // 于是 canRun 恒为 false，测试变成在测一个永远点不动的按钮
+    if (String(url).includes('/synthesis/preview')) return jsonResponse(previewData)
     return sseDone('tr_new')
   }))
   useStore.setState({
     toasts: [], selectedIds: new Set(), listLimit: 60, docsLoading: false,
     folders: [], currentDocId: null, searchQuery: '', activeType: '', activeTags: [], activeFolderId: null,
+    capabilities: undefined,
   })
 })
 
@@ -146,15 +183,184 @@ describe('DocLibrary — 合成请求形状', () => {
     fireEvent.change(container.querySelector('[data-synth-notes]')!, { target: { value: '重点比方法' } })
     fireEvent.click(container.querySelector('[data-confirm-synth]')!)
 
-    await vi.waitFor(() => expect(captured.length).toBe(1))
-    const body = JSON.parse(String(captured[0].init.body))
+    await vi.waitFor(() => expect(streamCall()).toBeTruthy())
+    const call = streamCall()!
+    const body = JSON.parse(String(call.init.body))
     // ⚠️ 对照 B：传 `[currentDocId]` → 此处变成 ['tr_a'] → 红。
     // 注意断言的是**逐项相等**（含顺序），不是 contains——顺序决定正文里 `【文档 1】` 是谁。
     expect(body.doc_ids).toEqual(['tr_a', 'tr_b'])
     expect(body.title).toBe('两篇对比')
     expect(body.user_notes).toBe('重点比方法')
-    expect(captured[0].init.method).toBe('POST')
-    expect(captured[0].url).toContain('/synthesis/stream')
+    expect(call.init.method).toBe('POST')
+    expect(call.url).toContain('/synthesis/stream')
+  })
+})
+
+describe('DocLibrary — 合成预览：每篇 token / 处理方式（§17.4）', () => {
+  it('清单每行带出该篇 token 与预计处理方式', async () => {
+    useStore.setState({ docs: twoDocs() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    // token 只能来自预览端点——`docs` 是白名单元数据、不含正文，前端算不出来
+    await vi.waitFor(() => expect(container.querySelector('[data-synth-plan]')).toBeTruthy())
+    expect(container.querySelector('[data-synth-plan]')!.textContent).toContain('600')
+    // 完整输入的篇不堆「完整输入」四个字（每行都有等于没有），只显 token
+    expect(container.querySelector('[data-synth-plan]')!.textContent).not.toContain('完整输入')
+  })
+
+  it('over_window 篇触发窗口 banner，chunked 篇只做行内标注', async () => {
+    previewData = {
+      ...previewData,
+      mode: 'map_reduce', total_tokens: 200000,
+      docs: [
+        { id: 'tr_a', title: '论文 A', tokens: 35000, plan: 'chunked', hasNotes: true, notesTokens: 200 },
+        { id: 'tr_b', title: '论文 B', tokens: 165000, plan: 'over_window', hasNotes: true, notesTokens: 200 },
+      ],
+    }
+    useStore.setState({ docs: twoDocs() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    await vi.waitFor(() => expect(container.querySelector('[data-synth-plan="chunked"]')).toBeTruthy())
+    // chunked 是设计认可的终态（用户无需行动）→ **不得**触发「换个模型吧」的 banner
+    expect(container.querySelector('[data-synth-window-banner]')).toBeTruthy()
+    expect(container.querySelector('[data-synth-plan="chunked"]')!.textContent).toContain('分块抽取')
+  })
+
+  it('只有 chunked（无 over_window / 非 reject）→ 不出窗口 banner', async () => {
+    previewData = {
+      ...previewData,
+      mode: 'map_reduce',
+      docs: [
+        { id: 'tr_a', title: '论文 A', tokens: 35000, plan: 'chunked', hasNotes: true, notesTokens: 200 },
+        { id: 'tr_b', title: '论文 B', tokens: 36000, plan: 'chunked', hasNotes: true, notesTokens: 200 },
+      ],
+    }
+    useStore.setState({ docs: twoDocs() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    await vi.waitFor(() => expect(container.querySelector('[data-synth-plan="chunked"]')).toBeTruthy())
+    expect(container.querySelector('[data-synth-window-banner]')).toBeNull()
+  })
+
+  it('窗口不足（mode=reject）→ 出 banner、按钮禁用', async () => {
+    previewData = {
+      ...previewData, mode: 'reject', reason: '当前模型窗口不足以做多文档综述',
+      stuff_window: 200000,
+    }
+    useStore.setState({
+      docs: twoDocs(),
+      capabilities: {
+        llmModels: { deepseek: [{ id: 'x', name: '超大窗口模型', desc: '', context_window: 1000000 }] },
+      } as unknown as Capabilities,
+    })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    await vi.waitFor(() => expect(container.querySelector('[data-synth-window-banner]')).toBeTruthy())
+    // 只提示、不给切换入口（§17.7）：推荐来自 capabilities.llmModels，不是前端写死的名单
+    expect(container.querySelector('[data-synth-window-banner]')!.textContent).toContain('超大窗口模型')
+    // ⚠️ 对照：去掉 canRun 里的 reject 分支 → 按钮可点 → 白等一次往返才被后端拒
+    expect((container.querySelector('[data-confirm-synth]') as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('DocLibrary — 对比维度可控（§18）', () => {
+  const withPresets = (): Capabilities => ({
+    llmModels: {},
+    dimensionPresets: [
+      { key: 'paper', label: '论文综述', dimensions: ['研究问题', '方法'] },
+      { key: 'tech', label: '技术资料', dimensions: ['背景', '方案'] },
+    ],
+  } as unknown as Capabilities)
+
+  it('预设下拉消费 capabilities；默认预填首个预设、切换预设覆盖列表', async () => {
+    useStore.setState({ docs: twoDocs(), capabilities: withPresets() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    const select = container.querySelector('[data-synth-preset]') as HTMLSelectElement
+    // ⚠️ 对照：前端硬编码预设名 → capabilities 换了文案它不变 → 红
+    expect([...select.options].map(o => o.textContent)).toEqual(['论文综述', '技术资料'])
+
+    const dims = () => (container.querySelector('[data-synth-dims]') as HTMLTextAreaElement).value
+    expect(dims()).toBe('研究问题\n方法')
+    fireEvent.change(select, { target: { value: 'tech' } })
+    expect(dims()).toBe('背景\n方案')
+  })
+
+  it('用户编辑后的维度原样进 body（每行一个，去空行）', async () => {
+    useStore.setState({ docs: twoDocs(), capabilities: withPresets() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    fireEvent.change(container.querySelector('[data-synth-dims]')!,
+      { target: { value: '样本量\n\n  结论  \n样本量' } })
+    fireEvent.click(container.querySelector('[data-confirm-synth]')!)
+
+    await vi.waitFor(() => expect(streamCall()).toBeTruthy())
+    // 去空行 + 去重（权威的清洗规则在后端，这层只为让「共 N 个维度」显示得准）
+    expect(JSON.parse(String(streamCall()!.init.body)).dimensions).toEqual(['样本量', '结论'])
+  })
+
+  it('老后端不返回 dimensionPresets → 不崩，只剩自由输入', async () => {
+    useStore.setState({ docs: twoDocs(), capabilities: undefined })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    expect(container.querySelector('[data-synth-preset]')).toBeNull()
+    expect(container.querySelector('[data-synth-dims]')).toBeTruthy()
+  })
+})
+
+describe('DocLibrary — 对比原料可选（§19）', () => {
+  it('切「笔记」重拉预览（带 source_mode）→ 无笔记的篇标灰 + 说明；done 里引号外的篇不进来源清单', async () => {
+    // 默认打开时是 raw；用户切到 notes 后预览变了：tr_b 无笔记
+    previewData = {
+      ...previewData,
+      docs: [
+        { id: 'tr_a', title: '论文 A', tokens: 200, plan: 'full', hasNotes: true, notesTokens: 200 },
+        { id: 'tr_b', title: '论文 B', tokens: 0, plan: 'unavailable', hasNotes: false, notesTokens: 0 },
+      ],
+      excluded: ['tr_b'],
+    }
+    // ⚠️ `excluded` 是 **id**（后端 `Result.excluded` 的语义）：前端拿它从选中集里
+    // 做差集。曾经这里是 `['论文 B']`（标题）——那样的实现下差集永远为空，于是
+    // 「2 合 1」徽章指向一份产物根本没读过的文档，且不报任何错。
+    streamExtra = { excluded: ['tr_b'] }
+    useStore.setState({ docs: twoDocs() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    const radioNotes = container.querySelector('[data-synth-source="notes"]') as HTMLInputElement
+    fireEvent.click(radioNotes)
+
+    // ⚠️ 必须**重拉**而不是前端本地重算：notes 的 token 数与 rawText 不同，`plan` 必须重算；
+    // 本地重算 = 把 `plan_synthesis` 复刻一遍（项目铁律「成对逻辑必须同源」明令禁止）
+    await vi.waitFor(() => {
+      expect(captured.some(c =>
+        c.url.includes('/synthesis/preview') && String(c.init.body).includes('"source_mode":"notes"'))).toBe(true)
+    })
+    await vi.waitFor(() => expect(container.querySelector('[data-synth-excluded]')).toBeTruthy())
+    expect(container.querySelector('[data-synth-excluded]')!.textContent).toContain('1 篇无笔记')
+
+    fireEvent.click(container.querySelector('[data-confirm-synth]')!)
+    await vi.waitFor(() => expect(streamCall()).toBeTruthy())
+    expect(JSON.parse(String(streamCall()!.init.body)).source_mode).toBe('notes')
+
+    // ⚠️ 对照：把 excluded 也写进 sourceDocIds → 「2 合 1」徽章指向一份产物没读过的文档 → 红
+    await vi.waitFor(() => expect(useStore.getState().docs.some(d => d.id === 'tr_new')).toBe(true))
+    expect(useStore.getState().docs.find(d => d.id === 'tr_new')!.sourceDocIds).toEqual(['tr_a'])
   })
 })
 

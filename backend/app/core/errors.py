@@ -156,6 +156,31 @@ class SynthesisError(AppError):
             detail or ", ".join(titles),
         )
 
+    @classmethod
+    def too_many_calls(cls, estimated: int, limit: int, detail: str = ""):
+        """预估调用数超上限。⚠️ 在**任何计费调用之前**抛出——让它跑到整体超时
+        才发现，意味着钱已经花掉了（设计 §17.5 B5）。"""
+        return cls(
+            "SYNTH_TOO_MANY_CALLS",
+            f"这次合成预计需要 {estimated} 次模型调用，超过上限（{limit}）。"
+            f"请减少篇数，或换一个上下文窗口更大的模型（减少分块）。",
+            detail,
+        )
+
+    @classmethod
+    def not_enough_notes(cls, available: int, excluded: list[str], detail: str = ""):
+        """`source_mode="notes"` 下，有笔记的篇不足 2 篇（设计 §19.4）。
+
+        ⚠️ 走 AppError 而非静默截断：原料模式是用户显式选的，但**没看预览就点了
+        合成**的用户仍必须知道为什么没做成。
+        """
+        return cls(
+            "SYNTH_NOT_ENOUGH_NOTES",
+            f"所选文档中只有 {available} 篇已有笔记，不足以做对比（至少 2 篇）。"
+            f"请先为这些文档生成笔记，或改用「原文」作为原料。",
+            detail or ", ".join(excluded),
+        )
+
 
 # -- 生成层 --
 

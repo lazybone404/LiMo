@@ -25,21 +25,29 @@ from app.core import logging as log
 from app.core.dependencies import get_config, get_guard, get_store
 from app.core.disconnect import disconnect_watcher
 from app.core.errors import AppError
-from app.generation.synthesis import synthesize
+from app.generation.synthesis import (
+    SYNTH_QUIET_TIMEOUT,
+    SYNTH_TOTAL_TIMEOUT,
+    clean_dimensions,
+    normalize_source_mode,
+    preview_synthesis,
+    synthesize,
+)
 from app.llm import CancelledError as LLMCancelledError
 from app.llm import LLMService
 
 router = APIRouter()
 
-# 整体上限：一次合成在最外层占着云端信号量的**一个许可**（上限 5），
-# 持续 N+2 次 LLM 调用。不设整体上限时，最坏情况是 `N × 单篇超时`——
-# 10 篇就是半小时，期间其它生成全部排队（设计 §14.9 风险 9）。
-# 15 分钟显著紧于该最坏值，超时即显式失败，不静默占着槽位。
-SYNTH_TOTAL_TIMEOUT = 900
-# 30s 无事件发心跳（与 ingest 的 SSE 同款）；超过它判挂死。
-# ⚠️ 合成期间最长的静默期是**单篇抽取的一次 LLM 调用**——`run_map_reduce` 每篇
-# 开工前都会推一条 stage，所以这个阈值不会被正常路径误触发。
-SYNTH_QUIET_TIMEOUT = 900
+# ⚠️ `SYNTH_TOTAL_TIMEOUT` 与 `SYNTH_QUIET_TIMEOUT` **已迁至 `generation/synthesis.py`**
+# 并与 `EXTRACT_TIMEOUT` / `CHUNK_EXTRACT_TIMEOUT` 一起用断言钉住序关系。搬家的理由：
+# 它们描述的是**管线自身的时序**（单次调用上限 vs 挂死判据 vs 整体超时），而
+# 「分块后一篇 = K 次调用串联」这件事只有管线自己知道——两个常量分处两地时，
+# 改了一处不会想起另一处（它们**曾经同为 900**，导致「挂死」与「整体超时」同刻到期，
+# 用户收到哪条错误由竞态决定）。
+
+# 软 deadline 比硬超时提前这么多秒：留给「剩余篇硬截断 + 组装 + 落库」的时间。
+# 没有它，硬超时一到就是**颗粒无收**——前面十几分钟与真实烧掉的 token 全部作废。
+DEADLINE_RESERVE = 60
 
 
 class SynthesisRequest(BaseModel):
@@ -47,6 +55,12 @@ class SynthesisRequest(BaseModel):
     title: str = ""
     user_notes: str = ""
     model_id: int | None = None
+    # 用户给定的对比维度（设计 §18）：非空则跳过「维度发现」那次计费调用。
+    dimensions: list[str] = []
+    # 原料模式（设计 §19）：`raw`（转录原文，默认）/ `notes`（已生成的笔记）。
+    # ⚠️ 非法值由 `normalize_source_mode` 显式拒绝——**不静默回退默认**，
+    # 否则用户以为在用笔记、实际用原文，而产物上看不出任何异常。
+    source_mode: str = "raw"
 
 
 @router.post("/synthesis/stream")
@@ -58,8 +72,11 @@ async def synthesis_stream(
     guard=Depends(get_guard),
 ):
     """N 篇 → 一个新的 composite 文档（SSE：stage → done/error）。"""
+    # 入参清洗放最前（在任何计费调用之前）：维度列表与原料模式都是用户可控输入
+    dimensions = clean_dimensions(req.dimensions)
+    source_mode = normalize_source_mode(req.source_mode)
     log.info("合成请求", docs=len(req.doc_ids), model_id=req.model_id,
-             title=req.title[:60])
+             title=req.title[:60], dims=len(dimensions), source_mode=source_mode)
     llm = LLMService(config, model_id=req.model_id)
     cancel_event = asyncio.Event()
 
@@ -71,15 +88,21 @@ async def synthesis_stream(
             if not llm.api_key:
                 raise AppError("SYNTH_NO_API_KEY", "LLM API Key 未配置，请在设置中填写",
                                recoverable=False)
+            # 软 deadline：到点后管线停止发起新调用、剩余篇截断，让流程走到落库。
+            # ⚠️ 减去 DEADLINE_RESERVE 是刻意的——两者同刻到期就等于没有软降级。
+            deadline = asyncio.get_running_loop().time() + SYNTH_TOTAL_TIMEOUT - DEADLINE_RESERVE
             async with disconnect_watcher(request, cancel_event):
                 async with asyncio.timeout(SYNTH_TOTAL_TIMEOUT):
                     result = await synthesize(
                         store, config, llm, req.model_id, req.doc_ids,
                         title=req.title, user_notes=req.user_notes,
+                        dimensions=dimensions, source_mode=source_mode,
                         cancel_event=cancel_event, on_stage=on_stage,
+                        deadline=deadline,
                     )
             log.info("合成完成", doc_id=result.transcript_id, mode=result.mode,
-                     calls=result.llm_call_count, degraded=len(result.degraded))
+                     calls=result.llm_call_count, degraded=len(result.degraded),
+                     excluded=len(result.excluded))
             queue.put_nowait({
                 "type": "done",
                 "id": result.transcript_id,
@@ -88,6 +111,9 @@ async def synthesis_stream(
                 # ⚠️ 同一份信息也写进了正文的「## 来源文档」列表——SSE 一闪用户
                 # 没看见就永远不知道，故落进产物本身才是主渠道，这里是补充。
                 "degraded": result.degraded,
+                # notes 模式下因**没有笔记**被排除的篇（设计 §19.4）。它不是错误
+                # ——但没看预览就点了合成的用户必须知道，否则会以为它参与了对比。
+                "excluded": result.excluded,
             })
         except LLMCancelledError:
             # 用户取消：不算错误，前端按「已取消」收尾
@@ -166,4 +192,34 @@ async def synthesis_stream(
         event_generator(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+class SynthesisPreviewRequest(BaseModel):
+    doc_ids: list[str]
+    model_id: int | None = None
+    source_mode: str = "raw"
+
+
+@router.post("/synthesis/preview")
+async def synthesis_preview(
+    req: SynthesisPreviewRequest,
+    store=Depends(get_store),
+    config=Depends(get_config),
+):
+    """合成**前**预览：每篇的 token 量、预计处理方式、以及「怎样才会全部装下」。
+
+    **零 LLM 调用、零副作用**——把 `plan_synthesis` 的结果摊开给用户看，让他
+    在花 token 之前就知道该不该换个窗口更大的模型（设计 §17.4：数据链路早已
+    存在，只是从没被消费过）。
+
+    ⚠️ 业务失败（篇数不足 / 源已删）走 `AppError` → **200 + `{code, message}`**
+    （项目模式 #36）——前端必须检查 `body.code`，不能只看 `response.ok`。
+
+    ⚠️ 不加 `guard.semaphore`：本端点不占用任何模型槽位（信号量是给真实调用的）。
+    读 N 篇小文件是毫秒级，不值得再套一层 `to_thread`。
+    """
+    return preview_synthesis(
+        store, config, req.model_id, req.doc_ids,
+        source_mode=normalize_source_mode(req.source_mode),
     )

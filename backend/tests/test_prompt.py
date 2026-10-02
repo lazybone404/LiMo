@@ -307,6 +307,9 @@ from app.generation.prompt import (
     build_synthesis_prompt,
     _DOC_NOTES_ROLE, _NOTES_ROLE, _POLISH_ROLE,
 )
+# 默认维度与生成侧回退用的是**同一个常量**（prompt.py 从 synthesis.py 引入），
+# 故断言用常量而非字面量——两处各写一份「论文维度」正是本设计要避免的静默错配。
+from app.generation.synthesis import DEFAULT_PAPER_DIMENSIONS
 from app.generation.prompt_builder import PromptBuilder
 
 _COMP_RAW = build_composite_raw_text(
@@ -401,5 +404,71 @@ for _st, _role in (('pdf', _DOC_NOTES_ROLE), ('docx', _DOC_NOTES_ROLE),
     _pl = build_polish_prompt('测试正文', 'T', 'detailed', _st)
     assert '横向对比' not in _pl, f'{_st} 的 polish 被污染成 synthesis'
 print('PASS: pdf/docx/video/webpage/text/image 既有分派零影响')
+
+# ═══════════════════════════════════════════════════════════════
+# 6. 对比维度注入 —— 「## 对比总表」的行标签必须**逐条列出**（设计 §18）
+# ═══════════════════════════════════════════════════════════════
+#
+# ⚠️ 本节防的是一个**已发生过的偏差**：`_SYNTHESIS_OUTPUT` 曾只写「行 = 对比维度」，
+# 把骨架交给模型即兴发挥——而「维度 × 文档」矩阵的行正是产物的骨架（§18.0）。
+# 对照实验：把 `_build_synthesis_output(dims)` 换回那句裸文案 → 下面每一条都红。
+#
+# ⚠️ 断言的**判别式**：维度名在 rawText 的出处头里**也会出现**（meta JSON 带了
+# `dimensions`），所以「`研究问题` in prompt」这种断言**在修复前也可能通过**。
+# 必须断言**带编号的行**（`1. 研究问题`）——它只可能来自 `_build_synthesis_output`
+# 里那几行 `    {i}. {d}`，正是「逐条列出」这个行为本身。
+
+_DIM = ["研究问题", "方法", "数据"]
+_COMP_DIM = build_composite_raw_text(
+    ["tr_a", "tr_b"], ["h1", "h2"],
+    [{"title": "论文A"}, {"title": "论文B"}],
+    "【文档 1】论文A\n正文甲\n\n【文档 2】论文B\n正文乙",
+    dimensions=_DIM,
+)
+
+# ── 6.1 meta 里有维度 → 逐条按原顺序进 prompt ──
+_sp_dim = build_synthesis_prompt(_COMP_DIM, "T")
+for _i, _d in enumerate(_DIM, 1):
+    assert f"{_i}. {_d}" in _sp_dim, f'维度 {_d} 未被逐条列出（裸「行 = 对比维度」的形态）'
+assert f'{len(_DIM)} 行' in _sp_dim, '总表段落应点明维度行数（避免模型自由增删）'
+assert _sp_dim.index('1. 研究问题') < _sp_dim.index('2. 方法') < _sp_dim.index('3. 数据'), \
+    '维度必须按给定顺序列出（顺序即产物骨架的顺序）'
+print(f'PASS: meta 维度逐条进 prompt 且保序（{_DIM}）')
+
+# ── 6.2 **历史文档 / 无维度** → 回退默认论文维度，不崩 ──
+# `_COMP_RAW`（第 312 行构造）没传 dimensions，正是新字段上线前那些合成文档的形态。
+# 对照实验：`_read_synthesis_dimensions` 写成 `meta["dimensions"]` → KeyError → 红。
+_sp_legacy = build_synthesis_prompt(_COMP_RAW, "T")
+for _i, _d in enumerate(DEFAULT_PAPER_DIMENSIONS, 1):
+    assert f"{_i}. {_d}" in _sp_legacy, f'历史文档应回退默认维度，缺：{_d}'
+# 回退只在**读不到**时发生：用户给了 3 个维度，默认那 5 个里的后两项不该出现。
+# （不能用「默认第 1 项不在」来判——本用例的第一个维度恰好也是「研究问题」。）
+assert '主要发现' not in _sp_dim and '局限' not in _sp_dim, \
+    '有维度的文档不该混入默认维度的其余项（回退只该在读不到时发生）'
+print(f'PASS: 无维度/历史文档回退默认（{DEFAULT_PAPER_DIMENSIONS}）')
+
+# ── 6.3 显式传参覆写（测试与将来的覆写入口）──
+_sp_override = build_synthesis_prompt(_COMP_DIM, "T", dimensions=["维度乙ABC"])
+assert "1. 维度乙ABC" in _sp_override, '显式 dimensions 应覆写 meta 里的值'
+assert "1. 研究问题" not in _sp_override, '覆写后不得残留 meta 里的旧维度'
+print('PASS: 显式 dimensions 覆写 meta 取值')
+
+# ── 6.4 meta 里的脏维度（空白项 / 全空）不得产出空骨架 ──
+_COMP_BLANK = build_composite_raw_text(
+    ["tr_a"], ["h1"], [{"title": "论文A"}], "正文甲",
+    dimensions=["  ", "", "有效维度ZZZ"],
+)
+_sp_blank = build_synthesis_prompt(_COMP_BLANK, "T")
+assert "1. 有效维度ZZZ" in _sp_blank, '空白项应被剔除、有效项仍列在第 1 行'
+assert "2. " not in _sp_blank.split('## 对比总表', 1)[1].split('## 分维度对比', 1)[0], \
+    '剔除空白项后不应留下空缺编号（否则总表多一行空行）'
+
+_COMP_ALLBLANK = build_composite_raw_text(
+    ["tr_a"], ["h1"], [{"title": "论文A"}], "正文甲", dimensions=["", "   "],
+)
+_sp_allblank = build_synthesis_prompt(_COMP_ALLBLANK, "T")
+assert f"1. {DEFAULT_PAPER_DIMENSIONS[0]}" in _sp_allblank, \
+    '全空维度视为「未给」→ 回退默认，而不是列出一张空骨架'
+print('PASS: 脏维度被清洗；全空回退默认（不产出空骨架）')
 
 print('\nAll prompt tests PASS')

@@ -32,11 +32,42 @@ _META_PREFIX = "<!-- limo-meta "
 _META_SUFFIX = " -->"
 
 # 来源在正文列表里的标注（§4.4.3：降级必须**落进产物**，不能只靠 SSE 一闪而过）
+#
+# ⚠️ **每种失败原因必须各自可辨**：`truncated` 曾是**垃圾桶**——超窗、超时、模型
+# 抽风全标它。但用户能采取的行动完全不同（换大窗口模型 / 重试 / 检查 Key），
+# 共用一个标签等于「知道出事了，但不知道该做什么」（设计 §17.3）。
+#
+# ⚠️ `truncated` 这一条**保留**：历史文档里写的就是它，删掉会让老产物在列表里
+# 静默丢行（`status_label` 的回退链依赖它）。
 _STATUS_LABEL = {
+    # ── 正常/无损 ──
     "full": "✓ 完整输入",
     "summarized": "⚠ 已压缩为摘要",
+    "chunked": "⚠ 已分块抽取（全文覆盖）",
+    # ── 降级，但原因可辨 ──
+    "chunked_partial": "⚠ 已分块（部分段落抽取失败）",
+    "truncated_over_window": "⚠ 已截断（原文超出模型窗口）",
+    "truncated_timeout": "⚠ 已截断（摘要超时）",
+    "truncated_llm_error": "⚠ 已截断（模型调用失败）",
+    # ── 历史文档的回退基础（勿删，见上）──
     "truncated": "⚠ 已截断",
 }
+
+
+def status_label(status: str) -> str:
+    """status → 列表里的中文标注；未知 status 走**基础状态回退**。
+
+    回退的意义：`truncated_timeout` 这类细分状态将来可能再增，而**历史产物**里
+    存的是老的 `truncated`。直接 `_STATUS_LABEL[status]` 索引会让未知状态抛
+    KeyError（整个列表渲染失败）或丢标注（用户看不到降级）——两者都比「退化成
+    粗粒度标注」坏。故按 `_` 切出基础状态再查一次。
+
+    历史文档（`truncated`）与将来未知状态（`foo_bar` → `foo` 查不到 → 空串）
+    都不崩、不丢行。
+    """
+    if not status:
+        return ""
+    return _STATUS_LABEL.get(status) or _STATUS_LABEL.get(status.split("_", 1)[0], "")
 
 
 def _clean_title(title: str | None) -> str:
@@ -119,16 +150,26 @@ def build_composite_raw_text(
     source_hashes: list[str],
     sources: list[dict],
     body: str,
+    dimensions: list[str] | None = None,
+    source_mode: str = "raw",
 ) -> str:
     """组装合成文档的完整 rawText：出处头 + 「## 来源文档」列表 + 正文。
 
-    `sources`: `[{"title": str, "status": "full"|"summarized"|"truncated"}]`，
+    `sources`: `[{"title": str, "status": "full"|"summarized"|…}]`，
     `status` 决定列表里的标注（§4.4.3：降级必须持久化在产物里——SSE 提示是一次性的，
     用户当时没看见就永远不知道，而「以为读的是完整论文、其实是摘要」是知识系统里
     危害最大的误解）。
 
     标题在这里**统一清洗一次**，随后同时供 JSON 与列表使用——两处各清一次虽然
     结果相同（`_clean_title` 幂等），但形状上更不容易漂移。
+
+    `dimensions` / `source_mode` **只进 meta，不进可见正文**（设计 §18.1 / §19.5）：
+    - `dimensions` 是**给模型的指令**（生成侧 parse_meta 读回后注入 prompt）。
+      混进可见正文会让用户在编辑正文时误删它——那是 rawText 里唯一被用户编辑的区。
+    - `source_mode` 是**产物自解释**（三个月后看这份综述，应当知道它基于原文还是笔记
+      ——这直接影响对信息完整度的判断）。生成侧不需要它（读的就是 rawText）。
+    ⚠️ 与 `sourceTitles` 的处理**刻意不同**——后者在 meta 与列表**两处都有**，
+    因为它需要人眼可读。
     """
     cleaned = [
         {"title": _clean_title(s.get("title")), "status": s.get("status", "full")}
@@ -140,11 +181,13 @@ def build_composite_raw_text(
         "sourceDocIds": list(source_doc_ids),
         "sourceTitles": [s["title"] for s in cleaned],
         "sourceHashes": list(source_hashes),
+        "dimensions": list(dimensions or []),
+        "sourceMode": source_mode,
     })
 
     lines = [head, "", "## 来源文档", ""]
     for i, s in enumerate(cleaned, 1):
-        label = _STATUS_LABEL.get(s["status"], "")
+        label = status_label(s["status"])
         lines.append(" ".join(p for p in (f"{i}.", s["title"], label) if p))
     lines += ["", body]
 

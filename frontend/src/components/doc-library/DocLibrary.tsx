@@ -24,8 +24,9 @@ import { cancelTask } from '../../api/taskManager'
 import { ContextMenu } from '../ui/ContextMenu'
 import {
   Pencil, Trash2, BookOpen, MessageSquare, RefreshCw, Tag, Clipboard, FolderInput, Layers,
+  AlertTriangle,
 } from 'lucide-react'
-import { streamSynthesis } from '../../api/synthesis'
+import { streamSynthesis, previewSynthesis, type SynthesisPreview, type SourceMode } from '../../api/synthesis'
 import type { DocEntry } from '../../store/types'
 import { BatchBar } from './BatchBar'
 import { DocRow, type DocRowActions } from './DocRow'
@@ -68,6 +69,32 @@ function cancelDocTasks(ids: string[]) {
     cancelTask(id)
     s.clearDocTasks(id)
   }
+}
+
+/**
+ * 维度 textarea（每行一个）→ 清洗后的维度数组。
+ *
+ * ⚠️ 这里只做**显然的**清洗（去空行、去重），上限与长度控制交给后端
+ * `clean_dimensions()`——**权威在后端**，前端这层只是让「已选 N 个维度」显示得
+ * 准一些。两边各写一套完整规则会漂移（且前端拦住的量后端拦不住就白搭）。
+ */
+function parseDimensions(text: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const line of text.split('\n')) {
+    const d = line.trim()
+    if (d && !seen.has(d)) { seen.add(d); out.push(d) }
+  }
+  return out
+}
+
+/** 预览里每篇的处理方式 → 面向用户的一句话（与后端 `_STATUS_LABEL` 同族语义） */
+const SYNTH_PLAN_LABEL: Record<string, string> = {
+  full: '完整输入',
+  summarized: '压缩为摘要',
+  chunked: '分块抽取',
+  over_window: '超出窗口',
+  unavailable: '无可用原料',
 }
 
 /** 内联编辑态：id + 草稿值。标题/标签两处同构 */
@@ -117,6 +144,10 @@ function FilterSplitter({ height, onResize }: { height: number; onResize: (h: nu
 
 export function DocLibrary() {
   const docs = useStore(s => s.docs)
+  // 订阅整个 capabilities 对象（而非 `s.capabilities?.dimensionPresets` 再 `?? []`）：
+  // 后者每次返回**新数组**，React 的 getSnapshot 比较会永远不等，触发
+  // 「getSnapshot should be cached」甚至无限重渲染。派生放在渲染体里做。
+  const capabilities = useStore(s => s.capabilities)
   const folders = useStore(s => s.folders)
   const currentId = useStore(s => s.currentDocId)
   const selectDoc = useStore(s => s.selectDoc)
@@ -209,9 +240,22 @@ export function DocLibrary() {
   // 合成对话框 —— null = 关闭；打开中由 synthStage 区分「待确认」与「进行中」
   // （非 null 即进行中，同时承载 stage 文案）
   const [synthOpen, setSynthOpen] = useState(false)
+  // 打开那一刻定格的选择集：预览与执行必须基于**同一批** id，否则会出现
+  // 「预览说会压缩这篇，实际压缩了另一篇」。不依赖「模态遮罩挡住了选择集变化」
+  // 这个隐含假设——把它显式化。
+  const [synthIds, setSynthIds] = useState<string[]>([])
   const [synthTitle, setSynthTitle] = useState('')
   const [synthNotes, setSynthNotes] = useState('')
   const [synthStage, setSynthStage] = useState<string | null>(null)
+  // 原料模式（互斥，默认原文）与对比维度（每行一个）—— 都是**现场决定**，
+  // 故放对话框本地 state，不做全局持久化（设计 §19.8）
+  const [synthSourceMode, setSynthSourceMode] = useState<SourceMode>('raw')
+  const [synthDimsText, setSynthDimsText] = useState('')
+  const [synthPresetKey, setSynthPresetKey] = useState('')
+  // 合成前预览（每篇 token / 预计处理方式）：零 LLM 调用、零副作用，
+  // 让用户在花 token 之前就知道该不该换模型（设计 §17.4）
+  const [synthPreview, setSynthPreview] = useState<SynthesisPreview | null>(null)
+  const [synthPreviewErr, setSynthPreviewErr] = useState<string | null>(null)
   // 拖拽 —— onDragOver 阶段读不到 payload，放置区的显隐/高亮只能靠这个 state
   const [draggingIds, setDraggingIds] = useState<Set<string>>(new Set())
 
@@ -527,6 +571,25 @@ export function DocLibrary() {
 
   // ── 合成对比综述（多篇 → 一个新文档） ──
 
+  /** 维度预设（后端下发；老后端无此字段时退化为空 → 只有自由输入） */
+  const dimensionPresets = capabilities?.dimensionPresets ?? []
+
+  /**
+   * 拉一次合成前预览（零 LLM 调用）。
+   *
+   * ⚠️ 切「原料模式」时必须**重调**而不是前端本地重算：notes 的 token 数与
+   * rawText 不同，`plan` 必须重算；而本地重算 = 把 `plan_synthesis` 复刻一遍
+   * （项目铁律「成对逻辑必须同源」明令禁止）。重调是一次无 LLM 调用的请求。
+   */
+  const loadSynthPreview = useCallback((ids: string[], mode: SourceMode) => {
+    setSynthPreview(null); setSynthPreviewErr(null)
+    previewSynthesis(ids, null, mode)
+      .then(setSynthPreview)
+      // 业务失败（篇数不足 / 源已删）走这里 —— 提示但不阻断对话框，
+      // 用户仍可取消；「合成」按钮由 `canRun` 单独把关
+      .catch(err => setSynthPreviewErr(getErrorMessage(err)))
+  }, [])
+
   /**
    * 打开确认对话框。
    *
@@ -538,39 +601,73 @@ export function DocLibrary() {
     const ids = [...selectedIds]
     if (ids.length < 2) return
     const first = docs.find(d => d.id === ids[0])?.title || ''
+    setSynthIds(ids)
     setSynthTitle(first ? `${first} 等 ${ids.length} 篇对比` : `${ids.length} 篇对比`)
     setSynthNotes('')
     setSynthStage(null)
+    // 每次打开都回到「原文 + 首个预设」：这些是**现场决定**，不该继承上次
+    // （否则用户上次改成「笔记」后这次静默沿用，会莫名其妙少几篇）
+    setSynthSourceMode('raw')
+    const firstPreset = dimensionPresets[0]
+    setSynthPresetKey(firstPreset?.key ?? '')
+    setSynthDimsText((firstPreset?.dimensions ?? []).join('\n'))
     setSynthOpen(true)
-  }, [selectedIds, docs])
+    loadSynthPreview(ids, 'raw')
+  }, [selectedIds, docs, dimensionPresets, loadSynthPreview])
+
+  /** 切换原料模式 → 重拉预览（不可用的篇会在清单里标灰） */
+  const changeSynthSourceMode = useCallback((mode: SourceMode) => {
+    setSynthSourceMode(mode)
+    loadSynthPreview(synthIds, mode)
+  }, [synthIds, loadSynthPreview])
+
+  /** 切换维度预设 = **覆盖**当前维度列表（预设即「种子值」语义，UI 上有一行说明） */
+  const changeSynthPreset = useCallback((key: string) => {
+    setSynthPresetKey(key)
+    const preset = dimensionPresets.find(p => p.key === key)
+    if (preset) setSynthDimsText(preset.dimensions.join('\n'))
+  }, [dimensionPresets])
 
   const runSynthesize = useCallback(() => {
-    const ids = [...selectedIds]
+    const ids = synthIds
+    // 窗口不足时后端会拒绝，这里提前拦住，别让用户白等一次往返
+    const blocked = synthPreview?.mode === 'reject' || synthPreviewErr !== null
     // `synthStage !== null` 防重复点击：这是计费调用，双击两次就是两份钱
-    if (ids.length < 2 || synthStage !== null) return
+    if (ids.length < 2 || synthStage !== null || blocked) return
     const title = synthTitle.trim()
     setBatchBusy(true)
     setSynthStage('准备中…')
-    streamSynthesis(ids, { title, userNotes: synthNotes.trim() }, {
+    streamSynthesis(ids, {
+      title,
+      userNotes: synthNotes.trim(),
+      dimensions: parseDimensions(synthDimsText),
+      sourceMode: synthSourceMode,
+    }, {
       onStage: setSynthStage,
-      onDone: (id, _mode, degraded) => {
+      onDone: (id, _mode, degraded, excluded) => {
         setBatchBusy(false); setSynthOpen(false); setSynthStage(null)
         // ⚠️ 必须走 `useStore.getState()` 而不是组件作用域里的闭包：合成可能持续数分钟，
         // 期间用户完全可能折叠文档库 —— 而折叠 = **卸载组件**（SlotLayout）。
         // 卸载后组件的回调全部失效：文档其实已经落库，列表里却看不到，用户以为失败了。
         // store 层调用不受组件生命周期影响，这条是「产物已落库但 UI 没接上」的防线。
         const s = useStore.getState()
+        const used = ids.filter(i => !excluded.includes(i))
         s.addDoc({
           id, title: title || '对比综述', sourceType: 'composite', engine: 'llm',
           contentHash: '', tags: [], createdAt: new Date().toISOString(),
-          sourceDocIds: ids,
-          sourceTitles: ids.map(i => docs.find(d => d.id === i)?.title || ''),
+          // 来源清单以**实际参与**的篇为准——被排除的篇没进产物，
+          // 记上会让「N 合 1」徽章与来源芯片条指向一份它没读过的文档
+          sourceDocIds: used,
+          sourceTitles: used.map(i => docs.find(d => d.id === i)?.title || ''),
         })
         s.selectDoc(id)
         s.clearSelection()
         // 降级可见（设计 §4.4.3）：SSE 一闪就没了，这里再提一次；主渠道是产物里的标注
-        if (degraded.length) addToast(`已合成 ${ids.length} 篇，其中 ${degraded.length} 篇为摘要输入`, 'info')
-        else addToast(`已合成 ${ids.length} 篇对比综述`)
+        const notes: string[] = []
+        if (degraded.length) notes.push(`${degraded.length} 篇为摘要输入`)
+        if (excluded.length) notes.push(`${excluded.length} 篇无笔记已跳过`)
+        if (notes.length) addToast(`已合成 ${used.length} 篇，其中 ${notes.join('，')}`, 'info')
+        else addToast(`已合成 ${used.length} 篇对比综述`)
       },
       onError: (_code, message, cancelled) => {
         setBatchBusy(false); setSynthOpen(false); setSynthStage(null)
@@ -578,7 +675,8 @@ export function DocLibrary() {
         if (!cancelled) addToast(message, 'error')
       },
     })
-  }, [selectedIds, synthTitle, synthNotes, synthStage, docs, addToast])
+  }, [synthIds, synthTitle, synthNotes, synthDimsText, synthSourceMode,
+      synthStage, synthPreview, synthPreviewErr, docs, addToast])
 
   // ── 右键菜单 ──
 
@@ -804,12 +902,42 @@ export function DocLibrary() {
       {/* 合成确认 —— 进行中（synthStage 非 null）时同一层显示阶段文案，
           不关窗：合成长则几分钟，用户需要看到它还在动 */}
       {synthOpen && (() => {
-        const ids = [...selectedIds]
+        // ⚠️ 用**打开那一刻定格**的 `synthIds`，而不是实时的 `selectedIds`：
+        // 预览与执行必须基于同一批 id，否则会出现「预览说会压缩这篇、实际压缩了另一篇」。
+        const ids = synthIds
         const running = synthStage !== null
+        // 预览按 id 索引：后端 docs 顺序与入参一致，但按 id 查不依赖那个顺序契约
+        const prevById = new Map((synthPreview?.docs ?? []).map(d => [d.id, d]))
+        const excludedSet = new Set(synthPreview?.excluded ?? [])
+        const unusableCount = excludedSet.size
+        // 窗口类 banner 的触发集**刻意收窄**（设计 §17.4）：banner 的语义是「你该做个动作」，
+        // 所以只有用户真该动的情形才配出现。`chunked`（总量超窗、单篇都不超）是**设计认可
+        // 的终态**、用户无需行动 —— 它也触发的话，一条「不用换模型」的路径会不断劝人换。
+        const overWindow = (synthPreview?.docs ?? []).some(d => d.plan === 'over_window')
+        const reject = synthPreview?.mode === 'reject'
+        const showWindowBanner = reject || overWindow
+        // 换模型推荐：**只提示，不提供切换**（设计 §17.7 明确不做对话框内换模型）
+        const stuffWindow = synthPreview?.stuff_window ?? 0
+        const bigModels: string[] = []
+        if (showWindowBanner && stuffWindow > 0) {
+          const seen = new Set<string>()
+          for (const list of Object.values(capabilities?.llmModels ?? {})) {
+            for (const m of list) {
+              if ((m.context_window ?? 0) >= stuffWindow && !seen.has(m.name)) {
+                seen.add(m.name); bigModels.push(m.name)
+              }
+            }
+          }
+        }
+        const canRun = !running && !reject && synthPreviewErr === null
+        // 只做「去空行 + 去重」的显然清洗，权威规则在后端 `clean_dimensions()`——
+        // 这里算出的数字仅用于给用户一个「共几个维度」的即时反馈
+        const dimsCount = parseDimensions(synthDimsText).length
+        const fmtTok = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`
         return (
           <div className="fixed inset-0 z-300 flex items-center justify-center bg-black/20 backdrop-blur-sm"
             onClick={() => { if (!running) setSynthOpen(false) }}>
-            <div data-synth-dialog className="bg-elevated rounded-2xl shadow-2xl border border-border-light p-6 max-w-105 w-full mx-4 animate-[fadeIn_0.15s_ease-out]"
+            <div data-synth-dialog className="bg-elevated rounded-2xl shadow-2xl border border-border-light p-6 max-w-105 w-full mx-4 max-h-[85vh] overflow-y-auto animate-[fadeIn_0.15s_ease-out]"
               onClick={e => e.stopPropagation()}>
               <h3 className="text-[17px] font-semibold mb-2 flex items-center gap-2">
                 <Layers size={16} className="text-accent" />合成 {ids.length} 篇对比综述
@@ -826,31 +954,103 @@ export function DocLibrary() {
                 </div>
               ) : (
                 <>
-                  {/* 已选清单 —— 用户在这里核对「选对了吗」，这是本对话框存在的主要理由 */}
+                  {/* 已选清单 —— 用户在这里核对「选对了吗、会怎么处理」，这是本对话框存在的主要理由。
+                      token 与处理方式来自预览端点（零 LLM 调用）——前端没有正文，算不出来 */}
                   <p className="text-[11px] text-disabled mb-1">将按以下顺序合成：</p>
-                  <ul data-synth-sources className="mb-4 max-h-32 overflow-y-auto rounded-lg border border-border-light bg-surface px-3 py-2 space-y-0.5">
-                    {ids.map((id, i) => (
-                      <li key={id} className="text-[12px] text-dimmed truncate">
-                        <span className="text-disabled mr-1">{i + 1}.</span>
-                        {docs.find(d => d.id === id)?.title || id}
-                      </li>
-                    ))}
+                  <ul data-synth-sources className="mb-3 max-h-32 overflow-y-auto rounded-lg border border-border-light bg-surface px-3 py-2 space-y-0.5">
+                    {ids.map((id, i) => {
+                      const p = prevById.get(id)
+                      const unavailable = excludedSet.has(id) || p?.plan === 'unavailable'
+                      return (
+                        <li key={id} data-synth-row={id}
+                          className={`text-[12px] truncate flex items-baseline gap-1 ${unavailable ? 'text-disabled' : 'text-dimmed'}`}>
+                          <span className="text-disabled mr-1">{i + 1}.</span>
+                          <span className="truncate flex-1">{docs.find(d => d.id === id)?.title || id}</span>
+                          {p && !unavailable && (
+                            <span data-synth-plan={p.plan} className={`shrink-0 text-[11px] ${p.plan === 'over_window' ? 'text-warning' : 'text-disabled'}`}>
+                              {p.plan === 'full' ? '' : `${SYNTH_PLAN_LABEL[p.plan] ?? p.plan} · `}{fmtTok(p.tokens)} tokens
+                            </span>
+                          )}
+                          {unavailable && <span className="shrink-0 text-[11px] text-disabled">无可用原料</span>}
+                        </li>
+                      )
+                    })}
                   </ul>
+
+                  {/* 窗口类 banner —— 只有 `reject` / `over_window` 触发（见上）；`chunked` 不出 */}
+                  {showWindowBanner && (
+                    <div data-synth-window-banner
+                      className="mb-3 px-3 py-2 rounded-lg bg-warning/10 text-warning text-[11px] leading-relaxed flex gap-1.5">
+                      <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                      <div>
+                        <p>
+                          {synthPreview?.reason || '部分文档超出当前模型窗口，将被压缩或截断后参与对比。'}
+                        </p>
+                        <p className="mt-1">
+                          若要全部原样输入，需要约 {fmtTok(stuffWindow)} 窗口的模型。
+                          {bigModels.length > 0
+                            ? ` 可用：${bigModels.slice(0, 3).join('、')}${bigModels.length > 3 ? ' 等' : ''}（请到设置中切换）`
+                            : ' 当前已配置的模型均不满足。'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 预览失败（篇数不足 / 源已删）—— 不阻断对话框，但拦下「合成」按钮 */}
+                  {synthPreviewErr && (
+                    <p data-synth-preview-err className="mb-3 text-[11px] text-warning">{synthPreviewErr}</p>
+                  )}
 
                   <label className="text-[12px] font-medium text-dimmed block mb-1">标题</label>
                   <input data-synth-title value={synthTitle} onChange={e => setSynthTitle(e.target.value)}
                     className="w-full px-2 py-1.5 mb-3 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent" />
 
+                  {/* 原料模式 —— 比维度更基础（先决定「用什么材料」，再决定「按什么比」），故在它之上。
+                      刻意**互斥不混合**：混合会让等比配额的前提失效、产物标注不可解释（设计 §19.2） */}
+                  <label className="text-[12px] font-medium text-dimmed block mb-1">对比原料</label>
+                  <div className="flex gap-4 mb-3">
+                    {([['raw', '原文（默认）'], ['notes', '已生成的笔记']] as const).map(([v, text]) => (
+                      <label key={v} className="flex items-center gap-1.5 text-[12px] text-dimmed cursor-pointer">
+                        <input type="radio" name="synth-source-mode" value={v}
+                          data-synth-source={v}
+                          checked={synthSourceMode === v}
+                          onChange={() => changeSynthSourceMode(v)}
+                          className="accent-accent" />
+                        {text}
+                      </label>
+                    ))}
+                  </div>
+                  {unusableCount > 0 && (
+                    <p data-synth-excluded className="mb-3 -mt-1.5 text-[11px] text-warning">
+                      已选 {ids.length} 篇，其中 {unusableCount} 篇无笔记，合成时将跳过。
+                    </p>
+                  )}
+
+                  {/* 对比维度 —— 「## 对比总表」的行标签，也就是产物的骨架（设计 §18.0）*/}
+                  <label className="text-[12px] font-medium text-dimmed block mb-1">对比维度</label>
+                  {dimensionPresets.length > 0 && (
+                    <select data-synth-preset value={synthPresetKey} onChange={e => changeSynthPreset(e.target.value)}
+                      className="w-full px-2 py-1.5 mb-2 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent">
+                      {dimensionPresets.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+                    </select>
+                  )}
+                  <textarea data-synth-dims value={synthDimsText} onChange={e => setSynthDimsText(e.target.value)}
+                    rows={4} placeholder="每行一个维度，例如：研究问题"
+                    className="w-full px-2 py-1.5 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent resize-none" />
+                  <p className="text-[10px] text-disabled mt-0.5 mb-3">
+                    每行一个，共 {dimsCount} 个维度，将作为对比总表的行标签。切换预设会覆盖当前列表。
+                  </p>
+
                   <label className="text-[12px] font-medium text-dimmed block mb-1">对比指引（可选）</label>
                   <textarea data-synth-notes value={synthNotes} onChange={e => setSynthNotes(e.target.value)}
-                    rows={2} placeholder="例如：重点比较各篇的方法差异与实验条件"
+                    rows={2} placeholder="例如：重点比较各篇的方法差异与实验条件；关注结论冲突之处"
                     className="w-full px-2 py-1.5 mb-4 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent resize-none" />
 
                   <div className="flex gap-2 justify-end">
                     <button onClick={() => setSynthOpen(false)}
                       className="px-4 py-2 text-[13px] text-dimmed hover:bg-surface rounded-lg transition-colors">取消</button>
-                    <button data-confirm-synth onClick={runSynthesize}
-                      className="px-4 py-2 bg-accent text-white text-[13px] font-medium rounded-lg hover:bg-accent-hover transition-colors">合成</button>
+                    <button data-confirm-synth onClick={runSynthesize} disabled={!canRun}
+                      className="px-4 py-2 bg-accent text-white text-[13px] font-medium rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed">合成</button>
                   </div>
                 </>
               )}

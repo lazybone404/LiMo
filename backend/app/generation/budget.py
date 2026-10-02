@@ -18,6 +18,8 @@
 见 `content_preparer` 的传参修正）。
 """
 
+import math
+
 # 生成侧真实发出的 max_tokens（generator.py:24 / llm/service.py:19 同值）。
 # multi 的 output_budget 必须等于它，否则预算等式不闭合。
 GENERATION_MAX_TOKENS = 65536
@@ -109,3 +111,21 @@ def input_budget_for(context_window: int, profile: str = "single") -> int:
     if profile == "multi":
         return multi_input_budget(context_window)
     return single_input_budget(context_window)
+
+
+def stuff_window(total_tokens: int) -> int:
+    """让这 N 篇**原样全部装下**（即走 Stuff 路径）所需的窗口。
+
+    ⚠️ **它不是「能做这次合成的最小窗口」**——总量超了照样能做，只是改走压缩。
+    命名必须精确：用户看到「需要 X 的窗口」时不该以为「窗口不够就不能合成」
+    （设计 §17.4 的 `required_window` → `stuff_window` 改名）。
+
+    由 `multi_input_budget` 的 `min()` 反解——两条上限都要满足：
+        `cw × RELIABILITY ≥ total`  →  `cw ≥ total / RELIABILITY`
+        `cw − 67536 ≥ total`        →  `cw ≥ total + GENERATION_MAX_TOKENS + SAFETY_MARGIN`
+    取更紧的一条。
+    """
+    return max(
+        int(math.ceil(total_tokens / RELIABILITY)),
+        total_tokens + GENERATION_MAX_TOKENS + SAFETY_MARGIN,
+    )

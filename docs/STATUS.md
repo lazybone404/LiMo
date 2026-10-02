@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-10-01 | **版本**: 0.4.7
+**更新**: 2026-10-02 | **版本**: 0.4.7
 
 ---
 
@@ -12,16 +12,16 @@
 | 指标 | 数量 |
 |------|------|
 | 后端 Python 文件 | 109（11 子目录：adapters 8 / agent 6 / core 20 / downloaders 4 / engines 15 / generation 14 / llm 4 / routers 18 / storage 2 / utils 6 / services 12） |
-| 前端 TS/TSX/CSS 文件 | 136（134 ts/tsx + 2 css；业务 115，排除 test 21） |
-| 前端测试文件 | 20（232 个测试用例，vitest 全绿） |
+| 前端 TS/TSX/CSS 文件 | 137（135 ts/tsx + 2 css；业务 115，排除 test 22） |
+| 前端测试文件 | 22（274 个测试用例，vitest 全绿） |
 | 后端测试文件 | 31 |
 | API 路由模块 | 17 业务模块（+ `__init__.py`，共 18 个 .py） |
-| API 端点 | 81（`@router.` 装饰器计数） |
+| API 端点 | 82（`@router.` 装饰器计数） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 13（docs/ 目录，含对话协议.md + AGENT-ONBOARDING.md + ACKNOWLEDGMENTS.md；design/ 另计） |
-| 代码行数 | 后端 app 26,313 / 前端业务 17,020 / 前端测试 3,318 |
+| 代码行数 | 后端 app 27,148 / 前端业务 17,151 / 前端测试 3,882 |
 
 ---
 
@@ -116,7 +116,7 @@
 | FastAPI Depends 依赖注入 | ✅ 12/15 路由迁移完成（未迁：generate/search/references） |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 15/15 路由全量完成，0 处 `raise HTTPException`（2026-09-19 核实） |
-| 前端测试 | ✅ vitest + 232 tests（20 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 4 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis） |
+| 前端测试 | ✅ vitest + 274 tests（22 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/readingPrefs/readingLayout） |
 | 后端测试 | ✅ 31 文件（含合成 6 个新文件：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api） |
 | 对话重写 | ✅ 独立 chatStore + 消息层组件树 + 工具气泡/引用/思考折叠（2026-08-04） |
 | 对话上下文管理 | ✅ context_window 四层解析 + 预算引擎 + 历史压缩 + token 进度/费用（2026-08-04 C1-C5） |
@@ -165,6 +165,11 @@
 | 阶段 0 四项独立小修 | ✅ ① `DocLibrary` 动画延迟 `i*50ms`（第 1000 篇要等 **50 秒**，是功能性错误不是性能问题）；② `search.py` snippet 列号 1→**2**（列序 `(id,title,content)`，列号 1 是标题 —— 不修则正文命中摘要显示标题）；③ `model.py` `"*"` 分支**跳过 exclude 检查**（`if`/`elif` 互斥使排除表成死代码）+ deepseek 规则改 `{"include":["*"],"exclude":[pro,reasoner,coder,embed]}`；④ `token.py` `DEFAULT_CONTEXT` 补 4 家（zhipu 刻意取 131072 不拉平 1M —— 兜底层取保守值才安全）（2026-09-23） |
 | 文档库交互重设计 | ✅ **三条「删除」是本轮核心**：① `selectMode` —— 批量选择从「模式」变常态，批量条由 `selectedIds.size > 0` **派生**（要原子修改来防的漂移，因为漂移的载体本身没了）；② **「正文匹配（N）」独立分组取消**（不受筛选约束 / 行是裸 `<button>` / 与排列旋钮打架），唯一值得保的性质由「**相关度**」排序键承接（rank 取 `hits` **数组索引**、**零后端改动**、搜索词从空变非空时自动切、无命中时不出现——否则是点不动的死键）；③ `FolderTree.tsx`（文件夹降为「排列方式」的一个取值，与类型/时间共用 `GroupHeader`，但增删改只对文件夹组开放）。**⚠️ 单击行 = 打开文档且不动选择集**（按「点即选中」实现则用户再也打不开文档），复选框常驻 + Ctrl/Shift 区间/Ctrl+A（输入框内不劫持）/Esc。**排列 ⊥ 排序**：排列（平铺/按文件夹/按类型/按时间）管横向归类，排序管组内顺序，**刻意无「筛选时退化成扁平」的特殊模式**（那正是「树和筛选打架」的来源）。筛选区五小节 + 两级折叠 + 收起仍显激活摘要 + 可拖分隔条（双击复位）；标题关键词纯内存不触发 FTS（「筛标题」vs 搜索框「找内容」）；「本周」= 本自然周。状态归属由「折叠即卸载」判定（`SlotLayout` 是 `collapsed ? PanelStrip : Comp`，本地 state 收起即归零）→ `selectedIds`/`listLimit`/`folderBusy`/`docsLoading`/`expandedFolders` 进 docsSlice，`density`/`groupBy`/`sort`/`expandedSections`/`filterAreaHeight` 进 prefs，非 boolean 的 **nonce** 进 uiSlice。`SearchBar` 从**第二套搜索实现**（限 10 条/无 AbortController/自带 snippet 分支）退化为入口按钮，与 Ctrl+K 共用 `openDocLibSearch`。顺手修 10 处真缺陷（右键复制复制的是**另一篇** / 首帧假空态 / 删文档不清产物 / `''` 哨兵写进 localStorage / ContextMenu divider 未渲染 / 哨兵 IO 未绑 root / 文件夹加载失败被静默吞 / 拖拽 `onDragOver` 读旧 state 致 drop 永不触发 / 新建失败丢草稿 / 部分失败整体回滚）。测试 130 → **209**（+5 文件），28 条对照实验自证（其中 3 条第一版判据没区分力，暴露的是判据本身）。**简略模式 = IDE 文件树**（同日续，用户看过实现后推翻原「平铺不分组」设计）：固定按文件夹分组、忽略「排列方式」偏好，子行缩进 + 缩进参考线（`treeIndent`，只给有行的组画），**分组头与文件行同高 26px（成对常量）**；顺带修掉一条从未命中的骨架判据——「分组模式下 `groups` 永远非空」，旧判据 `!groups?.length` 在默认排列下一次都没生效（冷启动显示的是「未分类 0」，正是 #19 要杀的假空态），沉淀为模式 #50。**后端零改动**（2026-09-25） |
 | PDF 导出 | ✅ 两条路径共用一份自包含 HTML。Tauri：Rust `export_pdf` → 屏幕外窗口 → `ICoreWebView2_7::PrintToPdf` **直接落文件**（A4+背景保留+无页眉页脚，存系统下载目录，同名加序号）；浏览器：屏幕外 iframe + 打印对话框。**Tauri 链已端到端实测** —— 真实文档导出 + PDF 读回断言（6 页全 209.9×297.0mm / 代码块底色·Pygments 三色高亮·表格·跨页表头·图表 PNG 逐页核对全对，2026-09-21）。⚠️ 加载 URL 必须带 `inline=1`：默认的 `Content-Disposition: attachment` 会让 WebView2 去「下载」而非渲染 → 打印出 876 字节白纸却报成功。**浏览器链只测到打印 CSS 层**（headless 4 套主题 + 暗色模拟），`printFromUrl` 的 iframe 交互路径未经真人点击验证 |
+
+| 合成超窗分层 | ✅ 「窗口不够」**不是一个问题，是四个**：① 总量超窗（已有逐篇抽取，非妥协）② **单篇自身超窗**（原只标「已截断」，约 78% 内容永久丢失且原因与超时/模型抽风**不可分辨**）③ 病态长文拖垮整次（超时 = 前面所有篇作废）④ 用户事前不知情。**②→篇内分块归并**：关键洞察是「分块不增加配额，而是让它在配额内覆盖全文」（现状从**头部**截断 → 后 78% 从未进模型）；三条预算约束闭合 + 每块 `_truncate_to_tokens(t, q)` + 归并去重；⚠️ **每块必须推 stage**——篇内静默 = Σ 各块耗时，K≥6 冲破 900s 会让**正常路径被判挂死**。**③→软 deadline**：到点则剩余篇硬截断 + 标 `truncated_timeout`，正常走到落库。**顺带订正** `SYNTH_QUIET_TIMEOUT` 与 `SYNTH_TOTAL_TIMEOUT` **同为 900**（「挂死」与「整体超时」同刻到期、由竞态决定收到哪条错误）+ 注释与值不符 → 改 300 并把三者关系写成**断言**。**降级状态 3 态→8 态**（`chunked`/`chunked_partial`/`truncated_over_window`/`truncated_timeout`/`truncated_llm_error`）+ 基础状态回退（历史 `truncated` 与未知状态都不崩）。**④→预览端点** `POST /api/synthesis/preview`（零 LLM 调用）：逐篇 token + 预计处理方式 + `stuff_window`；⚠️ 判据与执行**同源**（同一个 `_classify`）；`stuff_window` 语义是「让全部原样**装下**所需窗口」**不是**「能做合成的最小窗口」；换模型 banner 触发集**收窄**（`chunked` 是设计认可的终态，若也触发就在「不用换」的路径上不断劝人换）（2026-10-02） |
+| 合成维度可控 | ✅ **维度就是产物骨架**（「## 对比总表」= 行=维度 × 列=各篇）。查出一处**设计说了代码没做**：Stuff 路径（**多数情况**）**零维度注入** → 唯一的补救机制（维度发现）根本不跑 → 维度机制在最常见路径上一次都没生效。修：`DIMENSION_PRESETS` 四套（论文/技术资料/产品评测/媒体内容）→ capabilities 下发（前端不硬编码）→ 用户给定则**跳过维度发现调用** → **两条路都注入**。⚠️ 维度**落在出处头 meta**（生成是第二次独立请求，届时只有 rawText；落 index 会被重建丢失，落可见正文会与原始材料混淆）（2026-10-02） |
+| 合成原料可选 | ✅ 原文（默认）/ 已生成的笔记，**互斥不混合**——「只能选一项」是**刻意的设计**：混合会同时打破 ① 等比配额前提（笔记 token 密度与原文差一个数量级）② 产物可解释性（`✓ 完整输入` 会让人以为给的是原文）③ 降级语义（笔记本身已是压缩品，再叠 `summarized` 让状态细分失效）。**整批同源 ⇒ 三个问题一并消失**。⚠️ 前端拿不到「有没有笔记」（`DocEntry` 无产物字段），**解法是不新增字段/端点**——预览端点本就在逐篇读文档，顺带返回 `hasNotes`/`notesTokens`；切模式**重调预览**（本地重算 = 复刻 `plan_synthesis`，成对逻辑禁止）；**后端执行时再校验一次**（预览与执行之间隔着用户操作）；`sourceMode` 落 meta 是**为产物自解释**而非为生成（2026-10-02） |
+| 合成 `excluded` 语义 bug | ✅ 落地时**由测试抓到**：后端 `done.excluded` 填的是**标题**，前端拿它从选中集做差集（按 id）→ **永远匹配不上** → 被排除的篇仍写进来源清单，「N 合 1」徽章指向产物根本没读过的文档；预览侧 `excludedSet.has(id)` 同病。**两边都错、两边看起来都对**，失败完全静默（不报错、差集恒为空）。统一为 **id**（标题经清洗且重名合法，做身份判定必然错 —— §4.2.2「标题是展示字段，不是身份凭据」）；`not_enough_notes` 的 detail 在调用点转回标题。⚠️ **只断言「有 2 条」的写法抓不到它**，必须断值本身（2026-10-02） |
 
 ## 目录结构
 

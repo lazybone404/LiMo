@@ -17,6 +17,11 @@ from .prompts.common import PromptComposer
 from app.core.types import DOC_SOURCE_TYPES
 # 原在本文件定义，2026-10-01 下沉到 core（transcript_meta 需复用同一份清洗），此处 re-export
 from app.core.text_utils import sanitize_reference_name
+from app.core.transcript_meta import parse_meta
+# ⚠️ 单真相源：维度预设定义在 `synthesis.py`（合成侧写入 meta 的就是它），
+# 生成侧读回后若拿不到，回退的必须是**同一个**常量——两处各写一份论文维度，
+# 改了其中一处就会出现「合成时按新维度抽取、生成时按旧维度列表」的静默错配。
+from app.generation.synthesis import DEFAULT_PAPER_DIMENSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -944,15 +949,31 @@ _SYNTHESIS_TASK = (
     "不得省略或美化**。"
 )
 
-_SYNTHESIS_OUTPUT = (
-    "严格按以下五段结构输出（顺序不可调换；表与文章都要，不得省略任何一段）：\n\n"
-    "## 一句话概览\n"
-    "先用一到三句话概括这批文档的整体面貌与核心结论，并如实说明输入覆盖情况"
-    "（共几篇、其中几篇完整输入）。\n\n"
-    "## 对比总表\n"
-    "输出一张 Markdown 表：**行 = 对比维度，列 = 各篇文档**"
-    "（表头用文档序号与简短标题）。单元格填该篇在该维度上的要点，"
-    "**未提及的维度填「未提及」，不要留空、不要推断**。\n\n"
+def _build_synthesis_output(dimensions: list[str]) -> str:
+    """五段输出结构；「## 对比总表」的**行标签**由 `dimensions` 决定。
+
+    ⚠️ 维度**必须**逐条列进 prompt，不能只写「行 = 对比维度」把骨架交给模型
+    即兴发挥——工程实践的警告正是「模型倾向保留**出现次数最多**的内容，而不是
+    **最重要**的内容」，显式指定维度即显式告诉它什么重要（设计 §3.3 / §18.0）。
+    这才是「维度可控」这个功能真正落地的地方：总表的行 = 产物骨架。
+
+    ⚠️ 与 Map-Reduce 路径的关系：那条路径的「维度发现」在**抽取阶段**就已把
+    追加维度并进抽取结果，且 `synthesize` 会把**发现后的完整维度集**写进 meta。
+    所以这里拿到的已经是最终维度，不需要（也不该）在这里再做一次追加。
+    """
+    dims_lines = "\n".join(f"    {i}. {d}" for i, d in enumerate(dimensions, 1))
+    return (
+        "严格按以下五段结构输出（顺序不可调换；表与文章都要，不得省略任何一段）：\n\n"
+        "## 一句话概览\n"
+        "先用一到三句话概括这批文档的整体面貌与核心结论，并如实说明输入覆盖情况"
+        "（共几篇、其中几篇完整输入）。\n\n"
+        "## 对比总表\n"
+        f"输出一张 Markdown 表：**行 = 对比维度（就是下面列出的这 {len(dimensions)} 行），"
+        "列 = 各篇文档**（表头用文档序号与简短标题）。\n"
+        "**维度已由用户指定，逐行照用、顺序不变、不得增删或改名**：\n"
+        f"{dims_lines}\n"
+        "单元格填该篇在该维度上的要点。**某篇在某维度上没有相关表述时填「未提及」，"
+        "不要留空、不要用其它篇的内容顶替、不要凭常识推断**。\n\n"
     "## 分维度对比\n"
     "逐个维度展开：这一维度上各篇分别怎么说、哪些一致、哪些冲突。"
     "冲突时**并列呈现双方依据**，不要擅自裁决——除非某篇给出了明确的反驳证据。\n\n"
@@ -979,11 +1000,36 @@ _SYNTHESIS_CONSTRAINTS = (
 )
 
 
+def _read_synthesis_dimensions(raw_text: str) -> list[str]:
+    """从出处头读回本次综述的对比维度；读不到就回退默认论文维度。
+
+    ⚠️ **为什么在这里读，而不是在两个调用点各读一次**：`build_notes_prompt`
+    与 `build_polish_prompt` 各有一条 composite 兜底分支，两处各写一遍取值
+    必然漂移（项目铁律「成对逻辑必须同源」，CLAUDE.md #39）。收口成一处后，
+    将来维度 schema 有变只改这里。
+
+    三条路径都必须**不崩**：
+      · 正常合成文档 → meta 里有 dimensions（`synthesize` 保证非空）
+      · **历史文档** → 新字段上线前写下的 meta 没有 dimensions（用户库里已有的
+        合成文档全都属于这一类）
+      · meta 损坏 / 无头 → `parse_meta` 返回 `(None, _)`（用户手工改过第一行）
+    直接 `meta["dimensions"]` 索引会 KeyError，把一份本来完全正常的文档变成打不开的。
+    """
+    meta, _ = parse_meta(raw_text)
+    dims = (meta or {}).get("dimensions")
+    if isinstance(dims, list):
+        cleaned = [str(d).strip() for d in dims if str(d).strip()]
+        if cleaned:
+            return cleaned
+    return list(DEFAULT_PAPER_DIMENSIONS)
+
+
 def build_synthesis_prompt(
     raw_text: str,
     title: str = "",
     user_notes: str = "",
     target_language: str = "zh-CN",
+    dimensions: list[str] | None = None,
 ) -> str:
     """构建多篇文档对比综述 prompt（composite 专用）。
 
@@ -995,7 +1041,12 @@ def build_synthesis_prompt(
 
     无 `style_preference` 节：输出形状已拍板（五段固定结构），不随风格变化。
     `user_notes` 在此语义是**对比指引**（用户指定关注点），注入 `<user_request>`。
+
+    `dimensions` 缺省时**从 rawText 的出处头读回**（合成时写进去的那一份）——
+    这样两个调用点无需各自解析，且「合成写什么、生成就读什么」由构造保证同源。
+    显式传参只用于测试与将来的覆写场景。
     """
+    dims = list(dimensions) if dimensions else _read_synthesis_dimensions(raw_text)
     task = _SYNTHESIS_TASK
     # 标题是用户自己在对话框输入的，属用户意图而非不可信内容；但仍需抹掉换行
     # （换行会让它会破坏 task 段的结构）
@@ -1010,7 +1061,7 @@ def build_synthesis_prompt(
         ("instruction_priority", _INSTRUCTION_PRIORITY),
         ("output_language", _build_output_language(target_language, "composite")),
         ("hard_constraints", _SYNTHESIS_CONSTRAINTS),
-        ("output_format", _SYNTHESIS_OUTPUT),
+        ("output_format", _build_synthesis_output(dims)),
         ("user_request", user_notes.strip()),
     ]
     return PromptComposer.compose(sections)

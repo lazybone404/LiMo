@@ -18,6 +18,7 @@ from app.generation.budget import (
     GENERATION_MAX_TOKENS, MIN_MULTI_CONTEXT_WINDOW, MIN_MULTI_INPUT, RELIABILITY,
     SAFETY_MARGIN, SINGLE_OUTPUT_RESERVE,
     input_budget_for, multi_capacity_ok, multi_input_budget, single_input_budget,
+    stuff_window,
 )
 
 
@@ -285,5 +286,81 @@ print(f"PASS: ContentPreparer 构造点对称性（{_ctors}）")
 #    "model_context_window" 行 → 本节不红（它扫的是函数体内是否有该调用）；
 #    删掉**整行 resolve_context_window(...)** → 节 8 红。两者的差别正是本节的边界：
 #    它拦得住「整条链路没接」，拦不住「接了但没塞进传参的 dict」——后者由节 7 + 人工复核覆盖。
+
+# ═══════════════════════════════════════════════════════════════
+# 9. stuff_window —— 反解必须**恰好**（多一个 token 就装不下）
+# ═══════════════════════════════════════════════════════════════
+#
+# 它由 `multi_input_budget` 的 `min()` 反解而来，语义是「让这 N 篇**原样全部装下**
+# 所需的窗口」。判据不能只写「>= 某个数」（随便一个够大的数都满足）——必须**两侧
+# 都钉**：这个窗口装得下，少 1 就装不下。这才是「反解」而不是「估个大的」。
+#
+# ⚠️ 对照实验（写作时最容易犯的两个错）：
+#   ① 只写 `total / RELIABILITY` 一项 → 小总量下漏掉 `total + 67536` 那条上限 → 红
+#   ② 只写 `total + 67536` → 大总量下漏掉可靠度上限 → 红
+# （两条上限的**主导区间不同**，下面刻意取了两侧各一个样本。）
+
+for _t, _expect in {
+    0:       67536,      # 空集 → 输出预留那条主导（total/0.5 = 0）
+    20000:   87536,      # 小总量 → 输出预留主导（40,000 vs 87,536）
+    60000:   127536,     # 仍是输出预留主导（120,000 vs 127,536）—— 交界在 67,536
+    67536:   135072,     # 两条相等的交界
+    100000:  200000,     # 大总量 → 可靠度主导（200,000 vs 167,536）
+    200000:  400000,
+}.items():
+    _got = stuff_window(_t)
+    assert _got == _expect, f"stuff_window({_t}) = {_got}，应为 {_expect}"
+print("PASS: stuff_window 逐值正确（两条上限按总量大小分别主导）")
+
+# ── 恰好性：装得下 ∧ 少 1 就装不下 ──
+# 这是本节的核心判据。只验一侧的实现在另一侧必然露馅。
+_checked = 0
+for _t in (20000, 35000, 50000, 67536, 100000, 200000, 500000):
+    _w = stuff_window(_t)
+    if not multi_capacity_ok(_w):
+        # 小总量下 stuff_window **低于闸门门槛**（见本节末「不能当闸门判据」）——
+        # 预算函数此时拒绝求值，故「恰好性」只能在门槛之上那一段验证。
+        assert _w < MIN_MULTI_CONTEXT_WINDOW
+        continue
+    _checked += 1
+    _ok = multi_input_budget(_w)
+    assert _ok >= _t, f"stuff_window({_t})={_w} 竟然装不下 {_t}（预算只有 {_ok}）"
+    # 少 1 tok 的窗口：两个分支都必须够不着 total
+    _w1 = _w - 1
+    _ok1 = multi_input_budget(_w1) if multi_capacity_ok(_w1) else -1
+    assert _ok1 < _t, (
+        f"stuff_window({_t})={_w} 不是**最小**的：窗口 {_w1} 也装得下（预算 {_ok1}）"
+        f"—— 反解多算了，用户会被推荐一个不必要的大窗口"
+    )
+assert _checked >= 5, f"恰好性样本太少（{_checked} 个），判据覆盖面不足"
+print("PASS: 恰好性 —— w 装得下、w-1 装不下（反解不是「估个大的」）")
+
+# ── `RELIABILITY` 必须真参与（否则「1M 窗口下 20 篇也全塞」）──
+assert stuff_window(400000) == 800000, \
+    f"大总量下应由 1/RELIABILITY=2 倍主导：{stuff_window(400000)}"
+# 总量还不到「输出预留」的量级时，输出预留那条必须接管（而不是 2 倍就完事）
+assert stuff_window(50000) == 50000 + GENERATION_MAX_TOKENS + SAFETY_MARGIN == 117536, \
+    "总量 < 67,536 时输出预留必须成为更紧的那条（2×50,000 = 100,000 是不够的）"
+print("PASS: 可靠度因子与输出预留都真在公式里（换了任一项此处立刻红）")
+
+# ── ⚠️ `stuff_window` **不能**当闸门判据 ──
+# 小总量下它小于 `MIN_MULTI_CONTEXT_WINDOW`——但那次合成**照样需要 128k 窗口**，
+# 因为闸门约束的是「能不能做多文档综述」，与「这次有多少篇」无关。
+# Web端的「换个窗口更大的模型吧」推荐若直接拿 stuff_window 当门槛，
+# 会推荐出一个**窗口不足**的模型。故推荐值必须取两者较大者。
+_small = stuff_window(1000)
+assert _small < MIN_MULTI_CONTEXT_WINDOW, (
+    f"前置失效：本断言要求小总量下 stuff_window({_small}) 小于门槛"
+    f"（{MIN_MULTI_CONTEXT_WINDOW}）—— 若两者关系变了，请重新评估这条建议"
+)
+assert max(_small, MIN_MULTI_CONTEXT_WINDOW) == MIN_MULTI_CONTEXT_WINDOW, \
+    "推荐模型时的窗口要求 = max(stuff_window, MIN_MULTI_CONTEXT_WINDOW)"
+print(f"PASS: stuff_window({1000})={_small} < 门槛 {MIN_MULTI_CONTEXT_WINDOW} —— "
+      f"推荐门槛必须取 max(两者)，否则会推荐窗口不足的模型")
+
+# ── 单调性：多一篇进来，所需窗口不该变小 ──
+_prevs = [stuff_window(t) for t in range(0, 200000, 25000)]
+assert _prevs == sorted(_prevs), f"stuff_window 必须单调不减：{_prevs}"
+print("PASS: 单调不减（总量增加 → 所需窗口不会变小）")
 
 print("\n全部通过：budget 统一预算函数")

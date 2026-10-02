@@ -30,7 +30,8 @@ const results: Array<{ type: string; args: unknown[] }> = []
 function cb(): StreamSynthesisCallbacks {
   return {
     onStage: (m) => results.push({ type: 'stage', args: [m] }),
-    onDone: (id, mode, degraded) => results.push({ type: 'done', args: [id, mode, degraded] }),
+    onDone: (id, mode, degraded, excluded) =>
+      results.push({ type: 'done', args: [id, mode, degraded, excluded] }),
     onError: (code, message, cancelled) => results.push({ type: 'error', args: [code, message, cancelled] }),
   }
 }
@@ -98,7 +99,20 @@ describe('streamSynthesis — 请求形状', () => {
     stubFetch(sseResponse(['data: {"type":"done","id":"x"}\n\n']))
     streamSynthesis(['tr_a', 'tr_b'], {}, cb())
     await vi.waitFor(() => expect(results.length).toBe(1))
-    expect(bodyOf()).toEqual({ doc_ids: ['tr_a', 'tr_b'], title: '', user_notes: '', model_id: null })
+    expect(bodyOf()).toEqual({
+      doc_ids: ['tr_a', 'tr_b'], title: '', user_notes: '', model_id: null,
+      dimensions: [], source_mode: 'raw',
+    })
+  })
+
+  it('dimensions / source_mode 原样带出（维度是产物骨架，原料模式决定读哪份原料）', async () => {
+    stubFetch(sseResponse(['data: {"type":"done","id":"x"}\n\n']))
+    streamSynthesis(['tr_a', 'tr_b'],
+      { dimensions: ['研究问题', '方法'], sourceMode: 'notes' }, cb())
+    await vi.waitFor(() => expect(results.length).toBe(1))
+    expect(bodyOf()).toMatchObject({
+      dimensions: ['研究问题', '方法'], source_mode: 'notes',
+    })
   })
 })
 
@@ -116,19 +130,21 @@ describe('streamSynthesis — 事件分发', () => {
     expect(stages).toEqual(['读取源文档…', '逐篇结构化抽取（1/3）…'])
   })
 
-  it('done → onDone(id, mode, degraded)；degraded 缺省补空数组', async () => {
+  it('done → onDone(id, mode, degraded, excluded)；两个数组缺省补空', async () => {
     stubFetch(sseResponse([
-      'data: {"type":"done","id":"tr_new","mode":"map_reduce","degraded":["论文丙"]}\n\n',
+      'data: {"type":"done","id":"tr_new","mode":"map_reduce","degraded":["论文丙"],"excluded":["无笔记篇"]}\n\n',
     ]))
     streamSynthesis(['a', 'b'], {}, cb())
     await vi.waitFor(() => expect(results.length).toBe(1))
-    expect(results[0]).toEqual({ type: 'done', args: ['tr_new', 'map_reduce', ['论文丙']] })
+    expect(results[0]).toEqual({
+      type: 'done', args: ['tr_new', 'map_reduce', ['论文丙'], ['无笔记篇']],
+    })
 
     results.length = 0; captured.length = 0
     stubFetch(sseResponse(['data: {"type":"done","id":"tr_x","mode":"stuff"}\n\n']))
     streamSynthesis(['a', 'b'], {}, cb())
     await vi.waitFor(() => expect(results.length).toBe(1))
-    expect(results[0].args).toEqual(['tr_x', 'stuff', []])
+    expect(results[0].args).toEqual(['tr_x', 'stuff', [], []])
   })
 
   it('业务失败 → onError(code, message, cancelled=false)', async () => {
