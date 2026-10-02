@@ -258,6 +258,25 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - **绝不进打包**：PyInstaller/`tsc` 不收集 `_` 前缀文件；`git add` 时显式排除
 - **结论沉淀**：有价值的排查结论写回 CHANGELOG 或对应模块注释，脚本本身不保留
 
+### 模型预设核对（开发期脚本）
+
+```bash
+python scripts/check-models.py                     # 联网拉 models.dev
+python scripts/check-models.py --from-file X.json  # 离线（用本地缓存）
+python scripts/check-models.py --new-only          # A 类只看最近 6 个月
+python scripts/check-models.py --provider dashscope
+```
+
+⚠️ **本脚本的产出是「问题」，不是「答案」**——它只说「这条值得去官方页看一眼」，不说「预设错了」。
+models.dev 是社区聚合数据，实测三类问题：口径混用（1000000 vs 1048576，8 条不一致里占 4 条）、
+乐观标注（anthropic 自家 haiku 标 200K 而 sonnet/opus 标 1M）、覆盖率仅 54%（缺口正落在最新/最冷门模型上）。
+**一切以官方页为准**，脚本的唯一用途是决定「打开哪一页」。
+
+报告四类：**A** 可能有新模型（剔除了 `RETIRED_MODEL_IDS` 的墓碑）/ **B** 可能已下架 / **C** 数值不一致 / **D** 预设缺失的字段（max_tokens、价格）。
+**能力位不参与核对**——models.dev 的 `modalities` 说「模型能读 PDF」，与我们走 OpenAI 兼容端点认不认 `file` 块是两回事（模式 #51），该位仍只能逐家查官方文档后手标。
+
+⚠️ **新增 provider 时必须同步 `PROVIDER_MAP`**（无上游目录则加进 `NO_UPSTREAM`）——漏了不会报错，只是**从不提及那一整个厂商**，看起来像「那家没有变更」。`backend/tests/test_check_models.py` 有守卫钉住（含「守卫真会红」的对照实验）。
+
 ## 架构
 
 ### 管道总览（三条下游 + 合成回流）
@@ -393,7 +412,9 @@ FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_co
 
 ### 模型管理
 
-Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat` / `image_process`）。`resolve_model()`（`app/core/model_resolver.py`）是唯一模型解析入口，generate/chat/process 统一调用。多模态能力通过 `_PROVIDER_IMAGE_RULES` 按厂商 include/exclude 规则自动检测。**内置厂商 OpenCode Go（2026-08-17）**：OpenAI 兼容网关（`https://opencode.ai/go/v1`，chat/completions，`OPENCODE_API_KEY`，Go 订阅/ Zen 按量共用 key）——`PROVIDER_DEFAULTS` 注册 + `llm_models.opencode` 预置 chat-completions 系模型（GPT/Grok 走 Responses API 不互通不预置），Qwen/GLM 高版本标 image 供图片处理/OCR；该网关不实现 `GET /v1/models`，`test_connection` 对 404/405 用最小 chat 请求兜底验证，模型刷新失败回退预置列表。
+Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat` / `image_process`）。`resolve_model()`（`app/core/model_resolver.py`）是唯一模型解析入口，generate/chat/process 统一调用。多模态能力通过 `_PROVIDER_IMAGE_RULES` 按厂商 include/exclude 规则自动检测。**内置厂商 OpenCode Go（2026-08-17）**：OpenAI 兼容网关（**`https://opencode.ai/zen/go/v1`**，chat/completions，`OPENCODE_API_KEY`，Go 订阅/ Zen 按量共用 key）——`PROVIDER_DEFAULTS` 注册 + `llm_models.opencode` 预置 chat-completions 系模型（GPT/Grok 走 Responses API 不互通不预置），Qwen/GLM 高版本标 image 供图片处理/OCR。⚠️ **两条已订正的历史结论**（2026-10-02）：① base_url 原写 `opencode.ai/go/v1` → 实测 **404**，正确端点为 `zen/go/v1`；② 「该网关不实现 `GET /v1/models`」**已证伪**——实测返回 200 且免 key（标准 OpenAI 列表格式，不含 `context_length`），故模型刷新对它是**可用**的，不需要 404 兜底那条路（该分支保留给真正不实现它的自建网关）。`test_connection` 对 404/405 仍用最小 chat 请求兜底验证。
+
+**`provider.base_url` 归一化统一走 `app/core/url_utils.py::api_root()`**（2026-10-02）——判据是「**路径是否已含版本段**」而非「是否以 `/v1` 结尾」，因为后者对两家不成立：Google 兼容层 `.../v1beta/openai`（**必须是这个形态**，缺 `/openai` 会打到不存在的原生路径 → 整条 LLM 链路 404）与智谱 `.../api/paas/v4`。⚠️ 该判据此前在 `routers/model.py`（两处）+ `routers/config.py`（一处）**各有副本**，已收敛为唯一入口 + AST 源码守卫（见关键模式 #54）。⚠️ 新增内置 provider 时**不要**再写 `endswith("/v1")` 拼接。
 
 ### 前端布局（三栏插槽 + AI 浮窗）
 
@@ -635,6 +656,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 52. **「成对操作」漏掉任一半 = 结果与「完全没做」一模一样**：资产搬运要「复制文件」+「改写正文引用」两半；只做前一半，文件整齐躺在 `d1_chart_1.png`、正文仍写着 `chart_1.png`——**裂图依旧，且日志全绿**（复制成功、无异常、文件数正确）。这类「白做」比「做错」更难发现，因为没有任何异常信号。写法：测试必须断言**两半的对应关系**（逐条比对「新文件名 ↔ 正文引用」），而不是分别断言「文件复制了」「正文里有 assets/」。同族的还有 #14/#17（双模式必须都覆盖）、#19（双产物必须对称）——**凡是「A 改了，B 也得跟着改」的地方，测试要断的是 A 与 B 的一致性，不是各自的存在性**。（2026-10-01 合成资产搬运）
 
 53. **用户可见的信息要么能驱动行动，要么别出现**：两条判据同一精神的两面——① **提示的触发集**只该含「用户真该做个动作」的情形；② **降级标签的粒度**按「用户能采取的行动」划分，不按「实现里哪行代码失败」划分。合成本轮各踩一次：`chunked`（总量超窗、单篇都不超）是**设计认可的终态**（明说用户无需行动），却被列进「换大窗口模型吧」的 banner 触发集 → 一条设计说「不用换」的路径上会**每次弹**、不断劝人换；而超窗 / 超时 / 模型抽风三种失败共用 `truncated` 一个标签，三种**该做的事完全不同**（换模型 / 重试 / 检查 Key），用户看哪个标签都无从下手。⚠️ 判据要写**语义**而非**结构**——「存在某状态的篇」（#50 的「容器里有元素」同族）是结构事实，「用户看到它该做什么」才是判据；答不上来就不该出现，或该拆细。对照见 #51（能力存在 ≠ 该路径在用）：本条是它的**消费端**版本——**能力要被用上，且用在该用的地方**。（2026-10-02 合成预览）
+
+54. **「有几处同源」只能由全仓搜索回答，不能由注释回答——写错数量的注释比没有注释更糟**：`routers/model.py` 里那条注释**白纸黑字**写着「启发式拼接（本文件**两处**同源：test_connection 与 fetch_models —— 改一处必须改另一处）」，实际 **grep 出三处**，第三处在 `routers/config.py` 的 `POST /llm/models`。危险不在于「漏了第三处」，而在于**那条注释给出了确定感**——下一位读者看到「两处、已标注」，会认为覆盖已经完整，于是**连搜都不搜**。这正是 #39「成对余量必须同源」的另一面：#39 讲的是成对逻辑的**语义**必须一致（两个方向对同一宽度给出同值），本条讲的是**数量本身被记错**——同源关系被当成了记忆题，而它是搜索题。**纪律**：写下「N 处同源」这句话时，就已经欠了一次全仓验证（grep 判据要覆盖**全部相关形态**，不能只搜你记得的那个函数名）；改到第 3 处时**抽公共函数**（本项目「同一逻辑 ≥3 次即抽」），并加一条 **AST 源码守卫**防第四份长出来。⚠️ **两个配套细节**：① 守卫必须走 AST 而非 grep——`url_utils.api_root` 的 docstring 里**刻意**引用了旧写法当反例，grep 会把「讲代码的文字」判成违规；② 守卫必须**自证**（造一个真违规样本 + 一个注释样本，确认前者命中、后者不命中），否则「零命中」与「扫描器没工作」无法区分（#38）。⚠️ **第三处是死代码也要改**——`/llm/models` 端点当前前端零调用，但**死代码若被复活，不该带着一份不一致的判据回来**。（2026-10-02 Google 链路）
 
 ## 待办事项
 

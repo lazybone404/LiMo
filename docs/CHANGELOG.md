@@ -6,6 +6,173 @@
 
 ---
 
+## 2026-10-02 — 前端按钮精简（删重复入口 + 主题切换器收窄）
+
+回应「前端有一些按钮可能多余、重复」。全仓扫描 **192 个 `<button>` / 43 个文件**，
+范围收在**主界面常驻可见的入口**上——设置页内部的按钮（`ProviderSettings` 23 个等）各有独立职责、
+只在专门页面出现，不是精简对象。
+
+### 一、判据：先分清「刻意的双入口」与「真正的重复实现」
+
+项目里**明文记载**的刻意双入口一律不动，这是本轮最重要的克制：
+
+| 保留项 | 依据 |
+|---|---|
+| `ExportMenu`（工具条，快捷单文件）vs 顶栏「导出」（`ExportPanel`，批量多文档） | CLAUDE.md「两条路径设计」 |
+| 「文件夹范围」（过滤）vs「排列：按文件夹」（归类） | CLAUDE.md 明文「刻意保留两个入口」 |
+| 顶栏 `SearchBar` vs `Ctrl+K` | 已是「按钮 → 唯一实现」的正确形态（曾**是**两份实现，已修） |
+| 面板内的「收起面板」按钮 | 省的是鼠标移动，是合理便利；与顶栏开关撞车但不等价 |
+
+**只删「同屏、同动作、同一个 store action」的重复**。
+
+### 二、删：预览工具条的 AI 按钮
+
+`PreviewArea.tsx` 工具条右侧的纯图标 `MessageSquare` 按钮与顶栏「AI」按钮**同屏同时可见**，
+`toggleAI` 全仓的 UI 入口恰是这两个（+ 浮窗自己的关闭 X）。删工具条那个，顶栏「AI」成为唯一入口
+（`Ctrl+I` 不变）。同步移除 `MessageSquare` import，并把工具条顶部注释里列的入口清单改准。
+
+### 三、改：`ThemeToggle` 收成三格图标分段控件
+
+原实现是三个**带文字**的按钮（「浅色」「深色」「跟随系统」），在顶栏占近三倍宽度。
+改为 **icon-only 分段控件**（`w-7 h-7`，仍是三格、仍是一键直达），文字降为 `title`，
+并补 `aria-label` / `aria-pressed`。
+
+**刻意不用「单按钮循环切换」**——那要点两次才能从「浅色」到「跟随系统」；
+三格形态保住了直接跳转，同时拿到省宽度的收益。
+
+### 四、顺带发现（本轮**未改**）
+
+`markdown-components.tsx` 的 `ChartCodeBlock`（`:52`）与 `CodeBlock`（`:119`）各有一份
+**逐字相同的复制逻辑**（`writeText(...).then(setCopied, addToast)` + `setTimeout(2000)`），
+连 `copied` state 都各声明一份。**用户可见层面这不是重复**（每个代码块本就该有自己的复制按钮），
+只是实现可抽 `useCopy()` 收敛——列入后续可选打磨。
+
+### 影响范围
+
+- 前端仅两文件：`components/preview/PreviewArea.tsx`、`components/ui/ThemeToggle.tsx`
+- **零后端改动**；`toggleAI` / 主题 store 逻辑均未动，纯入口与呈现层
+- 验证：`npx tsc --noEmit` 0 错；`npm test` 278 全过；`npm run lint` 无新增告警
+- ⚠️ 删按钮时在 JSX 注释块内误写了 `*/` 导致**注释提前闭合**（后面的注释文本变成裸文本）——
+  被 `npm test` 的解析阶段立刻抓到。往 `{/* ... */}` 块里追加内容时留意结尾。
+
+---
+
+## 2026-10-02 — 模型预设核对脚本（开发期变更哨兵）
+
+回应「更新各项模型的信息」与「需要一个稳定的渠道来查询这些东西」。考察参考项目 **pi** 的做法后，
+**推翻了原本「照搬其生成式模型目录」的方案**——不是因为它写得不好，而是因为**数据源不可靠**。
+
+### 一、pi 的做法与它成立的前提
+
+pi 的模型目录是**生成的**：`scripts/generate-models.ts`（2602 行）从 `https://models.dev/api.json` 拉取，
+产出 `src/providers/{provider}.models.ts`（结构）+ `src/providers/data/{provider}.json`（值）+ `.manifest.json`，
+并用 sha256 挂进 `build:offline` 做构建期校验。它还有一条明确的克制原则（注释原文）：
+*"Keep this to narrow corrections over models.dev metadata instead of snapshotting Copilot's catalog"*——
+**只做窄修正，不整份快照**。
+
+这套东西成立的前提是：**数据源足够权威，值得让它生成进源码**。
+
+### 二、实测：models.dev 不满足该前提（三类问题，逐条比对 48 条预设）
+
+| 问题 | 实测证据 |
+|---|---|
+| **与官方页冲突** | `alibaba/qwen-turbo` 标 **1000000**，而我们 config.py 旁的人工注释写着「官方 `/qwen-turbo`：131072（2026-10-02 复核无误）」 |
+| **内部自相矛盾** | anthropic 的 `claude-haiku-4-5` 标 200000，同家 `claude-sonnet-4-6` / `claude-opus-4-8` 标 **1000000**——而 Claude 的 1M 需 beta header，默认仍是 200K，**自家数据都对不上** |
+| **覆盖率仅 54%** | 48 条预设中只有 26 条有记录，**缺口正落在最新与最冷门的模型上**——恰是最需要核对的那批 |
+| 口径混用 | 8 条「不一致」里 4 条只是 MB/MiB 差（1000000 vs 1048576） |
+
+⇒ **结论：models.dev 是社区聚合数据，不能当生成源。** 若照搬 pi 的做法，会把错误数据写进源码，
+并且**冲掉 `config.py` 里每条预设旁那段人工查证注释**（官方页 URL + 抓取日期 + 陷阱说明，如「取【上下文长度】不是【最大输出长度】」「OCR 两条是**高估**必须改小」）——
+那是本项目两年积累的**资产**，生成式覆写是净损失。
+
+### 三、改为「变更哨兵」：产出是**问题**，不是**答案**
+
+新建 `scripts/check-models.py`（开发期脚本，不进打包、不被后端 import）。报告四类：
+
+| 类 | 含义 |
+|---|---|
+| **A** | 数据源有、预设没有（多数是我们**刻意不预设**的老模型；按发布日期降序，只看头部即可） |
+| **B** | 预设里有、数据源查无（可能已下架；聚合网关 `opencode` 无上游目录，**跳过**） |
+| **C** | 双方都有但 `context_window` 不同（⚠️ **不代表预设错**——历史上 8 条里 4 条只是口径差） |
+| **D** | 预设**完全没有**的字段：`max_tokens`（我们硬编码 65536）/ 价格（预设一律不填）——新增能力的候选，非核对项 |
+
+**唯一用途是决定「打开哪一页」**，一切仍以官方页为准。脚本 docstring 把这段定位写在最前面，
+避免下一位读者把它当权威结论用。
+
+### 四、三处刻意的设计
+
+1. **墓碑必须同源**：A 类会消费 config.py 已有的 `RETIRED_MODEL_IDS`——否则每次都会把「我们刻意移除的旧模型」当成新模型报出来（实测 `deepseek-v4-flash` 两条噪声）。这是「**成对逻辑必须同源**」（模式 #54）：我们已有那张表，脚本不该另起一套判断。
+2. **能力位不参与核对**：models.dev 的 `modalities` 里 anthropic 全标了 `pdf`，但那说的是「模型能读 PDF」，与我们走 OpenAI 兼容端点认不认 `file` 块是**两回事**（模式 #51）。该位仍只能逐家查官方文档后手标（项目铁律：「能力位只标查证过的」）。
+3. **自身完整性守卫**：`PROVIDER_MAP` 漏映射 = **静默少核对一整个厂商**（报告照常输出、只是从不提及它，看起来像「那家没有变更」）。脚本在出报告前把这些喊到 stderr，测试另有守卫钉住。
+
+### 影响范围
+
+- **运行期零影响**：脚本只在开发期手动跑，不进 PyInstaller、不被后端 import；产出的是一次性缓存 JSON，**用完已删**（约 26MB，需要时随时重下）
+- **测试**：新增 `backend/tests/test_check_models.py`（14 用例，含「守卫真会红」的对照实验）
+- **文档**：`CLAUDE.md` 常用命令区新增「模型预设核对」小节
+- **本轮范围**：只做数据层。**不碰计费**——不采集真实 usage、不改 SSE 协议、不动前端费用显示（那里目前是字符估算，系统性高估）
+
+---
+
+## 2026-10-02 — Google 链路打通 + base_url 归一化三副本收敛
+
+承接上一轮「把剩下的做完」中的第三项。诊断出的是**两处独立缺陷**，修完顺带发现**同一个判据在本仓有第三份副本**。
+
+### 一、Google 的 base_url 是**原生 API 形态**，整条 LLM 链路必然不通
+
+`PROVIDER_DEFAULTS["google"]` 原为 `https://generativelanguage.googleapis.com/v1beta`——这是 **原生 API** 的根，而本项目全链走 OpenAI SDK。SDK 会据此发 `POST .../v1beta/chat/completions`，**原生端点不存在该路径** → 404。也就是说：**该 provider 自加入起，每一个请求都打到不存在的路径上**，与上一轮查出的 opencode 是同一类（自配 day one 起就没通过）。
+
+改为**官方 OpenAI 兼容层** `https://generativelanguage.googleapis.com/v1beta/openai`（无尾斜杠）。取三条独立来源交叉验证，而非单一页面转述：
+
+| 来源 | 内容 |
+|---|---|
+| hex.pm `ex_llm` 文档 | 逐字转录 Google 官方页的 `base_url="https://generativelanguage.googleapis.com/v1beta/openai/"` |
+| `docs.api7.ai` 的 ai-gateway 配置 | `"api_base": "https://generativelanguage.googleapis.com/v1beta/openai"`（无尾斜杠） |
+| `googleapis/python-genai#2868` | 官方 SDK 仓库称该路径为 "hosted OpenAI-compatibility layer" |
+
+⚠️ **顺带订正一条错误的历史注释**：代码里原写「Google 鉴权走 `?key=` 查询参数而非 `Authorization: Bearer`」——那是**原生 API** 的性质。兼容层接受标准 Bearer（官方 REST 示例 + Azure 文档均如此），**这正是选兼容层的理由**：不必为鉴权做任何按 provider 的特判分支。
+
+### 二、拼接启发式「以 /v1 结尾」对两家都不成立
+
+两处（`test_connection` / `refresh_models`）各写一份的
+
+```python
+if not base_url.endswith("/v1"):
+    base_url += "/v1"
+```
+
+对多数 provider 成立，但**不是普适规则**：
+
+- **google**：`.../v1beta/openai` 不以 `/v1` 结尾 → 拼成 `.../v1beta/openai/v1/models` → 404（**路径层再错一次**）
+- **zhipu**：`.../api/paas/v4` → 拼成 `.../v4/v1/models`，官方是 `.../v4/models`。⚠️ 智谱**两条路径都返回 401**（路由宽松、不报 404）→ **状态码区分不了对错**，这类问题只能靠官方文档裁决
+
+判据改为**「路径是否已含版本段」**（正则 `/v\d+[a-z]*(?:/|$)`，刻意不加 `re.I`——URL 路径大小写敏感，加 I 只会让 `/VIP/v1` 误命中）。**逐个验算过全部内置 provider，除 google / zhipu 两处（均为修正）外行为逐值不变**：`api.deepseek.com`、`api.anthropic.com` 仍拼 `/v1`；`api.openai.com/v1`、`compatible-mode/v1`、`api.moonshot.cn/v1`、`zen/go/v1` 仍不拼。
+
+### 三、同一个判据在仓库里有**三份**副本，已收敛到唯一入口
+
+`grep` 时发现第三处在 `routers/config.py` 的 `POST /llm/models`（此前只当它是「两处同源」）。正是项目铁律「**成对逻辑必须同源**」的活案例——改一处忘另一处不会报错，只会让不同入口对同一 provider 得出不同结论（「测试连接」说通、「刷新模型」拉不到）。
+
+抽出 **`app/core/url_utils.py::api_root()`**，三处共用。该端点目前**前端零调用**（`api/settings.ts` 的 `detectModels` 定义了但无调用方），仍一并收敛——**死代码若被复活，不该带着一份不一致的判据回来**。
+
+### 四、对既有用户是否生效（已核实）
+
+`_get_providers` 只在「config 里没有该 provider 条目」时补默认值。检查了本机 `~/.limo/config.yaml`：`providers` 段只有 `dashscope` / `deepseek` / `bcut` / `doc-local`，**没有 google 条目**（虽然 `llm_models` 里有 gemini 系模型）→ 走默认补全 → **本次修复对其直接生效，不需要迁移**。
+
+> 📌 记录一个未处理的缺口：**内置 provider 默认 base_url 变更，对「已保存过该 provider 的用户」无效**（其 config 里存着旧值）。opencode 上一轮校正 base_url 时同样没有迁移机制。`api_root` 只修「拼接」，不修「存量值」。是否加「仅当 base_url 精确等于某个历史默认值时才升级」的迁移，留待有第二个用户时再定。
+
+### 五、已知偏差（记录，不改）
+
+`llm/service.py::_warn_key_mismatch` 用 `"openai" in url` 判「key 是不是错配到 OpenAI」——google 的新 URL **含 "openai"**，于是「拿 DashScope Key 配 Google」会报「被用于 **OpenAI**」。触发条件是**真配错了**（warning 的实质正确），只是厂商名说错；改判据为 `api.openai.com` 会连带漏掉用户自配的含 "openai" 的中转地址，得不偿失。已就地留注释。
+
+### 影响范围
+
+- **后端**：新增 `app/core/url_utils.py`；改 `routers/model.py`（base_url + 两处拼接 + 注释）、`routers/config.py`（第三处拼接 + import）、`llm/service.py`（注释）
+- **前端**：零改动
+- **测试**：新增 `tests/test_url_utils.py`（7 组，含**两个对照实验**：把判据改回 `endswith("/v1")` → 3 条判红；把 google base_url 改回原生形态 → 1 条判红；另有 AST 源码守卫防第四份副本长出来 + 守卫自证「真代码命中、注释与字符串不命中」）。后端 23 个测试套件全绿
+- **打包**：新增模块走静态 import，PyInstaller 自动收集，spec 无需改
+
+---
+
 ## 2026-10-02 — 多篇合成三补：超窗分层 / 维度可控 / 原料可选
 
 承 2026-10-01 的落地，用户追问三个具体问题：「窗口不够怎么办」「对比的是哪些东西、是不是只针对论文」「对比的是转入产物还是已生成的产物」。三个问题各自揭出一处**设计说了但代码没做**、或**只做了最表层**的地方。
