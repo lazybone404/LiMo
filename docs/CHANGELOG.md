@@ -6,6 +6,445 @@
 
 ---
 
+## 2026-10-04 — CLI + 契约文档 + 门禁（「让产物能被 agent 复用」三期）
+
+三份 pi-docs 之《CLI 设计约定》落地：**只读**命令行 `limo`，把「读库」做成一条
+不依赖库内格式的稳定接口。
+
+> **驱动这轮的是实测代价**：把一篇产物交给外部模型评审时，手工复制文件 3 次、
+> 手工补上下文 2 次（「这 6 篇是什么、走的哪条路、来源多杂」全靠手写）。
+> **不是没人能读产物，是读的人不知道读了什么。**
+
+### 一、三层架构（CLI 不解析库格式）
+
+```
+limo_cli/（命令解析 / 渲染 / 退出码）
+    ↓
+app/services/query.py::QueryService（契约成形）
+    ↓
+Store / SearchEngine（数据真相）
+```
+
+⚠️ **CLI 不读 `index.json`、不读 `search.db`、不拼磁盘路径**。库内文件布局是实现
+细节，照着复刻一遍就是**第 6 个副本**（现有 5 处：`store.py` / `export.py` /
+`ingest.py` / `generate.py` / `files.py`），而副本的失效方式是「格式演进时漏改一处，
+它静默读错」。
+
+**七命令**：`status / list / search / get / export / folders / doctor`。
+**不做写操作**（import / generate / edit / delete）——成本、并发、超时、幂等、
+agent 误触发的风险都在写侧，那份账还没算。
+
+两个传输层暴露**同一契约**：`HttpSource`（默认，`GET /api/cli/*`）与 `LocalSource`
+（仅 `doctor --local`，后端没起时直开本机库）。形状由 `QueryService.to_dict()` 定义，
+`limo_cli/sources.py` 只负责搬运。
+
+### 二、输出契约（三条硬约定）
+
+- **`--json` 时 stdout 只有 JSON**，诊断与错误全走 stderr（错误也是 JSON）。**不用 TTY
+  检测** —— 管道里跑是最常见的用法，检测会把脚本场景误判成非交互。
+- **顶层恒有 `schema_version`**；主版本不匹配直接失败，不按老字段读（那会得到
+  「结构完整、值全错」）。⚠️ CLI 侧的 `EXPECTED_SCHEMA` **刻意不 import 后端常量** ——
+  同仓 import 会让「用户机器上跑的旧 exe」永远检测不出来。
+- **「没给全」分两种，`Page` 上并排两个字段组**：`has_more`+`next_cursor`（**能继续翻**）
+  与 `truncated`+`continuation`（**到头了但没给完**）。把后者伪装成前者（给一个续不动的
+  游标）等于让调用方的翻页循环静默少拿数据。
+
+### 三、退出码（「空」与「坏」必须分开）
+
+| 码 | 含义 | 码 | 含义 |
+|---|---|---|---|
+| 0 | 成功（**含空结果**） | 5 | 数据或响应异常（坏 ID / 坏游标 / 版本不匹配） |
+| 2 | 用法错误 | 6 | 内部错误 |
+| 3 | 未找到 | 130 | 被中断（SIGINT 惯例，不在主表） |
+| 4 | 后端不可达 | | |
+
+⚠️ **错误码 → 退出码按 `code` 判，不按 HTTP 状态**：`main.py` 对 `recoverable=True`
+且**未显式**传 status 的 `AppError` 返回 **HTTP 200**（`_explicit_status`），按状态判
+会把「资源不存在」读成一次成功响应，然后拿错误对象当数据用。
+
+### 四、门禁 `scripts/check-cli`（16 项）
+
+自启**独立端口 7419** 的后端（借用户的 7413 会让「后端不可达 → exit 4」那项**永远
+绿，而它绿的原因是错的**）。每项同时查三样：退出码、结构化标记（错误 `code` /
+`truncated.continuation` / `next_cursor`）、以及**是不是假成功**。含三条负向对照。
+
+### 五、修掉的真缺陷（三条，全部由门禁抓到）
+
+1. **`get ../../etc/passwd` → exit 3（应为 5）**：`/` 经 URL 编码成 `%2F`，又被 Starlette
+   **解码回 `/` 用于路由匹配** → 落到「无此路由」→ 404 → CLI 报「未找到」。而同一个
+   `..` 换成不含 `/` 的形态能正常到达 handler → 400 → exit 5。**同一类坏输入因字符集
+   不同得到两种退出码**，且 404 那条会诱导调用方「换个 ID 重试」。修法：`require_ident()`
+   在客户端用与后端**同源**的 `is_valid_resource_id` 预校验。
+2. **`limo status --base-url X` → exit 2 `unrecognized arguments`**：`--base-url` /
+   `--timeout` 只注册在主 parser 上，而「选项跟着它修饰的命令」是人的自然写法。修法：
+   移进 `common` parents（子命令用 `default=argparse.SUPPRESS`）。
+3. **`list --all` 在 HTTP 路径静默退化成「第一页 50 条」**：两个 Source 表达「一次取全」
+   的方式**不同** —— 本地是 `limit=None`（`QueryService` 语义），HTTP 是 `all=true` 且
+   **不传** `limit`（后端默认值是 50，不是「全部」）。归一成 `limit=None` 让 HTTP 路径
+   少拿了 26 篇却看起来完全正常。**第 9 项门禁（并集 == 全集）抓到的就是它**。
+
+### 六、契约文档两处
+
+- **库内 `~/.limo/AGENTS.md`**（`limo doctor --write-agents` 安装，模板在 `agents_md.py`）：
+  读者是**站在库前面**的 agent，故 usage 放最前（能做什么 → 返回什么 → 怎么省事 →
+  哪条花钱 → 最后才是贡献与开发）。⚠️ **默认不覆盖**：已存在且内容不同 → exit 2，
+  `--force` 才覆盖且先备份 `AGENTS.md.bak`。
+- **仓库根 `AGENTS.md`**：读者是**改这条链的开发者**，内容与库内那份刻意不重叠。
+
+### 影响范围
+
+- 新增：`backend/limo_cli/`（9 文件）、`backend/app/routers/cli.py`（7 端点）、
+  `backend/app/services/query.py` 的 `stats()` / `list_artifacts()`、
+  `store.list_markdown_entries()`、`scripts/check-cli`、`AGENTS.md`（仓库根）。
+- 改：`pyproject.toml` 加 `[project.scripts] limo`。
+- 前端**零改动**（`/api/cli/*` 是新路径，既有端点形状不变）。
+- ⚠️ **打包产物不含 CLI**：PyInstaller 从 `main.py` 出发做依赖分析，不会收集
+  `limo_cli`。故「桌面版用户也能敲 `limo`」**尚未决策**（加进 spec / 只面向仓库开发机
+  两条路各有代价）—— 从仓库跑 `python -m limo_cli` 或 `pip install -e backend/` 均可用。
+- **契约测试扩到 `/api/cli/*`**（`test_query_contract.py` §8，七端点逐字段比对 +
+  `schema_version` 守卫 + 续读拼接）：两条对照实验自证区分力，其中「续读拼接」
+  第一版曾给出**假绿灯**（测试数据用 `"行" * 300` 是周期性的，忽略 `offset` 的实现
+  拼出的字符串恰好相等）—— 已改用编号内容并把这个教训写进文件头。
+
+---
+
+## 2026-10-04 — 密钥与凭据卫生（「让产物能被 agent 复用」二期）
+
+三份 pi-docs 之《密钥与凭据存储约定》落地：**LiMo 自己落盘的文件不得出现明文凭据**。
+与一期技术正交（文件交集为零），但叙事相接 —— doc2 说「agent 不直读 `.limo`，走导出视图
+或接口」，而那个视图要过滤的正是 config/secrets，故**必须不晚于接口开放**。
+
+> ⚠️ **定位：卫生，不是安全边界。** DPAPI 挡的是「配置文件被复制走」的被动泄漏
+> （同步进网盘、贴进反馈附件、拷给别人），**挡不住同账户下的主动恶意进程**。
+> 不要当安全边界宣传。
+
+用户库实测：`config.yaml` 与 `config.yaml.bak` 各 6 处明文，共 **12 处**。
+
+### 一、先去重（根因修复），再加密封存
+
+**同一把 key 被写多份才是根因** —— 加密多份同一 key 仍暴露结构，且两份迟早漂移。
+本轮先消除重复存放点，再谈加密：
+
+- **`llm.api_key` / `cloud.dashscope` 下沉进 provider 列表**（`fold_to_providers`）：
+  这两个是旧版字段，但仍有读取点（`resolve_model` / `capabilities` / `engines` 的 key 探测），
+  而 `routers/model.py` 保存厂商 Key 时**两个地方都写**。现在落盘前把值**折叠**进
+  provider 条目（真相源），密钥库里就只剩一份密文；旧字段由 `load_config` 的
+  `_hydrate_provider_keys` 启动时镜像回来。
+  ⚠️ **「跳过抽取」⇔「已确认下沉成功」严格成对**：目标条目不存在、或源值本身是脱敏值时
+  **不跳过** —— 那种情况下该字段是这枚 key 的**唯一**存放处，跳过 = 用户的 key 无声消失。
+- **cookie 从三写回到一写**：历史三写指 `auth.bilibili` 原始串 + `_parsed.cookies` +
+  `_parsed.netscape`，而 netscape 那份就是 **yt-dlp 可直接使用的 cookie 文件内容**，
+  是三份里最敏感的形态。`auth.*_parsed` 现由 `strip_derived` 落盘前剥掉，读侧改为
+  **实时派生摘要**（`routers/config.py::_summarize_parsed` 只回 `{platform, cookieCount}`）。
+
+### 二、DPAPI 外移（零新依赖）
+
+- `core/secrets.py`：**ctypes 直调 `crypt32.dll`** 的 `CryptProtectData` / `CryptUnprotectData`
+  —— `pyproject.toml` 无 `keyring` / `pywin32`（CHANGELOG 记 pywin32 已移除），不为此引入新依赖。
+- 密钥库落 **`%LOCALAPPDATA%\LiMo\secrets.bin`**，**刻意不放 `~/.limo/`** ——
+  那是会被同步/备份/整个打包分享的数据目录（有测试钉住这个位置）。
+- `config.yaml` 里只留 `secrets_ref: dpapi:limo`；`load_config` 解析回填到内存，**不回写**。
+- ⚠️ **失败显式抛**（`SecretsUnavailable`），**不静默退回明文落盘** —— 静默退回等于二期白做，
+  且用户从 YAML 上看不出任何异常。非 Windows 平台同理（显式抛，不降级）。
+
+### 三、成对表：`config_io.py` 是唯一真相源
+
+四张表各自管一件事，**每张的两侧必须同源**，对不上的症状全都不抛错：
+
+| 表 | 一侧 | 另一侧 | 对不上的症状 |
+|---|---|---|---|
+| `SECRET_SCALARS` + `SECRET_LISTS` | `extract_secrets`（抽走） | `inject_secrets`（填回） | 保存后 Key 消失 |
+| `DERIVED_AUTH_SUFFIX` | `strip_derived`（剥） | `auto_parse`（重算） | 派生副本反复写回盘 |
+| `fold_to_providers` | 返回成功集 → `skip=` | 下沉失败**不跳过** | 同一把 key 存两份 / key 无声丢 |
+| `_EMPTY_CONTAINERS`（本轮新增） | 键名 | 类型 | **启动即崩**（见下） |
+
+⚠️ **`save_config` 的隐藏前提**：`elif disk.get(SECRETS_REF_KEY)` 分支（删库 + 撤 ref）
+**要求入参是回填过的内存配置** —— 它无法区分「用户清空了凭据」与「调用方把磁盘形态的 YAML
+喂了进来」。拿磁盘 YAML 直调 `save_config` = **密钥库被无声删除且 ref 被撤**（凭据彻底失联）。
+迁移脚本为此必须先把库里的值 inject 回来再 save。已在该分支上写明。
+
+⚠️ **`llm_models` 类型写错 = 启动即崩**（本轮验证时意外炸出）：`save_config` 原把
+`llm_presets` / `llm_models` / `engine_*` 归成同一组补 `None → []`，而 `llm_models` 是 **dict**
+（`_sync_llm_model_caps` / `model_resolver` 都拿它 `.get()`）→ 该键缺失时写出 `[]`，
+**下一次启动 `AttributeError`**。改为 `_EMPTY_CONTAINERS`（键名与类型绑在同一张表里），
+并加测试钉住「表里的类型 == `DEFAULT_CONFIG` 的真实类型」。
+
+### 四、启动自检 + 迁移工具
+
+- **`config_io.startup_check(cfg)`** 挂在 `main.py`（配置已载、logger 就绪、早于任何业务写盘）。
+  查两件事：① DPAPI 能不能用；② **磁盘原貌**里还有没有非空敏感字段（含 `.bak`）。
+  ⚠️ 第②条**必须读磁盘** —— 入参是 `load_config` 回填过的内存 cfg，处处非空，拿它判等于恒绿。
+- **`scripts/check-secrets.py`**（重构）：遍历数据目录做**内容侧**扫描（能发现「凭据被写进了
+  日志」这类泄漏），与启动自检是**分工不是重复** —— 启动路径上跑全量会让冷启动等一次目录遍历，
+  而它每天给出的结论都一样。重构为 `Backend` dataclass（`config_io` / `secrets` / `keystore`
+  三字段 + `ref_key` / `scalars` / `lists` / `config_file()` 四成员），删掉三处各自重算真相源的副本。
+- **`scripts/migrate-secrets.py`**（新建）：`--check`（不写任何文件）/ 默认迁移 / `--rollback`。
+  - **幂等**：已迁移的配置读进来时值先**从密钥库填回**，再交给 `save_config` 重新抽取。
+    ⚠️ 少了这一步，第二次运行时内存配置里敏感字段全空 → `save_config` 判定「用户清空了凭据」
+    → **删掉密钥库**。同理，密钥库**解不开时必须中止**，不能「当作空库继续」。
+  - **刻意不写明文备份**（偏离原计划）：`config.yaml.pre-migrate.bak` 等于在磁盘上新增一份
+    **静默的**明文副本 —— 正是本次要消灭的东西。回滚由 `--rollback` 承担（从密钥库填回 YAML，
+    是这次迁移**真正的逆操作**，比恢复备份更精准）；需要额外保险请手动复制到库目录之外。
+  - 回滚**走 `write_yaml_atomic` 绕过 `save_config`**（语义正相反：那个函数的职责正是把这些值再抽走）。
+- **退出码三态**：`0` 完成/干净 ｜ `1` 需要迁移/发现明文/失败 ｜ `2` **脚本自身出错**。
+  少了 2 这一档，「脚本崩了」与「查出问题」在 CI 上是同一个 1，无法区分。
+
+### 五、`.bak` 的处置：同生同灭，无需特殊处理
+
+原计划把它列为「三选一必须显式决定」。结论：**不用选**。`load_config` 每次启动
+`shutil.copy2(config.yaml, config.yaml.bak)` —— 复制的是**磁盘文件本身**。config.yaml 一旦干净，
+`.bak` 自动跟着干净（**同生同灭**）；既存的旧明文 `.bak` 由 `migrate-secrets.py` 迁移时主动刷新一次，
+否则它只活到下次启动。故 `startup_check` 与 `check-secrets.py` **照查** `.bak` 即可。
+
+### 六、顺带修的四个真缺陷
+
+| # | 缺陷 | 落点 |
+|---|---|---|
+| 1 | **`GET /api/config` 脱敏缺口** —— `cloud`（含 dashscope/alibaba key）**原样返回**、`auth.*_parsed`（含明文 cookie 与 netscape 内容）、`fetch.proxy`（含 `user:pass@`） | `routers/config.py`。新叙事下更严重：**接口本身就是泄漏通道** |
+| 2 | **`merge_sensitive` 调用是死代码** | `engines/__init__.py`。判据不是「异常被吞」（`is_masked` 对 dict 不抛）——而是**调用处没有接收返回值**，纯函数无副作用，**即使「成功」也是 no-op** |
+| 3 | **cookie 明文临时文件** —— `_cookie_to_file()` 往系统 TEMP 写 Netscape 明文供 yt-dlp 用 | `adapters/video.py` |
+| 4 | **`llm_models` 类型守卫写错**（启动即崩，见上） | `core/config_io.py` |
+
+⚠️ **缺陷 1 的判据设计**：每个哨兵值都设计成**能在响应体里直接 grep 到**，并保留一份
+`_legacy_response`（照抄旧实现）做**对照实验先证明旧实现真泄漏**，否则新实现的 PASS 可能只是假绿灯。
+另含 tab 的哨兵对字符串匹配是**盲的**（JSON 把真实 tab 转义成 `\t`，子串永不命中 —— netscape
+就是这么漏掉的），故另配一条**结构层面**的对照，它不依赖匹配。
+
+### 测试与验收
+
+新增 `tests/test_secrets.py`（16）/ `test_config_mask.py`（16）/ `test_config_io.py`（18），
+共 50 条。每条判据都配了**对照实验**（把实现换成「看起来对、其实错」的变体，确认测试真会红）：
+`inject_secrets` 空操作 / `strip_derived` 空操作 / `save_config` 抽了但不清空 / `startup_check`
+读内存而非磁盘 / `fold` 无条件报成功 / `llm_models` 类型写错 —— 六条全部实测判红，正确实现下全绿。
+
+跑法：
+```bash
+python scripts/check-secrets.py --check --root ~/.limo --root "$LOCALAPPDATA/LiMo"
+python scripts/migrate-secrets.py --check     # exit 1 = 需要迁移
+python scripts/migrate-secrets.py             # 执行（建议先关掉 LiMo）
+python scripts/migrate-secrets.py --rollback  # 还原
+```
+
+> ⚠️ **验收口径修正**：「重扫 408 个文本文件 0 命中」不可复现（408 出自 doc1 实测，本仓库任何
+> 口径都数不出），且**扫错了侧** —— doc1 的判据是「LiMo 自己落盘的文件」，目标是**用户库实例 +
+> 运行期产物**，不是仓库源码。写成上方的具体命令，仓库源码另扫（防「开发时把 key 写进代码」），
+> **但这是另一条判据，不要混计**。
+
+---
+
+## 2026-10-04 — 产物自证头 + 共享查询层（「让产物能被 agent 复用」一期）
+
+**驱动是一次实测的代价**：把一篇产物交给外部模型评审，手工复制文件 3 次、手工补上下文
+2 次（「这 6 篇是什么、走的哪条路、来源多杂」全靠手写）。**不是没人能读它，是读的人
+不知道读了什么。** 三份 pi-docs 约定（产物复用 / CLI 设计 / 密钥卫生）描述的就是这件事，
+本轮落地其中的地基：**产物自证 + 一个 HTTP 与 CLI 共用的只读查询层**。
+
+### 一、产物自证头：把「它是什么」写进产物自己
+
+一条 HTML 注释放在 `{mode}.md` **第一行**（`<!-- limo-meta {...} -->`），四条信息：
+**① 从哪来**（docId / sourceType / sourceUrl）**② 怎么来的**（model + promptVersion +
+params + generatedAt）**③ 是什么**（mode + version）**④ 可信度边界**（`trust` 结构先留）。
+
+- **载体必须是文件自身**：`index.json` 删掉重建时 id 由 sha256 重推、`sourceType` 写死空串，
+  一切非内容派生字段都保不住——只有正文扛得住重建。这条与合成出处头（`transcript.md`）同源。
+- **`core/transcript_meta.py` 拆出信封层**：原 `parse_meta` 把 schema 校验
+  （`sourceType == "composite"`）写在同一段里，于是**任何一种新头都会被它判成「损坏」**。
+  现拆为 `_parse_envelope`（只认「第一行是合法 limo-meta 注释」）+ `parse_meta` /
+  `parse_artifact_meta` 两个薄包装。⚠️ **「不是产物头」≠「损坏」**——历史无头产物是
+  `(None, False)`，若写成 `True` 会让**全部历史产物被标脏**（测试钉住布尔值）。
+- **`strip_meta` 改走信封层**：它此前依赖 `parse_meta`，拿产物头喂它会被判「坏」；而它
+  正好是本轮第一次进生产（笔记当合成原料前剥头、思维导图剥头）。
+- **装配层单独成模块** `generation/provenance.py`：产物有多个落点（generate 双产物 /
+  epub 逐章 / process），各拼一遍 JSON 必然漂移——而自证信息的漂移是**静默**的。
+- **`identity.version` 刻意留空**：真实版本由 `store.save_markdown` 在加锁区内算
+  （`top + 1`），写盘那一刻调用方还不知道。**填预估值就是写假数据**；改由读路径
+  （`QueryService._build`）用 index 里的真版本补全。
+- **`save_markdown` 的两个 dict 参数改名**：原 `extra`（进 index 条目）旁边新增文件头参数，
+  两个 dict 并排且名字都不带方向 —— 最容易接错的恰是「meta 进了 index / extra 进了文件头」，
+  **两边都不报错**。改名为 `file_meta`（→ 文件首行）/ `index_extra`（→ index 条目）。
+- **`_latest_notes_text` 出参前 `strip_meta`**：它把**已生成的笔记**当新合成的原料，
+  加头之后那条注释会进模型 prompt 并占 token 配额——正是「不给普通 `transcript.md` 加 meta」
+  要避免的同一条链路。
+- 新增 `PROMPT_VERSION`（从 `"1"` 起），进 meta 的 `generated.promptVersion`。
+  **bump 纪律**：判据是「这次改动会不会让同一输入产生不同输出」（prompt 模板串 /
+  风格定义 / 图表规范 / 合成与压缩 prompt 都算，只改调用逻辑或参数不算）；
+  **不给历史产物补版本**——它们的真实版本已不可追溯，**假数据比缺席更坏**
+  （与 `identity.version` 留空同一条理由）。详见
+  [prompts-inventory.md §13](prompts-inventory.md)。
+
+### 二、共享查询层：HTTP 与 CLI 走同一条只读路径
+
+新增 `app/services/query.py`（**零 FastAPI import**，CLI 可直接 import）。三层架构
+（CLI adapter / QueryService / Store）的中间层，负责**契约成形**（分页 / 游标 / ID 解析 /
+版本编排 / meta 装配 / 截断标记），**只调原语不重算**——版本选择只调
+`store.get_markdowns_by_transcript` 取 `[0]`，本地重算 max version 等于多一份判据。
+
+- **`SCHEMA_VERSION = "1"`** 第一天就定：先做无 meta 的查询层 = 把 schema 冻成缺自证字段的形状。
+- **游标是 keyset `(createdAt, id)` 且不透明**（base64）：不透明是刻意的——暴露成明文
+  迟早有人自己拼一个，然后漏掉并列时的 id 兜底。
+- **两套「没给全」不混用**：`has_more`/`next_cursor`（可以继续翻）vs
+  `truncated`/`continuation`（到头了但没给完）。把后者伪装成前者 = 让翻页循环静默少拿数据。
+- **`QueryError.no_search_engine`**：搜索引擎缺失时**显式报错**而不是返回空页——
+  静默空结果看起来完全正常（`main.py` 先建 Store、后建 SearchEngine，在 Store 旁边顺手
+  构造 service 就会拿到 `None`）。故 `get_query_service` **惰性构造**并写明理由。
+- **读路径迁移 5 处**：ingest（list/get）/ search / folders / generate（GET /markdown）/
+  export（`_resolve_tab_content` 三分支）。**响应形状一律不变**（列表仍是裸 list），前端零改动。
+- **ID 判据只统一读路径**：抽 `core/resource_id.py::is_valid_resource_id` 供读路径用，
+  `store._sanitize_id`（归一化器，永不失败）与 `export._safe_filename`（文件名清洗器）
+  **保留不动**并在 docstring 标注职责区别——三者硬合是**双向的坏**（要么写路径开始拒绝，
+  要么读路径继续放行 `..`）。
+
+### 三、顺带修复：`/api/search` 实际是 `/api/api/search`
+
+`search.py` 自带 `prefix="/api"`，而 `main.py` 又 `include_router(..., prefix="/api")`
+→ 真实路径 `/api/api/search`，而前端 `apiFetch(\`${BASE}/search\`)` 打的是 `/api/search`。
+**两侧测试都绿**（前端测试 mock 掉了 `api/search` 模块；后端 `test_search.py` 测的是
+`SearchEngine` 而不是 HTTP 路径；e2e 冒烟从没覆盖搜索）——所以它活了四个月。
+`test_query_contract.py` 是全仓第一个能发现它的东西。修法：删掉 `search.py` 的 prefix
+（全仓另外 16 个 router 都是裸 `APIRouter()`）。同类事故 2026-07-10 已发生过一次（那次在前端侧）。
+
+### 四、顺带修复：思维导图导出泄漏自证头残片
+
+`_build_mindmap_html` 的清洗规则里有 `r'<[^>]+>'`（去 HTML 标签），它**按第一个 `>` 断句**。
+meta 的 JSON 里只要有一个字符串值含 `>`——最真实的一例是用户自定义维度 `成本 > 收益`——
+注释就被从中间截断，` 收益"]},"model":"m"}...` 作为**可见文本**混进脑图节点。
+
+⚠️ **实测判据必须是「值含 `>`」那一例**：只测「含注释」（值不含 `>`）会得到**假绿灯**
+（实测：A 组干净、B/D 组泄漏）。修法是 `_build_mindmap_html` 内 `strip_meta`——
+思维导图是从产物**派生的视图**不是产物载体，它**不承载**自证头；且剥头必须收口在这个
+函数里（输入有两个来源，其中 `rawText` 是合成文档的三位一体、必须带头）。
+
+### 验证
+
+- `test_query_service.py`（新增，10 节）：分页并集 == 全集 / 版本与 store 同源 /
+  无头不判损坏 / meta 往返（`-->` 与换行）/ 读路径拒 `..` **且写路径行为不变**（对偶）/
+  截断与 `continuation` 同时存在 + offset 续读无缝 / 两正文域恒等 / 缺引擎显式报错 /
+  `folderId=""` ≠ 不传 / 单资源白名单。
+- `test_query_contract.py`（新增，7 节）：HTTP 响应逐字段 == `QueryService` 输出，
+  并成对断言 HTTP **该做**的那一步（`assets` → 绝对 URL）没被搬进 service。
+- `tests/conftest.py`（新增，全仓第一个）：临时 Store + 塞文档的共享工厂，
+  **写成普通函数而非只写 fixture**（三期 CLI 门禁脚本要 import 它）。
+- **对照实验共 8 条全部实测判红**（每条判据一个「看起来对、其实错」的实现）。
+  ⚠️ 第 1 节的对照实验做过两版：第一版**完全没有区分力**（同秒项的写入顺序恰好等于
+  id 降序，于是「单键排序」的错误实现照样全绿），修法是让同秒项按既非升序也非降序的
+  顺序入库——**「已实测判红」这句话本身也得被验证**。
+- 既有回归：`test_transcript_meta` / `test_artifact_meta` / `test_markdown_edit` /
+  `test_store_composite` / `test_synthesis` / `test_generate_gate` / `test_docx_export` /
+  `test_export_print` / `test_closure_shadowing` + pytest 风格 4 文件 37 项。
+
+- 内置示例文档**刻意不加头**（`seed_sample_doc` 不传 `file_meta`）：它是示例不是模型产物，
+  给它标一个假的 `promptVersion` 才是错。⚠️ 顺带核对了它那条「内容没变就不重写」的幂等判据
+  （`_latest_md` 拿读回的内容与源文件比相等）——**这类判据在加头之后必然不等**，若哪天有人
+  给示例文档也加上 meta，每次启动都会追加一版。无头产物被编辑时也不会被安上假头
+  （`markdown_edit` 取库中已有的头，无头则 `head = None`）。
+
+**影响范围**：读路径的**实现**换了但**响应形状零变化**（前端零改动）；产物文件新增首行注释
+（导出物随之带上自证，这是设计目标）；修复的搜索路径缺陷为对外可见的行为变化
+（`/api/search` 从 404 变为可用）；编辑器工具栏加一句「首行 limo-meta 注释由系统维护」
+（预览区不渲染 HTML 注释，用户只在源码视图看得到它——提示是为了防止「顺手删掉」
+与「改了却发现保存后又变回去」两种困惑）。
+
+**版本**：0.4.9 → **0.4.10**。文档同步：`CLAUDE.md`（读路径唯一入口 + 关键模式 #56/#57 +
+待办新增「🧩 产物复用」域）、`STATUS.md`（数字按实测重算：后端 113 py / 28,801 行、
+测试 37 文件、合成域 14 项）、`prompts-inventory.md`（新增 §13 提示词版本）。
+
+---
+
+## 2026-10-04 — 合成产物形态重做（评审报告 → 给人读的文章）
+
+多篇合成已上线（0.4.8），但产物实测是**评审报告而非文章**。6 篇材料 7295 字符实测：
+
+| 指标 | 实测 | 问题 |
+|---|---|---|
+| 后四段占比 | **96%** | 同一份对齐结果铺了四遍（总表 22% / 分维度 31% / 共识分歧 25% / 综合评价 18%） |
+| 加粗 | **40 处** | 表格首列 5 个字段名全加粗 |
+| 引证 `[文档 i]` | **80 处** | 平均每 91 字符一个——读者每读一句被打断一次 |
+| 首句 | 「本次综述覆盖 6 篇文档，全部为完整输入」 | 系统元数据开场 |
+
+**根因不在模型**：三处症状在提示词里逐句有源头（`:946` 强制「如实说明覆盖几篇」、
+`:992` 第 2 条「每处涉及具体篇目的论断必须标注来源」、`:952` 五段固定结构），
+模型是在**忠实执行一个错误的任务定义**。本轮改动全部落在提示词结构与参数链路上。
+
+### 一、默认对比套：paper 5 维 → general 7 维
+
+- 新增 `DIMENSION_PRESETS["general"]`（核心主题 · 主要结论 · 关键差异 · 共同点与一致信息 ·
+  重要限制/条件/风险 · 适用场景或行动影响 · 仍无法从材料确定的信息），
+  **并放在字典第一位**——前端用 `dimensionPresets[0]` 预填，排后面 = 后端换了默认、
+  前端仍静默预填 paper，且**零报错**（本轮计划风险 2）。
+- `DEFAULT_PAPER_DIMENSIONS` → `DEFAULT_DIMENSIONS`，**全局改名、不留别名**（别名 = 一个
+  对象两个名字，正是要消除的漂移）。引用传播 16 处一次改完。
+- ⚠️ **两支有意变化**（计划风险 7）：① 新合成的 Map-Reduce 维度发现改为对着 7 条 general
+  「追加维度」，结果会变；② **历史合成文档**（meta 里没有 `dimensions`）重新生成时，
+  回退锚点从 paper 5 行变 general 7 行——**同一份文档、同一个按钮、骨架变了**，
+  属「快照语义／历史产物可复现」关心的那类变化。`test_prompt.py` 补了断言，注明它现在锚 general。
+
+### 二、内容约束拆三块 + 读者意图
+
+- `_SYNTHESIS_CONSTRAINTS` 拆为 `_SYNTHESIS_FACT_CONSTRAINTS`（5 条）+
+  `_SYNTHESIS_STYLE_CONSTRAINTS`（通用文风 7 条）+
+  `_SYNTHESIS_GENRE_CONSTRAINTS`（体裁增量 4 类 × 3 条，每类第三条是**停止条件**，
+  多标签拼接必须去重）。
+- **读者意图** `READER_INTENTS` 五选一（理解主题 / 比较材料 / 找争议 / 提炼行动建议 / 自定义），
+  `purpose` 文本进 `<task>` 段的「读者目的」，`default_content_type` 只作高级区**预填建议**。
+  ⚠️ 「理解主题 / 比较材料」刻意用 `None` **不预设体裁**——它们是读者的动作、不指示材料是什么，
+  给它们猜体裁正是要消灭的错配（对话框静默预填 paper 对视频转写稿毫无意义）。
+- 新建 `_SYNTHESIS_INSTRUCTION_PRIORITY`（合成专用），**必须保留 `output_language` 行**：
+  原方案「output_language 对合成无意义」的理由不成立（`build_synthesis_prompt` 确实在发该节），
+  且本轮新增的读者意图是**用户自由文本**、进 `user_request` 节——恰是全局那条
+  「不可被用户备注覆盖」保护的场景。不动全局表的理由是单篇零回归。
+- **覆盖说明换位置而非取消**：删 `<task>` 段强制元数据开场 + 「一句话概览」里的重复，
+  改为在「## 综合评价」末尾以一句话说明输入覆盖情况。`:946` 是全仓唯一告诉模型
+  「## 来源文档 ✓/⚠ 含义」的地方，整段删掉会让只看笔记 tab 的读者无法区分
+  「6 篇里 3 篇是摘要输入」与全量输入。
+
+### 三、删掉死参数 `user_notes`（「对比指引」）
+
+`synthesize()` 签名里有、**函数体零引用**——用户在对话框填的对比指引对产物从来没有影响，
+且链路看起来完整（前端 state → 请求体 → 路由器 → 函数签名）。位置由
+`reader_intent` / `reader_intent_text` 承接，两者**经出处头 meta** 抵达生成 prompt：
+生成是**第二次独立请求**，届时手里只有 rawText，凡是生成侧要用的参数都只能落在这里。
+
+### 四、对话框重构
+
+读者意图单选组（purpose 作小字说明）+ 「自定义」时的文本框；**维度预设与维度列表移入折叠的
+「高级」区**；体裁多选由所选意图的 `defaultContentType` 预填、切换意图即重置。
+
+### 五、顺带修复两处
+
+- **`dump_meta` 加递归字符串清洗**：原先只清 `sourceTitles`，而 `dimensions` 同样进 meta——
+  用户自定义一个叫 `A-->B` 的维度，导出 HTML 即因注释提前闭合而泄漏 JSON 尾巴。
+  改为按**递归遍历**写，新增字段自动受保护。`readerIntentText` 是自由文本、天然带换行，
+  而 meta 必须单行（`parse_meta` 只认第一行）。
+- **入参清洗块从路由函数体移进 `runner`**：`normalize_reader_intent` / `normalize_source_mode`
+  在非法值上**显式抛错**，写在外面就等于在 `StreamingResponse` 构造之前抛出 → FastAPI 转成
+  HTTP 500，而前端拿 `fetch` + reader 解这条流，**500 只表现为「连接中断」**。
+  ⚠️ `source_mode` 比意图早上线，该路径在 API 层**一直是 500**（直调测试覆盖不到这一层）——
+  本轮一并修复并钉住。
+
+### 验证
+
+- 后端：`test_synthesis.py`（新增 §13 端到端：意图/体裁经 meta 抵达 prompt）、
+  `test_synthesis_api.py`（新增 §8：路由透传 / 非法值走 SSE / 限长 / 零回归）、
+  `test_prompt.py`（§7 十条）、`test_transcript_meta.py`（§8.5 三段）、`test_capabilities.py` 全绿。
+  每条新判据都配了**对照实验**并确认真会判红（只在 map-reduce 写 → 红；意图文本死链 → 红；
+  清洗写回函数体 → 500）。
+- 前端：`tsc -b` 无错；vitest 23 文件 287 测试通过（原 274，+13）。
+- ⏳ **端到端验收待跑**（需真实计费调用）：计划分**批次 A**（默认套 general 7 维）/ **批次 B**
+  （同批材料手动选「论文综述」5 维，零代码改动）分离「提示词结构」与「默认维度数」两个自变量；
+  指标 = 加粗 ≤21 / 引证显著下降且改段落级 / 后四段占比下降 / 每行平均字符数下降 /
+  首句直接进入内容 / 表格首列 0 处加粗。**负向对照必做**：喂 1–2 篇短材料，**对偶断言**
+  「未提及」仍出现、且没有引入材料外事实。
+
+### 明确不做
+
+10 项自检（显著增加输出 token 与延迟，先拿前两阶段实测数据）、改五段骨架（属「路线 2」）、
+`_POLISH_TASK` 编号重复等三条（影响单篇产物，混进来会模糊「零回归」的验证边界）。
+
+**影响范围**：仅 `sourceType="composite"` 的合成产物与其生成 prompt。单篇 notes / polished /
+其他管道的提示词零改动（`_INSTRUCTION_PRIORITY` 全局表未动）。
+
+---
+
 ## 2026-10-02 — 前端按钮精简（删重复入口 + 主题切换器收窄）
 
 回应「前端有一些按钮可能多余、重复」。全仓扫描 **192 个 `<button>` / 43 个文件**，

@@ -28,7 +28,7 @@ LiMo（沥墨）——知识管理系统。输入 URL/文本/文件 → 适配�
 
 | 文档 | 内容 | 什么时候读 |
 |------|------|-----------|
-| [CLAUDE.md](../CLAUDE.md) | 全部事实：命令/架构/37 条关键模式/待办 | 改任何代码前 |
+| [CLAUDE.md](../CLAUDE.md) | 全部事实：命令/架构/61 条关键模式/待办 | 改任何代码前 |
 | [architecture.md](architecture.md) | 六层分层架构 + 每层模块职责 | 理解模块边界 |
 | [frontend-patterns.md](frontend-patterns.md) | 前端状态管理/取消机制/TaskPanel | 改前端状态/任务 |
 | [export-pipeline.md](export-pipeline.md) | 导出两路径 + tabRegistry/contentSources | 改导出/tab |
@@ -37,6 +37,7 @@ LiMo（沥墨）——知识管理系统。输入 URL/文本/文件 → 适配�
 | [对话协议.md](对话协议.md) | Agent SSE 事件流 + 对话 REST 契约 | 改对话 |
 | [BUILD.md](BUILD.md) | 打包步骤（PyInstaller + Tauri） | 打包 |
 | [qianwen-models.md](qianwen-models.md) | 千问平台模型速查 | 配模型 |
+| [AGENTS.md](../AGENTS.md)（仓库根） | `limo` 只读 CLI 的对外契约：命令/退出码/`--json` 硬约定/改 CLI 的六条硬约束 | 改 `limo_cli/` 或 `/api/cli/*` |
 | **本文** | 上手路径 + How-to + 打包详细 + 调试 | 接手开发 |
 
 ---
@@ -90,6 +91,8 @@ npx tauri dev
 2. 点「生成」→ 双产物（笔记 + 整理版原文）流式输出
 3. 预览 tab 切换、导出 MD/HTML
 4. 选中文档 → `Ctrl+I` → 对话提问（Agent 工具搜索）
+5. （可选）命令行：`cd backend && python -m limo_cli status` —— 后端没起时 `doctor --local`
+   仍可直开 Store 诊断；`--json` 输出即 agent 可复用的契约（见 [AGENTS.md](../AGENTS.md)）
 
 ### 1.5 后端启动时序（知道为什么有时慢）
 
@@ -137,7 +140,7 @@ npx tauri dev
 |------|------|---------|
 | `adapters/` | 5 适配器（Video/Document/Image/Webpage/Text） | `__init__.py` 注册顺序决定路由优先级 |
 | `engines/` | 10 内置引擎 + 插件加载器 + ASR 契约 | `transcript.py`（TranscriptResult 契约） |
-| `routers/` | 14 个路由模块 | `ingest/generate/process/chat/export/files/conversations/capabilities/...` |
+| `routers/` | 19 个路由文件（18 业务模块 + `__init__.py`） | `ingest/generate/process/chat/export/files/conversations/capabilities/cli/synthesis/...` |
 | `generation/` | 生成/处理/OCR 预处理/prompt | `prompt_builder.py`、`ocr_preprocessor.py` |
 | `agent/` | LLM Agent 工具 + 会话管理 | `tools.py`、`tool_registry.py`、`compress.py`、`session.py`、`prompts/` |
 | `llm/` | LLMService + AgentRunner | `service.py`、`agent.py` |
@@ -162,7 +165,7 @@ npx tauri dev
 - **对话**：`conversations/`（JSONL + 会话目录）
 - **配置**：`config.yaml`（**唯一写入口 `app/core/config_io.py` → `save_config()`**，禁止业务模块直接 yaml.dump）
 - **FTS5 搜索**：SQLite `search.db` → `transcripts_fts`（CJK 空格插入分词）
-- **前端持久化**：手写 localStorage `mbw_*` 14 个 key（无 persist 中间件）
+- **前端持久化**：手写 localStorage `mbw_*` 16 个 key（无 persist 中间件）
 
 ---
 
@@ -278,7 +281,7 @@ async def my_stream(request: Request):
 
 1. 新建 `store/mySlice.ts`，**action 零跨域引用**
 2. `store/index.ts` 组合层挂载
-3. 持久化：手写 localStorage `mbw_*` key（注意 14 个已占用 key 的命名规范）
+3. 持久化：手写 localStorage `mbw_*` key（注意 16 个已占用 key 的命名规范）
 4. 对话相关状态**不要**进主 store——放 `chatStore.ts`（流式高频更新隔离）
 
 ### 5.6 新增预览 tab
@@ -425,33 +428,48 @@ rg "^\s+from app\.\S+ import" --glob '*.py' app/
 
 ## 7. 测试门禁
 
-### 7.1 后端（8 个测试文件）
+### 7.1 后端（40 个测试文件 = 39 个 `test_*.py` + `conftest.py`）
+
+⚠️ 全部是**脚本式**（顶层 assert，直接跑即退出码判定），不是 pytest 用例 ——
+故用循环跑全量，别指望 `pytest --collect-only` 数得准。
 
 ```bash
 cd backend
+for f in tests/test_*.py; do .venv/Scripts/python.exe "$f" || echo "FAIL $f"; done
+
+# 常跑的几个
 python tests/test_prompt.py          # Prompt 构建验证
-python tests/test_adapters.py        # 适配器注册 + 路由
-python tests/test_engines.py         # 引擎注册 + 查找
 python tests/test_store.py           # Store CRUD + 并发安全
-python tests/test_url_security.py    # URL SSRF 防护
-python tests/test_capabilities.py    # capabilities API 元数据
-python tests/test_plugin_loader.py   # 插件加载器
-python tests/test_e2e_smoke.py       # 端到端冒烟
+python tests/test_e2e_smoke.py       # 端到端冒烟（需后端已在跑）
+python tests/test_query_contract.py  # HTTP/CLI 契约 == QueryService（含对照实验）
+python tests/test_closure_shadowing.py  # AST 全库扫描（#26/#43 那类作用域错）
 ```
 
-### 7.2 前端（101 tests / 8 文件）
+### 7.2 前端（287 tests / 23 文件）
 
 ```bash
 cd frontend
-npm test        # vitest（store/theme/api/latex/streamBuffers/tabRegistry/chatStore/组件，<3s）
+npm test        # vitest（store/theme/api/tabRegistry/chatStore/文档库/组件…，<10s）
 npm run build   # 类型检查 + 生产构建（tsc）
 npm run lint    # oxlint
 ```
 
-### 7.3 改动后自测原则
+### 7.3 CLI 契约门禁（16 项）
+
+```bash
+bash scripts/check-cli          # 自启独立端口 7419 的后端，跑完杀掉（不打扰 7413）
+bash scripts/check-cli 9        # 只跑第 9 项（调试用）
+```
+
+⚠️ **不是 pytest、也不是「跑一遍看看」**：它是 `limo` 对外承诺的行为契约 ——
+退出码 / `--json` 纯净性 / 分页与截断的形状 / **负向对照**（后端不可达 4、坏 ID 5、
+不存在 3、用法错 2）。改 `limo_cli/` 或 `/api/cli/*` 后必跑。
+
+### 7.4 改动后自测原则
 
 - 改后端路由/引擎/适配器 → 跑对应 test + 手动 curl 端点
 - 改前端状态 → `npm test` + 手动跑链路
+- 改 `limo_cli/` 或 `app/routers/cli.py` 或 `services/query.py` → `bash scripts/check-cli`（16 项）
 - 删代码（死代码清理）→ 必须 `npm run build`（tsc 抓漏引用）+ `npm run lint`
 - 提交前 `grep` 确认零硬编码色值泄露（主题铁律）
 

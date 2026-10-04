@@ -285,7 +285,7 @@ export function appUrl(path: string): string {
 
 ## 7. Store 持久化
 
-**无 persist 中间件**——手写 localStorage，`mbw_*` 前缀共 14 个 key：
+**无 persist 中间件**——手写 localStorage，`mbw_*` 前缀共 16 个 key：
 
 | key | 写入位置 | 用途 |
 |-----|---------|------|
@@ -301,6 +301,8 @@ export function appUrl(path: string): string {
 | `mbw_contentWidth` | uiSlice cycleContentWidth | 阅读宽度 |
 | `mbw_llm_hint_dismissed` | chatStore | 缺 LLM key 首提 toast 已关闭 |
 | `mbw_dashscope_hint_dismissed` | ImportSection | 缺 dashscope 内联提示条已关闭 |
+| `mbw_docLibPrefs` | doc-library/docLibraryPrefs.ts | 文档库偏好（密度/排列/排序/折叠小节/筛选区高度） |
+| `mbw_reading` | lib/reading-prefs.ts | 沉浸阅读版式（行高 / 每行字数 / 段落区隔） |
 
 **规则**：lib 层的持久化在 slice 的 setter 中调用（如 `setTheme` → `saveTheme` → `applyTheme` → `set`）；action 内的 localStorage 读写需 try/catch（quota）。LLM 设置、provider、引擎配置都在后端 `~/.limo/config.yaml`，不由前端持久化。
 

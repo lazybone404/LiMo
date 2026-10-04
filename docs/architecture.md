@@ -515,7 +515,7 @@ App
 关键点：
 - Zustand store 按域拆 7 slices + 独立 `chatStore` + 独立 `streamBuffers.ts`（模块级 Map，非 slice），`store/index.ts` 只剩组合层，类型在 `store/types.ts`（`Store` 为交集）
 - `processingTasks` 用 `${docId}__${kind}` 键格式，`setProcessing(key, null)` 前缀树形删除
-- 持久化为手写 localStorage（`mbw_*` 14 个 key），**无 persist 中间件**；LLM/引擎配置在后端 `config.yaml`，不由前端持久化
+- 持久化为手写 localStorage（`mbw_*` 16 个 key），**无 persist 中间件**；LLM/引擎配置在后端 `config.yaml`，不由前端持久化
 - API 客户端按域拆分（`api/` 13 文件，`core.ts` 提供 `apiUrl()`/`appUrl()`/`apiFetch`，`client.ts` 是 barrel）；内容源统一走 `lib/contentSources.ts`（`TabDef.contentSource` 驱动）
 
 ### Slot 插槽注册表（lib/slotRegistry.ts）

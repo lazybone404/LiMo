@@ -88,6 +88,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [components.md](design/components.md) | Apple HIG 风格组件规格，布局+颜色+字体+组件 | 改 UI 组件/设计系统 |
 | [对话协议.md](docs/对话协议.md) | 对话 SSE 事件协议 + 会话 CRUD API + 前端映射 | 改对话流式/会话管理代码 |
 | [AGENT-ONBOARDING.md](docs/AGENT-ONBOARDING.md) | 上手教程：从零跑通 → 架构 → 注册表 → 数据流 → How-to → 打包发布 → 测试门禁 → 调试速查 | 新 agent 快速上手、打包/发布 |
+| [AGENTS.md](AGENTS.md)（仓库根） | CLI 这条链的开发文档：三层结构 / 改 CLI 的六条硬约束 / 门禁怎么跑。⚠️ 与库内 `~/.limo/AGENTS.md`（`limo doctor --write-agents` 生成）**读者不同、内容不重叠** | 改 `limo_cli` / `/api/cli/*` / `QueryService` |
 
 ## 版本号管理
 
@@ -209,6 +210,19 @@ npm run build     # 类型检查 + 生产构建
 npm run lint      # oxlint
 ```
 
+### 只读命令行（`limo`）
+
+```bash
+cd backend
+python -m limo_cli --help            # 未装入口点时的等价写法（pip install -e . 后可直接用 limo）
+python -m limo_cli status            # 需要后端在跑（否则 exit 4）
+python -m limo_cli doctor --local    # 不经过后端，直接开本机库（后端没起时诊断）
+python -m limo_cli doctor --write-agents   # 安装 ~/.limo/AGENTS.md（默认不覆盖）
+
+bash scripts/check-cli               # 16 项门禁（自启 7419 端口后端，不打扰 7413）
+bash scripts/check-cli 9             # 只跑第 9 项（调试用）
+```
+
 ### 一键启动
 
 ```bash
@@ -250,6 +264,23 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - **OpenSSL DLL 版本冲突**：`cryptography` 包携带的 `libcrypto-3-x64.dll`（~5MB）会覆盖 Python 原生的（~8MB），导致 `_ssl.pyd` 加载失败（`ImportError: DLL load failed`），最终使后端无法启动。spec 中需排除 cryptography 的 DLL 并显式添加 `sys.base_prefix/DLLs/` 下的原始版本。**每次新增依赖后验证**：直接运行 `LiMoBackend.exe` 确认能输出 `Uvicorn running on http://127.0.0.1:7413`
 - **PyInstaller binaries 格式**：`collect_all` 返回 `(dest_name, src_path)`，`Analysis(binaries=[])` 期望 `(src_path, dest_dir)`。追加 binaries 时用 `(abs_src_path, '.')` 格式
 
+### 密钥与凭据（运维脚本）
+
+```bash
+python scripts/check-secrets.py --check                        # 自检：数据目录有无明文
+python scripts/check-secrets.py --check --root ~/.limo --root "$LOCALAPPDATA/LiMo"
+python scripts/check-secrets.py --selftest                     # 检查 DPAPI 可用性
+
+python scripts/migrate-secrets.py --check     # 只报告会改什么，**不写任何文件**（exit 1 = 需要迁移）
+python scripts/migrate-secrets.py             # 执行迁移（建议先关掉 LiMo）
+python scripts/migrate-secrets.py --rollback  # 还原：密钥库的值填回 YAML + 删库
+```
+
+**退出码三态**（两脚本一致）：`0` 完成/干净 ｜ `1` 需要迁移/发现明文/失败 ｜ `2` **脚本自身出错**。
+少了 2 这一档，「脚本崩了」与「查出问题」在 CI 上是同一个 1，无法区分。
+
+⚠️ **迁移前必读**：迁移工具**刻意不写明文备份**（那等于在磁盘上新增一份静默的明文副本，正是要消灭的东西）——需要额外保险请**手动**把 `config.yaml` 复制到库目录之外；回滚由 `--rollback` 承担。幂等的前提是「先把密钥库的值 inject 回来再 save」，**密钥库解不开时必须中止**（继续下去 `save_config` 会把它删掉）。
+
 ### 临时调试脚本约定
 
 后端/前端根目录允许存在 `_` 前缀的一次性验证脚本（如 `backend/_chart_verify.py`），用于逐点排查（渲染验证、像素体检、API 探活）：
@@ -257,6 +288,7 @@ backend/.venv/Scripts/python.exe -m PyInstaller --noconfirm --clean backend/LiMo
 - **用完即删**：验证结论得出后立即删除，不留残骸。少数用户明确要求保留的（如 `_type_demo_gen.py`）例外，但**绝不提交 git**
 - **绝不进打包**：PyInstaller/`tsc` 不收集 `_` 前缀文件；`git add` 时显式排除
 - **结论沉淀**：有价值的排查结论写回 CHANGELOG 或对应模块注释，脚本本身不保留
+- ⚠️ **隔离要自证，不能靠直觉**：验证脚本动的是**真实路径还是沙箱**必须由**断言**回答。2026-10-04 一期验证时，`env = dict(os.environ, LIMO_CONFIG=..., LIMO_SECRETS=...)` **只传给了 subprocess**，当前进程里 `save_config()` 用的是真实路径 → 写出了 `%LOCALAPPDATA%\LiMo\secrets.bin`。「我设了环境变量」是直觉，「当前进程的 `os.environ` 里确实有」才是事实 —— 验证脚本跑完先断言「未污染真实位置」（模式 #58）
 
 ### 模型预设核对（开发期脚本）
 
@@ -339,11 +371,13 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **降级落进产物**：被压缩/截断的篇在「## 来源文档」逐条标 `✓/⚠`——SSE 提示是一次性的。**状态 8 态**（`full` / `summarized` / `chunked` / `chunked_partial` / `truncated_over_window` / `truncated_timeout` / `truncated_llm_error`，原 `truncated` 是**垃圾桶**：三种失败的**该做的事完全不同**却共用一个标签）——**分类粒度按「用户能采取的行动」划分**，不按「哪行代码失败」（模式 #53）；查询走**基础状态回退**（`get(s) or get(s.split("_",1)[0])`），历史 `truncated` 与未知状态都不崩、不丢行
 - **超窗分层**（「窗口不够」是**四个问题**不是一个，详见 CHANGELOG 2026-10-02）：**单篇自身超窗** → **篇内分块归并**（关键洞察：分块**不增加该篇配额**，而是让它在配额内**覆盖全文**——头部截断会让后 78% 从未进模型；取 `q = ceil(quota/K)`，⚠️ **每块必须推 `stage`**，否则篇内静默 = Σ 各块耗时，K≥6 冲破 900s 让**正常路径被判挂死**）；**病态长文拖垮整次** → **软 deadline**（到点则剩余篇硬截断 + 标 `truncated_timeout`，正常走到落库，用户拿到「M 篇完整 + K 篇截断」而非空手）；⚠️ `SYNTH_QUIET_TIMEOUT` 与 `SYNTH_TOTAL_TIMEOUT` **曾同为 900**（两条错误同刻到期、由**竞态**决定用户收到哪条）→ 改 300 并把 `max(EXTRACT_TIMEOUT, CHUNK_EXTRACT_TIMEOUT) < SYNTH_QUIET_TIMEOUT < SYNTH_TOTAL_TIMEOUT` 写成**断言**
 - **预览端点** `POST /api/synthesis/preview`（**零 LLM 调用、零副作用**）：逐篇 token + 预计处理方式 + `stuff_window`。⚠️ 判据与执行**必须同源**（同一个 `_classify`）；`stuff_window` = 「让全部 N 篇**原样装下**（走 Stuff）所需的窗口」，**不是**「能做合成的最小窗口」（总量超了照样能做、只是走压缩）；banner 触发集**只含** `over_window` / `reject`（`chunked` 是设计认可的终态，若也触发就在「不用换」的路径上不断劝人换，模式 #53）
-- **维度可控**（2026-10-02）：维度**就是产物骨架**（「## 对比总表」= 行=维度 × 列=各篇）。`DIMENSION_PRESETS` 四套（论文/技术资料/产品评测/媒体内容）经 capabilities 下发（前端不硬编码）；用户给定则**跳过维度发现调用**；⚠️ **Stuff 路径也必须注入**（修复前它是**零注入**——而 Stuff 是多数情况，导致「维度发现」这个唯一的补救机制在最常见路径上根本不跑）。维度落**出处头 meta**（生成是第二次独立请求，落 index 会被重建丢失、落可见正文会与原始材料混淆）
+- **维度可控**（2026-10-02）：维度**就是产物骨架**（「## 对比总表」= 行=维度 × 列=各篇）。`DIMENSION_PRESETS` **五套**（general 通用资料 / paper 论文 / tech 技术 / product 产品 / media 观点）经 capabilities 下发（前端不硬编码）；用户给定则**跳过维度发现调用**；⚠️ **Stuff 路径也必须注入**（修复前它是**零注入**——而 Stuff 是多数情况，导致「维度发现」这个唯一的补救机制在最常见路径上根本不跑）。维度落**出处头 meta**（生成是第二次独立请求，落 index 会被重建丢失、落可见正文会与原始材料混淆）。⚠️ **`general` 必须排在字典第一位**——前端用 `dimensionPresets[0]` 预填，排后面 = 后端换了默认而前端仍静默预填 paper，且零报错（2026-10-04 由 `DEFAULT_PAPER_DIMENSIONS` → `DEFAULT_DIMENSIONS` 换锚，历史文档重新生成的骨架随之 5 行 → 7 行）
 - **原料可选**（2026-10-02）：`raw`（默认）/ `notes`（最新版 `[0]`），**互斥不混合**——混合会同时打破等比配额前提、产物可解释性、降级语义（**整批同源 ⇒ 三个问题一并消失**）。⚠️ 前端拿不到「这篇有没有笔记」（`DocEntry` 无产物字段），**不新增字段/端点**——预览端点顺带返回 `hasNotes`；切模式**重调预览**（本地重算 = 复刻 `plan_synthesis`）；**后端执行时必须再校验**（预览与执行之间隔着用户操作）
+- **读者意图 ⊥ 材料体裁**（2026-10-04，产物形态重做的两只旋钮）：`READER_INTENTS` 五选一决定 `<task>` 段的「读者目的」，`CONTENT_TYPES` 多标签决定加载哪几类「体裁增量」条款（4 类 × 3 条，每类第三条是**停止条件**，多标签必须去重）。两者连同 `dimensions` / `source_mode` **全部只落出处头 meta**——生成是第二次独立请求，届时手里只有 rawText。⚠️ **错误语义刻意不同**：意图与原料模式非法**显式报错**（选错了产物的读者目的/性质就变了，而产物上看不出异常），维度与体裁**静默清洗**（多带一个不认识的值不该让整次合成失败）——判据是「**这个值错了会不会改变产物的性质**」。⚠️ 「理解主题 / 比较材料」的 `defaultContentType` 是 `None`、**刻意不预设体裁**（给「读者的动作」猜材料体裁，正是要消灭的那类错配）。⚠️ 历史字段 `user_notes`（「对比指引」）**已删除**——它是死链（签名里有、函数体零引用，链路看起来完整），位置由 `reader_intent_text` 承接
+- **内容约束三块**（2026-10-04）：`_SYNTHESIS_FACT_CONSTRAINTS`（事实 5 条）/ `_SYNTHESIS_STYLE_CONSTRAINTS`（通用文风 7 条）/ `_SYNTHESIS_GENRE_CONSTRAINTS`（体裁增量）。合成用 `_SYNTHESIS_INSTRUCTION_PRIORITY`（三层，无 style_preference 节，**必须保留 `output_language` 行**——读者意图是用户自由文本、进 `user_request` 节，正是「不可被用户备注覆盖」保护的场景）；全局 `_INSTRUCTION_PRIORITY` 四层不动（单篇零回归）。覆盖说明**换位置而非取消**：删 `<task>` 段的强制元数据开场，改在「## 综合评价」末尾一句话说明输入覆盖情况
 - **资产搬运**：源 `assets/xxx` 复制到新文档并加源序号前缀（`d1_`/`d2_`），**引用必须同步改写**（只复制不改写 = 与不搬运完全一样，却零报错）；⚠️ **每个路径都要 `relative_to` 守卫**（现存同款正则已有 5 个副本，新副本不带守卫 = 新开一条任意文件读取通道）
 - **生成闸门**（`generate.py`）：composite → 不产 polished、清空 `format_list`、跳过 `_auto_title`；`metadataCorrupt` 推 warning 但不阻断
-- 前端入口在**文档库 BatchBar**（选中 ≥ 2 篇）而非 GenPanel——输入的 N 篇是已入库文档，Attention 在文档库。**确认对话框消费预览端点**：逐篇 token + 处理方式（数据只有后端有——`docs` 是白名单序列化、**不含正文**）、窗口 banner、原料单选组、维度预设下拉 + 列表（textarea 每行一个，切换预设=覆盖）——**前端不本地重算 `plan`**（那是复刻 `plan_synthesis`，成对逻辑禁止）。⚠️ `tabRegistry` **只**给 summary/transcript 加 composite，**绝不动 `DOC_TYPES`**（会被 `ALL_TEXT` 展开、白送 polished/mindmap）；`summary.defaultFor` 也要加（`forSourceType` 与 `defaultFor` 是两件事）。详见 CHANGELOG 2026-10-01 / 2026-10-02
+- 前端入口在**文档库 BatchBar**（选中 ≥ 2 篇）而非 GenPanel——输入的 N 篇是已入库文档，Attention 在文档库。**确认对话框消费预览端点**：逐篇 token + 处理方式（数据只有后端有——`docs` 是白名单序列化、**不含正文**）、窗口 banner、读者意图单选组（+「自定义」文本框）、原料单选组、**折叠的「高级」区**（维度预设下拉 + 维度列表 textarea 每行一个、切换预设=覆盖；体裁多选，由所选意图的 `defaultContentType` 预填、切意图即重置）——**前端不本地重算 `plan`**（那是复刻 `plan_synthesis`，成对逻辑禁止）。⚠️ `tabRegistry` **只**给 summary/transcript 加 composite，**绝不动 `DOC_TYPES`**（会被 `ALL_TEXT` 展开、白送 polished/mindmap）；`summary.defaultFor` 也要加（`forSourceType` 与 `defaultFor` 是两件事）。详见 CHANGELOG 2026-10-01 / 2026-10-02
 
 ### 文档库（组织能力 2026-09-23；前端交互重设计 2026-09-25）
 
@@ -394,7 +428,25 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **ProductRegistry**（`app/generation/product_registry.py`）— 产物注册表，定义 notes/polished 及其依赖拓扑。新增产物类型只需加一个 `ProductDef` 即可，无需改分发逻辑或前端 UI。
 - **ToolRegistry**（`app/agent/tool_registry.py`）— Agent 工具注册中心，替代硬编码的 `_register_chat_tools()`。每个工具是独立 `ToolDef`，注册后自动被发现和调用。
 
-FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` 四个依赖，消除路由函数中 `request.app.state.xxx` 样板代码。**15 个路由中 12 个已迁移**（capabilities/chat/config/conversations/epub/export/files/ingest/markdown_edit/model/plugins/process）；未迁移 3 个：`generate.py`（7 处 `app.state`）、`search.py`、`references.py`。
+FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` / `get_query_service` 依赖，消除路由函数中 `request.app.state.xxx` 样板代码。**18 个路由模块中 17 个用 `Depends`**（`references.py` 两者都没用——它只有进程内暂存，不碰 store/config，本来就不需要）；仍有 `request.app.state` 残留的 **3 个**：`generate.py`（7 处）、`ingest.py`、`search.py`。⚠️ 计数以 `ls backend/app/routers/*.py` + `grep -l "app\.state"` 的输出为准——此处曾写「15 个里 12 个已迁移、ingest 已迁移」，而 ingest 至今仍有残留（模式 #54：有几处同源是搜索题）。
+
+### 只读命令行（`limo`，2026-10-04 三期）
+
+```
+limo_cli/（命令解析 / 渲染 / 退出码）
+    ↓
+app/services/query.py::QueryService（契约成形）
+    ↓
+Store / SearchEngine（数据真相）
+```
+
+- **七命令**：`status / list / search / get / export / folders / doctor`。**不做写操作**（import/generate/edit/delete）——成本、并发、超时、幂等、误触发的风险都在写侧
+- **⛔ CLI 不解析库格式**：不读 `index.json`、不读 `search.db`、不拼磁盘路径。照着复刻一遍 = 第 6 个副本（现有 5 处），而副本的失效方式是「格式演进时漏改一处，它静默读错」
+- **两个传输层同一契约**：`HttpSource`（默认，`GET /api/cli/*`）与 `LocalSource`（仅 `doctor --local`，后端没起时直开本机库）。形状由 `QueryService.to_dict()` 定义，`sources.py` 只搬运。⚠️ 但**「一次取全」两边的表达不同源**（本地 `limit=None` / HTTP `all=true` 且不传 `limit`）——模式 #61
+- **输出契约**：`--json` 时 **stdout 只有 JSON**、诊断与错误全走 stderr（**不用 TTY 检测**）；顶层恒有 `schema_version`（CLI 侧 `EXPECTED_SCHEMA` **刻意不 import 后端常量**——同仓 import 会让「用户机器上的旧 exe」永远检测不出来）；`Page` 上 `has_more`+`next_cursor`（**能继续翻**）与 `truncated`+`continuation`（**到头但没给完**）并排不混用
+- **退出码** `0/2/3/4/5/6`（+130 SIGINT）：0 成功**含空结果**｜2 用法｜3 未找到｜4 后端不可达｜5 数据/响应异常｜6 内部错误。⚠️ **按 `code` 判不按 HTTP 状态**（`recoverable=True` 且未显式 status 的 AppError 返回 **HTTP 200**，按状态判会把「找不到」读成成功）
+- **契约文档两处**：库内 `~/.limo/AGENTS.md`（`limo doctor --write-agents` 安装，**默认不覆盖**，`--force` 先备份）+ 仓库根 [`AGENTS.md`](AGENTS.md)（读者是改这条链的人）
+- **门禁** [`scripts/check-cli`](scripts/check-cli) 16 项：自启**独立端口 7419**（借用户的 7413 会让「后端不可达 → exit 4」永远绿、而绿的原因是错的）；每项同时查退出码 + 结构化标记 + **是不是假成功**；含 3 条负向对照
 
 ### 引擎系统
 
@@ -424,7 +476,7 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 - 可拖拽 resize，50–600px，<80px 自动折叠为 PanelStrip
 - 快捷键：`Ctrl+G` 切换生成面板，`Ctrl+I` 开关 AI 浮窗
 - **AI 对话为浮窗（唯一形态，2026-08-04 移除插槽面板）**：`FloatingAI` 覆盖式浮窗，可拖拽（边界钳制）/resize（不超视口），位置/大小持久化 localStorage（`mbw_aiPos`/`mbw_aiSize`），内部栏（会话列表/导航）可拖拽调宽 + 拖 <80px 自动折叠
-- Zustand store 按域拆 7 slices（`store/themeSlice.ts` / `docsSlice` / `contentSlice` / `tasksSlice` / `chatSlice` / `uiSlice` / `toastSlice`），`store/index.ts` 只剩组合层 + 模块副作用，共享类型在 `store/types.ts`（`Store` 为各 slice 交集）。**action 零跨域引用**，新增域 = 新建 slice 文件，消费方 API 零改动。持久化为手写 localStorage（`mbw_*` 14 个 key），无 persist 中间件。`setProcessing(key, null)` 是前缀树形删除语义（删 key 本身 + `key__` 前缀子任务），`clearDocTasks`/`cancelOneTask`/`failTask` 是兄弟函数
+- Zustand store 按域拆 7 slices（`store/themeSlice.ts` / `docsSlice` / `contentSlice` / `tasksSlice` / `chatSlice` / `uiSlice` / `toastSlice`），`store/index.ts` 只剩组合层 + 模块副作用，共享类型在 `store/types.ts`（`Store` 为各 slice 交集）。**action 零跨域引用**，新增域 = 新建 slice 文件，消费方 API 零改动。持久化为手写 localStorage（`mbw_*` 16 个 key），无 persist 中间件。`setProcessing(key, null)` 是前缀树形删除语义（删 key 本身 + `key__` 前缀子任务），`clearDocTasks`/`cancelOneTask`/`failTask` 是兄弟函数
 - **Slot 插槽注册表**（`lib/slotRegistry.ts`）：`SlotDef`（位置 left/right/center + 渲染组件 + 折叠行为）注册即得可拖拽面板，`SlotLayout.tsx` 是布局引擎（50–600px，<80px 折叠为 PanelStrip，`uiSlice.slots` 驱动宽度）。与 AI 浮窗（FloatingAI 覆盖式唯一形态）正交——插槽管内容面板，浮窗管对话
 - **对话独立 chatStore**（`store/chatStore.ts`，2026-08-04）：对话状态**不并入主 store**——流式 delta 高频更新隔离（主 store 订阅者不受波及）。chatSlice 只留 generating；AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice。对话组件树：`ChatCore`（容器，内部栏受控拖拽调宽）→ `ChatSidebar`（会话列表/归档折叠）/ `MessageList`（分页窗口）/ `MessageItem`（气泡/打字机/操作栏/工具气泡/思考折叠）/ `ChatInput`（textarea/IME/@引用/token 进度）。消息模型 ChatMsg 在 chatStore.ts 定义，**勿与主 store types.ts 的 ChatMessage 混淆**
 
@@ -454,8 +506,13 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 ### 数据流与持久化
 - **配置唯一入口**：`app/core/config_io.py` → `save_config()`。禁止业务模块直接 `yaml.dump`
+- **凭据不落 `config.yaml`**（2026-10-04 二期）：值送 `core/secrets.py` 的 DPAPI 密钥库（**ctypes 直调 `crypt32.dll`，零新依赖**，落 `%LOCALAPPDATA%\LiMo\secrets.bin` —— **刻意不放 `~/.limo/`**，那是会被同步/备份/打包分享的目录），YAML 只留 `secrets_ref: dpapi:limo`。**四张成对表**（`SECRET_SCALARS`+`SECRET_LISTS` 抽↔填 / `DERIVED_AUTH_SUFFIX` 剥↔重算 / `fold_to_providers` 下沉↔跳过 / `_EMPTY_CONTAINERS` 键名↔类型）是唯一真相源，**每张的两侧对不上的症状都不抛错**（Key 消失 / 明文回盘 / 启动即崩）。⚠️ **失败显式抛 `SecretsUnavailable`，不静默退回明文**（静默退回 = 二期白做且 YAML 上看不出异常）。⚠️ **定位是卫生不是安全边界** —— 挡的是「配置文件被复制走」的被动泄漏，挡不住同账户的主动恶意进程。⚠️ **`save_config` 的隐藏前提**：`elif disk.get(SECRETS_REF_KEY)` 分支（删库+撤 ref）**要求入参是回填过的内存配置**，拿磁盘 YAML 直调 = **密钥库被无声删除**；新增调用点前先问「这个 cfg 是 load 过的吗」
+- **密钥与凭据自检**：`main.py` 启动时调 `config_io.startup_check(cfg)`（查 DPAPI 可用性 + **磁盘** `config.yaml`/`.bak` 有无非空敏感字段）；⚠️ 它**必须读磁盘**——入参是 `load_config` 回填过的内存 cfg、处处非空，拿它判等于恒绿（#39「判据看的输入不是它以为的那个」）。全量内容扫描走 `scripts/check-secrets.py`（**分工不是重复**：启动路径上跑全量会让冷启动等一次目录遍历，而结论每天都一样）。`.bak` **同生同灭**（`load_config` 每次启动 `copy2` 的是磁盘文件本身，主文件干净它就干净），故照查即可，无需特殊处理
+- **配置落盘形态的守卫**：`_EMPTY_CONTAINERS` 绑「键名 ↔ 类型」（`llm_models` 是 **dict** 不是 list，写错的表现是**下次启动 `AttributeError`** 而非保存报错）；测试钉住「表里的类型 == `DEFAULT_CONFIG` 的真实类型」
 - **模型解析唯一入口**：`app/core/model_resolver.py` → `resolve_model()`。generate/chat/process 统一调用
 - **引擎映射唯一入口**：`_resolve_doc_engine` 用 `model_name` 查找（非 `provider_id`），支持字符串/数字/列表三种绑定格式
+- **读路径唯一入口**：`app/services/query.py` → `QueryService`（2026-10-04）。分页 / ID 解析 / 版本编排 / meta 装配 / 截断标记全部收口在此，**HTTP 与将来的 CLI import 同一份实现**（不是「写法相似」）。`app/services/*.py` **零 FastAPI import**（同 `services/epub_pipeline.py` 一分层），分层照抄 `routers/epub.py`（薄）→ `services/epub_pipeline.py`（厚）——router 留在 `routers/`，`services/` 不放 router。惰性构造在 `core/dependencies.py::get_query_service`（`main.py` 先建 `Store`、后建 `SearchEngine`，提前构造会拿到 `None` → **静默空结果**）
+- **产物自证头**：`notes`/`polished`/`process` 落盘时首行写 `<!-- limo-meta {json} -->`（从哪来 / 怎么来的 / 是什么 / 可信度边界四条）。编解码收口 `core/transcript_meta.py`（`_parse_envelope` 只认「第一行 + HTML 注释 + JSON + dict + 有 `v`」，`parse_meta`（composite）与 `parse_artifact_meta`（产物）各在 envelope 上做自己的 schema 校验）；装配用 `generation/provenance.py::artifact_meta()` + `PROMPT_VERSION`。**普通 `transcript.md` 刻意不加**（它会进模型 prompt，加头 = 改生成输入）；**无头 ≠ 损坏**；编辑保存必须**带回原头**；**派生视图（思维导图）必须剥头**
 - **引擎绑定保存合并**：`set_engine_bindings` 合并而非替换 — 保存 OCR 绑定不会删除 ASR 绑定。`cfg["engine_bindings"] = stored`（全量替换）→ `existing.update(stored)`（增量合并）
 - **LLM Key 双向同步**：`update_provider` 自动同步到 `llm.api_key`；generate router 在 `llm.api_key` 为空时从 providers 回退
 - **引擎前端后端驱动**：`GET /api/capabilities` 返回 `fileTypeMap`/`scenarioLabels`/`engineLabels`/`styleLabels` 等完整元数据，前端 `constants.ts` 不再硬编码引擎名/文件类型。新增引擎只需后端注册 + `config.py` builtin_models 加一行 desc，前端自动发现
@@ -472,7 +529,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **目标语言**：config.yaml `target_language` + prompt 参数化，8 语言可选
 - **LLM 续写**：`finish=length` → 自动续写 3 轮，temperature 递减
 - **流式 + 取消**：SSE 端点，cancel_event 真正中断 token 消耗，取消保存 partial 可续写
-- **Prompt XML 分节**：`PromptComposer.section()` + `compose()` 组装 10 个标签（role/task/source_content/instruction_priority/hard_constraints/output_language/style_preference/output_format/reference_texts/user_request），空节自动跳过。`_INSTRUCTION_PRIORITY` 声明三层优先级：hard_constraints > user_request > style_preference
+- **Prompt XML 分节**：`PromptComposer.section()` + `compose()` 组装 10 个标签（role/task/source_content/instruction_priority/hard_constraints/output_language/style_preference/output_format/reference_texts/user_request），空节自动跳过。`_INSTRUCTION_PRIORITY` 声明**四层**优先级：hard_constraints > output_language > user_request > style_preference（合成管道另有 `_SYNTHESIS_INSTRUCTION_PRIORITY` 三层版，无 style_preference 节）
 - **参考文件（Reference Text）**：生成时注入参考资料（如评论区观点），仅 notes 注入 `<reference_texts>` section（user_request 前），polished/Excel 不注入。流式 GET 无法传大 JSON → `POST /api/references` 内存暂存（TTL 20 分钟）+ 短 id，生成传 `reference_ids`。前端参考文件 state 仅会话内不持久化。**单文件上限 1MB**（前后端同值，2026-09-23 由 200KB 放宽）
 - **参考文件暂存**（`core/reference_store.py`）：内存 dict + TTL，**过期项全表清理**（`_purge_expired_locked()`，save/get 两路径都调）+ 双闸门（条目 32 / 总量 32MB，超限 `AppError(REFERENCE_STORE_FULL)`，闸门在清理**之后**判）。⚠️ **不能按入参惰性清理**：前端一次只持一个 id，换文件即换 id → 旧 id 再不会被查询，只清入参的实现永远碰不到它（详见「关键模式」第 42 条）
 - **参考文件超窗压缩**（`generation/reference_compressor.py`，2026-09-23）：`原文 + 参考 > 窗口 × 0.7`（与对话预算同源）时先用当前生成模型逐份摘要，装得下零成本原样返回。失败降级逐份截断 → 总量兜底。**只在 notes 侧做**（polished 不注入参考，压缩是白花钱）。流式路径先推 `stage` SSE 事件（`{type:'stage', message}`，前端 `TaskInfo.stage` 单值承载，正式 chunk 一到即被全量替换清掉）。**摘要超时 `COMPRESS_TIMEOUT=180s` 独立一层**——压缩在生成总超时（330/400s）之外，不设它模型挂起时要干等 5 分钟；`except CancelledError: raise` 必须排在前面（用户取消走 `app.llm.CancelledError`，与 `asyncio.CancelledError` 无关），`TimeoutError` 单独列一支（`str(TimeoutError())` 是空串）。⚠️ **三个坑**：① 原文自身超预算（base ≥ budget）时**不做兜底**（压到空也救不回请求）；② 截断函数不能有「至少留 N 字符」硬下限（会让配额远小于文本时纹丝不动）；③ 截断必须幂等且从 limit 里扣掉标记自身开销
@@ -571,7 +628,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **markmap 离线化**：`markmap.ts` 不调用 `markmap-common` 的 `loadCSS`/`loadJS`（动态 CDN 加载会被 Edge WebView2 跟踪防护拦截），KaTeX CSS 在 PreviewArea 中静态 import，hljs 由 react-syntax-highlighter 内联
 - **设置持久化**：`ProviderSettings.tsx` 中引擎/LLM Key 的保存不能仅靠 `onBlur`（组件卸载时不触发），需加 `useEffect` cleanup 用 ref 兜底保存
 - **上下文窗口四层解析**（2026-08-04 C1）：`resolve_context_window()`（`model_resolver.py`）——用户自定义（`enabled_models.context_window`，设置页可编辑）> llm_models 预设 > provider 默认表（`core/token.py` `DEFAULT_CONTEXT`）> 保守 32k。对话预算 `budget = context_window × 0.7`（`core/chat_context.py`），历史按 token 反向裁剪 + 文档分级截断
-- **路由异常标准化**：**15/15 个路由模块已全部完成 AppError 迁移**（2026-09-19 核实：全仓 `grep "raise HTTPException"` 结果为空）。迁移时注意模式 #36 —— 真 404/403 必须显式传 `status_code`
+- **路由异常标准化**：**18/18 个路由模块已全部完成 AppError 迁移**（2026-10-04 复核：全仓 `grep -l "HTTPException" backend/app/routers/*.py` 结果为空）。迁移时注意模式 #36 —— 真 404/403 必须显式传 `status_code`
 - **Content-Disposition 中文文件名**：必须用 RFC 5987 `filename*=UTF-8''` 编码，否则 Starlette 会尝试 latin-1 编码 → UnicodeEncodeError
 - **日志函数签名**：`app.core.logging.warning(msg, **kwargs)` 只接受 1 个位置参数 + kwargs，不能用 `%s` 占位符多参数调用。多参数用 f-string
 - **空文本去重碰撞**：空字符串 SHA256 固定为 `e3b0c44...`，两个空导入会误判为重复。TextAdapter 需检查 `text.strip()` 非空
@@ -582,7 +639,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（2026-07-10 起持续沉淀，现 53 条）
+## 关键模式（2026-07-10 起持续沉淀，现 61 条）
 
 以下模式是实现中易错的关键约束，新增代码必须遵守。
 
@@ -620,7 +677,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 27. **remark 插件顺序**：`remarkMath` 必须在 `remarkGfm` 之前。否则公式内的 `_`（下标）和 `<`（`x_{<k}`）会被 GFM 先解释为斜体/HTML 标签 → `$$` 定界符破裂 → KaTeX 渲染失败。**本次已修复**：markdown-plugins.ts。
 28. **引擎绑定只取第一个**：`engine_bindings` 列表只解析第一个可用引擎，失败直接报错（不再多引擎降级尝试）。扩展名兜底（pdf→pypdfium2 等）是默认行为，新用户无绑定时必须可用。引擎自动降级开关（`engine_auto_fallback`）已移除，用户换引擎去设置页手动改。LLM 降级（备用模型）是独立语义，仅 process.py 的 LLM→OCR 回退保留。
 29. **`init_engines` 禁止每次启动覆盖配置**：引擎初始化中的 `save_config` 会写全量配置到 config.yaml。若此调用在每次启动都触发，一旦内存中的 config 对象缺失敏感字段（API Key 等），这些字段将永久丢失。**本次已修复**：ASR 绑定逻辑从「强制先删后插重排」改为「仅空列表初始化」，确保后续启动 asr_changed=False。新增引擎/绑定变更时才保存。
-30. **FastAPI Depends 依赖注入**：用 `store=Depends(get_store)` 替代函数体内 `request.app.state.store`，消除样板代码。`app/core/dependencies.py` 提供 `get_store/config/guard/config_lock` 四个依赖。15 个路由已迁移 12 个；未迁移 `generate.py` / `search.py` / `references.py`（新增路由一律用 Depends，勿再写 `request.app.state`）。
+30. **FastAPI Depends 依赖注入**：用 `store=Depends(get_store)` 替代函数体内 `request.app.state.store`，消除样板代码。`app/core/dependencies.py` 提供 `get_store / get_config / get_guard / get_config_lock / get_query_service` 五个依赖。18 个路由模块中 17 个已用；仍有残留的仅 `generate.py` / `ingest.py` / `search.py`（新增路由一律用 Depends，勿再写 `request.app.state`）。⚠️ 写这类计数前先跑 `ls` + `grep`——本条曾把 ingest 记成「已迁移」。
 31. **disconnect_watcher 客户端断连监测**：`app/core/disconnect.py` 提供 `@asynccontextmanager` 封装的 `disconnect_watcher(request, cancel_event)`。替换了 5 个路由中 ~45 行重复的 `_watch_disconnect` 实现，修复了 process.py 资源泄漏和 chat.py 缺 await 两个 bug。新增长时端点时复用此工具。
 32. **适配器一请求一实例**：`AdapterRegistry` 存**类**（`register(VideoAdapter)`），`route()` 命中前 `cls()` 实例化——单例实例的 `cookies`/`_engine_config`（含 `cancel_event`）会被并发导入互相覆盖。适配器 `accept()` 是纯输入判断（无实例状态），`name` 是类属性。**本次已修复**：registry.py + adapters/__init__.py。
 33. **CORS Origin 白名单**：本地后端**禁止** `allow_origin_regex=".*"`（任意网页可跨站读本地数据）。白名单必须含 Tauri v2 生产的 **`http://tauri.localhost`**（Windows WebView2 实测 origin）+ `https://tauri.localhost` + `tauri://localhost` + 本机 localhost 任意端口；`_ForceCORSMiddleware` 仅对白名单 origin 回显凭证。**本次已修复**：main.py（2026-08-02 曾漏 `http://tauri.localhost` 导致打包版全接口 CORS 拦截）。
@@ -658,6 +715,20 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 53. **用户可见的信息要么能驱动行动，要么别出现**：两条判据同一精神的两面——① **提示的触发集**只该含「用户真该做个动作」的情形；② **降级标签的粒度**按「用户能采取的行动」划分，不按「实现里哪行代码失败」划分。合成本轮各踩一次：`chunked`（总量超窗、单篇都不超）是**设计认可的终态**（明说用户无需行动），却被列进「换大窗口模型吧」的 banner 触发集 → 一条设计说「不用换」的路径上会**每次弹**、不断劝人换；而超窗 / 超时 / 模型抽风三种失败共用 `truncated` 一个标签，三种**该做的事完全不同**（换模型 / 重试 / 检查 Key），用户看哪个标签都无从下手。⚠️ 判据要写**语义**而非**结构**——「存在某状态的篇」（#50 的「容器里有元素」同族）是结构事实，「用户看到它该做什么」才是判据；答不上来就不该出现，或该拆细。对照见 #51（能力存在 ≠ 该路径在用）：本条是它的**消费端**版本——**能力要被用上，且用在该用的地方**。（2026-10-02 合成预览）
 
 54. **「有几处同源」只能由全仓搜索回答，不能由注释回答——写错数量的注释比没有注释更糟**：`routers/model.py` 里那条注释**白纸黑字**写着「启发式拼接（本文件**两处**同源：test_connection 与 fetch_models —— 改一处必须改另一处）」，实际 **grep 出三处**，第三处在 `routers/config.py` 的 `POST /llm/models`。危险不在于「漏了第三处」，而在于**那条注释给出了确定感**——下一位读者看到「两处、已标注」，会认为覆盖已经完整，于是**连搜都不搜**。这正是 #39「成对余量必须同源」的另一面：#39 讲的是成对逻辑的**语义**必须一致（两个方向对同一宽度给出同值），本条讲的是**数量本身被记错**——同源关系被当成了记忆题，而它是搜索题。**纪律**：写下「N 处同源」这句话时，就已经欠了一次全仓验证（grep 判据要覆盖**全部相关形态**，不能只搜你记得的那个函数名）；改到第 3 处时**抽公共函数**（本项目「同一逻辑 ≥3 次即抽」），并加一条 **AST 源码守卫**防第四份长出来。⚠️ **两个配套细节**：① 守卫必须走 AST 而非 grep——`url_utils.api_root` 的 docstring 里**刻意**引用了旧写法当反例，grep 会把「讲代码的文字」判成违规；② 守卫必须**自证**（造一个真违规样本 + 一个注释样本，确认前者命中、后者不命中），否则「零命中」与「扫描器没工作」无法区分（#38）。⚠️ **第三处是死代码也要改**——`/llm/models` 端点当前前端零调用，但**死代码若被复活，不该带着一份不一致的判据回来**。（2026-10-02 Google 链路）
+
+55. **「业务失败走 SSE 事件」是端点契约，而清洗 / 校验写在响应构造之前就会把它废掉**：`POST /api/synthesis/stream` 的纪律白纸黑字（文件顶部注释）——业务失败必须是 SSE `error` 事件、不能是 HTTP 错误，因为前端拿 `fetch` + reader 解这条流，中途换成 HTTP JSON 只会表现为「连接中断」。而入参清洗块原写在**路由函数体**里（`StreamingResponse` 构造之前），`normalize_reader_intent` / `normalize_source_mode` 在非法值上**显式抛错**，一抛就逃出流式通道 → FastAPI 转成 **500**，用户看不到「不支持的读者意图：nope（可选：understand、…）」这种**可行动的文案**。⚠️ **`source_mode` 比意图早上线，这条路径在 API 层一直是 500**——而直调测试（直接调 `synthesize()`）覆盖得漂漂亮亮，因为它**测的就是不经路由的那一层**。这是 #51「能力存在 ≠ 该路径在用」的又一形态：错误码定义齐全、文案写得很好，用户拿到的却是连接中断。⚠️ 同族还有 #26/#43（作用域）与 #36（`AppError` 的 status_code）：**判据要落在用户真正经过的那条路径上**。纪律：凡是「业务失败要可见」的端点，清洗 / 校验 / 闸门一律放进事件生成器或 runner 的 `try` 之内；新增此类端点时第一件事是**确认失败路径真的走了流**，并由 API 层测试钉住（`test_synthesis_api.py` §8.3 / 8.3b 各一条）。（2026-10-04 合成产物形态重做）
+
+56. **路由 prefix 只在一处写——双前缀的失败模式是「两侧测试全绿 + 用户一直 404」**：`routers/search.py` 曾自带 `prefix="/api"`，而 `main.py` 统一 `include_router(..., prefix="/api")` → 实际路径 `/api/api/search`，前端打的是 `/api/search`，**存活四个月**。为什么两侧测试都测不到：前端测试**mock 掉了 `api/search` 模块**（被 mock 的调用不会因为路径错而变红）、后端 `test_search.py` 测的是 `SearchEngine` 而**不是 HTTP 路径**（#51「能力存在 ≠ 该路径在用它」）、e2e 冒烟从未覆盖搜索。发现它的是新写的**契约测试**（`tests/test_query_contract.py`：逐字段比对「HTTP 响应 == QueryService 输出」）——**路径本身第一次被断言**。判据：全仓 17 个 router 里另外 16 个都是裸 `APIRouter()`，**「同层同构」的一致性检查**比逐条读代码更容易抓到这类错。同族事故 2026-07-10 在前端侧已发生过一次（6 处 `/api/api/`）。（2026-10-04 共享查询层）
+
+57. **派生视图必须剥自证头——而清洗正则常常按第一个 `>` 断句**：思维导图的 `_build_mindmap_html` 清洗规则含 `r'<[^>]+>'`（去 HTML 标签），它**按第一个 `>` 断句**。自证头里只要某个值含 `>`（用户自定义维度 `成本 > 收益`、意图文本 `A > B`），注释被截半、**JSON 残片直接进导出物的 JS 模板字面量**。⚠️ **两个配套判据陷阱**：① **必须用「值含 `>`」那一例**——值不含 `>` 时该正则恰好匹配到注释结尾、整行删净，于是「只测含注释」会通过并给出**假绿灯**（实测确认：只测这一例时，撤掉修复也不红）；② **判据词必须只可能来自 meta**——`"type"` 出现在 markmap 的 JS 里（`["url","type","lang"]`）、`cost` 出现在 base64 字体数据里，拿它们当判据是**假红**（本判据第一版就跑错了）。根因是「**派生视图不承载自证头**」这条语义没落地：剥头动作要收口在生成派生视图的函数里，不能指望清洗正则碰巧删掉它。（2026-10-04 共享查询层）
+
+58. **验证脚本必须自证隔离——「我设了环境变量」是直觉，「当前进程的 `os.environ` 里确实有」才是事实**：一次性验证脚本里 `env = dict(os.environ, LIMO_CONFIG=tmp, LIMO_SECRETS=tmp)` 这种写法**看起来**把路径钉到了临时目录，但那个 `env` 只有 `subprocess` 之类显式接收它的调用才会用——**当前进程**里的 `config_io.save_config()` 读的是真实的 `os.environ`（含缺失时按 `Path.home()` 兜底）→ 脚本把**用户的真实密钥库**写了。症状是「验证全绿」，代价是污染了用户数据目录，而它**不会被任何测试发现**（测试只跑自己的断言）。**纪律**：① 隔离路径必须**同时**设进当前进程（`os.environ[...] = ...`），不是只塞进传给子进程的 dict；② 跑完断言「**未污染真实位置**」；③ 万一真写脏了，事后清理前**先判断用户是否已迁移**——「用户从未迁移（YAML 无 `secrets_ref` 且旧字段非空）⇒ 那个密钥库必然是我刚创建的」是唯一能安全删掉它的推理。这是 #38（判据要有区分力）的**邻居**：那条问「判据会不会红」，这条问「**判据会不会伤到不该动的东西**」——两者都在问「你凭什么是安全的」，而答案都只能来自断言。（2026-10-04 密钥卫生）
+
+59. **同一份契约写在两处时，被覆盖的那一处不会报错，只表现为行为退化**：`limo --json list` 的 stdout 里混进了人类可读输出。根因是 argparse 把子命令的结果写进**同一个 namespace**——子命令侧 `--json` 带 `default=False` 会**覆盖**主 parser 刚设好的 `True`，`| jq` 于是直接炸。修法是子命令侧 `default=argparse.SUPPRESS`（「没给这个参数就什么都不写」）。**同一个坑的第二个形态**：`--base-url` / `--timeout` 只注册在主 parser 上时，`limo status --base-url X` 得到 `unrecognized arguments` —— 一个把「位置放错了」说成「参数不存在」的报错，用户会以为这个选项根本不支持，于是**放弃那条本就该存在的用法**。**判据**：凡「同一参数要在多处可用/同一开关由两层定义」，加一条**两处都试**的门禁（本项由 `check-cli` 第 3 项抓到：它对着不可达端口跑 `status --base-url`，参数解析错误会以 exit 2 而非 4 暴露）。（2026-10-04 CLI）
+
+60. **同一类坏输入因字符集不同得到两种退出码——而错的那一种是无声的**：`limo get ../../etc/passwd` 报 exit 3（未找到），而 `limo get 'bad id!'` 报 exit 5（数据异常）。同一个 `..`，只因为**含 `/`** 就走上了另一条路：`/` 经 URL 编码成 `%2F`，又被 Starlette **解码回 `/` 用于路由匹配** → 落到「没有这条路由」→ FastAPI 默认 404 → CLI 说「未找到」。后者诱导调用方「换个 ID 重试」（它已重试了五次），前者才说出了「这个输入本身就是坏的」。**修法**：`require_ident()` 在**客户端**用与后端**同源**的 `is_valid_resource_id` 预校验，且 HTTP 与 `LocalSource` **两条路径都调**——本地路径不校验时，同一个坏 part 会走到「查不到」→ exit 3，与 HTTP 路径的 exit 5 分叉。**判据**：凡「要当路径段用」的输入，校验不能只发生在服务端，因为客户端拼完 URL 之后**它的形态已经变了**；同源判据（同一个函数）不是洁癖，是这类分叉的唯一防线。（2026-10-04 CLI）
+
+61. **两个传输层对「同一件事」的表达不同源时，错的那侧会静默退化**：`--all`（一次取全）在 `LocalSource` 是 `limit=None`（`QueryService` 的语义），在 `HttpSource` 必须是 `all=true` 且**不传** `limit` —— 因为后端的默认值是 **50**，不是「全部」。归一成 `limit=None` 之后，HTTP 路径少拿了 26 篇，而**返回的是一个完全正常的成功**（无警告、结构正确、不抛错）。这是 #54 的**镜像**：#54 是「同源的数量被记错」（写「两处」实为三处的注释给了确定感），本条是「**看似同源的语义其实不同源**」。**纪律**：写下「这两处做同一件事」之前，先各自读一遍它们**到底怎么表达**那件事；门禁要断**并集 == 全集**（只断「返回了一个列表」必过——它少给了 26 篇也满足）。⚠️ 配套陷阱：门禁本身「永远跳过」等价于没有（`list --all` 那条曾是 15/16，唯一失败项就是它）。**埋点必须有能力失败**。（2026-10-04 CLI）
 
 ## 待办事项
 
@@ -706,6 +777,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 预览端点（2026-10-02） | `POST /api/synthesis/preview`（零 LLM 调用/零副作用）：逐篇 token + 处理方式 + `stuff_window`；判据与执行**同源**（同一个 `_classify`）；banner 触发集只含 `over_window`/`reject` |
 | ✅ | 维度可控（2026-10-02） | `DIMENSION_PRESETS` 四套经 capabilities 下发；用户给定则跳过维度发现调用；**Stuff 路径也注入**（修复前为零）；维度落出处头 meta |
 | ✅ | 原料可选（2026-10-02） | `raw`（默认）/ `notes` 最新版，**互斥不混合**；预览顺带返回 `hasNotes`；后端执行时再校验；`sourceMode` 落 meta |
+| ✅ | 读者意图与体裁（2026-10-04） | `READER_INTENTS` 五选一决定 `<task>` 段的读者目的；`CONTENT_TYPES` 多标签决定加载哪几类体裁增量条款；两者**经 meta** 抵达生成 prompt；「理解主题/比较材料」刻意不预设体裁 |
+| ✅ | 产物形态重做（2026-10-04） | 默认套换 general 7 维；约束拆三块（事实/文风/体裁）；覆盖说明由开场换到综合评价末尾；删死参数 `user_notes`；`dump_meta` 递归清洗；入参清洗移进 `runner`（原本非法值走 HTTP 500 逃出 SSE 通道） |
 
 ### 📝 转录 & 引擎
 
@@ -828,7 +901,19 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 并发控制 | `ExecutionGuard` 双层信号量（云端 5 + 本地 2），generate/process/retranscribe 已接入 |
 | ✅ | 上下文窗口可配置 | `addModel()` API + ProviderSettings 展示 |
 | ✅ | 日志全链路追踪 | `contextvars.ContextVar` 注入 `request_id`，前端日志面板 |
-| ✅ | 旧格式错误迁移 | 15/15 个路由模块统一 AppError 体系（2026-09-19 核实无 `raise HTTPException` 残留） |
+| ✅ | 旧格式错误迁移 | 18/18 个路由模块统一 AppError 体系（2026-10-04 复核无 `HTTPException` 残留） |
+
+### 🧩 产物复用（2026-10-04 一期落地）
+
+> 源头是三份 pi-docs 约定（密钥存储 / CLI 设计 / 产物复用），共同目标是**让产物能被 agent 复用**：不是没人能读产物，是**读的人不知道读了什么**。
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ✅ | 产物自证头 | `notes`/`polished`/`process` 落盘首行 `<!-- limo-meta {json} -->`，回答「从哪来 / 怎么来的 / 是什么 / 可信度边界」；`core/transcript_meta.py` 拆出 envelope 层（`_parse_envelope` 只认第一行合法注释，`parse_meta` 与 `parse_artifact_meta` 各在其上做 schema 校验）；装配走 `generation/provenance.py::artifact_meta()` + `PROMPT_VERSION`。**普通 `transcript.md` 刻意不加**（会进 prompt）；**无头 ≠ 损坏**；编辑保存带回原头；**派生视图（思维导图）剥头**（模式 #57） |
+| ✅ | 共享查询层 | `services/query.py::QueryService`（零 FastAPI import，CLI 可直接 import）收口全部读路径：分页 / ID 解析 / 版本编排 / meta 装配 / 截断标记。`core/dependencies.py::get_query_service` **惰性构造**（`main.py` 先建 Store 后建 SearchEngine，提前构造 = 静默空结果）。顺带修 `/api/api/search` 双前缀（**存活四个月**，模式 #56） |
+| ✅ | 密钥与凭据卫生（二期，2026-10-04） | `.limo` 内零明文：**先去重**（同一 key 写多份才是根因）→ DPAPI 外移（`ctypes` 直调 `crypt32.dll`，零新依赖）→ 只留 `secrets_ref`；四张成对表收口 `config_io.py`；启动自检 `startup_check` + `scripts/check-secrets.py`；迁移/回滚 `scripts/migrate-secrets.py`（幂等 + 无明文备份）；顺带修 **4** 缺陷（`GET /api/config` 脱敏缺口 / `merge_sensitive` 死调用 / cookie 明文临时文件 / `llm_models` 类型守卫=启动即崩）；`.bak` **同生同灭**无需特殊处理；测试 50 条含 6 条对照实验 |
+| ✅ | CLI + 契约文档（三期，2026-10-04） | Python 同仓 `backend/limo_cli/`（9 文件）；七命令 `status/list/search/get/export/folders/doctor`（**不做写操作**——成本/并发/幂等/误触发风险）。三层：CLI → `QueryService` → `Store`，**CLI 不解析库格式**（否则是第 6 个副本）。两个传输层（`HttpSource` / `LocalSource`）同契约。`--json` 时 **stdout 只有 JSON、日志全走 stderr**（**不用 TTY 检测**）；退出码 `0/2/3/4/5/6`（+130 SIGINT）区分「空」与「坏」，**按 `code` 判不按 HTTP 状态**；`Page` 上 `has_more`+`next_cursor`（能继续翻）与 `truncated`+`continuation`（到头但没给完）**并排且不混用**。契约文档两处：库内 `~/.limo/AGENTS.md`（`doctor --write-agents`，默认不覆盖）+ 仓库根 `AGENTS.md`（读者是改这条链的人）。门禁 `scripts/check-cli` 16 项（独立端口 7419，含 3 条负向对照）。**顺带修 3 缺陷**（模式 #59/#60/#61） |
+| ❌ | 导出 meta 承载（四期） | md / html / docx **保留**、纯 txt **剥离**（注释在纯文本里是可见噪音）；docx 走 `core_properties`（零新依赖）；`[文档 i]` 用 meta 的 `sourceRefs` 解析回稳定 id |
 
 ### 🚀 规划中
 
@@ -852,7 +937,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 |----|------|------|------|
 | 📥 内容导入 | 8 | 8 | 100% |
 | 📚 文档库 | 9 | 9 | 100% |
-| 🔗 多篇合成 | 12 | 12 | 100% |
+| 🔗 多篇合成 | 14 | 14 | 100% |
 | 📝 转录 & 引擎 | 8 | 8 | 100% |
 | ✨ LLM 生成 | 11 | 11 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
@@ -861,4 +946,5 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 📤 导出 | 11 | 12 | 92% |
 | 🎨 前端 UI/UX | 16 | 16 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| **合计** | **107** | **109** | **98%** |
+| 🧩 产物复用 | 4 | 5 | 80% |
+| **合计** | **113** | **116** | **97%** |

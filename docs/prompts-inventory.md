@@ -2,7 +2,7 @@
 
 > 完整记录项目中所有 LLM 提示词，供审视和优化。
 > 生成日期：2026-07-15
-> 最后更新：2026-07-15（P0-3 Agent 工具调用可见性 + 文档智能截断）
+> 最后更新：2026-10-04（新增 §13 提示词版本；产物自证头落盘）
 
 ---
 
@@ -16,8 +16,10 @@
 - [6. 生成管道 — Prompt 构建流程](#6-生成管道--prompt-构建流程)
 - [7. 图片处理 — LLM / OCR Prompt](#7-图片处理--llm--ocr-prompt)
 - [9. AI 对话 — Agent Prompt](#9-ai-对话--agent-prompt)
-- [10. LLM 续写机制](#10-llm-续写机制)
-- [11. 审视点清单](#11-审视点清单)
+- [10. 合成管道 — 多篇对比综述 (Composite)](#10-合成管道--多篇对比综述-composite)
+- [11. LLM 续写机制](#11-llm-续写机制)
+- [12. 审视点清单](#12-审视点清单)
+- [13. 提示词版本（PROMPT_VERSION）](#13-提示词版本prompt_version)
 
 ---
 
@@ -562,7 +564,97 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 
 ---
 
-## 10. LLM 续写机制
+## 10. 合成管道 — 多篇对比综述 (Composite)
+
+**文件**：[backend/app/generation/prompt.py:936-1278](backend/app/generation/prompt.py#L936-L1278)
+**触发**：`sourceType="composite"` 的文档点「生成」→ `PromptBuilder` 在最外层分派（两个 `build_*_prompt` 里各有一条防御性兜底，见 `:753` / `:865`）
+
+**两步走**：N 篇文档 → `POST /api/synthesis/stream`（**只组装、不生成**）→ composite 文档 → 用户
+核对「## 来源文档」后自行点生成 → `build_synthesis_prompt`（**第二次独立 LLM 调用**）。
+
+⚠️ **由此推出的一条硬约束**：凡是生成侧要用的参数，**只能落出处头 meta**——第二次请求时手里
+只有 rawText。故 `build_synthesis_prompt` **签名刻意不扩张**，`dimensions` / `contentType` /
+`readerIntent*` 全部用 `_read_synthesis_*` 从 meta 读回（「合成写什么、生成就读什么」由构造保证）。
+
+### 10.1 节构成（10 个标签中实际用 8 个）
+
+| 节 | 内容 | 来源 |
+|---|---|---|
+| `role` | 综述作者角色 | `_SYNTHESIS_ROLE` |
+| `task` | 合成任务 + **读者目的**（预设 purpose 或用户自填文本） | `_build_synthesis_task(intent_text, title)` |
+| `source_content` | **原样等于 rawText**（含出处头 + 「## 来源文档」列表） | 三位一体前提，不加任何 label 前缀 |
+| `instruction_priority` | 三层：hard_constraints > output_language > user_request | `_SYNTHESIS_INSTRUCTION_PRIORITY`（**合成专用**；全局那份是**四层**，多 style_preference） |
+| `hard_constraints` | 三块拼接：事实 5 条 + 通用文风 7 条 + 体裁增量（0..N 类 × 3 条） | `_SYNTHESIS_FACT_CONSTRAINTS` / `_SYNTHESIS_STYLE_CONSTRAINTS` / `_SYNTHESIS_GENRE_CONSTRAINTS` |
+| `output_language` | 目标语言 | `_build_output_language(target_language, "composite")` |
+| `output_format` | 五段固定结构（「## 对比总表」的**行 = `dimensions`**） | `_build_synthesis_output(dimensions)` |
+| `user_request` | ⚠️ **来源是「生成请求的 `user_notes`」，不是合成对话框** | 见下 |
+
+**无 `style_preference` 节**——输出形状已拍板（五段固定结构），不随风格变化。
+
+⚠️ **`user_notes` 这个名字在本项目指过两样东西，别混**：
+
+| 位置 | 状态 |
+|---|---|
+| `SynthesisRequest.user_notes`（合成对话框的「对比指引」） | **已删除**（2026-10-04）——它是死链：签名里有、函数体零引用。位置由读者意图承接 |
+| `build_synthesis_prompt(..., user_notes=...)`（生成请求的备注） | **仍在用**，注入 `<user_request>`。**不要顺手删**，也不要把它当成对话框那个字段 |
+
+### 10.2 读者意图 `READER_INTENTS`（五选一，决定 `<task>` 段的读者目的）
+
+| key | label | `defaultContentType` |
+|---|---|---|
+| `understand` | 理解主题 | `None`（**不预设**） |
+| `compare` | 比较材料 | `None`（**不预设**） |
+| `controversy` | 找争议 | `media` |
+| `action` | 提炼行动建议 | `product` |
+| `custom` | 自定义 | `None`（用户自填文本，走 `readerIntentText`） |
+
+⚠️ `None` 是刻意的：「理解主题 / 比较材料」是**读者的动作**，不指示材料是什么体裁——给它们
+猜一个正是要消灭的那类错配（对话框静默预填 paper 对视频转写稿毫无意义，用户还看不出为什么）。
+
+### 10.3 材料体裁增量 `CONTENT_TYPES`（多标签）
+
+4 类 × 3 条，**每类第三条是停止条件**（多标签拼接必须去重）：
+
+| key | label | 对应维度预设 |
+|---|---|---|
+| `paper` | 论文 | 论文综述 |
+| `tech` | 技术资料 | 技术资料 |
+| `product` | 产品评测 | 产品评测 |
+| `media` | 观点内容 | 内容观点 |
+
+键**复用** `DIMENSION_PRESETS`（同一种材料的两个侧面），标签另立一份（`DIMENSION_PRESET_LABELS`
+是**产物形态**名，「论文综述」当体裁名不通）。两条成对断言钉住：`set(CONTENT_TYPES) <= set(DIMENSION_PRESETS)`
+且 `set(CONTENT_TYPES) == set(CONTENT_TYPE_LABELS)`。
+
+### 10.4 错误语义（**刻意不同，别统一**）
+
+| 输入 | 处理 | 判据 |
+|---|---|---|
+| `dimensions` / `content_type` | **静默清洗**（丢弃非法 / 去重 / 保序 / 限长） | 多带一个不认识的值不该让整次合成失败 |
+| `source_mode` / `reader_intent` | **显式报错**（`SYNTH_BAD_SOURCE_MODE` / `SYNTH_BAD_READER_INTENT`） | 选错了产物的性质 / 读者目的就变了，而产物上看不出异常 |
+
+### 10.5 温度与超时
+
+- 温度：与 notes 同（合成走 `build_notes_prompt` 分支，无独立设置）
+- 生成侧超时：沿用 `_gen_timeout(formats)` 体系
+- 组装侧另有独立一套：`EXTRACT_TIMEOUT` / `CHUNK_EXTRACT_TIMEOUT` / `SYNTH_QUIET_TIMEOUT` /
+  `SYNTH_TOTAL_TIMEOUT`（详见 CLAUDE.md「合成管道」节与 CHANGELOG 2026-10-02）
+
+### 10.6 本轮（2026-10-04）改了什么
+
+- 默认维度套 `paper` 5 维 → `general` 7 维（`DEFAULT_PAPER_DIMENSIONS` → `DEFAULT_DIMENSIONS`）
+- 约束拆三块；新增读者意图与体裁增量
+- **覆盖说明换位置**：删 `<task>` 段的强制元数据开场（它与新增的「禁止元数据开场」条款直接
+  矛盾——两条对立指令同时发给模型，验收标准不可能达成），改在「## 综合评价」末尾以一句话
+  说明输入覆盖情况
+- 新增 `_SYNTHESIS_INSTRUCTION_PRIORITY`（**必须保留 `output_language` 行**：读者意图是用户
+  自由文本、进 `user_request` 节，正是「不可被用户备注覆盖」保护的场景）
+
+**未做**：10 项自检（显著增加输出 token 与延迟）、改五段骨架（属「路线 2」）。
+
+---
+
+## 11. LLM 续写机制
 
 **文件**：[backend/app/llm/service.py:134-198](backend/app/llm/service.py#L134-L198)
 
@@ -570,9 +662,9 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 
 ---
 
-## 11. 审视点清单
+## 12. 审视点清单
 
-### 11.1 已修复（本次 P0-1）
+### 12.1 已修复（本次 P0-1）
 
 | # | 审视点 | 修复方式 |
 |---|--------|---------|
@@ -586,7 +678,7 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 | ✅ 8 | Agent 工具调用不可见性 | P0-3 新增 `agent_status` 事件 + `tool_start` display + `tool_result` summary |
 | ✅ 9 | 对话文档注入截断 | P0-3 `rawText[:1000]` → `smart_truncate(rawText, 1000)` 按句子边界截断 |
 
-### 11.2 未修复（P1 或更低优先级）
+### 12.2 未修复（P1 或更低优先级）
 
 | # | 审视点 | 严重度 | 说明 |
 |---|--------|--------|------|
@@ -596,7 +688,7 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 | 6 | **小红书风格适用场景** | 低 | "标题用二极管法"更适合标题而非正文 |
 | 7 | **Process 管道的 temperature** | 低 | 所有 4 种模式统一 0.1 |
 
-### 11.3 已确认 OK 的设计
+### 12.3 已确认 OK 的设计
 
 | # | 设计点 | 说明 |
 |---|--------|------|
@@ -607,6 +699,35 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 | 6 | Engine 绑定空列表 vs null | `[]`=清除绑定，`null`=不修改 |
 | 7 | Polish 格式白名单 | toc/link/screenshot/formulas/references/images 是编辑行为，仅 summary 是创作行为（translate 已移除） |
 | 8 | `_POLISH_FORMAT_FNS` vs `_ALL_FORMAT_FNS` | 两套映射表，白名单由传入的 `format_fns` 参数控制 |
+
+---
+
+## 13. 提示词版本（PROMPT_VERSION）
+
+**定义**：[backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) — 当前值 `"1"`
+
+这个常量只有一个用途：写进产物自证头的 `generated.promptVersion`（装配在 `generation/provenance.py`），回答「这份产物是凭哪版提示词生成的」。**它对 prompt 本身零影响**——改它不会让任何一次调用产生不同结果，但会让此后落盘的产物如实标出新版本。
+
+### 13.1 何时 bump
+
+判据是「**这次改动会不会让同一个输入产生不同的输出**」：
+
+| 变动 | bump |
+|------|:--:|
+| `generation/prompt.py` 的模板串（role / task / hard_constraints / output_format… 任一节） | ✅ |
+| `prompts/notes_styles.py` 的风格定义（COMMON / VIDEO / DOC_） | ✅ |
+| `prompt.py::get_chart_format()` 的图表规范措辞 | ✅ |
+| 合成管道的维度发现 / 逐篇抽取 prompt（`generation/synthesis.py`） | ✅ |
+| 参考文件摘要 prompt（`generation/reference_compressor.py`） | ✅ |
+| 只改代码逻辑、**不改发给模型的文本**（换调用顺序、改拼接实现） | ❌ |
+| 只改 temperature / 超时 / max_tokens 等**参数** | ❌（参数进 `generated.params`，两者是不同维度） |
+| 图片处理 prompt（`routers/process.py` 的 `IMAGE_PROMPTS` 4 种模式） | ✅（`artifact_meta` **无条件**写 `promptVersion`，process 产物也带它——与生成产物**共用同一个版本号**，故改图片 prompt 同样要 bump） |
+
+⚠️ **bump 之后新旧共存是正常的，不是不一致**：同一份文档的两版产物可以来自不同提示词，自证头如实记录各自的那一版。
+
+### 13.2 不给历史产物补版本
+
+2026-10-04 之前落盘的产物没有自证头（`parse_artifact_meta` → `(None, False)`，**无头 ≠ 损坏**）。把历史产物一律标成 `"1"` 是不诚实的——它们的真实版本已不可追溯，而**假数据比缺席更坏**（这也是 `identity.version` 刻意留空、由读路径补全的同一条理由）。
 
 ---
 
