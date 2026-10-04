@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+# LiMo CLI 门禁 —— 16 项，跑真后端（独立端口，不打扰你正在跑的那个）。
+#
+#   bash scripts/check-cli            # 全跑
+#   bash scripts/check-cli 12         # 只跑第 12 项（调试用）
+#
+# ⚠️ **为什么用独立端口**：第 3 项要验证「后端不可达 → exit 4」，而那要求一个
+# **确实没人监听**的端口。借用户的 7413 会得到一个不确定的结果（后端在跑的话这项
+# 永远绿，而它绿的原因是错的）。故本脚本自启一个 7419 上的后端，跑完杀掉。
+#
+# ⚠️ **每条判据同时查三样**：退出码、结构化标记（错误 code / 截断 continuation /
+# 分页游标）、以及「是不是假成功」。只查退出码会漏掉「命令失败但退出 0」这类
+# 最危险的形态 —— 那正是这套契约要消灭的东西。
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PORT="${LIMO_CHECK_PORT:-7419}"
+BASE="http://127.0.0.1:$PORT"
+ONLY="${1:-}"
+
+# ── Python 解释器 ──
+PY="${LIMO_PY:-}"
+if [ -z "$PY" ]; then
+  for cand in "$ROOT/backend/.venv/Scripts/python.exe" "$ROOT/backend/.venv/bin/python" \
+              python3 python; do
+    if command -v "$cand" >/dev/null 2>&1; then PY="$cand"; break; fi
+  done
+fi
+if [ -z "$PY" ]; then echo "找不到 Python 解释器（可用 LIMO_PY=... 指定）" >&2; exit 2; fi
+
+# CLI 一律经 `python -m limo_cli`（不依赖 pip 安装过入口点）
+limo() { (cd "$ROOT/backend" && "$PY" -m limo_cli "$@"); }
+
+PASS=0; FAIL=0; N=0
+TMP="$(mktemp -d)"
+BACKEND_PID=""
+# ⚠️ kill 之后要等一下再删临时目录：Windows 上进程退出与文件句柄释放不同步，
+# 立刻 `rm` 会报 "Device or resource busy"，而那条报错出现在**已经失败**的收尾里，
+# 会把真正的失败原因挤出屏幕。删不掉不算失败（`|| true`），但进程必须真的死掉 ——
+# 否则下次跑时 7419 被占，第 3 项（后端不可达）永远绿。
+cleanup() {
+  if [ -n "$BACKEND_PID" ]; then
+    kill "$BACKEND_PID" 2>/dev/null
+    sleep 1
+    kill -9 "$BACKEND_PID" 2>/dev/null
+    wait "$BACKEND_PID" 2>/dev/null
+  fi
+  rm -rf "$TMP" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# ── 断言小工具 ──
+ok()   { PASS=$((PASS+1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
+bad()  { FAIL=$((FAIL+1)); printf '  \033[31m✗\033[0m %s\n' "$1"; [ -n "${2:-}" ] && printf '      %s\n' "$2"; }
+case_start() { N=$((N+1)); if [ -z "$ONLY" ] || [ "$ONLY" = "$N" ]; then echo "[$N] $1"; SKIP=0; else SKIP=1; fi; }
+skip() { [ "$SKIP" = 1 ]; }
+
+json() { "$PY" -c "import json,sys;d=json.load(open(sys.argv[1],encoding='utf-8'));$2" "$1"; }
+
+# 跑一条命令，把 stdout/stderr/exit 分别落到变量
+run() { RC=0; OUT="$("$@" 2>"$TMP/err")" || RC=$?; ERR="$(cat "$TMP/err")"; }
+
+echo "LiMo CLI 门禁 · 端口 $PORT · 解释器 $PY"
+echo
+
+# ══ 1 ══ --help
+case_start "--help 列出全部七个命令"
+if ! skip; then
+  run limo --help
+  miss=""
+  for c in status list search get export folders doctor; do
+    echo "$OUT" | grep -q " $c" || miss="$miss $c"
+  done
+  if [ "$RC" = 0 ] && [ -z "$miss" ]; then ok "退出 0，七命令齐全"
+  else bad "退出 $RC，缺失:$miss"; fi
+fi
+
+# ══ 2 ══ --version 与唯一版本源一致
+case_start "--version 与 VERSION 文件一致（版本同源）"
+if ! skip; then
+  run limo --version
+  want="$(tr -d ' \r\n' < "$ROOT/VERSION")"
+  if [ "$RC" = 0 ] && echo "$OUT" | grep -q "$want"; then ok "limo $want"
+  else bad "输出 '$OUT' 不含 VERSION='$want'"; fi
+fi
+
+# ══ 3 ══ 负向：后端不可达 → 4（此刻 $PORT 上确实没有监听者）
+case_start "负向 · 后端不可达 → exit 4"
+if ! skip; then
+  run limo status --base-url "$BASE"
+  if [ "$RC" = 4 ] && [ -z "$OUT" ] && [ -n "$ERR" ]; then
+    ok "退出 4，stdout 空，诊断在 stderr"
+  else
+    bad "退出 $RC（期望 4）" "stdout='${OUT:0:80}' stderr='${ERR:0:80}'"
+  fi
+fi
+
+# ── 启动独立后端 ──
+(cd "$ROOT/backend" && exec "$PY" -m uvicorn main:app --host 127.0.0.1 --port "$PORT") \
+  >"$TMP/backend.log" 2>&1 &
+BACKEND_PID=$!
+ready=0
+for _ in $(seq 1 60); do
+  if limo status --base-url "$BASE" >/dev/null 2>&1; then ready=1; break; fi
+  sleep 0.5
+done
+if [ "$ready" != 1 ]; then
+  echo "后端未能在 30s 内就绪（$TMP/backend.log）"; tail -20 "$TMP/backend.log"; exit 1
+fi
+
+# ══ 4 ══ doctor
+case_start "doctor 全绿（后端在跑）"
+if ! skip; then
+  run limo doctor --base-url "$BASE" --json
+  if [ "$RC" = 0 ]; then ok "退出 0"
+  else bad "退出 $RC" "$(echo "$ERR" | head -3)"; fi
+fi
+
+# ══ 5 ══ status 契约
+case_start "status --json 有 schema_version 与整数 docCount"
+if ! skip; then
+  run limo status --base-url "$BASE" --json
+  echo "$OUT" > "$TMP/s.json"
+  if [ "$RC" = 0 ] && json "$TMP/s.json" \
+      "assert d['schema_version']=='1'; assert isinstance(d['docCount'],int)" 2>/dev/null; then
+    ok "schema 1 · $(json "$TMP/s.json" "print(d['docCount'])") 篇"
+  else bad "退出 $RC 或字段不符" "${OUT:0:120}"; fi
+fi
+
+# ══ 6 ══ list 分页形状
+case_start "list --limit 3 --json 每项 ≤ 3 条且 JSON 可解析"
+if ! skip; then
+  run limo list --base-url "$BASE" --limit 3 --json
+  echo "$OUT" > "$TMP/l1.json"
+  if [ "$RC" = 0 ] && json "$TMP/l1.json" \
+      "assert len(d['items'])<=3; assert all('id' in i for i in d['items'])" 2>/dev/null; then
+    ok "$(json "$TMP/l1.json" "print(len(d['items']))") 条"
+  else bad "退出 $RC 或结构不符" "${OUT:0:120}"; fi
+fi
+
+# ══ 7 ══ has_more 与 next_cursor 必须同进同出
+case_start "has_more 为真 ⇔ next_cursor 存在（不能只给其一）"
+if ! skip; then
+  if json "$TMP/l1.json" \
+      "assert (d['has_more'] and d['next_cursor']) or (not d['has_more'] and not d['next_cursor'])" 2>/dev/null; then
+    ok "两者一致（has_more=$(json "$TMP/l1.json" "print(d['has_more'])")）"
+  else bad "has_more 与 next_cursor 不一致 —— 翻页循环会静默少拿数据"; fi
+fi
+
+# ══ 8 ══ 游标续传：第二页与第一页无交集
+case_start "游标续传：第二页与第一页 id 不重叠"
+if ! skip; then
+  cur="$(json "$TMP/l1.json" "print(d['next_cursor'] or '')")"
+  if [ -z "$cur" ]; then
+    ok "库中不足 3 篇（has_more=false），本项无第二页可测"
+  else
+    run limo list --base-url "$BASE" --limit 3 --cursor "$cur" --json
+    echo "$OUT" > "$TMP/l2.json"
+    if [ "$RC" = 0 ] && "$PY" -c "
+import json,sys
+a={i['id'] for i in json.load(open(sys.argv[1],encoding='utf-8'))['items']}
+b={i['id'] for i in json.load(open(sys.argv[2],encoding='utf-8'))['items']}
+sys.exit(1 if (a & b) or not b else 0)" "$TMP/l1.json" "$TMP/l2.json"; then
+      ok "第二页非空且无重叠"
+    else bad "第二页为空或与第一页重叠 —— 游标判据与排序判据不同源"; fi
+  fi
+fi
+
+# ══ 9 ══ 并集 == 全集
+case_start "list --all 的条数 == status 的 docCount（并集 == 全集）"
+if ! skip; then
+  run limo list --base-url "$BASE" --all --json
+  echo "$OUT" > "$TMP/all.json"
+  if [ "$RC" = 0 ] && "$PY" -c "
+import json,sys
+alln=len(json.load(open(sys.argv[1],encoding='utf-8'))['items'])
+docn=json.load(open(sys.argv[2],encoding='utf-8'))['docCount']
+sys.exit(1 if alln!=docn else 0)" "$TMP/all.json" "$TMP/s.json"; then
+    ok "$(json "$TMP/all.json" "print(len(d['items']))") == docCount"
+  else bad "--all 条数与 docCount 不一致 —— 有文档静默消失"; fi
+fi
+
+# ══ 10 ══ search
+case_start "search 能命中且每项三字段齐全"
+if ! skip; then
+  kw="$("$PY" -c "
+import json,sys
+items=json.load(open(sys.argv[1],encoding='utf-8'))['items']
+import re
+for it in items:
+    m=re.findall(r'[0-9A-Za-z一-鿿]{2,}', it.get('title') or '')
+    if m: print(m[0][:4]); break" "$TMP/all.json")"
+  if [ -z "$kw" ]; then
+    ok "库中无可作关键词的标题，本项跳过"
+  else
+    run limo search --base-url "$BASE" "$kw" --json
+    echo "$OUT" > "$TMP/se.json"
+    if [ "$RC" = 0 ] && json "$TMP/se.json" \
+        "assert d['items'] and all({'id','title','snippet'}<=set(i) for i in d['items'])" 2>/dev/null; then
+      ok "关键词 '$kw' 命中 $(json "$TMP/se.json" "print(len(d['items']))") 条"
+    else bad "退出 $RC 或无命中/字段缺失（关键词 '$kw'）" "${OUT:0:120}"; fi
+  fi
+fi
+
+# ══ 11 ══ get 契约（含产物清单）
+case_start "get --json 含 id/title/rawText/artifacts"
+if ! skip; then
+  doc="$(json "$TMP/all.json" "print(d['items'][0]['id'])")"
+  run limo get --base-url "$BASE" "$doc" --json
+  echo "$OUT" > "$TMP/g.json"
+  if [ "$RC" = 0 ] && json "$TMP/g.json" \
+      "assert {'id','title','rawText','artifacts'}<=set(d)" 2>/dev/null; then
+    ok "$doc · 产物 $(json "$TMP/g.json" "print(len(d['artifacts']))") 个"
+  else bad "退出 $RC 或字段缺失" "${OUT:0:120}"; fi
+fi
+
+# ══ 12 ══ 负向：坏 ID → 5，且 stdout 不许有数据
+case_start "负向 · 坏 ID → exit 5 + QUERY_INVALID_ID + stdout 空"
+if ! skip; then
+  run limo get --base-url "$BASE" '../../etc/passwd'
+  if [ "$RC" = 5 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "无效的资源 ID"; then
+    ok "退出 5，识别为「坏输入」而非「未找到」"
+  else bad "退出 $RC（期望 5）" "stdout='${OUT:0:80}' stderr='${ERR:0:80}'"; fi
+fi
+
+# ══ 13 ══ 负向：合法但不存在的 ID → 3（与 12 成对，区分「空」与「坏」）
+case_start "负向 · 不存在的合法 ID → exit 3（与上项成对）"
+if ! skip; then
+  run limo get --base-url "$BASE" tr_000000000000
+  if [ "$RC" = 3 ]; then ok "退出 3"
+  else bad "退出 $RC（期望 3）" "${ERR:0:80}"; fi
+fi
+
+# ══ 14 ══ 负向：用法错误 → 2
+case_start "负向 · 用法错误（--limit 0）→ exit 2"
+if ! skip; then
+  run limo list --base-url "$BASE" --limit 0
+  if [ "$RC" = 2 ] && [ -z "$OUT" ]; then ok "退出 2，未打印任何数据"
+  else bad "退出 $RC（期望 2）" "${ERR:0:80}"; fi
+fi
+
+# ══ 15 ══ 截断必须显式（绝不静默截断）
+# ⚠️ 现找一篇**真有产物**的文档：`$doc` 是列表第一篇，它多半没生成过笔记，而
+# 「跳过」冠冕堂皇地让这条门禁常年不跑 —— 一条永远不执行的检查写着比不写更糟。
+case_start "超限结果显式标 truncated + 给 continuation"
+if ! skip; then
+  testdoc=""
+  for cand in $(json "$TMP/all.json" "print(' '.join(i['id'] for i in d['items'][:8]))"); do
+    if limo get --base-url "$BASE" "$cand" --json 2>/dev/null | \
+        "$PY" -c "import json,sys;sys.exit(0 if json.load(sys.stdin)['artifacts'] else 1)"; then
+      testdoc="$cand"; break
+    fi
+  done
+  [ -z "$testdoc" ] && testdoc="$doc"
+  found=""
+  for part in notes polished extract table digitize understand; do
+    run limo get --base-url "$BASE" "$testdoc" --part "$part" --max-chars 50 --json
+    [ "$RC" = 0 ] && found="$part" && break
+  done
+  if [ -z "$found" ]; then
+    ok "该文档无可测产物，本项跳过"
+  else
+    echo "$OUT" > "$TMP/tr.json"
+    if json "$TMP/tr.json" \
+        "assert d['truncated'] is True; assert d['continuation']['next_offset']; assert len(d['content'])<=50" 2>/dev/null; then
+      ok "$found 截断显式（next_offset=$(json "$TMP/tr.json" "print(d['continuation']['next_offset'])"))"
+    else bad "$found 未显式标截断或未给续读方式" "${OUT:0:160}"; fi
+  fi
+fi
+
+# ══ 16 ══ export 落盘与 rawText 一致
+# ⚠️ 比的是**字符数**不是字节数：rawText 多为中文，一字符 3 字节，拿 `wc -c` 去比
+# `len()` 会得到一个恒不相等的断言（一条永远红的项和没有这条项等价）。
+case_start "export --part raw 落盘内容 == get 的 rawText"
+if ! skip; then
+  outfile="$TMP/raw.md"
+  run limo export --base-url "$BASE" "$doc" --part raw -o "$outfile"
+  got="$([ -f "$outfile" ] && "$PY" -c "import sys;print(len(open(sys.argv[1],encoding='utf-8').read()))" "$outfile" 2>/dev/null || echo -1)"
+  want="$(json "$TMP/g.json" "print(len(d['rawText']))")"
+  if [ "$RC" = 0 ] && [ "$got" = "$want" ] && [ "$got" != "-1" ]; then
+    ok "$got 字符，与 rawText 逐字等长"
+  else bad "退出 $RC，落盘 $got 字符 / rawText $want" "${ERR:0:80}"; fi
+fi
+
+echo
+echo "──────────────  $PASS 通过 / $FAIL 失败  ──────────────"
+[ "$FAIL" = 0 ] || exit 1

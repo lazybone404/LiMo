@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from app.core.dependencies import get_store
 from app.core.errors import AppError
+from app.core.transcript_meta import parse_artifact_meta, strip_meta
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.storage.store import rewrite_asset_urls
 
@@ -74,11 +75,27 @@ async def edit_markdown(transcript_id: str, req: MarkdownEditRequest,
         style = "minimal"
 
     content = _unrewrite_asset_urls(req.content, transcript_id)
+
+    # ⚠️ 自证头是**系统管理**的首行，不属于用户的编辑对象（预览区不渲染它，只有
+    # 源码视图可见）。编辑保存的两条规矩：
+    #   ① 前端送来的正文里若带着旧头，**一律先剥掉**——以库里已有的头为准，不采纳
+    #      编辑器里那份可能被误改的副本；
+    #   ② 编辑**不改变** provenance（源、生成方式、可信边界），所以头原样带回。
+    # 丢掉头的后果很具体：一次编辑就把产物打回「不可自证」，正是本轮要修的缺陷。
+    body = strip_meta(content)
+    head, head_corrupt = parse_artifact_meta(mds[0].get("content") or "")
+    if head_corrupt:
+        # 库里已有的头是坏的：不把坏 JSON 再写回去（留着只会让下游继续读到 corrupt），
+        # 本次编辑顺手清理并留 warning——降级要看得见，不静默。
+        logger.warning("编辑保存：已有自证头损坏，本次重写不带头 tx=%s mode=%s",
+                       transcript_id, req.mode)
+        head = None
+
     mv = MarkdownView(
         id=f"md_{uuid.uuid4().hex}", transcript_id=transcript_id,
-        content=content, style=style, mode=GenerateMode(req.mode),
+        content=body, style=style, mode=GenerateMode(req.mode),
     )
-    if not store.save_markdown(mv, extra={"edited": True}):
+    if not store.save_markdown(mv, file_meta=head, index_extra={"edited": True}):
         raise AppError("MD_EDIT_SAVE_FAILED", "保存失败，请重试", recoverable=True)
 
     # 返回对齐 GET /api/markdown：最新 entry + versions + edited

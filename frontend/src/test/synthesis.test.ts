@@ -17,7 +17,7 @@
  *        因为其余用例都会先收到 done/error。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { streamSynthesis, type StreamSynthesisCallbacks, type SynthesisOptions } from '../api/synthesis'
+import { streamSynthesis, previewSynthesis, type StreamSynthesisCallbacks, type SynthesisOptions } from '../api/synthesis'
 
 interface Captured {
   url: string
@@ -85,13 +85,15 @@ describe('streamSynthesis — 请求形状', () => {
     expect(captured[0].url).not.toContain('?')  // 参数一律走 body
   })
 
-  it('title / user_notes / model_id 原样带出', async () => {
+  it('title / reader_intent / reader_intent_text / content_type / model_id 原样带出', async () => {
     stubFetch(sseResponse(['data: {"type":"done","id":"x"}\n\n']))
     streamSynthesis(['tr_a', 'tr_b'],
-      { title: '甲乙对比', userNotes: '重点看方法差异', modelId: 7 }, cb())
+      { title: '甲乙对比', readerIntent: 'controversy', readerIntentText: '重点看方法差异',
+        contentType: ['paper'], modelId: 7 }, cb())
     await vi.waitFor(() => expect(results.length).toBe(1))
     expect(bodyOf()).toMatchObject({
-      title: '甲乙对比', user_notes: '重点看方法差异', model_id: 7,
+      title: '甲乙对比', reader_intent: 'controversy',
+      reader_intent_text: '重点看方法差异', content_type: ['paper'], model_id: 7,
     })
   })
 
@@ -99,9 +101,13 @@ describe('streamSynthesis — 请求形状', () => {
     stubFetch(sseResponse(['data: {"type":"done","id":"x"}\n\n']))
     streamSynthesis(['tr_a', 'tr_b'], {}, cb())
     await vi.waitFor(() => expect(results.length).toBe(1))
+    // ⚠️ 这里列的是**全部**字段名：`user_notes`（对比指引）是死链，已删除；
+    // 少了它而多了 `reader_intent*` 是本轮契约变更的**唯一可见证据**——
+    // 若哪天有人把旧字段加回来而不删新的，这条会红。
     expect(bodyOf()).toEqual({
-      doc_ids: ['tr_a', 'tr_b'], title: '', user_notes: '', model_id: null,
+      doc_ids: ['tr_a', 'tr_b'], title: '', model_id: null,
       dimensions: [], source_mode: 'raw',
+      reader_intent: '', reader_intent_text: '', content_type: [],
     })
   })
 
@@ -113,6 +119,25 @@ describe('streamSynthesis — 请求形状', () => {
     expect(bodyOf()).toMatchObject({
       dimensions: ['研究问题', '方法'], source_mode: 'notes',
     })
+  })
+})
+
+describe('previewSynthesis — 请求形状（此前完全没测）', () => {
+  it('只发规划相关的三项：意图与体裁**不影响**规划，发了反而暗示它们影响', async () => {
+    stubFetch({ ok: true, status: 200, json: async () => ({ docs: [] }) } as unknown as Response)
+    await previewSynthesis(['tr_a', 'tr_b'], null, 'notes')
+    expect(captured[0].init.method).toBe('POST')
+    expect(bodyOf()).toEqual({
+      doc_ids: ['tr_a', 'tr_b'], model_id: null, source_mode: 'notes',
+    })
+  })
+
+  it('业务失败走 200 + body.code —— 只看 response.ok 会把失败当成功，再拿它渲染', async () => {
+    stubFetch({
+      ok: true, status: 200,
+      json: async () => ({ code: 'SYNTH_NOT_ENOUGH_DOCS', message: '至少选择 2 篇' }),
+    } as unknown as Response)
+    await expect(previewSynthesis(['tr_a'], null)).rejects.toThrow('至少选择 2 篇')
   })
 })
 

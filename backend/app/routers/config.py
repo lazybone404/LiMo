@@ -3,6 +3,7 @@
 """
 
 import logging
+import re
 
 from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel, model_validator
@@ -29,6 +30,55 @@ def _mask_agent_tools(agent_tools: dict) -> dict:
     return at
 
 
+def _mask_fields(d: dict, fields: tuple[str, ...]) -> dict:
+    """逐字段脱敏（值非空才动）—— 供 cloud 段这类「整块原样返回」的缺口收口。
+
+    ⚠️ 前端**不使用** cloud 段（全仓 grep 零命中），故这里可以安全地只留结构。
+    """
+    out = dict(d or {})
+    for k in fields:
+        if out.get(k):
+            out[k] = mask_sensitive(out[k])
+    return out
+
+
+def _summarize_parsed(platform: str, cfg: dict) -> dict | None:
+    """Cookie 解析**摘要** —— 只回答「认没认出来、几个字段」，**不返回任何值**。
+
+    ⚠️ 本端点曾原样返回 `auth.<platform>_parsed`，那里含**明文 cookies dict + netscape 全文**
+    （netscape 就是把 cookie 摊成 yt-dlp 可直接用的文件内容，是最敏感的形态）。
+
+    ⚠️ 刻意**实时派生**而不是读落盘的 `_parsed`：派生数据不该有第二个真相源 ——
+    落盘那份会与 `auth.<platform>` 漂移，而它本来就随时能重算。副作用是本端点不依赖
+    存储形态，将来 `_parsed` 不再落盘时这里零改动。
+    """
+    raw = (cfg.get("auth") or {}).get(platform, "")
+    if not raw:
+        return None
+    parsed = auto_parse(raw)
+    return {"platform": parsed["platform"], "cookieCount": len(parsed["cookies"])}
+
+
+_PROXY_AUTH_RE = re.compile(
+    r"^([a-zA-Z][a-zA-Z0-9+.\-]*://)([^:@/]*):([^@/]*)@(.*)$")
+
+
+def mask_proxy(url: str) -> str:
+    """代理 URL 脱敏 —— 只抹 `user:password@` 里的 **password**，host:port 原样保留
+    （前端要显示它、用户要认得出是哪个代理）。已是脱敏值时幂等。
+
+    ⚠️ 与它**成对**的是 `update_config` 里的 `merge_sensitive` 回填 —— 少了那一半，
+    用户「打开设置页 → 不改 → 保存」就会把 `***` 写进配置，真实密码无声丢失。
+    """
+    if not url or "@" not in url:
+        return url
+    m = _PROXY_AUTH_RE.match(url)
+    if not m:
+        return url
+    scheme, user, _password, rest = m.groups()
+    return f"{scheme}{user}:***@{rest}"
+
+
 @router.get("/config")
 async def get_config(request: Request, cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
     llm_key = cfg.get("llm", {}).get("api_key", "")
@@ -42,18 +92,21 @@ async def get_config(request: Request, cfg=Depends(get_config_dep), cfg_lock=Dep
         },
         # 优先读 scene_models（新格式），回退 llm_per_scene（旧格式）
         "llm_per_scene": cfg.get("scene_models") or cfg.get("llm_per_scene", {}),
-        "cloud": cfg.get("cloud", {}),
+        # ⚠️ 曾整块原样返回（含明文 dashscope / alibaba key）。前端零使用该段 → 逐字段脱敏。
+        "cloud": _mask_fields(cfg.get("cloud", {}), ("dashscope", "alibaba")),
         "fetch": {
-            "proxy": cfg.get("fetch", {}).get("proxy", ""),
+            "proxy": mask_proxy(cfg.get("fetch", {}).get("proxy", "")),
         },
         "auth": {
             "bilibili": mask_sensitive(cfg.get("auth", {}).get("bilibili", "")),
             "youtube": mask_sensitive(cfg.get("auth", {}).get("youtube", "")),
             "douyin": mask_sensitive(cfg.get("auth", {}).get("douyin", "")),
-            # 返回解析后的关键字段列表
-            "bilibili_parsed": cfg.get("auth", {}).get("bilibili_parsed"),
-            "youtube_parsed": cfg.get("auth", {}).get("youtube_parsed"),
-            "douyin_parsed": cfg.get("auth", {}).get("douyin_parsed"),
+            # ⚠️ 曾原样返回 `<platform>_parsed` —— 那里含明文 cookies dict + netscape 全文
+            #    （netscape 是 yt-dlp 可直接用的 cookie 文件内容，最敏感的形态）。
+            #    改为只答「认出来没有、几个字段」，值一律不出门。
+            "bilibili_parsed": _summarize_parsed("bilibili", cfg),
+            "youtube_parsed": _summarize_parsed("youtube", cfg),
+            "douyin_parsed": _summarize_parsed("douyin", cfg),
         },
         "data_dir": cfg.get("data_dir"),
         "agent_tools": _mask_agent_tools(cfg.get("agent_tools", {})),
@@ -105,47 +158,33 @@ async def update_config(data: ConfigUpdate, request: Request, cfg=Depends(get_co
                 cloud_data["dashscope"] = merge_sensitive(cloud_data["dashscope"], old_key)
             cfg["cloud"] = {**cfg.get("cloud", {}), **cloud_data}
 
-        # Fetch 配置
+        # Fetch 配置 —— ⚠️ 与 GET 的 `mask_proxy` **成对**：少了这一半，用户「打开设置页 →
+        # 不改 → 保存」就会把脱敏后的 `user:***@host` 写进配置，真实代理密码无声丢失
+        # （前端 SettingsPage 确实把 GET 回来的 proxy 直接塞进输入框再原样提交）。
         if data.fetch:
-            cfg["fetch"] = {**cfg.get("fetch", {}), **data.fetch}
+            fetch_data = dict(data.fetch)
+            if fetch_data.get("proxy"):
+                old_proxy = cfg.get("fetch", {}).get("proxy", "")
+                fetch_data["proxy"] = merge_sensitive(fetch_data["proxy"], old_proxy)
+            cfg["fetch"] = {**cfg.get("fetch", {}), **fetch_data}
 
-        # Auth — Cookie（脱敏保护 + 自动解析）
+        # Auth — Cookie（脱敏保护）
+        #
+        # ⚠️ 此前这里还把每个平台**再多写两份派生副本**（`<platform>_parsed.cookies` +
+        #    `.netscape`）—— 同一份 cookie 在配置里存成**三份**，而 `netscape` 就是
+        #    yt-dlp 可直接使用的 cookie 文件内容（最敏感的形态）。
+        #    但 `auto_parse()` 是**纯确定性函数**：派生数据不该落盘、不该有第二个真相源
+        #    （两份副本会在用户改 cookie 时与 `auth.<platform>` 漂移）。
+        #    全仓唯一的读者 `GET /api/config` 已改为**实时派生摘要**（`_summarize_parsed`），
+        #    前端对 `_parsed` 零命中 ⇒ 安全删除。循环里的 `pop` 负责清掉**历史落盘**的副本
+        #    （它们会经 `_deep_merge` 回到内存，不清就会一直被写回去）。
         if data.auth:
             auth = cfg.get("auth", {})
-            raw_bili = data.auth.get("bilibili", "")
-            raw_youtube = data.auth.get("youtube", "")
-            raw_douyin = data.auth.get("douyin", "")
-
-            if raw_bili and raw_bili.strip():
-                raw_bili = merge_sensitive(raw_bili, auth.get("bilibili", ""))
-                parsed = auto_parse(raw_bili)
-                auth["bilibili"] = raw_bili
-                auth["bilibili_parsed"] = {
-                    "platform": parsed["platform"],
-                    "cookies": parsed["cookies"],
-                    "netscape": parsed["netscape"],
-                }
-
-            if raw_youtube and raw_youtube.strip():
-                raw_youtube = merge_sensitive(raw_youtube, auth.get("youtube", ""))
-                parsed_yt = auto_parse(raw_youtube)
-                auth["youtube"] = raw_youtube
-                auth["youtube_parsed"] = {
-                    "platform": parsed_yt["platform"],
-                    "cookies": parsed_yt["cookies"],
-                    "netscape": parsed_yt["netscape"],
-                }
-
-            if raw_douyin and raw_douyin.strip():
-                raw_douyin = merge_sensitive(raw_douyin, auth.get("douyin", ""))
-                parsed_dy = auto_parse(raw_douyin)
-                auth["douyin"] = raw_douyin
-                auth["douyin_parsed"] = {
-                    "platform": parsed_dy["platform"],
-                    "cookies": parsed_dy["cookies"],
-                    "netscape": parsed_dy["netscape"],
-                }
-
+            for _platform in ("bilibili", "youtube", "douyin"):
+                auth.pop(f"{_platform}_parsed", None)
+                _raw = data.auth.get(_platform, "")
+                if _raw and _raw.strip():
+                    auth[_platform] = merge_sensitive(_raw, auth.get(_platform, ""))
             cfg["auth"] = auth
 
         # 目标语言

@@ -149,6 +149,16 @@ function selectRows(container: HTMLElement, n: number) {
 const synthBtn = (container: HTMLElement) =>
   container.querySelector('button[title*="对比综述"]') as HTMLButtonElement
 
+/**
+ * 展开「高级选项」——对比维度与材料体裁都移进了这个折叠区（读者意图才是主控件）。
+ *
+ * ⚠️ 折叠用的是**条件渲染**（`{synthAdvanced && …}`）而不是 CSS 隐藏：收起时那两个
+ * 控件**根本不在 DOM 里**，所以「维度默认不可见」这条判据才有硬证据（见 §18.1）。
+ */
+function openAdvanced(container: HTMLElement) {
+  fireEvent.click(container.querySelector('[data-synth-advanced-toggle]') as HTMLElement)
+}
+
 describe('DocLibrary — 合成按钮门控', () => {
   it('1 篇时禁用，2 篇时可点', () => {
     useStore.setState({ docs: twoDocs() })
@@ -169,7 +179,7 @@ describe('DocLibrary — 合成按钮门控', () => {
 })
 
 describe('DocLibrary — 合成请求形状', () => {
-  it('body 里的 doc_ids 等于选中集，标题/指引原样带出', async () => {
+  it('body 里的 doc_ids 等于选中集，标题原样带出', async () => {
     useStore.setState({ docs: twoDocs() })
     const { container } = render(<DocLibrary />)
 
@@ -180,7 +190,6 @@ describe('DocLibrary — 合成请求形状', () => {
     expect(container.querySelector('[data-synth-sources]')!.textContent).toContain('论文 B')
 
     fireEvent.change(container.querySelector('[data-synth-title]')!, { target: { value: '两篇对比' } })
-    fireEvent.change(container.querySelector('[data-synth-notes]')!, { target: { value: '重点比方法' } })
     fireEvent.click(container.querySelector('[data-confirm-synth]')!)
 
     await vi.waitFor(() => expect(streamCall()).toBeTruthy())
@@ -190,7 +199,9 @@ describe('DocLibrary — 合成请求形状', () => {
     // 注意断言的是**逐项相等**（含顺序），不是 contains——顺序决定正文里 `【文档 1】` 是谁。
     expect(body.doc_ids).toEqual(['tr_a', 'tr_b'])
     expect(body.title).toBe('两篇对比')
-    expect(body.user_notes).toBe('重点比方法')
+    // ⚠️ 旧字段 `user_notes`（「对比指引」）**已删除**——它是死链：后端签名里有、
+    // 函数体零引用，用户填的指引对产物从来没有影响。这条断言钉住它没被加回来。
+    expect(body).not.toHaveProperty('user_notes')
     expect(call.init.method).toBe('POST')
     expect(call.url).toContain('/synthesis/stream')
   })
@@ -311,11 +322,25 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
     ],
   } as unknown as Capabilities)
 
+  it('维度默认收在「高级」区里（它不再是主控件；读者意图才是）', async () => {
+    useStore.setState({ docs: twoDocs(), capabilities: withPresets() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    // ⚠️ 对照：把维度留在外面（不折叠）→ 此处非 null → 红
+    expect(container.querySelector('[data-synth-dims]')).toBeNull()
+    expect(container.querySelector('[data-synth-advanced-toggle]')).toBeTruthy()
+    openAdvanced(container)
+    expect(container.querySelector('[data-synth-dims]')).toBeTruthy()
+  })
+
   it('预设下拉消费 capabilities；默认预填首个预设、切换预设覆盖列表', async () => {
     useStore.setState({ docs: twoDocs(), capabilities: withPresets() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
+    openAdvanced(container)
 
     const select = container.querySelector('[data-synth-preset]') as HTMLSelectElement
     // ⚠️ 对照：前端硬编码预设名 → capabilities 换了文案它不变 → 红
@@ -332,6 +357,7 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
+    openAdvanced(container)
 
     fireEvent.change(container.querySelector('[data-synth-dims]')!,
       { target: { value: '样本量\n\n  结论  \n样本量' } })
@@ -347,9 +373,128 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
+    openAdvanced(container)
 
     expect(container.querySelector('[data-synth-preset]')).toBeNull()
     expect(container.querySelector('[data-synth-dims]')).toBeTruthy()
+  })
+})
+
+describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
+  /** 五项意图 + 四项体裁，形状与后端 `READER_INTENTS` / `CONTENT_TYPES` 一致 */
+  const withIntents = (): Capabilities => ({
+    llmModels: {},
+    readerIntents: [
+      { key: 'understand', label: '理解主题', purpose: '读完能准确复述核心议题。', defaultContentType: null },
+      { key: 'controversy', label: '找争议', purpose: '读完能指出真正冲突的地方。', defaultContentType: 'media' },
+      { key: 'custom', label: '自定义', purpose: '', defaultContentType: null },
+    ],
+    contentTypes: [
+      { key: 'paper', label: '论文' },
+      { key: 'media', label: '观点内容' },
+    ],
+  } as unknown as Capabilities)
+
+  it('意图单选组消费 capabilities，默认选中第一项并显示它的说明', () => {
+    useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    const radios = [...container.querySelectorAll('[data-synth-intent]')] as HTMLInputElement[]
+    // ⚠️ 对照：前端硬编码五档意图 → capabilities 换了标签它不变 → 红
+    expect(radios.map(r => r.parentElement!.textContent)).toEqual(['理解主题', '找争议', '自定义'])
+    expect(radios[0].checked).toBe(true)
+    expect(container.querySelector('[data-synth-intent-purpose]')!.textContent)
+      .toContain('准确复述')
+  })
+
+  it('切意图 → body 带出该 key；选「自定义」才出现文本框并带出文本', async () => {
+    useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    // 非「自定义」意图没有文本框（后端按意图取预设文案，用户没东西可填）
+    expect(container.querySelector('[data-synth-intent-text]')).toBeNull()
+
+    fireEvent.click(container.querySelector('[data-synth-intent="custom"]')!)
+    fireEvent.change(container.querySelector('[data-synth-intent-text]')!,
+      { target: { value: '给团队做选型决策，重点看成本' } })
+    fireEvent.click(container.querySelector('[data-confirm-synth]')!)
+
+    await vi.waitFor(() => expect(streamCall()).toBeTruthy())
+    const body = JSON.parse(String(streamCall()!.init.body))
+    expect(body.reader_intent).toBe('custom')
+    expect(body.reader_intent_text).toBe('给团队做选型决策，重点看成本')
+  })
+
+  it('切走「自定义」后不再发那段文本（否则它会污染另一条意图的读者目的）', async () => {
+    useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    fireEvent.click(container.querySelector('[data-synth-intent="custom"]')!)
+    fireEvent.change(container.querySelector('[data-synth-intent-text]')!,
+      { target: { value: '写给谁看的说明' } })
+    fireEvent.click(container.querySelector('[data-synth-intent="controversy"]')!)
+    fireEvent.click(container.querySelector('[data-confirm-synth]')!)
+
+    await vi.waitFor(() => expect(streamCall()).toBeTruthy())
+    const body = JSON.parse(String(streamCall()!.init.body))
+    expect(body.reader_intent).toBe('controversy')
+    expect(body.reader_intent_text).toBe('')
+  })
+
+  it('体裁由意图预填（找争议 → 观点内容），留空的意图不预填任何体裁', async () => {
+    useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+    openAdvanced(container)
+
+    const checked = () => [...container.querySelectorAll('[data-synth-genre]')]
+      .filter(n => (n as HTMLInputElement).checked)
+      .map(n => (n as HTMLElement).getAttribute('data-synth-genre'))
+
+    // 「理解主题」的 defaultContentType 是 null → **刻意留空**，不替用户猜一个
+    // （⚠️ 对照：无脑预填 paper → 此处非空 → 红）
+    expect(checked()).toEqual([])
+
+    fireEvent.click(container.querySelector('[data-synth-intent="controversy"]')!)
+    expect(checked()).toEqual(['media'])
+  })
+
+  it('体裁可多选修正；不选则 body 里是空数组（不加任何体裁专属条款）', async () => {
+    useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+    openAdvanced(container)
+
+    // 手动加一个 → 两个都在（多选是「修正」不是「替换」）
+    fireEvent.click(container.querySelector('[data-synth-intent="controversy"]')!)
+    fireEvent.click(container.querySelector('[data-synth-genre="paper"]')!)
+    fireEvent.click(container.querySelector('[data-confirm-synth]')!)
+    await vi.waitFor(() => expect(streamCall()).toBeTruthy())
+    expect(JSON.parse(String(streamCall()!.init.body)).content_type).toEqual(['media', 'paper'])
+  })
+
+  it('切意图重置体裁（与「切换预设覆盖维度」同款语义，小字已注明）', () => {
+    useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+    openAdvanced(container)
+
+    fireEvent.click(container.querySelector('[data-synth-intent="controversy"]')!)
+    fireEvent.click(container.querySelector('[data-synth-genre="paper"]')!)
+    // 切回不预填体裁的意图 → 之前手选的也一并清掉（覆盖语义，不留混血状态）
+    fireEvent.click(container.querySelector('[data-synth-intent="understand"]')!)
+    const checked = [...container.querySelectorAll('[data-synth-genre]')]
+      .filter(n => (n as HTMLInputElement).checked)
+    expect(checked).toEqual([])
   })
 })
 

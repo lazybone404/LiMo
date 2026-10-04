@@ -122,6 +122,31 @@ export interface DimensionPreset {
   dimensions: string[]
 }
 
+/**
+ * 材料体裁选项（合成对话框「高级」区的多选框；后端 `synthesis.CONTENT_TYPES` 下发）。
+ *
+ * ⚠️ `label` 与 `DimensionPreset.label` **刻意不同**——这里描述的是**材料本身**
+ * （「论文」），那边描述的是**产物形态**（「论文综述」）。两组键相同、文案不同。
+ */
+export interface ContentTypeOption {
+  key: string
+  label: string
+}
+
+/** 读者意图选项（合成对话框的主控件；后端 `synthesis.READER_INTENTS` 下发） */
+export interface ReaderIntentOption {
+  key: string
+  label: string
+  /** 该意图的完整描述（对话框里作小字说明） */
+  purpose: string
+  /**
+   * 建议的材料体裁 key。**`null` = 不预设**——「理解主题」「比较材料」说的是
+   * 读者的动作，不指示材料是什么体裁；前端据此留空高级区，而不是替用户猜一个
+   * （静默预填「论文」对一叠视频转写稿毫无意义，而用户看不出为什么）。
+   */
+  defaultContentType: string | null
+}
+
 export interface Capabilities {
   adapters: string[]
   engines: Record<string, Record<string, { supported_modes: string[] }>>
@@ -158,6 +183,13 @@ export interface Capabilities {
    * 整个 capabilities 解析失败（消费处一律 `?? []`）。
    */
   dimensionPresets?: DimensionPreset[]
+  /**
+   * 材料体裁选项（「高级」区多选框）。与 `dimensionPresets` 同款的可选字段——
+   * 老后端不返回时消费处一律 `?? []`，不让整个 capabilities 解析失败。
+   */
+  contentTypes?: ContentTypeOption[]
+  /** 读者意图选项（对话框主控件）。可选理由同上。 */
+  readerIntents?: ReaderIntentOption[]
   /** 缺 key 项（P2.1 主动提示）：llm 未配 key 的厂商 + 未配 key 的引擎（dashscope） */
   missingKeys: {
     llm: { id: string; name: string }[]

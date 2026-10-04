@@ -24,6 +24,7 @@ from app.core.config import build_engine_models
 from app.core.dependencies import get_store, get_config, get_guard
 from app.core.disconnect import disconnect_watcher
 from app.core.types import ProcessResult
+from app.generation.provenance import artifact_meta
 from app.llm import LLMService
 
 router = APIRouter(tags=["process"])
@@ -285,7 +286,16 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
                 engine=engine_name,
                 content=text,
             )
-            store.save_process_result(pr)
+            # 自证头：process 产物的「生产者」是 OCR 引擎（或 LLM 优先时的模型名），
+            # 语义不同于生成产物的 model，故走 engine 字段（见 provenance 的四条表）。
+            store.save_process_result(pr, file_meta=artifact_meta(
+                mode,
+                doc_id=transcript_id,
+                mode=mode,
+                source_type=tx.get("sourceType", "") or "",
+                source_url=tx.get("sourceUrl", "") or "",
+                engine=engine_name,
+            ))
 
             # 关闭 LLM 连接池（若本请求创建过 LLMService，防 httpx client 常驻累积）
             if "llm" in locals():

@@ -9,7 +9,6 @@ import re
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any
 from typing import Any, Optional
 
 from fastapi import APIRouter, Request, UploadFile, File, Form, Depends
@@ -18,7 +17,7 @@ from pydantic import BaseModel
 
 from app.core.types import PipelineInput, InputType, RawTranscript, ProgressEvent
 from app.core.registry import AdapterRegistry
-from app.core.dependencies import get_store, get_config, get_guard
+from app.core.dependencies import get_store, get_config, get_guard, get_query_service
 from app.core.errors import AppError
 from app.core.config import build_engine_models
 from app.core.disconnect import disconnect_watcher
@@ -50,49 +49,31 @@ class UpdateTranscriptRequest(BaseModel):
     tags: Optional[list[str]] = None
 
 @router.get("/transcripts")
-async def list_transcripts(request: Request, store=Depends(get_store), q: str = "", sourceType: str = "", tag: str = "", folderId: Optional[str] = None) -> list[dict[str, Any]]:
-    filters = {}
-    if q:
-        filters["query"] = q
-    if sourceType:
-        filters["sourceType"] = sourceType
-    if tag:
-        filters["tag"] = tag
-    # ⚠️ folderId 必须用 `is not None` 而非真值判断：空串是**有效筛选值**
-    # （只看未分类），与「参数缺席 = 不过滤」是两种语义。写成 `if folderId:`
-    # 会让「未分类」视图永远拿不到过滤条件（退化成看全部）。
-    if folderId is not None:
-        filters["folderId"] = folderId
-    return store.list_transcripts(filters if filters else None)
+async def list_transcripts(request: Request, svc=Depends(get_query_service), q: str = "", sourceType: str = "", tag: str = "", folderId: Optional[str] = None) -> list[dict[str, Any]]:
+    """文档列表。
+
+    ⚠️ **响应仍是裸 list**（不是 `Page`）：本端点的消费者是前端文档库，它自己做了
+    分批渲染；改成包装对象会是一次前端联动改造，而分页能力是给 CLI 的**新**契约，
+    不该顺手改掉既有端点的形状。`limit=None` 即为此（见 `QueryService.list_resources`）。
+    """
+    page = svc.list_resources(
+        query=q or None, source_type=sourceType or None, tag=tag or None,
+        # ⚠️ folderId 的「空串 = 只看未分类」语义由 service 内的 `is not None` 判定
+        # 保证——这里是**原样透传**（`None` 与 `""` 必须保持区别，不能写 `folderId or None`）。
+        folder_id=folderId,
+        limit=None,
+    )
+    return page.items
 
 
 @router.get("/transcripts/{tx_id}")
-async def get_transcript(tx_id: str, request: Request, store=Depends(get_store)) -> dict[str, Any]:
+async def get_transcript(tx_id: str, request: Request, svc=Depends(get_query_service)) -> dict[str, Any]:
     """获取单个 RawTranscript 完整内容（含 rawText）"""
-    tx = store.get_transcript(tx_id)
-    if not tx:
-        raise AppError("INGEST_DOC_NOT_FOUND", "文档不存在",
-                        status_code=404, recoverable=True)
-    # 不返回 rawText 全文（太大），仅返回元数据+前2000字符预览
-    return {
-        "id": tx["id"],
-        "title": tx.get("title", ""),
-        "sourceType": tx.get("sourceType", ""),
-        "sourceUrl": tx.get("sourceUrl", ""),
-        "engine": tx.get("engine", ""),
-        "language": tx.get("metadata", {}).get("language", ""),
-        "duration": tx.get("metadata", {}).get("duration"),
-        "coverUrl": tx.get("metadata", {}).get("cover_url", ""),
-        "contentHash": tx.get("contentHash", ""),
-        "tags": tx.get("tags", []),
-        "createdAt": tx.get("createdAt", ""),
-        # 合成来源身份（白名单序列化——store 返回了但这里不列，前端永远拿不到）
-        "sourceDocIds": tx.get("sourceDocIds", []),
-        "sourceTitles": tx.get("sourceTitles", []),
-        "sourceHashes": tx.get("sourceHashes", []),
-        "metadataCorrupt": tx.get("metadataCorrupt", False),
-        "rawText": rewrite_asset_urls(tx.get("rawText", ""), tx_id),
-    }
+    res = svc.get_resource(tx_id)
+    # `assets/xxx` → 绝对 API URL 是 **HTTP 层**的职责：CLI 拿绝对 URL 没有意义，
+    # 把改写放进 service 等于强迫所有消费方接受 HTTP 的表示法。
+    res["rawText"] = rewrite_asset_urls(res["rawText"], tx_id)
+    return res
 
 
 @router.patch("/transcripts/{tx_id}")
@@ -775,7 +756,7 @@ async def retranscribe(tx_id: str, request: Request, store=Depends(get_store), c
                 raise AppError("RETX_FAILED", f"重新转录失败: {str(e)[:200]}") from e
 
         # 持久化引擎提取的图片，重写 rawText 中的路径
-        doc_dir = store._get_doc_dir(tx_id)
+        doc_dir = store.get_doc_dir(tx_id)
         output.raw_text = _persist_media_images(output.raw_text, media_dir, doc_dir)
         _persist_original_image(output.raw_text, doc_dir)
 
@@ -987,7 +968,7 @@ async def serve_media_file(tx_id: str, filename: str, request: Request, store=De
     data_root = Path(store.root).resolve()
 
     # 1. {doc_dir}/assets/{filename}
-    doc_dir = store._get_doc_dir(tx_id)
+    doc_dir = store.get_doc_dir(tx_id)
     if doc_dir:
         r = _check_asset_within(doc_dir / "assets" / filename, data_root)
         if r:
@@ -1028,7 +1009,7 @@ async def serve_asset(tx_id: str, filename: str, store=Depends(get_store)):
     if "." not in filename and filename == "cover":
         candidates = [f"cover{e}" for e in (".jpg", ".png", ".webp")]
 
-    doc_dir = store._get_doc_dir(tx_id)
+    doc_dir = store.get_doc_dir(tx_id)
     if not doc_dir:
         raise AppError("INGEST_DOC_NOT_FOUND", "文档不存在",
                         status_code=404, recoverable=True)

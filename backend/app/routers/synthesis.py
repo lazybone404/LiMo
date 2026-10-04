@@ -28,7 +28,9 @@ from app.core.errors import AppError
 from app.generation.synthesis import (
     SYNTH_QUIET_TIMEOUT,
     SYNTH_TOTAL_TIMEOUT,
+    clean_content_types,
     clean_dimensions,
+    normalize_reader_intent,
     normalize_source_mode,
     preview_synthesis,
     synthesize,
@@ -53,7 +55,6 @@ DEADLINE_RESERVE = 60
 class SynthesisRequest(BaseModel):
     doc_ids: list[str]
     title: str = ""
-    user_notes: str = ""
     model_id: int | None = None
     # 用户给定的对比维度（设计 §18）：非空则跳过「维度发现」那次计费调用。
     dimensions: list[str] = []
@@ -61,6 +62,21 @@ class SynthesisRequest(BaseModel):
     # ⚠️ 非法值由 `normalize_source_mode` 显式拒绝——**不静默回退默认**，
     # 否则用户以为在用笔记、实际用原文，而产物上看不出任何异常。
     source_mode: str = "raw"
+    # 读者意图（设计 §7.8.3）：决定 `task` 段的「读者目的」。空 = 默认意图。
+    # ⚠️ 非法值由 `normalize_reader_intent` 显式拒绝（理由同 source_mode：
+    # 选错了产出的是**另一种读者目的**的综述，而产物上看不出异常）。
+    reader_intent: str = ""
+    # 「自定义」意图的自由文本；其他意图留空（后端按意图取预设文案）。
+    reader_intent_text: str = ""
+    # 材料体裁多标签（设计 §7.8.2）：决定加载哪几类「类型增量」条款。
+    # 空 = 不加任何体裁增量（**不回退到论文**——静默预填对视频转写稿毫无意义）。
+    content_type: list[str] = []
+    # ⚠️ 历史字段 `user_notes`（「对比指引」）**已删除**：它是死链——`synthesize()`
+    # 签名里有、函数体零引用，用户填的指引对产物从来没有影响。位置由
+    # `reader_intent` / `reader_intent_text` 承接（走 meta，**真正生效**）。
+    #
+    # ⚠️ 这三个新字段**必须落 meta**、不能只走请求参数：生成是**第二次独立请求**
+    # （用户核对完「## 来源文档」再点生成），届时手里只有 rawText。
 
 
 @router.post("/synthesis/stream")
@@ -72,19 +88,34 @@ async def synthesis_stream(
     guard=Depends(get_guard),
 ):
     """N 篇 → 一个新的 composite 文档（SSE：stage → done/error）。"""
-    # 入参清洗放最前（在任何计费调用之前）：维度列表与原料模式都是用户可控输入
-    dimensions = clean_dimensions(req.dimensions)
-    source_mode = normalize_source_mode(req.source_mode)
-    log.info("合成请求", docs=len(req.doc_ids), model_id=req.model_id,
-             title=req.title[:60], dims=len(dimensions), source_mode=source_mode)
     llm = LLMService(config, model_id=req.model_id)
     cancel_event = asyncio.Event()
 
     async def runner(queue: asyncio.Queue) -> None:
+        """⚠️ **入参清洗必须在这里面**，不能在路由函数体里：清洗是用户可控输入的第
+        一道处理，而 `normalize_*` 在非法值上是**显式抛错**的——放在函数体就等于在
+        `StreamingResponse` 构造之前抛出，FastAPI 把它转成 HTTP 500，而前端拿
+        `fetch` + reader 解这条流，**500 只表现为「连接中断」**，用户看不到
+        「不支持的读者意图：xxx（可选：…）」这种可行动的文案。本端点的纪律是
+        **业务失败一律走 SSE error 事件**（见文件顶部），清洗是最容易漏在门外的一步。
+        """
         def on_stage(message: str) -> None:
             queue.put_nowait({"type": "stage", "message": message})
 
         try:
+            # 清洗放最前（在任何计费调用之前）。⚠️ 四项的**错误语义刻意不同**：
+            # 维度与体裁静默清洗（多带一个不认识的值不该让整次合成失败——
+            # 判据是「这个值错了会不会改变产物的性质」），原料模式与读者意图
+            # 显式报错（选错了产物性质/读者目的就变了，而产物上看不出异常）。
+            dimensions = clean_dimensions(req.dimensions)
+            source_mode = normalize_source_mode(req.source_mode)
+            reader_intent = normalize_reader_intent(req.reader_intent)
+            content_type = clean_content_types(req.content_type)
+            # 自由文本限长：它要进提示词，不限长等于让一次请求把 prompt 撑爆。
+            reader_intent_text = (req.reader_intent_text or "").strip()[:2000]
+            log.info("合成请求", docs=len(req.doc_ids), model_id=req.model_id,
+                     title=req.title[:60], dims=len(dimensions), source_mode=source_mode,
+                     intent=reader_intent, genres=len(content_type))
             if not llm.api_key:
                 raise AppError("SYNTH_NO_API_KEY", "LLM API Key 未配置，请在设置中填写",
                                recoverable=False)
@@ -95,8 +126,10 @@ async def synthesis_stream(
                 async with asyncio.timeout(SYNTH_TOTAL_TIMEOUT):
                     result = await synthesize(
                         store, config, llm, req.model_id, req.doc_ids,
-                        title=req.title, user_notes=req.user_notes,
+                        title=req.title,
                         dimensions=dimensions, source_mode=source_mode,
+                        content_type=content_type, reader_intent=reader_intent,
+                        reader_intent_text=reader_intent_text,
                         cancel_event=cancel_event, on_stage=on_stage,
                         deadline=deadline,
                     )

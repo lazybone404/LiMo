@@ -20,6 +20,9 @@ from app.core.types import (
 )
 from app.generation import synthesis as S
 from app.generation.budget import input_budget_for, multi_capacity_ok, stuff_window
+from app.generation.prompt import (
+    _SYNTHESIS_GENRE_CONSTRAINTS, build_synthesis_prompt,
+)
 from app.storage.store import Store
 
 _TMP: list[str] = []
@@ -307,7 +310,7 @@ _PNG = b"\x89PNG\r\n\x1a\n" + b"fake-image-bytes" * 4
 def _mk_doc_with_asset(store: Store, tx_id: str, title: str, ref: str) -> None:
     """写入一篇正文里带 `![图](ref)` 的文档，并在其 assets/ 放一个真实文件。"""
     _add_doc(store, tx_id, title, f"正文开头\n\n![图]({ref})\n\n正文结尾")
-    _d = store._get_doc_dir(tx_id)
+    _d = store.get_doc_dir(tx_id)
     (_d / "assets").mkdir(exist_ok=True)
     (_d / "assets" / "img_0001.png").write_bytes(_PNG)
 
@@ -317,7 +320,7 @@ _ast = _new_store()
 _mk_doc_with_asset(_ast, "tr_i1", "图甲", "assets/img_0001.png")
 _mk_doc_with_asset(_ast, "tr_i2", "图乙", "assets/img_0001.png")
 _ares = _run(S.synthesize(_ast, cfg, FakeLLM(), mid, ["tr_i1", "tr_i2"], title="图对比"))
-_adir = _ast._get_doc_dir(_ares.transcript_id)
+_adir = _ast.get_doc_dir(_ares.transcript_id)
 _files = sorted(p.name for p in (_adir / "assets").iterdir())
 assert _files == ["d1_img_0001.png", "d2_img_0001.png"], \
     f"两篇都必须搬过来且带序号前缀（不加前缀 → 后一篇覆盖前一篇 → 只剩 1 个）：{_files}"
@@ -354,12 +357,12 @@ _add_doc(_est2, "tr_e2", "正常乙", "乙：普通正文。")
 # doc_dir/assets/../../outside_secret.txt == store.root/outside_secret.txt
 (_est2.root / "outside_secret.txt").write_bytes(b"TOP-SECRET-DO-NOT-COPY")
 assert (_est2.root / "outside_secret.txt").is_file(), "必须先确认越界目标真实存在"
-_e1dir = _est2._get_doc_dir("tr_e1")
+_e1dir = _est2.get_doc_dir("tr_e1")
 assert (_e1dir / "assets" / "../../outside_secret.txt").resolve().is_file(), \
     "越界路径必须真的能解析到这个文件（否则守卫没被真正考验）"
 
 _eres = _run(S.synthesize(_est2, cfg, FakeLLM(), mid, ["tr_e1", "tr_e2"], title="越界对比"))
-_edir = _est2._get_doc_dir(_eres.transcript_id)
+_edir = _est2.get_doc_dir(_eres.transcript_id)
 _copied = [p.name for p in (_edir / "assets").iterdir()] if (_edir / "assets").exists() else []
 assert not _copied, f"越界引用不得被复制：{_copied}（无守卫的实现会把 secret 搬过来）"
 assert "assets/../../outside_secret.txt" in _eres.raw_text, "越界引用原样保留"
@@ -581,7 +584,7 @@ print("PASS: 维度落进出处头 meta 且可读回（生成侧据此注入 pro
 # 不改它，预设就只在超窗（少数）时生效——而设计 §4.4.0 明说 Stuff 是多数情况。
 _sres2 = _run(S.synthesize(st, cfg, FakeLLM(), mid, ["tr_p1", "tr_p2"], title="默认维度"))
 _smeta2, _ = TM.parse_meta(_sres2.raw_text)
-assert _smeta2["dimensions"] == S.DEFAULT_PAPER_DIMENSIONS, (
+assert _smeta2["dimensions"] == S.DEFAULT_DIMENSIONS, (
     f"Stuff 路径也必须写入预设维度（漏了它 → 维度机制在最常见路径上一次都不生效）："
     f"{_smeta2.get('dimensions')}"
 )
@@ -703,8 +706,87 @@ for _txt, _want in ((_r_notes.raw_text, "notes"), (_r_raw.raw_text, "raw"),
 assert TM.parse_meta(_r_raw.raw_text)[0]["dimensions"], "默认也必须有维度（预设）"
 print("PASS: sourceMode 落进 meta 且往返相等（三个月后仍看得出基于原文还是笔记）")
 
+# ═══════════════════════════════════════════════════════════════
+# 13. 读者意图与材料体裁（设计 §7.8）—— 写进 meta，再由生成侧读回
+# ═══════════════════════════════════════════════════════════════
+#
+# 本节判据一律锚在**端到端**上：`synthesize` 产出 rawText → 拿这份 rawText 直接
+# 喂 `build_synthesis_prompt`（生成侧就是这么做的）→ 断言 prompt 里出现该出现的
+# 东西。只断言「synthesize 收到了参数」测不到死链——那恰是 `user_notes` 曾经的
+# 形态：签名里有、函数体零引用、调用方照传不误，产物上看不出任何异常。
+
+# ── 默认套 = general，且**必须排在第一位** ──
+# ⚠️ 顺序不是审美问题：`DocLibrary` 用 `dimensionPresets[0]` 预填。general 排在
+# 后面 = 后端换了默认、前端仍静默预填 paper，且**零报错**（计划风险 2）。
+assert list(S.DIMENSION_PRESETS)[0] == "general", \
+    f"默认套必须排第一（前端取 [0] 预填）：{list(S.DIMENSION_PRESETS)[:3]}"
+assert S.DEFAULT_DIMENSIONS == S.DIMENSION_PRESETS["general"], "默认维度必须指向 general"
+# 对照实验：漏换常量（DEFAULT_DIMENSIONS 仍指向 paper）→ 本行与上一行必红。
+assert set(S.DEFAULT_DIMENSIONS) != set(S.DIMENSION_PRESETS["paper"]), \
+    "general 与 paper 必须不同，否则「换了默认」这件事在产物上完全看不出来"
+assert len(S.DIMENSION_PRESETS["paper"]) == 5, \
+    "paper 预设必须仍可用（历史文档回退锚点已迁走，但预设本身要留着）"
+print(f"PASS: 默认套 general 且排第一（{len(S.DEFAULT_DIMENSIONS)} 维；paper 仍为 5 维）")
+
+_gcfg, _gmid = _cfg()
+_gs = _new_store()
+_add_doc(_gs, "tr_g1", "体裁甲", "甲文正文。")
+_add_doc(_gs, "tr_g2", "体裁乙", "乙文正文。")
+
+# ── 意图 / 体裁落进 meta —— **Stuff 路径也写** ──
+# ⚠️ 生成是**第二次独立请求**，届时手里只有 rawText：这三项不落 meta，用户在
+# 对话框选的读者意图与体裁在生成阶段**根本不存在**（`user_notes` 死链的同款症状，
+# 只是换了个位置）。
+_gr = _run(S.synthesize(_gs, _gcfg, FakeLLM(), _gmid, ["tr_g1", "tr_g2"],
+                        title="体裁意图", content_type=["media", "paper"],
+                        reader_intent="controversy"))
+_gmeta, _gcorrupt = TM.parse_meta(_gr.raw_text)
+assert _gcorrupt is False
+# ⚠️ 这一条同时证明「**Stuff 路径也写**」：两篇短文必然走 stuff，而 stuff 是
+# **零 LLM 调用**——若这三项只在 map-reduce 分支写，下面 meta 断言就会红。
+assert _gr.llm_call_count == 0, f"两篇短文应走 Stuff（零调用），实际 {_gr.llm_call_count}"
+assert _gmeta["contentType"] == ["media", "paper"], _gmeta.get("contentType")
+assert _gmeta["readerIntent"] == "controversy", _gmeta.get("readerIntent")
+print("PASS: contentType / readerIntent 落进 meta（Stuff 路径，零 LLM 调用）")
+
+# ── 「只在 meta」要断言**两半**：meta 里有（上）+ 可见正文里没有 ──
+# 缺了后半，「顺手也写进正文」的实现照样全绿——而正文正是用户唯一会编辑的区，
+# 编辑时删掉它，生成侧的读回就静默失效了。
+_gvis = TM.strip_meta(_gr.raw_text)
+assert "controversy" not in _gvis, "意图 key 只该在 meta 里"
+assert f"（{S.CONTENT_TYPE_LABELS['media']}）" not in _gvis, "体裁标签不得泄漏进正文"
+print("PASS: 意图 / 体裁只在 meta（可见正文零泄漏）")
+
+# ── ★ 意图自由文本经 meta 抵达 prompt（**证明死链已修**）──
+# 对照实验：把 `synthesize` 里的 `reader_intent_text=reader_intent_text` 改成
+# `reader_intent_text=""`（= 旧 `user_notes` 的死链形态）→ meta 字段空 → prompt
+# 里不含这句话 → 红。**只有端到端断言抓得到它**。
+_INTENT_TEXT = "只给我能直接照做的三步操作清单，不要背景介绍。"
+_cr = _run(S.synthesize(_gs, _gcfg, FakeLLM(), _gmid, ["tr_g1", "tr_g2"],
+                        title="自定义意图", reader_intent="custom",
+                        reader_intent_text=_INTENT_TEXT))
+_cmeta, _ = TM.parse_meta(_cr.raw_text)
+assert _cmeta["readerIntentText"] == _INTENT_TEXT, _cmeta.get("readerIntentText")
+assert _cmeta["contentType"] == [], \
+    "未选体裁 → meta 里是**空列表**（不是缺键、更不是 paper）"
+_prompt_custom = build_synthesis_prompt(_cr.raw_text, "自定义意图")
+assert _INTENT_TEXT in _prompt_custom, "用户自填的读者目的必须进 prompt（死链已修）"
+print("PASS: 意图自由文本经 meta 抵达 prompt（user_notes 那条死链确已修）")
+
+# ── 不同意图 → 不同读者目的；选中体裁的条款确实注入 ──
+_prompt_controversy = build_synthesis_prompt(_gr.raw_text, "体裁意图")
+assert S.READER_INTENTS["controversy"]["purpose"] in _prompt_controversy, \
+    "选中意图的预设 purpose 必须进 prompt"
+assert S.READER_INTENTS["controversy"]["purpose"] not in _prompt_custom, \
+    "自定义意图不得同时带上别人的 purpose（说明 purpose 是**按 key 查**的，不是写死的）"
+assert _prompt_custom != _prompt_controversy, "两个不同意图必须产出不同 prompt"
+for _g in ("media", "paper"):
+    assert f"（{S.CONTENT_TYPE_LABELS[_g]}）" in _prompt_controversy, f"多体裁缺 {_g} 标签"
+    assert _SYNTHESIS_GENRE_CONSTRAINTS[_g][0] in _prompt_controversy, f"多体裁缺 {_g} 条款"
+print("PASS: 意图 purpose 与选中体裁条款经 meta 抵达 prompt（多标签各自注入）")
+
 finally_ok = True
 for _t in _TMP:
     shutil.rmtree(_t, ignore_errors=True)
 
-print("\n全部通过：多篇文档合成（Step 0 分叉 / 预算收敛 / 资产搬运 / 降级显式化 / 分块 / 维度 / 原料）")
+print("\n全部通过：多篇文档合成（Step 0 分叉 / 预算收敛 / 资产搬运 / 降级显式化 / 分块 / 维度 / 原料 / 意图与体裁）")

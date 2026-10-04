@@ -6,7 +6,6 @@ ContentPreparer — 生成前的内容准备：VL 管线 + 图片剥离/优化 +
 """
 
 import logging
-import os
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -228,16 +227,12 @@ class ContentPreparer:
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             },
         }
-        cf = None
         if cookies:
-            try:
-                from app.adapters.video import _cookie_to_file
-                cf = _cookie_to_file(cookies.strip().strip("'\"").strip())
-                if cf:
-                    ydl_opts["cookiefile"] = cf
-                    logger.info("VL: 注入 Cookie (%s)", cf)
-            except Exception as e:
-                logger.warning("VL Cookie 注入失败: %s", e)
+            from app.adapters.video import _cookie_header
+            ch = _cookie_header(cookies.strip().strip("'\"").strip())
+            if ch:
+                ydl_opts["http_headers"]["Cookie"] = ch
+                logger.info("VL: 注入 Cookie (%d 字符)", len(ch))
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -253,13 +248,6 @@ class ContentPreparer:
             import shutil
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return None
-        finally:
-            # P1-11：Cookie 临时文件（Netscape 格式，供 yt-dlp 读取）用后删除，防残留
-            if cf:
-                try:
-                    os.remove(cf)
-                except OSError:
-                    pass
 
     async def _run_video_direct(self, vl_config: dict, source_url: str) -> tuple[str | None, str | None]:
         """视频直传理解：下载视频 → DashScope SDK 视频理解 → 描述文本。

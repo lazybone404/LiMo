@@ -42,28 +42,38 @@ def _extract_bvid(url: str) -> str | None:
     return f"BV{m.group(1)}" if m else None
 
 
-def _cookie_to_file(cookie_str: str, domain: str = ".bilibili.com") -> str | None:
-    """Cookie 字符串 → Netscape 临时文件。参照 BiliNote _cookie_to_file。"""
+def _cookie_header(cookie_str: str) -> str | None:
+    """Cookie 字符串 → 可直接放进 `http_headers['Cookie']` 的形式。
+
+    ⚠️ **刻意不落盘。** 此前是 `_cookie_to_file`：把 cookie 写成系统 TEMP 里的 Netscape
+    明文文件供 yt-dlp 读，用完在 finally 里删。问题在于它是一份**明文凭据落盘** ——
+    正常运行会删，但崩溃/强杀就残留，且落在 `tempfile` 的公共目录里无人管辖。
+    改为走 yt-dlp 的 `http_headers['Cookie']`：
+
+    yt-dlp 在 `YoutubeDL.__init__` 里把它取出来（`YoutubeDL.py:749`）、随即 `pop` 掉，
+    交给 `_load_cookies()` 装进 **cookiejar**，再由 `__extract_info` → `_apply_header_cookies(url)`
+    按目标 URL 的域名 scope。`_load_cookies` 的 docstring 明说这是为堵
+    GHSA-v8mc-9377-rwjj（cookie 被发给每个域）而做的。⇒ **域名绑定与 cookiefile 同一条路，
+    但零落盘**，且不再需要按平台猜 domain（此前硬编码 `.bilibili.com` 之类）。
+
+    ⚠️ 保留原有的过滤：跳过含非 ASCII 的值 —— 浏览器复制来的截断符 `…` 会让 yt-dlp
+    的 latin-1 编码炸掉。⚠️ 输出必须是**纯 `k=v; k=v`**：`_load_cookies` 对带属性
+    （`domain=`/`path=`）的输入会直接 `raise ValueError('Invalid syntax in Cookie Header')`。
+    """
     if not cookie_str:
         return None
-    lines = ["# Netscape HTTP Cookie File\n"]
+    pairs = []
     for pair in cookie_str.split(";"):
         pair = pair.strip()
-        if "=" in pair:
-            k, _, v = pair.partition("=")
-            # 跳过含非 ASCII 字符的值（浏览器截断符 `…` 等会导致 yt-dlp latin-1 错误）
-            try:
-                v.encode("latin-1")
-            except UnicodeEncodeError:
-                continue
-            lines.append(f"{domain}\tTRUE\t/\tFALSE\t0\t{k}\t{v}\n")
-    if len(lines) <= 1:
-        return None
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
-    tmp.writelines(lines)
-    tmp.close()
-    logger.info("Cookie 写入临时文件 (%d 条, domain=%s)", len(lines) - 1, domain)
-    return tmp.name
+        if "=" not in pair:
+            continue
+        k, _, v = pair.partition("=")
+        try:
+            v.encode("latin-1")
+        except UnicodeEncodeError:
+            continue
+        pairs.append(f"{k}={v}")
+    return "; ".join(pairs) if pairs else None
 
 
 class VideoAdapter(PipelineAdapter):
@@ -211,16 +221,9 @@ class VideoAdapter(PipelineAdapter):
         # ── Step 1: 下载 ──
         pg("downloading", "running", "下载音频中...", 20)
         video_info = {}
-        # 确定 Cookie 域名
-        if is_youtube:
-            cookie_domain = ".youtube.com"
-        elif is_douyin:
-            cookie_domain = ".douyin.com"
-        else:
-            cookie_domain = ".bilibili.com"
         try:
             video_path, video_info = await asyncio.to_thread(
-                self._download, url, cookie, cookie_domain, on_progress)
+                self._download, url, cookie, on_progress)
         except FatalError as e:
             logger.error("下载致命错误: %s", e)
             raise FatalError(f"视频下载失败: {str(e)[:100]}")
@@ -299,7 +302,7 @@ class VideoAdapter(PipelineAdapter):
         return proxy
 
     @retry(max_attempts=3, base_delay=2.0)
-    def _download(self, url: str, cookie: str = "", cookie_domain: str = ".bilibili.com",
+    def _download(self, url: str, cookie: str = "",
                   on_progress=None) -> tuple[Path | None, dict]:
         """下载视频/音频，返回 (文件路径, 视频元数据)。
 
@@ -315,7 +318,9 @@ class VideoAdapter(PipelineAdapter):
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 "Referer": "https://www.douyin.com/",
             }
-        cf = _cookie_to_file(cookie, cookie_domain) if cookie else None
+        cookie_hdr = _cookie_header(cookie)
+        if cookie_hdr:
+            headers["Cookie"] = cookie_hdr
         # 代理优先级：config.yaml > 环境变量
         proxy = self._get_proxy()
 
@@ -327,8 +332,6 @@ class VideoAdapter(PipelineAdapter):
             probe_opts = {"quiet": True, "no_warnings": True, "noplaylist": True,
                           "format": "bestaudio[ext=m4a]/bestaudio/best",
                           "http_headers": headers}
-            if cf:
-                probe_opts["cookiefile"] = cf
             if proxy:
                 probe_opts["proxy"] = proxy
             with yt_dlp.YoutubeDL(probe_opts) as ydl:
@@ -368,8 +371,6 @@ class VideoAdapter(PipelineAdapter):
             "retries": 1,
             "http_headers": headers,
         }
-        if cf:
-            ydl_opts["cookiefile"] = cf
         if proxy:
             ydl_opts["proxy"] = proxy
             logger.info("下载代理: %s", proxy)
@@ -399,12 +400,6 @@ class VideoAdapter(PipelineAdapter):
             if any(kw in msg for kw in ("412", "timeout", "connection", "5xx", "503", "502")):
                 raise RetryableError(f"yt-dlp 下载失败: {e}") from e
             raise FatalError(f"yt-dlp 下载失败: {e}") from e
-        finally:
-            if cf and os.path.exists(cf):
-                try:
-                    os.unlink(cf)
-                except OSError:
-                    pass
 
     def _extract_audio(self, video_path: Path) -> Path:
         """用 ffmpeg 提取/转换为 MP3（比 WAV 小 ~10×，云端 ASR 均支持）"""

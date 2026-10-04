@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from datetime import datetime
 
 from app.core.types import MarkdownView, Style, GenerateMode
-from app.core.dependencies import get_store, get_config, get_guard
+from app.core.dependencies import get_store, get_config, get_guard, get_query_service
 from app.core.errors import GenerateError, AppError
 from app.core.reference_store import get_references
 from app.core import logging as log
@@ -28,6 +28,7 @@ from app.core.model_resolver import resolve_llm_config, resolve_context_window
 from app.llm import LLMService, CancelledError
 from app.generation.generator import Generator, _post_process_content_markers, _post_process_screenshots
 from app.generation.effort import effort_for, chunk_timeout_for
+from app.generation.provenance import markdown_meta
 from app.services.chart_renderer import render_charts, CHART_FENCE_MARKS
 from app.services.doc_understand import DOC_DIRECT_GEN_TIMEOUT, DOC_DIRECT_MIN_RAW_CHARS
 from app.generation.content_preparer import ContentPreparer
@@ -270,7 +271,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         try:
             preparer = ContentPreparer(
                 str(store.root), llm_config,
-                doc_dir=str(store._get_doc_dir(transcript_id) or ""),
+                doc_dir=str(store.get_doc_dir(transcript_id) or ""),
                 # 合成文档的 rawText 是按 multi 预算**恰好装满**的，生成侧必须同 profile
                 # 同 cw —— 否则刚建好的综述会在生成时被二次截断（设计 §4.4.5 / §14.6）
                 budget_profile="multi" if source_type == "composite" else "single",
@@ -313,16 +314,20 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 )
                 # 非流式端点截图后处理（generator 内部 video_path 可能为 None，此处补处理）
                 if screenshot_video_path:
-                    doc_dir = str(store._get_doc_dir(transcript_id) or "")
+                    doc_dir = str(store.get_doc_dir(transcript_id) or "")
                     polished_mv.content = _post_process_screenshots(
                         polished_mv.content, screenshot_video_path, doc_dir=doc_dir)
                     notes_mv.content = _post_process_screenshots(
                         notes_mv.content, screenshot_video_path, doc_dir=doc_dir)
                 polished_mv.transcript_id = transcript_id
                 notes_mv.transcript_id = transcript_id
-                store.save_markdown(polished_mv)
+                store.save_markdown(polished_mv, file_meta=markdown_meta(
+                    polished_mv, tx, formats=formats_list,
+                    reasoning_effort=req.reasoning_effort))
                 _auto_title(store, transcript_id, polished_mv.content)
-                store.save_markdown(notes_mv)
+                store.save_markdown(notes_mv, file_meta=markdown_meta(
+                    notes_mv, tx, formats=formats_list,
+                    reasoning_effort=req.reasoning_effort))
                 log.info("Generate both done", tx_id=transcript_id,
                          polished_chars=len(polished_mv.content), notes_chars=len(notes_mv.content))
             elif want_polished:
@@ -339,9 +344,11 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 if screenshot_video_path:
                     polished_mv.content = _post_process_screenshots(
                         polished_mv.content, screenshot_video_path,
-                        doc_dir=str(store._get_doc_dir(transcript_id) or ""))
+                        doc_dir=str(store.get_doc_dir(transcript_id) or ""))
                 polished_mv.transcript_id = transcript_id
-                store.save_markdown(polished_mv)
+                store.save_markdown(polished_mv, file_meta=markdown_meta(
+                    polished_mv, tx, formats=formats_list,
+                    reasoning_effort=req.reasoning_effort))
                 _auto_title(store, transcript_id, polished_mv.content)
                 log.info("Generate done", tx_id=transcript_id, mode="polished", chars=len(polished_mv.content))
             elif want_notes:
@@ -360,9 +367,11 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 if screenshot_video_path:
                     notes_mv.content = _post_process_screenshots(
                         notes_mv.content, screenshot_video_path,
-                        doc_dir=str(store._get_doc_dir(transcript_id) or ""))
+                        doc_dir=str(store.get_doc_dir(transcript_id) or ""))
                 notes_mv.transcript_id = transcript_id
-                store.save_markdown(notes_mv)
+                store.save_markdown(notes_mv, file_meta=markdown_meta(
+                    notes_mv, tx, formats=formats_list,
+                    reasoning_effort=req.reasoning_effort))
                 log.info("Generate done", tx_id=transcript_id, mode="notes", chars=len(notes_mv.content))
             else:
                 raise AppError("GEN_INVALID_MODE", f"无法识别的生成模式: {req.mode}", recoverable=False)
@@ -543,7 +552,7 @@ async def generate_stream(transcript_id: str, request: Request,
     }
     preparer = ContentPreparer(
         str(store.root), prep_cfg,
-        doc_dir=str(store._get_doc_dir(transcript_id) or ""),
+        doc_dir=str(store.get_doc_dir(transcript_id) or ""),
         # 同非流式端点：合成文档必须用 multi profile，否则生成时二次截断（§4.4.5）
         budget_profile="multi" if source_type == "composite" else "single",
     )
@@ -606,7 +615,7 @@ async def generate_stream(transcript_id: str, request: Request,
         _active_generations.add(transcript_id)
         # 未完成标记：生成中断（应用重启/崩溃）时残留，capabilities 检测后前端提示
         marker_path: Path | None = None
-        _doc_dir = store._get_doc_dir(transcript_id)
+        _doc_dir = store.get_doc_dir(transcript_id)
         if _doc_dir:
             marker_path = _doc_dir / ".generating"
             try:
@@ -644,7 +653,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 if ocr_enabled and ocr_model_id:
                     from app.generation.ocr_preprocessor import OCRPreprocessor
                     ocr_engine = OCRPreprocessor(config, ocr_model_id)
-                    processed_text = await ocr_engine.process(epub_text, str(store.root), doc_dir=str(store._get_doc_dir(transcript_id) or ""))
+                    processed_text = await ocr_engine.process(epub_text, str(store.root), doc_dir=str(store.get_doc_dir(transcript_id) or ""))
 
                 # 预处理（VL + 图片剥离 + 文档直传 + 截断）
                 clean_text, image_urls, video_path, document = await preparer.prepare(
@@ -820,27 +829,31 @@ async def generate_stream(transcript_id: str, request: Request,
                     polished_content = await asyncio.to_thread(
                         _post_process,
                         "".join(polished_chunks), format_list,
-                        video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""),
+                        video_path or screenshot_video_path, source_type, str(store.get_doc_dir(transcript_id) or ""),
                         render_chart=False)  # 图表只入 notes（P0-3）
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
                         transcript_id=transcript_id, content=polished_content,
                         mode=GenerateMode.POLISHED, style=Style(style), status=status,
+                        generation_model=llm.model,
                     )
-                    store.save_markdown(mv)
+                    store.save_markdown(mv, file_meta=markdown_meta(
+                        mv, tx, formats=format_list, reasoning_effort=reasoning_effort))
                     _auto_title(store, transcript_id, mv.content)
                 if notes_chunks:
                     # P1-1：后处理（截图 ffmpeg + 图表 resvg）放线程池，释放事件循环
                     raw_notes = "".join(notes_chunks)
                     notes_content = await asyncio.to_thread(
                         _post_process, raw_notes, format_list,
-                        video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""))
+                        video_path or screenshot_video_path, source_type, str(store.get_doc_dir(transcript_id) or ""))
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
                         transcript_id=transcript_id, content=notes_content,
                         mode=GenerateMode.NOTES, style=Style(style), status=status,
+                        generation_model=llm.model,
                     )
-                    store.save_markdown(mv)
+                    store.save_markdown(mv, file_meta=markdown_meta(
+                        mv, tx, formats=format_list, reasoning_effort=reasoning_effort))
                     _auto_title(store, transcript_id, mv.content)
                     # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出图表围栏
                     # （旧习惯 svg 围栏 / 裸内联 / 没画）→ warning 提示重新生成
@@ -898,7 +911,7 @@ async def generate_stream(transcript_id: str, request: Request,
             if ocr_enabled and ocr_model_id:
                 from app.generation.ocr_preprocessor import OCRPreprocessor
                 ocr_engine = OCRPreprocessor(config, ocr_model_id)
-                processed_text = await ocr_engine.process(epub_text, str(store.root), doc_dir=str(store._get_doc_dir(transcript_id) or ""))
+                processed_text = await ocr_engine.process(epub_text, str(store.root), doc_dir=str(store.get_doc_dir(transcript_id) or ""))
 
             clean_text, image_urls, video_path, document = await preparer.prepare(
                 processed_text, vl_config, keep_refs, send_to_llm=send_to_llm,
@@ -988,15 +1001,17 @@ async def generate_stream(transcript_id: str, request: Request,
                     # P1-1：后处理放线程池，释放事件循环
                     content = await asyncio.to_thread(
                         _post_process, "".join(all_chunks), format_list,
-                        video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""),
+                        video_path or screenshot_video_path, source_type, str(store.get_doc_dir(transcript_id) or ""),
                         render_chart=stream_mode != "polished")  # 图表只入 notes（P0-3）
                     mv_mode = GenerateMode.POLISHED if stream_mode == "polished" else GenerateMode.NOTES
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
                         transcript_id=transcript_id, content=content,
                         mode=mv_mode, style=Style(style), status="partial",
+                        generation_model=llm.model,
                     )
-                    store.save_markdown(mv)
+                    store.save_markdown(mv, file_meta=markdown_meta(
+                        mv, tx, formats=format_list, reasoning_effort=reasoning_effort))
                     yield f"data: {json.dumps({'type': 'cancelled', 'saved_partial': True, 'id': mv.id}, ensure_ascii=False)}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'message': f'生成超时（{int(chunk_timeout)}s 无响应），请重试'}, ensure_ascii=False)}\n\n"
@@ -1016,19 +1031,21 @@ async def generate_stream(transcript_id: str, request: Request,
             raw_content = "".join(all_chunks)
             content = await asyncio.to_thread(
                 _post_process, raw_content, format_list,
-                video_path or screenshot_video_path, source_type, str(store._get_doc_dir(transcript_id) or ""),
+                video_path or screenshot_video_path, source_type, str(store.get_doc_dir(transcript_id) or ""),
                 render_chart=stream_mode != "polished")  # 图表只入 notes（P0-3）
             mv_mode = GenerateMode.POLISHED if stream_mode == "polished" else GenerateMode.NOTES
             mv = MarkdownView(
                 id=f"md_{uuid.uuid4().hex[:12]}",
                 transcript_id=transcript_id, content=content,
                 mode=mv_mode, style=Style(style),
+                generation_model=llm.model,
             )
             if partial_content:
                 # 续写完成 → 合并内容保存，标记 complete
                 mv.status = "complete"
                 mv.content = partial_content.rstrip() + "\n\n" + content
-            store.save_markdown(mv)
+            store.save_markdown(mv, file_meta=markdown_meta(
+                mv, tx, formats=format_list, reasoning_effort=reasoning_effort))
             _auto_title(store, transcript_id, mv.content)
             # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出图表围栏 → warning
             if "chart" in format_list and stream_mode != "polished" and not _has_chart_fence(raw_content):
@@ -1055,8 +1072,10 @@ async def generate_stream(transcript_id: str, request: Request,
                     id=f"md_{uuid.uuid4().hex[:12]}",
                     transcript_id=transcript_id, content=content,
                     mode=mv_mode, style=Style(style), status="partial",
+                    generation_model=llm.model,
                 )
-                store.save_markdown(mv)
+                store.save_markdown(mv, file_meta=markdown_meta(
+                    mv, tx, formats=format_list, reasoning_effort=reasoning_effort))
                 _auto_title(store, transcript_id, mv.content)
                 yield f"data: {json.dumps({'type': 'cancelled', 'saved_partial': True, 'id': mv.id}, ensure_ascii=False)}\n\n"
             else:
@@ -1177,8 +1196,14 @@ def _post_process(content: str, formats: list[str],
 
 
 @router.get("/markdown/{transcript_id}")
-async def get_markdown(transcript_id: str, mode: str = "", version: int = 0, request: Request = None) -> dict[str, object]:
-    """获取指定 transcript 的生成结果。mode=polished 返回整理版原文，version=0 返回最新"""
+async def get_markdown(transcript_id: str, mode: str = "", version: int = 0, request: Request = None, svc=Depends(get_query_service)) -> dict[str, object]:
+    """获取指定 transcript 的生成结果。mode=polished 返回整理版原文，version=0 返回最新
+
+    ⚠️ **一次读盘同时喂给「版本列表」与「选中内容」**：`get_markdowns_by_transcript`
+    一次就把两者都读出来了，故经 `build_from_entries` 成形。分成两次调用（列表走
+    store、内容走 `get_artifact`）会让两次读盘之间被生成任务替换的文件露出来 ——
+    用户看到「版本列表里的第 2 版」配着「第 1 版的正文」。
+    """
     store = request.app.state.store
     mds = store.get_markdowns_by_transcript(transcript_id)
     if not mds:
@@ -1195,23 +1220,29 @@ async def get_markdown(transcript_id: str, mode: str = "", version: int = 0, req
     else:
         mode_mds = mds
 
-    # 选择版本（默认最新 = idx 0，因为 get_markdowns_by_transcript 已降序排列）
-    selected = mode_mds[0]
+    # 选版本：默认最新（列表已按版本降序，[0] 即最新）。显式版本查不到**不回退最新**
+    # ——「我要第 1 版」拿到第 2 版是最坏的一种成功。
     if version > 0:
-        for md in mode_mds:
-            if md.get("version") == version:
-                selected = md
-                break
+        picked = [m for m in mode_mds if m.get("version") == version]
+        if not picked:
+            raise AppError("MD_NOT_FOUND", f"版本 {version} 不存在", status_code=404)
+        mode_mds = picked
 
-    # 改写磁盘相对路径 assets/xxx → 绝对 API URL
+    art = svc.build_from_entries(transcript_id, mode_mds, max_chars=None)
+
+    # 响应形状保持不变（前端 `MarkdownView` 依赖 id/style/mode/version/createdAt）：
+    # Artifact 的 `entry` 带着原始 index 条目，正是为了这里能原样还原。
+    # `content` 用 `raw_content`（**含自证头**）——源码编辑器应当能看到它，预览区
+    # 不渲染 HTML 注释故不受影响。
+    # 改写磁盘相对路径 assets/xxx → 绝对 API URL（HTTP 层职责）。
     result = {
-        **selected,
+        **art.entry,
+        "content": rewrite_asset_urls(art.raw_content, transcript_id),
         "versions": [{"version": m.get("version", 1), "id": m.get("id"),
-                       "createdAt": m.get("createdAt"), "status": m.get("status", "complete")}
-                      for m in mode_mds],
+                      "createdAt": m.get("createdAt"), "status": m.get("status", "complete"),
+                      "mode": m.get("mode", "")}
+                     for m in ([md for md in mds if not mode or md.get("mode", "") == mode])],
     }
-    if result.get("content"):
-        result["content"] = rewrite_asset_urls(result["content"], transcript_id)
     return result
 
 

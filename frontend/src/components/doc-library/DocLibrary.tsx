@@ -24,7 +24,7 @@ import { cancelTask } from '../../api/taskManager'
 import { ContextMenu } from '../ui/ContextMenu'
 import {
   Pencil, Trash2, BookOpen, MessageSquare, RefreshCw, Tag, Clipboard, FolderInput, Layers,
-  AlertTriangle,
+  AlertTriangle, ChevronRight,
 } from 'lucide-react'
 import { streamSynthesis, previewSynthesis, type SynthesisPreview, type SourceMode } from '../../api/synthesis'
 import type { DocEntry } from '../../store/types'
@@ -245,13 +245,21 @@ export function DocLibrary() {
   // 这个隐含假设——把它显式化。
   const [synthIds, setSynthIds] = useState<string[]>([])
   const [synthTitle, setSynthTitle] = useState('')
-  const [synthNotes, setSynthNotes] = useState('')
+  // 读者意图（对话框主控件，设计 §7.8.3）+ 「自定义」意图的自由文本。
+  // ⚠️ 后者**承接原 `synthNotes`（「对比指引」）的位置**——那个字段后端从不读取
+  // （死链），用户填的指引对产物零影响；现在它经 meta 进 prompt 的 task 段。
+  const [synthIntent, setSynthIntent] = useState('')
+  const [synthIntentText, setSynthIntentText] = useState('')
   const [synthStage, setSynthStage] = useState<string | null>(null)
   // 原料模式（互斥，默认原文）与对比维度（每行一个）—— 都是**现场决定**，
   // 故放对话框本地 state，不做全局持久化（设计 §19.8）
   const [synthSourceMode, setSynthSourceMode] = useState<SourceMode>('raw')
   const [synthDimsText, setSynthDimsText] = useState('')
   const [synthPresetKey, setSynthPresetKey] = useState('')
+  // 材料体裁多标签（决定加载哪几类文风增量条款）+「高级」区展开态。
+  // 维度与体裁都归高级区：读者意图才是主控件，这两项是「想微调才展开」的修正项。
+  const [synthGenres, setSynthGenres] = useState<string[]>([])
+  const [synthAdvanced, setSynthAdvanced] = useState(false)
   // 合成前预览（每篇 token / 预计处理方式）：零 LLM 调用、零副作用，
   // 让用户在花 token 之前就知道该不该换模型（设计 §17.4）
   const [synthPreview, setSynthPreview] = useState<SynthesisPreview | null>(null)
@@ -573,6 +581,9 @@ export function DocLibrary() {
 
   /** 维度预设（后端下发；老后端无此字段时退化为空 → 只有自由输入） */
   const dimensionPresets = capabilities?.dimensionPresets ?? []
+  /** 读者意图选项（主控件）与材料体裁选项（高级区）—— 同样后端下发、前端不硬编码 */
+  const readerIntents = capabilities?.readerIntents ?? []
+  const contentTypeOptions = capabilities?.contentTypes ?? []
 
   /**
    * 拉一次合成前预览（零 LLM 调用）。
@@ -603,17 +614,23 @@ export function DocLibrary() {
     const first = docs.find(d => d.id === ids[0])?.title || ''
     setSynthIds(ids)
     setSynthTitle(first ? `${first} 等 ${ids.length} 篇对比` : `${ids.length} 篇对比`)
-    setSynthNotes('')
+    setSynthIntentText('')
     setSynthStage(null)
-    // 每次打开都回到「原文 + 首个预设」：这些是**现场决定**，不该继承上次
-    // （否则用户上次改成「笔记」后这次静默沿用，会莫名其妙少几篇）
+    setSynthAdvanced(false)
+    // 每次打开都回到「原文 + 首个预设 + 首个意图」：这些是**现场决定**，不该继承
+    // 上次（否则用户上次改成「笔记」后这次静默沿用，会莫名其妙少几篇）
     setSynthSourceMode('raw')
     const firstPreset = dimensionPresets[0]
     setSynthPresetKey(firstPreset?.key ?? '')
     setSynthDimsText((firstPreset?.dimensions ?? []).join('\n'))
+    // 意图取下发列表第一项（后端保证第一项即默认「理解主题」），体裁由该意图的
+    // `defaultContentType` 推导——`null` 就留空，**不替用户猜一个**。
+    const firstIntent = readerIntents[0]
+    setSynthIntent(firstIntent?.key ?? '')
+    setSynthGenres(firstIntent?.defaultContentType ? [firstIntent.defaultContentType] : [])
     setSynthOpen(true)
     loadSynthPreview(ids, 'raw')
-  }, [selectedIds, docs, dimensionPresets, loadSynthPreview])
+  }, [selectedIds, docs, dimensionPresets, readerIntents, loadSynthPreview])
 
   /** 切换原料模式 → 重拉预览（不可用的篇会在清单里标灰） */
   const changeSynthSourceMode = useCallback((mode: SourceMode) => {
@@ -628,6 +645,26 @@ export function DocLibrary() {
     if (preset) setSynthDimsText(preset.dimensions.join('\n'))
   }, [dimensionPresets])
 
+  /**
+   * 切换读者意图 → **体裁跟着重算**（与「切换预设覆盖维度列表」同款语义，
+   * 同一对话框里两条「覆盖」规则，用户学一次就懂；小字里注明了这一点）。
+   *
+   * ⚠️ `defaultContentType` 为 `null` 的意图（理解主题 / 比较材料 / 自定义）
+   * **刻意留空**——它们说的是读者的动作，不指示材料是什么体裁。这里若退化成
+   * 「猜一个 paper」，就正是设计 §2.2 要根除的那种静默错配（对一叠视频转写稿
+   * 毫无意义，而用户看不出为什么）。
+   */
+  const changeSynthIntent = useCallback((key: string) => {
+    setSynthIntent(key)
+    const dct = readerIntents.find(i => i.key === key)?.defaultContentType
+    setSynthGenres(dct ? [dct] : [])
+  }, [readerIntents])
+
+  /** 体裁多选（高级区）。空数组合法 = 不加任何体裁增量条款。 */
+  const toggleSynthGenre = useCallback((key: string) => {
+    setSynthGenres(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])
+  }, [])
+
   const runSynthesize = useCallback(() => {
     const ids = synthIds
     // 窗口不足时后端会拒绝，这里提前拦住，别让用户白等一次往返
@@ -639,8 +676,12 @@ export function DocLibrary() {
     setSynthStage('准备中…')
     streamSynthesis(ids, {
       title,
-      userNotes: synthNotes.trim(),
+      readerIntent: synthIntent,
+      // ⚠️ 只在「自定义」时发文本：用户填了自定义文本后改选「找争议」的话，
+      // 文本框隐藏但 state 还在——原样发出去会用它污染那条意图的读者目的。
+      readerIntentText: synthIntent === 'custom' ? synthIntentText.trim() : '',
       dimensions: parseDimensions(synthDimsText),
+      contentType: synthGenres,
       sourceMode: synthSourceMode,
     }, {
       onStage: setSynthStage,
@@ -675,8 +716,9 @@ export function DocLibrary() {
         if (!cancelled) addToast(message, 'error')
       },
     })
-  }, [synthIds, synthTitle, synthNotes, synthDimsText, synthSourceMode,
-      synthStage, synthPreview, synthPreviewErr, docs, addToast])
+  }, [synthIds, synthTitle, synthIntent, synthIntentText, synthGenres,
+      synthDimsText, synthSourceMode, synthStage, synthPreview, synthPreviewErr,
+      docs, addToast])
 
   // ── 右键菜单 ──
 
@@ -935,6 +977,12 @@ export function DocLibrary() {
           }
         }
         const canRun = !running && !reject && synthPreviewErr === null
+        const activeIntent = readerIntents.find(i => i.key === synthIntent)
+        // 当前生效的材料体裁（高级区折叠时也要看得见——它是**实际生效值**，
+        // 比「意图建议值」更有用：用户手改过体裁后，这里显示的是改后的样子）
+        const genreSummary = synthGenres.length
+          ? synthGenres.map(k => contentTypeOptions.find(c => c.key === k)?.label ?? k).join('、')
+          : '未指定'
         // 只做「去空行 + 去重」的显然清洗，权威规则在后端 `clean_dimensions()`——
         // 这里算出的数字仅用于给用户一个「共几个维度」的即时反馈
         const dimsCount = parseDimensions(synthDimsText).length
@@ -1036,25 +1084,83 @@ export function DocLibrary() {
                     </p>
                   )}
 
-                  {/* 对比维度 —— 「## 对比总表」的行标签，也就是产物的骨架（设计 §18.0）*/}
-                  <label className="text-[12px] font-medium text-dimmed block mb-1">对比维度</label>
-                  {dimensionPresets.length > 0 && (
-                    <select data-synth-preset value={synthPresetKey} onChange={e => changeSynthPreset(e.target.value)}
-                      className="w-full px-2 py-1.5 mb-2 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent">
-                      {dimensionPresets.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
-                    </select>
+                  {/* 读者意图 —— 本对话框的**主控件**：它决定 task 段的「读者目的」，
+                      即「这份综述写给谁读、读来完成什么」（设计 §7.8.3）。维度与体裁都是
+                      **修正项**，退到高级区——三个控件同权重时用户不知道该动哪个。 */}
+                  {readerIntents.length > 0 && (
+                    <>
+                      <label className="text-[12px] font-medium text-dimmed block mb-1">读者意图</label>
+                      <div data-synth-intents className="flex flex-wrap gap-x-4 gap-y-1.5">
+                        {readerIntents.map(it => (
+                          <label key={it.key} className="flex items-center gap-1.5 text-[12px] text-dimmed cursor-pointer">
+                            <input type="radio" name="synth-intent" value={it.key}
+                              data-synth-intent={it.key}
+                              checked={synthIntent === it.key}
+                              onChange={() => changeSynthIntent(it.key)}
+                              className="accent-accent" />
+                            {it.label}
+                          </label>
+                        ))}
+                      </div>
+                      {activeIntent?.purpose && (
+                        <p data-synth-intent-purpose className="text-[10px] text-disabled mt-1 mb-3 leading-relaxed">
+                          {activeIntent.purpose}
+                        </p>
+                      )}
+                      {synthIntent === 'custom' && (
+                        <textarea data-synth-intent-text value={synthIntentText}
+                          onChange={e => setSynthIntentText(e.target.value)}
+                          rows={2} placeholder="说明这份综述给谁读、读来完成什么，例如：给团队做选型决策，重点看可落地性与成本"
+                          className="w-full px-2 py-1.5 mb-3 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent resize-none" />
+                      )}
+                    </>
                   )}
-                  <textarea data-synth-dims value={synthDimsText} onChange={e => setSynthDimsText(e.target.value)}
-                    rows={4} placeholder="每行一个维度，例如：研究问题"
-                    className="w-full px-2 py-1.5 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent resize-none" />
-                  <p className="text-[10px] text-disabled mt-0.5 mb-3">
-                    每行一个，共 {dimsCount} 个维度，将作为对比总表的行标签。切换预设会覆盖当前列表。
-                  </p>
 
-                  <label className="text-[12px] font-medium text-dimmed block mb-1">对比指引（可选）</label>
-                  <textarea data-synth-notes value={synthNotes} onChange={e => setSynthNotes(e.target.value)}
-                    rows={2} placeholder="例如：重点比较各篇的方法差异与实验条件；关注结论冲突之处"
-                    className="w-full px-2 py-1.5 mb-4 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent resize-none" />
+                  {/* 「高级」区 —— 维度与材料体裁。收起态在标题行里带出**当前生效**的体裁
+                      （不是「意图的建议值」）：用户手改过体裁之后，这里显示的就是改后的样子。 */}
+                  <button type="button" data-synth-advanced-toggle
+                    onClick={() => setSynthAdvanced(v => !v)}
+                    className="flex items-center gap-1 text-[12px] text-dimmed hover:text-text mb-2 transition-colors">
+                    <ChevronRight size={12}
+                      className={`transition-transform ${synthAdvanced ? 'rotate-90' : ''}`} />
+                    高级选项（对比维度 / 材料体裁：{genreSummary}）
+                  </button>
+
+                  {synthAdvanced && (
+                    <div data-synth-advanced className="mb-3 pl-3 border-l border-border-light">
+                      {/* 对比维度 —— 「## 对比总表」的行标签，也就是产物的骨架（设计 §18.0）*/}
+                      <label className="text-[12px] font-medium text-dimmed block mb-1">对比维度</label>
+                      {dimensionPresets.length > 0 && (
+                        <select data-synth-preset value={synthPresetKey} onChange={e => changeSynthPreset(e.target.value)}
+                          className="w-full px-2 py-1.5 mb-2 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent">
+                          {dimensionPresets.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+                        </select>
+                      )}
+                      <textarea data-synth-dims value={synthDimsText} onChange={e => setSynthDimsText(e.target.value)}
+                        rows={4} placeholder="每行一个维度，例如：研究问题"
+                        className="w-full px-2 py-1.5 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent resize-none" />
+                      <p className="text-[10px] text-disabled mt-0.5 mb-3">
+                        每行一个，共 {dimsCount} 个维度，将作为对比总表的行标签。切换预设会覆盖当前列表。
+                      </p>
+
+                      {/* 材料体裁（多选）—— 决定加载哪几类「类型增量」文风条款（设计 §7.8.2） */}
+                      <label className="text-[12px] font-medium text-dimmed block mb-1">材料体裁（可多选）</label>
+                      <div data-synth-genres className="flex flex-wrap gap-x-4 gap-y-1.5">
+                        {contentTypeOptions.map(c => (
+                          <label key={c.key} className="flex items-center gap-1.5 text-[12px] text-dimmed cursor-pointer">
+                            <input type="checkbox" data-synth-genre={c.key}
+                              checked={synthGenres.includes(c.key)}
+                              onChange={() => toggleSynthGenre(c.key)}
+                              className="accent-accent" />
+                            {c.label}
+                          </label>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-disabled mt-0.5">
+                        切换读者意图会重置本项；留空则不加任何体裁专属的文风条款。
+                      </p>
+                    </div>
+                  )}
 
                   <div className="flex gap-2 justify-end">
                     <button onClick={() => setSynthOpen(false)}

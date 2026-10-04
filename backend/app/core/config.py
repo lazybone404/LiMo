@@ -10,6 +10,9 @@ from typing import Any
 
 import yaml
 
+from app.core import config_io as _config_io
+from app.core import secrets as _secrets
+
 logger = logging.getLogger(__name__)
 
 
@@ -266,6 +269,34 @@ def _migrate_legacy_dir(old: Path, new: Path) -> None:
             pass  # 跨盘符等无法 rename，保留旧目录
 
 
+def _hydrate_provider_keys(config: dict) -> None:
+    """把 provider 列表里的 Key **单向**镜像到旧字段 `llm.api_key` / `cloud.dashscope`。
+
+    这两个字段是同一份秘密的第二个存放处（`routers/model.py` 保存厂商 Key / 引擎 Key 时
+    双写），会出现「改了一处、另一处还是旧值」。真相源定为 **provider 列表** ——
+    落盘侧也按这个来（`config_io.fold_to_providers` 把旧字段折进去、密钥库里只留一份）。
+
+    ⚠️ **provider 里读不到就不动**旧字段：老配置可能只有 `llm.api_key`
+    （从未经过 model.py 的保存路径），这里若清空它 = 用户的 Key 无声消失。
+
+    ⚠️ 本函数**只改内存、不落盘**，与 `_sync_llm_model_caps` 同一纪律 ——
+    startup 期间写全量配置会永久丢失敏感字段（模式 #29）。
+    """
+    llm = config.get("llm")
+    if isinstance(llm, dict):
+        pid = llm.get("provider") or ""
+        if pid:
+            for prov in config.get("providers") or []:
+                if isinstance(prov, dict) and prov.get("id") == pid and prov.get("api_key"):
+                    llm["api_key"] = prov["api_key"]
+                    break
+
+    for ep in config.get("engine_providers") or []:
+        if isinstance(ep, dict) and ep.get("id") == "dashscope" and ep.get("api_key"):
+            config.setdefault("cloud", {})["dashscope"] = ep["api_key"]
+            break
+
+
 def load_config(config_path: str | None = None) -> dict[str, Any]:
     """加载配置，优先从文件，缺省用默认值"""
     # 旧目录迁移: ~/.mybigwork → ~/.limo
@@ -276,12 +307,10 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
     DEFAULT_CONFIG["data_dir"] = resolved_dir
 
     # config.yaml 路径：环境变量优先，否则放在数据目录
+    # ⚠️ 拼法只此一处（`config_io.config_file_path`）—— save 侧与自检侧共用同一个函数，
+    #    否则「读 A 文件、写 B 文件」这种事不会有任何报错。
     if config_path is None:
-        config_path = (
-            os.environ.get("LIMO_CONFIG") or
-            os.environ.get("MYBIGWORK_CONFIG") or
-            str(Path(resolved_dir) / "config.yaml")
-        )
+        config_path = str(_config_io.config_file_path({"data_dir": resolved_dir}))
 
     config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -302,6 +331,11 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
             config["data_dir"] = str(Path.home() / ".limo")
 
         # 启动时自动备份 — 防止后续写入损坏后可恢复
+        # ⚠️ 这里**原样复制磁盘文件**，刻意不做脱敏：备份的暴露面永远等于被备份文件的
+        #    暴露面 —— config.yaml 干净时它必然干净，config.yaml 还是明文时它也没多泄漏
+        #    什么。若改成「备份前先剥离」，就得判断凭据是否已在密钥库里，而判错的方向是
+        #    「备份比原文件还残缺」，回滚回去反而把 Key 弄丢。迁移后残留的那一份明文
+        #    `.bak` 由 `scripts/migrate-secrets.py` 刷新。
         backup_path = path.with_suffix(".yaml.bak")
         try:
             import shutil
@@ -324,6 +358,18 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
     _sync_missing_providers(config)
     _sync_builtin_models(config)
     _sync_llm_model_caps(config)
+
+    # ── 凭据回填 + 落盘形态归一（顺序有依赖，勿调换）──
+    # ① 把 DPAPI 密钥库里的凭据填回内存（`secrets_ref` 由 save 侧留下）。
+    #    ⚠️ `load_secrets` 在「文件在但解不开」时**抛错**（换了 Windows 账户 /
+    #    entropy 改过 / 文件损坏），这里刻意不吞 —— 静默跳过 = 用户所有 Key 无声消失，
+    #    而他会以为「配置丢了」然后重新填一遍。
+    if config.get("secrets_ref"):
+        _config_io.inject_secrets(config, _secrets.load_secrets())
+    # ② 清掉历史落盘的派生副本（cookie 的 `_parsed.cookies` / `.netscape`）
+    _config_io.strip_derived(config)
+    # ③ provider 列表 → 旧字段单向镜像（旧字段仍被 resolve_model / capabilities 读）
+    _hydrate_provider_keys(config)
 
     return config
 

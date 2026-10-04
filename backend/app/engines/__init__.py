@@ -452,19 +452,17 @@ def init_engines(config: dict | None = None):
     if asr_changed or models_changed or doc_bindings_changed or migrated_changed:
         logger.info("init_engines: 引擎绑定/模型变更，持久化到 config.yaml (asr=%s models=%s doc_bindings=%s migrate=%s)",
                     asr_changed, models_changed, doc_bindings_changed, migrated_changed)
+        # ⚠️ 此处曾有一段「从磁盘重读 config、用真实 Key 覆盖内存中可能的脱敏值」的防御块，
+        #    2026-10-04 删除。三个理由，任一条都足以判它无效：
+        #    ① `merge_sensitive(new_val: str, old_val: str) -> str` 收到的是两个 **dict**，
+        #       且调用处**没有接收返回值** —— 纯函数 + 丢弃返回值 ⇒ 即使执行成功也是 no-op；
+        #    ② 它读的 `_cfg_path` 是 `backend/config.yaml`（仓库内），而 `save_config` 写的是
+        #       `~/.limo/config.yaml`（由 cfg["data_dir"] 推出）—— 读一个文件、写另一个；
+        #    ③ 防御的**前提本就不成立**：内存 config 不会含脱敏值 —— 全仓 `mask_sensitive`
+        #       调用点（config.py:28/38/50-52、model.py:133/538/742）全部只用于**构造响应**，
+        #       且都先做 `dict(p)` / `deepcopy` 副本，无一写回 cfg。
         try:
-            from app.core.config_io import save_config, merge_sensitive
-            # 先从磁盘重新加载原始 config 获取真实 Key，合并到当前内存 config 再保存
-            from app.core.config import DEFAULT_CONFIG
-            import copy, yaml, os as _os
-            _cfg_path = _os.path.join(_os.path.dirname(__file__), '..', '..', 'config.yaml')
-            try:
-                with open(_cfg_path, 'r', encoding='utf-8') as _f:
-                    _disk = yaml.safe_load(_f) or {}
-                _disk_sensitive = {k: _disk.get(k) for k in ('llm', 'cloud', 'auth', 'fetch', 'agent_tools') if k in _disk}
-                merge_sensitive(config, _disk_sensitive)  # 用磁盘上的真实 Key 覆盖内存中可能的脱敏值
-            except Exception:
-                pass
+            from app.core.config_io import save_config
             save_config(config)
         except OSError as e:
             logger.warning("init_engines: 无法保存配置（%s），继续运行", e)

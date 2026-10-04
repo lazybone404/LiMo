@@ -3,13 +3,13 @@
 """
 
 import logging
-import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from app.core.dependencies import get_store
 from app.core.errors import AppError
+from app.core.resource_id import is_valid_resource_id
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +26,18 @@ MIME_MAP = {
     ".pdf": "application/pdf",
 }
 
-_ID_RE = re.compile(r'^[a-zA-Z0-9_\-]+$')
-
 # 封面重定向允许的域名白名单
 _COVER_DOMAINS = {"i.ytimg.com", "img.youtube.com", "i0.hdslb.com", "i1.hdslb.com",
                    "i2.hdslb.com", "pic.bilibili.cc", "yt3.ggpht.com"}
 
 
 def _check_tx_id(transcript_id: str) -> bool:
-    return bool(_ID_RE.match(transcript_id)) and len(transcript_id) <= 64
+    """本文件内的历史名，判据已上移到 `core.resource_id`（读路径共用同一条）。
+
+    保留这个名字是因为本文件有五处调用点，而改名本身不产生任何行为变化
+    ——**判据同源**才是要修的东西，不是名字。
+    """
+    return is_valid_resource_id(transcript_id)
 
 
 def _safe_local_path(store_root: str, transcript_id: str, filename: str) -> Path | None:
@@ -60,7 +63,7 @@ def get_cover_image(transcript_id: str, store=Depends(get_store)):
         raise AppError("COVER_NOT_FOUND", "文档不存在")
 
     # 新路径：{doc_dir}/assets/cover.ext
-    doc_dir = store._get_doc_dir(transcript_id)
+    doc_dir = store.get_doc_dir(transcript_id)
     for ext in (".jpg", ".png", ".webp"):
         if doc_dir:
             new_path = doc_dir / "assets" / f"cover{ext}"

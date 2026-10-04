@@ -1,6 +1,6 @@
 [project]
 name = "limo-backend"
-version = "0.4.8"
+version = "0.4.12"
 description = "LiMo knowledge management system - backend"
 requires-python = ">=3.12"
 dependencies = [
@@ -51,6 +51,11 @@ dependencies = [
     "xlrd>=2.0.2",
     "resvg-py>=0.4.0",
 ]
+
+[project.scripts]
+# `limo` 命令行（只读）。⚠️ 与 `python -m limo_cli` 是同一条入口（见
+# `limo_cli/__main__.py`）——未安装入口点的环境（含 `scripts/check-cli`）走后者。
+limo = "limo_cli.cli:main"
 
 [dependency-groups]
 dev = [

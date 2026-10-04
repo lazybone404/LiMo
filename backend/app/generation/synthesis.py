@@ -51,7 +51,7 @@ from app.core import logging as log
 from app.core.errors import SynthesisError
 from app.core.text_utils import sanitize_reference_name, split_into_chunks
 from app.core.token import estimate_tokens
-from app.core.transcript_meta import build_composite_raw_text
+from app.core.transcript_meta import build_composite_raw_text, strip_meta
 from app.generation.budget import (
     MIN_MULTI_CONTEXT_WINDOW,
     input_budget_for,
@@ -69,10 +69,16 @@ SOURCE_MODES = ("raw", "notes")
 
 # ── Map 阶段：对比维度的预设模板（设计 §5.1 的 Hybrid 维度 / §18）──
 #
-# ⚠️ **预设维度对非论文材料会失效**：「研究方法」对一场访谈毫无意义。故给四套。
+# ⚠️ **预设维度对非论文材料会失效**：「研究方法」对一场访谈毫无意义。故给多套。
 # 但**不按文档类型自动选**——用户选文档时未必已想清楚要比什么，自动选错了
 # 比不选更难察觉（设计 §18.6）。
+#
+# ⚠️ **`general` 必须排在第一位**：前端对话框取 `dimensionPresets[0]` 作默认选中
+# 项（`DocLibrary.tsx` 的 `firstPreset`）。插在后面等于「后端换了默认、前端仍
+# 静默预填 paper」——零报错，只在产物骨架上体现。
 DIMENSION_PRESETS: dict[str, list[str]] = {
+    "general": ["核心主题 / 要解决的问题", "主要结论", "关键差异", "共同点与一致信息",
+                "重要限制 / 条件 / 风险", "适用场景或行动影响", "仍无法从材料确定的信息"],
     "paper":   ["研究问题", "方法", "数据", "主要发现", "局限"],
     "tech":    ["解决的问题", "技术方案", "关键设计", "效果", "限制"],
     "product": ["目标用户", "核心功能", "实现方式", "优劣", "适用场景"],
@@ -83,6 +89,7 @@ DIMENSION_PRESETS: dict[str, list[str]] = {
 # 放在后端而非前端：前端下拉的选项与文案全部由 capabilities 下发，新增一套预设
 # 只需改这里——这是本项目「引擎前端后端驱动」的同一原则。
 DIMENSION_PRESET_LABELS: dict[str, str] = {
+    "general": "通用资料 / 综合阅读",
     "paper": "论文综述",
     "tech": "技术资料",
     "product": "产品评测",
@@ -95,9 +102,80 @@ assert set(DIMENSION_PRESETS) == set(DIMENSION_PRESET_LABELS), (
     f"预设与文案不配对：{set(DIMENSION_PRESETS) ^ set(DIMENSION_PRESET_LABELS)}"
 )
 
-# 默认套 = 论文综述。**保留为别名**（同一对象），既有引用零改动。
+# 默认套 = 「通用资料 / 综合阅读」。
+#
+# ⚠️ 历史沿革：它曾叫 `DEFAULT_DIMENSIONS` 且指向 `paper`。改名与换指向是
+# **同一件事的两半**——只改指向留旧名，等于「默认」在代码里有两个读法（铁律 #39：
+# 成对常量必须同源；#54：数量与命名被记错比没有注释更糟）。
+#
 # ⚠️ 取用方一律 `list(...)` 拷贝（既有代码已如此），别名本身不得被原地修改。
-DEFAULT_PAPER_DIMENSIONS: list[str] = DIMENSION_PRESETS["paper"]
+DEFAULT_DIMENSIONS: list[str] = DIMENSION_PRESETS["general"]
+
+# ── 材料体裁（设计 §7.8.2：类型增量条款按此选择）──
+#
+# ⚠️ **键刻意复用 `DIMENSION_PRESETS`**：每个体裁都有一套对应的对比维度预设，两者
+# 是同一种材料的两个侧面。复用让 `set(CONTENT_TYPES) <= set(DIMENSION_PRESETS)`
+# 成为可断言的不变量（加了体裁却没有对应维度预设会红）。
+#
+# ⚠️ **标签另立一份**：`DIMENSION_PRESET_LABELS["paper"]` 是「论文综述」——那是
+# **产物形态**，当体裁名不通（体裁描述的是材料本身）。同一组键、两份文案。
+CONTENT_TYPES: tuple[str, ...] = ("paper", "tech", "product", "media")
+
+CONTENT_TYPE_LABELS: dict[str, str] = {
+    "paper": "论文",
+    "tech": "技术资料",
+    "product": "产品评测",
+    "media": "观点内容",
+}
+
+assert set(CONTENT_TYPES) <= set(DIMENSION_PRESETS), (
+    f"体裁没有对应的维度预设：{set(CONTENT_TYPES) - set(DIMENSION_PRESETS)}"
+)
+assert set(CONTENT_TYPES) == set(CONTENT_TYPE_LABELS), (
+    f"体裁与文案不配对：{set(CONTENT_TYPES) ^ set(CONTENT_TYPE_LABELS)}"
+)
+
+# ── 读者意图（设计 §7.8.3：落进 `<task>` 的「读者目的」）──
+#
+# 用户在合成对话框里选一个意图：`purpose` 文本进 `task` 段（决定文章围绕读者的什么
+# 动作组织），`default_content_type` 只作**高级区的预填建议**。
+#
+# ⚠️ **`None` 是刻意的**：「理解主题」「比较材料」是**读者的动作**，不指示材料是
+# 什么体裁。给它们预设体裁正是要消灭的那类错配（对话框静默预填 paper 对视频转写稿
+# 毫无意义，用户还看不出为什么）。`None` 而非 `""`——空串读起来像「漏填」。
+#
+# ⚠️ 键必须与 capabilities 下发的一致；非法值由调用方报错，**不静默回退**
+# （回退 = 用户选了「找争议」却按「理解主题」生成，产物上看不出异常）。
+READER_INTENTS: dict[str, dict] = {
+    "understand": {
+        "label": "理解主题",
+        "purpose": "读完能准确复述这批材料的核心议题，以及各自的实际立场与依据。",
+        "default_content_type": None,
+    },
+    "compare": {
+        "label": "比较材料",
+        "purpose": "读完能说清各篇在同一组维度上的异同与分歧点，以及这些差异各自依据什么。",
+        "default_content_type": None,
+    },
+    "controversy": {
+        "label": "找争议",
+        "purpose": "读完能指出材料之间真正冲突的地方、各自依据，以及这些分歧在什么条件下成立。",
+        "default_content_type": "media",
+    },
+    "action": {
+        "label": "提炼行动建议",
+        "purpose": "读完能带走可以落地的判断与下一步动作，并知道每个判断的适用条件与风险。",
+        "default_content_type": "product",
+    },
+    "custom": {
+        "label": "自定义",
+        "purpose": "",          # 由用户填写，见 `reader_intent_text`
+        "default_content_type": None,
+    },
+}
+
+# 未选意图时的默认（历史请求 / 旧前端）。`understand` 的 purpose 最中性。
+DEFAULT_READER_INTENT = "understand"
 
 # 用户维度列表的清洗上限（与 `_clean_dimension` 的单条限长 20 配套）
 MAX_USER_DIMENSIONS = 8
@@ -572,7 +650,7 @@ async def _discover_dimensions(
         for i, s in enumerate(sources, 1)
     )
     prompt = _DISCOVERY_PROMPT.format(
-        defaults="、".join(DEFAULT_PAPER_DIMENSIONS),
+        defaults="、".join(DEFAULT_DIMENSIONS),
         max_extra=DISCOVERY_MAX_EXTRA,
         material=material,
     )
@@ -585,21 +663,21 @@ async def _discover_dimensions(
     except TimeoutError:
         # `str(TimeoutError())` 是空串，单列一支避免留下无原因的日志
         log.warning("合成：维度发现超时，只用模板维度", timeout=EXTRACT_TIMEOUT)
-        return list(DEFAULT_PAPER_DIMENSIONS)
+        return list(DEFAULT_DIMENSIONS)
     except Exception as e:
         log.warning("合成：维度发现失败，只用模板维度", error=str(e)[:200])
-        return list(DEFAULT_PAPER_DIMENSIONS)
+        return list(DEFAULT_DIMENSIONS)
 
     extra: list[str] = []
     for line in (text or "").splitlines():
         dim = _clean_dimension(line)
-        if dim and dim not in DEFAULT_PAPER_DIMENSIONS and dim not in extra:
+        if dim and dim not in DEFAULT_DIMENSIONS and dim not in extra:
             extra.append(dim)
         if len(extra) >= DISCOVERY_MAX_EXTRA:
             break
     if extra:
         log.info("合成：追加对比维度", extra=extra)
-    return list(DEFAULT_PAPER_DIMENSIONS) + extra
+    return list(DEFAULT_DIMENSIONS) + extra
 
 
 async def _extract_one(
@@ -892,11 +970,17 @@ def _default_title(sources: list[Source]) -> str:
 
 
 def _latest_notes_text(store, tx_id: str) -> str:
-    """取该文档 notes 的**最新版**正文；没有笔记返回空串（设计 §19.1）。
+    """取该文档 notes 的**最新版正文**；没有笔记返回空串（设计 §19.1）。
 
     ⚠️ 「最新版」与 `store.get_markdown` 是同一套判据：`get_markdowns_by_transcript`
     返回**按 version 降序**的列表，`[0]` 即最新版（读 `notes.md` 而不是 `notes.prev.md`）。
     自己判版本号会与它漂移——两版制下的版本判据只应存在一份。
+
+    ⚠️ **必须剥掉自证头**：`{mode}.md` 的首行是 `<!-- limo-meta ... -->`，而这份
+    文本会作为【文档 i】的正文**进模型 prompt**。不剥的后果有三条：① 与「不给
+    普通 transcript 加头」的边界自相矛盾（那条的理由正是「会进 prompt」）；②
+    `Source.tokens = estimate_tokens(raw_text)`，头会被算进配额；③ 材料里多一类
+    可控文本（历史版本的真实 JSON，非伪造也够呛）。这也是「meta 不计入 tokens」的落点。
     """
     try:
         entries = store.get_markdowns_by_transcript(tx_id, mode="notes")
@@ -905,7 +989,7 @@ def _latest_notes_text(store, tx_id: str) -> str:
         return ""
     if not entries:
         return ""
-    return (entries[0].get("content") or "").strip()
+    return strip_meta(entries[0].get("content") or "").strip()
 
 
 def _load_sources(
@@ -985,6 +1069,44 @@ def normalize_source_mode(value: str | None) -> str:
     return mode
 
 
+def normalize_reader_intent(value: str | None) -> str:
+    """校验读者意图 key。空值 → 默认意图；**非法值 → 报错，不静默回退**。
+
+    回退的后果与 `source_mode` 同款：用户选了「找争议」却按「理解主题」生成，
+    产物上看不出任何异常。（空值不算非法——旧前端不发这个字段。）
+    """
+    key = (value or "").strip()
+    if not key:
+        return DEFAULT_READER_INTENT
+    if key not in READER_INTENTS:
+        raise SynthesisError(
+            "SYNTH_BAD_READER_INTENT",
+            f"不支持的读者意图：{key}（可选：{'、'.join(READER_INTENTS)}）",
+            recoverable=True,
+        )
+    return key
+
+
+def clean_content_types(values: list[str] | None) -> list[str]:
+    """体裁列表清洗：去空白 / 去重 / 保序 / 只留合法值 / 截断到枚举长度。
+
+    ⚠️ **非法值静默丢弃**，与 `normalize_source_mode` / `normalize_reader_intent`
+    的「显式报错」**刻意不同**：体裁是「高级区」的可选修正项——用户多带了不认识
+    的值不该让整次合成失败；而原料模式选错了产物性质就变了，读者意图选错了产出
+    的读者目的就错了。判据是「这个值错了会不会改变产物的性质」。
+
+    空列表是合法结果（= 不加任何体裁增量，**不回退到论文**）。
+    """
+    out: list[str] = []
+    for v in values or []:
+        s = str(v).strip()
+        if s in CONTENT_TYPES and s not in out:
+            out.append(s)
+            if len(out) >= len(CONTENT_TYPES):
+                break
+    return out
+
+
 async def synthesize(
     store,
     config: dict,
@@ -992,9 +1114,11 @@ async def synthesize(
     model_id: int | None,
     doc_ids: list[str],
     title: str = "",
-    user_notes: str = "",
     dimensions: list[str] | None = None,
     source_mode: str = "raw",
+    content_type: list[str] | None = None,
+    reader_intent: str | None = None,
+    reader_intent_text: str = "",
     cancel_event=None,
     on_stage=None,
     deadline: float | None = None,
@@ -1010,6 +1134,15 @@ async def synthesize(
 
     `dimensions` 是用户给定的对比维度（已清洗）；给了就跳过维度发现调用。
     `source_mode` 决定原料形态（原文 / 笔记）。`deadline` 见 `run_map_reduce`。
+
+    `content_type`（材料体裁，可多标签）与 `reader_intent` / `reader_intent_text`
+    **全部落进出处头 meta**，生成侧读回（`prompt.py` 的 `_read_synthesis_*`）。
+    ⚠️ 它们**不是本函数的入参意义上的一次性参数**——生成是第二次独立请求，届时
+    手里只有 rawText。落 meta 是唯一能让它们到达 prompt 的通道。
+
+    ⚠️ **历史参数 `user_notes` 已删除**（2026-10-04）：它是死链——签名里有、函数体
+    零引用，用户在对话框填的「对比指引」对产物从来没有影响。它的位置由
+    `reader_intent` / `reader_intent_text` 承接（走 meta，真正生效）。
     """
     from app.core.model_resolver import resolve_context_window
 
@@ -1056,13 +1189,13 @@ async def synthesize(
 
     for i, s in enumerate(sources, 1):
         # ⚠️ 复制与改写必须在同一步完成（见 relocate_assets 的说明）
-        s.text = relocate_assets(s.raw_text, store._get_doc_dir(s.doc_id), doc_dir, f"d{i}_")
+        s.text = relocate_assets(s.raw_text, store.get_doc_dir(s.doc_id), doc_dir, f"d{i}_")
 
     # ── 按 plan 执行 ──
     # ⚠️ 维度要**落进 meta**（生成是第二次独立请求，届时只有 rawText 可按）。
     # 未指定时用预设——**Stuff 路径也要写**，否则预设维度在最常见的路径上
     # 一次都不生效（设计 §18.0 查出的那个偏差）。
-    dims: list[str] = list(dimensions) if dimensions else list(DEFAULT_PAPER_DIMENSIONS)
+    dims: list[str] = list(dimensions) if dimensions else list(DEFAULT_DIMENSIONS)
     degraded: list[str] = []
     if plan.mode == "stuff":
         body, calls = build_stuff_text(sources), 0
@@ -1084,6 +1217,9 @@ async def synthesize(
         body,
         dimensions=dims,
         source_mode=source_mode,
+        content_type=content_type,
+        reader_intent=reader_intent,
+        reader_intent_text=reader_intent_text,
     )
 
     # ── 落库（合成文档不参与内容去重）──

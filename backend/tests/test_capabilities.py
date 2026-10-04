@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from app.routers.capabilities import _compute_missing_keys, _dimension_presets
 from app.generation.synthesis import (
-    DEFAULT_PAPER_DIMENSIONS, DIMENSION_PRESET_LABELS, DIMENSION_PRESETS,
+    CONTENT_TYPES, DEFAULT_DIMENSIONS, DIMENSION_PRESET_LABELS, DIMENSION_PRESETS,
+    READER_INTENTS,
 )
 
 
@@ -81,9 +82,47 @@ def test_dimension_presets_from_synthesis():
         assert p["label"] == DIMENSION_PRESET_LABELS[p["key"]], f'{p["key"]} 文案来源不对'
         assert p["dimensions"] == DIMENSION_PRESETS[p["key"]], f'{p["key"]} 维度值不同源'
     assert all(p["label"] and p["dimensions"] for p in ps), "不得有空白标签或空维度"
-    # 默认套（paper）必须真在其中——生成侧回退用的就是它
+    # 默认套必须真在其中——生成侧回退用的就是它。且必须**排在第一位**：
+    # 前端对话框取 `dimensionPresets[0]` 作默认选中项（`firstPreset`），
+    # 插在后面 = 后端换了默认、前端仍静默预填 paper，零报错。
+    assert ps[0]["key"] == "general", "默认套必须排在第一位（前端取 [0] 作默认）"
+    assert ps[0]["dimensions"] == DEFAULT_DIMENSIONS
+    # paper 仍在（历史文档回退标 / 用户手动选预设都要用它），且已与默认**分离**
     paper = [p for p in ps if p["key"] == "paper"][0]
-    assert paper["dimensions"] == DEFAULT_PAPER_DIMENSIONS
+    assert paper["dimensions"] == DIMENSION_PRESETS["paper"]
+    assert paper["dimensions"] != DEFAULT_DIMENSIONS, \
+        "默认套与 paper 必须是两套（换默认套时只改常量不改指向 → 此条红）"
+
+
+# ── contentTypes / readerIntents：与 synthesis 常量同源 ──
+# 同一精神（对照组：在 capabilities 里手写一份体裁列表 → 下面的断言必红）。
+
+
+def test_content_types_from_synthesis():
+    from app.routers.capabilities import _content_types
+    ct = _content_types()
+    assert [c["key"] for c in ct] == list(CONTENT_TYPES), "键与顺序必须来自 synthesis"
+    assert all(c["label"] for c in ct), "不得有空白体裁标签"
+    # 体裁与维度预设的键必须重叠（同一材料的两个侧面，见 synthesis 的注释）
+    assert set(CONTENT_TYPES) <= set(DIMENSION_PRESETS)
+
+
+def test_reader_intents_default_content_type_within_enum():
+    """`defaultContentType` 允许为 None（「理解主题」这类不预设体裁），
+    但**一旦有值就必须是合法体裁**。
+
+    ⚠️ 断言写成单条件 `in CONTENT_TYPES` → understand/compare/custom 三条全红：
+    与本设计「不重演静默预填 paper 那种错配」的意图直接冲突。这三条恰恰是
+    最需要保持「无建议」的。
+    """
+    from app.routers.capabilities import _reader_intents
+    for it in _reader_intents():
+        dct = it["defaultContentType"]
+        assert dct is None or dct in CONTENT_TYPES, \
+            f'{it["key"]} 的建议体裁 {dct!r} 不在枚举内'
+    assert all(it["label"] for it in _reader_intents()), "不得有空白意图标签"
+    assert all(it["purpose"] or it["key"] == "custom" for it in _reader_intents()), \
+        "除 custom（用户自填）外，每个意图都必须自带读者目的文案"
 
 
 def test_dimension_presets_are_copies():

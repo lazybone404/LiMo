@@ -11,7 +11,13 @@ from app.core.dependencies import get_config
 from app.generation.prompt import STYLE_MAP, DOC_STYLE_MAP, EXCEL_STYLE_MAP, AVAILABLE_OPTIONS
 # 对比维度预设随 capabilities 下发（同「引擎前端后端驱动」原则）：前端不硬编码预设名，
 # 新增一套预设只需改 synthesis.py 一处。⚠️ 单一真相源——不要在这里重写一份列表。
-from app.generation.synthesis import DIMENSION_PRESET_LABELS, DIMENSION_PRESETS
+from app.generation.synthesis import (
+    CONTENT_TYPE_LABELS,
+    CONTENT_TYPES,
+    DIMENSION_PRESET_LABELS,
+    DIMENSION_PRESETS,
+    READER_INTENTS,
+)
 from app.generation.product_registry import to_capability_list
 from app.routers.model import _get_providers
 
@@ -45,6 +51,34 @@ def _dimension_presets() -> list[dict]:
     return [
         {"key": k, "label": DIMENSION_PRESET_LABELS[k], "dimensions": list(v)}
         for k, v in DIMENSION_PRESETS.items()
+    ]
+
+
+def _content_types() -> list[dict]:
+    """材料体裁选项（合成对话框「高级」区的多选框）。
+
+    ⚠️ 标签取 `CONTENT_TYPE_LABELS` 而**不是** `DIMENSION_PRESET_LABELS`：后者是
+    「论文综述」——那是**产物形态**，当体裁名不通（体裁描述的是材料本身）。
+    两组键相同、文案不同，是刻意分开的两份。
+    """
+    return [{"key": k, "label": CONTENT_TYPE_LABELS[k]} for k in CONTENT_TYPES]
+
+
+def _reader_intents() -> list[dict]:
+    """读者意图选项（合成对话框的主控件，键顺序 == 前端选项顺序）。
+
+    `defaultContentType` 为 `None` = **不预设体裁**：「理解主题」「比较材料」是读者
+    的动作，不指示材料是什么体裁。前端据此留空高级区，而不是替用户猜一个——
+    静默预填 paper 对视频转写稿毫无意义，而用户看不出为什么。
+    """
+    return [
+        {
+            "key": k,
+            "label": v["label"],
+            "purpose": v["purpose"],
+            "defaultContentType": v["default_content_type"],
+        }
+        for k, v in READER_INTENTS.items()
     ]
 
 
@@ -282,7 +316,7 @@ async def capabilities(config=Depends(get_config)):
         "genOptions": AVAILABLE_OPTIONS,
         "llmModels": config.get("llm_models", {}),
         "products": to_capability_list(),
-        "version": "0.4.8",
+        "version": "0.4.12",
         # ── 新增：前端去硬编码元数据 ────────────────────────
         "fileTypeMap": file_type_map,
         "scenarioLabels": scenario_labels,
@@ -298,8 +332,13 @@ async def capabilities(config=Depends(get_config)):
             "task_oriented": "任务",
             "imrad": "IMRaD 精读",
         },
-        # 多篇合成的对比维度预设（前端对话框下拉 + 维度 textarea 预填）
+        # 多篇合成的对比维度预设（前端对话框「高级」区下拉 + 维度 textarea 预填）
+        # ⚠️ 第一项即默认选中项（前端取 [0]）——顺序由 synthesis 侧保证。
         "dimensionPresets": _dimension_presets(),
+        # 材料体裁（高级区多选框；`defaultContentType` 建议值由 readerIntents 给）
+        "contentTypes": _content_types(),
+        # 读者意图（对话框主控件）——决定 task 段的「读者目的」
+        "readerIntents": _reader_intents(),
         # ── 未完成生成标记（应用重启/崩溃时残留，前端启动提示）──
         "interruptedGenerations": _scan_interrupted_generations(config),
         # ── 缺 key 项（P2.1 主动提示：配置向导第三屏 + 操作前 toast）──

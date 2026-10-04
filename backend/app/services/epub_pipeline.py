@@ -28,6 +28,7 @@ from typing import Optional
 from app.core.text_utils import split_into_chunks
 from app.core.types import GenerateMode, MarkdownView, Style
 from app.generation.prompts.common import PromptComposer
+from app.generation.provenance import markdown_meta
 from app.llm import LLMService, CancelledError
 from app.services.errors import EpubError
 
@@ -333,14 +334,25 @@ async def _finalize(store, llm, doc_id: str, chapters: list, book_title: str,
             f"> 可查看整理版原文中的逐章解读，或重新发起一键解读。"
         )
 
-    store.save_markdown(MarkdownView(
+    # 自证头：epub 两产物都不是单次 generate 的产物（notes 是阶段 2 归并、polished 是
+    # 逐章拼接），故额外标 `pipeline="epub"` —— 看产物的人应当知道这条路径的多阶段性。
+    tx = store.get_transcript(doc_id) or {}
+    _epub_extra = {"pipeline": "epub"}
+    _book_model = getattr(llm, "model", "") or ""
+    notes_mv = MarkdownView(
         id=f"md_{uuid.uuid4().hex[:12]}", transcript_id=doc_id,
         content=summary, style=Style.DETAILED, mode=GenerateMode.NOTES,
-    ))
-    store.save_markdown(MarkdownView(
+        generation_model=_book_model,
+    )
+    polished_mv = MarkdownView(
         id=f"md_{uuid.uuid4().hex[:12]}", transcript_id=doc_id,
         content=polished, style=Style.DETAILED, mode=GenerateMode.POLISHED,
-    ))
+        generation_model=_book_model,
+    )
+    store.save_markdown(notes_mv, file_meta=markdown_meta(
+        notes_mv, tx, extra_params=_epub_extra))
+    store.save_markdown(polished_mv, file_meta=markdown_meta(
+        polished_mv, tx, extra_params=_epub_extra))
     # 自动标题：epub 导入标题一般为文件名，基本不触发；触发时用总结标题（更贴近书主题）
     try:
         from app.routers.generate import _auto_title

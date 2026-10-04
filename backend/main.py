@@ -24,7 +24,7 @@ from app.core.concurrency import ExecutionGuard
 from app.core.logging import request_id, init_request_id_logging, RequestIDFilter
 from app.storage.store import Store
 
-app = FastAPI(title="LiMo", version="0.4.8")
+app = FastAPI(title="LiMo", version="0.4.12")
 
 @app.middleware("http")
 async def add_request_id(request, call_next):
@@ -266,6 +266,20 @@ async def startup():
     _init_logging(config)
     init_request_id_logging()  # 注入 RequestID 过滤器
 
+    # 凭据卫生自检 —— 位置有意义：配置已载（知道 data_dir 与 secrets_ref）、logger 就绪
+    # （报得出来）、**早于任何业务写盘**（不会先写出明文再报警）。
+    # ⚠️ 只报告、不阻断：明文凭据是**卫生问题**不是功能故障，为它拒绝启动等于让用户
+    #    「升级后应用打不开」，而他从错误信息里也学不到该做什么。
+    from app.core.config_io import startup_check as _startup_check
+    _secret_problems = _startup_check(config)
+    if _secret_problems:
+        _secret_log = logging.getLogger(__name__)
+        for _p in _secret_problems:
+            _secret_log.warning("凭据自检：%s", _p)
+        _secret_log.warning(
+            "凭据自检：打开设置页点一次「保存」即可把明文凭据迁移到 DPAPI 加密存储"
+            "（开发环境可先跑 scripts/migrate-secrets.py --check 看会改什么）")
+
     # 存储
     app.state.store = Store(config.get("data_dir", "data"))
 
@@ -313,7 +327,7 @@ async def startup():
 @app.get("/health")
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.4.8", "started_at": app.state.started_at}
+    return {"status": "ok", "version": "0.4.12", "started_at": app.state.started_at}
 
 
 # 路由（files 在 ingest 之前——/files/{id}/original 比 /files/{id}/{name} 更具体，必须先匹配）
@@ -336,6 +350,9 @@ app.include_router(export.router, prefix="/api")
 app.include_router(conversations.router, prefix="/api")
 from app.routers import search
 app.include_router(search.router, prefix="/api")
+# CLI 只读接口（`limo` 命令行消费）——底层同一个 QueryService，形状是 Page/Artifact 契约
+from app.routers import cli as cli_router
+app.include_router(cli_router.router, prefix="/api")
 
 # ── 日志查看端点 ──
 

@@ -223,6 +223,53 @@ assert not c_dirty, "维度脏值不得让整个出处头判损坏"
 assert got_dirty["dimensions"][0] == "正常维度"
 print("PASS: 维度里的换行/--> 被清洗，出处头仍是单行且可解析")
 
+# ── 8.5 读者意图 / 材料体裁：新字段往返，且**只进 meta** ──
+# ⚠️ 这两个字段必须落 meta 而不是请求参数：生成是**第二次独立请求**
+# （用户核对完「## 来源文档」再点生成），届时手里只有 rawText。
+raw_new = build_composite_raw_text(
+    ["t1", "t2"], ["h1", "h2"],
+    [{"title": "论文A"}, {"title": "论文B"}], BODY,
+    content_type=["paper", "tech"], reader_intent="custom",
+    reader_intent_text="写给产品经理看",
+)
+got_new, c_new = parse_meta(raw_new)
+assert not c_new and got_new is not None
+assert got_new["contentType"] == ["paper", "tech"], got_new.get("contentType")
+assert got_new["readerIntent"] == "custom", got_new.get("readerIntent")
+assert got_new["readerIntentText"] == "写给产品经理看", got_new.get("readerIntentText")
+# 「只在 meta」这一半同样要断言——否则把它们也写进可见正文的实现照样通过
+# （用户编辑正文时会误删；同 §8 对维度与原料模式的理由）
+_visible_new = strip_meta(raw_new)
+assert "写给产品经理看" not in _visible_new and '"contentType"' not in _visible_new, \
+    "读者意图与体裁是给模型的指令，不得混进可见正文"
+print("PASS: contentType / readerIntent* 往返逐项相等，且不出现在可见正文里")
+
+# ── 8.5b 递归清洗：`-->` 与换行对**所有**字段生效（不再只清 sourceTitles）──
+# ⚠️ `readerIntentText` 是用户自由文本、天然可能带换行与箭头；`-->` 会**提前闭合
+# HTML 注释**，导出时 JSON 尾巴变成可见正文。规则按**字段**写就会一直漏（`dimensions`
+# 此前就是这样漏的），按**递归遍历**写则新增字段自动受保护——本用例钉的就是这条。
+raw_clean = build_composite_raw_text(
+    ["t1"], ["h1"], [{"title": "A"}], BODY,
+    content_type=["paper"], reader_intent="custom",
+    reader_intent_text="第一行\n第二行 --> 结束",
+)
+_head_clean = raw_clean.split("\n", 1)[0]
+assert _head_clean.count("-->") == 1, \
+    f"只有结尾那一个 -->（字段里的箭头必须被替换）——实际 {_head_clean.count('-->')} 个"
+assert "\n" not in _head_clean, "自由文本里的换行不得撑破「只认第一行」的单行契约"
+got_clean, c_clean = parse_meta(raw_clean)
+assert not c_clean, "清洗之后必须仍可解析（清洗不得反过来撑坏出处头）"
+assert "→" in got_clean["readerIntentText"], \
+    "换成 → 而不是直接删——保住「这里原本是个箭头」的信息"
+print("PASS: readerIntentText 里的 --> 与换行被递归清洗（单行契约不破）")
+
+# ── 8.5c 历史文档：meta 里根本没有新字段 → None，且**不得判损坏** ──
+# 与 §8 的 `_legacy` 同一份样本（新字段上线前写下的产物形态）。
+assert _legacy.get("contentType") is None and _legacy.get("readerIntent") is None, \
+    "老文档没有新字段——读方必须 .get()，不能下标"
+assert not _lc, "无头≠损坏的同一个道理：老格式也不是损坏"
+print("PASS: 老格式出处头（无 contentType/readerIntent）仍解析成功且字段为 None")
+
 # ═══════════════════════════════════════════════════════════════
 # 9. 降级状态八态可辨 + 基础状态回退
 # ═══════════════════════════════════════════════════════════════

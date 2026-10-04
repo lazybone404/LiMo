@@ -210,7 +210,7 @@ async def _capture_chart(self, *a, **kw):
 
 
 def _chart_pngs(tx_id: str) -> list[str]:
-    _assets = Path(_STORE._get_doc_dir(tx_id)) / "assets"
+    _assets = Path(_STORE.get_doc_dir(tx_id)) / "assets"
     return sorted(p.name for p in _assets.glob("chart_*.png")) if _assets.is_dir() else []
 
 

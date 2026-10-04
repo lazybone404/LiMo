@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.core import logging as log
-from app.core.dependencies import get_store
+from app.core.dependencies import get_store, get_query_service
 from app.core.errors import AppError
 
 router = APIRouter()
@@ -25,9 +25,9 @@ class FolderRenameRequest(BaseModel):
 
 
 @router.get("/folders")
-async def list_folders(store=Depends(get_store)) -> list[dict]:
+async def list_folders(svc=Depends(get_query_service)) -> list[dict]:
     """列出全部文件夹（含各自文档数 count）。未分类是 UI 派生视图，不是实体。"""
-    return store.list_folders()
+    return svc.list_folders()
 
 
 @router.post("/folders")

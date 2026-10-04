@@ -114,11 +114,29 @@ export interface StreamSynthesisCallbacks {
 
 export interface SynthesisOptions {
   title?: string
-  /** 对比指引（可选，追加到 prompt 的 user_request） */
-  userNotes?: string
+  /**
+   * 读者意图 key（`capabilities.readerIntents` 下发；空 = 后端默认「理解主题」）。
+   *
+   * ⚠️ 用 `string` 而非联合字面量：意图集由**后端下发**（同「引擎前端后端驱动」
+   * 原则），前端写死一份会在后端加意图时静默漏掉。非法值后端会显式拒绝，不静默回退。
+   */
+  readerIntent?: string
+  /**
+   * 「自定义」意图的自由文本（其他意图留空，由后端取预设文案）。
+   *
+   * ⚠️ **承接原 `userNotes`（「对比指引」）的位置**——那个字段是死链：签名里有、
+   * 后端函数体零引用，用户填的指引对产物从来没有影响。这里走的是 meta → 提示词
+   * 的 `task` 段，**真正生效**。
+   */
+  readerIntentText?: string
   modelId?: number | null
   /** 对比维度（每行一个，已清洗）；空数组 = 用默认预设 */
   dimensions?: string[]
+  /**
+   * 材料体裁多标签（`capabilities.contentTypes` 下发）——决定加载哪几类
+   * 「类型增量」文风条款。空数组 = 不加任何体裁增量（**不回退到论文**）。
+   */
+  contentType?: string[]
   /** 原料模式：原文 / 已生成的笔记（互斥） */
   sourceMode?: SourceMode
 }
@@ -140,15 +158,17 @@ export function streamSynthesis(
   fetch(`${BASE}/synthesis/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    // ⚠️ 字段名与后端 `SynthesisRequest` 逐字对齐
-    // （doc_ids / title / user_notes / model_id / dimensions / source_mode）
+    // ⚠️ 字段名与后端 `SynthesisRequest` 逐字对齐（doc_ids / title / model_id /
+    // dimensions / source_mode / reader_intent / reader_intent_text / content_type）
     body: JSON.stringify({
       doc_ids: sourceDocIds,
       title: opts.title ?? '',
-      user_notes: opts.userNotes ?? '',
       model_id: opts.modelId ?? null,
       dimensions: opts.dimensions ?? [],
       source_mode: opts.sourceMode ?? 'raw',
+      reader_intent: opts.readerIntent ?? '',
+      reader_intent_text: opts.readerIntentText ?? '',
+      content_type: opts.contentType ?? [],
     }),
     signal,
   })

@@ -176,6 +176,11 @@ class Generator:
             content=content,
             style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
             mode=GenerateMode(mode) if mode in GenerateMode._value2member_map_ else GenerateMode.NOTES,
+            # 自证头第②条「怎么来的」要记生成模型。它是**唯二**知道模型的地方
+            # （另一个是 LLMService 自己），落盘侧（router）拿不到 —— 故在此就地填。
+            # 此前该字段声明了却从无赋值（死字段），文档 §2「markdown 条目没有生成模型」
+            # 说的就是它。
+            generation_model=self._llm.model,
         )
 
     async def generate_both(
@@ -256,12 +261,14 @@ class Generator:
                 content=content,
                 style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
                 mode=GenerateMode.NOTES,
+                generation_model=self._llm.model,
             )
             polished = MarkdownView(
                 id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
                 content=content,
                 style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
                 mode=GenerateMode.POLISHED,
+                generation_model=self._llm.model,
             )
             return polished, mv
 
@@ -314,12 +321,14 @@ class Generator:
             content=content_a,
             style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
             mode=GenerateMode.POLISHED,
+            generation_model=self._llm.model,
         )
         notes = MarkdownView(
             id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
             content=content_b,
             style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
             mode=GenerateMode.NOTES,
+            generation_model=self._llm.model,
         )
         return polished, notes
 

@@ -21,8 +21,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.core import transcript_meta as TM
 from app.core.concurrency import ExecutionGuard
 from app.core.types import RawMetadata, RawTranscript, SourceType
+from app.generation.synthesis import DEFAULT_READER_INTENT
 from app.storage.store import Store
 
 import app.routers.synthesis as S
@@ -246,7 +248,93 @@ assert _elapsed < 20, \
 assert app.state.guard.semaphore._value == 5, "异常路径同样必须归还槽位"
 print(f"PASS: 未捕获异常 → 哨兵立即收尾（{_elapsed:.2f}s、不误报成功、归还槽位）")
 
+# ═══════════════════════════════════════════════════════════════
+# 8. 读者意图 / 材料体裁经 POST 落进产物 meta（设计 §7.8）
+# ═══════════════════════════════════════════════════════════════
+#
+# 与 test_synthesis.py §13 分工不同：那边直调 `synthesize()`，这边测**路由层把
+# 请求字段透传下去**。两者都要——路由漏透传（例如签名只改了一半）时直调测试
+# 照样全绿，而用户走的正是路由。
+
+def _last_doc(ev: list[dict]) -> dict:
+    _id = next(e for e in ev if e["type"] == "done")["id"]
+    return {"id": _id, **_STORE.get_transcript(_id)}
+
+
+# ── 8.1 正常透传：意图 key + 体裁多标签原样落 meta ──
+_code8, _ev8, _ = _synth({
+    "doc_ids": ["tr_a", "tr_b"], "title": "意图体裁", "model_id": 1,
+    "reader_intent": "controversy", "content_type": ["media", "paper"],
+})
+assert _code8 == 200 and "done" in [e["type"] for e in _ev8], _ev8
+_m8, _c8 = TM.parse_meta(_last_doc(_ev8)["rawText"])
+assert _c8 is False, "刚写的 meta 不该被判损坏"
+assert _m8["readerIntent"] == "controversy", _m8.get("readerIntent")
+assert _m8["contentType"] == ["media", "paper"], _m8.get("contentType")
+print("PASS: 意图 / 体裁经 POST 落进产物 meta（路由已透传，多标签保序）")
+
+# ── 8.2 自定义意图的自由文本落 meta，且**被限长** ──
+# ⚠️ 限长不是洁癖：这段文本要进生成 prompt，不限长 = 一次请求就能把上下文撑爆。
+_code9, _ev9, _ = _synth({
+    "doc_ids": ["tr_a", "tr_b"], "title": "自定义意图", "model_id": 1,
+    "reader_intent": "custom", "reader_intent_text": "长" * 5000,
+})
+_m9, _ = TM.parse_meta(_last_doc(_ev9)["rawText"])
+assert _m9["readerIntent"] == "custom", _m9.get("readerIntent")
+assert len(_m9["readerIntentText"]) == 2000, \
+    f"自由文本必须限长 2000；实际 {len(_m9.get('readerIntentText') or '')}"
+print("PASS: 自定义意图自由文本落 meta 且限长 2000")
+
+# ── 8.3 非法意图 → SSE error（**不静默回退**）──
+# 静默回退的后果与 source_mode 同款：用户选了「找争议」却按「理解主题」生成，
+# 产物上看不出任何异常——而这正是本设计要消灭的那类错配。
+_code10, _ev10, _ = _synth({
+    "doc_ids": ["tr_a", "tr_b"], "model_id": 1, "reader_intent": "nope",
+})
+_e10 = [e for e in _ev10 if e["type"] == "error"]
+assert _e10 and _e10[0]["code"] == "SYNTH_BAD_READER_INTENT", f"实际 {_ev10}"
+assert _e10[0].get("message"), "错误必须带面向用户的文案（要列可选项）"
+assert "done" not in [e["type"] for e in _ev10], "失败路径不该推 done"
+print(f"PASS: 非法读者意图 → SSE error({_e10[0]['code']})，不静默回退")
+
+# ── 8.3b 同一根因：非法原料模式也走 SSE（此前是 HTTP 500）──
+# ⚠️ 清洗块原先写在路由函数体里，`normalize_*` 一抛就逃出 `StreamingResponse` 的
+# 构造。`source_mode` 比意图早上线，这条路径在 API 层**一直是 500**——直调测试
+# （test_synthesis.py §12）覆盖不到这一层，正是「能力存在≠该路径在用」的另一种形态：
+# 错误码定义得齐齐整整，用户却只拿到「连接中断」。
+_code10b, _ev10b, _ = _synth({
+    "doc_ids": ["tr_a", "tr_b"], "model_id": 1, "source_mode": "summary",
+})
+_e10b = [e for e in _ev10b if e["type"] == "error"]
+assert _e10b and _e10b[0]["code"] == "SYNTH_BAD_SOURCE_MODE", f"实际 {_ev10b}"
+print(f"PASS: 非法原料模式 → SSE error({_e10b[0]['code']})（同根因，一并钉住）")
+
+# ── 8.4 非法体裁**静默丢弃**（与意图刻意不同：判据是这个值错了会不会改变产物性质）──
+_code11, _ev11, _ = _synth({
+    "doc_ids": ["tr_a", "tr_b"], "title": "混入脏体裁", "model_id": 1,
+    "content_type": ["paper", "不存在的体裁", "  ", "paper"],
+})
+assert _code11 == 200 and "done" in [e["type"] for e in _ev11], _ev11
+_m11, _ = TM.parse_meta(_last_doc(_ev11)["rawText"])
+assert _m11["contentType"] == ["paper"], \
+    f"非法/重复体裁该被丢弃并保序；实际 {_m11.get('contentType')}"
+print("PASS: 脏体裁被清洗（丢弃非法 / 去重 / 保序），不阻断合成")
+
+# ── 8.5 旧前端零回归：一个字段都不传 → 默认意图 + 空体裁（**不是回退到论文**）──
+_code12, _ev12, _ = _synth({"doc_ids": ["tr_a", "tr_b"], "title": "零新字段", "model_id": 1})
+assert _code12 == 200 and "done" in [e["type"] for e in _ev12], _ev12
+_m12, _ = TM.parse_meta(_last_doc(_ev12)["rawText"])
+assert _m12["readerIntent"] == DEFAULT_READER_INTENT, _m12.get("readerIntent")
+assert _m12["contentType"] == [], "未选体裁 → 空列表（回退到 paper 正是要消灭的错配）"
+assert _m12["readerIntentText"] == "", _m12.get("readerIntentText")
+print(f"PASS: 不传新字段 → 默认意图 {DEFAULT_READER_INTENT} / 空体裁（零回归）")
+
+# ── 槽位：新增的四条路径（含一条失败路径）同样必须归还 ──
+assert app.state.guard.semaphore._value == 5, \
+    f"意图/体裁相关请求后槽位必须全部归还；实际剩 {app.state.guard.semaphore._value}"
+print("PASS: 意图/体裁相关请求（含非法意图失败路径）槽位均归还")
+
 for _t in _TMP:
     shutil.rmtree(_t, ignore_errors=True)
 
-print("\n全部通过：合成端点（SSE 协议 / 业务错误走事件 / 槽位释放 / 异常哨兵）")
+print("\n全部通过：合成端点（SSE 协议 / 业务错误走事件 / 槽位释放 / 异常哨兵 / 意图与体裁透传）")

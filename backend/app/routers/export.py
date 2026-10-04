@@ -32,6 +32,8 @@ from app.services.markdown_render import (  # noqa: E402
     markdown_to_html as _markdown_to_html_impl,
 )
 from app.services.docx_export import markdown_to_docx  # noqa: E402
+from app.services.query import QueryService  # noqa: E402
+from app.core.transcript_meta import strip_meta  # noqa: E402
 
 # ── Pygments 语法高亮（可选依赖）──
 try:
@@ -205,7 +207,7 @@ async def export_content(
         # 图片 base64 内嵌 → 自包含单文件 HTML
         refs = _find_image_refs(content)
         if refs:
-            doc_dir = str(store._get_doc_dir(tx_id) or '')
+            doc_dir = str(store.get_doc_dir(tx_id) or '')
             imgs, name_map = _collect_images(refs, store.root, doc_dir=doc_dir)
             if imgs:
                 content = _inline_images(content, imgs, name_map, store.root, doc_dir=doc_dir)
@@ -228,7 +230,7 @@ async def export_content(
         imgs: dict[str, bytes] = {}
         refs = _find_image_refs(content)
         if refs:
-            doc_dir = str(store._get_doc_dir(tx_id) or '')
+            doc_dir = str(store.get_doc_dir(tx_id) or '')
             imgs, _name_map = _collect_images(refs, store.root, doc_dir=doc_dir)
         data = markdown_to_docx(content, title, images=imgs)
         safe_name = _safe_filename(title)
@@ -310,7 +312,7 @@ async def export_all_products(tx_id: str, request: Request, store=Depends(get_st
     all_refs: list[tuple[str, str]] = []
     for content in products.values():
         all_refs.extend(_find_image_refs(content))
-    doc_dir = str(store._get_doc_dir(tx_id) or '')
+    doc_dir = str(store.get_doc_dir(tx_id) or '')
     imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
 
     buf = io.BytesIO()
@@ -359,7 +361,7 @@ async def export_batch(data: dict, request: Request, store=Depends(get_store)):
             all_refs: list[tuple[str, str]] = []
             for content in products.values():
                 all_refs.extend(_find_image_refs(content))
-            doc_dir = str(store._get_doc_dir(tid) or '')
+            doc_dir = str(store.get_doc_dir(tid) or '')
             imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
 
             for fname, content in products.items():
@@ -1036,10 +1038,22 @@ def _build_mindmap_html(md: str, title: str) -> str:
     """构建自包含交互式思维导图 HTML。
     使用 markmap（markmap-lib + markmap-view + d3），与预览栏渲染效果一致。
     Markdown 内容嵌入 HTML，任何浏览器打开即显示。
+
+    ⚠️ **必须在这里 `strip_meta`**（思维导图**不承载**产物自证头）：
+    下游清洗规则里有 `r'<[^>]+>'`（去 HTML 标签），它**按第一个 `>` 断句**——
+    meta 的 JSON 里只要有一个字符串值含 `>`（最真实的一例是用户自定义维度
+    `成本 > 收益`，或意图文本里写 `A > B`），注释就被从中间截断，剩下的
+    ` 收益"]},"model":"m"}...` 会作为**可见文本**混进脑图节点（实测确认）。
+
+    ⚠️ **不能在调用点剥**：本函数的输入有两个来源（`store.get_markdown` 取产物、
+    以及 `rawText` 兜底），而合成文档的 `rawText` **必须**带头（三位一体）——
+    在调用点剥要么漏掉一路，要么把 rawText 的语义改坏。剥头与「不承载自证」
+    是同一件事的两面，故收口在这里。
     """
     import html as html_mod
 
     safe_title = html_mod.escape(title or "思维导图")
+    md = strip_meta(md or "")
     md = _normalize_latex_delimiters(md)
     assets = _get_markmap_assets()
     d3_js = assets.get("d3", "")
@@ -1236,7 +1250,7 @@ def export_custom(data: ExportCustomRequest, request: Request, store=Depends(get
                 for content in tab_contents.values():
                     all_refs.extend(_find_image_refs(content))
                 if all_refs:
-                    doc_dir = str(store._get_doc_dir(doc_id) or '')
+                    doc_dir = str(store.get_doc_dir(doc_id) or '')
                     imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
 
             # 写入各 tab 内容
@@ -1360,7 +1374,7 @@ async def _build_export_zip(
                     all_refs.extend(_find_image_refs(content))
                 if all_refs:
                     _push("images", idx + 1, total_docs, f"正在收集图片 ({len(all_refs)} 引用)...")
-                    doc_dir = str(store._get_doc_dir(doc_id) or '')
+                    doc_dir = str(store.get_doc_dir(doc_id) or '')
                     imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
 
             # 写入
@@ -1417,19 +1431,34 @@ async def _build_export_zip(
     return buf, total_files
 
 
+def _pick_artifact(store, tx: dict, mds: list[dict], mode: str) -> str:
+    """取某 mode 的产物原文（**含自证头**）。
+
+    走 `QueryService.build_from_entries` 而不是 `store.get_markdown(id)`：两者都读盘，
+    但前者复用**产物内容怎么取**的那条判据（剥头 / 自证装配 / 版本选择），导出侧才不会
+    与 CLI、预览各自长出一套。就地构造 `QueryService` 是因为本模块不走 `Depends` 风格
+    （全程只有 `store` 一个原语）——构造只存一个引用，零 I/O。
+
+    `max_chars=None` 是**必须显式写出来**的：导出要完整产物，而 `get_artifact` 系默认
+    带截断上限（那是给终端/agent 的防爆护栏）。此处漏写会静默导出半篇文章。
+
+    用 `raw_content`（不剥自证头）：产物离开 `.limo` 之后靠那一行自己说明来历
+    （《产物复用与获取渠道约定》§3）——导出正是它最该生效的场景。
+    """
+    entries = [md for md in mds if md.get("mode", "") == mode]
+    if not entries:
+        return ""
+    return QueryService(store).build_from_entries(
+        tx.get("id", ""), entries, max_chars=None).raw_content
+
+
 def _resolve_tab_content(store, tx: dict, mds: list[dict], tab: str) -> str:
     """解析单个 tab 的内容。与 export_custom 内联逻辑一致。"""
     content = ""
     if tab == "summary":
-        for md in mds:
-            if md.get("mode", "") == "notes":
-                content = store.get_markdown(md["id"]) or ""
-                break
+        content = _pick_artifact(store, tx, mds, "notes")
     elif tab == "polished":
-        for md in mds:
-            if md.get("mode", "") == "polished":
-                content = store.get_markdown(md["id"]) or ""
-                break
+        content = _pick_artifact(store, tx, mds, "polished")
     elif tab == "transcript":
         content = tx.get("rawText", "")
         try:
@@ -1446,10 +1475,7 @@ def _resolve_tab_content(store, tx: dict, mds: list[dict], tab: str) -> str:
     elif tab == "data_preview":
         content = tx.get("rawText", "")
     elif tab == "report":
-        for md in mds:
-            if md.get("mode", "") == "polished":
-                content = store.get_markdown(md["id"]) or ""
-                break
+        content = _pick_artifact(store, tx, mds, "polished")
     elif tab == "mindmap":
         mindmap_src = ""
         for md in mds:

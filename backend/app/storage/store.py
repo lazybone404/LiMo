@@ -20,7 +20,7 @@ from uuid import uuid4
 
 from app.core.types import RawTranscript, MarkdownView, ProcessResult, Style, GenerateMode
 from app.core.errors import AppError, StoreError
-from app.core.transcript_meta import parse_meta
+from app.core.transcript_meta import parse_meta, dump_meta
 
 logger = logging.getLogger(__name__)
 
@@ -280,7 +280,16 @@ class Store:
 
     @staticmethod
     def _sanitize_id(id: str) -> str:
-        """清理 ID 中的路径遍历字符，仅保留安全字符"""
+        """清理 ID 中的路径遍历字符 —— **归一化器，不是校验器**（职责不同，不可合并）。
+
+        ⚠️ 它**永不失败**：任何输入都会被变成某个可用的名字（兜底 `"unknown"`），
+        因为它的调用场景是「构造磁盘路径」，此时抛异常等于让写入整个失败。这与
+        `core.resource_id.is_valid_resource_id`（**校验器**，能返回 False，供读路径
+        拒绝非法 ID）和 `export._safe_filename`（文件名清洗器）是三件事。
+
+        硬合成一个的后果是双向的：要么写路径开始拒绝（用户改标题就报错），要么读路径
+        继续放行 `..`（安全缺陷）。故只把**读路径**统一到校验器上。
+        """
         sanitized = id.replace("\\", "/").replace("\0", "")
         sanitized = sanitized.rsplit("/", 1)[-1]
         sanitized = sanitized.rsplit("\\", 1)[-1]
@@ -313,8 +322,17 @@ class Store:
         suffix = tx_id[-6:]  # 末 6 位 hex（16M 空间）
         return f"{sanitized}-{suffix}"
 
-    def _get_doc_dir(self, tx_id: str) -> Optional[Path]:
-        """从 index 查找文档目录。返回 None 表示不存在。"""
+    def get_doc_dir(self, tx_id: str) -> Optional[Path]:
+        """从 index 查找文档目录。返回 None 表示不存在。
+
+        ⚠️ **公开名**：`routers/` / `services/` 侧需要按 doc_id 定位文档目录（导出、
+        附件服务、合成资产搬运）。它们此前**各自内联复制**了这段「遍历 index 找
+        dir_name → 拼 root」的逻辑——同一判据多份副本正是项目铁律 #39/#54 反复栽的
+        地方。新增调用方一律用这个公开名，不要再内联。
+
+        ⚠️ 与 `_sanitize_id` / `files._check_tx_id` **职责不同，不可合并**：本函数只
+        **查**（找不到返回 None），不校验也不归一化（见 `_sanitize_id` 的 docstring）。
+        """
         for entry in self._index["transcripts"]:
             if entry["id"] == tx_id:
                 dir_name = entry.get("dir_name", "")
@@ -324,9 +342,13 @@ class Store:
                         return d
         return None
 
+    # 旧私有名的兼容别名：历史外部调用方（routers/export.py 等）仍按私有名调用，
+    # 改名不能一刀切。新代码请用 `get_doc_dir`。
+    _get_doc_dir = get_doc_dir
+
     def _get_or_create_doc_dir(self, tx_id: str, title: str) -> Path:
         """获取已有或创建新文档目录。冲突时循环重试（追加序号）。"""
-        existing = self._get_doc_dir(tx_id)
+        existing = self.get_doc_dir(tx_id)
         if existing:
             return existing
         # 清洗 Windows 非法字符 + 控制字符（\n \r \t \x00 等）——标题含换行时
@@ -373,7 +395,7 @@ class Store:
 
     def _rename_doc_dir(self, tx_id: str, new_title: str) -> Optional[Path]:
         """标题变更时重命名文档目录。返回新 Path 或 None。"""
-        old_dir = self._get_doc_dir(tx_id)
+        old_dir = self.get_doc_dir(tx_id)
         if not old_dir:
             return None
         new_dir_name = self._compute_dir_name(new_title, tx_id)
@@ -458,18 +480,14 @@ class Store:
 
     def get_transcript(self, id: str) -> Optional[dict]:
         """从 index 读元数据 + 从 transcript.md 读 rawText。"""
-        entry = None
-        for e in self._index["transcripts"]:
-            if e["id"] == id:
-                entry = e
-                break
+        entry = next((e for e in self._index["transcripts"] if e["id"] == id), None)
         if not entry:
             return None
-        dir_name = entry.get("dir_name", "")
-        if not dir_name:
-            return None
-        doc_dir = self.root / dir_name
-        if not doc_dir.exists():
+        # 目录解析**不复刻**一份在这里：`get_doc_dir` 是唯一判据（它内部已处理
+        # dir_name 缺失与目录不存在两种缺失形态）。此前这里内联了同一段查找，
+        # 两处对「dir_name 为空」的处理迟早会漂移。
+        doc_dir = self.get_doc_dir(id)
+        if not doc_dir:
             return None
         tx_path = doc_dir / "transcript.md"
         if not tx_path.exists():
@@ -512,7 +530,7 @@ class Store:
 
     def delete_transcript(self, id: str) -> bool:
         """删除文档目录 + index 清理。"""
-        doc_dir = self._get_doc_dir(id)
+        doc_dir = self.get_doc_dir(id)
         if doc_dir and doc_dir.exists():
             try:
                 shutil.rmtree(doc_dir)
@@ -587,7 +605,7 @@ class Store:
         用于已有文档的更新（retranscribe, title/tag PATCH, _auto_title）。
         """
         tx_id = tx_data["id"]
-        doc_dir = self._get_doc_dir(tx_id)
+        doc_dir = self.get_doc_dir(tx_id)
         if not doc_dir:
             return False
 
@@ -743,9 +761,25 @@ class Store:
 
     # ── MarkdownView CRUD ──
 
-    def save_markdown(self, mv: MarkdownView, extra: dict | None = None) -> bool:
-        """两版制：{mode}.md → 降级为 {mode}.prev.md → 写新版。"""
-        doc_dir = self._get_doc_dir(mv.transcript_id)
+    def save_markdown(
+        self,
+        mv: MarkdownView,
+        file_meta: dict | None = None,
+        index_extra: dict | None = None,
+    ) -> bool:
+        """两版制：{mode}.md → 降级为 {mode}.prev.md → 写新版。
+
+        ⚠️ **两个 dict 参数去向完全不同，接错了两边都不报错**（最容易犯也最静默）：
+
+        - `file_meta` → 写进**文件首行**的 `<!-- limo-meta ... -->` 自证头。
+          它随文件走，是产物离开 `.limo` 之后**唯一**还能自证的载体。
+        - `index_extra` → 并进 **index.json 的条目**（如 `{"edited": True}`）。
+          它只在本地库里有效，删掉 `index.json` 重建即丢。
+
+        参数名刻意各带方向词（此前只有一个裸 `extra`，语义是后者）——「meta 进了
+        index / extra 进了文件头」是最容易犯且**不产生任何报错**的错。
+        """
+        doc_dir = self.get_doc_dir(mv.transcript_id)
         if not doc_dir:
             logger.warning("save_markdown: 文档目录不存在 tx=%s", mv.transcript_id)
             return False
@@ -754,6 +788,7 @@ class Store:
         latest = doc_dir / f"{mode}.md"
 
         # 两版制：最新版降级为 .prev.md
+        # ⚠️ `.prev.md` 是**完整产物**（带它自己那一版的自证头），降级不需要剥头
         if latest.exists():
             prev = doc_dir / f"{mode}.prev.md"
             try:
@@ -761,7 +796,11 @@ class Store:
             except OSError:
                 pass  # 降级失败不阻塞，直接覆盖写
 
-        self._atomic_write(latest, mv.content)
+        content = mv.content
+        if file_meta:
+            # dump_meta 返回单行；空行把注释与正文隔开（也匹配 strip_meta 的回剥规则）
+            content = f"{dump_meta(file_meta)}\n\n{content}"
+        self._atomic_write(latest, content)
 
         with self._lock:
             entry = {
@@ -770,7 +809,7 @@ class Store:
                 "mode": mode,
                 "version": mv.version, "createdAt": mv.created_at,
                 "status": getattr(mv, 'status', 'complete'),
-                **(extra or {}),
+                **(index_extra or {}),
             }
             existing = self._index["markdowns"].get(mv.transcript_id, [])
             if isinstance(existing, dict):
@@ -803,7 +842,7 @@ class Store:
 
         tx_id = target_entry.get("transcriptId", "")
         mode = target_entry.get("mode", "")
-        doc_dir = self._get_doc_dir(tx_id)
+        doc_dir = self.get_doc_dir(tx_id)
         if not doc_dir:
             return None
 
@@ -818,6 +857,19 @@ class Store:
             return path.read_text(encoding="utf-8")
         return None
 
+    def list_markdown_entries(self, transcript_id: str) -> list[dict]:
+        """该文档全部 Markdown 产物的 **index 条目**（版本降序，**不读盘**）。
+
+        ⚠️ 与 `get_markdowns_by_transcript` 的差别只有「要不要内容」：后者为每个条目
+        拼磁盘路径并 `read_text` —— 内容才是它的目的。而「这篇有哪些产物」是个
+        元数据问题，让列清单也去读一遍全文，等于每问一次「有什么」就把整库读一遍。
+        """
+        entries = self._index["markdowns"].get(transcript_id, [])
+        if isinstance(entries, dict):
+            entries = [entries]
+        return sorted((dict(e) for e in entries),
+                      key=lambda e: e.get("version", 0), reverse=True)
+
     def get_markdowns_by_transcript(self, transcript_id: str,
                                      mode: str = "", version: int | None = None) -> list[dict]:
         """获取指定 transcript 的 Markdown，支持 mode/version 过滤。
@@ -831,7 +883,7 @@ class Store:
         if version is not None:
             entries = [e for e in entries if e.get("version") == version]
 
-        doc_dir = self._get_doc_dir(transcript_id)
+        doc_dir = self.get_doc_dir(transcript_id)
         if not doc_dir:
             return []
 
@@ -856,16 +908,23 @@ class Store:
 
     # ── ProcessResult CRUD ──
 
-    def save_process_result(self, pr: ProcessResult) -> str:
-        """保存处理结果到 {doc_dir}/process/{mode}.md，同 mode 覆盖。"""
-        doc_dir = self._get_doc_dir(pr.transcript_id)
+    def save_process_result(self, pr: ProcessResult, file_meta: dict | None = None) -> str:
+        """保存处理结果到 {doc_dir}/process/{mode}.md，同 mode 覆盖。
+
+        `file_meta` 与 `save_markdown` 同义：写进**文件首行**的自证头。这里没有
+        `index_extra` 对应物——process 的 index 条目字段固定，不接受额外键。
+        """
+        doc_dir = self.get_doc_dir(pr.transcript_id)
         if not doc_dir:
             logger.warning("save_process_result: 文档目录不存在 tx=%s", pr.transcript_id)
             return pr.id
         proc_dir = doc_dir / "process"
         proc_dir.mkdir(exist_ok=True)
         path = proc_dir / f"{pr.mode}.md"
-        self._atomic_write(path, pr.content)
+        content = pr.content
+        if file_meta:
+            content = f"{dump_meta(file_meta)}\n\n{content}"
+        self._atomic_write(path, content)
         with self._lock:
             entry = {
                 "id": pr.id, "transcriptId": pr.transcript_id,
@@ -891,7 +950,7 @@ class Store:
                 if entry.get("id") == id:
                     tx_id = entry.get("transcriptId", "")
                     mode = entry.get("mode", "")
-                    doc_dir = self._get_doc_dir(tx_id)
+                    doc_dir = self.get_doc_dir(tx_id)
                     if not doc_dir:
                         return None
                     path = doc_dir / "process" / f"{mode}.md"
@@ -903,7 +962,7 @@ class Store:
 
     def _epub_chapters_dir(self, tx_id: str) -> Optional[Path]:
         """EPUB 章节解读片段目录（文档不存在返回 None）"""
-        doc_dir = self._get_doc_dir(tx_id)
+        doc_dir = self.get_doc_dir(tx_id)
         if not doc_dir:
             return None
         return doc_dir / "epub_chapters"
@@ -958,7 +1017,7 @@ class Store:
 
     def save_epub_task(self, tx_id: str, state: dict) -> bool:
         """保存 epub 任务状态到 {doc_dir}/epub_task.json。"""
-        doc_dir = self._get_doc_dir(tx_id)
+        doc_dir = self.get_doc_dir(tx_id)
         if not doc_dir:
             return False
         self._atomic_write(doc_dir / "epub_task.json",
@@ -967,7 +1026,7 @@ class Store:
 
     def load_epub_task(self, tx_id: str) -> Optional[dict]:
         """读取 epub 任务状态（不存在返回 None，不误报损坏；损坏时 _safe_load_json 兜底）。"""
-        doc_dir = self._get_doc_dir(tx_id)
+        doc_dir = self.get_doc_dir(tx_id)
         if not doc_dir:
             return None
         path = doc_dir / "epub_task.json"
@@ -977,7 +1036,7 @@ class Store:
 
     def clear_epub_task(self, tx_id: str) -> bool:
         """删除 epub 任务状态文件。"""
-        doc_dir = self._get_doc_dir(tx_id)
+        doc_dir = self.get_doc_dir(tx_id)
         if not doc_dir:
             return False
         p = doc_dir / "epub_task.json"
