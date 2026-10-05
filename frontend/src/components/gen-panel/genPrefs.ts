@@ -35,7 +35,12 @@ export interface GenPrefs {
 }
 
 const DEFAULTS: GenPrefs = {
-  style: 'detailed', selectedCore: ['notes', 'polished'],
+  // ⚠️ `plain`（通俗）= 2026-10-05 起的全局默认风格档，与后端各处默认值同源。
+  // ⚠️ 但它**只对没有本地存档的用户生效**——`loadGenPrefs()` 末尾是
+  // `{ ...DEFAULTS, ...raw }`，已存过 localStorage 的用户，`raw.style` 会覆盖
+  // 这个新默认。**刻意不加迁移**：用户当前的 detailed 可能是他显式选的，静默
+  // 改掉是替他做决定。想要存量也变，得用户先清 `genPrefs` 或手动选一次。
+  style: 'plain', selectedCore: ['notes', 'polished'],
   formatToc: true, formatLink: true, formatSummary: true, formatScreenshot: false, formatChart: false,
   formatTranslate: false, formatFormulas: false, formatReferences: false, formatImages: false,
   imageAnalyze: false, imageOptimize: true,

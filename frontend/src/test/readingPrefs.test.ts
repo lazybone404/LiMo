@@ -13,16 +13,23 @@
  *      `maxWidth: min(比例值, 0)` = 0px → **内容整块消失** → 红
  *   D. 单项损坏时整包丢弃 → 用户改过的行高被一个坏掉的 paraStyle 一并重置 → 红
  *   E. `measurePx` 忘乘 16（直接拿「字数」当 px）→ 40 字 → 40px 版宽 → 红
+ *   F. `nextFontScale` 不做四舍五入 → `0.8 + 0.1*3 = 1.0999999999999999` →
+ *      界面上出现「字号 110.00000000000001%」→ 红
+ *   G. 字号写成 em 而非 px → 与 `.preview-content` 的内联 `fontSize: …em` **相乘** →
+ *      字号随宽度档漂移 → 红
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   READING_DEFAULTS,
   LINE_HEIGHT_RANGE,
   MEASURE_RANGE,
+  FONT_SCALE_RANGE,
   CONTENT_WIDTH_RATIO,
   READING_BASE_FONT_PX,
   PARA_STYLE_OPTIONS,
   computeContentMaxW,
+  nextFontScale,
+  measurePxOf,
   getSavedReading,
   applyReading,
   saveReading,
@@ -34,6 +41,7 @@ beforeEach(() => {
   localStorage.clear()
   document.documentElement.removeAttribute('data-read-para')
   document.documentElement.style.removeProperty('--read-line-height')
+  document.documentElement.style.removeProperty('--read-font-size')
 })
 
 // ── 零回归：默认值必须等于改造前的现状 ──────────────────────
@@ -105,10 +113,10 @@ describe('getSavedReading — 逐字段校验', () => {
     expect(getSavedReading()).toEqual(READING_DEFAULTS)
   })
 
-  it('单个坏字段只退回该项默认，不带走另外两个', () => {
+  it('单个坏字段只退回该项默认，不带走另外三个', () => {
     // 对照 D：整包丢弃的实现 → lineHeight/paraStyle 也被重置 → 红
     localStorage.setItem(KEY, JSON.stringify({ lineHeight: 1.8, measure: 'x', paraStyle: 'book' }))
-    expect(getSavedReading()).toEqual({ lineHeight: 1.8, measure: null, paraStyle: 'book' })
+    expect(getSavedReading()).toEqual({ lineHeight: 1.8, measure: null, paraStyle: 'book', fontScale: 1.0 })
   })
 
   it('lineHeight 越界被 clamp 进区间', () => {
@@ -142,7 +150,7 @@ describe('getSavedReading — 逐字段校验', () => {
 
 describe('saveReading / applyReading', () => {
   it('save → get 往返一致', () => {
-    const p = { lineHeight: 1.65, measure: 36, paraStyle: 'book' as const }
+    const p = { lineHeight: 1.65, measure: 36, paraStyle: 'book' as const, fontScale: 1.2 }
     saveReading(p)
     expect(getSavedReading()).toEqual(p)
   })
@@ -150,14 +158,114 @@ describe('saveReading / applyReading', () => {
   it('applyReading 把行高写进 CSS 变量、把段落式写进 data-read-para', () => {
     // 两个出口形态不同（变量 vs 属性）是有意的：行高要参与 calc()，段落式是二选一。
     // 对照：把 lineHeight 也写成 data-* → CSS 取不到变量 → 回落到 :root 的 1.5 → 红
-    applyReading({ lineHeight: 1.7, measure: 40, paraStyle: 'book' })
+    applyReading({ lineHeight: 1.7, measure: 40, paraStyle: 'book', fontScale: 1.0 })
     expect(document.documentElement.style.getPropertyValue('--read-line-height')).toBe('1.7')
     expect(document.documentElement.getAttribute('data-read-para')).toBe('book')
   })
 
   it('applyReading 不把 measure 写进 DOM（它是 JS 侧算 maxWidth 的输入）', () => {
     // 做成 CSS 变量就得用 em，而 em 会随 fontSizeScale 漂移（见 lib 注释）
-    applyReading({ lineHeight: 1.5, measure: 48, paraStyle: 'web' })
+    applyReading({ lineHeight: 1.5, measure: 48, paraStyle: 'web', fontScale: 1.0 })
     expect(document.documentElement.getAttribute('data-read-measure')).toBe(null)
+  })
+})
+
+// ── 正文字号（需求 B）───────────────────────────────────────
+
+describe('fontScale — 状态与落点', () => {
+  it('默认 1.0，且它就是现状的 16px（零回归）', () => {
+    // 对照：默认写成 1.1「因为 16px 有点小」→ 所有既有用户的观感被静默改动 → 红
+    expect(READING_DEFAULTS.fontScale).toBe(1.0)
+    expect(getSavedReading().fontScale).toBe(1.0)
+  })
+
+  it('applyReading(READING_DEFAULTS) 写出的 --read-font-size 就是 16px', () => {
+    applyReading(READING_DEFAULTS)
+    expect(document.documentElement.style.getPropertyValue('--read-font-size')).toBe('16px')
+  })
+
+  it('--read-font-size 随 fontScale 等比变化，且单位是 px', () => {
+    // 对照 G：写成 em 的实现 → 这里拿到 '1.5em' → 红。
+    // 值本身也要断：写死 16px 而不乘 scale 的实现只会在这里红。
+    applyReading({ ...READING_DEFAULTS, fontScale: 1.5 })
+    expect(document.documentElement.style.getPropertyValue('--read-font-size')).toBe('24px')
+    applyReading({ ...READING_DEFAULTS, fontScale: 0.8 })
+    expect(document.documentElement.style.getPropertyValue('--read-font-size')).toBe('12.8px')
+  })
+
+  it('取值越界被 clamp 进 [0.8, 1.6]', () => {
+    for (const [bad, want] of [[0.5, FONT_SCALE_RANGE.min], [5, FONT_SCALE_RANGE.max]] as const) {
+      localStorage.setItem(KEY, JSON.stringify({ ...READING_DEFAULTS, fontScale: bad }))
+      expect(getSavedReading().fontScale).toBe(want)
+    }
+  })
+
+  it('非法类型 / NaN / null 一律回落 1.0', () => {
+    for (const bad of ['1.5', NaN, null, {}, true]) {
+      localStorage.setItem(KEY, JSON.stringify({ ...READING_DEFAULTS, fontScale: bad }))
+      expect(getSavedReading().fontScale).toBe(READING_DEFAULTS.fontScale)
+    }
+  })
+
+  it('合法值归一到两位小数（防滑条浮点尾巴）', () => {
+    localStorage.setItem(KEY, JSON.stringify({ ...READING_DEFAULTS, fontScale: 1.23456 }))
+    expect(getSavedReading().fontScale).toBe(1.23)
+  })
+
+  it('坏 fontScale 不带走另外三个', () => {
+    localStorage.setItem(KEY, JSON.stringify({ lineHeight: 1.8, measure: 36, paraStyle: 'book', fontScale: 'x' }))
+    expect(getSavedReading()).toEqual({ lineHeight: 1.8, measure: 36, paraStyle: 'book', fontScale: 1.0 })
+  })
+})
+
+describe('nextFontScale — 档位换算（键盘与滚轮共用同一份）', () => {
+  it('逐档推进 / 回退', () => {
+    expect(nextFontScale(1.0, 1)).toBe(1.1)
+    expect(nextFontScale(1.0, -1)).toBe(0.9)
+  })
+
+  it('⚠️ 无浮点漂移：从下限连推 8 档恰好落在上限', () => {
+    // 对照 F：不 round 的实现 → 0.8+0.1*3 = 1.0999999999999999 → 红
+    // `as const` 让 FONT_SCALE_RANGE.min 是字面量类型 0.8，必须显式放宽成 number
+    let v: number = FONT_SCALE_RANGE.min
+    for (let i = 0; i < 8; i++) v = nextFontScale(v, 1)
+    expect(v).toBe(FONT_SCALE_RANGE.max)
+    expect(String(v)).toBe('1.6')
+  })
+
+  it('到顶 / 到底返回原值（调用方据此静默，滚轮不会刷一屏 toast）', () => {
+    expect(nextFontScale(FONT_SCALE_RANGE.max, 1)).toBe(FONT_SCALE_RANGE.max)
+    expect(nextFontScale(FONT_SCALE_RANGE.min, -1)).toBe(FONT_SCALE_RANGE.min)
+  })
+
+  it('区间是 9 档 80%–160%', () => {
+    expect(FONT_SCALE_RANGE).toEqual({ min: 0.8, max: 1.6, step: 0.1 })
+    expect(Math.round((FONT_SCALE_RANGE.max - FONT_SCALE_RANGE.min) / FONT_SCALE_RANGE.step) + 1).toBe(9)
+  })
+})
+
+describe('measurePxOf — 版宽上限与字号同源', () => {
+  it('40 字在 1.0 档 = 640px；1.6 档 = 1024px', () => {
+    expect(measurePxOf(40, 1.0)).toBe(640)
+    expect(measurePxOf(40, 1.6)).toBe(1024)
+  })
+
+  it('⚠️ 同一 measure 下不同 fontScale 必须得到**不同**版宽', () => {
+    // 对照：漏乘 fontScale 的实现 → 两者都是 640 → 红。
+    // 症状是方向反的 —— 字号放大后每行放得下的字更少，版宽却纹丝不动，越放大越挤
+    expect(measurePxOf(40, 1.0)).not.toBe(measurePxOf(40, 1.6))
+    expect(measurePxOf(30, 0.8)).toBe(384)
+  })
+
+  it('measure 为 null → null（沿用「按容器宽度取比例」制，零回归）', () => {
+    // 对照 B 的同族：这里返回 0 会让 maxWidth 变成 0px → 内容整块消失
+    for (const s of [0.8, 1.0, 1.6]) expect(measurePxOf(null, s)).toBe(null)
+  })
+
+  it('与 computeContentMaxW 串起来：放大字号后版宽上限更早生效', () => {
+    // 1200 宽容器 / normal 档：byRatio = min(1080, 1040) = 1040
+    // 1.0 档 640 < 1040 → 受度量限；0.8 档 512 → 更窄
+    expect(computeContentMaxW(1200, 0.90, measurePxOf(40, 1.0)!)).toBe(640)
+    expect(computeContentMaxW(1200, 0.90, measurePxOf(40, 0.8)!)).toBe(512)
   })
 })

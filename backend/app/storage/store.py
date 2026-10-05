@@ -186,6 +186,11 @@ class Store:
                     md_id = f"md_{hashlib.sha256(str(md_file).encode()).hexdigest()[:12]}"
                     md_entries.append({
                         "id": md_id, "transcriptId": tx_id,
+                        # ⚠️ **这个 "detailed" 是「无法还原时的占位」，不是默认档**：
+                        # 磁盘上 md 文件只有正文，index.json 一删就没人记得当时的
+                        # style，只能填一个。改全局默认风格档时**不要**顺手改它
+                        # —— 那样会让历史产物的标签集体变成「通俗」，比留着旧的
+                        # 占位更不诚实。见模式 #44（重建路径手工构造字面量）。
                         "style": "detailed", "mode": mode,
                         "version": 1, "createdAt": "",
                         "status": "complete",

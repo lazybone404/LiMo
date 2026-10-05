@@ -34,12 +34,37 @@ from app.services.doc_understand import DOC_DIRECT_GEN_TIMEOUT, DOC_DIRECT_MIN_R
 from app.generation.content_preparer import ContentPreparer
 from app.generation.prompt_builder import PromptBuilder
 from app.generation.prompt import build_polish_prompt, build_notes_prompt
+from app.generation.prompts import normalize_style
 from app.generation.reference_compressor import (
     needs_compression, compress_references_if_needed,
 )
 from app.storage.store import rewrite_asset_urls
 
 router = APIRouter()
+
+
+def _normalize_and_validate_style(style: str) -> str:
+    """风格档入参：**先归一、再校验**，非法值回退默认档 `plain`。
+
+    抽成模块级函数（2026-10-05）是为了让测试**直调真实实现**——此前这段逻辑写在
+    `generate_stream` 的函数体里，测试只能复刻一遍表达式，而复刻的表达式永远与
+    真实实现"一致"（它测的是自己），正是模式 #51「能力存在 ≠ 该路径在用它」。
+
+    ⚠️ **归一必须排在校验之前**，两条理由方向相反、都要防：
+    - 枚举里会议纪要的成员值是 `MEETING = "meeting"`（曾为 `meeting_minutes`），
+      而前端发的是 `meeting`。两形不一致时白名单不含 `"meeting"` → 用户选「会议
+      纪要」被静默改写成 detailed（零报错）。
+    - 反过来说，修完枚举值之后若仍先校验后归一，传 `meeting_minutes` 的**旧调用方**
+      会被拒掉——而那正是 `STYLE_ALIAS` 存在的全部意义。白名单排在 `normalize_style`
+      前面会把兜底整个短路。
+
+    ⚠️ `"none"`（前端「无」按钮）合法但**不在 `Style` 枚举里**，必须显式放行——
+    原实现漏了它，注释写着「Polish only 模式可能传 none」而白名单里没有（同族第三个
+    静默改写：用户选「无风格」得到「详细模式」）。
+    """
+    style = normalize_style(style)
+    valid = {normalize_style(s.value) for s in Style} | {"none"}
+    return style if style in valid else "plain"
 
 
 async def _watch_disconnect(request: Request, cancel_event: asyncio.Event, interval: float = 0.5) -> None:
@@ -120,7 +145,7 @@ def _warn_mismatched_fields(source_type: str, values: dict):
 
 class GenerateRequest(BaseModel):
     mode: str = "notes"  # 逗号分隔的产物列表："notes,polished"
-    style: str = "detailed"
+    style: str = "plain"
     formats: list[str] = []  # ["toc", "link", "screenshot", "summary", "images"]
     model_id: int | None = None
     user_notes: str = ""  # 用户备注
@@ -406,7 +431,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
 class GenerateStreamRequest(BaseModel):
     """GET /generate/{id}/stream 的查询参数（用 Pydantic 校验）"""
     mode: str = "both"  # "notes" | "polished" | "both"
-    style: str = "detailed"
+    style: str = "plain"
     formats: str = ""  # 逗号分隔
     model_id: int | None = None
     user_notes: str = ""
@@ -427,7 +452,7 @@ class GenerateStreamRequest(BaseModel):
 
 @router.get("/generate/{transcript_id}/stream")
 async def generate_stream(transcript_id: str, request: Request,
-                          mode: str = "both", style: str = "detailed",
+                          mode: str = "both", style: str = "plain",
                           formats: str = "", model_id: int | None = None,
                           user_notes: str = "", reference_ids: str = "",
                           video_understanding: bool = False,
@@ -471,10 +496,7 @@ async def generate_stream(transcript_id: str, request: Request,
             log.warning("文档直传: 原件已不存在，改用文本模式", path=doc_path)
             doc_path = ""
 
-    # 校验 style 有效性（Polish only 模式可能传 "none"）
-    _valid_styles = {s.value for s in Style}
-    if style not in _valid_styles:
-        style = "detailed"
+    style = _normalize_and_validate_style(style)
 
     # ── source_type 上移到 mode 解析**之前**（合成文档闸门要按它改写 mode）──
     source_type = tx.get("sourceType", "text")

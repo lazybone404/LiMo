@@ -111,4 +111,30 @@ describe('index.css 的阅读版式规则', () => {
     })
     expect(onBody).toEqual([])
   })
+
+  // ── 正文字号（需求 B）──────────────────────────────────
+  //
+  // ⚠️ 这一组只能证明「规则写着」，**不能**证明「它赢了 vendor」——jsdom 不做级联。
+  // 后者只能靠肉眼（DevTools 里看 .markdown-body 的 computed font-size）。
+
+  it('正文字号覆盖 vendor 的硬编码 16px，且作用域限定在 .preview-area', () => {
+    // `.markdown-body { font-size:16px }` 是 vendor（github-markdown-light.css）写在
+    // 0,1,0 特异性上的**绝对值**。不覆盖它，Ctrl+滚轮 / Ctrl+± 一点效果都没有
+    // —— 这正是改造前 `fontSizeScale` 挂在外层 `.preview-content` 上却对正文无效的原因。
+    const blocks = [...css.matchAll(/\.preview-area\s+\.markdown-body\s*\{([^}]*)\}/g)]
+    expect(blocks.length).toBeGreaterThan(0)   // 自证：正则真的匹配到了规则，而不是没写
+
+    const fontBlocks = blocks.filter(b => /font-size\s*:/.test(b[1]))
+    expect(fontBlocks).toHaveLength(1)
+    expect(fontBlocks[0][1]).toMatch(/var\(--read-font-size/)
+    // 作用域必须带 .preview-area（特异性 0,2,0 压过 vendor 的 0,1,0），
+    // 否则它会一并改掉文档库 / 对话 / 工具栏的字号 —— 用户明确要求「只对预览栏生效」
+    expect(fontBlocks[0][1]).not.toContain('!important')
+  })
+
+  it('--read-font-size 的初值是 16px（= vendor 现值，零回归）', () => {
+    // 初值不是 16px 时，**还没加载过偏好**（首帧、或 localStorage 损坏）的渲染
+    // 会与改造前不一致 —— 这类差异只在冷启动的那一瞬可见，人工几乎测不出来。
+    expect(css).toMatch(/--read-font-size:\s*16px\s*;/)
+  })
 })

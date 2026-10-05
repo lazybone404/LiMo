@@ -61,6 +61,13 @@ export function handleAppKeyDown(e: React.KeyboardEvent) {
     // 默认的输入法/键盘布局切换前缀，会被输入法吞掉。Ctrl+\ 与 LobeChat 的 Zen Mode 同键。
     // 裸 Esc 退出的监听不在这里 —— L41 的 Ctrl/Meta 守卫会把它直接吞掉，见下面的独立 effect。
     case '\\': e.preventDefault(); s.toggleImmersive(); break
+    // 正文字号 —— 与预览区的 Ctrl+滚轮**共用同一对 store 动作**（档位换算与 toast
+    // 都只此一份）。⚠️ `=` 与 `+` 必须都列：`+` 是 Shift+`=` 的 e.key，
+    // 只写 `=` 的话「按住 Shift 放大」会静默失效；`-` 与 `_` 同理。
+    // **不要用 `toLowerCase()` 兜**——`'+'` 小写之后还是 `'+'`，两者不通用。
+    case '=': case '+': e.preventDefault(); s.stepFontScale(1); break
+    case '-': case '_': e.preventDefault(); s.stepFontScale(-1); break
+    case '0': e.preventDefault(); s.resetFontScale(); break
   }
 }
 

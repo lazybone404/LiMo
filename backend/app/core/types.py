@@ -36,6 +36,7 @@ class InputType(StrEnum):
     IMAGE = "image"
 
 class Style(StrEnum):
+    PLAIN = "plain"
     MINIMAL = "minimal"
     DETAILED = "detailed"
     ACADEMIC = "academic"
@@ -44,7 +45,14 @@ class Style(StrEnum):
     TUTORIAL = "tutorial"
     XIAOHONGSHU = "xiaohongshu"
     BUSINESS = "business"
-    MEETING_MINUTES = "meeting_minutes"
+    # ⚠️ **枚举值必须与 `notes_styles` 的 dict key 同形**（都是 `"meeting"`）。
+    # 它曾经是 `MEETING_MINUTES = "meeting_minutes"`，而风格表 key 是 `"meeting"`
+    # —— 两形不一致时 `{s.value for s in Style}` 构成的白名单不含 `"meeting"`，
+    # 于是前端实际发出的 `"meeting"` 被静默改写成 detailed（用户选「会议纪要」
+    # 得到「详细模式」，零报错）。兼容旧值 `meeting_minutes` 由 `STYLE_ALIAS`
+    # 在**字符串层**承担——但前提是白名单校验发生在归一**之后**（见
+    # `routers/generate.py` 的注释）。同族的还有 `"none"`，它不在枚举里但合法。
+    MEETING = "meeting"
     TASK_ORIENTED = "task_oriented"
 
 class GenerateMode(StrEnum):

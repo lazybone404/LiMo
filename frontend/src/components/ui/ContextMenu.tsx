@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronRight } from 'lucide-react'
 
-interface MenuItem {
+export interface MenuItem {
   label: string
   icon?: ReactNode
   /** 有 submenu 时可不传——父项本身不执行动作 */

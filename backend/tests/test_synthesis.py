@@ -169,7 +169,7 @@ assert len(llm.calls) == 0, "FakeLLM 也不该被调到"
 assert "【文档 1】" in res.raw_text and "【文档 2】" in res.raw_text
 assert "<!-- limo-meta" in res.raw_text, "出处头必须在"
 assert "## 来源文档" in res.raw_text, "来源列表必须在（降级透明度落进产物）"
-assert "✓ 完整输入" in res.raw_text, "未降级的篇目标注完整输入"
+assert "✓ 未删节" in res.raw_text, "未降级的篇目标注未删节"
 print(f"PASS: stuff 路径零 LLM 调用 + 正文含出处头/来源列表（{res.transcript_id}）")
 
 # 落库可见：新文档能读回，且来源身份正确
@@ -653,7 +653,7 @@ _md3, _ = TM.parse_meta(_r_ex.raw_text)
 assert set(_md3["sourceTitles"]) == {"有笔记0", "有笔记1", "有笔记2"}, _md3["sourceTitles"]
 assert "无笔记甲" not in _r_ex.raw_text and "无笔记乙" not in _r_ex.raw_text, \
     "被排除的篇不得出现在「## 来源文档」——该列表的语义是「这份综述读了哪几篇」"
-assert _r_ex.raw_text.count("✓ 完整输入") == 3
+assert _r_ex.raw_text.count("✓ 未删节") == 3
 print(f"PASS: 无笔记篇被排除且可见（参与 3 篇 / excluded={_r_ex.excluded}）")
 
 # ── 全部无笔记 → **显式拒绝**（不产出空合成文档，也不 500）──

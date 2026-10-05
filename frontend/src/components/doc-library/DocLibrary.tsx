@@ -88,9 +88,12 @@ function parseDimensions(text: string): string[] {
   return out
 }
 
-/** 预览里每篇的处理方式 → 面向用户的一句话（与后端 `_STATUS_LABEL` 同族语义） */
+/** 预览里每篇的处理方式 → 面向用户的一句话（与后端 `_STATUS_LABEL` 同族语义）。
+ *  ⚠️ `full` 用「未删节」而非「完整输入」（2026-10-05 与后端同步改）：用户在两处
+ *  读的是同一件事——这篇材料有没有被动手脚。后端 `_STATUS_LABEL` 那个「输入」是
+ *  相对模型说的词，而它的文案会落进产物正文、被模型学去（见该表注释）。 */
 const SYNTH_PLAN_LABEL: Record<string, string> = {
-  full: '完整输入',
+  full: '未删节',
   summarized: '压缩为摘要',
   chunked: '分块抽取',
   over_window: '超出窗口',
@@ -150,7 +153,9 @@ export function DocLibrary() {
   const capabilities = useStore(s => s.capabilities)
   const folders = useStore(s => s.folders)
   const currentId = useStore(s => s.currentDocId)
-  const selectDoc = useStore(s => s.selectDoc)
+  // ⚠️ 打开文档一律走 `openDocTab`（而非 `selectDoc`）——它额外记下「预览 / 常驻」意图，
+  // 由 `PreviewArea` 的 `loadDocContent` 在真正加载时提交成标签。
+  const openDocTab = useStore(s => s.openDocTab)
   const setDocs = useStore(s => s.setDocs)
   const setFolders = useStore(s => s.setFolders)
   const searchQuery = useStore(s => s.searchQuery)
@@ -319,8 +324,8 @@ export function DocLibrary() {
 
   const {
     selectedIds, hasSelection, toggle: toggleSelect, setAll: setSelectionAll,
-    clear: clearSelection, handleRowClick, onListKeyDown,
-  } = useDocSelection(visibleIds, selectDoc)
+    clear: clearSelection, handleRowClick, handleRowDoubleClick, onListKeyDown,
+  } = useDocSelection(visibleIds, openDocTab)
 
   // ── 分批渲染 ──
   // 深度活在 store 里：面板折叠会卸载组件，留在本地等于「收起再展开，滚到哪全忘了」。
@@ -518,7 +523,9 @@ export function DocLibrary() {
       const okIds = ids.filter(id => !failed.some(f => f.id === id))
       const s = useStore.getState()
       setDocs(s.docs.filter(d => !okIds.includes(d.id)))
-      if (s.currentDocId && okIds.includes(s.currentDocId)) selectDoc(null)
+      // ⚠️ **这里刻意不预先 `selectDoc(null)`**：那会让 `purgeDocArtifacts` 读到的
+      // `currentDocId` 已经是 null，判不出「被删的正是当前打开的那篇」→ 标签组清了
+      // 却不会激活邻居。「删除后的归属」（含邻居选择与 `mbw_lastDocId`）由 purge 独占。
       // 只清真正删掉的那些的产物残留（失败的还留着，清了等于把好数据丢了）
       purgeDocArtifacts(okIds)
       if (failed.length) addToast(`已删除 ${r.affected} 个，${failed.length} 个失败`, 'error')
@@ -530,7 +537,7 @@ export function DocLibrary() {
       clearSelection()
       refreshFolders()
     }
-  }, [addToast, setDocs, selectDoc, refreshFolders, purgeDocArtifacts, clearSelection])
+  }, [addToast, setDocs, refreshFolders, purgeDocArtifacts, clearSelection])
 
   // ── 批量 ──
 
@@ -745,9 +752,11 @@ export function DocLibrary() {
   const ctxItems = useMemo(() => {
     if (!ctxDoc) return []
     return [
-      { label: '打开', icon: <BookOpen size={14} />, onClick: () => selectDoc(ctxDoc.id) },
-      { label: '重新生成', icon: <RefreshCw size={14} />, onClick: () => { selectDoc(ctxDoc.id); useStore.getState().setGenPanelOpen(true) } },
-      { label: 'AI 对话', icon: <MessageSquare size={14} />, onClick: () => { selectDoc(ctxDoc.id); useStore.getState().setAiVisible(true) } },
+      // ⚠️ 右键是**显式动作**，一律钉成常驻标签（'pinned'）——不像单击那样会被
+      // 下一次单击顶掉。用户从菜单里点「打开」，意图显然比随手点一行更明确。
+      { label: '打开', icon: <BookOpen size={14} />, onClick: () => openDocTab(ctxDoc.id, 'pinned') },
+      { label: '重新生成', icon: <RefreshCw size={14} />, onClick: () => { openDocTab(ctxDoc.id, 'pinned'); useStore.getState().setGenPanelOpen(true) } },
+      { label: 'AI 对话', icon: <MessageSquare size={14} />, onClick: () => { openDocTab(ctxDoc.id, 'pinned'); useStore.getState().setAiVisible(true) } },
       { label: '', onClick: () => {}, divider: true },
       {
         // ⚠️ 非拖拽的移动路径：只做 DnD 会让键盘/触屏用户完全无法移动文档
@@ -763,7 +772,7 @@ export function DocLibrary() {
       { label: '', onClick: () => {}, divider: true },
       { label: '删除', icon: <Trash2 size={14} />, onClick: () => setDeleteTargets([ctxDoc.id]), danger: true },
     ]
-  }, [ctxDoc, folders, moveDocs, selectDoc, copyMarkdown, applyTitleEdit, applyTagsEdit])
+  }, [ctxDoc, folders, moveDocs, openDocTab, copyMarkdown, applyTitleEdit, applyTagsEdit])
 
   const onContextMenu = useCallback((e: React.MouseEvent, docId: string) => {
     e.preventDefault()
@@ -775,6 +784,7 @@ export function DocLibrary() {
   // ── DocRow 回调（引用稳定，让 React.memo 真的生效）──
   const rowActions: DocRowActions = useMemo(() => ({
     onRowClick: handleRowClick,
+    onRowDoubleClick: handleRowDoubleClick,
     onToggleSelect: toggleSelect,
     onContextMenu,
     onEditTitle: d => applyTitleEdit({ id: d.id, value: d.title }),
@@ -800,7 +810,7 @@ export function DocLibrary() {
       if (cur) saveTags(cur.id, cur.value)
     },
     onTagsCancel: () => applyTagsEdit(null),
-  }), [handleRowClick, toggleSelect, onContextMenu, applyTitleEdit, applyTagsEdit, handleRowDelete,
+  }), [handleRowClick, handleRowDoubleClick, toggleSelect, onContextMenu, applyTitleEdit, applyTagsEdit, handleRowDelete,
        handleDragStart, handleDragEnd, saveTitle, saveTags])
 
   /**
@@ -1128,7 +1138,16 @@ export function DocLibrary() {
 
                   {synthAdvanced && (
                     <div data-synth-advanced className="mb-3 pl-3 border-l border-border-light">
-                      {/* 对比维度 —— 「## 对比总表」的行标签，也就是产物的骨架（设计 §18.0）*/}
+                      {/* 对比维度 —— **两个落点**，软硬不同（2026-10-05 一天内变了两次，
+                          以当前为准）：
+                          ① 「## 读者问题」那几节的**候选来源**（软：可合并、重排、增补）
+                          ② 文末「## 各篇速查」的**小节标题**（硬：逐条成节）
+                          ⚠️ ① 单独存在时维度**在产物上没有硬落点**，「维度可控」有被架空的
+                          风险；② 把它接住了。但速查区是**竖排清单**，不是旧版那种
+                          「列 = 各篇文档」的大表——那张表 N 篇就是 N+1 列、中文单元格被
+                          压到十几个字符宽（用户原话：「表格上的内容多会影响显示」）。
+                          ⚠️ ① 的意义是**告诉模型什么更重要**——工程实践的警告正是
+                          「模型倾向保留出现次数最多的内容，而不是最重要的内容」，删不得。 */}
                       <label className="text-[12px] font-medium text-dimmed block mb-1">对比维度</label>
                       {dimensionPresets.length > 0 && (
                         <select data-synth-preset value={synthPresetKey} onChange={e => changeSynthPreset(e.target.value)}
@@ -1140,7 +1159,9 @@ export function DocLibrary() {
                         rows={4} placeholder="每行一个维度，例如：研究问题"
                         className="w-full px-2 py-1.5 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent resize-none" />
                       <p className="text-[10px] text-disabled mt-0.5 mb-3">
-                        每行一个，共 {dimsCount} 个维度，将作为对比总表的行标签。切换预设会覆盖当前列表。
+                        每行一个，共 {dimsCount} 个维度 —— 模型围绕它推导「读者问题」小节
+                        （可合并、重排或增补）；文末「各篇速查」则按这些维度逐条列出每篇的取值，
+                        供横向比对。切换预设会覆盖当前列表。
                       </p>
 
                       {/* 材料体裁（多选）—— 决定加载哪几类「类型增量」文风条款（设计 §7.8.2） */}

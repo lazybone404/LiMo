@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-10-04 | **版本**: 0.4.12
+**更新**: 2026-10-05 | **版本**: 0.4.13
 
 ---
 
@@ -12,8 +12,8 @@
 | 指标 | 数量 |
 |------|------|
 | 后端 Python 文件 | 115（11 子目录：adapters 8 / agent 6 / core 23 / downloaders 4 / engines 15 / generation 15 / llm 4 / routers 19 / storage 2 / utils 6 / services 13）+ `limo_cli/` 9（CLI，独立于 `app/`） |
-| 前端 TS/TSX/CSS 文件 | 140（138 ts/tsx + 2 css；业务 116，排除 test 24） |
-| 前端测试文件 | 24（23 测试文件 + `setup.ts`；287 个测试用例，vitest 全绿） |
+| 前端 TS/TSX/CSS 文件 | 146（144 ts/tsx + 2 css；业务 117，排除 test 29） |
+| 前端测试文件 | 30（29 测试文件 + `setup.ts`；384 个测试用例，vitest 全绿） |
 | 后端测试文件 | 40（含 `conftest.py` 共享 fixture；2026-10-04 新增 `test_secrets` / `test_config_mask` / `test_config_io`） |
 | API 路由模块 | 18 业务模块（+ `__init__.py`，共 19 个 .py） |
 | API 端点 | 89（`@router.` 装饰器计数；含 `/api/cli/*` 七端点） |
@@ -21,7 +21,7 @@
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 13（docs/ 目录，含对话协议.md + AGENT-ONBOARDING.md + ACKNOWLEDGMENTS.md；design/ 另计） |
-| 代码行数 | 后端 app 29,572 + CLI 1,341 / 前端业务 17,940 / 前端测试 4,220 |
+| 代码行数 | 后端 app 29,572 + CLI 1,341 / 前端业务 18,545 / 前端测试 5,395 |
 
 ---
 
@@ -120,7 +120,7 @@
 |------|------|
 | GenPanel | 导入 + 生成选项（epub 专属一键解读入口 EpubInterpretPanel，三态 UI；思考档位三档 + PDF 直传开关，均由模型能力位门控） |
 | DocLibrary | 文档列表/搜索/筛选（拆分 **17 文件**：编排 DocLibrary + DocLibraryToolbar + SearchField + FilterArea/FilterSection/filters/FilterPopover 筛选区 + ListToolbar 排列/排序旋钮 + DocList/GroupHeader/DocRow 列表 + BatchBar 批量条（**含多篇合成入口 + 确认对话框**）+ hook 层 useDocQuery/useDocSelection + docLibraryPrefs 偏好 + docMeta 元信息 + entryDelay 动画延迟） |
-| PreviewArea | 预览 + 多 tab（空态欢迎文档三产物：笔记/整理版原文/转录；产物编辑三态弹窗保护 + 编辑中未保存拦截） |
+| PreviewArea | 预览 + 多 tab（**文档标签页 `DocTabBar`**：VS Code 双标签模型——单击=预览/双击=常驻，延后提交与未保存守卫协同；**正文字号缩放** Ctrl+滚轮 / Ctrl+± / Ctrl+0，只作用于 `.preview-area`；空态欢迎文档三产物：笔记/整理版原文/转录；产物编辑三态弹窗保护 + 编辑中未保存拦截） |
 | FloatingAI | AI 对话浮窗（唯一形态；位置/尺寸记忆、内部栏拖拽调宽；含 ChatCore/ChatSidebar/MessageList/MessageItem/ChatInput） |
 | SettingsPage | 模型/引擎/配置（overlay，含对话上下文设置 + 模型元数据编辑） |
 | TaskPanel | 浮动任务管理（可拖拽、可取消） |
@@ -161,7 +161,7 @@
 | FastAPI Depends 依赖注入 | ✅ 17/18 路由用 `Depends`（未迁：generate/ingest/search；`references.py` 本就不需要） |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 18/18 路由全量完成，0 处 `HTTPException`（2026-10-04 复核） |
-| 前端测试 | ✅ vitest + 287 tests（23 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/readingPrefs/readingLayout） |
+| 前端测试 | ✅ vitest + 384 tests（29 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/readingPrefs/readingLayout/docTabs 3 个/字号、接线与快捷键守卫 3 个） |
 | 后端测试 | ✅ 40 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io） |
 | CLI 契约门禁 | ✅ `scripts/check-cli` 16 项全绿（含 3 条负向对照：后端不可达 / 坏 ID / 截断显式化）；`test_query_contract.py` §8 覆盖 `/api/cli/*` 七端点 + 两条对照实验（2026-10-04） |
 | 产物自证头 | ✅ `notes`/`polished`/`process` 落盘带 `<!-- limo-meta -->` 首行（从哪来/怎么来的/是什么/可信度边界四条），`core/transcript_meta.py` 拆出 envelope 层统一编解码；历史无头产物**不判损坏**；编辑保存带回原头；思维导图等派生视图剥头（2026-10-04） |
@@ -219,8 +219,10 @@
 | 合成读者意图与体裁 | ✅ 两只旋钮：`READER_INTENTS` 五选一决定 `<task>` 段的「读者目的」，`CONTENT_TYPES` 多标签决定加载哪几类体裁增量条款。⚠️ 两者连同 `dimensions`/`source_mode` **全部只落出处头 meta**（生成是第二次独立请求，届时手里只有 rawText）；⚠️ **错误语义刻意不同**——意图与原料模式非法**显式报错**（选错了产物的读者目的/性质就变了，而产物上看不出异常），维度与体裁**静默清洗**（判据 = 这个值错了会不会改变产物的性质）；⚠️ 「理解主题 / 比较材料」的 `defaultContentType` 是 `None`、**刻意不预设体裁**（给读者的动作猜材料体裁，正是要消灭的那类错配）；对话框加意图单选组 + **折叠的高级区**（维度预设 / 维度列表 / 体裁多选）（2026-10-04） |
 | 合成超窗分层 | ✅ 「窗口不够」**不是一个问题，是四个**：① 总量超窗（已有逐篇抽取，非妥协）② **单篇自身超窗**（原只标「已截断」，约 78% 内容永久丢失且原因与超时/模型抽风**不可分辨**）③ 病态长文拖垮整次（超时 = 前面所有篇作废）④ 用户事前不知情。**②→篇内分块归并**：关键洞察是「分块不增加配额，而是让它在配额内覆盖全文」（现状从**头部**截断 → 后 78% 从未进模型）；三条预算约束闭合 + 每块 `_truncate_to_tokens(t, q)` + 归并去重；⚠️ **每块必须推 stage**——篇内静默 = Σ 各块耗时，K≥6 冲破 900s 会让**正常路径被判挂死**。**③→软 deadline**：到点则剩余篇硬截断 + 标 `truncated_timeout`，正常走到落库。**顺带订正** `SYNTH_QUIET_TIMEOUT` 与 `SYNTH_TOTAL_TIMEOUT` **同为 900**（「挂死」与「整体超时」同刻到期、由竞态决定收到哪条错误）+ 注释与值不符 → 改 300 并把三者关系写成**断言**。**降级状态 3 态→8 态**（`chunked`/`chunked_partial`/`truncated_over_window`/`truncated_timeout`/`truncated_llm_error`）+ 基础状态回退（历史 `truncated` 与未知状态都不崩）。**④→预览端点** `POST /api/synthesis/preview`（零 LLM 调用）：逐篇 token + 预计处理方式 + `stuff_window`；⚠️ 判据与执行**同源**（同一个 `_classify`）；`stuff_window` 语义是「让全部原样**装下**所需窗口」**不是**「能做合成的最小窗口」；换模型 banner 触发集**收窄**（`chunked` 是设计认可的终态，若也触发就在「不用换」的路径上不断劝人换）（2026-10-02） |
 | 合成维度可控 | ✅ **维度就是产物骨架**（「## 对比总表」= 行=维度 × 列=各篇）。查出一处**设计说了代码没做**：Stuff 路径（**多数情况**）**零维度注入** → 唯一的补救机制（维度发现）根本不跑 → 维度机制在最常见路径上一次都没生效。修：`DIMENSION_PRESETS` **五套**（general 通用资料 / 论文 / 技术资料 / 产品评测 / 观点内容），`general` 排字典第一位为默认（前端取 `[0]` 预填）→ capabilities 下发（前端不硬编码）→ 用户给定则**跳过维度发现调用** → **两条路都注入**。⚠️ 维度**落在出处头 meta**（生成是第二次独立请求，届时只有 rawText；落 index 会被重建丢失，落可见正文会与原始材料混淆）（2026-10-02） |
-| 合成原料可选 | ✅ 原文（默认）/ 已生成的笔记，**互斥不混合**——「只能选一项」是**刻意的设计**：混合会同时打破 ① 等比配额前提（笔记 token 密度与原文差一个数量级）② 产物可解释性（`✓ 完整输入` 会让人以为给的是原文）③ 降级语义（笔记本身已是压缩品，再叠 `summarized` 让状态细分失效）。**整批同源 ⇒ 三个问题一并消失**。⚠️ 前端拿不到「有没有笔记」（`DocEntry` 无产物字段），**解法是不新增字段/端点**——预览端点本就在逐篇读文档，顺带返回 `hasNotes`/`notesTokens`；切模式**重调预览**（本地重算 = 复刻 `plan_synthesis`，成对逻辑禁止）；**后端执行时再校验一次**（预览与执行之间隔着用户操作）；`sourceMode` 落 meta 是**为产物自解释**而非为生成（2026-10-02） |
+| 合成原料可选 | ✅ 原文（默认）/ 已生成的笔记，**互斥不混合**——「只能选一项」是**刻意的设计**：混合会同时打破 ① 等比配额前提（笔记 token 密度与原文差一个数量级）② 产物可解释性（`✓ 未删节` 会让人以为给的是原文）③ 降级语义（笔记本身已是压缩品，再叠 `summarized` 让状态细分失效）。**整批同源 ⇒ 三个问题一并消失**。⚠️ 前端拿不到「有没有笔记」（`DocEntry` 无产物字段），**解法是不新增字段/端点**——预览端点本就在逐篇读文档，顺带返回 `hasNotes`/`notesTokens`；切模式**重调预览**（本地重算 = 复刻 `plan_synthesis`，成对逻辑禁止）；**后端执行时再校验一次**（预览与执行之间隔着用户操作）；`sourceMode` 落 meta 是**为产物自解释**而非为生成（2026-10-02） |
 | 合成 `excluded` 语义 bug | ✅ 落地时**由测试抓到**：后端 `done.excluded` 填的是**标题**，前端拿它从选中集做差集（按 id）→ **永远匹配不上** → 被排除的篇仍写进来源清单，「N 合 1」徽章指向产物根本没读过的文档；预览侧 `excludedSet.has(id)` 同病。**两边都错、两边看起来都对**，失败完全静默（不报错、差集恒为空）。统一为 **id**（标题经清洗且重名合法，做身份判定必然错 —— §4.2.2「标题是展示字段，不是身份凭据」）；`not_enough_notes` 的 detail 在调用点转回标题。⚠️ **只断言「有 2 条」的写法抓不到它**，必须断值本身（2026-10-02） |
+| 合成产物形态重做（二） | ✅ 上一轮（见上）改了约束与落点，**但骨架没换**。本轮从产物实测反推真因：**旧五段与已写入的文风条款正面冲突**——文风第 3/4/5 条禁「无新增信息地重复」，而骨架同时要求「分维度对比 → 共识与分歧 → 综合评价」把同一份对齐结果走三遍、且硬写「不得省略任何一段」⇒ 两条硬指令互斥、模型只能违反一边，**这才是「后四段占 96% 篇幅」的结构性来源**（不是文风条款不够）。换骨架：`## 这批材料放在一起说明了什么`（1–3 句给判断，禁元数据开场）/ `## 分歧在哪`（无分歧时不写）/ `## 读者问题`（3–6 个 `###`，每节三步：结论 / 材料怎么说 + `[文档 i]` 锚点 / 什么条件下不成立）/ `## 材料作用不同` / `## 材料索引`（**全文唯一允许表格处** + 覆盖情况一句话）。**维度降为「读者问题」的候选来源**（用户拍板：问题由模型按读者目的推导，不再当矩阵行标签——矩阵列 = 各篇文档，10 篇就是 11 列、中文单元格被压到十几个字符宽）——⚠️ 但**逐条注入不变、也不能删**（「模型倾向保留出现次数最多的内容，而不是最重要的内容」）。三处连带：① 事实约束第 3 条「未提及」是**表格单元格的填空规则**、表格移出正文后改写为「材料不足以判断」（**抽取阶段 `synthesis.py` 仍用「未提及」**——那是喂给最终模型的中间产物）；② 覆盖说明**第三次搬家**（概览段 → 综合评价末尾 → 材料索引表下，每次都跟着骨架走）；③ 文风续写第 8/9 条（说人话 / 不设篇幅上限但按读者问题数量定）——⚠️ 第 8 条**刻意不抄**单篇 `plain` 档的「不堆小标题和列表」，那句与要求 3–6 个 `###` 的新骨架正面冲突，是同一个病换个骨架复现一次（2026-10-05） |
+| 默认文风改通俗 | ✅ 新增 `plain` 档并设为**全局默认**（用户判断：「大部分用户一般默认文风就是要偏通俗，除非是论文那种要求严谨的才要求详细更多」）——此前**风格清单里根本没有「通俗」档**，默认是 detailed（与用户预期相反）。落点 **8 处，缺一即静默无风格**：`Style` 枚举 / `COMMON_NOTE_STYLES`（VIDEO、DOC 经 `**COMMON` 自动带出）/ `EXCEL_STYLE_MAP`（**同值引用 detailed**——数据摘要要的是准确与完整，「通俗」在此无意义）/ `styleLabels`（**手写 dict，不会随三张 MAP 自动带出**）/ 前端 `genPrefs` 默认值 / `GenPanel` 三处 fallback 数组 / 后端 6 处签名默认值。⚠️ 两条副作用显式处理：polish 豁免元组加 `plain`（否则**每生成一次整理版刷一条「已废弃」warning**）；**存量用户不受影响**（`{...DEFAULTS, ...raw}` 让已存的 `style` 覆盖新默认，**刻意不迁移**——用户当前的 detailed 可能是他显式选的，静默改掉是替他做决定）。**顺带修三个「静默改写风格档」的既有缺陷**（同一形态 ×3：**枚举值与风格表 key 不同形 → 白名单不含实际发来的值 → 被改回 detailed**，零报错）：`meeting`（枚举值是 `meeting_minutes`，而前端发的是 `meeting`）、`none`（不在枚举里、白名单没放行，而上一行注释白纸黑字写着「可能传 none」）、以及**修 `meeting` 时的反向回归**（白名单排在 `normalize_style` **之前** → `meeting_minutes` 旧调用方被拒，而 `STYLE_ALIAS` 存在的全部意义就是兼容它）→ 归一与校验**都走 `normalize_style`** + `none` 显式放行，收口到 `routers/generate.py::_normalize_and_validate_style()`（抽成模块级是为了让测试**直调真实实现**，而不是复刻一遍表达式——复刻的测的是它自己）。测试侧新补 `test_prompt.py` §8 五组断言（**全仓唯一**守护默认风格档的断言，此前每个调用点都显式传 `'detailed'`，默认值改成什么都不会变红）（2026-10-05） |
 | 模型预设核对脚本 | ✅ 开发期**变更哨兵** `scripts/check-models.py`（不进打包、不被后端 import）。考察参考项目 pi 的生成式模型目录（从 models.dev 生成进源码 + manifest 校验）后**推翻照搬方案**——实测 models.dev 不可作权威源：与官方页冲突（`qwen-turbo` 标 1M，官方 131072）、**自家数据自相矛盾**（anthropic 的 haiku 标 200K 而同家 sonnet/opus 标 1M，Claude 的 1M 需 beta header）、覆盖率仅 **54%** 且缺口正落在最新/最冷门模型上 ⇒ 定位改为「产出的**是问题不是答案**」，唯一用途是决定「打开哪一页」；照搬另会冲掉 `config.py` 里逐条人工查证注释（官方页 URL + 陷阱说明）。四类报告 A 新 / B 下架 / C 数值不一致 / D 缺字段；**墓碑同源**（消费既有 `RETIRED_MODEL_IDS`，否则每次都重报已知噪声）；**能力位不参与核对**（models.dev 的 `modalities` 说「模型能读 PDF」与我们认不认 `file` 块是两回事，模式 #51，仍只能逐家手标）；`PROVIDER_MAP` 漏映射 = **静默少核对一整个厂商**（报告照常输出、只是从不提及它）→ 脚本喊 stderr + `tests/test_check_models.py` 14 用例守卫（含「守卫真会红」对照实验）。**本轮只做数据层，不碰计费**（2026-10-02） |
 
 ## 目录结构

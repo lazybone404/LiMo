@@ -30,6 +30,11 @@ export interface DocRowActions {
    * Shift 区间。故这里必须收下 MouseEvent，不能只传 id。
    */
   onRowClick: (e: React.MouseEvent, id: string) => void
+  /**
+   * 行双击 = 钉成常驻标签（VS Code 的 Keep Open）。
+   * ⚠️ 行内交互元素上的双击**不会**传到这里 —— 守卫在 `DocRowImpl` 里（见那里）。
+   */
+  onRowDoubleClick: (e: React.MouseEvent, id: string) => void
   onToggleSelect: (id: string) => void
   onContextMenu: (e: React.MouseEvent, docId: string) => void
   onEditTitle: (doc: DocEntry) => void
@@ -80,6 +85,24 @@ function rowTone(active: boolean, selected: boolean): string {
 function DocRowImpl({
   doc, index, active, selected, density, matched, snippet, titleDraft, tagsDraft, actions,
 }: DocRowProps) {
+  /**
+   * 双击守卫 —— **在行根 div 上做一次判定**，而不是给子元素逐个补
+   * `onDoubleClick={e => e.stopPropagation()}`。
+   *
+   * 为什么不能枚举：行里的交互元素远不止复选框 / 编辑 / 删除三处（本文件有 6 个
+   * `<button>` + 3 个 `<input>`），**枚举必漏**。最典型的漏网是**双击标题输入框**——
+   * 「双击选一个词」是最自然的输入动作，冒泡到行根就成了「钉标签」。而 `onClick`
+   * 已经补过 `stopPropagation` 的地方反而更危险：它会给人一种「已经处理过」的错觉，
+   * 可 `dblclick` 是**独立事件**，完全不受 `click` 的 handler 影响。
+   *
+   * 判据放在这里而不是 `useDocSelection`：那里拿不到 DOM 事件目标。
+   */
+  const handleRowDoubleClick = (e: React.MouseEvent) => {
+    const t = e.target
+    if (t instanceof Element && t.closest('button,input,a,select,textarea')) return
+    actions.onRowDoubleClick(e, doc.id)
+  }
+
   const colors = TYPE_COLORS[doc.sourceType] || TYPE_COLORS.text
   // ⚠️ 判据是**篇数 ≥ 2**，不是 `sourceType === 'composite'`：1 篇「合成」没有可展示的
   // 「N 合 1」语义（N=1 是噪音），而 2 篇以上才配得上这个徽章。两者同时成立才画。
@@ -108,6 +131,7 @@ function DocRowImpl({
         onDragStart={e => actions.onDragStart(e, doc)}
         onDragEnd={actions.onDragEnd}
         onClick={e => actions.onRowClick(e, doc.id)}
+        onDoubleClick={handleRowDoubleClick}
         onContextMenu={e => actions.onContextMenu(e, doc.id)}
         data-active={active ? 'true' : undefined}
         data-selected={selected ? 'true' : undefined}
@@ -181,6 +205,7 @@ function DocRowImpl({
       onDragStart={e => actions.onDragStart(e, doc)}
       onDragEnd={actions.onDragEnd}
       onClick={e => actions.onRowClick(e, doc.id)}
+      onDoubleClick={handleRowDoubleClick}
       onContextMenu={e => actions.onContextMenu(e, doc.id)}
       data-active={active ? 'true' : undefined}
       data-selected={selected ? 'true' : undefined}

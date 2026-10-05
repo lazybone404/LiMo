@@ -36,7 +36,7 @@
 - 通过 `PromptComposer.compose()` 组装为 XML 分节格式
 - **无 `<style_preference>` 节** — Polish 固定忠实整理策略，不接受风格参数
 - 格式白名单（`_POLISH_FORMAT_FNS`）：toc / link / screenshot / formulas / references / images（仅禁止 summary）
-- `style` 参数保留但废弃（非 "detailed"/"none" 时 logger.warning 提示）
+- `style` 参数保留但废弃（非 "plain"/"detailed"/"none" 时 logger.warning 提示）
 - **无 `<user_request>` 节** — Polish 不接受用户备注（`_ = user_notes` 参数保留仅作 API 兼容，内部忽略）
 
 **实际发送的 XML 结构**：
@@ -125,7 +125,8 @@
 
 **Polish 没有风格选择**。`build_polish_prompt()` 不调用 `normalize_style()`，不查找风格字典，`PromptComposer.compose()` 中不含 `<style_preference>` 节。
 
-历史 `style` 参数保留仅用于 API 向后兼容，传 "detailed"/"none" 以外的值会触发 `logger.warning`。
+历史 `style` 参数保留仅用于 API 向后兼容，传 "plain"/"detailed"/"none" 以外的值会触发 `logger.warning`。
+⚠️ 豁免元组必须跟着**默认档**走：默认从 `detailed` 改成 `plain` 时若忘了加进去，每生成一次整理版就记一条 warning（无害但淹日志）。
 
 ---
 
@@ -219,7 +220,7 @@
 
 **审视点**：
 - `{data_section}` 由 `_build_data_summary()` 预处理——只给首尾各 3 行，中间的数据特征可能被忽略
-- 当前只有 detailed/minimal/business 三种 Excel 风格
+- Excel 风格 4 种（detailed/minimal/business/plain）；**`plain` 与 `detailed` 同值引用**——数据摘要要的是准确与完整，「通俗」在这里没有意义（pi-docs 的显式例外条款）。它必须存在，因为前端全局默认档就是 plain，取不到会得到空串（静默无风格）
 - Excel 双产物（polished+notes）当前强制返回相同内容（因为 LLM 无法做真正的数值分析）
 
 ---
@@ -290,9 +291,9 @@ _POLISH_FORMAT_FNS = {
 ### 5.1 风格体系架构
 
 ```
-COMMON_NOTE_STYLES (5 种: detailed/business/academic/tutorial/task_oriented)
-    ├── VIDEO_NOTE_STYLES  = COMMON + { minimal, meeting, life, xiaohongshu } = 9 种
-    └── DOC_NOTE_STYLES    = COMMON + { minimal, meeting, imrad }              = 8 种
+COMMON_NOTE_STYLES (6 种: plain/detailed/business/academic/tutorial/task_oriented)
+    ├── VIDEO_NOTE_STYLES  = COMMON + { minimal, meeting, life, xiaohongshu } = 10 种
+    └── DOC_NOTE_STYLES    = COMMON + { minimal, meeting, imrad }              = 9 种
 ```
 
 通过 Python dict 解构 `{**COMMON_NOTE_STYLES, ...}` 展开，不复制内容。
@@ -301,6 +302,7 @@ COMMON_NOTE_STYLES (5 种: detailed/business/academic/tutorial/task_oriented)
 
 | 风格 | 键 | 摘要 |
 |------|-----|------|
+| 通俗（**全局默认**） | `plain` | 日常说话方式，短句为主，术语当场解释；保留事实、数字、例子 |
 | 全文精要 | `detailed` | 尽可能覆盖原文全部主要内容，每个话题充分展开 |
 | 商业风格 | `business` | 结论先行，突出关键数据和行动建议 |
 | 学术风格 | `academic` | 正式学术用语，背景→方法→论证→结论 |
@@ -584,12 +586,15 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 | `task` | 合成任务 + **读者目的**（预设 purpose 或用户自填文本） | `_build_synthesis_task(intent_text, title)` |
 | `source_content` | **原样等于 rawText**（含出处头 + 「## 来源文档」列表） | 三位一体前提，不加任何 label 前缀 |
 | `instruction_priority` | 三层：hard_constraints > output_language > user_request | `_SYNTHESIS_INSTRUCTION_PRIORITY`（**合成专用**；全局那份是**四层**，多 style_preference） |
-| `hard_constraints` | 三块拼接：事实 5 条 + 通用文风 7 条 + 体裁增量（0..N 类 × 3 条） | `_SYNTHESIS_FACT_CONSTRAINTS` / `_SYNTHESIS_STYLE_CONSTRAINTS` / `_SYNTHESIS_GENRE_CONSTRAINTS` |
+| `hard_constraints` | 三块拼接：事实 5 条 + 通用文风 9 条 + 体裁增量（0..N 类 × 3 条） | `_SYNTHESIS_FACT_CONSTRAINTS` / `_SYNTHESIS_STYLE_CONSTRAINTS` / `_SYNTHESIS_GENRE_CONSTRAINTS` |
 | `output_language` | 目标语言 | `_build_output_language(target_language, "composite")` |
-| `output_format` | 五段固定结构（「## 对比总表」的**行 = `dimensions`**） | `_build_synthesis_output(dimensions)` |
+| `output_format` | **读者问题驱动五节**（`dimensions` 是「## 读者问题」的**候选来源**，不再是矩阵行标签） | `_build_synthesis_output(dimensions)` |
 | `user_request` | ⚠️ **来源是「生成请求的 `user_notes`」，不是合成对话框** | 见下 |
 
-**无 `style_preference` 节**——输出形状已拍板（五段固定结构），不随风格变化。
+**无 `style_preference` 节**——输出形状已拍板（读者问题驱动五节），不随风格变化。
+⚠️ 这意味着**用户的「笔记风格」档对合成产物零影响**（该值经 `build_notes_prompt` 的
+composite 分派就被丢弃）。合成文风**全部**由 `_SYNTHESIS_STYLE_CONSTRAINTS` 承担，
+改那句才改得动合成文风——加 `plain` 档、改默认值都不影响合成。
 
 ⚠️ **`user_notes` 这个名字在本项目指过两样东西，别混**：
 
@@ -652,6 +657,12 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 
 **未做**：10 项自检（显著增加输出 token 与延迟）、改五段骨架（属「路线 2」）。
 
+### 10.7 后续（2026-10-05，与本节同一条链）
+
+上节列为「未做」的**改五段骨架已于 2026-10-05 落地**（读者问题驱动五节 + 新增
+「## 各篇速查」工具区），覆盖说明随之由「## 综合评价」末尾**第三次搬家**到
+「## 材料索引」表下。完整说明见 CHANGELOG 2026-10-05 与 §13 版本表 `"2"`–`"5"`。
+
 ---
 
 ## 11. LLM 续写机制
@@ -704,9 +715,17 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 
 ## 13. 提示词版本（PROMPT_VERSION）
 
-**定义**：[backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) — 当前值 `"1"`
+**定义**：[backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) — 当前值 `"5"`
 
 这个常量只有一个用途：写进产物自证头的 `generated.promptVersion`（装配在 `generation/provenance.py`），回答「这份产物是凭哪版提示词生成的」。**它对 prompt 本身零影响**——改它不会让任何一次调用产生不同结果，但会让此后落盘的产物如实标出新版本。
+
+| 版本 | 变更 |
+|---|---|
+| `"1"` | 2026-10-04 起（产物自证头首次落地） |
+| `"2"` | 2026-10-05 合成骨架改读者问题驱动五节 + 合成文风加「说人话/不限篇幅」两条 + 新增 `plain`（通俗）风格档并设为全局默认 |
+| `"3"` | 2026-10-05 同日验收修订（"2" 真实重跑后的收紧）：锚点稀疏规则（分歧条行末集中标一次 / 读者问题每节 ≤3 个 / 第 3 步不再标）+ 文风第 8 条补排版密度 + 覆盖说明由「输入覆盖情况（完整输入）」改读者语言「有没有哪篇被删节过」。⚠️ **"2" 与 "3" 不共存**——"2" 的产物从未对外发布，本地重跑即被替代 |
+| `"4"` | 2026-10-05 新增「## 各篇速查」工具区（维度作小节、节内每篇一行）——真实场景驱动：论文读者要「看全 + 横向比」，与文章区的「低密度、通俗」要求相反，**分区而非折中** |
+| `"5"` | 2026-10-05（"4" 的真实重跑验收）材料索引表下那句补「直接给结论，不要解释你是怎么知道的（不要出现字段名、标签名或内部标记）」——两批实跑（3 篇论文 + 6 篇观点文）都稳定写出内部标签名 `source_content`，属「模型忠实执行 prompt、验收却把它当错」第 5 次复现 |
 
 ### 13.1 何时 bump
 

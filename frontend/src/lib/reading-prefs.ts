@@ -33,6 +33,15 @@ export interface ReadingPrefs {
    * 故这里是**二选一的单选**，而不是「缩进」+「段距」两个自由旋钮 —— 后者能拼出被禁止的组合。
    */
   paraStyle: ParaStyle
+  /**
+   * 正文字号倍率。**1.0 = 现状的 16px**。
+   *
+   * ⚠️ 这一项补的是一个**真实缺口**而不是加个新旋钮：`.markdown-body` 的字号被 vendor
+   * （`github-markdown-light.css`）硬写成绝对 `16px`，而本文件原有的 `--read-line-height`
+   * 只覆盖行高。`PreviewArea` 里那个 `fontSizeScale`（0.92/1.0/1.06em）挂在外层
+   * `.preview-content` 上，对正文**从来没生效过**。字号是这一个维度的唯一真相源。
+   */
+  fontScale: number
 }
 
 /** ⚠️ 每一项都必须等于「改造前的现状」—— 改这里就是改变所有用户的默认观感 */
@@ -40,6 +49,7 @@ export const READING_DEFAULTS: ReadingPrefs = {
   lineHeight: 1.5,
   measure: null,
   paraStyle: 'web',
+  fontScale: 1.0,
 }
 
 export const LINE_HEIGHT_RANGE = { min: 1.4, max: 2.0, step: 0.05 } as const
@@ -48,13 +58,47 @@ export const MEASURE_RANGE = { min: 30, max: 90, step: 2 } as const
 /** 勾选「限制每行字数」时的初值 —— 40 字 ≈ 640px，落在中文建议区间内 */
 export const MEASURE_DEFAULT_ON = 40
 
+/** 正文字号倍率区间：80%–160%，9 档。下限再小正文就不可读，上限再大一行放不下几个字 */
+export const FONT_SCALE_RANGE = { min: 0.8, max: 1.6, step: 0.1 } as const
+
 /**
- * 版宽换算的基准字号。
- * ⚠️ **必须写死 16**，不能取当前渲染字号：`.markdown-body` 的字号被 vendor 绝对固定在
- * `16px`，而 `.preview-content` 上的内联 `fontSize: fontSizeScale[...]em`（0.92/1.0/1.06）
- * 对正文**根本不生效**。若跟着后者算，版宽会随「紧凑/常规/宽松」档漂移 —— 方向正好反了。
+ * 版宽换算的**基准**字号（即 `fontScale === 1.0` 档对应的 px）。
+ * **正文的实际字号 = `READING_BASE_FONT_PX × fontScale`**。
+ *
+ * ⚠️ 这个常量曾经只能写死 16，因为 `.markdown-body` 的字号被 vendor 绝对固定在 `16px`
+ * （`index.css` 那时没覆盖字号）。自本文件加上 `fontScale` 之后，那个前提**不再成立**
+ * —— 所以凡是拿它换算的地方（见 `PreviewArea` 的 `measurePx`）**必须再乘 `fontScale`**，
+ * 否则字号放大后「限制每行 40 字」算出来的版宽偏大，实际每行只能放下 25 字，方向正好反了。
+ *
+ * ⚠️ 但 `.preview-content` 上的内联 `fontSize: fontSizeScale[...]em`（0.92/1.0/1.06，
+ * 宽度档的「档感」）**仍然不得乘进来** —— 那是另一个维度，与字号无关。混进来会让版宽
+ * 跟着宽度模式漂移，正是当初这条注释警惕的那个方向。字号的真相源只有 `fontScale` 一个。
  */
 export const READING_BASE_FONT_PX = 16
+
+/**
+ * 字号缩放的「下一档」——**纯函数**（可单测），命令行与滚轮两条路径共用，保证同源。
+ *
+ * ⚠️ 必须四舍五入回 step 的精度：0.1 在二进制里不精确，`0.8 + 0.1 * 3` 得到
+ * `1.0999999999999999`，连按几档后界面上会出现「字号 110.00000000000001%」。
+ */
+export function nextFontScale(cur: number, dir: 1 | -1): number {
+  const next = cur + dir * FONT_SCALE_RANGE.step
+  return clamp(Math.round(next * 100) / 100, FONT_SCALE_RANGE.min, FONT_SCALE_RANGE.max)
+}
+
+/**
+ * 「每行字数」→ 版宽上限（px）。**纯函数**，抽出来是为了让「换算与字号同源」可断言
+ * —— 留在 `PreviewArea` 里当内联表达式时，它只能靠肉眼核对。
+ *
+ * ⚠️ 乘的是 **`fontScale`**（字号变了，一行能放下的字数就跟着变），而**不是**
+ * `fontSizeScale[contentWidth]`（宽度档的「档感」，与字号无关）。
+ * 漏乘 `fontScale` 的症状是**方向反的**：字号放大后「限制每行 40 字」算出 640px，
+ * 而实际每行只放得下 25 字 —— 越放大越挤。
+ */
+export function measurePxOf(measure: number | null, fontScale: number): number | null {
+  return measure ? measure * READING_BASE_FONT_PX * fontScale : null
+}
 
 export const PARA_STYLE_OPTIONS: { key: ParaStyle; label: string; hint: string }[] = [
   { key: 'web', label: '网页式', hint: '不缩进 + 段间距 ≈ 一个行高。屏幕长文，扫描快' },
@@ -87,6 +131,9 @@ export function getSavedReading(): ReadingPrefs {
         paraStyle: v.paraStyle === 'book' || v.paraStyle === 'web'
           ? v.paraStyle
           : READING_DEFAULTS.paraStyle,
+        fontScale: typeof v.fontScale === 'number' && Number.isFinite(v.fontScale)
+          ? clamp(Math.round(v.fontScale * 100) / 100, FONT_SCALE_RANGE.min, FONT_SCALE_RANGE.max)
+          : READING_DEFAULTS.fontScale,
       }
     }
   } catch { /* 损坏 JSON → 全部用默认 */ }
@@ -101,6 +148,9 @@ export function applyReading(p: ReadingPrefs): void {
   const root = document.documentElement
   root.style.setProperty('--read-line-height', String(p.lineHeight))
   root.setAttribute('data-read-para', p.paraStyle)
+  // ⚠️ 写成 **px**（绝对单位）。若写成 em，它会与 `.preview-content` 上那份内联
+  // `fontSize: fontSizeScale[contentWidth]em` 相乘（1.06 × 1.25 = 1.32），字号随宽度档漂移。
+  root.style.setProperty('--read-font-size', `${READING_BASE_FONT_PX * p.fontScale}px`)
   // 注意：measure 不写 DOM —— 它是 JS 侧计算 maxWidth 的输入（见 PreviewArea 的
   // computeContentMaxW）。若做成 CSS 变量就得用 em，而 em 会随上面的 fontSizeScale 漂移。
 }

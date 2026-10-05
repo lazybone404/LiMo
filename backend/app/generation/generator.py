@@ -15,9 +15,28 @@ from pathlib import Path
 
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.generation.effort import effort_for
+from app.generation.prompts import normalize_style
 from app.generation.reference_compressor import compress_references_if_needed
 from app.llm.service import LLMService
 from app.services.chart_renderer import render_charts
+
+
+def _coerce_style(style: str) -> Style:
+    """外部传入的 style 字符串 → `Style` 枚举；未知值回退 `DETAILED`。
+
+    ⚠️ **必须先归一、再查枚举**。枚举成员是 `MEETING = "meeting"`（2026-10-05
+    由 `meeting_minutes` 改形），而历史调用方传的仍是别名 `meeting_minutes`
+    —— `STYLE_ALIAS` 存在的意义就是兼容它。不归一的话别名会**静默落进兜底
+    分支**，产物的元数据 style 被记成 detailed（一切看起来正常，只是标签错）。
+
+    ⚠️ 这段逻辑此前在本文件里**逐字重复了 5 次**，且 5 处全都没有归一 ——
+    同一缺陷有 5 个副本（模式 #54：同一逻辑 ≥3 次即抽）。
+
+    回退值是 `DETAILED` 而非新默认档 `PLAIN`：这是对「**不认识的输入**」的兜底，
+    不是默认值的第二处定义（默认值在 `generate()` / `generate_both()` 签名上）。
+    """
+    s = normalize_style(style)
+    return Style(s) if s in Style._value2member_map_ else Style.DETAILED
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +115,7 @@ class Generator:
         self,
         raw_text: str,
         title: str = "",
-        style: str = "detailed",
+        style: str = "plain",
         source_type: str = "text",
         mode: str = "notes",
         formats: list[str] | None = None,
@@ -174,7 +193,7 @@ class Generator:
             id=f"md_{uuid.uuid4().hex[:12]}",
             transcript_id="",
             content=content,
-            style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
+            style=_coerce_style(style),
             mode=GenerateMode(mode) if mode in GenerateMode._value2member_map_ else GenerateMode.NOTES,
             # 自证头第②条「怎么来的」要记生成模型。它是**唯二**知道模型的地方
             # （另一个是 LLMService 自己），落盘侧（router）拿不到 —— 故在此就地填。
@@ -187,7 +206,7 @@ class Generator:
         self,
         raw_text: str,
         title: str = "",
-        style: str = "detailed",
+        style: str = "plain",
         source_type: str = "text",
         formats: list[str] | None = None,
         vl_config: dict | None = None,
@@ -259,14 +278,14 @@ class Generator:
             mv = MarkdownView(
                 id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
                 content=content,
-                style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
+                style=_coerce_style(style),
                 mode=GenerateMode.NOTES,
                 generation_model=self._llm.model,
             )
             polished = MarkdownView(
                 id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
                 content=content,
-                style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
+                style=_coerce_style(style),
                 mode=GenerateMode.POLISHED,
                 generation_model=self._llm.model,
             )
@@ -319,14 +338,14 @@ class Generator:
         polished = MarkdownView(
             id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
             content=content_a,
-            style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
+            style=_coerce_style(style),
             mode=GenerateMode.POLISHED,
             generation_model=self._llm.model,
         )
         notes = MarkdownView(
             id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
             content=content_b,
-            style=Style(style) if style in Style._value2member_map_ else Style.DETAILED,
+            style=_coerce_style(style),
             mode=GenerateMode.NOTES,
             generation_model=self._llm.model,
         )

@@ -306,11 +306,12 @@ body {
    与上一组「GitHub Markdown Overrides」同性质，只是维度不同：那组覆盖**颜色**，
    这组覆盖**排版**。vendor（github-markdown-light.css）硬写 `.markdown-body
    { font-size:16px; line-height:1.5 }` 与 `p { margin-bottom:10px }`，全仓既无
-   text-indent、也无任何排版变量 —— 这一维此前完全空白。
+   text-indent、也无任何排版变量 —— 这一维此前完全空白（2026-10-05 起 font-size
+   也已覆盖，由字号缩放驱动 `--read-font-size`）。
 
-   `--read-line-height` 初值 1.5 与 vendor 同值、`web` 段落式的
-   (text-indent:0 + margin-bottom:10px) 也正是 vendor 现值 —— 故**用户没调过时
-   渲染逐值不变**（零回归是被 test/readingPrefs.test.ts 钉住的，不是靠自觉）。
+   `--read-line-height` 初值 1.5、`--read-font-size` 初值 16px 均与 vendor 同值、
+   `web` 段落式的 (text-indent:0 + margin-bottom:10px) 也正是 vendor 现值 —— 故
+   **用户没调过时渲染逐值不变**（零回归是被 test/readingPrefs.test.ts 钉住的，不是靠自觉）。
 
    驱动方式与 data-font / texture 同模式：属性与变量挂在 documentElement
    （见 lib/reading-prefs.ts 的 applyReading），作用域限定 .preview-area。
@@ -331,6 +332,8 @@ body {
 :root {
   /* 默认 = github-markdown-css 的 line-height 现值 → 零回归 */
   --read-line-height: 1.5;
+  /* 默认 = github-markdown-css 的 font-size 现值 → 零回归（由 applyReading 覆盖） */
+  --read-font-size: 16px;
 }
 
 /* 段落区隔 —— clreq 明确「首行缩进」与「加大段距」是两套并行传统、不建议混用
@@ -353,6 +356,17 @@ body {
 .preview-area .markdown-body > ul li,
 .preview-area .markdown-body > ol li {
   line-height: var(--read-line-height);
+}
+
+/* 字号（Ctrl+滚轮 / Ctrl+= / Ctrl+- / Ctrl+0 或设置页；值由 applyReading 写成
+   `${16px × fontScale}`）。
+   ⚠️ **必须是 px**：写成 em 会与 `.preview-content` 上的内联
+   `fontSize: fontSizeScale[contentWidth]em`（0.92/1.0/1.06）**相乘**，字号随宽度档漂移。
+   ⚠️ **刻意不用 !important**：本组是「排版覆盖」，靠特异性取胜（`.preview-area .markdown-body`
+   是 0,2,0，压过 vendor 的 0,1,0）—— 上面那组「颜色覆盖」才用 !important，别把两种手法混起来。
+   ⚠️ 标题 / 代码 / 表格 / 引用都是相对 em，会随这一条**自动等比**，无需逐条改。 */
+.preview-area .markdown-body {
+  font-size: var(--read-font-size, 16px);
 }
 
 /* GitHub Markdown dark mode — manual overrides since GitHub CSS

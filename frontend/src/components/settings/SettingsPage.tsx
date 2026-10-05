@@ -4,7 +4,7 @@ import { useStore } from '../../store'
 import { ACCENT_GROUPS, ACCENT_SWATCH } from '../../lib/accent'
 import { TEXTURE_OPTIONS, TEXTURE_SWATCH, FONT_OPTIONS, getSavedIntensity, applyIntensity, saveIntensity } from '../../lib/texture'
 import { BASE_OPTIONS } from '../../lib/theme-base'
-import { PARA_STYLE_OPTIONS, LINE_HEIGHT_RANGE, MEASURE_RANGE, MEASURE_DEFAULT_ON } from '../../lib/reading-prefs'
+import { PARA_STYLE_OPTIONS, LINE_HEIGHT_RANGE, MEASURE_RANGE, MEASURE_DEFAULT_ON, FONT_SCALE_RANGE, READING_DEFAULTS } from '../../lib/reading-prefs'
 import { THEME_PRESETS } from '../../lib/theme-presets'
 import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette, Puzzle } from 'lucide-react'
 import { ProviderSettings } from './ProviderSettings'
@@ -495,7 +495,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
 
                   {/* 每行字数 —— 勾选框 + 条件滑条（不用魔法值表达「不限」，
                       免得 0/负数在两处来回转换） */}
-                  <div>
+                  <div className="mb-5">
                     <label className="flex items-center gap-2 cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -528,6 +528,48 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                     <p className="text-[11px] text-muted mt-2">
                       中文排版建议每行 30-40 字（约 550-640px）。行宽过宽时视线容易跳行
                     </p>
+                  </div>
+
+                  {/* 正文字号 —— ⚠️ 这一项补的是一个**真实缺口**而不是多给一个旋钮：
+                      `.markdown-body` 的字号被 vendor（github-markdown-light.css）硬写成
+                      绝对 16px，而本区此前的规则只覆盖了行高与段距，所以正文大小一直调不动。
+                      标题 / 代码 / 表格 / 引用都是相对 em，跟着一起等比缩放。 */}
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[13px] font-medium">正文字号</span>
+                      <span className="text-[12px] text-accent font-medium bg-accent/10 px-2 py-0.5 rounded-full">
+                        {Math.round(reading.fontScale * 100)}%
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-disabled shrink-0">小</span>
+                      <input
+                        type="range"
+                        min={FONT_SCALE_RANGE.min} max={FONT_SCALE_RANGE.max} step={FONT_SCALE_RANGE.step}
+                        value={reading.fontScale}
+                        // 归一到两位小数：range 的 value 是字符串，浮点步进可能吐出
+                        // 1.2000000000000002 这类值，与 nextFontScale 的输出对不上
+                        onChange={e => setReading({ fontScale: Math.round(parseFloat(e.target.value) * 100) / 100 })}
+                        className="w-full h-2 rounded-full appearance-none cursor-pointer
+                          [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:rounded-full
+                          [&::-webkit-slider-thumb]:bg-accent [&::-webkit-slider-thumb]:shadow-md
+                          [&::-webkit-slider-thumb]:appearance-none
+                          bg-surface-hover"
+                      />
+                      <span className="text-[11px] text-disabled shrink-0">大</span>
+                    </div>
+                    <div className="flex items-start justify-between gap-3 mt-2">
+                      <p className="text-[11px] text-muted">
+                        只作用于预览区正文。快捷键 Ctrl + 滚轮 / Ctrl + + / Ctrl + −
+                      </p>
+                      <button
+                        onClick={() => setReading({ fontScale: READING_DEFAULTS.fontScale })}
+                        disabled={reading.fontScale === READING_DEFAULTS.fontScale}
+                        className="text-[11px] text-accent hover:underline shrink-0 disabled:text-disabled disabled:no-underline disabled:cursor-default"
+                      >
+                        重置为 100%
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

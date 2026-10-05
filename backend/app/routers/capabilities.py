@@ -316,7 +316,7 @@ async def capabilities(config=Depends(get_config)):
         "genOptions": AVAILABLE_OPTIONS,
         "llmModels": config.get("llm_models", {}),
         "products": to_capability_list(),
-        "version": "0.4.12",
+        "version": "0.4.13",
         # ── 新增：前端去硬编码元数据 ────────────────────────
         "fileTypeMap": file_type_map,
         "scenarioLabels": scenario_labels,
@@ -324,8 +324,14 @@ async def capabilities(config=Depends(get_config)):
             "text": "文字", "table": "表格", "image": "图片",
             "ocr": "OCR", "pdf": "PDF", "office": "文档", "asr": "语音",
         },
+        # ⚠️ 这个 dict 是**手写**的，不会随三张 MAP（styles/docStyles/excelStyles）
+        # 自动更新——新增风格档时**必须同时改这里**，否则按钮标签静默退化成
+        # 英文 key（`GenPanel` 用 `styleLabels[s] || s`）。pi-docs 方案曾误以为
+        # 「三张 MAP 会自动带出」，实际带出的只是 key 列表，标签得手写。
         "styleLabels": {
             "none": "无",
+            # `plain` = 2026-10-05 起的全局默认档（Excel 除外，见 EXCEL_STYLE_MAP）
+            "plain": "通俗",
             "minimal": "精简", "detailed": "全文精要", "academic": "学术", "life": "生活",
             "tutorial": "教程", "xiaohongshu": "小红书", "business": "商务",
             "meeting": "会议纪要",

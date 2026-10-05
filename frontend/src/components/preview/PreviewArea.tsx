@@ -12,8 +12,9 @@ import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, Package,
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
-import { CONTENT_WIDTH_RATIO, READING_BASE_FONT_PX, computeContentMaxW } from '../../lib/reading-prefs'
+import { CONTENT_WIDTH_RATIO, computeContentMaxW, measurePxOf } from '../../lib/reading-prefs'
 import { VideoBanner } from './VideoBanner'
+import { DocTabBar } from './DocTabBar'
 import { LogPanel } from '../ui/LogPanel'
 import { ExportMenu } from '../ui/ExportMenu'
 import { ResizeHandle } from '../ui/ResizeHandle'
@@ -158,8 +159,10 @@ export function PreviewArea() {
   }
 
   // 每行字数 → 版宽上限（px）。null = 不设上限（沿用比例制，零回归）。
-  // ⚠️ 乘的是 READING_BASE_FONT_PX（16），不是当前 fontSizeScale —— 见 reading-prefs.ts 的注释。
-  const measurePx = reading.measure ? reading.measure * READING_BASE_FONT_PX : null
+  // 换算收口在 `measurePxOf`（纯函数、可单测）：它乘的是 `fontScale`（正文的**实际**字号），
+  // **不是** `fontSizeScale[contentWidth]`（那是宽度档的档感，与字号无关）。漏乘 `fontScale`
+  // 的方向是反的：字号调到 160% 后仍按 16px 算成 640px，而实际只放得下 25 字 —— 越放大越挤。
+  const measurePx = measurePxOf(reading.measure, reading.fontScale)
 
   // ResizeObserver 追踪预览面板实际宽度
   const containerRef = useRef<HTMLDivElement>(null)
@@ -172,6 +175,26 @@ export function PreviewArea() {
     })
     ro.observe(el)
     return () => ro.disconnect()
+  }, [])
+
+  // ── 正文字号缩放：Ctrl + 滚轮 ──
+  // ⚠️ **必须用原生 `addEventListener(..., { passive: false })`，不能用 React 的 onWheel**：
+  // React 把 `wheel` / `touchstart` / `touchmove` 按 **passive** 注册在 root 上，在处理器里调
+  // `e.preventDefault()` 只会得到一条控制台警告，**拦不住** WebView2 把整个页面（连文档库、
+  // 工具栏一起）缩放 —— 那正是要阻止的行为。
+  // ⚠️ 挂在**预览区容器**（而非 window）：字面落实「只对预览栏生效」，也避免鼠标停在
+  // 文档库列表上按到 Ctrl+滚轮时误触。
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return
+      e.preventDefault()
+      // 复用 store 的跨 slice 动作（与键盘路径同一个函数、同一份档位换算与 toast）
+      useStore.getState().stepFontScale(e.deltaY < 0 ? 1 : -1)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
   // 内容上限动态跟随面板宽度：小窗口保底 1100px；折叠 GenPanel/DocLibrary 后面板变宽 →
@@ -333,6 +356,10 @@ export function PreviewArea() {
     const dlg = unsavedDialog
     if (!dlg) return
     setUnsavedDialog(null)
+    // ⚠️ 「取消」= 什么都没发生：丢弃待提交的标签意图即可。
+    // **不需要任何回滚**——标签组自始至终没被动过，这正是「延后提交」换来的性质
+    // （若当初是「先改标签组、取消时再快照回滚」，这里就得精确还原被替换的预览槽）。
+    useStore.getState().cancelTabChange()
     const backDocId = (dlg.type === 'doc' && (editing?.docId || dlg.prevDocId)) || undefined
     if (backDocId) {
       skipDocLoadRef.current = true
@@ -392,6 +419,11 @@ export function PreviewArea() {
    * docId 为 null → 仅清理旧内容（无选中文档）。
    */
   const loadDocContent = useCallback((docId: string | null) => {
+    // ⚠️ 提交标签变更必须在这一行（**首行**），不能挪到 `if (!docId) return` 之后：
+    // 「关闭最后一个标签」会走到 docId = null，那时同样要提交 pendingClose。
+    // 另外 docId 为空串（GenPanel 有一处 `selectDoc('')`）时归一成 null，不追加标签。
+    // 这一步同时是「未被守卫拦下」的证明——守卫命中时根本不会走到 loadDocContent。
+    useStore.getState().commitTabChange(docId || null)
     // 切换文档时清除所有旧内容
     setCurrentContent(null)
     setCurrentPolishedContent(null)
@@ -767,6 +799,9 @@ export function PreviewArea() {
   return (
     <>
     <main className="flex-1 flex flex-col overflow-hidden bg-surface rounded-2xl">
+      {/* 文档标签栏 —— 与工具栏一起隐藏：沉浸会同时藏掉文档库，没有打开新文档的入口时
+          一排标签只是噪音。`docTabs` 为空（欢迎页）时它自己返回 null。 */}
+      {!immersive && <DocTabBar />}
       {/* 工具栏 — 对齐 BiliNote MarkdownHeader。
           沉浸下整条不渲染：tab/复制/导出/宽度/日志全是**操作入口**，属去噪目标。
           ⚠️ 这里**刻意没有 AI 按钮** —— 顶栏「AI」是唯一入口（同一个 toggleAI）。

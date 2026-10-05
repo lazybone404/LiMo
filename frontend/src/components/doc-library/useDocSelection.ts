@@ -18,7 +18,7 @@ function isTextField(el: Element | null): boolean {
   return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable
 }
 
-export function useDocSelection(orderedIds: string[], onOpen: (id: string) => void) {
+export function useDocSelection(orderedIds: string[], onOpen: (id: string, mode: 'preview' | 'pinned') => void) {
   const selectedIds = useStore(s => s.selectedIds)
   const setSelectedIds = useStore(s => s.setSelectedIds)
   const clearSelection = useStore(s => s.clearSelection)
@@ -62,12 +62,27 @@ export function useDocSelection(orderedIds: string[], onOpen: (id: string) => vo
     setAnchorId(null)
   }, [clearSelection])
 
-  /** 行点击统一入口 —— 三种修饰键三套语义，默认那套是**打开** */
+  /** 行点击统一入口 —— 三种修饰键三套语义，默认那套是**打开**（预览标签） */
   const handleRowClick = useCallback((e: React.MouseEvent, id: string) => {
     if (e.ctrlKey || e.metaKey) { toggle(id); return }
     if (e.shiftKey) { selectRange(id); return }
-    onOpen(id)
+    onOpen(id, 'preview')
   }, [toggle, selectRange, onOpen])
+
+  /**
+   * 行双击 = **钉成常驻标签**（VS Code 的 Keep Open）。
+   *
+   * ⚠️ **不需要防抖**：浏览器双击先派发两次 `click`、再派发 `dblclick`。第二次 click
+   * 到达时该文档已在组内 → 只走「切过去」，是 no-op。所以 `click → click → dblclick`
+   * 的结果正是「打开 → 无变化 → 钉住」。即使 React 没在两次 click 之间 flush，
+   * `pendingOpenMode` 也会被这次的 `'pinned'` 覆盖，最终提交仍是常驻。
+   *
+   * 带修饰键的双击忽略：那时用户要的是加选 / 区间（单击那套语义），钉标签是误触。
+   */
+  const handleRowDoubleClick = useCallback((e: React.MouseEvent, id: string) => {
+    if (e.ctrlKey || e.metaKey || e.shiftKey) return
+    onOpen(id, 'pinned')
+  }, [onOpen])
 
   /** 挂到列表容器（需 `tabIndex={0}` 才能收到按键） */
   const onListKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -91,6 +106,7 @@ export function useDocSelection(orderedIds: string[], onOpen: (id: string) => vo
     setAll,
     clear,
     handleRowClick,
+    handleRowDoubleClick,
     onListKeyDown,
   }
 }

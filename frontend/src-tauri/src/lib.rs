@@ -79,6 +79,14 @@ pub fn run() {
 
             spawn_backend_ready_probe(app.handle().clone());
 
+            // 打包版：把 Ctrl+W / Ctrl+± / Ctrl+0 等从 WebView2 加速键手里放行到网页，
+            // 否则 `App.tsx::handleAppKeyDown` 在打包版根本不触发（详见 webview_keys 注释）
+            if let Some(w) = app.get_webview_window("main") {
+                if let Err(e) = w.with_webview(|pw| webview_keys::allow_app_shortcuts(&pw)) {
+                    app_log(&exe_dir, &format!("webview_keys 注册失败: {}", e));
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -658,6 +666,96 @@ async fn export_pdf(
     file_name: String,
 ) -> Result<String, String> {
     pdf_export::export(&app, url, file_name).await
+}
+
+// ── 打包版：把应用的 Ctrl 快捷键从 WebView2 手里放行到网页 ──
+//
+// ⚠️ **这里是「网页版（npm run dev）与打包版行为不同」的唯一落点**，也是本项目
+// 唯一需要 Rust 侧介入的键盘问题。
+//
+// WebView2 的浏览器加速键（`AreBrowserAcceleratorKeysEnabled`）**默认为开启**，
+// 而 `Ctrl+Plus` / `Ctrl+Minus` 正落在它的管辖范围内（同列表还有 Ctrl+P 打印、
+// Ctrl+F 查找、F5 刷新、DevTools）。按键的传播顺序是：
+//
+//   ① 宿主 AcceleratorKeyPressed 事件（本模块）
+//   ② **WebView2 按浏览器语义消费加速键**      ← Ctrl+± 死在这一步
+//   ③ 网页内容 —— 只有 ①② 都没拦下的组合才会到这里
+//
+// 于是 `App.tsx::handleAppKeyDown` 里那些 `preventDefault()` 在打包版
+// **根本不触发**（浏览器开发模式下一切正常），两端行为从根上分叉。
+//
+// 做法：对**我们自己在用的那几个键**单独设 `IsBrowserAcceleratorKeyEnabled = FALSE`
+// —— 浏览器跳过自己的处理，事件照常往下传播，余下交给既有前端逻辑。
+//
+// ⚠️ **不要设 `Handled = TRUE`**：那是「吞掉、连网页也收不到」，与目的正好相反。
+// ⚠️ **不要动全局的 `AreBrowserAcceleratorKeysEnabled`**：会连带废掉
+//    Ctrl+P / F5 / Ctrl+F / DevTools，排障时很麻烦 —— 精准放行只多这几行。
+
+#[cfg(windows)]
+mod webview_keys {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2AcceleratorKeyPressedEventArgs2;
+    use webview2_com::AcceleratorKeyPressedEventHandler;
+    use windows::core::Interface;
+
+    // Win32 虚拟键码。⚠️ **这份清单与 `frontend/src/App.tsx::handleAppKeyDown`
+    // 的 case 一一对应** —— 那边加/删快捷键时要同步改这里，否则新键在打包版会被
+    // WebView2 抢走（症状：开发模式好用、打包版没反应，且没有任何报错）。
+    //
+    // 逐键说明：
+    //   · `=` / `-`（VK_OEM_PLUS / VK_OEM_MINUS）—— **必须**放行：页面缩放正落在
+    //     WebView2 加速键的管辖范围内，不放行则打包版完全收不到这两个键
+    //   · 其余（W / G / I / K / \）—— 当前**不在** WebView2 的加速键列表里，
+    //     放行属于防御性的（对不被消费的键设 FALSE 零副作用）。之所以一并列出，
+    //     是让清单与 App.tsx 等长：新增快捷键时不必再逐个判断「这个键要不要放行」
+    const VK_0: u32 = 0x30; // '0' —— 重置字号
+    const VK_G: u32 = 0x47; // 'G' —— 生成面板
+    const VK_I: u32 = 0x49; // 'I' —— AI 浮窗
+    const VK_K: u32 = 0x4B; // 'K' —— 文档库搜索
+    const VK_W: u32 = 0x57; // 'W' —— 阅读宽度
+    const VK_OEM_PLUS: u32 = 0xBB; // '='（Shift 下是 '+'，VK 与 Shift 无关）
+    const VK_OEM_MINUS: u32 = 0xBD; // '-'（Shift 下是 '_'）
+    const VK_OEM_5: u32 = 0xDC; // '\' —— 沉浸阅读
+
+    fn is_app_shortcut(vk: u32) -> bool {
+        matches!(
+            vk,
+            VK_0 | VK_G | VK_I | VK_K | VK_W | VK_OEM_PLUS | VK_OEM_MINUS | VK_OEM_5
+        )
+    }
+
+    /// 在主窗口上注册加速键回调。**必须在 UI 线程调用**（WebView2 是单线程 COM）
+    pub fn allow_app_shortcuts(pw: &tauri::webview::PlatformWebview) {
+        let handler = AcceleratorKeyPressedEventHandler::create(Box::new(|_sender, args| {
+            if let Some(args) = args {
+                let mut vk: u32 = 0;
+                // 读不到键码就当不认识，保持默认行为
+                if unsafe { args.VirtualKey(&mut vk) }.is_ok() && is_app_shortcut(vk) {
+                    // Args2 需要运行时 1.0.1108+（Win10/11 自带的都满足）。
+                    // 老运行时不支持则 cast 失败 —— 退回现状（该键被浏览器加速键接管），
+                    // 不影响其它任何功能
+                    if let Ok(args2) = args.cast::<ICoreWebView2AcceleratorKeyPressedEventArgs2>() {
+                        let _ = unsafe { args2.SetIsBrowserAcceleratorKeyEnabled(false.into()) };
+                    }
+                }
+            }
+            Ok(())
+        }));
+
+        // handler 无需显式注销：COM 事件注册会 AddRef，随进程退出一并释放
+        let controller = pw.controller();
+        if let Err(e) = unsafe {
+            controller.add_AcceleratorKeyPressed(&handler, std::ptr::null_mut())
+        } {
+            eprintln!("注册加速键回调失败（应用快捷键仍由浏览器加速键接管）: {}", e);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod webview_keys {
+    /// 非 Windows 平台没有 WebView2 加速键这回事：Linux/macOS 的 webview 直接把
+    /// 按键交给网页。空实现让 `run()` 里的调用点不必包 `cfg`
+    pub fn allow_app_shortcuts(_pw: &tauri::webview::PlatformWebview) {}
 }
 
 // ── PATH 增强 ──

@@ -140,11 +140,14 @@ export function GenPanel() {
   const effectiveType = currentDoc?.sourceType || inputType
   const typeMeta = getTypeMeta(effectiveType, caps?.genOptions)
 
+  // 三处 fallback 数组是 capabilities 拿不到时的兜底（后端未起 / 旧后端），
+  // **必须含 `'plain'`**——它是当前默认档，漏了则默认选中项在列表里找不到，
+  // 按钮组渲染不出选中态。正常路径下这些数组根本用不到（后端下发 keys）。
   const styleKeys = (typeMeta.isExcel
-    ? caps?.excelStyles || ['detailed', 'minimal', 'business']
+    ? caps?.excelStyles || ['plain', 'detailed', 'minimal', 'business']
     : typeMeta.isDoc
-    ? caps?.docStyles || ['imrad', 'detailed', 'business', 'tutorial']
-    : caps?.styles || ['minimal', 'detailed', 'academic', 'life']
+    ? caps?.docStyles || ['plain', 'imrad', 'detailed', 'business', 'tutorial']
+    : caps?.styles || ['plain', 'minimal', 'detailed', 'academic', 'life']
   )
   const styleKeysWithNone = ['none', ...styleKeys]
 

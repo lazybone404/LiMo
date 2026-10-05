@@ -141,7 +141,7 @@ raw6 = build_composite_raw_text(
 )
 assert raw6.startswith("<!-- limo-meta ")
 assert "## 来源文档" in raw6
-assert "1. 论文A ✓ 完整输入" in raw6
+assert "1. 论文A ✓ 未删节" in raw6
 assert "2. 论文B ⚠ 已压缩为摘要" in raw6
 assert "3. 论文C ⚠ 已截断" in raw6
 assert raw6.endswith(BODY), "正文必须原样落在末尾（含缩进/换行，不得被改写）"
@@ -152,7 +152,7 @@ print("PASS: 组装形状正确，降级标注持久化在产物的来源列表�
 
 # status 缺省 / 未知：不应崩，也不应凭空编造标注
 raw7 = build_composite_raw_text(["t1"], ["h1"], [{"title": "无状态文档"}], "正文")
-assert "1. 无状态文档 ✓ 完整输入" in raw7, "status 缺省视为 full（调用方没标 = 完整输入）"
+assert "1. 无状态文档 ✓ 未删节" in raw7, "status 缺省视为 full（调用方没标 = 未删节）"
 raw8 = build_composite_raw_text(["t1"], ["h1"], [{"title": "怪状态", "status": "???"}], "正文")
 assert "1. 怪状态" in raw8, "未知 status 只影响标注，不应丢行"
 print("PASS: status 缺省/未知时不崩、不编造标注")

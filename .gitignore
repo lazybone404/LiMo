@@ -14,7 +14,7 @@ backend/build/
 *.egg-info/
 
 # ── 前端 ──
-frontend/node_modules/
+node_modules/
 frontend/dist/
 frontend/src-tauri/target/
 frontend/src-tauri/bin/
@@ -33,6 +33,8 @@ dist/
 pi-docs/
 
 # ── 测试数据 / 临时文件 ──
+# 一次性调试脚本（约定：`_` 前缀、用完即删、绝不进 git、绝不进打包）
+backend/_*.py
 backend/data/
 backend/test_images/
 tests/generation/outputs/

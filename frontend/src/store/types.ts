@@ -115,6 +115,16 @@ export interface AppSlice {
    * store 里（`store/streamBuffers.ts` 是模块级 Map），漏清就永久驻留到刷新页面为止。
    */
   purgeDocArtifacts: (ids: string[]) => void
+
+  /**
+   * 正文字号缩放的下一档 / 重置。**放在组合层而非 themeSlice**：它要在改值之后发一条
+   * toast，而 slice 的 action 不允许跨域读写别的 slice（那是本仓库的约定）。
+   *
+   * ⚠️ 键盘（`App.handleAppKeyDown`）与预览区滚轮两条入口**必须共用这一对**，
+   * 各写一份必然漂移（一个带 toast、一个不带；或档位取整规则不同）。
+   */
+  stepFontScale: (dir: 1 | -1) => void
+  resetFontScale: () => void
 }
 
 // ── Store 交集（各 slice 合并）──
