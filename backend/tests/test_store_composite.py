@@ -80,14 +80,13 @@ try:
 
     os.remove(os.path.join(d, "index.json"))
     s2 = Store(d)
-    # ⚠️ 重建**不是** Store() 构造时自动跑的——`_rebuild_index` 是显式入口，
-    # 当前全仓没有生产调用点（只有测试调它）。丢了 index.json 的实际后果是
-    # 「索引初始化为空、文档从列表里消失」，而不是自动重扫。
-    # 这里显式调它，是为了保住「将来接上重建入口时行为正确」这条不变量。
-    s2._rebuild_index()
+    # ⚠️ 2026-10-06 起这一步**不再需要显式调 `_rebuild_index()`**：`_load_index` 会在
+    # 「索引缺失/损坏且磁盘上仍有文档」时自动重建（P0-03）。此前那行显式调用是为了保住
+    # 「将来接上重建入口时行为正确」这条不变量 —— 入口现在接上了，断言随之升级成
+    # **构造即自愈**：磁盘上明明有文档却拿到空列表，就是静默空库，正是要防的那个。
     comp_rows = [e for e in s2.list_transcripts() if e.get("sourceType") == "composite"]
     assert comp_rows, (
-        "重建后 composite 身份丢失 —— 出处头没被解析。"
+        "删掉 index.json 后没能自愈（或 composite 身份丢失 —— 出处头没被解析）。"
         f"全部条目：{[(e.get('title'), e.get('sourceType')) for e in s2.list_transcripts()]}"
     )
     rebuilt = comp_rows[0]
@@ -182,10 +181,9 @@ try:
     assert plain["sourceDocIds"] == [] and plain["sourceTitles"] == []
     print("PASS: 无头普通文档零影响（不会被误标 metadata_corrupt）")
 
-    # 普通文档同样能抗重建
+    # 普通文档同样能抗重建（同上：构造即自愈，不再显式调 `_rebuild_index`）
     os.remove(os.path.join(s6.root, "index.json"))
     s6b = Store(str(s6.root))
-    s6b._rebuild_index()
     p_rows = [e for e in s6b.list_transcripts() if e.get("metadataCorrupt")]
     assert not p_rows, f"普通文档在重建后不得被标损坏：{p_rows}"
     print("PASS: 无头文档重建后仍不标损坏")

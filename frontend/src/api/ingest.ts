@@ -96,8 +96,16 @@ async function ingestStream(
     }
     // 回退：普通 JSON 响应
     const data = await response.json()
-    if (data.error) {
-      onError?.(data.error)
+    // 兼容两种错误信封：旧 `{error}` 与新 AppError `{code, message, recoverable}`
+    // （对齐 generate.ts:78 / transcripts.ts:26）。只判 `data.error` 时，后端返回的
+    // **新信封**业务错误一个都不命中 → 被当作成功送给 `onDone` → 文档没落库，
+    // 界面上却没有任何报错。
+    // ⚠️ 判据是 `error || code`，**不能拿 `message` 当判据**：「已导入过《…》」
+    // 「内容与已有…完全相同」这类**去重成功**响应本来就带 `message`（见后端
+    // `routers/ingest.py` 的 duplicate_url / duplicate_content 分支），拿它判会把
+    // 正常去重当成失败。`message` 只在**已经确定是错误之后**用来取人话文案。
+    if (data.error || data.code) {
+      onError?.(data.error || data.message || data.code)
       return
     }
     onDone(data)
@@ -128,8 +136,11 @@ async function fallbackJson(
       : undefined
     const r = await fetch(url, { method: 'POST', body, headers, signal })
     const data = await r.json()
-    if (data.error) {
-      onError?.(data.error)
+    // 同上（主路径那份注释解释了判据为什么不能含 `message`）——两处同源，改一处
+    // 另一处仍漏：`fallbackJson` 是**流式失败才走**的兜底路径，漏了它等于「SSE
+    // 正常时能报错、降级后不能报错」，而用户看到的都是同一个导入按钮。
+    if (data.error || data.code) {
+      onError?.(data.error || data.message || data.code)
       return
     }
     if (data.status === 'duplicate_url' || data.status === 'duplicate_content') {

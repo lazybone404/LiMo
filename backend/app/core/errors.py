@@ -203,7 +203,7 @@ class StoreError(AppError):
     def disk_full(cls, detail: str = ""):
         return cls("STORE_DISK_FULL", "磁盘空间不足，请清理后重试", detail)
 
-    @classmethod
-    def index_corrupt(cls, detail: str = ""):
-        return cls("STORE_INDEX_CORRUPT", "索引文件损坏，正在自动重建",
-                   detail, recoverable=False)
+    # ⚠️ 曾有 `index_corrupt`（"索引文件损坏，正在自动重建"），全仓零调用 —— 已删。
+    # 它的文案承诺的正是 `Store._load_index` 现在真正做的事（备份 + 全盘重建 + warning），
+    # 而作为一个 `recoverable=False` 的 AppError，抛出去只会**阻止启动**，与自愈互斥。
+    # 重建成没成、损失了什么，都从 `_load_index` 的 warning 里看。

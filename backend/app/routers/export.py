@@ -35,6 +35,7 @@ from app.services.docx_export import markdown_to_docx  # noqa: E402
 from app.services.query import QueryService  # noqa: E402
 from app.core.transcript_meta import strip_meta  # noqa: E402
 from app.core.markdown_assets import ASSET_REF_RE  # noqa: E402
+from app.core.path_guard import resolve_within  # noqa: E402
 
 # ── Pygments 语法高亮（可选依赖）──
 try:
@@ -680,21 +681,30 @@ def _collect_images(refs: list[tuple[str, str, str]], store_root: str,
     seen_names: set[str] = set()
 
     for filename, arg2, source in refs:
+        # ⚠️ 四个分支**全都**要过守卫：四份正则的字符集都允许 `..`——`ASSET_REF_RE`
+        # 那份最明显，而 `_IMG_RE` / `_SS_RE` / `_API_ASSET_RE` 的末段是 `[^\s)]*`，
+        # 同样能吃下 `../../config.yaml`。越界即**跳过该条目**（不读、不写）。
         if source == "assets" and doc_dir:
-            src = Path(doc_dir) / arg2
+            src = resolve_within(doc_dir, arg2)
         elif source == "screenshots":
-            src = Path(store_root) / "screenshots" / filename
+            src = resolve_within(store_root, f"screenshots/{filename}")
         elif source == "api_assets" and doc_dir:
-            src = Path(doc_dir) / "assets" / filename
+            src = resolve_within(doc_dir, f"assets/{filename}")
         else:
-            src = Path(store_root) / "files" / arg2 / filename
+            src = resolve_within(store_root, f"files/{arg2}/{filename}")
+        if src is None:
+            logger.warning("导出：图片引用越界，已跳过 source=%s ref=%s", source, filename)
+            continue
         if not src.exists():
             logger.warning("导出图片缺失: %s", src)
             continue
         if filename in name_map:
             continue
-        final_name = filename
-        parts = filename.rsplit(".", 1)
+        # ⚠️ 条目名只取 basename：`filename` 可以合法地含子路径与 `..`
+        # （`assets/sub/../img.png` 解析后仍在 doc_dir 内，守卫会放行），原样写进
+        # `{doc}/images/` 就是 zip-slip。导出物的图片本就是扁平目录，取 basename 不丢信息。
+        final_name = Path(filename).name or "image"
+        parts = final_name.rsplit(".", 1)
         base = parts[0]
         ext = parts[1] if len(parts) > 1 else ""
         counter = 1
@@ -737,8 +747,12 @@ def _inline_images(text: str, image_data: dict[str, bytes],
         import base64
         b64 = base64.b64encode(data).decode()
         return f"data:image/{mime_map.get(ext, 'png')};base64,{b64}"
-    def _resolve(src: Path) -> bytes | None:
-        return src.read_bytes() if src.exists() else None
+    def _read(src: Path | None) -> bytes | None:
+        # ⚠️ 与 `_collect_images` **同一守卫**（成对：收集侧跳过越界，内联侧也不能读——
+        # 少做一半等于完全没做，模式 #52）。传入 None 表示守卫已判越界。
+        if src is None or not src.exists():
+            return None
+        return src.read_bytes()
     def _replace(m: re.Match) -> str:
         alt = m.group(1)
         if m.re is ASSET_REF_RE:
@@ -746,25 +760,25 @@ def _inline_images(text: str, image_data: dict[str, bytes],
             fn = name_map.get(filename, filename)
             data = image_data.get(fn)
             if not data and doc_dir:
-                data = _resolve(Path(doc_dir) / m.group(2))
+                data = _read(resolve_within(doc_dir, m.group(2)))
         elif m.re is _SS_RE:
             filename = m.group(2)
             fn = name_map.get(filename, filename)
             data = image_data.get(fn)
             if not data:
-                data = _resolve(Path(store_root) / "screenshots" / filename)
+                data = _read(resolve_within(store_root, f"screenshots/{filename}"))
         elif m.re is _API_ASSET_RE:
             filename = m.group(3)
             fn = name_map.get(filename, filename)
             data = image_data.get(fn)
             if not data and doc_dir:
-                data = _resolve(Path(doc_dir) / "assets" / filename)
+                data = _read(resolve_within(doc_dir, f"assets/{filename}"))
         else:
             filename = m.group(3)
             fn = name_map.get(filename, filename)
             data = image_data.get(fn)
             if not data:
-                data = _resolve(Path(store_root) / "files" / m.group(2) / filename)
+                data = _read(resolve_within(store_root, f"files/{m.group(2)}/{filename}"))
         if data:
             return f"![{alt}]({_data_uri(data, filename)})"
         return m.group(0)

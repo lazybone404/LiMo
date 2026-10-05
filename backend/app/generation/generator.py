@@ -287,7 +287,12 @@ class Generator:
         # Excel 只需一个数据摘要产物（分析报告已移除——LLM 无法做数值分析）
         if source_type == "xlsx":
             logger.info("Generating Excel summary...")
-            # Excel 摘要二者同源，按 notes 取档（与流式路径对 xlsx 的处理一致）
+            # Excel 摘要二者同源（`build_both` 对 xlsx 返回 `(sp, sp)`），按 notes 取档。
+            # ⚠️ 「xlsx 只出一个产物」这条语义**成对**落在两个端点：这里靠 xlsx 分支
+            # 只跑 `prompt_a`，流式那边靠 `routers/generate.py` 的 xlsx 闸门把 `_raw_mode`
+            # 收成 `"notes"`。改一侧必须同时看另一侧 —— 此前流式侧**根本没有**这个闸门，
+            # 而这条注释却写着「与流式路径一致」，于是它既描述不了流式（没有那回事），
+            # 又让人不去检查流式（看起来已经一致）。
             effort = effort_for("notes", reasoning_effort, self._llm.supports_reasoning)
             try:
                 content = await self._llm.call(

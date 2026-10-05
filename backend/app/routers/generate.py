@@ -267,13 +267,24 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         # 下游 `if want_notes and want_polished` / `elif want_polished` / `elif want_notes`
         # 三分支全由它推导，改一处比打三个补丁清楚。
         _is_composite = source_type == "composite"
+        # ── Excel 闸门（与流式端点同源）──
+        # Excel 的产物只有一个「数据摘要」（落 notes 槽）：`PromptBuilder` 对 xlsx
+        # 直接返回 `build_excel_summary_prompt`，与 mode **无关**（xlsx 分支在 build 里
+        # 排在 mode 判断**之前**）。不拦的话 `mode=both` 会走 `generate_both` → 那边
+        # 为满足双产物接口返回 `(sp, sp)` 两份**内容相同**的 View → 写两份盘，而第二份
+        # 是**前端够不到**的：`tabRegistry` 里 polished 的 sourceTypes 是 `ALL_TEXT`
+        # （不含 xlsx），Excel 只有「笔记 / 数据预览 / 转录」三个 tab。
+        # ⚠️ 与 composite 的理由不同（那边是「rawText 已是定稿输入」），但**结果同形**——
+        # 都是「只有一个产物、落 notes 槽」，故共用同一个判据；两条理由各自成段，
+        # 任一失效时看注释就知道该去哪一侧找。
+        _single_product = source_type in ("composite", "xlsx")
         # ⚠️ 上面 :198 的 `request_timeout` 仍按 `req.formats` 原样算，不随此处清空——
         # 多留余量无害（与流式端点「闸门没过时多留余量无害」是同一取舍），
         # 且非流式路径没有 asyncio 总超时，收紧它只会让长输入更容易撞死。
         formats_list = [] if _is_composite else req.formats
 
         # ── 解析 mode 为产物列表（逗号分隔）──
-        _raw_mode = "notes" if _is_composite else (req.mode if req.mode else "")
+        _raw_mode = "notes" if _single_product else (req.mode if req.mode else "")
         if _raw_mode == "both":
             _raw_mode = "notes,polished"
         mode_list = [m.strip() for m in _raw_mode.split(",") if m.strip()] if _raw_mode else []
@@ -494,13 +505,24 @@ async def generate_stream(transcript_id: str, request: Request,
 
     # ── 解析 mode 为产物列表（逗号分隔）──
     _raw_mode = mode if mode else ""
-    # ── 合成文档闸门（设计 §14.6）──
-    # 合成文档**只有一个产物**：对比综述（落 notes 槽）。理由不是"没人给它做 polished"，
-    # 而是它的 rawText 已经是模型输入的最终形态（按 multi 预算恰好装满，§4.4.4 单真相源）——
-    # polished 与任何格式处理都只会在**装配阶段改动它**，把一个刻意定稿的输入变成第二个版本。
+    # ── 单产物闸门：composite / xlsx 都只有一个产物（落 notes 槽）──
+    # 两条理由不同、结果同形，故**共用一个判据**：分散成两个 if 时，改一个忘一个不会
+    # 报错，只会让产物数悄悄漂移 —— 那正是 P0-04 那个 xlsx 分派漂移的形态。
+    #
+    # · composite（设计 §14.6）：rawText 已是模型输入的最终形态（按 multi 预算恰好
+    #   装满，§4.4.4 单真相源），polished 与任何格式处理都只会在**装配阶段改动它**，
+    #   把一个刻意定稿的输入变成第二个版本。
+    # · xlsx：Excel 的产物只有一个数据摘要 —— `PromptBuilder` 对 xlsx 直接返回
+    #   `build_excel_summary_prompt`，与 mode **无关**。但**本条路径逐产物构建**
+    #   （notes 走 `build_notes_prompt`、polished 走 `build_polish_prompt`），不拦就会
+    #   **真发起两次 LLM 调用**：多出来的那一份走的是通用文档 polish（不是数据摘要）
+    #   要用户等、要用户付钱，而它在前端还**没有入口**（`tabRegistry` 里 polished 的
+    #   sourceTypes 是 `ALL_TEXT`，不含 xlsx）。
+    #
     # 在这里改写 `_raw_mode` 而不是事后覆盖 `stream_mode`：后面 want_notes / want_polished /
     # stream_mode 三处全由 mode_list 自然推导，改一处源头比在下游打三个补丁清楚。
-    if source_type == "composite":
+    _single_product = source_type in ("composite", "xlsx")
+    if _single_product:
         _raw_mode = "notes"
     # "both" → "notes,polished"（向后兼容）
     if _raw_mode == "both":
@@ -569,7 +591,13 @@ async def generate_stream(transcript_id: str, request: Request,
         # 同非流式端点：合成文档必须用 multi profile，否则生成时二次截断（§4.4.5）
         budget_profile="multi" if source_type == "composite" else "single",
     )
-    prompt_builder = PromptBuilder(target_language=target_language)
+    # ⚠️ 这里**不构造 PromptBuilder**：流式路径刻意内联调 `build_notes_prompt` /
+    # `build_polish_prompt`，因为前者要传 `video_understanding`（视频画面理解），
+    # 而 `PromptBuilder.build/build_both` 的签名里**没有**这个参数 —— 改走它会静默
+    # 丢掉视频理解（签名不匹配 = 参数根本没地方传，不是忘了传）。
+    # 曾有一个 `prompt_builder = PromptBuilder(...)` 死在上一行（零调用），已删：
+    # 它给人一种「流式也走 PromptBuilder」的错觉，而两条路径的分派规则其实各写一份
+    # （这也是 P0-04 那个 xlsx 分派漂移的成因，详见 prompt.py 顶部 xlsx 分支的注释）。
 
     # VL 配置
     vl_config = None

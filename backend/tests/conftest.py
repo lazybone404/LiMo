@@ -19,6 +19,14 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+#: `test_e2e_smoke.py` 是**脚本**不是 pytest 用例（自己起后端 + 全链路冒烟 + 退出码即结论），
+#: 而文件名匹配 `test_*.py`。不排除的话 pytest 会把它当用例文件收集，两个后果：
+#:   · **收集阶段 import 就执行模块顶层** —— 每跑一次 `pytest tests/` 就静默起一个后端、
+#:     打几十个请求、写一次配置（`__pycache__/*-pytest-*.pyc` 就是它被收集过的证据）；
+#:   · 单独跑时报「0 个用例」exit 5，看起来像失败。
+#: 排掉之后两条路各归各位：`pytest tests/` 收集不到它，`python tests/test_e2e_smoke.py` 照跑。
+collect_ignore = ["test_e2e_smoke.py"]
+
 from app.core.types import RawMetadata, RawTranscript, SourceType  # noqa: E402
 from app.storage.store import Store  # noqa: E402
 

@@ -12,6 +12,7 @@ from typing import Optional
 
 from app.core.markdown_assets import ASSET_REF_RE
 from app.core.model_caps import has_capability
+from app.core.path_guard import resolve_within
 from app.core.token import estimate_tokens as _estimate_tokens, DEFAULT_CONTEXT as _DEFAULT_CONTEXT
 # 文档直传（PDF file 块）：模块级导入——doc_understand 只依赖 app.core.logging，
 # 无循环导入风险（模式 #26：函数内导入是打破循环导入的手段，不是风格偏好）
@@ -435,12 +436,10 @@ class ContentPreparer:
             elif m.re is ASSET_REF_RE and doc_dir:
                 # 新格式：assets/xxx → 从 {doc_dir}/assets/ 读取
                 fname = m.group(2)  # e.g. "assets/img_0001.png"
-                file_path = (Path(doc_dir) / fname).resolve()
                 # ⚠️ 防路径穿越：rawText 来自用户导入内容，可构造 assets/../../config.yaml
                 # 读取 doc_dir 外任意文件 base64 发给 LLM / 写入导出包 — 越界则跳过不读
-                try:
-                    file_path.relative_to(Path(doc_dir).resolve())
-                except ValueError:
+                file_path = resolve_within(doc_dir, fname)
+                if file_path is None:
                     return f'[📷 {alt}]' if alt else '[📷 图片]'
                 if file_path.exists():
                     if send_to_llm:

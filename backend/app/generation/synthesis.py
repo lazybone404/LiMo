@@ -50,6 +50,7 @@ from pathlib import Path
 from app.core import logging as log
 from app.core.errors import SynthesisError
 from app.core.markdown_assets import ASSET_REF_RE
+from app.core.path_guard import resolve_within
 from app.core.text_utils import sanitize_reference_name, split_into_chunks
 from app.core.token import estimate_tokens
 from app.core.transcript_meta import build_composite_raw_text, strip_meta
@@ -407,11 +408,9 @@ def relocate_assets(
 
     def _repl(m: re.Match) -> str:
         alt, rel = m.group(1), m.group(2)
-        try:
-            file_path = (src_root / rel).resolve()
-            file_path.relative_to(src_root)      # ← 路径穿越守卫
-        except (ValueError, OSError):
-            return m.group(0)                    # 越界：原样保留
+        file_path = resolve_within(src_root, rel)   # ← 路径穿越守卫（core/path_guard）
+        if file_path is None:
+            return m.group(0)                        # 越界：原样保留
         if not file_path.is_file():
             return m.group(0)                    # 缺失：原样保留
 

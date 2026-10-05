@@ -878,6 +878,17 @@ def build_notes_prompt(
         return build_synthesis_prompt(
             raw_text, title, user_notes=user_notes, target_language=target_language)
 
+    # ── Excel 走数据摘要 prompt ──
+    # ⚠️ 必须排在 `is_doc` **之前**：`xlsx` **在** `DOC_SOURCE_TYPES` 里（它确实算文档类
+    # 输入），只按那个集合分派会让 Excel 落进 `_DOC_NOTES_ROLE` 这个通用文档角色，
+    # 整套「数据分析师 + 规模/字段/样品」全丢。
+    # ⚠️ 非流式路径由 `PromptBuilder.build/build_both` 在最外层拦下（那里是正确的），
+    # **流式路径直接调本函数** —— 同一个 source_type 在两条路径上此前分派不同，
+    # 而产物长得都像模像样，看输出发现不了（模式 #54 的同源漂移）。
+    if source_type == "xlsx":
+        return build_excel_summary_prompt(
+            raw_text, style, user_notes=user_notes, target_language=target_language)
+
     is_doc = source_type in DOC_SOURCE_TYPES
 
     if source_type == "webpage":

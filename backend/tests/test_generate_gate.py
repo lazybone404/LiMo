@@ -1,10 +1,15 @@
-"""验证生成端点对合成文档（composite）的闸门 — 产物裁剪 / 格式清空 / 出处头损坏提示
+"""验证生成端点的**单产物闸门** — composite / xlsx 的产物裁剪 / 格式清空 / 出处头损坏提示
 
 ⚠️ **不发起真实计费调用**：`LLMService` 被模块级替换为假类，只记调用次数。
 
 ⚠️ 本文件的核心纪律：闸门写宽了会**静默毁掉既有类型的行为**。所以每一条
 「composite 被拦下」的断言，都必须配一条「普通文档行为不变」的对照——只测前者
 的实现可以靠「一律砍掉 polished」全绿。
+
+⚠️ **xlsx 与 composite 的两条闸门理由不同、结果相同，各自独立**（§7）：composite 是
+「rawText 已是定稿输入，polished 只会改写它」，xlsx 是「Excel 的语义本就只有数据摘要
+**一个**产物」。合并成 `if source_type in (...)` 会掩盖两条理由，任一条失效时也看不出
+是哪条——所以本文件对两者各测各的。
 """
 import asyncio
 import copy
@@ -300,8 +305,96 @@ assert _STORE.get_transcript("tr_auto").get("title") == "生成的笔记", \
     "普通文档的自动标题行为不该被改动（条件写宽的实现会让它失效）"
 print("PASS: composite 跳过 _auto_title；对照 —— 普通文档自动标题照旧生效")
 
+# ═══════════════════════════════════════════════════════════════
+# 7. xlsx → 单产物 + prompt 走**数据摘要**（P0-04 stream-bypass-promptbuilder）
+#
+# 缺陷原貌：流式端点**内联**调 `build_notes_prompt`（不像非流式那样经
+# `PromptBuilder`），而后者按 `source_type in DOC_SOURCE_TYPES` 分派 —— **xlsx 在
+# 那个集合里**（它确实算文档类输入），于是 Excel 落进通用的 `_DOC_NOTES_ROLE`，
+# 「规模/字段/样品」整套数据摘要角色全丢；同时 `mode=both` 还会真跑一次 polished
+# （非流式那边 `build_both` 对 xlsx 返回 `(sp, sp)` 后被生成侧拦下，只跑一次）。
+# 两条路径对**同一个 source_type** 分派不同，而产物都长得像模像样（模式 #54）。
+#
+# ⚠️ 判据必须点**角色文案**而不是「有没有产出」：「文档阅读助手」（_DOC_NOTES_ROLE）
+#    与「数据分析师」（_EXCEL_ROLE）互斥，改回内联的实现必红。
+# ═══════════════════════════════════════════════════════════════
+
+_mk_doc("tr_xlsx", "季度销量表",
+        "## Sheet: 销量\n\n月份,销量\n1月,100\n2月,120\n3月,90", SourceType.XLSX)
+
+# ── 7a：非流式 xlsx 同样收成单产物（两条路径同源）──
+#
+# ⚠️ 这条**不是**「既有行为不变」——本轮改的正是它。改前非流式走 `generate_both`，
+# 那边为满足双产物接口返回 `(sp, sp)` 两份**内容相同**的 View → 落两份盘，而第二份
+# 前端根本够不到（`tabRegistry` 的 polished 展开源 ALL_TEXT 不含 xlsx）。
+# ⚠️ 产物数那条断言在闸门只写 `_is_composite` 时**实测红过**（拿到
+# `['notes', 'polished']`）—— 不是推演，是它把非流式那半漏网抓出来的（模式 #38）。
+#
+# ⚠️ 7a 与 7b 各守**一份** xlsx 分派实现，谁失效只会红自己那条：
+#   7a → `PromptBuilder.build` 的 xlsx 分支（非流式走 PromptBuilder）
+#   7b → `build_notes_prompt` 的 xlsx 分支（流式内联调用，不经 PromptBuilder）
+#   实测：临时废掉 `build_notes_prompt` 那段，**只有 7b 红**。两份实现都要有测试，
+#   否则「某一侧悄悄丢了 Excel 角色」可以带着全绿发布。
+_calls.clear()
+FakeLLMService.call = _capture
+try:
+    _rx1 = client.post("/api/generate/tr_xlsx", json={"mode": "both", "model_id": 1})
+finally:
+    FakeLLMService.call = _orig_call
+assert _rx1.status_code == 200, _rx1.text
+assert _modes("tr_xlsx") == ["notes"], \
+    f"非流式 xlsx 只该产 notes，实际 {_modes('tr_xlsx')}（缺闸门 = 多落一份够不到的盘）"
+assert len(_calls) == 1, f"非流式 xlsx 只该发起 1 次调用，实际 {len(_calls)} 次"
+assert "数据分析师" in _calls[0], "非流式 xlsx 的 prompt 没走数据摘要角色"
+print("PASS: [7a] 非流式 xlsx → 只产 notes + 1 次调用 + prompt 走「数据分析师」")
+
+# ── 7b（核心）：流式 xlsx + mode=both → **只产 notes 且只发起 1 次调用** ──
+# 改前：mode=both 走双产物分支 → 2 次 `llm.stream`（其中一次是白烧的 polished）。
+_stream_prompts: list[str] = []
+
+
+def _capture_stream(self, prompt, **kw) -> _FakeStream:
+    _stream_prompts.append(prompt)
+    return _FakeStream(["# 数据摘要", "\n\n这不是正文。"])   # 注意：产物文本**不是**判据
+
+
+_orig_stream = FakeLLMService.stream
+FakeLLMService.stream = _capture_stream
+try:
+    with client.stream("GET", "/api/generate/tr_xlsx/stream?mode=both&model_id=1") as _rsx:
+        _bx = "".join(_rsx.iter_text())
+finally:
+    FakeLLMService.stream = _orig_stream
+
+assert "done" in _bx, f"流式请求必须正常完成；实际 {_bx[:300]}"
+assert _modes("tr_xlsx") == ["notes"], \
+    f"流式 xlsx 只该产 notes，实际 {_modes('tr_xlsx')}（缺闸门的实现会多出 polished）"
+assert len(_stream_prompts) == 1, \
+    f"xlsx 只该发起 1 次 LLM 调用，实际 {len(_stream_prompts)} 次（缺闸门 = 白烧一次 polished）"
+_px = _stream_prompts[0]
+assert "数据分析师" in _px, \
+    "流式 xlsx 的 prompt 没走数据摘要角色（`build_notes_prompt` 缺 xlsx 分支的实现会红）"
+assert "文档阅读助手" not in _px, "流式 xlsx 落进了通用文档角色（_DOC_NOTES_ROLE）"
+print("PASS: [7b] 流式 xlsx → 只产 notes + 1 次调用 + prompt 走「数据分析师」")
+
+# ── 7c（对照）：普通网页流式 mode=both → 2 次调用、走**文档角色**（闸门没写宽）──
+_stream_prompts.clear()
+FakeLLMService.stream = _capture_stream
+try:
+    with client.stream("GET", "/api/generate/tr_plain/stream?mode=both&model_id=1") as _rsp:
+        _bp = "".join(_rsp.iter_text())
+finally:
+    FakeLLMService.stream = _orig_stream
+
+assert "done" in _bp, f"对照请求必须正常完成；实际 {_bp[:300]}"
+assert len(_stream_prompts) == 2, \
+    f"对照失败：普通文档 mode=both 必须跑 2 个产物，实际 {len(_stream_prompts)} 次"
+assert not any("数据分析师" in p for p in _stream_prompts), \
+    "对照失败：普通网页不该被 xlsx 分支截胡（判据写宽的实现会红）"
+print("PASS: [7c 对照] 普通网页流式 mode=both 仍跑 2 个产物且不走 Excel 角色")
+
 import shutil
 for _t in _TMP:
     shutil.rmtree(_t, ignore_errors=True)
 
-print("\n全部通过：生成闸门（产物裁剪 / 格式清空 / 出处头损坏提示 / 自动标题）")
+print("\n全部通过：生成闸门（产物裁剪 / 格式清空 / 出处头损坏提示 / 自动标题 / xlsx 单产物）")

@@ -80,23 +80,67 @@ class Store:
     # ── 索引加载 / 保存 / 迁移 ──
 
     def _load_index(self):
-        """加载统一索引。v2 及以下 → 自动初始化为空（新架构不兼容）。"""
+        """加载统一索引。
+
+        三种「不可用」——**文件缺失 / 内容损坏 / 旧格式（v<3）**——统一走同一条自愈路径：
+        磁盘上还扫得到文档目录就**全盘重建**，扫不到就空索引。
+
+        ⚠️ 此前损坏分支只是 `logger.warning` + 空索引：磁盘上几十篇文档还在，库却空了，
+        而**没有任何一层会告诉用户**（前端只显示「还没有文档」）。同一份文件在别的模块里
+        待遇完全不同 —— `core/config.py:338` 读不出 config.yaml 时会先 `copy2` 一份 `.bak`
+        再回落默认值。这里补上同样的两半：**备份**（原文是唯一还能人工抢救分类/标签/来源的
+        材料，重建一落盘就覆盖）+ **重建**。
+        """
+        reason = ""
         if self._index_path.exists():
             try:
                 data = json.loads(self._index_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                logger.warning("index.json 损坏，初始化为空索引")
-                data = None
-            if data and isinstance(data, dict) and data.get("version", 0) >= 3:
-                default = _empty_index()
-                for key in default:
-                    if key not in data:
-                        data[key] = default[key]
-                self._index = data
-                return
-            logger.info("检测到旧索引格式 (v%s)，初始化 v3 空索引",
-                        data.get("version", 0) if data else "?")
-        self._index = _empty_index()
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("index.json 无法解析：%s", e)
+                reason = "内容损坏"
+            else:
+                if isinstance(data, dict) and data.get("version", 0) >= 3:
+                    default = _empty_index()
+                    for key in default:
+                        if key not in data:
+                            data[key] = default[key]
+                    self._index = data
+                    return
+                reason = (f"旧索引格式 v{data.get('version', '?')}"
+                          if isinstance(data, dict) else "根节点不是对象")
+        else:
+            reason = "文件缺失"
+
+        # ── 自愈 ──
+        had_file = self._index_path.exists()
+        backup_name = ""
+        if had_file:
+            # ⚠️ `with_suffix` 不收多点的后缀（`.json.bak` 会 ValueError），只能拼 name
+            backup = self._index_path.with_name(self._index_path.name + ".bak")
+            try:
+                shutil.copy2(self._index_path, backup)
+                backup_name = backup.name
+            except OSError as e:
+                logger.warning("索引备份失败（不阻断重建）：%s", e)
+
+        # ⚠️ 判据与 `_rebuild_index` **同源**：不问「有没有 docs/ 目录」（文档目录就在
+        #    `root/` 下，并没有中间层），而是**让它自己扫**，扫出几篇就是几篇。
+        self._rebuild_index(save=False)
+        n = len(self._index["transcripts"])
+        # 全新用户（没文件、也没文档）保持原状：不凭空写一个空 index.json
+        if n or had_file:
+            self._save_index()
+
+        if n:
+            logger.warning(
+                "索引不可用（%s），已按磁盘重建 %d 篇文档（原文备份为 %s）。"
+                "⚠️ 重建**有损**：文档 id 由正文 sha256 重推（与旧 id 不同），"
+                "文件夹归属 / 标签 / 来源类型与 URL / 创建时间 / 产物风格档均无法还原。",
+                reason, n, backup_name or "（备份失败）",
+            )
+        elif had_file:
+            logger.warning("索引不可用（%s），磁盘上也没有可重建的文档目录，已初始化为空索引",
+                           reason)
 
     def _save_index(self):
         """原子写入统一 index.json"""
@@ -105,10 +149,13 @@ class Store:
             json.dumps(self._index, ensure_ascii=False, indent=2),
         )
 
-    def _rebuild_index(self):
+    def _rebuild_index(self, save: bool = True):
         """遍历所有文档目录重建索引（故障恢复）。
         识别规则：根目录下含 transcript.md 的子目录视为文档目录。
         从目录名反推 dir_name，从文件推断 index 条目。
+
+        `save=False` 供 `_load_index` 的「先扫一眼看有没有文档、再决定要不要落盘」用
+        —— 那条路径上写盘与否取决于扫描结果，不能无条件下手。
         """
         import re as _re
         self._index = _empty_index()
@@ -222,7 +269,8 @@ class Store:
                             except (json.JSONDecodeError, OSError):
                                 logger.warning("跳过损坏对话文件: %s", f.name)
 
-        self._save_index()
+        if save:
+            self._save_index()
 
     # ── 工具方法 ──
 
