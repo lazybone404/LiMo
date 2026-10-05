@@ -271,6 +271,7 @@ def build_composite_raw_text(
     sources: list[dict],
     body: str,
     dimensions: list[str] | None = None,
+    dimensions_source: str = "",
     source_mode: str = "raw",
     content_type: list[str] | None = None,
     reader_intent: str | None = None,
@@ -296,6 +297,12 @@ def build_composite_raw_text(
       手里只有 rawText，凡是生成侧要用的参数都只能落在这里。
     ⚠️ 与 `sourceTitles` 的处理**刻意不同**——后者在 meta 与列表**两处都有**，
     因为它需要人眼可读。
+
+    `dimensions_source`（P1-06）是维度的**来路**，取值 `custom` / `discovered` /
+    `template` / `template_fallback`。它**不改变生成行为**（生成侧只读 `dimensions`），
+    存在的唯一理由是：`template`（Stuff 路径本就用模板）与 `template_fallback`
+    （Map-Reduce 下发现失败退回模板）产出的 `dimensions` **逐元素相同**，没有来源
+    就永久分不出「本就这样」与「降级了」——而降级正是用户可能想重跑的那种状态。
     """
     cleaned = [
         {"title": _clean_title(s.get("title")), "status": s.get("status", "full")}
@@ -308,6 +315,7 @@ def build_composite_raw_text(
         "sourceTitles": [s["title"] for s in cleaned],
         "sourceHashes": list(source_hashes),
         "dimensions": list(dimensions or []),
+        "dimensionsSource": dimensions_source or "",
         "sourceMode": source_mode,
         "contentType": list(content_type or []),
         "readerIntent": reader_intent or "",

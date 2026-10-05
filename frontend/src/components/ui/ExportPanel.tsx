@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react'
 import { useStore } from '../../store'
 import { X, Download, FileText, Globe, File, Archive, Search, ChevronUp, ChevronDown, Film, PenLine, Image, BarChart3, BookOpen, FileType } from 'lucide-react'
 import { getTypeMeta } from '../gen-panel/constants'
-import { downloadFromUrl, downloadBlob } from '../../lib/download'
+import { downloadFromUrl, downloadBlob, sanitizeExportName } from '../../lib/download'
 import { apiUrl } from '../../api/client'
 
 type Format = 'md' | 'html' | 'plain' | 'docx'
@@ -108,7 +108,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (filenameEdited) return  // 手动改过就不再覆盖
     if (selectedIds.length === 1) {
-      const t = (docs.find(d => d.id === selectedIds[0])?.title || 'export').replace(/[\\/:*?"<>|]/g, '').slice(0, 60)
+      const t = sanitizeExportName(docs.find(d => d.id === selectedIds[0])?.title)
       setFilename(`LiMo_${t}_${date}`)
     } else if (selectedIds.length > 1) {
       setFilename(`LiMo_多篇导出_${date}`)

@@ -41,8 +41,11 @@ class PyPdfium2Engine(Engine):
         try:
             import pdfplumber as _pl
             _pp = _pl.open(file_path_str)
-        except Exception:
-            pass
+        except Exception as e:
+            # P1-16 triage（可保留，但必须留痕）：这是**能力级**降级——pdfplumber 没装
+            # 或这个 PDF 它打不开，后果是**整份文档的表格都不做提取**（文字与图片照常）。
+            # 不抛错是对的（表格是增量能力），但静默是错的：用户会以为「这份 PDF 没有表格」。
+            logger.warning("pdfplumber 打开失败，PDF 表格提取整体跳过：%s", str(e)[:80])
 
         # PDF 内置目录
         toc = self._extract_toc(pdf)
@@ -85,8 +88,17 @@ class PyPdfium2Engine(Engine):
                         md_ref = f"![img_{img_idx}](data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()})"
                     page_imgs.append((img_y, md_ref))
                     img_idx += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    # P1-16（**修**）：单张嵌入图提取失败 → 这张图**从产物里消失**。
+                    # 此前是 `pass`：图没了、日志没有、用户零提示，只表现为「这份 PDF
+                    # 的图好像少了」——而 PDF 的嵌入图常是图表/公式，丢了正文就断链。
+                    #
+                    # ⚠️ 形态与 `doc_docx.py:218` 的图片提取失败**一致**（warning + 跳过，
+                    #    **不**往正文插占位）：正文里没有任何内部标记需要被消费，所以这里
+                    #    不是「零残留」场景（对照 P1-07 的截图 marker——那里必须替换，
+                    #    因为 `Screenshot-[mm:ss]` 是内部标记，留着会被前端渲染成 badge）。
+                    logger.warning("pypdfium2 第 %d 页图片提取失败（跳过该图）：%s",
+                                   i + 1, str(e)[:80])
 
             # 按 Y 坐标将图片锚入段落之间
             if page_imgs and len(page_parts) > 1:
@@ -115,7 +127,9 @@ class PyPdfium2Engine(Engine):
         pdf.close()
         if _pp:
             try: _pp.close()
-            except Exception: pass
+            except Exception:
+                pass  # P1-16 triage（保留）：close 失败无副作用——句柄随进程回收，
+                      # 不影响已经生成的产物。记日志只会制造噪音。
 
         full_text = "\n\n".join(parts)
         is_scanned = len(parts) > 0 and scanned_pages > len(parts) * 0.5
@@ -131,6 +145,9 @@ class PyPdfium2Engine(Engine):
         try:
             items = list(pdf.get_toc())
         except Exception:
+            # P1-16 triage（保留）：**没有目录是绝大多数 PDF 的常态**，不是异常状态。
+            # 这里 `return None` 与「目录为空」走同一条路（下方 `if not items`），
+            # 记 warning 等于对每一份无目录的 PDF 刷一条噪音。
             return None
         if not items: return None
         lines: list[str] = []
@@ -158,6 +175,9 @@ class PyPdfium2Engine(Engine):
                     gaps.append((rects[i-1][3] + rects[i][1]) / 2)
             return sorted(gaps)[:n_paras - 1]
         except Exception:
+            # P1-16 triage（保留）：空列表 = **不做 Y 坐标锚定**，图片退化为落在页面
+            # 文字之后（`elif page_imgs:` 分支）。这是**排版**退化，不是内容丢失——
+            # 图还在、顺序也对，只是没插进段落之间。不值得为它打断转录。
             return []
 
     @staticmethod
@@ -179,5 +199,11 @@ class PyPdfium2Engine(Engine):
                     if ri == 0: lines.append("| " + " | ".join(["---"] * cols) + " |")
                 if len(lines) > 2: all_md.append("\n".join(lines))
             return "\n\n".join(all_md) if all_md else None
-        except Exception:
+        except Exception as e:
+            # P1-16（**修**）：与上面单图失败同病——这一页的表格**凭空消失**，而返回值
+            # 是 `None`，与「这页本来就没有表格」**不可区分**（调用方 `if table_md:`
+            # 只看真假）。用户看到的是「这份 PDF 的表格没被提取出来」，无从知道是该换
+            # 引擎（pdf-image 走 OCR）还是这份文件确实没有表格。
+            logger.warning("pdfplumber 第 %d 页表格提取失败（该页表格丢失）：%s",
+                           page_idx + 1, str(e)[:80])
             return None

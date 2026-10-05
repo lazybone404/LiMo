@@ -11,6 +11,7 @@ from .notes_styles import (
     DOC_NOTE_STYLES,
     STYLE_ALIAS,
     normalize_style,
+    coerce_style,
 )
 
 # 提示词版本 —— 写进产物自证头的 `generated.promptVersion`（`generation/provenance.py`）。

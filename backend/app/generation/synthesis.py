@@ -638,12 +638,20 @@ def _truncated_status(reason: str) -> str:
 
 async def _discover_dimensions(
     sources: list[Source], llm, cancel_event,
-) -> list[str]:
+) -> tuple[list[str], str]:
     """维度发现（Map-Reduce 路径专有的一次调用）。
+
+    返回 `(dims, source)`，`source ∈ {"discovered", "template_fallback"}`（P1-06）。
 
     ⚠️ 只在超窗时发生。**Stuff 路径下没有这一步**——模板维度直接进 prompt，
     模型在一次调用里自行完成「识别维度 + 抽取 + 综合」（设计 §4.4.0）。
     把它写成无条件流程，会让人以为「N 篇 = 至少 2 次调用」，而装得下时只需 1 次。
+
+    ⚠️ **`source` 必须带出去**：失败/超时时返回的维度与「发现成功但模型没追加任何
+    额外维度」**逐元素相同**（都是模板维度），只看 `dims` 分不出来。而这两件事对
+    用户的含义完全不同——后者是正常结果，前者是**降级**（「这次用的是通用维度，
+    不是为你这批材料发现的，可能需要自定义维度重跑」）。日志与 SSE 都是一次性的，
+    三个月后翻这份产物时只有 meta 能回答它（设计 §4.4.3：降级必须落进产物）。
     """
     material = "\n\n".join(
         f"【文档 {i}】{s.title}\n{s.raw_text[:DISCOVERY_HEAD_CHARS]}"
@@ -663,10 +671,10 @@ async def _discover_dimensions(
     except TimeoutError:
         # `str(TimeoutError())` 是空串，单列一支避免留下无原因的日志
         log.warning("合成：维度发现超时，只用模板维度", timeout=EXTRACT_TIMEOUT)
-        return list(DEFAULT_DIMENSIONS)
+        return list(DEFAULT_DIMENSIONS), "template_fallback"
     except Exception as e:
         log.warning("合成：维度发现失败，只用模板维度", error=str(e)[:200])
-        return list(DEFAULT_DIMENSIONS)
+        return list(DEFAULT_DIMENSIONS), "template_fallback"
 
     extra: list[str] = []
     for line in (text or "").splitlines():
@@ -677,7 +685,7 @@ async def _discover_dimensions(
             break
     if extra:
         log.info("合成：追加对比维度", extra=extra)
-    return list(DEFAULT_DIMENSIONS) + extra
+    return list(DEFAULT_DIMENSIONS) + extra, "discovered"
 
 
 async def _extract_one(
@@ -846,12 +854,17 @@ async def run_map_reduce(
     sources: list[Source], quotas: list[int], llm, title: str, context_window: int,
     cancel_event=None, on_stage=None, deadline: float | None = None,
     dims_override: list[str] | None = None,
-) -> tuple[str, int, list[str], list[str]]:
-    """Map-Reduce 路径。返回 `(body, llm_call_count, degraded_titles, dims)`。
+) -> tuple[str, int, list[str], list[str], str]:
+    """Map-Reduce 路径。返回 `(body, llm_call_count, degraded_titles, dims, dims_source)`。
 
     ⚠️ `dims` 是**实际使用**的维度（含模型追加的那些），必须带出去写进出处头
     meta——生成是**第二次独立请求**，届时只有 rawText 可按，维度不带出去等于
     用户选了一堆维度、模型一个都没收到（设计 §18.1）。
+
+    ⚠️ `dims_source ∈ {"custom", "discovered", "template_fallback"}` 与 `dims`
+    同等必要（P1-06）：它回答的是「这批维度是**为你这 N 篇材料发现的**，还是
+    **发现失败后退回的通用模板**」——后者与「成功但模型没追加维度」的 `dims`
+    逐元素相同，不带来源就永久不可分辨。
 
     ⚠️ **逐篇失败必须显式化**：`reference_compressor` 里「摘要失败」是私事（参考
     文件只是补充素材），但这里每一篇都是**并列的研究对象**——静默跳过等于用户拿到
@@ -878,9 +891,10 @@ async def run_map_reduce(
 
     if dims_override:
         dims = list(dims_override)
+        dims_source = "custom"
         calls = 0                      # ⚠️ 跳过发现 → 调用数不 +1
     else:
-        dims = await _discover_dimensions(sources, llm, cancel_event)
+        dims, dims_source = await _discover_dimensions(sources, llm, cancel_event)
         calls = 1
 
     degraded: list[str] = []
@@ -955,7 +969,7 @@ async def run_map_reduce(
 
         parts.append(f"【文档 {i}】{s.title}\n{s.text}")
 
-    return "\n\n".join(parts), calls, degraded, dims
+    return "\n\n".join(parts), calls, degraded, dims, dims_source
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1196,13 +1210,21 @@ async def synthesize(
     # 未指定时用预设——**Stuff 路径也要写**，否则预设维度在最常见的路径上
     # 一次都不生效（设计 §18.0 查出的那个偏差）。
     dims: list[str] = list(dimensions) if dimensions else list(DEFAULT_DIMENSIONS)
+    # 维度的**来源**（P1-06）。⚠️ 与 `dims` 一样必须落 meta —— Stuff 路径用的
+    # `template` 与 Map-Reduce 发现失败退回的 `template_fallback` 产出的是**同一份
+    # 维度列表**，只有来源能区分「本就这样」与「降级了」。
+    #   custom           用户给定（两个路径都可能）
+    #   discovered       Map-Reduce 下 LLM 发现成功（可能带额外维度）
+    #   template         Stuff 路径：模板维度直接进 prompt，**没有**发现这一步
+    #   template_fallback Map-Reduce 下发现失败/超时 → 退回模板（**降级**）
+    dims_source = "custom" if dimensions else "template"
     degraded: list[str] = []
     if plan.mode == "stuff":
         body, calls = build_stuff_text(sources), 0
     else:
         if on_stage:
             on_stage("分析对比维度…")
-        body, calls, degraded, dims = await run_map_reduce(
+        body, calls, degraded, dims, dims_source = await run_map_reduce(
             sources, plan.quotas, llm, merged_title, context_window,
             cancel_event=cancel_event, on_stage=on_stage,
             deadline=deadline, dims_override=dimensions,
@@ -1216,6 +1238,7 @@ async def synthesize(
         [{"title": s.title, "status": s.status} for s in sources],
         body,
         dimensions=dims,
+        dimensions_source=dims_source,
         source_mode=source_mode,
         content_type=content_type,
         reader_intent=reader_intent,

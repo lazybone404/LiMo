@@ -15,6 +15,7 @@ from app.core.errors import AppError
 from app.core.cookie_parser import auto_parse
 from app.core.config_io import save_config as _save_config, mask_sensitive, merge_sensitive
 from app.core.url_utils import api_root
+from app.core.provider_defaults import default_base_url
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -215,6 +216,22 @@ async def update_config(data: ConfigUpdate, request: Request, cfg=Depends(get_co
     return {"status": "ok"}
 
 
+def _resolve_detect_base_url(cfg: dict, provider: str, explicit: str) -> str:
+    """`/llm/models` 的 base_url 解析：显式传入 > 用户配置 > 内置厂商默认。
+
+    ⚠️ 抽成**纯函数**是为了让它可被测试直调（P1-14）：这段逻辑连同那份手写的两家
+    字典一起长在路由函数体里，测试无从下手——于是「第三档只认两家」的分叉存活了很久
+    （`detect_models` 会发真实网络请求，直调端点的代价没人愿意付）。
+    第三档走 `core/provider_defaults.default_base_url`（内置厂商表的唯一真相源）。
+    """
+    if explicit:
+        return explicit
+    from_cfg = (cfg.get("llm", {}) or {}).get("base_url", {}).get(provider, "")
+    if from_cfg:
+        return from_cfg
+    return default_base_url(provider)
+
+
 @router.post("/llm/models")
 async def detect_models(data: dict, request: Request, cfg=Depends(get_config_dep)):
     """从厂商 API 动态检测可用模型列表"""
@@ -225,14 +242,8 @@ async def detect_models(data: dict, request: Request, cfg=Depends(get_config_dep
     if not api_key:
         raise AppError("DETECT_NO_API_KEY", "请先填写 API Key")
 
-    # 构建 base_url
-    if not base_url:
-            base_url = cfg.get("llm", {}).get("base_url", {}).get(provider, "")
-
-    if not base_url:
-        # 默认地址
-        defaults = {"deepseek": "https://api.deepseek.com", "openai": "https://api.openai.com/v1"}
-        base_url = defaults.get(provider, "")
+    # 构建 base_url（三档回退见 `_resolve_detect_base_url`）
+    base_url = _resolve_detect_base_url(cfg, provider, base_url)
 
     if not base_url:
         raise AppError("DETECT_NO_BASE_URL", "无法确定 API 地址")

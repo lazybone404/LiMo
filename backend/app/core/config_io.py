@@ -61,7 +61,6 @@ DERIVED_AUTH_SUFFIX = "_parsed"
 #: dict 用 `.get()` → 配置里该键缺失时写出 `[]`，**下一次启动 `AttributeError`**。
 #: 绑在一张表里就不会再出现「键名在这组、类型在那组」。
 _EMPTY_CONTAINERS: dict[str, type] = {
-    "llm_presets": list,
     "llm_models": dict,        # ← dict，不是 list
     "engine_providers": list,
     "engine_models": list,

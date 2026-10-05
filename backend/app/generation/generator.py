@@ -15,28 +15,30 @@ from pathlib import Path
 
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.generation.effort import effort_for
-from app.generation.prompts import normalize_style
+from app.generation.prompts import coerce_style
 from app.generation.reference_compressor import compress_references_if_needed
 from app.llm.service import LLMService
 from app.services.chart_renderer import render_charts
 
 
 def _coerce_style(style: str) -> Style:
-    """外部传入的 style 字符串 → `Style` 枚举；未知值回退 `DETAILED`。
+    """外部传入的 style 字符串 → `Style` 枚举。
 
-    ⚠️ **必须先归一、再查枚举**。枚举成员是 `MEETING = "meeting"`（2026-10-05
-    由 `meeting_minutes` 改形），而历史调用方传的仍是别名 `meeting_minutes`
-    —— `STYLE_ALIAS` 存在的意义就是兼容它。不归一的话别名会**静默落进兜底
-    分支**，产物的元数据 style 被记成 detailed（一切看起来正常，只是标签错）。
+    ⚠️ 判据已收敛到 `prompts.notes_styles.py::coerce_style`（P1-05）：本函数此前
+    自带一份「不认识的值 → `DETAILED`」的兜底，与 HTTP 侧（→ `plain`）**不同源**
+    —— 同一个非法输入，走流式与非流式两条路得到不同风格，而两侧都不报错。
 
-    ⚠️ 这段逻辑此前在本文件里**逐字重复了 5 次**，且 5 处全都没有归一 ——
-    同一缺陷有 5 个副本（模式 #54：同一逻辑 ≥3 次即抽）。
+    ⚠️ 那段「回退 `DETAILED` 而非新默认档 `PLAIN`，因为这是兜底不是默认值的第二处
+    定义」的旧论证**已废弃**：兜底值与默认值不同，等于说「传一个不存在的档」比
+    「不传」更严谨详细。理由详见 `coerce_style` 的 docstring。
 
-    回退值是 `DETAILED` 而非新默认档 `PLAIN`：这是对「**不认识的输入**」的兜底，
-    不是默认值的第二处定义（默认值在 `generate()` / `generate_both()` 签名上）。
+    ⚠️ 那段逻辑此前在本文件里**逐字重复了 5 次**（且 5 处全都没有归一）——
+    模式 #54：同一逻辑 ≥3 次即抽。
+
+    `coerce_style` 的返回值由 `Style` 枚举的合法集派生，故这里的 `Style(...)`
+    **不可能**抛 `ValueError`。
     """
-    s = normalize_style(style)
-    return Style(s) if s in Style._value2member_map_ else Style.DETAILED
+    return Style(coerce_style(style))
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,23 @@ def _post_process_content_markers(markdown: str) -> str:
     仅移除可能残留的前导 *（避免被 markdown 解析为斜体）。"""
     import re
     return re.sub(r'\*(Content-\[\d{1,2}:\d{1,2}\])', r'\1', markdown)
+
+
+def _screenshot_fail_note(ts: int) -> str:
+    """截图失败提示文本（替换标记，零残留）。
+
+    ⚠️ 与 `chart_renderer._fail_note` 同形态、同纪律：失败的**标记必然被替换**——
+    成功的产物里有引用、失败的产物里有原因，永不留下内部标记（P1-07）。
+
+    ⚠️ 不塞异常文本：ffmpeg 的报错是本机绝对路径 + 英文栈信息，而这段字符串要进
+    **用户产物正文**（图表侧同理——它传的是中文校验原因，不是 `repr(e)`）。
+
+    ⚠️ 用 `divmod` 重新格式化而不是把 `marker` 原样嵌进去：marker 的形态有四种
+    （带不带括号、前导 `*` 有无），嵌进去会让失败提示**读起来千奇百怪**；失败提示
+    应当形态一致。
+    """
+    mm, ss = divmod(max(ts, 0), 60)
+    return f"\n📸 截图生成失败（{mm:02d}:{ss:02d}）\n"
 
 
 def _post_process_screenshots(markdown: str, video_path: str | None, doc_dir: str = "") -> str:
@@ -83,7 +102,12 @@ def _post_process_screenshots(markdown: str, video_path: str | None, doc_dir: st
                 markdown = markdown.replace(marker, f"![]({img_url})", 1)
                 logger.info("原片截图：%s → %s", marker, filename)
             except Exception as e:
+                # P1-07：失败**必须替换标记**（此前只 logger.warning，标记原样留在正文）。
+                # ⚠️ 而前端把 `Screenshot-[mm:ss]` 渲染成橙色「📷 截图标」badge
+                # （`markdown-components.tsx:237`）——于是失败的产物**看起来与成功的
+                # 一模一样**，只是点了没反应。用户无从知道图没生成、更不知道要重跑。
                 logger.warning("截图生成失败 ts=%ds: %s", ts, e)
+                markdown = markdown.replace(marker, _screenshot_fail_note(ts), 1)
 
         return markdown
     except Exception as e:
@@ -184,7 +208,7 @@ class Generator:
                 content = await asyncio.to_thread(
                     _post_process_screenshots, content, video_path, doc_dir=self._prep.doc_dir)
             if formats and "chart" in formats:
-                # P1-1：resvg 渲染放线程池，释放事件循环
+                # P1-1：图表渲染放线程池，释放事件循环
                 content = await asyncio.to_thread(render_charts, content, self._prep.doc_dir)
         finally:
             self._cleanup_video(video_path)
@@ -330,7 +354,7 @@ class Generator:
                 )
             if formats and "chart" in formats:
                 # 图表只入 notes（content_b）——polished 也渲染会写同名 chart_N.png 覆盖 notes 图（P0-3）
-                # P1-1：resvg 渲染放线程池，释放事件循环
+                # P1-1：图表渲染放线程池，释放事件循环
                 content_b = await asyncio.to_thread(render_charts, content_b, self._prep.doc_dir)
         finally:
             self._cleanup_video(video_path)

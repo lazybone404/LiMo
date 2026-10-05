@@ -4,7 +4,7 @@ import { useStore } from '../../store'
 import { getTypeMeta } from '../gen-panel/constants'
 import { TabRegistry } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
-import { downloadText, downloadFromUrl } from '../../lib/download'
+import { downloadText, downloadFromUrl, sanitizeExportName } from '../../lib/download'
 import { exportPdfFromUrl } from '../../lib/print'
 
 /** Tauri 环境检测 —— 决定 PDF 导出是「直接落文件」还是「退回打印对话框」 */
@@ -89,7 +89,8 @@ export function ExportMenu() {
   // ── 生成文件名 ──
   const makeFileName = (ext: string): string => {
     const title = currentDoc?.title || 'export'
-    const safe = title.replace(/[\\/:*?"<>|]/g, '').slice(0, 60)
+    // 清洗 + 限长收口在 `sanitizeExportName`（与 ExportPanel 及后端 `_safe_filename` 同源）
+    const safe = sanitizeExportName(title)
     const date = new Date().toISOString().slice(0, 10)
     const suffix = tabDef?.exportSuffix || ''
     return `${safe}${suffix}-${date}.${ext}`

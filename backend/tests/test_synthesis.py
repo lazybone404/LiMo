@@ -595,6 +595,64 @@ assert list(S.DIMENSION_PRESETS) and all(
 print(f"PASS: Stuff 路径也写入预设维度（{_smeta2['dimensions']}）")
 
 # ═══════════════════════════════════════════════════════════════
+# 11b. 维度的**来路**必须落 meta（P1-06）
+# ═══════════════════════════════════════════════════════════════
+#
+# ⚠️ 为什么加这个键：`template`（Stuff 本就用模板）与 `template_fallback`
+#    （Map-Reduce 下维度发现失败退回模板）产出的 `dimensions` **逐元素相同**——
+#    没有来源键就永久分不出「本就这样」与「降级了」。而降级正是用户可能想重跑的
+#    那种状态，它只可能是**一次性**的 SSE 提示（设计 §4.4.3：降级必须落进产物）。
+#
+# 值域 4 个，各有不可替代的区分力：custom / discovered / template / template_fallback
+# 对照实验：从 `build_composite_raw_text(...)` 的调用里删掉 `dimensions_source=`
+#          → 下面**每一条**都会红（meta 里读到空串），不会只红一条。
+
+# ① custom —— 用户给定维度（上面那段场景已跑完，`_dmeta` 就在手边）
+assert _dmeta.get("dimensionsSource") == "custom", (
+    f"用户给定维度 → custom，实际 {_dmeta.get('dimensionsSource')!r}")
+# ② template —— Stuff 路径**本就用**模板维度，不是降级
+assert _smeta2.get("dimensionsSource") == "template", (
+    f"Stuff 路径没有「发现」这一步，来源必须是 template（**不是** template_fallback，"
+    f"那是 Map-Reduce 发现失败才有的），实际 {_smeta2.get('dimensionsSource')!r}")
+
+# ③ discovered —— 发现成功且**确实追加了**额外维度。
+#    ⚠️ 必须用「模板维度之外」的串：extra 为空时 `discovered` 与 `template_fallback`
+#    的 dims 完全一样——本键存在的理由，测试自己也得避开它。
+_EXTRA_DIM = "实验设置XYZ"
+_disc_res = _run(S.synthesize(_mr_d, _cfg_mr, FakeLLM(dims=_EXTRA_DIM), _mid_mr,
+                              ["tr_j1", "tr_j2"], title="发现维度"))
+_dm2, _dc2 = TM.parse_meta(_disc_res.raw_text)
+assert _dc2 is False, "刚写的 meta 不该被判损坏"
+assert _dm2.get("dimensionsSource") == "discovered", _dm2.get("dimensionsSource")
+assert _EXTRA_DIM in _dm2["dimensions"], (
+    f"发现的额外维度必须进 meta（否则生成侧拿不到它）：{_dm2['dimensions']}")
+
+
+class _DimFailLLM(FakeLLM):
+    """只在**维度发现**那次调用抛错（逐篇抽取照常走）。"""
+
+    async def call(self, prompt, **kw):
+        if "默认维度" in prompt:          # 发现 prompt 独有字样（抽取 prompt 不含）
+            self.calls.append(prompt)
+            raise RuntimeError("dim discovery boom")
+        return await super().call(prompt, **kw)
+
+
+# ④ template_fallback —— 发现失败，退回模板维度（**这一次不再静默**）
+_fb_res = _run(S.synthesize(_mr_d, _cfg_mr, _DimFailLLM(), _mid_mr,
+                            ["tr_j1", "tr_j2"], title="发现失败"))
+_fm, _ = TM.parse_meta(_fb_res.raw_text)
+assert _fm.get("dimensionsSource") == "template_fallback", (
+    f"发现失败必须留下痕迹（退回模板 ≠ 本来就用模板）：{_fm.get('dimensionsSource')!r}")
+assert _fm["dimensions"] == S.DEFAULT_DIMENSIONS, "发现失败 → 退回模板维度"
+
+# ★ 这条是**设计动机的自证**：②（Stuff）与 ④（发现失败）的 dims 逐元素相同，
+#   唯一的差别就是 dimensionsSource。删掉它，两件事在产物上不可分。
+assert _smeta2["dimensions"] == _fm["dimensions"], (
+    "② 与 ④ 的 dimensions 必须逐元素相同——这正是必须有 dimensionsSource 的理由")
+print("PASS: 维度来源落 meta（custom / template / discovered / template_fallback 四值可分）")
+
+# ═══════════════════════════════════════════════════════════════
 # 12. 原料模式：原文 / 笔记（设计 §19 / §19.7）
 # ═══════════════════════════════════════════════════════════════
 

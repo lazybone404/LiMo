@@ -100,7 +100,7 @@ LiMo 的「口子原则」要求重依赖、AGPL/协议风险项目**进程外�
 | Tesseract | Apache-2.0 | 已从内置移除 | 本地 OCR 插件模板（`examples/tesseract_plugin.py`） |
 | docling | MIT | 已移除 | torch ~2GB 无法打包的教训 → 轻量引擎优先 |
 | pymupdf4llm | AGPL-3.0 | **进程外插件**（`~/.limo/plugins/`） | AGPL 隔离模式，官方只维护契约 + 加载 + 文档 |
-| resvg / resvg-py | MPL-2.0（核心）/ MIT（绑定层） | 已切换 PIL 自绘 | Windows 无法渲染 SVG 文字（上游普遍 bug）→ 自研子集渲染器。⚠️ `pyproject.toml` 里 `resvg-py` 的**依赖声明仍残留**（已无代码引用、spec 的 `collect_all` 早已移除），待清理 |
+| resvg / resvg-py | MPL-2.0（核心）/ MIT（绑定层） | 已切换 PIL 自绘 | Windows 无法渲染 SVG 文字（上游普遍 bug）→ 自研子集渲染器。`pyproject.toml` 里的依赖声明已于 **2026-10-06 清理**（自 2026-08-16 起零 import） |
 | SearXNG | AGPL-3.0 | 便携版进程外 | 搜索降级链 + AGPL 进程外启动 |
 | html2text | GPL-3.0 | 已移除（2026-08-26，webpage.py 改用 bs4 get_text） | GPL 库进主 exe 是「合并作品」→ 替换优于附全文 |
 | ebooklib | AGPL-3.0 | 已移除（2026-08-26，自研 epub-container 纯标准库替代） | AGPL 库进主 exe 是风险点 → 自研零依赖解析器，达成主 exe 零 AGPL/GPL |

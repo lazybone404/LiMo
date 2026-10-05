@@ -15,6 +15,9 @@ from app.core.errors import AppError
 from app.core.config_io import merge_sensitive, mask_sensitive
 from app.core.registry import EngineRegistry
 from app.core.url_utils import api_root
+# 内置厂商默认表已下沉 core（P1-14）——`routers/config.py` 也要用它，
+# 而路由模块之间互相 import 在本项目没有先例（共享常量一贯放 core/）。
+from app.core.provider_defaults import PROVIDER_DEFAULTS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -60,37 +63,10 @@ def _save_cfg(cfg: dict):
     save_config(cfg)
 
 
-PROVIDER_DEFAULTS = {
-    "deepseek": {"name": "DeepSeek", "base_url": "https://api.deepseek.com", "type": "built-in"},
-    "dashscope": {"name": "阿里云 DashScope", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "type": "built-in"},
-    "openai": {"name": "OpenAI", "base_url": "https://api.openai.com/v1", "type": "built-in"},
-    "anthropic": {"name": "Anthropic", "base_url": "https://api.anthropic.com", "type": "built-in"},
-    # Google Gemini — 走 **OpenAI 兼容层**，base_url 必须带 `/openai` 后缀（2026-10-02 订正）。
-    # ⚠️ 此前写的是 `.../v1beta`（**原生 API** 形态），OpenAI SDK 会据此发
-    #    `POST .../v1beta/chat/completions` —— 原生端点**不存在该路径** → 整条 LLM 链路必然不通。
-    #    官方文档（ai.google.dev/gemini-api/docs/openai）给的兼容层 base_url 即
-    #    `https://generativelanguage.googleapis.com/v1beta/openai`（**无尾斜杠**）。
-    #    三条独立旁证：hex.pm ex_llm 的官方文档转录、docs.api7.ai 的 ai-gateway 配置、
-    #    googleapis/python-genai#2868（官方 SDK 仓库称该路径为 "hosted OpenAI-compatibility layer"）。
-    # ⚠️ 鉴权：兼容层接受标准 `Authorization: Bearer <key>`（官方 REST 示例 + Azure 文档均如此），
-    #    故**不需要**为原生 API 的 `?key=` 查询参数做任何特殊分支——这正是选兼容层的原因。
-    #    （本文件下方 :307 附近的旧注释称「Google 鉴权走 ?key=」，那是**原生 API** 的性质，
-    #     已随本次改动订正。）
-    "google": {"name": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "type": "built-in"},
-    "zhipu": {"name": "智谱 GLM", "base_url": "https://open.bigmodel.cn/api/paas/v4", "type": "built-in"},
-    "moonshot": {"name": "Moonshot Kimi", "base_url": "https://api.moonshot.cn/v1", "type": "built-in"},
-    # OpenCode Go — OpenAI 兼容网关（chat/completions，Go 固定订阅 / Zen 按量，共用 OPENCODE_API_KEY）。
-    # ⚠️ base_url 实测校正（2026-10-02）：正确端点是 https://opencode.ai/zen/go/v1。
-    #    此前写的是 https://opencode.ai/go/v1 —— 实测 **404**，即该 provider 的**每一个请求
-    #    都打到不存在的路径**（自配 day one 起就没通过）。对照实验（同一台机器、相隔数秒）：
-    #      GET https://opencode.ai/go/v1/models      → 404
-    #      GET https://opencode.ai/zen/go/v1/models  → 200
-    #    ⚠️ 同时订正一条**错误的历史注释**：这里曾写「网关不实现 GET /v1/models」——
-    #    实测 zen/go/v1 的 /models **返回 200 且免 key**，返回 35+ 个模型 id（标准 OpenAI
-    #    列表格式：id/object/created/owned_by，**不含 context_length**）。
-    #    故「刷新模型」对本 provider 是**可用**的，不需要走 404 兜底那条路。
-    "opencode": {"name": "OpenCode Go", "base_url": "https://opencode.ai/zen/go/v1", "type": "built-in"},
-}
+# ⚠️ `PROVIDER_DEFAULTS` 的定义已搬到 `app/core/provider_defaults.py`（P1-14）：
+# `routers/config.py::detect_models` 此前**手写了第二份**（只有 deepseek / openai 两家），
+# 是「同一集合写在两处、且覆盖集不同」的典型。这里是 import 不是定义——
+# **不要在本文件重新写一份表**。
 
 
 def _get_providers(cfg: dict) -> list[dict]:

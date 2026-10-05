@@ -19,6 +19,7 @@ from app.core.types import PipelineInput, InputType, RawTranscript, ProgressEven
 from app.core.registry import AdapterRegistry
 from app.core.dependencies import get_store, get_config, get_guard, get_query_service
 from app.core.errors import AppError
+from app.core.resource_id import is_valid_resource_id
 from app.core.config import build_engine_models
 from app.core.disconnect import disconnect_watcher
 from app.core import logging as log
@@ -936,8 +937,15 @@ _ALLOWED_IMAGE_EXTS = ("png", "jpg", "jpeg", "gif", "webp")
 
 
 def _validate_tx_id(tx_id: str) -> None:
-    """tx_id 只能由安全字符组成（防路径注入）。违规抛 400。"""
-    if not re.match(r'^[a-zA-Z0-9_\-]+$', tx_id):
+    """tx_id 只能由安全字符组成（防路径注入）。违规抛 400。
+
+    ⚠️ 判据走 `core/resource_id.is_valid_resource_id`（P1-11）——本函数此前自带一份
+    **只有字符集、漏了长度上限**的正则：同一个 `tx_id`，`QueryService.resolve_doc_id`
+    （`:234`）与 `files._check_tx_id` 都拒长度 > 64，只有这条文件服务路径放行。
+    分叉的方向还恰好是「读路径严、这条松」，且**两侧都不报错**——只在某个超长 ID
+    上表现为「一半端点 404、另一半能取到图」（模式 #54：同源是搜索题不是记忆题）。
+    """
+    if not is_valid_resource_id(tx_id):
         raise AppError("INGEST_INVALID_TX_ID", "无效的文档 ID",
                         status_code=400, recoverable=False)
 

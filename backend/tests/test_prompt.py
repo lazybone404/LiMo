@@ -832,6 +832,22 @@ for _p in _probes:
 assert _Style('none') is _Style.NONE, 'none 必须是枚举成员而不是被放行的野值'
 print('PASS: 白名单 == 下游能构造的集（%d 个输入全部可落到 Style 枚举）' % len(_probes))
 
+# ── 8.4c 「非法 style → 合法档」两处判据必须同源（P1-05，2026-10-05 补）──
+# ⚠️ 8.4 只断言 **HTTP 侧**那个函数。而同一件事在 `generation/generator.py::_coerce_style`
+# 里还有**第二份**实现，且回退值不同（`plain` vs `detailed`）—— 同一个非法输入，走流式
+# 与非流式两条路得到不同风格，**两侧都不报错**（模式 #54：同一契约写在两处时，不同源的
+# 那处不会报错，只表现为行为分叉）。收敛后两处都调 `coerce_style`，本组钉住它们不再分家。
+# ⚠️ 对照实验：把 `_coerce_style` 改回 `Style.DETAILED` → 第 1、2 条必红。
+from app.generation.generator import _coerce_style as _cs  # noqa: E402
+assert _cs('不存在的档') is _Style.PLAIN, \
+    'HTTP 侧落 plain、内部侧此前落 detailed —— 两处必须同一档（见 coerce_style 的 docstring）'
+assert _cs('') is _Style.PLAIN, '空值同样落默认档'
+assert _cs('meeting_minutes') is _Style.MEETING, \
+    'STYLE_ALIAS 的兼容在内部侧同样生效（不归一就会静默落兜底分支）'
+assert _cs('none') is _Style.NONE, '「无」是合法档，不得被当成非法值'
+assert _cs('plain') is _Style.PLAIN
+print('PASS: 非法 style 兜底两处同源（P1-05：HTTP 侧与内部侧落同一档）')
+
 # ── 8.5 会议纪要真的产出会议纪要风格块 ──
 # 从「风格档过了校验」到「风格文本进了 prompt」还有一跳：lookup.get(style, "")。
 # 取不到就是**空风格段**——不报错、只是没风格（这种静默正是本条要拦的）。

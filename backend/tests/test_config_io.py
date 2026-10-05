@@ -96,11 +96,10 @@ def test_empty_containers_match_default_config():
 
 
 def test_missing_container_repaired_with_correct_type():
-    cfg = {"llm": {"provider": "dashscope", "api_key": KEY}}   # 五个容器键全缺
+    cfg = {"llm": {"provider": "dashscope", "api_key": KEY}}   # 容器键全缺（见 _EMPTY_CONTAINERS）
     config_io.save_config(cfg)
     disk = _disk()
     assert isinstance(disk["llm_models"], dict)
-    assert isinstance(disk["llm_presets"], list)
     assert isinstance(disk["engine_providers"], list)
     assert isinstance(disk["engine_models"], list)
     assert isinstance(disk["engine_bindings"], dict)

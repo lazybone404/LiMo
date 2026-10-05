@@ -23,12 +23,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "model": {"deepseek": "deepseek-flash", "openai": "gpt-4o", "anthropic": "claude-sonnet-4-6"},
         "base_url": {"deepseek": "https://api.deepseek.com"},
     },
-    # 模型预设 — 不同场景绑定不同预设
-    # provider/model 为空时使用 llm 全局配置
-    "llm_presets": [
-        {"id": "generate", "label": "生成笔记", "provider": "", "model": "", "desc": "V4.1 Flash — 快速便宜"},
-        {"id": "chat",     "label": "AI 对话", "provider": "", "model": "", "desc": "V4 Pro — 推理更强"},
-    ],
+    # ⚠️ 这里曾有 `llm_presets`（「生成笔记 / AI 对话」两个场景预设），2026-10-06 删除
+    # （P1-08）：全仓**零消费方**——模型解析早已收敛到 `scene_models` + `resolve_model()`，
+    # 这个键从 2026-07 之后就没再被读过。CHANGELOG 的历史条目仍会提到它，指的就是这里。
     # 可用模型列表 — 前端设置页动态渲染
     # context_window：结构化上下文窗口（token），供对话上下文预算使用（四层：用户自定义 > 预设 > provider 默认表 > 保守 32k）
     # price_in/price_out：每百万 token 价格（元）——预设不填，用户在中转/自定义模型时于设置页填写后才启用费用显示

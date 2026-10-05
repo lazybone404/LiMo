@@ -11,14 +11,20 @@
    `_lookup_preset_capabilities(...) or _detect_capabilities(...)`，预设层会替它通过，
    被测函数根本没执行。
 """
+import ast
 import os
 import sys
+from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from app.core.config import DEFAULT_CONFIG
+from app.core.model_caps import has_capability
 from app.core.model_resolver import resolve_context_window
 from app.core.token import DEFAULT_CONTEXT
+from app.generation.content_preparer import ContentPreparer
+from app.llm.service import LLMService
 from app.routers.model import _PROVIDER_IMAGE_RULES, _detect_capabilities
 
 
@@ -234,6 +240,146 @@ def test_unknown_model_uses_128k_not_32k():
     win = resolve_context_window({"enabled_models": []},
                                  provider_id="mystery-gateway", model_name="whatever")
     assert win == 128 * 1024, f"未知模型兜底应为 128k，实际 {win}"
+
+
+# ── 能力位判据的单一真相源（P1-15 收敛）──
+#
+# ⚠️ 收敛前有 **6 处** 同构内联（`llm/service.py` ×3 + `generation/content_preparer.py` ×3），
+#    其中 `supports_document` 与 `content_preparer._run_doc_direct` 的能力门是
+#    **同一件事的两份判据**，而 `supports_document` 全仓零调用点 —— 两份里有一份是死的，
+#    改哪一份都对不上另一份，且零报错（模式 #54「同源是搜索题不是记忆题」）。
+#
+#    本节三层断言：① 判据定义只有一处；② 全仓零内联形态（AST 守卫）；
+#    ③ 两处消费方**同判**（行为断言）。②③ 缺一不可——只守 ② 会漏掉「调了但判错了」，
+#    只守 ③ 会漏掉「第三份内联悄悄长出来」。
+
+_BACKEND = Path(__file__).resolve().parent.parent
+_APP = _BACKEND / "app"
+_CAP_BITS = ("image", "document", "video", "reasoning")
+
+
+def _rel(p: Path) -> str:
+    return p.relative_to(_BACKEND).as_posix()
+
+
+def _inline_capability_checks() -> list[str]:
+    """全仓 `app/` 找**内联的能力位判据**：`<字面量能力位> in <表达式>`。
+
+    ⚠️ 必须走 AST 而非 grep：`core/model_caps.py` 与本测试的文档里**刻意**引用了
+    旧写法当反例，grep 会把「讲代码的文字」判成违规（模式 #54 的配套细节）。
+    """
+    hits: list[str] = []
+    for py in sorted(_APP.rglob("*.py")):
+        tree = ast.parse(py.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+                continue
+            if not isinstance(node.ops[0], ast.In):
+                continue
+            left = node.left
+            if isinstance(left, ast.Constant) and left.value in _CAP_BITS:
+                hits.append(f"{_rel(py)}:{node.lineno}")
+    return hits
+
+
+def _call_sites(rel: str) -> int:
+    """文件里 `has_capability(...)` 的调用次数。"""
+    tree = ast.parse((_BACKEND / rel).read_text(encoding="utf-8"))
+    return sum(1 for n in ast.walk(tree)
+               if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "has_capability")
+
+
+def test_capability_judgement_defined_exactly_once():
+    """判据实现**只有一处**（`core/model_caps.py`）。
+
+    第二份定义（哪怕是复制粘贴的同名函数）会让守卫 `_call_sites` 的计数失去意义——
+    它数的是**名字**，不是那份实现。
+    """
+    defs: list[str] = []
+    for py in sorted(_APP.rglob("*.py")):
+        tree = ast.parse(py.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "has_capability":
+                defs.append(f"{_rel(py)}:{node.lineno}")
+    assert len(defs) == 1 and defs[0].startswith("app/core/model_caps.py"), \
+        f"能力位判据应只定义在 app/core/model_caps.py 一处，实际：{defs}"
+
+
+def test_no_inline_capability_judgement():
+    """全仓零内联能力位判据 —— 新增消费方必须调 `has_capability`。"""
+    hits = _inline_capability_checks()
+    assert not hits, (
+        "发现内联的能力位判据（应改调 app/core/model_caps.has_capability）：\n  "
+        + "\n  ".join(hits))
+
+
+def test_control_inline_detector_has_discrimination():
+    """对照实验：守卫**真能**抓到内联形态，且**不**误伤注释里的旧写法（模式 #38/#54）。
+
+    前半证明判据有区分力（否则「零命中」与「扫描器根本没工作」无法区分）；
+    后半证明它走的是 AST 而非 grep —— 讲代码的文字被判成违规是本项目栽过的形态
+    （`url_utils.api_root` 的 docstring 里刻意引用了旧写法当反例）。
+    """
+    inline = ast.parse('x = any("image" in (c or "") for c in caps)')
+    found = [n for n in ast.walk(inline)
+             if isinstance(n, ast.Compare) and isinstance(n.ops[0], ast.In)
+             and isinstance(n.left, ast.Constant) and n.left.value in _CAP_BITS]
+    assert len(found) == 1, "守卫判据写错了：连手工造的内联样本都抓不到"
+
+    commented = ast.parse('# any("image" in (c or "") for c in caps)\nx = 1')
+    assert not [n for n in ast.walk(commented) if isinstance(n, ast.Compare)], \
+        "注释被当成了代码——守卫必须走 AST 而非 grep"
+
+
+def test_both_consumers_call_the_single_source():
+    """两个消费方各自**接上**了单一真相源（模式 #52：漏一半 = 与完全没做一样）。"""
+    assert _call_sites("app/llm/service.py") == 3, "三个 supports_* 属性都应走 has_capability"
+    assert _call_sites("app/generation/content_preparer.py") == 3, \
+        "三处（video/image/document）都应走 has_capability"
+
+
+def test_has_capability_semantics():
+    """判据语义**逐值等价**于收敛前的内联写法（不是重新设计）。"""
+    assert has_capability(["text", "image"], "image") is True
+    assert has_capability(["text"], "image") is False
+    assert has_capability([], "image") is False
+    # 子串包含而非相等：capabilities 是自由字符串，历史/未来都有 image_input 这类变体
+    assert has_capability(["image_input"], "image") is True
+    # 手编 YAML 会写出空项（`- `）；旧写法靠 `(c or "")` 兜住，收敛后必须仍不抛
+    assert has_capability(["text", None, ""], "image") is False
+
+
+def _svc(caps: list) -> LLMService:
+    """真 LLMService（client 惰性构造，不发任何请求）。"""
+    return LLMService({"llm": {"provider": "deepseek", "capabilities": caps}})
+
+
+def test_supports_document_reads_the_capability_bit():
+    """`supports_document` 按模型标注判，且**刻意不复用 image 位**。"""
+    assert _svc(["text", "document"]).supports_document is True
+    assert _svc(["text"]).supports_document is False
+    # image 认 PDF ≠ OpenAI 兼容端点认 `file` 块（doc_understand.py 的逐家结论正是为此）
+    assert _svc(["text", "image"]).supports_document is False
+
+
+def test_two_consumers_agree_on_the_same_capabilities():
+    """★ 两侧**同判**：同一份 capabilities 下，`supports_document` 与
+    `ContentPreparer._run_doc_direct` 的能力门结论必须一致。
+
+    这是 P1-15 收敛的直接判据。收敛前任一处改判（或另一处忘了跟），本条即红——
+    而**只看代码看不出来**（两处表达式逐字同构，不放到一起跑就发现不了分叉）。
+    """
+    fake = {"filename": "x.pdf", "data_uri": "data:application/pdf;base64,AA=="}
+    with patch("app.generation.content_preparer.build_pdf_document", return_value=fake):
+        for caps, expected in ((["text", "document"], True),
+                               (["text", "image"], False),
+                               (["text"], False)):
+            prep = ContentPreparer(llm_config={"capabilities": caps})
+            got = prep._run_doc_direct("C:/nope/x.pdf") is not None
+            assert got is expected, \
+                f"caps={caps}: _run_doc_direct 能力门判成 {got}，期望 {expected}"
+            assert _svc(caps).supports_document is expected, \
+                f"caps={caps}: 两侧判据分叉（supports_document 与 content_preparer 是否同源？）"
 
 
 if __name__ == "__main__":

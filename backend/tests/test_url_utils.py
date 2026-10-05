@@ -20,7 +20,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from app.core.url_utils import api_root
-from app.routers.model import PROVIDER_DEFAULTS
+# 内置厂商表已下沉 core（P1-14）——从定义处 import，不再绕经 `routers/model.py`
+from app.core.provider_defaults import PROVIDER_DEFAULTS
 
 
 def _legacy_root(base_url: str) -> str:

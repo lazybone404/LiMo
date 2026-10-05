@@ -10,6 +10,8 @@ Notes 风格定义 — 视频和文档各自独立的风格集
 风格文本来源：原 prompt.py STYLE_MAP / DOC_STYLE_MAP（内容不变，仅重组归属）
 """
 
+from app.core.types import Style
+
 _STYLE_HEADER = "## 输出风格\n"
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -140,3 +142,31 @@ STYLE_ALIAS: dict[str, str] = {
 def normalize_style(style: str) -> str:
     """统一风格键名，兼容历史数据（如 meeting_minutes → meeting）"""
     return STYLE_ALIAS.get(style, style)
+
+
+def coerce_style(style: str, fallback: str = "plain") -> str:
+    """把任意输入收敛成一个**合法的风格档位字符串**：先归一别名，不认识的值落 `fallback`。
+
+    ⚠️ 这是「非法 style 该落哪」的**唯一真相源**（P1-05）。此前这份判据有**两份、
+    且回退值不同**：流式入口（`routers/generate.py::_normalize_and_validate_style`）
+    落 `plain`，内部转换（`generation/generator.py::_coerce_style`）落 `detailed`
+    —— **同一个非法输入，走流式与非流式两条路得到不同风格**，而两侧都不报错
+    （模式 #54：同一契约写在两处时，不同源的那处不会报错，只表现为行为分叉）。
+
+    ⚠️ **回退值是默认档 `plain`，不是 `detailed`**。`_coerce_style` 曾为 `detailed`
+    辩护说「这是对**不认识**的输入的兜底，不是默认值的第二处定义」——但兜底值与默认值
+    不同，等于在说「传一个不存在的档」比「不传」更严谨详细，这没有任何依据；对不认识
+    的输入，与不传做**同一件事**才是可预期的。`tests/test_prompt.py` §8.4 早已把
+    `plain` 钉在流式侧，缺的只是让另一侧跟上。
+
+    ⚠️ **合法集必须与「下游能消费的集」同源**：`valid` 由 `Style` 枚举派生，故返回值
+    **保证**能构造出 `Style`（2026-10-05 的 `none` 崩溃正是「校验放行 ≠ 下游接得住」：
+    字符串层显式放行、枚举里却没有，最后倒在落盘的 `Style("none")` 上）。
+
+    ⚠️ **归一必须排在校验之前**：`STYLE_ALIAS` 兼容的是**旧调用方**（传
+    `meeting_minutes`），白名单排在归一前面会把这份兼容整个短路，症状是旧值被静默
+    改写成默认档。
+    """
+    s = normalize_style(style)
+    valid = {normalize_style(m.value) for m in Style}
+    return s if s in valid else fallback

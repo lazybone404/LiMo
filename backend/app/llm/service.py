@@ -11,6 +11,7 @@ from typing import AsyncGenerator, Awaitable, Callable
 
 from openai import AsyncOpenAI
 
+from app.core.model_caps import has_capability
 from app.core.model_resolver import resolve_model
 from app.llm.errors import CancelledError, LLMError
 
@@ -114,7 +115,7 @@ class LLMService:
 
     @property
     def supports_vision(self) -> bool:
-        return any("image" in (c or "") for c in self.capabilities)
+        return has_capability(self.capabilities, "image")
 
     @property
     def supports_document(self) -> bool:
@@ -123,15 +124,17 @@ class LLMService:
         **按模型能力标注，不按 provider 判断**——同 supports_reasoning。
         ⚠️ 刻意不复用 `image` 位：它 gate 着「AI 分析图片」「OCR 模型选择」
         「图片处理用途筛选」三处入口，拿它代指 file 块会错误放开这些入口。
+        ⚠️ 与 `ContentPreparer._run_doc_direct` 的 gate 是**同一判据**，
+        两侧都走 `core/model_caps.has_capability`（P1-15 收敛，模式 #54）。
         """
-        return any("document" in (c or "") for c in self.capabilities)
+        return has_capability(self.capabilities, "document")
 
     @property
     def supports_reasoning(self) -> bool:
         """是否认 reasoning_effort 参数。**按模型能力标注，不按 provider 判断**——
         provider 级硬编码会在新增支持该参数的渠道时前后端各改一处，
         与「能力位由模型标注」的既有原则相悖。"""
-        return any("reasoning" in (c or "") for c in self.capabilities)
+        return has_capability(self.capabilities, "reasoning")
 
     async def aclose(self) -> None:
         """关闭底层 AsyncOpenAI/httpx 连接池 — 每请求新建的 LLMService 用完调用，防常驻累积"""

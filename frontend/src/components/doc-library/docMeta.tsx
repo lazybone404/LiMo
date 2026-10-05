@@ -14,6 +14,10 @@ import {
 export const SOURCE_FILTERS = [
   { key: '', label: '全部', icon: '' },
   { key: 'video', label: '视频', icon: 'Film' },
+  // ⚠️ `audio` 是后端 `SourceType.AUDIO`（`core/types.py`）里的一类，此前前端**漏了它**
+  // （P1-13）：音频文档因此没有筛选项、没有配色、连标签都取不到——而 `IconByName`
+  // 早就备着 `Music` / `Mic` 两个 case（写好了没人用）。与 video 相邻是刻意的：音视频同类。
+  { key: 'audio', label: '音频', icon: 'Music' },
   { key: 'webpage', label: '网页', icon: 'Globe' },
   { key: 'pdf', label: 'PDF', icon: 'FileText' },
   { key: 'docx', label: 'Word', icon: 'PenLine' },
@@ -25,7 +29,7 @@ export const SOURCE_FILTERS = [
   { key: 'image', label: '图片', icon: 'Image' },
   { key: 'text', label: '文本', icon: 'FileText' },
   // 多篇合成的对比综述（sourceType === 'composite'）。排在最末：它是二次产物，
-  // 与上面 11 个「原始输入类型」不是同一层的东西
+  // 与上面 12 个「原始输入类型」不是同一层的东西
   { key: 'composite', label: '合成', icon: 'Layers' },
 ]
 
@@ -37,6 +41,9 @@ export const SRC_LABEL: Record<string, string> = Object.fromEntries(
 /** sourceType → 主题色（缩略图背景 + 类型标签）。bg 使用 rgba 透明度，亮暗模式均适用 */
 export const TYPE_COLORS: Record<string, { bg: string; text: string; dot: string }> = {
   video:    { bg: 'rgba(255,59,48,0.12)',  text: '#FF3B30', dot: '#FF3B30' },
+  // teal —— 上面 11 个类型都没占用的色（没这一项时 audio 会 fallback 到 text 的灰）
+  audio:    { bg: 'rgba(48,176,199,0.12)', text: '#30B0C7', dot: '#30B0C7' },
+  // teal —— 上面 11 个类型都没占用的色（没这一项时 audio 会 fallback 到 text 的灰）
   webpage:  { bg: 'rgba(52,199,89,0.12)',  text: '#34C759', dot: '#34C759' },
   pdf:      { bg: 'rgba(255,149,0,0.12)',  text: '#FF9500', dot: '#FF9500' },
   docx:     { bg: 'rgba(0,122,255,0.12)',  text: '#007AFF', dot: '#007AFF' },

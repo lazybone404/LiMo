@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from app.core.model_caps import has_capability
 from app.core.token import estimate_tokens as _estimate_tokens, DEFAULT_CONTEXT as _DEFAULT_CONTEXT
 # 文档直传（PDF file 块）：模块级导入——doc_understand 只依赖 app.core.logging，
 # 无循环导入风险（模式 #26：函数内导入是打破循环导入的手段，不是风格偏好）
@@ -130,8 +131,7 @@ class ContentPreparer:
             source_url = vl_config.get("source_url", "")
             if source_url:
                 # 视频直传：模型支持 video 时 SDK 直传理解（服务端抽帧）→ 描述文本
-                has_video_cap = any("video" in (c or "")
-                                    for c in self.llm_config.get("capabilities", []))
+                has_video_cap = has_capability(self.llm_config.get("capabilities", []), "video")
                 if video_direct and has_video_cap:
                     desc, vp = await self._run_video_direct(vl_config, source_url)
                     if desc:
@@ -195,7 +195,7 @@ class ContentPreparer:
                 llm_vl_urls = list(vl_image_urls)
         llm_doc_urls = doc_image_urls or []
         merged_urls = llm_vl_urls + llm_doc_urls
-        has_image = any("image" in (c or "") for c in self.llm_config.get("capabilities", []))
+        has_image = has_capability(self.llm_config.get("capabilities", []), "image")
         image_urls = merged_urls if (merged_urls and has_image) else None
 
         # 直传模式下 prompt 里没有正文，图片没有可嵌入的位置 —— 一律不发。
@@ -303,9 +303,13 @@ class ContentPreparer:
 
         返回 None = **保持文本模式**（调用方 clean_text 原样不动），不是换链路。
         具体失败原因（不可读/为空/超限/非 PDF）见 build_pdf_document 的日志。
+
+        ⚠️ 能力门与 `LLMService.supports_document` 是**同一判据**，两侧都走
+        `core/model_caps.has_capability`（P1-15 收敛，模式 #54）——此前这里与
+        `service.py:127` 各写一份同构表达式，改一处另一处静默不动。
         """
         caps = self.llm_config.get("capabilities", [])
-        if not any("document" in (c or "") for c in caps):
+        if not has_capability(caps, "document"):
             logger.warning("文档直传: 当前模型未标注 document 能力，改用文本模式")
             return None
         return build_pdf_document(doc_path)

@@ -34,7 +34,7 @@ from app.services.doc_understand import DOC_DIRECT_GEN_TIMEOUT, DOC_DIRECT_MIN_R
 from app.generation.content_preparer import ContentPreparer
 from app.generation.prompt_builder import PromptBuilder
 from app.generation.prompt import build_polish_prompt, build_notes_prompt
-from app.generation.prompts import normalize_style
+from app.generation.prompts import coerce_style
 from app.generation.reference_compressor import (
     needs_compression, compress_references_if_needed,
 )
@@ -44,29 +44,19 @@ router = APIRouter()
 
 
 def _normalize_and_validate_style(style: str) -> str:
-    """风格档入参：**先归一、再校验**，非法值回退默认档 `plain`。
+    """风格档入参（HTTP 侧）：**先归一、再校验**，非法值落默认档 `plain`。
 
-    抽成模块级函数（2026-10-05）是为了让测试**直调真实实现**——此前这段逻辑写在
-    `generate_stream` 的函数体里，测试只能复刻一遍表达式，而复刻的表达式永远与
-    真实实现"一致"（它测的是自己），正是模式 #51「能力存在 ≠ 该路径在用它」。
+    ⚠️ 判据已收敛到 `generation/prompts/notes_styles.py::coerce_style`（P1-05）：
+    这段逻辑此前在本函数与 `generation/generator.py::_coerce_style` 各有一份，
+    且**回退值不同**（`plain` vs `detailed`）——同一个非法输入，走流式与非流式
+    两条路得到不同风格，而两侧都不报错。两条历史教训（归一必须排在校验之前 /
+    合法集必须与下游能消费的集同源）随实现一并搬进了那边的 docstring。
 
-    ⚠️ **归一必须排在校验之前**，两条理由方向相反、都要防：
-    - 枚举里会议纪要的成员值是 `MEETING = "meeting"`（曾为 `meeting_minutes`），
-      而前端发的是 `meeting`。两形不一致时白名单不含 `"meeting"` → 用户选「会议
-      纪要」被静默改写成 detailed（零报错）。
-    - 反过来说，修完枚举值之后若仍先校验后归一，传 `meeting_minutes` 的**旧调用方**
-      会被拒掉——而那正是 `STYLE_ALIAS` 存在的全部意义。白名单排在 `normalize_style`
-      前面会把兜底整个短路。
-
-    ⚠️ **白名单必须与「下游能不能消费」同源**（2026-10-05 补）：`"none"` 曾在此
-    被 `| {"none"}` 显式放行，但它当时**不在 `Style` 枚举里** → 校验通过、prompt 也
-    正确地跳过了风格节，最后倒在落盘的 `Style("none")` 上（`ValueError`，整条流失败）。
-    修法不是再放行一次，而是把它加进枚举（`Style.NONE`）——**校验的合法集就是下游
-    能构造出来的集**，两个集合由同一个枚举定义，不可能再分叉。
+    ⚠️ 保留这个壳（而不是让调用方直接调 `coerce_style`）：`tests/test_prompt.py`
+    §8.4 直调本函数——那是 2026-10-05 特意抽出来的，为的是让测试**测真实实现**
+    而不是复刻一遍表达式（模式 #51）。
     """
-    style = normalize_style(style)
-    valid = {normalize_style(s.value) for s in Style}
-    return style if style in valid else "plain"
+    return coerce_style(style)
 
 
 async def _watch_disconnect(request: Request, cancel_event: asyncio.Event, interval: float = 0.5) -> None:
@@ -236,7 +226,6 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         if req.doc_direct and doc_path and not os.path.isfile(doc_path):
             log.warning("文档直传: 原件已不存在，改用文本模式", path=doc_path)
             doc_path = ""
-
         vl_config = None
         if req.video_understanding:
             source_url = tx.get("sourceUrl", "")
@@ -849,7 +838,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 # 保存双产物（取消时 status=partial，完成时 status=complete）
                 status = "partial" if was_cancelled else "complete"
                 if polished_chunks:
-                    # P1-1：后处理（截图 ffmpeg + 图表 resvg）放线程池，释放事件循环
+                    # P1-1：后处理（截图 ffmpeg + 图表渲染）放线程池，释放事件循环
                     polished_content = await asyncio.to_thread(
                         _post_process,
                         "".join(polished_chunks), format_list,
@@ -865,7 +854,7 @@ async def generate_stream(transcript_id: str, request: Request,
                         mv, tx, formats=format_list, reasoning_effort=reasoning_effort))
                     _auto_title(store, transcript_id, mv.content)
                 if notes_chunks:
-                    # P1-1：后处理（截图 ffmpeg + 图表 resvg）放线程池，释放事件循环
+                    # P1-1：后处理（截图 ffmpeg + 图表渲染）放线程池，释放事件循环
                     raw_notes = "".join(notes_chunks)
                     notes_content = await asyncio.to_thread(
                         _post_process, raw_notes, format_list,
