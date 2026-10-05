@@ -90,6 +90,8 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [AGENT-ONBOARDING.md](docs/AGENT-ONBOARDING.md) | 上手教程：从零跑通 → 架构 → 注册表 → 数据流 → How-to → 打包发布 → 测试门禁 → 调试速查 | 新 agent 快速上手、打包/发布 |
 | [AGENTS.md](AGENTS.md)（仓库根） | CLI 这条链的开发文档：三层结构 / 改 CLI 的六条硬约束 / 门禁怎么跑。⚠️ 与库内 `~/.limo/AGENTS.md`（`limo doctor --write-agents` 生成）**读者不同、内容不重叠** | 改 `limo_cli` / `/api/cli/*` / `QueryService` |
 | [code-audit.md](docs/code-audit.md) | 代码质量与缺陷扫描（第一轮）：**24 项带证据发现**（P0 可直接触发 4 / P1 静默失效·死代码 10 / P2 无机制·重复实现 10，每项含稳定 slug + 五段式）+ 「刻意为之」判据 + 已剔除的假阳性。⚠️ **是 `4174166` 时点的快照，不随代码更新** | 排查已知缺陷、修复前查有无现成记录 |
+| [code-audit-2.md](docs/code-audit-2.md) | 代码质量外部审查（第二轮）：**35 项发现** + **8 条纠偏**（照报告改会引入新问题）+ **6 条描述与现状不符**。⚠️ 与第一轮一样是**时点快照**（`6c2ef28` / 0.4.16），不随代码更新 | 回溯本轮修了什么、为什么这么修 |
+| [patterns.md](docs/patterns.md) | **关键模式 65 条**（从本文件拆出）：前端 `#1`-`#8` / 后端 `#9`-`#31` / **同源与成对判据 `#32`-`#65`** | **写任何模块的代码前**；查「这个坑踩过没有」 |
 
 ## 版本号管理
 
@@ -188,18 +190,21 @@ uv run uvicorn main:app --host 127.0.0.1 --port 7413 --reload
 # 修改 config.yaml / 适配器注册 / 引擎注册后需手动重启。
 
 # 运行测试（全量走 `bash scripts/check-all backend`；下面是单跑常用项）
+# ⚠️ 标记 `pytest` 的四个（2026-10-06 起）必须是 pytest 调用：它们原先的顶层是模块级
+# 裸调用，`python tests/x.py` 能跑，但 `pytest tests/` 跑过去**一片绿而根本不产生用例**
+# （假绿）。现已改写为 `def test_*`，脚本式调用反而什么都不做。
 python tests/test_prompt.py          # Prompt 构建验证
-python tests/test_adapters.py        # 适配器注册 + 路由
-python tests/test_engines.py         # 引擎注册 + 查找
+pytest tests/test_adapters.py        # 适配器注册 + 路由
+pytest tests/test_engines.py         # 引擎注册 + 查找
 python tests/test_store.py           # Store CRUD + 并发安全
 python tests/test_url_security.py    # URL SSRF 防护
-python tests/test_e2e_smoke.py       # 端到端冒烟测试（36 断言，需后端已启动）
+python tests/test_e2e_smoke.py       # 端到端冒烟测试（36 断言，需后端已启动）。⚠️ 已收进 `main()` 且被 `conftest.py::collect_ignore` 排除，pytest 不会收集它（此前会被收集并静默起后端+污染真实配置）
 python tests/test_capabilities.py    # capabilities API 结构
-python tests/test_plugin_loader.py   # 插件加载器
+pytest tests/test_plugin_loader.py   # 插件加载器
 python tests/test_chart_layout.py    # 图表几何算子 + expand 不变量
 python tests/test_chart_svg.py       # 图表 SVG 生成（PIL 子集）
 python tests/test_chart_renderer.py  # 图表校验链 + PIL 自绘渲染
-python tests/test_epub_pipeline.py   # EPUB 一键解读（逐章/归并/取消）
+pytest tests/test_epub_pipeline.py   # EPUB 一键解读（逐章/归并/取消）
 python tests/test_markdown_edit.py   # 产物编辑保存（PUT /api/markdown/{id}）
 python tests/test_docx_export.py     # Word 导出（回读 docx 产物断言）
 python tests/test_export_print.py    # 导出 HTML 打印样式（CSS 顺序 + 分页约束）
@@ -691,106 +696,20 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（2026-07-10 起持续沉淀，现 65 条）
+## 关键模式（65 条）
 
-以下模式是实现中易错的关键约束，新增代码必须遵守。
-
-### 前端
-
-1. **processingTasks 键格式**：`{docId}__{kind}`，永不用裸 `docId` 查找。`clearDocTasks` 只清 store，必须先 `cancelTask` 再 `clearDocTasks`。详见 [frontend-patterns.md](docs/frontend-patterns.md)。
-2. **取消操作**：`cancelTask(docId)` 用裸 docId（非完整键），导入固定用 `"__import__"`。`createAbort` 注册的 key 必须与 `cancelTask` 的 key 一致。
-3. **所有 HTTP 请求**：必须走 `apiUrl()` 或 `apiFetch()`。裸 `fetch('/api/...')` 在 Tauri 下失败。
-4. **API Key 保存**：`(val || undefined) ?? current` — 空字符串不是 nullish，会覆盖真实 key。
-5. **操作互斥**：`lockOtherOps = retranscribing || imageProcessing`。Ctrl+G 拦截检查 `generating || processingTasks > 0`。
-6. **query string 参数序列化**：`streamGenerate` 中新增参数时必须在 **`frontend/src/api/generate.ts`** 加对应的 `params.set()`（⚠️ 早期版本这里写的是 `client.ts` —— 该文件已拆分，物理位置就是 `api/generate.ts`）。布尔/数字参数用 `!== undefined` 而非 truthiness，否则 `false`/`0` 被当作 falsy 跳过，后端收到默认值。**已修复**：`dedupe_enabled`、`unit_width`、`unit_height`、`save_quality`、`frame_quality_filter` 此前因缺失序列化从未生效。**断链检查**：`frontend/src/test/genParams.test.ts` 对新参数在 **URL 里**断言（不是断言「传了 options」——后者在漏 set 的实现下照样通过）。
-7. **React 列表 key 唯一性**：`React.Children.map` 会展平嵌套数组，若各子元素内部都用 `key={i}`（数组索引），展平后产生重复 key。使用 `React.useId()` 生成组件实例唯一前缀 `key={`${id}-${i}`}`。**本次已修复**：markdown-components 中 `p`/`li` 组件的时间戳 badge。
-8. **视频画面理解对标 BiliNote**：「AI 画面理解」一个开关 = VL 管线 + 网格图发 LLM。网格图不嵌入笔记（对读者无意义）。不要恢复 formatImages/imageAnalyze/imageOptimize 三级嵌套。
-
-### 后端
-
-9. **信号量**：`await guard.semaphore.acquire()` 后立即 `try:`，否则异常泄漏。
-10. **配置深拷贝**：`DEFAULT_CONFIG` 必须 `copy.deepcopy()`，浅拷贝污染嵌套 dict。
-11. **引擎绑定合并**：保存用增量合并，`null`=不修改，`[]`=清除绑定。
-12. **适配器错误**：失败必须 `raise FatalError`，不要 `return AdapterOutput(engine="none")`。
-13. **markdown→HTML 导出**：移除 `nl2br` 扩展，GFM 特性（删除线/任务列表/表格前空行）用 `_preprocess_gfm()` 正则预处理，Pygments 可选依赖。详见 [export-pipeline.md](docs/export-pipeline.md)。
-14. **引擎图片双模式**：所有 Doc 引擎必须支持 `media_dir` 非空（写文件引用 `![alt](img_0001.png)`）和 `media_dir` 为空（内嵌 base64 `![alt](data:image/...;base64,...)`）两种模式。不可用 `if media_dir` 守卫静默跳过图片提取。已统一：PyPdfium2 / MarkItDown / DocxEngine / PptxEngine / ExcelEngine / EpubEngine。
-15. **本地引擎异步化**：耗时引擎必须通过 `asyncio.to_thread` 调用以释放事件循环，否则 `_watch_disconnect` 协程被卡死无法 set cancel_event。引擎 `execute()` 内需逐段检查 `cancel_event.is_set()` 并在取消时抛 `FatalError`。新增耗时本地引擎时遵守此模式。
-16. **prepare() 参数对称**：`ContentPreparer.prepare()` 的 `send_to_llm` 和 `optimize_images` 参数在双产物路径和单产物路径必须保持一致。**本次已修复**：单产物路径此前漏传，导致「AI 分析图片」在只选 notes 或只选 polished 时静默失效。
-17. **图片优化覆盖率**：`ContentPreparer` 中新增图片路径时，必须确保 `optimize_images` 同时覆盖「嵌入文本」和「发给 LLM」两个方向。**本次已修复**：VL 图片和文档 data URI 发给 LLM 时此前不走优化。
-18. **图片剥离占位符**：base64 剥离后不能用 `![alt]`（Markdown 渲染成 `<img src="">`），改用 `[📷 alt]` 纯文本占位符。否则空 src 触发浏览器重载整页。
-19. **screenshot 后处理双产物对称**：`_post_process_screenshots` 必须同时应用于 polished 和 notes。`generate_both` 此前只处理 notes。**本次已修复**。
-20. **异常类导入完整性**：新增 `raise FatalError`/`AppError` 等自定义异常时必须确认文件顶部有对应 import。PyInstaller 打包后不会通过间接导入自动补全。**本次已修复**：document.py（FatalError）、model.py（AppError）、export.py（shutil）。
-21. **`appUrl()` 统一应用内 URL**：前端所有图片组件（MarkdownImage / DocLibrary / VideoBanner）必须用 `appUrl()` 而非裸 URL。打包端无 Vite proxy，`/api/` 和 `/static/` 路径需转为 `http://127.0.0.1:7413` 绝对 URL。`apiUrl()` 仅用于 `/api/` 下的 fetch 请求。
-22. **`async def` 全调用链 `await`**：将同步函数改为 `async def` 后，必须检查所有调用点是否加 `await`。Python 不会为漏掉的 await 报编译错——静默返回 coroutine。**本次已修复**：video.py 三处 `_transcribe` 调用，两处漏 `await`。
-23. **`subprocess.CREATE_NO_WINDOW`**：所有 Windows 下 `subprocess.run/Popen` 调用必须加 `creationflags=subprocess.CREATE_NO_WINDOW`，否则 ffmpeg/yt-dlp 等会弹出 CMD 黑框。当前已涵盖 video.py、video_reader.py、video_helper.py、asr_cloud.py、export.py 共 5 个文件。新增 subprocess 调用时必须携带此 flag。
-24. **文件路径基于 `store.root`**：打包环境下 `os.getcwd()` 指向 exe 所在目录而非数据目录。所有文件读写路径（截图、导出、临时文件等）必须基于 `store.root`。`StaticFiles` 挂载也应在 startup event 中用 `store.root` 动态计算路径，而非模块级 `os.getcwd()` 求值。
-25. **`_watch_disconnect` 标准取消模式**：5 个端点（generate/ingest/retranscribe/chat/process）均使用相同的 `_watch_disconnect` 闭包 + `cancel_event` + `disconnect_task` 模式。新增支持取消的 SSE/长时端点时复用此模式，保持 0.5s 检测间隔和 `finally` 清理逻辑一致。未来可提取为 `app/core/disconnect.py` 公共工具。
-26. **禁止函数内重复导入**：不要在函数内部写已存在于模块顶部的 `from X import Y`。Python 解析到函数内的赋值语句后会将 `Y` 视为整个函数的局部变量——若函数内导入在条件分支中且条件未命中，函数内其他引用会抛出 `UnboundLocalError`。**本次已修复**：process.py:215、model.py:578 的 `EngineRegistry` 阴影导入。新增代码时：函数内仅导入模块级不存在的名称（如打破循环导入），且放在函数顶部无条件路径上。
-27. **remark 插件顺序**：`remarkMath` 必须在 `remarkGfm` 之前。否则公式内的 `_`（下标）和 `<`（`x_{<k}`）会被 GFM 先解释为斜体/HTML 标签 → `$$` 定界符破裂 → KaTeX 渲染失败。**本次已修复**：markdown-plugins.ts。
-28. **引擎绑定只取第一个**：`engine_bindings` 列表只解析第一个可用引擎，失败直接报错（不再多引擎降级尝试）。扩展名兜底（pdf→pypdfium2 等）是默认行为，新用户无绑定时必须可用。引擎自动降级开关（`engine_auto_fallback`）已移除，用户换引擎去设置页手动改。LLM 降级（备用模型）是独立语义，仅 process.py 的 LLM→OCR 回退保留。
-29. **`init_engines` 禁止每次启动覆盖配置**：引擎初始化中的 `save_config` 会写全量配置到 config.yaml。若此调用在每次启动都触发，一旦内存中的 config 对象缺失敏感字段（API Key 等），这些字段将永久丢失。**本次已修复**：ASR 绑定逻辑从「强制先删后插重排」改为「仅空列表初始化」，确保后续启动 asr_changed=False。新增引擎/绑定变更时才保存。
-30. **FastAPI Depends 依赖注入**：用 `store=Depends(get_store)` 替代函数体内 `request.app.state.store`，消除样板代码。`app/core/dependencies.py` 提供 `get_store / get_config / get_guard / get_config_lock / get_query_service` 五个依赖。18 个路由模块中 17 个已用；仍有残留的仅 `generate.py` / `ingest.py` / `search.py`（新增路由一律用 Depends，勿再写 `request.app.state`）。⚠️ 写这类计数前先跑 `ls` + `grep`——本条曾把 ingest 记成「已迁移」。
-31. **disconnect_watcher 客户端断连监测**：`app/core/disconnect.py` 提供 `@asynccontextmanager` 封装的 `disconnect_watcher(request, cancel_event)`。替换了 5 个路由中 ~45 行重复的 `_watch_disconnect` 实现，修复了 process.py 资源泄漏和 chat.py 缺 await 两个 bug。新增长时端点时复用此工具。
-32. **适配器一请求一实例**：`AdapterRegistry` 存**类**（`register(VideoAdapter)`），`route()` 命中前 `cls()` 实例化——单例实例的 `cookies`/`_engine_config`（含 `cancel_event`）会被并发导入互相覆盖。适配器 `accept()` 是纯输入判断（无实例状态），`name` 是类属性。**本次已修复**：registry.py + adapters/__init__.py。
-33. **CORS Origin 白名单**：本地后端**禁止** `allow_origin_regex=".*"`（任意网页可跨站读本地数据）。白名单必须含 Tauri v2 生产的 **`http://tauri.localhost`**（Windows WebView2 实测 origin）+ `https://tauri.localhost` + `tauri://localhost` + 本机 localhost 任意端口；`_ForceCORSMiddleware` 仅对白名单 origin 回显凭证。**本次已修复**：main.py（2026-08-02 曾漏 `http://tauri.localhost` 导致打包版全接口 CORS 拦截）。
-34. **app 内置欢迎文档同步**：PreviewArea 空态欢迎页（2026-08-16 改造为 **LiMo 三产物形态**：`WELCOME_NOTES`=笔记（欢迎简介）/ `WELCOME_POLISHED`=整理版原文（开发者功能）/ `WELCOME_TRANSCRIPT`=转录（更新记录），`frontend/src/components/preview/PreviewArea.tsx` 模块级常量 + `welcomeTab` 三 tab 切换）**在新增/移除功能时必须同步更新**——它面向新用户展示当前能力，曾因未同步而过时（如缺失插件系统/参考文件）。判断标准：改动影响「导入/转录/生成/导出/插件」任一能力时，检查此文档。⚠️ 三份内容都是**模板字符串**——正文里写反引号会提前终止字符串，而报错发生在解析阶段（整个模块加载失败），症状与「你改的那句话」毫无关系（2026-09-25 在 Welcome 文案里写 `Ctrl+K` 踩过）。
-35. **log. helper 自动带来源模块**：`app/core/logging.py` 的 `_emit` 用 `inspect.currentframe()` 取**调用者模块名**注入 logger——所有走 `from app.core import logging as log; log.info(msg, key=value)` 的日志 name 即来源模块（非固定的 `app.core.logging`），配合 rid 精确定位。新增日志一律用 `log.` helper 结构化 kwargs（`log.warning` 只接受 1 位置参数 + kwargs），**勿再新增 stdlib `logging.getLogger(__name__)`**——混用导致风格分裂。函数内 import 规则（#26）仍适用。
-36. **AppError recoverable 与 status_code 两维独立**：recoverable = 是否预期业务状态（决定日志级别 + 前端 `isRecoverable` 是否静默），status_code = HTTP 语义。main.py 异常处理器**尊重显式 status_code（含显式 400）**，未显式时 recoverable→200。显式与否由 AppError 的 `_explicit_status` 标记判定（默认值用哨兵 `_UNSET`，非「≠400」判断）——显式 `status_code=400 + recoverable=True`（如 EXPORT_NO_CONTENT）必须返回 400，否则前端 `!r.ok` 把 200 当成功，下载到损坏 zip（2026-08-25 评审 H1 修复）。迁移 HTTPException 时：真 404/403 必须显式传 status_code，**禁止用 recoverable=True 压掉真 404**——删除后 GET 必须 404（e2e「deleted doc -> 404」断言），前端 `isRecoverable` 已兼容 recoverable 404。
-37. **React `onClick={handler}` 会注入事件对象**：React 调用 onClick 处理器时**总是传 MouseEvent**，若 handler 首个参数是**可选业务参数**（如 `handleSave(saveDocId?: string)`），事件对象被当作业务值 → 模板字符串拼出 `[object Object]`（实测：保存编辑产物 → `PUT /api/markdown/[object Object]` → 后端 `MD_EDIT_NOT_FOUND`）。**TS 不报错**——`() => void` 赋给 `onClick` 属逆变兼容，静态检查无法发现。修复双管齐下：① 绑定处箭头包装 `onClick={() => onSave()}`；② handler 内加 `typeof x === 'string'` 守卫纵深防御。**新增 onClick 绑定时**：handler 首参为业务参数就必须箭头包装，勿裸传标识符。（2026-09-19 修复 TextareaMarkdownEditor / UnsavedChangesDialog）
-
-⚠️ **姊妹坑（2026-10-05）**：`dblclick` 是**独立事件**，完全不受 `click` 的 handler 影响——`onClick` 里补过的 `stopPropagation` 对双击**零作用**（那种「已经处理过」的错觉反而更危险）。行内交互元素多时（`DocRow` 有 6 个 `<button>` + 3 个 `<input>`）**不要在子元素上逐个补 `onDoubleClick={e => e.stopPropagation()}`——枚举必漏**，最典型的漏网是**双击标题输入框**（「双击选一个词」是最自然的输入动作）。改在**行根做一次判定**：`closest('button,input,a,select,textarea')`。⚠️ 另有同族陷阱：给**多密度 / 多分支**组件补事件时，`replace_all` 会因各分支缩进不同**只匹配到其中一支**——症状是「详细模式正常、简略模式完全没反应」且零报错，必须用 `describe.each` 逐密度覆盖。
-38. **可选参数入断言 = 默认不生效**：`assert_layout(nodes, W, height, edges=None, labels=None, shapes=None)` 这类「不变量检查靠可选参数喂数据」的设计，**内部调用点不传就等于没写**——代码里躺着断言、测试也全绿，运行时一条都没执行（「断言存在」≠「断言有效」）。新增此类不变量时：① `expand()` 内部两处调用**必须传全量**；② 必须造**故意违规**的输入直接调它、确认真能抛错，否则无法区分「检查通过」与「检查根本没跑」。（2026-09-19 图表 `assert_layout` 补三条不变量时修复）
-39. **成对余量必须同源，判据要防「输入已被上游改坏」**：`_shape_min_w`（文字→需要多宽）× `_shape_inner_w`（已有这么宽→能放多少）是同一余量的两个方向，**必须对同一宽度给出同值**——`_fit_labels` 曾写死 `avail-32` 与后者的 `<64 → w-8` 分支脱节，窄节点按 16px 算可用宽，文字在下游判据**看到它之前**就被截成纯 `…`。教训：① 新增成对常量/函数时，后来者**调用前者**而非各自重算；② 判据不能只看「自己算出来的值是否违规」，还要能识别「输入已被上游改坏」的形态（本例：`_shrink_labels` 补前置检查——空壳测宽 11px 远小于可用宽，只看测量值的截断分支根本进不去）。这是第 38 条的另一面：**判据跑到了，但它看的输入已经不是它以为的那个**。（2026-09-19 图表「空壳图」修复）
-40. **OOXML 的 `w:pPr`/`w:rPr` 是 ordered sequence，不是集合**：手写 `w:shd`/`w:pBdr` 时**禁止 `append`**，必须按 ECMA-376 的序列插位（`app/services/docx_export.py` 的 `_PPR_ORDER`/`_RPR_ORDER` + `_ordered_insert`）。python-docx 没暴露 `_insert_shd`/`_insert_pBdr`，而它自己的 `get_or_add_*` 会保序——所以「用高层 API 没问题，手写 XML 才有事」这条边界很容易被忽略。⚠️ **失败模式是「只有 Word 看得见」**：乱序产物用 python-docx 照常读得回来、单测全绿，只有 Word 会提示「文件已损坏」——因此该类检查**必须自证**（先用修复前的真实写法造出违规、确认检查抓得到，再断言产物零违规）。（2026-09-21 Word 导出）
-41. **「保底下限」会吃掉「收敛兜底」**：给截断/裁剪函数设「至少留 N 单位」的硬下限时，先问「调用方会不会要求比 N 更小」。参考文件压缩的总量兜底要把每份从 200 token 削到 10 token，而 `_truncate_to_tokens` 里 `cut = max(200, len*ratio)` 的「至少 200 字符」让每份**纹丝不动** → 兜底不收敛、请求照样超窗失败，而只断言「压缩函数被调用过」的单测完全看不出来。同一函数另两个配套坑：**必须幂等**（反复调用不能把截断标记叠成一串）、**目标值要先扣掉标记自身的 token 开销**（否则出现「削到 166、实际输出 186」的假收敛）。教训：兜底链的**最后一环必须用真实数字断言收敛**（本例：总量 ≤ 预算），验证「函数被调用了」等于没验证。另：兜底要认边界——原文自身超预算（`base ≥ budget`）时，把参考文件削成空也救不回请求，此时**不做兜底**才是对的。（2026-09-23 参考文件压缩，三个缺陷全部由测试抓到）
-
-42. **「按入参惰性清理」在换 id 的用法下等于不清理**：`get_references(ids)` 旧实现只 pop「入参里出现过且已过期」的条目。而前端一次只持有一个参考文件 id —— 用户换一次文件就换一个 id，**旧 id 从此再也不会出现在任何入参里**，那条记录会一直驻留到进程重启，20 分钟 TTL 形同虚设（1MB 上限把每次泄漏从 200KB 放大 5 倍）。改为**全表扫过期项**（`_purge_expired_locked()`）+ 双闸门（条目数/总量）。**教训**：写「惰性清理」前先问「触发清理的那次访问还会不会发生」——缓存淘汰里被换掉的那一半永远不会再被访问，正是最需要回收的部分。⚠️ **测试要断言的是内部条目数**（`len(_store)`），不是「取回的内容对不对」——按入参清理时内容完全正确，只有条目数能暴露泄漏；并且**必须自证用例有区分力**（把清理函数换成 no-op，确认用例真的会失败）。（2026-09-23 参考文件暂存）
-
-43. **嵌套函数内给外层变量赋值 = 该名在整个嵌套函数里变成局部变量**：`generate_stream` 顶层的 `ref_texts`，被嵌套函数 `merged_stream` 里的一句 `ref_texts = await compress_references_if_needed(...)` 拽成了后者的局部变量 → 上一行的 `if ref_texts` 在任何赋值之前读取它 → **UnboundLocalError（必然，非偶发）**。Python 的规则是「函数体内出现对该名的赋值 → 整个函数内它都是局部」，**与赋值语句在不在前面无关**。修法：嵌套函数内用局部名承接（`refs = ref_texts`），不要写回外层。**这是 #26（函数内重复 import 造成同名局部）的跨作用域版本**——同一根因；同一文件此前已在 `video_path` 上栽过一次（条件分支内赋值 + finally 引用，属同作用域变体）。⚠️ **测试测不到它**：不是逻辑错，而是运行时必炸、读代码与跑单测都正常的作用域错误，且流式端点的真实运行路径此前没有覆盖。已补 `tests/test_closure_shadowing.py`（AST 全库扫描，判据 = 外层赋值名 ∩ 嵌套赋值名 ∩ **嵌套内读早于写**）——**必须按执行顺序而非 AST 子节点顺序展开读写**（`ast.Assign._fields` 是 `('targets','value')` 而语义上 value 先求值，直接 `ast.walk` 会把 `x = x + 1` 判成「先写后读」，正好漏掉最该抓的一类；`AugAssign` 同为先读后写；形参算「进入即绑定」）。（2026-09-23 流式生成必炸修复）
-
-44. **索引是「手工逐字段构造」的，新增字段必须三处同改**：`index.json` 的每条 transcript 由 `_empty_index()`（顶层键）/ `_transcript_index_entry()`（正常读写路径）/ **`_rebuild_index()`（删 index.json 后全盘重扫）** 三个地方分别构造，后者是手工写的字面量。只改前两处 → **一切正常，直到有人删了 index.json**，重建后全部分类丢失。凡给 transcript 条目加字段，必须同时改三处 + 补一条「删除 index.json 后重建，断言字段仍在」的测试（只改 `_transcript_index_entry` 的实现必失败）。（2026-09-23 文件夹功能）
-
-45. **data-uri 体积上限约束的是「base64 之后的字符串」，不是原始文件**：厂商报的字节数（或 20 MiB 这类上限）作用在编码后的 payload 上，PDF base64 膨胀 4/3。按 `len("data:<mime>;base64,") + 4*ceil(N/3) ≤ LIMIT` 反解原字节上限，**取整要向下留余量**——贴着理论边界取（15 MiB）算出来比上限多 25 字节，照样被拒。**贴边的常量等于一个随机失效的开关**：它不是「成功率低」，而是「取决于文件大小的最后几个字节」，测试与实测都可能恰好抽到通过的那一侧。（2026-09-23 PDF 直传）
-
-46. **同一个静默期的两个来源要用 `max()` 合并，不能互相覆盖**：直传模式下模型「解析原件」与思考模式「思考」是**两个正交的静默期来源**（前者 ≈10s/MB，后者随档位 150/180s），谁长不一定。用 `if doc_direct: return DOC_DIRECT_TIMEOUT` 覆盖掉档位值，会在哪天常量被调小时让直传**比普通档更早被判挂起**——一个「看起来更安全」的隐蔽回归（常量变小 = 更保守？不，是更早失败）。写出 `max(base, DOC_DIRECT_TIMEOUT)` 并**用测试钉住**（临时把常量调到比档位小，断言取的仍是档位值）。（2026-09-23 PDF 直传）
-
-47. **直传 = 双真相源，且分叉方向最坑**：把原件发给模型、本地仍照跑解析时，`rawText` 是**导出/搜索/预览的真相源，但不是模型所见的真相源**——扫描件上模型读懂了原件而 rawText 近乎空（或只剩 OCR 失败的**占位文本**约 50 字符）。这不是可修的 bug 而是模式固有代价，故必须让它可见：直传成功但 rawText 过短时给完成期 warning。⚠️ **判据不能是「空串」**——占位文本正好是那种「看起来有内容、实际没内容」的形态，只判空串会精准漏掉本提示要覆盖的头号场景。同理，本地解析**必须照跑**：它是本地库不花 token，跳过它 = 转录空白 + 导出丢内容。（2026-09-23 PDF 直传）
-
-48. **实测证明不了上界，上界只写在官方文档里**：超时/尺寸/限额这类常量，**不能由「实测样本 × 余量」推出来**——实测覆盖的永远是那几档样本，它给的是「至少能到这么大」，而不是「最大就这么大」。`DOC_DIRECT_TIMEOUT` 第一版按最大实测样本（149.3s）× 1.6 取 240，看着留了 60% 余量很稳妥，但官方明写「首包超时最长为 **300 秒**」→ 240 < 300，落在该区间的**正常请求会被自己的超时掐断**，且**只表现为静默降级**（日志里只有「超时」，看起来像厂商不配合）。正确姿势：**先去官方文档取上界，再乘余量**（330 = 300 × 1.1，不贴边是因为要避开「厂商超时」与「我们的超时」赛跑）。这是 #39 的又一形态——判据（实测数据）是真的，但它**不构成对「最大值」的证据**。配套：总超时必须跟着乘二而不是并列（330 → 660），两者改一个而不动另一个会让某一侧先到。（2026-09-23 文档能力调查）
-
-49. **WebView 里失败请求的报错无法在 JS 层抑制，唯一解法是让那条请求别发出去**：`fetch` 打到未监听端口产生的 `ERR_CONNECTION_REFUSED` 由浏览器/WebView **自动打印**，`catch` 掉、降成 `console.debug` 一样照出。所以「冷启动时后端还没起」这类**必然失败**的时刻，正确做法是**静默期一条请求都不发**、由 Rust 侧就绪事件唤醒（Rust 的探测在独立进程用裸 `TcpStream` 手写 HTTP，不碰网络栈、零日志），而不是「让失败安静下来」。配套两个易错点：① **store/`useState` 初值在 render 时生效，而 effect 在 render 之后才跑** —— 「未就绪」标记初值给 `true` 会在**首渲染**就挂载业务组件（GenPanel 一挂载就拉 `/api/models`、`/api/providers`），后面那句 `setBackendReady(false)` 拦不住第一次渲染；初值必须**同步**按环境判定。② 与 Rust 探测重复的前端轮询要**删掉**而不是留作双保险 —— 一侧零成本、另一侧每条失败都留痕，二者代价极不对等。⚠️ 回归后**功能完全正常**（后端起来后一切照旧），只表现为控制台红字 + 加载屏闪一下，而 `backendReady: true` 恰恰是更直观的写法 → 必须用测试钉住（`vi.resetModules()` + 动态 import 改环境重取初值），并做对照实验确认改回 `true` 时真会变红。（2026-09-23 冷启动报错修复）
-
-50. **「集合非空」不等于「有内容」——分组渲染下前者恒真**：`DocList` 的骨架判据曾是 `docsLoading && !rendered.length && !groups?.length`，而**分组模式下 `groups` 永远非空**（按文件夹分组至少有一个 0 篇的「未分类」组）→ 这条判据在默认排列下**一次都没命中过**：冷启动不显示骨架，显示的是「未分类 0」+ 空列表，正是 #19 要杀的那种假空态。判据要写**语义**（`rendered.length > 0 || groups.some(g => g.docs.length > 0)`）。同一根因的另一处：`groups` 非空就照画分组头，会得到「还没有文档」旁边杵着「未分类 0」——空态下必须**连分组头一起跳过**（`!emptyText`）。**教训**：「容器里有元素」是结构事实，「用户能看到东西」是语义事实；一旦给渲染引入了**可以合法为空的中间层**（分组、分区、bucket），两者就分家了。写这类判据时先问一句「这个集合可能含 0 个有效项吗」。（2026-09-25 简略模式 IDE 树）
-
-51. **「能力存在」≠「该路径在用它」——核实一条链要一路核到调用点**：`resolve_context_window()` 确实是四层解析（用户自定义 > 预设 > provider 表 > 32k），函数本身没问题；但**生成路径从头到尾没调用它**——全仓仅 2 个调用点（`chat_context.py` / `reference_compressor.py`），生成走的 `resolve_llm_config()` 只查第 1 层，第 2 层预设从不流入 → 实际落到 provider 兜底表。dashscope/qwen3.8-max 预设 **131,072** vs 兜底表 **1,000,000**，**同一请求两个预算差 7.6 倍**，而两处代码看起来都对。⚠️ **这个错误我自己犯过两次**：设计文档里我曾写「本项目早已是四层解析、按 model_id 优先」为项目辩护——我只核了**函数本身是不是四层**，没核**该路径调的是不是它**。所以「去核实一下」的正确粒度是：**打开调用点，看它用的是哪个函数、传的是哪个变量**——不是打开函数看它写得对不对。这是 #38/#39「断言存在 ≠ 断言有效」的**跨模块版本**：那条是「断言写了但没跑到」，这条是「函数写了但没人调」，两者都是「代码看着完美、行为完全不符」。同批还查出第二处：`single` 预算预留 `max_tokens` 写 16384、真实发出去的是 65536（相差 49152，两处注释都没提），128k 窗口下现有单文档路径**本身就可能超窗**。（2026-10-01 多篇合成 / cw 来源与输出预留）
-
-52. **「成对操作」漏掉任一半 = 结果与「完全没做」一模一样**：资产搬运要「复制文件」+「改写正文引用」两半；只做前一半，文件整齐躺在 `d1_chart_1.png`、正文仍写着 `chart_1.png`——**裂图依旧，且日志全绿**（复制成功、无异常、文件数正确）。这类「白做」比「做错」更难发现，因为没有任何异常信号。写法：测试必须断言**两半的对应关系**（逐条比对「新文件名 ↔ 正文引用」），而不是分别断言「文件复制了」「正文里有 assets/」。同族的还有 #14/#17（双模式必须都覆盖）、#19（双产物必须对称）——**凡是「A 改了，B 也得跟着改」的地方，测试要断的是 A 与 B 的一致性，不是各自的存在性**。（2026-10-01 合成资产搬运）
-
-53. **用户可见的信息要么能驱动行动，要么别出现**：两条判据同一精神的两面——① **提示的触发集**只该含「用户真该做个动作」的情形；② **降级标签的粒度**按「用户能采取的行动」划分，不按「实现里哪行代码失败」划分。合成本轮各踩一次：`chunked`（总量超窗、单篇都不超）是**设计认可的终态**（明说用户无需行动），却被列进「换大窗口模型吧」的 banner 触发集 → 一条设计说「不用换」的路径上会**每次弹**、不断劝人换；而超窗 / 超时 / 模型抽风三种失败共用 `truncated` 一个标签，三种**该做的事完全不同**（换模型 / 重试 / 检查 Key），用户看哪个标签都无从下手。⚠️ 判据要写**语义**而非**结构**——「存在某状态的篇」（#50 的「容器里有元素」同族）是结构事实，「用户看到它该做什么」才是判据；答不上来就不该出现，或该拆细。对照见 #51（能力存在 ≠ 该路径在用）：本条是它的**消费端**版本——**能力要被用上，且用在该用的地方**。（2026-10-02 合成预览）
-
-54. **「有几处同源」只能由全仓搜索回答，不能由注释回答——写错数量的注释比没有注释更糟**：`routers/model.py` 里那条注释**白纸黑字**写着「启发式拼接（本文件**两处**同源：test_connection 与 fetch_models —— 改一处必须改另一处）」，实际 **grep 出三处**，第三处在 `routers/config.py` 的 `POST /llm/models`。危险不在于「漏了第三处」，而在于**那条注释给出了确定感**——下一位读者看到「两处、已标注」，会认为覆盖已经完整，于是**连搜都不搜**。这正是 #39「成对余量必须同源」的另一面：#39 讲的是成对逻辑的**语义**必须一致（两个方向对同一宽度给出同值），本条讲的是**数量本身被记错**——同源关系被当成了记忆题，而它是搜索题。**纪律**：写下「N 处同源」这句话时，就已经欠了一次全仓验证（grep 判据要覆盖**全部相关形态**，不能只搜你记得的那个函数名）；改到第 3 处时**抽公共函数**（本项目「同一逻辑 ≥3 次即抽」），并加一条 **AST 源码守卫**防第四份长出来。⚠️ **两个配套细节**：① 守卫必须走 AST 而非 grep——`url_utils.api_root` 的 docstring 里**刻意**引用了旧写法当反例，grep 会把「讲代码的文字」判成违规；② 守卫必须**自证**（造一个真违规样本 + 一个注释样本，确认前者命中、后者不命中），否则「零命中」与「扫描器没工作」无法区分（#38）。⚠️ **第三处是死代码也要改**——`/llm/models` 端点当前前端零调用，但**死代码若被复活，不该带着一份不一致的判据回来**。（2026-10-02 Google 链路）
-
-55. **「业务失败走 SSE 事件」是端点契约，而清洗 / 校验写在响应构造之前就会把它废掉**：`POST /api/synthesis/stream` 的纪律白纸黑字（文件顶部注释）——业务失败必须是 SSE `error` 事件、不能是 HTTP 错误，因为前端拿 `fetch` + reader 解这条流，中途换成 HTTP JSON 只会表现为「连接中断」。而入参清洗块原写在**路由函数体**里（`StreamingResponse` 构造之前），`normalize_reader_intent` / `normalize_source_mode` 在非法值上**显式抛错**，一抛就逃出流式通道 → FastAPI 转成 **500**，用户看不到「不支持的读者意图：nope（可选：understand、…）」这种**可行动的文案**。⚠️ **`source_mode` 比意图早上线，这条路径在 API 层一直是 500**——而直调测试（直接调 `synthesize()`）覆盖得漂漂亮亮，因为它**测的就是不经路由的那一层**。这是 #51「能力存在 ≠ 该路径在用」的又一形态：错误码定义齐全、文案写得很好，用户拿到的却是连接中断。⚠️ 同族还有 #26/#43（作用域）与 #36（`AppError` 的 status_code）：**判据要落在用户真正经过的那条路径上**。纪律：凡是「业务失败要可见」的端点，清洗 / 校验 / 闸门一律放进事件生成器或 runner 的 `try` 之内；新增此类端点时第一件事是**确认失败路径真的走了流**，并由 API 层测试钉住（`test_synthesis_api.py` §8.3 / 8.3b 各一条）。（2026-10-04 合成产物形态重做）
-
-56. **路由 prefix 只在一处写——双前缀的失败模式是「两侧测试全绿 + 用户一直 404」**：`routers/search.py` 曾自带 `prefix="/api"`，而 `main.py` 统一 `include_router(..., prefix="/api")` → 实际路径 `/api/api/search`，前端打的是 `/api/search`，**存活四个月**。为什么两侧测试都测不到：前端测试**mock 掉了 `api/search` 模块**（被 mock 的调用不会因为路径错而变红）、后端 `test_search.py` 测的是 `SearchEngine` 而**不是 HTTP 路径**（#51「能力存在 ≠ 该路径在用它」）、e2e 冒烟从未覆盖搜索。发现它的是新写的**契约测试**（`tests/test_query_contract.py`：逐字段比对「HTTP 响应 == QueryService 输出」）——**路径本身第一次被断言**。判据：全仓 17 个 router 里另外 16 个都是裸 `APIRouter()`，**「同层同构」的一致性检查**比逐条读代码更容易抓到这类错。同族事故 2026-07-10 在前端侧已发生过一次（6 处 `/api/api/`）。（2026-10-04 共享查询层）
-
-57. **派生视图必须剥自证头——而清洗正则常常按第一个 `>` 断句**：思维导图的 `_build_mindmap_html` 清洗规则含 `r'<[^>]+>'`（去 HTML 标签），它**按第一个 `>` 断句**。自证头里只要某个值含 `>`（用户自定义维度 `成本 > 收益`、意图文本 `A > B`），注释被截半、**JSON 残片直接进导出物的 JS 模板字面量**。⚠️ **两个配套判据陷阱**：① **必须用「值含 `>`」那一例**——值不含 `>` 时该正则恰好匹配到注释结尾、整行删净，于是「只测含注释」会通过并给出**假绿灯**（实测确认：只测这一例时，撤掉修复也不红）；② **判据词必须只可能来自 meta**——`"type"` 出现在 markmap 的 JS 里（`["url","type","lang"]`）、`cost` 出现在 base64 字体数据里，拿它们当判据是**假红**（本判据第一版就跑错了）。根因是「**派生视图不承载自证头**」这条语义没落地：剥头动作要收口在生成派生视图的函数里，不能指望清洗正则碰巧删掉它。（2026-10-04 共享查询层）
-
-58. **验证脚本必须自证隔离——「我设了环境变量」是直觉，「当前进程的 `os.environ` 里确实有」才是事实**：一次性验证脚本里 `env = dict(os.environ, LIMO_CONFIG=tmp, LIMO_SECRETS=tmp)` 这种写法**看起来**把路径钉到了临时目录，但那个 `env` 只有 `subprocess` 之类显式接收它的调用才会用——**当前进程**里的 `config_io.save_config()` 读的是真实的 `os.environ`（含缺失时按 `Path.home()` 兜底）→ 脚本把**用户的真实密钥库**写了。症状是「验证全绿」，代价是污染了用户数据目录，而它**不会被任何测试发现**（测试只跑自己的断言）。**纪律**：① 隔离路径必须**同时**设进当前进程（`os.environ[...] = ...`），不是只塞进传给子进程的 dict；② 跑完断言「**未污染真实位置**」；③ 万一真写脏了，事后清理前**先判断用户是否已迁移**——「用户从未迁移（YAML 无 `secrets_ref` 且旧字段非空）⇒ 那个密钥库必然是我刚创建的」是唯一能安全删掉它的推理。这是 #38（判据要有区分力）的**邻居**：那条问「判据会不会红」，这条问「**判据会不会伤到不该动的东西**」——两者都在问「你凭什么是安全的」，而答案都只能来自断言。（2026-10-04 密钥卫生）
-
-59. **同一份契约写在两处时，被覆盖的那一处不会报错，只表现为行为退化**：`limo --json list` 的 stdout 里混进了人类可读输出。根因是 argparse 把子命令的结果写进**同一个 namespace**——子命令侧 `--json` 带 `default=False` 会**覆盖**主 parser 刚设好的 `True`，`| jq` 于是直接炸。修法是子命令侧 `default=argparse.SUPPRESS`（「没给这个参数就什么都不写」）。**同一个坑的第二个形态**：`--base-url` / `--timeout` 只注册在主 parser 上时，`limo status --base-url X` 得到 `unrecognized arguments` —— 一个把「位置放错了」说成「参数不存在」的报错，用户会以为这个选项根本不支持，于是**放弃那条本就该存在的用法**。**判据**：凡「同一参数要在多处可用/同一开关由两层定义」，加一条**两处都试**的门禁（本项由 `check-cli` 第 3 项抓到：它对着不可达端口跑 `status --base-url`，参数解析错误会以 exit 2 而非 4 暴露）。（2026-10-04 CLI）
-
-60. **同一类坏输入因字符集不同得到两种退出码——而错的那一种是无声的**：`limo get ../../etc/passwd` 报 exit 3（未找到），而 `limo get 'bad id!'` 报 exit 5（数据异常）。同一个 `..`，只因为**含 `/`** 就走上了另一条路：`/` 经 URL 编码成 `%2F`，又被 Starlette **解码回 `/` 用于路由匹配** → 落到「没有这条路由」→ FastAPI 默认 404 → CLI 说「未找到」。后者诱导调用方「换个 ID 重试」（它已重试了五次），前者才说出了「这个输入本身就是坏的」。**修法**：`require_ident()` 在**客户端**用与后端**同源**的 `is_valid_resource_id` 预校验，且 HTTP 与 `LocalSource` **两条路径都调**——本地路径不校验时，同一个坏 part 会走到「查不到」→ exit 3，与 HTTP 路径的 exit 5 分叉。**判据**：凡「要当路径段用」的输入，校验不能只发生在服务端，因为客户端拼完 URL 之后**它的形态已经变了**；同源判据（同一个函数）不是洁癖，是这类分叉的唯一防线。（2026-10-04 CLI）
-
-61. **两个传输层对「同一件事」的表达不同源时，错的那侧会静默退化**：`--all`（一次取全）在 `LocalSource` 是 `limit=None`（`QueryService` 的语义），在 `HttpSource` 必须是 `all=true` 且**不传** `limit` —— 因为后端的默认值是 **50**，不是「全部」。归一成 `limit=None` 之后，HTTP 路径少拿了 26 篇，而**返回的是一个完全正常的成功**（无警告、结构正确、不抛错）。这是 #54 的**镜像**：#54 是「同源的数量被记错」（写「两处」实为三处的注释给了确定感），本条是「**看似同源的语义其实不同源**」。**纪律**：写下「这两处做同一件事」之前，先各自读一遍它们**到底怎么表达**那件事；门禁要断**并集 == 全集**（只断「返回了一个列表」必过——它少给了 26 篇也满足）。⚠️ 配套陷阱：门禁本身「永远跳过」等价于没有（`list --all` 那条曾是 15/16，唯一失败项就是它）。**埋点必须有能力失败**。（2026-10-04 CLI）
-
-62. **「延后提交」的 pending 必须有人消费——不改变 `currentDocId` 的操作若进了 pending 就永远没人管**：文档标签页用「意图先进 `pending*`、真正跑 `loadDocContent` 时才提交」换来「取消天然等于什么都没发生」（免去快照回滚）。但 `pendingClose` **只**在 `commitTabChange` 里被消费，而后者**只**在 `loadDocContent` 跑时才调 → 一个**不改 `currentDocId`** 的关闭操作（典型：**关一个非激活标签**）若也进 pending，就**永远关不掉且零报错**。判据统一为「**该操作是否改变 `currentDocId`**」，三个 close 动作各分两支（改变→进 pending，不变→立即执行）。**教训**：凡是「先记意图、稍后提交」的设计，都要问一句「这个意图一定会遇到提交点吗」——把**不需要等待**的操作也塞进等待队列，它们等的那个时刻永远不会来。测试要断「组**立即**变化 + `pendingClose` 仍为 `null`」（只断「最终能关掉」会同时放过两支）。（2026-10-05 文档标签页）
-
-63. **React 的 `onWheel` 是 passive 的，`preventDefault()` 在里面无效——要拦就得挂原生监听**：React 把 `wheel` / `touchstart` / `touchmove` 按 passive 注册在 root 上，处理器里调 `e.preventDefault()` 只得到一条控制台警告，**拦不住**浏览器 / WebView2 的默认缩放（症状是「正文字号变了、整个应用也变了」的双份缩放）。要阻止默认行为必须 `el.addEventListener('wheel', h, { passive: false })` 挂**原生**监听并返回清理，且监听挂**目标容器**而非 window（字面落实作用域，也避免鼠标在别处滚动时误触）。⚠️ 这条**单测测不出来**（jsdom 不派发真实合成事件也不做默认行为），只能靠人工验收「整个界面没跟着变」；**键盘路径同理**——`Ctrl+=` / `-` / `0` 的 `preventDefault()` 能否拦住取决于 WebView2 的**宿主级加速键**开关（`AreBrowserAcceleratorKeysEnabled`），**不能从代码推出来**。（2026-10-05 正文字号缩放）
-
-64. **同一维度出现多个倍率时，「乘的是哪一个」要有唯一真相源**：正文字号同时受三样东西影响——`fontScale`（字号倍率，本轮新增）、`fontSizeScale[contentWidth]`（宽度档的「档感」，挂在外层 `.preview-content` 的内联 `fontSize: …em`）、vendor 写死在 `.markdown-body` 的 `font-size:16px`。⚠️ **新字号必须写 px**：写 em 会与外层那份 em **相乘**（1.06 × 1.25 = 1.32），字号随宽度档漂移。⚠️ **版宽换算必须乘 `fontScale`、绝不能乘 `fontSizeScale`**：漏乘前者症状是**方向反的**（放大后「限制每行 40 字」算出 640px，实际每行只放得下 25 字，越放大越挤），多乘后者会让版宽跟着宽度模式变，正是当初要避免的方向。把换算抽成纯函数（`measurePxOf(measure, fontScale)`）让「同源」从肉眼核对变成可断言。**教训**：旁路进来的第二个倍率**哪怕名字很像**（`fontScale` vs `fontSizeScale`）也是坑——「字号」的真相源只能有一个。（2026-10-05 正文字号缩放）
-
-65. **同一条约束写在两种语言里时，必须由机器核对——因为失效的那一半只在特定运行形态下暴露**：应用快捷键的「清单」被写在两处——`App.tsx::handleAppKeyDown` 的 `switch (e.key)`（真正干活）与 `lib.rs::webview_keys::is_app_shortcut`（打包版里把这些键从 WebView2 加速键手里放行到网页，否则 `preventDefault()` 根本不触发）。⚠️ **后者的失效方式是本项目最难自查的一类**：Rust 侧漏一个键，**开发模式（`npm run dev`）一切正常、打包版那个键没反应**，零报错零日志——而开发模式恰恰是日常改代码时唯一在用的形态。根因不是「谁写错了」，而是**同一集合的两半分别住在前端与 Rust 里，没有任何编译器或测试天然覆盖两者的一致性**（不像 TS 里两处 import 同一常量）。修法是把两边都当**数据**解析出来做集合相等断言（`appShortcutKeys.test.ts` 读两份源码各自提取键集合），⚠️ 并让 `matches!` 里每个 `VK_*` 名字都能在同文件 `const` 表里查到（引用未定义的常量名＝静默少放行一个键）。**教训**：这是 #39 / #52 / #54 那组「成对逻辑必须同源」的**跨语言版本**——#54 说「同源是搜索题不是记忆题」，本条补上「**当搜索跨不出语言边界时，只能靠源码级守卫**」。（2026-10-05 打包版加速键放行）
+> **完整内容见 [docs/patterns.md](docs/patterns.md)** —— 实现中易错的关键约束，新增代码必须遵守。
+>
+> ⚠️ **本轮（2026-10-06）从本文件拆出**：本文件已 184KB，而该段的**起点就越过 64KB**，
+> 等于**日常根本不加载** —— 偏偏它才是写代码时最该守的东西（不是风格偏好，每条都带
+> 「为什么」和「怎么避开」）。拆开后按需读取，指路留在原位。
+>
+> **分三组**：前端 `#1`-`#8`（状态/取消/任务）｜后端 `#9`-`#31`（并发/配置/日志/异步）
+> ｜**同源与成对判据 `#32`-`#65`**（最容易踩：成对逻辑必须同源、判据要自证有区分力、
+> 能力存在 ≠ 该路径在用、延后提交的 pending 必须有人消费……）。
+>
+> 本文件其余部分（架构、管道、导出、数据流）仍在下方，模式里的 `#NN` 交叉引用一律指
+> **[docs/patterns.md](docs/patterns.md)**。
 
 ## 待办事项
 
@@ -929,7 +848,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 思维导图 | SVG 下载 + markmap 交互式 HTML (~980KB，暗色自适应) |
 | ✅ | 对话导出 | Markdown + JSON，支持批量 ZIP |
 | ✅ | Word 导出 | Markdown→HTML→docx（共用解析器 `markdown_render.py`）；标题大纲级别/嵌套列表/表格/代码块/引用/超链接/☑任务列表/时间戳双色 badge/图片等比内嵌；公式保留 LaTeX 原文（2026-09-21） |
-| ✅ | 导出进度反馈 | `POST /export/custom/stream` SSE 流式进度 + `GET /export/download/{temp_id}` 临时下载 |
+| 🟡 | 导出进度反馈 | ⚠️ **后端就绪、前端未接线**（2026-10-06 P1-12 核实）：`POST /export/custom/stream`（SSE 进度）+ `GET /export/download/{temp_id}` 端点完备，打包已 `await asyncio.to_thread(_build_export_zip, ...)`（不再阻塞事件循环），但前端 `api/export.ts::streamExportProgress` **零调用者** —— `ExportPanel` 的「详细导出」走的是**同步** `POST /export/custom`。如实标注，**不写成已可用**；要用起来需先制定进度 UI |
 | ❌ | 图片预处理复用 | 导入时已 optimize_images，导出 ZIP 未复用压缩后图片 |
 | ✅ | PDF 导出 | 两条路径共用一份自包含 HTML——**Tauri**：Rust `export_pdf` → 屏幕外窗口 → `ICoreWebView2_7::PrintToPdf` **免对话框直接落文件**（A4 + 背景保留 + 无页眉页脚，存系统「下载」目录、同名加序号）；**浏览器**：屏幕外 iframe → 打印对话框。打印样式三处落点（`_PRINT_CSS` + Pygments 浅底 defs + limo 暗色还原）。两条链均已实测（2026-09-21） |
 | ❌ | md 公式渲染修复 | `formula_md=render` 依赖 matplotlib 而它不在依赖里 → 该选项自上线起从未生效（静默降级）；合理修法是切到 KaTeX 图片管线并删掉 matplotlib 分支 |

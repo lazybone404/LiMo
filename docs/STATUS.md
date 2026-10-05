@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-10-05 | **版本**: 0.4.16
+**更新**: 2026-10-06 | **版本**: 0.5.0
 
 ---
 
@@ -11,17 +11,17 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 115（11 子目录：adapters 8 / agent 6 / core 23 / downloaders 4 / engines 15 / generation 15 / llm 4 / routers 19 / storage 2 / utils 6 / services 13）+ `limo_cli/` 9（CLI，独立于 `app/`） |
-| 前端 TS/TSX/CSS 文件 | 146（144 ts/tsx + 2 css；业务 117，排除 test 29） |
-| 前端测试文件 | 30（29 测试文件 + `setup.ts`；384 个测试用例，vitest 全绿） |
-| 后端测试文件 | 40（含 `conftest.py` 共享 fixture；2026-10-04 新增 `test_secrets` / `test_config_mask` / `test_config_io`） |
+| 后端 Python 文件 | 116（11 子目录：adapters 8 / agent 6 / core 27 / downloaders 1 / engines 15 / generation 15 / llm 4 / routers 19 / storage 2 / utils 6 / services 13）+ `limo_cli/` 9（CLI，独立于 `app/`） |
+| 前端 TS/TSX/CSS 文件 | 167（165 ts/tsx + 2 css；业务 120，测试 44，`setup.ts` 1） |
+| 前端测试文件 | 45（44 测试文件 + `setup.ts`；503 个测试用例，vitest 全绿） |
+| 后端测试文件 | 57（含 `conftest.py` 共享 fixture；2026-10-04 新增 `test_secrets` / `test_config_mask` / `test_config_io`） |
 | API 路由模块 | 18 业务模块（+ `__init__.py`，共 19 个 .py） |
 | API 端点 | 89（`@router.` 装饰器计数；含 `/api/cli/*` 七端点） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 13（docs/ 目录，含对话协议.md + AGENT-ONBOARDING.md + ACKNOWLEDGMENTS.md；design/ 另计） |
-| 代码行数 | 后端 app 29,572 + CLI 1,341 / 前端业务 18,545 / 前端测试 5,395 |
+| 代码行数 | 后端 app 29,636 + CLI 1,356 / 前端业务 18,593 / 前端测试 7,001 |
 
 ---
 
@@ -80,7 +80,7 @@
 
 ### 只读命令行（2026-10-04 三期，7 个端点）
 
-`limo` —— 只读 CLI（`backend/limo_cli/`，9 个 .py / 1,341 行），三层：命令层 → `QueryService` → `Store`。**不解析库格式**（不读 `index.json` / `search.db` / 不拼磁盘路径），两个传输层同契约（`HttpSource` 默认 / `LocalSource` 仅 `doctor --local`）。
+`limo` —— 只读 CLI（`backend/limo_cli/`，9 个 .py / 1,356 行），三层：命令层 → `QueryService` → `Store`。**不解析库格式**（不读 `index.json` / `search.db` / 不拼磁盘路径），两个传输层同契约（`HttpSource` 默认 / `LocalSource` 仅 `doctor --local`）。
 
 | 端点 | 用途 |
 |------|------|
@@ -136,17 +136,17 @@
 |----|------|------|------|
 | 内容导入 | 8 | 8 | 100% |
 | 文档库 | 9 | 9 | 100% |
-| 多篇合成 | 14 | 14 | 100% |
+| 多篇合成 | 16 | 16 | 100% |
 | 转录 & 引擎 | 8 | 8 | 100% |
-| LLM 生成 | 11 | 11 | 100% |
+| LLM 生成 | 12 | 12 | 100% |
 | 图片处理 | 4 | 4 | 100% |
 | AI 对话 | 9 | 9 | 100% |
 | 图表生成 | 11 | 12 | 92% |
 | 导出 | 11 | 12 | 92% |
-| 前端 UI/UX | 16 | 16 | 100% |
+| 前端 UI/UX | 18 | 18 | 100% |
 | 安全 & 运维 | 8 | 8 | 100% |
 | 产物复用 | 4 | 5 | 80% |
-| **合计** | **113** | **116** | **97%** |
+| **合计** | **118** | **121** | **98%** |
 
 > 进度说明：
 > - 产物复用（4/5）：已落地**产物自证头 + 共享查询层**（一期）、**密钥与凭据卫生**（二期）、**CLI + 契约文档 + 门禁**（三期），均 2026-10-04；待做**导出 meta 承载 + 渠道扩展**（四期）。路线图见 [CHANGELOG.md](CHANGELOG.md) 2026-10-04 条目
@@ -154,15 +154,15 @@
 > - 导出：11/12 — **打印样式 + PDF 导出已落地**（2026-09-21）：Tauri 内走 WebView2 PrintToPdf 直接落文件（**真实文档已端到端实测**，期间修掉 `Content-Disposition: attachment` 导致打印白纸的伪成功），浏览器内退回打印对话框（原「打印 / 另存为 PDF」与「PDF 一键导出」两行已合并为一，因为它们是同一个按钮的两条分支）；待完成**图片预处理复用**（ZIP 导出复用导入时的 optimize_images 结果）与 **md 公式渲染修复**（`formula_md=render` 依赖不在依赖树里的 matplotlib，自上线起从未生效）
 > - 不做的项目：PDF Layer 2（pdfplumber 已成熟提取表格）、VL 帧过滤（成本/收益不成正比）
 
-## 工程质量（2026-10-04 状态）
+## 工程质量（2026-10-06 状态）
 
 | 指标 | 状态 |
 |------|:--:|
 | FastAPI Depends 依赖注入 | ✅ 17/18 路由用 `Depends`（未迁：generate/ingest/search；`references.py` 本就不需要） |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 18/18 路由全量完成，0 处 `HTTPException`（2026-10-04 复核） |
-| 前端测试 | ✅ vitest + 384 tests（29 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/readingPrefs/readingLayout/docTabs 3 个/字号、接线与快捷键守卫 3 个） |
-| 后端测试 | ✅ 40 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io） |
+| 前端测试 | ✅ vitest + 503 tests（44 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/readingPrefs/readingLayout/docTabs 3 个/字号、接线与快捷键守卫 3 个/onAccent/installWarning） |
+| 后端测试 | ✅ 57 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io） |
 | CLI 契约门禁 | ✅ `scripts/check-cli` 16 项全绿（含 3 条负向对照：后端不可达 / 坏 ID / 截断显式化）；`test_query_contract.py` §8 覆盖 `/api/cli/*` 七端点 + 两条对照实验（2026-10-04） |
 | 产物自证头 | ✅ `notes`/`polished`/`process` 落盘带 `<!-- limo-meta -->` 首行（从哪来/怎么来的/是什么/可信度边界四条），`core/transcript_meta.py` 拆出 envelope 层统一编解码；历史无头产物**不判损坏**；编辑保存带回原头；思维导图等派生视图剥头（2026-10-04） |
 | 共享查询层 | ✅ `services/query.py::QueryService` 收口全部读路径（HTTP 与 CLI **同一份**实现）；顺带修掉存活四个月的 `search.py` 双 `prefix` 导致 `/api/api/search`（前端搜索一直 404 而两侧测试全绿，2026-10-04） |
@@ -234,7 +234,7 @@ backend/app/
   routers/       18 个路由模块（含 folders/plugins/references/search/epub/markdown_edit/cli）
   generation/    生成/处理/OCR预处理/prompt/参考文件超窗压缩/思考档位/provenance（自证头装配 + PROMPT_VERSION）（fact_check/review 已移除 2026-08-16）
   agent/         LLM Agent 工具 + 会话管理（tools/tool_registry/compress/session）
-  downloaders/   平台下载器（yt-dlp/douyin + abogus 签名）
+  downloaders/   平台下载器（yt-dlp 通用路径；抖音走同一 `_download` 的 UA/Referer 覆盖。⚠️ 自研 `douyin_downloader` + `douyin_helper/abogus`（GPL-3.0 声明）已于 2026-10-06 整体删除）
   llm/           LLMService + agent 循环
   core/          配置/类型/注册/错误/disconnect/搜索/cookie/sample_doc + transcript_meta（产物自证头编解码）+ resource_id（读路径 ID 校验）
   utils/         视频管线（video_reader/video_helper/screenshot_marker/frame_quality）

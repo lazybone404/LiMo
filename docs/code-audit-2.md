@@ -70,12 +70,16 @@
 | Rust 侧另有 2 个**无监听事件** | `lib.rs:261/274` 的 `backend-restarting` / `backend-restarted`，与 P2-10 那两个同病 |
 | **P0-2 的第二条污染路径：端口占用**（已修） | 7413 已被占用时 uvicorn 起不来，而 `start_server` 的判据是「`/health` 返回 200」→ 它会**连上用户正在跑的那个真实后端**，全程对着真实数据目录操作。症状是**所有断言照样全过**（比重启失败危险得多）。修法：起后端前先探端口，占用即拒绝（exit 2） |
 | **P0-2 的第三条：pytest 收集阶段就在执行**（已修） | 文件名匹配 `test_*.py`，而顶层代码是**裸执行体**（非 `__main__` 守卫）→ 每跑一次 `pytest tests/` 就静默起一个后端 + 打几十个请求 + 写一次配置。`tests/__pycache__/test_e2e_smoke.cpython-3xx-pytest-9.1.1.pyc` 是它**确实被 pytest 收集过**的物证；而 CHANGELOG 里「该文件需已启动的后端，本轮跳过」的记录说明作者一直以为它不会被 pytest 跑到。修法：执行体收进 `main()` + `tests/conftest.py::collect_ignore` |
+| 「不产生用例」有**两种**形态（P1-01 核实） | 报告说的 4 文件确为「模块级 `check()` 裸调用」；但**同目录另有两个文件是另一种形态** —— `test_export_print.py` / `test_docx_export.py` 把断言写在**模块级**（靠 `import` 执行），所以它们**不是 no-op**（跑了，真断言了），但 import 期一失败就是 **collection error，会中断整轮 pytest**。二者都该改写或至少知情：判据是「这个文件的绿，是自己跑出来的还是恰好没被跑」 |
 
 ---
 
 ## 二、35 项修复台账
 
-**状态**：⬜ 待修 ｜ 🟡 进行中 ｜ ✅ 已修（附 commit）
+**状态**：⬜ 待修 ｜ 🟡 进行中 ｜ ✅ 已修 ｜ ❌ 明确不做
+
+**汇总（2026-10-06 收尾）**：35 项 = **32 ✅ 已修** / **3 ❌ 明确不做**（P2-01 ruff 接入、P2-04 CHANGELOG 切分、P2-11 字体子集化，均为用户决定，理由见 §四）。
+另有纠偏 A 的 8 条改判修法、纠偏 B 的 6 条描述订正、纠偏 C 的 6 处报告漏项，全部随本轮落地。
 
 ### P0（5 项，批次 1）
 
@@ -91,40 +95,40 @@
 
 | slug | 落点 | 修法要点 | 状态 |
 |---|---|---|---|
-| `P1-01-tests-never-red` | `tests/test_engines.py:28-32` 等 4 文件 | 改写成 `def test_*`；至少加 `assert status == "OK"` | ⬜ |
-| `P1-02-plugin-config-not-restored` | `engines/plugin_loader.py:183,328` | `init_plugins` 从 `cfg["plugin_configs"]` 回填；`enabled=False` 时**跳过 `exec_module`** | ⬜ |
-| `P1-03-placeholder-entry-deleted` | `storage/store.py:548` | 见纠偏 A：就绪标记 | ⬜ |
-| `P1-04-default-config-polluted` | `core/config.py:521` | `user_provs.append(copy.deepcopy(dp))`，与姊妹函数 `:453` 同源 | ⬜ |
-| `P1-05-atomic-write-fixed-tmp` | `storage/store.py:229` | 见纠偏 A：`tempfile.mkstemp(dir=path.parent)`，**不加锁** | ⬜ |
-| `P1-06-stf-return-dropped` | `ingest.py:108,802`、`generate.py:1298` | 三处不再丢弃 `False`；不回显未落库的值 | ⬜ |
-| `P1-07-excel-phantom-sheet` | `generation/prompt.py:526,616` | 删幻影 `Sheet1`；`except Exception` 收窄 + 记 warning | ⬜ |
-| `P1-08-dual-product-partial` | `routers/generate.py:839` | 「有 chunks 且有 err_msg」也判 `partial`。⚠️ 先确认前端 `onWarning` 语义 | ⬜ |
-| `P1-09-compressor-skips-user-window` | `core/model_resolver.py:135` | 见纠偏 A：第 1 层加 provider+model 匹配支路 | ⬜ |
-| `P1-10-ingest-tmp-leak` | `routers/ingest.py:581-657,877-891` | 上传收成一份；清理进 `finally`；`:890-891` 移进 `try`；补结束哨兵（照 `synthesis.py:172-177`） | ⬜ |
-| `P1-11-custom-export-two-impl` | `routers/export.py:1111,1266` | 以 `export_custom` 为准收敛（**它才是前端在用的**） | ⬜ |
-| `P1-12-export-zip-blocks-loop` | `routers/export.py:1459` | `await asyncio.to_thread(_build_export_zip, ...)`；死端点接线或删宣称 | ⬜ |
-| `P1-13-provider-settings-no-catch` | `settings/ProviderSettings.tsx` | 19 个处理器补齐 try/catch + toast（对照 `:192`） | ⬜ |
-| `P1-14-chatstore-rebuild-race` | `store/chatStore.ts:323,332,356` | 补 `await`；`deleteMessage` 补 `if (s.streaming) return` | ⬜ |
-| `P1-15-heading-id-three-ways` | `lib/markdown-components.tsx:27` + `services/markdown_render.py:95` | 渲染侧改递归取文本节点；三处同源。顺带处置死依赖 `rehype-slug` | ⬜ |
-| `P1-16-color-guard-narrow` | `test/themeTokens.test.ts:40`、`index.css:117` | 见纠偏 A：加 `--tk-on-accent` | ⬜ |
-| `P1-17-chart-asset-name-collision` | `services/chart_renderer.py:142,250` | `chart_N` 加版本/内容 hash 前缀（对齐 `video_helper.py:15`） | ⬜ |
-| `P1-18-chart-node-normalize` | `services/chart_layout/` | 见纠偏 A：`engine.expand` 分派前统一归一化 | ⬜ |
-| `P1-19-abogus-gpl` | `video.py:185-217`、`downloaders/douyin_*`、spec、`THIRD-PARTY-NOTICES.md:64` | **删自研抖音路径**，回落 yt-dlp（`video.py:217-219` 已有兜底 → **功能不丢，只是要下整段视频**） | ⬜ |
+| `P1-01-tests-never-red` | `tests/test_engines.py` 等 4 文件 | ✅ 全部改写成 `def test_*` 真用例（实测 `grep -c "^def test_"`：engines 2 / adapters 2 / epub_pipeline 9 / plugin_loader 23）。此前是模块级 `check()` 裸调用 —— **`pytest tests/` 跑过去一片绿，因为它们根本不产生用例**（模式 #38：断言存在 ≠ 断言有效） | ✅ |
+| `P1-02-plugin-config-not-restored` | `engines/plugin_loader.py:356,423` | ✅ `init_plugins` 读 `config["plugin_configs"]` 回填进 `adapter.plugin_config`（`:356` 取 / `:423` 写，带 `dict(...)` 拷贝防串用）；`enabled=False` 跳过 `exec_module`。⚠️ 见纠偏 B：报告的「`plugin_config` **无读方**」不成立（有 3 处读方），真缺陷是**启动路径从不回填** → 插件配置重启即丢。照「无读方」去删字段会删掉 stdin 契约 | ✅ |
+| `P1-03-placeholder-entry-deleted` | `storage/store.py:228,384,500` | ✅ 见纠偏 A：加**就绪标记**（写侧 `:228/:384` 置 `ready=True`、`:500` 的占位条目置 `False`），只清理「非 ready **且**超时」的条目（`:685/:709`）。⚠️ **读侧一律 `entry.get("ready", True)`——缺键 = 就绪**：判据写反会让所有历史 index.json 被当成待清理的幽灵条目（与 P0-3「无头 ≠ 损坏」同一类陷阱）。报告建议的「文件不存在就不删」会让**真被删目录**的幽灵条目永久残留 | ✅ |
+| `P1-04-default-config-polluted` | `core/config.py:531` | ✅ `user_provs.append(copy.deepcopy(dp))` —— 与姊妹函数 `_sync_models` 的 `copy.deepcopy(dm)`（`:456`）同源；浅拷贝下 `capabilities` 是 list，用户改一次就污染 `DEFAULT_CONFIG`（跨进程累积） | ✅ |
+| `P1-05-atomic-write-fixed-tmp` | `storage/store.py:313,326` | ✅ 见纠偏 A：改 `tempfile.mkstemp(dir=path.parent)`（同目录唯一名）—— 固定 `.tmp` 名在两个进程同时写同一份产物时**互相截断**（症状是产物半截且无报错）。⚠️ **锁结构完全没动**：`self._lock` 是非重入 `threading.Lock`，而 `_save_index` 内部**也**调 `_atomic_write` 且恒在已持锁时被调到 → 照报告「纳入同一把锁」会**死锁** | ✅ |
+| `P1-06-stf-return-dropped` | `ingest.py:111,829`、`generate.py:1323` | ✅ 三处 `save_transcript_full` 的 `bool` 返回不再丢弃（一律 `if not ...` 判定）。⚠️ 后果不是「少个返回值」而是**回显了没落库的值**：用户看到「已导入」而 store 里没有那份文档。修法是显式报错/降级，不是把返回值接着往下传 | ✅ |
+| `P1-07-excel-phantom-sheet` | `generation/prompt.py:526,552,585` | ✅ 删幻影 `Sheet1`：工作表**只在见到 `## Sheet:` 时**才建（`:552`），无头数据（纯 Markdown 表格）才走兜底名（`:569-570`）；`rows`/`cols` 改 `.get` 防空表 `KeyError`（`:585`）。⚠️ 此前那条空壳永远拿不到 `rows`/`cols` → **100%** 走 `except` 兜底把整张表灌进 prompt（不是"偶尔失败"，是每一份 Excel 都命中） | ✅ |
+| `P1-08-dual-product-partial` | `routers/generate.py:817,853` | ✅ per-product 失败改发 warning（`:817`）；删掉「一个全局 `status = partial if was_cancelled else complete` 喂两路」的写法（`:853` 注释）。⚠️ 与前端 `GenPanel.tsx:778` 的 `onWarning`（置 `genOutcomeRef='partial'`）**刻意不重复**（`:858` 注明分工）：后端管落库态，前端管展示态 | ✅ |
+| `P1-09-compressor-skips-user-window` | `core/model_resolver.py:148` | ✅ 见纠偏 A：`resolve_context_window` **第 1 层**加「`provider_id` **且** `model_name` 匹配 `enabled_models`」支路（`:148-153`）—— 调用点语义不动。⚠️ 判据必须两者都匹配、不能只按名字（`qwen-max` 这类同名模型跨 provider 存在）；报告的「把 `model_id` 传进去，调用方手里就有」不成立：`LLMService` 只暴露 `provider`/`model`，且**按实际在用的模型查询正是设计意图** | ✅ |
+| `P1-10-ingest-tmp-leak` | `routers/ingest.py:586,621,946` | ✅ 上传收成 `_handle_file_upload` 一份（`:586`）+ `_discard_upload` 统一清理（`:621`）进 `finally`；补**结束哨兵** `queue.put_nowait(None)`（`:946`，照 `synthesis.py` 做法，`run_pipeline` 的 `finally` 一定投递）。⚠️ 无哨兵时消费侧在异常分支**空等**到超时。**这一条直接消掉了机器上 `~/.limo/tmp` 的 221MB** | ✅ |
+| `P1-11-custom-export-two-impl` | `routers/export.py:1129,1153` | ✅ 以 `export_custom` 为准收敛（**它才是前端在用的**，`ExportPanel.tsx:376`）：打包逻辑全收在 `_build_export_zip` 一份里（`:1153`），端点退化为**薄包装**（`:1129` 注释）。此前两份实现已分叉（空结果 400 vs 空 zip） | ✅ |
+| `P1-12-export-zip-blocks-loop` | `routers/export.py:1386` | ✅ `await asyncio.to_thread(_build_export_zip, ...)`（`:1386`）。⚠️ 配套：`push` 回调改成**线程安全回调**而不是 `asyncio.Queue`（`:1169` 注释）—— worker 线程里 `put_nowait` 不能跨线程调 loop；取消改抛 `asyncio.CancelledError` 与调用方既有语义一致（`:1180`）。见纠偏 B：更要紧的是该 SSE 端点**前端零调用者** | ✅ |
+| `P1-13-provider-settings-no-catch` | `settings/ProviderSettings.tsx:98` | ✅ 加 `guard(fn, label)` 包装器统一 catch + toast（`:98`）。⚠️ 见纠偏 B：「19 个处理器仅 6 处 catch」实为**处理器内只有 4 处**（另 2 处不在处理器里）—— 文件内注释已订正为实测数（`:87`） | ✅ |
+| `P1-14-chatstore-rebuild-race` | `store/chatStore.ts:100,146` | ✅ `regenerate`/`editMessage` 补 `await`（后端 rebuild 落定后再发流式请求，`:100` 注释点明）；`deleteMessage` 补 `if (s.streaming) return`（`:146`）。⚠️ 漏 `await` 的形态是**流式请求抢在 rebuild 之前发出** → 读到旧消息树，且**不报错** | ✅ |
+| `P1-15-heading-id-three-ways` | `lib/markdown-components.tsx:15-27` + `services/markdown_render.py:104-105` | ✅ 渲染侧改递归 `nodeText(node)`（`:15-27`，处理数组与 React 元素 `props.children`）—— 此前 `children.join('')` 对 React 元素产出 `[object Object]`；后端 `add_heading_ids` 先 `re.sub(r'<[^>]+>', '')` 剥 HTML + `html_lib.unescape`（`:104-105`），时间戳三条规则与前端 `stripHeadingDecor` **逐条对应**。**三处同源**（渲染侧 / 抽取侧 / 后端导出）。顺带删死依赖 `rehype-slug`（`package.json` 已无） | ✅ |
+| `P1-16-color-guard-narrow` | `index.css:117`、`lib/onAccent.ts` + `test/onAccent.test.ts` | ✅ 见纠偏 A：新增 `--tk-on-accent` 前景 token（`index.css`）+ `lib/onAccent.ts` 推导函数，实底按钮引用它；守护判据改断**语义**（禁裸 hex / 禁非语义底色的黑白），**不断某个类名**。⚠️ 照报告「正则补禁 `text-white`/`bg-black`」会假阳性一片 —— 全仓 49 处里大部分是有意的（彩底白字、`bg-black/20` 遮罩） | ✅ |
+| `P1-17-chart-asset-name-collision` | `services/chart_renderer.py:253-260` | ✅ 文件名改 `chart_{sha1(svg)[:8]}.png` —— **内容 hash 而非序号**。⚠️ 报告提的「版本前缀」不够：counter 每次生成都从 0 起，改一半的实现仍会撞名；hash 同时给了两个性质——**内容相同 → 同名**（幂等、不累积孤儿）、**内容不同 → 必不同名** | ✅ |
+| `P1-18-chart-node-normalize` | `services/chart_layout/engine.py:99` | ✅ 见纠偏 A：归一化提到 `engine.expand` 的**语义校验阶段**（`:99`「语义校验 + 归一化，返回处理后的副本」），10 个算子一起受益、**不动任一算子的字段假设**。⚠️ 照报告「给 hchain/timeline/branch 补 `_norm_node`」会把 `_branch` 的崩溃换成**静默错图**（它依赖 `n['result']`/`n['result_sub']`，而归一化对字符串只产 `{"label":...}` → 右列结果框全空） | ✅ |
+| `P1-19-abogus-gpl` | `video.py`、`downloaders/douyin_*`（已删）、spec、`THIRD-PARTY-NOTICES.md`、`pyproject.toml` | ✅ **删自研抖音路径**（用户拍板）：`douyin_downloader.py` + `douyin_helper/`（含 `abogus.py` 598 行，头部自称 GPLv3）已删、spec 两行 hiddenimports 已删、`THIRD-PARTY-NOTICES.md` 声明已改；⚠️ **连带清掉两个死依赖** `gmssl` / `pycryptodomex`（唯一使用方就是 abogus）。抖音回落 yt-dlp 通用 `_download`（只保留 UA/Referer 反爬头，那是 yt-dlp 的配置，不含 GPL 签名代码）—— **功能不丢，只是要下整段视频** | ✅ |
 
 ### P2（11 项，批次 4）
 
 | slug | 落点 | 修法要点 | 状态 |
 |---|---|---|---|
 | `P2-01-no-static-check` | — | ❌ **不做**（用户决定；且自写扫描器覆盖面不等价，见纠偏 A） | ❌ |
-| `P2-02-status-stats-stale` | `docs/STATUS.md:14-24` | ⚠️ **最小修复**：手工校正为实测值，不写生成脚本 | ⬜ |
-| `P2-03-claude-md-overflow` | `CLAUDE.md` | ✅ 拆出 `docs/patterns.md`（65 条），主体留引用 + 触发条件 | ⬜ |
-| `P2-04-changelog-452kb` | — | ❌ **不做**（122 条全在 2026 年，按年切分不可行） | ❌ |
-| `P2-05-dead-code-cluster` | `store.py:341`、`concurrency.py:19`、`generate.py:422-441` | 删三处；`generate.py` 那个模型字段漂移 7 个且零引用 | ⬜ |
-| `P2-06-write-agents-exit-code` | `limo_cli/cli.py:169` | `return _write_agents` 移进 `try` | ⬜ |
-| `P2-07-conversation-404` | `routers/conversations.py:89,107,126` | **前后端同批**（见纠偏 A） | ⬜ |
-| `P2-08-alibaba-merge-missing` | `routers/config.py:155` | 写侧补 `cloud.alibaba` 回填（成对表的唯一漏项） | ⬜ |
-| `P2-09-store-error-disk-full` | `storage/store.py:236` | 细分 `OSError`（权限/占用/路径过长 ≠ 磁盘满） | ⬜ |
-| `P2-10-rust-dead-events` | `src-tauri/src/lib.rs:64,93` | 处置 4 个无监听事件/命令（含纠偏 C 新挖的 2 个） | ⬜ |
+| `P2-02-status-stats-stale` | `docs/STATUS.md:14-24` | ✅ **最小修复**（用户决定不写生成脚本）：手工校正 11 处为实测值 —— 后端 Python 文件 115→**116**（core 23→27 / downloaders 4→1）、前端文件 146→**167**、前端测试 30→**45** 文件 / 384→**503** 用例、后端测试 40→**57**、行数 29,572→**29,636**+CLI 1,356、进度表合计 113/116→**118/121** | ✅ |
+| `P2-03-claude-md-overflow` | `CLAUDE.md` + 新建 `docs/patterns.md` | ✅ 拆出 `docs/patterns.md`（**65 条 / 45,153 字节**，`grep -c "^[0-9]\+\. \*\*"` 实测 65），`CLAUDE.md` 原位留指路段（分三组说明 + 「写代码前」触发条件），两处交叉引用路径改同目录。`CLAUDE.md` **184,292 → 140,753 字节**。⚠️ **未达计划验证表写的 < 64KB** —— 拆分前的前 693 行本身就有 110KB，模式段只占其中 44KB；如实记录，不谎报 | ✅ |
+| `P2-04-changelog-452kb` | — | ❌ **不做**（122 条带日期条目**全在 2026 年**，按年切分只会切出一个文件） | ❌ |
+| `P2-05-dead-code-cluster` | `store.py`、`core/concurrency.py`、`routers/generate.py` | ✅ 三处全删：① `store.py` 的 `_get_doc_dir = get_doc_dir` 私有名兼容别名 —— **注释自称「历史外部调用方（routers/export.py 等）仍按私有名调用」，全仓 grep 零命中**（注释描述的调用方不存在）；② `concurrency.py` 末尾 `def shutdown(self): pass`（零调用点）；③ `generate.py` 的 `GenerateStreamRequest` Pydantic 模型（零引用，且**字段漂移 7 个**：抄出 16 个而真实签名 23 个，`reference_ids`/`image_analyze`/`image_optimize`/`doc_direct`/`ocr_enabled`/`ocr_model_id`/`reasoning_effort` 从未出现）。⚠️ 第三处的处置是**删除而非同步**——它既不被 FastAPI 消费也不被 import，唯一作用是让人误以为「这里有校验」（模式 #51） | ✅ |
+| `P2-06-write-agents-exit-code` | `limo_cli/cli.py:169` | ✅ 包**内层 try**，**不复用**外层那个 —— 外层 except 的文案是「无法打开本机库」，而这一支根本不碰数据源：文件系统写失败（权限/占用/磁盘满）被套上那句，用户会去查库路径，而问题在目标目录；未捕获时 traceback 裸奔 + 退出码 1（= `USAGE`，语义错） | ✅ |
+| `P2-07-conversation-404` | `routers/conversations.py` + `ChatSidebar.tsx` + `chatStore.ts` + `ChatCore.tsx` | ✅ 见纠偏 A：**前后端同批**。后端 `rename`/`clear_context`/`delete` 三个端点补 `AppError(..., status_code=404)`（`delete` 此前**不查存在性**、无条件回 `{"status":"deleted"}`，而 `store.delete_conversation` 恒返回 True）；前端三个 handler 改**乐观更新 + 失败回滚**（此前 `renameConversation`/`deleteConversation` 不 await 不 catch → 改 404 后会变成未捕获 rejection）；⚠️ 另修报告未提的一处：`chatStore.clearContext` 的 `catch {}` 吞掉异常 → `ChatCore` **无条件弹「已清除上下文」**（对话不存在时是假成功，模式 #53），改为不吞、成功才弹 | ✅ |
+| `P2-08-alibaba-merge-missing` | `routers/config.py:154` | ✅ 写侧补 `cloud.alibaba` 回填 —— 与 GET 侧 `_mask_fields(cfg["cloud"], ("dashscope", "alibaba"))` **成对**：GET mask 几个字段，写侧就得回填几个。此前只回填 dashscope 而 alibaba 一并被 mask → 用户「打开设置页 → 不改 → 保存」就把 `***` 写进 `cloud.alibaba`，**真实 key 无声丢失**（模式 #52） | ✅ |
+| `P2-09-store-error-disk-full` | `core/errors.py::StoreError.write_failed` + `storage/store.py:326` | ✅ 新增 `write_failed(op, exc)` 按 errno 细分（磁盘满 / 占用 / 路径过长 / 没权限 / 未知），调用点 `_atomic_write` 的 except 收窄为 `OSError`。⚠️ **Windows 特例**：文件被占用是 `WinError 32` 而 `errno` 被一并给成 `EACCES`(13) → 只看 errno 会误判成「没有权限」，故 **winerror 优先**。「一律说磁盘空间不足」的代价不是不够精确，是**用户朝错误的方向行动** | ✅ |
+| `P2-10-rust-dead-events` | `src-tauri/src/lib.rs` + `frontend/src/App.tsx` + 新建 `lib/installWarning.ts` | ✅ **一接一删**（按模式 #53「这条信息能不能驱动用户行动」分流）：① **接上** `backend-warning` —— Rust 一直在发、前端零监听（等于白发），而它描述的正是「后端可能起不来」的原因（路径含空格/非 ASCII/不可写）→ 换个安装目录就能解决，故新建 `lib/installWarning.ts`（无问题时返空串、不渲染横幅）+ `App.tsx` 监听 + 可关闭横幅；② **删** `backend-restarting`/`backend-restarted`（`restart_backend_sidecar` 是**同步**命令，前端 `await` 的 resolve 就等价于 restarted —— 这是同步命令的冗余第二出口）与 `get_install_path_diagnostics`（同一份诊断数据已由 `backend-warning` 出门，且那条出口现在真的有人听）。新增 `test/installWarning.test.ts`（6 例，逐条只改一位） | ✅ |
 | `P2-11-font-25mb` | — | ❌ **不做**（CJK 子集化会让生僻字变豆腐块；woff2 需仓库没有的构建链） | ❌ |
 
 ---

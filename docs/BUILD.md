@@ -69,7 +69,6 @@ rg "^\s+from app\.\S+ import" --glob '*.py' app/
 - `app.generation.*`（generator/content_preparer/prompt_builder/prompt/ocr_preprocessor）
 - `app.core.model_resolver`、`app.core.cookie_parser`、`app.core.text_utils`、`app.core.disconnect`
 - `app.utils.url_security`、`app.utils.screenshot_marker`、`app.utils.video_helper`、`app.utils.video_reader`
-- `app.downloaders.douyin_downloader`、`app.downloaders.douyin_helper`
 - `app.llm`、`app.llm.service`、`app.llm.agent`、`app.llm.errors`
 - `app.agent`、`app.agent.tools`
 - `app.engines.*`（doc_types/doc_markitdown/doc_docx/doc_pptx/doc_excel/epub 等，`init_engines()` 动态导入）

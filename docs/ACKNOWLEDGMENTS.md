@@ -51,7 +51,6 @@
 | youtube-transcript-api | MIT | YouTube 字幕提取 |
 | Pygments | BSD-2 | 代码高亮 |
 | python-markdown | BSD-3 | Markdown 渲染 |
-| gmssl | BSD | 国密工具 |
 | duckduckgo-search | MIT | 搜索降级链末端 |
 | certifi | MPL-2.0 | SSL 证书（PyInstaller 打包） |
 | pytest / PyInstaller | MIT / GPL-2.0 (bootloader 例外) | 测试 / 打包 |
@@ -104,6 +103,7 @@ LiMo 的「口子原则」要求重依赖、AGPL/协议风险项目**进程外�
 | SearXNG | AGPL-3.0 | 便携版进程外 | 搜索降级链 + AGPL 进程外启动 |
 | html2text | GPL-3.0 | 已移除（2026-08-26，webpage.py 改用 bs4 get_text） | GPL 库进主 exe 是「合并作品」→ 替换优于附全文 |
 | ebooklib | AGPL-3.0 | 已移除（2026-08-26，自研 epub-container 纯标准库替代） | AGPL 库进主 exe 是风险点 → 自研零依赖解析器，达成主 exe 零 AGPL/GPL |
+| abogus（抖音 `a_bogus` 签名） | GPL-3.0（**文件头自行声明**，源自 TikTokDownloader） | 已移除（2026-10-06，自研抖音下载路径整体删除，抖音改走 yt-dlp 通用路径） | 「头部自称 GPLv3 却被 import 进主 exe」与对外声明的「主 exe 零 GPL」正面冲突——自研平台协议路径的合规风险，高于它省下的那点下载流量（yt-dlp 要下整段视频，但那是可接受的代价） |
 
 ---
 
@@ -126,7 +126,7 @@ LiMo 是模型无关的知识工具，接入多家模型/服务（非开源代�
 
 1. **版权归属**：所有第三方代码的版权归原作者所有；本文件仅记录使用与借鉴，不主张任何归属。
 2. **许可证合规**：
-   - AGPL/GPL 类：ebooklib、html2text 已于 2026-08-26 彻底移除（**主 exe 零 AGPL/GPL 库**）；pymupdf4llm（AGPL）为**进程外插件**、SearXNG（AGPL）不随主包、ffmpeg（GPLv3）为**独立进程**且随包附全文——均不并入核心主程序。
+   - AGPL/GPL 类：ebooklib、html2text 已于 2026-08-26 彻底移除；abogus（GPL-3.0 声明）于 2026-10-06 随自研抖音路径一并移除（**主 exe 零 AGPL/GPL 库**）；pymupdf4llm（AGPL）为**进程外插件**、SearXNG（AGPL）不随主包、ffmpeg（GPLv3）为**独立进程**且随包附全文——均不并入核心主程序。
    - 其余依赖按各自许可证（MIT/BSD/Apache/MPL/ISC 等）自由使用。
 3. **不擦除声明**：任何分发/修改都不会剥离源码或二进制中的版权与许可证声明。
 4. **完整许可证文本**：各依赖的完整许可证文本随其包发布（pip / npm / cargo），本文件不重复粘贴全文；如需逐条核对，以官方仓库 LICENSE 为准。

@@ -145,7 +145,7 @@ npx tauri dev
 | `agent/` | LLM Agent 工具 + 会话管理 | `tools.py`、`tool_registry.py`、`compress.py`、`session.py`、`prompts/` |
 | `llm/` | LLMService + AgentRunner | `service.py`、`agent.py` |
 | `core/` | 配置/类型/注册表/错误/断连/FTS5 搜索/cookie | `config_io.py`、`model_resolver.py`、`search.py`、`protocols.py` |
-| `downloaders/` | 平台下载器 | yt-dlp/douyin + abogus 签名 |
+| `downloaders/` | 平台下载器 | yt-dlp 通用路径（含抖音，走 `_download` 的 UA/Referer 覆盖） |
 | `utils/` | 视频管线 | video_reader/video_helper/screenshot_marker/frame_quality |
 | `storage/` | 文件系统存储 | Store 并发安全 |
 
