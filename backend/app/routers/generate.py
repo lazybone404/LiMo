@@ -58,12 +58,14 @@ def _normalize_and_validate_style(style: str) -> str:
       会被拒掉——而那正是 `STYLE_ALIAS` 存在的全部意义。白名单排在 `normalize_style`
       前面会把兜底整个短路。
 
-    ⚠️ `"none"`（前端「无」按钮）合法但**不在 `Style` 枚举里**，必须显式放行——
-    原实现漏了它，注释写着「Polish only 模式可能传 none」而白名单里没有（同族第三个
-    静默改写：用户选「无风格」得到「详细模式」）。
+    ⚠️ **白名单必须与「下游能不能消费」同源**（2026-10-05 补）：`"none"` 曾在此
+    被 `| {"none"}` 显式放行，但它当时**不在 `Style` 枚举里** → 校验通过、prompt 也
+    正确地跳过了风格节，最后倒在落盘的 `Style("none")` 上（`ValueError`，整条流失败）。
+    修法不是再放行一次，而是把它加进枚举（`Style.NONE`）——**校验的合法集就是下游
+    能构造出来的集**，两个集合由同一个枚举定义，不可能再分叉。
     """
     style = normalize_style(style)
-    valid = {normalize_style(s.value) for s in Style} | {"none"}
+    valid = {normalize_style(s.value) for s in Style}
     return style if style in valid else "plain"
 
 

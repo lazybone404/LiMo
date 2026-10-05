@@ -32,6 +32,20 @@ export interface DocEntry {
   sourceHashes?: string[];
   /** 出处头丢失/损坏 → 保留文档但**不猜**来源（§4.2.3） */
   metadataCorrupt?: boolean;
+  /**
+   * 这篇**已有哪些生成产物**（`"notes"` / `"polished"`），由后端列表端点带出
+   * （`QueryService.list_resources` 取自 `index.json` 的产物索引，零额外读盘）。
+   *
+   * ⚠️ **`undefined` 与 `[]` 语义不同，消费方必须分流**：
+   *   - `undefined` = **未知**（旧后端 / 测试 mock / 乐观插入的新文档）→ 照旧发请求
+   *   - `[]`        = **确定没有产物** → 一个产物请求都不发
+   * 这把「尚未生成」还原成一个正常状态，而不是靠一个必然 404 的请求 + `recoverable`
+   * 把它静默掉（那会让浏览器网络层照打红字，见 [PreviewArea.loadDocContent]）。
+   *
+   * ⚠️ 由生成/解读链路在产物落盘后**追加**（见 store 的 `markArtifact`）——不追加的话
+   * 「生成完 → 切走 → 切回」会因 `[]` 而不请求，笔记看起来凭空消失（模式 #52）。
+   */
+  modes?: string[];
 }
 
 /** 单层文件夹（纯逻辑分类，不映射磁盘目录） */

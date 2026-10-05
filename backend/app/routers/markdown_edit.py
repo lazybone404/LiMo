@@ -17,6 +17,7 @@ from app.core.dependencies import get_store
 from app.core.errors import AppError
 from app.core.transcript_meta import parse_artifact_meta, strip_meta
 from app.core.types import MarkdownView, Style, GenerateMode
+from app.generation.prompts import normalize_style
 from app.storage.store import rewrite_asset_urls
 
 logger = logging.getLogger(__name__)
@@ -68,9 +69,14 @@ async def edit_markdown(transcript_id: str, req: MarkdownEditRequest,
         raise AppError("MD_EDIT_NO_PRODUCT", "该文档还没有可编辑的产物", recoverable=False)
 
     # 保留原 style（编辑不改样式语义；旧 entry 缺省 minimal）
+    # ⚠️ **必须先归一再构造**：历史产物里存的是旧别名（`meeting_minutes`），直接
+    # `Style()` 会落进 except → 静默改写成 minimal（用户的「会议纪要」变「极简」，
+    # 零报错）。这与 `routers/generate.py::_normalize_and_validate_style` 是**同一条
+    # 纪律的写侧/读侧**：`STYLE_ALIAS` 的兼容必须在**两个方向**都生效（模式 #52：
+    # 成对操作漏一半，结果与完全没做一样）。
     style = "minimal"
     try:
-        style = Style(mds[0].get("style", "minimal")).value
+        style = Style(normalize_style(mds[0].get("style", "minimal"))).value
     except ValueError:
         style = "minimal"
 

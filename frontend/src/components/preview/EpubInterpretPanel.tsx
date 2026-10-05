@@ -74,6 +74,10 @@ export function EpubInterpretPanel({ docId, modelId }: { docId: string; modelId:
       // 解读完成 → 新产物无 edited → 标记自动清除（方案 5.3）
       st.setMarkdownEdited('notes', false)
       st.setMarkdownEdited('polished', false)
+      // 产物已落盘 → 补记产物位（不补则切走再切回时 `modes` 还说「没有产物」，
+      // 预览区一个请求都不发 → 刚解读完的笔记不可见。见 `DocEntry.modes`）
+      if (notes) st.markArtifact(docId, 'notes')
+      if (polished) st.markArtifact(docId, 'polished')
     }).catch(() => {})
     if (!isSameDoc()) return
     const failed = t.chapters_failed.length

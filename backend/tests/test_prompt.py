@@ -797,11 +797,40 @@ from app.routers.generate import _normalize_and_validate_style as _nvs  # noqa: 
 assert _nvs('meeting') == 'meeting', '前端实际发的是 meeting，必须原样通过'
 assert _nvs('meeting_minutes') == 'meeting', \
     'STYLE_ALIAS 必须仍在起作用（白名单排在归一之前就会把它拒掉）'
-assert _nvs('none') == 'none', '「无」合法但不在枚举里，必须显式放行'
+assert _nvs('none') == 'none', '「无」是合法档（`Style.NONE`），必须原样通过'
 assert _nvs('plain') == 'plain', '默认档必须通过'
 assert _nvs('不存在的档') == 'plain', '非法值回退**默认档**（不是回退 detailed）'
 assert _nvs('') == 'plain', '空值同样回退'
 print('PASS: 风格档归一 + 白名单（meeting/meeting_minutes/none/plain/非法值）')
+
+# ── 8.4b 白名单 == 下游能构造的集：**跨模块成对断言**（2026-10-05 补）──
+# ⚠️ 这一条是本文件此前**唯一缺的那条**，而它漏掉的正是整条流水线：8.4 只断言 `_nvs`
+# 的返回值，从不问这个值能不能被**落盘处**消费。`"none"` 当时不在 `Style` 枚举里，
+# 却被 `| {"none"}` 显式放行 —— 校验通过、prompt 也正确跳过了风格节，最后倒在
+# `routers/generate.py` 的 `Style(style)` 上：`ValueError: 'none' is not a valid Style`，
+# **整条生成流失败**（用户选「无」= 生成不出来）。而校验函数的单测全绿。
+# 这是模式 #51「能力存在 ≠ 该路径在用它」的成对版本：**校验放行 ≠ 下游能接住**。
+# 判据写成「对每个输入都真构造一次」，而不是再抄一遍白名单表达式（复刻测的是自己）。
+from app.generation.prompts.notes_styles import STYLE_ALIAS  # noqa: E402
+
+# ⚠️ `'none'` **必须显式写出来**，不能指望它从 `[s.value for s in _Style]` 里来 ——
+# 探针集从**被检验的对象**派生时，恰好抓不到「对象缺了什么」：枚举里没有 none 时，
+# 探针里也就没有 none，循环静默跑过 17 个不相干的输入（实测确认：撤销修复后它一声
+# 不响，红的只是下面那条显式断言）。前端会发的值是一份**独立**于实现的清单。
+_probes = ([s.value for s in _Style] + list(STYLE_ALIAS)
+           + ['none', 'plain', 'detailed', 'meeting',
+              '', '不存在的档', 'NONE', 'None', ' plain '])
+for _p in _probes:
+    _r = _nvs(_p)
+    try:
+        _Style(_r)
+    except ValueError:
+        raise AssertionError(
+            f'校验把 {_p!r} 放行成 {_r!r}，但落盘处的 Style() 构造不出来 —— '
+            f'白名单与「下游能消费的集」不同源（2026-10-05 的 none 就是这么崩的整条流）'
+        ) from None
+assert _Style('none') is _Style.NONE, 'none 必须是枚举成员而不是被放行的野值'
+print('PASS: 白名单 == 下游能构造的集（%d 个输入全部可落到 Style 枚举）' % len(_probes))
 
 # ── 8.5 会议纪要真的产出会议纪要风格块 ──
 # 从「风格档过了校验」到「风格文本进了 prompt」还有一跳：lookup.get(style, "")。

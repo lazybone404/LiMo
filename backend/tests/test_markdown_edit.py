@@ -130,4 +130,25 @@ assert fn('![a](/api/assets/other/y.png)', 'tr_edit001') == '![a](/api/assets/ot
 assert fn('<img src="/api/assets/tr_edit001/z.png">', 'tr_edit001') == '<img src="/api/assets/tr_edit001/z.png">'
 print('PASS: _unrewrite_asset_urls 边界')
 
+# ── 12. 旧别名 style 在**读侧**同样归一（不是静默改写）──
+# 2026-10-05 枚举值改形（`meeting_minutes` → `meeting`）之前的产物，索引里存的是旧别名。
+# 编辑保存这条路径此前裸 `Style(...)` 构造 → 落进 except → **静默改成 minimal**
+# （用户的「会议纪要」变「极简」，零报错）。`STYLE_ALIAS` 的兼容必须在**写侧
+# （`_normalize_and_validate_style`）与读侧（本节）都生效** —— 只做一半与完全没做一样。
+# ⚠️ `content_hash` 必须与上文任何一次导入都不同：Store 的内容去重会**静默拒绝**
+# 重复 hash 的写入（返回 False，不抛错），随后 PUT 就会误报 MD_EDIT_NOT_FOUND。
+s.save_transcript(RawTranscript(
+    id='tr_legacy', title='Legacy', source_type=SourceType.WEBPAGE,
+    engine='trafilatura', raw_text='原文', content_hash='h_legacy', metadata=RawMetadata(),
+))
+s.save_markdown(MarkdownView(
+    id='md_legacy', transcript_id='tr_legacy', content='# 会议纪要\n内容',
+    style='meeting_minutes', mode=GenerateMode.NOTES,  # ⚠️ 刻意传字符串：历史数据的真实形态
+))
+r_legacy = client.put('/api/markdown/tr_legacy', json={'mode': 'notes', 'content': '# 会议纪要\n改过'})
+assert r_legacy.status_code == 200, r_legacy.text
+assert r_legacy.json()['style'] == 'meeting', \
+    f"旧别名必须在读侧也归一（否则静默退化成 minimal）：{r_legacy.json()['style']!r}"
+print('PASS: 历史别名 style 编辑保存后归一为 meeting（不是静默变 minimal）')
+
 print('\n全部 PASS: test_markdown_edit')

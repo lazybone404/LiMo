@@ -13,6 +13,7 @@ import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
 import { CONTENT_WIDTH_RATIO, computeContentMaxW, measurePxOf } from '../../lib/reading-prefs'
+import { planArtifactRequests } from '../../lib/artifactModes'
 import { VideoBanner } from './VideoBanner'
 import { DocTabBar } from './DocTabBar'
 import { LogPanel } from '../ui/LogPanel'
@@ -444,39 +445,57 @@ export function PreviewArea() {
     const handleLoadError = (label: string, err: unknown) => {
       if (!isRecoverable(err)) { console.error(`${label}:`, err); if (isSame()) setContentLoadError(true) }
     }
+    // ── 产物位门控：没产物就**一个请求都不发**（判据见 lib/artifactModes.ts）──
+    // `modes` 由列表端点随 `index.json` 一起带出（零额外读盘）。此前无论有没有产物
+    // 都盲发 4 条 `?mode=` 请求，没生成过就是一片 404 —— 前端确实把它们静默掉了
+    // （不进 console.error、不弹 toast），但**浏览器网络层照打红字**（WebView 里 JS
+    // 抑制不掉，模式 #49），而且协议层把「尚未生成」这个**正常状态**建模成了 HTTP 错误。
+    const { notes: wantNotes, polished: wantPolished } = planArtifactRequests(
+      useStore.getState().docs.find(d => d.id === capturedId)?.modes,
+    )
+
     // 预加载 rawText（已无 base64，体积小，不阻塞）
     getTranscript(capturedId).then(tx => {
       if (tx && isSame()) setCurrentRawText(tx.rawText ?? '')
     }).catch(err => { handleLoadError('加载转录失败', err) })
-    getMarkdown(capturedId, 'notes').then(md => {
-      if (!isSame()) return
-      // F4：生成中切回（生成快结束时）→ 跳过——此 GET 可能返回保存前的旧版本 V0，
-      // 网络慢时会在 onDone 的 refreshSaved(V1) 之后 resolve → V0 覆盖 V1。
-      // 跳过安全：流式 buffer 会遮蔽 store 值
-      if (useStore.getState().processingTasks[capturedId + '__generate']) return
-      if (md) {
-        setCurrentContent(md.content)
-        setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version, edited: !!md.edited })
-        setMarkdownVersions(md.versions || [])
-      } else {
-        setCurrentContent(null)
-        setMarkdownMeta(null)
-        setMarkdownVersions([])
-      }
-      useStore.getState().setMarkdownEdited('notes', !!md?.edited)
-    }).catch(err => { handleLoadError('加载笔记失败', err) })
-    getMarkdown(capturedId, 'polished').then(md => {
-      if (!isSame()) return
-      // F4：同上——生成中跳过，防旧版本覆盖 onDone 刷新结果
-      if (useStore.getState().processingTasks[capturedId + '__generate']) return
-      setCurrentPolishedContent(md && md.content ? md.content : null)
-      useStore.getState().setMarkdownEdited('polished', !!md?.edited)
-    }).catch(err => { handleLoadError('加载整理版原文失败', err) })
+    // 两个产物各一条请求（**没有的那个直接不发**），返回值汇给下面的 tab 判定。
+    // 此前是「notes 一条 + polished 一条 + Promise.all 再两条」，其中
+    // `?mode=polished` 与上一行**完全重复**，`无 mode` 那条只为了算 `hasContent`
+    // ——同一份内容取两遍。现在请求数 = 有产物的档数（0/1/2）。
+    const notesP = wantNotes
+      ? getMarkdown(capturedId, 'notes').then(md => {
+          if (!isSame()) return null
+          // F4：生成中切回（生成快结束时）→ 跳过**赋值**——此 GET 可能返回保存前的旧版本 V0，
+          // 网络慢时会在 onDone 的 refreshSaved(V1) 之后 resolve → V0 覆盖 V1。
+          // 跳过安全：流式 buffer 会遮蔽 store 值。
+          // ⚠️ 早退必须**把 md 交出去**：下面 `hasContent` 靠它判断，返回 undefined 会让
+          // 「有产物 → 切到该类型的默认 tab」在生成中切回时误判成无产物、掉到转录 tab。
+          if (useStore.getState().processingTasks[capturedId + '__generate']) return md
+          if (md) {
+            setCurrentContent(md.content)
+            setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version, edited: !!md.edited })
+            setMarkdownVersions(md.versions || [])
+          } else {
+            setCurrentContent(null)
+            setMarkdownMeta(null)
+            setMarkdownVersions([])
+          }
+          useStore.getState().setMarkdownEdited('notes', !!md?.edited)
+          return md
+        }).catch(err => { handleLoadError('加载笔记失败', err); return null })
+      : Promise.resolve(null)
+    const polishedP = wantPolished
+      ? getMarkdown(capturedId, 'polished').then(md => {
+          if (!isSame()) return null
+          // F4：同上——生成中跳过赋值，但值仍要传给 tab 判定
+          if (useStore.getState().processingTasks[capturedId + '__generate']) return md
+          setCurrentPolishedContent(md && md.content ? md.content : null)
+          useStore.getState().setMarkdownEdited('polished', !!md?.edited)
+          return md
+        }).catch(err => { handleLoadError('加载整理版原文失败', err); return null })
+      : Promise.resolve(null)
     // 文档/视频/PDF — 若无笔记则自动显示转录
-    Promise.all([
-      getMarkdown(capturedId),
-      getMarkdown(capturedId, 'polished'),
-    ]).then(([notes, polished]) => {
+    Promise.all([notesP, polishedP]).then(([notes, polished]) => {
       if (!isSame()) return
       const hasContent = !!(notes || polished?.content)
       const st = useStore.getState().docs.find(d => d.id === capturedId)?.sourceType || ''

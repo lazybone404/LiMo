@@ -125,6 +125,8 @@ export interface DocsSlice {
   setDocs: (docs: DocEntry[]) => void
   setFolders: (folders: FolderEntry[]) => void
   addDoc: (doc: DocEntry) => void
+  /** 补记「这篇已有某产物」（生成/解读落盘后调用）——见实现处的两条守卫 */
+  markArtifact: (docId: string, mode: string) => void
   /** ⚠️ 传 null 表示「没有选中任何文档」。空串 `''` 不是有效 id，不要再用它当哨兵。 */
   selectDoc: (id: string | null) => void
   setSearchQuery: (q: string) => void
@@ -158,6 +160,29 @@ export const createDocsSlice: StateCreator<Store, [], [], DocsSlice> = (set, get
   setDocs: (docs) => set({ docs }),
   setFolders: (folders) => set({ folders }),
   addDoc: (doc) => set(s => ({ docs: [doc, ...s.docs] })),
+  /**
+   * 就地补记「这篇已有某产物」——生成 / EPUB 解读刚落盘时调用（**服务端确认存在后**才调）。
+   *
+   * 存在的理由是新鲜度：`modes` 是列表拉取那一刻的快照，而生成发生在其后。不补记的话
+   * 「生成完 → 切到别的文档 → 切回来」会因 `modes` 里没有它而不发请求，**笔记看起来
+   * 凭空消失**（模式 #52 的典型：成对操作只做了一半，且零报错）。
+   *
+   * ⚠️ **`modes === undefined`（未知）时原样返回**，绝不补成 `[mode]`：那会把「不知道
+   * 有没有」误变成「确定只有这一个」，另一种产物**从此永远不请求**（旧后端下切回来
+   * 少一半内容）。`undefined` 只能由整份列表刷新收敛。
+   * ⚠️ 已含该 mode 时也返回原对象——`set` 按引用比较，新数组会让整棵树白重渲染一次
+   * （每篇生成完成都会调到这里）。
+   */
+  markArtifact: (docId, mode) => set(s => {
+    const i = s.docs.findIndex(d => d.id === docId)
+    if (i < 0) return s
+    const d = s.docs[i]
+    if (!d.modes || d.modes.includes(mode)) return s
+    const docs = s.docs.slice()
+    // 排序与后端同源（`get_artifact_modes` 用 `sorted`）——免得两处顺序不同，比对时误判
+    docs[i] = { ...d, modes: [...d.modes, mode].sort() }
+    return { docs }
+  }),
   selectDoc: (id) => {
     try {
       // ⚠️ 只在真值时才写：空串不是有效 id，写进去会让下次启动拿它去 restore，

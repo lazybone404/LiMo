@@ -24,6 +24,8 @@ service，**又自己加了点东西**」。本模块逐字段比对两侧输出
 | cli 的 `content` 不剥自证头（返回磁盘原串） | 第 8.5 节 | 产物响应必须逐字段等于 `Artifact.to_dict()` |
 | `_build` 忽略 `offset`（续读永远回第一页） | 第 8.5 节 | 按 `continuation` 续读拼起来必须还原全文 |
 | 某个 cli 端点漏掉顶层 `schema_version` | 第 8.7 节 | 漏掉的那个端点，CLI 只能对它免检 |
+| `modes` 加在路由层而非 service（只有前端拿得到） | 第 9 节 | 补过产物位后 HTTP ≠ service |
+| 无产物给 `None` 而不是 `[]` | 第 9 节 | 前端靠 `undefined`（未知）与 `[]`（确定没有）分流 |
 
 ⚠️ **第 8.5 节的续读判据第一版曾给出假绿灯**（实测确认：撤掉修复也不红）：正文用的是
 `"行" * 300` —— 周期性的内容让「忽略 offset、每次都返回第一页」的实现拼出恰好相等的
@@ -321,7 +323,77 @@ for _p, _params in [("/api/cli/status", {}), ("/api/cli/resources", {}),
 
 print("PASS: /api/cli/* 与 service 同源（Page 形状 / 剥头 / 截断续读 / schema 守卫）")
 
+# ═══════════════════════════════════════════════════════════════
+# 9. 列表携带产物位（`modes`）：让前端**先判断再请求**
+# ═══════════════════════════════════════════════════════════════
+
+# 背景：在这之前，前端打开任何文档都会盲发 `GET /api/markdown/{id}?mode=notes|polished`
+# ——没生成过就是两条 404。前端**已经**把它们静默掉了（`recoverable` 不进 console.error、
+# 不弹 toast），但浏览器网络层照打红字（WebView 里 JS 抑制不掉，模式 #49），更要紧的是
+# **协议层把「尚未生成」这个正常状态建模成了 HTTP 错误**。产物位本来就在 `index.json` 里
+# （`_index["markdowns"][tx_id]`），随列表带出去即可，前端据此零请求。
+#
+# ⚠️ 前端判据：`modes === undefined` → **未知**（旧后端 / mock 数据）→ 照旧发请求；
+# `modes === []` → **确定没有** → 不发。故**空数组与缺键必须能区分**，`None` 更不行
+# （`undefined` 与 `null` 在前端都是 falsy，`!modes` 会把两者混为一谈）。
+
+S.save_markdown(  # tr_c0 已有 notes（第 168 行），这里补 polished，顺带钉住排序
+    MarkdownView(id="md_c2", transcript_id="tr_c0", content="# 整理版正文\n",
+                 style=Style.DETAILED, mode=GenerateMode.POLISHED),
+    file_meta=artifact_meta("polished", doc_id="tr_c0", mode="polished", model="test-model"),
+)
+
+_rows = {e["id"]: e for e in C.get("/api/transcripts").json()}
+assert _rows, "列表为空则本节全部判据退化成恒真 —— 先确认用例有输入"
+assert all("modes" in e for e in _rows.values()), \
+    f"每一条都必须带 modes 键，缺的是 {[k for k, e in _rows.items() if 'modes' not in e]}"
+assert all(isinstance(e["modes"], list) for e in _rows.values()), \
+    "modes 必须是数组（缺省给 []，不给 None）"
+
+# ⚠️ **成对判据**：只断言「键存在」会在 `modes` 恒为 `[]` 的实现下给出假绿灯（模式 #52）
+# ——而那个实现在前端就是「什么都不请求」，整个修复变成静默失效。
+assert _rows["tr_c0"]["modes"] == ["notes", "polished"], _rows["tr_c0"]["modes"]
+assert _rows["tr_c4"]["modes"] == ["notes"], _rows["tr_c4"]["modes"]
+assert _rows["tr_c2"]["modes"] == [], \
+    "无产物必须是**空数组** —— 前端靠 `undefined`（未知）与 `[]`（确定没有）分流"
+
+# 与产物清单**同源**：断「两处的对应关系」而非各自的存在性（模式 #52——只复制不改写
+# 与完全没做一模一样，两个各自正确的列表也可能互不相干）
+for _id, _e in _rows.items():
+    _md_kinds = sorted(a["kind"] for a in svc.list_artifacts(_id) if a["storage"] == "markdown")
+    assert _e["modes"] == _md_kinds, f"{_id} 的 modes 与产物清单不同源：{_e['modes']} != {_md_kinds}"
+
+# 补过产物位之后 HTTP 与 service 仍逐字段相等（第 1 节的判据在**有产物**的窗口上重跑）
+assert C.get("/api/transcripts").json() == svc.list_resources(limit=None).items, \
+    "modes 若加在路由层而不是 service 层，这里必红（CLI 会拿不到它，模式 #61）"
+
+print("PASS: 列表携带产物位（有产物非空 / 无产物空数组 / 与产物清单同源）")
+
+# ═══════════════════════════════════════════════════════════════
+# 10. `Style.NONE`（前端「无」）能一路走到产物元数据
+# ═══════════════════════════════════════════════════════════════
+
+# 2026-10-05 的真实故障：`_normalize_and_validate_style` 白名单里显式放行了 `"none"`
+# （而它当时**不在 `Style` 枚举里**），prompt 也正确地跳过了风格节，最后倒在落盘的
+# `Style(style)` 上 —— `ValueError: 'none' is not a valid Style`，**整条生成流失败**
+# （用户选「无」= 生成不出任何东西，且日志只有一行 ValueError）。
+# 修法是把 `none` 收进枚举（`Style.NONE`），让**校验的合法集 == 下游能构造的集**。
+# 本节钉住「构造」之后的**整条往返**：写盘 → 索引 → 读回仍是 `none`。
+S.save_markdown(
+    MarkdownView(id="md_none", transcript_id="tr_c3", content="# 无风格产物\n",
+                 style=Style.NONE, mode=GenerateMode.NOTES),
+    file_meta=artifact_meta("notes", doc_id="tr_c3", mode="notes", model="test-model"),
+)
+_got = C.get("/api/markdown/tr_c3").json()
+assert _got["style"] == "none", \
+    f"style='none' 必须**原样**存读（不是被改写成 plain/detailed）：{_got.get('style')!r}"
+# 读回的字符串要能**再次构造**——编辑保存路径（`routers/markdown_edit.py`）就是这么干的
+assert Style(_got["style"]) is Style.NONE, "读回的 style 必须能再次落到枚举上"
+assert C.get("/api/transcripts").json() == svc.list_resources(limit=None).items, \
+    "加了这个产物之后两侧仍必须逐字段相等"
+print("PASS: Style.NONE 落盘往返（写 none → 索引 → 读回 none / 两侧仍同源）")
+
 cleanup_stores()
 
 print("\n全部通过：HTTP 契约 == QueryService 输出"
-      "（列表 / 筛选 / 单资源 / 搜索 / 文件夹 / 产物 / 404 / cli 七端点）")
+      "（列表 / 筛选 / 单资源 / 搜索 / 文件夹 / 产物 / 404 / cli 七端点 / 产物位 / none 往返）")

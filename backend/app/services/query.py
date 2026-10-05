@@ -286,8 +286,20 @@ class QueryService:
             window = entries[start:start + size]
             has_more = start + size < len(entries)
 
+        # 「这篇有哪些产物」在索引里是一次内存查询（不读盘），随列表一起带出去。
+        # 前端靠它决定要不要发产物请求：没产物就不发 —— 而不是盲发一个必然 404 的
+        # 请求、再把它静默掉（那是把正常状态建模成 HTTP 错误的根源，见 `list_resources`
+        # 上方 `modes` 的消费方 `PreviewArea.loadDocContent`）。
+        # ⚠️ 放在**契约层**而非 HTTP 端点：CLI 与前端同源，两侧不会各读各的（#61）。
+        modes_map = self._store.get_artifact_modes([e["id"] for e in window])
+        items = []
+        for e in window:
+            item = self.project_resource_entry(e)
+            item["modes"] = modes_map.get(e["id"], [])
+            items.append(item)
+
         return Page(
-            items=[self.project_resource_entry(e) for e in window],
+            items=items,
             has_more=has_more,
             next_cursor=_encode_cursor(window[-1]) if (has_more and window) else None,
         )

@@ -140,6 +140,65 @@ describe('addDoc + selectDoc', () => {
   })
 })
 
+// ── markArtifact：产物落盘后补记产物位 ──
+//
+// 存在的理由是新鲜度：`docs` 是生成**开始之前**拉的快照，不补记的话「生成完 → 切到
+// 别的文档 → 切回来」会因 `modes` 里没有它而一个请求都不发，笔记看起来凭空消失。
+describe('markArtifact — 产物位补记', () => {
+  const mk = (id: string, modes?: string[]) => ({
+    id, title: id, sourceType: 'webpage', engine: '', contentHash: id, tags: [], createdAt: '2024-01-01',
+    ...(modes === undefined ? {} : { modes }),
+  })
+
+  it('已有 mode 的文档追加新产物，顺序与后端 sorted() 同源', () => {
+    useStore.setState({ docs: [mk('d1', ['polished'])] })
+    useStore.getState().markArtifact('d1', 'notes')
+    expect(useStore.getState().docs[0].modes).toEqual(['notes', 'polished'])
+  })
+
+  it('重复补记同一产物：值不变、且**引用不变**（set 按引用比较，白重建会拖累整棵树）', () => {
+    useStore.setState({ docs: [mk('d1', ['notes'])] })
+    const before = useStore.getState().docs[0]
+    useStore.getState().markArtifact('d1', 'notes')
+    expect(useStore.getState().docs[0]).toBe(before)
+  })
+
+  // ⚠️ 这条是整个修复里最容易写错的地方：把「不知道有没有」误变成「确定只有这一个」，
+  // 于是另一种产物从此**永远不请求**（切回来少一半内容，零报错）。
+  it('modes 为 undefined（未知）→ **原样不动**，绝不补成 [mode]', () => {
+    useStore.setState({ docs: [mk('d1')] })
+    const before = useStore.getState().docs[0]
+    useStore.getState().markArtifact('d1', 'notes')
+    expect(useStore.getState().docs[0]).toBe(before)
+    expect(useStore.getState().docs[0].modes).toBeUndefined()
+  })
+
+  it('docId 不存在 → 不动任何文档', () => {
+    useStore.setState({ docs: [mk('d1', ['notes'])] })
+    const before = useStore.getState().docs
+    useStore.getState().markArtifact('nope', 'polished')
+    expect(useStore.getState().docs).toBe(before)
+  })
+
+  it('只改目标文档，兄弟文档引用不变', () => {
+    useStore.setState({ docs: [mk('d1', ['notes']), mk('d2', ['notes'])] })
+    const sibling = useStore.getState().docs[1]
+    useStore.getState().markArtifact('d1', 'polished')
+    expect(useStore.getState().docs[1]).toBe(sibling)
+    expect(useStore.getState().docs[1].modes).toEqual(['notes'])
+  })
+
+  // 端到端语义：补记之后，门控判据必须真的放行（两条断言成对——只断言 modes 变了
+  // 会在「补记了但判据不认」的实现下绿）
+  it('补记后门控放行该产物（与 planArtifactRequests 成对）', async () => {
+    const { planArtifactRequests } = await import('../lib/artifactModes')
+    useStore.setState({ docs: [mk('d1', [])] })
+    expect(planArtifactRequests(useStore.getState().docs[0].modes)).toEqual({ notes: false, polished: false })
+    useStore.getState().markArtifact('d1', 'notes')
+    expect(planArtifactRequests(useStore.getState().docs[0].modes)).toEqual({ notes: true, polished: false })
+  })
+})
+
 // ── 多任务并发 ──
 
 describe('cancelOneTask — 逐任务取消', () => {

@@ -875,6 +875,24 @@ class Store:
         return sorted((dict(e) for e in entries),
                       key=lambda e: e.get("version", 0), reverse=True)
 
+    def get_artifact_modes(self, transcript_ids: list[str]) -> dict[str, list[str]]:
+        """批量取「各文档已有哪些产物」→ `{tx_id: ["notes", "polished"]}`（**不读盘**）。
+
+        列表端点（`GET /api/transcripts`）的热路径：每篇文档带不带这个信息，决定了
+        前端**要不要发产物请求**——没产物就不发，而不是盲发一个必然 404 的请求、再
+        靠 `recoverable` 把它静默掉（那是把正常状态建模成 HTTP 错误的根源）。
+
+        ⚠️ **复用 `list_markdown_entries`、不另写一份索引访问**：同一份真相读两遍写法
+        是模式 #54 的温床（同源数量记错比漏改更糟）。这里只在外面补一把锁——一次
+        加锁查完整个窗口，因为调用方每次刷新列表都要问全库一遍。
+        """
+        with self._lock:
+            return {
+                tx_id: sorted({e.get("mode", "") for e in self.list_markdown_entries(tx_id)
+                               if e.get("mode")})
+                for tx_id in transcript_ids
+            }
+
     def get_markdowns_by_transcript(self, transcript_id: str,
                                      mode: str = "", version: int | None = None) -> list[dict]:
         """获取指定 transcript 的 Markdown，支持 mode/version 过滤。

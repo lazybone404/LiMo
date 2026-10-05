@@ -728,6 +728,10 @@ export function GenPanel() {
             if (useStore.getState().processingTasks[taskKey]) return
             // 生成完成 → 新 entry 无 edited → 标记自动清除（方案 5.3）
             useStore.getState().setMarkdownEdited(mode, !!md?.edited)
+            // 产物已落盘 → 补记产物位。不补的话「生成完 → 切到别的文档 → 切回来」会因
+            // `modes` 里没有它而**一个请求都不发**，笔记看起来凭空消失（`docs` 是生成
+            // 开始之前拉的快照，模式 #52：成对操作只做了一半）。服务端确认存在才记。
+            if (md) useStore.getState().markArtifact(capturedId, mode)
             if (mode === 'notes') {
               setMarkdownMeta(md ? { id: md.id, style: md.style, mode: md.mode, version: md.version, edited: !!md.edited } : null)
               if (md) {
@@ -819,6 +823,10 @@ export function GenPanel() {
               const prev = useStore.getState().markdownVersions
               setMarkdownVersions([...fresh, ...prev.filter(v => !fresh.some(f => f.mode === v.mode))])
             }
+            // 取消也**落盘了 partial 产物** → 同样要补记产物位（见 handleGenerate 里
+            // refreshSaved 的同款注释：不补则切走再切回时新版产物不可见）
+            if (nmd) useStore.getState().markArtifact(capturedId, 'notes')
+            if (pmd) useStore.getState().markArtifact(capturedId, 'polished')
           }).catch(() => {})  // 网络异常忽略，取消态不阻塞 UI
         }
       },

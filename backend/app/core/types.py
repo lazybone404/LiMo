@@ -51,9 +51,17 @@ class Style(StrEnum):
     # 于是前端实际发出的 `"meeting"` 被静默改写成 detailed（用户选「会议纪要」
     # 得到「详细模式」，零报错）。兼容旧值 `meeting_minutes` 由 `STYLE_ALIAS`
     # 在**字符串层**承担——但前提是白名单校验发生在归一**之后**（见
-    # `routers/generate.py` 的注释）。同族的还有 `"none"`，它不在枚举里但合法。
+    # `routers/generate.py` 的注释）。
     MEETING = "meeting"
     TASK_ORIENTED = "task_oriented"
+    # `"none"` = 前端「无」按钮：**明确不注入风格条款**，是一个真实档位而非「没选」。
+    # ⚠️ 它曾长期**不在枚举里**，只在字符串层被 `_normalize_and_validate_style` 显式
+    # 放行 —— 于是 `Style("none")` 在**落盘那一刻**抛 `ValueError`，**整条生成流失败**
+    # （用户选「无」= 生成不出来），而那个校验函数的单测全绿：它只断言自己的返回值，
+    # 从不问这个值能不能被下游消费（模式 #51「能力存在 ≠ 该路径在用它」）。
+    # 加进枚举后，写入（`routers/generate.py`）与读回（`routers/markdown_edit.py`）
+    # 两个方向都不再需要特判；`notes_styles` 无此 key，取文案处靠 `!= "none"` 跳过。
+    NONE = "none"
 
 class GenerateMode(StrEnum):
     POLISHED = "polished"
