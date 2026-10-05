@@ -1,6 +1,6 @@
 import { useState, type ChangeEvent } from 'react'
 import { ChevronDown, Camera, Upload, FileText, X } from 'lucide-react'
-import { normalizeStyle, type TypeMeta } from './constants'
+import { normalizeStyle, isFormatVisible, type TypeMeta } from './constants'
 import { useStore } from '../../store'
 import { saveReference } from '../../api/references'
 import { getErrorMessage } from '../../api/core'
@@ -158,15 +158,20 @@ export function GenerateOptions(props: Props) {
       <div className="pt-3 border-t border-border-light">
         <span className="text-[12px] font-medium text-dimmed mb-2 block">笔记格式</span>
         <div className="space-y-1.5">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={p.formatToc} onChange={e => p.setFormatToc(e.target.checked)} className="w-4 h-4 accent-accent" />
-            <span className="text-[13px]">目录</span></label>
-          {p.typeMeta.isVideo && (
+          {/* ⚠️ 逐项可见性一律走 `isFormatVisible`（= 后端 `AVAILABLE_OPTIONS` 能力表），
+              不在 JSX 里另写 `isVideo`/`isMedia` 判据 —— 那正是 P0-01 的成因：
+              UI 显示一个后端不认的项 = 用户勾了、提交时被静默抹掉。 */}
+          {isFormatVisible('toc', p.typeMeta) && (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={p.formatToc} onChange={e => p.setFormatToc(e.target.checked)} className="w-4 h-4 accent-accent" />
+              <span className="text-[13px]">目录</span></label>
+          )}
+          {isFormatVisible('link', p.typeMeta) && (
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={p.formatLink} onChange={e => p.setFormatLink(e.target.checked)} className="w-4 h-4 accent-accent" />
               <span className="text-[13px]">原片跳转</span></label>
           )}
-          {p.typeMeta.isVideo && (
+          {isFormatVisible('screenshot', p.typeMeta) && (
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={p.formatScreenshot} onChange={e => p.setFormatScreenshot(e.target.checked)}
                 className="w-4 h-4 accent-accent" />
@@ -174,15 +179,19 @@ export function GenerateOptions(props: Props) {
               <span className="text-[10px] text-disabled">AI 在文中标记时间点 → 本地 ffmpeg 抽帧嵌入，不经过大模型</span>
             </label>
           )}
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={p.formatSummary} onChange={e => p.setFormatSummary(e.target.checked)} className="w-4 h-4 accent-accent" />
-            <span className="text-[13px]">AI 总结</span></label>
-          <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-            <input type="checkbox" checked={p.formatChart} onChange={e => p.setFormatChart(e.target.checked)} disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
-            <span className="text-[13px]">图表</span>
-            {isPolishedOnly
-              ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
-              : <span className="text-[10px] text-disabled">AI 选结构（9 种）→ 本地绘制 PNG 嵌入</span>}</label>
+          {isFormatVisible('summary', p.typeMeta) && (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={p.formatSummary} onChange={e => p.setFormatSummary(e.target.checked)} className="w-4 h-4 accent-accent" />
+              <span className="text-[13px]">AI 总结</span></label>
+          )}
+          {isFormatVisible('chart', p.typeMeta) && (
+            <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+              <input type="checkbox" checked={p.formatChart} onChange={e => p.setFormatChart(e.target.checked)} disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
+              <span className="text-[13px]">图表</span>
+              {isPolishedOnly
+                ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
+                : <span className="text-[10px] text-disabled">AI 选结构（9 种）→ 本地绘制 PNG 嵌入</span>}</label>
+          )}
         </div>
       </div>
     )}
@@ -215,29 +224,41 @@ export function GenerateOptions(props: Props) {
       <div className="pt-3 border-t border-border-light">
         <span className="text-[12px] font-medium text-dimmed mb-2 block">笔记格式</span>
         <div className="space-y-1.5">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={p.formatToc} onChange={e => p.setFormatToc(e.target.checked)} className="w-4 h-4 accent-accent" />
-            <span className="text-[13px]">目录</span></label>
-          {p.typeMeta.isPDF && <>
+          {isFormatVisible('toc', p.typeMeta) && (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={p.formatToc} onChange={e => p.setFormatToc(e.target.checked)} className="w-4 h-4 accent-accent" />
+              <span className="text-[13px]">目录</span></label>
+          )}
+          {/* ⚠️ 此前这两项同包在 `{isPDF && <>…</>}` 里 —— 而能力表里 `formulas` 有
+              **pdf/docx/pptx/text** 四类、`references` 只有 pdf。把「一组」当「一项」写，
+              症状是 Word/PPT/文本下后端支持、UI 藏起来（P0-01 的目标形态）；
+              若反过来只拆一半（留着 `isPDF` 给 formulas），则是「UI 显示、提交被抹掉」。 */}
+          {isFormatVisible('formulas', p.typeMeta) && (
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={p.formatFormulas} onChange={e => p.setFormatFormulas(e.target.checked)} className="w-4 h-4 accent-accent" />
               <span className="text-[13px]">公式集</span>
               <span className="text-[10px] text-disabled">LaTeX 独立汇总</span></label>
+          )}
+          {isFormatVisible('references', p.typeMeta) && (
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={p.formatReferences} onChange={e => p.setFormatReferences(e.target.checked)} className="w-4 h-4 accent-accent" />
               <span className="text-[13px]">参考文献</span>
               <span className="text-[10px] text-disabled">BibTeX + 可读列表</span></label>
-          </>}
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={p.formatSummary} onChange={e => p.setFormatSummary(e.target.checked)} className="w-4 h-4 accent-accent" />
-            <span className="text-[13px]">AI 总结</span></label>
-          <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-            <input type="checkbox" checked={p.formatChart} onChange={e => p.setFormatChart(e.target.checked)} disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
-            <span className="text-[13px]">图表</span>
-            {isPolishedOnly
-              ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
-              : <span className="text-[10px] text-disabled">AI 选结构（9 种）→ 本地绘制 PNG 嵌入</span>}</label>
-          {(p.typeMeta.hasImages) && (
+          )}
+          {isFormatVisible('summary', p.typeMeta) && (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={p.formatSummary} onChange={e => p.setFormatSummary(e.target.checked)} className="w-4 h-4 accent-accent" />
+              <span className="text-[13px]">AI 总结</span></label>
+          )}
+          {isFormatVisible('chart', p.typeMeta) && (
+            <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+              <input type="checkbox" checked={p.formatChart} onChange={e => p.setFormatChart(e.target.checked)} disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
+              <span className="text-[13px]">图表</span>
+              {isPolishedOnly
+                ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
+                : <span className="text-[10px] text-disabled">AI 选结构（9 种）→ 本地绘制 PNG 嵌入</span>}</label>
+          )}
+          {isFormatVisible('images', p.typeMeta) && (
             <>
               {/* 三个正交维度，独立组合，互不依赖：
                   保留图片引用 / OCR 提取文字 / AI 分析图片 可任意搭配 */}

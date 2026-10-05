@@ -88,9 +88,50 @@ export function getTypeMeta(sourceType: string, genOptions: Record<string, strin
       { name: 'polished', label: '整理版原文', description: '去噪音、修正错别字、合并段落' },
     ],
     generateLabel: isExcel ? '生成数据摘要' : isComposite ? '生成对比综述' : '生成',
-    availableFormats: genOptions[st] || [],
+    // ⚠️ 与后端**同源兜底**（`generation/prompt.py`：`AVAILABLE_OPTIONS.get(st,
+    // AVAILABLE_OPTIONS.get("text", []))`）。此前前端只 `genOptions[st] || []`，缺这一层
+    // 兜底 —— 空表本身无害，但它是**门控判据**（见 isFormatVisible）：为空 = 该类型下
+    // 所有格式项连渲染都不渲染，而后端其实支持。
+    availableFormats: genOptions[st] ?? genOptions['text'] ?? [],
     tabs,
   }
+}
+
+/**
+ * 笔记格式项在当前类型下是否可见 —— **单一真相源**。
+ *
+ * `GenerateOptions` 的渲染条件与 `GenPanel` 提交前的格式校验此前各写一份判据
+ * （前者按 `isPDF`/`isVideo`/`hasImages` 硬编码，后者注释自称「镜像 GenerateOptions
+ * 显示条件」）。两处漂移的失效方式很隐蔽：UI 显示一个后端能力表不认的项 = 用户勾了、
+ * 提交时被 `GenPanel` 的 `.filter(f => availableFormats.includes(f))` 静默抹掉。
+ *
+ * 判据 = 后端下发的能力表（`AVAILABLE_OPTIONS`），前端不另存一份；
+ * 仅 `images` 额外受「这类文档有图片」约束 —— 能力表说这类**能**提取图片，
+ * 但这篇文档未必有（`hasImages` 按 sourceType 判，与后端键集刻意分开）。
+ */
+export function isFormatVisible(fmt: string, m: TypeMeta): boolean {
+  if (!m.availableFormats.includes(fmt)) return false
+  if (fmt === 'images') return m.hasImages
+  return true
+}
+
+/** 风格档位的全局默认值（2026-10-05 起 = 通俗）。改它要同步后端 8 处，见 CLAUDE.md。 */
+export const DEFAULT_STYLE = 'plain'
+
+/**
+ * 切换文档类型后应选中的风格档 —— **条件重置**：只在本档对新类型不合法时才动它。
+ *
+ * 两种写错的方式各有症状，且都不报错：
+ *   - **无条件重置**（`return DEFAULT_STYLE`）→ 冲掉用户在两类之间**共享的合法档**
+ *     （`plain`/`detailed`/`academic`/`business` 在视频与文档两套里都有），
+ *     表现为「我只是换了个文档，刚选的风格没了」；
+ *   - **完全不重置** → 带着一个本类型表里没有的 key 去生成，后端
+ *     `lookup.get(style, "")` 静默返回空串，产物无风格且两侧零报错（P0-02）。
+ *
+ * `none`（不套风格）在任何类型下都合法，故永远保持。
+ */
+export function reconcileStyle(style: string, styleKeys: string[]): string {
+  return new Set(['none', ...styleKeys]).has(style) ? style : DEFAULT_STYLE
 }
 
 const STYLE_ALIAS: Record<string, string> = {

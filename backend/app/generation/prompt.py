@@ -910,6 +910,14 @@ def build_notes_prompt(
         style = normalize_style(style)
         lookup = DOC_NOTE_STYLES if is_doc else VIDEO_NOTE_STYLES
         style_text = lookup.get(style, "")
+        if not style_text:
+            # ⚠️ `.get(style, "")` 会**静默吞掉**「档位不在本类型的表里」——正常路径不该发生
+            # （前端按类型过滤档位列表，见 GenPanel 的 styleKeys + 跨类型条件重置），
+            # 但直调 API、或前后端档位集漂移时仍会送进来。不记的话表现是：产物「没有风格」
+            # 而两侧都零报错 —— 正是 P0-02 修的那类静默。
+            logger.warning(
+                "笔记风格档位不在当前类型的可用表中，本次按无风格生成: "
+                "style=%s is_doc=%s source_type=%s", style, is_doc, source_type)
 
     # 格式选项
     available = AVAILABLE_OPTIONS.get(source_type, AVAILABLE_OPTIONS.get("text", []))

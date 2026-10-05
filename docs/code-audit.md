@@ -32,7 +32,7 @@
 
 **核实纪律**：Explore 报回的每条都做了机械二次核实。已剔除 **4 条**假阳性（见文末，第 4 条由 2026-10-05 开工前纠偏补入），并修正 **11 处**行号 / 路径错误——其中 `#4` 的 `except` 行、`#19` 的三处「偏 1」全是**引用粒度选错**（引了字典定义行而应引条目行），而非数字算错。
 
-**条目计数**：P0 **4** / P1 **11**（原 10，剔除 1 假阳性、新增 2）/ P2 **10** = **25 项**。
+**条目计数**：P0 **4** / P1 **10** / P2 **11** = **25 项**（原报 24：剔除 P1-09 假阳性 −1、新增 P1-15/P1-16 +2；2026-10-05 实施时 **P1-15 降为 P2**，编号为免牵动多处引用而保留）。
 
 ### 「刻意为之」判据（跨条目统一）
 
@@ -59,7 +59,12 @@
 **半 B —— 审计漏项：`availableFormats` 两端兜底不同源**
 
 - **证据**：`AVAILABLE_OPTIONS`（`prompt.py:666-676`）只有 8 个键（video/audio/webpage/pdf/docx/pptx/xlsx/text），**没有 `epub`/`document`/`chat`/`image`**；后端取值走兜底 `prompt.py:683` = `AVAILABLE_OPTIONS.get(st, AVAILABLE_OPTIONS.get("text", []))`，而前端 `components/gen-panel/constants.ts:91` 是 `genOptions[st] || []`——**没有 text 兜底**。
-- **用户可见症状（今天就已存在）**：`GenPanel.tsx:581` 提交时真按它过滤 `.filter(f => typeMeta.availableFormats.includes(f))` → 对 epub/document，**用户勾的任何格式都被静默抹掉**；epub 连 toast 都没有（`formatVisible` `:594-600` 有一条 `typeMeta.sourceType !== 'epub'` 把它排除），document 反而弹一条**误导性** toast「当前内容类型不支持：目录、小结」（后端其实支持）。
+- **用户可见症状**：`GenPanel.tsx:581` 提交时真按它过滤 `.filter(f => typeMeta.availableFormats.includes(f))`——「空表 ⇒ 勾了也被抹掉」这条通道**确实存在**，但 ⚠️ **两个受影响的类型今天都走不到**（2026-10-05 实施时实测修正）：
+  - `document` **作为 sourceType 不可达**：`_adapter_to_source_type`（`ingest.py:400-420`）对 document 适配器**总是**细分出 `pdf/docx/pptx/xlsx/epub`（都不命中则兜底 `pdf`），**永不返回 `"document"`**；
+  - `epub` 虽可达且确实无键，但格式区的外层条件（`GenerateOptions.tsx:214` 的 `sourceType !== 'epub'`）**根本不渲染**——没有可勾的项，也就无从被抹。
+
+  故半 B 的准确性质是**防御未来的结构不一致**（后端加键 / 前端加类型时两侧不同源），**不是**「今天正在抹用户勾选」。原文把一条不可达的路径写成了现网症状。
+  反过来说，**半 A 会把它变成真问题**：`formulas` 一旦改走 `availableFormats`，这两类若哪天进入渲染分支，空表会让「公式集」直接消失。
 - **为什么必须并入半 A**：半 A 把 `formulas` 改成走 `availableFormats` 后，这两类的「公式集」勾选框会**直接消失**——后端支持、UI 隐藏，**正是 P0-01 要修的那个形状**。
 - **修复方案**：`constants.ts:91` 与后端**同源兜底**（`genOptions[st] ?? genOptions['text'] ?? []`），或给 `AVAILABLE_OPTIONS` 补齐 epub/document 键。
 - **危险度判据**：用户可直接触发（勾了等于没勾 / 勾不到）× 中（功能不可达且部分场景连提示都没有）。
@@ -95,7 +100,7 @@
 
 ---
 
-## P1 — 静默失效 / 死代码（11 项）
+## P1 — 静默失效 / 死代码（10 项）
 
 ### P1-05-style-fallback-split 非法 style 兜底双轨
 
@@ -155,12 +160,17 @@
 - **判据**：按「刻意为之」判据属**保留为待办**（注释只承认现状）。
 - **备注**：这是早先单列的「`detectModels` 死端点」与「provider 默认表只剩 2 家」两条的合并——同一条死路径的两面，分开计数会抬高总数。
 
-### P1-15-supports-document-unwired `supports_document` 能力门从未接线 ⭐新增
+### P1-15-supports-document-unwired `supports_document` 是**判据的第二份副本**（⚠️ 实施时降为 **P2**）
 
-- **证据**：`app/llm/service.py:120` 的 `supports_document`（属性定义 `:115`）**全仓零调用点**——仅有的两处提及是它自己的 docstring 与 `core/config.py:54` 的一句注释。它是**三个同构能力门里唯一没接线的**：`supports_vision` 用于 `service.py:202` + `routers/process.py:145`；`supports_reasoning` 用于 `generation/generator.py:173/267/298-300` + `routers/generate.py:828/833/979`。
-- **用户可见症状**：前端 `GenPanel.tsx:272-274` 手写了一份等价判据（`capabilities.includes('document')`）并 gate 住了 UI，**后端那份从未接线 → 直调 API 传 `doc_direct=true` 可绕过**。而直传模式下 `rawText` **不进 prompt**，模型不认 `file` 块则**什么都看不到、零报错**——产出一篇凭空捏造的笔记。
-- **修复方案**：后端补 gate（在 `doc_direct` 生效前校验），不支持则**显式报错**——不做降级：降级为文本模式 = 改变语义（用户要的是直传）。
-- **危险度判据**：UI 路径走不到（前端挡住了）× 防御纵深缺口。这是模式 #54「同一契约写在两处、被覆盖的那处不报错」与 #51「能力存在 ≠ 该路径在用」的合体。
+> **⚠️ 2026-10-05 实施时降级并改方案。** 原文「能力门**从未接线**、直调 API 可绕过」的**前提不成立**：后端 gate **存在且有效** —— `content_preparer.py:307-310` 对 `llm_config["capabilities"]` 做校验，未标 `document` 则记 warning 并**返回 `None`（保持文本模式）**；而 `tests/test_doc_understand.py:191-202` 对**三态都有实测覆盖**（未标 → 文本模式 / 标了 → 直传 / 无原件路径 → 文本模式）。直调 API 传 `doc_direct=true` 会被这一层挡下，不存在「模型什么都看不到」的路径。
+>
+> 真正的性质是**同一个判据被写了两份**：`LLMService.supports_document`（`service.py:115/120`）**零调用点**，是纯死属性；真正干活的是 `content_preparer` 里的那份。这是模式 #54「同一契约写在两处、没人用的那处不报错」的形态，**不是** #51「能力存在但该路径没在用」。
+>
+> **动作因此改为「收敛为单一真相源」，绝不补报错 gate** —— 现有行为是**降级为文本模式**（用户仍拿得到产物）；补一个「显式报错」等于把一次可用的降级变成一次失败的请求，是**行为倒退**。
+
+- **证据**：`app/llm/service.py:120` 的 `supports_document`（属性定义 `:115`）**全仓零调用点**——仅有的两处提及是它自己的 docstring 与 `core/config.py:54` 的一句注释。同构的另两个能力门都**确实接线**：`supports_vision` 在 `service.py:202` + `routers/process.py:145`；`supports_reasoning` 在 `generation/generator.py:173/267/298-300` + `routers/generate.py:828/833/979`。
+- **修复方案（已改）**：把两处判据收敛为**一处**，二选一——(a) 让 `content_preparer` 调 `LLMService.supports_document`；(b) 删掉该属性。**倾向 (a)**：能力位判据住在 `LLMService` 上才与它的两个兄弟一致。
+- **危险度判据（已改）**：无用户可见症状 × **维护性**——两份判据会漂移（改一份、漏一份，且**不报错**）。
 
 ### P1-16-pdf-silent-excepts `docling.py`（活跃 PDF 引擎）内六处静默 `except` ⭐新增
 
@@ -262,6 +272,19 @@
 | 「默认 style 四处不一致」 | 分属不同语义层次（默认值 vs 无法还原占位），非同一件事 |
 | **原 P1-09：`app/engines/docling.py` 是死文件** | `engines/__init__.py:307` 导入、`:313-315` 实例化并注册为 **`("doc", "pypdfium2")`——PDF 默认引擎**。删了 = 删掉主引擎。文件内的静默 `except` 已另立 **P1-16** |
 
+## 实施阶段新证实的报告错误（2026-10-05，动手修 P0 四项时）
+
+除「开工前纠偏」那三处外，真正开始改代码后又核实出 4 处不符 —— 记录在此，**同一份报告不要被后来的读者当成可信基线**：
+
+| # | 报告原述 | 实际 |
+|---|---|---|
+| 1 | P1-15「`supports_document` 能力门**从未接线**，直调 API 可绕过」 | 后端 gate **存在且有效**（`content_preparer.py:307-310`：未标 `document` → warning + 保持文本模式），`test_doc_understand.py:191-202` **有三态实测**。真相是**判据的第二份副本**（`service.py:120` 零调用点）→ 降为 P2，动作改为「收敛为单一真相源」，**不补报错 gate**（那会把现有降级变成失败 = 行为倒退） |
+| 2 | P0-01 半 B「epub/document 用户勾的格式被静默抹掉（**今天就已存在**）」 | 通道成立，但**两个类型今天都不可达**：`document` 作为 sourceType 不可达（`_adapter_to_source_type` 永不返回它）、`epub` 被格式区外层条件排除 → 性质是**防御未来结构不一致**，不是现网症状。**半 A 才会把它变成真问题** |
+| 3 | P0-03 落点写作 `app/export.py` | 实为 `app/routers/export.py`。**删代码的条目里，路径错比行号错更危险**（照原文去删 = 找不到文件 = 有可能去改另一个同名概念的位置） |
+| 4 | 「后端测试全绿」（隐含前提） | `test_folders_api.py::test_batch_tag_and_delete` **全量跑时失败、单独跑通过**。根因：`_setup()` 注入临时 `Store` 却**漏注入 `search_engine`** —— 它的赋值在 `main.py` 的 startup event 里，而该文件刻意不进 TestClient 上下文，于是拿到**先前某个跑了 startup 的测试留下的、指向已删 tempdir 的实例** → `unable to open database file` → `BATCH_ALL_FAILED`。**既有缺陷，非本轮引入**（`git stash` 后复现确认），已随手修（`_setup` 补 `SearchEngine(d)`） |
+
+⚠️ 第 4 条的意义超出它本身：**「全绿」这个门禁判据此前不可信，而每批提交都依赖它判定**。修好后后端基线 145 → **148** passed（含 P0-04 新增 3 条）；前端 **411** passed / 31 文件。
+
 ## 修复时的验证建议
 
 本报告不含代码改动，故本轮未跑门禁。修任一条目后，按项目既有门禁验证：
@@ -279,6 +302,6 @@
 | P0-02 | 切类型后 style **条件重置**（共享档如 plain 不被冲掉）；`describe.each` 逐类型覆盖 |
 | P0-03 | `ExportPanel` 无该选项 + **`formula_md` 的 `render` 取值已不存在于任何请求模型/调用点** + 后端无 matplotlib 分支 |
 | P0-04 | 删除文档后 `/api/search` 不再命中；**且** `engine` 为 `None` 时有 warning（对照实验：改回 `pass` 必红） |
-| P1-15 | 直调 `POST /generate/{id}` 带 `doc_direct=true` + 模型无 `document` 位 → **显式报错**（对照：有该位则通过） |
+| P1-15 | ~~直调 API 显式报错~~ → 后端 gate **已存在且有测试**（`test_doc_understand.py:191-202` 三态）。新断言：收敛后 `supports_document` 与 `content_preparer` 的判据**只应存在一处**（AST 源码守卫，模式 #54） |
 | P1-16 | 造一张嵌入失败的图 → 断言 warning 被记录（模式 #38：断言必须有区分力） |
 | P2-22 | 三处 `ENGINE_CATS` 集合相等（AST 源码守卫，模式 #54） |

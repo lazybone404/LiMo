@@ -120,11 +120,19 @@ async def delete_transcript(tx_id: str, request: Request, store=Depends(get_stor
                         status_code=404, recoverable=True)
 
     store.delete_transcript(tx_id)
-    # 从全文索引中移除
-    try:
-        _engine = getattr(request.app.state, 'search_engine', None)
-        if _engine: _engine.delete(tx_id)
-    except Exception: pass
+    # 从全文索引中移除。
+    # ⚠️ 这一步**不能静默失败**：store 里文档已经删了、索引里却还留着 → 搜索仍能命中，
+    # 点开是 404（「幽灵命中」）。而 `except Exception: pass` 让它**零痕迹**：
+    # 用户只看到「删了但还搜得到」，日志里什么都没有。批量路径（见下）就是这么处理的。
+    engine = getattr(request.app.state, "search_engine", None)
+    if engine is None:
+        log.warning("全文索引未就绪，已删除的文档可能仍有搜索残留", tx_id=tx_id)
+    else:
+        try:
+            engine.delete(tx_id)
+        except Exception as e:
+            log.warning("从全文索引移除失败，搜索可能仍命中该文档",
+                        tx_id=tx_id, err=str(e)[:120])
     return {"status": "deleted", "id": tx_id}
 
 

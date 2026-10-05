@@ -93,7 +93,10 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
   }
 
   // ── 设置 ──
-  const [formulaMd, setFormulaMd] = useState<'keep' | 'render' | 'remove'>('keep')
+  // ⚠️ 只有 keep / remove —— "render"（渲染为图片）已于 2026-10-06 移除：
+  // 它依赖 matplotlib，而 matplotlib 不在依赖里，该选项**自上线起从未生效**
+  // （静默降级回原文，用户以为设了其实没设）。见 CHANGELOG。
+  const [formulaMd, setFormulaMd] = useState<'keep' | 'remove'>('keep')
   const [imageMd, setImageMd] = useState<'separate' | 'inline' | 'none'>('separate')
   const [formulaPlain, setFormulaPlain] = useState<'remove' | 'unicode'>('remove')
   const [htmlTheme, setHtmlTheme] = useState<'paper' | 'github' | 'minimal' | 'limo'>('limo')
@@ -131,7 +134,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
       lines.push(`共 ${totalFiles} 个文件`)
       if (formats.length > 1) lines.push(`(${formats.map(f => FORMAT_META[f].label).join(' + ')})`)
     }
-    if (formats.includes('md')) lines.push(`MD: 公式${formulaMd === 'keep' ? '保留' : formulaMd === 'render' ? '渲染图片' : '移除'} · 图片${imageMd === 'separate' ? '独立文件夹' : imageMd === 'inline' ? 'base64内嵌' : '不包含'}`)
+    if (formats.includes('md')) lines.push(`MD: 公式${formulaMd === 'keep' ? '保留' : '移除'} · 图片${imageMd === 'separate' ? '独立文件夹' : imageMd === 'inline' ? 'base64内嵌' : '不包含'}`)
     if (formats.includes('html')) lines.push(`HTML: ${htmlTheme === 'limo' ? 'LiMo 预览栏' : htmlTheme === 'paper' ? '学术论文' : htmlTheme === 'github' ? 'GitHub' : '极简'}样式`)
     if (formats.includes('docx')) lines.push(`Word: 图片${imageMd === 'none' ? '不包含' : '内嵌'} · 公式保留 LaTeX 原文`)
     if (formats.includes('plain')) lines.push(`纯文本: 公式${formulaPlain === 'remove' ? '移除' : 'Unicode'}`)
@@ -255,7 +258,6 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
                       <select value={formulaMd} onChange={e => setFormulaMd(e.target.value as typeof formulaMd)}
                         className="flex-1 px-2.5 py-1.5 bg-elevated border border-border-default rounded-lg text-[11px] outline-none">
                         <option value="keep">公式：保留 LaTeX</option>
-                        <option value="render">公式：渲染为图片</option>
                         <option value="remove">公式：移除</option>
                       </select>
                       <select value={imageMd} onChange={e => setImageMd(e.target.value as typeof imageMd)}

@@ -631,64 +631,6 @@ def _unicode_formulas(md: str) -> str:
     return md
 
 
-def _render_formulas_to_images(md: str) -> str:
-    """将 Markdown 中的公式渲染为 base64 PNG 嵌入"""
-    md = _normalize_latex_delimiters(md)
-    import base64
-    try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-    except ImportError:
-        return md  # matplotlib 不可用，保留原文
-
-    def _latex_to_png(latex: str) -> str:
-        """渲染单个 LaTeX 公式为 PNG base64 data URL。
-        将常见 LaTeX 命令转换为 matplotlib mathtext 兼容格式。"""
-        # LaTeX → mathtext 兼容转换
-        expr = latex
-        expr = re.sub(r'\\text\{([^}]*)\}', r'\\mathrm{\1}', expr)   # \text → \mathrm
-        expr = re.sub(r'\\mathcal\{([^}]*)\}', r'\1', expr)           # \mathcal → 去掉（mathtext 不支持）
-        expr = re.sub(r'\\mathbb\{([^}]*)\}', r'\\mathbf{\1}', expr)  # \mathbb → \mathbf
-        expr = re.sub(r'\\bm\{([^}]*)\}', r'\\mathbf{\1}', expr)      # \bm → \mathbf
-        expr = re.sub(r'\\math(?:scr|frak|cal)\{([^}]*)\}', r'\1', expr)
-        try:
-            # 根据公式长度动态计算尺寸
-            w = max(len(expr) * 0.12 + 0.6, 1.5)
-            h = max(0.55, min(1.2, len(expr) * 0.008 + 0.45))
-            fig, ax = plt.subplots(figsize=(w, h))
-            ax.axis('off')
-            ax.text(0.5, 0.5, f"${expr}$", fontsize=14, ha='center', va='center',
-                    transform=ax.transAxes)
-            buf = io.BytesIO()
-            fig.savefig(buf, format='png', dpi=100, bbox_inches='tight', pad_inches=0.05,
-                        facecolor='white', edgecolor='none')
-            plt.close(fig)
-            buf.seek(0)
-            return f"data:image/png;base64,{base64.b64encode(buf.read()).decode()}"
-        except Exception:
-            plt.close('all')
-            return f"[公式: {latex[:60]}]"
-
-    # 先处理 $$...$$（块级公式）
-    def _replace_block(m):
-        latex = m.group(1).strip()
-        png = _latex_to_png(latex)
-        return f'\n\n![公式]({png})\n\n'
-
-    md = re.sub(r'\$\$\s*(.+?)\s*\$\$', _replace_block, md, flags=re.DOTALL)
-
-    # 处理 $...$（行内公式，TeX 惯例：$ 前后不邻数字或空白）
-    def _replace_inline(m):
-        latex = m.group(1).strip()
-        png = _latex_to_png(latex)
-        return f'![公式]({png})'
-
-    md = re.sub(r'(?<!\d)\$(?=\S)(.+?)(?<=\S)\$(?!\d)', _replace_inline, md)
-
-    return md
-
-
 # ── 图片收集/重写（导出自包含核心）──
 
 # 新格式：assets/xxx（磁盘相对路径）
@@ -1155,7 +1097,7 @@ class ExportCustomRequest(BaseModel):
     doc_ids: list[str] = []
     formats: list[str] = ["md"]          # md, html, plain, docx
     content_tabs: list[str] = ["summary"]  # summary, polished, transcript, ...
-    formula_md: str = "keep"             # keep, render, remove（docx 恒保留原文，见下）
+    formula_md: str = "keep"             # keep, remove（docx 恒保留 LaTeX 原文，见下）
     image_md: str = "separate"           # separate, inline, none
     formula_plain: str = "remove"         # remove, unicode
     html_theme: str = "limo"       # limo 匹配应用内预览
@@ -1273,13 +1215,9 @@ def export_custom(data: ExportCustomRequest, request: Request, store=Depends(get
 
                     # 公式处理
                     if fmt == "md":
-                        if data.formula_md == "render":
-                            processed = _render_formulas_to_images(processed)
-                        elif data.formula_md == "remove":
+                        if data.formula_md == "remove":
                             processed = _remove_formulas(processed)
                     elif fmt == "html":
-                        if data.formula_md == "render":
-                            processed = _render_formulas_to_images(processed)
                         processed = _build_selfcontained_html(processed, tx.get("title", doc_title), data.html_theme)
                         ext = "html"
                     elif fmt == "plain":
@@ -1289,7 +1227,7 @@ def export_custom(data: ExportCustomRequest, request: Request, store=Depends(get
                         # Word：用**原始 content**（非 processed）——image_md=inline 已把图片
                         # 换成 base64 data URI，那条路是给自包含 HTML 用的；docx 只要原始
                         # `![alt](assets/x.png)` + 收集好的 imgs 字典即可内嵌。
-                        # 公式恒保留 LaTeX 原文（render 路径依赖 matplotlib，不在依赖内）。
+                        # 公式恒保留 LaTeX 原文（md/html 侧的 render 路径已移除，见 CHANGELOG）。
                         processed = markdown_to_docx(content, tx.get("title", doc_title), images=imgs)
                         ext = "docx"
 
@@ -1395,13 +1333,9 @@ async def _build_export_zip(
                         processed = _rewrite_image_paths(processed, name_map, prefix="images/")
 
                     if fmt == "md":
-                        if data.formula_md == "render":
-                            processed = _render_formulas_to_images(processed)
-                        elif data.formula_md == "remove":
+                        if data.formula_md == "remove":
                             processed = _remove_formulas(processed)
                     elif fmt == "html":
-                        if data.formula_md == "render":
-                            processed = _render_formulas_to_images(processed)
                         processed = _build_selfcontained_html(processed, tx.get("title", doc_title), data.html_theme)
                         ext = "html"
                     elif fmt == "plain":
@@ -1411,7 +1345,7 @@ async def _build_export_zip(
                         # Word：用**原始 content**（非 processed）——image_md=inline 已把图片
                         # 换成 base64 data URI，那条路是给自包含 HTML 用的；docx 只要原始
                         # `![alt](assets/x.png)` + 收集好的 imgs 字典即可内嵌。
-                        # 公式恒保留 LaTeX 原文（render 路径依赖 matplotlib，不在依赖内）。
+                        # 公式恒保留 LaTeX 原文（md/html 侧的 render 路径已移除，见 CHANGELOG）。
                         processed = markdown_to_docx(content, tx.get("title", doc_title), images=imgs)
                         ext = "docx"
 

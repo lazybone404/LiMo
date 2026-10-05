@@ -13,7 +13,7 @@ import { ImportSection } from './ImportSection'
 import { GenerateOptions } from './GenerateOptions'
 import { ImageModeCards } from './ImageModeCards'
 import { EpubInterpretPanel } from '../preview/EpubInterpretPanel'
-import { EXT_TO_SUBTYPE, getSubScenario, getTypeMeta, normalizeStyle } from './constants'
+import { EXT_TO_SUBTYPE, getSubScenario, getTypeMeta, normalizeStyle, reconcileStyle } from './constants'
 import { useTaskRunner } from '../../hooks/useTaskRunner'
 
 // 会话级标记：参考文件意图缺失提醒只弹一次（无论确认/取消，用户已理解机制）
@@ -179,6 +179,23 @@ export function GenPanel() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typeMeta.coreProducts])
+
+  // 切换文档类型时，确保 style 仍是当前类型的合法档位
+  useEffect(() => {
+    // ⚠️ **条件重置**（照上方 selectedCore 的语义）：仅当当前选中的档不在新类型的可用集里
+    // 才重置。写成「切类型就无条件重置」会冲掉用户在两类之间**共享的合法档**
+    // （`plain`/`academic`/`business` 在视频与文档两套里都有），
+    // 症状是「我只是换了个文档，选的风格没了」——而那是用户自己的选择。
+    //
+    // 修的是：style 此前从 localStorage 恢复后**再不随类型变化**，于是「PDF 选 IMRaD
+    // → 切到视频」会带着一个视频风格表里不存在的 key 去生成。后端拿不到风格文本，
+    // 静默无风格（`prompt.py` 的 `lookup.get(style, "")`）——两侧都零报错。
+    const next = reconcileStyle(style, styleKeys)
+    if (next !== style) setStyle(next)
+    // ⚠️ 依赖用 `styleKeys.join(',')` 而非数组本身：styleKeys 每次 render 都是新数组，
+    // 直接进依赖会每帧触发（effect 内又 setState → 死循环）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [styleKeys.join(','), style])
 
   useEffect(() => {
     if (!fileObj) return
@@ -580,27 +597,17 @@ export function GenPanel() {
       formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
     ].filter(Boolean).filter(f => typeMeta.availableFormats.includes(f as string)).join(',')
 
-    // P1-5：被 availableFormats 静默过滤的格式一次性 toast 提示（不静默丢弃）。
-    // 只提示「当前类型 UI 可见」的格式（镜像 GenerateOptions 显示条件）——UI 不可见的
-    // 是 genPrefs 跨类型持久化残留（如 PDF 勾过「保留文档图片」→ 切到文本/视频），
-    // 该类型本就不支持、用户无法在 UI 上操作，静默忽略即可，避免每次生成都弹骚扰。
+    // genPrefs 跨类型持久化会让「另一类型勾过的格式」跟着进来（如 PDF 勾过「保留文档图片」
+    // → 切到文本）。它们不在本类型的能力表里，上一行的 `.filter` 已清掉，此处只留一条
+    // 开发者日志（不是给用户看的：该类型本就无处可勾，用户没有可采取的动作）。
+    // ⚠️ 此前这里还有一条面向用户的 toast（「当前内容类型不支持：…」）——**已删**，不是
+    // 丢了功能：它的触发条件是「UI 可见 **且** 不在能力表里」，而自 P0-01 起格式项的
+    // UI 可见性直接由能力表派生（`constants.isFormatVisible`），两者互为充要 → 交集恒空。
     const droppedAll = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
       formatSummary && 'summary', formatChart && 'chart',
       formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
     ].filter(Boolean).map(String).filter(f => !typeMeta.availableFormats.includes(f))
     if (droppedAll.length > 0) console.warn('[GenPanel] 生成格式被当前类型过滤:', droppedAll, 'sourceType=', typeMeta.sourceType)
-    const formatVisible = (f: string): boolean => {
-      if (f === 'link' || f === 'screenshot') return typeMeta.isVideo
-      if (f === 'formulas' || f === 'references') return typeMeta.isPDF
-      if (f === 'images') return typeMeta.hasImages
-      return !typeMeta.isExcel && !typeMeta.isImage && typeMeta.sourceType !== 'epub' &&
-        (typeMeta.isMedia || typeMeta.sourceType === 'text' || typeMeta.isDoc)
-    }
-    const droppedFormats = droppedAll.filter(formatVisible)
-    if (droppedFormats.length > 0) {
-      const fmtNames: Record<string, string> = { toc: '目录', link: '原片跳转', screenshot: '原片截图', summary: 'AI 总结', chart: '图表', formulas: '公式集', references: '参考文献', images: '保留文档图片' }
-      addToast(`当前内容类型不支持：${droppedFormats.map(f => fmtNames[f] || f).join('、')}`, 'info')
-    }
 
     const streamMode = selectedCore.join(',')
     const isBoth = selectedCore.includes('notes') && selectedCore.includes('polished')

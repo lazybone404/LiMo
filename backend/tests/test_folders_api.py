@@ -28,6 +28,14 @@ def _setup(n_docs: int = 3) -> tuple[TestClient, Store, str]:
     d = tempfile.mkdtemp(prefix="limo_folders_api_")
     store = Store(d)
     app.state.store = store
+    # ⚠️ `search_engine` 与 `store` 一样必须显式注入 —— 它的赋值在 `main.py` 的
+    # **startup event** 里，而本文件刻意不进 TestClient 上下文（不跑 startup）。
+    # 不注入时的症状不是「没有 engine」而是**拿到别的测试留下的那个**：
+    # 先前某个跑了 startup 的文件把 `app.state.search_engine` 指到自己的临时目录，
+    # 那目录随后被 rmtree → 本文件批量删除时 `unable to open database file`
+    # → BATCH_ALL_FAILED（**单独跑这条绿、全量跑才红**，典型的顺序依赖）。
+    from app.core.search import SearchEngine
+    app.state.search_engine = SearchEngine(d)
     for i in range(n_docs):
         store.save_transcript(RawTranscript(
             id=f"tr_{i}", title=f"文档{i}", source_type=SourceType.WEBPAGE,
