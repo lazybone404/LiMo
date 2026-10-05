@@ -261,7 +261,7 @@ export function TextareaMarkdownEditor({
         <button
           onClick={() => onSave()}
           disabled={!dirty || saving}
-          className="px-4 py-1.5 text-[12px] bg-accent text-white rounded-lg hover:bg-accent-hover disabled:opacity-40 disabled:pointer-events-none transition-colors flex items-center gap-1"
+          className="px-4 py-1.5 text-[12px] bg-accent text-on-accent rounded-lg hover:bg-accent-hover disabled:opacity-40 disabled:pointer-events-none transition-colors flex items-center gap-1"
         >{saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} 保存</button>
       </div>
     </div>

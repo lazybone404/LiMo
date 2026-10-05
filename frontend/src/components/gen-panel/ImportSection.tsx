@@ -330,7 +330,7 @@ export function ImportSection(props: Props) {
 
       {/* 导入按钮 */}
       <button onClick={p.handleImport} disabled={isDisabled}
-        className="w-full py-1.5 bg-accent text-white text-[12px] font-medium rounded-full hover:bg-accent-hover disabled:opacity-40 transition-all">
+        className="w-full py-1.5 bg-accent text-on-accent text-[12px] font-medium rounded-full hover:bg-accent-hover disabled:opacity-40 transition-all">
         {p.importing
           ? (IMPORTING_LABELS[p.inputType] || '导入中...')
           : MEDIA_INPUT_TYPES.includes(p.inputType) && p.fileObj ? '导入文件'

@@ -520,51 +520,59 @@ DOC_STYLE_MAP = DOC_NOTE_STYLES
 # ── Excel 数据摘要辅助函数 ──
 
 def _parse_markdown_table(data_text: str) -> dict:
-    """从 Markdown 表格文本中提取结构化摘要"""
+    """从 Markdown 表格文本中提取结构化摘要。
+
+    ⚠️ **不预设幻影工作表**（P1-07）：此前 `sheets` 一开始就塞了一条
+    `{"name": "Sheet1"}`，而 `doc_excel.py:138` 的输出**每份都以 `## Sheet: 名` 开头**
+    → 那条空壳永远拿不到 `rows`/`cols`（它在 `## Sheet:` 行上被换掉、却留在列表里）
+    → `_build_data_summary` 读 `sh['rows']` 抛 KeyError → **100% 走 `except` 兜底**，
+    「结构化摘要」这条分支从来没有真正跑过，而日志里一个字都没有。
+
+    现在：工作表只在见到 `## Sheet:` 时才建；无头数据（纯 Markdown 表格）在遇到
+    第一行表格时惰性建一个兜底名 —— 保留原意图，但不制造空壳。
+    """
     import re
     sheets: list[dict] = []
-    current_sheet = {"name": "Sheet1"}
-    sheets = [current_sheet]
+    current_sheet: dict | None = None
     current_rows: list[list[str]] = []
     header: list[str] = []
+
+    def _flush(sheet: dict | None) -> None:
+        """把已累积的表头/行写进 sheet。**幂等** —— 原先这段在三个地方重写了一遍，
+        空行时会被反复调用（每次都是一样的结果）。"""
+        if sheet is None or not header:
+            return
+        sheet["rows"] = len(current_rows)
+        sheet["cols"] = len(header)
+        sheet["columns"] = header[:20]
+        sheet["sample_rows"] = current_rows[:3] + (
+            current_rows[-3:] if len(current_rows) > 6 else [])
 
     for line in data_text.split("\n"):
         m = re.match(r"^##\s+Sheet:\s*(.+)", line)
         if m:
-            if header:
-                current_sheet["rows"] = len(current_rows)
-                current_sheet["cols"] = len(header)
-                current_sheet["columns"] = header[:20]
-                current_sheet["sample_rows"] = current_rows[:3] + (
-                    current_rows[-3:] if len(current_rows) > 6 else [])
+            _flush(current_sheet)
             current_sheet = {"name": m.group(1).strip()}
             sheets.append(current_sheet)
             current_rows = []
             header = []
             continue
         if not line.startswith("|") and not line.startswith("##"):
-            if header:
-                current_sheet["rows"] = len(current_rows)
-                current_sheet["cols"] = len(header)
-                current_sheet["columns"] = header[:20]
-                current_sheet["sample_rows"] = current_rows[:3] + (
-                    current_rows[-3:] if len(current_rows) > 6 else [])
+            _flush(current_sheet)
             continue
         if re.match(r"^\|[\s\-:|]+\|$", line):
             if current_rows and not header:
                 header = current_rows.pop()
             continue
         if line.startswith("|"):
+            if current_sheet is None:
+                # 无 `## Sheet:` 头的纯表格输入 → 兜底名（真有数据才建）
+                current_sheet = {"name": "Sheet1"}
+                sheets.append(current_sheet)
             cells = [c.strip() for c in line.split("|")[1:-1]]
             current_rows.append(cells)
 
-    if current_sheet and header:
-        current_sheet["rows"] = len(current_rows)
-        current_sheet["cols"] = len(header)
-        current_sheet["columns"] = header[:20]
-        current_sheet["sample_rows"] = current_rows[:3] + (
-            current_rows[-3:] if len(current_rows) > 6 else [])
-
+    _flush(current_sheet)
     return {"total_sheets": len(sheets), "sheets": sheets}
 
 
@@ -574,9 +582,11 @@ def _build_data_summary(data_text: str) -> str:
     parts: list[str] = []
     for sh in info["sheets"]:
         cols_str = ", ".join(sh.get("columns", [])[:20])
+        # ⚠️ `rows`/`cols` 用 `.get`（P1-07）：空工作表（只有 `## Sheet: 名` 没有表格）
+        # 是**合法输入**（Excel 里真有空表），显示「0 行 × 0 列」比 KeyError 好。
         parts.append(
             f"## {sh['name']}\n"
-            f"共 {sh['rows']} 行 × {sh['cols']} 列\n"
+            f"共 {sh.get('rows', 0)} 行 × {sh.get('cols', 0)} 列\n"
             f"字段: {cols_str}\n"
         )
         if sh.get("sample_rows"):
@@ -615,7 +625,11 @@ def build_excel_summary_prompt(data_text: str, style: str = "detailed",
 
     try:
         data_summary = _build_data_summary(data_text)
-    except Exception:
+    except Exception as e:
+        # 兜底保留（输入是用户文件，格式无法穷举），但**不再静默**（P1-07）：此前它吞掉的
+        # 正是「幻影 Sheet1 让每一份 Excel 都 KeyError」这个 100% 命中的常态缺陷 ——
+        # 于是摘要分支从未运行过，而日志里一个字都没有，看代码只觉得「有兜底，挺稳」。
+        logger.warning(f"Excel 数据摘要解析失败，回退为原文：{type(e).__name__}: {e}")
         data_summary = f"数据内容（Markdown 表格）：\n---\n{data_text}\n---"
 
     source_content = (

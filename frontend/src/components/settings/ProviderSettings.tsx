@@ -81,15 +81,40 @@ export function ProviderSettings() {
   const provName = (pid: string) =>
     llmProviders.find(p => p.id === pid)?.name || engineProviders.find(p => p.id === pid)?.name || pid
 
-  // LLM handlers
-  const handleLlmRefresh = async () => {
-    setRefreshing(true)
-    const r = await refreshModels(selectedLlmId)
-    if (r.models) setRefreshResult(r.models)
-    setRefreshing(false)
+  /**
+   * 写操作统一收口（P1-13）：失败 → error toast。
+   *
+   * 此前本文件 18 个异步处理器里只有 3 个自己 catch —— 其余在后端 400（Key 为空 /
+   * 厂商不存在）或网络不可达时**静默抛出**：既没有成功 toast 也没有失败 toast，
+   * 而输入框里刚打的 Key 仍在显示（值来自本地 state）→ 看起来就是保存成功了，
+   * 直到某次生成报鉴权错才发现。同文件 `handleSaveEngineKey` 早就有正确写法，
+   * 本函数只是把那个形状抽出来复用。
+   *
+   * ⚠️ 只管**失败**一侧：成功提示留在各自的 `fn` 里（文案各不相同）。`label` 写
+   *    **动作名**（「保存 API Key」）而非结果名 —— 要和 `失败` 拼成通顺的句子，
+   *    写「已保存」就得到「已保存失败」。
+   */
+  const runWrite = async (label: string, fn: () => Promise<void>) => {
+    try { await fn() } catch (e: any) { addToast(`${label}失败：${e?.message || e}`, 'error') }
   }
-  const handleEnableModel = async (name: string) => { await addModel(selectedLlmId, name); await loadAll(); addToast(`已启用 ${name}`) }
-  const handleDeleteLlmModel = async (mid: number) => {
+
+  // LLM handlers
+  const handleLlmRefresh = () => runWrite('刷新模型列表', async () => {
+    setRefreshing(true)
+    try {
+      const r = await refreshModels(selectedLlmId)
+      if (r.models) setRefreshResult(r.models)
+    } finally {
+      // ⚠️ `finally` 不是洁癖：此前 `setRefreshing(false)` 写在 await 之后，
+      //    出错时**根本不执行** → 按钮一直转圈，把「失败」包装成了「正在刷新」，
+      //    用户会一直等下去（静默失效的另一种形态）。
+      setRefreshing(false)
+    }
+  })
+  const handleEnableModel = (name: string) => runWrite(`启用 ${name}`, async () => {
+    await addModel(selectedLlmId, name); await loadAll(); addToast(`已启用 ${name}`)
+  })
+  const handleDeleteLlmModel = (mid: number) => runWrite('移除模型', async () => {
     const model = enabledModels.find(m => m.id === mid)
     await deleteModel(mid)
     if (sceneModels.generate === mid) setScene(s => ({ ...s, generate: null }))
@@ -97,8 +122,8 @@ export function ProviderSettings() {
     if (sceneModels.image_process === mid) setScene(s => ({ ...s, image_process: null }))
     await loadAll()
     addToast(`已移除 ${model?.model_name || mid}`)
-  }
-  const handleToggleImageCap = async (m: EnabledModel) => {
+  })
+  const handleToggleImageCap = (m: EnabledModel) => runWrite('更新模型能力', async () => {
     const hasImage = m.capabilities?.includes('image')
     const newCaps = hasImage
       ? (m.capabilities || ['text']).filter(c => c !== 'image')
@@ -106,7 +131,7 @@ export function ProviderSettings() {
     await updateModel(m.id, { capabilities: newCaps })
     await loadAll()
     addToast(hasImage ? '已标记为纯文本' : '已标记为多模态')
-  }
+  })
 
   // 模型元数据编辑（上下文窗口 / 价格 —— 中转/自定义模型修正，未填回退厂商默认）
   const [editingModel, setEditingModel] = useState<EnabledModel | null>(null)
@@ -119,7 +144,7 @@ export function ProviderSettings() {
     setEditPriceIn(m.price_in ? String(m.price_in) : '')
     setEditPriceOut(m.price_out ? String(m.price_out) : '')
   }
-  const saveModelEdit = async () => {
+  const saveModelEdit = () => runWrite('保存模型元数据', async () => {
     if (!editingModel) return
     const data: { context_window?: number; price_in?: number; price_out?: number } = {}
     if (editCtx.trim()) data.context_window = parseInt(editCtx, 10)
@@ -129,7 +154,7 @@ export function ProviderSettings() {
     setEditingModel(null)
     await loadAll()
     addToast(`已更新 ${editingModel.model_name} 元数据`)
-  }
+  })
 
   // 对话上下文设置（C4）：预算档位 / 历史上限 / 文档引用模式（存 cfg.chat_context）
   const [chatCtx, setChatCtx] = useState<{ budget_ratio: string; history_limit: string; doc_mode: string }>({ budget_ratio: 'auto', history_limit: '0', doc_mode: 'auto' })
@@ -143,7 +168,7 @@ export function ProviderSettings() {
       })
     }).catch(() => {})
   }, [])
-  const saveChatCtx = async () => {
+  const saveChatCtx = () => runWrite('保存对话上下文设置', async () => {
     await updateConfig({
       chat_context: {
         budget_ratio: chatCtx.budget_ratio,
@@ -153,89 +178,91 @@ export function ProviderSettings() {
     })
     notifyConfigChanged()
     addToast('对话上下文设置已保存')
-  }
-  const handleSceneBind = async (scene: 'generate' | 'chat' | 'image_process', mid: number | null) => {
-    const u = { ...sceneModels, [scene]: mid }; setScene(u); await setSceneModels(u)
-    notifyConfigChanged()  // 场景绑定不经过 loadAll，单独广播
-  }
-  const handleSaveLlmKey = async () => {
+  })
+  const handleSceneBind = (scene: 'generate' | 'chat' | 'image_process', mid: number | null) =>
+    runWrite('切换场景模型', async () => {
+      const u = { ...sceneModels, [scene]: mid }; setScene(u); await setSceneModels(u)
+      notifyConfigChanged()  // 场景绑定不经过 loadAll，单独广播
+    })
+  const handleSaveLlmKey = () => runWrite('保存 API Key', async () => {
     const current = llmProviders.find(p => p.id === selectedLlmId)?.api_key || ''
     const k = (apiKeys[selectedLlmId] || undefined) ?? current
     if (k === current) return  // 未变更，跳过
     await updateProvider(selectedLlmId, { api_key: k }); await loadAll()
     addToast('API Key 已保存')
-  }
-  const handleAddLlmProv = async () => {
+  })
+  const handleAddLlmProv = () => runWrite('添加 LLM 厂商', async () => {
     if (!newLlmName.trim()) return
     await addProvider({ name: newLlmName.trim(), base_url: newLlmBaseUrl, api_key: newLlmApiKey, type: 'custom' })
     setNewLlmName(''); setNewLlmBaseUrl(''); setNewLlmApiKey(''); setShowAddLlm(false); await loadAll()
     addToast(`LLM 厂商「${newLlmName.trim()}」已添加`)
-  }
-  const handleDeleteLlmProv = async (pid: string) => {
+  })
+  const handleDeleteLlmProv = (pid: string) => runWrite('删除 LLM 厂商', async () => {
     if (!window.confirm('确定删除该 LLM 厂商？关联的启用模型也会被移除。')) return
     await deleteProvider(pid); await loadAll()
     if (selectedLlmId === pid) setSelectedLlmId(llmProviders[0]?.id || 'deepseek')
     addToast('LLM 厂商已删除')
-  }
+  })
 
   // Engine handlers
-  const handleEngineRefresh = async () => {
+  const handleEngineRefresh = () => runWrite('刷新引擎模型列表', async () => {
     setEngineRefreshing(true)
-    const r = await refreshModels(selectedEngineId)
-    if (r.models) setEngineRefreshResult(r.models)
-    setEngineRefreshing(false)
-  }
-  const handleSaveEngineKey = async () => {
+    try {
+      const r = await refreshModels(selectedEngineId)
+      if (r.models) setEngineRefreshResult(r.models)
+    } finally {
+      // ⚠️ 同 handleLlmRefresh：出错时也要复位，否则 spinner 永远转下去
+      setEngineRefreshing(false)
+    }
+  })
+  const handleSaveEngineKey = () => runWrite('保存引擎 Key', async () => {
     const current = engineProviders.find(p => p.id === selectedEngineId)?.api_key || ''
     const k = (engineApiKeys[selectedEngineId] || undefined) ?? current
     if (k === current) return  // 未变更，跳过
-    try {
-      await apiFetch(apiUrl(`/engine-providers/${selectedEngineId}`), {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ api_key: k }),
-      }); await loadAll()
-      addToast('引擎 Key 已保存')
-    } catch (e: any) { addToast(`保存失败: ${e?.message || e}`, 'error') }
-  }
-  const handleAssignEngine = async (modelName: string, cat: string | null) => {
-    if (!cat) {
-      const exist = engineModels.find(m => m.provider_id === selectedEngineId && m.model_name === modelName)
-      if (exist) { await deleteEngineModel(exist.id); await loadAll() }
-    } else {
-      try {
+    await apiFetch(apiUrl(`/engine-providers/${selectedEngineId}`), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ api_key: k }),
+    }); await loadAll()
+    addToast('引擎 Key 已保存')
+  })
+  const handleAssignEngine = (modelName: string, cat: string | null) =>
+    runWrite('分配引擎模型', async () => {
+      if (!cat) {
+        // ⚠️ 这一支此前**没有** try/catch —— 原来的 catch 只罩住 else（模式 #52
+        //    「成对操作漏一半」：同一个 handler 的两条分支，保护只覆盖了一条）。
+        const exist = engineModels.find(m => m.provider_id === selectedEngineId && m.model_name === modelName)
+        if (exist) { await deleteEngineModel(exist.id); await loadAll() }
+      } else {
         await apiFetch(apiUrl('/engine-models'), {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ provider_id: selectedEngineId, model_name: modelName, category: cat }),
         }); await loadAll()
-      } catch (e: any) { addToast(`分配失败: ${e?.message || e}`, 'error') }
-    }
-  }
-  const handleManualAdd = async () => {
+      }
+    })
+  const handleManualAdd = () => runWrite('添加引擎模型', async () => {
     if (!manualModelName.trim()) return
-    try {
-      await apiFetch(apiUrl('/engine-models'), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider_id: selectedEngineId, model_name: manualModelName.trim(), category: manualModelCat }),
-      }); setManualModelName(''); await loadAll()
-    } catch (e: any) { addToast(`添加失败: ${e?.message || e}`, 'error') }
-  }
-  const handleAddEngineProv = async () => {
+    await apiFetch(apiUrl('/engine-models'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: selectedEngineId, model_name: manualModelName.trim(), category: manualModelCat }),
+    }); setManualModelName(''); await loadAll()
+  })
+  const handleAddEngineProv = () => runWrite('添加引擎厂商', async () => {
     if (!newName.trim()) return
     await addEngineProvider({ name: newName, base_url: newBaseUrl, api_key: newApiKey, type: 'custom' })
     setNewName(''); setNewBaseUrl(''); setNewApiKey(''); setShowAddEngine(false); await loadAll()
     addToast(`引擎厂商「${newName}」已添加`)
-  }
-  const handleDeleteEngineProv = async (pid: string) => {
+  })
+  const handleDeleteEngineProv = (pid: string) => runWrite('删除引擎厂商', async () => {
     if (!window.confirm('确定删除？')) return
     await deleteEngineProvider(pid); await loadAll()
     if (selectedEngineId === pid) setSelectedEngineId(engineProviders[0]?.id || 'dashscope')
     addToast('引擎厂商已删除')
-  }
-  const handleEngineBind = async (cat: string, modelId: number | null) => {
+  })
+  const handleEngineBind = (cat: string, modelId: number | null) => runWrite('更新引擎绑定', async () => {
     const u = { ...engineBindings, [cat]: modelId }; setEngineBindings(u); await saveEngineBindings(u)
     addToast('引擎绑定已更新')
-  }
+  })
 
-  const handleRestoreDefaults = async () => {
+  const handleRestoreDefaults = () => runWrite('恢复默认引擎绑定', async () => {
     if (!window.confirm('确定恢复所有引擎绑定为系统默认？当前自定义配置将丢失。')) return
     // 收集所有已知 binding key → 全部置空（后端 [] = 清除，下次启动恢复默认）
     const clearAll: Record<string, any[]> = {}
@@ -250,7 +277,7 @@ export function ProviderSettings() {
     setEngineBindings({})
     await loadAll()
     addToast('引擎绑定已恢复为系统默认')
-  }
+  })
 
   // 组件卸载时兜底保存未提交的 Key（用户输入后直接关设置不丢）
   const refSaveLlm = useRef(handleSaveLlmKey); refSaveLlm.current = handleSaveLlmKey
@@ -324,7 +351,7 @@ export function ProviderSettings() {
                 <input value={newLlmBaseUrl} onChange={e => setNewLlmBaseUrl(e.target.value)} placeholder="Base URL（如 http://localhost:8000/v1）" className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-[13px] outline-none" />
                 <input value={newLlmApiKey} onChange={e => setNewLlmApiKey(e.target.value)} placeholder="API Key（可选）" type="password" className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-[13px] outline-none font-mono" />
                 <div className="flex gap-2">
-                  <button onClick={handleAddLlmProv} disabled={!newLlmName.trim()} className="px-3 py-1.5 text-[12px] font-medium bg-accent text-white rounded-lg hover:bg-accent-hover disabled:opacity-40">添加</button>
+                  <button onClick={handleAddLlmProv} disabled={!newLlmName.trim()} className="px-3 py-1.5 text-[12px] font-medium bg-accent text-on-accent rounded-lg hover:bg-accent-hover disabled:opacity-40">添加</button>
                   <button onClick={() => setShowAddLlm(false)} className="px-3 py-1.5 text-[12px] text-dimmed hover:bg-surface-hover rounded-lg">取消</button>
                 </div>
               </div>
@@ -460,7 +487,7 @@ export function ProviderSettings() {
                 <input value={newBaseUrl} onChange={e => setNewBaseUrl(e.target.value)} placeholder="Base URL (可选)" className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-[13px] outline-none" />
                 <input value={newApiKey} onChange={e => setNewApiKey(e.target.value)} placeholder="API Key (可选)" type="password" className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-[13px] outline-none font-mono" />
                 <div className="flex gap-2">
-                  <button onClick={handleAddEngineProv} disabled={!newName.trim()} className="px-3 py-1.5 text-[12px] font-medium bg-accent text-white rounded-lg hover:bg-accent-hover disabled:opacity-40">添加</button>
+                  <button onClick={handleAddEngineProv} disabled={!newName.trim()} className="px-3 py-1.5 text-[12px] font-medium bg-accent text-on-accent rounded-lg hover:bg-accent-hover disabled:opacity-40">添加</button>
                   <button onClick={() => setShowAddEngine(false)} className="px-3 py-1.5 text-[12px] text-dimmed hover:bg-surface-hover rounded-lg">取消</button>
                 </div>
               </div>
@@ -524,7 +551,7 @@ export function ProviderSettings() {
                     {CATEGORIES.map(c => <option key={c} value={c}>{CAT_LABELS[c]}</option>)}
                   </select>
                   <button onClick={handleManualAdd} disabled={!manualModelName.trim()}
-                    className="px-3 py-1.5 text-[11px] font-medium bg-accent text-white rounded-lg hover:bg-accent-hover disabled:opacity-40 whitespace-nowrap">添加</button>
+                    className="px-3 py-1.5 text-[11px] font-medium bg-accent text-on-accent rounded-lg hover:bg-accent-hover disabled:opacity-40 whitespace-nowrap">添加</button>
                 </div>
               </>
             )}
@@ -633,7 +660,7 @@ export function ProviderSettings() {
               <option value="summary">摘要（1000 字符）</option>
             </select>
           </div>
-          <button onClick={saveChatCtx} className="px-3 py-1.5 text-[12px] font-medium bg-accent text-white rounded-lg hover:bg-accent-hover">保存</button>
+          <button onClick={saveChatCtx} className="px-3 py-1.5 text-[12px] font-medium bg-accent text-on-accent rounded-lg hover:bg-accent-hover">保存</button>
         </div>
       </div>
 
@@ -664,7 +691,7 @@ export function ProviderSettings() {
             </div>
             <div className="flex gap-2 justify-end mt-5">
               <button onClick={() => setEditingModel(null)} className="px-4 py-2 text-[13px] text-dimmed hover:bg-surface rounded-lg">取消</button>
-              <button onClick={saveModelEdit} className="px-4 py-2 bg-accent text-white text-[13px] font-medium rounded-lg">保存</button>
+              <button onClick={saveModelEdit} className="px-4 py-2 bg-accent text-on-accent text-[13px] font-medium rounded-lg">保存</button>
             </div>
           </div>
         </div>

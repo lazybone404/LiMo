@@ -1187,7 +1187,7 @@ export function DocLibrary() {
                     <button onClick={() => setSynthOpen(false)}
                       className="px-4 py-2 text-[13px] text-dimmed hover:bg-surface rounded-lg transition-colors">取消</button>
                     <button data-confirm-synth onClick={runSynthesize} disabled={!canRun}
-                      className="px-4 py-2 bg-accent text-white text-[13px] font-medium rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed">合成</button>
+                      className="px-4 py-2 bg-accent text-on-accent text-[13px] font-medium rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed">合成</button>
                   </div>
                 </>
               )}

@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -57,6 +58,31 @@ def _empty_index() -> dict:
     }
 
 
+# ── 占位条目的宽限期（P1-3）──
+
+# `_get_or_create_doc_dir` 会先建目录 + 写一条**占位索引**，`transcript.md` 直到
+# `save_transcript` 才落盘 —— 中间夹着封面下载（`timeout=15`）、甚至整段视频的
+# 下载 + 云端转写。这段时间里条目本来就该没有正文，**不是「文档已被删除」**。
+# 本进程正在导入的（`Store._pending_ids`）一律豁免；跨进程的按年龄宽限。
+PENDING_GRACE_SECONDS = 3600
+
+
+def _entry_age_seconds(entry: dict) -> float:
+    """条目 `createdAt` 距今秒数；解析不了（空串 / 格式坏）→ 视为**很久以前**。
+
+    ⚠️ 返回 `inf` 而非 0：本值的唯一用途是「够不够旧、能不能清理」，而 `createdAt`
+    是本模块自己写的、格式由本模块独占 —— 读不出来只可能是条目被外力改坏。此时
+    「一条永远不会有正文的占位记录永久驻留」比「把它清掉」更糟（它没有自愈途径）。
+    """
+    raw = entry.get("createdAt", "")
+    if not raw:
+        return float("inf")
+    try:
+        return (datetime.now() - datetime.fromisoformat(raw)).total_seconds()
+    except (ValueError, TypeError):
+        return float("inf")
+
+
 class Store:
     """单用户文件系统存储。v2 统一索引。"""
 
@@ -75,6 +101,9 @@ class Store:
         self._index: dict = _empty_index()
         self._index_path = self.root / "index.json"
         self._lock = threading.Lock()
+        # 本进程内「已建目录、正文尚未落盘」的 id（P1-3）。导入窗口可能很长（视频
+        # 下载 + 转写），带年龄宽限仍可能误判 → 会话内豁免是**精确**的那一半。
+        self._pending_ids: set[str] = set()
         self._load_index()
 
     # ── 索引加载 / 保存 / 迁移 ──
@@ -194,6 +223,9 @@ class Store:
                 "sourceDocIds": [], "sourceTitles": [], "sourceHashes": [],
                 "metadataCorrupt": False,
                 "dir_name": dir_name,
+                # 就绪标记（P1-3）：本函数只对**存在 transcript.md 的目录**建条目，
+                # 故恒 True（与 `_transcript_index_entry` 同构，见那里的说明）。
+                "ready": True,
             }
             # ── 出处头是重建后**唯一**能还原合成身份的来源 ──
             # 重建时 id 由内容 sha256 重推、sourceType 被写死为空、非内容派生字段全丢，
@@ -276,13 +308,37 @@ class Store:
 
     @staticmethod
     def _atomic_write(path: Path, content: str):
-        """原子写入 + StoreError 保护"""
+        """原子写入 + StoreError 保护。
+
+        ⚠️ 临时名必须**每次唯一**（`mkstemp`），不能用固定的 `path.with_suffix(".tmp")`：
+        两个写者（多进程 / 并发测试）撞上同一路径时都写同一个临时文件，内容交错，
+        后一个 `replace` 把**半截内容**原子地换上去 —— 原子性只保证了「换」这一步，
+        保证不了「换上去的东西是完整的」，而症状是一份解析不了的 index.json
+        （即 `_load_index` 那条自愈路径，代价是全盘重建 + 分类丢失）。
+
+        ⚠️ 别想着「顺手加个锁更稳」：`self._lock` 是**非重入** `threading.Lock`，而
+        `_save_index` 恒在**已持锁**时调到本函数 —— 加锁即死锁（本函数还是
+        `@staticmethod`，本来也拿不到 `self`）。并发安全由唯一临时名 + `os.replace`
+        的原子性承担，不需要互斥。
+        """
+        tmp_path: str | None = None
         try:
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(content, encoding="utf-8")
-            tmp.replace(path)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp_path, path)
+            tmp_path = None          # 已改名，finally 不该再去删它
         except OSError as e:
-            raise StoreError.disk_full(detail=f"写入 {path.name} 失败: {e}") from e
+            # 按 errno 细分（ENOSPC / 占用 / 路径过长 / 权限 / 未知）——「一律磁盘
+            # 空间不足」会让用户朝错误的方向行动，见 StoreError.write_failed。
+            raise StoreError.write_failed(f"写入 {path.name}", e) from e
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     @staticmethod
     def _transcript_index_entry(data: dict) -> dict:
@@ -320,6 +376,12 @@ class Store:
             "sourceHashes": data.get("sourceHashes", []),
             "metadataCorrupt": data.get("metadataCorrupt", False),
             "dir_name": data.get("dir_name", "") if "dir_name" in data else "",
+            # 就绪标记（P1-3）：本函数只由 `save_transcript` 走到，此时 `transcript.md`
+            # 已落盘 → 恒 True。与 `_get_or_create_doc_dir` 的占位条目（False）成对。
+            # ⚠️ 读侧一律用 `entry.get("ready", True)` —— **缺键 = 就绪**：旧 index.json
+            # 里没有这个键的历史条目必须按原行为处理，否则一次升级把所有老文档变成
+            # 「永不清理的占位」或「可被随意清理的幽灵」，两种都糟。
+            "ready": True,
         }
 
     @staticmethod
@@ -386,10 +448,6 @@ class Store:
                         return d
         return None
 
-    # 旧私有名的兼容别名：历史外部调用方（routers/export.py 等）仍按私有名调用，
-    # 改名不能一刀切。新代码请用 `get_doc_dir`。
-    _get_doc_dir = get_doc_dir
-
     def _get_or_create_doc_dir(self, tx_id: str, title: str) -> Path:
         """获取已有或创建新文档目录。冲突时循环重试（追加序号）。"""
         existing = self.get_doc_dir(tx_id)
@@ -433,7 +491,15 @@ class Store:
                     # 真实值由随后的 save_transcript upsert 覆盖。
                     "sourceDocIds": [], "sourceTitles": [], "sourceHashes": [],
                     "metadataCorrupt": False,
+                    # 就绪标记（P1-3）：`transcript.md` 还没写。**这是本标记唯一的
+                    # False 写点**——旧实现没有它，`list_transcripts` 只看「目录里有没有
+                    # transcript.md」，于是导入窗口内任何一次列表刷新都把这条判成
+                    # 「文档已删除」永久删掉；随后 `save_transcript` 重建出
+                    # `{title}-{hex}_1` 第二份目录，而 assets 已写在旧目录 → 该文档
+                    # 图片**永久 404**、旧目录成孤儿。
+                    "ready": False,
                 })
+                self._pending_ids.add(tx_id)
                 self._save_index()
         return d
 
@@ -520,6 +586,9 @@ class Store:
             else:
                 self._index["transcripts"].append(entry)
             self._save_index()
+            # 正文已落盘 → 摘掉会话级豁免（P1-3）。此后若目录再消失，那就是真的
+            # 被外力删了，按幽灵条目清理是对的。
+            self._pending_ids.discard(tx.id)
         return True
 
     def get_transcript(self, id: str) -> Optional[dict]:
@@ -590,21 +659,56 @@ class Store:
         return True
 
     def list_transcripts(self, filters: dict | None = None) -> list[dict]:
+        """列出文档条目（顺带清理幽灵条目）。
+
+        ⚠️ 清理判据（P1-3）：**「目录里没有 transcript.md」不等于「文档已被删除」** ——
+        `_get_or_create_doc_dir` 先建目录 + 写占位条目，正文直到 `save_transcript` 才落盘，
+        中间夹着封面下载（15s）甚至整段视频的下载 + 转写。旧实现无条件按后者处理，于是
+        导入窗口内的任何一次列表刷新都会把条目**永久删掉**，随后 `save_transcript` 重建出
+        `{title}-{hex}_1` 第二份目录，而 assets 已写在旧目录 → 图片永久 404、旧目录成孤儿。
+
+        现在分三类：就绪（返回）/ 未就绪（**保留但不返回**，见下）/ 真幽灵（删除）。
+        未就绪条目要**两条豁免都不过**才清理：本进程正在导入的（`_pending_ids`）绝不清理；
+        跨进程的按 `createdAt` 宽限（`PENDING_GRACE_SECONDS`）。
+        """
         with self._lock:
             dirty = False
             valid = []
+            pending_kept = 0
             for entry in self._index["transcripts"]:
                 dir_name = entry.get("dir_name", "")
                 if dir_name and (self.root / dir_name / "transcript.md").exists():
                     valid.append(entry)
-                else:
-                    logger.warning(f"索引条目 {entry['id']} 对应目录不存在，已移除")
+                    continue
+
+                # 未就绪的占位条目（缺键 = 就绪，兼容旧 index.json）
+                if entry.get("ready", True) is False:
+                    if (entry["id"] in self._pending_ids
+                            or _entry_age_seconds(entry) < PENDING_GRACE_SECONDS):
+                        # 保留在索引里（`save_transcript` 要能 upsert 到它，
+                        # 否则就是「重建第二份目录」那条老路），但**不返回给前端**：
+                        # 半成品条目（只有标题和 createdAt）出现在文档库里对用户无意义。
+                        valid.append(entry)
+                        pending_kept += 1
+                        continue
+                    logger.warning(
+                        "占位条目 %s 超过 %d 秒仍无正文（导入未完成即退出？），已从索引移除",
+                        entry["id"], PENDING_GRACE_SECONDS)
                     dirty = True
+                    continue
+
+                logger.warning(f"索引条目 {entry['id']} 对应目录不存在，已移除")
+                dirty = True
             if dirty:
                 self._index["transcripts"] = valid
                 self._save_index()
+            if pending_kept:
+                # ⚠️ 用 debug 而非 warning：导入窗口内这是**正常态**，warning 会让每次
+                # 列表刷新都刷一条（而它一天要跑很多次）。真出问题时有上面那条。
+                logger.debug("列表隐藏 %d 条尚未落盘的占位条目", pending_kept)
+            visible = [e for e in valid if e.get("ready", True) is not False]
 
-        result = self._index["transcripts"]
+        result = visible
         if filters:
             if "sourceType" in filters:
                 result = [e for e in result if e.get("sourceType") == filters["sourceType"]]

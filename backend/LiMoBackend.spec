@@ -33,7 +33,7 @@ hiddenimports = [
     'openai', 'httpx', 'aiohttp', 'requests',
     'python_multipart', 'dateutil',
     'PIL', 'numpy',
-    'gmssl', 'websocket',
+    'websocket',
     # 关键子依赖（PyInstaller 常漏掉）
     'anyio', 'sniffio', 'h11',
     'typing_extensions', 'annotated_types',
@@ -50,8 +50,7 @@ hiddenimports = [
     'app.core.cookie_parser', 'app.core.text_utils',
     'app.utils.url_security',
     'app.utils.screenshot_marker', 'app.utils.video_helper',
-    'app.utils.video_reader', 'app.downloaders.douyin_downloader',
-    'app.downloaders.douyin_helper',
+    'app.utils.video_reader',
     'app.llm', 'app.llm.service', 'app.llm.agent', 'app.llm.errors',
     'app.agent', 'app.agent.tools',
     'app.generation.ocr_preprocessor',

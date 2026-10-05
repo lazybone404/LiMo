@@ -1,6 +1,6 @@
 [project]
 name = "limo-backend"
-version = "0.4.16"
+version = "0.5.0"
 description = "LiMo knowledge management system - backend"
 requires-python = ">=3.12"
 dependencies = [
@@ -43,7 +43,9 @@ dependencies = [
     # 带入），2026-09-21 起被 app/services/docx_export.py 直接 import → 提为显式依赖
     "beautifulsoup4>=4.12",
     # 其他
-    "gmssl>=3.2",
+    # gmssl 已移除（2026-10-06）：唯一使用方是自研抖音签名模块 abogus（头部声明 GPLv3，
+    # 源自 TikTokDownloader）——该路径已整体删除，抖音改走 yt-dlp 通用路径。
+    # 详见 docs/ACKNOWLEDGMENTS.md。
     "duckduckgo-search>=8.1.1",
     # docling 已移除（2026-08-03，依赖 torch ~2GB 无法打包），此处删依赖防 venv 残留拖入打包
     "pypdfium2>=5.12.1",

@@ -88,8 +88,12 @@ def append_message(conv_id: str, data: AppendRequest, store=Depends(get_store)):
 
 @router.patch("/conversations/{conv_id}/rename")
 def rename_conversation(conv_id: str, data: RenameRequest, store=Depends(get_store)):
-    ok = store.rename_conversation(conv_id, data.title)
-    return {"status": "ok" if ok else "not found"}
+    # ⚠️ 此前「没找到」也返回 **HTTP 200 + {"status": "not found"}** —— 前端 `apiFetch`
+    # 只看 `r.ok`，会把重命名失败当成成功（乐观更新从此永不回滚）。存在性失败必须走
+    # 404，与同文件 get/patch/append/rebuild 四处已有写法一致（模式 #36）。
+    if not store.rename_conversation(conv_id, data.title):
+        raise AppError("CONV_NOT_FOUND", "对话不存在", status_code=404)
+    return {"status": "ok"}
 
 
 @router.patch("/conversations/{conv_id}")
@@ -107,8 +111,10 @@ def patch_conversation(conv_id: str, data: PatchRequest, store=Depends(get_store
 @router.post("/conversations/{conv_id}/clear-context")
 def clear_context(conv_id: str, data: ClearContextRequest, store=Depends(get_store)):
     """清除上下文边界 — 不删消息，停止携带该索引前历史（对齐 NextChat clearContextIndex）"""
-    ok = SessionManager(store).set_clear_context(conv_id, data.index)
-    return {"status": "ok" if ok else "not found"}
+    # ⚠️ 同上：`{"status": "not found"}` + 200 会让前端把「对话没了」读成「已清除」。
+    if not SessionManager(store).set_clear_context(conv_id, data.index):
+        raise AppError("CONV_NOT_FOUND", "对话不存在", status_code=404)
+    return {"status": "ok"}
 
 
 @router.put("/conversations/{conv_id}/messages")
@@ -125,5 +131,9 @@ def rebuild_messages(conv_id: str, data: RebuildRequest, store=Depends(get_store
 
 @router.delete("/conversations/{conv_id}")
 def delete_conversation(conv_id: str, store=Depends(get_store)):
+    # ⚠️ 此前**不查存在性**，无条件回 `{"status": "deleted"}` —— `store.delete_conversation`
+    # 恒返回 True（本就无存在性判定），故「删除一个已经没了的对话」在 API 层与真删同形。
+    if not store.get_conversation(conv_id):
+        raise AppError("CONV_NOT_FOUND", "对话不存在", status_code=404)
     store.delete_conversation(conv_id)
     return {"status": "deleted"}

@@ -39,6 +39,42 @@ function stripCssComments(s: string): string {
 /** Tailwind 任意色值类：`bg-[#123456]` / `text-[#abc]` … */
 const ARBITRARY_COLOR = /\b(?:bg|text|border|accent|ring|shadow|fill|stroke|from|to|via)-\[#/
 
+/**
+ * 「不透明的主色实底」——`bg-accent`，但**排除** `bg-accent-hover`（那是 hover 态底色，
+ * 与实底同时出现）与 `bg-accent/10`（透明变体，上面本来就不该用 on-accent 那种前景）。
+ */
+const ACCENT_SOLID = /\bbg-accent(?![\w/-])/
+
+/** 写死的前景色 —— 主色实底上不允许出现（P1-16） */
+const HARDCODED_FG = /\btext-(?:white|black)\b|\btext-\[#/
+
+/**
+ * 判据（**语义**，不是「必须出现某个类名」）：主色实底上的前景色必须**随主色变化**。
+ * 修复前 33 处写死 `text-white`，而主色在 dark 下亮度 62%、白字对比度 ~2.9:1
+ * （「暖阳」1.9:1）——低于 WCAG AA 4.5:1，也低于大字档 3:1。
+ *
+ * ⚠️ 刻意**不**禁 `text-white` 本身：`bg-black/20 text-white`（遮罩上的白图标）
+ *    与 `bg-error text-white` 之类是**对的**，一刀切禁类名会产生大量假阳性。
+ *    被禁的是「写死前景 × 不透明主色底」这个**组合**。
+ */
+export function isBadAccentLine(line: string): boolean {
+  return ACCENT_SOLID.test(line) && HARDCODED_FG.test(line)
+}
+
+/**
+ * 剥 TS/TSX 注释 —— **本判据必须剥**：`lib/onAccent.ts` 的文件头逐字写着「33 处
+ * `bg-accent` 实底按钮，前景一律写死 `text-white`」，不剥的话「讲代码的文字」会被
+ * 判成违规（模式 #54 的配套细节：守卫走 AST 而非 grep 的同一理由）。
+ *
+ * 块注释替换成等量空白而非删除 —— 保留换行，报错时给的行号才对得上。
+ */
+export function stripTsComments(s: string): string {
+  return s
+    .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
+    // `[^:]` 避开 `https://`（URL 里的 `//` 不是注释起点）
+    .replace(/(^|[^:])\/\/[^\n]*/gm, '$1')
+}
+
 /** 全仓源码（**排除 test/** —— 测试里刻意留着旧写法当反例） */
 const ALL_SOURCES = import.meta.glob(
   ['../**/*.{ts,tsx}', '!../test/**'],
@@ -95,6 +131,56 @@ describe('P2-16 — 零硬编码主题色', () => {
       .filter(([, line]) => /#[0-9A-Fa-f]{3,8}\b/.test(line))
       .map(([n, line]) => `${n}: ${line}`)
     expect(offenders, `这些行的 hex 不在 token 定义位置：\n${offenders.join('\n')}`).toEqual([])
+  })
+})
+
+describe('P1-16 — 主色实底的前景色随主色变', () => {
+  it('★ 全仓无「不透明主色底 + 写死黑白前景」的组合', () => {
+    const offenders: string[] = []
+    for (const [path, src] of Object.entries(ALL_SOURCES)) {
+      stripTsComments(src).split('\n').forEach((line, i) => {
+        if (isBadAccentLine(line)) offenders.push(`${path.replace(/^\.\.\//, '')}:${i + 1}`)
+      })
+    }
+    expect(offenders, `这些行的主色实底配了写死前景（dark 下对比度不足）：\n${offenders.join('\n')}`).toEqual([])
+    expect(Object.keys(ALL_SOURCES).length).toBeGreaterThan(50)
+  })
+
+  it('对照：该组合会被抓到，而合法的白字不受误伤', () => {
+    expect(isBadAccentLine('className="px-4 bg-accent text-white"')).toBe(true)
+    expect(isBadAccentLine('className="px-4 bg-accent text-on-accent"')).toBe(false)
+    // 透明变体不是实底 → 放行（它上面本来就不该用 on-accent 那种前景）
+    expect(isBadAccentLine('className="bg-accent/10 text-white"')).toBe(false)
+    // 遮罩底不是主色底 → 白字是**对的**，正是「一刀切禁类名」会误伤的那批
+    expect(isBadAccentLine('className="bg-black/20 text-white"')).toBe(false)
+    // hover 态底色与实底同行时，被匹配到的仍只有实底那一个
+    expect(isBadAccentLine('className="bg-accent text-on-accent hover:bg-accent-hover"')).toBe(false)
+    // 注释里「讲旧写法」的文字不算违规 —— 剥注释这件事本身要有区分力（模式 #38）：
+    // 不剥的话 `lib/onAccent.ts` 的文件头会被判违规，而那正是最该留档的地方。
+    const docComment = ['/**', ' * 修复前 33 处 bg-accent 一律配 text-white。', ' */', 'const a = 1'].join('\n')
+    expect(stripTsComments(docComment).split('\n').some(isBadAccentLine)).toBe(false)
+    // 但**代码行**里的违规剥完仍在（别把剥注释做成「怎么都不报」）
+    expect(stripTsComments('const a = 1 // 说明\nconst b = "bg-accent text-white"')
+      .split('\n').some(isBadAccentLine)).toBe(true)
+  })
+
+  it('★ accent 三参数都住在 CSS 里（JS 侧不复制色表）', () => {
+    const css = stripCssComments(indexCss)
+    // 亮度参数化：:root 一档 + dark 覆盖一档
+    expect((css.match(/--accent-lit\s*:/g) || []).length).toBe(2)
+    expect(css).toMatch(/--tk-accent:\s*hsl\([^;]*var\(--accent-lit\)/)
+    // 反过来：主色亮度**不得**再写死数字 —— 写死则 JS 读不到，而解决办法只剩
+    // 「在前端复制一份色表」，那正是模式 #54 的副本（加第 27 套配色时静默用错字色）
+    expect(css).not.toMatch(/--tk-accent:\s*hsl\([^;]*,\s*\d+%\)/)
+  })
+
+  it('★ on-accent 前景 token 有定义，且兜底值只有一处', () => {
+    const css = stripCssComments(indexCss)
+    expect(css).toMatch(/--tk-on-accent:\s*#[0-9A-Fa-f]{3,8}/)
+    expect(css).toContain('--color-on-accent: var(--tk-on-accent)')
+    // 26 套配色 × 明暗两档各有各的最优前景，CSS 里给不出 52 个值 ——
+    // 只能有一个首帧兜底，真实取值由 lib/onAccent.ts 算完内联写入
+    expect((css.match(/--tk-on-accent\s*:/g) || []).length).toBe(1)
   })
 })
 

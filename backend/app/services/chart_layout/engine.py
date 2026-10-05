@@ -32,6 +32,7 @@ from .layouts import (
     _grid,
     _layers,
     _NODES_RUNNERS,
+    _norm_node,
     _norm_tree,
     _SPEC_RUNNERS,
     _tree_stats,
@@ -108,6 +109,22 @@ def validate_spec(spec) -> dict:
         # 布局都要记得回来改（漏改的后果是模型永远不知道有这种图）。
         raise LayoutError(f"未知布局 {layout!r}（可用：{' / '.join(_LAYOUTS)}）")
 
+    # ── 节点归一化：纯字符串 = {"label": s}（P1-18）──
+    #
+    # ⚠️ 必须在**分派之前统一做一次**，不能交给各算子自理：`_NODES_RUNNERS` 的三个
+    #   算子（hchain / timeline / branch）此前**都没有**归一化 —— 模型写
+    #   `"nodes": ["A", "B"]` 这种简写时它们直接 `n.get('label')` →
+    #   `AttributeError: 'str' object has no attribute 'get'`（不是 LayoutError，
+    #   逃出渲染器的兜底链）；而 `_SPEC_RUNNERS` 里的算子各自调 `_norm_node` ——
+    #   同一份输入在十个布局上两种命运，是模式 #54（同源漂移）的又一形态。
+    # ⚠️ 收在 `validate_spec` 而非 `expand`：下面 flowchart 分支立刻就要读
+    #   `spec['nodes']` 里每项的 `it.get('id')`，晚一步做照样 AttributeError。
+    # ⚠️ 只归一化这一层：`layers` 的层内节点、`grid` 的行内元素是**另两种容器**
+    #   （结构各不相同），由各自算子处理，不在此处越界展平。
+    _raw_nodes = spec.get('nodes')
+    if isinstance(_raw_nodes, list):
+        spec['nodes'] = [_norm_node(n) for n in _raw_nodes]
+
     if layout == "tree":
         root = spec.get('root')
         if not isinstance(root, dict):
@@ -150,6 +167,23 @@ def validate_spec(spec) -> dict:
         quads = [q for q in (spec.get('quadrants') or []) if isinstance(q, dict)]
         if not any(q.get('items') for q in quads):
             raise LayoutError("quadrant 的 quadrants 至少要有一个象限带 items")
+    elif layout == "branch":
+        items = spec.get('nodes') or []
+        if not items:
+            raise LayoutError("branch 的 nodes 为空——至少要有一个节点")
+        # ⚠️ branch 是**成对结构**（每项 = 左判定 + 右结果），所以字符串简写在这里
+        #    是「信息不足」而非「可简化」：上面那条归一化会把 `"判定1"` 变成
+        #    `{"label": "判定1"}`，`n.get('result', '')` 随即取到空串 —— 图照样画得
+        #    出来、几何全对、`assert_layout` 全过，**右列结果框却全是空的**（静默
+        #    错图）。这正是「给 branch 补 `_norm_node`」那种修法的翻车点：它把崩溃
+        #    换成了错图，而错图没有任何信号（P1-18）。
+        #    故此处显式拒绝，并把出路（换 hchain）直接写给模型 —— 只说「缺 result」
+        #    它会再试一次同样的输入。
+        for i, it in enumerate(items):
+            if not str(it.get('result') or '').strip():
+                raise LayoutError(
+                    f"nodes[{i}]（{it.get('label', '')}）缺少 result —— branch 的每个"
+                    "节点都要给「判定结果」；若只想画一串顺序节点请改用 hchain")
     elif layout == "layers":
         layers = spec.get('layers') or []
         if not layers:

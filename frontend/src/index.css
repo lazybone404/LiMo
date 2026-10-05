@@ -90,9 +90,21 @@
   /* 边框 */
   --tk-border: #D6D3CE;
   --tk-border-light: #EBE7E2;
-  /* 主色 — 从 HSL 原语动态派生 */
-  --tk-accent: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 50%);
-  --tk-accent-hover: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 42%);
+  /* 主色 — 从 HSL 原语动态派生
+     ⚠️ 亮度单独抽成 `--accent-lit`（P1-16）：`lib/onAccent.ts` 要读它来算
+        「白字 vs 深字哪个对比度高」，而 JS 读不到 `calc(var(--accent-sat) * 1%)`
+        这种嵌在 hsl() 里的表达式。抽出来之后**色相/饱和度/亮度三个参数都住在 CSS 里**，
+        选择逻辑是算出来的 —— 不是在前端复制一份色表（模式 #54：同源是搜索题）。 */
+  --accent-lit: 50%;
+  --tk-accent: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), var(--accent-lit));
+  --tk-accent-hover: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), calc(var(--accent-lit) - 8%));
+  /* 主色实底之上的前景色 — 由 JS 按 WCAG 对比度在黑白间选优后**内联写入**
+     （`lib/onAccent.ts`，样式属性优先级高于本规则）。这里给的是**首帧兜底**：
+     JS 尚未执行时按白字显示，而不是让文字变透明/继承。
+     ⚠️ 别再往实底按钮上写 `text-white` —— 主色在 dark 下亮度 62%，
+        白字对比度只有 ~2.9:1（「暖阳」预设 1.9:1），低于 WCAG AA 的 4.5:1，
+        连大字放宽档 3:1 都够不上。用 `text-on-accent`。 */
+  --tk-on-accent: #FFFFFF;
   /* 辅色 — 标题、引用 */
   --tk-secondary: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 44%);
   --tk-secondary-hover: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 36%);
@@ -113,9 +125,11 @@
   --tk-dimmed: #8A8884;
   --tk-muted: #6A6864;
   --tk-disabled: #504E4B;
-  /* 主色 — dark 下 lightness 更高 */
-  --tk-accent: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 62%);
-  --tk-accent-hover: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 72%);
+  /* 主色 — dark 下 lightness 更高（`--accent-lit` 覆盖 light 的 50%；hover 继续按
+     相对偏移派生，故 dark 得 72% —— 与改造前逐值一致） */
+  --accent-lit: 62%;
+  --tk-accent: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), var(--accent-lit));
+  --tk-accent-hover: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), calc(var(--accent-lit) + 10%));
   /* 辅色 — dark 下同样抬高 lightness */
   --tk-secondary: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 56%);
   --tk-secondary-hover: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 66%);
@@ -138,6 +152,8 @@
   --color-disabled: var(--tk-disabled);
   --color-accent: var(--tk-accent);
   --color-accent-hover: var(--tk-accent-hover);
+  /* 主色实底之上的前景色 → 得到 `text-on-accent`（P1-16） */
+  --color-on-accent: var(--tk-on-accent);
   --color-secondary: var(--tk-secondary);
   --color-secondary-hover: var(--tk-secondary-hover);
   --color-border-default: var(--tk-border);

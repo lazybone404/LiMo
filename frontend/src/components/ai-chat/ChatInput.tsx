@@ -138,7 +138,7 @@ export function ChatInput({ scale }: ChatInputProps) {
           </button>
         ) : (
           <button onClick={submit} disabled={!value.trim()}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-white transition-all hover:bg-accent-hover disabled:opacity-40">
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-on-accent transition-all hover:bg-accent-hover disabled:opacity-40">
             <Send size={s.btn} />
           </button>
         )}

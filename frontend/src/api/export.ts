@@ -1,51 +1,13 @@
 /**
- * export 域 — 自定义导出流式进度 + ZIP 下载。
+ * export 域 — 导出 ZIP 下载。
+ *
+ * ⚠️ 这里原有一个 `streamExportProgress`（POST `/export/custom/stream` 收进度 SSE），
+ * **全前端零调用**，已删除（P1-12）。后端那两个端点（SSE 进度 + 临时 ZIP 下载）
+ * 仍然存在且行为正确，只是 UI 从未接线 —— 见 docs/export-pipeline.md。
+ * 将来若要接进度反馈，要做的是**把 UI 接起来**，而不是把这个封装函数抄回来：
+ * 抄回来仍是零调用，死代码只是换了个地方躺。
  */
 import { apiFetch, BASE } from './core'
-import { parseSSEStream } from './sse'
-
-export interface ExportProgressCallbacks {
-  onProgress?: (event: { phase: string; doc: number; total: number; message: string }) => void
-  onDone?: (downloadUrl: string, totalFiles: number) => void
-  onError?: (msg: string) => void
-}
-
-export function streamExportProgress(
-  body: any,
-  callbacks: ExportProgressCallbacks,
-  signal?: AbortSignal,
-): void {
-  fetch(`${BASE}/export/custom/stream`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  })
-    .then(async (response) => {
-      if (!response.ok) {
-        let err: any = {}
-        try { err = await response.json() } catch { /* not JSON */ }
-        callbacks.onError?.(err.detail || err.message || `请求失败 (${response.status})`)
-        return
-      }
-      const reader = response.body?.getReader()
-      if (!reader) { callbacks.onError?.('无法读取响应流'); return }
-
-      await parseSSEStream(reader, (event) => {
-        switch (event.type) {
-          case 'progress': (callbacks.onProgress as any)?.(event); break
-          case 'done': callbacks.onDone?.(event.download_url, event.total_files); break
-          case 'error': callbacks.onError?.(event.message); break
-          case 'cancelled': callbacks.onError?.('导出已取消'); break
-        }
-      })
-    })
-    .catch((err) => {
-      if ((err as Error).name !== 'AbortError') {
-        callbacks.onError?.((err as Error).message)
-      }
-    })
-}
 
 /** 导出单个文档的全部产物为 zip → 触发浏览器/Tauri 下载 */
 export async function exportAllProducts(txId: string) {

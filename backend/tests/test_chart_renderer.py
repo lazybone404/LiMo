@@ -2,14 +2,20 @@
 
 对齐 pi-docs/图表围栏内部协议设计说明.md（2026-08-16 定稿）：
 - 只认 ```chart 专用围栏；svg/xml 围栏、裸内联 <svg> 一律不碰（用户内容零触碰）
-- 围栏必然被替换：成功 → ![图表](assets/chart_N.png)；失败 → 「📊 图表生成失败」文本
+- 围栏必然被替换：成功 → ![图表](assets/chart_{hash8}.png)；失败 → 「📊 图表生成失败」文本
 - 产物零残留：围栏/源码不出现在最终内容中
+
+⚠️ 文件名自 2026-10-06（P1-17）起带**内容 hash**，不再是 `chart_1.png` 的顺序编号
+（顺序编号下重跑一次就覆盖同名文件，而 v1 的 `notes.prev.md` 仍引用旧名 → 「新图配
+旧正文」静默错配）。本文件因此**只断言数量与配对**，不断言具体文件名——用 `_charts()`
+动态发现。硬编码文件名会让这份测试在下次换命名规则时于**收集阶段**炸掉，而它守的
+其实不是命名规则。
 
 覆盖：
 1. P0-2 `width="50000"` + 合法 viewBox → 校验失败（resvg 实际画布由属性决定）
 2. 正常尺寸 / 仅 viewBox → 校验通过
 3. `_post_process(render_chart=False)`（polished 侧）→ 不渲染、不写 chart 文件
-4. chart 围栏 → 渲染出 chart_N.png 替换引用
+4. chart 围栏 → 渲染出 chart_{hash8}.png 替换引用
 5. ```svg 围栏 / 裸内联 <svg> → 原样保留不处理（协议收紧回归）
 6. 围栏校验失败 → 替换为失败文本（零残留，无围栏/源码/图片引用）
 7. chart 围栏内非 SVG → 原样保留不处理
@@ -17,7 +23,7 @@
 
 resvg 渲染用 mock 兜底，不依赖打包环境是否携带 resvg_py。
 """
-import sys, os, tempfile
+import sys, os, re, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from unittest import mock
@@ -25,6 +31,42 @@ from unittest import mock
 from app.services.chart_renderer import render_charts, _validate_svg
 
 PNG = b'\x89PNG\r\n\x1a\n' + b'fake-png-bytes'
+
+
+# ── 产物文件发现（文件名含内容 hash，不可硬编码）──
+
+def _charts(tmp, ext='.png'):
+    """本次渲染在 `{tmp}/assets/` 下产出的图表文件（按名排序）。"""
+    d = os.path.join(tmp, 'assets')
+    if not os.path.isdir(d):
+        return []
+    return sorted(f for f in os.listdir(d)
+                  if f.startswith('chart_') and f.endswith(ext))
+
+
+def _stems(tmp, ext):
+    """`_charts` 去掉扩展名的 stem 集合（用于 png ↔ json/svg 配对断言）。"""
+    return {f[:-len(ext)] for f in _charts(tmp, ext)}
+
+
+# 产物里的图片引用。⚠️ 刻意**不校验文件名的形态**（不写成 `chart_[0-9a-f]{8}`）：
+# 命名规则不是这份测试的守护对象，把它焊进判据只会让「哪天换个更合适的命名」变成
+# 一屏假红。命名要守的两条语义（内容相同→同名 / 内容不同→不同名）由下面两个专条负责。
+_REF_RE = re.compile(r'!\[图表\]\(assets/chart_[^)]+\.png\)')
+
+
+def _ref_name(md):
+    """单独渲染一个围栏，返回它产出的图片引用字符串（None = 没出图）。
+
+    用于多图场景断言「引用**按文档顺序**出现」——文件名是内容 hash，不再自带顺序
+    信息，只能拿每个围栏各自的名字去比对位置。顺带钉住 P1-17 的核心不变式：
+    **同一内容 → 同一 hash → 同一文件名**（这正是重跑不覆盖 v1 引用的前提）。
+    """
+    with tempfile.TemporaryDirectory() as d:
+        with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+            m = _REF_RE.search(render_charts(md, d))
+    return m.group(0) if m else None
+
 
 # ── P0-2：width/height 属性绕过校验 ──
 
@@ -87,7 +129,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert '📊 图表生成失败' in out, f'零文字图应替换为失败文本: {out}'
     assert '无文字说明' in out, f'失败文本应说明原因: {out}'
     assert '![图表](assets/' not in out, f'零文字图不应产生图片引用: {out}'
-    assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png')), '零文字图不应写 chart 文件'
+    assert _charts(tmp) == [], '零文字图不应写 chart 文件'
 print('PASS: 零文字图围栏替换为失败文本（无文字说明）')
 
 # ── chart 围栏正常渲染（mock resvg，不依赖打包环境）──
@@ -98,31 +140,37 @@ def _chart_md():
 with tempfile.TemporaryDirectory() as tmp:
     with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
         out = render_charts(_chart_md(), tmp)
-    assert '![图表](assets/chart_1.png)' in out, out
+    assert _REF_RE.search(out), f'应产出图片引用: {out}'
     assert '```chart' not in out, f'围栏应被替换消失（零残留）: {out}'
-    assert os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png'))
+    assert len(_charts(tmp)) == 1, f'应写出 1 个 PNG，实际 {_charts(tmp)}'
     # 2026-08-16：渲染成功时同步保存 SVG 源码片段（调试 + 导出矢量图）
-    assert os.path.exists(os.path.join(tmp, 'assets', 'chart_1.svg')), '应保存 chart_1.svg 源码片段'
-    with open(os.path.join(tmp, 'assets', 'chart_1.svg'), encoding='utf-8') as f:
+    # ⚠️ 与 PNG **同 stem**（由同一 hash 派生）——三件套（png/svg/json）必须一起动，
+    # 只改一处会让它们指向不同的图（P1-17 顺带钉住的一致性）
+    _svgs = _charts(tmp, '.svg')
+    assert len(_svgs) == 1, f'应保存 1 个 SVG 源码片段，实际 {_svgs}'
+    assert _svgs[0][:-4] == _charts(tmp)[0][:-4], 'SVG 片段应与 PNG 同 stem'
+    with open(os.path.join(tmp, 'assets', _svgs[0]), encoding='utf-8') as f:
         assert '<svg' in f.read(), 'SVG 片段应为 LLM 原始输出'
 print('PASS: chart 围栏渲染 PNG 并替换引用（同步保存 SVG 片段）')
 
 # ── P0-3：图表只入 notes —— _post_process 的 render_chart 门控 ──
-# 双产物若各调一次 render_charts，counter 每次重置为 0 → 写同名 chart_1.png 互踩。
 # 修复：polished 传 render_chart=False 不渲染，只有 notes 渲染。
+# ⚠️ 命名改哈希（P1-17）后，双产物**同时渲染也不再错配**（同一份 SVG → 同一 hash →
+# 同名同内容，幂等覆盖）。门控此时省的是**一次无谓渲染**，语义仍成立故断言保留，
+# 但别再把它当成「防互踩」的守卫——那条已被命名规则结构性解决。
 from app.routers.generate import _post_process
 
 with tempfile.TemporaryDirectory() as tmp:
     # polished 侧：render_chart=False → 不渲染（保留原 chart 围栏，不写 chart 文件）
     out = _post_process(_chart_md(), ['chart'], None, 'text', tmp, render_chart=False)
     assert '```chart' in out, 'polished 侧应保留原 chart 围栏'
-    assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png')), 'polished 侧不应生成 chart 文件'
+    assert _charts(tmp) == [], 'polished 侧不应生成 chart 文件'
 
     # notes 侧：render_chart=True（默认）→ 渲染
     with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
         out2 = _post_process(_chart_md(), ['chart'], None, 'text', tmp, render_chart=True)
-    assert '![图表](assets/chart_1.png)' in out2, out2
-    assert os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png'))
+    assert _REF_RE.search(out2), out2
+    assert len(_charts(tmp)) == 1
 print('PASS: P0-3 双产物 render_chart 门控（polished 不渲染 / notes 渲染）')
 
 # ── 协议收紧：svg/xml 围栏、裸内联 <svg> 一律不碰（用户内容零触碰）──
@@ -134,7 +182,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert '```svg\n' in out, f'用户 svg 围栏应原样保留: {out}'
     assert '<svg' in out, f'用户 svg 围栏内容应保留: {out}'
     assert '![图表](assets/' not in out, f'svg 围栏不应被处理: {out}'
-    assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png')), 'svg 围栏不应写 chart 文件'
+    assert _charts(tmp) == [], 'svg 围栏不应写 chart 文件'
 print('PASS: 用户 ```svg 围栏不被处理')
 
 inline_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100"><rect x="10" y="10" width="80" height="50" fill="#4A90D9"/></svg>'
@@ -143,7 +191,7 @@ with tempfile.TemporaryDirectory() as tmp:
         out = render_charts(inline_svg, tmp)
     assert '<svg' in out, f'裸内联 <svg> 应原样保留: {out}'
     assert '![图表](assets/' not in out, f'裸内联不应被渲染: {out}'
-    assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png')), '裸内联不应写 chart 文件'
+    assert _charts(tmp) == [], '裸内联不应写 chart 文件'
 print('PASS: 裸内联 <svg> 不被处理')
 
 # 混合：chart 围栏正常渲染，svg 围栏 / 裸内联原样保留
@@ -151,7 +199,7 @@ mixed_md = '```chart\n' + good_svg + '\n```\n```svg\n' + vb_only_svg + '\n```\n'
 with tempfile.TemporaryDirectory() as tmp:
     with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
         out = render_charts(mixed_md, tmp)
-    assert '![图表](assets/chart_1.png)' in out, out
+    assert len(_REF_RE.findall(out)) == 1, out
     assert '```svg' in out, f'svg 围栏应原样保留: {out}'
     assert out.count('<svg') == 2, f'裸内联 + svg 围栏内 svg 应保留（共 2 处 <svg）: {out}'
 print('PASS: 混合场景只处理 chart 围栏，用户 svg 内容不受影响')
@@ -166,7 +214,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert '📊 图表生成失败' in out, f'应替换为失败提示文本: {out}'
     assert out.count('图表生成失败') == 1, f'失败标注应只出现一次: {out}'
     assert '![图表](assets/' not in out, f'失败不应产生图片引用: {out}'
-    assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png')), '失败不应写 chart 文件'
+    assert _charts(tmp) == [], '失败不应写 chart 文件'
 print('PASS: 围栏校验失败替换为失败文本（零残留）')
 
 # chart 围栏内非 SVG（伪代码）→ 原样保留，不处理不标注
@@ -177,24 +225,27 @@ with tempfile.TemporaryDirectory() as tmp:
     assert '```chart' in out, f'非图表围栏应原样保留: {out}'
     assert '这不是 SVG' in out, out
     assert '图表生成失败' not in out, f'非图表围栏不应出失败标注: {out}'
-    assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png')), '非图表围栏不应写 chart 文件'
+    assert _charts(tmp) == [], '非图表围栏不应写 chart 文件'
 print('PASS: chart 围栏内非 SVG 原样保留不处理')
 
 # ── svg 字面量垃圾清理（保留：只作用于图片引用后粘连的 svg 字面量，不触碰用户内容）──
-garbage_md = '```chart\n' + good_svg + '\n```\n![图表](assets/chart_1.png)svg'
+# ⚠️ 正文里这个引用**不来自本次渲染**（渲染产物名含内容 hash，无法预先写死）——它是
+# 「已存在于正文中的任意图片引用」的样例：`_IMG_SVG_GARBAGE_RE` 用的是通用
+# `![...](...)` 匹配，与图片叫什么名字无关。
+garbage_md = '```chart\n' + good_svg + '\n```\n![图表](assets/chart_deadbeef.png)svg'
 with tempfile.TemporaryDirectory() as tmp:
     with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
         out = render_charts(garbage_md, tmp)
-    assert '![图表](assets/chart_1.png)' in out, out
-    assert '![图表](assets/chart_1.png)svg' not in out, f'粘连 svg 应被清理: {out}'
+    assert '![图表](assets/chart_deadbeef.png)' in out, out
+    assert '![图表](assets/chart_deadbeef.png)svg' not in out, f'粘连 svg 应被清理: {out}'
 print('PASS: 图片引用后粘连 svg 字面量清理')
 
 # 场景：图片引用后跨行跟 svg 单词（正常文本）→ 不被误清理
-safe_md = '```chart\n' + good_svg + '\n```\n![图表](assets/chart_1.png)\n\nsvg 文件说明'
+safe_md = '```chart\n' + good_svg + '\n```\n![图表](assets/chart_deadbeef.png)\n\nsvg 文件说明'
 with tempfile.TemporaryDirectory() as tmp:
     with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
         out = render_charts(safe_md, tmp)
-    assert '![图表](assets/chart_1.png)' in out, out
+    assert '![图表](assets/chart_deadbeef.png)' in out, out
     assert 'svg 文件说明' in out, f'跨行 svg 单词不应被误清理: {out}'
 print('PASS: 跨行 svg 单词不被误清理')
 
@@ -322,26 +373,28 @@ def _fig(body):
 with tempfile.TemporaryDirectory() as tmp:
     with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
         out = render_charts(_fig(FIG_HCHAIN), tmp)
-    assert '![图表](assets/chart_1.png)' in out, out
+    assert _REF_RE.search(out), out
     assert '```fig' not in out, f'围栏应被替换消失（零残留）: {out}'
     assert '{' not in out, f'语义 JSON 不应残留在产物里: {out}'
     ads = os.path.join(tmp, 'assets')
-    assert os.path.exists(os.path.join(ads, 'chart_1.png'))
-    assert os.path.exists(os.path.join(ads, 'chart_1.svg')), 'fig 也应保存 SVG 片段'
-    # chart_N.json 只在走通 fig 分支时落盘 —— 是「模型确实切到新协议」的确定性证据
-    # （两条路径都出 PNG 且张数可能一样，只有 .json 能区分）
-    jp = os.path.join(ads, 'chart_1.json')
-    assert os.path.exists(jp), 'fig 路径应落 chart_N.json'
-    with open(jp, encoding='utf-8') as f:
+    _pngs = _charts(tmp)
+    assert len(_pngs) == 1, f'应写出 1 个 PNG，实际 {_pngs}'
+    assert len(_charts(tmp, '.svg')) == 1, 'fig 也应保存 SVG 片段'
+    # chart_{hash}.json 只在走通 fig 分支时落盘 —— 是「模型确实切到新协议」的确定性证据
+    # （两条路径都出 PNG 且张数可能一样，只有 .json 能区分）；三件套必须**同 stem**
+    _jsons = _charts(tmp, '.json')
+    assert len(_jsons) == 1, f'fig 路径应落 chart_{{hash}}.json，实际 {_jsons}'
+    assert _jsons[0][:-5] == _pngs[0][:-4], 'json 应与 PNG 同 stem（三件套同源）'
+    with open(os.path.join(ads, _jsons[0]), encoding='utf-8') as f:
         assert _json.load(f)['layout'] == 'hchain', 'json 应为原始语义源'
-print('PASS: fig 语义围栏 → PNG + SVG + JSON 三落盘，围栏/JSON 零残留')
+print('PASS: fig 语义围栏 → PNG + SVG + JSON 三落盘（同 stem），围栏/JSON 零残留')
 
 
 # 带 edges 的 grid（v1 唯一任意拓扑连线能力）走通全链
 with tempfile.TemporaryDirectory() as tmp:
     with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
         out = render_charts(_fig(FIG_GRID), tmp)
-    assert '![图表](assets/chart_1.png)' in out, out
+    assert _REF_RE.search(out), out
     assert '```fig' not in out, out
 print('PASS: fig grid（含 edges 拓扑连线）全链通过')
 
@@ -350,10 +403,9 @@ print('PASS: fig grid（含 edges 拓扑连线）全链通过')
 with tempfile.TemporaryDirectory() as tmp:
     with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
         out = render_charts(_fig(good_svg), tmp)
-    ads = os.path.join(tmp, 'assets')
-    assert '![图表](assets/chart_1.png)' in out, f'fig 内嵌 SVG 应按 chart 路径出图: {out}'
-    assert os.path.exists(os.path.join(ads, 'chart_1.svg'))
-    assert not os.path.exists(os.path.join(ads, 'chart_1.json')), \
+    assert _REF_RE.search(out), f'fig 内嵌 SVG 应按 chart 路径出图: {out}'
+    assert len(_charts(tmp, '.svg')) == 1
+    assert _charts(tmp, '.json') == [], \
         '走 chart 容错路径时不应落 .json（这正是区分两条路径的信号）'
 print('PASS: fig 围栏内嵌 <svg> → 按 chart 路径处理（容错兜底生效，不落 .json）')
 
@@ -367,8 +419,7 @@ for label, body in (('JSON 语法错', '{这不是 JSON'), ('未知 layout', '{"
         assert body[:6] not in out, f'{label}: 原始 JSON 不应残留: {out}'
         assert '📊 图表生成失败' in out, f'{label}: 应替换为失败文本: {out}'
         assert '![图表](assets/' not in out, f'{label}: 不应产生图片引用: {out}'
-        assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png')), \
-            f'{label}: 失败不应写任何文件'
+        assert _charts(tmp) == [], f'{label}: 失败不应写任何文件'
 print('PASS: fig 的 JSON 损坏 / 未知 layout / 空对象 / 非对象 → 失败文本零残留')
 
 # 未选图表 / 不是专用围栏 → 仍不处理（协议隔离不因新增 fig 而放松）
@@ -376,41 +427,65 @@ with tempfile.TemporaryDirectory() as tmp:
     with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
         out = render_charts('```json\n' + FIG_HCHAIN + '\n```', tmp)
     assert '```json' in out and 'layout' in out, f'通用 json 围栏不该被碰: {out}'
-    assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.png'))
+    assert _charts(tmp) == []
 print('PASS: 通用 ```json 围栏不被处理（协议隔离保持）')
 
-# 多图：fig / chart 交替 → 按文档顺序编号 1/2/3（两条路径共用计数器）
-multi = '\n\n'.join([_fig(FIG_HCHAIN), '```chart\n' + good_svg + '\n```', _fig(FIG_GRID)])
+# 多图：fig / chart 交替 → 每个围栏一张图，引用按文档顺序出现
+_blocks = [_fig(FIG_HCHAIN), '```chart\n' + good_svg + '\n```', _fig(FIG_GRID)]
 with tempfile.TemporaryDirectory() as tmp:
     with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
-        out = render_charts(multi, tmp)
-    ads = os.path.join(tmp, 'assets')
-    for i in (1, 2, 3):
-        assert os.path.exists(os.path.join(ads, f'chart_{i}.png')), f'缺 chart_{i}.png'
-    assert not os.path.exists(os.path.join(ads, 'chart_4.png'))
-    assert out.count('![图表](assets/chart_') == 3, f'应产生 3 个图片引用: {out}'
-    assert os.path.exists(os.path.join(ads, 'chart_1.json'))     # fig
-    assert not os.path.exists(os.path.join(ads, 'chart_2.json'))  # chart
-    assert os.path.exists(os.path.join(ads, 'chart_3.json'))     # fig
+        out = render_charts('\n\n'.join(_blocks), tmp)
+    assert len(_charts(tmp)) == 3, f'应写出 3 张 PNG，实际 {_charts(tmp)}'
+    # 顺序判据：out 里三个引用逐位等于三个围栏**各自单独**渲染时的名字。名字是内容
+    # hash，所以这条同时钉住了「同一内容 → 同一 hash」——那正是「重跑不覆盖 v1 引用」
+    # 的前提（P1-17 的另一半：内容不同必须不同名，见下面的失败用例与多图计数）。
+    assert [m.group(0) for m in _REF_RE.finditer(out)] == [_ref_name(b) for b in _blocks], \
+        f'图片引用应按文档顺序出现: {out}'
+    # .json 精确标记各图来源路径：两个 fig 各落一份、中间的 chart 不落
+    _png_stems, _json_stems = _stems(tmp, '.png'), _stems(tmp, '.json')
+    assert _json_stems <= _png_stems, '.json 必须都能在 .png 里找到同 stem 者（三件套同源）'
+    assert len(_json_stems) == 2, f'两张 fig 应各落一份 .json，实际 {_json_stems}'
     assert '```fig' not in out and '```chart' not in out, '两种围栏都应零残留'
-print('PASS: fig/chart 交替多图 → chart_1/2/3 顺序编号，.json 精确标记各图来源路径')
+print('PASS: fig/chart 交替多图 → 3 图 3 引用按文档顺序，.json 精确标记来源（2 fig / 1 chart）')
 
-# 中间一张失败 → 编号不跳号（失败不占位）
+# ── P1-17 主判据：内容不同 → 不同文件名（重跑不覆盖上一版仍被引用的图）──
+# 「重新生成」会再跑一遍 render_charts，若文件名按序编号（旧实现 `chart_1.png`），
+# 第二版会把第一版覆盖掉，而 v1 的 `notes.prev.md` **仍引用旧名** → 切到 v1 看到
+# 「新图配旧正文」，全程零报错。这条是本次修复的区分力证据：旧实现下 out_v1 == out_v2。
+with tempfile.TemporaryDirectory() as tmp:
+    with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+        _out_v1 = render_charts(_fig(FIG_HCHAIN), tmp)   # 第一版
+        _out_v2 = render_charts(_fig(FIG_GRID), tmp)     # 重新生成，内容不同
+    assert _out_v1 != _out_v2, f'内容不同必须不同名（否则 v1 引用被 v2 覆盖）: {_out_v1} / {_out_v2}'
+    assert len(_charts(tmp)) == 2, f'两版内容应各有其文件，实际 {_charts(tmp)}'
+print('PASS: P1-17 内容不同 → 不同文件名（v1 的引用不会被 v2 覆盖）')
+
+# 另一半（幂等）：**同一内容**重渲染 → 同一文件名、只有一个文件
+# 与上一条合起来才是完整语义：「内容相同 → 同名（不累积孤儿）」「内容不同 → 不同名（不互踩）」。
+# ⚠️ 这条在旧实现下也是绿的（编号实现同样满足幂等），故它不是本轮修复的区分力证据——
+# 它守的是「哪天实现换成 uuid / 时间戳」时的回归（那会每次都产出新文件、引用永远对不上）。
+with tempfile.TemporaryDirectory() as tmp:
+    with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+        _a = render_charts(_fig(FIG_HCHAIN), tmp)
+        _b = render_charts(_fig(FIG_HCHAIN), tmp)
+    assert _a == _b, f'同一内容两次渲染应产出同一引用: {_a} / {_b}'
+    assert len(_charts(tmp)) == 1, f'不应累积第二个文件，实际 {_charts(tmp)}'
+print('PASS: 同内容重渲染 → 同文件名（幂等，不累积孤儿文件）')
+
+# 中间一张失败 → 失败不写文件，成功两张各落一张
 with tempfile.TemporaryDirectory() as tmp:
     with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
         out = render_charts('\n\n'.join([_fig(FIG_HCHAIN), _fig('{坏 JSON'), _fig(FIG_GRID)]), tmp)
-    ads = os.path.join(tmp, 'assets')
-    assert os.path.exists(os.path.join(ads, 'chart_1.png'))
-    assert os.path.exists(os.path.join(ads, 'chart_2.png')), '失败不占号，第三张应为 chart_2'
-    assert not os.path.exists(os.path.join(ads, 'chart_3.png'))
+    assert len(_charts(tmp)) == 2, f'1 成功 / 2 失败 / 3 成功 → 只写 2 张，实际 {_charts(tmp)}'
+    assert len(_REF_RE.findall(out)) == 2, f'应产生 2 个图片引用: {out}'
     assert out.count('图表生成失败') == 1
-print('PASS: fig 失败不跳号（1 成功 / 2 失败 / 3 成功 → chart_1 + chart_2）')
+print('PASS: 中间一张失败 → 只写 2 张图 + 1 处失败标注（失败不写文件）')
 
 # render_chart=False（polished 侧）对 fig 同样不渲染
 with tempfile.TemporaryDirectory() as tmp:
     out = _post_process(_fig(FIG_HCHAIN), ['chart'], None, 'text', tmp, render_chart=False)
     assert '```fig' in out, 'polished 侧应保留原围栏不动'
-    assert not os.path.exists(os.path.join(tmp, 'assets', 'chart_1.json'))
+    assert _charts(tmp, '.json') == []
 print('PASS: render_chart=False 对 fig 同样不渲染（双产物门控一致）')
 
 # ── _has_chart_fence：两种协议都算「已出图」──

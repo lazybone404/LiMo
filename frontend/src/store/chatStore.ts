@@ -97,9 +97,10 @@ export interface ChatStoreState {
   newChat: () => void
   sendMessage: (text: string, docRefs?: DocRef[]) => void
   stopGenerating: () => void
-  regenerate: (msgId: string) => void
+  /** ⚠️ 返回 Promise：内部要先 `await` 后端 rebuild 落定，再发流式请求（见实现注释） */
+  regenerate: (msgId: string) => Promise<void>
   deleteMessage: (msgId: string) => void
-  editMessage: (msgId: string, content: string) => void
+  editMessage: (msgId: string, content: string) => Promise<void>
   refreshConversations: () => Promise<void>
   /** 清除上下文：不删消息，停止携带该索引前历史（后端 clear_context_at） */
   clearContext: () => Promise<void>
@@ -308,7 +309,7 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       activeController?.abort()
     },
 
-    regenerate: (msgId) => {
+    regenerate: async (msgId) => {
       const s = get()
       if (s.streaming) return
       const msgs = s.messages
@@ -320,28 +321,41 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       if (ui < 0) return
       const userMsg = msgs[ui]
       // 后端先截断到 ui（rebuild），再本地重发（流式 append 新消息）
+      //
+      // ⚠️ `await` 是**协议要求**，不是风格问题（P1-14）：后端 PUT 是整表覆盖，
+      //    而 `/chat/stream` 在返回 StreamingResponse **之前**就 append 了用户提问。
+      //    不 await 时两条请求谁先到由网络决定 —— PUT 后到就把刚发出的提问整条抹掉，
+      //    症状是「问完立刻消失」。原来的 `.catch()` 只处理失败，**不保证顺序**，
+      //    所以它不能替代这里的 await（判据看的是两个请求的先后，不是有没有报错）。
       if (s.currentId) {
-        rebuildConversationMessages(s.currentId, msgs.slice(0, ui).map(toBackendMsg)).catch(() => {
-          // P1-19：后端同步失败不再静默吞错——本地已更新但可能未持久化
+        try {
+          await rebuildConversationMessages(s.currentId, msgs.slice(0, ui).map(toBackendMsg))
+        } catch {
+          // 同步失败不阻塞重发：本地已更新，只是可能未持久化
           useStore.getState().addToast('同步失败，操作可能未保存', 'error')
-        })
+        }
       }
       dispatchSend(userMsg.content, userMsg.docRefs, ui)
     },
 
     deleteMessage: (msgId) => {
       const s = get()
+      // ⚠️ 流式中删历史消息 → 下面这次 rebuild 会把「含半成品回复的快照」整表回写，
+      //    而正在流的那条回复随后还会继续 append → 后端快照与流式内容互相打架
+      //    （P1-14）。`regenerate` / `editMessage` 早就有这条守卫，三个写动作应当一致。
+      //    ⚠️ 本动作**不需要** await：它后面没有第二个写请求，不存在到达顺序问题。
+      if (s.streaming) return
       const next = s.messages.filter(m => m.id !== msgId)
       set({ messages: next })
       if (s.currentId) {
         rebuildConversationMessages(s.currentId, next.map(toBackendMsg)).catch(() => {
-          // P1-19：后端同步失败不再静默吞错——本地已更新但可能未持久化
+          // 后端同步失败不再静默吞错——本地已更新但可能未持久化
           useStore.getState().addToast('同步失败，操作可能未保存', 'error')
         })
       }
     },
 
-    editMessage: (msgId, content) => {
+    editMessage: async (msgId, content) => {
       const s = get()
       if (s.streaming) return
       const msgs = s.messages
@@ -352,23 +366,26 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       if (!trimmed) return
       if (msg.role === 'user') {
         // 分支语义：后端先截断到 idx（rebuild），再本地以新内容重发（流式 append）
+        // ⚠️ 与 `regenerate` 同因（P1-14）：rebuild 之后还有一次写请求，必须等它落定。
         if (s.currentId) {
-          rebuildConversationMessages(s.currentId, msgs.slice(0, idx).map(toBackendMsg)).catch(() => {
-            // P1-19：后端同步失败不再静默吞错——本地已更新但可能未持久化
+          try {
+            await rebuildConversationMessages(s.currentId, msgs.slice(0, idx).map(toBackendMsg))
+          } catch {
             useStore.getState().addToast('同步失败，操作可能未保存', 'error')
-          })
+          }
         }
         dispatchSend(trimmed, msg.docRefs, idx)
       } else {
         // assistant：本地覆盖文本（不重发），同步 rebuild
+        // ⚠️ 这一支**不需要** await：改完就结束了，没有后续写请求与它抢顺序。
         const next = [...msgs]
         next[idx] = { ...msg, content: trimmed, isError: false }
         set({ messages: next })
         if (s.currentId) {
           rebuildConversationMessages(s.currentId, next.map(toBackendMsg)).catch(() => {
-          // P1-19：后端同步失败不再静默吞错——本地已更新但可能未持久化
-          useStore.getState().addToast('同步失败，操作可能未保存', 'error')
-        })
+            // 后端同步失败不再静默吞错——本地已更新但可能未持久化
+            useStore.getState().addToast('同步失败，操作可能未保存', 'error')
+          })
         }
       }
     },
@@ -383,10 +400,13 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       const s = get()
       if (!s.currentId || s.messages.length === 0) return
       const index = s.messages.length  // 边界：该索引前消息不再携带（不清除消息）
-      try {
-        await clearConversationContext(s.currentId, index)
-        set({ clearContextIndex: index })
-      } catch { /* 组件层 toast */ }
+      // ⚠️ **刻意不吞异常**（此前是 `catch { /* 组件层 toast */ }`）：吞掉之后
+      // 「对话已不在（后端 404）」与「已清除」在调用方**完全同形**，而组件层是靠
+      // resolve/reject 决定弹成功还是失败的 —— 于是 `ChatCore` 无条件弹「已清除上下文」
+      // （假成功，模式 #53）。store 只负责状态：失败时连 `clearContextIndex` 都不动，
+      // 免得本地以为清了、后端没有。
+      await clearConversationContext(s.currentId, index)
+      set({ clearContextIndex: index })
     },
 
     dismissCompressedHint: () => set({ compressedHint: null }),

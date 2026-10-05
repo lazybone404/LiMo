@@ -130,7 +130,7 @@ export function BatchBar({
             <option value="replace">替换</option>
           </select>
           <button onClick={commitTag}
-            className="px-2 py-1 text-[11px] rounded-md bg-accent text-white hover:bg-accent-hover">
+            className="px-2 py-1 text-[11px] rounded-md bg-accent text-on-accent hover:bg-accent-hover">
             应用
           </button>
         </div>

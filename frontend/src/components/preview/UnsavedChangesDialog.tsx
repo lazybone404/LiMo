@@ -67,7 +67,7 @@ export function UnsavedChangesDialog({
           <button
             onClick={() => onSave()}
             disabled={saving}
-            className="px-3 py-1.5 text-[12px] bg-accent text-white rounded-lg hover:bg-accent-hover disabled:opacity-40 transition-colors flex items-center gap-1"
+            className="px-3 py-1.5 text-[12px] bg-accent text-on-accent rounded-lg hover:bg-accent-hover disabled:opacity-40 transition-colors flex items-center gap-1"
           >
             {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
             保存并离开

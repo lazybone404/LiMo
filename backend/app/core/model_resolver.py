@@ -130,9 +130,26 @@ def resolve_context_window(config: dict, model_id: int | None = None,
         model_id = config.get("scene_models", {}).get(scene)
 
     # 1. 用户自定义
+    #
+    # ⚠️ **两条支路缺一不可**（P1-09）：调用方分两类，此前只有第一类被覆盖 ——
+    #   · 传 `model_id` 的（generate / synthesis / chat）：按下标查；
+    #   · 传 `provider_id + model_name` 的（`reference_compressor` 按**实际在用的
+    #     模型**查询，可能不是场景模型）：**整条第 1 层被跳过** → 用户在设置页给
+    #     这个模型填的 `context_window` 对这类调用**完全不生效**，静默落到
+    #     第 2/3/4 层（同一份配置下能差数倍，且零报错）。
+    #   ⚠️ 判据必须是 `provider_id` **且** `model_name`，不能只按名字：`qwen-max`
+    #   这类名字在各家网关都可能有，只按名字匹配会把别家的窗口安到这家的头上。
+    #   ⚠️ 两个 `if` 而非 `if/elif`：按 id 没查到（老配置里缺这条）时，
+    #   显式传了 provider/model 的调用方仍应有机会命中。
     if model_id:
         for m in config.get("enabled_models", []):
             if m.get("id") == model_id and m.get("context_window"):
+                return int(m["context_window"])
+    if provider_id and model_name:
+        for m in config.get("enabled_models", []):
+            if (m.get("provider_id") == provider_id
+                    and m.get("model_name") == model_name
+                    and m.get("context_window")):
                 return int(m["context_window"])
 
     # 由 model_id 解析 provider/model_name（未显式传入时）

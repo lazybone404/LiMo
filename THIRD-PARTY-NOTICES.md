@@ -61,5 +61,5 @@ LiMo 不主张任何归属。各许可证全文随发行包附带，位置见各
 1. 不剥离任何版权声明，各许可证文本随发行包附带：本文件（随包于 `_internal/licenses/THIRD-PARTY-NOTICES.md`）
    + 汇总全文 `_internal/licenses/` + 静态资源 `_internal/static/licenses/` + 各包自带 `_internal/*.dist-info/licenses/`。
    安装目录内的读者可先看同目录 `README.md`，它说明了本目录内容与其他许可证位置。
-2. AGPL/GPL 类组件：ffmpeg 以独立进程隔离（GPL-3.0 全文随包）；ebooklib（AGPL-3.0）与 html2text（GPL-3.0）已于 2026-08-26 彻底移除（ebooklib → 自研 epub-container 纯标准库；html2text → bs4），**主 exe 已零 AGPL/GPL 库**，不再随包附带 AGPL/GPL 全文。
+2. AGPL/GPL 类组件：ffmpeg 以独立进程隔离（GPL-3.0 全文随包）；ebooklib（AGPL-3.0）与 html2text（GPL-3.0）已于 2026-08-26 彻底移除（ebooklib → 自研 epub-container 纯标准库；html2text → bs4）；自研抖音下载路径（含头部声明 GPLv3 的 `abogus` 签名模块，源自 TikTokDownloader）已于 2026-10-06 移除，抖音改走 yt-dlp 通用路径，**主 exe 已零 AGPL/GPL 库**，不再随包附带 AGPL/GPL 全文。
 3. 完整许可证文本以各项目官方仓库为准；本文件与 [ACKNOWLEDGMENTS.md](docs/ACKNOWLEDGMENTS.md) 如有出入，以官方为准。

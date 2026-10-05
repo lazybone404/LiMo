@@ -295,7 +295,7 @@ export function OnboardingWizard({ onDone }: Props) {
           </button>
           <button
             onClick={() => (caps && !hasMissing ? onDone() : setScreen(2))}
-            className="flex-[2] py-2.5 rounded-xl bg-accent text-white text-[14px] font-medium hover:bg-accent-hover transition-colors flex items-center justify-center gap-2">
+            className="flex-[2] py-2.5 rounded-xl bg-accent text-on-accent text-[14px] font-medium hover:bg-accent-hover transition-colors flex items-center justify-center gap-2">
             {caps && !hasMissing
               ? (allFound ? '开始使用' : '知道了，开始使用')
               : '下一步'}
@@ -381,7 +381,7 @@ function renderAiConfigScreen(props: {
                       <button
                         onClick={() => onSaveLlm(item)}
                         disabled={savingId === item.id}
-                        className="px-4 py-2 rounded-lg bg-accent text-white text-[13px] font-medium hover:bg-accent-hover transition-colors disabled:opacity-50 flex items-center gap-1.5 shrink-0">
+                        className="px-4 py-2 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:bg-accent-hover transition-colors disabled:opacity-50 flex items-center gap-1.5 shrink-0">
                         {savingId === item.id ? <Loader2 size={13} className="animate-spin" /> : null}
                         保存并验证
                       </button>
@@ -419,7 +419,7 @@ function renderAiConfigScreen(props: {
                     <button
                       onClick={onSaveDs}
                       disabled={savingId === 'dashscope-engine'}
-                      className="px-4 py-2 rounded-lg bg-accent text-white text-[13px] font-medium hover:bg-accent-hover transition-colors disabled:opacity-50 flex items-center gap-1.5 shrink-0">
+                      className="px-4 py-2 rounded-lg bg-accent text-on-accent text-[13px] font-medium hover:bg-accent-hover transition-colors disabled:opacity-50 flex items-center gap-1.5 shrink-0">
                       {savingId === 'dashscope-engine' ? <Loader2 size={13} className="animate-spin" /> : null}
                       保存
                     </button>
@@ -447,7 +447,7 @@ function renderAiConfigScreen(props: {
             上一步
           </button>
           <button onClick={onDone}
-            className="flex-[2] py-2.5 rounded-xl bg-accent text-white text-[14px] font-medium hover:bg-accent-hover transition-colors flex items-center justify-center gap-2">
+            className="flex-[2] py-2.5 rounded-xl bg-accent text-on-accent text-[14px] font-medium hover:bg-accent-hover transition-colors flex items-center justify-center gap-2">
             跳过，开始使用
             <ChevronRight size={16} />
           </button>

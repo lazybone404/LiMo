@@ -482,6 +482,44 @@ assert sp['edges'][0]['label'] == "很长的边标签文字"[:L._EDGE_LABEL_MAX]
 assert len(sp['edges'][0]['label']) == L._EDGE_LABEL_MAX
 print(f"PASS: 边标签超长截断为 {L._EDGE_LABEL_MAX} 字而非拒绝整图")
 
+# ── 7c. 节点归一化：字符串简写在所有布局上必须同命运（P1-18）──
+
+# 修复前 `_NODES_RUNNERS` 的三个算子（hchain / timeline / branch）**都没有**
+# 归一化：模型写 `"nodes": ["A", "B"]` 时它们直接 `n.get('label')` →
+# `AttributeError: 'str' object has no attribute 'get'`（不是 LayoutError，
+# 会逃出渲染器的兜底链）；而 `_SPEC_RUNNERS` 里的算子各自调 `_norm_node` ——
+# 同一份输入两种命运（模式 #54：同源是搜索题不是记忆题）。
+r_s = L.expand({"layout": "hchain", "nodes": ["甲", "乙", "丙"]})
+assert [n['label'] for n in r_s['nodes']] == ["甲", "乙", "丙"], r_s['nodes']
+print("PASS: hchain 接受字符串节点且产物正确（判据是「不崩**且**图对」，不是只不崩）")
+
+# 混用（字符串 + 对象）—— 归一化过的对象不能被压扁成只剩 label
+r_mix = L.expand({"layout": "hchain", "nodes": ["甲", {"label": "乙", "sub": "注"}]})
+assert [n['label'] for n in r_mix['nodes']] == ["甲", "乙"], r_mix['nodes']
+assert r_mix['nodes'][1].get('sub') == '注', r_mix['nodes'][1]
+print("PASS: hchain 字符串与对象混用，对象的 sub 未被丢失")
+
+r_t = L.expand({"layout": "timeline", "nodes": ["起点", {"label": "终点", "sub": "12:00"}]})
+assert [n['label'] for n in r_t['nodes']] == ["起点", "终点"], r_t['nodes']
+print("PASS: timeline 同样接受字符串节点")
+
+# ⚠️ branch 的字符串简写**不能**归一化了事：它是成对结构（左判定 + 右结果），
+# `"判定1"` 归一化后没有 result → 右列结果框全空。图照样画得出来、几何全对、
+# assert_layout 全过，只是内容没了 —— 「把崩溃换成错图」不算修好，错图没有任何
+# 信号。故必须显式拒绝，并给出路（只说「缺 result」模型会重试同样的输入）。
+m = _raises(lambda: L.expand({"layout": "branch", "nodes": ["判定1", "判定2"]}),
+            '缺少 result', 'branch 字符串节点应显式拒绝（不是 AttributeError、更不是错图）')
+assert 'hchain' in m, f'branch 报错未给出路：{m}'
+print(f"PASS: branch 字符串节点被显式拒绝且给出路 — {m}")
+
+# 对照（同一判据的另一侧）：完整输入时右列结果必须真的有字
+r_b = L.expand({"layout": "branch", "nodes": [
+    {"label": "判定1", "result": "结果1"},
+    {"label": "判定2", "result": "结果2", "result_sub": "补充"}]})
+assert [n['label'] for n in r_b['nodes']][1::2] == ["结果1", "结果2"], r_b['nodes']
+assert all(n['label'] for n in r_b['nodes']), "branch 有节点标签为空"
+print("PASS: branch 完整输入右列结果非空（与上一条是同一判据的两侧）")
+
 # ── 8. 高度超限 → LayoutError ──
 
 # timeline 行距最小，24 个节点即使行距压到下限也放不下

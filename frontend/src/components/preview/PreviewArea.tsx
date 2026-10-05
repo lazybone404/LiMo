@@ -673,7 +673,7 @@ export function PreviewArea() {
         if (!displayContent) {
           if (isStreaming) return <ProcessingPlaceholder task={taskForView(activeView)} mode={activeView === 'polished' ? 'polished' : 'notes'} />
           if (contentLoadError) {
-            return <EmptyState icon={<AlertTriangle size={16} className="text-warning" />} title="内容加载失败" description="请检查后端是否正常运行，然后刷新页面重试" action={<button onClick={() => window.location.reload()} className="px-4 py-1.5 bg-accent text-white text-[12px] rounded-full hover:bg-accent-hover">刷新页面</button>} />
+            return <EmptyState icon={<AlertTriangle size={16} className="text-warning" />} title="内容加载失败" description="请检查后端是否正常运行，然后刷新页面重试" action={<button onClick={() => window.location.reload()} className="px-4 py-1.5 bg-accent text-on-accent text-[12px] rounded-full hover:bg-accent-hover">刷新页面</button>} />
           }
           return <EmptyState title="尚未生成" description="点击左侧「生成」按钮为本文档生成 Markdown 笔记" />
         }

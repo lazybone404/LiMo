@@ -430,26 +430,12 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
 
 # ── 流式 SSE 端点 ──
 
-class GenerateStreamRequest(BaseModel):
-    """GET /generate/{id}/stream 的查询参数（用 Pydantic 校验）"""
-    mode: str = "both"  # "notes" | "polished" | "both"
-    style: str = "plain"
-    formats: str = ""  # 逗号分隔
-    model_id: int | None = None
-    user_notes: str = ""
-    # VL 参数
-    video_understanding: bool = False
-    video_direct: bool = False  # 视频直传模型（DashScope SDK，模型支持 video 时）
-    video_interval: int = 6
-    grid_cols: int = 2
-    grid_rows: int = 2
-    dedupe_enabled: bool = True
-    unit_width: int = 960
-    unit_height: int = 540
-    save_quality: int = 90
-    frame_quality_filter: bool = True
-    # 续写参数
-    continue_from: str = ""  # "" = 新生成, "partial" = 续写最新残缺产物
+# ⚠️ 这里曾有一个 `GenerateStreamRequest`（Pydantic 查询参数模型），全仓**零引用**
+# ——流式端点用的是 FastAPI 的**签名参数**（见下），那个模型只是照着签名抄了一半：
+# 抄出 16 个字段，而签名有 23 个（reference_ids / image_analyze / image_optimize /
+# doc_direct / ocr_enabled / ocr_model_id / reasoning_effort 七个从未出现在模型里）。
+# 它既不被 FastAPI 消费、也不被任何调用方 import，唯一作用是让人误以为「这里有校验」。
+# 「定义已漂移」不是它该修的形态——它根本不该存在，故删除而非同步（模式 #51）。
 
 
 @router.get("/generate/{transcript_id}/stream")
@@ -863,8 +849,17 @@ async def generate_stream(transcript_id: str, request: Request,
                     (polished_chunks, polished_cancelled, polished_error) = await asyncio.gather(*_tasks)
                 was_cancelled = polished_cancelled or notes_cancelled
 
-                # 保存双产物（取消时 status=partial，完成时 status=complete）
-                status = "partial" if was_cancelled else "complete"
+                # 保存双产物：status 必须**逐路**判定（P1-8）
+                # 此前是一个全局 `status = partial if was_cancelled else complete` 喂给两路 ——
+                # 单路失败（另一路成功）时**两路都标 complete**，包括那个只写出半截的
+                # （失败前已流出的 chunk 照样落盘）。后果不止是显示：续写入口靠
+                # `md.get("status") == "partial"` 找回残缺产物（见本文件 continue_from 分支），
+                # 标成 complete = 用户**没法续写**一条被截断的笔记，而界面上看不出异常。
+                # ⚠️ 与前端 `onWarning`（GenPanel.tsx:778 把 genOutcomeRef 置 'partial'）**不重复**：
+                # 那是会话内瞬态判断（只决定收尾 toast / onDone 文案、不落盘），
+                # 这个是持久字段（驱动续写），两者各管一头。
+                polished_status = "partial" if (polished_cancelled or polished_error) else "complete"
+                notes_status = "partial" if (notes_cancelled or notes_error) else "complete"
                 if polished_chunks:
                     # P1-1：后处理（截图 ffmpeg + 图表渲染）放线程池，释放事件循环
                     polished_content = await asyncio.to_thread(
@@ -875,7 +870,7 @@ async def generate_stream(transcript_id: str, request: Request,
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
                         transcript_id=transcript_id, content=polished_content,
-                        mode=GenerateMode.POLISHED, style=Style(style), status=status,
+                        mode=GenerateMode.POLISHED, style=Style(style), status=polished_status,
                         generation_model=llm.model,
                     )
                     store.save_markdown(mv, file_meta=markdown_meta(
@@ -890,7 +885,7 @@ async def generate_stream(transcript_id: str, request: Request,
                     mv = MarkdownView(
                         id=f"md_{uuid.uuid4().hex[:12]}",
                         transcript_id=transcript_id, content=notes_content,
-                        mode=GenerateMode.NOTES, style=Style(style), status=status,
+                        mode=GenerateMode.NOTES, style=Style(style), status=notes_status,
                         generation_model=llm.model,
                     )
                     store.save_markdown(mv, file_meta=markdown_meta(
@@ -1323,5 +1318,9 @@ def _auto_title(store: object, tx_id: str, content: str) -> None:
     new_title = _extract_title(content)
     if new_title:
         tx["title"] = new_title
-        store.save_transcript_full(tx)
-        log.info(f"自动标题: {old_title[:30]} → {new_title}")
+        # ⚠️ 判返回值（P1-06）：写盘失败时下面那句日志会**撒谎** —— 它打的是内存里的
+        # 新标题，而磁盘上仍是旧的（用户下次进来看到标题没变，日志里却写着改过）。
+        if store.save_transcript_full(tx):
+            log.info(f"自动标题: {old_title[:30]} → {new_title}")
+        else:
+            log.warning(f"自动标题未保存（文档目录不存在）: {old_title[:30]} → {new_title}")

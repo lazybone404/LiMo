@@ -11,6 +11,10 @@ markdown 理解**，「预览一致」原则才不会因为多了个导出格式
   span 是纯噪音，还会把 `<pre>` 内容切得七零八落
 """
 
+# ⚠️ 必须用别名：下面的 `add_heading_ids(html: str)` 有个**同名参数**，
+#    参数会遮蔽模块名 → `import html` 写在这里也会 AttributeError（模式 #26 家族，
+#    只是这次的遮蔽来自形参而非函数内 import，症状同样是「模块方法不存在」）。
+import html as html_lib
 import logging
 import re
 
@@ -96,9 +100,18 @@ def add_heading_ids(html: str) -> str:
     """给 <h2>/<h3>/<h4> 追加 id 属性（算法对齐前端 headingId），
     使得 HTML 导出中的标题锚点链接可以定位"""
     def _make_id(text: str) -> str:
-        # 先清除时间戳标记
-        text = re.sub(r'(?:▶ |\*?Content-\[)?\d{2}:\d{2}\]?', '', text)
-        text = re.sub(r'Screenshot-\[\d{2}:\d{2}\]', '', text)
+        # ⚠️ 先把 HTML 剥成纯文本（P1-15）：`inner` 是**已渲染的 HTML**，标题里的
+        #    `**重点**` 到这一步是 `<strong>重点</strong>`、`&` 是 `&amp;` ——
+        #    不剥的话 id 里会混进 `strong` / `amp`，而前端渲染侧拿到的是纯文本
+        #    （React 节点树），同一标题两边算出不同 id，锚点静默失效。
+        text = re.sub(r'<[^>]+>', '', text)
+        text = html_lib.unescape(text)
+        # 时间戳标记：三条规则与前端 `stripHeadingDecor` 逐条对应（源码态 /
+        # 渲染后态各不同）。⚠️ 以前这里是一条宽松的 `\d{2}:\d{2}` 全删 ——
+        # 「12:30 的会议」这种非行尾时间会被前端保留、被后端删掉，又是一种分叉。
+        text = re.sub(r'\s*\*?(?:Content|Screenshot)-\[\d{2}:\d{2}\]', '', text)
+        text = re.sub(r'\s*▶\s*\d{2}:\d{2}', '', text)
+        text = re.sub(r'\s*\d{2}:\d{2}\s*$', '', text)
         # 转小写、空白→短横、保留字母/数字/CJK
         text = text.lower().strip()
         text = re.sub(r'\s+', '-', text)

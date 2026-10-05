@@ -105,7 +105,12 @@ async def update_transcript(tx_id: str, request: Request, store=Depends(get_stor
     # 写回磁盘 + 更新索引
     # ⚠️ save_transcript_full 是**整体替换** index 条目，故 tx 里必须带全字段——
     # 这正是 get_transcript() 要返回 folderId 的原因（否则改标题=移出文件夹）。
-    store.save_transcript_full(tx)
+    # ⚠️ 返回值必须查（P1-06）：目录不存在时它返回 False 且**什么都没写**，而下面的
+    # 响应体回显的是内存里的新值 —— 不查 = 「告诉用户改成功了，磁盘上没变」，刷新即打脸。
+    # 走到这里目录通常还在（上面刚 get_transcript 过），但那是**另一次独立读**。
+    if not store.save_transcript_full(tx):
+        raise AppError("INGEST_DOC_NOT_FOUND", "文档目录不存在（可能已被外部删除），修改未保存",
+                       status_code=404, recoverable=True)
     _index_for_search(request, tx_id, tx.get("title", ""), tx.get("rawText", ""))
 
     return {"status": "ok", "title": tx.get("title", ""), "tags": tx.get("tags", []),
@@ -613,6 +618,42 @@ async def _handle_file_upload(file: UploadFile, content_length: str | None, stor
     return tmp_path
 
 
+def _discard_upload(tmp_path: Path | None) -> None:
+    """删除**无人接管**的上传临时文件（P1-10）。幂等、不抛。
+
+    ⚠️ 边界：只有「这次导入没有成功持久化」时才该调它。成功路径的 tmp 会被
+    `_persist_ingest_result` 登记成 `source_file_path`（重新转录要用），
+    **删了就等于砍掉一个既有功能**——这正是本函数不接受「一律删除」调用的原因。
+    """
+    if tmp_path is None:
+        return
+    try:
+        tmp_path.unlink()
+    except OSError:
+        pass
+
+
+async def _file_pipeline_input(
+    file: UploadFile, content_length: str | None, store_root: Path,
+) -> tuple[PipelineInput, Path]:
+    """上传文件 → `(PipelineInput, tmp_path)`，**两个导入端点同源**（P1-10）。
+
+    ⚠️ 收成一份的原因：此前 `ingest`（:639-662）与 `ingest_stream`（:839-844）
+    **各有一份逐字同构**的写盘逻辑，只差错误类型（`AppError` vs `_FileTooLarge`）。
+    改一处漏一处**零报错**——它写的还是同一个磁盘路径，两边看起来都「在工作」。
+    这是模式 #54（同源是搜索题不是记忆题）的又一形态。
+    """
+    try:
+        tmp_path = await _handle_file_upload(file, content_length, store_root)
+    except _FileTooLarge:
+        raise AppError(
+            "INGEST_FILE_TOO_LARGE",
+            f"文件过大（最大 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB）",
+            recoverable=False,
+        ) from None
+    return PipelineInput(type=InputType.FILE, file_path=str(tmp_path)), tmp_path
+
+
 @router.post("/ingest")
 async def ingest(
     request: Request,
@@ -624,94 +665,77 @@ async def ingest(
     config=Depends(get_config),
 ):
 
-    # 构造 PipelineInput
-    if file:
-        # 检查文件大小（Content-Length header）
-        content_length = request.headers.get("content-length")
-        cl = int(content_length) if content_length else 0
-        if cl > MAX_UPLOAD_BYTES:
-            raise AppError("INGEST_FILE_TOO_LARGE", f"文件过大（最大 {MAX_UPLOAD_BYTES // (1024*1024)}MB）", recoverable=False)
-        tmp_dir = Path(store.root) / "tmp"
-        tmp_dir.mkdir(exist_ok=True)
-        safe_name = _safe_filename(file.filename or "")
-        tmp_path = tmp_dir / f"{uuid.uuid4().hex}_{safe_name}"
-        # 大文件（>100MB）流式写入磁盘，小文件保持内存读取
-        if cl > STREAM_THRESHOLD:
-            total = 0
-            with open(tmp_path, "wb") as f:
-                while True:
-                    chunk = await file.read(STREAM_CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > MAX_UPLOAD_BYTES:
-                        try: tmp_path.unlink()
-                        except OSError: pass
-                        raise AppError("INGEST_FILE_TOO_LARGE", f"文件过大（最大 {MAX_UPLOAD_BYTES // (1024*1024)}MB）", recoverable=False)
-                    f.write(chunk)
-            log.info("流式写入完成", name=safe_name, mb=round(total / (1024 * 1024), 1))
-        else:
-            data = await file.read()
-            if len(data) > MAX_UPLOAD_BYTES:
-                raise AppError("INGEST_FILE_TOO_LARGE", f"文件过大（最大 {MAX_UPLOAD_BYTES // (1024*1024)}MB）", recoverable=False)
-            tmp_path.write_bytes(data)
-        inp = PipelineInput(type=InputType.FILE, file_path=str(tmp_path))
-    elif url:
-        inp = PipelineInput(type=InputType.URL, url=url)
-    elif text:
-        inp = PipelineInput(type=InputType.TEXT, text=text)
-    else:
-        raise AppError("INGEST_NO_INPUT", "请提供 url / text / file 之一", recoverable=False)
-
-    # 路由适配器
-    adapter = AdapterRegistry.route(inp)
-    if not adapter:
-        raise AppError("INGEST_UNSUPPORTED", "不支持的输入格式",
-                       detail=", ".join(a.name for a in AdapterRegistry.all()), recoverable=False)
-
-    # 注入平台 Cookie + URL 去重
-    _inject_cookies(adapter, inp, config)
-
-    # URL 去重（force=true 时跳过）
-    if inp.url and not force:
-        existing_url = store.find_by_url(inp.url)
-        if existing_url:
-            return {
-                "id": existing_url["id"],
-                "title": existing_url.get("title", ""),
-                "status": "duplicate_url",
-                "message": f"已导入过《{existing_url.get('title', '')}》",
-                "count": store.count,
-            }
-
-    # 为转录图片创建临时目录（引擎写入文件而非 base64）
-    import tempfile
-    media_dir = tempfile.mkdtemp(prefix="mbw_img_")
-
+    # ⚠️ `tmp_path` / `media_dir` 在**函数顶部无条件初始化**：下面的 `finally`
+    # 是所有早退路径（无输入 / 不支持格式 / 适配器失败 / persist 抛异常）的唯一收口，
+    # 它必须能在任何一个分支上安全读到这两个名字。
+    tmp_path: Path | None = None
+    media_dir: str | None = None
+    persisted = False
     try:
-        output = await adapter.adapt(inp, engine_config=_build_engine_config(config, media_dir))
-    except AppError:
-        # P1-13：上传的临时源文件（可达 2GB）在适配器失败时清理。
-        # 成功路径被 _persist_ingest_result 持久化为 source_file_path 保留，不能删。
+        # 构造 PipelineInput
         if file:
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
-        raise
-    except Exception as e:
-        if file:
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
-        log.exception("Ingest failed", error=str(e)[:200])
-        raise AppError("INGEST_FAILED", f"导入失败: {str(e)[:200]}") from e
+            # 大小校验 + 写盘收口在 `_file_pipeline_input`（与流式端点同源，P1-10）
+            inp, tmp_path = await _file_pipeline_input(
+                file, request.headers.get("content-length"), store.root)
+        elif url:
+            inp = PipelineInput(type=InputType.URL, url=url)
+        elif text:
+            inp = PipelineInput(type=InputType.TEXT, text=text)
+        else:
+            raise AppError("INGEST_NO_INPUT", "请提供 url / text / file 之一", recoverable=False)
 
-    result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir)
-    if result.get("status") == "done" and "id" in result:
-        _index_for_search(request, result["id"], result.get("title", ""), output.raw_text)
-    return result
+        # 路由适配器
+        adapter = AdapterRegistry.route(inp)
+        if not adapter:
+            raise AppError("INGEST_UNSUPPORTED", "不支持的输入格式",
+                           detail=", ".join(a.name for a in AdapterRegistry.all()), recoverable=False)
+
+        # 注入平台 Cookie + URL 去重
+        _inject_cookies(adapter, inp, config)
+
+        # URL 去重（force=true 时跳过）
+        if inp.url and not force:
+            existing_url = store.find_by_url(inp.url)
+            if existing_url:
+                return {
+                    "id": existing_url["id"],
+                    "title": existing_url.get("title", ""),
+                    "status": "duplicate_url",
+                    "message": f"已导入过《{existing_url.get('title', '')}》",
+                    "count": store.count,
+                }
+
+        # 为转录图片创建临时目录（引擎写入文件而非 base64）
+        import tempfile
+        media_dir = tempfile.mkdtemp(prefix="mbw_img_")
+
+        # AppError（适配器自己报的业务错误）不包装，直接穿透到 finally
+        try:
+            output = await adapter.adapt(inp, engine_config=_build_engine_config(config, media_dir))
+        except AppError:
+            raise
+        except Exception as e:
+            log.exception("Ingest failed", error=str(e)[:200])
+            raise AppError("INGEST_FAILED", f"导入失败: {str(e)[:200]}") from e
+
+        result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir)
+        persisted = True
+        if result.get("status") == "done" and "id" in result:
+            _index_for_search(request, result["id"], result.get("title", ""), output.raw_text)
+        return result
+    finally:
+        # ── 临时文件收口（P1-10）──
+        # 原实现只在「适配器抛异常」那两支里删 tmp，于是三条路径**各漏一处**，
+        # 而这三处都零报错、只体现为 `~/.local/…/tmp` 里悄悄涨：
+        #   · 「不支持的格式」/「无输入」：tmp 已写盘，还没走到那个 except；
+        #   · `_persist_ingest_result` 抛异常：在 try 之外（现已在 try 内）。
+        # ⚠️ **成功路径不能删** —— `_persist_ingest_result` 已把 tmp 登记成
+        # `source_file_path`（重新转录要用它）。
+        if not persisted:
+            _discard_upload(tmp_path)
+        # media_dir（引擎写图的临时目录）：成功时 persist 里已 rmtree 过，幂等
+        if media_dir:
+            shutil.rmtree(media_dir, ignore_errors=True)
 
 
 
@@ -799,7 +823,15 @@ async def retranscribe(tx_id: str, request: Request, store=Depends(get_store), c
         tx["metadata"] = metadata
 
         # 写回（同 id 覆盖文件，更新索引中的条目）
-        store.save_transcript_full(tx)
+        # ⚠️ 返回值必须查（P1-06）：重新转录已经花掉时间与额度，写盘失败却回 ok =
+        # 用户看到「转录完成」而 rawText 仍是旧的，刷新即回退，且**无从解释**。
+        # 与上面 RETX_EMPTY 同一处置（失败显式化，不静默降级）。
+        if not store.save_transcript_full(tx):
+            raise AppError(
+                "RETX_SAVE_FAILED",
+                f"重新转录已成功（{output.engine}），但保存失败：文档目录不存在。旧内容已保留。",
+                recoverable=False,
+            )
         _index_for_search(request, tx_id, tx.get("title", ""), output.raw_text)
 
         log.info("重新转录完成", title=tx.get("title", tx_id)[:40],
@@ -823,12 +855,13 @@ async def ingest_stream(
 ):
     """SSE 流式导入 — 实时推送进度"""
 
+    # ⚠️ `tmp_path` 在顶部无条件初始化：下面两处**早退**（无输入 / 格式不支持）
+    # 都要能安全地读到它（`_discard_upload` 对 None 是 no-op）。
+    tmp_path: Path | None = None
     if file:
-        try:
-            tmp_path = await _handle_file_upload(file, request.headers.get("content-length"), store.root)
-        except _FileTooLarge:
-            raise AppError("INGEST_FILE_TOO_LARGE", f"文件过大（最大 {MAX_UPLOAD_BYTES // (1024*1024)}MB）", recoverable=False) from None
-        inp = PipelineInput(type=InputType.FILE, file_path=str(tmp_path))
+        # 大小校验 + 写盘收口（与 `ingest` 同源，P1-10）
+        inp, tmp_path = await _file_pipeline_input(
+            file, request.headers.get("content-length"), store.root)
     elif url:
         inp = PipelineInput(type=InputType.URL, url=url)
     elif text:
@@ -838,6 +871,8 @@ async def ingest_stream(
 
     adapter = AdapterRegistry.route(inp)
     if not adapter:
+        # 早退路径：管道还没跑，上传的 tmp 无人接管 → 就地清理（P1-10）
+        _discard_upload(tmp_path)
         raise AppError("INGEST_UNSUPPORTED", "不支持的输入格式",
                        detail=", ".join(a.name for a in AdapterRegistry.all()), recoverable=False)
 
@@ -875,20 +910,40 @@ async def ingest_stream(
             log.warning("SSE queue full, dropping progress event (client may have disconnected)")
 
     async def run_pipeline():
-        """在后台运行适配器管道"""
+        """在后台运行适配器管道（P1-10：整段一次 try/finally 收口）。
+
+        此前有三处缺口，共同症状都是**没有任何报错**：
+          ① `_persist_ingest_result` 在 try **之外** —— 它抛异常时 queue 永远收不到
+             done/error，消费侧只能干等到 900s 静默超时才报「处理超时」，而真正
+             的异常连日志都没有；
+          ② 适配器失败时上传的 tmp 文件（可达 2GB）**从不删除** ——
+             实测在 `~/.limo/tmp` 累积了 83 个文件 / 221MB；
+          ③ `media_dir` 无论成败都不清理（引擎抽的图留在系统临时目录）。
+        ⚠️ 成功路径**不能删 tmp**：`_persist_ingest_result` 已把它登记为
+        `source_file_path`（重新转录要用）。
+        """
+        persisted = False
         try:
             output = await adapter.adapt(inp, on_progress=on_progress,
                                           engine_config=_build_engine_config(config, media_dir))
+            result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir)
+            persisted = True
+            queue.put_nowait({"type": "done", **result})
         except AppError as e:
             queue.put_nowait({"type": "error", "message": e.message, "code": e.code})
-            return
         except Exception as e:
             log.exception("Ingest stream failed", error=str(e)[:200])
             queue.put_nowait({"type": "error", "message": str(e)})
-            return
-
-        result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir)
-        queue.put_nowait({"type": "done", **result})
+        finally:
+            # ① 未成功持久化 → 删上传的源文件（成功时它已被登记，不能删）
+            if not persisted:
+                _discard_upload(tmp_path)
+            # ② media_dir 无论成败都清（成功时 persist 里已 rmtree 过，幂等）
+            shutil.rmtree(media_dir, ignore_errors=True)
+            # ③ 结束哨兵（照 `services/synthesis.py` 的做法）：无论走哪条分支——
+            #    包括**任何**漏网的异常与 task 被取消——消费侧都能立刻退出，
+            #    而不是把每个 bug 都表现成「15 分钟无响应」。
+            queue.put_nowait(None)
 
     async def event_generator():
         """SSE 事件生成器 — 心跳保持连接，30s 无事件发心跳，15min 无事件判定挂死"""
@@ -900,6 +955,11 @@ async def ingest_stream(
             while True:
                 try:
                     data = await asyncio.wait_for(queue.get(), timeout=30)
+                    # 结束哨兵：`run_pipeline` 的 finally 一定投递它。
+                    # ⚠️ 必须**先判 None 再取 `data["type"]`** —— 不然这一行本身
+                    # 就抛 TypeError，把「管道异常退出」变成另一个更难查的异常。
+                    if data is None:
+                        break
                     yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                     last_event = loop.time()
                     if data["type"] in ("done", "error"):

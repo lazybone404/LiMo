@@ -166,7 +166,18 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT.USAGE
 
     if args.command == "doctor" and args.write_agents:
-        return _write_agents(args, out)
+        # ⚠️ 单独包一层，**不复用下面那个 try**：那个 except 的文案是「无法打开本机
+        # 库」，而这一支根本不碰数据源——文件系统写失败（权限/占用/磁盘满）被套上
+        # 那句，用户会去查库路径，而问题在目标目录。未捕获时 traceback 裸奔 + 退出码
+        # 1（= USAGE，语义还是错的）。
+        try:
+            return _write_agents(args, out)
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            out.error("安装 AGENTS.md 失败", code="CLI_INTERNAL",
+                      detail=f"{type(e).__name__}: {e}",
+                      hint="请确认数据目录可写；也可手动把 AGENTS.md 放到该目录")
+            return EXIT.INTERNAL
 
     try:
         # ⚠️ `--local` 只有 doctor 认（其他命令的 parser 里根本没这个参数，argparse

@@ -1,7 +1,13 @@
 """验证 epub 一键解读管道 — 逐章解读 + 归并总结 + 中断续跑 + 取消 + 互斥
 
-运行：cd backend && python tests/test_epub_pipeline.py
+运行：cd backend && ./.venv/Scripts/python.exe -m pytest tests/test_epub_pipeline.py
 注入点：替换 epub_pipeline._llm_factory 返回 FakeLLM（不 monkeypatch 类方法）。
+
+⚠️ 判据纪律（P1-01，2026-10-06）：本文件原先只有
+`if __name__ == "__main__": asyncio.run(main())` 一个入口 —— 40 条 assert 全在
+`scenario_*` 里，**只有手工跑脚本时可达**。pytest 收集 0 项、exit 0，
+于是 `check-all` 的 backend 层从来没有执行过这一条管道。现在每个场景各自是一个
+pytest 用例（脚本入口已删除，避免「两个入口各自演进」）。
 """
 
 import asyncio
@@ -13,6 +19,8 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+import pytest
 
 from app.storage.store import Store
 from app.core.types import RawTranscript, SourceType
@@ -266,21 +274,58 @@ def scenario_errors():
     print("PASS: 非 epub / 无章节 / 无任务 cancel 错误分支")
 
 
-async def main():
-    await scenario_success()
-    await scenario_fail_skip()
-    await scenario_retry_recover()
-    await scenario_all_fail()
-    await scenario_summary_split()
-    await scenario_resume()
-    await scenario_cancel()
-    await scenario_busy()
+# ═══ pytest 入口 ═══
+# 每个 scenario 一个用例。`asyncio.run` 而非 anyio/pytest-asyncio：各场景彼此独立
+# （各自建 store、各用独立 doc_id），不需要共享事件循环，也就不必引入新插件依赖。
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_llm_factory():
+    """场景替换了 `epub_pipeline._llm_factory`，模块跑完恢复原值（原来写在 `__main__` 的 finally）。"""
+    yield
+    epub_pipeline._llm_factory = _ORIG_FACTORY
+
+
+def test_epub_success():
+    """逐章解读 → 全部成功后触发归并，notes=总结 / polished=逐章。"""
+    asyncio.run(scenario_success())
+
+
+def test_epub_fail_skip():
+    """单章永久失败 → 跳过并在 polished 按序插失败标注，其余照常。"""
+    asyncio.run(scenario_fail_skip())
+
+
+def test_epub_retry_recover():
+    """单章先失败 n 次后成功 → 重试机制生效。"""
+    asyncio.run(scenario_retry_recover())
+
+
+def test_epub_all_fail():
+    """全部章节失败 → 仍落盘失败产物，不静默丢文档。"""
+    asyncio.run(scenario_all_fail())
+
+
+def test_epub_summary_split():
+    """章节过多 → 阶段 2 先子总结再归并（分组切分路径）。"""
+    asyncio.run(scenario_summary_split())
+
+
+def test_epub_resume():
+    """中断后重跑 → 只补未完成的章，不重复解读已完成的。"""
+    asyncio.run(scenario_resume())
+
+
+def test_epub_cancel():
+    """软取消：cancel_event 生效、产物保留，可继续上次解读。"""
+    asyncio.run(scenario_cancel())
+
+
+def test_epub_busy():
+    """互斥：同一文档进行中重复启动被拒；进行中任务可取消。"""
+    asyncio.run(scenario_busy())
+
+
+def test_epub_error_branches():
+    """非 epub / 无章节 / 无任务 cancel 三个错误分支。"""
     scenario_errors()
-    print("✅ 全部 epub_pipeline 测试通过")
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    finally:
-        epub_pipeline._llm_factory = _ORIG_FACTORY

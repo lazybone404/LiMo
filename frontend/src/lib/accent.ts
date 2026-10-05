@@ -6,6 +6,8 @@
  * 底色保持中性灰阶不变。
  */
 
+import { applyOnAccent } from './onAccent'
+
 export type AccentColor =
   // 现代
   | 'sky' | 'ocean' | 'sunset' | 'forest' | 'lavender' | 'slate'
@@ -113,6 +115,9 @@ export function getSavedAccent(): AccentColor {
 
 export function applyAccent(accent: AccentColor): void {
   document.documentElement.setAttribute('data-accent', accent)
+  // 主色变了 → 实底上的前景色要重算（P1-16）。挂在入口函数里而不是调用点，
+  // 是为了让「切配色」的所有路径（设置页 / 一键主题包 / 启动初始化）都自动带上。
+  applyOnAccent()
 }
 
 export function saveAccent(accent: AccentColor): void {

@@ -344,7 +344,7 @@ export function GenerateOptions(props: Props) {
         <div className="flex gap-1">
           {EFFORT_TIERS.map(t => (
             <button key={t.value} onClick={() => p.setReasoningEffort(t.value)}
-              className={`px-3 py-1.5 text-[13px] rounded-full font-medium transition-colors ${p.reasoningEffort === t.value ? 'bg-accent text-white' : 'text-dimmed hover:bg-surface-hover'}`}>
+              className={`px-3 py-1.5 text-[13px] rounded-full font-medium transition-colors ${p.reasoningEffort === t.value ? 'bg-accent text-on-accent' : 'text-dimmed hover:bg-surface-hover'}`}>
               {t.label}</button>
           ))}
         </div>
@@ -444,7 +444,7 @@ export function GenerateOptions(props: Props) {
         <div className="flex gap-1 flex-wrap">
           {p.styleKeys.map(s => (
             <button key={s} onClick={() => p.setStyle(normalizeStyle(s))}
-              className={`px-3 py-1.5 text-[13px] rounded-full font-medium transition-colors ${normalizedStyle === normalizeStyle(s) ? 'bg-accent text-white' : 'text-dimmed hover:bg-surface-hover'}`}>
+              className={`px-3 py-1.5 text-[13px] rounded-full font-medium transition-colors ${normalizedStyle === normalizeStyle(s) ? 'bg-accent text-on-accent' : 'text-dimmed hover:bg-surface-hover'}`}>
               {caps?.styleLabels?.[s] || s}</button>
           ))}
         </div>

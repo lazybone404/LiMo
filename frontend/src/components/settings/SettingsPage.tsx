@@ -139,7 +139,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-light">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-xs">D</div>
+            <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-on-accent font-bold text-xs">D</div>
             <span className="text-lg font-bold text-foreground">设置</span>
           </div>
           <button
@@ -200,7 +200,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
               </p>
             </div>
             <button onClick={handleSave}
-              className="flex items-center gap-1.5 px-5 py-2.5 bg-accent text-white text-[13px] font-medium rounded-full hover:bg-accent-hover transition-all">
+              className="flex items-center gap-1.5 px-5 py-2.5 bg-accent text-on-accent text-[13px] font-medium rounded-full hover:bg-accent-hover transition-all">
               {saved ? <><CheckCircle size={14} /> 已保存</> : '保存设置'}
             </button>
           </div>

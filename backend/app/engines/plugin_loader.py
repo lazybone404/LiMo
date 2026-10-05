@@ -13,6 +13,7 @@ EnginePlugin v1 契约（2026-08-02 正式化，以用户定稿 v2 为准）：
 - PLUGIN_REGISTRY 登记所有已发现插件（含门控拒绝/禁用的），供管理 API 枚举
 """
 
+import ast
 import importlib.util
 import json
 import logging
@@ -290,6 +291,47 @@ PLUGIN_REGISTRY: dict[str, dict] = {}
 
 # ── 加载入口 ──
 
+def _base_name(node: ast.expr) -> str:
+    """基类表达式的名字：`EnginePlugin` / `sdk.EnginePlugin` 都返回 `EnginePlugin`。"""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _peek_plugin_meta(py_file: Path) -> Optional[dict]:
+    """**不执行插件代码**，从源码静态读出声明类上的字符串字面量属性（至少含 `name`）。
+
+    只服务于一条路径：`plugin_states[name] is False` 时**跳过 `exec_module`**（P1-02）。
+    插件名恰恰要执行完才知道，而「禁用」的全部意义就是别执行它的代码 —— 只能从源码读。
+
+    ⚠️ 读不出来就返回 None，调用方退回「先执行、再判」的旧行为并记 debug：静态解析
+    撑不住所有写法（动态拼 name、多级继承、`__slots__` 之类），**降级方向必须安全**
+    （宁可多执行一个文件，也不能因为解析不了就漏装一个插件）。这条降级是**可见的**
+    （有日志），不是静默的。
+    """
+    try:
+        tree = ast.parse(py_file.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return None
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if not any(_base_name(b) == "EnginePlugin" for b in node.bases):
+            continue
+        meta: dict = {}
+        for stmt in node.body:
+            if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                    and isinstance(stmt.targets[0], ast.Name)
+                    and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str)):
+                meta[stmt.targets[0].id] = stmt.value.value
+        if "name" in meta:
+            return meta
+    return None
+
+
 def init_plugins(config: dict):
     """扫描 {data_dir}/plugins/ 目录，加载所有插件。
 
@@ -297,14 +339,21 @@ def init_plugins(config: dict):
     插件覆盖规则：同 category + name 插件覆盖内置引擎（用户优先）。
 
     门控：command→进程外（默认）；trusted→进程内；无 command 且未 trusted→拒绝（warning）。
-    启用：plugin_states[name]==False → 跳过注册但保留 PLUGIN_REGISTRY 条目；
+    启用：plugin_states[name]==False → **连代码都不加载**（静态度出名字后整个跳过），
+          仍保留 PLUGIN_REGISTRY 条目供前端展示与「重新启用」；
           未配置默认 enabled（向后兼容，现有插件不因新配置而禁用）。
+
+    ⚠️ 「禁用」的语义是**不执行它的顶层代码**（P1-02）：插件是任意 Python，
+    `exec_module` 那一刻它就能联网/写盘，与主程序同权限（`docs/plugins.md` 的告示）。
+    此前的实现是先 `exec_module` 再读 enabled —— 于是「停用」只免注册、代码照跑，
+    与前端「重启后停用」的文案不符。
     """
     plugins_dir = Path(config.get("data_dir", "")) / "plugins"
     if not plugins_dir.exists():
         return  # 目录不存在优雅跳过（打包版用户可能从未装插件）
 
     states = config.get("plugin_states", {}) or {}
+    plugin_configs = config.get("plugin_configs", {}) or {}
 
     loaded = 0
     # 扫描范围：plugins/ 顶层 *.py + 一层子目录 *.py
@@ -317,6 +366,28 @@ def init_plugins(config: dict):
     ]
     for py_file in py_files:
         try:
+            # ── 禁用即不加载（P1-02）──
+            # 插件名要执行完才知道，而「禁用」的意义就是别执行它的代码 → 先从源码
+            # 静态读名字，命中禁用名单就整个跳过（`exec_module` 一次都不发生）。
+            # 读不出名字（None）则退回旧行为：执行后再判 enabled —— 见 `_peek_plugin_meta`。
+            _peeked = _peek_plugin_meta(py_file)
+            if _peeked is not None and states.get(_peeked["name"], True) is False:
+                PLUGIN_REGISTRY[_peeked["name"]] = {
+                    "adapter": None,        # 没有实例：这条路径的全部意义就是不实例化它
+                    "meta": None,
+                    "path": str(py_file),
+                    "source": "user",
+                    "category": _peeked.get("category", ""),
+                    "enabled": False,
+                    "loaded": False,
+                    "reason": "disabled-by-config",
+                }
+                logger.info("Plugin disabled by config，代码未加载: %s (%s)",
+                            _peeked["name"], py_file.name)
+                continue
+            if _peeked is None:
+                logger.debug("插件元信息无法静态解析，改为执行后再判 enabled: %s", py_file.name)
+
             # 模块名带 parent（顶层="plugins"，子目录=仓库名）——同名 stem 不冲突
             spec = importlib.util.spec_from_file_location(
                 f"_limo_plugin_{py_file.parent.name}_{py_file.stem}", py_file
@@ -345,6 +416,11 @@ def init_plugins(config: dict):
                         continue
 
                     adapter = _PluginEngineAdapter(instance, py_file.parent, py_file)
+                    # 回填落盘配置（P1-02）：此前只有 `PUT /plugins/{name}/config` 会写
+                    # `adapter.plugin_config`（内存），启动路径从不读 `plugin_configs`
+                    # → 重启后插件拿到的恒是空 dict，用户保存的配置静默丢失（插件退回
+                    # 默认值，而 UI 上那条 config 明明还在）。键缺失 = 用户没配过 = 空 dict。
+                    adapter.plugin_config = dict(plugin_configs.get(instance.name) or {})
 
                     # 门控：无 command 且未 trusted → 拒绝（登记但不注册）
                     if adapter._exec_mode is None:
@@ -565,8 +641,14 @@ def install_plugin_deps(name: str) -> dict:
 def set_plugin_config(name: str, config: dict) -> None:
     """更新插件配置到内存（下次执行 stdin 即含新 config；落盘由 router 负责）"""
     entry = PLUGIN_REGISTRY.get(name)
-    if entry:
-        entry["adapter"].plugin_config = dict(config)
+    if not entry:
+        return
+    adapter = entry.get("adapter")
+    if adapter is None:
+        # 被禁用的插件没有 adapter（代码未加载，P1-02）。配置**已由 router 落盘**，
+        # 重启加载时会被 `init_plugins` 回填 —— 这里无需（也不能）更新内存。
+        return
+    adapter.plugin_config = dict(config)
 
 
 def set_plugin_enabled(name: str, enabled: bool) -> None:
@@ -584,10 +666,38 @@ def enumerate_plugins() -> list[dict]:
     """枚举所有已发现插件（含门控拒绝/禁用的），按 name 排序。
 
     返回管理 API 友好的 dict 列表（前端按 category 分组渲染）。
+
+    ⚠️ 被 `plugin_states` 禁用的插件**没有 adapter**（P1-02：整个文件没执行，见
+    `init_plugins`）——能力 / schema / 依赖状态一律给空值：那些信息只能在执行过模块
+    之后才知道，而这条路径的全部意义**就是不执行它**。保住的是那条闭环：
+    它仍出现在列表里、能点「启用」、重启后恢复正常信息。
     """
     result = []
     for name, entry in PLUGIN_REGISTRY.items():
-        adapter = entry["adapter"]
+        adapter = entry.get("adapter")
+        if adapter is None:
+            result.append({
+                "name": name,
+                "namespace": "engine",
+                "category": entry.get("category", ""),
+                "displayName": name,
+                "userDesc": "",
+                "license": "",
+                "fileTypes": [],
+                "configSchema": [],
+                "path": entry.get("path", ""),
+                # enabled / pendingRestart 仍走同一套语义：点「启用」后应为
+                # enabled=True + pendingRestart=True（重启才真正加载）
+                "enabled": entry.get("enabled", False),
+                "loaded": entry.get("loaded", False),
+                "pendingRestart": entry.get("enabled", False) != entry.get("loaded", False),
+                "config": {},
+                "reason": entry.get("reason", ""),
+                "execMode": None,
+                "hasRequirements": False,
+                "depsInstalled": False,
+            })
+            continue
         result.append({
             "name": name,
             "namespace": adapter.namespace,

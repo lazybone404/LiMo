@@ -393,8 +393,101 @@ assert not any("数据分析师" in p for p in _stream_prompts), \
     "对照失败：普通网页不该被 xlsx 分支截胡（判据写宽的实现会红）"
 print("PASS: [7c 对照] 普通网页流式 mode=both 仍跑 2 个产物且不走 Excel 角色")
 
+# ═══════════════════════════════════════════════════════════════
+# 8. 双产物单路失败 → **只有失败那一路**标 partial（P1-08）
+#
+# 缺陷原貌：`status = "partial" if was_cancelled else "complete"` 是**一个**全局变量，
+# 同时喂给 notes 与 polished 两路。于是一路失败（另一路成功）时**两路都标 complete**
+# —— 包括那个断在半截的（失败前已流出的 chunk 照样落盘）。后果不止是显示：
+# 续写入口靠 `md.get("status") == "partial"` 找回残缺产物（本文件 §… 之外，
+# generate.py 的 `continue_from` 分支），标成 complete = 用户**没法续写**一条
+# 被截断的笔记，而界面上看不出任何异常。
+#
+# ⚠️ 判据必须是「**两路 status 不相等**」，不能只断「失败那路是 partial」——
+# 只断后者的话，一个「一律标 partial」的实现照样全绿（模式 #38：判据要有区分力）。
+# ⚠️ 与前端 `onWarning`（GenPanel.tsx:778 置 `genOutcomeRef='partial'`）**不重复**：
+# 那是会话内瞬态判断（只决定收尾 toast / onDone 文案、**不落盘**），
+# 本条测的是**落盘字段**，两者各管一头。
+# ═══════════════════════════════════════════════════════════════
+
+
+class _FailingStream:
+    """先吐一段再抛错 —— 模拟「写了一半断流」。
+
+    ⚠️ **必须先吐一个 chunk 再抛**：完全没吐 chunk 的那路拿不到任何内容 →
+    **不落盘** → status 无从观测（那种形态下「两路共用一个 status」也看不出问题）。
+    这也是真实世界里唯一能留下 partial 产物的失败形态。
+    """
+
+    def __init__(self, chunks, boom: bool = True):
+        self._chunks = list(chunks)
+        self._boom = boom
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._chunks:
+            return self._chunks.pop(0)
+        if self._boom:
+            self._boom = False
+            raise RuntimeError("模拟断流")
+        raise StopAsyncIteration
+
+    async def aclose(self):
+        self._chunks.clear()
+
+
+def _fail_polished_stream(self, prompt, **kw) -> _FakeStream:
+    """polished 半途断流、notes 正常。
+
+    区分两路的判据是**角色文案**（`_WEB_POLISH_ROLE`「专业的内容编辑」vs
+    `_WEB_NOTES_ROLE`「内容阅读助手」），**不是调用顺序** —— 两个产物是并发
+    `create_task`，谁先调到 `stream()` 不保证。
+    """
+    if "专业的内容编辑" in prompt:
+        return _FailingStream(["# 整理版（写到这里断了）"])
+    return _FakeStream(["# 生成的笔记", "\n\n这篇笔记是完整的。"])
+
+
+_mk_doc("tr_p18", "单路失败对照", "这是一篇普通网页的正文。", SourceType.WEBPAGE)
+FakeLLMService.stream = _fail_polished_stream
+try:
+    with client.stream("GET", "/api/generate/tr_p18/stream?mode=both&model_id=1") as _rs8:
+        _b8 = "".join(_rs8.iter_text())
+finally:
+    FakeLLMService.stream = _orig_stream
+
+assert "done" in _b8, f"单路失败不该让整条流断掉；实际 {_b8[:400]}"
+_md8 = {m["mode"]: m for m in _STORE.get_markdowns_by_transcript("tr_p18")}
+assert set(_md8) == {"notes", "polished"}, f"两路都该落盘，实际 {sorted(_md8)}"
+assert _md8["notes"]["status"] == "complete", \
+    f"notes 那路成功，必须标 complete；实际 {_md8['notes']['status']}"
+assert _md8["polished"]["status"] == "partial", \
+    ("半截的 polished 必须标 partial（旧的全局 status 实现下它会是 complete，"
+     f"且用户再也续写不了它）；实际 {_md8['polished']['status']}")
+assert _md8["notes"]["status"] != _md8["polished"]["status"], \
+    "两路 status 必须各自独立（相等 = 又变回一个全局 status 喂两路）"
+print(f"PASS: 双产物单路失败 → notes={_md8['notes']['status']} / "
+      f"polished={_md8['polished']['status']}（逐路判定）")
+
+# ── 对照：两路都成功 → 必须都是 complete（防「一律标 partial」的实现假绿）──
+_mk_doc("tr_p18b", "双路成功对照", "这是一篇普通网页的正文。", SourceType.WEBPAGE)
+FakeLLMService.stream = _orig_stream
+try:
+    with client.stream("GET", "/api/generate/tr_p18b/stream?mode=both&model_id=1") as _rs8b:
+        _b8b = "".join(_rs8b.iter_text())
+finally:
+    FakeLLMService.stream = _orig_stream
+
+_md8b = {m["mode"]: m for m in _STORE.get_markdowns_by_transcript("tr_p18b")}
+assert set(_md8b) == {"notes", "polished"}, f"两路都该落盘，实际 {sorted(_md8b)}"
+assert all(m["status"] == "complete" for m in _md8b.values()), \
+    f"完全成功的一次生成，两路都该是 complete；实际 {[(k, v['status']) for k, v in _md8b.items()]}"
+print("PASS: [对照] 双路都成功 → 两路都是 complete（判据不是「一律 partial」）")
+
 import shutil
 for _t in _TMP:
     shutil.rmtree(_t, ignore_errors=True)
 
-print("\n全部通过：生成闸门（产物裁剪 / 格式清空 / 出处头损坏提示 / 自动标题 / xlsx 单产物）")
+print("\n全部通过：生成闸门（产物裁剪 / 格式清空 / 出处头损坏提示 / 自动标题 / xlsx 单产物 / 逐路 status）")

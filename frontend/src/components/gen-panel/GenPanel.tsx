@@ -1030,12 +1030,12 @@ export function GenPanel() {
                     const hasComplete = (Array.isArray(markdownVersions) && markdownVersions.some(v => v.status !== 'partial'))
                     if (hasComplete) {
                       return <button onClick={() => handleGenerate()} disabled={isGenerating || lockOtherOps || !currentDocId || selectedCore.length === 0}
-                        className="flex-1 py-2.5 bg-accent text-white text-[15px] font-medium rounded-lg hover:bg-accent-hover active:scale-[0.97] transition-all disabled:opacity-40">
+                        className="flex-1 py-2.5 bg-accent text-on-accent text-[15px] font-medium rounded-lg hover:bg-accent-hover active:scale-[0.97] transition-all disabled:opacity-40">
                         {isGenerating ? '生成中...' : '重新生成'}
                       </button>
                     }
                     return <button onClick={() => handleGenerate()} disabled={isGenerating || lockOtherOps || !currentDocId || selectedCore.length === 0}
-                      className="flex-1 py-2.5 bg-accent text-white text-[15px] font-medium rounded-lg hover:bg-accent-hover active:scale-[0.97] transition-all disabled:opacity-40">
+                      className="flex-1 py-2.5 bg-accent text-on-accent text-[15px] font-medium rounded-lg hover:bg-accent-hover active:scale-[0.97] transition-all disabled:opacity-40">
                       {isGenerating ? '生成中...' : typeMeta.generateLabel}
                     </button>
                   })()}

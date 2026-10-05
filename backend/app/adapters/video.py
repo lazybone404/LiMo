@@ -112,7 +112,6 @@ class VideoAdapter(PipelineAdapter):
         # ── Step 0: 字幕优先（B站 / YouTube）──
         is_bilibili = "bilibili.com" in url
         is_youtube = "youtube.com" in url or "youtu.be" in url
-        is_douyin = "douyin.com" in url
 
         if is_bilibili:
             pg("fetching_subtitles", "running", "正在拉取B站字幕...", 10)
@@ -180,43 +179,6 @@ class VideoAdapter(PipelineAdapter):
             except Exception as e:
                 warnings.append(f"YouTube字幕拉取失败: {e}")
                 logger.debug("YouTube字幕拉取失败，回退下载: %s", e)
-
-        # ── 抖音 API 优先路径（直接获取音频 URL，无需下载视频）──
-        if is_douyin:
-            pg("downloading", "running", "正在提取抖音音频...", 10)
-            try:
-                from app.downloaders.douyin_downloader import download_audio as dy_download
-                dy_result = await asyncio.to_thread(dy_download, url, cookie)
-                audio_path = Path(dy_result["file_path"])
-                if audio_path.exists() and audio_path.stat().st_size > 0:
-                    pg("downloading", "done", "音频提取完成", 50)
-                    pg("transcribing", "running", "语音转写中...（可能需要几分钟）", 55)
-                    asr_result = await self._transcribe(audio_path, warnings)
-                    if asr_result.get("segments"):
-                        pg("transcribing", "done",
-                           f"转写完成 ({len(asr_result.get('segments', []))}段)", 85)
-                        pg("done", "done", "导入完成", 100)
-                        # 清理临时音频
-                        try: audio_path.unlink()
-                        except OSError: pass
-                        return AdapterOutput(
-                            raw_text=json.dumps(asr_result, ensure_ascii=False),
-                            metadata=RawMetadata(
-                                language=asr_result.get("language", "zh"),
-                                duration=dy_result.get("duration", 0),
-                                source_title=dy_result.get("title", ""),
-                                cover_url=dy_result.get("cover_url", ""),
-                                platform="douyin",
-                                warnings=warnings,
-                            ),
-                            engine=asr_result.get("engine_used", "asr"),
-                        )
-                    pg("transcribing", "error", "转写失败", 80)
-                else:
-                    pg("downloading", "error", "音频文件为空", 50)
-            except Exception as e:
-                warnings.append(f"抖音API提取失败: {e}")
-                logger.debug("抖音API提取失败，回退 yt-dlp: %s", e)
 
         # ── Step 1: 下载 ──
         pg("downloading", "running", "下载音频中...", 20)

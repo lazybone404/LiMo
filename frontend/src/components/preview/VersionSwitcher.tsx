@@ -27,7 +27,7 @@ export function VersionSwitcher({ mode, versions, activeMeta, loading, onSelect 
           disabled={loading}
           className={`px-2 py-0.5 rounded text-[11px] font-mono transition-all disabled:opacity-40 ${
             activeVersion === v.version
-              ? 'bg-accent text-white'
+              ? 'bg-accent text-on-accent'
               : 'text-muted hover:bg-surface-hover'
           }`}
         >v{v.version}</button>

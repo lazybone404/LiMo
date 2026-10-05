@@ -69,7 +69,7 @@ export function MessageItem({ msg, scale }: MessageItemProps) {
       </div>
 
       <div className="max-w-[85%] min-w-0">
-        <div className={`mt-0.5 px-3.5 py-2 ${s.msg} rounded-2xl break-words ${isUser ? 'bg-accent text-white rounded-br-md' : 'bg-surface text-foreground rounded-bl-md'}`}>
+        <div className={`mt-0.5 px-3.5 py-2 ${s.msg} rounded-2xl break-words ${isUser ? 'bg-accent text-on-accent rounded-br-md' : 'bg-surface text-foreground rounded-bl-md'}`}>
           {/* 思考段折叠（P5 后端 thinking 事件） */}
           {msg.thinking ? (
             <div className="mb-1">
@@ -138,7 +138,7 @@ export function MessageItem({ msg, scale }: MessageItemProps) {
               className="mb-4 w-full resize-none rounded-lg border border-border-default bg-surface px-3 py-2 text-[13px] outline-none" />
             <div className="flex justify-end gap-2">
               <button onClick={() => setEditing(false)} className="rounded-lg px-4 py-2 text-[13px] text-dimmed hover:bg-surface">取消</button>
-              <button onClick={saveEdit} className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white">保存</button>
+              <button onClick={saveEdit} className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-on-accent">保存</button>
             </div>
           </div>
         </div>

@@ -12,7 +12,8 @@ import { SearchBar } from './components/ui/SearchBar'
 import { ThemeToggle } from './components/ui/ThemeToggle'
 import { fetchCapabilities, listTranscripts, listFolders, getMarkdown, getTranscript } from './api/client'
 import { startHealthPoll } from './lib/health'
-import { Settings, PanelLeft, Library, MessageSquare, Archive } from 'lucide-react'
+import { installWarningText, type InstallPathWarning } from './lib/installWarning'
+import { Settings, PanelLeft, Library, MessageSquare, Archive, X } from 'lucide-react'
 
 // 冷启动静默期（ms）：后端实测 ~2s 就绪，这段窗口内**故意一条请求都不发** ——
 // 起步就探测的话，那一刻后端必然还没监听，会稳定产生一条无意义的失败；而 WebView 里
@@ -80,6 +81,8 @@ export default function App() {
   const setFolders = useStore(s => s.setFolders)
   const [showSettings, setShowSettings] = useState(false)
   const [showExport, setShowExport] = useState(false)
+  // 安装路径告警（Rust `backend-warning`）—— 空串 = 无告警、整条不渲染
+  const [installWarning, setInstallWarning] = useState('')
   const [showSetup, setShowSetup] = useState(() => {
     try { return !localStorage.getItem('limo_setup_done') } catch { return false }
   })
@@ -212,6 +215,7 @@ export default function App() {
 
       let unlistenReady = () => {}
       let unlistenTimeout = () => {}
+      let unlistenWarning = () => {}
       import('@tauri-apps/api/event').then(({ listen }) => {
         // ① 主路径：后端就绪即唤醒（冷启动 2s 左右），此前一条请求都不用发
         listen('backend-ready', () => initOnce()).then(un => { unlistenReady = un })
@@ -220,6 +224,12 @@ export default function App() {
           console.warn('后端启动超时，强制加载')
           initOnce()
         }).then(un => { unlistenTimeout = un })
+        // ③ 安装路径告警 —— Rust 一直在发，此前前端零监听（等于白发）。故意
+        //    **不挂 init**：它描述的正是「后端可能起不来」的原因，等 init 就太晚了。
+        listen<InstallPathWarning>('backend-warning', e => {
+          const text = installWarningText(e.payload)
+          if (text) setInstallWarning(text)
+        }).then(un => { unlistenWarning = un })
       }).catch(() => {}) // 事件模块导入失败也不要紧：静默期探测 + 硬兜底仍能放行
 
       // ③ 静默期过后探测一次 —— 覆盖「页面刷新时后端已在运行、backend-ready 早已错过」。
@@ -243,6 +253,7 @@ export default function App() {
         clearTimeout(hardTimer)
         unlistenReady()
         unlistenTimeout()
+        unlistenWarning()
         unsubConfig()
       }
     }
@@ -333,6 +344,16 @@ export default function App() {
           {backendStatus === 'crashed'
             ? '后端已崩溃，请重启应用'
             : '后端服务异常，已断开，正在重试…'}
+        </div>
+      )}
+
+      {/* 安装路径告警（Rust backend-warning）— 可关闭：它是**建议**而非故障，
+          用户看过即可。下次启动若仍命中会再出现（诊断在每次启动时跑）。 */}
+      {installWarning && (
+        <div className="flex items-center gap-2 px-4 py-1.5 text-[12px] font-medium border-b border-border-light shrink-0 z-10 bg-warning/10 text-warning">
+          <span className="w-2 h-2 rounded-full bg-warning shrink-0" />
+          <span className="flex-1">{installWarning}</span>
+          <button onClick={() => setInstallWarning('')} className="rounded p-0.5 hover:bg-surface-hover" title="关闭"><X size={12} /></button>
         </div>
       )}
 

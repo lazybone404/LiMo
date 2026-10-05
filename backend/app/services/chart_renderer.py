@@ -4,7 +4,7 @@
 协议定位（pi-docs/图表围栏内部协议设计说明.md）：
 - 图表只用专用围栏（不属于任何通用语言，用户内容出现概率≈0，零误伤）
 - 只处理专用围栏；用户自己的 svg/xml 代码块、裸内联 <svg> 一律不碰
-- 围栏必然被替换：成功 → ![图表](assets/chart_N.png)；失败 → 「📊 图表生成失败」文本
+- 围栏必然被替换：成功 → ![图表](assets/chart_{hash8}.png)；失败 → 「📊 图表生成失败」文本
 - 产物（存储/展示/导出）永不含围栏，内部协议不外泄
 
 两条围栏路径（2026-09-19 起并存）：
@@ -21,11 +21,12 @@
 - 检测：只认专用围栏；chart 内容须含 <svg 根元素，fig 内容须是 JSON 对象
 - 安全过滤：<script> / on* 事件属性 / xlink:href·外部 URL 引用
 - 校验：XML 良构 → viewBox + width/height 双尺寸 ≤640×640 → 有实际内容 → 渲染（失败重试 1 次）
-- 多图编号：按出现顺序 chart_1 / chart_2 / …（两条围栏共用计数器，失败不跳号）
+- 多图：每个围栏一张，文件名 = `chart_{内容hash8}.png`（**不是**按序编号，见 `_process_svg`）
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -77,7 +78,8 @@ _VIEWBOX_RE = re.compile(r'viewBox=["\']([^"\']+)["\']')
 _DIM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:px)?", re.IGNORECASE)
 
 
-# LLM 偶发在图片引用后粘连 "svg" 字面量（如 `![图表](assets/chart_1.png)svg`）——格式垃圾。
+# LLM 偶发在图片引用后粘连 "svg" 字面量（如 `![图表](assets/chart_59e0267f.png)svg`）——
+# 格式垃圾。注意匹配是**通用**的 `![...](...)`，与图片叫什么名字无关（不依赖下面的 hash 命名）。
 # 仅清理图片引用同行紧随的 svg（[ \t]* 不跨换行；后跟字母不清理），避免误伤正常文本。
 _IMG_SVG_GARBAGE_RE = re.compile(r"(!\[[^\]]*\]\([^)]*\))[ \t]*svg(?![A-Za-z])")
 
@@ -227,9 +229,9 @@ def _process_svg(svg: str, assets_dir: str, counter: int,
                  source_json: dict | None = None) -> tuple[str, int, str | None]:
     """校验 + 渲染单个 SVG。返回 (输出, 新计数器, 失败原因)。
 
-    成功：counter +1 并写 chart_{counter}.png，返回图片引用、原因 None。
-    失败：返回 (None, counter, reason)——由调用方替换为失败提示文本，
-      counter 不递增（编号不跳号）。
+    成功：写 `chart_{内容hash8}.png`，返回图片引用、原因 None。
+    失败：返回 (None, counter, reason)——由调用方替换为失败提示文本。
+    ⚠️ `counter` 现在**不参与文件名**（只保留给调用方接口与「失败不递增」语义）。
     """
     if len(svg) > MAX_SVG_BYTES:
         # 长度上限（P1-2）：不进入校验/渲染，返回失败原因由调用方替换为失败文本
@@ -248,7 +250,14 @@ def _process_svg(svg: str, assets_dir: str, counter: int,
         return None, counter, "渲染失败"
 
     next_counter = counter + 1
-    fname = f"chart_{next_counter}.png"
+    # ⚠️ 文件名带**内容 hash**，不是 `chart_{n}.png`：counter 每次生成都从 0 起，
+    #    重跑一次就把 `chart_1.png` 覆盖掉，而 v1 的 `notes.prev.md` **仍引用**
+    #    `assets/chart_1.png` —— 切到 v1 看到的是「新版的图配旧版的正文」。三张图
+    #    全部渲染成功、文件都在、零报错，静默错配（模式 #52 的同族：成对的东西
+    #    改了一半）。hash 让「内容相同 → 同名」（幂等、不累积孤儿）、「内容不同 →
+    #    不同名」（互不覆盖）同时成立，对齐截图路径的做法
+    #    （`app/utils/video_helper.py` 的 `screenshot_{i:03}_{uuid8}.jpg`）。
+    fname = f"chart_{hashlib.sha1(svg.encode('utf-8')).hexdigest()[:8]}.png"
     try:
         with open(os.path.join(assets_dir, fname), "wb") as f:
             f.write(data)

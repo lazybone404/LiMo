@@ -163,7 +163,7 @@ export function EpubInterpretPanel({ docId, modelId }: { docId: string; modelId:
         </div>
       ) : (
         <button onClick={handleStart} disabled={starting}
-          className="w-full py-2.5 bg-accent text-white text-[15px] font-medium rounded-lg hover:bg-accent-hover active:scale-[0.97] transition-all disabled:opacity-40">
+          className="w-full py-2.5 bg-accent text-on-accent text-[15px] font-medium rounded-lg hover:bg-accent-hover active:scale-[0.97] transition-all disabled:opacity-40">
           {starting ? '启动中…' : canResume ? `继续上次解读（还剩 ${task?.remaining_chapters ?? 0} 章）` : '一键解读'}
         </button>
       )}

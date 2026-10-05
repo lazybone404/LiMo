@@ -13,6 +13,7 @@ import { ChatSidebar } from './ChatSidebar'
 import { MessageList } from './MessageList'
 import { ChatInput } from './ChatInput'
 import { ResizeHandle } from '../ui/ResizeHandle'
+import { getErrorMessage } from '../../api/core'
 import type { ChatScale } from './scale'
 
 interface ChatCoreProps {
@@ -125,7 +126,13 @@ export function ChatCore({
           <div className="flex items-center gap-0.5">
             <button onClick={newConv} className="rounded-md p-1 text-muted hover:bg-surface-hover" title="新建对话"><Plus size={14} /></button>
             {currentId && messages.length > 0 && (
-              <button onClick={() => { clearContext(); addToast('已清除上下文，之后的对话不再携带之前历史', 'info') }}
+              <button onClick={() => {
+                // ⚠️ 成功才弹成功：`clearContext` 现在会把 404（对话已不在）reject 出来，
+                // 无条件弹「已清除」就是一条**用户无法据此行动**的假消息（模式 #53）。
+                void clearContext()
+                  .then(() => addToast('已清除上下文，之后的对话不再携带之前历史', 'info'))
+                  .catch(e => addToast('清除上下文失败: ' + getErrorMessage(e), 'error'))
+              }}
                 className="rounded-md p-1 text-muted hover:bg-surface-hover" title="清除上下文（不删消息，停止携带之前历史）"><Eraser size={14} /></button>
             )}
             {compact && <button onClick={onToggleList} className="rounded-md p-1 text-muted hover:bg-surface-hover" title="对话列表"><MessageSquare size={14} /></button>}

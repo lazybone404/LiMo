@@ -90,7 +90,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_install_path_diagnostics,
             restart_backend_sidecar,
             detect_components,
             export_pdf,
@@ -257,9 +256,11 @@ fn restart_backend_sidecar(
     state: tauri::State<'_, SidecarHandle>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.emit("backend-restarting", ());
-    }
+    // ⚠️ 这里曾 emit `backend-restarting` / `backend-restarted`，前端**零监听**。
+    // 它们是纯粹的冗余：本命令是**同步**的（spawn + 落位完成后才 Ok 返回），
+    // 前端 `await invoke('restart_backend_sidecar')` 的 resolve 就等价于「restarted」，
+    // 而「restarting」在 await 开始前即是事实。事件只在「命令之外的异步通知」上
+    // 才有价值，这里是同一件事的第二个出口 —— 两份表达必然漂移，删掉。
     {
         let mut guard = state.0.lock().map_err(|e| format!("{}", e))?;
         if let Some(ref mut child) = *guard { let _ = child.kill(); }
@@ -269,9 +270,6 @@ fn restart_backend_sidecar(
     {
         let mut guard = state.0.lock().map_err(|e| format!("{}", e))?;
         *guard = Some(new_child);
-    }
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.emit("backend-restarted", ());
     }
     spawn_backend_ready_probe(app);
     Ok(())
@@ -305,10 +303,10 @@ fn analyze_install_path(exe_path: &Path) -> InstallPathDiagnostics {
     }
 }
 
-#[tauri::command]
-fn get_install_path_diagnostics() -> InstallPathDiagnostics {
-    analyze_install_path(&env::current_exe().unwrap_or_default())
-}
+// ⚠️ 这里曾有 `#[tauri::command] get_install_path_diagnostics`，前端**零 invoke**。
+// 同一份诊断数据已由 `backend-warning` 事件出门（`run()` 的 setup 里），且那条
+// 出口现在真的有人听（`App.tsx` 的安装路径告警横幅）。留着它就是同一事实的第二
+// 个出口 —— 删掉命令、保留 `analyze_install_path`（事件在用它）。
 
 // ── 组件检测 ──
 

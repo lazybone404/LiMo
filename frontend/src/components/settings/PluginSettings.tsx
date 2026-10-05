@@ -95,7 +95,7 @@ function ConfigForm({ plugin }: { plugin: PluginInfo }) {
       ))}
       <button
         onClick={save} disabled={saving}
-        className="px-4 py-1.5 text-[12px] font-medium bg-accent text-white rounded-lg hover:bg-accent-hover disabled:opacity-40"
+        className="px-4 py-1.5 text-[12px] font-medium bg-accent text-on-accent rounded-lg hover:bg-accent-hover disabled:opacity-40"
       >
         {saving ? '保存中...' : '保存配置'}
       </button>
@@ -342,7 +342,7 @@ export function PluginSettings() {
         </label>
         <button
           onClick={restart} disabled={restarting}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-white rounded-lg bg-accent hover:bg-accent-hover disabled:opacity-40 shrink-0"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-on-accent rounded-lg bg-accent hover:bg-accent-hover disabled:opacity-40 shrink-0"
         >
           <RefreshCw size={12} className={restarting ? 'animate-spin' : ''} />
           {restarting ? '重启中...' : '重启后端'}

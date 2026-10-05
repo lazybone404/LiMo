@@ -54,23 +54,41 @@ export function ChatSidebar({ conversations, currentId, compact, scale, onSwitch
     useChatStore.setState({ conversations: useChatStore.getState().conversations.map(c => c.id === id ? { ...c, ...patch } : c) })
   }
 
+  // ⚠️ 三处都是**乐观更新 + 失败回滚**。此前它们把返回的 Promise **直接丢弃**
+  // （不 await 不 catch）：后端改为「不存在即 404」后，`apiFetch` 抛错会变成
+  // **未捕获 rejection**，症状是控制台红字而 UI 停在那个从未发生过的状态上
+  // ——**只改后端不补前端**，等于把静默失败换成了另一种静默失败（模式 #52）。
   const doRename = (id: string, title: string) => {
-    renameConversation(id, title)
-    patchConv(id, { title })
+    const prev = conversations.find(c => c.id === id)?.title
+    patchConv(id, { title })                 // 乐观
     setRenamingId(null)
+    void renameConversation(id, title).catch(e => {
+      if (prev !== undefined) patchConv(id, { title: prev })   // 回滚到真实标题
+      addToast('重命名失败: ' + getErrorMessage(e), 'error')
+    })
   }
 
   const doArchive = (id: string, archived: boolean) => {
-    archiveConversation(id, archived)
-    patchConv(id, { archived })
-    addToast(archived ? '已归档' : '已取消归档')
+    patchConv(id, { archived })              // 乐观
+    void archiveConversation(id, archived)
+      .then(() => addToast(archived ? '已归档' : '已取消归档'))
+      .catch(e => {
+        patchConv(id, { archived: !archived })                 // 回滚
+        addToast('归档失败: ' + getErrorMessage(e), 'error')
+      })
   }
 
   const doDelete = (id: string) => {
-    deleteConversation(id)
-    useChatStore.setState({ conversations: useChatStore.getState().conversations.filter(c => c.id !== id) })
-    if (currentId === id) onNew()
+    const snapshot = conversations           // 回滚源（失败时整列表还原）
+    useChatStore.setState({ conversations: conversations.filter(c => c.id !== id) })
     setDeletingId(null)
+    void deleteConversation(id)
+      // ⚠️ 切走当前会话**放到成功之后**：失败时不动用户正在看的东西
+      .then(() => { if (currentId === id) onNew() })
+      .catch(e => {
+        useChatStore.setState({ conversations: snapshot })
+        addToast('删除失败: ' + getErrorMessage(e), 'error')
+      })
   }
 
   const doExport = (id: string, title: string) => {
@@ -152,7 +170,7 @@ export function ChatSidebar({ conversations, currentId, compact, scale, onSwitch
               className="mb-4 w-full rounded-lg border border-border-default bg-surface px-3 py-2 text-[13px] outline-none" />
             <div className="flex justify-end gap-2">
               <button onClick={() => setRenamingId(null)} className="rounded-lg px-4 py-2 text-[13px] text-dimmed hover:bg-surface">取消</button>
-              <button onClick={() => doRename(renamingId, renameValue.trim())} className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-white">确定</button>
+              <button onClick={() => doRename(renamingId, renameValue.trim())} className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-on-accent">确定</button>
             </div>
           </div>
         </div>

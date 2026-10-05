@@ -524,9 +524,12 @@ def _sync_missing_providers(config: dict):
     added = False
     for dp in default_provs:
         if dp["id"] not in user_ids:
-            user_provs.append(dp)
+            # ⚠️ 必须 deepcopy，与姊妹函数 `_sync_models` 的 `copy.deepcopy(dm)` 同源：
+            #    浅拷贝下补入的条目与模块级 `DEFAULT_CONFIG` **是同一个对象**，用户
+            #    在设置页改一次 base_url / api_key（dict 是 in-place 改的）就污染了
+            #    全局默认 —— 之后所有新用户的默认 engine_providers 都带着那次改动。
+            user_provs.append(copy.deepcopy(dp))
             added = True
-            logger = __import__("logging").getLogger(__name__)
             logger.info("Auto-added missing engine_provider: %s", dp["id"])
     if added:
         config["engine_providers"] = user_provs

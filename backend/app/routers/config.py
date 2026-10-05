@@ -151,12 +151,16 @@ async def update_config(data: ConfigUpdate, request: Request, cfg=Depends(get_co
                 llm_data.pop("model", None)
             cfg["llm"] = {**cfg.get("llm", {}), **llm_data}
 
-        # Cloud 配置
+        # Cloud 配置 —— ⚠️ 与 GET 侧 `_mask_fields(cfg["cloud"], ("dashscope", "alibaba"))`
+        # **成对**：GET mask 了几个字段，这里就必须回填几个。此前只回填 dashscope，而
+        # alibaba 一并被 mask —— 用户「打开设置页 → 不改 → 保存」就把 `***` 写进
+        # cloud.alibaba，真实 key 无声丢失（模式 #52：成对操作漏一半 = 完全没做）。
         if data.cloud:
             cloud_data = data.cloud
-            if cloud_data.get("dashscope"):
-                old_key = cfg.get("cloud", {}).get("dashscope", "")
-                cloud_data["dashscope"] = merge_sensitive(cloud_data["dashscope"], old_key)
+            for _f in ("dashscope", "alibaba"):
+                if cloud_data.get(_f):
+                    old_key = cfg.get("cloud", {}).get(_f, "")
+                    cloud_data[_f] = merge_sensitive(cloud_data[_f], old_key)
             cfg["cloud"] = {**cfg.get("cloud", {}), **cloud_data}
 
         # Fetch 配置 —— ⚠️ 与 GET 的 `mask_proxy` **成对**：少了这一半，用户「打开设置页 →

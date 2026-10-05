@@ -231,6 +231,49 @@ def test_scene_fallback_not_used_when_provider_given():
         f"显式 provider/model 被 scene 回退覆盖了（拿到 scene 模型的 12345），实际 {win}"
 
 
+# ── 第 1 层的**第二条支路**：按 provider_id + model_name 命中（P1-09）──
+#
+# ⚠️ 调用方分两类，此前只有传 `model_id` 的那类被第 1 层覆盖：
+#   · `generate` / `chat` / `synthesis` 传 `model_id`；
+#   · `reference_compressor._resolve_budget`（:71-76）传 **provider_id + model_name**
+#     —— 它按**实际在用的模型**查询，可能根本不是场景模型。
+# 后者整条第 1 层被跳过 → 用户在设置页给这个模型填的 `context_window`
+# 对它**完全不生效**，静默落到第 2/3/4 层（同一份配置下能差数倍，零报错）。
+
+def test_user_custom_applies_to_provider_model_callers():
+    """对照实验：删掉新支路（只剩 `model_id` 那条）→ 落回预设/兜底 → 本断言红。"""
+    cfg = {"enabled_models": [
+        {"id": 1, "provider_id": "dashscope", "model_name": "qwen-max",
+         "context_window": 999888},
+    ]}
+    win = resolve_context_window(cfg, None, provider_id="dashscope", model_name="qwen-max")
+    assert win == 999888, \
+        f"按 provider/model 查询的调用方拿不到用户自定义窗口，实际 {win}（第 1 层被跳过了）"
+
+
+def test_provider_model_match_requires_both_fields():
+    """对照：只按 `model_name` 命中会**张冠李戴**——判据必须是 `and`。
+
+    `qwen-max` 这类名字在各家兼容网关都可能有；只比名字的话，甲家设置的窗口会被
+    安到乙家同名模型头上，而两家的真实窗口可能差数倍（且零报错）。
+    对照实验：把 `and` 放宽成「名字相同即命中」→ 本断言红（拿到 999888）。
+    """
+    cfg = {"enabled_models": [
+        {"id": 1, "provider_id": "dashscope", "model_name": "qwen-max",
+         "context_window": 999888},
+    ]}
+    win = resolve_context_window(cfg, None, provider_id="opencode", model_name="qwen-max")
+    assert win != 999888, "同名不同厂的模型串了窗口（判据漏了 provider_id）"
+
+
+def test_model_id_branch_still_works():
+    """零回归对照：按 `model_id` 的既有形态不受新支路影响。"""
+    cfg = {"enabled_models": [
+        {"id": 7, "provider_id": "x", "model_name": "y", "context_window": 54321},
+    ]}
+    assert resolve_context_window(cfg, 7) == 54321
+
+
 def test_unknown_model_uses_128k_not_32k():
     """第 4 层兜底值断言——用户明确要求「不默认搞成 32k 那小的」。
 

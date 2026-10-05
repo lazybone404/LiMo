@@ -84,7 +84,7 @@ export function TaskPanel() {
           </div>
           <span className="text-[12px] font-semibold text-foreground">任务</span>
           {entries.length > 0 && (
-            <span className="inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 text-[9px] font-bold text-white bg-accent rounded-full">
+            <span className="inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 text-[9px] font-bold text-on-accent bg-accent rounded-full">
               {entries.length}
             </span>
           )}
@@ -187,7 +187,7 @@ export function TaskPanelToggle() {
     >
       <ListTodo size={15} />
       {count > 0 && (
-        <span className="absolute -top-1 -right-1 flex items-center justify-center w-4 h-4 text-[9px] font-bold text-white bg-accent rounded-full shadow-sm shadow-accent/20">
+        <span className="absolute -top-1 -right-1 flex items-center justify-center w-4 h-4 text-[9px] font-bold text-on-accent bg-accent rounded-full shadow-sm shadow-accent/20">
           {count > 9 ? '9+' : count}
         </span>
       )}

@@ -3,6 +3,7 @@
 参照 system-design-spec.md 八.1 + BiliNote demo 错误分类
 """
 
+import errno
 import functools
 import logging
 import time
@@ -207,3 +208,29 @@ class StoreError(AppError):
     # 它的文案承诺的正是 `Store._load_index` 现在真正做的事（备份 + 全盘重建 + warning），
     # 而作为一个 `recoverable=False` 的 AppError，抛出去只会**阻止启动**，与自愈互斥。
     # 重建成没成、损失了什么，都从 `_load_index` 的 warning 里看。
+
+    @classmethod
+    def write_failed(cls, op: str, exc: OSError):
+        """把 OSError 按**真实原因**分类 —— 而不是一律说「磁盘空间不足」。
+
+        ⚠️ 粗细在这里是有代价的：权限被拒 / 文件被占用 / 路径过长三种失败与磁盘空间
+        毫无关系，用户照「请清理磁盘」去行动会发现清了也没用，而真相就在
+        `exc.errno` / `exc.winerror` 里。Windows 上「文件被占用」是 WinError 32
+        （共享冲突），同时 `errno` 被一并给成 `EACCES`(13) —— 只看 errno 会把它误判成
+        「没有权限」，故 **winerror 优先**。
+        """
+        winerr = getattr(exc, "winerror", None)
+        code = exc.errno
+        detail = f"{op}: {type(exc).__name__}: {exc}"
+        if code == errno.ENOSPC:
+            return cls("STORE_DISK_FULL", "磁盘空间不足，请清理后重试", detail)
+        if winerr == 32 or code in (errno.EBUSY, errno.EAGAIN):
+            return cls("STORE_FILE_BUSY", "文件正被其他程序占用，请关闭后重试", detail)
+        if winerr == 206 or code == errno.ENAMETOOLONG:
+            return cls("STORE_PATH_TOO_LONG",
+                       "文件路径过长，请缩短标题或更换数据目录位置", detail)
+        if code in (errno.EACCES, errno.EPERM):
+            return cls("STORE_ACCESS_DENIED",
+                       "没有写入权限，请检查数据目录权限或关闭占用它的程序", detail)
+        return cls("STORE_WRITE_FAILED",
+                   "写入数据目录失败，请检查该目录是否可用", detail)

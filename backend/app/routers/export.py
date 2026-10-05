@@ -1124,145 +1124,18 @@ class ExportCustomRequest(BaseModel):
 
 @router.post("/export/custom")
 def export_custom(data: ExportCustomRequest, request: Request, store=Depends(get_store)):
-    buf = io.BytesIO()
-    total_files = 0
+    """定制导出（多文档 × 多 tab × 多格式）→ ZIP 下载。
 
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for doc_id in data.doc_ids:
-            tx = store.get_transcript(doc_id)
-            if not tx:
-                continue
-            doc_title = _safe_filename(tx.get("title", doc_id))
-            mds = store.get_markdowns_by_transcript(doc_id)
+    ⚠️ 本函数**只是薄包装** —— 打包逻辑全部收在 `_build_export_zip` 一份里（P1-11）。
+    它此前与 `export_custom_stream` 各有一份逐字相似的实现（内联版 vs 抽取版），
+    分叉后「空结果」一处报 400、一处照发空 zip：同一件事写两遍，代价总是先在
+    其中一份上出现，而两份看起来都在「正常工作」。
 
-            # 预先收集该文档所有 tab 的内容（用于收集图片引用）
-            tab_contents: dict[str, str] = {}
-            for tab in data.content_tabs:
-                content = ""
-                if tab == "summary":
-                    for md in mds:
-                        if md.get("mode", "") == "notes":
-                            content = store.get_markdown(md["id"]) or ""
-                            break
-                elif tab == "polished":
-                    for md in mds:
-                        if md.get("mode", "") == "polished":
-                            content = store.get_markdown(md["id"]) or ""
-                            break
-                elif tab == "transcript":
-                    content = tx.get("rawText", "")
-                    try:
-                        parsed = json.loads(content)
-                        if isinstance(parsed, dict) and "full_text" in parsed:
-                            content = parsed["full_text"]
-                        elif isinstance(parsed, dict) and "segments" in parsed:
-                            content = "\n\n".join(
-                                f"{s.get('start', 0):.0f}s: {s.get('text', '')}"
-                                for s in parsed["segments"]
-                            )
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                elif tab == "data_preview":
-                    # 原始数据：直接取 transcript rawText（与预览栏 data_preview 一致）
-                    content = tx.get("rawText", "")
-                elif tab == "report":
-                    for md in mds:
-                        if md.get("mode", "") == "polished":
-                            content = store.get_markdown(md["id"]) or ""
-                            break
-                elif tab == "mindmap":
-                    # 取笔记内容作为思维导图源
-                    mindmap_src = ""
-                    for md in mds:
-                        if md.get("mode", "") not in ("polished",):
-                            mindmap_src = store.get_markdown(md["id"]) or ""
-                            if mindmap_src: break
-                    if not mindmap_src:
-                        mindmap_src = tx.get("rawText", "")
-                    content = _build_mindmap_html(mindmap_src, tx.get("title", doc_title) or doc_title)
-                    # mindmap 是完整 HTML，跳过后续 markdown→HTML 转换
-                    tab_contents[tab] = content
-                    continue
-                elif tab == "skeleton":
-                    content = tx.get("rawText", "")
-                else:
-                    results = store.get_process_results(doc_id)
-                    for r in results:
-                        if r.get("mode") == tab:
-                            content = store.get_process_result(r["id"]) or ""
-                            break
-                    if not content:
-                        content = tx.get("rawText", "")
-                        try:
-                            parsed = json.loads(content)
-                            if isinstance(parsed, dict) and "full_text" in parsed:
-                                content = parsed["full_text"]
-                        except (json.JSONDecodeError, KeyError, TypeError):
-                            pass
-                if content and content.strip():
-                    tab_contents[tab] = content
-
-            # 图片处理：收集该文档所有 tab 的图片引用
-            imgs: dict[str, bytes] = {}
-            name_map: dict[str, str] = {}
-            if data.image_md != "none":
-                all_refs: list[tuple[str, str]] = []
-                for content in tab_contents.values():
-                    all_refs.extend(_find_image_refs(content))
-                if all_refs:
-                    doc_dir = str(store.get_doc_dir(doc_id) or '')
-                    imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
-
-            # 写入各 tab 内容
-            for tab, content in tab_contents.items():
-                if tab == "mindmap":
-                    # mindmap 已是自包含 HTML，直接写入，不经过 markdown→HTML 转换
-                    safe_tab = tab.replace("/", "-")
-                    zf.writestr(f"{doc_title}/{doc_title}_{safe_tab}.html", content)
-                    total_files += 1
-                    continue
-                for fmt in data.formats:
-                    processed = content
-                    ext = fmt
-
-                    # 图片处理
-                    if data.image_md == "inline" and imgs:
-                        processed = _inline_images(processed, imgs, name_map, store.root)
-                    elif data.image_md == "separate" and imgs:
-                        processed = _rewrite_image_paths(processed, name_map, prefix="images/")
-
-                    # 公式处理
-                    if fmt == "md":
-                        if data.formula_md == "remove":
-                            processed = _remove_formulas(processed)
-                    elif fmt == "html":
-                        processed = _build_selfcontained_html(processed, tx.get("title", doc_title), data.html_theme)
-                        ext = "html"
-                    elif fmt == "plain":
-                        processed = _remove_formulas(processed) if data.formula_plain == "remove" else _unicode_formulas(processed)
-                        ext = "txt"
-                    elif fmt == "docx":
-                        # Word：用**原始 content**（非 processed）——image_md=inline 已把图片
-                        # 换成 base64 data URI，那条路是给自包含 HTML 用的；docx 只要原始
-                        # `![alt](assets/x.png)` + 收集好的 imgs 字典即可内嵌。
-                        # 公式恒保留 LaTeX 原文（md/html 侧的 render 路径已移除，见 CHANGELOG）。
-                        processed = markdown_to_docx(content, tx.get("title", doc_title), images=imgs)
-                        ext = "docx"
-
-                    safe_tab = tab.replace("/", "-")
-                    zf.writestr(f"{doc_title}/{doc_title}_{safe_tab}.{ext}", processed)
-                    total_files += 1
-
-            # 写入图片文件（separate 模式）
-            if data.image_md == "separate" and imgs:
-                for img_name, data_bytes in imgs.items():
-                    zf.writestr(f"{doc_title}/images/{img_name}", data_bytes)
-
-    buf.seek(0)
-    if total_files == 0:
-        raise AppError("EXPORT_NO_CONTENT", "无可导出内容",
-                        status_code=400, recoverable=True)
-
+    ⚠️ 保持**同步 `def`**（不要改成 `async def`）：FastAPI 会把同步端点丢进线程池，
+    而打包里含 `subprocess.run(["node", ...])` 这类最长 60s 的阻塞调用 —— 放事件
+    循环上会冻结整个后端进程（P1-12）。
+    """
+    buf, _total = _build_export_zip(data, store)
     zipname = f"{data.filename}.zip"
     encoded = quote(zipname.encode('utf-8'), safe='')
     return StreamingResponse(buf, media_type="application/zip",
@@ -1277,24 +1150,42 @@ _TEMP_DIR = os.path.join(tempfile.gettempdir(), "limo_exports")
 _TEMP_TTL = 600  # 10分钟
 
 
-async def _build_export_zip(
+def _build_export_zip(
     data: ExportCustomRequest,
     store,
-    queue: asyncio.Queue | None = None,
-    cancel_event: asyncio.Event | None = None,
+    push=None,
+    cancel_event=None,
 ) -> tuple[io.BytesIO, int]:
-    """构建导出 ZIP，可选通过 queue 推送进度事件。
-    返回 (buffer, total_files)。"""
+    """构建定制导出 ZIP —— **定制导出的唯一实现**（P1-11）。返回 (buffer, total_files)。
+
+    从前这里是 `async def` 但函数体**零 await**（P1-12）：`export_custom_stream` 用
+    `await _build_export_zip(...)` 调它，于是整个打包（含 KaTeX 服务端渲染的
+    `subprocess.run(["node", ...])`，最长 60s）**跑在事件循环线程上** —— 该端点一被
+    调用，同进程所有请求（含 `/health`）全部挂起。改成同步 `def` 后：
+
+      · `export_custom`（同步端点）调它 → FastAPI 自动把同步端点丢进线程池；
+      · `export_custom_stream` → `await asyncio.to_thread(_build_export_zip, ...)`。
+
+    ⚠️ `push` 是**线程安全的回调**，不是 `asyncio.Queue`：本函数现在跑在 worker
+    线程里，而 `asyncio.Queue.put_nowait` **不能跨线程调**（它会直接操作 loop 的
+    Future）。调用方须自己包一层 `loop.call_soon_threadsafe`。
+    ⚠️ `cancel_event.is_set()` 跨线程**读**是安全的（只读一个 bool），故原样保留。
+
+    空结果 → `EXPORT_NO_CONTENT`(400)（与另一个入口的旧行为统一，见 P1-11）。
+    """
     buf = io.BytesIO()
     total_files = 0
 
     def _check_cancel():
+        # ⚠️ 抛 `asyncio.CancelledError` 而非自定义异常：调用方（`run_build`）
+        # 本来就 `except asyncio.CancelledError` 推 cancelled 事件，语义一致。
+        # 它在这里意味着「用户取消了」，与「任务被 loop 取消」殊途同归。
         if cancel_event and cancel_event.is_set():
             raise asyncio.CancelledError()
 
     def _push(phase: str, doc: int, total: int, message: str = ""):
-        if queue:
-            queue.put_nowait({
+        if push:
+            push({
                 "type": "progress", "phase": phase,
                 "doc": doc, "total": total, "message": message,
             })
@@ -1377,9 +1268,17 @@ async def _build_export_zip(
                 for img_name, data_bytes in imgs.items():
                     zf.writestr(f"{doc_title}/images/{img_name}", data_bytes)
 
-        _push("done", total_docs, total_docs, f"导出完成，共 {total_files} 个文件")
-
     buf.seek(0)
+    # ⚠️ 空结果必须**显式报错**，不能发一个空 ZIP（P1-11）：另一条实现此前
+    # `return buf, 0` → 照发 done → 用户下载到一个 22 字节的 zip 并以为导出成功。
+    # ⚠️ `status_code=400` 必须显式给：本错误 `recoverable=True`，不给状态码会按
+    # AppError 默认返回 **HTTP 200**（模式 #36），前端 `!r.ok` 于是否掉失败、
+    # 照样去解那个空 zip —— 静默失败比报错更坏。
+    if total_files == 0:
+        raise AppError("EXPORT_NO_CONTENT", "无可导出内容",
+                       status_code=400, recoverable=True)
+    # done 事件只在成功时推（空结果上面已经抛了，推了也没人读）
+    _push("done", total_docs, total_docs, f"导出完成，共 {total_files} 个文件")
     return buf, total_files
 
 
@@ -1470,7 +1369,22 @@ async def export_custom_stream(
     async def event_generator():
         async def run_build():
             try:
-                buf, total_files = await _build_export_zip(data, store, queue, cancel_event)
+                # ⚠️ 必须 `to_thread`（P1-12）：`_build_export_zip` 是**同步**函数，
+                # 直接 `await` 它等于让整个打包（含最长 60s 的 KaTeX node 子进程）
+                # 独占事件循环线程 —— 该端点一被调用，同进程所有请求（含 /health）
+                # 全部挂起。它从前被标成 `async def` 却零 await，正是这个陷阱的
+                # 「看不出来」形态：await 一个不 await 任何东西的协程，读起来完全
+                # 正常。
+                # ⚠️ push 必须跨线程回到 loop：worker 线程里直接
+                # `queue.put_nowait` 会用到 `call_soon` 的线程检查（默认只在 debug
+                # 模式生效）→ 生产环境静默竞态、debug 下 RuntimeError。
+                _loop = asyncio.get_running_loop()
+
+                def _push(ev):
+                    _loop.call_soon_threadsafe(queue.put_nowait, ev)
+
+                buf, total_files = await asyncio.to_thread(
+                    _build_export_zip, data, store, _push, cancel_event)
                 if cancel_event.is_set():
                     return
                 # 保存到临时文件
@@ -1497,6 +1411,12 @@ async def export_custom_stream(
                 })
             except asyncio.CancelledError:
                 queue.put_nowait({"type": "cancelled"})
+            except AppError as e:
+                # 业务失败走 SSE error 事件（照 `routers/ingest.py` 的做法）：要单独
+                # 列这一支，否则落到下面的 `except Exception` → `str(e)` 未必等于
+                # `message`，用户拿到一句不明所以的话，而「无可导出内容」这种文案
+                # 本身是可行动的（去勾选内容）。
+                queue.put_nowait({"type": "error", "message": e.message, "code": e.code})
             except Exception as e:
                 logger.exception("Export stream build failed")
                 queue.put_nowait({"type": "error", "message": str(e)[:200]})

@@ -208,7 +208,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
                           return (
                             <label key={t.key}
                               onClick={() => toggleGroupTab(g.type, t.key)}
-                              className={`px-2.5 py-1 rounded-lg text-[11px] cursor-pointer transition-colors ${checked ? 'bg-accent text-white' : 'bg-elevated text-dimmed hover:bg-surface-hover'}`}>
+                              className={`px-2.5 py-1 rounded-lg text-[11px] cursor-pointer transition-colors ${checked ? 'bg-accent text-on-accent' : 'bg-elevated text-dimmed hover:bg-surface-hover'}`}>
                               {t.label}
                             </label>
                           )
@@ -388,7 +388,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
               } catch (e) { addToast('导出失败: ' + (e as Error).message, 'error') }
               finally { setExporting(false) }
             }}
-              className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 bg-accent text-white text-[13px] font-medium rounded-xl hover:bg-accent-hover disabled:opacity-30 transition-colors">
+              className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 bg-accent text-on-accent text-[13px] font-medium rounded-xl hover:bg-accent-hover disabled:opacity-30 transition-colors">
               <Download size={14} />
               {exporting ? '导出中...' : `按上方设置导出 ${totalFiles} 个文件 ${formats.length > 1 || totalFiles > 1 ? '(ZIP)' : ''}`}
             </button>

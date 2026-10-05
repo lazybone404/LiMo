@@ -15,6 +15,3 @@ class ExecutionGuard:
     def __init__(self, cloud_max: int = 5, local_max: int = 2):
         self.semaphore = asyncio.Semaphore(cloud_max)  # 云端操作（生成/处理/云端引擎）
         self.local_semaphore = asyncio.Semaphore(local_max)  # 本地 CPU 引擎
-
-    def shutdown(self):
-        pass
