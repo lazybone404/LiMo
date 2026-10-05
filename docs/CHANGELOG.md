@@ -6,6 +6,98 @@
 
 ---
 
+## 2026-10-06 — 代码审计 25 项修复（4 批）+ 报告纠偏
+
+对 `docs/code-audit.md`（24 项，快照锚定 `4174166`）执行**全量修复**，分 4 批 5 个 commit。
+动手前先做了一轮报告纠偏——**审计报告本身不能当可信基线**。
+
+### 报告纠偏（动手前 + 实施中累计 8 处）
+
+动手前查出 3 处「照着修会修坏」：`engines/docling.py` 被报成死文件，实为**PDF 默认引擎**的
+栖身处（删了 = 删掉主引擎，剔除）；P0-04 建议的 `search.py::rebuild` 是「DELETE 全表 + 全量重插」，
+且启动时**已在调用**（拿全量重建干单条删除的活，改用更小的修法）；P0-03 的「切到 KaTeX 图片
+管线」前提不成立（`_render_formulas_katex` 是给 HTML 导出在 **WebView 里**渲染的，服务端拿不到
+位图）→ 用户重新拍板「移除 UI 选项 + 完整删 matplotlib 分支」。
+
+实施中又证实 5 处不符，其中两条会**直接修坏功能**：
+
+- **P2-17 的「接回 `clear_epub_task`」是反的**——`epub_pipeline.py:251-254` 逐字写着「取消＝
+  **保留进度**，不入阶段 2」，三态 UI 的「继续上次解读」正靠它读非 `done` 状态。在取消路径清
+  ＝ **摧毁续跑**。改为**保留不接**（它是与 `cache_put`/`cache_get` 同类的多余门面方法）。
+- **P0-01 半 A 不配半 B 会制造同款新 bug**：`AVAILABLE_OPTIONS` 只有 8 个键，epub/document
+  走的是「后端有兜底、前端没有」的不对称路径。只把 `formulas` 改成走 `availableFormats`，
+  这两类的公式勾选框会**直接消失**（后端支持、UI 隐藏）——正是本项要修的那个形状。
+
+⚠️ **最普遍的一课**（记入模式沉淀）：**「功能缺少调用点」有两种，处置完全相反**——一种是
+**本该被调用而漏了**（真缺口），一种是**本来就不该有调用者**（多余公开方法）。区分二者的唯一
+办法是**把候选落点逐个打开看它的语义**，而不是看名字像不像。
+
+### 批次 1 — P0 用户可直接触发（4 项）
+
+- **P0-01 公式集门控**（含审计漏项）：`formulas` 与 `references` 拆开改由 `availableFormats`
+  驱动 + 两端兜底同源。
+- **P0-02 风格档跨类型**：**条件重置**——「仅当档位不在新类型的可用集里才重置」。⚠️ 无条件
+  重置会冲掉跨类型**共享的合法档**（plain/academic/business），是本条最易踩的坑。
+- **P0-03**：移除「公式渲染为图片」UI 选项 + **完整删除** matplotlib 分支（半删比不删更糟：
+  `_latex_to_png` 里的 `plt` 会失去定义 → `NameError`）。MD 保留 `$...$`。
+- **P0-04 搜索幽灵**：`ingest.py` 的静默 `except Exception: pass` 拆开记 warning。
+
+### 批次 2 — P1 静默失效与死代码（11 项）
+
+`coerce_style` 收口（此前非法 style 在流式/非流式两条路落**不同档**且都不报错）/ 合成维度来路
+落 `dimensionsSource` meta / 截图失败 marker 零残留 / 删 `llm_presets` 死配置 / 删 `resvg-py`
+死依赖（⚠️ `ACKNOWLEDGMENTS.md` 的行**保留**——那是三方许可 + 沿革记录，只更新 ⚠️ 措辞，
+**不在合规文件上做删除**）/ id 校验与导出文件名阈值跨端同源 / 前端筛选项补 `audio` /
+`PROVIDER_DEFAULTS` 下沉 `core/` / `has_capability` 收口 6 处内联（**收敛，不补报错**——后端
+gate 本就在跑，补报错会把既有降级变成失败 = 行为倒退）/ `docling.py` 六处静默 `except` 逐处
+triage（三修三留，保留项由**反向断言**钉住不产生 warning）。
+
+### 批次 3 — P2 重复实现收敛（6 项）
+
+`assets/` 正则四份逐字副本 → `core/markdown_assets.py`（与 tx 反向正则**同模块**，成对反向）/
+样式别名表两份合并 / OCR 四模式标签七处收敛（报告漏了 `PreviewArea` 那处）/ 三组 fallback 改由
+capabilities 驱动 / `ENGINE_CATS` 三处收敛（AST 守卫另抓出**两处报告漏掉的副本，实为五处**）/
+面板默认宽 260 三处下沉 `lib/slotMetrics.ts`。
+
+### 批次 4 — P2 收尾（4 项）+ 实施期新发现 1 项
+
+`engineLabels` 前端接入（后端补引擎**能力位**标签表，与模型的 `modelCaps` 是两套词汇，
+刻意不合并）/ 硬编码色值 → token（`TYPE_COLORS` 12 处与两处 fallback 按判据**刻意保留**）/
+死函数清理 / **新增 CI**。
+
+#### ⭐ D1（不在报告的 24 项里）：FTS5 的 `title` 列从未做 CJK 拆字
+
+`index()`/`rebuild()` 只对 `content` 调 `_clean_for_search`（内含逐字拆空格），`title` 存原文；
+而查询侧 `_prepare_query` **一律拆字**。后果：**凡「只出现在标题、正文里没有」的中文词永远
+搜不到**——查询成 `使 AND 用 AND 说 AND 明`，而 title 里是整 token「使用说明」，四个字只中两个。
+
+修法两个取舍：① 标题拆字版**并入 `content` 列**（**不能写回 `title` 列**——`search()` 直接返回
+该列供显示，写回会让用户看到「✨ 使 用 说 明（示 例）」）；② `rebuild` 守卫 `if content:` →
+「标题与正文**都**空才跳过」（原写法让「只有标题」的文档整条不进索引）。零 schema 变更，
+启动时 `rebuild()` 自动重写旧库。
+
+**怎么发现的**：加 CI（P2-24）时必须回答「这条门禁假设了什么环境」——本地 81 篇真实库让它
+看起来无条件成立；搬到**空库沙箱**立刻红（首篇是内置示例文档，`使用说明` 恰好只写在标题上）。
+⚠️ 既有 `test_title_hit_still_matches` 的名字正是「标题命中同样要能搜到」，但它用 `needle`
+—— **用例名声称覆盖中文路径，用例体只走了英文路径**。
+
+⚠️ 此时「调 seed 让关键词落进正文」等于**把真红伪装成假红**（正是 P0-04 要消灭的那类静默），
+所以选择修实现。修完沙箱 **16 通过 / 0 失败**。
+
+### 影响范围
+
+- 后端：`core/search.py` / `core/registry.py` / `adapters/image.py` / `downloaders/douyin_helper/abogus.py` /
+  `routers/capabilities.py` / `core/config.py` / `app/engines/docling.py` / `app/routers/*` 等
+- 前端：`EngineSelect` / `ImageModeCards` / `PluginSettings` / `SettingsPage` / `ExportPanel` /
+  `LogPanel` / `index.css` / `lib/imageModes.ts` / `lib/slotMetrics.ts`（新增）
+- 新增：`.github/workflows/ci.yml`（**CI 只负责「记得跑」，命令与本地逐条相同**，不另写判据）
+- 存量用户：搜索索引在下次启动时自动重建，无需干预
+
+**门禁**：后端 **197** passed / 前端 **467** passed（39 文件）/ `tsc -b` ✓ / lint 零 error /
+`check-cli` 16 项（真实库 + 空库沙箱各一遍，均 16/0）。
+
+---
+
 ## 2026-10-05 — 预览区：文档多标签页 + 正文字号缩放
 
 两条独立需求，同一处落脚（预览区的阅读 / 切换体验）。
