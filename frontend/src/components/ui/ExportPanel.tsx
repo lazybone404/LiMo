@@ -177,7 +177,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
                   {filteredDocs.map(d => (
                     <label key={d.id}
                       className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-elevated/50 transition-colors ${selectedIds.includes(d.id) ? 'bg-accent/5' : ''}`}>
-                      <input type="checkbox" checked={selectedIds.includes(d.id)} onChange={() => toggleDoc(d.id)} className="w-4 h-4 accent-[#007AFF] shrink-0" />
+                      <input type="checkbox" checked={selectedIds.includes(d.id)} onChange={() => toggleDoc(d.id)} className="w-4 h-4 accent-accent shrink-0" />
                       <span className="text-[12px] truncate flex-1">{d.title}</span>
                       <span className="text-[10px] text-disabled shrink-0">{TYPE_LABELS[d.sourceType] || d.sourceType}</span>
                       <span className="text-[9px] text-muted shrink-0">{d.createdAt?.slice(0, 10)}</span>

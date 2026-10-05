@@ -176,7 +176,10 @@ body {
   background: var(--tk-border-light);
   border-radius: 1px;
 }
-.r-handle:hover, .r-handle.active { background: rgba(0,122,255,0.1); }
+/* 悬停高亮走 accent token（此前硬编码 rgba(0,122,255,.1)）——
+   同一规则块的 `::after` 早就在用 `var(--tk-accent)`，只有这层底色没跟上，
+   换配色后拖拽条会闪一下蓝色。`color-mix` 与 `:166` 处同款。 */
+.r-handle:hover, .r-handle.active { background: color-mix(in srgb, var(--tk-accent) 10%, transparent); }
 .r-handle:hover::after, .r-handle.active::after {
   background: var(--tk-accent);
 }

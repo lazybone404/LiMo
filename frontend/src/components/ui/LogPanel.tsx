@@ -108,8 +108,11 @@ export function LogPanel({ onClose }: { onClose: () => void }) {
           </div>
         </header>
 
-        {/* 日志列表 */}
-        <div ref={scrollRef} className="flex-1 overflow-auto bg-[#1E1E1E] p-3 font-mono text-xs leading-relaxed">
+        {/* 日志列表 —— 底色走 token（此前硬编码 #1E1E1E）：
+            级别色 `text-error/warning/success` 与正文 `text-disabled` **全是主题 token**，
+            浅色主题下它们是深色 —— 配一块写死的深黑底必然看不清。
+            「终端就该是黑的」在这里不成立：字不是终端色，底也不该自己定。 */}
+        <div ref={scrollRef} className="flex-1 overflow-auto bg-surface p-3 font-mono text-xs leading-relaxed">
           {logs.length === 0 ? (
             <div className="text-dimmed italic pt-4 text-center">
               {errorCount > 1 ? '日志加载失败，请检查后端是否运行' : '暂无日志'}

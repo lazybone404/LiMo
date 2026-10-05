@@ -7,7 +7,8 @@
 
 from fastapi import APIRouter, Depends
 from app.core.registry import (
-    AdapterRegistry, EngineRegistry, ENGINE_CATEGORIES, ENGINE_CATEGORY_ORDER,
+    AdapterRegistry, EngineRegistry,
+    ENGINE_CATEGORIES, ENGINE_CATEGORY_ORDER, ENGINE_CAPABILITY_LABELS,
 )
 from app.core.dependencies import get_config
 from app.generation.prompt import STYLE_MAP, DOC_STYLE_MAP, EXCEL_STYLE_MAP, AVAILABLE_OPTIONS
@@ -322,10 +323,8 @@ async def capabilities(config=Depends(get_config)):
         # ── 新增：前端去硬编码元数据 ────────────────────────
         "fileTypeMap": file_type_map,
         "scenarioLabels": scenario_labels,
-        "engineLabels": {
-            "text": "文字", "table": "表格", "image": "图片",
-            "ocr": "OCR", "pdf": "PDF", "office": "文档", "asr": "语音",
-        },
+        # 引擎能力位 → 中文标签（取自 core/registry，前端 EngineSelect 消费）
+        "engineLabels": ENGINE_CAPABILITY_LABELS,
         # ⚠️ 这个 dict 是**手写**的，不会随三张 MAP（styles/docStyles/excelStyles）
         # 自动更新——新增风格档时**必须同时改这里**，否则按钮标签静默退化成
         # 英文 key（`GenPanel` 用 `styleLabels[s] || s`）。pi-docs 方案曾误以为

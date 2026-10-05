@@ -249,7 +249,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
             <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-4">
               <p className="text-[13px] text-muted">访问 YouTube / GitHub 等需要代理。作用于 LLM API + 视频下载。</p>
               <label className="flex items-center gap-3 cursor-pointer">
-                <input type="checkbox" checked={proxyEnabled} onChange={e => setProxyEnabled(e.target.checked)} className="w-4 h-4 accent-[#007AFF]" />
+                <input type="checkbox" checked={proxyEnabled} onChange={e => setProxyEnabled(e.target.checked)} className="w-4 h-4 accent-accent" />
                 <span className="text-[15px]">启用代理</span>
               </label>
               {proxyEnabled && (

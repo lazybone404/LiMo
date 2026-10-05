@@ -1,10 +1,14 @@
 """
-图像适配器 — 图片 → OCR + VL 描述
-支持 URL 输入（下载后 OCR）
+图像适配器 — 图片 → 导入（存文件 + 元数据）
+支持 URL 输入（下载后存本地）
+
+⚠️ **导入阶段刻意不做 OCR / VL 描述**：处理统一由 `POST /process/{id}` 触发
+（4 个模式：提取文字 / 表格 / 数字化 / 理解），走 LLM 优先 → 引擎回退。
+本类此前的 `_ocr` / `_resolve_ocr_engine` / `_get_dashscope_key` 三件套
+是处理链路迁走后的历史残留（全仓零调用），2026-10-06 清理。
 """
 
 import asyncio
-import copy
 import json
 import logging
 import tempfile
@@ -15,7 +19,6 @@ import requests
 
 from app.core.types import PipelineInput, AdapterOutput, RawMetadata, InputType, ProgressEvent
 from app.core.protocols import PipelineAdapter
-from app.core.registry import EngineRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -65,77 +68,6 @@ class ImageAdapter(PipelineAdapter):
         if on_progress:
             on_progress(ProgressEvent(phase="download", status="done"))
         return dest
-
-    def _get_dashscope_key(self) -> str:
-        """从注入的配置中读取 DashScope API Key"""
-        cfg = self._engine_config or {}
-        for ep in cfg.get("engine_providers", []):
-            if ep.get("id") == "dashscope":
-                return ep.get("api_key", "")
-        return ""
-
-    def _resolve_ocr_engine(self):
-        """根据 engine_bindings.ocr 解析第一个可用引擎（不再自动降级）"""
-        cfg = self._engine_config or {}
-        bindings = cfg.get("engine_bindings", {})
-        engine_models = cfg.get("engine_models", [])
-
-        model_ids = bindings.get("ocr", [])
-        # 向后兼容：旧格式 int → [int]
-        if isinstance(model_ids, int):
-            model_ids = [model_ids]
-        if not model_ids:
-            logger.error("OCR 引擎未绑定，请在设置中配置 OCR 引擎")
-            return "", None, ""
-
-        emap = {m["id"]: m for m in engine_models}
-        for mid in model_ids:
-            bm = emap.get(mid)
-            if not bm:
-                continue
-            provider_id = bm["provider_id"]
-            model_name = bm["model_name"]
-            if provider_id == "dashscope":
-                engine = EngineRegistry.get("ocr", "dashscope-ocr")
-                if engine:
-                    return "dashscope-ocr", engine, model_name
-            else:
-                # 直接用 model_name 查找引擎
-                engine = EngineRegistry.get("ocr", model_name)
-                if engine:
-                    return model_name, engine, model_name
-
-        # 所有绑定均不可用 → 不降级，返回空（调用方报错）
-        logger.error("OCR 绑定链全部失败，请在设置中更换 OCR 引擎")
-        return "", None, ""
-
-    def _ocr(self, file_path: str) -> str:
-        """调用 OCR 引擎提取文字"""
-        eng_name, engine, model_name = self._resolve_ocr_engine()
-        if not engine:
-            logger.warning("OCR 引擎未注册: %s", eng_name)
-            return ""
-
-        # 深拷贝防并发竞态
-        engine = copy.copy(engine)
-
-        # 动态注入 API Key
-        if eng_name == "dashscope-ocr" and hasattr(engine, 'api_key') and not engine.api_key:
-            key = self._get_dashscope_key()
-            if key:
-                engine.api_key = key
-                logger.info("OCR: 动态注入 DashScope API Key")
-
-        try:
-            result = engine.run(file_path, model_name=model_name)
-            if result and result.text:
-                logger.info("OCR: %s 成功 (%d 字)", eng_name, len(result.text))
-                return result.text
-            logger.warning("OCR: %s 返回空结果", eng_name)
-            return ""
-        except Exception as e:
-            logger.warning("OCR: %s 失败: %s", eng_name, str(e)[:120])
-            return ""
 
     async def adapt(self, input: PipelineInput, on_progress=None,
                     engine_config: dict | None = None) -> AdapterOutput:

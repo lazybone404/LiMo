@@ -1,7 +1,8 @@
 """全文搜索 — FTS5 索引与摘要正确性（纯函数单测，无需启动后端）。
 
 运行：uv run python tests/test_search.py
-覆盖：摘要列号（正文命中必须取 content 列）/ 标题命中 / CJK 逐字分词 / 删除后不留幽灵命中
+覆盖：摘要列号（正文命中必须取 content 列）/ 标题命中（含**只在标题里**的中文词）/
+CJK 逐字分词 / rebuild 守卫（正文为空但标题非空）/ 删除后不留幽灵命中
 
 ⚠️ 本文件的判据都刻意构造成「实现写错时必失败」——见每个用例的 ⚠️ 说明。
 """
@@ -64,6 +65,45 @@ def test_cjk_char_tokenize():
         # 故先剥标记再去空格，断言的是「用户肉眼能读到的关键词」
         plain = re.sub(r'</?mark>', '', hits[0]["snippet"]).replace(" ", "")
         assert "梯度下降" in plain, f"摘要应含中文关键词，实际 {hits[0]['snippet']!r}"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_cjk_title_only_hit():
+    """⚠️ 只在标题里、正文里**没有**的中文词必须能搜到。
+
+    构造：正文刻意不含「使」「用」「说」「明」中的任何一个字，于是查询拆成
+    `使 AND 用 AND 说 AND 明` 时，**只有标题参与匹配**才可能成立。
+
+    区分力（本用例存在的理由）：`title` 列若不拆字，里面是整 token「使用说明」，
+    四个拆开 token 一个都匹配不上 → 0 命中，用例必红。
+    ⚠️ 这条**不能改用英文**——unicode61 天然切分英文，:44 的
+    `test_title_hit_still_matches` 用 `needle` 测「标题命中」一直是绿的，
+    而它掩盖的正是这个中文缺陷（断言存在 ≠ 断言有效）。
+    """
+    eng, d = _engine()
+    try:
+        eng.index("tr_1", "使用说明", "这是正文，里面刻意不出现那四个字。")
+        hits = eng.search("使用说明", limit=10)
+        assert len(hits) == 1, f"只在标题里的中文词必须能搜到，实际 {len(hits)} 条"
+        assert hits[0]["title"] == "使用说明", (
+            f"title 列必须仍是原文（拆字版只该并入 content 列），实际 {hits[0]['title']!r}"
+        )
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_title_only_doc_indexed_on_rebuild():
+    """⚠️「正文为空、只有标题」的文档也必须进索引。
+
+    `rebuild` 的守卫曾是 `if content:` —— 按它写，这类文档**整条不进索引**
+    （连标题都搜不到）。判据应是「标题与正文**都**空」才跳过。
+    """
+    eng, d = _engine()
+    try:
+        eng.rebuild([{"id": "tr_t", "title": "只有标题的文档"}], lambda _id: "")
+        hits = eng.search("只有标题", limit=10)
+        assert len(hits) == 1, f"正文为空的文档应仍可按标题搜到，实际 {len(hits)} 条"
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

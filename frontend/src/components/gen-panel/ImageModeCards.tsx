@@ -1,5 +1,5 @@
 import { ScanText, Table, Eye, ScanLine } from 'lucide-react'
-import { IMAGE_MODE_LABELS } from '../../lib/imageModes'
+import { IMAGE_MODE_LABELS, imageModeLabel } from '../../lib/imageModes'
 
 interface Props {
   imageMode: string
@@ -52,7 +52,9 @@ export function ImageModeCards({ imageMode, setImageMode, ocrSupportedModes, ocr
           {Object.keys(imageResults[currentDocId || '']).map(mode => (
             <button key={mode} onClick={() => setActiveView(mode)}
               className="px-2 py-0.5 rounded-full bg-success/10 text-[10px] text-success font-medium hover:bg-success/20 transition-colors">
-              {{ extract: '文字', table: '表格', digitize: '数字化', understand: '理解' }[mode] || mode}
+              {/* 与上方 MODES 同一份标签（`lib/imageModes`）——此前这里另抄了一份短版，
+                  于是同一个模式在卡片上叫「文档数字化」、在结果 chip 上叫「数字化」 */}
+              {imageModeLabel(mode)}
             </button>
           ))}
         </div>

@@ -59,7 +59,7 @@ function ConfigForm({ plugin }: { plugin: PluginInfo }) {
               <input
                 type="checkbox" checked={!!values[field.name]}
                 onChange={e => setValues(v => ({ ...v, [field.name]: e.target.checked }))}
-                className="w-4 h-4 accent-[#007AFF]"
+                className="w-4 h-4 accent-accent"
               />
               {field.hint && <span className="text-[12px] text-muted">{field.hint}</span>}
             </label>

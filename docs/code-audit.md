@@ -211,9 +211,9 @@
 - **⚠️ 修正（2026-10-05）**：原文把 `core/search.py:61 rebuild` 列为「零引用」是**错的**——`main.py:319` 启动时就在调它（与 P0-04 纠偏同源，见「开工前纠偏」#2）。
 - **⚠️ 路径修正（2026-10-05）**：`abogus.py` 的实际路径是 `backend/app/downloaders/douyin_helper/abogus.py`（原报告写 `app/engines/abogus.py`，**该路径不存在**）；`image.py` 补全为 `backend/app/adapters/image.py:112`。**删代码的项里，路径错比行号错更危险。**
 - **修复方案**：按「删确凿的、保留公共面」逐类处置——
-  - **删**：抖音残留 4 个 + `adapters/image.py:112 _ocr`；
+  - **删**：抖音残留 4 个（含其唯一消费者的类属性 `__arguments`）、`adapters/image.py:112 _ocr`（**连带死亡**：`_resolve_ocr_engine` / `_get_dashscope_key` 两个只服务于它的私有方法 + `copy` / `EngineRegistry` 两个随之孤立的 import）；
   - **保留**：`errors.py` 工厂（错误码目录=公共 API 面）、Store 门面方法、`product_registry` / `tool_registry` 公开接口；
-  - **接回**：`store.py:1060 clear_epub_task`——`save_epub_task:1041` / `load_epub_task:1050` 同在，load 在用、clear 无调用方 = **真缺口**（取消 epub 解读时应清 task 文件）。
+  - ~~**接回**：`store.py:1051 clear_epub_task`（「取消 epub 解读时应清 task 文件」）~~ → **2026-10-06 推翻**：`services/epub_pipeline.py:251-254` 逐字写着「取消 = **保留进度**，不入阶段 2」，三态 UI 的「继续上次解读」正靠 `load_epub_task` 读到非 `done` 状态——**在取消路径清 = 摧毁续跑**。真相是**多余的门面方法**（与 `cache_put`/`cache_get` 同类，落在「保留公共面」里），**保留不接**。详见文末「实施阶段新证实的报告错误」#5。
 - **备注**：`llm/service.py:120 supports_document` 已升为 **P1-15**（它不是「多余」，是「未接线」，性质不同）。
 
 ### P2-18-asset-regex-6copies `assets/` 图片引用重写正则 ≥6 份副本
@@ -274,7 +274,7 @@
 
 ## 实施阶段新证实的报告错误（2026-10-05，动手修 P0 四项时）
 
-除「开工前纠偏」那三处外，真正开始改代码后又核实出 4 处不符 —— 记录在此，**同一份报告不要被后来的读者当成可信基线**：
+除「开工前纠偏」那三处外，真正开始改代码后又核实出 **5 处**不符（#1–#4 于 2026-10-05、#5 于 2026-10-06）—— 记录在此，**同一份报告不要被后来的读者当成可信基线**：
 
 | # | 报告原述 | 实际 |
 |---|---|---|
@@ -282,8 +282,28 @@
 | 2 | P0-01 半 B「epub/document 用户勾的格式被静默抹掉（**今天就已存在**）」 | 通道成立，但**两个类型今天都不可达**：`document` 作为 sourceType 不可达（`_adapter_to_source_type` 永不返回它）、`epub` 被格式区外层条件排除 → 性质是**防御未来结构不一致**，不是现网症状。**半 A 才会把它变成真问题** |
 | 3 | P0-03 落点写作 `app/export.py` | 实为 `app/routers/export.py`。**删代码的条目里，路径错比行号错更危险**（照原文去删 = 找不到文件 = 有可能去改另一个同名概念的位置） |
 | 4 | 「后端测试全绿」（隐含前提） | `test_folders_api.py::test_batch_tag_and_delete` **全量跑时失败、单独跑通过**。根因：`_setup()` 注入临时 `Store` 却**漏注入 `search_engine`** —— 它的赋值在 `main.py` 的 startup event 里，而该文件刻意不进 TestClient 上下文，于是拿到**先前某个跑了 startup 的测试留下的、指向已删 tempdir 的实例** → `unable to open database file` → `BATCH_ALL_FAILED`。**既有缺陷，非本轮引入**（`git stash` 后复现确认），已随手修（`_setup` 补 `SearchEngine(d)`） |
+| 5 | P2-17 处置建议「**接回** `clear_epub_task`——取消 epub 解读时应清 task 文件」 | **反了，照做会摧毁功能**：`epub_pipeline.py:251-254` 的取消分支注释逐字写着「取消：保留进度，不入阶段 2」，随后 `return` 而**不删任何落盘状态**——`epub_task.json`（含 `chapters_done`）正是三态 UI 里「继续上次解读」的数据来源。报告把「零调用方」正确识别出来了，却**给了一个会让续跑永久失效的落点**。⚠️ 更普遍的一课：**「功能缺少调用点」有两种，处置完全相反**——一种是**本该被调用而漏了**（真缺口，如 `supports_document` 的门），一种是**本来就不该有调用者**（多余的公开方法，如本项）。区分二者的唯一办法是**把候选落点逐个打开看它的语义**，而不是看名字像不像。 |
 
 ⚠️ 第 4 条的意义超出它本身：**「全绿」这个门禁判据此前不可信，而每批提交都依赖它判定**。修好后后端基线 145 → **148** passed（含 P0-04 新增 3 条）；前端 **411** passed / 31 文件。
+
+## 实施阶段新发现的缺陷（2026-10-06，修 P2-24 时）
+
+**不在报告的 24 项里**。修 P2-24（加 CI）时必须先回答「这条门禁假设了什么环境」——本地 81 篇的真实库会让门禁**看起来无条件成立**。把 CLI 门禁搬进空库沙箱后立刻暴露：
+
+| # | 缺陷 | 影响 | 处置 |
+|---|---|---|---|
+| D1 | **FTS5 的 `title` 列从未做 CJK 拆字** —— `index()` / `rebuild()` 只对 `content` 调 `_clean_for_search`（内含 `_insert_cjk_spaces`），`title` 直接存原文；而查询侧 `_prepare_query` **一律拆字** | 凡「词只出现在标题、正文里没有」的中文查询**永远搜不到**：查询被拆成 `使 AND 用 AND 说 AND 明`，而 title 列里是整 token `使用说明` —— 四个字只中两个，AND 不成立 | 标题的拆字版并入 `content` 列（见下），`rebuild` 守卫 `if content:` → `if not content and not title:`，新增 2 条用例 |
+
+**D1 的两个设计取舍**：
+
+- ⚠️ **不能把拆字版写回 `title` 列**：`search()` 直接把读出的 `title` 返回给调用方，写回会让用户在搜索结果里看到「✨ 使 用 说 明（示 例）」。故 `title` 列保持原文供显示，拆字版并入 `content` 列 —— 标题本就是搜索对象之一，而 `content` 列的定义正是「为搜索清洗过的文本」。零 schema 变更、零 API 变更，`main.py` 启动时 `rebuild()` 自动重写旧库。
+- ⚠️ **守卫的判据是「标题与正文**都**空」**：原写法 `if content:` 会让「有标题、正文为空」的文档**整条不进索引**（连英文标题都搜不到）。
+
+**怎么发现的**：`scripts/check-cli` 第 10 项取「列表首篇标题里第一个连续字符段的前 4 字」当搜索词（[check-cli:186-192](scripts/check-cli#L186-L192)），在真实库上一直绿 —— 因为 81 篇里**总有一篇正文含这个词**（正文含则拆字后能命中）。换到空库沙箱，首篇是内置示例文档「✨ 使用说明（示例）」，`使用说明` **只写在标题上**，立刻红。
+
+⚠️ **既有测试为什么没抓到**：`test_search.py::test_title_hit_still_matches` 的名字正是「标题命中同样要能搜到」，但它用 `needle`（**英文**）—— unicode61 天然切分英文，标题存进去的已经是可匹配的 token。**用例名声称覆盖中文路径，用例体只走了英文路径**（模式 #38「断言存在 ≠ 断言有效」的又一形态；对照实验已确认：旧实现下新增的两条必红、这条仍绿）。
+
+⚠️ **不修会怎样**：CI 的 CLI job 在全新 runner 上**一上来就红**。而这时「调 seed 让关键词落进正文」等于**把真红伪装成假红**——正是 P0-04 要消灭的那类静默。修完沙箱 **16 通过 / 0 失败**。
 
 ## 修复时的验证建议
 
@@ -305,3 +325,4 @@
 | P1-15 | ~~直调 API 显式报错~~ → 后端 gate **已存在且有测试**（`test_doc_understand.py:191-202` 三态）。新断言：收敛后 `supports_document` 与 `content_preparer` 的判据**只应存在一处**（AST 源码守卫，模式 #54） |
 | P1-16 | 造一张嵌入失败的图 → 断言 warning 被记录（模式 #38：断言必须有区分力） |
 | P2-22 | 三处 `ENGINE_CATS` 集合相等（AST 源码守卫，模式 #54） |
+| **D1** | 只在标题里、正文不含的中文词能被搜到（`test_cjk_title_only_hit`）+ 正文为空但有标题的文档经 `rebuild` 仍可搜（`test_title_only_doc_indexed_on_rebuild`）。⚠️ **两处改动各有专属对照**，已实测：① `_searchable_body` 退回「不并入标题」→ **只红那一条**（名字相似的英文用例 `test_title_hit_still_matches` 仍绿）；② 守卫换回 `if content:` → 只红另一条 |

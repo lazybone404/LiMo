@@ -28,6 +28,29 @@ ENGINE_CATEGORIES: frozenset[str] = frozenset({"asr", "ocr", "doc"})
 ENGINE_CATEGORY_ORDER: tuple[str, ...] = ("asr", "ocr", "doc")
 
 
+# 引擎**能力位**（不是类别）→ 中文标签。经 capabilities 下发，前端引擎下拉里
+# 显示的「能力」一栏用它（此前前端把 `capabilities` 原样 join，用户看到裸英文
+# `pypdfium2 · doc`）。
+#
+# ⚠️ **与 `lib/modelCaps.ts` 是两套词汇，不要合并**：那边是**模型能力位**
+# （`text`/`image`/`video`/`reasoning`/`document`——「这个模型收得下什么模态」），
+# 这边是**引擎能力位**（「这个引擎能从文件里取出什么」）。两边都有 `text` 与
+# `image`，但含义与文案都不同（模型 `text`＝文本，引擎 `text`＝文字）。
+#
+# ⚠️ 新增引擎能力位时**必须同步登记这里**，否则前端徽标退化成裸英文。
+# `tests/test_engine_capability_labels.py` 扫全部引擎类的 `capabilities`
+# 与这张表做包含断言（模式 #54：同源是搜索题，不能靠记得）。
+ENGINE_CAPABILITY_LABELS: dict[str, str] = {
+    "text": "文字",
+    "table": "表格",
+    "image": "图片",
+    "ocr": "OCR",
+    "pdf": "PDF",
+    "office": "文档",
+    "asr": "语音",
+}
+
+
 # -- 适配器注册表 --
 
 class AdapterRegistry:

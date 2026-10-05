@@ -41,8 +41,8 @@ class SearchEngine:
     # ── 索引 ──
 
     def index(self, tx_id: str, title: str, content: str):
-        """新增或更新一条索引。content 会被清洗（去 Markdown 标记、连续空白归一化）。"""
-        clean = _clean_for_search(content)
+        """新增或更新一条索引。title/content 一并处理成可搜索文本（见 `_searchable_body`）。"""
+        clean = _searchable_body(title, _clean_for_search(content))
         with self._lock, self._conn() as conn:
             # 先删后插 — FTS5 不支持 UPDATE，用 INSERT OR REPLACE
             conn.execute("DELETE FROM transcripts_fts WHERE id = ?", (tx_id,))
@@ -67,12 +67,16 @@ class SearchEngine:
             conn.execute("DELETE FROM transcripts_fts")
             for tx in transcripts:
                 content = get_content(tx["id"])
-                if content:
-                    clean = _clean_for_search(content)
-                    conn.execute(
-                        "INSERT INTO transcripts_fts(id, title, content) VALUES (?, ?, ?)",
-                        (tx["id"], tx.get("title", ""), clean),
-                    )
+                title = tx.get("title", "")
+                # ⚠️ 判据是「标题与正文**都**空」才跳过，不是「content 为空」——
+                # 按后者写，「只有标题、正文为空」的文档整条不进索引（连标题都搜不到）
+                if not content and not title:
+                    continue
+                clean = _searchable_body(title, _clean_for_search(content))
+                conn.execute(
+                    "INSERT INTO transcripts_fts(id, title, content) VALUES (?, ?, ?)",
+                    (tx["id"], title, clean),
+                )
             conn.commit()
 
     # ── 搜索 ──
@@ -167,6 +171,30 @@ def _insert_cjk_spaces(text: str) -> str:
             result.append(ch)
         prev_cjk = is_cjk
     return re.sub(r'\s+', ' ', ''.join(result)).strip()
+
+
+def _searchable_body(title: str, content: str) -> str:
+    """拼出 FTS5 `content` 列要存的字符串 —— 标题（拆过字）+ 已清洗正文。
+
+    ⚠️ **为什么标题要并进 content 列，而不是把拆字版写进 title 列**：
+    FTS5 的 unicode61 不切分 CJK —— 一整段连续中文是一个 token。所以索引侧
+    把 CJK 逐字拆开（`_insert_cjk_spaces`）、查询侧同样拆（`_prepare_query`），
+    两侧对称才做得了子串匹配。而 `title` 列此前**只存原文、从未拆字**，于是
+    「只出现在标题、正文里没有」的词永远搜不到：查询被拆成
+    `使 AND 用 AND 说 AND 明`，title 列里却是整 token `使用说明` —— 四个字只中两个。
+    （2026-10-06 实测：`engine.search('使用说明')` → `[]`，而该词就写在标题上。）
+
+    ⚠️ **不能把拆字版写回 title 列**：`search()` 把读出的 title 直接返回给调用方，
+    那样用户在搜索结果里会看到「✨ 使 用 说 明（示 例）」。故 title 列保持原文
+    供显示，拆字版并入 content 列供匹配 —— 标题本就是搜索对象之一，
+    而 content 列的定义正是「为搜索清洗过的文本」。
+
+    ⚠️ 标题只做 CJK 拆字、**不**走 `_clean_for_search` 的去 Markdown 清洗：
+    标题是纯文本，其中的 `#`/`-` 是内容而非语法（`_clean_for_search` 会把
+    `[*_~`>|#-]+` 一律抹成空格）。正文仍走全套清洗。
+    """
+    t = _insert_cjk_spaces(title or "")
+    return f"{t} {content}" if t else content
 
 
 def _prepare_query(query: str) -> str:

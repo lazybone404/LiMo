@@ -1,0 +1,112 @@
+# LiMo CI —— 三条门禁的机械替代（此前「39 个后端测试 + 39 个前端测试文件 +
+# 16 项 CLI 门禁全靠人记得跑」，见 docs/code-audit.md P2-24）。
+#
+# ⚠️ **与本地脚本是同一条命令，不另写一套判据**：
+#     后端 → `uv run pytest tests/`          （39 文件）
+#     前端 → `npm test` + `npx tsc -b` + `npm run lint`
+#     CLI  → `bash scripts/check-cli`        （16 项，自启 7419 端口的真后端）
+# CI 只负责「记得跑」。本地红了就别推——第二套判据正是漂移的来源（模式 #54）。
+#
+# ⚠️ **依赖走 pyproject 里配的清华源**（`[[tool.uv.index]] default = true`）。
+# 上游 runner 在境外，访问该镜像可能比直连 PyPI 慢；若成为瓶颈，在仓库变量里
+# 设 `UV_DEFAULT_INDEX=https://pypi.org/simple` 覆盖即可，不必改 pyproject
+# （改 pyproject = 改本地开发体验）。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一分支连续推送时取消旧运行（省 runner，也避免旧结果盖住新的）
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端（pytest + CLI 门禁）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠️ 用 uv 而不是手工 pip：`scripts/check-cli` 按
+      # `$ROOT/backend/.venv/bin/python` 找解释器（找不到才退到 python3），
+      # 而 uv sync 恰好把 venv 建在 backend/.venv —— 两者是配套的。
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      # `--frozen`：lock 与 pyproject 不一致时直接红，而不是在 CI 里静默重解析。
+      # 这条判据抓到过一次真实漂移（P1-10 删了 resvg-py 却没更新 uv.lock）。
+      - name: 安装依赖
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: pytest
+        working-directory: backend
+        run: uv run pytest tests/ -q
+
+      # ⚠️ **`scripts/check-cli` 假设库里至少有 1 篇文档**：第 11 项取 `items[0]`
+      # 的 id，第 15/16 项都建在它之上；`doctor`（第 4 项）还要求数据目录与
+      # index.json 已存在。CI 的 HOME 是全新的、库是空的 —— 不种数据会得到
+      # **一片「假红」**（门禁没坏，是它对环境的假设没被满足）。
+      # 这也顺带覆盖了「全新用户首次跑 CLI」这条路。
+      - name: 种一篇文档（CLI 门禁的前置）
+        working-directory: backend
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+
+          from app.core.config import load_config
+          from app.core.types import RawTranscript, SourceType
+          from app.storage.store import Store
+
+          # 与 limo_cli/doctor.py 的兜底同源：data_dir 缺失时落 ~/.limo
+          data_dir = load_config().get("data_dir") or (Path.home() / ".limo")
+          store = Store(str(data_dir))
+          ok = store.save_transcript(RawTranscript(
+              id="tr_000000000001",
+              title="CI 门禁种子文档 smoke contract",
+              source_type=SourceType.TEXT,
+              engine="ci_seed",
+              raw_text="CI 门禁的种子文档，用于 scripts/check-cli 的前置数据。\n" * 20,
+              content_hash="",  # 空 → save_transcript 内自行算 sha256
+          ))
+          print("种子写入:", ok, "→", data_dir)
+          PY
+
+      - name: CLI 门禁（16 项）
+        run: bash scripts/check-cli
+
+  frontend:
+    name: 前端（vitest + tsc + lint）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖
+        working-directory: frontend
+        run: npm ci
+
+      # ⚠️ **必须是 `tsc -b`，不是 `tsc --noEmit`**：`tsconfig.json` 是 solution
+      # file（只有 references），后者什么都不检查却**退出 0** —— 一个假绿灯。
+      - name: 类型检查
+        working-directory: frontend
+        run: npx tsc -b
+
+      - name: lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: vitest
+        working-directory: frontend
+        run: npm test
