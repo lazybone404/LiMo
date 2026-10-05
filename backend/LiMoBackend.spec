@@ -11,6 +11,10 @@ datas = [
     # ⚠️ PyInstaller 6.x 的 datas 相对路径按 spec 所在目录（backend/）解析，
     #    故 licenses 在项目根需用 ../licenses 回退（其余三项恰好在 backend/ 下）
     ('../licenses', 'licenses'),
+    # 第三方组件总清单（组件/许可证/全文位置，四类），落到 licenses/ 内与全文同处——
+    # 它此前只存在于 GitHub 仓库，装机用户在安装目录里看不到那份唯一的总清单。
+    # 目录读者从 licenses/README.md 指路过来。
+    ('../THIRD-PARTY-NOTICES.md', 'licenses'),
 ]
 # tiktoken_ext / dateparser_data — namespace package，collect_all 不会自动收集
 # PyInstaller 对 namespace package 的处理不可靠，显式添加每个文件

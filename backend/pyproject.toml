@@ -1,6 +1,6 @@
 [project]
 name = "limo-backend"
-version = "0.4.15"
+version = "0.4.16"
 description = "LiMo knowledge management system - backend"
 requires-python = ">=3.12"
 dependencies = [

@@ -35,7 +35,7 @@ cp ../../../../licenses/GPL-3.0.txt ffmpeg/
 cp ../../../../licenses/README-ffmpeg.txt ffmpeg/
 ```
 
-> `licenses/` 目录本身由 spec 的 `datas` 打包进 `_internal/licenses/`（自动，无需手动）；上面两步是给 `ffmpeg/` 内**紧邻二进制**再放一份，合规上更明确。
+> `licenses/` 目录与根目录 [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)（第三方组件总清单）由 spec 的 `datas` **一并**打包进 `_internal/licenses/`（自动，无需手动）；上面两步是给 `ffmpeg/` 内**紧邻二进制**再放一份，合规上更明确。
 
 Tauri v2 的 `externalBin` 自动加平台后缀，所以需要重命名。
 

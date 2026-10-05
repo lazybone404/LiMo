@@ -6,6 +6,47 @@
 
 ---
 
+## 2026-10-06 — 打包合规补口子：第三方总清单随包
+
+### 做了什么
+
+- `backend/LiMoBackend.spec` 的 `datas` 新增一项 `('../THIRD-PARTY-NOTICES.md', 'licenses')`
+  → 总清单落到安装目录 `_internal/licenses/THIRD-PARTY-NOTICES.md`
+- `licenses/README.md` 补全三处：① 新增「先看总清单」指路节；② 文件表补上此前**漏列**的
+  `README-ffmpeg.txt` 与新随包的 `THIRD-PARTY-NOTICES.md`；③ 新增「安装目录中其他许可证位置」
+  表 —— `_internal/static/licenses/`、`_internal/*.dist-info/licenses/`、`ffmpeg/` 三处，
+  含相对本目录的路径写法
+- `THIRD-PARTY-NOTICES.md` 第 5 节第 1 条改写：写明本文件自己的随包位置（原文「各许可证文本
+  随发行包附带（**本文件** + …）」在它自己不随包时**是不成立的**）
+- `docs/BUILD.md` 第 38 行同步说明两项由 `datas` 一并收集
+
+### 为什么
+
+用户提出「似乎没有把那些开源项目需要的协议文件写进来」。实查后**后端侧是完整的**——
+`_internal/licenses/` 5 文件、29 个 dist-info 里 24 个带 `licenses/`、`static/licenses/` 4 文件、
+`ffmpeg/` 内 GPL 全文 + 构建说明，全都在包里。
+
+真正断掉的是**清单与读者之间的那一段**：`THIRD-PARTY-NOTICES.md` 是唯一的总清单（组件名 /
+许可证 / 全文位置，四类），**但它没进 `datas` → 只在 GitHub 上**，而它的读者（装了包的人）
+手里只有安装目录。装机用户打开 `_internal/licenses/` 看到的是 5 个文件 + 一份只讲
+ffmpeg/magika/markitdown 三个组件的 `README.md`，**看不出「还有 16 个前端依赖、4 份静态资源许可证」**。
+
+这是模式 #51（「能力存在 ≠ 该路径在用」）的合规版本：**清单存在 ≠ 读者拿得到**。
+修法不是再写一份清单（那会变成第二份真相源，模式 #54），而是把唯一那份送到读者手上，
+并让目录内的 `README.md` 只做**指路**（讲这个目录 + 指向总清单），不复制组件表。
+
+### 影响范围
+
+- 产物：`_internal/licenses/` 由 5 文件变 6 文件，安装包体积 +3.4KB
+- 仓库：`licenses/README.md` 读者从「仓库访客」正式转为「安装目录内的访客」——
+  里面的相对路径以**安装目录**为基准书写，仓库里看会对不上（这是刻意的：仓库读者该看的是
+  根目录 `THIRD-PARTY-NOTICES.md` 与 `docs/ACKNOWLEDGMENTS.md`）
+- 未做（用户本轮未选，**仍缺**）：① 前端 16 个依赖的许可证**全文**收集（现在只有
+  `THIRD-PARTY-NOTICES.md` 里的名字表，无版权声明原文）；② 安装向导的许可页
+  （Tauri `bundle.license` / `licenseFile` 未配，NSIS/MSI 安装时不显示任何协议）
+
+---
+
 ## 2026-10-06 — 公共常量索引表 + 决定不做同源扫描器
 
 ### 做了什么
