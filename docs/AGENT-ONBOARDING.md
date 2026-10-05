@@ -428,14 +428,31 @@ rg "^\s+from app\.\S+ import" --glob '*.py' app/
 
 ## 7. 测试门禁
 
-### 7.1 后端（40 个测试文件 = 39 个 `test_*.py` + `conftest.py`）
+```bash
+bash scripts/check-all            # 全部五项（约 40s）—— 提交前跑这个
+bash scripts/check-all frontend   # 只改前端时
+bash scripts/check-all backend    # 只改后端时
+bash scripts/check-all cli        # 只改 limo_cli / QueryService 时
+bash scripts/check-all quick      # 约 5s，仅 tsc + lint
+```
 
-⚠️ 全部是**脚本式**（顶层 assert，直接跑即退出码判定），不是 pytest 用例 ——
-故用循环跑全量，别指望 `pytest --collect-only` 数得准。
+⚠️ **分层的轴是「域」不是「快慢」**：每一层都是该域的**完整验证**。`quick` 是唯一
+例外——它只看得到类型 / lint 能看见的东西。2026-10-06 那轮 25 项审计发现里**没有
+一项**是它能抓到的（全是静默失效、同源漂移、死代码，必须跑起来才现形），故别拿
+它的绿当「没问题」。
+
+⚠️ 这个脚本**不重新实现任何检查**：`cli` 那层就是 `bash scripts/check-cli`。编排
+脚本复刻被编排的脚本，是「同源漂移」最经典的入口（模式 #54）。
+
+### 7.1 后端
+
+测试文件都在 `backend/tests/`。两种跑法**都行**——每个文件带 `if __name__ == "__main__"`
+（可直接跑），同时顶层 `test_*` 函数也是合法的 pytest 用例（实测 `pytest tests/` 能
+全部收集到）。**优先用 pytest**：单进程、有汇总、失败详情完整。
 
 ```bash
-cd backend
-for f in tests/test_*.py; do .venv/Scripts/python.exe "$f" || echo "FAIL $f"; done
+cd backend && ./.venv/Scripts/python.exe -m pytest tests/ -q     # 全量
+./.venv/Scripts/python.exe -m pytest tests/ -q -k search         # 按名字筛
 
 # 常跑的几个
 python tests/test_prompt.py          # Prompt 构建验证
@@ -445,14 +462,21 @@ python tests/test_query_contract.py  # HTTP/CLI 契约 == QueryService（含对�
 python tests/test_closure_shadowing.py  # AST 全库扫描（#26/#43 那类作用域错）
 ```
 
-### 7.2 前端（384 tests / 29 文件）
+### 7.2 前端
+
+测试文件都在 `frontend/src/test/`。
 
 ```bash
 cd frontend
-npm test        # vitest（store/theme/api/tabRegistry/chatStore/文档库/文档标签页/组件…，<15s）
-npm run build   # 类型检查 + 生产构建（tsc）
+npm test        # vitest（<15s；覆盖 store/theme/api/tabRegistry/chatStore/文档库/文档标签页… 等域）
+npx tsc -b      # 类型检查（⚠️ 必须 -b：tsconfig.json 是 solution file，`--noEmit` 什么都不检查）
 npm run lint    # oxlint
+npm run build   # 类型检查 + 生产构建（发布前才需要，日常用 check-all frontend 即可）
 ```
+
+⚠️ **此处刻意不写死测试数量**：写死的计数必然过期（本节此前写着 384/29，而实际已是
+467/39），而**写错的计数比不写更糟**——它给出确定感，让下一位读者不再核对（模式 #54）。
+当前数量跑 `bash scripts/check-all` 即可看到。
 
 ### 7.3 CLI 契约门禁（16 项）
 
@@ -467,11 +491,16 @@ bash scripts/check-cli 9        # 只跑第 9 项（调试用）
 
 ### 7.4 改动后自测原则
 
-- 改后端路由/引擎/适配器 → 跑对应 test + 手动 curl 端点
-- 改前端状态 → `npm test` + 手动跑链路
-- 改 `limo_cli/` 或 `app/routers/cli.py` 或 `services/query.py` → `bash scripts/check-cli`（16 项）
-- 删代码（死代码清理）→ 必须 `npm run build`（tsc 抓漏引用）+ `npm run lint`
+- **提交前** → `bash scripts/check-all`（约 40s，五项全跑）
+- 改后端路由/引擎/适配器 → `bash scripts/check-all backend` + 手动 curl 端点
+- 改前端状态 → `bash scripts/check-all frontend` + 手动跑链路
+- 改 `limo_cli/` 或 `app/routers/cli.py` 或 `services/query.py` → `bash scripts/check-all cli`
+- 删代码（死代码清理）→ 必须跑 tsc（`check-all frontend` 含）：漏引用只有它能抓
 - 提交前 `grep` 确认零硬编码色值泄露（主题铁律）
+
+⚠️ **跑绿只说明「有测试覆盖的部分」没问题**。前端视觉改动（主题色、引擎标签）绿了也
+只说明 token 用对了，说明不了看起来对不对 —— 那类改动仍需人工看一眼。别拿这里的绿
+当作「验收通过」。
 
 ---
 

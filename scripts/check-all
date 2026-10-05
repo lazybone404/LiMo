@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# LiMo 门禁总入口 —— 一次跑完全部检查，或按域跑一部分。
+#
+#   bash scripts/check-all              # 全部（约 45s）
+#   bash scripts/check-all quick        # 类型 + lint（约 5s）
+#   bash scripts/check-all backend      # 后端 pytest
+#   bash scripts/check-all frontend     # 前端 tsc + lint + vitest
+#   bash scripts/check-all cli          # CLI 契约（scripts/check-cli）
+#
+# ⚠️ **分层的轴是「域」，不是「快慢」**。按快慢切会切出一层「很快但几乎不验证
+# 行为」的假安全 —— 2026-10-06 那轮审计的 25 项里，没有一项是 tsc / oxlint 能
+# 发现的（它们是静默失效、同源漂移、死代码，全部得跑起来才现形）。按域切则
+# 每一层都是**该域的完整验证**，而域的边界恰好是开发者思考的边界：「我在改
+# 前端」是自然的，因此 `frontend` 这层有真实语义。`quick` 那层刻意保留，但它
+# **不构成验证**（见下），只用于「保存后确认没打错字」。
+#
+# ⚠️ **cli 层不在这里重新实现** —— 直接调 scripts/check-cli。编排脚本复刻被编排
+# 的脚本，是「同源漂移」最经典的入口（项目模式 #54：同源是搜索题不是记忆题，
+# 而复制一份是让它变成记忆题的最快方式）。
+#
+# ⚠️ **串行、每项独立、最后汇总**：一项失败不影响后续项照跑，这样一次能看到全部
+# 问题，而不是修一个跑一次。输出保持串行是为了可读 —— 并行能快约 20 秒，但交错
+# 的输出没人看得下去，而省下的这 20 秒远不值那个代价。
+#
+# ⚠️ **已知边界**：本脚本只跑「有测试覆盖的部分」。前端视觉改动（主题色、引擎
+# 标签）跑绿了也只说明 token 用对了，说明不了看起来对不对 —— 那类改动仍需人工
+# 看一眼。别拿这里的绿当作「验收通过」。
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TARGET="${1:-all}"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
+
+# ── Python 解释器（与 check-cli 同款探测，便于用 LIMO_PY 统一定制）──
+# 刻意不在开头就 `exit 2`：quick / frontend 两层用不到 Python，解释器缺失
+# 不该拦住它们。缺解释器的后果留给真正用到它的那一层去报。
+PY="${LIMO_PY:-}"
+if [ -z "$PY" ]; then
+  for cand in "$ROOT/backend/.venv/Scripts/python.exe" "$ROOT/backend/.venv/bin/python" \
+              python3 python; do
+    if command -v "$cand" >/dev/null 2>&1; then PY="$cand"; break; fi
+  done
+fi
+
+PASS=0; FAIL=0; FAILED=""
+START=$(date +%s)
+
+run_stage() {
+  local label="$1"; shift
+  local t0 t1 rc secs
+  t0=$(date +%s)
+  # ⚠️ 必须重定向到文件再单独读 $? —— `cmd | tail` 的退出码是 **tail 的**（恒 0），
+  #    失败会被读成成功。这个坑项目在 `npm run lint | tail` 上真踩过。
+  "$@" >"$TMP/out.log" 2>&1
+  rc=$?
+  t1=$(date +%s); secs=$((t1 - t0))
+  if [ "$rc" = 0 ]; then
+    printf '  \033[32m✓\033[0m %-26s %3ds\n' "$label" "$secs"
+    PASS=$((PASS+1))
+  else
+    printf '  \033[31m✗\033[0m %-26s %3ds  (exit %s)\n' "$label" "$secs" "$rc"
+    FAIL=$((FAIL+1)); FAILED="$FAILED  $label"
+    # 失败时先报「关键行」再给「输出尾部」——那正是接下来要看的东西，
+    # 不打就得为了看它再单独跑一遍同一条命令。
+    # ⚠️ **为什么不能只给 tail**（实测依据）：pytest 失败时尾部 20 行里有 18 行是
+    #    FastAPI 的 deprecation 堆栈，真正的 `FAILED tests/…` 只占一行且被压在最后 ——
+    #    只 tail 等于给了一屏噪音。这里提取的是**通用失败信号**（每个工具都有自己的
+    #    写法），不解析任何具体工具的语法；grep 不到也无妨，尾部照样兜底。
+    local keys
+    keys="$(grep -aE 'FAILED|ERROR|error TS|Error:|failed|✗' "$TMP/out.log" | head -n 12)"
+    if [ -n "$keys" ]; then
+      echo "      ───── 关键行 ─────"
+      echo "$keys" | sed 's/^/      /'
+    fi
+    echo "      ───── 输出尾部（要看全量：单独跑上面这层）─────"
+    tail -n 15 "$TMP/out.log" | sed 's/^/      /'
+    echo
+  fi
+}
+
+# ── 各域：只做「切目录 + 调真实命令」，零逻辑 ──
+# 这里每多一行判断，就多一处「与真实命令不一致」的机会。
+stage_tsc()   { ( cd "$ROOT/frontend" && npx tsc -b ); }   # ⚠️ 必须是 -b：tsconfig 是 solution
+stage_lint()  { ( cd "$ROOT/frontend" && npm run lint ); }
+stage_vitest(){ ( cd "$ROOT/frontend" && npm test ); }
+stage_pytest(){
+  [ -n "$PY" ] || { echo "找不到 Python 解释器（可用 LIMO_PY=... 指定）"; return 2; }
+  ( cd "$ROOT/backend" && "$PY" -m pytest tests/ -q )
+}
+stage_cli(){
+  [ -n "$PY" ] || { echo "找不到 Python 解释器（可用 LIMO_PY=... 指定）"; return 2; }
+  ( cd "$ROOT" && bash scripts/check-cli )
+}
+
+echo "LiMo 门禁 · 目标=$TARGET · 解释器=${PY:-（未找到）}"
+echo
+
+case "$TARGET" in
+  quick)
+    # 5 秒档，用于「改完想立刻知道有没有打错字」。
+    # 刻意在此重申：这层绿了**不代表没坏**，它只看得到类型与 lint 能看见的东西。
+    run_stage "typescript (tsc -b)" stage_tsc
+    run_stage "oxlint"              stage_lint
+    ;;
+  backend)
+    run_stage "pytest" stage_pytest
+    ;;
+  frontend)
+    run_stage "typescript (tsc -b)" stage_tsc
+    run_stage "oxlint"              stage_lint
+    run_stage "vitest"              stage_vitest
+    ;;
+  cli)
+    run_stage "check-cli" stage_cli
+    ;;
+  all)
+    run_stage "typescript (tsc -b)" stage_tsc
+    run_stage "oxlint"              stage_lint
+    run_stage "vitest"              stage_vitest
+    run_stage "pytest"              stage_pytest
+    run_stage "check-cli"           stage_cli
+    ;;
+  *)
+    echo "未知目标：$TARGET" >&2
+    echo "可用：quick | backend | frontend | cli |（留空 = 全部）" >&2
+    exit 2
+    ;;
+esac
+
+END=$(date +%s)
+echo
+echo "──────────────  $PASS 通过 / $FAIL 失败 · $((END-START))s  ──────────────"
+if [ "$FAIL" != 0 ]; then
+  echo "失败项：$FAILED"
+  exit 1
+fi

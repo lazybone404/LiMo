@@ -157,6 +157,26 @@ python scripts/sync-version.py
 
 ## 常用命令
 
+### 门禁（提交前跑这个）
+
+```bash
+bash scripts/check-all            # 全部五项，约 40s
+bash scripts/check-all frontend   # 只改前端时（tsc + lint + vitest）
+bash scripts/check-all backend    # 只改后端时（pytest）
+bash scripts/check-all cli        # 只改 limo_cli / QueryService 时（16 项契约）
+bash scripts/check-all quick      # 约 5s，仅 tsc + lint
+```
+
+**分层的轴是「域」不是「快慢」**：每层都是该域的**完整验证**，而域的边界就是开发者
+思考的边界（"我在改前端"）。⚠️ `quick` 是唯一例外——它只看得到类型 / lint 能看见的
+东西，本轮 25 项审计发现里**没有一项**是它能抓到的（全是静默失效、同源漂移、死代码，
+必须跑起来才现形），别拿它的绿当「没问题」。
+
+⚠️ 本脚本**不重新实现任何检查**——`cli` 那层就是 `bash scripts/check-cli`。编排脚本
+复刻被编排的脚本，是「同源漂移」最经典的入口（模式 #54）。失败时它会先打**关键行**
+再打输出尾部（实测：pytest 失败时尾部 20 行里 18 行是 FastAPI 的 deprecation 堆栈，
+只给 tail 等于给了一屏噪音）。
+
 ### 后端（Python/FastAPI）
 
 ```bash
@@ -167,7 +187,7 @@ uv run uvicorn main:app --host 127.0.0.1 --port 7413 --reload
 # 注意：--reload 只重载代码变更，不重跑 startup event。
 # 修改 config.yaml / 适配器注册 / 引擎注册后需手动重启。
 
-# 运行测试（31 个测试文件）
+# 运行测试（全量走 `bash scripts/check-all backend`；下面是单跑常用项）
 python tests/test_prompt.py          # Prompt 构建验证
 python tests/test_adapters.py        # 适配器注册 + 路由
 python tests/test_engines.py         # 引擎注册 + 查找
@@ -206,7 +226,7 @@ python tests/test_synthesis_api.py   # 合成端点（SSE 协议 / 业务错误�
 ```bash
 cd frontend
 npm run dev       # 开发服务器，端口 5173，API 代理 → 127.0.0.1:7413
-npm test          # vitest（384 tests，29 文件：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/synthesis/getTypeMeta/readingPrefs/readingLayout/docTabs/docTabBar/docTabsClick/docTabsWiring/fontScaleKeys/appShortcutKeys 等，<15s）
+npm test          # vitest（<15s；覆盖 store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/synthesis/getTypeMeta/readingPrefs/readingLayout/docTabs/docTabBar/docTabsClick/docTabsWiring/fontScaleKeys/appShortcutKeys 等域）
 npm run build     # 类型检查 + 生产构建
 npm run lint      # oxlint
 ```

@@ -6,6 +6,78 @@
 
 ---
 
+## 2026-10-06 — 门禁总入口 `scripts/check-all`（一键分层）
+
+此前 5 条门禁命令（`tsc -b` / oxlint / vitest / pytest / check-cli）散在文档各处，**靠人记**。
+新增编排脚本，一条命令跑完，或按域跑一部分。
+
+### 分层的轴是「域」不是「快慢」
+
+原本的想法是切「快档 / 全档」，**实测后被否掉**：全套跑完只要 **40s**（tsc 5 + lint 0 +
+vitest 9 + pytest 15 + check-cli 10），并不慢；而按快慢切会切出一层「5 秒但几乎不验证行为」
+的假安全 —— 本轮 25 项审计发现里**没有一项**是 tsc / oxlint 抓得到的（全是静默失效、同源
+漂移、死代码，必须跑起来才现形）。按域切则每层都是该域的**完整验证**，且域的边界正好是
+开发者思考的边界（「我在改前端」）。
+
+```
+bash scripts/check-all            # 全部，约 40s
+bash scripts/check-all frontend   # 改了前端
+bash scripts/check-all backend    # 改了后端
+bash scripts/check-all cli        # 改了 limo_cli / QueryService
+bash scripts/check-all quick      # 5s，仅 tsc + lint（⚠️ 不验证行为）
+```
+
+### 三个设计决定
+
+- **不重新实现任何检查**：`cli` 那层就是 `bash scripts/check-cli`。编排脚本复刻被编排的
+  脚本是「同源漂移」最经典的入口（模式 #54）—— 写一个「简化版 check-cli」等于埋下第二份真相。
+- **串行、每项独立、最后汇总**：一项失败不影响后续项照跑，一次看到全部问题；输出保持串行
+  是为了可读（并行能快 ~20s，但交错输出没人看得下去）。
+- **失败时先打「关键行」再打尾部**（实测驱动）：pytest 失败时尾部 20 行里 **18 行**是 FastAPI
+  的 deprecation 堆栈，真正的 `FAILED tests/…` 只占一行且被压在最后 —— 只给 `tail` 等于给了
+  一屏噪音。改为先 grep 通用失败信号（`FAILED|ERROR|error TS|Error:`）再附尾部兜底；
+  grep 不到也不影响。
+
+### 对照实验（模式 #38）
+
+注入一条必失败的测试 → `✗ pytest (exit 1)` + 汇总「1 失败」+ 脚本 exit 1；还原后工作区干净。
+未知目标 → exit 2。两处均实测，非推断。
+
+### 顺带修正文档里的门禁说明（两处实际是错的）
+
+- `docs/AGENT-ONBOARDING.md` 写着「全部是脚本式，**不是 pytest 用例**，别指望
+  `pytest --collect-only` 数得准」—— **实测 `pytest tests/ -q` → 197 passed**，这句是错的
+  （那些文件既支持直跑、同时也是合法 pytest 用例）。改为「两种跑法都行，优先 pytest」，
+  并删掉那个已被 pytest 取代的手写 `for` 循环。
+- 同文件 7.2 的「**384 tests / 29 文件**」已过期（实际 467 / 39）。**改为不再写死计数**
+  （CLAUDE.md 同处一并处理）：写死的计数必然过期，而**写错的计数比不写更糟** —— 它给出
+  确定感，让下一位读者不再核对（模式 #54）。
+
+### 排查记录：CRLF —— **结论是不需要处理**（记此以免重复排查）
+
+提交时 git 提示 `LF will be replaced by CRLF`（`core.autocrlf=true` 且仓库无 `.gitattributes`），
+而 bash 脚本带 CRLF 通常会坏。**实测三个场景，均不触发**：
+
+- **当前工作区**：`git ls-files --eol scripts/` → `i/lf w/lf`，本来就是 LF；
+- **Windows clone**（autocrlf 生效，`file` 确认 `with CRLF line terminators`）：**Git Bash 会剥离
+  CR** —— 最小复现脚本里函数收到的参数经 `od -c` 验证是纯 `bar` 而非 `bar\r`；clone 出的
+  `scripts/check-all bogus` 正常输出并 exit 2；
+- **Linux（CI）**：`core.autocrlf` 默认 `false`，检出即 LF。
+
+故**刻意不加 `.gitattributes`** —— 那会为一个实测不存在的病加防护，而防护和判据一样需要
+区分力（模式 #38）。本条记录在此，是为了下次看到同一条 warning 时不必重新排查一遍。
+
+### 影响范围
+
+新增 `scripts/check-all`（+1 文件）；`CLAUDE.md` / `docs/AGENT-ONBOARDING.md` / `AGENTS.md` /
+`docs/CHANGELOG.md` 各更新门禁说明。**无代码逻辑改动** —— 各层跑的就是原来那五条命令。
+
+### 门禁
+
+`bash scripts/check-all` → **5 通过 / 0 失败 · 40s**。
+
+---
+
 ## 2026-10-06 — 代码审计 25 项修复（4 批）+ 报告纠偏
 
 对 `docs/code-audit.md`（24 项，快照锚定 `4174166`）执行**全量修复**，分 4 批 5 个 commit。
