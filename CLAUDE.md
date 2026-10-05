@@ -529,6 +529,33 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 ## 关键设计决策
 
+### 公共常量与判据的「家」（写新代码前先查，别复制）
+
+**纪律：默认抽公共，复制要能说出理由。**
+
+本轮 25 项审计里有 **8 项**（P2-18/19/20/22/23、P0-01、P1-11/12/14）根因都是「同一份东西
+住在多处」——而它们**全都不是「不知道要抽公共」，是「抽出来的家没人知道在哪」**
+（`markdown_assets.py` 收的那六份资产正则里，四份是逐字同构的）。所以这里有一张表：
+
+| 要写的东西 | 家 |
+|---|---|
+| 模型能力位判据（image / document / reasoning / video） | [core/model_caps.py](backend/app/core/model_caps.py) |
+| 资产路径正则（Markdown 图片改写 + tx 反向） | [core/markdown_assets.py](backend/app/core/markdown_assets.py) |
+| 资源 id 校验（前后端同源，含长度上限） | [core/resource_id.py](backend/app/core/resource_id.py) |
+| `provider.base_url` 归一（判据是「路径是否已含版本段」） | [core/url_utils.py](backend/app/core/url_utils.py) |
+| 内置厂商默认表（名字 / base_url / 类型） | [core/provider_defaults.py](backend/app/core/provider_defaults.py) |
+| 上下文窗口默认表 / token 估算 | [core/token.py](backend/app/core/token.py) |
+| 产物自证头编解码 | [core/transcript_meta.py](backend/app/core/transcript_meta.py) |
+| 图片处理四模式标签 | [lib/imageModes.ts](frontend/src/lib/imageModes.ts) |
+| 面板默认宽 / 折叠阈值 | [lib/slotMetrics.ts](frontend/src/lib/slotMetrics.ts) |
+| 风格档 / 引擎标签 / 域列表 / 公式集 / 体裁 / 读者意图 / 维度预设 | **capabilities 下发**（`GET /api/capabilities`），前端**不硬编码** |
+
+⚠️ **最后一行的意思是「不要去前端建第二份表」**：凡是「后端注册了什么，前端就要列什么」的
+集合，一律经 capabilities 下发 —— 前端硬编码一份 = 后端加了引擎/风格而前端静默不显示。
+
+⚠️ 反过来，**纯前端内部**的共享常量（如 `slotMetrics`）放 `lib/`，**不要**经 capabilities
+—— 那会把一个前端实现细节变成对外 API。
+
 ### 数据流与持久化
 - **配置唯一入口**：`app/core/config_io.py` → `save_config()`。禁止业务模块直接 `yaml.dump`
 - **凭据不落 `config.yaml`**（2026-10-04 二期）：值送 `core/secrets.py` 的 DPAPI 密钥库（**ctypes 直调 `crypt32.dll`，零新依赖**，落 `%LOCALAPPDATA%\LiMo\secrets.bin` —— **刻意不放 `~/.limo/`**，那是会被同步/备份/打包分享的目录），YAML 只留 `secrets_ref: dpapi:limo`。**四张成对表**（`SECRET_SCALARS`+`SECRET_LISTS` 抽↔填 / `DERIVED_AUTH_SUFFIX` 剥↔重算 / `fold_to_providers` 下沉↔跳过 / `_EMPTY_CONTAINERS` 键名↔类型）是唯一真相源，**每张的两侧对不上的症状都不抛错**（Key 消失 / 明文回盘 / 启动即崩）。⚠️ **失败显式抛 `SecretsUnavailable`，不静默退回明文**（静默退回 = 二期白做且 YAML 上看不出异常）。⚠️ **定位是卫生不是安全边界** —— 挡的是「配置文件被复制走」的被动泄漏，挡不住同账户的主动恶意进程。⚠️ **`save_config` 的隐藏前提**：`elif disk.get(SECRETS_REF_KEY)` 分支（删库+撤 ref）**要求入参是回填过的内存配置**，拿磁盘 YAML 直调 = **密钥库被无声删除**；新增调用点前先问「这个 cfg 是 load 过的吗」
