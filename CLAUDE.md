@@ -89,6 +89,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [对话协议.md](docs/对话协议.md) | 对话 SSE 事件协议 + 会话 CRUD API + 前端映射 | 改对话流式/会话管理代码 |
 | [AGENT-ONBOARDING.md](docs/AGENT-ONBOARDING.md) | 上手教程：从零跑通 → 架构 → 注册表 → 数据流 → How-to → 打包发布 → 测试门禁 → 调试速查 | 新 agent 快速上手、打包/发布 |
 | [AGENTS.md](AGENTS.md)（仓库根） | CLI 这条链的开发文档：三层结构 / 改 CLI 的六条硬约束 / 门禁怎么跑。⚠️ 与库内 `~/.limo/AGENTS.md`（`limo doctor --write-agents` 生成）**读者不同、内容不重叠** | 改 `limo_cli` / `/api/cli/*` / `QueryService` |
+| [code-audit.md](docs/code-audit.md) | 代码质量与缺陷扫描（第一轮）：**24 项带证据发现**（P0 可直接触发 4 / P1 静默失效·死代码 10 / P2 无机制·重复实现 10，每项含稳定 slug + 五段式）+ 「刻意为之」判据 + 已剔除的假阳性。⚠️ **是 `4174166` 时点的快照，不随代码更新** | 排查已知缺陷、修复前查有无现成记录 |
 
 ## 版本号管理
 
