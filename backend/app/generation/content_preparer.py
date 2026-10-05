@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from app.core.markdown_assets import ASSET_REF_RE
 from app.core.model_caps import has_capability
 from app.core.token import estimate_tokens as _estimate_tokens, DEFAULT_CONTEXT as _DEFAULT_CONTEXT
 # 文档直传（PDF file 块）：模块级导入——doc_understand 只依赖 app.core.logging，
@@ -414,11 +415,13 @@ class ContentPreparer:
         image_urls: list[str] = []
         data_uri_pat = r'!\[([^\]]*)\]\((data:image/[^;]+;base64,[^)]+)\)'
         file_ref_pat = r'!\[([^\]]*)\]\((/api/files/([a-zA-Z0-9_\-]+)/([a-zA-Z0-9_\-.]+))\)'
-        asset_ref_pat = r'!\[([^\]]*)\]\((assets/[^\s)]+)\)'
 
         data_uri_re = re.compile(data_uri_pat)
         file_ref_re = re.compile(file_ref_pat)
-        asset_ref_re = re.compile(asset_ref_pat)
+        # ⚠️ `assets/` 引用正则来自 `core/markdown_assets`（P2-18 收敛），**不是**本函数
+        # 自己的副本；且必须是**同一个编译对象**——下方 `_replacer` 用
+        # `m.re is ASSET_REF_RE` 判分支，各自 compile 时 `is` 恒假、该分支永不进入
+        # （症状是「新格式图片全部原样留在正文里」，而日志显示剥离数为 0）。
 
         def _replacer(m):
             alt = m.group(1)
@@ -429,7 +432,7 @@ class ContentPreparer:
                     if cleaned:
                         image_urls.append(cleaned)
                 return f'[📷 {alt}]' if alt else '[📷 图片]'
-            elif m.re is asset_ref_re and doc_dir:
+            elif m.re is ASSET_REF_RE and doc_dir:
                 # 新格式：assets/xxx → 从 {doc_dir}/assets/ 读取
                 fname = m.group(2)  # e.g. "assets/img_0001.png"
                 file_path = (Path(doc_dir) / fname).resolve()
@@ -477,7 +480,7 @@ class ContentPreparer:
 
         clean_text = data_uri_re.sub(_replacer, raw_text)
         clean_text = file_ref_re.sub(_replacer, clean_text)
-        clean_text = asset_ref_re.sub(_replacer, clean_text)
+        clean_text = ASSET_REF_RE.sub(_replacer, clean_text)
 
         stripped = len(image_urls)
         if stripped:

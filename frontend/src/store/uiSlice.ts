@@ -7,6 +7,7 @@
 import type { StateCreator } from 'zustand'
 import type { Store, SlotState, ActiveView, ContentWidth } from './types'
 import type { Capabilities } from '../api/client'
+import { PANEL_DEFAULT_WIDTH } from '../lib/slotMetrics'
 
 // ── AI 浮窗默认/记忆 ──
 
@@ -93,12 +94,15 @@ export interface UiSlice {
 }
 
 /**
- * 文档库面板的默认宽度 —— 与 [slotRegistry.ts](../lib/slotRegistry.ts) 里
- * `docLib.defaultWidth` 同值，但**不能直接 import 那份**：slotRegistry 引用了
- * DocLibrary 组件，`uiSlice ← store ← DocLibrary ← slotRegistry` 会成环。故同值重写，
- * 改一处必须改另一处（下面 slots 初值里的 260 也是这一份）。
+ * 文档库面板的默认宽度 —— 取自 [slotMetrics.ts](../lib/slotMetrics.ts) 的共享常量。
+ *
+ * ⚠️ 此前这里写的是「不能直接 import `slotRegistry` 的 `docLib.defaultWidth`（会成环），
+ * 故同值重写」——那句判断**已过期**（slotRegistry 只 import `type FC` + lucide，是纯数据
+ * 叶子；会成环的是「将来把组件 register 进去」的形态）。但**也不该**改成 import 注册表：
+ * store 是注册表的下游（SlotLayout 读 store 拿宽度），反向读 SlotDef 会把两者焊死。
+ * 正解是双方都引零依赖的常量模块 —— 与 `lib/reading-prefs.ts` 同一手法。
  */
-const DOC_LIB_DEFAULT_WIDTH = 260
+const DOC_LIB_DEFAULT_WIDTH = PANEL_DEFAULT_WIDTH
 
 /** 有任务在跑时拒绝进入沉浸 —— 与 App.tsx 里 Ctrl+G 的守卫同一语义（防 GenPanel 卸载致任务僵尸） */
 const IMMERSIVE_BUSY_MSG = '操作进行中，请完成或取消后再进入沉浸阅读'
@@ -106,7 +110,7 @@ const IMMERSIVE_BUSY_MSG = '操作进行中，请完成或取消后再进入沉�
 export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set, get) => ({
   activeView: 'polished',
   slots: {
-    genPanel: { width: 260, collapsed: false, visible: true },
+    genPanel: { width: PANEL_DEFAULT_WIDTH, collapsed: false, visible: true },
     docLib:   { width: DOC_LIB_DEFAULT_WIDTH, collapsed: false, visible: true },
     preview:  { width: 0,   collapsed: false, visible: true },
     toc:      { width: 160, collapsed: false, visible: true },

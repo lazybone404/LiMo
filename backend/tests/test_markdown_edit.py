@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.core.dependencies import get_store
 from app.core.errors import AppError
+from app.core.markdown_assets import rewrite_asset_urls, unrewrite_asset_urls
 from app.core.types import RawTranscript, SourceType, RawMetadata, MarkdownView, Style, GenerateMode
 from app.storage.store import Store
 from app.routers import markdown_edit
@@ -121,14 +122,20 @@ finally:
     markdown_edit._MAX_CONTENT_CHARS = orig_max
 print('PASS: 内容超限拒绝')
 
-# ── 11. _unrewrite_asset_urls 边界 ──
-fn = markdown_edit._unrewrite_asset_urls
+# ── 11. 资产 URL 反向改写边界（P2-18 起住 core/markdown_assets，与正向同模块）──
+fn = unrewrite_asset_urls
 assert fn('![a](/api/assets/tr_edit001/x.png)', 'tr_edit001') == '![a](assets/x.png)'
 assert fn('![](/api/assets/tr_edit001/x.png)', 'tr_edit001') == '![](assets/x.png)'
 # 其他文档 URL 不反转；<img> 形态（用户新增内容）不反转
 assert fn('![a](/api/assets/other/y.png)', 'tr_edit001') == '![a](/api/assets/other/y.png)'
 assert fn('<img src="/api/assets/tr_edit001/z.png">', 'tr_edit001') == '<img src="/api/assets/tr_edit001/z.png">'
-print('PASS: _unrewrite_asset_urls 边界')
+# ★ 与正向**成对**（模式 #52）：GET 改写 → 编辑保存反转，必须逐字节回到原样。
+#   两侧曾分居 store.py 与 markdown_edit.py，「改了正向忘了反向」不会有任何报错，
+#   只表现为磁盘上悄悄多出一批绝对 URL（导出/二次渲染才开始裂图）。
+_live = '![a](assets/img_0001.png)'
+assert fn(rewrite_asset_urls(_live, 'tr_edit001'), 'tr_edit001') == _live, \
+    '正/反不再是成对操作：往返没有回到原样'
+print('PASS: unrewrite_asset_urls 边界 + 与正向往返成对')
 
 # ── 12. 旧别名 style 在**读侧**同样归一（不是静默改写）──
 # 2026-10-05 枚举值改形（`meeting_minutes` → `meeting`）之前的产物，索引里存的是旧别名。

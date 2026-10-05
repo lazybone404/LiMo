@@ -9,6 +9,25 @@ from .protocols import PipelineAdapter, Engine
 from .types import PipelineInput
 
 
+# -- 引擎类别清单 --
+
+# 引擎类别的**唯一真相源**（`asr` / `ocr` / `doc`）。
+#
+# ⚠️ **两个视图并存是刻意的，不要合并成一个容器**：set 与 tuple 的语义不同 ——
+#   - `ENGINE_CATEGORIES`（frozenset）：**成员判据**（`if cat not in ...: continue`），
+#     只需要「在不在」；
+#   - `ENGINE_CATEGORY_ORDER`（tuple）：**遍历顺序**，`GET /engine-registry`
+#     按它分组输出，前端引擎选择器的分组顺序由它决定。
+#   合并成一个就得在遍历处补 `sorted()`，而排序依据从「刻意的业务顺序」变成
+#   「字典序」——那是一次没人会注意到的界面顺序变更。
+#
+# ⚠️ 收敛前这三处（`routers/capabilities.py` 两处 + `core/config.py` 一处）各写一份，
+#   且**其中一处是 list 形态**（语义已经分叉）。新增类别时漏改任一处的症状是
+#   「该类别在设置页看不见」或「分组顺序变了」，**两处都不报错**（模式 #54）。
+ENGINE_CATEGORIES: frozenset[str] = frozenset({"asr", "ocr", "doc"})
+ENGINE_CATEGORY_ORDER: tuple[str, ...] = ("asr", "ocr", "doc")
+
+
 # -- 适配器注册表 --
 
 class AdapterRegistry:

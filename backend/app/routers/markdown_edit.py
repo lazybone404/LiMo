@@ -7,7 +7,6 @@ notes/polished 手动编辑保存：覆盖当前版本（两版制自动保留�
 """
 
 import logging
-import re
 import uuid
 
 from fastapi import APIRouter, Depends
@@ -15,10 +14,10 @@ from pydantic import BaseModel
 
 from app.core.dependencies import get_store
 from app.core.errors import AppError
+from app.core.markdown_assets import rewrite_asset_urls, unrewrite_asset_urls
 from app.core.transcript_meta import parse_artifact_meta, strip_meta
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.generation.prompts import normalize_style
-from app.storage.store import rewrite_asset_urls
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,16 +32,11 @@ class MarkdownEditRequest(BaseModel):
     content: str
 
 
-def _unrewrite_asset_urls(content: str, tx_id: str) -> str:
-    """GET 返回时 rewrite_asset_urls 把 assets/xxx 改成 /api/assets/{tx_id}/xxx；
-    编辑保存前反向转回 assets/xxx，避免绝对 URL 写回磁盘污染导出/二次渲染。
-
-    只处理 markdown 图片引用 `![alt](assets/xxx)` 这一种形态（与 rewrite_asset_urls 对称）——
-    用户手动输入的 <img src="/api/assets/..."> 等是新增内容，不反转（按用户输入存盘）。"""
-    if not content:
-        return content
-    pat = re.compile(r"!\[([^\]]*)\]\(/api/assets/" + re.escape(tx_id) + r"/([^\s)]+)\)")
-    return pat.sub(r"![\1](assets/\2)", content)
+# ⚠️ 正/反两个改写（`assets/x` ↔ `/api/assets/{tx}/x`）都已下沉 `core/markdown_assets.py`
+# （P2-18 收敛）——它们是一对，此前分居 `storage/store.py` 与**本文件**：
+# 「改了正向忘了反向」不会有任何报错，只表现为磁盘上悄悄多出一批绝对 URL，
+# 直到导出 / 二次渲染才开始裂图。见 `unrewrite_asset_urls` docstring 里的两条约定
+# （只反转**本文档**的引用 / 不碰 `<img>`）。
 
 
 @router.put("/markdown/{transcript_id}")
@@ -80,7 +74,7 @@ async def edit_markdown(transcript_id: str, req: MarkdownEditRequest,
     except ValueError:
         style = "minimal"
 
-    content = _unrewrite_asset_urls(req.content, transcript_id)
+    content = unrewrite_asset_urls(req.content, transcript_id)
 
     # ⚠️ 自证头是**系统管理**的首行，不属于用户的编辑对象（预览区不渲染它，只有
     # 源码视图可见）。编辑保存的两条规矩：

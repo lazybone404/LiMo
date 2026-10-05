@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
+from app.core.markdown_assets import rewrite_asset_urls  # noqa: F401  (re-export，见下)
 from app.core.types import RawTranscript, MarkdownView, ProcessResult, Style, GenerateMode
 from app.core.errors import AppError, StoreError
 from app.core.transcript_meta import parse_meta, dump_meta
@@ -27,21 +28,11 @@ logger = logging.getLogger(__name__)
 INDEX_VERSION = 3
 
 # ── 资产 URL 改写 ──
-# 注意：此函数仅用于路由层（content API 返回前改写）。
-# Store CRUD 方法（get_markdown/get_transcript 等）不调此函数，
-# 原因：导出需要原始相对路径（从 {doc_dir}/assets/ 读盘），续写需要原文。
-
-# assets/ 前缀移出捕获组：\2 只取文件名，避免改写后 URL 重复 assets/ 段
-# （修复：/api/assets/{tx_id}/assets/img_0000.png → /api/assets/{tx_id}/img_0000.png）
-_RE_ASSET_REF = re.compile(r'!\[([^\]]*)\]\(assets/([^\s)]+)\)')
-
-
-def rewrite_asset_urls(content: str, tx_id: str) -> str:
-    """将磁盘相对路径 assets/xxx 改写为绝对 API URL，供前端渲染。
-    应在路由层调用，不在 Store CRUD 内部调用。"""
-    if not content:
-        return content
-    return _RE_ASSET_REF.sub(rf'![\1](/api/assets/{tx_id}/\2)', content)
+# ⚠️ 实现已下沉 `core/markdown_assets.py`（P2-18 收敛）：`assets/` 引用正则在仓库里
+# 曾有 4 份副本（本文件 + synthesis + export + content_preparer），且本文件那份的
+# 捕获组布局与另三份**不同**（`assets/` 放在组外）。`rewrite_asset_urls` 在顶部
+# re-export，**不要在本文件重新实现**——「仅用于路由层、Store CRUD 内部不调」的
+# 约定随 docstring 一起搬走了。
 
 
 def _serialize_metadata(meta) -> dict:

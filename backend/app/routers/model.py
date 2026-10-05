@@ -13,7 +13,7 @@ from app.core.dependencies import get_config as get_cfg, get_config_lock
 from app.core.errors import AppError
 
 from app.core.config_io import merge_sensitive, mask_sensitive
-from app.core.registry import EngineRegistry
+from app.core.registry import EngineRegistry, ENGINE_CATEGORIES
 from app.core.url_utils import api_root
 # 内置厂商默认表已下沉 core（P1-14）——`routers/config.py` 也要用它，
 # 而路由模块之间互相 import 在本项目没有先例（共享常量一贯放 core/）。
@@ -584,12 +584,11 @@ def list_engine_models(request: Request, config=Depends(get_cfg)):
     """列出所有引擎模型（builtin 自动注册 + 用户自定义），不修改全局 config"""
     cfg = _get_cfg(config)
     models = [dict(m) for m in cfg.get("engine_models", [])]  # 深拷贝每一项，不污染全局
-    ENGINE_CATS = {"asr", "ocr", "doc"}
     # 从 engine_providers 的 builtin_models 自动注册（只注册引擎类模型）
     existing = {(m["provider_id"], m["model_name"], m["category"]) for m in models}
     for prov in cfg.get("engine_providers", []):
         for bm in prov.get("builtin_models", []):
-            if bm["category"] not in ENGINE_CATS:
+            if bm["category"] not in ENGINE_CATEGORIES:
                 continue  # 跳过 LLM 模型
             key = (prov["id"], bm["model_name"], bm["category"])
             if key not in existing:

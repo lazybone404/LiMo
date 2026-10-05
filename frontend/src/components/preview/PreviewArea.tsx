@@ -33,6 +33,16 @@ import { TranscriptQualityNote } from './TranscriptQualityNote'
 import { ImageResultView } from './ImageResultView'
 import { CopyContentBtn } from './CopyContentBtn'
 import 'katex/dist/katex.min.css'
+import { IMAGE_MODES, IMAGE_MODE_LABELS, type ImageMode } from '../../lib/imageModes'
+
+/**
+ * OCR 空态四项提示的图标 —— 按 mode **键**组织，不用数组下标。
+ * ⚠️ 下标写法（`[ScanText, Table, ...][i]`）把「哪个图标配哪个模式」变成**位置记忆**：
+ * 谁调整了 `IMAGE_MODES` 的顺序，图标就整体错配一格，**零报错**（模式 #54 的形态）。
+ */
+const IMAGE_MODE_ICONS: Record<ImageMode, typeof ScanText> = {
+  extract: ScanText, table: Table, digitize: ScanLine, understand: Eye,
+}
 
 // ── 欢迎文档（空态示例文档）内容 ──
 // 对齐 LiMo 双产物 + 转录结构：笔记（欢迎/简介）· 整理版原文（开发者全面功能）· 转录（更新记录）。
@@ -713,10 +723,10 @@ export function PreviewArea() {
             title={<h2 className="text-[18px] font-semibold">{currentDoc.title}</h2>}
             description="图片已导入，选择一个处理模式开始提取"
             action={<div className="flex items-center justify-center gap-3 text-[12px] text-muted">
-              <span className="flex items-center gap-1"><ScanText size={14} /> 提取文字</span>
-              <span className="flex items-center gap-1"><Table size={14} /> 表格数据</span>
-              <span className="flex items-center gap-1"><ScanLine size={14} /> 文档数字化</span>
-              <span className="flex items-center gap-1"><Eye size={14} /> 理解内容</span>
+              {IMAGE_MODES.map(m => {
+                const Icon = IMAGE_MODE_ICONS[m]
+                return <span key={m} className="flex items-center gap-1"><Icon size={14} /> {IMAGE_MODE_LABELS[m]}</span>
+              })}
             </div>}
           />
         )
@@ -742,7 +752,8 @@ export function PreviewArea() {
       case 'digitize':
       case 'understand': {
         if (!typeMeta.isImage) return null
-        const modeLabels: Record<string, string> = { extract: '提取文字', table: '表格数据', digitize: '文档数字化', understand: '理解内容' }
+        // 标签来自 `lib/imageModes`（单一真相源）
+        const modeLabels = IMAGE_MODE_LABELS
         const result = imageResults[currentDocId || '']?.[activeView]
         // 全部用 Markdown 渲染：VL 模型可能在任意模式下输出表格/公式
 

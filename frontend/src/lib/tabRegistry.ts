@@ -7,7 +7,12 @@
  * - 纯数据，不 import React 组件，避免循环依赖
  * - 渲染逻辑仍在 PreviewArea.tsx，但由 TabDef 属性驱动而非硬编码分支
  * - visible 回调处理 sourceTypes 表达不了的动态条件
+ *
+ * ⚠️ 唯一允许的 import 是 `lib/imageModes`（图片模式中文标签的唯一真相源）——
+ * 它自身是零 import 的纯数据叶子，不破坏上面的无环约束。
  */
+
+import { IMAGE_MODE_LABELS, type ImageMode } from './imageModes'
 
 // ── Tab 数据定义 ──
 
@@ -202,19 +207,22 @@ TabRegistry.register({
   processingKinds: ['import'],
 })
 
-// 图片处理 tab（extract/table/digitize/understand）共享属性
-const IMG_TABS: Array<{ key: string; label: string; priority: number; suffix: string }> = [
-  { key: 'extract', label: '提取文字', priority: 31, suffix: '-提取文字' },
-  { key: 'table', label: '表格数据', priority: 32, suffix: '-表格数据' },
-  { key: 'digitize', label: '文档数字化', priority: 33, suffix: '-文档数字化' },
-  { key: 'understand', label: '理解内容', priority: 34, suffix: '-理解内容' },
+// 图片处理 tab（extract/table/digitize/understand）共享属性。
+// ⚠️ label / suffix 都从 `lib/imageModes` 取（单一真相源）：suffix 是
+// **`-` + label** 的派生式，手抄时改一处漏一处会让导出文件名与 tab 名对不上。
+const IMG_TABS: Array<{ key: ImageMode; priority: number }> = [
+  { key: 'extract', priority: 31 },
+  { key: 'table', priority: 32 },
+  { key: 'digitize', priority: 33 },
+  { key: 'understand', priority: 34 },
 ]
 for (const t of IMG_TABS) {
+  const label = IMAGE_MODE_LABELS[t.key]
   TabRegistry.register({
-    key: t.key, label: t.label,
+    key: t.key, label,
     sourceTypes: ['image'],
     priority: t.priority,
-    contentSource: 'imageResult', htmlMode: t.key, exportSuffix: t.suffix, exportLabel: t.label,
+    contentSource: 'imageResult', htmlMode: t.key, exportSuffix: `-${label}`, exportLabel: label,
     showBanner: true,
     processingKinds: ['import', 'process'],
   })

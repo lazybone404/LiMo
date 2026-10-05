@@ -5,10 +5,7 @@
 import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
 import type { createMarkdownComponents } from '../../lib/markdown-components'
-
-const MODE_LABELS: Record<string, string> = {
-  extract: '提取文字', table: '表格数据', digitize: '文档数字化', understand: '理解内容',
-}
+import { imageModeLabel } from '../../lib/imageModes'
 
 export function ImageResultView({ result, mode, title, createdAt, markdownComponents }: {
   result: { text: string; engine: string; id: string }
@@ -22,11 +19,11 @@ export function ImageResultView({ result, mode, title, createdAt, markdownCompon
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-[20px] font-semibold">{title}</h2>
         <span className="text-[12px] text-success font-medium">
-          {result.engine} · {MODE_LABELS[mode] || mode}
+          {result.engine} · {imageModeLabel(mode)}
         </span>
       </div>
       <div className="text-[12px] text-disabled mb-4 flex items-center gap-3">
-        <span>{MODE_LABELS[mode]}</span>
+        <span>{imageModeLabel(mode)}</span>
         {createdAt && (
           <><span>·</span><span>{new Date(createdAt).toLocaleDateString('zh-CN')}</span></>
         )}

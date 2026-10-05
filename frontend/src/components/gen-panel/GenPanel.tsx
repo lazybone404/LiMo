@@ -13,7 +13,8 @@ import { ImportSection } from './ImportSection'
 import { GenerateOptions } from './GenerateOptions'
 import { ImageModeCards } from './ImageModeCards'
 import { EpubInterpretPanel } from '../preview/EpubInterpretPanel'
-import { EXT_TO_SUBTYPE, getSubScenario, getTypeMeta, normalizeStyle, reconcileStyle } from './constants'
+import { EXT_TO_SUBTYPE, getSubScenario, getTypeMeta, normalizeStyle, pickStyleKeys, reconcileStyle, styleOptions } from './constants'
+import { imageModeLabel } from '../../lib/imageModes'
 import { useTaskRunner } from '../../hooks/useTaskRunner'
 
 // 会话级标记：参考文件意图缺失提醒只弹一次（无论确认/取消，用户已理解机制）
@@ -140,16 +141,10 @@ export function GenPanel() {
   const effectiveType = currentDoc?.sourceType || inputType
   const typeMeta = getTypeMeta(effectiveType, caps?.genOptions)
 
-  // 三处 fallback 数组是 capabilities 拿不到时的兜底（后端未起 / 旧后端），
-  // **必须含 `'plain'`**——它是当前默认档，漏了则默认选中项在列表里找不到，
-  // 按钮组渲染不出选中态。正常路径下这些数组根本用不到（后端下发 keys）。
-  const styleKeys = (typeMeta.isExcel
-    ? caps?.excelStyles || ['plain', 'detailed', 'minimal', 'business']
-    : typeMeta.isDoc
-    ? caps?.docStyles || ['plain', 'imrad', 'detailed', 'business', 'tutorial']
-    : caps?.styles || ['plain', 'minimal', 'detailed', 'academic', 'life']
-  )
-  const styleKeysWithNone = ['none', ...styleKeys]
+  // 风格表只有 caps 一个来源（三路选择与兜底见 `pickStyleKeys` / `styleOptions`，
+  // 刻意不在此处兜固定表——理由写在那两个函数的 docstring 里）。
+  const styleKeys = pickStyleKeys(caps, typeMeta.isExcel ? 'excel' : typeMeta.isDoc ? 'doc' : 'media')
+  const styleKeysWithNone = styleOptions(styleKeys)
 
   // ── OCR 引擎模式 ──
   const ocrEngines = caps?.engines?.ocr || _EMPTY_OBJ
@@ -182,6 +177,10 @@ export function GenPanel() {
 
   // 切换文档类型时，确保 style 仍是当前类型的合法档位
   useEffect(() => {
+    // ⚠️ caps 未到位时**不动 style**：此时唯一可判的是兜底表（只有默认档），
+    // 拿它判非法会把用户存的 `imrad` / `life` 这类档改成 `plain`，而后端起来、
+    // 真表到位后 effect 不会再复原（值已经变了）——「后端慢一点启动 = 我的风格没了」。
+    if (!styleKeys?.length) return
     // ⚠️ **条件重置**（照上方 selectedCore 的语义）：仅当当前选中的档不在新类型的可用集里
     // 才重置。写成「切类型就无条件重置」会冲掉用户在两类之间**共享的合法档**
     // （`plain`/`academic`/`business` 在视频与文档两套里都有），
@@ -195,7 +194,7 @@ export function GenPanel() {
     // ⚠️ 依赖用 `styleKeys.join(',')` 而非数组本身：styleKeys 每次 render 都是新数组，
     // 直接进依赖会每帧触发（effect 内又 setState → 死循环）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [styleKeys.join(','), style])
+  }, [styleKeys?.join(',') ?? '', style])
 
   useEffect(() => {
     if (!fileObj) return
@@ -1023,7 +1022,7 @@ export function GenPanel() {
               ) : typeMeta.isImage ? (
                 <button onClick={handleProcessImage} disabled={isImageProcessing || !currentDocId}
                   className="w-full py-2.5 bg-success text-white text-[15px] font-medium rounded-full hover:bg-success/80 active:scale-[0.97] transition-all disabled:opacity-40">
-                  {isImageProcessing ? '处理中...' : `处理 — ${({ extract: '提取文字', table: '表格数据', digitize: '文档数字化', understand: '理解内容' })[imageMode]}`}
+                  {isImageProcessing ? '处理中...' : `处理 — ${imageModeLabel(imageMode)}`}
                 </button>
               ) : (
                 <div className="flex gap-2">

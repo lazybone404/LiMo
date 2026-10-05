@@ -34,6 +34,7 @@ from app.services.markdown_render import (  # noqa: E402
 from app.services.docx_export import markdown_to_docx  # noqa: E402
 from app.services.query import QueryService  # noqa: E402
 from app.core.transcript_meta import strip_meta  # noqa: E402
+from app.core.markdown_assets import ASSET_REF_RE  # noqa: E402
 
 # ── Pygments 语法高亮（可选依赖）──
 try:
@@ -633,18 +634,21 @@ def _unicode_formulas(md: str) -> str:
 
 # ── 图片收集/重写（导出自包含核心）──
 
-# 新格式：assets/xxx（磁盘相对路径）
-_ASSET_RE = re.compile(r'!\[([^\]]*)\]\((assets/[^\s)]+)\)')
+# 新格式：assets/xxx（磁盘相对路径）—— 正则来自 `core/markdown_assets`（P2-18 收敛）。
+# ⚠️ 必须是**同一个编译对象**：下方 `_collect_image_data` 用 `m.re is ASSET_REF_RE`
+# 判断「这次匹配来自哪个模式」，各自 compile 时两个对象永不相等、判断恒假。
 # 旧格式兼容
 _IMG_RE = re.compile(r'!\[([^\]]*)\]\(/api/files/([a-zA-Z0-9_\-]+)/([a-zA-Z0-9_\-.]{1,}[^\s)]*)\)')
 _SS_RE  = re.compile(r'!\[([^\]]*)\]\(/static/screenshots/([a-zA-Z0-9_\-.]{1,}[^\s)]*)\)')
+# ⚠️ 与 `markdown_assets.unrewrite_asset_urls` 形态相似但**不同源**：那条要匹配
+# **指定 tx_id** 的引用（编辑保存只反转本文档），这条要**提取** tx_id（导出可能跨文档）
 _API_ASSET_RE = re.compile(r'!\[([^\]]*)\]\(/api/assets/([a-zA-Z0-9_\-]+)/([a-zA-Z0-9_\-.]{1,}[^\s)]*)\)')
 
 
 def _find_image_refs(text: str) -> list[tuple[str, str, str]]:
     seen: set[str] = set()
     refs: list[tuple[str, str, str]] = []
-    for m in _ASSET_RE.finditer(text):
+    for m in ASSET_REF_RE.finditer(text):
         full = m.group(0)
         if full not in seen:
             seen.add(full)
@@ -716,7 +720,7 @@ def _rewrite_image_paths(text: str, name_map: dict[str, str],
         return f"![{m.group(1)}]({prefix}{name_map.get(m.group(2), m.group(2))})"
     def _replace_api(m: re.Match) -> str:
         return f"![{m.group(1)}]({prefix}{name_map.get(m.group(3), m.group(3))})"
-    text = _ASSET_RE.sub(_replace_asset, text)
+    text = ASSET_REF_RE.sub(_replace_asset, text)
     text = _IMG_RE.sub(_replace_img, text)
     text = _SS_RE.sub(_replace_ss, text)
     text = _API_ASSET_RE.sub(_replace_api, text)
@@ -737,7 +741,7 @@ def _inline_images(text: str, image_data: dict[str, bytes],
         return src.read_bytes() if src.exists() else None
     def _replace(m: re.Match) -> str:
         alt = m.group(1)
-        if m.re is _ASSET_RE:
+        if m.re is ASSET_REF_RE:
             filename = m.group(2).split("/", 1)[1]
             fn = name_map.get(filename, filename)
             data = image_data.get(fn)
@@ -764,7 +768,7 @@ def _inline_images(text: str, image_data: dict[str, bytes],
         if data:
             return f"![{alt}]({_data_uri(data, filename)})"
         return m.group(0)
-    text = _ASSET_RE.sub(_replace, text)
+    text = ASSET_REF_RE.sub(_replace, text)
     text = _IMG_RE.sub(_replace, text)
     text = _SS_RE.sub(_replace, text)
     text = _API_ASSET_RE.sub(_replace, text)

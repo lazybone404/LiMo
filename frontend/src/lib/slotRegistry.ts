@@ -11,6 +11,7 @@
 
 import type { FC } from 'react'
 import { PenLine, Library } from 'lucide-react'
+import { PANEL_DEFAULT_WIDTH, PANEL_MIN_WIDTH, PANEL_MAX_WIDTH } from './slotMetrics'
 
 // ── 类型 ──
 
@@ -80,9 +81,9 @@ SlotRegistry.register({
   side: 'left',
   label: '生成',
   icon: PenLine,
-  defaultWidth: 260,
-  minWidth: 50,
-  maxWidth: 600,
+  defaultWidth: PANEL_DEFAULT_WIDTH,
+  minWidth: PANEL_MIN_WIDTH,
+  maxWidth: PANEL_MAX_WIDTH,
   closable: true,
   visibleKey: 'genPanel',
 })
@@ -92,9 +93,9 @@ SlotRegistry.register({
   side: 'left',
   label: '文档库',
   icon: Library,
-  defaultWidth: 260,
-  minWidth: 50,
-  maxWidth: 600,
+  defaultWidth: PANEL_DEFAULT_WIDTH,
+  minWidth: PANEL_MIN_WIDTH,
+  maxWidth: PANEL_MAX_WIDTH,
 })
 
 SlotRegistry.register({

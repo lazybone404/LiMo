@@ -1,4 +1,5 @@
 import { ScanText, Table, Eye, ScanLine } from 'lucide-react'
+import { IMAGE_MODE_LABELS } from '../../lib/imageModes'
 
 interface Props {
   imageMode: string
@@ -10,11 +11,12 @@ interface Props {
   setActiveView: (v: string) => void
 }
 
+// ⚠️ 标签来自 `lib/imageModes`（单一真相源）；`desc` / `icon` 是本卡专属，留在原地
 const MODES = [
-  { key: 'extract', icon: ScanText, label: '提取文字', desc: '提取全部文字，保留段落结构' },
-  { key: 'table', icon: Table, label: '表格数据', desc: '优先识别表格，输出 Markdown 表格' },
-  { key: 'digitize', icon: ScanLine, label: '文档数字化', desc: '文档扫描件转可编辑文本' },
-  { key: 'understand', icon: Eye, label: '理解内容', desc: '描述并解读图片中的信息' },
+  { key: 'extract', icon: ScanText, label: IMAGE_MODE_LABELS.extract, desc: '提取全部文字，保留段落结构' },
+  { key: 'table', icon: Table, label: IMAGE_MODE_LABELS.table, desc: '优先识别表格，输出 Markdown 表格' },
+  { key: 'digitize', icon: ScanLine, label: IMAGE_MODE_LABELS.digitize, desc: '文档扫描件转可编辑文本' },
+  { key: 'understand', icon: Eye, label: IMAGE_MODE_LABELS.understand, desc: '描述并解读图片中的信息' },
 ] as const
 
 export function ImageModeCards({ imageMode, setImageMode, ocrSupportedModes, ocrModesReady, imageResults, currentDocId, setActiveView }: Props) {

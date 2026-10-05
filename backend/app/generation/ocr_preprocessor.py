@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 # 新格式: ![alt](assets/img_NNNN.png) / ![alt](assets/fig_NNNN.png)
 # 前缀同时容纳 pypdfium2（img_）与 docling（fig_）引擎的图片命名
 # 捕获组 3 个：alt / assets路径 / 文件名（findall 解包 (alt, arg2, filename) 依赖此结构）
+#
+# ⚠️ 形态与 `core/markdown_assets.ASSET_REF_RE` 相似，但**刻意更严、不是它的副本**：
+#    这里限定 `(?:img|fig)_\d{4}\.[a-z]+`——只认 OCR 管线自己产出的图片名。
+#    放宽成通用版会让用户正文里手写的任意 `![x](assets/任意文件)` 也进 OCR 队列。
+#    全项目**只有本文件**需要这个严格度，故不合并（搬进 core 会制造「看起来同源
+#    其实不同源」的错觉，模式 #61）。**新增通用 `assets/` 匹配需求请用 core 那份。**
 _RE_IMG_REF = re.compile(
     r'!\[([^\]]*)\]\((assets/((?:img|fig)_\d{4}\.[a-z]+))\)'
 )

@@ -12,6 +12,8 @@ import yaml
 
 from app.core import config_io as _config_io
 from app.core import secrets as _secrets
+# `registry` 只依赖 `protocols`/`types`（纯类型模块），零 config 依赖 —— 不成环
+from app.core.registry import ENGINE_CATEGORIES, ENGINE_CATEGORY_ORDER
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +344,7 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
 
     # 向后兼容：engine_bindings 旧格式 int → [int], None → []
     bindings = config.get("engine_bindings", {})
-    for cat in ("asr", "ocr", "doc"):
+    for cat in ENGINE_CATEGORY_ORDER:
         val = bindings.get(cat)
         if val is None:
             bindings[cat] = []
@@ -591,10 +593,9 @@ def build_engine_models(config: dict) -> list[dict]:
     """
     models = [dict(m) for m in config.get("engine_models", [])]
     existing = {(m["provider_id"], m["model_name"], m["category"]) for m in models}
-    ENGINE_CATS = {"asr", "ocr", "doc"}
     for prov in config.get("engine_providers", []):
         for bm in prov.get("builtin_models", []):
-            if bm["category"] not in ENGINE_CATS:
+            if bm["category"] not in ENGINE_CATEGORIES:
                 continue
             key = (prov["id"], bm["model_name"], bm["category"])
             if key not in existing:

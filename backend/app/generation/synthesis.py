@@ -49,6 +49,7 @@ from pathlib import Path
 
 from app.core import logging as log
 from app.core.errors import SynthesisError
+from app.core.markdown_assets import ASSET_REF_RE
 from app.core.text_utils import sanitize_reference_name, split_into_chunks
 from app.core.token import estimate_tokens
 from app.core.transcript_meta import build_composite_raw_text, strip_meta
@@ -242,7 +243,8 @@ CHUNK_SAFETY = 512
 MAX_SYNTH_CALLS = 30
 
 # 出处头注释里的标记（与 `transcript_meta` 同源，这里只用于扫描时不误伤）
-_ASSET_REF_RE = re.compile(r'!\[([^\]]*)\]\((assets/[^\s)]+)\)')
+# ⚠️ 正则来自 `core/markdown_assets.ASSET_REF_RE`（P2-18 收敛）——此处只需**匹配**
+# 以做资产搬运，替换逻辑（复制文件 + 改写引用）是本模块自己的语义，留在下方 `_repl`。
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -422,7 +424,7 @@ def relocate_assets(
             return m.group(0)
         return f"![{alt}](assets/{new_name})"
 
-    return _ASSET_REF_RE.sub(_repl, text)
+    return ASSET_REF_RE.sub(_repl, text)
 
 
 # ═══════════════════════════════════════════════════════════════════

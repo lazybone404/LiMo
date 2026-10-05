@@ -1,3 +1,5 @@
+import { normalizeStyle } from './constants'
+
 export interface GenPrefs {
   style: string
   selectedCore: string[]               // ["notes","polished"] — 生成产物的复选框
@@ -88,9 +90,15 @@ export function loadGenPrefs(): GenPrefs {
         delete raw.selectedCore
       }
     }
-    // 迁移旧风格 key：meeting_minutes → meeting
-    if (raw.style === 'meeting_minutes') {
-      raw.style = 'meeting'
+    // 迁移旧风格 key（`meeting_minutes` → `meeting`）。
+    // ⚠️ **别名表只有一份**（`constants.ts` 的 `STYLE_ALIAS`，与 `normalizeStyle` 同处）——
+    // 此前这里手抄了一遍 `=== 'meeting_minutes'`，新增第二条别名时改一处漏一处，
+    // 症状是「旧存档的档位静默不生效」且零报错（模式 #54：同源是搜索题不是记忆题）。
+    // ⚠️ 必须带 `typeof` 守卫：老存档可能整个没有 `style` 字段，无条件写回会显式造出
+    // `style: undefined`，而末尾 `{ ...DEFAULTS, ...raw }` 的展开**会覆盖**新默认值
+    // （症状是「没选过风格的老用户拿不到 plain」）。
+    if (typeof raw.style === 'string') {
+      raw.style = normalizeStyle(raw.style)
     }
     return { ...DEFAULTS, ...raw }
   } catch { return { ...DEFAULTS } }

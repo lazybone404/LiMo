@@ -134,6 +134,53 @@ export function reconcileStyle(style: string, styleKeys: string[]): string {
   return new Set(['none', ...styleKeys]).has(style) ? style : DEFAULT_STYLE
 }
 
+/** `reconcileStyle` 的可用集从哪来 —— 决定 caps 里读哪一张表 */
+export type StyleScope = 'excel' | 'doc' | 'media'
+
+export interface CapsStyleTables {
+  styles?: string[]
+  docStyles?: string[]
+  excelStyles?: string[]
+}
+
+/**
+ * 取当前类型的风格表。**返回 `undefined` 表示 caps 未到位**（后端未起 / 旧后端）——
+ * 这个 `undefined` 是有意义的信号，**不要在这里兜一张固定的表**。
+ *
+ * ⚠️ 此处曾有三组各 5 项的硬编码 fallback，与后端真表**漂移**（后端 video 10 档 /
+ * doc 9 档，前端各写 5 档且顺序不同）。兜底表最坏的地方不是「少」，而是它
+ * **看起来像完整表**——用户会以为「就这几种风格」，而后端支持更多，且往后越差越远。
+ * 调用方拿到 `undefined` 后应当：只渲染默认档（`styleOptions`），
+ * 且**不拿它做合法性判定**（`GenPanel` 的 effect 会早退）。
+ */
+export function pickStyleKeys(
+  caps: CapsStyleTables | null | undefined,
+  scope: StyleScope,
+): string[] | undefined {
+  if (!caps) return undefined
+  const keys = scope === 'excel' ? caps.excelStyles
+    : scope === 'doc' ? caps.docStyles
+    : caps.styles
+  return keys?.length ? keys : undefined
+}
+
+/**
+ * 按钮组的选项列表 = 「不套风格」+ 当前可用档。
+ * caps 未到位时退化为 `['none', DEFAULT_STYLE]`：**渲染得出选中态**即可，
+ * 不假装有一张完整表（见 `pickStyleKeys` 的说明）。
+ */
+export function styleOptions(styleKeys: string[] | undefined): string[] {
+  return ['none', ...(styleKeys?.length ? styleKeys : [DEFAULT_STYLE])]
+}
+
+/**
+ * 风格键的历史别名 —— **前端唯一一份**，`normalizeStyle` 的所有调用方都走这里
+ * （生成提交 `GenPanel.tsx` / 选项渲染 `GenerateOptions.tsx` / 存档迁移 `genPrefs.ts`）。
+ *
+ * ⚠️ 与后端 `generation/prompts/notes_styles.py::STYLE_ALIAS` 是**成对**的同一张表
+ * （模式 #52）：前端归一漏一条 = 该档位静默不生效；后端漏一条 = 生成产物无风格。
+ * 两侧都必须「写入前归一 + 读取时归一」，只做一半与完全没做一样。
+ */
 const STYLE_ALIAS: Record<string, string> = {
   meeting_minutes: 'meeting',
 }

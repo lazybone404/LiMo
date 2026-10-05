@@ -6,7 +6,9 @@
 """
 
 from fastapi import APIRouter, Depends
-from app.core.registry import AdapterRegistry, EngineRegistry
+from app.core.registry import (
+    AdapterRegistry, EngineRegistry, ENGINE_CATEGORIES, ENGINE_CATEGORY_ORDER,
+)
 from app.core.dependencies import get_config
 from app.generation.prompt import STYLE_MAP, DOC_STYLE_MAP, EXCEL_STYLE_MAP, AVAILABLE_OPTIONS
 # 对比维度预设随 capabilities 下发（同「引擎前端后端驱动」原则）：前端不硬编码预设名，
@@ -154,11 +156,11 @@ async def capabilities(config=Depends(get_config)):
     existing = {(m["provider_id"], m["model_name"], m["category"]) for m in engine_models}
     seen_names = {(m["category"], m["model_name"]) for m in engine_models}  # 跨来源去重
     import hashlib
-    # 扩展点：新增插件类别在此追加（加载机制本身类别无关，分派骨架按 category 查表）
-    ENGINE_CATS = {"asr", "ocr", "doc"}
+    # 扩展点：新增插件类别改 `core/registry.ENGINE_CATEGORIES`（加载机制本身类别无关，
+    # 分派骨架按 category 查表）
     for prov in config.get("engine_providers", []):
         for bm in prov.get("builtin_models", []):
-            if bm["category"] not in ENGINE_CATS:
+            if bm["category"] not in ENGINE_CATEGORIES:
                 continue
             key = (prov["id"], bm["model_name"], bm["category"])
             name_key = (bm["category"], bm["model_name"])
@@ -169,7 +171,7 @@ async def capabilities(config=Depends(get_config)):
                 seen_names.add(name_key)
     # 同样从 EngineRegistry 自动注册不在 engine_models 中的引擎
     for cat, store in EngineRegistry._stores.items():
-        if cat not in ENGINE_CATS:
+        if cat not in ENGINE_CATEGORIES:
             continue
         for name in store:
             key = ("__registry__", name, cat)
@@ -358,8 +360,8 @@ async def engine_registry():
     前端据此动态渲染引擎选择器，不再硬编码引擎名称。
     新增引擎只需后端注册，前端自动发现。
     """
-    cats = ["asr", "ocr", "doc"]
+    # 顺序取自共享常量的 **ORDER 视图**（不是 set——遍历顺序是界面顺序）
     result: dict[str, list[str]] = {}
-    for cat in cats:
+    for cat in ENGINE_CATEGORY_ORDER:
         result[cat] = sorted(EngineRegistry.list_category(cat))
     return result

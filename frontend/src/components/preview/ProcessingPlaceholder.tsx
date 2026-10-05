@@ -4,10 +4,7 @@
  */
 import { Loader2 } from 'lucide-react'
 import type { TaskInfo } from '../../store/types'
-
-const MODE_LABELS: Record<string, string> = {
-  extract: '提取文字', table: '表格数据', digitize: '文档数字化', understand: '理解内容',
-}
+import { imageModeLabel } from '../../lib/imageModes'
 
 const LABELS: Record<string, string> = {
   'generate': '正在生成...',
@@ -34,7 +31,7 @@ export function ProcessingPlaceholder({ task, mode }: { task?: TaskInfo; mode?: 
         reasoning = task.reasoning?.[m]?.trim() || ''
       }
     } else if (task.kind === 'process' && task.mode) {
-      label = `处理中 — ${MODE_LABELS[task.mode] || task.mode}`
+      label = `处理中 — ${imageModeLabel(task.mode)}`
     } else {
       label = LABELS[task.kind] || '处理中...'
     }
