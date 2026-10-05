@@ -28,7 +28,7 @@ LiMo（沥墨）——知识管理系统。输入 URL/文本/文件 → 适配�
 
 | 文档 | 内容 | 什么时候读 |
 |------|------|-----------|
-| [CLAUDE.md](../CLAUDE.md) | 全部事实：命令/架构/61 条关键模式/待办 | 改任何代码前 |
+| [CLAUDE.md](../CLAUDE.md) | 全部事实：命令/架构/65 条关键模式/待办 | 改任何代码前 |
 | [architecture.md](architecture.md) | 六层分层架构 + 每层模块职责 | 理解模块边界 |
 | [frontend-patterns.md](frontend-patterns.md) | 前端状态管理/取消机制/TaskPanel | 改前端状态/任务 |
 | [export-pipeline.md](export-pipeline.md) | 导出两路径 + tabRegistry/contentSources | 改导出/tab |
@@ -155,7 +155,7 @@ npx tauri dev
 |------|------|
 | `components/` | gen-panel / doc-library / preview / ai-chat / settings / ui |
 | `store/` | Zustand：`types.ts` + 7 slices + `chatStore.ts`（对话独立）+ `streamBuffers.ts`（流式缓冲） |
-| `api/` | API 客户端 13 文件（core + 域文件 + barrel + sse/taskManager） |
+| `api/` | API 客户端 16 文件（core + 域文件 + barrel + sse/taskManager） |
 | `hooks/` | useTaskRunner 等 |
 | `lib/` | tabRegistry / contentSources / slotRegistry / 主题模块 / health / download |
 
@@ -326,12 +326,12 @@ async def my_stream(request: Request):
 
 Tauri v2 `externalBin` 自动加平台后缀 → PyInstaller 产物 exe 需重命名匹配。
 
-### 6.2 产物位置与体积（0.4.1 实测，2026-08-16 图表围栏协议收紧后）
+### 6.2 产物位置与体积（0.4.13 实测，2026-10-05 文档多标签页 + 正文字号缩放后）
 
 | 产物 | 路径 | 大小 |
 |------|------|------|
-| NSIS 安装包 | `frontend/src-tauri/target/release/bundle/nsis/LiMo_0.4.1_x64-setup.exe` | ~149MB |
-| MSI 安装包 | `frontend/src-tauri/target/release/bundle/msi/LiMo_0.4.1_x64_en-US.msi` | ~196MB |
+| NSIS 安装包 | `frontend/src-tauri/target/release/bundle/nsis/LiMo_0.4.13_x64-setup.exe` | ~148MB |
+| MSI 安装包 | `frontend/src-tauri/target/release/bundle/msi/LiMo_0.4.13_x64_en-US.msi` | ~195MB |
 
 > 体积优化（2026-08-14）：docling/pytesseract 依赖残留清理 + ffmpeg 换精简版后，安装包从 ~265M/~366M 降到 ~148M/~195M。详见 [CHANGELOG.md](CHANGELOG.md)（2026-08-14 打包体积优化条目）。
 
@@ -386,7 +386,7 @@ python scripts/sync-version.py minor --tag      # 升级 + 打 git tag v0.5.0
 
 | 症状 | 根因 | 修复 |
 |------|------|------|
-| Tauri 构建 os error 5（权限） | `bin/searxng/.git` 被 PyInstaller 收集 | 打包前清理 `bin/searxng/.git` 目录 |
+| Tauri 构建 os error 5（权限） | `bin/searxng/.git` 被 PyInstaller 收集 | ⚠️ **仅在手动部署 searxng 时可能遇到**——2026-08-26 起 SearXNG 不随包（tauri resources 未配置），常规打包不再触发；如需手动部署，打包前清理 `bin/searxng/.git` |
 | 后端启动 `ImportError: DLL load failed` | cryptography 的 `libcrypto-3-x64.dll`（~5MB）覆盖 Python 原生 DLL（~8MB），`_ssl.pyd` 加载失败 | spec 排除 cryptography DLL + 显式加 `sys.base_prefix/DLLs/` 原生版本 |
 | HTTPS 请求全部失败 | SSL 证书路径丢失 | spec 含 certifi；启动时设 `SSL_CERT_FILE` + `REQUESTS_CA_BUNDLE` |
 | 启动报 `ModuleNotFoundError: app.xxx.yyy` | 函数内 `from app.xxx import yyy` 不被 PyInstaller 静态分析捕获 | 加到 spec `hiddenimports`（见 [BUILD.md](BUILD.md) 已固化清单） |
@@ -445,11 +445,11 @@ python tests/test_query_contract.py  # HTTP/CLI 契约 == QueryService（含对�
 python tests/test_closure_shadowing.py  # AST 全库扫描（#26/#43 那类作用域错）
 ```
 
-### 7.2 前端（287 tests / 23 文件）
+### 7.2 前端（384 tests / 29 文件）
 
 ```bash
 cd frontend
-npm test        # vitest（store/theme/api/tabRegistry/chatStore/文档库/组件…，<10s）
+npm test        # vitest（store/theme/api/tabRegistry/chatStore/文档库/文档标签页/组件…，<15s）
 npm run build   # 类型检查 + 生产构建（tsc）
 npm run lint    # oxlint
 ```

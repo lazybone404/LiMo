@@ -64,5 +64,5 @@
 | 语音转写 | paraformer-realtime-v2 | 方言支持最全 |
 | 代码生成 | qwen3-coder-plus | 代码专用 |
 
-> **能力标注说明**：LiMo 内置预设覆盖 qwen 系（dashscope）、deepseek、gpt、claude、gemini、glm、kimi 的部分模型，均内置 `capabilities`（text/image）与 `context_window`。
+> **能力标注说明**：LiMo 内置预设覆盖 qwen 系（dashscope）、deepseek、gpt、claude、gemini、glm、kimi 的部分模型，均内置 `capabilities` 与 `context_window`。能力位四类：`text` / `image`（图片理解、OCR 模型选择、图片处理用途筛选三处入口都读它）/ `document`（PDF 原件直传——**逐家查过官方文档才标**，dashscope 只有 qwen3.8 系在名单里，任何 qwen-vl / qwen3.5 视觉模型都**不在**）/ `reasoning`（思考档位可配）。**能力位只标查证过的，不要凭印象补标。**
 > **内置预设 `context_window` 保守设为 131072**（≈131K，qwen 系平台标称 1M/262K 以平台为准，对话预算按保守值计算）；deepseek / gemini / glm-5.2 等设 1M。MiniMax、kimi-k3 等未内置预设的模型需手动添加，优先复用预设标签，API 拉取到的新模型默认纯文本，可在设置页调整。

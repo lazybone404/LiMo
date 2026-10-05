@@ -40,7 +40,8 @@
 | pdfplumber | MIT | PDF 表格提取 |
 | pypdfium2 | BSD-3-Clause / Apache-2.0 | PDF 文字直读 + 原图嵌入 |
 | xlrd | BSD-3 | 旧版 Excel (.xls) |
-| resvg-py | MIT（绑定层）/ [MPL-2.0](https://github.com/linebender/resvg)（resvg 核心） | SVG 渲染绑定（实测后切换 PIL 自绘） |
+| beautifulsoup4 | MIT | HTML 解析（Word 导出用；2026-09-21 由传递依赖提为显式） |
+| magika | Apache-2.0 | 文件类型检测（经 markitdown 引入，PyInstaller 需连带保留 onnxruntime） |
 | Pillow | MIT-CMU（HPND） | 图片处理/图表渲染 |
 | numpy | BSD-3 | 数值计算/模糊帧过滤 |
 | trafilatura | Apache-2.0 | 网页正文提取 |
@@ -99,7 +100,7 @@ LiMo 的「口子原则」要求重依赖、AGPL/协议风险项目**进程外�
 | Tesseract | Apache-2.0 | 已从内置移除 | 本地 OCR 插件模板（`examples/tesseract_plugin.py`） |
 | docling | MIT | 已移除 | torch ~2GB 无法打包的教训 → 轻量引擎优先 |
 | pymupdf4llm | AGPL-3.0 | **进程外插件**（`~/.limo/plugins/`） | AGPL 隔离模式，官方只维护契约 + 加载 + 文档 |
-| resvg | MPL-2.0 | 已切换 PIL 自绘 | Windows 无法渲染 SVG 文字（上游普遍 bug）→ 自研子集渲染器 |
+| resvg / resvg-py | MPL-2.0（核心）/ MIT（绑定层） | 已切换 PIL 自绘 | Windows 无法渲染 SVG 文字（上游普遍 bug）→ 自研子集渲染器。⚠️ `pyproject.toml` 里 `resvg-py` 的**依赖声明仍残留**（已无代码引用、spec 的 `collect_all` 早已移除），待清理 |
 | SearXNG | AGPL-3.0 | 便携版进程外 | 搜索降级链 + AGPL 进程外启动 |
 | html2text | GPL-3.0 | 已移除（2026-08-26，webpage.py 改用 bs4 get_text） | GPL 库进主 exe 是「合并作品」→ 替换优于附全文 |
 | ebooklib | AGPL-3.0 | 已移除（2026-08-26，自研 epub-container 纯标准库替代） | AGPL 库进主 exe 是风险点 → 自研零依赖解析器，达成主 exe 零 AGPL/GPL |
@@ -130,7 +131,7 @@ LiMo 是模型无关的知识工具，接入多家模型/服务（非开源代�
 3. **不擦除声明**：任何分发/修改都不会剥离源码或二进制中的版权与许可证声明。
 4. **完整许可证文本**：各依赖的完整许可证文本随其包发布（pip / npm / cargo），本文件不重复粘贴全文；如需逐条核对，以官方仓库 LICENSE 为准。
 
-> 本文件的许可证标注已按本地安装包元数据核对（2026-08-25，`pip/npm/cargo` 实际安装版本）；个别包同时含核心与绑定两层许可（如 resvg 核心 MPL-2.0 / resvg-py 绑定 MIT），已分别标注。ffmpeg 已按 gyan.dev 官方页面核实为 GPLv3（2026-08-26）。任何出入以官方仓库为准。
+> 本文件的许可证标注已按本地安装包元数据核对（2026-08-25，`pip/npm/cargo` 实际安装版本）；个别包同时含核心与绑定两层许可（如 resvg 核心 MPL-2.0 / resvg-py 绑定 MIT），已分别标注。ffmpeg 已按 gyan.dev 官方页面核实为 GPLv3（2026-08-26）。**2026-10-05 复核**：比对 `backend/pyproject.toml` 与 `frontend/package.json`，新增 `beautifulsoup4`（显式化）与 `magika`（传递依赖但需显式保留）两条，其余无变化。任何出入以官方仓库为准。
 
 ---
 

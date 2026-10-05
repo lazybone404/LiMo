@@ -35,7 +35,7 @@
 │ Process (图片 OCR/表格/数字化/理解)                   │
 ├─────────────────────────────────────────────────────┤
 │ Layer 5: 导出层                                      │
-│ Markdown → HTML / MD / ZIP / Mindmap                │
+│ Markdown → HTML / MD / DOCX / PDF / ZIP / Mindmap   │
 │ Pygments 高亮 + KaTeX 渲染 + GFM 预处理               │
 └─────────────────────────────────────────────────────┘
          │
@@ -376,7 +376,7 @@ model_id → scene_models.image_process → scene_models.generate → Engine 回
 ### 对话管道（Agent + Chat）
 
 - **端点**：`POST /api/chat` + `GET /api/chat/stream`（SSE 8 事件：meta → compressed → agent_status → tool_start → tool_result → thinking → text → done/error；引用不独立成事件，随 `tool_result.refs` 携带）。完整协议见 [对话协议.md](对话协议.md)
-- **Agent 循环**：`llm/agent.py`（`stream_run`）+ `agent/tools.py` 5 工具（search_docs/lookup_doc/list_docs/search_web/fetch_url），`tool_registry.py` ToolDef 注册
+- **Agent 循环**：`llm/agent.py`（`stream_run`）；5 个工具经 `tool_registry.py` 的 `ToolDef` 注册，注册入口是 `routers/chat.py::_build_registry`——`search_docs`/`lookup_doc`/`list_docs` 的实现在该文件内就地定义（闭包工厂，需要 store），`search_web`/`fetch_url` 实现来自 `agent/tools.py`
 - **会话管理**：`agent/session.py` 的 `SessionManager`——会话 CRUD + `append_user_message`/`append_assistant_message` + 上下文边界（clear-context）
 - **上下文预算**：`core/chat_context.py`（compute_budget/trim_history/build_doc_context）+ `agent/compress.py`（超阈值 LLM 摘要早期消息）
 
@@ -416,7 +416,7 @@ class ExecutionGuard:
 ### 配置系统
 
 - **存储位置**：`~/.limo/config.yaml`（绝对路径，自动创建目录）
-- **读入口**：`core/config.py:184` → `load_config()`；**写入口**：`core/config_io.py:12` → `save_config()`（**唯一写入口**，业务模块禁止直接 `yaml.dump`）
+- **读入口**：`core/config.py:300` → `load_config()`；**写入口**：`core/config_io.py:250` → `save_config()`（**唯一写入口**，业务模块禁止直接 `yaml.dump`）
 - **原子写入**：`tmp_path` → `os.replace(tmp_path, config_path)`
 - **启动同步**（`config.py`）：`_sync_missing_providers`（补齐 providers 中缺失的内置模型，保证 `llm.api_key`/provider 从旧配置自动迁移）、`_migrate_legacy_dir`（旧数据目录迁移）
 
@@ -459,7 +459,7 @@ class GenerateError(AppError): ...   # 生成特定
 
 前端 `apiFetch` 自动解析非 2xx 响应为 `ApiErrorException`。
 
-**迁移状态**：✅ **15/15 个路由模块已全部统一 AppError 体系**（2026-09-19 核实：全仓 `grep "raise HTTPException"` 结果为空，export.py / ingest.py 残留已清零）。新增代码统一用 AppError，真 404/403 必须显式传 `status_code`（见 CLAUDE.md 关键模式 #36）。
+**迁移状态**：✅ **18/18 个路由模块已全部统一 AppError 体系**（2026-10-04 复核：`ls backend/app/routers/*.py` 计 19 个文件、其中 `__init__.py` 不算路由模块；全仓 `grep -l "HTTPException" backend/app/routers/*.py` 结果为空）。新增代码统一用 AppError，真 404/403 必须显式传 `status_code`（见 CLAUDE.md 关键模式 #36）。
 
 ### 安全
 
@@ -495,6 +495,7 @@ App
 ├── DocLibrary          # 文档列表/搜索/筛选
 │   └── SearchBar        # FTS5 关键词全文搜索（GET /api/search）
 ├── PreviewArea         # 预览 + 多 tab（按 sourceType 分派）
+│   ├── DocTabBar       # 文档多标签页（VS Code 双标签：单击=预览可替换 / 双击=钉住）
 │   ├── TranscriptView  # 时间轴/转录（epub 内嵌 EpubChapterView 章节浏览）
 │   └── MindmapView     # 思维导图
 ├── FloatingAI          # AI 对话浮窗（唯一形态，2026-08-04 移除插槽面板）
@@ -516,7 +517,7 @@ App
 - Zustand store 按域拆 7 slices + 独立 `chatStore` + 独立 `streamBuffers.ts`（模块级 Map，非 slice），`store/index.ts` 只剩组合层，类型在 `store/types.ts`（`Store` 为交集）
 - `processingTasks` 用 `${docId}__${kind}` 键格式，`setProcessing(key, null)` 前缀树形删除
 - 持久化为手写 localStorage（`mbw_*` 16 个 key），**无 persist 中间件**；LLM/引擎配置在后端 `config.yaml`，不由前端持久化
-- API 客户端按域拆分（`api/` 13 文件，`core.ts` 提供 `apiUrl()`/`appUrl()`/`apiFetch`，`client.ts` 是 barrel）；内容源统一走 `lib/contentSources.ts`（`TabDef.contentSource` 驱动）
+- API 客户端按域拆分（`api/` 16 文件，`core.ts` 提供 `apiUrl()`/`appUrl()`/`apiFetch`，`client.ts` 是 barrel）；内容源统一走 `lib/contentSources.ts`（`TabDef.contentSource` 驱动）
 
 ### Slot 插槽注册表（lib/slotRegistry.ts）
 

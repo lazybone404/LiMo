@@ -1,6 +1,6 @@
 # 前端状态管理模式
 
-> 写于 2026-07-10 整体审查后（2026-08-01 更新 store 拆分；2026-08-14 更新 store 表/api 域文件/mbw key/探活与缺 key 提示）。记录 GenPanel 任务生命周期、取消机制、状态同步的关键模式和已知陷阱。
+> 写于 2026-07-10 整体审查后（2026-08-01 更新 store 拆分；2026-08-14 更新 store 表/api 域文件/mbw key/探活与缺 key 提示；2026-10-05 更新 docsSlice 标签页状态、api 域文件计数 16、mbw_reading 字号、§8 补两条陷阱）。记录 GenPanel 任务生命周期、取消机制、状态同步的关键模式和已知陷阱。
 
 ---
 
@@ -12,7 +12,7 @@
 |------|------|
 | `types.ts` | 全部共享类型 + 具名类型（`ActiveView`/`MarkdownMeta`/`ImageResult` 等）+ `Store` 交集 |
 | `themeSlice.ts` | 主题六轴（theme/accent/texture/font/base/applyPreset），完全自包含 |
-| `docsSlice.ts` | 文档库（docs/currentDocId/searchQuery/activeTag） |
+| `docsSlice.ts` | 文档库（docs/currentDocId/searchQuery/activeTag）+ **文档多标签页**（docTabs/pendingOpenMode/pendingClose/commitTabChange/cancelTabChange，**延后提交**见 §8） |
 | `contentSlice.ts` | 预览内容 + streamTick |
 | `tasksSlice.ts` | importProgress/importStages/imageResults/processingTasks/taskPanelOpen |
 | `chatSlice.ts` | 生成状态（generating）——对话管理在独立 chatStore |
@@ -246,7 +246,7 @@ if (!receivedDoneOrError) {
 
 ## 6. apiUrl / appUrl 模式
 
-`api/` 目录 13 个文件（2026-08-01 按域拆分）：
+`api/` 目录 16 个文件（2026-08-01 按域拆分；2026-10-05 重新计数）：
 
 | 文件 | 职责 |
 |------|------|
@@ -256,6 +256,7 @@ if (!receivedDoneOrError) {
 | `transcripts.ts` / `settings.ts` | 转录结果 / 配置读写 |
 | `ingest.ts` / `generate.ts` | 导入（含 SSE 进度）/ 生成（流式 + 取消） |
 | `chat.ts` / `export.ts` / `references.ts` / `plugins.ts` | 对话（SSE）/ 导出 / 参考文件 / 插件管理 |
+| `epub.ts` / `search.ts` / `synthesis.ts` | EPUB 一键解读 / FTS 全文搜索 / 多篇合成（SSE） |
 | `taskManager.ts` | `registerAbort`/`cancelTask` 全局 AbortController Map |
 | `sse.ts` | `parseSSEStream` 统一 SSE 解析（fetch → ReadableStream → 事件回调），各流式端点复用 |
 
@@ -302,7 +303,7 @@ export function appUrl(path: string): string {
 | `mbw_llm_hint_dismissed` | chatStore | 缺 LLM key 首提 toast 已关闭 |
 | `mbw_dashscope_hint_dismissed` | ImportSection | 缺 dashscope 内联提示条已关闭 |
 | `mbw_docLibPrefs` | doc-library/docLibraryPrefs.ts | 文档库偏好（密度/排列/排序/折叠小节/筛选区高度） |
-| `mbw_reading` | lib/reading-prefs.ts | 沉浸阅读版式（行高 / 每行字数 / 段落区隔） |
+| `mbw_reading` | lib/reading-prefs.ts | 沉浸阅读版式（行高 / 每行字数 / 段落区隔 / **正文字号缩放 fontScale**） |
 
 **规则**：lib 层的持久化在 slice 的 setter 中调用（如 `setTheme` → `saveTheme` → `applyTheme` → `set`）；action 内的 localStorage 读写需 try/catch（quota）。LLM 设置、provider、引擎配置都在后端 `~/.limo/config.yaml`，不由前端持久化。
 
@@ -318,3 +319,6 @@ export function appUrl(path: string): string {
 | `clearDocTasks` 替代 `setProcessing(key, null)` | 误杀同文档的其他并发任务 | 精确 key 清理 |
 | `apiKey ?? current` 空字符串 | `""` 不是 nullish，覆盖真实 key | `(val \|\| undefined) ?? current` |
 | `fetch()` 替代 `apiFetch()` | HTTP 错误被忽略，Toast 误导 | 统一用 `apiFetch` |
+| 把「不改 `currentDocId` 的关闭」也塞进 `pendingClose` | 标签**永远关不掉且零报错**（pending 只被 `loadDocContent` 消费，而那条路径上它不会跑） | 三个 close 动作按「是否改变 `currentDocId`」各分两支 |
+| React `onWheel` 里调 `preventDefault()` | passive 注册下无效 → WebView2 把整页缩放了 | 原生 `addEventListener('wheel', h, { passive: false })`，挂目标容器 |
+| 正文新字号写 `em`，或把 `fontSizeScale` 乘进版宽换算 | 字号与外层 em **相乘**随宽度档漂移 / 版宽跟着宽度模式变 | 写 `px`；版宽只乘 `fontScale`（`measurePxOf`） |

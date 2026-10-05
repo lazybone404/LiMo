@@ -3,6 +3,7 @@
 > 检查日期：2026-07-08 | 范围：全栈（后端 FastAPI + 前端 React/TypeScript）
 > ⚠️ **时点审计报告**：以下问题多数已修复（标注 ✅），保留用于追溯。当前安全状态见 [CLAUDE.md](CLAUDE.md)「安全」章节。
 > 2026-08-02 追加修复（全面漏洞排查）：**CORS Origin 白名单**（阻断任意网页跨站读本地后端/Cookie 泄漏）、serve_asset 路径遍历收紧到 `doc_dir/assets`、导出 `temp_id` 穿越校验、content_preparer `assets/../../` 任意文件读取校验。
+> 2026-10-04 追加修复：**凭据移出 `config.yaml`** —— 所有 API Key / Cookie 改存 Windows DPAPI 密钥库（`%LOCALAPPDATA%\LiMo\secrets.bin`，`ctypes` 直调 `crypt32.dll`，零新依赖），YAML 只留 `secrets_ref: dpapi:limo`；配套 `scripts/check-secrets.py`（自检）与 `scripts/migrate-secrets.py`（迁移 / 回滚）。**下方 L3 因此已失效**。
 
 ---
 
@@ -119,9 +120,13 @@ media_dir = tempfile.mkdtemp(prefix="mbw_img_")
 
 **修复方案**：用 `try/finally` 包裹确保临时目录总是被清理。
 
-### L3. `config.yaml` 中 API Key 明文存储
+### L3. `config.yaml` 中 API Key 明文存储 ✅ 已修复（2026-10-04）
 
-所有 API Key（LLM、DashScope、Tavily）以明文存储在 `config.yaml`。对于本地桌面应用是常见做法，但用户应注意文件权限。
+~~所有 API Key（LLM、DashScope、Tavily）以明文存储在 `config.yaml`。对于本地桌面应用是常见做法，但用户应注意文件权限。~~
+
+**修复**：值改送 DPAPI 密钥库，`config.yaml` 只留 `secrets_ref: dpapi:limo`。密钥库**刻意放 `%LOCALAPPDATA%\LiMo\`**——`~/.limo/` 会被同步 / 备份 / 打包分享，不是放密钥的地方。
+
+⚠️ **定位是「卫生」不是「安全边界」**：挡的是「配置文件被复制走」的被动泄漏，挡不住同账户下的主动恶意进程。解法失败时**显式抛错**，不静默退回明文（退回等于白做，且 YAML 上看不出异常）。
 
 ### L4. `data_dir` 配置值未做路径遍历校验
 

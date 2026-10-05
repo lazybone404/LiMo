@@ -632,9 +632,9 @@ ExportMenu 从客户端 store 读数据（即时），ExportPanel 把 tab 名发
 ### 新增内容 tab
 
 1. **前端 `lib/tabRegistry.ts`**：`TabRegistry.register(TabDef)` 注册新 tab，指定 `contentSource`（→ §2.5 字段说明）、`htmlMode`、`exportSuffix`、`exportLabel`。零改动其他文件
-2. **前端 `lib/contentSources.ts`**：若新 tab 的内容源不是已有的 6 个 `ContentSource` 枚举之一，加枚举 + `CONTENT_GETTERS` 补 getter（`Record` 类型约束编译期强制），三处消费（PreviewArea/CopyContentBtn/ExportMenu）自动生效
-3. **后端 `export_content`**（`GET /export/{id}`，第 92 行起）：确认 `htmlMode` 走 content 回退链（markdown → process_results → transcript → 404）
-4. **后端 `export_custom`**（`POST /api/export/custom`，第 933 行起）：如需批量/自定义导出，在 `tab_contents` 收集循环加 `elif tab == "xxx":` 分支
+2. **前端 `lib/contentSources.ts`**：若新 tab 的内容源不是已有的 5 个 `ContentSource` 枚举之一，加枚举 + `CONTENT_GETTERS` 补 getter（`Record` 类型约束编译期强制），三处消费（PreviewArea/CopyContentBtn/ExportMenu）自动生效
+3. **后端 `export_content`**（`GET /export/{id}`，第 164 行起）：确认 `htmlMode` 走 content 回退链（markdown → process_results → transcript → 404）
+4. **后端 `export_custom`**（`POST /api/export/custom`，第 1166 行起）：如需批量/自定义导出，在 `tab_contents` 收集循环加 `elif tab == "xxx":` 分支
 5. **后端 `services/markdown_render.py`**：若新内容引入新的 GFM 风格语法，在 `preprocess_gfm` 补对应预处理（删除线/任务列表/时间戳 badge 模式）—— **一处生效，HTML + Word 两条导出路径同时受益**
 6. **本文档第 2 节**：更新内容源映射表
 
