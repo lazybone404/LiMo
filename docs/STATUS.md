@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-10-06 | **版本**: 0.5.0
+**更新**: 2026-10-10 | **版本**: 0.5.0
 
 ---
 
@@ -12,8 +12,8 @@
 | 指标 | 数量 |
 |------|------|
 | 后端 Python 文件 | 116（11 子目录：adapters 8 / agent 6 / core 27 / downloaders 1 / engines 15 / generation 15 / llm 4 / routers 19 / storage 2 / utils 6 / services 13）+ `limo_cli/` 9（CLI，独立于 `app/`） |
-| 前端 TS/TSX/CSS 文件 | 167（165 ts/tsx + 2 css；业务 120，测试 44，`setup.ts` 1） |
-| 前端测试文件 | 45（44 测试文件 + `setup.ts`；503 个测试用例，vitest 全绿） |
+| 前端 TS/TSX/CSS 文件 | 174（172 ts/tsx + 2 css；业务 123，测试 48，`setup.ts` 1） |
+| 前端测试文件 | 49（48 测试文件 + `setup.ts`；563 个测试用例，vitest 全绿） |
 | 后端测试文件 | 57（含 `conftest.py` 共享 fixture；2026-10-04 新增 `test_secrets` / `test_config_mask` / `test_config_io`） |
 | API 路由模块 | 18 业务模块（+ `__init__.py`，共 19 个 .py） |
 | API 端点 | 89（`@router.` 装饰器计数；含 `/api/cli/*` 七端点） |
@@ -21,7 +21,7 @@
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 13（docs/ 目录，含对话协议.md + AGENT-ONBOARDING.md + ACKNOWLEDGMENTS.md；design/ 另计） |
-| 代码行数 | 后端 app 29,636 + CLI 1,356 / 前端业务 18,593 / 前端测试 7,001 |
+| 代码行数 | 后端 app 29,636 + CLI 1,356 / 前端业务 18,961 / 前端测试 7,688 |
 
 ---
 
@@ -118,6 +118,7 @@
 
 | 组件 | 说明 |
 |------|------|
+| ActivityBar | 左侧活动栏（常驻最左竖排图标列）：面板项**从 `SlotRegistry.grouped().left` 派生**（加一个面板自动多一个图标），两个动作项 AI 对话 / 设置；左侧面板默认**互斥切换**（`layout-prefs.ts`，可在设置→外观切回并排）。顶栏不再有面板按钮 |
 | GenPanel | 导入 + 生成选项（epub 专属一键解读入口 EpubInterpretPanel，三态 UI；思考档位三档 + PDF 直传开关，均由模型能力位门控） |
 | DocLibrary | 文档列表/搜索/筛选（拆分 **17 文件**：编排 DocLibrary + DocLibraryToolbar + SearchField + FilterArea/FilterSection/filters/FilterPopover 筛选区 + ListToolbar 排列/排序旋钮 + DocList/GroupHeader/DocRow 列表 + BatchBar 批量条（**含多篇合成入口 + 确认对话框**）+ hook 层 useDocQuery/useDocSelection + docLibraryPrefs 偏好 + docMeta 元信息 + entryDelay 动画延迟） |
 | PreviewArea | 预览 + 多 tab（**文档标签页 `DocTabBar`**：VS Code 双标签模型——单击=预览/双击=常驻，延后提交与未保存守卫协同；**正文字号缩放** Ctrl+滚轮 / Ctrl+± / Ctrl+0，只作用于 `.preview-area`；空态欢迎文档三产物：笔记/整理版原文/转录；产物编辑三态弹窗保护 + 编辑中未保存拦截） |
@@ -143,10 +144,10 @@
 | AI 对话 | 9 | 9 | 100% |
 | 图表生成 | 11 | 12 | 92% |
 | 导出 | 11 | 12 | 92% |
-| 前端 UI/UX | 18 | 18 | 100% |
+| 前端 UI/UX | 19 | 19 | 100% |
 | 安全 & 运维 | 8 | 8 | 100% |
 | 产物复用 | 4 | 5 | 80% |
-| **合计** | **118** | **121** | **98%** |
+| **合计** | **119** | **122** | **98%** |
 
 > 进度说明：
 > - 产物复用（4/5）：已落地**产物自证头 + 共享查询层**（一期）、**密钥与凭据卫生**（二期）、**CLI + 契约文档 + 门禁**（三期），均 2026-10-04；待做**导出 meta 承载 + 渠道扩展**（四期）。路线图见 [CHANGELOG.md](CHANGELOG.md) 2026-10-04 条目
@@ -242,12 +243,12 @@ backend/app/
   storage/       文件系统存储
 backend/limo_cli/  只读命令行（cli 入口 / commands 七命令 / doctor 诊断 / output 输出契约 / sources 两个传输层 / agents_md 契约文档模板 / exit_codes）
 frontend/src/
-  components/    UI 组件（preview/ 下 6 个展示组件拆分；doc-library/ 17 文件拆分）
+  components/    UI 组件（ui/ 布局层：SlotLayout 布局引擎 + ActivityBar 活动栏 + PanelStrip 折叠条；preview/ 下 6 个展示组件拆分；doc-library/ 17 文件拆分）
   store/         Zustand 状态（types.ts + 7 slices + chatStore + streamBuffers）
   api/           API 客户端（15 文件：core + 域文件 + client.ts barrel + sse/taskManager）
   hooks/         useTaskRunner 等自定义 hook
-  lib/           tabRegistry / contentSources / slotRegistry / modelCaps / 主题模块 / health / download / print
-  test/          前端测试（24 个文件 = 23 测试 + setup.ts，含 7 个组件测试）
+  lib/           tabRegistry / contentSources / slotRegistry（持有 SlotDef.component）/ panelToggle（开合判据）/ layout-prefs（侧栏布局偏好）/ slotMetrics / modelCaps / 主题模块 / health / download / print
+  test/          前端测试（49 个文件 = 48 测试 + setup.ts，含 16 个组件测试）
 docs/            设计文档（13 份）
 design/          引擎实测标准
 tests/           集成测试（40 个 .py = 39 个 test_*.py + conftest.py 共享 fixture）

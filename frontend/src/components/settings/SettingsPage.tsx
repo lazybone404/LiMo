@@ -5,6 +5,7 @@ import { ACCENT_GROUPS, ACCENT_SWATCH } from '../../lib/accent'
 import { TEXTURE_OPTIONS, TEXTURE_SWATCH, FONT_OPTIONS, getSavedIntensity, applyIntensity, saveIntensity } from '../../lib/texture'
 import { BASE_OPTIONS } from '../../lib/theme-base'
 import { PARA_STYLE_OPTIONS, LINE_HEIGHT_RANGE, MEASURE_RANGE, MEASURE_DEFAULT_ON, FONT_SCALE_RANGE, READING_DEFAULTS } from '../../lib/reading-prefs'
+import { LAYOUT_OPTIONS } from '../../lib/layout-prefs'
 import { THEME_PRESETS } from '../../lib/theme-presets'
 import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette, Puzzle } from 'lucide-react'
 import { ProviderSettings } from './ProviderSettings'
@@ -60,6 +61,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const setBase = useStore(s => s.setBase)
   const reading = useStore(s => s.reading)
   const setReading = useStore(s => s.setReading)
+  const layout = useStore(s => s.layout)
+  const setLayout = useStore(s => s.setLayout)
   const applyPreset = useStore(s => s.applyPreset)
   const [intensity, setIntensity] = useState(getSavedIntensity())
 
@@ -435,6 +438,32 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                       )
                     })}
                   </div>
+                </div>
+              </div>
+
+              {/* 侧栏布局 —— 左侧面板是互斥切换还是允许并排。
+                  ⚠️ 与「阅读版式」的「默认即现状」**相反**：这里默认互斥是**有意的默认
+                  变更**（2026-10-10 用户拍板），所以必须给一条随时改回去的路，而不是
+                  让不习惯的人只能去改 localStorage。 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6">
+                <label className="text-[15px] font-medium mb-1 block">侧栏布局</label>
+                <p className="text-[12px] text-muted mb-4">
+                  左侧面板（生成 / 文档库）的展开方式。入口是最左边的活动栏图标
+                </p>
+                <div className="space-y-1">
+                  {LAYOUT_OPTIONS.map(o => {
+                    const selected = layout.leftPanelsExclusive === o.key
+                    return (
+                      <button
+                        key={String(o.key)}
+                        onClick={() => setLayout({ leftPanelsExclusive: o.key })}
+                        className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors ${selected ? 'bg-accent/10' : 'hover:bg-surface-hover'}`}
+                      >
+                        <div className={`text-[14px] ${selected ? 'text-accent font-medium' : 'text-dimmed'}`}>{o.label}</div>
+                        <div className="text-[11px] text-disabled mt-0.5">{o.hint}</div>
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
 

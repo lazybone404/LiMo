@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useStore } from '../store'
+import { PANEL_DEFAULT_WIDTH } from '../lib/slotMetrics'
 
 // Reset store to clean state before each test
 beforeEach(() => {
@@ -415,5 +416,151 @@ describe('沉浸阅读 — toggleImmersive 的守卫', () => {
     useStore.setState({ immersive: true })
     useStore.getState().setImmersive(false)
     expect(useStore.getState().immersive).toBe(false)
+  })
+})
+
+// ── 侧栏布局：activeLeftPanel 选择器 + 三个统一入口 ──
+//
+// ⚠️ **为什么是一个选择器字段，不是「打开甲时遍历同侧把乙收起」**：后者的漏洞面是
+// 「所有直接改单个 slot 的调用点」—— Ctrl+K / 右键菜单 / 面板自关闭按钮各有一处，
+// 任何一处漏改就在互斥模式下露出两个面板。选择器让「两个同时开」在结构上不可能，
+// 代价是这些调用点必须改走 `openPanel/closePanel/togglePanel`（已全部改完）。
+//
+// 本组最该守的两条「看起来多余、其实是设计承诺」的断言：
+//   ① 打开/关闭一个面板时**不动别的面板的 slot**（引用不变）——顺手收起另一个，
+//      切回并排模式时它会莫名其妙是收起的；
+//   ② 直接 `setSlot`（绕过入口）也不会造成两个面板同开 —— 渲染层根本不看它。
+const leftSlots = () => ({
+  genPanel: { width: PANEL_DEFAULT_WIDTH, collapsed: false, visible: true },
+  docLib: { width: PANEL_DEFAULT_WIDTH, collapsed: false, visible: true },
+  preview: { width: 0, collapsed: false, visible: true },
+})
+
+describe('侧栏布局 — 统一入口与选择器', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useStore.setState({
+      layout: { leftPanelsExclusive: true },
+      activeLeftPanel: 'docLib',
+      slots: leftSlots(),
+    })
+  })
+
+  it('默认（互斥）下 store 初值就是互斥 + 展开文档库', () => {
+    // 初值来自 getSavedLayout()，这里只钉住「默认那一路」的语义
+    expect(useStore.getState().layout.leftPanelsExclusive).toBe(true)
+  })
+
+  it('openPanel：设激活项 + 展开，且**不动另一个面板的 slot**', () => {
+    // 对照：写成「遍历同侧收起」的实现 → docLib 的引用会变 → 红
+    const docLibBefore = useStore.getState().slots.docLib
+    useStore.getState().openPanel('genPanel')
+    expect(useStore.getState().activeLeftPanel).toBe('genPanel')
+    expect(useStore.getState().slots.genPanel.collapsed).toBe(false)
+    expect(useStore.getState().slots.docLib).toBe(docLibBefore)
+  })
+
+  it('openPanel：宽度 < 80 的面板被复位到默认宽（不然只展开一条缝）', () => {
+    useStore.setState(s => ({ slots: { ...s.slots, genPanel: { ...s.slots.genPanel, width: 40, collapsed: true } } }))
+    useStore.getState().openPanel('genPanel')
+    expect(useStore.getState().slots.genPanel.width).toBe(PANEL_DEFAULT_WIDTH)
+  })
+
+  it('closePanel：互斥下「关掉」= 谁都不展开，且不改任何 slot', () => {
+    const slotsBefore = useStore.getState().slots
+    useStore.getState().closePanel('docLib')
+    expect(useStore.getState().activeLeftPanel).toBe(null)
+    expect(useStore.getState().slots).toBe(slotsBefore)
+  })
+
+  it('closePanel：关的不是当前激活项 → 状态原样不动', () => {
+    useStore.getState().closePanel('genPanel')
+    expect(useStore.getState().activeLeftPanel).toBe('docLib')
+  })
+
+  it('togglePanel：再按一次正激活的面板 → 全收起（不露出另一个）', () => {
+    useStore.getState().togglePanel('docLib')
+    expect(useStore.getState().activeLeftPanel).toBe(null)
+  })
+
+  it('togglePanel：按未激活的面板 → 它接管', () => {
+    useStore.getState().togglePanel('genPanel')
+    expect(useStore.getState().activeLeftPanel).toBe('genPanel')
+  })
+
+  it('不存在的面板 id → 空转（不把激活项置成幽灵）', () => {
+    useStore.getState().openPanel('nope')
+    expect(useStore.getState().activeLeftPanel).toBe('docLib')
+  })
+
+  it('setLayout 切回互斥时归一化失效的激活项（退回默认面板）', () => {
+    // 并排模式下 activeLeftPanel 是 null（那个字段那时无意义），切回互斥必须补一个值，
+    // 否则用户看到的是一个也没展开的空左侧。
+    useStore.setState({ layout: { leftPanelsExclusive: false }, activeLeftPanel: null })
+    useStore.getState().setLayout({ leftPanelsExclusive: true })
+    expect(useStore.getState().activeLeftPanel).toBe('docLib')
+  })
+
+  it('setLayout 写入 localStorage（刷新后仍是用户选的布局）', () => {
+    useStore.getState().setLayout({ leftPanelsExclusive: false })
+    expect(JSON.parse(localStorage.getItem('mbw_layout')!)).toEqual({ leftPanelsExclusive: false })
+  })
+
+  it('openDocLibSearch：展开文档库 + 发聚焦信号（Ctrl+K 的一条链）', () => {
+    const nonce = useStore.getState().docLibSearchFocusNonce
+    useStore.getState().openDocLibSearch()
+    expect(useStore.getState().activeLeftPanel).toBe('docLib')
+    expect(useStore.getState().slots.docLib.collapsed).toBe(false)
+    expect(useStore.getState().docLibSearchFocusNonce).toBe(nonce + 1)
+  })
+
+  it('⚠️ 直接 setSlot 改单个 slot **不会**造成两个面板同开（渲染层不看它）', () => {
+    // 这正是选择器相对「遍历收起」的关键差异：绕过入口的调用点是无害的，
+    // 因为「谁在布局里」只由 activeLeftPanel 决定。
+    useStore.getState().setSlot('genPanel', { collapsed: false, visible: true })
+    expect(useStore.getState().activeLeftPanel).toBe('docLib')
+    expect(useStore.getState().slots.genPanel.collapsed).toBe(false)
+  })
+
+  it('兼容别名仍可用：toggleGenPanel / setGenPanelOpen 走同一套语义', () => {
+    useStore.getState().setGenPanelOpen(true)
+    expect(useStore.getState().activeLeftPanel).toBe('genPanel')
+    useStore.getState().toggleGenPanel()
+    expect(useStore.getState().activeLeftPanel).toBe(null)
+  })
+})
+
+describe('侧栏布局 — 并排模式', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useStore.setState({
+      layout: { leftPanelsExclusive: false },
+      activeLeftPanel: null,
+      slots: leftSlots(),
+    })
+  })
+
+  it('openPanel 不碰 activeLeftPanel（那个字段只对互斥有意义）', () => {
+    useStore.getState().openPanel('genPanel')
+    expect(useStore.getState().activeLeftPanel).toBe(null)
+    expect(useStore.getState().slots.genPanel.collapsed).toBe(false)
+  })
+
+  it('closePanel 收起为窄条（改造前的行为，一字未改）', () => {
+    useStore.getState().closePanel('docLib')
+    expect(useStore.getState().slots.docLib.collapsed).toBe(true)
+  })
+
+  it('togglePanel 在收起/展开之间切换', () => {
+    useStore.getState().togglePanel('docLib')
+    expect(useStore.getState().slots.docLib.collapsed).toBe(true)
+    useStore.getState().togglePanel('docLib')
+    expect(useStore.getState().slots.docLib.collapsed).toBe(false)
+  })
+
+  it('setLayout 切到并排时不动 activeLeftPanel（切回来还能用）', () => {
+    useStore.setState({ layout: { leftPanelsExclusive: true }, activeLeftPanel: 'genPanel' })
+    useStore.getState().setLayout({ leftPanelsExclusive: false })
+    expect(useStore.getState().activeLeftPanel).toBe('genPanel')
   })
 })

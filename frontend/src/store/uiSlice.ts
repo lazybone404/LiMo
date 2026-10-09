@@ -8,6 +8,8 @@ import type { StateCreator } from 'zustand'
 import type { Store, SlotState, ActiveView, ContentWidth } from './types'
 import type { Capabilities } from '../api/client'
 import { PANEL_DEFAULT_WIDTH } from '../lib/slotMetrics'
+import { type LayoutPrefs, getSavedLayout, saveLayout } from '../lib/layout-prefs'
+import { isPanelOpen, openPatch, nextActive } from '../lib/panelToggle'
 
 // ── AI 浮窗默认/记忆 ──
 
@@ -28,9 +30,29 @@ export interface UiSlice {
   slots: Record<string, SlotState>
   /** 通用：更新一个 slot 的任意字段 */
   setSlot: (id: string, patch: Partial<SlotState>) => void
-  // 保留以下设置为兼容别名（内部委托到 slots）：
+  // 保留以下设置为兼容别名（自身零逻辑，只转调下面的统一入口）：
   toggleGenPanel: () => void
   setGenPanelOpen: (v: boolean) => void
+
+  // ── 侧栏布局偏好（互斥切换 / 允许并排） ──
+  layout: LayoutPrefs
+  setLayout: (patch: Partial<LayoutPrefs>) => void
+  /**
+   * 互斥模式下当前展开的左侧面板 id（`null` = 全收起，只剩活动栏）。并排模式忽略它。
+   *
+   * ⚠️ 用**一个字段当选择器**，而不是「打开甲时遍历同侧把乙收起」——后者可被任何
+   * 直接改单个 slot 的调用点绕过（Ctrl+K 搜索、右键菜单、面板自己的关闭按钮），
+   * 是本仓库反复写守卫防的「多入口漂移」。选择器让「两个同时开」在结构上不可能发生，
+   * 且 `uiSlice` 无需知道「左侧有哪些面板」→ 不必 import `slotRegistry` → 环不存在。
+   */
+  activeLeftPanel: string | null
+  /**
+   * 左侧面板的统一入口 —— 活动栏 / Ctrl+G / Ctrl+K / 右键菜单**共用这三个**。
+   * 两处各写一遍必然漂移（一处忘了互斥、一处忘了宽度复位），同 `openDocLibSearch` 的既有教训。
+   */
+  openPanel: (id: string) => void
+  closePanel: (id: string) => void
+  togglePanel: (id: string) => void
 
   // ── AI 浮窗（唯一形态） ──
   aiVisible: boolean
@@ -104,6 +126,20 @@ export interface UiSlice {
  */
 const DOC_LIB_DEFAULT_WIDTH = PANEL_DEFAULT_WIDTH
 
+/**
+ * 互斥模式下默认展开的左侧面板 —— 用户拍板「文档库」（打开应用多半是看文档，
+ * 「生成」是唯一导入入口，但它随时在活动栏上，点一下就有）。
+ * 也用作「激活项失效时退回哪个」的兜底（见 `setLayout` 的归一化）。
+ */
+const DEFAULT_LEFT_PANEL = 'docLib'
+
+/**
+ * 初值**同源**：`layout` 与 `activeLeftPanel` 必须来自同一次读取。
+ * 分两次 `getSavedLayout()` 不仅多解析一次 JSON，更糟的是两次之间理论上可以不同
+ * —— 模式读出「互斥」而激活项按「并排」算，且这种不一致只在改过偏好的机器上出现。
+ */
+const INITIAL_LAYOUT = getSavedLayout()
+
 /** 有任务在跑时拒绝进入沉浸 —— 与 App.tsx 里 Ctrl+G 的守卫同一语义（防 GenPanel 卸载致任务僵尸） */
 const IMMERSIVE_BUSY_MSG = '操作进行中，请完成或取消后再进入沉浸阅读'
 
@@ -125,9 +161,60 @@ export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set, get) =>
     }
     return { slots: { ...s.slots, [id]: next } }
   }),
-  // 兼容别名（保持旧 API 可用，避免大面积改 call site）
-  toggleGenPanel: () => set(s => ({ slots: { ...s.slots, genPanel: { ...s.slots.genPanel, visible: !s.slots.genPanel.visible } } })),
-  setGenPanelOpen: (v) => set(s => ({ slots: { ...s.slots, genPanel: { ...s.slots.genPanel, visible: v } } })),
+  // ── 侧栏布局偏好 ──
+  layout: INITIAL_LAYOUT,
+  setLayout: (patch) => set(s => {
+    const next = { ...s.layout, ...patch }
+    saveLayout(next)
+    // 切回互斥时归一化激活项：只验「激活项**自己**」是否还有效（可见且未收起），
+    // 不枚举「左侧有哪些面板」—— 枚举需要 `slotRegistry`，而它持有组件 → 成环。
+    // 失效就退回默认面板，免得切过去是一片空。
+    let active = s.activeLeftPanel
+    if (next.leftPanelsExclusive) {
+      const cur = active ? s.slots[active] : undefined
+      if (!cur || !cur.visible || cur.collapsed) active = DEFAULT_LEFT_PANEL
+    }
+    return { layout: next, activeLeftPanel: active }
+  }),
+  activeLeftPanel: INITIAL_LAYOUT.leftPanelsExclusive ? DEFAULT_LEFT_PANEL : null,
+
+  // ── 左侧面板的统一入口（活动栏 / Ctrl+G / Ctrl+K / 右键菜单共用） ──
+  openPanel: (id) => set(s => {
+    const slot = s.slots[id]
+    if (!slot) return s
+    return {
+      // 并排模式不动 activeLeftPanel（那个字段只对互斥有意义）
+      ...(s.layout.leftPanelsExclusive ? { activeLeftPanel: id } : {}),
+      slots: { ...s.slots, [id]: { ...slot, ...openPatch(slot) } },
+    }
+  }),
+  closePanel: (id) => set(s => {
+    const slot = s.slots[id]
+    if (!slot) return s
+    if (s.layout.leftPanelsExclusive) {
+      // 互斥下「关掉它」= 谁都不展开。**不去动别的面板** —— 若顺手把某个面板置成
+      // collapsed，切回并排时它会莫名其妙是收起的。
+      return s.activeLeftPanel === id ? { activeLeftPanel: null } : s
+    }
+    return { slots: { ...s.slots, [id]: { ...slot, collapsed: true } } }
+  }),
+  togglePanel: (id) => set(s => {
+    const slot = s.slots[id]
+    if (!slot) return s
+    const exclusive = s.layout.leftPanelsExclusive
+    const open = isPanelOpen(slot, exclusive, s.activeLeftPanel, id)
+    if (exclusive) {
+      // 互斥下「再按一次是关闭」而不是切到另一个面板（见 `nextActive` 的注释）
+      return nextActive(exclusive, s.activeLeftPanel, id, open) === id
+        ? { activeLeftPanel: id, slots: { ...s.slots, [id]: { ...slot, ...openPatch(slot) } } }
+        : { activeLeftPanel: null }
+    }
+    return { slots: { ...s.slots, [id]: { ...slot, ...(open ? { collapsed: true } : openPatch(slot)) } } }
+  }),
+
+  // 兼容别名（保持旧 API 可用，避免大面积改 call site）—— 自身零逻辑，只转调统一入口
+  toggleGenPanel: () => get().togglePanel('genPanel'),
+  setGenPanelOpen: (v) => (v ? get().openPanel('genPanel') : get().closePanel('genPanel')),
 
   // ── AI 浮窗 ──
   aiVisible: false,
@@ -189,15 +276,11 @@ export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set, get) =>
   focusDocLibSearch: () => set(s => ({ docLibSearchFocusNonce: s.docLibSearchFocusNonce + 1 })),
   openDocLibSearch: () => {
     const s = get()
-    const slot = s.slots.docLib
-    // ⚠️ 宽度也要一起复位：折叠态下宽度可以是 40px 之类的小值（用户拖窄时 `setSlot`
-    // 会自动把它折叠，之后就再也不能拖了），这时只设 `collapsed: false` 会展开出一个
-    // 40px 宽的面板 —— 用户按 Ctrl+K 是要搜索，不是要一条缝。
-    // （SlotLayout 的 PanelStrip 展开按钮也是这么做的：`width: def.defaultWidth`。）
-    s.setSlot('docLib', {
-      visible: true, collapsed: false,
-      ...(slot.width < 80 ? { width: DOC_LIB_DEFAULT_WIDTH } : {}),
-    })
+    // ⚠️ 这里只负责「打开 + 聚焦」两件事。宽度复位（用户把面板拖窄到 40px 时，
+    // 只设 `collapsed: false` 会展开出**一条缝**而不是搜索框）已收进 `openPatch`
+    // —— 全入口共用一份实现，在这里再写一遍就是第四份副本。
+    // 互斥下「先收起别的面板」由 `openPanel` 的选择器接管，这里无需枚举左侧面板。
+    s.openPanel('docLib')
     s.focusDocLibSearch()
   },
 

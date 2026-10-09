@@ -755,7 +755,9 @@ export function DocLibrary() {
       // ⚠️ 右键是**显式动作**，一律钉成常驻标签（'pinned'）——不像单击那样会被
       // 下一次单击顶掉。用户从菜单里点「打开」，意图显然比随手点一行更明确。
       { label: '打开', icon: <BookOpen size={14} />, onClick: () => openDocTab(ctxDoc.id, 'pinned') },
-      { label: '重新生成', icon: <RefreshCw size={14} />, onClick: () => { openDocTab(ctxDoc.id, 'pinned'); useStore.getState().setGenPanelOpen(true) } },
+      // ⚠️ 走统一入口 `openPanel`（不是旧别名）：互斥模式下它同时把左侧切到生成面板，
+      // 而「重新生成」的下一步按钮就在那个面板里 —— 这正是用户此刻要去的地方。
+      { label: '重新生成', icon: <RefreshCw size={14} />, onClick: () => { openDocTab(ctxDoc.id, 'pinned'); useStore.getState().openPanel('genPanel') } },
       { label: 'AI 对话', icon: <MessageSquare size={14} />, onClick: () => { openDocTab(ctxDoc.id, 'pinned'); useStore.getState().setAiVisible(true) } },
       { label: '', onClick: () => {}, divider: true },
       {

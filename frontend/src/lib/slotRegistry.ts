@@ -1,17 +1,28 @@
 /**
- * 插槽注册表 — 面板自包含声明，替代 App.tsx 硬编码的 4 个面板。
+ * 插槽注册表 — 面板自包含声明，替代 App.tsx 硬编码的面板。
  *
- * Phase 2 核心：新增面板只需在此注册一个 SlotDef，App.tsx 零改动。
+ * **新增一个面板 = 在这里注册一段**（连同组件本体）。左侧活动栏的图标也从
+ * `grouped().left` 派生，所以注册完就自动有了入口。
+ *
+ * ⚠️ 这正是 2026-10-10 补上的那一半：此前组件本体硬编码在 `SlotLayout` 的
+ * `COMPONENTS` 映射里，「注册一个 SlotDef」只完成了元数据，加面板实际要改两处。
  *
  * 设计约束：
- * - 纯数据，不 import React 组件（组件在 SlotLayout 中通过动态查找渲染）
- * - side 字段驱动方向感知 resize（left 面板 dx 取正，right 面板 dx 取反）
+ * - `side` 驱动方向感知 resize（left 面板 dx 取正，right 取反）与活动栏归属
+ * - ⚠️ **本模块持有页面组件**，故 `store/` 侧（`uiSlice` / `panelToggle`）**不得 import 它**
+ *   —— 组件 import store，反向引用即成环（判据的原始形态见 `slotMetrics.ts` 的头注释）。
+ *   store 需要的尺寸与开合判据走零依赖的 `slotMetrics` / `panelToggle`，它们只认
+ *   `SlotState`，不认 `SlotDef`。
+ * - 只需**类型**的消费方请写 `import type { SlotDef }`，别把三个页面组件拖进无关模块
  * - TOC 暂不走 slot 系统，仍在 PreviewArea 内部自管
  */
 
 import type { FC } from 'react'
 import { PenLine, Library } from 'lucide-react'
 import { PANEL_DEFAULT_WIDTH, PANEL_MIN_WIDTH, PANEL_MAX_WIDTH } from './slotMetrics'
+import { GenPanel } from '../components/gen-panel/GenPanel'
+import { DocLibrary } from '../components/doc-library/DocLibrary'
+import { PreviewArea } from '../components/preview/PreviewArea'
 
 // ── 类型 ──
 
@@ -22,6 +33,13 @@ export interface SlotDef {
   id: string
   /** 面板所在侧 */
   side: SlotSide
+  /**
+   * 面板组件本体（无 props —— 面板自己从 store 取需要的一切）。
+   *
+   * ⚠️ **必填**，不是可选：`SlotLayout` 直接渲染它，注册表里漏写组件的表现是
+   * 「面板注册了但渲染不出来」，那种失败没有报错、只在界面上少一块。
+   */
+  component: FC
   /** PanelStrip 折叠态标签 */
   label: string
   /** PanelStrip 图标 */
@@ -73,12 +91,13 @@ class SlotRegistryImpl {
 export const SlotRegistry = new SlotRegistryImpl()
 
 // ═══════════════════════════════════════════
-// 注册 4 个内置面板
+// 注册内置面板（left 侧的顺序 = 活动栏图标的顺序）
 // ═══════════════════════════════════════════
 
 SlotRegistry.register({
   id: 'genPanel',
   side: 'left',
+  component: GenPanel,
   label: '生成',
   icon: PenLine,
   defaultWidth: PANEL_DEFAULT_WIDTH,
@@ -91,6 +110,7 @@ SlotRegistry.register({
 SlotRegistry.register({
   id: 'docLib',
   side: 'left',
+  component: DocLibrary,
   label: '文档库',
   icon: Library,
   defaultWidth: PANEL_DEFAULT_WIDTH,
@@ -101,6 +121,7 @@ SlotRegistry.register({
 SlotRegistry.register({
   id: 'preview',
   side: 'center',
+  component: PreviewArea,
   label: '预览',
   icon: PenLine,
   defaultWidth: 0,

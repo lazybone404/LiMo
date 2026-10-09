@@ -495,18 +495,21 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 
 **`provider.base_url` 归一化统一走 `app/core/url_utils.py::api_root()`**（2026-10-02）——判据是「**路径是否已含版本段**」而非「是否以 `/v1` 结尾」，因为后者对两家不成立：Google 兼容层 `.../v1beta/openai`（**必须是这个形态**，缺 `/openai` 会打到不存在的原生路径 → 整条 LLM 链路 404）与智谱 `.../api/paas/v4`。⚠️ 该判据此前在 `routers/model.py`（两处）+ `routers/config.py`（一处）**各有副本**，已收敛为唯一入口 + AST 源码守卫（见关键模式 #54）。⚠️ 新增内置 provider 时**不要**再写 `endswith("/v1")` 拼接。
 
-### 前端布局（三栏插槽 + AI 浮窗）
+### 前端布局（活动栏 + 三栏插槽 + AI 浮窗）
 
 ```
-[GenPanel] | [DocLibrary] | [PreviewArea]
+[ActivityBar] [GenPanel | DocLibrary] | [PreviewArea]
 ```
+- **左侧活动栏**（`ui/ActivityBar.tsx`，2026-10-10）：常驻最左的竖排图标列。面板项**从 `SlotRegistry.grouped().left` 派生**（顺序即注册顺序）+ 两个**动作项**（AI 对话 / 设置，它们不是 slot，故在 store 之外硬编码）。⚠️ **顶栏的面板按钮已全部删除**——活动栏是唯一入口，刻意不留第二套（两处各写一遍必然漂移，模式 #54）
+- **左侧两面板默认互斥**（`lib/layout-prefs.ts` 的 `leftPanelsExclusive`，localStorage `mbw_layout`）：同一时刻只展开一个，由活动栏图标切换；**再按一次是关闭、不露出另一个**（VS Code 语义）。改回「允许并排」在 设置 → 外观 → 侧栏布局。⚠️ **互斥靠 `uiSlice.activeLeftPanel` 这个「选择器字段」，不是「打开甲时遍历同侧把乙收起」**——后者可被任何直接改单个 slot 的调用点绕过，而这样的调用点有四处（`openDocLibSearch` / DocLibrary 右键「重新生成」/ GenPanel 与 DocLibraryToolbar 的面板自关闭），漏一处就露出两个面板。统一入口：`openPanel` / `closePanel` / `togglePanel`（`toggleGenPanel` / `setGenPanelOpen` 保留为薄委托别名）
+- **互斥模式下关掉的面板「连 PanelStrip 都不渲染」**——一次只该有一个面板，34px 窄条此时没有意义；并排模式保留现状（收起 = 窄条）
 - 可拖拽 resize，50–600px，<80px 自动折叠为 PanelStrip
 - **预览区顶部有文档标签栏**（`preview/DocTabBar.tsx`）：VS Code 双标签模型——单击=**预览标签**（斜体、可被下一次单击替换，全组至多一个），双击=钉成**常驻**，已打开的文档直接切过去；不做溢出下拉 / 拖拽排序 / 标签组持久化（基础版，溢出走横向滚动）。⚠️ **`currentDocId` 仍是唯一真相源**（不另存 `activeTabId`），激活态由 `tab.docId === currentDocId` 派生；⚠️ **延后提交**：导航意图先进 `pendingOpenMode`/`pendingClose`，`loadDocContent` **首行**才 `commitTabChange` —— 于是「取消未保存弹窗」天然等于什么都没发生（模式 #62）；⚠️ **与本页签名易混**：`tabRegistry` + `activeView` 是一篇文档**内部**的视图切换，标签栏是**文档之间**的，两者无关
 - **正文字号缩放**：`reading-prefs.ts` 的 `fontScale`（默认 1.0 = 现状 16px，归入既有「阅读版式」族）→ `--read-font-size` → `index.css` 的 `.preview-area .markdown-body { font-size }`（特异性 0,2,0 压过 vendor 硬编码的 16px，**不用 `!important`**——那是「颜色覆盖」的做法）。快捷键 `Ctrl+滚轮`（**原生** `addEventListener(..., { passive: false })`，React 的 `onWheel` 拦不住）/ `Ctrl+=`/`+`/`-`/`_`/`0`。⚠️ 三个必须：写 **px**（em 会与外层 `.preview-content` 的内联 em 相乘）、版宽换算走 `measurePxOf(measure, fontScale)` **同源**、作用域限定 `.preview-area`（模式 #64）
-- 快捷键：`Ctrl+G` 切换生成面板，`Ctrl+I` 开关 AI 浮窗
+- 快捷键：`Ctrl+G` 切到生成面板（⚠️ **语义随布局偏好变**：互斥下没开就打开、开着就关闭且**不露出文档库**；并排下与改造前一致的「切换」），`Ctrl+I` 开关 AI 浮窗，`Ctrl+\` 开关沉浸阅读
 - **AI 对话为浮窗（唯一形态，2026-08-04 移除插槽面板）**：`FloatingAI` 覆盖式浮窗，可拖拽（边界钳制）/resize（不超视口），位置/大小持久化 localStorage（`mbw_aiPos`/`mbw_aiSize`），内部栏（会话列表/导航）可拖拽调宽 + 拖 <80px 自动折叠
-- Zustand store 按域拆 7 slices（`store/themeSlice.ts` / `docsSlice` / `contentSlice` / `tasksSlice` / `chatSlice` / `uiSlice` / `toastSlice`），`store/index.ts` 只剩组合层 + 模块副作用，共享类型在 `store/types.ts`（`Store` 为各 slice 交集）。**action 零跨域引用**，新增域 = 新建 slice 文件，消费方 API 零改动。持久化为手写 localStorage（`mbw_*` 16 个 key），无 persist 中间件。`setProcessing(key, null)` 是前缀树形删除语义（删 key 本身 + `key__` 前缀子任务），`clearDocTasks`/`cancelOneTask`/`failTask` 是兄弟函数
-- **Slot 插槽注册表**（`lib/slotRegistry.ts`）：`SlotDef`（位置 left/right/center + 渲染组件 + 折叠行为）注册即得可拖拽面板，`SlotLayout.tsx` 是布局引擎（50–600px，<80px 折叠为 PanelStrip，`uiSlice.slots` 驱动宽度）。与 AI 浮窗（FloatingAI 覆盖式唯一形态）正交——插槽管内容面板，浮窗管对话
+- Zustand store 按域拆 7 slices（`store/themeSlice.ts` / `docsSlice` / `contentSlice` / `tasksSlice` / `chatSlice` / `uiSlice` / `toastSlice`），`store/index.ts` 只剩组合层 + 模块副作用，共享类型在 `store/types.ts`（`Store` 为各 slice 交集）。**action 零跨域引用**，新增域 = 新建 slice 文件，消费方 API 零改动。持久化为手写 localStorage（`mbw_*` 17 个 key），无 persist 中间件。`setProcessing(key, null)` 是前缀树形删除语义（删 key 本身 + `key__` 前缀子任务），`clearDocTasks`/`cancelOneTask`/`failTask` 是兄弟函数
+- **Slot 插槽注册表**（`lib/slotRegistry.ts`）：`SlotDef`（位置 left/right/center + **`component` 组件本体（必填）** + 宽度上下限 / closable / visibleKey）注册即得可拖拽面板 + 活动栏图标，`SlotLayout.tsx` 是布局引擎（50–600px，<80px 折叠为 PanelStrip，`uiSlice.slots` 驱动宽度）。⚠️ **加一个面板 = 只改注册表一处**——组件本体自 2026-10-10 起也在 `SlotDef` 里（此前硬编码在 `SlotLayout` 的 `COMPONENTS` 映射，加面板要改两处）。⚠️ 注册表**持有页面组件**，故 `store/` 侧（`uiSlice`）**不得 import 它**（会成环）；开合判据走零依赖的 `lib/panelToggle.ts`。与 AI 浮窗（FloatingAI 覆盖式唯一形态）正交——插槽管内容面板，浮窗管对话
 - **对话独立 chatStore**（`store/chatStore.ts`，2026-08-04）：对话状态**不并入主 store**——流式 delta 高频更新隔离（主 store 订阅者不受波及）。chatSlice 只留 generating；AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice。对话组件树：`ChatCore`（容器，内部栏受控拖拽调宽）→ `ChatSidebar`（会话列表/归档折叠）/ `MessageList`（分页窗口）/ `MessageItem`（气泡/打字机/操作栏/工具气泡/思考折叠）/ `ChatInput`（textarea/IME/@引用/token 进度）。消息模型 ChatMsg 在 chatStore.ts 定义，**勿与主 store types.ts 的 ChatMessage 混淆**
 
 ### Tauri 桌面壳
@@ -553,6 +556,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 产物自证头编解码 | [core/transcript_meta.py](backend/app/core/transcript_meta.py) |
 | 图片处理四模式标签 | [lib/imageModes.ts](frontend/src/lib/imageModes.ts) |
 | 面板默认宽 / 折叠阈值 | [lib/slotMetrics.ts](frontend/src/lib/slotMetrics.ts) |
+| 面板开合判据（互斥 / 并排同源） | [lib/panelToggle.ts](frontend/src/lib/panelToggle.ts) |
+| 侧栏布局偏好（互斥 or 并排） | [lib/layout-prefs.ts](frontend/src/lib/layout-prefs.ts) |
 | 风格档 / 引擎标签 / 域列表 / 公式集 / 体裁 / 读者意图 / 维度预设 | **capabilities 下发**（`GET /api/capabilities`），前端**不硬编码** |
 
 ⚠️ **最后一行的意思是「不要去前端建第二份表」**：凡是「后端注册了什么，前端就要列什么」的
@@ -858,8 +863,9 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 状态 | 功能 | 说明 |
 |------|------|------|
 | ✅ | 三栏布局 + AI 浮窗 | GenPanel \| DocLibrary \| PreviewArea 可拖拽 resize；AI 对话统一浮窗（位置/尺寸记忆、内部栏拖拽调宽） |
-| ✅ | PanelStrip | <80px 自动折叠为图标条 |
-| ✅ | 快捷键 | `Ctrl+G` 生成面板，`Ctrl+I` AI 面板 |
+| ✅ | 左侧活动栏 + 面板互斥（2026-10-10） | `ui/ActivityBar.tsx`：常驻最左竖排图标列，面板项**从 `SlotRegistry.grouped().left` 派生** → 加一个面板自动多一个图标；顶栏面板按钮**全部删除**（唯一入口）。左侧两面板**默认互斥**（`layout-prefs.ts`，可在 设置→外观 切回并排）。互斥靠 `uiSlice.activeLeftPanel` **选择器字段**而非「打开甲时收起乙」——后者可被四处直接改单个 slot 的调用点绕过。顺带把 `SlotDef.component` 补成必填（加面板从「改两处」变「改一处」）。⚠️ 与文档多标签页同一批：都不是新功能，是**入口收敛** |
+| ✅ | PanelStrip | <80px 自动折叠为图标条（⚠️ 互斥模式下被关掉的面板**连窄条都不渲染**——一次只该有一个） |
+| ✅ | 快捷键 | `Ctrl+G` 切到生成面板（互斥下再按关闭且不露出文档库），`Ctrl+I` AI 浮窗，`Ctrl+\` 沉浸阅读 |
 | ✅ | 后端持续探活 | `lib/health.ts` 10s 轮询 `/api/health`，运行中断开顶部横幅（down「正在重试」/ crashed「请重启」分级，超 30s 判崩溃），恢复自动消失；与启动探活职责分离 |
 | ✅ | 缺 key 主动提示 | 导入图片/视频缺 dashscope（内联提示条可 X 关）、发送对话缺 LLM key（toast 首次）前置提示，localStorage 记忆 |
 | ✅ | 主题系统 | 六轴独立 — `data-theme`(明暗) × `data-accent`(26套配色) × `data-base`(13种基调) × `data-texture`(6种纹理) × `data-font`(5种字体) × 强度滑条。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（20个: 护眼/经典/粉色/雅致/国风各4）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值） |
@@ -872,7 +878,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 编辑/输入 mono 字体 | 对话输入框 + 文本/链接/图片/文件 URL 粘贴框统一等宽字体（2026-08-16） |
 | ✅ | 欢迎文档三产物 | 空态示例文档 = 笔记（欢迎简介）/整理版原文（开发者功能）/转录（更新记录，2026-08-16） |
 | ✅ | 产物编辑保护 | notes/polished 手动编辑（源码\|预览分屏）+ 未保存离开三态弹窗（保存并离开/不保存/取消）+ 编辑态绑定来源 docId（弹窗期间切文档不错存）+ 编辑中未保存 × 重新生成拦截（`dirtyEditingDocId` 轻量桥，2026-08-25） |
-| ✅ | 沉浸阅读 | 去噪容器（`Ctrl+\` 开关 / `Esc` 退出 / `hideSlots` 藏侧栏，进入复用 Ctrl+G 的 `processingTasks` 守卫）+ 阅读版式三旋钮（行高 / 每行字数 / 段落区隔，**默认值 = 改造前现状**故零回归）。⚠️ **导出不跟随**（用户决策，已知偏差）。详见 CHANGELOG 2026-10-02 |
+| ✅ | 沉浸阅读 | 去噪容器（`Ctrl+\` 开关 / `Esc` 退出 / **预览区工具栏「沉浸」按钮**（2026-10-10 补，活动栏在沉浸下也一并隐藏）/ `hideSlots` 藏侧栏，进入复用 Ctrl+G 的 `processingTasks` 守卫）+ 阅读版式三旋钮（行高 / 每行字数 / 段落区隔，**默认值 = 改造前现状**故零回归）。⚠️ **导出不跟随**（用户决策，已知偏差）。详见 CHANGELOG 2026-10-02 |
 | ✅ | 文档多标签页（2026-10-05） | 预览区顶部 `DocTabBar`，**VS Code 双标签模型**（单击=预览可替换 / 双击=钉住常驻，全组至多一个预览槽）；`currentDocId` 仍是唯一真相源；**延后提交**让「取消未保存弹窗」天然等于什么都没发生（模式 #62）；右键菜单（关闭/其他/全部/固定）+ 中键关闭 + 溢出横向滚动 + 激活项滚入；**不做** Ctrl+P / 最近列表 / 拖拽排序 / 持久化。⚠️ 顺带修「简略模式双击完全没反应」（`replace_all` 只匹配到详细分支） |
 | ✅ | 正文字号缩放（2026-10-05） | 补上**真实缺口**（vendor 硬写 `.markdown-body{font-size:16px}`，既有 `fontSizeScale` 对正文从未生效）；`Ctrl+滚轮` / `Ctrl+±` / `Ctrl+0`，只作用于 `.preview-area`；归入阅读版式族（`fontScale` 默认 1.0 = 零回归）；⚠️ px 非 em、版宽 `measurePxOf` 同源、滚轮走**原生** `passive:false`（模式 #63/#64）。⚠️ 键盘路径的 WebView2 宿主级加速键由 Rust 侧精准放行（`webview_keys`，模式 #65），**打包版生效与否待实测** |
 
@@ -930,7 +936,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 💬 AI 对话 | 9 | 9 | 100% |
 | 📊 图表生成 | 11 | 12 | 92% |
 | 📤 导出 | 11 | 12 | 92% |
-| 🎨 前端 UI/UX | 18 | 18 | 100% |
+| 🎨 前端 UI/UX | 19 | 19 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
 | 🧩 产物复用 | 4 | 5 | 80% |
-| **合计** | **118** | **121** | **98%** |
+| **合计** | **119** | **122** | **98%** |

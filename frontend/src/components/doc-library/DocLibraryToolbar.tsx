@@ -77,9 +77,10 @@ export function DocLibraryToolbar({ density, onDensity, onCreateFolder, busy }: 
               </button>
             ))}
           </span>
+          {/* 走统一入口：互斥下「收起」= 谁都不展开，并排下才收起为窄条（见 `closePanel`） */}
           <button
             data-collapse-panel
-            onClick={() => useStore.getState().setSlot('docLib', { collapsed: true })}
+            onClick={() => useStore.getState().closePanel('docLib')}
             className="w-6 h-6 rounded-md hover:bg-surface-hover flex items-center justify-center"
             title="收起面板"
           >

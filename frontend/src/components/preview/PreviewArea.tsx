@@ -8,7 +8,7 @@ import { getStreamBuffer } from '../../store/streamBuffers'
 import type { TaskInfo } from '../../store/types'
 import { TabRegistry, type TabDef } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Minimize2, Pencil } from 'lucide-react'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Minimize2, Expand, Pencil } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -160,6 +160,7 @@ export function PreviewArea() {
   const contentWidth = useStore(s => s.contentWidth)
   const cycleContentWidth = useStore(s => s.cycleContentWidth)
   const immersive = useStore(s => s.immersive)
+  const toggleImmersive = useStore(s => s.toggleImmersive)
   const reading = useStore(s => s.reading)
 
   // ratio 取自 lib/reading-prefs 的 CONTENT_WIDTH_RATIO（单源）——本表只补 label/icon
@@ -833,9 +834,12 @@ export function PreviewArea() {
           一排标签只是噪音。`docTabs` 为空（欢迎页）时它自己返回 null。 */}
       {!immersive && <DocTabBar />}
       {/* 工具栏 — 对齐 BiliNote MarkdownHeader。
-          沉浸下整条不渲染：tab/复制/导出/宽度/日志全是**操作入口**，属去噪目标。
-          ⚠️ 这里**刻意没有 AI 按钮** —— 顶栏「AI」是唯一入口（同一个 toggleAI）。
-          曾两处都有，同屏两个 MessageSquare 图标，用户只会觉得「这图标是什么」。
+          沉浸下整条不渲染：tab/复制/导出/宽度/沉浸/日志全是**操作入口**，属去噪目标
+          （「沉浸」自己也在其中 —— 它的进入靠这条工具栏，退出靠右上角常驻角标）。
+          ⚠️ 这里**刻意没有 AI 按钮** —— 左侧活动栏的「AI 对话」是唯一入口（同一个
+          `toggleAI`）。曾两处都有，同屏两个 MessageSquare 图标，用户只会觉得
+          「这图标是什么」。（2026-10-10 前那句话写的是「顶栏 AI 是唯一入口」——
+          入口已从顶栏迁到活动栏，判据不变、位置变了。）
           ⚠️ 它不在插槽系统里（`hideSlots` 管不到），必须显式控制。
           ⚠️ TOC **刻意保留** —— 它是阅读导航（长文跳章），与「操作噪音」性质不同，
           且本就能折叠成 28px 竖条，空间成本由用户自己控制。隐藏它 = 功能损失而非去噪。 */}
@@ -874,6 +878,18 @@ export function PreviewArea() {
             title={`阅读宽度：${WIDTH_RATIO[contentWidth].label}（Ctrl+W）`}
           >
             {contentWidth === 'narrow' ? <AlignCenter size={15} /> : contentWidth === 'wide' ? <Maximize2 size={15} /> : <Columns size={15} />}
+          </button>
+          {/* 沉浸阅读 —— 与 Ctrl+\ 共用同一个 `toggleImmersive`（它带 processingTasks
+              守卫：有任务在跑时拒绝进入并 toast，否则 GenPanel 卸载会让任务变僵尸）。
+              ⚠️ 这条按钮只在**非沉浸**时可见（整条工具栏在沉浸下不渲染），所以它实际
+              只承担「进入」；「退出」由右上角常驻角标 / Esc / Ctrl+\ 承担 —— 三者与这里
+              在 store 上收口于同一对 action。 */}
+          <button
+            onClick={toggleImmersive}
+            className="w-7 h-7 flex items-center justify-center text-dimmed hover:bg-surface-hover rounded-lg transition-colors"
+            title="沉浸阅读（Ctrl+\）"
+          >
+            <Expand size={15} />
           </button>
           <button
             onClick={() => setShowLogs(!showLogs)}

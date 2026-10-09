@@ -5,25 +5,24 @@
 import { useCallback } from 'react'
 import { useStore } from '../../store'
 import { SlotRegistry } from '../../lib/slotRegistry'
+import { isPanelOpen } from '../../lib/panelToggle'
 import { ResizeHandle } from './ResizeHandle'
 import { PanelStrip } from './PanelStrip'
-import { GenPanel } from '../gen-panel/GenPanel'
-import { DocLibrary } from '../doc-library/DocLibrary'
-import { PreviewArea } from '../preview/PreviewArea'
-
-const COMPONENTS: Record<string, React.FC> = {
-  genPanel: GenPanel, docLib: DocLibrary, preview: PreviewArea,
-}
 
 /**
  * 将注册的面板展开为扁平的可见项列表，每项标记侧边和是否需要 resize handle。
  *
  * 布局顺序: [left panels] → center → [right panels]
  * 每对相邻的可见+未折叠面板之间插入 ResizeHandle。
+ *
+ * **组件本体来自 `def.component`**（注册在 `slotRegistry`），本文件不再持有映射表
+ * —— 加一个面板只需在注册表写一段。
  */
 export function SlotLayout({ hideSlots }: { hideSlots?: string[] }) {
   const slots = useStore(s => s.slots)
   const setSlot = useStore(s => s.setSlot)
+  const exclusive = useStore(s => s.layout.leftPanelsExclusive)
+  const activeLeftPanel = useStore(s => s.activeLeftPanel)
 
   // 按侧分组 + 展开为扁平列表
   const grouped = SlotRegistry.grouped()
@@ -34,8 +33,17 @@ export function SlotLayout({ hideSlots }: { hideSlots?: string[] }) {
   const items = allDefs.map(def => {
     const s = slots[def.id]
     if (!s || hidden.has(def.id)) return null
-    const visible = def.closable ? (def.visibleKey ? s.visible : true) : true
-    if (!visible) return null
+    if (exclusive && def.side === 'left') {
+      // ⚠️ **互斥模式下左侧谁在布局里，由 `activeLeftPanel` 这个选择器决定**，
+      // 判据与 `uiSlice` 同源（`isPanelOpen`）—— 不能在这里另写一份「两个都可见就
+      // 都渲染」的逻辑，那正是「打开甲时遍历把乙收起」被绕过之后的同一个洞。
+      // 未激活的左侧面板**整项不出现**（连 PanelStrip 都不给：一次只该有一个面板，
+      // 34px 窄条在这个模式下没有意义）。center/right 侧不受互斥影响。
+      if (!isPanelOpen(s, true, activeLeftPanel, def.id)) return null
+    } else {
+      const visible = def.closable ? (def.visibleKey ? s.visible : true) : true
+      if (!visible) return null
+    }
     return { def, state: s }
   }).filter(Boolean) as Array<{ def: typeof allDefs[number]; state: typeof slots[string] }>
 
@@ -89,14 +97,13 @@ function PanelItem({ def, collapsed, width, needsResize, onResize, onExpand }: {
   collapsed: boolean; width: number; needsResize: boolean
   onResize: (dx: number) => void; onExpand: () => void
 }) {
-  const Comp = COMPONENTS[def.id]
-  if (!Comp) return null
+  const Comp = def.component
   const isCenter = def.side === 'center'
 
   if (isCenter) {
     return (
       <>
-        <div className="flex-1 flex overflow-hidden min-w-[200px]">
+        <div data-panel={def.id} className="flex-1 flex overflow-hidden min-w-[200px]">
           <Comp />
         </div>
         {needsResize && <ResizeHandle onResize={onResize} />}
@@ -114,7 +121,10 @@ function PanelItem({ def, collapsed, width, needsResize, onResize, onExpand }: {
           onClick={onExpand}
         />
       ) : (
-        <div style={{ width, minWidth: def.minWidth, maxWidth: def.maxWidth }} className="shrink-0">
+        // `data-panel` 是测试钩子：「哪个面板真的进了布局」只能这样问 —— 互斥模式的
+        // 核心承诺（同一时刻只有一个左侧面板在 DOM 里）必须**断在渲染结果上**，
+        // 只断 `activeLeftPanel` 的值的话，布局层没用它就是绿的。
+        <div data-panel={def.id} style={{ width, minWidth: def.minWidth, maxWidth: def.maxWidth }} className="shrink-0">
           <Comp />
         </div>
       )}

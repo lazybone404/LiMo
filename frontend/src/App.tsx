@@ -8,12 +8,13 @@ import { FloatingAI } from './components/ai-chat/FloatingAI'
 import { SettingsPage } from './components/settings/SettingsPage'
 import { OnboardingWizard } from './components/ui/OnboardingWizard'
 import { SlotLayout } from './components/ui/SlotLayout'
+import { ActivityBar } from './components/ui/ActivityBar'
 import { SearchBar } from './components/ui/SearchBar'
 import { ThemeToggle } from './components/ui/ThemeToggle'
 import { fetchCapabilities, listTranscripts, listFolders, getMarkdown, getTranscript } from './api/client'
 import { startHealthPoll } from './lib/health'
 import { installWarningText, type InstallPathWarning } from './lib/installWarning'
-import { Settings, PanelLeft, Library, MessageSquare, Archive, X } from 'lucide-react'
+import { Archive, X } from 'lucide-react'
 
 // 冷启动静默期（ms）：后端实测 ~2s 就绪，这段窗口内**故意一条请求都不发** ——
 // 起步就探测的话，那一刻后端必然还没监听，会稳定产生一条无意义的失败；而 WebView 里
@@ -48,6 +49,10 @@ export function handleAppKeyDown(e: React.KeyboardEvent) {
       if (Object.keys(s.processingTasks).length > 0) {
         s.addToast('操作进行中，请完成或取消后再切换面板', 'info')
       } else {
+        // ⚠️ **语义随「侧栏布局」偏好而变**（2026-10-10 起 Ctrl+G 与活动栏图标共用同一个
+        // `togglePanel`）：互斥（默认）下它从「切换生成面板开合」变成「切到生成面板」——
+        // 面板没开就打开、开了就关闭，**关闭时不露出文档库**（对齐 VS Code：按的是「关掉
+        // 这个」，不是「给我那个」）。并排模式下与改造前完全一致（各自独立收起/展开）。
         s.toggleGenPanel()
       }
       break
@@ -73,8 +78,6 @@ export function handleAppKeyDown(e: React.KeyboardEvent) {
 }
 
 export default function App() {
-  const slots = useStore(s => s.slots)
-  const setSlot = useStore(s => s.setSlot)
   const aiVisible = useStore(s => s.aiVisible)
   const setCapabilities = useStore(s => s.setCapabilities)
   const setDocs = useStore(s => s.setDocs)
@@ -86,8 +89,6 @@ export default function App() {
   const [showSetup, setShowSetup] = useState(() => {
     try { return !localStorage.getItem('limo_setup_done') } catch { return false }
   })
-  const toggleGenPanel = useStore(s => s.toggleGenPanel)
-  const toggleAI = useStore(s => s.toggleAI)
   const backendReady = useStore(s => s.backendReady)
   const setBackendReady = useStore(s => s.setBackendReady)
   const backendStatus = useStore(s => s.backendStatus)
@@ -288,46 +289,10 @@ export default function App() {
           <img src="/logo.png" className="w-7 h-7 rounded-lg object-cover" alt="LiMo" />
           <span className="font-semibold text-[15px]">LiMo</span>
         </div>
-        {/* 集中式面板切换 — 对标 BiliNote 工具栏 */}
-        <div className="flex items-center gap-0.5 ml-6 bg-surface rounded-lg p-0.5">
-          <button
-            onClick={toggleGenPanel}
-            className={`px-2.5 py-1 rounded-md text-[12px] transition-all flex items-center gap-1.5 ${slots.genPanel.visible ? 'bg-elevated font-medium shadow-sm text-foreground' : 'text-muted hover:text-dimmed'}`}
-            title={slots.genPanel.visible ? '收起生成面板' : '展开生成面板'}
-          >
-            <PanelLeft size={13} />
-            <span>生成</span>
-          </button>
-          <button
-            onClick={() => {
-              if (slots.docLib.collapsed) {
-                setSlot('docLib', { collapsed: false, width: 260 })
-              } else {
-                setSlot('docLib', { collapsed: true })
-              }
-            }}
-            className={`px-2.5 py-1 rounded-md text-[12px] transition-all flex items-center gap-1.5 ${!slots.docLib.collapsed ? 'bg-elevated font-medium shadow-sm text-foreground' : 'text-muted hover:text-dimmed'}`}
-            title={!slots.docLib.collapsed ? '收起文档库' : '展开文档库'}
-          >
-            <Library size={13} />
-            <span>文档库</span>
-          </button>
-          <button
-            onClick={toggleAI}
-            className={`px-2.5 py-1 rounded-md text-[12px] transition-all flex items-center gap-1.5 ${aiVisible ? 'bg-elevated font-medium shadow-sm text-foreground' : 'text-muted hover:text-dimmed'}`}
-            title={aiVisible ? '关闭 AI 浮窗' : '打开 AI 浮窗'}
-          >
-            <MessageSquare size={13} />
-            <span>AI</span>
-          </button>
-          <div className="w-px h-5 bg-border-default" />
-          <button
-            onClick={() => setShowSettings(true)}
-            className={`px-2.5 py-1 rounded-md text-[12px] transition-all flex items-center gap-1.5 text-muted hover:text-dimmed`}
-            title="设置"
-          >
-            <Settings size={13} />
-          </button>
+        {/* 顶栏只留「全局工具」。面板入口（生成 / 文档库 / AI / 设置）已全部收进左侧
+            活动栏 —— 刻意**不在顶栏保留第二套按钮**：两处各写一遍必然漂移（一处忘了
+            互斥、一处忘了宽度复位），而今天这份漂移是用户能直接看见的（两个面板同开）。 */}
+        <div className="flex items-center gap-0.5 ml-6">
           <TaskPanelToggle />
           <div className="w-px h-5 bg-border-default" />
           <ThemeToggle />
@@ -357,8 +322,11 @@ export default function App() {
         </div>
       )}
 
-      {/* 主体 — 插槽布局引擎 */}
+      {/* 主体 — 活动栏 + 插槽布局引擎 */}
       <div className="flex flex-1 overflow-hidden">
+        {/* 活动栏常驻最左（沉浸下让位，与顶栏一致 —— 沉浸要藏掉所有面板入口）。
+            它**不是** slot：图标来自 `SlotRegistry.grouped().left` 的派生，不加新机制。 */}
+        {!immersive && <ActivityBar onOpenSettings={() => setShowSettings(true)} />}
         {/* hideSlots 是**真卸载**（SlotLayout 直接 return null），不是 CSS 隐藏 —— 故进入
             沉浸前要过 processingTasks 守卫（见 uiSlice.toggleImmersive），否则正在跑的
             任务会因 GenPanel 卸载变僵尸。预览区（center）不在隐藏名单里。 */}

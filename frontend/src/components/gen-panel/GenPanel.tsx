@@ -869,7 +869,10 @@ export function GenPanel() {
               <XCircle size={12} />取消
             </button>
           )}
-          <button onClick={() => useStore.getState().setSlot('genPanel', { collapsed: true })}
+          {/* 走统一入口（不是直接 `setSlot(collapsed: true)`）：互斥模式下「收起」= 谁都不
+              展开（`activeLeftPanel = null`），并排模式下才收起为 34px 窄条 —— 这个分歧
+              属于布局层，不该由每个面板各判一次。 */}
+          <button onClick={() => useStore.getState().closePanel('genPanel')}
             className="w-6 h-6 rounded-md hover:bg-surface-hover flex items-center justify-center"
             title="收起面板"
           ><PanelLeftClose size={14} className="text-muted" /></button>
