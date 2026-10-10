@@ -311,4 +311,26 @@ describe('会话切换', () => {
     expect(s.messages).toEqual([])
     expect(s.topic).toBe('新对话')
   })
+
+  // ⚠️ 这是「同一篇文档被两个工具轮次引用」的落盘形态（search_docs 命中 → lookup_doc 打开）：
+  // 引用 chips 用 docId 当 React key，重复项会炸 React 重复 key 警告 + chips 渲染错乱。
+  // 实时流路径的 onRef 本就去重，**恢复路径曾经没有** → 那批数据只在「下次打开会话」时炸。
+  // 恢复侧的去重同时兼任历史数据自愈点，故这条用例必须走 openConversation 而不是 onRef。
+  it('openConversation 恢复时按 docId 保序去重（历史数据自愈点）', async () => {
+    vi.mocked(chatApi.getConversation).mockResolvedValueOnce({
+      id: 'conv1', title: 'T', created_at: 'c', updated_at: 'u', doc_ids: [],
+      messages: [{
+        id: 'm1', role: 'assistant', content: '答', timestamp: 't',
+        doc_refs: [
+          { docId: 'tr_a', title: 'A' },
+          { docId: 'tr_b', title: 'B' },
+          { docId: 'tr_a', title: 'A' },  // 重复
+        ],
+      }],
+    })
+    await useChatStore.getState().openConversation('conv1')
+    const refs = useChatStore.getState().messages[0].docRefs!
+    // 断言**顺序**（保序去重，不是 Set 任意序）+ 去重结果
+    expect(refs.map(r => r.docId)).toEqual(['tr_a', 'tr_b'])
+  })
 })

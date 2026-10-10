@@ -121,6 +121,25 @@ def _build_registry(store: object) -> ToolRegistry:
     return reg
 
 
+def _append_refs(refs: list[dict], seen: set[str], incoming: list | None) -> None:
+    """把 `incoming` 里的引用按 `docId` **保序去重**后并入 `refs`（原地修改两个容器）。
+
+    ⚠️ **必须去重**：同一篇文档被多个工具轮次引用是常态（`search_docs` 命中 →
+    `lookup_doc` 打开），`extend` 会让同一 `docId` 进两次。前端引用 chips 用 `docId`
+    当 React key —— 流式路径的 `onRef` 顺手去重了，**重开会话的恢复路径没有**，于是
+    「落盘数据里的重复」只在下次打开会话时炸成 React 重复 key 警告 + chips 渲染错乱。
+
+    抽成模块级函数是为了让测试**直调真实实现**：调用点在一个嵌套的 async generator
+    里（`sse_stream`），测试够不到，只能复刻表达式 —— 而复刻的表达式正是最常见的
+    「改了一处、另一处还在旧假设上」的来源。
+    """
+    for r in incoming or []:
+        rid = r.get("docId")
+        if rid and rid not in seen:
+            seen.add(rid)
+            refs.append(r)
+
+
 # ── 路由 ──
 
 
@@ -253,7 +272,9 @@ async def chat_stream(
     async def sse_stream():
         full_answer: list[str] = []
         tool_calls: list[dict] = []
+        # 引用累加器：`seen_ref_ids` 与 `refs` 成对（去重判据见 `_append_refs`）
         refs: list[dict] = []
+        seen_ref_ids: set[str] = set()
         thinking_parts: list[str] = []
         async with disconnect_watcher(request, cancel_event):
             try:
@@ -267,7 +288,7 @@ async def chat_stream(
                     elif event["type"] == "tool_start":
                         tool_calls.append({"tool": event["tool"], "display": event["display"]})
                     elif event["type"] == "tool_result":
-                        refs.extend(event.get("refs", []) or [])
+                        _append_refs(refs, seen_ref_ids, event.get("refs"))
                     elif event["type"] == "thinking":
                         thinking_parts.append(event.get("text", ""))
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"

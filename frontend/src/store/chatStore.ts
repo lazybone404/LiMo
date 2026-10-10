@@ -27,6 +27,18 @@ export interface DocRef {
   segment?: string
 }
 
+/**
+ * 按 `docId` 保序去重 —— 引用 chips 用 `docId` 当 React key，重复项会让 chips 渲染错乱。
+ *
+ * ⚠️ **两条消费路径必须同源**：流式追加（`onRef`）与重开会话恢复（`openConversation`）。
+ * 此前只有前者去重，而后端落盘的 `doc_refs` 里**可能有重复**（同一篇文档被多个工具轮次
+ * 引用——search_docs 命中后又 lookup_doc 打开是常态），于是那批数据只在「下次打开会话」
+ * 时才炸成重复 key 警告。恢复侧的去重同时兼任**历史数据自愈**（后端修复只影响新会话）。
+ */
+function dedupeRefs(refs: DocRef[]): DocRef[] {
+  return refs.filter((r, i, arr) => arr.findIndex(x => x.docId === r.docId) === i)
+}
+
 export interface ToolCall {
   id: string
   tool: string
@@ -205,9 +217,7 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       onRef(docId, title) {
         updateLastBot(msg => ({
           ...msg,
-          docRefs: [...(msg.docRefs || []), { docId, title }].filter(
-            (r, i, arr) => arr.findIndex(x => x.docId === r.docId) === i,
-          ),
+          docRefs: dedupeRefs([...(msg.docRefs || []), { docId, title }]),
         }))
       },
       onThinking(text) {
@@ -283,7 +293,9 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
           role: m.role === 'user' || m.role === 'assistant' ? m.role : 'system',
           content: m.content,
           date: m.timestamp || new Date().toLocaleString(),
-          docRefs: m.doc_refs?.length ? m.doc_refs : undefined,
+          // ⚠️ 恢复侧也要去重：落盘数据里可能有重复 docId（见 `dedupeRefs` 注释）——
+          // 这是历史数据唯一的自愈点。
+          docRefs: m.doc_refs?.length ? dedupeRefs(m.doc_refs) : undefined,
           toolCalls: m.tool_calls?.length
             ? m.tool_calls.map(tc => ({ id: nextMsgId(), tool: tc.tool, display: tc.display, summary: tc.summary, status: 'done' as const }))
             : undefined,
