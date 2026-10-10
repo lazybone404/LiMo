@@ -20,7 +20,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { splitByH2 } from '../lib/markdown-sections'
+import { splitByH2, splitByHeading } from '../lib/markdown-sections'
 
 /**
  * ⚠️ 用 `process.cwd()` 而非 `import.meta.url`：本文件跑在 jsdom 环境。
@@ -71,5 +71,42 @@ describe('splitByH2 — 结构不变量', () => {
     const { preamble, sections } = splitByH2('# 大标题\n\n### 三级\n内容\n')
     expect(sections).toEqual([])
     expect(preamble).toContain('# 大标题')
+  })
+})
+
+describe('splitByHeading — 层级是参数（对话卡片组按 `###` 切卡）', () => {
+  it('level=3：每个 `###` 一节，preamble 是首个 `###` 之前的内容', () => {
+    const md = '引言\n\n### 甲\n内容一\n\n### 乙\n内容二\n'
+    expect(splitByHeading(md, 3)).toEqual({
+      preamble: '引言',
+      sections: [
+        { heading: '### 甲', body: '内容一' },
+        { heading: '### 乙', body: '内容二' },
+      ],
+    })
+  })
+
+  it('对照 A：`###` 出现在代码围栏里时**不切**', () => {
+    // ⚠️ 这条正是「泛化做进 `markdown-sections.ts`、而不是在对话组件里另写一份扫描」的
+    // 理由：另写一份必然漏掉围栏感知 → 切出幽灵卡，而两张卡看起来都正常、零报错。
+    const md = '```\n### 这是代码里的井号\n```\n\n### 真标题\n内容\n'
+    const { sections } = splitByHeading(md, 3)
+    expect(sections).toHaveLength(1)
+    expect(sections[0].heading).toBe('### 真标题')
+  })
+
+  it('更浅与更深的标题都不切（level=3 时 `##` 与 `####` 都留在正文里）', () => {
+    const md = '## 二级\n正文\n\n#### 四级\n正文\n'
+    expect(splitByHeading(md, 3).sections).toEqual([])
+  })
+
+  it('无该级标题 → sections 为空、preamble 等于整篇（调用方据此退化为普通正文）', () => {
+    const md = '只有正文\n没有标题\n'
+    expect(splitByHeading(md, 3)).toEqual({ preamble: md, sections: [] })
+  })
+
+  it('splitByH2 就是 splitByHeading(md, 2) —— 泛化后行为逐字不变', () => {
+    const md = '引言\n\n## 甲\n一\n\n## 乙\n二\n'
+    expect(splitByH2(md)).toEqual(splitByHeading(md, 2))
   })
 })

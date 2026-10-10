@@ -25,6 +25,7 @@ from app.agent.tool_registry import ToolRegistry, ToolDef
 from app.agent.session import SessionManager
 from app.agent.compress import should_compress, compress_history
 from app.agent.prompts import loader as prompt_loader
+from app.core.artifact_blocks import parse_blocks
 
 router = APIRouter()
 
@@ -278,8 +279,17 @@ async def chat_stream(
                     tool_calls=tool_calls or None,
                     thinking="".join(thinking_parts) or None,
                 )
+                # ⚠️ **`blocks` 是本轮唯一不靠肉眼判断的模型行为信号**：`limo-block` 卡片组 /
+                # 追问建议是**模型可选**的输出，遵循率与滥用率都只能在真实流量里看。
+                # 没有这一项，「模型到底用没用」就只能翻聊天记录猜。
+                # ⚠️ 用 `parse_blocks` 计数而不是数子串：正文里讨论本协议时也会出现
+                # `limo-block` 这个词，那不算用了它。
+                answer = "".join(full_answer)
+                blocks = [s for s in parse_blocks(answer) if s["kind"] == "block"]
                 log.info("Chat SSE 完成", conversation_id=conversation_id,
-                         answer_len=len("".join(full_answer)),
+                         answer_len=len(answer),
+                         blocks=len(blocks),
+                         block_types=",".join(sorted({s["type"] for s in blocks})) or "-",
                          tools=len(tool_calls), refs=len(refs), saved=True)
             finally:
                 # 关闭 LLM 连接池（防 httpx client 常驻累积）

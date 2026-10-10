@@ -15,9 +15,12 @@ from pathlib import Path
 import pytest
 
 from app.core.artifact_blocks import (
+    ARTIFACT_BLOCK_TYPES,
+    CHAT_BLOCK_TYPES,
     KNOWN_BLOCK_TYPES,
     PROTOCOL_VERSION,
     has_blocks,
+    is_known_type,
     parse_blocks,
     strip_blocks,
 )
@@ -60,6 +63,47 @@ def test_已知类型白名单与前端同源():
 
 def test_协议版本与前端同源():
     assert PROTOCOL_VERSION == FIXTURE["meta"]["protocolVersion"]
+
+
+def test_三个集合的关系与_fixture_同源():
+    """`ARTIFACT ∪ CHAT == KNOWN`、两者**不相交**、各等于 fixture 的子集。
+
+    ⚠️ 这条挡住的是「加了 type 却漏写渲染器」—— 那种失效**零报错**：协议认识它，
+    某一侧把它当普通正文吐出来，看起来像「模型没写标记」（`limo-blocks.json` 的
+    `meta` 注释里写着同一条纪律）。
+    """
+    meta = FIXTURE["meta"]
+    assert ARTIFACT_BLOCK_TYPES == frozenset(meta["artifactTypes"])
+    assert CHAT_BLOCK_TYPES == frozenset(meta["chatTypes"])
+    assert KNOWN_BLOCK_TYPES == ARTIFACT_BLOCK_TYPES | CHAT_BLOCK_TYPES
+    assert not (ARTIFACT_BLOCK_TYPES & CHAT_BLOCK_TYPES)
+    # 两侧的类型都在协议白名单里（`is_known_type` 是渲染方唯一的查询入口）
+    for t in KNOWN_BLOCK_TYPES:
+        assert is_known_type(t), t
+
+
+def test_fixture_覆盖了两个新类型():
+    """名称级守卫：光有集合常量不算覆盖 —— 新类型必须**至少有一条解析用例**，
+    否则「加进白名单」与「真的能解析」之间没有任何证据。"""
+    names = "\n".join(c["name"] for c in CASES)
+    for kw in ("card-group", "follow-up"):
+        assert kw in names, f"fixture 缺少 {kw} 的用例"
+
+
+def test_对话侧类型在产物侧只剥标记行_结构原样保留():
+    """产物侧不认识 `card-group`，但**零丢失**地处理它：`###` 结构原样交给 Markdown
+    渲染器（`render_blocks_html` 对任何 type 都一视同仁地包 `md-block`，CSS 层匹配不到
+    `card-group` 就退化成普通内容）。
+
+    ⚠️ 与「解析器对 type 无感知」这条设计同源 —— 若解析器按白名单吞内容，
+    产物侧碰到对话类型就会**静默丢一段正文**。
+    """
+    md = ('<!-- limo-block:v1 type="card-group" -->\n'
+          "### 甲\n内容一\n\n### 乙\n内容二\n<!-- /limo-block -->")
+    assert strip_blocks(md) == "### 甲\n内容一\n\n### 乙\n内容二"
+    assert parse_blocks(md) == [
+        {"kind": "block", "type": "card-group", "content": "### 甲\n内容一\n\n### 乙\n内容二"}
+    ]
 
 
 # ── 表驱动：与前端逐字段同形 ────────────────────────────────────

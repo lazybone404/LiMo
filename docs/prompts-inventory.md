@@ -524,18 +524,22 @@ POST /process/{id}
 
 ### 9.1 分层 System Prompt（`app/agent/prompts/`）
 
-**文件**：`app/agent/prompts/base.md`（角色定义）+ `rules.md`（硬约束）+ `__init__.py`（`PromptLoader`）
+**文件**：`app/agent/prompts/base.md`（角色定义）+ `rules.md`（硬约束）+ `formats.md`（可选呈现）+ `__init__.py`（`PromptLoader`）
 
-不再用 chat.py 内联 `SYSTEM_PROMPT` 字符串——三层叠加（参照 AGENTS.md 模式）：
+不再用 chat.py 内联 `SYSTEM_PROMPT` 字符串——四层叠加（参照 AGENTS.md 模式）：
 
 ```python
 loader = PromptLoader()          # 模块级单例
-system = loader.build(doc_context)  # base + rules + 动态注入的当前文档摘要
+system = loader.build(doc_context)  # base + rules + formats + 动态注入的当前文档摘要
 ```
 
 - `base.md` → 角色定义
 - `rules.md` → 硬约束（禁止编造、先查再答…）
+- `formats.md` → 回答可用的**语义块**（`limo-block` 的 `card-group` 卡片组 / `follow-up` 追问建议），见 9.5
 - `doc_context` → 运行时注入的文档内容（`smart_truncate(rawText, 1000)` 按句子边界截断）
+
+⚠️ `formats` 排在 `rules` 之后、`doc_context` 之前：它是「回答怎么呈现得好读」的**补充**，
+不是硬约束（排 `rules` 前会让它读起来比「禁止编造」更重要）；排 `doc_context` 后则像文档的一部分。
 
 ### 9.2 运行时扩充
 
@@ -556,6 +560,27 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 ```
 
 **C 端隐私**：`tool_result` 仅推送摘要（计数/长度），完整结果只传给 LLM 不出现在前端 UI。`tool_start` 的 `display` 由后端 `_tool_display()` 生成安全文案。无独立 `ref` 事件——引用随 `tool_result.refs` 携带。
+
+### 9.5 回答的语义块（`formats.md`，2026-10-11）
+
+| 类型 | 触发条件 | 渲染方 |
+|------|---------|--------|
+| `card-group` | 并列比较 2–4 个同级对象、比同一组维度 | 前端 `ai-chat/ChatMarkerContent.tsx` → 并排卡片 |
+| `follow-up` | 回答末尾有 2–4 个自然的下一步问题 | 同上 → 可点击的追问 chip |
+
+**三条写作纪律**（照图表管道那套）：
+
+1. **只教语义不教外观** —— 不提颜色/边框/圆角一个字，外观归 `chat-blocks.css` 与主题系统；
+2. **约束尽量少** —— 堆规则与遵循率是直接 trade-off（2026-08-16 图表那次的教训）；
+3. **显式逃生口** —— 「一个块都不用是正常且常见的，不用不减分」，否则模型为「用上新功能」硬凑。
+
+**与产物侧的关系**：协议同名（`limo-block`），**类型与规范文本刻意各一套**。
+产物侧走 `generation/prompt.py::get_markdown_block_format()`（只教 `key-takeaway`），
+对话侧走本文件。两边集合由 `core/artifact_blocks.py` 的 `ARTIFACT_BLOCK_TYPES` /
+`CHAT_BLOCK_TYPES` 定义且**不相交**，共享 fixture `limo-blocks.json` 的 `meta` 钉住。
+
+⚠️ **无勾选项、无条件注入** —— 与产物侧同理：价值全在「模型自主判断该不该用」，
+要求用户先勾选就把问题退回去了。
 
 ### 9.4 工具描述
 
@@ -770,7 +795,8 @@ composite 分派就被丢弃）。合成文风**全部**由 `_SYNTHESIS_STYLE_CO
 | [backend/app/engines/ocr.py](backend/app/engines/ocr.py) | DashScopeOCREngine — 4 种图片处理模式（与 process.py 重复） |
 | [backend/app/agent/prompts/base.md](backend/app/agent/prompts/base.md) | Agent 角色定义层（分层 System Prompt 第一层） |
 | [backend/app/agent/prompts/rules.md](backend/app/agent/prompts/rules.md) | Agent 硬约束层（禁止编造、先查再答…第二层） |
-| [backend/app/agent/prompts/__init__.py](backend/app/agent/prompts/__init__.py) | `PromptLoader` — 组装 base + rules + 动态 doc_context（chat.py 的旧内联 SYSTEM_PROMPT 已迁移至此） |
+| [backend/app/agent/prompts/formats.md](backend/app/agent/prompts/formats.md) | Agent 回答的语义块规范（`limo-block` 的 `card-group` / `follow-up`，第三层；见 9.5） |
+| [backend/app/agent/prompts/__init__.py](backend/app/agent/prompts/__init__.py) | `PromptLoader` — 组装 base + rules + formats + 动态 doc_context（chat.py 的旧内联 SYSTEM_PROMPT 已迁移至此） |
 | [backend/app/agent/tools.py](backend/app/agent/tools.py) | 5 个工具 ToolDef + 工具描述（search_docs / lookup_doc / list_docs / search_web / fetch_url） |
 | [backend/app/llm/agent.py](backend/app/llm/agent.py) | AgentRunner — SSE 事件流（agent_status / tool_start / tool_result / thinking / text / done） |
 | [backend/app/llm/service.py](backend/app/llm/service.py) | LLMService — 续写机制 |

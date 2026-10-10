@@ -34,12 +34,29 @@ import re
 #: （零残留降级，内容不丢）。与前端 `markdown-markers.ts::PROTOCOL_VERSION` 同源。
 PROTOCOL_VERSION = "v1"
 
-#: 已知的块类型白名单。
+#: **产物侧**（预览 / HTML / Word 导出）真写了渲染分支的块类型。
 #: ⚠️ **第一版刻意只有 1 个** —— 加一个类型的成本不在代码，而在 prompt 每轮都要重新教育
 #: 一遍模型（且类型越多越容易「到处都用」）。先看这一个的真实遵循率与滥用率。
-#: ⚠️ 与前端 `markdown-markers.ts::KNOWN_BLOCK_TYPES` **必须同源**，由
-#: `frontend/src/test/fixtures/limo-blocks.json` 的 `meta.knownTypes` 钉住。
-KNOWN_BLOCK_TYPES = frozenset({"key-takeaway"})
+ARTIFACT_BLOCK_TYPES = frozenset({"key-takeaway"})
+
+#: **对话侧**（前端 `ai-chat/ChatMarkerContent.tsx`）真写了渲染分支的块类型。
+#: ⚠️ 与 `ARTIFACT_BLOCK_TYPES` **刻意不相交** —— 产物 prompt 与对话 prompt 各教各的。
+CHAT_BLOCK_TYPES = frozenset({"card-group", "follow-up"})
+
+#: **协议已知**的全部块类型 = 上两者之并。
+#:
+#: ⚠️ **「协议知道这个 type」与「某一侧实现了渲染」是两件事**，故拆成三个集合。混为一谈的
+#: 失效方式是静默的：把一个 type 加进这里就等于宣称「有人处理它」，而某个渲染方其实没有
+#: 分支 → 该 type 被原样当正文吐出来，**零报错**。拆开后测试可以机器核对
+#: 「并集相等 + 两两不相交」。
+#:
+#: ⚠️ **Python 侧只消费本集合**（`is_known_type`），另两个是**镜像声明** —— 产物导出
+#: （`render_blocks_html`）对任何 type 都一视同仁地包 `md-block`，不认识的在 CSS 层退化成
+#: 普通内容。保留它们是为了让「并集 == 两侧之和」这条断言在**两侧都成立**。
+#:
+#: ⚠️ 与前端 `markdown-scan.ts` 的三个同名集合**必须同源**，由
+#: `frontend/src/test/fixtures/limo-blocks.json` 的 `meta` 三者钉住。
+KNOWN_BLOCK_TYPES = ARTIFACT_BLOCK_TYPES | CHAT_BLOCK_TYPES
 
 #: 开标记：`<!-- limo-block:vN type="xxx" -->`，独占一行。
 #: ⚠️ 与前端 `markdown-markers.ts::OPEN_RE` **逐字同构**（同一份 fixture 钉住）。

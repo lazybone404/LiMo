@@ -1,20 +1,26 @@
 /**
- * 按 H2 切分 Markdown —— 产物骨架轴（`card`）的切分器。**纯函数，独立单测**。
+ * 按指定层级标题切分 Markdown —— 产物骨架轴（`card`）与对话卡片组共用。**纯函数，独立单测**。
  *
  * ⚠️ 与后端 `app/services/markdown_sections.py::split_by_h2` **判据同构**（同一条围栏正则、
  * 同样只认 `##`、同样剥尾部分隔线）。跨语言必然两份实现，靠
  * `test/fixtures/h2-sections.json` 钉住一致 —— 不靠「写得像」。
  *
- * ⚠️ **`heading` 保留原始标题行（含 `## ` 前缀），不在这里剥装饰**。
- * 卡片渲染时把 `heading + '\n' + body` 原样交给既有 `MarkdownPreview`，于是卡片内的标题
- * **仍然是那条 `<h2>`** —— badge、锚点 id、TOC 跳转、字号全部与今天逐一致。
+ * ⚠️ **层级是参数**（2026-10-11 泛化）：产物侧消费 `level=2`（每个 H2 一张卡），
+ * 对话卡片组消费 `level=3`（块内每个 `###` 一张卡）。泛化**刻意做在这里**而不是在对话
+ * 组件里另写一遍 —— 围栏感知（代码块里的 `###` 不是标题）只该有一个家，
+ * 两条实现漂移的症状是「卡数对不上」，**零报错**（模式 #54）。
+ * 后端**不跟**：对话只在前端渲染，多一份 Python 实现才是负担。
+ *
+ * ⚠️ **`heading` 保留原始标题行（含 `#` 前缀），不在这里剥装饰**。
+ * 卡片渲染时把 `heading + '\n' + body` 原样交给既有渲染器，于是卡片内的标题
+ * **仍然是那条 `<h2>`/`<h3>`** —— badge、锚点 id、TOC 跳转、字号全部与今天逐一致。
  * 若在这里剥成纯文本另画一个标题元素，就等于**新起第二条标题渲染路径**，
  * 而「同一个渲染决策只写在一个地方」正是本轮要守的。
  *
  * 边界：
- *  - 无 H2 → `{ preamble: md, sections: [] }`（调用方回落长文）；
- *  - H2 前的引言 → `preamble`（单独成块，**不丢弃**）；
- *  - H2 内的 H3/H4 → **留在卡片内**（卡片是容器，不是细分器；节内二级切分本轮不做）。
+ *  - 无该级标题 → `{ preamble: md, sections: [] }`（调用方回落长文）；
+ *  - 首个标题之前的引言 → `preamble`（单独成块，**不丢弃**）；
+ *  - 该级标题内的更深标题 → **留在卡片内**（卡片是容器，不是细分器）。
  */
 
 import { scanHeadingLines } from './markdown-scan'
@@ -53,14 +59,15 @@ function trimBody(lines: string[]): string {
   return lines.slice(start, end).join('\n')
 }
 
-export function splitByH2(md: string): SplitResult {
+/** 按 `level` 级标题切分（`level` 1-6）。围栏内与标记块内的同名标题**不算**切点。 */
+export function splitByHeading(md: string, level: number): SplitResult {
   // ⚠️ **先整体规范化 CRLF**（`\r\n` 与孤立 `\r`）。只在匹配时剥 `\r` 是不够的：
   // `lines[h.line]` 与 body 的**每一行**都可能带尾 `\r`，症状是卡片正文行尾多一个
   // 不可见字符（渲染上看不出来，fixture 比对上一眼就现形）。
   // 行数不变，故 `scanHeadingLines` 给出的行号在规范化前后一致。
   const src = md.replace(/\r\n?/g, '\n')
   const lines = src.split('\n')
-  const marks = [...scanHeadingLines(src, 2, 2)]
+  const marks = [...scanHeadingLines(src, level, level)]
   if (marks.length === 0) return { preamble: src, sections: [] }
 
   const sections: Section[] = marks.map((h, i) => {
@@ -69,6 +76,11 @@ export function splitByH2(md: string): SplitResult {
   })
 
   return { preamble: lines.slice(0, marks[0].line).join('\n').replace(/\s+$/, ''), sections }
+}
+
+/** 产物骨架轴（`card`）的切分器：每个 H2 一张卡。行为与泛化前逐字一致。 */
+export function splitByH2(md: string): SplitResult {
+  return splitByHeading(md, 2)
 }
 
 /**

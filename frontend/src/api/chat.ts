@@ -75,8 +75,14 @@ export function streamChat(
         else if (data.type === 'text') callbacks.onText(data.text)
         else if (data.type === 'agent_status') callbacks.onStatus?.(data.message)
         else if (data.type === 'tool_start') callbacks.onToolStart(data.tool ?? '', data.display)
-        else if (data.type === 'tool_result') callbacks.onToolResult?.(data.tool, data.summary)
-        else if (data.type === 'ref') callbacks.onRef?.(data.docId, data.title)
+        else if (data.type === 'tool_result') {
+          callbacks.onToolResult?.(data.tool, data.summary)
+          // ⚠️ 引用**随 `tool_result` 一起发**（后端 `agent.py::_extract_refs` → `refs: [{docId, title}]`），
+          // 这里必须逐个转发给 `onRef`。此前只取了 `summary`、把 `refs` 整个丢掉，
+          // 于是**实时流里 assistant 的引用 chips 从不出现**，只有重开会话才从落盘的
+          // `doc_refs` 复原 —— 而下面那条 `ref` 事件后端**根本不发**（死分支）。
+          for (const r of data.refs ?? []) callbacks.onRef?.(r.docId, r.title)
+        }
         else if (data.type === 'thinking') callbacks.onThinking?.(data.text)
         else if (data.type === 'compressed') callbacks.onCompressed?.(data.count)
         else if (data.type === 'done') { callbacks.onUsage?.(data.usage); callbacks.onDone(data.usage) }

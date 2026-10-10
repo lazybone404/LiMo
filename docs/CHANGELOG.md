@@ -6,6 +6,148 @@
 
 ---
 
+## 2026-10-11 — 对话侧卡片组 + 追问 chips（`limo-block` 扩展到对话）（0.5.0，未升版）
+
+### 做了什么
+
+把上一轮（`b7df321`）搭好的「**正文协议元素**」架构**扩展到对话侧**，新增两个形态：
+
+| 形态 | 触发条件 | 渲染 |
+|---|---|---|
+| `card-group` 卡片组 | 回答要**并列比较 2–4 个同级对象**、比同一组维度 | 块内 `###` 各成一张**并排卡片**（可横着扫） |
+| `follow-up` 追问 chips | 回答末尾有 2–4 个自然的下一步问题 | 每项一颗**可点击**的 chip，点了直接发送 |
+
+**为什么**：对话是这个项目里**读得最多**的产物，也是**最难读**的 —— 信息密度大、成段成段，
+用户的原话是「看着累」。而上一轮的架构只在产物侧生效，对话正文走的是一条完全独立的渲染
+路径（裸 `ReactMarkdown`），模型想组织回答也没有手段。
+
+**四个已拍板的决策**（不再论证）：① 两个都做；② 卡片组内容格式 = **结构化 Markdown**
+（块内 `###` 切卡），不是 JSON；③ 追问承载 = **正文标记**（复用 `limo-block`），不是新增
+SSE 事件；④ 流式半截标记 = **整行抑制**（不显示写到一半的协议文本）。
+
+**明确不改**：SSE 协议 / 消息存储格式 / `PROMPT_VERSION`（对话侧本就没有）/ 版本号。
+
+### 协议层：正则一行都没改
+
+`BLOCK_OPEN_RE` 的 type 段是 `[a-z][a-z0-9-]*`，已覆盖两个新 type；且 `matchBlockOpen` /
+`match_open` **只校验协议版本、不查白名单** —— 解析器对 type 无感知是本协议的关键设计。
+**加一个 type 的成本 = 改白名单常量 + 写渲染器**，不是改语法。
+
+⚠️ **「协议知道这个 type」与「某一侧实现了渲染」拆成三个集合**
+（`ARTIFACT_BLOCK_TYPES` / `CHAT_BLOCK_TYPES` / `KNOWN_BLOCK_TYPES = 前两者之并`，
+前后端各一份）。混为一谈的失效方式是**静默**的：把 type 加进白名单就等于宣称「有人处理它」，
+而某个渲染方其实没有分支 → 该 type 被原样当正文吐出来，**零报错**。拆开后由断言机器核对
+「并集相等 + 两两不相交 + 各等于 fixture 的子集」（`limo-blocks.json` 的 `meta` 三处）。
+
+### 对话侧渲染：**只共享判据，不共享渲染器**
+
+核实过两条渲染路径的确切差异：插件集**完全相同**，但 `MessageItem.tsx` 是**裸** `ReactMarkdown`
+（无 `components` prop），而 `MarkdownPreview` 传了 `createMarkdownComponents(...)`（代码高亮 /
+图片 zoom / 标题锚点 id / 时间戳 badge / 链接安全校验）。让对话复用产物侧的 `MarkerContent`
+（内部硬编码 `MarkdownPreview`）**等于把整个对话正文换成产物渲染路径** —— 语法高亮凭空出现、
+每条历史消息的间距与表格全变，是一次**波及全部历史消息的静默回归**。
+
+故新增 `ai-chat/ChatMarkerContent.tsx`：内部 `ChatText`（就是原来那段 `ReactMarkdown`）+
+`ChatCardGroup` / `ChatFollowUp`；**其余 type（含产物侧的 `key-takeaway` 与未知 type）一律走
+`ChatText`**（内容原样，零残留）。共用的是 `parseMarkers` 与新增的层级化切分器
+`splitByHeading(md, level)`（`splitByH2` 改为委托它，行为逐字不变）—— 与后端
+`render_blocks_html(md, render_fragment)`「渲染交给调用方」同一纪律。
+
+⚠️ 对话样式刻意**不共用 `.md-block`**（那是 `blocks.css` 的产物强调块，左边框 + 淡底）——
+对话要紧凑，`chat-blocks.css` 用独立的 `.chat-*`、尺寸一律 em（跟随对话三档字号）、色值零硬编码。
+
+### 流式：半截标记行的抑制（本轮最大的新问题）
+
+`parseMarkers` 是为**完整字符串**设计的，从没在 partial 上跑过。chunk 会把开标记切在中间
+（`<!-- limo-block:v1 type="card-`），这种半截行**既不匹配 `BLOCK_OPEN_RE`（缺 `-->`）
+也不匹配 `MARKER_LINE_RE`** → 落到「普通正文」分支被渲染出来，用户看着原始协议文本飘过。
+
+新增 `isPartialMarkerLine` / `suppressTrailingPartialMarker`（`markdown-scan.ts`，判据的唯一家）：
+
+- ⚠️ **判据必须命名空间感知** —— 朴素的「以 `<!--` 开头且没有 `-->`」会把**正在输入的合法
+  HTML 注释**（`<!-- 这是一段说明`）一起吞掉，正文瞬断。测试里有一条**对照实验**专门证明
+  两个判据在这里行为不同（否则命名空间感知形同虚设）。
+- ⚠️ **只削最后一行** —— chunk 只向后追加，半截行必定在末尾；削中间行会在正文里挖出空洞。
+- ⚠️ **无需抑制时原样返回入参引用** —— 这个函数在流式的每一帧都被调用，无谓的字符串重建是纯浪费。
+- **只在对话正文且 `streaming === true` 时调用**：产物侧、历史消息、重开会话一律不调用 → 与现状零差异。
+
+### prompt：`formats.md` 作为第四层（无条件注入）
+
+`app/agent/prompts/formats.md`（新）+ `PromptLoader` 三层 → **四层**
+（`base + rules + formats + doc_context`）。`chat.py` 的非流式与流式两个调用方**共用 `build()`**，
+故自动覆盖。
+
+三条写作纪律（照图表管道那套）：**只教语义不教外观**（不提颜色/边框/圆角一个字）/
+**约束尽量少**（堆规则与遵循率是直接 trade-off）/ **显式逃生口**（「一个块都不用是正常且
+常见的，不用不减分，也不要求每条回答都用」，以及「不要为了用上新功能而勉强凑出一块」）。
+另有一条挡「模型在工具调用前后的过渡语里加块」——那些过程话术**不是最终回答**。
+
+⚠️ **两侧规范刻意不共用一份文本**：产物侧走 `get_markdown_block_format()`（只教 `key-takeaway`），
+对话侧走 `formats.md`；类型集合不相交，措辞与触发条件也各不相同。共用会让某一侧被迫接受
+另一侧的纪律。测试里有「不串味」断言（产物规范不含对话类型、对话规范不含 `key-takeaway`）。
+
+### 消费点清单（每加一个消费点都要回来看，模式 #54）
+
+| 场景 | 处理 | 落点 |
+|------|------|------|
+| 对话渲染 | 解析并渲染 | `ai-chat/ChatMarkerContent.tsx`（**新**） |
+| 持久化 | **原文一字不动落盘** | `chat.py` 存 `"".join(full_answer)`；重开会话重新解析即复原，**零额外字段** |
+| 消息编辑 | 随文本保留（改坏了走既有零残留降级） | — |
+| MD 导出 | **剥离**（两处：单条 + 批量） | `export.py` 的 `_strip_blocks` |
+| JSON 导出 | **刻意保留**（可回灌格式，剥了再导入卡片结构就没了） | `export.py`（有注释写明这是决策） |
+| 复制按钮 | **剥离**（复制的是用户看到的内容） | `MessageItem` → `stripMarkers` |
+| LLM 历史 | **刻意保留**（模型看到自己写过的格式，强化一致性；标记 token 极少） | `chat.py` |
+
+⚠️ 两个 strip 名字别混：`stripMarkers` 是**前端**函数（复制用）、`strip_blocks` 是**后端**函数
+（导出用）—— 跨语言必然各一份，测试两侧各钉。
+
+### 顺带修：实时流里的引用 chips 根本不出现
+
+后端 `tool_result` **确实在发** `refs: [{docId, title}]`，但 `api/chat.ts` 只取了 `data.summary`、
+**丢掉了 `data.refs`**；紧接着又在等一个后端**从不发**的 `ref` 事件（死分支）。后果是
+**实时流里 assistant 的引用 chips 根本不出现**，只有重开会话后从落盘 `doc_refs` 复原。
+修法：`tool_result` 分支遍历 `data.refs` 调 `onRef`（`chatStore.onRef` 已带去重），删掉死分支。
+**不改 SSE 协议**（字段本就在发），`docs/对话协议.md` 随之改对。
+
+### 独立信号：模型到底用没用
+
+`chat.py` 的完成期 `log.info` 补 `blocks=` / `block_types=` —— 用 `parse_blocks` 统计而**不是数
+子串**（否则模型在正文里讨论本协议时会误计）。没有它，「模型遵循率/滥用率」只能靠翻聊天记录猜。
+
+### 测试
+
+- 前端 4 新 + 2 扩：`chatBlocks.test.tsx`（组件级行为，含「点第 i 颗 chip → 以该项文本发送」）/
+  `chatMarkersWiring.test.ts`（**接线守卫**，含 `export.py` 的两个函数都得剥、prompt 写了得拼进
+  `build()`）/ `partialMarker.test.ts`（含朴素判据的**对照实验**）/ `chatBlockContent.test.ts`
+  （围栏内的 `- x` 不算追问项）/ `markdownSections.test.ts`（`splitByHeading` 层级参数）/
+  `markdownMarkers.test.ts`（三集合关系）
+- 后端 1 新 + 2 扩：`test_conversation_export.py`（`.md` 剥、`.json` 留，单条 + 批量，含**夹具自证**
+  ——先断言 store 里的原文真含标记，否则那组 `not in` 断言会退化成恒真）/ `test_artifact_blocks.py`
+  （三集合关系 + 对话类型在产物侧零丢失）/ `test_block_prompt.py`（对话侧 prompt 门控）
+- ⚠️ **接线守卫里剥注释是必须的**：那两份文件的注释**故意**写着 `md-block` / `limo-block` 提醒
+  后来者别这么干，不剥的话断言测的是注释的措辞（注释一改就变绿）。
+
+### 明确不做
+
+- **不接入 `marker-prefs` 装饰开关** —— 那个开关的语义是「隐藏**装饰**、内容照留」；对话卡片与
+  chips **不是装饰，是内容组织与可点击能力**，隐藏它等于砍功能
+- **不引入 `streamBuffers` 流式节流** —— 聊天答案量级（几 KB）下 `parseMarkers` 的线性扫描可忽略；
+  收益不抵「引入新的 flush 生命周期」的复杂度。**若实测卡顿**再接，设计可随时叠加
+- 不做第三种卡片形态、不改 SSE 协议、不改存储格式、不升版本号
+
+### 影响范围
+
+- 新增：`ai-chat/ChatMarkerContent.tsx`、`lib/chat-block-content.ts`、`styles/chat-blocks.css`、
+  `agent/prompts/formats.md` + 对应测试
+- 改动：`lib/markdown-scan.ts`（三集合 + 两个抑制函数）、`lib/markdown-sections.ts`（泛化）、
+  `ai-chat/MessageItem.tsx`（正文 + 复制）、`api/chat.ts`（refs 缺口）、`main.tsx`、
+  `core/artifact_blocks.py`（三集合）、`agent/prompts/__init__.py`（四层）、
+  `routers/export.py`（对话 MD 剥标记 + 注释）、`routers/chat.py`（完成期统计）
+- **零回归**：无标记的对话走**快路径**（产出与改造前逐字相同的树）；产物侧完全不受影响
+  （新 type 不会被产物 prompt 教）；`splitByH2` 行为逐字不变
+
+---
+
 ## 2026-10-10 — 产物语义标记 `limo-block` v1（重点块）（0.5.0，未升版）
 
 ### 做了什么

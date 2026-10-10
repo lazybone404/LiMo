@@ -16,9 +16,14 @@
   E. 规范里顺手教了外观（颜色 / 边框 / 圆角）→ 与 `blocks.css` 成了两份真相源，
      且与图表协议「只教语义、坐标由后端算」的纪律背道而驰（模型管「这是什么性质」，
      渲染管「长什么样」）。
+
+文件后半是**对话侧**（`agent/prompts/formats.md`，卡片组 / 追问）的对应门控 ——
+两侧的规范文本与类型集合都**刻意不共用**（`artifact_blocks.py` 的
+`ARTIFACT_BLOCK_TYPES` / `CHAT_BLOCK_TYPES` 不相交），故门控也各测各的。
 """
 from __future__ import annotations
 
+from app.agent.prompts import PromptLoader
 from app.generation.prompt import (
     AVAILABLE_OPTIONS, _ALL_FORMAT_FNS, build_excel_summary_prompt,
     build_notes_prompt, build_polish_prompt, get_markdown_block_format,
@@ -83,3 +88,63 @@ def test_规范写了逃生口与数量上限():
     spec = get_markdown_block_format()
     assert '1–3' in spec or '1-3' in spec
     assert '不加不减分' in spec
+
+
+# ═══════════════════════════════════════════════════════════════
+# 对话侧（`agent/prompts/formats.md`）—— 卡片组 / 追问
+# ═══════════════════════════════════════════════════════════════
+
+def test_对话侧规范写了就要拼进_build():
+    """⚠️ 只读不拼是最静默的一种：文件在、内容对、`__init__` 里也赋值了，
+    唯独 `build()` 的 parts 里没有它 → 模型永远不知道有这套协议，**零报错**。"""
+    p = PromptLoader().build()
+    assert 'limo-block:v1' in p
+    assert 'type="card-group"' in p
+    assert 'type="follow-up"' in p
+
+
+def test_对话侧规范排在文档上下文之前():
+    """`formats` 讲的是「回答怎么呈现」，属于角色/约束那一层；排在
+    `--- 当前文档 ---` 之后读起来像「当前文档的一部分」。"""
+    p = PromptLoader().build(doc_context='文档内容占位')
+    assert p.index('limo-block:v1') < p.index('--- 当前文档 ---')
+
+
+def test_两侧规范不串味():
+    """产物规范只教 `key-takeaway`、对话规范只教两个对话类型 —— 各自教各自的，
+    模型在哪条管道里就只看到那条管道的写法。
+
+    串味的后果不是报错，而是**模型学到另一侧的约定写进来**：产物里冒出一个
+    对话卡片组（导出侧不认识它，只会当普通内容渲染），或者对话里冒出一个强调块。
+    """
+    assert 'key-takeaway' not in PromptLoader().formats
+    product_spec = get_markdown_block_format()
+    assert 'card-group' not in product_spec
+    assert 'follow-up' not in product_spec
+
+
+def test_对话侧规范不教外观():
+    """同 E 条：模型管**性质**，CSS（`chat-blocks.css`）管长相。"""
+    spec = PromptLoader().formats
+    for word in ('颜色', '色值', '边框', '圆角', '投影', '阴影', '背景色', 'background'):
+        assert word not in spec, f"对话侧规范里不该出现外观描述：{word}"
+
+
+def test_对话侧规范写了逃生口与数量上限():
+    """两条会被模型「按字面执行」的措辞，与产物侧同源：
+
+    · **上限**（2～4 个）没了 → 模型把一段连贯叙述硬拆成十几张卡，读者看到的是噪音；
+    · **逃生口**（不用不减分）没了 → 模型为「用上新功能」硬凑，而「一个块都不用」
+      是**最常见的正常情况**。
+    """
+    spec = PromptLoader().formats
+    assert '2～4' in spec or '2-4' in spec
+    assert '不用不减分' in spec
+
+
+def test_对话侧规范挡了过渡语滥用():
+    """模型在工具调用前后的客套话（「我先帮你查一下」）**不是最终回答** ——
+    在那里加卡片组，用户会看到一段还没说完的话被切成几张卡。"""
+    spec = PromptLoader().formats
+    assert '过渡语' in spec
+    assert '最终回答' in spec

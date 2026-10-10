@@ -10,6 +10,9 @@ import './styles/cards.css'
 // ⚠️ 同样**同时是后端导出的来源**（`export.py::_load_block_css()`）。与 cards.css 分家：
 // 那份管骨架（章节怎么组织），这份管标记（一段内容是什么性质）—— 两者正交。
 import './styles/blocks.css'
+// ⚠️ 对话侧的两个卡片块形态（`ai-chat/ChatMarkerContent.tsx`）。与上两份**不同**：
+// 这份**不进导出**（`export.py` 不读它）—— 对话没有 HTML 导出形态，故可自由引用 `--tk-*`。
+import './styles/chat-blocks.css'
 import App from './App.tsx'
 
 createRoot(document.getElementById('root')!).render(

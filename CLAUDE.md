@@ -86,7 +86,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [BUILD.md](docs/BUILD.md) | PyInstaller + Tauri 完整打包流程，常见陷阱 | 打包/发布 |
 | [qianwen-models.md](docs/qianwen-models.md) | 千问平台模型速查（文本/OCR/ASR）含价格+调用方式 | 配模型/选引擎 |
 | [components.md](design/components.md) | Apple HIG 风格组件规格，布局+颜色+字体+组件 | 改 UI 组件/设计系统 |
-| [cards.md](design/cards.md) | 卡片视觉语言参考（19 种）：共享视觉语法 + `--card-*`/`--sh-*` 令牌 + 视觉方案轴 + 按 LiMo 现状分桶（✅5 已有等价 / ⛔3 不该由模型产出 / 🆕11 全新）+ 两种判据的分野（产物侧按**结构**切节 vs 对话侧按**内容形态**吐围栏）。⚠️ **是素材库不是实施计划** —— 落地哪些取决于真实产物的形态分布 | 做卡片形态、改 [styles/cards.css](frontend/src/styles/cards.css)、讨论对话侧卡片化 |
+| [cards.md](design/cards.md) | 卡片视觉语言参考（19 种）：共享视觉语法 + `--card-*`/`--sh-*` 令牌 + 视觉方案轴 + 按 LiMo 现状分桶（✅5 已有等价 / ⛔3 不该由模型产出 / ✅2 已落地【比较卡组 + 追问 chips，2026-10-11】/ 🆕9 全新）+ 两种判据的分野（产物侧按**结构**切节 vs 对话侧按**内容形态**吐围栏）。⚠️ **是素材库不是实施计划** —— 落地哪些取决于真实产物的形态分布 | 做卡片形态、改 [styles/cards.css](frontend/src/styles/cards.css)、讨论对话侧卡片化 |
 | [对话协议.md](docs/对话协议.md) | 对话 SSE 事件协议 + 会话 CRUD API + 前端映射 | 改对话流式/会话管理代码 |
 | [AGENT-ONBOARDING.md](docs/AGENT-ONBOARDING.md) | 上手教程：从零跑通 → 架构 → 注册表 → 数据流 → How-to → 打包发布 → 测试门禁 → 调试速查 | 新 agent 快速上手、打包/发布 |
 | [AGENTS.md](AGENTS.md)（仓库根） | CLI 这条链的开发文档：三层结构 / 改 CLI 的六条硬约束 / 门禁怎么跑。⚠️ 与库内 `~/.limo/AGENTS.md`（`limo doctor --write-agents` 生成）**读者不同、内容不重叠** | 改 `limo_cli` / `/api/cli/*` / `QueryService` |
@@ -629,6 +629,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **主题模块**：`lib/accent.ts` / `lib/texture.ts` / `lib/theme-base.ts` / `lib/theme-presets.ts` / `lib/theme.ts` — 各轴独立管理，Store 统一分发
 - **骨架轴（2026-10-10）**：`lib/card-prefs.ts`（localStorage `mbw_card`）→ `data-skeleton="card"`（每个 H2 章节一张卡）+ `data-card-style`（8 套视觉方案，[styles/cards.css](frontend/src/styles/cards.css)）。⚠️ **不是第七轴** —— 六轴描述「界面长什么样」，它描述「正文怎么组织」；放 themeSlice 只因与 texture/font 同属「影响预览观感的外观设置」，**刻意不进 `THEME_PRESETS`**（换主题包不该连带重置骨架）。⚠️ **`paper`（默认）时两个属性都 `removeAttribute`** —— 零回归靠「**选择器不匹配**」（`cards.css` 每条规则带 `[data-skeleton="card"]` 前缀）而非「取值相同」。⚠️ 切分器单一真相源 `lib/markdown-scan.ts::scanHeadingLines`（`extractHeadings` 已改为消费它，**围栏内 `## ` 不算标题**）；`lib/markdown-sections.ts::splitByH2` 切分；`CardSections.tsx` **每张卡各跑一个现有 `MarkdownPreview`**（绝不新起第二个渲染器）；接入点**只有** [PreviewArea.tsx](frontend/src/components/preview/PreviewArea.tsx) 的 notes/polished 只读态（**刻意不在 `MarkdownPreview` 内部按骨架轴分派** —— 会静默扩散到 Excel 数据摘要 / 原始转录两处）
 - **语义标记 `limo-block`（2026-10-10）**：产物正文里的**协议元素** —— 模型在笔记里写 `<!-- limo-block:v1 type="key-takeaway" -->` … `<!-- /limo-block -->`（块内是普通 Markdown），渲染成**轻量强调块**（左边框 + 淡底，**刻意不是卡片** ⇒ 与骨架轴正交、无「卡中卡」）。解析链 `lib/markdown-scan.ts`（**唯一的行分类器**，`inFence` + `inBlock`）→ `lib/markdown-markers.ts`（`parseMarkers` / `stripMarkers`）→ `preview/MarkerContent.tsx`（每段各跑一个现有 `MarkdownPreview`）。⚠️ **接入点只有两处**（PreviewArea 的 paper 分支 + CardSections 每张卡的 body），**绝不放进 `MarkdownPreview` 内部**（会扩散到 Excel 数据摘要 / 原始转录）。⚠️ **顺序是 Markdown 层的：先切卡、再在每节内解析标记**（跨节标记在降级里自然消解）。⚠️ **开关语义是「隐藏装饰」不是「隐藏标记」**：`lib/marker-prefs.ts`（`mbw_markers`，默认 `decor: true`）关掉后**文字一字不少**，只是边框与淡底消失——**落点是纯 CSS 层**（`[data-marker-decor="off"]` 前缀规则），**不是 JS 分支不渲染包裹层**（那会让后端导出侧再实现一遍）；DOM 落点 `data-marker-decor="off"`（**默认不写属性**⇒ 零回归靠「选择器不匹配」）。⚠️ 后端协议收口 `core/artifact_blocks.py`（与 `transcript_meta.py` 并列：一个管自证头、一个管正文标记），**前后端各一份实现靠共享 fixture `limo-blocks.json` 钉住**。⚠️ **prompt 无条件注入且无勾选项**（价值全在「模型自主判断重点」，先勾选就退回旧问题）—— 故「谁该有谁不该有」只能靠测试钉住
+- **语义标记 · 对话侧（2026-10-11）**：同一套协议、**另一套类型**（两侧集合**不相交**，由三集合 `ARTIFACT_BLOCK_TYPES` / `CHAT_BLOCK_TYPES` / `KNOWN_BLOCK_TYPES = 并集` 拆开——「协议知道」≠「某侧实现了」，混为一谈的失效是静默的）——`card-group`（并列比较 2–4 个同级对象 → 块内 `###` 各成一张**并排卡片**）/ `follow-up`（2–4 个下一步问题 → 每项一颗 chip，点了**直接发送**）。⚠️ **只共享判据、不共享渲染器**：`ai-chat/ChatMarkerContent.tsx` 是**新组件**（内联 `ChatText` = 原来的裸 `ReactMarkdown`），**刻意不复用** `preview/MarkerContent`（它内部硬编码 `MarkdownPreview` → 复用等于把整个对话正文换成产物渲染路径，波及**全部历史消息**）；共享的是 `parseMarkers` 与新增的 `splitByHeading(md, level)`（`splitByH2` 改为委托，行为逐字不变）。⚠️ **流式半截标记行必须抑制**（`markdown-scan.ts::suppressTrailingPartialMarker`，**只在对话正文且 `streaming` 时调用**）：`<!-- limo-block:v1 type="card-` 这种半截行既不匹配开标记也不匹配 `MARKER_LINE_RE` → 会被当普通正文渲染出来；⚠️ **判据必须命名空间感知**（朴素的「以 `<!--` 开头且无 `-->`」会吞掉**正在输入的合法 HTML 注释**，测试有对照实验）。⚠️ **消费点**：存储/LLM 历史**保留原文**、`.md` 导出与复制**剥离**、`.json` 导出**刻意保留**（可回灌）、未闭合/未知 type **零残留降级**。⚠️ **对话样式独立**（`styles/chat-blocks.css`，`.chat-*` 不共用 `.md-block`、尺寸用 em、零硬编码色值、**不进导出**）。⚠️ prompt 是 `agent/prompts/formats.md`（system prompt 第四层，无条件注入）；**两侧规范刻意不共用一份文本**（有「不串味」断言）
 - **⚠️ github-markdown-light.css 覆盖**：`main.tsx` 导入的第三方 CSS 硬编码 `.markdown-body { background-color: #ffffff }` 和 `#f6f8fa` 等冷灰色。`index.css` 中用 `!important` + `--tk-*` 变量覆盖。新增 markdown 背景样式时必须同步检查此文件。提交前 `grep` 确认零硬编码色值泄露
 
 ### 导出系统
@@ -846,6 +847,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 消息级文档引用 | 输入区 @ 选文档 → docRefs chips；docIds = 当前选中 + 本条引用（动态组合）；引用 chips 点击跳转预览区 |
 | ✅ | assistant 引用块 | tool_result.refs → assistant 消息引用文档 chips（点击跳转） |
 | ✅ | 上下文管理 | 模型窗口感知预算（context_window 四层解析）+ 历史 token 反向裁剪 + 长对话 LLM 压缩 + 前端 token 占用进度/费用显示 + clearContext + 429 重试 |
+| ✅ | 回答形态卡片（2026-10-11） | 对话侧 `limo-block`：`card-group`（并列比较 2–4 个同级对象 → 并排卡片）/ `follow-up`（2–4 个下一步问题 → 可点 chip，点了直接发送）。⚠️ **只共享判据不共享渲染器**（新组件 `ChatMarkerContent`，**不复用**产物侧 `MarkerContent` —— 它会波及全部历史消息）；⚠️ 流式**半截标记行整行抑制**；`.md` 导出与复制**剥离**、`.json`/存储/LLM 历史**保留**；规范走 `agent/prompts/formats.md`（第四层，无条件注入） |
 
 ### 📊 图表生成（2026-08-16 建立，2026-09-19 语义化布局 + 多图）
 
@@ -959,10 +961,10 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 📝 转录 & 引擎 | 8 | 8 | 100% |
 | ✨ LLM 生成 | 13 | 13 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
-| 💬 AI 对话 | 9 | 9 | 100% |
+| 💬 AI 对话 | 10 | 10 | 100% |
 | 📊 图表生成 | 11 | 12 | 92% |
 | 📤 导出 | 11 | 12 | 92% |
 | 🎨 前端 UI/UX | 20 | 20 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
 | 🧩 产物复用 | 4 | 5 | 80% |
-| **合计** | **121** | **124** | **98%** |
+| **合计** | **122** | **125** | **98%** |

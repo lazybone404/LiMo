@@ -1,0 +1,113 @@
+/* ══════════════════════════════════════════════════════════════════════
+   对话卡片块 —— `limo-block` 语义标记在**对话侧**的两个形态
+   （`type="card-group"` 卡片组 / `type="follow-up"` 追问 chips）
+   ══════════════════════════════════════════════════════════════════════
+
+   ⚠️ **与 `blocks.css` 分家的理由**：那个管**产物**正文里的强调块，选择器是
+   `.md-block[data-block-type="key-takeaway"]`；这里是**对话**里的块，类名刻意不同
+   （`.chat-*`，**不带 `md-block`**）。两侧的块类型集合本就不相交（见
+   `markdown-scan.ts` 的 `ARTIFACT_BLOCK_TYPES` / `CHAT_BLOCK_TYPES`），观感也该分家：
+   产物要「读得舒服」（大边距、淡底），对话要「塞得下」（紧凑、不抢气泡宽度）。
+
+   ⚠️ **本文件不进导出**（与 `blocks.css` 的关键区别）：`export.py::_load_block_css()`
+   读的是 `blocks.css`，不读这份。对话没有 HTML 导出形态（只有 md / json），
+   故这里**不需要**照顾「导出侧拿不到 `--tk-*`」的场景，可以自由引用令牌。
+   反过来，**不要**把这里的规则挪进 `blocks.css` —— 那会让导出无缘无故带上对话样式。
+
+   ⚠️ **零硬编码色值**（项目铁律）：全部引用 `--tk-*`。
+   ⚠️ **尺寸用 em 不用 px**：对话有 sm/md/lg 三档字号（`ai-chat/scale.ts`），
+   外层 `.markdown-chat` 的字号由档位决定，这里跟着缩才不会被大档位撑爆。
+   ────────────────────────────────────────────────────────────────────── */
+
+/* ── 卡片组 ──────────────────────────────────────────────────────────── */
+
+.chat-card-group {
+  margin: 0.5em 0;
+}
+
+/* 引言（首个 `###` 之前的内容）与卡片网格之间留一口气 */
+.chat-card-group > * + * {
+  margin-top: 0.5em;
+}
+
+.chat-cards {
+  display: grid;
+  gap: 0.5em;
+  /* ⚠️ 自适应列数：宽度够就并排（这就是卡片组的意义 —— 横向可扫），
+     浮窗被拖窄时自动退化成一列。160px 是「一列中文还能读」的下限，
+     低于它并排会把每列压到十几个字符宽（与合成管道「表格列挤压」同款问题）。 */
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.chat-card {
+  min-width: 0; /* ⚠️ 必须：否则卡内的长 URL / 代码把 grid 单元撑破，横向溢出 */
+  padding: 0.5em 0.7em;
+  border: 1px solid var(--tk-border-light);
+  border-radius: 10px;
+  background: var(--tk-elevated);
+}
+
+/* 卡内标题收一档 —— 正文的 h3 是给长文用的，卡片里显得过大且吃宽度 */
+.chat-card h3 {
+  margin: 0 0 0.25em;
+  font-size: 1em;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* 卡内首尾元素去掉多余外边距（否则卡片看起来上下不对称） */
+.chat-card > :first-child {
+  margin-top: 0;
+}
+.chat-card > :last-child {
+  margin-bottom: 0;
+}
+
+/* ── 追问建议 ────────────────────────────────────────────────────────── */
+
+.chat-followup {
+  margin: 0.6em 0 0.2em;
+}
+
+.chat-followup-label {
+  margin-bottom: 0.35em;
+  font-size: 0.85em;
+  color: var(--tk-muted);
+}
+
+/* ⚠️ **纵向单列、不做 flex-wrap**：追问通常是一句完整的话，横向并排会折成
+   参差不齐的一堆碎片，读不出「这是几个可选问题」。 */
+.chat-followup-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+}
+
+/* ⚠️ **不是 docRef chip 那种「胶囊」**（那个是跳转，短标题、强调色、hover 变色）。
+   这个是**发送**一个长句，故：整行宽、左对齐、普通前景色、hover 只做极轻的反馈。
+   刻意不用 `bg-accent/10 text-accent` —— 那会让一片追问看起来像一片超链接。 */
+.chat-followup-chip {
+  display: block;
+  width: 100%;
+  padding: 0.4em 0.65em;
+  border: 1px solid var(--tk-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tk-foreground);
+  font-size: 0.92em;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+
+.chat-followup-chip:hover:not(:disabled) {
+  background: var(--tk-hover);
+  border-color: var(--tk-accent);
+}
+
+/* 流式中不可点（`dispatchSend` 首行也会兜底）：降透明度让这一点看得出来 */
+.chat-followup-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

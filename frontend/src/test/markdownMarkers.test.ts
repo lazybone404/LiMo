@@ -19,7 +19,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { hasBlocks, parseMarkers, stripMarkers } from '../lib/markdown-markers'
-import { KNOWN_BLOCK_TYPES, PROTOCOL_VERSION } from '../lib/markdown-scan'
+import { ARTIFACT_BLOCK_TYPES, CHAT_BLOCK_TYPES, KNOWN_BLOCK_TYPES, PROTOCOL_VERSION } from '../lib/markdown-scan'
 import { splitByH2 } from '../lib/markdown-sections'
 
 /**
@@ -28,7 +28,7 @@ import { splitByH2 } from '../lib/markdown-sections'
  */
 const FIXTURE_PATH = resolve(process.cwd(), 'src/test/fixtures/limo-blocks.json')
 const FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf-8')) as {
-  meta: { protocolVersion: string; knownTypes: string[] }
+  meta: { protocolVersion: string; knownTypes: string[]; artifactTypes: string[]; chatTypes: string[] }
   cases: {
     name: string
     md: string
@@ -41,6 +41,21 @@ const FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf-8')) as {
 describe('limo-block — 白名单与协议版本的跨语言守卫', () => {
   it('KNOWN_BLOCK_TYPES 与 fixture 的 knownTypes 一致（加类型时漏改一侧即红）', () => {
     expect([...KNOWN_BLOCK_TYPES].sort()).toEqual([...FIXTURE.meta.knownTypes].sort())
+  })
+
+  it('KNOWN = ARTIFACT ∪ CHAT，且两两不相交 —— 「协议知道」≠「某侧实现了」', () => {
+    // ⚠️ 挡的是**静默失效**：把一个 type 加进 KNOWN_BLOCK_TYPES 等于宣称「有人处理它」，
+    // 而某个渲染方其实没有分支 → 该 type 被原样当正文吐出来、零报错。
+    // 这里核对三者关系；**各侧是否真有渲染分支**由 chatBlocks.test.tsx /
+    // markerContent.test.tsx 的渲染断言承担（两条一起才闭环）。
+    expect([...ARTIFACT_BLOCK_TYPES].sort()).toEqual([...FIXTURE.meta.artifactTypes].sort())
+    expect([...CHAT_BLOCK_TYPES].sort()).toEqual([...FIXTURE.meta.chatTypes].sort())
+    expect([...KNOWN_BLOCK_TYPES].sort()).toEqual(
+      [...new Set([...ARTIFACT_BLOCK_TYPES, ...CHAT_BLOCK_TYPES])].sort(),
+    )
+    for (const t of ARTIFACT_BLOCK_TYPES) {
+      expect(CHAT_BLOCK_TYPES.has(t), `两侧类型重叠：${t}`).toBe(false)
+    }
   })
 
   it('PROTOCOL_VERSION 与 fixture 一致', () => {
@@ -58,6 +73,8 @@ describe('parseMarkers — 跨语言共享 fixture', () => {
     expect(names).toContain('围栏内')     // A
     expect(names).toContain('不算闭合')   // D
     expect(names).toContain('CRLF')
+    expect(names).toContain('卡片组')     // 对话侧新类型
+    expect(names).toContain('追问')
   })
 
   for (const c of FIXTURE.cases) {

@@ -11,8 +11,8 @@ import { useState } from 'react'
 import { useStore } from '../../store'
 import { useChatStore, type ChatMsg } from '../../store/chatStore'
 import { Copy, Check, Pencil, RefreshCw, Trash2, Square, Bot, User, Wrench, ChevronDown, ChevronRight, FileText } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import { REMARK_PLUGINS, REHYPE_PLUGINS, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
+import { stripMarkers } from '../../lib/markdown-markers'
+import { ChatMarkerContent } from './ChatMarkerContent'
 import { SCALES, type ChatScale } from './scale'
 
 interface MessageItemProps {
@@ -35,7 +35,9 @@ export function MessageItem({ msg, scale }: MessageItemProps) {
   const statusText = useChatStore(st => st.statusText)
 
   const copy = () => {
-    navigator.clipboard.writeText(msg.content).then(
+    // ⚠️ **复制的是剥掉标记行的正文**（`limo-block` 是渲染协议，不是给用户看的内容）。
+    // 无标记时 `stripMarkers` 原样返回入参 —— 零回归。与产物侧 ExportMenu 同纪律。
+    navigator.clipboard.writeText(stripMarkers(msg.content)).then(
       () => { setCopied(true); setTimeout(() => setCopied(false), 1500) },
       () => useStore.getState().addToast('复制失败，请手动复制', 'error'),
     )
@@ -113,10 +115,11 @@ export function MessageItem({ msg, scale }: MessageItemProps) {
           ) : isUser ? (
             <div className="whitespace-pre-wrap">{msg.content}</div>
           ) : (
+            // ⚠️ 外层 `markdown-chat` 容器**保持不动**：无标记时 `ChatMarkerContent` 走快路径，
+            // 产出的树与改造前逐字相同（零回归）。容器留在外面也让分段路径下的多段渲染
+            // 共用同一套 `.markdown-chat` 样式作用域。
             <div className={`markdown-chat ${s.msg}`}>
-              <ReactMarkdown key={msg.streaming ? 'loading' : 'done'} remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
-                {normalizeLatexDelimiters(msg.content || (msg.streaming ? (statusText || '…') : ''))}
-              </ReactMarkdown>
+              <ChatMarkerContent content={msg.content} streaming={!!msg.streaming} statusText={statusText} />
             </div>
           )}
         </div>

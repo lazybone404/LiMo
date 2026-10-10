@@ -483,6 +483,10 @@ def export_conversation(conv_id: str, format: str = "md", request: Request = Non
     date = datetime.now().strftime("%Y-%m-%d")
 
     if format == "json":
+        # ⚠️ **JSON 刻意保留原文（含 `limo-block` 标记）** —— 与下面的 Markdown 分支
+        # **非对称，这是有意的**：JSON 是数据记录 / 可回灌格式，剥掉标记会破坏保真
+        # （再导入时卡片结构就没了）；而 Markdown 是给人读的成品，协议标记不该出现在
+        # 读者的文件里。改动这一条前先想清楚「谁在消费这个格式」。
         return Response(
             json.dumps(conv, ensure_ascii=False, indent=2),
             media_type="application/json",
@@ -490,13 +494,17 @@ def export_conversation(conv_id: str, format: str = "md", request: Request = Non
         )
 
     # Markdown 格式
+    # ⚠️ **必须剥掉 `limo-block` 标记行**：它是**渲染协议**，不是内容。不剥的话导出的
+    # .md 里会留着 `<!-- limo-block:v1 type="card-group" -->` —— **预览所见 ≠ 导出所得，
+    # 且零报错**（没有人会因此收到异常，只会拿到一份脏文件）。
+    # 与前端复制按钮的 `stripMarkers` 同纪律，只是前后端各一份实现（跨语言必然如此）。
     lines = [f"# {conv.get('title', '对话')}", f"\n导出日期: {date}\n"]
     for m in conv.get("messages", []):
         ts = m.get("timestamp", "")[:16]
         if m["role"] == "user":
-            lines.append(f"**用户** ({ts})\n\n{m['content']}\n")
+            lines.append(f"**用户** ({ts})\n\n{_strip_blocks(m['content'])}\n")
         elif m["role"] == "assistant":
-            lines.append(f"**AI** ({ts})\n\n{m['content']}\n")
+            lines.append(f"**AI** ({ts})\n\n{_strip_blocks(m['content'])}\n")
     md = "\n".join(lines)
     return Response(md, media_type="text/markdown",
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(f'{title}.md'.encode('utf-8'), safe='')}"})
@@ -518,7 +526,9 @@ async def export_conversations(data: dict, request: Request, store=Depends(get_s
                 role = "用户" if m["role"] == "user" else "AI"
                 ts = str(m.get("timestamp", ""))[:16]
                 ts_str = f" ({ts})" if ts else ""
-                lines.append(f"**{role}**{ts_str}\n\n{m['content']}\n")
+                # ⚠️ 同单条导出：.md 剥标记、.json 保留 —— 两处都要改，
+                # 只改一处的话「导出单条干净、导出批量脏」而两边都不会报错。
+                lines.append(f"**{role}**{ts_str}\n\n{_strip_blocks(m['content'])}\n")
             zf.writestr(f"{title}.md", "\n".join(lines))
     buf.seek(0)
     date = datetime.now().strftime("%Y-%m-%d")
