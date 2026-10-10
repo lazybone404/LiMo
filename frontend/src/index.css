@@ -232,12 +232,12 @@ body {
   --md-h4: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 46%);
   --md-strong: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.8 * 1%), 36%);
   --md-link: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 46%);
-  --md-blockquote-bg: var(--tk-surface-hover);
+  --md-blockquote-bg: var(--tk-hover);
   --md-blockquote-border: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 48%);
-  --md-code-bg: var(--tk-surface-hover);
+  --md-code-bg: var(--tk-hover);
   --md-code-color: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.7 * 1%), 38%);
   --md-table-border: var(--tk-border);
-  --md-table-header-bg: var(--tk-surface-hover);
+  --md-table-header-bg: var(--tk-hover);
   --md-hr: var(--tk-border);
 }
 
@@ -249,9 +249,9 @@ body {
   --md-h4: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 52%);
   --md-strong: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.65 * 1%), 72%);
   --md-link: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.8 * 1%), 65%);
-  --md-blockquote-bg: var(--tk-surface-hover);
+  --md-blockquote-bg: var(--tk-hover);
   --md-blockquote-border: hsl(var(--second-hue), calc(var(--second-sat) * 0.8 * 1%), 54%);
-  --md-code-bg: var(--tk-surface-hover);
+  --md-code-bg: var(--tk-hover);
   --md-code-color: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.55 * 1%), 72%);
   --md-table-border: var(--color-border-default);
   --md-table-header-bg: var(--color-surface-hover);
@@ -283,12 +283,12 @@ body {
   color: var(--tk-foreground);
 }
 .markdown-body table tr { background-color: transparent; }
-.markdown-body table tr:nth-child(2n) { background-color: var(--tk-surface-hover); }
+.markdown-body table tr:nth-child(2n) { background-color: var(--tk-hover); }
 .markdown-body code { background-color: var(--md-code-bg); }
-.markdown-body pre { background-color: var(--tk-surface-hover); }
+.markdown-body pre { background-color: var(--tk-hover); }
 .markdown-body th { background-color: var(--md-table-header-bg); }
 .markdown-body blockquote { background-color: var(--md-blockquote-bg); }
-.markdown-body kbd { background-color: var(--tk-surface-hover); }
+.markdown-body kbd { background-color: var(--tk-hover); }
 .markdown-body img { background-color: transparent; }
 
 /* ── GitHub Markdown Overrides (blue hierarchy) ─────────── */
@@ -398,7 +398,7 @@ body {
   border-color: var(--color-border-default);
 }
 [data-theme="dark"] .markdown-body table tr:nth-child(2n) {
-  background-color: var(--tk-surface-hover);
+  background-color: var(--tk-hover);
 }
 [data-theme="dark"] .markdown-body summary {
   color: var(--color-muted);

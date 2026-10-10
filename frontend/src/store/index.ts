@@ -8,6 +8,8 @@ import { applyAccent, getSavedAccent } from '../lib/accent'
 import { applyTexture, applyFont, applyIntensity, getSavedTexture, getSavedFont, getSavedIntensity } from '../lib/texture'
 import { applyBase, getSavedBase } from '../lib/theme-base'
 import { applyReading, getSavedReading, nextFontScale, READING_DEFAULTS } from '../lib/reading-prefs'
+import { applyCard, getSavedCard } from '../lib/card-prefs'
+import { applyMarkers, getSavedMarkers } from '../lib/marker-prefs'
 import { createThemeSlice } from './themeSlice'
 import { createDocsSlice } from './docsSlice'
 import { createContentSlice } from './contentSlice'
@@ -115,6 +117,8 @@ applyIntensity(getSavedIntensity())
 applyFont(getSavedFont())
 applyBase(getSavedBase())
 applyReading(getSavedReading())
+applyCard(getSavedCard())
+applyMarkers(getSavedMarkers())
 
 // Listen for system theme changes when in "system" mode
 // 模块副作用保持在此 — 监听器需要 useStore.getState()，移入 slice 会制造运行时循环依赖

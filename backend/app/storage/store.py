@@ -23,6 +23,7 @@ from app.core.markdown_assets import rewrite_asset_urls  # noqa: F401  (re-expor
 from app.core.types import RawTranscript, MarkdownView, ProcessResult, Style, GenerateMode
 from app.core.errors import AppError, StoreError
 from app.core.transcript_meta import parse_meta, dump_meta, parse_artifact_meta, strip_meta
+from app.core.artifact_blocks import strip_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -1336,7 +1337,9 @@ class Store:
             result.append({
                 **meta,
                 "content": text,
-                "chars": len(strip_meta(text)),
+                # ⚠️ 标记行不算「正文字数」：它是协议元素，读者看不到它（`strip_blocks`
+                # 只剥标记行、块内文字照算）。
+                "chars": len(strip_blocks(strip_meta(text))),
                 "edited": bool((head.get("edit") or {}).get("edited")),
                 "source": (head.get("generated") or {}).get("model", ""),
             })

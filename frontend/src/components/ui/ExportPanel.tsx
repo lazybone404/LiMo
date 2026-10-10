@@ -28,6 +28,9 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
   const currentDocId = useStore(s => s.currentDocId)
   const docs = useStore(s => s.docs)
   const addToast = useStore(s => s.addToast)
+  const skeleton = useStore(s => s.skeleton)
+  const cardStyle = useStore(s => s.cardStyle)
+  const markerDecor = useStore(s => s.markerDecor)
 
   // ── 文档选择 ──
   const [selectedIds, setSelectedIds] = useState<string[]>(currentDocId ? [currentDocId] : [])
@@ -375,7 +378,9 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
                 const tabs = Array.from(new Set(typeGroups.flatMap(g => groupTabs[g.type] || [])))
                 const r = await fetch(apiUrl('/export/custom'), {
                   method: 'POST', headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ doc_ids: selectedIds, formats, content_tabs: tabs, formula_md: formulaMd, image_md: imageMd, formula_plain: formulaPlain, html_theme: htmlTheme, filename }),
+                  // skeleton / card_style / marker_decor 跟随预览（与 ExportMenu 同源）——
+                  // ⚠️ 默认值（`paper` / 装饰开）时后端走的仍是那条逐字未改的分支。
+                  body: JSON.stringify({ doc_ids: selectedIds, formats, content_tabs: tabs, formula_md: formulaMd, image_md: imageMd, formula_plain: formulaPlain, html_theme: htmlTheme, skeleton, card_style: cardStyle, marker_decor: markerDecor, filename }),
                 })
                 if (!r.ok) { const err = await r.json().catch(() => ({ detail: `HTTP ${r.status}` })); addToast(err.detail || '导出失败', 'error'); return }
                 const blob = await r.blob()

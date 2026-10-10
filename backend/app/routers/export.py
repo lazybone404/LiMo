@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import uuid as _uuid
 import zipfile
@@ -32,6 +33,18 @@ from app.services.markdown_render import (  # noqa: E402
     markdown_to_html as _markdown_to_html_impl,
 )
 from app.services.docx_export import markdown_to_docx  # noqa: E402
+# H2 → 卡片切分。⚠️ 与前端 `lib/markdown-sections.ts::splitByH2` **同形**，
+# 由共享 fixture（`frontend/src/test/fixtures/h2-sections.json`）钉住 —— 预览与
+# 导出必须切出同一批卡片，否则就是「导出与预览不一致」这个核心约束的直接违反。
+from app.services.markdown_sections import split_by_h2  # noqa: E402
+# 产物正文的语义标记（`limo-block`）。⚠️ 与前端 `lib/markdown-markers.ts::parseMarkers`
+# **同形**，由共享 fixture（`frontend/src/test/fixtures/limo-blocks.json`）钉住 ——
+# 「预览里是强调块、导出里是一行注释文字」正是这条链最容易出的岔子。
+from app.core.artifact_blocks import (  # noqa: E402
+    has_blocks as _has_blocks,
+    render_blocks_html as _render_blocks_html,
+    strip_blocks as _strip_blocks,
+)
 from app.services.query import QueryService  # noqa: E402
 from app.core.transcript_meta import strip_meta  # noqa: E402
 from app.core.markdown_assets import ASSET_REF_RE  # noqa: E402
@@ -228,6 +241,18 @@ async def export_content(
         raise AppError("EXPORT_NO_CONTENT", "无可导出内容",
                         status_code=404, recoverable=True)
 
+    # 骨架轴 / 卡片视觉方案 —— **HTML 与 Word 两条链共用**，故读在分支之前。
+    # ⚠️ 默认值与前端 `CARD_DEFAULTS` **必须同值**（`paper` / `gpt`）：任何没带参数的
+    # 调用方（历史前端、第三方脚本、PDF 导出链）拿到的都必须是今天这份产物。
+    # 取值合法性由 `_build_selfcontained_html` 自己兜（它只认 `"card"`，其余当 `paper`）。
+    # md / plain 没有视觉层，读到也不消费 —— 刻意不在这里报错。
+    skeleton = request.query_params.get("skeleton", "paper")
+    card_style = request.query_params.get("card_style", "gpt")
+    # 语义标记的装饰开关 —— ⚠️ 默认 `True`（**与前端 `MARKER_DEFAULTS` 同值**）：
+    # 任何没带参数的调用方必须拿到「装饰开着」这份产物，与预览里看到的一致。
+    # 只有显式的 `marker_decor=0` 才关 —— 认不认识的值一律当「开」（同骨架取值兜底）。
+    marker_decor = request.query_params.get("marker_decor", "1") != "0"
+
     if format == "html":
         # 图片 base64 内嵌 → 自包含单文件 HTML
         refs = _find_image_refs(content)
@@ -238,7 +263,9 @@ async def export_content(
                 content = _inline_images(content, imgs, name_map, store.root, doc_dir=doc_dir)
         # 用 limo 主题匹配应用内预览样式
         export_theme = request.query_params.get("theme", "limo")
-        html = _build_selfcontained_html(content, title, theme=export_theme)
+        html = _build_selfcontained_html(content, title, theme=export_theme,
+                                         skeleton=skeleton, card_style=card_style,
+                                         marker_decor=marker_decor)
         safe_name = _safe_filename(title)
         encoded_name = quote(f"{safe_name}.html", safe='')
         # ⚠️ disposition 必须是 attachment —— 点击「HTML」就该下载文件。但 PDF 导出
@@ -257,7 +284,7 @@ async def export_content(
         if refs:
             doc_dir = str(store.get_doc_dir(tx_id) or '')
             imgs, _name_map = _collect_images(refs, store.root, doc_dir=doc_dir)
-        data = markdown_to_docx(content, title, images=imgs)
+        data = markdown_to_docx(content, title, images=imgs, skeleton=skeleton)
         safe_name = _safe_filename(title)
         encoded_name = quote(f"{safe_name}.docx", safe='')
         return Response(
@@ -267,6 +294,10 @@ async def export_content(
         )
 
     # MD: 将图片路径重写为绝对 URL，外部查看时不裂图
+    # ⚠️ **先剥语义标记**（用户拍板：导出的文件应当是干净正文）。折叠进数据层的标记是
+    # 给渲染器看的协议元素，落到 `.md` 文件里就是读者可见的一行注释 —— 这里剥、数据层
+    # 不剥（`query.py` 读路径返回原文，预览要靠它才能渲染出强调块）。
+    content = _strip_blocks(content)
     base = str(request.base_url).rstrip('/')
     content = re.sub(r'\(assets/', f'({base}/api/assets/{tx_id}/', content)
     content = re.sub(r'\(/api/files/', f'({base}/api/files/', content)
@@ -905,23 +936,171 @@ _PRINT_CSS = """@page { size: A4; margin: 18mm 16mm; }
 }"""
 
 
-def _build_selfcontained_html(md: str, title: str, theme: str = "limo") -> str:
+#: 卡片 CSS 依赖的**界面令牌** —— 导出 HTML 里**一个 `--tk-*` 都没有**：
+#: `HTML_THEMES` 是自包含的独立一套 CSS（纯裸色值 + 自己的明暗段），与应用内预览
+#: 用的 `--tk-*` 体系无交集。而 `cards.css` 里那 27 处 `var(--tk-…)` 没有 fallback
+#: ⇒ 不补这份定义的话，卡片**没有底色、没有边框、没有圆角**（几何量是硬值所以还在），
+#: 而「section 数量对」「CSS 里有卡片规则」这类断言**照样全绿**。
+#:
+#: ⚠️ 取值对齐 `HTML_THEMES["limo"]`（同一套蓝 + 同一组灰），三态齐全（浅色 / 暗色 /
+#: 打印）。`@media print` 段**必须在 dark 段之后**：两者会**同时匹配**（既有教训，
+#: 见 `HTML_THEMES["limo"]` 里那段同样的注释），同特异性下后者胜。
+_CARD_TOKENS_CSS = """
+:root {
+  --tk-surface: #ffffff;   --tk-elevated: #f5f5f7;  --tk-hover: #ececf0;
+  --tk-border: #d2d2d7;    --tk-border-light: #e5e5ea;
+  --tk-foreground: #1c1c1e; --tk-dimmed: #636366;   --tk-accent: #2563eb;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tk-surface: #1c1c1e;  --tk-elevated: #2c2c2e;  --tk-hover: #353537;
+    --tk-border: #48484a;   --tk-border-light: #38383a;
+    --tk-foreground: #e5e5ea; --tk-dimmed: #aeaeb2;  --tk-accent: #60a5fa;
+  }
+}
+@media print {
+  :root {
+    --tk-surface: #ffffff;   --tk-elevated: #f5f5f7;  --tk-hover: #ececf0;
+    --tk-border: #d2d2d7;    --tk-border-light: #e5e5ea;
+    --tk-foreground: #1c1c1e; --tk-dimmed: #636366;   --tk-accent: #2563eb;
+  }
+}
+"""
+
+
+#: 卡片视觉方案的**出口白名单** —— key 集合与前端 `lib/card-prefs.ts::CARD_STYLE_OPTIONS`
+#: 对齐。这里的职责只有一条：不认识的值不要写进 HTML 属性（写了也不报错，只是样式
+#: 永不命中）。**不在这里定义「每套长什么样」** —— 那是 `cards.css` 的事。
+_CARD_STYLES = frozenset({"gpt", "apple", "compact", "outline",
+                          "paper", "guofeng", "seal", "ink"})
+
+
+def _load_card_css() -> str:
+    """读前端那份 `cards.css`（**单一真相源**）原样内联进导出 HTML。
+
+    ⚠️ **单一真相源在前端**（`frontend/src/styles/cards.css`）：前端 `main.tsx`
+    直接 import 它，后端从磁盘读**同一份文件**。刻意**不**往 `backend/static/`
+    放副本 —— 副本就是第二份拷贝，正是本项目「同一份判据不得有两份实现」这条纪律
+    要消除的形态，绕到打包路径上发生也一样（模式 #54）。
+
+    ⚠️ **不缓存**：这份文件是「我们会改的源文件」，而验收步骤正是「改完 CSS 跑一次
+    导出看效果」。缓存会让改动静默不生效。`_get_katex_assets` 那边可以缓存，是因为
+    KaTeX 是只读的第三方资产 —— 性质不同，不要照抄。
+
+    ⚠️ **读不到就抛错，不静默输出无样式的卡片**：静默降级的表现是「导出成功、卡片
+    一点样式都没有」，而「section 数量与 H2 一致」「CSS 里有卡片规则」这类断言
+    照样全绿（本项目点名的「断言全过、肉眼等于没有」）。`_get_katex_assets` 找不到
+    时只 warning —— **这里刻意更严**：KaTeX 缺失还能读正文，卡片样式缺失等于功能没实现。
+    """
+    candidates = [
+        # 开发环境：仓库内的源文件
+        Path(__file__).resolve().parents[3] / "frontend" / "src" / "styles" / "cards.css",
+    ]
+    # 打包环境：spec 的 datas 把它收到 `styles/cards.css`（与 spec 那行逐字对应）
+    _meipass = getattr(sys, "_MEIPASS", None)
+    if _meipass:
+        candidates.append(Path(_meipass) / "styles" / "cards.css")
+    for p in candidates:
+        if p.is_file():
+            return p.read_text(encoding="utf-8")
+    raise AppError(
+        "EXPORT_CARD_CSS_MISSING",
+        "卡片样式文件缺失，无法导出卡片骨架",
+        detail="已查找：" + "、".join(str(p) for p in candidates),
+        recoverable=False, status_code=500,
+    )
+
+
+def _load_block_css() -> str:
+    """读前端那份 `blocks.css`（**单一真相源**）原样内联进导出 HTML。
+
+    与 `_load_card_css` 同一纪律：单一真相源在前端（`frontend/src/styles/blocks.css`，
+    `main.tsx` 直接 import 它）、不缓存（改完 CSS 跑一次导出看效果正是验收步骤）、
+    读不到就**抛错**（静默降级的表现是「导出成功、强调块一点样式都没有」，
+    而那些只看「div 数量对不对」的断言照样全绿）。
+
+    ⚠️ **刻意写成第二个函数而不是给上面那个加参数**：两份文件的仓库路径、打包路径
+    （spec 的 datas 是两行）、错误码、缺失后果各自独立 —— 参数化会把「哪一份缺失」
+    这条信息压成同一个错误，排查时得靠猜。
+    """
+    candidates = [
+        Path(__file__).resolve().parents[3] / "frontend" / "src" / "styles" / "blocks.css",
+    ]
+    _meipass = getattr(sys, "_MEIPASS", None)
+    if _meipass:
+        candidates.append(Path(_meipass) / "styles" / "blocks.css")
+    for p in candidates:
+        if p.is_file():
+            return p.read_text(encoding="utf-8")
+    raise AppError(
+        "EXPORT_BLOCK_CSS_MISSING",
+        "强调块样式文件缺失，无法导出含重点块的产物",
+        detail="已查找：" + "、".join(str(p) for p in candidates),
+        recoverable=False, status_code=500,
+    )
+
+
+def _render_md_with_blocks(md: str) -> str:
+    """Markdown → HTML，其中 `limo-block` 段包成 `<div class="md-block" …>`。
+
+    ⚠️ **分段与包裹的逻辑不在这里** —— 收口在 `artifact_blocks.render_blocks_html`
+    （Word 导出共用同一份消费循环，只差一个渲染回调）。本函数只提供**本侧的渲染器**
+    （`_protect_latex` → `_markdown_to_html` → `_restore_latex`，KaTeX 保护链）。
+    """
+    def _render(fragment: str) -> str:
+        _p, _ph = _protect_latex(fragment)
+        return _restore_latex(_markdown_to_html(_p), _ph)
+
+    return _render_blocks_html(md, _render)
+
+
+def _build_selfcontained_html(md: str, title: str, theme: str = "limo",
+                              skeleton: str = "paper", card_style: str = "gpt",
+                              marker_decor: bool = True) -> str:
     """构建完全自包含的 HTML 文档（图片已在上游处理完毕）。
 
     公式策略：
     - Node.js 可用 → 服务端 KaTeX 预渲染（公式→HTML），内联 CSS
     - Node.js 不可用 → 保留 $...$ + 内联 CSS + JS 客户端渲染
     无任何外部 CDN 依赖。
+
+    `skeleton="card"` 时按 H2 切成 `.md-card` —— 与前端预览**同一套切分判据**
+    （`split_by_h2` ↔ `splitByH2`，共享 fixture 钉住），这正是「用户在预览栏看到
+    什么，导出就应该得到什么」这条核心约束在本轮的落点。⚠️ **默认 `paper` 时
+    逐字走今天的分支**，一个字符都不动。
     """
     import html as html_mod
 
     theme_css = HTML_THEMES.get(theme, HTML_THEMES["github"])
     safe_title = html_mod.escape(title or "导出")
+    # ⚠️ 在**任何重新赋值之前**判定（card 分支不再改 `md`，但这条约束值得写下来）：
+    # 「产物里有没有语义标记」决定是否注入 blocks.css 与装饰属性。
+    blocks_present = _has_blocks(md)
 
-    # 公式处理：优先服务端预渲染
-    md, ph = _protect_latex(md)
-    body = _markdown_to_html(md)
-    body = _restore_latex(body, ph)
+    if skeleton == "card":
+        # ⚠️ 切分在**原始 md** 上做（不是公式保护之后的）—— 前端 `splitByH2` 看到的
+        # 就是这个字符串，两侧输入同源才谈得上「切出同一批卡片」。公式保护逐段做即可
+        # （占位符 `⟨⟨LATEX_BLOCK_N⟩⟩` 恒为单行，且 `_restore_latex` 紧跟其后）。
+        preamble, sections = split_by_h2(md)
+        blocks: list[str] = []
+        if preamble.strip():
+            blocks.append(_render_md_with_blocks(preamble))
+        cards: list[str] = []
+        for heading, section_body in sections:
+            # ⚠️ 标记解析发生在**切卡之后**（每张卡各自解析）—— 顺序反过来的话，
+            # 一个跨节的块会把两张卡的结构搅在一起，而跨节的块本来就是异常。
+            inner = _render_md_with_blocks(f"{heading}\n{section_body}")
+            cards.append(f'<section class="md-card">{inner}</section>')
+        # ⚠️ 无 H2（`sections` 为空）时**不包 `.md-cards`** —— 此时 `preamble` 就是
+        # 整篇原文，渲染结果与 `paper` 一致（内容一字不少，只是多了个容器 div 会
+        # 多出一层 flex 布局的副作用）。
+        if cards:
+            blocks.append('<div class="md-cards">\n' + "\n".join(cards) + "\n</div>")
+        body = "\n".join(blocks)
+    else:
+        # 公式处理：优先服务端预渲染（⚠️ **无标记时本节与改造前逐字相同** ——
+        # `_render_md_with_blocks` 在 `_has_blocks` 为假时原样走这条链）
+        body = _render_md_with_blocks(md)
 
     # KaTeX 渲染
     katex = _get_katex_assets()
@@ -940,6 +1119,24 @@ def _build_selfcontained_html(md: str, title: str, theme: str = "limo") -> str:
 <script>renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]})</script>"""
 
     style_block = f"<style>{theme_css}</style>"
+    # ⚠️ `_CARD_TOKENS_CSS` 是「导出页缺失的那套 `--tk-*` 定义」—— 导出主题
+    # （`HTML_THEMES`）**一个 `--tk-*` 都不提供**，而 `var()` 无 fallback 时整条声明
+    # 作废。它现在有**两个消费者**：`cards.css`（骨架）与 `blocks.css`（标记）。
+    # 漏注入的表现是「那一块完全没有样式」，不报错、不抛异常，且**应用内预览里是好的**
+    # （那边令牌由主题系统提供）—— 所以判据必须是「凡引用了 `--tk-*` 的 CSS 都要与它
+    # 同时在场」，而不是「skeleton=card 时注入」。
+    # ⚠️ 顺序在两者之间无所谓（CSS 变量运行时解析）。
+    # ⚠️ 「无标记 + paper」不注入 —— 保证与改造前**逐字节相同**。
+    if skeleton == "card" or blocks_present:
+        style_block += f"\n<style>{_CARD_TOKENS_CSS}</style>"
+    if skeleton == "card":
+        style_block += f"\n<style>{_load_card_css()}</style>"
+    # 强调块样式 —— ⚠️ 闸门是「**产物里真有 limo-block**」而不是骨架：标记与骨架正交
+    # （`paper` 下强调块也在正文流里），但**没有标记时一个字节都不该多**：绝大多数历史
+    # 产物没有标记，它们的导出 HTML 必须与改造前**逐字节相同**（无条件注入会让每个导出
+    # 文件都多一段 `<style>`，视觉无变化，可那条零回归断言就再也写不出来了）。
+    if blocks_present:
+        style_block += f"\n<style>{_load_block_css()}</style>"
     pygments_css = _get_pygments_css()
     if pygments_css:
         style_block += f"\n<style>{pygments_css}</style>"
@@ -951,8 +1148,25 @@ def _build_selfcontained_html(md: str, title: str, theme: str = "limo") -> str:
     # 打印样式放最末 —— 同特异性下后者胜
     style_block += f"\n<style>{_PRINT_CSS}</style>"
 
+    # ⚠️⚠️ **卡片规则的主作用域是 `data-skeleton="card"`**，`data-card-style` 只是
+    # 第二根轴（选哪套皮肤）。只写后者的话，`cards.css` 里所有
+    # `[data-skeleton="card"] …` 规则在导出页上**永远不命中** ⇒ 导出的是没有样式的
+    # 卡片，而「section 数量与 H2 一致」「CSS 里有卡片规则」这类断言**全绿**。
+    # 这正是本项目点名的「断言全过、肉眼等于没有」，故测试里有一条专门断言它存在。
+    html_attrs = ""
+    if skeleton == "card":
+        # 不认识的值静默回退 `gpt`：视觉方案出错**不改变产物的性质**（判据同合成管道
+        # 的维度清洗），不该让整次导出失败。
+        html_attrs = (' data-skeleton="card" data-card-style="'
+                      + (card_style if card_style in _CARD_STYLES else "gpt") + '"')
+    # 装饰开关 —— 与前端 `applyMarkers` 同款：**关掉才写属性**，默认（开）不写。
+    # ⚠️ 再加一道 `blocks_present` 闸门：没有块时写它是个恒无效果的属性，还会破坏
+    # 「无标记产物的导出逐字节不变」。（有块但用户没关 → 不写，与前端一致。）
+    if blocks_present and not marker_decor:
+        html_attrs += ' data-marker-decor="off"'
+
     return f"""<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN"{html_attrs}>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1037,6 +1251,10 @@ def _build_mindmap_html(md: str, title: str) -> str:
 
     safe_title = html_mod.escape(title or "思维导图")
     md = strip_meta(md or "")
+    # ⚠️ **显式剥语义标记，不依赖下面那条通用的 `r'<[^>]+>'`**：那条是「去 HTML 标签」
+    # 的顺带效果，把它当成「标记不会进脑图」的依据等于让协议隔离挂在一个与它无关的正则上
+    # —— 那条规则哪天为别的目的被调整，`<!-- limo-block:… -->` 就会**静默变成脑图节点**。
+    md = _strip_blocks(md)
     md = _normalize_latex_delimiters(md)
     assets = _get_markmap_assets()
     d3_js = assets.get("d3", "")
@@ -1142,6 +1360,14 @@ class ExportCustomRequest(BaseModel):
     image_md: str = "separate"           # separate, inline, none
     formula_plain: str = "remove"         # remove, unicode
     html_theme: str = "limo"       # limo 匹配应用内预览
+    # 骨架轴 / 卡片视觉方案（2026-10-10）。⚠️ 默认 `paper` = 改造前的产物形态，
+    # 不带这两项的调用方零影响。**只对 html 格式生效**（md / plain 没有视觉层）。
+    skeleton: str = "paper"        # paper | card
+    card_style: str = "gpt"        # 仅 skeleton=card 时有意义
+    # 语义标记装饰开关（2026-10-10）。与预览区工具栏那个是**同一个开关**（前端把偏好
+    # 一路带到导出请求里），语义 = 「导出应与预览一致」；md / plain 恒剥离标记行，
+    # 与它无关（那里没有视觉层可谈）。
+    marker_decor: bool = True
     filename: str = "export"
 
 
@@ -1267,18 +1493,27 @@ def _build_export_zip(
                     if fmt == "md":
                         if data.formula_md == "remove":
                             processed = _remove_formulas(processed)
+                        # 与单文档 md 导出同源：标记只在前端显示，导出文件干净
+                        processed = _strip_blocks(processed)
                     elif fmt == "html":
-                        processed = _build_selfcontained_html(processed, tx.get("title", doc_title), data.html_theme)
+                        processed = _build_selfcontained_html(
+                            processed, tx.get("title", doc_title), data.html_theme,
+                            skeleton=data.skeleton, card_style=data.card_style,
+                            marker_decor=data.marker_decor)
                         ext = "html"
                     elif fmt == "plain":
                         processed = _remove_formulas(processed) if data.formula_plain == "remove" else _unicode_formulas(processed)
+                        # 纯文本里 HTML 注释是**可见噪音**（`<!-- limo-block:v1 … -->`），
+                        # 与 md 同理剥离 —— 剥的是标记行，块内文字一个字不少。
+                        processed = _strip_blocks(processed)
                         ext = "txt"
                     elif fmt == "docx":
                         # Word：用**原始 content**（非 processed）——image_md=inline 已把图片
                         # 换成 base64 data URI，那条路是给自包含 HTML 用的；docx 只要原始
                         # `![alt](assets/x.png)` + 收集好的 imgs 字典即可内嵌。
                         # 公式恒保留 LaTeX 原文（md/html 侧的 render 路径已移除，见 CHANGELOG）。
-                        processed = markdown_to_docx(content, tx.get("title", doc_title), images=imgs)
+                        processed = markdown_to_docx(content, tx.get("title", doc_title),
+                                                      images=imgs, skeleton=data.skeleton)
                         ext = "docx"
 
                     safe_tab = tab.replace("/", "-")

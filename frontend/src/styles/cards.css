@@ -1,0 +1,253 @@
+/* ══════════════════════════════════════════════════════════════════════
+   卡片骨架 —— 产物章节结构（`## X` → 一张卡）
+   ══════════════════════════════════════════════════════════════════════
+
+   ⚠️ **本文件是单一真相源，导出侧读的就是这一份**（`export.py::_load_card_css()`
+   从磁盘读它并内联进导出的 HTML）。故此处**不得**出现任何只能在前端成立的写法
+   （React 组件选择器、Tailwind class 的依赖、`.preview-area` 作用域等）——
+   导出的 HTML 里没有 `.preview-area`，限定了就静默不生效。
+
+   两根轴（见 `lib/card-prefs.ts`）：
+     `data-skeleton="card"`      要不要卡片（**属性缺失即 paper**，见下）
+     `data-card-style="gpt|…"`   卡片长什么样（8 套）
+
+   ⚠️⚠️ **全部渲染规则都带 `[data-skeleton="card"]` 前缀**，这不是啰嗦而是零回归的
+   **机制**：`paper` 时 `applyCard()` 把属性整个 `removeAttribute` 掉，于是这些规则
+   **永远不匹配**（比「取值相同」强 —— 任何一条漏写前缀的规则都不可能漏出来）。
+   后端导出的 `<html>` 也**必须**带同一个属性，否则导出的是「没有样式的卡片」，
+   而「section 数量对得上」这类断言照样全绿。
+
+   ⚠️ **零硬编码色值**（项目铁律）：`--card-*` 的值只能引用 `--tk-*` / `--sh-N` 或
+   纯几何量（px / 无单位数）。**唯一的例外是 `--sh-*` 的定义层**——影子本质上就是黑，
+   且它**必须**随明暗换值，这件事只能在等级层做（方案层做不了）。
+   故方案层恒为 `var(--sh-N)`，一个色值都不许出现。
+
+   ⚠️ 本文件出现的底色变量一律是 `--tk-hover`。`--tk-surface-hover` 是坏的
+   （全仓 9 处引用、0 处定义，2026-10-10 已修）——**一处也不能复制进来**。
+   ────────────────────────────────────────────────────────────────────── */
+
+/* ── ① 投影等级 ────────────────────────────────────────────────────────
+   分两层：等级层持色值（随明暗换），方案层只引用 `var(--sh-N)`。
+   ⚠️ 合成一层会让「方案 × 明暗」变成乘法 —— 每套方案都要自己维护明暗两份阴影，
+   而方案有 8 套、主题有 2 侧，维护量按笛卡尔积涨。 */
+:root {
+  --sh-0: none;
+  --sh-1: 0 1px 2px rgb(0 0 0 / .04);
+  --sh-2: 0 4px 12px rgb(0 0 0 / .06);
+  --sh-3: 0 8px 30px rgb(0 0 0 / .10);
+}
+/* ⚠️ 同一个 6% 黑在 `#161618` 上完全看不见 —— 暗色必须加深，这正是色值只能待在
+   等级层的原因。 */
+[data-theme="dark"] {
+  --sh-1: 0 1px 2px rgb(0 0 0 / .30);
+  --sh-2: 0 4px 12px rgb(0 0 0 / .40);
+  --sh-3: 0 8px 30px rgb(0 0 0 / .50);
+}
+
+/* ── ② 变量初值（= 默认方案 `gpt` 风） ────────────────────────────────
+   ⚠️ 没有 `data-card-style` 时用的就是这一组。与 `[data-card-style="gpt"]`
+   逐值相同（那里再写一遍是防初值将来被改动时两处不同源）。 */
+:root {
+  /* 底色是一根**派生轴**，不是几个固定档：
+       基色（从哪来） × 抬升（走多远）—— 两者正交，可组合出「跟随背景」到
+       「抬到浮起面」的连续区间，不需要为每个中间档再开一个下拉项。 */
+  --card-bg-base: var(--tk-surface);
+  --card-lift: 100%;
+  --card-bg: color-mix(in srgb, var(--card-bg-base), var(--tk-elevated) var(--card-lift));
+
+  --card-border: 1px solid var(--tk-border-light);
+  --card-radius: 16px;
+  --card-shadow: var(--sh-0);          /* ← GPT 风的要害：靠描边分层，不靠投影 */
+  --card-padding: 22px 26px;
+  --card-gap: 14px;
+  /* 内框 —— ⚠️ 用 `outline` 而不是再套一层 border：嵌套 div 要污染 DOM 结构，
+     而 `box-shadow: inset` 会和投影抢同一个属性（那是「一个变量控制两件事」）。
+     `outline` + **负** offset 能在容器内部画第二圈线，不占布局、不动内边距。 */
+  --card-frame: none;
+  --card-frame-inset: 0px;
+
+  /* ② 内部层次 —— 次级变量，方案可选调 */
+  --card-divider: 1px solid var(--tk-border-light);
+  --card-title: var(--tk-foreground);
+  --card-weak: var(--tk-dimmed);
+  --card-chip-bg: var(--tk-hover);
+  --card-chip-fg: var(--tk-dimmed);
+  --card-badge-radius: 6px;
+  --card-icon-stroke: 2;
+  --card-icon-cap: round;
+  --card-icon-join: round;
+}
+
+/* ── ③ 8 套方案 ────────────────────────────────────────────────────────
+   ⚠️ 与样板的 JS（inline style 写变量）不同，**CSS 属性选择器天然隔离**：
+   只有当前 `data-card-style` 匹配的那条规则生效，其余根本不参与层叠，
+   所以**不需要**样板里的「先清空全部受控变量」那一步（那一步是为了对付
+   inline style 的残留）。照抄样板的 setVars 反而会引入一份多余的清单。
+   未写的键**有意**回落到初值（= gpt 的取值），不是遗漏。 */
+
+[data-card-style="gpt"] {                /* 默认 */
+  --card-bg-base: var(--tk-surface);
+  --card-lift: 100%;
+  --card-border: 1px solid var(--tk-border-light);
+  --card-radius: 16px;
+  --card-shadow: var(--sh-0);
+  --card-padding: 22px 26px;
+  --card-gap: 14px;
+}
+
+[data-card-style="apple"] {              /* 投影分层 + 更圆 */
+  --card-bg-base: var(--tk-surface);
+  --card-lift: 100%;
+  --card-border: none;
+  --card-radius: 14px;
+  --card-shadow: var(--sh-2);
+  --card-padding: 22px 26px;
+  --card-gap: 14px;
+}
+
+[data-card-style="compact"] {            /* 小圆角 + 密间距 */
+  --card-bg-base: var(--tk-surface);
+  --card-lift: 100%;
+  --card-border: 1px solid var(--tk-border-light);
+  --card-radius: 6px;
+  --card-shadow: var(--sh-0);
+  --card-padding: 12px 16px;
+  --card-gap: 8px;
+}
+
+[data-card-style="outline"] {            /* 底色透明，全靠描边 */
+  --card-bg-base: transparent;
+  --card-lift: 0%;
+  --card-border: 1px solid var(--tk-border);
+  --card-radius: 10px;
+  --card-shadow: var(--sh-0);
+  --card-padding: 22px 26px;
+  --card-gap: 14px;
+}
+
+[data-card-style="paper"] {              /* 与页面同色、小圆角 */
+  --card-bg-base: var(--tk-surface);
+  --card-lift: 0%;
+  --card-border: 1px solid var(--tk-border);
+  --card-radius: 4px;
+  --card-shadow: var(--sh-1);
+  --card-padding: 30px 36px;
+  --card-gap: 22px;
+}
+
+/* 国风三套的取舍：中式视觉可用的手段**只有几何**——颜色归 `--tk-*`（硬约束），
+   所以国风**不能靠「加一抹朱红」实现**。四条落点：方角 / 方头线条 / 框的处理 / 大留白。 */
+
+[data-card-style="guofeng"] {            /* 印谱双框 */
+  --card-bg-base: var(--tk-surface);
+  --card-lift: 0%;
+  --card-border: 1px solid var(--tk-border);
+  --card-radius: 2px;
+  --card-shadow: var(--sh-0);
+  --card-padding: 30px 36px;
+  --card-gap: 22px;
+  /* ⚠️ 内框必须与外框**同色同粗**。曾写 `--tk-border-light`，实测像素 `#EBE7E2`
+     对卡片底 `#F4F1EE` **只差 9 个灰阶** —— 线画出来了、断言全过、**肉眼等于没有**，
+     双框这个特征整个没落地。「外强内弱」在 CSS 里做不出粗细差（`border` 与
+     `outline` 都只能 1px），只能同强度。 */
+  --card-frame: 1px solid var(--tk-border);
+  --card-frame-inset: -7px;
+  --card-badge-radius: 2px;
+  --card-icon-stroke: 1.5;
+  --card-icon-cap: square;
+  --card-icon-join: miter;
+}
+
+[data-card-style="seal"] {               /* 主色粗边 = 印章 */
+  /* ⚠️ 用**主色**描边 —— 在默认蓝色 accent 下它是「蓝章」，只有用户把 accent 换成
+     朱红才是红章。**这是对的**：形状归方案，颜色归主题。 */
+  --card-bg-base: color-mix(in srgb, var(--tk-accent) 8%, var(--tk-elevated));
+  --card-lift: 0%;
+  --card-border: 2px solid var(--tk-accent);
+  --card-radius: 2px;
+  --card-shadow: var(--sh-0);
+  --card-padding: 22px 26px;
+  --card-gap: 14px;
+  --card-badge-radius: 2px;
+  --card-icon-stroke: 1.75;
+  --card-icon-cap: square;
+  --card-icon-join: miter;
+}
+
+[data-card-style="ink"] {                /* 水墨：无框无圆角，只有留白 */
+  --card-bg-base: var(--tk-surface);
+  --card-lift: 0%;
+  --card-border: none;
+  --card-radius: 0px;
+  --card-shadow: var(--sh-0);
+  --card-padding: 30px 36px;
+  --card-gap: 22px;
+  --card-icon-stroke: 1.25;
+  --card-icon-cap: square;
+  --card-icon-join: miter;
+}
+
+/* ══ 渲染规则（全部带骨架前缀 —— 见文件头「零回归的机制」） ══════════ */
+
+/* 卡片列 —— 前端与导出共用同一个容器 class */
+[data-skeleton="card"] .md-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--card-gap);
+}
+
+[data-skeleton="card"] .md-card {
+  background: var(--card-bg);
+  border: var(--card-border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  outline: var(--card-frame);
+  outline-offset: var(--card-frame-inset);
+  padding: var(--card-padding);
+}
+
+/* 卡片内标题 —— 吃方案色（`guofeng` / `seal` / `ink` 的差异在此可见）。
+   ⚠️ 用**后代**选择器（中间不限定 `.markdown-body`）：前端卡片里标题在
+   `<div class="markdown-body">` 内（`MarkdownPreview` 的 wrapper），而导出 HTML 里
+   标题是 `section.md-card` 的直接子元素（后端拼的是裸片段）—— 限定任一侧，
+   另一侧就静默不生效，且不报错。
+   ⚠️ 本段注释**刻意不写出那个开标签的字面量**：后端的计数断言（`<section
+   class="md-card">` 出现几次 == 有几个 H2）会被注释里的一份拷贝骗到，多算一个。 */
+[data-skeleton="card"] .md-card h1,
+[data-skeleton="card"] .md-card h2,
+[data-skeleton="card"] .md-card h3 {
+  color: var(--card-title);
+}
+
+/* 卡片标题下的分隔线 —— ⚠️ 这条同时修掉一个既有瑕疵：vendor
+   （`github-markdown-light.css`）给 h1/h2 硬编码了 `border-bottom: 1px solid #d1d9e0b3`，
+   在暗色基调下偏亮。此处改成方案的分隔线（1px 简写正好可整体替换 border-bottom）。 */
+[data-skeleton="card"] .md-card h2 {
+  border-bottom: var(--card-divider);
+}
+
+/* 卡片内图标的线条气质 —— 同一份 path，靠线宽/线帽/拐角换气质。
+   ⚠️ **必须走 CSS 不能走 SVG 属性**：`stroke-width="var(--x)"` 在 attribute 里不成立，
+   而 CSS 的 `stroke-width` 会覆盖 presentation attribute。lucide 的 svg 自带
+   `stroke-width="2"` 属性，正好被这里覆盖。 */
+[data-skeleton="card"] .md-card svg {
+  stroke-width: var(--card-icon-stroke);
+  stroke-linecap: var(--card-icon-cap);
+  stroke-linejoin: var(--card-icon-join);
+}
+
+/* 时间戳 badge 的圆角（国风三套设为 2px 方角）。
+   ⚠️ 靠**特异性**压过 Tailwind 的 `.rounded-full`（0,1,0 对 0,2,0），不需要 !important
+   —— Tailwind v4 的 utilities 在 `@layer` 里，而未分层的本文件天然优先。 */
+[data-skeleton="card"] .md-card .limo-badge {
+  border-radius: var(--card-badge-radius);
+}
+
+/* ══ 本轮未接入的变量（**已在上面定义，但暂无渲染落点**） ════════════
+   `--card-weak` / `--card-chip-bg` / `--card-chip-fg`
+     —— 「标签 chip」「副标题/元信息」属于 19 种组件卡片（design/cards.md），
+     本轮只做「H2 → 卡片容器」，产物是纯 Markdown，没有 chip 可画。
+   定义先行的理由是它们是**方案的一部分**（国风三套会调它们），
+   接入 19 种卡片时不该再去改一遍 8 套预设的取值。
+   ⚠️ 若将来确认长期不用，应连同 8 套预设里的取值一并删掉，不留「定义了没人用」的死变量。
+   ────────────────────────────────────────────────────────────────────── */

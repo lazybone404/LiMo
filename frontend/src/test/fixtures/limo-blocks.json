@@ -1,0 +1,133 @@
+{
+  "_comment": [
+    "`limo-block` 语义标记的**跨语言共享 fixture** —— 前端 vitest（markdownMarkers.test.ts）与后端 pytest（test_artifact_blocks.py）各读同一份、各跑各的断言。",
+    "两份实现必然存在（JS 一份、Python 一份），这份文件是它们唯一的一致性证据；「写得像」不是证据。改任一侧的实现前先看这里的用例，改完两侧都要绿。",
+    "每个用例带 name 是为了让失败信息说得出「哪一类行为坏了」，而不是只报行号。",
+    "⚠️ segments 的形状必须与后端 parse_blocks 的返回值逐字段对齐（kind / type / content），否则「两侧都读同一份 fixture」这句就落不了地。",
+    "⚠️ 无标记用例的 stripped 与 md 逐字相同（零回归）；未闭合用例的 stripped 与「从未写过标记」逐字相同（降级不断内容）。这两条是本协议最重要的不变量。"
+  ],
+  "meta": {
+    "protocolVersion": "v1",
+    "_knownTypes_comment": "白名单的跨语言守卫：前端 KNOWN_BLOCK_TYPES 与后端 KNOWN_BLOCK_TYPES 都必须等于这一个集合。加类型时改这里 + 两侧各改一处，漏改一侧即红。",
+    "knownTypes": ["key-takeaway"]
+  },
+  "cases": [
+    {
+      "name": "无标记 —— 单个 text 段且逐字相同（零回归）",
+      "md": "只有一段文字\n第二行",
+      "segments": [{ "kind": "text", "content": "只有一段文字\n第二行" }],
+      "stripped": "只有一段文字\n第二行"
+    },
+    {
+      "name": "单块 + 块前后有正文 —— 切出 text/block/text 三段",
+      "md": "开头。\n\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n**核心结论**\n\n采用异步任务。\n<!-- /limo-block -->\n\n结尾。",
+      "segments": [
+        { "kind": "text", "content": "开头。\n" },
+        { "kind": "block", "type": "key-takeaway", "content": "**核心结论**\n\n采用异步任务。" },
+        { "kind": "text", "content": "\n结尾。" }
+      ],
+      "stripped": "开头。\n\n**核心结论**\n\n采用异步任务。\n\n结尾。"
+    },
+    {
+      "name": "两个块 —— 中间正文单独成段",
+      "md": "<!-- limo-block:v1 type=\"key-takeaway\" -->\n甲\n<!-- /limo-block -->\n中间\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n乙\n<!-- /limo-block -->",
+      "segments": [
+        { "kind": "block", "type": "key-takeaway", "content": "甲" },
+        { "kind": "text", "content": "中间" },
+        { "kind": "block", "type": "key-takeaway", "content": "乙" }
+      ],
+      "stripped": "甲\n中间\n乙"
+    },
+    {
+      "name": "未闭合（有开无闭）—— 降级为正文，内容一字不丢",
+      "md": "正文一\n\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n块内文字\n块内第二行",
+      "segments": [
+        { "kind": "text", "content": "正文一\n" },
+        { "kind": "text", "content": "块内文字\n块内第二行" }
+      ],
+      "stripped": "正文一\n\n块内文字\n块内第二行"
+    },
+    {
+      "name": "孤儿闭标记 —— 剥掉该行，其余原样",
+      "md": "正文\n<!-- /limo-block -->\n尾部",
+      "segments": [{ "kind": "text", "content": "正文\n尾部" }],
+      "stripped": "正文\n尾部"
+    },
+    {
+      "name": "未知 type —— 语法合法即照常切块（白名单判定交给渲染方，解析器不吞内容）",
+      "md": "<!-- limo-block:v1 type=\"warning\" -->\n警告内容\n<!-- /limo-block -->",
+      "segments": [{ "kind": "block", "type": "warning", "content": "警告内容" }],
+      "stripped": "警告内容"
+    },
+    {
+      "name": "未知协议版本 v2 —— 只剥标记行，内容保留为正文（不吞内容）",
+      "md": "<!-- limo-block:v2 type=\"key-takeaway\" -->\n内容\n<!-- /limo-block -->",
+      "segments": [{ "kind": "text", "content": "内容" }],
+      "stripped": "内容"
+    },
+    {
+      "name": "围栏内的假标记 —— 完全不解析（用户内容零触碰）",
+      "md": "```\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n```",
+      "segments": [
+        { "kind": "text", "content": "```\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n```" }
+      ],
+      "stripped": "```\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n```"
+    },
+    {
+      "name": "块内围栏里的闭标记不算闭合 —— 真正闭合的是围栏外那一行",
+      "md": "<!-- limo-block:v1 type=\"key-takeaway\" -->\n示例：\n\n```\n<!-- /limo-block -->\n```\n<!-- /limo-block -->",
+      "segments": [
+        {
+          "kind": "block",
+          "type": "key-takeaway",
+          "content": "示例：\n\n```\n<!-- /limo-block -->\n```"
+        }
+      ],
+      "stripped": "示例：\n\n```\n<!-- /limo-block -->\n```"
+    },
+    {
+      "name": "嵌套开标记 —— 外层优先，内层开标记行剥掉，内容并入外层",
+      "md": "<!-- limo-block:v1 type=\"key-takeaway\" -->\n甲\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n乙\n<!-- /limo-block -->",
+      "segments": [{ "kind": "block", "type": "key-takeaway", "content": "甲\n乙" }],
+      "stripped": "甲\n乙"
+    },
+    {
+      "name": "CRLF —— 入口整体规范化后行为与 LF 一致",
+      "md": "开头\r\n<!-- limo-block:v1 type=\"key-takeaway\" -->\r\n内容\r\n<!-- /limo-block -->",
+      "segments": [
+        { "kind": "text", "content": "开头" },
+        { "kind": "block", "type": "key-takeaway", "content": "内容" }
+      ],
+      "stripped": "开头\n内容"
+    },
+    {
+      "name": "type 属性值含 > —— 正则不匹配，退化为「未知行被剥掉」，内容不吞",
+      "md": "<!-- limo-block:v1 type=\"a>b\" -->\n内容",
+      "segments": [{ "kind": "text", "content": "内容" }],
+      "stripped": "内容"
+    }
+  ],
+  "h2Cases": [
+    {
+      "name": "对照：无标记时按 H2 正常切两节",
+      "md": "## 甲\n内容一\n\n## 乙\n内容二\n",
+      "preamble": "",
+      "sections": [
+        { "heading": "## 甲", "body": "内容一" },
+        { "heading": "## 乙", "body": "内容二" }
+      ]
+    },
+    {
+      "name": "标记块内的 ## 不是文档结构 —— 仍只有两节（漏了 inBlock 会得到三节）",
+      "md": "## 甲\n正文\n\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n## 块内假标题\n块内正文\n<!-- /limo-block -->\n\n## 乙\n内容二\n",
+      "preamble": "",
+      "sections": [
+        {
+          "heading": "## 甲",
+          "body": "正文\n\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n## 块内假标题\n块内正文\n<!-- /limo-block -->"
+        },
+        { "heading": "## 乙", "body": "内容二" }
+      ]
+    }
+  ]
+}

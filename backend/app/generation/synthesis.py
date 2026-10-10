@@ -54,6 +54,7 @@ from app.core.path_guard import resolve_within
 from app.core.text_utils import sanitize_reference_name, split_into_chunks
 from app.core.token import estimate_tokens
 from app.core.transcript_meta import build_composite_raw_text, strip_meta
+from app.core.artifact_blocks import strip_blocks
 from app.generation.budget import (
     MIN_MULTI_CONTEXT_WINDOW,
     input_budget_for,
@@ -1004,7 +1005,10 @@ def _latest_notes_text(store, tx_id: str) -> str:
         return ""
     if not entries:
         return ""
-    return strip_meta(entries[0].get("content") or "").strip()
+    # ⚠️ **语义标记同剥**：与自证头同理（那段 docstring 的三条理由逐条成立）—— 标记行
+    # 进 prompt 是噪音、会被 `estimate_tokens` 算进配额、且是我们专属的协议元素。
+    # ⚠️ 剥的**只是标记行**，块内文字照旧进 prompt（`strip_blocks` 的契约）。
+    return strip_blocks(strip_meta(entries[0].get("content") or "")).strip()
 
 
 def _load_sources(

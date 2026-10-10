@@ -15,6 +15,19 @@ datas = [
     # 它此前只存在于 GitHub 仓库，装机用户在安装目录里看不到那份唯一的总清单。
     # 目录读者从 licenses/README.md 指路过来。
     ('../THIRD-PARTY-NOTICES.md', 'licenses'),
+    # 卡片骨架 CSS —— ⚠️ **唯一真相源在前端**（`frontend/src/styles/cards.css`），
+    # 前端 `main.tsx` 直接 import 它、后端 `export.py::_load_card_css()` 从磁盘读
+    # 同一份并内联进导出 HTML。**刻意不往 backend/static/ 放副本** —— 副本就是
+    # 第二份拷贝，正是「同一份判据不得有两份实现」这条纪律要消除的形态，绕到
+    # 打包路径上发生也一样。落到 _MEIPASS/styles/ 下，与 _load_card_css 的
+    # 候选路径逐字对应（改这里必须同步改那里，两处的名字是成对常量）。
+    ('../frontend/src/styles/cards.css', 'styles'),
+    # 语义标记（limo-block）CSS —— 与上一行同款：唯一真相源在前端
+    # （`frontend/src/styles/blocks.css`），`export.py::_load_block_css()` 读同一份。
+    # ⚠️ **与 cards.css 是两份文件、两行 datas**（一份管骨架、一份管标记），
+    # 合并成一行目录收集会在「只想带一份」时被误伤。落到 _MEIPASS/styles/ 下，
+    # 与 `_load_block_css` 的候选路径逐字对应。
+    ('../frontend/src/styles/blocks.css', 'styles'),
 ]
 # tiktoken_ext / dateparser_data — namespace package，collect_all 不会自动收集
 # PyInstaller 对 namespace package 的处理不可靠，显式添加每个文件

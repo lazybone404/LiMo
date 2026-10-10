@@ -11,17 +11,17 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 117（11 子目录：adapters 8 / agent 6 / core 28 / downloaders 1 / engines 15 / generation 15 / llm 4 / routers 19 / storage 2 / utils 6 / services 13）+ `limo_cli/` 9（CLI，独立于 `app/`） |
-| 前端 TS/TSX/CSS 文件 | 177（175 ts/tsx + 2 css；业务 124，测试 50，`setup.ts` 1） |
-| 前端测试文件 | 51（50 测试文件 + `setup.ts`；583 个测试用例，vitest 全绿） |
-| 后端测试文件 | 62（含 `conftest.py` 共享 fixture；2026-10 新增 `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle`） |
+| 后端 Python 文件 | 119（11 子目录：adapters 8 / agent 6 / core 29 / downloaders 1 / engines 15 / generation 15 / llm 4 / routers 19 / storage 2 / utils 6 / services 14）+ `limo_cli/` 9（CLI，独立于 `app/`） |
+| 前端 TS/TSX/CSS 文件 | 193（189 ts/tsx + 4 css；业务 131，测试 57，`setup.ts` 1） |
+| 前端测试文件 | 58（57 测试文件 + `setup.ts`；688 个测试用例，vitest 全绿） |
+| 后端测试文件 | 67（含 `conftest.py` 共享 fixture；2026-10 新增 `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt`） |
 | API 路由模块 | 18 业务模块（+ `__init__.py`，共 19 个 .py） |
 | API 端点 | 89（`@router.` 装饰器计数；含 `/api/cli/*` 七端点） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 17（docs/ 目录 .md 计数：architecture / frontend-patterns / export-pipeline / patterns / 对话协议 / AGENT-ONBOARDING / user-scenarios / plugins / prompts-inventory / BUILD / qianwen-models / ACKNOWLEDGMENTS / code-audit 1-3 + CHANGELOG / STATUS；design/ 另计） |
-| 代码行数 | 后端 app 30,257 + CLI 1,356 / 前端业务 19,260 / 前端测试 7,931（`wc -l` 累加；前端业务不含 `*.test.*` 与 `setup.ts`） |
+| 代码行数 | 后端 app 31,114 + CLI 1,356 / 前端业务 20,104 / 前端测试 8,766（`wc -l` 累加；前端业务不含 `*.test.*` 与 `setup.ts`） |
 
 ---
 
@@ -69,7 +69,7 @@
 | EPUB 解读 | `POST /api/epub/generate/{id}` + `GET /api/epub/task/{id}` + `POST /api/epub/cancel/{id}` | EPUB 一键解读（阶段1 逐章 + 阶段2 归并总结 + 中断续跑 + 失败章跳过标注） |
 | 文档库 | `GET/POST/PATCH/DELETE /api/folders` + `POST /api/transcripts/batch` | 单层文件夹（**纯逻辑分类，不映射磁盘目录**）+ 批量删除/打标签/移动；`GET /api/transcripts?folderId=` 三态语义（不传=不过滤 / 空串=仅未分类 / id=该文件夹）；`GET /api/search` 全文检索（内存过滤即时 + FTS5 消抖合并，命中并入主列表 + 「原文」角标 + 相关度排序键） |
 | 多篇合成 | `POST /api/synthesis/stream` | 选中 N 篇（≥2）→ 按 multi 预算组装正文 → 落库为 `sourceType="composite"` 新文档。**只建文档不生成**（综述由用户核对「## 来源文档」后自行点生成，走现成 `/generate/{id}/stream`）。Step 0 分叉：装得下 → Stuff（零 LLM 调用）/ 超出 → Map-Reduce（维度发现 + 逐篇固定维度结构化抽取）。业务失败（篇数不足 / 源已删 / 窗口不够 / 缺 Key / **非法原料模式 / 非法读者意图**）全走 SSE error 事件，HTTP 仍 200——⚠️ 入参清洗必须在 `runner` **内**（写在 `StreamingResponse` 构造之前会让 `normalize_*` 的抛错变成 HTTP 500，前端只看到「连接中断」） |
-| 导出 | 9 端点：单文件/全产物/批量/思维导图/对话单篇/对话批量/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/Word(docx 图片内嵌+标题大纲级别)/ZIP(3模式)/思维导图(交互版+SVG)/**PDF**(复用 HTML 产物，无独立端点：Tauri 走 WebView2 PrintToPdf 直接落文件 / 浏览器走打印对话框)。**按版本导出**：`?version=N`（0=最新，查不到**显式报错不回退**），HTML/Word/PDF 三条后端路径共用 |
+| 导出 | 9 端点：单文件/全产物/批量/思维导图/对话单篇/对话批量/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/Word(docx 图片内嵌+标题大纲级别)/ZIP(3模式)/思维导图(交互版+SVG)/**PDF**(复用 HTML 产物，无独立端点：Tauri 走 WebView2 PrintToPdf 直接落文件 / 浏览器走打印对话框)。**按版本导出**：`?version=N`（0=最新，查不到**显式报错不回退**），HTML/Word/PDF 三条后端路径共用。**卡片骨架跟随**（2026-10-10）：`?skeleton=card&card_style=…`（默认 `paper` = 逐字节零回归），HTML 切 H2 包 `section.md-card` / Word 包单单元格表格 / PDF 自动跟随。**语义标记跟随**（2026-10-10）：`?marker_decor=0`（默认开=跟随预览）——HTML 把 `limo-block` 段包成 `div.md-block` / Word 包单单元格表格+左边框 / **md 与纯文本恒剥离标记行**（那里没有视觉层） |
 
 ### 共享查询层（2026-10-04，无独立端点）
 
@@ -139,15 +139,15 @@
 | 文档库 | 9 | 9 | 100% |
 | 多篇合成 | 16 | 16 | 100% |
 | 转录 & 引擎 | 8 | 8 | 100% |
-| LLM 生成 | 12 | 12 | 100% |
+| LLM 生成 | 13 | 13 | 100% |
 | 图片处理 | 4 | 4 | 100% |
 | AI 对话 | 9 | 9 | 100% |
 | 图表生成 | 11 | 12 | 92% |
 | 导出 | 11 | 12 | 92% |
-| 前端 UI/UX | 19 | 19 | 100% |
+| 前端 UI/UX | 20 | 20 | 100% |
 | 安全 & 运维 | 8 | 8 | 100% |
 | 产物复用 | 4 | 5 | 80% |
-| **合计** | **119** | **122** | **98%** |
+| **合计** | **121** | **124** | **98%** |
 
 > 进度说明：
 > - 产物复用（4/5）：已落地**产物自证头 + 共享查询层**（一期）、**密钥与凭据卫生**（二期）、**CLI + 契约文档 + 门禁**（三期），均 2026-10-04；待做**导出 meta 承载 + 渠道扩展**（四期）。路线图见 [CHANGELOG.md](CHANGELOG.md) 2026-10-04 条目
@@ -162,11 +162,12 @@
 | FastAPI Depends 依赖注入 | ✅ 17/18 路由用 `Depends`（未迁：generate/ingest/search；`references.py` 本就不需要） |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 18/18 路由全量完成，0 处 `HTTPException`（2026-10-04 复核） |
-| 前端测试 | ✅ vitest + 583 tests（50 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/readingPrefs/readingLayout/docTabs 3 个/字号、接线与快捷键守卫 3 个/版本切换与预览同步 2 个/onAccent/installWarning） |
-| 后端测试 | ✅ 62 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io；版本布局 2 个：store_version_layout/store_legacy_migration；导出与网络 3 个：export_by_version/proxy_exemption/youtube_subtitle） |
+| 前端测试 | ✅ vitest + 688 tests（57 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/readingPrefs/readingLayout/docTabs 3 个/字号、接线与快捷键守卫 3 个/版本切换与预览同步 2 个/卡片偏好、切分器、骨架组件 3 个/标记解析、偏好、组件、导出接线 4 个/onAccent/installWarning） |
+| 后端测试 | ✅ 67 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io；版本布局 2 个：store_version_layout/store_legacy_migration；导出与网络 5 个：export_by_version/proxy_exemption/youtube_subtitle/markdown_sections/export_cards；**产物标记 3 个**：artifact_blocks/export_blocks/block_prompt） |
 | CLI 契约门禁 | ✅ `scripts/check-cli` 16 项全绿（含 3 条负向对照：后端不可达 / 坏 ID / 截断显式化）；`test_query_contract.py` §8 覆盖 `/api/cli/*` 七端点 + 两条对照实验（2026-10-04） |
 | 产物自证头 | ✅ `notes`/`polished`/`process` 落盘带 `<!-- limo-meta -->` 首行（从哪来/怎么来的/是什么/可信度边界四条），`core/transcript_meta.py` 拆出 envelope 层统一编解码；历史无头产物**不判损坏**；编辑保存带回原头；思维导图等派生视图剥头（2026-10-04） |
 | 共享查询层 | ✅ `services/query.py::QueryService` 收口全部读路径（HTTP 与 CLI **同一份**实现）；顺带修掉存活四个月的 `search.py` 双 `prefix` 导致 `/api/api/search`（前端搜索一直 404 而两侧测试全绿，2026-10-04） |
+| 产物语义标记 | ✅ `limo-block` v1（`key-takeaway` 一种）：模型写进产物正文的协议元素，前端渲染为轻量强调块 + 一键隐藏装饰；`core/artifact_blocks.py` ↔ `lib/markdown-markers.ts` 前后端各一份、共享 fixture `limo-blocks.json` 钉住。三条不变量（专用标记隔离 / **零残留降级** / 围栏内零触碰）；**无标记产物导出逐字节零回归**。⚠️ 顺带修 4 个既有缺陷（导出页 `--tk-*` 令牌注入闸门漏 `paper`+有标记 / Word 把注释泄漏成可见段落 / 合成把标记当模型输入 / `chars` 把标记算进正文字数）；实机验收待用户操作（2026-10-10） |
 | 只读 CLI | ✅ `limo` 七命令 + `/api/cli/*` 七端点（只读，无写操作）；`--json` 时 stdout 纯 JSON、退出码 `0/2/3/4/5/6` 区分「空」与「坏」、`has_more`/`next_cursor` 与 `truncated`/`continuation` 不混用；契约文档两处（库内 `~/.limo/AGENTS.md` + 仓库根）；顺带修 3 缺陷（坏 ID 退出码分叉 / 子命令选项不可用 / `--all` HTTP 静默退化成第一页）（2026-10-04） |
 | 第三轮代码自查 | ✅ 10 条（P0 迁移调用整库重建抹掉标签/文件夹/来源 + P1 前端跨 mode 版本滞后 + `chars` 伪造 + 版本切换竞态 + 导出测试脚本式假绿 + 4 条 P2），另有 5 条「记录不修」，见 [code-audit-3.md](code-audit-3.md)；对照实验 6 条（2026-10-10） |
 | 对话重写 | ✅ 独立 chatStore + 消息层组件树 + 工具气泡/引用/思考折叠（2026-08-04） |
@@ -238,19 +239,21 @@ backend/app/
   agent/         LLM Agent 工具 + 会话管理（tools/tool_registry/compress/session）
   downloaders/   平台下载器（yt-dlp 通用路径；抖音走同一 `_download` 的 UA/Referer 覆盖。⚠️ 自研 `douyin_downloader` + `douyin_helper/abogus`（GPL-3.0 声明）已于 2026-10-06 整体删除）
   llm/           LLMService + agent 循环
-  core/          配置/类型/注册/错误/disconnect/搜索/cookie/sample_doc + transcript_meta（产物自证头编解码）+ resource_id（读路径 ID 校验）
+  core/          配置/类型/注册/错误/disconnect/搜索/cookie/sample_doc + transcript_meta（产物自证头编解码）+ artifact_blocks（产物正文协议标记 limo-block）+ resource_id（读路径 ID 校验）
   utils/         视频管线（video_reader/video_helper/screenshot_marker/frame_quality）
-  services/      共享查询层（query，HTTP 与 CLI 同一份读路径）+ 视频直传理解（video_understand）+ 文档直传（doc_understand，PDF file 块）+ 图表（chart_layout/ 包：geometry 几何 + layouts 算子 + engine 校验 / chart_svg 生成 / chart_renderer 渲染）+ epub 解读 + markdown_render（HTML/Word 共用渲染）+ docx_export（Word 导出）+ 错误体系
+  services/      共享查询层（query，HTTP 与 CLI 同一份读路径）+ 视频直传理解（video_understand）+ 文档直传（doc_understand，PDF file 块）+ 图表（chart_layout/ 包：geometry 几何 + layouts 算子 + engine 校验 / chart_svg 生成 / chart_renderer 渲染）+ epub 解读 + markdown_render（HTML/Word 共用渲染）+ markdown_sections（H2 切分，导出卡片骨架与统计脚本共用）+ docx_export（Word 导出）+ 错误体系
   storage/       文件系统存储
 backend/limo_cli/  只读命令行（cli 入口 / commands 七命令 / doctor 诊断 / output 输出契约 / sources 两个传输层 / agents_md 契约文档模板 / exit_codes）
+backend/tests/     后端测试（67 个 .py，含 conftest.py 共享 fixture；test_e2e_smoke 经 collect_ignore 排除）
 frontend/src/
-  components/    UI 组件（ui/ 布局层：SlotLayout 布局引擎 + ActivityBar 活动栏 + PanelStrip 折叠条；preview/ 下 6 个展示组件拆分；doc-library/ 17 文件拆分）
+  components/    UI 组件（ui/ 布局层：SlotLayout 布局引擎 + ActivityBar 活动栏 + PanelStrip 折叠条；preview/ 下 6 个展示组件拆分 + CardSections 卡片骨架 + MarkerContent 标记渲染；doc-library/ 17 文件拆分）
   store/         Zustand 状态（types.ts + 7 slices + chatStore + streamBuffers）
   api/           API 客户端（15 文件：core + 域文件 + client.ts barrel + sse/taskManager）
   hooks/         useTaskRunner 等自定义 hook
-  lib/           tabRegistry / contentSources / slotRegistry（持有 SlotDef.component）/ panelToggle（开合判据）/ layout-prefs（侧栏布局偏好）/ slotMetrics / modelCaps / 主题模块 / health / download / print
-  test/          前端测试（49 个文件 = 48 测试 + setup.ts，含 16 个组件测试）
+  lib/           tabRegistry / contentSources / slotRegistry（持有 SlotDef.component）/ panelToggle（开合判据）/ layout-prefs（侧栏布局偏好）/ slotMetrics / modelCaps / markdown-scan（围栏感知标题扫描）/ markdown-sections（H2 切分）/ marker-prefs（标记装饰开关）/ markdown-markers（limo-block 解析/剥离）/ card-prefs（骨架轴偏好）/ 主题模块 / health / download / print
+  styles/        卡片骨架 CSS（cards.css）+ 语义标记 CSS（blocks.css），前后端共用单一真相源 —— 后端导出时从磁盘读它
+  test/          前端测试（58 个文件 = 57 测试 + setup.ts，含组件测试；fixtures/h2-sections.json 与 limo-blocks.json 前后端共享）
 docs/            设计文档（13 份）
-design/          引擎实测标准
-tests/           集成测试（40 个 .py = 39 个 test_*.py + conftest.py 共享 fixture）
+design/          引擎实测标准 + 卡片视觉方案（cards.md）
+scripts/         门禁与工具（check-all / check-cli / check-secrets / check-artifact-structure 产物结构统计 等）
 ```

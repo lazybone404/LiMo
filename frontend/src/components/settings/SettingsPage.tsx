@@ -5,6 +5,7 @@ import { ACCENT_GROUPS, ACCENT_SWATCH } from '../../lib/accent'
 import { TEXTURE_OPTIONS, TEXTURE_SWATCH, FONT_OPTIONS, getSavedIntensity, applyIntensity, saveIntensity } from '../../lib/texture'
 import { BASE_OPTIONS } from '../../lib/theme-base'
 import { PARA_STYLE_OPTIONS, LINE_HEIGHT_RANGE, MEASURE_RANGE, MEASURE_DEFAULT_ON, FONT_SCALE_RANGE, READING_DEFAULTS } from '../../lib/reading-prefs'
+import { SKELETON_OPTIONS, CARD_STYLE_OPTIONS } from '../../lib/card-prefs'
 import { LAYOUT_OPTIONS } from '../../lib/layout-prefs'
 import { THEME_PRESETS } from '../../lib/theme-presets'
 import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette, Puzzle } from 'lucide-react'
@@ -61,6 +62,11 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const setBase = useStore(s => s.setBase)
   const reading = useStore(s => s.reading)
   const setReading = useStore(s => s.setReading)
+  const skeleton = useStore(s => s.skeleton)
+  const cardStyle = useStore(s => s.cardStyle)
+  const setCard = useStore(s => s.setCard)
+  const markerDecor = useStore(s => s.markerDecor)
+  const setMarker = useStore(s => s.setMarker)
   const layout = useStore(s => s.layout)
   const setLayout = useStore(s => s.setLayout)
   const applyPreset = useStore(s => s.applyPreset)
@@ -600,6 +606,86 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                       </button>
                     </div>
                   </div>
+                </div>
+              </div>
+
+              {/* 产物骨架 + 卡片视觉方案 —— 与「阅读版式」同族的独立卡片，
+                  **刻意不进「推荐搭配」主题包**（换主题包不该把产物骨架连带重置）。
+                  默认 skeleton='paper' = 改造前逐像素一致（见 lib/card-prefs.ts）。 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
+                <div>
+                  <label className="text-[15px] font-medium mb-1 block">产物骨架</label>
+                  <p className="text-[12px] text-muted mb-4">
+                    笔记、整理版原文的排版方式。默认「整篇」与改造前完全一致
+                  </p>
+                  <div className="space-y-1">
+                    {SKELETON_OPTIONS.map(o => {
+                      const selected = skeleton === o.key
+                      return (
+                        <button
+                          key={o.key}
+                          onClick={() => setCard({ skeleton: o.key })}
+                          className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors ${selected ? 'bg-accent/10' : 'hover:bg-surface-hover'}`}
+                        >
+                          <div className={`text-[14px] ${selected ? 'text-accent font-medium' : 'text-dimmed'}`}>{o.label}</div>
+                          <div className="text-[11px] text-disabled mt-0.5">{o.hint}</div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                {/* ⚠️ 骨架 = 整篇时**整块隐藏**（而不是灰置）—— 没有卡片可画，
+                    留着一个「调了没反应」的旋钮比少一个控件更让人困惑（模式 #53）。 */}
+                {skeleton === 'card' && (
+                  <div>
+                    <div className="text-[13px] font-medium mb-2">卡片视觉方案</div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {CARD_STYLE_OPTIONS.map(o => {
+                        const selected = cardStyle === o.key
+                        return (
+                          <button
+                            key={o.key}
+                            onClick={() => setCard({ style: o.key })}
+                            title={o.hint}
+                            className={`text-left px-3 py-2 rounded-lg transition-colors border ${selected ? 'bg-accent/10 border-accent/30' : 'border-transparent hover:bg-surface-hover'}`}
+                          >
+                            <div className={`text-[13px] ${selected ? 'text-accent font-medium' : 'text-dimmed'}`}>{o.label}</div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <p className="text-[11px] text-muted mt-3">
+                      只改变卡片的观感与分节方式。Markdown 本身不变，HTML / Word / PDF
+                      导出会跟着一起变；切回「整篇」即恢复原样
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* 产物语义标记的装饰开关 —— 与「产物骨架」并列而**不塞进去**：
+                  强调块与骨架轴正交（「整篇」下它也在正文流里），塞进骨架卡片会
+                  暗示它只对卡片生效。默认开启 = 与改造前一致（那边根本没有块）。 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-4">
+                <div>
+                  <label className="text-[15px] font-medium mb-1 block">重点块装饰</label>
+                  <p className="text-[12px] text-muted mb-4">
+                    模型在笔记里标出的重点段落，显示为左侧色条 + 淡底的强调块
+                  </p>
+                  <label className="flex items-center gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={markerDecor}
+                      onChange={e => setMarker({ decor: e.target.checked })}
+                      className="w-4 h-4 accent-accent"
+                    />
+                    <span className="text-[13px] text-dimmed">显示重点块装饰</span>
+                  </label>
+                  <p className="text-[11px] text-muted mt-3">
+                    关闭只是隐藏装饰 —— <span className="text-dimmed">文字内容照常显示</span>，
+                    不会被一并隐藏。预览区工具栏也有同一个开关；HTML / Word / PDF
+                    导出会跟随此设置
+                  </p>
                 </div>
               </div>
 

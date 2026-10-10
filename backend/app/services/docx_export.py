@@ -29,6 +29,10 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 from app.services.markdown_render import markdown_to_html
+from app.core.artifact_blocks import render_blocks_html as _render_blocks_html
+# H2 → 卡片切分：与前端 `splitByH2` / HTML 导出 `split_by_h2` **同一份判据**，
+# 靠共享 fixture 钉住（`frontend/src/test/fixtures/h2-sections.json`）。
+from app.services.markdown_sections import split_by_h2
 
 logger = logging.getLogger(__name__)
 
@@ -527,6 +531,130 @@ def _render_blockquote(doc, bq_tag, images, resolver):
         _inline(para, _wrap(blk), _InlineStyle(italic=False, color=COLOR_MUTED), images, resolver)
 
 
+#: 卡片容器的底纹（Word 侧）。⚠️ 这是 docx 模块里**唯一**为卡片新增的色值 ——
+#: 8 套皮肤在 Word 里会退化成 8 组硬编码色值，那是第二份色表（CSS 里那份才是真相源）。
+#: 故 docx 侧的「卡片」= 「有边框和底纹的块」，**按内容形态判断，不按皮肤判断**。
+FILL_CARD = "FAFAFB"
+
+
+class _CellProxy:
+    """让 `_render_block` 能往表格单元格里写内容。
+
+    ⚠️ 只代理 `_render_block` 真正调用到的三个方法。python-docx 的 `_Cell` 自带
+    `add_paragraph` / `add_table`，**唯独没有 `add_heading`** —— 而标题正是卡片里的
+    第一块内容（卡片头就是那个 `##`），所以走代理是必须的，不是图省事。
+    """
+
+    def __init__(self, cell):
+        self._cell = cell
+
+    def add_paragraph(self, *a, **kw):
+        return self._cell.add_paragraph(*a, **kw)
+
+    def add_table(self, *a, **kw):
+        return self._cell.add_table(*a, **kw)
+
+    def add_heading(self, text: str = "", level: int = 1):
+        # 与 python-docx `Document.add_heading` 同款：level 0 → Title，n → Heading n
+        style = "Title" if level == 0 else f"Heading {level}"
+        return self._cell.add_paragraph(text, style=style)
+
+
+def _render_card(doc, section_tag, images, resolver, ctx: dict):
+    """一张卡片 → 单单元格表格（边框 + 底纹）。
+
+    ⚠️ **Word 没有圆角和投影**，所以「卡片」在这里只能是「有边框和底纹的块」。
+    这是**能力边界**，不是实现省略 —— 验收按这个形态判断，不要拿它跟 HTML 侧比像素。
+    """
+    table = doc.add_table(rows=1, cols=1)
+    try:
+        table.style = "Table Grid"
+    except KeyError:
+        logger.warning("docx 缺少 Table Grid 样式，卡片将无边框")
+
+    cell = table.rows[0].cells[0]
+    # ⚠️ python-docx 新建单元格自带一个空段落，不删掉的话每张卡顶部多一个空行。
+    first = cell.paragraphs[0]
+    first._p.getparent().remove(first._p)
+    _shade_cell(cell, FILL_CARD)
+
+    inner = _CellProxy(cell)
+    for child in section_tag.children:
+        if isinstance(child, Tag):
+            _render_block(inner, child, images, resolver, ctx)
+        elif isinstance(child, NavigableString) and str(child).strip():
+            para = cell.add_paragraph()
+            _emit_text(para, str(child), _InlineStyle())
+    # 空卡片（切出来但内容为空）保留表格本身 —— 与预览一致：卡片是容器，空也占位
+    if not cell.paragraphs:
+        cell.add_paragraph()
+
+
+def _shade_cell(cell, fill: str):
+    """表格单元格底纹。`_shade` 系列操作的是 `w:p` 的 `w:pPr`，而 cell 的底纹在
+    `w:tcPr/w:shd` 上 —— 两者是不同的元素，不能复用。"""
+    tcPr = cell._tc.get_or_add_tcPr()
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), fill)
+    tcPr.append(shd)
+
+
+def _set_cell_left_bar(cell, color: str):
+    """表格单元格左边框。
+
+    ⚠️ 与 `_set_left_bar`（段落用 `w:pBdr`）**不是同一个元素** —— 单元格的边框在
+    `w:tcPr/w:tcBorders` 上，复用不了（同 `_shade_cell` vs `_shade` 的关系）。
+    """
+    tcPr = cell._tc.get_or_add_tcPr()
+    borders = OxmlElement('w:tcBorders')
+    left = OxmlElement('w:left')
+    left.set(qn('w:val'), 'single')
+    left.set(qn('w:sz'), '18')       # 1/8 pt 单位 → 18 ≈ 2.25pt（与段落竖线同宽）
+    left.set(qn('w:space'), '0')
+    left.set(qn('w:color'), color)
+    borders.append(left)
+    tcPr.append(borders)
+
+
+#: 语义标记块在 Word 侧的形态常量。⚠️ 与 `FILL_CARD` 同款的能力边界：Word 表达不了
+#: CSS 变量，`blocks.css` 里的 `--tk-accent` 到这里只能落成一个固定色值 —— 这是
+#: **能力边界不是实现省略**（8 套主题在 Word 里退化成 8 组色值才是错的）。
+#: ⚠️ 刻意**不**复用 `FILL_CARD` + Table Grid —— 那样 `card` 骨架下「卡内标记块」
+#: 会看起来像「一张卡里套着一张卡」。
+FILL_MARKER = "FDF7F2"
+BAR_MARKER = "EB6C36"
+
+
+def _render_marker_block(doc, div_tag, images, resolver, ctx: dict):
+    """一个语义标记块 → 单单元格表格（左侧竖线 + 淡底）。
+
+    ⚠️ 走表格而不是段落底纹：块内容是**整段 Markdown**（可能多段、含列表/代码），
+    段落级底纹只能逐段加、段与段之间会露出缝隙（与卡片同一个理由）。
+
+    ⚠️ **本分支缺了也不会丢内容** —— `_render_block` 末尾的 `else` 会递归子元素。
+    故测试必须断到「这一块被单单元格表格包裹 + 竖线/底纹生效」，断「内容还在」是绿不了的。
+    """
+    table = doc.add_table(rows=1, cols=1)
+    cell = table.rows[0].cells[0]
+    # ⚠️ 新建单元格自带一个空段落，不删掉每块顶部多一个空行（与卡片同款）
+    first = cell.paragraphs[0]
+    first._p.getparent().remove(first._p)
+    _shade_cell(cell, FILL_MARKER)
+    _set_cell_left_bar(cell, BAR_MARKER)
+
+    inner = _CellProxy(cell)
+    for child in div_tag.children:
+        if isinstance(child, Tag):
+            _render_block(inner, child, images, resolver, ctx)
+        elif isinstance(child, NavigableString) and str(child).strip():
+            para = cell.add_paragraph()
+            _emit_text(para, str(child), _InlineStyle())
+    if not cell.paragraphs:
+        cell.add_paragraph()
+
+
 def _render_block(doc, node, images: dict[str, bytes], resolver, ctx: dict):
     """渲染一个块级元素"""
     name = node.name.lower()
@@ -581,6 +709,22 @@ def _render_block(doc, node, images: dict[str, bytes], resolver, ctx: dict):
 
     elif name == "blockquote":
         _render_blockquote(doc, node, images, resolver)
+
+    # ⚠️ 卡片分支必须加在 elif 链**中间**：下方 `else` 是「未知块 → 递归子元素，
+    # 尽量不丢内容」，排在它后面的分支**永远不可达**。也正因为有那个兜底，
+    # 漏加本分支**不会丢内容**（section 被当未知块递归、正文照旧渲染）——
+    # 所以测试必须断到「该节被单单元格表格包裹」这一层，断「内容还在」是绿不了的。
+    elif name == "section" and "md-card" in (node.get("class") or []):
+        _render_card(doc, node, images, resolver, ctx)
+
+    elif name == "div" and "md-block" in (node.get("class") or []):
+        _render_marker_block(doc, node, images, resolver, ctx)
+
+    elif name == "div" and "md-cards" in (node.get("class") or []):
+        # 卡片容器：本身不出块，逐个渲染里面的 section（各自成卡）
+        for child in node.children:
+            if isinstance(child, Tag):
+                _render_block(doc, child, images, resolver, ctx)
 
     elif name == "hr":
         para = doc.add_paragraph()
@@ -642,6 +786,7 @@ def markdown_to_docx(
     *,
     images: dict[str, bytes] | None = None,
     resolver: Callable[[str], bytes | None] | None = None,
+    skeleton: str = "paper",
 ) -> bytes:
     """Markdown → .docx 字节流
 
@@ -650,6 +795,11 @@ def markdown_to_docx(
         title: 文档标题（写入正文首行 Title 样式 + docx 元数据）
         images: 已收集的图片 {文件名: 字节}（图片内嵌的首选来源）
         resolver: 兜底图片解析回调 `src -> bytes | None`（图片不在 images 里时调用）
+        skeleton: `"card"` 时按 H2 切成单单元格表格；默认 `"paper"` = 改造前形态。
+
+    ⚠️ **刻意不接收 `card_style`**：Word 表达不了圆角/投影/渐变，8 套皮肤在这里会
+    退化成 8 组硬编码色值 —— 那就是 `cards.css` 之外的第二份色表，正是「同一份判据
+    不得有两份实现」要防的。Word 侧的卡片 = 「有边框和底纹的块」，只有一种。
 
     Returns:
         .docx 文件的完整字节（可直接作为 Response body / zip 条目）
@@ -664,7 +814,25 @@ def markdown_to_docx(
         except Exception:
             pass
 
-    html = markdown_to_html(md, codehilite=False)
+    def _to_html(fragment: str) -> str:
+        # Word 侧专用：`codehilite=False`（docx 里逐 token 的 `<span>` 是噪音）
+        return markdown_to_html(fragment, codehilite=False)
+
+    if skeleton == "card":
+        # ⚠️ 逐段各自转 HTML 后拼串，**不**用一篇 HTML 再切 —— 切分器的判据是
+        # Markdown（与前端同源），一旦先转 HTML，两侧就在比不同的东西了。
+        # ⚠️ 顺序也是 Markdown 层的：**先切卡、再在每节内解析标记**（与前端同款）。
+        # 反过来的话块会跨节，而跨节标记属于异常，会在降级里自然消解。
+        preamble, sections = split_by_h2(md)
+        chunks: list[str] = []
+        if preamble.strip():
+            chunks.append(_render_blocks_html(preamble, _to_html))
+        for heading, section_body in sections:
+            inner = _render_blocks_html(f"{heading}\n{section_body}", _to_html)
+            chunks.append(f'<section class="md-card">{inner}</section>')
+        html = "\n".join(chunks)
+    else:
+        html = _render_blocks_html(md, _to_html)
     soup = BeautifulSoup(html, "html.parser")
     body = soup.body or soup
 

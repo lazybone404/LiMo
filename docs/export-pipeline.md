@@ -1,6 +1,6 @@
 # 导出管线
 
-> 写于 2026-07-10，最后更新 2026-09-21。
+> 写于 2026-07-10，最后更新 2026-10-10。
 > 记录 Markdown→HTML/Word 导出、思维导图、批量 ZIP 的完整管线架构、设计决策、内容映射表和已知局限。
 
 ---
@@ -44,6 +44,102 @@ AI 对话右键菜单                 ChatCore                     GET /export/c
 - ⚠️ **前端必须校验 mode**：`markdownMeta` 只在加载文档时设一次（notes 优先），切到 polished tab **不会**更新它。不校验就会把 notes 的版本号塞给 polished 导出，拿到「polished 的第 N 版」而不是用户正在看的那一版（`ExportMenu.tsx::exportVersion` 的 `markdownMeta.mode === tabDef.htmlMode` 判据）。
 - 批量导出（`/export/{id}/all`、`POST /export/batch`、`POST /export/custom`）**不带 version**：它们在版本归档布局下自然导出**全部版本**。
 - `_pick_artifact`（`export.py`）在 mode 过滤后按 version 再过滤；`_collect_doc_products` / `_build_export_zip` 保持原样。
+
+
+### 卡片骨架跟随（2026-10-10）
+
+预览区有一条**骨架轴**（`data-skeleton="card"`：每个 H2 章节渲染成一张卡片）。导出**跟随**它——项目核心约束「用户在预览栏看到什么，导出就应该得到什么」，卡片不例外。
+
+**参数**（三条后端路径 `GET /export/{id}` 共用）：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `skeleton` | `"paper"` | `card` 才切卡；**默认 `paper` ⇒ 导出与改造前逐字节一致** |
+| `card_style` | `"gpt"` | 8 套视觉方案之一；不在 `_CARD_STYLES` 白名单内**静默回退 `gpt`** |
+
+前端唯一拼装点是 [ExportMenu.tsx](../frontend/src/components/ui/ExportMenu.tsx) 的 `backendParams()`（HTML / Word / PDF 三条路径共用，`lib/print.ts` 无需改）。⚠️ **`paper` 时一个参数都不发** —— 后端默认值同为 `paper`，URL 与改造前逐字一致。批量导出面板（`ExportCustomRequest`）有同名字段。
+
+**HTML 侧**（`_build_selfcontained_html`）：
+- `card`：`split_by_h2(md)` 切分 → `preamble` 不包 → 每节 `_markdown_to_html` 后包 `<section class="md-card">` → 装进 `<div class="md-cards">`。
+- ⚠️ **`<html>` 必须同时带 `data-skeleton="card"` 和 `data-card-style`** —— 前者是卡片 CSS 的**主作用域**（`cards.css` 里每条规则都带 `[data-skeleton="card"]` 前缀），只带后者的话规则**永不命中** ⇒ 导出的是**没有样式的卡片**，而「section 数与 H2 数一致」「CSS 里有卡片规则」这类断言**全绿**（本项目点名的「断言全过、肉眼等于没有」）。
+- ⚠️ **导出 HTML 的主题（`HTML_THEMES`）是自包含裸色值 CSS，一个 `--tk-*` 都不提供** —— 而卡片 CSS 有 27 处 `var(--tk-*)` 引用（8 个令牌），`var()` 无 fallback 时整条声明作废 ⇒ 卡片**没有底色、没有边框、没有圆角**，且**应用内预览里一切正常**（那边 `--tk-*` 由主题系统提供）。故 `export.py` 必须补一份 `_CARD_TOKENS_CSS`（**三态**：浅色 / `prefers-color-scheme: dark` / `@media print`，后者还原浅色）。⚠️ **三态都要给全**：`@media print` 与暗色媒体查询**会同时匹配**。`test_export_cards.py::test_卡片_CSS_引用的每个界面令牌在导出页里都有定义` 是这条的**成对常量守卫**（正则抽 `var(--tk-…)` 后逐一查定义），能自动发现「cards.css 新引了一个令牌而导出侧没补」。
+
+**CSS 拼接顺序**（顺序即优先级）：`theme_css` → **`_CARD_TOKENS_CSS` + `_load_card_css()`** → pygments → badge → katex → `_PRINT_CSS`（垫底）。卡片 CSS 必须在 `_PRINT_CSS` 之前。
+
+**`_load_card_css()`** —— 卡片 CSS 的**单一真相源在前端** [frontend/src/styles/cards.css](../frontend/src/styles/cards.css)，后端**从磁盘读**并内联，**零重复定义**。候选路径：开发环境 `仓库根/frontend/src/styles/cards.css`；打包环境 `sys._MEIPASS/styles/cards.css`（PyInstaller spec 的 datas 收集源文件本身）。⚠️ **刻意不往 `backend/static/` 放副本** —— 副本就是第二份拷贝，正是要消除的形态，只是绕到打包路径上发生。⚠️ **读不到显式抛 `AppError("EXPORT_CARD_CSS_MISSING", recoverable=False)`**，不做「静默输出无样式卡片」。⚠️ **不缓存**（对照 `_get_katex_assets()` 的 `_KATEX_CACHE`：KaTeX 是只读第三方资产，而 `cards.css` 是**我们会改的源文件**，缓存会让改动静默不生效）。
+
+**Word 侧**（`markdown_to_docx(..., skeleton=...)`）：解析**同一份 HTML**，识别 `<section class="md-card">` → **单单元格表格**包裹该节（`Table Grid` 边框 + 底纹 `FILL_CARD`）。⚠️ **docx 无圆角无投影** —— Word 侧的「卡片」=「有边框和底纹的块」，这是**能力边界不是实现省略**。⚠️ **刻意不接收 `card_style`**：8 套皮肤会退化成第二份硬编码色表，Word 表达不了圆角/投影。三处实现陷阱：
+1. **`_render_block` 的 elif 链必须加在中间**（`blockquote` 之后）—— 链尾的 `else` 是「未知块 → 递归子元素」，排在它后面的分支**永不可达**。
+2. ⚠️ **正因为那个 `else` 兜底，漏加分支不会丢内容**（section 被当未知块递归、正文照旧渲染）⇒「读回断言内容还在」这种断言**在漏加时照样绿**。断言必须落在**结构层**（该节被单单元格表格包裹 / `w:tcPr/w:shd` 的 `w:fill == FILL_CARD`）。
+3. `_Cell` **没有 `add_heading`**，而卡片头就是那个 `##` —— `_CellProxy` 代理 `add_paragraph` / `add_table` / `add_heading`（掉了的话标题退化成正文段落，观感全变、零报错）。
+
+**PDF 侧**：**自动跟随，零后端改动** —— PDF 复用 HTML 端点那一份自包含 HTML，前端在 URL 里带上卡片参数即可（`exportPdfFromUrl` 复用 `backendParams`）。
+
+**⚠️ 不跟随的**：纯 **Markdown / 纯文本**导出（md 就是 md，没有视觉层）；`/export/{id}/all`（只打包原始 md 产物，不渲染 HTML）。
+
+**跨语言同源**：前后端**各有一份** H2 切分实现（JS `splitByH2` / Python `split_by_h2`），靠**共享 fixture** [frontend/src/test/fixtures/h2-sections.json](../frontend/src/test/fixtures/h2-sections.json) 钉住一致 —— 前端 vitest 与后端 pytest **各读同一文件、各跑各的断言**。切分点必须在 `_protect_latex` **之前**（前端 `splitByH2` 看到的就是原始 md，两侧输入同源才谈得上切出同一批卡片）。
+
+**章末的 `---`**：`_NOTES_TASK` 第 6 条要求章间写分割线，切卡后章节边界由卡片间距承担，那条 `---` 挂在卡底只是噪音 ⇒ `split_by_h2` 的 `_trim_body` 在**切分器里**剥（前后端都要剥，放切分器避免同源漂移）；章节**内部**的分隔线（在分隔话题）保留。
+
+
+### 语义标记跟随（`limo-block`，2026-10-10）
+
+产物正文里的**协议元素**（模型写的 `<!-- limo-block:v1 type="…" -->` … `<!-- /limo-block -->`，
+块内是普通 Markdown）在三条后端路径上的处理。完整协议与降级规则见
+[CHANGELOG 2026-10-10](CHANGELOG.md)。
+
+**⚠️ 与骨架轴正交** —— `paper` 下强调块在正文流，`card` 下在**卡内**（轻量强调块的形态刻意
+不是卡片 ⇒ 无「卡中卡」）。⚠️ **顺序是 Markdown 层的：先切卡、再在每节内解析标记**（跨节标记
+是异常，在降级里自然消解；反向顺序会让块跨节）。
+
+**参数**：`marker_decor`（默认**开**）。⚠️ 语义是「**隐藏装饰**不是隐藏标记」—— 关掉后块的
+**包裹层**不渲染，块内文字照常输出。前端同样「关掉才发」（`p.set('marker_decor', '0')`）。
+
+| 路径 | 动作 |
+|---|---|
+| HTML / PDF | **转换**：块 → `<div class="md-block" data-block-type="…">` |
+| Word | **转换**：块 → 单单元格表格（左边框 + 淡底） |
+| 思维导图 | 显式 `strip_blocks`（替换掉对通用 `<[^>]+>` 规则的隐式依赖） |
+| md / 纯文本 | **剥离**标记行（客户端 `stripMarkers` / 后端 `_strip_blocks`） |
+
+**HTML 侧**：分段与包裹收口在 [artifact_blocks.py](../backend/app/core/artifact_blocks.py) 的
+`render_blocks_html(md, render_fragment)` —— `export.py` 只提供**本侧的渲染回调**（KaTeX 保护链），
+Word 侧提供自己的（无代码高亮）。⚠️ **这不是过度抽象**：两个消费点各写一遍消费循环就是模式 #54
+点名的「同一份判据两处实现」。
+
+- ⚠️ **无标记时 `render_blocks_html` 逐字返回 `render_fragment(md)`**（一个字符都不动）—— 这是
+  「无标记产物的导出 HTML 与改造前逐字节相同」那条断言的机制所在。
+- ⚠️ **空段必须丢掉**：它转成 HTML 是空串，但更糟的是在拼接结果里留下一个空行。
+- CSS 拼接顺序：`theme_css` → **`_CARD_TOKENS_CSS`（闸门见下）+ `_load_card_css()` / `_load_block_css()`** → pygments → badge → katex → `_PRINT_CSS`（垫底）。
+
+⚠️ **`_CARD_TOKENS_CSS` 的注入闸门是 `skeleton == "card" or blocks_present`** —— 该常量是导出页
+**唯一的** `--tk-*` 提供者（`HTML_THEMES` 一个都不提供），而 `blocks.css` 在 `paper` 下也要生效。
+**闸门漏掉 `blocks_present` 的表现是「强调块一点样式都没有，而应用内预览完全正常、零报错」**
+（本项目点名的「断言全过、肉眼等于没有」）。⚠️ 反向的闸门同样重要：**无标记 + `paper` 不注入**，
+否则「逐字节零回归」这条断言再也写不出来。
+
+**`_load_block_css()`** —— 与 `_load_card_css()` 同款纪律（单一真相源在前端
+[frontend/src/styles/blocks.css](../frontend/src/styles/blocks.css)、从磁盘读、不缓存、读不到抛
+`AppError("EXPORT_BLOCK_CSS_MISSING", recoverable=False)`）。⚠️ **刻意写成第二个函数而非给前者加
+参数**：仓库路径、打包路径（spec 的 datas 是两行）、错误码、缺失后果各自独立 —— 参数化会把
+「哪一份缺失」压成同一个错误，排查时得靠猜。
+
+**Word 侧**：识别 `<div class="md-block">` → 单单元格表格 + 底纹 `FILL_MARKER` + 左边框
+`BAR_MARKER`。⚠️ **刻意不复用 `FILL_CARD` + `Table Grid`** —— 那样 `card` 骨架下的「卡内标记块」
+会看起来像**一张卡里套着一张卡**。⚠️ **顺带修掉一个既有泄漏缺陷**：`BeautifulSoup` 把
+`<!-- … -->` 解析成 `Comment`（`NavigableString` 子类、**不是 `Tag`**）→ 走「非 Tag 即文本」
+兜底 → 标记被排成**可见段落**。回归守卫 `test_word_标记行不出现在文档正文里`。
+
+**跨语言同源**：与 H2 切分同款 —— 前后端各有一份实现（JS `lib/markdown-markers.ts` / Python
+`artifact_blocks.py`），靠共享 fixture
+[frontend/src/test/fixtures/limo-blocks.json](../frontend/src/test/fixtures/limo-blocks.json) 钉住。
+
+**前端接线守卫**：[exportMarkers.test.ts](../frontend/src/test/exportMarkers.test.ts) 把
+属性名/取值（`data-marker-decor="off"`）、query 参数名与取值、两个注入闸门、以及三处前端接线
+（`ExportMenu` 的 `stripMarkers` 与 `p.set`、`ExportPanel` 的 body 字段）逐条钉住 —— 这类
+「加了开关但没接线」的失败**零报错**，只有对照实机才看得出来。
+
+**⚠️ 不跟随的**：与卡片同理，`/export/{id}/all` 只打包原始产物。
 
 
 ### 设计意图
@@ -589,8 +685,10 @@ ExportMenu「导出 PDF」
 | 图片 | apiUrl() 路径 | base64 内联（HTML）/ 保持原样（MD） | HTML 自包含 |
 | 暗色模式 | ✅ CSS 变量 + data-theme | ✅ limo 主题支持 | 默认主题支持 |
 | 图片缩放 | ✅ react-medium-image-zoom | ❌ | 导出无交互 |
+| 章节卡片 | ✅ `data-skeleton="card"` + `CardSections` | ✅ HTML `section.md-card` / Word 单单元格表格 | 一致（8 套视觉方案仅 HTML 生效，Word 是能力边界） |
+| 重点块（`limo-block`） | ✅ `Div` 强调块（`MarkerContent`） | ✅ HTML `div.md-block` / Word 单单元格表格+左边框 | 一致（开关状态经 `marker_decor` 跟随；md/纯文本**剥离**标记行） |
 
-> 差距收敛进度：2026-07-10 修图片收集/重写/内联 → 2026-08-04 对齐代码高亮 one-dark + checkbox 任务列表 + 暗色代码块 → 2026-09-21 新增 Word 导出（同一解析器，元素映射见 §11）。当前仅剩复制按钮 / 图片缩放两项导出无法复现（静态 HTML 本质限制）。
+> 差距收敛进度：2026-07-10 修图片收集/重写/内联 → 2026-08-04 对齐代码高亮 one-dark + checkbox 任务列表 + 暗色代码块 → 2026-09-21 新增 Word 导出（同一解析器，元素映射见 §11）→ 2026-10-10 卡片骨架跟随（§1「卡片骨架跟随」）+ 语义标记跟随（§1「语义标记跟随」）。当前仅剩复制按钮 / 图片缩放两项导出无法复现（静态 HTML 本质限制）。
 >
 > **Word 导出与预览的差距**（单独列出，因为差异维度不同）：标题/列表/表格/引用/链接/任务列表/时间戳 badge/图片**全部一致**；代码块**不高亮**（保真请用 HTML）；公式**保留 LaTeX 原文**；主题六轴**不生效**（固定 ink/muted 配色）。
 

@@ -6,6 +6,322 @@
 
 ---
 
+## 2026-10-10 — 产物语义标记 `limo-block` v1（重点块）（0.5.0，未升版）
+
+### 做了什么
+
+**起因是用户对「与内容无关的东西混在正文里」的不满**，原话：「解析失败剥掉的标记应该只是
+在前端显示，导出的话不应该有，也可一键隐藏不再显示」。追问后收敛到**两个诉求**：① 产物正文
+里那些**协议元素**不该被当成内容（导出要干净、要能一键不显示）② 顺带解决「产物是连续文章、
+模型没有表达『这段是重点』的手段」。
+
+⚠️ **两个诉求本轮只做后者**（用户拍板：失败标记的隔离**只留口子、不实现**），但**架构是按
+两者共用设计的** —— 这是本节最重要的一条：`limo-block` 不是「重点块功能」，而是**产物正文里
+协议元素的第一位住户**。下一批（失败标记接入）不需要重新论证架构，只需往同一张消费点表上加行。
+
+| 决策 | 结论 | 理由 |
+|---|---|---|
+| 谁生成标记 | **模型直接写进 Markdown** | 只有模型知道「这句是结论」；前端推断做不到 |
+| 第一版类型数 | **1 个：`key-takeaway`** | 加类型的成本不在代码，在 prompt 每轮重新教育 |
+| 渲染形态 | **轻量强调块**（左边框 + 淡底，非卡片） | 与骨架轴正交 → 天然无「卡中卡」 |
+| 隐藏开关 | 预览区工具栏小图标 + 持久化 | — |
+| md 导出 | **剥离**（导出文件干净） | 用户拍板 |
+
+**三条核实结论改变了方案**（都是**先核实、后动手**的产物）：
+
+1. ⚠️ **`<!-- comment -->` 在预览里会原样显示成文字** —— 我此前判断「会被丢弃」是**错的**。
+   react-markdown 10 内部**默认** `allowDangerousHtml:true`（`lib/index.js:123`）且 `skipHtml`
+   默认 false → 裸 HTML 节点在 `post()` 里被替换为**普通文本节点**（同文件 `:360-366`）。
+   ⇒ 标记**必须在字符串层预解析**（与 `splitByH2` 同层），且**不能用 `skipHtml`**（它删的是
+   所有 HTML，用户正文可能合法含 HTML）。
+2. ⚠️ **Word 导出会把注释泄漏成可见段落** —— `BeautifulSoup` 把 `<!-- … -->` 解析成 `Comment`
+   （`NavigableString` 子类、**不是 `Tag`**）→ 走「非 Tag 即文本」兜底 → 排成可见段落。
+   **这是本轮之前就存在的缺陷**，顺带修（回归守卫
+   `test_word_标记行不出现在文档正文里`）。
+3. ⚠️ **合成管道会把注释当模型输入并计入 token 配额** —— `_latest_notes_text` 只 `strip_meta`
+   （只剥自证头那一行）。**同样是既有缺陷**，顺带修。
+
+**协议**（`<!-- limo-block:v1 type="key-takeaway" -->` … `<!-- /limo-block -->`，各独占一行，
+块内是普通 Markdown）与**三条不变量**：
+
+- **专用标记隔离** —— 只认专用围栏/标记，用户内容零触碰（照图表围栏协议的三件套：专用语法 /
+  零残留降级 / 协议隔离）
+- **零残留降级** —— 未闭合、未知 `type`、嵌套一律**只剥标记行**，块内文字一字不丢；剥完与
+  「从未写过标记」**逐字相同**（这是「无标记 = 正常文章」的机器可验证形式）
+- **围栏内零触碰** —— 代码块里的标记文本是用户内容
+
+⚠️ **一处刻意不照搬图表**：图表有「勾选了但没出图」的**完成期 warning**，标记**不加** ——
+无标记是**正常文章**，不是失败。这正是用户要的「模型没生成标记时文章仍然正常可读」。
+
+**四层落点**：
+
+- **前端解析**：`lib/markdown-scan.ts` 扩展（**唯一的行分类器**，`inFence` + 新增 `inBlock`）
+  → `lib/markdown-markers.ts`（`parseMarkers` / `stripMarkers`）→ `preview/MarkerContent.tsx`
+  （每段各跑一个现有 `MarkdownPreview`，**绝不新起第二个 Markdown 渲染器**）。接入点**只有两处**
+  （`PreviewArea` 的 paper 分支 + `CardSections` 每张卡的 body），**绝不放进 `MarkdownPreview`
+  内部**（会静默扩散到 Excel 数据摘要与原始转录两处非 LLM 产物）。
+- **前端开关**：`lib/marker-prefs.ts`（`mbw_markers`，默认 `decor: true`）。⚠️ **语义是「隐藏
+  装饰」不是「隐藏标记」**——块内文字一个不少，只是左边框与淡底消失。⚠️ **落点是纯 CSS 层**
+  （`[data-marker-decor="off"] .md-block { border:none; background:none; padding:0 }`，`margin`
+  刻意与默认态同值），**不是「JS 分支不渲染包裹层」**——后者会让后端导出侧再实现一遍同样的
+  分支（同一份判据两处实现）。DOM 落点 `data-marker-decor="off"`（**默认不写该属性**，与
+  `data-skeleton` 同款）；带前缀的规则**永远不匹配** ⇒ 零回归靠「选择器不匹配」而非「取值相同」。
+- **后端协议**：新增 `app/core/artifact_blocks.py`（与 `transcript_meta.py` 并列 —— 都是「产物
+  正文里的协议元素」的家；一个管自证头、一个管正文标记）。⚠️ **`strip_meta` 是前车之鉴**：它
+  只剥第一行，本模块**必须真的按行扫**。
+- **prompt**：`get_markdown_block_format()` **只入 notes**（`_POLISH_FORMAT_FNS` 不加 —— polished
+  是「忠实整理」，不该塞进模型的主观「这是重点」判断）。⚠️ **不新增勾选项、无条件注入**：标记的
+  价值全在「模型自主判断重点」，要求用户先勾选就退回了「用户自己知道哪里有重点」的旧问题。
+  规范**不教外观**（颜色/边框/圆角一个字不提 —— 模型管性质、CSS 管长相，与图表协议「只教语义、
+  坐标全由后端算」同一纪律），并写了**数量上限**（1–3 处）与**逃生口**（不加标记不减分）。
+  `PROMPT_VERSION` `"6"` → `"7"`。
+
+**消费点清单**（这张表就是「留口子」的具体形态：每加一个消费点都要回来看有没有漏，模式 #54）：
+
+| 消费点 | 动作 |
+|---|---|
+| HTML / PDF 导出 | **转换**为 `<div class="md-block" data-block-type="…">` |
+| Word 导出 | **转换**为单单元格表格（左边框 + 淡底）+ 修泄漏缺陷 |
+| 思维导图 | 显式 `strip_blocks`（替换掉对通用 `<[^>]+>` 规则的隐式依赖） |
+| md / 纯文本导出 | 前端 `stripMarkers`（客户端直读 store，后端碰不到） |
+| 合成管道 | `strip_blocks`（修既有缺陷） |
+| 字数统计 | `strip_blocks`（`chars` 是「正文字数」） |
+| H2 切分 | 跳过块内 `##`（与前端同源） |
+
+**刻意不动**（数据层保留原文是有意的架构选择）：`query.py` 读路径（返回原文让前端解析）、
+`markdown_edit.py`（原样回写，数据层真相不动）、FTS 索引 / Agent 工具（已安全 —— FTS 只索引
+`transcript.rawText`，Agent 工具只读 rawText / 元数据）。
+
+### 为什么
+
+- **「模型管性质、CSS 管长相」是这一轮的主线** —— 规范里出现外观词就等于两处都在描述同一件事，
+  改一处就漂移（而产物上没人能说清哪个是错的）。`test_block_prompt.py` 用词表断言钉住。
+- **零回归不是靠「小心」，是靠结构** —— 默认路径（`paper` + 无标记）满足三个「不可能」：
+  `data-marker-decor` 属性不写、`blocks.css` 不注入、`render_blocks_html` 无标记时**逐字返回**
+  `render_fragment(md)`。于是「无标记产物的导出 HTML 与改造前逐字节相同」是一条可写出来的断言。
+- **Word 侧形态刻意不复用卡片** —— 复用 `FILL_CARD` + `Table Grid` 会让 `card` 骨架下的「卡内
+  标记块」看起来像**一张卡里套着一张卡**。故另立 `FILL_MARKER` / `BAR_MARKER`。
+
+### 顺带修掉的 4 个缺陷（都是先建守卫、缺陷随之暴露）
+
+1. ⚠️ **`_CARD_TOKENS_CSS` 注入闸门漏了一整类**（**本轮最有价值的一条**）：该常量是导出页
+   **唯一的** `--tk-*` 提供者（`HTML_THEMES` 一个 `--tk-*` 都不提供），它原先只在
+   `skeleton == "card"` 时注入。于是 **`paper` + 有标记**时 `blocks.css` 的
+   `border-left: 3px solid var(--tk-accent)` 与 `background: color-mix(…)` 整条声明作废 ——
+   **导出 HTML 里强调块一点样式都没有，而应用内预览完全正常、零报错**。修法：
+   `if skeleton == "card" or blocks_present:`（无标记 + paper 仍不注入，零回归保持）。
+   守卫先建（`test_blocks_css_引用的每个界面令牌在导出页里都有定义`），缺陷随之暴露。
+2. **Word 导出注释泄漏**（见上「核实结论 2」）。
+3. **合成管道把标记当输入**（见上「核实结论 3」）。
+4. **`chars` 把标记字符算进正文字数** —— 派生字段由 `get_markdowns_by_transcript` 读文件头现算，
+   改为 `len(strip_blocks(strip_meta(text)))`。
+
+### 影响范围
+
+- **新增 12 个文件**（5 源 + 7 测试）：源 = `backend/app/core/artifact_blocks.py`、
+  `frontend/src/lib/{markdown-markers,marker-prefs}.ts`、`frontend/src/components/preview/MarkerContent.tsx`、
+  `frontend/src/styles/blocks.css`；测试 = `backend/tests/test_{artifact_blocks,export_blocks,block_prompt}.py`
+  + `frontend/src/test/{markdownMarkers,markerPrefs,markerContent,exportMarkers}.test.{ts,tsx}`
+  **+ 共享 fixture** `frontend/src/test/fixtures/limo-blocks.json`（前端 vitest 与后端 pytest
+  **各读同一文件、各跑各的断言**，与 `h2-sections.json` 同款 —— 跨语言同源的机制所在）。
+- **改动**：`export.py`（渲染下沉 / 令牌闸门 / md+plain 剥离 / `marker_decor` 参数）、
+  `docx_export.py`（标记块 → 单单元格表格）、`synthesis.py`、`store.py`、`prompt.py`、
+  `prompts/__init__.py`、前端 `ExportMenu.tsx` / `ExportPanel.tsx` 等。
+- **prompt 改动影响所有后续生成**：`PROMPT_VERSION` `"6"` → `"7"`。**存量产物不受影响**。
+- **打包**：`LiMoBackend.spec` 的 datas 加 `('../frontend/src/styles/blocks.css', 'styles')`
+  （与 `cards.css` 两行分开 —— 一份管骨架、一份管标记）。⚠️ **打包后需再验 `_load_block_css()`
+  能读到**（单测已覆盖该分支，真机待验）。
+- ⚠️ **实机验收待用户操作**：① 真实生成一次笔记看遵循率与「无标记照样可读」② `paper` / `card`
+  两种骨架下强调块都成立 ③ 开关一键隐藏后文字一字不少、刷新记住 ④ Word 导出读回看（有边框
+  底纹的块、无可见的 `limo-block:v1 type=` 文字）。**测试全绿不等于实机通过**（本轮后端 28 条
+  新测试全绿，但它们证明的是「代码按设计工作」，不是「模型真会照写」）。
+
+---
+
+## 2026-10-10 — 产物章节结构：一节一张卡（0.5.0，未升版）
+
+> 设计文档见 [design/cards.md](../design/cards.md)（两根新轴 + 8 套视觉方案 + 19 种样板）。
+
+### 做了什么
+
+**起因是呈现层诉求，不是功能诉求**：用户原话「以 DeepSeek 这类偏重逻辑的模型为例，
+回复常常信息密度过大、不易阅读；做成卡片，既易于阅读，也方便追问」。于是新增两根与
+既有六轴**正交**的轴 —— **骨架**（`paper` 一整张纸 / `card` 每节一张卡）× **卡片视觉
+方案**（8 套：`gpt` / `apple` / `compact` / `outline` / `paper` / `guofeng` / `seal` / `ink`）。
+
+**探索先挖出两件事，它们决定了「先动 prompt」是必要的**：
+
+1. **默认路径恰好是最反对章节结构的组合**：`plain` 是 2026-10-05 起的全局默认档，第 4 条
+   逐字为「**不堆小标题和列表**：能用一段话讲清就不拆成三条」（[notes_styles.py](../backend/app/generation/prompts/notes_styles.py)）；
+   而**视频/音频的 `_NOTES_TASK` 是五个 NOTES 分支里唯一没有标题要求的**（[prompt.py](../backend/app/generation/prompt.py)，
+   由 `else` 兜底命中）。两者叠加 ⇒ 默认产出的视频笔记大概率一个 `##` 都没有，切卡只会得到**一张巨卡**。
+2. **视频支的「章节」要求今天只由「格式勾选」条件性提供**：五个 NOTES 分支里四个都写了
+   「层次结构：使用标题层级（## → ###）」，唯独视频/音频那支什么都没有；而「章节」这个概念
+   在同一支里至少被五处引用（`_NOTES_TASK` 第 6 条的分割线 + 三条格式指令：`toc` / `link` /
+   `screenshot`），但那三条**只在用户勾选对应格式、才注入 `<hard_constraints>`** ⇒ 不勾任何
+   格式时一条都不生效。修法：把**条件性要求变成无条件基线**。
+
+**⚠️ 实施期更正：上面两件事的**后果**部分被基线实测证伪。** 第 1 部分建成后立刻跑了基线
+（198 份产物 / 90 篇文档）：勾选过 `toc`/`link`/`screenshot` 的产物 **0 份**；有自证头的
+23 份 **H2 中位 7、无 H2 占比 0%**；**视频来源 18 份全部「未勾选」，却全部写出了 `##`**
+（H2 中位 7）；`plain` 档 5 份同样全部分节。**模型没等 prompt 要求就自己分了节。** 于是
+第 2 部分的**性质改变**（用户拍板：两处仍都做）——从「修一个已存在的缺陷」降为「把已经
+发生的事实写成显式要求」，是**加固**（行为更确定、与另外四条路径一致、换模型时不易丢失
+结构），不是修复。⚠️ 「相邻 H2 之间 max 80,223 字符」证实「一张巨卡」**真实存在**（至少 1 例），
+这部分支撑 card 功能的价值不受影响。
+
+**第 0 部分 · 顺带修复 `--tk-surface-hover`（独立于卡片轴）**
+- **事实**：该变量在原 `index.css` **9 处引用、0 处定义**。按 CSS 规范 `var()` 引用未定义变量
+  且无 fallback ⇒ 声明在计算值阶段失效 ⇒ **代码块底色 / 引用块底色 / 表格表头底色 / 斑马纹
+  四处实际落到 `transparent`**。正确名字是 `--tk-hover`。
+- ⚠️ **这是视觉行为变更，不是零回归** —— 四处底色一起从透明变成有底。故验收时与「骨架轴
+  零回归」**分开断言**。修法收口在 [index.css](../frontend/src/index.css)，并在
+  [cards.css](../frontend/src/styles/cards.css) 文件头留一条注释（记下这个名字是坏的，
+  防后来者照抄）。`cardPrefs.test.ts` 有一条守卫：**剥掉注释后** `cards.css` 不得出现它。
+
+**第 1 部分 · 只读统计脚本**（[scripts/check-artifact-structure.py](../scripts/check-artifact-structure.py)）
+- **定位是可重复的验收工具，不是门禁**（**不进 `scripts/check-all`**）：prompt 改动前后各跑
+  一次，看「按文风档分组的 H2 计数分布有没有上移」。形态照 `check-secrets.py`：`--root` /
+  `--json` / `--selftest` + **三态退出码**。
+- 回答四问：① 按 `generated.params.style` 分组的 H1/H2/H3 计数 ② 按 `source.sourceType`
+  分组 ③ 相邻 H2 之间正文字符数分布 ④ 表格/代码块/引用/图片/列表出现率（为「19 种里哪些
+  值得做」提供第一份真实数据，此前是零数据）。
+- ⚠️ **输出绝不回显任何标题文本、正文或文件名** —— 只给计数与分布；这份报告可能被贴进
+  issue、传给外部讨论，产物内容属用户隐私（与 `check-secrets.py`「不回显凭据值」同一条纪律）。
+- ⚠️ **H2 判定走 `markdown_sections.iter_headings`，与导出切分器同源** —— 各写一份的症状是
+  静默的：统计说「3 个 `##`」而导出只切出 2 张卡，两边都不报错。
+- `--selftest` 自证扫描器有区分力：造两段合成 Markdown（一段 3 个 `##`、一段 0 个，各带一句
+  **围栏内的假标题**），断言计数正确且不被围栏内的 `## ` 骗到（后者是 `extractHeadings`
+  已经踩过的真坑）。
+
+**第 2 部分 · prompt 收敛**（两处改动 + `PROMPT_VERSION` `"5"` → `"6"`）
+- **改动一**：`plain` 档第 4 条 `- 不堆小标题和列表：…` → `- 不硬凑结构：…`（**只换前半句**，
+  冒号后一字不动）。原句的「不堆**小标题**」在视频路径上会被读成「连标题也不要有」，
+  「**和列表**」是第二类误伤。「不硬凑结构」保留「别为凑而凑」的原意，**又不再出现「标题」
+  这个词** —— 歧义从字面消失，而不是靠加解释去压。⚠️ **刻意不加**「内容有几个话题时才用
+  `##`」这类许可句：`##` 的组织要求由 `<task>` 无条件承担，风格档不该重复定义它。
+- **改动二**：`_NOTES_TASK` 补 `"2. **层次结构**：使用标题层级（## → ###）组织内容，反映
+  内容的逻辑结构。"`（插在第 1 条之后，其后编号统一 +1）。与另外四处**逐字同源**，唯一
+  有意差异在句尾：它们说「反映**原文**的逻辑结构」，这里说「反映**内容**的」——视频是口播
+  转录，没有成文的「原文结构」可反映。⚠️ **刻意不加**「单一主题的短内容不必强行分节」：
+  三条格式指令无条件要求 `##` 章节，而 `<hard_constraints>` 优先级**高于** `<style_preference>`
+  ⇒ 加这句等于**用一条低优先级的软偏好去授权违反高优先级的硬约束**。
+- ⚠️ **写这两条文案前过了一道闸**：任何写进风格档的「可以不要标题」都会给模型一张违反
+  hard_constraints 的通行证 ⇒ 两处改动都刻意不提「要不要标题」以外的条件。改完逐层核过
+  同一份 prompt 里**没有残留方向相反的两条指令**（`<hard_constraints>` 三条要求 `##` 的
+  指令与新条款同向；`<style_preference>` 除 `plain` 第 4 条外没有第二个档表达「不要章节」，
+  两处 `minimal` 反而**以「章节存在」为前提**）。
+- ⚠️ **「不要卡片」这个诉求不该由 prompt 档位承担**，由**骨架轴的 `paper`** 承担（切回 paper
+  时 `##` 仍是普通标题、渲染成一整篇）。这让两根轴分工自洽：**prompt 管「产物有没有结构」，
+  骨架管「结构长什么样」**。
+- 连带：`notes_styles.py` 注释块里逐字引用旧句的那句、以及它「单篇笔记没有骨架约束」的**已
+  被推翻的前提**一并改；`common.py` 的两处过期 docstring（漏列 `<output_language>` /
+  `<reference_texts>`；`<role>` 误写「含语言要求」）改成与 `prompts-inventory.md` 附录 C 同序
+  同措辞；`prompts-inventory.md` §13 版本表加 `"6"` 行 + §12.1 加一行。
+- ⚠️ **改动点是 `prompt.py` / `notes_styles.py` 的常量**（流式与非流式两条构建路径都读同一份
+  常量），**不是** PromptBuilder 层 —— 后者会漏掉流式。
+
+**第 3 部分 · 前端骨架**
+- **新文件 [lib/card-prefs.ts](../frontend/src/lib/card-prefs.ts)**（localStorage `mbw_card`），
+  形态照 `reading-prefs.ts`：逐字段校验、单项坏只退该项。启动链
+  [store/index.ts](../frontend/src/store/index.ts) 补一行 `applyCard(getSavedCard())`。
+- ⚠️ **`paper` 时必须 `removeAttribute` 而不是写 `="paper"`** —— 用「**属性缺失即 paper**」
+  让卡片规则**永远命不中**。这是「零回归」从「取值相同」升级为「**选择器不匹配**」的更强
+  保证（写 `="paper"` 时，任何一条漏写 `[data-skeleton="card"]` 前缀的卡片规则都会漏出来）。
+- **切分器抽成唯一真相源**：[lib/markdown-scan.ts](../frontend/src/lib/markdown-scan.ts) 的
+  `scanHeadingLines` 把**围栏扫描**收口，`markdown-components.tsx` 的 `extractHeadings` 改为
+  消费它（**不是复制一份** —— 代码块里的 `## ` 被当成标题是已经踩过一次的真坑）。
+  [lib/markdown-sections.ts](../frontend/src/lib/markdown-sections.ts) 的 `splitByH2` 返回
+  `{ preamble, sections }`（无 H2 时回落长文；H2 前引言单独成块不丢弃；卡内 H3/H4 留在卡内）。
+- **[components/preview/CardSections.tsx](../frontend/src/components/preview/CardSections.tsx)**：
+  切分后**每张卡各跑一个现有的 `MarkdownPreview`** ⇒ 表格/代码/引用/公式/图片/时间戳 badge/
+  标题锚点与今天逐一致（**绝不新起第二个 Markdown 渲染器**）。**接入点只有一处** ——
+  [PreviewArea.tsx](../frontend/src/components/preview/PreviewArea.tsx) 的 notes / polished
+  只读态。⚠️ **刻意不在 `MarkdownPreview` 内部按骨架轴分派** —— 那样会**静默扩散**到另外两处
+  调用点（Excel 数据摘要 / 原始转录）。⚠️ `paper` 分支与改造前**逐字相同**。
+- **卡片 CSS 独立成 [styles/cards.css](../frontend/src/styles/cards.css)** —— 19 个 `--card-*`
+  + 4 个 `--sh-*`（**全项目唯一允许出现裸色值的地方**，影子本质是黑且必须随明暗换值），
+  其余零硬编码色值（单测断言：除 `--sh-*` 等级层外不出现任何 `#`/`rgb(`/`hsl(`）。⚠️ **切换
+  预设必须先清空全部受控变量再套新值**，且受控变量清单**从 `PRESETS` 派生、不手写第二份** ——
+  只写差异而不清，上一套独有的键会残留（国风的 `--card-frame` 漏到 `gpt` 上，界面像「预设
+  切换有 bug」，实际是静默串味）。⚠️ **国风双框内框必须与外框同色**（曾用 `--tk-border-light`，
+  像素实测与卡片底只差 9 个灰阶 —— 线画出来了、断言全过、**肉眼等于没有**）。
+- **设置页**：骨架（两选一）+ 卡片视觉方案（8 选一）；⚠️ 骨架 = `paper` 时**隐藏**方案块
+  （而非灰置），否则是「调了没反应」的死旋钮。
+
+**第 4 部分 · 导出跟随**（用户拍板：明知「禁止导出与预览不一致」是核心约束，选择**不让
+卡片成为例外**）。详见 [export-pipeline.md](export-pipeline.md)「卡片骨架跟随」段。
+- 参数贯通：`GET /export/{id}` 加 `skeleton`/`card_style` 查询参数（**默认 `paper`**）、
+  `ExportCustomRequest` 加同名字段、前端唯一拼装点 `ExportMenu.tsx::backendParams()`
+  （HTML / Word / PDF 三条路径共用，`lib/print.ts` 无需改）。⚠️ **`paper` 时一个参数都不发** ——
+  URL 与改造前逐字一致。⚠️ PDF **自动跟随，零后端改动**（复用 HTML 那份自包含 HTML）。
+- **HTML 侧**：`split_by_h2` 切分 → 每节包 `<section class="md-card">` 装进 `<div class="md-cards">`。
+  ⚠️ **`<html>` 必须同时带 `data-skeleton="card"` 和 `data-card-style`** —— 前者是卡片规则的
+  **主作用域**，只带后者的话规则**永不命中** ⇒ 导出的是**没有样式的卡片**，而「section 数与
+  H2 数一致」「CSS 里有卡片规则」这类断言**全绿**（本项目点名的「断言全过、肉眼等于没有」）。
+- ⚠️ **本轮挖出的关键缺陷（不是报错，但等价严重）**：导出 HTML 的主题（`HTML_THEMES`）是
+  **自包含裸色值 CSS，一个 `--tk-*` 都不提供** —— 而卡片 CSS 有 27 处 `var(--tk-*)` 引用
+  （8 个令牌），`var()` 无 fallback 时整条声明作废 ⇒ 卡片**没有底色、没有边框、没有圆角**，
+  且**应用内预览里一切正常**（那边 `--tk-*` 由主题系统提供）。修法：`export.py` 补一份
+  `_CARD_TOKENS_CSS`（**三态**：浅色 / `prefers-color-scheme: dark` / `@media print`，
+  后者还原浅色）—— ⚠️ **三态都要给全**：`@media print` 与暗色媒体查询**会同时匹配**。
+- **`_load_card_css()`** —— 卡片 CSS 的**单一真相源在前端**，后端**从磁盘读**并内联，
+  **零重复定义**。候选：开发环境 `仓库根/frontend/src/styles/cards.css`；打包环境
+  `sys._MEIPASS/styles/cards.css`（[LiMoBackend.spec](../backend/LiMoBackend.spec) 的 datas
+  收集源文件本身）。⚠️ **刻意不往 `backend/static/` 放副本** —— 副本就是第二份拷贝。⚠️
+  **读不到显式抛 `AppError("EXPORT_CARD_CSS_MISSING", recoverable=False)`**，不静默输出无样式
+  卡片。⚠️ **不缓存**（对照 `_get_katex_assets()` 的缓存：KaTeX 是只读第三方资产，而
+  `cards.css` 是**我们会改的源文件**，缓存会让改动静默不生效）。
+- **Word 侧**：解析**同一份 HTML**，识别 `<section class="md-card">` → **单单元格表格**包裹
+  （`Table Grid` 边框 + 底纹 `FILL_CARD`）。⚠️ **docx 无圆角无投影**，Word 侧的「卡片」=
+  「有边框和底纹的块」，是**能力边界不是实现省略**；⚠️ **刻意不接收 `card_style`**（8 套皮肤
+  会退化成第二份硬编码色表）。⚠️ **`_render_block` 的 elif 链必须加在中间**（`blockquote` 之后）
+  —— 链尾的 `else` 是「未知块 → 递归子元素」，排在它后面的分支**永不可达**；也**正因那个
+  `else` 兜底，漏加分支不会丢内容**（section 被当未知块递归、正文照旧渲染）⇒「读回断言内容
+  还在」这种断言**在漏加时照样绿**，断言必须落在**结构层**。
+- ⚠️ **不跟随的**：纯 Markdown / 纯文本导出（md 就是 md，没有视觉层）；`/export/{id}/all`
+  （只打包原始 md 产物，不渲染 HTML）。
+
+**跨语言同源**：前后端**各有一份** H2 切分实现，靠**共享 fixture**
+[frontend/src/test/fixtures/h2-sections.json](../frontend/src/test/fixtures/h2-sections.json)
+钉住一致 —— 前端 vitest 与后端 pytest **各读同一文件、各跑各的断言**。⚠️ **切分点必须在
+`_protect_latex` 之前**（前端 `splitByH2` 看到的就是原始 md，两侧输入同源才谈得上切出同一
+批卡片，否则含跨行公式的文档会在预览与导出之间分叉）。⚠️ **章末的 `---` 在切分器里剥**
+（`_NOTES_TASK` 第 6 条要求章间写分割线，切卡后由卡片间距承担；前后端都要剥，放切分器
+避免同源漂移），章节**内部**的分隔线保留。
+
+### 为什么
+
+- **产物是给人读的，而「一节一张卡」是呈现层的事** —— 拆成卡片既降单屏信息密度，又让每节
+  成为可独立指认的对象（为将来的追问留好位）。
+- **零回归靠「选择器不匹配」而非「取值相同」** —— 默认 `paper` 时两个属性都被移除，`cards.css`
+  里所有规则带 `[data-skeleton="card"]` 前缀 ⇒ 一整套新样式**在结构上不可能**影响既有渲染。
+- **导出必须跟随**（用户决定）—— 项目核心约束是「用户在预览栏看到什么，导出就应该得到什么」，
+  用户选择不让卡片成为例外。代价是本轮必须克服两处静默失效（`data-skeleton` 属性、`--tk-*`
+  令牌），都在上面如实记了。
+- **prompt 先动而不是只做前端** —— 若产物没有 `##`，切卡只会得到一张巨卡。⚠️ 但基线实测
+  证伪了这个推论，故 prompt 改动的定位从「修复」下调为「加固」（见上「实施期更正」）。
+
+### 影响范围
+
+- **新增 7 个源文件**：`scripts/check-artifact-structure.py`、`backend/app/services/markdown_sections.py`、
+  `frontend/src/lib/{markdown-scan,markdown-sections,card-prefs}.ts`、
+  `frontend/src/components/preview/CardSections.tsx`、`frontend/src/styles/cards.css`
+  **+ 5 个测试文件**（`backend/tests/test_{markdown_sections,export_cards}.py`、
+  `frontend/src/test/{markdownSections.test.ts,cardSections.test.tsx,cardPrefs.test.ts}`）
+  **+ 共享 fixture** `frontend/src/test/fixtures/h2-sections.json`。
+- **prompt 改动影响所有后续生成**：`PROMPT_VERSION` `"5"` → `"6"`，之后生成的产物自证头会带
+  `"6"`。**存量产物不受影响**（它们已落盘）。⚠️ 真实验收（用视频素材生成一次、确认产物真有
+  `##` 且 `promptVersion === "6"`）**待用户实机操作**。
+- **导出行为**：`paper`（默认）路径**逐字节未改**（有单测 `test_显式传_paper_与不传参数逐字节
+  等价` 钉住）；只有用户主动切到 card 才走新分支。
+- **打包**：[LiMoBackend.spec](../backend/LiMoBackend.spec) 的 datas 加了
+  `('../frontend/src/styles/cards.css', 'styles')`。⚠️ **打包后必须再验一次** `_load_card_css()`
+  能读到文件（单测已覆盖该分支，真机待验）。
+- **门禁**：`bash scripts/check-all` 五项全绿（tsc / oxlint / vitest / pytest / check-cli）。
+
+---
+
 ## 2026-10-10 — 第三轮代码自查：P0 迁移抹索引 / P1 前端版本滞后（0.5.0，未升版）
 
 > 完整报告见 [code-audit-3.md](code-audit-3.md)（10 条 + 「记录不修」5 条 + 对照实验 6 条）。

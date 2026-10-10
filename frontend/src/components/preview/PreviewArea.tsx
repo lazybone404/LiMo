@@ -8,7 +8,7 @@ import { getStreamBuffer } from '../../store/streamBuffers'
 import type { MarkdownMeta, MarkdownVersion, TaskInfo } from '../../store/types'
 import { TabRegistry, type TabDef } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Minimize2, Expand, Pencil } from 'lucide-react'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Minimize2, Expand, Pencil, Highlighter } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -23,6 +23,8 @@ import { TOC } from './TOC'
 import MindmapView from './MindmapView'
 import { TranscriptView } from './TranscriptView'
 import { MarkdownPreview } from './MarkdownPreview'
+import { CardSections } from './CardSections'
+import { MarkerContent } from './MarkerContent'
 import { TextareaMarkdownEditor } from './TextareaMarkdownEditor'
 import { PartialBanner } from './PartialBanner'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
@@ -163,6 +165,14 @@ export function PreviewArea() {
   const immersive = useStore(s => s.immersive)
   const toggleImmersive = useStore(s => s.toggleImmersive)
   const reading = useStore(s => s.reading)
+  // 产物骨架轴（`paper` / `card`）—— **只在 notes/polished 的只读态消费**（唯一接入点）。
+  // ⚠️ 刻意不在 MarkdownPreview 内部按骨架分派：那会静默扩散到 Excel 数据摘要与
+  //    原始转录两处调用点，而它们都不是 LLM 产物。
+  const skeleton = useStore(s => s.skeleton)
+  // 语义标记的装饰开关（`limo-block`）。⚠️ 与 skeleton 不同，它**只影响装饰**：
+  // 关掉后块内文字照常显示，只是没有左边框/淡底（见 lib/marker-prefs.ts 文件头）。
+  const markerDecor = useStore(s => s.markerDecor)
+  const setMarker = useStore(s => s.setMarker)
 
   // ratio 取自 lib/reading-prefs 的 CONTENT_WIDTH_RATIO（单源）——本表只补 label/icon
   const WIDTH_RATIO: Record<string, { label: string; icon: typeof Columns; ratio: number }> = {
@@ -807,7 +817,15 @@ export function PreviewArea() {
                   title="编辑产物（源码 + 分屏预览）"
                 ><Pencil size={12} /> 编辑</button>
               </div>
-              <MarkdownPreview sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
+              {/* 骨架轴分派 —— **唯一接入点**。两条分支都过 `MarkerContent`（语义标记
+                  与骨架轴正交：`paper` 下强调块在正文流里，`card` 下它在卡内）。
+                  ⚠️ `paper` 且**无标记**时 `MarkerContent` 走快路径，渲染树与改造前逐字
+                  相同（同组件、同 props、同顺序）—— 这是可断言的事实，见
+                  `test/cardSections.test.tsx`。无 H2 时 CardSections **内部回落**到与
+                  本行完全相同的路径。 */}
+              {skeleton === 'card'
+                ? <CardSections sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
+                : <MarkerContent sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />}
             </>
           )}
         </>
@@ -975,6 +993,18 @@ export function PreviewArea() {
             title={`阅读宽度：${WIDTH_RATIO[contentWidth].label}（Ctrl+W）`}
           >
             {contentWidth === 'narrow' ? <AlignCenter size={15} /> : contentWidth === 'wide' ? <Maximize2 size={15} /> : <Columns size={15} />}
+          </button>
+          {/* 重点块装饰开关 —— 只影响「强调块产生的附加物」（左边框/淡底），
+              **内容一字不减**。⚠️ 高亮表示「已改变默认」（装饰被关掉），与右侧日志
+              按钮的按下态同一套表达；默认态不高亮，避免常驻视觉噪音。
+              ⚠️ 本工具栏在沉浸态整条不渲染 —— 本轮接受这个边界，不在沉浸态另开入口
+              （设置页里有同一个开关，见 SettingsPage 的「阅读与产物」区）。 */}
+          <button
+            onClick={() => setMarker({ decor: !markerDecor })}
+            className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors ${markerDecor ? 'text-dimmed hover:bg-surface-hover' : 'bg-accent/10 text-accent'}`}
+            title={markerDecor ? '重点块装饰：显示中（点击隐藏装饰）' : '重点块装饰：已隐藏（点击显示）'}
+          >
+            <Highlighter size={15} />
           </button>
           {/* 沉浸阅读 —— 与 Ctrl+\ 共用同一个 `toggleImmersive`（它带 processingTasks
               守卫：有任务在跑时拒绝进入并 toast，否则 GenPanel 卸载会让任务变僵尸）。

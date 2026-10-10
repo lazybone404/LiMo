@@ -144,6 +144,9 @@
 - **有 `<style_preference>` 节** — 通过 `normalize_style()` 查找 `VIDEO_NOTE_STYLES`
 - 格式选项从 `AVAILABLE_OPTIONS` 动态过滤，使用 `_ALL_FORMAT_FNS`（全部 7 种格式可用）
 - **参考文件**：仅 Notes 注入 `<reference_texts>` 节（user_request 前）；polished/Excel 不注入
+- **语义标记 `limo-block`**（`get_markdown_block_format()`，2026-10-10）：**无条件追加**到
+  `hard_constraints` 末尾 —— ⚠️ **与 `AVAILABLE_OPTIONS` / `_ALL_FORMAT_FNS` 无关**（没有勾选项，
+  见 §13 `"7"`）。它是**独立追加**而非经格式过滤，故「不勾任何格式」时同样注入
 - `_INSTRUCTION_PRIORITY` 声明了三层优先级
 
 ```xml
@@ -688,6 +691,7 @@ composite 分派就被丢弃）。合成文风**全部**由 `_SYNTHESIS_STYLE_CO
 | ✅ 7 | 语言策略不一致（4 个 role 硬编码矛盾语言策略） | P0-2 统一为 `<output_language>` 节，随 target_language 动态生成 |
 | ✅ 8 | Agent 工具调用不可见性 | P0-3 新增 `agent_status` 事件 + `tool_start` display + `tool_result` summary |
 | ✅ 9 | 对话文档注入截断 | P0-3 `rawText[:1000]` → `smart_truncate(rawText, 1000)` 按句子边界截断 |
+| ✅ 10 | **视频/音频支的章节要求只由「格式勾选」条件性提供**（PROMPT_VERSION `"6"`） | 五条 NOTES 路径里四条写了「层次结构」，唯独 `_NOTES_TASK` 没有；而「章节」在同一支里至少被五处引用（分割线那条 + `minimal` 档 + 三条 format 指令）。补上无条件第 2 条，与另外四条同源。⚠️ **实测显示缺条款没有产生后果**（视频产物 100% 自发写出 `##`），故这是**加固**不是修复 |
 
 ### 12.2 未修复（P1 或更低优先级）
 
@@ -715,7 +719,7 @@ composite 分派就被丢弃）。合成文风**全部**由 `_SYNTHESIS_STYLE_CO
 
 ## 13. 提示词版本（PROMPT_VERSION）
 
-**定义**：[backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) — 当前值 `"5"`
+**定义**：[backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) — 当前值 `"7"`
 
 这个常量只有一个用途：写进产物自证头的 `generated.promptVersion`（装配在 `generation/provenance.py`），回答「这份产物是凭哪版提示词生成的」。**它对 prompt 本身零影响**——改它不会让任何一次调用产生不同结果，但会让此后落盘的产物如实标出新版本。
 
@@ -726,6 +730,8 @@ composite 分派就被丢弃）。合成文风**全部**由 `_SYNTHESIS_STYLE_CO
 | `"3"` | 2026-10-05 同日验收修订（"2" 真实重跑后的收紧）：锚点稀疏规则（分歧条行末集中标一次 / 读者问题每节 ≤3 个 / 第 3 步不再标）+ 文风第 8 条补排版密度 + 覆盖说明由「输入覆盖情况（完整输入）」改读者语言「有没有哪篇被删节过」。⚠️ **"2" 与 "3" 不共存**——"2" 的产物从未对外发布，本地重跑即被替代 |
 | `"4"` | 2026-10-05 新增「## 各篇速查」工具区（维度作小节、节内每篇一行）——真实场景驱动：论文读者要「看全 + 横向比」，与文章区的「低密度、通俗」要求相反，**分区而非折中** |
 | `"5"` | 2026-10-05（"4" 的真实重跑验收）材料索引表下那句补「直接给结论，不要解释你是怎么知道的（不要出现字段名、标签名或内部标记）」——两批实跑（3 篇论文 + 6 篇观点文）都稳定写出内部标签名 `source_content`，属「模型忠实执行 prompt、验收却把它当错」第 5 次复现 |
+| `"6"` | 2026-10-10 产物章节结构：① `_NOTES_TASK`（**视频/音频支，五条 NOTES 路径里唯一无条件缺「层次结构」的一条**）新增第 2 条「使用标题层级（## → ###）组织内容，反映内容的逻辑结构」，与另外四条逐字同源；② `plain` 档第 4 条「不堆小标题和列表」→「不硬凑结构」。⚠️ 起因是**加固不是修复**——基线实测（198 份产物 / 90 篇文档）显示视频产物在**零**格式指令下已 100% 自发写出 `##`（中位 7 个），缺条款没有产生后果；本轮把「模型自发」变成「prompt 明确要求」，换模型时不易丢失结构 |
+| `"7"` | 2026-10-10 产物语义标记 `limo-block`：notes 的 `hard_constraints` **无条件追加** `get_markdown_block_format()`（重点块规范）。⚠️ **不新增勾选项**——标记的价值全在「模型自主判断重点」，要求用户先勾选就退回了「用户自己知道哪里有重点」的旧问题（因此**没有 UI 表达**，「谁该有谁不该有」只能靠 `backend/tests/test_block_prompt.py` 钉住）。⚠️ **只入 notes**：polished 是「忠实整理」，塞进模型的主观重点判断就违约了；composite 在函数顶部已被拦下走独立骨架（多一条指令会与那套骨架正面打架）；Excel 数据摘要同理。⚠️ 规范**不教外观**（颜色/边框/圆角一个字不提）——模型管性质、CSS 管长相，与图表协议「只教语义、坐标全由后端算」同一纪律 |
 
 ### 13.1 何时 bump
 

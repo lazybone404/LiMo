@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { Copy, Check, Play, Camera, Link2, ChevronDown, ChevronUp, Code } from 'lucide-react'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { appUrl } from '../api/client'
+import { scanHeadingLines } from './markdown-scan'
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import Zoom from 'react-medium-image-zoom'
 import { useStore } from '../store'
@@ -67,21 +68,20 @@ export function stripHeadingDecor(text: string): string {
     .trim()
 }
 
-/** 从 Markdown 源码提取标题（供 TOC 使用） */
+/**
+ * 从 Markdown 源码提取标题（供 TOC 使用）。
+ *
+ * ⚠️ 围栏扫描走 `lib/markdown-scan.ts::scanHeadingLines`（**同一份判据**，
+ *    与产物卡片骨架的 `splitByH2` 共用）。此前这里是内联循环，而切片器若再写一份
+ *    「跳过代码块」的逻辑，就是同一个坑的第二份实现（模式 #54）—— 那段注释里记的
+ *    「代码块里的 `## ` 被当成标题 → 目录长出点了没反应的幽灵项」，正是复制它会重现的东西。
+ */
 export function extractHeadings(md: string) {
   const items: { level: number; text: string; id: string }[] = []
-  // ⚠️ 逐行扫 + 跳过围栏代码块（P1-15）：此前是一条多行正则，于是代码块里的
-  //    `## ` 也被当成标题 → 目录多出「点了没反应」的幽灵项（没有对应的 DOM 节点）。
-  let inFence = false
-  for (const rawLine of md.split('\n')) {
-    const line = rawLine.replace(/\r$/, '')   // CRLF：不剥会让 id 尾多一个 `-`
-    if (/^\s*(?:```|~~~)/.test(line)) { inFence = !inFence; continue }
-    if (inFence) continue
-    const m = /^(#{2,4})\s+(.+?)\s*$/.exec(line)
-    if (!m) continue
-    const text = stripHeadingDecor(m[2])
+  for (const h of scanHeadingLines(md, 2, 4)) {
+    const text = stripHeadingDecor(h.text)
     if (!text) continue                       // 纯时间戳标题（`## ▶ 12:30`）无锚点可言
-    items.push({ level: m[1].length, text, id: headingId(text) })
+    items.push({ level: h.level, text, id: headingId(text) })
   }
   return items
 }
@@ -97,7 +97,9 @@ function cleanHeading(children: any): { clean: React.ReactNode; text: string } {
   if (timeMatch) {
     const time = `${timeMatch[1]}:${timeMatch[2]}`
     return {
-      clean: <>{cleanText} <span className="inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{time}</span></>,
+      // ⚠️ `limo-badge` 是给卡片骨架的钩子（8 套方案里的国风三套把角改方，
+      //    见 styles/cards.css）。靠特异性压过 Tailwind 的 `.rounded-full`。
+      clean: <>{cleanText} <span className="limo-badge inline-flex items-center gap-0.5 rounded-full bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-foreground align-middle select-none"><Play size={9} className="text-accent" />{time}</span></>,
       text: cleanText,
     }
   }

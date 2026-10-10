@@ -5,6 +5,7 @@ import { getTypeMeta } from '../gen-panel/constants'
 import { TabRegistry } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
 import { downloadText, downloadFromUrl, sanitizeExportName } from '../../lib/download'
+import { stripMarkers } from '../../lib/markdown-markers'
 import { exportPdfFromUrl } from '../../lib/print'
 
 /** Tauri 环境检测 —— 决定 PDF 导出是「直接落文件」还是「退回打印对话框」 */
@@ -49,6 +50,9 @@ export function ExportMenu() {
   const markdownMeta = useStore(s => s.markdownMeta)
   const imageResults = useStore(s => s.imageResults)
   const docs = useStore(s => s.docs)
+  const skeleton = useStore(s => s.skeleton)
+  const cardStyle = useStore(s => s.cardStyle)
+  const markerDecor = useStore(s => s.markerDecor)
   const menuRef = useRef<HTMLDivElement>(null)
 
   const currentDoc = docs.find(d => d.id === currentDocId)
@@ -75,6 +79,19 @@ export function ExportMenu() {
     const p = new URLSearchParams({ format, mode })
     // 0 是后端的「最新」默认值，发出去等价但多一个参数
     if (exportVersion > 0) p.set('version', String(exportVersion))
+    // 骨架轴 / 卡片视觉方案 —— 「用户在预览栏看到什么，导出就应该得到什么」。
+    // ⚠️ `paper`（默认）时**一个参数都不发**：后端默认值同为 `paper`，不发即走今天
+    // 那条逐字未改的分支，URL 也与改造前逐字一致（零回归的最简形态）。
+    // 三条路径（HTML / Word / PDF）共用本函数，故只在这里拼一次。
+    if (skeleton === 'card') {
+      p.set('skeleton', 'card')
+      p.set('card_style', cardStyle)
+    }
+    // 标记装饰开关：同样是「关掉才发」（后端默认 `marker_decor=1`）。语义是
+    // 「预览里怎么显示，导出就怎么显示」——用户关掉装饰后导出的 HTML 也不带。
+    // ⚠️ md / 纯文本**不看这个开关**：那里标记行是**整体剥掉**的（后端与这边的
+    // `stripMarkers` 都剥），没有「装饰」可谈。
+    if (!markerDecor) p.set('marker_decor', '0')
     return p
   }
 
@@ -138,7 +155,11 @@ export function ExportMenu() {
   const handleDownloadMD = () => {
     if (!exportContent) return
     setOpen(false)
-    const result = downloadText(exportContent, makeFileName('md'), 'text/markdown')
+    // ⚠️ **剥掉语义标记行**再落盘（用户拍板：导出的文件应当是干净正文）：`.md` 里
+    // 留一行 `<!-- limo-block:v1 … -->` 只会让下游工具和读者困惑。剥的是**标记行**，
+    // 块内文字一个字不少。后端三条路径（html/word/pdf）走**转换**而非剥离，
+    // 所以这个开关**只在这里**——它们是两回事。
+    const result = downloadText(stripMarkers(exportContent), makeFileName('md'), 'text/markdown')
     if (result.ok) {
       addToast('Markdown 已下载，请查看下载文件夹')
     } else {
@@ -207,7 +228,8 @@ export function ExportMenu() {
   const handleCopy = async () => {
     if (!exportContent) return
     try {
-      await navigator.clipboard.writeText(exportContent)
+      // 与 md 下载同源：复制的是「用户看到的内容」，标记行在预览里本就不显示
+      await navigator.clipboard.writeText(stripMarkers(exportContent))
       addToast('已复制到剪贴板')
     } catch {
       addToast('复制失败，请手动复制', 'error')

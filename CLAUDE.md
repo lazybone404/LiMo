@@ -76,7 +76,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 |------|------|--------|
 | [architecture.md](docs/architecture.md) | 六层分层架构，每层模块职责、交互、陷阱 | 理解整体架构和模块边界 |
 | [frontend-patterns.md](docs/frontend-patterns.md) | 状态管理、取消机制、TaskPanel、apiUrl | 改前端状态/任务相关代码 |
-| [export-pipeline.md](docs/export-pipeline.md) | 导出架构、两条路径设计、Tab→内容映射表、KaTeX/Pygments、HTML/Word 共用解析器、**PDF 导出（WebView2 PrintToPdf / 打印对话框双路径）**、打印 CSS 三处落点、新增导出格式落点清单 | 改导出功能、新增 tab、**新增导出格式**、改打印样式/PDF 导出 |
+| [export-pipeline.md](docs/export-pipeline.md) | 导出架构、两条路径设计、Tab→内容映射表、KaTeX/Pygments、HTML/Word 共用解析器、**PDF 导出（WebView2 PrintToPdf / 打印对话框双路径）**、打印 CSS 三处落点、**卡片骨架跟随（`skeleton=card` 参数贯通 + `data-skeleton` 主作用域 + 导出侧 `--tk-*` 令牌补齐）**、新增导出格式落点清单 | 改导出功能、新增 tab、**新增导出格式**、改打印样式/PDF 导出、改卡片导出 |
 | [CHANGELOG.md](docs/CHANGELOG.md) | 修改记录：做了什么、为什么、影响范围 | 了解历史决策、避免重复踩坑 |
 | [STATUS.md](docs/STATUS.md) | 纯事实清单（文件/端点/引擎计数/代码行数） | 需要统计数据 |
 | [ACKNOWLEDGMENTS.md](docs/ACKNOWLEDGMENTS.md) | 开源致谢与合规声明（借鉴项目 + 第三方依赖许可证） | 新增/移除依赖、借鉴新开源项目时更新 |
@@ -86,13 +86,14 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [BUILD.md](docs/BUILD.md) | PyInstaller + Tauri 完整打包流程，常见陷阱 | 打包/发布 |
 | [qianwen-models.md](docs/qianwen-models.md) | 千问平台模型速查（文本/OCR/ASR）含价格+调用方式 | 配模型/选引擎 |
 | [components.md](design/components.md) | Apple HIG 风格组件规格，布局+颜色+字体+组件 | 改 UI 组件/设计系统 |
+| [cards.md](design/cards.md) | 卡片视觉语言参考（19 种）：共享视觉语法 + `--card-*`/`--sh-*` 令牌 + 视觉方案轴 + 按 LiMo 现状分桶（✅5 已有等价 / ⛔3 不该由模型产出 / 🆕11 全新）+ 两种判据的分野（产物侧按**结构**切节 vs 对话侧按**内容形态**吐围栏）。⚠️ **是素材库不是实施计划** —— 落地哪些取决于真实产物的形态分布 | 做卡片形态、改 [styles/cards.css](frontend/src/styles/cards.css)、讨论对话侧卡片化 |
 | [对话协议.md](docs/对话协议.md) | 对话 SSE 事件协议 + 会话 CRUD API + 前端映射 | 改对话流式/会话管理代码 |
 | [AGENT-ONBOARDING.md](docs/AGENT-ONBOARDING.md) | 上手教程：从零跑通 → 架构 → 注册表 → 数据流 → How-to → 打包发布 → 测试门禁 → 调试速查 | 新 agent 快速上手、打包/发布 |
 | [AGENTS.md](AGENTS.md)（仓库根） | CLI 这条链的开发文档：三层结构 / 改 CLI 的六条硬约束 / 门禁怎么跑。⚠️ 与库内 `~/.limo/AGENTS.md`（`limo doctor --write-agents` 生成）**读者不同、内容不重叠** | 改 `limo_cli` / `/api/cli/*` / `QueryService` |
 | [code-audit.md](docs/code-audit.md) | 代码质量与缺陷扫描（第一轮）：**24 项带证据发现**（P0 可直接触发 4 / P1 静默失效·死代码 10 / P2 无机制·重复实现 10，每项含稳定 slug + 五段式）+ 「刻意为之」判据 + 已剔除的假阳性。⚠️ **是 `4174166` 时点的快照，不随代码更新** | 排查已知缺陷、修复前查有无现成记录 |
 | [code-audit-2.md](docs/code-audit-2.md) | 代码质量外部审查（第二轮）：**35 项发现** + **8 条纠偏**（照报告改会引入新问题）+ **6 条描述与现状不符**。⚠️ 与第一轮一样是**时点快照**（`6c2ef28` / 0.4.16），不随代码更新 | 回溯本轮修了什么、为什么这么修 |
 | [code-audit-3.md](docs/code-audit-3.md) | 代码质量自查（第三轮，**对象是刚落地的新代码**）：**10 项**（P0 启动迁移调 `_rebuild_index(save=True)` 抹掉全库标签/文件夹/来源 + P1 前端跨 mode 版本滞后致编辑覆盖用户没在看的版本 + `chars` 伪造 0 + 版本切换竞态 + 导出测试脚本式假绿 + 4 条 P2）+ **记录不修 5 条** + **对照实验 6 条** + **已知缺口 1 条**（前端 P1 无组件级行为测试）。⚠️ **本轮的新意是「写入语义从新建改为就地覆盖」放大了旧假设的危害**，故四处旧假设被重新评估。⚠️ **时点快照**（`cde70b8` 之上的工作树 / 0.5.0） | 下次自查前查清单、避免重复论证「为什么不修」 |
-| [patterns.md](docs/patterns.md) | **关键模式 65 条**（从本文件拆出）：前端 `#1`-`#8` / 后端 `#9`-`#31` / **同源与成对判据 `#32`-`#65`** | **写任何模块的代码前**；查「这个坑踩过没有」 |
+| [patterns.md](docs/patterns.md) | **关键模式 66 条**（从本文件拆出）：前端 `#1`-`#8` / 后端 `#9`-`#31` / **同源与成对判据 `#32`-`#66`** | **写任何模块的代码前**；查「这个坑踩过没有」 |
 
 ## 版本号管理
 
@@ -565,6 +566,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 上下文窗口默认表 / token 估算 | [core/token.py](backend/app/core/token.py) |
 | 代理豁免判据（本地/内网地址不走代理）+ NO_PROXY 合成 | [core/net.py](backend/app/core/net.py) |
 | 产物自证头编解码 | [core/transcript_meta.py](backend/app/core/transcript_meta.py) |
+| 产物正文协议标记（`limo-block`）解析/剥离/渲染 | [core/artifact_blocks.py](backend/app/core/artifact_blocks.py) ↔ [lib/markdown-markers.ts](frontend/src/lib/markdown-markers.ts)（前后端各一份，共享 fixture `limo-blocks.json` 钉住） |
 | 图片处理四模式标签 | [lib/imageModes.ts](frontend/src/lib/imageModes.ts) |
 | 面板默认宽 / 折叠阈值 | [lib/slotMetrics.ts](frontend/src/lib/slotMetrics.ts) |
 | 面板开合判据（互斥 / 并排同源） | [lib/panelToggle.ts](frontend/src/lib/panelToggle.ts) |
@@ -625,6 +627,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **处理进度按 tab 粒度**：生成笔记只影响 summary/polished tab，图片处理只影响对应 mode tab
 - **主题系统**：六轴独立 — `data-theme`(明暗) × `data-accent`(26套配色) × `data-base`(13种基调) × `data-texture`(6种纹理) × `data-font`(5种字体)。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（20个: 护眼/经典/粉色/雅致/国风各4）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值）
 - **主题模块**：`lib/accent.ts` / `lib/texture.ts` / `lib/theme-base.ts` / `lib/theme-presets.ts` / `lib/theme.ts` — 各轴独立管理，Store 统一分发
+- **骨架轴（2026-10-10）**：`lib/card-prefs.ts`（localStorage `mbw_card`）→ `data-skeleton="card"`（每个 H2 章节一张卡）+ `data-card-style`（8 套视觉方案，[styles/cards.css](frontend/src/styles/cards.css)）。⚠️ **不是第七轴** —— 六轴描述「界面长什么样」，它描述「正文怎么组织」；放 themeSlice 只因与 texture/font 同属「影响预览观感的外观设置」，**刻意不进 `THEME_PRESETS`**（换主题包不该连带重置骨架）。⚠️ **`paper`（默认）时两个属性都 `removeAttribute`** —— 零回归靠「**选择器不匹配**」（`cards.css` 每条规则带 `[data-skeleton="card"]` 前缀）而非「取值相同」。⚠️ 切分器单一真相源 `lib/markdown-scan.ts::scanHeadingLines`（`extractHeadings` 已改为消费它，**围栏内 `## ` 不算标题**）；`lib/markdown-sections.ts::splitByH2` 切分；`CardSections.tsx` **每张卡各跑一个现有 `MarkdownPreview`**（绝不新起第二个渲染器）；接入点**只有** [PreviewArea.tsx](frontend/src/components/preview/PreviewArea.tsx) 的 notes/polished 只读态（**刻意不在 `MarkdownPreview` 内部按骨架轴分派** —— 会静默扩散到 Excel 数据摘要 / 原始转录两处）
+- **语义标记 `limo-block`（2026-10-10）**：产物正文里的**协议元素** —— 模型在笔记里写 `<!-- limo-block:v1 type="key-takeaway" -->` … `<!-- /limo-block -->`（块内是普通 Markdown），渲染成**轻量强调块**（左边框 + 淡底，**刻意不是卡片** ⇒ 与骨架轴正交、无「卡中卡」）。解析链 `lib/markdown-scan.ts`（**唯一的行分类器**，`inFence` + `inBlock`）→ `lib/markdown-markers.ts`（`parseMarkers` / `stripMarkers`）→ `preview/MarkerContent.tsx`（每段各跑一个现有 `MarkdownPreview`）。⚠️ **接入点只有两处**（PreviewArea 的 paper 分支 + CardSections 每张卡的 body），**绝不放进 `MarkdownPreview` 内部**（会扩散到 Excel 数据摘要 / 原始转录）。⚠️ **顺序是 Markdown 层的：先切卡、再在每节内解析标记**（跨节标记在降级里自然消解）。⚠️ **开关语义是「隐藏装饰」不是「隐藏标记」**：`lib/marker-prefs.ts`（`mbw_markers`，默认 `decor: true`）关掉后**文字一字不少**，只是边框与淡底消失——**落点是纯 CSS 层**（`[data-marker-decor="off"]` 前缀规则），**不是 JS 分支不渲染包裹层**（那会让后端导出侧再实现一遍）；DOM 落点 `data-marker-decor="off"`（**默认不写属性**⇒ 零回归靠「选择器不匹配」）。⚠️ 后端协议收口 `core/artifact_blocks.py`（与 `transcript_meta.py` 并列：一个管自证头、一个管正文标记），**前后端各一份实现靠共享 fixture `limo-blocks.json` 钉住**。⚠️ **prompt 无条件注入且无勾选项**（价值全在「模型自主判断重点」，先勾选就退回旧问题）—— 故「谁该有谁不该有」只能靠测试钉住
 - **⚠️ github-markdown-light.css 覆盖**：`main.tsx` 导入的第三方 CSS 硬编码 `.markdown-body { background-color: #ffffff }` 和 `#f6f8fa` 等冷灰色。`index.css` 中用 `!important` + `--tk-*` 变量覆盖。新增 markdown 背景样式时必须同步检查此文件。提交前 `grep` 确认零硬编码色值泄露
 
 ### 导出系统
@@ -659,6 +663,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 **核心约束**：
 - 用户在预览栏看到什么，导出就应该得到什么。禁止导出与预览不一致的内容
+- **正文里的协议元素（`limo-block`）在 HTML/Word/PDF 上是「转换」、在 md/纯文本上是「剥离」**——前者没有视觉层可谈（用户拍板「导出的文件要干净」），后者要跟随预览（`marker_decor` 开关）。⚠️ **无标记产物必须逐字节零回归**：`data-marker-decor` 不写属性、`blocks.css` 不注入、`render_blocks_html` 无标记时逐字返回渲染结果（三条都写在 `test_export_blocks.py` 里）
 - 前端预览 tab → 内容映射走 `lib/tabRegistry.ts`（`TabDef` 纯数据注册：id/标签/`contentSource`/processingKinds）+ `lib/contentSources.ts`（`CONTENT_GETTERS`：`Record<ContentSource>` getter）。新增 tab = 注册一个 TabDef + 一个 getter，无需改分发逻辑（旧 `TAB_EXPORT` 表已移除）
 - 后端 `GET /export/{id}` 内容源回退链：markdown（notes/polished）→ process_results（图片 extract/table 等）→ transcript（rawText）→ 404
 - HTML 导出已对齐预览：Pygments 代码高亮 + 语言标签、GFM 删除线/任务列表、时间戳 badge（Content 蓝色/Screenshot 橙色）、标题锚点 id
@@ -666,6 +671,14 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - 图片文档没有 markdown 条目，HTML 导出依赖 `get_process_results()` 回退
 - mindmap HTML 导出走独立端点 `/export/{id}/mindmap`（markmap 库需要特殊 HTML 模板）
 - `apiUrl()` / `downloadFromUrl()` 内部已拼接 BASE（含 `/api`），调用方传路径时**禁止加 `/api` 前缀**，否则产生 `/api/api/...` 导致 404
+
+**卡片骨架跟随**（2026-10-10，详见 [export-pipeline.md](docs/export-pipeline.md)「卡片骨架跟随」段）：
+预览区骨架轴（`data-skeleton="card"`：每个 H2 章节一张卡）**导出跟随**；`GET /export/{id}` 加 `skeleton`/`card_style`（**默认 `paper` ⇒ 逐字节零回归**），前端唯一拼装点是 `ExportMenu.tsx::backendParams()`（HTML / Word / PDF 共用），PDF 自动跟随零后端改动。五处陷阱：
+- ⚠️ **导出 HTML 的 `<html>` 必须同时带 `data-skeleton="card"`** —— 它是 `cards.css` 的**主作用域**，只带 `data-card-style` 则规则永不命中 ⇒ 导出**没有样式的卡片**，而结构断言全绿
+- ⚠️ **`HTML_THEMES` 是自包含裸色值 CSS、零 `--tk-*`** ⇒ 卡片 CSS 的 8 个 `var(--tk-*)` 全部落空（预览里却是好的）。修法是 `export.py` 的 `_CARD_TOKENS_CSS` 补**三态**令牌（浅色 / 暗色 / `@media print` 还原），并有一条**成对常量守卫**（正则抽 `var(--tk-…)` 后逐一查定义）
+- ⚠️ **`cards.css` 单一真相源在前端**，后端 `_load_card_css()` 从磁盘读并内联（开发 `frontend/src/styles/`、打包 `_MEIPASS/styles/`），**不往 `backend/static/` 放副本**、**不缓存**（会改的源文件）、**读不到显式抛 500**（不静默输出无样式卡片）
+- ⚠️ **Word 侧** `_render_block` 的 elif 链必须加在**中间**（链尾 `else` 是「未知块 → 递归子元素」）；也**正因那个 `else` 兜底，漏加分支不丢内容** ⇒ 断言必须落在**结构层**（单单元格表格 / `w:tcPr/w:shd`）。docx 无圆角无投影，**刻意不接收 `card_style`**
+- ⚠️ **前后端各一份 H2 切分实现**（JS `splitByH2` / Python `split_by_h2`），靠**共享 fixture** `frontend/src/test/fixtures/h2-sections.json` 钉住；**切分点必须在 `_protect_latex` 之前**（两侧输入同源）
 
 **已修复的关键问题**（2026-07-10）：
 - `/api/api/` 路径重复 → 6 处修复
@@ -712,7 +725,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（65 条）
+## 关键模式（66 条）
 
 > **完整内容见 [docs/patterns.md](docs/patterns.md)** —— 实现中易错的关键约束，新增代码必须遵守。
 >
@@ -721,7 +734,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 > 「为什么」和「怎么避开」）。拆开后按需读取，指路留在原位。
 >
 > **分三组**：前端 `#1`-`#8`（状态/取消/任务）｜后端 `#9`-`#31`（并发/配置/日志/异步）
-> ｜**同源与成对判据 `#32`-`#65`**（最容易踩：成对逻辑必须同源、判据要自证有区分力、
+> ｜**同源与成对判据 `#32`-`#66`**（最容易踩：成对逻辑必须同源、判据要自证有区分力、
 > 能力存在 ≠ 该路径在用、延后提交的 pending 必须有人消费……）。
 >
 > 本文件其余部分（架构、管道、导出、数据流）仍在下方，模式里的 `#NN` 交叉引用一律指
@@ -809,6 +822,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 思考档位可配 | `generation/effort.py` 全系统唯一真相（此前 `"low"` 散落四处）；能力位 `reasoning` 按模型标注；**整理版恒 low 除非选 max** 且 UI 明示；静默期分档 150/180（不改则「选最高档反而更容易失败」）；AST 断言钉住无硬编码档位字面量 |
 | ✅ | PDF 直传（2026-09-23） | 用户可选**二选一**（文本模式默认 / 直传模式只发原文件）；`file` 块随生成请求发送（**必须走 Chat Completions**）；闸门 14 MiB（由 data-uri 20 MiB 上限倒推）；能力位 `document` 标 dashscope 官方名单的三个（qwen3.8-max / flash / 27b），**其他渠道逐家查证后一律不标**（理由见下）；双真相源 + rawText 过短完成期 warning |
 | ✅ | 默认文风通俗（2026-10-05） | 新增 `plain` 档并设为**全局默认**（Excel 例外，映射到 detailed 同值文案）；用户判断「大部分场景默认要通俗，论文类才要严谨详细」。落点 **8 处，缺一即静默无风格**；⚠️ 存量用户不受影响（localStorage 已存的 `style` 会覆盖新默认，**刻意不迁移**）；⚠️ polish 豁免元组同步加 plain（否则每次生成整理版刷一条 warning）；顺带修**三个静默改写风格档**的既有缺陷（meeting / none / 修 meeting 时的反向回归） |
+| ✅ | 语义标记 `limo-block` v1（2026-10-10） | 模型在笔记里写 `<!-- limo-block:v1 type="key-takeaway" -->` … `<!-- /limo-block -->`（**只有这一种类型**），渲染为轻量强调块。**本轮搭的是「正文协议元素」这套架构，不是单做一个重点块功能**（用户原始诉求含「失败标记一类与内容无关的东西要隔离」——那批只留口子、下一批接入）。三条不变量：专用标记隔离 / **零残留降级**（剥标记行、文字一字不丢、剥完与「从未写过标记」逐字相同）/ 围栏内零触碰。**只入 notes**、**无勾选项无条件注入**、规范**不教外观**。⚠️ **刻意不加完成期 warning** —— 无标记是正常文章不是失败。顺带修 4 个既有缺陷（`_CARD_TOKENS_CSS` 注入闸门漏 `paper`+有标记 / Word 把注释泄漏成可见段落 / 合成把标记当模型输入 / `chars` 把标记算进正文字数）。⚠️ **实机验收待用户操作**（模型遵循率、两种骨架下的观感、Word 读回看） |
 
 ### 🔍 图片处理
 
@@ -892,6 +906,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 沉浸阅读 | 去噪容器（`Ctrl+\` 开关 / `Esc` 退出 / **预览区工具栏「沉浸」按钮**（2026-10-10 补，活动栏在沉浸下也一并隐藏）/ `hideSlots` 藏侧栏，进入复用 Ctrl+G 的 `processingTasks` 守卫）+ 阅读版式三旋钮（行高 / 每行字数 / 段落区隔，**默认值 = 改造前现状**故零回归）。⚠️ **导出不跟随**（用户决策，已知偏差）。详见 CHANGELOG 2026-10-02 |
 | ✅ | 文档多标签页（2026-10-05） | 预览区顶部 `DocTabBar`，**VS Code 双标签模型**（单击=预览可替换 / 双击=钉住常驻，全组至多一个预览槽）；`currentDocId` 仍是唯一真相源；**延后提交**让「取消未保存弹窗」天然等于什么都没发生（模式 #62）；右键菜单（关闭/其他/全部/固定）+ 中键关闭 + 溢出横向滚动 + 激活项滚入；**不做** Ctrl+P / 最近列表 / 拖拽排序 / 持久化。⚠️ 顺带修「简略模式双击完全没反应」（`replace_all` 只匹配到详细分支） |
 | ✅ | 正文字号缩放（2026-10-05） | 补上**真实缺口**（vendor 硬写 `.markdown-body{font-size:16px}`，既有 `fontSizeScale` 对正文从未生效）；`Ctrl+滚轮` / `Ctrl+±` / `Ctrl+0`，只作用于 `.preview-area`；归入阅读版式族（`fontScale` 默认 1.0 = 零回归）；⚠️ px 非 em、版宽 `measurePxOf` 同源、滚轮走**原生** `passive:false`（模式 #63/#64）。⚠️ 键盘路径的 WebView2 宿主级加速键由 Rust 侧精准放行（`webview_keys`，模式 #65），**打包版生效与否待实测** |
+| ✅ | 产物章节卡片（2026-10-10） | 骨架轴 `data-skeleton="card"`：**每个 H2 章节渲染成一张卡**；8 套视觉方案（`styles/cards.css`，19 个 `--card-*` + 4 个 `--sh-*`）。⚠️ **默认 `paper` 零回归靠「选择器不匹配」而非「取值相同」**（paper 时两属性都 `removeAttribute`，cards.css 每条规则带 `[data-skeleton="card"]` 前缀）。切分器单一真相源 `markdown-scan.ts::scanHeadingLines`（围栏内 `## ` 不算标题）+ `markdown-sections.ts::splitByH2`；`CardSections.tsx` 每张卡各跑现有 `MarkdownPreview`；接入点只有 PreviewArea 的 notes/polished 只读态。**导出跟随**（HTML/Word/PDF，`skeleton`/`card_style` 参数，PDF 自动跟随）。⚠️ 详见 CHANGELOG 2026-10-10 |
 
 ### 🛡️ 安全 & 运维
 
@@ -942,12 +957,12 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 📚 文档库 | 9 | 9 | 100% |
 | 🔗 多篇合成 | 16 | 16 | 100% |
 | 📝 转录 & 引擎 | 8 | 8 | 100% |
-| ✨ LLM 生成 | 12 | 12 | 100% |
+| ✨ LLM 生成 | 13 | 13 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 9 | 9 | 100% |
 | 📊 图表生成 | 11 | 12 | 92% |
 | 📤 导出 | 11 | 12 | 92% |
-| 🎨 前端 UI/UX | 19 | 19 | 100% |
+| 🎨 前端 UI/UX | 20 | 20 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
 | 🧩 产物复用 | 4 | 5 | 80% |
-| **合计** | **119** | **122** | **98%** |
+| **合计** | **121** | **124** | **98%** |
