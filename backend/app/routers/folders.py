@@ -1,8 +1,8 @@
 """文件夹（单层逻辑分类）— GET/POST/PATCH/DELETE /api/folders
 
 ⚠️ 文件夹是**纯逻辑分类**，永不映射为磁盘目录：每个文档已有独立目录
-{sanitized_title}-{hex6}/（含 transcript.md / assets / process / 两版制产物），
-把文件夹做成目录会同时破坏目录命名规则、assets 相对引用与两版制。
+{sanitized_title}-{hex6}/（含 transcript.md / assets / process / 版本归档产物），
+把文件夹做成目录会同时破坏目录命名规则、assets 相对引用与版本归档。
 故 folders 只活在 index.json 里，store 层实现见 storage/store.py。
 """
 

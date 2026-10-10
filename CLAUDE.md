@@ -91,6 +91,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [AGENTS.md](AGENTS.md)（仓库根） | CLI 这条链的开发文档：三层结构 / 改 CLI 的六条硬约束 / 门禁怎么跑。⚠️ 与库内 `~/.limo/AGENTS.md`（`limo doctor --write-agents` 生成）**读者不同、内容不重叠** | 改 `limo_cli` / `/api/cli/*` / `QueryService` |
 | [code-audit.md](docs/code-audit.md) | 代码质量与缺陷扫描（第一轮）：**24 项带证据发现**（P0 可直接触发 4 / P1 静默失效·死代码 10 / P2 无机制·重复实现 10，每项含稳定 slug + 五段式）+ 「刻意为之」判据 + 已剔除的假阳性。⚠️ **是 `4174166` 时点的快照，不随代码更新** | 排查已知缺陷、修复前查有无现成记录 |
 | [code-audit-2.md](docs/code-audit-2.md) | 代码质量外部审查（第二轮）：**35 项发现** + **8 条纠偏**（照报告改会引入新问题）+ **6 条描述与现状不符**。⚠️ 与第一轮一样是**时点快照**（`6c2ef28` / 0.4.16），不随代码更新 | 回溯本轮修了什么、为什么这么修 |
+| [code-audit-3.md](docs/code-audit-3.md) | 代码质量自查（第三轮，**对象是刚落地的新代码**）：**10 项**（P0 启动迁移调 `_rebuild_index(save=True)` 抹掉全库标签/文件夹/来源 + P1 前端跨 mode 版本滞后致编辑覆盖用户没在看的版本 + `chars` 伪造 0 + 版本切换竞态 + 导出测试脚本式假绿 + 4 条 P2）+ **记录不修 5 条** + **对照实验 6 条** + **已知缺口 1 条**（前端 P1 无组件级行为测试）。⚠️ **本轮的新意是「写入语义从新建改为就地覆盖」放大了旧假设的危害**，故四处旧假设被重新评估。⚠️ **时点快照**（`cde70b8` 之上的工作树 / 0.5.0） | 下次自查前查清单、避免重复论证「为什么不修」 |
 | [patterns.md](docs/patterns.md) | **关键模式 65 条**（从本文件拆出）：前端 `#1`-`#8` / 后端 `#9`-`#31` / **同源与成对判据 `#32`-`#65`** | **写任何模块的代码前**；查「这个坑踩过没有」 |
 
 ## 版本号管理
@@ -353,16 +354,25 @@ models.dev 是社区聚合数据，实测三类问题：口径混用（1000000 v
                     ▼                         ▼                          ▼
               MarkdownView              ProcessResult               conversations/
            save_markdown()        save_process_result()
-         版本管理(2版)             同 mode 覆盖
+        版本归档(全部保留)           同 mode 覆盖
 ```
 
 **生成管道**（视频/网页/文本/文档 → LLM 创作）：
 - 输入 `rawText`，触发 `POST /generate/{id}`
 - 双产物并行（notes + polished），`source_type` 派发不同 prompt 模板
 - OCR 预处理（可选）：文档图片先用廉价 OCR 模型提取文字塞回原文，再用文本 LLM 生成
-- 同 mode 保留最近 2 版，前端 v2/v1 切换器
-- 存储：按文档聚合 `{doc_dir}/{mode}.md` + `{mode}.prev.md`（两版制），图片用相对路径 `assets/xxx` 引用，API 返回前统一 `rewrite_asset_urls` 改写为绝对 URL
+- **版本归档（2026-10-10 从「两版制」重做）**：每版**独立归档、全部保留**，前端版本下拉（时间 / 字数 / 来源 / 编辑标记）。见下方「产物版本」段
+- 存储：按文档聚合 `{doc_dir}/{mode}/v{N}.md`（**一版一文件**），图片用相对路径 `assets/xxx` 引用，API 返回前统一 `rewrite_asset_urls` 改写为绝对 URL
 - **PDF 直传（2026-09-23）**：材料怎么给模型由用户二选一——文本模式（默认，抽出 Markdown 进 prompt）/ **直传模式（PDF 原件以 `file` 块随生成请求发出，本地抽取的正文不进 prompt）**。语义是「**只发原文件**」，不是叠加（叠加 = 同一份内容 token 双花）。实现见 `services/doc_understand.py`（只编码不发起请求）+ `llm/service.py::supports_document`（**按模型标注，刻意不复用 `image` 位**——它 gate 着 AI 分析图片/OCR 模型选择/图片处理用途筛选三处入口）。⚠️ **双真相源**：直传下 rawText 仍是导出/搜索/预览的真相源但不是模型所见的真相源，扫描件上真分叉 → rawText < 100 字符时给完成期 warning。⚠️ **哪些渠道能用是逐家查官方文档得来的结论**（dashscope 只认 qwen3.8 系四个——**任何 qwen-vl / qwen3.5 视觉模型都不在名单**；openai/anthropic/google/zhipu/moonshot/opencode 各有硬理由不标）——**能力位只标查证过的，不要凭印象补标**，逐家结论与理由见 `doc_understand.py` 模块文档。⚠️ 详见「关键模式」#45/#46/#47/#48 与 CHANGELOG
+
+**产物版本**（2026-10-10 重做：两版制 → 版本归档）：
+- **磁盘**：`{doc_dir}/{mode}/v{N}.md`，一版一文件、**全部保留不设上限**。`{mode}.md` / `{mode}.prev.md` 是遗留布局，`Store.__init__` 的 `_migrate_legacy_markdown_layout()` 启动时一次性迁走（**只 `os.replace` 改名**、内容与自证头一字不动、幂等；崩在半途的「顶层仍有 `{mode}.md`」状态接在最大版本号之后 + warning）
+- **头是真相，index 只是缓存**：`identity.version` 由 store **写盘前注入**（= 文件名 N）；`createdAt` / `style` / `source` 从自证头的 `generated.generatedAt` / `params.style` / `model` 还原 → **删一次 `index.json` 重建后，版本序与生成时间仍在**（此前 `_rebuild_index` 显式跳过 `.prev.md` 且从不读文件头，删一次全丢）
+- **三种写入语义**：生成 = 新建 `v{max+1}`（`max` **扫磁盘**取、**与写盘同处一把 `self._lock`**——分开会让并发生成算出同一个 N）｜编辑 = `replace_version=N` **就地覆盖当前版**（版本号不变，**编辑不产生版本**，产品模型 2026-10-10 定）｜追问（未来）= 同编辑
+- **编辑标记落文件头**（`edit` 键 + `transcript_meta.mark_edited`），不再进 index；生成路径不写它 → 「重新生成自动清除标记」无需额外逻辑
+- **派生字段不进 index**：`chars` / `edited` / `source` 由 `get_markdowns_by_transcript` 读文件头现算（它本来就要逐版读盘，零额外 I/O）；版本列表形状收口 `QueryService.artifact_versions`（此前 generate / markdown_edit 各一份副本，模式 #54）
+- **前端**：`VersionSwitcher` 下拉（≤1 版整块隐藏）；编辑跟随 `markdownMeta.version`；导出带 `version`（HTML/Word/PDF 三条后端路径共用 `backendParams` 一处拼；MD/复制走客户端 store 天然正确），**指定版本查不到时显式报错、不回退最新**
+- ⚠️ **`markdownMeta` 只在加载文档时设一次（notes 优先）**，切 tab **不会**更新它 → 任何按 mode 消费它的地方（编辑 / 导出 / 高亮）**必须先校验 mode**，否则「切到 polished 导出却带上了 notes 的版本号」
 
 **处理管道**（图片/Document → LLM 优先 → Engine 回退）：
 - 输入 `file_path`（原始文件），触发 `POST /process/{id}`
@@ -408,7 +418,7 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 
 ### 文档库（组织能力 2026-09-23；前端交互重设计 2026-09-25）
 
-- **单层文件夹**（`routers/folders.py` + store 层）：**纯逻辑分类，永不映射为磁盘目录** —— 每个文档已有独立目录（含 `assets` 相对引用与两版制产物），做成目录会同时破坏三样东西。`index.json` 顶层 `folders` + transcript 条目 `folderId`（`""` = 未分类，**UI 派生视图而非实体**）；允许重名（id 是身份）；**悬空 folderId 双向容错**；`delete_folder` 同锁区内先搬移文档再删行，**绝不删文档**（返回 `moved`）。⚠️ 见「关键模式」#44（三处构造点）
+- **单层文件夹**（`routers/folders.py` + store 层）：**纯逻辑分类，永不映射为磁盘目录** —— 每个文档已有独立目录（含 `assets` 相对引用与版本归档产物），做成目录会同时破坏三样东西。`index.json` 顶层 `folders` + transcript 条目 `folderId`（`""` = 未分类，**UI 派生视图而非实体**）；允许重名（id 是身份）；**悬空 folderId 双向容错**；`delete_folder` 同锁区内先搬移文档再删行，**绝不删文档**（返回 `moved`）。⚠️ 见「关键模式」#44（三处构造点）
 - **排列 ⊥ 排序**（两个独立旋钮）：**排列**（`groupBy`：平铺 / 按文件夹 / 按类型 / 按时间）管**横向归类**，**排序**管**组内纵向顺序**。刻意**没有「筛选时退化成扁平」的特殊模式**——筛了 PDF 而排列仍是按文件夹时，列表按文件夹分组、每组只显 PDF、空组自动隐藏；那种退化正是「树和筛选打架」的来源。「按文件夹」= IDE 一体化树（文件夹是可折叠分组头）。分组头三维度共用（`GroupHeader`）但**增删改只对文件夹组开放**（`group.editable` 显式标志——「把 PDF 组改叫视频」没有语义）；文件夹组**保留空组**（它是拖拽放置目标），类型/时间组隐藏空组
 - **筛选区**：五个可折叠小节（文件夹范围 / 文件类型 / 标签 / 标题关键词 / 日期范围）+ **两级折叠**（整区 + 各小节），小节收起时标题行仍显示**激活摘要**（`文件类型 · PDF ×`——否则收起后不知道在筛什么）+ 区头「已激活 N 项 · 清除全部」。**文件夹刻意保留两个入口**：「文件夹范围」（**过滤**「只看这些」）与「排列：按文件夹」（**归类呈现**）——不采用「排列=folder 时隐藏该小节」，切换排列时筛选区突然多/少一节比多读一个词更困惑。**标签无 12 上限**（全量滚动 + 已选置顶）；**标题关键词纯内存零网络、不触发 FTS**，与搜索框的分工是「筛标题」vs「找内容」，二者可同时生效（AND）；**日期范围**「本周」= 本自然周（周一起），**不是**最近 7 天
 - **全文搜索**：内存过滤（0ms）**立刻**渲染 → 停手 250ms 打 `GET /api/search` → 合并。⚠️ `docs` 数组**没有正文**（白名单序列化器只存元数据），故正文搜索客户端**不可能**实现 —— FTS5 是唯一可行解不是优化。结果集**单一化**：`eligible`（类型/标签/文件夹/日期/标题，**不含关键词**）∩（关键词内存命中 ∪ FTS 命中）——命中行统一走 `DocRow`（有复选框/右键/拖拽，不再是不能选的裸按钮）且**受筛选约束**；标题类命中加「**原文**」角标（措辞非「正文」：FTS5 索引 title+content 两列，一次查询无法判定命中来自哪列），纯原文命中加 `SearchSnippet` 第二行。结果限 100 条，到顶时底部提示细化关键词（静默截断 = 用户以为「就这些」）
@@ -431,16 +441,16 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **标签截断两级 + 空壳判据**（2026-09-19）：`_fit_labels`（节点定稿时按该节点最终宽度截）→ `_shrink_labels`（布局收尾保险——`_distribute` 的收缩发生在 `_fit_labels` **之后**）。⚠️ **可用宽必须走 `_shape_inner_w` 同一个函数**：`_fit_labels` 曾写死 `avail - 32`，与后者的 `<64 → w-8` 分支**不同源**，tree 等比收缩到 `_MIN_NODE_W=48` 时按 16px 算 → 连「一个中文 13px + 省略号 11px」都塞不下，9 个节点全被截成纯 `…`（**空壳图**：渲染成功、几何全对、断言全过、压测全过，用户拿到一张一个字都没有的图）。判据：截到「整个字都不剩」直接抛 `LayoutError`；且 `_shrink_labels` 必须**前置**检查「进来时是否已是空壳」——空壳测宽 11px 远小于可用宽，只看测量值的判据**进不去截断分支，会静默失效**（第一版修法正是栽在这里）
 - **chart 路径**（legacy，全链零改动）：LLM 手写 SVG → 现有 `_render_png` 全链，**免费回退路径**——回滚只需改 `get_chart_format` 一个函数
 - **按内容形态容错分流**：fig 围栏内若含 `<svg` → 按 chart 分支处理（模型改用 fig 后 legacy 兜底会自然失效，JSON 一错就白丢一张图）
-- **多图**：每个围栏 = 1 张图，prompt 允许 **1~N 张**（旧 prompt 硬性「必须 1 张最有代表性的图」，渲染链路本无上限，瓶颈纯粹在措辞）；单围栏节点 ≤9，超过必须拆围栏。编号 `chart_N` 按文档顺序递增，失败不跳号
+- **多图**：每个围栏 = 1 张图，prompt 允许 **1~N 张**（旧 prompt 硬性「必须 1 张最有代表性的图」，渲染链路本无上限，瓶颈纯粹在措辞）；单围栏节点 ≤9，超过必须拆围栏。⚠️ **文件名是内容哈希 `chart_{sha1(svg)[:8]}.png`，不是按序编号**——按序编号 `chart_N` 每次生成都从 0 起，重跑一次就把 `chart_1.png` 覆盖掉，而旧版本仍引用它（切到旧版看到「新版的图配旧版的正文」，三张图全成功、零报错）。hash 让「内容相同 → 同名，内容不同 → 不同名」同时成立，与截图路径同款做法。`counter` 只保留「失败不递增」的语义，不参与文件名（2026-08-16 已改，本文件此处长期写着旧行为）
 - **自然尺寸 + 等比缩放**（2026-09-19，用户提议「先完整绘制再缩放到对应比例」）：布局按**自然尺寸**定稿；高度超 640 不再直接失败，返回 `scale` → 落到根 `<g transform="scale(k)">`；`_MIN_SCALE=0.65` 下限（再小字号就糊，宁可报错让模型拆图）。**宽度按内容裁剪**（`_trim_width`，**四类元素 nodes+labels+shapes+edges 全部计入边界**——只按节点裁会把 state 回边沟槽切出界）消除窄图右侧留白（timeline 640→196px）。⚠️ 背景 rect 必须在 scale 组**之外**，否则 `100%` 被缩成 `100%×k` 留出空白带。⚠️ **已知遗留**：`_trim_width` **只裁右不裁左**——布局阶段按 640 宽居中，裁剪后画布变窄而内容坐标不变 → 窄图内容整体偏右、左侧留大空白（实测 flowchart 留白 232px / 画布 412px）。修法是裁剪后把内容平移回居中，但会改变既有 4 算子的全部产物坐标，未纳入本轮
 - **超时分档**：`_gen_timeout(formats)` → 勾选图表 `_GEN_TIMEOUT_CHART=400` / 其余 `330`。**两入口都要传**（非流式 `generate()` 无 `asyncio.timeout`，只受 SDK 约束）。⚠️ `request_timeout` 必须同时改 `LLMService.__init__` **和** `client` property——`AsyncOpenAI` 是惰性构造的，只改前者会「存了没用」（值进了实例属性但 property 里写死 330），**超时一点没变且单测照样 PASS**
-- **`chart_N.json` 是协议切换的确定性信号**：两条路径都出 PNG 且张数可能一样，只有 `.json`（仅 fig 分支解析成功时落盘）能区分走的哪条路
+- **`chart_{hash8}.json` 是协议切换的确定性信号**：两条路径都出 PNG 且张数可能一样，只有 `.json`（仅 fig 分支解析成功时落盘）能区分走的哪条路
 - 实测（2026-09-19，约 900 字文档）：**6 张图 9.8s / 2890 字符**——新协议下出图几乎不增加成本，「多图会显著拉长生成」的前提不成立，故 `_GEN_TIMEOUT_CHART` 由基础档线性外推（330×1.21）而非按 P95×1.5 套用
-- 生成笔记勾选「图表」（formats=chart）→ prompt 按需注入图表规范（`get_chart_format(source_type)` 基础规范 + 来源差异段）。**以下为 legacy chart 路径的历史约束**（2026-09-19 起 prompt 不再教这些——fig 路径的坐标/宽度/遮罩全在 `chart_layout`/`chart_svg`，保留备查）：prompt 硬性规范优先（viewBox+width/height 双写一致 ≤640×640、**正常显示硬规则**（2026-08-16 从原仓库 diagram-design 提取：背景不透明铺满 rect / 元素不越界留 ≥16px 边距 / 相邻节点不重叠 / 每个节点必须文字·字号 ≥12·深字浅底 / 文字节点内居中）；**样式复用原仓库**（用户要求）：背景 `paper #f5f5f5` / 主文字描边 `ink #2d3142` / 连线 `muted #4f5d75` / 强调 `accent #eb6c36`（≤2 焦点）/ 节点白底 rx=6 圆角 + ink 描边 1px / 节点名 `sans-serif` 12-14px 600 居中（Google 字体 Geist 换系统 sans-serif）、安全红线清单；2026-08-16 精简——移除防重叠 6 条/≤300 行/4px 网格等**质量**硬规则（回归原仓库建议层），改「最小可行动例模板」降低 fast 模型创作门槛，详见 CHANGELOG），代码校验链只做兜底（LLM 失控时拦截，见下）→ LLM 输出 ```chart 围栏 → `app/services/chart_renderer.py` 校验链 → PIL 渲染 PNG(2x) 存 `assets/chart_N.png` → 替换为 `![图表](assets/chart_N.png)`
+- 生成笔记勾选「图表」（formats=chart）→ prompt 按需注入图表规范（`get_chart_format(source_type)` 基础规范 + 来源差异段）。**以下为 legacy chart 路径的历史约束**（2026-09-19 起 prompt 不再教这些——fig 路径的坐标/宽度/遮罩全在 `chart_layout`/`chart_svg`，保留备查）：prompt 硬性规范优先（viewBox+width/height 双写一致 ≤640×640、**正常显示硬规则**（2026-08-16 从原仓库 diagram-design 提取：背景不透明铺满 rect / 元素不越界留 ≥16px 边距 / 相邻节点不重叠 / 每个节点必须文字·字号 ≥12·深字浅底 / 文字节点内居中）；**样式复用原仓库**（用户要求）：背景 `paper #f5f5f5` / 主文字描边 `ink #2d3142` / 连线 `muted #4f5d75` / 强调 `accent #eb6c36`（≤2 焦点）/ 节点白底 rx=6 圆角 + ink 描边 1px / 节点名 `sans-serif` 12-14px 600 居中（Google 字体 Geist 换系统 sans-serif）、安全红线清单；2026-08-16 精简——移除防重叠 6 条/≤300 行/4px 网格等**质量**硬规则（回归原仓库建议层），改「最小可行动例模板」降低 fast 模型创作门槛，详见 CHANGELOG），代码校验链只做兜底（LLM 失控时拦截，见下）→ LLM 输出 ```chart 围栏 → `app/services/chart_renderer.py` 校验链 → PIL 渲染 PNG(2x) 存 `assets/chart_{hash8}.png` → 替换为 `![图表](assets/chart_{hash8}.png)`
 - **只入 notes**：`_POLISH_FORMAT_FNS` 白名单无 chart，polish 不注入；`AVAILABLE_OPTIONS` 按 source_type 控制勾选（video/webpage/pdf/docx/pptx/text 有，xlsx/audio 无）；前端排除 epub（走独立解读管道）
 - **协议收紧**（2026-08-16，见 [pi-docs/图表围栏内部协议设计说明.md](pi-docs/图表围栏内部协议设计说明.md)）：只认**专用围栏**——```chart（内容须含 `<svg` 根元素）与 ```fig（语义 JSON）；svg/xml/json 围栏、裸内联 `<svg>` 一律不碰（用户内容零触碰）。取舍：误伤用户内容（静默改写用户数据）> LLM 偶尔不遵循围栏约定（warning 重新生成）。⚠️ **fig 与 chart 有意不同**：chart 内非 SVG 原样保留（可能是协议外内容），而 fig 是毫无歧义的协议标记，解析失败**必须零残留替换**为失败文本
 - **校验链**：XML 良构 → viewBox ≤640×640 → 有形状元素 → **有非空文字内容（2026-08-16 起：<text 标签必须含非空白文字——空 `<text></text>` / 自闭合 `<text/>` 与零文字图一并拦截，防 LLM 只画框不写字产出无字图）** → PIL 渲染（失败重试 1 次）；任一失败**替换为** `📊 图表生成失败（{reason}）` 文本（零残留——产物永不含围栏，内部协议不外泄）。勾选图表但 LLM 未输出图表围栏 → 完成时 warning「图表未生成：请重新生成」（`_has_chart_fence()` 判定，两种围栏都算「已出图」）。**fig 路径的失败前置**：JSON 解析失败 → 「图表数据格式错误」；`LayoutError` → 「布局失败：{原因}」（节点超限/缩放下限/索引越界均带定位信息）；同样零残留、不写任何文件
-- **字体实测定案 + SVG 片段保存（2026-08-16）**：resvg→PIL 切换（见下）。`_detect_chinese_font()` 探测系统第一个中文字体**文件路径**（`ImageFont.truetype` 加载成功即可用，候选 msyh.ttc/msyh.ttf/simhei/simsun/PingFang/Noto/WenQuanYi，进程内缓存探测结果 + 按 `(path,size)` 缓存字体对象），PIL 用该路径渲染中文；**prompt 不再约束 font-family**。**SVG 源码片段同步保存** `assets/chart_N.svg`（与 PNG 并列，用户提议）：不用于展示（assets 白名单无 svg），供①调试——文字没渲染时查看 LLM 原始输出②用户深度使用时导出矢量图。⚠️ **这个「导出矢量图」的用途目前用户实际够不到**：资产白名单 `_ALLOWED_IMAGE_EXTS` 拒绝 svg（`/api/assets` 返回 400），导出也只按 markdown 引用收集、不扫目录。另 **fig 路径额外落盘 `assets/chart_N.json`**（语义源，同上纯旁路）；两者都在 `_collect_images` 实测复核中确认**零外泄**
+- **字体实测定案 + SVG 片段保存（2026-08-16）**：resvg→PIL 切换（见下）。`_detect_chinese_font()` 探测系统第一个中文字体**文件路径**（`ImageFont.truetype` 加载成功即可用，候选 msyh.ttc/msyh.ttf/simhei/simsun/PingFang/Noto/WenQuanYi，进程内缓存探测结果 + 按 `(path,size)` 缓存字体对象），PIL 用该路径渲染中文；**prompt 不再约束 font-family**。**SVG 源码片段同步保存** `assets/chart_{hash8}.svg`（与 PNG 并列，用户提议）：不用于展示（assets 白名单无 svg），供①调试——文字没渲染时查看 LLM 原始输出②用户深度使用时导出矢量图。⚠️ **这个「导出矢量图」的用途目前用户实际够不到**：资产白名单 `_ALLOWED_IMAGE_EXTS` 拒绝 svg（`/api/assets` 返回 400），导出也只按 markdown 引用收集、不扫目录。另 **fig 路径额外落盘 `assets/chart_{hash8}.json`**（语义源，同上纯旁路）；两者都在 `_collect_images` 实测复核中确认**零外泄**
 - **安全过滤**：`<script>` / `on*` 事件属性 / `xlink:href`·外部 URL 引用按不可信内容剥离（纵深防御——最终产物是 PNG 不执行脚本）
 - **PIL 自绘渲染器（2026-08-16 resvg→PIL 切换）**：resvg 全系（py 绑定 0.4.0 + CLI v0.47/v0.48 官方二进制）在 **Windows 无法渲染 SVG 文字**——fontdb 加载系统字体正常（`--list-fonts` 可见 Arial），但 usvg text 解析一律 `No match for "<font-family>"` → 跳过 text（上游普遍 bug，非绑定/配置问题，实测 v0.46-v0.48 全系列 + cargo 编译 v0.48.1 + 官方 v0.47 win64 二进制皆复现；v0.48.1 无 Windows 发布即 Windows CI 失败佐证）。改 **PIL 自绘 SVG 子集渲染器**（`_svg_to_pil`）：覆盖 rect（rounded_rectangle）/text（`anchor` 基线锚——SVG y 即基线）/line/path/circle/ellipse/polygon/polyline，非子集元素（image 等）忽略（漏画优于画错）。**path 用正则 tokenizer 分离命令与数字**（`_path_polylines`，兼容粘连写法 `M470 90 V130`——此前 split() 解析漏命令导致虚线不画，用户实测反馈）；**贝塞尔曲线补齐**（2026-08-16）：C/S 三次 + Q/T 二次采样为密集折线（`_bezier3`/`_bezier2`，S/T 控制点反射 `_reflect`，Z 闭合回子路径起点），A 椭圆弧跳过——此前曲线命令跳过参数漏画，图表曲线连线消失，三张手写示例图（line/虚线/折线/曲线/箭头/S-T 平滑/相对命令）实测全渲染；**polygon 描边闭合**（2026-08-16）：SVG 语义 polygon 最后一点回起点，draw.line 不自动闭合——此前菱形/箭头描边缺最后一条边（用户实测「流程图错位和边框缺失」），`_draw_poly` 对 polygon 追加首点闭合、polyline 保持不闭合；**transform 支持**（2026-08-17）：`<g transform>` 此前整块不画/画错位（用户实测「图表错位/缺内容」头号来源——原仓库 diagram-design 规范大量用 `<g transform>` 定位 + `dominant-baseline=middle` 节点居中），`_parse_transform` 2x3 affine 解析 translate/scale/rotate/matrix 组合 + `_svg_to_pil` 递归遍历 `<g>` 累计变换至子元素 + `_map(x,y,m)` 统一映射；**text 组合锚**：text-anchor（start/middle/end）× dominant-baseline（middle→中线 m / hanging→ascender / text-after-edge→descender，默认基线 s）组合成 PIL 双字母 anchor，`dominant-baseline="middle"` 节点内文字真正垂直居中；含旋转/斜切时 rect/ellipse 退化多边形近似（漏画圆角优于画错位置），字号/笔宽按 transform 局部缩放因子自适应（`tots = scale * lscale`）；`stroke-dasharray` 虚线按弧长分段绘制。零新依赖（PIL 已随图片优化打包，spec 无需额外收集；resvg_py 收集已从 spec 移除）。校验链/安全过滤/SVG 片段保存/失败标注逻辑不变
 - **后处理挂载**：generator.py `generate()`/`generate_both()` + generate.py `_post_process`（在 `_normalize_generated_images` 之前，先替换 assets 相对路径再统一 URL 规范化）
@@ -553,6 +563,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | `provider.base_url` 归一（判据是「路径是否已含版本段」） | [core/url_utils.py](backend/app/core/url_utils.py) |
 | 内置厂商默认表（名字 / base_url / 类型） | [core/provider_defaults.py](backend/app/core/provider_defaults.py) |
 | 上下文窗口默认表 / token 估算 | [core/token.py](backend/app/core/token.py) |
+| 代理豁免判据（本地/内网地址不走代理）+ NO_PROXY 合成 | [core/net.py](backend/app/core/net.py) |
 | 产物自证头编解码 | [core/transcript_meta.py](backend/app/core/transcript_meta.py) |
 | 图片处理四模式标签 | [lib/imageModes.ts](frontend/src/lib/imageModes.ts) |
 | 面板默认宽 / 折叠阈值 | [lib/slotMetrics.ts](frontend/src/lib/slotMetrics.ts) |
@@ -789,7 +800,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | prompt 按类型派发 | 视频/网页→通用，PDF/文档→文档 prompt，Excel→分析+数据摘要 |
 | ✅ | SSE 流式输出 | 逐 token 推送 + cancel_event 真正中断 |
 | ✅ | 自动续写 | `finish=length` → 3 轮续写，temperature 递减 |
-| ✅ | 版本管理 | 同 mode 保留最近 2 版，前端 v2/v1 切换 |
+| ✅ | 版本归档 | **全部版本独立归档不设上限**（`{mode}/v{N}.md`，两版制已重做）；版本下拉显示时间/字数/来源/编辑标记；切换 = 纯视图零写入；按版本导出；编辑 = 就地覆盖当前版**不产生版本**（2026-10-10） |
 | ✅ | 模型解析 | `resolve_model()` 唯一入口，多模态能力自动检测 |
 | ✅ | 目标语言 | config `target_language`，8 语言可选 |
 | ✅ | 参考文件 | 参考资料（如评论区观点）注入笔记生成，仅 notes；暂存 id 传递（`POST /api/references`）；上限 1MB；**超出模型上下文时自动先压缩**（`stage` 事件 + 前端小字提示，2026-09-23） |
@@ -836,7 +847,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | **`title` 渲染**（2026-09-19 续） | 此前解析了从不绘制；`TITLE_H=24` 在 `expand` 计入。**接受 3.75% 容量损失（640→616），不动 `_MIN_SCALE`** |
 | ✅ | **多图**（2026-09-19） | 每个围栏 = 1 张图，1~N 张；单围栏 ≤9 节点超出须拆图；编号按文档顺序递增、失败不跳号。实测 6 张图 9.8s |
 | ✅ | **自然尺寸 + 等比缩放**（2026-09-19） | 高度超 640 不再失败，按自然高度定稿 + `<g transform="scale(k)">`；`_MIN_SCALE=0.65` 下限；宽度按内容裁剪消除留白（⚠️ 只裁右不裁左，窄图左侧留白为已知遗留） |
-| ✅ | PIL 渲染嵌入 | 围栏 → 校验链 → PIL 渲染 PNG(2x) → `assets/chart_N.png` → `![图表](...)` 引用（resvg 全系 Windows 无法渲染 SVG 文字，2026-08-16 切换）；legacy ` ```chart ` 手写 SVG 路径完整保留为回退 |
+| ✅ | PIL 渲染嵌入 | 围栏 → 校验链 → PIL 渲染 PNG(2x) → `assets/chart_{hash8}.png` → `![图表](...)` 引用（resvg 全系 Windows 无法渲染 SVG 文字，2026-08-16 切换）；legacy ` ```chart ` 手写 SVG 路径完整保留为回退 |
 | ✅ | 校验链 + 安全过滤 | 只认 ```fig/```chart 专用围栏/XML 良构/viewBox ≤640×640/有形状元素 + script·on*·外部引用剥离；失败替换为 📊 失败文本（零残留）；无图表围栏 → 完成 warning |
 | ✅ | 只入 notes | polish 白名单无 chart；xlsx/audio 无勾选；前端排除 epub |
 | ❌ | 更多图表类型 | 当前 10 个算子（`branch` 已实现未上 prompt），无 echarts/mermaid 等专业图库（插件化方向，暂不实施） |

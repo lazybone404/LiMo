@@ -136,7 +136,7 @@ assert art.id == store_entries[0]["id"], "最新版判定必须与 store 一致"
 assert art.version == store_entries[0]["version"], (art.version, store_entries[0])
 assert "第二版正文" in art.content, art.content
 
-# 显式取旧版：旧版内容此刻在 notes.prev.md 里，由 store 定位
+# 显式取旧版：旧版内容此刻在 `notes/v1.md` 里（版本归档布局），由 store 定位
 art_v1 = svc2.get_artifact("tr_ver", "notes", version=1)
 assert art_v1.version == 1, art_v1.version
 assert "第一版正文" in art_v1.content, art_v1.content

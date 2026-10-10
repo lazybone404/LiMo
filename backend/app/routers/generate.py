@@ -1258,7 +1258,10 @@ async def get_markdown(transcript_id: str, mode: str = "", version: int = 0, req
 
     # 选版本：默认最新（列表已按版本降序，[0] 即最新）。显式版本查不到**不回退最新**
     # ——「我要第 1 版」拿到第 2 版是最坏的一种成功。
-    if version > 0:
+    # ⚠️ 判据是「非 0」而**不是**「> 0」：0 = 最新是约定，而负数与其它越界值一样
+    # 应当显式报错（下面查不到即 404）。写成 `> 0` 会把 -1 静默当成最新——用户
+    # 拿到一版却以为是另一版。三处入口（generate / export / markdown_edit）判据同源。
+    if version:
         picked = [m for m in mode_mds if m.get("version") == version]
         if not picked:
             raise AppError("MD_NOT_FOUND", f"版本 {version} 不存在", status_code=404)
@@ -1274,10 +1277,12 @@ async def get_markdown(transcript_id: str, mode: str = "", version: int = 0, req
     result = {
         **art.entry,
         "content": rewrite_asset_urls(art.raw_content, transcript_id),
-        "versions": [{"version": m.get("version", 1), "id": m.get("id"),
-                      "createdAt": m.get("createdAt"), "status": m.get("status", "complete"),
-                      "mode": m.get("mode", "")}
-                     for m in ([md for md in mds if not mode or md.get("mode", "") == mode])],
+        # 版本列表**不受 version 选择影响**（它列出该 mode 的全部版本，供用户切换），
+        # 故这里从 `mds` 重新过滤而**不是**用已被 `version` 收窄的 `mode_mds`。
+        # 形状收口在 `QueryService.artifact_versions`（本仓此前的第二份副本见 #54）。
+        "versions": svc.artifact_versions(
+            [md for md in mds if not mode or md.get("mode", "") == mode]
+        ),
     }
     return result
 

@@ -46,6 +46,7 @@ export function ExportMenu() {
   const currentRawText = useStore(s => s.currentRawText)
   const currentDocId = useStore(s => s.currentDocId)
   const activeView = useStore(s => s.activeView)
+  const markdownMeta = useStore(s => s.markdownMeta)
   const imageResults = useStore(s => s.imageResults)
   const docs = useStore(s => s.docs)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -55,6 +56,27 @@ export function ExportMenu() {
   const addToast = useStore(s => s.addToast)
 
   const tabDef = TabRegistry.get(activeView) || null
+
+  /**
+   * 当前 tab 该导出**哪一版**产物（0 = 最新，后端默认）。
+   *
+   * 「所见即所得」在版本维度上的落点：用户在预览区切到 v1 再导出，拿到的必须是 v1。
+   * ⚠️ **必须校验 mode**：`markdownMeta` 只在**加载文档时设一次**（notes 优先），
+   * 切到 polished tab 并不会更新它——不看 mode 就把 notes 的版本号塞给 polished 导出，
+   * 拿到的会是「polished 的第 N 版」而不是用户正在看的那一版。
+   * 不匹配时落回 0（最新），这与 `VersionSwitcher` 的高亮判据同源（它也以「最新」兜底）。
+   */
+  const exportVersion = markdownMeta && markdownMeta.mode === tabDef?.htmlMode
+    ? markdownMeta.version
+    : 0
+
+  /** 后端三条导出路径（HTML / Word / PDF）共用的查询参数 —— 版本语义只在一处拼。 */
+  const backendParams = (format: string, mode: string): URLSearchParams => {
+    const p = new URLSearchParams({ format, mode })
+    // 0 是后端的「最新」默认值，发出去等价但多一个参数
+    if (exportVersion > 0) p.set('version', String(exportVersion))
+    return p
+  }
 
   // ── 按 tab 确定导出内容 ──
   // 返回 null 表示当前 tab 没有可导出内容（如还没生成笔记、图片未处理等）
@@ -87,13 +109,16 @@ export function ExportMenu() {
   )
 
   // ── 生成文件名 ──
-  const makeFileName = (ext: string): string => {
+  /** `version > 0` 时文件名带 `_v{N}` —— 「按版本导出」的全部意义就是拿到**能区分开**
+   *  的不同版本；不加的话两版落进同一个文件名，靠浏览器加 `(1)` 反而更难认。 */
+  const makeFileName = (ext: string, version = 0): string => {
     const title = currentDoc?.title || 'export'
     // 清洗 + 限长收口在 `sanitizeExportName`（与 ExportPanel 及后端 `_safe_filename` 同源）
     const safe = sanitizeExportName(title)
     const date = new Date().toISOString().slice(0, 10)
     const suffix = tabDef?.exportSuffix || ''
-    return `${safe}${suffix}-${date}.${ext}`
+    const vSuffix = version > 0 ? `_v${version}` : ''
+    return `${safe}${suffix}${vSuffix}-${date}.${ext}`
   }
 
   // 点击外部关闭
@@ -136,8 +161,8 @@ export function ExportMenu() {
       return
     }
 
-    const params = new URLSearchParams({ format: 'html', mode: tabDef.htmlMode })
-    const result = await downloadFromUrl(`/export/${currentDocId}?${params.toString()}`, makeFileName('html'))
+    const params = backendParams('html', tabDef.htmlMode)
+    const result = await downloadFromUrl(`/export/${currentDocId}?${params.toString()}`, makeFileName('html', exportVersion))
     if (result.ok) {
       addToast('HTML 已导出，请查看下载文件夹')
     } else {
@@ -148,8 +173,8 @@ export function ExportMenu() {
   const handleExportDocx = async () => {
     if (!currentDocId || !tabDef?.htmlMode || docxBlocked) return
     setOpen(false)
-    const params = new URLSearchParams({ format: 'docx', mode: tabDef.htmlMode })
-    const result = await downloadFromUrl(`/export/${currentDocId}?${params.toString()}`, makeFileName('docx'))
+    const params = backendParams('docx', tabDef.htmlMode)
+    const result = await downloadFromUrl(`/export/${currentDocId}?${params.toString()}`, makeFileName('docx', exportVersion))
     if (result.ok) addToast('Word 已导出，请查看下载文件夹')
     else addToast(`导出失败: ${result.error}`, 'error')
   }
@@ -159,10 +184,10 @@ export function ExportMenu() {
     setOpen(false)
     setExportingPdf(true)
     try {
-      const params = new URLSearchParams({ format: 'html', mode: tabDef.htmlMode })
+      const params = backendParams('html', tabDef.htmlMode)
       const result = await exportPdfFromUrl(
         `/export/${currentDocId}?${params.toString()}`,
-        makeFileName('pdf'),
+        makeFileName('pdf', exportVersion),
       )
       if (result.ok) {
         // Tauri：直接落盘，报出完整路径方便用户去找；浏览器：只是调起了对话框

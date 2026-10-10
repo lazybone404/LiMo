@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useStore } from '../../store'
 import { getMarkdown, getErrorMessage } from '../../api/client'
 import { startEpubInterpret, getEpubTask, cancelEpubInterpret, type EpubTaskStatus } from '../../api/epub'
+import { toMarkdownMeta } from '../../lib/markdownMeta'
 
 /**
  * EPUB 一键解读入口 — GenPanel 生成区（epub 专属，替代 GenerateOptions + 生成按钮）。
@@ -62,7 +63,7 @@ export function EpubInterpretPanel({ docId, modelId }: { docId: string; modelId:
       const st = useStore.getState()
       if (notes) {
         st.setCurrentContent(notes.content)
-        st.setMarkdownMeta({ id: notes.id, style: notes.style, mode: notes.mode, version: notes.version, edited: !!notes.edited })
+        st.setMarkdownMeta(toMarkdownMeta(notes))
         const prev = st.markdownVersions
         st.setMarkdownVersions([...(notes.versions || []), ...prev.filter(v => v.mode !== 'notes')])
       }

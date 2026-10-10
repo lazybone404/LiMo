@@ -4,6 +4,19 @@
 import { apiFetch, getErrorMessage, BASE, type GenerateResult, type MarkdownView } from './core'
 import { parseSSEStream } from './sse'
 
+/**
+ * 版本列表条目的响应形状（后端 `QueryService.artifact_versions`）。
+ *
+ * ⚠️ 与 `store/types.ts::MarkdownVersion` 是**同一份形状的两处声明**（分层所限：
+ * api 层不 import store）——后端新增字段时两处都要加，否则「接口层收得到、store 层
+ * 看不见」。`chars` / `source` / `edited` 是后端**读时从文件头派生**的，不是 index
+ * 的持久字段；缺省（`undefined`）语义是「后端没给」，不是「0 字 / 没编辑过」。
+ */
+export type MarkdownVersionEntry = {
+  version: number; id: string; createdAt: string; status?: string; mode?: string
+  chars?: number; source?: string; edited?: boolean
+}
+
 // -- generate types --
 
 /** 所有 source_type 共享的基础选项 */
@@ -67,7 +80,7 @@ export async function generateMarkdown(
   return r.json()
 }
 
-export async function getMarkdown(transcriptId: string, mode?: string, version?: number): Promise<(MarkdownView & { versions?: { version: number; id: string; createdAt: string; status?: string; mode?: string }[] }) | null> {
+export async function getMarkdown(transcriptId: string, mode?: string, version?: number): Promise<(MarkdownView & { versions?: MarkdownVersionEntry[] }) | null> {
   const params = new URLSearchParams()
   if (mode) params.set('mode', mode)
   if (version) params.set('version', String(version))
@@ -79,16 +92,23 @@ export async function getMarkdown(transcriptId: string, mode?: string, version?:
   return data
 }
 
-/** 保存 notes/polished 手动编辑 — 覆盖当前版本（两版制自动保留生成版为 prev），返回对齐 GET /api/markdown */
+/**
+ * 保存 notes/polished 手动编辑 —— **就地覆盖**指定的那一版，不产生新版本
+ * （版本 = AI 生成出来的东西；编辑是「在那一版上改」，系统不追踪编辑历史）。
+ *
+ * `version` 必传：它是**用户正在看的那一版**（`markdownMeta.version`）。不传会落到
+ * 后端默认（最新版）——用户切到 v1 编辑却改掉了 v3，是最坏的一种成功。
+ */
 export async function saveMarkdownContent(
   docId: string,
   mode: 'notes' | 'polished',
   content: string,
-): Promise<MarkdownView & { edited?: boolean; versions?: { version: number; id: string; createdAt: string; status?: string; mode?: string }[] }> {
+  version: number,
+): Promise<MarkdownView & { edited?: boolean; versions?: MarkdownVersionEntry[] }> {
   const r = await apiFetch(`${BASE}/markdown/${docId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode, content }),
+    body: JSON.stringify({ mode, content, version }),
   })
   return r.json()
 }

@@ -6,8 +6,8 @@
                  ├─→ QueryService（本模块） ─→ Store / SearchEngine（原语）
     HTTP 路由   ─┘
 
-⚠️ **为什么 CLI 不直读 `.limo`**：文件布局（`index.json` 的形状、两版制的
-`{mode}.md` / `{mode}.prev.md` 命名、`<!-- limo-meta -->` 头信封）是**实现细节**。
+⚠️ **为什么 CLI 不直读 `.limo`**：文件布局（`index.json` 的形状、版本归档的
+`{mode}/v{N}.md` 命名、`<!-- limo-meta -->` 头信封）是**实现细节**。
 在 CLI 里照着复刻一遍 = 第 6 个副本（现有 5 处：`storage/store.py`、`routers/export.py`、
 `routers/ingest.py`、`routers/generate.py`、`routers/files.py`）。任何格式演进都要
 同时改 6 处，而**漏改的那处不会报错**——它只是静默读错，这正是把接口做成隔离边界
@@ -400,7 +400,7 @@ class QueryService:
         而一篇文档通常只有其中一两个。没有这个清单，CLI/agent 要发现「这篇有没有
         笔记」就得挨个 `get --part`，靠 `exit 3` 反推 —— 六次往返去问一个元数据问题。
 
-        生成产物（`storage="markdown"`）有版本概念（两版制），处理产物
+        生成产物（`storage="markdown"`）有版本概念（版本归档，全部保留），处理产物
         （`storage="process"`）恒为 `version=0`——**同 mode 覆盖不版本化**是既定设计
         （OCR 是确定性的），不是"版本还没算出来"。两类共有的键一律出现（各自的
         专有键缺省给空），免得消费方按 storage 分支取字段。
@@ -466,6 +466,38 @@ class QueryService:
             raw=entries[0].get("content", "") or "", entry=entries[0],
             offset=offset, max_chars=max_chars,
         )
+
+    @staticmethod
+    def artifact_versions(entries: list[dict]) -> list[dict]:
+        """index 条目列表 → **版本列表**（前端 `versions[]`）的唯一形状落点。
+
+        此前这个列表推导在本仓有**两份几乎相同的副本**（`routers/generate.py` 与
+        `routers/markdown_edit.py`），且字段集不同——新增一个展示字段（如本轮的
+        `chars`）只会被改到其中一处，另一处静默少一个字段。同源漂移，模式 #54。
+
+        ⚠️ **`chars` / `edited` / `source` 是读时派生值**（`get_markdowns_by_transcript`
+        顺带解析文件头算出），**不进 index**：进 index 就是第二份真相源，而它在
+        「删除 index 重建」之后必与文件头分叉。
+        ⚠️ **缺失的 `chars` 干脆不给这个键**：`0` 的语义是「真的 0 字」而不是
+        「不知道」，填 `0` 是伪造数据（前端的 `undefined` 与之严格区分）。
+        """
+        return [
+            {
+                "version": e.get("version", 1),
+                "id": e.get("id", ""),
+                "createdAt": e.get("createdAt", ""),
+                "status": e.get("status", "complete"),
+                "mode": e.get("mode", ""),
+                # ⚠️ 缺失时**不给这个键**（而非填 `0`）：前端的 `undefined` 语义是
+                # 「后端没给」，与「真的 0 字」是两回事（`VersionSwitcher` 据此决定
+                # 那一格显不显示）。填 `0` 是**伪造数据**，且与上面 docstring 自相矛盾
+                # ——「不知道」被写成了「没有」。正常路径下 `chars` 恒存在（读时派生）。
+                **({"chars": e["chars"]} if "chars" in e else {}),
+                "edited": bool(e.get("edited")),
+                "source": e.get("source", ""),
+            }
+            for e in entries
+        ]
 
     def get_artifact(self, doc_id: str, part: str, version: int | None = None, *,
                      offset: int = 0, max_chars: int | None = DEFAULT_MAX_CHARS) -> Artifact:

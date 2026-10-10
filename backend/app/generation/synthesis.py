@@ -988,10 +988,10 @@ def _latest_notes_text(store, tx_id: str) -> str:
     """取该文档 notes 的**最新版正文**；没有笔记返回空串（设计 §19.1）。
 
     ⚠️ 「最新版」与 `store.get_markdown` 是同一套判据：`get_markdowns_by_transcript`
-    返回**按 version 降序**的列表，`[0]` 即最新版（读 `notes.md` 而不是 `notes.prev.md`）。
-    自己判版本号会与它漂移——两版制下的版本判据只应存在一份。
+    返回**按 version 降序**的列表，`[0]` 即最新版（即 `{mode}/v{max}.md`）。
+    自己判版本号会与它漂移——版本判据只应存在一份。
 
-    ⚠️ **必须剥掉自证头**：`{mode}.md` 的首行是 `<!-- limo-meta ... -->`，而这份
+    ⚠️ **必须剥掉自证头**：`{mode}/v{N}.md` 的首行是 `<!-- limo-meta ... -->`，而这份
     文本会作为【文档 i】的正文**进模型 prompt**。不剥的后果有三条：① 与「不给
     普通 transcript 加头」的边界自相矛盾（那条的理由正是「会进 prompt」）；②
     `Source.tokens = estimate_tokens(raw_text)`，头会被算进配额；③ 材料里多一类

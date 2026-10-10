@@ -27,7 +27,10 @@ dependencies = [
     "openpyxl>=3.1",
     # 适配器
     "trafilatura>=2.1",
-    "youtube-transcript-api>=0.6",
+    # ⚠️ 下界必须 >=1.0：1.x 是破坏性重写（list/fetch 变实例方法、片段变 dataclass、
+    # 代理走 proxy_config），代码已按 1.x 适配。曾因 `>=0.6` 松到实际装 1.x 而代码没跟，
+    # 字幕路径每次都抛 TypeError 被吞 → 静默回退下载（2026-10-10 修复）
+    "youtube-transcript-api>=1.0",
     # ASR 引擎（faster-whisper 已从内置移除，需用户自行安装插件）
     "dashscope>=0.0.1",
     # OCR

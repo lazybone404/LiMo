@@ -170,8 +170,15 @@ async def export_content(
     format: str = Query("md", description="导出格式: md / html / docx"),
     mode: str = Query("", description="产物模式: polished / notes / transcript"),
     inline: bool = Query(False, description="内联展示而非下载 —— PDF 导出窗口需渲染此页，见下"),
+    version: int = Query(0, description="产物版本号；0 = 最新版。⚠️ 仅对 notes/polished "
+                                        "生效——转录原文（transcript）只有一个版本，传了会被忽略"),
 ):
-    """导出文档为 MD / HTML / Word"""
+    """导出文档为 MD / HTML / Word
+
+    `version` 支撑「**所见即所得**」：用户在预览区切到 v1 再导出，拿到的必须是 v1。
+    显式版本查不到时**显式报错**（`EXPORT_VERSION_NOT_FOUND`）而不回退到最新版 ——
+    「我要第 1 版」导出第 2 版是最坏的一种成功：文件已经落盘，用户不会发现拿错。
+    """
 
     if mode == "transcript":
         tx = store.get_transcript(tx_id)
@@ -183,16 +190,32 @@ async def export_content(
     else:
         # 默认取 notes，避免 polished 排在前面导致与预览栏不一致
         filter_mode = mode if mode else "notes"
-        mds = store.get_markdowns_by_transcript(tx_id, mode=filter_mode)
+        # `version=0` → 传 None = 不过滤（取最新，列表已按版本降序）
+        mds = store.get_markdowns_by_transcript(tx_id, mode=filter_mode,
+                                                version=version or None)
+        # ⚠️ 显式指定版本却查不到 → **不回退**。「我要导第 1 版」导出第 2 版是最坏的
+        # 一种成功（模式同 `QueryService.get_artifact`：不静默回退最新版）。
+        # ⚠️ `recoverable=False` 与 `status_code=404` 两个都要显式给：前者默认 True
+        # 会把响应压成 **HTTP 200**（模式 #36），前端 `!r.ok` 于是否掉失败、照样去
+        # 解那个失败体。这里与同文件的 `EXPORT_NO_CONTENT` 刻意**不同**：那边
+        # 「没内容」可能是「还没生成完」，重试有意义；「版本 99 不存在」重试一万次
+        # 也不会出现，是可恢复性上的另一类错误。
+        if version and not mds:
+            raise AppError("EXPORT_VERSION_NOT_FOUND", f"版本 {version} 不存在",
+                           status_code=404, recoverable=False)
         # mode 已显式指定但未找到 → 不回退到其他 mode 的内容（预览一致原则）
-        # 仅 mode 为空（用户未指定）时，无 notes 才回退到任意可用产物
-        if not mds and not mode:
+        # 仅 mode 为空（用户未指定）时，无 notes 才回退到任意可用产物。
+        # ⚠️ 指定了 version 时**禁掉这条回退**：它会把「notes 的第 2 版」悄悄换成
+        # 「polished 的第 2 版」，而用户要的是 notes。
+        if not mds and not mode and not version:
             mds = store.get_markdowns_by_transcript(tx_id, mode="")
         content = mds[0]["content"] if mds else ""
         # 回退：无 markdown 条目时尝试 process results
         # 图片文档（sourceType=image）没有 markdown 条目，处理结果存在 process_results 中
         # mode 如 extract/table/digitize/understand 对应图片处理的各种模式
-        if not content and mode:
+        # ⚠️ 同理：指定 version 时不走这条（图片处理产物**同 mode 覆盖、无版本概念**，
+        # 拿一份没有版本概念的产物去满足「要第 1 版」是答非所问）。
+        if not content and mode and not version:
             results = store.get_process_results(tx_id)
             for r in results:
                 if r.get("mode") == mode:

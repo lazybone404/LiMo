@@ -15,6 +15,7 @@ import { ImageModeCards } from './ImageModeCards'
 import { EpubInterpretPanel } from '../preview/EpubInterpretPanel'
 import { EXT_TO_SUBTYPE, getSubScenario, getTypeMeta, normalizeStyle, pickStyleKeys, reconcileStyle, styleOptions } from './constants'
 import { imageModeLabel } from '../../lib/imageModes'
+import { toMarkdownMeta } from '../../lib/markdownMeta'
 import { useTaskRunner } from '../../hooks/useTaskRunner'
 
 // 会话级标记：参考文件意图缺失提醒只弹一次（无论确认/取消，用户已理解机制）
@@ -363,7 +364,7 @@ export function GenPanel() {
           if (!isSameDoc(capturedId)) return
           if (notes) {
             setCurrentContent(notes.content)
-            setMarkdownMeta({ id: notes.id, style: notes.style, mode: notes.mode, version: notes.version })
+            setMarkdownMeta(toMarkdownMeta(notes))
             setMarkdownVersions([...(notes.versions || []), ...(polished?.versions || [])])
           } else {
             setCurrentContent(null)
@@ -739,7 +740,7 @@ export function GenPanel() {
             // 开始之前拉的快照，模式 #52：成对操作只做了一半）。服务端确认存在才记。
             if (md) useStore.getState().markArtifact(capturedId, mode)
             if (mode === 'notes') {
-              setMarkdownMeta(md ? { id: md.id, style: md.style, mode: md.mode, version: md.version, edited: !!md.edited } : null)
+              setMarkdownMeta(md ? toMarkdownMeta(md) : null)
               if (md) {
                 setCurrentContent(md.content)
                 const prev = useStore.getState().markdownVersions

@@ -5,7 +5,7 @@ import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
 import { getStreamBuffer } from '../../store/streamBuffers'
-import type { TaskInfo } from '../../store/types'
+import type { MarkdownMeta, MarkdownVersion, TaskInfo } from '../../store/types'
 import { TabRegistry, type TabDef } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
 import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Minimize2, Expand, Pencil } from 'lucide-react'
@@ -34,6 +34,7 @@ import { ImageResultView } from './ImageResultView'
 import { CopyContentBtn } from './CopyContentBtn'
 import 'katex/dist/katex.min.css'
 import { IMAGE_MODES, IMAGE_MODE_LABELS, type ImageMode } from '../../lib/imageModes'
+import { toMarkdownMeta } from '../../lib/markdownMeta'
 
 /**
  * OCR 空态四项提示的图标 —— 按 mode **键**组织，不用数组下标。
@@ -250,7 +251,8 @@ export function PreviewArea() {
   // 编辑态绑定来源文档 id：所有无参保存路径（Ctrl+S / 保存按钮）必须以编辑内容的
   // 真实归属文档为目标，而非 currentDocId——弹窗打开时 currentDocId 已被 selectDoc 切成
   // 新文档，用 currentDocId 会把 A 的编辑内容错存进 B（评审发现的数据污染根因）。
-  const [editing, setEditing] = useState<{ mode: 'notes' | 'polished'; docId: string } | null>(null)
+  // `version` 是**开始编辑时用户正在看的那一版**——编辑就地覆盖它（不产生新版本）。
+  const [editing, setEditing] = useState<{ mode: 'notes' | 'polished'; docId: string; version: number } | null>(null)
   const [editValue, setEditValue] = useState('')
   const [editDirty, setEditDirty] = useState(false)
   const [savingEdit, setSavingEdit] = useState(false)
@@ -265,16 +267,67 @@ export function PreviewArea() {
   const setDirtyEditingDocId = useStore(s => s.setDirtyEditingDocId)
   // 切文档防丢：记录上一次文档 id（取消切换时回退）
   const prevDocIdRef = useRef<string | null>(null)
+  /**
+   * 每个 mode **各自**最近一次从后端拿到的产物元数据与版本列表。
+   *
+   * ⚠️ 为什么必须按 mode 分桶：`markdownMeta` / `markdownVersions` 是**单值**的，
+   * 而 notes 与 polished 是两个独立产物位、版本号各自从 v1 起。它们在两个 tab 之间
+   * 切换时若不同步，会同时坏掉两件事：
+   *   - 版本下拉显示**另一个 mode** 的版本列表（切到整理版看到笔记的版本）；
+   *   - 编辑「就地覆盖」时把另一个 mode 的版号用到这一版上 —— 2026-10-10 引入就地
+   *     覆盖语义后，这条从「多留一版」升级成**覆盖掉用户没在看的版本、原文不可恢复**
+   *     （P1，本轮修复；`docs/code-audit-3.md`）。
+   * 本 ref 是「每个 mode 的真相」，store 里的那两个值是「当前 tab 的视图」。
+   */
+  const perModeMetaRef = useRef<Partial<Record<'notes' | 'polished',
+    { meta: MarkdownMeta; versions: MarkdownVersion[] }>>>({})
+  /** 最近一次版本切换请求的归属（文档 + mode + 版本号）—— 见 `loadVersion` 的竞态说明。 */
+  const versionReqRef = useRef<{ docId: string; mode: 'notes' | 'polished'; version: number } | null>(null)
   // 弹窗「取消」回退后，下一次 effect 需跳过清理+加载（保留原文档编辑态与未保存内容）
   const skipDocLoadRef = useRef(false)
+
+  /**
+   * 切 tab 时把 `markdownMeta` / `markdownVersions` 同步成**那个 mode 自己的**
+   * （理由见 `perModeMetaRef`）。只对 notes / polished 两个产物 tab 生效 ——
+   * 转录/图片/思维导图不持有产物版本概念，不该被改写成某一个 mode 的。
+   *
+   * ⚠️ 覆盖「ref 已在、但 effect 不重跑」的缺口：产物是**异步**加载后才写进 ref 的，
+   * 那一次由加载分支自己负责同步（见 `loadDocContent`）；本 effect 管的是**之后**的
+   * 用户切换。
+   */
+  useEffect(() => {
+    // ⚠️ 判据走 `TabDef.htmlMode`，**不是** activeView 字面量：笔记 tab 的 key 是
+    //    `'summary'` 而不是 `'notes'`，写成 `activeView !== 'notes'` 编译期就会红
+    //    （tsc 抓到了），而写成别的差不多的字面量则**不报错、只是这个 effect 永不生效**
+    //    ——那就是「修了但没修上」。`htmlMode` 是 tabRegistry 里「此 tab 对应哪个产物
+    //    mode」的唯一定义，用它顺带自动排除转录/思维导图/图片等无产物版本的 tab。
+    const mode = TabRegistry.get(activeView)?.htmlMode
+    if (mode !== 'notes' && mode !== 'polished') return
+    const cached = perModeMetaRef.current[mode]
+    if (cached) {
+      setMarkdownMeta(cached.meta)
+      setMarkdownVersions(cached.versions)
+    } else if (markdownMeta && markdownMeta.mode === mode) {
+      // 自举：视图值已属于这个 mode（生成完成时 GenPanel / 恢复态 App.tsx 直接写进
+      // store，**没经过本组件**；F4 早退路径同理），但 ref 里没有记录。认领它 ——
+      // 否则下次从另一个 tab 切回来，会读到更早的陈旧值。
+      perModeMetaRef.current[mode] = { meta: markdownMeta, versions: markdownVersions }
+    }
+  }, [activeView, markdownMeta, markdownVersions, setMarkdownMeta, setMarkdownVersions])
 
   /** 进入编辑模式（summary tab → notes；polished tab → polished） */
   const startEditing = () => {
     if (!currentDocId || !displayContent) return
     const mode: 'notes' | 'polished' = activeView === 'polished' ? 'polished' : 'notes'
+    // ⚠️ 必须记下**用户此刻正在看的那一版**：编辑是就地覆盖（不产生新版本），保存时
+    // 靠它定位目标。切 tab 时 `markdownMeta` 已由 `perModeMetaRef` 的同步 effect 换成
+    // **这个 mode 自己的**元数据（含用户在该 tab 切过的版本），故下面的判据恒成立。
+    // ⚠️ 兜底 `0`（= 最新版）**不是无害的默认值**：就地覆盖语义下它会把用户没在看的那
+    // 一版改掉、原文不可恢复（audit-3 P1 正是这条路径）。它是最后一道防线，不是正常路径。
+    const version = markdownMeta && markdownMeta.mode === mode ? markdownMeta.version : 0
     setEditValue(displayContent)
     setEditDirty(false)
-    setEditing({ mode, docId: currentDocId })
+    setEditing({ mode, docId: currentDocId, version })
   }
 
   const cancelEditing = () => {
@@ -283,7 +336,8 @@ export function PreviewArea() {
   }
 
   /**
-   * 保存编辑：PUT /api/markdown → 更新内容/meta/versions + 置 edited 标记（生成版自动降 prev）。
+   * 保存编辑：PUT /api/markdown → 更新内容/meta/versions + 置 edited 标记。
+   * **就地覆盖 `editing.version` 那一版**（版本数不变、版本号不变）——编辑不产生版本。
    * 返回 boolean（是否保存成功）——「保存并离开」需据此决定是否放行离开。
    * saveDocId：覆盖保存目标文档。切文档「保存并离开」时 currentDocId 已变为新文档，
    *   必须传入原文档 id（prevDocId）否则内容会存到错误文档。注意不要求 editDirty——
@@ -301,13 +355,15 @@ export function PreviewArea() {
     if (typeof saveDocId !== 'string' && unsavedDialog) return false
     setSavingEdit(true)
     try {
-      const md = await saveMarkdownContent(docId, editing.mode, editValue)
+      const md = await saveMarkdownContent(docId, editing.mode, editValue, editing.version)
       if (editing.mode === 'polished') {
         setCurrentPolishedContent(md.content)
       } else {
         setCurrentContent(md.content)
       }
-      setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version, edited: true })
+      // `edited` 不再写死 true：它由后端从文件头派生后带回（`md.edited`）。
+      // 写死就是在响应里放第二份判据（模式 #54）；映射收口在 `toMarkdownMeta`。
+      setMarkdownMeta(toMarkdownMeta(md))
       setMarkdownVersions(md.versions || [])
       setMarkdownEdited(editing.mode, true)
       setEditing(null)
@@ -409,21 +465,36 @@ export function PreviewArea() {
     const docId = useStore.getState().currentDocId
     if (!docId || versionLoading) return
     setVersionLoading(true)
-    const mdMode = mode === 'polished' ? 'polished' : 'notes'
-    getMarkdown(docId, mdMode || undefined, version > 0 ? version : undefined).then(md => {
-      if (!md || docId !== useStore.getState().currentDocId) return
-      if (mode === 'polished') {
+    const mdMode: 'notes' | 'polished' = mode === 'polished' ? 'polished' : 'notes'
+    // ⚠️ 归属守卫必须带 **version 这一维**：只比 docId 时，「连点 v1 再点 v2」两个
+    // 并发请求中先发的那个若后返回，会用 v1 的内容覆盖 v2（`versionLoading` 只是
+    // 异步生效的按钮禁用，拦不住已经发出去的请求）。模式 #38：判据要能区分它该区分的事。
+    versionReqRef.current = { docId, mode: mdMode, version }
+    const isStale = () => {
+      const req = versionReqRef.current
+      return !req || req.docId !== docId || req.mode !== mdMode || req.version !== version
+    }
+    getMarkdown(docId, mdMode, version > 0 ? version : undefined).then(md => {
+      if (!md || docId !== useStore.getState().currentDocId || isStale()) return
+      if (mdMode === 'polished') {
         setCurrentPolishedContent(md.content)
       } else {
         setCurrentContent(md.content)
       }
-      setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version, edited: !!md.edited })
+      // 用户刚在这个 tab 切了版本 → 该 mode 的真相与当前视图**同时**更新
+      const meta = toMarkdownMeta(md)
+      perModeMetaRef.current[mdMode] = { meta, versions: md.versions || [] }
+      setMarkdownMeta(meta)
       setMarkdownVersions(md.versions || [])
     }).catch(err => {
       // P1-16：版本加载失败不再静默——toast 告知（含瞬时网络故障归一化后的中文消息）
       console.error('加载版本失败:', err)
       useStore.getState().addToast(getErrorMessage(err), 'error')
-    }).finally(() => setVersionLoading(false))
+    }).finally(() => {
+      // 被取代的请求不解除 loading —— 解除权属于**最新**那次请求（否则旧请求先回来
+      // 就把按钮放开了，用户可以在新请求还在飞的时候再点一次）
+      if (!isStale()) setVersionLoading(false)
+    })
   }
 
   /**
@@ -443,6 +514,10 @@ export function PreviewArea() {
     setMarkdownMeta(null)
     setMarkdownVersions([])
     setContentLoadError(false)
+    // 每个 mode 的产物真相随文档生命周期清零 —— 不清就会串到下一篇文档
+    // （切文档后 activeView 未变 → 同步 effect 不重跑 → 读到上一篇的 meta/版本列表）
+    perModeMetaRef.current = {}
+    versionReqRef.current = null
     // 编辑状态按文档生命周期重置 + 跨文档隔离 edited 标记（防 A 的标记误判 B 的覆盖确认）
     setEditing(null)
     setEditDirty(false)
@@ -484,12 +559,23 @@ export function PreviewArea() {
           if (useStore.getState().processingTasks[capturedId + '__generate']) return md
           if (md) {
             setCurrentContent(md.content)
-            setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version, edited: !!md.edited })
-            setMarkdownVersions(md.versions || [])
+            const meta = toMarkdownMeta(md)
+            const versions = md.versions || []
+            perModeMetaRef.current.notes = { meta, versions }
+            // ⚠️ 只在**当前 tab 就是笔记**时直接更新视图值：文档加载是异步的，
+            // 此刻 activeView 可能仍是上一轮的「整理版」——无条件写会让整理版 tab
+            // 短暂挂上笔记的版本列表。切 tab 的正确同步由 effect 负责。
+            if (useStore.getState().activeView !== 'polished') {
+              setMarkdownMeta(meta)
+              setMarkdownVersions(versions)
+            }
           } else {
+            delete perModeMetaRef.current.notes
             setCurrentContent(null)
-            setMarkdownMeta(null)
-            setMarkdownVersions([])
+            if (useStore.getState().activeView !== 'polished') {
+              setMarkdownMeta(null)
+              setMarkdownVersions([])
+            }
           }
           useStore.getState().setMarkdownEdited('notes', !!md?.edited)
           return md
@@ -500,7 +586,18 @@ export function PreviewArea() {
           if (!isSame()) return null
           // F4：同上——生成中跳过赋值，但值仍要传给 tab 判定
           if (useStore.getState().processingTasks[capturedId + '__generate']) return md
+          // 整理版此前**从不更新** markdownMeta / markdownVersions（改动前此处只设内容）——
+          // 于是切到整理版 tab 看到的是笔记的版本列表，且「就地覆盖」会拿笔记的版号去改
+          // 整理版那一版（P1）。现在按 mode 分桶记下来，切 tab 时同步（见 perModeMetaRef）。
+          const polMeta = md && md.content ? toMarkdownMeta(md) : null
+          const polVersions = md?.versions || []
+          if (polMeta) perModeMetaRef.current.polished = { meta: polMeta, versions: polVersions }
+          else delete perModeMetaRef.current.polished
           setCurrentPolishedContent(md && md.content ? md.content : null)
+          if (useStore.getState().activeView === 'polished') {
+            setMarkdownMeta(polMeta)
+            setMarkdownVersions(polVersions)
+          }
           useStore.getState().setMarkdownEdited('polished', !!md?.edited)
           return md
         }).catch(err => { handleLoadError('加载整理版原文失败', err); return null })

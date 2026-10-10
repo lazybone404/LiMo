@@ -11,17 +11,17 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 116（11 子目录：adapters 8 / agent 6 / core 27 / downloaders 1 / engines 15 / generation 15 / llm 4 / routers 19 / storage 2 / utils 6 / services 13）+ `limo_cli/` 9（CLI，独立于 `app/`） |
-| 前端 TS/TSX/CSS 文件 | 174（172 ts/tsx + 2 css；业务 123，测试 48，`setup.ts` 1） |
-| 前端测试文件 | 49（48 测试文件 + `setup.ts`；563 个测试用例，vitest 全绿） |
-| 后端测试文件 | 57（含 `conftest.py` 共享 fixture；2026-10-04 新增 `test_secrets` / `test_config_mask` / `test_config_io`） |
+| 后端 Python 文件 | 117（11 子目录：adapters 8 / agent 6 / core 28 / downloaders 1 / engines 15 / generation 15 / llm 4 / routers 19 / storage 2 / utils 6 / services 13）+ `limo_cli/` 9（CLI，独立于 `app/`） |
+| 前端 TS/TSX/CSS 文件 | 177（175 ts/tsx + 2 css；业务 124，测试 50，`setup.ts` 1） |
+| 前端测试文件 | 51（50 测试文件 + `setup.ts`；583 个测试用例，vitest 全绿） |
+| 后端测试文件 | 62（含 `conftest.py` 共享 fixture；2026-10 新增 `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle`） |
 | API 路由模块 | 18 业务模块（+ `__init__.py`，共 19 个 .py） |
 | API 端点 | 89（`@router.` 装饰器计数；含 `/api/cli/*` 七端点） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
-| 设计文档 | 13（docs/ 目录，含对话协议.md + AGENT-ONBOARDING.md + ACKNOWLEDGMENTS.md；design/ 另计） |
-| 代码行数 | 后端 app 29,636 + CLI 1,356 / 前端业务 18,961 / 前端测试 7,688 |
+| 设计文档 | 17（docs/ 目录 .md 计数：architecture / frontend-patterns / export-pipeline / patterns / 对话协议 / AGENT-ONBOARDING / user-scenarios / plugins / prompts-inventory / BUILD / qianwen-models / ACKNOWLEDGMENTS / code-audit 1-3 + CHANGELOG / STATUS；design/ 另计） |
+| 代码行数 | 后端 app 30,257 + CLI 1,356 / 前端业务 19,260 / 前端测试 7,931（`wc -l` 累加；前端业务不含 `*.test.*` 与 `setup.ts`） |
 
 ---
 
@@ -62,14 +62,14 @@
 | 管道 | 端点 | 触发 |
 |------|------|------|
 | 导入 | `POST /api/ingest` + `/stream` | URL/文本/文件 |
-| 生成 | `POST /api/generate/{id}` + `/stream` | LLM 生成笔记 |
+| 生成 | `POST /api/generate/{id}` + `/stream` | LLM 生成笔记；**版本归档** `{doc_dir}/{mode}/v{N}.md`（一版一文件、全部保留，生成追加新版 / 编辑就地覆盖当前版，2026-10-10 从两版制重做） |
 | 处理 | `POST /api/process/{id}` | 图片 OCR |
 | 对话 | `POST /api/chat` + `/chat/stream` | AI Agent |
 | 图表 | `POST /api/generate/{id}`（formats=chart）| 生成笔记勾选「图表」→ AI 输出 ```fig 语义 JSON（1~N 张、**9 种布局**、不写坐标）→ `chart_layout` 算几何 → `chart_svg` 生成 → PIL 本地自绘渲染 PNG 嵌入（`app/services/chart_layout/` 包 + `chart_svg.py` + `chart_renderer.py`；resvg 已切换，Windows 文字 bug；legacy ```chart 手写 SVG 路径保留为回退） |
 | EPUB 解读 | `POST /api/epub/generate/{id}` + `GET /api/epub/task/{id}` + `POST /api/epub/cancel/{id}` | EPUB 一键解读（阶段1 逐章 + 阶段2 归并总结 + 中断续跑 + 失败章跳过标注） |
 | 文档库 | `GET/POST/PATCH/DELETE /api/folders` + `POST /api/transcripts/batch` | 单层文件夹（**纯逻辑分类，不映射磁盘目录**）+ 批量删除/打标签/移动；`GET /api/transcripts?folderId=` 三态语义（不传=不过滤 / 空串=仅未分类 / id=该文件夹）；`GET /api/search` 全文检索（内存过滤即时 + FTS5 消抖合并，命中并入主列表 + 「原文」角标 + 相关度排序键） |
 | 多篇合成 | `POST /api/synthesis/stream` | 选中 N 篇（≥2）→ 按 multi 预算组装正文 → 落库为 `sourceType="composite"` 新文档。**只建文档不生成**（综述由用户核对「## 来源文档」后自行点生成，走现成 `/generate/{id}/stream`）。Step 0 分叉：装得下 → Stuff（零 LLM 调用）/ 超出 → Map-Reduce（维度发现 + 逐篇固定维度结构化抽取）。业务失败（篇数不足 / 源已删 / 窗口不够 / 缺 Key / **非法原料模式 / 非法读者意图**）全走 SSE error 事件，HTTP 仍 200——⚠️ 入参清洗必须在 `runner` **内**（写在 `StreamingResponse` 构造之前会让 `normalize_*` 的抛错变成 HTTP 500，前端只看到「连接中断」） |
-| 导出 | 9 端点：单文件/全产物/批量/思维导图/对话单篇/对话批量/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/Word(docx 图片内嵌+标题大纲级别)/ZIP(3模式)/思维导图(交互版+SVG)/**PDF**(复用 HTML 产物，无独立端点：Tauri 走 WebView2 PrintToPdf 直接落文件 / 浏览器走打印对话框) |
+| 导出 | 9 端点：单文件/全产物/批量/思维导图/对话单篇/对话批量/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/Word(docx 图片内嵌+标题大纲级别)/ZIP(3模式)/思维导图(交互版+SVG)/**PDF**(复用 HTML 产物，无独立端点：Tauri 走 WebView2 PrintToPdf 直接落文件 / 浏览器走打印对话框)。**按版本导出**：`?version=N`（0=最新，查不到**显式报错不回退**），HTML/Word/PDF 三条后端路径共用 |
 
 ### 共享查询层（2026-10-04，无独立端点）
 
@@ -155,19 +155,20 @@
 > - 导出：11/12 — **打印样式 + PDF 导出已落地**（2026-09-21）：Tauri 内走 WebView2 PrintToPdf 直接落文件（**真实文档已端到端实测**，期间修掉 `Content-Disposition: attachment` 导致打印白纸的伪成功），浏览器内退回打印对话框（原「打印 / 另存为 PDF」与「PDF 一键导出」两行已合并为一，因为它们是同一个按钮的两条分支）；待完成**图片预处理复用**（ZIP 导出复用导入时的 optimize_images 结果）与 **md 公式渲染修复**（`formula_md=render` 依赖不在依赖树里的 matplotlib，自上线起从未生效）
 > - 不做的项目：PDF Layer 2（pdfplumber 已成熟提取表格）、VL 帧过滤（成本/收益不成正比）
 
-## 工程质量（2026-10-06 状态）
+## 工程质量（2026-10-10 状态）
 
 | 指标 | 状态 |
 |------|:--:|
 | FastAPI Depends 依赖注入 | ✅ 17/18 路由用 `Depends`（未迁：generate/ingest/search；`references.py` 本就不需要） |
 | disconnect_watcher 公共工具 | ✅ 5 端点统一，修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 18/18 路由全量完成，0 处 `HTTPException`（2026-10-04 复核） |
-| 前端测试 | ✅ vitest + 503 tests（44 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/readingPrefs/readingLayout/docTabs 3 个/字号、接线与快捷键守卫 3 个/onAccent/installWarning） |
-| 后端测试 | ✅ 57 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io） |
+| 前端测试 | ✅ vitest + 583 tests（50 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/readingPrefs/readingLayout/docTabs 3 个/字号、接线与快捷键守卫 3 个/版本切换与预览同步 2 个/onAccent/installWarning） |
+| 后端测试 | ✅ 62 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io；版本布局 2 个：store_version_layout/store_legacy_migration；导出与网络 3 个：export_by_version/proxy_exemption/youtube_subtitle） |
 | CLI 契约门禁 | ✅ `scripts/check-cli` 16 项全绿（含 3 条负向对照：后端不可达 / 坏 ID / 截断显式化）；`test_query_contract.py` §8 覆盖 `/api/cli/*` 七端点 + 两条对照实验（2026-10-04） |
 | 产物自证头 | ✅ `notes`/`polished`/`process` 落盘带 `<!-- limo-meta -->` 首行（从哪来/怎么来的/是什么/可信度边界四条），`core/transcript_meta.py` 拆出 envelope 层统一编解码；历史无头产物**不判损坏**；编辑保存带回原头；思维导图等派生视图剥头（2026-10-04） |
 | 共享查询层 | ✅ `services/query.py::QueryService` 收口全部读路径（HTTP 与 CLI **同一份**实现）；顺带修掉存活四个月的 `search.py` 双 `prefix` 导致 `/api/api/search`（前端搜索一直 404 而两侧测试全绿，2026-10-04） |
 | 只读 CLI | ✅ `limo` 七命令 + `/api/cli/*` 七端点（只读，无写操作）；`--json` 时 stdout 纯 JSON、退出码 `0/2/3/4/5/6` 区分「空」与「坏」、`has_more`/`next_cursor` 与 `truncated`/`continuation` 不混用；契约文档两处（库内 `~/.limo/AGENTS.md` + 仓库根）；顺带修 3 缺陷（坏 ID 退出码分叉 / 子命令选项不可用 / `--all` HTTP 静默退化成第一页）（2026-10-04） |
+| 第三轮代码自查 | ✅ 10 条（P0 迁移调用整库重建抹掉标签/文件夹/来源 + P1 前端跨 mode 版本滞后 + `chars` 伪造 + 版本切换竞态 + 导出测试脚本式假绿 + 4 条 P2），另有 5 条「记录不修」，见 [code-audit-3.md](code-audit-3.md)；对照实验 6 条（2026-10-10） |
 | 对话重写 | ✅ 独立 chatStore + 消息层组件树 + 工具气泡/引用/思考折叠（2026-08-04） |
 | 对话上下文管理 | ✅ context_window 四层解析 + 预算引擎 + 历史压缩 + token 进度/费用（2026-08-04 C1-C5） |
 | AI 浮窗 | ✅ 移除插槽，统一浮窗（位置记忆/边界钳制/内部栏拖拽） |
@@ -201,14 +202,14 @@
 | 错误体系 sentinel 语义 | ✅ AppError `_UNSET` 哨兵区分「未显式指定」/「显式传 400」——显式 400 + recoverable 不再被压 200（评审 H1：export_custom 前端曾下载损坏 zip，2026-08-25） |
 | 编辑态绑定来源 docId | ✅ 编辑态 `{mode, docId}`，无参保存（Ctrl+S）永远写回编辑内容归属文档，弹窗期间切文档不错存/不错回退（评审 H2/H3，2026-08-25） |
 | 编辑中未保存 × 重新生成拦截 | ✅ `dirtyEditingDocId` 轻量桥（uiSlice 标记，不提升编辑态）+ GenPanel 生成入口两态 confirm，放弃编辑后 PreviewArea 自关闭编辑态（评审遗留①，2026-08-25） |
-| 图表语义化布局 | ✅ 出图从「模型手写 SVG 坐标」改为「模型填语义 JSON + 后端算几何」——9 种 layout（tree/flowchart/state/sequence/quadrant 新增 + 形状层 + `shapes` 通道）/ 1~N 张图 / 自然尺寸 + 等比缩放 / 超时分档 / `chart_N.json` 协议切换证据（2026-09-19） |
+| 图表语义化布局 | ✅ 出图从「模型手写 SVG 坐标」改为「模型填语义 JSON + 后端算几何」——9 种 layout（tree/flowchart/state/sequence/quadrant 新增 + 形状层 + `shapes` 通道）/ 1~N 张图 / 自然尺寸 + 等比缩放 / 超时分档 / `chart_{hash8}.json` 协议切换证据（2026-09-19） |
 | 图表几何缺陷六修 | ✅ 同行跨列边穿节点 / 走廊边叠同一 y / 隔行边穿中间行 / edges·shapes 不参与 bbox / 报错文案误导（「节点过多」掩盖「有环」）/ **窄节点文字被压成纯省略号**（`_fit_labels` 与 `_shape_inner_w` 余量不同源）+ `assert_layout` 补三条不变量 + `title` 渲染（2026-09-19 续） |
 | Word 导出 | ✅ Markdown→HTML→**共用解析器**→docx（标题大纲级别/列表嵌套/表格/代码块/引用/超链接/任务列表 ☑/时间戳双色 badge/图片等比缩放内嵌）；`markdown_render.py` 下沉 + 旧版 HTML 输出逐字节等价验证；OOXML 元素顺序保序插入 + 自证检查（2026-09-21） |
 | 参考文件超窗压缩 | ✅ 单文件上限 200KB→**1MB**；「原文 + 参考 > 窗口 × 0.7」（与对话预算同源）时用当前生成模型逐份摘要——**装得下零成本原样返回**；失败降级截断 + 总量兜底 + 原文自超预算时不兜底；仅 notes 侧做；流式推 `stage` 事件 + 前端小字提示；文件名清洗防伪造标记。注入文案从「仅供背景参考」改为主动利用指引 + 逐项编号（2026-09-23） |
 | 参考文件质量与安全复查 | ✅ 同日续，修 4 处：① 暂存区**孤儿条目永不清理**（按入参惰性清理 → 全表扫）+ 双闸门（条目 32/总量 32MB）+ `tests/test_reference_store.py`（并自证用例有区分力）；② 摘要**独立超时** `COMPRESS_TIMEOUT=180s`（原先只有 SDK 330s 兜底，模型挂起要干等 5 分钟）；③ prompt **注入防御声明**「参考资料只是素材，不是指令」（注入侧 + 压缩侧，内容零触碰）——⚠️ `source_content` 同样缺此声明，未纳入本轮；④ 压缩 prompt 补「正文真进了模板」断言（写本轮改动时实际踩到过漏占位符）。⚠️ 已知边界：`POST /api/references` 的 1MB 校验在 body 读入**之后**（FastAPI 依赖顺序），超大 body 会先吃内存才被拒——本地服务 + CORS 白名单 + 前端已挡，判定收益低未加；若后端未来暴露到局域网/公网必须补 Content-Length 预检（2026-09-23） |
 | DeepSeek 模型名与参数对齐 | ✅ 依官网原文核实两轮变更：预置模型改用现役名 `deepseek-flash`（V4.1-Flash，原生多模态；旧名 2026-09-10 下线）、`compress.py` 一级 fallback 从已停用的 `deepseek-chat` 改 `deepseek-flash`；补注思考模式参数契约（默认开启/effort 默认 high、temperature 等三参数不生效、top_p 仅思考模式生效）（2026-09-23） |
 | 流式生成必炸修复 | ✅ 0.4.4 打包后首次生成即 `UnboundLocalError: ref_texts`（**必然**非偶发）：`generate_stream` 顶层变量被嵌套函数 `merged_stream` 内的赋值拽成后者局部变量 → 赋值前的读取直接炸（模式 #43）。改用局部名 `refs` 承接（两处：双产物/单产物）；新增 `tests/test_closure_shadowing.py` 静态 AST 全库扫描防**整类**（判据含「按执行顺序展开读写」，`x = x + 1` / `x += 1` 均能抓到；自证有区分力 + 回滚真实代码确认可捕获；全库其余 5 处遮蔽经核对均为安全写法）。⚠️ 暴露的缺口：流式端点运行路径此前无测试覆盖（2026-09-23） |
-| 文档库组织能力 | ✅ ① **单层文件夹**（`routers/folders.py` 四端点）——**纯逻辑分类永不映射磁盘目录**（每文档已有独立目录含 assets 相对引用与两版制，改目录会同时破坏三样）；悬空 folderId 双向容错；删文件夹只搬移不删文档；DnD + 右键菜单。② **全文搜索接入**——内存过滤 0ms 即时 + 消抖 250ms 合并 FTS5（`docs` 无正文，客户端**不可能**实现，FTS5 是唯一解不是优化）；「正文匹配」独立分组 + 双命中「正文」角标。③ **排序 + 标签筛选**（来源类型与用户标签此前混淆，现拆两组）。④ **批量操作** `POST /api/transcripts/batch`（按 action 显式枚举校验 + failed 明细 + 全失败 400 + store 一次加锁一次写盘）。⑤ **大列表分批渲染** 60 条 + 全选跨分批（2026-09-23） |
+| 文档库组织能力 | ✅ ① **单层文件夹**（`routers/folders.py` 四端点）——**纯逻辑分类永不映射磁盘目录**（每文档已有独立目录含 assets 相对引用与版本归档产物，改目录会同时破坏三样）；悬空 folderId 双向容错；删文件夹只搬移不删文档；DnD + 右键菜单。② **全文搜索接入**——内存过滤 0ms 即时 + 消抖 250ms 合并 FTS5（`docs` 无正文，客户端**不可能**实现，FTS5 是唯一解不是优化）；「正文匹配」独立分组 + 双命中「正文」角标。③ **排序 + 标签筛选**（来源类型与用户标签此前混淆，现拆两组）。④ **批量操作** `POST /api/transcripts/batch`（按 action 显式枚举校验 + failed 明细 + 全失败 400 + store 一次加锁一次写盘）。⑤ **大列表分批渲染** 60 条 + 全选跨分批（2026-09-23） |
 | DeepSeek 思考档位 | ✅ `generation/effort.py` 全系统唯一真相（此前 `"low"` 散落四处）；能力位 `reasoning` 按模型标注；**整理版恒 low 除非选 max** 且 UI 明示；静默期分档 150/180（不改则「选最高档反而更容易失败」）；默认档 `high` = 服务端默认，零回归；AST 断言钉住全库无硬编码档位字面量（2026-09-23） |
 | PDF 直传 | ✅ 用户可选**二选一**（文本模式默认 / 直传模式将 PDF 原件以 `file` 块随生成请求发出，**只发原文件**防 token 双花）。**探针实测**：data-uri 20 MiB 上限约束的是 **base64 之后的字符串**（19MB 被拒）→ 反解原字节上限 ≈15.0 MiB，工程取 **14 MiB**（贴边的 15 MiB 算出 data-uri 恰多 25 字节，照样被拒）；首包**次线性**（12KB→3.4s、9.5MB→143s、13.7MB→149.3s，服务端逐页渲染故由页数主导）；**必须走 Chat Completions**（Responses API 官方记载会 200 但丢文件，且无客户端可见信号）。⚠️ **双真相源**：rawText 是导出/搜索/预览的真相源但不是模型所见的真相源（扫描件上真分叉）→ rawText < 100 字符时完成期 warning（判据取 100 而非空串：OCR 失败的**占位文本**约 50 字符「看起来有内容实际没内容」）。能力位 `document` **只标查证过的**：dashscope 官方名单的三个（`qwen3.8-max` / `qwen3.8-flash` / `qwen3.8-27b`，**任何 qwen-vl / qwen3.5 视觉模型都不在名单**）；`routers/model.py` 不做名字自动检测（2026-09-23） |
 | 文档能力逐家查证 | ✅ 同日续，用户要求「其他模型的文档能力去官网文档调查」。7 家结论：**仅 dashscope 标**（《PDF 理解》页明列 qwen3.8 系四个）；openai（通道在但 gpt-5 系社区反馈看不到文件/Azure gpt-4o 直接报错）、anthropic（用 `document` 块不是 `file` 块，而全线共用 AsyncOpenAI）、google（兼容层不支持）、zhipu / moonshot（独立端点抽文本，非原件直传）、opencode 网关（未查证 + 该能力仅限华北2 地域）**一律不标**。**结论表唯一沉淀点** = `services/doc_understand.py` 模块文档。配套修正三处：新增 flash/27b 预设；`qwen3.8-max` 的 `context_window` 131072→**1000000**（原把「最大输出」当成了「上下文」，对话预算 700k 缩成 91k）；`DOC_DIRECT_TIMEOUT` 240→**330** / `DOC_DIRECT_GEN_TIMEOUT` 450→**660**（240 按实测 ×1.6 算，而官方明写首包最坏 300s → 区间内正常请求被自己掐断且只表现为静默降级；**实测证明不了上界**，模式 #48）+ 修 `generate.py` 流式端点漏传 `doc_direct`（模式 #16）（2026-09-23） |

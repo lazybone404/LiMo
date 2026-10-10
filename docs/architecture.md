@@ -217,10 +217,11 @@ data/
 │   └── {prefix}/{id}.json
 └── {title}-{6位hex}/           # ★ 一文档一目录
     ├── transcript.md           # rawText（Markdown 或 image JSON）
-    ├── notes.md                # 笔记最新版
-    ├── notes.prev.md           # 笔记上一版
-    ├── polished.md / polished.prev.md
-    ├── process/                # 图片处理结果
+    ├── notes/                  # 版本归档：一版一文件、全部保留不设上限
+    │   ├── v1.md               # 首行自证头是该版的**持久真相**（生成时间/模型/参数/版本号）
+    │   └── v2.md               # 最新版 = max(N)；生成追加、编辑就地覆盖当前版
+    ├── polished/               # 同上（{mode}/v{N}.md）
+    ├── process/                # 图片处理结果（同 mode 覆盖，不版本化）
     │   └── {mode}.md           # extract/table/digitize/understand
     └── assets/                 # 图片资源（img_*.png / cover / original / screenshot_*）
 ```
@@ -250,10 +251,10 @@ class Store:
     find_by_url(url) -> dict | None       # URL 去重
     delete_transcript(id) -> bool         # rmtree(doc_dir)
 
-    # Markdown（两版制：{mode}.md + {mode}.prev.md）
-    get_markdown(id) -> str | None        # 按 index 查 mode → 判断版本读 .md 或 .prev.md
-    get_markdowns_by_transcript(tx_id, mode="") -> list
-    save_markdown(mv: MarkdownView) -> bool
+    # Markdown（版本归档：{mode}/v{N}.md，一版一文件）
+    get_markdown(id) -> str | None        # 路径由该条目自己的 (mode, version) 决定
+    get_markdowns_by_transcript(tx_id, mode="", version=None) -> list  # 版本降序，[0] = 最新
+    save_markdown(mv, file_meta=None, *, replace_version=None) -> bool  # None = 追加新版；N = 就地覆盖第 N 版
 
     # Process（{doc_dir}/process/{mode}.md）
     get_process_result(id) -> str | None
@@ -272,10 +273,10 @@ class Store:
 
 ### 关键决策
 
-- **版本管理**：同 mode 保留最近 2 版（`.md` + `.prev.md`），前端 v2/v1 切换器
+- **版本归档**（2026-10-10，前身「两版制」）：同 mode 每版独立归档 `{mode}/v{N}.md`、**全部保留不设上限**；头是真相、index 只是缓存（删 index 重建后版本序与生成时间仍在）；生成追加新版、编辑 `replace_version` 就地覆盖当前版（**不产生版本**）；切换是纯视图操作故无「当前版指针」
+- **索引重建**：`_rebuild_index` 扫描根目录含 `transcript.md` 的目录反推；产物的版本序/时间/风格**读各自文件头的自证头**还原（此前跳过 `.prev.md` 且不读头，删一次 index 即全丢）
 - **处理结果覆盖**：同 mode 覆盖不版本化（OCR 确定性的）
 - **去重两层**：URL 去重 + SHA256 contentHash 去重（空文本固定 hash 需在 TextAdapter 层防碰撞）
-- **索引重建**：`_rebuild_index` 扫描根目录含 `transcript.md` 的目录反推
 
 ---
 

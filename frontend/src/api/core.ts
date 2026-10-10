@@ -241,8 +241,13 @@ export interface GenerateResult {
 export interface MarkdownView {
   id: string; transcriptId: string; content: string
   style: string; mode: string; version: number; createdAt: string
-  /** 已手动编辑标记（GET /api/markdown 透传 index entry；生成版无此字段） */
+  /** 已手动编辑标记——**从产物文件头的 `edit` 键派生**（不是 index 字段），
+   *  故删掉 index.json 重建后仍在（2026-10-10 版本归档）。生成版无此字段。 */
   edited?: boolean
+  /** 纯正文字数（不含自证头）。同样读时从文件头派生，`undefined` = 后端没给 */
+  chars?: number
+  /** 生成用的模型名（版本列表的「来源」列） */
+  source?: string
 }
 
 export interface ChatResult {

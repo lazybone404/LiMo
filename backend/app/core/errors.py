@@ -80,6 +80,22 @@ class AppError(Exception):
         }
 
 
+def http_status(exc: AppError) -> int:
+    """`AppError` → HTTP 状态码的**唯一判据**（`main.py` 的异常处理器与测试共用）。
+
+    显式指定过 `status_code`（`_explicit_status`，**含显式 400**）时尊重它；未显式
+    时 `recoverable → 200`（「尚未生成」是预期业务状态，压成 200 可免浏览器
+    DevTools 显示网络错误）。显式 400 必须返回 400 —— 用「≠默认 400」判断会让
+    `status_code=400 + recoverable=True`（如 `export_custom`）被误压成 200，
+    前端 `if (!r.ok)` 当成功 → 下载到损坏 zip（评审 H1）。
+
+    ⚠️ 抽出来是因为测试要造「与生产一致」的 app：复刻一份表达式就是模式 #54 的
+    入口，而分叉的症状（测试与线上状态码不同）不抛错、只是静默判错。
+    """
+    return exc.status_code if exc._explicit_status else (
+        200 if exc.recoverable else exc.status_code)
+
+
 # -- 获取层 --
 
 class FetchError(AppError):

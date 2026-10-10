@@ -9,8 +9,13 @@
 ⚠️ **对照实验（每条判据配一个「看起来对、其实错」的实现，且已实测判红）**：
 - 写入判据 ← 替代实现「`file_meta` 不写盘」→ 第 1 节红（实测：`读回的内容应带自证头`）
 - 剥离判据 ← 替代实现「笔记当原料时不剥头」→ 第 6 节红（实测：`喂给模型的原料不该含自证头`）
-- 串位判据 ← 替代实现「`index_extra` 位置填 `file_meta`」→ 第 3 节红（实测：`index 条目的 marker 应是 INDEX`）
+- 漏进 index 判据 ← 替代实现「`file_meta` 的键顺手并进 index 条目」→ 第 3 节红（实测：`file_meta 的键不该漏进 index 条目`）
 - 派生视图判据 ← 替代实现「思维导图不剥头」→ 第 8 节红（实测：`自证头残片 '收益' 进了导出的 JS 模板字面量`）
+
+⚠️ 第 3 节的**原型**是「`file_meta` 与 `index_extra` 串位」的对照实验。2026-10-10 起
+`index_extra` 参数已随两版制一起退休（编辑标记改落文件头），串位的可能性从根上消失；
+留下的那条防线（**`file_meta` 的键不得漏进 index 条目**）仍有人守——它防的是
+「随手把 meta 并进条目」这种写法，症状是 index 里躺着一份与文件头分叉的副本。
 
 ⚠️ **一条刻意不写进来的对照**：`strip_meta` 从 `parse_meta` 换到 `_parse_envelope` 作判据，
 **行为面没有区分力**——旧判据下产物头虽被归为「损坏」，但 `strip_meta` 的剥头动作照做、
@@ -55,8 +60,12 @@ def _mv(mv_id: str, tx_id: str, body: str = BODY,
                         style=Style.DETAILED, mode=mode)
 
 
-def _head_line(st: Store, tx_id: str, filename: str = "notes.md") -> str:
-    """读产物文件的首行（**绕过 Store**，直接看磁盘）—— 这是「文件是不是真相源」的判据。"""
+def _head_line(st: Store, tx_id: str, filename: str = "notes/v1.md") -> str:
+    """读产物文件的首行（**绕过 Store**，直接看磁盘）—— 这是「文件是不是真相源」的判据。
+
+    ⚠️ 路径默认 `notes/v1.md`（版本归档布局）：默认值写错会让**每一个**调用点
+    静默读错文件（`FileNotFoundError` 至少还会响，最坏是读到别的版本的头）。
+    """
     d = st.get_doc_dir(tx_id)
     assert d, f"文档目录不存在: {tx_id}"
     return (d / filename).read_text(encoding="utf-8").split("\n", 1)[0]
@@ -93,9 +102,10 @@ assert parsed["generated"]["promptVersion"] == PROMPT_VERSION, parsed["generated
 assert parsed["generated"]["params"]["formats"] == ["toc", "chart"], parsed["generated"]
 assert parsed["generated"]["params"]["reasoningEffort"] == "high", parsed["generated"]
 assert parsed["generated"]["generatedAt"], parsed["generated"]
-# ③ 是什么 —— version 刻意留空（真实版本由 store 在加锁区内算，写盘时调用方还不知道）
+# ③ 是什么 —— mode 由装配层填；version 由 **store 写盘前注入**（版本号就是文件名
+#    `{mode}/v{N}.md` 的 N，写盘那一刻已知）。故这里必须读到真值，且与磁盘一致。
 assert parsed["identity"]["mode"] == "notes", parsed["identity"]
-assert "version" not in parsed["identity"], "version 不该被预填（假数据比缺席更坏）"
+assert parsed["identity"]["version"] == 1, parsed["identity"]
 # ④ 可信度边界：结构在，值待提示词侧配合
 assert "trust" in parsed, parsed
 
@@ -105,49 +115,53 @@ print("PASS: 自证头落盘 → 读回 → 解析四条齐全（源/生成方�
 print("PASS: 剥离后逐字节等于原文（写方读方成对，不留脏正文）")
 
 # ═══════════════════════════════════════════════════════════════
-# 2. 两版制：降级的 prev 也是**完整产物**（带它自己那一版的头）
+# 2. 版本归档：连写两版 → 一版一文件，各自带**自己那一版**的头
+#    （旧「两版制」是 {mode}.md + {mode}.prev.md 两个**位置**，一版的头一旦
+#      写错位就再也说不清自己是第几版；版本号写进文件名后，头与文件名同源）
 # ═══════════════════════════════════════════════════════════════
 
 mv2 = _mv("md_am2", "tr_am1")
 mv2.generation_model = "qwen3.8-max"
 s.save_markdown(mv2, file_meta=markdown_meta(mv2, tx))
 
-prev_line = _head_line(s, "tr_am1", "notes.prev.md")
-cur_line = _head_line(s, "tr_am1", "notes.md")
-assert prev_line.startswith("<!-- limo-meta "), f"prev 也该带头，实得: {prev_line[:40]}"
-assert cur_line.startswith("<!-- limo-meta "), f"最新版该带头，实得: {cur_line[:40]}"
-# 两版各自带头，且是**不同的** meta（generatedAt 至少不同档，版本语义靠 index）
-assert parse_artifact_meta(prev_line)[0] is not None
-assert parse_artifact_meta(cur_line)[0] is not None
+v1_line = _head_line(s, "tr_am1", "notes/v1.md")
+v2_line = _head_line(s, "tr_am1", "notes/v2.md")
+assert v1_line.startswith("<!-- limo-meta "), f"v1 该带头，实得: {v1_line[:40]}"
+assert v2_line.startswith("<!-- limo-meta "), f"v2 该带头，实得: {v2_line[:40]}"
+# 每版各自带头，且 `identity.version` **等于文件名里的 N**（文件头是真相源：
+# index.json 删掉重建后，全靠这一条还原「这是第几版」）
+assert parse_artifact_meta(v1_line)[0]["identity"]["version"] == 1, v1_line[:80]
+assert parse_artifact_meta(v2_line)[0]["identity"]["version"] == 2, v2_line[:80]
+# 且两版都还是**完整产物**（正文没被头吃掉、也没互相覆盖）
+assert strip_meta(s.get_markdowns_by_transcript("tr_am1", mode="notes")[1]["content"]) == BODY
 
-print("PASS: 降级产生的 .prev.md 同样带自证头（它是完整产物，不是残片）")
+print("PASS: 版本归档 —— 一版一文件，identity.version 与文件名同源")
 
 # ═══════════════════════════════════════════════════════════════
-# 3. ⚠️ 对照实验：`file_meta` 与 `index_extra` 去向不同，串位不报错
-#    （P3 —— 两个 dict 参数并排、名字都不带方向时最容易接错）
+# 3. ⚠️ `file_meta` 的键**只**该落在文件首行，index 条目是**受限白名单**
+#    （原型是两个 dict 参数串位的对照实验，见模块 docstring）
 # ═══════════════════════════════════════════════════════════════
 
 s3 = _new_store()
 _import_store(s3, "tr_am3")
 mv3 = _mv("md_am3", "tr_am3")
-s3.save_markdown(mv3,
-                 file_meta={"type": "artifact", "kind": "notes", "marker": "FILE"},
-                 index_extra={"edited": True, "marker": "INDEX"})
+s3.save_markdown(mv3, file_meta={"type": "artifact", "kind": "notes", "marker": "FILE"})
 
 entry3 = s3.get_markdowns_by_transcript("tr_am3", mode="notes")[0]
-head3 = _head_line(s3, "tr_am3")
+head3 = _head_line(s3, "tr_am3", "notes/v1.md")
 
 # ① file_meta 的键**只**该出现在文件首行
-assert entry3.get("marker") == "INDEX", f"index 条目的 marker 应是 INDEX，实得 {entry3.get('marker')}"
-assert "kind" not in entry3, f"file_meta 的键不该漏进 index 条目: {sorted(entry3)}"
-assert "type" not in entry3, f"file_meta 的键不该漏进 index 条目: {sorted(entry3)}"
-
-# ② index_extra 的键**只**该出现在 index 条目
-assert entry3.get("edited") is True, "index_extra 应进 index 条目"
-assert "INDEX" not in head3, f"index_extra 的键不该漏进文件首行: {head3[:80]}"
 assert '"marker":"FILE"' in head3.replace(" ", ""), f"file_meta 应在文件首行: {head3[:80]}"
+assert "marker" not in entry3, f"file_meta 的键不该漏进 index 条目: {sorted(entry3)}"
+assert "kind" not in entry3 and "type" not in entry3, \
+    f"file_meta 的键不该漏进 index 条目: {sorted(entry3)}"
 
-print("PASS: 对照实验 —— file_meta 只进文件首行、index_extra 只进 index 条目（串位必红）")
+# ② index 条目的键集**精确等于**白名单 + 读时派生字段。多一个键意味着有东西
+#    绕过了白名单直接并进条目——那会是一份与文件头分叉的副本（软性双真相源）。
+assert set(entry3) == {"id", "transcriptId", "style", "mode", "version", "createdAt",
+                       "status", "content", "chars", "edited", "source"}, sorted(entry3)
+
+print("PASS: file_meta 只进文件首行；index 条目键集受限（漏进即红）")
 
 # ═══════════════════════════════════════════════════════════════
 # 4. process 产物：生产者是 engine（不是生成模型的 model）
@@ -253,9 +267,24 @@ assert head_after is not None, "编辑保存必须带回自证头（否则产物
 assert head_after["source"]["docId"] == "tr_am7", head_after["source"]
 assert head_after["generated"]["model"] == "qwen3.8-max", head_after["generated"]
 assert strip_meta(after["content"]) == "# 标题\n\n用户改过的正文。\n", after["content"][:120]
-assert after.get("edited") is True, "index_extra 侧不受影响"
+# ⚠️ 编辑标记落**文件头**（`mark_edited`），读路径再从头**派生**出 `edited`。
+# 「只进 index」是旧实现——那样删一次 index.json 重建，编辑痕迹就永久丢了。
+assert (head_after.get("edit") or {}).get("edited") is True, \
+    f"编辑标记必须落进文件头，实得 {head_after.get('edit')}"
+assert after.get("edited") is True, "读路径应从头派生出 edited"
 
-print("PASS: 编辑保存带回自证头 + 正文生效 + edited 标记仍进 index")
+s7._rebuild_index(save=True)
+# ⚠️ 重建**会重推 id**（`tr_{sha256(正文)}`，与旧 id 不同）——这是既有语义，不是本轮
+# 引入的；故重建后必须用新 id 查，否则拿不到条目会让下面断在 IndexError 上，
+# 而不是断在「编辑标记丢了」这句上（**假红**比不红更误导人）。
+rebuilt_id = s7._index["transcripts"][0]["id"]
+assert rebuilt_id != "tr_am7", "前置：重建按正文 sha256 重推 id"
+rebuilt = s7.get_markdowns_by_transcript(rebuilt_id, mode="notes")[0]
+assert rebuilt.get("edited") is True, \
+    "删 index 重建后编辑标记丢失 —— 说明它没真正落在文件头里"
+assert strip_meta(rebuilt["content"]) == "# 标题\n\n用户改过的正文。\n"
+
+print("PASS: 编辑保存带回自证头 + 正文生效 + 编辑标记落在文件头（重建后仍在）")
 
 # ═══════════════════════════════════════════════════════════════
 # 8. 思维导图导出：派生视图**不承载**自证头（值含 `>` 时也不漏残片）

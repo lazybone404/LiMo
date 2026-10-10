@@ -23,6 +23,8 @@ from app.generation.synthesis import (
 )
 from app.generation.product_registry import to_capability_list
 from app.routers.model import _get_providers
+# 产物布局判据的家（`{mode}/v{N}.md`）——不要在本文件内联 md 文件路径
+from app.storage.store import MARKDOWN_MODES, markdown_dir_has_version
 
 router = APIRouter()
 
@@ -129,7 +131,11 @@ def _scan_interrupted_generations(config: dict) -> list[dict]:
         if not marker.is_file():
             continue
         # 假中断自愈：产物已生成（生成实际完成）→ marker 是残留，清理不提示
-        has_product = (doc_dir / "notes.md").is_file() or (doc_dir / "polished.md").is_file()
+        # ⚠️ 判据走 `store.markdown_dir_has_version`，**不要**在这里内联 md 文件路径：
+        # 产物布局是 `{mode}/v{N}.md`，内联的 `(doc_dir / "notes.md").is_file()` 会在
+        # 布局改版后永远为假——症状是「已生成完的文档被误报成生成中断残留」，
+        # 且那条提示永远清不掉（静默类 bug）。
+        has_product = any(markdown_dir_has_version(doc_dir, m) for m in MARKDOWN_MODES)
         if has_product:
             try:
                 marker.unlink()

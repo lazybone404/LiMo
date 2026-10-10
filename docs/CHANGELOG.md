@@ -6,6 +6,268 @@
 
 ---
 
+## 2026-10-10 — 第三轮代码自查：P0 迁移抹索引 / P1 前端版本滞后（0.5.0，未升版）
+
+> 完整报告见 [code-audit-3.md](code-audit-3.md)（10 条 + 「记录不修」5 条 + 对照实验 6 条）。
+
+### 做了什么
+
+**起因**：上面那批「产物版本管理重做」刚落地，而它把**写入语义从「新建」改成了「就地覆盖」**
+—— 同一个小笔误，旧模型下是「多一版」，新模型下是**覆盖掉用户没在看的版本、原文不可恢复**。
+语义升级带来了新的风险面，故对这批改动做一轮专项自查（三个并行 Agent 分域 + 逐条复现）。
+
+**① P0 — 启动迁移抹掉全库文档级字段**（[store.py](../backend/app/storage/store.py)）
+- 迁移函数末尾调了 `self._rebuild_index(save=True)`「刷新一下索引」。而 `_rebuild_index` 从
+  **磁盘**重扫，磁盘上没有 `tags` / `folderId` / `sourceUrl` / `createdAt` / `id`，也没有 `folders`
+  整张表 —— 它们**只存在于 `index.json`**。`save=True` 让它**扫完立刻落盘**。
+- **每个升级用户首次启动必现、不可逆、且日志写着「迁移成功」**。写法是迁移只重算**受影响的
+  `(文档, mode)`** 产物条目，新增 `_markdown_entries_desynced`（判据是**版本集合比较**，
+  天然幂等，已迁移的库上恒 False = 正常启动零副作用）。写盘失败**不阻断启动**
+  （`StoreError` 是 `AppError` 子类而非 `OSError`，只 catch 后者会让磁盘满时后端起不来）。
+- ⚠️ **对照实验**：把 `_rebuild_index(save=True)` 注入回去 → 新增 3 条守卫全红，
+  **而原有 6 条迁移测试全绿** —— 后者才是这条缺陷能活下来的原因。
+
+**② P1 — 跨 mode 切 tab 后编辑覆盖「用户没在看的那一版」**（[PreviewArea.tsx](../frontend/src/components/preview/PreviewArea.tsx)）
+- `markdownMeta` 是**单值**，而 notes / polished 两个产物位的版本号**各自从 v1 起**。
+  此前加载文档只写 notes 的 meta、切到 polished **什么都不做**，而 `startEditing` 直接取
+  `markdownMeta.version` → **拿笔记的版号去覆盖整理版的第 N 版**。旧模型（编辑 = 新建版本）下
+  这只是「多一版」；就地覆盖语义下它是**改错文件**。
+- 修法：`perModeMetaRef` 按 mode 分桶（四处写入点）+ 一个切 tab 的同步 effect + **自举分支**
+  （生成完成时 GenPanel / 恢复态 `App.tsx` 直接写 store、不经过本组件，不认领就会读到更早的陈旧值）
+  + 切文档清空桶。顺带修掉「切到整理版，版本下拉显示的是笔记的版本列表」这个继承性缺口
+  （同根，只是危害小到没人报过）。
+- ⚠️ **差点修错，值得留档**：effect 守卫初版写成 `activeView !== 'notes'`，而**笔记 tab 的 key
+  是 `'summary'`** —— 是 tsc 报 `TS2367`（两类型无重叠）才暴露。更关键的是：我为它写的源码断言
+  **恰恰断定了那个错误字符串**。教训是**结构守卫断得住「有没有」，断不住「对不对」**，
+  故补了一条行为断言（`TabRegistry.get('summary')?.htmlMode === 'notes'`）钉住前提。
+
+**③ P1 — 版本条目 `chars` 缺失被填 `0`**（[services/query.py](../backend/app/services/query.py)）
+- `artifact_versions` 对缺失的 `chars` 填 `0`，而同一个函数的 docstring 说它是**读时从文件头现算
+  的派生值**（派生值**可能算不出来**）。前端 `undefined`（没给）与真 `0` 字是严格区分的两种语义
+  （`VersionSwitcher` 的测试正是在断这个），填 `0` 是在**后端主动伪造数据**，且伪造值落在
+  「用户会当真」的那一侧。改为**缺失时不给这个键**。
+
+**④ P1 — 版本切换的归属守卫漏了 `version` 这一维**
+- 守卫只比 `docId`。`versionLoading` 只是**异步生效**的按钮禁用，拦不住已经发出去的请求 ——
+  「连点 v1 再点 v2」，先发的后返回就会用 v1 覆盖 v2，且旧请求的 `finally` 还会放开 loading。
+  修法：守卫带全 `docId + mode + version`，解除 loading 的权利归**最新**那次请求（模式 #38）。
+
+**⑤ P1 — 新导出测试是脚本式（假绿）+ handler 与生产分叉**
+- `test_export_by_version.py` 原是一串模块级裸调用 + `main()`：`python tests/x.py` 能跑，
+  `pytest tests/` **收集 0 条而一片绿**。且它自带一个忽略 `_explicit_status` 的异常处理器 ——
+  测试断言的状态码可能与**线上真正的**状态码不同（模式 #54：复刻一份表达式，分叉了不抛错，
+  只是静默判错）。改为 pytest 风格 7 个 `def test_*` + `tmp_path_factory`，并把状态码判据抽成
+  [errors.http_status()](../backend/app/core/errors.py)，**`main.py` 的异常处理器与测试共用同一份**。
+  ⚠️ 判据必须是「有没有**显式指定** `status_code`」而不是「等不等于默认 400」——
+  `status_code=400 + recoverable=True`（`export_custom` 就是这个组合）用后者会被误压成 200
+  → 前端 `if (!r.ok)` 当成功 → 下载到损坏的 zip。
+
+**⑥ P2 — 四处同源漂移 / 无机制**
+- `version` 判据三个入口三种写法（`> 0` / 非 0）→ `version=-1` 在 `generate` 拿到最新版、
+  在 `export`/`markdown_edit` 报 404。统一为「**非 0**」：越界值该显式报错，不该退化成「最新」。
+- `save_markdown` **就地改写调用方传入的 `file_meta`** → 同一个 dict 连写两版时，两版自证头会是
+  同一个版本号（零报错）。改为浅拷贝。
+- `MarkdownView → MarkdownMeta` 的收口函数本轮新写了，但 `PreviewArea.tsx` 内部**两处仍是内联
+  字面量** —— 收口做了一半，剩下这一半正好在本轮最关键的链路上（`chars`/`source` 静默丢失）。
+- 代理豁免表（见下）缺保留私有域名后缀。
+
+**⑦ 顺带修复：代理豁免表**（新模块 [app/core/net.py](../backend/app/core/net.py)）
+- 启动时把 `fetch.proxy` 注入成**全局**环境变量，但**没有豁免表** —— 本地 SearXNG
+  （`http://127.0.0.1:18080`）与自建 LLM 网关（`http://localhost:8000`）也一并被塞进代理。
+  多数代理软件默认对回环直连，所以平时看不出问题 —— **那是运气不是设计**。
+- 两条通道**刻意不同源**（被第三方库的表达能力限制）：`NO_PROXY` 环境变量只列字面量
+  （各家后缀匹配语义不一致，押在它上面等于把 bug 埋进依赖库），Python 侧的 `proxy_for()` 承担
+  任意判据（回环 + 私网 + link-local + 保留私有域后缀）。
+- ⚠️ 后缀**只收有标准依据的**（`.local` RFC 6762 / `.home.arpa` RFC 8375 / `.internal` ICANN 2024）：
+  「绕过代理」是**猜错也静默**的判据（少了代理的症状是连不上而不是报错），靠印象扩大豁免面会把
+  真正要走代理的网关一并豁免掉。反面对照写进测试（`notlocal.com` / `api.localstack.com` /
+  `internal.example.com`）。
+
+**⑧ 顺带修复：YouTube 字幕 API 1.x 适配**（[adapters/youtube_subtitle.py](../backend/app/adapters/youtube_subtitle.py)）
+- `pyproject` 写的是 `youtube-transcript-api>=0.6`，实际装到 1.x —— 而 1.x 是**破坏性重写**
+  （`list()`/`fetch()` 变实例方法、片段变 dataclass、代理走 `proxy_config`）。代码仍按 0.6.x 写，
+  于是 `YouTubeTranscriptApi.list(vid, cookies=...)` **每次必抛 TypeError**，又被宽 `except`
+  吞掉 → **字幕路径从未成功过**，静默回退 yt-dlp 下载（用户感受为「油管导入特别慢 / 像是不通」）。
+- 修法按 1.x 适配 + 依赖下界提到 `>=1.0` + **失败分型按「用户能采取的行动」划分**（模式 #53）：
+  「视频确实没字幕」静默降级走 ASR；「被反爬 / 网络拦下」**必须显式冒泡** —— 伪装成「没字幕」
+  会让代理失效表现为「导入变慢」，用户永远查不到原因。异常类用 `getattr` 收集而非直接 import，
+  免得依赖漂移时缺一个类就把**不依赖字幕**的视频下载路径一起打挂。
+  `tests/test_youtube_subtitle.py::test_api_shape_contract` 钉住三条形状契约，依赖漂移即红。
+
+### 为什么
+
+1. **「就地覆盖」把同一个笔误的后果放大了。** 版本重做之前，「前端以为用户在看哪一版」算错了
+   只是多一个版本（无害）；之后它就是**覆盖掉另一份不可恢复的原文**。所以本轮的重点不是
+   「再检查一遍」，而是**针对新语义重新评估旧代码的每条假设** —— `markdownMeta` 的单值假设、
+   `chars` 填 `0` 的无害假设、归属守卫只比 docId 的充分性假设，全都是在这一批里才变成错的。
+2. **P0 那条的教训与代码无关**：「刷新一下索引」是个听上去无害的动作，而 `_rebuild_index`
+   的真身是「把索引丢回磁盘从头来」。**它的名字没有说谎，是调用位置错了。**
+3. **测试的绿要问它是怎么绿的。** 同一批缺陷里，一个是「6 条迁移测试全绿」（覆盖了文件搬家，
+   没覆盖元数据幸存），一个是「pytest 收集 0 条」（根本没跑）。两者都会让门禁全绿。
+
+### 影响范围
+
+| 层 | 文件 |
+|---|---|
+| 存储 | [store.py](../backend/app/storage/store.py)（迁移只重算受影响 mode + `_markdown_entries_desynced` + `save_markdown` 不再就地改入参） |
+| 核心 | [core/errors.py](../backend/app/core/errors.py)（`http_status` 唯一判据）、[core/net.py](../backend/app/core/net.py)（新）、[main.py](../backend/main.py)（handler 改调 `http_status`） |
+| 路由 | [generate.py](../backend/app/routers/generate.py)（`version` 判据非 0）、[adapters/youtube_subtitle.py](../backend/app/adapters/youtube_subtitle.py)、[agent/tools.py](../backend/app/agent/tools.py)（`_searxng_search` 改走 `proxy_for`） |
+| 服务 | [services/query.py](../backend/app/services/query.py)（`chars` 缺失不给键） |
+| 前端 | [preview/PreviewArea.tsx](../frontend/src/components/preview/PreviewArea.tsx)（分桶 + 同步 effect + 竞态守卫）、[lib/markdownMeta.ts](../frontend/src/lib/markdownMeta.ts)（收口落实） |
+| 依赖 | [pyproject.toml](../backend/pyproject.toml) `youtube-transcript-api>=1.0` |
+| 测试 | [test_store_legacy_migration.py](../backend/tests/test_store_legacy_migration.py)（+3 元数据幸存守卫）、[test_export_by_version.py](../backend/tests/test_export_by_version.py)（改 pytest 风格）、[test_proxy_exemption.py](../backend/tests/test_proxy_exemption.py)、[test_youtube_subtitle.py](../backend/tests/test_youtube_subtitle.py)、前端 `previewVersionSync.test.ts`（新，源码结构守卫） |
+| 文档 | [code-audit-3.md](code-audit-3.md)（新）+ 本文件 |
+
+- **不升版本号、不打包、不发布。** `PROMPT_VERSION` **不 bump**（没改任何发给模型的文本）。
+- **不做**（明确记录，非遗漏）：`MarkdownVersion` 两处声明（`api/` 不 import `store/`，分层所限）、
+  ingest 8 位 hex 哈希（理论级，与 `chart_{sha1[:8]}` 同款取舍）、404 文案、`VersionSwitcher` 的
+  `Esc`/`aria-haspopup`。
+- ⚠️ **已知缺口**：`P1-01`（前端版本滞后）**没有组件级行为测试**，只有源码结构守卫 + 一条前提
+  行为断言。整树渲染 `PreviewArea` 要 `vi.mock` 掉一整个依赖图，脆弱且慢，本轮未做 —— 故这条
+  修复靠**结构上消灭它**（分桶 + 单一同步点）而不是靠测试兜底。
+
+---
+
+## 2026-10-10 — 产物版本管理重做：两版制 → 版本归档（0.5.0，未升版）
+
+### 做了什么
+
+**起因**：用户要「把历史版本做好」。现状是**两版制**（`{mode}.md` + `{mode}.prev.md` 两个位置，
+index.json 只留 2 条），有三个按伤害排序的问题：
+
+1. **编辑也在造版本**。[markdown_edit.py](../backend/app/routers/markdown_edit.py) 走的是同一个
+   `save_markdown`，于是「编辑一次」就把 AI 生成的那一版挤成 prev，**编辑两次 AI 那版被物理覆盖**。
+2. **只有 2 版**。`save_markdown` 主动裁掉第 3 条往前的 index 条目，磁盘上 `os.replace` 也直接覆盖。
+3. **「每个版本保留好它的各种信息」根本做不到**。`_rebuild_index` **显式跳过 `.prev.md`**，
+   重建出的条目 `version` 恒为 1、`createdAt` 恒为**空串**、`style` 写死 `"detailed"`
+   —— **删一次 `index.json`，版本历史连同时间全丢**。
+
+而答案其实早就在文件里：产物首行的自证头有 `generated.generatedAt` / `model` / `params`
+—— **只是重建路径从来没去读它**。
+
+**用户拍板的产品模型（不可改）**：版本 = **AI 生成出来的**东西，每版独立归档；
+**编辑不产生版本**（「编辑只是用户在那个对应版本上做更改，我们不负责」）；
+**用「切换」而非「回滚」**（→ 切换是纯视图操作、零写入，因此**不需要「当前版指针」**这个新持久概念）；
+**全部保留、不设上限**；要看时间/字数/来源/编辑标记，要用切换/按版本导出；**不做** diff 对比视图。
+
+**① 磁盘布局：`{doc_dir}/{mode}/v{N}.md`**（[storage/store.py](../backend/app/storage/store.py)）
+- **一版一文件**，版本序写进文件名（`^v(\d+)\.md$`），重建可解。
+- 选目录而非平铺 `{mode}.v3.md`：平铺会与遗留的 `{mode}.md` / `{mode}.prev.md` 挤在同一命名空间，
+  而现有的 `.prev` 特判正是这类坑；且 `process/`、`epub_chapters/`、`assets/` 已是「按概念分子目录」的既成风格。
+- 顺带消灭[store.py](../backend/app/storage/store.py) 里「`os.replace(latest → prev)` 失败被静默吞掉、
+  随后照样覆盖 latest」的降级舞步 —— 新布局没有需要保持同步的第二个指针文件。
+
+**② 头是真相，index 只是缓存**
+- `identity.version` 由 store **写盘前注入**（= 文件名 N）。此前 `provenance.py` 注释说「写盘那刻不知道
+  版本号」—— 那是旧模型的理由（版本号在加锁区算、头在 generator 早装配好），新布局下版本号**就是文件名**。
+- `_scan_markdown_versions()` 成为**条目构造的唯一落点**（消灭裸字面量，模式 #44）：遍历 `v*.md` →
+  `parse_artifact_meta` 取 `generatedAt`/`model`/`style` 还原 `createdAt`/`source`/`style`。
+  无头的文件才回退占位值，且 warning 文案如实说明「重建有损、能还原什么、不能还原什么」。
+- **派生字段不进 index**：`chars` / `edited` / `source` 由 `get_markdowns_by_transcript` 读文件头现算
+  （它本来就要逐版读盘，零额外 I/O）→ index/header 双真相源漂移从根上消失。
+
+**③ 三种写入语义**（一张表定死）
+
+| 语义 | 入口 | `replace_version` | 文件动作 | 版本序 |
+|---|---|---|---|---|
+| 生成 | `generate.py` 各产物 + `epub_pipeline.py` | `None` | 新建 `v{max+1}.md` | +1 |
+| 编辑 | `markdown_edit.py` | `= 前端正在看的版本 N` | 覆盖 `v{N}.md` | **不变** |
+| 追问（未来，本轮不实现） | — | `= 正在看的版本 N` | 覆盖 `v{N}.md`，body 追加 | **不变** |
+
+- ⚠️ **`max` 扫磁盘取、且与写盘同处一把 `self._lock`** —— 此前文件写在锁外、index 写在锁内，
+  新布局下版本号由磁盘现状决定，分开会让并发生成算出同一个 N。
+- `replace_version=N` 时**文件必须已存在**，否则显式报错（失败显式化，不静默新建）。
+- `index_extra` 参数退休：那个「meta 进了 index / extra 进了文件头，接错了两边都不报错」的陷阱从根上消失。
+
+**④ 启动时迁移遗留布局**（`_migrate_legacy_markdown_layout()`，`Store.__init__` 里调一次）
+- `notes.prev.md` → `v1.md`、`notes.md` → `v2.md`（无 prev 则 → `v1.md`）。
+  **只 `os.replace` 改名，内容与自证头一字不动**；幂等；崩在半途的「顶层仍有 `{mode}.md`」状态
+  接在最大版本号之后 + warning。迁移失败**不拒绝启动**（磁盘脏了但应用该照常可用）。
+
+**⑤ 编辑标记搬到文件头**（`transcript_meta.mark_edited`）
+- 「已编辑」此前在 index 条目里，删一次 `index.json` 重建就永久丢失。现在打 `edit` 键进自证头。
+- **生成路径不写这个键** → 新版本无 `edit` → 「重新生成自动清除 edited」这条既有语义**无需任何额外逻辑**即成立。
+
+**⑥ 按版本导出**（[routers/export.py](../backend/app/routers/export.py)）
+- `GET /export/{id}` 加 `version: int = Query(0)`（0 = 最新，与 `get_markdowns_by_transcript` 同语义）。
+- ⚠️ **指定版本查不到时显式报错、不回退** —— 两条既有回退链（`notes → 无 mode 时的 markdown`、
+  `→ process_results`）在 `version` 存在时都被禁掉：它们会把「notes 的第 2 版」悄悄换成别的东西。
+- ZIP 内文件名带 `_v{N}` 后缀（仅 >1 版时加），全部产物导出**自然包含全部版本**。
+
+**⑦ 前端**
+- [VersionSwitcher.tsx](../frontend/src/components/preview/VersionSwitcher.tsx)：一行 `v{n}` 按钮 →
+  **下拉**。触发按钮显示当前版 + 字数；每行两行式（`v{n}` + 「已编辑」徽标 + 当前项勾 /
+  时间 · 字数 · 来源）。≤1 版整块隐藏的既有行为保留。
+- **编辑跟随当前版本**：`saveMarkdownContent` 带上 `markdownMeta.version`，后端就地覆盖那一版。
+- [ExportMenu.tsx](../frontend/src/components/ui/ExportMenu.tsx)：三条后端导出路径（HTML/Word/PDF）
+  **共用** `backendParams()` 一处拼版本参数；文件名加 `_v{N}`。
+- ⚠️ **`markdownMeta` 只在加载文档时设一次（notes 优先）**，切 tab **不会**更新它 →
+  编辑 / 导出 / 高亮三处**都先校验 mode**，否则「切到 polished 导出却带上了 notes 的版本号」。
+- ⚠️ 新模块 [lib/markdownMeta.ts](../frontend/src/lib/markdownMeta.ts)：`MarkdownView → MarkdownMeta`
+  的映射此前**在 5 处各写一份**（App 恢复态 / GenPanel×2 / EpubInterpretPanel / PreviewArea），
+  加字段时只有一处会记得改，其余静默少字段、零报错 → 收口为 `toMarkdownMeta()`。
+
+**⑧ 配图不再被覆盖**（用户要求「顺手修」）
+- 排查后范围**远小于预期**，如实收窄：图表 `chart_{sha1(svg)[:8]}.png` 与抽帧截图
+  `screenshot_{i}_{uuid4[:8]}.jpg` **已经是内容哈希 / 天然唯一**；视频网格图走 `mkdtemp` 从不落 assets；
+  `original.png` / `cover.*` **刻意不改**（它们是文档的固有身份，不属于任何一版，被覆盖是正确的）。
+- **唯一真需要改的是 [ingest.py](../backend/app/routers/ingest.py) `_persist_media_images`**：
+  `img_{count:04d}` → `img_{sha1(bytes)[:8]}`。真正的失效场景是 **retranscribe**（复用同一 doc_dir
+  原地覆盖）——旧版本的笔记引用 `assets/img_0000.png`，而文件已换成新转录的第一张图。
+  同图同名（幂等、不累积孤儿），不同图不同名（不覆盖）。引用改写就在同一函数内，闭环不外溢。
+
+**⑨ 测试 +4 文件 / +25 用例（另有 1 个脚本式端到端，16 断言）**
+- 后端 [`test_store_version_layout.py`](../backend/tests/test_store_version_layout.py)（8）/
+  [`test_store_legacy_migration.py`](../backend/tests/test_store_legacy_migration.py)（6）/
+  [`test_export_by_version.py`](../backend/tests/test_export_by_version.py)；
+  `test_query_contract.py` 扩版本条目字段集断言（`chars` 是**纯正文**字数、`edited`、`source`）。
+- 前端 [`versionSwitcher.test.tsx`](../frontend/src/test/versionSwitcher.test.tsx)（11）：
+  断言的是**信息有没有真的到用户眼前**（时间/字数/来源/编辑标记四列），不是「组件渲染了」。
+- ⚠️ 测试里一个反复踩的坑：`_rebuild_index` 会按正文 sha256 **重推 transcript id** →
+  删 index 重建后必须用**新 id** 查产物，否则得到空列表，「版本丢没丢」这条断言会**以错误的理由失败**（假红）。
+
+**⑩ 顺带清理**
+- `markdown_edit._EDITABLE_MODES` 改为 `set(MARKDOWN_MODES)`（**与 store 同源**）——
+  此前另写了一份 `{"notes","polished"}`，两侧漂移的症状是「新 mode 有产物、UI 上有编辑入口、后端却 400」，
+  而**没有任何报错指向这里**（模式 #54）。
+- `_rebuild_index` 里的死 import `import re as _re` 删除；自愈 warning 文案订正为如实说明重建的有损范围。
+- `generate.py` 与 `markdown_edit.py` **各写了一份几乎相同的 `versions` 列表推导** → 收口到
+  `QueryService.artifact_versions(entries)`。
+- [capabilities.py](../backend/app/routers/capabilities.py) 的「本机是否已有该文档产物」判据改调
+  `store.markdown_dir_has_version()`，不再内联拼 `notes.md` 路径（漏改的症状是「已完成的生成一直被误报成中断残留」）。
+
+### 为什么
+
+1. **「版本 = 位置」是病根**。旧模型里「一个版本读到哪份文件」取决于**别人**的版本号
+   （要先算同 mode 的 `max_version`、再决定读 `.md` 还是 `.prev.md`）。这既是「只有 2 版」的成因，
+   也是「编辑会挤掉生成版」的成因 —— 一个写入动作的效果取决于当时有几版别的产物。
+   改成「版本 = 一个文件」后，读、写、删、重建四条路径都不再需要互相对齐。
+2. **重建必须能还原真相**。用户要的是「每个版本保留好它的各种信息」，而信息的持久家本来就在文件里
+   （自证头），index 只是加速定位的缓存。此前重建路径不读头 → 缓存一丢信息就丢，与「头是真相」的
+   既有纪律自相矛盾。
+3. **只有 2 版是历史包袱不是需求**。用户明确要全部保留。代价是 assets 与版本文件单调增长 ——
+   本地 md 体量小，可接受。
+4. **「切换」这个选择消掉了一个新概念**。若用「回滚」（写操作），就必须引入「当前版指针」这个新持久状态，
+   以及它的一整套同步/漂移问题。切换是纯视图操作 → 不需要指针。
+
+### 影响范围
+
+| 层 | 文件 |
+|---|---|
+| 存储 | [store.py](../backend/app/storage/store.py)（新布局 + 版本扫描 + 迁移 + 派生字段）、[transcript_meta.py](../backend/app/core/transcript_meta.py)（`edit` 键）、[provenance.py](../backend/app/generation/provenance.py)（版本号注入） |
+| 路由 | [markdown_edit.py](../backend/app/routers/markdown_edit.py)（`replace_version`）、[export.py](../backend/app/routers/export.py)（`version` 查询参数）、[generate.py](../backend/app/routers/generate.py)（版本列表收口）、[capabilities.py](../backend/app/routers/capabilities.py)（产物存在判据）、[ingest.py](../backend/app/routers/ingest.py)（图片内容哈希命名） |
+| 服务 | [query.py](../backend/app/services/query.py)（`artifact_versions`） |
+| 前端 | [VersionSwitcher.tsx](../frontend/src/components/preview/VersionSwitcher.tsx)（重写为下拉）、[lib/markdownMeta.ts](../frontend/src/lib/markdownMeta.ts)（新）、[ExportMenu.tsx](../frontend/src/components/ui/ExportMenu.tsx)、[PreviewArea.tsx](../frontend/src/components/preview/PreviewArea.tsx)、[api/core.ts](../frontend/src/api/core.ts)、[store/types.ts](../frontend/src/store/types.ts) + 5 处 `toMarkdownMeta` 调用点 |
+| 文档 | CLAUDE.md（管道总览 + 「产物版本」段）、architecture / AGENT-ONBOARDING / STATUS / export-pipeline / 本文件 |
+
+- **迁移**：旧库首次启动自动迁移，**只改名不改内容**，幂等；存量文档的正文引用照旧可用（不重写正文）。
+- **不升版本号**（沿用只推 patch 的惯例，本轮未要求升版）；**不打包、不发布**。
+- `PROMPT_VERSION` **不 bump** —— 改的是自证头与存储布局，不是发给模型的文本。
+- **不做**：diff 对比视图、回滚、追问功能本身、版本上限与清理、改 `original.png`/`cover.*` 命名、
+  orphan GC（assets 里未引用文件不影响任何东西——导出**按 markdown 引用收集**，不扫目录）。
+
+---
+
 ## 2026-10-10 — 左侧活动栏 + 左侧面板互斥（0.5.0，未升版）
 
 ### 做了什么

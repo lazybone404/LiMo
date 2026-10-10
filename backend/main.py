@@ -133,7 +133,7 @@ app.add_middleware(_ForceCORSMiddleware)
 
 # ── 全局异常处理 — AppError → 结构化 JSON 响应 ──
 
-from app.core.errors import AppError
+from app.core.errors import AppError, http_status
 from app.core import logging as log
 
 @app.exception_handler(AppError)
@@ -147,14 +147,9 @@ async def app_error_handler(request, exc: AppError):
         log.warning("AppError", code=exc.code, message=exc.message,
                     path=request.url.path)
     from fastapi.responses import JSONResponse
-    # status_code 显式指定（_explicit_status，含显式 400）时尊重；未显式时
-    # recoverable → 200（避免浏览器 DevTools 显示网络错误，如 "尚未生成" 是预期
-    # 业务状态，不是真的 HTTP 错误）。显式 400 必须返回 400——此前用「≠默认 400」
-    # 判断，显式传 status_code=400 + recoverable=True 会被误压成 200，前端下载
-    # 到损坏 zip（评审 H1）。
-    http_status = exc.status_code if exc._explicit_status else (
-        200 if exc.recoverable else exc.status_code)
-    return JSONResponse(status_code=http_status, content=exc.to_dict())
+    # 状态码判据抽在 `errors.http_status` —— 测试要造「与生产一致」的 app，
+    # 复刻一份表达式就是模式 #54 的入口（分叉不抛错，只是静默判错）。
+    return JSONResponse(status_code=http_status(exc), content=exc.to_dict())
 
 
 @app.exception_handler(Exception)
@@ -256,12 +251,11 @@ async def startup():
         pass
 
     # 注入全局代理 → dashscope SDK / openai / yt-dlp 统一走 proxy
+    # 豁免表（回环地址不走代理）与合成逻辑都在 app/core/net.py::apply_proxy_env
     _proxy = (config.get("fetch", {}) or {}).get("proxy", "").strip()
     if _proxy:
-        _os.environ["HTTP_PROXY"] = _proxy
-        _os.environ["HTTPS_PROXY"] = _proxy
-        _os.environ["http_proxy"] = _proxy
-        _os.environ["https_proxy"] = _proxy
+        from app.core.net import apply_proxy_env
+        apply_proxy_env(_proxy)
 
     _init_logging(config)
     init_request_id_logging()  # 注入 RequestID 过滤器

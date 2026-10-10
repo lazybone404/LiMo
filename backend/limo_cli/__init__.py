@@ -13,8 +13,8 @@
 - 默认：`GET /api/cli/*`（后端已启动，走进程边界）
 - `doctor --local`：本进程直开 `Store` + `QueryService`（后端没起时诊断用）
 
-⚠️ **CLI 不解析库的存储格式**：`index.json` 的形状、两版制的 `{mode}.md` /
-`{mode}.prev.md` 命名、`<!-- limo-meta -->` 头信封全是实现细节。在这里照抄一遍就是
+⚠️ **CLI 不解析库的存储格式**：`index.json` 的形状、版本归档的 `{mode}/v{N}.md`
+命名、`<!-- limo-meta -->` 头信封全是实现细节。在这里照抄一遍就是
 第 6 个副本（现有 5 处，见 `services/query.py` 的模块 docstring），而格式演进时
 **漏改的那处不报错**——它只是静默读错。
 

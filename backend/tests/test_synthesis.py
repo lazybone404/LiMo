@@ -680,15 +680,15 @@ assert "笔记独有句子-CCC1" in _r_notes.raw_text, \
 assert "原文独有句子-AAA" not in _r_notes.raw_text, "两种模式互斥，不得混入原文"
 print("PASS: notes 模式真读了笔记（正文含笔记独有句、不含原文独有句）")
 
-# ── 两版制：必须取**最新版**（notes.md，而非 notes.prev.md）──
+# ── 版本归档：必须取**最新版**（`notes/v2.md`，而非 `notes/v1.md`）──
 _ns.save_markdown(MarkdownView(
     id="md_k1_v2", transcript_id="tr_k1",
     content="笔记第二版-DDD。", mode=GenerateMode.NOTES, style=Style.MINIMAL))
 _r_v2 = _run(S.synthesize(_ns, cfg, FakeLLM(), mid, ["tr_k1", "tr_k2"],
                           title="新版对比", source_mode="notes"))
-assert "笔记第二版-DDD" in _r_v2.raw_text, "必须取最新版（notes.md 而非 .prev.md）"
+assert "笔记第二版-DDD" in _r_v2.raw_text, "必须取最新版（v2 而非 v1）"
 assert "笔记独有句子-CCC1" not in _r_v2.raw_text, "不得读到上一版"
-print("PASS: 两版制下取最新版（tr_k1 的 v2 生效，v1 不出现）")
+print("PASS: 版本归档下取最新版（tr_k1 的 v2 生效，v1 不出现）")
 
 # ── 排除可见：5 篇中 2 篇无笔记 → 只列 3 篇 + `excluded` 带 2 条 ──
 _ns2 = _new_store()

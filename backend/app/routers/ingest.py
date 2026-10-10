@@ -477,8 +477,15 @@ def _persist_media_file(store: object, raw_text: str) -> str:
 def _persist_media_images(raw_text: str, media_dir: str, doc_dir: Path) -> str:
     """将引擎提取的图片从临时目录迁移到文档目录，改写 rawText 中路径。
 
-    引擎写入 `![alt](img_0001.png)` → 改写为 `![alt](assets/img_0001.png)`（相对路径）
+    引擎写入 `![alt](img_0001.png)` → 改写为 `![alt](assets/img_{sha1}.png)`（相对路径）
     无图片时直接返回原文。
+
+    ⚠️ **文件名取内容哈希，不取顺序编号**（2026-10-10 改）。顺序编号（`img_0000`）
+    的失效场景是**重新转录**（`ingest.py::retranscribe` 复用同一 `doc_dir` 原地覆盖）：
+    旧版本的笔记引用着 `assets/img_0000.png`，而那个文件已被换成新一次转录的第一张图。
+    在两版制下这个错误「最多错一版」，而版本**全部保留**之后，它变成「所有历史版本
+    的配图都是最新一次的」——同一个 bug，伤害面随改动一起放大了。
+    内容寻址后：同图同名（幂等、不累积孤儿文件），不同图不同名（互不覆盖）。
     """
     media = Path(media_dir)
     if not media.exists() or not any(media.iterdir()):
@@ -492,13 +499,15 @@ def _persist_media_images(raw_text: str, media_dir: str, doc_dir: Path) -> str:
     dest_dir = doc_dir / "assets"
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    import re
     count = 0
     all_imgs = set(media.glob("img_*")) | set(media.glob("*.png")) | set(media.glob("*.jpg")) | set(media.glob("*.jpeg"))
     for img_file in sorted(all_imgs):
-        new_name = f"img_{count:04d}{img_file.suffix}"
+        data = img_file.read_bytes()
+        new_name = f"img_{hashlib.sha1(data).hexdigest()[:8]}{img_file.suffix}"
         dest = dest_dir / new_name
-        shutil.copy2(img_file, dest)
+        # 同名 = 同内容 → 已在盘上就不必重写（幂等，且让 mtime 稳定）
+        if not dest.exists():
+            dest.write_bytes(data)
         escaped = re.escape(img_file.name)
         raw_text = re.sub(
             rf'!\[([^\]]*)\]\s*\([^)]*{escaped}\)',

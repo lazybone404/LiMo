@@ -103,10 +103,20 @@ export interface MarkdownMeta {
   id: string; style: string; mode: string; version: number; status?: string
   /** 已手动编辑标记（重新生成前确认用） */
   edited?: boolean
+  /** 纯正文字数（不含自证头）。⚠️ 读时由后端从文件头派生，不是 index 的持久字段 */
+  chars?: number
+  /** 生成用的模型名（版本列表的「来源」列） */
+  source?: string
 }
 
 export interface MarkdownVersion {
   version: number; id: string; createdAt: string; status?: string; mode?: string
+  /** 纯正文字数（不含自证头）——展示用，`undefined` = 后端没给（不是 0 字） */
+  chars?: number
+  /** 该版由哪个模型生成 */
+  source?: string
+  /** 该版被人工编辑过（编辑就地覆盖，不产生新版本） */
+  edited?: boolean
 }
 
 export interface ImageResult {

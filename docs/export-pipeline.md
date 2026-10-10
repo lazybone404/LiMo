@@ -14,8 +14,8 @@
 ────────                        ────────                    ────────
 PreviewArea 工具栏             ExportMenu（下拉菜单）        GET /export/{id}
   ├─ 下载 MD           →      客户端直读 store              （无后端调用）
-  ├─ 导出 HTML         →      downloadFromUrl()      →     GET /export/{id}?format=html&mode=...
-  ├─ 导出 Word         →      downloadFromUrl()      →     GET /export/{id}?format=docx&mode=...
+  ├─ 导出 HTML         →      downloadFromUrl()      →     GET /export/{id}?format=html&mode=...&version=N
+  ├─ 导出 Word         →      downloadFromUrl()      →     GET /export/{id}?format=docx&mode=...&version=N
   ├─ 全部产物 ZIP      →      downloadFromUrl()      →     GET /export/{id}/all
   ├─ 思维导图 SVG      →      客户端 DOM clone              （无后端调用）
   ├─ 思维导图 HTML     →      downloadFromUrl()      →     GET /export/{id}/mindmap
@@ -34,6 +34,17 @@ AI 对话右键菜单                 ChatCore                     GET /export/c
 > **9 个导出端点**：`GET /export/{id}`（单文件）、`GET /export/{id}/all`（全产物）、`POST /export/batch`（多文档）、`GET /export/{id}/mindmap`、`GET /export/conversation/{id}`、`POST /export/conversations/batch`、`POST /export/custom`、`POST /export/custom/stream`（SSE 进度）、`GET /export/download/{temp_id}`。
 >
 > ⚠️ **`/export/custom/stream` 与 `/export/download/{temp_id}` 当前无前端调用者**（2026-10-06 P1-12 核实：`api/export.ts::streamExportProgress` 零 import）。端点本身完备（打包已 `to_thread` 不阻塞事件循环），但 `ExportPanel` 的「详细导出」走的是**同步** `POST /export/custom` —— 上表那条「进度反馈」是**能力**不是**现状**。
+
+### 按版本导出（2026-10-10）
+
+`GET /export/{id}` 加 `version: int = Query(0)`（**0 = 最新版**，与 `get_markdowns_by_transcript` 的语义一致）。三条后端导出路径（HTML / Word / PDF，PDF 复用 HTML 那份 URL）**共用**同一份参数拼装（前端 `ExportMenu.tsx::backendParams()`，版本语义只在一处拼）。
+
+- **用户切到哪一版，导出就是哪一版**（项目「所见即所得」原则）。MD 下载 / 复制 MD 走客户端 store 直读，天然正确，不需要参数。
+- ⚠️ **显式指定的版本查不到时显式报错、不回退最新**——沿用 `QueryService` 的既有纪律（读了错的版本比读不到更糟）。
+- ⚠️ **前端必须校验 mode**：`markdownMeta` 只在加载文档时设一次（notes 优先），切到 polished tab **不会**更新它。不校验就会把 notes 的版本号塞给 polished 导出，拿到「polished 的第 N 版」而不是用户正在看的那一版（`ExportMenu.tsx::exportVersion` 的 `markdownMeta.mode === tabDef.htmlMode` 判据）。
+- 批量导出（`/export/{id}/all`、`POST /export/batch`、`POST /export/custom`）**不带 version**：它们在版本归档布局下自然导出**全部版本**。
+- `_pick_artifact`（`export.py`）在 mode 过滤后按 version 再过滤；`_collect_doc_products` / `_build_export_zip` 保持原样。
+
 
 ### 设计意图
 
@@ -396,7 +407,7 @@ mindmap tab 始终输出为完整 `.html` 文件（跳过 markdown→HTML 转换
 
 ## 10. MD 导出
 
-端点：`GET /export/{id}?format=md&mode=`
+端点：`GET /export/{id}?format=md&mode=&version=`（`version` 0/省略 = 最新版，见「按版本导出」）
 
 直接返回原始 Markdown 文本，不做任何转换。图片路径保持 `/api/files/...` 原样。
 
@@ -406,7 +417,7 @@ mindmap tab 始终输出为完整 `.html` 文件（跳过 markdown→HTML 转换
 
 ## 11. Word 导出（.docx）
 
-端点：`GET /export/{id}?format=docx&mode=`（单文件）／ `POST /export/custom` 的 `formats: ["docx"]`（批量 ZIP）
+端点：`GET /export/{id}?format=docx&mode=&version=`（单文件，`version` 见「按版本导出」）／ `POST /export/custom` 的 `formats: ["docx"]`（批量 ZIP，导出全部版本）
 
 **实现**：`backend/app/services/docx_export.py` —— `markdown_to_docx(md, title, *, images, resolver) -> bytes`
 

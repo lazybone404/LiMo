@@ -22,11 +22,75 @@ from uuid import uuid4
 from app.core.markdown_assets import rewrite_asset_urls  # noqa: F401  (re-export，见下)
 from app.core.types import RawTranscript, MarkdownView, ProcessResult, Style, GenerateMode
 from app.core.errors import AppError, StoreError
-from app.core.transcript_meta import parse_meta, dump_meta
+from app.core.transcript_meta import parse_meta, dump_meta, parse_artifact_meta, strip_meta
 
 logger = logging.getLogger(__name__)
 
 INDEX_VERSION = 3
+
+# ── 产物版本的磁盘布局 ──
+#
+# 每个 mode 一个目录、一个版本一个文件：`{doc_dir}/{mode}/v{N}.md`。
+#
+# ⚠️ **版本号必须写在文件名里**——这是硬约束。`_rebuild_index` 只能从磁盘恢复，
+#    而旧布局（`{mode}.md` + `{mode}.prev.md`）只表达「最新 / 上一版」两个**位置**，
+#    重建出的条目 version 恒为 1、createdAt 恒为空串、style 只能填占位：
+#    **删一次 index.json，版本历史连同生成时间全丢**。
+#
+# ⚠️ 不用平铺 `{mode}.v{N}.md`：那会与遗留的 `{mode}.md` / `{mode}.prev.md` 挤在
+#    同一命名空间，正则得同时排除 `.prev` —— 旧重建逻辑栽的正是这个坑。
+#
+# 目录式与既有风格一致（`{doc_dir}/process/`、`epub_chapters/`、`assets/` 都是
+# 「按概念分子目录」）。详见 docs/CHANGELOG.md 2026-10-10。
+VERSION_FILE_RE = re.compile(r"^v(\d+)\.md$")
+
+# 产物 mode。⚠️ 与 `routers/markdown_edit.py::_EDITABLE_MODES` 同源（后者是本表的
+# 子集）；新增 mode 时两处都要动，前端 `lib/tabRegistry.ts` 也要开 `showVersionSwitcher`。
+MARKDOWN_MODES = ("notes", "polished")
+
+# 遗留布局（一次性迁移的输入；迁移后不再产生新文件）
+LEGACY_SUFFIX_LATEST = ".md"        # {mode}.md         —— 旧「最新」
+LEGACY_SUFFIX_PREV = ".prev.md"     # {mode}.prev.md    —— 旧「上一版」
+
+
+def markdown_version_path(doc_dir: Path, mode: str, version: int) -> Path:
+    """`{doc_dir}/{mode}/v{N}.md` —— 版本文件路径的**唯一**构造点。
+
+    ⚠️ 不要在各调用点手拼 `doc_dir / mode / f"v{version}.md"`：路径判据多份副本是
+    本项目反复栽的地方（模式 #54），而这里的副本漂移症状是「读不到文件、静默返回
+    空产物」——零报错。
+    """
+    return doc_dir / mode / f"v{version}.md"
+
+
+def list_version_files(doc_dir: Path, mode: str) -> list[tuple[int, Path]]:
+    """某 mode 下已有的版本文件，按版本号升序 → `[(N, path)]`。
+
+    **磁盘是版本序的真相源**：`save_markdown` 靠它算 `max+1`（而非读 index），
+    `_scan_markdown_versions` 靠它还原重建后的版本序。
+    """
+    mode_dir = doc_dir / mode
+    if not mode_dir.is_dir():
+        return []
+    found: list[tuple[int, Path]] = []
+    for f in mode_dir.iterdir():
+        m = VERSION_FILE_RE.match(f.name)
+        if m and f.is_file():
+            found.append((int(m.group(1)), f))
+    return sorted(found, key=lambda t: t[0])
+
+
+def markdown_dir_has_version(doc_dir: Path, mode: str) -> bool:
+    """该文档该 mode 下有没有**任何**产物（新布局，或尚未迁移的遗留布局）。
+
+    ⚠️ 供 `routers/capabilities.py::_scan_interrupted_generations` 用——那里只持有
+    config、没有 store 实例，此前**内联**了 `(doc_dir / "notes.md").is_file()`。
+    布局改版后那句会永远为假，症状是「已生成完的文档一直被误报成生成中断残留」
+    （静默类 bug，且用户会看到一条永不消失的提示）。
+    """
+    if list_version_files(doc_dir, mode):
+        return True
+    return (doc_dir / f"{mode}{LEGACY_SUFFIX_LATEST}").is_file()
 
 # ── 资产 URL 改写 ──
 # ⚠️ 实现已下沉 `core/markdown_assets.py`（P2-18 收敛）：`assets/` 引用正则在仓库里
@@ -105,6 +169,10 @@ class Store:
         # 下载 + 转写），带年龄宽限仍可能误判 → 会话内豁免是**精确**的那一半。
         self._pending_ids: set[str] = set()
         self._load_index()
+        # 一次性布局迁移：两版制（{mode}.md + {mode}.prev.md）→ 版本归档（{mode}/v{N}.md）。
+        # 放在 `_load_index` **之后**：即便 index 丢了，`_load_index` 已先做过常规重建，
+        # 这里搬完文件再重建一次，产物版本即可正确出现。幂等，详见方法 docstring。
+        self._migrate_legacy_markdown_layout()
 
     # ── 索引加载 / 保存 / 迁移 ──
 
@@ -164,7 +232,9 @@ class Store:
             logger.warning(
                 "索引不可用（%s），已按磁盘重建 %d 篇文档（原文备份为 %s）。"
                 "⚠️ 重建**有损**：文档 id 由正文 sha256 重推（与旧 id 不同），"
-                "文件夹归属 / 标签 / 来源类型与 URL / 创建时间 / 产物风格档均无法还原。",
+                "文档级字段（文件夹归属 / 标签 / 来源类型与 URL / 创建时间）无法还原；"
+                "产物的**版本序 / 生成时间 / 风格档**改由各自文件头的自证头还原"
+                "（2026-10-10 起，此前一并丢失）。",
                 reason, n, backup_name or "（备份失败）",
             )
         elif had_file:
@@ -178,6 +248,121 @@ class Store:
             json.dumps(self._index, ensure_ascii=False, indent=2),
         )
 
+    def _migrate_legacy_markdown_layout(self) -> None:
+        """一次性把遗留的两版制布局迁到版本归档布局（**幂等、无损**）。
+
+        ```
+        {doc_dir}/{mode}.md        （旧「最新」）  ┐
+        {doc_dir}/{mode}.prev.md   （旧「上一版」）┘ → {mode}/v2.md + {mode}/v1.md
+        只有 {doc_dir}/{mode}.md 没有 prev         → {mode}/v1.md
+        ```
+
+        ⚠️ **只 `os.replace` 改名**——内容与自证头一字不动。任何「顺便整理一下内容」
+        都会破坏 `generatedAt` 与正文的对应关系，也让「迁移无损」失去可验证性。
+
+        ⚠️ **幂等守卫**是「目标目录里已经有版本文件」。半途崩掉的状态（目录里已有
+        `v*`，顶层却还留着 `{mode}.md`）也能自愈——把遗留文件接在最大版本号之后，
+        并**记 warning**（迁移这种事不该悄悄发生）。
+
+        ⚠️ 「只有 `{mode}.md`、没有 `{mode}.prev.md`」是**正常输入**：旧实现在
+        `os.replace` 失败时静默吞掉异常，磁盘上就可能只剩最新那份。此时如实映射为
+        v1——更早的那版在旧模型下**已经被物理覆盖**，无从找回，不要在这里伪造一个。
+
+        ⚠️ **迁移失败不能阻断启动**：磁盘是脏的，但应用该照常可用（读到哪版算哪版）。
+
+        ⚠️ **只重算受影响 mode 的产物条目，绝不整库 `_rebuild_index`**：后者会
+        `self._index = _empty_index()` 后从磁盘重扫，而磁盘**无法还原**文档级字段
+        （标签 / 文件夹归属 / 来源 URL / 创建时间）与 `folders` 整张表。这不是理论
+        风险——升级用户（磁盘上必然留有两版制产物）首次启动就触发，随后
+        `_save_index()` **立刻把清空后的索引落盘**，标签与文件夹分类不可逆丢失。
+        """
+        moved = 0
+        resync: list[tuple[str, str, str]] = []   # (dir_name, tx_id, mode)
+        # dir_name → tx_id。迁移**只动文件、不动 transcript 条目**，故映射建一次即可。
+        by_dir = {e.get("dir_name", ""): e.get("id", "") for e in self._index["transcripts"]}
+        for d in sorted(self.root.iterdir()):
+            if not d.is_dir() or d.name.startswith("."):
+                continue
+            if not (d / "transcript.md").exists():
+                continue      # 不是文档目录（与 `_rebuild_index` 同一条判据）
+            for mode in MARKDOWN_MODES:
+                try:
+                    moved += self._migrate_mode_layout(d, mode)
+                except OSError as e:
+                    logger.warning("产物布局迁移失败（跳过该 mode，不影响使用）%s/%s：%s",
+                                   d.name, mode, e)
+                    continue
+                tx_id = by_dir.get(d.name, "")
+                if tx_id and self._markdown_entries_desynced(tx_id, d, mode):
+                    resync.append((d.name, tx_id, mode))
+        if resync:
+            # ⚠️ 写盘失败**不阻断启动**（docstring 的承诺）：`_save_index → _atomic_write`
+            # 抛的是 `StoreError`（`AppError` 子类，**不是 `OSError`**），只 catch OSError
+            # 会让磁盘满 / 索引文件被占用时后端起不来。失败在这里是安全的——内存结果
+            # 没落盘，下次启动 `_markdown_entries_desynced` 会再判一次（它比的是集合，
+            # 天然幂等）。
+            try:
+                with self._lock:
+                    for dir_name, tx_id, mode in resync:
+                        # 只换该 mode 的条目：同文档另一个 mode 的条目原样保留
+                        # （`_scan_markdown_versions` 会把它一并扫回来，但那份是磁盘视角，
+                        #  可能丢掉 index 独有信息如 `status="partial"`）。
+                        cur = self._index["markdowns"].get(tx_id, [])
+                        if isinstance(cur, dict):
+                            cur = [cur]
+                        scanned = self._scan_markdown_versions(self.root / dir_name, tx_id)
+                        self._index["markdowns"][tx_id] = (
+                            [e for e in cur if e.get("mode") != mode]
+                            + [e for e in scanned if e.get("mode") == mode]
+                        )
+                    self._save_index()
+            except AppError as e:
+                logger.warning("产物布局迁移：索引更新失败（不阻断启动，下次启动重试）：%s", e)
+        if moved:
+            logger.warning(
+                "产物布局已迁移：%d 个文件改为「一版一文件」（{mode}/v{N}.md）。"
+                "此后每个版本独立归档，不再只保留两版。", moved)
+
+    def _markdown_entries_desynced(self, tx_id: str, doc_dir: Path, mode: str) -> bool:
+        """index 里该 (文档, mode) 的版本集合，是否与磁盘上的版本文件不一致。
+
+        判据刻意是**集合比较**而不是「本次搬动了几个文件」——于是它同时覆盖三种
+        状态：正常迁移（旧条目 version 与新的文件名对不上）、迁移崩在半途（文件已
+        改名、index 未及更新）、index 被外部改坏。三种都收敛到同一条修法：按磁盘
+        重扫该 mode 的条目（磁盘是版本序的真相源）。
+
+        ⚠️ 在**已迁移且一致**的库上恒为 False —— 这是「正常启动零副作用」的保证。
+        """
+        disk = {v for v, _ in list_version_files(doc_dir, mode)}
+        entries = self._index["markdowns"].get(tx_id, [])
+        if isinstance(entries, dict):
+            entries = [entries]
+        mem = {e.get("version") for e in entries if e.get("mode") == mode}
+        return disk != mem
+
+    @staticmethod
+    def _migrate_mode_layout(doc_dir: Path, mode: str) -> int:
+        """迁一个 `(doc_dir, mode)`，返回搬动的文件数（见 `_migrate_legacy_markdown_layout`）。"""
+        latest = doc_dir / f"{mode}{LEGACY_SUFFIX_LATEST}"
+        prev = doc_dir / f"{mode}{LEGACY_SUFFIX_PREV}"
+        if not latest.exists() and not prev.exists():
+            return 0
+
+        # 目标目录已有版本 → 接在最大版本号之后（已迁移过 / 上次崩在半途）
+        existing = list_version_files(doc_dir, mode)
+        nxt = (existing[-1][0] if existing else 0) + 1
+        mode_dir = doc_dir / mode
+        moved = 0
+        # ⚠️ 顺序有意义：`prev` 是**更早**的一版，必须先搬、拿更小的版本号。
+        # 反过来会让「上一版」变成最新版——静默的历史错序，且看不出来。
+        for legacy in (prev, latest):
+            if legacy.exists():
+                mode_dir.mkdir(parents=True, exist_ok=True)
+                os.replace(legacy, markdown_version_path(doc_dir, mode, nxt))
+                nxt += 1
+                moved += 1
+        return moved
+
     def _rebuild_index(self, save: bool = True):
         """遍历所有文档目录重建索引（故障恢复）。
         识别规则：根目录下含 transcript.md 的子目录视为文档目录。
@@ -186,7 +371,6 @@ class Store:
         `save=False` 供 `_load_index` 的「先扫一眼看有没有文档、再决定要不要落盘」用
         —— 那条路径上写盘与否取决于扫描结果，不能无条件下手。
         """
-        import re as _re
         self._index = _empty_index()
 
         for d in sorted(self.root.iterdir()):
@@ -243,28 +427,11 @@ class Store:
             #    不按 id 反查（§4.2.2「本项目根本没有稳定 id」）。
             self._index["transcripts"].append(tx_entry)
 
-            # 重建 markdown 条目
-            md_entries = []
-            for md_file in sorted(d.glob("*.md")):
-                if md_file.name == "transcript.md":
-                    continue
-                mode = md_file.stem
-                if mode.endswith(".prev"):
-                    mode = mode[:-5]  # notes.prev → notes
-                # 只处理主文件，.prev 由 get_markdowns_by_transcript 检测
-                if md_file.suffix == ".md" and not md_file.stem.endswith(".prev"):
-                    md_id = f"md_{hashlib.sha256(str(md_file).encode()).hexdigest()[:12]}"
-                    md_entries.append({
-                        "id": md_id, "transcriptId": tx_id,
-                        # ⚠️ **这个 "detailed" 是「无法还原时的占位」，不是默认档**：
-                        # 磁盘上 md 文件只有正文，index.json 一删就没人记得当时的
-                        # style，只能填一个。改全局默认风格档时**不要**顺手改它
-                        # —— 那样会让历史产物的标签集体变成「通俗」，比留着旧的
-                        # 占位更不诚实。见模式 #44（重建路径手工构造字面量）。
-                        "style": "detailed", "mode": mode,
-                        "version": 1, "createdAt": "",
-                        "status": "complete",
-                    })
+            # 重建 markdown 条目 —— 读文件头还原版本序、生成时间与风格档。
+            # ⚠️ 旧实现**跳过 `.prev.md` 且从不读文件内容**，于是重建出的条目
+            #    version 恒为 1、createdAt 恒为空串 —— 删一次 index.json，
+            #    版本历史连同时间全丢（本轮修复的核心症状）。
+            md_entries = self._scan_markdown_versions(d, tx_id)
             if md_entries:
                 self._index["markdowns"][tx_id] = md_entries
 
@@ -305,6 +472,62 @@ class Store:
             self._save_index()
 
     # ── 工具方法 ──
+
+    @staticmethod
+    def _markdown_entry_id(tx_id: str, mode: str, version: int) -> str:
+        """版本条目的 id：由 `(tx_id, mode, version)` **确定性派生**。
+
+        ⚠️ 用相对 key 而非绝对路径（旧布局是 `sha256(str(md_file))`）：后者会让
+        同一份库在**换数据目录 / 换盘符后 id 全变**。相对 key 保证「同一篇文档的
+        同一版」在任何位置都是同一个 id，删 index 重建后 id 不变。
+
+        ⚠️ 写侧（`save_markdown`）**也用它**，不采信调用方传的 `mv.id`——同一份
+        数据两套 id 是本项目模式 #54 的典型入口。
+        """
+        key = f"{tx_id}/{mode}/v{version}"
+        return f"md_{hashlib.sha256(key.encode()).hexdigest()[:12]}"
+
+    def _scan_markdown_versions(self, doc_dir: Path, tx_id: str) -> list[dict]:
+        """扫磁盘还原该文档**全部产物版本**的 index 条目（重建的唯一构造点）。
+
+        这是本轮修复的核心：旧重建路径**跳过 `.prev.md`、且从不读文件内容**，
+        于是版本号恒为 1、`createdAt` 恒为空串、`style` 只能填占位。而答案一直在
+        文件里——产物首行的自证头（`<!-- limo-meta -->`）里有 `generated.generatedAt`
+        （真实生成时间）与 `generated.params.style`。本函数把它们读回来。
+
+        ⚠️ **版本号取文件名，不取 `identity.version`**：文件名才是布局的硬约束
+        （它决定读哪个文件）。两者不一致时以文件名为准。
+
+        ⚠️ 与 `save_markdown` 的**写侧同源**：这里还原的字段就是写侧落盘时写进
+        index 的那一批。两处对不上不会有任何报错（模式 #54），改一侧必须看另一侧。
+        """
+        entries: list[dict] = []
+        for mode in MARKDOWN_MODES:
+            for version, path in list_version_files(doc_dir, mode):
+                try:
+                    raw = path.read_text(encoding="utf-8")
+                except OSError as e:
+                    logger.warning("重建：跳过读不出的产物版本 %s（%s）", path, e)
+                    continue
+                head, _corrupt = parse_artifact_meta(raw)
+                generated = (head or {}).get("generated") or {}
+                params = generated.get("params") or {}
+                entries.append({
+                    "id": self._markdown_entry_id(tx_id, mode, version),
+                    "transcriptId": tx_id,
+                    # ⚠️ **这个 "detailed" 是「无法还原时的占位」，不是默认档**：
+                    # 本轮之前落盘的产物多数没有自证头，读不出当时的 style，只能填
+                    # 一个。改全局默认风格档时**不要**顺手改它 —— 那样会让历史产物
+                    # 的标签集体变成「通俗」，比留着旧的占位更不诚实。见模式 #44。
+                    "style": params.get("style") or "detailed",
+                    "mode": mode,
+                    "version": version,
+                    "createdAt": generated.get("generatedAt", ""),
+                    # ⚠️ 产物 status（complete/partial）**没有落进自证头**，磁盘上
+                    # 无从还原，与旧重建路径一样填 complete。要还原它得先把它写进头。
+                    "status": "complete",
+                })
+        return entries
 
     @staticmethod
     def _atomic_write(path: Path, content: str):
@@ -797,8 +1020,8 @@ class Store:
     #
     # 设计约束：文件夹是**纯逻辑分类**，永不映射为磁盘目录。
     # 每个文档已有独立目录 {sanitized_title}-{hex6}/（含 transcript.md / assets /
-    # process / 两版制产物），把文件夹做成目录会同时破坏目录命名规则、assets 相对
-    # 引用、两版制——移动文档要重写全部 index 路径。故 folders 只活在 index.json 里。
+    # process / 版本归档产物），把文件夹做成目录会同时破坏目录命名规则、assets 相对
+    # 引用、版本归档——移动文档要重写全部 index 路径。故 folders 只活在 index.json 里。
 
     def list_folders(self) -> list[dict]:
         """列出全部文件夹，附带各自文档数。count 现算（文件夹数远少于文档数）。"""
@@ -913,19 +1136,35 @@ class Store:
         self,
         mv: MarkdownView,
         file_meta: dict | None = None,
-        index_extra: dict | None = None,
+        *,
+        replace_version: int | None = None,
     ) -> bool:
-        """两版制：{mode}.md → 降级为 {mode}.prev.md → 写新版。
+        """写入一份产物版本 → `{doc_dir}/{mode}/v{N}.md`。
 
-        ⚠️ **两个 dict 参数去向完全不同，接错了两边都不报错**（最容易犯也最静默）：
+        **三种写入语义只由 `replace_version` 一个参数区分**：
 
-        - `file_meta` → 写进**文件首行**的 `<!-- limo-meta ... -->` 自证头。
-          它随文件走，是产物离开 `.limo` 之后**唯一**还能自证的载体。
-        - `index_extra` → 并进 **index.json 的条目**（如 `{"edited": True}`）。
-          它只在本地库里有效，删掉 `index.json` 重建即丢。
+        | 语义 | 调用方 | `replace_version` | 动作 |
+        |---|---|---|---|
+        | **生成** | generate / epub_pipeline / sample_doc | `None` | 新建 `v{max+1}` |
+        | **编辑** | `routers/markdown_edit.py` | `= 用户正在看的那一版 N` | 覆盖 `v{N}` |
+        | **追问**（未来） | — | `= 正在看的 N` | 覆盖 `v{N}`（body 由调用方拼好） |
 
-        参数名刻意各带方向词（此前只有一个裸 `extra`，语义是后者）——「meta 进了
-        index / extra 进了文件头」是最容易犯且**不产生任何报错**的错。
+        ⚠️ **编辑不产生版本**（用户拍板：「编辑只是用户在那个对应版本上做更改，我们
+        不负责」）。覆盖时版本号不变、条目 id 不变——「这一版被改过」这个事实落在
+        **文件头**的 `edit` 键里（由调用方放进 `file_meta`），而不是靠新建一条 index
+        记录。旧实现把编辑也当新产物写，于是「编辑两次，AI 生成的那一版就被物理覆盖」。
+
+        ⚠️ `file_meta` → 写进**文件首行**的自证头，随文件走、扛得住删 index 重建。
+        旧签名另有一个 `index_extra`（只并进 index.json 条目），本轮**删除**：唯一
+        调用点传的是 `{"edited": True}`，那种标记放 index 里删一次就丢。少一个
+        「参数接反了两边都不报错」的陷阱（旧版 docstring 专门警告过）。
+
+        ⚠️ **版本号计算与文件写入必须在同一把锁内**：版本号由磁盘现状（`max+1`）
+        决定。旧实现是「文件写在锁外、index 写在锁内」——在新语义下会让两个并发的
+        生成算出**同一个 N** 而互相覆盖。
+
+        ⚠️ 版本**全量归档、不设上限**（用户选择）——磁盘是本地 md，一篇文档即使攒到
+        上百版也只有几 MB。
         """
         doc_dir = self.get_doc_dir(mv.transcript_id)
         if not doc_dir:
@@ -933,50 +1172,82 @@ class Store:
             return False
 
         mode = mv.mode.value if hasattr(mv.mode, 'value') else mv.mode
-        latest = doc_dir / f"{mode}.md"
-
-        # 两版制：最新版降级为 .prev.md
-        # ⚠️ `.prev.md` 是**完整产物**（带它自己那一版的自证头），降级不需要剥头
-        if latest.exists():
-            prev = doc_dir / f"{mode}.prev.md"
-            try:
-                os.replace(latest, prev)
-            except OSError:
-                pass  # 降级失败不阻塞，直接覆盖写
-
-        content = mv.content
-        if file_meta:
-            # dump_meta 返回单行；空行把注释与正文隔开（也匹配 strip_meta 的回剥规则）
-            content = f"{dump_meta(file_meta)}\n\n{content}"
-        self._atomic_write(latest, content)
+        style = mv.style.value if hasattr(mv.style, 'value') else mv.style
 
         with self._lock:
+            existing = list_version_files(doc_dir, mode)
+            if replace_version is None:
+                version = (existing[-1][0] if existing else 0) + 1
+            else:
+                version = replace_version
+                if not markdown_version_path(doc_dir, mode, version).is_file():
+                    # ⚠️ 显式失败，不静默新建：编辑请求指向一个不存在的版本，说明
+                    # 前端的版本视图已过期（或被外力改坏）。悄悄新建一版等于把
+                    # 「用户以为在改 v1」变成「库里凭空多了个 v1」。
+                    logger.warning("save_markdown: 要覆盖的版本不存在 %s/%s/v%d",
+                                   doc_dir.name, mode, version)
+                    return False
+            target = markdown_version_path(doc_dir, mode, version)
+
+            # 自证头注入**真实版本号** —— 版本号现在就是文件名，写盘前已知。
+            # （`provenance.py` 里「写盘那刻不知道版本号」的说明据此失效，那里已改。）
+            if isinstance(file_meta, dict):
+                # ⚠️ **不就地改调用方的 dict**：`identity.version` 是**本次写盘**才定下的，
+                # 而 `file_meta` 是调用方的入参。就地改写会让「同一个 dict 连写两版」的
+                # 调用方把第一版的版本号带进第二版（零报错，两版自证头同号）。浅拷贝足够
+                # ——被写的只有 `identity` 一层，这里连它一起拷。
+                file_meta = dict(file_meta)
+                identity = file_meta.get("identity")
+                identity = dict(identity) if isinstance(identity, dict) else {}
+                identity["version"] = version
+                file_meta["identity"] = identity
+
+            content = mv.content
+            if file_meta:
+                # dump_meta 返回单行；空行把注释与正文隔开（也匹配 strip_meta 的回剥规则）
+                content = f"{dump_meta(file_meta)}\n\n{content}"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._atomic_write(target, content)
+
+            entry_list = self._index["markdowns"].get(mv.transcript_id, [])
+            if isinstance(entry_list, dict):
+                entry_list = [entry_list]
+            prior = next((e for e in entry_list
+                          if e.get("mode") == mode and e.get("version") == version), None) or {}
+
+            # ⚠️ 「这一版何时生成、生成得完不完整」**不因编辑而改变**——编辑只改正文。
+            # createdAt 优先取自证头里的 `generatedAt`：与 `_scan_markdown_versions`
+            # 的重建路径**同源**，否则「删 index 重建后时间会变」。
+            created_at = mv.created_at
+            if isinstance(file_meta, dict):
+                created_at = ((file_meta.get("generated") or {}).get("generatedAt")
+                              or prior.get("createdAt") or mv.created_at)
+            status = prior.get("status") if replace_version is not None else None
+
             entry = {
-                "id": mv.id, "transcriptId": mv.transcript_id,
-                "style": mv.style.value if hasattr(mv.style, 'value') else mv.style,
-                "mode": mode,
-                "version": mv.version, "createdAt": mv.created_at,
-                "status": getattr(mv, 'status', 'complete'),
-                **(index_extra or {}),
+                # ⚠️ id 由 (tx, mode, version) 确定性派生，**不采信 `mv.id`**：否则
+                # 同一版在「写盘时」与「重建后」会有两个 id（模式 #54）。
+                "id": self._markdown_entry_id(mv.transcript_id, mode, version),
+                "transcriptId": mv.transcript_id,
+                "style": style, "mode": mode, "version": version,
+                "createdAt": created_at,
+                "status": status or getattr(mv, 'status', 'complete'),
             }
-            existing = self._index["markdowns"].get(mv.transcript_id, [])
-            if isinstance(existing, dict):
-                existing = [existing]
-            same_mode = [e for e in existing if e.get("mode") == mode]
-            top = max((e.get("version", 0) for e in same_mode), default=0)
-            entry["version"] = top + 1
-            existing.append(entry)
-            # 保留最近 2 版（清理超出两版的旧 index 条目）
-            same_mode = [e for e in existing if e.get("mode") == mode]
-            same_mode.sort(key=lambda e: e.get("version", 0), reverse=True)
-            for old in same_mode[2:]:
-                existing.remove(old)
-            self._index["markdowns"][mv.transcript_id] = existing
+            entry_list = [e for e in entry_list
+                          if not (e.get("mode") == mode and e.get("version") == version)]
+            entry_list.append(entry)
+            entry_list.sort(key=lambda e: e.get("version", 0), reverse=True)
+            self._index["markdowns"][mv.transcript_id] = entry_list
             self._save_index()
         return True
 
     def get_markdown(self, id: str) -> Optional[str]:
-        """按 id 查找 markdown 条目 -> 判断是否最新版 -> 读 .md 或 .prev.md。"""
+        """按条目 id 读**该版本**的正文（含自证头首行）。
+
+        ⚠️ 路径直接由条目自己的 `(mode, version)` 决定。旧实现要先算同 mode 的
+        `max_version`、再判断读 `{mode}.md` 还是 `{mode}.prev.md`——「一个版本读成
+        哪份文件」取决于**别人**的版本号，那正是「版本 = 位置」的病根。
+        """
         target_entry = None
         for entries in self._index["markdowns"].values():
             for entry in entries if isinstance(entries, list) else [entries]:
@@ -988,19 +1259,11 @@ class Store:
         if not target_entry:
             return None
 
-        tx_id = target_entry.get("transcriptId", "")
-        mode = target_entry.get("mode", "")
-        doc_dir = self.get_doc_dir(tx_id)
+        doc_dir = self.get_doc_dir(target_entry.get("transcriptId", ""))
         if not doc_dir:
             return None
-
-        all_for_tx = self._index["markdowns"].get(tx_id, [])
-        same_mode = [e for e in all_for_tx if e.get("mode") == mode]
-        max_version = max((e.get("version", 0) for e in same_mode), default=0)
-        if target_entry.get("version", 0) < max_version:
-            path = doc_dir / f"{mode}.prev.md"
-        else:
-            path = doc_dir / f"{mode}.md"
+        path = markdown_version_path(doc_dir, target_entry.get("mode", ""),
+                                     target_entry.get("version", 0))
         if path.exists():
             return path.read_text(encoding="utf-8")
         return None
@@ -1038,8 +1301,17 @@ class Store:
 
     def get_markdowns_by_transcript(self, transcript_id: str,
                                      mode: str = "", version: int | None = None) -> list[dict]:
-        """获取指定 transcript 的 Markdown，支持 mode/version 过滤。
-        按版本判断：最新版读 {mode}.md，上一版读 {mode}.prev.md。
+        """该文档的产物版本（含正文），**版本降序**（`[0]` 即最新）。
+
+        每条 = index 条目 + `content`（含自证头）+ 三个**从自证头现算**的派生字段：
+        `chars`（纯正文字数）/ `edited` / `source`（生成用的模型）。
+
+        ⚠️ 派生字段刻意**不进 index**：index 一删就丢，而这三个全都写在文件里
+        （`generatedAt` / `generated.model` / `edit`）。两处各存一份就是双真相源
+        （模式 #54），且漂移时**没有任何报错**——`chars` 会悄悄与正文对不上。
+
+        ⚠️ `version` 过滤是**导出「按版本导出」的落点**（`routers/export.py`）；
+        显式指定版本查不到时返回空列表，由调用方决定报错，**不在这里回退到最新版**。
         """
         entries = self._index["markdowns"].get(transcript_id, [])
         if isinstance(entries, dict):
@@ -1053,23 +1325,21 @@ class Store:
         if not doc_dir:
             return []
 
-        all_for_tx = self._index["markdowns"].get(transcript_id, [])
-        mode_max = {}
-        for e in all_for_tx:
-            m = e.get("mode", "")
-            v = e.get("version", 0)
-            if v > mode_max.get(m, 0):
-                mode_max[m] = v
-
         result = []
         for meta in entries:
-            md_mode = meta.get("mode", "")
-            is_latest = meta.get("version", 0) >= mode_max.get(md_mode, 0)
-            suffix = "" if is_latest else ".prev"
-            path = doc_dir / f"{md_mode}{suffix}.md"
-            if path.exists():
-                text = path.read_text(encoding="utf-8")
-                result.append({**meta, "content": text})
+            path = markdown_version_path(doc_dir, meta.get("mode", ""),
+                                         meta.get("version", 0))
+            if not path.exists():
+                continue
+            text = path.read_text(encoding="utf-8")
+            head = parse_artifact_meta(text)[0] or {}
+            result.append({
+                **meta,
+                "content": text,
+                "chars": len(strip_meta(text)),
+                "edited": bool((head.get("edit") or {}).get("edited")),
+                "source": (head.get("generated") or {}).get("model", ""),
+            })
         return sorted(result, key=lambda e: e.get("version", 0), reverse=True)
 
     # ── ProcessResult CRUD ──

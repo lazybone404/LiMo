@@ -216,6 +216,34 @@ def parse_artifact_meta(raw_text: str) -> tuple[dict | None, bool]:
     return meta, False
 
 
+# 产物自证头的第五个键（**不在「四条」之内**，故不由 `build_artifact_meta` 写）：
+# 「这一版被人工编辑过」。它记的是**编辑这件事**，既不是来源、也不是产物的身份，
+# 四条里哪一条都装不下。
+#
+# ⚠️ 它必须在**删掉 index.json 重建后仍然存在**——2026-10-10 之前「已编辑」只是
+# index 条目的一个布尔字段，重建即永久丢失（而重建恰恰是用户复制库目录、换机器
+# 之后的第一件事）。故它落在头里，与其它自证信息同命。
+#
+# ⚠️ 生成路径**刻意不写**这个键（连 `false` 都不写）：于是「重新生成 = 编辑标记
+# 自动清除」不需要任何额外逻辑——新版本的文件头里没有这个键，读方自然读到 False。
+EDIT_KEY = "edit"
+
+
+def mark_edited(meta: dict | None, edited_at: str) -> dict:
+    """给一份产物自证头打上「已编辑」，返回**新** dict（不改入参）。
+
+    `meta` 为 `None`（历史产物本就没头，或头已损坏）时返回一份**最小合法头**：
+    编辑标记不能因为「本来就没头」而静默丢失——那正是「index 一删，编辑痕迹就
+    查不到」的老毛病换了个入口。缺 `source` / `generated` 的语义是**如实记录
+    「这两条不知道」**，而不是伪造。
+
+    信封的 `v` 不必在这里写：`dump_meta` 统一补。
+    """
+    out = dict(meta) if meta else {"type": _ARTIFACT_TYPE}
+    out[EDIT_KEY] = {"edited": True, "editedAt": edited_at}
+    return out
+
+
 def build_artifact_meta(
     kind: str,
     *,
@@ -235,6 +263,9 @@ def build_artifact_meta(
 
     `kind` 是产物种类（`notes` / `polished` / `process`），与信封标识 `type` 分开——
     前者回答「这是什么产物」，后者回答「这段 meta 由谁解析」。
+
+    ⚠️ 本函数**只写四条**。编辑痕迹（`edit` 键）由 `mark_edited` 事后叠加，**不经
+    这里**——生成路径与编辑路径的头是同一份 dict，区别只在于谁在最后动过它。
     """
     return {
         "type": _ARTIFACT_TYPE,

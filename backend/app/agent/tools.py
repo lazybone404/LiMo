@@ -3,7 +3,7 @@ Agent 工具 — 网络搜索 + 网页抓取
 
 给 AgentRunner 注册用的 search_web / fetch_url。
 SearXNG 优先，不可达自动降级 DuckDuckGo。
-HTTP 请求统一走 config.fetch.proxy。
+HTTP 请求统一走 config.fetch.proxy（**本地地址除外** —— 判据收口在 app/core/net.py）。
 """
 
 import asyncio
@@ -17,6 +17,8 @@ import time
 import urllib.parse
 
 import httpx
+
+from app.core.net import proxy_for
 
 logger = logging.getLogger(__name__)
 
@@ -222,8 +224,13 @@ async def fetch_url(url: str) -> str:
 
 async def _searxng_search(query: str, max_results: int, base_url: str, proxy: str) -> str:
     client_kwargs: dict = {"timeout": 10.0}
-    if proxy:
-        client_kwargs["proxy"] = proxy
+    # ⚠️ 本地 SearXNG（默认 http://127.0.0.1:18080）**不该走代理**：以前这里只问
+    # 「配了代理没」，不问「目标是谁」，于是本机地址也被塞进代理 —— 多数代理软件默认
+    # 对回环直连，看不出问题，但那是运气不是设计。其余调用点（tavily / jina / ddg /
+    # 用户给的 URL）目标恒为公网，不需要过这道判据。
+    p = proxy_for(base_url, proxy)
+    if p:
+        client_kwargs["proxy"] = p
     async with httpx.AsyncClient(**client_kwargs) as c:
         r = await c.get(f"{base_url}/search", params={"q": query, "format": "json"})
         r.raise_for_status()

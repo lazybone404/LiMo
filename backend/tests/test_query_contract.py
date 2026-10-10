@@ -182,6 +182,16 @@ assert _body["content"].startswith("<!-- limo-meta "), \
 _art = svc.get_artifact("tr_c0", "notes", max_chars=None)
 assert _body["content"] == _art.raw_content, "HTTP 的 content 必须 == Artifact.raw_content"
 assert _body["versions"] and _body["versions"][0]["version"] == 1, _body["versions"]
+# 版本条目的三个**派生字段**（从文件头现算、**不进 index**，2026-10-10 版本归档）：
+# 前端版本下拉靠它们显示「2.4k字 · 模型名 · 已编辑」。缺任何一个都是**静默**的
+# ——下拉里那一格空白，而没有任何报错。
+_v0 = _body["versions"][0]
+assert set(_v0) == {"version", "id", "createdAt", "status", "mode",
+                    "chars", "edited", "source"}, f"版本条目字段集变了: {set(_v0)}"
+assert _v0["chars"] == len("# 笔记正文\n"), \
+    f"chars 应为**纯正文**字数（不含自证头）: {_v0['chars']}"
+assert _v0["edited"] is False, "刚生成的版本不该带编辑标记"
+assert _v0["source"] == "test-model", f"来源没从 generated.model 还原: {_v0['source']}"
 assert _body["id"] == _art.id and _body["mode"] == "notes"
 
 print("PASS: GET /api/markdown 与 service 同源（含自证头）、版本列表形状不变")

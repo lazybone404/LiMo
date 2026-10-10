@@ -311,7 +311,7 @@ async def _interpret_chapter(store, llm, doc_id: str, i: int, ch: dict,
 
 async def _finalize(store, llm, doc_id: str, chapters: list, book_title: str,
                     state: dict, cancel_event: asyncio.Event) -> None:
-    """归并全书总结 + 组装产物 + 一次性落盘 notes/polished（两版制 = 新版本）。"""
+    """归并全书总结 + 组装产物 + 一次性落盘 notes/polished（生成 = 追加新版本）。"""
     done_parts = store.list_epub_chapters(doc_id)
 
     # polished = 按书序交错：成功章片段 + failed 章标注

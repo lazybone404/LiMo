@@ -13,6 +13,7 @@ import { SearchBar } from './components/ui/SearchBar'
 import { ThemeToggle } from './components/ui/ThemeToggle'
 import { fetchCapabilities, listTranscripts, listFolders, getMarkdown, getTranscript } from './api/client'
 import { startHealthPoll } from './lib/health'
+import { toMarkdownMeta } from './lib/markdownMeta'
 import { installWarningText, type InstallPathWarning } from './lib/installWarning'
 import { Archive, X } from 'lucide-react'
 
@@ -183,7 +184,7 @@ export default function App() {
           getMarkdown(restoredId, 'notes').then(md => {
             if (md && useStore.getState().currentDocId === restoredId) {
               useStore.getState().setCurrentContent(md.content)
-              useStore.getState().setMarkdownMeta({ id: md.id, style: md.style, mode: md.mode, version: md.version })
+              useStore.getState().setMarkdownMeta(toMarkdownMeta(md))
               useStore.getState().setMarkdownVersions(md.versions || [])
             }
           }).catch(() => {})

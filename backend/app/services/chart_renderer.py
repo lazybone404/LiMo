@@ -220,8 +220,11 @@ def _process_fig(body: str, assets_dir: str, counter: int) -> tuple[str, int, st
         logger.warning("图表 SVG 生成器 bug：%s", e)
         return None, counter, "图表绘制失败"
 
-    # source_json 落盘为 chart_N.json：只在走通 fig 分支时出现，
-    # 是「模型确实切到新协议」的确定性证据（只看 PNG 张数区分不了新旧路径）
+    # source_json 落盘为 `chart_{hash8}.json`（与 PNG/SVG 同名，见 `_process_svg`）：
+    # 只在走通 fig 分支时出现，是「模型确实切到新协议」的确定性证据（只看 PNG
+    # 张数区分不了新旧路径）。
+    # ⚠️ 曾经的写法是 `chart_N.json`（按序编号），与同时期的 `chart_N.png` 配套——
+    # 两者**都已改成内容哈希**；`counter` 现在只承担「失败不递增」的语义。
     return _process_svg(svg, assets_dir, counter, source_json=obj)
 
 
@@ -251,7 +254,7 @@ def _process_svg(svg: str, assets_dir: str, counter: int,
 
     next_counter = counter + 1
     # ⚠️ 文件名带**内容 hash**，不是 `chart_{n}.png`：counter 每次生成都从 0 起，
-    #    重跑一次就把 `chart_1.png` 覆盖掉，而 v1 的 `notes.prev.md` **仍引用**
+    #    重跑一次就把 `chart_1.png` 覆盖掉，而 v1 的 `notes/v1.md` **仍引用**
     #    `assets/chart_1.png` —— 切到 v1 看到的是「新版的图配旧版的正文」。三张图
     #    全部渲染成功、文件都在、零报错，静默错配（模式 #52 的同族：成对的东西
     #    改了一半）。hash 让「内容相同 → 同名」（幂等、不累积孤儿）、「内容不同 →

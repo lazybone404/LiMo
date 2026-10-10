@@ -161,7 +161,7 @@ npx tauri dev
 
 ### 2.4 数据持久化
 
-- **文档/转录/产物**：`~/.limo/` 文件系统（Store 层），每文档 `{doc_dir}/`：`transcript.json`、`{mode}.md`、`{mode}.prev.md`、`process/{mode}.md`、`assets/`
+- **文档/转录/产物**：`~/.limo/` 文件系统（Store 层），每文档 `{doc_dir}/`：`transcript.json`、`{mode}/v{N}.md`（**版本归档**，一版一文件、全部保留）、`process/{mode}.md`、`assets/`（`{mode}.md` / `{mode}.prev.md` 是遗留两版制布局，启动时一次性迁移）
 - **对话**：`conversations/`（JSONL + 会话目录）
 - **配置**：`config.yaml`（**唯一写入口 `app/core/config_io.py` → `save_config()`**，禁止业务模块直接 yaml.dump）
 - **FTS5 搜索**：SQLite `search.db` → `transcripts_fts`（CJK 空格插入分词）
@@ -208,7 +208,7 @@ POST /generate/{id}
 → resolve_model()（唯一模型解析入口）→ scene_models.generate
 → PromptBuilder.build()：source_type + mode → prompt 函数（XML 分节）
 → generate_both()：asyncio.gather(polished, notes) ← ⚠️ 解包必须同序
-→ 存储：{doc_dir}/{mode}.md + .prev.md（两版制）
+→ 存储：{doc_dir}/{mode}/v{N}.md（版本归档：生成追加新版本、编辑就地覆盖当前版）
 → 返回前 rewrite_asset_urls 改写图片为绝对 URL
 ```
 
