@@ -20,6 +20,21 @@ export interface ClassifyFolderSuggestion {
   id?: string
   /** `reuse`（现有夹名）/ `new`（新建名）时在场；`none` 时缺省 */
   name?: string
+  /**
+   * **仅当 `none` 是「新建超限被拒」的结果时在场** —— 模型原本想建的那个夹名。
+   *
+   * ⚠️ 与「本来就无合适归处」的 `none` 是两回事：那个不带这个字段。带它的时候，
+   * 对话框会多出一个「新建：XX」选项供用户一键采纳（等于手动把上限放开一格）。
+   * 没有它，用户只能看到「不归入」，模型原本的分类意图就整个丢了。
+   */
+  candidate?: string
+  /**
+   * `true` = 这是**口袋（兜底）文件夹**（后端 `MISC_FOLDER_NAME`）。
+   *
+   * 它不占新建额度，由后端机械闸门约束（钻进太多就整夹撤下）。此处只作标记，
+   * UI 暂不特殊渲染 —— 它在界面上就是一个普通的「建议新建」。
+   */
+  misc?: boolean
 }
 
 export interface ClassifySuggestion {

@@ -87,6 +87,13 @@ interface Draft {
   mode: 'reuse' | 'new' | 'none'
   folderId: string
   newName: string
+  /**
+   * 模型原本建议的新建名，**仅当这一行是被「新建超限」拒掉时非空**（后端 `candidate`）。
+   *
+   * 用途只有一个：给被拒的行补一个「新建：XX」选项，让用户能一键采纳 —— 否则那篇
+   * 只剩「不归入」，用户看不到模型本来想把它放进哪（91 篇实测：14 个候选只留 5 个）。
+   */
+  candidate: string
   tagsText: string
 }
 
@@ -150,6 +157,7 @@ function toDraft(s: ClassifySuggestion): Draft {
     mode,
     folderId: s.folder.id ?? '',
     newName: s.folder.name ?? '',
+    candidate: s.folder.candidate ?? '',
     tagsText: s.tags.join(', '),
   }
 }
@@ -512,8 +520,10 @@ export function ClassifyDialog({
                               onChange={e => {
                                 const v = e.target.value
                                 if (v === 'none') patch(d.id, { mode: 'none', folderId: '' })
-                                else if (v === 'new') patch(d.id, { mode: 'new' })
-                                else patch(d.id, { mode: 'reuse', folderId: v.slice('reuse:'.length) })
+                                else if (v === 'new') {
+                                  // 采纳候补时**把模型原本的夹名预填进去**，用户不必重打一遍
+                                  patch(d.id, { mode: 'new', newName: d.newName || d.candidate })
+                                } else patch(d.id, { mode: 'reuse', folderId: v.slice('reuse:'.length) })
                               }}
                               className="flex-1 text-[12px] bg-elevated border border-border-light rounded-md px-1.5 py-1 outline-none">
                               <option value="none">未分类</option>
@@ -522,6 +532,10 @@ export function ClassifyDialog({
                               ))}
                               {/* 「保留新建」只在模型确实建议了新建时出现 */}
                               {d.mode === 'new' && <option value="new">新建：{d.newName || '（未命名）'}</option>}
+                              {/* 超限被拒的**候补**：模型原本想建的夹名，一键采纳（等于手动多开一格） */}
+                              {d.mode !== 'new' && !!d.candidate && (
+                                <option value="new">新建：{d.candidate}（模型原建议）</option>
+                              )}
                             </select>
                             {d.mode === 'new' && (
                               <input data-classify-new-name={d.id} value={d.newName}

@@ -33,9 +33,9 @@ from app.generation.classifier import (
     CLASSIFY_BATCH_SIZE,
     FOLDER_MODE_REUSE_ONLY, FOLDER_MODE_REUSE_OR_NEW, FOLDER_MODE_TAGS_ONLY, FOLDER_MODES,
     MAX_NEW_FOLDERS, MAX_NEW_FOLDERS_LIMIT, MAX_TAGS_PER_DOC, MAX_TAG_LEN,
-    MIN_USEFUL_CHARS, TAG_MODE_FREE, TAG_MODE_SEED, TAG_MODE_VOCAB, TAG_MODES,
+    MIN_USEFUL_CHARS, MISC_FOLDER_NAME, TAG_MODE_FREE, TAG_MODE_SEED, TAG_MODE_VOCAB, TAG_MODES,
     build_classify_prompt, clamp_max_new_folders, clamp_notes_chars, clamp_seed_tags,
-    classify_documents, collect_doc_inputs, collect_tag_vocab, fit_to_budget,
+    classify_documents, clean_tag_names, collect_doc_inputs, collect_tag_vocab, fit_to_budget,
     normalize_suggestions, parse_classify_response, per_batch_new_limit, validate_mode,
 )
 from app.llm import CancelledError
@@ -488,6 +488,87 @@ def test_normalize_new_folder_cap_counts_distinct_names():
     assert any("超过上限" in w for w in out["suggestions"][3]["warnings"])
 
 
+def test_rejected_new_keeps_the_candidate_name():
+    """超限被拒时**必须带出模型原本的夹名**（`candidate`），不能只剩一句「不归入」。
+
+    ⚠️ 91 篇实测：14 个候选夹名只留 5 个，被拒的 60+ 篇在对话框里只剩「不归入」——
+    模型的分类意图整个丢失，用户无从判断「是不是该把上限调高、或手动建那个夹」。
+
+    对照：把 `{"action": "none", "candidate": cand}` 改回 `{"action": "none"}` → 红。
+    """
+    raw = {"docs": [
+        {"id": "tx_a", "folderAction": "new", "newFolderName": "甲类"},
+        {"id": "tx_b", "folderAction": "new", "newFolderName": "乙类"},   # 第 2 个 → 超上限
+    ]}
+    out = normalize_suggestions(raw, _docs("tx_a", "tx_b"), [], 1)
+    assert out["suggestions"][0]["folder"]["action"] == "new"
+    rejected = out["suggestions"][1]["folder"]
+    assert rejected["action"] == "none"
+    assert rejected["candidate"] == "乙类", rejected
+    assert any("乙类" in w for w in out["suggestions"][1]["warnings"]), "warning 也要点名"
+    # 反向对照：**没被拒**的篇不该带 candidate —— 否则这个字段失去区分力
+    assert "candidate" not in out["suggestions"][0]["folder"]
+
+
+def test_misc_folder_does_not_consume_the_new_quota():
+    """口袋夹**不占**新建额度：上限 1 时它仍能与一个真实新夹并存。
+
+    ⚠️ 若占额度，上限紧张时它挤掉的正是它要来救的那批文档 —— 等于形同虚设。
+
+    对照：把 `if is_misc_folder_name(name): continue` 从 `new_order` 循环里删掉 → 红
+    （杂项占掉唯一名额，「甲类」变成 none）。
+    """
+    raw = {"docs": [
+        {"id": "tx_a", "folderAction": "new", "newFolderName": "甲类"},
+        {"id": "tx_b", "folderAction": "new", "newFolderName": MISC_FOLDER_NAME},
+        {"id": "tx_c", "folderAction": "none"},
+        {"id": "tx_d", "folderAction": "none"},
+    ]}
+    out = normalize_suggestions(raw, _docs("tx_a", "tx_b", "tx_c", "tx_d"), [], 1)
+    assert out["suggestions"][0]["folder"]["action"] == "new"
+    assert out["suggestions"][1]["folder"]["action"] == "new"
+    assert out["suggestions"][1]["folder"].get("misc") is True
+    assert not any("上限" in w for w in out["warnings"]), out["warnings"]
+
+
+def test_misc_folder_is_removed_when_it_swallows_too_much():
+    """机械闸门：进杂项的篇数**超过** 1/3 ⇒ 整夹撤下、退回候补。
+
+    ⚠️ 「尽量少放」只写进 prompt 就是模型自觉；口袋夹一旦泛滥就退化成垃圾桶，
+    把本该分开的内容都吸进去。判据放在代码里，不放在模型身上。
+
+    对照：删掉 `normalize_suggestions` 末尾的闸门段 → 红。
+    """
+    raw = {"docs": [{"id": d, "folderAction": "new", "newFolderName": MISC_FOLDER_NAME}
+                    for d in ("tx_a", "tx_b", "tx_c")]}      # 3/3 篇
+    out = normalize_suggestions(raw, _docs("tx_a", "tx_b", "tx_c"), [], MAX_NEW_FOLDERS)
+    assert all(s["folder"]["action"] == "none" for s in out["suggestions"])
+    assert all(s["folder"].get("candidate") == MISC_FOLDER_NAME for s in out["suggestions"])
+    assert any("口袋文件夹" in w for w in out["warnings"])
+
+    # 边界反向对照：**恰好 1/3 不撤** —— 判据是「超过」，不是「达到」
+    raw3 = {"docs": [{"id": "tx_a", "folderAction": "new", "newFolderName": MISC_FOLDER_NAME},
+                     {"id": "tx_b", "folderAction": "none"},
+                     {"id": "tx_c", "folderAction": "none"}]}
+    out3 = normalize_suggestions(raw3, _docs("tx_a", "tx_b", "tx_c"), [], MAX_NEW_FOLDERS)
+    assert out3["suggestions"][0]["folder"].get("misc") is True, "1/3 未超过，不该撤"
+
+
+def test_misc_name_reuses_an_existing_misc_folder():
+    """库里**已有**「杂项」时，建议转成复用它 —— 不再造第二个口袋夹。
+
+    对照：把 `name.lower() in by_name` 那一支挪到 `is_misc_folder_name` **之后** → 红
+    （会走成 misc=new，凭空多出一个同名夹）。
+    """
+    folders = [{"id": "fd_9", "name": MISC_FOLDER_NAME, "count": 3}]
+    raw = {"docs": [{"id": "tx_a", "folderAction": "new",
+                     "newFolderName": MISC_FOLDER_NAME}]}
+    out = normalize_suggestions(raw, _docs("tx_a"), folders, MAX_NEW_FOLDERS)
+    f = out["suggestions"][0]["folder"]
+    assert f["action"] == "reuse" and f["id"] == "fd_9", f
+    assert not f.get("misc")
+
+
 def test_normalize_duplicate_id_takes_first():
     raw = {"docs": [{"id": "tx_a", "folderAction": "new", "newFolderName": "第一"},
                     {"id": "tx_a", "folderAction": "new", "newFolderName": "第二"}]}
@@ -640,6 +721,87 @@ def test_per_batch_new_limit_splits_quota_and_keeps_zero():
     assert per_batch_new_limit(1, 9) == 1      # 每批至少 1，否则这档形同关闭
 
 
+# 策略矩阵：三档 × {空库, 非空库}。判据不是「某档当前说了什么」，而是
+# **「这一档的指令是否与其它档冲突」**——`_folder_section` 是三个策略**共用**的一个
+# 函数，任何一句写在这儿的文案都会被三档同时看到。所以矩阵要钉的是**互斥**：
+# 某一档的指令绝不能在另一档里也出现（那是「同一段里同时给两条相反要求」）。
+
+def test_folder_mode_matrix_prompt_is_exclusive_across_modes():
+    """六种状态两两不串味：每档的**特有**指令只在它自己那儿出现。
+
+    ⚠️ 这一节的判据（外部审查提出）是「**共享规则必须兼容所有引用策略的完整契约**」
+    ——不是「当前这几次调用恰好相同」。只钉「默认档现在写了什么」的测试，在
+    「给某档加一句本档特有的话」时会静默通过，而那恰恰是串味的入口。
+
+    对照：把 `_FOLDER_SECTION_NONE` 换成 `_fFOLDERS_EMPTY_NOTE_REUSE_ONLY`（两处都
+    「不产出新文件夹」）→ tags_only 那两列红；把 rules 的 `else` 分支错接到
+    `FOLDER_MODE_REUSE_ONLY` → reuse_or_new 列红。
+    """
+    folders = [{"id": "fd_1", "name": "研究", "count": 2}]
+
+    # 每档的「专属口令」与它在两种库状态下的在场/缺席
+    #   (mode,              口令,            空库,  非空库)
+    cases = [
+        # ── reuse_or_new：默认档，始终给「最多新建 N 个」，从不给禁令 ──
+        (FOLDER_MODE_REUSE_OR_NEW, "最多新建", True, True),
+        (FOLDER_MODE_REUSE_OR_NEW, "不得新建", False, False),
+        (FOLDER_MODE_REUSE_OR_NEW, "只使用 none", False, False),
+        # ── reuse_only：只复用，始终禁新建，从不给「最多新建」──
+        (FOLDER_MODE_REUSE_ONLY, "不得新建", True, True),
+        (FOLDER_MODE_REUSE_ONLY, "只允许复用", True, True),
+        (FOLDER_MODE_REUSE_ONLY, "最多新建", False, False),
+        # ── tags_only：完全不动文件夹，故两句都不该出现 ──
+        (FOLDER_MODE_TAGS_ONLY, "不处理文件夹", True, True),
+        (FOLDER_MODE_TAGS_ONLY, "最多新建", False, False),
+        (FOLDER_MODE_TAGS_ONLY, "不得新建", False, False),
+        (FOLDER_MODE_TAGS_ONLY, "只允许复用", False, False),
+    ]
+    for mode, phrase, in_empty, in_nonempty in cases:
+        for fs, present in (([], in_empty), (folders, in_nonempty)):
+            p = build_classify_prompt(_docs("tx_a"), fs, [], MAX_NEW_FOLDERS,
+                                      folder_mode=mode)
+            label = f"{mode} / {'非空库' if fs else '空库'} / {phrase!r}"
+            assert (phrase in p) is present, label
+
+    # 分类空间**只在需要它的时候**摆到模型面前：tags_only 下连 id 都不喂
+    # （喂了却要求别用 = 诱导违反）；其余两档两种库状态都必须列出已有 id
+    for mode in (FOLDER_MODE_REUSE_OR_NEW, FOLDER_MODE_REUSE_ONLY):
+        p = build_classify_prompt(_docs("tx_a"), folders, [], MAX_NEW_FOLDERS,
+                                  folder_mode=mode)
+        assert "id=fd_1" in p, mode
+    assert "id=fd_1" not in build_classify_prompt(
+        _docs("tx_a"), folders, [], MAX_NEW_FOLDERS, folder_mode=FOLDER_MODE_TAGS_ONLY)
+
+
+def test_prompt_offers_the_misc_folder_only_under_reuse_or_new():
+    """口袋夹那条规则**只该出现在 `reuse_or_new` 档**：另两档根本不动文件夹。
+
+    ⚠️ 与矩阵测试同一个判据（共享函数里的每一句都要与三档各自的契约兼容）：
+    把兜底规则写进共用位置，`tags_only` 下就变成「先说不处理文件夹、再说可以建个杂项」。
+    """
+    p = build_classify_prompt(_docs("tx_a"), [], [], MAX_NEW_FOLDERS,
+                              folder_mode=FOLDER_MODE_REUSE_OR_NEW)
+    assert MISC_FOLDER_NAME in p and "不占" in p
+    for mode in (FOLDER_MODE_REUSE_ONLY, FOLDER_MODE_TAGS_ONLY):
+        pm = build_classify_prompt(_docs("tx_a"), [], [], MAX_NEW_FOLDERS, folder_mode=mode)
+        assert MISC_FOLDER_NAME not in pm, mode
+
+
+def test_default_mode_still_allows_new_folders_on_normalize():
+    """矩阵的**归一化侧**：默认档不得把模型提的新建也砍掉。
+
+    ⚠️ 这是上面那些「reuse_only 下 new → none」断言的反向对照。只测「限制生效」
+    的测试有一个共同的盲点：把限制写过头（所有档都降级）时它们**全绿**。
+    """
+    r = normalize_suggestions(
+        {"docs": [{"id": "tx_a", "folderAction": "new",
+                   "newFolderName": "新主题", "tags": []}]},
+        _docs("tx_a"), [], MAX_NEW_FOLDERS,
+        folder_mode=FOLDER_MODE_REUSE_OR_NEW)
+    assert r["suggestions"][0]["folder"]["action"] == "new", "默认档必须放行新建"
+    assert not any("策略" in w for w in r["suggestions"][0]["warnings"])
+
+
 # ── 6. store 写入 ──
 
 def test_apply_classifications_writes_index_once():
@@ -705,6 +867,50 @@ def test_merge_tags_is_one_implementation_for_both_paths():
         s.apply_classifications([{"id": "tx_b", "folder_id": "",
                                   "tags": ["基线", "新", "新"]}])
         assert _tags_of(s, "tx_a") == _tags_of(s, "tx_b") == ["基线", "新"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_clean_tag_names_is_shared_by_model_and_user_sites():
+    """**同源证明**：内核 `clean_tag_names` 与它的两个纯函数落点喂同一份脏输入 →
+    必须逐字相同。
+
+    ⚠️ 三个落点（preview 的模型输出 / 用户手填 seed / commit 写入）此前是**三份各自
+    实现的清洗**，其中 commit 那份漏了截长——症状是「同一条长标签，模型给的被截成
+    30 字、用户手打的原样入库」，同一个库里并存两种长度，而两侧各自看起来都正常
+    （模式 #54）。第三落点（端点）见下一条。
+
+    对照：在 `_clean_tags` 或 `clamp_seed_tags` 里另写一份 trim/去重（不经内核）→ 本条红。
+    """
+    dirty = ["  甲  ", "甲", "", None, 7, "乙" * 40]
+    expected = ["甲", "乙" * MAX_TAG_LEN]          # trim / 去空 / 去非 str / 去重 / 截长
+    assert clean_tag_names(dirty) == expected
+
+    raw = {"docs": [{"id": "tx_a", "folderAction": "none", "tags": dirty}]}
+    via_model = normalize_suggestions(
+        raw, _docs("tx_a"), [], MAX_NEW_FOLDERS)["suggestions"][0]["tags"]
+    assert via_model == expected, "preview 侧（模型输出）"
+    assert clamp_seed_tags(dirty) == expected, "用户手填 seed 侧"
+
+
+def test_commit_cleans_tag_names_with_the_same_kernel():
+    """**第三落点**：commit 端点入库的 tags 必须与内核逐字相同。
+
+    ⚠️ 修复前这里是一份内联实现，且**只 trim 不截长**：同一条 40 字标签，
+    走 preview 建议进来的是 30 字、用户直接手打进对话框的却是 40 字。
+
+    对照：把 `routers/classify.py` 的 `clean_tag_names(a.tags)` 改回
+    `[t.strip() for t in a.tags]`（或任何不经内核的写法）→ 末条断言红。
+    """
+    s, d = _new_store()
+    try:
+        _add_doc(s, "tx_a", "甲")
+        client, _ = _make_client(s)
+        r = client.post("/api/classify/commit", json={"assignments": [
+            {"id": "tx_a", "folderId": "", "tags": [" 甲 ", "甲", "乙" * 40]},
+        ]})
+        assert r.json()["affected"] == 1
+        assert _tags_of(s, "tx_a") == ["甲", "乙" * MAX_TAG_LEN]
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -895,6 +1101,35 @@ def test_preview_passes_strategies_through_to_the_prompt():
 
             prompt = fake.calls[0][0]
             assert "不处理文件夹" in prompt and "论文" in prompt
+        finally:
+            restore()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_preview_echoes_effective_max_new_folders_not_the_default():
+    """`limits.maxNewFolders` 回显的是**本次实际生效值**，不是默认常量。
+
+    前端 `ClassifyDialog` 用它拼「最多新建 N 个」的摘要。回显常量的表现是：用户把
+    上限调到 8，对话框仍写「最多新建 5 个」——而分类照 8 跑。**判据与执行不同源**，
+    且两侧各自看起来都正常（前端只是忠实显示了后端给的值）。
+
+    对照：把 `"maxNewFolders": max_new` 改回 `MAX_NEW_FOLDERS` → 本条红。
+    """
+    s, d = _new_store()
+    try:
+        _add_doc(s, "tx_a", "甲")
+        client, _ = _make_client(s, config={"llm": {"api_key": "x"}, "scene_models": {}})
+        fake = _FakeLLM('{"docs":[{"id":"tx_a","folderAction":"none","tags":[]}]}')
+        restore = _patch_llm(fake)
+        try:
+            r = client.post("/api/classify/preview",
+                            json={"docIds": ["tx_a"], "maxNewFolders": 8})
+            body = r.json()
+            assert body["limits"]["maxNewFolders"] == 8
+            assert body["limits"]["maxNewFoldersLimit"] == MAX_NEW_FOLDERS_LIMIT
+            # 判据与执行同源的另一面：喂给模型的额度也必须是 8（1 篇 = 1 批，原样）
+            assert "最多新建 8 个" in fake.calls[0][0]
         finally:
             restore()
     finally:

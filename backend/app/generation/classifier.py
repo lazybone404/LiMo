@@ -97,6 +97,30 @@ MAX_NEW_FOLDERS_LIMIT = 10
 # 用户手填基础标签的条数上限（超出静默截断——清洗不改变语义，同 `clean_dimensions`）
 MAX_SEED_TAGS = 50
 
+# ── 口袋（兜底）文件夹 ────────────────────────────────────────────────
+#
+# 上限用尽后，那些「确实没有合适归处」的零散材料原本全部落 `none` —— 用户拿到一堆
+# 「不归入」，而**模型原本想把它放进哪**也一并丢失。口袋夹给它们一个有名字的去处。
+#
+# ⚠️ **两条约束都是产品决策，不是实现细节**（2026-10-11 拍板）：
+#   1. **不占用 `MAX_NEW_FOLDERS` 额度**。占了的话，上限 5 时它挤掉一个真实分类 ——
+#      等于救不了「超限」这个它专门要解决的场景；
+#   2. **受机械闸门约束**（进它的篇数超过全部篇数的 1/3 就整夹撤下，退回候补）。
+#      「尽量少放」若只写进 prompt 就是模型自觉；而口袋夹一旦泛滥就退化成垃圾桶，
+#      把本该分开的内容都吸进去。**判据交给代码，不交给模型。**
+#
+# ⚠️ 识别**只认确切的名字**（`is_misc_folder_name`）：模型若写成「其他」「未分类」，
+#    就按普通新建走（占额度、受上限约束）—— 零残留降级，不会误判成一个口袋夹。
+#    若库里**已有**一个叫「杂项」的文件夹，则建议会先被 `by_name` 命中并转成 `reuse`,
+#    这正是想要的行为（复用已有口袋夹，而不是再造一个）。
+MISC_FOLDER_NAME = "杂项"
+MISC_MAX_DENOMINATOR = 3        # 进杂项的篇数 × 3 > 总篇数 ⇒ 超过 1/3
+
+
+def is_misc_folder_name(name: str) -> bool:
+    """模型给的「新建」名是不是口袋夹 —— **只认确切的名字**，不做同义猜测。"""
+    return str(name or "").strip().lower() == MISC_FOLDER_NAME.lower()
+
 # ⚠️ 用 `string.Template` 而不是 `str.format`：下面 JSON schema 里全是花括号，
 # `format` 要求逐个转义成 `{{`/`}}`，改一处漏一处就是运行期 KeyError。
 #
@@ -137,9 +161,11 @@ $docs
 # 实机实测（91 篇、零文件夹、仅标题）：共用那份时 `new` **恰为 0**（91 篇全 none）；
 # 换成中性陈述后同一份输入得到 **23 篇归入 5 个新建文件夹**。判决判据就在这一句 prompt 上。
 #
-# ⚠️ 对照 [P2-2 的空词表兜底]：那里的 `seed` / `vocab` 两档**共用同一份**，因为
-# 「都没有词表可挑」时两档语义完全一致；这里恰恰相反 —— **判据是「两种取值下该做的
-# 事是否相同」，不是「两种取值是否都在同一个函数里」**（模式 #54）。
+# ⚠️ 对照 [P2-2 的空词表兜底]：那里的 `seed` / `vocab` 两档**共用同一份**，因为那段
+# 文字与两档各自的契约都不冲突；这里恰恰相反。判据是**「一段共享文案只有在与引用它的
+# 每一个策略的完整契约都不冲突时才能共享」** —— 共享的是跨策略不变量，凡携带策略特有
+# 约束的句子都必须上浮到该策略自己的段里。它**不是**「两种取值是否写在同一处」，也
+# **不是**「两种取值下该做的事是否相同」—— 后者仍需额外限定取值点才成立（模式 #54）。
 #
 # 两句话都必须**明说**，否则模型会照着格式编造 id。
 _FOLDERS_EMPTY_NOTE_REUSE_ONLY = (
@@ -147,7 +173,14 @@ _FOLDERS_EMPTY_NOTE_REUSE_ONLY = (
 )
 _FOLDERS_EMPTY_NOTE_REUSE_OR_NEW = "（当前库里还没有任何文件夹，请为这批材料新建合适的分类）"
 
-# 两种「不给文件夹空间」的说法（`tags_only` 与 空库 + `reuse_only`）
+# `tags_only` 专用：本次**完全不进行文件夹分类**。
+#
+# ⚠️ **别把它与「空库 + `reuse_only`」混为一谈** —— 两者都不产出新文件夹，但**用户选
+# 的操作语义不同**：`tags_only` 是用户**主动选择不动文件夹**；空库 + `reuse_only` 是
+# 用户**仍然要求做文件夹分类**，只是没有可复用的、又不许新建，于是只能不归入（那条
+# 路径走 `_FOLDERS_EMPTY_NOTE_REUSE_ONLY` + 「不得新建」规则段）。原注释写成「两种
+# 『不给文件夹空间』的说法」，会让后来者以为它们可以共用一份常量 —— 而按「该做的事
+# 是否相同」的判据，这两档该做的事并不相同。
 _FOLDER_SECTION_NONE = """<文件夹>
 本次**不处理文件夹**：所有文档一律 `"folderAction": "none"`，`folderId` 与
 `newFolderName` 都填空串。你的任务只是给每篇打标签。
@@ -198,7 +231,8 @@ def _folder_section(folders: list[dict], mode: str, max_new: int) -> str:
 1. **优先复用**上面列出的文件夹。只有确实没有合适归处时，才新建一个。
 2. 你这一批最多新建 {max_new} 个文件夹（全部分批共享一个总上限，故每批只提最必要的）。需要更多归处时，把相近的合并成同一类，或对该篇用 "none" 表示不归入。
 3. 复用时必须**逐字复制**上面列出的 id（形如 fd_xxxxxxxxxxxx），**绝不自己编造 id**。
-4. 新建时给一个短名（12 字以内），描述这一类材料的共同主题。"""
+4. 新建时给一个短名（12 字以内），描述这一类材料的共同主题。
+5. 把整批材料都看完之后，如果仍有一小批内容零散、各自都撑不起一个分类，可以把它们一起放进一个名为「{MISC_FOLDER_NAME}」的文件夹兜底。**它只用于确实没有合适归处的少数材料，尽量少放**；这个文件夹**不占**上面第 2 条的数量。"""
 
     return f"<现有文件夹>\n{listing}\n</现有文件夹>\n\n{rules}"
 
@@ -371,21 +405,40 @@ def parse_classify_response(text: str):
     return parse_json_object(text or "")
 
 
+def clean_tag_names(names) -> list[str]:
+    """标签名清洗内核：trim → 去空 → 去重 → 截长到 `MAX_TAG_LEN`。**全项目唯一一份**。
+
+    ⚠️ **只管「什么算一个合法的标签名」，不管数量** —— 条数上限是**策略特有**的
+    （模型输出 8 个 / 用户手填 50 个 / commit 侧不设），由各调用方自己施加。
+    这正是 `_FOLDERS_EMPTY_NOTE_*` 那条判据的**正面形态**：共享不变量下沉、
+    策略特有约束上浮。
+
+    ⚠️ **三个落点**：preview 的模型输出（`_clean_tags`）／用户手填的 seed
+    （`clamp_seed_tags`）／commit 的写入（`routers/classify.py`）。此前它们是**三份各自
+    实现的清洗**，其中 commit 那份漏了截长 —— 症状是「同一条长标签，模型给的被截成
+    30 字、用户手打的原样入库」，同一个库里并存两种长度（模式 #54：同源判据住多处，
+    漂移的那一处从结果上看不出来）。
+
+    这些清洗都是**静默**的（与 `clean_dimensions` 同款：不改变语义，不该刷警告）。
+    """
+    out: list[str] = []
+    if not isinstance(names, list):
+        return out
+    for v in names:
+        if not isinstance(v, str):
+            continue
+        t = v.strip()
+        if not t or t in out:
+            continue
+        out.append(t[:MAX_TAG_LEN])
+    return out
+
+
 def _clean_tags(item: dict) -> tuple[list[str], list[str]]:
-    """清洗单篇的 tags → `(tags, warnings)`。trim / 去空 / 去重是**静默**的
-    （与 `clean_dimensions` 同款：这类清洗不改变语义，不该刷警告），
-    只有「超量被截断」才记一条。"""
+    """清洗单篇的 tags → `(tags, warnings)`。名称清洗走 `clean_tag_names`（唯一内核），
+    这里只补一条**模型侧特有**的条数上限与它的 warning。"""
     warnings: list[str] = []
-    raw = item.get("tags")
-    tags: list[str] = []
-    if isinstance(raw, list):
-        for t in raw:
-            if not isinstance(t, str):
-                continue
-            t = t.strip()
-            if not t or t in tags:
-                continue
-            tags.append(t[:MAX_TAG_LEN])
+    tags = clean_tag_names(item.get("tags"))
     if len(tags) > MAX_TAGS_PER_DOC:
         tags = tags[:MAX_TAGS_PER_DOC]
         warnings.append(f"模型给的标签超过 {MAX_TAGS_PER_DOC} 个，已保留前 {MAX_TAGS_PER_DOC} 个")
@@ -437,8 +490,18 @@ def _normalize_one(item: dict, by_id: dict, by_name: dict,
                       "name": by_id[existing].get("name") or name}
             warnings.append("建议的新文件夹与现有文件夹同名，已改为归入它")
         elif name.lower() in rejected_new:
-            folder = {"action": "none"}
-            warnings.append(f"新建文件夹数超过上限（{max_new} 个），已改为不归入")
+            # ⚠️ **候补名必须带出去**（`candidate`）。只说「已改为不归入」，用户就看不到
+            # 模型本来想把它放进哪 —— 91 篇实测时 14 个候选只留 5 个，被拒的 60+ 篇在
+            # 对话框里只剩一句「不归入」，模型的分类意图整个丢失（F7）。
+            cand = sanitize_reference_name(name)
+            folder = {"action": "none", "candidate": cand}
+            warnings.append(f"模型原本建议新建「{cand}」，但新建数量已超过上限"
+                            f"（{max_new} 个），已改为不归入")
+        elif is_misc_folder_name(name):
+            # 口袋夹：**不占额度**（故这一支排在 `rejected_new` 判定之后也不受它影响 ——
+            # 它压根不参与 `new_order` 计数），泛滥与否由 `normalize_suggestions` 的
+            # 机械闸门统一裁决。名字规范成常量，免得模型给的「杂项 」带空格进产物。
+            folder = {"action": "new", "name": MISC_FOLDER_NAME, "misc": True}
         else:
             folder = {"action": "new", "name": name}
     else:
@@ -515,6 +578,8 @@ def normalize_suggestions(raw, docs: list[dict], folders: list[dict],
             key = name.lower()
             if not name or key in new_keys or key in by_name:
                 continue                  # 空名 / 重名 / 与现有同名 → 不占上限
+            if is_misc_folder_name(name):
+                continue                  # 口袋夹不占额度，由机械闸门单独裁决
             new_keys.add(key)
             new_order.append(name)
     rejected = {n.lower() for n in new_order[max_new:]}
@@ -535,6 +600,20 @@ def normalize_suggestions(raw, docs: list[dict], folders: list[dict],
                                                  folder_mode)
             warnings.extend(extra)
         suggestions.append({**d, "folder": folder, "tags": tags, "warnings": warnings})
+
+    # ── 口袋夹的机械闸门 ──────────────────────────────────────────────
+    # 「尽量少放」**不能只写在 prompt 里**。整批看完之后若发现进杂项的篇数超过 1/3，
+    # 说明它已经不是在兜底、而是在吸走本该分开的内容 —— 整夹撤下、退回候补
+    # （带 `candidate`，用户仍看得到模型的意图，只是不自动采纳）。
+    misc_rows = [s for s in suggestions if s["folder"].get("misc")]
+    if len(misc_rows) * MISC_MAX_DENOMINATOR > len(suggestions):
+        for s in misc_rows:
+            s["folder"] = {"action": "none", "candidate": MISC_FOLDER_NAME}
+            s["warnings"].append(
+                f"归入「{MISC_FOLDER_NAME}」的文档过多，该文件夹已整体撤下，本篇改为不归入")
+        global_warnings.append(
+            f"模型把 {len(misc_rows)}/{len(suggestions)} 篇归入了口袋文件夹"
+            f"（「{MISC_FOLDER_NAME}」），超过 1/{MISC_MAX_DENOMINATOR}，已整体撤下")
 
     return {"suggestions": suggestions, "warnings": global_warnings}
 
@@ -564,22 +643,12 @@ def clamp_max_new_folders(value: int | None) -> int:
 
 
 def clamp_seed_tags(values) -> list[str]:
-    """清洗用户手填的基础标签：trim / 去空 / 去重 / 截长 / 限量。
+    """用户手填的基础标签。名称清洗走 `clean_tag_names`（唯一内核），
+    这里只施加**用户侧特有**的条数上限 `MAX_SEED_TAGS`。
 
-    与 `_clean_tags` 同款——「深度学习 」与「深度学习」是同一个标签，这类清洗不改变
-    语义，静默即可。条数上界主要由 UI 兜（那是个手填文本框），这里防的是直接打 API。
+    条数上界主要由 UI 兜（那是个手填文本框），这里防的是直接打 API。
     """
-    if not isinstance(values, list):
-        return []
-    out: list[str] = []
-    for v in values:
-        if not isinstance(v, str):
-            continue
-        t = v.strip()
-        if not t or t in out:
-            continue
-        out.append(t[:MAX_TAG_LEN])
-    return out[:MAX_SEED_TAGS]
+    return clean_tag_names(values)[:MAX_SEED_TAGS]
 
 
 def validate_mode(value: str | None, allowed: tuple, fallback: str, label: str) -> str:

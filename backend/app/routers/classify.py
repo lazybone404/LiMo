@@ -42,6 +42,7 @@ from app.generation.classifier import (
     clamp_notes_chars,
     clamp_seed_tags,
     classify_documents,
+    clean_tag_names,
     validate_mode,
 )
 from app.llm import LLMService
@@ -121,9 +122,12 @@ async def classify_preview(
     return {
         "status": "ok",
         "model": getattr(llm, "model", "") or "",
-        # 上限经响应回显而非前端硬编码——对话框要显示「最多新建 N 个」时读这里
+        # 上限经响应回显而非前端硬编码——对话框要显示「最多新建 N 个」时读这里。
+        # ⚠️ 回显的是**本次实际生效值**（用户可把它调到 `MAX_NEW_FOLDERS_LIMIT`），
+        # **不是**默认常量——前端 `ClassifyDialog` 用它拼「最多新建 N 个」的摘要，
+        # 回显常量会让用户调成 8 之后仍看到「最多新建 5 个」（判据与执行不同源）。
         "limits": {
-            "maxNewFolders": MAX_NEW_FOLDERS,
+            "maxNewFolders": max_new,
             "maxNewFoldersLimit": MAX_NEW_FOLDERS_LIMIT,
             "notesChars": notes_chars,
             "notesCharsMax": NOTES_CHARS_MAX,
@@ -186,13 +190,11 @@ async def classify_commit(
         if a.folderId and not store.folder_exists(a.folderId):
             failed.append({"id": a.id, "error": "目标文件夹不存在"})
             continue
-        # 清洗是静默的（trim / 去空 / 去重）——与批量打标签的口径一致
-        tags: list[str] = []
-        for t in a.tags:
-            t = (t or "").strip()
-            if t and t not in tags:
-                tags.append(t)
-        assignments.append({"id": a.id, "folder_id": a.folderId, "tags": tags})
+        # 名称清洗走 `clean_tag_names`（唯一内核，与 preview 侧同源）——此前这里
+        # 是**第三份**内联实现，且漏了截长：同一条长标签，模型给的被截成 30 字、
+        # 用户手打的原样入库（模式 #54）。commit 侧**不设条数上限**（用户主权）。
+        assignments.append({"id": a.id, "folder_id": a.folderId,
+                            "tags": clean_tag_names(a.tags)})
 
     affected = store.apply_classifications(assignments) if assignments else 0
     if affected == 0 and failed:

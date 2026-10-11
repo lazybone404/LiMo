@@ -511,6 +511,46 @@ describe('ClassifyDialog — 审定编辑（纯组件，直测）', () => {
     expect(row.tags).toEqual(['综述', '对比', '综述'])
   })
 
+  /**
+   * **候补**（F7）：被「新建超限」拒掉的篇多出一个「新建：XX（模型原建议）」选项，
+   * 采纳后把模型原本的夹名**预填**进新建名输入框（用户不必重打）。
+   *
+   * 对照：删掉 select 里 `d.mode !== 'new' && !!d.candidate` 那个 option → 本条红。
+   */
+  it('超限被拒的候补 → 多一个可采纳的「新建：XX（模型原建议）」选项', () => {
+    const { onConfirm } = mount(base({
+      suggestions: [
+        { id: 'tr_a', title: '论文 A', source: 'notes', chars: 600,
+          folder: { action: 'none', candidate: '乙类' }, tags: [],
+          warnings: ['模型原本建议新建「乙类」，但新建数量已超过上限（1 个），已改为不归入'] },
+      ],
+    }))
+
+    const sel = dlg('[data-classify-folder-select="tr_a"]') as HTMLSelectElement
+    expect(Array.from(sel.options).find(o => o.value === 'new')?.textContent).toContain('乙类')
+
+    fireEvent.change(sel, { target: { value: 'new' } })
+    expect(dlg('[data-classify-row="tr_a"]')!
+      .getAttribute('data-classify-folder-mode')).toBe('new')
+    // ⚠️ 预填是关键：只给选项不给名字，用户还得照抄一遍模型的建议
+    expect((dlg('[data-classify-new-name="tr_a"]') as HTMLInputElement).value).toBe('乙类')
+
+    fireEvent.click(dlg('[data-confirm-classify]') as HTMLElement)
+    const row = onConfirm.mock.calls[0][0].find((r: { id: string }) => r.id === 'tr_a')
+    expect(row.newFolderName).toBe('乙类')
+  })
+
+  it('本来就无归处的「不归入」**不给**候补选项（两者不得混同）', () => {
+    mount(base({
+      suggestions: [
+        { id: 'tr_a', title: '论文 A', source: 'notes', chars: 600,
+          folder: { action: 'none' }, tags: [], warnings: [] },
+      ],
+    }))
+    const sel = dlg('[data-classify-folder-select="tr_a"]') as HTMLSelectElement
+    expect(Array.from(sel.options).some(o => o.value === 'new')).toBe(false)
+  })
+
   it('未分类 = 空 folderId（后端把空串当未分类，不会误建空名夹）', () => {
     const { onConfirm } = mount(base())
     fireEvent.change(dlg('[data-classify-folder-select="tr_a"]') as HTMLSelectElement,

@@ -13,7 +13,7 @@
 |------|------|
 | 后端 Python 文件 | 122（11 子目录：adapters 8 / agent 6 / core 29 / downloaders 1 / engines 15 / generation 17 / llm 4 / routers 20 / storage 2 / utils 6 / services 14）+ `limo_cli/` 9（CLI，独立于 `app/`） |
 | 前端 TS/TSX/CSS 文件 | 204（199 ts/tsx + 5 css；业务 140，测试 63，`setup.ts` 1） |
-| 前端测试文件 | 64（63 测试文件 + `setup.ts`；840 个测试用例，vitest 全绿） |
+| 前端测试文件 | 64（63 测试文件 + `setup.ts`；842 个测试用例，vitest 全绿） |
 | 后端测试文件 | 70（含 `conftest.py` 共享 fixture；2026-10 新增 `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify`） |
 | API 路由模块 | 19 业务模块（+ `__init__.py`，共 20 个 .py） |
 | API 端点 | 91（`@router.` 装饰器计数；含 `/api/cli/*` 七端点） |
@@ -21,7 +21,7 @@
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 17（docs/ 目录 .md 计数：architecture / frontend-patterns / export-pipeline / patterns / 对话协议 / AGENT-ONBOARDING / user-scenarios / plugins / prompts-inventory / BUILD / qianwen-models / ACKNOWLEDGMENTS / code-audit 1-3 + CHANGELOG / STATUS；design/ 另计） |
-| 代码行数 | 后端 app 32,539 + CLI 1,356 / 前端业务 23,387 / 前端测试 10,557（`wc -l` 累加；前端业务不含 `*.test.*` 与 `setup.ts`） |
+| 代码行数 | 后端 app 32,610 + CLI 1,356 / 前端业务 23,416 / 前端测试 10,597（`wc -l` 累加；前端业务不含 `*.test.*` 与 `setup.ts`） |
 
 ---
 
@@ -164,7 +164,7 @@
 | disconnect_watcher 公共工具 | ✅ 6 端点统一（新增 classify/preview），修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 19/19 路由全量完成，0 处 `HTTPException`（2026-10-11 复核） |
 | 前端测试 | ✅ vitest + 840 tests（63 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/classifyDialog/readingPrefs/readingLayout/docTabs 3 个/字号、接线与快捷键守卫 3 个/版本切换与预览同步 2 个/卡片偏好、切分器、骨架组件 3 个/标记解析、偏好、组件、导出接线 4 个/onAccent/installWarning） |
-| 后端测试 | ✅ 70 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io；版本布局 2 个：store_version_layout/store_legacy_migration；导出与网络 5 个：export_by_version/proxy_exemption/youtube_subtitle/markdown_sections/export_cards；**产物标记 3 个**：artifact_blocks/export_blocks/block_prompt；**智能分类 1 个**：classify，47 用例；2026-10-11 代码审查修 `fit_to_budget` 分批预算 + 每批新建额度 + 空词表兜底，+2） |
+| 后端测试 | ✅ 70 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io；版本布局 2 个：store_version_layout/store_legacy_migration；导出与网络 5 个：export_by_version/proxy_exemption/youtube_subtitle/markdown_sections/export_cards；**产物标记 3 个**：artifact_blocks/export_blocks/block_prompt；**智能分类 1 个**：classify，57 用例；2026-10-11 代码审查修 `fit_to_budget` 分批预算 + 每批新建额度 + 空词表兜底；同日五轮/六轮补策略矩阵、候补与口袋夹、回显同源、标签清洗同源，+10） |
 | CLI 契约门禁 | ✅ `scripts/check-cli` 16 项全绿（含 3 条负向对照：后端不可达 / 坏 ID / 截断显式化）；`test_query_contract.py` §8 覆盖 `/api/cli/*` 七端点 + 两条对照实验（2026-10-04） |
 | 产物自证头 | ✅ `notes`/`polished`/`process` 落盘带 `<!-- limo-meta -->` 首行（从哪来/怎么来的/是什么/可信度边界四条），`core/transcript_meta.py` 拆出 envelope 层统一编解码；历史无头产物**不判损坏**；编辑保存带回原头；思维导图等派生视图剥头（2026-10-04） |
 | 共享查询层 | ✅ `services/query.py::QueryService` 收口全部读路径（HTTP 与 CLI **同一份**实现）；顺带修掉存活四个月的 `search.py` 双 `prefix` 导致 `/api/api/search`（前端搜索一直 404 而两侧测试全绿，2026-10-04） |
