@@ -3,6 +3,7 @@
  */
 import { apiFetch, getErrorMessage, BASE, type ChatResult } from './core'
 import { parseSSEStream } from './sse'
+import { toChatSources, type ChatSource } from '../lib/chat-sources'
 
 // -- chat --
 
@@ -25,7 +26,14 @@ export interface StreamChatCallbacks {
   onText: (text: string) => void
   onToolStart: (tool: string, display: string) => void
   onStatus?: (message: string) => void
-  onToolResult?: (tool: string, summary: string) => void
+  /**
+   * `sources` = 公网来源（`search_web` 的结果列表 / `fetch_url` 抓的那一页）。
+   *
+   * ⚠️ 它是**展示用**的第三条通路，与 `onRef`（库内文档）**不是一回事**：
+   * `onRef` 是 `refs: [{docId, title}]`（点了跳预览区），这是
+   * `sources: [{title, url}]`（点了开浏览器）。别再合并成一个回调。
+   */
+  onToolResult?: (tool: string, summary: string, sources?: ChatSource[]) => void
   /** assistant 回答引用文档（P5 后端 ref 事件） */
   onRef?: (docId: string, title: string) => void
   /** 思考段流式（P5 后端 thinking 事件） */
@@ -55,6 +63,14 @@ export interface StreamChatOptions {
   docRefs?: { docId: string; title: string }[]
   /** 用户开着「追问建议」→ 带 `follow_up=1`（默认不带 = 零回归，见 `lib/chat-prefs.ts`） */
   followUp?: boolean
+  /**
+   * 用户关掉「联网」→ 带 `web_search=0`（默认**不带** = 联网，见 `lib/chat-prefs.ts`）。
+   *
+   * ⚠️ 与 `followUp` **方向相反**：那边是「开着才带参数」，这边是「关着才带参数」——
+   * 因为两者的默认值相反（追问默认关、联网默认开），而纪律是同一条：
+   * **参数只在偏离默认时才发出去**（少一个参数是「与改造前逐字相同」里可被断言的那种）。
+   */
+  webSearch?: boolean
 }
 
 export function streamChat(
@@ -63,7 +79,7 @@ export function streamChat(
   callbacks: StreamChatCallbacks,
   options: StreamChatOptions = {},
 ): void {
-  const { signal, conversationId, docRefs, followUp } = options
+  const { signal, conversationId, docRefs, followUp, webSearch } = options
   const params = new URLSearchParams({ question })
   if (docIds.length > 0) params.set('doc_ids', docIds.join(','))
   if (conversationId) params.set('conversation_id', conversationId)
@@ -71,6 +87,9 @@ export function streamChat(
   // ⚠️ 关着的时候**根本不设这个参数**（不是 `follow_up=0`）—— 与「改造前逐字相同」
   // 是同一件事的两种说法，而少一个参数是其中**可被断言**的那种。
   if (followUp) params.set('follow_up', '1')
+  // ⚠️ 同理但方向相反：**开着**（＝默认）时根本不设参数，只有 `false` 才带 `=0`。
+  // `undefined` 视为默认（开）—— 与后端 `Query(1)` 同源，别写成 `if (!webSearch)`。
+  if (webSearch === false) params.set('web_search', '0')
 
   // 追踪 SSE 是否正常结束（收到 done/error）— 对齐 generate.ts。
   // 断连时 onDone/onError 都不会触发，若不追踪则聊天 UI 永久卡加载
@@ -100,7 +119,9 @@ export function streamChat(
         else if (data.type === 'agent_status') callbacks.onStatus?.(data.message)
         else if (data.type === 'tool_start') callbacks.onToolStart(data.tool ?? '', data.display)
         else if (data.type === 'tool_result') {
-          callbacks.onToolResult?.(data.tool, data.summary)
+          // `toChatSources` 过滤 + 去重（纵深防御的第二道，主防线在后端
+          // `llm/agent.py::_safe_http_url`，见 `lib/chat-sources.ts`）
+          callbacks.onToolResult?.(data.tool, data.summary, toChatSources(data.sources))
           // ⚠️ 引用**随 `tool_result` 一起发**（后端 `agent.py::_extract_refs` → `refs: [{docId, title}]`），
           // 这里必须逐个转发给 `onRef`。此前只取了 `summary`、把 `refs` 整个丢掉，
           // 于是**实时流里 assistant 的引用 chips 从不出现**，只有重开会话才从落盘的
@@ -140,7 +161,8 @@ export interface ConvEntry {
 export interface ConvMessage {
   id: string; role: string; content: string; timestamp: string
   doc_refs?: { docId: string; title: string }[]
-  tool_calls?: { tool: string; display: string; summary?: string }[]
+  /** ⚠️ 与后端 `routers/chat.py` 的落盘白名单、前端 `chatStore.ts::toBackendMsg` **三处同源** */
+  tool_calls?: { tool: string; display: string; summary?: string; sources?: ChatSource[] }[]
   thinking?: string
   /** assistant 的追问建议（**独立第二次调用**的产物，不在 `content` 里） */
   follow_ups?: string[]

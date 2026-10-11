@@ -6,6 +6,248 @@
 
 ---
 
+## 2026-10-12 — 联网检索审查修复：整体闸门 + 取消透传 + 死分支（同日续）
+
+### 起因
+
+对话侧联网落地后做的一轮代码/漏洞审查，在**产物侧新代码**里抓到几处不对称，逐条修复。
+
+### 做了什么
+
+| # | 问题 | 修法 |
+|---|---|---|
+| P2-1 | `_search_all` **无整体闸门、也收不到 `cancel_event`** —— `search_web` 是三级降级**串行链**（Tavily 15s → SearXNG 10s → DDG），各层只兜得住单次请求；「三轮都慢」时生成一直吊在这里，**用户点了取消也不动** | 新增独立常量 `SEARCH_TIMEOUT = 60.0`；`_search_all(queries, cancel_event=None)` 用 `asyncio.wait(FIRST_COMPLETED)` 同时等「搜索完成」与「取消置位」，谁先到算谁；起跑前再查一次取消 |
+| P2-2 | `agent.py::_tool_summary` 的 `isinstance(data, list)` 分支**不可达**（三家 provider 恒返回 dict），且与 `_extract_sources`（只认 dict）形状判据不对称 | **删**分支（向收紧一侧对齐）；**不**反向给 `_extract_sources` 补 list 兼容 —— 形状判据要收在同一侧 |
+| P2-3 | `_record_tool_result` 用 `not tc["summary"]` 配对 —— 依赖「`_tool_summary` 恒返回非空串」这个**跨模块**不变量 | 加注释点明该依赖 + 失效形态（同名 result 反复覆盖首条、后面的气泡永远空着，**零报错**） |
+| P3-1 | 气泡「找到 N 条」与来源列表条数可不等（`_extract_sources` 封顶 5） | 注释定性：N 是**搜索结果总数**（工具返回了什么），5 是**展示上限**（展开列表画多长），**刻意允许不等** |
+| P3-2 | 前端 `isSafeSourceUrl` 无长度上限（后端 `_safe_http_url` 有 ≤2000），注释却自称「与后端同条件」 | 前端补 `MAX_SOURCE_URL_CHARS = 2000`（与后端同值），注释措辞对齐 |
+| P3-3 | 非流式 `POST /chat` 无联网开关 | **不修、加注释记一笔**：前端 `chatStore` 只导入 `streamChat`，`api/chat.ts::chat()` 与本端点**均无消费者** ⇒ 当前不构成用户可见问题；但记下「将来被 SDK / 脚本调用时，『关掉开关后不能上网』这句承诺在它上面不成立」 |
+
+### 为什么这么设计
+
+1. **`SEARCH_TIMEOUT` 与 `WEB_SEARCH_TIMEOUT` 刻意分成两个常量**：前者管「一次 LLM 抽词调用」、后者管「N 路并发 HTTP 搜索」。合用一个，将来为其中一件事调值时就会**静默改掉**另一件（同源漂移最典型的入口）。
+2. **超时 / 取消 / 零命中三条都返回 `[]`，共用同一条下游路径** —— 对用户而言三者能采取的行动完全相同（重试 / 换材料），差别只对读日志的人有意义，故只在日志里分开记。**不新增失败态**（分类粒度按「用户能采取的行动」划分，同模式 #53）。
+3. **取消 ≠ 失败**：`run_web_search` 在 `_search_all` 之后补一次取消判断 —— 否则用户自己按的取消会被报成「联网检索没有返回结果」（把用户的动作报成我们的失败）。`hits=0` 照留（自证头记的是事实）。
+4. **超时不保证掐断底层请求**：DDG 走 `asyncio.to_thread`，线程取消不了；这里能保证的只是「调用方不必再等」。既有约束（导出侧同款），非本轮引入。
+
+### 影响范围
+
+- `backend/app/generation/web_search.py`（`SEARCH_TIMEOUT` + `_search_all` + `run_web_search`）
+- `backend/app/llm/agent.py`（删死分支 + 注释）、`backend/app/routers/chat.py`（注释）
+- `frontend/src/lib/chat-sources.ts`（长度上限）
+- `backend/tests/test_web_search_reference.py`（34 → 39 用例，新用例各带对照实验，并逐条做过「回退修复 → 变红」验证）
+- `frontend/src/test/chatWebSearch.test.tsx`（`isSafeSourceUrl` 补长度边界断言）
+
+⚠️ **不改用户可见行为**：README / `VERSION` / `PROMPT_VERSION` 均未动（闸门只影响「多久放弃等待」，产物形态不变）。
+
+---
+
+## 2026-10-12 — 对话侧联网：一个开关 + 把「搜到了什么」露出来
+
+### 起因
+
+产物侧联网落地后，用户明确「我们后面还要进行对话侧的联网工具」。经一次 AskUserQuestion
+定下两件：**加联网开关**（能在面板上关掉）与**强化结果呈现**（把「搜了什么、来源在哪」
+露出来）。
+
+现状是**一半有一半没有**：对话侧 `search_web` / `fetch_url` 一直可用，但 ① 用户**关不掉**
+（想让它只查本地库做不到）；② 搜到的 URL **一条通路都没有** —— `tool_result` 只带
+`refs`（库内文档），前端全程只见得着「正在搜索网络: xxx」这句状态文案。
+
+### 做什么
+
+| 改动 | 落点 |
+|---|---|
+| **开关（后端）** | `routers/chat.py::_build_registry(store, *, allow_web=True)` 整组摘掉两个联网工具；`chat_stream` 加 `web_search: int = Query(1)` |
+| **开关（prompt）** | 新建一对互斥文件 `agent/prompts/web_tools.md` / `no_web.md`，`PromptLoader.build(..., web_search=True)` 二选一注入；原 `rules.md` §3 的联网措辞整节搬走（§4/§5 重编号） |
+| **开关（前端）** | `lib/chat-prefs.ts` 加 `webSearch`（默认 `true`）+ `ChatInput` 的 Globe 按钮 |
+| **来源（后端）** | `llm/agent.py::_safe_http_url`（白名单）+ `_extract_sources`（抽 title/url）；`tool_result` 事件新增 `sources` |
+| **来源（落盘）** | `_record_tool_start` / `_record_tool_result` 两个模块级函数收口白名单：`{tool, display, summary, sources}` |
+| **来源（前端）** | 新建 `lib/chat-sources.ts`（`toChatSources` / `isSafeSourceUrl` / `sourceHost`）+ `ToolCall.sources` + `MessageItem` 的 `ToolBubble` 展开列表 |
+
+### 为什么这么设计（六条决策）
+
+1. **一个开关管两个工具**（`search_web` **和** `fetch_url`）：两者都是「能不能联外网」，
+   拆成两个开关会造出「能抓网页但不能搜」这种半开状态，而它没有任何使用场景。
+2. **开关驱动两处、且必须同源**：工具表（`_build_registry`）与 system prompt 的联网层
+   （`prompt_loader.build`）由**同一个 `allow_web` 局部变量**驱动。只改一处就是模式 #54
+   的典型形态 —— 工具摘了而 prompt 还写着「你可以搜索互联网」（模型会去调一个不存在的
+   工具），或反过来（明明能搜却被告知不能）。测试 §6 有两条接线守卫钉住这两行在同一函数里。
+3. **prompt 层用「一对互斥文件」而不是占位符**：占位符要引入第二套标记解析器，而它的
+   失败形态是用户看见 `{{WEB_TOOLS}}` 原文。文件读一次即缓存，代价为零。
+   → 连带把 `base.md` / `rules.md` 里所有联网措辞清空（§10 的源码守卫钉住「工具名只许
+   出现在那两个文件里」）—— 那两份文件**两种模式下都注入**，漏一句就等于开关只关了一半。
+4. **默认值是「默认开」，与产物侧相反且都对**：产物侧 `web_search: bool = False`（**新增**
+   能力 → 默认关 = 零回归），对话侧 `Query(1)` / `webSearch: true`（给**已有**能力加开关 →
+   默认开 = 零回归）。判据同一条 —— **默认值必须等于改造前的行为**。连带地，参数只在偏离
+   默认时才发：`follow_up` 是「开着才带 `=1`」，`web_search` 是「**关着**才带 `=0`」。
+5. **`sources` 与 `refs` 是两条路，不合并**：`refs` 是**库内文档**（`{docId, title}`，点了跳
+   预览区），`sources` 是**公网来源**（`{title, url}`，点了开浏览器）。形状、跳转语义、
+   消费方都不同，合并成一个列表 = 前端分不出该跳哪，且两个功能同时坏（测试 §7 有对照）。
+   ⚠️ 「C 端不暴露完整工具结果」那条约束**不管来源列表** —— 它管的是 `fetch_url` 的 4000 字
+   正文、`lookup_doc` 的 2000 字全文；来源的 title+url 与 `refs` 已是同一种粒度。
+6. **URL 白名单：后端主防线 + 前端纵深防御**：搜索结果来自公网（Tavily / SearXNG / DDG
+   返回什么就是什么），直接进 `<a href>` 就是一条 `javascript:` / `data:` 通道。后端
+   `_safe_http_url` 在**抽取阶段**就丢掉不合规的整条（不是留个没链接的标题 —— 标题单独存在
+   无从核查）；前端 `toChatSources` 在**不可信数据的两个入口**（`api/chat.ts` 的 SSE 流 +
+   `chatStore.openConversation` 的磁盘读取）再判一次。渲染层直接渲染并注明「不是忘了判」——
+   判据住在入口，重复判会让它看起来像有两个真相源。
+
+### 顺带修的两个既有缺陷
+
+- **落盘 `tool_calls` 只存 `tool` + `display`**（连 `summary` 都丢）⇒ 流式完成后落盘的气泡
+  没有摘要，而重新打开会话从 `toBackendMsg` 拿回来的却带着摘要 —— **同一个东西两种状态**。
+  本轮补齐 `summary` + `sources`，并把配对逻辑抽成 `_record_tool_start` / `_record_tool_result`
+  两个模块级函数（照 `_append_refs` 的先例：调用点在嵌套 async generator 里，测试够不到，
+  复刻表达式正是同源漂移的来源）。⚠️ 配对判据是「**同名且尚未填过**的第一条」—— 一轮内
+  同名工具被调用两次也能各归各位（有对照实验：改成「总是填最后一条」则第一条永远空着）。
+- **`saveChatPrefs` 是整对象覆盖**：加第二个开关的那一刻就会「切 A 开关把 B 开关重置回默认」，
+  而那件事**既没报错也没提示**（用户关掉联网、顺手开追问，联网又自己开了）。`ChatInput.tsx`
+  的旧注释恰好预言过这一幕。已改为**合并式**（签名收 `Partial<ChatPrefs>`，内部
+  `{ ...loadChatPrefs(), ...p }`）—— 从根上消灭这类坑，而不是在每个调用点记得带全字段。
+
+### 影响范围
+
+- **零回归靠「默认开 + 不关就不发参数」**（不靠取值相同）：`web_search` 只在 `=== false`
+  时设成 `'0'`；`undefined` 视为默认开（与后端 `Query(1)` 同源）。
+- **非流式 `POST /chat` 端点刻意不改**：它调 `_build_registry(store)` 与
+  `prompt_loader.build(doc_text)` 都用默认 = 联网可用（零回归），前端也根本不用这个端点。
+- **产物侧零影响**：`web_search.py` 与本次的 `_extract_sources` 是两套东西（前者注入
+  参考资料、后者给前端展示来源），互不引用。
+- **不动 `PROMPT_VERSION`**：改的是对话侧 system prompt，不产生产物、也不进任何产物的
+  自证头。
+- 测试：后端 `tests/test_chat_web_search.py`（38 条，含 4 条对照实验 + 4 条接线守卫）、
+  前端 `src/test/chatWebSearch.test.tsx`（27 条，含 4 条对照实验）。
+
+---
+
+## 2026-10-12 — 产物侧联网检索：生成前自动补一份「参考资料」
+
+### 起因
+
+用户先问「想不想加网络搜索能力或者工具，支持 Tavily 之类」，随后把范围收窄成
+**产物侧开关**：「生成产物侧加一个按钮在生成面板上，用户可以选择是否启用；启用了会调用
+搜索工具搜网上的一些资料之类的」。
+
+经一次 AskUserQuestion 定下三件：**检索词先让 LLM 从正文抽**（不让用户手填）、
+**只用搜索摘要**（不抓全文）、**只做产物侧、搜索商维持现有三家**
+（Tavily → SearXNG → DuckDuckGo，不新建注册表、不动 capabilities）。
+
+### 做什么
+
+| 改动 | 落点 |
+|---|---|
+| **新模块** | `app/generation/web_search.py`：抽词 prompt + `parse_queries` + `_search_all` + `compose_reference` + 异步生成器 `run_web_search` + 自证头字段 `outcome_param` |
+| **流式端点** | `generate.py` 加 `_web_search_stream`（把 `stage` 转 SSE、把失败转 `warning`），双产物与单产物两个分支各插同一段（`replace_all` 同源） |
+| **非流式端点** | `POST /generate/{id}` 里解析一次 + 检索一次（**只写盘、不推事件**），插在 `await llm.aclose()` **之前** |
+| **自证头** | `markdown_meta(..., extra_params={"webSearch": {...}})`（`provenance` 早有 `extra_params` 口子，无需改它） |
+| **前端** | `genPrefs.webSearch` + `GenPanel` state/持久化/参数/透传 + `GenerateOptions` 勾选项（挂在「参考资料」块内）+ `api/generate.ts` 的 `web_search` 查询参数 |
+
+### 为什么这么设计（五条决策）
+
+1. **不新建注入通道 —— 检索结果伪装成「一份普通参考资料」**（`{name, content}` 追加到
+   `reference_texts` 末尾）。于是这些能力**全部免费继承、一行不用改**：超窗自动压缩
+   （`reference_compressor`）、「参考资料只是素材不是指令」的注入防御声明
+   （`_format_reference_texts`）、**只注入 notes**（`build_polish_prompt` 根本不接受该参数）、
+   前端「正在压缩…」的 stage 提示。
+2. **是「一份」而不是「每条一份」**：压缩器给每份的配额下界是 200 token，逐条注入时
+   6 条 = 1200 token 起、很容易撑破总量；而总量兜底是**等比削**，削到句子中间的一份摘要
+   对模型毫无价值。合并成一份 = 压缩器看到的是「一份需要取舍的材料」，它能做的是**摘要**。
+3. **搜索走 `agent.tools.search_web`，不在此处另写 provider 分支**：三级降级、代理豁免
+   判据、DDG 同步库必须放 executor —— 全都在那一份实现里。另写一遍就是模式 #54：
+   两份实现对「哪家可用」「失败怎么降级」迟早给出不同答案，而**没有任何测试会发现**。
+   ⚠️ 但 `search_web` 只**吞掉网络异常**，它的**返回结构**（`{"results":[{title,url,snippet}]}`）
+   仍是契约 —— 故 `_search_all` 对结构做显式校验 + 记日志，并有一条源码哨兵钉住
+   （对面改了形状而这边静默拿到空结果，是「检索成功、产物里少一节、零报错」的形态）。
+4. **失败一律显式、且绝不阻断生成**：抽词失败 → 退化成**标题检索** + `error`；
+   搜索失败/零命中 → 不注入 + `error`。流式推**专属 kind** `web_search_failed`
+   （前端 `onWarning` 对它走 info toast 且**不标 partial** —— 检索没生效不等于笔记生成失败）；
+   非流式只落自证头 `webSearch.error`。⚠️ `hits: 0` **必须留在自证头**：它是
+   「开了检索但一条都没搜到」与「压根没开检索」之间唯一的区分点（`compact_params`
+   用 `is not False` 判，数值 0 会保留）。
+5. **抽词那一次调用独立超时（60s）+ 按能力位关思考**：它发生在生成**之前**，共用生成总超时
+   会把整个生成拖死。思考档位复用 `followup.thinking_extra`（有 `reasoning` 能力位 → 关闭、
+   否则不传）—— 抽两个检索词是纯生成、推理无产出。
+
+### 影响范围
+
+- **零回归靠「后端默认 `web_search=False` + 前端不勾时不传参数」**，不靠取值相同。
+- **只注 notes**：单产物 `mode=polished` 时整段检索代码在外层 `if stream_mode != "polished"`
+  之外 ⇒ 一次都不发生（`polished` 的自证头也没有 `webSearch` 键）。
+- **不产生产物版本语义变化、不改 `PROMPT_VERSION`**：检索结果进的是**已有**的
+  `<reference_texts>` 节，不是新的 prompt 规范文本。
+- **不 bump 版本号、不动 `VERSION`**（未获发布授权）。
+- **测试**：后端 `tests/test_web_search_reference.py`（34 条，纯函数 / 检索层 / 编排 / 端点四段，
+  含 6 条对照实验与一条 `search_web` 返回结构的源码哨兵）；前端 `genParams.test.ts` 加
+  `web_search` 序列化 3 条。
+- **对照实验已实测**：注释掉 `params.set('web_search', …)` → 前端 2 条红；去掉 `_search_all`
+  的 URL 去重 → 后端 1 条红；把单产物分支的 `stream_mode != "polished"` 破坏 → 「整理版不检索」
+  那条红。
+
+---
+
+## 2026-10-12 — 对话浮窗的三条交互：独立字号缩放 / 回到最新 / 代码块复制
+
+### 起因
+
+用户：「ai 对话的那一个对话框也应该像预览区那样可以 ctrl 滚轮放大缩小，就是其他一些 agent
+常见并且容易加进来的机制也可以考虑加入一下」。
+
+拆成三层：① **主** —— 对话消息区支持 `Ctrl+滚轮` 调字号；② 顺带看有哪些「同类 agent 常见、
+实现成本低」的机制值得加；③ 可上网查参考。经一次 AskUserQuestion 定下两件事：
+**字号范围 = 对话独立一份**（不与阅读区共用）、**附加机制 = 「回到最新」+「代码块一键复制」**
+（明确**不要**「↑ 键编辑上一条」与「Ctrl+F 对话内搜索」）。
+
+### 做什么
+
+| 改动 | 落点 |
+|---|---|
+| **对话字号缩放（独立一份）** | 新 `lib/chat-font.ts`（key `mbw_chatFont`，`applyChatFont` 写 `<html>` 的 `--chat-font-scale`）；`index.css` 加 `--chat-font-scale` 默认值 + `.chat-msg-sm/md/lg` 三条（`calc(<基准px> × var(--chat-font-scale))`）；`ai-chat/scale.ts` 的 `msg` 字段由 Tailwind 字面量改这三个类名；`store/index.ts` 模块副作用区加启动 `apply(chatFont)` |
+| **滚轮监听** | `MessageList` 的滚动容器挂**原生** `addEventListener('wheel', …, { passive: false })`（照抄 `PreviewArea` 的既有写法与理由） |
+| **「回到最新」浮层按钮** | 同文件加 `atBottom` state + 右下角 `ArrowDown` 按钮，点击 `scrollTo({ behavior: 'smooth' })` |
+| **代码块一键复制** | `ChatMarkerContent` 的 `ChatText` 加 `components={{ pre: ChatPre }}`；新增 `ChatPre`（`useRef` + `textContent` 复制、hover/focus 悬浮按钮、流式中隐藏） |
+
+### 为什么这么设计（三条决策）
+
+1. **字号「独立一份」而不是与 `--read-font-size` 共用**：两者是不同宿主上的不同排版 ——
+   预览区是宽屏长文（基准 16px + 版宽/行高/段式一整套），气泡是窄浮窗里的短回复
+   （基准 13–15px，还随浮窗宽度切 sm/md/lg 三档）。共用一个倍率意味着「调大阅读字号」
+   会把气泡一起撑大，反之亦然 —— 而这对用户是两件不同的事（阅读要疏朗、对话要紧凑）。
+   ⚠️ **档位换算与区间仍复用 `reading-prefs.nextFontScale` / `FONT_SCALE_RANGE`**（`toBe`
+   身份断言钉住）—— 共享的是「倍率怎么算」，分家的只是「算出来写给谁」。
+   ⚠️ 与 `chat-prefs.ts`（`mbw_chatPrefs`）**刻意不合并**：那一个控制「下一次请求带什么
+   参数」，是纯瞬时读取值、不写 DOM；字号是「正文怎么显示」，与 `card-prefs` / `marker-prefs` 同族。
+2. **「回到最新」按钮的显隐与自动跟随同源**（同一个 `< 40px` 判据、同一个 `onScroll` 里更新）
+   —— 各写一套判据就会在阈值附近互相矛盾（按钮在说「你不在底部」而自动跟随认为在）。
+   按钮用 `opacity` 而非 `hidden` 显隐：后者会让代码块/内容在 hover 时高度跳动。
+3. **复制按钮挂 `pre` 而不是 `code`，且不复用产物侧的 `CodeBlock`**：`react-markdown` v10
+   已移除 `inline` prop，块级是 `pre > code`、**行内是裸 `code`** —— 挂 `code` 会给每个
+   `` `x` `` 也配一个复制按钮。而产物侧 `markdown-components.tsx::CodeBlock` 带
+   `SyntaxHighlighter`（语言注册 + 主题）+ 标题栏 + 行号，是**产物**的渲染路径，挂进来
+   = 把全部历史消息的代码块换成另一套观感（与 `ChatMarkerContent` 文件头那条「不复用
+   `preview/MarkerContent`」是同一类静默回归）。这里只要「原样的 `<pre>` + 一个按钮」，
+   于是代码文本就是 `textContent`，不必从 React children 递归提取。
+
+### 影响范围
+
+- **零回归是「默认值 = 现状」**：`CHAT_FONT_DEFAULTS.fontScale = 1.0`，且 `--chat-font-scale`
+  的 `:root` 默认值也是 `1` —— 没调过的用户看到的字号与改造前逐字相同。对话侧的
+  `input` / `btn` / `icon` / `avatar` 等档位字段**一律不动**（只 `msg` 一个字段改了取值）。
+- **键盘路径不动**：`Ctrl+=` / `Ctrl+-` / `Ctrl+0` 仍只调阅读字号（用户拍板「对话独立一份」，
+  键盘是「阅读」这条链的入口）。对话字号只有滚轮一条入口。
+- **不进导出**：三者全在对话渲染路径，产物/导出侧零改动。
+- **测试**：新增 `chatFont.test.ts`（13 条，含「两份字号互不干扰」的双向断言）与
+  `chatMessageList.test.tsx`（14 条，含「连滚两次真的再进一档」「行内代码不配按钮」
+  两条对照实验）。既有的 21 个测试域全绿。
+
+### 明确不做
+
+- 「↑ 键编辑上一条」与「对话内搜索 Ctrl+F」（用户在这轮问答里未选）
+- 设置页暴露对话字号（滚轮已够；少一个入口就少一处漂移）
+- 会话列表 / 输入框的字号缩放（只作用于消息区 —— 那是「读」的地方）
+
+---
+
 ## 2026-10-11 — 内置模型预设表更新（48 → 58 条）
 
 ### 起因

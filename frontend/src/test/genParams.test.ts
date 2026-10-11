@@ -87,3 +87,27 @@ describe('streamGenerate — doc_direct 序列化', () => {
     expect(queryOf().has('doc_direct')).toBe(false)
   })
 })
+
+describe('streamGenerate — web_search 序列化', () => {
+  it('开启时出现在 URL 里', () => {
+    streamGenerate('doc1', { mode: 'notes', web_search: true }, cb())
+    // ⚠️ 对照（验证有区分力）：注释掉 api/generate.ts 里的 params.set 行 → 本条变红。
+    //    这正是模式 #6 的形态：勾选框好好的、后端收到默认值、「上线了但没反应」。
+    expect(queryOf().get('web_search')).toBe('true')
+  })
+
+  it('未指定时不带该参数（后端默认不检索，零回归）', () => {
+    streamGenerate('doc1', { mode: 'notes' }, cb())
+    expect(queryOf().has('web_search')).toBe(false)
+  })
+
+  /**
+   * ⚠️ 与 `doc_direct` 同一分水岭：`web_search` 的「不传」= 后端 `False` = 不开，
+   * 与「显式传 false」在服务端同义 —— 但 API 层仍按 `!== undefined` 判（模式 #6），
+   * 不靠调用方自觉。开→关 的路径由 GenPanel 传 `undefined` 表达（见其 options 拼装）。
+   */
+  it('显式 false 也照样传（关掉的意图不能被吞）', () => {
+    streamGenerate('doc1', { mode: 'notes', web_search: false }, cb())
+    expect(queryOf().get('web_search')).toBe('false')
+  })
+})

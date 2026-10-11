@@ -2,7 +2,8 @@
 
 > 完整记录项目中所有 LLM 提示词，供审视和优化。
 > 生成日期：2026-07-15
-> 最后更新：2026-10-11（§14 智能分类 prompt **改四轮**：空库文案**按策略拆两份**（共用时 `reuse_or_new` 被静默改写成 `tags_only`）+ 新增**杂项口袋夹**条款（只入 `reuse_or_new`，不占新建额度、由收口层机械闸门兜底）；此前三轮：补「分批 20 篇/批 + `disable_thinking` 关思考（与 `reasoning_effort` 互斥）+ `CLASSIFY_EMPTY_OUTPUT`」；二轮：文件夹/标签两段改为按用户策略生成 + 补两项策略表与 `CLASSIFY_BAD_OPTION`；§13 版本表补至 `"13"`）
+> 最后更新：2026-10-12（新增 §15 联网检索的抽词 `QUERY_PROMPT` —— 生成前**附带**一次调用从正文抽 2 个检索词；产出的词**不进产物**、只驱动搜索，故 **不 bump `PROMPT_VERSION`**，判据锚是「产物变了没有」而不是「动了几段 prompt」）
+> 此前 2026-10-11（§14 智能分类 prompt **改四轮**：空库文案**按策略拆两份**（共用时 `reuse_or_new` 被静默改写成 `tags_only`）+ 新增**杂项口袋夹**条款（只入 `reuse_or_new`，不占新建额度、由收口层机械闸门兜底）；此前三轮：补「分批 20 篇/批 + `disable_thinking` 关思考（与 `reasoning_effort` 互斥）+ `CLASSIFY_EMPTY_OUTPUT`」；二轮：文件夹/标签两段改为按用户策略生成 + 补两项策略表与 `CLASSIFY_BAD_OPTION`；§13 版本表补至 `"13"`）
 
 ---
 
@@ -21,6 +22,7 @@
 - [12. 审视点清单](#12-审视点清单)
 - [13. 提示词版本（PROMPT_VERSION）](#13-提示词版本prompt_version)
 - [14. 智能分类 — 文档归类（`CLASSIFY_PROMPT`）](#14-智能分类--文档归类classify_prompt2026-10-11)
+- [15. 生成管道 — 联网检索的抽词（`QUERY_PROMPT`）](#15-生成管道--联网检索的抽词query_prompt2026-10-12)
 
 ---
 
@@ -542,16 +544,17 @@ POST /process/{id}
 
 ### 9.1 分层 System Prompt（`app/agent/prompts/`）
 
-**文件**：`app/agent/prompts/base.md`（角色定义）+ `rules.md`（硬约束）+ `formats.md`（可选呈现）+ `__init__.py`（`PromptLoader`）
+**文件**：`app/agent/prompts/base.md`（角色定义）+ `web_tools.md` / `no_web.md`（**联网层，一对互斥文件，二选一注入**）+ `rules.md`（硬约束）+ `formats.md`（可选呈现）+ `__init__.py`（`PromptLoader`）
 
-不再用 chat.py 内联 `SYSTEM_PROMPT` 字符串——四层叠加（参照 AGENTS.md 模式）：
+不再用 chat.py 内联 `SYSTEM_PROMPT` 字符串——**五层叠加**（参照 AGENTS.md 模式）：
 
 ```python
 loader = PromptLoader()          # 模块级单例
-system = loader.build(doc_context)  # base + rules + formats + 动态注入的当前文档摘要
+system = loader.build(doc_context, web_search=allow_web)  # base + 联网层 + rules + formats + 当前文档
 ```
 
 - `base.md` → 角色定义
+- **联网层**（2026-10-12）→ `web_tools.md`（能用 `search_web` / `fetch_url` + 搜索结果的使用规则）**或** `no_web.md`（明确声明没有联网能力，不许声称「根据最新数据」、不许编造来源）
 - `rules.md` → 硬约束（禁止编造、先查再答…）
 - `formats.md` → 回答可用的**语义块**（`limo-block` 的四个对话侧类型：`card-group` 卡片组 / `follow-up` 追问建议 / `info` 信息卡 / `digest` 摘要卡），见 9.5
 - `doc_context` → 运行时注入的文档内容（`smart_truncate(rawText, 1000)` 按句子边界截断）
@@ -559,9 +562,17 @@ system = loader.build(doc_context)  # base + rules + formats + 动态注入的�
 ⚠️ `formats` 排在 `rules` 之后、`doc_context` 之前：它是「回答怎么呈现得好读」的**补充**，
 不是硬约束（排 `rules` 前会让它读起来比「禁止编造」更重要）；排 `doc_context` 后则像文档的一部分。
 
+⚠️ **联网层为什么是一对文件而不是占位符**（2026-10-12）：占位符要引入第二套标记解析器，
+而它的失败形态是**用户看见 `{{WEB_TOOLS}}` 原文**；文件读一次即缓存，代价为零。
+⚠️ 与 `allow_web` **同源**：工具表（`routers/chat.py::_build_registry`）与这一层由**同一个
+布尔量**驱动 —— 只改一处就是模式 #54（模型去调一个不存在的工具，或明明能搜却被告知不能）。
+⚠️ 因此 **`base.md` / `rules.md` 里不许再出现 `search_web` / `fetch_url`**（那两份两种模式下
+**都**注入，漏一句 = 开关只关了一半）；`tests/test_chat_web_search.py` 有源码守卫钉住。
+⚠️ 反问句也搬到 `no_web.md`（原 `rules.md` §4 末条「禁止在未搜索的情况下声称『根据最新数据…』」）。
+
 ### 9.2 运行时扩充
 
-对话上下文通过 `search_docs` / `lookup_doc` / `list_docs` 三个工具访问知识库；`search_web`（Tavily → SearXNG → DDG 降级）+ `fetch_url`（trafilatura/Jina）联网。
+对话上下文通过 `search_docs` / `lookup_doc` / `list_docs` 三个工具访问知识库；`search_web`（Tavily → SearXNG → DDG 降级）+ `fetch_url`（trafilatura/Jina）联网。⚠️ **后两个由面板上的联网开关控制**（`lib/chat-prefs.ts` 的 `webSearch`，默认开）—— 关掉时它们**整组**从工具表里摘掉，system prompt 同时换成 `no_web.md`。
 
 ### 9.3 Agent SSE 事件流
 
@@ -569,7 +580,8 @@ system = loader.build(doc_context)  # base + rules + formats + 动态注入的�
 meta        → budget/price 等上下文元信息（对话预算 = 窗口×0.7）
 agent_status→ "正在分析问题..."              ← 工具判定前
 tool_start  → tool + display（安全文案）
-tool_result → summary + refs（引用文档 docId/title，完整结果只传 LLM）
+tool_result → summary + refs（引用文档 docId/title）+ sources（公网来源 title/url，2026-10-12）
+              （完整工具结果只传 LLM；refs 与 sources 是**两条路**：前者跳预览区、后者开浏览器）
   （可能多轮）
 thinking    → reasoning_content（思考段，流式）
 text        → 流式 token
@@ -577,7 +589,7 @@ done        → 结束（不带 usage；token/费用统计依赖 meta.price 前�
 compressed  → 长对话 LLM 压缩通知（agent.py 发）
 ```
 
-**C 端隐私**：`tool_result` 仅推送摘要（计数/长度），完整结果只传给 LLM 不出现在前端 UI。`tool_start` 的 `display` 由后端 `_tool_display()` 生成安全文案。无独立 `ref` 事件——引用随 `tool_result.refs` 携带。
+**C 端隐私**：`tool_result` 仅推送摘要（计数/长度），完整结果只传给 LLM 不出现在前端 UI。`tool_start` 的 `display` 由后端 `_tool_display()` 生成安全文案。无独立 `ref` 事件——引用随 `tool_result.refs` 携带。⚠️ **`sources` 不在「完整结果」之列**（2026-10-12）：它推的是 `{title, url}`（title 截到 200 字），与 `refs` 里已有的 `{docId, title}` 是同一种粒度；那条约束管的是 `fetch_url` 的 4000 字正文、`lookup_doc` 的 2000 字全文。URL 由 `llm/agent.py::_safe_http_url` 过滤（http/https + 无空白 + ≤2000 字）。
 
 ### 9.5 回答的语义块（`formats.md`，2026-10-11）
 
@@ -617,8 +629,8 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 | `search_docs` | 跨所有文档搜索相关内容 |
 | `lookup_doc` | 查看指定文档的完整内容 |
 | `list_docs` | 列出当前知识库中的可用文档 |
-| `search_web` | 搜索互联网（Tavily → SearXNG → DuckDuckGo 三级降级） |
-| `fetch_url` | 抓取指定网页的正文内容 |
+| `search_web` | 搜索互联网（Tavily → SearXNG → DuckDuckGo 三级降级）。⚠️ **由联网开关控制**，关掉时整个工具不注册 |
+| `fetch_url` | 抓取指定网页的正文内容。⚠️ 同上，与 `search_web` **同生同灭**（一个开关管两个，避免「能抓不能搜」的半开状态） |
 
 ### 9.6 追问建议（`FOLLOWUP_PROMPT` / `ARTIFACT_FOLLOWUP_PROMPT`，2026-10-11）
 
@@ -873,6 +885,7 @@ light 档在默认 `warm` 基调下离正文底只差 9 个灰阶、底色差 6 
 | 合成管道的维度发现 / 逐篇抽取 prompt（`generation/synthesis.py`） | ✅ |
 | 参考文件摘要 prompt（`generation/reference_compressor.py`） | ✅ |
 | 只改代码逻辑、**不改发给模型的文本**（换调用顺序、改拼接实现） | ❌ |
+| **对话侧** system prompt（`agent/prompts/*.md` —— 含 2026-10-12 的联网层） | ❌（**不产生产物、不进任何自证头**。⚠️ 与 `formats.md` 同一处境：改了确实会让同一个问题得到不同回答，但 `PROMPT_VERSION` 是**产物**的来历字段，对话没有产物可标） |
 | 只改 temperature / 超时 / max_tokens 等**参数** | ❌（参数进 `generated.params`，两者是不同维度） |
 | 图片处理 prompt（`routers/process.py` 的 `IMAGE_PROMPTS` 4 种模式） | ✅（`artifact_meta` **无条件**写 `promptVersion`，process 产物也带它——与生成产物**共用同一个版本号**，故改图片 prompt 同样要 bump） |
 
@@ -1015,6 +1028,68 @@ process 产物确实带 `promptVersion`，而分类根本没有产物可带。
 
 ---
 
+## 15. 生成管道 — 联网检索的抽词（`QUERY_PROMPT`，2026-10-12）
+
+**位置**：[backend/app/generation/web_search.py](../backend/app/generation/web_search.py)（模块级单例常量）
+**入口**：`build_query_prompt()` ← `_extract_queries()` ← `run_web_search()` ← `POST /generate/{id}` / `GET /generate/{id}/stream`（勾选「联网检索」时）
+
+生成前**附带**的一次调用：读正文开头，给出 2 个能直接丢进搜索引擎的检索词。
+产出的检索词**不写进任何产物**——它只决定「去搜什么」，搜回来的摘要另走
+`<reference_texts>` 通道（见 [§2 生成管道 — Notes](#2-生成管道--结构化-笔记-notes)）。
+
+### 15.1 节构成与条款
+
+模板只有四个占位符 `{n}` / `{limit}` / `{title}` / `{text}`，一段三段式要求
+（`n` = `MAX_QUERIES` = 2，`limit` = `MAX_QUERY_CHARS` = 40，`text` 取正文前
+`TEXT_HEAD_CHARS` = 2000 字）：
+
+| 条款 | 为什么写它 |
+|---|---|
+| 「每个检索词是一句能直接丢进搜索引擎的**短查询**（不超过 40 字），带足限定词；**不要写成问句，也不要写成一句完整的话**」 | 模型的默认倾向是写自然语言问句（「XX 是什么」）——那会命中问答站而非资料。长句还会被搜索引擎切成词袋，限定词全部失效。`parse_queries` 侧另有一次 `[:MAX_QUERY_CHARS]` 截断兜底 |
+| 「2 个检索词**方向要不同**：一个对准材料主题本身，另一个对准材料里提到的**具体事物**（人名、产品、事件、术语）」 | 同主题的两个查询在搜索结果上**高度重叠**（真正的去重发生在 `_search_all`，而它只能去掉已经撞上的）。**对准主题**保证「有没有背景补充」，**对准具体事物**保证「有没有这篇独有的信息」——后者才是「材料本身信息量偏少」时救场的那一路 |
+| 「只从材料里出现过的内容出发，**不要凭空想象主题**」 | 抽词时模型只看到标题 + 前 2000 字，很容易顺着标题脑补出一个更高大上的主题，搜回来的东西与产物无关 |
+| 输出「一行一个、每行以 `- ` 开头。**不要编号、不要解释、不要其他文字**」 | 抓取靠 `LIST_ITEM_RE`（与追问侧共用）。⚠️ 兜底（模型写成裸行）刻意排除**以冒号结尾**的行——「以下是可以用于搜索的检索词：」是最常见的一种"看起来像查询词"的噪音。⚠️ **不复用 `followup.extract_followup_items`**：那个函数带 `MIN_QUESTION_CHARS = 4` 的过短过滤，而中文检索词天然可能只有两三个字（「通胀」「美联储」），借它会**静默丢掉短而有效的关键词** |
+
+### 15.2 参数
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| `temperature` | 0.3 | 抽词要稳定；这个值不改变「抽不抽得出来」，只影响同义改写 |
+| 思考档位 | `extra_body=thinking_extra(llm)` | **按能力位分两支**：有 `reasoning` 能力位 → **关闭思考**（`DISABLE_THINKING_EXTRA`，与 `followup.py` / 流式追问**共用同一份形状**）；无该能力位 → `extra_body=None` **不传**。抽两个检索词是纯生成、推理无产出，而代价是 token 预算与首 token 的等待 |
+| 超时 | `WEB_SEARCH_TIMEOUT` = **60s**（独立一层） | ⚠️ **必须独立成层**：它发生在生成**之前**，共用生成总超时的话模型挂起时会把整个生成一起拖死（用户等不到任何产物）。与 `FOLLOWUP_TIMEOUT` 同值 —— 都是「一次附带的、可放弃的调用」 |
+| 取消 | `cancel_event` 置位时**不发起调用** | 用户已经取消，不该再花钱（与对话侧追问的 `should_attempt` 同款语义） |
+| 失败 | **一律返回 `[]`，永不抛** | 抽不出来不是错误，是「退化用标题检索」的触发条件（见下） |
+
+### 15.3 降级：抽词失败 → **用标题检索**（是本节的唯一降级，且它显式可见）
+
+`_extract_queries` 返回空 ⇒ `run_web_search` **不静默跳过**，而是拿标题当检索词重试，
+并把 `outcome.error = "未能从正文抽取检索词，已改用标题检索"` 带出去。判据是
+「**用户勾了开关却什么都没发生**」是「失败显式化」要消灭的形态：静默跳过时，产物
+看不出异常、toast 也没有，用户唯一的线索是「搜索结果好像不太对」。
+
+⚠️ **与 `reference_compressor` 的降级链（摘要 → 截断 → 总量兜底）不同源**：那条链是
+「必须给模型一些东西，所以逐级妥协」，这里只有一级（标题），且**每一级都显式**。
+
+### 15.4 ⚠️ 不 bump `PROMPT_VERSION`
+
+§13.1 的判据是「**这次改动会不会让同一个输入产生不同的输出**」，但那条的前提是
+**产生产物**——版本号只写进产物自证头的 `generated.promptVersion`（`artifact_meta()`）。
+本次抽词：
+
+- **不产生产物**，与 §14.5 的分类 prompt 同款；
+- 它影响的是**喂给模型的参考资料**，而那一段进的是**已有的** `<reference_texts>` 节
+  ——prompt 的**模板**一个字没改。
+
+⚠️ **不要照 §13.1 表里「参考文件摘要 prompt ✅ bump」那一行类推**：那条成立是因为
+压缩后的摘要**直接进产物正文**（同一个输入会产出不同的笔记）；抽词的结果**不进正文**，
+它只决定去搜什么。**判据的锚是「产物变了没有」，不是「这一轮动了几个 prompt」**。
+
+推论：要判断这次检索用哪版抽词规范，看的是**代码**本身；产物侧只能看到
+`generated.params.webSearch`（`queries` / `hits` / `error`），那记录的是**这次实际搜了什么**，
+不是「用的哪版规范」。
+
+---
+
 ## 附录 A: Prompt 文件索引
 
 | 文件 | 包含的 Prompt / 模块 |
@@ -1038,6 +1113,7 @@ process 产物确实带 `promptVersion`，而分类根本没有产物可带。
 | [backend/app/generation/classifier.py](backend/app/generation/classifier.py) | `CLASSIFY_PROMPT` + `build_classify_prompt()` + `_folder_section()` / `_tag_section()`（两段按用户策略生成）— 智能分类（见 §14）；另含 `collect_doc_inputs` / `fit_to_budget` / `normalize_suggestions` 纯函数与 `clamp_*` / `validate_mode` 四个入参收口 |
 | [backend/app/generation/reference_compressor.py](backend/app/generation/reference_compressor.py) | `COMPRESS_PROMPT` — 参考文件超窗摘要（与 §14 对照：那侧**失败降级返回 `None`**，分类侧**不降级**） |
 | [backend/app/agent/followup.py](backend/app/agent/followup.py) | `FOLLOWUP_PROMPT`（对话侧）/ `ARTIFACT_FOLLOWUP_PROMPT`（产物侧）—— 追问建议，两者**共用条款常量 `FOLLOWUP_RULES` 与解析层**，见 §9.6；另含 `digest_answer` / `extract_followup_items` / `has_usable_followup` / `should_attempt` / `thinking_extra` / `_run_followup_llm` / `generate_followups` / `generate_artifact_followups` |
+| [backend/app/generation/web_search.py](backend/app/generation/web_search.py) | `QUERY_PROMPT` + `build_query_prompt()` / `parse_queries()` — 产物侧联网检索的**抽检索词**调用（见 §15）；另含 `_search_all`（并发调 `agent.tools.search_web` + 按 URL 去重）/ `compose_reference`（拼成**一份**参考资料）/ `run_web_search` 异步生成器 / `outcome_param` 自证头字段 |
 
 ## 附录 B: 温度参数速查
 
@@ -1050,10 +1126,13 @@ process 产物确实带 `promptVersion`，而分类根本没有产物可带。
 | 参考 | 参考文件超窗摘要（`COMPRESS_PROMPT`） | 0.3 | `min(max(target_chars×2, 1024), 65536)` | 1（目标可能较长） |
 | 对话 | 工具调用 / 最终回答 | 0.7 | — | — |
 | 追问 | 对话侧 / 产物侧（`_run_followup_llm`） | 0.3 | —（不传，SDK 默认） | 0（**直调 SDK**，不经 `LLMService`，无续写） |
+| 联网检索 | 抽检索词（`_extract_queries`） | 0.3 | —（不传，SDK 默认） | 0（**直调 SDK**，不经 `LLMService`，无续写） |
 
-⚠️ 追问那一行是**唯一不经 `LLMService` 的调用**（`_run_followup_llm` 直调
-`client.chat.completions.create`）⇒ `max_tokens` / `max_continuations` 都没有落点。它的
-**思考档位按模型分两支**（有档位关闭 / 无档位不传），见 §9.6 与 `followup.thinking_extra`。
+⚠️ **追问与联网检索抽词是仅有的两处不经 `LLMService` 的调用**（各自直调
+`client.chat.completions.create`）⇒ `max_tokens` / `max_continuations` 都没有落点。两者的
+**思考档位都按模型分两支**（有档位关闭 / 无档位不传），且**共用同一份形状**
+（`followup.thinking_extra` / `DISABLE_THINKING_EXTRA`，见 §9.6、§15.2 与
+「关键设计决策 → 公共常量的家」那张表）。
 
 ## 附录 C: PromptComposer 标签速查
 

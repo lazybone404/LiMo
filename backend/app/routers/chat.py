@@ -88,8 +88,18 @@ def _make_list_docs(store: object):
     return list_docs
 
 
-def _build_registry(store: object) -> ToolRegistry:
-    """构建工具注册中心 — 参照 Pi 的扩展工具动态注册"""
+def _build_registry(store: object, *, allow_web: bool = True) -> ToolRegistry:
+    """构建工具注册中心 — 参照 Pi 的扩展工具动态注册。
+
+    `allow_web=False` 时**整组**摘掉 `search_web` / `fetch_url`（不是只摘搜索）——
+    两者是同一件事（「这台机器能不能联外网」），只摘一个会造出「能抓网页但不能搜」
+    这种用户无法理解、也没法配的半开状态。
+
+    ⚠️ **必须与 prompt 层同源**：关掉时调用方要同时传 `web_search=False` 给
+    `prompt_loader.build`，否则 system prompt 里还写着「可使用 search_web…」而工具表
+    里已经没有它 —— 模型会调用一个不存在的工具（轻则白写一段，重则服务端 400）。
+    两个开关在 `chat_stream` 里由**同一个**布尔量驱动（见该函数）。
+    """
     reg = ToolRegistry()
     reg.register(ToolDef(
         "search_docs", "跨所有文档搜索相关内容",
@@ -109,16 +119,17 @@ def _build_registry(store: object) -> ToolRegistry:
         {"type": "object", "properties": {}},
         _make_list_docs(store),
     ))
-    reg.register(ToolDef(
-        "search_web", "搜索互联网获取最新信息，返回 JSON 结果列表。当本地文档不足以回答时使用",
-        {"type": "object", "properties": {"query": {"type": "string", "description": "搜索关键词"}}, "required": ["query"]},
-        search_web,
-    ))
-    reg.register(ToolDef(
-        "fetch_url", "抓取指定网页的正文内容，返回 Markdown。用于精读搜索结果中的网页",
-        {"type": "object", "properties": {"url": {"type": "string", "description": "网页 URL"}}, "required": ["url"]},
-        fetch_url,
-    ))
+    if allow_web:
+        reg.register(ToolDef(
+            "search_web", "搜索互联网获取最新信息，返回 JSON 结果列表。当本地文档不足以回答时使用",
+            {"type": "object", "properties": {"query": {"type": "string", "description": "搜索关键词"}}, "required": ["query"]},
+            search_web,
+        ))
+        reg.register(ToolDef(
+            "fetch_url", "抓取指定网页的正文内容，返回 Markdown。用于精读搜索结果中的网页",
+            {"type": "object", "properties": {"url": {"type": "string", "description": "网页 URL"}}, "required": ["url"]},
+            fetch_url,
+        ))
     return reg
 
 
@@ -139,6 +150,48 @@ def _append_refs(refs: list[dict], seen: set[str], incoming: list | None) -> Non
         if rid and rid not in seen:
             seen.add(rid)
             refs.append(r)
+
+
+def _record_tool_start(tool_calls: list[dict], event: dict) -> None:
+    """`tool_start` → 落盘条目（原地追加）。
+
+    ⚠️ 这是**落盘白名单**：只存这四个字段。`args` 刻意不存（含用户输入的搜索词 / URL，
+    且前端已由 `display` 表达）。加字段时别忘了前端 `chatStore.ts::toBackendMsg`
+    那份成对白名单，以及 `core/types.py::ChatMessage.to_dict()`（整体透传、不校验内部）。
+
+    `summary` / `sources` 此刻还没有（工具没跑完），由 `_record_tool_result` 回填 ——
+    此前这里**只存了 `tool` 与 `display`**，于是「流式完成后落盘的气泡没有摘要」，
+    而重新打开会话从 `toBackendMsg` 拿回来的却带着摘要 ⇒ 同一个东西两种状态。
+
+    与 `_append_refs` 同因抽成模块级：调用点在嵌套的 async generator 里，测试够不到。
+    """
+    tool_calls.append({
+        "tool": event["tool"],
+        "display": event.get("display", ""),
+        "summary": "",
+        "sources": [],
+    })
+
+
+def _record_tool_result(tool_calls: list[dict], event: dict) -> None:
+    """`tool_result` → 回填**同名且尚未填过的第一条**（原地修改）。
+
+    agent.py 一轮内先发全部 `tool_start`、再逐个 `tool_result`（`for tc in
+    msg.tool_calls` 里 await，严格顺序、非并发），故配对稳定；同一轮里同名工具被调用
+    两次也能各归各位（第一条填完就轮到第二条）。
+
+    ⚠️ **配对判据是「`summary` 尚为空」—— 它依赖另一个模块的不变量**：
+    `agent.py::_tool_summary` 必须**恒返回非空串**（它的每个分支都 return 了文案，最差
+    也是 `"搜索完成"`）。若哪天给它加一条「未知工具返回 `""`」的路径，这里的
+    `not tc["summary"]` 就会把**同一个气泡**认成「还没填过」，于是后续的同名
+    `tool_result` 反复覆盖第一条、后面的气泡永远空着 —— **零报错**。
+    跨模块隐式契约，改 `_tool_summary` 的返回可能时要回来看这里。
+    """
+    for tc in tool_calls:
+        if tc["tool"] == event["tool"] and not tc["summary"]:
+            tc["summary"] = event.get("summary", "")
+            tc["sources"] = event.get("sources", [])
+            return
 
 
 # ── 路由 ──
@@ -163,6 +216,12 @@ async def chat(req: ChatRequest, request: Request, store=Depends(get_store), con
     history = trim_history(req.history or [], budget, history_limit=cc.get("history_limit", 0))
 
     agent = AgentRunner(llm, max_rounds=3)
+    # ⚠️ **非流式端点没有联网开关**，两处都用默认值（工具表含 search_web/fetch_url、
+    # system prompt 是联网层）。这是**已知的不对称**，不是漏改 —— 前端 `chatStore`
+    # 只导入 `streamChat`，`api/chat.ts::chat()` 与本端点目前**都没有消费者**。
+    # 但记一笔：将来 SDK / 脚本直接调它时，「关掉联网开关后 AI 不能上网」这句承诺
+    # 在它上面**不成立**。真要用起来，得照 `chat_stream` 的做法把 `allow_web` 一路
+    # 传给这两处（那个局部变量驱动的两处必须同时改，见 `web_search` 查询参数的注释）。
     _build_registry(store).apply_to(agent)
 
     log.info("Chat start", question_len=len(req.question), docs=len(req.doc_ids))
@@ -192,6 +251,7 @@ async def chat_stream(
     model_id: int | None = None,
     conversation_id: str = Query(""),
     follow_up: int = Query(0),
+    web_search: int = Query(1),
     store=Depends(get_store),
     config=Depends(get_config),
 ):
@@ -199,6 +259,11 @@ async def chat_stream(
 
     `follow_up=1` = 用户开启了「追问建议」：回答结束后若模型没自己写可用的 `follow-up`
     块，由后端**补调一次** LLM 并推 `followup` 事件（见 `agent/followup.py`）。
+
+    `web_search=0` = 用户关掉了「联网」：整组摘掉 `search_web` / `fetch_url`，并把
+    system prompt 的联网层换成离线声明。**默认 1 = 改造前的现状**（联网一直可用）。
+    ⚠️ 这个默认值与产物侧 `GenerateRequest.web_search`（默认 `False`）**方向相反且都是对的**
+    —— 那边是**新增能力**（默认关 = 零回归），这边是**给已有能力加开关**（默认开 = 零回归）。
     """
 
     doc_list = [d.strip() for d in doc_ids.split(",") if d.strip()]
@@ -227,8 +292,11 @@ async def chat_stream(
         raise AppError("CHAT_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
     # ── 工具注册 + 上下文预算组装（C2：预算 = 窗口×0.7，分配 system→doc→history）──
+    # ⚠️ `allow_web` 驱动**两处**：工具表（这里）与 system prompt 的联网层（下方
+    #    `prompt_loader.build`）。拆成两个变量就是同源漂移的入口。
+    allow_web = bool(web_search)
     agent = AgentRunner(llm, max_rounds=3)
-    _build_registry(store).apply_to(agent)
+    _build_registry(store, allow_web=allow_web).apply_to(agent)
 
     window, budget = compute_budget(config, model_id)
     cc = config.get("chat_context") or {}
@@ -250,7 +318,7 @@ async def chat_stream(
     summary = conv.get("summary") or ""
     system_text = "\n\n".join(
         x for x in [doc_text, f"[历史摘要]\n{summary}" if summary else None] if x)
-    system = prompt_loader.build(system_text)
+    system = prompt_loader.build(system_text, web_search=allow_web)
     tool_defs = agent._tool_defs
     used = estimate_tokens(system) + sum(estimate_tokens(json.dumps(t, ensure_ascii=False)) for t in tool_defs)
     hist_budget = max(0, budget - used)
@@ -295,8 +363,9 @@ async def chat_stream(
                     if event["type"] == "text":
                         full_answer.append(event["text"])
                     elif event["type"] == "tool_start":
-                        tool_calls.append({"tool": event["tool"], "display": event["display"]})
+                        _record_tool_start(tool_calls, event)
                     elif event["type"] == "tool_result":
+                        _record_tool_result(tool_calls, event)
                         _append_refs(refs, seen_ref_ids, event.get("refs"))
                     elif event["type"] == "thinking":
                         thinking_parts.append(event.get("text", ""))

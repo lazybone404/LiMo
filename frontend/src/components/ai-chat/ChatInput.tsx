@@ -8,7 +8,7 @@
  * 发送时 docRefs 随 sendMessage 传入，docIds = 当前选中文档 + 本条引用（chatStore 组合去重）。
  */
 import { useEffect, useRef, useState } from 'react'
-import { Send, Square, AtSign, FileText, X, MessageCircleQuestion } from 'lucide-react'
+import { Send, Square, AtSign, FileText, X, MessageCircleQuestion, Globe } from 'lucide-react'
 import { useChatStore, type DocRef } from '../../store/chatStore'
 import { useStore, type DocEntry } from '../../store'
 import { loadChatPrefs, saveChatPrefs } from '../../lib/chat-prefs'
@@ -31,10 +31,11 @@ export function ChatInput({ scale }: ChatInputProps) {
   const [docRefs, setDocRefs] = useState<DocRef[]>([])
   const [refOpen, setRefOpen] = useState(false)
   const [refSearch, setRefSearch] = useState('')
-  // 追问建议开关（`lib/chat-prefs.ts` 持久化；发送时由 `dispatchSend` 现读一次）
+  // 两个发送偏好开关（`lib/chat-prefs.ts` 持久化；发送时由 `dispatchSend` 现读一次）
   // ⚠️ 这里是**受控回显**：真正的生效点是发送那一刻读 localStorage（见 chatStore），
-  // 本地 state 只负责把这个开关画出来 —— 两者共用同一份 key，不会分叉。
+  // 本地 state 只负责把开关画出来 —— 两者共用同一份 key，不会分叉。
   const [followUp, setFollowUp] = useState(() => loadChatPrefs().followUp)
+  const [webSearch, setWebSearch] = useState(() => loadChatPrefs().webSearch)
   const taRef = useRef<HTMLTextAreaElement>(null)
   // 输入区 + @ 浮层的共同祖先：判断「点在内部还是外部」的界
   const rootRef = useRef<HTMLDivElement>(null)
@@ -85,12 +86,19 @@ export function ChatInput({ scale }: ChatInputProps) {
 
   const filteredDocs = refSearch ? docs.filter(d => d.title.toLowerCase().includes(refSearch.toLowerCase())) : docs
 
+  // ⚠️ `saveChatPrefs` 是**合并式**保存（参数 `Partial`），所以这里只写自己这一项 ——
+  // 早先它是整对象覆盖，加第二个开关的那一刻就会「切 A 开关时把 B 开关重置回默认」，
+  // 而那件事既没报错也没提示（用户的联网开关会自己打开）。合并搬进了函数内部。
   const toggleFollowUp = () => {
     const next = !followUp
     setFollowUp(next)
-    // ⚠️ `saveChatPrefs` 现在是整对象覆盖 —— 将来加第二个字段时必须改成
-    // `saveChatPrefs({ ...loadChatPrefs(), followUp: next })`，否则会把它抹掉。
     saveChatPrefs({ followUp: next })
+  }
+
+  const toggleWebSearch = () => {
+    const next = !webSearch
+    setWebSearch(next)
+    saveChatPrefs({ webSearch: next })
   }
 
   const addRef = (doc: DocEntry) => {
@@ -151,6 +159,15 @@ export function ChatInput({ scale }: ChatInputProps) {
             : '追问建议已关闭：开启后每轮回答都会给出追问（点击即发送）'}
           className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${followUp ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
           <MessageCircleQuestion size={s.btn} />
+        </button>
+        {/* 联网开关：关掉后整组摘掉 search_web / fetch_url，模型只能看已导入的文档。
+            ⚠️ 默认**开**（= 改造前的现状，见 `lib/chat-prefs.ts` 的默认值表）。 */}
+        <button onClick={toggleWebSearch} data-websearch-toggle={webSearch ? 'on' : 'off'}
+          title={webSearch
+            ? '联网已开启：本地文档不够时模型可搜索互联网（点击关闭）'
+            : '联网已关闭：模型只能使用已导入的文档（点击开启）'}
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${webSearch ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
+          <Globe size={s.btn} />
         </button>
         <textarea
           ref={taRef}

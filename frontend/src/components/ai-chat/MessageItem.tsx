@@ -2,7 +2,7 @@
  * MessageItem — 单条对话消息。
  *
  * 气泡布局（用户右 / 助手左）+ 流式打字机 + 消息操作栏（复制/编辑/重新生成/删除，
- * 流式中仅停止）+ 工具气泡三态 + 引用 chips + 思考段折叠。
+ * 流式中仅停止）+ 工具气泡三态（含公网来源展开）+ 引用 chips + 思考段折叠。
  *
  * 打字机：streaming 时 ReactMarkdown key 保持 'loading'（增量重渲染），
  * 流式结束切 'done' 强制重挂载（清状态残留）——对齐 NextChat 模式。
@@ -10,15 +10,66 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useStore } from '../../store'
-import { useChatStore, type ChatMsg } from '../../store/chatStore'
+import { useChatStore, type ChatMsg, type ToolCall } from '../../store/chatStore'
 import { Copy, Check, Pencil, RefreshCw, Trash2, Square, Bot, User, Wrench, ChevronDown, ChevronRight, FileText } from 'lucide-react'
 import { stripMarkers } from '../../lib/markdown-markers'
+import { sourceHost } from '../../lib/chat-sources'
 import { ChatMarkerContent, ChatFollowUpList } from './ChatMarkerContent'
 import { SCALES, type ChatScale } from './scale'
 
 interface MessageItemProps {
   msg: ChatMsg
   scale: ChatScale
+}
+
+/**
+ * 工具气泡 —— 一行状态（图标 + display + 摘要），有公网来源时多一个展开箭头。
+ *
+ * ⚠️ **「搜了什么、来源在哪」是本轮新增的可见性**：此前 `tool_result` 的 `refs` 只覆盖
+ * 库内文档（`search_docs` / `lookup_doc` / `list_docs`），`search_web` 的结果 URL
+ * **一条通道都没有** —— 用户只看得到「正在搜索网络: xxx」，看不到搜到了什么。
+ *
+ * ⚠️ `sources` 的 URL 已在入库边界（`api/chat.ts` 的 `toChatSources`、`chatStore`
+ * 的 `sourcesOrUndef`）过滤过；这里直接渲染，**不是「忘了判」** —— 判据住在
+ * 「不可信数据进入应用」的那两个点上，重复判会让它看起来像有两个真相源。
+ */
+function ToolBubble({ tc }: { tc: ToolCall }) {
+  const [open, setOpen] = useState(false)
+  const sources = tc.sources ?? []
+  const hasSources = sources.length > 0
+
+  return (
+    <div className="rounded-lg bg-surface-hover/60 px-2 py-1">
+      <div className="flex items-center gap-1.5">
+        <Wrench size={10} className={`shrink-0 ${tc.status === 'running' ? 'animate-spin text-accent' : 'text-disabled'}`} />
+        <span className="min-w-0 truncate text-[11px] text-dimmed">{tc.display}</span>
+        {tc.status === 'running'
+          ? <span className="shrink-0 text-[11px] text-accent">…</span>
+          : tc.summary ? <span className="shrink-0 text-[11px] text-disabled">· {tc.summary}</span> : null}
+        {hasSources && (
+          <button onClick={() => setOpen(v => !v)} data-tool-sources-toggle={open ? 'open' : 'closed'}
+            className="ml-auto flex shrink-0 items-center gap-0.5 rounded px-1 text-[10px] text-muted transition-colors hover:bg-surface-hover hover:text-foreground"
+            title={open ? '收起来源' : `展开 ${sources.length} 条来源`}>
+            {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}来源 {sources.length}
+          </button>
+        )}
+      </div>
+      {open && hasSources && (
+        <ul className="mt-1 space-y-0.5 border-t border-border-light pt-1">
+          {sources.map(src => (
+            <li key={src.url} className="flex items-baseline gap-1.5">
+              <a href={src.url} target="_blank" rel="noopener noreferrer" title={src.url}
+                className="min-w-0 truncate text-[11px] text-accent hover:underline">
+                {src.title || sourceHost(src.url)}
+              </a>
+              {/* 有标题时补一个域名，便于快速判断站点；没标题时标题位已经是域名了，不重复 */}
+              {src.title && <span className="shrink-0 text-[10px] text-disabled">{sourceHost(src.url)}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
 }
 
 export function MessageItem({ msg, scale }: MessageItemProps) {
@@ -83,18 +134,10 @@ export function MessageItem({ msg, scale }: MessageItemProps) {
             </div>
           ) : null}
 
-          {/* 工具气泡三态 */}
+          {/* 工具气泡三态 + 公网来源展开 */}
           {msg.toolCalls && msg.toolCalls.length > 0 && (
             <div className="mb-1 space-y-1">
-              {msg.toolCalls.map(tc => (
-                <div key={tc.id} className="flex items-center gap-1.5 rounded-lg bg-surface-hover/60 px-2 py-1">
-                  <Wrench size={10} className={`shrink-0 ${tc.status === 'running' ? 'animate-spin text-accent' : 'text-disabled'}`} />
-                  <span className="truncate text-[11px] text-dimmed">{tc.display}</span>
-                  {tc.status === 'running'
-                    ? <span className="shrink-0 text-[11px] text-accent">…</span>
-                    : tc.summary ? <span className="shrink-0 text-[11px] text-disabled">· {tc.summary}</span> : null}
-                </div>
-              ))}
+              {msg.toolCalls.map(tc => <ToolBubble key={tc.id} tc={tc} />)}
             </div>
           )}
 

@@ -1,5 +1,5 @@
 import { useState, type ChangeEvent } from 'react'
-import { ChevronDown, Camera, Upload, FileText, X } from 'lucide-react'
+import { ChevronDown, Camera, Upload, FileText, X, Globe } from 'lucide-react'
 import { normalizeStyle, isFormatVisible, type TypeMeta } from './constants'
 import { useStore } from '../../store'
 import { saveReference } from '../../api/references'
@@ -50,6 +50,8 @@ interface Props {
   hasDocumentModel: boolean  // 当前模型是否支持 PDF 直传（capabilities 含 document）
   // PDF 直传（仅 PDF 且模型支持时可选）
   docDirect: boolean; setDocDirect: (v: boolean) => void
+  // 联网检索（与「参考文件」并列的资料获取方式 —— 只注 notes）
+  webSearch: boolean; setWebSearch: (v: boolean) => void
   // 思考强度（capabilities 含 reasoning 时才展示 —— 见下方渲染处的取舍说明）
   reasoningSupported: boolean
   reasoningEffort: 'low' | 'high' | 'max'; setReasoningEffort: (v: 'low' | 'high' | 'max') => void
@@ -472,16 +474,33 @@ export function GenerateOptions(props: Props) {
       </div>
     )}
 
-    {/* 参考文件 — 非图片类型均可（内容暂存后端，仅 notes 注入） */}
+    {/* 参考资料 — 非图片类型均可（内容暂存后端，仅 notes 注入）。
+        ⚠️ 块名自 2026-10-12 起由「参考文件」改为「参考资料」：块内现在有**两种来源**
+        （用户上传的文件 / 联网检索），标题必须覆盖两者，否则「联网检索」读起来像
+        放错了地方。（`refExpanded` 这个 state 名保留 —— 它只是内部名字。） */}
     {!p.typeMeta.isImage && <div className="pt-3 border-t border-border-light">
       <button onClick={() => setRefExpanded(!refExpanded)}
         className="flex items-center gap-1.5 text-[12px] font-medium text-dimmed hover:text-foreground transition-colors">
         <ChevronDown size={12} className={`transition-transform ${refExpanded ? '' : '-rotate-90'}`} />
-        <span>参考文件</span>
+        <span>参考资料</span>
+        {/* 收起时也要看得出「开着什么」：两种来源各给一个标记（文件是圆点、联网是角标） */}
+        {p.webSearch && <span className="px-1 py-px rounded text-[9px] leading-tight bg-accent/15 text-accent">联网</span>}
         {p.refFile && <span className="w-1.5 h-1.5 rounded-full bg-accent" />}
       </button>
       {refExpanded && (
         <div className="mt-2 space-y-2">
+          {/* 联网检索 —— 第二种来源。⚠️ **不是 format 项**：它不往 prompt 加规范，
+              而是产生一份参考资料，走与上传文件**完全相同**的注入通道（超窗自动压缩、
+              「参考资料只是素材不是指令」的防御声明、只注 notes）。 */}
+          <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+            <input type="checkbox" checked={p.webSearch} onChange={e => p.setWebSearch(e.target.checked)}
+              disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
+            <Globe size={12} className="shrink-0 text-muted" />
+            <span className="text-[13px]">联网检索</span>
+            <span className="text-[10px] text-disabled">
+              {isPolishedOnly ? '整理版原文不支持' : '生成前自动检索相关资料，作为参考注入笔记'}
+            </span>
+          </label>
           <label className={`flex items-center justify-center gap-1.5 py-2 px-3 border border-dashed border-border-default rounded-lg text-[11px] text-muted transition-colors ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-accent hover:bg-accent/10'}`}>
             <Upload size={12} />
             <span>{isPolishedOnly ? '整理版原文不支持参考文件' : (refLoading ? '暂存中...' : '选择参考文件（txt / md，≤1MB）')}</span>

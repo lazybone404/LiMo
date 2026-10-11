@@ -17,6 +17,7 @@
 import { create } from 'zustand'
 import { streamChat, listConversations, getConversation, rebuildConversationMessages, clearConversationContext } from '../api/chat'
 import { loadChatPrefs } from '../lib/chat-prefs'
+import { toChatSources, type ChatSource } from '../lib/chat-sources'
 import { useStore } from './index'
 import { nextMsgId } from './toastSlice'
 
@@ -40,11 +41,24 @@ function dedupeRefs(refs: DocRef[]): DocRef[] {
   return refs.filter((r, i, arr) => arr.findIndex(x => x.docId === r.docId) === i)
 }
 
+/**
+ * `toChatSources` + 空值归一：空数组 → `undefined`。
+ *
+ * ⚠️ 「没来源」只允许**一种**表示。留着一个 `sources: []` 会让渲染层多一个
+ * `?.length` 分支、让 `toBackendMsg` 多写一个空数组进落盘数据，而两者语义完全相同。
+ */
+function sourcesOrUndef(list: unknown): ChatSource[] | undefined {
+  const s = toChatSources(list)
+  return s.length ? s : undefined
+}
+
 export interface ToolCall {
   id: string
   tool: string
   display: string
   summary?: string
+  /** 公网来源（`search_web` / `fetch_url` 才非空）—— 点了开浏览器，与 `docRefs` 不同 */
+  sources?: ChatSource[]
   status: 'running' | 'done' | 'error'
 }
 
@@ -137,7 +151,7 @@ const toBackendMsg = (m: ChatMsg) => ({
   role: m.role,
   content: m.content,
   ...(m.docRefs && m.docRefs.length ? { doc_refs: m.docRefs } : {}),
-  ...(m.toolCalls && m.toolCalls.length ? { tool_calls: m.toolCalls.map(tc => ({ tool: tc.tool, display: tc.display, summary: tc.summary })) } : {}),
+  ...(m.toolCalls && m.toolCalls.length ? { tool_calls: m.toolCalls.map(tc => ({ tool: tc.tool, display: tc.display, summary: tc.summary, sources: tc.sources })) } : {}),
   ...(m.thinking ? { thinking: m.thinking } : {}),
   ...(m.followUps && m.followUps.length ? { follow_ups: m.followUps } : {}),
 })
@@ -210,7 +224,9 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
     const convId = s.currentId || undefined
     // ⚠️ **在发送这一刻读**（不是订阅）：偏好变了只影响之后的请求，进行中的那一轮
     // 用的仍是发起时的取值 —— 下面 `onFollowUp` 的守卫也读同一个变量。
-    const wantFollowUp = loadChatPrefs().followUp
+    // 两项一起读，一次 `loadChatPrefs()`（两次调用是同一个结果，只是白读一次）。
+    const prefs = loadChatPrefs()
+    const wantFollowUp = prefs.followUp
 
     streamChat(text, docIds, {
       onMeta(convId, meta) {
@@ -238,11 +254,17 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
           toolCalls: [...(msg.toolCalls || []), { id: nextMsgId(), tool, display, status: 'running' as const }],
         }))
       },
-      onToolResult(tool, summary) {
+      onToolResult(tool, summary, sources) {
+        // ⚠️ 按「同名 + 还在跑」定位（与后端 `routers/chat.py` 回填时同一套判据）：
+        // 一轮里同名工具被调用两次时也能各归各位。`sources` 只在这里才拿到
+        // （`onToolStart` 时工具还没跑完）。
+        const src = sourcesOrUndef(sources)
         updateLastBot(msg => ({
           ...msg,
           toolCalls: (msg.toolCalls || []).map(tc =>
-            tc.tool === tool && tc.status === 'running' ? { ...tc, summary, status: 'done' as const } : tc,
+            tc.tool === tool && tc.status === 'running'
+              ? { ...tc, summary, sources: src, status: 'done' as const }
+              : tc,
           ),
         }))
       },
@@ -298,7 +320,7 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
           followUpError: error || undefined,
         }))
       },
-    }, { signal: controller.signal, conversationId: convId, docRefs, followUp: wantFollowUp })
+    }, { signal: controller.signal, conversationId: convId, docRefs, followUp: wantFollowUp, webSearch: prefs.webSearch })
   }
 
   return {
@@ -342,8 +364,15 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
           // ⚠️ 恢复侧也要去重：落盘数据里可能有重复 docId（见 `dedupeRefs` 注释）——
           // 这是历史数据唯一的自愈点。
           docRefs: m.doc_refs?.length ? dedupeRefs(m.doc_refs) : undefined,
+          // ⚠️ 恢复侧是**唯一**把落盘的 `sources` 捡回来的地方（与 `toBackendMsg` 成对：
+          // 一个管「重建时丢」、一个管「恢复时捡」）。⚠️ 落盘数据来自**旧版本**时没有
+          // 这个字段 —— `toChatSources(undefined)` 返回 `[]`，不是崩溃。
           toolCalls: m.tool_calls?.length
-            ? m.tool_calls.map(tc => ({ id: nextMsgId(), tool: tc.tool, display: tc.display, summary: tc.summary, status: 'done' as const }))
+            ? m.tool_calls.map(tc => ({
+                id: nextMsgId(), tool: tc.tool, display: tc.display, summary: tc.summary,
+                sources: sourcesOrUndef(tc.sources),
+                status: 'done' as const,
+              }))
             : undefined,
           thinking: m.thinking || undefined,
           // 追问建议（落盘字段 `follow_ups` → 前端 `followUps`）。⚠️ 与 `toBackendMsg`

@@ -29,6 +29,12 @@ export interface BaseGenOptions {
   /** 参考文件暂存 id（POST /api/references 取得；后端仅 notes 注入） */
   reference_ids?: string[]
   /**
+   * 联网检索：生成前先让 LLM 从正文抽检索词 → 调搜索工具（Tavily / SearXNG /
+   * DuckDuckGo）→ 结果汇总成**一份**参考资料注入笔记。
+   * ⚠️ 跨类型字段（与 `reference_ids` 并列）—— 走的是同一条注入通道，故同样**只注 notes**。
+   */
+  web_search?: boolean
+  /**
    * 思考强度（仅支持 reasoning 能力的模型）。跨类型字段，故在 Base 而非某个具体类型里。
    * ⚠️ 实际下发值由后端 effort.py::effort_for 决定（**整理版恒 low**，除非 'max'）——
    * 前端传的是「用户偏好」，不是「最终各产物用什么档」。
@@ -172,6 +178,9 @@ export function streamGenerate(
   // 模式 #6：同样必须用 !== undefined —— doc_direct 的 false 是默认态，
   // 用 truthiness 判断的话用户「关掉直传」的意图根本传不出去（旧值可能还开着）
   if (opts.doc_direct !== undefined) params.set('doc_direct', String(opts.doc_direct))
+  // 同款 `!== undefined`（模式 #6）—— 虽然 GenPanel 现在只传 true/undefined，
+  // 但显式 false 也照传，不靠调用方自觉。
+  if (opts.web_search !== undefined) params.set('web_search', String(opts.web_search))
 
   const qs = params.toString()
   // 追踪 SSE 是否正常结束（收到 done/error/cancelled 事件）

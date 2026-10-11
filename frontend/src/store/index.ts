@@ -10,6 +10,7 @@ import { applyBase, getSavedBase } from '../lib/theme-base'
 import { applyReading, getSavedReading, nextFontScale, READING_DEFAULTS } from '../lib/reading-prefs'
 import { applyCard, getSavedCard } from '../lib/card-prefs'
 import { applyMarkers, getSavedMarkers } from '../lib/marker-prefs'
+import { applyChatFont, getSavedChatFont } from '../lib/chat-font'
 import { createThemeSlice } from './themeSlice'
 import { createDocsSlice } from './docsSlice'
 import { createContentSlice } from './contentSlice'
@@ -117,6 +118,9 @@ applyIntensity(getSavedIntensity())
 applyFont(getSavedFont())
 applyBase(getSavedBase())
 applyReading(getSavedReading())
+// ⚠️ 必须在启动时 apply 一次：变量只由滚轮写的话，刷新页面后 localStorage 里存着
+// 1.3 而 DOM 上是默认 1 → 字号「莫名恢复默认」，且零报错。
+applyChatFont(getSavedChatFont())
 applyCard(getSavedCard())
 applyMarkers(getSavedMarkers())
 

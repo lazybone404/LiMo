@@ -37,6 +37,7 @@ from app.core.artifact_blocks import parse_blocks
 from app.generation.prompt import build_polish_prompt, build_notes_prompt
 from app.generation.prompts import coerce_style
 from app.agent.followup import generate_artifact_followups
+from app.generation.web_search import run_web_search, outcome_param
 from app.generation.reference_compressor import (
     needs_compression, compress_references_if_needed,
 )
@@ -186,6 +187,29 @@ async def _emit_followup(store, llm, tx_id: str, tx: dict, notes_content: str,
     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+async def _web_search_stream(llm, title: str, text: str, cancel_event):
+    """流式端点用：驱动联网检索，**把 stage 转成 SSE、把失败转成 warning**。
+
+        yield ("event", "<一行 SSE 数据>")   —— 调用方原样 yield 给客户端
+        yield ("outcome", WebSearchOutcome)  —— 恰好一次、且是最后一个
+
+    ⚠️ 抽成一份的理由同 `_do_followup` / `_emit_followup` 的拆分：流式端点有**两个**
+    调用点（双产物分支 / 单产物分支），各写一遍就是「两处对『推哪几条提示、失败怎么
+    措辞』迟早给出不同答案」（模式 #54）。
+    """
+    async for _kind, _payload in run_web_search(llm, title, text, cancel_event=cancel_event):
+        if _kind == "stage":
+            yield ("event", f"data: {json.dumps({'type': 'stage', 'message': _payload}, ensure_ascii=False)}\n\n")
+        else:
+            # 失败推 warning，但**用专属 kind**：`GenPanel.onWarning` 对
+            # `chart_missing` / `doc_direct_raw_short` 走 info toast 且**不标 partial**
+            # （那两个的产物本身是成功的），`web_search_failed` 属于同一类 ——
+            # 检索没生效不等于生成失败，标成 partial 会让用户以为笔记出了问题。
+            if _payload.error:
+                yield ("event", f"data: {json.dumps({'type': 'warning', 'kind': 'web_search_failed', 'message': f'联网检索未生效：{_payload.error}'}, ensure_ascii=False)}\n\n")
+            yield ("outcome", _payload)
+
+
 def _warn_mismatched_fields(source_type: str, values: dict):
     own_fields = _TYPE_FIELDS.get(source_type, set())
     for st, fields in _TYPE_FIELDS.items():
@@ -207,6 +231,9 @@ class GenerateRequest(BaseModel):
     model_id: int | None = None
     user_notes: str = ""  # 用户备注
     reference_ids: list[str] = []  # 参考文件暂存 id（POST /api/references 取得，仅 notes 注入）
+    # 联网检索（仅 notes 注入；用户勾选「联网检索」才有）。检索结果**追加在
+    # reference_ids 之后**（用户主动给的参考资料排在前面）。
+    web_search: bool = False
     source_type: str = ""  # 文档类型，用于校验字段。空字符串 = 不校验
     # VL 视觉理解参数（source_type=video 专属）
     video_understanding: bool = False
@@ -285,6 +312,22 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
             raise AppError("GEN_NOT_FOUND", "文档不存在，请先导入内容")
         if not llm_config.get("api_key"):
             raise AppError("GEN_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
+
+        # ── 参考文件：**只解析一次**（下面双产物支与 notes-only 支共用）──
+        # 此前两处各写一句 `_resolve_reference_texts(req.reference_ids)`（同源漂移，
+        # 模式 #54）。上提成一次解析后，联网检索的结果也有了一个统一的追加点。
+        ref_texts = _resolve_reference_texts(req.reference_ids)
+        # 联网检索（用户勾选）—— LLM 抽检索词 → 搜索 → 汇总成**一份**参考资料追加在
+        # 末尾（用户主动提供的参考资料排在前面）。与 `_do_followup` 同款：本端点不是
+        # async generator，**只写盘、不推事件**，失败经自证头 `webSearch.error` 留痕。
+        web_param: dict | None = None
+        if req.web_search:
+            async for _kind, _payload in run_web_search(
+                    llm, tx.get("title", ""), tx["rawText"]):
+                if _kind == "result":
+                    web_param = outcome_param(_payload)
+                    if _payload.reference:
+                        ref_texts = ref_texts + [_payload.reference]
 
         # 文档直传的触发源（同流式端点的预检）：路径已是绝对路径（模式 #24）
         doc_path = tx.get("sourceFilePath", "") if req.doc_direct else ""
@@ -401,7 +444,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     raw_text=epub_text, title=tx.get("title", ""), style=req.style,
                     source_type=tx.get("sourceType", "text"), formats=formats_list,
                     vl_config=vl_config, user_notes=req.user_notes,
-                    reference_texts=_resolve_reference_texts(req.reference_ids),
+                    reference_texts=ref_texts,
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                     ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
                     video_direct=req.video_direct,
@@ -423,7 +466,10 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 _auto_title(store, transcript_id, polished_mv.content)
                 store.save_markdown(notes_mv, file_meta=markdown_meta(
                     notes_mv, tx, formats=formats_list,
-                    reasoning_effort=req.reasoning_effort))
+                    reasoning_effort=req.reasoning_effort,
+                    # 联网检索只进 notes ⇒ 只有「笔记」的自证头该记它。整理版原文
+                    # 没用到那些资料，记上去会让读产物的人以为它用了。
+                    extra_params={"webSearch": web_param}))
                 _n_blocks, _block_types = _block_stats(notes_mv.content)
                 log.info("Generate both done", tx_id=transcript_id,
                          polished_chars=len(polished_mv.content), notes_chars=len(notes_mv.content),
@@ -455,7 +501,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                     source_type=tx.get("sourceType", "text"), mode="notes",
                     formats=formats_list, vl_config=vl_config,
                     user_notes=req.user_notes,
-                    reference_texts=_resolve_reference_texts(req.reference_ids),
+                    reference_texts=ref_texts,
                     image_analyze=req.image_analyze, image_optimize=req.image_optimize,
                     ocr_enabled=req.ocr_enabled, ocr_model_id=req.ocr_model_id,
                     video_direct=req.video_direct,
@@ -469,7 +515,10 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 notes_mv.transcript_id = transcript_id
                 store.save_markdown(notes_mv, file_meta=markdown_meta(
                     notes_mv, tx, formats=formats_list,
-                    reasoning_effort=req.reasoning_effort))
+                    reasoning_effort=req.reasoning_effort,
+                    # 联网检索只进 notes ⇒ 只有「笔记」的自证头该记它。整理版原文
+                    # 没用到那些资料，记上去会让读产物的人以为它用了。
+                    extra_params={"webSearch": web_param}))
                 _n_blocks, _block_types = _block_stats(notes_mv.content)
                 log.info("Generate done", tx_id=transcript_id, mode="notes",
                          chars=len(notes_mv.content),
@@ -529,6 +578,7 @@ async def generate_stream(transcript_id: str, request: Request,
                           mode: str = "both", style: str = "plain",
                           formats: str = "", model_id: int | None = None,
                           user_notes: str = "", reference_ids: str = "",
+                          web_search: bool = False,
                           video_understanding: bool = False,
                           video_direct: bool = False,
                           video_interval: int = 6, grid_cols: int = 2,
@@ -755,6 +805,9 @@ async def generate_stream(transcript_id: str, request: Request,
                 yield f"data: {json.dumps({'type': 'warning', 'kind': 'metadata_corrupt', 'message': '本文档的来源信息已损坏，来源清单不可用于核对'}, ensure_ascii=False)}\n\n"
 
             all_chunks: list[str] = []
+            # 联网检索的自证头字段（勾选了才有值）。两个分支（双产物 / 单产物）都要用，
+            # 且两边各写一次初始化就得记得两处 —— 预置在这里，分支里只管赋值。
+            web_param: dict | None = None
             video_path: str | None = None  # P0-5：finally 统一清理（prepare 失败时未定义，需预初始化）
             # P1-8：双产物协程引用（断连/异常时 finally 取消，防孤儿任务继续烧 token）
             _tasks: list[asyncio.Task] = []
@@ -791,6 +844,19 @@ async def generate_stream(transcript_id: str, request: Request,
                 # 局部变量 —— 紧随其后的读取直接 UnboundLocalError（2026-09-23 首次
                 # 流式生成即炸）。压缩结果只给 notes 用，本就没有回传外层的必要。
                 refs = ref_texts
+                # 联网检索（用户勾选）—— 结果追加在用户上传的参考资料**之后**，且必须
+                # 在下面的 `needs_compression` **之前**：它同样是一份要参与预算判断的料。
+                # ⚠️ 追加进局部名 `refs`（不是外层 `ref_texts`）—— 同 `refs = ref_texts`
+                # 那条注释的理由：merged_stream 内对 `ref_texts` 赋值会让它整段变局部。
+                if web_search and not cancel_event.is_set():
+                    async for _k, _v in _web_search_stream(
+                            llm, tx.get("title", ""), epub_text, cancel_event):
+                        if _k == "event":
+                            yield _v
+                        else:
+                            web_param = outcome_param(_v)
+                            if _v.reference:
+                                refs = refs + [_v.reference]
                 if refs and needs_compression(refs, clean_text, llm, config):
                     yield f"data: {json.dumps({'type': 'stage', 'message': '参考文件超出模型上下文，正在压缩…'}, ensure_ascii=False)}\n\n"
                 refs = await compress_references_if_needed(
@@ -985,7 +1051,10 @@ async def generate_stream(transcript_id: str, request: Request,
                         generation_model=llm.model,
                     )
                     store.save_markdown(mv, file_meta=markdown_meta(
-                        mv, tx, formats=format_list, reasoning_effort=reasoning_effort))
+                        mv, tx, formats=format_list, reasoning_effort=reasoning_effort,
+                        # 联网检索只进 notes ⇒ 只有「笔记」的自证头该记它
+                        # （整理版原文没用到那些资料，记上去是误导）。
+                        extra_params={"webSearch": web_param}))
                     _auto_title(store, transcript_id, mv.content)
                     _notes_for_followup = notes_content      # 供 done 决策处产追问（见预置注释）
                     _n_blocks, _block_types = _block_stats(notes_content)
@@ -1072,6 +1141,19 @@ async def generate_stream(transcript_id: str, request: Request,
             # 会让外层同名变量变成局部变量 → UnboundLocalError）。
             if stream_mode != "polished":
                 refs = ref_texts
+                # 联网检索（用户勾选）—— 结果追加在用户上传的参考资料**之后**，且必须
+                # 在下面的 `needs_compression` **之前**：它同样是一份要参与预算判断的料。
+                # ⚠️ 追加进局部名 `refs`（不是外层 `ref_texts`）—— 同 `refs = ref_texts`
+                # 那条注释的理由：merged_stream 内对 `ref_texts` 赋值会让它整段变局部。
+                if web_search and not cancel_event.is_set():
+                    async for _k, _v in _web_search_stream(
+                            llm, tx.get("title", ""), epub_text, cancel_event):
+                        if _k == "event":
+                            yield _v
+                        else:
+                            web_param = outcome_param(_v)
+                            if _v.reference:
+                                refs = refs + [_v.reference]
                 if refs and needs_compression(refs, clean_text, llm, config):
                     yield f"data: {json.dumps({'type': 'stage', 'message': '参考文件超出模型上下文，正在压缩…'}, ensure_ascii=False)}\n\n"
                 refs = await compress_references_if_needed(
@@ -1191,7 +1273,10 @@ async def generate_stream(transcript_id: str, request: Request,
                 mv.status = "complete"
                 mv.content = partial_content.rstrip() + "\n\n" + content
             store.save_markdown(mv, file_meta=markdown_meta(
-                mv, tx, formats=format_list, reasoning_effort=reasoning_effort))
+                mv, tx, formats=format_list, reasoning_effort=reasoning_effort,
+                # 联网检索只进 notes：整理版原文（stream_mode == "polished"）那条路上
+                # 检索根本没跑，web_param 恒为 None（`compact_params` 会丢掉空值）。
+                extra_params={"webSearch": web_param}))
             _auto_title(store, transcript_id, mv.content)
             # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出图表围栏 → warning
             if "chart" in format_list and stream_mode != "polished" and not _has_chart_fence(raw_content):

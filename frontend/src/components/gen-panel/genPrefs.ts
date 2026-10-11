@@ -29,6 +29,14 @@ export interface GenPrefs {
    */
   docDirect: boolean
   /**
+   * 联网检索：生成前先让 LLM 从正文抽出检索词 → 调搜索工具（Tavily / SearXNG /
+   * DuckDuckGo）→ 结果汇总成一份参考资料注入笔记。
+   * ⚠️ **不是 format 项**（不进 `formatStr` 的 formats 列表）：它不改 prompt 规范，
+   * 而是**产生一份参考资料**，走的是和「参考文件」同一条通道（超窗自动压缩、只注入
+   * notes）。默认关 + 记忆。
+   */
+  webSearch: boolean
+  /**
    * 思考强度（仅对标注了 reasoning 能力的模型可见）。
    * 实际下发值由后端 effort.py::effort_for 决定 —— **整理版恒为 low**（除非选 max），
    * 这不是隐规则，GenerateOptions 里有对应文案。
@@ -60,6 +68,7 @@ const DEFAULTS: GenPrefs = {
   videoUnderstanding: false, videoInterval: 6,
   videoDirect: false,
   docDirect: false,
+  webSearch: false,
   reasoningEffort: 'high',
   gridCols: 2, gridRows: 2,
   dedupeEnabled: true, unitWidth: 960, unitHeight: 540,

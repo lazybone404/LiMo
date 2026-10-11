@@ -70,6 +70,10 @@ export function GenPanel() {
   const [videoUnderstanding, setVideoUnderstanding] = useState(saved.videoUnderstanding)
   const [videoDirect, setVideoDirect] = useState(saved.videoDirect)
   const [docDirect, setDocDirect] = useState(saved.docDirect ?? false)
+  // 联网检索（与「参考文件」同性质：**产生一份参考资料**，只注 notes）。
+  // ⚠️ 与 docDirect 不同，它**不依赖模型能力位** —— 走的是 LLM 抽词 + 搜索工具，
+  //    任何能生成的模型都能用（抽词那次调用的思考档位由后端按能力位决定）。
+  const [webSearch, setWebSearch] = useState(saved.webSearch ?? false)
   const [reasoningEffort, setReasoningEffort] = useState<'low' | 'high' | 'max'>(saved.reasoningEffort ?? 'high')
   const [videoInterval, setVideoInterval] = useState(saved.videoInterval)
   const [gridCols, setGridCols] = useState(saved.gridCols)
@@ -241,6 +245,7 @@ export function GenPanel() {
       imageAnalyze, imageOptimize,
       selectedModelId, videoUnderstanding, videoDirect, videoInterval, gridCols, gridRows,
       docDirect,
+      webSearch,
       reasoningEffort,
       dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter,
       imageMode, userNotes, notesExpanded, streamDisplay })
@@ -251,6 +256,7 @@ export function GenPanel() {
       selectedModelId,
       videoUnderstanding, videoDirect, videoInterval, gridCols, gridRows, streamDisplay,
       docDirect,
+      webSearch,
       reasoningEffort,
       dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter, userNotes, imageMode, notesExpanded])
 
@@ -661,6 +667,10 @@ export function GenPanel() {
       ocr_model_id: isVideo ? undefined : (ocrEnabled ? ocrModelId ?? undefined : undefined),
       // 仅 PDF 且模型支持时传（false 一律转 undefined = 不传 = 后端默认文本模式）
       doc_direct: typeMeta.isPDF && hasDocumentModel && docDirect ? true : undefined,
+      // 联网检索（只注 notes，故整理版单独生成时传了也没用 —— 由后端 `stream_mode !=
+      // "polished"` 拦住；这里也不特判，用户切回 both/notes 时意图原样保留）。
+      // 与 doc_direct 同款：false 转 undefined = 不传 = 后端默认不开。
+      web_search: webSearch ? true : undefined,
     }, {
       onChunk(text, mode) {
         // 1. 无条件写 buffer（key 按 docId 隔离——切走期间流式内容不丢，切回显示完整）
@@ -797,7 +807,9 @@ export function GenPanel() {
         // 不标 partial——避免 onDone 误报「部分产物生成失败」（协议收紧的语义区分）
         // doc_direct_raw_short（直传成功但本地抽取近乎为空）同理：生成是成功的，
         // 只是转录/导出/搜索会不完整——是提示不是失败。
-        if (kind === 'chart_missing' || kind === 'doc_direct_raw_short') {
+        // web_search_failed（联网检索没生效）：同上——**产物本身是成功的**，只是少了一份
+        // 参考资料。走 info 且不标 partial，否则 onDone 会把它报成「部分产物生成失败」。
+        if (kind === 'chart_missing' || kind === 'doc_direct_raw_short' || kind === 'web_search_failed') {
           if (!isSameDoc(capturedId)) return
           addToast(msg, 'info')
           return
@@ -998,6 +1010,7 @@ export function GenPanel() {
                   hasVideoModel={hasVideoModel}
                   hasDocumentModel={hasDocumentModel}
                   docDirect={docDirect} setDocDirect={setDocDirect}
+                  webSearch={webSearch} setWebSearch={setWebSearch}
                   reasoningSupported={reasoningSupported}
                   reasoningEffort={reasoningEffort} setReasoningEffort={setReasoningEffort}
                   style={style} setStyle={setStyle} styleKeys={styleKeysWithNone}

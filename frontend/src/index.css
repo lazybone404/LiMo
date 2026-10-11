@@ -353,6 +353,9 @@ body {
   --read-line-height: 1.5;
   /* 默认 = github-markdown-css 的 font-size 现值 → 零回归（由 applyReading 覆盖） */
   --read-font-size: 16px;
+  /* 对话正文字号倍率，与上面的阅读字号**各存各的**（由 applyChatFont 覆盖）。
+     1 = 各档基准字号（13/14/15px），见下方 `.chat-msg-*`。 */
+  --chat-font-scale: 1;
 }
 
 /* 段落区隔 —— clreq 明确「首行缩进」与「加大段距」是两套并行传统、不建议混用
@@ -411,6 +414,18 @@ body {
 [data-theme="dark"] .markdown-body input[type="checkbox"] {
   accent-color: var(--color-accent);
 }
+
+/* ── 对话正文字号（Ctrl+滚轮缩放的落点）────────────────────
+   ⚠️ **基准 px 写在 `components/ai-chat/scale.ts`（sm/md/lg 随浮窗宽度切），
+   倍率写在 `<html>` 的 `--chat-font-scale`（由 `lib/chat-font.ts` 写）** ——
+   两个维度各住一处，改档位去 scale.ts、改缩放去 chat-font.ts，别把 px 搬到这里来。
+   ⚠️ 与预览区的 `--read-font-size` **刻意无关**：那一个管宽屏长文（16px 基准 +
+   版宽/行高/段式一整套），这一个管窄浮窗里的短回复；共用一个倍率会让「调大阅读
+   字号」把气泡一起撑大。
+   ⚠️ 类名必须与 `scale.ts` 的 `msg` 取值同源（`chat-msg-sm|md|lg`）。 */
+.chat-msg-sm { font-size: calc(13px * var(--chat-font-scale, 1)); }
+.chat-msg-md { font-size: calc(14px * var(--chat-font-scale, 1)); }
+.chat-msg-lg { font-size: calc(15px * var(--chat-font-scale, 1)); }
 
 /* ── Chat Markdown ──────────────────────────────────────── */
 

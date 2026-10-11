@@ -20,15 +20,17 @@
  * 「产物里的块」本就该是两种观感（产品场景不同）。对话样式全在 `styles/chat-blocks.css`。
  */
 
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { ChevronDown, ChevronRight, ClipboardList, Info } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, ClipboardList, Copy, Info } from 'lucide-react'
 import { parseMarkers } from '../../lib/markdown-markers'
 import { splitByHeading } from '../../lib/markdown-sections'
 import { suppressTrailingPartialMarker } from '../../lib/markdown-scan'
 import { parseFollowUpItems } from '../../lib/chat-block-content'
 import { REMARK_PLUGINS, REHYPE_PLUGINS, normalizeLatexDelimiters } from '../../lib/markdown-plugins'
 import { useChatStore } from '../../store/chatStore'
+import { useStore } from '../../store'
 
 interface ChatMarkerContentProps {
   /** `msg.content` 原文 */
@@ -39,10 +41,64 @@ interface ChatMarkerContentProps {
   statusText: string
 }
 
+/** 代码块 —— 只加一个「一键复制」按钮（2026-10-12）。
+ *
+ * ⚠️ **挂 `pre` 而不是 `code`**：`react-markdown` v10 已移除 `inline` prop，
+ * 块级代码是 `pre > code`，而**行内**代码是裸 `code` —— 挂 `code` 会给每个 `\`x\``
+ * 也配一个复制按钮。
+ *
+ * ⚠️ **刻意不复用产物侧的 `markdown-components.tsx::CodeBlock`**：那个带
+ * `SyntaxHighlighter`（语言注册 + 主题）+ 标题栏 + 行号，是**产物**的渲染路径。
+ * 挂进来 = 把全部历史消息的代码块换成另一套观感 —— 与本文件开头那条
+ * 「不复用 `preview/MarkerContent`」要挡的是同一类静默回归。
+ * 这里只要「原样的 `<pre>` + 一个按钮」，于是代码文本就是 `textContent`，
+ * 不必从 React children 递归提取。
+ *
+ * ⚠️ **不转发 `props` 到 `<pre>`**：react-markdown 会塞一个 `node`（hast 节点）进来，
+ * 展开到 DOM 就是 React 的 unknown-prop 警告。对话侧本来也不需要那些属性
+ * （`.markdown-chat pre` 是标签选择器，不靠类名）。
+ *
+ * ⚠️ **流式中不显示按钮**：代码还在往后长，复制到的会是半截内容。
+ * ⚠️ 按钮用 `opacity` 显隐而**不是** `hidden` —— 后者会让代码块在 hover 时高度跳动；
+ * `focus-visible` 一并放行，键盘用户 tab 到它仍可见（消息操作栏的「复制」是另一条兜底）。 */
+function ChatPre({ children, streaming }: { children?: ReactNode; streaming: boolean }) {
+  const ref = useRef<HTMLPreElement>(null)
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    const text = ref.current?.textContent ?? ''
+    navigator.clipboard.writeText(text).then(
+      () => { setCopied(true); window.setTimeout(() => setCopied(false), 1500) },
+      () => useStore.getState().addToast('复制失败，请手动复制', 'error'),
+    )
+  }
+  return (
+    <div className="group/code relative">
+      {!streaming && (
+        <button
+          type="button"
+          onClick={copy}
+          title="复制代码"
+          aria-label="复制代码"
+          className="absolute right-1.5 top-1.5 z-10 rounded-md border border-border-light bg-surface p-1 text-dimmed opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/code:opacity-100"
+        >
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+        </button>
+      )}
+      <pre ref={ref}>{children}</pre>
+    </div>
+  )
+}
+
 /** 一段普通正文。⚠️ 严格沿用改造前 `MessageItem` 里那段 `ReactMarkdown`（含打字机 key 语义） */
 function ChatText({ content, streaming, statusText }: ChatMarkerContentProps) {
+  // ⚠️ 依赖 `streaming`：流式结束的那一帧要重新渲染出复制按钮（同时上面的 `key`
+  // 也从 `loading` 变 `done`、整棵子树重挂，故不必操心组件引用稳定）。
+  const components = useMemo(
+    () => ({ pre: ({ children }: { children?: ReactNode }) => <ChatPre streaming={streaming}>{children}</ChatPre> }),
+    [streaming],
+  )
   return (
-    <ReactMarkdown key={streaming ? 'loading' : 'done'} remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
+    <ReactMarkdown key={streaming ? 'loading' : 'done'} remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
       {normalizeLatexDelimiters(content || (streaming ? statusText || '…' : ''))}
     </ReactMarkdown>
   )

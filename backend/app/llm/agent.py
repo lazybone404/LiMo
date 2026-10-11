@@ -69,8 +69,11 @@ def _tool_summary(tool_name: str, result: str) -> str:
         data = result
 
     if tool_name == "search_web":
-        if isinstance(data, list):
-            return f"找到 {len(data)} 条相关结果"
+        # ⚠️ **只认 dict 形状**。三家 provider（tavily / searxng / ddg）在
+        # `agent/tools.py` 里的 return 全是 `{"results": [...]}`，此处曾有一个
+        # `isinstance(data, list)` 分支 —— 那是**不可达的死代码**。
+        # 删掉它，而**不是**反过来给 `_extract_sources` 补 list 兼容：形状判据要收在
+        # **同一侧**，两处对「什么是合法返回」给出不同答案就是模式 #54 的入口。
         if isinstance(data, dict) and data.get("results"):
             return f"找到 {len(data['results'])} 条相关结果"
         return "搜索完成"
@@ -99,6 +102,78 @@ def _tool_summary(tool_name: str, result: str) -> str:
         return "已列出可用文档"
 
     return "工具执行完成"
+
+
+def _safe_http_url(url: object) -> str:
+    """只放行 http/https 绝对 URL，不合规返回空串。
+
+    搜索结果里的 URL **来自公网**（Tavily / SearXNG / DDG 返回什么就是什么），不可信 ——
+    直接拼进 `<a href>` 就多了一条 `javascript:` / `data:` 通道。这里是**主防线**：
+    不合规的 URL 在抽取阶段就被丢掉；前端渲染前还会做一次同条件校验（纵深防御）。
+    """
+    u = str(url or "").strip()
+    if not u or len(u) > 2000:
+        return ""
+    # ⚠️ 夹带空白的串必须拒：`urlparse("https://a b")` 的 netloc 是 `"a b"`（非空），
+    # 只判 scheme/netloc 会让它通过 —— 而那种串进 `href` 有可能被浏览器截断解析。
+    # 前端 `chat-sources.ts::isSafeSourceUrl` 的正则本就拒它（`[^\s]+$`），
+    # 这里补齐才真的是「同条件校验」。
+    if any(c.isspace() for c in u):
+        return ""
+    try:
+        parts = urlparse(u)
+    except ValueError:
+        return ""
+    return u if parts.scheme in ("http", "https") and parts.netloc else ""
+
+
+def _extract_sources(tool_name: str, result: str, args: dict | None = None) -> list[dict]:
+    """从工具结果中提取**外部来源**（title/url），供前端展示「搜了什么、来源在哪」。
+
+    ⚠️ 与 `_extract_refs` 是**两件事**，不合并：`refs` 是**库内文档**（docId/title，
+    点了跳预览区，不离开应用），这里是**公网来源**（title/url，点了开浏览器）。形状不同、
+    消费方不同、跳转语义不同 —— 混成一个列表会让前端分不出该跳哪。
+
+    ⚠️ 「C 端不暴露完整工具结果」这条约束**不管来源列表**：它管的是 fetch_url 的 4000 字
+    正文、lookup_doc 的 2000 字全文。来源的 `title` + `url` 与 `refs` 里已有的
+    `{"docId", "title"}` 是同一种粒度，此处只是把它补到 search_web / fetch_url 上。
+    """
+    args = args or {}
+
+    if tool_name == "search_web":
+        try:
+            data = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        results = (data or {}).get("results", []) if isinstance(data, dict) else []
+        out: list[dict] = []
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            url = _safe_http_url(r.get("url"))
+            if not url:
+                continue
+            out.append({"title": str(r.get("title", ""))[:200], "url": url})
+            # 上限 5 条（与 `_extract_refs` 同款）。⚠️ 这是**展示**上限，与气泡文案里
+            # 的「找到 N 条」**刻意允许不等** —— 那个 N 是搜索结果总数（`_tool_summary`
+            # 报的是工具返回了什么），这个只决定展开列表画多长。强行对齐就得二选一：
+            # 要么砍掉气泡里的真实数字，要么把来源列表撑成无上限（UI 没那个承载）。
+            if len(out) >= 5:
+                break
+        return out
+
+    if tool_name == "fetch_url":
+        # 失败返回 `{"error": ...}`，正文没拿到 —— 也就没有可展示的来源
+        try:
+            data = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            data = None
+        if isinstance(data, dict) and data.get("error"):
+            return []
+        url = _safe_http_url(args.get("url"))
+        return [{"title": urlparse(url).netloc, "url": url}] if url else []
+
+    return []
 
 
 def _extract_refs(tool_name: str, result: str) -> list[dict]:
@@ -191,11 +266,14 @@ class AgentRunner:
         工具判定回合用非流式（需完整 tool_calls 解析），
         最终回答用流式实时输出。
 
-        产出事件：
+        产出事件（完整协议见 docs/对话协议.md）：
+          {"type": "agent_status", "message": "..."}
+          {"type": "tool_start", "tool": "x", "args": {...}, "display": "..."}
+          {"type": "tool_result", "tool": "x", "summary": "...",
+           "refs": [{docId, title}], "sources": [{title, url}]}
+          {"type": "thinking", "text": "..."}
           {"type": "text", "text": "..."}
-          {"type": "tool_start", "tool": "x", "args": {...}}
-          {"type": "tool_result", "tool": "x", "result": "..."}
-          {"type": "done"}
+          {"type": "done", "cancelled": bool}
           {"type": "error", "message": "..."}
         """
         messages: list[dict] = [{"role": "system", "content": system_prompt}]
@@ -298,6 +376,7 @@ class AgentRunner:
                     "tool": fn_name,
                     "summary": _tool_summary(fn_name, result),
                     "refs": _extract_refs(fn_name, result),
+                    "sources": _extract_sources(fn_name, result, fn_args),
                 }
 
         # 达到最大轮数 → 带完整消息历史的流式最终回答
