@@ -24,6 +24,8 @@
  *      这会打破「一套标记 × 任意主题」，且暗色下必然失效。
  *   F. CSS 里写了一个 `KNOWN_BLOCK_TYPES` 之外的 `data-block-type="…"` → 那条规则
  *      永远不会命中（解析器根本产不出这个类型）→ 红。
+ *   G. 某个 type 有本体形态、却漏写「关掉装饰」的归零规则 → 开关对那个 type
+ *      **什么都不发生**（其它 type 都乖乖变干净了，只有它还带着边框底色）→ 红。
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -141,8 +143,53 @@ describe('blocks.css 源约束', () => {
     for (const t of used) expect(KNOWN_BLOCK_TYPES.has(t), `CSS 里的类型不在白名单：${t}`).toBe(true)
   })
 
+  it('每个有本体形态的 type 都有对应的 `decor=off` 归零规则', () => {
+    // 对照 G：漏写某一种的症状是「开关对那个 type 无效」—— 其它 type 都变干净了，
+    // 只有它还带着边框与底色，而整条链零报错、也零断言。
+    // ⚠️ 判据**从 CSS 自身派生**（本体规则里出现的 type 集合），不手写四类型名单
+    // —— 下次加 type 时手写名单会静默过期（模式 #54）。
+    const bodyTypes = new Set(
+      [...cssNoComments.matchAll(/\.md-block\[data-block-type="([^"]+)"\]\s*\{/g)].map(m => m[1]),
+    )
+    const offTypes = new Set(
+      [...cssNoComments.matchAll(/\[data-marker-decor="off"\]\s*\.md-block\[data-block-type="([^"]+)"\]/g)]
+        .map(m => m[1]),
+    )
+    // 自证判据有区分力：真抓到了本体规则，而不是两个空集合在互相包含
+    expect(bodyTypes.size).toBeGreaterThan(1)
+    expect(bodyTypes.has('key-takeaway')).toBe(true)
+    const missing = [...bodyTypes].filter(t => !offTypes.has(t))
+    expect(missing, `这些类型没有 decor=off 归零规则：${missing.join(', ')}`).toEqual([])
+  })
+
   it('强调块刻意**不是**卡片形态（无投影）—— 避免卡中卡', () => {
     // `card` 骨架下强调块长在卡片内部，若它也带投影就会看起来像「一张卡里套着一张卡」
     expect(cssNoComments).not.toContain('box-shadow')
+  })
+
+  it('中性面板族（metric / table / code / image）的边框用 `--tk-border`，不是 light 档', () => {
+    // ⚠️ 2026-10-11 实机修正，教训带具体数字：light 档在默认 `warm` 基调下是
+    // `#EBE7E2`，离正文底 `--tk-surface`（`#F4F1EE`）只差 9 个灰阶，而面板自己的
+    // 底色 `--tk-elevated`（`#FAF8F5`）离正文只差 6 阶 —— 三层叠在一起等于没有容器，
+    // 用户看到的是「几行没有框的大数字」（原话「显示效果不太好」）。`--tk-border`
+    // （`#D6D3CE`）离正文 30 阶，是 light 档的 3.3 倍，且与章节卡片默认方案 `gpt`
+    // 用的是**同一套语言**（两者本就是嵌套关系：卡片里包面板）。
+    // 这条防的是「哪天有人觉得边框太重、又调回 light」—— 调回去同样零报错。
+    // ⚠️ 只断这两条**容器**规则：`timeline` 的竖连线仍用 light 档（细线本就该淡），
+    // 全局断言会把它一起误判。
+    const bodyOf = (sel: string) => {
+      const m = new RegExp(
+        `\\.md-block\\[data-block-type="${sel}"\\][^{]*\\{([^}]*)\\}`).exec(cssNoComments)
+      expect(m, `找不到 .md-block[data-block-type="${sel}"] 的本体规则`).not.toBeNull()
+      return m![1]
+    }
+    // table / code / image 三个选择器**共享同一条规则**，取 table 那条即代表全族
+    for (const sel of ['metric', 'table']) {
+      const body = bodyOf(sel)
+      // ⚠️ 带右括号匹配：`var(--tk-border` 会被 `var(--tk-border-light)` 满足，
+      // 判据就失去了区分力（同款失误在本项目里已有先例）。
+      expect(body, `${sel} 的边框应引用 --tk-border`).toContain('var(--tk-border)')
+      expect(body, `${sel} 不该再用 light 档边框`).not.toContain('--tk-border-light')
+    }
   })
 })

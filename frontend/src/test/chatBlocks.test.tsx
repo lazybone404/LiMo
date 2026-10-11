@@ -106,6 +106,44 @@ describe('ChatMarkerContent — follow-up', () => {
   })
 })
 
+describe('ChatMarkerContent — info / digest', () => {
+  const INFO = '回答正文。\n\n<!-- limo-block:v1 type="info" -->\n**bcut-asr** 是 B 站必剪的免费云端转写接口。\n<!-- /limo-block -->'
+  const DIGEST = '<!-- limo-block:v1 type="digest" -->\n- 要点一\n- 要点二\n<!-- /limo-block -->\n\n详细展开……'
+
+  it('info → 卡片容器 + data-block-type，块内文字在（空壳检测）', () => {
+    const { container } = renderChat(INFO)
+    const card = container.querySelector('.chat-info-card')
+    expect(card).not.toBeNull()
+    expect(card!.getAttribute('data-block-type')).toBe('info')
+    expect(card!.textContent).toContain('bcut-asr')
+    expect(container.textContent).toContain('回答正文。')   // 块外正文没丢
+  })
+
+  it('digest → 卡片容器 + data-block-type，块内列表项在（空壳检测）', () => {
+    const { container } = renderChat(DIGEST)
+    const card = container.querySelector('.chat-digest-card')
+    expect(card).not.toBeNull()
+    expect(card!.getAttribute('data-block-type')).toBe('digest')
+    expect(card!.textContent).toContain('要点一')
+    expect(container.textContent).toContain('详细展开……')
+  })
+
+  it('两者都**不**带 md-block（对话路径不命中产物侧的 blocks.css）', () => {
+    // 与「对照 B」同一条纪律：对话渲染路径与产物渲染路径刻意不共用类名。
+    for (const md of [INFO, DIGEST]) {
+      expect(renderChat(md).container.querySelector('.md-block')).toBeNull()
+    }
+  })
+
+  it('标记行不出现在页面上', () => {
+    for (const md of [INFO, DIGEST]) {
+      const { container } = renderChat(md)
+      expect(container.textContent).not.toContain('limo-block')
+      expect(container.textContent).not.toContain('<!--')
+    }
+  })
+})
+
 describe('ChatMarkerContent — 快路径与跨侧兜底', () => {
   it('无标记 → 快路径：没有卡片组 / 追问容器，正文正常渲染', () => {
     const { container } = renderChat('# 标题\n\n正文一段。')
@@ -114,14 +152,20 @@ describe('ChatMarkerContent — 快路径与跨侧兜底', () => {
     expect(container.textContent).toContain('正文一段。')
   })
 
-  it('对照 B：产物侧类型（key-takeaway）在对话里**不**变成卡片、也不带 md-block', () => {
-    const md = '<!-- limo-block:v1 type="key-takeaway" -->\n**重点**\n<!-- /limo-block -->'
-    const { container } = renderChat(md)
-    expect(container.querySelectorAll('.chat-card').length).toBe(0)
-    expect(container.querySelector('[data-block-type="card-group"]')).toBeNull()
-    // ⚠️ `md-block` 会命中产物侧的 blocks.css（左边框 + 淡底），对话不该有
-    expect(container.querySelector('.md-block')).toBeNull()
-    expect(container.textContent).toContain('重点')
+  it('对照 B：产物侧类型在对话里**不**变成卡片、也不带 md-block', () => {
+    // 逐一遍历产物侧全部类型 —— 「两侧集合不相交」的**渲染层**证据（集合本身由
+    // markdownMarkers.test.ts 的守卫钉住，那条只证明常量对，证明不了这里真的没分支）。
+    for (const t of ['key-takeaway', 'alert', 'recommend', 'metric']) {
+      const md = `<!-- limo-block:v1 type="${t}" -->\n**重点**\n<!-- /limo-block -->`
+      const { container } = renderChat(md)
+      expect(container.querySelectorAll('.chat-card').length, t).toBe(0)
+      expect(container.querySelector('[data-block-type="card-group"]'), t).toBeNull()
+      expect(container.querySelector('.chat-info-card'), t).toBeNull()
+      expect(container.querySelector('.chat-digest-card'), t).toBeNull()
+      // ⚠️ `md-block` 会命中产物侧的 blocks.css（左边框 + 淡底），对话不该有
+      expect(container.querySelector('.md-block'), t).toBeNull()
+      expect(container.textContent).toContain('重点')
+    }
   })
 
   it('未知 type 内容原样出现（不认识 ≠ 内容消失）', () => {

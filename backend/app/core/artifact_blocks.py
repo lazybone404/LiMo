@@ -35,13 +35,52 @@ import re
 PROTOCOL_VERSION = "v1"
 
 #: **产物侧**（预览 / HTML / Word 导出）真写了渲染分支的块类型。
-#: ⚠️ **第一版刻意只有 1 个** —— 加一个类型的成本不在代码，而在 prompt 每轮都要重新教育
-#: 一遍模型（且类型越多越容易「到处都用」）。先看这一个的真实遵循率与滥用率。
-ARTIFACT_BLOCK_TYPES = frozenset({"key-takeaway"})
+#:
+#: ⚠️ 这六种在预览侧**全部是纯 CSS 形态**（`styles/blocks.css`），产物侧刻意不做 DOM
+#: 结构分派 —— 那份 CSS 同时是导出侧读的单一真相源，而导出 HTML 由本模块的
+#: `render_blocks_html` 生成。Python 这边**对所有 type 一视同仁**地包 `md-block`
+#: （见 `render_blocks_html`），形态差异全留给 CSS。
+#:
+#: ⚠️ `steps` / `timeline`（2026-10-11 补）是**图表管道里「简单线性图」的替代**：
+#: 横链 / 竖列这两种关系 Markdown 列表能保真表达，不值得为它付一整条渲染链
+#: （`chart_layout` → PIL → PNG）。形状差异落在**块内子元素类型**上（`steps` 用
+#: 无序列表 → `<ul>`；`timeline` 用有序列表 → `<ol>`），两者都是 Markdown 的自然
+#: 产物，预览（React）与导出（`markdown_render.py`）两侧同构 —— 故仍是纯 CSS，
+#: 不需要 Python 侧任何分支。
+#:
+#: ⚠️ `table` / `code` / `image`（2026-10-11 补）与上面六个**性质不同族**：前六个
+#: 标记的是**普通段落**（「这一段文字是什么性质」），块内原本就是散文；这三个标记的
+#: 是**富内容** —— 表格 / 代码块 / 图片本来就与正文不同质，加标记的全部作用就是外面
+#: 多一层壳，块内一个字节都不动。⚠️ 导出侧对本族**也同样零分支**：`render_blocks_html`
+#: 一视同仁地包 `md-block`，块内的 `<table>` / `<pre><code>` / `<img>` 由各自的渲染
+#: 路径产出，与「有没有标记」无关。
+ARTIFACT_BLOCK_TYPES = frozenset(
+    {"key-takeaway", "alert", "recommend", "metric", "steps", "timeline",
+     "table", "code", "image"}
+)
 
 #: **对话侧**（前端 `ai-chat/ChatMarkerContent.tsx`）真写了渲染分支的块类型。
 #: ⚠️ 与 `ARTIFACT_BLOCK_TYPES` **刻意不相交** —— 产物 prompt 与对话 prompt 各教各的。
-CHAT_BLOCK_TYPES = frozenset({"card-group", "follow-up"})
+CHAT_BLOCK_TYPES = frozenset({"card-group", "follow-up", "info", "digest"})
+
+#: **节级修饰符** `card` —— 唯一的「不是块」的 type（2026-10-11）。
+#:
+#: ⚠️ 它与上面两族的区别是**粒度**：那两族标记的是**块**（一段内容），`card` 标记的是
+#: **节**（一个 `##` 标题及其全部后续内容，直到下一个同级标题）。语义是**「这一节值得
+#: 单独成一张卡片」**，故标记写在标题行的**下面一行**（`markdown_sections.split_by_h2`
+#: 据此把 `Section.card` 置真）。
+#:
+#: ⚠️ 为什么要有这个区分（不是洁癖）：模型很可能会把它**写在标题之前**（其余 type 都是
+#: 包裹式，写成 `<!-- card -->\n## 标题` 是它的本能）。若当成块，`iter_headings` 会进入
+#: 块内状态、把 `## 标题` 整个跳过 —— 这一节从文档结构里消失，切分器连「节」都看不到。
+#: 当作**节修饰符**（`match_open` 返回 `None`）时，两种写法都退化成同一件事：
+#: **该节不成卡，但结构与内容一字不少**。
+#:
+#: ⚠️ 标记行仍被 `MARKER_LINE_RE` 剥掉（零残留）；`parse_blocks` 里 `match_open` 之后
+#: 紧跟的那道 `MARKER_LINE_RE` 剥除正好接住它，故**不需要**在 `parse_blocks` 里另开分支。
+#:
+#: ⚠️ 与前端 `markdown-scan.ts::SECTION_CARD_TYPE` 同源（fixture 的 `meta.section_types` 钉住）。
+SECTION_CARD_TYPE = "card"
 
 #: **协议已知**的全部块类型 = 上两者之并。
 #:
@@ -113,13 +152,36 @@ def is_known_type(block_type: str) -> bool:
 
 
 def match_open(line: str) -> re.Match[str] | None:
-    """匹配一行的开标记；**协议版本不符时返回 `None`**（该行按「未知」剥掉，内容不吞）。
+    """匹配一行的**块**开标记；**协议版本不符、或该 type 是节修饰符时返回 `None`**。
+
+    协议不符的行按「未知」剥掉（内容不吞）；节修饰符则**根本不开块** —— 见
+    `SECTION_CARD_TYPE`（它标记的是「节」，不是块）。
 
     ⚠️ 这个判据被 `parse_blocks` 与 `markdown_sections.iter_headings` **共用** ——
     两侧各写一遍的症状是「预览里没这张卡、TOC 里却多一项」，且零报错（模式 #54）。
+
+    ⚠️ 与前端 `markdown-scan.ts::matchBlockOpen` 同源。
     """
     m = OPEN_RE.match(line)
-    return m if (m and m.group("ver") == PROTOCOL_VERSION) else None
+    if m is None or m.group("ver") != PROTOCOL_VERSION:
+        return None
+    return None if m.group("type") == SECTION_CARD_TYPE else m
+
+
+def is_section_card(line: str) -> bool:
+    """该行是不是「把这一节标成卡片」的**节修饰符**（`type="card"` 的开标记）。
+
+    ⚠️ 与 `match_open` **刻意分开**：那个回答「这里是不是块的开头」（节修饰符不是），
+    这个回答「这一节要不要成卡」（只有切分器问）。合成一个函数会让「card 不开块」与
+    「card 标记了节」两条互不相干的判据绑在一起。
+
+    ⚠️ 认**当前协议版本**：将来 `v2` 改语法时，`v1` 的 card 标记按未知行剥掉（零残留），
+    与 `match_open` 的版本纪律一致。
+    ⚠️ 与前端 `markdown-scan.ts::isSectionCard` 同源。
+    """
+    m = OPEN_RE.match(line)
+    return (m is not None and m.group("ver") == PROTOCOL_VERSION
+            and m.group("type") == SECTION_CARD_TYPE)
 
 
 def closes_block(line: str) -> bool:

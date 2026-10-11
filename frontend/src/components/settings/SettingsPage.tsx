@@ -650,7 +650,16 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                             title={o.hint}
                             className={`text-left px-3 py-2 rounded-lg transition-colors border ${selected ? 'bg-accent/10 border-accent/30' : 'border-transparent hover:bg-surface-hover'}`}
                           >
-                            <div className={`text-[13px] ${selected ? 'text-accent font-medium' : 'text-dimmed'}`}>{o.label}</div>
+                            {/* 迷你小样 —— 让 8 套方案的差异**看得见**，而不是只有名字。
+                                ⚠️ `data-card-style` 写在小样元素自己身上：`cards.css` 的
+                                方案块（`[data-card-style="x"] { --card-*: … }`）**不带骨架前缀**，
+                                故这里直接就能取到那批变量；小样元素用它们画一个缩微卡片
+                                （`.card-preview`，与 `.md-card` 消费同一批变量）。 */}
+                            <span className="flex items-center gap-2.5">
+                              <span aria-hidden data-card-style={o.key} className="card-preview shrink-0" />
+                              <span className={`text-[13px] ${selected ? 'text-accent font-medium' : 'text-dimmed'}`}>{o.label}</span>
+                            </span>
+                            <span className="text-[10.5px] text-disabled mt-1.5 block leading-snug">{o.hint}</span>
                           </button>
                         )
                       })}
@@ -664,13 +673,16 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
               </div>
 
               {/* 产物语义标记的装饰开关 —— 与「产物骨架」并列而**不塞进去**：
-                  强调块与骨架轴正交（「整篇」下它也在正文流里），塞进骨架卡片会
-                  暗示它只对卡片生效。默认开启 = 与改造前一致（那边根本没有块）。 */}
+                  标记块与骨架轴正交（「整篇」下它也在正文流里），塞进骨架卡片会
+                  暗示它只对卡片生效。默认开启 = 与改造前一致（那边根本没有块）。
+                  ⚠️ 2026-10-11 起射程含**内容卡片族**（表格 / 代码 / 图片）—— 关掉后
+                  它们还原成「没包过围栏」的排版，这正是用户要的「保留原来的形式」。 */}
               <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-4">
                 <div>
-                  <label className="text-[15px] font-medium mb-1 block">重点块装饰</label>
+                  <label className="text-[15px] font-medium mb-1 block">内容块装饰</label>
                   <p className="text-[12px] text-muted mb-4">
-                    模型在笔记里标出的重点段落，显示为左侧色条 + 淡底的强调块
+                    模型在笔记里标出的重点、提醒、指标等段落，以及对照表、代码、图片，
+                    显示成带装饰的块
                   </p>
                   <label className="flex items-center gap-2.5 cursor-pointer">
                     <input
@@ -679,12 +691,12 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                       onChange={e => setMarker({ decor: e.target.checked })}
                       className="w-4 h-4 accent-accent"
                     />
-                    <span className="text-[13px] text-dimmed">显示重点块装饰</span>
+                    <span className="text-[13px] text-dimmed">显示内容块装饰</span>
                   </label>
                   <p className="text-[11px] text-muted mt-3">
-                    关闭只是隐藏装饰 —— <span className="text-dimmed">文字内容照常显示</span>，
-                    不会被一并隐藏。预览区工具栏也有同一个开关；HTML / Word / PDF
-                    导出会跟随此设置
+                    关闭只是隐藏装饰 —— <span className="text-dimmed">内容一字不少</span>，
+                    表格 / 代码 / 图片会还原成原本的排版。预览区工具栏也有同一个开关；
+                    HTML / Word / PDF 导出会跟随此设置
                   </p>
                 </div>
               </div>

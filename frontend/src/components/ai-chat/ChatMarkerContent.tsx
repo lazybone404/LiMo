@@ -22,6 +22,7 @@
 
 import { useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
+import { ClipboardList, Info } from 'lucide-react'
 import { parseMarkers } from '../../lib/markdown-markers'
 import { splitByHeading } from '../../lib/markdown-sections'
 import { suppressTrailingPartialMarker } from '../../lib/markdown-scan'
@@ -101,6 +102,36 @@ function ChatFollowUp({ content, streaming }: ChatMarkerContentProps) {
   )
 }
 
+/** `info`：讲清一个对象（一个概念 / 一个工具 / 一份来源）。
+ *
+ * ⚠️ 与上面两个不同，它**不做子结构解析** —— 块内就是普通 Markdown，整块交给 `ChatText`。
+ * 于是也不存在「解析不出 → 退化」的分支：没有可解析的东西，就没有解析失败。
+ * 形态差异全在外壳（图标 + 语义色），与产物侧的三种是同一个思路。 */
+function ChatInfoCard({ content, streaming }: ChatMarkerContentProps) {
+  return (
+    <div className="chat-info-card" data-block-type="info">
+      <Info className="chat-block-icon" size={14} aria-hidden="true" />
+      <div className="chat-block-body">
+        <ChatText content={content} streaming={streaming} statusText="" />
+      </div>
+    </div>
+  )
+}
+
+/** `digest`：长回答开头的整体印象（2～5 条要点）。
+ *
+ * ⚠️ 同 `info`：不解析子结构，块内是普通 Markdown（通常是有序 / 无序列表）。 */
+function ChatDigestCard({ content, streaming }: ChatMarkerContentProps) {
+  return (
+    <div className="chat-digest-card" data-block-type="digest">
+      <ClipboardList className="chat-block-icon" size={14} aria-hidden="true" />
+      <div className="chat-block-body">
+        <ChatText content={content} streaming={streaming} statusText="" />
+      </div>
+    </div>
+  )
+}
+
 export function ChatMarkerContent({ content, streaming, statusText }: ChatMarkerContentProps) {
   // ⚠️ 抑制只作用于**渲染用**的字符串 —— `content` 本身（消息本体 / 存储 / 复制 / 导出）
   // 一字不动。半截标记行只可能出现在末尾（chunk 只向后追加）。
@@ -126,6 +157,8 @@ export function ChatMarkerContent({ content, streaming, statusText }: ChatMarker
         if (seg.kind === 'text') return <ChatText key={i} {...props} />
         if (seg.type === 'card-group') return <ChatCardGroup key={i} {...props} />
         if (seg.type === 'follow-up') return <ChatFollowUp key={i} {...props} />
+        if (seg.type === 'info') return <ChatInfoCard key={i} {...props} />
+        if (seg.type === 'digest') return <ChatDigestCard key={i} {...props} />
         // 其余（产物侧类型 / 未知 type）一律当普通正文 —— 零残留
         return <ChatText key={i} {...props} />
       })}

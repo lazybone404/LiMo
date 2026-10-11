@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import io
+import re
 import shutil
 import tempfile
 import zipfile
@@ -32,7 +33,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from app.core.artifact_blocks import strip_blocks
+from app.core.artifact_blocks import ARTIFACT_BLOCK_TYPES, strip_blocks
 from app.core.dependencies import get_store
 from app.core.errors import AppError
 from app.core.transcript_meta import strip_meta
@@ -50,6 +51,15 @@ BLOCK = f"{_OPEN}\n**核心结论**\n\n采用异步任务处理长文档，可�
 
 MD = f"开场白。\n\n## 甲\n内容一\n\n{BLOCK}\n\n## 乙\n内容二\n"
 PLAIN = "开场白。\n\n## 甲\n内容一\n\n## 乙\n内容二\n"
+
+#: 卡片轴的用例专用（2026-10-11 起**只有被 `card` 节修饰符标过的节**才成卡，
+#: 故 `MD` 那份点不出一张卡来）。⚠️ `MD` 保持无标记不动 —— 它被本文件里其余
+#: 十几个用例消费，给它加标记等于顺手改掉一批与骨架无关的用例的输入。
+CARD_LINE = '<!-- limo-block:v1 type="card" -->'
+CARD_MD = (
+    f"开场白。\n\n## 甲\n{CARD_LINE}\n内容一\n\n{BLOCK}\n\n"
+    f"## 乙\n{CARD_LINE}\n内容二\n"
+)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -200,8 +210,8 @@ def test_装饰开关_关时写_off_开时不写属性():
 
 def test_card_骨架下块落在卡内():
     """骨架轴 ⊥ 标记轴：`card` 下强调块在**卡片内部**，而不是另起一节或被切卡逻辑吞掉。"""
-    html = _build_selfcontained_html(MD, "标题", skeleton="card")
-    assert html.count('<section class="md-card">') == 2      # 甲 / 乙
+    html = _build_selfcontained_html(CARD_MD, "标题", skeleton="card")
+    assert html.count('<section class="md-card">') == 2      # 甲 / 乙（都标了 card）
     i_card = html.index('<section class="md-card">')
     i_block = html.index('<div class="md-block"')
     assert i_block > i_card, "强调块跑到卡片外面去了"
@@ -210,9 +220,103 @@ def test_card_骨架下块落在卡内():
 
 def test_块内的_H2_不会被切成新卡():
     """标记块里的 `##` 不是文档结构 —— 切卡必须跳过块内（与前端 `markdown-scan` 同源）。"""
-    md = f"开场\n\n## 甲\n内容\n\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n## 这不是标题\n块内\n<!-- /limo-block -->\n"
+    md = (f"开场\n\n## 甲\n{CARD_LINE}\n内容\n\n"
+          '<!-- limo-block:v1 type="key-takeaway" -->\n## 这不是标题\n块内\n<!-- /limo-block -->\n')
     html = _build_selfcontained_html(md, "标题", skeleton="card")
     assert html.count('<section class="md-card">') == 1, "块内的 ## 被当成了新章节"
+
+
+def _md_of(type_: str, body: str = "块内内容") -> str:
+    """单个指定 type 的标记块 —— 新增类型逐一过导出链时用（`MD` 那份只含 key-takeaway）。"""
+    return f'<!-- limo-block:v1 type="{type_}" -->\n{body}\n<!-- /limo-block -->\n'
+
+
+#: `steps` / `timeline` 的**形状**全靠块内是 `<ul>` 还是 `<ol>`（`blocks.css` 按子元素
+#: 类型区分，见文件头），故这两个的用例必须带列表 body —— 用纯文字 body 的话，
+#: 「块内列表结构原样穿过导出链」这件事根本没有证据，而它正是纯 CSS 方案的前提。
+_LIST_BODY = {
+    "steps": "- 输入\n- 清洗\n- 输出",
+    "timeline": "1. **导入**\n2. **解析**",
+}
+
+
+def test_html_新增八种类型都包成_md_block_而不是裸露的标记行():
+    """**「解析器对 type 无感知」这条设计在导出侧的证据**：八种新形态在 Python 侧
+    一行分支都没有，走的正是 key-takeaway 的同一条包装路径，形态差异全在 CSS。
+
+    ⚠️ 断两件事：包装在（结构）+ 标记行不在读者可见正文里（症状）。只断前者的话
+    「包了一层但仍把注释拼进正文」照样绿 —— 与 `key-takeaway` 那条同款。
+    """
+    for t in ("alert", "recommend", "metric", "steps", "timeline",
+              "table", "code", "image"):
+        html = _build_selfcontained_html(_md_of(t), "标题")
+        assert f'<div class="md-block" data-block-type="{t}">' in html, t
+        assert '<!-- limo-block' not in _body(html), t
+        assert '<!-- /limo-block' not in _body(html), t
+        assert '块内内容' in html, t
+
+
+#: `table` / `code` / `image` 的**全部增量就是一层外壳** —— 块内那张表、那段代码、
+#: 那张图必须**原样**穿过导出链。用默认的纯文字 body 测不出这一点（文字放哪儿都是
+#: 文字），故这三个必须带专属 body。与 `_LIST_BODY` 同一条理由：纯 CSS 方案的前提是
+#: 「Markdown 结构在链路上不被压扁」，而那件事没有断言就只是一句愿望。
+_RICH_BODY = {
+    "table": "| 方案 | 成本 |\n| --- | --- |\n| A | 低 |",
+    "code": "```python\ncfg = load()\n```",
+    "image": "![架构图](assets/arch.png)",
+}
+
+
+def _text_of(html: str) -> str:
+    """HTML → 纯文字（只为断言「内容还在」，不解码实体 —— 本文件这几条用例里没有实体）。
+
+    ⚠️ 非有它不可的原因：Pygments 会把 `cfg = load()` 拆成一串 `<span>`，直接
+    `'cfg = load()' in html` 会**假红**（代码明明在，只是被逐 token 高亮了）。断言
+    「文字在不在」本就不该受高亮实现的影响。
+    """
+    return re.sub(r"<[^>]+>", "", html)
+
+
+def test_html_内容卡片三种_块内富结构原样穿过导出链():
+    """这一族**唯一会坏的方式**不是「块没包上」，而是**块内那份富内容被压扁** ——
+    表格变成一行字、代码变成一行字、图片变成一个失效引用。那时 `data-block-type`
+    包装断言照样绿、文字也一字不少（因为「压扁」压掉的是结构不是文字）。
+
+    ⚠️ 这三个的整个价值就是「内容还是原来那份内容」，故这条断言与上面那条包装断言
+    缺一不可 —— 上面管壳，这条管内容。
+    ⚠️ **两层分开断**：标签归标签（结构），文字归文字（内容）。混在一起断就会出现
+    「代码在、只是被高亮了」这种假红。
+    """
+    body = _body(_build_selfcontained_html(
+        "\n".join(_md_of(t, b) for t, b in _RICH_BODY.items()), "标题"))
+    # 结构层：三样富内容各自的标签都真的在
+    assert "<table>" in body, "块内表格没有原样穿过（或没被渲染成 <table>）"
+    assert "<pre" in body and "<code" in body, "块内代码没有原样穿过"
+    # ⚠️ 图片的说明文字在 **`alt` 属性**里（不在文本节点），故它归结构层 ——
+    # 剥标签时属性会一起被剥掉，写成 `'架构图' in _text_of(body)` 会假红。
+    assert "<img" in body and "arch.png" in body, "块内图片没有原样穿过"
+    assert 'alt="架构图"' in body, "图片的说明文字（alt）丢了"
+    # 内容层：文字一个不少（剥掉标签后再断，免得被高亮的 span 拆解骗过）
+    text = _text_of(body)
+    assert "方案" in text and "低" in text, "表格里的文字丢了"
+    assert "cfg = load()" in text, "代码里的文字丢了"
+
+
+def test_html_列表结构原样穿过导出链():
+    """`steps` / `timeline` 的形态判据是**块内子元素类型**（无序 / 有序列表），而
+    Python 侧对此一行分支都没有 —— 形状完全靠 Markdown 渲染器把 `- ` / `1. ` 转成
+    `<ul>` / `<ol>`。若哪一步（KaTeX 保护链 / 骨架切分 / 段拼接）把列表压成纯文本，
+    `blocks.css` 里那两条按子元素选择器写的规则就**静默不命中**，两个 type 一起退化成
+    裸段落 —— 而包装断言 `data-block-type="steps"` 照样绿。
+
+    ⚠️ 这是「CSS 单一真相源」这套方案**唯一依赖的 Markdown 层前提**，值得单独钉住。
+    """
+    h_steps = _body(_build_selfcontained_html(_md_of("steps", _LIST_BODY["steps"]), "标题"))
+    h_tl = _body(_build_selfcontained_html(_md_of("timeline", _LIST_BODY["timeline"]), "标题"))
+    # 对照：steps 用无序列表、timeline 用有序列表 —— 两边**各自**只出自己要的那一种
+    # （只断「有 <ul>」的话，一个把两者都渲染成 <ul> 的实现照样绿）。
+    assert "<ul>" in h_steps and "<ol>" not in h_steps, "steps 应渲染成无序列表"
+    assert "<ol>" in h_tl and "<ul>" not in h_tl, "timeline 应渲染成有序列表"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -286,13 +390,108 @@ def test_word_card_骨架下标记块表格嵌在卡片表格内():
     ⚠️ `Document.tables` 只返回 **body 顶层**的表格 —— 嵌套表在 `cell.tables` 里。
     写成「顶层应该有 3 张」会红在这里，而实现其实是对的。
     """
-    doc = Document(io.BytesIO(markdown_to_docx(MD, "标题", skeleton="card")))
+    doc = Document(io.BytesIO(markdown_to_docx(CARD_MD, "标题", skeleton="card")))
     assert len(doc.tables) == 2, "卡片数不对（甲 / 乙）"
     nested = [inner for t in doc.tables
               for row in t.rows for cell in row.cells for inner in cell.tables]
     assert len(nested) == 1, "标记块没有嵌在卡片内部（或反过来，卡片嵌在块里）"
     assert 'limo-block' not in "\n".join(
         p.text for p in nested[0].rows[0].cells[0].paragraphs)
+
+
+def _marker_colors(data: bytes) -> tuple[str, str]:
+    """从 Word 产物里**读回**强调块的 (底纹色, 左边框色)。
+
+    ⚠️ 刻意不 `import _MARKER_COLORS` 来比对 —— 那样只能证明「表里写着什么」，
+    证明不了「渲染时真查了表」。漏查表时的表现正是**全部走兜底色**：表本身完全正确，
+    产物上三种块长得一模一样，而 import 式的断言一路绿。
+    """
+    tables = _tables(data)
+    assert len(tables) == 1, f"强调块没有包成单张表格（{len(tables)} 张）"
+    tcPr = tables[0].rows[0].cells[0]._tc.find(qn("w:tcPr"))
+    shd = tcPr.find(qn("w:shd"))
+    left = tcPr.find(qn("w:tcBorders")).find(qn("w:left"))
+    return shd.get(qn("w:fill")), left.get(qn("w:color"))
+
+
+def test_word_各类型的配色互不相同():
+    """加了块却只有一种视觉 = 白加。这条挡的是「`_render_marker_block` 漏按
+    `data-block-type` 取色」——那种情况下六种 type 全走 `(FILL_MARKER, BAR_MARKER)`。
+
+    ⚠️ 断**两两不同**而不是逐个比对写死的色值：写死色值等于把实现抄进测试，
+    改配色要改两处、改错一处时测试还是绿的。
+    ⚠️ 名单从 `_MARKER_COLORS` 的键派生（`import` 的是**键集**不是**值**）——
+    手写名单在下次加 type 时会绿着失去意义（模式 #54）。上面 `_marker_colors` 那条
+    「不 import 值比对」的纪律不受影响：这里仍然是从产物**读回**颜色再两两比。
+    """
+    from app.services.docx_export import _MARKER_COLORS
+    types = sorted(_MARKER_COLORS)
+    got = {t: _marker_colors(markdown_to_docx(_md_of(t), "标题")) for t in types}
+    assert len(set(got.values())) == len(types), \
+        f"有类型共用同一套配色（漏查表的症状）：{got}"
+
+
+def test_word_新增类型的块内文字一字不少():
+    """结构对了还要内容对 —— 不能因为加分支把块内文字吞掉或复制一份。
+
+    ⚠️ 名单从 `ARTIFACT_BLOCK_TYPES` **派生**（排除 `key-takeaway` —— 它由上面 `MD`
+    那条覆盖），手写名单在下次加 type 时会绿着失去意义（模式 #54）。
+    """
+    for t in sorted(ARTIFACT_BLOCK_TYPES - {"key-takeaway"}):
+        texts = "\n".join(_paragraph_texts(markdown_to_docx(_md_of(t), "标题")))
+        assert texts.count("块内内容") == 1, t
+        assert 'limo-block' not in texts, t
+
+
+def test_word_内容卡片三种_块内富结构原样穿过且_table_是表格套表格():
+    """`table` / `code` / `image` 的价值同样是「块内那份富内容原样保留」，Word 侧要断
+    两件事：
+
+      · **内容在** —— 表格的行列、代码的文字、图片的占位都在（不是只有一个空壳）；
+      · **形态边界** —— `table` 卡在这里是**表格套表格**：外层是强调块用的单单元格
+        表格，内层是 Markdown 表格自己那张 Table Grid。⚠️ 这是**能力边界不是缺陷**：
+        Word 的「容器」手段只有表格这一种，要不嵌套就得让 Python 去识别「块内是什么」，
+        而那正是 `blocks.css` 文件头否掉的方向（形态差异只走 CSS）。钉住现状，不修。
+
+    ⚠️ `Document.tables` 只返回 **body 顶层**的表格，嵌套表在 `cell.tables` 里 ——
+    写成「顶层应该有 2 张」会红在这里，而实现其实是对的（与
+    `test_word_card_骨架下标记块表格嵌在卡片表格内` 同款陷阱）。
+    """
+    doc = Document(io.BytesIO(markdown_to_docx(_md_of("table", _RICH_BODY["table"]), "标题")))
+    assert len(doc.tables) == 1, "table 卡的外壳没有包成单单元格表格"
+    shell = doc.tables[0]
+    assert len(shell.rows) == 1 and len(shell.columns) == 1, "外壳应是一格"
+    nested = shell.rows[0].cells[0].tables
+    assert len(nested) == 1, "块内那张表格没有原样穿过（或被压扁成文字）"
+    inner = "\n".join(p.text for r in nested[0].rows for c in r.cells for p in c.paragraphs)
+    assert "方案" in inner and "低" in inner, "内层表格的内容丢了"
+
+    # code / image：同样包成单格，块内的文字 / 图片占位一字不少
+    for t, want in (("code", "cfg = load()"), ("image", "架构图")):
+        texts = "\n".join(_paragraph_texts(markdown_to_docx(_md_of(t, _RICH_BODY[t]), "标题")))
+        assert want in texts, f"{t} 丢了块内内容：{want}"
+        assert 'limo-block' not in texts, t
+
+
+def test_word_steps_timeline_退化成竖排列表_这是能力边界():
+    """⚠️ **如实记录一条已知偏差**：`steps`（横向步骤条）在 Word 里**不是**横排 ——
+    预览侧的横排靠 `display:flex` + 伪元素箭头，Word 的 XML 没有对应表达。两者在这里
+    都渲染成一个单单元格表格 + 竖排列表，**只有配色不同**。
+
+    把它写成断言而不是只写进注释：哪天有人以为「Word 侧也是横的」而按此改代码，
+    这条会先红。修法（改多单元格表格）等于让 Python 复刻预览的结构 —— 那正是
+    `blocks.css` 文件头明确否掉的方向，故**不修**，只钉住现状。
+    """
+    want = {"steps": ("输入", "清洗"), "timeline": ("导入", "解析")}
+    for t in ("steps", "timeline"):
+        doc = Document(io.BytesIO(markdown_to_docx(_md_of(t, _LIST_BODY[t]), "标题")))
+        assert len(doc.tables) == 1, f"{t} 应包成单单元格表格"
+        assert len(doc.tables[0].rows) == 1 and len(doc.tables[0].columns) == 1, t
+        texts = "\n".join(_paragraph_texts(markdown_to_docx(_md_of(t, _LIST_BODY[t]), "标题")))
+        # 列表项文字一字不少（形态退化、内容不退化）
+        for w in want[t]:
+            assert w in texts, f"{t} 丢了列表项文字：{w}"
+        assert 'limo-block' not in texts, t
 
 
 # ═══════════════════════════════════════════════════════════════

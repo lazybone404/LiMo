@@ -9,10 +9,12 @@
   "meta": {
     "protocolVersion": "v1",
     "_knownTypes_comment": "**协议并集**的跨语言守卫：前端与后端的 KNOWN_BLOCK_TYPES 都必须等于 knownTypes，且必须满足「== artifactTypes ∪ chatTypes」与「两者不相交」。加类型时改这里 + 两侧各改一处 + **写渲染器**，漏改任一处即红。",
-    "knownTypes": ["key-takeaway", "card-group", "follow-up"],
+    "knownTypes": ["key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "table", "code", "image", "card-group", "follow-up", "info", "digest"],
     "_sideTypes_comment": "⚠️ **「协议知道这个 type」与「某一侧实现了渲染」是两件事**：这两个子集是各侧真写了渲染分支的类型。把两者混为一谈的失效方式是静默的 —— 只进 knownTypes 而不写渲染器，等于宣称「有人处理它」，实际会被原样当正文吐出来（零报错）。故拆开、由断言核对。",
-    "artifactTypes": ["key-takeaway"],
-    "chatTypes": ["card-group", "follow-up"]
+    "artifactTypes": ["key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "table", "code", "image"],
+    "chatTypes": ["card-group", "follow-up", "info", "digest"],
+    "_sectionTypes_comment": "⚠️ **第三节集合：节级修饰符**（2026-10-11）—— 它们**不是块**：`matchBlockOpen` / `match_open` 对它们返回 null（标记行对标题扫描完全透明，因此模型把标记写在标题**之前**也不会吞掉那个标题），而是改「**这一节**渲染成什么」的修饰符。`card` 写在 `##` 标题之下 ⇒ 该节成卡。⚠️ **刻意不进 `knownTypes`** —— 那个集合的语义是「块类型」，而 `is_known_type` 决定的是「包不包强调块外壳」，两种判定混在一起会让「card 不开块」这条静默失效。",
+    "sectionTypes": ["card"]
   },
   "cases": [
     {
@@ -125,6 +127,104 @@
         { "kind": "block", "type": "follow-up", "content": "- 第一个问题？\n- 第二个问题？" }
       ],
       "stripped": "回答正文。\n\n- 第一个问题？\n- 第二个问题？"
+    },
+    {
+      "name": "产物提醒块（alert）—— 块内多段 Markdown 原样保留",
+      "md": "<!-- limo-block:v1 type=\"alert\" -->\n**风险**\n\n该方法在并发写入时会丢数据。\n<!-- /limo-block -->",
+      "segments": [
+        { "kind": "block", "type": "alert", "content": "**风险**\n\n该方法在并发写入时会丢数据。" }
+      ],
+      "stripped": "**风险**\n\n该方法在并发写入时会丢数据。"
+    },
+    {
+      "name": "产物推荐块（recommend）—— 块内加粗前缀原样保留",
+      "md": "<!-- limo-block:v1 type=\"recommend\" -->\n**推荐方案**：用 A。\n\n**为什么**：它在扩展性上胜出。\n<!-- /limo-block -->",
+      "segments": [
+        { "kind": "block", "type": "recommend", "content": "**推荐方案**：用 A。\n\n**为什么**：它在扩展性上胜出。" }
+      ],
+      "stripped": "**推荐方案**：用 A。\n\n**为什么**：它在扩展性上胜出。"
+    },
+    {
+      "name": "产物指标块（metric）—— 块内 `### 名称` + 数字，结构原样保留",
+      "md": "<!-- limo-block:v1 type=\"metric\" -->\n### 已处理文档\n128 份\n\n### 待处理\n7 份\n<!-- /limo-block -->",
+      "segments": [
+        { "kind": "block", "type": "metric", "content": "### 已处理文档\n128 份\n\n### 待处理\n7 份" }
+      ],
+      "stripped": "### 已处理文档\n128 份\n\n### 待处理\n7 份"
+    },
+    {
+      "name": "对话信息卡（info）—— 块内普通 Markdown 原样保留",
+      "md": "回答正文。\n\n<!-- limo-block:v1 type=\"info\" -->\n**XXX** 是一个……\n\n它的主要用途是……\n<!-- /limo-block -->",
+      "segments": [
+        { "kind": "text", "content": "回答正文。\n" },
+        { "kind": "block", "type": "info", "content": "**XXX** 是一个……\n\n它的主要用途是……" }
+      ],
+      "stripped": "回答正文。\n\n**XXX** 是一个……\n\n它的主要用途是……"
+    },
+    {
+      "name": "对话摘要卡（digest）—— 块内有序列表原样保留",
+      "md": "<!-- limo-block:v1 type=\"digest\" -->\n- 要点一\n- 要点二\n<!-- /limo-block -->\n\n详细展开……",
+      "segments": [
+        { "kind": "block", "type": "digest", "content": "- 要点一\n- 要点二" },
+        { "kind": "text", "content": "\n详细展开……" }
+      ],
+      "stripped": "- 要点一\n- 要点二\n\n详细展开……"
+    },
+    {
+      "name": "产物横向步骤（steps）—— 块内无序列表原样保留（CSS 靠 `<ul>` 横排，故结构是判据）",
+      "md": "<!-- limo-block:v1 type=\"steps\" -->\n- 输入\n- 清洗\n- 输出\n<!-- /limo-block -->",
+      "segments": [
+        { "kind": "block", "type": "steps", "content": "- 输入\n- 清洗\n- 输出" }
+      ],
+      "stripped": "- 输入\n- 清洗\n- 输出"
+    },
+    {
+      "name": "产物竖向时间线（timeline）—— 块内有序列表原样保留（CSS 靠 `<ol>` 编号，故结构是判据）",
+      "md": "<!-- limo-block:v1 type=\"timeline\" -->\n1. **导入文档**\n   保存原始资料及来源元信息。\n2. **解析与清洗**\n   提取正文并整理文档结构。\n<!-- /limo-block -->",
+      "segments": [
+        {
+          "kind": "block",
+          "type": "timeline",
+          "content": "1. **导入文档**\n   保存原始资料及来源元信息。\n2. **解析与清洗**\n   提取正文并整理文档结构。"
+        }
+      ],
+      "stripped": "1. **导入文档**\n   保存原始资料及来源元信息。\n2. **解析与清洗**\n   提取正文并整理文档结构。"
+    },
+    {
+      "name": "产物表格卡（table）—— 块内 Markdown 表格连表头分隔行一起原样保留",
+      "md": "<!-- limo-block:v1 type=\"table\" -->\n三种方案的对比：\n\n| 方案 | 成本 | 延迟 |\n| --- | --- | --- |\n| A | 低 | 高 |\n| B | 高 | 低 |\n<!-- /limo-block -->",
+      "segments": [
+        {
+          "kind": "block",
+          "type": "table",
+          "content": "三种方案的对比：\n\n| 方案 | 成本 | 延迟 |\n| --- | --- | --- |\n| A | 低 | 高 |\n| B | 高 | 低 |"
+        }
+      ],
+      "stripped": "三种方案的对比：\n\n| 方案 | 成本 | 延迟 |\n| --- | --- | --- |\n| A | 低 | 高 |\n| B | 高 | 低 |"
+    },
+    {
+      "name": "产物代码卡（code）—— 块内围栏代码原样保留（围栏感知，标记与代码互不干扰）",
+      "md": "<!-- limo-block:v1 type=\"code\" -->\n读取配置并建连接：\n\n```python\ncfg = load()\n```\n<!-- /limo-block -->",
+      "segments": [
+        {
+          "kind": "block",
+          "type": "code",
+          "content": "读取配置并建连接：\n\n```python\ncfg = load()\n```"
+        }
+      ],
+      "stripped": "读取配置并建连接：\n\n```python\ncfg = load()\n```"
+    },
+    {
+      "name": "产物图片卡（image）—— 块内图片引用与说明文字原样保留",
+      "md": "<!-- limo-block:v1 type=\"image\" -->\n![三层架构](assets/arch.png)\n\n自上而下是界面、服务与存储。\n<!-- /limo-block -->",
+      "segments": [
+        {
+          "kind": "block",
+          "type": "image",
+          "content": "![三层架构](assets/arch.png)\n\n自上而下是界面、服务与存储。"
+        }
+      ],
+      "stripped": "![三层架构](assets/arch.png)\n\n自上而下是界面、服务与存储。"
     }
   ],
   "h2Cases": [
@@ -147,6 +247,48 @@
           "body": "正文\n\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n## 块内假标题\n块内正文\n<!-- /limo-block -->"
         },
         { "heading": "## 乙", "body": "内容二" }
+      ]
+    },
+    {
+      "name": "card 节修饰符 —— 标记写在标题之下 ⇒ 该节 card=true 且标记行已从 body 剥掉",
+      "md": "## 甲\n<!-- limo-block:v1 type=\"card\" -->\n内容一\n\n## 乙\n内容二\n",
+      "preamble": "",
+      "sections": [
+        { "heading": "## 甲", "body": "内容一", "card": true },
+        { "heading": "## 乙", "body": "内容二", "card": false }
+      ]
+    },
+    {
+      "name": "card 标记与标题之间空一行 —— 仍认（取标题后第一个非空行）",
+      "md": "## 甲\n\n<!-- limo-block:v1 type=\"card\" -->\n内容一\n",
+      "preamble": "",
+      "sections": [{ "heading": "## 甲", "body": "内容一", "card": true }]
+    },
+    {
+      "name": "card 写在标题【之前】—— 结构一字不少、只退化成不成卡（宽容在降级侧）",
+      "md": "<!-- limo-block:v1 type=\"card\" -->\n## 甲\n内容一\n",
+      "preamble": "<!-- limo-block:v1 type=\"card\" -->",
+      "sections": [{ "heading": "## 甲", "body": "内容一", "card": false }]
+    },
+    {
+      "name": "card 与 key-takeaway 同节 —— 节修饰符不开块，块标记照常工作",
+      "md": "## 甲\n<!-- limo-block:v1 type=\"card\" -->\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n重点\n<!-- /limo-block -->\n",
+      "preamble": "",
+      "sections": [
+        {
+          "heading": "## 甲",
+          "body": "<!-- limo-block:v1 type=\"key-takeaway\" -->\n重点\n<!-- /limo-block -->",
+          "card": true
+        }
+      ]
+    },
+    {
+      "name": "成卡的节 —— 尾部分隔线随成卡一起剥掉（卡的下边界已承担分隔；反面对照见 h2-sections.json 同款输入）",
+      "md": "## 甲\n<!-- limo-block:v1 type=\"card\" -->\n内容一\n\n---\n\n## 乙\n内容二\n",
+      "preamble": "",
+      "sections": [
+        { "heading": "## 甲", "body": "内容一", "card": true },
+        { "heading": "## 乙", "body": "内容二", "card": false }
       ]
     }
   ]

@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from typing import Iterator
 
-from app.core.artifact_blocks import FENCE_RE, closes_block, match_open
+from app.core.artifact_blocks import FENCE_RE, closes_block, is_section_card, match_open
 
 #: ATX 标题：`#{1,6}` + 至少一个空白 + 文本。
 #: ⚠️ 与前端 `markdown-scan.ts::HEADING_RE` 同构。
@@ -50,9 +50,9 @@ def iter_headings(md: str, min_level: int = 1, max_level: int = 6
             continue
         if in_fence:
             continue
-        # ⚠️ **标记块内的 `##` 不是文档结构** —— 它属于「重点块」内部。在这里切它会切出
-        # 一张内容是半截强调块的卡（TOC 还会多一个点了没反应的幽灵项）。与前端
-        # `markdown-scan.ts::scanHeadingLines` 同构。
+        # ⚠️ **标记块内的 `##` 不是文档结构** —— 它属于「内容块」内部（强调块 / 内容卡片
+        # 都算）。在这里切它会切出一张内容是半截块的卡（TOC 还会多一个点了没反应的幽灵项）。
+        # 与前端 `markdown-scan.ts::scanHeadingLines` 同构。
         if in_block:
             if closes_block(line):
                 in_block = False
@@ -73,31 +73,47 @@ def iter_headings(md: str, min_level: int = 1, max_level: int = 6
 _THEMATIC_BREAK_RE = re.compile(r"^\s{0,3}([-*_])\s*(?:\1\s*){2,}$")
 
 
-def _trim_body(lines: list[str]) -> str:
-    """去首尾空行；再把**尾部的分隔线行**（及其上方空行）一并去掉。
+def _trim_body(lines: list[str], strip_break: bool) -> str:
+    """去首尾空行；`strip_break` 为真时再把**尾部的分隔线行**（及其上方空行）一并去掉。
+
+    ⚠️ **`strip_break` 由「这一节是否成卡」决定**（2026-10-11）：分隔线的功能是「把这一节
+    与下一节分开」，而**成卡的节已经有了卡的下边界**，那条 `---` 就只剩「卡片底部多一条线」。
+    未标记的节没有卡边界，`---` 仍是它唯一的分隔手段 —— 一并剥掉会让「开了卡片模式，
+    普通章节之间的分隔线却消失了」，而那是与骨架轴无关的损失。
 
     ⚠️ 与前端 `markdown-sections.ts::trimBody` **逐字同构**（同一份 fixture 钉住）。
     """
     end = len(lines)
     while end > 0 and lines[end - 1].strip() == "":
         end -= 1
-    while end > 0 and _THEMATIC_BREAK_RE.match(lines[end - 1]):
-        end -= 1
-        while end > 0 and lines[end - 1].strip() == "":
+    if strip_break:
+        while end > 0 and _THEMATIC_BREAK_RE.match(lines[end - 1]):
             end -= 1
+            while end > 0 and lines[end - 1].strip() == "":
+                end -= 1
     start = 0
     while start < end and lines[start].strip() == "":
         start += 1
     return "\n".join(lines[start:end])
 
 
-def split_by_h2(md: str) -> tuple[str, list[tuple[str, str]]]:
-    """按 H2（`## `）切成「前言 + 各节」。返回 `(preamble, [(heading, body), ...])`。
+def split_by_h2(md: str) -> tuple[str, list[tuple[str, str, bool]]]:
+    """按 H2（`## `）切成「前言 + 各节」。返回 `(preamble, [(heading, body, card), ...])`。
 
     · `heading` —— 原始标题行（**含 `## ` 前缀**）。调用方把它与 `body` 拼回
       （`f"{heading}\\n{body}"`）即是该节完整的 Markdown —— 标题留在里面，因为
       卡片头就是那个 `##`；
-    · `body` —— 该节其余内容，已去首尾空行与**尾部分隔线**。
+    · `body` —— 该节其余内容，已去首尾空行与**尾部分隔线**；
+    · `card` —— 这一节是否被 `card` **节修饰符**标记（`<!-- limo-block:v1 type="card" -->`
+      写在标题行之后）。⚠️ 标记行**已从 `body` 剥掉** —— 它不该流到渲染器。
+
+    ⚠️ **切分永远按标题层级进行**，不因为有没有标记而变（未标记的节照样是一个
+    `Section`，只是 `card` 为假）。导出侧要按节拼 HTML、TOC 要按节列条目，若「没标记的
+    节根本不存在」，两处都得改 —— 于是判据收在 `card` 这一个字段里，其余形状不变。
+
+    ⚠️ **`card` 只认「标题之后」**：写在标题**之前**的标记在 `iter_headings` 里对结构
+    完全透明（见 `artifact_blocks.SECTION_CARD_TYPE`），于是它退化成「这一节不成卡、
+    结构与内容一字不少」。宽容写在**降级**这一侧，不写在判据这一侧。
 
     ⚠️ **与前端 `splitByH2` 的返回值形状逐字段对齐**（同一份 fixture 逐条比对
     `preamble` 与 `sections` 的每个字段）。形状不同的话「两侧都读同一份 fixture」
@@ -132,9 +148,15 @@ def split_by_h2(md: str) -> tuple[str, list[tuple[str, str]]]:
     if not h2:
         return src, []
 
-    sections: list[tuple[str, str]] = []
+    sections: list[tuple[str, str, bool]] = []
     for i, (start, _title) in enumerate(h2):
         end = h2[i + 1][0] if i + 1 < len(h2) else len(lines)
-        sections.append((lines[start], _trim_body(lines[start + 1:end])))
+        body_lines = lines[start + 1:end]
+        # 节修饰符 —— 标题行之后**第一个非空行**是 `card` 标记 → 这一节成卡，并剥掉该行。
+        at = next((j for j, l in enumerate(body_lines) if l.strip() != ""), -1)
+        card = at >= 0 and is_section_card(body_lines[at])
+        if card:
+            body_lines = body_lines[:at] + body_lines[at + 1:]
+        sections.append((lines[start], _trim_body(body_lines, card), card))
     preamble = "\n".join(lines[:h2[0][0]]).rstrip()
     return preamble, sections

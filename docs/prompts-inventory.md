@@ -144,9 +144,26 @@
 - **有 `<style_preference>` 节** — 通过 `normalize_style()` 查找 `VIDEO_NOTE_STYLES`
 - 格式选项从 `AVAILABLE_OPTIONS` 动态过滤，使用 `_ALL_FORMAT_FNS`（全部 7 种格式可用）
 - **参考文件**：仅 Notes 注入 `<reference_texts>` 节（user_request 前）；polished/Excel 不注入
-- **语义标记 `limo-block`**（`get_markdown_block_format()`，2026-10-10）：**无条件追加**到
-  `hard_constraints` 末尾 —— ⚠️ **与 `AVAILABLE_OPTIONS` / `_ALL_FORMAT_FNS` 无关**（没有勾选项，
-  见 §13 `"7"` / `"8"`）。它是**独立追加**而非经格式过滤，故「不勾任何格式」时同样注入
+- **语义标记 `limo-block`**（`get_markdown_block_format()`，2026-10-10；2026-10-11 由 1 种扩到
+  **9 种块 + 1 种节修饰符**：`key-takeaway` / `alert` / `recommend` / `metric` / `steps` /
+  `timeline` / `table` / `code` / `image` + ⚠️ **`card`**）：
+  **无条件追加**到 `hard_constraints` 末尾 —— ⚠️ **与 `AVAILABLE_OPTIONS` / `_ALL_FORMAT_FNS`
+  无关**（没有勾选项，见 §13 `"7"`–`"13"`）。它是**独立追加**而非经格式过滤，
+  故「不勾任何格式」时同样注入。
+  ⚠️ **`steps` / `timeline` 与 `get_chart_format` 是成对的**：前者**无条件**注入、后者**勾选后**
+  才注入 —— 故「线性步骤/阶段不要画图」这条指令删/改时，`get_chart_format` 里对应的
+  `hchain` / `timeline` 引导**必须同批**删/改，否则勾了图表的那批产物会同时收到两条互斥指令
+  ⚠️ **后三个（`table` / `code` / `image`）与前六个性质不同族**：前六个标的是**普通段落**、
+  后三个标的是**内容本身**（表格 / 代码 / 图片本来就与正文不同质），故规范对它们额外明写
+  「块内照原样写」、「`image` 的地址原样照抄」—— 前者防模型把表格改写成卡片，后者防它
+  自己编一个看起来合理的图片路径（那就是一张裂图）
+  ⚠️ **`card` 又是第三种性质**：前九个标的是**块**（一段内容，包裹式、有闭合标记），
+  `card` 标的是**节**（一个 `##` 标题及其全部后续内容），写法是「写在标题**下面一行**」、
+  **没有闭合标记**。它是**前端骨架轴 `card` 的唯一触发源**（没有勾选项）—— 模型不写它，
+  那个轴就等于什么都不做。**刻意不进** `ARTIFACT_BLOCK_TYPES`（当块处理会让行分类器
+  吞掉标题），故它是**唯一没有集合守卫盯着**的类型，只能由
+  `test_block_prompt.py::test_规范教了节级修饰符_card` 手写钉住（名字在场 + 「写在标题之下」
+  + 「没有闭合标记」三条）
 - `_INSTRUCTION_PRIORITY` 声明了三层优先级
 
 ```xml
@@ -535,7 +552,7 @@ system = loader.build(doc_context)  # base + rules + formats + 动态注入的�
 
 - `base.md` → 角色定义
 - `rules.md` → 硬约束（禁止编造、先查再答…）
-- `formats.md` → 回答可用的**语义块**（`limo-block` 的 `card-group` 卡片组 / `follow-up` 追问建议），见 9.5
+- `formats.md` → 回答可用的**语义块**（`limo-block` 的四个对话侧类型：`card-group` 卡片组 / `follow-up` 追问建议 / `info` 信息卡 / `digest` 摘要卡），见 9.5
 - `doc_context` → 运行时注入的文档内容（`smart_truncate(rawText, 1000)` 按句子边界截断）
 
 ⚠️ `formats` 排在 `rules` 之后、`doc_context` 之前：它是「回答怎么呈现得好读」的**补充**，
@@ -567,6 +584,12 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 |------|---------|--------|
 | `card-group` | 并列比较 2–4 个同级对象、比同一组维度 | 前端 `ai-chat/ChatMarkerContent.tsx` → 并排卡片 |
 | `follow-up` | 回答末尾有 2–4 个自然的下一步问题 | 同上 → 可点击的追问 chip |
+| `info` | 讲清一个对象（概念/工具/来源/做法），且它值得被单独框出来、之后可能单独回来查 | 同上 → 带图标的信息卡 |
+| `digest` | 回答较长时，在**开头**给出 2–5 条压缩后的要点 | 同上 → 带图标的摘要卡 |
+
+⚠️ **总量闸门**（「四种块合计不超过两块」）：逐条判据管「这一块该不该用」，闸门管
+「一次回答用几块」—— 四种同时可用时滥用是实数风险（`card-group` 一块就够，`info` 又长得
+像普通段落），缺了后者只剩前者时，模型可以每一块都「判据成立」。
 
 **三条写作纪律**（照图表管道那套）：
 
@@ -575,9 +598,13 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 3. **防滥用靠判据、不靠叮嘱** —— 2026-10-11 起由「显式逃生口」改为「**把触发判据写清楚**」（卡片组：同级 + 同维度；追问：从读者视角出发的下一步问题）。用户明确「卡片是附加在 MD 上的一种显示语法，不用过于克制」，故反复劝退的措辞已从两侧规范删除。⚠️ 真有「用得太多」的问题时，正确修法是**收紧判据**而不是重新堆叮嘱 —— 叮嘱压的是使用率，判据调的是使用质量。
 
 **与产物侧的关系**：协议同名（`limo-block`），**类型与规范文本刻意各一套**。
-产物侧走 `generation/prompt.py::get_markdown_block_format()`（只教 `key-takeaway`），
-对话侧走本文件。两边集合由 `core/artifact_blocks.py` 的 `ARTIFACT_BLOCK_TYPES` /
-`CHAT_BLOCK_TYPES` 定义且**不相交**，共享 fixture `limo-blocks.json` 的 `meta` 钉住。
+产物侧走 `generation/prompt.py::get_markdown_block_format()`（教 `key-takeaway` / `alert` /
+`recommend` / `metric` / `steps` / `timeline` / `table` / `code` / `image` **九种**），
+对话侧走本文件。两边集合由 `core/artifact_blocks.py` 的
+`ARTIFACT_BLOCK_TYPES` / `CHAT_BLOCK_TYPES` 定义且**不相交**，共享 fixture
+`limo-blocks.json` 的 `meta` 钉住。⚠️ **两侧是否真写了渲染分支**由各自的渲染测试承担
+（`chatBlocks.test.tsx` / `markerContent.test.tsx`）—— 集合常量只能证明「协议知道」，
+证明不了「这一侧实现了」（两者的差别就是下面那条静默失效）。
 
 ⚠️ **无勾选项、无条件注入** —— 与产物侧同理：价值全在「模型自主判断该不该用」，
 要求用户先勾选就把问题退回去了。
@@ -744,7 +771,7 @@ composite 分派就被丢弃）。合成文风**全部**由 `_SYNTHESIS_STYLE_CO
 
 ## 13. 提示词版本（PROMPT_VERSION）
 
-**定义**：[backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) — 当前值 `"7"`
+**定义**：[backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) — 当前值 `"13"`
 
 这个常量只有一个用途：写进产物自证头的 `generated.promptVersion`（装配在 `generation/provenance.py`），回答「这份产物是凭哪版提示词生成的」。**它对 prompt 本身零影响**——改它不会让任何一次调用产生不同结果，但会让此后落盘的产物如实标出新版本。
 
@@ -758,6 +785,16 @@ composite 分派就被丢弃）。合成文风**全部**由 `_SYNTHESIS_STYLE_CO
 | `"6"` | 2026-10-10 产物章节结构：① `_NOTES_TASK`（**视频/音频支，五条 NOTES 路径里唯一无条件缺「层次结构」的一条**）新增第 2 条「使用标题层级（## → ###）组织内容，反映内容的逻辑结构」，与另外四条逐字同源；② `plain` 档第 4 条「不堆小标题和列表」→「不硬凑结构」。⚠️ 起因是**加固不是修复**——基线实测（198 份产物 / 90 篇文档）显示视频产物在**零**格式指令下已 100% 自发写出 `##`（中位 7 个），缺条款没有产生后果；本轮把「模型自发」变成「prompt 明确要求」，换模型时不易丢失结构 |
 | `"7"` | 2026-10-10 产物语义标记 `limo-block`：notes 的 `hard_constraints` **无条件追加** `get_markdown_block_format()`（重点块规范）。⚠️ **不新增勾选项**——标记的价值全在「模型自主判断重点」，要求用户先勾选就退回了「用户自己知道哪里有重点」的旧问题（因此**没有 UI 表达**，「谁该有谁不该有」只能靠 `backend/tests/test_block_prompt.py` 钉住）。⚠️ **只入 notes**：polished 是「忠实整理」，塞进模型的主观重点判断就违约了；composite 在函数顶部已被拦下走独立骨架（多一条指令会与那套骨架正面打架）；Excel 数据摘要同理。⚠️ 规范**不教外观**（颜色/边框/圆角一个字不提）——模型管性质、CSS 管长相，与图表协议「只教语义、坐标全由后端算」同一纪律 |
 | `"8"` | 2026-10-11 卡片取向调整：`get_markdown_block_format()` 的措辞由「劝退」改为「**常规呈现手段**」——用户明确「卡片是附加在 MD 上的一种显示语法，不用过于克制」。故**删除反复的逃生口话术**（「多数笔记一处都不用 / 不要为了用而用 / 不加不减分」），只留**触发判据 + 数量参照**（1–3 处保留：强调块一多就不再是强调）。⚠️ 同一轮对话侧 `agent/prompts/formats.md` 同步改（那侧本就没有 PROMPT_VERSION，不单独标记）。⚠️ 两侧**文本不共用**这条纪律未变（防串味，有断言钉住）。⚠️ 新增反向断言 `test_取向_两侧规范都不再有反复劝退的措辞` 钉住这次决策 |
+| `"9"` | 2026-10-11 语义块四种：`get_markdown_block_format()` 由 1 种扩到 4 种——新增 `alert`（提醒/异常）、`recommend`（推荐）、`metric`（指标），与既有的 `key-takeaway` 共用一套标记语法（只有 `type` 值不同，语法示例仍只给一次）。⚠️ **一次铺开三种是刻意的**：它们的**形态差异全在 CSS**（`blocks.css`），加一种的成本只落在 prompt 与那条 CSS 规则上，不在渲染链路上。⚠️ 真实遵循率与滥用率**没有先例数据**——靠 `generate.py` 新增的 `blocks=` / `block_types=` 统计 + 实机跑一轮观察，**不靠这行版本号判断**。同一轮对话侧 `agent/prompts/formats.md` 由 2 种扩到 4 种（新增 `info` / `digest`）+ 总量闸门「四种块合计不超过两块」（那侧本就没有 PROMPT_VERSION，不单独标记）。⚠️ 两侧**文本不共用**这条纪律未变（`test_两侧规范不串味` 改由集合常量派生后仍钉着） |
+| `"10"` | 2026-10-11 线性图改走列表：`get_markdown_block_format()` 由 4 种扩到 **6 种**（新增 `steps` 横向步骤条 / `timeline` 竖向时间线，分别用块内**无序**/**有序**列表承载 —— 这条「用哪种列表」**必须写进 prompt**，形态差异就靠它），同时 `get_chart_format()` **删去 `hchain` / `timeline` 两种布局引导**（九种 → 七种）、补一句「一条线走到底的步骤/阶段不要画图」的指路、`diff` 段四处跟着改、示例里的 `hchain` 换成 `flowchart`。⚠️ **两处必须同批改**：语义块规范**无条件注入**、图表规范**勾选后才注入**，只改前者会让勾了图表的那批产物同时收到「线性用列表」与「线性画成图」两条**互斥指令**。⚠️ **删的是引导不是能力** —— 两个算子仍在 `chart_layout._LAYOUTS`（历史产物 / 插件照旧能渲染），`test_prompt.py` 同时钉住「引导里没有 + `_LAYOUTS` 里有」。动机：单链是出现频率最高的两种图，列表能保真的关系不值得付一整条渲染链 |
+| `"11"` | 2026-10-11 内容卡片三种：`get_markdown_block_format()` 由 6 种扩到 **9 种**（新增 `table` 对照表 / `code` 示例代码 / `image` 单独展示的图）。⚠️ **这三种与前六种性质不同族**：前六种标记的是**普通段落**（「这一段文字是什么性质」—— 结论/风险/建议/数字/步骤/阶段），这三种标记的是**内容本身** —— 表格 / 代码 / 图片本来就与正文不同质，加标记的**全部作用**就是外面多一层壳，**块内一个字节都不动**。故规范里明写「块内照原样写」，防的是模型以为要把表格改写成卡片、把代码拆成散文（图鉴判词：「不要为了统一视觉而把代码改成普通文字卡片，否则会影响可读性和可用性」）；`image` 另有硬约束「地址原样照抄」—— 模型自己编一个看起来合理的路径出来就是一张裂图。⚠️ **不加新开关**：既有的 `lib/marker-prefs.ts`「内容块装饰」开关语义正是「收起装饰性容器、内容一字不少」，把这一族纳入它的射程即等于「保留原来的显示形式」（关掉后与从未写过围栏逐字相同），零新增 UI |
+| `"12"` | 2026-10-11 章节卡片改由标记决定：`get_markdown_block_format()` 多出**第十种** —— `card`，但它与前九种**性质不同**：前九种标记的是**块**（一段内容），`card` 标记的是**节**（一个 `##` 标题及其全部后续内容），写法是「写在标题**下面一行**」而非包裹式、**没有闭合标记**。动机：用户 2026-10-11 判「章节卡片太简单粗暴」，取向改为「卡片用在需要强调的地方」—— 前端骨架轴 `card` 从「每个 H2 无差别一张卡」改成「**只给标记过的章节成卡**」，未标记的节保持普通正文（于是卡片在页面里是**混排**的）。⚠️ **prompt 是本轮唯一的触发源**（没有勾选项）：模型不写 `card` 标记，这个轴就等于什么都不做（不报错、不警告、看起来像「模型觉得这篇没重点」）—— 故那句「一般标 1–3 节」的数量参照是必要的，少了它就只剩「值得留意时用」这条无边界判据。⚠️ 定性上是**节修饰符**不是块（前端 `SECTION_CARD_TYPE` / 后端 `is_section_card`，**刻意不进** `ARTIFACT_BLOCK_TYPES`）：若当块处理，模型把标记写在标题**之前**（其余九种都是包裹式，那是它的本能）会让行分类器进入块内状态、把那个 `## 标题` 整个跳过 —— **整节从文档结构里消失**。故 `match_open` 对它返回 `None`（不开块），标记行由紧随其后的标记行剥除接住（**零残留降级**，无需新分支）|
+| `"13"` | 2026-10-11 `card` 提到规范最前（**纯位置与结构，判据与类型一字未改**，故无新增 type）。起因是 `"12"` 的实机验收：v12 产出的那篇**其余九种几乎全写对了，独独 0 个 `card` 标记**（全库扫下来 v12 只跑过 1 篇，样本小但现象干净）。推论是**形态差异**造成的 —— 九个块级标记是同一形态的反复（只有 `type` 值不同），模型扫一眼就抓住了模式；`card` 是唯一形态不同的那一个（不包裹内容、写在标题之下、没有闭合标记），吊在长列表第 10 项、示例还单独放在整段末尾时，最容易被当成「又一个 type」略过。故按**层级**重排：先讲节级的 `card`（管整节，粒度最大）、示例紧跟其说明，再讲段级九种。⚠️ 这与 `"8"` 立的「不堆劝退话术」取向**不冲突**：改的是位置，触发判据仍是原来那句「核心结论 / 风险清单 / 关键数据」，并保留「一般标 1–3 节」 |
+
+⚠️ **同一轮还有一处 CSS 改动，不 bump**：中性面板族（`metric` / `table` / `code` / `image`）
+的容器边框由 `--tk-border-light` 换成 `--tk-border`（[blocks.css](../frontend/src/styles/blocks.css)）。
+它不影响「同一个输入产生什么输出」，只影响渲染，故不进版本表。起因同一次实机反馈：
+light 档在默认 `warm` 基调下离正文底只差 9 个灰阶、底色差 6 阶，三层叠加等于没有容器。
 
 ### 13.1 何时 bump
 
@@ -796,7 +833,7 @@ composite 分派就被丢弃）。合成文风**全部**由 `_SYNTHESIS_STYLE_CO
 | [backend/app/engines/ocr.py](backend/app/engines/ocr.py) | DashScopeOCREngine — 4 种图片处理模式（与 process.py 重复） |
 | [backend/app/agent/prompts/base.md](backend/app/agent/prompts/base.md) | Agent 角色定义层（分层 System Prompt 第一层） |
 | [backend/app/agent/prompts/rules.md](backend/app/agent/prompts/rules.md) | Agent 硬约束层（禁止编造、先查再答…第二层） |
-| [backend/app/agent/prompts/formats.md](backend/app/agent/prompts/formats.md) | Agent 回答的语义块规范（`limo-block` 的 `card-group` / `follow-up`，第三层；见 9.5） |
+| [backend/app/agent/prompts/formats.md](backend/app/agent/prompts/formats.md) | Agent 回答的语义块规范（`limo-block` 的四个对话侧类型 `card-group` / `follow-up` / `info` / `digest`，第三层；见 9.5） |
 | [backend/app/agent/prompts/__init__.py](backend/app/agent/prompts/__init__.py) | `PromptLoader` — 组装 base + rules + formats + 动态 doc_context（chat.py 的旧内联 SYSTEM_PROMPT 已迁移至此） |
 | [backend/app/agent/tools.py](backend/app/agent/tools.py) | 5 个工具 ToolDef + 工具描述（search_docs / lookup_doc / list_docs / search_web / fetch_url） |
 | [backend/app/llm/agent.py](backend/app/llm/agent.py) | AgentRunner — SSE 事件流（agent_status / tool_start / tool_result / thinking / text / done） |

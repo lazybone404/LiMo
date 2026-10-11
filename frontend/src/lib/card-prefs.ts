@@ -10,8 +10,14 @@
  *
  * | 轴 | 管什么 | 取值 |
  * |---|---|---|
- * | **骨架** `skeleton` | **要不要**卡片 | `paper`（一整张纸，默认=现状）／`card`（每节一张卡） |
+ * | **骨架** `skeleton` | **要不要**按标记显示卡片 | `paper`（一整篇连续正文，默认=现状）／`card`（**模型标记过的**章节成卡） |
  * | **视觉方案** `style` | 卡片**长什么样** | 8 套（`gpt` 默认） |
+ *
+ * ⚠️ **`card` 不是「每个 `##` 一张卡」**（2026-10-11 起）：用户判定「一律按标题切卡太
+ * 简单粗暴，卡片应该用在需要强调的地方」。哪几节成卡由**模型**在产物里标
+ * （`<!-- limo-block:v1 type="card" -->` 写在标题之下），其余章节保持普通正文。
+ * 骨架轴因此只回答**「要不要按标记显示卡片」**，不回答「哪些节该成卡」——
+ * 后者是 `lib/markdown-sections.ts::splitByH2` 的 `Section.card`。
  *
  * ⚠️ **骨架 = `paper` 时视觉方案轴失效**（没有卡片可画）—— 设置页必须**隐藏**该控件，
  * 否则是一个「调了没反应」的死旋钮（模式 #53）。
@@ -33,7 +39,7 @@ export type CardStyle =
   | 'guofeng' | 'seal' | 'ink'                          // 国风 3
 
 export interface CardPrefs {
-  /** 产物骨架。`paper` = 现状（一整篇连续长文），`card` = 每个 H2 一张卡 */
+  /** 产物骨架。`paper` = 现状（一整篇连续长文），`card` = **被标记的**章节成卡 */
   skeleton: Skeleton
   /** 卡片视觉方案。⚠️ `skeleton === 'paper'` 时该值不生效（DOM 上不写该属性） */
   style: CardStyle
@@ -52,7 +58,7 @@ export const CARD_DEFAULTS: CardPrefs = {
 
 export const SKELETON_OPTIONS: { key: Skeleton; label: string; hint: string }[] = [
   { key: 'paper', label: '整篇', hint: '内容连续排下来，标题只是标题。长文阅读的传统形态' },
-  { key: 'card', label: '卡片', hint: '每个二级标题（##）单独成一张卡，节与节之间有明确边界' },
+  { key: 'card', label: '卡片', hint: '模型标为重点的章节渲染成卡片，其余章节保持普通正文' },
 ]
 
 /**

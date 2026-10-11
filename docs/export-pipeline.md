@@ -46,9 +46,11 @@ AI 对话右键菜单                 ChatCore                     GET /export/c
 - `_pick_artifact`（`export.py`）在 mode 过滤后按 version 再过滤；`_collect_doc_products` / `_build_export_zip` 保持原样。
 
 
-### 卡片骨架跟随（2026-10-10）
+### 卡片骨架跟随（2026-10-10；判据 2026-10-11 改由标记决定）
 
-预览区有一条**骨架轴**（`data-skeleton="card"`：每个 H2 章节渲染成一张卡片）。导出**跟随**它——项目核心约束「用户在预览栏看到什么，导出就应该得到什么」，卡片不例外。
+预览区有一条**骨架轴**（`data-skeleton="card"`：**被 `card` 节修饰符标过的**章节渲染成一张卡片，其余保持普通正文）。导出**跟随**它——项目核心约束「用户在预览栏看到什么，导出就应该得到什么」，卡片不例外。
+
+⚠️ **触发判据在 2026-10-11 由「每个 H2」改成「H2 + 该节的 `card` 标记」**（用户判「每个 H2 一张卡太简单粗暴」），故页面里卡片与普通章节是**混排**的、**没有外层容器**（`.md-cards` 已删）。**导出侧零改动** —— `split_by_h2` 多返回一个 `card` 字段，`<section class="md-card">` 分支只对 `card=True` 的节触发，其余节照原样穿过渲染链，`.md-cards` 的产出语句删掉即可。
 
 **参数**（三条后端路径 `GET /export/{id}` 共用）：
 
@@ -60,7 +62,9 @@ AI 对话右键菜单                 ChatCore                     GET /export/c
 前端唯一拼装点是 [ExportMenu.tsx](../frontend/src/components/ui/ExportMenu.tsx) 的 `backendParams()`（HTML / Word / PDF 三条路径共用，`lib/print.ts` 无需改）。⚠️ **`paper` 时一个参数都不发** —— 后端默认值同为 `paper`，URL 与改造前逐字一致。批量导出面板（`ExportCustomRequest`）有同名字段。
 
 **HTML 侧**（`_build_selfcontained_html`）：
-- `card`：`split_by_h2(md)` 切分 → `preamble` 不包 → 每节 `_markdown_to_html` 后包 `<section class="md-card">` → 装进 `<div class="md-cards">`。
+- `card`：`split_by_h2(md)` 切分 → `preamble` 不包 → **带 `card` 标记的**节 `_markdown_to_html` 后包 `<section class="md-card">`，**未标记的节原样穿过渲染链**（前后是兄弟节点，**不再装进任何容器**）。
+  - ⚠️ **节修饰符标记行必须在渲染前剥掉**（剥它的位置在 `parse_blocks` 的标记行剥除，切分器只管认不认得出它）—— 读者不该在页面上看到 `<!-- limo-block … -->`。`test_card_模式下标记行不落进产物` 钉住，且**判据限定在 `<body>` 之后的正文区**（内联的 `cards.css` 注释里就写着这句标记的示例，拿整份 HTML 去断会恒红）。
+  - ⚠️ **章末的 `---` 剥不剥，判据挂在 `card` 上而不是挂在骨架轴上**：成卡的节剥（卡的下边界已承担分隔），**不成卡的节保留**（它没有卡边界，`---` 是唯一的分隔手段）；**章节内部**的 `---` 恒留。三个方向各有一条断言 —— 漏掉中间那条就是「开了卡片模式、普通章节之间的分隔线却消失了」，一个与骨架轴无关的损失。
 - ⚠️ **`<html>` 必须同时带 `data-skeleton="card"` 和 `data-card-style`** —— 前者是卡片 CSS 的**主作用域**（`cards.css` 里每条规则都带 `[data-skeleton="card"]` 前缀），只带后者的话规则**永不命中** ⇒ 导出的是**没有样式的卡片**，而「section 数与 H2 数一致」「CSS 里有卡片规则」这类断言**全绿**（本项目点名的「断言全过、肉眼等于没有」）。
 - ⚠️ **导出 HTML 的主题（`HTML_THEMES`）是自包含裸色值 CSS，一个 `--tk-*` 都不提供** —— 而卡片 CSS 有 27 处 `var(--tk-*)` 引用（8 个令牌），`var()` 无 fallback 时整条声明作废 ⇒ 卡片**没有底色、没有边框、没有圆角**，且**应用内预览里一切正常**（那边 `--tk-*` 由主题系统提供）。故 `export.py` 必须补一份 `_CARD_TOKENS_CSS`（**三态**：浅色 / `prefers-color-scheme: dark` / `@media print`，后者还原浅色）。⚠️ **三态都要给全**：`@media print` 与暗色媒体查询**会同时匹配**。`test_export_cards.py::test_卡片_CSS_引用的每个界面令牌在导出页里都有定义` 是这条的**成对常量守卫**（正则抽 `var(--tk-…)` 后逐一查定义），能自动发现「cards.css 新引了一个令牌而导出侧没补」。
 
@@ -92,8 +96,14 @@ AI 对话右键菜单                 ChatCore                     GET /export/c
 不是卡片 ⇒ 无「卡中卡」）。⚠️ **顺序是 Markdown 层的：先切卡、再在每节内解析标记**（跨节标记
 是异常，在降级里自然消解；反向顺序会让块跨节）。
 
-**参数**：`marker_decor`（默认**开**）。⚠️ 语义是「**隐藏装饰**不是隐藏标记」—— 关掉后块的
-**包裹层**不渲染，块内文字照常输出。前端同样「关掉才发」（`p.set('marker_decor', '0')`）。
+**参数**：`marker_decor`（默认**开**）。⚠️ 语义是「**隐藏装饰**不是隐藏标记」—— 关掉后在
+`<html>` 上写 `data-marker-decor="off"`，`blocks.css` 的归零规则命中（**DOM 一字不动、只是
+CSS 归零**），块内内容照常输出。前端同样「关掉才发」（`p.set('marker_decor', '0')`）。
+
+⚠️ **内容卡片族（`table` / `code` / `image`）的归零 = 「还原成没包过围栏的样子」** ——
+`blocks.css` 末尾那组规则把边框 / 底 / 内边距 / 居中全部撤掉，**只保留 `margin: 16px 0`**
+（恰好等于预览侧 `.md-table-wrap` 的 `my-4`，故「关掉装饰」与「从未包过围栏」的间距一致）。
+这正是用户要的「保留原来没有卡片时的显示形式」。
 
 | 路径 | 动作 |
 |---|---|
@@ -126,7 +136,11 @@ Word 侧提供自己的（无代码高亮）。⚠️ **这不是过度抽象**�
 
 **Word 侧**：识别 `<div class="md-block">` → 单单元格表格 + 底纹 `FILL_MARKER` + 左边框
 `BAR_MARKER`。⚠️ **刻意不复用 `FILL_CARD` + `Table Grid`** —— 那样 `card` 骨架下的「卡内标记块」
-会看起来像**一张卡里套着一张卡**。⚠️ **顺带修掉一个既有泄漏缺陷**：`BeautifulSoup` 把
+会看起来像**一张卡里套着一张卡**。⚠️ **九种 type 在 Word 里都是同一个形态**（单单元格表格），
+只有配置色不同 —— 其中内容卡片族取**中性色**（不是语义色，染色等于替它加一层它没有的意思）。
+⚠️ **`table` 卡在这里是「表格套表格」**（外层单单元格 + 内层真表格），`code` / `image` 只有外框、
+没有工具条 / 居中表达 —— 这是**能力边界不是实现省略**（想复刻预览形态 = 让 Python 复刻 React
+的结构，模式 #54）。已写成断言钉在 `test_export_blocks.py` 里。⚠️ **顺带修掉一个既有泄漏缺陷**：`BeautifulSoup` 把
 `<!-- … -->` 解析成 `Comment`（`NavigableString` 子类、**不是 `Tag`**）→ 走「非 Tag 即文本」
 兜底 → 标记被排成**可见段落**。回归守卫 `test_word_标记行不出现在文档正文里`。
 
@@ -686,7 +700,7 @@ ExportMenu「导出 PDF」
 | 暗色模式 | ✅ CSS 变量 + data-theme | ✅ limo 主题支持 | 默认主题支持 |
 | 图片缩放 | ✅ react-medium-image-zoom | ❌ | 导出无交互 |
 | 章节卡片 | ✅ `data-skeleton="card"` + `CardSections` | ✅ HTML `section.md-card` / Word 单单元格表格 | 一致（8 套视觉方案仅 HTML 生效，Word 是能力边界） |
-| 重点块（`limo-block`） | ✅ `Div` 强调块（`MarkerContent`） | ✅ HTML `div.md-block` / Word 单单元格表格+左边框 | 一致（开关状态经 `marker_decor` 跟随；md/纯文本**剥离**标记行） |
+| 内容块（`limo-block`，9 种） | ✅ `Div` 强调块 / 内容卡片（`MarkerContent`） | ✅ HTML `div.md-block` / Word 单单元格表格（+左边框） | 一致（开关状态经 `marker_decor` 跟随；md/纯文本**剥离**标记行）。⚠️ **内容卡片族（`table`/`code`/`image`）块内一律原样穿过**：HTML 侧 `table` 仍是 `<table>`、`code` 仍是 `codehilite`、`image` 仍是 `<img>`；Word 侧 `table` 是**表格套表格**（能力边界）。⚠️ **卡片外壳只落在 `.md-block` 上，绝不用预览专有 class**（`.md-table-wrap` / `.group` 在导出侧不存在 —— 两侧 DOM 本来就不同，这层差异先于卡片存在） |
 
 > 差距收敛进度：2026-07-10 修图片收集/重写/内联 → 2026-08-04 对齐代码高亮 one-dark + checkbox 任务列表 + 暗色代码块 → 2026-09-21 新增 Word 导出（同一解析器，元素映射见 §11）→ 2026-10-10 卡片骨架跟随（§1「卡片骨架跟随」）+ 语义标记跟随（§1「语义标记跟随」）。当前仅剩复制按钮 / 图片缩放两项导出无法复现（静态 HTML 本质限制）。
 >

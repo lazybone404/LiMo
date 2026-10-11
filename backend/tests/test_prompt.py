@@ -250,10 +250,10 @@ assert '【参考资料 1】' in p and '【参考资料 2】' in p, '多份参�
 assert p.count('由用户主动提供') == 1, '节首说明只出现一次，不逐份重复'
 print('PASS: multi-reference numbered + single header')
 
-# ── 2026-09-19 图表协议切到 ```fig 语义 JSON，布局类型 4 → 9 全展开 ──
+# ── 2026-09-19 图表协议切到 ```fig 语义 JSON，布局全展开（2026-10-11 九 → 七）──
 # 坐标由后端 chart_layout 算，所以 prompt 里不该再有坐标/样式/SVG 教学；
-# 9 种全部展开是用户明确决策（接受 prompt 变长的代价）：只列名字不够——fast
-# 模型对没见过的结构不会自己拼 schema，最后仍然全用示例里最眼熟的 hchain，
+# 全部展开是用户明确决策（接受 prompt 变长的代价）：只列名字不够——fast
+# 模型对没见过的结构不会自己拼 schema，最后仍然全用示例里最眼熟的那一种，
 # 「扩展类型」就白做了。约束仍只有 4 条（是引导变长，不是规则变多）。
 # branch 已实现但仍不暴露，防止模型用上未文档化的算子。
 from app.generation.prompt import get_chart_format
@@ -264,12 +264,27 @@ cf = get_chart_format('video')
 assert '```fig' in cf, '图表指令应引导 fig 围栏'
 assert '```chart' not in cf, '不应再引导手写 SVG 的 chart 围栏'
 # 断言与 _LAYOUTS 同源：将来加算子若忘了改 prompt，这里立刻挂（不是等模型不用）
-_exposed = [lay for lay in _LAYOUTS if lay != 'branch']
-assert len(_exposed) == 9, f'暴露给模型的布局应为 9 种，实际 {_exposed}'
-assert '九种结构' in cf, 'prompt 的「九种结构」文案须与 _LAYOUTS 规模同步'
+#
+# ⚠️ **2026-10-11 起「算子存在」与「引导它用」是两件事**：`hchain` / `timeline` 的
+# 算子**仍在** `chart_layout`（历史产物、插件、将来别的入口照样能渲染），只是从 prompt
+# 里删了引导 —— 单链的线性关系改由语义块 `steps` / `timeline` 承担，而语义块规范是
+# **无条件注入**的，两边都教就是互斥指令。故这里维护的名单是**引导名单**，不是算子名单。
+_NOT_EXPOSED = {'branch', 'hchain', 'timeline'}
+_exposed = [lay for lay in _LAYOUTS if lay not in _NOT_EXPOSED]
+assert len(_exposed) == 7, f'引导给模型的布局应为 7 种，实际 {_exposed}'
+assert '七种结构' in cf, 'prompt 的「七种结构」文案须与引导规模同步'
 for lay in _exposed:
     assert f'"{lay}"' in cf, f'缺少 layout {lay} 的说明'
 assert '"branch"' not in cf, 'branch 已实现但不暴露给模型（防用上未文档化算子）'
+# ⚠️ 下面两条反向断言用**带引号形态**（`"timeline"` 而非裸词 `timeline`）：同一段 prompt
+# 的指路句里出现了语义块名 `timeline`（「先后阶段用 `timeline` 表达」），裸词判据会命中
+# 它而**恒红**。带引号形态才是 layout 值在 prompt 里的真实写法（`{"layout":"timeline"}`），
+# 有区分力 —— 这是「判据得自证能区分」的一个实例。
+assert '"hchain"' not in cf, 'hchain 引导已删（线性流程改走语义块 steps）'
+assert '"timeline"' not in cf, 'timeline 引导已删（先后阶段改走语义块 timeline）'
+assert 'steps' in cf and '不要画图' in cf, '删了引导必须补指路语（否则模型两头都不知道该用哪个）'
+# 自证：删的是**引导**不是**能力** —— 两个算子在 `_LAYOUTS` 里必须仍然健在
+assert 'hchain' in _LAYOUTS and 'timeline' in _LAYOUTS, '移除的是引导，不是算子能力'
 assert '1~N' in cf, '应说明可输出多张（1~N）'
 assert '禁止输出坐标' in cf, '应禁止模型自写坐标'
 assert '不需要写任何坐标' in cf, '应明确减负：不写坐标/尺寸/SVG'
@@ -280,9 +295,14 @@ assert '拆成多个围栏' in cf, '节点超限要引导拆图（多图触发�
 assert '字符串 id' in cf, 'flowchart/state/sequence 用 id 引用是它们最易写错的点，必须点名'
 # 来源引导按 source_type 分流，且落到具体 layout 建议
 assert 'grid' in get_chart_format('pdf') or 'layers' in get_chart_format('pdf')
-assert 'hchain' in get_chart_format('webpage')
-assert 'timeline' in get_chart_format('video')
-print(f'PASS: get_chart_format — fig 协议 / {len(_exposed)} 种 layout 全展开 / 1~N / 禁坐标 / 无 branch')
+assert 'flowchart' in get_chart_format('webpage')
+assert 'sequence' in get_chart_format('video')
+# 被删的两种在**来源引导段**里也不能残留 —— 那是同一件事的第二个落点，
+# 只改 base 不动 diff 就是「删了一处留了一处」，而 diff 段短、最容易被跳过。
+for _st in ('video', 'webpage', 'pdf', 'text', 'link'):
+    assert '"hchain"' not in get_chart_format(_st), f'来源引导 {_st} 仍推荐 hchain'
+    assert '"timeline"' not in get_chart_format(_st), f'来源引导 {_st} 仍推荐 timeline'
+print(f'PASS: get_chart_format — fig 协议 / {len(_exposed)} 种 layout 引导 / 1~N / 禁坐标 / 无 branch·hchain·timeline')
 
 # 两条围栏路径都在 _ALL_FORMAT_FNS 里挂着（chart 是 format key，与围栏名同源）
 assert 'chart' in _ALL_FORMAT_FNS, 'chart 格式函数应已注册'

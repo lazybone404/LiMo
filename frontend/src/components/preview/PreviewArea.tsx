@@ -996,6 +996,9 @@ export function PreviewArea() {
             {contentWidth === 'narrow' ? <AlignCenter size={15} /> : contentWidth === 'wide' ? <Maximize2 size={15} /> : <Columns size={15} />}
           </button>
           {/* 产物骨架切换 —— 「章节卡片」的一键开关。
+              ⚠️ 2026-10-11 起它只回答**「要不要按标记显示卡片」**：哪几节成卡由模型在
+              产物里标（`limo-block:v1 type="card"` 写在标题之下），未标记的章节在两种
+              骨架下长得一样。
               ⚠️ 门控与正文里的骨架分派**同源**：只有 notes/polished 的非 Excel 路径会
               渲染骨架（见下方 `skeleton === 'card'` 分派），其余 tab（数据预览/转录/
               思维导图/图片/Excel 数据摘要）切了没有任何效果 —— 那种只在**设置页**能调
@@ -1006,20 +1009,22 @@ export function PreviewArea() {
             <button
               onClick={() => setCard({ skeleton: skeleton === 'card' ? 'paper' : 'card' })}
               className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors ${skeleton === 'card' ? 'bg-accent/10 text-accent' : 'text-dimmed hover:bg-surface-hover'}`}
-              title={skeleton === 'card' ? '章节卡片：已开启（点击还原为连续正文）' : '章节卡片：已关闭（点击按章节分卡）'}
+              title={skeleton === 'card' ? '章节卡片：已开启（模型标为重点的章节显示为卡片，点击还原为连续正文）' : '章节卡片：已关闭（点击按标记显示卡片）'}
             >
               <LayoutGrid size={15} />
             </button>
           )}
-          {/* 重点块装饰开关 —— 只影响「强调块产生的附加物」（左边框/淡底），
-              **内容一字不减**。⚠️ 高亮表示「已改变默认」（装饰被关掉），与右侧日志
-              按钮的按下态同一套表达；默认态不高亮，避免常驻视觉噪音。
+          {/* 内容块装饰开关 —— 只影响「标记块产生的附加物」（边框/淡底/居中），
+              **内容一字不减**。⚠️ 2026-10-11 起射程含内容卡片族（表格/代码/图片），
+              关掉后它们**还原成没包过围栏的样子**；见 `lib/marker-prefs.ts` 文件头。
+              ⚠️ 高亮表示「已改变默认」（装饰被关掉），与右侧日志按钮的按下态同一套
+              表达；默认态不高亮，避免常驻视觉噪音。
               ⚠️ 本工具栏在沉浸态整条不渲染 —— 本轮接受这个边界，不在沉浸态另开入口
               （设置页里有同一个开关，见 SettingsPage 的「阅读与产物」区）。 */}
           <button
             onClick={() => setMarker({ decor: !markerDecor })}
             className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors ${markerDecor ? 'text-dimmed hover:bg-surface-hover' : 'bg-accent/10 text-accent'}`}
-            title={markerDecor ? '重点块装饰：显示中（点击隐藏装饰）' : '重点块装饰：已隐藏（点击显示）'}
+            title={markerDecor ? '内容块装饰：显示中（点击隐藏装饰）' : '内容块装饰：已隐藏（点击显示）'}
           >
             <Highlighter size={15} />
           </button>

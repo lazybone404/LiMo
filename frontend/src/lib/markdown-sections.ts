@@ -2,14 +2,20 @@
  * 按指定层级标题切分 Markdown —— 产物骨架轴（`card`）与对话卡片组共用。**纯函数，独立单测**。
  *
  * ⚠️ 与后端 `app/services/markdown_sections.py::split_by_h2` **判据同构**（同一条围栏正则、
- * 同样只认 `##`、同样剥尾部分隔线）。跨语言必然两份实现，靠
+ * 同样只认 `##`、同样剥尾部分隔线、同样判 `card` 修饰符）。跨语言必然两份实现，靠
  * `test/fixtures/h2-sections.json` 钉住一致 —— 不靠「写得像」。
  *
- * ⚠️ **层级是参数**（2026-10-11 泛化）：产物侧消费 `level=2`（每个 H2 一张卡），
+ * ⚠️ **层级是参数**（2026-10-11 泛化）：产物侧消费 `level=2`（按 H2 分节），
  * 对话卡片组消费 `level=3`（块内每个 `###` 一张卡）。泛化**刻意做在这里**而不是在对话
  * 组件里另写一遍 —— 围栏感知（代码块里的 `###` 不是标题）只该有一个家，
  * 两条实现漂移的症状是「卡数对不上」，**零报错**（模式 #54）。
  * 后端**不跟**：对话只在前端渲染，多一份 Python 实现才是负担。
+ *
+ * ⚠️ **`card` 是节修饰符，不是「切分级别」**（2026-10-11 起）：切分**永远按标题层级**
+ * 进行（产物侧 = 每个 H2 一个 `Section`，**不因为有没有标记而变**），`card` 只决定
+ * 这一节**渲染成什么**（卡片 or 普通正文）。两者分开的理由是下游的消费方式完全不同 ——
+ * 导出侧要按节拼 HTML、TOC 要按节列条目，若「没标记的节根本不存在」，两处都得改。
+ * 于是判据收在这一个字段里，`Section.card` 之外形状不变。
  *
  * ⚠️ **`heading` 保留原始标题行（含 `#` 前缀），不在这里剥装饰**。
  * 卡片渲染时把 `heading + '\n' + body` 原样交给既有渲染器，于是卡片内的标题
@@ -23,7 +29,7 @@
  *  - 该级标题内的更深标题 → **留在卡片内**（卡片是容器，不是细分器）。
  */
 
-import { scanHeadingLines } from './markdown-scan'
+import { isSectionCard, scanHeadingLines } from './markdown-scan'
 
 /**
  * 分隔线行（CommonMark thematic break：三个以上 `-` / `*` / `_`，可带空白间隔）。
@@ -38,6 +44,12 @@ export interface Section {
   heading: string
   /** 该节正文：标题行之后、下一个 H2 之前的行；已去首尾空行与尾部分隔线 */
   body: string
+  /**
+   * 这一节是否被 `card` **节修饰符**标记（`<!-- limo-block:v1 type="card" -->`
+   * 写在标题行之后）。标记行**已从 `body` 剥掉** —— 它不该流到渲染器。
+   * ⚠️ 与后端 `markdown_sections.py::split_by_h2` 的第三元组元素同源（fixture 钉住）。
+   */
+  card: boolean
 }
 
 export interface SplitResult {
@@ -46,13 +58,22 @@ export interface SplitResult {
   sections: Section[]
 }
 
-/** 去首尾空行；再把**尾部的分隔线行**（及其上方空行）一并去掉 */
-function trimBody(lines: string[]): string {
+/**
+ * 去首尾空行；`stripBreak` 为真时再把**尾部的分隔线行**（及其上方空行）一并去掉。
+ *
+ * ⚠️ **`stripBreak` 由「这一节是否成卡」决定**（2026-10-11）：分隔线的功能是「把这一节
+ * 与下一节分开」，而**成卡的节已经有了卡的下边界**，那条 `---` 就只剩「卡片底部多一条线」。
+ * 未标记的节没有卡边界，`---` 仍是它唯一的分隔手段 —— 一并剥掉会让「开了卡片模式，
+ * 普通章节之间的分隔线却消失了」，而那是与骨架轴无关的损失。
+ */
+function trimBody(lines: string[], stripBreak: boolean): string {
   let end = lines.length
   while (end > 0 && lines[end - 1].trim() === '') end--
-  while (end > 0 && THEMATIC_BREAK_RE.test(lines[end - 1])) {
-    end--
-    while (end > 0 && lines[end - 1].trim() === '') end--
+  if (stripBreak) {
+    while (end > 0 && THEMATIC_BREAK_RE.test(lines[end - 1])) {
+      end--
+      while (end > 0 && lines[end - 1].trim() === '') end--
+    }
   }
   let start = 0
   while (start < end && lines[start].trim() === '') start++
@@ -72,13 +93,22 @@ export function splitByHeading(md: string, level: number): SplitResult {
 
   const sections: Section[] = marks.map((h, i) => {
     const end = i + 1 < marks.length ? marks[i + 1].line : lines.length
-    return { heading: lines[h.line], body: trimBody(lines.slice(h.line + 1, end)) }
+    let bodyLines = lines.slice(h.line + 1, end)
+    // 节修饰符 —— 标题行之后**第一个非空行**是 `card` 标记 → 这一节成卡，并把该行剥掉。
+    // ⚠️ 判据**只认「标题之后」**：写在标题**之前**的标记在 `scanHeadingLines` 里对结构
+    // 完全透明（`SECTION_CARD_TYPE` 解释了为什么），于是它退化成「这一节不成卡、结构与
+    // 内容一字不少」。宽容写在**降级**这一侧（写错位置不丢东西），不写在判据这一侧
+    // （判据多一条分支就多一处可能不同源）。
+    const at = bodyLines.findIndex(l => l.trim() !== '')
+    const card = at >= 0 && isSectionCard(bodyLines[at])
+    if (card) bodyLines = [...bodyLines.slice(0, at), ...bodyLines.slice(at + 1)]
+    return { heading: lines[h.line], body: trimBody(bodyLines, card), card }
   })
 
   return { preamble: lines.slice(0, marks[0].line).join('\n').replace(/\s+$/, ''), sections }
 }
 
-/** 产物骨架轴（`card`）的切分器：每个 H2 一张卡。行为与泛化前逐字一致。 */
+/** 产物侧切分器（骨架轴 `card`）：按 H2 分节，**由节内的 `card` 修饰符决定哪几节成卡**。 */
 export function splitByH2(md: string): SplitResult {
   return splitByHeading(md, 2)
 }

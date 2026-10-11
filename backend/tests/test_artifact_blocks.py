@@ -19,8 +19,11 @@ from app.core.artifact_blocks import (
     CHAT_BLOCK_TYPES,
     KNOWN_BLOCK_TYPES,
     PROTOCOL_VERSION,
+    SECTION_CARD_TYPE,
     has_blocks,
     is_known_type,
+    is_section_card,
+    match_open,
     parse_blocks,
     strip_blocks,
 )
@@ -42,15 +45,27 @@ def test_fixture_可读且用例没被删空():
     """防「用例被删空后整组测试静默变成空跑」—— 参数化到空列表时 pytest 报 0 个
     用例（exit 5），看起来像失败也可能被忽略。这里先正面断言它有内容。"""
     assert FIXTURE_PATH.is_file(), f"共享 fixture 不存在：{FIXTURE_PATH}"
-    assert len(CASES) >= 11, f"用例太少（{len(CASES)}），可能被误删"
-    assert len(H2_CASES) >= 2, f"h2 用例太少（{len(H2_CASES)}），可能被误删"
+    assert len(CASES) >= 20, f"用例太少（{len(CASES)}），可能被误删"
+    assert len(H2_CASES) >= 6, f"h2 用例太少（{len(H2_CASES)}），可能被误删"
 
 
 def test_用例覆盖到那几类关键行为():
-    """名称级守卫：关键行为一条都不能少，否则本文件会「绿着失去意义」。"""
+    """名称级守卫：关键行为一条都不能少，否则本文件会「绿着失去意义」。
+
+    ⚠️ 后两个关键字（`steps` / `timeline`）**不是同类的行为用例** —— 它们是「块内
+    列表结构原样保留」的形态判据（预览与导出两侧都靠 `<ul>` / `<ol>` 区分这两个
+    类型，见 `blocks.css`）。放在这条里是因为判据的形式相同（名称级），而不是说
+    它们与「未闭合 / 围栏内」属于同一类降级行为。
+    """
     names = "\n".join(c["name"] for c in CASES)
-    for kw in ("无标记", "未闭合", "未知协议版本", "围栏内", "不算闭合", "CRLF"):
+    for kw in ("无标记", "未闭合", "未知协议版本", "围栏内", "不算闭合", "CRLF",
+               "steps", "timeline"):
         assert kw in names, f"fixture 缺少「{kw}」类用例"
+    # ⚠️ `h2Cases` 单独点名：`card` 是本轮唯一的**节级**修饰符，它那几条用例
+    # （成卡 / 隔空行 / 写在标题之前 / 与块同节）是「节修饰符不是块」这件事的全部证据。
+    h2_names = "\n".join(c["name"] for c in H2_CASES)
+    for kw in ("card", "之前"):
+        assert kw in h2_names, f"h2Cases 缺少「{kw}」类用例"
 
 
 # ── 跨语言守卫：白名单与协议版本 ────────────────────────────────
@@ -63,6 +78,20 @@ def test_已知类型白名单与前端同源():
 
 def test_协议版本与前端同源():
     assert PROTOCOL_VERSION == FIXTURE["meta"]["protocolVersion"]
+
+
+def test_节级修饰符与_fixture_同源_且不在块白名单里():
+    """`card` 是**第三节集合**（节级修饰符，2026-10-11）—— 与前端 `markdown-scan.ts`
+    同源，且**刻意不进 `knownTypes`**。
+
+    ⚠️ 两个方向各自对应一种静默失效：
+    · 少了前半条 → 前后端 `card` 拼写漂移（模型写的是 `card`，只有一侧认得它）。
+    · 少了后半条 → `card` 被并进 `knownTypes`，于是「包不包强调块外壳」的判定
+      （`is_known_type`）认为它算 —— 而 card 根本不开块。两种判定混在一起零报错，
+      后果是标题被当成块内容吞掉。
+    """
+    assert list(FIXTURE["meta"]["sectionTypes"]) == [SECTION_CARD_TYPE]
+    assert SECTION_CARD_TYPE not in KNOWN_BLOCK_TYPES
 
 
 def test_三个集合的关系与_fixture_同源():
@@ -82,12 +111,17 @@ def test_三个集合的关系与_fixture_同源():
         assert is_known_type(t), t
 
 
-def test_fixture_覆盖了两个新类型():
-    """名称级守卫：光有集合常量不算覆盖 —— 新类型必须**至少有一条解析用例**，
-    否则「加进白名单」与「真的能解析」之间没有任何证据。"""
-    names = "\n".join(c["name"] for c in CASES)
-    for kw in ("card-group", "follow-up"):
-        assert kw in names, f"fixture 缺少 {kw} 的用例"
+def test_每个白名单类型都至少有一条解析用例():
+    """名称级守卫的**集合驱动**版本：光有集合常量不算覆盖 —— 白名单里每个类型都必须
+    至少有一条解析用例，否则「加进白名单」与「真的能解析」之间没有任何证据。
+
+    ⚠️ 判据从 `segments[].type` **派生**，而不是人肉维护一份「新类型名单」：手写名单是
+    同一件事实的第二份副本（模式 #54），下次加 type 忘了改它，这条守卫就会**绿着失去
+    意义** —— 而它本该正是「加了 type 却忘了写用例」的那道防线。
+    """
+    covered = {s["type"] for c in CASES for s in c["segments"] if "type" in s}
+    missing = sorted(KNOWN_BLOCK_TYPES - covered)
+    assert not missing, f"白名单里这些类型没有任何 fixture 用例：{missing}"
 
 
 def test_对话侧类型在产物侧只剥标记行_结构原样保留():
@@ -122,8 +156,29 @@ def test_strip_blocks_与前端同形(case):
 
 @pytest.mark.parametrize("case", H2_CASES, ids=[c["name"] for c in H2_CASES])
 def test_split_by_h2_跳过标记块(case):
-    expected = (case["preamble"], [(s["heading"], s["body"]) for s in case["sections"]])
+    # ⚠️ `card` 用 `.get(..., False)` 归一：带 card 的用例（`limo-blocks.json::h2Cases`
+    # 里那四条）就比 card，不带的默认 False —— 而不是给每条用例手写一遍 `"card": False`
+    # （那是把「无标记 ⇒ 不成卡」这条推导抄 6 遍，抄错了反而是新缺陷）。
+    expected = (
+        case["preamble"],
+        [(s["heading"], s["body"], s.get("card", False)) for s in case["sections"]],
+    )
     assert split_by_h2(case["md"]) == expected
+
+
+def test_对照实验_两个判据不是同一个函数的别名():
+    """⚠️ 这是上面那些用例**自证有区分力**的方式。
+
+    若把 `is_section_card` 实现成 `match_open(line) is not None`（读起来等价，也确实
+    能通过不少断言），card 就会开块 → 扫描进入块内状态 → **标题与整节内容被跳过**。
+    这里正反两面都断，别名实现在第一条就红。
+    """
+    card = '<!-- limo-block:v1 type="card" -->'
+    alert = '<!-- limo-block:v1 type="alert" -->'
+    assert match_open(card) is None
+    assert is_section_card(card) is True
+    assert match_open(alert) is not None
+    assert is_section_card(alert) is False
 
 
 # ── 结构不变量（与前端 markdownMarkers.test.ts 的第二节对称）──────

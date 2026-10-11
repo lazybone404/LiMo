@@ -33,6 +33,7 @@ from app.services.chart_renderer import render_charts, CHART_FENCE_MARKS
 from app.services.doc_understand import DOC_DIRECT_GEN_TIMEOUT, DOC_DIRECT_MIN_RAW_CHARS
 from app.generation.content_preparer import ContentPreparer
 from app.generation.prompt_builder import PromptBuilder
+from app.core.artifact_blocks import parse_blocks
 from app.generation.prompt import build_polish_prompt, build_notes_prompt
 from app.generation.prompts import coerce_style
 from app.generation.reference_compressor import (
@@ -57,6 +58,22 @@ def _normalize_and_validate_style(style: str) -> str:
     而不是复刻一遍表达式（模式 #51）。
     """
     return coerce_style(style)
+
+
+def _block_stats(md: str) -> tuple[int, str]:
+    """产物侧 `limo-block` 语义块的使用信号 —— `(块数, 类型列表)`。
+
+    ⚠️ 与对话侧 `chat.py` 那条**对称**（那边早就有）：标记是**模型可选**的输出，
+    遵循率与滥用率都只能在真实流量里看。没有它，「模型到底用没用、用了哪种」就只能
+    翻产物记录猜 —— 而这一轮一次铺开了三种新类型，正是最需要这个信号的时候。
+
+    ⚠️ 用 `parse_blocks` 而不是数子串：正文里讨论本协议时也会出现 `limo-block` 这个词，
+    那不算用了它。
+    ⚠️ **只对 notes 有意义**（polished / composite / Excel 都不注入该规范）——
+    由调用点自己保证，本函数不做判断。
+    """
+    blocks = [s for s in parse_blocks(md) if s["kind"] == "block"]
+    return len(blocks), ",".join(sorted({s["type"] for s in blocks})) or "-"
 
 
 async def _watch_disconnect(request: Request, cancel_event: asyncio.Event, interval: float = 0.5) -> None:
@@ -355,8 +372,10 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 store.save_markdown(notes_mv, file_meta=markdown_meta(
                     notes_mv, tx, formats=formats_list,
                     reasoning_effort=req.reasoning_effort))
+                _n_blocks, _block_types = _block_stats(notes_mv.content)
                 log.info("Generate both done", tx_id=transcript_id,
-                         polished_chars=len(polished_mv.content), notes_chars=len(notes_mv.content))
+                         polished_chars=len(polished_mv.content), notes_chars=len(notes_mv.content),
+                         blocks=_n_blocks, block_types=_block_types)
             elif want_polished:
                 polished_mv = await gen.generate(
                     raw_text=epub_text, title=tx.get("title", ""), style=req.style,
@@ -399,7 +418,10 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                 store.save_markdown(notes_mv, file_meta=markdown_meta(
                     notes_mv, tx, formats=formats_list,
                     reasoning_effort=req.reasoning_effort))
-                log.info("Generate done", tx_id=transcript_id, mode="notes", chars=len(notes_mv.content))
+                _n_blocks, _block_types = _block_stats(notes_mv.content)
+                log.info("Generate done", tx_id=transcript_id, mode="notes",
+                         chars=len(notes_mv.content),
+                         blocks=_n_blocks, block_types=_block_types)
             else:
                 raise AppError("GEN_INVALID_MODE", f"无法识别的生成模式: {req.mode}", recoverable=False)
 
@@ -891,6 +913,10 @@ async def generate_stream(transcript_id: str, request: Request,
                     store.save_markdown(mv, file_meta=markdown_meta(
                         mv, tx, formats=format_list, reasoning_effort=reasoning_effort))
                     _auto_title(store, transcript_id, mv.content)
+                    _n_blocks, _block_types = _block_stats(notes_content)
+                    log.info("Generate stream done", tx_id=transcript_id, mode="notes",
+                             chars=len(notes_content),
+                             blocks=_n_blocks, block_types=_block_types)
                     # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出图表围栏
                     # （旧习惯 svg 围栏 / 裸内联 / 没画）→ warning 提示重新生成
                     if "chart" in format_list and not _has_chart_fence(raw_notes):

@@ -24,6 +24,11 @@
 from __future__ import annotations
 
 from app.agent.prompts import PromptLoader
+from app.core.artifact_blocks import (
+    ARTIFACT_BLOCK_TYPES,
+    CHAT_BLOCK_TYPES,
+    SECTION_CARD_TYPE,
+)
 from app.generation.prompt import (
     AVAILABLE_OPTIONS, _ALL_FORMAT_FNS, build_excel_summary_prompt,
     build_notes_prompt, build_polish_prompt, get_markdown_block_format,
@@ -95,6 +100,37 @@ def test_规范写了触发判据与数量参照():
     assert '1–3' in spec or '1-3' in spec
 
 
+def test_产物规范列出了白名单里的每一个类型():
+    """⚠️ **集合驱动**：加一个产物类型却忘了写进规范 = 白名单认得它、渲染器画得出来、
+    `blocks.css` 有规则，唯独**模型永远不知道有这个 type** → 零报错、零使用。
+
+    判据从 `ARTIFACT_BLOCK_TYPES` 派生而不是手写四个名字（模式 #54：手写名单是同一件
+    事实的第二份副本，下次加 type 时它会绿着失去意义）。
+    """
+    spec = get_markdown_block_format()
+    missing = sorted(t for t in ARTIFACT_BLOCK_TYPES if t not in spec)
+    assert not missing, f"产物规范里没有这些类型：{missing}"
+
+
+def test_规范教了节级修饰符_card():
+    """⚠️ 这一条**不在**上面那条的派生抽检范围内 —— `card` 刻意不进
+    `ARTIFACT_BLOCK_TYPES`（它是节修饰符不是块，进了会被当块开、把标题吞掉）。
+    也就是说，它是**唯一**没有集合守卫盯着的类型，只能手写。
+
+    手写的失效方式正是本项目最怕的那种静默：**模型永远不知道有 `card` 这个 type**
+    ⇒ 骨架轴开着也一张卡都不会出现，零报错、零警告、看起来像「模型觉得这篇没重点」。
+
+    故除了「名字在场」，还要断**写法差异**那两句：「写在标题之下」与「没有闭合标记」
+    —— 模型按包裹式写（其余九种都是那样）会退化成「不成卡，但结构与内容一字不少」
+    （有宽容兜底，不是灾难），但那等于这个功能白做。
+    """
+    spec = get_markdown_block_format()
+    assert SECTION_CARD_TYPE in spec
+    assert '下面一行' in spec          # 位置：标题之下
+    assert '没有闭合标记' in spec      # 形态：不是包裹式
+    assert '1–3' in spec or '1-3' in spec
+
+
 def test_取向_两侧规范都不再有反复劝退的措辞():
     """⚠️ **反向断言**（`not in`），与文件里其它几条方向相反 —— 它防的是「哪天有人
     觉得模型用得太多，又把劝退话术加回来」。
@@ -118,8 +154,22 @@ def test_对话侧规范写了就要拼进_build():
     唯独 `build()` 的 parts 里没有它 → 模型永远不知道有这套协议，**零报错**。"""
     p = PromptLoader().build()
     assert 'limo-block:v1' in p
-    assert 'type="card-group"' in p
-    assert 'type="follow-up"' in p
+    for t in CHAT_BLOCK_TYPES:
+        assert f'type="{t}"' in p, f"对话 prompt 里没有 {t} 的示例"
+
+
+def test_对话侧规范列出了白名单里的每一个类型():
+    """同产物侧那条：集合驱动，加 type 忘了写规范时自动红。"""
+    spec = PromptLoader().formats
+    missing = sorted(t for t in CHAT_BLOCK_TYPES if t not in spec)
+    assert not missing, f"对话规范里没有这些类型：{missing}"
+
+
+def test_对话侧有总量闸门():
+    """四种块同时可用时滥用是**实数**风险（`card-group` 一个就够、`info` 又长得像
+    普通段落）。逐条判据管的是「这一块该不该用」，总量闸门管的是「一次回答用几块」——
+    两者挡的不是同一件事，缺了后者只剩前者时，模型可以每一块都「判据成立」。"""
+    assert '不超过两块' in PromptLoader().formats
 
 
 def test_对话侧规范排在文档上下文之前():
@@ -130,16 +180,36 @@ def test_对话侧规范排在文档上下文之前():
 
 
 def test_两侧规范不串味():
-    """产物规范只教 `key-takeaway`、对话规范只教两个对话类型 —— 各自教各自的，
+    """产物规范只教产物类型、对话规范只教对话类型 —— 各自教各自的，
     模型在哪条管道里就只看到那条管道的写法。
 
     串味的后果不是报错，而是**模型学到另一侧的约定写进来**：产物里冒出一个
     对话卡片组（导出侧不认识它，只会当普通内容渲染），或者对话里冒出一个强调块。
+
+    ⚠️ 判据由两侧的**集合常量**派生，不手写名单 —— 加 type 时手写名单会静默过期
+    （与 `test_产物规范列出了白名单里的每一个类型` 同一条理由）。
+
+    ⚠️ **反串味那条用 `type="xxx"` 而不是裸 type 名**（2026-10-11 收紧）：产物侧新增
+    的 `table` / `code` / `image` 都是英文常用词 —— 用裸子串判「对话规范里有没有产物
+    类型」，会因为 `formats.md` 里随手写一句英文（如 "code block"）而**假红**，而那
+    并不是串味。串味的真实判据是「教了另一侧的**协议形态**」，故贴着协议形态判。
+    反面那条（「必须在场」）仍用裸名：产物规范里九个 type 只有 `key-takeaway` 带完整
+    示例行，对它用 `type="…"` 会**假红**，而「提到了这个名字」正是它要的证据。
     """
-    assert 'key-takeaway' not in PromptLoader().formats
     product_spec = get_markdown_block_format()
-    assert 'card-group' not in product_spec
-    assert 'follow-up' not in product_spec
+    chat_spec = PromptLoader().formats
+    for t in sorted(CHAT_BLOCK_TYPES):
+        assert f'type="{t}"' not in product_spec, f"产物规范里出现了对话侧类型：{t}"
+    for t in sorted(ARTIFACT_BLOCK_TYPES):
+        assert f'type="{t}"' not in chat_spec, f"对话规范里出现了产物侧类型：{t}"
+    # ⚠️ 节级修饰符 `card` 是**产物侧独有**的（对话正文没有「节」这个概念，它有
+    # 自己的 card-group）—— 它既不在 ARTIFACT 也不在 CHAT（刻意如此），故上面那两条
+    # 循环覆盖不到它，得单独断一次。漏断的后果不是报错，是模型在对话里写出一行
+    # 毫无作用的标记（对话侧解析器认得它、但没有任何东西消费它）。
+    assert f'type="{SECTION_CARD_TYPE}"' not in chat_spec
+    # 自证有区分力：两侧各自确实提到了自己的类型（否则上面两条可能因规范为空而恒真）
+    assert all(t in product_spec for t in ARTIFACT_BLOCK_TYPES)
+    assert all(t in chat_spec for t in CHAT_BLOCK_TYPES)
 
 
 def test_对话侧规范不教外观():

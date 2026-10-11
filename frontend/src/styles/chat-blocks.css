@@ -111,3 +111,57 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* ── 信息卡（info） / 摘要卡（digest）───────────────────────────────────
+   单块容器：图标 + 内容。与卡片组同族，但**不做网格**（块内是一段连续的说明或
+   一列要点，没有可并排的多个对象）。
+
+   ⚠️ 两者的形态**几乎完全相同**，差别只在图标与左边框色（accent / muted）——
+   这是刻意的：它们区别在「这是什么性质」（背景信息 vs 压缩后的摘要），而这件事
+   由图标 + 颜色各承担一半即可；给两者设计两套布局，读者反而要重新学一遍。 */
+
+.chat-info-card,
+.chat-digest-card {
+  display: flex;
+  gap: 0.5em;
+  margin: 0.5em 0;
+  padding: 0.5em 0.7em;
+  border: 1px solid var(--tk-border-light);
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: var(--tk-elevated);
+}
+
+.chat-info-card {
+  border-left-color: var(--tk-accent);
+}
+
+.chat-digest-card {
+  border-left-color: var(--tk-muted);
+}
+
+/* ⚠️ `flex: none` 不参与伸缩（否则长正文把它压扁）；`margin-top` 是为了与首行文字的
+   视觉中线对齐，而不是与行框顶对齐。 */
+.chat-block-icon {
+  flex: none;
+  margin-top: 0.15em;
+  color: var(--tk-accent);
+}
+
+.chat-digest-card .chat-block-icon {
+  color: var(--tk-muted);
+}
+
+/* ⚠️ `min-width: 0` 与 `.chat-card` 同款：否则块内的长 URL / 代码把 flex 单元撑破 */
+.chat-block-body {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 块内首尾元素去掉多余外边距（否则卡片看起来上下不对称，与 `.chat-card` 同款） */
+.chat-block-body > :first-child {
+  margin-top: 0;
+}
+.chat-block-body > :last-child {
+  margin-bottom: 0;
+}

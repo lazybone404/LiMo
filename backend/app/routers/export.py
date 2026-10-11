@@ -946,13 +946,20 @@ _PRINT_CSS = """@page { size: A4; margin: 18mm 16mm; }
 }"""
 
 
-#: 卡片 CSS 依赖的**界面令牌** —— 导出 HTML 里**一个 `--tk-*` 都没有**：
+#: 卡片 / 语义块 CSS 依赖的**界面令牌** —— 导出 HTML 里**一个 `--tk-*` 都没有**：
 #: `HTML_THEMES` 是自包含的独立一套 CSS（纯裸色值 + 自己的明暗段），与应用内预览
-#: 用的 `--tk-*` 体系无交集。而 `cards.css` 里那 27 处 `var(--tk-…)` 没有 fallback
-#: ⇒ 不补这份定义的话，卡片**没有底色、没有边框、没有圆角**（几何量是硬值所以还在），
-#: 而「section 数量对」「CSS 里有卡片规则」这类断言**照样全绿**。
+#: 用的 `--tk-*` 体系无交集。而 `cards.css` / `blocks.css` 里的 `var(--tk-…)` 没有
+#: fallback ⇒ 不补这份定义的话，卡片**没有底色、没有边框、没有圆角**、语义块**没有
+#: 竖线色与数字色**（几何量是硬值所以还在），而「section 数量对」「CSS 里有卡片规则」
+#: 这类断言**照样全绿**。
 #:
-#: ⚠️ 取值对齐 `HTML_THEMES["limo"]`（同一套蓝 + 同一组灰），三态齐全（浅色 / 暗色 /
+#: ⚠️ **成对常量守卫**：`test_export_blocks.py` 会从这两份 CSS 里正则抽出全部
+#: `var(--tk-…)` 再逐一查这里有没有定义 —— 加了新令牌却忘了补，那条断言直接红。
+#: 这就是本表存在的意义（比「记得同步」可靠）。
+#:
+#: ⚠️ 取值：中性与品牌色对齐 `HTML_THEMES["limo"]`（同一套蓝 + 同一组灰）；语义色
+#: （success / warning）用应用内同一组 Apple 系统色（`index.css` 的 `--tk-success` /
+#: `--tk-warning`）—— 导出页没有理由给同一个语义换一个色相。三态齐全（浅色 / 暗色 /
 #: 打印）。`@media print` 段**必须在 dark 段之后**：两者会**同时匹配**（既有教训，
 #: 见 `HTML_THEMES["limo"]` 里那段同样的注释），同特异性下后者胜。
 _CARD_TOKENS_CSS = """
@@ -960,12 +967,14 @@ _CARD_TOKENS_CSS = """
   --tk-surface: #ffffff;   --tk-elevated: #f5f5f7;  --tk-hover: #ececf0;
   --tk-border: #d2d2d7;    --tk-border-light: #e5e5ea;
   --tk-foreground: #1c1c1e; --tk-dimmed: #636366;   --tk-accent: #2563eb;
+  --tk-success: #34c759;   --tk-warning: #ff9500;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --tk-surface: #1c1c1e;  --tk-elevated: #2c2c2e;  --tk-hover: #353537;
     --tk-border: #48484a;   --tk-border-light: #38383a;
     --tk-foreground: #e5e5ea; --tk-dimmed: #aeaeb2;  --tk-accent: #60a5fa;
+    --tk-success: #30d158;  --tk-warning: #ff9f0a;
   }
 }
 @media print {
@@ -973,6 +982,7 @@ _CARD_TOKENS_CSS = """
     --tk-surface: #ffffff;   --tk-elevated: #f5f5f7;  --tk-hover: #ececf0;
     --tk-border: #d2d2d7;    --tk-border-light: #e5e5ea;
     --tk-foreground: #1c1c1e; --tk-dimmed: #636366;   --tk-accent: #2563eb;
+    --tk-success: #34c759;   --tk-warning: #ff9500;
   }
 }
 """
@@ -1044,7 +1054,7 @@ def _load_block_css() -> str:
             return p.read_text(encoding="utf-8")
     raise AppError(
         "EXPORT_BLOCK_CSS_MISSING",
-        "强调块样式文件缺失，无法导出含重点块的产物",
+        "内容块样式文件缺失，无法导出含标记块的产物",
         detail="已查找：" + "、".join(str(p) for p in candidates),
         recoverable=False, status_code=500,
     )
@@ -1095,17 +1105,17 @@ def _build_selfcontained_html(md: str, title: str, theme: str = "limo",
         blocks: list[str] = []
         if preamble.strip():
             blocks.append(_render_md_with_blocks(preamble))
-        cards: list[str] = []
-        for heading, section_body in sections:
-            # ⚠️ 标记解析发生在**切卡之后**（每张卡各自解析）—— 顺序反过来的话，
-            # 一个跨节的块会把两张卡的结构搅在一起，而跨节的块本来就是异常。
+        for heading, section_body, card in sections:
+            # ⚠️ 标记解析发生在**切节之后**（每节各自解析）—— 顺序反过来的话，
+            # 一个跨节的块会把两节的结构搅在一起，而跨节的块本来就是异常。
             inner = _render_md_with_blocks(f"{heading}\n{section_body}")
-            cards.append(f'<section class="md-card">{inner}</section>')
-        # ⚠️ 无 H2（`sections` 为空）时**不包 `.md-cards`** —— 此时 `preamble` 就是
-        # 整篇原文，渲染结果与 `paper` 一致（内容一字不少，只是多了个容器 div 会
-        # 多出一层 flex 布局的副作用）。
-        if cards:
-            blocks.append('<div class="md-cards">\n' + "\n".join(cards) + "\n</div>")
+            # ⚠️ **只有被模型标记过的节**包 `<section class="md-card">`；其余章节原样
+            # 穿过（渲染结果与 `paper` 下逐字相同）。用户 2026-10-11 判定「每个 H2 一张卡
+            # 太简单粗暴，卡片应该用在需要强调的地方」—— 判据在前端与后端**同源**的
+            # `split_by_h2` 里（共享 fixture 钉住），这里只消费 `card` 这一位。
+            # ⚠️ **不再有 `.md-cards` 外层容器**：卡片与普通章节是混排的兄弟节点，
+            # 套一层 flex 会把普通章节的每一行内容变成一个独立 flex item。
+            blocks.append(f'<section class="md-card">{inner}</section>' if card else inner)
         body = "\n".join(blocks)
     else:
         # 公式处理：优先服务端预渲染（⚠️ **无标记时本节与改造前逐字相同** ——

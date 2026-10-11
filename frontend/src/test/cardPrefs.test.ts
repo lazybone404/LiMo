@@ -163,6 +163,37 @@ describe('cards.css 源约束', () => {
   })
 })
 
+// ── 设置页的迷你视觉小样（2026-10-11）────────────────────────
+
+describe('设置页迷你视觉小样', () => {
+  const settings = readFileSync(
+    resolve(process.cwd(), 'src/components/settings/SettingsPage.tsx'), 'utf-8')
+
+  it('小样消费与 `.md-card` 相同的变量（没有第二份真相源）', () => {
+    // 对照：小样自己写死一组色值 → 改方案时卡片变了、小样没变（或反之），零报错。
+    // 断`.card-preview` 块里真的引用了这几个变量，而不是「CSS 里有 .card-preview 这个词」。
+    const block = /\.card-preview\s*\{([\s\S]*?)\}/.exec(cssNoComments)
+    expect(block, 'cards.css 里没有 .card-preview 规则').not.toBeNull()
+    for (const v of ['--card-bg', '--card-border', '--card-radius', '--card-shadow']) {
+      // ⚠️ 带右括号匹配，而不是 `var(--card-bg` —— 后者会被 `var(--card-bg-base)`
+      // 满足，判据就失去了区分力（同款失误在本文件里已有先例）。
+      expect(block![1], `.card-preview 没有消费 ${v}`).toContain(`var(${v})`)
+    }
+    // ⚠️ 它**刻意不带** `[data-skeleton="card"]` 前缀：那个属性挂在 `<html>` 上，
+    // 设置页里这个前提不成立 —— 带了就永远不匹配，小样退化成看不见的空方块。
+    expect(cssNoComments).toContain('.card-preview {')
+  })
+
+  it('设置页真的把小样用起来了，且每个方案各带自己的皮肤属性', () => {
+    // ⚠️ 这条防的正是「CSS 已就位、JSX 还没用」这个中间状态 —— 它零报错、
+    // 界面照常渲染（只是每个方案按钮旁边没有小样），肉眼看才发现。
+    // ⚠️ 判据带**词边界 + class 属性**：裸子串 `card-preview` 会被 `card-previewX`
+    // 满足（本项目点名过的「判据没有区分力」，已在对照实验里实测到）。
+    expect(settings).toMatch(/className="[^"]*\bcard-preview\b/)
+    expect(settings).toContain('data-card-style={o.key}')
+  })
+})
+
 // ── 跨语言守卫（照 `appShortcutKeys.test.ts` 读 Rust 源码的先例）────────
 
 describe('与后端导出侧同源', () => {

@@ -626,6 +626,41 @@ def _set_cell_left_bar(cell, color: str):
 FILL_MARKER = "FDF7F2"
 BAR_MARKER = "EB6C36"
 
+#: 各种语义块的 (底纹, 左侧竖线) 色值。
+#:
+#: ⚠️ `key-takeaway` **沿用上面两个常量**（`test_export_blocks.py` 从本模块导入它们做
+#: 断言）—— 给新类型换色时**另开表**，不要原地改那两个值：改了是既有用例红，而不是
+#: 新用例绿。
+#: ⚠️ 色相与预览侧呼应（alert 琥珀 = `--tk-warning` / recommend 绿 = `--tk-success`），
+#: 但**取值独立**：Word 表达不了 CSS 变量，这是能力边界不是实现省略（同 `FILL_CARD`）。
+#: `metric` 在预览里**没有左侧竖线**（只有一圈浅边框），这里给一条极浅的灰线近似
+#: 「有一圈边」的观感 —— 单单元格表格的左线是这条链唯一的边框手段。
+#:
+#: ⚠️ **`steps` / `timeline` 在 Word 里只有配色不同，形态与其它块一致**（都是一个单
+#: 单元格表格 + 竖线 + 淡底）—— 这是**能力边界不是实现省略**：预览侧这两个的形状差异
+#: 全靠 `blocks.css`（横排 chip + 箭头 / 圆形编号 + 竖连线），而那套东西依赖 flex 与
+#: 伪元素计数器，Word 的 XML 里没有对应表达。如实记录：**Word 侧这两个会长得一样**，
+#: 只有底色与竖线色区分；HTML / PDF 侧正常。想区分只能改成多单元格表格（= 让 Python
+#: 复刻一遍预览的结构），那正是 `blocks.css` 文件头明确否掉的方向。
+_MARKER_COLORS: dict[str, tuple[str, str]] = {
+    "key-takeaway": (FILL_MARKER, BAR_MARKER),
+    "alert": ("FFF7EC", "E08A00"),
+    "recommend": ("F1F9F2", "34A853"),
+    "metric": ("F5F5F7", "C7C7CC"),
+    "steps": ("EEF4FB", "5B8DEF"),
+    "timeline": ("F3F0FA", "8B7BD8"),
+    # ⚠️ `table` / `code` / `image`（内容卡片族）取**中性色**，不是语义色 —— 它们标的
+    # 是内容本身，没有「风险 / 建议」那层意思，染色等于替它加一层它没有的意思。
+    # ⚠️ **Word 侧表达不了这一族的预览形态**：`table` 卡在预览里是「面板里一张真表格」，
+    # 到这里会变成**表格套表格**（外层单单元格表格 + 内层 Table Grid 表格）—— 因为
+    # Word 的「容器」只有表格这一种手段。这是**能力边界不是实现省略**：要让它不嵌套
+    # 就得给这一族开 Python 分支去识别「块内是什么」，而那正是 `blocks.css` 文件头
+    # 明确否掉的方向（形态差异只走 CSS）。
+    "table": ("F1F7F7", "4E97A6"),
+    "code": ("F4F4F5", "6B6B75"),
+    "image": ("F8F2F6", "A15E96"),
+}
+
 
 def _render_marker_block(doc, div_tag, images, resolver, ctx: dict):
     """一个语义标记块 → 单单元格表格（左侧竖线 + 淡底）。
@@ -641,8 +676,11 @@ def _render_marker_block(doc, div_tag, images, resolver, ctx: dict):
     # ⚠️ 新建单元格自带一个空段落，不删掉每块顶部多一个空行（与卡片同款）
     first = cell.paragraphs[0]
     first._p.getparent().remove(first._p)
-    _shade_cell(cell, FILL_MARKER)
-    _set_cell_left_bar(cell, BAR_MARKER)
+    # ⚠️ 未知 type 回退到 `key-takeaway` 的配色 —— **不是报错**：协议允许更新版本引入
+    # 本版还不认识的类型（那头由「解析器对 type 无感知」承担），这里给个中性外观即可。
+    fill, bar = _MARKER_COLORS.get(div_tag.get("data-block-type", ""), (FILL_MARKER, BAR_MARKER))
+    _shade_cell(cell, fill)
+    _set_cell_left_bar(cell, bar)
 
     inner = _CellProxy(cell)
     for child in div_tag.children:
@@ -721,7 +759,11 @@ def _render_block(doc, node, images: dict[str, bytes], resolver, ctx: dict):
         _render_marker_block(doc, node, images, resolver, ctx)
 
     elif name == "div" and "md-cards" in (node.get("class") or []):
-        # 卡片容器：本身不出块，逐个渲染里面的 section（各自成卡）
+        # ⚠️ **历史分支**：2026-10-11 起 HTML 导出不再生成 `.md-cards` 容器（卡片与普通
+        # 章节改成混排的兄弟节点，见 `_build_selfcontained_html`）。保留它是因为它挡的是
+        # **未知块被兜底递归**那条路 —— 若将来有别的入口喂进带该 class 的 HTML，逐个子元素
+        # 渲染仍是正确行为。分支本身不会被执行到（无人再产出该 class），故**不是死代码
+        # 清理的候选**：删掉它没有任何收益，留下它对任何输入都安全。
         for child in node.children:
             if isinstance(child, Tag):
                 _render_block(doc, child, images, resolver, ctx)
@@ -827,9 +869,12 @@ def markdown_to_docx(
         chunks: list[str] = []
         if preamble.strip():
             chunks.append(_render_blocks_html(preamble, _to_html))
-        for heading, section_body in sections:
+        for heading, section_body, card in sections:
             inner = _render_blocks_html(f"{heading}\n{section_body}", _to_html)
-            chunks.append(f'<section class="md-card">{inner}</section>')
+            # ⚠️ **只有被模型标记过的节**包 `<section class="md-card">`（Word 里 = 单单元格
+            # 表格）；其余章节原样穿过，与 `paper` 下逐字相同。判据与前端 / HTML 导出
+            # **同源**（`split_by_h2`），这里只消费 `card` 这一位。
+            chunks.append(f'<section class="md-card">{inner}</section>' if card else inner)
         html = "\n".join(chunks)
     else:
         html = _render_blocks_html(md, _to_html)

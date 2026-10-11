@@ -25,7 +25,20 @@ from app.routers import export
 from app.routers.export import _build_selfcontained_html, _load_card_css
 from app.services.docx_export import FILL_CARD, markdown_to_docx
 
+#: ⚠️ 2026-10-11 起骨架轴由**标记**驱动：只有被 `card` 节修饰符标过的节才成卡。
+#: 故「卡片」类用例要用 `CARD_MD`；`MD` 保留为**无标记**版本，供「零回归 / 默认
+#: paper 逐字节不变」类用例使用（那些用例的输入必须真的不带标记，否则测的不是同一件事）。
 MD = "开场白。\n\n## 甲\n内容一\n\n---\n\n## 乙\n内容二\n\n## 丙\n内容三\n"
+
+#: 甲 / 乙标了 `card`、**丙没标** —— 混排是现在的常态，而「标了的成卡、没标的保持
+#: 普通正文」这条判据必须由同一份样本同时覆盖两侧（只测「全标」的话，把实现改成
+#: 「凡是 card 模式一律成卡」它照样绿）。
+CARD_MD = (
+    "开场白。\n\n"
+    '## 甲\n<!-- limo-block:v1 type="card" -->\n内容一\n\n---\n\n'
+    '## 乙\n<!-- limo-block:v1 type="card" -->\n内容二\n\n'
+    "## 丙\n内容三\n"
+)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -52,18 +65,39 @@ def test_card_模式下_html_标签同时带两个属性():
     assert 'data-card-style="ink"' in html
 
 
-def test_card_模式下卡片数与_H2_数一致():
-    html = _build_selfcontained_html(MD, "标题", skeleton="card")
-    assert html.count('<section class="md-card">') == 3
-    assert '<div class="md-cards">' in html
-    # 三节内容都在（空壳检测的反面：不是切出三个空 section）
-    for chunk in ("内容一", "内容二", "内容三"):
+def test_card_模式下卡片数等于被标记的节数():
+    """⚠️ 数量断的是**标记数（2）**而不是 H2 数（3）—— 后者是本轮改掉的那条无差别规则。
+    同时必须断「未标记的丙节内容仍在」：把 `card` 判据写反（未标记的成卡、标记的不成卡）
+    时，数量仍是 2，只有这条内容侧断言 + 下面那条「丙不在 section 里」能分辨。"""
+    html = _build_selfcontained_html(CARD_MD, "标题", skeleton="card")
+    assert html.count('<section class="md-card">') == 2
+    for chunk in ("开场白。", "内容一", "内容二", "内容三"):
         assert chunk in html
+    # 未标记的丙节**不在**任何 section 里（它原样穿过渲染链）
+    tail = html[html.rindex("</section>") + len("</section>"):]
+    assert "内容三" in tail and "<section" not in tail
+
+
+def test_card_模式下标记行不落进产物():
+    """节修饰符是内部协议 —— 读者不该在页面上看到 `<!-- limo-block … -->`。
+    剥它的地方是渲染层（`parse_blocks` 的标记行剥除），切分器只管认不认得出它。
+
+    ⚠️ 判据是**注释形式的标记行**，不是裸子串 `limo-block` —— 内联的 `cards.css`
+    注释里就写着这个词（那是给读源码的人看的，不会显示给读者），拿裸子串去断会恒红。
+    """
+    html = _build_selfcontained_html(CARD_MD, "标题", skeleton="card")
+    # ⚠️ 判据限定在 `<body>` 之后的**正文区**：内联的 `cards.css` 注释里就写着这句
+    # 标记的示例（那是给读源码的人看的，不会显示给读者），拿整份 HTML 去断会恒红。
+    body = html[html.index("<body"):]
+    assert "limo-block" not in body
+    assert 'type="card"' not in body
 
 
 def test_card_模式下卡片_CSS_真的被内联():
     """⚠️ 断的是「导出页里出现了 `cards.css` 的选择器」，不是「文件存在」——
     文件存在但没拼进 style 块，效果与没有一样。"""
+    # 注入 CSS 的门是 `skeleton == "card"`，与「有没有标记」无关 —— 用无标记的 MD
+    # 正是不让这一条被标记干扰（有标记的那份由上面的用例管）。
     html = _build_selfcontained_html(MD, "标题", skeleton="card")
     css = _load_card_css()
     assert '[data-skeleton="card"]' in html
@@ -112,13 +146,23 @@ def test_无_H2_时不产出卡片容器且内容不丢():
     assert "只有一段话" in html and "第二段" in html
 
 
-def test_章末的_hr_被剥掉而章内的保留():
-    """切卡后章节边界由卡片间距承担，那条 `---` 挂在卡底只是噪音；
-    但章节**内部**的分隔线是在分隔话题，必须留。"""
-    html = _build_selfcontained_html(MD, "标题", skeleton="card")
-    assert html.count("<hr") == 0   # MD 里的 --- 全在章末，应被剥光
-    inner = _build_selfcontained_html("## 甲\n话题一\n\n---\n\n话题二\n", "t", skeleton="card")
-    assert inner.count("<hr") == 1
+def test_章末的_hr_成卡的剥掉_不成卡的保留():
+    """三个方向各一条，缺一不可（2026-10-11 起判据挂在 `card` 上）：
+
+    · **成卡的节**：章节边界已由卡的下边界承担，那条 `---` 挂在卡底只是噪音 → 剥；
+    · **未标记的节**：它没有卡边界，`---` 是**唯一**的分隔手段 → 留。
+      （漏了这条，「开了卡片模式、普通章节之间的分隔线却消失了」—— 与骨架轴无关的损失。）
+    · **章节内部**的 `---`：在分隔话题，不是章节边界 → 恒留。
+    """
+    html = _build_selfcontained_html(CARD_MD, "标题", skeleton="card")
+    assert html.count("<hr") == 0   # 甲节末尾那条随成卡被剥
+    plain = _build_selfcontained_html(
+        "## 甲\n内容一\n\n---\n\n## 乙\n内容二\n", "t", skeleton="card")
+    assert plain.count("<hr") == 1  # 都未标记 → 保留
+    inner = _build_selfcontained_html(
+        '## 甲\n<!-- limo-block:v1 type="card" -->\n话题一\n\n---\n\n话题二\n',
+        "t", skeleton="card")
+    assert inner.count("<hr") == 1  # 成卡也留章内的那条
 
 
 def test_非法视觉方案静默回退_gpt():
@@ -199,10 +243,12 @@ def test_word_paper_默认不产生卡片表格():
 
 def test_word_card_每节包成单单元格表格():
     """对照 B：断在**结构层**（表格数 / 单元格数），不断「内容还在」——
-    漏加 section 分支时内容由 `else` 兜底照样渲染，那种断言绿得毫无意义。"""
-    data = markdown_to_docx(MD, "标题", skeleton="card")
+    漏加 section 分支时内容由 `else` 兜底照样渲染，那种断言绿得毫无意义。
+
+    ⚠️ 数量是**标记数（2）**：丙节没标 `card`，它不该被包成表格。"""
+    data = markdown_to_docx(CARD_MD, "标题", skeleton="card")
     tables = _tables(data)
-    assert len(tables) == 3
+    assert len(tables) == 2
     for t in tables:
         assert len(t.rows) == 1
         assert len(t.columns) == 1
@@ -210,7 +256,7 @@ def test_word_card_每节包成单单元格表格():
 
 def test_word_卡片底纹真的应用了():
     """结构层再深一层：`w:tcPr/w:shd` 存在且取值正确（只加表格不加底纹 = 白框）。"""
-    tables = _tables(markdown_to_docx(MD, "标题", skeleton="card"))
+    tables = _tables(markdown_to_docx(CARD_MD, "标题", skeleton="card"))
     tc = tables[0].rows[0].cells[0]._tc
     tcPr = tc.find(qn("w:tcPr"))
     assert tcPr is not None
@@ -222,7 +268,8 @@ def test_word_卡片底纹真的应用了():
 def test_word_卡片内标题是_Heading_样式而不是普通段落():
     """`_CellProxy` 存在的唯一理由就是 `_Cell` 没有 `add_heading` ——
     这条钉住它真的被用上了（掉了的话标题会退化成正文段落，观感全变、零报错）。"""
-    tables = _tables(markdown_to_docx("## 甲\n正文\n", "标题", skeleton="card"))
+    tables = _tables(markdown_to_docx(
+        '## 甲\n<!-- limo-block:v1 type="card" -->\n正文\n', "标题", skeleton="card"))
     styles = {p.style.name for p in tables[0].rows[0].cells[0].paragraphs}
     assert any(s.startswith("Heading") for s in styles), styles
 
@@ -235,10 +282,13 @@ def test_word_对照_裸_section_标签不会变卡片():
 
 
 def test_word_卡片内容零增减():
-    """结构对了还要内容对 —— 两张卡不能把正文吞掉或复制一份。"""
-    tables = _tables(markdown_to_docx(MD, "标题", skeleton="card"))
+    """结构对了还要内容对 —— 两张卡不能把正文吞掉或复制一份，**未标记的丙节也不能丢**
+    （它的内容不在表格里，故要另取一次文档正文来断）。"""
+    data = markdown_to_docx(CARD_MD, "标题", skeleton="card")
     got = "\n".join(
-        p.text for t in tables for p in t.rows[0].cells[0].paragraphs
+        p.text for t in _tables(data) for p in t.rows[0].cells[0].paragraphs
     )
-    for chunk in ("甲", "内容一", "乙", "内容二", "丙", "内容三"):
+    for chunk in ("甲", "内容一", "乙", "内容二"):
         assert got.count(chunk) == 1, f"{chunk} 出现 {got.count(chunk)} 次"
+    body = "\n".join(p.text for p in Document(io.BytesIO(data)).paragraphs)
+    assert body.count("丙") == 1 and body.count("内容三") == 1

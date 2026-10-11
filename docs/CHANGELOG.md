@@ -6,6 +6,473 @@
 
 ---
 
+## 2026-10-11 — 两类「卡片」的实机修正：面板边框提亮 + `card` 提到规范最前（PROMPT_VERSION `"12"` → `"13"`）
+
+### 起因
+
+上一轮刚落地「章节卡片改由标记决定」。用户实机生成一篇后反馈：
+
+> 「现在有一个问题就是其他的那些卡片边框会显示吗，目前我生成的感觉显示效果不太好」
+
+排查先扫全库产物，拿到两条事实：
+
+| 观察 | 数据 |
+|---|---|
+| 语义块**在用** | v12 那篇写齐了 5 种：`key-takeaway` / `alert` / `timeline` / `metric` / `recommend` |
+| 章节卡片**没在用** | 全库 6 篇含标记的产物里 **`card` 标记 0 个**（v12 只跑过 1 篇文档 —— 样本小，但现象干净） |
+
+于是拆成两个独立问题：**视觉强度**（面板族容器看不见）与**引导位置**（`card` 被略过）。
+
+### 做了什么
+
+**① 中性面板族边框 `--tk-border-light` → `--tk-border`**
+
+`metric` / `table` / `code` / `image` 这一族的容器在浅色主题下**等于没有**。以默认 `warm`
+基调实测：边框 `#EBE7E2` 离正文底 `--tk-surface`（`#F4F1EE`）**只差 9 个灰阶**，
+底色 `--tk-elevated`（`#FAF8F5`）离正文**只差 6 阶** —— 两层叠加后，用户看到的约等于
+「几行没有容器的大数字」。换成 `--tk-border`（`#D6D3CE`，离正文 **30** 阶，3.3 倍对比度），
+与章节卡片默认方案 `gpt`（`--card-border: 1px solid var(--tk-border)`）是**同一套语言**
+—— 两者本来就是嵌套关系（卡片里包面板），强度同级才不会看起来像两种东西。
+
+| # | 文件 | 动作 |
+|---|---|---|
+| 1 | [blocks.css](../frontend/src/styles/blocks.css) | `metric` 与 `table`/`code`/`image` 两条规则块的 `border` 换 `--tk-border`（把「为什么不复用 light 档」与具体灰阶差写进注释） |
+| 2 | [markerPrefs.test.ts](../frontend/src/test/markerPrefs.test.ts) | 新增守卫「中性面板族的边框用 `--tk-border`，不是 light 档」 |
+
+⚠️ `timeline` 的**竖连**线仍用 light 档（细线本就该淡），故守卫限定在两条**容器**规则内
+—— 写成全局断言会把它一起误判为红。
+
+**② `card` 从列表末项提到规范最前**
+
+`get_markdown_block_format()` 按**层级**重排：先讲节级的 `card`（管整节，粒度最大），
+再讲段级的九种；`card` 的示例紧跟它的说明，不再与九种挤在整段末尾。
+⚠️ **判据与类型一字未改** —— 改的只是位置与结构，与上一轮刚立的「不堆劝退话术」不冲突。
+
+| # | 文件 | 动作 |
+|---|---|---|
+| 3 | [prompt.py](../backend/app/generation/prompt.py) | `get_markdown_block_format()` 重排为「① 整节成卡 / ② 段内标记」两节 |
+| 4 | [prompts/`__init__`.py](../backend/app/generation/prompts/__init__.py) | `PROMPT_VERSION` `"12"` → `"13"` |
+
+**推论**（写下来免得后人重新推）：九个块级标记是**同一形态的反复**（只有 `type` 值不同），
+模型扫一眼就抓住了模式；`card` 是**唯一形态不同的那一个**（不包裹内容、写在标题之下、
+没有闭合标记），吊在长列表第 10 项、示例还单独放在末尾时，最容易被当成「又一个 type」略过。
+
+### 影响范围
+
+- **预览与导出同步**：`blocks.css` 是导出侧 `_load_block_css()` 读的**单一真相源**，
+  改这一处两侧同时变；`--tk-border` 在 `_CARD_TOKENS_CSS` 里**已有三态定义**，无需补令牌
+- **零回归不受影响**：`--tk-border` 是既有令牌，`paper` 骨架下同样生效（面板族在两种骨架
+  下形态一致，刻意不是卡片形态）
+- **历史产物**：无标记的逐字节不变；有标记的**面板会更明显** —— 这正是本轮目的
+
+### 验证
+
+- `bash scripts/check-all` → **5 通过 / 0 失败**（前端 808 tests / 62 文件）
+- **对照实验 3 条**（每条都改坏一次、确认真的变红、再还原）：
+  - 改坏 prompt 的「下面一行」→ `test_规范教了节级修饰符_card` 红（还原后 19 passed）
+  - **整段删掉 `card` 引导** → 同一条红（模拟「`card` 从未写进规范」的真实失效场景）
+  - `blocks.css` 的面板边框改回 light 档 → 新守卫红（还原后 16 passed）
+- ⚠️ **待实机验收**：`card` 的新位置是否真能提升遵循率 —— 需再生成 2–3 篇不同体裁的确认
+  （这是本轮唯一没有自动信号的部分）；以及面板提亮后的整体观感
+
+---
+
+## 2026-10-11 — 章节卡片改由标记决定：`card` 节修饰符（PROMPT_VERSION `"11"` → `"12"`）
+
+### 起因
+
+上一轮（2026-10-10）把卡片骨架轴做成了**每个 H2 无差别一张卡**。用户当天判定这不对：
+
+> 「章节卡片主要是太简单粗暴了,卡片形式用在需要强调的地方就行了」
+
+澄清后用户定下实现方式：
+
+> 「卡片由标记决定,然后只给标记过的章节成卡，8种视觉方案可以适当的去引导使用」
+
+随后追加一条默认值决定：
+
+> 「还有就是默认使用的视觉方案就是加重边线以及背景颜色与卡片颜色相同」
+
+### 做了什么
+
+骨架轴 `card` 的**判据从「每个 H2」换成「被模型标过的节」**：模型在 `## 标题` 的**下一行**
+写 `<!-- limo-block:v1 type="card" -->`，这一节才渲染成卡；其余章节保持普通正文
+（于是卡片在页面里是**混排**的，不再是整齐的一列）。8 套视觉方案全部保留。
+
+| # | 文件 | 动作 |
+|---|---|---|
+| 1 | [markdown-sections.ts](../frontend/src/lib/markdown-sections.ts) / [markdown_sections.py](../backend/app/services/markdown_sections.py) | 切分结果多一个 `card` 字段；H2 之后紧跟的那行 `card` 标记决定它 |
+| 2 | [markdown-markers.ts](../frontend/src/lib/markdown-markers.ts) / [artifact_blocks.py](../backend/app/core/artifact_blocks.py) | 新增 `SECTION_CARD_TYPE` / `is_section_card`；**`match_open` 对 `card` 返回 `null`** |
+| 3 | [limo-blocks.json](../frontend/src/test/fixtures/limo-blocks.json) | `meta` 加 `sectionTypes` + 5 条 `h2Cases`（标记 × 切分的交叉） |
+| 4 | [cards.css](../frontend/src/styles/cards.css) | 删 `.md-cards` flex 容器（卡片与普通节是兄弟节点，套容器会把普通节的**每一行**拆成 flex item）；间距改由 `.md-card { margin-block }`；删 `.md-card:last-child` 特例；工具条补「章节卡片」开关 |
+| 5 | [cards.css](../frontend/src/styles/cards.css) | 默认方案 `gpt` 改为用户定的「**加重边线 + 背景与正文同色**」（`--card-lift: 0%` + `border: var(--tk-border)`） |
+| 6 | [cards.css](../frontend/src/styles/cards.css) | 新增 `.card-preview` 迷你视觉小样 + [SettingsPage.tsx](../frontend/src/components/settings/SettingsPage.tsx) 用它，`hint` 由 hover `title` 提升为可见文字 |
+| 7 | [prompt.py](../backend/app/generation/prompt.py) `get_markdown_block_format()` | 多出第十种 `card`，写法与其余九种**不同**（见下） |
+| 8 | [prompts/`__init__`.py](../backend/app/generation/prompts/__init__.py) | `PROMPT_VERSION` `"11"` → `"12"` |
+
+**零改动**：`MarkerContent.tsx`、`render_blocks_html`、`parse_blocks` / `parse_markers` 的
+主路径、`export.py` 的全部导出分支（卡片容器由既有的 `md-card` 分支产出）、Word 侧 `_render_block`。
+
+### ⚠️ `card` 定性为**节修饰符**，不是块 —— 一个决定解决两个隐患
+
+前九种 type 都是**块**（包裹式，有闭合标记），`card` **根本不是块**：它标的是「这个 `##` 标题
+及其全部后续内容」，写法是**写在标题之下、没有闭合标记**。前端 `isSectionCard` / 后端
+`is_section_card` 与 `match_open` **是两个判据**（`match_open('…type="card"…')` 返回 `null`），
+`test_对照实验_两个判据不是同一个函数的别名` 钉住它俩方向恰好相反。
+
+把 `card` 当块处理会同时引爆两件事：
+
+1. **吞标题**。模型的本能是把标记写在标题**之前**（其余九种都是那样）。行分类器一旦进入
+   块内状态，那个 `## 标题` 会被整行跳过 —— **整节从文档结构里消失**，卡片、目录、导出全线受影响。
+   现在 `card` 标记行对标题扫描**完全透明**，写在前面也只是「不成卡」（宽容降级在**内容侧**：
+   标记行照剥、标题照留、一个字不少，有断言钉住）。
+2. **吞同一节里的块标记**。`card` 若开块，节内第一个真正的块（`alert` / `table`…）的闭合标记
+   会被当成 `card` 的闭合。现在节内块照常解析。
+
+**零残留**是免费拿到的：`match_open` 返回 `null` 之后，`parse_blocks` 里紧跟的**标记行剥除**
+正好接住 `card` 标记行，**无需新分支**。
+
+### ⚠️ `strip_break` 挂在 `card` 上，不是挂在骨架轴上
+
+「成卡的节剥掉尾部的 `---`」这条（卡的下边界已承担分隔功能）此前挂在「开了卡片骨架」上。
+现在它挂在**这一节是否成卡**上 —— 两种输入的表现因此不同：
+
+| 输入 | 结果 |
+|---|---|
+| `## 甲` + `card` 标记 + 内容 + `---` | 剥（卡底挂一条分隔线是噪音） |
+| `## 甲` + 内容 + `---`（**无标记**） | **保留** —— 它没有卡边界，`---` 是**唯一**的分隔手段 |
+
+漏掉后者就是「开了卡片模式、普通章节之间的分隔线却消失了」—— 一个与骨架轴无关的损失。
+三个方向（成卡的剥 / 不成卡的留 / **章内**的 `---` 恒留）在 `test_export_cards.py` 里各有一条。
+
+### ⚠️ 卡片 CSS 不再有外层容器
+
+`.md-cards { display: flex }` **已删除**。混排之后卡片与普通章节是**兄弟节点**，套一层 flex
+容器会把普通章节里**每一行**内容变成一个独立 flex item，布局直接散架。卡片间距改由
+`.md-card { margin-block: var(--card-gap) }` 承担 —— 普通流里相邻块的外边距会**折叠**，
+两张卡之间是 `--card-gap` 而不是它的两倍。`.md-card:last-child { margin-bottom: 0 }`
+这条特例随之删除（同一个 margin 两端对称，特例只会让它变怪）。
+
+### ⚠️ 设置页的迷你小样：让 8 套方案的差异**看得见**
+
+用户要「引导使用」，而此前 8 套方案**只有名字和一句 hover 提示**，看不出差异也就谈不上引导。
+落地方式是给每个方案按钮加一个 42×28 的空 `<span>`，用**与 `.md-card` 完全相同的那批
+`--card-*` 变量**画一个缩微卡片（`.card-preview`）：
+
+- **依据**：`[data-card-style="x"] { --card-*: … }` 这批规则**不带** `[data-skeleton="card"]`
+  前缀（那个前缀只在渲染规则上），故小样元素自己写一个 `data-card-style` 就能取到变量 ——
+  **没有第二份真相源**，方案块里改任何取值，卡片与小样同步变；
+- 圆角与内框按 **0.5** 缩放（真实卡片是 16–36px 留白衬出来的，小样只有几十像素，原值会让
+  圆角吃掉整个方块）—— 缩放的是**同一个变量**，不是新写的一份取值；
+- 小样是空元素、不进导出（`cards.css` 会被导出侧读走，但导出 HTML 里没有 `.card-preview`）。
+
+### 影响范围
+
+- **默认观感变了**：`gpt`（默认方案）由「无边框 + 抬升底 + 阴影」改为「**加重边线 + 与正文同底色**」。
+  这是用户明确定的默认值，不是回归。
+- **历史产物**：无标记的产物在 `card` 骨架下**一张卡都不出**（内容一字不少）—— 这是本轮**有意**
+  的行为改变。想要卡片的旧产物需重新生成。
+- **`paper` 仍然零回归**：`applyCard()` 对两个属性都 `removeAttribute`，`cards.css` 每条规则带
+  `[data-skeleton="card"]` 前缀 —— 零回归靠**选择器不匹配**而非取值相同。
+
+### 验证
+
+`bash scripts/check-all` → 5 通过 / 0 失败（前端 807 tests）。
+跨语言守卫：`limo-blocks.json` 的 `sectionTypes` + 5 条 `h2Cases` 由两侧测试共同消费
+（`markdownMarkers.test.ts` / `test_artifact_blocks.py`），`h2-sections.json` 保持「**纯切分**」
+定位（`card` 恒 `false`），交叉场景一律住 `h2Cases` —— 同一批形状不在两处各写一遍。
+
+**设置页小样**另加两条守卫（`cardPrefs.test.ts`）：① `.card-preview` 块真的消费那四个
+`--card-*` 变量、且**不带**骨架前缀（带了就永远不匹配 ⇒ 小样是个看不见的空方块）；
+② `SettingsPage.tsx` 里那个类名**真的用上了**（防「CSS 已就位、JSX 还没用」这个零报错的
+中间状态）。⚠️ 第 ② 条第一版写成裸子串 `toContain('card-preview')`，**对照实验发现它恒真**
+（`card-previewX` 也包含它）—— 改成 `className="…\bcard-preview\b"` 后重做对照实验才真的变红。
+两条对照实验（改坏 JSX / 删掉 CSS 规则）均实测可捕获。
+
+⚠️ 实机验收（模型遵循率：会不会写 `card` 标记、会不会滥用）**待用户操作**。
+
+---
+
+## 2026-10-11 — 内容卡片三种：表格 / 代码 / 图片（PROMPT_VERSION `"10"` → `"11"`）
+
+### 起因
+
+用户先点明要做的三种：
+
+> 「三个：表格 + 代码 + 图片」
+
+随即给出了**实现方式的定义**，这一句定了整轮的形状：
+
+> 「其实可以考虑作为就是同种类型的表现形式只是在原有的基础上再加上了围栏而已然后他就按照那种卡片显示」
+
+即：**不是**把表格改写成卡片、把代码拆成散文 —— 它们**本来就是**真表格 / 真代码块 / 真图片，
+只是外面多了一层 `limo-block` 围栏，于是按卡片显示。**块内一个字节都不动。**
+
+最后补了一条：
+
+> 「还有一点就是咱们原来没有卡片的时候显示相关的那个也可以做成一个可勾选项当做用户需可能需要保留的形式」
+
+→ **不新造开关**，见下。
+
+### 与前六种「性质不同族」—— 这是本轮最要紧的一条
+
+| | 前六个（`key-takeaway`/`alert`/`recommend`/`metric`/`steps`/`timeline`） | 后三个（`table`/`code`/`image`） |
+|---|---|---|
+| 标的是什么 | **普通段落** —— 「这一段文字是什么性质」 | **内容本身** —— 表格 / 代码 / 图片，本来就与正文不同质 |
+| 块内原本是 | 散文 | 富结构（`<table>` / `<pre><code>` / `<img>`） |
+| 加标记的作用 | 换形态（色条 / 淡底 / 横排 chip / 时间线） | **只是外面多一层壳**，块内原样穿过 |
+| CSS 做什么 | 换 `display`、换子元素排布 | **不换 `display`、不换子元素**，只做容器装饰 |
+
+⚠️ 所以这一族**刻意不是「把表格/代码/图片改造成卡片的形状」**。图鉴对代码面板有明确判词
+（[cards.md](../design/cards.md) 附录 B 第 4 条）：「不要为了统一视觉而把代码改成普通文字卡片，
+否则会影响可读性和可用性。」保住等宽、缩进、复制、横向滚动，是这三个 type 能成立的**前提**。
+
+### 改了什么
+
+| # | 文件 | 动作 |
+|---|---|---|
+| 1 | [markdown-scan.ts](../frontend/src/lib/markdown-scan.ts) / [artifact_blocks.py](../backend/app/core/artifact_blocks.py) | 产物集合 6 → 9（`table` / `code` / `image`），两侧镜像 + 一段「性质不同族」注释 |
+| 2 | [limo-blocks.json](../frontend/src/test/fixtures/limo-blocks.json) | `meta` 两数组 + 3 条 case（各带**富结构 body**：真表格 / 真围栏代码 / 真图片引用） |
+| 3 | [blocks.css](../frontend/src/styles/blocks.css) | 一族中性容器规则（四边浅边框 + `--tk-elevated` 底 + 圆角，**不带语义色**）+ 首尾 margin 归零 + `image` 居中；末尾各配 `decor=off` 归零规则 |
+| 4 | [prompt.py](../backend/app/generation/prompt.py) `get_markdown_block_format()` | 6 种 → 9 种；补「块内**照原样写**」「`image` 地址**原样照抄**」两条硬约束 |
+| 5 | [docx_export.py](../backend/app/services/docx_export.py) `_MARKER_COLORS` | +3 组**中性**配色（不是语义色 —— 染色等于替它加一层它没有的意思） |
+| 6 | [prompts/`__init__`.py](../backend/app/generation/prompts/__init__.py) | `PROMPT_VERSION` `"10"` → `"11"` |
+
+**零改动**（由「形态差异全在 CSS」这条约束保证，逐处确认过）：`MarkerContent.tsx`、
+`ChatMarkerContent.tsx`、`artifact_blocks.py` 的 `parse_blocks`/`strip_blocks`/`render_blocks_html`、
+`markdown-markers.ts`、`export.py` 的全部导出分支、前端导出侧。
+
+### ⚠️ 卡片外壳的选择器只能落在 `.md-block` 自己身上
+
+调研时发现**预览侧与导出侧的 DOM 本就不同**（这层差异**先于本轮就存在**，不是本轮引入的）：
+
+| 内容 | 预览（React） | 导出（`markdown_render.py`） |
+|---|---|---|
+| 表格 | `.md-table-wrap`（Tailwind `overflow-x-auto my-4 rounded-lg border`）> `<table>` | **裸 `<table>`** |
+| 代码 | `.group.relative`（工具条：语言标签 + 复制按钮）> `SyntaxHighlighter` | `<div class="codehilite"><pre><code>`（Pygments） |
+| 图片 | `<img>` | `<img>` |
+
+故卡片规则**只能**写成 `.md-block[data-block-type="…"]` 或作用在块内**通用元素**
+（`table` / `pre` / `img`）上 —— **绝不能碰 `.md-table-wrap`、`.group` 或任何 Tailwind class**
+（导出侧根本不存在，会当场分叉）。代价如实记录：预览侧是「面板里嵌一层容器」，导出侧只有面板。
+`blocks.css` 里这一族的注释写明了这一点。
+
+### ⚠️ 用户要的「保留原来的形式」= 既有装饰开关的射程扩张，不是新开关
+
+既不新造 UI，也不新造字段 —— 既有的 `lib/marker-prefs.ts`「**内容块装饰**」（原「重点块装饰」）
+语义逐字就是用户要的：**关掉装饰、内容一字不少**。把这一族纳入它的射程即成立：
+
+- 关掉后表格退回裸 `<table>`、代码退回带工具条的代码块、图片退回靠左 ——
+  **与从未写过围栏在渲染上逐字相同**；
+- 卡片自己的 `margin: 16px 0` 在 `decor=off` 时**刻意保留**（恰好等于预览侧 `.md-table-wrap`
+  的 `my-4`），故「关掉装饰」与「从未包过」的**间距一致**；
+- 代价只是 `blocks.css` 末尾多三条归零规则 + 三处文案改准（「重点块装饰」覆盖表格/代码/图片后
+  不再准确 → 统一为「**内容块装饰**」）。
+
+⚠️ **漏写某一种的 `decor=off` 归零规则，症状是「开关对那个 type 无效」** —— 不报错、不崩溃，
+只是那一种块永远带着装饰。`marker-prefs.ts` 文件头已把这条写进纪律。
+
+### 代价（如实记录）
+
+- **Word 侧的 `table` 卡是「表格套表格」** —— 外层单单元格表格（所有 type 在 Word 里都是这个
+  形态，只有配色不同）+ 内层真表格。`code` / `image` 同理只有外框，没有工具条 / 居中表达。
+  这是**能力边界不是实现省略**：想复刻预览形态就得让 Python 复刻 React 的结构（模式 #54）。
+  已写成断言钉住（`test_word_内容卡片三种_块内富结构原样穿过且_table_是表格套表格`），
+  免得后人以为「Word 侧也是并排的」。
+- **`image` 卡只覆盖图鉴媒体卡的「外框层」** —— 贴边大图 + 加粗标题 + `--tk-dimmed` 元信息
+  那一整套没做（那需要块内出现「标题 + 元信息」的结构）。故 13 媒体卡在 [cards.md](../design/cards.md)
+  附录 A 里**同时**留在「🆕 真正全新」桶，注明「部分落地」。
+
+### 测试
+
+- `test_export_blocks.py`：HTML 八种新 type 都包 `md-block`；**新增一条专断「富结构穿过导出链」**
+  （`<table>` / `<pre><code>` / `<img>` + `alt`）；Word 侧同理 + 表格套表格的结构断言。
+  ⚠️ 断「文字在不在」时加了 `_text_of()` helper（剥标签）—— **Pygments 会把 `cfg = load()`
+  拆成一串 `<span>`**，字面匹配会假红；图片的说明文字在 `alt` **属性**里（不在文本节点），
+  故它归**结构层**断言。这两处都是「断言不该受实现细节影响」的实例。
+- 新增 `_RICH_BODY` 常量：用**纯文字 body** 测这三个 type 是**假绿**（「块内富结构原样穿过」
+  这件事一件证据都没有）。
+- `test_block_prompt.py`：`test_产物规范列出了白名单里的每一个类型` 由集合派生，**自动覆盖**；
+  ⚠️ 顺带**收紧**了 `test_两侧规范不串味` —— 反串味改判 `type="xxx"` 而非裸子串
+  （`table` / `code` / `image` 都是英文常用词，裸子串会因 `formats.md` 里随手一句英文而**假红**，
+  而那并不是串味）。这是**顺带修的真缺陷**，不是本轮必需。
+- `markerContent.test.tsx`：新增「内容卡片三种：块内那份富内容原样穿过渲染层」。
+- `setup.ts`：补 `ResizeObserver` stub —— ⚠️ jsdom 没有它，而 `react-medium-image-zoom`
+  在 mount 时要用，症状是**渲染含 `<img>` 的 Markdown 整条用例崩在 commit 阶段**
+  （`ReferenceError: ResizeObserver is not defined`），与标记解析毫无关系。
+- 门禁：待跑 `bash scripts/check-all`。
+
+### 明确不做
+
+- **不加勾选项**（同前几轮：标记的价值全在「模型自主判断」，要求用户先勾选 = 把功能取消）；
+- **不给 `image` 内层结构**（贴边大图 / 标题 / 元信息）—— 那需要产物侧 DOM 结构变化；
+- **不做轮播卡组**（16，容器形态，非待办）；
+- 不改版本号、不打包、不发布。
+
+---
+
+## 2026-10-11 — 横向步骤条 / 竖向时间线：把「简单线性图」从图表管道挪到语义块（PROMPT_VERSION `"9"` → `"10"`）
+
+### 起因
+
+用户先提了一串「哪些图该由卡片承担」的设想，我梳理出边界清单后他给了**真实频率**这一关键输入：
+
+> 「简单的一条线横向的线性竖向的线性可以考虑使用卡片替换因为这两个出现的比较频繁」
+
+随即拍板「横竖各一个 type」，并批准实施。
+
+### 判据：Markdown 列表能保真的关系，不值得付一整条渲染链
+
+单链（一条线走到底 / 一串先后阶段）过去要付 **语义 JSON → `chart_layout` 算几何 →
+`chart_svg` → PIL 出 PNG** 一整条链，而它表达的恰恰是**列表本身就能表达**的东西。
+留在线上的都是列表表达不了的关系：**分支 / 回环 / 二维 / 多参与者时序**。
+
+故本轮：**迁移** `hchain`（横链）与 `timeline`（竖列）→ 语义块 `steps` / `timeline`；
+`tree` / `layers` 按同一判据也在迁移候选里（嵌套列表能表达），但用户点名的是这两个，
+**本轮只做这两个**，其余留待需要时再说。
+
+### 改了什么
+
+| # | 文件 | 动作 |
+|---|---|---|
+| 1 | [markdown-scan.ts](../frontend/src/lib/markdown-scan.ts) / [artifact_blocks.py](../backend/app/core/artifact_blocks.py) | 三集合各加 `steps` / `timeline`（都进 `ARTIFACT`），两侧镜像 |
+| 2 | [limo-blocks.json](../frontend/src/test/fixtures/limo-blocks.json) | `meta` 两数组 + 2 条 case（20 条） |
+| 3 | [blocks.css](../frontend/src/styles/blocks.css) | `steps` = 块内**无序列表**横排 chip + `→` 串联；`timeline` = 块内**有序列表** + 自定义 counter 圆形编号 + 竖连线（末项不画）；各配一条 `decor=off` 归零规则（`steps` 退回竖排圆点列表、`timeline` 退回默认数字编号） |
+| 4 | [prompt.py](../backend/app/generation/prompt.py) `get_markdown_block_format()` | 4 种 → 6 种；⚠️ **必须写明「用无序列表 / 用有序列表」**——形态差异就靠块内子元素类型 |
+| 5 | [prompt.py](../backend/app/generation/prompt.py) `get_chart_format()` | **删 `hchain` / `timeline` 两种引导**（九种 → 七种）+ 开头补指路语 + `diff` 段四处跟着改 + 两个示例里的 `hchain` 换成 `flowchart` |
+| 6 | [docx_export.py](../backend/app/services/docx_export.py) `_MARKER_COLORS` | +2 组配色（`steps` 蓝 / `timeline` 紫） |
+| 7 | [prompts/`__init__`.py](../backend/app/generation/prompts/__init__.py) | `PROMPT_VERSION` `"9"` → `"10"` |
+
+### ⚠️ 最容易漏的一处：两处必须同批改
+
+语义块规范是**无条件注入**的（无勾选项，这是它的设计），而图表规范**勾选后才注入**。
+若只加语义块、不删图表引导，那么**勾了「图表」的那批产物**会在同一篇 prompt 里同时收到
+「线性步骤用列表表达」与「流程/步骤 → `hchain`」两条**互斥指令** —— 模型只能违反一边，
+而产物上看不出异常。这是本轮最需要对偶修改的地方，`test_prompt.py` 已改成**反向断言**
+（`'"hchain"' not in cf`）+ 一条「来源引导段里也不能残留」（diff 段是第二个落点，短、最易被跳过）。
+
+⚠️ **`_NOT_EXPOSED` 里的 `hchain` / `timeline` 是「引导名单」不是「算子名单」**：两个算子
+**仍在** `chart_layout._LAYOUTS` 里（历史产物、插件、将来别的入口照样渲染），删的只是 prompt
+引导。测试同时钉住「引导里没有 + `_LAYOUTS` 里有」，防止有人顺手把算子也删了。
+
+### 代价（如实记录）
+
+**Word 侧 `steps` 与 `timeline` 长得一样** —— 都渲染成一个单单元格表格 + 竖排列表，只有配色
+不同。预览侧的横排靠 `display:flex` + 伪元素、时间线靠 counter + 伪元素，Word 的 XML 没有
+对应表达。想区分只能改成多单元格表格 = 让 Python 复刻预览的结构，那正是 `blocks.css` 文件头
+明确否掉的方向（模式 #54）。故**不修**，改为在 `test_export_blocks.py` 里**写成断言**钉住现状
+（哪天有人以为「Word 侧也是横的」而按此改代码，这条会先红）。HTML / PDF 侧正常。
+
+### 测试
+
+- `test_artifact_blocks.py`：用例下限 18 → 20；关键词守卫加 `steps` / `timeline`（它们与既有
+  几条**不同类** —— 那几条是降级行为，这两个是「块内列表结构原样保留」的形态判据）。
+- `test_export_blocks.py`：HTML 五种新 type 都包 `md-block`；**新增一条专门断「列表结构穿过
+  导出链」**（`steps` 出 `<ul>` 且不出 `<ol>`、`timeline` 反之）—— 那是纯 CSS 方案**唯一依赖
+  的 Markdown 层前提**，塌了的话两条 CSS 规则静默不命中，而包装断言照样绿；Word 配色守卫的
+  名单改从 `_MARKER_COLORS` 的**键**派生（`== 4` → `== len(types)`），加 type 时自动跟上。
+- `markerContent.test.tsx`：表驱动扩到五种 + **新增「块内列表类型」结构守卫**（反面对照放在
+  块内 `querySelector`，只断「有 `<ul>`」抓不到「两者都渲染成同一个标签」）。
+- `test_prompt.py`：`_exposed` 改成从 `_NOT_EXPOSED` 排除集派生（7 种）、「九种结构」→
+  「七种结构」、两条反向断言用**带引号形态**（裸词 `timeline` 会被指路语命中而恒红 ——
+  这是「判据得自证有区分力」的一个实例）。
+- 门禁：`bash scripts/check-all frontend` 3 通过、`check-all backend` 1 通过。
+
+### 明确不做
+
+- **不加勾选项**（与既有纪律一致，`test_block_prompt.py::test_没有勾选项` 钉着）；
+- **不迁 `tree` / `layers`** —— 同一判据下它们在候选里，但用户点名的只有横竖两种；
+- **不删算子**（见上）；
+- 不改版本号、不打包、不发布。
+
+---
+
+## 2026-10-11 — 语义块一次扩到四种（产物 `alert`/`recommend`/`metric` + 对话 `info`/`digest`）（PROMPT_VERSION `"8"` → `"9"`）
+
+### 起因
+
+上一轮落地的 `limo-block` 表达手段各只有一两种（产物侧 `key-takeaway`、对话侧 `card-group` /
+`follow-up`）——模型想标一个风险提示、给一条明确建议、列几个关键数字，都只能写成普通段落，
+**读者看不出这几段与别段性质不同**。用户看过 [design/cards.md](../design/cards.md) 附录 A 的
+分桶后拍板：**「可以把 a 选项的线全做了」**——把「🆕 真正全新」里**适合由模型产出**的 5 种一次做掉。
+
+### 落点按真实场景分（用户拍板）
+
+| type | 中文 | 侧 | 为什么落这侧 |
+|---|---|---|---|
+| `alert` | 提醒 / 异常 | **产物** | 唯一有**现成内容在等它**的形态——扫描件 OCR 失败占位、合成管道 8 态降级标注，这些失败说明现在就是普通段落；其两条硬约束与项目「失败显式化」逐字同源 |
+| `recommend` | 推荐 | **产物** | 与 `alert` 同族（结论型），产物是「读完给结论」的场景 |
+| `metric` | 指标 | **产物** | Excel 分析 / 数据类材料的数字落在这里 |
+| `info` | 信息卡 | **对话** | 「XX 是什么」是对话高频问题；对话正文最缺组织手段 |
+| `digest` | 摘要卡 | **对话** | 长回答开头的整体印象 |
+
+### 核心设计约束（本轮全部依赖它）
+
+> **产物侧的形态差异只允许用 CSS 表达，一行业务 DOM 结构都不许变。**
+
+依据是 `blocks.css` 文件头那条既有纪律：**它是单一真相源，导出侧 `_load_block_css()` 读的就是
+这一份**，导出 HTML 由 **Python** 的 `render_blocks_html` 生成。产物侧一旦出现「某个 type 的 DOM
+结构与别的不一样」，Python 就得复刻 React 的结构 —— 那是同一份判据的第二份实现（模式 #54），
+且「预览所见 = 导出所得」会退化成靠人工对齐维持。
+
+**收益是连锁的**：`MarkerContent.tsx` 零改动、`render_blocks_html` 零改动、`blocks.css` 只加
+选择器、导出与预览**天然一致**。**代价如实记录**：`metric` **不做并排**——并排需要网格容器，
+那就是结构变化；改为纵向的「`### 名称` 收成小标签 + 紧随其后的段落放大成数字」，靠 `h3 + p`
+相邻兄弟选择器实现，纯 CSS。
+
+⚠️ **`alert` 用 `--tk-warning` 而不是 `--tk-error`**，这是刻意的：图鉴自己写了「**不应该只用
+颜色制造紧张感**，而应当明确告诉用户出了什么问题 / 有什么影响 / 下一步如何处理」。既然严重度
+该由**文字**承担，颜色就不该替它分级 —— 用覆盖面更广的 warning（风险 / 重要前提 / 内容不完整 /
+异常都在射程内），避免把一个「重要条件」误渲染成「失败了」。
+
+### 改了什么
+
+| # | 文件 | 动作 |
+|---|---|---|
+| 1 | [markdown-scan.ts](../frontend/src/lib/markdown-scan.ts) / [artifact_blocks.py](../backend/app/core/artifact_blocks.py) | 三集合各加 5 个 type（`ARTIFACT` +3 / `CHAT` +2），两侧镜像 |
+| 2 | [limo-blocks.json](../frontend/src/test/fixtures/limo-blocks.json) | `meta` 三数组 + 5 条新 case（18 条） |
+| 3 | [blocks.css](../frontend/src/styles/blocks.css) | 3 种本体形态 + `decor=off` 归零规则（`metric` **只收容器、字号保留**—— 开关语义是「收起装饰性容器」，字号是内容呈现；强行退回要复刻 vendor 的 `h3` 字号 = 第二份真相源） |
+| 4 | [chat-blocks.css](../frontend/src/styles/chat-blocks.css) / [ChatMarkerContent.tsx](../frontend/src/components/ai-chat/ChatMarkerContent.tsx) | `ChatInfoCard` / `ChatDigestCard`（lucide 图标，对话侧**不受**纯 CSS 约束——`chat-blocks.css` 明确不进导出） |
+| 5 | [prompt.py](../backend/app/generation/prompt.py) `get_markdown_block_format()` | 1 种 → 4 种，只给触发判据、不堆劝退话术 |
+| 6 | [formats.md](../backend/app/agent/prompts/formats.md) | 2 种 → 4 种 + **新增总量闸门「四种块合计不超过两块」** |
+| 7 | [export.py](../backend/app/routers/export.py) `_CARD_TOKENS_CSS` | 三态各补 `--tk-success` / `--tk-warning`（**实施前发现的必做项**：这两个令牌前端有、导出页没有，新 CSS 一引用就会让成对常量守卫红） |
+| 8 | [docx_export.py](../backend/app/services/docx_export.py) | 新增 `_MARKER_COLORS` 表，`_render_marker_block` 按 `data-block-type` 取色 |
+| 9 | [generate.py](../backend/app/routers/generate.py) | 新增 `_block_stats()`，三个完成点记 `blocks=` / `block_types=`（产物侧此前**零统计**，对话侧早有） |
+| 10 | [prompts/`__init__`.py](../backend/app/generation/prompts/__init__.py) | `PROMPT_VERSION` `"8"` → `"9"` |
+
+**零改动（由核心约束保证，逐处确认过）**：`MarkerContent.tsx`、`artifact_blocks.py` 的
+`parse_blocks` / `strip_blocks` / `render_blocks_html`、`markdown-markers.ts`、`export.py`
+的全部导出分支、`chat.py` 的 SSE 协议、对话导出路径（**用户拍板「维持现状」**：`.md` 剥离、
+`.json` 保留，故本轮**零导出工作**）。
+
+### 测试
+
+- **跨语言守卫**：`test_fixture_覆盖了两个新类型` 重写为**集合驱动**的
+  `test_每个白名单类型都至少有一条解析用例`（判据从 `segments[].type` 派生），前端
+  `markdownMarkers.test.ts` 加对称一条。⚠️ 人肉维护的「新类型名单」是同一件事实的第二份
+  副本（模式 #54），加 type 忘了改它会让守卫**绿着失去意义**。
+- `test_block_prompt.py` 加**两条集合驱动**的「规范列出白名单里每一个类型」（产物 / 对话各一，
+  这是「新类型漏写规范 → 模型永远不知道有这个 type」的直接防线）+ 对话侧总量闸门断言；
+  `test_两侧规范不串味` 改由 `ARTIFACT_BLOCK_TYPES` / `CHAT_BLOCK_TYPES` 派生。
+- `test_export_blocks.py`：HTML 三种新 type 都包 `md-block`；Word 侧**从产物读回** (底纹, 竖线)
+  断**四种两两不同**（bool 式的「import 私有表比对」证明不了「渲染时真查了表」——漏查表的
+  症状正是全走兜底色，而表本身完全正确）。
+- `markerPrefs.test.ts` 新增「**每个有本体形态的 type 都有对应的 `decor=off` 归零规则**」
+  （判据从 CSS 自身派生）——漏写某一种的症状是「开关对那个 type 无效」，其余 type 都乖乖
+  变干净，零报错。
+- **三组对照实验全部确认有区分力**：① 给白名单加一个 fixture 里没有的 type → 覆盖守卫红；
+  ② 把 `alert` 的 Word 配色改成与 `key-takeaway` 同值 → 三色守卫红；③ 把 `recommend` 从
+  `decor=off` 组合选择器里摘掉 → CSS 守卫**精准单红**。
+
+### 已知的未知（不靠测试解决，靠实机）
+
+5 种新 type 一次性铺开，**prompt 遵循率与滥用率都没有先例数据**。看两头的方向已经写进
+`docs/prompts-inventory.md`：**该用的时候用了吗**（判据够不够清楚）、**不该用的时候用了吗**
+（闸门够不够紧）。调优方向一律是**改判据**，不是加劝退话术（上一轮刚删掉那批）。
+产物侧这轮补的 `blocks=` 统计就是为这个观察服务的——**不靠版本号判断**。
+
+---
+
 ## 2026-10-11 — 卡片取向调整：从「稀有的强调」改为「常规呈现手段」（PROMPT_VERSION `"7"` → `"8"`）
 
 ### 起因
@@ -2893,7 +3360,7 @@ plan 原方案把 `DOC_DIRECT_TIMEOUT` 定位为「`prepare()` 内的直传调�
 
 起因：能力位 `document` 当时只标了 `qwen3.8-max` 一个，用户提出「其他模型的文档能力我们可能也需要去官网文档调查然后再进行针对性的修改」。**不实测**（成本高），只查官方文档。
 
-#### 结论表（唯一沉淀点，模块文档 [backend/app/services/doc_understand.py](backend/app/services/doc_understand.py) 有同一份）
+#### 结论表（唯一沉淀点，模块文档 [backend/app/services/doc_understand.py](../backend/app/services/doc_understand.py) 有同一份）
 
 | 渠道 | 官方结论 | 标注 |
 |---|---|---|
@@ -4455,8 +4922,8 @@ whisper 已移除且不插件化；pymupdf4llm 作为 AGPL 引擎走插件通道
 
 **1. faster-whisper 彻底移出内置** — 体积大（模型 464MB~3GB）、CPU 推理慢、GPU 又依赖笨重的 CUDA/cuDNN/cuBLAS 运行时，不适合随安装包分发。移除后默认 ASR 只剩 **bcut-asr**（免费云，无需 Key）+ **dashscope-asr**（需 Key）。
 
-- 抽取 `TranscriptResult` / `TranscriptSegment` 到独立 [transcript.py](backend/app/engines/transcript.py)（原定义在 asr.py 里，删除后 bcut/asr_cloud 的 import 不破）
-- 删除 `FasterWhisperEngine` 注册 + [asr.py](backend/app/engines/asr.py) 整文件
+- 抽取 `TranscriptResult` / `TranscriptSegment` 到独立 [transcript.py](../backend/app/engines/transcript.py)（原定义在 asr.py 里，删除后 bcut/asr_cloud 的 import 不破）
+- 删除 `FasterWhisperEngine` 注册 + [asr.py](../backend/app/engines/asr.py) 整文件
 - 打包清理：spec 移除 `faster_whisper`/`ctranslate2`/`av`/`tokenizers`（保留 `onnxruntime`——magika/rapidocr 依赖）、pyproject 移除 `faster-whisper` 依赖
 - **用户 config.yaml 残留迁移**（防启动后设置页仍有 whisper 条目、绑定后无引擎报错）：`init_engines` 开头清理 `engine_providers` 的 faster-whisper 整组 + `engine_models` 相关条目 + 残留 `engine_auto_fallback` 键，变更计入 save_config 判定落盘；`config.py` 的 `_sync_builtin_models` 废弃 provider 集合加入 faster-whisper（双保险）
 - 示例文档 ASR 表格 / QA 同步更新（本地转写引擎标注「需自行安装」）
@@ -4496,9 +4963,9 @@ whisper 已移除且不插件化；pymupdf4llm 作为 AGPL 引擎走插件通道
   - 内容更新 → 即使被删除也重建（**兼作更新说明**，让用户知道新内容）
   - 内容无更新 + 已删除 → 尊重删除不打扰
   - 重新安装（数据目录清空）→ 自然重建
-- 实现：[sample_doc.py](backend/app/core/sample_doc.py) + [main.py](backend/main.py) startup 挂载（置于 init_engines 之后）+ [LiMoBackend.spec](backend/LiMoBackend.spec) datas
+- 实现：[sample_doc.py](../backend/app/core/sample_doc.py) + [main.py](../backend/main.py) startup 挂载（置于 init_engines 之后）+ [LiMoBackend.spec](../backend/LiMoBackend.spec) datas
 
-**2. 修复全新安装启动崩溃（严重）** — `DEFAULT_CONFIG` 的 `engine_bindings` 中 `doc`/`doc:epub` 为**空 list**，[engines/__init__.py](backend/app/engines/__init__.py) 清理失效绑定循环 `emap.get([])` 抛 `TypeError: unhashable type: 'list'` → 全新安装（无 `~/.limo/config.yaml`）启动必崩；打包版能跑只因用户 config 绑定已非空。修复：空 list 视为无效绑定，自动回填该子场景默认引擎（doc→pypdfium2、doc:epub→ebooklib 等）。
+**2. 修复全新安装启动崩溃（严重）** — `DEFAULT_CONFIG` 的 `engine_bindings` 中 `doc`/`doc:epub` 为**空 list**，[engines/__init__.py](../backend/app/engines/__init__.py) 清理失效绑定循环 `emap.get([])` 抛 `TypeError: unhashable type: 'list'` → 全新安装（无 `~/.limo/config.yaml`）启动必崩；打包版能跑只因用户 config 绑定已非空。修复：空 list 视为无效绑定，自动回填该子场景默认引擎（doc→pypdfium2、doc:epub→ebooklib 等）。
 
 ### 影响范围
 
@@ -4520,10 +4987,10 @@ whisper 已移除且不插件化；pymupdf4llm 作为 AGPL 引擎走插件通道
 
 **2. 文档图片三开关（保留/OCR/AI分析）正交化** — 原前端把三个开关做成嵌套依赖，多组合不可达：
 
-- 前端 [GenerateOptions.tsx](frontend/src/components/gen-panel/GenerateOptions.tsx)：`AI 分析图片` 曾依赖 `formatImages && !ocrEnabled`（OCR 勾上后 AI 分析选项消失，人为互斥）；`OCR`/`AI 分析` 都依赖 `formatImages`。改为三个平铺独立开关，任意组合
-- 前端 [GenPanel.tsx](frontend/src/components/gen-panel/GenPanel.tsx)：`image_analyze`/`image_optimize` 曾被 `formatImages` 门控（不勾保留图片则 AI 分析静默失效），改为独立传递
-- 后端 [generator.py](backend/app/generation/generator.py)：非流式端点两处 OCR 调用漏传 `doc_dir` → 新格式 `assets/img_NNNN.png` 定位到错误路径 `{store_root}/files/assets/...`，OCR 全部 `[图片缺失]`。流式端点原本正确，前端走流式所以未暴露
-- 后端 [ocr_preprocessor.py](backend/app/generation/ocr_preprocessor.py)：正则只匹配 `img_NNNN`，docling 引擎产出 `fig_NNNN` 被跳过。放宽为 `(?:img|fig)_\d{4}`（捕获组结构保持 3 元素解包不变）
+- 前端 [GenerateOptions.tsx](../frontend/src/components/gen-panel/GenerateOptions.tsx)：`AI 分析图片` 曾依赖 `formatImages && !ocrEnabled`（OCR 勾上后 AI 分析选项消失，人为互斥）；`OCR`/`AI 分析` 都依赖 `formatImages`。改为三个平铺独立开关，任意组合
+- 前端 [GenPanel.tsx](../frontend/src/components/gen-panel/GenPanel.tsx)：`image_analyze`/`image_optimize` 曾被 `formatImages` 门控（不勾保留图片则 AI 分析静默失效），改为独立传递
+- 后端 [generator.py](../backend/app/generation/generator.py)：非流式端点两处 OCR 调用漏传 `doc_dir` → 新格式 `assets/img_NNNN.png` 定位到错误路径 `{store_root}/files/assets/...`，OCR 全部 `[图片缺失]`。流式端点原本正确，前端走流式所以未暴露
+- 后端 [ocr_preprocessor.py](../backend/app/generation/ocr_preprocessor.py)：正则只匹配 `img_NNNN`，docling 引擎产出 `fig_NNNN` 被跳过。放宽为 `(?:img|fig)_\d{4}`（捕获组结构保持 3 元素解包不变）
 
 **3. 笔记 prompt 加 Markdown 排版引导** — 5 个笔记变体（视频/网页/文本/图片/文档）统一加一句：「充分利用 Markdown 排版：不要只用列表平铺内容。按内容形态选样式——对比/条目用表格、论断/名言用引用块、原始文本用代码块、章节用分割线、重点加粗」。（通用版，按内容形态给判据而非列举式）
 

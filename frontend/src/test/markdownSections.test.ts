@@ -45,7 +45,12 @@ describe('splitByH2 — 跨语言共享 fixture', () => {
 
   for (const c of FIXTURE.cases) {
     it(c.name, () => {
-      expect(splitByH2(c.md)).toEqual({ preamble: c.preamble, sections: c.sections })
+      // ⚠️ `card` 恒为 false —— 本 fixture 是**纯切分**场景（全部用例都不带标记），
+      // 「H2 与标记的交叉」住在 `limo-blocks.json::h2Cases`（那份的两侧消费者是
+      // markdownMarkers.test.ts / test_artifact_blocks.py）。同一批形状在两个 fixture
+      // 里各写一遍，就是让它们有机会漂移 —— 这里只做这一条推导：没有标记就没有卡。
+      const sections = c.sections.map(s => ({ ...s, card: false }))
+      expect(splitByH2(c.md)).toEqual({ preamble: c.preamble, sections })
     })
   }
 })
@@ -77,11 +82,14 @@ describe('splitByH2 — 结构不变量', () => {
 describe('splitByHeading — 层级是参数（对话卡片组按 `###` 切卡）', () => {
   it('level=3：每个 `###` 一节，preamble 是首个 `###` 之前的内容', () => {
     const md = '引言\n\n### 甲\n内容一\n\n### 乙\n内容二\n'
+    // ⚠️ `card` 字段**不区分层级**：`splitByHeading(md, 3)` 也照样返回它（这里恒 false）。
+    // 判据不按 level 加分支是刻意的 —— 节修饰符的语义是「这一节值得单独成卡」，
+    // 与它用几级标题开头无关；而分层级会让这条判据在 H3 上静默失效（漏改零报错）。
     expect(splitByHeading(md, 3)).toEqual({
       preamble: '引言',
       sections: [
-        { heading: '### 甲', body: '内容一' },
-        { heading: '### 乙', body: '内容二' },
+        { heading: '### 甲', body: '内容一', card: false },
+        { heading: '### 乙', body: '内容二', card: false },
       ],
     })
   })

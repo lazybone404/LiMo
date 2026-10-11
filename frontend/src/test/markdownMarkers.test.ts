@@ -19,7 +19,15 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { hasBlocks, parseMarkers, stripMarkers } from '../lib/markdown-markers'
-import { ARTIFACT_BLOCK_TYPES, CHAT_BLOCK_TYPES, KNOWN_BLOCK_TYPES, PROTOCOL_VERSION } from '../lib/markdown-scan'
+import {
+  ARTIFACT_BLOCK_TYPES,
+  CHAT_BLOCK_TYPES,
+  KNOWN_BLOCK_TYPES,
+  PROTOCOL_VERSION,
+  SECTION_CARD_TYPE,
+  isSectionCard,
+  matchBlockOpen,
+} from '../lib/markdown-scan'
 import { splitByH2 } from '../lib/markdown-sections'
 
 /**
@@ -28,14 +36,25 @@ import { splitByH2 } from '../lib/markdown-sections'
  */
 const FIXTURE_PATH = resolve(process.cwd(), 'src/test/fixtures/limo-blocks.json')
 const FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf-8')) as {
-  meta: { protocolVersion: string; knownTypes: string[]; artifactTypes: string[]; chatTypes: string[] }
+  meta: {
+    protocolVersion: string
+    knownTypes: string[]
+    artifactTypes: string[]
+    chatTypes: string[]
+    sectionTypes: string[]
+  }
   cases: {
     name: string
     md: string
     segments: { kind: string; type?: string; content: string }[]
     stripped: string
   }[]
-  h2Cases: { name: string; md: string; preamble: string; sections: { heading: string; body: string }[] }[]
+  h2Cases: {
+    name: string
+    md: string
+    preamble: string
+    sections: { heading: string; body: string; card?: boolean }[]
+  }[]
 }
 
 describe('limo-block — 白名单与协议版本的跨语言守卫', () => {
@@ -61,11 +80,32 @@ describe('limo-block — 白名单与协议版本的跨语言守卫', () => {
   it('PROTOCOL_VERSION 与 fixture 一致', () => {
     expect(PROTOCOL_VERSION).toBe(FIXTURE.meta.protocolVersion)
   })
+
+  it('节级修饰符 card 与 fixture 的 sectionTypes 一致 —— 且刻意**不在** knownTypes 里', () => {
+    // ⚠️ 两个方向都要断，各自对应一种静默失效：
+    // · 少了前半条 → 前后端 `card` 拼写漂移（模型写的是 `card`，只有一侧认得它）。
+    // · 少了后半条 → `card` 被并进 knownTypes，于是「该不该包一层强调块外壳」的判定
+    //   （`is_known_type` / 渲染侧白名单）认为它算——而 card 是**节修饰符**、根本不开块。
+    //   两种判定混在一起的后果是零报错的（标记会被当成块的开标记，把标题吞掉）。
+    expect([...FIXTURE.meta.sectionTypes]).toEqual([SECTION_CARD_TYPE])
+    expect([...KNOWN_BLOCK_TYPES]).not.toContain(SECTION_CARD_TYPE)
+  })
+
+  it('白名单里每个类型都至少有一条解析用例（集合驱动，不是人肉名单）', () => {
+    // ⚠️ 与后端 `test_每个白名单类型都至少有一条解析用例` 对称。
+    // 判据从 segments[].type 派生而非手写一份「新类型名单」—— 手写名单是同一件事实的
+    // 第二份副本（模式 #54），下次加 type 忘了改它，这条守卫就绿着失去意义。
+    const covered = new Set(
+      FIXTURE.cases.flatMap(c => c.segments.map(s => s.type).filter(Boolean) as string[]),
+    )
+    const missing = [...KNOWN_BLOCK_TYPES].filter(t => !covered.has(t))
+    expect(missing, `白名单里这些类型没有任何 fixture 用例：${missing.join(', ')}`).toEqual([])
+  })
 })
 
 describe('parseMarkers — 跨语言共享 fixture', () => {
   it('fixture 至少覆盖到那几类关键行为（防止用例被删空后整组测试静默变成空跑）', () => {
-    expect(FIXTURE.cases.length).toBeGreaterThanOrEqual(11)
+    expect(FIXTURE.cases.length).toBeGreaterThanOrEqual(20)
     const names = FIXTURE.cases.map(c => c.name).join('\n')
     expect(names).toContain('无标记')     // E
     expect(names).toContain('未闭合')     // B
@@ -75,6 +115,11 @@ describe('parseMarkers — 跨语言共享 fixture', () => {
     expect(names).toContain('CRLF')
     expect(names).toContain('卡片组')     // 对话侧新类型
     expect(names).toContain('追问')
+    // ⚠️ 后两个与上面几个**不同类**：上面是降级行为判据，这两个是「块内列表结构原样
+    // 保留」的**形态判据** —— 预览与导出两侧都靠块内是 `<ul>` 还是 `<ol>` 区分
+    // `steps` / `timeline`（见 styles/blocks.css），故结构必须原样穿过解析层。
+    expect(names).toContain('steps')
+    expect(names).toContain('timeline')
   })
 
   for (const c of FIXTURE.cases) {
@@ -135,7 +180,41 @@ describe('parseMarkers — 结构不变量', () => {
 describe('splitByH2 × 标记块 —— 块内的 `##` 不是文档结构', () => {
   for (const c of FIXTURE.h2Cases) {
     it(c.name, () => {
-      expect(splitByH2(c.md)).toEqual({ preamble: c.preamble, sections: c.sections })
+      // ⚠️ `card` 用 `?? false` 归一：`h2Cases` 里带 card 的用例就比 card，不带的
+      // 默认 false —— 而不是让每条用例都手写一遍 `"card": false`（那是把「无标记
+      // ⇒ 不成卡」这条推导抄 6 遍，抄错了反而是新缺陷）。
+      const sections = c.sections.map(s => ({
+        heading: s.heading,
+        body: s.body,
+        card: s.card ?? false,
+      }))
+      expect(splitByH2(c.md)).toEqual({ preamble: c.preamble, sections })
     })
   }
+
+  it('对照实验：两者不是同一个函数的别名 —— card 与其余 type 的判据恰好相反', () => {
+    // ⚠️ 这条是上面那些用例**自证有区分力**的方式。若把 `isSectionCard` 实现成
+    // `matchBlockOpen(line) !== null`（看起来等价、也确实能通过不少断言），card 就会
+    // 开块 → 块内状态 → 标题被跳过。这里正反两面都断，别名实现在第一条就红。
+    const card = '<!-- limo-block:v1 type="card" -->'
+    const alert = '<!-- limo-block:v1 type="alert" -->'
+    expect(matchBlockOpen(card)).toBeNull()
+    expect(isSectionCard(card)).toBe(true)
+    expect(matchBlockOpen(alert)).toEqual({ type: 'alert' })
+    expect(isSectionCard(alert)).toBe(false)
+  })
+
+  it('card 写在标题【之前】不吞标题 —— 宽容在降级侧，结构与内容一字不少', () => {
+    // ⚠️ 本轮最重要的一条不变量。其余九种 type 都是包裹式写法，模型把 card 写成
+    // `<!-- card -->\n## 标题` 是它的**本能**。若把 card 当块处理，标题扫描会进入
+    // 块内状态、把 `## 标题` 整个跳过 —— 这一节（标题 + 正文）从文档结构里消失，
+    // 而且零报错、零残留（简直像模型没写这段）。
+    const { preamble, sections } = splitByH2('<!-- limo-block:v1 type="card" -->\n## 甲\n内容一\n')
+    expect(sections).toHaveLength(1)
+    expect(sections[0].heading).toBe('## 甲')
+    expect(sections[0].card).toBe(false)
+    // 标记行落在前言里（它没有被当成块的开始）—— 渲染层的 `parseMarkers` 会把它剥掉，
+    // 切分器这一层不去管它（两层的分工：切分看结构，渲染看显示）。
+    expect(preamble).toContain('limo-block')
+  })
 })

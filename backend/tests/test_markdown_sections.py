@@ -45,7 +45,14 @@ def test_用例覆盖到那几类关键行为():
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
 def test_与前端同形(case):
     """逐字段比对 —— 断言的是「前端那份实现会得到什么」，不是「后端自己觉得对」。"""
-    expected = (case["preamble"], [(s["heading"], s["body"]) for s in case["sections"]])
+    # ⚠️ `card` 恒为 False —— 本 fixture 是**纯切分**场景（全部用例都不带标记），
+    # 「H2 与标记的交叉」住在 `limo-blocks.json::h2Cases`（那份的两侧消费者是
+    # test_artifact_blocks.py / markdownMarkers.test.ts）。同一批形状在两个 fixture 里
+    # 各写一遍，就是让它们有机会漂移 —— 这里只做这一条推导：没有标记就没有卡。
+    expected = (
+        case["preamble"],
+        [(s["heading"], s["body"], False) for s in case["sections"]],
+    )
     assert split_by_h2(case["md"]) == expected
 
 
@@ -76,7 +83,7 @@ def test_拼回去内容零增减():
     md = "## 甲\n内容一\n\n## 乙\n内容二\n\n## 丙\n内容三\n"
     preamble, sections = split_by_h2(md)
     joined = "\n\n".join(
-        [x for x in [preamble, *(f"{h}\n{b}" for h, b in sections)] if x != ""]
+        [x for x in [preamble, *(f"{h}\n{b}" for h, b, _card in sections)] if x != ""]
     )
     for chunk in ("## 甲", "内容一", "## 乙", "内容二", "## 丙", "内容三"):
         assert chunk in joined

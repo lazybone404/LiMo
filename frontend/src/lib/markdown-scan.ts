@@ -33,16 +33,54 @@ export const PROTOCOL_VERSION = 'v1'
 /**
  * **产物侧**（预览 / 导出）真写了渲染分支的块类型。
  *
- * ⚠️ **第一版刻意只有 1 个** —— 加一个类型的成本不在代码，而在 prompt 每轮都要重新
- * 教育模型（且类型越多、模型越容易「到处都用」）。先看这一个的真实遵循率与滥用率。
+ * ⚠️ **这六种全部是「纯 CSS 形态」**（`styles/blocks.css`）—— 产物侧**刻意不做 DOM
+ * 结构分派**。理由是那份 CSS 同时是导出侧读的**单一真相源**，而导出的 HTML 由 Python
+ * 的 `render_blocks_html` 生成：一旦某个 type 的结构与别的不一样，Python 就得复刻一遍
+ * React 的结构（模式 #54），「预览所见 = 导出所得」也变成靠人工对齐维持。
+ * 需要结构差异的形态（如指标卡并排）因此**不做**，退化为纯 CSS 能表达的样子。
+ * 详见 `styles/blocks.css` 文件头。
+ *
+ * ⚠️ `steps` / `timeline`（2026-10-11 补）**替代图表管道里的简单线性图** ——
+ * 横/竖两种单链在 `fig` 里要付一整条渲染链（语义 JSON → `chart_layout` → PIL → PNG），
+ * 而它们表达的关系用 Markdown 列表就能保真：`steps` = 块内无序列表（横排 chip），
+ * `timeline` = 块内有序列表（圆编号 + 竖连线）。`get_chart_format` 已删掉 hchain /
+ * timeline 两种布局的引导（九种 → 七种），留下的都是列表表达不了的关系
+ * （分支 / 环 / 二维 / 时序）。
+ *
+ * ⚠️ `table` / `code` / `image`（2026-10-11 补）与上面六个**性质不同族**：
+ * 前六个标记的是**普通段落**——「这一段文字是什么性质」（结论 / 风险 / 建议 / 数字 /
+ * 步骤 / 阶段），块内原本就是散文。这三个标记的是**富内容**——表格、代码块、图片
+ * 本来就与正文不同质，加标记的**全部作用**是外面多一层壳，块内一个字节都不动。
+ * 故它们在 `blocks.css` 里**不换 `display`、不换子元素**，只做容器装饰。
+ * ⚠️ 这一族**刻意不是「把表格/代码改写成卡片形状」**——图鉴对此有明确判词
+ * （「不要为了统一视觉而把代码改成普通文字卡片，否则会影响可读性和可用性」）。
+ * 保住等宽、缩进、复制、横向滚动，是这三个 type 能成立的前提。
  */
-export const ARTIFACT_BLOCK_TYPES: ReadonlySet<string> = new Set(['key-takeaway'])
+export const ARTIFACT_BLOCK_TYPES: ReadonlySet<string> = new Set([
+  'key-takeaway',
+  'alert',
+  'recommend',
+  'metric',
+  'steps',
+  'timeline',
+  'table',
+  'code',
+  'image',
+])
 
 /**
  * **对话侧**（`ai-chat/ChatMarkerContent.tsx`）真写了渲染分支的块类型。
  * 与 `ARTIFACT_BLOCK_TYPES` **刻意不相交** —— 产物 prompt 与对话 prompt 各教各的。
+ *
+ * ⚠️ 这侧**不受**上面那条「只做 CSS 形态」的约束：`chat-blocks.css` 明说不进导出
+ * （对话只有 md / json 两条导出路径），故可以自由用 React 结构与图标。
  */
-export const CHAT_BLOCK_TYPES: ReadonlySet<string> = new Set(['card-group', 'follow-up'])
+export const CHAT_BLOCK_TYPES: ReadonlySet<string> = new Set([
+  'card-group',
+  'follow-up',
+  'info',
+  'digest',
+])
 
 /**
  * v1 协议定义的**全部**块类型 = 上两者之并。
@@ -61,6 +99,26 @@ export const KNOWN_BLOCK_TYPES: ReadonlySet<string> = new Set([
   ...ARTIFACT_BLOCK_TYPES,
   ...CHAT_BLOCK_TYPES,
 ])
+
+/**
+ * **节级修饰符** `card` —— 唯一的「不是块」的 type（2026-10-11）。
+ *
+ * ⚠️ 它与上面两族 type 的区别是**粒度**：那两族标记的是**块**（一段内容），`card`
+ * 标记的是**节**（一个 `##` 标题及其全部后续内容，直到下一个同级标题）。语义是
+ * **「这一节值得单独成一张卡片」**，故标记写在标题行的**下面一行**。
+ *
+ * ⚠️ 为什么要有这个区分（不是洁癖）：模型很可能会把它**写在标题之前**（其余 type 都是
+ * 包裹式，写成 `<!-- card -->\n## 标题` 是它的本能）。若当成块，`scanHeadingLines`
+ * 会进入块内状态、把 `## 标题` 整个跳过 —— 这一节从文档结构里消失，切分器连"节"都
+ * 看不到。当作**节修饰符**（`matchBlockOpen` 返回 `null`，标记行对标题扫描完全透明）
+ * 时，两种写法都退化成同一件事：**该节不成卡，但结构与内容一字不少**。
+ *
+ * ⚠️ 标记行仍被 `MARKER_LINE_RE` 剥掉（零残留）—— 渲染时它照旧不会出现在正文里，
+ * 与「解析失败的标记不该出现在读者眼前」这条既有判据同源。
+ *
+ * ⚠️ 与后端 `artifact_blocks.py::SECTION_CARD_TYPE` 同源。
+ */
+export const SECTION_CARD_TYPE = 'card'
 
 /**
  * 开标记：`<!-- limo-block:vN type="xxx" -->`，独占一行。
@@ -86,12 +144,28 @@ export const BLOCK_CLOSE_RE = /^[ \t]*<!--[ \t]*\/limo-block[ \t]*-->[ \t]*$/
 export const MARKER_LINE_RE = /^[ \t]*<!--[ \t]*\/?limo-block.*-->[ \t]*$/
 
 /**
- * 匹配开标记；**协议版本不符时返回 `null`**（该行按「未知」剥掉，内容不吞）。
+ * 匹配**块**开标记；**协议版本不符、或该 type 是节修饰符时返回 `null`**
+ * （协议不符的行按「未知」剥掉、内容不吞；节修饰符则根本不开块 —— 见 `SECTION_CARD_TYPE`）。
  * ⚠️ 与后端 `artifact_blocks.py::match_open` 同源。
  */
 export function matchBlockOpen(line: string): { type: string } | null {
   const m = BLOCK_OPEN_RE.exec(line)
-  return m && m[1] === PROTOCOL_VERSION ? { type: m[2] } : null
+  if (!m || m[1] !== PROTOCOL_VERSION || m[2] === SECTION_CARD_TYPE) return null
+  return { type: m[2] }
+}
+
+/**
+ * 该行是不是「把这一节标成卡片」的**节修饰符**（`type="card"` 的开标记）。
+ *
+ * ⚠️ 与 `matchBlockOpen` **刻意分开**：那个回答「这里是不是块的开头」（节修饰符不是），
+ * 这个回答「这一节要不要成卡」（只有切分器问）。合成一个函数会让
+ * 「card 不开块」与「card 标记了节」两条互不相干的判据绑在一起。
+ * ⚠️ 认**当前协议版本**：将来 `v2` 改语法时，`v1` 的 card 标记按未知行剥掉（零残留），
+ * 与 `matchBlockOpen` 的版本纪律一致。
+ */
+export function isSectionCard(line: string): boolean {
+  const m = BLOCK_OPEN_RE.exec(line)
+  return m !== null && m[1] === PROTOCOL_VERSION && m[2] === SECTION_CARD_TYPE
 }
 
 /** 该行是否闭合标记块 */
@@ -175,8 +249,8 @@ export function* scanHeadingLines(
     const text = raw.endsWith('\r') ? raw.slice(0, -1) : raw
     if (FENCE_TOGGLE_RE.test(text)) { inFence = !inFence; continue }
     if (inFence) continue
-    // ⚠️ **标记块内的 `##` 不是文档结构** —— 它属于「重点块」内部。在这里切它会切出
-    // 一张内容是半截强调块的卡（TOC 还会多一个点了没反应的幽灵项）。
+    // ⚠️ **标记块内的 `##` 不是文档结构** —— 它属于「内容块」内部（强调块 / 内容卡片
+    // 都算）。在这里切它会切出一张内容是半截块的卡（TOC 还会多一个点了没反应的幽灵项）。
     // 与后端 `markdown_sections.py::iter_headings` 同构。
     if (inBlock) {
       if (isBlockClose(text)) inBlock = false

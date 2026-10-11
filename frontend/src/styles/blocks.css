@@ -41,6 +41,82 @@
   background: color-mix(in srgb, var(--tk-accent) 7%, var(--tk-elevated));
 }
 
+/* ── 提醒 / 异常块（alert）─────────────────────────────────────────────
+   形态与强调块同族（左边框 + 淡底），**只换语义色**。
+
+   ⚠️ **用 `--tk-warning` 而不是 `--tk-error`，这是刻意的**：严重度由**文字**承担
+   （图鉴原话：「不应该只用颜色制造紧张感，而应当明确告诉用户出了什么问题、有什么
+   影响、下一步如何处理」）。既然颜色本就不该替严重度分级，就用覆盖面更广的 warning
+   ——「风险 / 重要前提 / 内容不完整 / 异常」都在它的射程内，避免把一个「重要条件」
+   误渲染成「失败了」。 */
+.md-block[data-block-type="alert"] {
+  margin: 16px 0;
+  padding: 12px 18px;
+  border-left: 3px solid var(--tk-warning);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--tk-warning) 7%, var(--tk-elevated));
+}
+
+/* ── 推荐块（recommend）────────────────────────────────────────────────
+   与 `alert` 同族、同款手法，绿色。模型侧的三段（推荐什么 / 为什么 / 主要限制）
+   都写在块内正文里，CSS 这边**不做结构分派**（理由同下）。 */
+.md-block[data-block-type="recommend"] {
+  margin: 16px 0;
+  padding: 12px 18px;
+  border-left: 3px solid var(--tk-success);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--tk-success) 7%, var(--tk-elevated));
+}
+
+/* ── 指标块（metric）───────────────────────────────────────────────────
+   形态 = 浅色小面板 + 「`### 名称` 收成小标签」+「紧随其后的段落放大成数字」。
+
+   ⚠️ **刻意不做并排**：并排需要网格容器，那是**结构**变化，而本文件是导出侧读的
+   单一真相源 —— 结构一变，Python 的 `render_blocks_html` 就得复刻一遍 React 的
+   结构（模式 #54），「预览所见 = 导出所得」随即变成靠人工对齐维持。这条约束直接
+   来自文件头那条纪律，代价是这里只能纵向排列。
+   ⚠️ 放大靠 `h3 + p` **相邻兄弟选择器**，故模型必须按约定写（`### 名称` 后紧跟数字）
+   —— 不按约定写就**自然退化成普通内容**（h3 是普通小标题、p 是普通段落），零残留。 */
+.md-block[data-block-type="metric"] {
+  margin: 16px 0;
+  padding: 12px 18px;
+  /* ⚠️ `--tk-border` 而不是 `--tk-border-light`（2026-10-11 实机修正）：light 档
+     的**对比度不足**——以默认 `warm` 基调实测，它 `#EBE7E2` 离正文底 `#F4F1EE`
+     只差 9 个灰阶，配上同样贴近正文的 `--tk-elevated`（差 6 阶），整个容器在浅色
+     主题下**等于没有**：用户看到的是「几行没有容器的大数字」。`--tk-border`
+     （`#D6D3CE`，离正文 30 阶）是 3.3 倍对比度，且与章节卡片默认方案 `gpt`
+     （`--card-border: 1px solid var(--tk-border)`）**同一套语言** —— 两者本来就
+     是嵌套关系（卡片里包面板），同强度才不会看起来像两种东西。
+     ⚠️ 暗色主题下 light 档反而够用（`--tk-surface: #161618` vs
+     `--tk-border-light: #2E2E34`），但**不为明暗各写一套**：那会变成「同一件事
+     两处描述」，而 `--tk-border` 在两侧都成立。 */
+  border: 1px solid var(--tk-border);
+  border-radius: 6px;
+  background: var(--tk-elevated);
+}
+
+.md-block[data-block-type="metric"] h3 {
+  margin: 0 0 2px;
+  font-size: 0.82em;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--tk-dimmed);
+}
+
+/* ⚠️ 只放大**紧跟在标签之后**的那一段：块内其余段落（补充说明）保持正文字号 ——
+   指标卡的全部价值就是「这个小标签对应这个数字」，放大任意段落会把它变成强调块。 */
+.md-block[data-block-type="metric"] h3 + p {
+  margin: 0 0 14px;
+  font-size: 2.2em;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--tk-success);
+}
+
+.md-block[data-block-type="metric"] > :last-child {
+  margin-bottom: 0;
+}
+
 /* ── 关掉装饰：只留内容 ────────────────────────────────────────────────
    ⚠️ **这不是「隐藏标记」**——块内的文字一个字都不少，只是没有边框与底色。
    ⚠️ `margin` 保持与默认态**同值**：这里的语义是「去掉装饰」，不是「把它变回普通
@@ -51,4 +127,257 @@
   border-left: none;
   border-radius: 0;
   background: none;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="alert"],
+[data-marker-decor="off"] .md-block[data-block-type="recommend"] {
+  margin: 16px 0;
+  padding: 0;
+  border-left: none;
+  border-radius: 0;
+  background: none;
+}
+
+/* ⚠️ `metric` 在关掉装饰时**只收容器**（边框 + 底色 + 内边距），小标签与放大数字
+   **保留**。理由：这个开关的语义是「收起装饰性**容器**」（`lib/marker-prefs.ts` 的
+   `decor`），而字号是**内容呈现**不是容器装饰。强行把字号也退回正文，就得在这里
+   复刻一遍 vendor 的 `h3` 字号值 —— 那正是「同一份判据两处实现」。 */
+[data-marker-decor="off"] .md-block[data-block-type="metric"] {
+  margin: 16px 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+}
+
+/* ── 横向步骤条（steps）────────────────────────────────────────────────
+   形态 = 块内**无序列表**横排成一串 chip，相邻之间一个箭头 —— 取代图表管道里的
+   `hchain`（横向流程链）。⚠️ **横排靠 `display: flex`，不是靠改 DOM**：`<ul><li>`
+   结构在预览（React）与导出（`markdown_render.py`）两侧本来就一致，故仍是纯 CSS。
+
+   ⚠️ 箭头走 `li:not(:last-child)::after` 并**绝对定位到 chip 右外侧**（不是放在 chip
+   内部）——`li` 自身就是有底色的小圆角块，`::after` 不脱离文档流的话会跟文字挤在同一
+   个底色里。`gap` 因此要留够箭头的宽度。
+   ⚠️ 节点多到一行放不下时 `flex-wrap` 会让它换行，换行处会有一个「行尾孤箭头」——
+   接受这个瑕疵：判据是「宁可换行也不横向溢出」，且 `get_markdown_block_format` 已
+   把 `steps` 限在「≤6 个短标签」上，长链本来就该用 `timeline`。 */
+.md-block[data-block-type="steps"] {
+  margin: 16px 0;
+}
+
+.md-block[data-block-type="steps"] ul {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 24px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.md-block[data-block-type="steps"] li {
+  position: relative;
+  padding: 4px 12px;
+  border-radius: 999px;
+  /* 底用 `--tk-hover` 而不是 accent 派生色：steps 是**结构**不是语义强调，不该
+     抢走 accent（那个留给 key-takeaway / metric 的数字）。与 chip 的既有观感一致。 */
+  background: var(--tk-hover);
+  font-size: 0.9em;
+}
+
+.md-block[data-block-type="steps"] li:not(:last-child)::after {
+  content: "→";
+  position: absolute;
+  right: -18px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--tk-dimmed);
+}
+
+/* ── 竖向时间线（timeline）─────────────────────────────────────────────
+   形态 = 块内**有序列表**，每项前面一个圆形编号、编号之间一条竖连线 —— 取代图表
+   管道里的 `timeline`（阶段/时间线）。同样靠块内子元素类型区分（`<ol>`），纯 CSS。
+
+   ⚠️ 编号用**自定义 counter**（`limo-tl`）而不是 `list-style`：要把它画成一个圆形
+   徽标就必须脱离 `::marker`（`::marker` 的可样式化属性极少，做不出圆底）。
+   故 `list-style: none` + `counter-increment` + `::before`。
+   ⚠️ 竖连线挂在 `li:not(:last-child)::after` 上、从编号下方贯穿到该项底部 ——
+   **最后一项不画线**（图鉴第 10 条的形态要求：线从编号向下，末尾不再延伸）。 */
+.md-block[data-block-type="timeline"] {
+  margin: 16px 0;
+}
+
+.md-block[data-block-type="timeline"] ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: limo-tl;
+}
+
+.md-block[data-block-type="timeline"] li {
+  position: relative;
+  counter-increment: limo-tl;
+  padding-left: 34px;
+  padding-bottom: 14px;
+}
+
+.md-block[data-block-type="timeline"] li:last-child {
+  padding-bottom: 0;
+}
+
+.md-block[data-block-type="timeline"] li::before {
+  content: counter(limo-tl);
+  position: absolute;
+  left: 0;
+  top: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  /* 浅底 + accent 文字（与 key-takeaway 的 `color-mix` 同款手法）：直接在 accent 实底
+     上压浅色文字，暗色主题下对比度会翻车 —— 而这里要的是「编号是个 accent 徽标」，
+     不是「一块 accent 色」。 */
+  background: color-mix(in srgb, var(--tk-accent) 12%, var(--tk-elevated));
+  color: var(--tk-accent);
+  font-size: 0.78em;
+  font-weight: 600;
+  line-height: 22px;
+  text-align: center;
+}
+
+.md-block[data-block-type="timeline"] li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 28px;
+  bottom: 0;
+  width: 2px;
+  background: var(--tk-border-light);
+}
+
+/* ── 内容卡片（table / code / image）──────────────────────────────────
+   形态 = **中性面板**（四边浅边框 + 浅底 + 圆角），与 `metric` 同款手法、与上面
+   几个强调块**刻意分家**：强调块回答「这段文字是什么性质」（结论 / 风险 / 建议），
+   形态是左边框 + 语义色；这一族回答「这块内容自成一体」，故**不带语义色** ——
+   给一张表格染上 accent 或 warning 是替它加一层它本没有的意思。
+
+   ⚠️ **这一族一个字节的内容都不改**：表格仍是真 `<table>`（列对齐、斑马纹、横向
+   滚动），代码仍是真 `<pre><code>`（等宽、缩进、高亮、复制按钮），图片仍是真
+   `<img>`。这里一个 `display` 都不换、一个子元素都不包 —— 把这三样「改成卡片
+   形状」正是图鉴明确反对的事（「不要为了统一视觉而把代码改成普通文字卡片，否则
+   会影响可读性和可用性」）。加围栏的**全部作用**就是外面多一层壳。
+
+   ⚠️ **选择器只用两侧都有的东西**：`.md-block[data-block-type=…]` 与块内的
+   `table` / `pre` / `img`。**刻意不碰**预览专有的 `.md-table-wrap` 与 Tailwind
+   class（导出侧 `markdown_render.py` 产出的是**裸** `<table>` / 裸 `<pre>`）——
+   那种规则在导出侧永远不命中，而本文件是导出侧读的单一真相源（见文件头）。
+   代价如实记录：预览里的表格/代码自带一层容器，故**预览侧是「面板里嵌一层容器」、
+   导出侧只有面板**。这层差异**先于本轮就存在**（今天预览与导出的表格容器本就不
+   一致），本轮只给它补了一层两侧共同的外壳，不新增分叉。 */
+.md-block[data-block-type="table"],
+.md-block[data-block-type="code"],
+.md-block[data-block-type="image"] {
+  margin: 16px 0;
+  padding: 12px 16px;
+  /* ⚠️ 同 `metric`：`--tk-border` 而非 `--tk-border-light`（2026-10-11 实机修正，
+     对比度论证见上面那段）。这一族尤其需要它 —— 块内是**真表格 / 真代码 / 真图片**，
+     它们自己就带一层视觉重量（表格有网格线、代码有底色），此时外框若淡到看不见，
+     读者根本不知道「这层壳存在」，也就无从知道它可以用「内容块装饰」开关关掉。 */
+  border: 1px solid var(--tk-border);
+  border-radius: 6px;
+  background: var(--tk-elevated);
+}
+
+/* ⚠️ 块内首尾元素收掉自己的外边距 —— 否则卡片上下各白空一截（那段间距本该由卡片
+   自己的 16px 承担）。副产物是**把预览与导出的一处既存差异抹平了**：预览侧的
+   `.md-table-wrap` 带 `my-4`、导出侧的裸表格没有，归零后两侧的垂直间距才同源。 */
+.md-block[data-block-type="table"] > :first-child,
+.md-block[data-block-type="code"] > :first-child,
+.md-block[data-block-type="image"] > :first-child {
+  margin-top: 0;
+}
+
+.md-block[data-block-type="table"] > :last-child,
+.md-block[data-block-type="code"] > :last-child,
+.md-block[data-block-type="image"] > :last-child {
+  margin-bottom: 0;
+}
+
+/* ⚠️ 图片居中：这张卡存在的意义就是「单独把这张图展示出来」，左对齐会让它在面板里
+   拖着一条右侧空白。居中不改 DOM（`text-align` 是纯 CSS），导出侧同样生效。
+   ⚠️ 但它是**容器装饰**而非图片属性 —— 故关掉装饰时随之退回默认（见文件末尾）。 */
+.md-block[data-block-type="image"] {
+  text-align: center;
+}
+
+/* 图片自带圆角：面板是圆角的，方角图片贴在它内壁上会「顶」出四个直角。 */
+.md-block[data-block-type="image"] img {
+  border-radius: 4px;
+}
+
+/* ── 关掉装饰：steps / timeline 各自退回「块内内容原样」────────────────
+   ⚠️ 这两个的「原样」就是**普通列表**（它们本身是 Markdown 列表）—— 故归零比其它
+   type 多一步：`steps` 要退回竖排圆点列表、`timeline` 要退回默认数字编号。只收走
+   chip 底色/箭头/圆形徽标/竖线，而**列在哪儿**（横排还是竖排）也是装饰的一部分
+   —— 横排文字串在窄屏会挤，退回默认竖排才是「没有任何附加物」的自然形态。 */
+[data-marker-decor="off"] .md-block[data-block-type="steps"] {
+  margin: 16px 0;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="steps"] ul {
+  display: block;
+  padding-left: 1.5em;
+  list-style: disc;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="steps"] li {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="steps"] li:not(:last-child)::after {
+  content: none;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="timeline"] {
+  margin: 16px 0;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="timeline"] ol {
+  padding-left: 1.5em;
+  list-style: decimal;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="timeline"] li {
+  padding-left: 0;
+  padding-bottom: 0;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="timeline"] li::before,
+[data-marker-decor="off"] .md-block[data-block-type="timeline"] li::after {
+  content: none;
+}
+
+/* ── 关掉装饰：table / code / image 退回「内容原样」──────────────────────
+   ⚠️ 这一族的归零**最干净**：装饰全在容器上，而内容本来就是内容 —— 关掉之后与
+   「从来没写过围栏」在渲染上**逐字相同**（同样一张表、同样一段代码、同样一张图）。
+   这正是「保留原来的显示形式」这个诉求的落点。
+
+   ⚠️ `margin` 仍保持 `16px 0`（与默认态同值，理由同上面几个 type）。这里**恰好
+   是对的**：预览侧无围栏时表格靠 `.md-table-wrap` 的 `my-4` 拿到 16px，而归零后
+   卡片自己的 16px 顶上 —— 两者同值，所以「关掉装饰」与「从未包过」的间距一致。 */
+[data-marker-decor="off"] .md-block[data-block-type="table"],
+[data-marker-decor="off"] .md-block[data-block-type="code"],
+[data-marker-decor="off"] .md-block[data-block-type="image"] {
+  margin: 16px 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+}
+
+/* ⚠️ `image` 多归零一样：居中**是卡片带来的**，图片原本靠左。不退回就等于用这个
+   开关留着一条只有卡片才有的排版，而它恰恰是「原来没有卡片时的形态」要来抹掉的。 */
+[data-marker-decor="off"] .md-block[data-block-type="image"] {
+  text-align: inherit;
 }

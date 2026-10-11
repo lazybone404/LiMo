@@ -1,6 +1,13 @@
 /* ══════════════════════════════════════════════════════════════════════
-   卡片骨架 —— 产物章节结构（`## X` → 一张卡）
+   卡片骨架 —— 产物里**被模型标记过**的章节（`## X` + `card` 修饰符 → 一张卡）
    ══════════════════════════════════════════════════════════════════════
+
+   ⚠️ **2026-10-11 起不再是「每个 H2 一张卡」**：用户判定「一律按标题切卡太简单粗暴，
+   卡片应该用在需要强调的地方」。现在哪几节成卡由**模型**在产物里标
+   （`<!-- limo-block:v1 type="card" -->` 写在标题之下），未标记的节保持普通正文。
+   判据收在前端 `lib/markdown-sections.ts::splitByH2` 的 `Section.card`
+   （后端 `markdown_sections.py::split_by_h2` 同源，fixture 钉住）。
+   ⚠️ 于是卡片在页面里是**混排**的：本文件的规则只管卡片自己，不管它周围是不是卡片。
 
    ⚠️ **本文件是单一真相源，导出侧读的就是这一份**（`export.py::_load_card_css()`
    从磁盘读它并内联进导出的 HTML）。故此处**不得**出现任何只能在前端成立的写法
@@ -8,7 +15,7 @@
    导出的 HTML 里没有 `.preview-area`，限定了就静默不生效。
 
    两根轴（见 `lib/card-prefs.ts`）：
-     `data-skeleton="card"`      要不要卡片（**属性缺失即 paper**，见下）
+     `data-skeleton="card"`      要不要按标记显示卡片（**属性缺失即 paper**，见下）
      `data-card-style="gpt|…"`   卡片长什么样（8 套）
 
    ⚠️⚠️ **全部渲染规则都带 `[data-skeleton="card"]` 前缀**，这不是啰嗦而是零回归的
@@ -52,10 +59,10 @@
        基色（从哪来） × 抬升（走多远）—— 两者正交，可组合出「跟随背景」到
        「抬到浮起面」的连续区间，不需要为每个中间档再开一个下拉项。 */
   --card-bg-base: var(--tk-surface);
-  --card-lift: 100%;
+  --card-lift: 0%;
   --card-bg: color-mix(in srgb, var(--card-bg-base), var(--tk-elevated) var(--card-lift));
 
-  --card-border: 1px solid var(--tk-border-light);
+  --card-border: 1px solid var(--tk-border);
   --card-radius: 16px;
   --card-shadow: var(--sh-0);          /* ← GPT 风的要害：靠描边分层，不靠投影 */
   --card-padding: 22px 26px;
@@ -86,9 +93,15 @@
    未写的键**有意**回落到初值（= gpt 的取值），不是遗漏。 */
 
 [data-card-style="gpt"] {                /* 默认 */
+  /* ⚠️ 默认观感由用户 2026-10-11 定：「**加重边线 + 背景与正文同色**」——
+     卡片靠**描边**与页面分层，不靠底色抬升、也不靠投影。
+     · `--card-lift: 0%` ⇒ `--card-bg` == `--tk-surface` == 预览区（`bg-surface`）的底色，
+       卡片与正文**同底**；
+     · `--card-border` 用 `--tk-border`（不是 `--tk-border-light`）——light 档对 surface
+       只差 9 个灰阶，实测「线画出来了、断言全过、肉眼等于没有」，正是默认档要避免的。 */
   --card-bg-base: var(--tk-surface);
-  --card-lift: 100%;
-  --card-border: 1px solid var(--tk-border-light);
+  --card-lift: 0%;
+  --card-border: 1px solid var(--tk-border);
   --card-radius: 16px;
   --card-shadow: var(--sh-0);
   --card-padding: 22px 26px;
@@ -189,13 +202,10 @@
 
 /* ══ 渲染规则（全部带骨架前缀 —— 见文件头「零回归的机制」） ══════════ */
 
-/* 卡片列 —— 前端与导出共用同一个容器 class */
-[data-skeleton="card"] .md-cards {
-  display: flex;
-  flex-direction: column;
-  gap: var(--card-gap);
-}
-
+/* ⚠️ **没有 `.md-cards` 外层容器了**（2026-10-11 起）：卡片与未标记的章节现在是**混排**
+   的兄弟节点 —— 套一层 flex 会把普通章节里**每一行**内容变成一个独立 flex item，布局散架。
+   卡片间距因此改由 `margin-block` 承担：普通流里相邻块的外边距会**折叠**，
+   两张卡之间是 `--card-gap` 而不是它的两倍。 */
 [data-skeleton="card"] .md-card {
   background: var(--card-bg);
   border: var(--card-border);
@@ -204,6 +214,29 @@
   outline: var(--card-frame);
   outline-offset: var(--card-frame-inset);
   padding: var(--card-padding);
+  margin-block: var(--card-gap);
+}
+
+/* ── 设置页的迷你视觉小样（2026-10-11） ──────────────────────────────
+   8 套方案此前**只有文字标签**，用户看不出差异，也就谈不上"引导使用"（用户原话：
+   「8 种视觉方案可以适当的去引导使用」）。小样**消费与 `.md-card` 完全相同的变量**
+   —— 方案块里改任何一个取值，卡片与小样同步变，**没有第二份真相源**。
+
+   ⚠️ 它**不是** `.md-card`：卡片规则带 `[data-skeleton="card"]` 前缀（那个属性挂在
+   `<html>` 上，是应用级的轴），设置页里这个前提不成立。这里只复刻「用哪几个变量画
+   什么」，元素本身是一个空 `<span>`，不引入任何 DOM 结构约定（导出侧看不到它）。
+   ⚠️ 圆角与内框按 **0.5** 缩放：真实卡片是 16–36px 的留白衬出来的，小样只有几十像素，
+   原值会让圆角吃掉整个方块。缩放的是**同一个变量**，不是新写的一份取值。 */
+.card-preview {
+  display: inline-block;
+  width: 42px;
+  height: 28px;
+  background: var(--card-bg);
+  border: var(--card-border);
+  border-radius: calc(var(--card-radius) * 0.5);
+  box-shadow: var(--card-shadow);
+  outline: var(--card-frame);
+  outline-offset: calc(var(--card-frame-inset) * 0.5);
 }
 
 /* 卡片内标题 —— 吃方案色（`guofeng` / `seal` / `ink` 的差异在此可见）。
