@@ -39,7 +39,7 @@ from app.core.errors import AppError
 from app.core.transcript_meta import strip_meta
 from app.core.types import (GenerateMode, MarkdownView, RawMetadata, RawTranscript,
                             SourceType, Style)
-from app.generation.synthesis import _latest_notes_text
+from app.generation.doc_text import latest_notes_text
 from app.routers import export as E
 from app.routers.export import _build_selfcontained_html, _load_block_css
 from app.services.docx_export import BAR_MARKER, FILL_MARKER, markdown_to_docx
@@ -553,7 +553,7 @@ def test_docx_端点导出块是表格():
 def test_合成读原料时剥掉标记行():
     """对照 E：标记行进 prompt 会同时踩三条 —— 噪音、被 `estimate_tokens` 算进逐篇配额、
     材料里多一类我们专属的可控文本。⚠️ 块内文字**照旧进**（剥的只是标记行）。"""
-    text = _latest_notes_text(_STORE, 'tr_blk001')
+    text = latest_notes_text(_STORE, 'tr_blk001')
     assert 'limo-block' not in text
     assert 'limo-meta' not in text        # 自证头成对地也剥（现有行为，别被这次改动带坏）
     assert '核心结论' in text              # 块内文字照旧

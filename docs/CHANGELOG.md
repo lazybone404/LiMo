@@ -6,6 +6,121 @@
 
 ---
 
+## 2026-10-11 — 智能分类：选中 N 篇 → 模型建议「文件夹 + 标签」→ 用户审定 → 写入
+
+### 起因
+
+用户报告「这几次更新导致原有的文件夹和分类全丢了」，接着提出：
+
+> 「我觉得我们可以加一个功能就是自动分类？根据文件夹和文档的标题？」
+
+丢分类的**根因已单独修完**（`P0-01-migration-rebuild-wipes-index`，2026-10-10 `24b6097`，
+随 0.5.1 打包；那次丢的数据不可恢复）。本轮的定位因此不是「修丢失」，而是**把重新分类的成本降下来**。
+
+### 做了什么
+
+**主线**：文档库选中若干篇 → 一次 LLM 调用产出「每篇 → 建议文件夹 + 建议标签」→
+用户在对话框里审定/编辑 → 确认后一次写入。**模型永不直接写库**。
+
+```
+选中 N 篇 → BatchBar「智能分类」
+   → POST /api/classify/preview   （一次 LLM 调用，零写入）
+   → 对话框审定（改夹 / 改标签 / 换取材深度）
+   → 前端先建缺失的夹 → POST /api/classify/commit（一次加锁、一次写盘）
+```
+
+| # | 文件 | 动作 |
+|---|---|---|
+| 1 | [generation/classifier.py](../backend/app/generation/classifier.py)（新） | `CLASSIFY_PROMPT` + 取材三态 + 预算缩减 + 归一化边界 + `classify_documents()` |
+| 2 | [routers/classify.py](../backend/app/routers/classify.py)（新） | `POST /api/classify/preview` / `POST /api/classify/commit` |
+| 3 | [storage/store.py](../backend/app/storage/store.py) | `_merge_tags`（从 `update_transcripts_tags` 抽出，两处共用）+ `apply_classifications` |
+| 4 | [generation/doc_text.py](../backend/app/generation/doc_text.py)（新） | `latest_notes_text` —— 「最新版」判据全项目只此一份 |
+| 5 | [core/text_utils.py](../backend/app/core/text_utils.py) | `parse_json_object` 提升为公共（原 `chart_renderer._parse_json_object` 一行委托） |
+| 6 | [api/classify.ts](../frontend/src/api/classify.ts)（新） / [ClassifyDialog.tsx](../frontend/src/components/doc-library/ClassifyDialog.tsx)（新） | 前端域 + 审定对话框 |
+| 7 | [BatchBar.tsx](../frontend/src/components/doc-library/BatchBar.tsx) / [DocLibrary.tsx](../frontend/src/components/doc-library/DocLibrary.tsx) | 「智能分类」入口 + 建夹→写入编排 |
+
+**四条产品决策**（用户逐条选定）：
+
+| 决策 | 取值 | 为什么 |
+|---|---|---|
+| 产物 | 文件夹 **+** 标签两者 | 单层文件夹是项目既有能力，标签管跨夹主题 |
+| 姿态 | 先建议、**确认后写入** | 模型分类错了在界面上看不出来，必须有人过一遍 |
+| 分类空间 | **优先复用**既有文件夹，必要时新建且**设上限 5** | 不加复用压力 = 每跑一次多五个夹，文件夹比标签更容易失控 |
+| 取材 | 标题 + 笔记开头，**深度由用户选**（600/200/仅标题） | 「看多少」是成本与准确率的权衡，该由用户决定；后端再按预算兜底缩减并**逐篇显式标注** |
+
+### 为什么不扩 `POST /api/transcripts/batch`
+
+它的形状是「**一个**动作、**一个** folderId、**一组**统一 tags」——表达不了「每篇各自的
+folder + 各自的 tags」。硬塞进去会让 `BatchTranscriptsRequest` 七成字段只对某一个 action 有效。
+而**它与 `batch` 存在的理由逐字同源**（[ingest.py:147](../backend/app/routers/ingest.py#L147)
+的「一次写盘而非 N 次」）：走现有端点意味着最坏 N×2 次全量写盘。
+
+### ⚠️ 实机验证抓到一个单测抓不到的缺陷（本轮最有价值的一条）
+
+`classify.py` 最初写的是：
+
+```python
+llm_config = resolve_llm_config(config, req.modelId)
+llm = LLMService(llm_config)          # ← 错
+```
+
+`LLMService.__init__` 的第一参数是**整份 config**（它内部自己做 `config.get("llm", {})`），
+传 `resolve_llm_config` 的结果（llm 子字典）进去 → 取到空 dict → **`api_key` 恒为空** →
+**每次预览都报「LLM API Key 未配置」**。
+
+- 失效形态：**功能 100% 不可用**，而 34 条单测**全绿** —— 端点用例注入的是假 `LLMService`，
+  压根不经过构造，`api_key` 是替身自己的字段。
+- 全项目其余 **10 处**调用点（chat / generate / process / synthesis / epub / agent …）
+  都是 `LLMService(config, model_id=…)`，只有这一处新写的传了子字典。
+- 修法：`LLMService(config, model_id=req.modelId)`。
+- 守卫：`test_classify.py` 的端点用例新增一条断言 —— **替身记下构造时收到的入参**，
+  断言其中有 `"llm"` 键（`resolve_llm_config` 的返回**没有**这个键，判据因此精确）。
+  对照实验：改回 `LLMService(llm_config)` → **只此一条红、其余 33 条全绿**，
+  如实复现了「坏掉而没人发现」的形态。
+
+### 端到端实测（隔离库，非真实库）
+
+临时 `data_dir` + 沿用真实配置（密钥库回填 key），4 篇文档（3 带笔记 / 1 篇只有标题）：
+
+| 观察项 | 实测结果 |
+|---|---|
+| 真实模型 JSON 解析 | ✅ `deepseek-v4-flash`，6.6s |
+| 顺序不变式 | ✅ `suggestions` 顺序 == 请求 `docIds` |
+| 无笔记篇降级 | ✅ `source="title_only"`、`chars=0`（**显式**，不假装看过） |
+| 优先复用 | ✅ tr_v1/tr_v2 → 既有「论文」夹，tr_v3 → 既有「工程实践」夹；只有无笔记的 tr_v4 落到 `new: 行业观察` |
+| 切档重跑 | ✅ `notesChars=0` 时全篇 `title_only`、标签从 4–5 个收到 2 个 |
+| 写入 | ✅ 落库 `folderId` 与 `tags` 均正确；混合 1 有效 / 2 无效 → `affected:1` + `failed` 逐条明细 |
+| 失败显式化 | ✅ 全失败 400 `CLASSIFY_ALL_FAILED` / 空 assignments 400 `CLASSIFY_NO_ASSIGNMENTS` / 无 key `CLASSIFY_NO_API_KEY` |
+| **零副作用** | ✅ 只跑 preview 前后，库 `index.json` 的 size 与 mtime **逐字节一致** |
+| **隔离自证** | ✅ 全程结束后，**真实库** `~/.limo/index.json` 的 size/mtime 与开始前**逐字节一致**（模式 #58：隔离要由断言回答，不靠直觉） |
+
+### 同源与成对判据（本轮的三处）
+
+| 判据 | 家 | 若各写一份的症状 |
+|---|---|---|
+| 标签 add / replace 合并 | `store._merge_tags` | add 语义在两处慢慢漂移，无人察觉 |
+| 「最新版笔记正文」 | `generation/doc_text.latest_notes_text` | 版本序判据出现第二份实现 |
+| JSON 对象抽取 | `core/text_utils.parse_json_object` | 逐 `{` 试 `raw_decode` 的容错逻辑各写各的 |
+
+三处都有守卫：`test_classify.py` 里有一条专测「改 `_merge_tags` 会让
+`update_transcripts_tags` 与 `apply_classifications` 的用例**同时红**」；
+`parse_json_object` 的身份断言（`chart_renderer.parse_json_object is parse_json_object`）
+钉住委托关系。
+
+### 影响范围
+
+- **不 bump `PROMPT_VERSION`** —— 它标记的是「产物生成的 prompt 版本」（写进产物自证头），
+  本轮**不产生产物**（分类只改文档级元数据）。
+- **不新增 capabilities 常量** —— 分类空间是「用户数据 + 模型输出」，不是固定枚举，
+  无需「后端注册 / 前端列举」的同步；上限经 preview 响应的 `limits` **回显**给前端。
+- **零回归面**：`update_transcripts_tags` 行为逐字不变；`chart_renderer` 的 JSON 解析行为
+  逐字不变（原有测试仍绿）；`synthesis` 的取材行为逐字不变。
+- 前端**不本地重算任何判据**：切取材深度**重调 preview**（与合成「切原料模式重拉预览」同款）。
+- 折叠左栏 = 卸载 `DocLibrary`，而分类是**计费调用** → 持 `AbortController`，
+  cleanup 里 abort，触发后端 `disconnect_watcher` → `CLASSIFY_CANCELLED`。
+
+---
+
 ## 2026-10-11 — 两类「卡片」的实机修正：面板边框提亮 + `card` 提到规范最前（PROMPT_VERSION `"12"` → `"13"`）
 
 ### 起因

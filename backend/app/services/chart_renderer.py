@@ -36,6 +36,7 @@ import xml.etree.ElementTree as ET
 
 from PIL import Image, ImageDraw, ImageFont  # PIL 已随图片优化打包，是硬依赖
 
+from app.core.text_utils import parse_json_object  # ⚠️ 本模块曾自带一份私有实现（2026-10-11 提升为公共）
 from app.services import chart_layout, chart_svg  # 语义围栏链路（chart_layout 零依赖）
 
 logger = logging.getLogger(__name__)
@@ -179,29 +180,13 @@ def _font_measure(text: str, size: float) -> float:
     return _load_font(_detect_chinese_font(), int(size)).getlength(text)
 
 
-def _parse_json_object(body: str):
-    """从围栏内容里取第一个完整 JSON 对象。
-
-    容忍模型多包一层 ```json、加前后说明文字——逐个 ``{`` 尝试 ``raw_decode``，
-    比手写括号计数稳。取不到返回 None。
-    """
-    for i, ch in enumerate(body):
-        if ch != "{":
-            continue
-        try:
-            return json.JSONDecoder().raw_decode(body[i:])[0]
-        except ValueError:
-            continue
-    return None
-
-
 def _process_fig(body: str, assets_dir: str, counter: int) -> tuple[str, int, str | None]:
     """语义 JSON → 布局 → SVG → 复用 _process_svg 的校验/渲染/落盘。
 
     与 chart 分支有意不同的一点：chart 内非 SVG **原样保留**（可能是协议外内容），
     而 fig 是毫无歧义的协议标记 → 任何失败都**必须零残留替换**。
     """
-    obj = _parse_json_object(body)
+    obj = parse_json_object(body)
     if not isinstance(obj, dict):
         logger.info("图表 fig 围栏 JSON 解析失败 → 替换为失败文本")
         return None, counter, "图表数据格式错误"

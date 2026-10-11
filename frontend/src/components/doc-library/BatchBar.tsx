@@ -1,12 +1,12 @@
 /**
- * 批量操作条 — 选中若干文档后出现的工具栏（导出 / 移动 / 打标签 / 删除）。
+ * 批量操作条 — 选中若干文档后出现的工具栏（合成 / 导出 / 移动 / 打标签 / 智能分类 / 删除）。
  *
  * ⚠️ 「全选」= **当前筛选结果的全部匹配项**（跨分批），不是「已渲染的那几十条」。
  * 分批渲染只是少画 DOM，不代表数据只有那么多——工具栏因此必须显示真实选中数，
  * 并在「选中数 > 已渲染条数」时补一句「含未显示项」，否则用户会以为只选中了看得见的那些。
  */
 import { useState } from 'react'
-import { Archive, FolderInput, Tag, Trash2, X, CheckSquare, Square, Layers } from 'lucide-react'
+import { Archive, FolderInput, Tag, Trash2, X, CheckSquare, Square, Layers, Sparkles } from 'lucide-react'
 import type { FolderEntry } from '../../store/types'
 
 export interface BatchBarProps {
@@ -23,13 +23,15 @@ export interface BatchBarProps {
   onSynthesize: () => void
   onMove: (folderId: string) => void
   onTag: (tags: string[], mode: 'add' | 'replace') => void
+  /** 智能分类（模型建议 + 用户审定）。**1 篇也能用**，没有合成那样的篇数门槛 */
+  onClassify: () => void
   onDelete: () => void
   onClear: () => void
 }
 
 export function BatchBar({
   selectedCount, renderedCount, totalMatches, folders, busy, allSelected,
-  onToggleSelectAll, onExport, onMove, onTag, onDelete, onClear, onSynthesize,
+  onToggleSelectAll, onExport, onMove, onTag, onClassify, onDelete, onClear, onSynthesize,
 }: BatchBarProps) {
   const [open, setOpen] = useState<'move' | 'tag' | null>(null)
   const [tagDraft, setTagDraft] = useState('')
@@ -83,6 +85,13 @@ export function BatchBar({
           title="批量打标签"
           className={`w-6 h-6 rounded-md flex items-center justify-center disabled:opacity-50 ${open === 'tag' ? 'bg-accent/10 text-accent' : 'hover:bg-surface-hover'}`}>
           <Tag size={13} className={open === 'tag' ? 'text-accent' : 'text-muted'} />
+        </button>
+        {/* 智能分类：与上面两个同属「整理既有文档」，跟在打标签之后。
+            ⚠️ **不设篇数门槛**（1 篇也能整理），与合成按钮的 `selectedCount < 2` 刻意不同 */}
+        <button onClick={onClassify} disabled={busy} data-batch-classify
+          title={`让模型为选中的 ${selectedCount} 篇建议文件夹与标签`}
+          className="w-6 h-6 rounded-md hover:bg-accent/10 flex items-center justify-center disabled:opacity-50 disabled:hover:bg-transparent">
+          <Sparkles size={13} className="text-accent" />
         </button>
         <button onClick={onDelete} disabled={busy} title="删除选中文档"
           className="w-6 h-6 rounded-md hover:bg-error/10 flex items-center justify-center disabled:opacity-50">

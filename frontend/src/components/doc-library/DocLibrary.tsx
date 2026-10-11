@@ -27,6 +27,8 @@ import {
   AlertTriangle, ChevronRight,
 } from 'lucide-react'
 import { streamSynthesis, previewSynthesis, type SynthesisPreview, type SourceMode } from '../../api/synthesis'
+import { classifyPreview, commitClassifications, type ClassifyPreview } from '../../api/classify'
+import { ClassifyDialog, type ClassifyPlanRow } from './ClassifyDialog'
 import type { DocEntry } from '../../store/types'
 import { BatchBar } from './BatchBar'
 import { DocRow, type DocRowActions } from './DocRow'
@@ -269,6 +271,15 @@ export function DocLibrary() {
   // 让用户在花 token 之前就知道该不该换模型（设计 §17.4）
   const [synthPreview, setSynthPreview] = useState<SynthesisPreview | null>(null)
   const [synthPreviewErr, setSynthPreviewErr] = useState<string | null>(null)
+  // 智能分类对话框 —— 同样是**现场决定**的瞬时状态（折叠即丢弃，不持久化）。
+  // `classifyIds` 在打开那一刻**定格**：预览与写入必须基于同一批 id。
+  const [classifyOpen, setClassifyOpen] = useState(false)
+  const [classifyIds, setClassifyIds] = useState<string[]>([])
+  const [classifyNotesChars, setClassifyNotesChars] = useState(600)
+  const [classifyRunning, setClassifyRunning] = useState(false)
+  const [classifyCommitting, setClassifyCommitting] = useState(false)
+  const [classifyErr, setClassifyErr] = useState<string | null>(null)
+  const [classifyPreviewData, setClassifyPreviewData] = useState<ClassifyPreview | null>(null)
   // 拖拽 —— onDragOver 阶段读不到 payload，放置区的显隐/高亮只能靠这个 state
   const [draggingIds, setDraggingIds] = useState<Set<string>>(new Set())
 
@@ -727,6 +738,141 @@ export function DocLibrary() {
       synthDimsText, synthSourceMode, synthStage, synthPreview, synthPreviewErr,
       docs, addToast])
 
+  // ── 智能分类（模型建议 → 用户审定 → 一次写入）──
+
+  /**
+   * 分类 preview 的 `AbortController`。
+   *
+   * ⚠️ **折叠面板 = 卸载组件**（`SlotLayout` 是 `collapsed ? <PanelStrip/> : <Comp/>`），
+   * 而分类是**计费调用**。不中止的话，用户收起侧栏就留下一个无人接收的 LLM 请求：
+   * token 照花、结果丢进虚空。cleanup 里 abort → 后端 `disconnect_watcher` 察觉断连
+   * → `CLASSIFY_CANCELLED`。**刻意不留恢复路径**（草稿不持久化，重开就重跑）。
+   */
+  const classifyAbortRef = useRef<AbortController | null>(null)
+  useEffect(() => () => { classifyAbortRef.current?.abort() }, [])
+
+  /**
+   * 拉一次分类建议（一次 LLM 调用，零写入）。
+   *
+   * ⚠️ 切「取材深度」时必须**重调**而不是前端本地重算——取材深度决定了模型看到什么，
+   * 结果必然不同；本地重算等于把分类逻辑复刻一遍（项目铁律：成对逻辑必须同源）。
+   */
+  const loadClassifyPreview = useCallback((ids: string[], chars: number) => {
+    classifyAbortRef.current?.abort()      // 连点两档时作废前一次，只留最后一次
+    const ctrl = new AbortController()
+    classifyAbortRef.current = ctrl
+    setClassifyRunning(true); setClassifyErr(null); setClassifyPreviewData(null)
+    classifyPreview(ids, chars, ctrl.signal)
+      .then(p => { if (!ctrl.signal.aborted) setClassifyPreviewData(p) })
+      .catch(err => {
+        if (ctrl.signal.aborted) return    // 自己作废的请求不该弹错误
+        setClassifyErr(getErrorMessage(err))
+      })
+      .finally(() => {
+        // 只有仍是当前请求时才收尾：否则后发的那次会被先结束的那次把 loading 抹掉
+        if (classifyAbortRef.current === ctrl) setClassifyRunning(false)
+      })
+  }, [])
+
+  const handleOpenClassify = useCallback(() => {
+    const ids = [...selectedIds]
+    if (!ids.length) return
+    setClassifyIds(ids)
+    setClassifyNotesChars(600)             // 每次打开回到默认档，不继承上次
+    setClassifyCommitting(false)
+    setClassifyOpen(true)
+    loadClassifyPreview(ids, 600)
+  }, [selectedIds, loadClassifyPreview])
+
+  /** 切取材深度 → 重跑 preview（见 `loadClassifyPreview` 的注释） */
+  const changeClassifyDepth = useCallback((chars: number) => {
+    setClassifyNotesChars(chars)
+    loadClassifyPreview(classifyIds, chars)
+  }, [classifyIds, loadClassifyPreview])
+
+  const closeClassify = useCallback(() => {
+    classifyAbortRef.current?.abort()
+    setClassifyOpen(false)
+    setClassifyPreviewData(null)
+    setClassifyErr(null)
+    setClassifyRunning(false)
+  }, [])
+
+  /**
+   * 应用分类方案：**先建夹、再写入**。
+   *
+   * 顺序不能反——`commit` 只接受已存在的 folderId（它刻意不建夹，因为文件夹名是
+   * 用户可改的自由文本，只有前端知道最终值）。
+   *
+   * 任一建夹失败 → **中止整次**并保持对话框打开（草稿还在），绝不带着一半文件夹写入。
+   */
+  const runClassify = useCallback(async (plan: ClassifyPlanRow[]) => {
+    if (!plan.length) return
+    setClassifyCommitting(true)
+    try {
+      // ① 新建名 → id。先在本地的 folders 里按 trim + 大小写不敏感查同名，
+      //    命中就复用（用户可能已经建过同名夹，只是模型没看出来）
+      const nameToId = new Map(
+        useStore.getState().folders.map(f => [f.name.trim().toLowerCase(), f.id]))
+      const newNames = [...new Set(plan.map(r => r.newFolderName.trim()).filter(Boolean))]
+      const createdNames: string[] = []
+      for (const name of newNames) {
+        const hit = nameToId.get(name.toLowerCase())
+        if (hit) continue
+        const entry = await createFolder(name)
+        if (!entry?.id) throw new Error(`新建文件夹「${name}」失败`)
+        nameToId.set(name.toLowerCase(), entry.id)
+        createdNames.push(name)
+      }
+
+      const assignments = plan.map(r => ({
+        id: r.id,
+        // 新建名留空 = 实际不归入（`folderId: ''` 就是未分类，不会误建空名夹）
+        folderId: r.newFolderName.trim()
+          ? (nameToId.get(r.newFolderName.trim().toLowerCase()) ?? r.folderId)
+          : r.folderId,
+        tags: r.tags,
+      }))
+
+      // ② 乐观更新（写库前先改本地，交互不等往返）
+      const before = useStore.getState().docs
+      const beforeFolder = new Map(before.map(d => [d.id, d.folderId]))
+      const beforeTags = new Map(before.map(d => [d.id, [...(d.tags || [])]]))
+      const byId = new Map(assignments.map(a => [a.id, a]))
+      setDocs(before.map(d => {
+        const a = byId.get(d.id)
+        if (!a) return d
+        return { ...d, folderId: a.folderId, tags: [...new Set([...(d.tags || []), ...a.tags])] }
+      }))
+
+      const r = await commitClassifications(assignments)
+      const failed = r.failed || []
+      if (failed.length) {
+        // ⚠️ **只回滚失败项**（照抄 `moveDocs` 的样板）：整体回滚会把服务端明明
+        //    已经改好的那些也退回原处，用户下次刷新会看到它们「跳回去又跳回来」
+        const failedIds = new Set(failed.map(f => f.id))
+        setDocs(useStore.getState().docs.map(d =>
+          failedIds.has(d.id)
+            ? { ...d, folderId: beforeFolder.get(d.id) ?? '', tags: beforeTags.get(d.id) ?? [] }
+            : d))
+        // 建了夹却一篇都没写进去 → 会留下空文件夹，**说出来**而不是让用户自己发现
+        const orphan = createdNames.length ? `（新建的 ${createdNames.length} 个文件夹已保留）` : ''
+        addToast(`已分类 ${r.affected} 篇，${failed.length} 篇失败${orphan}`, 'error')
+      } else {
+        addToast(`已分类 ${r.affected} 篇`)
+      }
+      setClassifyOpen(false)
+      setClassifyPreviewData(null)
+      clearSelection()
+      refreshFolders()
+    } catch (err) {
+      // 建夹失败 / 后端整体拒绝：**保持对话框打开**（草稿不丢），让用户改完再来
+      addToast(getErrorMessage(err), 'error')
+    } finally {
+      setClassifyCommitting(false)
+    }
+  }, [addToast, setDocs, clearSelection, refreshFolders])
+
   // ── 右键菜单 ──
 
   /**
@@ -877,6 +1023,7 @@ export function DocLibrary() {
           onSynthesize={handleOpenSynthesize}
           onMove={fid => runBatch(() => moveDocs([...selectedIds], fid))}
           onTag={handleBatchTag}
+          onClassify={handleOpenClassify}
           onDelete={() => setDeleteTargets([...selectedIds])}
           onClear={clearSelection}
         />
@@ -951,6 +1098,21 @@ export function DocLibrary() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 智能分类确认 —— 建议由模型给，写不写、怎么写由用户定 */}
+      {classifyOpen && (
+        <ClassifyDialog
+          ids={classifyIds}
+          notesChars={classifyNotesChars}
+          running={classifyRunning}
+          committing={classifyCommitting}
+          error={classifyErr}
+          preview={classifyPreviewData}
+          onDepthChange={changeClassifyDepth}
+          onClose={closeClassify}
+          onConfirm={runClassify}
+        />
       )}
 
       {/* 合成确认 —— 进行中（synthStage 非 null）时同一层显示阶段文案，

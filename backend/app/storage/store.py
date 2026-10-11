@@ -1109,6 +1109,22 @@ class Store:
                 self._save_index()
         return n
 
+    def _merge_tags(self, entry: dict, tags: list[str], mode: str) -> None:
+        """把 tags 合进某条 transcript。`add` = 并入去重 / `replace` = 整体替换。
+
+        ⚠️ **本函数是 add/replace 语义的唯一实现**：批量打标签与自动分类的写入都调它。
+        两处各写一份 = 同源判据住多处（模式 #54），而它的失效方式恰好最隐蔽——
+        「add 的去重在一处悄悄漂移，另一处看不出来」。
+        """
+        if mode == "replace":
+            entry["tags"] = list(tags)
+            return
+        merged = list(entry.get("tags", []))
+        for t in tags:
+            if t not in merged:
+                merged.append(t)
+        entry["tags"] = merged
+
     def update_transcripts_tags(self, ids: list[str], tags: list[str],
                                mode: str = "add") -> int:
         """批量打标签。mode="add" 并入去重 / mode="replace" 整体替换。返回命中数。"""
@@ -1118,14 +1134,34 @@ class Store:
             for e in self._index["transcripts"]:
                 if e["id"] not in targets:
                     continue
-                if mode == "replace":
-                    e["tags"] = list(tags)
-                else:
-                    merged = list(e.get("tags", []))
-                    for t in tags:
-                        if t not in merged:
-                            merged.append(t)
-                    e["tags"] = merged
+                self._merge_tags(e, tags, mode)
+                n += 1
+            if n:
+                self._save_index()
+        return n
+
+    def apply_classifications(self, assignments: list[dict]) -> int:
+        """按**逐篇异构**的方案写入（每篇各自的文件夹 + 各自的标签）。返回命中数。
+
+        `assignments = [{"id": str, "folder_id": str, "tags": list[str]}]`。
+
+        ⚠️ **为什么单开一个方法而不是循环调上面两个**：分类的每篇 folder 与 tags
+        通常互不相同，用现有批量端点表达等于最坏 N×2 次**全量 index.json 写盘**
+        （与 `routers/ingest.py` 里「一次写盘而非 N 次」的收益同源，只是这里 N 是
+        逐篇而非逐批）。一次加锁、一次写盘。
+
+        ⚠️ 未命中（id 不存在）的条目**静默跳过**——存在性校验是调用方（路由层）的
+        职责，那里才有 `failed` 明细的出口；在这里抛异常会让「一条不存在」毁掉整批。
+        """
+        by_id = {a["id"]: a for a in assignments}
+        with self._lock:
+            n = 0
+            for e in self._index["transcripts"]:
+                a = by_id.get(e["id"])
+                if a is None:
+                    continue
+                e["folderId"] = a.get("folder_id") or ""
+                self._merge_tags(e, a.get("tags") or [], "add")
                 n += 1
             if n:
                 self._save_index()

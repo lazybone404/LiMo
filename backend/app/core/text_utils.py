@@ -2,6 +2,8 @@
 文本处理工具 — 智能截断等通用操作
 """
 
+import json
+
 _SENTENCE_BOUNDARIES = (
     "。\n",
     "。\n\n",
@@ -90,3 +92,27 @@ def sanitize_reference_name(name: str | None, max_len: int = 80) -> str:
     n = n.replace('"', "'")
     n = n.replace('【', '[').replace('】', ']')   # 不与结构标记【参考资料 N】/【文档 i】共用字符
     return n[:max_len] or "未命名"
+
+
+def parse_json_object(body: str):
+    """从模型输出里取第一个完整 JSON 对象；取不到返回 None。
+
+    容忍模型多包一层 ```json、加前后说明文字——逐个 ``{`` 尝试 ``raw_decode``，
+    比手写括号计数稳（`{` 在字符串字面量里、括号不配对、嵌套 —— 手写计数都要
+    额外照顾，而 ``raw_decode`` 直接交给标准解析器）。
+
+    ⚠️ **这里刻意不做「提取 JSON 数组」的变体**：模型被要求吐对象时，返回数组
+    本身就是没遵循约定，猜它的意图比显式失败更糟。调用方拿 None 去走「格式错误」
+    分支即可。
+
+    ⚠️ 前身是 `services/chart_renderer.py` 的私有同名函数（2026-10-11 提升）——
+    分类端点需要同一件事，而两份语义完全相同的实现没有复制的理由。
+    """
+    for i, ch in enumerate(body):
+        if ch != "{":
+            continue
+        try:
+            return json.JSONDecoder().raw_decode(body[i:])[0]
+        except ValueError:
+            continue
+    return None

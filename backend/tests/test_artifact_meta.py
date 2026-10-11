@@ -205,7 +205,10 @@ print("PASS: 无头产物不判损坏（历史产物与内置示例零影响）"
 #    （合成 source_mode="notes" 链路，§19 已上线）
 # ═══════════════════════════════════════════════════════════════
 
-from app.generation.synthesis import _latest_notes_text  # noqa: E402
+# ⚠️ 2026-10-11 起「最新版笔记正文」的判据搬到了 `generation/doc_text.py`
+# （智能分类与合成共用同一份，不再各判一次版本序）。测试跟着搬家，不留转发别名
+# ——别名会让「判据住哪儿」重新变模糊，正是这次抽公共要消灭的东西。
+from app.generation.doc_text import latest_notes_text  # noqa: E402
 
 s6 = _new_store()
 _import_store(s6, "tr_am6")
@@ -216,7 +219,7 @@ s6.save_markdown(mv6, file_meta=markdown_meta(mv6, s6.get_transcript("tr_am6")))
 raw_notes = s6.get_markdowns_by_transcript("tr_am6", mode="notes")[0]["content"]
 assert "limo-meta" in raw_notes, "前置：库里那份确实是带头的"
 
-notes_text = _latest_notes_text(s6, "tr_am6")
+notes_text = latest_notes_text(s6, "tr_am6")
 assert "limo-meta" not in notes_text, f"喂给模型的原料不该含自证头: {notes_text[:80]}"
 assert notes_text == BODY.strip(), "剥头后应等于纯正文"
 

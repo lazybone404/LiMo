@@ -325,8 +325,10 @@ async def health():
 
 
 # 路由（files 在 ingest 之前——/files/{id}/original 比 /files/{id}/{name} 更具体，必须先匹配）
-from app.routers import ingest, generate, config as config_router, capabilities, chat, model, process, files, export, conversations, plugins, references, epub, markdown_edit, folders, synthesis
+from app.routers import ingest, generate, config as config_router, capabilities, chat, model, process, files, export, conversations, plugins, references, epub, markdown_edit, folders, synthesis, classify
 app.include_router(folders.router, prefix="/api")
+# 自动分类（preview 只建议不写、commit 一次写盘）——紧邻 synthesis，同属「文档库批量动作」
+app.include_router(classify.router, prefix="/api")
 app.include_router(markdown_edit.router, prefix="/api")
 app.include_router(references.router, prefix="/api")
 app.include_router(epub.router, prefix="/api")

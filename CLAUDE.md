@@ -431,6 +431,7 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **密度**：详细（默认，卡片）/ **简略**（26px 单行，复选框常驻防标题横跳，筛选区收成一行入口 + 浮层复用同一批小节组件，排列旋钮与分隔条不渲染）。**简略模式 = IDE 文件树**：**固定按文件夹分组、无视「排列方式」偏好**（那个旋钮在简略下本就不渲染，也就没有跟随它的必要），分组头是父节点、其下子行缩进一层 + 一条 1px 缩进参考线（`treeIndent`，只给**有行的组**画）。⚠️ **分组头 26px 与文件行 26px 是成对常量**，改一处必须改另一处——否则父节点比子节点矮，树形就散了（`GroupHeader.compact` / `DocRow` 紧凑分支，两处都有注释指路）。⚠️ 曾设计为「简略一律平铺不分组」（省下分组头的高度），那样省掉的是**结构**：一个文件夹 30 篇时，平铺列表除了一列标题什么信息都不给
 - **大列表**：分批渲染 60 条 + `IntersectionObserver`（`root` 绑滚动容器），**全选 = 全部匹配项（跨分批）**，工具栏显示「含未显示项」。⚠️ `animationDelay: i*50ms` 在第 1000 篇要等 50 秒——是功能性错误不是动画偏好
 - **批量操作**：`POST /api/transcripts/batch`（delete/tag/move）按 action **显式枚举校验**（不能静默 `affected:0`）；逐条收集 `failed` 明细；全部失败 → 400；store 侧**一次加锁一次写盘**（相对 N 次 PATCH = N 次全量写盘）
+- **智能分类**（2026-10-11）：选中 N 篇 → `POST /api/classify/preview`（恰一次 LLM 调用、**零写入**）产出「每篇 → 建议文件夹 + 建议标签」→ 对话框审定 → `POST /api/classify/commit`（一次加锁一次写盘）。**模型永不直接写库**。⚠️ 四条产品决策：分类空间**优先复用**既有文件夹（必要时新建，上限 5——不加复用压力 = 每跑一次多几个夹）、取材深度**用户选**（600/200/仅标题，后端再按预算兜底缩减并**逐篇显式标注** `shortened` / `title_only`）、标签**喂全库词表要求优先复用**、**分类不做降级**（超时/JSON 非法一律 `AppError`，与 `reference_compressor` 的降级返回 `None` 刻意不同）。⚠️ **不扩 `batch` 的第 4 个 action**——它的形状是「一个动作、一个 folderId、一组统一 tags」，表达不了逐篇异构。⚠️ **新文件夹由前端在 commit 前用现成 `POST /api/folders` 建**（名字是用户可改的自由文本），commit 只做存在性校验。⚠️ 折叠左栏 = 卸载 `DocLibrary`，而分类是计费调用 → 持 `AbortController` 在 cleanup 里 abort。详见 CHANGELOG 2026-10-11
 - **状态归属由「折叠即卸载」判定**（`SlotLayout` 是 `collapsed ? <PanelStrip/> : <Comp/>`，组件本地 state 收起即归零）：`selectedIds` / `listLimit` / `folderBusy` / `docsLoading` / `expandedFolders` / `titleFilter` / `dateFrom` / `dateTo` 在 `docsSlice`；`density` / `groupBy` / `sort` / `expandedSections` / `filterAreaHeight` 在 `docLibraryPrefs`（localStorage `mbw_docLibPrefs`）；`docLibSearchFocusNonce` 在 `uiSlice`（**自增 nonce 而非 boolean**——boolean 表达不了「已经是 true 时再按一次」）。**刻意不改 SlotLayout 为 CSS 隐藏**：本轮的 store 需求不止「折叠别丢」，还要跨组件共享 + 与筛选 setter 原子发生修改
 - **Ctrl+K / 顶栏搜索**：`SearchBar` 已退化为**纯按钮**，点它 = 展开文档库 + 聚焦搜索框，与 Ctrl+K 共用 `openDocLibSearch`（**唯一入口**——两处各写一遍必然漂移；宽度一并复位，折叠态宽度可能是 40px，只设 `collapsed: false` 会展开出一条缝）。⚠️ 它曾是**第二套搜索实现**（限 10 条、无 AbortController、自带一份 snippet 渲染分支）——「搜文档」被做了两遍
 - 前端拆 **17 文件**（编排 `DocLibrary` / `DocLibraryToolbar` / `SearchField` / `FilterArea` / `FilterSection` / `filters` / `FilterPopover` / `ListToolbar` / `DocList` / `GroupHeader` / `DocRow` / `BatchBar` / hook 层 `useDocQuery` / `useDocSelection` + `docLibraryPrefs` / `docMeta` / `entryDelay`）。纯函数单独导出以便表驱动单测：`filterDocs` / `sortDocs` / `buildResultSet` / `groupDocs` / `countByFolder` / `collectTagFacets`。**文件夹计数以 `countByFolder`（本地派生）为唯一来源**——不能读后端 `folder.count`，那是上次拉取的快照，而 `moveDocs` 是乐观更新，两边各读各的会在移动瞬间互相矛盾。拖拽用原生 HTML5 DnD（零新依赖）+ ContextMenu「移动到文件夹」子菜单兜底键盘用户
@@ -469,7 +470,7 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **ProductRegistry**（`app/generation/product_registry.py`）— 产物注册表，定义 notes/polished 及其依赖拓扑。新增产物类型只需加一个 `ProductDef` 即可，无需改分发逻辑或前端 UI。
 - **ToolRegistry**（`app/agent/tool_registry.py`）— Agent 工具注册中心，替代硬编码的 `_register_chat_tools()`。每个工具是独立 `ToolDef`，注册后自动被发现和调用。
 
-FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` / `get_query_service` 依赖，消除路由函数中 `request.app.state.xxx` 样板代码。**18 个路由模块中 17 个用 `Depends`**（`references.py` 两者都没用——它只有进程内暂存，不碰 store/config，本来就不需要）；仍有 `request.app.state` 残留的 **3 个**：`generate.py`（7 处）、`ingest.py`、`search.py`。⚠️ 计数以 `ls backend/app/routers/*.py` + `grep -l "app\.state"` 的输出为准——此处曾写「15 个里 12 个已迁移、ingest 已迁移」，而 ingest 至今仍有残留（模式 #54：有几处同源是搜索题）。
+FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` / `get_query_service` 依赖，消除路由函数中 `request.app.state.xxx` 样板代码。**19 个路由模块中 18 个用 `Depends`**（`references.py` 两者都没用——它只有进程内暂存，不碰 store/config，本来就不需要）；仍有 `request.app.state` 残留的 **3 个**：`generate.py`（7 处）、`ingest.py`、`search.py`。⚠️ 计数以 `ls backend/app/routers/*.py` + `grep -l "app\.state"` 的输出为准（**该 `ls` 把 `__init__.py` 也算进去**，故文件数 = 模块数 + 1）——此处曾写「15 个里 12 个已迁移、ingest 已迁移」，而 ingest 至今仍有残留（模式 #54：有几处同源是搜索题）。
 
 ### 只读命令行（`limo`，2026-10-04 三期）
 
@@ -569,6 +570,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 上下文窗口默认表 / token 估算 | [core/token.py](backend/app/core/token.py) |
 | 代理豁免判据（本地/内网地址不走代理）+ NO_PROXY 合成 | [core/net.py](backend/app/core/net.py) |
 | 产物自证头编解码 | [core/transcript_meta.py](backend/app/core/transcript_meta.py) |
+| JSON 对象抽取（逐 `{` 试 `raw_decode`，容错前置说明/围栏） | [core/text_utils.py](backend/app/core/text_utils.py)（`chart_renderer` 的私有副本已改为一行委托，有身份断言钉住） |
+| 「最新版笔记正文」（版本序判据） | [generation/doc_text.py](backend/app/generation/doc_text.py)（智能分类与合成共用；`synthesis` 的私有副本已改为委托） |
 | 产物正文协议标记（`limo-block`）解析/剥离/渲染 | [core/artifact_blocks.py](backend/app/core/artifact_blocks.py) ↔ [lib/markdown-markers.ts](frontend/src/lib/markdown-markers.ts)（前后端各一份，共享 fixture `limo-blocks.json` 钉住） |
 | **H2 切分 + `card` 节修饰符判据**（骨架轴的判据） | [services/markdown_sections.py](backend/app/services/markdown_sections.py) ↔ [lib/markdown-sections.ts](frontend/src/lib/markdown-sections.ts)（共享 fixture `h2-sections.json`；⚠️ **H2 × 标记的交叉**住 `limo-blocks.json::h2Cases`，`h2-sections.json` 保持「纯切分」定位） |
 | 图片处理四模式标签 | [lib/imageModes.ts](frontend/src/lib/imageModes.ts) |
@@ -723,7 +726,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **markmap 离线化**：`markmap.ts` 不调用 `markmap-common` 的 `loadCSS`/`loadJS`（动态 CDN 加载会被 Edge WebView2 跟踪防护拦截），KaTeX CSS 在 PreviewArea 中静态 import，hljs 由 react-syntax-highlighter 内联
 - **设置持久化**：`ProviderSettings.tsx` 中引擎/LLM Key 的保存不能仅靠 `onBlur`（组件卸载时不触发），需加 `useEffect` cleanup 用 ref 兜底保存
 - **上下文窗口四层解析**（2026-08-04 C1）：`resolve_context_window()`（`model_resolver.py`）——用户自定义（`enabled_models.context_window`，设置页可编辑）> llm_models 预设 > provider 默认表（`core/token.py` `DEFAULT_CONTEXT`）> 保守 32k。对话预算 `budget = context_window × 0.7`（`core/chat_context.py`），历史按 token 反向裁剪 + 文档分级截断
-- **路由异常标准化**：**18/18 个路由模块已全部完成 AppError 迁移**（2026-10-04 复核：全仓 `grep -l "HTTPException" backend/app/routers/*.py` 结果为空）。迁移时注意模式 #36 —— 真 404/403 必须显式传 `status_code`
+- **路由异常标准化**：**19/19 个路由模块已全部完成 AppError 迁移**（2026-10-11 复核：全仓 `grep -l "HTTPException" backend/app/routers/*.py` 结果为空）。迁移时注意模式 #36 —— 真 404/403 必须显式传 `status_code`
 - **Content-Disposition 中文文件名**：必须用 RFC 5987 `filename*=UTF-8''` 编码，否则 Starlette 会尝试 latin-1 编码 → UnicodeEncodeError
 - **日志函数签名**：`app.core.logging.warning(msg, **kwargs)` 只接受 1 个位置参数 + kwargs，不能用 `%s` 占位符多参数调用。多参数用 f-string
 - **空文本去重碰撞**：空字符串 SHA256 固定为 `e3b0c44...`，两个空导入会误判为重复。TextAdapter 需检查 `text.strip()` 非空
@@ -779,6 +782,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 大列表分批渲染 | 前 60 条 + IntersectionObserver 每次 +60（`root` 绑滚动容器）；**全选 = 全部匹配项（跨分批）**；⚠️ 顺带修 `animationDelay: i*50ms`（第 1000 篇要等 50 秒的**功能性错误**） |
 | ✅ | 批量操作 | `POST /api/transcripts/batch`（删除/打标签/移动）；按 action 显式枚举校验；`failed` 明细；全失败 → 400；store 侧一次加锁一次写盘 |
 | ✅ | Ctrl+K 搜索入口 | 顶栏 `SearchBar` 退化为按钮，与 Ctrl+K 共用 `openDocLibSearch`（展开面板 + 聚焦搜索框 + 宽度复位） |
+| ✅ | 智能分类（2026-10-11） | 选中 N 篇 → `POST /api/classify/preview`（一次 LLM 调用、**零写入**）建议「每篇 → 文件夹 + 标签」→ 对话框审定/编辑 → `POST /api/classify/commit`（一次加锁一次写盘）。**模型永不直接写库**；分类空间**优先复用**既有文件夹（新建上限 5）；取材深度用户选（600/200/仅标题，无笔记篇显式标 `title_only`）；标签喂全库词表要求优先复用；**不降级**（超时/坏 JSON 一律显式报错）；新夹由前端在 commit 前建、commit 只做存在性校验 |
 
 ### 🔗 多篇合成（2026-10-01 建立，2026-10-02 三补）
 
@@ -929,7 +933,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 并发控制 | `ExecutionGuard` 双层信号量（云端 5 + 本地 2），generate/process/retranscribe 已接入 |
 | ✅ | 上下文窗口可配置 | `addModel()` API + ProviderSettings 展示 |
 | ✅ | 日志全链路追踪 | `contextvars.ContextVar` 注入 `request_id`，前端日志面板 |
-| ✅ | 旧格式错误迁移 | 18/18 个路由模块统一 AppError 体系（2026-10-04 复核无 `HTTPException` 残留） |
+| ✅ | 旧格式错误迁移 | 19/19 个路由模块统一 AppError 体系（2026-10-11 复核无 `HTTPException` 残留） |
 
 ### 🧩 产物复用（2026-10-04 一期落地）
 

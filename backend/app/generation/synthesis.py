@@ -53,8 +53,10 @@ from app.core.markdown_assets import ASSET_REF_RE
 from app.core.path_guard import resolve_within
 from app.core.text_utils import sanitize_reference_name, split_into_chunks
 from app.core.token import estimate_tokens
-from app.core.transcript_meta import build_composite_raw_text, strip_meta
-from app.core.artifact_blocks import strip_blocks
+from app.core.transcript_meta import build_composite_raw_text
+# ⚠️ `latest_notes_text` 的判据（版本序 + 两个剥离）**只此一份**，分类管道共用同一份
+# （2026-10-11 从本模块的私有 `_latest_notes_text` 提升为公共）。
+from app.generation.doc_text import latest_notes_text
 from app.generation.budget import (
     MIN_MULTI_CONTEXT_WINDOW,
     input_budget_for,
@@ -985,32 +987,6 @@ def _default_title(sources: list[Source]) -> str:
     return f"{sources[0].title} 等 {len(sources)} 篇对比"
 
 
-def _latest_notes_text(store, tx_id: str) -> str:
-    """取该文档 notes 的**最新版正文**；没有笔记返回空串（设计 §19.1）。
-
-    ⚠️ 「最新版」与 `store.get_markdown` 是同一套判据：`get_markdowns_by_transcript`
-    返回**按 version 降序**的列表，`[0]` 即最新版（即 `{mode}/v{max}.md`）。
-    自己判版本号会与它漂移——版本判据只应存在一份。
-
-    ⚠️ **必须剥掉自证头**：`{mode}/v{N}.md` 的首行是 `<!-- limo-meta ... -->`，而这份
-    文本会作为【文档 i】的正文**进模型 prompt**。不剥的后果有三条：① 与「不给
-    普通 transcript 加头」的边界自相矛盾（那条的理由正是「会进 prompt」）；②
-    `Source.tokens = estimate_tokens(raw_text)`，头会被算进配额；③ 材料里多一类
-    可控文本（历史版本的真实 JSON，非伪造也够呛）。这也是「meta 不计入 tokens」的落点。
-    """
-    try:
-        entries = store.get_markdowns_by_transcript(tx_id, mode="notes")
-    except Exception as e:
-        log.warning("合成：读取笔记失败", doc=tx_id, error=str(e)[:200])
-        return ""
-    if not entries:
-        return ""
-    # ⚠️ **语义标记同剥**：与自证头同理（那段 docstring 的三条理由逐条成立）—— 标记行
-    # 进 prompt 是噪音、会被 `estimate_tokens` 算进配额、且是我们专属的协议元素。
-    # ⚠️ 剥的**只是标记行**，块内文字照旧进 prompt（`strip_blocks` 的契约）。
-    return strip_blocks(strip_meta(entries[0].get("content") or "")).strip()
-
-
 def _load_sources(
     store, doc_ids: list[str], source_mode: str,
 ) -> tuple[list[Source], list[str], dict[str, str]]:
@@ -1042,7 +1018,7 @@ def _load_sources(
         titles[did] = title
 
         if source_mode == "notes":
-            text = _latest_notes_text(store, did)
+            text = latest_notes_text(store, did)
             if not text:
                 # 无笔记 → **排除**（不是错误）。用户显式选了 notes 模式，
                 # 这一篇只是没有该形态的原料而已（设计 §19.4）。
@@ -1333,7 +1309,7 @@ def preview_synthesis(
         if source_mode == "notes":
             notes_text = s.raw_text         # `_load_sources` 读的就是笔记，不重复 IO
         else:
-            notes_text = _latest_notes_text(store, did)
+            notes_text = latest_notes_text(store, did)
         docs.append({
             "id": did,
             "title": title,
