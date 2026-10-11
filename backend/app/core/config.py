@@ -74,6 +74,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
             {"id": "qwen3.8-max",         "name": "Qwen3.8 Max",         "desc": "视觉+视频 · 旗舰 · PDF直传",    "capabilities": ["text", "image", "video", "document"], "context_window": 1000000},
             {"id": "qwen3.8-flash",       "name": "Qwen3.8 Flash",       "desc": "视觉+视频 · PDF直传 · 快",     "capabilities": ["text", "image", "video", "document"], "context_window": 1000000},
             {"id": "qwen3.8-27b",         "name": "Qwen3.8 27B",         "desc": "视觉+视频 · PDF直传 · 开源版", "capabilities": ["text", "image", "video", "document"], "context_window": 1000000},
+            # 2026-09-17 发布的全模态 Flash（官方 /qwen3-8-omni-flash，2026-10-11 抓取）：
+            # 输入 text/image/audio/video、**输出仅文本**，1M 上下文 / 131072 最大输出。
+            # ⚠️ capabilities **只标 image/video**：`audio` 在 LiMo 没有对应能力位（能力位只有
+            # text/image/video/document/reasoning）；`document` **刻意不标**——PDF 直传是
+            # 2026-09-23 逐条查证后的**收窄名单**（只有 qwen3.8-max / flash / 27b 三条），
+            # omni-flash 是后来新增的、**未查证**，不要按「同代应该也能」推。
+            # ⚠️ `reasoning` **不标**：官方确有 thinking 模式（默认开启、可调档），但那走的是
+            # DashScope 自有参数；它认不认 OpenAI 兼容层的 `reasoning_effort` **未查证**。
+            {"id": "qwen3.8-omni-flash",  "name": "Qwen3.8 Omni Flash",  "desc": "全模态 · 文本输出 · 1M", "capabilities": ["text", "image", "video"], "context_window": 1000000},
             # 模态 Text（纯文本，官方页输入模态逐条写明）——qwen3.7-max-2026-06-08 快照版才是
             # 「Image Text Video」，主线刻意只有文本，不要按快照版给它补能力位。
             {"id": "qwen3.7-max",         "name": "Qwen3.7 Max",         "desc": "纯文本 · 旗舰推理",              "capabilities": ["text"],                 "context_window": 1000000},  # 官方 /qwen3-7-max：上下文 1000000，最大输出 131072（2026-10-02）
@@ -95,16 +104,39 @@ DEFAULT_CONFIG: dict[str, Any] = {
             {"id": "qwen3-coder-plus",    "name": "Qwen3 Coder Plus",    "desc": "纯文本 · 代码生成",              "capabilities": ["text"],                 "context_window": 1000000},  # 官方 /qwen3-coder-plus：1000000（2026-10-02）
             {"id": "qwen-vl-max",         "name": "Qwen-VL Max",          "desc": "视觉+视频 · 旗舰图片理解（视频 2秒-20分）", "capabilities": ["text", "image", "video"], "context_window": 131072},   # 官方 /qwen-vl-max：131072（2026-10-02 复核无误）
         ],
+        # 取值来自官方 models 页 developers.openai.com/api/docs/models（2026-10-11 抓取）：
+        # GPT-6 家族三条均为 ~1.05M 上下文 / 128K 最大输出；**超过 272K 输入有长上下文附加费**
+        # （整单 2× 输入 / 1.5× 输出）——与 Claude 全窗标准价不同，配长文时留意。
+        # ⚠️ Sol / Luna / Astra 是官方在用的型号名（非 LiMo 自造），故原样保留。
         "openai": [
-            {"id": "gpt-4o",        "name": "GPT-4o",        "desc": "文本+视觉", "context_window": 128000},
-            {"id": "gpt-4o-mini",   "name": "GPT-4o Mini",   "desc": "文本",       "context_window": 128000},
+            {"id": "gpt-6-astra",   "name": "GPT-6 Astra",   "desc": "文本+视觉 · 旗舰",   "context_window": 1050000},
+            {"id": "gpt-6.1-sol",   "name": "GPT-6.1 Sol",   "desc": "文本+视觉 · 主力",   "context_window": 1050000},
+            {"id": "gpt-6-luna",    "name": "GPT-6 Luna",    "desc": "文本+视觉 · 低价",   "context_window": 1050000},
+            {"id": "gpt-4o",        "name": "GPT-4o",        "desc": "文本+视觉",         "context_window": 128000},
+            {"id": "gpt-4o-mini",   "name": "GPT-4o Mini",   "desc": "文本",              "context_window": 128000},
         ],
+        # 取值来自官方模型总览页 platform.claude.com/docs/zh-CN/models/overview（2026-10-11 抓取）：
+        # **Claude 4.6 及以后全系都是 1M 上下文 / 128K 最大输出**，且官方明确「1M 窗口内无
+        # 长上下文附加费（标准价适用全窗）」——故 sonnet-4-6 / opus-4-8 此前写的 200000 是
+        # 4.5 时代的口径，本轮订正为 1000000。
+        # ⚠️ haiku-4-5 **保持 200000**：它仍是**在售的最低档**（Haiku 5.5 的官方口径尚不一致，
+        # 部分来源称「数周内发布」），本轮不预设未 GA 的型号。
         "anthropic": [
-            {"id": "claude-sonnet-4-6", "name": "Sonnet 4.6", "desc": "文本+视觉", "context_window": 200000},
-            {"id": "claude-opus-4-8",   "name": "Opus 4.8",   "desc": "文本+视觉", "context_window": 200000},
-            {"id": "claude-haiku-4-5",  "name": "Haiku 4.5",  "desc": "文本",       "context_window": 200000},
+            {"id": "claude-fable-5-1",  "name": "Fable 5.1",  "desc": "文本+视觉 · 旗舰",     "context_window": 1000000},
+            {"id": "claude-opus-5-5",   "name": "Opus 5.5",   "desc": "文本+视觉 · 官方推荐默认", "context_window": 1000000},
+            {"id": "claude-sonnet-5-5", "name": "Sonnet 5.5", "desc": "文本+视觉 · 均衡",     "context_window": 1000000},
+            {"id": "claude-sonnet-4-6", "name": "Sonnet 4.6", "desc": "文本+视觉",           "context_window": 1000000},
+            {"id": "claude-opus-4-8",   "name": "Opus 4.8",   "desc": "文本+视觉",           "context_window": 1000000},
+            {"id": "claude-haiku-4-5",  "name": "Haiku 4.5",  "desc": "文本",                "context_window": 200000},
         ],
+        # 取值来自官方模型页 ai.google.dev/gemini-api/docs/latest-model（2026-10-11 抓取）：
+        # gemini-3.8-flash 为 GA 稳定名（**无 `-preview` 后缀**），输入含 text/image/video/audio/PDF，
+        # 上下文 1048576（= 1MiB，官方以 2 的幂标注，与 dashscope 的 1000000 是两种口径，
+        # **不要互相抄**）。思考档位默认 medium（low/medium/high 可调）。
+        # ⚠️ `document`（PDF 直传）**仍不标**：Gemini 的 OpenAI 兼容层不支持 `file` 块，
+        # 理由是逐家查证过的（见 services/doc_understand.py 的渠道表），别因为「页面写支持 PDF 输入」补标。
         "google": [
+            {"id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash", "desc": "文本+视觉+视频", "context_window": 1048576},
             {"id": "gemini-3.5-flash", "name": "Gemini 3.5 Flash", "desc": "文本+视觉", "context_window": 1000000},
             {"id": "gemini-3.1-pro",   "name": "Gemini 3.1 Pro",   "desc": "文本+视觉", "context_window": 1000000},
             {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "desc": "文本+视觉", "context_window": 1000000},
@@ -112,6 +144,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # 智谱取值来自官方模型概览页（docs.bigmodel.cn，2026-10-02 抓取）：该页按「输入模态」
         # 分表，每行给出「上下文窗口 / 最大输出 Tokens」两列——**同样要先分清是哪一列**。
         "zhipu": [
+            # 2026-08 发布的 5.3 两条（官方 zhipuai.cn/zh/news/163，2026-10-11 抓取）：**均为 1M 上下文 /
+            # 128K 输出**（此前多来源把 128K 说成「上下文」，实为**最大输出**那一列 —— 同 dashscope 的坑）。
+            # GLM-5.3 旗舰是**纯文本**（长程 Agent / 编程）；GLM-5.3-Flash 是 5 系首个**原生多模态**
+            # （文本/图片/视频/文件输入，MIT 开源）。
+            # ⚠️ 两者思考模式**始终开启且不可关闭**（low/high/max 三档）——但 `reasoning` 能力位**不标**：
+            # 该位判据是「认 OpenAI 兼容层的 `reasoning_effort`」，智谱走的是自有参数，**未查证**。
+            {"id": "glm-5.3",       "name": "GLM-5.3",     "desc": "纯文本 · 长程 Agent", "context_window": 1000000},  # 官方：1M 上下文 / 128K 出（2026-10-11）
+            {"id": "glm-5.3-flash", "name": "GLM-5.3 Flash", "desc": "原生多模态 · 1M",   "context_window": 1000000},  # 官方：1M 上下文 / 128K 出（2026-10-11）
             {"id": "glm-5.2",       "name": "GLM-5.2",     "desc": "1M上下文", "context_window": 1000000},  # 官方：1M 上下文 / 128K 出（2026-10-02）
             # ⚠️ 131072 → 200000：GLM-4.7 官方标 200K 上下文（最大输出 128K），此前填的是「输出」那列。
             {"id": "glm-4.7",       "name": "GLM-4.7",     "desc": "推理+编程", "context_window": 200000},   # 官方：200K 上下文 / 128K 出（2026-10-02）

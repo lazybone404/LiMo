@@ -84,14 +84,14 @@ describe('getTypeMeta — 既有类型零回归', () => {
  *  ⚠️ 这**不是**真相源，只是「我以为的后端值」——下方第一条用例会打开后端源码
  *  逐键比对，两边一旦漂移就红（模式 #54：同源关系是搜索题，不是记忆题）。 */
 const EXPECTED_BACKEND_FORMATS: Record<string, string[]> = {
-  video: ['toc', 'link', 'screenshot', 'summary', 'chart'],
-  audio: ['toc', 'summary', 'formulas'],
-  webpage: ['toc', 'summary', 'formulas', 'chart'],
-  pdf: ['toc', 'formulas', 'references', 'summary', 'images', 'chart'],
-  docx: ['toc', 'summary', 'images', 'formulas', 'chart'],
-  pptx: ['toc', 'summary', 'images', 'formulas', 'chart'],
+  video: ['toc', 'link', 'screenshot', 'summary', 'chart', 'followup'],
+  audio: ['toc', 'summary', 'formulas', 'followup'],
+  webpage: ['toc', 'summary', 'formulas', 'chart', 'followup'],
+  pdf: ['toc', 'formulas', 'references', 'summary', 'images', 'chart', 'followup'],
+  docx: ['toc', 'summary', 'images', 'formulas', 'chart', 'followup'],
+  pptx: ['toc', 'summary', 'images', 'formulas', 'chart', 'followup'],
   xlsx: [],
-  text: ['toc', 'summary', 'formulas', 'chart'],
+  text: ['toc', 'summary', 'formulas', 'chart', 'followup'],
 }
 
 /** 真去读后端源码（跨语言守卫，同 `appShortcutKeys.test.ts` 的手法）。 */

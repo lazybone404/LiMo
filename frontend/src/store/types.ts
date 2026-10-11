@@ -107,6 +107,8 @@ export interface MarkdownMeta {
   chars?: number
   /** 生成用的模型名（版本列表的「来源」列） */
   source?: string
+  /** 追问建议（预览区笔记末尾的可点 chip）。`undefined` = 这一版没有（不是空数组） */
+  followUps?: string[]
 }
 
 export interface MarkdownVersion {

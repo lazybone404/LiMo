@@ -58,6 +58,7 @@ export function GenPanel() {
   const [formatSummary, setFormatSummary] = useState(saved.formatSummary)
   const [formatScreenshot, setFormatScreenshot] = useState(saved.formatScreenshot)
   const [formatChart, setFormatChart] = useState(saved.formatChart ?? false)
+  const [formatFollowUp, setFormatFollowUp] = useState(saved.formatFollowUp ?? false)
   const [formatFormulas, setFormatFormulas] = useState(saved.formatFormulas ?? false)
   const [formatReferences, setFormatReferences] = useState(saved.formatReferences ?? false)
   const [formatImages, setFormatImages] = useState(saved.formatImages ?? false)
@@ -235,6 +236,7 @@ export function GenPanel() {
   // 持久化
   useEffect(() => {
     saveGenPrefs({ style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot, formatChart,
+      formatFollowUp,
       formatFormulas, formatReferences, formatImages,
       imageAnalyze, imageOptimize,
       selectedModelId, videoUnderstanding, videoDirect, videoInterval, gridCols, gridRows,
@@ -243,6 +245,7 @@ export function GenPanel() {
       dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter,
       imageMode, userNotes, notesExpanded, streamDisplay })
   }, [style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot, formatChart,
+      formatFollowUp,
       formatFormulas, formatReferences, formatImages, imageAnalyze, imageOptimize,
       ocrEnabled, ocrModelId,
       selectedModelId,
@@ -305,6 +308,12 @@ export function GenPanel() {
   // 生成结果状态：error（onError 已报过，onDone 不重复报）/ partial（部分失败，
   // onDone 报"部分失败"而非"生成完成"）/ ok（全部成功）
   const genOutcomeRef = useRef<'ok' | 'error' | 'partial'>('ok')
+  // 本轮追问建议（勾了「追问卡片」才有）。**它只为一件事存在：和 `done` 触发的
+  // `refreshSaved` 抢顺序** —— 追问事件推在 `done` **之后**，而那次 `getMarkdown`
+  // 可能在事件之后才 resolve，把刚写进去的 `followUps` 覆盖回 `undefined`（真实竞态）。
+  // ref 是两边共享的真相：先到先写、后到的读它补上，两个顺序收敛到同一结果。
+  // 每次生成开始时重置为 `null`（上一轮的追问不该粘到这一轮）。
+  const followUpsRef = useRef<string[] | null>(null)
   // 思考链累积：per-taskKey Map（双文档并发生成互不干扰——单 ref + 每次生成重置会
   // 清掉另一文档的思考链，且节流判断产生负数冻结更新）
   const reasoningBuf = useRef<Map<string, { notes: string; polished: string }>>(new Map())
@@ -583,6 +592,7 @@ export function GenPanel() {
     reasoningBuf.current.set(taskKey, { notes: '', polished: '' })  // 思考链清零（per-taskKey）
     cancelledHandled.current = false  // 并行双产物两路 cancelled 事件去重
     genOutcomeRef.current = 'ok'  // 生成结果状态重置
+    followUpsRef.current = null   // 上一轮的追问不能粘到这一轮（见 ref 定义处的说明）
     const doc = useStore.getState().docs.find(d => d.id === capturedId)
     setProcessing(taskKey, { kind: 'generate', title: doc?.title || '' })
 
@@ -593,7 +603,7 @@ export function GenPanel() {
     setStreamBuffer(polishedKey, '')
 
     const formatStr = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
-      formatSummary && 'summary', formatChart && 'chart',
+      formatSummary && 'summary', formatChart && 'chart', formatFollowUp && 'followup',
       formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
     ].filter(Boolean).filter(f => typeMeta.availableFormats.includes(f as string)).join(',')
 
@@ -604,7 +614,7 @@ export function GenPanel() {
     // 丢了功能：它的触发条件是「UI 可见 **且** 不在能力表里」，而自 P0-01 起格式项的
     // UI 可见性直接由能力表派生（`constants.isFormatVisible`），两者互为充要 → 交集恒空。
     const droppedAll = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
-      formatSummary && 'summary', formatChart && 'chart',
+      formatSummary && 'summary', formatChart && 'chart', formatFollowUp && 'followup',
       formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
     ].filter(Boolean).map(String).filter(f => !typeMeta.availableFormats.includes(f))
     if (droppedAll.length > 0) console.warn('[GenPanel] 生成格式被当前类型过滤:', droppedAll, 'sourceType=', typeMeta.sourceType)
@@ -740,7 +750,13 @@ export function GenPanel() {
             // 开始之前拉的快照，模式 #52：成对操作只做了一半）。服务端确认存在才记。
             if (md) useStore.getState().markArtifact(capturedId, mode)
             if (mode === 'notes') {
-              setMarkdownMeta(md ? toMarkdownMeta(md) : null)
+              // ⚠️ **追问竞态**（2026-10-11）：`followup` 事件推在 `done` **之后**，而本
+              // fetch 由 `done` 触发 —— 它可能在事件**之后**才 resolve，把 `onFollowUp`
+              // 刚写进去的 `followUps` 覆盖回 `undefined`（真实竞态，非理论）。故这里在
+              // 赋值前用 ref 补一次：事件到得早 → 这句补回；到得晚 → onFollowUp 自己写。
+              const meta = md ? toMarkdownMeta(md) : null
+              if (meta && followUpsRef.current) meta.followUps = followUpsRef.current
+              setMarkdownMeta(meta)
               if (md) {
                 setCurrentContent(md.content)
                 const prev = useStore.getState().markdownVersions
@@ -789,6 +805,21 @@ export function GenPanel() {
         if (genOutcomeRef.current === 'ok') genOutcomeRef.current = 'partial'
         if (!isSameDoc(capturedId)) return
         addToast(msg, 'error')
+      },
+      onFollowUp(questions, error) {
+        // 追问建议 —— **推在 `done` 之后**（此刻 processingTask 已清、流式 buffer 已删，
+        // 故这里只碰 `markdownMeta`，绝不再动流式状态）。
+        // ⚠️ 用户已切走则**丢弃 UI 更新**（数据已在盘上，切回来时走加载路径拿到）——刻意。
+        if (!isSameDoc(capturedId)) return
+        // ⚠️ 失败必须让用户看见：追问是**用户开了开关的承诺**，静默失败等于「勾了但没有」。
+        //    与对话侧不同，这里没有气泡可挂小字，故走 toast（不进预览区留长期噪音）。
+        if (error) { addToast(error, 'error'); return }
+        if (!questions.length) return
+        followUpsRef.current = questions
+        const meta = useStore.getState().markdownMeta
+        // ⚠️ **必须判 `meta.mode === 'notes'`**：`markdownMeta` 是**当前 tab 那份**，
+        // 用户在等追问的这几十秒里若切到整理版 tab，无条件写会把笔记的追问塞给整理版。
+        if (meta && meta.mode === 'notes') setMarkdownMeta({ ...meta, followUps: questions })
       },
       onCancelled(savedPartial) {
         // 并行双产物：两路各自发 cancelled 事件 → 只处理第一次（第二次 buffer 已清理）
@@ -955,6 +986,7 @@ export function GenPanel() {
                   formatSummary={formatSummary} setFormatSummary={setFormatSummary}
                   formatScreenshot={formatScreenshot} setFormatScreenshot={setFormatScreenshot}
                   formatChart={formatChart} setFormatChart={setFormatChart}
+                  formatFollowUp={formatFollowUp} setFormatFollowUp={setFormatFollowUp}
                   formatFormulas={formatFormulas} setFormatFormulas={setFormatFormulas}
                   formatReferences={formatReferences} setFormatReferences={setFormatReferences}
                   formatImages={formatImages} setFormatImages={setFormatImages}

@@ -22,16 +22,17 @@ let captured: {
     onStatus: (m: string) => void
     onDone: () => void
     onError: (m: string) => void
+    onFollowUp?: (questions: string[], error?: string | null) => void
   }
-  signal: AbortSignal
-  convId?: string
+  /** ⚠️ `streamChat` 的尾部参数已收成 options 对象（第 4 个位置参数不再是 signal） */
+  options: { signal?: AbortSignal; conversationId?: string; followUp?: boolean }
 } | null = null
 
 let listResult: { id: string; title: string }[] = []
 
 vi.mock('../api/chat', () => ({
-  streamChat: (question: string, docIds: string[], callbacks: unknown, signal: AbortSignal, convId?: string) => {
-    captured = { question, docIds, callbacks: callbacks as NonNullable<typeof captured>['callbacks'], signal, convId }
+  streamChat: (question: string, docIds: string[], callbacks: unknown, options: NonNullable<typeof captured>['options']) => {
+    captured = { question, docIds, callbacks: callbacks as NonNullable<typeof captured>['callbacks'], options }
   },
   listConversations: vi.fn(async () => listResult),
   getConversation: vi.fn(async () => null),
@@ -296,9 +297,9 @@ describe('deleteMessage / stopGenerating', () => {
 
   it('stopGenerating abort 活跃请求的 signal', () => {
     useChatStore.getState().sendMessage('问题')
-    expect(captured!.signal.aborted).toBe(false)
+    expect(captured!.options.signal!.aborted).toBe(false)
     useChatStore.getState().stopGenerating()
-    expect(captured!.signal.aborted).toBe(true)
+    expect(captured!.options.signal!.aborted).toBe(true)
   })
 })
 

@@ -36,6 +36,7 @@ from app.generation.prompt_builder import PromptBuilder
 from app.core.artifact_blocks import parse_blocks
 from app.generation.prompt import build_polish_prompt, build_notes_prompt
 from app.generation.prompts import coerce_style
+from app.agent.followup import generate_artifact_followups
 from app.generation.reference_compressor import (
     needs_compression, compress_references_if_needed,
 )
@@ -136,6 +137,53 @@ def _has_chart_fence(text: str) -> bool:
     新增 fig 协议后必须两处同步改，漏一处就变成「明明出了图却报未生成」。
     """
     return any(mark in (text or "") for mark in CHART_FENCE_MARKS)
+
+
+async def _do_followup(store, llm, tx_id: str, tx: dict, notes_content: str,
+                       cancel_event) -> dict:
+    """产出追问建议（**独立第二次调用** → 写旁路文件），返回 `followup` 事件的 payload。
+
+    ⚠️ **只写盘、不推事件** —— 于是非流式端点（不是 async generator，不能 `yield`）
+    也能直接 `await` 它；流式端点用下面的 `_emit_followup` 包一层。三条路径共用这一份
+    实现（模式 #54：各写一遍就是「改了一处、另一处还在旧假设上」）。
+
+    ⚠️ **绝不 `aclose()` llm**：两侧的 llm 都由调用方在 `finally` 里关（对话侧
+    `compress.py` 那个 `aclose` 是因为它**自己新建**了一个 llm，别照抄）。
+    ⚠️ **先写盘、再返回**（顺序不可颠倒）：反过来写盘失败 = 「界面有卡、刷新后没了」。
+    """
+    _qs = await generate_artifact_followups(
+        llm, tx.get("title", ""), notes_content, cancel_event=cancel_event)
+    # ⚠️ **必须按 mode 过滤**：双产物时 notes / polished 几乎同刻写入、版本号也相同，
+    # 不过滤则降序 `[0]` 可能取到 polished 那版（排序不稳定，且**不报错**）。
+    _entries = [e for e in store.list_markdown_entries(tx_id) if e.get("mode") == "notes"]
+    _ver = _entries[0].get("version", 0) if _entries else 0
+
+    _err = None
+    if _ver == 0:
+        # ⚠️ 防御分支（正常路径不可达）：`save_markdown` 在锁内同步更新 `self._index`，
+        #    save 返回后 `list_markdown_entries` 必定可见。而 `v0.followups.json` 是
+        #    **读不回来的垃圾** —— 读取路径按 `version=N` 拼，v0 不是合法版本号。
+        #    故宁可显式报错也不落盘（失败显式化，不做静默妥协）。
+        _err = "无法确定产物版本"
+    elif not _qs:
+        _err = "追问建议生成失败"
+    else:
+        store.save_artifact_followups(tx_id, "notes", _ver, _qs, model=llm.model)
+
+    return {"type": "followup", "mode": "notes", "version": _ver,
+            "questions": _qs or [], "error": _err}
+
+
+async def _emit_followup(store, llm, tx_id: str, tx: dict, notes_content: str,
+                         cancel_event):
+    """流式端点用：产出追问并推 `followup` 事件（**在 `done` 之后**）。
+
+    ⚠️ `parseSSEStream` 读到 reader 关闭才 break ⇒ `done` 之后推的事件前端收得到。
+    ⚠️ 前端分发侧有个同款陷阱：`api/generate.ts` 的 `else if (data.mode)` 会吞掉本事件
+    （payload 恰好带 `mode`）⇒ 前端分支必须插在它**之前**。
+    """
+    payload = await _do_followup(store, llm, tx_id, tx, notes_content, cancel_event)
+    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 def _warn_mismatched_fields(source_type: str, values: dict):
@@ -307,6 +355,10 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         mode_list = [m.strip() for m in _raw_mode.split(",") if m.strip()] if _raw_mode else []
         want_notes = "notes" in mode_list
         want_polished = "polished" in mode_list
+        # 追问卡片（用户勾选的 format 项，2026-10-11）：**不注入 prompt**，由落盘后的
+        # 独立第二次调用产生。⚠️ `formats_list` 在 composite 时已被清空 ⇒ 合成文档
+        # 天然不产追问（同流式端点）。
+        _want_followup = "followup" in formats_list
 
         log.info("Generate start", tx_id=transcript_id, mode=mode_list,
                  style=req.style, source_type=source_type,
@@ -424,6 +476,18 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
                          blocks=_n_blocks, block_types=_block_types)
             else:
                 raise AppError("GEN_INVALID_MODE", f"无法识别的生成模式: {req.mode}", recoverable=False)
+
+            # ── 追问卡片（用户勾选的 format 项）—— 与流式端点共用 `_do_followup` ──
+            # ⚠️ **必须插在 `finally` 的 `await llm.aclose()` 之前**。放到之后 = 追问拿着
+            #    已关闭的连接池失败，且失败被 `_run_followup_llm` 吞掉（那是刻意的，为的是
+            #    不阻塞主流程）⇒ 用户勾了却什么都没有、只剩一条 warning 日志，**零报错**。
+            # ⚠️ 非流式**只写盘、不推事件**（`_do_followup` 而不是 `_emit_followup` 正是
+            #    为此拆的两个函数：本端点不是 async generator，`yield` 不了）。前端走的是
+            #    流式端点，故「这里没有 `followup` 事件」是设计而不是遗漏。
+            # ⚠️ 判据用 `notes_mv is not None and notes_mv.content`：只出 polished 的那条
+            #    分支（`notes_mv` 为 None）天然跳过 —— 追问只作用于笔记（用户已定）。
+            if _want_followup and notes_mv is not None and notes_mv.content:
+                await _do_followup(store, llm, transcript_id, tx, notes_mv.content, None)
 
             return {
                 "id": notes_mv.id if notes_mv else (polished_mv.id if polished_mv else ""),
@@ -566,6 +630,10 @@ async def generate_stream(transcript_id: str, request: Request,
     # 只清一处会让「超时按图表档放宽、实际不生成图表」这种对不上的状态存在。
     if source_type == "composite":
         format_list = []
+    # 追问卡片（用户勾选的 format 项，2026-10-11）：**不注入 prompt**，由落盘后的
+    # 独立第二次调用产生（`_emit_followup`）。⚠️ 上面 composite 已清空 format_list，
+    # 故合成文档天然不产追问 —— 正是要的。
+    _want_followup = "followup" in format_list
     # ⚠️ doc_direct 必须传（此前漏了，非流式那侧是传的）：request_timeout 是 httpx 的
     # read timeout，必须 ≥ 单 chunk 静默超时，否则直传时 SDK 会先于我们的 wait_for
     # 抛超时——异常被下游 except Exception 归到「连接中断」并按那条路重试，
@@ -755,6 +823,12 @@ async def generate_stream(transcript_id: str, request: Request,
                 was_cancelled = False
                 polished_error: str | None = None
                 notes_error: str | None = None
+                # ⚠️ notes 正文的追问用副本：`notes_content` **只在 `if notes_chunks:`
+                # 块内赋值、无预置初始化**，在下面的 done 决策处（块外）引用它会 NameError
+                # （`tests/test_closure_shadowing.py` 防的正是这一类）。预置为空串后，
+                # 「notes 失败/为空 ⇒ 不追问」这个条件被 `_notes_for_followup` 非空判据
+                # **顺带**包住，不必再单独判 notes_chunks / notes_error。
+                _notes_for_followup = ""
                 _queue: asyncio.Queue[dict] = asyncio.Queue()
 
                 async def _run_product(label: str, prompt: str, effort: str | None = None) -> tuple[list[str], bool, str | None]:
@@ -913,6 +987,7 @@ async def generate_stream(transcript_id: str, request: Request,
                     store.save_markdown(mv, file_meta=markdown_meta(
                         mv, tx, formats=format_list, reasoning_effort=reasoning_effort))
                     _auto_title(store, transcript_id, mv.content)
+                    _notes_for_followup = notes_content      # 供 done 决策处产追问（见预置注释）
                     _n_blocks, _block_types = _block_stats(notes_content)
                     log.info("Generate stream done", tx_id=transcript_id, mode="notes",
                              chars=len(notes_content),
@@ -962,6 +1037,15 @@ async def generate_stream(transcript_id: str, request: Request,
                     yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+
+                # 追问建议（勾选 followup）—— 上面三个 done 出口汇到这里的**统一收尾**，
+                # 不插在任一 done 之后（插三处 = 三个可能漏改的点）。
+                # ⚠️ 必须在下面的 finally 之前：追问要用同一个 `llm`（它之后被 aclose）。
+                # ⚠️ `was_cancelled` 时不追问（用户按了停止，不该再花一次调用）。
+                if _want_followup and _notes_for_followup and not was_cancelled:
+                    async for _ev in _emit_followup(store, llm, transcript_id, tx,
+                                                    _notes_for_followup, cancel_event):
+                        yield _ev
                 return
 
             # ── 单产物 ──
@@ -1120,6 +1204,16 @@ async def generate_stream(transcript_id: str, request: Request,
             if _raw_warn:
                 yield f"data: {json.dumps({'type': 'warning', 'kind': 'doc_direct_raw_short', 'message': _raw_warn}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'id': mv.id}, ensure_ascii=False)}\n\n"
+
+            # 追问建议（勾选 followup；整理版原文不做，与「图表只入 notes」同款门控）。
+            # ⚠️ `mv.content` 而非 `content`：续写时前者是 partial + 本次的合并全文，
+            # 追问该基于「用户最终看到的那一份」。
+            # ⚠️ 上面的超时 `return` 与下面的 `except CancelledError` 都到不了这里
+            # （天然不追问）；本段在 finally 之前，`llm` 还活着。
+            if _want_followup and stream_mode != "polished":
+                async for _ev in _emit_followup(store, llm, transcript_id, tx,
+                                                mv.content, cancel_event):
+                    yield _ev
 
             # 视频清理统一在 finally（P0-5）：正常/取消/异常路径都删，防磁盘泄漏
 

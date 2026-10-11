@@ -69,10 +69,30 @@
   margin: 0.6em 0 0.2em;
 }
 
+/* ⚠️ 这是一个 `<button>`（折叠开关），不是 `<div>`（2026-10-11 起）——
+   下面那串是 **UA 默认值覆盖**，少写任何一条外观都会走样：
+   `background`/`border`/`padding` 复位按钮盒子，`font: inherit` 复位字体族与字重
+   （不写就与正文不是同一套字体，看起来像另一块 UI），`text-align`/`width` 让它
+   表现得像一段左对齐的文字而不是一个撑满整行的控件。
+   ⚠️ **`font: inherit` 必须排在 `font-size` 之前** —— 那个简写会把 font-size 一并重置。 */
 .chat-followup-label {
+  display: flex;
+  align-items: center;
+  gap: 0.2em;
+  width: fit-content;
   margin-bottom: 0.35em;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
   font-size: 0.85em;
+  text-align: left;
   color: var(--tk-muted);
+  cursor: pointer;
+}
+
+.chat-followup-label:hover {
+  color: var(--tk-foreground);
 }
 
 /* ⚠️ **纵向单列、不做 flex-wrap**：追问通常是一句完整的话，横向并排会折成

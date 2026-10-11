@@ -20,7 +20,7 @@ import logging
 import re
 from typing import Callable
 
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
@@ -879,6 +879,18 @@ def markdown_to_docx(
     else:
         html = _render_blocks_html(md, _to_html)
     soup = BeautifulSoup(html, "html.parser")
+    # ⚠️ **必须剥掉 HTML 注释**：bs4 的 `Comment` 是 `NavigableString` 的**子类**，
+    #    会命中下面 `elif isinstance(node, NavigableString) and str(node).strip():`
+    #    分支，被当正文段落写进 docx —— Word 里就表现为孤零零一行
+    #    `<!-- limo-meta {…} -->`（模型写进正文的注释同理）。
+    #    ⚠️ 语义分工：注释是**文本源**里的元信息 —— `.md` 导出保留（让离开 `.limo`
+    #    的产物自己说明来历）、HTML 导出保留（本就是 HTML 注释，浏览器不显示）。
+    #    而 docx 是**纯渲染格式**，没有「源码」可留，故不进正文（与「预览所见 =
+    #    导出所得」一致：预览里也不该出现它）。
+    # ⚠️ 剥在**解析之后、取 body 之前**：`soup.body` 在无 `<body>` 标签时会退回
+    #    `soup` 本身，先取 body 再剥会漏掉那些直接挂在根上的注释。
+    for _comment in soup.find_all(string=lambda t: isinstance(t, Comment)):
+        _comment.extract()
     body = soup.body or soup
 
     ctx: dict = {"pending_lang": "", "seen_body": False}

@@ -129,6 +129,10 @@ export interface StreamGenerateCallbacks {
   /** 生成前置阶段提示（如参考文件超出模型上下文正在压缩）——单条，不区分产物。
    *  压缩可能耗时数十秒，用于打消「是不是卡死了」的疑虑 */
   onStage?: (message: string) => void
+  /** 追问建议（用户勾了「追问卡片」）。**推在 `done` 之后**——`parseSSEStream` 读到
+   *  reader 关闭才 break，故这里收得到。`error` 非空表示这一版没产出（超时/模型没按
+   *  格式输出/版本号无法确定），`questions` 为空数组。 */
+  onFollowUp?: (questions: string[], error?: string | null) => void
 }
 
 export function streamGenerate(
@@ -206,6 +210,10 @@ export function streamGenerate(
         } else if (data.type === 'reasoning') {
           // 思考链（带 mode 也不走 onChunk——必须在 data.mode 判断之前）
           callbacks.onReasoning?.(data.text || '', data.mode)
+        } else if (data.type === 'followup') {
+          // 追问建议（payload 带 mode —— **必须在 data.mode 判断之前**，否则会被下面
+          // 那支当成正文 chunk 塞进笔记，且零报错。与 stage / reasoning 同款陷阱）
+          callbacks.onFollowUp?.(data.questions || [], data.error ?? null)
         } else if (data.mode) {
           callbacks.onChunk(data.text || '', data.mode)
         } else if (data.text) {

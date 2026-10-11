@@ -34,6 +34,8 @@ interface Props {
   formatSummary: boolean; setFormatSummary: (v: boolean) => void
   formatScreenshot: boolean; setFormatScreenshot: (v: boolean) => void
   formatChart: boolean; setFormatChart: (v: boolean) => void
+  // 追问卡片（笔记专属 —— 与图表同款：整理版原文不产出）
+  formatFollowUp: boolean; setFormatFollowUp: (v: boolean) => void
   // PDF 专属格式
   formatFormulas: boolean; setFormatFormulas: (v: boolean) => void
   formatReferences: boolean; setFormatReferences: (v: boolean) => void
@@ -192,6 +194,14 @@ export function GenerateOptions(props: Props) {
                 ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
                 : <span className="text-[10px] text-disabled">AI 选结构（9 种）→ 本地绘制 PNG 嵌入</span>}</label>
           )}
+          {isFormatVisible('followup', p.typeMeta) && (
+            <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+              <input type="checkbox" checked={p.formatFollowUp} onChange={e => p.setFormatFollowUp(e.target.checked)} disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
+              <span className="text-[13px]">追问卡片</span>
+              {isPolishedOnly
+                ? <span className="text-[10px] text-disabled">追问仅笔记产出</span>
+                : <span className="text-[10px] text-disabled">读完可点的问题，点了直接问 AI</span>}</label>
+          )}
         </div>
       </div>
     )}
@@ -257,6 +267,14 @@ export function GenerateOptions(props: Props) {
               {isPolishedOnly
                 ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
                 : <span className="text-[10px] text-disabled">AI 选结构（9 种）→ 本地绘制 PNG 嵌入</span>}</label>
+          )}
+          {isFormatVisible('followup', p.typeMeta) && (
+            <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+              <input type="checkbox" checked={p.formatFollowUp} onChange={e => p.setFormatFollowUp(e.target.checked)} disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
+              <span className="text-[13px]">追问卡片</span>
+              {isPolishedOnly
+                ? <span className="text-[10px] text-disabled">追问仅笔记产出</span>
+                : <span className="text-[10px] text-disabled">读完可点的问题，点了直接问 AI</span>}</label>
           )}
           {isFormatVisible('images', p.typeMeta) && (
             <>

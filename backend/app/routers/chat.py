@@ -24,6 +24,7 @@ from app.agent.tools import search_web, fetch_url
 from app.agent.tool_registry import ToolRegistry, ToolDef
 from app.agent.session import SessionManager
 from app.agent.compress import should_compress, compress_history
+from app.agent.followup import generate_followups, should_attempt
 from app.agent.prompts import loader as prompt_loader
 from app.core.artifact_blocks import parse_blocks
 
@@ -190,10 +191,15 @@ async def chat_stream(
     doc_refs: str = Query(""),
     model_id: int | None = None,
     conversation_id: str = Query(""),
+    follow_up: int = Query(0),
     store=Depends(get_store),
     config=Depends(get_config),
 ):
-    """SSE 流式对话 — 实时推送回答 + 工具调用进度 + 自动持久化"""
+    """SSE 流式对话 — 实时推送回答 + 工具调用进度 + 自动持久化
+
+    `follow_up=1` = 用户开启了「追问建议」：回答结束后若模型没自己写可用的 `follow-up`
+    块，由后端**补调一次** LLM 并推 `followup` 事件（见 `agent/followup.py`）。
+    """
 
     doc_list = [d.strip() for d in doc_ids.split(",") if d.strip()]
 
@@ -276,6 +282,9 @@ async def chat_stream(
         refs: list[dict] = []
         seen_ref_ids: set[str] = set()
         thinking_parts: list[str] = []
+        # 追问补调的准入状态（判据见下方 `attempted`）
+        saw_error = False
+        cancelled = False
         async with disconnect_watcher(request, cancel_event):
             try:
                 if compressed_count:
@@ -291,26 +300,54 @@ async def chat_stream(
                         _append_refs(refs, seen_ref_ids, event.get("refs"))
                     elif event["type"] == "thinking":
                         thinking_parts.append(event.get("text", ""))
+                    elif event["type"] == "error":
+                        saw_error = True
+                    elif event["type"] == "done":
+                        # `done` 有四处发出（agent.py：取消 / 错误 / CancelledError / 正常走完），
+                        # 只有「正常走完且未取消」才允许补调追问。
+                        cancelled = bool(event.get("cancelled"))
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
+                answer = "".join(full_answer)
+
+                # ── 追问补调（仅用户开启时）──
+                # 准入判据在 `followup.should_attempt` 里（抽出去是为了让测试直调真实实现，
+                # 而非在测试里复刻这五个条件）。
+                attempted = should_attempt(bool(follow_up), saw_error=saw_error,
+                                           cancelled=cancelled, answer=answer)
+                follow_ups: list[str] | None = None
+                if attempted:
+                    follow_ups = await generate_followups(llm, question, answer, cancel_event=cancel_event)
+
+                # ⚠️ **先落库、再推事件**（顺序不可颠倒）：反过来会让「写库失败」变成
+                # 「前端有卡、刷新后没了」这种自相矛盾的状态；先落库则失败时两边都没有。
                 sessions.append_assistant_message(
                     conversation_id,
-                    "".join(full_answer),
+                    answer,
                     doc_refs=refs or None,
                     tool_calls=tool_calls or None,
                     thinking="".join(thinking_parts) or None,
+                    follow_ups=follow_ups,
                 )
+
+                if attempted:
+                    # ⚠️ 推在 `done` **之后**（此处）：`parseSSEStream` 读到流关闭才 break，
+                    # 前端收得到；而 `done` 一到输入框就已可用，用户不必等这几秒。
+                    # ⚠️ 失败也要推（`questions: []` + `error`）——「开了开关却什么都没有」
+                    # 必须看得出是失败，不是静默。
+                    yield f"data: {json.dumps({'type': 'followup', 'questions': follow_ups or [], 'error': None if follow_ups else '追问建议生成失败'}, ensure_ascii=False)}\n\n"
+
                 # ⚠️ **`blocks` 是本轮唯一不靠肉眼判断的模型行为信号**：`limo-block` 卡片组 /
                 # 追问建议是**模型可选**的输出，遵循率与滥用率都只能在真实流量里看。
                 # 没有这一项，「模型到底用没用」就只能翻聊天记录猜。
                 # ⚠️ 用 `parse_blocks` 计数而不是数子串：正文里讨论本协议时也会出现
                 # `limo-block` 这个词，那不算用了它。
-                answer = "".join(full_answer)
                 blocks = [s for s in parse_blocks(answer) if s["kind"] == "block"]
                 log.info("Chat SSE 完成", conversation_id=conversation_id,
                          answer_len=len(answer),
                          blocks=len(blocks),
                          block_types=",".join(sorted({s["type"] for s in blocks})) or "-",
+                         followups=len(follow_ups or []),
                          tools=len(tool_calls), refs=len(refs), saved=True)
             finally:
                 # 关闭 LLM 连接池（防 httpx client 常驻累积）

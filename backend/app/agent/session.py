@@ -97,8 +97,10 @@ class SessionManager:
         doc_refs: list[dict] | None = None,
         tool_calls: list[dict] | None = None,
         thinking: str | None = None,
+        follow_ups: list[str] | None = None,
     ) -> None:
-        """追加 AI 回复到对话。扩展字段：doc_refs（引用文档）/ tool_calls（工具气泡）/ thinking（思考段）"""
+        """追加 AI 回复到对话。扩展字段：doc_refs（引用文档）/ tool_calls（工具气泡）/
+        thinking（思考段）/ follow_ups（追问建议，独立第二次调用的产物）"""
         conv = self._store.get_conversation(conv_id)
         if not conv:
             return
@@ -109,6 +111,7 @@ class SessionManager:
             doc_refs=doc_refs,
             tool_calls=tool_calls,
             thinking=thinking,
+            follow_ups=follow_ups,
         )
         conv.setdefault("messages", []).append(msg.to_dict())
         conv["updated_at"] = datetime.now().isoformat()

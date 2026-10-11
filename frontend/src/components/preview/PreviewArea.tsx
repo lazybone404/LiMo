@@ -31,12 +31,15 @@ import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { EmptyState } from './EmptyState'
 import { ProcessingPlaceholder } from './ProcessingPlaceholder'
 import { VersionSwitcher } from './VersionSwitcher'
+import { ArtifactMetaBar } from './ArtifactMetaBar'
 import { TranscriptQualityNote } from './TranscriptQualityNote'
 import { ImageResultView } from './ImageResultView'
 import { CopyContentBtn } from './CopyContentBtn'
 import 'katex/dist/katex.min.css'
 import { IMAGE_MODES, IMAGE_MODE_LABELS, type ImageMode } from '../../lib/imageModes'
 import { toMarkdownMeta } from '../../lib/markdownMeta'
+import { ChatFollowUpList } from '../ai-chat/ChatMarkerContent'
+import { useChatStore } from '../../store/chatStore'
 
 /**
  * OCR 空态四项提示的图标 —— 按 mode **键**组织，不用数组下标。
@@ -241,6 +244,24 @@ export function PreviewArea() {
   const setSlot = useStore(s => s.setSlot)
 
   const currentDoc = docs.find(d => d.id === currentDocId)
+  // ⚠️ **必须是 `s.streaming`**（对话正在跑），**不是** `s.generating`（那位的语义是
+  // 「本轮要生成」而非「正在流式」）。两者在同一个 `set` 里、词形相近，极易取错一个 ——
+  // 取错的表现是 chip 的禁用态与 `dispatchSend` 首行 `if (s.streaming) return` **不同源**：
+  // 界面看起来能点，点了却什么都不发生。`artifactFollowUp.test.tsx` 有对照实验钉住。
+  const chatStreaming = useChatStore(s => s.streaming)
+
+  // 追问 chip 点击：**打开 AI 浮窗 + 带着这篇文档直接发问**。
+  // ⚠️ **必须显式传 `docRefs`**：对话气泡里那个 chip 刻意不传（它是当前会话的延续，
+  // 「当前选中文档」由 `dispatchSend` 自动带上），语义正确；而这里是从预览区发起，
+  // 「就这篇文档发问」才是用户的真实意图 —— 不传会退化成「向 AI 提一个孤零零的问题」。
+  const handleFollowUpSelect = useCallback((q: string) => {
+    // ⚠️ 守卫不是防御性习惯：`currentDocId` 的类型是 `string | null`，而没有当前文档时
+    // 追问卡压根不渲染 —— 早退把「类型上可能为空」与「实际不会为空」两件事对齐，
+    // 而不是用 `currentDocId || ''` 去伪造一个不存在的 docId。
+    if (!currentDocId) return
+    useStore.getState().setAiVisible(true)
+    useChatStore.getState().sendMessage(q, [{ docId: currentDocId, title: currentDoc?.title || '' }])
+  }, [currentDocId, currentDoc?.title])
   const sourceUrl = currentDoc?.sourceUrl
   const isVideo = currentDoc?.sourceType === 'video'
   const imageMarkdownComponents = useMemo(() => createMarkdownComponents(sourceUrl, isVideo), [sourceUrl, isVideo])
@@ -806,6 +827,18 @@ export function PreviewArea() {
             />
           ) : (
             <>
+              {/* 产物自证条：这一版是哪一版 / 什么时候生成 / 多少字 / 谁生成的。
+                  ⚠️ 只挂在**只读态**——编辑态下用户在改正文，顶上压一条元数据只是干扰。
+                  ⚠️ 此刻 `markdownMeta` 已是**本 tab 的 mode**（切 tab 由
+                  `perModeMetaRef` 的同步 effect 换成那个 mode 自己的，见其注释），
+                  故不需要在这里再校验 mode。
+                  ⚠️ 流式生成中**不显示**：这时 `markdownMeta` 还是**上一版**的数
+                  （store 只在生成完成时被更新），配着新流入的正文显示是错位读数。 */}
+              {!isStreaming && (
+                <div className="mb-2 px-1">
+                  <ArtifactMetaBar meta={markdownMeta} versions={markdownVersions} />
+                </div>
+              )}
               {/* 内容区工具条：已编辑徽章 + 编辑按钮（Excel 数据摘要走 summary 内容源但不可编辑，方案范围表） */}
               <div className="flex items-center justify-end gap-2 mb-1 px-1 -mt-0.5">
                 {markdownEdited[editMode] && (
@@ -827,6 +860,28 @@ export function PreviewArea() {
               {skeleton === 'card'
                 ? <CardSections sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
                 : <MarkerContent sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />}
+              {/* 追问卡片 —— 生成时勾了「追问卡片」才有的 4~6 个可点问题（点了带这篇
+                  文档直接问 AI）。它是**后端独立补调一次**产出的，住在旁路文件里，
+                  **不在正文、不在导出**，故这里只是把它挂到笔记末尾。
+
+                  ⚠️ **判据走 `TabRegistry.htmlMode`（= 'notes'），不是 `activeView` 字面量**：
+                  本文件别处已踩过这个坑（笔记 tab 的 key 未必叫 `summary`）。用 `htmlMode`
+                  同时也把 Excel 数据摘要那支挡在外面 —— 它走 `summary` 内容源但
+                  `htmlMode !== 'notes'`，而后端同样只给 notes 产追问，**两侧判据同源**。
+                  ⚠️ **流式生成中不渲染**：此刻 `markdownMeta` 还是上一版，配新流入的正文
+                  是错位读数（与上面的 `ArtifactMetaBar` 同款理由）。
+                  ⚠️ **编辑态不渲染**：用户在改正文，末尾挂一排 chip 只是干扰。 */}
+              {!inEditing && !isStreaming
+                && TabRegistry.get(activeView)?.htmlMode === 'notes'
+                && !!markdownMeta?.followUps?.length && (
+                <div className="mt-5 pt-3 border-t border-border-light px-1">
+                  <ChatFollowUpList
+                    items={markdownMeta.followUps}
+                    streaming={chatStreaming}
+                    onSelect={handleFollowUpSelect}
+                  />
+                </div>
+              )}
             </>
           )}
         </>

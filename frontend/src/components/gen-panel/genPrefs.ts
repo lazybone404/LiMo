@@ -5,6 +5,14 @@ export interface GenPrefs {
   selectedCore: string[]               // ["notes","polished"] — 生成产物的复选框
   formatToc: boolean; formatLink: boolean; formatSummary: boolean; formatScreenshot: boolean
   formatChart: boolean
+  /**
+   * 追问卡片：笔记生成完之后，**独立再调一次** LLM，产出 4~6 个「读完可能想问的问题」，
+   * 以可点 chip 的形式补在笔记末尾（点了带这篇文档直接问 AI）。
+   * ⚠️ 它是 format 项（住在「笔记格式」区）但**不进 prompt** —— 与 `formatChart` 那种
+   * 「勾了就往 prompt 里加规范」的项不同，它只驱动「落盘后再调一次」+ 旁路文件。
+   * 默认关 = 零回归。
+   */
+  formatFollowUp: boolean
   /** @deprecated replaced by target_language — kept for old data compat */
   formatTranslate: boolean; formatFormulas: boolean; formatReferences: boolean; formatImages: boolean
   imageAnalyze: boolean; imageOptimize: boolean
@@ -44,6 +52,7 @@ const DEFAULTS: GenPrefs = {
   // 改掉是替他做决定。想要存量也变，得用户先清 `genPrefs` 或手动选一次。
   style: 'plain', selectedCore: ['notes', 'polished'],
   formatToc: true, formatLink: true, formatSummary: true, formatScreenshot: false, formatChart: false,
+  formatFollowUp: false,
   formatTranslate: false, formatFormulas: false, formatReferences: false, formatImages: false,
   imageAnalyze: false, imageOptimize: true,
   ocrEnabled: false, ocrModelId: null,

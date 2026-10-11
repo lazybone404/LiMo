@@ -142,6 +142,23 @@ def has_blocks(md: str) -> bool:
     return "limo-block" in md
 
 
+def has_block(md: str, type_name: str) -> bool:
+    """正文里是否存在**指定 type 的真块**。
+
+    ⚠️ **不能用子串判**（`type_name in md`）：正文里讨论本协议时也会出现 `follow-up`
+    这种词，那是**提到**不是**用了**。`chat.py` 的 `blocks` 统计正因如此走 `parse_blocks`，
+    本函数与它同源。
+
+    ⚠️ 判据是「有**这个 type 的块**」，**不是**「块里能抽出有用内容」—— 后者是各消费点
+    自己的事（例如追问补调要的是 `followup.has_usable_followup`，它在本函数之上再问
+    「块内抽得出问题吗」，因为**空壳块**对它是「不可用」而对本函数是「有」）。
+    """
+    if not has_blocks(md):
+        return False
+    return any(seg["kind"] == "block" and seg["type"] == type_name
+               for seg in parse_blocks(md))
+
+
 def is_known_type(block_type: str) -> bool:
     """该块类型是否在渲染白名单里。
 

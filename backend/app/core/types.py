@@ -183,8 +183,14 @@ class ChatMessage:
     doc_refs: list | None = None      # user @ 的文档 / assistant 引用的文档 [{docId,title}]
     tool_calls: list | None = None    # assistant 工具调用气泡 [{tool,display,summary}]
     thinking: str | None = None       # assistant 思考段
+    # assistant 的追问建议（独立第二次调用的产物，**不进 content**——见 agent/followup.py）
+    follow_ups: list | None = None    # [str, ...] 追问问题文本
 
     def to_dict(self) -> dict:
+        # ⚠️ **这是显式白名单**：不在下面的字段**在写盘那一刻被丢掉**，而症状与前端
+        # 透传点漏一处完全一样（刷新/编辑后卡片消失），排查时会先怀疑前端。
+        # 新增扩展字段时**必须**在这里加一行 —— 它与前端 `chatStore.ts::toBackendMsg`
+        # 是一对（一个管落盘、一个管 rebuild 回写）。
         d: dict = {"id": self.id, "role": self.role, "content": self.content, "timestamp": self.timestamp}
         if self.doc_refs:
             d["doc_refs"] = self.doc_refs
@@ -192,6 +198,8 @@ class ChatMessage:
             d["tool_calls"] = self.tool_calls
         if self.thinking:
             d["thinking"] = self.thinking
+        if self.follow_ups:
+            d["follow_ups"] = self.follow_ups
         return d
 
 

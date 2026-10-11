@@ -13,7 +13,7 @@ import { useStore } from '../../store'
 import { useChatStore, type ChatMsg } from '../../store/chatStore'
 import { Copy, Check, Pencil, RefreshCw, Trash2, Square, Bot, User, Wrench, ChevronDown, ChevronRight, FileText } from 'lucide-react'
 import { stripMarkers } from '../../lib/markdown-markers'
-import { ChatMarkerContent } from './ChatMarkerContent'
+import { ChatMarkerContent, ChatFollowUpList } from './ChatMarkerContent'
 import { SCALES, type ChatScale } from './scale'
 
 interface MessageItemProps {
@@ -123,6 +123,14 @@ export function MessageItem({ msg, scale }: MessageItemProps) {
               <ChatMarkerContent content={msg.content} streaming={!!msg.streaming} statusText={statusText} />
             </div>
           )}
+
+          {/* 追问建议 —— **气泡内部末尾**（正文之后、操作栏之前），视觉上是回答的收尾
+              而不是挂在气泡外的独立 UI。两个来源共用 `ChatFollowUpList`（另一个来源是
+              模型自主写在正文里的 `follow-up` 块，由 `ChatMarkerContent` 渲染）。
+              ⚠️ 两者由后端保证互斥（有可用块就不补调），前端**不再判一次**。 */}
+          {msg.followUps?.length ? <ChatFollowUpList items={msg.followUps} streaming={!!msg.streaming} /> : null}
+          {/* ⚠️ 失败要有落点：开了开关却什么都没有，必须看得出是失败而非「这轮没有」 */}
+          {msg.followUpError ? <div className="mt-1 text-[11px] text-dimmed">{msg.followUpError}</div> : null}
         </div>
 
         {/* 操作栏 + 时间 */}

@@ -449,6 +449,56 @@ assert not viol, "OOXML 元素顺序违规（Word 可能报文件已损坏）：
 print("PASS: 全要素产物的 w:pPr / w:rPr 子元素顺序全部符合 ECMA-376")
 
 
+# ═══════════════════════════════════════════════════════════
+# 9. HTML 注释不进正文（产物自证头 / 模型写的说明性注释）
+# ═══════════════════════════════════════════════════════════
+# 背景：`.md` / `.html` 导出**刻意保留**产物自证头（让离开 `.limo` 的产物自己说明来历；
+# HTML 里它本就是注释，浏览器不显示）。但 docx 是**纯渲染格式**，没有「源码」可留 ——
+# 而 bs4 的 `Comment` 是 `NavigableString` 的**子类**，会命中下面遍历里的
+# `isinstance(node, NavigableString)` 分支被当正文段落写出来，Word 里就表现为
+# 孤零零一行 `<!-- limo-meta {…} -->`（模型写进正文的注释同理）。
+
+COMMENT_MD = """<!-- limo-meta {"type":"artifact","identity":{"mode":"notes","version":1}} -->
+
+# 标题
+
+## 风险
+
+<!-- 无闭合标记，本节按卡片展示 -->
+
+这一节的正文。
+
+```html
+<!-- 代码块里的注释必须保留 -->
+```
+"""
+
+_doc_c = _reload(markdown_to_docx(COMMENT_MD, "注释测试"))
+_text_c = _all_text(_doc_c)
+
+assert "limo-meta" not in _text_c, "产物自证头漏进了 Word 正文"
+assert "无闭合标记" not in _text_c, "模型写的说明性注释漏进了 Word 正文"
+assert "这一节的正文" in _text_c, "剥注释时误删了注释后面的正文"
+assert "标题" in _text_c, "剥注释时误删了标题"
+# ⚠️ 代码块内的注释是另一回事：那是用户**本来就要展示**的代码，必须留住。
+assert "代码块里的注释必须保留" in _text_c, "代码块内的注释被误删（那是用户要展示的内容）"
+print("PASS: HTML 注释不进 Word 正文，且代码块内的注释保留")
+
+# ── 对照实验：证明上一条不是「本来就没有」──
+# 直击根因：bs4 的 `Comment` 是 `NavigableString` 的**子类** —— 不剥的话，它必然被上面
+# 遍历里的 `isinstance(node, NavigableString)` 分支接住、当正文写进 docx。
+# 少了这条，「limo-meta not in text」可能因为别的原因（比如根本没解析出注释）而假绿。
+from bs4 import BeautifulSoup as _BS, Comment as _Comment, NavigableString  # noqa: E402
+assert isinstance(_BS("<!-- x -->", "html.parser").find(string=True), _Comment), \
+    "对照实验失效：bs4 未把注释解析成 Comment，本用例的根因判断有误"
+_raw_soup = _BS("<p>a</p><!-- ZZLEAK --><p>b</p>", "html.parser")
+_leaked = [str(n).strip() for n in _raw_soup.children
+           if isinstance(n, NavigableString) and str(n).strip()]
+assert any("ZZLEAK" in s for s in _leaked), \
+    f"对照实验失效：未剥注释时它没有落进 NavigableString 分支（实际 {_leaked!r}）"
+print("PASS: 对照实验 —— 未剥时注释确实落进 NavigableString 分支（根因成立）")
+
+
 print("\nAll docx export tests done")
 
 

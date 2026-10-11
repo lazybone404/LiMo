@@ -36,20 +36,41 @@ export interface StreamChatCallbacks {
   onUsage?: (usage: { prompt_tokens?: number; completion_tokens?: number }) => void
   onDone: (usage?: { prompt_tokens?: number; completion_tokens?: number }) => void
   onError: (message: string) => void
+  /**
+   * 追问建议（`follow_up=1` 时后端在 `done` **之后**补推的事件）。
+   *
+   * ⚠️ **它晚于 `onDone`** —— 上面的 `receivedDoneOrError` 守卫在 `done` 到达时就已置真，
+   * 故这次「迟到的推送」**不会**被误报成「连接意外断开」。若将来有人把那个守卫改成
+   * 「以流关闭为准」，这里会当场变成「每次追问都额外弹一条连接错误」。
+   *
+   * `error` 非空 = 后端开了开关但没生成出来（**失败要显式**，不能静默当「这轮没有」）。
+   */
+  onFollowUp?: (questions: string[], error?: string | null) => void
+}
+
+/** `streamChat` 的尾部可选参数 —— 收成对象：位置参数已经到 6 个，再加就是「第几个是哪个」的记忆题 */
+export interface StreamChatOptions {
+  signal?: AbortSignal
+  conversationId?: string
+  docRefs?: { docId: string; title: string }[]
+  /** 用户开着「追问建议」→ 带 `follow_up=1`（默认不带 = 零回归，见 `lib/chat-prefs.ts`） */
+  followUp?: boolean
 }
 
 export function streamChat(
   question: string,
   docIds: string[],
   callbacks: StreamChatCallbacks,
-  signal?: AbortSignal,
-  conversationId?: string,
-  docRefs?: { docId: string; title: string }[],
+  options: StreamChatOptions = {},
 ): void {
+  const { signal, conversationId, docRefs, followUp } = options
   const params = new URLSearchParams({ question })
   if (docIds.length > 0) params.set('doc_ids', docIds.join(','))
   if (conversationId) params.set('conversation_id', conversationId)
   if (docRefs && docRefs.length > 0) params.set('doc_refs', JSON.stringify(docRefs))
+  // ⚠️ 关着的时候**根本不设这个参数**（不是 `follow_up=0`）—— 与「改造前逐字相同」
+  // 是同一件事的两种说法，而少一个参数是其中**可被断言**的那种。
+  if (followUp) params.set('follow_up', '1')
 
   // 追踪 SSE 是否正常结束（收到 done/error）— 对齐 generate.ts。
   // 断连时 onDone/onError 都不会触发，若不追踪则聊天 UI 永久卡加载
@@ -71,6 +92,9 @@ export function streamChat(
       if (!reader) { callbacks.onError('无法读取响应流'); return }
 
       await parseSSEStream(reader, (data) => {
+        // ⚠️ **`done` 之后必须继续处理事件**：追问事件就排在 `done` 后面（后端先推 done
+        // 让输入框即刻可用、再补推 followup）。这里现在没有 early return，天然满足——
+        // 加 `followup` 分支时**别顺手**在 `done` 那句上写 `return`。
         if (data.type === 'meta') callbacks.onMeta(data.conversation_id, { context_window: data.context_window, budget: data.budget, price_in: data.price_in, price_out: data.price_out })
         else if (data.type === 'text') callbacks.onText(data.text)
         else if (data.type === 'agent_status') callbacks.onStatus?.(data.message)
@@ -87,6 +111,8 @@ export function streamChat(
         else if (data.type === 'compressed') callbacks.onCompressed?.(data.count)
         else if (data.type === 'done') { callbacks.onUsage?.(data.usage); callbacks.onDone(data.usage) }
         else if (data.type === 'error') callbacks.onError(data.message)
+        // 追问建议（晚于 `done`，见 `onFollowUp` 的注释）
+        else if (data.type === 'followup') callbacks.onFollowUp?.(data.questions ?? [], data.error ?? null)
       })
 
       if (!receivedDoneOrError) {
@@ -116,6 +142,8 @@ export interface ConvMessage {
   doc_refs?: { docId: string; title: string }[]
   tool_calls?: { tool: string; display: string; summary?: string }[]
   thinking?: string
+  /** assistant 的追问建议（**独立第二次调用**的产物，不在 `content` 里） */
+  follow_ups?: string[]
 }
 
 export interface ConvFull extends ConvEntry {
@@ -154,7 +182,7 @@ export async function archiveConversation(id: string, archived: boolean) {
 
 export async function rebuildConversationMessages(
   id: string,
-  messages: { id: string; role: string; content: string; doc_refs?: unknown; tool_calls?: unknown; thinking?: string }[],
+  messages: { id: string; role: string; content: string; doc_refs?: unknown; tool_calls?: unknown; thinking?: string; follow_ups?: unknown }[],
 ) {
   return (await apiFetch(`${BASE}/conversations/${id}/messages`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },

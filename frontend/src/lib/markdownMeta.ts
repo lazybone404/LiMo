@@ -18,6 +18,10 @@ import type { MarkdownMeta } from '../store/types'
  *
  * ⚠️ `chars` / `source` **原样透传（可能是 `undefined`）**：`undefined` 的语义是
  * 「后端没给」，不是「0 字 / 未知模型」——补成默认值等于伪造数据。
+ *
+ * ⚠️ `followUps` 同理原样透传，且**不做「空数组当缺省」的归一**：后端是「有才给键、
+ * 空不给」（`store.get_markdowns_by_transcript`），两者在这里必须保持可区分 ——
+ * `[]` 与 `undefined` 的消费方（PreviewArea 的渲染条件）只判后者。
  */
 export function toMarkdownMeta(md: MarkdownView): MarkdownMeta {
   return {
@@ -28,5 +32,6 @@ export function toMarkdownMeta(md: MarkdownView): MarkdownMeta {
     edited: !!md.edited,
     chars: md.chars,
     source: md.source,
+    followUps: md.followUps,
   }
 }

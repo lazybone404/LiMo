@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-10-11 | **版本**: 0.5.4
+**更新**: 2026-10-11 | **版本**: 0.5.5
 
 ---
 
@@ -11,17 +11,17 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 122（11 子目录：adapters 8 / agent 6 / core 29 / downloaders 1 / engines 15 / generation 17 / llm 4 / routers 20 / storage 2 / utils 6 / services 14）+ `limo_cli/` 9（CLI，独立于 `app/`） |
-| 前端 TS/TSX/CSS 文件 | 206（201 ts/tsx + 5 css；业务 141，测试 64，`setup.ts` 1） |
-| 前端测试文件 | 65（64 测试文件 + `setup.ts`；854 个测试用例，vitest 全绿） |
-| 后端测试文件 | 72（含 `conftest.py` 共享 fixture；2026-10 新增 `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_export_md_images` / `test_export_tab_applicability`） |
+| 后端 Python 文件 | 123（11 子目录：adapters 8 / agent 7 / core 29 / downloaders 1 / engines 15 / generation 17 / llm 4 / routers 20 / storage 2 / utils 6 / services 14）+ `limo_cli/` 9（CLI，独立于 `app/`） |
+| 前端 TS/TSX/CSS 文件 | 214（209 ts/tsx + 5 css；业务 139，测试 69，`setup.ts` 1） |
+| 前端测试文件 | 70（69 测试文件 + `setup.ts`；952 个测试用例，vitest 全绿） |
+| 后端测试文件 | 74（含 `conftest.py` 共享 fixture；2026-10 新增 `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_export_md_images` / `test_export_tab_applicability` / `test_followup` / `test_artifact_followup`） |
 | API 路由模块 | 19 业务模块（+ `__init__.py`，共 20 个 .py） |
 | API 端点 | 91（`@router.` 装饰器计数；含 `/api/cli/*` 七端点） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 17（docs/ 目录 .md 计数：architecture / frontend-patterns / export-pipeline / patterns / 对话协议 / AGENT-ONBOARDING / user-scenarios / plugins / prompts-inventory / BUILD / qianwen-models / ACKNOWLEDGMENTS / code-audit 1-3 + CHANGELOG / STATUS；design/ 另计） |
-| 代码行数 | 后端 app 32,666 + CLI 1,356 / 前端业务 23,565 / 前端测试 10,730（`wc -l` 累加；前端业务不含 `*.test.*` 与 `setup.ts`） |
+| 代码行数 | 后端 app 33,222 + CLI 1,356 / 前端业务 22,641 / 前端测试 11,935（`wc -l` 累加；前端业务 = `src/` 下 ts/tsx **排除 `*.test.*` 与 `setup.ts`**，2026-10-11 按此口径实测重算） |
 
 ---
 
@@ -164,10 +164,10 @@
 | FastAPI Depends 依赖注入 | ✅ 18/19 路由用 `Depends`（未迁：generate/ingest/search；`references.py` 本就不需要） |
 | disconnect_watcher 公共工具 | ✅ 6 端点统一（新增 classify/preview），修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 19/19 路由全量完成，0 处 `HTTPException`（2026-10-11 复核） |
-| 前端测试 | ✅ vitest + 854 tests（64 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/classifyDialog/readingPrefs/readingLayout/docTabs 3 个/字号、接线与快捷键守卫 3 个/版本切换与预览同步 2 个/卡片偏好、切分器、骨架组件 3 个/标记解析、偏好、组件、导出接线 4 个/导出偏好 1 个/onAccent/installWarning） |
+| 前端测试 | ✅ vitest + 893 tests（67 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/classifyDialog/readingPrefs/readingLayout/docTabs 3 个/字号、接线与快捷键守卫 3 个/版本切换与预览同步 2 个/卡片偏好、切分器、骨架组件 3 个/标记解析、偏好、组件、导出接线 4 个/HTML 注释 1 个/**产物元数据 2 个**/导出偏好 1 个/onAccent/installWarning） |
 | 后端测试 | ✅ 72 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io；版本布局 2 个：store_version_layout/store_legacy_migration；导出与网络 7 个：export_by_version/proxy_exemption/youtube_subtitle/markdown_sections/export_cards/export_md_images/export_tab_applicability；**产物标记 3 个**：artifact_blocks/export_blocks/block_prompt；**智能分类 1 个**：classify，57 用例；2026-10-11 代码审查修 `fit_to_budget` 分批预算 + 每批新建额度 + 空词表兜底；同日五轮/六轮补策略矩阵、候补与口袋夹、回显同源、标签清洗同源，+10） |
 | CLI 契约门禁 | ✅ `scripts/check-cli` 16 项全绿（含 3 条负向对照：后端不可达 / 坏 ID / 截断显式化）；`test_query_contract.py` §8 覆盖 `/api/cli/*` 七端点 + 两条对照实验（2026-10-04） |
-| 产物自证头 | ✅ `notes`/`polished`/`process` 落盘带 `<!-- limo-meta -->` 首行（从哪来/怎么来的/是什么/可信度边界四条），`core/transcript_meta.py` 拆出 envelope 层统一编解码；历史无头产物**不判损坏**；编辑保存带回原头；思维导图等派生视图剥头（2026-10-04） |
+| 产物自证头 | ✅ `notes`/`polished`/`process` 落盘带 `<!-- limo-meta -->` 首行（从哪来/怎么来的/是什么/可信度边界四条），`core/transcript_meta.py` 拆出 envelope 层统一编解码；历史无头产物**不判损坏**；编辑保存带回原头；思维导图等派生视图剥头（2026-10-04）。⚠️ **预览侧**（2026-10-11）：自证头信息由**产物自证条**（正文上方一横排带图标小标签：版本/时间/字数/模型）呈现，展示判据收口 `lib/artifactMeta.ts`；纯视图装饰、**不参与导出** |
 | 共享查询层 | ✅ `services/query.py::QueryService` 收口全部读路径（HTTP 与 CLI **同一份**实现）；顺带修掉存活四个月的 `search.py` 双 `prefix` 导致 `/api/api/search`（前端搜索一直 404 而两侧测试全绿，2026-10-04） |
 | 产物语义标记 | ✅ `limo-block` v1（2026-10-10 起，**九种块 + 一种节修饰符**，2026-10-11 扩）：模型写进产物正文的协议元素，前端渲染为轻量强调块 / 内容卡片 + 一键隐藏装饰。**九种块分两族**——六个**语义强调块**（`key-takeaway` / `alert` / `recommend` / `metric` / `steps` / `timeline`，标「这段文字是什么性质」）+ 三个**内容卡片**（`table` / `code` / `image`，标「整块内容自成一体」；**块内是真表格/真代码/真图片，一个字节不动**，只加外壳）。⚠️ **第十种 `card` 不是块而是「节修饰符」**（2026-10-11）：写在 `## 标题` **下一行**、**无闭合标记**，标的是「这一节」——它是骨架轴 `card` 的**唯一触发源**（没有勾选项）。`core/artifact_blocks.py` ↔ `lib/markdown-markers.ts` 前后端各一份、共享 fixture `limo-blocks.json` 钉住。三条不变量（专用标记隔离 / **零残留降级** / 围栏内零触碰）；**无标记产物导出逐字节零回归**。⚠️ 装饰开关（`lib/marker-prefs.ts`，UI 名「内容块装饰」）关掉后内容一字不少、内容卡片**还原成没包过围栏的样子**。⚠️ 顺带修 4 个既有缺陷（导出页 `--tk-*` 令牌注入闸门漏 `paper`+有标记 / Word 把注释泄漏成可见段落 / 合成把标记当模型输入 / `chars` 把标记算进正文字数）；实机验收待用户操作（2026-10-10） |
 | 对话语义标记 | ✅ 同一套 `limo-block` 协议、**另一套类型**（2026-10-11）：`card-group`（并列比较 2–4 个同级对象 → 块内 `###` 各成一张并排卡片）/ `follow-up`（2–4 个下一步问题 → 每项一颗 chip，点了直接发送）/ `info`（信息卡）/ `digest`（摘要卡）——后两种同日补，**规范带总量闸门**（四种合计不超两块）。⚠️ 两侧集合**不相交**，拆成 `ARTIFACT_BLOCK_TYPES` / `CHAT_BLOCK_TYPES` / `KNOWN_BLOCK_TYPES = 并集`（「协议知道」≠「某侧实现了」）；⚠️ **只共享判据不共享渲染器**（`ai-chat/ChatMarkerContent.tsx`，不复用产物侧 `MarkerContent` —— 它会波及全部历史消息）；⚠️ 流式**半截标记行整行抑制**（命名空间感知，只在对话且 streaming 时调用）；消费点：存储/LLM 历史/JSON 导出**保留**，`.md` 导出与复制**剥离**；规范走 `agent/prompts/formats.md`（system prompt 第四层）。⚠️ 顺带修**实时流引用 chips 不出现**（`api/chat.ts` 丢了 `tool_result.refs` 又在等一个不存在的 `ref` 事件）；实机验收待用户操作 |
@@ -250,13 +250,13 @@ backend/app/
 backend/limo_cli/  只读命令行（cli 入口 / commands 七命令 / doctor 诊断 / output 输出契约 / sources 两个传输层 / agents_md 契约文档模板 / exit_codes）
 backend/tests/     后端测试（72 个 .py，含 conftest.py 共享 fixture；test_e2e_smoke 经 collect_ignore 排除）
 frontend/src/
-  components/    UI 组件（ui/ 布局层：SlotLayout 布局引擎 + ActivityBar 活动栏 + PanelStrip 折叠条；preview/ 下 6 个展示组件拆分 + CardSections 卡片骨架 + MarkerContent 标记渲染；ai-chat/ 对话组件 + ChatMarkerContent 对话块渲染；doc-library/ 18 文件拆分）
+  components/    UI 组件（ui/ 布局层：SlotLayout 布局引擎 + ActivityBar 活动栏 + PanelStrip 折叠条；preview/ 下 6 个展示组件拆分 + CardSections 卡片骨架 + MarkerContent 标记渲染 + ArtifactMetaBar 产物自证条；ai-chat/ 对话组件 + ChatMarkerContent 对话块渲染；doc-library/ 18 文件拆分）
   store/         Zustand 状态（types.ts + 7 slices + chatStore + streamBuffers）
   api/           API 客户端（17 文件：core + 域文件 + client.ts barrel + sse/taskManager）
   hooks/         useTaskRunner 等自定义 hook
-  lib/           tabRegistry / contentSources / slotRegistry（持有 SlotDef.component）/ panelToggle（开合判据）/ layout-prefs（侧栏布局偏好）/ slotMetrics / modelCaps / markdown-scan（围栏感知标题扫描 + limo-block 行分类/半截标记判据）/ markdown-sections（H2 与任意层级切分，含 `card` 节修饰符判据）/ marker-prefs（标记装饰开关）/ markdown-markers（limo-block 解析/剥离）/ chat-block-content（追问项抽取）/ card-prefs（骨架轴偏好 + 底/抬升/边微调与 `serializeCardVars`）/ export-prefs（快捷导出偏好，`embedImages` 默认开）/ 主题模块 / health / download / print
+  lib/           tabRegistry / contentSources / slotRegistry（持有 SlotDef.component）/ panelToggle（开合判据）/ layout-prefs（侧栏布局偏好）/ slotMetrics / modelCaps / markdown-scan（围栏感知标题扫描 + limo-block 行分类/半截标记判据）/ markdown-sections（H2 与任意层级切分，含 `card` 节修饰符判据）/ marker-prefs（标记装饰开关）/ markdown-markers（limo-block 解析/剥离）/ chat-block-content（追问项抽取）/ card-prefs（骨架轴偏好 + 底/抬升/边微调与 `serializeCardVars`）/ **artifactMeta（产物元数据展示判据：时间/字数格式化 + 取哪几项；自证条与 VersionSwitcher 共用）** / export-prefs（快捷导出偏好，`embedImages` 默认开）/ 主题模块 / health / download / print
   styles/        卡片骨架 CSS（cards.css）+ 语义标记 CSS（blocks.css，进导出）+ 对话块 CSS（chat-blocks.css，**不进导出**），前后端共用单一真相源 —— 后端导出时从磁盘读它
-  test/          前端测试（64 测试文件 + setup.ts + fixtures 目录，含组件测试；fixtures/h2-sections.json 与 limo-blocks.json 前后端共享）
+  test/          前端测试（67 测试文件 + setup.ts + fixtures 目录，含组件测试；fixtures/h2-sections.json 与 limo-blocks.json 前后端共享）
 docs/            设计文档（13 份）
 design/          引擎实测标准 + 卡片视觉方案（cards.md）
 scripts/         门禁与工具（check-all / check-cli / check-secrets / check-artifact-structure 产物结构统计 等）

@@ -64,6 +64,19 @@ def markdown_version_path(doc_dir: Path, mode: str, version: int) -> Path:
     return doc_dir / mode / f"v{version}.md"
 
 
+def markdown_followup_path(doc_dir: Path, mode: str, version: int) -> Path:
+    """`{doc_dir}/{mode}/v{N}.followups.json` —— 追问建议的**旁路文件**路径。
+
+    ⚠️ 与 `v{N}.md` **并排**（不是目录、不是 index 字段）：让追问天然跟着版本走
+    （v2 有 v2 的）、跟着文档删（`delete_transcript` 的 rmtree 覆盖整个 doc_dir）。
+    ⚠️ `VERSION_FILE_RE` 是 `^v(\\d+)\\.md$`，所以这个 `.json` **不会**被当成一个版本
+    ——它是 `v{N}.md` 的**附属**，不是独立版本。
+    ⚠️ 内容不写进正文 / index / 自证头：那三处都会被导出或「删 index 重建」带出去
+    （`.md`/`.html` 导出刻意保留自证头、index 只是缓存）。
+    """
+    return doc_dir / mode / f"v{version}.followups.json"
+
+
 def list_version_files(doc_dir: Path, mode: str) -> list[tuple[int, Path]]:
     """某 mode 下已有的版本文件，按版本号升序 → `[(N, path)]`。
 
@@ -1184,7 +1197,10 @@ class Store:
         |---|---|---|---|
         | **生成** | generate / epub_pipeline / sample_doc | `None` | 新建 `v{max+1}` |
         | **编辑** | `routers/markdown_edit.py` | `= 用户正在看的那一版 N` | 覆盖 `v{N}` |
-        | **追问**（未来） | — | `= 正在看的 N` | 覆盖 `v{N}`（body 由调用方拼好） |
+
+        ⚠️ 旧表里还有一行「**追问**（未来）→ 覆盖 `v{N}`，body 由调用方拼好」——
+        **已作废**（2026-10-11）：追问建议改走**旁路文件** `v{N}.followups.json`
+        （`save_artifact_followups`），不写正文、**不经过本函数**、不产生版本。
 
         ⚠️ **编辑不产生版本**（用户拍板：「编辑只是用户在那个对应版本上做更改，我们
         不负责」）。覆盖时版本号不变、条目 id 不变——「这一版被改过」这个事实落在
@@ -1340,12 +1356,20 @@ class Store:
                                      mode: str = "", version: int | None = None) -> list[dict]:
         """该文档的产物版本（含正文），**版本降序**（`[0]` 即最新）。
 
-        每条 = index 条目 + `content`（含自证头）+ 三个**从自证头现算**的派生字段：
-        `chars`（纯正文字数）/ `edited` / `source`（生成用的模型）。
+        每条 = index 条目 + `content`（含自证头）+ **四个附加字段**：
+        `chars`（纯正文字数）/ `edited` / `source`（生成用的模型）/ `followUps`（追问建议）。
 
-        ⚠️ 派生字段刻意**不进 index**：index 一删就丢，而这三个全都写在文件里
-        （`generatedAt` / `generated.model` / `edit`）。两处各存一份就是双真相源
+        ⚠️ 前三个从自证头**现算**，刻意**不进 index**：index 一删就丢，而这三个全都
+        写在文件里（`generatedAt` / `generated.model` / `edit`）。两处各存一份就是双真相源
         （模式 #54），且漂移时**没有任何报错**——`chars` 会悄悄与正文对不上。
+
+        ⚠️ `followUps` 是**第四个**，但**不是同一种东西**：它**不在自证头里**，住在
+        **第三个存储位置** `v{N}.followups.json`（旁路文件，见 `markdown_followup_path`）。
+        同样不进 index（理由同上）。⚠️ 别把它当「删了能重算」的派生字段——**删掉旁路
+        文件就真的没有了**，它本身就是真相源。
+        ⚠️ **有才给键、空不给**（与 `chars` 的「缺就不给」同款纪律）：`"followUps"` 缺
+        表示「没生成过」，不是「生成了但为空」——两者在 UI 上都不显示，但把它填成 `[]`
+        会让「有没有这个能力」从数据上再也分不出来。
 
         ⚠️ `version` 过滤是**导出「按版本导出」的落点**（`routers/export.py`）；
         显式指定版本查不到时返回空列表，由调用方决定报错，**不在这里回退到最新版**。
@@ -1370,7 +1394,7 @@ class Store:
                 continue
             text = path.read_text(encoding="utf-8")
             head = parse_artifact_meta(text)[0] or {}
-            result.append({
+            item = {
                 **meta,
                 "content": text,
                 # ⚠️ 标记行不算「正文字数」：它是协议元素，读者看不到它（`strip_blocks`
@@ -1378,8 +1402,73 @@ class Store:
                 "chars": len(strip_blocks(strip_meta(text))),
                 "edited": bool((head.get("edit") or {}).get("edited")),
                 "source": (head.get("generated") or {}).get("model", ""),
-            })
+            }
+            # 追问旁路文件（本来就要逐版读盘，这里是搭车的一次 exists 快判）
+            fu = self.read_artifact_followups(transcript_id, meta.get("mode", ""),
+                                              meta.get("version", 0))
+            if fu:
+                item["followUps"] = fu
+            result.append(item)
         return sorted(result, key=lambda e: e.get("version", 0), reverse=True)
+
+    # ── 追问建议（旁路文件，与 v{N}.md 并排）──
+
+    def save_artifact_followups(self, tx_id: str, mode: str, version: int,
+                                questions: list[str], model: str = "") -> bool:
+        """写 `{doc_dir}/{mode}/v{N}.followups.json`（与 `v{N}.md` 并排）。
+
+        ⚠️ **空列表 / 非法版本直接拒绝**：写一个 `questions: []` 的文件等于制造「生成过
+        但为空」的假象；`version <= 0` 更糟——`v0.followups.json` 是**读不回来的垃圾**
+        （读取路径按 `version=N` 拼，版本号从 index/文件名来，v0 永远不是合法版本）。
+        返回 `False` 让调用方把这件事**显式化**（推 `error` 字段），不静默。
+        """
+        if not questions or version <= 0:
+            return False
+        doc_dir = self.get_doc_dir(tx_id)
+        if not doc_dir:
+            logger.warning("save_artifact_followups: 文档目录不存在 tx=%s", tx_id)
+            return False
+        path = markdown_followup_path(doc_dir, mode, version)
+        payload = {
+            "v": 1,
+            "questions": [q for q in questions if isinstance(q, str)],
+            "generatedAt": datetime.now().isoformat(),
+            "model": model or "",
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._atomic_write(path, json.dumps(payload, ensure_ascii=False, indent=2))
+        except OSError as e:
+            logger.warning("save_artifact_followups: 写盘失败 %s (%s)", path.name, str(e)[:80])
+            return False
+        return True
+
+    def read_artifact_followups(self, tx_id: str, mode: str, version: int) -> list[str]:
+        """读 `{doc_dir}/{mode}/v{N}.followups.json`；**缺 / 坏一律 `[]`，永不抛**。
+
+        ⚠️ 旁路文件损坏**不该挡阅读**（正文本体完好）——所以这里吞掉解析失败、只留
+        warning。这与 `save_artifact_followups` 的「显式拒绝」是**两个方向**的语义：
+        写侧失败要让人知道（承诺没兑现），读侧失败只是少一张卡（内容一字不少）。
+        """
+        if not mode or version <= 0:
+            return []
+        doc_dir = self.get_doc_dir(tx_id)
+        if not doc_dir:
+            return []
+        path = markdown_followup_path(doc_dir, mode, version)
+        # ⚠️ 快判：没勾选过追问的文档**必然**没这个文件，一次 `stat` 就返回
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            logger.warning("read_artifact_followups: 文件损坏，忽略 %s (%s)",
+                           path.name, str(e)[:80])
+            return []
+        qs = data.get("questions") if isinstance(data, dict) else None
+        if not isinstance(qs, list):
+            return []
+        return [q for q in qs if isinstance(q, str) and q.strip()]
 
     # ── ProcessResult CRUD ──
 

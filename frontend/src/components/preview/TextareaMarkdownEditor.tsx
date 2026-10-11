@@ -222,8 +222,10 @@ export function TextareaMarkdownEditor({
         <ToolBtn title="重做 (Ctrl+Y)" onClick={redo} disabled={futureLen === 0}><Redo2 size={14} /></ToolBtn>
         <div className="flex-1" />
         {/* ⚠️ 首行 `<!-- limo-meta -->` 是**系统管理**的自证头（记录产物从哪来/怎么来的），
-            预览区不渲染 HTML 注释，故用户只在源码视图看得到它。这句提示是为了防止两件事：
-            ① 用户以为那是残留垃圾顺手删掉；② 用户改了它却发现「保存后又变回去了」（以库里那份为准）。
+            预览区不渲染 HTML 注释（由 `lib/markdown-plugins.ts::rehypeStripComments` 保证
+            —— 改动那个插件时要一并复核这句提示的措辞），故用户只在源码视图看得到它。
+            这句提示是为了防止两件事：① 用户以为那是残留垃圾顺手删掉；② 用户改了它却发现
+            「保存后又变回去了」（以库里那份为准）。
             文案不得与后端行为冲突：`markdown_edit.py` 会剥掉编辑器里的旧头、以库中头为准。 */}
         <span className="text-[11px] text-disabled mr-3 hidden xl:inline">
           首行 limo-meta 注释由系统维护（预览区不显示，无需修改）

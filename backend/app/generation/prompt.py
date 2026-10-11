@@ -783,15 +783,23 @@ def get_images_format() -> str:
 
 # ── 可用选项（供 capabilities 端点 + 前端渲染）──
 
+# ⚠️ `"followup"`（追问卡片）是**登记但不注入 prompt 的格式项**（2026-10-11）：
+# 它的作用只有两个 —— ① 让前端的勾选项出现（本表是 `genOptions` 的唯一来源，不登记
+# 则勾选项根本不渲染，且 `GenPanel` 的 `.filter(f => availableFormats.includes(f))`
+# 会把值**静默抹掉**）；② 让 `generate.py` 的 `_want_followup` 判据成立。
+# 它**不在** `_ALL_FORMAT_FNS` 里 —— 于是 `_build_hard_constraints` 的 `if not fn:
+# continue` 会静默跳过它，这正是要的（追问由**独立第二次调用**产生，不进正文 prompt）。
+# 见 `agent/followup.py` 模块文档与 `generate.py::_emit_followup`。
+# ⚠️ `xlsx` 保持 `[]`：Excel 走数据摘要管道，没有笔记格式区。
 AVAILABLE_OPTIONS = {
-    "video": ["toc", "link", "screenshot", "summary", "chart"],
-    "audio": ["toc", "summary", "formulas"],
-    "webpage": ["toc", "summary", "formulas", "chart"],
-    "pdf": ["toc", "formulas", "references", "summary", "images", "chart"],
-    "docx": ["toc", "summary", "images", "formulas", "chart"],
-    "pptx": ["toc", "summary", "images", "formulas", "chart"],
+    "video": ["toc", "link", "screenshot", "summary", "chart", "followup"],
+    "audio": ["toc", "summary", "formulas", "followup"],
+    "webpage": ["toc", "summary", "formulas", "chart", "followup"],
+    "pdf": ["toc", "formulas", "references", "summary", "images", "chart", "followup"],
+    "docx": ["toc", "summary", "images", "formulas", "chart", "followup"],
+    "pptx": ["toc", "summary", "images", "formulas", "chart", "followup"],
     "xlsx": [],
-    "text": ["toc", "summary", "formulas", "chart"],
+    "text": ["toc", "summary", "formulas", "chart", "followup"],
 }
 
 # ── 格式函数映射 ──
@@ -851,6 +859,9 @@ def _build_hard_constraints(
     for f in formats:
         fn = format_fns.get(f)
         if not fn:
+            # ⚠️ **这里不是漏了 `followup`**（2026-10-11）：追问卡片是登记在
+            # `AVAILABLE_OPTIONS` 里、但**刻意不进 `_ALL_FORMAT_FNS`** 的格式项，
+            # 它靠这一句被静默跳过。追问由独立第二次调用产生，正文 prompt 一字不加。
             continue
         if f == "screenshot":
             parts.append(fn(has_visual=video_understanding))

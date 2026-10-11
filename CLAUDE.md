@@ -380,12 +380,14 @@ models.dev 是社区聚合数据，实测三类问题：口径混用（1000000 v
 - OCR 预处理（可选）：文档图片先用廉价 OCR 模型提取文字塞回原文，再用文本 LLM 生成
 - **版本归档（2026-10-10 从「两版制」重做）**：每版**独立归档、全部保留**，前端版本下拉（时间 / 字数 / 来源 / 编辑标记）。见下方「产物版本」段
 - 存储：按文档聚合 `{doc_dir}/{mode}/v{N}.md`（**一版一文件**），图片用相对路径 `assets/xxx` 引用，API 返回前统一 `rewrite_asset_urls` 改写为绝对 URL
+- **追问卡片（2026-10-11）**：勾选项在「笔记格式」区（与「图表」同排，**只 notes**）→ 生成完成后**独立再调一次 LLM**（与对话侧同源：`agent/followup.py` 共享 `FOLLOWUP_RULES` 与解析层）→ 落**旁路文件** + 推 `followup` 事件（推在 `done` **之后**）。⚠️ 它登记成 format 项（`AVAILABLE_OPTIONS`，不登记则勾选项不显示 + 提交时被 `.filter` **静默抹掉**）但**刻意不进 `_ALL_FORMAT_FNS`** —— prompt 层零注入，只驱动开关与旁路文件（`_build_hard_constraints` 的 `if not fn: continue` 静默跳过**正是要的**，两处都有「不是漏了」的注释）。⚠️ **那一次调用的思考档位按模型分两支**（`followup.thinking_extra`，判据是能力位 `reasoning`）：**有档位**（内置预设里只有 DeepSeek V4 两兄弟）→ **关闭思考**（形状取自 `llm/service.py` 的 `DISABLE_THINKING_EXTRA`，与 `stream()` 共用一份）；**无档位**（qwen / gpt / claude…）→ **不传**（`extra_body=None`，逐字等于改造前）。⚠️ 有档位时是**关闭**而非 `reasoning_effort="low"` —— 两者服务端互为替代，而 `low` 照样可能把输出预算烧光（分类管道实测）。⚠️ 落点与版本语义见下方「产物版本」段末条与 CHANGELOG
 - **PDF 直传（2026-09-23）**：材料怎么给模型由用户二选一——文本模式（默认，抽出 Markdown 进 prompt）/ **直传模式（PDF 原件以 `file` 块随生成请求发出，本地抽取的正文不进 prompt）**。语义是「**只发原文件**」，不是叠加（叠加 = 同一份内容 token 双花）。实现见 `services/doc_understand.py`（只编码不发起请求）+ `llm/service.py::supports_document`（**按模型标注，刻意不复用 `image` 位**——它 gate 着 AI 分析图片/OCR 模型选择/图片处理用途筛选三处入口）。⚠️ **双真相源**：直传下 rawText 仍是导出/搜索/预览的真相源但不是模型所见的真相源，扫描件上真分叉 → rawText < 100 字符时给完成期 warning。⚠️ **哪些渠道能用是逐家查官方文档得来的结论**（dashscope 只认 qwen3.8 系四个——**任何 qwen-vl / qwen3.5 视觉模型都不在名单**；openai/anthropic/google/zhipu/moonshot/opencode 各有硬理由不标）——**能力位只标查证过的，不要凭印象补标**，逐家结论与理由见 `doc_understand.py` 模块文档。⚠️ 详见「关键模式」#45/#46/#47/#48 与 CHANGELOG
 
 **产物版本**（2026-10-10 重做：两版制 → 版本归档）：
 - **磁盘**：`{doc_dir}/{mode}/v{N}.md`，一版一文件、**全部保留不设上限**。`{mode}.md` / `{mode}.prev.md` 是遗留布局，`Store.__init__` 的 `_migrate_legacy_markdown_layout()` 启动时一次性迁走（**只 `os.replace` 改名**、内容与自证头一字不动、幂等；崩在半途的「顶层仍有 `{mode}.md`」状态接在最大版本号之后 + warning）
 - **头是真相，index 只是缓存**：`identity.version` 由 store **写盘前注入**（= 文件名 N）；`createdAt` / `style` / `source` 从自证头的 `generated.generatedAt` / `params.style` / `model` 还原 → **删一次 `index.json` 重建后，版本序与生成时间仍在**（此前 `_rebuild_index` 显式跳过 `.prev.md` 且从不读文件头，删一次全丢）
-- **三种写入语义**：生成 = 新建 `v{max+1}`（`max` **扫磁盘**取、**与写盘同处一把 `self._lock`**——分开会让并发生成算出同一个 N）｜编辑 = `replace_version=N` **就地覆盖当前版**（版本号不变，**编辑不产生版本**，产品模型 2026-10-10 定）｜追问（未来）= 同编辑
+- **三种写入语义**：生成 = 新建 `v{max+1}`（`max` **扫磁盘**取、**与写盘同处一把 `self._lock`**——分开会让并发生成算出同一个 N）｜编辑 = `replace_version=N` **就地覆盖当前版**（版本号不变，**编辑不产生版本**，产品模型 2026-10-10 定）｜追问建议 = **不产生版本**，落旁路文件（见下条）
+- **追问建议走旁路文件**（2026-10-11）：`{mode}/v{N}.followups.json` 与 `v{N}.md` **并排** —— 不进正文 / 不进 `index.json` / 不进自证头 / **不进导出**（导出只读 `.md` 正文，故这套机制在导出侧**零改动**）。读是**搭车**的（`get_markdowns_by_transcript` 本来就要逐版读盘，多一次 `exists` 快判），**非空才给 `followUps` 键**（缺 ≠ 空数组）。⚠️ 于是它是**第四类「不在 `.md` 文件里的字段」**：`chars`/`edited`/`source` 从自证头**现算**，`followUps` 从**旁路文件读** —— 那段 docstring 若笼统写「派生字段」，后人会以为删了能重算。⚠️ **与版本脱钩是取舍**：编辑正文（就地覆盖 `v{N}.md`）后追问仍基于编辑前的正文 —— 追问是「当时生成的建议」；相应地「关掉勾选重新生成」时新版无、**旧版仍有**（旁路文件按版本各存），这是**预期语义**不是 bug
 - **编辑标记落文件头**（`edit` 键 + `transcript_meta.mark_edited`），不再进 index；生成路径不写它 → 「重新生成自动清除标记」无需额外逻辑
 - **派生字段不进 index**：`chars` / `edited` / `source` 由 `get_markdowns_by_transcript` 读文件头现算（它本来就要逐版读盘，零额外 I/O）；版本列表形状收口 `QueryService.artifact_versions`（此前 generate / markdown_edit 各一份副本，模式 #54）
 - **前端**：`VersionSwitcher` 下拉（≤1 版整块隐藏）；编辑跟随 `markdownMeta.version`；导出带 `version`（HTML/Word/PDF 三条后端路径共用 `backendParams` 一处拼；MD/复制走客户端 store 天然正确），**指定版本查不到时显式报错、不回退最新**
@@ -406,6 +408,7 @@ models.dev 是社区聚合数据，实测三类问题：口径混用（1000000 v
 - 5 个工具：search_docs / lookup_doc / list_docs / search_web / fetch_url
 - 前端独立 `store/chatStore.ts`（不并入主 store）：ChatMsg 模型（streaming/toolCalls/docRefs/thinking）+ 流式状态机 + 会话 CRUD；chatSlice 只留 generating，AI 浮窗状态（aiVisible/aiPos/aiSize）在 uiSlice
 - **消息级文档引用**：docIds = 当前选中文档 + 本条 @ 引用（chatStore 组合去重），不绑定会话
+- **追问建议**（2026-10-11）：用户可选开关（`lib/chat-prefs.ts`，`mbw_chatPrefs`，**默认关 = 零回归**）—— 开启后**由代码保证有一份**：模型自己写了可用的 `follow-up` 块就用它的，没写则由 `agent/followup.py` **独立补调一次** LLM 并推 `followup` 事件（推在 `done` **之后**；`parseSSEStream` 读到流关闭才 break 故收得到，而 `done` 一到输入框即可用）。⚠️ 判据是「有块 **且** 块里抽得出问题」（`has_usable_followup`）**不是**「有块」—— 空壳块（有标记、块内无列表）会让补调被跳过 ⇒ **开了开关却没有卡**（静默违反承诺）。⚠️ `done` 有**四处**发出，只有「正常走完且未取消」才补调（`should_attempt`）。追问**独立存放**（`ChatMsg.followUps` → 会话 `follow_ups`），**绝不写进 `content`** ⇒ 「导出剥离」整类问题不存在；**追问的追问天然成立**（点 chip 走 `sendMessage` → 新请求照带 `follow_up=1`，刻意不设轮次上限）
 
 **合成管道**（2026-10-01 建立，2026-10-02 三补：超窗分层 / 维度可控 / 原料可选。N 篇已入库文档 → 一份跨文档对比综述；**下游回流进生成管道**）：
 
@@ -583,9 +586,13 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 上下文窗口默认表 / token 估算 | [core/token.py](backend/app/core/token.py) |
 | 代理豁免判据（本地/内网地址不走代理）+ NO_PROXY 合成 | [core/net.py](backend/app/core/net.py) |
 | 产物自证头编解码 | [core/transcript_meta.py](backend/app/core/transcript_meta.py) |
+| 产物元数据的**展示判据**（时间/字数格式化 + 取哪几项、什么顺序） | [lib/artifactMeta.ts](frontend/src/lib/artifactMeta.ts)（预览区自证条与 `VersionSwitcher` 共用；`fmtTime`/`fmtChars` 曾在后者里各有一份） |
 | JSON 对象抽取（逐 `{` 试 `raw_decode`，容错前置说明/围栏） | [core/text_utils.py](backend/app/core/text_utils.py)（`chart_renderer` 的私有副本已改为一行委托，有身份断言钉住） |
+| 「**关闭思考**」的 `extra_body` 形状 | [llm/service.py](backend/app/llm/service.py) 的 `DISABLE_THINKING_EXTRA`。⚠️ `stream(disable_thinking=True)` 与 [agent/followup.py](backend/app/agent/followup.py) **共用同一份** —— 后者直调 `client.chat.completions.create`、**走不到 `LLMService`**，故形状必须抽出来（抄一份就是模式 #54）。`test_followup.py` 有源码守卫钉住字面量只此一处 |
 | 「最新版笔记正文」（版本序判据） | [generation/doc_text.py](backend/app/generation/doc_text.py)（智能分类与合成共用；`synthesis` 的私有副本已改为委托） |
 | 产物正文协议标记（`limo-block`）解析/剥离/渲染 | [core/artifact_blocks.py](backend/app/core/artifact_blocks.py) ↔ [lib/markdown-markers.ts](frontend/src/lib/markdown-markers.ts)（前后端各一份，共享 fixture `limo-blocks.json` 钉住） |
+| `limo-block` 存在性 / 按类型判据 | [core/artifact_blocks.py](backend/app/core/artifact_blocks.py) 的 `has_blocks`（有无）/ `has_block(md, type)`（**按类型**）。⚠️ **不要写 `"follow-up" in md` 子串判** —— 正文里讨论本协议时也会出现这个词 |
+| 追问建议的生成层（prompt 拼装 / 列表项抽取 / 清洗 / 去重 / 过短过滤 / 超时与非阻塞） | [agent/followup.py](backend/app/agent/followup.py) 的 `extract_followup_items` / `_run_followup_llm`。**对话侧与产物侧共用同一份**（两侧都从 `FOLLOWUP_RULES` 拼 prompt、都走 `_run_followup_llm`）；后端**抽取层**与前端 `parseFollowUpItems` 逐字同源（共享 fixture `follow-up-parse.json`），而**清洗/去重/过短三条只在服务端**（前端解析器还要服务「模型自主写的块」，那条路上「原样呈现」才对） |
 | **H2 切分 + `card` 节修饰符判据**（骨架轴的判据） | [services/markdown_sections.py](backend/app/services/markdown_sections.py) ↔ [lib/markdown-sections.ts](frontend/src/lib/markdown-sections.ts)（共享 fixture `h2-sections.json`；⚠️ **H2 × 标记的交叉**住 `limo-blocks.json::h2Cases`，`h2-sections.json` 保持「纯切分」定位） |
 | 图片处理四模式标签 | [lib/imageModes.ts](frontend/src/lib/imageModes.ts) |
 | 面板默认宽 / 折叠阈值 | [lib/slotMetrics.ts](frontend/src/lib/slotMetrics.ts) |
@@ -607,7 +614,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **模型解析唯一入口**：`app/core/model_resolver.py` → `resolve_model()`。generate/chat/process 统一调用
 - **引擎映射唯一入口**：`_resolve_doc_engine` 用 `model_name` 查找（非 `provider_id`），支持字符串/数字/列表三种绑定格式
 - **读路径唯一入口**：`app/services/query.py` → `QueryService`（2026-10-04）。分页 / ID 解析 / 版本编排 / meta 装配 / 截断标记全部收口在此，**HTTP 与将来的 CLI import 同一份实现**（不是「写法相似」）。`app/services/*.py` **零 FastAPI import**（同 `services/epub_pipeline.py` 一分层），分层照抄 `routers/epub.py`（薄）→ `services/epub_pipeline.py`（厚）——router 留在 `routers/`，`services/` 不放 router。惰性构造在 `core/dependencies.py::get_query_service`（`main.py` 先建 `Store`、后建 `SearchEngine`，提前构造会拿到 `None` → **静默空结果**）
-- **产物自证头**：`notes`/`polished`/`process` 落盘时首行写 `<!-- limo-meta {json} -->`（从哪来 / 怎么来的 / 是什么 / 可信度边界四条）。编解码收口 `core/transcript_meta.py`（`_parse_envelope` 只认「第一行 + HTML 注释 + JSON + dict + 有 `v`」，`parse_meta`（composite）与 `parse_artifact_meta`（产物）各在 envelope 上做自己的 schema 校验）；装配用 `generation/provenance.py::artifact_meta()` + `PROMPT_VERSION`（**当前 `"5"`**，2026-10-05 一天内连推四档：骨架/文风/风格表改动 → "2"，同日验收修订 → "3"，新增速查区 → "4"，真实重跑验收后收紧材料索引措辞（禁提内部标签名）→ "5"；改任何发给模型的文本都要 bump，纪律见 [prompts-inventory.md](docs/prompts-inventory.md) §13）。**普通 `transcript.md` 刻意不加**（它会进模型 prompt，加头 = 改生成输入）；**无头 ≠ 损坏**；编辑保存必须**带回原头**；**派生视图（思维导图）必须剥头**
+- **产物自证头**：`notes`/`polished`/`process` 落盘时首行写 `<!-- limo-meta {json} -->`（从哪来 / 怎么来的 / 是什么 / 可信度边界四条）。编解码收口 `core/transcript_meta.py`（`_parse_envelope` 只认「第一行 + HTML 注释 + JSON + dict + 有 `v`」，`parse_meta`（composite）与 `parse_artifact_meta`（产物）各在 envelope 上做自己的 schema 校验）；装配用 `generation/provenance.py::artifact_meta()` + `PROMPT_VERSION`（**当前 `"5"`**，2026-10-05 一天内连推四档：骨架/文风/风格表改动 → "2"，同日验收修订 → "3"，新增速查区 → "4"，真实重跑验收后收紧材料索引措辞（禁提内部标签名）→ "5"；改任何发给模型的文本都要 bump，纪律见 [prompts-inventory.md](docs/prompts-inventory.md) §13）。**普通 `transcript.md` 刻意不加**（它会进模型 Prompt，加头 = 改生成输入）；**无头 ≠ 损坏**；编辑保存必须**带回原头**；**派生视图（思维导图）必须剥头**。⚠️ **渲染层另有一条统一规则**（2026-10-11）：**正文里的 HTML 注释一律不显示**（前端 `markdown-plugins.ts::rehypeStripComments` + 后端 `docx_export.py` 剥 bs4 `Comment` 节点），但 **`.md` / `.html` 导出刻意保留**自证头（`_pick_artifact` 用 `raw_content`）—— 两者不矛盾：注释是**文本源**里的元信息，docx 是纯渲染格式没有源码可留
 - **引擎绑定保存合并**：`set_engine_bindings` 合并而非替换 — 保存 OCR 绑定不会删除 ASR 绑定。`cfg["engine_bindings"] = stored`（全量替换）→ `existing.update(stored)`（增量合并）
 - **LLM Key 双向同步**：`update_provider` 自动同步到 `llm.api_key`；generate router 在 `llm.api_key` 为空时从 providers 回退
 - **引擎前端后端驱动**：`GET /api/capabilities` 返回 `fileTypeMap`/`scenarioLabels`/`engineLabels`/`styleLabels` 等完整元数据，前端 `constants.ts` 不再硬编码引擎名/文件类型。新增引擎只需后端注册 + `config.py` builtin_models 加一行 desc，前端自动发现
@@ -701,6 +708,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 **核心约束**：
 - 用户在预览栏看到什么，导出就应该得到什么。禁止导出与预览不一致的内容
+- **HTML 注释一律不进渲染**（2026-10-11）：正文里任意 `<!-- … -->` 在**预览与 Word 里都不显示** —— 前端 `lib/markdown-plugins.ts::rehypeStripComments`（挂进 `REHYPE_PLUGINS` / `REHYPE_PLUGINS_PLAIN`，一处覆盖全部 7 个渲染点）+ 后端 `docx_export.py` 剥 bs4 的 `Comment` 节点（**它是 `NavigableString` 的子类，不剥会被当正文段落写进 Word**）。⚠️ 但 `.md` / `.html` 导出**刻意保留**自证头（`_pick_artifact` 用 `raw_content`）—— 分工是「注释是**文本源**里的元信息，docx 是纯渲染格式没有源码可留」
+- ⚠️ **顺带**（2026-10-11）：自证头的信息在**预览侧**改由**产物自证条**（正文上方一横排带图标小标签）呈现 —— 那是**视图装饰、不参与导出**（同版本切换器 / 编辑按钮），与上一条「导出保留自证头注释」不矛盾：一边是**给人看**的形式，一边是**给 agent 读**的形式。「预览所见 = 导出所得」约束管的是**内容**。⚠️ 插件必须**跳过 `code` / `pre` 子树**（代码块里的注释是 `text` 节点、与正文注释长得一样，但那是用户要展示的代码）
 - **正文里的协议元素（`limo-block`）在 HTML/Word/PDF 上是「转换」、在 md/纯文本上是「剥离」**——前者没有视觉层可谈（用户拍板「导出的文件要干净」），后者要跟随预览（`marker_decor` 开关）。⚠️ **无标记产物必须逐字节零回归**：`data-marker-decor` 不写属性、`blocks.css` 不注入、`render_blocks_html` 无标记时逐字返回渲染结果（三条都写在 `test_export_blocks.py` 里）
 - 前端预览 tab → 内容映射走 `lib/tabRegistry.ts`（`TabDef` 纯数据注册：id/标签/`contentSource`/processingKinds）+ `lib/contentSources.ts`（`CONTENT_GETTERS`：`Record<ContentSource>` getter）。新增 tab = 注册一个 TabDef + 一个 getter，无需改分发逻辑（旧 `TAB_EXPORT` 表已移除）
 - 后端 `GET /export/{id}` 内容源回退链：markdown（notes/polished）→ process_results（图片 extract/table 等）→ transcript（rawText）→ 404
@@ -853,6 +862,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 状态 | 功能 | 说明 |
 |------|------|------|
 | ✅ | 双产物并行 | notes + polished，`asyncio.gather` 并发 |
+| ✅ | 追问卡片（2026-10-11） | 生成前勾选（「笔记格式」区，与图表同排，**只 notes**）→ 生成完成后**独立再调一次 LLM**，笔记末尾列出 4~6 个读完自然会问的问题，点一下**自动打开 AI 浮窗并带着这篇文档发问**。⚠️ 「勾了必定有」靠独立调用而非 prompt 强制；追问落**旁路文件** `notes/v{N}.followups.json`（不进正文 / index / 自证头 / **不进导出** ⇒ 导出侧零改动）；事件推在 `done` **之后**、不吃生成预算；`AVAILABLE_OPTIONS` 登记但 **prompt 层零注入**（`_ALL_FORMAT_FNS` 刻意不含它）；⚠️ 那一次调用的**思考档位按模型分两支**（`thinking_extra`：能力位 `reasoning` 为真 → **关闭思考**；为假 → **不传**）|
 | ✅ | prompt 按类型派发 | 视频/网页→通用，PDF/文档→文档 prompt，Excel→分析+数据摘要 |
 | ✅ | SSE 流式输出 | 逐 token 推送 + cancel_event 真正中断 |
 | ✅ | 自动续写 | `finish=length` → 3 轮续写，temperature 递减 |
@@ -889,7 +899,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 消息级文档引用 | 输入区 @ 选文档 → docRefs chips；docIds = 当前选中 + 本条引用（动态组合）；引用 chips 点击跳转预览区 |
 | ✅ | assistant 引用块 | tool_result.refs → assistant 消息引用文档 chips（点击跳转） |
 | ✅ | 上下文管理 | 模型窗口感知预算（context_window 四层解析）+ 历史 token 反向裁剪 + 长对话 LLM 压缩 + 前端 token 占用进度/费用显示 + clearContext + 429 重试 |
-| ✅ | 回答形态卡片（2026-10-11） | 对话侧 `limo-block`：`card-group`（并列比较 2–4 个同级对象 → 并排卡片）/ `follow-up`（2–4 个下一步问题 → 可点 chip，点了直接发送）/ `info`（信息卡）/ `digest`（摘要卡）——后两种 2026-10-11 补，规范含**总量闸门**（四种合计不超两块）。⚠️ **只共享判据不共享渲染器**（新组件 `ChatMarkerContent`，**不复用**产物侧 `MarkerContent` —— 它会波及全部历史消息）；⚠️ 流式**半截标记行整行抑制**；`.md` 导出与复制**剥离**、`.json`/存储/LLM 历史**保留**；规范走 `agent/prompts/formats.md`（第四层，无条件注入） |
+| ✅ | 回答形态卡片（2026-10-11） | 对话侧 `limo-block`：`card-group`（并列比较 2–4 个同级对象 → 并排卡片）/ `follow-up`（2–4 个下一步问题 → 可点 chip，点了直接发送）/ `info`（信息卡）/ `digest`（摘要卡）——后两种 2026-10-11 补，规范含**总量闸门**（四种合计不超两块）。⚠️ **只共享判据不共享渲染器**（新组件 `ChatMarkerContent`，**不复用**产物侧 `MarkerContent` —— 它会波及全部历史消息）；⚠️ 流式**半截标记行整行抑制**；`.md` 导出与复制**剥离**、`.json`/存储/LLM 历史**保留**；规范走 `agent/prompts/formats.md`（第四层，无条件注入）。⚠️ **追问卡片（2026-10-11）**：升为**用户可选 + 选了必定有** —— 开关（`lib/chat-prefs.ts`，**默认关 = 零回归**）开启后由 `agent/followup.py` **独立补调一次** LLM（Dify 同款）并推 `followup` 事件（推在 `done` **之后**）；判据 `has_usable_followup`（有块**且**抽得出问题，空壳块会让补调被跳过）；追问**独立字段存放**（`ChatMsg.followUps` → 会话 `follow_ups`）**不写进 `content`** ⇒ 导出天然不含候选；**追问的追问天然成立**（点 chip 走 `sendMessage`）；气泡内部末尾 + **默认展开可折叠** |
 
 ### 📊 图表生成（2026-08-16 建立，2026-09-19 语义化布局 + 多图）
 
@@ -952,6 +962,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 文档多标签页（2026-10-05） | 预览区顶部 `DocTabBar`，**VS Code 双标签模型**（单击=预览可替换 / 双击=钉住常驻，全组至多一个预览槽）；`currentDocId` 仍是唯一真相源；**延后提交**让「取消未保存弹窗」天然等于什么都没发生（模式 #62）；右键菜单（关闭/其他/全部/固定）+ 中键关闭 + 溢出横向滚动 + 激活项滚入；**不做** Ctrl+P / 最近列表 / 拖拽排序 / 持久化。⚠️ 顺带修「简略模式双击完全没反应」（`replace_all` 只匹配到详细分支） |
 | ✅ | 正文字号缩放（2026-10-05） | 补上**真实缺口**（vendor 硬写 `.markdown-body{font-size:16px}`，既有 `fontSizeScale` 对正文从未生效）；`Ctrl+滚轮` / `Ctrl+±` / `Ctrl+0`，只作用于 `.preview-area`；归入阅读版式族（`fontScale` 默认 1.0 = 零回归）；⚠️ px 非 em、版宽 `measurePxOf` 同源、滚轮走**原生** `passive:false`（模式 #63/#64）。⚠️ 键盘路径的 WebView2 宿主级加速键由 Rust 侧精准放行（`webview_keys`，模式 #65），**打包版生效与否待实测** |
 | ✅ | 产物章节卡片（2026-10-10；判据 2026-10-11 改由标记决定） | 骨架轴 `data-skeleton="card"`：**被 `card` 节修饰符标过的章节**渲染成一张卡，其余保持普通正文（**混排**，无外层容器）；8 套视觉方案（`styles/cards.css`，19 个 `--card-*` + 4 个 `--sh-*`），**默认 `gpt` = 「加重边线 + 与正文同底色」**（用户 2026-10-11 定），设置页每套带**迷你视觉小样**（`.card-preview`，与 `.md-card` 同一批变量）。⚠️ **默认 `paper` 零回归靠「选择器不匹配」而非「取值相同」**（paper 时两属性都 `removeAttribute`，cards.css 每条规则带 `[data-skeleton="card"]` 前缀）。切分器单一真相源 `markdown-scan.ts::scanHeadingLines`（围栏内 `## ` 不算标题）+ `markdown-sections.ts::splitByH2`（结果多一个 `card` 字段）；`CardSections.tsx` 每张卡各跑现有 `MarkdownPreview`；接入点只有 PreviewArea 的 notes/polished 只读态。**导出跟随**（HTML/Word/PDF，`skeleton`/`card_style`/`card_vars` 参数，PDF 自动跟随）。**逐维度微调（2026-10-11）**：底（基色）/ 抬升 / 边三根旋钮 —— 8 套方案**覆盖不到**的组合（抬升只有 0%/100% 两档、中间一整段为空）；`null` = 跟随方案（默认，零回归），切方案时清空；透明基色下抬升强制归零。⚠️ 详见 CHANGELOG 2026-10-11 |
+| ✅ | 产物自证条（2026-10-11） | 预览区正文上方一横排**图标 + 短文本**小标签：`v{n}` / 生成时间 / 字数 / 模型（lucide `History`·`Clock`·`AlignLeft`·`Cpu`）。它是 `<!-- limo-meta … -->` 自证头在**读者侧**的等价物 —— 上一轮让注释不再漏进渲染后，信息也随之消失，这一条把它以低干扰形态接回来。⚠️ **只取四项、缺就不给**（`params`/`promptVersion`/`sourceRefs` 是给 agent 读的，铺给用户是噪音）；**刻意不含「已编辑」**（同屏工具条已用 warning 色承担，相邻两行说同一件事只是噪音）。⚠️ 版本行按 **`(version, mode)` 双键**取（notes/polished 各自从 v1 起，只按 version 会让「笔记 v2」显示成整理版 v2 的时间，**无报错**）。⚠️ **流式生成中不显示**（`markdownMeta` 还是上一版，配新正文是错位读数）。⚠️ 展示判据收口 [lib/artifactMeta.ts](frontend/src/lib/artifactMeta.ts)（`fmtTime`/`fmtChars` 从 `VersionSwitcher` 搬来，两处共用）；**不动后端**（字段早已从文件头现算派生）；**不参与导出**（视图装饰，同版本切换器） |
 
 ### 🛡️ 安全 & 运维
 

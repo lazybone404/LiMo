@@ -18,6 +18,10 @@
 import { useState } from 'react'
 import { Check, ChevronDown, History, Loader2 } from 'lucide-react'
 import type { MarkdownVersion } from '../../store/types'
+// ⚠️ 时间 / 字数的格式化判据住在 `lib/artifactMeta.ts`（本组件与预览区自证条共用）。
+// 原先它们在本文件里是模块私有的；抽出的理由是自证条要用同一套渲染，各写一份就会
+// 慢慢漂移且无人报错（模式 #54）。函数体逐字搬移，行为不变。
+import { fmtChars, fmtTime } from '../../lib/artifactMeta'
 
 export interface VersionSwitcherProps {
   mode: 'notes' | 'polished'
@@ -25,26 +29,6 @@ export interface VersionSwitcherProps {
   activeMeta: { mode: string; version: number } | null
   loading: boolean
   onSelect: (version: number) => void
-}
-
-/** 本地化到分钟。⚠️ 空串 / 解析失败一律返回空串——`new Date("").toLocaleString()`
- *  会渲染出 `Invalid Date`，那既不准确也不比留白更有用（空 = 这一版没有时间信息）。 */
-function fmtTime(iso: string): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  return d.toLocaleString('zh-CN', {
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit',
-  })
-}
-
-/** 字数标签。⚠️ `undefined` = 后端没给（旧产物 / 测试 mock）→ **不显示**；
- *  `0` = 确实 0 字 → 显示「0字」。把两者都渲染成 `0字` 是在伪造数据。 */
-function fmtChars(n?: number): string {
-  if (n === undefined) return ''
-  if (n < 1000) return `${n}字`
-  return `${(n / 1000).toFixed(1)}k字`
 }
 
 export function VersionSwitcher({ mode, versions, activeMeta, loading, onSelect }: VersionSwitcherProps) {

@@ -248,6 +248,11 @@ export interface MarkdownView {
   chars?: number
   /** 生成用的模型名（版本列表的「来源」列） */
   source?: string
+  /** 追问建议（勾了「追问卡片」时由后端独立补调一次 LLM 产出）。
+   *  ⚠️ **住在第三个存储位置**：前三项从产物文件头的 `<!-- limo-meta -->` 现算，这一个
+   *  从旁路的 `{doc_dir}/{mode}/v{N}.followups.json` 读（不进正文/不进 index/不进自证头）。
+   *  ⚠️ `undefined` = 这一版没有追问（没勾 / 生成失败 / 历史版本）——**与空数组合义不同**。 */
+  followUps?: string[]
 }
 
 export interface ChatResult {

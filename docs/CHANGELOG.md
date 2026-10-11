@@ -6,6 +6,569 @@
 
 ---
 
+## 2026-10-11 — 内置模型预设表更新（48 → 58 条）
+
+### 起因
+
+用户：「更新一下模型表」。先跑了 `scripts/check-models.py`（数据源 models.dev）作为**问题清单**，
+再逐条去官方页核对——**脚本的产出是「该打开哪一页」，不是答案**（本轮又一次印证：
+它报的 `qwen-turbo` 差 7.6 倍，打开官方页一看是它自己混进了 Qwen2.5-Turbo 的 1M，我们的
+131072 是对的）。
+
+### 做什么
+
+| provider | 改动 | 依据 |
+|---|---|---|
+| `anthropic` | **+3**（`claude-fable-5-1` / `claude-opus-5-5` / `claude-sonnet-5-5`，均 1M）；**订正 2**（`claude-sonnet-4-6` / `claude-opus-4-8`：200000 → **1000000**） | 官方模型总览页（2026-10-11 抓取）：**4.6 及以后全系 1M / 128K 出**，且 1M 窗口内**无长上下文附加费**（此前填的是 4.5 时代口径）。`haiku-4-5` **保持 200000**——它仍是在售最低档，Haiku 5.5 官方口径尚不一致，不预设未 GA 的型号 |
+| `openai` | **+3**（`gpt-6-astra` / `gpt-6.1-sol` / `gpt-6-luna`，均 1050000） | 官方 models 页（同上）。⚠️ 与 Claude 不同：**超过 272K 输入有长上下文附加费**（整单 2× 输入 / 1.5× 输出），已写进注释 |
+| `google` | **+1**（`gemini-3.8-flash`，1048576） | 官方 latest-model 页（同上）：GA 稳定名、**无 `-preview` 后缀**。⚠️ 它是 2 的幂口径（1MiB），与 dashscope 的 1000000 **是两种口径，已注明「不要互相抄」** |
+| `dashscope` | **+1**（`qwen3.8-omni-flash`，1M） | 官方 `/qwen3-8-omni-flash`（同上）：2026-09-17 发布，输入 text/image/audio/video、**输出仅文本** |
+| `zhipu` | **+2**（`glm-5.3` / `glm-5.3-flash`，均 1M） | 官方 `zhipuai.cn/zh/news/163`（同上）：5 系首个原生多模态是 Flash 那条；⚠️ 多来源把「128K」说成上下文，**实为最大输出**那一列（同 dashscope 的坑） |
+| `docs/qianwen-models.md` | 修正一句**已过时且与代码不符**的话 | 原文「内置预设 `context_window` **保守设为 131072**」是 2026-10-02 之前的旧口径，而 config 里 dashscope 早已逐条实测（多为 1M）；同句「kimi-k3 未内置预设」也已不成立（它在 `moonshot` 里） |
+
+**覆盖率**：`check-models.py` 从 48 条 / 26 条有记录（54%）→ **58 条 / 36 条（62%）**。
+
+### 为什么这么设计（这一轮的取舍）
+
+- **能标的才标，不能标的一律不标**（能力位铁律）：
+  - `qwen3.8-omni-flash` **只标 `image` / `video`** —— `audio` 在 LiMo **没有对应能力位**（只有
+    text/image/video/document/reasoning）；`document`（PDF 直传）**刻意不标**：那份名单是
+    2026-09-23 逐条查证后的**收窄名单**（只有 `qwen3.8-max` / `flash` / `27b`），**同代 ≠ 同名单**；
+    `reasoning` **也不标**：它确有 thinking 模式，但那走 DashScope 自有参数，认不认 OpenAI
+    兼容层的 `reasoning_effort` **未查证**。
+  - `glm-5.3` 两条同理**不标 `reasoning`**（官方说「思考始终开启、low/high/max 三档」，
+    但参数名与兼容层是否透传未查证）。
+  - `gemini-3.8-flash` **不标 `document`** —— 页面写「支持 PDF 输入」不等于兼容层认 `file` 块，
+    理由见 `services/doc_understand.py` 的渠道表。
+- **按既有风格保留旧模型、不做静默删除**：Claude 4.6/4.8、GPT-4o 系都留着（老用户已启用的配置
+  不该凭空消失），只在**确认下架**时才标 `retired`。
+- **`zhipu` 新增条目不写 `capabilities` 字段**：与同段既有条目（`glm-5.2` / `glm-4.7`）保持一致，
+  避免在「未查证能力位」和「风格一致」之间只挑一边。
+
+### 待核（本轮**刻意没改**，别当成遗漏）
+
+| 项 | 为什么不动 |
+|---|---|
+| `qwen-vl-ocr-latest` **可能已于 2026-10-10 下线** | 搜到一条下线通知（蚂蚁数科 DTMaaS 平台），但阿里云**计费页仍列着它**（0.3 元/M）——**两条证据冲突**。⚠️ 它是 **OCR 默认绑定模型**（未绑定时自动绑），动它等于动功能行为，**必须由官方页确认后再改**（或直接问用户） |
+| `qwen3.8-27b` / `qwen3.5-ocr` / `qwen3-vl-flash` 在 models.dev「查无」 | 这四条都是 2026-10-02 **逐条打开官方页确认过**的；models.dev 覆盖率仅 54%、**缺口正落在最新/最冷门模型上** —— 「查无」不构成下架证据 |
+| `gemini-3.1-pro` 同样查无 | 同上，无其他证据，不动 |
+| `qwen-turbo` / 4 条 MiB 口径差 / `glm-4.7` 的 204800 | 前者已核实官方就是 131072（**脚本错**）；后几条是 1000000 vs 1048576 的 2 的幂口径差，**不是错** |
+| 价格 / `max_tokens` 字段 | 项目既定决策：预设不填价格（预置模型看不到费用）、`max_tokens` 硬编码 65536 不分模型 |
+
+### 影响范围
+
+- **零代码逻辑改动**：只动 `DEFAULT_CONFIG["llm_models"]` 数据。既有用户配置经
+  `_sync_builtin_models` 增量补入新条目（**不覆盖**用户已改过的字段）。
+- 设置页/`capabilities` 的模型列表变长（+10），新增条目的上下文窗口按上表取值。
+- 守卫：`tests/test_check_models.py`（`PROVIDER_MAP` 同步）+ `test_config_io.py`（`llm_models`
+  类型守卫）等 **69 条全绿**。
+- ⚠️ **本条目不含版本号变更**（那是 `sync-version.py` 的事，不因「改了数据」自动发生）。
+
+---
+
+## 2026-10-11 — 追问那一次调用：思考档位按模型分两支（有档位的关闭，没档位的不传）
+
+### 起因
+
+用户两条：
+
+> 「关于追问的思考强度直接关闭或者是开最低」
+> 「其他模型的如果有的话就搞最低没有的话就默认」
+
+合起来即：**按模型分两支** —— **有思考档位的压到最低，没有档位的走默认（什么都不传）**。
+
+### 做什么
+
+| 位置 | 改动 |
+|---|---|
+| `app/llm/service.py` | 新增模块级常量 **`DISABLE_THINKING_EXTRA = {"thinking": {"type": "disabled"}}`** —— 「关闭思考」的 extra_body 形状**全仓唯一一份**；`stream()` 里的 `if disable_thinking:` 分支改为 `_extra.update(DISABLE_THINKING_EXTRA)`（形状一字不变，只是搬了家） |
+| `app/llm/__init__.py` | 导出 `DISABLE_THINKING_EXTRA`（加进 import 行与 `__all__`） |
+| `app/agent/followup.py` | 新增模块级判据 **`thinking_extra(llm)`** → 有档位返 `DISABLE_THINKING_EXTRA`，无档位返 `None`；`_run_followup_llm` 的 `create(...)` 加 `extra_body=thinking_extra(llm)` |
+| `tests/test_followup.py` | 新增 3 条：有档位关闭且**不传**档位（含 `is` 身份断言）／无档位一个字段都不塞／**源码守卫**（`'"type": "disabled"'` 全仓只该出现在 `llm/service.py`）；`FakeLLM` 加 `supports_reasoning` 参数 |
+| `tests/test_artifact_followup.py` | 同一条判据在**产物侧**再钉一次；替身改为记录**完整实参**（`followup_calls`），既有断言仍读 `followup_prompts` |
+
+**判据是模型能力位 `reasoning`**（= 认 `reasoning_effort`），内置预设里**只有 DeepSeek V4
+两兄弟**带它 —— 与项目既有原则一致（能力位由**模型**标注，不按 provider 判断）。
+
+### 为什么这么设计
+
+- **「有档位的搞最低」落地成「关闭」而不是 `reasoning_effort="low"`**：两者在服务端
+  **互为替代**（同传被校验拒绝），而「最低档」的**彻底形式**就是关闭。依据是分类管道的
+  实测教训 —— `low` 照样可能把整个输出预算烧在推理链上（90 篇时正文 0 字符、`finish=length`，
+  见 `classifier.py` 的 `CLASSIFY_BATCH_SIZE` 注释）：**降档救不了，关掉才行**。
+- **追问恰好是「关掉无损失」的那类任务**：它是「把读过的内容列成几个问题」——**纯生成、
+  推理无产出**，而代价是双份的：token 预算 + **首 token 的等待**（用户刚看到 `done`，
+  这张卡越晚到越像卡住）。
+- **没档位的模型**（qwen / gpt / claude…）**不传**：它们本就没有「思考强度」这个概念，
+  塞未知字段通常被忽略，但**没有的东西不该假装有**；而且 `None` 逐字等于改造前的行为
+  （**零回归**）。
+- **为什么把形状抽成 `llm/service.py` 的模块级常量**：`_run_followup_llm` **直调
+  `client.chat.completions.create`**，走不到 `LLMService.stream()` —— 那里 `disable_thinking=True`
+  的机制**够不着它**。把形状抄一份过去正是模式 #54（一份判据住多处，改一处漏一处，
+  且两处行为分叉时**都不报错**）。`test_followup.py` 的源码守卫就是在钉这一点。
+- **为什么把判据抽成 `thinking_extra(llm)` 函数**：让测试**直调真实实现**，而不是在测试里
+  复刻 `DISABLE_THINKING_EXTRA if llm.supports_reasoning else None` 这个表达式（同
+  `should_attempt` 的纪律 —— 复刻的表达式正是「改了一处、另一处还在旧假设上」的来源）。
+
+### 测试
+
+- `pytest tests/test_followup.py tests/test_artifact_followup.py` → **82 passed**（原 78 + 4 新）
+- `python tests/test_effort.py` 全 PASS（`disable_thinking` 的 canonical 形状与
+  `reasoning_effort` 互斥两条既有断言仍绿 ⇒ `_extra.update()` **没有改变形状**）
+- **对照实验 1**：`thinking_extra` 改成无条件返回 `DISABLE_THINKING_EXTRA` →
+  「无档位的模型一个字段都不塞」两条红 ✓
+- **对照实验 2**：调用点换成手写字面量 `{"thinking": {"type": "disabled"}}` →
+  **4 条红**（两条身份断言 + 无档位那条 + 源码守卫）✓；还原后 82 passed，
+  且 `grep -c '"type": "disabled"' app/agent/followup.py` = **0**（副本清零）
+
+### 影响范围
+
+- **产物字节零变化**：只改**调用参数**、不改发给模型的正文 prompt ⇒ **不 bump
+  `PROMPT_VERSION`**（同 `_run_followup_llm` 的既定纪律）。
+- **无档位模型逐字零回归**（`extra_body=None`）；**有档位模型**（DeepSeek V4）的追问
+  从「默认开启思考」变成「关闭思考」—— 这正是本轮要的效果（更快出卡、更省 token）。
+- **对话侧与产物侧同时生效**（两侧共用 `_run_followup_llm`，一处改两条路都得）。
+- **文档**：`prompts-inventory.md` §9.6 的「参数」行 + 附录 B 温度表（新增「追问」一行，
+  它是**唯一不经 `LLMService`** 的调用）+ 附录 A 清单行补 `thinking_extra`。
+
+---
+
+## 2026-10-11 — 产物侧追问卡片：生成前勾选，笔记末尾长出可点的问题
+
+### 起因
+
+上一条把**对话侧**的追问升级成了「用户可选 + 选了必定有」。用户随即提了三条：
+
+> 「有个问题就是按钮你放在那不应该和生成图表那些的话一起吗」
+> 「其实除了 ai 对话的，生成产物侧也可能需要做这个」
+> 「就是用户生成之前是否勾选生成追问卡片，剩下的应该和我说的之前的机制差不多」
+
+即：**勾选项该在生成面板的「笔记格式」区**（与「图表」同排），而不是只长在对话输入框上；
+产物这一侧同样需要。**机制照搬对话侧**（独立第二次调用、失败显式、独立存放），
+**落点全新**（产物有版本、有导出、有文档库 —— 对话那些约束一个都不适用）。
+
+### 做什么
+
+一个勾选项 + 一次独立调用 + 一个旁路文件。
+
+| 位置 | 改动 |
+|---|---|
+| [agent/followup.py](../backend/app/agent/followup.py) | 把 8 条条款抽成 `FOLLOWUP_RULES`（两个 prompt 共用，避免「改一条要记得改两处」）；新增 `ARTIFACT_FOLLOWUP_PROMPT` / `build_artifact_followup_prompt` / `_run_followup_llm`（超时 / 不 aclose / 取消不发起 / 吞失败 —— 两侧共用）；`generate_followups` 改为薄封装 + 新增 `generate_artifact_followups`。⚠️ **与对话侧同文件**：分家会把「共享条款与解析层」重新变成跨目录的两份 |
+| [generation/prompt.py](../backend/app/generation/prompt.py) | `AVAILABLE_OPTIONS` 七类各加 `"followup"`（`xlsx` 保持 `[]`）；**刻意不进 `_ALL_FORMAT_FNS`**（见下） |
+| [storage/store.py](../backend/app/storage/store.py) | `markdown_followup_path()` + `save_artifact_followups()` + `read_artifact_followups()`；`get_markdowns_by_transcript` 逐版搭车读（**非空才给键**）；删掉 `save_markdown` docstring 里已作废的「追问（未来）→ 覆盖 v{N}」一行 |
+| [routers/generate.py](../backend/app/routers/generate.py) | `_do_followup`（返回 payload）+ `_emit_followup`（payload → SSE 行），**三条路径共用**：双产物插在三个 `done` 出口汇到的统一收尾、单产物插在 `yield done` 之后、非流式插在 `finally: aclose()` **之前** |
+| [genPrefs.ts](../frontend/src/components/gen-panel/genPrefs.ts) / [GenPanel.tsx](../frontend/src/components/gen-panel/GenPanel.tsx) / [GenerateOptions.tsx](../frontend/src/components/gen-panel/GenerateOptions.tsx) | `formatFollowUp` 状态 + 持久化 + `formatStr` 拼装 + 勾选项（**两处**「笔记格式」区各一行，`isPolishedOnly` 时 disabled 并说明「追问仅笔记产出」） |
+| [api/core.ts](../frontend/src/api/core.ts) / [store/types.ts](../frontend/src/store/types.ts) / [lib/markdownMeta.ts](../frontend/src/lib/markdownMeta.ts) | `MarkdownView.followUps` / `MarkdownMeta.followUps` / `toMarkdownMeta` 一行透传 —— **只改这一处，8 个调用点全部自动获得**（那正是该文件存在的理由） |
+| [api/generate.ts](../frontend/src/api/generate.ts) | `onFollowUp` callback + `data.type === 'followup'` 分支，**必须排在 `else if (data.mode)` 之前**（见下） |
+| [ai-chat/ChatMarkerContent.tsx](../frontend/src/components/ai-chat/ChatMarkerContent.tsx) | `ChatFollowUpList` 加两个**可选** prop（`label` / `onSelect`），缺省时行为逐字不变 ⇒ 对话侧零回归 |
+| [preview/PreviewArea.tsx](../frontend/src/components/preview/PreviewArea.tsx) | 笔记 tab 末尾挂 `ChatFollowUpList`；`onSelect` = 打开 AI 浮窗 + **显式带 `docRefs`** + 发送 |
+
+### 为什么这么设计
+
+**① 追问由独立第二次调用产生，不新增产物侧 `limo-block` 类型。** 三条理由，逐条都独立成立：
+（a）「勾了必定有」是**代码承诺**，模型自主写块是概率、且失败静默（用户分不清是没写还是坏了）；
+（b）产物侧九种块判的是「**这段内容该不该被强调**」，而追问是**用户开关驱动**的 ——
+性质不同，混进来只会让那份「无条件注入的块规范」再长一截；
+（c）追问不进正文 ⇒ **导出这一整类问题不存在** —— `.md` / 纯文本 / 复制 / Word / PDF
+一条链路都不用改（对话侧那条「导出要剥离追问」的教训在这里直接消掉，不是再解一次）。
+
+**② 旁路文件 `{doc_dir}/notes/v{N}.followups.json`，与 `v{N}.md` 并排。**
+四个候选落点逐个排除：**写进正文** → `.md` 导出会把候选问句带走；**进 `index.json`** →
+违反「头是真相、index 只是缓存」（删一次 index 重建就丢）；**进自证头** → `.md` / `.html`
+导出**刻意保留**自证头，一样带走。旁路文件四项全免：**版本天然跟随**（v2 有 v2 的）、
+**删文档天然清理**（跟着 `rmtree` 走）、导出一行不改、且 `get_markdowns_by_transcript`
+**本来就要逐版读盘**，读它是搭车。
+
+**③ 推在 `done` 之后，且不吃生成预算。** `asyncio.timeout(_gen_timeout(...))` 只包住
+**流式循环**，不包落库与收尾；`parseSSEStream` 读到 reader 关闭才 `break`（不因 `done`
+类型停止）⇒ 晚推收得到，而 `done` 一到工具栏即可用，用户不必盯着「还在生成」等那几秒。
+**先写盘、再推事件**（顺序不可颠倒 —— 反过来是「界面有卡、刷新后没了」）。
+
+**④ 登记为 format 项，但 prompt 层零注入。** `AVAILABLE_OPTIONS` 必须登记（它是
+`genOptions` 的唯一来源：不登记则勾选项根本不显示，且 GenPanel 提交时会
+`.filter(f => availableFormats.includes(f))` **静默抹掉**这个值 —— P0-01 的成因）；
+但**刻意不进 `_ALL_FORMAT_FNS`**：`_build_hard_constraints` 里 `if not fn: continue`
+会对它静默跳过，**这正是要的**（追问不由 prompt 驱动）。两处都写了「不是漏了」的注释。
+⚠️ **已知副作用（接受并记录）**：`format_list` 会喂给 `markdown_meta(..., formats=)`
+⇒ 自证头 `generated.params.formats` 里会多出 `"followup"`，读它的人可能以为「模型真被
+要求产出追问」。接受（它确实登记成了一个 format 项），并在
+[prompts-inventory.md](prompts-inventory.md) §9.6 写明「登记但零注入」。
+
+**⑤ 复用 `ChatFollowUpList`，不建第二份 chip。** 加两个**可选** prop
+（`label` / `onSelect`），chip 的 `onClick` 变成
+`onSelect ? onSelect(q) : sendMessage(q)` —— 对话侧那个「裸 chip 点了直接发」的行为
+逐字保留，产物侧则走自己的入口（**必须显式传 `docRefs`**：对话气泡里那个刻意不传，
+它是当前会话的延续；而这里是从预览区发起，「就这篇文档发问」才是真实意图）。
+⚠️ 残留风险（如实记录）：`.chat-followup-*` 用 em 单位、宿主本是对话气泡，挂进正文流后
+会跟随 `--read-font-size` 缩放 —— **实机观感待确认**，若明显不协调则抽公共变量层
+（**不是**新增第二份 `.chat-followup-*` 副本）。
+
+### 两处「静默失效」的守卫（本轮最容易踩、且都不报错）
+
+**`api/generate.ts` 的分支顺序。** 本事件的 payload 恰好带 `mode`（产物侧要按版本落位），
+而 `else if (data.mode)` 那行的本意是「带 mode 的**正文 chunk**」—— 顺序写反，追问就被
+当成正文 chunk 塞进笔记（`text` 缺失 ⇒ 空 chunk），**零报错**。既有的 `stage` / `reasoning`
+两支注释里已写明同款陷阱，照它写在前面。
+
+**`refreshSaved` 与 `followup` 事件的竞态。** `done` 一到就会 `refreshSaved('notes')` →
+`getMarkdown` → `setMarkdownMeta`；若该 fetch 在 `followup` 事件**之后** resolve，会把刚
+写进去的 `followUps` **抹掉**（卡片闪过即消失）。用一个 `followUpsRef` 做双向合并：
+事件里先写 ref 再写 meta，`refreshSaved` 写 meta **之前**把 ref 里的值补回去。
+
+### 顺带修的一个测试隔离缺陷（本轮实测踩到）
+
+后端新测试**单跑 22 条全绿、放进 `tests/` 全量跑则 8 条红**，且红的形态是「追问返回空」
+而非断言写错。根因不在被测代码：`generate.LLMService` 是**模块级共享全局**，
+`test_generate_gate.py` 等文件也在**模块级**替换它，而 pytest 在**收集阶段** import 全部
+测试模块 —— 每个文件都在 import 时执行 `G.LLMService = <自己的假类>`，**最后 import 的
+那个赢**。故替换必须放进 function-scope `monkeypatch` fixture（用例结束自动还原）。
+⚠️ 这类缺陷的形态值得记住：**它不是「假绿」而是「单跑绿」** —— 局部看一切正常，
+只有把整个套件跑起来才现形；反向也一样成立，任何"只在全量下红"的用例都该先怀疑全局污染。
+
+### 测试
+
+- 后端 [tests/test_artifact_followup.py](../backend/tests/test_artifact_followup.py) **22 条**
+  （`def test_*` 形态 —— 本仓另有一批顶层裸断言的脚本式测试，在 `pytest tests/` 下
+  **收集 0 个、静默空跑**，新增一律不用那个形态）。覆盖：勾选落盘 + 内容一致 / 不勾对照 /
+  composite 与 polished-only 不产 / 失败显式报错不阻断 / 事件推在 `done` 之后 /
+  **先写盘再推事件**（流未读完时断言）/ 读取层**有才给键**（缺 ≠ 空数组）/ 坏文件不抛 /
+  prompt 带标题且已剥 `limo-block` / 两侧共用同一份条款常量（源码守卫）/ 不 aclose llm /
+  异常与超时返回 `None` / 取消置位不发起 / 双产物挂在 **notes 那一版**（先造出 polished v2
+  再验，防「碰巧取对」）/ 双产物单路失败仍产出（三个 `done` 出口）/ notes 失败不抛
+  `NameError` / `_ver == 0` 显式报错且不落盘 / 非流式同样写盘且插在 `aclose` **之前**。
+  **5 条对照实验全部如期变红**（去 mode 过滤 / 勾选判据恒真 / 追问挪到 aclose 之后 /
+  不写盘 / 追问挪到 done 之前）。
+- 前端 [src/test/artifactFollowUp.test.tsx](../frontend/src/test/artifactFollowUp.test.tsx) **22 条**：
+  SSE 分发（走 `onFollowUp` 且**一个 chunk 都不产生**）/ **分支顺序的源码守卫**（按文本
+  index 比较）/ `toMarkdownMeta` 透传（并钉住 **`[]` 与 `undefined` 必须可区分**，不合并）/
+  可见性（**最小构造**，不用整表镜像）/ 勾选项渲染与 `isPolishedOnly` 禁用 / `ChatFollowUpList`
+  的两个新 prop + **对话侧零回归**两条。
+  **2 条对照实验如期变红**（分支挪到 `data.mode` 之后 / chip 改成无条件 `sendMessage`）。
+- 六项门禁（tsc / oxlint / vitest / pytest / check-cli / check-doc-refs）**全绿**。
+
+### 影响范围与已知取舍
+
+- **编辑正文后追问仍基于编辑前的正文**：`PUT /markdown/{id}` 就地覆盖 `v{N}.md` 时
+  `v{N}.followups.json` 保留旧内容。取舍：追问是「当时生成的建议」。
+- **关掉勾选重新生成 → 新版本无追问、旧版本仍有**（旁路文件按版本各存）。这是**预期语义**，
+  与前一条是两类不同现象。
+- **多花一次计费调用**：勾了就必然发生（是承诺的一部分）。
+- **产物侧追问不做**：整理版原文（用户选定只 notes）、重新生成 / 「换一批」、「首次打开时现算」。
+- **`_ver` 取自 `list_markdown_entries` 按 `mode == "notes"` 过滤降序第一**：`save_markdown`
+  **不写回** `mv.version`（它只写进文件头 `identity` 与 index），不能读 `mv.version`；
+  不过滤则双产物（两条几乎同刻写入、版本号相同）可能取到 polished 那版，**且不报错**。
+- **导出侧零改动**：导出只读 `.md` 正文，追问天然不在其中；`docs/export-pipeline.md`
+  核对后确认无落点（本条即那个结论的出处）。
+
+---
+
+## 2026-10-11 — 追问卡片：用户可选开关 + 选了必定有
+
+### 起因
+
+对话侧已有的四类回答形态卡里，用户点名要做 `follow-up` 这一类，但提了三条它当时不满足
+的要求：「我想把它做成用户可选，如果选择了一定会有，这个是交互式卡片」。
+
+核查后「交互式」**本来就有** —— [ChatMarkerContent.tsx](../frontend/src/components/ai-chat/ChatMarkerContent.tsx)
+的 chip 点了直接 `sendMessage(q)`。缺的是另两条：「用户可选」（写不写只能靠模型自主
+决定）与「选了必定有」（模型自愿 ⇒ 遵循率是概率，**而失败还是静默的**：用户开了开关
+什么都没看到，分不清是模型没写还是功能坏了）。用户自己在设计稿里写过「这个功能能不能
+生效**取决于模型愿不愿意用，代码保证不了**」—— 本轮把这句话消掉。
+
+**这不是「补一个漏掉的功能」，是「把有条件的自主行为升级为可承诺的能力」。**
+
+### 做什么
+
+一个开关 + 一次补调。
+
+| 位置 | 改动 |
+|---|---|
+| [agent/followup.py](../backend/app/agent/followup.py)（新） | `FOLLOWUP_PROMPT` + `digest_answer` / `build_followup_prompt` / `extract_followup_items` / `has_usable_followup` / `should_attempt` / `generate_followups`；常量 `FOLLOWUP_TIMEOUT=60` / `MAX_QUESTIONS=6` / `MIN_QUESTION_CHARS=4` |
+| [core/artifact_blocks.py](../backend/app/core/artifact_blocks.py) | 新增 `has_block(md, type_name)` —— 在既有 `has_blocks`（只判有无）之外补**按类型**的判据，复用 `parse_blocks`（**不写 `"follow-up" in md` 子串判**：正文里讨论本协议时也会出现这个词） |
+| [routers/chat.py](../backend/app/routers/chat.py) | `follow_up` query 参数；stream 循环里记 `saw_error` / `cancelled`；循环后按 `should_attempt` 补调，**先落库、再推 `followup` 事件**；完成日志加 `blocks` / `followups` 两个计数（本轮唯一不靠肉眼判断的模型行为信号） |
+| [agent/session.py](../backend/app/agent/session.py) + [core/types.py](../backend/app/core/types.py) | `append_assistant_message(..., follow_ups=)`；`ChatMessage.to_dict()` 白名单加 `follow_ups` |
+| [lib/chat-prefs.ts](../frontend/src/lib/chat-prefs.ts)（新） | `ChatPrefs { followUp }`，localStorage `mbw_chatPrefs`，**默认关** |
+| [api/chat.ts](../frontend/src/api/chat.ts) | 六个位置参数收成 `StreamChatOptions` 对象 + `onFollowUp` callback + `ConvMessage.follow_ups` |
+| [store/chatStore.ts](../frontend/src/store/chatStore.ts) | `ChatMsg.followUps` / `followUpError`、`patchBot(id, fn)`、`toBackendMsg` 透传、`openConversation` 映射 |
+| [ai-chat/ChatMarkerContent.tsx](../frontend/src/components/ai-chat/ChatMarkerContent.tsx) | 拆出 `ChatFollowUpList`（纯渲染 + 折叠），`ChatFollowUp` 改为「解析块内容 → 调 List」 |
+| [ai-chat/MessageItem.tsx](../frontend/src/components/ai-chat/MessageItem.tsx) | 气泡内部末尾挂 `ChatFollowUpList` / 失败小字 |
+| [ai-chat/ChatInput.tsx](../frontend/src/components/ai-chat/ChatInput.tsx) | 发送行加开关（lucide `MessageCircleQuestion`） |
+| [styles/chat-blocks.css](../frontend/src/styles/chat-blocks.css) | `.chat-followup-label` 由 `<div>` 变 `<button>` → 补一串 UA 默认值覆盖（`font: inherit` 等，否则字体族与字重回落到按钮默认）+ `:hover` 反馈 |
+
+### 为什么这么设计
+
+**① 「一定会有」靠独立第二次调用，不靠 prompt 强制。** 遵循率给不出「一定」，且失败
+是静默的 —— 正好违反项目的失败显式化原则。也不是「无条件调用」：会与模型自主写的块
+**同时**出两张卡。业界主流的 Dify `suggested_questions_after_answer` 走的就是这条独立
+调用的路。
+
+**② 判据是「有块 **且** 块里抽得出问题」（`has_usable_followup`），不是「有块」。**
+模型写了个空壳块（有标记、块内没有列表）时，「有块」会让后端跳过补调，而前端
+`parseFollowUpItems` 抽不出项、整块退化成普通正文 → **开了开关却一张卡都没有**（正是
+① 要消灭的那种静默失败）。故后端判据必须**比前端更严格或等价**才安全 —— 这是一条
+**单向包含**，**不是**「两侧对同一输入给同一批项」的双向一致（后者不成立：服务端多做
+了去重 / 过短 / 截断，见 ④）。
+
+**③ 事件推在 `done` 之后。** `parseSSEStream` 读到 reader 关闭才 `break`（不因 `done`
+类型停止），所以晚推收得到；而 `done` 一到 `streaming` 就已复位、输入框立即可用，用户
+不必盯着「还在生成」等那几秒。⚠️ `done` 有**四处**发出（取消 / 错误 / `CancelledError` /
+正常走完），只有「正常走完且未取消」才补调 —— 五条准入判据收口在 `should_attempt`
+（抽成模块级函数是为了让测试**直调真实实现**，而不是在测试里复刻那五个条件）。
+⚠️ **本设计有一个隐含前提必须写下来**：[api/chat.ts](../frontend/src/api/chat.ts) 那个防
+「连接意外断开」的 `receivedDoneOrError` 守卫在 `done` 到达时就已置真 ⇒ 追问事件晚到
+**不会**被误报成断线。将来若有人把它改成「以流关闭为准」，本设计会当场变成「每次追问
+都多弹一条连接错误」。
+
+**④ 追问建议独立存放，绝不写进 `msg.content`。** 走 SSE 事件 → `ChatMsg.followUps` →
+会话消息 `follow_ups` → chip，与正文完全分离。于是「导出要剥离追问」这一整类问题
+**从根上不存在**：导出只读 `content`，「被采纳的追问」是普通 user/assistant 消息、天然
+按正常文章排布（正是用户要的），「没被采纳的候选」压根不在产物里。
+
+**⑤ 展示形态：气泡内部末尾 + 默认展开 + 可折叠。** 位置在正文内容块之后、操作栏之前
+—— 视觉上是回答的**收尾**，不是挂在气泡外的独立 UI。默认展开：「选了一定有」的承诺
+意味着用户要看得到；折叠是给「这一轮不关心」用的。折叠状态**刻意不持久化**（瞬时的
+阅读偏好，组件本地 state）。
+
+**⑥ 数量 4～6 个 + 反凑数条款。** 放宽到 6 是**与折叠配套**（能收起就不占地方），且
+上限与前端既有 `MAX_FOLLOW_UPS = 6` 对齐（不用动前端常量）。**反凑数**（prompt 第 8 条）
+是与放宽**直接配套**的对冲：上限一松，最容易被换来的就是模型为凑数编问题 —— 而凑出来
+的（复述性 / 客套性 / 预设结论）恰恰是最该避免的那类。下限同时从「3～4」松成「有没有
+3 个都行」：**「有」由代码保证，不该由数量保证**。
+
+**⑦ 追问的追问天然成立。** 补调发生在**每一轮**流结束（`sse_stream` 的通用收尾），所以
+点 chip 产生的那一轮回答末尾一样会补追问，可以无限追下去；chip 点击走 `sendMessage(q)`
+→ `dispatchSend` 读 `loadChatPrefs().followUp` → 新请求照带 `follow_up=1`。**刻意不设
+「连续 N 轮后停止」** —— 用户选的就是「一定会有」，限制它等于把承诺打折。⚠️ 正因为它靠
+「机制天然成立」而非专门代码，实机必须**走两轮亲验**。
+
+### 顺带记录在案（本轮不改）
+
+- ⚠️ **模型自主写的追问块在导出里是一段裸无序列表** —— `strip_blocks` 剥的是**标记行、
+  保留内容**（自述供 md / 纯文本导出用），所以那几条候选问题会以无标记、无 chip、无上
+  下文说明的形式出现在导出的 `.md` 里。这是**本轮之前就有的**隐藏偏差（「预览看到
+  chips、导出看到一串问题」），本轮**不动 `strip_blocks` 对 follow-up 的行为**（改它要
+  触及它对全部四种对话块的现有语义），但**写进文档**，不装看不见。
+- ⚠️ **`deleteMessage` 在追问链上是个陷阱**：追问链第 3 轮基于第 2 轮的回答生成，摘掉
+  第 2 轮 ⇒ 第 3 轮在回答一个**已不存在的问题**（界面上读成「AI 答非所问」）。**追问链
+  上的清理走截断类**（`regenerate` / `editMessage(user)`），不走删单条。⚠️ 这与
+  `clear_context_at` / `last_compress_index` 等**按索引定位**的字段在 rebuild 后不跟着
+  调整是**两个**既有缺陷，都影响所有对话、非本轮引入，列入实机观察点。
+
+### 影响范围
+
+- 后端 5 文件（2 新：`followup.py` / `test_followup.py`）+ 前端 10 文件（3 新：
+  `chat-prefs.ts` / `chatFollowUp.test.tsx` / `fixtures/follow-up-parse.json`）；无新增
+  依赖、无新增快捷键、不动 Rust。
+- **开关默认关 ⇒ 零回归**：关闭时 `follow_up` 参数**根本不传**（不是传 `=0`），后端
+  `should_attempt` 第一条件即返回，行为与改造前逐字相同。
+- `mbw_*` localStorage key **18 → 19**（新增 `mbw_chatPrefs`）。
+- ⚠️ **四个持久化透传点漏一个就静默丢卡**（症状都是「刷新或编辑后卡片消失」）：前端
+  `ChatMsg.followUps` → `toBackendMsg`（**白名单转换**，且**四处调用点**：regenerate /
+  delete / edit-user / edit-assistant）→ `ConvMessage.follow_ups` + `openConversation`
+  映射 → **后端 `ChatMessage.to_dict()`**（**最容易漏** —— 它不在「前端透传」这个心智
+  模型里，不加就是在**写盘那一刻**把字段丢掉）。
+- **不改** [formats.md](../backend/app/agent/prompts/formats.md)（follow-up 段一字不动：
+  开关关闭时零回归，打开时两条路互斥且天然去重）、**不 bump `PROMPT_VERSION`**（对话侧
+  不产生产物）、非流式 `/chat` 不动。
+- 两组对照实验自证判据有区分力：① `patchBot` 换回按末尾定位 → 竞态测试红；
+  ② `toBackendMsg` 白名单删掉 `follow_ups` → 四条 rebuild 测试全红。
+
+---
+
+## 2026-10-11 — 产物自证条：元数据渲染成一横排带图标的小标签
+
+### 起因
+
+上一轮修掉「HTML 注释漏进渲染」后（同日本文件上一条），产物首行的
+`<!-- limo-meta {…} -->` **不再显示**了 —— 但它承载的信息（哪一版 / 何时生成 /
+谁生成的 / 有没有被改过）也随之从视野里消失。用户提出的诉求是「前端元数据的美观
+显示」，并两次明确形态：「渲染成一横排小标签」→「**我的意思是像有这种小图标的**」。
+
+### 做什么
+
+新增 [ArtifactMetaBar.tsx](../frontend/src/components/preview/ArtifactMetaBar.tsx) ——
+正文上方一横排**图标 + 短文本**的小标签，每位各配一个 lucide 图标：
+
+| 位 | 图标 | 数据来源 |
+|---|---|---|
+| `v{n}` | `History` | `markdownMeta.version` |
+| 生成时间 | `Clock` | `markdownVersions` 里那一版的 `createdAt` |
+| 字数 | `AlignLeft` | `markdownMeta.chars` |
+| 模型 | `Cpu` | `markdownMeta.source` |
+
+挂载点：`PreviewArea.tsx` 的 notes/polished **只读态**（编辑态不挂）+ `!isStreaming`。
+
+### 为什么这么设计
+
+**① 不是把 JSON 全量铺开** —— 自证头的 `params` / `promptVersion` / `sourceRefs`
+是**给 agent 读的**，铺给用户只是噪音（设计规范 A 信息卡：「不要为了填满卡片而添加
+无关字段」）。故只取四项，且**缺就不给、绝不补位**。
+
+**② 判据收口到 [artifactMeta.ts](../frontend/src/lib/artifactMeta.ts)** —— `fmtTime` /
+`fmtChars` 原先只住在 `VersionSwitcher.tsx` 里。自证条要用同一套渲染，各写一份就是
+模式 #54：两处的时间格式或字数进位会慢慢漂移而**无人报错**（两边都只是「显示得不太
+一样」，没有断言盯着）。函数体逐字搬移，`VersionSwitcher` 改为 import。
+
+**③ `chars` 的 `undefined` ≠ `0`** —— `undefined` = 后端没给（旧产物），**不显示**；
+`0` = 确实 0 字，显示「0字」。两者都渲染成「0字」是在伪造数据。
+
+**④ 版本行按 `(version, mode)` 双键取** —— notes / polished **各自从 v1 起**编号，
+同 version 必然同时存在；只按 `version` 匹配会让「笔记 v2」显示成**整理版 v2** 的
+时间和字数，而两个数都是合法日期，**没有任何东西会报错**。
+
+**⑤ 刻意不含「已编辑」chip** —— 同一屏的工具条已经用 `markdownEdited[mode]` 显示
+「已手动编辑」（warning 色、紧邻编辑按钮，语义是「你再点编辑会覆盖」），自证条就在
+它正上方；再加一个是同一信息相邻两行重复，而它并不比工具条多说什么。
+
+**⑥ 流式生成中不显示** —— 此刻 `markdownMeta` 还是**上一版**的数（store 只在生成
+完成时更新），配着新流入的正文显示是错位读数。
+
+### 顺带修掉一个静默失效（本轮实际踩到）
+
+第一版写了 `hover:border-border`，而项目里的 token 真名是 `--color-border-default`
+（**没有** `--color-border`）。**Tailwind 对不存在的工具类静默不生成任何 CSS** ——
+不报错、渲染测试全绿、编辑器里看着类名「挺对的」，只是 hover 时边框纹丝不动。
+已改 `hover:border-border-default`，并补一条守卫（正则抽组件里所有 `border-/text-/bg-`
+类名，逐个查 `index.css` 的 `--color-<name>:` 是否存在）**附对照实验**（拿写错的字面量
+跑同一判据，证明它有区分力）。
+
+### 测试
+
+- `test/artifactMeta.test.ts` —— 展示判据，含 4 条对照实验（`chars` 补 `?? 0` /
+  版本行不带 mode / 顺序随字段变 / 加回「已编辑」）+ **同源守卫**（`VersionSwitcher`
+  不得再出现私有的 `fmtTime`/`fmtChars` 实现）
+- `test/artifactMetaBar.test.tsx` —— 渲染（每个标签一个图标、无数据整条不出现）+
+  **接线源码守卫**（`PreviewArea.tsx` 里只挂一次、挂载点前必须有 `!isStreaming`、
+  不出现在 `MarkdownPreview.tsx` 里）+ 颜色 token 守卫
+
+### 影响范围
+
+- 新增：`frontend/src/lib/artifactMeta.ts`、`frontend/src/components/preview/ArtifactMetaBar.tsx`
+- 改：[PreviewArea.tsx](../frontend/src/components/preview/PreviewArea.tsx)（接入 + import）、
+  [VersionSwitcher.tsx](../frontend/src/components/preview/VersionSwitcher.tsx)（删本地两份
+  `fmt*`，改 import；行为逐字不变）
+- **不动后端**：所需字段后端早已从产物文件头**现算派生**（`chars` / `edited` / `source`），
+  `markdownVersions` 也已带 `createdAt` —— 故**不在前端新写一份首行解析**（那会是
+  Python `core/transcript_meta.py` 的第二份实现，正是模式 #54 要避免的）
+- **不参与导出**：纯视图装饰，与版本切换器、编辑按钮同类，不属于「用户在预览栏看到
+  的**内容**」。导出物里的元信息仍由 `.md` / `.html` 保留的自证头注释承载
+  （`export.py::_pick_artifact` 用 `raw_content`）
+- 不 bump `PROMPT_VERSION`（不产生产物、不改任何发给模型的文本）
+
+---
+
+## 2026-10-11 — HTML 注释不再漏进渲染（前端全部渲染路径 + Word 导出）
+
+### 起因
+
+用户实机反馈「有一些标记会被展示出来」，贴出两处**形态不同**的存活证据：
+
+1. 产物首行的自证头 `<!-- limo-meta {"type":"artifact",…} -->`
+2. 模型写进正文的 `<!-- 无闭合标记，本节按卡片展示 -->`
+
+出现位置是**主预览区 + Word 导出**。两条**根因互相独立**，只是症状同形。
+
+---
+
+### 根因一：前端 —— 注释被**转义**成可见文本
+
+`react-markdown` 在**不启用** `allowDangerousHtml` / `rehype-raw` 时，HTML 注释
+**不会被当成注释丢弃**，而是以 `raw` 节点一路走到渲染阶段、在那儿被**转义**成
+`&lt;!-- … --&gt;` **当普通文本显示**。
+
+⚠️ **`skipHtml` 不是解法**：它删的是**所有** HTML —— 用户正文里的合法 HTML 会被一并删掉。
+
+⚠️ **本项目的剥离链当时只覆盖两种**：`parseMarkers` 剥 `limo-block` **标记行**（字符串层）、
+`strip_meta` 剥**首行**自证头（后端）。**正文中间的任意 HTML 注释没有任何一层管** ——
+用户报的正是这一类。`markerContent.test.tsx` 的对照实验 C 早就写着「标记行没被剥掉 →
+页面上出现一行可见文字」，但那是 `limo-block` 的专用判据，覆盖不到「其余注释」。
+
+---
+
+### 修法 [markdown-plugins.ts](../frontend/src/lib/markdown-plugins.ts) — 共享 rehype 插件 `rehypeStripComments`
+
+挂进 `REHYPE_PLUGINS` + `REHYPE_PLUGINS_PLAIN` **两个插件集**：前端 7 个渲染点
+（主预览 / 产物编辑器 / 对话 / EPUB 章节 / 图片结果 / 转录 / 卡片内各段）全部走这两个
+常量，故**一处修改全覆盖**，没有第二份实现。
+
+⚠️ **判据建立在实测形态上**（先用探针把节点打出来，再写代码）：
+
+| 注释位置 | 节点类型 | 值 |
+|---|---|---|
+| 正文（块级 / 句中 / 句末 / 多行） | **`raw`** | 注释原文 |
+| 代码块内 | `text` | `"<!-- … -->\n"` |
+| 行内代码内 | `text` | `"<!-- … -->"` |
+
+—— 正文注释是 `raw`，而**代码块里的注释是 `text`、值与正文注释长得几乎一样**。那正是
+用户**本来就要展示**的代码，故必须**显式跳过 `code` / `pre` 子树**；不跳就会静默删掉
+用户的代码。判据对 `raw` / `text` / `comment` 三种类型都匹配（而非只认实测到的 `raw`），
+落在「值是不是注释」这个语义上，不依赖 react-markdown 把注释归进哪一类。
+
+⚠️ **判据是「整个值就是一个注释」**（`/^<!--[\s\S]*?-->$/`）：实测句中的注释会把前后文字
+切成各自独立的节点（`"句中 "` / `"<!-- ZZ -->"` / `" 文字"`），整节点删除即可；
+**不做文本中间替换** —— 那会把正文里的空格改掉。
+
+---
+
+### 根因二：Word —— bs4 把注释当正文段落
+
+`export.py::_pick_artifact` **刻意**返回不剥自证头的 `raw_content`（设计如此：产物离开
+`.limo` 之后靠那一行自己说明来历）。这条设计在 **md / HTML 导出上没有问题** —— 前者是
+文本文件、后者里它**本来就是 HTML 注释**（浏览器不显示）。
+
+问题在 docx：`bs4` 的 **`Comment` 是 `NavigableString` 的子类**，会命中 `docx_export.py`
+遍历里的 `isinstance(node, NavigableString)` 分支，被当普通文本 `add_paragraph()` 写进
+正文 —— Word 里就表现为孤零零一行 `<!-- limo-meta {…} -->`。
+
+**修法**：解析出 `soup` 之后、**取 `body` 之前**统一 `extract()` 掉所有
+`isinstance(t, Comment)` 的节点。⚠️ 顺序不能反 —— 无 `<body>` 标签时 `soup.body` 会退回
+`soup` 本身，先取 body 再剥会漏掉那些直接挂在根上的注释。
+
+### 修完之后的分工（三处各不相同，都是有意的）
+
+| 出口 | 注释 | 为什么 |
+|---|---|---|
+| 主预览 / 编辑器 / 对话 | **不显示** | 渲染层，用户不该看到协议内部物 |
+| `.md` 导出 | **保留** | 文本源；离开 `.limo` 后靠它自证来历 |
+| `.html` 导出 | **保留** | 它是真 HTML 注释，浏览器本就不显示（源里仍可供 agent 读） |
+| `.docx` 导出 | **不写进正文** | 纯渲染格式，没有「源码」可留 —— 与「预览所见 = 导出所得」一致 |
+
+**影响范围**：全部前端渲染路径的显示结果；Word 导出的正文内容。`.md` / `.html` 导出
+与产物落盘内容**零变化**。
+
+---
+
+### 顺带订正两条互相矛盾的注释
+
+`markdown-markers.ts` 说「HTML 注释会被替换成普通文本节点……会在预览里**原样显示成一行字**」，
+`TextareaMarkdownEditor.tsx` 说「预览区**不渲染** HTML 注释」—— **后者在修好之前是错的**，
+用户证词站在前者那边。前者描述的现象本轮已被消除，故改写成「**为什么在字符串层解析**」的
+真实理由：标记是**成对**的、要在两者**之间**生成一个块级容器 —— 那是**结构变换**，不是
+「删掉两行」。「不让它显示」用剥的，「让这两行之间成为一个块」只能靠字符串层解析。
+
+---
+
+### 测试
+
+- 前端 [htmlComments.test.tsx](../frontend/src/test/htmlComments.test.tsx) 10 条：块级 / 自证头形态 /
+  模型写的说明性注释 / 句中 / 多行 / **代码块保留** / **行内代码保留** / 纯文本插件集 /
+  合法 HTML 不受影响 / **反向对照**（去掉插件 → 注释确实漏出，证明前几条不是假绿）
+- 后端 `test_docx_export.py` 追加 2 条（注释不进正文 + 代码块注释保留），另加一条**根因对照
+  实验**（直验 `isinstance(bs4 Comment, NavigableString)` 为真、未剥时确实落进那个分支）。
+  实现层另做过一次反向验证：把 `extract()` 换成 `pass` → 用例**确实变红**，且报错信息正是
+  「产物自证头漏进了 Word 正文」
+- 门禁 `bash scripts/check-all` 六层全绿
+
+---
+
+### 本轮不做（用户已明确划范围）
+
+- **不清理用户产物里已有的注释** —— 模型写进正文的那行**仍在文件里**，只是不再显示。
+  「让模型别写它」是 prompt 侧的另一件事（`card` 提到规范最前带来的副作用）。
+- **元数据小标签**（用户已定方向「渲染成一横排小标签」）留待后续轮次。
+
+---
+
 ## 2026-10-11 — 文档交叉引用机器校验（新门禁层 `docs`）+ 模式 #68
 
 ### 起因

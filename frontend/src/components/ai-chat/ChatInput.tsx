@@ -8,9 +8,10 @@
  * 发送时 docRefs 随 sendMessage 传入，docIds = 当前选中文档 + 本条引用（chatStore 组合去重）。
  */
 import { useEffect, useRef, useState } from 'react'
-import { Send, Square, AtSign, FileText, X } from 'lucide-react'
+import { Send, Square, AtSign, FileText, X, MessageCircleQuestion } from 'lucide-react'
 import { useChatStore, type DocRef } from '../../store/chatStore'
 import { useStore, type DocEntry } from '../../store'
+import { loadChatPrefs, saveChatPrefs } from '../../lib/chat-prefs'
 import { SCALES, type ChatScale } from './scale'
 import { estimateTokenLength, formatTokens } from '../../utils/token'
 
@@ -30,6 +31,10 @@ export function ChatInput({ scale }: ChatInputProps) {
   const [docRefs, setDocRefs] = useState<DocRef[]>([])
   const [refOpen, setRefOpen] = useState(false)
   const [refSearch, setRefSearch] = useState('')
+  // 追问建议开关（`lib/chat-prefs.ts` 持久化；发送时由 `dispatchSend` 现读一次）
+  // ⚠️ 这里是**受控回显**：真正的生效点是发送那一刻读 localStorage（见 chatStore），
+  // 本地 state 只负责把这个开关画出来 —— 两者共用同一份 key，不会分叉。
+  const [followUp, setFollowUp] = useState(() => loadChatPrefs().followUp)
   const taRef = useRef<HTMLTextAreaElement>(null)
   // 输入区 + @ 浮层的共同祖先：判断「点在内部还是外部」的界
   const rootRef = useRef<HTMLDivElement>(null)
@@ -80,6 +85,14 @@ export function ChatInput({ scale }: ChatInputProps) {
 
   const filteredDocs = refSearch ? docs.filter(d => d.title.toLowerCase().includes(refSearch.toLowerCase())) : docs
 
+  const toggleFollowUp = () => {
+    const next = !followUp
+    setFollowUp(next)
+    // ⚠️ `saveChatPrefs` 现在是整对象覆盖 —— 将来加第二个字段时必须改成
+    // `saveChatPrefs({ ...loadChatPrefs(), followUp: next })`，否则会把它抹掉。
+    saveChatPrefs({ followUp: next })
+  }
+
   const addRef = (doc: DocEntry) => {
     if (docRefs.some(r => r.docId === doc.id)) return
     setDocRefs([...docRefs, { docId: doc.id, title: doc.title }])
@@ -128,6 +141,16 @@ export function ChatInput({ scale }: ChatInputProps) {
         <button onClick={() => { setRefOpen(v => !v); setRefSearch('') }} title="引用文档"
           className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${docRefs.length ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
           <AtSign size={s.btn} />
+        </button>
+        {/* 追问建议开关：开启后每轮回答末尾给出可点击直发的问题。
+            ⚠️ `title` 里必须写「点击即发送」——那是一颗 chip 的真实行为，
+            不写清楚用户不敢点（看起来像普通文字）。 */}
+        <button onClick={toggleFollowUp} data-followup-toggle={followUp ? 'on' : 'off'}
+          title={followUp
+            ? '追问建议已开启：每轮回答后给出 4～6 个追问，点击即发送'
+            : '追问建议已关闭：开启后每轮回答都会给出追问（点击即发送）'}
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${followUp ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
+          <MessageCircleQuestion size={s.btn} />
         </button>
         <textarea
           ref={taRef}

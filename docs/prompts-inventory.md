@@ -620,6 +620,70 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 | `search_web` | 搜索互联网（Tavily → SearXNG → DuckDuckGo 三级降级） |
 | `fetch_url` | 抓取指定网页的正文内容 |
 
+### 9.6 追问建议（`FOLLOWUP_PROMPT` / `ARTIFACT_FOLLOWUP_PROMPT`，2026-10-11）
+
+**位置**：[backend/app/agent/followup.py](../backend/app/agent/followup.py)（模块级常量）
+**两个入口**，8 条条款（`FOLLOWUP_RULES`）与解析层**共用**：
+
+| 入口 | 上游 | 材料怎么进 prompt |
+|---|---|---|
+| `build_followup_prompt()` ← `generate_followups()` | `routers/chat.py::sse_stream` | `<用户的问题>` + `<回答>`（先 `digest_answer` 保头 800 + 尾 1500） |
+| `build_artifact_followup_prompt()` ← `generate_artifact_followups()` | `routers/generate.py::_do_followup` | `<笔记主题>` + `<笔记内容>` —— **产物侧没有「用户的问题」**，换成标题 + 正文 |
+
+⚠️ **两侧放同一文件**（而非各起一个模块）：条款与解析层是共享的，分家会把「同源」
+重新变成「跨目录的两份」。
+
+**⚠️ 产物侧的 `followup` 是「登记但零注入」的格式项。** `AVAILABLE_OPTIONS` 七类各登记了
+`"followup"`（它是 `genOptions` 的唯一来源 —— 不登记则勾选项根本不显示，且 GenPanel 提交时
+`.filter(f => availableFormats.includes(f))` 会把该值**静默抹掉**，P0-01 的成因）；但它
+**刻意不在 `_ALL_FORMAT_FNS` 里**：`_build_hard_constraints` 的 `if not fn: continue` 会对它
+静默跳过，**这正是要的**（追问由生成完成后的独立调用产出，不由 prompt 驱动）。两处都写了
+「不是漏了」的注释。⚠️ **副作用（接受）**：`format_list` 会喂给 `markdown_meta(formats=)`
+⇒ 自证头 `generated.params.formats` 里会多出 `"followup"`，读它的人可能以为「模型真被要求
+产出追问」。
+
+与 [compress.py](../backend/app/agent/compress.py) **并列同性质**（对话侧的辅助 LLM 调用）。
+区别：`compress` 是**内部优化**（失败静默跳过）；追问是**用户开了开关的承诺**（失败必须
+**显式** —— 推 `followup` 事件带 `error` 字段）。
+
+**触发条件**（`should_attempt`，五条缺一不可）：用户开了 `follow_up` 开关 / 没出错 /
+没取消 / 回答非空 / **模型没自己写出可用的 `follow-up` 块**（`has_usable_followup`）。
+
+| 条款 | 为什么写它 |
+|---|---|
+| 「**不预设结论**」+ ✗/✓ 对照示例 | 现有 [formats.md](../backend/app/agent/prompts/formats.md) 只写了「不是复述或客套」，**没有反诱导**。诱导性追问（*loaded*：埋隐藏前提 / *leading*：措辞暗示答案）在知识管理场景危害更大 —— 用户点一下就相当于把模型埋的前提当事实接受了 |
+| 「每个问题**不超过 20 个字**」 | 取自 Dify（中文场景实测值），比 ChatBI 的「≤15 词」更适合中文 |
+| 「几个问题应当**方向不同**」+ 举例 | 取自 ChatBI 五类方向表 + ACL 2025 的 Bloom 递进结论（低阶问题答对率高、高阶差），但**写成举例而非穷举清单** —— 堆硬规则会让模型宁可不用（图表管道的教训） |
+| 「**不要为凑数编问题**」 | **与数量放宽直接配套**：上限从 4 提到 6，最容易换来的就是模型为凑数编问题，而凑出来的（复述 / 客套 / 预设结论）恰是最该避免的那类。下限同时松成「有没有 3 个都行」—— **「有」由代码保证，不该由数量保证** |
+| 输出「`- ` 一行一个」而非 JSON | ① 前端 `parseFollowUpItems` 解析的就是这个格式；② 绕开 Dify 踩过的小模型返回 dict 而非 array 的坑；③ 无转义风险 |
+
+**参数**：`temperature=0.3`（与 Dify 同值）+ **思考档位按模型分两支**（`thinking_extra(llm)`，
+判据是能力位 `reasoning`）：**有档位**（内置预设里只有 DeepSeek V4 两兄弟）→ **关闭思考**
+（形状取自 [llm/service.py](../backend/app/llm/service.py) 的模块级 `DISABLE_THINKING_EXTRA`，
+与 `stream()` 共用同一份）；**无档位**（qwen / gpt / claude…）→ **不传**（`extra_body=None`，
+逐字等于改造前）。
+⚠️ 有档位时下发的是**关闭**而不是 `reasoning_effort="low"`：两者在服务端**互为替代**，而
+「最低档」的彻底形式就是关闭 —— 分类管道的实测教训是 `low` 照样可能把整个输出预算烧在
+推理链上（正文 0 字符）。追问是「把读过的内容列成几个问题」，**纯生成、推理无产出**，而代价
+是双份的：token 预算 + **首 token 的等待**（用户刚看到 `done`，这张卡越晚到越像卡住）。
+⚠️ `_run_followup_llm` **直调 `client.chat.completions.create`**、走不到 `LLMService.stream()`，
+故形状必须**引共用常量而非另写一份**（模式 #54；`test_followup.py` 有源码守卫钉住字面量只
+出现在 `llm/service.py`）。
+**超时**：`FOLLOWUP_TIMEOUT=60s`，**独立成层**（同 `COMPRESS_TIMEOUT` 的理由：它发生在
+对话主流程**之后**，共用对话总超时会让已经看到 `done` 的用户干等）。
+**回答进 prompt 前**：先过 `strip_blocks`（`limo-block` 是渲染协议、模型看了会困惑），
+再 `digest_answer` 保头 800 + 尾 1500（**尾部最重要** —— 追问接的是回答的结尾）。
+**抽取与归一**：`extract_followup_items` 的**抽取层**与前端 `parseFollowUpItems` 逐字同源
+（共享 fixture `frontend/src/test/fixtures/follow-up-parse.json` 钉住）；而**去重 / 过滤过短 /
+项文本清洗三条只在服务端**（前端解析器同时服务「模型自主写的块」，那条路上「原样呈现」才对）。
+⚠️ **两个入口共用这一份**（产物侧不另写解析）。
+**不 bump `PROMPT_VERSION`**：两个入口都**不产生产物**（对话侧判据同 §14.5；产物侧虽在生成
+链路上，但追问落在旁路文件、不进 `.md` 正文 ⇒ 产物字节不变）。
+
+**外部参考**：Dify `suggested_questions_after_answer`（独立调用 / 20 字 / temperature 0.3）、
+ChatBI followup-suggestions（五类方向表）、反谄媚提示词规范（*loaded* vs *leading*）、
+ACL 2025 industry（Bloom 递进与答对率）。
+
 ---
 
 ## 10. 合成管道 — 多篇对比综述 (Composite)
@@ -973,6 +1037,7 @@ process 产物确实带 `promptVersion`，而分类根本没有产物可带。
 | [backend/app/core/text_utils.py](backend/app/core/text_utils.py) | `smart_truncate()` — 按句子边界截断；`parse_json_object()` — JSON 对象抽取（图表 `chart_renderer` 与此处分类共用）；`sanitize_reference_name()` — 注入侧名字清洗 |
 | [backend/app/generation/classifier.py](backend/app/generation/classifier.py) | `CLASSIFY_PROMPT` + `build_classify_prompt()` + `_folder_section()` / `_tag_section()`（两段按用户策略生成）— 智能分类（见 §14）；另含 `collect_doc_inputs` / `fit_to_budget` / `normalize_suggestions` 纯函数与 `clamp_*` / `validate_mode` 四个入参收口 |
 | [backend/app/generation/reference_compressor.py](backend/app/generation/reference_compressor.py) | `COMPRESS_PROMPT` — 参考文件超窗摘要（与 §14 对照：那侧**失败降级返回 `None`**，分类侧**不降级**） |
+| [backend/app/agent/followup.py](backend/app/agent/followup.py) | `FOLLOWUP_PROMPT`（对话侧）/ `ARTIFACT_FOLLOWUP_PROMPT`（产物侧）—— 追问建议，两者**共用条款常量 `FOLLOWUP_RULES` 与解析层**，见 §9.6；另含 `digest_answer` / `extract_followup_items` / `has_usable_followup` / `should_attempt` / `thinking_extra` / `_run_followup_llm` / `generate_followups` / `generate_artifact_followups` |
 
 ## 附录 B: 温度参数速查
 
@@ -984,6 +1049,11 @@ process 产物确实带 `promptVersion`，而分类根本没有产物可带。
 | 分类 | 智能分类（每篇一个文件夹 + 标签） | 0.2 | `min(max(2048, N×120), 8192)` | 0（输出要整体解析的 JSON，续写拼接无意义） |
 | 参考 | 参考文件超窗摘要（`COMPRESS_PROMPT`） | 0.3 | `min(max(target_chars×2, 1024), 65536)` | 1（目标可能较长） |
 | 对话 | 工具调用 / 最终回答 | 0.7 | — | — |
+| 追问 | 对话侧 / 产物侧（`_run_followup_llm`） | 0.3 | —（不传，SDK 默认） | 0（**直调 SDK**，不经 `LLMService`，无续写） |
+
+⚠️ 追问那一行是**唯一不经 `LLMService` 的调用**（`_run_followup_llm` 直调
+`client.chat.completions.create`）⇒ `max_tokens` / `max_continuations` 都没有落点。它的
+**思考档位按模型分两支**（有档位关闭 / 无档位不传），见 §9.6 与 `followup.thinking_extra`。
 
 ## 附录 C: PromptComposer 标签速查
 

@@ -20,6 +20,19 @@ logger = logging.getLogger(__name__)
 MAX_TOKENS = 65536
 _RETRY_COUNT = 2  # 网络错误重试次数
 
+#: 「**关闭思考**」的 extra_body 形状 —— 全仓唯一一份。
+#:
+#: canonical 形式是 `thinking={"type": "disabled"}`（`reasoning_effort="none"` 亦可，
+#: 但中间层（LiteLLM 等）不总是翻译它 —— 我们直连，用最稳的一种）。
+#: ⚠️ 与 `reasoning_effort` **互为替代**（服务端校验拒绝同传），故 `stream()` 里写成
+#: `elif`：两者绝不能同时出现在同一个 extra_body 里。
+#: ⚠️ **抽成模块级常量、而不是内联在 `stream()` 里**：`agent/followup.py` 那条路径
+#: **直调 `client.chat.completions.create`**、走不到本类的任何方法，却同样需要关掉思考
+#: —— 把形状抄一份过去正是模式 #54（一份判据住多处，改一处漏一处，且两处行为分叉时
+#: **都不报错**）。改形状（例如换成 `"none"`）时，引用它的两条路径必须同时生效。
+#: ⚠️ 只读：`stream()` 用浅合并取值，调用方**不要**就地改内层 dict。
+DISABLE_THINKING_EXTRA: dict = {"thinking": {"type": "disabled"}}
+
 # 思考链回调签名：async (text: str) -> None
 AwaitableCallable = Callable[[str], Awaitable[None]]
 
@@ -239,11 +252,10 @@ class LLMService:
                 try:
                     _extra: dict = {}
                     if disable_thinking:
-                        # 关闭思考（DeepSeek V4 系列默认开启）。canonical 形式是
-                        # `thinking={"type":"disabled"}`（`reasoning_effort="none"` 亦
-                        # 可，但中间层（LiteLLM 等）不总是翻译它——我们直连，用最稳的一种）。
+                        # 关闭思考（DeepSeek V4 系列默认开启）——形状与理由见模块级
+                        # DISABLE_THINKING_EXTRA（追问那条直调 SDK 的路径共用同一份）。
                         # ⚠️ 与 reasoning_effort **互斥**，故 elif：同传会被服务端校验拒绝。
-                        _extra["thinking"] = {"type": "disabled"}
+                        _extra.update(DISABLE_THINKING_EXTRA)
                     elif reasoning_effort:
                         # deepseek-v4 思考强度（extra_body 兼容 OpenAI SDK 未声明参数）
                         _extra["reasoning_effort"] = reasoning_effort

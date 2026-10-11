@@ -16,6 +16,7 @@
  */
 import { create } from 'zustand'
 import { streamChat, listConversations, getConversation, rebuildConversationMessages, clearConversationContext } from '../api/chat'
+import { loadChatPrefs } from '../lib/chat-prefs'
 import { useStore } from './index'
 import { nextMsgId } from './toastSlice'
 
@@ -62,6 +63,10 @@ export interface ChatMsg {
   docRefs?: DocRef[]
   /** 思考段（P5 后端 thinking 事件） */
   thinking?: string
+  /** assistant 的追问建议（开关开启时后端补调的产物；**不在 `content` 里**） */
+  followUps?: string[]
+  /** 追问建议生成失败的原因（非空 = 显式失败，不是「这轮没有」） */
+  followUpError?: string
 }
 
 /** 会话列表条目（轻量，来自 GET /api/conversations） */
@@ -120,7 +125,13 @@ export interface ChatStoreState {
   dismissCompressedHint: () => void
 }
 
-/** ChatMsg → 后端 message dict（rebuild 用，保留扩展字段；timestamp 由后端覆盖） */
+/** ChatMsg → 后端 message dict（rebuild 用，保留扩展字段；timestamp 由后端覆盖）
+ *
+ * ⚠️ **这是白名单**：不在这里的字段在 rebuild 那一刻被丢掉。而 rebuild 有**四处**
+ * 调用点（`regenerate` / `deleteMessage` / `editMessage` 的两支）—— 漏一个字段就是
+ * 「编辑任意一条消息后，追问卡整批消失」，且四个动作共用本函数，症状完全一样。
+ * 后端侧与之成对的是 `core/types.py::ChatMessage.to_dict()`（管落盘）。
+ */
 const toBackendMsg = (m: ChatMsg) => ({
   id: m.id,
   role: m.role,
@@ -128,6 +139,7 @@ const toBackendMsg = (m: ChatMsg) => ({
   ...(m.docRefs && m.docRefs.length ? { doc_refs: m.docRefs } : {}),
   ...(m.toolCalls && m.toolCalls.length ? { tool_calls: m.toolCalls.map(tc => ({ tool: tc.tool, display: tc.display, summary: tc.summary })) } : {}),
   ...(m.thinking ? { thinking: m.thinking } : {}),
+  ...(m.followUps && m.followUps.length ? { follow_ups: m.followUps } : {}),
 })
 
 /** 当前活跃流式请求的 AbortController（同一时刻只允许一条流式） */
@@ -142,6 +154,23 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
     if (!last || last.role !== 'assistant') return
     const next = [...msgs]
     next[next.length - 1] = fn(last)
+    set({ messages: next })
+  }
+
+  /** 按 **id** 更新一条消息（找不到则什么都不做 —— 被删掉的轮次不该被复活）。
+   *
+   * ⚠️ **追问必须用它、不能用 `updateLastBot`**：追问事件在 `done` **之后**才到
+   * （后端先推 done 让输入框即刻可用，再补调一次 LLM），中间用户完全可能已经发了
+   * 下一条消息 —— 此时「最后一条」已经是新问题了，按末尾定位会把上一轮的追问挂到
+   * 新一轮的**用户消息**上（`updateLastBot` 只认 assistant，于是干脆丢掉卡片）。
+   * 这是本功能唯一新引入的竞态，实机要专门走一遍（见 CHANGELOG）。
+   */
+  const patchBot = (id: string, fn: (msg: ChatMsg) => ChatMsg) => {
+    const msgs = get().messages
+    const i = msgs.findIndex(m => m.id === id)
+    if (i < 0) return
+    const next = [...msgs]
+    next[i] = fn(next[i])
     set({ messages: next })
   }
 
@@ -179,6 +208,9 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
     const controller = new AbortController()
     activeController = controller
     const convId = s.currentId || undefined
+    // ⚠️ **在发送这一刻读**（不是订阅）：偏好变了只影响之后的请求，进行中的那一轮
+    // 用的仍是发起时的取值 —— 下面 `onFollowUp` 的守卫也读同一个变量。
+    const wantFollowUp = loadChatPrefs().followUp
 
     streamChat(text, docIds, {
       onMeta(convId, meta) {
@@ -252,7 +284,21 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
         updateLastBot(bot => ({ ...bot, content: bot.content || msg, isError: true, streaming: false }))
         endStreaming()
       },
-    }, controller.signal, convId, docRefs)
+      // 追问建议 —— 晚于 `onDone`（见 `api/chat.ts::StreamChatCallbacks.onFollowUp`）
+      onFollowUp(questions, error) {
+        // ⚠️ 判的是「**本次请求**有没有要」，与上面那个 `wantFollowUp` 是同一个变量 ——
+        // 不是重新推导后端的准入条件（那会是第二份判据）。开关关着时后端根本不推这个
+        // 事件，真收到了说明有别的东西在推，忽略它比写进消息好。
+        if (!wantFollowUp) return
+        // ⚠️ **按 `botMsg.id` 定位，不能按末尾**（原因见 `patchBot` 的注释）：
+        // 事件到达时用户可能已经发了新消息。
+        patchBot(botMsg.id, m => ({
+          ...m,
+          followUps: questions.length ? questions : undefined,
+          followUpError: error || undefined,
+        }))
+      },
+    }, { signal: controller.signal, conversationId: convId, docRefs, followUp: wantFollowUp })
   }
 
   return {
@@ -300,6 +346,9 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
             ? m.tool_calls.map(tc => ({ id: nextMsgId(), tool: tc.tool, display: tc.display, summary: tc.summary, status: 'done' as const }))
             : undefined,
           thinking: m.thinking || undefined,
+          // 追问建议（落盘字段 `follow_ups` → 前端 `followUps`）。⚠️ 与 `toBackendMsg`
+          // **成对**：一个负责「重建时丢」，一个负责「恢复时捡回来」，缺任一都是静默丢卡。
+          followUps: m.follow_ups?.length ? m.follow_ups : undefined,
         }))
         set({ currentId: id, topic: c.title, messages, streaming: false, generating: false, statusText: '' })
       } catch { /* 组件层 toast */ }

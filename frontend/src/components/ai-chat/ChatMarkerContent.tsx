@@ -20,9 +20,9 @@
  * 「产物里的块」本就该是两种观感（产品场景不同）。对话样式全在 `styles/chat-blocks.css`。
  */
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { ClipboardList, Info } from 'lucide-react'
+import { ChevronDown, ChevronRight, ClipboardList, Info } from 'lucide-react'
 import { parseMarkers } from '../../lib/markdown-markers'
 import { splitByHeading } from '../../lib/markdown-sections'
 import { suppressTrailingPartialMarker } from '../../lib/markdown-scan'
@@ -72,34 +72,78 @@ function ChatCardGroup({ content, streaming }: ChatMarkerContentProps) {
   )
 }
 
-/** `follow-up`：块内每行一个问题，渲染成可点击直发的 chip */
-function ChatFollowUp({ content, streaming }: ChatMarkerContentProps) {
-  const items = useMemo(() => parseFollowUpItems(content), [content])
-  // ⚠️ 同款退化：解析不出列表项（空块 / 纯段落）→ 当普通正文，不画空壳
-  if (items.length === 0) return <ChatText content={content} streaming={streaming} statusText="" />
+/** 追问 chips —— **两个数据来源共用的唯一渲染器**。
+ *
+ * ⚠️ **它是全仓唯一的 chip 发生地**（`chat-followup-chip` 只在本文件出现）：
+ * 补调来的（`msg.followUps` 数组，见 `MessageItem`）与模型**自主写**在正文里的
+ * （`follow-up` 块 → 下面的 `ChatFollowUp`）走的是同一个组件。各写一份就是第二份
+ * 实现（模式 #54），而两份 chip 的观感分叉是**必然**的。
+ *
+ * ⚠️ **折叠状态是组件本地 state、不持久化**：它是瞬时的阅读偏好（「这一轮我不关心
+ * 追问」）。分页窗口卸载重挂会复位，可接受 —— 重挂是切会话/翻页，用户此时看的是别处。
+ * ⚠️ **两个来源各自独立折叠**：它们是两个组件实例，state 天然隔离、不会互相带动。
+ *
+ * ⚠️ **默认展开**：开关的承诺是「选了一定有」，默认收起会让这份承诺看不出来。
+ *
+ * ⚠️ **两个可选 prop（2026-10-11，产物侧复用）**：`label` / `onSelect` 缺省时行为
+ * **逐字不变** ⇒ 对话侧零回归。产物侧（预览区笔记末尾）带 `label="继续追问"` 与自己的
+ * `onSelect`（要点：它必须**显式传 docRefs**，而对话侧那个刻意不传）。
+ */
+export function ChatFollowUpList({ items, streaming, label = '继续追问', onSelect }: {
+  items: string[]; streaming: boolean; label?: string; onSelect?: (q: string) => void
+}) {
+  const [collapsed, setCollapsed] = useState(false)
+  // ⚠️ **空数组不渲染空壳**：否则会留下一个「继续追问 · 0」的标签挂在回答末尾。
+  // ⚠️ 这句必须在 `useState` **之后**（hooks 顺序）—— 它挡的是渲染、不是状态。
+  if (items.length === 0) return null
 
   return (
     <div className="chat-followup" data-block-type="follow-up">
-      <div className="chat-followup-label">继续追问</div>
-      <div className="chat-followup-items">
-        {items.map((q, i) => (
-          <button
-            key={i}
-            type="button"
-            disabled={streaming}
-            // ⚠️ 不传 `docRefs`：这是**新问题**不是 @ 引用。
-            // 「当前选中文档」由 `dispatchSend` 自动带上（`chatStore.ts` 的 docIds 组合），语义正确。
-            // ⚠️ 流式中重复点击由 `dispatchSend` 首行 `if (s.streaming) return` 兜底，
-            // `disabled` 只是让这一点**看得出来**。
-            onClick={() => useChatStore.getState().sendMessage(q)}
-            className="chat-followup-chip"
-          >
-            {q}
-          </button>
-        ))}
-      </div>
+      {/* ⚠️ `<button>` 而不是 `<div>`：它是折叠开关（2026-10-11）。外观全靠
+          `chat-blocks.css` 里那串 UA 默认值覆盖 —— 少写 `font: inherit` 就会
+          与正文的字体族/字重不一致（看起来像另一套 UI）。 */}
+      <button
+        type="button"
+        className="chat-followup-label"
+        data-followup-collapse
+        aria-expanded={!collapsed}
+        onClick={() => setCollapsed(v => !v)}
+      >
+        {collapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}{label} · {items.length}
+      </button>
+      {!collapsed && (
+        <div className="chat-followup-items">
+          {items.map((q, i) => (
+            <button
+              key={i}
+              type="button"
+              disabled={streaming}
+              // ⚠️ 不传 `docRefs`：这是**新问题**不是 @ 引用。
+              // 「当前选中文档」由 `dispatchSend` 自动带上（`chatStore.ts` 的 docIds 组合），语义正确。
+              // ⚠️ 流式中重复点击由 `dispatchSend` 首行 `if (s.streaming) return` 兜底，
+              // `disabled` 只是让这一点**看得出来**。
+              // ⚠️ 产物侧传 `onSelect`（要显式带 docRefs）—— 两边共用同一个 chip
+              // 组件、不同的「发问入口」，不新起第二份实现（模式 #54）。
+              onClick={() => (onSelect ? onSelect(q) : useChatStore.getState().sendMessage(q))}
+              className="chat-followup-chip"
+            >
+              {q}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
+}
+
+/** `follow-up` 块：块内每行一个问题（模型**自主写**在正文里的那条路）。
+ *
+ * ⚠️ 解析不出列表项（空块 / 纯段落）→ **退化成普通正文**（内容一字不丢），
+ * 不画空壳 —— 与 `ChatCardGroup` 同款纪律。 */
+function ChatFollowUp({ content, streaming }: ChatMarkerContentProps) {
+  const items = useMemo(() => parseFollowUpItems(content), [content])
+  if (items.length === 0) return <ChatText content={content} streaming={streaming} statusText="" />
+  return <ChatFollowUpList items={items} streaming={streaming} />
 }
 
 /** `info`：讲清一个对象（一个概念 / 一个工具 / 一份来源）。
