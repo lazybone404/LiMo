@@ -4,6 +4,7 @@ import { X, Download, FileText, Globe, File, Archive, Search, ChevronUp, Chevron
 import { getTypeMeta } from '../gen-panel/constants'
 import { downloadFromUrl, downloadBlob, sanitizeExportName } from '../../lib/download'
 import { apiUrl } from '../../api/client'
+import { serializeCardVars } from '../../lib/card-prefs'
 
 type Format = 'md' | 'html' | 'plain' | 'docx'
 
@@ -30,7 +31,15 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
   const addToast = useStore(s => s.addToast)
   const skeleton = useStore(s => s.skeleton)
   const cardStyle = useStore(s => s.cardStyle)
+  const cardBg = useStore(s => s.cardBg)
+  const cardLift = useStore(s => s.cardLift)
+  const cardBorder = useStore(s => s.cardBorder)
   const markerDecor = useStore(s => s.markerDecor)
+  // 逐维度微调 —— 与 `ExportMenu::backendParams` 同一处拼（那边是 GET query、这边是
+  // POST body，两条传输各拼一次是既有的形状；变量串本身仍出自 `serializeCardVars`）。
+  const cardVars = serializeCardVars({
+    skeleton, style: cardStyle, bg: cardBg, lift: cardLift, border: cardBorder,
+  })
 
   // ── 文档选择 ──
   const [selectedIds, setSelectedIds] = useState<string[]>(currentDocId ? [currentDocId] : [])
@@ -380,7 +389,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
                   method: 'POST', headers: { 'Content-Type': 'application/json' },
                   // skeleton / card_style / marker_decor 跟随预览（与 ExportMenu 同源）——
                   // ⚠️ 默认值（`paper` / 装饰开）时后端走的仍是那条逐字未改的分支。
-                  body: JSON.stringify({ doc_ids: selectedIds, formats, content_tabs: tabs, formula_md: formulaMd, image_md: imageMd, formula_plain: formulaPlain, html_theme: htmlTheme, skeleton, card_style: cardStyle, marker_decor: markerDecor, filename }),
+                  body: JSON.stringify({ doc_ids: selectedIds, formats, content_tabs: tabs, formula_md: formulaMd, image_md: imageMd, formula_plain: formulaPlain, html_theme: htmlTheme, skeleton, card_style: cardStyle, marker_decor: markerDecor, card_vars: cardVars, filename }),
                 })
                 if (!r.ok) { const err = await r.json().catch(() => ({ detail: `HTTP ${r.status}` })); addToast(err.detail || '导出失败', 'error'); return }
                 const blob = await r.blob()

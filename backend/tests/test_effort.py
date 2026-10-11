@@ -6,7 +6,10 @@
 2. **`generate_both` 的 a/b 顺序与流式路径相反**（a=polished / b=notes），而本仓库
    有「曾解包反了导致两产物互换写进对方文件」的历史 —— 档位若按位置传，就是把
    笔记的档位配到整理版上，**不报错、无异常、单测全绿**，只有用户觉得「怎么变慢了」；
-3. 静默期分档若写死，选最高档反而更容易被判超时 —— 而这一条只在 max 档真实触发。
+3. 静默期分档若写死，选最高档反而更容易被判超时 —— 而这一条只在 max 档真实触发；
+4. **「降档」与「关闭思考」的失效方式不同**（第 5 节）：降档是「参数发出去了但不保证
+   够用」（实测 low 档仍烧光输出预算），关闭是结构性的。且两者在服务端**互斥**，
+   同传即整次 400 —— 只有查 extra_body 形状才看得见。
 
 判据自证（模式 #38「断言存在 ≠ 断言有效」）：文件末尾的对照实验可复现 ——
 - 把 `chunk_timeout_for` 改成恒返回 150 → 分档用例红；
@@ -243,5 +246,81 @@ assert CALL_SITES >= 7, (
     f'effort_for 调用点只有 {CALL_SITES} 处，少于预期的 7 处 —— 某个路径的档位可能被'
     f'整体删掉或绕开了（模式 #16：漏传一处即静默失效）')
 print(f'PASS: 全库无硬编码档位字面量；effort_for 调用点 {CALL_SITES} 处（≥7）')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 5. 思考开闭：`disable_thinking` 的落点形状（llm/service.py）
+# ═══════════════════════════════════════════════════════════════
+#
+# 「降档」与「关闭」是**两件事**，而它们的失效方式完全不同：
+#   - 降档（reasoning_effort="low"）：参数发出去了、模型也认，但**不保证够用**。
+#     实测分类 90 篇时 low 档仍把 8192 token 的输出预算全烧在推理链上、正文 0 字符。
+#   - 关闭（disable_thinking）：是结构性的，模型不产生推理链，预算全留给正文。
+# 因此判据不能只断「传了参数」，必须断**参数的形状**——两者在服务端**互斥**。
+
+from app.llm.service import LLMService       # noqa: E402
+
+
+class _FakeChatCompletions:
+    """只记下 create 的实参，并回一个空流（无需任何 chunk：finish=None 即收尾）。"""
+
+    def __init__(self, seen: list[dict]):
+        self._seen = seen
+
+    async def create(self, **kwargs):
+        self._seen.append(kwargs)
+
+        async def _empty():
+            return
+            yield                                # pragma: no cover
+
+        return _empty()
+
+
+class _FakeChat:
+    def __init__(self, seen: list[dict]):
+        self.completions = _FakeChatCompletions(seen)
+
+
+class _FakeOpenAI:
+    def __init__(self, seen: list[dict]):
+        self.chat = _FakeChat(seen)
+
+
+async def _drain(svc, **kw):
+    async for _ in svc.stream("PROMPT", **kw):
+        pass
+
+
+def _extra_body_for(**stream_kw):
+    """跑一次 stream()，回传真正发给 SDK 的 extra_body。"""
+    seen: list[dict] = []
+    svc = LLMService({"llm": {"provider": "deepseek", "api_key": "sk-test",
+                              "model": {"deepseek": "deepseek-v4-flash"}}})
+    # ⚠️ 直接塞假 client 绕过惰性构造（`client` property 只在 _client is None 时才建）
+    svc._client = _FakeOpenAI(seen)
+    asyncio.run(_drain(svc, **stream_kw))
+    assert len(seen) == 1, f'预期恰好一次 create 调用，实际 {len(seen)} 次'
+    return seen[0]["extra_body"]
+
+
+# 关闭思考 → canonical 形式（`reasoning_effort="none"` 亦可，但中间层不总翻译它）
+assert _extra_body_for(disable_thinking=True) == {"thinking": {"type": "disabled"}}, \
+    _extra_body_for(disable_thinking=True)
+
+# ⚠️ **互斥的反向钉**：同传时 effort 必须被丢弃（代码里是 elif）。
+# 若有人把 elif 改回独立 if，两个键会同时出现在 extra_body 里 —— 服务端校验直接
+# 拒绝整次请求，而本文件若不查形状就发现不了（它照样「发了个参数出去」）。
+assert _extra_body_for(disable_thinking=True, reasoning_effort="low") == \
+    {"thinking": {"type": "disabled"}}, _extra_body_for(disable_thinking=True, reasoning_effort="low")
+
+# 老路径（只降档）零回归
+assert _extra_body_for(reasoning_effort="low") == {"reasoning_effort": "low"}, \
+    _extra_body_for(reasoning_effort="low")
+
+# 都不传 → **None 而非 {}**：空 dict 也会被当作显式 extra_body 发出去
+assert _extra_body_for() is None, _extra_body_for()
+
+print('PASS: disable_thinking 走 canonical 形状、与 reasoning_effort 互斥、不传时为 None')
 
 print('\nAll effort tests PASS')

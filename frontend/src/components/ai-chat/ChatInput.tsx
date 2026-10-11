@@ -7,7 +7,7 @@
  * @ 文档引用：AtSign 按钮弹出文档选择浮层，选中文档 → docRef chips（本条消息引用）。
  * 发送时 docRefs 随 sendMessage 传入，docIds = 当前选中文档 + 本条引用（chatStore 组合去重）。
  */
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Send, Square, AtSign, FileText, X } from 'lucide-react'
 import { useChatStore, type DocRef } from '../../store/chatStore'
 import { useStore, type DocEntry } from '../../store'
@@ -31,6 +31,23 @@ export function ChatInput({ scale }: ChatInputProps) {
   const [refOpen, setRefOpen] = useState(false)
   const [refSearch, setRefSearch] = useState('')
   const taRef = useRef<HTMLTextAreaElement>(null)
+  // 输入区 + @ 浮层的共同祖先：判断「点在内部还是外部」的界
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  // ⚠️ 点浮层外关闭走 **document 监听**，不再是透明遮罩（2026-10-11 改）：
+  // `FloatingAI` 的根 `<aside>` 带 `backdrop-blur`，它会**创建包含块**，把 `fixed`
+  // 后代锁进浮窗自身的大小——`fixed inset-0` 遮罩实际只盖住对话窗那一块，点窗口外
+  // 关不掉 @ 浮层（模式 #67）。浮层本身 `absolute bottom-full` 定位在这个输入区上，
+  // Portal 到 body 会失去定位基准，故改为监听 document、用 `contains` 划内外界。
+  useEffect(() => {
+    if (!refOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current?.contains(e.target as Node)) return
+      setRefOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [refOpen])
 
   // 上下文占用进度（C4）— 前端字符估算仅供参考，实际裁剪以后端 tiktoken 为准
   const messages = useChatStore(st => st.messages)
@@ -72,9 +89,7 @@ export function ChatInput({ scale }: ChatInputProps) {
   }
 
   return (
-    <div className="relative shrink-0 border-t border-border-light p-3">
-      {/* 点击浮层外关闭 */}
-      {refOpen && <div className="fixed inset-0 z-[5]" onClick={() => setRefOpen(false)} />}
+    <div ref={rootRef} className="relative shrink-0 border-t border-border-light p-3">
 
       {/* 本条消息引用的文档 chips */}
       {docRefs.length > 0 && (

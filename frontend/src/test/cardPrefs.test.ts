@@ -23,13 +23,22 @@ import { resolve } from 'node:path'
 import {
   CARD_DEFAULTS,
   CARD_STYLE_OPTIONS,
+  CARD_BG_OPTIONS,
+  CARD_BORDER_OPTIONS,
+  CARD_VARS,
+  type CardPrefs,
   getSavedCard,
   applyCard,
   saveCard,
+  serializeCardVars,
 } from '../lib/card-prefs'
 
 const KEY = 'mbw_card'
 const root = () => document.documentElement
+/** 构造完整偏好（本轮加了三个微调字段后，裸对象字面量不再是合法 `CardPrefs`）。 */
+const P = (patch: Partial<CardPrefs> = {}): CardPrefs => ({ ...CARD_DEFAULTS, ...patch })
+/** 读 `<html>` 上的 inline 变量（微调的唯一落点）。 */
+const inlineVar = (v: string) => root().style.getPropertyValue(v).trim()
 /** ⚠️ 与 `readingLayout.test.tsx` 读 `index.css` 同款（jsdom 下用 process.cwd()） */
 const cardsCss = readFileSync(resolve(process.cwd(), 'src/styles/cards.css'), 'utf-8')
 /** 剥注释后再做源约束断言 —— 注释里举例提到色值不等于规则用了色值 */
@@ -39,6 +48,10 @@ beforeEach(() => {
   localStorage.clear()
   root().removeAttribute('data-skeleton')
   root().removeAttribute('data-card-style')
+  // ⚠️ inline 变量也要清 —— jsdom 的 `getComputedStyle` **会合并 inline style**，
+  // 不清的话上一个用例写下的 `--card-bg-base: transparent` 会让下一个用例的
+  // 「跟随方案」判据读到它（测试之间互相污染，且方向刚好是「让守卫变绿」）。
+  for (const v of Object.values(CARD_VARS)) root().style.removeProperty(v)
 })
 
 // ── 零回归：默认值必须等于改造前的现状 ──────────────────────
@@ -57,14 +70,14 @@ describe('零回归 — 默认 = 改造前的现状', () => {
   it('paper 时两个属性都**不存在**（而不是等于 "paper"）', () => {
     // 对照 B：写 setAttribute(...,'paper') → 红。这是零回归从「取值相同」
     // 升级为「选择器不匹配」的那一步，退化掉就等于少了一层保证。
-    applyCard({ skeleton: 'paper', style: 'gpt' })
+    applyCard(P())
     expect(root().hasAttribute('data-skeleton')).toBe(false)
     expect(root().hasAttribute('data-card-style')).toBe(false)
   })
 
   it('从 card 切回 paper 时属性被清掉（不留残余）', () => {
-    applyCard({ skeleton: 'card', style: 'guofeng' })
-    applyCard({ skeleton: 'paper', style: 'guofeng' })
+    applyCard(P({ skeleton: 'card', style: 'guofeng' }))
+    applyCard(P({ skeleton: 'paper', style: 'guofeng' }))
     expect(root().hasAttribute('data-skeleton')).toBe(false)
     expect(root().hasAttribute('data-card-style')).toBe(false)
   })
@@ -75,15 +88,15 @@ describe('零回归 — 默认 = 改造前的现状', () => {
 describe('applyCard — 写 DOM', () => {
   it('card 时两个属性同时写（缺任何一个都会静默失效）', () => {
     // 对照 C：属性名与 cards.css 的选择器不同源 → 样式永不生效且不报错
-    applyCard({ skeleton: 'card', style: 'seal' })
+    applyCard(P({ skeleton: 'card', style: 'seal' }))
     expect(root().getAttribute('data-skeleton')).toBe('card')
     expect(root().getAttribute('data-card-style')).toBe('seal')
   })
 
   it('骨架切换不丢视觉方案（切回来还是原来那套）', () => {
-    applyCard({ skeleton: 'card', style: 'ink' })
-    applyCard({ skeleton: 'paper', style: 'ink' })
-    applyCard({ skeleton: 'card', style: 'ink' })
+    applyCard(P({ skeleton: 'card', style: 'ink' }))
+    applyCard(P({ skeleton: 'paper', style: 'ink' }))
+    applyCard(P({ skeleton: 'card', style: 'ink' }))
     expect(root().getAttribute('data-card-style')).toBe('ink')
   })
 })
@@ -91,9 +104,11 @@ describe('applyCard — 写 DOM', () => {
 // ── 读写往返 + 逐字段校验 ──────────────────────────────────
 
 describe('读写往返与容错', () => {
-  it('save → get 往返一致', () => {
-    saveCard({ skeleton: 'card', style: 'apple' })
-    expect(getSavedCard()).toEqual({ skeleton: 'card', style: 'apple' })
+  it('save → get 往返一致（含三项微调）', () => {
+    saveCard(P({ skeleton: 'card', style: 'apple', bg: 'hover', lift: 40, border: 'thick' }))
+    expect(getSavedCard()).toEqual({
+      skeleton: 'card', style: 'apple', bg: 'hover', lift: 40, border: 'thick',
+    })
   })
 
   it('损坏的 JSON → 整体落回默认（不抛）', () => {
@@ -104,12 +119,89 @@ describe('读写往返与容错', () => {
   it('单项非法只退该项，不带走另一项', () => {
     // 对照：整包丢弃 → 用户设好的 style 被一个坏的 skeleton 一并重置
     localStorage.setItem(KEY, JSON.stringify({ skeleton: 'card', style: '不存在' }))
-    expect(getSavedCard()).toEqual({ skeleton: 'card', style: 'gpt' })
+    expect(getSavedCard()).toEqual(P({ skeleton: 'card' }))
+  })
+
+  it('三项微调逐字段校验：不认识的档位 / 越界抬升 → 落回「跟随方案」', () => {
+    // 对照：原样透传 → 「存了但永远不生效」（值不认识 ⇒ CSS 里查不到表，静默无效）
+    localStorage.setItem(KEY, JSON.stringify({
+      skeleton: 'card', style: 'ink', bg: '不存在', lift: 250, border: '也不存在',
+    }))
+    const got = getSavedCard()
+    expect([got.bg, got.lift, got.border]).toEqual([null, null, null])
+    expect(got.style).toBe('ink')   // 好的字段不被坏的带走
   })
 
   it('不认识的骨架值 → 落回 paper（而不是当成 card）', () => {
     localStorage.setItem(KEY, JSON.stringify({ skeleton: 'CARD', style: 'ink' }))
     expect(getSavedCard().skeleton).toBe('paper')
+  })
+})
+
+// ── 逐维度微调（2026-10-11）──────────────────────────────────
+
+describe('逐维度微调 — 覆盖方案取值', () => {
+  it('没调过时**一个 inline 变量都不写**（新增旋钮不改变既有用户的观感）', () => {
+    // 对照：applyCard 无条件写三个变量（哪怕是方案原值）→ 表面无变化，但「跟随方案」
+    // 这个语义没了：以后改方案取值，已经打开过设置页的用户不会跟着变。
+    applyCard(P({ skeleton: 'card', style: 'apple' }))
+    for (const v of Object.values(CARD_VARS)) expect(inlineVar(v)).toBe('')
+  })
+
+  it('调过的项写 inline、没调的仍跟随方案', () => {
+    applyCard(P({ skeleton: 'card', style: 'ink', bg: 'hover', lift: 40 }))
+    expect(inlineVar(CARD_VARS.bg)).toBe('var(--tk-hover)')
+    expect(inlineVar(CARD_VARS.lift)).toBe('40%')
+    expect(inlineVar(CARD_VARS.border)).toBe('')   // 没调 → 落回 ink 方案
+  })
+
+  it('切回「整篇」时 inline 变量一并清空（不留残余）', () => {
+    // 对照：只 removeAttribute、不清变量 → 下次挑方案时被上一轮的覆盖压住，
+    // 用户以为在改方案、其实什么都没变，零报错。
+    applyCard(P({ skeleton: 'card', style: 'seal', bg: 'hover', border: 'accent' }))
+    applyCard(P({ skeleton: 'paper', style: 'seal', bg: 'hover', border: 'accent' }))
+    expect(inlineVar(CARD_VARS.bg)).toBe('')
+    expect(inlineVar(CARD_VARS.border)).toBe('')
+  })
+
+  it('透明基色下抬升被强制归零（无效组合不留活口）', () => {
+    // 对照：透明底 + lift:40% ⇒ color-mix(transparent, elevated 40%) 混出**半透明黑**，
+    // 不是「在背景色上做变化」—— 这是拉不出正确结果的旋钮（模式 #53）。
+    applyCard(P({ skeleton: 'card', style: 'outline', bg: 'transparent', lift: 40 }))
+    expect(inlineVar(CARD_VARS.lift)).toBe('0%')
+  })
+
+  it('serializeCardVars —— 没调过给空串，调过给**解析好的 CSS 值**', () => {
+    // 传值而非传 key：后端只做字符白名单，不持有第二张「档位 → 取值」的表。
+    expect(serializeCardVars(P({ skeleton: 'card', style: 'gpt' }))).toBe('')
+    expect(serializeCardVars(P({ skeleton: 'card', style: 'gpt', lift: 40 })))
+      .toBe('--card-lift:40%')
+    expect(serializeCardVars(P({ skeleton: 'card', style: 'gpt', bg: 'transparent', lift: 40 })))
+      .toBe('--card-bg-base:transparent;--card-lift:0%')
+  })
+})
+
+describe('逐维度微调 — 与后端导出侧同源', () => {
+  const py = readFileSync(resolve(process.cwd(), '../backend/app/routers/export.py'), 'utf-8')
+
+  it('后端 `_CARD_TUNE_VARS` 的变量名 == 前端 `CARD_VARS` 的值', () => {
+    // 不同源的表现：前端调过的那一项，导出时被后端**逐项静默丢弃** ——
+    // 预览里是调过的样子、导出还是方案原样，且导出成功、不报错。
+    const m = /_CARD_TUNE_VARS\s*=\s*frozenset\(\{([\s\S]*?)\}\)/.exec(py)
+    expect(m, '未在 export.py 找到 _CARD_TUNE_VARS（改名或挪走了？）').not.toBeNull()
+    const backend = [...m![1].matchAll(/"([^"]+)"/g)].map(x => x[1]).sort()
+    expect(backend).toEqual(Object.values(CARD_VARS).sort())
+  })
+
+  it('前端每个档位的 CSS 值都过得去后端的字符白名单', () => {
+    // ⚠️ 正则从 Python 源码里**抽出来用**（不是在这里抄一份）：抄一份就是第二份真相源，
+    // 后端哪天收紧白名单，这个守卫照样绿。Python 与本正则用到的字符类在此子集里语义一致。
+    const m = /_CARD_VAR_VALUE_RE\s*=\s*re\.compile\(r"([^"]*)"\)/.exec(py)
+    expect(m, '未在 export.py 找到 _CARD_VAR_VALUE_RE').not.toBeNull()
+    const re = new RegExp(m![1])
+    for (const o of [...CARD_BG_OPTIONS, ...CARD_BORDER_OPTIONS]) {
+      expect(re.test(o.css), `档位「${o.label}」的取值过不了后端白名单：${o.css}`).toBe(true)
+    }
   })
 })
 

@@ -1,4 +1,4 @@
-# 关键模式（66 条）
+# 关键模式（67 条）
 
 > 从 [CLAUDE.md](../CLAUDE.md) 拆出（2026-10-06）。原文件 184KB，而这一段的**起点已越过
 > 64KB** —— 等于日常根本不加载，偏偏它才是改代码时最该守的东西。拆开后按需读取，
@@ -6,7 +6,8 @@
 >
 > **何时读**：实现中易错的关键约束，新增代码必须遵守。分三组 ——
 > 前端 `#1`-`#8` / 后端 `#9`-`#31` / **同源与成对判据 `#32`-`#66`**（最容易踩：
-> 「成对逻辑必须同源」「判据必须自证有区分力」「能力存在 ≠ 该路径在用」一大类）。
+> 「成对逻辑必须同源」「判据必须自证有区分力」「能力存在 ≠ 该路径在用」一大类）；
+> 末尾 `#67` 是 CSS 宿主环境陷阱（祖先的 `backdrop-filter` 改写 `fixed` 的参照系）。
 > 每条都带「为什么」与「怎么避开」，不是风格偏好。
 
 ---
@@ -47,7 +48,7 @@
 27. **remark 插件顺序**：`remarkMath` 必须在 `remarkGfm` 之前。否则公式内的 `_`（下标）和 `<`（`x_{<k}`）会被 GFM 先解释为斜体/HTML 标签 → `$$` 定界符破裂 → KaTeX 渲染失败。**本次已修复**：markdown-plugins.ts。
 28. **引擎绑定只取第一个**：`engine_bindings` 列表只解析第一个可用引擎，失败直接报错（不再多引擎降级尝试）。扩展名兜底（pdf→pypdfium2 等）是默认行为，新用户无绑定时必须可用。引擎自动降级开关（`engine_auto_fallback`）已移除，用户换引擎去设置页手动改。LLM 降级（备用模型）是独立语义，仅 process.py 的 LLM→OCR 回退保留。
 29. **`init_engines` 禁止每次启动覆盖配置**：引擎初始化中的 `save_config` 会写全量配置到 config.yaml。若此调用在每次启动都触发，一旦内存中的 config 对象缺失敏感字段（API Key 等），这些字段将永久丢失。**本次已修复**：ASR 绑定逻辑从「强制先删后插重排」改为「仅空列表初始化」，确保后续启动 asr_changed=False。新增引擎/绑定变更时才保存。
-30. **FastAPI Depends 依赖注入**：用 `store=Depends(get_store)` 替代函数体内 `request.app.state.store`，消除样板代码。`app/core/dependencies.py` 提供 `get_store / get_config / get_guard / get_config_lock / get_query_service` 五个依赖。18 个路由模块中 17 个已用；仍有残留的仅 `generate.py` / `ingest.py` / `search.py`（新增路由一律用 Depends，勿再写 `request.app.state`）。⚠️ 写这类计数前先跑 `ls` + `grep`——本条曾把 ingest 记成「已迁移」。
+30. **FastAPI Depends 依赖注入**：用 `store=Depends(get_store)` 替代函数体内 `request.app.state.store`，消除样板代码。`app/core/dependencies.py` 提供 `get_store / get_config / get_guard / get_config_lock / get_query_service` 五个依赖。19 个路由模块中 18 个已用（`references.py` 两者都没用）；仍有 `request.app.state` 残留的是 `generate.py`（7 处）/ `ingest.py`（3 处）/ `search.py`（1 处）——⚠️ **「有残留」与「已用 Depends」不互斥**（同一文件里部分函数仍走 `app.state`），别把前者读成「这个模块没迁移」。新增路由一律用 Depends，勿再写 `request.app.state`。⚠️ 写这类计数前先跑 `ls` + `grep`——本条曾把 ingest 记成「已迁移」，2026-10-11 又因新增 `classify.py` 而**整体滞后一档**（当时写的是 18/17）。
 31. **disconnect_watcher 客户端断连监测**：`app/core/disconnect.py` 提供 `@asynccontextmanager` 封装的 `disconnect_watcher(request, cancel_event)`。替换了 5 个路由中 ~45 行重复的 `_watch_disconnect` 实现，修复了 process.py 资源泄漏和 chat.py 缺 await 两个 bug。新增长时端点时复用此工具。
 32. **适配器一请求一实例**：`AdapterRegistry` 存**类**（`register(VideoAdapter)`），`route()` 命中前 `cls()` 实例化——单例实例的 `cookies`/`_engine_config`（含 `cancel_event`）会被并发导入互相覆盖。适配器 `accept()` 是纯输入判断（无实例状态），`name` 是类属性。**本次已修复**：registry.py + adapters/__init__.py。
 33. **CORS Origin 白名单**：本地后端**禁止** `allow_origin_regex=".*"`（任意网页可跨站读本地数据）。白名单必须含 Tauri v2 生产的 **`http://tauri.localhost`**（Windows WebView2 实测 origin）+ `https://tauri.localhost` + `tauri://localhost` + 本机 localhost 任意端口；`_ForceCORSMiddleware` 仅对白名单 origin 回显凭证。**本次已修复**：main.py（2026-08-02 曾漏 `http://tauri.localhost` 导致打包版全接口 CORS 拦截）。
@@ -111,3 +112,7 @@
 65. **同一条约束写在两种语言里时，必须由机器核对——因为失效的那一半只在特定运行形态下暴露**：应用快捷键的「清单」被写在两处——`App.tsx::handleAppKeyDown` 的 `switch (e.key)`（真正干活）与 `lib.rs::webview_keys::is_app_shortcut`（打包版里把这些键从 WebView2 加速键手里放行到网页，否则 `preventDefault()` 根本不触发）。⚠️ **后者的失效方式是本项目最难自查的一类**：Rust 侧漏一个键，**开发模式（`npm run dev`）一切正常、打包版那个键没反应**，零报错零日志——而开发模式恰恰是日常改代码时唯一在用的形态。根因不是「谁写错了」，而是**同一集合的两半分别住在前端与 Rust 里，没有任何编译器或测试天然覆盖两者的一致性**（不像 TS 里两处 import 同一常量）。修法是把两边都当**数据**解析出来做集合相等断言（`appShortcutKeys.test.ts` 读两份源码各自提取键集合），⚠️ 并让 `matches!` 里每个 `VK_*` 名字都能在同文件 `const` 表里查到（引用未定义的常量名＝静默少放行一个键）。**教训**：这是 #39 / #52 / #54 那组「成对逻辑必须同源」的**跨语言版本**——#54 说「同源是搜索题不是记忆题」，本条补上「**当搜索跨不出语言边界时，只能靠源码级守卫**」。（2026-10-05 打包版加速键放行）
 
 66. **往产物正文里加一个协议元素 = 同时改 N 个消费点，且「零回归」的判据是「无协议元素时逐字节相同」而非「有元素时正确」**：`limo-block`（产物语义标记）落地时，同一条正文要流经 **7 个消费点**——HTML 导出（**转换**成 `<div class="md-block">`）/ Word 导出（转换成单单元格表格）/ 思维导图（**剥离**）/ md 与纯文本导出（**剥离**）/ 合成管道（**剥离**，否则标记进 prompt 还计 token）/ 字数统计 `chars`（**剥离**）/ H2 切分（**跳过块内 `##`**）。⚠️ **两种处置（转换 / 剥离）不是不一致，是消费点的性质不同**——有视觉层的地方跟随预览，没有的地方要干净。**漏掉任一个都不报错**，症状分别是「导出物里躺着一行 `<!-- limo-block:v1 … -->`」「合成产物把标记当输入」「字数虚高」——都是只有对照实机才看得见的静默失效。⚠️ **「留口子」的具体形态就是这张消费点表**：本轮只做了 `limo-block` 一个类型，但表已按「用户最初诉求里的失败标记（图表/OCR 失败占位）也要走同一套」设计好——下一批接入不需要重新论证架构，只需往表上加行。**两条配套纪律**：① **零残留降级**——未闭合 / 未知 `type` / 嵌套一律只剥标记行、块内文字一字不丢，剥完与「从未写过标记」**逐字相同**（这是「无标记 = 正常文章」的机器可验证形式）；② **零回归靠结构不靠自觉**——默认态**不写属性**（`data-marker-decor` 缺失即默认）、CSS 规则全带前缀选择器、`render_blocks_html` 在无标记时**逐字返回**原渲染结果，三条合起来才能把「无标记产物的导出 HTML 与改造前逐字节相同」写成一条断言。⚠️ **本轮靠这套守卫抓出一个真实缺陷**：`_CARD_TOKENS_CSS`（导出页唯一的 `--tk-*` 提供者，导出主题一个都不提供）原先只在 `skeleton == "card"` 时注入，于是 `paper` + 有标记时 `blocks.css` 的 `border-left: var(--tk-accent)` 整条声明作废——**导出 HTML 里强调块一点样式都没有，而应用内预览完全正常、零报错**（这正是 #39/#51「断言全过、肉眼等于没有」的又一形态）。**教训**：判据只写「有标记时结构对不对」是不够的，「**无标记时那个字节有没有多出来**」才是零回归的真正边界。（2026-10-10 产物语义标记）
+
+67. **祖先的 `backdrop-filter` / `transform` / `filter` 会创建包含块——`position: fixed` 的后代不再相对视口定位**：`DocLibrary` 的分类对话框写的是 `fixed inset-0`，但它挂在带 `backdrop-blur-[20px]` 的 `<aside>` 里，于是遮罩只覆盖那块面板（用户原话「这一个界面还是卡在那一个文档栏里面」）。⚠️ **同一形态在项目里一次查出 6 处**（文档库的分类 / 合成 / 删除确认 + 对话浮窗的重命名 / 删除 / 消息编辑），说明这不是偶发笔误而是**模式化陷阱**：`fixed` 读起来就是「相对视口」的保证，读代码时没有任何线索提示它被祖先改写了参照系，而**症状完全不像定位问题**（用户描述成「卡在某个面板里」，像布局 bug）。**修法**：该面板内的浮层一律 `createPortal(…, document.body)`（先例 `ui/ContextMenu.tsx`），并在面板根元素上留一条**常驻注释**声明这条纪律——**根因在祖先的样式上、不在浮层自己身上**，不写下来下一个人只会再犯一次。判据是「**这个面板的根元素有没有 `backdrop-blur` / `transform` / `filter`**」：`GenPanel` 也有 `backdrop-blur` 但**内部无 `fixed` 元素**，故不需要改（blur 本身不是错，它只是把面板变成了后代的定位参照系）；`PreviewArea` 根无 blur 同理。⚠️ **测试的连带影响**：Portal 之后 `container.querySelector('[data-…]')` **恒为 null**，`fireEvent.click(null)` 报的是「provide a DOM element」——看起来像测试写坏了，实际是组件换了挂载位置，查询必须从 `document.body` 走；批量替换时**别把 helper 的定义体也换掉**（`(sel) => document.body.querySelectorAll(sel)` 被替换成 `allInDialog(sel)` → **无限递归**），同源替换会命中定义自身。（2026-10-11 智能分类两阶段）
+
+⚠️ **例外：`absolute` 锚在某个元素上的「下拉」不能 Portal**（2026-10-11 补）——「一律 Portal」这句话会把人带沟里：`FilterPopover` 的筛选浮层与对话 `ChatInput` 的 @ 浮层都是 `absolute right-0 top-full` **挂在触发按钮上**的下拉，Portal 到 body 就**失去定位基准**（落到初始包含块，即视口左上角）。这两处正确的修法是**更小的那个动作**：删掉透明遮罩、改为 `document` 上监听 `mousedown` + 用 `rootRef.contains(e.target)` 划内外界（原注释担心的「点按钮本身也算外部」正是由 `contains` 解决）。于是判据细化为：**先看这个浮层是「对话框」（整块 `fixed`）还是「下拉」（锚在元素上）** —— 前者 Portal，后者监听 document。⚠️ 两处的遮罩此前**看着在工作**（面板内点击确实能关），失效面只在「点面板**外**」——而用户几乎总是往面板外点，所以实测很容易发现、静态读代码却看不出来。（2026-10-11 代码审查修复）

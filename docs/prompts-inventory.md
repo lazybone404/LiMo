@@ -2,7 +2,7 @@
 
 > 完整记录项目中所有 LLM 提示词，供审视和优化。
 > 生成日期：2026-07-15
-> 最后更新：2026-10-11（新增 §14 智能分类 prompt；§13 版本表补至 `"13"`）
+> 最后更新：2026-10-11（§14 智能分类 prompt **改三轮**：补「分批 20 篇/批 + `disable_thinking` 关思考（与 `reasoning_effort` 互斥）+ `CLASSIFY_EMPTY_OUTPUT`」；此前二轮：文件夹/标签两段改为按用户策略生成 + 补两项策略表与 `CLASSIFY_BAD_OPTION`；§13 版本表补至 `"13"`）
 
 ---
 
@@ -831,24 +831,44 @@ light 档在默认 `warm` 基调下离正文底只差 9 个灰阶、底色差 6 
 ### 14.1 节构成
 
 用 `string.Template`（**不是 `str.format`**：下面的 JSON schema 全是花括号，`format`
-要求逐个转义成 `{{}}`，改一处漏一处就是运行期 KeyError）。四个占位符：
+要求逐个转义成 `{{}}`，改一处漏一处就是运行期 KeyError）。**只有三个占位符**——
+文件夹段与标签段**各整段由函数生成**（2026-10-11 二轮改）：
 
 | 占位符 | 内容 | 缺了会怎样 |
 |---|---|---|
-| `$folders` | 现有文件夹逐行 `- id=fd_xxx 名称=研究（现有 3 篇）` | 模型编造 id，全部落 `none` |
-| `$max_new` | `MAX_NEW_FOLDERS`（当前 5） | 每次跑一遍多出无上限的新夹 |
-| `$tag_vocab` | 全库现有标签、`、` 连接（前 `TAG_VOCAB_LIMIT`=200，按出现次数降序） | 标签碎片化（同一件事被叫成三个名字） |
+| `${folder_section}` | `_folder_section(folders, mode, max_new)` 的整段输出（含文件夹清单 / `$max_new` 上限句 / 复用硬规则），**随文件夹策略变** | 模型编造 id，全部落 `none` |
+| `${tag_section}` | `_tag_section(tag_vocab, mode)` 的整段输出（含词表 / 复用引导），**随标签策略变** | 标签碎片化（同一件事被叫成三个名字） |
 | `$docs` | 每篇 `【文档 i】id=… 标题=… 取材=N 字` + 正文 | — |
 
-三块上下文**都是必给的**（合成管道那边「维度可否省略」的讨论不适用于这里：文件夹与
-标签词表正是「优先复用」这条规则的**唯一依据**）。
+⚠️ **为什么不把这两段写死在模板里**：它们的正文随策略变（只复用 / 只打标签 / 不给
+词表……），而**判据与执行必须同源**——「prompt 怎么要求」与「`_normalize_one` 怎么
+收口」必须是**同一次策略选择的两个投影**。写死在模板里等于把一个投影钉在一处、另一个
+散在函数里（模式 #54），二者漂移时**两侧都不报错**。
+
+`$docs` 恒必给；另两块**随策略可以为「不需要空间」的形态**：`tags_only` 下文件夹段
+明说「本次不处理文件夹，一律 `folder_action: none`」（端点响应里 `folders == []`——
+**不喂分类空间**，否则「给了却要求别用」是诱导违反），`free` 下标签段不给词表，
+`reuse_only` 遇上空库也走「不处理文件夹」那段（`_FOLDERS_EMPTY_NOTE` 是同一件事的
+第三种说法——空清单喂给模型等于给它编造 id 的许可）。
+
+#### 两项策略（用户**在发起调用之前**选定）
+
+| 策略 | 取值 | prompt 侧 | 收口侧（`_normalize_one`） |
+|---|---|---|---|
+| `folderMode` | `reuse_or_new`（默认）/ `reuse_only` / `tags_only` | 三份不同的文件夹段 | 非 `reuse_or_new` 时 `new` 一律降级；`tags_only` 下 `reuse`/`new` **都**降级 |
+| `tagMode` | `vocab`（默认）/ `seed` / `free` | 全库词表 / 用户手填的基础标签（**替代**词表，不叠加）/ 不给词表 | 三档共用同一套清洗（trim / 去空 / 去重 / 截断），**不对词表做存在性校验**——词表是引导不是封闭集合 |
+
+⚠️ **非法策略显式报错 `CLASSIFY_BAD_OPTION`，且在校验处（`validate_mode`）就返回**，
+**不发起计费调用**（用例断言 `fake_llm.calls == []`）。判据是「这个值错了会不会改变
+**产物的性质**」：选错「只打标签」与「动文件夹」会让产物性质完全不同而从结果上看不出
+异常；`notesChars` / `maxNewFolders` / `seedTags` 错的是**量** → 静默夹紧 / 清洗。
 
 ### 14.2 关键条款与理由
 
 | 条款 | 为什么写它 |
 |---|---|
 | 「**优先复用**……确实没有合适归处时才新建」 | 不加复用压力 = 每跑一次多几个夹。文件夹比标签更容易失控（它是**导航结构**，多了就没法用） |
-| 「本次最多新建 `$max_new` 个」 | 硬上限进 prompt 是**双重保险**：`normalize_suggestions` 也会截（按名字去重计数，超出的整名降 `none` + 全局 warning） |
+| 「本次最多新建 N 个」（N = `max_new`，由 `${folder_section}` 注入） | 硬上限进 prompt 是**双重保险**：`normalize_suggestions` 也会截（按名字去重计数，超出的整名降 `none` + 全局 warning） |
 | 「复用时**逐字复制** id，**绝不自己编造**」 | 编造的 id 会被归一化丢弃并记 warning，但那篇就白分类了 |
 | 「新建时给短名（12 字以内）」 | 与「文件夹是导航结构」同源；归一化侧超 12 字只补一条**建议性** warning（不截断——名字是用户可见的自由文本） |
 | 「每篇 1-5 个、每个 8 字以内；**优先从上面选**」 | 词表机制的唯一落点。⚠️ 这是**引导不是约束**：模型仍可新造，`MAX_TAGS_PER_DOC`=8 / `MAX_TAG_LEN`=30 才是硬边界（截断 + warning） |
@@ -864,12 +884,19 @@ light 档在默认 `warm` 基调下离正文底只差 9 个灰阶、底色差 6 
 
 | 情形 | code | HTTP |
 |---|---|---|
-| 选中的文档都已不存在 | `CLASSIFY_NO_DOCS` | 404 |
+| 未指定文档 / 选中的文档都已不存在 | `CLASSIFY_NO_DOCS` | 200（`recoverable=True` 且**未显式传** `status_code` → 压成 200） |
+| 策略取值非法（`folderMode` / `tagMode`） | `CLASSIFY_BAD_OPTION` | **400**（`recoverable=False` → 不压成 200；**在校验处就返回，不发起计费调用**） |
 | 未配置 API Key | `CLASSIFY_NO_API_KEY` | 200（`recoverable=False`） |
-| `CLASSIFY_TIMEOUT`（120s） | `CLASSIFY_TIMEOUT` | 200 |
+| 单批超时（120s）/ 整次超时（600s） | `CLASSIFY_TIMEOUT` | 200 |
 | 模型调用异常 | `CLASSIFY_LLM_ERROR` | 200 |
 | 输出不是合法 JSON | `CLASSIFY_BAD_JSON` | 200 |
+| **正文为空**（返回了内容但只思考没输出） | `CLASSIFY_EMPTY_OUTPUT` | 200 |
 | 用户取消 | `CLASSIFY_CANCELLED` | — |
+
+⚠️ **2026-10-11 三轮后「不降级」的粒度变了**：分批让「失败」有了**局部性**——
+**全部批都没成** → 整次显式抛错（上面那条原则不变）；**部分批失败** → 结果照给，但全局
+`warnings` 点名「第 N 批（原因）」。少了后半条，用户会把那些篇的「不归入」当成**模型的
+判断**，而它其实**根本没被分析过**——这正是 14.3 要防的那种「看起来永远合理的方案」。
 
 ⚠️ 异常链的顺序是**判据**不是风格：`except CancelledError: raise` 必须排在
 `except Exception` **之前**（否则用户取消被吞成「模型调用失败」），而 `TimeoutError`
@@ -882,10 +909,16 @@ light 档在默认 `warm` 基调下离正文底只差 9 个灰阶、底色差 6 
 |---|---|---|
 | `temperature` | 0.2 | 归类要稳定，不要创造性 |
 | `max_continuations` | 0 | 输出是要整体解析的 JSON，续写拼接只会得到两段拼不起来的 JSON |
-| `reasoning_effort` | `"low"` | 归类是轻任务；默认档 `high` 会让 DeepSeek 静默思考几十秒（`generation/effort.py` 是档位唯一真相源） |
-| `max_tokens` | `min(max(2048, N×120), 8192)` | 每篇输出约一条对象（~60 token）；下限 2048 给「篇数很少但模型多话」留余地 |
-| 超时 | `CLASSIFY_TIMEOUT` = 120s | **独立成层**，理由同 `COMPRESS_TIMEOUT`：不设它就只有 SDK 请求超时兜底，模型挂起时用户要干等到那儿 |
+| `disable_thinking` | `True` | **关掉思考，而不是降档**（`extra_body={"thinking":{"type":"disabled"}}`）。实测 90 篇时 `reasoning_effort="low"` **同样把 8192 输出预算烧光**（正文 0 字符、`finish=length`）——降档救不了。⚠️ 与 `reasoning_effort` **服务端互斥**，代码里写成 `elif`，两者绝不共现 |
+| `max_tokens` | `min(max(2048, **本批**篇数×120), 8192)` | 每篇输出约一条对象（~60 token）；⚠️ **跟着本批篇数**而不是全部——这正是分批的意义；下限 2048 给「篇数很少但模型多话」留余地 |
+| 超时 | 每批 `CLASSIFY_TIMEOUT` = 120s；整次 `CLASSIFY_TOTAL_TIMEOUT` = 600s | 每批那层**独立成层**，理由同 `COMPRESS_TIMEOUT`（不设它就只有 SDK 请求超时兜底，模型挂起时用户干等到那儿）；整次那层是**外层总闸门**——分批是**串行**的，没有它极端篇数会累积成不可接受的等待 |
 | 输入预算 | `window×0.5 − 2000` | 超出则 `fit_to_budget` 缩减每篇取材并**逐篇标注** `shortened` / `title_only`（缩到 `MIN_USEFUL_CHARS`=120 以下就统一退成「仅标题」——截到 30 字给模型的信息量与标题无异，却让用户以为模型读了笔记） |
+
+⚠️ **分批（`CLASSIFY_BATCH_SIZE` = 20，2026-10-11）**：每批**独立组装 prompt**（同一份
+文件夹 / 标签上下文），拿回各自的 `docs` 数组后**合并成一份再交给同一个
+`normalize_suggestions`** —— 新建上限的**全局计数**、同名归一、幻觉 id 剔除全部仍走
+那一个出口，**分批不引入第二套收口逻辑**（模式 #54）。触发它的不是「大 N 会更慢」这类
+预判，是实机失败：90 篇一次调用时模型把 8192 输出预算全烧在推理链上、正文 0 字符。
 
 ### 14.5 ⚠️ 不 bump `PROMPT_VERSION`
 
@@ -919,7 +952,7 @@ process 产物确实带 `promptVersion`，而分类根本没有产物可带。
 | [backend/app/llm/agent.py](backend/app/llm/agent.py) | AgentRunner — SSE 事件流（agent_status / tool_start / tool_result / thinking / text / done） |
 | [backend/app/llm/service.py](backend/app/llm/service.py) | LLMService — 续写机制 |
 | [backend/app/core/text_utils.py](backend/app/core/text_utils.py) | `smart_truncate()` — 按句子边界截断；`parse_json_object()` — JSON 对象抽取（图表 `chart_renderer` 与此处分类共用）；`sanitize_reference_name()` — 注入侧名字清洗 |
-| [backend/app/generation/classifier.py](backend/app/generation/classifier.py) | `CLASSIFY_PROMPT` + `build_classify_prompt()` — 智能分类（见 §14）；另含 `collect_doc_inputs` / `fit_to_budget` / `normalize_suggestions` 三个纯函数 |
+| [backend/app/generation/classifier.py](backend/app/generation/classifier.py) | `CLASSIFY_PROMPT` + `build_classify_prompt()` + `_folder_section()` / `_tag_section()`（两段按用户策略生成）— 智能分类（见 §14）；另含 `collect_doc_inputs` / `fit_to_budget` / `normalize_suggestions` 纯函数与 `clamp_*` / `validate_mode` 四个入参收口 |
 | [backend/app/generation/reference_compressor.py](backend/app/generation/reference_compressor.py) | `COMPRESS_PROMPT` — 参考文件超窗摘要（与 §14 对照：那侧**失败降级返回 `None`**，分类侧**不降级**） |
 
 ## 附录 B: 温度参数速查

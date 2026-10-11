@@ -37,16 +37,60 @@ export interface ClassifySuggestion {
 /** 上限由后端**回显**而非前端硬编码（同「引擎前端后端驱动」原则）。 */
 export interface ClassifyLimits {
   maxNewFolders: number
+  /** 「最多新建」滑条的上界 */
+  maxNewFoldersLimit: number
   /** 夹紧后的实际取材深度 */
   notesChars: number
   notesCharsMax: number
   maxTagsPerDoc: number
+  /** 用户手填基础标签的条数上限 */
+  maxSeedTags: number
+}
+
+/**
+ * 文件夹策略 —— **用户在点「开始分析」之前**选定，决定模型面对怎样的分类空间。
+ *
+ * ⚠️ **这三项硬编码在前端是刻意的**，与「引擎/风格/体裁必须 capabilities 下发」不同：
+ * 后者是「后端注册了什么，前端就得列什么」（漏了就是后端加了引擎而前端静默不显示）；
+ * 这里是**界面选项**——每项配一段人写的说明与排布，新策略上线本就该手工设计 UI，
+ * 不能像引擎列表那样自动铺开。后端 `FOLDER_MODES` 是同一份清单的**校验侧**，
+ * 两边不一致时后端会显式报 `CLASSIFY_BAD_OPTION`（显式失败，不是静默降级）。
+ */
+export type FolderMode =
+  /** 优先复用现有夹，必要时新建（受 maxNewFolders 约束） */
+  | 'reuse_or_new'
+  /** 只用现有夹，一篇都不新建 */
+  | 'reuse_only'
+  /** 本次完全不动文件夹，只打标签 */
+  | 'tags_only'
+
+/**
+ * 标签策略 —— 决定模型的标签从哪来。
+ *
+ * `vocab`：把全库现有标签喂给它并要求优先复用（收敛词表）。
+ * `seed`：用户手填几个基础标签作为词表（**库里还没标签时**的起步方案）。
+ * `free`：不给词表，完全由模型自由发挥。
+ */
+export type TagMode = 'vocab' | 'seed' | 'free'
+
+/** 「开始分析」时用户选定的那一套策略。 */
+export interface ClassifyOptions {
+  /** 0 = 仅标题（后端 `clamp_notes_chars` 会夹紧） */
+  notesChars: number
+  folderMode: FolderMode
+  maxNewFolders: number
+  tagMode: TagMode
+  /** 仅 `tagMode === 'seed'` 时有意义 */
+  seedTags: string[]
 }
 
 export interface ClassifyPreview {
   status: string
   model: string
   limits: ClassifyLimits
+  /** 策略回显：前端据此知道「这一次模型到底看到了什么」 */
+  folderMode: FolderMode
+  tagMode: TagMode
   /** 喂给模型的分类空间（回显，供 UI 显示「已归入现有文件夹」） */
   folders: { id: string; name: string; count: number }[]
   /** 喂给模型的标签词表（回显） */
@@ -72,6 +116,9 @@ export interface ClassifyCommitResult {
 /**
  * 生成分类建议。**零写入**、恰好一次 LLM 调用（计费）。
  *
+ * ⚠️ **它是计费调用的唯一触发点**——调用方必须等到用户在配置阶段按下
+ * 「开始分析」才调它，不能在打开对话框时就调（2026-10-11 实机反馈的原始形态）。
+ *
  * `signal` 用于面板折叠时中止（折叠 = 卸载组件，不中止就是一次无人接收的计费调用）。
  *
  * ⚠️ **必须检查 `body.code`**：后端把「没选文档 / 没配 key / 超时 / JSON 不合法」
@@ -80,13 +127,13 @@ export interface ClassifyCommitResult {
  */
 export async function classifyPreview(
   docIds: string[],
-  notesChars: number,
+  opts: ClassifyOptions,
   signal?: AbortSignal,
 ): Promise<ClassifyPreview> {
   const response = await fetch(`${BASE}/classify/preview`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ docIds, notesChars }),
+    body: JSON.stringify({ docIds, ...opts }),
     signal,
   })
   let body: Record<string, unknown> = {}

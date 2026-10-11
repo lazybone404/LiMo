@@ -6,6 +6,400 @@
 
 ---
 
+## 2026-10-11 — 实机验收（91 篇真实库）：空库那句 prompt 把 `reuse_or_new` 静默改写成 `tags_only`
+
+### 起因
+
+用户请求「就拿这台机器上的那 90 多篇笔记来做个分类测试，只用标题」。拿本机真实库（**91 篇**）
+跑 `POST /api/classify/preview`，`notesChars=0`，**只调 preview（零写入）**。
+
+### 现象
+
+13 秒跑完、5 批、91 篇全 `title_only` —— 但 `folderAction` **91 篇全是 `none`**，
+即用户明明选了默认的 `reuse_or_new`，实际拿到的是 `tags_only` 的结果。
+
+### 根因：空库文案是一句**命令**，而不是一句**陈述**
+
+`_FOLDERS_EMPTY_NOTE` 原本是**单份常量**、`reuse_or_new` 与 `reuse_only` 共用：
+
+```
+（当前库里没有任何文件夹，本次请只使用 none，不要使用 reuse 或 new）
+```
+
+两档在「库里没有文件夹」这个事实上的**结论恰好相反**：
+
+| 策略 | 空库意味着 | 共用那份文案的后果 |
+|---|---|---|
+| `reuse_only` | 没有可复用的 ⇒ 结论就是「全 none」，**这是对的** | 无 |
+| `reuse_or_new` | 没有可复用的 ⇒ **正是该新建的时候**（首次使用 / 刚丢完分类，恰是最常见的两个场景） | 用户明确选的策略被静默改写成 `tags_only` |
+
+写这份常量的**动机是正当的**（防止模型凭空编造 `fd_xxx`），但手段过界：把「不许复用」
+扩写成了「只许 none」。
+
+### 对照实验（同一份输入 91 篇，只换那一句文案）
+
+| | 原样（命令式） | 中性陈述 |
+|---|---|---|
+| `new` | **0** | **23** |
+| `none` | 91 | 68 |
+| 耗时 | 12.8s | 14.1s |
+
+对照组新建名分布：`{"求职与面试":3, "绘画与创作":4, "情感与心理":6, "科技与AI观察":5, "创作与审美":5}`。
+**判决判据就落在这一句 prompt 上** —— 模型其余部分（标签质量、逐篇判断）两版完全一致。
+（该常量是 0.5.2 工作树里**未提交**的改动，不在同日「7 条修复」清单内。）
+
+### 修法
+
+拆成按策略分派的**两份常量** + `_folder_section` 里 `reuse_only` / `else` 两支：
+
+```python
+_FOLDERS_EMPTY_NOTE_REUSE_ONLY = "（当前库里没有任何文件夹，本次请只使用 none，不要使用 reuse 或 new）"
+_FOLDERS_EMPTY_NOTE_REUSE_OR_NEW = "（当前库里还没有任何文件夹，请为这批材料新建合适的分类）"
+```
+
+⚠️ **与同日 P2-2（空词表兜底）是一对反例，判据由此定形**：
+
+- P2-2 的 `seed` / `vocab` 两档**共用同一份** `_TAG_SECTION_NO_VOCAB` —— 对的，因为
+  「都没有词表可挑」时两档语义完全一致；
+- 这里**必须分两份** —— 因为「没有文件夹」在两档下的结论相反。
+
+**判据是「两种取值下该做的事是否相同」，不是「两种取值是否都在同一个函数里」**。
+把两者混为一谈，就是模式 #54（同源漂移）在 prompt 层的形态：共用一份的理由看起来
+同样充分（「都是空库嘛」），而失效方式是**用户选的那一档被悄悄换成另一档**。
+
+### 测试
+
+⚠️ 既有的 `test_prompt_says_no_reuse_when_library_has_no_folder` **本身就是这个 bug 的守卫** ——
+它在**默认的 `reuse_or_new`** 下断言 prompt 含「不要使用 reuse」，等于把当时的实现固化成契约。
+改写为 `test_prompt_empty_library_note_follows_folder_mode`，按策略分列断言，并含**反向对照**：
+同一句禁令在 `reuse_only` 下**确实在场**（否则「不在场」的断言可能只因该措辞从模板里整体消失而通过，
+两条都绿却什么也没验）。
+
+### 附带观察（如实记录，本轮未处置）
+
+1. **`MAX_NEW_FOLDERS = 5` 对主题极散的库严重不足**（plan 风险 3 被实例证实）：91 篇覆盖
+   绘画 / AI / 职场 / 情感 / 社会评论 / 编程六大簇，模型跨 5 批共提 **14 个**不同新名，
+   全局收口保留 5 个 → **60+ 篇因上限被拒而落 `none`**（这部分篇的 warning 明写「已改为不归入」）。
+   用户可在对话框把上限调到 `MAX_NEW_FOLDERS_LIMIT`(10)，但 14 > 10，仍会掉一批。
+   模型给出的分类本身是准的（如「游戏设计/机制/方法论」「AI/影视/短剧」），问题在上限这个旋钮。
+2. **冷启动时标签不收敛**（plan 风险 2）：91 篇产出 **223 种**标签、绝大多数只出现一次。
+   词表为空时「优先复用」无从谈起，这是冷启动的必然；**需第二轮才有收敛证据**。
+3. 模型对同一篇返回了多条结果，被 `normalize_suggestions` 取第一条并给 warning —— 兜底按设计生效。
+
+---
+
+## 2026-10-11 — 智能分类 + 卡片微调的代码审查：7 条修复
+
+### 起因
+
+对 0.5.2 工作树上未提交的两批改动（智能分类 / 卡片逐维度微调）做了一轮代码质量与漏洞审查。
+7 条发现**逐条回读源码验证**（不采信静态扫描结论），**未发现可利用的安全漏洞**。全部修复 + 4 条新守卫。
+
+### 修复清单
+
+**① P1 分批与预算不同源**（`classifier.fit_to_budget`）
+分批把「一次请求 N 篇」变成「≤20 篇的多次请求」，而预算仍按**全量 N** 均摊 —— 每篇被砍到
+分批后本可容纳值的约 1/批数（90 篇时 159 字，而单批本来放得下 600 字），分批「把每批输出量压下来」
+的收益被反向吃掉。改为按**单批**篇数均摊（模式 #54：判据必须与「谁在花这份预算」同源）。
+⚠️ **副作用如实记录**：按批均摊后每篇配额下界 = `_input_budget` 地板价 4000 ÷ 单批 20 = **200**，
+恒大于 `MIN_USEFUL_CHARS`(120) —— `fit_to_budget` 的 `title_only` 分支在**默认常量下变得不可达**。
+分支保留（常量组合变化时的纵深防御），其测试改为**显式抬高 `MIN_USEFUL_CHARS`** 来行使它，
+并在 docstring 注明「测的是行为契约，不是某组真实输入恰好触发它」（模式 #38）。
+
+**② P1 审定阶段重跑失败后「应用」被禁用**（`ClassifyDialog.canConfirm` 的 `!error`）
+父组件 `loadClassifyPreview` 的 `.catch` 只设 error、**不碰 preview**（注释明写「旧的留在屏幕上 +
+顶部一条错误行，用户可以先用手上的」）—— `!error` 把这条设计意图当场推翻：建议明明摆在眼前，
+按钮却是灰的。「从没成功过」由 `!!preview` 挡住，`!error` 多余且有害。
+
+**③ P2 新建上限每批声明全量**（`classifier.per_batch_new_limit`）
+每批 prompt 都声明「最多新建 5 个」，而模型跨批无法协调 → 5 批各提 5 个、全局收口拒掉约 80%，
+用户拿到一堆 `none` + 一条 warning。改为**按批分配**（`ceil(上限/批数)`；⚠️ 上限为 0 时仍是 0，
+写成无条件 `max(1, ·)` 会把「用户不许新建」抬成「每批可以建 1 个」）。**声明按份、收口按总量**，
+两者是同一次策略选择的两个投影。
+
+**④ P2 空词表兜底只做了一半**（`classifier._tag_section`）
+`seed` 档用户没填标签、或 `vocab` 档而库里还没有标签（**新用户首次分类的常见情况**）时，prompt 会
+输出「请优先从中选择：」+ 空白 / 「优先从上面选」+「（库里还没有标签）」—— 同一句里自相矛盾。
+两档**共用同一份兜底常量** `_TAG_SECTION_NO_VOCAB`，配「整篇逐字相等」的同源断言 +
+「有词表时两档必须不同」的反向断言（防顺手把刻意分开的措辞也抹平）。
+
+**⑤ P2 配置阶段段控另写了一份表达式**（`ClassifyDialog.activeDepth`）
+`activeDepth` 三元里 `phase === 'review'` 恒真（只在审定段控消费），配置阶段的段控却另写
+`cfg.notesChars` —— 于是三元的一支永不被行使。改为**两处段控共用 `activeDepth`**，死代码消失。
+
+**⑥ P2 两处 `fixed inset-0` 遮罩被锁进面板**（`FilterPopover` / `ChatInput`）
+两处浮层的祖先都带 `backdrop-blur`，它**创建包含块**把 `fixed` 后代锁进面板自身大小，遮罩实际只盖住
+面板那一条 —— 点面板外关不掉浮层（模式 #67）。⚠️ 这两处**不能**照其他浮层的做法 Portal 到 body：
+它们是 `absolute` 定位于触发按钮的**下拉**，脱离 `relative` 父就失去基准。改法取最小的那个：
+**删遮罩、监听到 document**，用 `contains` 划内外界（原注释担心的「点按钮也算外部」由它解决）。
+
+**⑦ P3 + 纵深防御**：`DocLibrary` 的 `?? 5` → `MAX_NEW_FOLDERS_DEFAULT`（字面量会在常量调整后静默
+留在旧值）；`ClassifyDialog` 的 `notesChars: 600` → `DEPTH_OPTIONS[0].value`；`_CARD_VAR_VALUE_RE`
+加长度上限 `{1,200}`（字符集白名单不限制长度，一次请求可带几 MB 合法字符进 `<style>`）。
+
+### 新增守卫（4 条，每条都有对照实验）
+
+预算按**单批**均摊（改回 `len(docs)` → 红）｜审定阶段重跑失败仍可应用（`!error` 加回 → 红）｜
+`DEPTH_OPTIONS` 首项 = 600（钉「调序 = 静默改默认档」）｜筛选浮层点浮层外关闭（改回透明遮罩 → 红）。
+
+### 影响范围
+
+后端 `generation/classifier.py`（4 处）、`routers/export.py`（1 处）；前端 `ClassifyDialog.tsx` /
+`DocLibrary.tsx` / `FilterPopover.tsx` / `ChatInput.tsx`。**不改版本号、不 bump `PROMPT_VERSION`**
+（分类 prompt 措辞变了，但分类**不产生产物**、没有自证头）。
+
+---
+
+## 2026-10-11 — 智能分类三轮：分批 + 关思考（一次调用撑不住大 N）
+
+### 起因
+
+用户在 90 篇文档上跑智能分类，问题不是「结果不好」，是 **`0 chars`**：
+
+```
+app.llm.service  LLM 流式响应: 0 chars, model=deepseek-v4-flash, finish=length, round=0
+POST /api/classify/preview status=200 duration_ms=27986.0 slow=True
+```
+
+模型思考了 28 秒、**一个字正文都没吐**、`finish=length` 说明输出预算被耗尽 —— 而耗尽它的是推理链。
+更糟的是**报错措辞把根因指反了**：`parse_json_object("")` 返回 `None` → 抛 `CLASSIFY_BAD_JSON`
+「模型返回的内容不是合法的 JSON」。用户看到这句会去查 JSON 格式，真相却是「模型只思考、没输出」。
+
+### 根因
+
+一次性调用时 `max_tokens = min(max(2048, 90×120), 8192) = 8192`，而 DeepSeek V4 **思考默认开启**。
+90 篇各产一条 JSON 的负载下，推理链把 8192 全部吃掉；`max_continuations=0`（分类不需要续写）
+让 `finish=length` 直接 break，于是拿到空串。
+
+### 关键决策
+
+**① 分批（`CLASSIFY_BATCH_SIZE = 20`）—— 这不是为了省事，是被实机逼出来的。**
+每批独立组装 prompt（同一份文件夹 / 标签上下文），拿回各自的 `docs` 数组，
+**合并成一份再交给同一个 `normalize_suggestions`**。于是新建上限的**全局计数**、同名归一、
+幻觉 id 剔除全部仍走那一个出口，**分批不引入第二套收口逻辑**（模式 #54）。
+`max_tokens` 跟着**本批**篇数走（`min(max(2048, len(batch)×120), 8192)`），下限 2048 是给「篇数少但模型多话」留的余地。
+
+**② 关思考，不是降档。** 用户中途说「我觉得可以不用思考模型」，这个判断是对的：分类是
+**结构化抽取**，答案由输入决定，推理没有增值空间。实机也证明**降档救不了** —— low 档同样把预算烧光。
+改走 `extra_body={"thinking": {"type": "disabled"}}`（canonical 形式；`reasoning_effort="none"`
+亦可，但中间层如 LiteLLM 不总翻译它）。⚠️ **两者在服务端互斥**，同传会被校验拒绝，故代码里是 `elif`；
+测试同时钉住「关思考时 effort 不出现」与「同传时 effort 被丢弃」两条 —— 对照实验（把 `elif` 改回 `if`）
+可让后者当场变红（实测：`{'thinking': …, 'reasoning_effort': 'low'}` 同现）。
+
+**③ 全失败与部分失败的语义分家。**
+- **全部批都没成** → 整次显式失败。分类方案要么完整、要么说清为什么没有，**不降级**。
+- **部分批失败** → 结果照给，但全局 `warnings` 点名「第 N 批（原因）」。少了这条，用户会把那些篇的
+  「不归入」当成**模型的判断**，而它其实**根本没被分析过** —— 静默降级的典型形态。
+
+**④ 空输出有了自己的错误码**：`CLASSIFY_EMPTY_OUTPUT`（「模型未返回内容（可能仍耗尽了输出预算）」），
+与 `CLASSIFY_BAD_JSON`（真返回了东西但不是 JSON）分开。前端 `classifyPreview` 本就按 `body.code`
+显示 `message`，**无需前端改动**。
+
+**⑤ 双层超时**：每批 `CLASSIFY_TIMEOUT = 120s`（独立成层，理由同 `COMPRESS_TIMEOUT` ——
+不设它就只有 SDK 请求超时兜底，模型挂起时用户干等到那儿）+ 整次 `CLASSIFY_TOTAL_TIMEOUT = 600s`
+（分批是**串行**的，没有总闸门时极端篇数会累积成不可接受的等待）。
+
+### 顺带修：TOC 的 React 重复 key
+
+同一条日志里还有 `Encountered two children with the same key, '后果'`。根因是 `headingId()`
+对中文**保留原字**，两个 `## 后果` 算出同一个 id。[TOC.tsx](frontend/src/components/preview/TOC.tsx)
+的 key 改为 `${i}-${item.id}`。⚠️ **id 本身仍是重复的**（`document.getElementById` 只命中第一个，
+点第二个同名标题会滚到第一个）—— 那是渲染侧 `headingId` 去重的问题，**本轮不解决**，只在注释里标注。
+扫库确认来源：`平台避雷…-e81093/notes/v2.md` 等 3 个文件有同名标题。
+
+### 影响了什么
+
+- [generation/classifier.py](backend/app/generation/classifier.py)：新增 `CLASSIFY_BATCH_SIZE` /
+  `CLASSIFY_TOTAL_TIMEOUT`；`classify_documents` 的调用段改为**分批循环 + 失败收集 + 合并后统一归一**。
+- [llm/service.py](backend/app/llm/service.py)：`disable_thinking` 贯通 `stream()` 与 `call()`，
+  落点为 `_extra["thinking"] = {"type": "disabled"}`（与 `reasoning_effort` 互斥的 `elif`）。
+- [preview/TOC.tsx](frontend/src/components/preview/TOC.tsx)：key 加序号。
+- 测试：[test_classify.py](backend/tests/test_classify.py) 新增 4 条（含 `_ScriptedLLM` 逐批脚本替身）；
+  [test_effort.py](backend/tests/test_effort.py) 新增第 5 节 3 条 extra_body 形状断言。
+
+**不 bump `PROMPT_VERSION`** —— 它标记的是「产物生成的 prompt 版本」（写进产物自证头），
+分类不产生产物。
+
+---
+
+## 2026-10-11 — 卡片逐维度微调：底 / 抬升 / 边（三根旋钮 + 导出跟随）
+
+### 起因
+
+用户在看过 8 套卡片方案后提出：
+
+> 「就之前视觉方案里面不是有很多选项可以调设置吗那些设置其实也可以考虑加进来」
+
+指的是 `pi-docs/卡片视觉方案-样板.html` 里那排「逐项微调」控件（7 个：底 / 抬升 / 边 / 圆角 / 投影 / 内边距 / 间距）。用「**预设覆盖不到的组合才值得开成旋钮**」这一条筛完，用户拍板**只做前三个**。
+
+### 为什么是这三个
+
+| 旋钮 | 值 | 为什么值得 |
+|---|---|---|
+| 底（基色） | 页面底 / 悬停面 / 主色淡底 / 透明 | 与抬升是**同一根轴的两端**（`--card-bg = color-mix(base, elevated lift)`），预设只覆盖了 base 的两端 |
+| 抬升 | 0–100% 滑条 | **8 套里只有 `0%` 与 `100%` 两个取值**，中间一整段一格都没有 —— 而用户 2026-10-10 的原话是「在背景颜色基础上稍微做点变化」，那正是中间段 |
+| 边 | 极细浅 / 标准 / 粗描边 / 主色细边 / 主色粗边 / 无 | 多出「粗中性边」「主色细边」两档预设没有的组合 |
+
+**不做的四个**：圆角、投影（8 套已铺满常见档，边际收益小）；内边距、间距（三档已被 8 套方案占满，**零新增价值**）。
+
+### 关键决策
+
+**① 微调 = 同一批 CSS 变量的第二个入口，不是第二套机制**（模式 #54）。旋钮直接写 `--card-bg-base` / `--card-lift` / `--card-border`，与 8 套方案写的是同一组变量、同一份 `cards.css`。落点是 `<html>` 上的 **inline 变量** —— 特异性天然压过方案块（非 inline），故「调过的覆盖方案给的，没调的落回方案取值」。
+
+**② 「跟随方案」是每组的第一个选项（默认）**。三个字段的默认值是 `null`，表示**一个 inline 变量都不写** —— 于是新增旋钮**不改变任何既有用户的默认观感**（零回归靠「不写」而不是「写一个与方案相同的值」，后者会在方案取值演进时静默脱节）。
+
+**③ 切方案时清空微调**（样板 `setVars` 的第一步同款）。语义上微调是「在方案之上的一层覆盖」，换地基就该重新决定要不要覆盖；不清的症状是「调完再切预设，微调看着还在、实际被新方案压住」，零报错。
+
+**④ 透明基色下抬升被强制归零**（`isLiftDisabled`）。`color-mix` 里的 `transparent` 等价于 `rgb(0 0 0 / 0)` —— 抬升把它混出来的是**半透明黑**，不是「在背景色上做变化」。这是拉不出正确结果的旋钮（模式 #53），处置是**主动写 `--card-lift: 0%` 覆盖方案值**（不写的话 `apple` 方案自带的 100% 照样生效）+ UI 禁用滑条。⚠️ 判据读**运行时** `--card-bg-base`：`outline` 方案本身就是透明底，而「跟随方案」时前端并不知道 —— 所以 `applyCard` 的第一步（无条件清空 inline 变量）必须排在这次读取之前，否则会读到自证循环（一旦选了透明就再也回不去）。
+
+**⑤ 导出跟随 —— 这是本轮唯一会静默分叉的地方**。前端把微调**解析成 CSS 值**（`--card-lift:40%`）经 `card_vars` 参数发出；后端只做**字符白名单**过滤、**不持有第二张「档位 → 取值」的表**（否则格式演进时漏改一侧的症状是「预览对了、导出还是老样子」，而导出照样成功）。
+
+- **顺序即优先级**：微调 `<style>` 必须排在 `cards.css` **之后** —— 方案块 `[data-card-style="x"]` 与微调的 `:root` **特异性相同**（都是 0,1,0）。放到前面会被方案原样压住。有专门的用例钉住这个索引关系。
+- **白名单拦住的是「从变量值逃逸出去」**：值里不许出现 `;` `{` `}` `<` `>` `"` `'` `\` `/` `*` —— 合起来正是「写新规则 / 闭合注释 / 折断 `<style>` / 引外链」需要的全套字符。逐项丢弃、不报错（判据同 `card_style`：微调出错不改变产物的**性质**）。
+- **两条传输各拼一次**：`ExportMenu`（GET query）与 `ExportPanel`（POST body），但变量串本身都出自 `serializeCardVars` 一处。
+
+### 影响了什么
+
+- [frontend/src/lib/card-prefs.ts](frontend/src/lib/card-prefs.ts)：`CardPrefs` 加三个字段 + `CARD_BG_OPTIONS` / `CARD_BORDER_OPTIONS` / `CARD_VARS`（受控变量**唯一一份**清单）/ `isLiftDisabled` / `serializeCardVars`；`applyCard` 补「先清空 inline」这一步。
+- [settings/SettingsPage.tsx](frontend/src/components/settings/SettingsPage.tsx)：新增微调区（含 `TuneChip`），仅在骨架 = 卡片时显示。⚠️ 设置页的 8 个迷你小样**自动反映微调**（它们消费同一批变量，继承自 `<html>`），等于免费拿到实时预览。
+- [ui/ExportMenu.tsx](frontend/src/components/ui/ExportMenu.tsx) / [ui/ExportPanel.tsx](frontend/src/components/ui/ExportPanel.tsx) / [routers/export.py](backend/app/routers/export.py)：`card_vars` 一路贯通（含 `_parse_card_vars` + `_CARD_TUNE_VARS` 白名单）。
+- 测试：[cardPrefs.test.ts](frontend/src/test/cardPrefs.test.ts) 26 条（含 2 条跨语言同源守卫）、[test_export_cards.py](backend/tests/test_export_cards.py) 31 条（含 5 条逃逸字符参数化对照）。
+
+**零回归**：三个字段默认 `null` ⇒ 渲染路径一个字节不多（有用例断言「没调过时三个变量全空」与「`card_vars` 不传时导出 HTML 逐字节等价」）。
+
+---
+
+## 2026-10-11 — 智能分类二轮：从「打开即分析」改成两阶段（配置 → 分析）+ 对话框脱困
+
+### 起因
+
+上一条把「建议 vs 结果」讲明白了，用户接着提了三条：
+
+> 「点那个智能分类它因为初始就选择了 600，是它在点进去的一瞬间就会以 600 字为基准开始分类」
+>
+> 「关于是否利用现有的文件夹，我如果没有文件夹要不要建文件夹，备注文件夹还是什么的，**这些都得先选好最后一步才用户点击确认才开始**」
+>
+> 「这一个界面还是卡在那一个文档栏里面，我认为这个应该像 ai 对话界面一样可以悬浮在外面」
+>
+> 「文档可能没有标签，那么也可能得让用户提供几个基础的或者是全部交给大模型」
+
+第二条与第一条是**同一个根因的两个面**：`handleOpenClassify` 在打开对话框的那一次事件里就 `loadClassifyPreview()`，于是「打开」与「花掉一次计费调用」是同一个动作。用户在对话框里看到的每一行，是**他还没同意就已经发生过**的结果——「初始就是 600」只是那件事最显眼的读数（600 是默认档，所以默认档就是实际被执行的档）。
+
+### 根因二：`backdrop-filter` 会创建**包含块**
+
+对话框写的是 `fixed inset-0`，但它挂在 `DocLibrary` 的 `<aside className="… backdrop-blur-[20px] …">` 里。**带 `backdrop-filter` 的元素会成为后代的包含块**——`position: fixed` 因此不再相对视口定位，而是相对那个面板。面板多宽，遮罩就多宽；用户看到的就是「对话框被关在文档栏里」。
+
+这**不是** DocLibrary 一处的问题：`FloatingAI` 的根 `<aside>` 同样是 `backdrop-blur-[20px]`，对话侧的**重命名 / 删除 / 消息编辑**三个弹窗一直有同样的症状，只是没人报（它们出现得少、且通常浮窗本身就够大）。
+
+### 改了什么
+
+**① 两阶段交互（前端）** — `ClassifyDialog` 拆出 `phase: 'config' | 'review'`：
+
+| 阶段 | 内容 |
+|---|---|
+| `config` | 取材深度（600 / 200 / 仅标题）、文件夹策略、新建上限滑条、标签策略（+seed 时的手填框）。**一个请求都不发** |
+| `review` | 上一条已经落地的审定界面（逐行改夹/改标签 → 应用 N 篇） |
+
+`onStart(opts)` 是**计费调用的唯一出口**——只有用户按「开始分析」才会走到 `loadClassifyPreview`。`preview` 一到就 `setPhase('review')`（后端是真相源，不等前端计时）。
+
+`handleOpenClassify` 现在只做 `setClassifyOpen(true)` 与清场，**不发请求**——这条有专门的用例钉住（「打开对话框一个请求都不发」）。
+
+**② 两项策略后端化** — 用户第二条问的「要不要建文件夹 / 怎么建」与第四条问的「标签从哪来」被收成两个显式枚举，**全部在开始分析之前选定**：
+
+| 策略 | 取值 |
+|---|---|
+| `folderMode` | `reuse_or_new`（默认，优先复用、必要时新建）/ `reuse_only`（只复用，无合适的不归入）/ `tags_only`（本次不动文件夹，只打标签） |
+| `tagMode` | `vocab`（默认，喂全库现有标签词表）/ `seed`（用户手填基础标签，**替代**词表而非叠加）/ `free`（不给词表，完全交给模型） |
+
+「全库无标签」是现实场景（用户第四条的原话），前端据此把默认档从 `vocab` 落到 `seed`——**词表为空时喂一个空词表等于没喂**，而用户此时最需要的是「我给你几个起点」。有标签时仍默认 `vocab`。
+
+**③ 判据的粒度分两档**（这是本轮最该被记住的一条）：
+
+- `folderMode` / `tagMode` 非法 → **显式报错** `CLASSIFY_BAD_OPTION`，**且在校验处就返回**（不发起计费调用，有用例断言 `fake.calls == []`）
+- `notesChars` / `maxNewFolders` / `seedTags` 非法 → **静默夹紧/清洗**
+
+分野是「**这个值错了会不会改变产物的性质**」：选错「只打标签」与「动文件夹」会让产物性质完全不同而从结果上看不出异常；看 600 字还是 200 字只是量。与 `synthesis` 的读者意图/原料模式同一条判据。
+
+**④ 同源：策略的两个投影** — prompt 侧（`_folder_section` / `_tag_section`）与收口侧（`_normalize_one`）必须收到**同一次策略取值**。所以两段整段由函数生成、模板只留 `${folder_section}` / `${tag_section}` 两个占位符——写死在模板里就是把一个投影钉住、另一个散在函数里（模式 #54）。「不动文件夹」时连分类空间都不喂（喂了却要求别用 = 诱导违反），端点响应里 `folders == []` 有用例钉住。
+
+**⑤ 六处浮层 Portal 到 body** — DocLibrary 的分类/合成/删除确认三处 + ChatSidebar 的重命名/删除两处 + MessageItem 的消息编辑一处，全部改 `createPortal(…, document.body)`（项目先例：`ui/ContextMenu.tsx`）。并在 `DocLibrary` 的 `<aside>` 上加常驻注释声明「本面板内的任何浮层都必须 Portal」——**根因在祖先的样式上，不在浮层自己身上**，不写在会有人再犯。
+
+### 实机抓到的一处（单测绿而功能全废）
+
+`LLMService(config, …)` 的**第一参数是整份 config，不是 `resolve_llm_config` 的返回值**——后者是子字典，`LLMService.__init__` 自己会做 `config.get("llm", {})`，传子字典进去取到空 dict → `api_key` 恒为空 → 每次预览都报「LLM API Key 未配置」。
+
+**而单测照样全绿**：端点用例注入的是假 `LLMService`，压根碰不到这个构造。全项目其余 10 处调用点（chat / generate / process / synthesis / epub …）传的都是顶层 config，只有新写的这处传错了。教训与项目既有纪律同款：**单测绿不等于功能对，新端点要走一遍实机**。
+
+### 对照实验（三条，全部实测有效后还原）
+
+| # | 实验 | 结果 |
+|---|---|---|
+| E | `handleOpenClassify` 里加回 `loadClassifyPreview` | 红 1 条（「打开对话框一个请求都不发」） |
+| F | `startClassify` 丢掉 opts | 红 1 条（「配置阶段选的三项策略原样随请求发出」） |
+| G | `activeDepth` 改回读本地 `cfg` 而非后端回显 | 红 1 条（「切档后段控高亮跟随后端回显」） |
+
+⚠️ G 钉的是一个**真相源划分**：审定阶段的档位高亮读 `preview.limits.notesChars`（后端夹紧后的真实值），不读本地草稿——用户选了 5000 而后端夹到 2000 时，界面该显示 2000。
+
+### 踩到的坑（改测试时）
+
+对话框 Portal 到 body 之后，`container.querySelector('[data-synth-…]')` **恒为 null**，`fireEvent.click(null)` 报的是「provide a DOM element」——看起来像测试写坏了，实际是组件改了挂载位置。修法是新增 `inDialog()` helper 从 `document.body` 查，并在 helper 上方把原因写清楚（否则下一个人会以为是随手加的）。
+
+顺带一个自伤：批量替换时「先切出 helper 定义再对 body 做替换」的写法会**命中定义自身**（`const allInDialog = (sel) => document.body.querySelectorAll(sel)` 被替换成自己）→ 无限递归。同源替换要避开定义体。
+
+### 影响范围
+
+- 后端：[classifier.py](backend/app/generation/classifier.py) 加两组枚举 + `clamp_*` / `validate_mode` 四个夹紧函数，`build_classify_prompt` 改收策略参数；[routers/classify.py](backend/app/routers/classify.py) 请求模型加四项 + 回显 `folderMode`/`tagMode`/`limits`；[test_classify.py](backend/tests/test_classify.py) 41 条
+- 前端：[api/classify.ts](frontend/src/api/classify.ts) 加 `ClassifyOptions` 与两个策略类型；[ClassifyDialog.tsx](frontend/src/components/doc-library/ClassifyDialog.tsx) 重写为两阶段；[DocLibrary.tsx](frontend/src/components/doc-library/DocLibrary.tsx) 接线改造（`classifyOpts` 取代 `classifyNotesChars`）+ 三处 portal；[ChatSidebar.tsx](frontend/src/components/ai-chat/ChatSidebar.tsx) / [MessageItem.tsx](frontend/src/components/ai-chat/MessageItem.tsx) 各补 portal
+- 前端 829 passed (63 files) / 后端 562 passed
+- **无版本号变动、无打包**（随下一次打包带上）
+
+---
+
+## 2026-10-11 — 智能分类后续：把「建议」写明白（**不是写入 bug**）
+
+### 起因
+
+落地当天用户反馈：
+
+> 「我点智能分类只是点进那个界面还没开始选确定分类他就直接给我分类了」
+
+听起来像是「打开对话框就写库了」——与「preview 零写入、只有 commit 才写」的设计正面冲突。
+
+### 排查：先把「有没有真写」证死
+
+三条独立证据都指向**零写入**：
+
+| 证据 | 结果 |
+|---|---|
+| `~/.limo/app.log` 里 classify 相关请求 | 只有 2 条 `POST /api/classify/preview`（11:37，status 200），**没有任何 `commit`、没有任何 `POST /api/folders`** |
+| `~/.limo/index.json` 的 mtime | **09:31:47**（用户当天导入一篇文档的时刻），11:37 的 preview 之后**未变动** |
+| 库内实际字段 | `folders` 0 个 · `folderId` 非空的文档 0 篇 · 带标签的文档 0 篇 |
+
+⚠️ 日志里另有一条 `11:21:15 POST /api/classify/commit status=400`——那是**当天打包后验证 exe 时自己发的空 assignments 探测**（返回 `CLASSIFY_NO_ASSIGNMENTS`，同样零写入），不是用户操作。**读日志定位用户行为时，先排除自己留在里面的探针请求**，否则会把「自己 9 分钟前戳的那一下」算到用户头上。
+
+### 根因：建议被读成了结果
+
+preview 返回后，对话框里**每一行都被预填**——文件夹下拉已经选中了某个夹、标签输入框已经填满、行首徽标写着「**归入现有**」。整页读起来就是一份**已经保存好的分类**，而「这是建议、还没写库」在界面上**一个字都没说**。徽标那三个字尤其致命：它是**完成时**措辞。
+
+修法是三处落点（同一件事的三个说法，**缺一即复发**）：
+
+| 落点 | 改动 |
+|---|---|
+| 头部常驻声明 | 新增 `data-classify-notice`：`以下为模型建议，**尚未写入文档库** —— 确认后点右下角「应用这 N 篇」`。放头部而非主体，**不随逐篇列表滚动** |
+| 行首徽标 | `归入现有` / `新建` → **`建议归入` / `建议新建`**（`不归入` 保持——它是中性态，加「建议」反拗口） |
+| 确认按钮 | `应用` → **`应用这 N 篇`**（既写明确认范围，也让「还没确认」更显眼）；标题同步为「智能分类建议 · N 篇」 |
+
+### 顺带建立的东西
+
+`classifyDialog.test.tsx` 新增 `建议态被显式声明：头部提示 + 徽标带「建议」+ 按钮写明篇数`，**三条断言各配一次对照实验**（撤掉 notice 属性 / 徽标改回完成时 / 按钮改回「应用」→ **各自单跑只红这一条**，其余 14 条全绿）。这条用例钉的不是文案美观，而是**「建议 vs 结果」的语义不被下一次改版抹掉**。
+
+### 影响范围
+
+- 只动 [ClassifyDialog.tsx](frontend/src/components/doc-library/ClassifyDialog.tsx) 的呈现层与它的用例；**后端、API、store 零改动**（它们本来就是对的）
+- **无版本号变动、无打包**（纯前端文案与结构，随下一次打包带上）
+
+---
+
 ## 2026-10-11 — 智能分类：选中 N 篇 → 模型建议「文件夹 + 标签」→ 用户审定 → 写入
 
 ### 起因

@@ -28,12 +28,21 @@ from app.core.disconnect import disconnect_watcher
 from app.core.errors import AppError
 from app.core.model_resolver import resolve_llm_config
 from app.generation.classifier import (
+    FOLDER_MODE_REUSE_OR_NEW,
+    FOLDER_MODES,
     MAX_NEW_FOLDERS,
+    MAX_NEW_FOLDERS_LIMIT,
+    MAX_SEED_TAGS,
     MAX_TAGS_PER_DOC,
     NOTES_CHARS_DEFAULT,
     NOTES_CHARS_MAX,
+    TAG_MODE_VOCAB,
+    TAG_MODES,
+    clamp_max_new_folders,
     clamp_notes_chars,
+    clamp_seed_tags,
     classify_documents,
+    validate_mode,
 )
 from app.llm import LLMService
 
@@ -48,6 +57,17 @@ class ClassifyPreviewRequest(BaseModel):
     # 用户选的「看多少」：0 = 仅标题。超出区间的值由 clamp_notes_chars 夹紧
     # （请求体来自网络，不能假定它合法）
     notesChars: int = NOTES_CHARS_DEFAULT
+
+    # ── 下面四项是**用户在开始分析之前**选定的策略（见 classifier 模块的枚举注释）──
+    #
+    # ⚠️ 非法策略**显式报错**而非静默退回默认：选错会让产物性质完全不同，而从结果上
+    #    看不出异常。这与 `notesChars` 这类「超区间就夹紧」刻意不同——那个错的是**量**，
+    #    这个错的是**性质**。
+    folderMode: str = FOLDER_MODE_REUSE_OR_NEW
+    maxNewFolders: int = MAX_NEW_FOLDERS
+    tagMode: str = TAG_MODE_VOCAB
+    # 仅 `tagMode="seed"` 时有意义：用户手填的基础标签
+    seedTags: list[str] = []
 
 
 @router.post("/classify/preview")
@@ -79,12 +99,22 @@ async def classify_preview(
                        recoverable=False)
 
     notes_chars = clamp_notes_chars(req.notesChars)
+    folder_mode = validate_mode(req.folderMode, FOLDER_MODES,
+                                FOLDER_MODE_REUSE_OR_NEW, "文件夹策略")
+    tag_mode = validate_mode(req.tagMode, TAG_MODES, TAG_MODE_VOCAB, "标签策略")
+    max_new = clamp_max_new_folders(req.maxNewFolders)
+    seed_tags = clamp_seed_tags(req.seedTags)
+
     cancel_event = asyncio.Event()
     async with disconnect_watcher(request, cancel_event):
         # 与生成/处理走同一个云端信号量——分类是真实计费调用，必须占槽位
         async with guard.semaphore:
             result = await classify_documents(
                 store, llm_config, llm, req.docIds, notes_chars,
+                folder_mode=folder_mode,
+                max_new_folders=max_new,
+                tag_mode=tag_mode,
+                seed_tags=seed_tags,
                 cancel_event=cancel_event,
             )
 
@@ -94,10 +124,15 @@ async def classify_preview(
         # 上限经响应回显而非前端硬编码——对话框要显示「最多新建 N 个」时读这里
         "limits": {
             "maxNewFolders": MAX_NEW_FOLDERS,
+            "maxNewFoldersLimit": MAX_NEW_FOLDERS_LIMIT,
             "notesChars": notes_chars,
             "notesCharsMax": NOTES_CHARS_MAX,
             "maxTagsPerDoc": MAX_TAGS_PER_DOC,
+            "maxSeedTags": MAX_SEED_TAGS,
         },
+        # 策略回显：前端据此知道「这一次模型到底看到了什么」（见 classifier 的枚举）
+        "folderMode": folder_mode,
+        "tagMode": tag_mode,
         "folders": [{"id": f["id"], "name": f.get("name") or "", "count": f.get("count", 0)}
                     for f in result["folders"]],
         "tagVocab": result["tag_vocab"],

@@ -5,12 +5,33 @@ import { ACCENT_GROUPS, ACCENT_SWATCH } from '../../lib/accent'
 import { TEXTURE_OPTIONS, TEXTURE_SWATCH, FONT_OPTIONS, getSavedIntensity, applyIntensity, saveIntensity } from '../../lib/texture'
 import { BASE_OPTIONS } from '../../lib/theme-base'
 import { PARA_STYLE_OPTIONS, LINE_HEIGHT_RANGE, MEASURE_RANGE, MEASURE_DEFAULT_ON, FONT_SCALE_RANGE, READING_DEFAULTS } from '../../lib/reading-prefs'
-import { SKELETON_OPTIONS, CARD_STYLE_OPTIONS } from '../../lib/card-prefs'
+import { SKELETON_OPTIONS, CARD_STYLE_OPTIONS, CARD_BG_OPTIONS, CARD_BORDER_OPTIONS, isLiftDisabled } from '../../lib/card-prefs'
 import { LAYOUT_OPTIONS } from '../../lib/layout-prefs'
 import { THEME_PRESETS } from '../../lib/theme-presets'
 import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette, Puzzle } from 'lucide-react'
 import { ProviderSettings } from './ProviderSettings'
 import { PluginSettings } from './PluginSettings'
+
+/**
+ * 卡片「逐维度微调」的档位按钮 —— 与方案按钮同一视觉语言但更小（它是次级控件）。
+ * 抽成组件只是因为同一形态要出现十次（底 5 + 边 7），不是新机制。
+ */
+function TuneChip({ selected, onClick, children }: {
+  selected: boolean; onClick: () => void; children: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`text-[11.5px] px-2.5 py-1 rounded-md border transition-colors ${
+        selected
+          ? 'bg-accent/10 border-accent/30 text-accent font-medium'
+          : 'border-border-light text-dimmed hover:bg-surface-hover'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
 
 /** BiliNote 式设置布局 — 左侧菜单导航 + 右侧内容区 */
 
@@ -64,7 +85,16 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const setReading = useStore(s => s.setReading)
   const skeleton = useStore(s => s.skeleton)
   const cardStyle = useStore(s => s.cardStyle)
+  const cardBg = useStore(s => s.cardBg)
+  const cardLift = useStore(s => s.cardLift)
+  const cardBorder = useStore(s => s.cardBorder)
   const setCard = useStore(s => s.setCard)
+  // 卡片微调的两个派生量 —— 都不是 hook，放在这里只是紧挨着相关取值。
+  // `liftDisabled` 读的是**运行时** `--card-bg-base`（`outline` 方案本身就是透明底，
+  // 「跟随方案」时前端并不知道），而 `setCard` 已同步 `applyCard` 写过 DOM，
+  // 故本次渲染读到的就是最新状态。
+  const cardTuned = cardBg !== null || cardLift !== null || cardBorder !== null
+  const liftDisabled = isLiftDisabled({ bg: cardBg })
   const markerDecor = useStore(s => s.markerDecor)
   const setMarker = useStore(s => s.setMarker)
   const layout = useStore(s => s.layout)
@@ -646,7 +676,11 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                         return (
                           <button
                             key={o.key}
-                            onClick={() => setCard({ style: o.key })}
+                            // ⚠️ **切方案时一并清空微调**（原型样板 `setVars` 的第一步同款）。
+                            // 不清的表现是「调完圆角再切预设，微调看着还在、实际被新方案压住」——
+                            // 用户以为改了方案、其实还带着上一次的覆盖，零报错。语义上微调是
+                            // 「在方案之上的一层覆盖」，换地基就该重新决定要不要覆盖。
+                            onClick={() => setCard({ style: o.key, bg: null, lift: null, border: null })}
                             title={o.hint}
                             className={`text-left px-3 py-2 rounded-lg transition-colors border ${selected ? 'bg-accent/10 border-accent/30' : 'border-transparent hover:bg-surface-hover'}`}
                           >
@@ -668,6 +702,76 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                       只改变卡片的观感与分节方式。Markdown 本身不变，HTML / Word / PDF
                       导出会跟着一起变；切回「整篇」即恢复原样
                     </p>
+
+                    {/* ── 逐维度微调 ────────────────────────────────────────────
+                        8 套方案**覆盖不到全部组合**：最典型的是「抬升」——8 套里只有
+                        0% 与 100% 两个取值，中间一整段一格都没有。微调是同一个 CSS
+                        变量的第二个入口（`lib/card-prefs.ts`），不是第二套机制。
+                        ⚠️ 「跟随方案」是每组的**第一个选项**（默认选中）：`null` 表示
+                        不写 inline 变量、原样落回方案取值 —— 于是新增旋钮**不改变任何
+                        既有用户的默认观感**（零回归）。 */}
+                    <div className="mt-5 pt-5 border-t border-border-light space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="text-[13px] font-medium">逐维度微调</div>
+                        <button
+                          onClick={() => setCard({ bg: null, lift: null, border: null })}
+                          disabled={!cardTuned}
+                          className="text-[11px] text-accent hover:underline shrink-0 disabled:text-disabled disabled:no-underline disabled:cursor-default"
+                        >
+                          全部跟随方案
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-muted">
+                        不定制就跟随上面的方案；调过的项覆盖方案取值，切换方案时自动清空
+                      </p>
+
+                      <div className="flex items-start gap-3" data-card-tune="bg">
+                        <div className="text-[12px] text-dimmed w-8 shrink-0 pt-1">底</div>
+                        <div className="flex flex-wrap gap-1.5">
+                          <TuneChip selected={cardBg === null} onClick={() => setCard({ bg: null })}>跟随</TuneChip>
+                          {CARD_BG_OPTIONS.map(o => (
+                            <TuneChip key={o.key} selected={cardBg === o.key} onClick={() => setCard({ bg: o.key })}>
+                              {o.label}
+                            </TuneChip>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-3" data-card-tune="lift">
+                        <div className="text-[12px] text-dimmed w-8 shrink-0">抬升</div>
+                        <input
+                          type="range" min={0} max={100} step={5}
+                          value={cardLift ?? 0}
+                          disabled={liftDisabled}
+                          onChange={e => setCard({ lift: Number(e.target.value) })}
+                          style={{ accentColor: 'var(--tk-accent)' }}
+                          className="flex-1 disabled:opacity-35"
+                        />
+                        <span className="text-[11px] text-muted w-20 shrink-0 text-right">
+                          {liftDisabled ? '透明底不适用' : cardLift === null ? '跟随方案' : `${cardLift}%`}
+                        </span>
+                        {cardLift !== null && !liftDisabled && (
+                          <button
+                            onClick={() => setCard({ lift: null })}
+                            className="text-[11px] text-accent hover:underline shrink-0"
+                          >
+                            跟随
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex items-start gap-3" data-card-tune="border">
+                        <div className="text-[12px] text-dimmed w-8 shrink-0 pt-1">边</div>
+                        <div className="flex flex-wrap gap-1.5">
+                          <TuneChip selected={cardBorder === null} onClick={() => setCard({ border: null })}>跟随</TuneChip>
+                          {CARD_BORDER_OPTIONS.map(o => (
+                            <TuneChip key={o.key} selected={cardBorder === o.key} onClick={() => setCard({ border: o.key })}>
+                              {o.label}
+                            </TuneChip>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>

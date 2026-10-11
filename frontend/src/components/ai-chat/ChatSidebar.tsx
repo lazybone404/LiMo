@@ -5,6 +5,7 @@
  * 置顶语义由后端 updated_at 降序天然实现，不做物理拖拽。
  */
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useChatStore, type ChatListItem } from '../../store/chatStore'
 import { useStore } from '../../store'
 import { deleteConversation, renameConversation, archiveConversation } from '../../api/client'
@@ -160,8 +161,9 @@ export function ChatSidebar({ conversations, currentId, compact, scale, onSwitch
         <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} items={menuItems(contextMenu)} />
       )}
 
-      {/* 重命名弹窗 */}
-      {renamingId && (
+      {/* 重命名弹窗 —— **Portal 到 body**：祖先 `FloatingAI` 的根 `<aside>` 带
+          `backdrop-blur-[20px]`，会创建包含块把 `fixed` 后代锁进浮窗内（同 DocLibrary） */}
+      {renamingId && createPortal(
         <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => setRenamingId(null)}>
           <div className="mx-4 w-full max-w-[320px] rounded-2xl border border-border-light bg-elevated p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
             <h3 className="mb-4 text-[17px] font-semibold">重命名对话</h3>
@@ -173,11 +175,12 @@ export function ChatSidebar({ conversations, currentId, compact, scale, onSwitch
               <button onClick={() => doRename(renamingId, renameValue.trim())} className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-on-accent">确定</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {/* 删除确认弹窗 */}
-      {deletingId && (
+      {/* 删除确认弹窗 —— 同因同修（见上方重命名弹窗的注释） */}
+      {deletingId && createPortal(
         <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => setDeletingId(null)}>
           <div className="mx-4 w-full max-w-[320px] rounded-2xl border border-border-light bg-elevated p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
             <h3 className="mb-2 text-[17px] font-semibold">删除对话</h3>
@@ -187,7 +190,8 @@ export function ChatSidebar({ conversations, currentId, compact, scale, onSwitch
               <button onClick={() => doDelete(deletingId)} className="rounded-lg bg-error px-4 py-2 text-[13px] font-medium text-white">删除</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

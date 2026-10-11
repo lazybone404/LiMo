@@ -158,6 +158,7 @@ class LLMService:
         cancel_event: asyncio.Event | None = None,
         on_reasoning: AwaitableCallable | None = None,
         reasoning_effort: str | None = None,
+        disable_thinking: bool = False,
     ) -> AsyncGenerator[str, None]:
         """流式 LLM 调用，每个 chunk 间检查 cancel_event。
 
@@ -170,6 +171,12 @@ class LLMService:
         仅对支持该参数的模型生效（qwen 等忽略 extra_body 未知字段）。
         文档：thinking 默认开启且 effort 默认 high——简单任务传 'low'
         可大幅缩短思考静默期（polished 整理是忠实转录任务，无需深度思考）。
+
+        disable_thinking：**彻底关闭思考**（DeepSeek V4 系列思考默认开启）。用于
+        结构化抽取这类「答案确定、推理无用」的任务——实测分类 90 篇时模型把整个
+        8192 token 的输出预算**全烧在推理链上**，正文 0 字符。⚠️ 与 reasoning_effort
+        **互斥**（服务端校验拒绝同传），故传它时不要再传 effort。非思考模型
+        （qwen 等）会忽略该未知字段，无害。
 
         ⚠️ temperature 的效力取决于模型（2026-09-23 依官方「思考模式」页补注）：
         DeepSeek 思考模式下 temperature / presence_penalty / frequency_penalty
@@ -231,7 +238,13 @@ class LLMService:
             for attempt in range(_RETRY_COUNT + 1):
                 try:
                     _extra: dict = {}
-                    if reasoning_effort:
+                    if disable_thinking:
+                        # 关闭思考（DeepSeek V4 系列默认开启）。canonical 形式是
+                        # `thinking={"type":"disabled"}`（`reasoning_effort="none"` 亦
+                        # 可，但中间层（LiteLLM 等）不总是翻译它——我们直连，用最稳的一种）。
+                        # ⚠️ 与 reasoning_effort **互斥**，故 elif：同传会被服务端校验拒绝。
+                        _extra["thinking"] = {"type": "disabled"}
+                    elif reasoning_effort:
                         # deepseek-v4 思考强度（extra_body 兼容 OpenAI SDK 未声明参数）
                         _extra["reasoning_effort"] = reasoning_effort
                     stream = await self.client.chat.completions.create(
@@ -312,12 +325,14 @@ class LLMService:
         max_continuations: int = 0,
         cancel_event: asyncio.Event | None = None,
         reasoning_effort: str | None = None,
+        disable_thinking: bool = False,
     ) -> str:
         """非流式 LLM 调用——内部收集 stream() 的全部输出。
 
         process-image 用这个：max_tokens=4096, temperature=0.1, max_continuations=0。
         reasoning_effort：思考强度透传（参考文件摘要等忠实压缩类任务传 'low'，
         避开 DeepSeek 思考模式默认 effort=high 的数十秒静默期）。
+        disable_thinking：**彻底关闭思考**（结构化抽取类任务，见 `stream()` 的同名参数）。
         """
         parts: list[str] = []
         async for chunk in self.stream(
@@ -329,6 +344,7 @@ class LLMService:
             max_continuations=max_continuations,
             cancel_event=cancel_event,
             reasoning_effort=reasoning_effort,
+            disable_thinking=disable_thinking,
         ):
             parts.append(chunk)
         return "".join(parts)

@@ -8,6 +8,7 @@
  * 流式结束切 'done' 强制重挂载（清状态残留）——对齐 NextChat 模式。
  */
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useStore } from '../../store'
 import { useChatStore, type ChatMsg } from '../../store/chatStore'
 import { Copy, Check, Pencil, RefreshCw, Trash2, Square, Bot, User, Wrench, ChevronDown, ChevronRight, FileText } from 'lucide-react'
@@ -131,8 +132,9 @@ export function MessageItem({ msg, scale }: MessageItemProps) {
         </div>
       </div>
 
-      {/* 编辑弹窗 */}
-      {editing && (
+      {/* 编辑弹窗 —— **Portal 到 body**：祖先 `FloatingAI` 的根 `<aside>` 带
+          `backdrop-blur-[20px]`，会创建包含块把 `fixed` 后代锁进浮窗内（同 DocLibrary） */}
+      {editing && createPortal(
         <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => setEditing(false)}>
           <div className="mx-4 w-full max-w-[480px] rounded-2xl border border-border-light bg-elevated p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
             <h3 className="mb-3 text-[15px] font-semibold">{isUser ? '编辑并重新发送' : '编辑消息'}</h3>
@@ -144,7 +146,8 @@ export function MessageItem({ msg, scale }: MessageItemProps) {
               <button onClick={saveEdit} className="rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-on-accent">保存</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

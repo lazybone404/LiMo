@@ -168,6 +168,27 @@ describe('密度（详细 / 简略）', () => {
     expect(container.querySelector('[data-search-input]')).toBeTruthy()
   })
 
+  it('简略模式筛选浮层：点浮层外关闭走 **document 监听**（透明遮罩已删）', () => {
+    // ⚠️ 判据是「点浮层**外**真的关得掉」。原实现用 `fixed inset-0` 透明遮罩，而本组件
+    //    挂在文档库 `<aside>` 里、那个 aside 带 `backdrop-blur-[20px]` —— `backdrop-filter`
+    //    会**创建包含块**，把 `fixed` 后代锁进面板自身的大小，于是遮罩只盖住侧栏那一条，
+    //    点预览区关不掉浮层（模式 #67）。若改回遮罩，本条红。
+    useStore.setState({ docs: [doc({ id: 'a' })], folders: [] })
+    const { container } = render(<DocLibrary />)
+    fireEvent.click(container.querySelector('[data-density="compact"]') as HTMLElement)
+    fireEvent.click(container.querySelector('[data-filter-popover-toggle]') as HTMLElement)
+    expect(container.querySelector('[data-filter-popover]')).toBeTruthy()
+
+    // 原生 mousedown 派到 body（组件监听的是 document，不是 React 合成事件）
+    fireEvent.mouseDown(document.body)
+    expect(container.querySelector('[data-filter-popover]')).toBeNull()
+
+    // 浮层**内部**的 mousedown 不关（按钮与浮层同在一个 rootRef 内，`contains` 划的内外界）
+    fireEvent.click(container.querySelector('[data-filter-popover-toggle]') as HTMLElement)
+    fireEvent.mouseDown(container.querySelector('[data-filter-popover]') as HTMLElement)
+    expect(container.querySelector('[data-filter-popover]')).toBeTruthy()
+  })
+
   const inFolders = () => [doc({ id: 'a', folderId: 'f1' }), doc({ id: 'b', folderId: 'f1' })]
 
   it('简略模式**固定按文件夹**分组（IDE 树），不跟随「排列方式」偏好', () => {

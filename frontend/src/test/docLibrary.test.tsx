@@ -131,7 +131,7 @@ describe('DocLibrary — 批量删除的取消顺序', () => {
     fireEvent.click(deleteBtn)
     // 弹窗按钮用 data-confirm-delete 定位：行内的删除按钮 title 也叫「删除」，
     // 按 accessible name 取会命中多个。
-    fireEvent.click(container.querySelector('[data-confirm-delete]') as HTMLElement)
+    fireEvent.click(document.body.querySelector('[data-confirm-delete]') as HTMLElement)
 
     await vi.waitFor(() => expect(batchMock).toHaveBeenCalled())
 

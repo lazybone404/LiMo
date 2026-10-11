@@ -6,6 +6,7 @@ import { TabRegistry } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
 import { downloadText, downloadFromUrl, sanitizeExportName } from '../../lib/download'
 import { stripMarkers } from '../../lib/markdown-markers'
+import { serializeCardVars } from '../../lib/card-prefs'
 import { exportPdfFromUrl } from '../../lib/print'
 
 /** Tauri 环境检测 —— 决定 PDF 导出是「直接落文件」还是「退回打印对话框」 */
@@ -52,6 +53,9 @@ export function ExportMenu() {
   const docs = useStore(s => s.docs)
   const skeleton = useStore(s => s.skeleton)
   const cardStyle = useStore(s => s.cardStyle)
+  const cardBg = useStore(s => s.cardBg)
+  const cardLift = useStore(s => s.cardLift)
+  const cardBorder = useStore(s => s.cardBorder)
   const markerDecor = useStore(s => s.markerDecor)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -86,6 +90,15 @@ export function ExportMenu() {
     if (skeleton === 'card') {
       p.set('skeleton', 'card')
       p.set('card_style', cardStyle)
+      // 逐维度微调 —— 与骨架/方案同一条「所见即所得」：预览里覆盖了某个变量，
+      // 导出就该覆盖同一个。⚠️ **没调过时一个参数都不发**（`serializeCardVars`
+      // 返回空串），故未微调用户的导出 URL 与本轮之前逐字一致。
+      // 传的是**解析好的 CSS 值**（`--card-lift:40%`）而不是档位 key —— 后端只做
+      // 字符白名单校验、不认语义，见 `lib/card-prefs.ts::serializeCardVars` 的注。
+      const cardVars = serializeCardVars({
+        skeleton, style: cardStyle, bg: cardBg, lift: cardLift, border: cardBorder,
+      })
+      if (cardVars) p.set('card_vars', cardVars)
     }
     // 标记装饰开关：同样是「关掉才发」（后端默认 `marker_decor=1`）。语义是
     // 「预览里怎么显示，导出就怎么显示」——用户关掉装饰后导出的 HTML 也不带。

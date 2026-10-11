@@ -16,6 +16,8 @@ import sys
 import tempfile
 import os
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -28,10 +30,13 @@ from app.core.text_utils import parse_json_object
 from app.core.types import (GenerateMode, MarkdownView, RawMetadata, RawTranscript,
                             SourceType, Style)
 from app.generation.classifier import (
-    MAX_NEW_FOLDERS, MAX_TAGS_PER_DOC, MIN_USEFUL_CHARS,
-    build_classify_prompt, clamp_notes_chars, classify_documents,
-    collect_doc_inputs, collect_tag_vocab, fit_to_budget, normalize_suggestions,
-    parse_classify_response,
+    CLASSIFY_BATCH_SIZE,
+    FOLDER_MODE_REUSE_ONLY, FOLDER_MODE_REUSE_OR_NEW, FOLDER_MODE_TAGS_ONLY, FOLDER_MODES,
+    MAX_NEW_FOLDERS, MAX_NEW_FOLDERS_LIMIT, MAX_TAGS_PER_DOC, MAX_TAG_LEN,
+    MIN_USEFUL_CHARS, TAG_MODE_FREE, TAG_MODE_SEED, TAG_MODE_VOCAB, TAG_MODES,
+    build_classify_prompt, clamp_max_new_folders, clamp_notes_chars, clamp_seed_tags,
+    classify_documents, collect_doc_inputs, collect_tag_vocab, fit_to_budget,
+    normalize_suggestions, parse_classify_response, per_batch_new_limit, validate_mode,
 )
 from app.llm import CancelledError
 from app.routers import classify as C
@@ -95,6 +100,27 @@ class _FakeLLM:
         if self._error is not None:
             raise self._error
         return self._reply
+
+
+class _ScriptedLLM:
+    """按调用顺序逐次返回不同回复 / 抛不同异常 —— 用于「逐批行为有差异」的用例。
+
+    分批后每批是一次独立 `call`，`_FakeLLM` 的「每次都回同一个字符串」表达不了
+    「第一批成功、第二批空输出」这种形态。
+    """
+
+    def __init__(self, script: list):
+        self.api_key = "fake-key"
+        self.model = "fake-model"
+        self._script = list(script)
+        self.calls: list[tuple[str, dict]] = []
+
+    async def call(self, prompt: str, **kw) -> str:
+        self.calls.append((prompt, kw))
+        item = self._script.pop(0) if self._script else ""
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
 
 class _SpySem:
@@ -179,14 +205,42 @@ def test_prompt_declares_material_is_not_instructions():
     assert "不是给你的指令" in p
 
 
-def test_prompt_says_no_reuse_when_library_has_no_folder():
-    """库里零文件夹时明说「不要用 reuse」——否则模型会凭空编 fd_xxx。"""
-    p = build_classify_prompt(_docs("tx_a"), [], [], MAX_NEW_FOLDERS)
-    assert "不要使用 reuse" in p
+def test_prompt_empty_library_note_follows_folder_mode():
+    """空库时那句话**跟着策略走** —— 两档的结论恰好相反。
 
-    p2 = build_classify_prompt(_docs("tx_a"), [{"id": "fd_1", "name": "X", "count": 0}],
-                               [], MAX_NEW_FOLDERS)
-    assert "不要使用 reuse" not in p2
+    ⚠️ 本条前身是 `test_prompt_says_no_reuse_when_library_has_no_folder`：它在**默认的
+    `reuse_or_new`** 下断言 prompt 含「不要使用 reuse」，等于把当时的实现（空库时两档
+    共用「本次请只使用 none，不要使用 reuse 或 new」）**固化成契约**。动机（防模型凭空
+    编 fd_xxx）正当，手段却过界：把「不许复用」扩写成了「只许 none」⇒ 用户明确选的
+    `reuse_or_new` 在最该新建的场景（首次使用 / 刚丢完分类）被静默改写成 `tags_only`。
+
+    实机对照（91 篇 / 零文件夹 / 仅标题）：共用那份 → 新建 **0**；拆开后 → 新建 **23**
+    （归入 5 个新建夹）。判据就落在这一句 prompt 上。
+
+    判据是「**两种取值下该做的事是否相同**」，不是「两种取值是否都在同一个函数里」——
+    对照 P2-2 的空词表兜底：那里 `seed`/`vocab` 共用同一份是对的（都没词表可选时语义
+    一致），这里共用则把一档的结论安到另一档头上。
+    """
+    # reuse_or_new + 空库 ⇒ 导向「新建」，且**不得**出现那句「只许 none」的禁令
+    p = build_classify_prompt(_docs("tx_a"), [], [], MAX_NEW_FOLDERS,
+                              folder_mode=FOLDER_MODE_REUSE_OR_NEW)
+    assert "新建" in p
+    assert "只使用 none" not in p
+    assert "不要使用 reuse 或 new" not in p
+
+    # 反向对照：同一句禁令在 reuse_only 下**确实在场** —— 证明上一条不是因为该措辞
+    # 从模板里整体消失而通过的（否则两条断言都绿，却什么也没验）
+    p2 = build_classify_prompt(_docs("tx_a"), [], [], MAX_NEW_FOLDERS,
+                               folder_mode=FOLDER_MODE_REUSE_ONLY)
+    assert "只使用 none" in p2
+    assert "不要使用 reuse 或 new" in p2
+
+    # 有文件夹时两档都不该出现空库那句
+    folders = [{"id": "fd_1", "name": "X", "count": 0}]
+    for m in (FOLDER_MODE_REUSE_OR_NEW, FOLDER_MODE_REUSE_ONLY):
+        pm = build_classify_prompt(_docs("tx_a"), folders, [], MAX_NEW_FOLDERS,
+                                   folder_mode=m)
+        assert "当前库里" not in pm
 
 
 def test_prompt_marks_title_only_docs():
@@ -280,13 +334,43 @@ def test_fit_to_budget_shortens_and_labels():
     assert all(o["warnings"] for o in out), "缩了却不告诉用户，等于静默降级"
 
 
-def test_fit_to_budget_falls_back_to_title_only_below_min_useful():
-    """缩不成有信息量的长度时**统一退成仅标题**，而不是截到几十字冒充「读过笔记」。"""
+def test_fit_to_budget_averages_over_batch_not_total():
+    """**P1-1 守卫**：预算按**单批**篇数均摊，不是按全量 N。
+
+    分批之后每次 LLM 调用只装 ≤`CLASSIFY_BATCH_SIZE` 篇，若仍按全量 N 均摊，每篇
+    会被砍到分批后本可容纳值的约 1/批数——分批「把每批输出量压下来」的收益被反向
+    吃掉（90 篇时 159 字，而单批本来放得下 600 字）。判据与「谁在花这份预算」同源。
+
+    **对照实验**：把 `min(len(docs), CLASSIFY_BATCH_SIZE)` 改回 `len(docs)` → 本条红
+    （60 篇算出 4000//60=66 < MIN_USEFUL_CHARS，会整批跌进 title_only）。
+    """
     docs = [{"id": f"tx_{i}", "title": str(i), "source": "notes",
-             "opening": "z" * 600, "chars": 600, "warnings": []} for i in range(40)]
+             "opening": "w" * 600, "chars": 600, "warnings": []} for i in range(60)]
+    out = fit_to_budget(docs, 8000, 600)
+    # `_input_budget` 地板价 4000 ÷ 单批上限 = 每篇配额（按全量 60 均摊只有 66）
+    quota = 4000 // CLASSIFY_BATCH_SIZE
+    assert quota >= MIN_USEFUL_CHARS, "本例的前提：按批均摊后不该退成 title_only"
+    assert all(o["source"] == "shortened" for o in out), \
+        f"按全量均摊了（应是 shortened，不是 {[o['source'] for o in out][:3]}）"
+    assert all(0 < o["chars"] <= quota + len("...") for o in out)
+
+
+def test_fit_to_budget_falls_back_to_title_only_below_min_useful(monkeypatch):
+    """缩不成有信息量的长度时**统一退成仅标题**，而不是截到几十字冒充「读过笔记」。
+
+    ⚠️ **本分支在默认常量下不可达**（2026-10-11 P1-1 修复后的实测结论）：按批均摊
+    之后每篇配额下界 = `_input_budget` 地板价 4000 ÷ 单批上限 20 = **200**，恒大于
+    `MIN_USEFUL_CHARS`(120)——「预算不够到连摘要都给不了」这个组合需要更极端的常量。
+    故这里**显式抬高** `MIN_USEFUL_CHARS` 来行使该分支：测的是它的**行为契约**，
+    而不是「某组真实输入恰好触发它」（后者会随常量调整静默失去覆盖，模式 #38）。
+    """
+    monkeypatch.setattr("app.generation.classifier.MIN_USEFUL_CHARS", 300)
+    docs = [{"id": f"tx_{i}", "title": str(i), "source": "notes",
+             "opening": "z" * 600, "chars": 600, "warnings": []} for i in range(20)]
     out = fit_to_budget(docs, 8000, 600)
     assert all(o["source"] == "title_only" and o["chars"] == 0 for o in out)
-    assert MIN_USEFUL_CHARS > 4000 // 40, "本例的前提：配额低于 MIN_USEFUL_CHARS"
+    assert 4000 // min(len(docs), CLASSIFY_BATCH_SIZE) < 300, \
+        "本例的前提：配额低于（抬高后的）MIN_USEFUL_CHARS"
 
 
 def test_clamp_notes_chars():
@@ -436,6 +520,126 @@ def test_normalize_cleans_and_truncates_tags():
     assert any("超过" in w for w in s2["warnings"])
 
 
+# ── 5b. 用户策略：文件夹 / 标签（**先选好，最后才点开始**）──
+#
+# 这一节钉的是「同一次策略选择的两个投影必须同源」：`_folder_section` 决定**怎么要求
+# 模型**，`_normalize_one` 决定**模型不遵守时怎么收口**。只改一边不会报错——症状是
+# 「说了不许，结果里却出现了」，而那恰恰是用户按自己的策略挡下来的东西。
+
+def test_folder_mode_reuse_only_forbids_new_on_both_sides():
+    folders = [{"id": "fd_1", "name": "研究", "count": 1}]
+    p = build_classify_prompt(_docs("tx_a"), folders, [], MAX_NEW_FOLDERS,
+                              folder_mode=FOLDER_MODE_REUSE_ONLY)
+    assert "只允许复用" in p and "不得新建" in p
+    # 对照：这一档若仍写「最多新建 N 个」，等于**同时**给了两条互斥指令 → 红
+    assert "最多新建" not in p
+
+    raw = {"docs": [{"id": "tx_a", "folderAction": "new",
+                     "newFolderName": "新主题", "tags": []}]}
+    r = normalize_suggestions(raw, _docs("tx_a"), folders, MAX_NEW_FOLDERS,
+                              folder_mode=FOLDER_MODE_REUSE_ONLY)
+    assert r["suggestions"][0]["folder"]["action"] == "none"
+    assert any("只复用" in w for w in r["suggestions"][0]["warnings"])
+    # 策略降级**不是**上限问题，不能混进那条全局警告（原因不同，用户该做的事也不同）
+    assert not any("超过上限" in w for w in r["warnings"])
+
+
+def test_folder_mode_tags_only_drops_folders_keeps_tags():
+    folders = [{"id": "fd_1", "name": "研究", "count": 1}]
+    p = build_classify_prompt(_docs("tx_a"), folders, [], MAX_NEW_FOLDERS,
+                              folder_mode=FOLDER_MODE_TAGS_ONLY)
+    assert "不处理文件夹" in p
+    # 既然要求全 none，就不该再把分类空间摆到它面前——喂了却要求别用只会诱导违反
+    assert "id=fd_1" not in p
+
+    raw = {"docs": [{"id": "tx_a", "folderAction": "reuse",
+                     "folderId": "fd_1", "tags": ["x"]}]}
+    r = normalize_suggestions(raw, _docs("tx_a"), folders, MAX_NEW_FOLDERS,
+                              folder_mode=FOLDER_MODE_TAGS_ONLY)
+    assert r["suggestions"][0]["folder"] == {"action": "none"}
+    assert r["suggestions"][0]["tags"] == ["x"], "这一档只砍文件夹，标签照旧"
+    assert any("不改动文件夹" in w for w in r["suggestions"][0]["warnings"])
+
+
+def test_tag_modes_decide_what_is_fed():
+    """标签三档各自喂什么。`seed` 是**替代**全库词表，不是叠加。"""
+    p_seed = build_classify_prompt(_docs("tx_a"), [], ["论文", "综述"], MAX_NEW_FOLDERS,
+                                   tag_mode=TAG_MODE_SEED)
+    assert "用户提供的基础标签" in p_seed and "论文" in p_seed
+
+    # 对照：`free` 档若仍把词表拼进去 → 红。「不给词表」必须是**真的不给**
+    p_free = build_classify_prompt(_docs("tx_a"), [], ["不该出现"], MAX_NEW_FOLDERS,
+                                   tag_mode=TAG_MODE_FREE)
+    assert "不该出现" not in p_free and "不提供标签词表" in p_free
+
+    assert "深度学习" in build_classify_prompt(_docs("tx_a"), [], ["深度学习"],
+                                               MAX_NEW_FOLDERS, tag_mode=TAG_MODE_VOCAB)
+
+
+def test_seed_mode_with_empty_vocab_falls_back_to_free():
+    """`seed` 档但用户一个字没填 → 必须**兜底成「自行决定」**，不能输出一条指向空白的
+    「请优先从中选择：」——那是条自相矛盾的指令（模型只能凭空猜「上面这些」是什么）。
+
+    ⚠️ 这条路径现实中可达：前端 `start()` 对空 `seedTagsText` **零守卫**
+    （`splitSeedTags('')` 得 `[]` 照发）。对照：删掉 `_tag_section` 里那个
+    `if not tag_vocab` 分支 → 本条红（回退成「优先从中选择」+ 空白）。
+    """
+    p = build_classify_prompt(_docs("tx_a"), [], [], MAX_NEW_FOLDERS,
+                              tag_mode=TAG_MODE_SEED)
+    assert "优先从中选择" not in p and "优先从上面选" not in p
+    assert "没有可用的标签词表" in p and "自行决定标签" in p
+    # 与 VOCAB 空词表**逐字同源**（共用同一份兜底常量，不是两份措辞各写一遍）——
+    # 对照实验：把 `_TAG_SECTION_NO_VOCAB` 复制成两份、只改其中一份 → 本条红
+    p_vocab = build_classify_prompt(_docs("tx_a"), [], [], MAX_NEW_FOLDERS,
+                                    tag_mode=TAG_MODE_VOCAB)
+    assert p_vocab == p, "两档没词表时该是同一份兜底，各写一份会只修一半"
+    # 有词表时两档措辞**必须不同**（一个「用户提供」、一个「现有」）——
+    # 上一条同源断言不能顺手把「刻意分开」也抹平了
+    p_seed = build_classify_prompt(_docs("tx_a"), [], ["甲"], MAX_NEW_FOLDERS,
+                                   tag_mode=TAG_MODE_SEED)
+    p_vocab2 = build_classify_prompt(_docs("tx_a"), [], ["甲"], MAX_NEW_FOLDERS,
+                                     tag_mode=TAG_MODE_VOCAB)
+    assert p_seed != p_vocab2, "有词表时两档的语气刻意不同，不该合并成一份"
+
+
+def test_validate_mode_errors_on_unknown_but_defaults_when_blank():
+    """非法策略**显式报错**；缺省（None / 空串）走默认档——那是合法输入。"""
+    assert validate_mode(None, FOLDER_MODES, "reuse_or_new", "文件夹策略") == "reuse_or_new"
+    assert validate_mode("", TAG_MODES, TAG_MODE_VOCAB, "标签策略") == TAG_MODE_VOCAB
+    with pytest.raises(AppError) as ei:
+        validate_mode("maybe", FOLDER_MODES, "reuse_or_new", "文件夹策略")
+    assert ei.value.code == "CLASSIFY_BAD_OPTION"
+
+
+def test_clamp_max_new_folders_and_seed_tags():
+    assert clamp_max_new_folders(None) == MAX_NEW_FOLDERS
+    assert clamp_max_new_folders(-3) == 0
+    assert clamp_max_new_folders(999) == MAX_NEW_FOLDERS_LIMIT
+    # trim / 去空 / 去重是静默的（同 `_clean_tags`），截长也静默
+    assert clamp_seed_tags([" 论文 ", "论文", "", "  ", "b" * 40, 7]) == \
+        ["论文", "b" * MAX_TAG_LEN]
+    assert clamp_seed_tags("不是列表") == []
+
+
+def test_per_batch_new_limit_splits_quota_and_keeps_zero():
+    """新建上限**按批分配**（P2-1）：每批 prompt 只声明自己那一份。
+
+    每批都声明全量的话，5 批各提 5 个 → 全局收口（`normalize_suggestions` 的
+    「保留前 K 个」）拒掉约 80%，用户拿到一堆 `none` + 一条 warning。方向没错，
+    但结果是「模型提的多数被系统吃掉了」。**单批时原样返回**（零行为变化）。
+
+    ⚠️ 上限 0 必须仍是 0：若函数体写成无条件 `max(1, ceil(n/b))`，「用户不许新建」
+    会被抬成「每批可以建 1 个」，正好是反的。
+
+    对照：把函数体改回 `return max_new_folders`（不分批）→ 第 2、3 条断言红。
+    """
+    assert per_batch_new_limit(5, 1) == 5      # 单批：原样
+    assert per_batch_new_limit(10, 5) == 2     # ceil(10/5)
+    assert per_batch_new_limit(5, 3) == 2      # ceil(5/3)=2，不是 1（向上取整）
+    assert per_batch_new_limit(0, 4) == 0      # 不许新建 → 仍是 0
+    assert per_batch_new_limit(1, 9) == 1      # 每批至少 1，否则这档形同关闭
+
+
 # ── 6. store 写入 ──
 
 def test_apply_classifications_writes_index_once():
@@ -576,11 +780,14 @@ def test_classify_documents_bad_json_is_explicit():
         shutil.rmtree(d, ignore_errors=True)
 
 
-def test_classify_documents_passes_low_effort_and_no_continuation():
-    """归类是轻任务：必须 low 档 + 不续写。
+def test_classify_documents_disables_thinking_and_no_continuation():
+    """归类是结构化抽取：**彻底关掉思考** + 不续写。
 
-    对照：删掉 `reasoning_effort="low"` → 本条红。默认 high 会让 DeepSeek 静默思考
-    几十秒，而分类的输出只有几十个 token。
+    对照：把 `disable_thinking=True` 换回 `reasoning_effort="low"` → 本条红。
+    **降档救不了**：实机 90 篇时 low 档仍把整个输出预算烧在推理链上、正文 0 字符
+    （见 CLASSIFY_BATCH_SIZE 注释），故这里要的是「关」而不是「降」。
+
+    ⚠️ `reasoning_effort` 与 `disable_thinking` 在服务端**互斥**，绝不能同传。
     """
     s, d = _new_store()
     try:
@@ -588,7 +795,8 @@ def test_classify_documents_passes_low_effort_and_no_continuation():
         llm = _FakeLLM('{"docs":[{"id":"tx_a","folderAction":"none","tags":["x"]}]}')
         out = asyncio.run(classify_documents(s, {}, llm, ["tx_a"], 600))
         _, kw = llm.calls[0]
-        assert kw["reasoning_effort"] == "low"
+        assert kw["disable_thinking"] is True
+        assert "reasoning_effort" not in kw      # 互斥：同传会被服务端校验拒绝
         assert kw["max_continuations"] == 0
         assert out["suggestions"][0]["tags"] == ["x"]
         # 响应投影必须剥掉取材正文（N 篇 × 数百字白白塞进响应体）
@@ -597,7 +805,120 @@ def test_classify_documents_passes_low_effort_and_no_continuation():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_classify_documents_batches_large_selections(monkeypatch):
+    """篇数超过批大小时**拆成多次调用**，每批不超过批大小。
+
+    对照：删掉分批（回到一次性调用）→ 本条红。一次性调用在 90 篇时会让模型把
+    整个输出预算烧在推理链上、正文 0 字符（实机 2026-10-11 的现象）。
+    """
+    monkeypatch.setattr("app.generation.classifier.CLASSIFY_BATCH_SIZE", 3)
+    s, d = _new_store()
+    try:
+        ids = [f"tx_{i}" for i in range(7)]
+        for i in ids:
+            _add_doc(s, i, i)
+        llm = _FakeLLM('{"docs":[]}')          # 每批都回空 docs → 各篇标待处理，不失败
+        out = asyncio.run(classify_documents(s, {}, llm, ids, 0))
+        assert len(llm.calls) == 3              # ceil(7 / 3)
+        assert len(out["suggestions"]) == 7     # 不变式：每篇一条（顺序同入参）
+        for prompt, _ in llm.calls:             # 每批的 prompt 里文档数 ≤ 批大小
+            assert prompt.count("【文档 ") <= 3
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_classify_documents_empty_output_is_not_bad_json():
+    """「模型只思考、没吐正文」≠「输出不是合法 JSON」—— 两者错误码不同。
+
+    对照：把空输出也归进 `CLASSIFY_BAD_JSON` → 本条红。措辞误导会让用户去改格式，
+    而真正该做的是减少篇数（思考已在设计上关掉）。
+    """
+    s, d = _new_store()
+    try:
+        _add_doc(s, "tx_a", "甲")
+        try:
+            asyncio.run(classify_documents(s, {}, _FakeLLM(""), ["tx_a"], 600))
+            assert False, "空输出竟没报错"
+        except AppError as e:
+            assert e.code == "CLASSIFY_EMPTY_OUTPUT"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_classify_documents_partial_batch_failure_still_returns(monkeypatch):
+    """**部分批失败**：其余批的结果照给，且全局 warning 点明哪批没成。
+
+    对照：删掉失败标注（照常 normalize）→ 失败批的篇被**静默**标成「不归入」，
+    用户以为模型判断过它们（静默降级，正是要消灭的形态）。
+    """
+    monkeypatch.setattr("app.generation.classifier.CLASSIFY_BATCH_SIZE", 2)
+    s, d = _new_store()
+    try:
+        ids = ["tx_0", "tx_1", "tx_2"]          # 2 批：tx_0/tx_1 | tx_2
+        for i in ids:
+            _add_doc(s, i, i)
+        llm = _ScriptedLLM(['{"docs":[{"id":"tx_0","folderAction":"none","tags":["a"]}]}', ""])
+        out = asyncio.run(classify_documents(s, {}, llm, ids, 0))
+        assert len(out["suggestions"]) == 3
+        assert out["suggestions"][0]["tags"] == ["a"]
+        assert any("批分析失败" in w for w in out["warnings"])
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 # ── 8. 端点 ──
+
+def test_preview_passes_strategies_through_to_the_prompt():
+    """端点必须把用户选的策略送到 prompt。
+
+    半路丢掉的表现是「prompt 里仍是默认档」而响应一切正常——用户以为自己选了
+    「只打标签」，实际文件夹照动，且两端都不报错。
+    """
+    s, d = _new_store()
+    try:
+        _add_doc(s, "tx_a", "甲")
+        s.create_folder("研究")
+        client, _ = _make_client(s, config={"llm": {"api_key": "x"}, "scene_models": {}})
+        fake = _FakeLLM('{"docs":[{"id":"tx_a","folderAction":"none","tags":["x"]}]}')
+        restore = _patch_llm(fake)
+        try:
+            r = client.post("/api/classify/preview", json={
+                "docIds": ["tx_a"], "folderMode": "tags_only",
+                "tagMode": "seed", "seedTags": ["论文"],
+            })
+            body = r.json()
+            assert body["status"] == "ok"
+            assert body["folderMode"] == "tags_only" and body["tagMode"] == "seed"
+            # 「不动文件夹」下连分类空间都不喂给模型（喂了却要求别用 = 诱导违反）
+            assert body["folders"] == []
+            assert body["tagVocab"] == ["论文"]
+
+            prompt = fake.calls[0][0]
+            assert "不处理文件夹" in prompt and "论文" in prompt
+        finally:
+            restore()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_preview_rejects_unknown_strategy_before_calling_llm():
+    """非法策略 → 显式错误，且**在校验处就返回**，不发起计费调用。"""
+    s, d = _new_store()
+    try:
+        _add_doc(s, "tx_a", "甲")
+        client, _ = _make_client(s, config={"llm": {"api_key": "x"}, "scene_models": {}})
+        fake = _FakeLLM('{"docs":[]}')
+        restore = _patch_llm(fake)
+        try:
+            r = client.post("/api/classify/preview",
+                            json={"docIds": ["tx_a"], "folderMode": "随便"})
+            assert r.json()["code"] == "CLASSIFY_BAD_OPTION"
+            assert fake.calls == [], "非法入参不该已经花掉一次调用"
+        finally:
+            restore()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
 
 def test_preview_rejects_empty_docs_and_missing_key():
     s, d = _new_store()

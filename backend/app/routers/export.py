@@ -248,6 +248,10 @@ async def export_content(
     # md / plain 没有视觉层，读到也不消费 —— 刻意不在这里报错。
     skeleton = request.query_params.get("skeleton", "paper")
     card_style = request.query_params.get("card_style", "gpt")
+    # 逐维度微调（2026-10-11）—— 前端传的是**解析好的 CSS 值**（`--card-lift:40%`），
+    # 合法性由 `_parse_card_vars` 的字符白名单兜底，不在这里校验。默认空串 ⇒
+    # 未微调的用户走今天这条逐字未改的分支。
+    card_vars = request.query_params.get("card_vars", "")
     # 语义标记的装饰开关 —— ⚠️ 默认 `True`（**与前端 `MARKER_DEFAULTS` 同值**）：
     # 任何没带参数的调用方必须拿到「装饰开着」这份产物，与预览里看到的一致。
     # 只有显式的 `marker_decor=0` 才关 —— 认不认识的值一律当「开」（同骨架取值兜底）。
@@ -265,7 +269,7 @@ async def export_content(
         export_theme = request.query_params.get("theme", "limo")
         html = _build_selfcontained_html(content, title, theme=export_theme,
                                          skeleton=skeleton, card_style=card_style,
-                                         marker_decor=marker_decor)
+                                         marker_decor=marker_decor, card_vars=card_vars)
         safe_name = _safe_filename(title)
         encoded_name = quote(f"{safe_name}.html", safe='')
         # ⚠️ disposition 必须是 attachment —— 点击「HTML」就该下载文件。但 PDF 导出
@@ -995,6 +999,40 @@ _CARD_STYLES = frozenset({"gpt", "apple", "compact", "outline",
                           "paper", "guofeng", "seal", "ink"})
 
 
+#: 卡片「逐维度微调」的受控变量白名单 —— 与前端 `lib/card-prefs.ts::CARD_VARS` 对齐。
+#: ⚠️ **这里刻意只有名字白名单，没有「档位 key → CSS 值」的表**：取值语义归前端
+#: （`CARD_BG_OPTIONS` / `CARD_BORDER_OPTIONS`），导出侧只负责一件事 —— 不把任意
+#: CSS 塞进我们生成的 HTML。若在这里再维护一张表，就是同一份判据的两份实现，
+#: 格式演进时漏改一侧的症状是「预览里调过了、导出还是方案原样」，而导出**照样成功**。
+_CARD_TUNE_VARS = frozenset({"--card-bg-base", "--card-lift", "--card-border"})
+
+#: 变量值允许的字符集：覆盖 `var(--tk-hover)` / `color-mix(in srgb, var(--tk-accent) 8%, var(--tk-elevated))`
+#: / `transparent` / `none` / `1px solid var(--tk-border)` / `40%` 这几种真实取值。
+#: ⚠️ 刻意**不含** `;` `{` `}` `<` `>` `"` `'` `\` `/` `*` —— 那恰好是「从变量值里逃逸
+#: 出去写新规则 / 提前闭合注释 / 折断 `<style>`」所需的全套字符，一个都不能放。
+#: ⚠️ 长度上限 **200**（真实最长是 `color-mix(...)` 那条约 55 字符，余量充足）：
+#: 字符集白名单不限制长度，一次请求可以带几 MB 的合法字符进 `<style>`。
+_CARD_VAR_VALUE_RE = re.compile(r"^[A-Za-z0-9 ,%().#-]{1,200}$")
+
+
+def _parse_card_vars(raw: str) -> str:
+    """`card_vars`（`--a:1;--b:2`）→ 一段安全的 `:root{…}`；无有效项时返回空串。
+
+    ⚠️ **逐项静默丢弃、不报错**：判据同 `card_style` —— 微调取值出错不改变产物的
+    性质，不该让整次导出失败。但丢弃**只作用于那一项**，同串里其余项照常生效。
+    """
+    decls = []
+    for item in (raw or "").split(";"):
+        name, sep, value = item.partition(":")
+        name, value = name.strip(), value.strip()
+        if not sep or name not in _CARD_TUNE_VARS:
+            continue
+        if not value or not _CARD_VAR_VALUE_RE.match(value):
+            continue
+        decls.append(f"{name}:{value}")
+    return ":root{" + ";".join(decls) + "}" if decls else ""
+
+
 def _load_card_css() -> str:
     """读前端那份 `cards.css`（**单一真相源**）原样内联进导出 HTML。
 
@@ -1076,7 +1114,7 @@ def _render_md_with_blocks(md: str) -> str:
 
 def _build_selfcontained_html(md: str, title: str, theme: str = "limo",
                               skeleton: str = "paper", card_style: str = "gpt",
-                              marker_decor: bool = True) -> str:
+                              marker_decor: bool = True, card_vars: str = "") -> str:
     """构建完全自包含的 HTML 文档（图片已在上游处理完毕）。
 
     公式策略：
@@ -1151,6 +1189,14 @@ def _build_selfcontained_html(md: str, title: str, theme: str = "limo",
         style_block += f"\n<style>{_CARD_TOKENS_CSS}</style>"
     if skeleton == "card":
         style_block += f"\n<style>{_load_card_css()}</style>"
+        # 逐维度微调（2026-10-11）—— ⚠️ **必须排在 `cards.css` 之后**：方案块
+        # `[data-card-style="x"]` 与本段 `:root` 的**特异性相同**（都是 0,1,0），
+        # 同特异性下**后者胜**（顺序即优先级）。放到前面会被方案原样压住，
+        # 症状是「预览里调过的项，导出还是方案取值」，且导出成功、不报错。
+        # 用户没调过时 `_parse_card_vars` 返回空串 —— 一个字节都不多，零回归。
+        _card_vars_css = _parse_card_vars(card_vars)
+        if _card_vars_css:
+            style_block += f"\n<style>{_card_vars_css}</style>"
     # 强调块样式 —— ⚠️ 闸门是「**产物里真有 limo-block**」而不是骨架：标记与骨架正交
     # （`paper` 下强调块也在正文流里），但**没有标记时一个字节都不该多**：绝大多数历史
     # 产物没有标记，它们的导出 HTML 必须与改造前**逐字节相同**（无条件注入会让每个导出
@@ -1384,6 +1430,9 @@ class ExportCustomRequest(BaseModel):
     # 不带这两项的调用方零影响。**只对 html 格式生效**（md / plain 没有视觉层）。
     skeleton: str = "paper"        # paper | card
     card_style: str = "gpt"        # 仅 skeleton=card 时有意义
+    # 逐维度微调（2026-10-11）：`--a:1;--b:2` 形态，前端已解析成 CSS 值。
+    # 空串 = 没调过（零回归），非法项由 `_parse_card_vars` 逐项丢弃。
+    card_vars: str = ""
     # 语义标记装饰开关（2026-10-10）。与预览区工具栏那个是**同一个开关**（前端把偏好
     # 一路带到导出请求里），语义 = 「导出应与预览一致」；md / plain 恒剥离标记行，
     # 与它无关（那里没有视觉层可谈）。
@@ -1519,7 +1568,7 @@ def _build_export_zip(
                         processed = _build_selfcontained_html(
                             processed, tx.get("title", doc_title), data.html_theme,
                             skeleton=data.skeleton, card_style=data.card_style,
-                            marker_decor=data.marker_decor)
+                            marker_decor=data.marker_decor, card_vars=data.card_vars)
                         ext = "html"
                     elif fmt == "plain":
                         processed = _remove_formulas(processed) if data.formula_plain == "remove" else _unicode_formulas(processed)

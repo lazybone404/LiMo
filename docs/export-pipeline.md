@@ -58,8 +58,17 @@ AI 对话右键菜单                 ChatCore                     GET /export/c
 |---|---|---|
 | `skeleton` | `"paper"` | `card` 才切卡；**默认 `paper` ⇒ 导出与改造前逐字节一致** |
 | `card_style` | `"gpt"` | 8 套视觉方案之一；不在 `_CARD_STYLES` 白名单内**静默回退 `gpt`** |
+| `card_vars` | `""` | **逐维度微调**（2026-10-11）：`--a:1;--b:2` 形态，值是**前端解析好的 CSS 值**；空串 ⇒ 一个字节都不多 |
 
-前端唯一拼装点是 [ExportMenu.tsx](../frontend/src/components/ui/ExportMenu.tsx) 的 `backendParams()`（HTML / Word / PDF 三条路径共用，`lib/print.ts` 无需改）。⚠️ **`paper` 时一个参数都不发** —— 后端默认值同为 `paper`，URL 与改造前逐字一致。批量导出面板（`ExportCustomRequest`）有同名字段。
+前端拼装点两处：[ExportMenu.tsx](../frontend/src/components/ui/ExportMenu.tsx) 的 `backendParams()`（HTML / Word / PDF 三条路径共用，`lib/print.ts` 无需改）与 [ExportPanel.tsx](../frontend/src/components/ui/ExportPanel.tsx) 的 POST body。⚠️ **两条传输各拼一次，但变量串同出 `lib/card-prefs.ts::serializeCardVars`**。⚠️ **`paper` 时一个参数都不发** —— 后端默认值同为 `paper`，URL 与改造前逐字一致。批量导出面板（`ExportCustomRequest`）有同名字段。
+
+**逐维度微调（`card_vars`，2026-10-11）** ——「底 / 抬升 / 边」三根旋钮（8 套方案覆盖不到的组合：抬升只有 0%/100% 两档、中间一整段为空）。三个**必须同源的落点**：
+
+- ⚠️ **后端只做字符白名单，不持有「档位 → 取值」的第二张表** —— 前端传的是 `--card-lift:40%` 这种**解析好的值**。后端若自己再维护一张表，格式演进时漏改一侧的症状是「预览里调过了、导出还是方案原样」，而导出**照样成功**。名字限 `_CARD_TUNE_VARS`（三个），值不许含 `;{}<>"'\/*` —— 合起来正是「从变量值逃逸出去」需要的全套字符；非法项**逐项静默丢弃**（判据同 `card_style`：微调出错不改变产物的性质）。
+- ⚠️ **该段 `<style>` 必须排在 `cards.css` 之后** —— 方案块 `[data-card-style="x"]` 与微调段 `:root` 的**特异性相同**（都是 0,1,0），同特异性下后者胜。放到前面会被方案原样压住。有专门的索引断言钉住。
+- ⚠️ **`paper` 模式下不注入**（没有卡片，注入了也是死规则，还会破坏「paper 导出逐字节不变」）。
+
+**CSS 拼接顺序**（顺序即优先级）：`theme_css` → **`_CARD_TOKENS_CSS` + `_load_card_css()` + 微调 `:root`** → pygments → badge → katex → `_PRINT_CSS`（垫底）。卡片 CSS 必须在 `_PRINT_CSS` 之前。
 
 **HTML 侧**（`_build_selfcontained_html`）：
 - `card`：`split_by_h2(md)` 切分 → `preamble` 不包 → **带 `card` 标记的**节 `_markdown_to_html` 后包 `<section class="md-card">`，**未标记的节原样穿过渲染链**（前后是兄弟节点，**不再装进任何容器**）。
@@ -68,11 +77,9 @@ AI 对话右键菜单                 ChatCore                     GET /export/c
 - ⚠️ **`<html>` 必须同时带 `data-skeleton="card"` 和 `data-card-style`** —— 前者是卡片 CSS 的**主作用域**（`cards.css` 里每条规则都带 `[data-skeleton="card"]` 前缀），只带后者的话规则**永不命中** ⇒ 导出的是**没有样式的卡片**，而「section 数与 H2 数一致」「CSS 里有卡片规则」这类断言**全绿**（本项目点名的「断言全过、肉眼等于没有」）。
 - ⚠️ **导出 HTML 的主题（`HTML_THEMES`）是自包含裸色值 CSS，一个 `--tk-*` 都不提供** —— 而卡片 CSS 有 27 处 `var(--tk-*)` 引用（8 个令牌），`var()` 无 fallback 时整条声明作废 ⇒ 卡片**没有底色、没有边框、没有圆角**，且**应用内预览里一切正常**（那边 `--tk-*` 由主题系统提供）。故 `export.py` 必须补一份 `_CARD_TOKENS_CSS`（**三态**：浅色 / `prefers-color-scheme: dark` / `@media print`，后者还原浅色）。⚠️ **三态都要给全**：`@media print` 与暗色媒体查询**会同时匹配**。`test_export_cards.py::test_卡片_CSS_引用的每个界面令牌在导出页里都有定义` 是这条的**成对常量守卫**（正则抽 `var(--tk-…)` 后逐一查定义），能自动发现「cards.css 新引了一个令牌而导出侧没补」。
 
-**CSS 拼接顺序**（顺序即优先级）：`theme_css` → **`_CARD_TOKENS_CSS` + `_load_card_css()`** → pygments → badge → katex → `_PRINT_CSS`（垫底）。卡片 CSS 必须在 `_PRINT_CSS` 之前。
-
 **`_load_card_css()`** —— 卡片 CSS 的**单一真相源在前端** [frontend/src/styles/cards.css](../frontend/src/styles/cards.css)，后端**从磁盘读**并内联，**零重复定义**。候选路径：开发环境 `仓库根/frontend/src/styles/cards.css`；打包环境 `sys._MEIPASS/styles/cards.css`（PyInstaller spec 的 datas 收集源文件本身）。⚠️ **刻意不往 `backend/static/` 放副本** —— 副本就是第二份拷贝，正是要消除的形态，只是绕到打包路径上发生。⚠️ **读不到显式抛 `AppError("EXPORT_CARD_CSS_MISSING", recoverable=False)`**，不做「静默输出无样式卡片」。⚠️ **不缓存**（对照 `_get_katex_assets()` 的 `_KATEX_CACHE`：KaTeX 是只读第三方资产，而 `cards.css` 是**我们会改的源文件**，缓存会让改动静默不生效）。
 
-**Word 侧**（`markdown_to_docx(..., skeleton=...)`）：解析**同一份 HTML**，识别 `<section class="md-card">` → **单单元格表格**包裹该节（`Table Grid` 边框 + 底纹 `FILL_CARD`）。⚠️ **docx 无圆角无投影** —— Word 侧的「卡片」=「有边框和底纹的块」，这是**能力边界不是实现省略**。⚠️ **刻意不接收 `card_style`**：8 套皮肤会退化成第二份硬编码色表，Word 表达不了圆角/投影。三处实现陷阱：
+**Word 侧**（`markdown_to_docx(..., skeleton=...)`）：解析**同一份 HTML**，识别 `<section class="md-card">` → **单单元格表格**包裹该节（`Table Grid` 边框 + 底纹 `FILL_CARD`）。⚠️ **docx 无圆角无投影** —— Word 侧的「卡片」=「有边框和底纹的块」，这是**能力边界不是实现省略**。⚠️ **刻意不接收 `card_style`，同样不接收 `card_vars`**：8 套皮肤会退化成第二份硬编码色表，Word 表达不了圆角/投影；逐维度微调（底/抬升/边）**整根轴都长在 `--card-*` 的 CSS 层上**，Word 侧走的是结构层（单单元格表格 + 固定边框/底纹），`--card-*` 一个都不参与。三处实现陷阱：
 1. **`_render_block` 的 elif 链必须加在中间**（`blockquote` 之后）—— 链尾的 `else` 是「未知块 → 递归子元素」，排在它后面的分支**永不可达**。
 2. ⚠️ **正因为那个 `else` 兜底，漏加分支不会丢内容**（section 被当未知块递归、正文照旧渲染）⇒「读回断言内容还在」这种断言**在漏加时照样绿**。断言必须落在**结构层**（该节被单单元格表格包裹 / `w:tcPr/w:shd` 的 `w:fill == FILL_CARD`）。
 3. `_Cell` **没有 `add_heading`**，而卡片头就是那个 `##` —— `_CellProxy` 代理 `add_paragraph` / `add_table` / `add_heading`（掉了的话标题退化成正文段落，观感全变、零报错）。

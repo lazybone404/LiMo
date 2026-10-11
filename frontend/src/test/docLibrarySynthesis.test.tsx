@@ -145,6 +145,20 @@ function selectRows(container: HTMLElement, n: number) {
   for (let i = 0; i < n; i++) fireEvent.click(toggles[i] as HTMLElement)
 }
 
+/**
+ * 合成对话框内的节点一律**从 `document.body` 查**，不从 render 的 `container` 查。
+ *
+ * ⚠️ 对话框是 `createPortal(..., document.body)` 的：它写在一个带
+ * `backdrop-blur-[20px]` 的 `<aside>` 里，而 `backdrop-filter` 会创建**包含块**，
+ * 把 `position: fixed` 的后代锁进面板大小的一小块（用户原话「这一个界面还是卡在
+ * 那一个文档栏里面」）。Portal 之后 `container.querySelector('[data-synth-…]')`
+ * 恒为 `null` —— 于是 `fireEvent.click(null)` 报的是「provide a DOM element」，
+ * 看起来像测试写坏了，实际是组件改了挂载位置。
+ */
+const inDialog = <T extends Element = HTMLElement>(sel: string): T | null =>
+  document.body.querySelector<T>(sel)
+const allInDialog = (sel: string) => document.body.querySelectorAll(sel)
+
 /** 合成按钮：title 两种文案都含「对比综述」，故按它取（同时避开行内其它按钮） */
 const synthBtn = (container: HTMLElement) =>
   container.querySelector('button[title*="对比综述"]') as HTMLButtonElement
@@ -155,8 +169,8 @@ const synthBtn = (container: HTMLElement) =>
  * ⚠️ 折叠用的是**条件渲染**（`{synthAdvanced && …}`）而不是 CSS 隐藏：收起时那两个
  * 控件**根本不在 DOM 里**，所以「维度默认不可见」这条判据才有硬证据（见 §18.1）。
  */
-function openAdvanced(container: HTMLElement) {
-  fireEvent.click(container.querySelector('[data-synth-advanced-toggle]') as HTMLElement)
+function openAdvanced() {
+  fireEvent.click(inDialog('[data-synth-advanced-toggle]') as HTMLElement)
 }
 
 describe('DocLibrary — 合成按钮门控', () => {
@@ -186,11 +200,11 @@ describe('DocLibrary — 合成请求形状', () => {
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
     // 对话框要先列出「将按以下顺序合成」，用户靠它核对选对没有
-    expect(container.querySelector('[data-synth-sources]')!.textContent).toContain('论文 A')
-    expect(container.querySelector('[data-synth-sources]')!.textContent).toContain('论文 B')
+    expect(inDialog('[data-synth-sources]')!.textContent).toContain('论文 A')
+    expect(inDialog('[data-synth-sources]')!.textContent).toContain('论文 B')
 
-    fireEvent.change(container.querySelector('[data-synth-title]')!, { target: { value: '两篇对比' } })
-    fireEvent.click(container.querySelector('[data-confirm-synth]')!)
+    fireEvent.change(inDialog('[data-synth-title]')!, { target: { value: '两篇对比' } })
+    fireEvent.click(inDialog('[data-confirm-synth]')!)
 
     await vi.waitFor(() => expect(streamCall()).toBeTruthy())
     const call = streamCall()!
@@ -215,10 +229,10 @@ describe('DocLibrary — 合成预览：每篇 token / 处理方式（§17.4）'
     fireEvent.click(synthBtn(container))
 
     // token 只能来自预览端点——`docs` 是白名单元数据、不含正文，前端算不出来
-    await vi.waitFor(() => expect(container.querySelector('[data-synth-plan]')).toBeTruthy())
-    expect(container.querySelector('[data-synth-plan]')!.textContent).toContain('600')
+    await vi.waitFor(() => expect(inDialog('[data-synth-plan]')).toBeTruthy())
+    expect(inDialog('[data-synth-plan]')!.textContent).toContain('600')
     // 完整输入的篇不堆「完整输入」四个字（每行都有等于没有），只显 token
-    expect(container.querySelector('[data-synth-plan]')!.textContent).not.toContain('完整输入')
+    expect(inDialog('[data-synth-plan]')!.textContent).not.toContain('完整输入')
   })
 
   it('over_window 篇触发窗口 banner，chunked 篇只做行内标注', async () => {
@@ -235,10 +249,10 @@ describe('DocLibrary — 合成预览：每篇 token / 处理方式（§17.4）'
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
 
-    await vi.waitFor(() => expect(container.querySelector('[data-synth-plan="chunked"]')).toBeTruthy())
+    await vi.waitFor(() => expect(inDialog('[data-synth-plan="chunked"]')).toBeTruthy())
     // chunked 是设计认可的终态（用户无需行动）→ **不得**触发「换个模型吧」的 banner
-    expect(container.querySelector('[data-synth-window-banner]')).toBeTruthy()
-    expect(container.querySelector('[data-synth-plan="chunked"]')!.textContent).toContain('分块抽取')
+    expect(inDialog('[data-synth-window-banner]')).toBeTruthy()
+    expect(inDialog('[data-synth-plan="chunked"]')!.textContent).toContain('分块抽取')
   })
 
   it('只有 chunked（无 over_window / 非 reject）→ 不出窗口 banner', async () => {
@@ -255,8 +269,8 @@ describe('DocLibrary — 合成预览：每篇 token / 处理方式（§17.4）'
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
 
-    await vi.waitFor(() => expect(container.querySelector('[data-synth-plan="chunked"]')).toBeTruthy())
-    expect(container.querySelector('[data-synth-window-banner]')).toBeNull()
+    await vi.waitFor(() => expect(inDialog('[data-synth-plan="chunked"]')).toBeTruthy())
+    expect(inDialog('[data-synth-window-banner]')).toBeNull()
   })
 
   it('窗口不足（mode=reject）→ 出 banner、按钮禁用', async () => {
@@ -274,11 +288,11 @@ describe('DocLibrary — 合成预览：每篇 token / 处理方式（§17.4）'
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
 
-    await vi.waitFor(() => expect(container.querySelector('[data-synth-window-banner]')).toBeTruthy())
+    await vi.waitFor(() => expect(inDialog('[data-synth-window-banner]')).toBeTruthy())
     // 只提示、不给切换入口（§17.7）：推荐来自 capabilities.llmModels，不是前端写死的名单
-    expect(container.querySelector('[data-synth-window-banner]')!.textContent).toContain('超大窗口模型')
+    expect(inDialog('[data-synth-window-banner]')!.textContent).toContain('超大窗口模型')
     // ⚠️ 对照：去掉 canRun 里的 reject 分支 → 按钮可点 → 白等一次往返才被后端拒
-    expect((container.querySelector('[data-confirm-synth]') as HTMLButtonElement).disabled).toBe(true)
+    expect((inDialog('[data-confirm-synth]') as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('换模型推荐**排除已下线模型**（retired 非空不进推荐名单）', async () => {
@@ -306,8 +320,8 @@ describe('DocLibrary — 合成预览：每篇 token / 处理方式（§17.4）'
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
 
-    await vi.waitFor(() => expect(container.querySelector('[data-synth-window-banner]')).toBeTruthy())
-    const banner = container.querySelector('[data-synth-window-banner]')!.textContent!
+    await vi.waitFor(() => expect(inDialog('[data-synth-window-banner]')).toBeTruthy())
+    const banner = inDialog('[data-synth-window-banner]')!.textContent!
     expect(banner).toContain('在线大模型')
     expect(banner).not.toContain('已下线大模型')
   })
@@ -329,10 +343,10 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
     fireEvent.click(synthBtn(container))
 
     // ⚠️ 对照：把维度留在外面（不折叠）→ 此处非 null → 红
-    expect(container.querySelector('[data-synth-dims]')).toBeNull()
-    expect(container.querySelector('[data-synth-advanced-toggle]')).toBeTruthy()
-    openAdvanced(container)
-    expect(container.querySelector('[data-synth-dims]')).toBeTruthy()
+    expect(inDialog('[data-synth-dims]')).toBeNull()
+    expect(inDialog('[data-synth-advanced-toggle]')).toBeTruthy()
+    openAdvanced()
+    expect(inDialog('[data-synth-dims]')).toBeTruthy()
   })
 
   it('预设下拉消费 capabilities；默认预填首个预设、切换预设覆盖列表', async () => {
@@ -340,13 +354,13 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
-    openAdvanced(container)
+    openAdvanced()
 
-    const select = container.querySelector('[data-synth-preset]') as HTMLSelectElement
+    const select = inDialog('[data-synth-preset]') as HTMLSelectElement
     // ⚠️ 对照：前端硬编码预设名 → capabilities 换了文案它不变 → 红
     expect([...select.options].map(o => o.textContent)).toEqual(['论文综述', '技术资料'])
 
-    const dims = () => (container.querySelector('[data-synth-dims]') as HTMLTextAreaElement).value
+    const dims = () => (inDialog('[data-synth-dims]') as HTMLTextAreaElement).value
     expect(dims()).toBe('研究问题\n方法')
     fireEvent.change(select, { target: { value: 'tech' } })
     expect(dims()).toBe('背景\n方案')
@@ -357,11 +371,11 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
-    openAdvanced(container)
+    openAdvanced()
 
-    fireEvent.change(container.querySelector('[data-synth-dims]')!,
+    fireEvent.change(inDialog('[data-synth-dims]')!,
       { target: { value: '样本量\n\n  结论  \n样本量' } })
-    fireEvent.click(container.querySelector('[data-confirm-synth]')!)
+    fireEvent.click(inDialog('[data-confirm-synth]')!)
 
     await vi.waitFor(() => expect(streamCall()).toBeTruthy())
     // 去空行 + 去重（权威的清洗规则在后端，这层只为让「共 N 个维度」显示得准）
@@ -373,10 +387,10 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
-    openAdvanced(container)
+    openAdvanced()
 
-    expect(container.querySelector('[data-synth-preset]')).toBeNull()
-    expect(container.querySelector('[data-synth-dims]')).toBeTruthy()
+    expect(inDialog('[data-synth-preset]')).toBeNull()
+    expect(inDialog('[data-synth-dims]')).toBeTruthy()
   })
 })
 
@@ -401,11 +415,11 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
 
-    const radios = [...container.querySelectorAll('[data-synth-intent]')] as HTMLInputElement[]
+    const radios = [...allInDialog('[data-synth-intent]')] as HTMLInputElement[]
     // ⚠️ 对照：前端硬编码五档意图 → capabilities 换了标签它不变 → 红
     expect(radios.map(r => r.parentElement!.textContent)).toEqual(['理解主题', '找争议', '自定义'])
     expect(radios[0].checked).toBe(true)
-    expect(container.querySelector('[data-synth-intent-purpose]')!.textContent)
+    expect(inDialog('[data-synth-intent-purpose]')!.textContent)
       .toContain('准确复述')
   })
 
@@ -416,12 +430,12 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     fireEvent.click(synthBtn(container))
 
     // 非「自定义」意图没有文本框（后端按意图取预设文案，用户没东西可填）
-    expect(container.querySelector('[data-synth-intent-text]')).toBeNull()
+    expect(inDialog('[data-synth-intent-text]')).toBeNull()
 
-    fireEvent.click(container.querySelector('[data-synth-intent="custom"]')!)
-    fireEvent.change(container.querySelector('[data-synth-intent-text]')!,
+    fireEvent.click(inDialog('[data-synth-intent="custom"]')!)
+    fireEvent.change(inDialog('[data-synth-intent-text]')!,
       { target: { value: '给团队做选型决策，重点看成本' } })
-    fireEvent.click(container.querySelector('[data-confirm-synth]')!)
+    fireEvent.click(inDialog('[data-confirm-synth]')!)
 
     await vi.waitFor(() => expect(streamCall()).toBeTruthy())
     const body = JSON.parse(String(streamCall()!.init.body))
@@ -435,11 +449,11 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
 
-    fireEvent.click(container.querySelector('[data-synth-intent="custom"]')!)
-    fireEvent.change(container.querySelector('[data-synth-intent-text]')!,
+    fireEvent.click(inDialog('[data-synth-intent="custom"]')!)
+    fireEvent.change(inDialog('[data-synth-intent-text]')!,
       { target: { value: '写给谁看的说明' } })
-    fireEvent.click(container.querySelector('[data-synth-intent="controversy"]')!)
-    fireEvent.click(container.querySelector('[data-confirm-synth]')!)
+    fireEvent.click(inDialog('[data-synth-intent="controversy"]')!)
+    fireEvent.click(inDialog('[data-confirm-synth]')!)
 
     await vi.waitFor(() => expect(streamCall()).toBeTruthy())
     const body = JSON.parse(String(streamCall()!.init.body))
@@ -452,9 +466,9 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
-    openAdvanced(container)
+    openAdvanced()
 
-    const checked = () => [...container.querySelectorAll('[data-synth-genre]')]
+    const checked = () => [...allInDialog('[data-synth-genre]')]
       .filter(n => (n as HTMLInputElement).checked)
       .map(n => (n as HTMLElement).getAttribute('data-synth-genre'))
 
@@ -462,7 +476,7 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     // （⚠️ 对照：无脑预填 paper → 此处非空 → 红）
     expect(checked()).toEqual([])
 
-    fireEvent.click(container.querySelector('[data-synth-intent="controversy"]')!)
+    fireEvent.click(inDialog('[data-synth-intent="controversy"]')!)
     expect(checked()).toEqual(['media'])
   })
 
@@ -471,12 +485,12 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
-    openAdvanced(container)
+    openAdvanced()
 
     // 手动加一个 → 两个都在（多选是「修正」不是「替换」）
-    fireEvent.click(container.querySelector('[data-synth-intent="controversy"]')!)
-    fireEvent.click(container.querySelector('[data-synth-genre="paper"]')!)
-    fireEvent.click(container.querySelector('[data-confirm-synth]')!)
+    fireEvent.click(inDialog('[data-synth-intent="controversy"]')!)
+    fireEvent.click(inDialog('[data-synth-genre="paper"]')!)
+    fireEvent.click(inDialog('[data-confirm-synth]')!)
     await vi.waitFor(() => expect(streamCall()).toBeTruthy())
     expect(JSON.parse(String(streamCall()!.init.body)).content_type).toEqual(['media', 'paper'])
   })
@@ -486,13 +500,13 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
-    openAdvanced(container)
+    openAdvanced()
 
-    fireEvent.click(container.querySelector('[data-synth-intent="controversy"]')!)
-    fireEvent.click(container.querySelector('[data-synth-genre="paper"]')!)
+    fireEvent.click(inDialog('[data-synth-intent="controversy"]')!)
+    fireEvent.click(inDialog('[data-synth-genre="paper"]')!)
     // 切回不预填体裁的意图 → 之前手选的也一并清掉（覆盖语义，不留混血状态）
-    fireEvent.click(container.querySelector('[data-synth-intent="understand"]')!)
-    const checked = [...container.querySelectorAll('[data-synth-genre]')]
+    fireEvent.click(inDialog('[data-synth-intent="understand"]')!)
+    const checked = [...allInDialog('[data-synth-genre]')]
       .filter(n => (n as HTMLInputElement).checked)
     expect(checked).toEqual([])
   })
@@ -518,7 +532,7 @@ describe('DocLibrary — 对比原料可选（§19）', () => {
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
 
-    const radioNotes = container.querySelector('[data-synth-source="notes"]') as HTMLInputElement
+    const radioNotes = inDialog('[data-synth-source="notes"]') as HTMLInputElement
     fireEvent.click(radioNotes)
 
     // ⚠️ 必须**重拉**而不是前端本地重算：notes 的 token 数与 rawText 不同，`plan` 必须重算；
@@ -527,10 +541,10 @@ describe('DocLibrary — 对比原料可选（§19）', () => {
       expect(captured.some(c =>
         c.url.includes('/synthesis/preview') && String(c.init.body).includes('"source_mode":"notes"'))).toBe(true)
     })
-    await vi.waitFor(() => expect(container.querySelector('[data-synth-excluded]')).toBeTruthy())
-    expect(container.querySelector('[data-synth-excluded]')!.textContent).toContain('1 篇无笔记')
+    await vi.waitFor(() => expect(inDialog('[data-synth-excluded]')).toBeTruthy())
+    expect(inDialog('[data-synth-excluded]')!.textContent).toContain('1 篇无笔记')
 
-    fireEvent.click(container.querySelector('[data-confirm-synth]')!)
+    fireEvent.click(inDialog('[data-confirm-synth]')!)
     await vi.waitFor(() => expect(streamCall()).toBeTruthy())
     expect(JSON.parse(String(streamCall()!.init.body)).source_mode).toBe('notes')
 
@@ -547,7 +561,7 @@ describe('DocLibrary — done 之后不自动生成（D7）', () => {
 
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
-    fireEvent.click(container.querySelector('[data-confirm-synth]')!)
+    fireEvent.click(inDialog('[data-confirm-synth]')!)
 
     // 先确认 done 链路真的走通了——否则「没有 generate 请求」可能只是「整个回调没跑」
     await vi.waitFor(() => {

@@ -31,7 +31,7 @@ LiMo 采用六轴主题系统，所有视觉元素通过 CSS 变量驱动，零�
 ```
 data-theme="light|dark"            ← 明暗极性
 data-accent="sky|ocean|…"         ← 主辅配色（26套: 现代9+国风9+自然8，HSL动态派生）
-data-base="warm|neutral|cool|…"   ← 界面基调（13种，覆盖冷暖偏色+护眼）
+data-base="warm|neutral|cool|…"   ← 界面基调（14种，覆盖冷暖偏色+护眼）
 data-texture="plain|xuan|kraft|…" ← 预览区纹理（6种纸张质感）
 data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 --texture-opacity（强度滑条 10-100）← 纹理强度，反转映射到 opacity
@@ -51,7 +51,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 - **基调切换一致性**：`data-base` 切换时所有 `--tk-*` 变量同步变化，`--md-*` 通过 `var()` 引用自动跟随。
 - **一键主题包**：`THEME_PRESETS` 提供 20 个预设（护眼4/经典4/粉色4/雅致4/国风4），一键设置 base+accent+texture+font 四轴。
 
-### 六种界面基调
+### 界面基调（14 种）
 
 | key | 名称 | 色调偏向 | surface |
 |-----|------|---------|---------|
@@ -70,16 +70,21 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | `cloud` | 云白 | 微蓝白 | `#F3F4F8` |
 | `blush` | 腮红 | 极淡粉 | `#F7F1F2` |
 
+⚠️ **别拿 `index.css` 的 `data-base=` 选择器条数当基调数**——它只有 **13** 条，因为默认的 `warm` 走 `:root` 不写选择器（2026-10-11 实测踩到，「13 还是 14」正是这么分叉的）。唯一真相源是 [lib/theme-base.ts](frontend/src/lib/theme-base.ts) 的 `BASE_OPTIONS`（14 项）。同理 **`data-accent=` 是 26 条**（26 套全部显式写，无默认项）。
+
 ## 文档索引
 
 | 文档 | 内容 | 何时读 |
 |------|------|--------|
+| [README.md](README.md)（**面向用户**） | 产品介绍：能做什么 / 安装 / 首次使用 / 快捷键 | ⚠️ **改任何用户可见能力时必须同步**（它是用户的唯一入口）|
 | [architecture.md](docs/architecture.md) | 六层分层架构，每层模块职责、交互、陷阱 | 理解整体架构和模块边界 |
 | [frontend-patterns.md](docs/frontend-patterns.md) | 状态管理、取消机制、TaskPanel、apiUrl | 改前端状态/任务相关代码 |
 | [export-pipeline.md](docs/export-pipeline.md) | 导出架构、两条路径设计、Tab→内容映射表、KaTeX/Pygments、HTML/Word 共用解析器、**PDF 导出（WebView2 PrintToPdf / 打印对话框双路径）**、打印 CSS 三处落点、**卡片骨架跟随（`skeleton=card` 参数贯通 + `data-skeleton` 主作用域 + 导出侧 `--tk-*` 令牌补齐）**、新增导出格式落点清单 | 改导出功能、新增 tab、**新增导出格式**、改打印样式/PDF 导出、改卡片导出 |
 | [CHANGELOG.md](docs/CHANGELOG.md) | 修改记录：做了什么、为什么、影响范围 | 了解历史决策、避免重复踩坑 |
 | [STATUS.md](docs/STATUS.md) | 纯事实清单（文件/端点/引擎计数/代码行数） | 需要统计数据 |
 | [ACKNOWLEDGMENTS.md](docs/ACKNOWLEDGMENTS.md) | 开源致谢与合规声明（借鉴项目 + 第三方依赖许可证） | 新增/移除依赖、借鉴新开源项目时更新 |
+| [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)（仓库根） | **发行包内嵌**第三方组件的许可证清单（与上一条**分工不同**：这条面向发行合规，逐项标「全文位置」） | 打包/发布、增删内嵌依赖（ffmpeg / KaTeX / 字体…）时 |
+| [SECURITY_AUDIT.md](SECURITY_AUDIT.md)（仓库根） | **时点**安全审计报告（2026-07-08 起，逐条标 ✅ 已修）；⚠️ 不随代码更新，当前状态以本文件「安全」段为准 | 排查某类漏洞「是不是早就查过/修过」 |
 | [user-scenarios.md](docs/user-scenarios.md) | 10 个用户场景及实现状态 | 理解产品需求 |
 | [plugins.md](docs/plugins.md) | 插件系统标准 — 开发 API + GitHub 安装流程 + 安全声明 | 开发/安装/调试插件 |
 | [prompts-inventory.md](docs/prompts-inventory.md) | 全部 LLM 提示词清单 + 审视点清单（9 已修复/8 待处理）+ 温度参数速查 + PromptComposer 标签速查 + Agent SSE 事件流 | 审视/优化 prompt、新增管道需要参考 prompt 风格 |
@@ -93,7 +98,9 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [code-audit.md](docs/code-audit.md) | 代码质量与缺陷扫描（第一轮）：**24 项带证据发现**（P0 可直接触发 4 / P1 静默失效·死代码 10 / P2 无机制·重复实现 10，每项含稳定 slug + 五段式）+ 「刻意为之」判据 + 已剔除的假阳性。⚠️ **是 `4174166` 时点的快照，不随代码更新** | 排查已知缺陷、修复前查有无现成记录 |
 | [code-audit-2.md](docs/code-audit-2.md) | 代码质量外部审查（第二轮）：**35 项发现** + **8 条纠偏**（照报告改会引入新问题）+ **6 条描述与现状不符**。⚠️ 与第一轮一样是**时点快照**（`6c2ef28` / 0.4.16），不随代码更新 | 回溯本轮修了什么、为什么这么修 |
 | [code-audit-3.md](docs/code-audit-3.md) | 代码质量自查（第三轮，**对象是刚落地的新代码**）：**10 项**（P0 启动迁移调 `_rebuild_index(save=True)` 抹掉全库标签/文件夹/来源 + P1 前端跨 mode 版本滞后致编辑覆盖用户没在看的版本 + `chars` 伪造 0 + 版本切换竞态 + 导出测试脚本式假绿 + 4 条 P2）+ **记录不修 5 条** + **对照实验 6 条** + **已知缺口 1 条**（前端 P1 无组件级行为测试）。⚠️ **本轮的新意是「写入语义从新建改为就地覆盖」放大了旧假设的危害**，故四处旧假设被重新评估。⚠️ **时点快照**（`cde70b8` 之上的工作树 / 0.5.0） | 下次自查前查清单、避免重复论证「为什么不修」 |
-| [patterns.md](docs/patterns.md) | **关键模式 66 条**（从本文件拆出）：前端 `#1`-`#8` / 后端 `#9`-`#31` / **同源与成对判据 `#32`-`#66`** | **写任何模块的代码前**；查「这个坑踩过没有」 |
+| [patterns.md](docs/patterns.md) | **关键模式 67 条**（从本文件拆出）：前端 `#1`-`#8` / 后端 `#9`-`#31` / **同源与成对判据 `#32`-`#66`** / CSS 宿主环境陷阱 `#67` | **写任何模块的代码前**；查「这个坑踩过没有」 |
+
+> ⚠️ **README 与代码的一致性**（2026-10-11 核查并**已修**）：曾有两处滞后——① 「同模式保留最近两版」（版本归档早已重做为**全部保留不设上限**）；② 「九种」图型（prompt 层面只暴露**七种**，`hchain` / `timeline` 引导已删、改走语义块）。两处都**读起来毫无异常**，是「文档骗人」最典型的形态。**改任何用户可见能力时回头看一眼 README**。
 
 ## 版本号管理
 
@@ -431,10 +438,10 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **密度**：详细（默认，卡片）/ **简略**（26px 单行，复选框常驻防标题横跳，筛选区收成一行入口 + 浮层复用同一批小节组件，排列旋钮与分隔条不渲染）。**简略模式 = IDE 文件树**：**固定按文件夹分组、无视「排列方式」偏好**（那个旋钮在简略下本就不渲染，也就没有跟随它的必要），分组头是父节点、其下子行缩进一层 + 一条 1px 缩进参考线（`treeIndent`，只给**有行的组**画）。⚠️ **分组头 26px 与文件行 26px 是成对常量**，改一处必须改另一处——否则父节点比子节点矮，树形就散了（`GroupHeader.compact` / `DocRow` 紧凑分支，两处都有注释指路）。⚠️ 曾设计为「简略一律平铺不分组」（省下分组头的高度），那样省掉的是**结构**：一个文件夹 30 篇时，平铺列表除了一列标题什么信息都不给
 - **大列表**：分批渲染 60 条 + `IntersectionObserver`（`root` 绑滚动容器），**全选 = 全部匹配项（跨分批）**，工具栏显示「含未显示项」。⚠️ `animationDelay: i*50ms` 在第 1000 篇要等 50 秒——是功能性错误不是动画偏好
 - **批量操作**：`POST /api/transcripts/batch`（delete/tag/move）按 action **显式枚举校验**（不能静默 `affected:0`）；逐条收集 `failed` 明细；全部失败 → 400；store 侧**一次加锁一次写盘**（相对 N 次 PATCH = N 次全量写盘）
-- **智能分类**（2026-10-11）：选中 N 篇 → `POST /api/classify/preview`（恰一次 LLM 调用、**零写入**）产出「每篇 → 建议文件夹 + 建议标签」→ 对话框审定 → `POST /api/classify/commit`（一次加锁一次写盘）。**模型永不直接写库**。⚠️ 四条产品决策：分类空间**优先复用**既有文件夹（必要时新建，上限 5——不加复用压力 = 每跑一次多几个夹）、取材深度**用户选**（600/200/仅标题，后端再按预算兜底缩减并**逐篇显式标注** `shortened` / `title_only`）、标签**喂全库词表要求优先复用**、**分类不做降级**（超时/JSON 非法一律 `AppError`，与 `reference_compressor` 的降级返回 `None` 刻意不同）。⚠️ **不扩 `batch` 的第 4 个 action**——它的形状是「一个动作、一个 folderId、一组统一 tags」，表达不了逐篇异构。⚠️ **新文件夹由前端在 commit 前用现成 `POST /api/folders` 建**（名字是用户可改的自由文本），commit 只做存在性校验。⚠️ 折叠左栏 = 卸载 `DocLibrary`，而分类是计费调用 → 持 `AbortController` 在 cleanup 里 abort。详见 CHANGELOG 2026-10-11
+- **智能分类**（2026-10-11；同日二轮改为**两阶段**）：选中 N 篇 → 对话框**先呈现配置**（取材深度 / 文件夹策略 / 新建上限 / 标签策略）→ 用户按「开始分析」才 `POST /api/classify/preview`（恰一次 LLM 调用、**零写入**）产出「每篇 → 建议文件夹 + 建议标签」→ 逐篇审定 → `POST /api/classify/commit`（一次加锁一次写盘）。**模型永不直接写库**。⚠️ **`onStart` 是计费调用的唯一出口**——`handleOpenClassify` 只打开对话框、**一个请求都不发**（此前是「打开即分析」：用户没点任何东西就已经花了钱、界面已被填满；用户说的「初始就选了 600」只是那件事最显眼的读数）。⚠️ **两项策略各三档**：`folderMode` = 优先复用或新建（默认）/ 只复用 / 只打标签；`tagMode` = 喂全库词表（默认）/ 用户手填基础标签（**替代**词表而非叠加；全库无标签时前端默认落这档——空词表等于没喂）/ 完全交给模型。⚠️ **判据粒度分两档**：策略非法 → **显式报错 `CLASSIFY_BAD_OPTION`，且在校验处就返回**（不发起计费调用）；`notesChars` / `maxNewFolders` / `seedTags` 非法 → 静默夹紧。分野 = 「这个值错了会不会改变**产物性质**」。⚠️ **策略的两个投影必须同源**：prompt 侧（`_folder_section` / `_tag_section`）与收口侧（`_normalize_one`）收到同一次取值，故模板只留两个占位符、整段由函数生成（模式 #54）。⚠️ 四条产品决策：分类空间**优先复用**既有文件夹（必要时新建，上限 5——不加复用压力 = 每跑一次多几个夹）、取材深度**用户选**（600/200/仅标题，后端再按预算兜底缩减并**逐篇显式标注** `shortened` / `title_only`）、标签**优先复用**、**分类不做降级**（超时/JSON 非法一律 `AppError`，与 `reference_compressor` 的降级返回 `None` 刻意不同）。⚠️ **不扩 `batch` 的第 4 个 action**——它的形状是「一个动作、一个 folderId、一组统一 tags」，表达不了逐篇异构。⚠️ **新文件夹由前端在 commit 前用现成 `POST /api/folders` 建**（名字是用户可改的自由文本），commit 只做存在性校验。⚠️ 折叠左栏 = 卸载 `DocLibrary`，而分类是计费调用 → 持 `AbortController` 在 cleanup 里 abort。⚠️ **本面板内的浮层必须 Portal 到 body**：`<aside>` 带 `backdrop-blur-[20px]`，它会**创建包含块**把 `fixed` 后代锁进面板大小的一小块（用户原话「卡在那一个文档栏里面」）；`FloatingAI` 的根 `<aside>` 同款，对话侧三个弹窗一并修（**共 6 处**）。⚠️ **例外（2026-10-11 代码审查）**：`FilterPopover` 的筛选浮层与 `ChatInput` 的 @ 浮层是 `absolute` **锚在按钮上的下拉**，Portal 到 body 会失去定位基准 → 改为删遮罩 + 监听 `document` 的 `mousedown`、用 `contains` 划内外界（原注释担心的「点按钮也算外部」正由它解决）。⚠️ **同日三轮（分批 + 关思考）**：一次调用撑不住大 N（实测 90 篇时模型把 8192 输出预算**全烧在推理链上**、正文 0 字符、`finish=length`，而报错还是误导性的「JSON 不合法」）→ **每 `CLASSIFY_BATCH_SIZE=20` 篇一批**（每批独立组装 prompt，拿回各自 `docs` **合并后仍交给同一个 `normalize_suggestions`** ⇒ 新建上限的全局计数 / 同名归一 / 幻觉 id 剔除**不产生第二份实现**，模式 #54）+ **关思考而非降档**（`disable_thinking` → `extra_body={"thinking":{"type":"disabled"}}`；**实测 low 档同样把预算烧光**，降档救不了。⚠️ 与 `reasoning_effort` **服务端互斥**，代码里是 `elif`，测试有对照实验钉住）。失败语义分家：**全部批失败 → 整次显式报错**（不降级）／**部分批失败 → 结果照给但全局 warning 点名哪几批**（少它则用户会把「根本没被分析过」当成「模型的判断是归入 none」）；空输出另有 `CLASSIFY_EMPTY_OUTPUT`（与「返回了东西但不是 JSON」的 `CLASSIFY_BAD_JSON` 分开）。双层超时：每批 120s + 整次 600s（分批是**串行**的）。⚠️ **同日四轮（代码审查 7 条，详见 CHANGELOG）**：`fit_to_budget` 预算改按**单批**篇数均摊（此前按全量 N——分批后每篇被砍到约 1/批数，分批「压输出量」的收益被反向吃掉；⚠️ **副作用**：按批均摊后每篇配额下界 200 > `MIN_USEFUL_CHARS`(120)，`title_only` 分支**在默认常量下不可达**，测试改为显式抬高该常量来行使它）｜新建上限**按批分配**（`per_batch_new_limit`，此前每批都声明全量 ⇒ 全局收口拒掉约 80%；**声明按份、收口按总量**）｜空词表兜底 `seed`/`vocab` **共用同一份**（此前只修了 seed 半边，vocab 空库时「优先从上面选」+「（库里还没有标签）」自相矛盾）｜审定阶段重跑失败**仍可应用**（`canConfirm` 删 `!error`——父组件刻意留着旧 preview 给用户用）｜两处段控共用 `activeDepth`（此前三元的一支永不被行使）。⚠️ **同日五轮（实机验收 91 篇真实库，详见 CHANGELOG）**：空库那句 prompt **必须按策略分两份**——`reuse_only` 空库「只能全 none」**是对的**，`reuse_or_new` 空库**正是该新建的时候**（首次使用 / 刚丢完分类，恰是最常见的两个场景）；曾两档共用「本次请只使用 none，不要使用 reuse 或 new」，等于把用户选的 `reuse_or_new` 在最该新建的场景静默改写成 `tags_only`（实机对照同一份输入：共用 → 新建 **0**；拆开 → 新建 **23**）。⚠️ **与同日二轮的「空词表兜底」恰成反例**（那里 `seed`/`vocab` **共用一份是对的**，因为「都没词表可挑」时两档语义完全一致）——**判据是「两种取值下该做的事是否相同」，不是「两种取值是否都在同一个函数里」**；混为一谈就是模式 #54 在 prompt 层的形态（共用一份的理由看起来同样充分「都是空库嘛」，失效方式却是**用户选的那一档被悄悄换成另一档**）。⚠️ **附带观察（如实记录，未处置）**：`MAX_NEW_FOLDERS=5` 对主题极散的 91 篇严重不足（模型跨 5 批共提 **14 个**新名 → **60+ 篇被上限拒成 `none`**，模型分类本身是准的，问题在那个旋钮）；冷启动标签不收敛（91 篇 **223 种**，词表为空时「优先复用」无从谈起，**需第二轮才有证据**）。详见 CHANGELOG 2026-10-11
 - **状态归属由「折叠即卸载」判定**（`SlotLayout` 是 `collapsed ? <PanelStrip/> : <Comp/>`，组件本地 state 收起即归零）：`selectedIds` / `listLimit` / `folderBusy` / `docsLoading` / `expandedFolders` / `titleFilter` / `dateFrom` / `dateTo` 在 `docsSlice`；`density` / `groupBy` / `sort` / `expandedSections` / `filterAreaHeight` 在 `docLibraryPrefs`（localStorage `mbw_docLibPrefs`）；`docLibSearchFocusNonce` 在 `uiSlice`（**自增 nonce 而非 boolean**——boolean 表达不了「已经是 true 时再按一次」）。**刻意不改 SlotLayout 为 CSS 隐藏**：本轮的 store 需求不止「折叠别丢」，还要跨组件共享 + 与筛选 setter 原子发生修改
 - **Ctrl+K / 顶栏搜索**：`SearchBar` 已退化为**纯按钮**，点它 = 展开文档库 + 聚焦搜索框，与 Ctrl+K 共用 `openDocLibSearch`（**唯一入口**——两处各写一遍必然漂移；宽度一并复位，折叠态宽度可能是 40px，只设 `collapsed: false` 会展开出一条缝）。⚠️ 它曾是**第二套搜索实现**（限 10 条、无 AbortController、自带一份 snippet 渲染分支）——「搜文档」被做了两遍
-- 前端拆 **17 文件**（编排 `DocLibrary` / `DocLibraryToolbar` / `SearchField` / `FilterArea` / `FilterSection` / `filters` / `FilterPopover` / `ListToolbar` / `DocList` / `GroupHeader` / `DocRow` / `BatchBar` / hook 层 `useDocQuery` / `useDocSelection` + `docLibraryPrefs` / `docMeta` / `entryDelay`）。纯函数单独导出以便表驱动单测：`filterDocs` / `sortDocs` / `buildResultSet` / `groupDocs` / `countByFolder` / `collectTagFacets`。**文件夹计数以 `countByFolder`（本地派生）为唯一来源**——不能读后端 `folder.count`，那是上次拉取的快照，而 `moveDocs` 是乐观更新，两边各读各的会在移动瞬间互相矛盾。拖拽用原生 HTML5 DnD（零新依赖）+ ContextMenu「移动到文件夹」子菜单兜底键盘用户
+- 前端拆 **18 文件**（编排 `DocLibrary` / `DocLibraryToolbar` / `SearchField` / `FilterArea` / `FilterSection` / `filters` / `FilterPopover` / `ListToolbar` / `DocList` / `GroupHeader` / `DocRow` / `BatchBar` / `ClassifyDialog` / hook 层 `useDocQuery` / `useDocSelection` + `docLibraryPrefs` / `docMeta` / `entryDelay`）。纯函数单独导出以便表驱动单测：`filterDocs` / `sortDocs` / `buildResultSet` / `groupDocs` / `countByFolder` / `collectTagFacets`。**文件夹计数以 `countByFolder`（本地派生）为唯一来源**——不能读后端 `folder.count`，那是上次拉取的快照，而 `moveDocs` 是乐观更新，两边各读各的会在移动瞬间互相矛盾。拖拽用原生 HTML5 DnD（零新依赖）+ ContextMenu「移动到文件夹」子菜单兜底键盘用户
 
 **图表管道**（2026-08-16 建立，2026-09-19 改为语义化布局 + 多图 + 类型 4→9）：
 
@@ -470,7 +477,7 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **ProductRegistry**（`app/generation/product_registry.py`）— 产物注册表，定义 notes/polished 及其依赖拓扑。新增产物类型只需加一个 `ProductDef` 即可，无需改分发逻辑或前端 UI。
 - **ToolRegistry**（`app/agent/tool_registry.py`）— Agent 工具注册中心，替代硬编码的 `_register_chat_tools()`。每个工具是独立 `ToolDef`，注册后自动被发现和调用。
 
-FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` / `get_query_service` 依赖，消除路由函数中 `request.app.state.xxx` 样板代码。**19 个路由模块中 18 个用 `Depends`**（`references.py` 两者都没用——它只有进程内暂存，不碰 store/config，本来就不需要）；仍有 `request.app.state` 残留的 **3 个**：`generate.py`（7 处）、`ingest.py`、`search.py`。⚠️ 计数以 `ls backend/app/routers/*.py` + `grep -l "app\.state"` 的输出为准（**该 `ls` 把 `__init__.py` 也算进去**，故文件数 = 模块数 + 1）——此处曾写「15 个里 12 个已迁移、ingest 已迁移」，而 ingest 至今仍有残留（模式 #54：有几处同源是搜索题）。
+FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` / `get_query_service` 依赖，消除路由函数中 `request.app.state.xxx` 样板代码。**19 个路由模块中 18 个用 `Depends`**（`references.py` 两者都没用——它只有进程内暂存，不碰 store/config，本来就不需要）；仍有 `request.app.state` 残留的 **3 个**：`generate.py`（7 处）、`ingest.py`、`search.py`。⚠️ 计数以 `ls backend/app/routers/*.py` + `grep -l "app\.state"` 的输出为准（**该 `ls` 把 `__init__.py` 也算进去**，故文件数 = 模块数 + 1；2026-10-11 实测 **20 文件 = 19 模块 + 1**，`grep -l "Depends("` 命中 18 个，`app.state` 残留 3 个 / 共 11 处）——此处曾写「15 个里 12 个已迁移、ingest 已迁移」，而 ingest 至今仍有残留（模式 #54：有几处同源是搜索题）。
 
 ### 只读命令行（`limo`，2026-10-04 三期）
 
@@ -521,7 +528,7 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 - 可拖拽 resize，50–600px，<80px 自动折叠为 PanelStrip
 - **预览区顶部有文档标签栏**（`preview/DocTabBar.tsx`）：VS Code 双标签模型——单击=**预览标签**（斜体、可被下一次单击替换，全组至多一个），双击=钉成**常驻**，已打开的文档直接切过去；不做溢出下拉 / 拖拽排序 / 标签组持久化（基础版，溢出走横向滚动）。⚠️ **`currentDocId` 仍是唯一真相源**（不另存 `activeTabId`），激活态由 `tab.docId === currentDocId` 派生；⚠️ **延后提交**：导航意图先进 `pendingOpenMode`/`pendingClose`，`loadDocContent` **首行**才 `commitTabChange` —— 于是「取消未保存弹窗」天然等于什么都没发生（模式 #62）；⚠️ **与本页签名易混**：`tabRegistry` + `activeView` 是一篇文档**内部**的视图切换，标签栏是**文档之间**的，两者无关
 - **正文字号缩放**：`reading-prefs.ts` 的 `fontScale`（默认 1.0 = 现状 16px，归入既有「阅读版式」族）→ `--read-font-size` → `index.css` 的 `.preview-area .markdown-body { font-size }`（特异性 0,2,0 压过 vendor 硬编码的 16px，**不用 `!important`**——那是「颜色覆盖」的做法）。快捷键 `Ctrl+滚轮`（**原生** `addEventListener(..., { passive: false })`，React 的 `onWheel` 拦不住）/ `Ctrl+=`/`+`/`-`/`_`/`0`。⚠️ 三个必须：写 **px**（em 会与外层 `.preview-content` 的内联 em 相乘）、版宽换算走 `measurePxOf(measure, fontScale)` **同源**、作用域限定 `.preview-area`（模式 #64）
-- 快捷键：`Ctrl+G` 切到生成面板（⚠️ **语义随布局偏好变**：互斥下没开就打开、开着就关闭且**不露出文档库**；并排下与改造前一致的「切换」），`Ctrl+I` 开关 AI 浮窗，`Ctrl+\` 开关沉浸阅读
+- 快捷键：`Ctrl+G` 切到生成面板（⚠️ **语义随布局偏好变**：互斥下没开就打开、开着就关闭且**不露出文档库**；并排下与改造前一致的「切换」），`Ctrl+I` 开关 AI 浮窗，`Ctrl+W` 循环阅读宽度，`Ctrl+K` 展开文档库并聚焦搜索框（**全局劫持，不做 `activeElement` 守卫**——与 Ctrl+A 相反，那个必须让位给输入框内全选），`Ctrl+\` 开关沉浸阅读，字号三键见上一条。⚠️ **清单真相源是 [App.tsx::handleAppKeyDown](frontend/src/App.tsx#L43)**（全部 `case` 即全集），Rust 侧放行名单由 [appShortcutKeys.test.ts](frontend/src/test/appShortcutKeys.test.ts) 双向钉住（模式 #65）——**别照抄本行**，它是摘要不是源
 - **AI 对话为浮窗（唯一形态，2026-08-04 移除插槽面板）**：`FloatingAI` 覆盖式浮窗，可拖拽（边界钳制）/resize（不超视口），位置/大小持久化 localStorage（`mbw_aiPos`/`mbw_aiSize`），内部栏（会话列表/导航）可拖拽调宽 + 拖 <80px 自动折叠
 - Zustand store 按域拆 7 slices（`store/themeSlice.ts` / `docsSlice` / `contentSlice` / `tasksSlice` / `chatSlice` / `uiSlice` / `toastSlice`），`store/index.ts` 只剩组合层 + 模块副作用，共享类型在 `store/types.ts`（`Store` 为各 slice 交集）。**action 零跨域引用**，新增域 = 新建 slice 文件，消费方 API 零改动。持久化为手写 localStorage（`mbw_*` 17 个 key），无 persist 中间件。`setProcessing(key, null)` 是前缀树形删除语义（删 key 本身 + `key__` 前缀子任务），`clearDocTasks`/`cancelOneTask`/`failTask` 是兄弟函数
 - **Slot 插槽注册表**（`lib/slotRegistry.ts`）：`SlotDef`（位置 left/right/center + **`component` 组件本体（必填）** + 宽度上下限 / closable / visibleKey）注册即得可拖拽面板 + 活动栏图标，`SlotLayout.tsx` 是布局引擎（50–600px，<80px 折叠为 PanelStrip，`uiSlice.slots` 驱动宽度）。⚠️ **加一个面板 = 只改注册表一处**——组件本体自 2026-10-10 起也在 `SlotDef` 里（此前硬编码在 `SlotLayout` 的 `COMPONENTS` 映射，加面板要改两处）。⚠️ 注册表**持有页面组件**，故 `store/` 侧（`uiSlice`）**不得 import 它**（会成环）；开合判据走零依赖的 `lib/panelToggle.ts`。与 AI 浮窗（FloatingAI 覆盖式唯一形态）正交——插槽管内容面板，浮窗管对话
@@ -632,9 +639,9 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **PreviewArea 按 sourceType 分派 tab**：视频 3tab / 文档 3tab / Excel 3tab / 图片 5tab / 网页 3tab / 文本 3tab + 思维导图
 - **Transcript 视图分派**：JSON+segments → 时间轴（视频）；否则 → 完整 Markdown 渲染
 - **处理进度按 tab 粒度**：生成笔记只影响 summary/polished tab，图片处理只影响对应 mode tab
-- **主题系统**：六轴独立 — `data-theme`(明暗) × `data-accent`(26套配色) × `data-base`(13种基调) × `data-texture`(6种纹理) × `data-font`(5种字体)。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（20个: 护眼/经典/粉色/雅致/国风各4）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值）
+- **主题系统**：六轴独立 — `data-theme`(明暗) × `data-accent`(26套配色) × `data-base`(14种基调) × `data-texture`(6种纹理) × `data-font`(5种字体)。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（20个: 护眼/经典/粉色/雅致/国风各4）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值）
 - **主题模块**：`lib/accent.ts` / `lib/texture.ts` / `lib/theme-base.ts` / `lib/theme-presets.ts` / `lib/theme.ts` — 各轴独立管理，Store 统一分发
-- **骨架轴（2026-10-10；2026-10-11 判据改由标记决定）**：`lib/card-prefs.ts`（localStorage `mbw_card`）→ `data-skeleton="card"`（**被 `card` 节修饰符标过的章节成卡**，其余保持普通正文）+ `data-card-style`（8 套视觉方案，[styles/cards.css](frontend/src/styles/cards.css)）。⚠️ **不再是「每个 H2 一张卡」** —— 用户 2026-10-11 判「章节卡片太简单粗暴，卡片应该用在需要强调的地方」，故改由模型在 `## 标题` 的**下一行**写 `<!-- limo-block:v1 type="card" -->` 决定哪几节成卡（判据 `Section.card`，前后端同源）。于是卡片在页面里是**混排**的、**没有外层容器**（`.md-cards` flex 已删——套容器会把**普通章节的每一行**变成独立 flex item），间距由 `.md-card { margin-block }` 承担。⚠️ **不是第七轴** —— 六轴描述「界面长什么样」，它描述「正文怎么组织」；放 themeSlice 只因与 texture/font 同属「影响预览观感的外观设置」，**刻意不进 `THEME_PRESETS`**（换主题包不该连带重置骨架）。⚠️ **`paper`（默认）时两个属性都 `removeAttribute`** —— 零回归靠「**选择器不匹配**」（`cards.css` 每条规则带 `[data-skeleton="card"]` 前缀）而非「取值相同」。⚠️ 切分器单一真相源 `lib/markdown-scan.ts::scanHeadingLines`（`extractHeadings` 已改为消费它，**围栏内 `## ` 不算标题**）；`lib/markdown-sections.ts::splitByH2` 切分；`CardSections.tsx` **每张卡各跑一个现有 `MarkdownPreview`**（绝不新起第二个渲染器）；接入点**只有** [PreviewArea.tsx](frontend/src/components/preview/PreviewArea.tsx) 的 notes/polished 只读态（**刻意不在 `MarkdownPreview` 内部按骨架轴分派** —— 会静默扩散到 Excel 数据摘要 / 原始转录两处）。⚠️ 设置页给 8 套方案各画了一个**迷你视觉小样**（`.card-preview`，消费与 `.md-card` **完全相同**的 `--card-*` 变量 ⇒ 无第二份真相源；圆角/内框按 0.5 缩放是缩放**同一个变量**）—— 依据是 `[data-card-style="x"]` 定义变量的那批规则**不带**骨架前缀，故小样元素自己写个属性就能取到
+- **骨架轴（2026-10-10；2026-10-11 判据改由标记决定）**：`lib/card-prefs.ts`（localStorage `mbw_card`）→ `data-skeleton="card"`（**被 `card` 节修饰符标过的章节成卡**，其余保持普通正文）+ `data-card-style`（8 套视觉方案，[styles/cards.css](frontend/src/styles/cards.css)）。⚠️ **不再是「每个 H2 一张卡」** —— 用户 2026-10-11 判「章节卡片太简单粗暴，卡片应该用在需要强调的地方」，故改由模型在 `## 标题` 的**下一行**写 `<!-- limo-block:v1 type="card" -->` 决定哪几节成卡（判据 `Section.card`，前后端同源）。于是卡片在页面里是**混排**的、**没有外层容器**（`.md-cards` flex 已删——套容器会把**普通章节的每一行**变成独立 flex item），间距由 `.md-card { margin-block }` 承担。⚠️ **不是第七轴** —— 六轴描述「界面长什么样」，它描述「正文怎么组织」；放 themeSlice 只因与 texture/font 同属「影响预览观感的外观设置」，**刻意不进 `THEME_PRESETS`**（换主题包不该连带重置骨架）。⚠️ **`paper`（默认）时两个属性都 `removeAttribute`** —— 零回归靠「**选择器不匹配**」（`cards.css` 每条规则带 `[data-skeleton="card"]` 前缀）而非「取值相同」。⚠️ 切分器单一真相源 `lib/markdown-scan.ts::scanHeadingLines`（`extractHeadings` 已改为消费它，**围栏内 `## ` 不算标题**）；`lib/markdown-sections.ts::splitByH2` 切分；`CardSections.tsx` **每张卡各跑一个现有 `MarkdownPreview`**（绝不新起第二个渲染器）；接入点**只有** [PreviewArea.tsx](frontend/src/components/preview/PreviewArea.tsx) 的 notes/polished 只读态（**刻意不在 `MarkdownPreview` 内部按骨架轴分派** —— 会静默扩散到 Excel 数据摘要 / 原始转录两处）。⚠️ 设置页给 8 套方案各画了一个**迷你视觉小样**（`.card-preview`，消费与 `.md-card` **完全相同**的 `--card-*` 变量 ⇒ 无第二份真相源；圆角/内框按 0.5 缩放是缩放**同一个变量**）—— 依据是 `[data-card-style="x"]` 定义变量的那批规则**不带**骨架前缀，故小样元素自己写个属性就能取到。⚠️ **逐维度微调（2026-10-11）**：`bg` / `lift` / `border` 三项，`null` = **跟随方案（默认）—— DOM 上一个 inline 变量都不写**，故新增旋钮不改变既有用户观感；写的是 `<html>` 上的 **inline 变量**（`--card-bg-base` / `--card-lift` / `--card-border`），特异性天然压过方案块。三处硬约束：① **切方案时清空微调**（微调是「方案之上的一层覆盖」，换地基就该重新决定）；② **透明基色下抬升强制归零**（`color-mix` 的 `transparent` = `rgb(0 0 0/0)`，抬升混出的是半透明**黑**，是无效组合）且 `applyCard` **第一步无条件清空 inline**（`isLiftDisabled` 要读运行时 `--card-bg-base`，不清空会读到自证循环）；③ **受控变量清单只有 `CARD_VARS` 一份**（`applyCard` 清空、`serializeCardVars` 拼导出串都从它派生）。⚠️ 微调**只作用于章节卡片** —— `blocks.css` 的九种语义块不吃 `--card-*`
 - **语义标记 `limo-block`（2026-10-10）**：产物正文里的**协议元素** —— 模型在笔记里写 `<!-- limo-block:v1 type="key-takeaway" -->` … `<!-- /limo-block -->`（块内是普通 Markdown），渲染成**轻量强调块**（左边框 + 淡底，**刻意不是卡片** ⇒ 与骨架轴正交、无「卡中卡」）。⚠️ **九种块，分两族**（2026-10-11 由 1 种 → 4 种 → 6 种 → 9 种）+ ⚠️ **第十种 `card` 是节修饰符不是块**（见本节末）：
   - **六个语义强调块**（回答「这段文字是什么性质」，块内原本就是散文）：`key-takeaway` 重点 / `alert` 提醒·异常 / `recommend` 推荐 / `metric` 指标 / `steps` 横向步骤条 / `timeline` 竖向时间线；
   - **三个内容卡片**（2026-10-11 补，**性质不同族**）：`table` 对照表 / `code` 示例代码 / `image` 单独展示的图 —— 它们标的是**内容本身**（表格 / 代码 / 图片本来就与正文不同质），加标记的**全部作用**是外面多一层壳、**块内一个字节都不动**。故 CSS 里这一族**不换 `display`、不换子元素**，只做中性容器装饰（**不带语义色** —— 染色等于替它加一层它没有的意思）。⚠️ **刻意不是「把表格/代码改造成卡片形状」**：图鉴明确禁止「为了统一视觉而把代码改成普通文字卡片」，保住等宽/缩进/复制/横向滚动是前提。⚠️ **卡片外壳的选择器只能落在 `.md-block` 自己或块内通用元素（`table`/`pre`/`img`）上** —— 预览侧的 `.md-table-wrap`、代码块工具条 `.group` 在导出侧**根本不存在**（导出是裸 `<table>` / `codehilite`），碰它们就当场分叉（这层预览/导出结构差异**先于本轮就存在**）。
@@ -685,12 +692,13 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - `apiUrl()` / `downloadFromUrl()` 内部已拼接 BASE（含 `/api`），调用方传路径时**禁止加 `/api` 前缀**，否则产生 `/api/api/...` 导致 404
 
 **卡片骨架跟随**（2026-10-10，详见 [export-pipeline.md](docs/export-pipeline.md)「卡片骨架跟随」段）：
-预览区骨架轴（`data-skeleton="card"`：**被 `card` 节修饰符标过的章节**渲染成一张卡）**导出跟随**；`GET /export/{id}` 加 `skeleton`/`card_style`（**默认 `paper` ⇒ 逐字节零回归**），前端唯一拼装点是 `ExportMenu.tsx::backendParams()`（HTML / Word / PDF 共用），PDF 自动跟随零后端改动。五处陷阱：
+预览区骨架轴（`data-skeleton="card"`：**被 `card` 节修饰符标过的章节**渲染成一张卡）**导出跟随**；`GET /export/{id}` 加 `skeleton`/`card_style`/`card_vars`（**默认 `paper` + 空串 ⇒ 逐字节零回归**），前端拼装点是 `ExportMenu.tsx::backendParams()`（HTML / Word / PDF 共用）与 `ExportPanel` 的 POST body（两条传输各拼一次，变量串本身同出 `serializeCardVars`），PDF 自动跟随零后端改动。陷阱：
 - ⚠️ **导出 HTML 的 `<html>` 必须同时带 `data-skeleton="card"`** —— 它是 `cards.css` 的**主作用域**，只带 `data-card-style` 则规则永不命中 ⇒ 导出**没有样式的卡片**，而结构断言全绿
 - ⚠️ **`HTML_THEMES` 是自包含裸色值 CSS、零 `--tk-*`** ⇒ 卡片 CSS 的 8 个 `var(--tk-*)` 全部落空（预览里却是好的）。修法是 `export.py` 的 `_CARD_TOKENS_CSS` 补**三态**令牌（浅色 / 暗色 / `@media print` 还原），并有一条**成对常量守卫**（正则抽 `var(--tk-…)` 后逐一查定义）
 - ⚠️ **`cards.css` 单一真相源在前端**，后端 `_load_card_css()` 从磁盘读并内联（开发 `frontend/src/styles/`、打包 `_MEIPASS/styles/`），**不往 `backend/static/` 放副本**、**不缓存**（会改的源文件）、**读不到显式抛 500**（不静默输出无样式卡片）
 - ⚠️ **Word 侧** `_render_block` 的 elif 链必须加在**中间**（链尾 `else` 是「未知块 → 递归子元素」）；也**正因那个 `else` 兜底，漏加分支不丢内容** ⇒ 断言必须落在**结构层**（单单元格表格 / `w:tcPr/w:shd`）。docx 无圆角无投影，**刻意不接收 `card_style`**
 - ⚠️ **前后端各一份 H2 切分实现**（JS `splitByH2` / Python `split_by_h2`），靠**共享 fixture** `frontend/src/test/fixtures/h2-sections.json` 钉住；**切分点必须在 `_protect_latex` 之前**（两侧输入同源）
+- ⚠️ **逐维度微调（2026-10-11）走 `card_vars`**：前端发**解析好的 CSS 值**（`--card-lift:40%`），后端 `_parse_card_vars` 只做**字符白名单**（名字限 `_CARD_TUNE_VARS` 三个、值不许含 `;{}<>"'\/*`），**刻意不持有第二张「档位 → 取值」表**。该段 `<style>` 必须排在 `cards.css` **之后**（方案块与 `:root` 特异性同为 0,1,0，顺序即优先级，放前面会被静默压住）；没调过时返回空串 ⇒ 一个字节都不多
 
 **已修复的关键问题**（2026-07-10）：
 - `/api/api/` 路径重复 → 6 处修复
@@ -737,7 +745,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（66 条）
+## 关键模式（67 条）
 
 > **完整内容见 [docs/patterns.md](docs/patterns.md)** —— 实现中易错的关键约束，新增代码必须遵守。
 >
@@ -745,9 +753,11 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 > 等于**日常根本不加载** —— 偏偏它才是写代码时最该守的东西（不是风格偏好，每条都带
 > 「为什么」和「怎么避开」）。拆开后按需读取，指路留在原位。
 >
-> **分三组**：前端 `#1`-`#8`（状态/取消/任务）｜后端 `#9`-`#31`（并发/配置/日志/异步）
+> **分三组 + 一条补录**：前端 `#1`-`#8`（状态/取消/任务）｜后端 `#9`-`#31`（并发/配置/日志/异步）
 > ｜**同源与成对判据 `#32`-`#66`**（最容易踩：成对逻辑必须同源、判据要自证有区分力、
-> 能力存在 ≠ 该路径在用、延后提交的 pending 必须有人消费……）。
+> 能力存在 ≠ 该路径在用、延后提交的 pending 必须有人消费……）；`#67` 是 **CSS 宿主环境
+> 陷阱**（祖先的 `backdrop-filter` 会创建包含块、把 `fixed` 后代锁进面板 → **对话框** Portal 到 body；
+> ⚠️ `absolute` 锚在按钮上的**下拉**不能 Portal（会失去定位基准），改写 document 监听 —— 见该条末尾的例外）。
 >
 > 本文件其余部分（架构、管道、导出、数据流）仍在下方，模式里的 `#NN` 交叉引用一律指
 > **[docs/patterns.md](docs/patterns.md)**。
@@ -782,7 +792,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 大列表分批渲染 | 前 60 条 + IntersectionObserver 每次 +60（`root` 绑滚动容器）；**全选 = 全部匹配项（跨分批）**；⚠️ 顺带修 `animationDelay: i*50ms`（第 1000 篇要等 50 秒的**功能性错误**） |
 | ✅ | 批量操作 | `POST /api/transcripts/batch`（删除/打标签/移动）；按 action 显式枚举校验；`failed` 明细；全失败 → 400；store 侧一次加锁一次写盘 |
 | ✅ | Ctrl+K 搜索入口 | 顶栏 `SearchBar` 退化为按钮，与 Ctrl+K 共用 `openDocLibSearch`（展开面板 + 聚焦搜索框 + 宽度复位） |
-| ✅ | 智能分类（2026-10-11） | 选中 N 篇 → `POST /api/classify/preview`（一次 LLM 调用、**零写入**）建议「每篇 → 文件夹 + 标签」→ 对话框审定/编辑 → `POST /api/classify/commit`（一次加锁一次写盘）。**模型永不直接写库**；分类空间**优先复用**既有文件夹（新建上限 5）；取材深度用户选（600/200/仅标题，无笔记篇显式标 `title_only`）；标签喂全库词表要求优先复用；**不降级**（超时/坏 JSON 一律显式报错）；新夹由前端在 commit 前建、commit 只做存在性校验 |
+| ✅ | 智能分类（2026-10-11；同日二轮改两阶段） | 选中 N 篇 → 对话框**先选配置**（取材深度 / 文件夹策略 / 新建上限 / 标签策略）→ 用户按「开始分析」才发 `POST /api/classify/preview`（一次 LLM 调用、**零写入**）建议「每篇 → 文件夹 + 标签」→ 逐篇审定/编辑 → `POST /api/classify/commit`（一次加锁一次写盘）。**模型永不直接写库**；**打开对话框零请求**（`onStart` 是唯一计费出口——此前「打开即分析」）；两项策略各三档（文件夹：复用或新建 / 只复用 / 只打标签；标签：全库词表 / 用户手填基础标签 / 完全交给模型），**非法策略显式报错且不发起调用**；分类空间**优先复用**既有文件夹（新建上限 5）；取材深度用户选（600/200/仅标题，无笔记篇显式标 `title_only`）；**不降级**（超时/坏 JSON 一律显式报错）；新夹由前端在 commit 前建、commit 只做存在性校验。⚠️ 对话框与文档库内所有浮层 **Portal 到 body**（`backdrop-blur` 会创建包含块把 `fixed` 锁进面板）；⚠️ **例外**：`FilterPopover` 的筛选浮层与 `ChatInput` 的 @ 浮层是 `absolute` 锚在按钮上的下拉，Portal 会失去定位基准 → 改 document 监听。**同日三轮：分批（20 篇/批，抗大 N）+ 关思考（`disable_thinking`，免推理链烧光输出预算）+ 部分批失败显式 warning。同日四轮（代码审查）：预算按单批均摊 + 新建上限按批分配 + 审定阶段失败仍可用 + 空词表兜底同源。同日五轮（91 篇实机验收）：空库文案按策略分两份——`reuse_or_new` 在空库不再被静默降级成「只打标签」（实机：新建 0 → 23）** |
 
 ### 🔗 多篇合成（2026-10-01 建立，2026-10-02 三补）
 
@@ -904,10 +914,10 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 三栏布局 + AI 浮窗 | GenPanel \| DocLibrary \| PreviewArea 可拖拽 resize；AI 对话统一浮窗（位置/尺寸记忆、内部栏拖拽调宽） |
 | ✅ | 左侧活动栏 + 面板互斥（2026-10-10） | `ui/ActivityBar.tsx`：常驻最左竖排图标列，面板项**从 `SlotRegistry.grouped().left` 派生** → 加一个面板自动多一个图标；顶栏面板按钮**全部删除**（唯一入口）。左侧两面板**默认互斥**（`layout-prefs.ts`，可在 设置→外观 切回并排）。互斥靠 `uiSlice.activeLeftPanel` **选择器字段**而非「打开甲时收起乙」——后者可被四处直接改单个 slot 的调用点绕过。顺带把 `SlotDef.component` 补成必填（加面板从「改两处」变「改一处」）。⚠️ 与文档多标签页同一批：都不是新功能，是**入口收敛** |
 | ✅ | PanelStrip | <80px 自动折叠为图标条（⚠️ 互斥模式下被关掉的面板**连窄条都不渲染**——一次只该有一个） |
-| ✅ | 快捷键 | `Ctrl+G` 切到生成面板（互斥下再按关闭且不露出文档库），`Ctrl+I` AI 浮窗，`Ctrl+\` 沉浸阅读 |
+| ✅ | 快捷键 | `Ctrl+G` 切生成面板（互斥下再按关闭且不露出文档库）/ `Ctrl+I` AI 浮窗 / `Ctrl+W` 阅读宽度 / `Ctrl+K` 文档库搜索 / `Ctrl+\` 沉浸阅读 / `Ctrl+滚轮`·`Ctrl+=`·`+`·`-`·`_`·`0` 字号 |
 | ✅ | 后端持续探活 | `lib/health.ts` 10s 轮询 `/api/health`，运行中断开顶部横幅（down「正在重试」/ crashed「请重启」分级，超 30s 判崩溃），恢复自动消失；与启动探活职责分离 |
 | ✅ | 缺 key 主动提示 | 导入图片/视频缺 dashscope（内联提示条可 X 关）、发送对话缺 LLM key（toast 首次）前置提示，localStorage 记忆 |
-| ✅ | 主题系统 | 六轴独立 — `data-theme`(明暗) × `data-accent`(26套配色) × `data-base`(13种基调) × `data-texture`(6种纹理) × `data-font`(5种字体) × 强度滑条。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（20个: 护眼/经典/粉色/雅致/国风各4）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值） |
+| ✅ | 主题系统 | 六轴独立 — `data-theme`(明暗) × `data-accent`(26套配色) × `data-base`(14种基调) × `data-texture`(6种纹理) × `data-font`(5种字体) × 强度滑条。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（20个: 护眼/经典/粉色/雅致/国风各4）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值） |
 | ✅ | GenPanel 类型门控 | 5 类型 × 5 子标签，逐类型显隐选项 |
 | ✅ | EPUB 一键解读 | 逐章解读 + 归并全书总结 + 中断续跑 + 三态 UI（进度条/继续上次/一键解读），GenPanel epub 专属入口 |
 | ✅ | 图表生成 UI | GenerateOptions 笔记格式区「图表」勾选（视频/网页/PDF/文档/文本显示；Excel/图片/电子书排除），默认不勾选 |
@@ -920,7 +930,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 沉浸阅读 | 去噪容器（`Ctrl+\` 开关 / `Esc` 退出 / **预览区工具栏「沉浸」按钮**（2026-10-10 补，活动栏在沉浸下也一并隐藏）/ `hideSlots` 藏侧栏，进入复用 Ctrl+G 的 `processingTasks` 守卫）+ 阅读版式三旋钮（行高 / 每行字数 / 段落区隔，**默认值 = 改造前现状**故零回归）。⚠️ **导出不跟随**（用户决策，已知偏差）。详见 CHANGELOG 2026-10-02 |
 | ✅ | 文档多标签页（2026-10-05） | 预览区顶部 `DocTabBar`，**VS Code 双标签模型**（单击=预览可替换 / 双击=钉住常驻，全组至多一个预览槽）；`currentDocId` 仍是唯一真相源；**延后提交**让「取消未保存弹窗」天然等于什么都没发生（模式 #62）；右键菜单（关闭/其他/全部/固定）+ 中键关闭 + 溢出横向滚动 + 激活项滚入；**不做** Ctrl+P / 最近列表 / 拖拽排序 / 持久化。⚠️ 顺带修「简略模式双击完全没反应」（`replace_all` 只匹配到详细分支） |
 | ✅ | 正文字号缩放（2026-10-05） | 补上**真实缺口**（vendor 硬写 `.markdown-body{font-size:16px}`，既有 `fontSizeScale` 对正文从未生效）；`Ctrl+滚轮` / `Ctrl+±` / `Ctrl+0`，只作用于 `.preview-area`；归入阅读版式族（`fontScale` 默认 1.0 = 零回归）；⚠️ px 非 em、版宽 `measurePxOf` 同源、滚轮走**原生** `passive:false`（模式 #63/#64）。⚠️ 键盘路径的 WebView2 宿主级加速键由 Rust 侧精准放行（`webview_keys`，模式 #65），**打包版生效与否待实测** |
-| ✅ | 产物章节卡片（2026-10-10；判据 2026-10-11 改由标记决定） | 骨架轴 `data-skeleton="card"`：**被 `card` 节修饰符标过的章节**渲染成一张卡，其余保持普通正文（**混排**，无外层容器）；8 套视觉方案（`styles/cards.css`，19 个 `--card-*` + 4 个 `--sh-*`），**默认 `gpt` = 「加重边线 + 与正文同底色」**（用户 2026-10-11 定），设置页每套带**迷你视觉小样**（`.card-preview`，与 `.md-card` 同一批变量）。⚠️ **默认 `paper` 零回归靠「选择器不匹配」而非「取值相同」**（paper 时两属性都 `removeAttribute`，cards.css 每条规则带 `[data-skeleton="card"]` 前缀）。切分器单一真相源 `markdown-scan.ts::scanHeadingLines`（围栏内 `## ` 不算标题）+ `markdown-sections.ts::splitByH2`（结果多一个 `card` 字段）；`CardSections.tsx` 每张卡各跑现有 `MarkdownPreview`；接入点只有 PreviewArea 的 notes/polished 只读态。**导出跟随**（HTML/Word/PDF，`skeleton`/`card_style` 参数，PDF 自动跟随）。⚠️ 详见 CHANGELOG 2026-10-11 |
+| ✅ | 产物章节卡片（2026-10-10；判据 2026-10-11 改由标记决定） | 骨架轴 `data-skeleton="card"`：**被 `card` 节修饰符标过的章节**渲染成一张卡，其余保持普通正文（**混排**，无外层容器）；8 套视觉方案（`styles/cards.css`，19 个 `--card-*` + 4 个 `--sh-*`），**默认 `gpt` = 「加重边线 + 与正文同底色」**（用户 2026-10-11 定），设置页每套带**迷你视觉小样**（`.card-preview`，与 `.md-card` 同一批变量）。⚠️ **默认 `paper` 零回归靠「选择器不匹配」而非「取值相同」**（paper 时两属性都 `removeAttribute`，cards.css 每条规则带 `[data-skeleton="card"]` 前缀）。切分器单一真相源 `markdown-scan.ts::scanHeadingLines`（围栏内 `## ` 不算标题）+ `markdown-sections.ts::splitByH2`（结果多一个 `card` 字段）；`CardSections.tsx` 每张卡各跑现有 `MarkdownPreview`；接入点只有 PreviewArea 的 notes/polished 只读态。**导出跟随**（HTML/Word/PDF，`skeleton`/`card_style`/`card_vars` 参数，PDF 自动跟随）。**逐维度微调（2026-10-11）**：底（基色）/ 抬升 / 边三根旋钮 —— 8 套方案**覆盖不到**的组合（抬升只有 0%/100% 两档、中间一整段为空）；`null` = 跟随方案（默认，零回归），切方案时清空；透明基色下抬升强制归零。⚠️ 详见 CHANGELOG 2026-10-11 |
 
 ### 🛡️ 安全 & 运维
 

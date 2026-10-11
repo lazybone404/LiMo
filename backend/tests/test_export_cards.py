@@ -22,7 +22,7 @@ from docx.oxml.ns import qn
 
 from app.core.errors import AppError
 from app.routers import export
-from app.routers.export import _build_selfcontained_html, _load_card_css
+from app.routers.export import _build_selfcontained_html, _load_card_css, _parse_card_vars
 from app.services.docx_export import FILL_CARD, markdown_to_docx
 
 #: ⚠️ 2026-10-11 起骨架轴由**标记**驱动：只有被 `card` 节修饰符标过的节才成卡。
@@ -227,6 +227,80 @@ def test_读不到_cards_css_时显式抛错而非静默降级(monkeypatch):
     assert ei.value.code == "EXPORT_CARD_CSS_MISSING"
     # 部署期错误，重试不会好转 —— 不可恢复
     assert ei.value.recoverable is False
+
+
+# ═══════════════════════════════════════════════════════════════
+# C. 逐维度微调（`card_vars`，2026-10-11）
+# ═══════════════════════════════════════════════════════════════
+
+#: 前端 `serializeCardVars` 会发出来的真实形态（`lib/card-prefs.ts`）。
+_LEGAL_VARS = ("--card-bg-base:var(--tk-hover);--card-lift:40%"
+               ";--card-border:2px solid var(--tk-border)")
+
+
+def test_微调_合法串解析成_root_段():
+    css = _parse_card_vars(_LEGAL_VARS)
+    assert css.startswith(":root{") and css.endswith("}")
+    assert "--card-bg-base:var(--tk-hover)" in css
+    assert "--card-lift:40%" in css
+    assert "--card-border:2px solid var(--tk-border)" in css
+
+
+def test_微调_空串给空串():
+    """没调过的用户走今天这条逐字未改的分支 —— `_build_selfcontained_html` 据此
+    **一个字节都不多**（下面还有一条逐字节等价的用例钉住）。"""
+    assert _parse_card_vars("") == ""
+    assert _parse_card_vars(";;;") == ""
+
+
+def test_微调_不认识的名字被丢弃():
+    """白名单外的变量一律不写 —— 否则 query 参数就成了「往导出页注入任意 CSS 变量」
+    的通道（`--tk-border:#000` 之类能整页改色）。"""
+    assert _parse_card_vars("--tk-border:red") == ""
+    assert _parse_card_vars("--card-radius:20px") == ""   # 圆角刻意没开成旋钮
+    # 逐项丢弃：一项非法**不影响**同串里的合法项
+    css = _parse_card_vars("--tk-border:red;--card-lift:40%")
+    assert "--tk-border" not in css and "--card-lift:40%" in css
+
+
+@pytest.mark.parametrize("evil", [
+    "--card-lift:0}",                        # 提前闭合规则块
+    "--card-lift:40%;--card-radius:20px",    # 用分号续写
+    "--card-lift:</style><script>alert(1)</script>",
+    "--card-border:1px solid red/*",         # 注释起始
+    "--card-bg-base:url(//evil.example/x)",  # 外链（`/` 与 `*` 都不在白名单里）
+])
+def test_微调_值里的逃逸字符全被拦下(evil):
+    """对照：把白名单放宽成「只要不含分号」→ 这几条至少有一条能逃出去。
+    ⚠️ 判据是**整串没有可疑字符**，不是「解析结果非空」—— 后者对逃逸串也成立。"""
+    css = _parse_card_vars(evil)
+    # 整串只该有 `:root{` 这一对花括号 —— 多一个就是「值里逃出了一个规则块」
+    assert css.count("{") <= 1 and css.count("}") <= 1, css
+    for bad in ("<", ">", "/", "*", '"', "'", "\\"):
+        assert bad not in css, f"{bad!r} 混进去了：{css}"
+
+
+def test_微调_必须排在_cards_css_之后():
+    """⚠️ 顺序即优先级：方案块 `[data-card-style="x"]` 与微调的 `:root` **特异性相同**
+    （都是 0,1,0），同特异性下后者胜。放到前面会被方案原样压住 ——
+    症状是「预览里调过的项，导出还是方案取值」，而导出成功、不报错。
+    ⚠️ 用 `--sh-0:` 定位 cards.css（投影等级层，只在那一份里出现）。"""
+    html = _build_selfcontained_html(MD, "标题", skeleton="card", card_vars="--card-lift:40%")
+    assert "--card-lift:40%" in html
+    assert html.index("--card-lift:40%") > html.index("--sh-0:"), "微调段跑到 cards.css 前面了"
+
+
+def test_微调_没传时与改造前逐字节等价():
+    """零回归：`card_vars` 默认空串 ⇒ 多出来的那个 `<style>` 根本不存在。"""
+    assert (_build_selfcontained_html(MD, "标题", skeleton="card")
+            == _build_selfcontained_html(MD, "标题", skeleton="card", card_vars=""))
+
+
+def test_微调_paper_模式下不注入():
+    """`card_vars` 只在骨架为 `card` 时消费 —— `paper` 下没有卡片，
+    注入了也是死规则，还会破坏「paper 导出逐字节不变」。"""
+    html = _build_selfcontained_html(MD, "标题", card_vars="--card-lift:40%")
+    assert "--card-lift:40%" not in html
 
 
 # ═══════════════════════════════════════════════════════════════

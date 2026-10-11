@@ -51,6 +51,12 @@ export interface ThemeSlice {
   // 返回值是字符串（引用稳定），嵌套对象会在每次 set 时换引用。
   skeleton: Skeleton
   cardStyle: CardStyle
+  // ── 卡片逐维度微调（`null` = 跟随视觉方案）──
+  // 与上面两个字段同款：扁平、可序列化、引用稳定。它们同样只被 CSS 变量消费，
+  // 镜像进 store 的唯一用途是**设置页的控件能显示当前选择**。
+  cardBg: string | null
+  cardLift: number | null
+  cardBorder: string | null
   setCard: (patch: Partial<CardPrefs>) => void
 
   // ── 语义标记的装饰开关（`limo-block`） ──
@@ -118,11 +124,23 @@ export const createThemeSlice: StateCreator<Store, [], [], ThemeSlice> = (set) =
   // 两次 getSavedCard() 是同一份纯读，不存在读出不一致的可能。
   skeleton: getSavedCard().skeleton,
   cardStyle: getSavedCard().style,
+  cardBg: getSavedCard().bg,
+  cardLift: getSavedCard().lift,
+  cardBorder: getSavedCard().border,
   setCard: (patch) => set(s => {
-    const next: CardPrefs = { skeleton: s.skeleton, style: s.cardStyle, ...patch }
+    // ⚠️ 合并的**源必须是 store 里的全部字段**而不是只挑两项：漏一个字段的表现是
+    // 「改完骨架，微调悄悄回到跟随方案」——patch 里没有的那个字段被默认值覆盖。
+    const next: CardPrefs = {
+      skeleton: s.skeleton, style: s.cardStyle,
+      bg: s.cardBg, lift: s.cardLift, border: s.cardBorder,
+      ...patch,
+    }
     saveCard(next)
     applyCard(next)
-    return { skeleton: next.skeleton, cardStyle: next.style }
+    return {
+      skeleton: next.skeleton, cardStyle: next.style,
+      cardBg: next.bg, cardLift: next.lift, cardBorder: next.border,
+    }
   }),
 
   // ⚠️ 同上：启动链另有 applyMarkers（DOM 上的 data-marker-decor 靠它写）。

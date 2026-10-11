@@ -72,9 +72,13 @@ export function TOC({ width = 160 }: { width?: number }) {
         </button>
       </div>
       <nav className="space-y-0.5">
-        {items.map(item => (
+        {items.map((item, i) => (
           <a
-            key={item.id}
+            // ⚠️ key 必须带序号：同名标题（如两个 `## 后果`）会被 headingId 算成
+            // 同一个 id，只用 id 作 key 就撞 React 的重复 key 检查（实机 2026-10-11）。
+            // id 本身仍是重复的（点第二个同名标题会滚到第一个）——那是渲染侧
+            // headingId 去重的问题，不在这一处。
+            key={`${i}-${item.id}`}
             href={`#${item.id}`}
             onClick={(e) => {
               e.preventDefault()

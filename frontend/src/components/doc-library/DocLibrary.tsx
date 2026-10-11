@@ -14,6 +14,7 @@
  * 禁用态全在 store；偏好全在 localStorage。详见 plan「三、状态归属」。
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useStore } from '../../store'
 import {
   updateTranscript, exportBatch, getErrorMessage,
@@ -27,13 +28,13 @@ import {
   AlertTriangle, ChevronRight,
 } from 'lucide-react'
 import { streamSynthesis, previewSynthesis, type SynthesisPreview, type SourceMode } from '../../api/synthesis'
-import { classifyPreview, commitClassifications, type ClassifyPreview } from '../../api/classify'
-import { ClassifyDialog, type ClassifyPlanRow } from './ClassifyDialog'
+import { classifyPreview, commitClassifications, type ClassifyOptions, type ClassifyPreview } from '../../api/classify'
+import { ClassifyDialog, MAX_NEW_FOLDERS_DEFAULT, type ClassifyPlanRow } from './ClassifyDialog'
 import type { DocEntry } from '../../store/types'
 import { BatchBar } from './BatchBar'
 import { DocRow, type DocRowActions } from './DocRow'
 import {
-  useDocQuery, countByFolder, groupDocs, type DocGroup, type SortKey,
+  useDocQuery, countByFolder, collectTagFacets, groupDocs, type DocGroup, type SortKey,
 } from './useDocQuery'
 import {
   loadDocLibraryPrefs, saveDocLibraryPrefs, DEFAULT_FILTER_AREA_HEIGHT,
@@ -275,7 +276,14 @@ export function DocLibrary() {
   // `classifyIds` 在打开那一刻**定格**：预览与写入必须基于同一批 id。
   const [classifyOpen, setClassifyOpen] = useState(false)
   const [classifyIds, setClassifyIds] = useState<string[]>([])
-  const [classifyNotesChars, setClassifyNotesChars] = useState(600)
+  /**
+   * **上一次实际发给后端的**那套策略。
+   *
+   * ⚠️ 它在审定阶段被两处消费：① 用户切取材深度时，其余三项要原样沿用（只换深度
+   * 就得重跑）；② 界面上的当前档位。**它记录的是「请求了什么」而不是「结果是什么」**
+   * ——结果那边的真相是 `preview.limits`（后端夹紧后的值），两者在越界输入下会不同。
+   */
+  const [classifyOpts, setClassifyOpts] = useState<ClassifyOptions | null>(null)
   const [classifyRunning, setClassifyRunning] = useState(false)
   const [classifyCommitting, setClassifyCommitting] = useState(false)
   const [classifyErr, setClassifyErr] = useState<string | null>(null)
@@ -294,6 +302,15 @@ export function DocLibrary() {
    * （改完立刻改本地 `docs`、不 refetch）。两边各读各的，移动那一瞬间计数就互相矛盾。
    */
   const counts = useMemo(() => countByFolder(docs, folders), [docs, folders])
+
+  /**
+   * 库里的**去重标签数** —— 分类对话框拿它决定「标签」一栏的默认档与措辞。
+   *
+   * ⚠️ 用的是**全库**而非当前筛选结果：词表是后端 `collect_tag_vocab(store)` 从整库
+   * 归并出来的，按筛选后的小集合来提示「库里有 N 个标签供复用」，数字就与模型
+   * 实际拿到的那份对不上——而这行字的全部职责就是让用户知道模型手里有什么。
+   */
+  const tagCount = useMemo(() => collectTagFacets(docs).length, [docs])
 
   /**
    * 简略模式**固定按文件夹分组**（不管「排列方式」偏好是什么）——
@@ -754,15 +771,19 @@ export function DocLibrary() {
   /**
    * 拉一次分类建议（一次 LLM 调用，零写入）。
    *
-   * ⚠️ 切「取材深度」时必须**重调**而不是前端本地重算——取材深度决定了模型看到什么，
+   * ⚠️ 切「取材深度」/换策略时必须**重调**而不是前端本地重算——那决定了模型看到什么，
    * 结果必然不同；本地重算等于把分类逻辑复刻一遍（项目铁律：成对逻辑必须同源）。
+   *
+   * ⚠️ **不清空上一次的 `preview`**（清空只在打开对话框时做）：审定阶段切档重跑失败时，
+   * 用户已经拿到的建议不该跟着一起消失——失败的是**新的那次**，与手上这份无关。
+   * 旧的留在屏幕上 + 顶部一条错误行，用户可以先用手上的、也可以再试。
    */
-  const loadClassifyPreview = useCallback((ids: string[], chars: number) => {
+  const loadClassifyPreview = useCallback((ids: string[], opts: ClassifyOptions) => {
     classifyAbortRef.current?.abort()      // 连点两档时作废前一次，只留最后一次
     const ctrl = new AbortController()
     classifyAbortRef.current = ctrl
-    setClassifyRunning(true); setClassifyErr(null); setClassifyPreviewData(null)
-    classifyPreview(ids, chars, ctrl.signal)
+    setClassifyRunning(true); setClassifyErr(null)
+    classifyPreview(ids, opts, ctrl.signal)
       .then(p => { if (!ctrl.signal.aborted) setClassifyPreviewData(p) })
       .catch(err => {
         if (ctrl.signal.aborted) return    // 自己作废的请求不该弹错误
@@ -774,25 +795,59 @@ export function DocLibrary() {
       })
   }, [])
 
+  /**
+   * 打开对话框 —— **只打开，不发请求**。
+   *
+   * ⚠️ 这一行曾经是 `loadClassifyPreview(ids, 600)`（打开即按默认档分析）。用户原话：
+   * 「我点智能分类只是点进那个界面还没开始选确定分类他就直接给我分类了」——调用本身
+   * 零写入，但**结果先于选择出现**，用户没机会决定模型看多少、要不要建文件夹。
+   * 现在计费调用的唯一出口是 `startClassify`（对话框配置阶段底部那个按钮）。
+   */
   const handleOpenClassify = useCallback(() => {
     const ids = [...selectedIds]
     if (!ids.length) return
     setClassifyIds(ids)
-    setClassifyNotesChars(600)             // 每次打开回到默认档，不继承上次
+    setClassifyOpts(null)
+    setClassifyPreviewData(null)
+    setClassifyErr(null)
     setClassifyCommitting(false)
     setClassifyOpen(true)
-    loadClassifyPreview(ids, 600)
-  }, [selectedIds, loadClassifyPreview])
+  }, [selectedIds])
 
-  /** 切取材深度 → 重跑 preview（见 `loadClassifyPreview` 的注释） */
-  const changeClassifyDepth = useCallback((chars: number) => {
-    setClassifyNotesChars(chars)
-    loadClassifyPreview(classifyIds, chars)
+  /** 用户在配置阶段按下「开始分析」——唯一一次（首次）计费调用的入口 */
+  const startClassify = useCallback((opts: ClassifyOptions) => {
+    setClassifyOpts(opts)
+    loadClassifyPreview(classifyIds, opts)
   }, [classifyIds, loadClassifyPreview])
+
+  /**
+   * 审定阶段切取材深度 → 重跑。
+   *
+   * ⚠️ 只换 `notesChars`，其余三项沿用**上一次实际请求的**那套（`classifyOpts`）。
+   * 少了这个沿用，切档就会把用户的文件夹/标签策略悄悄打回默认——而界面上那三个
+   * 选择器此时并不在场（在配置阶段），用户看不到它们变了。
+   *
+   * ⚠️ 兜底值本身**不可达**（本函数只在审定阶段被调用，那时 `handleOpenClassify` 必已
+   * 设过 `classifyOpts`），保留只为满足类型；但也**不许写字面量**——写成 `?? 5` 的话，
+   * `MAX_NEW_FOLDERS_DEFAULT` 一旦调整，这里会静默留在旧值上（用户设的滑条上限变了、
+   * 切一次深度又悄悄退回 5），且零报错。
+   */
+  const changeClassifyDepth = useCallback((chars: number) => {
+    const next: ClassifyOptions = {
+      notesChars: chars,
+      folderMode: classifyOpts?.folderMode ?? 'reuse_or_new',
+      maxNewFolders: classifyOpts?.maxNewFolders ?? MAX_NEW_FOLDERS_DEFAULT,
+      tagMode: classifyOpts?.tagMode ?? 'vocab',
+      seedTags: classifyOpts?.seedTags ?? [],
+    }
+    setClassifyOpts(next)
+    loadClassifyPreview(classifyIds, next)
+  }, [classifyIds, classifyOpts, loadClassifyPreview])
 
   const closeClassify = useCallback(() => {
     classifyAbortRef.current?.abort()
     setClassifyOpen(false)
+    setClassifyOpts(null)
     setClassifyPreviewData(null)
     setClassifyErr(null)
     setClassifyRunning(false)
@@ -862,6 +917,7 @@ export function DocLibrary() {
         addToast(`已分类 ${r.affected} 篇`)
       }
       setClassifyOpen(false)
+      setClassifyOpts(null)
       setClassifyPreviewData(null)
       clearSelection()
       refreshFolders()
@@ -1005,6 +1061,26 @@ export function DocLibrary() {
   }
 
   return (
+    /**
+     * ⚠️ **本面板内的任何浮层都必须 `createPortal(..., document.body)`**。
+     *
+     * `backdrop-blur-[20px]` 会让这个 `<aside>` 成为后代 `position: fixed` 元素的
+     * **包含块**（`backdrop-filter` 非 none 即创建，同 `transform` / `filter`）。
+     * 于是写在里面的「全屏遮罩」会被裁剪成面板大小的一小块 —— 用户原话：
+     * 「这一个界面还是卡在那一个文档栏里面，我认为这个应该像 ai 对话界面一样可以
+     * 悬浮在外面」。现有三处（智能分类 / 合成 / 删除确认）都已 Portal；
+     * **新增待办：加浮层时先看这里**。
+     *
+     * ⚠️ **例外：`absolute` 锚在按钮上的「下拉」不能 Portal**（2026-10-11 代码审查补）
+     * ——`FilterPopover` 的筛选浮层是 `absolute right-0 top-full` 挂在这个面板的按钮
+     * 上的**下拉**，Portal 到 body 就失去定位基准（会落到视口左上角）。它的修法是另一个
+     * 更小的动作：**删掉透明遮罩、改监听 `document` 的 `mousedown`**，用 `rootRef.contains`
+     * 划内外界。判据：先看这个浮层是「对话框」（整块 `fixed` → Portal）还是「下拉」
+     * （锚在元素上 → 监听 document）。
+     *
+     * 同样的坑也在 `FloatingAI` 的根 `<aside>`（它自带 `backdrop-blur-[20px]`），
+     * 对话侧的三个小对话框同因同修。
+     */
     <aside className="w-full h-full border-r border-border-light flex flex-col bg-elevated/60 backdrop-blur-[20px]">
       {/* 标题栏 / 批量工具条
           ⚠️ 显隐**派生自 `hasSelection`**，没有「批量模式」开关：勾中任意一行，工具条
@@ -1075,8 +1151,9 @@ export function DocLibrary() {
 
       {ctxMenu && <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={ctxItems} onClose={() => setCtxMenu(null)} />}
 
-      {/* 删除确认 */}
-      {deleteTargets && (
+      {/* 删除确认 —— **必须 Portal 到 body**，理由见 `<aside>` 的注释（它带
+          `backdrop-blur-[20px]`，会把 `fixed` 后代锁在面板内） */}
+      {deleteTargets && createPortal(
         <div className="fixed inset-0 z-300 flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => setDeleteTargets(null)}>
           <div className="bg-elevated rounded-2xl shadow-2xl border border-border-light p-6 max-w-[320px] w-full mx-4 animate-[fadeIn_0.15s_ease-out]" onClick={e => e.stopPropagation()}>
             <h3 className="text-[17px] font-semibold mb-2">
@@ -1097,18 +1174,21 @@ export function DocLibrary() {
                 className="px-4 py-2 bg-error text-white text-[13px] font-medium rounded-lg hover:bg-error/80 transition-colors">删除</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* 智能分类确认 —— 建议由模型给，写不写、怎么写由用户定 */}
       {classifyOpen && (
         <ClassifyDialog
           ids={classifyIds}
-          notesChars={classifyNotesChars}
+          folderCount={folders.length}
+          tagCount={tagCount}
           running={classifyRunning}
           committing={classifyCommitting}
           error={classifyErr}
           preview={classifyPreviewData}
+          onStart={startClassify}
           onDepthChange={changeClassifyDepth}
           onClose={closeClassify}
           onConfirm={runClassify}
@@ -1161,7 +1241,10 @@ export function DocLibrary() {
         // 这里算出的数字仅用于给用户一个「共几个维度」的即时反馈
         const dimsCount = parseDimensions(synthDimsText).length
         const fmtTok = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`
-        return (
+        // ⚠️ Portal 到 body：本对话框虽然写在 `<aside>`（带 `backdrop-blur-[20px]`）里，
+        //    但 `backdrop-filter` 会为该元素创建**包含块**，`fixed` 后代将相对它定位，
+        //    于是「全屏遮罩」被裁剪成面板大小的一小块。见 `<aside>` 的注释。
+        return createPortal(
           <div className="fixed inset-0 z-300 flex items-center justify-center bg-black/20 backdrop-blur-sm"
             onClick={() => { if (!running) setSynthOpen(false) }}>
             {/* ⚠️ 宽度 720px 而非 420px（max-w-105）：本对话框是 fixed 居中，
@@ -1356,7 +1439,8 @@ export function DocLibrary() {
                 </>
               )}
             </div>
-          </div>
+          </div>,
+          document.body,
         )
       })()}
     </aside>
