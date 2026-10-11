@@ -1,0 +1,26 @@
+# 行尾归一 —— 让工作区行尾在任何平台上一致（Windows / WSL / macOS）。
+#
+# ⚠️ 规则优先级：同一文件匹配多条时**最后一条匹配的胜出**，所以 `* text=auto eol=lf`
+#    必须放在最前面（它会被下面的特例覆盖）。
+
+# 文本文件：仓库里存 LF，工作区也用 LF。
+# ⚠️ `eol=lf` 单独写会**强制**该路径为文本（二进制文件会被改坏），但 `text=auto`
+#    显式在场时自动检测仍然生效（gitattributes 文档：eol「除非 text 被显式设为 auto」）。
+#    两者必须成对写，别只留 `eol=lf`。
+* text=auto eol=lf
+
+# ⚠️ 关于 shell 脚本（`start.sh` / `restart-backend.sh` / 无扩展名的 `scripts/check-all`
+#    与 `scripts/check-cli`）：它们被上面的 `eol=lf` 一并覆盖，无需单列。但值得记一笔 ——
+#    曾据「CRLF 会让 bash 因 shebang 后的 `\r` 报错」判定这是**必须修的隐患**，
+#    2026-10-11 的对照实验**推翻了它**：本仓库的 Git Bash（Cygwin bash 5.3.9）把 `\r`
+#    当空白，CRLF 化的脚本 `if [ "$rc" = 0 ]` 这类判定照常正确、退出码 0（显式
+#    `bash script` 与 `./script` 两条路径都试过）。真正需要这条规则的理由是**跨平台
+#    确定性**（Linux / macOS 的 bash 不把 `\r` 当空白，那时才会真坏）与消除 git 反复
+#    预告的「LF will be replaced by CRLF the next time Git touches it」，**不是**
+#    「脚本会坏」—— 别把这个已被证伪的理由写回注释里。
+
+# ── Windows 批处理：固定 CRLF ──
+# ⚠️ 仓库当前**没有** `.bat` / `.cmd`（`git ls-files` 实测）。写在这里是预防性的：
+#    将来新增启动器时不必再判断一次。
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
