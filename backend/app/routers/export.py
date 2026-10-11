@@ -185,6 +185,10 @@ async def export_content(
     inline: bool = Query(False, description="内联展示而非下载 —— PDF 导出窗口需渲染此页，见下"),
     version: int = Query(0, description="产物版本号；0 = 最新版。⚠️ 仅对 notes/polished "
                                         "生效——转录原文（transcript）只有一个版本，传了会被忽略"),
+    image_md: str = Query("link", description="**仅 format=md** 时生效：`link`（默认）= 图片"
+                                             "引用改写成绝对 URL（外部查看需后端在跑）；"
+                                             "`inline` = 图片以 base64 内嵌进 .md，单文件自包含"
+                                             "（快捷「下载 MD」在设置里开启「把图片一起带走」时走这条）"),
 ):
     """导出文档为 MD / HTML / Word
 
@@ -302,6 +306,20 @@ async def export_content(
     # 给渲染器看的协议元素，落到 `.md` 文件里就是读者可见的一行注释 —— 这里剥、数据层
     # 不剥（`query.py` 读路径返回原文，预览要靠它才能渲染出强调块）。
     content = _strip_blocks(content)
+    # 图片内嵌（`image_md=inline`，2026-10-11）—— 快捷「下载 MD」在设置里开了
+    # 「Markdown 导出时把图片一起带走」时走这条。动机：MD 从前只把引用改写成指向
+    # 本机后端的绝对 URL，文件一离开应用（关掉后端、转发给别人）就整篇裂图。
+    # ⚠️ 与 HTML / docx 两条分支**同一套**收集与内联函数（`_collect_images` /
+    # `_inline_images`），故「哪些引用算什么图」「越界怎么处置」两边天然同源，不产生
+    # 第二份判据（模式 #54）。⚠️ `_inline_images` 对**没找到数据的引用原样保留**，
+    # 正好由下面那四条绝对 URL 改写兜底 —— 顺序不能颠倒（先内联、后改写）。
+    if image_md == "inline":
+        refs = _find_image_refs(content)
+        if refs:
+            doc_dir = str(store.get_doc_dir(tx_id) or '')
+            imgs, name_map = _collect_images(refs, store.root, doc_dir=doc_dir)
+            if imgs:
+                content = _inline_images(content, imgs, name_map, store.root, doc_dir=doc_dir)
     base = str(request.base_url).rstrip('/')
     content = re.sub(r'\(assets/', f'({base}/api/assets/{tx_id}/', content)
     content = re.sub(r'\(/api/files/', f'({base}/api/files/', content)
@@ -343,7 +361,12 @@ def _collect_doc_products(store, tx_id: str) -> dict[str, str]:
         if md_mode == "polished": mode_label = "整理版原文"
         else: mode_label = "笔记"
         ver = f"_v{md['version']}" if md.get("version", 1) > 1 else ""
-        products[f"{title}-{mode_label}{ver}.md"] = md["content"]
+        # ⚠️ 必须剥 `limo-block` 标记 —— 与定制导出（`_build_export_zip` 的 md/plain
+        # 分支）**同源**。`get_markdowns_by_transcript` 给的是磁盘原文（含标记行），
+        # 不剥的话「一键导出所有产物」的 md 里留着 `<!-- limo-block:v1 … -->`，
+        # 而「按设置导出」的 md 是干净的 —— 同一条「预览所见 = 导出所得」的约束
+        # 在两条链上给出相反结果（2026-10-11 实跑查出）。
+        products[f"{title}-{mode_label}{ver}.md"] = _strip_blocks(md["content"])
 
     # 图片处理结果
     for pr in store.get_process_results(tx_id):
@@ -409,6 +432,7 @@ async def export_batch(data: dict, request: Request, store=Depends(get_store)):
             return Response(f"invalid id: {tid}", status_code=400)
 
     buf = io.BytesIO()
+    total_files = 0
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for tid in ids:
             products = _collect_doc_products(store, tid)
@@ -428,9 +452,23 @@ async def export_batch(data: dict, request: Request, store=Depends(get_store)):
                 if imgs:
                     content = _rewrite_image_paths(content, name_map, prefix="images/")
                 zf.writestr(f"{folder}/{fname}", content)
-            for img_name, data in imgs.items():
-                zf.writestr(f"{folder}/images/{img_name}", data)
+                total_files += 1
+            # ⚠️ 循环变量**不叫 `data`**：本函数有个同名入参（`data: dict`），
+            # 遮蔽它虽在当下无害，却是「改天有人在循环后接着用入参」的现成陷阱。
+            for img_name, img_bytes in imgs.items():
+                zf.writestr(f"{folder}/images/{img_name}", img_bytes)
+                total_files += 1
     buf.seek(0)
+
+    # ⚠️ 空结果必须**显式报错**，不能发一个空 ZIP —— 与 `/export/{id}/all`(404)
+    # 和 `/export/custom`(400) 统一。这里是 P1-11 的**第三处**，此前只修了前两处，
+    # 而 `_build_export_zip` 的注释当时就写着「已统一」，看起来像是查过了。
+    # 只 `continue` 的后果：选中一批已删除/无效的文档 → 用户下载到 22 字节空 zip，
+    # toast 却报「已导出」；**同一操作只选 1 篇**走 `/all` 反而报错
+    # —— 「1 篇报错、2 篇静默成功」正是判据不同源最典型的形态（2026-10-11 实跑查出）。
+    if total_files == 0:
+        raise AppError("EXPORT_NO_CONTENT", "无可导出内容",
+                       status_code=404, recoverable=True)
 
     date = datetime.now().strftime("%Y-%m-%d")
     fname = f"LiMo_export_{date}.zip"
@@ -1555,7 +1593,14 @@ def _build_export_zip(
                     ext = fmt
 
                     if data.image_md == "inline" and imgs:
-                        processed = _inline_images(processed, imgs, name_map, store.root)
+                        # ⚠️ `doc_dir` **必须传**（与收集侧成对，模式 #52）：少了它，
+                        # `_inline_images` 里「收集时没拿到、这里就地读盘」的兜底分支
+                        # 永不生效。当前 `imgs` 已全量收集故不暴露 —— 但那是**巧合**
+                        # 而非保证：收集侧一旦发生裁剪，内联侧就会静默保留
+                        # `assets/x.png` 引用，而 docstring 仍宣称「成对」
+                        # （2026-10-11 代码审查查出）。
+                        processed = _inline_images(processed, imgs, name_map, store.root,
+                                                   doc_dir=doc_dir)
                     elif data.image_md == "separate" and imgs:
                         processed = _rewrite_image_paths(processed, name_map, prefix="images/")
 
@@ -1589,8 +1634,11 @@ def _build_export_zip(
                     zf.writestr(f"{doc_title}/{doc_title}_{safe_tab}.{ext}", processed)
                     total_files += 1
 
-            # 图片文件
-            if data.image_md == "separate" and imgs:
+            # 图片文件（`separate` 的契约 = 正文引用 `images/x`、图片另放一个目录）
+            # ⚠️ docx **不在这个契约里**：它用原始 content（引用仍是 `assets/x`）+ imgs
+            # 字典内嵌图片，压根不读 `images/`。只勾 Word + 独立图片时若照写一份
+            # `images/`，那个目录在整个 zip 里**无人引用** —— 纯冗余（2026-10-11 审查查出）。
+            if data.image_md == "separate" and imgs and any(f != "docx" for f in data.formats):
                 _push("images", idx + 1, total_docs, f"正在写入图片...")
                 for img_name, data_bytes in imgs.items():
                     zf.writestr(f"{doc_title}/images/{img_name}", data_bytes)
@@ -1631,7 +1679,17 @@ def _pick_artifact(store, tx: dict, mds: list[dict], mode: str) -> str:
 
 
 def _resolve_tab_content(store, tx: dict, mds: list[dict], tab: str) -> str:
-    """解析单个 tab 的内容。与 export_custom 内联逻辑一致。"""
+    """解析单个 tab 的内容 —— **定制导出唯一实现**（`_build_export_zip` 的唯一调用点）。
+
+    返回空串 = 「该 tab 对此文档不适用」，调用方据此不产文件（见 `_build_export_zip`
+    的 `if content and content.strip()`）。⚠️ 这层语义是 2026-10-11 收紧的：
+    `content_tabs` 由前端**按类型分组后拍平成并集**，对某一篇文档必然夹带它没有的
+    tab —— 从前那些 tab 会被兜底成 rawText，产出名字对不上的假产物。
+
+    ⚠️ `report` / `skeleton` 是**后端认、前端从不发**的分支（`TabRegistry` 里没有这两个
+    key：`report` 从未注册、`skeleton` 已随骨架面板移除）。保留是为了不改变既有形状，
+    但它们当前**取不到**。
+    """
     content = ""
     if tab == "summary":
         content = _pick_artifact(store, tx, mds, "notes")
@@ -1667,19 +1725,17 @@ def _resolve_tab_content(store, tx: dict, mds: list[dict], tab: str) -> str:
     elif tab == "skeleton":
         content = tx.get("rawText", "")
     else:
-        results = store.get_process_results(tx.get("id", ""))
-        for r in results:
+        # 落到这里的是图片处理类 tab（extract / table / digitize / understand）。
+        # ⚠️ **查不到对应处理结果就返回空串（→ 调用方不产文件），绝不回退 rawText**：
+        # 前端发出的是**各类型的并集**（ExportPanel 界面上按类型分组勾选，发请求时
+        # 拍平成一个列表），后端却把这份并集套到每一篇上 —— 一旦回退 rawText，
+        # 一份网页文档就会凭空多出 `_提取文字.md`/`_原图.md`/`_OCR.md`，三份内容
+        # 全是同一段原文。那是**看起来成功、实则是假产物**，比少一个文件坏得多
+        # （2026-10-11 实跑查出：2 篇文档导出 9 个文件，其中 6 个是重复原文）。
+        for r in store.get_process_results(tx.get("id", "")):
             if r.get("mode") == tab:
                 content = store.get_process_result(r["id"]) or ""
                 break
-        if not content:
-            content = tx.get("rawText", "")
-            try:
-                parsed = json.loads(content)
-                if isinstance(parsed, dict) and "full_text" in parsed:
-                    content = parsed["full_text"]
-            except (json.JSONDecodeError, KeyError, TypeError):
-                pass
     return content
 
 

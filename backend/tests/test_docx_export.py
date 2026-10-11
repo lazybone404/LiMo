@@ -450,3 +450,26 @@ print("PASS: 全要素产物的 w:pPr / w:rPr 子元素顺序全部符合 ECMA-3
 
 
 print("\nAll docx export tests done")
+
+
+# ═══════════════════════════════════════════════════════════
+# pytest 适配层
+# ═══════════════════════════════════════════════════════════
+# ⚠️ 本文件是**脚本式**的：上面全部断言在**导入期**顺序执行，任一失败即
+# `AssertionError` 中断导入 —— `python tests/test_docx_export.py` 与 `pytest`
+# 两种跑法都因此变红。
+#
+# 那为什么还要有这个函数？因为 `scripts/check-all` 跑的是 `pytest tests/ -q`，
+# 而**模块级裸断言不产生任何用例**：文件被 pytest 当成普通模块、收集数为 0，
+# 于是它既不红也不计数 —— 「18 项全过」是个幻觉，实际一项都没跑
+# （2026-10-11 代码审查查出，与 2026-10-06 在另外四个文件上踩的是同一个坑）。
+#
+# 哨兵的作用：若哪天有人把上面整段包进 `def main()` 却忘了调用，
+# `_SUITE_COMPLETED` 就不会被定义 → 本函数 `NameError` → 红。
+_SUITE_COMPLETED = True
+
+
+def test_docx_export_suite():
+    """占位入口 —— 断言在模块级（导入期已执行）。函数体刻意为空。"""
+    assert _SUITE_COMPLETED
+

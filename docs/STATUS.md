@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-10-11 | **版本**: 0.5.3
+**更新**: 2026-10-11 | **版本**: 0.5.4
 
 ---
 
@@ -12,16 +12,16 @@
 | 指标 | 数量 |
 |------|------|
 | 后端 Python 文件 | 122（11 子目录：adapters 8 / agent 6 / core 29 / downloaders 1 / engines 15 / generation 17 / llm 4 / routers 20 / storage 2 / utils 6 / services 14）+ `limo_cli/` 9（CLI，独立于 `app/`） |
-| 前端 TS/TSX/CSS 文件 | 204（199 ts/tsx + 5 css；业务 140，测试 63，`setup.ts` 1） |
-| 前端测试文件 | 64（63 测试文件 + `setup.ts`；842 个测试用例，vitest 全绿） |
-| 后端测试文件 | 70（含 `conftest.py` 共享 fixture；2026-10 新增 `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify`） |
+| 前端 TS/TSX/CSS 文件 | 206（201 ts/tsx + 5 css；业务 141，测试 64，`setup.ts` 1） |
+| 前端测试文件 | 65（64 测试文件 + `setup.ts`；854 个测试用例，vitest 全绿） |
+| 后端测试文件 | 72（含 `conftest.py` 共享 fixture；2026-10 新增 `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_export_md_images` / `test_export_tab_applicability`） |
 | API 路由模块 | 19 业务模块（+ `__init__.py`，共 20 个 .py） |
 | API 端点 | 91（`@router.` 装饰器计数；含 `/api/cli/*` 七端点） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 17（docs/ 目录 .md 计数：architecture / frontend-patterns / export-pipeline / patterns / 对话协议 / AGENT-ONBOARDING / user-scenarios / plugins / prompts-inventory / BUILD / qianwen-models / ACKNOWLEDGMENTS / code-audit 1-3 + CHANGELOG / STATUS；design/ 另计） |
-| 代码行数 | 后端 app 32,610 + CLI 1,356 / 前端业务 23,416 / 前端测试 10,597（`wc -l` 累加；前端业务不含 `*.test.*` 与 `setup.ts`） |
+| 代码行数 | 后端 app 32,666 + CLI 1,356 / 前端业务 23,565 / 前端测试 10,730（`wc -l` 累加；前端业务不含 `*.test.*` 与 `setup.ts`） |
 
 ---
 
@@ -70,7 +70,7 @@
 | 文档库 | `GET/POST/PATCH/DELETE /api/folders` + `POST /api/transcripts/batch` | 单层文件夹（**纯逻辑分类，不映射磁盘目录**）+ 批量删除/打标签/移动；`GET /api/transcripts?folderId=` 三态语义（不传=不过滤 / 空串=仅未分类 / id=该文件夹）；`GET /api/search` 全文检索（内存过滤即时 + FTS5 消抖合并，命中并入主列表 + 「原文」角标 + 相关度排序键） |
 | 智能分类 | `POST /api/classify/preview` + `POST /api/classify/commit` | 选中 N 篇 → **对话框先选配置**（取材深度 / 文件夹策略 / 新建上限 / 标签策略）→ 按「开始分析」才发起一次 LLM 调用产出「每篇 → 建议文件夹 + 建议标签」（**零写入**）→ 逐篇审定 → **一次加锁一次写盘**。**打开对话框零请求**（`onStart` 是唯一计费出口）；模型**永不直接写库**；两项策略各三档（`folderMode`：复用或新建 / 只复用 / 只打标签；`tagMode`：全库词表 / 用户手填基础标签 / 完全交给模型），**非法策略显式报错 `CLASSIFY_BAD_OPTION` 且不发起调用**；分类空间**优先复用**既有文件夹（新建上限 5）；取材深度用户选（600/200/仅标题，无笔记篇显式标 `title_only`、被预算缩减标 `shortened`）；**不降级**（超时/坏 JSON 一律显式报错）。新夹由前端在 commit 前用现成 `POST /api/folders` 建，commit 只做存在性校验。⚠️ **同日三轮：分批 + 关思考**——实测 90 篇一次调用时模型把 8192 输出预算**全烧在推理链上**（正文 0 字符、`finish=length`），而报错是误导性的「JSON 不合法」→ 每 **20 篇一批**（`CLASSIFY_BATCH_SIZE`，每批独立组装 prompt，**合并后仍交给同一个 `normalize_suggestions`**，收口逻辑不翻倍）+ **关思考**（`disable_thinking` → `thinking={"type":"disabled"}`；**low 档实测同样烧光**，降档救不了；与 `reasoning_effort` 服务端**互斥**故代码用 `elif`）。全失败 → 整次显式报错；**部分批失败 → 结果照给 + 全局 warning 点名哪几批**；空输出另有 `CLASSIFY_EMPTY_OUTPUT`。双层超时（每批 120s / 整次 600s） |
 | 多篇合成 | `POST /api/synthesis/stream` | 选中 N 篇（≥2）→ 按 multi 预算组装正文 → 落库为 `sourceType="composite"` 新文档。**只建文档不生成**（综述由用户核对「## 来源文档」后自行点生成，走现成 `/generate/{id}/stream`）。Step 0 分叉：装得下 → Stuff（零 LLM 调用）/ 超出 → Map-Reduce（维度发现 + 逐篇固定维度结构化抽取）。业务失败（篇数不足 / 源已删 / 窗口不够 / 缺 Key / **非法原料模式 / 非法读者意图**）全走 SSE error 事件，HTTP 仍 200——⚠️ 入参清洗必须在 `runner` **内**（写在 `StreamingResponse` 构造之前会让 `normalize_*` 的抛错变成 HTTP 500，前端只看到「连接中断」） |
-| 导出 | 9 端点：单文件/全产物/批量/思维导图/对话单篇/对话批量/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(图片绝对URL)/Word(docx 图片内嵌+标题大纲级别)/ZIP(3模式)/思维导图(交互版+SVG)/**PDF**(复用 HTML 产物，无独立端点：Tauri 走 WebView2 PrintToPdf 直接落文件 / 浏览器走打印对话框)。**按版本导出**：`?version=N`（0=最新，查不到**显式报错不回退**），HTML/Word/PDF 三条后端路径共用。**卡片骨架跟随**（2026-10-10；2026-10-11 判据改由标记决定）：`?skeleton=card&card_style=…&card_vars=…`（默认 `paper` = 逐字节零回归），**只对带 `card` 节修饰符的 H2 切卡**（未标记的节原样穿过、与卡片混排），HTML 包 `section.md-card` / Word 包单单元格表格 / PDF 自动跟随。**逐维度微调**（2026-10-11）：`card_vars` = 「底 / 抬升 / 边」三根旋钮的变量覆盖串（前端传**解析好的 CSS 值**，后端只做字符白名单、不持有第二张「档位 → 取值」表；空串不多一字节；Word 侧不接收）。**语义标记跟随**（2026-10-10）：`?marker_decor=0`（默认开=跟随预览）——HTML 把 `limo-block` 段包成 `div.md-block` / Word 包单单元格表格+左边框 / **md 与纯文本恒剥离标记行**（那里没有视觉层）。⚠️ 内容卡片族（`table`/`code`/`image`）**块内原样穿过**（HTML 侧仍是 `<table>` / `codehilite` / `<img>`）；Word 侧 `table` 卡是**表格套表格**（能力边界）。**对话导出**（2026-10-11）：`.md` 剥标记行（单条 + 批量两处）/ `.json` **刻意保留**（可回灌格式，剥了再导入卡片结构就没了） |
+| 导出 | 9 端点：单文件/全产物/批量/思维导图/对话单篇/对话批量/自定义/SSE进度流/临时下载 | HTML(代码高亮+GFM+时间戳badge+标题锚点+KaTeX字体内联)/MD(默认图片重写为绝对 URL；`?image_md=inline` 时 base64 内嵌为单文件，2026-10-11)/Word(docx 图片内嵌+标题大纲级别)/ZIP(3模式)/思维导图(交互版+SVG)/**PDF**(复用 HTML 产物，无独立端点：Tauri 走 WebView2 PrintToPdf 直接落文件 / 浏览器走打印对话框)。**按版本导出**：`?version=N`（0=最新，查不到**显式报错不回退**），HTML/Word/PDF 三条后端路径共用。**卡片骨架跟随**（2026-10-10；2026-10-11 判据改由标记决定）：`?skeleton=card&card_style=…&card_vars=…`（默认 `paper` = 逐字节零回归），**只对带 `card` 节修饰符的 H2 切卡**（未标记的节原样穿过、与卡片混排），HTML 包 `section.md-card` / Word 包单单元格表格 / PDF 自动跟随。**逐维度微调**（2026-10-11）：`card_vars` = 「底 / 抬升 / 边」三根旋钮的变量覆盖串（前端传**解析好的 CSS 值**，后端只做字符白名单、不持有第二张「档位 → 取值」表；空串不多一字节；Word 侧不接收）。**语义标记跟随**（2026-10-10）：`?marker_decor=0`（默认开=跟随预览）——HTML 把 `limo-block` 段包成 `div.md-block` / Word 包单单元格表格+左边框 / **md 与纯文本恒剥离标记行**（那里没有视觉层）。⚠️ 内容卡片族（`table`/`code`/`image`）**块内原样穿过**（HTML 侧仍是 `<table>` / `codehilite` / `<img>`）；Word 侧 `table` 卡是**表格套表格**（能力边界）。**对话导出**（2026-10-11）：`.md` 剥标记行（单条 + 批量两处）/ `.json` **刻意保留**（可回灌格式，剥了再导入卡片结构就没了）。**同日详细导出审查**：`_resolve_tab_content` 删掉 rawText 回退（图片类 tab 查不到处理结果返回空串 → 不再凭空多出「原图」「OCR」等幻影文件）/ 批量与全产物导出空结果**显式 404**（不再产出空 zip）/ 批量导出 md 同步剥标记行 / 批量与自定义导出 md 走 `_inline_images` / 前端导出 tab 清单滤掉 `contentSource === 'none'` |
 
 ### 共享查询层（2026-10-04，无独立端点）
 
@@ -114,6 +114,7 @@
 | `scripts/check-secrets.py` | 凭据卫生自检 |
 | `scripts/migrate-secrets.py` | 明文凭据迁移 / 回滚 |
 | `scripts/check-cli` | CLI 契约门禁（16 项，自启 7419 端口后端） |
+| `scripts/check-doc-refs.py` | 文档交叉引用校验（门禁 `docs` 层；`--selftest` 9 条自证判据有区分力） |
 
 ## 前端组件
 
@@ -163,8 +164,8 @@
 | FastAPI Depends 依赖注入 | ✅ 18/19 路由用 `Depends`（未迁：generate/ingest/search；`references.py` 本就不需要） |
 | disconnect_watcher 公共工具 | ✅ 6 端点统一（新增 classify/preview），修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 19/19 路由全量完成，0 处 `HTTPException`（2026-10-11 复核） |
-| 前端测试 | ✅ vitest + 840 tests（63 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/classifyDialog/readingPrefs/readingLayout/docTabs 3 个/字号、接线与快捷键守卫 3 个/版本切换与预览同步 2 个/卡片偏好、切分器、骨架组件 3 个/标记解析、偏好、组件、导出接线 4 个/onAccent/installWarning） |
-| 后端测试 | ✅ 70 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io；版本布局 2 个：store_version_layout/store_legacy_migration；导出与网络 5 个：export_by_version/proxy_exemption/youtube_subtitle/markdown_sections/export_cards；**产物标记 3 个**：artifact_blocks/export_blocks/block_prompt；**智能分类 1 个**：classify，57 用例；2026-10-11 代码审查修 `fit_to_budget` 分批预算 + 每批新建额度 + 空词表兜底；同日五轮/六轮补策略矩阵、候补与口袋夹、回显同源、标签清洗同源，+10） |
+| 前端测试 | ✅ vitest + 854 tests（64 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/文档库 5 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/classifyDialog/readingPrefs/readingLayout/docTabs 3 个/字号、接线与快捷键守卫 3 个/版本切换与预览同步 2 个/卡片偏好、切分器、骨架组件 3 个/标记解析、偏好、组件、导出接线 4 个/导出偏好 1 个/onAccent/installWarning） |
+| 后端测试 | ✅ 72 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io；版本布局 2 个：store_version_layout/store_legacy_migration；导出与网络 7 个：export_by_version/proxy_exemption/youtube_subtitle/markdown_sections/export_cards/export_md_images/export_tab_applicability；**产物标记 3 个**：artifact_blocks/export_blocks/block_prompt；**智能分类 1 个**：classify，57 用例；2026-10-11 代码审查修 `fit_to_budget` 分批预算 + 每批新建额度 + 空词表兜底；同日五轮/六轮补策略矩阵、候补与口袋夹、回显同源、标签清洗同源，+10） |
 | CLI 契约门禁 | ✅ `scripts/check-cli` 16 项全绿（含 3 条负向对照：后端不可达 / 坏 ID / 截断显式化）；`test_query_contract.py` §8 覆盖 `/api/cli/*` 七端点 + 两条对照实验（2026-10-04） |
 | 产物自证头 | ✅ `notes`/`polished`/`process` 落盘带 `<!-- limo-meta -->` 首行（从哪来/怎么来的/是什么/可信度边界四条），`core/transcript_meta.py` 拆出 envelope 层统一编解码；历史无头产物**不判损坏**；编辑保存带回原头；思维导图等派生视图剥头（2026-10-04） |
 | 共享查询层 | ✅ `services/query.py::QueryService` 收口全部读路径（HTTP 与 CLI **同一份**实现）；顺带修掉存活四个月的 `search.py` 双 `prefix` 导致 `/api/api/search`（前端搜索一直 404 而两侧测试全绿，2026-10-04） |
@@ -247,15 +248,15 @@ backend/app/
   services/      共享查询层（query，HTTP 与 CLI 同一份读路径）+ 视频直传理解（video_understand）+ 文档直传（doc_understand，PDF file 块）+ 图表（chart_layout/ 包：geometry 几何 + layouts 算子 + engine 校验 / chart_svg 生成 / chart_renderer 渲染）+ epub 解读 + markdown_render（HTML/Word 共用渲染）+ markdown_sections（H2 切分 + `card` 节修饰符判据，导出卡片骨架与统计脚本共用）+ docx_export（Word 导出）+ 错误体系
   storage/       文件系统存储
 backend/limo_cli/  只读命令行（cli 入口 / commands 七命令 / doctor 诊断 / output 输出契约 / sources 两个传输层 / agents_md 契约文档模板 / exit_codes）
-backend/tests/     后端测试（70 个 .py，含 conftest.py 共享 fixture；test_e2e_smoke 经 collect_ignore 排除）
+backend/tests/     后端测试（72 个 .py，含 conftest.py 共享 fixture；test_e2e_smoke 经 collect_ignore 排除）
 frontend/src/
   components/    UI 组件（ui/ 布局层：SlotLayout 布局引擎 + ActivityBar 活动栏 + PanelStrip 折叠条；preview/ 下 6 个展示组件拆分 + CardSections 卡片骨架 + MarkerContent 标记渲染；ai-chat/ 对话组件 + ChatMarkerContent 对话块渲染；doc-library/ 18 文件拆分）
   store/         Zustand 状态（types.ts + 7 slices + chatStore + streamBuffers）
   api/           API 客户端（17 文件：core + 域文件 + client.ts barrel + sse/taskManager）
   hooks/         useTaskRunner 等自定义 hook
-  lib/           tabRegistry / contentSources / slotRegistry（持有 SlotDef.component）/ panelToggle（开合判据）/ layout-prefs（侧栏布局偏好）/ slotMetrics / modelCaps / markdown-scan（围栏感知标题扫描 + limo-block 行分类/半截标记判据）/ markdown-sections（H2 与任意层级切分，含 `card` 节修饰符判据）/ marker-prefs（标记装饰开关）/ markdown-markers（limo-block 解析/剥离）/ chat-block-content（追问项抽取）/ card-prefs（骨架轴偏好 + 底/抬升/边微调与 `serializeCardVars`）/ 主题模块 / health / download / print
+  lib/           tabRegistry / contentSources / slotRegistry（持有 SlotDef.component）/ panelToggle（开合判据）/ layout-prefs（侧栏布局偏好）/ slotMetrics / modelCaps / markdown-scan（围栏感知标题扫描 + limo-block 行分类/半截标记判据）/ markdown-sections（H2 与任意层级切分，含 `card` 节修饰符判据）/ marker-prefs（标记装饰开关）/ markdown-markers（limo-block 解析/剥离）/ chat-block-content（追问项抽取）/ card-prefs（骨架轴偏好 + 底/抬升/边微调与 `serializeCardVars`）/ export-prefs（快捷导出偏好，`embedImages` 默认开）/ 主题模块 / health / download / print
   styles/        卡片骨架 CSS（cards.css）+ 语义标记 CSS（blocks.css，进导出）+ 对话块 CSS（chat-blocks.css，**不进导出**），前后端共用单一真相源 —— 后端导出时从磁盘读它
-  test/          前端测试（63 测试文件 + setup.ts + fixtures 目录，含组件测试；fixtures/h2-sections.json 与 limo-blocks.json 前后端共享）
+  test/          前端测试（64 测试文件 + setup.ts + fixtures 目录，含组件测试；fixtures/h2-sections.json 与 limo-blocks.json 前后端共享）
 docs/            设计文档（13 份）
 design/          引擎实测标准 + 卡片视觉方案（cards.md）
 scripts/         门禁与工具（check-all / check-cli / check-secrets / check-artifact-structure 产物结构统计 等）

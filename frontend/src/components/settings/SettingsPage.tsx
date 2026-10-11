@@ -99,6 +99,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const setMarker = useStore(s => s.setMarker)
   const layout = useStore(s => s.layout)
   const setLayout = useStore(s => s.setLayout)
+  const exportPrefs = useStore(s => s.exportPrefs)
+  const setExportPrefs = useStore(s => s.setExportPrefs)
   const applyPreset = useStore(s => s.applyPreset)
   const [intensity, setIntensity] = useState(getSavedIntensity())
 
@@ -869,15 +871,37 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
           )}
 
           {tab === 'general' && (
-            <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-4">
-              <p className="text-[13px] text-muted">翻译目标语言及界面显示语言。</p>
-              <div>
-                <label className="text-[15px] font-medium mb-2 block">翻译目标语言</label>
-                <p className="text-[12px] text-muted mb-2">生成笔记时，「翻译」选项将内容翻译为此语言。</p>
-                <select value={targetLanguage} onChange={e => setTargetLanguage(e.target.value)}
-                  className="w-full px-3 py-2.5 bg-surface border border-border-default rounded-[10px] text-[14px] outline-none">
-                  {LANG_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                </select>
+            <div className="space-y-4">
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-4">
+                <p className="text-[13px] text-muted">翻译目标语言及界面显示语言。</p>
+                <div>
+                  <label className="text-[15px] font-medium mb-2 block">翻译目标语言</label>
+                  <p className="text-[12px] text-muted mb-2">生成笔记时，「翻译」选项将内容翻译为此语言。</p>
+                  <select value={targetLanguage} onChange={e => setTargetLanguage(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-surface border border-border-default rounded-[10px] text-[14px] outline-none">
+                    {LANG_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* 导出行为 —— 即时生效（与上面需要点「保存」的配置项不同：这一项存的是本机偏好，
+                  不走 config.yaml）。见 lib/export-prefs.ts 的文件头。 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-4">
+                <p className="text-[13px] text-muted">导出行为（改动立即生效）。</p>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input type="checkbox" checked={exportPrefs.embedImages}
+                    onChange={e => setExportPrefs({ embedImages: e.target.checked })}
+                    className="mt-1 w-4 h-4 accent-accent shrink-0" />
+                  <span>
+                    <span className="text-[15px] font-medium block">Markdown 导出时把图片一起带走</span>
+                    <span className="text-[12px] text-muted block mt-1 leading-relaxed">
+                      开启后，预览区的「下载 MD」会把图片以 base64 直接写进文件，单个 .md 就能离线查看、转发给别人也正常显示
+                      —— 代价是这一步要依赖本地后端（正常使用中它一直开着，感知不到）。
+                      关闭则只保留图片链接：文件更小、不依赖后端，但离开本应用后图片会显示不出来。
+                      本项只影响「下载 MD」，不影响「复制 Markdown」和右侧详细导出面板（那里逐次自选图片处理方式）。
+                    </span>
+                  </span>
+                </label>
               </div>
             </div>
           )}

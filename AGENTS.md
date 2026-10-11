@@ -56,7 +56,7 @@ bash scripts/check-cli          # 16 项，自启独立端口 7419 的后端
 bash scripts/check-cli 9        # 只跑第 9 项（调试用）
 
 bash scripts/check-all cli      # 同上（门禁总入口的 cli 层，不重复实现）
-bash scripts/check-all          # 全套五项（前端 + 后端 + 本项），约 40s
+bash scripts/check-all          # 全套六项（前端 + 后端 + 本项 + 文档引用），约 60s
 ```
 
 ⚠️ **它用独立端口（7419）而不是 7413**，因为第 3 项要验证「后端不可达 → exit 4」

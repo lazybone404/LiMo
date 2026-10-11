@@ -63,6 +63,7 @@ export function downloadBlob(blob: Blob, suggestedName: string): DownloadResult 
 export async function downloadFromUrl(
   url: string,
   suggestedName: string,
+  opts: { preferSuggestedName?: boolean } = {},
 ): Promise<DownloadResult> {
   try {
     const fullUrl = apiUrl(url)
@@ -72,10 +73,13 @@ export async function downloadFromUrl(
       return { ok: false, error: err.detail || `HTTP ${r.status}` }
     }
     const blob = await r.blob()
-    // 优先从 Content-Disposition 取文件名
+    // 优先从 Content-Disposition 取文件名。
+    // ⚠️ `preferSuggestedName` 是给「同一个按钮有前后端两条路径」的场景用的：调用方
+    // 必须能给同一个动作一个**恒定**的文件名，否则改个开关就发现文件名也跟着变了
+    // （后端那条命名规则是 `{标题}-{mode}.md`，不含版本后缀与日期，与前端不同源）。
     const disp = r.headers.get('Content-Disposition') || ''
     const m = disp.match(/filename\*?=(?:UTF-8'')?(.+)/)
-    const finalName = m ? decodeURIComponent(m[1]) : suggestedName
+    const finalName = !opts.preferSuggestedName && m ? decodeURIComponent(m[1]) : suggestedName
     return downloadBlob(blob, finalName)
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }

@@ -69,7 +69,14 @@ export function getTypeMeta(sourceType: string, genOptions: Record<string, strin
   const isComposite = st === 'composite'
 
   // tabs 从 TabRegistry 自动生成 — 零硬编码，新增 tab 只需注册 TabDef
-  const tabs = TabRegistry.forSourceType(st).map(t => ({ key: t.key, label: t.label }))
+  // ⚠️ `contentSource === 'none'` 的 tab 在这里滤掉（图片类的「原图」「OCR」）：
+  // 它们自己声明了**没有可导出的内容源**（`CONTENT_GETTERS.none` 恒返回 null），
+  // 而 `tabs` 唯一的消费方就是导出面板。不过滤的表现是——选项在、勾得动，
+  // 导出后却多出一个名为「原图」而内容其实是 rawText 的文件（2026-10-11 查出）。
+  // 判据仍只有一份：`TabDef.contentSource`。
+  const tabs = TabRegistry.forSourceType(st)
+    .filter(t => t.contentSource !== 'none')
+    .map(t => ({ key: t.key, label: t.label }))
 
   return {
     sourceType: st,

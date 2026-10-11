@@ -57,6 +57,7 @@ export function ExportMenu() {
   const cardLift = useStore(s => s.cardLift)
   const cardBorder = useStore(s => s.cardBorder)
   const markerDecor = useStore(s => s.markerDecor)
+  const exportPrefs = useStore(s => s.exportPrefs)
   const menuRef = useRef<HTMLDivElement>(null)
 
   const currentDoc = docs.find(d => d.id === currentDocId)
@@ -165,13 +166,45 @@ export function ExportMenu() {
 
   // ── 操作处理 ──
 
-  const handleDownloadMD = () => {
-    if (!exportContent) return
+  /**
+   * 「下载 MD」的两条路径 —— 由设置里的 `exportPrefs.embedImages` 决定（默认开）。
+   *
+   * - **开（默认）：走后端**，`GET /export/{id}?format=md&image_md=inline` —— 图片以
+   *   base64 内嵌进 `.md`，单文件自包含，离线 / 转发都正常显示。代价是**依赖本地后端**
+   *   （这正是那个开关的语义，也是它默认开着的原因：正常使用中后端一直随应用在跑）。
+   * - **关：纯前端**（改造前的老路径），直接把 store 里的正文落盘，图片只留链接。
+   *
+   * ⚠️ **两条路径必须给出同一个文件名**：后端会带回自己的 `Content-Disposition`
+   * （`{标题}-{mode}.md`，不含版本后缀与日期），与前端 `makeFileName` 不同源 —— 故这里
+   * 用 `preferSuggestedName` 强制覆盖。否则用户只是换了个开关，却会发现「连文件名都变了」。
+   *
+   * 另见 `lib/export-prefs.ts` 的文件头：该开关**只管这一个按钮**，复制与详细导出不受影响。
+   */
+  const handleDownloadMD = async () => {
+    if (!exportContent || !currentDocId) return
     setOpen(false)
+
+    if (exportPrefs.embedImages && tabDef?.htmlMode) {
+      // 思维导图 tab 的正文就是笔记，而它的 htmlMode 是 `__mindmap__` 这个哨兵（不是 mode）
+      const mode = tabDef.htmlMode === '__mindmap__' ? 'notes' : tabDef.htmlMode
+      const params = new URLSearchParams({ format: 'md', mode, image_md: 'inline' })
+      // 用户切到 v1 再导出，拿到的必须是 v1（与另三条后端路径同一个 `exportVersion`）
+      if (exportVersion > 0) params.set('version', String(exportVersion))
+      const result = await downloadFromUrl(
+        `/export/${currentDocId}?${params.toString()}`,
+        makeFileName('md', exportVersion),
+        { preferSuggestedName: true },
+      )
+      if (result.ok) addToast('Markdown 已下载（图片已内嵌），请查看下载文件夹')
+      else addToast(`下载失败: ${result.error}`, 'error')
+      return
+    }
+
     // ⚠️ **剥掉语义标记行**再落盘（用户拍板：导出的文件应当是干净正文）：`.md` 里
     // 留一行 `<!-- limo-block:v1 … -->` 只会让下游工具和读者困惑。剥的是**标记行**，
     // 块内文字一个字不少。后端三条路径（html/word/pdf）走**转换**而非剥离，
-    // 所以这个开关**只在这里**——它们是两回事。
+    // 所以这个开关**只在这里**——它们是两回事。后端 md 分支同样是剥（`_strip_blocks`），
+    // 故上面那条路径与这里在「标记怎么办」上一致。
     const result = downloadText(stripMarkers(exportContent), makeFileName('md'), 'text/markdown')
     if (result.ok) {
       addToast('Markdown 已下载，请查看下载文件夹')

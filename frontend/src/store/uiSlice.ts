@@ -9,6 +9,7 @@ import type { Store, SlotState, ActiveView, ContentWidth } from './types'
 import type { Capabilities } from '../api/client'
 import { PANEL_DEFAULT_WIDTH } from '../lib/slotMetrics'
 import { type LayoutPrefs, getSavedLayout, saveLayout } from '../lib/layout-prefs'
+import { type ExportPrefs, getSavedExport, saveExport } from '../lib/export-prefs'
 import { isPanelOpen, openPatch, nextActive } from '../lib/panelToggle'
 
 // ── AI 浮窗默认/记忆 ──
@@ -37,6 +38,12 @@ export interface UiSlice {
   // ── 侧栏布局偏好（互斥切换 / 允许并排） ──
   layout: LayoutPrefs
   setLayout: (patch: Partial<LayoutPrefs>) => void
+
+  // ── 导出行为偏好（快捷 MD 是否内嵌图片 ⇒ 是否依赖后端） ──
+  // 判据同 `layout`：它是**持久偏好**（localStorage），不是「折叠即卸载」的现场状态，
+  // 且消费方在另一个组件（设置页改、ExportMenu 读）—— 走 store 才能让改动立刻生效。
+  exportPrefs: ExportPrefs
+  setExportPrefs: (patch: Partial<ExportPrefs>) => void
   /**
    * 互斥模式下当前展开的左侧面板 id（`null` = 全收起，只剩活动栏）。并排模式忽略它。
    *
@@ -177,6 +184,17 @@ export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set, get) =>
     return { layout: next, activeLeftPanel: active }
   }),
   activeLeftPanel: INITIAL_LAYOUT.leftPanelsExclusive ? DEFAULT_LEFT_PANEL : null,
+
+  // ── 导出行为偏好 ──
+  // 与 marker/card/reading 不同，这里**没有 DOM 副作用**（那个属性不写在 `<html>` 上），
+  // 故 `store/index.ts` 的启动链不需要对应的一行 —— 少了 apply 就不会有「值进了
+  // store、DOM 没被写」那类冷启动 bug。
+  exportPrefs: getSavedExport(),
+  setExportPrefs: (patch) => set(s => {
+    const next: ExportPrefs = { ...s.exportPrefs, ...patch }
+    saveExport(next)
+    return { exportPrefs: next }
+  }),
 
   // ── 左侧面板的统一入口（活动栏 / Ctrl+G / Ctrl+K / 右键菜单共用） ──
   openPanel: (id) => set(s => {

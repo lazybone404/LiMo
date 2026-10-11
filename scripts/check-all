@@ -6,6 +6,7 @@
 #   bash scripts/check-all backend      # 后端 pytest
 #   bash scripts/check-all frontend     # 前端 tsc + lint + vitest
 #   bash scripts/check-all cli          # CLI 契约（scripts/check-cli）
+#   bash scripts/check-all docs         # 文档交叉引用（scripts/check-doc-refs.py）
 #
 # ⚠️ **分层的轴是「域」，不是「快慢」**。按快慢切会切出一层「很快但几乎不验证
 # 行为」的假安全 —— 2026-10-06 那轮审计的 25 项里，没有一项是 tsc / oxlint 能
@@ -92,6 +93,14 @@ stage_cli(){
   [ -n "$PY" ] || { echo "找不到 Python 解释器（可用 LIMO_PY=... 指定）"; return 2; }
   ( cd "$ROOT" && bash scripts/check-cli )
 }
+# ⚠️ **不加 cd**：check-doc-refs.py 用 `__file__` 自定位仓库根，在哪个目录跑都一样。
+#    docs 是**独立的一层**（域 =「我在改文档」），不并进 quick/frontend —— 那两层的
+#    语义是「前端代码没问题」，而文档引用失效与前端类型毫无关系。
+#    它约 0.2s（纯文本扫描、零依赖），是全部层里最快的。
+stage_docrefs(){
+  [ -n "$PY" ] || { echo "找不到 Python 解释器（可用 LIMO_PY=... 指定）"; return 2; }
+  "$PY" "$ROOT/scripts/check-doc-refs.py"
+}
 
 echo "LiMo 门禁 · 目标=$TARGET · 解释器=${PY:-（未找到）}"
 echo
@@ -114,16 +123,20 @@ case "$TARGET" in
   cli)
     run_stage "check-cli" stage_cli
     ;;
+  docs)
+    run_stage "check-doc-refs" stage_docrefs
+    ;;
   all)
     run_stage "typescript (tsc -b)" stage_tsc
     run_stage "oxlint"              stage_lint
     run_stage "vitest"              stage_vitest
     run_stage "pytest"              stage_pytest
     run_stage "check-cli"           stage_cli
+    run_stage "check-doc-refs"      stage_docrefs
     ;;
   *)
     echo "未知目标：$TARGET" >&2
-    echo "可用：quick | backend | frontend | cli |（留空 = 全部）" >&2
+    echo "可用：quick | backend | frontend | cli | docs |（留空 = 全部）" >&2
     exit 2
     ;;
 esac

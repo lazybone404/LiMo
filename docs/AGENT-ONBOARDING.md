@@ -429,10 +429,11 @@ rg "^\s+from app\.\S+ import" --glob '*.py' app/
 ## 7. 测试门禁
 
 ```bash
-bash scripts/check-all            # 全部五项（约 40s）—— 提交前跑这个
+bash scripts/check-all            # 全部六项（约 60s）—— 提交前跑这个
 bash scripts/check-all frontend   # 只改前端时
 bash scripts/check-all backend    # 只改后端时
 bash scripts/check-all cli        # 只改 limo_cli / QueryService 时
+bash scripts/check-all docs       # 只改文档时（「第 N 节」交叉引用，约 0.2s）
 bash scripts/check-all quick      # 约 5s，仅 tsc + lint
 ```
 
@@ -491,10 +492,11 @@ bash scripts/check-cli 9        # 只跑第 9 项（调试用）
 
 ### 7.4 改动后自测原则
 
-- **提交前** → `bash scripts/check-all`（约 40s，五项全跑）
+- **提交前** → `bash scripts/check-all`（约 60s，六项全跑）
 - 改后端路由/引擎/适配器 → `bash scripts/check-all backend` + 手动 curl 端点
 - 改前端状态 → `bash scripts/check-all frontend` + 手动跑链路
 - 改 `limo_cli/` 或 `app/routers/cli.py` 或 `services/query.py` → `bash scripts/check-all cli`
+- 改 `docs/` 或任何带编号章节的 md（尤其**重排过章节结构**）→ `bash scripts/check-all docs`：正文里的「第 N 节」是**手写**的，重排后不会自己跟着改（模式 #68）
 - 删代码（死代码清理）→ 必须跑 tsc（`check-all frontend` 含）：漏引用只有它能抓
 - 提交前 `grep` 确认零硬编码色值泄露（主题铁律）
 

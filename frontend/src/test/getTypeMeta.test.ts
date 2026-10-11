@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { getTypeMeta, isFormatVisible } from '../components/gen-panel/constants'
+import { TabRegistry } from '../lib/tabRegistry'
 
 describe('getTypeMeta — composite', () => {
   const m = getTypeMeta('composite')
@@ -181,5 +182,45 @@ describe('P0-01 — 格式门控与后端能力表同源', () => {
     expect(m.hasImages).toBe(false)  // 前提
     expect(isFormatVisible('images', m)).toBe(false)
     expect(isFormatVisible('images', { ...m, hasImages: true })).toBe(true)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-10-11 — 导出面板的 tab 清单滤掉 `contentSource === 'none'`
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 「原图」/「OCR」两个 tab 的 `contentSource` 是 `'none'`（`CONTENT_GETTERS.none`
+// 恒返回 null）—— 它们**自己声明了没有可导出的内容**。而 `TypeMeta.tabs` 唯一的
+// 消费方就是导出面板，从前不过滤 ⇒ 选项在、勾得动，导出后后端在那个 tab 上兜底成
+// `rawText`，于是 zip 里多出一个名叫「原图」、内容其实是原文的文件。
+//
+// 对照实验：去掉 `constants.ts` 的 `.filter(t => t.contentSource !== 'none')`
+// → 第一、第三条红（第二条仍绿 —— 它守的正是「别把 tab 本身删了」）。
+
+describe('2026-10-11 — 导出 tab 清单滤掉 contentSource=none', () => {
+  it('图片类型不再出现「原图」/「OCR」，四个处理 tab 一个不少', () => {
+    const keys = getTypeMeta('image').tabs.map(t => t.key)
+    expect(keys).not.toContain('original')
+    expect(keys).not.toContain('ocr')
+    expect(keys).toEqual(['extract', 'table', 'digitize', 'understand'])
+  })
+
+  it('守卫自证：这两个 tab 在 TabRegistry 里**仍然注册着**', () => {
+    // ⚠️ 滤的是**导出清单**，不是把 tab 删了 —— 真删掉的话预览区 tab 栏会静默少两项，
+    // 而上面那条照样绿。两条必须同时在场。
+    const all = TabRegistry.forSourceType('image').map(t => t.key)
+    expect(all).toContain('original')
+    expect(all).toContain('ocr')
+  })
+
+  it('过滤规则**只有** contentSource !== none（不是按类型硬编码的黑名单）', () => {
+    // 判据从 TabRegistry 派生，不手写「图片类型去掉哪几个」——
+    // 手写名单在下次加 tab 时会静默过期（模式 #54）。
+    for (const st of ['image', 'webpage', 'video', 'pdf', 'xlsx', 'composite', 'text']) {
+      const expected = TabRegistry.forSourceType(st)
+        .filter(t => t.contentSource !== 'none')
+        .map(t => t.key)
+      expect(getTypeMeta(st).tabs.map(t => t.key), `${st} 的导出 tab 清单`).toEqual(expected)
+    }
   })
 })

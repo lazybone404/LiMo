@@ -98,7 +98,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [code-audit.md](docs/code-audit.md) | 代码质量与缺陷扫描（第一轮）：**24 项带证据发现**（P0 可直接触发 4 / P1 静默失效·死代码 10 / P2 无机制·重复实现 10，每项含稳定 slug + 五段式）+ 「刻意为之」判据 + 已剔除的假阳性。⚠️ **是 `4174166` 时点的快照，不随代码更新** | 排查已知缺陷、修复前查有无现成记录 |
 | [code-audit-2.md](docs/code-audit-2.md) | 代码质量外部审查（第二轮）：**35 项发现** + **8 条纠偏**（照报告改会引入新问题）+ **6 条描述与现状不符**。⚠️ 与第一轮一样是**时点快照**（`6c2ef28` / 0.4.16），不随代码更新 | 回溯本轮修了什么、为什么这么修 |
 | [code-audit-3.md](docs/code-audit-3.md) | 代码质量自查（第三轮，**对象是刚落地的新代码**）：**10 项**（P0 启动迁移调 `_rebuild_index(save=True)` 抹掉全库标签/文件夹/来源 + P1 前端跨 mode 版本滞后致编辑覆盖用户没在看的版本 + `chars` 伪造 0 + 版本切换竞态 + 导出测试脚本式假绿 + 4 条 P2）+ **记录不修 5 条** + **对照实验 6 条** + **已知缺口 1 条**（前端 P1 无组件级行为测试）。⚠️ **本轮的新意是「写入语义从新建改为就地覆盖」放大了旧假设的危害**，故四处旧假设被重新评估。⚠️ **时点快照**（`cde70b8` 之上的工作树 / 0.5.0） | 下次自查前查清单、避免重复论证「为什么不修」 |
-| [patterns.md](docs/patterns.md) | **关键模式 67 条**（从本文件拆出）：前端 `#1`-`#8` / 后端 `#9`-`#31` / **同源与成对判据 `#32`-`#66`** / CSS 宿主环境陷阱 `#67` | **写任何模块的代码前**；查「这个坑踩过没有」 |
+| [patterns.md](docs/patterns.md) | **关键模式 68 条**（从本文件拆出）：前端 `#1`-`#8` / 后端 `#9`-`#31` / **同源与成对判据 `#32`-`#66`** / CSS 宿主环境陷阱 `#67` / **文档自身的同源漂移 `#68`** | **写任何模块的代码前**；查「这个坑踩过没有」 |
 
 > ⚠️ **README 与代码的一致性**（2026-10-11 核查并**已修**）：曾有两处滞后——① 「同模式保留最近两版」（版本归档早已重做为**全部保留不设上限**）；② 「九种」图型（prompt 层面只暴露**七种**，`hchain` / `timeline` 引导已删、改走语义块）。两处都**读起来毫无异常**，是「文档骗人」最典型的形态。**改任何用户可见能力时回头看一眼 README**。
 
@@ -171,10 +171,11 @@ python scripts/sync-version.py
 ### 门禁（提交前跑这个）
 
 ```bash
-bash scripts/check-all            # 全部五项，约 40s
+bash scripts/check-all            # 全部六项，约 40s
 bash scripts/check-all frontend   # 只改前端时（tsc + lint + vitest）
 bash scripts/check-all backend    # 只改后端时（pytest）
 bash scripts/check-all cli        # 只改 limo_cli / QueryService 时（16 项契约）
+bash scripts/check-all docs       # 只改文档时（「第 N 节」交叉引用，约 0.2s）
 bash scripts/check-all quick      # 约 5s，仅 tsc + lint
 ```
 
@@ -182,6 +183,11 @@ bash scripts/check-all quick      # 约 5s，仅 tsc + lint
 思考的边界（"我在改前端"）。⚠️ `quick` 是唯一例外——它只看得到类型 / lint 能看见的
 东西，本轮 25 项审计发现里**没有一项**是它能抓到的（全是静默失效、同源漂移、死代码，
 必须跑起来才现形），别拿它的绿当「没问题」。
+
+⚠️ `docs` 层是**文档域**（`scripts/check-doc-refs.py`，独立脚本、零依赖、约 0.2s）：
+校验每份 md 里所有「第 N 节」都指向**本文件真实存在**的编号标题。判据与已知边界见该
+脚本 docstring；它刻意**不并进** `quick` / `frontend`（那两层的语义是「前端代码没问
+题」，而文档引用失效与前端类型毫无关系）。工具本身用 `--selftest` 自证有区分力。
 
 ⚠️ 本脚本**不重新实现任何检查**——`cli` 那层就是 `bash scripts/check-cli`。编排脚本
 复刻被编排的脚本，是「同源漂移」最经典的入口（模式 #54）。失败时它会先打**关键行**
@@ -653,10 +659,23 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 ### 导出系统
 
 **两条路径设计**（详见 [export-pipeline.md](docs/export-pipeline.md)）：
-- **ExportMenu**（PreviewArea 工具栏下拉）：快捷单文件导出，内容自动跟随当前预览 tab。MD/复制走客户端 store 直读，HTML/Word/ZIP 走后端
+- **ExportMenu**（PreviewArea 工具栏下拉）：快捷单文件导出，内容自动跟随当前预览 tab。**复制**恒走客户端 store 直读；**MD 二选一**（设置项 `lib/export-prefs.ts::embedImages`，**默认开** = 走 `?format=md&image_md=inline` 让后端把图片 base64 内嵌、**依赖后端**；关 = 纯前端落盘、零依赖但图片是只在本应用内有效的根相对路径）；HTML/Word/ZIP 恒走后端
 - **ExportPanel**（顶部 Download → 侧边面板）：批量多文档导出，用户手动选 tab/格式/主题。全部走后端
 
 **四种格式**：MD / HTML / **Word(.docx)** / 纯文本。
+
+**快捷 MD 的图片**（2026-10-11）：MD 从前只有纯前端一条路（`downloadText(stripMarkers(...))`），
+正文里的 `/api/assets/{id}/x.png` 一离开应用就裂图 → 加设置项 `embedImages`（**默认开**），
+开后走 `GET /export/{id}?format=md&image_md=inline`，后端 base64 内嵌。⚠️ 后端 `export_content`
+的 `image_md` **默认 `link`**（= 改造前行为，零回归），且 md 分支复用 HTML/docx **同一套**
+`_find_image_refs` / `_collect_images` / `_inline_images`；⚠️ **先内联、后绝对 URL 改写**（缺图靠后半兜底）；
+⚠️ 走后端时前端传 `preferSuggestedName: true` —— 后端命名 `{标题}-{mode}.md` 与前端
+`makeFileName` **不同源**，不给它就是「同一个按钮、改个开关文件名也变」。
+
+**文档库 tab → 导出面板**：「原图」「OCR」的 `contentSource` 是 `'none'`（恒无内容源），
+`getTypeMeta` 的 `tabs` 把它们滤掉（该字段**唯一**消费方就是导出面板）；后端
+`_resolve_tab_content` 对不适用的 tab 返回**空串、不回退 rawText**（`content_tabs` 是前端
+**各类型并集**拍平后发来的，回退会让每篇都多出几个「名字对不上、内容是同一段原文」的假文件）。
 
 **Word 导出**（2026-09-21）：
 - 链路 `Markdown → HTML → docx`（`app/services/docx_export.py`）。**两跳是刻意的**——markdown 解析器（含 LiMo 方言：表格前空行/删除线/任务列表/时间戳 badge）只应存在一份，故已下沉为 `app/services/markdown_render.py`，HTML 与 Word 共用。抽取时用 git 旧版对比过 8 个样本的 HTML 输出，**逐字节等价**
@@ -745,7 +764,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（67 条）
+## 关键模式（68 条）
 
 > **完整内容见 [docs/patterns.md](docs/patterns.md)** —— 实现中易错的关键约束，新增代码必须遵守。
 >
@@ -753,11 +772,12 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 > 等于**日常根本不加载** —— 偏偏它才是写代码时最该守的东西（不是风格偏好，每条都带
 > 「为什么」和「怎么避开」）。拆开后按需读取，指路留在原位。
 >
-> **分三组 + 一条补录**：前端 `#1`-`#8`（状态/取消/任务）｜后端 `#9`-`#31`（并发/配置/日志/异步）
+> **分三组 + 两条补录**：前端 `#1`-`#8`（状态/取消/任务）｜后端 `#9`-`#31`（并发/配置/日志/异步）
 > ｜**同源与成对判据 `#32`-`#66`**（最容易踩：成对逻辑必须同源、判据要自证有区分力、
 > 能力存在 ≠ 该路径在用、延后提交的 pending 必须有人消费……）；`#67` 是 **CSS 宿主环境
 > 陷阱**（祖先的 `backdrop-filter` 会创建包含块、把 `fixed` 后代锁进面板 → **对话框** Portal 到 body；
 > ⚠️ `absolute` 锚在按钮上的**下拉**不能 Portal（会失去定位基准），改写 document 监听 —— 见该条末尾的例外）。
+> `#68` 把同源判据延伸到**文档自身**（手写节号是第二真相源 → 门禁 `docs` 层机器校验）。
 >
 > 本文件其余部分（架构、管道、导出、数据流）仍在下方，模式里的 `#NN` 交叉引用一律指
 > **[docs/patterns.md](docs/patterns.md)**。
@@ -894,7 +914,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| ✅ | MD 下载 | 前端 Blob 直接下载 |
+| ✅ | MD 下载 | 前端 Blob 直接下载；**可连图片一起带走**（设置项 `embedImages` **默认开** → 走 `GET /export/{id}?format=md&image_md=inline` base64 内嵌，**依赖后端**；关则纯前端零依赖。2026-10-11） |
 | ✅ | HTML 导出 | 代码高亮(Pygments)+GFM+时间戳badge+标题锚点，4 主题，完全自包含 |
 | ✅ | KaTeX 内联 | CSS/JS/字体(60个) base64 内联，零 CDN，断网可用 |
 | ✅ | MD 图片路径 | 导出时自动重写为绝对 URL，外部查看不裂图 |
@@ -904,6 +924,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | Word 导出 | Markdown→HTML→docx（共用解析器 `markdown_render.py`）；标题大纲级别/嵌套列表/表格/代码块/引用/超链接/☑任务列表/时间戳双色 badge/图片等比内嵌；公式保留 LaTeX 原文（2026-09-21） |
 | 🟡 | 导出进度反馈 | ⚠️ **后端就绪、前端未接线**（2026-10-06 P1-12 核实）：`POST /export/custom/stream`（SSE 进度）+ `GET /export/download/{temp_id}` 端点完备，打包已 `await asyncio.to_thread(_build_export_zip, ...)`（不再阻塞事件循环），但前端 `api/export.ts::streamExportProgress` **零调用者** —— `ExportPanel` 的「详细导出」走的是**同步** `POST /export/custom`。如实标注，**不写成已可用**；要用起来需先制定进度 UI |
 | ❌ | 图片预处理复用 | 导入时已 optimize_images，导出 ZIP 未复用压缩后图片 |
+| ✅ | 详细导出判据修复（2026-10-11） | 审查查出六条：跨类型 tab 并集不再产出「名字对不上、内容是同一段原文」的假文件（前端滤 `contentSource='none'` + 后端不回退 rawText）/「原图」「OCR」摘出导出清单（它们本就没有内容源）/ `/export/batch` 空结果 404（与 `/all`、`/custom` 统一）/ 一键导出剥 `limo-block`（与定制导出同源）/ `_inline_images` 补 `doc_dir`（成对守卫）/ 只勾 Word 时不再写无人引用的 `images/`。⚠️ **同一批发现三个导出测试文件在门禁里空跑**（模块级裸断言 → pytest 收集数 0），已加适配层 |
 | ✅ | PDF 导出 | 两条路径共用一份自包含 HTML——**Tauri**：Rust `export_pdf` → 屏幕外窗口 → `ICoreWebView2_7::PrintToPdf` **免对话框直接落文件**（A4 + 背景保留 + 无页眉页脚，存系统「下载」目录、同名加序号）；**浏览器**：屏幕外 iframe → 打印对话框。打印样式三处落点（`_PRINT_CSS` + Pygments 浅底 defs + limo 暗色还原）。两条链均已实测（2026-09-21） |
 | ❌ | md 公式渲染修复 | `formula_md=render` 依赖 matplotlib 而它不在依赖里 → 该选项自上线起从未生效（静默降级）；合理修法是切到 KaTeX 图片管线并删掉 matplotlib 分支 |
 

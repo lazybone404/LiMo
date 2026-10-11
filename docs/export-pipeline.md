@@ -13,7 +13,8 @@
 用户入口                        前端组件                    后端端点
 ────────                        ────────                    ────────
 PreviewArea 工具栏             ExportMenu（下拉菜单）        GET /export/{id}
-  ├─ 下载 MD           →      客户端直读 store              （无后端调用）
+  ├─ 下载 MD（不嵌图） →      客户端直读 store              （无后端调用）
+  ├─ 下载 MD（嵌图）   →      fetch → downloadBlob    →     GET /export/{id}?format=md&image_md=inline
   ├─ 导出 HTML         →      downloadFromUrl()      →     GET /export/{id}?format=html&mode=...&version=N
   ├─ 导出 Word         →      downloadFromUrl()      →     GET /export/{id}?format=docx&mode=...&version=N
   ├─ 全部产物 ZIP      →      downloadFromUrl()      →     GET /export/{id}/all
@@ -34,6 +35,16 @@ AI 对话右键菜单                 ChatCore                     GET /export/c
 > **9 个导出端点**：`GET /export/{id}`（单文件）、`GET /export/{id}/all`（全产物）、`POST /export/batch`（多文档）、`GET /export/{id}/mindmap`、`GET /export/conversation/{id}`、`POST /export/conversations/batch`、`POST /export/custom`、`POST /export/custom/stream`（SSE 进度）、`GET /export/download/{temp_id}`。
 >
 > ⚠️ **`/export/custom/stream` 与 `/export/download/{temp_id}` 当前无前端调用者**（2026-10-06 P1-12 核实：`api/export.ts::streamExportProgress` 零 import）。端点本身完备（打包已 `to_thread` 不阻塞事件循环），但 `ExportPanel` 的「详细导出」走的是**同步** `POST /export/custom` —— 上表那条「进度反馈」是**能力**不是**现状**。
+
+### 快捷 MD 的图片内嵌（2026-10-11）
+
+「下载 MD」**默认把图片一起 base64 内嵌**（单文件自包含，离线/分享都能看），设置 → 通用可关。
+
+- 判据在 [lib/export-prefs.ts](../frontend/src/lib/export-prefs.ts) 的 `embedImages`（默认 `true`）；`ExportMenu.tsx` 读它决定走客户端直读还是后端那条路。
+- **为什么默认走后端**：正文里是 `assets/xxx.png` 这种文档目录内的相对引用，**纯前端拿不到图片字节** —— 内嵌必须后端读盘。关掉它 = **不依赖后端**（纯前端 Blob 下载），代价是图片保持绝对 URL、只在本机应用内有效，与改造前的行为逐字相同。
+- 后端 `GET /export/{id}` 加 `image_md: str = Query("link")`：**只有 `inline` 才动图片**，`link`（默认）逐字节零回归 —— 详细导出面板的 `image_md` 是另一套（`separate`/`inline`/`none`），两者互不影响。
+- **内嵌与「重写为绝对 URL」互斥**：内嵌后引用是 data URI，不再重写。查不到的图与**越界路径**（`../`）退回绝对 URL，不静默丢引用（`_inline_images` 的 `relative_to` 守卫）。
+- **只影响 `format=md`**：HTML 导出早有自己的一套 base64 内联，两条路互不干扰。
 
 ### 按版本导出（2026-10-10）
 
@@ -276,7 +287,7 @@ export const CONTENT_GETTERS: Record<ContentSource, (ctx) => string | null> = {
 ```
 
 **字段说明**：
-- `contentSource`：决定内容从哪个字段读（`contentKey` 的替代，getter 化）。`'none'` = 无内容可导出（原图/OCR tab）
+- `contentSource`：决定内容从哪个字段读（`contentKey` 的替代，getter 化）。`'none'` = 无内容可导出（原图/OCR tab）—— ⚠️ **导出面板的 tab 清单据此滤掉它们**（`gen-panel/constants.ts::getTypeMeta`，2026-10-11）：判据仍只有这一个字段，前端不另存黑名单
 - `htmlMode`：传给后端 `GET /export/{id}?mode=` 的值；`'__mindmap__'` = 走 `/export/{id}/mindmap` 专用端点；空字符串 = HTML 导出不可用
 - `exportSuffix` / `exportLabel`：文件名后缀 / 人类可读标签
 - `visible` 回调：处理动态显隐（如 mindmap 需已有 notes）
@@ -290,7 +301,7 @@ export const CONTENT_GETTERS: Record<ContentSource, (ctx) => string | null> = {
 | 无笔记（summary tab） | 按钮 disabled，tooltip 显示"尚未生成笔记" | 勾选 summary tab → 后端查不到内容 → 跳过，不写入 ZIP |
 | 无整理版（polished tab） | 按钮 disabled | 同上 |
 | 图片未处理（extract 等） | 按钮 disabled | 同上 |
-| 图片 original tab | 按钮 disabled（无文本内容可导出） | tab 可选但后端无内容 → 跳过 |
+| 图片 original / ocr tab | 按钮 disabled（无文本内容可导出） | **不出现**在勾选项里（前端按 `contentSource === 'none'` 过滤，2026-10-11；此前是「可选但后端跳过」——选项在、勾得动，导出后多出一个名为「原图」而内容是 rawText 的幻影文件） |
 
 **后端无内容时**：`export_custom` 检查 `if content and content.strip():` 后才写入 ZIP。`export_content` 返回 404。
 
@@ -520,15 +531,26 @@ mindmap tab 始终输出为完整 `.html` 文件（跳过 markdown→HTML 转换
 
 `export_custom`（SSE 流）与 `_build_export_zip`（打包）**各有一份 `for fmt in formats` 循环**。新增格式时两处都要加分支 —— 漏一处则 ZIP 导出静默少文件（不报错，只是文件不出现）。Word 分支用的是**原始 `content` 而非 `processed`**：`image_md=inline` 已把图片换成 base64 data URI，此时再走图片收集会得到空字典。
 
+### 判据修复（2026-10-11 审查）
+
+一轮针对三条入口（`POST /export/custom`、`POST /export/batch`、`GET /export/{id}/all`）的审查，六条：
+
+1. **`_resolve_tab_content` 不再回退 `rawText`**（`export.py`）—— 图片处理类 tab（`extract` / `table` / `digitize` / `understand`）在原文档没有对应处理结果时返回**空串**（调用方据此不产文件）。成因：前端发来的 `content_tabs` 是**各类型的并集**（见 §2.6），一旦回退 `rawText`，一份网页文档会凭空多出「原图」「OCR」「提取文字」三份内容全同的幻影文件。
+2. **空结果显式 404**（`EXPORT_NO_CONTENT`）—— `export_batch` 与 `_build_export_zip` 在一个文件都没产出时不再返回**空 zip**（用户拿到一个 0 字节的包，看起来像成功）。
+3. **批量导出 md 剥标记行** —— `_collect_doc_products` 与 `_build_export_zip` 的 md 分支走 `strip_blocks`，与单文件导出同源（此前只有单文件那条路剥）。
+4. **批量 md 走 `_inline_images`** —— `_build_export_zip` 内嵌时补传 `doc_dir`，使 `assets/xxx` 相对路径也能解析（此前只有单文件导出能解）。
+5. **`separate` 模式的落空目录** —— 收集图片的条件补 `any(f != "docx" for f in formats)`：所选格式**只有 docx** 时不再单独建 `images/`（docx 自带图片内嵌，那份图没人引用）。
+6. **前端导出 tab 清单滤掉 `contentSource === 'none'`**（`gen-panel/constants.ts`）—— 「原图」「OCR」两个 tab 自己声明了没有可导出的内容源，不过滤则选项在、勾得动，导出后多出幻影文件。**与第 1 条是同一件事的两端**：判据仍只有 `TabDef.contentSource` 一份。
+
 ---
 
 ## 10. MD 导出
 
 端点：`GET /export/{id}?format=md&mode=&version=`（`version` 0/省略 = 最新版，见「按版本导出」）
 
-直接返回原始 Markdown 文本，不做任何转换。图片路径保持 `/api/files/...` 原样。
+直接返回原始 Markdown 文本（`image_md=link`，默认），图片路径重写为 `/api/files/...` 绝对 URL。
 
-**局限**：离线/分享场景下图片不可用。HTML 导出通过 base64 内联解决了此问题。
+`image_md=inline`（2026-10-11 起为快捷「下载 MD」的默认，见「快捷 MD 的图片内嵌」）时把图片 base64 内嵌、引用改成 data URI，单文件自包含 —— 离线/分享场景也能看。此时不再重写为绝对 URL（两者互斥）；查不到的图与越界路径退回绝对 URL，不静默丢引用。
 
 ---
 
