@@ -172,7 +172,9 @@ async def search_web(query: str, max_results: int = 5) -> str:
     cfg = _get_config()
     proxy = cfg.get("fetch", {}).get("proxy", "")
     sc = cfg.get("agent_tools", {}).get("search", {})
-    provider = sc.get("provider", "searxng")
+    # 兜底默认（load_config 深合并保证键恒存在，正常走不到这里）；
+    # 取值须与 config.py::DEFAULT_CONFIG 的同名字段一致，否则就是第二个真相源
+    provider = sc.get("provider", "duckduckgo")
 
     if provider == "tavily":
         api_key = sc.get("tavily_api_key", "")

@@ -912,7 +912,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
             <div className="space-y-4">
               <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
                 <p className="text-[13px] text-muted">
-                  AI 对话和报告审核时使用以下方案搜索网络和抓取网页。DuckDuckGo 免费零配置，SearXNG 需本地部署，Tavily 需 API Key 但质量最高。
+                  搜索网络用于 AI 对话和生成笔记时的联网检索，网页抓取仅用于 AI 对话。DuckDuckGo 免费零配置，SearXNG 需本地部署，Tavily 需 API Key 但质量最高。
                 </p>
 
                 {/* 搜索方案 */}
