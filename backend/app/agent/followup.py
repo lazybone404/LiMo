@@ -51,6 +51,14 @@ MAX_QUESTIONS = 6
 #: `extract_followup_items` 的纪律说明）。
 MIN_QUESTION_CHARS = 4
 
+#: 追问生成失败时给用户看的那句话。
+#:
+#: ⚠️ **抽成常量而不是在两处各写字面量**：这条文案是**承诺的落点**（用户开了开关，
+#: 看不到卡时必须知道是「失败了」而不是「这轮没有」）。两处措辞分叉的后果是同一个
+#: 功能给出两种失败说法，且两边看起来都正常（模式 #54 在**文案**上的形态）。
+#: 消费者是在同一份 `followup_payload()`（对话 SSE 与「换一批」端点共用）。
+FOLLOWUP_FAILED_MSG = "追问建议生成失败"
+
 #: 追问条款 —— **两侧（对话 / 产物）共用的唯一一份**。
 #:
 #: ⚠️ **必须是一份常量、由两侧 prompt 拼接**：条款里「回答」这个词在产物侧指的是
@@ -314,3 +322,21 @@ async def generate_artifact_followups(llm: LLMService, title: str, content: str,
     """
     return await _run_followup_llm(
         llm, build_artifact_followup_prompt(title, content), cancel_event=cancel_event)
+
+
+def followup_payload(questions: list[str] | None) -> dict[str, object]:
+    """一批追问的**对外载荷** —— SSE 的 `followup` 事件与「换一批」端点**共用这一份**。
+
+    ⚠️ 形状里 `type` 恒在：SSE 侧它是事件判别字段（前端 `parseSSEStream` 按它分派），
+    HTTP 侧是冗余但无害的多余键。**不为此拆成两个函数** —— 拆开的直接后果是
+    「什么算失败、失败给哪句话」出现第二处判据，而两个消费点渲染的是**同一张卡**
+    （模式 #54）。
+
+    ⚠️ `error` 的判据是 `not questions`（`None` 与空列表同为失败）：`_run_followup_llm`
+    永不返回空列表，但真返回了也必须报失败 —— 「开关开了却没有卡」正是要显式化的现象。
+    """
+    return {
+        "type": "followup",
+        "questions": questions or [],
+        "error": None if questions else FOLLOWUP_FAILED_MSG,
+    }

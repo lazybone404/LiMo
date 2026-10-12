@@ -60,6 +60,16 @@ const CHAT_CSS = read('src/styles/chat-blocks.css')
 const FORMATS_MD = read('../backend/app/agent/prompts/formats.md')
 const PROMPTS_PY = py('../backend/app/agent/prompts/__init__.py')
 
+/**
+ * 对话侧类型清单 —— **从共享 fixture 派生，不在这里再抄一份**。
+ *
+ * ⚠️ 抄一份的话，「加一个类型」这条链上就多了一个**没人守着的副本**：fixture 改了、
+ * 渲染器写了、prompt 忘了 —— 而这里的硬编码列表还是老的四项，于是那两个遍历断言
+ * 全都绿。派生之后，`chatTypes` 就是「这七种都必须有渲染分支、都必须有 prompt 示例」
+ * 的唯一真相源（它自己另有跨语言守卫：两侧常量 == 它）。
+ */
+const CHAT_TYPES: string[] = JSON.parse(read('src/test/fixtures/limo-blocks.json')).meta.chatTypes
+
 describe('跨语言同源 — 类型集合', () => {
   it('两侧都拆成「产物侧 / 对话侧 / 全集」三个集合', () => {
     for (const src of [SCAN_TS, BLOCKS_PY]) {
@@ -69,21 +79,26 @@ describe('跨语言同源 — 类型集合', () => {
     }
   })
 
-  it('两个新类型两侧都登记', () => {
+  it('每个对话类型两侧常量表都登记', () => {
+    // ⚠️ 只验「文件里出现过这个词」是不够的（注释里也会出现），但它守的是另一半：
+    // 「TS 加了、Python 没加」时后端 `is_known_type` 会认不出该类型 —— 症状是
+    // 导出/落盘一侧把它当**未知类型**处理，而渲染那侧一切正常。
     for (const src of [SCAN_TS, BLOCKS_PY]) {
-      expect(src).toContain('card-group')
-      expect(src).toContain('follow-up')
+      for (const t of CHAT_TYPES) expect(src).toContain(t)
     }
   })
 })
 
 describe('对话侧渲染 — 类型分派必须真的分派', () => {
-  it('`ChatMarkerContent` 对两个类型各有一支', () => {
+  it('`ChatMarkerContent` 对**每一个**对话类型都有一支', () => {
     // ⚠️ 断言**整条判据表达式**：只搜 `'card-group'` 的话，常量表、注释、测试用例
     // 都含这个词，渲染分支被删掉也照样绿 —— 而症状正是「模型写了标记，
     // 用户看到一行被剥掉的注释、正文里什么都没有」。
-    expect(CHAT_TSX).toContain("seg.type === 'card-group'")
-    expect(CHAT_TSX).toContain("seg.type === 'follow-up'")
+    // ⚠️ 2026-10-12 起七种（原四种 + `caution` / `how-to` / `quote`）。清单从 fixture
+    // 派生（见 `CHAT_TYPES`）—— 这正是「新加的那三种」最容易被漏接线的地方。
+    for (const t of CHAT_TYPES) {
+      expect(CHAT_TSX).toContain(`seg.type === '${t}'`)
+    }
   })
 
   it('按 `###` 切卡，且**用的就是共用的层级化切分器**（不另写一份扫描）', () => {
@@ -119,6 +134,14 @@ describe('MessageItem — 两个消费点', () => {
     // 只有 `suppressTrailingPartialMarker` 认它，而它只在 `streaming` 为真时调用。
     expect(MESSAGE_ITEM).toMatch(/streaming=\{[^}]*streaming[^}]*\}/)
   })
+
+  it('⚠️ 「换一批」接上了 `onRefresh`（漏了 = 按钮看得见、点了一点反应没有）', () => {
+    // ⚠️ 判据落在**组件实例上**（`onRefresh={…}`）而不是「文件里出现过
+    // `refreshFollowUps`」：取 action 那一行（`useChatStore(st => st.refreshFollowUps)`）
+    // 本身就在同文件里，只搜名字的话把 `onRefresh` 整个删掉照样绿。
+    expect(MESSAGE_ITEM).toContain('onRefresh=')
+    expect(MESSAGE_ITEM).toContain('refreshFollowUps')
+  })
 })
 
 describe('对话样式 — 接线与铁律', () => {
@@ -127,11 +150,29 @@ describe('对话样式 — 接线与铁律', () => {
     expect(() => read('src/styles/chat-blocks.css')).not.toThrow()
   })
 
-  it('零硬编码色值（项目铁律：全部走 `--tk-*`）', () => {
+  it('零硬编码色值（项目铁律：全部走 `--tk-*` / `--card-*`）', () => {
     // 六轴主题下裸 hex 会「换个基调就露出原色」。尺寸也一律用 em（跟随对话字号档）。
+    // ⚠️ 令牌集自 2026-10-12 起**有两族**：`--tk-*`（六轴主题）与 `--card-*`（卡片视觉
+    // 方案，与产物侧骨架轴同源）。断言写成「只许 `--tk-`」会在视觉跟随那次改动上误红 ——
+    // 而消费 `--card-*` 正是它该放行的事。
     expect(CHAT_CSS).not.toMatch(/#[0-9a-fA-F]{3,8}\b/)
     expect(CHAT_CSS).not.toMatch(/\brgba?\(/)
-    expect(CHAT_CSS).toContain('var(--tk-')
+    expect(CHAT_CSS).toMatch(/var\(--(tk|card)-/)
+  })
+
+  it('容器级属性跟随卡片方案，尺寸级**刻意不跟随**', () => {
+    // ⚠️ **跟随的机制性前提**（没有它这套写法就是错的）：`--card-*` 的初值写在
+    // `cards.css` 的**裸 `:root`**，故 `paper`（默认骨架）下**也有值**。若哪天初值
+    // 被挪进 `[data-skeleton="card"]`，下面的 `var()` 会全部落空 —— 卡片退化成
+    // 透明无框，而**其余断言全部照样绿**（`var()` 取不到只是无效值，不抛错）。
+    // 那条前提由 `cards.css` 自己的注释承担，这里钉的是「这个文件确实在消费它」。
+    for (const v of ['--card-border', '--card-radius', '--card-bg', '--card-shadow']) {
+      expect(CHAT_CSS).toContain(`var(${v})`)
+    }
+    // ⚠️ 尺寸级不跟随：`--card-padding` / `--card-gap` 是给**宽栏长文**的 px 值
+    // （22px 26px），浮窗里会把卡片撑爆；对话的间距一律 em（跟对话字号档一起缩）。
+    expect(CHAT_CSS).not.toContain('var(--card-padding)')
+    expect(CHAT_CSS).not.toContain('var(--card-gap)')
   })
 
   it('这份 CSS **不进导出**（对话不导出，后端只内联 `blocks.css`）', () => {
@@ -160,9 +201,12 @@ describe('对话 MD 导出 — 两个函数都要剥', () => {
 })
 
 describe('prompt — 写了就要拼进去', () => {
-  it('`formats.md` 含两个类型的可复制示例', () => {
-    expect(FORMATS_MD).toContain('<!-- limo-block:v1 type="card-group" -->')
-    expect(FORMATS_MD).toContain('<!-- limo-block:v1 type="follow-up" -->')
+  it('`formats.md` 含**每一个**对话类型的可复制示例', () => {
+    // ⚠️ 逐类型断言、而不是抽一两个代表：`formats.md` 漏掉哪一种**只影响那一种**，
+    // 而它的失效形态是「模型从不产出该类型」—— 零报错，看起来只是「这轮没用上」。
+    for (const t of CHAT_TYPES) {
+      expect(FORMATS_MD).toContain(`<!-- limo-block:v1 type="${t}" -->`)
+    }
     expect(FORMATS_MD).toContain('<!-- /limo-block -->')
   })
 

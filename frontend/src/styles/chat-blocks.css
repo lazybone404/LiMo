@@ -1,6 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════
-   对话卡片块 —— `limo-block` 语义标记在**对话侧**的两个形态
-   （`type="card-group"` 卡片组 / `type="follow-up"` 追问 chips）
+   对话侧渲染 —— `limo-block` 语义块（七种）+ 对话正文的元素样式
    ══════════════════════════════════════════════════════════════════════
 
    ⚠️ **与 `blocks.css` 分家的理由**：那个管**产物**正文里的强调块，选择器是
@@ -14,9 +13,44 @@
    故这里**不需要**照顾「导出侧拿不到 `--tk-*`」的场景，可以自由引用令牌。
    反过来，**不要**把这里的规则挪进 `blocks.css` —— 那会让导出无缘无故带上对话样式。
 
-   ⚠️ **零硬编码色值**（项目铁律）：全部引用 `--tk-*`。
-   ⚠️ **尺寸用 em 不用 px**：对话有 sm/md/lg 三档字号（`ai-chat/scale.ts`），
-   外层 `.markdown-chat` 的字号由档位决定，这里跟着缩才不会被大档位撑爆。
+   ⚠️ **七种块**（2026-10-12：原四种 + `caution` / `how-to` / `quote`）分两档：
+   卡片组（`card-group`，网格）与追问 chips（`follow-up`）各自成组；其余五种
+   （`info` / `digest` / `caution` / `how-to` / `quote`）共用 `.chat-block` 外壳，
+   **形态差异只有图标与左边框色** —— 它们区别在「这是什么性质」，由这两样各承担
+   一半即可；给五种各设计一套布局，读者反而要重新学一遍。
+
+   ── 视觉跟随 `--card-*`（2026-10-12 起）────────────────────────────────
+
+   ⚠️ **与产物侧章节卡片同一套变量**：用户在设置里选的「卡片视觉方案」（8 套）
+   同时决定两边长什么样。跟随是**零 JS 改动**的 —— `cards.css` 把初值写在**裸
+   `:root`**（值 = 默认的 gpt 风），且 `paper`（默认骨架）时 `applyCard()` 只
+   `removeAttribute` 两个 data 属性、**不删变量**；`CARD_VARS` 那份「受控变量清单」
+   也只覆盖 `--card-bg-base` / `--card-lift` / `--card-border` 三项，
+   `--card-bg` / `--card-radius` / `--card-shadow` 根本不在清单里。
+   ⇒ **本文件不需要任何中间变量层、不需要知道当前是哪套方案。**
+
+   ⚠️ **只跟随「容器级」属性，尺寸级保持 em**：
+
+     border / border-radius / background / box-shadow  →  var(--card-*)
+     padding / gap / margin                            →  em（写死）
+
+   理由是 `--card-padding`（22px 26px，paper 方案 30px 36px）与 `--card-gap` 是给
+   **宽栏长文**设计的 px 值；对话有三档字号（`ai-chat/scale.ts`）且浮窗很窄，
+   套进去会在大档位下把卡片撑爆。跟随的是「这张卡什么质感」，不是「它多大」。
+
+   ⚠️ **`--card-border` 可能是 `none`**（`apple` / `ink` 两套方案）—— 它们的设计就是
+   「靠投影分层、不画框」。故 `border-left-width: 3px` 这类**硬写宽度**只能在
+   `.chat-*` 的语义变体里出现（那时左框由 `border-left-color` 单独着色）；
+   一旦某套方案的 `border` 是 `none`，左框的 style 也是 none、整条边框不显示 ——
+   **这正是跟随该有的结果**，语义差异此时**仍由图标色承担**（见 `.chat-block-icon`）。
+
+   ⚠️ **零硬编码色值**（项目铁律）：全部引用 `--tk-*` / `--md-*` / `--card-*`。
+   ⚠️ **尺寸用 em 不用 px**：外层 `.markdown-chat` 的字号由档位决定，这里跟着缩
+   才不会被大档位撑爆。
+   ⚠️ **`.markdown-chat` 基础元素（表格 / 代码 / 引用 / 列表）2026-10-12 从
+   `index.css` 搬到这里**：它们与上面的语义块作用在**同一批节点**上（块内就是普通
+   Markdown），分住两个文件时「给块内的表格加样式」得先想清楚两边谁压谁。
+   搬家的收益是**同一个文件的规则可以按顺序读**，代价是 `index.css` 少一段。
    ────────────────────────────────────────────────────────────────────── */
 
 /* ── 卡片组 ──────────────────────────────────────────────────────────── */
@@ -40,11 +74,14 @@
 }
 
 .chat-card {
+  /* ⚠️ 复制按钮的定位宿主（`.chat-card-copy` 是 absolute） */
+  position: relative;
   min-width: 0; /* ⚠️ 必须：否则卡内的长 URL / 代码把 grid 单元撑破，横向溢出 */
   padding: 0.5em 0.7em;
-  border: 1px solid var(--tk-border-light);
-  border-radius: 10px;
-  background: var(--tk-elevated);
+  border: var(--card-border);
+  border-radius: var(--card-radius);
+  background: var(--card-bg);
+  box-shadow: var(--card-shadow);
 }
 
 /* 卡内标题收一档 —— 正文的 h3 是给长文用的，卡片里显得过大且吃宽度 */
@@ -63,10 +100,55 @@
   margin-bottom: 0;
 }
 
+/* ── 复制按钮（`ChatCopyButton`，两处宿主共用）────────────────────────
+   ⚠️ **常驻、不 hover 浮现**：卡里是一段完整可搬走的内容，而 hover 浮现意味着
+   它在**触摸屏上永不出现**。压住存在感的办法是「低对比 + 半透明」而不是隐藏。
+   ⚠️ 定位落在**宿主右侧空白**（`padding` 0.7em，按钮自身 ~1.4em —— 略微压住正文
+   末尾的字，故用低透明度；给容器补 `padding-right` 会牺牲每张卡的可读宽度，
+   不划算）。 */
+.chat-card-copy,
+.chat-block-copy {
+  position: absolute;
+  top: 0.3em;
+  right: 0.3em;
+  display: flex;
+  padding: 0.15em;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--tk-dimmed);
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity 0.15s, color 0.15s, background-color 0.15s;
+}
+
+.chat-card:hover .chat-card-copy,
+.chat-block:hover .chat-block-copy,
+.chat-card-copy:focus-visible,
+.chat-block-copy:focus-visible {
+  opacity: 1;
+}
+
+.chat-card-copy:hover,
+.chat-block-copy:hover {
+  background: var(--tk-hover);
+  color: var(--tk-foreground);
+}
+
 /* ── 追问建议 ────────────────────────────────────────────────────────── */
 
 .chat-followup {
   margin: 0.6em 0 0.2em;
+}
+
+/* ⚠️ 标签行是 flex 容器（2026-10-12）：折叠开关靠左、「换一批」靠右各占一端。
+   两个按钮的 `margin-bottom` 统一提到这一层 —— 各写一份会让行高取决于谁更高。 */
+.chat-followup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+  margin-bottom: 0.35em;
 }
 
 /* ⚠️ 这是一个 `<button>`（折叠开关），不是 `<div>`（2026-10-11 起）——
@@ -80,7 +162,6 @@
   align-items: center;
   gap: 0.2em;
   width: fit-content;
-  margin-bottom: 0.35em;
   padding: 0;
   border: 0;
   background: transparent;
@@ -93,6 +174,37 @@
 
 .chat-followup-label:hover {
   color: var(--tk-foreground);
+}
+
+/* 「换一批」——与折叠标签同级的次级按钮（同款 UA 复位串，理由见上）。
+   ⚠️ 用 `--tk-hover` 底而不是 `--tk-accent` 底：它是**次级**动作，
+   整行里最该被看见的仍是那几个问题本身。 */
+.chat-followup-refresh {
+  display: flex;
+  align-items: center;
+  gap: 0.2em;
+  padding: 0.1em 0.35em;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.85em;
+  white-space: nowrap;
+  color: var(--tk-muted);
+  cursor: pointer;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.chat-followup-refresh:hover:not(:disabled) {
+  background: var(--tk-hover);
+  color: var(--tk-accent);
+}
+
+/* 流式中 / 正在换一批：禁用而不是隐藏（隐藏会让标签行宽度来回跳动，
+   而「正在换」本身需要被看见，否则重试像没反应） */
+.chat-followup-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ⚠️ **纵向单列、不做 flex-wrap**：追问通常是一句完整的话，横向并排会折成
@@ -132,33 +244,37 @@
   cursor: default;
 }
 
-/* ── 信息卡（info） / 摘要卡（digest）───────────────────────────────────
-   单块容器：图标 + 内容。与卡片组同族，但**不做网格**（块内是一段连续的说明或
-   一列要点，没有可并排的多个对象）。
+/* ── 语义块外壳（info / digest / caution / how-to / quote 共用）────────
+   单块容器：图标 + 内容。与卡片组同族，但**不做网格**（块内是一段连续的说明、
+   一列要点或一段引用，没有可并排的多个对象）。
 
-   ⚠️ 两者的形态**几乎完全相同**，差别只在图标与左边框色（accent / muted）——
-   这是刻意的：它们区别在「这是什么性质」（背景信息 vs 压缩后的摘要），而这件事
-   由图标 + 颜色各承担一半即可；给两者设计两套布局，读者反而要重新学一遍。 */
+   ⚠️ 五种共用 `.chat-block` 基座，**只有图标与左边框色不同** —— 见文件头的理由。 */
 
-.chat-info-card,
-.chat-digest-card {
+.chat-block {
+  position: relative;      /* 复制按钮的定位宿主 */
   display: flex;
   gap: 0.5em;
   margin: 0.5em 0;
-  padding: 0.5em 0.7em;
-  border: 1px solid var(--tk-border-light);
+  padding: 0.55em 0.75em;
+  /* ⚠️ 左框加粗到 3px 是**语义色**的载体（`border-left-color` 由各变体给）。
+     整套 `--card-border` 为 `none` 时（apple / ink），这条左框也一并消失 ——
+     跟随该有的结果，此时语义由图标色承担。 */
+  border: var(--card-border);
   border-left-width: 3px;
-  border-radius: 10px;
-  background: var(--tk-elevated);
+  border-radius: var(--card-radius);
+  background: var(--card-bg);
+  box-shadow: var(--card-shadow);
 }
 
-.chat-info-card {
-  border-left-color: var(--tk-accent);
-}
-
-.chat-digest-card {
-  border-left-color: var(--tk-muted);
-}
+.chat-info-card { border-left-color: var(--tk-accent); }
+.chat-digest-card { border-left-color: var(--tk-muted); }
+/* ⚠️ `caution` 用 `--tk-warning`（**不是** `--tk-error`）：严重度由**文字**承担，
+   颜色不该替它分级 —— 与产物侧 `alert` 的判据同源（`blocks.css`）。 */
+.chat-caution { border-left-color: var(--tk-warning); }
+.chat-howto { border-left-color: var(--tk-accent); }
+/* ⚠️ `quote` 用中性 `--tk-border`：引用是「别人说的话」，不该带强调色 ——
+   一强调读者会以为那是**结论**，而它恰恰是**论据**。 */
+.chat-quote { border-left-color: var(--tk-border); }
 
 /* ⚠️ `flex: none` 不参与伸缩（否则长正文把它压扁）；`margin-top` 是为了与首行文字的
    视觉中线对齐，而不是与行框顶对齐。 */
@@ -168,9 +284,9 @@
   color: var(--tk-accent);
 }
 
-.chat-digest-card .chat-block-icon {
-  color: var(--tk-muted);
-}
+.chat-digest-card .chat-block-icon { color: var(--tk-muted); }
+.chat-caution .chat-block-icon { color: var(--tk-warning); }
+.chat-quote .chat-block-icon { color: var(--tk-dimmed); }
 
 /* ⚠️ `min-width: 0` 与 `.chat-card` 同款：否则块内的长 URL / 代码把 flex 单元撑破 */
 .chat-block-body {
@@ -184,4 +300,120 @@
 }
 .chat-block-body > :last-child {
   margin-bottom: 0;
+}
+
+/* ── `how-to`：编号醒目 ───────────────────────────────────────────────
+   ⚠️ 编号来自**块内的有序列表**（Markdown 的自然产物），不是本文件造出来的 ——
+   模型写成无序列表时这里什么都不匹配，退化成普通列表（**不是 bug**）。 */
+.chat-howto ol {
+  margin: 0;
+  padding-left: 1.4em;
+}
+
+.chat-howto li::marker {
+  color: var(--tk-accent);
+  font-weight: 600;
+}
+
+/* ── `quote`：出处行 ─────────────────────────────────────────────────
+   ⚠️ 判据是「引用之后的那个段落」（相邻兄弟）—— prompt 教的写法就是「`>` 原话，
+   再单独一行写出处」。**刻意不做更强的识别**（比如匹配开头的 `——`）：写法多样，
+   认死的规则会在别的写法下静默失效，而这里退化的结果只是一行普通右对齐小字。 */
+.chat-quote blockquote + p {
+  margin-top: 0.15em;
+  font-size: 0.88em;
+  line-height: 1.4;
+  text-align: right;
+  color: var(--tk-dimmed);
+}
+
+/* ── 代码块（`ChatPre`）──────────────────────────────────────────────── */
+
+/* 语言标签（2026-10-12）—— 从 `<code>` 的 `language-xxx` 类取，取不到不渲染。
+   ⚠️ `pointer-events: none`：否则它会挡住代码首行的**文本选择**与横向滚动起点。 */
+.chat-code-lang {
+  position: absolute;
+  top: 0.35em;
+  left: 0.8em;
+  font-size: 0.72em;
+  line-height: 1.6;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--tk-dimmed);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ⚠️ 有语言标签时给 `pre` 顶上腾一行 —— 标签是绝对定位的，不腾就会叠在第一行代码上。
+   类名由 `ChatPre` 写在 `<pre>` 上（**不用 `:has()`**：少一个宿主环境依赖）。 */
+.markdown-chat pre.chat-has-lang {
+  padding-top: 1.9em;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   对话正文的 Markdown 元素（2026-10-12 从 `index.css` 搬来 + 加壳）
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ⚠️ 表格**刻意不做圆角**：`border-collapse: collapse` 下单元格的 `border-radius`
+   不生效，要做就得换 `separate` 并重画每一条边（相邻边各画一次 → 2px 双线）。
+   加壳改由「斑马纹 + 表头加深」承担。
+   ⚠️ **已知未处置**：窄浮窗 + 多列时表格会横向溢出气泡（`.markdown-chat` 没有
+   `overflow-x`，`display: block` 那套会破坏列宽分配）。这是**改造前就有的行为**，
+   本轮不动 —— 记在这里免得下一轮以为漏了。 */
+.markdown-chat table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+  font-size: 0.9em;
+}
+
+.markdown-chat th,
+.markdown-chat td {
+  border: 1px solid var(--md-table-border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.markdown-chat th {
+  background: var(--md-table-header-bg);
+  font-weight: 600;
+}
+
+/* 斑马纹：读表时行不串（长回答里的表格是「回来查」时最需要的一项） */
+.markdown-chat tbody tr:nth-child(even) {
+  background: var(--tk-hover);
+}
+
+.markdown-chat code {
+  background: var(--md-code-bg);
+  color: var(--md-code-color);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.markdown-chat pre {
+  background: var(--tk-hover);
+  padding: 10px 14px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+
+.markdown-chat pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown-chat blockquote {
+  border-left: 3px solid var(--md-blockquote-border);
+  padding-left: 12px;
+  color: var(--tk-dimmed);
+  margin: 0.5em 0;
+}
+
+.markdown-chat ul,
+.markdown-chat ol {
+  padding-left: 1.5em;
+  margin: 0.3em 0;
 }

@@ -61,7 +61,11 @@ ARTIFACT_BLOCK_TYPES = frozenset(
 
 #: **对话侧**（前端 `ai-chat/ChatMarkerContent.tsx`）真写了渲染分支的块类型。
 #: ⚠️ 与 `ARTIFACT_BLOCK_TYPES` **刻意不相交** —— 产物 prompt 与对话 prompt 各教各的。
-CHAT_BLOCK_TYPES = frozenset({"card-group", "follow-up", "info", "digest"})
+#: ⚠️ `caution` / `how-to` / `quote`（2026-10-12 补）与 `info` / `digest` 同族：
+#: 一律不解析子结构，形态差异全落在 CSS 外壳上。
+CHAT_BLOCK_TYPES = frozenset(
+    {"card-group", "follow-up", "info", "digest", "caution", "how-to", "quote"}
+)
 
 #: **节级修饰符** `card` —— 唯一的「不是块」的 type（2026-10-11）。
 #:

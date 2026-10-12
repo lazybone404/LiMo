@@ -144,6 +144,105 @@ describe('ChatMarkerContent — info / digest', () => {
   })
 })
 
+describe('ChatMarkerContent — caution / how-to / quote', () => {
+  const CAUTION = '<!-- limo-block:v1 type="caution" -->\n**该接口有速率限制**，高频调用会被拒绝。\n<!-- /limo-block -->'
+  const HOW_TO = '<!-- limo-block:v1 type="how-to" -->\n1. 安装依赖\n2. 配置环境变量\n3. 启动服务\n<!-- /limo-block -->'
+  const QUOTE = '<!-- limo-block:v1 type="quote" -->\n> 过早优化是万恶之源。\n\n—— Donald Knuth\n<!-- /limo-block -->'
+
+  // ⚠️ 类名**不等于** `chat-${type}`：`how-to` 的容器是 `.chat-howto`（去掉了连字符），
+  // 与其余两个的构词法刻意不同 —— 用模板串拼选择器会在这一条上静默查不到元素。
+  const SHELLS: [string, string, string][] = [
+    [CAUTION, 'caution', 'chat-caution'],
+    [HOW_TO, 'how-to', 'chat-howto'],
+    [QUOTE, 'quote', 'chat-quote'],
+  ]
+
+  it('三种各有自己的外壳类 + `data-block-type`，块内文字在（空壳检测）', () => {
+    for (const [md, type, cls] of SHELLS) {
+      const { container } = renderChat(md)
+      const el = container.querySelector(`.${cls}`)
+      expect(el, type).not.toBeNull()
+      expect(el!.getAttribute('data-block-type'), type).toBe(type)
+      expect(el!.textContent!.trim().length, type).toBeGreaterThan(0)
+    }
+  })
+
+  it('三种都在 `.chat-block` 基类上（缺了 = 卡片样式整组落空，而上面那条照样绿）', () => {
+    // ⚠️ 这是**最容易漏且最静默**的一处：外壳类只决定语义色（一条 `border-left-color`），
+    // 容器本身（跟随 `--card-*` 的 border / radius / bg / shadow）全挂在 `.chat-block` 上。
+    // 漏了基类 ⇒ 卡片退化成裸文字，而「外壳类在、文字在」的断言一条都不会红。
+    for (const [md, type, cls] of SHELLS) {
+      const { container } = renderChat(md)
+      expect(container.querySelector(`.${cls}`)!.classList.contains('chat-block'), type).toBe(true)
+    }
+  })
+
+  it('how-to 块内是**有序**列表（CSS 的编号判据依赖 `<ol>`）', () => {
+    // ⚠️ 与产物侧 `timeline` 同款：形态差异全部由 CSS 表达，而 CSS 判据依赖**列表类型**。
+    // 模型按 prompt 写成 `1. 2. 3.` 时这里才有 `<ol>`；写成 `-` 会红 —— 那是 prompt
+    // 该修的事，**不是把断言放宽**（放宽等于承认这个块可以两种形态，而它只有一种）。
+    const { container } = renderChat(HOW_TO)
+    const ol = container.querySelector('.chat-howto ol')
+    expect(ol).not.toBeNull()
+    expect(ol!.querySelectorAll('li').length).toBe(3)
+    expect(container.querySelector('.chat-howto ul')).toBeNull()
+  })
+
+  it('quote 块内是 `blockquote`，出处文字同在（CSS 靠相邻兄弟选它）', () => {
+    const { container } = renderChat(QUOTE)
+    const bq = container.querySelector('.chat-quote blockquote')
+    expect(bq).not.toBeNull()
+    expect(bq!.textContent).toContain('过早优化')
+    // 出处是**普通段落**（不是引用的一部分）—— 它必须与 blockquote 分属两个节点，
+    // 否则 `.chat-quote blockquote + p` 那条样式选不到任何东西。
+    expect(container.querySelector('.chat-quote')!.textContent).toContain('Knuth')
+  })
+
+  it('对照：产物侧同名语义的 `alert` 在对话里**不**变成注意事项卡', () => {
+    // 两侧类型集合刻意不相交（`alert` 是产物侧的）。这条挡的是「名字像就复用」那类改动。
+    const md = '<!-- limo-block:v1 type="alert" -->\n**风险**\n<!-- /limo-block -->'
+    const { container } = renderChat(md)
+    expect(container.querySelector('.chat-caution')).toBeNull()
+    expect(container.querySelector('.chat-block')).toBeNull()
+    expect(container.textContent).toContain('风险')
+  })
+})
+
+describe('ChatMarkerContent — 卡片整体复制', () => {
+  it('card-group 的每张卡各有一个复制按钮（整卡可搬走）', () => {
+    const { container } = renderChat(CARD_GROUP)
+    expect(container.querySelectorAll('.chat-card-copy').length).toBe(2)
+  })
+
+  it('caution / how-to / quote 的**外壳上**有复制按钮', () => {
+    for (const md of [
+      '<!-- limo-block:v1 type="caution" -->\n风险。\n<!-- /limo-block -->',
+      '<!-- limo-block:v1 type="how-to" -->\n1. 一步\n<!-- /limo-block -->',
+      '<!-- limo-block:v1 type="quote" -->\n> 原话。\n<!-- /limo-block -->',
+    ]) {
+      expect(renderChat(md).container.querySelectorAll('.chat-block-copy').length).toBe(1)
+    }
+  })
+
+  it('info / digest **刻意没有**复制按钮（内容短，复制价值低于它占的注意力）', () => {
+    // ⚠️ 这条挡的是「顺手把五个块补齐」：它们共用 `ChatIconBlock`，而 `copyLabel`
+    // 是**可选**的 —— 一次「看起来更一致」的补全会让这个取舍悄悄消失。
+    for (const md of [
+      '<!-- limo-block:v1 type="info" -->\n**X** 是一个东西。\n<!-- /limo-block -->',
+      '<!-- limo-block:v1 type="digest" -->\n- 要点一\n<!-- /limo-block -->',
+    ]) {
+      const { container } = renderChat(md)
+      expect(container.querySelectorAll('.chat-block-copy').length).toBe(0)
+    }
+  })
+
+  it('流式中不显示复制按钮（复制的会是半截内容）', () => {
+    expect(renderChat(CARD_GROUP, true).container.querySelectorAll('.chat-card-copy').length).toBe(0)
+    expect(renderChat('<!-- limo-block:v1 type="quote" -->\n> 原话。\n<!-- /limo-block -->', true)
+      .container.querySelectorAll('.chat-block-copy').length).toBe(0)
+  })
+})
+
 describe('ChatMarkerContent — 快路径与跨侧兜底', () => {
   it('无标记 → 快路径：没有卡片组 / 追问容器，正文正常渲染', () => {
     const { container } = renderChat('# 标题\n\n正文一段。')
@@ -155,13 +254,18 @@ describe('ChatMarkerContent — 快路径与跨侧兜底', () => {
   it('对照 B：产物侧类型在对话里**不**变成卡片、也不带 md-block', () => {
     // 逐一遍历产物侧全部类型 —— 「两侧集合不相交」的**渲染层**证据（集合本身由
     // markdownMarkers.test.ts 的守卫钉住，那条只证明常量对，证明不了这里真的没分支）。
-    for (const t of ['key-takeaway', 'alert', 'recommend', 'metric']) {
+    for (const t of ['key-takeaway', 'alert', 'recommend', 'metric', 'steps', 'timeline', 'table', 'code', 'image']) {
       const md = `<!-- limo-block:v1 type="${t}" -->\n**重点**\n<!-- /limo-block -->`
       const { container } = renderChat(md)
       expect(container.querySelectorAll('.chat-card').length, t).toBe(0)
       expect(container.querySelector('[data-block-type="card-group"]'), t).toBeNull()
       expect(container.querySelector('.chat-info-card'), t).toBeNull()
       expect(container.querySelector('.chat-digest-card'), t).toBeNull()
+      // ⚠️ 三个新块（2026-10-12）同样要在这里查一遍 —— 「新加的类型名与产物侧撞了」
+      // 正是这一组断言存在的理由（`alert` 与 `caution` 语义相近，最容易顺手复用）。
+      expect(container.querySelector('.chat-caution'), t).toBeNull()
+      expect(container.querySelector('.chat-howto'), t).toBeNull()
+      expect(container.querySelector('.chat-quote'), t).toBeNull()
       // ⚠️ `md-block` 会命中产物侧的 blocks.css（左边框 + 淡底），对话不该有
       expect(container.querySelector('.md-block'), t).toBeNull()
       expect(container.textContent).toContain('重点')

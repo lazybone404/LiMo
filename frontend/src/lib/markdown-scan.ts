@@ -74,12 +74,23 @@ export const ARTIFACT_BLOCK_TYPES: ReadonlySet<string> = new Set([
  *
  * ⚠️ 这侧**不受**上面那条「只做 CSS 形态」的约束：`chat-blocks.css` 明说不进导出
  * （对话只有 md / json 两条导出路径），故可以自由用 React 结构与图标。
+ *
+ * ⚠️ `caution` / `how-to` / `quote`（2026-10-12 补）与 `info` / `digest` **同族**：
+ * 一律**不解析子结构**，块内是普通 Markdown、整块交给 `ChatText`，形态差异全在外壳
+ * （图标 + 语义色）。于是也不存在「解析不出 → 退化」的分支 —— 没有可解析的东西，
+ * 就没有解析失败。
+ * ⚠️ 三种都**刻意不与产物侧同名**（那边叫 `alert` / `steps` / 无对应），也不叫
+ * `warning`（`limo-blocks.json` 拿它当「未知 type」的示例）：两侧类型集合不相交是
+ * 本文件的既有不变量，跨侧撞名会让「某一侧没实现」这条静默失效。
  */
 export const CHAT_BLOCK_TYPES: ReadonlySet<string> = new Set([
   'card-group',
   'follow-up',
   'info',
   'digest',
+  'caution',
+  'how-to',
+  'quote',
 ])
 
 /**

@@ -161,6 +161,36 @@ def _entry_age_seconds(entry: dict) -> float:
         return float("inf")
 
 
+def _unique_tx_id(seed: str, taken: set[str]) -> str:
+    """从 `seed` 派生一个**未被 `taken` 占用**的文档 id（`tr_` + 12 hex）。
+
+    ⚠️ **首次尝试与旧行为逐字相同**（`sha256(seed)[:12]`）——调用方传的是
+    `transcript.md` 内容，故「不冲突」这个绝大多数情形下，重建结果与改造前
+    **完全一致**（零回归）；只有真撞上时才走加盐分支。
+
+    ⚠️ 为什么非要唯一不可：`id` 是文档的**主键** —— 前端的 React key、
+    `get_transcript` / `update_title` / `delete_transcript` 的定位全用它。
+    两条条目共用一个 id 时：
+    - 后端：`delete_transcript` 的 `find` 只命中第一条，**第二条永远留在列表里
+      且再也删不掉**（无论怎么点「删除」，它都还在）；
+    - 前端：直接报 `Encountered two children with the same key` 并可能重复/省略行。
+    冲突的真实来源是**磁盘上两份内容完全相同的文档目录**（同一 URL 被并发导入、
+    或历史遗留的重复目录）——按内容派生 id，同内容必然同 id，故必须有盐打破它。
+    """
+    cand = f"tr_{hashlib.sha256(seed.encode()).hexdigest()[:12]}"
+    if cand not in taken:
+        return cand
+    for attempt in range(16):
+        cand = f"tr_{hashlib.sha256(f'{seed}\x00{attempt}'.encode()).hexdigest()[:12]}"
+        if cand not in taken:
+            return cand
+    # 16 次仍撞：数据已严重异常（同一 seed + 16 个盐全落在同一批 id 上）。
+    # 退化为随机 id（与正常导入路径同款）而不是抛错——重建/自愈中途崩掉
+    # 会把「索引有点脏」升级成「应用起不来」。绝不返回重复值。
+    logger.warning("文档 id 派生连续冲突（seed 前缀 %r），退化为随机 id", seed[:16])
+    return f"tr_{uuid4().hex[:12]}"
+
+
 class Store:
     """单用户文件系统存储。v2 统一索引。"""
 
@@ -183,6 +213,11 @@ class Store:
         # 下载 + 转写），带年龄宽限仍可能误判 → 会话内豁免是**精确**的那一半。
         self._pending_ids: set[str] = set()
         self._load_index()
+        # 一次性修正：索引里**重复的文档 id**（历史重建留下的脏数据，见方法 docstring）。
+        # 放在 `_load_index` **之后**——两条加载路径（正常读盘 / 故障重建）都要覆盖。
+        # ⚠️ 它是**定点改字段**，不是重建：绝不重扫磁盘、绝不碰 tags/folderId/来源
+        #    （第 3 轮审计 P0 的教训正是「启动迁移里整库重建，把分类全抹掉」）。
+        self._dedupe_transcript_ids()
         # 一次性布局迁移：两版制（{mode}.md + {mode}.prev.md）→ 版本归档（{mode}/v{N}.md）。
         # 放在 `_load_index` **之后**：即便 index 丢了，`_load_index` 已先做过常规重建，
         # 这里搬完文件再重建一次，产物版本即可正确出现。幂等，详见方法 docstring。
@@ -261,6 +296,48 @@ class Store:
             self._index_path,
             json.dumps(self._index, ensure_ascii=False, indent=2),
         )
+
+    def _dedupe_transcript_ids(self) -> None:
+        """把索引里**重复的文档 id** 就地改成唯一（幂等，启动时跑一次）。
+
+        重复的**真实来源**是磁盘上两份**内容完全相同**的文档目录：`_rebuild_index`
+        按 `transcript.md` 的内容派生 id，同内容必然推出同一个 id。`_rebuild_index`
+        侧已改为冲突时唯一化（`_unique_tx_id`），但**改代码不会让已经落盘的脏索引
+        自愈** —— 这些条目已经存在于用户的 index.json 里，每一次列表刷新都会把它们
+        发给前端，于是 React 每次都报 `Encountered two children with the same key`。
+
+        ⚠️ **只改 `id` 一个字段，不删任何东西**：
+        - 另一份目录仍在磁盘上（用户可自行判断要不要删），本次不动文件系统；
+        - 不重扫磁盘、不碰 `tags` / `folderId` / 来源字段（第 3 轮审计 P0 的教训：
+          启动迁移里整库 `_rebuild_index` 会把标签与文件夹分类**不可逆抹掉**）；
+        - `markdowns` / `processes` 的 key **保持指向原 id**：那两份目录里只可能
+          一份有产物，而 dict 本来就只存得下一份 —— 让产物留在「第一条」上，与
+          `get_transcript` / `delete_transcript` 取 `find` 首条的行为一致；新 id
+          那条的产物为空。⚠️ 所以**不能**顺手把产物字段也搬过去，那会凭空发明
+          「哪份目录生了这篇笔记」这个事实。
+        """
+        seen: set[str] = set()
+        renamed: list[tuple[str, str]] = []
+        for entry in self._index.get("transcripts", []):
+            tid = entry.get("id", "")
+            if tid and tid not in seen:
+                seen.add(tid)
+                continue
+            # 空 id（被外力改坏）或重复 id → 重发一个。
+            # ⚠️ 盐必须是**天然互异**的东西：`dir_name` 是同内容目录之间唯一的区别
+            #    （内容相同 ⇒ 内容派生的 id 相同 ⇒ 只有目录名能打破）。
+            new_id = _unique_tx_id(f"{tid}\x00{entry.get('dir_name', '')}", seen)
+            seen.add(new_id)
+            renamed.append((tid, new_id))
+            entry["id"] = new_id
+
+        if renamed:
+            self._save_index()
+            logger.warning(
+                "索引中有 %d 条重复/空文档 id，已就地重发（只改 id，未动磁盘）：%s",
+                len(renamed),
+                "; ".join(f"{old or '(空)'} → {new}" for old, new in renamed),
+            )
 
     def _migrate_legacy_markdown_layout(self) -> None:
         """一次性把遗留的两版制布局迁到版本归档布局（**幂等、无损**）。
@@ -386,6 +463,8 @@ class Store:
         —— 那条路径上写盘与否取决于扫描结果，不能无条件下手。
         """
         self._index = _empty_index()
+        # 本次扫描已分配的 id（⚠️ 每次重建都重置，故只需记本轮的）——见 `_unique_tx_id`
+        taken_ids: set[str] = set()
 
         for d in sorted(self.root.iterdir()):
             if not d.is_dir():
@@ -402,8 +481,12 @@ class Store:
             tx_id = ""
 
             # 从 transcript.md 内容推断 tx_id（无可靠方法，生成新 ID）
+            # ⚠️ 必须过 `_unique_tx_id`：磁盘上可能有两份**内容相同**的目录
+            #    （旧的导入窗口 bug / 同 URL 并发导入的遗留），纯内容派生会让它们
+            #    共用同一个 id —— 那是「删不掉的那一篇」与前端重复 key 的来源。
             raw_text = tx_md.read_text(encoding="utf-8")
-            tx_id = f"tr_{hashlib.sha256(raw_text.encode()).hexdigest()[:12]}"
+            tx_id = _unique_tx_id(raw_text, taken_ids)
+            taken_ids.add(tx_id)
 
             # 构建 transcript index 条目
             tx_entry = {

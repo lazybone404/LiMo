@@ -15,7 +15,8 @@
  *  - 删除/编辑/分支截断本地更新，P5 走 PUT /conversations/{id}/messages 全量 rebuild 同步后端
  */
 import { create } from 'zustand'
-import { streamChat, listConversations, getConversation, rebuildConversationMessages, clearConversationContext } from '../api/chat'
+import { streamChat, listConversations, getConversation, rebuildConversationMessages, clearConversationContext, refreshFollowUps as refreshFollowUpsApi } from '../api/chat'
+import { getErrorMessage } from '../api/core'
 import { loadChatPrefs } from '../lib/chat-prefs'
 import { toChatSources, type ChatSource } from '../lib/chat-sources'
 import { useStore } from './index'
@@ -135,6 +136,13 @@ export interface ChatStoreState {
   refreshConversations: () => Promise<void>
   /** 清除上下文：不删消息，停止携带该索引前历史（后端 clear_context_at） */
   clearContext: () => Promise<void>
+  /**
+   * 「换一批」追问建议 —— 为**指定那条** assistant 消息重新生成候选并落库。
+   *
+   * ⚠️ 入参是**消息 id**（前端 id），但发给后端的只有原文：后端端点无状态，
+   * 两侧消息 id 不同源（见 `api/chat.ts::refreshFollowUps`）。
+   */
+  refreshFollowUps: (botMsgId: string) => Promise<void>
   /** 关闭压缩提示条 */
   dismissCompressedHint: () => void
 }
@@ -497,6 +505,50 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       // 免得本地以为清了、后端没有。
       await clearConversationContext(s.currentId, index)
       set({ clearContextIndex: index })
+    },
+
+    refreshFollowUps: async (botMsgId) => {
+      const s = get()
+      // ⚠️ 流式中不许换（与 `deleteMessage` 同款守卫）：调用方本身不写 content，
+      //    但末尾那次全表 rebuild 会把「含半成品回复的快照」整表回写，与正在流的
+      //    那条回复互相打架（P1-14 那一类）。
+      if (s.streaming) return
+      const msgs = s.messages
+      const idx = msgs.findIndex(m => m.id === botMsgId)
+      if (idx < 0) return
+      const bot = msgs[idx]
+      // ⚠️ 只对**后端补调来的那一份**开放：模型自主写在正文里的 `follow-up` 块住在
+      //    `content` 里，不是这里能改的字段 —— 它没有可重跑的上游。
+      if (bot.role !== 'assistant' || !bot.followUps?.length) return
+      // 上游提问 = 向前最近的一条 user（与 `regenerate` 同一套配对规则）
+      let ui = idx
+      while (ui >= 0 && msgs[ui].role !== 'user') ui--
+      const question = ui >= 0 ? msgs[ui].content : ''
+
+      let payload: { questions: string[]; error: string | null }
+      try {
+        payload = await refreshFollowUpsApi(question, bot.content)
+      } catch (e) {
+        useStore.getState().addToast(getErrorMessage(e), 'error')
+        return
+      }
+      // ⚠️ **重新按 id 定位**，不复用上面的 `idx`：await 期间用户可能已经删掉这条、
+      //    或切到别的会话（数组整个换了）。`patchBot` 找不到就什么都不做 ——
+      //    陈旧响应落到新会话上，正是「上一轮的追问挂到这一轮」那类错位。
+      patchBot(botMsgId, m => payload.questions.length
+        ? { ...m, followUps: payload.questions, followUpError: undefined }
+        // ⚠️ **失败时保留原有那批**：替换语义管的是「成功时换成新的」。生成失败还把
+        //    用户手上正能用的一批清掉，是纯粹的净损失（且与首次生成失败的形态不同：
+        //    那里本来就没有可保留的东西）。
+        : { ...m, followUpError: payload.error || '追问建议生成失败' })
+      // 落库（整表覆盖）——与 `deleteMessage` / `editMessage` 同款。不 await：后面没有
+      // 第二个写请求与它抢顺序。
+      const cid = get().currentId
+      if (cid) {
+        rebuildConversationMessages(cid, get().messages.map(toBackendMsg)).catch(() => {
+          useStore.getState().addToast('同步失败，操作可能未保存', 'error')
+        })
+      }
     },
 
     dismissCompressedHint: () => set({ compressedHint: null }),

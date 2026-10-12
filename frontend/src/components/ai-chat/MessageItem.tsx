@@ -84,6 +84,7 @@ export function MessageItem({ msg, scale }: MessageItemProps) {
   const regenerate = useChatStore(st => st.regenerate)
   const deleteMessage = useChatStore(st => st.deleteMessage)
   const editMessage = useChatStore(st => st.editMessage)
+  const refreshFollowUps = useChatStore(st => st.refreshFollowUps)
   const statusText = useChatStore(st => st.statusText)
 
   const copy = () => {
@@ -171,7 +172,17 @@ export function MessageItem({ msg, scale }: MessageItemProps) {
               而不是挂在气泡外的独立 UI。两个来源共用 `ChatFollowUpList`（另一个来源是
               模型自主写在正文里的 `follow-up` 块，由 `ChatMarkerContent` 渲染）。
               ⚠️ 两者由后端保证互斥（有可用块就不补调），前端**不再判一次**。 */}
-          {msg.followUps?.length ? <ChatFollowUpList items={msg.followUps} streaming={!!msg.streaming} /> : null}
+          {msg.followUps?.length ? (
+            <ChatFollowUpList
+              items={msg.followUps}
+              streaming={!!msg.streaming}
+              // ⚠️ 「换一批」只在**这一支**出现：`msg.followUps` 就是后端补调来的那份，
+              //    它知道自己的上游问题与回答（`refreshFollowUps` 会向前找最近一条 user）。
+              //    另一个来源（模型自主写在正文里的 `follow-up` 块）住在 `content` 里，
+              //    由 `ChatMarkerContent` 渲染，**没有可重跑的上游**。
+              onRefresh={() => refreshFollowUps(msg.id)}
+            />
+          ) : null}
           {/* ⚠️ 失败要有落点：开了开关却什么都没有，必须看得出是失败而非「这轮没有」 */}
           {msg.followUpError ? <div className="mt-1 text-[11px] text-dimmed">{msg.followUpError}</div> : null}
         </div>

@@ -6,6 +6,108 @@
 
 ---
 
+## 2026-10-12 — 文档 id 唯一：重建不再按内容撞 id + 启动自愈已有脏索引
+
+### 起因
+
+用户贴来浏览器控制台的告警（同一句出现两次）：
+
+```
+Encountered two children with the same key, `tr_336b128e8316`. Keys should be unique so that
+components maintain their identity across updates. Non-unique keys may cause children to be
+duplicated and/or omitted — the behavior is unsupported and could change in a future version.
+```
+
+查库确认：`index.json` **95 条 / 94 个唯一 id**，撞的是 `tr_336b128e8316` 两条。两条
+`dir_name` 分别是 `Herman Melville - Moby-Dick-94882f` 与 `…-cbcbd1`，两份
+`transcript.md` **长度 3566、sha256 前 12 位都是 `336b128e8316`** —— 内容一字不差。
+全库 95 条里 90 条 `createdAt` 为空 ⇒ 这个库被 `_rebuild_index` 整库重建过。
+
+**根因链**：磁盘上有两份内容相同的文档目录 → `index.json` 缺失/损坏触发
+`_rebuild_index` → 它按 `transcript.md` **内容**派生 id（无可靠方法，只能这样）→
+同内容必然推出**同一个 id**。而 id 是文档的主键：前端 React key、`get_transcript` /
+`update_title` / **`delete_transcript` 的定位**全用它。
+
+⚠️ **比控制台告警严重得多的后果**：`delete_transcript` 用 `find` 定位，只命中**第一条**
+—— 第二条无论点多少次「删除」都还在列表里。前端那句 warning 是这件事**唯一**的可见征兆。
+
+### 做什么
+
+| # | 改动 | 落点 |
+|---|---|---|
+| 1 | 新增模块级 `_unique_tx_id(seed, taken)`：**首次尝试与旧行为逐字相同**，撞了才加盐，16 次仍撞退化为随机 id（绝不返回重复值） | `store.py` |
+| 2 | `_rebuild_index` 记 `taken_ids` 集合，id 派生改走 `_unique_tx_id` | `store.py` |
+| 3 | 新增 `_dedupe_transcript_ids()`：启动时定点修**已经落盘**的重复 id（幂等），挂在 `_load_index()` 之后 | `store.py` |
+| 4 | 回归测试 5 条（含 1 条对照实验） | `tests/test_store_index_recovery.py` |
+
+### 为什么这么设计
+
+1. **首次尝试必须逐字等于旧行为**（`f"tr_{sha256(seed)[:12]}"`）。绝大多数库没有重复目录，此时重建结果与改造前**一字不差** = 零回归。若上来就换个派生方式，升级一次全库 id 全体漂移，历史引用（`sourceDocIds` 锚点、对话里的 docRefs）全断。
+2. **盐用 `dir_name`**：同内容目录之间**唯一**的区别就是目录名，内容派生的值已经相同了，只有目录名能打破。`_dedupe_transcript_ids` 的种子是 `f"{tid}\x00{dir_name}"`，同理。
+3. **16 次仍撞退化为随机 id，而不是抛错**：数据已严重异常，但「重建/自愈中途崩掉」会把「索引有点脏」升级成「应用起不来」。退化为与正常导入路径同款的 `uuid4` 是安全出口，**且绝不返回重复值**。
+4. **两道网，职责不同**：`_unique_tx_id` 管**将来**（下一次重建不再产生重复），`_dedupe_transcript_ids` 管**已有的脏索引**（改代码不会让旧数据自愈——用户库里的重复条目就在那儿，每次刷新都会发给前端）。缺前者则每次重建复发，缺后者则存量用户永远修不好。
+5. **自愈是「定点改字段」不是「重建」**：只改 `id` 一个键，**不重扫磁盘、不碰 tags / folderId / 来源 / createdAt、不删任何目录**。这是第 3 轮审计 P0 的直接教训——启动迁移里整库 `_rebuild_index` 会把分类与标签**不可逆抹掉**（磁盘上根本不存在这些字段）。
+6. **`markdowns` / `processes` 的 key 保持在原 id 上**：那两份目录里只可能一份有产物，而 dict 本来就只存得下一份——让产物留在「第一条」，与 `get_transcript` / `delete_transcript` 取 `find` 首条的行为一致。⚠️ 反过来「把产物字段也搬过去」是凭空发明「哪份目录生了这篇笔记」这个事实，故不做。
+7. **不选「输出前静默去重」**：那违反本项目「失败显式化 / 不做静默降级」的原则，且掩盖了「磁盘上真有两份目录」这件事——用户有权知道并自行决定删哪份。
+
+### 影响范围
+
+- 后端：`app/storage/store.py`（`_unique_tx_id` + `_rebuild_index` 唯一化 + `_dedupe_transcript_ids` + `__init__` 挂载）
+- 测试：`tests/test_store_index_recovery.py` +5 条（`_unique_tx_id` 的零回归/加盐、两份同内容目录重建后唯一、`_dedupe_transcript_ids` 修脏索引与幂等、**对照实验**）
+
+⚠️ **对照实验有个坑，已写进测试注释**：只掐掉第一道网（`_unique_tx_id`）时，第二道网
+（`_dedupe_transcript_ids`）会当场把刚产生的重复修好 ⇒ 对照实验**反而全绿而结论是错的**。
+验其中任何一道都必须把另一道按住。
+⚠️ **本次只修代码，不动用户磁盘上的任何目录** —— 那两份 `Moby-Dick` 目录仍在原地，
+删哪份由用户自行决定。
+⚠️ **不改 `VERSION` 之外的任何标识**（无 `PROMPT_VERSION` 变更：本次不涉及发给模型的文本）。
+
+---
+
+## 2026-10-12 — 对话侧卡片：补三种形态 + 视觉跟随卡片方案 + 复制 / 换一批
+
+### 起因
+
+对话侧 `limo-block` 已有四种（`card-group` / `follow-up` / `info` / `digest`），但
+① **形态缺三块常见**——注意事项、操作步骤、引用出处，模型想说这些时只能退回普通段落；
+② 对话卡片与产物侧章节卡片**各长各的**，用户在设置里挑的那套「卡片视觉方案」在对话里
+完全不生效；③ 卡片是**只读**的——一段比较结论、一个引用，想搬走只能手动划选；
+④ 追问卡给了一批就定死了，**想换一批没有办法**（二次调用的能力早就有，缺的是入口）。
+
+### 做什么
+
+| # | 改动 | 落点 |
+|---|---|---|
+| 1 | **新增三种块**：`caution`（注意事项）/ `how-to`（操作步骤）/ `quote`（引用出处）→ 对话侧 **7 种** | 两侧常量表 + `formats.md` 三节 + `ChatMarkerContent` 三分支 + fixture 三处 |
+| 2 | **视觉跟随卡片方案**：容器的 `border` / `border-radius` / `background` / `box-shadow` 改消费 `--card-*`（与产物侧章节卡片同一套变量、同一套 8 方案） | `chat-blocks.css` 重写 |
+| 3 | **`.markdown-chat` 基础元素搬进 `chat-blocks.css`**（表格 / 代码 / 引用 / 列表），与语义块作用在同一批节点上 | `index.css` 删节（留指路注释） |
+| 4 | **代码块与表格加壳**（纯 CSS + `ChatPre` 扩展）：语言标签 + 复制按钮；表格斑马纹 + 表头底色 | `ChatMarkerContent.tsx` / `chat-blocks.css` |
+| 5 | **卡片整体复制**：`card-group` 每张卡、`caution` / `how-to` / `quote` 外壳各一个复制按钮 | `ChatCopyButton` 泛化 |
+| 6 | **追问「换一批」**：新端点 `POST /api/chat/followups` + `ChatFollowUpList.onRefresh` + `chatStore.refreshFollowUps` | 后端 / 前端各三处 |
+
+### 为什么这么设计
+
+1. **三种新块的 type 名刻意不与产物侧重叠**（用 `caution` 而非产物侧的 `alert`、用 `how-to` 而非 `steps`）。两侧集合本就**刻意不相交**（由 `limo-blocks.json::meta` 钉住），名字撞上就等于「同一套渲染器服务两种语义」——而它们的降级判据、CSS 归宿、导出待遇都不同。
+2. **视觉跟随是零 JS 改动、零中间变量层的**：`--card-*` 的初值写在 `cards.css` 的**裸 `:root`**（值 = gpt 风），`paper`（默认骨架）下 `applyCard()` 只 `removeAttribute` 两个 data 属性、**不删变量**，且 `CARD_VARS` 只覆盖 `--card-bg-base` / `--card-lift` / `--card-border` 三项。⇒ 对话侧直接 `var(--card-*)` 即可，默认拿初值、用户切方案后自动跟随，**不需要知道当前是哪套**。
+3. **只跟随「容器级」属性，尺寸级保持 em**：`--card-padding` 是 `22px 26px`，那是给**宽栏长文**的值，浮窗里会把卡片撑爆；对话的间距必须跟对话字号档一起缩（`lib/chat-font.ts` 的倍率）。
+4. **代码块 / 表格加壳走纯 CSS，刻意不走 `limo-block`**：标记驱动意味着「模型漏标 = 静默失效」，而加壳这件事**没有任何需要模型判断的东西**；纯 CSS 还让**全部历史消息立刻受益**。与产物侧 `table` / `code`（标记驱动）的差异是有意的——那边要保证「预览所见 = 导出所得」，这边**对话不导出**。
+5. **复制按钮的落点克制**：只给有明确边界的内容卡。`info` / `digest` 内容短、复制价值低于它占的注意力，**刻意不加**（有一条反向断言守着，防「顺手补齐」把这个取舍悄悄改掉）。
+6. **「换一批」端点做成无状态**（入参就是生成所需的原文，不碰 `SessionManager`）：按消息定位的两个可用坐标**在各处都不成立**——① 前后端消息 id **不同源**（前端 `nextMsgId()`，服务端 `msg_…`，一次会话进行中必然不同）；② 改用下标则多一层「前端数组与服务端数组同步」的隐含前提，而 `editMessage` / `deleteMessage` / `regenerate` 三个动作都在改它。代价是落库由前端承担（与那三个写动作同款）。
+7. **失败时保留原有那批**：替换语义管的是「成功时换成新的」。生成失败还把用户手上正能用的一批清掉是**纯粹的净损失**，且与首次生成失败的形态不同（那里本来就没有可保留的东西）。
+8. **`onRefresh` 缺省不渲染按钮**：产物侧（预览区笔记末尾）复用同一个 `ChatFollowUpList`，它没有可重跑的上游；默认渲染的话那边会多出一个点了没反应的控件——而**那种缺口没有任何断言会红**。
+
+### 影响范围
+
+- 后端：`app/core/artifact_blocks.py`（`CHAT_BLOCK_TYPES` 4 → 7）、`app/routers/chat.py`（`POST /api/chat/followups` + SSE 侧改用 `followup_payload`）、`app/agent/followup.py`（`FOLLOWUP_FAILED_MSG` + `followup_payload`）、`app/agent/prompts/formats.md`（三节 + 闸门量词）
+- 前端：`lib/markdown-scan.ts`（`CHAT_BLOCK_TYPES`）、`components/ai-chat/ChatMarkerContent.tsx`、`components/ai-chat/MessageItem.tsx`、`store/chatStore.ts`、`api/chat.ts`、`styles/chat-blocks.css`（重写）、`index.css`（删 `.markdown-chat` 节）、`styles/blocks.css`（注释订正）
+- 测试：新 `backend/tests/test_chat_followups.py`（16 条）；`frontend/src/test/chatBlocks.test.tsx`、`chatFollowUp.test.tsx`、`chatMarkersWiring.test.ts`、`fixtures/limo-blocks.json`
+
+⚠️ **不改 `VERSION` / `PROMPT_VERSION`**：对话侧没有产物版本号，`formats.md` 是**对话** prompt（不是产物 prompt），bump `PROMPT_VERSION` 会让产物侧的自证头凭空变化。
+⚠️ **`formats.md` 由 `PromptLoader` 单例在导入时读一次并缓存**，只改 `.md` 不重启后端**不生效**（零报错，开发期陷阱）。
+⚠️ **待实机确认**（风险已知）：默认 `paper` 骨架下 `--card-bg` == `--tk-surface` == assistant 气泡底色，对话卡片与气泡**同底**、只靠 `1px solid var(--tk-border)` 分层。若观感变糟，回退 `--card-bg-base` 取值或给 `.chat-*` 单独兜底——**不改跟随机制本身**。
+
+---
+
 ## 2026-10-12 — 联网检索审查修复：整体闸门 + 取消透传 + 死分支（同日续）
 
 ### 起因

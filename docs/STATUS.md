@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-10-12 | **版本**: 0.5.6
+**更新**: 2026-10-12 | **版本**: 0.5.7
 
 ---
 
@@ -13,15 +13,15 @@
 |------|------|
 | 后端 Python 文件 | 124（11 子目录：adapters 8 / agent 7 / core 29 / downloaders 1 / engines 15 / generation 18 / llm 4 / routers 20 / storage 2 / utils 6 / services 14）+ `limo_cli/` 9（CLI，独立于 `app/`） |
 | 前端 TS/TSX/CSS 文件 | 219（214 ts/tsx + 5 css；业务 141，测试 72，`setup.ts` 1） |
-| 前端测试文件 | 73（72 测试文件 + `setup.ts`；1009 个测试用例，vitest 全绿） |
-| 后端测试文件 | 76（含 `conftest.py` 共享 fixture；2026-10 新增 `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_export_md_images` / `test_export_tab_applicability` / `test_followup` / `test_artifact_followup` / `test_web_search_reference` / `test_chat_web_search`） |
+| 前端测试文件 | 73（72 测试文件 + `setup.ts`；1037 个测试用例，vitest 全绿） |
+| 后端测试文件 | 77（含 `conftest.py` 共享 fixture；2026-10 新增 `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_export_md_images` / `test_export_tab_applicability` / `test_followup` / `test_artifact_followup` / `test_web_search_reference` / `test_chat_web_search` / `test_chat_followups`） |
 | API 路由模块 | 19 业务模块（+ `__init__.py`，共 20 个 .py） |
-| API 端点 | 91（`@router.` 装饰器计数；含 `/api/cli/*` 七端点） |
+| API 端点 | 92（`@router.` 装饰器计数；含 `/api/cli/*` 七端点） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 17（docs/ 目录 .md 计数：architecture / frontend-patterns / export-pipeline / patterns / 对话协议 / AGENT-ONBOARDING / user-scenarios / plugins / prompts-inventory / BUILD / qianwen-models / ACKNOWLEDGMENTS / code-audit 1-3 + CHANGELOG / STATUS；design/ 另计） |
-| 代码行数 | 后端 app 33,879 + CLI 1,356 / 前端业务 23,107 / 前端测试 12,798（`wc -l` 累加；前端业务 = `src/` 下 ts/tsx **排除 `*.test.*` 与 `setup.ts`**，2026-10-12 按此口径实测重算） |
+| 代码行数 | 后端 app 34,143 + CLI 1,356 / 前端业务 23,339 / 前端测试 13,045（`wc -l` 累加；前端业务 = `src/` 下 ts/tsx **排除 `*.test.*` 与 `setup.ts`**，2026-10-12 按此口径实测重算） |
 
 ---
 
@@ -231,6 +231,7 @@
 | 合成 `excluded` 语义 bug | ✅ 落地时**由测试抓到**：后端 `done.excluded` 填的是**标题**，前端拿它从选中集做差集（按 id）→ **永远匹配不上** → 被排除的篇仍写进来源清单，「N 合 1」徽章指向产物根本没读过的文档；预览侧 `excludedSet.has(id)` 同病。**两边都错、两边看起来都对**，失败完全静默（不报错、差集恒为空）。统一为 **id**（标题经清洗且重名合法，做身份判定必然错 —— §4.2.2「标题是展示字段，不是身份凭据」）；`not_enough_notes` 的 detail 在调用点转回标题。⚠️ **只断言「有 2 条」的写法抓不到它**，必须断值本身（2026-10-02） |
 | 合成产物形态重做（二） | ✅ 上一轮（见上）改了约束与落点，**但骨架没换**。本轮从产物实测反推真因：**旧五段与已写入的文风条款正面冲突**——文风第 3/4/5 条禁「无新增信息地重复」，而骨架同时要求「分维度对比 → 共识与分歧 → 综合评价」把同一份对齐结果走三遍、且硬写「不得省略任何一段」⇒ 两条硬指令互斥、模型只能违反一边，**这才是「后四段占 96% 篇幅」的结构性来源**（不是文风条款不够）。换骨架：`## 这批材料放在一起说明了什么`（1–3 句给判断，禁元数据开场）/ `## 分歧在哪`（无分歧时不写）/ `## 读者问题`（3–6 个 `###`，每节三步：结论 / 材料怎么说 + `[文档 i]` 锚点 / 什么条件下不成立）/ `## 材料作用不同` / `## 材料索引`（**全文唯一允许表格处** + 覆盖情况一句话）。**维度降为「读者问题」的候选来源**（用户拍板：问题由模型按读者目的推导，不再当矩阵行标签——矩阵列 = 各篇文档，10 篇就是 11 列、中文单元格被压到十几个字符宽）——⚠️ 但**逐条注入不变、也不能删**（「模型倾向保留出现次数最多的内容，而不是最重要的内容」）。三处连带：① 事实约束第 3 条「未提及」是**表格单元格的填空规则**、表格移出正文后改写为「材料不足以判断」（**抽取阶段 `synthesis.py` 仍用「未提及」**——那是喂给最终模型的中间产物）；② 覆盖说明**第三次搬家**（概览段 → 综合评价末尾 → 材料索引表下，每次都跟着骨架走）；③ 文风续写第 8/9 条（说人话 / 不设篇幅上限但按读者问题数量定）——⚠️ 第 8 条**刻意不抄**单篇 `plain` 档的「不堆小标题和列表」，那句与要求 3–6 个 `###` 的新骨架正面冲突，是同一个病换个骨架复现一次（2026-10-05） |
 | 默认文风改通俗 | ✅ 新增 `plain` 档并设为**全局默认**（用户判断：「大部分用户一般默认文风就是要偏通俗，除非是论文那种要求严谨的才要求详细更多」）——此前**风格清单里根本没有「通俗」档**，默认是 detailed（与用户预期相反）。落点 **8 处，缺一即静默无风格**：`Style` 枚举 / `COMMON_NOTE_STYLES`（VIDEO、DOC 经 `**COMMON` 自动带出）/ `EXCEL_STYLE_MAP`（**同值引用 detailed**——数据摘要要的是准确与完整，「通俗」在此无意义）/ `styleLabels`（**手写 dict，不会随三张 MAP 自动带出**）/ 前端 `genPrefs` 默认值 / `GenPanel` 三处 fallback 数组 / 后端 6 处签名默认值。⚠️ 两条副作用显式处理：polish 豁免元组加 `plain`（否则**每生成一次整理版刷一条「已废弃」warning**）；**存量用户不受影响**（`{...DEFAULTS, ...raw}` 让已存的 `style` 覆盖新默认，**刻意不迁移**——用户当前的 detailed 可能是他显式选的，静默改掉是替他做决定）。**顺带修三个「静默改写风格档」的既有缺陷**（同一形态 ×3：**枚举值与风格表 key 不同形 → 白名单不含实际发来的值 → 被改回 detailed**，零报错）：`meeting`（枚举值是 `meeting_minutes`，而前端发的是 `meeting`）、`none`（不在枚举里、白名单没放行，而上一行注释白纸黑字写着「可能传 none」）、以及**修 `meeting` 时的反向回归**（白名单排在 `normalize_style` **之前** → `meeting_minutes` 旧调用方被拒，而 `STYLE_ALIAS` 存在的全部意义就是兼容它）→ 归一与校验**都走 `normalize_style`** + `none` 显式放行，收口到 `routers/generate.py::_normalize_and_validate_style()`（抽成模块级是为了让测试**直调真实实现**，而不是复刻一遍表达式——复刻的测的是它自己）。测试侧新补 `test_prompt.py` §8 五组断言（**全仓唯一**守护默认风格档的断言，此前每个调用点都显式传 `'detailed'`，默认值改成什么都不会变红）（2026-10-05） |
+| 文档 id 唯一 | ✅ 控制台 `Encountered two children with the same key, tr_336b128e8316` 查出真因：磁盘上**两份内容相同的文档目录**（Moby-Dick 两份，`transcript.md` 长度与 sha256 前 12 位完全一致）+ `index.json` 损坏触发 `_rebuild_index` → 它按**内容**派生 id ⇒ 同内容同 id。⚠️ 真正的危害不是前端告警而是 **`delete_transcript` 的 `find` 只命中第一条 ⇒ 第二条永远删不掉**（告警是唯一的可见征兆）。三条修：① `_unique_tx_id(seed, taken)` —— **首次尝试逐字等于旧行为**（绝大多数库零回归，否则升级一次全库 id 漂移）、撞了加盐、16 次仍撞退化为随机 id 绝不返回重复；② `_rebuild_index` 记 `taken_ids` 走它；③ 新增 `_dedupe_transcript_ids()` 启动时修**已有脏索引**（幂等，**只改 id 一个键**、不重扫磁盘、不碰 tags/folderId/来源/不删目录 —— 第 3 轮审计 P0 的教训；`markdowns`/`processes` 的 key 留在原 id 上，与 `find` 取首条一致）。⚠️ 不选「输出前静默去重」（违反失败显式化原则、且掩盖「磁盘上真有两份」）。测试 +5（`test_store_index_recovery.py`，含对照实验 —— ⚠️ 只掐第一道网时第二道会当场兜住，**对照实验反而全绿而结论是错的**）（2026-10-12） |
 | 模型预设核对脚本 | ✅ 开发期**变更哨兵** `scripts/check-models.py`（不进打包、不被后端 import）。考察参考项目 pi 的生成式模型目录（从 models.dev 生成进源码 + manifest 校验）后**推翻照搬方案**——实测 models.dev 不可作权威源：与官方页冲突（`qwen-turbo` 标 1M，官方 131072）、**自家数据自相矛盾**（anthropic 的 haiku 标 200K 而同家 sonnet/opus 标 1M，Claude 的 1M 需 beta header）、覆盖率仅 **54%** 且缺口正落在最新/最冷门模型上 ⇒ 定位改为「产出的**是问题不是答案**」，唯一用途是决定「打开哪一页」；照搬另会冲掉 `config.py` 里逐条人工查证注释（官方页 URL + 陷阱说明）。四类报告 A 新 / B 下架 / C 数值不一致 / D 缺字段；**墓碑同源**（消费既有 `RETIRED_MODEL_IDS`，否则每次都重报已知噪声）；**能力位不参与核对**（models.dev 的 `modalities` 说「模型能读 PDF」与我们认不认 `file` 块是两回事，模式 #51，仍只能逐家手标）；`PROVIDER_MAP` 漏映射 = **静默少核对一整个厂商**（报告照常输出、只是从不提及它）→ 脚本喊 stderr + `tests/test_check_models.py` 14 用例守卫（含「守卫真会红」对照实验）。**本轮只做数据层，不碰计费**（2026-10-02） |
 
 ## 目录结构

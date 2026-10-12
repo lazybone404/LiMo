@@ -40,6 +40,11 @@ vi.mock('../api/chat', async (importOriginal) => {
     listConversations: vi.fn(async () => []),
     getConversation: vi.fn(async () => null),
     rebuildConversationMessages: vi.fn(async () => ({ status: 'ok' })),
+    // ⚠️ 「换一批」也必须换掉：它走 `apiFetch` → 本文件的 `globalThis.fetch` 被 mock 成
+    // **SSE 流**（返回的是 `ReadableStream`，`.json()` 会炸）。给一个成功的**默认实现**
+    // 而不是让每个用例自己 `mockResolvedValueOnce` —— 一次性的实现没被消费掉就会
+    // 残留到下一个用例（`clearAllMocks` 只清调用记录，不清 once 队列）。
+    refreshFollowUps: vi.fn(async () => ({ type: 'followup', questions: ['换一批得到的新问题'], error: null })),
   }
 })
 
@@ -457,5 +462,127 @@ describe('⚠️ 四种 rebuild 都不丢追问', () => {
 
   it('editMessage(assistant)（就地覆盖）', async () => {
     expectKept(await payloadAfter(() => useChatStore.getState().editMessage('m4', '改过的回答')))
+  })
+})
+
+// ═══════════════════════════════════════════════════════════
+// 10. 「换一批」—— 只对有可重跑上游的那一份开放
+//
+// 两条来源里只有**后端补调**的那份能换：模型自主写在正文里的 `follow-up` 块住在
+// `content` 里，没有「上游问题 + 回答」这对输入可重跑。故准入判据落在
+// `msg.followUps` 上（那边为空即早退）。
+// ═══════════════════════════════════════════════════════════
+
+describe('ChatFollowUpList — 换一批按钮', () => {
+  const ITEMS = ['第一个追问是什么']
+
+  it('不传 `onRefresh` 时**不渲染**按钮（产物侧复用零回归）', () => {
+    // ⚠️ 判据是「没传 ⇒ 没有」，不是「传了 ⇒ 有」：预览区笔记末尾那处复用传的是
+    // `label` / `onSelect`、**不传** `onRefresh`（它没有可重跑的上游）。默认渲染的话
+    // 产物侧会多出一个点了没反应的控件 —— 而那种缺口没有任何断言会红。
+    const { container } = render(<ChatFollowUpList items={ITEMS} streaming={false} />)
+    expect(container.querySelector('.chat-followup-refresh')).toBeNull()
+    // 折叠开关照旧（按钮的有无不改标签行其余部分）
+    expect(container.querySelector('.chat-followup-label')).not.toBeNull()
+  })
+
+  it('传了就有；点一次调用一次', async () => {
+    const onRefresh = vi.fn(async () => {})
+    const { container } = render(<ChatFollowUpList items={ITEMS} streaming={false} onRefresh={onRefresh} />)
+    fireEvent.click(container.querySelector('.chat-followup-refresh')!)
+    await settle(2)
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('流式中禁用（新一批会挂到正在变的内容上）', () => {
+    const { container } = render(<ChatFollowUpList items={ITEMS} streaming onRefresh={async () => {}} />)
+    expect((container.querySelector('.chat-followup-refresh') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('连点两次只发一次请求（`refreshing` 期间早退）', async () => {
+    // 无这道闸门时每次点击都会独立地打完一轮 LLM 调用，而最后回来的那批胜出 ——
+    // 用户看到的是一批随机结果，且账单是点击次数。
+    let release!: () => void
+    const onRefresh = vi.fn(() => new Promise<void>(r => { release = r }))
+    const { container } = render(<ChatFollowUpList items={ITEMS} streaming={false} onRefresh={onRefresh} />)
+    const btn = container.querySelector('.chat-followup-refresh')!
+    fireEvent.click(btn)
+    fireEvent.click(btn)
+    release()
+    await settle(2)
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('`MessageItem` 上接了线（漏了 = 按钮看得见、点了一点反应没有）', () => {
+    const msg: ChatMsg = { id: 'm1', role: 'assistant', content: '答', date: 'd', followUps: ['一条追问'] }
+    const { container } = render(<MessageItem msg={msg} scale="md" />)
+    expect(container.querySelector('.chat-followup-refresh')).not.toBeNull()
+  })
+})
+
+describe('chatStore.refreshFollowUps', () => {
+  const seed = (): ChatMsg[] => [
+    { id: 'm1', role: 'user', content: '上游问题', date: 'd' },
+    { id: 'm2', role: 'assistant', content: '上游回答', date: 'd', followUps: ['旧的一批'] },
+  ]
+  const put = (msgs: ChatMsg[], streaming = false) =>
+    useChatStore.setState({ messages: msgs, currentId: 'conv1', streaming })
+
+  it('上游取自**向前最近的一条 user**（与 `regenerate` 同一套配对规则）', async () => {
+    put(seed())
+    await useChatStore.getState().refreshFollowUps('m2')
+    await settle(2)
+    expect(vi.mocked(chatApi.refreshFollowUps)).toHaveBeenCalledWith('上游问题', '上游回答')
+  })
+
+  it('成功 → 替换该条的 `followUps` 并落库', async () => {
+    put(seed())
+    await useChatStore.getState().refreshFollowUps('m2')
+    await settle(4)
+    const msg = useChatStore.getState().messages[1]
+    expect(msg.followUps).toEqual(['换一批得到的新问题'])
+    expect(msg.followUpError).toBeUndefined()
+    // 落库走整表覆盖（与 deleteMessage / editMessage 同款）
+    const payload = vi.mocked(chatApi.rebuildConversationMessages).mock.calls.at(-1)![1]
+    expect(payload[1].follow_ups).toEqual(['换一批得到的新问题'])
+  })
+
+  it('失败 → **保留原有那批** + 记下原因（替换语义只管成功那一半）', async () => {
+    // ⚠️ 生成失败还把用户手上正能用的一批清掉，是纯粹的净损失 —— 这条挡的正是它。
+    vi.mocked(chatApi.refreshFollowUps).mockResolvedValueOnce({
+      type: 'followup', questions: [], error: '追问建议生成失败',
+    })
+    put(seed())
+    await useChatStore.getState().refreshFollowUps('m2')
+    await settle(4)
+    const msg = useChatStore.getState().messages[1]
+    expect(msg.followUps).toEqual(['旧的一批'])
+    expect(msg.followUpError).toBe('追问建议生成失败')
+  })
+
+  it('流式中不动（与 `deleteMessage` 同款守卫）', async () => {
+    // 调用方本身不写 content，但末尾那次**整表 rebuild** 会把「含半成品回复的快照」
+    // 整表回写，与正在流的那条互相打架。
+    put(seed(), true)
+    await useChatStore.getState().refreshFollowUps('m2')
+    await settle(2)
+    expect(chatApi.refreshFollowUps).not.toHaveBeenCalled()
+  })
+
+  it('模型自主写在正文里的那份 → 早退（它没有可重跑的上游）', async () => {
+    // 追问住在 `content` 里（`follow-up` 块），`followUps` 为空。放行的话会拿
+    // 正文里的块当回答去重跑，生成一批与那条内容无关的问题。
+    put([{ id: 'm1', role: 'assistant', content: '带 follow-up 块的正文', date: 'd' }])
+    await useChatStore.getState().refreshFollowUps('m1')
+    await settle(2)
+    expect(chatApi.refreshFollowUps).not.toHaveBeenCalled()
+  })
+
+  it('目标消息已被删掉 → 什么都不做（陈旧响应不许落到别处）', async () => {
+    put(seed())
+    await useChatStore.getState().refreshFollowUps('不存在的 id')
+    await settle(2)
+    expect(chatApi.refreshFollowUps).not.toHaveBeenCalled()
+    expect(useChatStore.getState().messages[1].followUps).toEqual(['旧的一批'])
   })
 })

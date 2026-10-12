@@ -24,7 +24,7 @@ from app.agent.tools import search_web, fetch_url
 from app.agent.tool_registry import ToolRegistry, ToolDef
 from app.agent.session import SessionManager
 from app.agent.compress import should_compress, compress_history
-from app.agent.followup import generate_followups, should_attempt
+from app.agent.followup import followup_payload, generate_followups, should_attempt
 from app.agent.prompts import loader as prompt_loader
 from app.core.artifact_blocks import parse_blocks
 
@@ -404,7 +404,9 @@ async def chat_stream(
                     # 前端收得到；而 `done` 一到输入框就已可用，用户不必等这几秒。
                     # ⚠️ 失败也要推（`questions: []` + `error`）——「开了开关却什么都没有」
                     # 必须看得出是失败，不是静默。
-                    yield f"data: {json.dumps({'type': 'followup', 'questions': follow_ups or [], 'error': None if follow_ups else '追问建议生成失败'}, ensure_ascii=False)}\n\n"
+                    # ⚠️ 载荷形状走 `followup_payload`（与「换一批」端点**共用一份**）：
+                    # 两个消费点渲染的是同一张卡，两处各拼一遍 dict = 失败文案会分叉。
+                    yield f"data: {json.dumps(followup_payload(follow_ups), ensure_ascii=False)}\n\n"
 
                 # ⚠️ **`blocks` 是本轮唯一不靠肉眼判断的模型行为信号**：`limo-block` 卡片组 /
                 # 追问建议是**模型可选**的输出，遵循率与滥用率都只能在真实流量里看。
@@ -430,3 +432,56 @@ async def chat_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+class FollowUpRequest(BaseModel):
+    """「换一批」的入参 —— **无状态**：只带生成所需的原文，不带会话 / 消息标识。"""
+
+    question: str = ""
+    answer: str
+    model_id: int | None = None
+
+
+@router.post("/chat/followups")
+async def refresh_followups(req: FollowUpRequest, config=Depends(get_config)) -> dict[str, object]:
+    """为一条已有回答**重新生成**一批追问建议（前端「换一批」按钮）。
+
+    ⚠️ **刻意做成无状态**（入参就是生成所需的原文，端点本身不碰 `SessionManager`）。
+    按消息定位需要的标识在两处都不成立：① **客户端与服务端的消息 id 不同源** ——
+    前端 `ChatMsg.id` 由 `nextMsgId()` 生成，服务端 `SessionManager.append_*` 生成的是
+    `msg_…`，一次会话进行中两者**必然不同**；② 改用**下标**定位则多一层「前端数组与
+    服务端数组是否同步」的隐含前提，而 `editMessage` / `deleteMessage` / `regenerate`
+    三个动作都在改它（那正是这层前提会静默失效的地方）。
+    代价是**落库由前端承担**（`chatStore.refreshFollowUps` 拿到新一批后调
+    `rebuildConversationMessages`，与上述三个写动作同款）—— 没有「刷新后变回旧的一批」
+    这种静默不一致。
+
+    ⚠️ 与生成结束时的补调**共用同一份编排**：`generate_followups`（准入、超时、抽项）
+    + `followup_payload`（形状与失败文案）。另写一份的话，两条路径产出的同一张卡会在
+    「什么算失败、失败说什么」上分叉。
+
+    ⚠️ 失败**不吞**（与 SSE 侧「失败也推事件」同一条纪律，但形态相反）：这里没有
+    「已推送的流」可挂错误，且入参非法属**调用方错误**（空 answer 前端根本不会发）。
+    真正生成不出问题（模型超时 / 抽不出项）走**成功响应 + `error` 字段**，
+    由前端决定怎么显示 —— 那是可预期的业务结果，不是请求失败。
+    """
+    if not req.answer.strip():
+        raise AppError("CHAT_FOLLOWUP_NO_ANSWER", "没有可用于生成追问的回答内容", recoverable=False)
+
+    model_id = req.model_id or config.get("scene_models", {}).get("chat")
+    llm = LLMService(config, model_id=model_id)
+    if not llm.api_key:
+        raise AppError("CHAT_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
+
+    try:
+        # ⚠️ 不传 `cancel_event`：本请求的生命周期就是这次调用，客户端断开由 ASGI 层
+        # 取消任务承担；SSE 侧那个 `cancel_event` 属于**对话流**，这里根本没有它。
+        questions = await generate_followups(llm, req.question, req.answer)
+        return followup_payload(questions)
+    finally:
+        # 本端点**自己新建**了 llm，故必须关（与 `_run_followup_llm` 那条
+        # 「复用调用方的实例、绝不 aclose」的纪律不冲突：那条说的是别关**别人的**）。
+        try:
+            await llm.aclose()
+        except Exception:
+            pass

@@ -219,3 +219,25 @@ export async function clearConversationContext(id: string, index: number) {
     body: JSON.stringify({ index }),
   })).json()
 }
+
+/**
+ * 「换一批」追问建议 —— 重新生成同一条回答的追问候选。
+ *
+ * ⚠️ **入参只有原文，没有会话 / 消息标识**（后端端点也是无状态的）。原因是**消息 id
+ * 两侧不同源**：这里 `ChatMsg.id` 由 `nextMsgId()` 生成，后端 `SessionManager` 生成的是
+ * `msg_…` —— 一次会话进行中两者必然不同，拿前端的 id 去后端定位只会 404 或定位到别的
+ * 消息。⚠️ 于是**落库由调用方负责**（`chatStore.refreshFollowUps` 拿到新一批后调
+ * `rebuildConversationMessages`）—— 端点本身不碰会话数据。
+ *
+ * ⚠️ 返回形状与 SSE 的 `followup` 事件**逐字相同**（后端 `followup_payload` 只此一份）：
+ * `questions` 为空即失败，`error` 非空是给人看的原因。⚠️ 生成不出问题**不是**请求失败
+ * （HTTP 200 + `error`），调用方不要靠 try/catch 判失败。
+ */
+export async function refreshFollowUps(
+  question: string, answer: string, modelId?: number | null,
+): Promise<{ type: string; questions: string[]; error: string | null }> {
+  return (await apiFetch(`${BASE}/chat/followups`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, answer, model_id: modelId ?? null }),
+  })).json()
+}

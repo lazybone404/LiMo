@@ -556,7 +556,7 @@ system = loader.build(doc_context, web_search=allow_web)  # base + 联网层 + r
 - `base.md` → 角色定义
 - **联网层**（2026-10-12）→ `web_tools.md`（能用 `search_web` / `fetch_url` + 搜索结果的使用规则）**或** `no_web.md`（明确声明没有联网能力，不许声称「根据最新数据」、不许编造来源）
 - `rules.md` → 硬约束（禁止编造、先查再答…）
-- `formats.md` → 回答可用的**语义块**（`limo-block` 的四个对话侧类型：`card-group` 卡片组 / `follow-up` 追问建议 / `info` 信息卡 / `digest` 摘要卡），见 9.5
+- `formats.md` → 回答可用的**语义块**（`limo-block` 的**七个**对话侧类型：`card-group` 卡片组 / `follow-up` 追问建议 / `info` 信息卡 / `digest` 摘要卡 / `caution` 注意事项 / `how-to` 操作步骤 / `quote` 引用出处），见 9.5
 - `doc_context` → 运行时注入的文档内容（`smart_truncate(rawText, 1000)` 按句子边界截断）
 
 ⚠️ `formats` 排在 `rules` 之后、`doc_context` 之前：它是「回答怎么呈现得好读」的**补充**，
@@ -591,7 +591,7 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 
 **C 端隐私**：`tool_result` 仅推送摘要（计数/长度），完整结果只传给 LLM 不出现在前端 UI。`tool_start` 的 `display` 由后端 `_tool_display()` 生成安全文案。无独立 `ref` 事件——引用随 `tool_result.refs` 携带。⚠️ **`sources` 不在「完整结果」之列**（2026-10-12）：它推的是 `{title, url}`（title 截到 200 字），与 `refs` 里已有的 `{docId, title}` 是同一种粒度；那条约束管的是 `fetch_url` 的 4000 字正文、`lookup_doc` 的 2000 字全文。URL 由 `llm/agent.py::_safe_http_url` 过滤（http/https + 无空白 + ≤2000 字）。
 
-### 9.5 回答的语义块（`formats.md`，2026-10-11）
+### 9.5 回答的语义块（`formats.md`，2026-10-11；2026-10-12 扩到七种）
 
 | 类型 | 触发条件 | 渲染方 |
 |------|---------|--------|
@@ -599,10 +599,19 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 | `follow-up` | 回答末尾有 2–4 个自然的下一步问题 | 同上 → 可点击的追问 chip |
 | `info` | 讲清一个对象（概念/工具/来源/做法），且它值得被单独框出来、之后可能单独回来查 | 同上 → 带图标的信息卡 |
 | `digest` | 回答较长时，在**开头**给出 2–5 条压缩后的要点 | 同上 → 带图标的摘要卡 |
+| `caution` | 要提醒一个**风险 / 易错点 / 前提条件**（做错有代价、不做不能继续） | 同上 → 警示色边框的提醒卡（⚠️ 色用 `--tk-warning` **不是** `--tk-error`，严重度由**文字**承担，同产物侧 `alert` 的判据） |
+| `how-to` | 主体是**一组有先后顺序的操作步骤**（照做即成一件事） | 同上 → 编号列表卡（⚠️ 规范要求块内写**有序**列表，CSS 的编号样式靠 `<ol>` 认） |
+| `quote` | 要**引用一段原文或他人观点**并标明出处 | 同上 → 引用卡（出处小字靠 `blockquote + p` 相邻兄弟选择器） |
 
-⚠️ **总量闸门**（「四种块合计不超过两块」）：逐条判据管「这一块该不该用」，闸门管
-「一次回答用几块」—— 四种同时可用时滥用是实数风险（`card-group` 一块就够，`info` 又长得
-像普通段落），缺了后者只剩前者时，模型可以每一块都「判据成立」。
+⚠️ **新增的三种（2026-10-12）名字刻意避开产物侧九种**：`caution` 而非语义相近的
+`alert`、`how-to` 而非产物侧的 `steps`。两侧集合本就**刻意不相交**（见下方「与产物侧的关系」），
+名字撞上等于「同一套渲染器服务两种语义」—— 而它们的判据、CSS 归宿、导出待遇都不同。
+
+⚠️ **总量闸门**（「这些块合计不超过两块」）：逐条判据管「这一块该不该用」，闸门管
+「一次回答用几块」—— 七种同时可用时滥用是实数风险（`card-group` 一块就够，`info` 又长得
+像普通段落），缺了后者只剩前者时，模型可以每一块都「判据成立」。⚠️ **加类型时数字刻意不动**：
+闸门强度是「一次回答用几块」这个**用量**问题，与可选类型有几种无关；把 4 改成 7 等于
+在加形态的同一轮里悄悄放宽了它。
 
 **三条写作纪律**（照图表管道那套）：
 
@@ -639,11 +648,18 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 
 | 入口 | 上游 | 材料怎么进 prompt |
 |---|---|---|
-| `build_followup_prompt()` ← `generate_followups()` | `routers/chat.py::sse_stream` | `<用户的问题>` + `<回答>`（先 `digest_answer` 保头 800 + 尾 1500） |
+| `build_followup_prompt()` ← `generate_followups()` | `routers/chat.py::sse_stream` 与 **`routers/chat.py::POST /chat/followups`（「换一批」）** | `<用户的问题>` + `<回答>`（先 `digest_answer` 保头 800 + 尾 1500） |
 | `build_artifact_followup_prompt()` ← `generate_artifact_followups()` | `routers/generate.py::_do_followup` | `<笔记主题>` + `<笔记内容>` —— **产物侧没有「用户的问题」**，换成标题 + 正文 |
 
 ⚠️ **两侧放同一文件**（而非各起一个模块）：条款与解析层是共享的，分家会把「同源」
 重新变成「跨目录的两份」。
+
+⚠️ **「换一批」是同一份编排的第二个调用点（2026-10-12）**，不是第二套 prompt：端点
+`POST /api/chat/followups` 拿到的就是同一批问题，故它**只**调 `generate_followups`，
+载荷形状也只走 `followup_payload`（该函数是**失败文案与 `error` 判据的唯一住址**）。
+⚠️ 该端点**无状态**（入参 `{question, answer, model_id}`，不碰 `SessionManager`）——
+根因见 `routers/chat.py` 的 docstring（前后端消息 id 不同源、下标定位依赖被三个写动作
+破坏的前提）。
 
 **⚠️ 产物侧的 `followup` 是「登记但零注入」的格式项。** `AVAILABLE_OPTIONS` 七类各登记了
 `"followup"`（它是 `genOptions` 的唯一来源 —— 不登记则勾选项根本不显示，且 GenPanel 提交时
@@ -1104,7 +1120,7 @@ process 产物确实带 `promptVersion`，而分类根本没有产物可带。
 | [backend/app/engines/ocr.py](backend/app/engines/ocr.py) | DashScopeOCREngine — 4 种图片处理模式（与 process.py 重复） |
 | [backend/app/agent/prompts/base.md](backend/app/agent/prompts/base.md) | Agent 角色定义层（分层 System Prompt 第一层） |
 | [backend/app/agent/prompts/rules.md](backend/app/agent/prompts/rules.md) | Agent 硬约束层（禁止编造、先查再答…第二层） |
-| [backend/app/agent/prompts/formats.md](backend/app/agent/prompts/formats.md) | Agent 回答的语义块规范（`limo-block` 的四个对话侧类型 `card-group` / `follow-up` / `info` / `digest`，第三层；见 9.5） |
+| [backend/app/agent/prompts/formats.md](backend/app/agent/prompts/formats.md) | Agent 回答的语义块规范（`limo-block` 的七个对话侧类型 `card-group` / `follow-up` / `info` / `digest` / `caution` / `how-to` / `quote`，第三层；见 9.5） |
 | [backend/app/agent/prompts/__init__.py](backend/app/agent/prompts/__init__.py) | `PromptLoader` — 组装 base + rules + formats + 动态 doc_context（chat.py 的旧内联 SYSTEM_PROMPT 已迁移至此） |
 | [backend/app/agent/tools.py](backend/app/agent/tools.py) | 5 个工具 ToolDef + 工具描述（search_docs / lookup_doc / list_docs / search_web / fetch_url） |
 | [backend/app/llm/agent.py](backend/app/llm/agent.py) | AgentRunner — SSE 事件流（agent_status / tool_start / tool_result / thinking / text / done） |

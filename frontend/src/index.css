@@ -427,40 +427,10 @@ body {
 .chat-msg-md { font-size: calc(14px * var(--chat-font-scale, 1)); }
 .chat-msg-lg { font-size: calc(15px * var(--chat-font-scale, 1)); }
 
-/* ── Chat Markdown ──────────────────────────────────────── */
-
-.markdown-chat table { border-collapse: collapse; width: 100%; margin: 0.5em 0; font-size: 0.9em; }
-.markdown-chat th, .markdown-chat td {
-  border: 1px solid var(--md-table-border);
-  padding: 6px 10px;
-  text-align: left;
-}
-.markdown-chat th {
-  background: var(--md-table-header-bg);
-  font-weight: 600;
-}
-.markdown-chat code {
-  background: var(--md-code-bg);
-  color: var(--md-code-color);
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 0.9em;
-}
-.markdown-chat pre {
-  background: var(--tk-hover);
-  padding: 10px 14px;
-  border-radius: 8px;
-  overflow-x: auto;
-  margin: 0.5em 0;
-}
-.markdown-chat pre code { background: none; padding: 0; }
-.markdown-chat blockquote {
-  border-left: 3px solid var(--md-blockquote-border);
-  padding-left: 12px;
-  color: var(--tk-dimmed);
-  margin: 0.5em 0;
-}
-.markdown-chat ul, .markdown-chat ol { padding-left: 1.5em; margin: 0.3em 0; }
+/* ⚠️ `.markdown-chat`（对话正文的表格 / 代码 / 引用 / 列表）**已搬到
+   `styles/chat-blocks.css`**（2026-10-12）—— 它与那里的 `limo-block` 语义块作用在
+   **同一批节点**上（块内就是普通 Markdown），分住两个文件时「给块内的表格加样式」
+   得先想清楚两边谁压谁。**别在这里加回来**，改去那个文件。 */
 
 /* ── Mindmap Dark Mode — use markmap's native .markmap-dark ─ */
 

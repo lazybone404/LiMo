@@ -9,10 +9,10 @@
   "meta": {
     "protocolVersion": "v1",
     "_knownTypes_comment": "**协议并集**的跨语言守卫：前端与后端的 KNOWN_BLOCK_TYPES 都必须等于 knownTypes，且必须满足「== artifactTypes ∪ chatTypes」与「两者不相交」。加类型时改这里 + 两侧各改一处 + **写渲染器**，漏改任一处即红。",
-    "knownTypes": ["key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "table", "code", "image", "card-group", "follow-up", "info", "digest"],
+    "knownTypes": ["key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "table", "code", "image", "card-group", "follow-up", "info", "digest", "caution", "how-to", "quote"],
     "_sideTypes_comment": "⚠️ **「协议知道这个 type」与「某一侧实现了渲染」是两件事**：这两个子集是各侧真写了渲染分支的类型。把两者混为一谈的失效方式是静默的 —— 只进 knownTypes 而不写渲染器，等于宣称「有人处理它」，实际会被原样当正文吐出来（零报错）。故拆开、由断言核对。",
     "artifactTypes": ["key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "table", "code", "image"],
-    "chatTypes": ["card-group", "follow-up", "info", "digest"],
+    "chatTypes": ["card-group", "follow-up", "info", "digest", "caution", "how-to", "quote"],
     "_sectionTypes_comment": "⚠️ **第三节集合：节级修饰符**（2026-10-11）—— 它们**不是块**：`matchBlockOpen` / `match_open` 对它们返回 null（标记行对标题扫描完全透明，因此模型把标记写在标题**之前**也不会吞掉那个标题），而是改「**这一节**渲染成什么」的修饰符。`card` 写在 `##` 标题之下 ⇒ 该节成卡。⚠️ **刻意不进 `knownTypes`** —— 那个集合的语义是「块类型」，而 `is_known_type` 决定的是「包不包强调块外壳」，两种判定混在一起会让「card 不开块」这条静默失效。",
     "sectionTypes": ["card"]
   },
@@ -225,6 +225,42 @@
         }
       ],
       "stripped": "![三层架构](assets/arch.png)\n\n自上而下是界面、服务与存储。"
+    },
+    {
+      "name": "对话注意事项（caution）—— 块内普通 Markdown 原样保留",
+      "md": "<!-- limo-block:v1 type=\"caution\" -->\n**该接口有速率限制**，高频调用会被拒绝。\n<!-- /limo-block -->",
+      "segments": [
+        {
+          "kind": "block",
+          "type": "caution",
+          "content": "**该接口有速率限制**，高频调用会被拒绝。"
+        }
+      ],
+      "stripped": "**该接口有速率限制**，高频调用会被拒绝。"
+    },
+    {
+      "name": "对话操作步骤（how-to）—— 块内有序列表原样保留（CSS 靠 `<ol>` 编号，故结构是判据）",
+      "md": "<!-- limo-block:v1 type=\"how-to\" -->\n1. 安装依赖\n2. 配置环境变量\n3. 启动服务\n<!-- /limo-block -->",
+      "segments": [
+        {
+          "kind": "block",
+          "type": "how-to",
+          "content": "1. 安装依赖\n2. 配置环境变量\n3. 启动服务"
+        }
+      ],
+      "stripped": "1. 安装依赖\n2. 配置环境变量\n3. 启动服务"
+    },
+    {
+      "name": "对话引用出处（quote）—— 块内引用与出处文字原样保留",
+      "md": "<!-- limo-block:v1 type=\"quote\" -->\n> 过早优化是万恶之源。\n\n—— Donald Knuth\n<!-- /limo-block -->",
+      "segments": [
+        {
+          "kind": "block",
+          "type": "quote",
+          "content": "> 过早优化是万恶之源。\n\n—— Donald Knuth"
+        }
+      ],
+      "stripped": "> 过早优化是万恶之源。\n\n—— Donald Knuth"
     }
   ],
   "h2Cases": [
