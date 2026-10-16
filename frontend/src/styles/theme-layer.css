@@ -1,0 +1,390 @@
+/* ══════════════════════════════════════════════════════════
+   LiMo — 主题层（Theme Layer）· 纯数据
+   ══════════════════════════════════════════════════════════
+
+   **这个文件里只有变量声明，零消费方选择器。** 谁消费由宿主决定：
+     前端 → `index.css` 的 `.preview-area` / `.markdown-body` / `.tex-card`
+     导出 → 后端 `HTML_THEMES["limo"]` 段内的 `body` 规则
+   同一份数据两个宿主，是因为「预览所见 = 导出所得」这条核心约束要求颜色
+   也只有一份真相源 —— 后端的 `--tk-*` 硬编码副本（`_CARD_TOKENS_CSS`）正是
+   没有这一层时的症状。
+
+   ⚠️ **不搬进来的两块，各有硬理由**（写在这里防下一个人「顺手理顺」）：
+   · `@theme`（Tailwind v4 指令）—— 它是**构建期指令**不是主题数据；且它必须与
+     消费它的工具类同处一个 Tailwind 入口文件。
+   · `@font-face`（LXGW WenKai）—— `src: url('./fonts/…')` 是**相对 CSS 文件**解析的，
+     搬走 = 静默 404 + 字体回退，全程零报错。字体文件在 `src/fonts/`，与 `index.css` 同级。
+
+   ── 轴与层叠 ──────────────────────────────────────────────
+   data-theme(明暗) × data-accent(配色) × data-base(基调) × data-texture(纹理) × data-font(字体)
+
+   以下四块的顺序**不能动**（三者特异性同为 (0,1,0)、作用在同一个 `<html>` 上，
+   谁生效完全由顺序决定）：
+       1. `:root` 浅色底盘
+       2. `[data-base="…"]` × 13   ← 只在浅色覆盖基调；暗色下让位给下一块
+       3. `[data-theme="dark"]`
+   `test/themeTokens.test.ts` 有守卫钉住这个次序（2026-10-16 之前 base 写在 `:root`
+   之前，5 个底色变量被整组盖回 warm ⇒ 界面基调整轴静默失效）。
+   ══════════════════════════════════════════════════════════ */
+
+/* ══════════════════════════════════════════════════════════
+   Layer 0 — 配色原语（data-accent 驱动）
+   每套只存 4 个 HSL 原语，其余色值全部动态派生。
+   26 套 = 现代 9 + 国风 9 + 自然 8；加一套只需在此加一行。
+   ══════════════════════════════════════════════════════════ */
+
+/* 现代 */
+[data-accent="sky"]       { --accent-hue: 211; --accent-sat: 100; --second-hue: 195; --second-sat: 80;  }
+[data-accent="ocean"]     { --accent-hue: 225; --accent-sat: 60;  --second-hue: 210; --second-sat: 50;  }
+[data-accent="sunset"]    { --accent-hue: 30;  --accent-sat: 100; --second-hue: 345; --second-sat: 70;  }
+[data-accent="forest"]    { --accent-hue: 145; --accent-sat: 60;  --second-hue: 160; --second-sat: 45;  }
+[data-accent="lavender"]  { --accent-hue: 272; --accent-sat: 60;  --second-hue: 340; --second-sat: 50;  }
+[data-accent="slate"]     { --accent-hue: 220; --accent-sat: 15;  --second-hue: 215; --second-sat: 25;  }
+/* 国风 */
+[data-accent="dunhuang"]  { --accent-hue: 2;   --accent-sat: 80;  --second-hue: 40;  --second-sat: 75;  }
+[data-accent="porcelain"] { --accent-hue: 225; --accent-sat: 50;  --second-hue: 215; --second-sat: 22;  }
+[data-accent="ink"]       { --accent-hue: 30;  --accent-sat: 10;  --second-hue: 125; --second-sat: 30;  }
+[data-accent="rouge"]     { --accent-hue: 350; --accent-sat: 70;  --second-hue: 285; --second-sat: 25;  }
+[data-accent="celadon"]   { --accent-hue: 170; --accent-sat: 30;  --second-hue: 215; --second-sat: 20;  }
+[data-accent="osmanthus"] { --accent-hue: 40;  --accent-sat: 75;  --second-hue: 5;   --second-sat: 50;  }
+[data-accent="matcha"]   { --accent-hue: 135; --accent-sat: 35;  --second-hue: 155; --second-sat: 25;  }
+[data-accent="cherry"]   { --accent-hue: 355; --accent-sat: 75;  --second-hue: 340; --second-sat: 55;  }
+[data-accent="pine"]     { --accent-hue: 130; --accent-sat: 25;  --second-hue: 150; --second-sat: 20;  }
+[data-accent="coral"]    { --accent-hue: 12;  --accent-sat: 85;  --second-hue: 25;  --second-sat: 70;  }
+[data-accent="spearmint"]{ --accent-hue: 150; --accent-sat: 40;  --second-hue: 170; --second-sat: 30;  }
+[data-accent="plum"]     { --accent-hue: 290; --accent-sat: 45;  --second-hue: 320; --second-sat: 40;  }
+[data-accent="vermillion"]{--accent-hue: 10;  --accent-sat: 70;  --second-hue: 30;  --second-sat: 60;  }
+[data-accent="indigo"]   { --accent-hue: 240; --accent-sat: 35;  --second-hue: 260; --second-sat: 30;  }
+[data-accent="sandalwood"]{--accent-hue: 25;  --accent-sat: 40;  --second-hue: 45;  --second-sat: 35;  }
+[data-accent="olive"]    { --accent-hue: 80;  --accent-sat: 35;  --second-hue: 100; --second-sat: 28;  }
+[data-accent="teal"]     { --accent-hue: 175; --accent-sat: 45;  --second-hue: 195; --second-sat: 35;  }
+[data-accent="blossom"]  { --accent-hue: 348; --accent-sat: 60;  --second-hue: 8;   --second-sat: 50;  }
+[data-accent="peony"]    { --accent-hue: 340; --accent-sat: 65;  --second-hue: 355; --second-sat: 55;  }
+[data-accent="rosegold"] { --accent-hue: 20;  --accent-sat: 55;  --second-hue: 345; --second-sat: 50;  }
+
+/* 默认 = 天际蓝（`data-accent` 未设置时） */
+:root:not([data-accent]) { --accent-hue: 211; --accent-sat: 100; --second-hue: 195; --second-sat: 80; }
+
+/* ══════════════════════════════════════════════════════════
+   Layer 0b — 主色/辅色的派生（**必须挂在 `[data-accent]` 上**）
+
+   ⚠️ **`:root` 那一半不可省**：首帧（JS 未跑、`applyAccent` 还没执行）与
+   「固定主题导出」（不带 `data-accent`）时 `<html>` 上根本没有该属性 —— 只写
+   `[data-accent]` 就没人声明 `--tk-accent`，**主色整条消失**（按钮/链接/边框全废）。
+   `:root` 恒命中 `<html>`，`[data-accent]` 命中局部色卡（设置页/向导），两个都要。
+
+   ⚠️ **这条规则存在的理由是 CSS 自定义属性的计算值语义**：`var()` 在
+   **computed-value time** 完成替换，**继承传递的是计算值**（规范：
+   `Computed value: specified value with variables substituted`）。
+   ⇒ 若只在 `:root` 派生一次，`<html>` 上就算完了，**子元素上重设 `--accent-hue`
+   不能回溯改变它** —— 设置页 26 个色块会全部显示成应用当前配色。
+   挂了 `[data-accent]` 之后，色卡在**自己身上**重跑一次派生，用自己那份原语。
+   （`data-base` / `data-texture` / `data-font` 不受此影响：它们是**直接声明**
+   在色卡元素上的，而直接声明永远赢过继承值 —— 只有走「派生」的 accent 会坏。）
+
+   亮度的四个档位（`--accent-lit` / `--accent-lit-hover` / `--secondary-lit` /
+   `--secondary-lit-hover`）由 `:root` 与 `[data-theme="dark"]` 覆盖，见 Layer 1/2。
+   ⚠️ 明暗两档的 hover **偏移方向相反**（浅色更深 −8%，暗色更浅 +10%），
+   所以是四个独立字面量，不是「同一个偏移量」。
+   ══════════════════════════════════════════════════════════ */
+
+:root,
+[data-accent] {
+  --tk-accent: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), var(--accent-lit));
+  --tk-accent-hover: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), var(--accent-lit-hover));
+  --tk-secondary: hsl(var(--second-hue), calc(var(--second-sat) * 1%), var(--secondary-lit));
+  --tk-secondary-hover: hsl(var(--second-hue), calc(var(--second-sat) * 1%), var(--secondary-lit-hover));
+}
+
+/* ══════════════════════════════════════════════════════════
+   Layer 1 — 浅色底盘（`:root`）
+   ⚠️ 派生那 4 行**不在这里** —— 见 Layer 0b。这里只声明参数与不随配色变的令牌。
+   ══════════════════════════════════════════════════════════ */
+
+:root {
+  /* ⚠️ **底色（`--tk-surface` / `--tk-elevated` / `--tk-hover` / `--tk-border` /
+     `--tk-border-light`）不在这里** —— 它们与 `[data-base]` 是同一族，必须与
+     `[data-base="…"]` 规则住在一起（见下方 Layer 1b）。曾经写在这里：那时
+     `data-base="warm"` **没有任何规则命中**，设置页的暖灰色卡只能继承 `<html>` 的
+     `--tk-surface` ⇒ **14 张基调色卡里 warm 那张永远显示成当前基调**（另外 13 张
+     各自有规则，是对的）。2026-10-16 档 A 改成色块消费 `var()` 时才暴露。 */
+
+  /* 文本 — 暖灰阶，从 foreground 明度递减 */
+  --tk-foreground: #1C1C1E;
+  --tk-dimmed: #5E5C5A;
+  --tk-muted: #8A8886;
+  --tk-disabled: #AEACA9;
+  /* 边框 */
+  --tk-border: #D6D3CE;
+  --tk-border-light: #EBE7E2;
+
+  /* ── 主色/辅色的四个亮度档（派生在 Layer 0b）──
+     ⚠️ 亮度单独抽成变量（P1-16）：`lib/onAccent.ts` 要读 `--accent-lit` 来算
+        「白字 vs 深字哪个对比度高」，而 JS 读不到 `calc(var(--accent-sat) * 1%)`
+        这种嵌在 `hsl()` 里的表达式。抽出来之后**色相/饱和度/亮度三个参数都住在 CSS 里**，
+        选择逻辑是**算出来的** —— 不是在前端复制一份色表（模式 #54：同源是搜索题）。
+     ⚠️ 这四个是**参数**不是成品色：改它们会同时改变 `--tk-accent(-hover)` /
+        `--tk-secondary(-hover)`，也会改变 JS 那边算出的 on-accent 前景。 */
+  --accent-lit: 50%;
+  --accent-lit-hover: 42%;
+  --secondary-lit: 44%;
+  --secondary-lit-hover: 36%;
+
+  /* 主色实底之上的前景色 — 由 JS 按 WCAG 对比度在黑白间选优后**内联写入**
+     （`lib/onAccent.ts`，行内样式优先级高于本规则）。这里给的是**首帧兜底**：
+     JS 尚未执行时按白字显示，而不是让文字变透明/继承。
+     ⚠️ 别再往实底按钮上写 `text-white` —— 主色在 dark 下亮度 62%，
+        白字对比度只有 ~2.9:1（「暖阳」预设 1.9:1），低于 WCAG AA 的 4.5:1，
+        连大字放宽档 3:1 都够不上。用 `text-on-accent`。 */
+  --tk-on-accent: #FFFFFF;
+
+  /* 功能性 */
+  --tk-success: #34C759;
+  --tk-warning: #FF9500;
+  --tk-error: #FF3B30;
+}
+
+/* ══════════════════════════════════════════════════════════
+   Layer 1b — 界面基调（data-base 驱动）
+
+   ⚠️ **这一块的位置有硬约束**：必须在 Layer 1 的浅色 `:root`（上方）之后、
+   `[data-theme="dark"]`（下方）之前 —— 别挪。
+
+   它和 `:root` 的特异性**同为 (0,1,0)**、作用在**同一个元素**（`<html>`）上、
+   写的是**同 5 个底色变量**，胜负完全由**顺序**决定。住在这里 →
+   浅色模式下基调覆盖默认的 warm；而 `[data-theme="dark"]` 又在它之后 →
+   暗色模式下暗色底座覆盖基调（基调是**浅色模式**的底色偏色，刻意不给深色值）。
+
+   ⚠️ **2026-10-16 修复**：这一块此前写在 `:root` **之前**，5 个变量被 `:root` 整组
+   盖回 warm ⇒ **界面基调整轴失效**（自 `e3a9027` 引入那天起就是，`THEME_PRESETS`
+   的 base 轴同样从未生效 —— 20 个预设全都设了 base）。当时没被发现，是因为
+   **所有预览都是对的**：设置页基调色块是内联 hex（`style={{background:…}}`）、
+   向导预设卡片把 `data-base` 设在**非根元素**上（那里规则是生效的 —— 继承值永远输给
+   直接声明），只有「应用到 `<html>`」这一条路被盖住。这是个**断言看不见、只有全局
+   生效路径才看得见**的失效形态。⇒ 现在由 `test/themeTokens.test.ts` 的比较**次序**
+   的守卫钉住（不是比某段文本在场 —— 三块一个字都没少）。
+
+   ⚠️ **`warm`（默认基调）必须写成 `:root, [data-base="warm"]` 两条腿**，不能只留
+   `:root` 那一半 —— 第二腿服务的是**局部色卡**（设置页基调色块、预设卡带的
+   `data-base`）。色卡元素上若无任何规则命中，它会**继承 `<html>` 的 `--tk-surface`**
+   ⇒ warm 那张卡永远显示成当前基调的颜色，而另外 13 张各自有规则、全是对的：
+   **14 张里错 1 张**，且错的那张看起来只是「跟随了主题」，是最难被发现的一类。
+   （与 Layer 0b 的 `:root, [data-accent]` 同款手法、同款理由。
+     值也只有这一份 —— 不在 Layer 1 的 `:root` 里再写一遍。） */
+
+:root,
+[data-base="warm"] { --tk-surface: #F4F1EE; --tk-elevated: #FAF8F5; --tk-hover: #EDEAE6; --tk-border: #D6D3CE; --tk-border-light: #EBE7E2; }
+
+[data-base="neutral"] { --tk-surface: #F5F5F5; --tk-elevated: #FCFCFC; --tk-hover: #ECECEC; --tk-border: #D8D8D8; --tk-border-light: #E8E8E8; }
+[data-base="cream"]   { --tk-surface: #F9F6F0; --tk-elevated: #FEFCF8; --tk-hover: #F2EDE4; --tk-border: #E0D8CA; --tk-border-light: #EDE6DA; }
+[data-base="cool"]    { --tk-surface: #F2F3F5; --tk-elevated: #F8F9FC; --tk-hover: #E8EAEE; --tk-border: #D4D6DA; --tk-border-light: #E4E6EA; }
+[data-base="rose"]    { --tk-surface: #F5F1F2; --tk-elevated: #FBF8F9; --tk-hover: #EEE6E8; --tk-border: #D8CED2; --tk-border-light: #E8DEE2; }
+[data-base="sage"]    { --tk-surface: #F2F4F0; --tk-elevated: #F8FAF7; --tk-hover: #E8ECE6; --tk-border: #D0D6CE; --tk-border-light: #E0E6DE; }
+[data-base="jade"]    { --tk-surface: #EEF2ED; --tk-elevated: #F5F8F4; --tk-hover: #E4EAE3; --tk-border: #CED4CD; --tk-border-light: #DEE4DD; }
+[data-base="amber"]   { --tk-surface: #F9F4EA; --tk-elevated: #FEFBF5; --tk-hover: #F2EBDE; --tk-border: #E0D6C4; --tk-border-light: #EDE6D8; }
+[data-base="pearl"]   { --tk-surface: #F7F6F3; --tk-elevated: #FDFCFB; --tk-hover: #EEEDEA; --tk-border: #DEDCD8; --tk-border-light: #EBE9E5; }
+[data-base="mint"]    { --tk-surface: #EDF4EF; --tk-elevated: #F4FAF6; --tk-hover: #E3EDE6; --tk-border: #CDD8D0; --tk-border-light: #DDE8E0; }
+[data-base="sand"]    { --tk-surface: #F6F2EA; --tk-elevated: #FCF9F3; --tk-hover: #EFE9DD; --tk-border: #DDD5C5; --tk-border-light: #EBE5D8; }
+[data-base="lilac"]   { --tk-surface: #F3F0F6; --tk-elevated: #FAF8FC; --tk-hover: #ECE7F0; --tk-border: #D6D0DC; --tk-border-light: #E6E0EC; }
+[data-base="cloud"]   { --tk-surface: #F3F4F8; --tk-elevated: #FAFBFC; --tk-hover: #EAEBF0; --tk-border: #D4D6DC; --tk-border-light: #E3E5EB; }
+[data-base="blush"]   { --tk-surface: #F7F1F2; --tk-elevated: #FDF9FA; --tk-hover: #F1E8EA; --tk-border: #DDD0D4; --tk-border-light: #EDE0E4; }
+
+/* ══════════════════════════════════════════════════════════
+   Layer 2 — 暗色（data-theme="dark"）
+
+   **只覆盖参数与底盘，不重复派生那 4 行** —— 这不只是省几行，是**载荷性**的：
+   `var()` 替换用的是该元素上 **cascaded 之后**的参数，与规则先后无关，
+   故 `<html data-theme="dark" data-accent="sky">` 两者都命中时，
+   Layer 0b 的 `--tk-accent` 自然取到本块覆盖后的 `--accent-lit: 62%`。
+   反过来，若在这里再写一遍成品 `--tk-accent`（改造前的写法），
+   就退化成「靠规则先后」裁决 —— 一个没必要存在、且改顺序就会静默坏的耦合。
+
+   ── ⚠️ `@media screen` 是**载荷性**的（2026-10-16 加）──
+
+   `@media (prefers-color-scheme: dark)` 与 `@media print` **不互斥**（同时匹配），
+   而 `[data-theme="dark"]` 是属性选择器，**它感知不到媒体类型** ⇒ 打印时这个块
+   照样生效，`--tk-foreground: #E6E3E0` 这类浅色文字落在白纸上几乎看不见。
+   导出侧受这条影响最直接：`_PRINT_CSS` 的 `!important` 只管 `body`/代码容器，
+   管不到 `h1~h4` / `a` / `strong` / `blockquote` / 表格 —— 全是 `var(--md-*)` 驱动的。
+
+   两种修法摆在面前：① 在导出侧再写一份「暗色 → 浅色」的还原表（那就是**同一份
+   主题数据的第三份副本**，正是本轮要消灭的形态）；② 声明「**暗色是屏幕概念，
+   纸永远是浅的**」。取 ② —— 一处改动，前端与导出两个宿主同时正确，且打印时
+   拿到的是**该配色自己的浅色档**（Layer 1 的 `:root` 仍在那儿），而不是一份写死的蓝。
+
+   ⚠️ 代价如实记录：**应用内打印**（用户在浏览器/WebView 里对应用本身按 Ctrl+P）
+   也会打印成浅色。应用内打印样式本来就没做过适配，且方向是「更可读」，可接受。
+   ══════════════════════════════════════════════════════════ */
+
+@media screen {
+[data-theme="dark"] {
+  --tk-surface: #161618;
+  --tk-elevated: #222226;
+  --tk-hover: #1C1C20;
+  --tk-foreground: #E6E3E0;
+  --tk-dimmed: #8A8884;
+  --tk-muted: #6A6864;
+  --tk-disabled: #504E4B;
+
+  /* 主色/辅色 — 暗色下亮度抬高（浅色档见 Layer 1）。
+     ⚠️ hover 的偏移方向与浅色**相反**（+10% 而非 −8%），故四个值都是字面量。 */
+  --accent-lit: 62%;
+  --accent-lit-hover: 72%;
+  --secondary-lit: 56%;
+  --secondary-lit-hover: 66%;
+
+  --tk-border: #3A3A40;
+  --tk-border-light: #2E2E34;
+  --tk-success: #30D158;
+  --tk-warning: #FF9F0A;
+  --tk-error: #FF453A;
+}
+} /* ← @media screen 收尾（理由见本块开头的注释） */
+
+/* ══════════════════════════════════════════════════════════
+   Layer 3 — Markdown 颜色变量（`--md-*`）
+
+   全部从 `--tk-*` 或 accent/secondary 原语派生，**无独立硬编码色值**。
+   ⚠️ 派生自 `--tk-*` 的那几条（`--md-blockquote-bg` / `--md-code-bg` /
+   `--md-table-*` / `--md-hr`）**必须用 `var(--tk-*)` 而不是 `@theme` 的
+   `--color-*` 桥令牌** —— 桥令牌只存在于 `index.css` 的 `@theme` 里
+   （Tailwind 构建指令，**不随本文件走**），导出侧从不定义它们 ⇒
+   暗色表格边框 / 分隔线 / 表头底会**静默消失**（2026-10-16 修）。
+   ══════════════════════════════════════════════════════════ */
+
+/* 浅色 — 标题/引用用辅色，链接/代码/加粗用主色 */
+:root {
+  --md-h1: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 22%);
+  --md-h2: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 30%);
+  --md-h3: hsl(var(--second-hue), calc(var(--second-sat) * 0.8 * 1%), 38%);
+  --md-h4: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 46%);
+  --md-strong: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.8 * 1%), 36%);
+  --md-link: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 46%);
+  --md-blockquote-bg: var(--tk-hover);
+  --md-blockquote-border: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 48%);
+  --md-code-bg: var(--tk-hover);
+  --md-code-color: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.7 * 1%), 38%);
+  --md-table-border: var(--tk-border);
+  --md-table-header-bg: var(--tk-hover);
+  --md-hr: var(--tk-border);
+}
+
+/* 暗色 — 降低 sat 避免荧光感，提高 lightness
+   ⚠️ 同 Layer 2：**包在 `@media screen` 里**，否则打印时这批浅色标题落在白纸上
+   （`--md-h1: …78%` 那种亮度在白纸上是淡到看不见的）。 */
+@media screen {
+[data-theme="dark"] {
+  --md-h1: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 78%);
+  --md-h2: hsl(var(--second-hue), calc(var(--second-sat) * 0.65 * 1%), 68%);
+  --md-h3: hsl(var(--second-hue), calc(var(--second-sat) * 0.7 * 1%), 60%);
+  --md-h4: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 52%);
+  --md-strong: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.65 * 1%), 72%);
+  --md-link: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.8 * 1%), 65%);
+  --md-blockquote-bg: var(--tk-hover);
+  --md-blockquote-border: hsl(var(--second-hue), calc(var(--second-sat) * 0.8 * 1%), 54%);
+  --md-code-bg: var(--tk-hover);
+  --md-code-color: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.55 * 1%), 72%);
+  --md-table-border: var(--tk-border);
+  --md-table-header-bg: var(--tk-hover);
+  --md-hr: var(--tk-border);
+}
+} /* ← @media screen 收尾 */
+
+/* ══════════════════════════════════════════════════════════
+   Layer 4 — 阅读字体（data-font 驱动）
+
+   只声明 `--font-reading`；**消费方自己决定谁用它**（前端是 `.preview-area` /
+   `.markdown-body` / `.tex-card`，导出侧是 `body`）。
+   ⚠️ 这里曾经是 `[data-font="x"] .preview-area, … { font-family: … }` ——
+   那种写法**导出侧够不到**（导出页没有这三个 class），于是「选了字体但导出不跟随」。
+   改成变量后同一份数据两个宿主都能用。
+
+   ⚠️ system 档的 `var(--font-sans, -apple-system)` **兜底不可省**：`--font-sans`
+   住在 `@theme` 里（Tailwind 指令，不随本文件走），导出侧没有它 ——
+   没有兜底则整条 `font-family` 声明在**计算值阶段作废**（var 未定义 + 无 fallback
+   ⇒ 该声明变成 `unset`），字体静默回退到继承值。
+   ══════════════════════════════════════════════════════════ */
+
+[data-font="system"]  { --font-reading: var(--font-sans, -apple-system), -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+[data-font="kaiti"]   { --font-reading: 'KaiTi', 'STKaiti', serif; }
+[data-font="songti"]  { --font-reading: 'Songti SC', 'SimSun', 'STSong', serif; }
+[data-font="fangsong"]{ --font-reading: 'FangSong', 'STFangsong', serif; }
+[data-font="wenkai"]  { --font-reading: 'LXGW WenKai', 'KaiTi', serif; }
+
+/* ══════════════════════════════════════════════════════════
+   Layer 5 — 纸张纹理（data-texture 驱动）
+
+   只声明三个变量，**消费方自己决定谁、怎么用**：
+     前端 `lib/texture.css` → `.preview-area` / `.tex-card[data-texture]`
+     导出 → `HTML_THEMES["limo"]` 段内的 `body` 规则
+
+   ⚠️ **`plain` 档刻意不在这里定义** —— 它的语义是「没有纹理」，未定义即由消费方
+   的 `var(--texture-bg-*, <兜底>)` 决定，而两个宿主该有的兜底**不同**：
+     · `.preview-area` 透明（露出 body 的 `--tk-surface`，与改造前逐字一致）
+     · 设置页的纹理色块取 `var(--tk-surface)`（否则「显示真实纹理」在 plain 上
+       会显示成一片透明）
+   在这里给 plain 填一个统一值，就等于替两个宿主做了同一个决定 —— 那正是
+   「消费方各自决定」要避免的。
+
+   ⚠️ 每套的最后一层 `linear-gradient` 里嵌着 `var(--second-hue)` / `var(--accent-hue)`：
+   它在**声明元素上**完成替换。于是「色卡带自己的 `data-accent`」时会用**自己的**
+   配色算图案，「`<html>` 带 `data-accent`」时全体一致 —— 两种都对。
+   ══════════════════════════════════════════════════════════ */
+
+/* ── 宣纸 ── 纤维噪声 + 不均匀染色 ──────────────────── */
+[data-texture="xuan"] {
+  --texture-bg-color: #F6EFE4;
+  --texture-bg-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.35' numOctaves='4' stitchTiles='stitch' seed='7'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23a)' opacity='0.20' fill='%23807050'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='b'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='3' stitchTiles='stitch' seed='23'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23b)' opacity='0.22' fill='%23908060'/%3E%3C/svg%3E"),
+    radial-gradient(ellipse at 12% 18%, rgba(200,180,140,0.16) 0%, transparent 50%),
+    radial-gradient(ellipse at 55% 82%, rgba(210,190,150,0.15) 0%, transparent 40%),
+    repeating-linear-gradient(82deg, transparent 0, transparent 6px, rgba(160,140,100,0.08) 6px, rgba(160,140,100,0.08) 7px, transparent 7px, transparent 14px),
+    linear-gradient(170deg, hsl(var(--second-hue), calc(var(--second-sat) * 0.3 * 1%), 94%) 0%, hsl(var(--accent-hue), calc(var(--accent-sat) * 0.15 * 1%), 97%) 100%);
+  --texture-blend: normal, normal, normal, normal, normal, soft-light;
+}
+
+/* ── 牛皮纸 ── 粗噪声 + 斜向纤维 ────────────────────── */
+[data-texture="kraft"] {
+  --texture-bg-color: #F4E8D4;
+  --texture-bg-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.4' numOctaves='4' stitchTiles='stitch' seed='31'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23a)' opacity='0.22' fill='%23908060'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150'%3E%3Cfilter id='b'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.0' numOctaves='3' stitchTiles='stitch' seed='47'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='150' height='150' filter='url(%23b)' opacity='0.18' fill='%23706048'/%3E%3C/svg%3E"),
+    radial-gradient(ellipse at 20% 30%, rgba(180,160,120,0.16) 0%, transparent 50%),
+    repeating-linear-gradient(85deg, transparent 0, transparent 5px, rgba(140,120,80,0.12) 5px, rgba(140,120,80,0.12) 6px, transparent 6px, transparent 12px),
+    linear-gradient(160deg, hsl(var(--second-hue), calc(var(--second-sat) * 0.25 * 1%), 93%) 0%, hsl(var(--accent-hue), calc(var(--accent-sat) * 0.12 * 1%), 96%) 100%);
+  --texture-blend: normal, normal, normal, normal, soft-light;
+}
+
+/* ── 羊皮纸 ── 大尺度噪声 + 边缘渐深 ────────────────── */
+[data-texture="parchment"] {
+  --texture-bg-color: #F6F0E4;
+  --texture-bg-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.25' numOctaves='5' stitchTiles='stitch' seed='13'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='400' height='400' filter='url(%23a)' opacity='0.18' fill='%23908060'/%3E%3C/svg%3E"),
+    radial-gradient(ellipse at 10% 15%, rgba(200,180,140,0.28) 0%, transparent 40%),
+    radial-gradient(ellipse at 50% 90%, rgba(200,180,140,0.22) 0%, transparent 45%),
+    radial-gradient(ellipse at 80% 80%, rgba(190,170,130,0.12) 0%, transparent 40%),
+    linear-gradient(175deg, hsl(var(--second-hue), calc(var(--second-sat) * 0.2 * 1%), 94%) 0%, hsl(var(--accent-hue), calc(var(--accent-sat) * 0.1 * 1%), 97%) 100%);
+  --texture-blend: normal, normal, normal, normal, soft-light;
+}
+
+/* ── 竹纸 ── 竖向竹纤维 + 浅绿噪声 ──────────────────── */
+[data-texture="bamboo"] {
+  --texture-bg-color: #F1F4EC;
+  --texture-bg-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='250' height='250'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.5' numOctaves='3' stitchTiles='stitch' seed='59'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='250' height='250' filter='url(%23a)' opacity='0.14' fill='%23808860'/%3E%3C/svg%3E"),
+    repeating-linear-gradient(90deg, transparent 0, transparent 28px, rgba(150,165,100,0.10) 28px, rgba(150,165,100,0.10) 29px, transparent 29px, transparent 56px),
+    radial-gradient(ellipse at 30% 40%, rgba(180,200,140,0.08) 0%, transparent 50%),
+    linear-gradient(180deg, hsl(var(--second-hue), calc(var(--second-sat) * 0.2 * 1%), 95%) 0%, hsl(var(--accent-hue), calc(var(--accent-sat) * 0.1 * 1%), 98%) 100%);
+  --texture-blend: normal, normal, normal, soft-light;
+}
+
+/* ── 信笺 ── 横格线 + 淡紫噪声 ──────────────────────── */
+[data-texture="letter"] {
+  --texture-bg-color: #F4F0F6;
+  --texture-bg-image:
+    repeating-linear-gradient(0deg, transparent 0, transparent 23px, rgba(160,140,200,0.20) 23px, rgba(160,140,200,0.20) 24px),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.6' numOctaves='3' stitchTiles='stitch' seed='71'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23a)' opacity='0.10' fill='%23908080'/%3E%3C/svg%3E"),
+    linear-gradient(170deg, hsl(var(--second-hue), calc(var(--second-sat) * 0.2 * 1%), 96%) 0%, hsl(var(--accent-hue), calc(var(--accent-sat) * 0.1 * 1%), 98%) 100%);
+  --texture-blend: normal, normal, soft-light;
+}

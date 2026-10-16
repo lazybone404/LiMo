@@ -6,6 +6,137 @@
 
 ---
 
+## 2026-10-16 — 主题系统优化：JS 里只剩 label + 轴注册表 + 导出跟随应用主题
+
+### 起因
+
+六轴主题系统（明暗 × 26 套配色 × 14 种基调 × 6 种纹理 × 5 种字体 × 强度滑条）**用户看得见的
+部分是好的**，但底下积累了三类问题，且已经漂移出可观测的错：
+
+**一、色值有三份副本，其中两份和真相不符**
+
+| 副本 | 位置 | 现状 |
+|---|---|---|
+| `BASE_OPTIONS` 56 个 hex | [lib/theme-base.ts](../frontend/src/lib/theme-base.ts) | 与 CSS 一致，纯重复 |
+| `ACCENT_SWATCH` 52 个 hsl | [lib/accent.ts](../frontend/src/lib/accent.ts) | hue/sat 逐项一致，**L 散在 13 种取值（32~60）**，而实机恒为 50%（浅）/ 62%（暗）—— 色块亮度**不是**实机亮度 |
+| `TEXTURE_SWATCH` 6 个 hex | [lib/texture.ts](../frontend/src/lib/texture.ts) | 与 [lib/texture.css](../frontend/src/lib/texture.css) 的 `background-color` **6/6 全不符** |
+
+这三份表**零守门人** —— 主题域约 95 个用例全在测**行为**，没有一条测**数据一致性**，所以漂移了也静默。
+
+**二、加一条轴要改 5~6 处，且启动链靠手写**
+
+`store/index.ts` 有 12 行手写 `apply*(getSaved*())`，注释里记录着**已踩坑三次**。层叠顺序是**隐含约束** ——
+`[data-base]` 必须住在 `:root` 与 `[data-theme=dark]` 之间（三者特异性同为 (0,1,0)、作用在同一元素，
+顺序即裁决），**这条此前被写反过，整轴静默失效**（所有预览都是对的，因为预览把 `data-base` 设在非根元素上
+—— 继承值永远输给直接声明）。
+
+**三、导出完全不跟随应用主题 —— 直接违背项目写死的核心约束**
+
+`HTML_THEMES["limo"]` 是自包含裸色值 CSS，零 `var()`、零 `--tk-*`；两个导出入口一个 accent/base 参数
+都不传，恒用硬编码蓝 `#2563EB`。**骨架 / 卡片方案 / 逐维度微调 / 标记装饰全都跟随了，唯独颜色不跟随。**
+顺带暴露更要命的一条：limo 主题用 `@media (prefers-color-scheme: dark)` 而非 `data-theme`
+⇒ **导出文件的明暗不由用户决定，由打开文件的读者机器的系统偏好决定**。
+
+### 做什么
+
+| # | 改动 | 落点 |
+|---|---|---|
+| 1 | 新增**主题层** `styles/theme-layer.css`：六轴的**纯数据层**（全部是变量声明，零消费方选择器）。`index.css` 用 `@import` 引入 | 前端新建 |
+| 2 | 新增**轴注册表** `lib/theme-axes.ts`：key / attr / storageKey / options / fallback / apply 一处收口 | 前端新建 |
+| 3 | 删 `ACCENT_SWATCH` / `TEXTURE_SWATCH` 整表、`BASE_OPTIONS` 的 4 个色值字段；色块改 `data-*` + `var()` 渲染 | `accent.ts` / `texture.ts` / `theme-base.ts` |
+| 4 | `store/index.ts` 12 行手写启动链 → `THEME_AXES.forEach(a => a.apply(a.saved()))`；`themeSlice` 5 个 setter 收敛为 `setAxis` | 前端 |
+| 5 | `[data-accent]` **自己重跑一次派生**（新增 `:root, [data-accent] { --tk-accent: hsl(…) }`） | `theme-layer.css` |
+| 6 | 导出跟随：`_build_selfcontained_html()` 加 6 参数 → 过字符白名单 → 拼 `<html>` 属性 + 行内 `--texture-opacity` | `export.py` |
+| 7 | 主题层注入闸门：**有任一轴参数才注入**，且排在 `HTML_THEMES` **之前**（变量先定义、后消费） | `export.py` |
+| 8 | `_CARD_TOKENS_CSS` → `_EXPORT_NEUTRAL_TOKENS_CSS`，**仅在未跟随时**注入（跟随路径由主题层接管） | `export.py` |
+| 9 | `HTML_THEMES["limo"]` 重写：配色类换 `var()` + 今天裸值作 fallback，排版结构类原样；**删 `@media print` 还原段** | `export.py` |
+| 10 | 两个暗色块（主题层的 `--tk-*` 与 `--md-*`、limo 主题的暗色段）**全部包进 `@media screen`** | `theme-layer.css` / `export.py` |
+| 11 | `_PRINT_CSS` 补 `body::before { display: none }`（纹理叠加层在纸上会把正文压成灰底） | `export.py` |
+| 12 | 前端两个导出入口补 6 参数（query / POST body）；`ExportPanel` 的 `limo` 项文案改「**跟随应用主题**」（key 不变） | `ExportMenu.tsx` / `ExportPanel.tsx` |
+| 13 | `LiMoBackend.spec` 的 datas 加 `theme-layer.css` | 打包 |
+| 14 | 测试：新增 `test_export_theme.py`（18 条）+ `themeAxisSync.test.ts`；改 `test_export_print.py` / `test_export_blocks.py` / `themeTokens.test.ts` / `onAccent.test.ts` / `exportMarkers.test.ts` / `store.test.ts` | 两侧 |
+
+### 为什么这么设计
+
+1. **「JS 里只剩 label，一个色值都不留」是档 A 的唯一目标**。文档此前就写着「色块与实机是同源数据」，
+   但同源的办法一直是**抄一份值**——两份值只要有一次没同步就静默漂移（`TEXTURE_SWATCH` 已经 6/6 全错）。
+   改法是**让色块消费与实机完全相同的那些变量**（`data-accent` + `var(--tk-accent)`），
+   于是「不一致」从结构上不可能发生 —— 不需要守卫，因为**值只有一份**。
+   这正是 [onAccent.ts](../frontend/src/lib/onAccent.ts) 早就写着的做法（「本模块一个色值都不存」），
+   只是此前没推广到另外三条轴。
+2. **`[data-accent]` 必须自己重跑派生**（`#5`）—— CSS 自定义属性的**计算值**是「指定值经 `var()` 替换后的
+   结果」，**继承传递的是计算值**。故 `:root { --tk-accent: hsl(var(--accent-hue), …) }` 在 `<html>` 上就算完了，
+   **子元素上设 `data-accent` 不改变它**。不补这条，删掉 `ACCENT_SWATCH` 之后设置页 26 个色块会
+   **全部显示成应用当前配色** —— 比现状（26 个硬编码但至少互不相同）**更糟**。
+   ⚠️ 这也解释了为什么同批要落到 `:root, [data-accent]` **两条腿**：`:root` 那一半是必需的 ——
+   首帧（JS 未执行）与固定主题导出时 `<html>` 上没有该属性，只写 `[data-accent]` 会让主色整条消失。
+3. **同批还修掉一个既存 bug**：[OnboardingWizard](../frontend/src/components/ui/OnboardingWizard.tsx) 的
+   4 张预设卡在子元素上消费 `var(--tk-accent)` —— 于是 4 个圆点与标题色**全都等于应用当前配色**，
+   而同一块的 `var(--tk-surface)` 是对的（它是直接声明）。`#5` 落地后它自动正确，**组件零改动**。
+   决策前**未实机确认**（用户已看到效果），如实记录。
+4. **明暗块的 `@media screen` 是「暗色是屏幕概念，纸永远是浅的」这一条判断的落地**。
+   改前的做法是「先铺暗色、再写一段 `@media print` 还原成浅色」，判据是「还原段必须排在暗色段之后」
+   —— 因为 `@media (prefers-color-scheme: dark)` 与 `@media print` **不互斥，会同时匹配**，
+   靠源顺序裁决。改后**没有还原段**：暗色块整个包进 `@media screen`，打印时**根本不匹配**，
+   落下来的是该配色自己的浅色档。**一处改动让三个宿主同时正确**（应用内 / 导出屏幕 / 导出打印），
+   且打印拿到的不再是一份写死的蓝（选「胭脂」的暗色用户打印出来终于会是胭脂的浅色）。
+   ⚠️ 代价如实记录：**应用内打印**（对应用本身 Ctrl+P）也会打印成浅色 —— 可接受（那套样式本来
+   就没适配过，且方向是「更可读」）。
+5. **`_EXPORT_NEUTRAL_TOKENS_CSS` 不能删，只能收窄条件**（`#8`）。原先的判断（「固定主题不消费
+   `var(--tk-*)`，删了无害」）只对 `HTML_THEMES` 那段 CSS 成立 —— `cards.css` / `blocks.css` 是
+   **按 `skeleton=card` / 有标记无条件注入**的，消费者身份与 `html_theme` 无关。删掉它 + 恒注入主题层，
+   会让 **paper/github/minimal 的卡片与语义块底色从 `#ffffff` 变暖白**（视觉回归），
+   连 `@media print` 的纯白强制也一并丢失。
+   ⚠️ 两者取值 6/6 不同（`--tk-surface`: `#ffffff` vs 暖白 `#F4F1EE`；`--tk-accent`: `#2563eb` vs
+   `hsl(211,100%,50%)`）—— 这正是「跟随」的**语义**差别，不是 bug。
+6. **白名单只做字符，不持有第二张表**（`#6`）。后端**刻意不维护 key 列表** —— 那是 CSS 那份真相源的
+   第二份副本。五个选择型轴用 `^[a-z0-9-]{1,24}$`，`texture_opacity` 用 `^(?:0|1|0?\.\d{1,4})$`。
+   非法值**静默丢弃该项**（判据：某个轴值不对**不改变产物的性质**），其余轴照常。
+   ⚠️ 字符集里绝不能有 `"` `<` `>` 空格 `=`：`data-accent="{v}"` 是**原样拼接的注入面**。
+   ⚠️ 小数位限 **4** 与长度上限同一条理由 —— 字符白名单**不限制长度**，一次请求可以带几 MB 的合法数字进 `<style>`。
+7. **「刻意不跟随」的最后三处，且这是判据不是遗漏**（与 `TYPE_COLORS` 同款）：时间戳徽标
+   （`#007aff` / `#ff9500` 是**类别标识色**，跨主题保持可辨识）、Pygments 屏幕段与打印段（代码高亮
+   主题是独立的产品决策，正交于 `--tk-*`）、以及**未跟随 + 卡片**这一档的明暗仍由读者系统决定
+   （固定主题本就该固定）。三处**各加一句注释说明这是刻意分界**，否则下一个人会当漏网之鱼来「修」。
+8. **零回归的两条落点**：① 无轴参数 ⇒ 一个属性都不写、主题层不注入 ⇒ 与改造前**逐字节相同**
+   （第三方脚本与历史调用方零回归）；② `limo` 的配色写成「变量 + 今天裸值」的 fallback 形式
+   （`var(--tk-foreground, #1C1C1E)`）—— 零回归靠 **`var()` 兜底**而不是靠分支。
+   `HTML_THEMES["paper"/"github"/"minimal"]` **一字未动**。
+9. **不选「构建期生成 CSS」**（档 C）：那会把 CSS 变成生成物、调试体验变差，属「预建大教堂」。
+   主题层用 `@import` 接入 —— 实测构建产物里 `@import` 内容**插入在语句位置**，
+   故主题层落在 texture 宿主规则之后、消费者规则之前，**相对顺序不变**；
+   且主题层规则与消费者规则**都不带 `@layer`**，移动位置不改变优先级。
+
+### 影响范围
+
+- 前端：新增 `styles/theme-layer.css`、`lib/theme-axes.ts`、`test/themeAxisSync.test.ts`；
+  改 `index.css`、`lib/accent.ts`、`lib/theme-base.ts`、`lib/texture.ts`、`lib/texture.css`、
+  `store/index.ts`、`store/themeSlice.ts`、`components/settings/SettingsPage.tsx`、
+  `components/ui/ExportMenu.tsx`、`components/ui/ExportPanel.tsx`
+- 后端：`app/routers/export.py`（`_load_theme_layer_css` / 6 参数 / 白名单 / 注入闸门 /
+  `_EXPORT_NEUTRAL_TOKENS_CSS` / `HTML_THEMES["limo"]` / `_PRINT_CSS` / 三处传参）
+- 打包：`backend/LiMoBackend.spec` 的 datas **必须**含 `theme-layer.css`
+  —— ⚠️ 少了这一行**开发版全绿而打包版导出直接 500**（读不到文件时按纪律显式抛错，不静默输出无主题的 HTML）
+- 测试：后端 +18（`test_export_theme.py`），前端新增一致性守卫 + 6 处判据更新
+- ⚠️ **不动 `VERSION`**（本轮未要求打包）；**不改 `PROMPT_VERSION`**（不涉及发给模型的文本）
+
+### 已知偏差与残余风险
+
+1. **导出页纹理叠加层的四边 40px 无纹理**：`body` 有 `margin: 40px auto`，而叠加层 `inset: 0`
+   覆盖的是 padding box。可接受（应用内那条 `::before` 是同款形态）。
+2. **导出卡片底色变化**：未跟随时是 `#ffffff`，跟随时是用户基调色（暖白系）—— 这是「跟随」的语义，
+   需要真人看一次观感。
+3. **测试里解析 CSS 文本必须处理 `@media` 嵌套**：`([^{}]+)\{([^}]*)\}` 遇到
+   `@media screen { [data-theme="dark"] { … } }` 时 `([^}]*)` 会一路吃到**内层的** `}`，
+   于是「选择器」被算成 `@media screen`、`[data-theme="dark"]` 掉进「声明体」里 ——
+   症状是 `darkAt()` **恒返回 -1**（判据不再测任何东西，且不报错）。见 patterns #71。
+4. **`themeSlice` 的明暗轴参与注册表但 `apply` 带特化**（还要设 `style.colorScheme` + 调
+   `applyOnAccent`）；**纹理强度不进注册表**（它是数值轴不是选择型，启动链里单独一行 + 注释说明理由）。
+5. **`data-texture` 的变量值里嵌 `var(--second-hue)`**，替换在**声明元素**上完成 ⇒ 导出侧若某子树带
+   `data-accent`，会用到 `<html>` 的 accent 算好的图案。应用内无此场景，导出页也没有。
+
+---
+
 ## 2026-10-12 — 文档 id 唯一：重建不再按内容撞 id + 启动自愈已有脏索引
 
 ### 起因

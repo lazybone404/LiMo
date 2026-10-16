@@ -3,10 +3,9 @@
  * 字段/action 定义见对应 slice 文件，共享类型见 types.ts。
  */
 import { create } from 'zustand'
-import { applyTheme, resolveTheme, getSavedTheme } from '../lib/theme'
-import { applyAccent, getSavedAccent } from '../lib/accent'
-import { applyTexture, applyFont, applyIntensity, getSavedTexture, getSavedFont, getSavedIntensity } from '../lib/texture'
-import { applyBase, getSavedBase } from '../lib/theme-base'
+import { applyTheme, resolveTheme } from '../lib/theme'
+import { applyIntensity, getSavedIntensity } from '../lib/texture'
+import { THEME_AXES } from '../lib/theme-axes'
 import { applyReading, getSavedReading, nextFontScale, READING_DEFAULTS } from '../lib/reading-prefs'
 import { applyCard, getSavedCard } from '../lib/card-prefs'
 import { applyMarkers, getSavedMarkers } from '../lib/marker-prefs'
@@ -110,13 +109,17 @@ export const useStore = create<Store>()((...a) => {
   }
 })
 
-// Apply initial theme on store creation
-applyTheme(resolveTheme(getSavedTheme()))
-applyAccent(getSavedAccent())
-applyTexture(getSavedTexture())
+// ── 主题轴：从注册表派生（加一条轴 = lib/theme-axes.ts 加一行）──
+//
+// ⚠️ **必须在这里 apply 一次**，光靠 slice 的初始 state 不够：初值只把值读进内存，
+//    DOM 上的 data-* / CSS 变量得靠这里写。漏掉的表现是**冷启动不生效、零报错**
+//    —— 这个坑踩过三次（--texture-opacity / reading / card，各自的注释都在记）。
+THEME_AXES.forEach(axis => axis.apply(axis.saved()))
+
+// ⚠️ 纹理强度**刻意不在 THEME_AXES 里**：它是 0-100 的**数值轴**，而注册表的形状是
+//    「离散选项 + membership 校验」。它单独一行 —— 别当漏网之鱼顺手搬进表里。
 applyIntensity(getSavedIntensity())
-applyFont(getSavedFont())
-applyBase(getSavedBase())
+
 applyReading(getSavedReading())
 // ⚠️ 必须在启动时 apply 一次：变量只由滚轮写的话，刷新页面后 localStorage 里存着
 // 1.3 而 DOM 上是默认 1 → 字号「莫名恢复默认」，且零报错。
@@ -130,7 +133,10 @@ const sysMq = window.matchMedia('(prefers-color-scheme: dark)')
 sysMq.addEventListener('change', () => {
   const s = useStore.getState()
   if (s.theme === 'system') {
-    const r = sysMq.matches ? 'dark' : 'light'
+    // 用 `resolveTheme('system')` 而不是就地写 `sysMq.matches ? 'dark' : 'light'`：
+    // 那是同一判据的第二份实现（同一个媒体查询），两处各写一遍 = 将来改「什么算暗色」
+    // 时必漏一处。
+    const r = resolveTheme('system')
     applyTheme(r)
     useStore.setState({ resolvedTheme: r })
   }

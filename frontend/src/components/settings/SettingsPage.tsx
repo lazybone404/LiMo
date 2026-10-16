@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { getConfig, updateConfig, getErrorMessage } from '../../api/client'
 import { useStore } from '../../store'
-import { ACCENT_GROUPS, ACCENT_SWATCH } from '../../lib/accent'
-import { TEXTURE_OPTIONS, TEXTURE_SWATCH, FONT_OPTIONS, getSavedIntensity, applyIntensity, saveIntensity } from '../../lib/texture'
+import { ACCENT_GROUPS } from '../../lib/accent'
+import { TEXTURE_OPTIONS, FONT_OPTIONS, getSavedIntensity, applyIntensity, saveIntensity } from '../../lib/texture'
 import { BASE_OPTIONS } from '../../lib/theme-base'
 import { PARA_STYLE_OPTIONS, LINE_HEIGHT_RANGE, MEASURE_RANGE, MEASURE_DEFAULT_ON, FONT_SCALE_RANGE, READING_DEFAULTS } from '../../lib/reading-prefs'
 import { SKELETON_OPTIONS, CARD_STYLE_OPTIONS, CARD_BG_OPTIONS, CARD_BORDER_OPTIONS, isLiftDisabled } from '../../lib/card-prefs'
@@ -324,9 +324,14 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                               : 'hover:bg-surface-hover'
                           }`}
                         >
+                          {/* 色卡 = `data-base` 自驱动 + 消费 `var()`（2026-10-16 档 A）。
+                              ⚠️ 内联只写 `backgroundColor`（长名）—— 写 shorthand `background`
+                              会把 CSS 规则层可能给的 `background-image` 一并重置掉（内联层赢）。
+                              颜色只有一份真相源：`styles/theme-layer.css` 的 `[data-base]` 规则。 */}
                           <div
+                            data-base={b.key}
                             className="w-full h-10 rounded-lg border border-border-light"
-                            style={{ background: b.surface }}
+                            style={{ backgroundColor: 'var(--tk-surface)' }}
                           />
                           <span className={`text-[12px] ${
                             selected ? 'text-accent font-medium' : 'text-muted'
@@ -352,7 +357,6 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                       </h4>
                       <div className="grid grid-cols-6 gap-3">
                         {group.accents.map(a => {
-                          const sw = ACCENT_SWATCH[a.key]
                           const selected = accent === a.key
                           return (
                             <button
@@ -361,14 +365,21 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                               title={a.label}
                               className="flex flex-col items-center gap-1.5 group"
                             >
+                              {/* ⚠️ `data-accent` 挂在这个 div 上，不是装饰 —— 它是
+                                  **色卡能显示自己那套配色的唯一原因**：`--tk-accent`
+                                  是 `var()` 派生出来的，而**自定义属性继承的是计算值**，
+                                  子元素重设原语不能回溯改变 `<html>` 上算好的那个
+                                  （详见 theme-layer.css 的 Layer 0b）。去掉它，
+                                  26 个色块会全部显示成应用当前配色。 */}
                               <div
+                                data-accent={a.key}
                                 className={`w-10 h-10 rounded-full transition-all ${
                                   selected
                                     ? 'ring-2 ring-offset-2 ring-accent ring-offset-surface scale-110'
                                     : 'hover:scale-105'
                                 }`}
                                 style={{
-                                  background: `conic-gradient(${sw.primary} 0deg 180deg, ${sw.secondary} 180deg 360deg)`,
+                                  backgroundImage: 'conic-gradient(var(--tk-accent) 0deg 180deg, var(--tk-secondary) 180deg 360deg)',
                                 }}
                               />
                               <span className={`text-[11px] ${
@@ -401,9 +412,17 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                               : 'hover:bg-surface-hover'
                           }`}
                         >
+                          {/* 显示**真实纹理**（用户 2026-10-16 定）——底色 + 图案层，
+                              不再是一块纯色。`tex-card` 类是必须的：图案与 blend-mode
+                              由 `lib/texture.css` 的 `.tex-card[data-texture]:not(plain)`
+                              规则提供，没有它只剩底色。
+                              ⚠️ `plain` 档**刻意不在 theme-layer 里声明变量**，故这里给
+                              `var(--tk-surface)` 兜底 ⇒ 显示当前基调底色、无图案
+                              （不给兜底就是一片透明，看像是坏了）。 */}
                           <div
-                            className="w-full h-12 rounded-lg border border-border-light"
-                            style={{ background: TEXTURE_SWATCH[t.key] }}
+                            data-texture={t.key}
+                            className="tex-card w-full h-12 rounded-lg border border-border-light"
+                            style={{ backgroundColor: 'var(--texture-bg-color, var(--tk-surface))' }}
                           />
                           <span className={`text-[12px] ${
                             selected ? 'text-accent font-medium' : 'text-muted'
@@ -816,32 +835,30 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                   </p>
                   {(() => {
                     const renderCard = (p: typeof THEME_PRESETS[number]) => {
-                      const baseColor = BASE_OPTIONS.find(b => b.key === p.base)
-                      const accentColors = ACCENT_SWATCH[p.accent]
                       const fontLabel = FONT_OPTIONS.find(f => f.key === p.font)
                       const textureLabel = TEXTURE_OPTIONS.find(t => t.key === p.texture)
-                      const fontFamily = p.font === 'system' ? undefined
-                        : p.font === 'kaiti' ? "'KaiTi', 'STKaiti', serif"
-                        : p.font === 'songti' ? "'Songti SC', 'SimSun', 'STSong', serif"
-                        : p.font === 'fangsong' ? "'FangSong', 'STFangsong', serif"
-                        : "'LXGW WenKai', 'KaiTi', serif"
+                      // 三轴属性挂在卡片自己身上（与设置页各色卡同款），色值一律 `var()` ——
+                      // 这个文件里**一个色值都不许再写**（2026-10-16 档 A）。
                       return (
                         <button
                           key={p.name}
                           onClick={() => applyPreset(p.name)}
                           data-texture={p.texture}
+                          data-base={p.base}
+                          data-accent={p.accent}
+                          data-font={p.font}
                           className="tex-card flex items-center gap-4 p-4 rounded-xl transition-all border border-border-light text-left overflow-hidden relative hover:brightness-[0.97]"
                         >
                           <div className="shrink-0 relative z-10">
                             <div
                               className="w-12 h-12 rounded-full border-2 border-border-light"
                               style={{
-                                background: `conic-gradient(${accentColors?.primary || '#007AFF'} 0deg 180deg, ${baseColor?.surface || '#F4F1EE'} 180deg 360deg)`,
+                                backgroundImage: 'conic-gradient(var(--tk-accent) 0deg 180deg, var(--tk-surface) 180deg 360deg)',
                               }}
                             />
                           </div>
                           <div className="min-w-0 relative z-10">
-                            <span className="text-[15px] font-medium block" style={fontFamily ? { fontFamily } : undefined}>{p.label}</span>
+                            <span className="text-[15px] font-medium block" style={{ fontFamily: 'var(--font-reading, inherit)' }}>{p.label}</span>
                             <span className="text-[11px] text-dimmed block leading-relaxed">
                               {fontLabel?.label || p.font} · {textureLabel?.label || p.texture}
                             </span>

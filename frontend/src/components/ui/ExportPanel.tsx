@@ -5,6 +5,7 @@ import { getTypeMeta } from '../gen-panel/constants'
 import { downloadFromUrl, downloadBlob, sanitizeExportName } from '../../lib/download'
 import { apiUrl } from '../../api/client'
 import { serializeCardVars } from '../../lib/card-prefs'
+import { getSavedIntensity, textureOpacity } from '../../lib/texture'
 
 type Format = 'md' | 'html' | 'plain' | 'docx'
 
@@ -40,6 +41,16 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
   const cardVars = serializeCardVars({
     skeleton, style: cardStyle, bg: cardBg, lift: cardLift, border: cardBorder,
   })
+  // 主题跟随（2026-10-16）—— 与 `ExportMenu` 同源同款（那边是 GET query、这边是
+  // POST body，两条传输各拼一次是既有的形状）。⚠️ **两处必须齐全**：批量与单个走
+  // 两条端点，只改一处的话「单个跟随、批量不跟随」，而两条都成功、都不报错。
+  const resolvedTheme = useStore(s => s.resolvedTheme)
+  const accent = useStore(s => s.accent)
+  const base = useStore(s => s.base)
+  const font = useStore(s => s.font)
+  const texture = useStore(s => s.texture)
+  // 强度是 `plain` 之外的属性（同 ExportMenu 的判据）—— `plain` 时它是死属性。
+  const textureOpacityValue = texture === 'plain' ? '' : textureOpacity(getSavedIntensity())
 
   // ── 文档选择 ──
   const [selectedIds, setSelectedIds] = useState<string[]>(currentDocId ? [currentDocId] : [])
@@ -147,7 +158,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
       if (formats.length > 1) lines.push(`(${formats.map(f => FORMAT_META[f].label).join(' + ')})`)
     }
     if (formats.includes('md')) lines.push(`MD: 公式${formulaMd === 'keep' ? '保留' : '移除'} · 图片${imageMd === 'separate' ? '独立文件夹' : imageMd === 'inline' ? 'base64内嵌' : '不包含'}`)
-    if (formats.includes('html')) lines.push(`HTML: ${htmlTheme === 'limo' ? 'LiMo 预览栏' : htmlTheme === 'paper' ? '学术论文' : htmlTheme === 'github' ? 'GitHub' : '极简'}样式`)
+    if (formats.includes('html')) lines.push(`HTML: ${htmlTheme === 'limo' ? '跟随应用主题' : htmlTheme === 'paper' ? '学术论文' : htmlTheme === 'github' ? 'GitHub' : '极简'}样式`)
     if (formats.includes('docx')) lines.push(`Word: 图片${imageMd === 'none' ? '不包含' : '内嵌'} · 公式保留 LaTeX 原文`)
     if (formats.includes('plain')) lines.push(`纯文本: 公式${formulaPlain === 'remove' ? '移除' : 'Unicode'}`)
     return lines
@@ -289,7 +300,10 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
                     </div>
                     <select value={htmlTheme} onChange={e => setHtmlTheme(e.target.value as typeof htmlTheme)}
                       className="w-full px-2.5 py-1.5 bg-elevated border border-border-default rounded-lg text-[11px] outline-none">
-                      <option value="limo">样式：LiMo 预览栏</option>
+                      {/* ⚠️ `limo` 的显示名是「跟随应用主题」（2026-10-16 由「LiMo 预览栏」改）：
+                          它的 **key 不变**（改了会让老用户的偏好静默回到默认），但它现在真的
+                          跟随用户在设置页选的那套配色/基调/字体/纹理 —— 旧名字已经说不清这件事。 */}
+                      <option value="limo">样式：跟随应用主题</option>
                       <option value="paper">样式：学术论文</option>
                       <option value="github">样式：GitHub 风格</option>
                       <option value="minimal">样式：极简白底</option>
@@ -387,9 +401,10 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
                 const tabs = Array.from(new Set(typeGroups.flatMap(g => groupTabs[g.type] || [])))
                 const r = await fetch(apiUrl('/export/custom'), {
                   method: 'POST', headers: { 'Content-Type': 'application/json' },
-                  // skeleton / card_style / marker_decor 跟随预览（与 ExportMenu 同源）——
+                  // skeleton / card_style / marker_decor / 主题六轴跟随预览（与 ExportMenu 同源）——
                   // ⚠️ 默认值（`paper` / 装饰开）时后端走的仍是那条逐字未改的分支。
-                  body: JSON.stringify({ doc_ids: selectedIds, formats, content_tabs: tabs, formula_md: formulaMd, image_md: imageMd, formula_plain: formulaPlain, html_theme: htmlTheme, skeleton, card_style: cardStyle, marker_decor: markerDecor, card_vars: cardVars, filename }),
+                  // 主题六轴**无条件发**（跟随是产品决策不是开关），后端逐项白名单校验。
+                  body: JSON.stringify({ doc_ids: selectedIds, formats, content_tabs: tabs, formula_md: formulaMd, image_md: imageMd, formula_plain: formulaPlain, html_theme: htmlTheme, skeleton, card_style: cardStyle, marker_decor: markerDecor, card_vars: cardVars, theme_mode: resolvedTheme, accent, base, font, texture, texture_opacity: textureOpacityValue, filename }),
                 })
                 if (!r.ok) { const err = await r.json().catch(() => ({ detail: `HTTP ${r.status}` })); addToast(err.detail || '导出失败', 'error'); return }
                 const blob = await r.blob()

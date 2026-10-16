@@ -73,42 +73,29 @@ export const ACCENT_GROUPS: AccentGroup[] = [
   },
 ]
 
-/** 色块预览色 — 主色和辅色的代表性 hsl 值 */
-export const ACCENT_SWATCH: Record<AccentColor, { primary: string; secondary: string }> = {
-  sky:        { primary: 'hsl(211,100%,50%)', secondary: 'hsl(195,80%,46%)' },
-  ocean:      { primary: 'hsl(225,60%,44%)',  secondary: 'hsl(210,50%,48%)' },
-  sunset:     { primary: 'hsl(30,100%,48%)',  secondary: 'hsl(345,70%,55%)' },
-  forest:     { primary: 'hsl(145,60%,38%)',  secondary: 'hsl(160,45%,42%)' },
-  lavender:   { primary: 'hsl(272,60%,50%)',  secondary: 'hsl(340,50%,55%)' },
-  slate:      { primary: 'hsl(220,15%,42%)',  secondary: 'hsl(215,25%,48%)' },
-  dunhuang:   { primary: 'hsl(2,80%,48%)',    secondary: 'hsl(40,75%,45%)' },
-  porcelain:  { primary: 'hsl(225,50%,42%)',  secondary: 'hsl(215,22%,50%)' },
-  ink:        { primary: 'hsl(30,10%,40%)',   secondary: 'hsl(125,30%,36%)' },
-  rouge:      { primary: 'hsl(350,70%,52%)',  secondary: 'hsl(285,25%,48%)' },
-  celadon:    { primary: 'hsl(170,30%,38%)',  secondary: 'hsl(215,20%,50%)' },
-  osmanthus:  { primary: 'hsl(40,75%,45%)',   secondary: 'hsl(5,50%,48%)' },
-  matcha:     { primary: 'hsl(135,35%,38%)', secondary: 'hsl(155,25%,42%)' },
-  cherry:     { primary: 'hsl(355,75%,60%)', secondary: 'hsl(340,55%,55%)' },
-  pine:       { primary: 'hsl(130,25%,32%)', secondary: 'hsl(150,20%,38%)' },
-  coral:      { primary: 'hsl(12,85%,55%)',  secondary: 'hsl(25,70%,50%)' },
-  spearmint:  { primary: 'hsl(150,40%,40%)', secondary: 'hsl(170,30%,44%)' },
-  plum:       { primary: 'hsl(290,45%,45%)', secondary: 'hsl(320,40%,48%)' },
-  vermillion: { primary: 'hsl(10,70%,48%)',  secondary: 'hsl(30,60%,45%)' },
-  indigo:     { primary: 'hsl(240,35%,40%)', secondary: 'hsl(260,30%,44%)' },
-  sandalwood: { primary: 'hsl(25,40%,42%)',  secondary: 'hsl(45,35%,46%)' },
-  olive:      { primary: 'hsl(80,35%,35%)',  secondary: 'hsl(100,28%,40%)' },
-  teal:       { primary: 'hsl(175,45%,38%)', secondary: 'hsl(195,35%,42%)' },
-  blossom:    { primary: 'hsl(348,60%,58%)', secondary: 'hsl(8,50%,55%)' },
-  peony:      { primary: 'hsl(340,65%,52%)', secondary: 'hsl(355,55%,55%)' },
-  rosegold:   { primary: 'hsl(20,55%,48%)',  secondary: 'hsl(345,50%,52%)' },
-}
+/** 全部配色的扁平列表 —— 遍历用；分组视图见 `ACCENT_GROUPS`（同一份数据）。 */
+export const ACCENT_OPTIONS: AccentEntry[] = ACCENT_GROUPS.flatMap(g => g.accents)
+
+/**
+ * 合法性白名单 —— 校验「localStorage 里存的那个字符串还算不算一套配色」。
+ *
+ * ⚠️ **必须是 `ACCENT_OPTIONS` 的 key 集合，不能是任何色值表**。这里此前写的是
+ * `ACCENT_SWATCH[v]`（色块预览色表）。色块表已于 2026-10-16 删除（色值改由
+ * theme-layer.css 的 `[data-accent]` 规则提供，色块用 `data-accent` + `var()` 渲染），
+ * 若校验还挂在它上面 → `ACCENT_SWATCH[v]` 恒 `undefined` → **所有已保存的配色
+ * 被判非法、静默回退 `sky`**：用户配色被无声重置，**零报错**，只有当事人发现「我选的胭脂没了」。
+ *
+ * 判据是「这个 key 在我们支持的表里吗」，与「它长什么样」无关 —— 所以校验源是
+ * **选项表**，不是色值表。
+ */
+const ACCENT_KEYS = new Set<string>(ACCENT_OPTIONS.map(a => a.key))
 
 const STORAGE_KEY = 'mbw_accent'
 
 export function getSavedAccent(): AccentColor {
   try {
     const v = localStorage.getItem(STORAGE_KEY)
-    if (v && ACCENT_SWATCH[v as AccentColor]) return v as AccentColor
+    if (v && ACCENT_KEYS.has(v)) return v as AccentColor
   } catch { /* quota exceeded — ignore */ }
   return 'sky'
 }

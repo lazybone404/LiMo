@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./lib/texture.css";
+@import "./styles/theme-layer.css";
 
 /* ── Web Fonts ─────────────────────────────────────────── */
 
@@ -16,129 +17,27 @@
    data-theme(明暗) × data-accent(配色) 驱动所有颜色
    ══════════════════════════════════════════════════════════ */
 
-/* ── Layer 0: Accent Theme Presets (data-accent driven) ────── */
+/* ── 动画曲线 ───────────────────────────────────────────────
+   ⚠️ 这是**全局设计令牌，不是主题数据**（不随任何轴变化），刻意留在主题层
+   （`styles/theme-layer.css`）之外 —— 那一层的定义是「主题相关的变量声明」，
+   把不随主题变的东西塞进去会让「谁在用这份文件」这个判据变模糊。 */
 
-/*
- * 每个主题包装4个 HSL 原语，其余颜色通过 hsl() 动态派生。
- * 15 条紧凑规则，添加新主题只需在此加一行。
- */
-
-/* 现代 */
-[data-accent="sky"]       { --accent-hue: 211; --accent-sat: 100; --second-hue: 195; --second-sat: 80;  }
-[data-accent="ocean"]     { --accent-hue: 225; --accent-sat: 60;  --second-hue: 210; --second-sat: 50;  }
-[data-accent="sunset"]    { --accent-hue: 30;  --accent-sat: 100; --second-hue: 345; --second-sat: 70;  }
-[data-accent="forest"]    { --accent-hue: 145; --accent-sat: 60;  --second-hue: 160; --second-sat: 45;  }
-[data-accent="lavender"]  { --accent-hue: 272; --accent-sat: 60;  --second-hue: 340; --second-sat: 50;  }
-[data-accent="slate"]     { --accent-hue: 220; --accent-sat: 15;  --second-hue: 215; --second-sat: 25;  }
-/* 国风 */
-[data-accent="dunhuang"]  { --accent-hue: 2;   --accent-sat: 80;  --second-hue: 40;  --second-sat: 75;  }
-[data-accent="porcelain"] { --accent-hue: 225; --accent-sat: 50;  --second-hue: 215; --second-sat: 22;  }
-[data-accent="ink"]       { --accent-hue: 30;  --accent-sat: 10;  --second-hue: 125; --second-sat: 30;  }
-[data-accent="rouge"]     { --accent-hue: 350; --accent-sat: 70;  --second-hue: 285; --second-sat: 25;  }
-[data-accent="celadon"]   { --accent-hue: 170; --accent-sat: 30;  --second-hue: 215; --second-sat: 20;  }
-[data-accent="osmanthus"] { --accent-hue: 40;  --accent-sat: 75;  --second-hue: 5;   --second-sat: 50;  }
-[data-accent="matcha"]   { --accent-hue: 135; --accent-sat: 35;  --second-hue: 155; --second-sat: 25;  }
-[data-accent="cherry"]   { --accent-hue: 355; --accent-sat: 75;  --second-hue: 340; --second-sat: 55;  }
-[data-accent="pine"]     { --accent-hue: 130; --accent-sat: 25;  --second-hue: 150; --second-sat: 20;  }
-[data-accent="coral"]    { --accent-hue: 12;  --accent-sat: 85;  --second-hue: 25;  --second-sat: 70;  }
-[data-accent="spearmint"]{ --accent-hue: 150; --accent-sat: 40;  --second-hue: 170; --second-sat: 30;  }
-[data-accent="plum"]     { --accent-hue: 290; --accent-sat: 45;  --second-hue: 320; --second-sat: 40;  }
-[data-accent="vermillion"]{--accent-hue: 10;  --accent-sat: 70;  --second-hue: 30;  --second-sat: 60;  }
-[data-accent="indigo"]   { --accent-hue: 240; --accent-sat: 35;  --second-hue: 260; --second-sat: 30;  }
-[data-accent="sandalwood"]{--accent-hue: 25;  --accent-sat: 40;  --second-hue: 45;  --second-sat: 35;  }
-[data-accent="olive"]    { --accent-hue: 80;  --accent-sat: 35;  --second-hue: 100; --second-sat: 28;  }
-[data-accent="teal"]     { --accent-hue: 175; --accent-sat: 45;  --second-hue: 195; --second-sat: 35;  }
-[data-accent="blossom"]  { --accent-hue: 348; --accent-sat: 60;  --second-hue: 8;   --second-sat: 50;  }
-[data-accent="peony"]    { --accent-hue: 340; --accent-sat: 65;  --second-hue: 355; --second-sat: 55;  }
-[data-accent="rosegold"] { --accent-hue: 20;  --accent-sat: 55;  --second-hue: 345; --second-sat: 50;  }
-
-/* 默认 = 天际蓝 (data-accent 未设置时) */
-:root:not([data-accent]) { --accent-hue: 211; --accent-sat: 100; --second-hue: 195; --second-sat: 80; }
-
-/* ── Layer 0: Base Tone Presets (data-base driven) ────────── */
-/* warm 为默认，无需额外规则 */
-
-[data-base="neutral"] { --tk-surface: #F5F5F5; --tk-elevated: #FCFCFC; --tk-hover: #ECECEC; --tk-border: #D8D8D8; --tk-border-light: #E8E8E8; }
-[data-base="cream"]   { --tk-surface: #F9F6F0; --tk-elevated: #FEFCF8; --tk-hover: #F2EDE4; --tk-border: #E0D8CA; --tk-border-light: #EDE6DA; }
-[data-base="cool"]    { --tk-surface: #F2F3F5; --tk-elevated: #F8F9FC; --tk-hover: #E8EAEE; --tk-border: #D4D6DA; --tk-border-light: #E4E6EA; }
-[data-base="rose"]    { --tk-surface: #F5F1F2; --tk-elevated: #FBF8F9; --tk-hover: #EEE6E8; --tk-border: #D8CED2; --tk-border-light: #E8DEE2; }
-[data-base="sage"]    { --tk-surface: #F2F4F0; --tk-elevated: #F8FAF7; --tk-hover: #E8ECE6; --tk-border: #D0D6CE; --tk-border-light: #E0E6DE; }
-[data-base="jade"]    { --tk-surface: #EEF2ED; --tk-elevated: #F5F8F4; --tk-hover: #E4EAE3; --tk-border: #CED4CD; --tk-border-light: #DEE4DD; }
-[data-base="amber"]   { --tk-surface: #F9F4EA; --tk-elevated: #FEFBF5; --tk-hover: #F2EBDE; --tk-border: #E0D6C4; --tk-border-light: #EDE6D8; }
-[data-base="pearl"]   { --tk-surface: #F7F6F3; --tk-elevated: #FDFCFB; --tk-hover: #EEEDEA; --tk-border: #DEDCD8; --tk-border-light: #EBE9E5; }
-[data-base="mint"]    { --tk-surface: #EDF4EF; --tk-elevated: #F4FAF6; --tk-hover: #E3EDE6; --tk-border: #CDD8D0; --tk-border-light: #DDE8E0; }
-[data-base="sand"]    { --tk-surface: #F6F2EA; --tk-elevated: #FCF9F3; --tk-hover: #EFE9DD; --tk-border: #DDD5C5; --tk-border-light: #EBE5D8; }
-[data-base="lilac"]   { --tk-surface: #F3F0F6; --tk-elevated: #FAF8FC; --tk-hover: #ECE7F0; --tk-border: #D6D0DC; --tk-border-light: #E6E0EC; }
-[data-base="cloud"]   { --tk-surface: #F3F4F8; --tk-elevated: #FAFBFC; --tk-hover: #EAEBF0; --tk-border: #D4D6DC; --tk-border-light: #E3E5EB; }
-[data-base="blush"]   { --tk-surface: #F7F1F2; --tk-elevated: #FDF9FA; --tk-hover: #F1E8EA; --tk-border: #DDD0D4; --tk-border-light: #EDE0E4; }
-
-/* ── Layer 1: Semantic Variables (data-theme driven) ──────── */
-/* 两轴驱动：data-theme(明暗) + data-accent(配色)           */
-/* 底色变量由 data-base 覆盖，其余在此定义                  */
-
-/* Light defaults */
 :root {
-  /* 底色 — 暖白阶 */
-  --tk-surface: #F4F1EE;
-  --tk-elevated: #FAF8F5;
-  --tk-hover: #EDEAE6;
-  /* 文本 — 暖灰阶，从 foreground 明度递减 */
-  --tk-foreground: #1C1C1E;
-  --tk-dimmed: #5E5C5A;
-  --tk-muted: #8A8886;
-  --tk-disabled: #AEACA9;
-  /* 边框 */
-  --tk-border: #D6D3CE;
-  --tk-border-light: #EBE7E2;
-  /* 主色 — 从 HSL 原语动态派生
-     ⚠️ 亮度单独抽成 `--accent-lit`（P1-16）：`lib/onAccent.ts` 要读它来算
-        「白字 vs 深字哪个对比度高」，而 JS 读不到 `calc(var(--accent-sat) * 1%)`
-        这种嵌在 hsl() 里的表达式。抽出来之后**色相/饱和度/亮度三个参数都住在 CSS 里**，
-        选择逻辑是算出来的 —— 不是在前端复制一份色表（模式 #54：同源是搜索题）。 */
-  --accent-lit: 50%;
-  --tk-accent: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), var(--accent-lit));
-  --tk-accent-hover: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), calc(var(--accent-lit) - 8%));
-  /* 主色实底之上的前景色 — 由 JS 按 WCAG 对比度在黑白间选优后**内联写入**
-     （`lib/onAccent.ts`，样式属性优先级高于本规则）。这里给的是**首帧兜底**：
-     JS 尚未执行时按白字显示，而不是让文字变透明/继承。
-     ⚠️ 别再往实底按钮上写 `text-white` —— 主色在 dark 下亮度 62%，
-        白字对比度只有 ~2.9:1（「暖阳」预设 1.9:1），低于 WCAG AA 的 4.5:1，
-        连大字放宽档 3:1 都够不上。用 `text-on-accent`。 */
-  --tk-on-accent: #FFFFFF;
-  /* 辅色 — 标题、引用 */
-  --tk-secondary: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 44%);
-  --tk-secondary-hover: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 36%);
-  /* 功能性 */
-  --tk-success: #34C759;
-  --tk-warning: #FF9500;
-  --tk-error: #FF3B30;
-  /* 动画 */
   --ease-apple: cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
-/* Dark overrides */
-[data-theme="dark"] {
-  --tk-surface: #161618;
-  --tk-elevated: #222226;
-  --tk-hover: #1C1C20;
-  --tk-foreground: #E6E3E0;
-  --tk-dimmed: #8A8884;
-  --tk-muted: #6A6864;
-  --tk-disabled: #504E4B;
-  /* 主色 — dark 下 lightness 更高（`--accent-lit` 覆盖 light 的 50%；hover 继续按
-     相对偏移派生，故 dark 得 72% —— 与改造前逐值一致） */
-  --accent-lit: 62%;
-  --tk-accent: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), var(--accent-lit));
-  --tk-accent-hover: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), calc(var(--accent-lit) + 10%));
-  /* 辅色 — dark 下同样抬高 lightness */
-  --tk-secondary: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 56%);
-  --tk-secondary-hover: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 66%);
-  --tk-border: #3A3A40;
-  --tk-border-light: #2E2E34;
-  --tk-success: #30D158;
-  --tk-warning: #FF9F0A;
-  --tk-error: #FF453A;
-}
+/* ── 配色原语 / 浅色底盘 / 界面基调 / 暗色 ────────────────────
+   ↑ 这四块（26 套 accent HSL 原语、`:root` 浅色底盘、13 条 `[data-base]`、
+     `[data-theme="dark"]` 暗色覆盖）**已搬到 [`styles/theme-layer.css`]**
+     （2026-10-16，档 B）。那里是**纯数据层**、零消费方选择器 —— 因为同一份数据
+     还有第二个宿主：后端导出（`HTML_THEMES["limo"]`），而「预览所见 = 导出所得」
+     要求颜色只有一份真相源。
+
+   ⚠️ **`[data-base]` 必须仍住在 `:root` 之后、`[data-theme="dark"]` 之前** ——
+   这条硬约束在搬到新文件后**依然成立**，且三块仍在**同一个文件**里。
+   守卫（`test/themeTokens.test.ts`）已改为读那个文件，别把它当成「旧文件的遗留」。
+
+   ⚠️ 在这个文件里**不要**定义 `--tk-*` —— 分家之后再补一份就是又造了第二真相源。 */
 
 /* ── Layer 3: Tailwind v4 @theme (var() references) ─────── */
 
@@ -222,59 +121,26 @@ body {
   border-radius: 4px;
 }
 
-/* ── Markdown Color Variables ───────────────────────────── */
+/* ── Markdown 颜色变量（`--md-*`）────────────────────────────
+   已与其余主题声明一并搬到 [`styles/theme-layer.css`]（导出侧也要用同一份）。 */
 
-/* Light — 标题/引用用辅色，链接/代码/加粗用主色 */
-:root {
-  --md-h1: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 22%);
-  --md-h2: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 30%);
-  --md-h3: hsl(var(--second-hue), calc(var(--second-sat) * 0.8 * 1%), 38%);
-  --md-h4: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 46%);
-  --md-strong: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.8 * 1%), 36%);
-  --md-link: hsl(var(--accent-hue), calc(var(--accent-sat) * 1%), 46%);
-  --md-blockquote-bg: var(--tk-hover);
-  --md-blockquote-border: hsl(var(--second-hue), calc(var(--second-sat) * 1%), 48%);
-  --md-code-bg: var(--tk-hover);
-  --md-code-color: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.7 * 1%), 38%);
-  --md-table-border: var(--tk-border);
-  --md-table-header-bg: var(--tk-hover);
-  --md-hr: var(--tk-border);
+/* ── 阅读字体（data-font 驱动）·消费侧 ───────────────────────
+   字体栈住在 theme-layer（`[data-font="x"] { --font-reading: … }`），
+   这里只决定**谁用它** —— 另一个宿主是导出侧的 `body`。
+
+   ⚠️ **选择器形态刻意保持改造前的 `[data-font] <后代>`**（特异性 0,2,0）：
+   vendor（`github-markdown-light.css`）的 `.markdown-body { font-family: … }`
+   是 (0,1,0)，写成单类选择器会被它**静默压过**（vendor 的导入顺序在本文件之前，
+   同特异性下后声明的赢）—— 症状是「换了字体，笔记正文纹丝不动，别的元素却变了」。
+
+   ⚠️ `var(--font-reading, inherit)` 的兜底就是「没选中任何档」的正确语义：
+   `font-family` 是可继承属性，`inherit` 与「这条规则不存在」逐值相同。 */
+
+[data-font] .preview-area,
+[data-font] .markdown-body,
+[data-font] .tex-card {
+  font-family: var(--font-reading, inherit);
 }
-
-/* Dark — 降低 sat 避免荧光感，提高 lightness */
-[data-theme="dark"] {
-  --md-h1: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 78%);
-  --md-h2: hsl(var(--second-hue), calc(var(--second-sat) * 0.65 * 1%), 68%);
-  --md-h3: hsl(var(--second-hue), calc(var(--second-sat) * 0.7 * 1%), 60%);
-  --md-h4: hsl(var(--second-hue), calc(var(--second-sat) * 0.6 * 1%), 52%);
-  --md-strong: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.65 * 1%), 72%);
-  --md-link: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.8 * 1%), 65%);
-  --md-blockquote-bg: var(--tk-hover);
-  --md-blockquote-border: hsl(var(--second-hue), calc(var(--second-sat) * 0.8 * 1%), 54%);
-  --md-code-bg: var(--tk-hover);
-  --md-code-color: hsl(var(--accent-hue), calc(var(--accent-sat) * 0.55 * 1%), 72%);
-  --md-table-border: var(--color-border-default);
-  --md-table-header-bg: var(--color-surface-hover);
-  --md-hr: var(--color-border-default);
-}
-
-/* ── Reading Fonts (data-font driven) ───────────────────── */
-
-[data-font="system"] .preview-area,
-[data-font="system"] .markdown-body,
-[data-font="system"] .tex-card        { font-family: var(--font-sans), -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
-[data-font="kaiti"] .preview-area,
-[data-font="kaiti"] .markdown-body,
-[data-font="kaiti"] .tex-card         { font-family: 'KaiTi', 'STKaiti', serif; }
-[data-font="songti"] .preview-area,
-[data-font="songti"] .markdown-body,
-[data-font="songti"] .tex-card        { font-family: 'Songti SC', 'SimSun', 'STSong', serif; }
-[data-font="fangsong"] .preview-area,
-[data-font="fangsong"] .markdown-body,
-[data-font="fangsong"] .tex-card      { font-family: 'FangSong', 'STFangsong', serif; }
-[data-font="wenkai"] .preview-area,
-[data-font="wenkai"] .markdown-body,
-[data-font="wenkai"] .tex-card        { font-family: 'LXGW WenKai', 'KaiTi', serif; }
 
 /* ── GitHub Markdown Overrides (覆盖 github-markdown-light 硬编码) ── */
 

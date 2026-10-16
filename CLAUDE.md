@@ -37,16 +37,31 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 --texture-opacity（强度滑条 10-100）← 纹理强度，反转映射到 opacity
 ```
 
-### 色板架构（两层）
+### 色板架构（两层 + 一个宿主无关的数据层）
 
 | 层 | 说明 | 例子 |
 |----|------|------|
 | `--tk-*` 语义令牌 | 由 `data-theme` + `data-base` 联合驱动，所有组件引用此层 | `--tk-surface`, `--tk-elevated`, `--tk-border` |
 | `--md-*` Markdown 变量 | 全部从 `--tk-*` 或 accent/secondary HSL 派生，无独立硬编码 | `--md-h1`, `--md-code-bg`, `--md-blockquote-bg` |
 
+⚠️ **六轴的「数据」住在 [styles/theme-layer.css](frontend/src/styles/theme-layer.css)**（2026-10-16 从 `index.css` 抽出）：
+它是**纯声明层、零消费方选择器**（26 套 accent 原语 + 派生 + 浅色底盘 + 14 条基调 + 暗色 + `--md-*` + 字体 + 纹理数据）。
+前端 `index.css` 用 `@import` 引入、**后端导出 [export.py](backend/app/routers/export.py)::`_load_theme_layer_css()` 读同一份**
+内联进导出 HTML —— 抽出去的理由就是「同一份数据要给两个宿主用」，往后端抄一份就是第二真相源。
+⚠️ **内部顺序即现状顺序，`[data-base]` 必须住在 `:root` 之后、`[data-theme=dark]` 之前**（三者特异性同为 (0,1,0)、
+作用在同一元素，顺序即裁决）——**这条此前被写反过、整轴静默失效**，别挪；有守卫钉着（`themeTokens.test.ts`）。
+⚠️ **派生型轴的陷阱见关键模式 #69**（`--tk-accent` 这类 `var()` 派生**必须在 `[data-accent]` 上自己重跑一次**，
+继承传递的是**计算值**）；**暗色块一律包在 `@media screen` 里**（见 #70，纸永远是浅的）。
+
 **关键约束：**
 
 - **禁止硬编码色值**：任何 CSS/TSX 不得出现 `#FFFFFF`, `#F5F5F7`, `#E8E8ED` 等裸 hex。全部通过 `--tk-*` 或 Tailwind token 引用。
+- **JS 里只有 label，一个色值都不留**（2026-10-16 起）：色块一律 `data-*` + `var()`（设置页四组色块 / 预设卡 / 向导预览块），
+  值与实机**只有 CSS 一份** ⇒ 漂移从结构上不可能发生，也就不需要「两份值要同步」的守卫。
+  `ACCENT_SWATCH` / `TEXTURE_SWATCH` / `BASE_OPTIONS` 的色值字段**已全部删除，别再建表**（此前 `TEXTURE_SWATCH` 与实际底色 **6/6 全不符**、`ACCENT_SWATCH` 的亮度散在 13 种取值而实机恒 50%/62%，零守门人、静默漂移）。
+- **轴注册表 [lib/theme-axes.ts](frontend/src/lib/theme-axes.ts)**：key / attr / storageKey / options / fallback / apply 一处收口。
+  加一条选择型轴 = **改 2 处**（轴模块 + 注册表一行），启动链（`THEME_AXES.forEach(a => a.apply(a.saved()))`）与预设遍历自动覆盖。
+  明暗轴参与但 `apply` 带特化（还要设 `style.colorScheme` + 调 `applyOnAccent`）；**纹理强度不进注册表**（数值轴不是选择型，启动链里单独一行）。
 - **github-markdown-light.css 覆盖**：`main.tsx` 导入的第三方 CSS 硬编码了 `.markdown-body { background-color: #ffffff }` 和 `#f6f8fa` 等冷灰色。`index.css` 用 `!important` + `--tk-*` 变量全部覆盖。**新增 markdown 背景样式时必须同步检查此文件。**
 - **基调切换一致性**：`data-base` 切换时所有 `--tk-*` 变量同步变化，`--md-*` 通过 `var()` 引用自动跟随。
 - **一键主题包**：`THEME_PRESETS` 提供 20 个预设（护眼4/经典4/粉色4/雅致4/国风4），一键设置 base+accent+texture+font 四轴。
@@ -70,7 +85,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | `cloud` | 云白 | 微蓝白 | `#F3F4F8` |
 | `blush` | 腮红 | 极淡粉 | `#F7F1F2` |
 
-⚠️ **别拿 `index.css` 的 `data-base=` 选择器条数当基调数**——它只有 **13** 条，因为默认的 `warm` 走 `:root` 不写选择器（2026-10-11 实测踩到，「13 还是 14」正是这么分叉的）。唯一真相源是 [lib/theme-base.ts](frontend/src/lib/theme-base.ts) 的 `BASE_OPTIONS`（14 项）。同理 **`data-accent=` 是 26 条**（26 套全部显式写，无默认项）。
+⚠️ **别拿 `theme-layer.css` 的 `data-base=` 选择器条数当基调数**——它现在是 **14** 条（2026-10-16 起 `warm` 也显式写：它必须有**一条真规则命中**，否则设置页那张暖灰基调卡只能继承 `<html>` 的 `--tk-surface`，14 张里错 1 张）。它此前是 13 条（`warm` 走 `:root` 不写选择器，2026-10-11 实测踩到，「13 还是 14」正是这么分叉的）。唯一真相源是 [lib/theme-base.ts](frontend/src/lib/theme-base.ts) 的 `BASE_OPTIONS`（14 项）。同理 **`data-accent=` 是 26 条**（26 套全部显式写，无默认项）。
 
 ## 文档索引
 
@@ -605,6 +620,9 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 面板默认宽 / 折叠阈值 | [lib/slotMetrics.ts](frontend/src/lib/slotMetrics.ts) |
 | 面板开合判据（互斥 / 并排同源） | [lib/panelToggle.ts](frontend/src/lib/panelToggle.ts) |
 | 侧栏布局偏好（互斥 or 并排） | [lib/layout-prefs.ts](frontend/src/lib/layout-prefs.ts) |
+| **六轴的键与 label**（key / attr / storageKey / options / fallback / apply） | [lib/theme-axes.ts](frontend/src/lib/theme-axes.ts)。⚠️ **只放 label、不放色值** —— 值只有 CSS 一份（下一行），前端再存一个色值就是本轮删掉的那份副本 |
+| **六轴的 CSS 数据**（accent 原语 + 派生 + 浅色底盘 + 14 条基调 + 暗色 + `--md-*` + 字体 + 纹理） | [styles/theme-layer.css](frontend/src/styles/theme-layer.css)。**前端 `@import` 与后端导出读同一份**（`_load_theme_layer_css`）；⚠️ 打包须在 `LiMoBackend.spec` 的 datas 里带上，否则**开发版全绿、打包版导出直接 500** |
+| **纹理强度 → `--texture-opacity` 的反转映射** | [lib/texture.ts](frontend/src/lib/texture.ts) 的 `textureOpacity()`（**DOM 写入与导出参数共用一份**；`toFixed(2)` 是为了过后端 `_TEXTURE_OPACITY_RE`，它刻意不收科学计数法） |
 | 风格档 / 引擎标签 / 域列表 / 公式集 / 体裁 / 读者意图 / 维度预设 | **capabilities 下发**（`GET /api/capabilities`），前端**不硬编码** |
 
 ⚠️ **最后一行的意思是「不要去前端建第二份表」**：凡是「后端注册了什么，前端就要列什么」的
@@ -660,8 +678,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **PreviewArea 按 sourceType 分派 tab**：视频 3tab / 文档 3tab / Excel 3tab / 图片 5tab / 网页 3tab / 文本 3tab + 思维导图
 - **Transcript 视图分派**：JSON+segments → 时间轴（视频）；否则 → 完整 Markdown 渲染
 - **处理进度按 tab 粒度**：生成笔记只影响 summary/polished tab，图片处理只影响对应 mode tab
-- **主题系统**：六轴独立 — `data-theme`(明暗) × `data-accent`(26套配色) × `data-base`(14种基调) × `data-texture`(6种纹理) × `data-font`(5种字体)。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（20个: 护眼/经典/粉色/雅致/国风各4）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值）
-- **主题模块**：`lib/accent.ts` / `lib/texture.ts` / `lib/theme-base.ts` / `lib/theme-presets.ts` / `lib/theme.ts` — 各轴独立管理，Store 统一分发
+- **主题系统**：六轴独立 — `data-theme`(明暗) × `data-accent`(26套配色) × `data-base`(14种基调) × `data-texture`(6种纹理) × `data-font`(5种字体) × `--texture-opacity` 强度滑条。CSS 变量（`--tk-*` 全动态）+ Tailwind v4 `@theme` 引用。一键预设包（20个: 护眼/经典/粉色/雅致/国风各4）。Markdown 用 `--md-*` 变量（全部引用 `--tk-*` 或 HSL 派生，零硬编码色值）。⚠️ **数据层已抽到 [styles/theme-layer.css](frontend/src/styles/theme-layer.css)**（2026-10-16），前端与**后端导出读同一份**
+- **主题模块**：`lib/theme-axes.ts`（**轴注册表**，加一条选择型轴 = 改 2 处）+ `lib/accent.ts` / `lib/texture.ts` / `lib/theme-base.ts` / `lib/theme-presets.ts` / `lib/theme.ts` — 各轴独立管理，Store 统一分发。⚠️ **这几个模块只存 key 与 label，一个色值都不存**（色块走 `data-*` + `var()`，值与实机同源），`ACCENT_SWATCH` / `TEXTURE_SWATCH` / `BASE_OPTIONS` 的色值字段已删、别再建
 - **骨架轴（2026-10-10；2026-10-11 判据改由标记决定）**：`lib/card-prefs.ts`（localStorage `mbw_card`）→ `data-skeleton="card"`（**被 `card` 节修饰符标过的章节成卡**，其余保持普通正文）+ `data-card-style`（8 套视觉方案，[styles/cards.css](frontend/src/styles/cards.css)）。⚠️ **不再是「每个 H2 一张卡」** —— 用户 2026-10-11 判「章节卡片太简单粗暴，卡片应该用在需要强调的地方」，故改由模型在 `## 标题` 的**下一行**写 `<!-- limo-block:v1 type="card" -->` 决定哪几节成卡（判据 `Section.card`，前后端同源）。于是卡片在页面里是**混排**的、**没有外层容器**（`.md-cards` flex 已删——套容器会把**普通章节的每一行**变成独立 flex item），间距由 `.md-card { margin-block }` 承担。⚠️ **不是第七轴** —— 六轴描述「界面长什么样」，它描述「正文怎么组织」；放 themeSlice 只因与 texture/font 同属「影响预览观感的外观设置」，**刻意不进 `THEME_PRESETS`**（换主题包不该连带重置骨架）。⚠️ **`paper`（默认）时两个属性都 `removeAttribute`** —— 零回归靠「**选择器不匹配**」（`cards.css` 每条规则带 `[data-skeleton="card"]` 前缀）而非「取值相同」。⚠️ 切分器单一真相源 `lib/markdown-scan.ts::scanHeadingLines`（`extractHeadings` 已改为消费它，**围栏内 `## ` 不算标题**）；`lib/markdown-sections.ts::splitByH2` 切分；`CardSections.tsx` **每张卡各跑一个现有 `MarkdownPreview`**（绝不新起第二个渲染器）；接入点**只有** [PreviewArea.tsx](frontend/src/components/preview/PreviewArea.tsx) 的 notes/polished 只读态（**刻意不在 `MarkdownPreview` 内部按骨架轴分派** —— 会静默扩散到 Excel 数据摘要 / 原始转录两处）。⚠️ 设置页给 8 套方案各画了一个**迷你视觉小样**（`.card-preview`，消费与 `.md-card` **完全相同**的 `--card-*` 变量 ⇒ 无第二份真相源；圆角/内框按 0.5 缩放是缩放**同一个变量**）—— 依据是 `[data-card-style="x"]` 定义变量的那批规则**不带**骨架前缀，故小样元素自己写个属性就能取到。⚠️ **逐维度微调（2026-10-11）**：`bg` / `lift` / `border` 三项，`null` = **跟随方案（默认）—— DOM 上一个 inline 变量都不写**，故新增旋钮不改变既有用户观感；写的是 `<html>` 上的 **inline 变量**（`--card-bg-base` / `--card-lift` / `--card-border`），特异性天然压过方案块。三处硬约束：① **切方案时清空微调**（微调是「方案之上的一层覆盖」，换地基就该重新决定）；② **透明基色下抬升强制归零**（`color-mix` 的 `transparent` = `rgb(0 0 0/0)`，抬升混出的是半透明**黑**，是无效组合）且 `applyCard` **第一步无条件清空 inline**（`isLiftDisabled` 要读运行时 `--card-bg-base`，不清空会读到自证循环）；③ **受控变量清单只有 `CARD_VARS` 一份**（`applyCard` 清空、`serializeCardVars` 拼导出串都从它派生）。⚠️ 微调**只作用于章节卡片** —— `blocks.css` 的九种语义块不吃 `--card-*`
 - **语义标记 `limo-block`（2026-10-10）**：产物正文里的**协议元素** —— 模型在笔记里写 `<!-- limo-block:v1 type="key-takeaway" -->` … `<!-- /limo-block -->`（块内是普通 Markdown），渲染成**轻量强调块**（左边框 + 淡底，**刻意不是卡片** ⇒ 与骨架轴正交、无「卡中卡」）。⚠️ **九种块，分两族**（2026-10-11 由 1 种 → 4 种 → 6 种 → 9 种）+ ⚠️ **第十种 `card` 是节修饰符不是块**（见本节末）：
   - **六个语义强调块**（回答「这段文字是什么性质」，块内原本就是散文）：`key-takeaway` 重点 / `alert` 提醒·异常 / `recommend` 推荐 / `metric` 指标 / `steps` 横向步骤条 / `timeline` 竖向时间线；
@@ -678,6 +696,16 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **ExportPanel**（顶部 Download → 侧边面板）：批量多文档导出，用户手动选 tab/格式/主题。全部走后端
 
 **四种格式**：MD / HTML / **Word(.docx)** / 纯文本。
+
+**导出跟随应用主题**（2026-10-16）：
+- **六条轴参数**（`theme_mode` / `accent` / `base` / `font` / `texture` / `texture_opacity`）落到导出页 `<html>` 上（前五条走 `data-*`，强度走**行内 `style="--texture-opacity: …"`** —— 它是 0–1 小数，`data-*` 表达不了）。⚠️ 明暗发的是 **`resolvedTheme`**（解析后的 `light|dark`），`data-theme="system"` 是**死属性**（没有选择器认它）
+- **逐轴独立、非空才写** ⇒ **不带任何参数 = 一个属性都不多、主题层不注入 = 与改造前逐字节相同**（第三方脚本与历史调用方零回归）。前端两个入口各拼一次（`ExportMenu::backendParams()` 与 `ExportPanel` 的 POST body），**批量导出经 `_build_export_zip` 也产 HTML，必须一并带**，否则「单个跟随、批量不跟随」
+- **主题层注入闸门**：**有任一轴参数才**注入 `<style>{theme-layer.css}</style>`，且位置在 `HTML_THEMES` **之前**（变量先定义、后消费 —— 放后面 `var()` 全部落空，导出**比改造前更糟**：原来至少是固定的蓝，现在是无色）
+- **`_EXPORT_NEUTRAL_TOKENS_CSS`（原名 `_CARD_TOKENS_CSS`）只在「未跟随」时注入**：跟随时令牌由主题层接管。⚠️ 两份**不能同时在场**（否则「卡片底色该用哪个」由 CSS 源顺序裁决）；⚠️ 也**不能删** —— `cards.css` / `blocks.css` 的注入条件与 `html_theme` 无关，删了会让 `paper`/`github`/`minimal` 的卡片底色从 `#ffffff` 变暖白。两者取值 6/6 不同，**这正是「跟随」的语义差别**
+- **白名单只做字符、不持有第二张表**：五个选择型轴 `^[a-z0-9-]{1,24}$`，强度 `^(?:0|1|0?\.\d{1,4})$`；非法值**静默丢弃该项**、其余轴照常（判据同 `card_style`）。⚠️ `data-accent="{v}"` 是**原样拼接的注入面**，字符集里绝不能有 `"` `<` `>` 空格 `=`
+- ⚠️ **暗色块一律包在 `@media screen` 里**（limo 主题与主题层两处 + `--md-*` 那块共三处）：`@media (prefers-color-scheme: dark)` 与 `@media print` **不互斥、会同时匹配**，裸着的话浅色标题会落到白纸上。**「暗色是屏幕概念，纸永远是浅的」**——一处改动让三个宿主（应用内 / 导出屏幕 / 导出打印）同时正确，且打印拿到的是**该配色自己的浅色档**（不是一份写死的蓝）。⚠️ 于是**没有「暗色 → 浅色」还原表了**，那是同一份主题数据的第二份副本
+- ⚠️ **刻意不跟随的三处（判据不是遗漏）**：时间戳徽标 `#007aff`/`#ff9500`（**类别标识色**，跨主题保持可辨识，同 `TYPE_COLORS`）、Pygments 屏幕段与打印段（代码高亮是独立的产品决策，正交于 `--tk-*`）、**未跟随 + 卡片**这一档的明暗仍由读者系统决定（固定主题本就该固定）。三处**各有一句注释说明这是刻意分界**
+- `ExportPanel` 的 `limo` 项文案已改「**跟随应用主题**」（key 不变、零迁移），3 套固定主题（`paper`/`github`/`minimal`）仍可手动选 —— 它们**不消费 `var(--tk-*)`**，选了就拿到那套固定样式（`HTML_THEMES` 共 4 项，含 `limo`）
 
 **快捷 MD 的图片**（2026-10-11）：MD 从前只有纯前端一条路（`downloadText(stripMarkers(...))`），
 正文里的 `/api/assets/{id}/x.png` 一离开应用就裂图 → 加设置项 `embedImages`（**默认开**），
@@ -781,7 +809,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **操作互斥**：GenPanel 中 `lockOtherOps` — 转录/图片处理中禁止生成，反之亦然。`Ctrl+G` 操作进行中拦截+Toast 提示
 - **取消机制**：5 个端点全部覆盖 — generate/ingest/retranscribe/chat/process 均有 `cancel_event` + `_watch_disconnect`（0.5s 检测；fact_check 已随 AI 审核移除 2026-08-16）。LLM 调用逐 chunk 检查取消信号停止 token 消耗。本地同步引擎用 `asyncio.to_thread` 放到线程池避免卡死事件循环，引擎内部逐段检查 `cancel_event.is_set()` 立即停止 CPU
 
-## 关键模式（68 条）
+## 关键模式（71 条）
 
 > **完整内容见 [docs/patterns.md](docs/patterns.md)** —— 实现中易错的关键约束，新增代码必须遵守。
 >
@@ -795,6 +823,9 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 > 陷阱**（祖先的 `backdrop-filter` 会创建包含块、把 `fixed` 后代锁进面板 → **对话框** Portal 到 body；
 > ⚠️ `absolute` 锚在按钮上的**下拉**不能 Portal（会失去定位基准），改写 document 监听 —— 见该条末尾的例外）。
 > `#68` 把同源判据延伸到**文档自身**（手写节号是第二真相源 → 门禁 `docs` 层机器校验）。
+> 末尾 `#69`-`#71` 是 **CSS 层**三条：**计算值继承**（`var()` 派生必须在每个会被设属性的元素上重跑 ——
+> 「三条轴都对、只有 accent 坏」就是它）、**暗色是屏幕概念**（`prefers-color-scheme` 与 `@media print`
+> 不互斥 → 包 `@media screen`，别维护还原表）、**测试解析嵌套 CSS**（`@media` 会让判据恒 -1 而不报错）。
 >
 > 本文件其余部分（架构、管道、导出、数据流）仍在下方，模式里的 `#NN` 交叉引用一律指
 > **[docs/patterns.md](docs/patterns.md)**。

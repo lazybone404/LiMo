@@ -28,6 +28,13 @@ datas = [
     # 合并成一行目录收集会在「只想带一份」时被误伤。落到 _MEIPASS/styles/ 下，
     # 与 `_load_block_css` 的候选路径逐字对应。
     ('../frontend/src/styles/blocks.css', 'styles'),
+    # 主题层 CSS（六轴的**纯数据层**）—— 与上两行同款：唯一真相源在前端
+    # （`frontend/src/styles/theme-layer.css`），`index.css` 用 `@import` 引入它
+    # 给应用自己用，`export.py::_load_theme_layer_css()` 从磁盘读同一份内联进
+    # 「跟随应用主题」的导出 HTML。**刻意不往 backend/static/ 放副本**（同上）。
+    # ⚠️ 少了这一行，**开发版全绿而打包版导出直接 500**（读不到文件时按纪律显式
+    # 抛错，不静默输出无主题的 HTML）—— 那个 500 只会在用户装了安装包之后出现。
+    ('../frontend/src/styles/theme-layer.css', 'styles'),
 ]
 # tiktoken_ext / dateparser_data — namespace package，collect_all 不会自动收集
 # PyInstaller 对 namespace package 的处理不可靠，显式添加每个文件

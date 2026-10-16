@@ -79,13 +79,26 @@ describe('跨语言同源 — 导出开关的参数', () => {
 })
 
 describe('导出页的令牌注入', () => {
-  it('`_CARD_TOKENS_CSS` 的注入条件含 `blocks_present`', () => {
+  it('`_EXPORT_NEUTRAL_TOKENS_CSS` 在**未跟随**时含 `blocks_present`', () => {
     // ⚠️ **真实缺陷的回归守卫**（本轮修掉的那个）：导出主题 `HTML_THEMES` 一个
-    // `--tk-*` 都不提供，该常量是**唯一的提供者**。它原先只在 `skeleton == "card"`
-    // 时注入，于是 `paper` + 有标记时 `blocks.css` 的
+    // `--tk-*` 都不提供，该常量是**未跟随路径上唯一的提供者**。它原先只在
+    // `skeleton == "card"` 时注入，于是 `paper` + 有标记时 `blocks.css` 的
     // `border-left: 3px solid var(--tk-accent)` 整条声明作废 ——
     // **导出 HTML 里强调块一点样式都没有，而应用内预览完全正常、零报错**。
-    expect(EXPORT_PY).toMatch(/if\s+skeleton\s*==\s*"card"\s+or\s+blocks_present:/)
+    //
+    // ⚠️ 2026-10-16（导出跟随主题）该条件**多了一个前提 `not followed`**：
+    // 跟随时令牌改由主题层（`theme-layer.css`）提供，两份同时在场会让「卡片底色
+    // 该用哪个」由 CSS 源顺序裁决。故这条正则钉住的是**两个条件都在**——
+    // 只写 `skeleton or blocks_present` 变红（漏了让位），
+    // 只写 `not followed` 也变红（`paper` + 有标记那一档又没有令牌了）。
+    expect(EXPORT_PY).toMatch(
+      /if\s+not\s+followed\s+and\s+\(skeleton\s*==\s*"card"\s+or\s+blocks_present\):/)
+  })
+
+  it('跟随路径注入的是主题层，不是中性令牌', () => {
+    // 成对：上面那条只说「未跟随仍在」，单看它无法区分「两种提供者都在场」——
+    // 而那正是本轮要消灭的形态（`test_export_theme.py` 从产物侧钉了同一条）。
+    expect(EXPORT_PY).toMatch(/if\s+followed:\s*\n\s*style_block\s*\+=\s*f"<style>\{_load_theme_layer_css\(\)\}<\/style>/)
   })
 })
 

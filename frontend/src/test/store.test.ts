@@ -324,7 +324,12 @@ describe('主题轴冷启动恢复 — --texture-opacity', () => {
     localStorage.setItem(KEY, '80')
     await import('../store')
     // applyIntensity 做 (100-value)/100 的反转：80 → 0.2
-    expect(spy).toHaveBeenCalledWith('--texture-opacity', '0.2')
+    // ⚠️ 断言的是**定长两位小数的字符串**（`toFixed(2)`），不是数值 0.2 ——
+    // 2026-10-16 起这条映射收口在 `lib/texture.ts::textureOpacity`，DOM 与
+    // **导出参数**共用同一份产出。定长是给后端的 `_TEXTURE_OPACITY_RE` 看的
+    // （它刻意不收科学计数法，而滑条若不是整数步长，`String()` 可能给出 `5e-2`）。
+    // 写成 `0.2` 会红，但两者在 CSS 里等价 —— 红的理由是字符串形态，不是行为回归。
+    expect(spy).toHaveBeenCalledWith('--texture-opacity', '0.20')
     spy.mockRestore()
   })
 
@@ -333,7 +338,7 @@ describe('主题轴冷启动恢复 — --texture-opacity', () => {
     vi.resetModules()
     localStorage.removeItem(KEY)
     await import('../store')
-    expect(spy).toHaveBeenCalledWith('--texture-opacity', '0.5')
+    expect(spy).toHaveBeenCalledWith('--texture-opacity', '0.50')
     spy.mockRestore()
   })
 })

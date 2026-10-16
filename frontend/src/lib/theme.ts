@@ -12,12 +12,25 @@ import { applyOnAccent } from './onAccent'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
+/**
+ * 明暗三档 —— **真相源**。（`ThemeToggle` 只额外持有「哪一档配哪个图标」，
+ * 那是 UI 关切；名字是轴的数据，注册表与设置页都要读它。）
+ */
+export const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
+  { key: 'light',  label: '浅色' },
+  { key: 'dark',   label: '深色' },
+  { key: 'system', label: '跟随系统' },
+]
+
 const STORAGE_KEY = 'mbw_theme'
 
 export function getSavedTheme(): ThemeMode {
   try {
     const v = localStorage.getItem(STORAGE_KEY)
-    if (v === 'light' || v === 'dark' || v === 'system') return v
+    // ⚠️ 用**选项表**做 membership，不写 `v === 'light' || v === 'dark' || …` 字面量链：
+    // 字面量链是第二真相源，将来加一档（如 'auto'）时会**静默**把合法值判成非法、
+    // 回退 'system' —— 症状是「新档位存进去、刷新就没了」。（同 accent/base/texture/font）
+    if (v && THEME_OPTIONS.some(o => o.key === v)) return v as ThemeMode
   } catch { /* quota exceeded — ignore */ }
   return 'system'
 }

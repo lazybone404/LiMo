@@ -147,7 +147,11 @@ def test_无标记_html_导出逐字节不变():
     base = _build_selfcontained_html(PLAIN, "标题")
     assert base == _build_selfcontained_html(PLAIN, "标题", marker_decor=False)
     assert base == _build_selfcontained_html(PLAIN, "标题", marker_decor=True)
-    assert 'md-block' not in base
+    # ⚠️ 判据**必须精确到 class 属性**，不能用裸子串 `'md-block' in html`：
+    # limo 主题自 2026-10-16 起有 `--md-blockquote-border` / `--md-blockquote-bg`，
+    # 它**含**这个子串 —— 裸子串版本当场变红，而它红的原因是**判据太宽**，
+    # 与「真有块漏包」完全无关。`_body` 再排除 `<style>` 与注释里的示例。
+    assert 'class="md-block' not in _body(base)
     assert 'data-marker-decor' not in base
 
 

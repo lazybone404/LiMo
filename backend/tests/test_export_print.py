@@ -1,10 +1,15 @@
 """
 打印样式测试（导出 HTML 的 `@media print` 行为）
 
-**为什么这些用例值得存在**：打印样式由三处拼起来（`_PRINT_CSS` + Pygments 的
-print 段 + limo 主题的 print 段），三者靠 **CSS 源顺序**决定优先级 —— 而顺序是
+**为什么这些用例值得存在**：打印样式由两处拼起来（`_PRINT_CSS` + Pygments 的
+print 段），靠 **CSS 源顺序**决定优先级 —— 而顺序是
 **隐式契约**：把 `_PRINT_CSS` 挪到 style_block 前面，代码照样跑、页面照样出，
 只是打印出来是深底浅字。这类回归没有报错、没有日志，只能靠断言挡住。
+
+⚠️ **暗色不在这一处**（2026-10-16 起）：limo 主题与主题层（`theme-layer.css`）
+的暗色块一律包在 `@media screen` 里，打印时根本不匹配 —— 所以这里没有、也不该有
+「暗色 → 浅色」的还原表（那是同一份主题数据的第二份副本，且不跟随用户配色）。
+本文件只钉住那条纪律本身（见第 1 节的 limo 暗色段断言）。
 
 同理，`pre`/`table` 上的 `break-inside: avoid` 曾被写进去过，后果是**整页空白** ——
 也是一条「删掉就再也想不起来」的约束，故一并固化。
@@ -56,7 +61,10 @@ assert '@page' in _PRINT_CSS, "缺少 @page —— 纸张尺寸与页边距没�
 assert '@media print' in _PRINT_CSS
 assert 'max-width: none' in _PRINT_CSS, \
     "缺少解除屏幕布局的 max-width —— 纸上会出现一圈古怪的窄边距"
-print("PASS: _PRINT_CSS 含 @page + 解除屏幕布局")
+assert 'body::before' in _PRINT_CSS, \
+    ("缺少纹理强度叠加层的关闭规则 —— 它是 position:fixed 的半透明层（跟随主题时才有），"
+     "在纸上会把正文压成灰底")
+print("PASS: _PRINT_CSS 含 @page + 解除屏幕布局 + 关掉纹理叠加层")
 
 pygments_css = _get_pygments_css()
 if pygments_css:
@@ -69,11 +77,27 @@ if pygments_css:
 else:
     print("SKIP: Pygments 未安装")
 
+# ── limo 主题的暗色段：只能作用于**屏幕**（2026-10-16 改判据）──
+#
+# 改前的形态是「先铺暗色，再写一段 `@media print` 还原成浅色」，判据是「还原段
+# 必须排在暗色段之后（两者不互斥，靠源顺序裁决）」。改后**没有还原段了** ——
+# 暗色块整个包进 `@media screen`，打印时它**根本不匹配**，落下来的是该配色自己的
+# 浅色档（`:root` 底盘还在）。一处改动让三个宿主同时正确（应用内 / 导出屏幕 /
+# 导出打印），且打印拿到的不再是一份写死的蓝。
+#
+# ⚠️ 两个断言必须**都在**：
+#   ① 带 `screen` 的暗色段在场 —— 少了它就没有暗色；
+#   ② **裸的** `@media (prefers-color-scheme: dark)` 不在场 —— 少了它就没有
+#      「纸永远是浅的」这半条（浅色 `--md-h1` 会落到白纸上）。
+#   ②天然不会被①误伤：`@media screen and (prefers-color-scheme: dark)` 里，
+#   `@media ` 与 `(prefers` 之间隔着 `screen and `，是两条不同的子串。
 limo = HTML_THEMES['limo']
-assert '@media (prefers-color-scheme: dark)' in limo and '@media print' in limo
-assert limo.index('@media print') > limo.index('@media (prefers-color-scheme: dark)'), \
-    "limo 的 @media print 必须排在暗色段之后 —— 两者不互斥，靠顺序决定谁胜"
-print("PASS: limo 主题在暗色段之后还原了打印取值")
+assert '@media screen and (prefers-color-scheme: dark)' in limo, \
+    "limo 缺暗色段（或它没被包进 @media screen）—— 导出页从此不会有暗色"
+assert '@media (prefers-color-scheme: dark)' not in limo, \
+    ("limo 里有**裸的** `@media (prefers-color-scheme: dark)` —— 它与 @media print "
+     "不互斥，浅色变量会落到白纸上（详见本文件注释与 theme-layer.css 的说明）")
+print("PASS: limo 的暗色段只作用于屏幕（纸永远是浅的）")
 
 
 # ═══════════════════════════════════════════════════════════

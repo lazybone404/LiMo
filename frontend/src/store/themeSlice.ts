@@ -1,12 +1,17 @@
 /**
  * 主题六轴 slice — theme/accent/texture/font/base + 一键主题包。
  * 完全自包含：只依赖 lib/ 主题模块，零跨域引用。
+ *
+ * 五条选择型轴的「写盘 / 写 DOM / 写 store」三件套**不再手写** —— 全部走
+ * [`lib/theme-axes.ts`](../lib/theme-axes.ts) 的注册表。加一条轴的落点从
+ * 6 处降到 2 处（轴模块 + 注册表一行）。
  */
 import type { StateCreator } from 'zustand'
-import { type ThemeMode, getSavedTheme, resolveTheme, applyTheme, saveTheme } from '../lib/theme'
-import { type AccentColor, getSavedAccent, applyAccent, saveAccent } from '../lib/accent'
-import { type TexturePreset, type FontPreset, getSavedTexture, getSavedFont, applyTexture, applyFont, saveTexture, saveFont } from '../lib/texture'
-import { type BasePreset, getSavedBase, applyBase, saveBase } from '../lib/theme-base'
+import { type ThemeMode, getSavedTheme, resolveTheme } from '../lib/theme'
+import { type AccentColor, getSavedAccent } from '../lib/accent'
+import { type TexturePreset, type FontPreset, getSavedTexture, getSavedFont } from '../lib/texture'
+import { type BasePreset, getSavedBase } from '../lib/theme-base'
+import { THEME_AXES, AXIS, type ThemeAxis } from '../lib/theme-axes'
 import { type ReadingPrefs, getSavedReading, applyReading, saveReading } from '../lib/reading-prefs'
 import { type Skeleton, type CardStyle, type CardPrefs, getSavedCard, applyCard, saveCard } from '../lib/card-prefs'
 import { type MarkerPrefs, getSavedMarkers, applyMarkers, saveMarkers } from '../lib/marker-prefs'
@@ -69,96 +74,108 @@ export interface ThemeSlice {
   applyPreset: (name: string) => void
 }
 
-export const createThemeSlice: StateCreator<Store, [], [], ThemeSlice> = (set) => ({
-  theme: getSavedTheme(),
-  resolvedTheme: resolveTheme(getSavedTheme()),
-  setTheme: (mode) => {
-    saveTheme(mode)
-    const resolved = resolveTheme(mode)
-    applyTheme(resolved)
-    set({ theme: mode, resolvedTheme: resolved })
-  },
+export const createThemeSlice: StateCreator<Store, [], [], ThemeSlice> = (set) => {
+  /**
+   * 写一条轴：**写盘 → 写 DOM → 返回该轴在 store 里的字段**。
+   *
+   * 五条轴此前各自手写这三连（`saveAccent` / `applyAccent` / `set({accent})`），
+   * 逐字重复五份；收成一处后，「加一条轴」不再需要在 slice 里再添一个 setter。
+   *
+   * ⚠️ 那两次 `as unknown as` 是因为注册表**刻意不 import `Store` 类型**
+   * （`lib/` 反向依赖 `store/` 会成环）。`axis.key` 与 `Store` 字段同名是刻意的，
+   * 由 `themeAxisSync.test.ts` 钉住。
+   */
+  const writeAxis = (axis: ThemeAxis, value: string): Record<string, unknown> => {
+    axis.save(value)
+    axis.apply(value)
+    return axis.state ? axis.state(value) : { [axis.key]: value }
+  }
+  const setAxis = (axis: ThemeAxis, value: string) =>
+    set(writeAxis(axis, value) as unknown as Partial<Store>)
 
-  accent: getSavedAccent(),
-  setAccent: (accent) => {
-    saveAccent(accent)
-    applyAccent(accent)
-    set({ accent })
-  },
+  return {
+    // ⚠️ 初始 state 是**手写**的、不派生自 THEME_AXES：本函数的返回类型是显式的
+    //    `ThemeSlice`，而 `Object.fromEntries` 只会给出 `{[k: string]: string}`，
+    //    把 `theme` / `accent` 这些联合类型的静态保证全丢掉。两处的一致性由
+    //    `themeAxisSync.test.ts` 保证（它比对注册表 key 与 store 字段集合）。
+    theme: getSavedTheme(),
+    resolvedTheme: resolveTheme(getSavedTheme()),
+    setTheme: (t) => setAxis(AXIS.theme, t),
 
-  texture: getSavedTexture(),
-  setTexture: (texture) => {
-    saveTexture(texture)
-    applyTexture(texture)
-    set({ texture })
-  },
+    accent: getSavedAccent(),
+    setAccent: (a) => setAxis(AXIS.accent, a),
 
-  font: getSavedFont(),
-  setFont: (font) => {
-    saveFont(font)
-    applyFont(font)
-    set({ font })
-  },
+    texture: getSavedTexture(),
+    setTexture: (t) => setAxis(AXIS.texture, t),
 
-  base: getSavedBase(),
-  setBase: (base) => {
-    saveBase(base)
-    applyBase(base)
-    set({ base })
-  },
+    font: getSavedFont(),
+    setFont: (f) => setAxis(AXIS.font, f),
 
-  // patch 形式（三个值合成一个 JSON key 落盘）；用函数式 set 拿到上一个值做合并。
-  // ⚠️ 启动链（store/index.ts）另有 applyReading —— **这一行不能省**，
-  // 初值只把值读进内存，DOM 上的 --read-line-height / data-read-para 得靠启动链写。
-  // 这是 --texture-opacity 冷启动 bug 的同一形态（值在 store 里、DOM 没被写）。
-  reading: getSavedReading(),
-  setReading: (patch) => set(s => {
-    const next = { ...s.reading, ...patch }
-    saveReading(next)
-    applyReading(next)
-    return { reading: next }
-  }),
+    base: getSavedBase(),
+    setBase: (b) => setAxis(AXIS.base, b),
 
-  // ⚠️ 启动链（store/index.ts）另有 applyCard —— **这一行不能省**：初值只把值读进内存，
-  // DOM 上的 data-skeleton / data-card-style 得靠启动链写（--texture-opacity 冷启动 bug 的同一形态）。
-  // 两次 getSavedCard() 是同一份纯读，不存在读出不一致的可能。
-  skeleton: getSavedCard().skeleton,
-  cardStyle: getSavedCard().style,
-  cardBg: getSavedCard().bg,
-  cardLift: getSavedCard().lift,
-  cardBorder: getSavedCard().border,
-  setCard: (patch) => set(s => {
-    // ⚠️ 合并的**源必须是 store 里的全部字段**而不是只挑两项：漏一个字段的表现是
-    // 「改完骨架，微调悄悄回到跟随方案」——patch 里没有的那个字段被默认值覆盖。
-    const next: CardPrefs = {
-      skeleton: s.skeleton, style: s.cardStyle,
-      bg: s.cardBg, lift: s.cardLift, border: s.cardBorder,
-      ...patch,
-    }
-    saveCard(next)
-    applyCard(next)
-    return {
-      skeleton: next.skeleton, cardStyle: next.style,
-      cardBg: next.bg, cardLift: next.lift, cardBorder: next.border,
-    }
-  }),
+    // patch 形式（三个值合成一个 JSON key 落盘）；用函数式 set 拿到上一个值做合并。
+    // ⚠️ 启动链（store/index.ts）另有 applyReading —— **这一行不能省**，
+    // 初值只把值读进内存，DOM 上的 --read-line-height / data-read-para 得靠启动链写。
+    // 这是 --texture-opacity 冷启动 bug 的同一形态（值在 store 里、DOM 没被写）。
+    reading: getSavedReading(),
+    setReading: (patch) => set(s => {
+      const next = { ...s.reading, ...patch }
+      saveReading(next)
+      applyReading(next)
+      return { reading: next }
+    }),
 
-  // ⚠️ 同上：启动链另有 applyMarkers（DOM 上的 data-marker-decor 靠它写）。
-  markerDecor: getSavedMarkers().decor,
-  setMarker: (patch) => set(s => {
-    const next: MarkerPrefs = { decor: s.markerDecor, ...patch }
-    saveMarkers(next)
-    applyMarkers(next)
-    return { markerDecor: next.decor }
-  }),
+    // ⚠️ 启动链（store/index.ts）另有 applyCard —— **这一行不能省**：初值只把值读进内存，
+    // DOM 上的 data-skeleton / data-card-style 得靠启动链写（--texture-opacity 冷启动 bug 的同一形态）。
+    // 两次 getSavedCard() 是同一份纯读，不存在读出不一致的可能。
+    skeleton: getSavedCard().skeleton,
+    cardStyle: getSavedCard().style,
+    cardBg: getSavedCard().bg,
+    cardLift: getSavedCard().lift,
+    cardBorder: getSavedCard().border,
+    setCard: (patch) => set(s => {
+      // ⚠️ 合并的**源必须是 store 里的全部字段**而不是只挑两项：漏一个字段的表现是
+      // 「改完骨架，微调悄悄回到跟随方案」——patch 里没有的那个字段被默认值覆盖。
+      const next: CardPrefs = {
+        skeleton: s.skeleton, style: s.cardStyle,
+        bg: s.cardBg, lift: s.cardLift, border: s.cardBorder,
+        ...patch,
+      }
+      saveCard(next)
+      applyCard(next)
+      return {
+        skeleton: next.skeleton, cardStyle: next.style,
+        bg: next.bg, lift: next.lift, border: next.border,
+      }
+    }),
 
-  applyPreset: (name) => {
-    const p = THEME_PRESETS.find(pr => pr.name === name)
-    if (!p) return
-    applyBase(p.base); saveBase(p.base)
-    applyAccent(p.accent); saveAccent(p.accent)
-    applyTexture(p.texture); saveTexture(p.texture)
-    applyFont(p.font); saveFont(p.font)
-    set({ base: p.base, accent: p.accent, texture: p.texture, font: p.font })
-  },
-})
+    // ⚠️ 同上：启动链另有 applyMarkers（DOM 上的 data-marker-decor 靠它写）。
+    markerDecor: getSavedMarkers().decor,
+    setMarker: (patch) => set(s => {
+      const next: MarkerPrefs = { decor: s.markerDecor, ...patch }
+      saveMarkers(next)
+      applyMarkers(next)
+      return { markerDecor: next.decor }
+    }),
+
+    applyPreset: (name) => {
+      const p = THEME_PRESETS.find(pr => pr.name === name)
+      if (!p) return
+      // 遍历注册表而不是逐轴手写 —— 将来预设里多一条轴时这里自动跟上
+      // （此前漏写的表现是「预设里配了、点了没反应」）。
+      // ⚠️ 判据是 `axis.key in p`：预设条目只有 accent/base/texture/font 四个字段
+      // （**没有 theme** —— 换主题包不该顺手改明暗，用户的日夜偏好是独立的一轴），
+      // 这一条自动跳过其余轴，不需要为「预设覆盖哪些轴」再造一张表。
+      const patch: Record<string, unknown> = {}
+      for (const axis of THEME_AXES) {
+        if (!(axis.key in p)) continue
+        const v = (p as unknown as Record<string, string>)[axis.key]
+        Object.assign(patch, writeAxis(axis, v))
+      }
+      // 一次 set 而不是每轴一次：五条轴是同一个动作的五个分量，分五次通知订阅者
+      // 会让「切主题包」产生五次中间态渲染。
+      set(patch as unknown as Partial<Store>)
+    },
+  }
+}

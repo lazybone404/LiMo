@@ -1,12 +1,13 @@
 import { useStore } from '../../store'
-import type { ThemeMode } from '../../lib/theme'
+import { THEME_OPTIONS, type ThemeMode } from '../../lib/theme'
 import { Sun, Moon, Monitor } from 'lucide-react'
 
-const modes: { mode: ThemeMode; label: string; icon: typeof Sun }[] = [
-  { mode: 'light', label: '浅色', icon: Sun },
-  { mode: 'dark', label: '深色', icon: Moon },
-  { mode: 'system', label: '跟随系统', icon: Monitor },
-]
+/**
+ * 档位 → 图标。**只有图标住在这个文件里** —— 三档的名字是**轴的数据**，
+ * 住在 `lib/theme.ts` 的 `THEME_OPTIONS`（另四条轴同款，注册表要读它；
+ * 名字写两份的下场见 CLAUDE.md 的「加一条轴 = 改 N 处」）。
+ */
+const ICONS: Record<ThemeMode, typeof Sun> = { light: Sun, dark: Moon, system: Monitor }
 
 /**
  * 明暗切换 — 三栏分段控件，**只显图标不显文字**。
@@ -21,22 +22,25 @@ export function ThemeToggle() {
 
   return (
     <div className="flex items-center gap-0.5 bg-surface rounded-lg p-0.5">
-      {modes.map(({ mode, label, icon: Icon }) => (
-        <button
-          key={mode}
-          onClick={() => setTheme(mode)}
-          aria-label={label}
-          aria-pressed={theme === mode}
-          className={`w-7 h-7 flex items-center justify-center rounded-md transition-all ${
-            theme === mode
-              ? 'bg-elevated shadow-sm text-foreground'
-              : 'text-muted hover:text-dimmed hover:bg-surface-hover'
-          }`}
-          title={label}
-        >
-          <Icon size={13} />
-        </button>
-      ))}
+      {THEME_OPTIONS.map(({ key: mode, label }) => {
+        const Icon = ICONS[mode]
+        return (
+          <button
+            key={mode}
+            onClick={() => setTheme(mode)}
+            aria-label={label}
+            aria-pressed={theme === mode}
+            className={`w-7 h-7 flex items-center justify-center rounded-md transition-all ${
+              theme === mode
+                ? 'bg-elevated shadow-sm text-foreground'
+                : 'text-muted hover:text-dimmed hover:bg-surface-hover'
+            }`}
+            title={label}
+          >
+            <Icon size={13} />
+          </button>
+        )
+      })}
     </div>
   )
 }

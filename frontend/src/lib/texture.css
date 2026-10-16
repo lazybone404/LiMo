@@ -1,9 +1,24 @@
 /* ══════════════════════════════════════════════════════════
-   LiMo — 预览区纸张纹理 (data-texture driven)
-   每种纹理有底色 + 图案层 + 主题色渐变，暗模式下全部清除
-   强度通过 --texture-opacity (0-1) 控制
-   选择器: [data-texture="X"] .preview-area (全局驱动)
-           .tex-card[data-texture="X"]     (自驱动，预设卡片等)
+   LiMo — 预览区纸张纹理 · 宿主规则 (data-texture driven)
+
+   ⚠️ **六套纹理的数据不在这个文件里** —— 底色 / 图案层 / blend-mode 已搬到
+   [`../styles/theme-layer.css`](../styles/theme-layer.css)，以三个变量声明：
+       --texture-bg-color / --texture-bg-image / --texture-blend
+   （另有 `type="plain"` 档**刻意不声明**，见那个文件里的说明。）
+
+   分家的理由：同一份数据还有**第二个宿主** —— 后端导出（`_build_selfcontained_html`
+   的 `<body>`），而导出页里**不存在** `.preview-area` / `.tex-card`
+   ⇒ 数据与宿主选择器必须分开，否则「选了纹理但导出不跟随」。
+
+   这个文件只剩两件事：
+     ① 视觉管道 —— 强度叠加层（`::before`）与暗色阻尼（`::after`）；
+        导出侧另有一份等价物（`body::before`），**不是同源**，改这里时记得看那边。
+     ② 把变量接到实际元素上。
+
+   选择器两条腿（改造前就有，保留）：
+     [data-texture="X"] .preview-area   全局驱动（`data-texture` 在 <html> 上）
+     .tex-card[data-texture="X"]        自驱动（设置页色卡 / 向导预设卡片自带属性）
+   两条腿都靠 `.tex-card` / `.preview-area` 上的变量取值，故宿主选择器与数据无关。
    ══════════════════════════════════════════════════════════ */
 
 /* ── 公共属性（仅 preview-area） ────────────────────── */
@@ -25,6 +40,18 @@
 /* 子元素在叠加层之上 */
 [data-texture]:not([data-texture="plain"]) .preview-area > * {
   position: relative;
+}
+
+/* ── 数据 → 实际背景 ─────────────────────────────────
+   ⚠️ `:not([data-texture="plain"])` 不是装饰：plain 档**没有**变量声明，
+   有这条排除时「plain 不出规则」＝改造前逐值相同；去掉它则会给 plain 元素
+   写上一组 `var()` 兜底值（把 `.tex-card` 自己可能有的底色冲掉）。 */
+
+[data-texture]:not([data-texture="plain"]) .preview-area,
+.tex-card[data-texture]:not([data-texture="plain"]) {
+  background-color: var(--texture-bg-color);
+  background-image: var(--texture-bg-image);
+  background-blend-mode: var(--texture-blend);
 }
 
 /* ── 暗模式：极淡纹理（ 2-3% 透明度） ────────────────── */
@@ -69,74 +96,6 @@
 [data-texture="plain"] .preview-area,
 .tex-card[data-texture="plain"] {
   background-image: none !important;
-}
-
-/* ── 宣纸 ── 纤维噪声 + 不均匀染色 ──────────────────── */
-
-[data-texture="xuan"] .preview-area,
-.tex-card[data-texture="xuan"] {
-  background-color: #F6EFE4;
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.35' numOctaves='4' stitchTiles='stitch' seed='7'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23a)' opacity='0.20' fill='%23807050'/%3E%3C/svg%3E"),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='b'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='3' stitchTiles='stitch' seed='23'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23b)' opacity='0.22' fill='%23908060'/%3E%3C/svg%3E"),
-    radial-gradient(ellipse at 12% 18%, rgba(200,180,140,0.16) 0%, transparent 50%),
-    radial-gradient(ellipse at 55% 82%, rgba(210,190,150,0.15) 0%, transparent 40%),
-    repeating-linear-gradient(82deg, transparent 0, transparent 6px, rgba(160,140,100,0.08) 6px, rgba(160,140,100,0.08) 7px, transparent 7px, transparent 14px),
-    linear-gradient(170deg, hsl(var(--second-hue), calc(var(--second-sat) * 0.3 * 1%), 94%) 0%, hsl(var(--accent-hue), calc(var(--accent-sat) * 0.15 * 1%), 97%) 100%);
-  background-blend-mode: normal, normal, normal, normal, normal, soft-light;
-}
-
-/* ── 牛皮纸 ── 粗噪声 + 斜向纤维 ────────────────────── */
-
-[data-texture="kraft"] .preview-area,
-.tex-card[data-texture="kraft"] {
-  background-color: #F4E8D4;
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.4' numOctaves='4' stitchTiles='stitch' seed='31'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23a)' opacity='0.22' fill='%23908060'/%3E%3C/svg%3E"),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150'%3E%3Cfilter id='b'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.0' numOctaves='3' stitchTiles='stitch' seed='47'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='150' height='150' filter='url(%23b)' opacity='0.18' fill='%23706048'/%3E%3C/svg%3E"),
-    radial-gradient(ellipse at 20% 30%, rgba(180,160,120,0.16) 0%, transparent 50%),
-    repeating-linear-gradient(85deg, transparent 0, transparent 5px, rgba(140,120,80,0.12) 5px, rgba(140,120,80,0.12) 6px, transparent 6px, transparent 12px),
-    linear-gradient(160deg, hsl(var(--second-hue), calc(var(--second-sat) * 0.25 * 1%), 93%) 0%, hsl(var(--accent-hue), calc(var(--accent-sat) * 0.12 * 1%), 96%) 100%);
-  background-blend-mode: normal, normal, normal, normal, soft-light;
-}
-
-/* ── 羊皮纸 ── 大尺度噪声 + 边缘渐深 ────────────────── */
-
-[data-texture="parchment"] .preview-area,
-.tex-card[data-texture="parchment"] {
-  background-color: #F6F0E4;
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.25' numOctaves='5' stitchTiles='stitch' seed='13'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='400' height='400' filter='url(%23a)' opacity='0.18' fill='%23908060'/%3E%3C/svg%3E"),
-    radial-gradient(ellipse at 10% 15%, rgba(200,180,140,0.28) 0%, transparent 40%),
-    radial-gradient(ellipse at 50% 90%, rgba(200,180,140,0.22) 0%, transparent 45%),
-    radial-gradient(ellipse at 80% 80%, rgba(190,170,130,0.12) 0%, transparent 40%),
-    linear-gradient(175deg, hsl(var(--second-hue), calc(var(--second-sat) * 0.2 * 1%), 94%) 0%, hsl(var(--accent-hue), calc(var(--accent-sat) * 0.1 * 1%), 97%) 100%);
-  background-blend-mode: normal, normal, normal, normal, soft-light;
-}
-
-/* ── 竹纸 ── 竖向竹纤维 + 浅绿噪声 ──────────────────── */
-
-[data-texture="bamboo"] .preview-area,
-.tex-card[data-texture="bamboo"] {
-  background-color: #F1F4EC;
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='250' height='250'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.5' numOctaves='3' stitchTiles='stitch' seed='59'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='250' height='250' filter='url(%23a)' opacity='0.14' fill='%23808860'/%3E%3C/svg%3E"),
-    repeating-linear-gradient(90deg, transparent 0, transparent 28px, rgba(150,165,100,0.10) 28px, rgba(150,165,100,0.10) 29px, transparent 29px, transparent 56px),
-    radial-gradient(ellipse at 30% 40%, rgba(180,200,140,0.08) 0%, transparent 50%),
-    linear-gradient(180deg, hsl(var(--second-hue), calc(var(--second-sat) * 0.2 * 1%), 95%) 0%, hsl(var(--accent-hue), calc(var(--accent-sat) * 0.1 * 1%), 98%) 100%);
-  background-blend-mode: normal, normal, normal, soft-light;
-}
-
-/* ── 信笺 ── 横格线 + 淡紫噪声 ──────────────────────── */
-
-[data-texture="letter"] .preview-area,
-.tex-card[data-texture="letter"] {
-  background-color: #F4F0F6;
-  background-image:
-    repeating-linear-gradient(0deg, transparent 0, transparent 23px, rgba(160,140,200,0.20) 23px, rgba(160,140,200,0.20) 24px),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='a'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.6' numOctaves='3' stitchTiles='stitch' seed='71'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23a)' opacity='0.10' fill='%23908080'/%3E%3C/svg%3E"),
-    linear-gradient(170deg, hsl(var(--second-hue), calc(var(--second-sat) * 0.2 * 1%), 96%) 0%, hsl(var(--accent-hue), calc(var(--accent-sat) * 0.1 * 1%), 98%) 100%);
-  background-blend-mode: normal, normal, soft-light;
 }
 
 /* ── 欢迎页纹理重置 ─────────────────────────────────── */

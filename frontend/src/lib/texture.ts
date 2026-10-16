@@ -4,6 +4,14 @@
  * data-texture: 6 种纸张纹理，纯 CSS SVG feTurbulence 实现
  * data-font: 5 种阅读字体（4 系统 + 1 Web），后续可扩展
  * 四轴独立：theme × accent × texture × font
+ *
+ * ⚠️ **本模块零色值**（2026-10-16 档 A）。纹理的底色 / 图案 / blend-mode 只有一份
+ * 真相源 —— [`styles/theme-layer.css`](../styles/theme-layer.css) 的
+ * `[data-texture="x"]` 规则，以三个变量声明：
+ *     --texture-bg-color / --texture-bg-image / --texture-blend
+ * 消费方（设置页色卡 / 预览区 / 导出）一律 `<el data-texture="x">` + `var()`，
+ * **不要在前端再存一份色值表** —— 此前那份 `TEXTURE_SWATCH` 与 CSS 实际底色
+ * **6/6 全不符**（色卡与实机对不上，零报错）。
  */
 
 export type TexturePreset = 'plain' | 'xuan' | 'kraft' | 'parchment' | 'bamboo' | 'letter'
@@ -28,16 +36,6 @@ export const FONT_OPTIONS: FontEntry[] = [
   { key: 'fangsong', label: '仿宋',         category: 'system' },
   { key: 'wenkai',   label: '霞鹜文楷',     category: 'web'   },
 ]
-
-/** 纹理预览色 — 与 CSS 实际底色同步的色卡 */
-export const TEXTURE_SWATCH: Record<TexturePreset, string> = {
-  plain:     '#F4F1EE',
-  xuan:      '#F9F4EC',
-  kraft:     '#F7F1E8',
-  parchment: '#F9F5EE',
-  bamboo:    '#F6F7F0',
-  letter:    '#F8F5F8',
-}
 
 const TEXTURE_KEY = 'mbw_texture'
 const FONT_KEY = 'mbw_font'
@@ -71,9 +69,25 @@ export function getSavedIntensity(): number {
   return 50
 }
 
+/**
+ * 强度滑条值（10-100）→ `--texture-opacity` 取值。
+ *
+ * ⚠️ **反转映射**：`10 → 0.9`（弱）`100 → 0`（强）。这个映射只有这一份 ——
+ * DOM 写入（`applyIntensity`）与导出参数（`ExportMenu` / `ExportPanel` 的
+ * `texture_opacity`）**共用它**。两处各写一遍 `(100-v)/100` 的话，改映射必漏一处，
+ * 症状是「预览里调了强度，导出还是老样子」而两边都不报错。
+ *
+ * `toFixed(2)` 是给导出侧看的：后端 `_TEXTURE_OPACITY_RE` 是纯数字白名单
+ * （`^(?:0|1|0?\.\d+)$`），固定两位小数让它**不必容忍科学计数法**（滑条若不是
+ * 整数步长，`String()` 可能给出 `5e-2` 这类形态）。对 `opacity` 而言两位小数
+ * 语义无损，故 DOM 侧直接用同一个字符串，不存在「预览与导出强度差一点」。
+ */
+export function textureOpacity(value: number): string {
+  return ((100 - value) / 100).toFixed(2)
+}
+
 export function applyIntensity(value: number): void {
-  // value: 10-100, 反转: 10→0.9(弱) 100→0(强)
-  document.documentElement.style.setProperty('--texture-opacity', String((100 - value) / 100))
+  document.documentElement.style.setProperty('--texture-opacity', textureOpacity(value))
 }
 
 export function saveIntensity(value: number): void {

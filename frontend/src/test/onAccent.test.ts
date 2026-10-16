@@ -5,9 +5,13 @@
  * （26 套配色 × 明暗两档亮度），白字在 dark 下（亮度 62%）对比度只有 ~2.9:1，
  * 最差的「金桂」1.87:1 —— 低于 WCAG AA 的 4.5:1，也低于大字档 3:1。
  *
- * ⚠️ **本文件的配色表是从 `index.css` 解析出来的，不是抄的**：抄一份的话，新增第 27
- *    套配色时这里不会红、只是**少覆盖一套**（静默漏检）。解析则自动纳入，且解析失败会
- *    以「数量不对」直接暴露（下面第一条断言就是干这个的）——模式 #54。
+ * ⚠️ **本文件的配色表是从 `styles/theme-layer.css` 解析出来的，不是抄的**：抄一份的话，
+ *    新增第 27 套配色时这里不会红、只是**少覆盖一套**（静默漏检）。解析则自动纳入，
+ *    且解析失败会以「数量不对」直接暴露（下面第一条断言就是干这个的）——模式 #54。
+ *
+ *    ⚠️ 2026-10-16 起这份表住在 `theme-layer.css`（原 `index.css`）—— 搬家的理由是
+ *    同一份数据要同时给后端导出用。**路径写错不会报错，只会解析出 0 套**，
+ *    而 `expect(ACCENTS.length).toBe(26)` 会当场红 —— 这条断言正是为这个而设。
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -15,14 +19,14 @@ import { resolve } from 'node:path'
 
 import { hslLuminance, contrastRatio, pickOnAccent, applyOnAccent, ON_ACCENT_CANDIDATES } from '../lib/onAccent'
 
-const indexCss = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
+const themeLayerCss = readFileSync(resolve(process.cwd(), 'src/styles/theme-layer.css'), 'utf-8')
 
 /** 从 `[data-accent="x"] { --accent-hue: N; --accent-sat: M; … }` 解析出全部配色。 */
-const ACCENTS = [...indexCss.matchAll(
+const ACCENTS = [...themeLayerCss.matchAll(
   /\[data-accent="([\w-]+)"\]\s*\{\s*--accent-hue:\s*(\d+);\s*--accent-sat:\s*(\d+);/g,
 )].map(m => ({ key: m[1], h: Number(m[2]), s: Number(m[3]) }))
 
-/** 两档主色亮度 —— 与 `index.css` 的 `--accent-lit`（:root 50% / dark 62%）同值。 */
+/** 两档主色亮度 —— 与主题层的 `--accent-lit`（`:root` 50% / `dark` 62%）同值。 */
 const LIGHT_L = 50
 const DARK_L = 62
 
@@ -36,7 +40,7 @@ const DARK_L = 62
 const MIN_RATIO = 4.3
 
 describe('P1-16 — on-accent 前景色选择', () => {
-  it('★ 配色表解析自 index.css（解析挂了这条先红，避免下面空转恒真）', () => {
+  it('★ 配色表解析自 theme-layer.css（解析挂了这条先红，避免下面空转恒真）', () => {
     expect(ACCENTS.length).toBe(26)
     expect(ACCENTS.map(a => a.key)).toContain('sky')
     expect(ACCENTS.map(a => a.key)).toContain('osmanthus')

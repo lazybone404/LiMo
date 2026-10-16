@@ -7,6 +7,7 @@ import { getContentForView } from '../../lib/contentSources'
 import { downloadText, downloadFromUrl, sanitizeExportName } from '../../lib/download'
 import { stripMarkers } from '../../lib/markdown-markers'
 import { serializeCardVars } from '../../lib/card-prefs'
+import { getSavedIntensity, textureOpacity } from '../../lib/texture'
 import { exportPdfFromUrl } from '../../lib/print'
 
 /** Tauri 环境检测 —— 决定 PDF 导出是「直接落文件」还是「退回打印对话框」 */
@@ -57,6 +58,12 @@ export function ExportMenu() {
   const cardLift = useStore(s => s.cardLift)
   const cardBorder = useStore(s => s.cardBorder)
   const markerDecor = useStore(s => s.markerDecor)
+  // 主题跟随（2026-10-16）—— 与骨架/卡片同一条「预览所见即导出所得」，只是这条管**颜色**。
+  const resolvedTheme = useStore(s => s.resolvedTheme)
+  const accent = useStore(s => s.accent)
+  const base = useStore(s => s.base)
+  const font = useStore(s => s.font)
+  const texture = useStore(s => s.texture)
   const exportPrefs = useStore(s => s.exportPrefs)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -106,6 +113,21 @@ export function ExportMenu() {
     // ⚠️ md / 纯文本**不看这个开关**：那里标记行是**整体剥掉**的（后端与这边的
     // `stripMarkers` 都剥），没有「装饰」可谈。
     if (!markerDecor) p.set('marker_decor', '0')
+    // 主题跟随（2026-10-16）—— 六项**无条件发**（不像上面几个开关那样「关掉才发」）：
+    // 「跟随应用主题」是这一轮的**产品决策**（用户已确认），不是可选项。后端逐项做
+    // 字符白名单校验、非法项静默丢弃，故这里不需要同步一份 key 列表。
+    // ⚠️ 明暗发 `resolvedTheme` 而**不是** `theme`：后者可能是 `'system'`，而导出页
+    // 没有 matchMedia 之外的判断依据 —— `data-theme="system"` 是一条谁都不认识的死属性，
+    // 症状是「系统设成暗色、导出却是白的」。
+    p.set('theme_mode', resolvedTheme)
+    p.set('accent', accent)
+    p.set('base', base)
+    p.set('font', font)
+    p.set('texture', texture)
+    // 强度传的是**反转映射后**的值（`textureOpacity`，与写进 DOM 的那份同源）——
+    // 后端原样搬运、不再换算。`plain` 时它是一个恒无效果的属性（导出页的
+    // `body::before` 选择器带 `:not([data-texture="plain"])`），故不发。
+    if (texture !== 'plain') p.set('texture_opacity', textureOpacity(getSavedIntensity()))
     return p
   }
 

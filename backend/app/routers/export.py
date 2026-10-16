@@ -260,6 +260,18 @@ async def export_content(
     # 任何没带参数的调用方必须拿到「装饰开着」这份产物，与预览里看到的一致。
     # 只有显式的 `marker_decor=0` 才关 —— 认不认识的值一律当「开」（同骨架取值兜底）。
     marker_decor = request.query_params.get("marker_decor", "1") != "0"
+    # 主题跟随（2026-10-16）—— 六项全部**默认空串**：一个都不带的调用方（历史前端、
+    # 第三方脚本、PDF 导出链）拿到的是今天的固定配色，逐字节零回归。
+    # ⚠️ 这里的职责只有「搬运」：合法性由 `_build_selfcontained_html` 的字符白名单兜
+    # （非法值静默丢弃那一项），**刻意不在这里校验、也不维护 key 列表**（第二份真相源）。
+    # 明暗传的是**解析后**的值（前端取 `resolvedTheme`）—— 导出页没有 `matchMedia`
+    # 之外的判断依据，`data-theme="system"` 是一条谁都不认识的死属性。
+    theme_mode = request.query_params.get("theme_mode", "")
+    accent = request.query_params.get("accent", "")
+    base = request.query_params.get("base", "")
+    font = request.query_params.get("font", "")
+    texture = request.query_params.get("texture", "")
+    texture_opacity = request.query_params.get("texture_opacity", "")
 
     if format == "html":
         # 图片 base64 内嵌 → 自包含单文件 HTML
@@ -273,7 +285,10 @@ async def export_content(
         export_theme = request.query_params.get("theme", "limo")
         html = _build_selfcontained_html(content, title, theme=export_theme,
                                          skeleton=skeleton, card_style=card_style,
-                                         marker_decor=marker_decor, card_vars=card_vars)
+                                         marker_decor=marker_decor, card_vars=card_vars,
+                                         theme_mode=theme_mode, accent=accent, base=base,
+                                         font=font, texture=texture,
+                                         texture_opacity=texture_opacity)
         safe_name = _safe_filename(title)
         encoded_name = quote(f"{safe_name}.html", safe='')
         # ⚠️ disposition 必须是 attachment —— 点击「HTML」就该下载文件。但 PDF 导出
@@ -613,60 +628,29 @@ th { font-weight: 500; color: #888; font-size: 0.85em; text-transform: uppercase
 pre { background: #282C34; border-radius: 4px; padding: 20px; color: #ABB2BF; }
 code { font-family: "SF Mono", monospace; font-size: 0.9em; }
 :not(pre) > code { background: #fafafa; padding: 1px 5px; border-radius: 3px; }""",
-    "limo": """body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.75; color: #1C1C1E; background: #fff; }
-h1 { font-size: 2em; color: #1E3A5F; border-bottom: 1px solid #d0d7de; padding-bottom: .3em; }
-h2 { font-size: 1.5em; color: #1D4ED8; border-bottom: 1px solid #d0d7de; padding-bottom: .3em; margin-top: 24px; }
-h3 { font-size: 1.25em; color: #2563EB; margin-top: 24px; }
-h4 { font-size: 1em; color: #3B82F6; margin-top: 24px; }
-strong { color: #1E40AF; }
-a { color: #2563EB; }
+    "limo": """body { font-family: var(--font-reading, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif); max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.75; color: var(--tk-foreground, #1C1C1E); background-color: var(--texture-bg-color, var(--tk-surface, #fff)); background-image: var(--texture-bg-image); background-blend-mode: var(--texture-blend); }
+html[data-texture]:not([data-texture="plain"]) body::before { content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: var(--tk-surface, #fff); opacity: var(--texture-opacity, 0); }
+h1 { font-size: 2em; color: var(--md-h1, #1E3A5F); border-bottom: 1px solid var(--tk-border, #d0d7de); padding-bottom: .3em; }
+h2 { font-size: 1.5em; color: var(--md-h2, #1D4ED8); border-bottom: 1px solid var(--tk-border, #d0d7de); padding-bottom: .3em; margin-top: 24px; }
+h3 { font-size: 1.25em; color: var(--md-h3, #2563EB); margin-top: 24px; }
+h4 { font-size: 1em; color: var(--md-h4, #3B82F6); margin-top: 24px; }
+strong { color: var(--md-strong, #1E40AF); }
+a { color: var(--md-link, #2563EB); }
 del { text-decoration: line-through; }
-blockquote { border-left: 4px solid #3B82F6; background: #EFF6FF; margin: 0; padding: 0 1em; color: #636366; border-radius: 0 8px 8px 0; }
+blockquote { border-left: 4px solid var(--md-blockquote-border, #3B82F6); background-color: var(--md-blockquote-bg, #EFF6FF); margin: 0; padding: 0 1em; color: var(--tk-dimmed, #636366); border-radius: 0 8px 8px 0; }
 pre { background: #282C34; border-radius: 8px; padding: 16px; overflow-x: auto; color: #ABB2BF; }
 code { font-family: "SF Mono", "Fira Code", monospace; font-size: 0.9em; }
-:not(pre) > code { background: #F0F4FF; color: #1D4ED8; padding: 2px 6px; border-radius: 4px; }
+:not(pre) > code { background-color: var(--md-code-bg, #F0F4FF); color: var(--md-code-color, #1D4ED8); padding: 2px 6px; border-radius: 4px; }
 table { border-collapse: collapse; width: 100%; margin: 16px 0; }
-th, td { border: 1px solid #D2D2D7; padding: 8px 12px; text-align: left; font-size: 0.95em; }
-th { background: #F5F5F7; font-weight: 600; }
+th, td { border: 1px solid var(--md-table-border, #D2D2D7); padding: 8px 12px; text-align: left; font-size: 0.95em; }
+th { background-color: var(--md-table-header-bg, #F5F5F7); font-weight: 600; }
 img { max-width: 100%; border-radius: 8px; }
-hr { border-color: #D2D2D7; }
-@media (prefers-color-scheme: dark) {
-  body { color: #E5E5EA; background: #1C1C1E; }
-  h1 { color: #93C5FD; border-bottom-color: #48484A; }
-  h2 { color: #60A5FA; border-bottom-color: #48484A; }
-  h3 { color: #60A5FA; }
-  h4 { color: #93C5FD; }
-  strong { color: #93C5FD; }
-  a { color: #60A5FA; }
-  blockquote { background: rgba(59,130,246,0.08); border-left-color: #60A5FA; color: #AEAEB2; }
-  pre { background: #21252B; color: #ABB2BF; }
-  code { color: #ABB2BF; }
-  :not(pre) > code { background: rgba(59,130,246,0.12); color: #93C5FD; }
-  table th { background: #2C2C2E; }
-  table td, table th { border-color: #48484A; }
-  img { opacity: 0.85; }
-  hr { border-color: #48484A; }
-}
-@media print {
-  /* 打印必须消解上面的暗色段 —— 系统处于暗色偏好时两者会**同时匹配**，
-     而这些浅色文字（blockquote #AEAEB2、行内 code #93C5FD）落在白纸上几乎看不见。
-     `_PRINT_CSS` 的 !important 只管 body/代码容器这几条通用规则，管不到这里，
-     故由引入暗色段的主题**自己**在打印时还原成浅色段取值。 */
-  body { color: #1C1C1E; background: #fff; }
-  h1 { color: #1E3A5F; }
-  h2 { color: #1D4ED8; }
-  h3 { color: #2563EB; }
-  h4 { color: #3B82F6; }
-  strong { color: #1E40AF; }
-  a { color: #2563EB; }
-  blockquote { background: #EFF6FF; border-left-color: #3B82F6; color: #636366; }
-  pre { background: #fff; color: #1F2328; }
-  code { color: inherit; }
-  :not(pre) > code { background: #F0F4FF; color: #1D4ED8; }
-  table th { background: #F5F5F7; }
-  table td, table th { border-color: #D2D2D7; }
-  img { opacity: 1; }
-  hr { border-color: #D2D2D7; }
+hr { border-color: var(--md-hr, #D2D2D7); }
+@media screen and (prefers-color-scheme: dark) {
+  html:not([data-theme]) { --tk-foreground: #E5E5EA; --tk-surface: #1C1C1E; --tk-dimmed: #AEAEB2; --tk-border: #48484A; --md-h1: #93C5FD; --md-h2: #60A5FA; --md-h3: #60A5FA; --md-h4: #93C5FD; --md-strong: #93C5FD; --md-link: #60A5FA; --md-blockquote-bg: rgba(59,130,246,0.08); --md-blockquote-border: #60A5FA; --md-code-bg: rgba(59,130,246,0.12); --md-code-color: #93C5FD; --md-table-border: #48484A; --md-table-header-bg: #2C2C2E; --md-hr: #48484A; }
+  html:not([data-theme]) pre { background: #21252B; }
+  html:not([data-theme]) code { color: #ABB2BF; }
+  html:not([data-theme]) img { opacity: 0.85; }
 }""",
 }
 
@@ -685,6 +669,13 @@ def _get_pygments_css() -> str:
     类选择器，改 `pre`/`code` 的 color 压不住它们，必须是**整份浅底主题的 defs**。
 
     两套规则同特异性 → `@media print` 块在后，打印时后者胜出，屏幕样式零影响。
+
+    ⚠️ **刻意不跟随 `--tk-*`（2026-10-16 复核过，这是分界不是遗漏）**：代码高亮的
+    配色主题（one-dark ↔ 打印浅底）是一个**独立的产品决策**，正交于界面主题 ——
+    用户换「胭脂」配色，期望的是界面与正文变红，不是代码块里那二十种 token 色
+    跟着乱掉（每套配色都要重新定一套 token 色板，代价远超收益）。
+    ⚠️ 与 `themeTokens.test.ts` 里 `TYPE_COLORS` 那组「刻意保留的硬编码」同款判据。
+    别把它当漏网之鱼顺手改成 `var(--tk-code-bg)`。
     """
     if not _PYGMENTS_OK:
         return ""
@@ -712,7 +703,13 @@ def _get_pygments_css() -> str:
 
 
 def _get_badge_css() -> str:
-    """时间戳 badge CSS — 对标前端 markdown-components.tsx 的 Tailwind 样式"""
+    """时间戳 badge CSS — 对标前端 markdown-components.tsx 的 Tailwind 样式
+
+    ⚠️ **刻意不跟随 `--tk-*`（2026-10-16 复核过，这是分界不是遗漏）**：这里的
+    `#007aff`(Content) / `#ff9500`(Screenshot) 是**类别标识色**，不是主题色 ——
+    它的职责是让读者在一屏里分清「这句是内容 / 这句是截图」，跨主题保持可辨识
+    才有意义。同 `TYPE_COLORS`（`themeTokens.test.ts` 有它的反面对照）。
+    """
     return """
 .ts-badge { display: inline-block; border-radius: 999px; padding: 1px 8px;
     font-size: 0.8em; font-weight: 500; vertical-align: middle; margin: 0 2px; }
@@ -964,13 +961,20 @@ def _get_katex_assets() -> dict[str, str]:
 # 靠 `pre`/`code` 的 color 压不住，必须在 _get_pygments_css() 里换一整套浅底主题。
 # 本文件负责的是容器（背景/边框）与版式。
 #
-# 插入位置在 style_block 末尾 —— 同特异性下后者胜，可覆盖主题与 katex 的屏幕样式
-# （本文件规则带 !important，也能压过 limo 主题的 prefers-color-scheme: dark 段）。
+# 插入位置在 style_block 末尾 —— 同特异性下后者胜，可覆盖主题与 katex 的屏幕样式。
+#
+# ⚠️ 暗色**不在本文件的职责范围**（2026-10-16 改）：主题层与 limo 主题的暗色段
+# 一律包在 `@media screen` 里（「**暗色是屏幕概念，纸永远是浅的**」），打印时它们
+# **根本不匹配**，落下来的是该配色自己的浅色档。故这里没有、也不需要「暗色 → 浅色」
+# 还原表 —— 那种表是同一份主题数据的第二份副本，且不跟随用户配色（选「胭脂」的暗色
+# 打印出来会是默认蓝）。
 _PRINT_CSS = """@page { size: A4; margin: 18mm 16mm; }
 @media print {
-  /* 解除屏幕布局；!important 同时覆盖 limo 主题的暗色媒体查询 */
+  /* 解除屏幕布局（background 简写顺带清掉纹理的 background-image / blend-mode） */
   body { max-width: none !important; margin: 0 !important; padding: 0 !important;
          background: #fff !important; color: #000 !important; }
+  /* 纹理强度叠加层（跟随主题时才有）—— position:fixed 层在纸上会把正文压成灰底 */
+  body::before { display: none !important; }
   /* 代码容器改浅底深字（token 配色见 _get_pygments_css 的 @media print 段） */
   .codehilite, .codehilite pre, pre { background: #fff !important;
     border: 1px solid #D0D7DE !important; color: #1F2328 !important; }
@@ -988,12 +992,14 @@ _PRINT_CSS = """@page { size: A4; margin: 18mm 16mm; }
 }"""
 
 
-#: 卡片 / 语义块 CSS 依赖的**界面令牌** —— 导出 HTML 里**一个 `--tk-*` 都没有**：
-#: `HTML_THEMES` 是自包含的独立一套 CSS（纯裸色值 + 自己的明暗段），与应用内预览
-#: 用的 `--tk-*` 体系无交集。而 `cards.css` / `blocks.css` 里的 `var(--tk-…)` 没有
-#: fallback ⇒ 不补这份定义的话，卡片**没有底色、没有边框、没有圆角**、语义块**没有
-#: 竖线色与数字色**（几何量是硬值所以还在），而「section 数量对」「CSS 里有卡片规则」
-#: 这类断言**照样全绿**。
+#: 卡片 / 语义块 CSS 依赖的**界面令牌** —— **仅「未跟随主题」时注入**（见
+#: `_build_selfcontained_html`）：跟随路径下 `--tk-*` 由 `theme-layer.css` 提供，
+#: 而那一套是它的**超集**（17 个令牌 vs 这里 10 个）且带用户自己的配色。
+#:
+#: 「未跟随」= 固定主题（paper / github / minimal）+ 老调用方（不带任何轴参数）。
+#: 那些产物**今天就是这个样子**，所以这份取值一个字都不能动 —— 它换成主题层的暖白
+#: 会让固定主题的卡片底色从 `#ffffff` 变成米黄（`--tk-surface` 6/6 不同，
+#: 差异是「跟随」的语义本身，不是 bug）。
 #:
 #: ⚠️ **成对常量守卫**：`test_export_blocks.py` 会从这两份 CSS 里正则抽出全部
 #: `var(--tk-…)` 再逐一查这里有没有定义 —— 加了新令牌却忘了补，那条断言直接红。
@@ -1002,9 +1008,13 @@ _PRINT_CSS = """@page { size: A4; margin: 18mm 16mm; }
 #: ⚠️ 取值：中性与品牌色对齐 `HTML_THEMES["limo"]`（同一套蓝 + 同一组灰）；语义色
 #: （success / warning）用应用内同一组 Apple 系统色（`index.css` 的 `--tk-success` /
 #: `--tk-warning`）—— 导出页没有理由给同一个语义换一个色相。三态齐全（浅色 / 暗色 /
-#: 打印）。`@media print` 段**必须在 dark 段之后**：两者会**同时匹配**（既有教训，
-#: 见 `HTML_THEMES["limo"]` 里那段同样的注释），同特异性下后者胜。
-_CARD_TOKENS_CSS = """
+#: 打印）。`@media print` 段**必须在 dark 段之后**：两者会**同时匹配**（既有教训），
+#: 同特异性下后者胜。
+#:
+#: ⚠️ 名字里的 `NEUTRAL`（2026-10-16 由 `_CARD_TOKENS_CSS` 改）指的是「**中立于主题**」：
+#: 它不给任何用户配色，只保证卡片/块在固定主题下有一组能用的灰。别把它当成
+#: 「主题层的中性版」而拿去替代主题层。
+_EXPORT_NEUTRAL_TOKENS_CSS = """
 :root {
   --tk-surface: #ffffff;   --tk-elevated: #f5f5f7;  --tk-hover: #ececf0;
   --tk-border: #d2d2d7;    --tk-border-light: #e5e5ea;
@@ -1053,6 +1063,30 @@ _CARD_TUNE_VARS = frozenset({"--card-bg-base", "--card-lift", "--card-border"})
 _CARD_VAR_VALUE_RE = re.compile(r"^[A-Za-z0-9 ,%().#-]{1,200}$")
 
 
+#: 主题跟随（2026-10-16）—— 五条**选择型轴**的属性值白名单。
+#:
+#: ⚠️ 与 `_parse_card_vars` **同一条纪律：只做字符白名单，刻意不持有 key 列表**。
+#: 后端再维护一份「26 套配色 / 14 种基调」的副本 = 第二份真相源，前端加一套配色而
+#: 这里没跟上时的症状是「导出静默不跟随那一套」，零报错、也不影响其他轴。
+#: 值最终落在 `data-accent="{v}"` 上，**原样拼接就是注入面** —— 字符集里绝不能有
+#: `"` `<` `>` 空格 `=`，这条正则正是那道闸。
+#:
+#: 非法值**静默丢弃该项**（与 `card_style` 同判据：选错配色不改变产物的**性质**，
+#: 不该让整次导出失败）。长度上限 24：最长真实 key 是 `spearmint`(9) / `parchment`(9)。
+_AXIS_VALUE_RE = re.compile(r"^[a-z0-9-]{1,24}$")
+
+#: 纹理强度 `--texture-opacity`（0–1 小数）—— 唯一走**行内 style** 的轴（它不是
+#: `data-*` 能表达的形式）。⚠️ 前端 `lib/texture.ts::textureOpacity` 写的是**反转映射**
+#: 后的值（`(100 - 滑条值) / 100`），导出侧**原样搬运、不做第二次换算**：再反转一次
+#: 等于没跟随，而且「滑条拉到底反而更明显」这种症状看起来像 CSS 写错了。
+#: 也刻意不接受 `0.5%` / `calc(...)` 这类形态 —— 它是消费者（`opacity:`）要的
+#: 就是个纯数字，多收一种形态只会多一份「谁来解释它」的负担。
+#: ⚠️ 小数位限 **4**（前端 `toFixed(2)` 恒 2 位，余量充足）：与 `_AXIS_VALUE_RE`
+#: 的长度上限同一条理由 —— 字符集白名单**不限制长度**，一次请求可以带几 MB 的
+#: 合法数字进 `<style>`。
+_TEXTURE_OPACITY_RE = re.compile(r"^(?:0|1|0?\.\d{1,4})$")
+
+
 def _parse_card_vars(raw: str) -> str:
     """`card_vars`（`--a:1;--b:2`）→ 一段安全的 `:root{…}`；无有效项时返回空串。
 
@@ -1071,40 +1105,62 @@ def _parse_card_vars(raw: str) -> str:
     return ":root{" + ";".join(decls) + "}" if decls else ""
 
 
-def _load_card_css() -> str:
-    """读前端那份 `cards.css`（**单一真相源**）原样内联进导出 HTML。
+def _load_frontend_css(filename: str, error_code: str, error_msg: str) -> str:
+    """读前端 `frontend/src/styles/{filename}`（**单一真相源**）原样内联进导出 HTML。
 
-    ⚠️ **单一真相源在前端**（`frontend/src/styles/cards.css`）：前端 `main.tsx`
-    直接 import 它，后端从磁盘读**同一份文件**。刻意**不**往 `backend/static/`
-    放副本 —— 副本就是第二份拷贝，正是本项目「同一份判据不得有两份实现」这条纪律
-    要消除的形态，绕到打包路径上发生也一样（模式 #54）。
+    `cards.css` 与 `theme-layer.css` **共用这一份读取逻辑** —— 「开发路径 / 打包路径 /
+    读不到抛错」这组三连写两遍就是模式 #54 的典型入口：改了其中一份的路径规则，另一份
+    照样「能跑」，只是**永远读不到**，而两条链的调用点相隔甚远，谁也不会发现。
 
-    ⚠️ **不缓存**：这份文件是「我们会改的源文件」，而验收步骤正是「改完 CSS 跑一次
-    导出看效果」。缓存会让改动静默不生效。`_get_katex_assets` 那边可以缓存，是因为
-    KaTeX 是只读的第三方资产 —— 性质不同，不要照抄。
+    ⚠️ **单一真相源在前端**：前端直接 import 这些文件，后端从磁盘读**同一份文件**。
+    刻意**不**往 `backend/static/` 放副本 —— 副本就是第二份拷贝，正是本项目
+    「同一份判据不得有两份实现」这条纪律要消除的形态，绕到打包路径上发生也一样。
 
-    ⚠️ **读不到就抛错，不静默输出无样式的卡片**：静默降级的表现是「导出成功、卡片
-    一点样式都没有」，而「section 数量与 H2 一致」「CSS 里有卡片规则」这类断言
-    照样全绿（本项目点名的「断言全过、肉眼等于没有」）。`_get_katex_assets` 找不到
-    时只 warning —— **这里刻意更严**：KaTeX 缺失还能读正文，卡片样式缺失等于功能没实现。
+    ⚠️ **不缓存**：它们是「我们会改的源文件」，而验收步骤正是「改完 CSS 跑一次导出看
+    效果」。缓存会让改动静默不生效。`_get_katex_assets` 那边可以缓存，是因为 KaTeX 是
+    只读的第三方资产 —— 性质不同，不要照抄。
+
+    ⚠️ **读不到就抛错，不静默输出无样式的产物**：静默降级的表现是「导出成功、卡片/
+    主题一点样式都没有」，而「CSS 里有卡片规则」这类断言照样全绿（本项目点名的
+    「断言全过、肉眼等于没有」）。`_get_katex_assets` 找不到时只 warning ——
+    **这里刻意更严**：KaTeX 缺失还能读正文，这些样式缺失等于功能没实现。
+
+    ⚠️ **打包版必须同步 `LiMoBackend.spec` 的 datas**（`('../frontend/src/styles/x', 'styles')`）
+    —— 漏了的症状是**开发版全绿、打包版导出直接 500**。
     """
     candidates = [
         # 开发环境：仓库内的源文件
-        Path(__file__).resolve().parents[3] / "frontend" / "src" / "styles" / "cards.css",
+        Path(__file__).resolve().parents[3] / "frontend" / "src" / "styles" / filename,
     ]
-    # 打包环境：spec 的 datas 把它收到 `styles/cards.css`（与 spec 那行逐字对应）
+    # 打包环境：spec 的 datas 把它收到 `styles/{filename}`（与 spec 那行逐字对应）
     _meipass = getattr(sys, "_MEIPASS", None)
     if _meipass:
-        candidates.append(Path(_meipass) / "styles" / "cards.css")
+        candidates.append(Path(_meipass) / "styles" / filename)
     for p in candidates:
         if p.is_file():
             return p.read_text(encoding="utf-8")
     raise AppError(
-        "EXPORT_CARD_CSS_MISSING",
-        "卡片样式文件缺失，无法导出卡片骨架",
+        error_code, error_msg,
         detail="已查找：" + "、".join(str(p) for p in candidates),
         recoverable=False, status_code=500,
     )
+
+
+def _load_card_css() -> str:
+    """卡片视觉方案（`cards.css`）—— 读取纪律见 `_load_frontend_css`。"""
+    return _load_frontend_css("cards.css", "EXPORT_CARD_CSS_MISSING",
+                              "卡片样式文件缺失，无法导出卡片骨架")
+
+
+def _load_theme_layer_css() -> str:
+    """主题层（`theme-layer.css`）—— **跟随应用主题时**注入，读取纪律同上。
+
+    ⚠️ 它是导出侧的 `--tk-*` / `--md-*` / `--font-reading` / `--texture-*`
+    **唯一来源**（不跟随时由 `_EXPORT_NEUTRAL_TOKENS_CSS` + `HTML_THEMES["limo"]`
+    的裸值 fallback 承担）。名字里的 `theme_layer` 与前端同源。
+    """
+    return _load_frontend_css("theme-layer.css", "EXPORT_THEME_CSS_MISSING",
+                              "主题层文件缺失，无法导出跟随主题")
 
 
 def _load_block_css() -> str:
@@ -1152,7 +1208,10 @@ def _render_md_with_blocks(md: str) -> str:
 
 def _build_selfcontained_html(md: str, title: str, theme: str = "limo",
                               skeleton: str = "paper", card_style: str = "gpt",
-                              marker_decor: bool = True, card_vars: str = "") -> str:
+                              marker_decor: bool = True, card_vars: str = "",
+                              theme_mode: str = "", accent: str = "",
+                              base: str = "", font: str = "", texture: str = "",
+                              texture_opacity: str = "") -> str:
     """构建完全自包含的 HTML 文档（图片已在上游处理完毕）。
 
     公式策略：
@@ -1164,6 +1223,14 @@ def _build_selfcontained_html(md: str, title: str, theme: str = "limo",
     （`split_by_h2` ↔ `splitByH2`，共享 fixture 钉住），这正是「用户在预览栏看到
     什么，导出就应该得到什么」这条核心约束在本轮的落点。⚠️ **默认 `paper` 时
     逐字走今天的分支**，一个字符都不动。
+
+    主题跟随（2026-10-16）：末六个参数是应用主题的**五条选择型轴 + 纹理强度**，
+    由前端从 store 读后传入（明暗取 `resolvedTheme` —— `theme` 可能是 `'system'`）。
+    ⚠️ **各轴独立**：非空**且合法**才写属性 ⇒ **一个参数都不传时逐字节等于改造前**
+    （第三方脚本、历史调用方的调用点零改动）。传了任何一条轴属性即视为「跟随」：
+    此时注入 `theme-layer.css`（与前端**同一份文件**），`HTML_THEMES["limo"]` 里
+    那些 `var(--tk-*, <今天裸值>)` 就开始取用户的值 —— 写成 **fallback 形式**是关键：
+    未跟随时取到的就是今天那批硬编码色值，**零回归不靠分支靠 `var()` 兜底**。
     """
     import html as html_mod
 
@@ -1214,17 +1281,43 @@ def _build_selfcontained_html(md: str, title: str, theme: str = "limo",
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 <script>renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]})</script>"""
 
-    style_block = f"<style>{theme_css}</style>"
-    # ⚠️ `_CARD_TOKENS_CSS` 是「导出页缺失的那套 `--tk-*` 定义」—— 导出主题
-    # （`HTML_THEMES`）**一个 `--tk-*` 都不提供**，而 `var()` 无 fallback 时整条声明
-    # 作废。它现在有**两个消费者**：`cards.css`（骨架）与 `blocks.css`（标记）。
-    # 漏注入的表现是「那一块完全没有样式」，不报错、不抛异常，且**应用内预览里是好的**
-    # （那边令牌由主题系统提供）—— 所以判据必须是「凡引用了 `--tk-*` 的 CSS 都要与它
-    # 同时在场」，而不是「skeleton=card 时注入」。
+    # ── 主题跟随：五条轴各自独立，非空且合法才写 ──
+    # ⚠️ 白名单只做**字符**校验、**刻意不持有 key 列表**（那是 CSS 那份真相源的第二份
+    # 副本）—— 与 `_parse_card_vars` 同一条纪律。非法值**静默丢弃该项**：某个轴值不对
+    # **不改变产物的性质**（判据同骨架的 `card_style` / 合成管道的维度清洗），
+    # 不该让整次导出失败。
+    _axis_pairs = (("data-theme", theme_mode), ("data-accent", accent),
+                   ("data-base", base), ("data-font", font), ("data-texture", texture))
+    axis_attrs = "".join(f' {a}="{v}"' for a, v in _axis_pairs if _AXIS_VALUE_RE.match(v))
+    followed = bool(axis_attrs)
+    # 纹理强度是**唯一走行内 style 的轴** —— 它不是枚举值而是 0–1 的小数。
+    # ⚠️ 前端写的是**反转映射**后的值（`lib/texture.ts::applyIntensity`：强度 100 → 0）。
+    # 导出侧**原样搬运、不做第二次换算**：这里是搬运工不是判据的第二个家。
+    # ⚠️ 只在「跟随」时才写 —— 没有轴属性时它是个恒无效果的属性（选择器不匹配）。
+    style_attr = (f' style="--texture-opacity: {texture_opacity}"'
+                  if followed and _TEXTURE_OPACITY_RE.match(texture_opacity) else "")
+
+    style_block = ""
+    # 主题层（`theme-layer.css`，与前端同一份文件）—— ⚠️ **必须排在 `theme_css` 之前**：
+    # 它只声明变量，`HTML_THEMES["limo"]` 消费 `var(--tk-*)`，变量先定义后消费。
+    # ⚠️ 不恒注入 —— 恒注入会给每个导出多一段 `<style>`，破坏「无参数产物逐字节零回归」。
+    if followed:
+        style_block += f"<style>{_load_theme_layer_css()}</style>\n"
+    style_block += f"<style>{theme_css}</style>"
+    # ⚠️ `_EXPORT_NEUTRAL_TOKENS_CSS` 是「**未跟随**时导出页缺失的那套 `--tk-*` 定义」——
+    # 固定主题（`paper`/`github`/`minimal` 的 `HTML_THEMES`）**一个 `--tk-*` 都不提供**，
+    # 而 `var()` 无 fallback 时整条声明作废。它现在有**两个消费者**：`cards.css`（骨架）
+    # 与 `blocks.css`（标记）。漏注入的表现是「那一块完全没有样式」，不报错、不抛异常，
+    # 且**应用内预览里是好的**（那边令牌由主题系统提供）—— 所以判据必须是「凡引用了
+    # `--tk-*` 的 CSS 都要与它同时在场」，而不是「skeleton=card 时注入」。
+    # ⚠️ **跟随时它必须让位**：主题层才是令牌的真相源（17 个 `--tk-*` 是这里的超集）。
+    # 两份同时注入 = 让「跟随时卡片底色该是 #ffffff 还是暖白」由规则先后裁决，
+    # 而那正是本轮要消灭的形态。取值差别（`--tk-surface`: `#ffffff` vs 暖白）**正是
+    # 「跟随」的语义**，不是 bug。
     # ⚠️ 顺序在两者之间无所谓（CSS 变量运行时解析）。
-    # ⚠️ 「无标记 + paper」不注入 —— 保证与改造前**逐字节相同**。
-    if skeleton == "card" or blocks_present:
-        style_block += f"\n<style>{_CARD_TOKENS_CSS}</style>"
+    # ⚠️ 「无标记 + paper + 未跟随」不注入 —— 保证与改造前**逐字节相同**。
+    if not followed and (skeleton == "card" or blocks_present):
+        style_block += f"\n<style>{_EXPORT_NEUTRAL_TOKENS_CSS}</style>"
     if skeleton == "card":
         style_block += f"\n<style>{_load_card_css()}</style>"
         # 逐维度微调（2026-10-11）—— ⚠️ **必须排在 `cards.css` 之后**：方案块
@@ -1268,6 +1361,8 @@ def _build_selfcontained_html(md: str, title: str, theme: str = "limo",
     # 「无标记产物的导出逐字节不变」。（有块但用户没关 → 不写，与前端一致。）
     if blocks_present and not marker_decor:
         html_attrs += ' data-marker-decor="off"'
+    # 主题跟随的五条轴属性 + 纹理强度行内变量（未跟随时两者都是空串，见上）。
+    html_attrs += axis_attrs + style_attr
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"{html_attrs}>
@@ -1475,6 +1570,17 @@ class ExportCustomRequest(BaseModel):
     # 一路带到导出请求里），语义 = 「导出应与预览一致」；md / plain 恒剥离标记行，
     # 与它无关（那里没有视觉层可谈）。
     marker_decor: bool = True
+    # 主题跟随（2026-10-16）—— 与单文档端点 `GET /export/{id}` 的六个 query 参数
+    # **一一对应**（明暗 / 配色 / 基调 / 字体 / 纹理 / 强度）。默认全空串 = 不跟随，
+    # 与今天的固定配色逐字节相同。
+    # ⚠️ **必须两处齐全**：批量与单个走的是两条端点，只改一处的话「单个导出跟随、
+    # 批量导出不跟随」，而两条都成功、都不报错 —— 用户只会觉得批量导出的颜色「怪」。
+    theme_mode: str = ""           # light | dark（**解析后**的值，不是 system）
+    accent: str = ""
+    base: str = ""
+    font: str = ""
+    texture: str = ""
+    texture_opacity: str = ""      # 0–1 小数，前端已做反转映射
     filename: str = "export"
 
 
@@ -1613,7 +1719,10 @@ def _build_export_zip(
                         processed = _build_selfcontained_html(
                             processed, tx.get("title", doc_title), data.html_theme,
                             skeleton=data.skeleton, card_style=data.card_style,
-                            marker_decor=data.marker_decor, card_vars=data.card_vars)
+                            marker_decor=data.marker_decor, card_vars=data.card_vars,
+                            theme_mode=data.theme_mode, accent=data.accent,
+                            base=data.base, font=data.font, texture=data.texture,
+                            texture_opacity=data.texture_opacity)
                         ext = "html"
                     elif fmt == "plain":
                         processed = _remove_formulas(processed) if data.formula_plain == "remove" else _unicode_formulas(processed)

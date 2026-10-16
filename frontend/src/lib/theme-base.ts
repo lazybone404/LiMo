@@ -1,8 +1,18 @@
 /**
  * LiMo — 界面基调管理 (data-base)
  *
- * 控制全局 --tk-* 底色变量。6 种基调覆盖冷暖 + 偏色。
+ * 控制全局 --tk-* 底色变量。**14 种**基调覆盖冷暖 + 偏色（真相源是下方 BASE_OPTIONS）。
  * data-base 独立于 existing 四轴 (theme × accent × texture × font)
+ *
+ * ⚠️ **本模块零色值**（2026-10-16 档 A）。每种基调的 surface / elevated / hover / border
+ * 只有一份真相源 —— [`styles/theme-layer.css`](../styles/theme-layer.css) 的
+ * `[data-base="x"]` 规则。消费方（设置页色卡 / 预设卡）一律
+ * `<el data-base="x">` + `var(--tk-surface)`，**不要在前端再存一份色值表**。
+ *
+ * ⚠️ 它只提供**浅色模式**的底色偏色。对应的 `[data-base="…"]` 规则必须住在
+ * `theme-layer.css` 的 `:root` 与 `[data-theme="dark"]` **之间** —— 三块特异性同为
+ * (0,1,0) 且作用在同一个 `<html>` 上，谁生效完全由**顺序**决定（2026-10-16 修：这条
+ * 写反过，整轴静默失效）。有测试钉住相对顺序，别挪。
  */
 
 export type BasePreset = 'warm' | 'neutral' | 'cream' | 'cool' | 'rose' | 'sage' | 'jade' | 'amber' | 'pearl' | 'mint' | 'sand' | 'lilac' | 'cloud' | 'blush'
@@ -10,27 +20,23 @@ export type BasePreset = 'warm' | 'neutral' | 'cream' | 'cool' | 'rose' | 'sage'
 interface BaseEntry {
   key: BasePreset
   label: string
-  surface: string
-  elevated: string
-  hover: string
-  border: string
 }
 
 export const BASE_OPTIONS: BaseEntry[] = [
-  { key: 'warm',    label: '暖灰',   surface: '#F4F1EE', elevated: '#FAF8F5', hover: '#EDEAE6', border: '#D6D3CE' },
-  { key: 'neutral', label: '中性白', surface: '#F5F5F5', elevated: '#FCFCFC', hover: '#ECECEC', border: '#D8D8D8' },
-  { key: 'cream',   label: '奶油',   surface: '#F9F6F0', elevated: '#FEFCF8', hover: '#F2EDE4', border: '#E0D8CA' },
-  { key: 'cool',    label: '冷灰',   surface: '#F2F3F5', elevated: '#F8F9FC', hover: '#E8EAEE', border: '#D4D6DA' },
-  { key: 'rose',    label: '玫瑰',   surface: '#F5F1F2', elevated: '#FBF8F9', hover: '#EEE6E8', border: '#D8CED2' },
-  { key: 'sage',    label: '鼠尾草', surface: '#F2F4F0', elevated: '#F8FAF7', hover: '#E8ECE6', border: '#D0D6CE' },
-  { key: 'jade',    label: '柔绿',   surface: '#EEF2ED', elevated: '#F5F8F4', hover: '#E4EAE3', border: '#CED4CD' },
-  { key: 'amber',   label: '琥珀',   surface: '#F9F4EA', elevated: '#FEFBF5', hover: '#F2EBDE', border: '#E0D6C4' },
-  { key: 'pearl',   label: '珍珠白', surface: '#F7F6F3', elevated: '#FDFCFB', hover: '#EEEDEA', border: '#DEDCD8' },
-  { key: 'mint',    label: '薄荷',   surface: '#EDF4EF', elevated: '#F4FAF6', hover: '#E3EDE6', border: '#CDD8D0' },
-  { key: 'sand',    label: '沙色',   surface: '#F6F2EA', elevated: '#FCF9F3', hover: '#EFE9DD', border: '#DDD5C5' },
-  { key: 'lilac',   label: '丁香',   surface: '#F3F0F6', elevated: '#FAF8FC', hover: '#ECE7F0', border: '#D6D0DC' },
-  { key: 'cloud',   label: '云白',   surface: '#F3F4F8', elevated: '#FAFBFC', hover: '#EAEBF0', border: '#D4D6DC' },
-  { key: 'blush',   label: '腮红',   surface: '#F7F1F2', elevated: '#FDF9FA', hover: '#F1E8EA', border: '#DDD0D4' },
+  { key: 'warm',    label: '暖灰' },
+  { key: 'neutral', label: '中性白' },
+  { key: 'cream',   label: '奶油' },
+  { key: 'cool',    label: '冷灰' },
+  { key: 'rose',    label: '玫瑰' },
+  { key: 'sage',    label: '鼠尾草' },
+  { key: 'jade',    label: '柔绿' },
+  { key: 'amber',   label: '琥珀' },
+  { key: 'pearl',   label: '珍珠白' },
+  { key: 'mint',    label: '薄荷' },
+  { key: 'sand',    label: '沙色' },
+  { key: 'lilac',   label: '丁香' },
+  { key: 'cloud',   label: '云白' },
+  { key: 'blush',   label: '腮红' },
 ]
 
 const STORAGE_KEY = 'mbw_base'
