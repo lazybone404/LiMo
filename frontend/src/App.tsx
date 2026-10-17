@@ -14,7 +14,10 @@ import { ThemeToggle } from './components/ui/ThemeToggle'
 import { fetchCapabilities, listTranscripts, listFolders, getMarkdown, getTranscript } from './api/client'
 import { startHealthPoll } from './lib/health'
 import { toMarkdownMeta } from './lib/markdownMeta'
-import { installWarningText, type InstallPathWarning } from './lib/installWarning'
+import {
+  installWarningText, isInstallWarningDismissed, dismissInstallWarning,
+  type InstallPathWarning,
+} from './lib/installWarning'
 import { Archive, X } from 'lucide-react'
 
 // 冷启动静默期（ms）：后端实测 ~2s 就绪，这段窗口内**故意一条请求都不发** ——
@@ -230,7 +233,9 @@ export default function App() {
         //    **不挂 init**：它描述的正是「后端可能起不来」的原因，等 init 就太晚了。
         listen<InstallPathWarning>('backend-warning', e => {
           const text = installWarningText(e.payload)
-          if (text) setInstallWarning(text)
+          // 用户主动关过就一直不再显示（跨会话，见 `installWarning.ts`）——
+          // Rust 每次启动都会重新发这条事件，只清 state 的话每次开机都要再关一遍。
+          if (text && !isInstallWarningDismissed()) setInstallWarning(text)
         }).then(un => { unlistenWarning = un })
       }).catch(() => {}) // 事件模块导入失败也不要紧：静默期探测 + 硬兜底仍能放行
 
@@ -313,13 +318,16 @@ export default function App() {
         </div>
       )}
 
-      {/* 安装路径告警（Rust backend-warning）— 可关闭：它是**建议**而非故障，
-          用户看过即可。下次启动若仍命中会再出现（诊断在每次启动时跑）。 */}
+      {/* 安装路径告警（Rust backend-warning）— 可关闭，且**关过就不再出现**：
+          它是**建议**而非故障（诊断每次启动都跑，用户没关就一直提示；关了则本机
+          永久静默，理由见 `lib/installWarning.ts`）。 */}
       {installWarning && (
         <div className="flex items-center gap-2 px-4 py-1.5 text-[12px] font-medium border-b border-border-light shrink-0 z-10 bg-warning/10 text-warning">
           <span className="w-2 h-2 rounded-full bg-warning shrink-0" />
           <span className="flex-1">{installWarning}</span>
-          <button onClick={() => setInstallWarning('')} className="rounded p-0.5 hover:bg-surface-hover" title="关闭"><X size={12} /></button>
+          <button
+            onClick={() => { dismissInstallWarning(); setInstallWarning('') }}
+            className="rounded p-0.5 hover:bg-surface-hover" title="关闭（不再提示）"><X size={12} /></button>
         </div>
       )}
 
