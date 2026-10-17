@@ -215,6 +215,10 @@
   outline-offset: var(--card-frame-inset);
   padding: var(--card-padding);
   margin-block: var(--card-gap);
+  /* ⚠️ 长 URL / 无空白长串不撑破整节卡（2026-10-17）：卡片是宽栏容器，正文里一条
+     长链接在窄窗口 + 大字号下会把卡片撑出横向滚动。`break-word` 只在确实放不下时
+     拆长串，正常中文的折行位置不受影响。与对话侧 `.chat-card` 同款。 */
+  overflow-wrap: break-word;
 }
 
 /* ── 设置页的迷你视觉小样（2026-10-11） ──────────────────────────────
@@ -250,6 +254,10 @@
 [data-skeleton="card"] .md-card h2,
 [data-skeleton="card"] .md-card h3 {
   color: var(--card-title);
+  /* ⚠️ 标题孤字（2026-10-17）：两行标题断成「长行 + 一个词」很难看，`balance`
+     让两行长度均匀。浏览器对超过若干行的块会自动放弃（标题本来就短），
+     不改任何既有排版。 */
+  text-wrap: balance;
 }
 
 /* 卡片标题下的分隔线 —— ⚠️ 这条同时修掉一个既有瑕疵：vendor

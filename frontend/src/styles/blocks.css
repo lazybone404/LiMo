@@ -117,7 +117,16 @@
   font-size: 2.2em;
   font-weight: 600;
   line-height: 1.15;
-  color: var(--tk-success);
+  /* ⚠️ **跟随主题 accent**（2026-10-17 由 `--tk-success` 改）：指标数字是「这篇
+     笔记的主数据」，跟随用户选的配色才像同一个界面的一部分；写死 success 会让它在
+     26 套 accent 下永远是一块孤立的绿。这也正是下方 `steps` 注释一直写着的分工
+     （「accent 留给 key-takeaway / metric 的数字」）—— 此前落地时写偏了，不是设计。
+     ⚠️ **不新增 `--tk-metric` 令牌**：多一层间接 = 多一个导出侧落空点（未跟随主题的
+     固定主题导出只注 `_EXPORT_NEUTRAL_TOKENS_CSS`，它不认识新令牌 → 数字无色且零
+     报错）。`--tk-accent` 在预览与导出两侧都有值（含打印段）。
+     ⚠️ `tabular-nums`：多个指标纵向排列时数字等宽、小数点对齐（2.2em 字号下肉眼可见）。 */
+  color: var(--tk-accent);
+  font-variant-numeric: tabular-nums;
 }
 
 .md-block[data-block-type="metric"] > :last-child {
@@ -316,9 +325,44 @@
   text-align: center;
 }
 
-/* 图片自带圆角：面板是圆角的，方角图片贴在它内壁上会「顶」出四个直角。 */
+/* 图片自带圆角：面板是圆角的，方角图片贴在它内壁上会「顶」出四个直角。
+   ⚠️ 大图限高（2026-10-17）：长截图（整页截图 / 聊天记录长图）不限高会把一张卡
+   拉成两三个屏幕高，读者滚过它之后找不到下文。`70vh` 是「一眼能看到底、又不至于
+   缩到看不清」的折中；`width: auto` 让它是**等比缩小**而不是被压扁（`max-width`
+   兜住宽图，两者取严）。 */
 .md-block[data-block-type="image"] img {
   border-radius: 4px;
+  max-width: 100%;
+  max-height: 70vh;
+  width: auto;
+}
+
+/* ⚠️ 宽表横向滚动（2026-10-17）：列数由内容决定，窄窗口下必然超宽。预览侧的
+   `.md-table-wrap` 自带 `overflow-x`，但**导出侧是裸 `<table>`** —— 不在这里兜底，
+   导出 HTML 里超宽表格会撑破版心（打印时右侧列被直接裁掉，且没有任何滚动条）。
+   `overflow-x` 不改 DOM，两侧同时成立；`.md-block` 有边框与内边距，滚动条落在
+   它的内壁而不是表格中间。
+   ⚠️ 这条**排在本体规则之后**：`markerPrefs.test.ts` 按「同一选择器取第一条」读
+   边框令牌，放在前面会让它抓到这条、以为面板没写边框（零报错，测试红得莫名其妙）。 */
+.md-block[data-block-type="table"] {
+  overflow-x: auto;
+}
+
+/* 横向滚动时首列留在视野里（第一列通常是「名字」，翻到右边就不知道行对应谁了）。
+   ⚠️ `td` 必须自带**不透明**底色：sticky 元素浮在滚动内容之上，透明会让后面列的
+   文字透上来叠字。用面板底色而不是斑马纹色 —— 斑马纹住在 `tr` 上，CSS 无法让
+   `td` 拿到「父行自己的背景」；首列与斑马纹不同色恰好也是 Excel 冻结列的样子，
+   不会被误读为「这一行被选中了」。
+   ⚠️ `th` 刻意不设底色：表头本来就有 `--md-table-header-bg`（预览与导出两侧都有），
+   覆盖它会让表头首列与其余表头断开。 */
+.md-block[data-block-type="table"] thead th:first-child,
+.md-block[data-block-type="table"] tbody td:first-child {
+  position: sticky;
+  left: 0;
+}
+
+.md-block[data-block-type="table"] tbody td:first-child {
+  background: var(--tk-elevated);
 }
 
 /* ── 关掉装饰：steps / timeline 各自退回「块内内容原样」────────────────

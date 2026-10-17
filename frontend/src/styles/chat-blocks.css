@@ -16,8 +16,9 @@
    ⚠️ **七种块**（2026-10-12：原四种 + `caution` / `how-to` / `quote`）分两档：
    卡片组（`card-group`，网格）与追问 chips（`follow-up`）各自成组；其余五种
    （`info` / `digest` / `caution` / `how-to` / `quote`）共用 `.chat-block` 外壳，
-   **形态差异只有图标与左边框色** —— 它们区别在「这是什么性质」，由这两样各承担
-   一半即可；给五种各设计一套布局，读者反而要重新学一遍。
+   **形态差异只有图标与四边框色**（2026-10-17 由「左边框」改为四边框，见下）——
+   它们区别在「这是什么性质」，由这两样各承担一半即可；给五种各设计一套布局，
+   读者反而要重新学一遍。
 
    ── 视觉跟随 `--card-*`（2026-10-12 起）────────────────────────────────
 
@@ -31,18 +32,37 @@
 
    ⚠️ **只跟随「容器级」属性，尺寸级保持 em**：
 
-     border / border-radius / background / box-shadow  →  var(--card-*)
-     padding / gap / margin                            →  em（写死）
+     border-radius / background / box-shadow          →  var(--card-*)
+     padding / gap / margin                           →  em（写死）
 
    理由是 `--card-padding`（22px 26px，paper 方案 30px 36px）与 `--card-gap` 是给
    **宽栏长文**设计的 px 值；对话有三档字号（`ai-chat/scale.ts`）且浮窗很窄，
    套进去会在大档位下把卡片撑爆。跟随的是「这张卡什么质感」，不是「它多大」。
 
-   ⚠️ **`--card-border` 可能是 `none`**（`apple` / `ink` 两套方案）—— 它们的设计就是
-   「靠投影分层、不画框」。故 `border-left-width: 3px` 这类**硬写宽度**只能在
-   `.chat-*` 的语义变体里出现（那时左框由 `border-left-color` 单独着色）；
-   一旦某套方案的 `border` 是 `none`，左框的 style 也是 none、整条边框不显示 ——
-   **这正是跟随该有的结果**，语义差异此时**仍由图标色承担**（见 `.chat-block-icon`）。
+   ⚠️ **边界怎么跟随，两类卡片刻意不同**（2026-10-17）：
+
+     .chat-card（卡片组里的卡）  →  `border: var(--card-border)`，**完整跟随方案**
+     .chat-block（五种语义块）   →  `border: 1px solid var(--block-edge)`，**自持**
+
+   后者自持的理由是 `--card-border` **可能是 `none`**（`apple` / `ink` 两套方案的设计
+   就是「靠投影分层、不画框」）。语义块若跟着消失，就只剩一个图标悬在半空 ——
+   「这是个提示 / 注意事项」的边界没了，而边界正是它唯一的容器语言。故它的**宽度与
+   样式自己定**（1px solid），**颜色按语义混**（`--block-edge` = 语义色与
+   `--tk-border` 的 `color-mix`），质感（圆角 / 底色 / 投影）继续跟随方案。
+   ⚠️ 连带的取舍：设置页「逐维度微调 → 边」改的是 `--card-border`，因此**只作用于
+   章节卡片与 `.chat-card`，不作用于 `.chat-block`** —— 语义块的边界不是视觉偏好，
+   是它承载「这是什么性质」的地方，不该被一个外观旋钮整块抹掉。
+
+   ── 设置页里的可配置轴（改本文件时逐条对一眼）──────────────────────────
+
+     `--tk-*`      ← 主题六轴（明暗 / 26 套配色 / 14 种基调 / 纹理 / 字体）
+     `--card-*`    ← 「卡片视觉方案」8 套 + 底/抬升/边三项微调
+     em            ← 「对话字号」三档（`lib/chat-font.ts`，随浮窗宽度切基准 px）
+     `mbw_markers` ← 「内容块装饰」开关：**只管产物侧 `.md-block`**，对话侧不接
+                     （对话块是回答的一部分，不是可关的装饰；关掉会让七种语义块
+                     退化成普通 Markdown，而它们承载的正是「哪些话是提示/步骤」）
+
+   ⚠️ 因此本文件里**不新增自己的颜色令牌**：多一层间接 = 多一个设置轴之外的真相源。
 
    ⚠️ **零硬编码色值**（项目铁律）：全部引用 `--tk-*` / `--md-*` / `--card-*`。
    ⚠️ **尺寸用 em 不用 px**：外层 `.markdown-chat` 的字号由档位决定，这里跟着缩
@@ -57,6 +77,10 @@
 
 .chat-card-group {
   margin: 0.5em 0;
+  /* ⚠️ 容器查询的宿主：列数要按**卡片组自己的宽度**决定，不是视口宽度 ——
+     没有它，下面 `@container` 那条窄浮窗兜底根本不生效（找不到容器时整块规则
+     被忽略，零报错，看起来只是「兜底没起作用」）。 */
+  container-type: inline-size;
 }
 
 /* 引言（首个 `###` 之前的内容）与卡片网格之间留一口气 */
@@ -67,21 +91,52 @@
 .chat-cards {
   display: grid;
   gap: 0.5em;
-  /* ⚠️ 自适应列数：宽度够就并排（这就是卡片组的意义 —— 横向可扫），
-     浮窗被拖窄时自动退化成一列。160px 是「一列中文还能读」的下限，
-     低于它并排会把每列压到十几个字符宽（与合成管道「表格列挤压」同款问题）。 */
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  /* 默认单列：1 张卡 / 5 张以上 / 数量未知 */
+  grid-template-columns: 1fr;
+}
+
+/* ⚠️ 列数按**卡片张数**决定，不按宽度（2026-10-17 由 `auto-fit minmax(160px,1fr)` 改）。
+   宽度驱动的结果是「同样 3 张卡，浮窗拖宽一点就并排、拖窄一点就竖排」—— 同一段
+   内容在两台机器上长得不一样；而卡片组的语义（并列即可横向扫读）由内容决定，
+   不该由窗口决定。判据与 prompt「并列比较 2～4 个对象」对齐。
+   ⚠️ 后三条各自 `:not()` 掉下一档，因此**不依赖书写顺序**（示例页原版靠「后写的
+   胜出」，改着容易错）。4 张给 2×2 —— 三列放 4 张会剩一个孤儿；5 张以上落回默认
+   单列（prompt 越界，不画挤爆的三加二）。 */
+.chat-cards:has(> :nth-child(2)):not(:has(> :nth-child(3))) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.chat-cards:has(> :nth-child(3)):not(:has(> :nth-child(4))) {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.chat-cards:has(> :nth-child(4)):not(:has(> :nth-child(5))) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* ⚠️ 窄浮窗兜底 —— 本文件**唯一**需要 `!important` 的地方（刻意保留）：它要压过
+   上面三条带 `:has()` 的复数卡片规则（特异性最高 (0,3,0)），而在容器查询里把每条
+   选择器重写成同款长串只为「赢得战争」，正是下一轮读不懂的东西。语义本身是硬约束：
+   三列挤在 320px 里每列不足 100px，中文一列只剩三五个字。 */
+@container (max-width: 320px) {
+  .chat-cards {
+    grid-template-columns: 1fr !important;
+  }
 }
 
 .chat-card {
   /* ⚠️ 复制按钮的定位宿主（`.chat-card-copy` 是 absolute） */
   position: relative;
+  display: flex;
+  flex-direction: column;
   min-width: 0; /* ⚠️ 必须：否则卡内的长 URL / 代码把 grid 单元撑破，横向溢出 */
   padding: 0.5em 0.7em;
   border: var(--card-border);
   border-radius: var(--card-radius);
   background: var(--card-bg);
   box-shadow: var(--card-shadow);
+  /* ⚠️ 长 URL / 无空白长串不撑破卡片：`min-width: 0` 只管 grid 单元，不管文字
+     自身的断行。用 `break-word` 而不是 `anywhere`（后者会压低 min-content，
+     连正常中文的折行位置也提前）。 */
+  overflow-wrap: break-word;
 }
 
 /* 卡内标题收一档 —— 正文的 h3 是给长文用的，卡片里显得过大且吃宽度 */
@@ -98,6 +153,100 @@
 }
 .chat-card > :last-child {
   margin-bottom: 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   篇幅变体 —— 同样是「一张卡」，内容多少差别很大
+   ══════════════════════════════════════════════════════════════════════
+
+   ⚠️ **判据只能是结构**（直接子元素个数 / 类型、列表项数）：CSS 看不见字数、
+   行数与渲染高度。故这里**不做 JS 测量** —— 流式回答每来一段都要重算，
+   而且字体加载完成时高度会变，两次触发的结论可能互相矛盾。
+
+   ⚠️ **极端情况给变种，不退化**（2026-10-17 用户定）：内容少就把卡做扁、内容多
+   就把卡做成有头的面板，**不把卡片拆回分节正文** —— 那等于否定模型「这些是同
+   类对象」的判断，整组也失去横向对照的形态。
+
+   全部规则只看 `.chat-card` 的**直接子元素**：块内嵌套结构（引用里的 p、列表的
+   子列表）不参与判据。 */
+
+/* ① 整组都只有标题（每张卡都没有段落 / 列表）：收紧卡间距，让它们看起来是
+   一排标签，而不是一排空盒子。
+   ⚠️ 开头 `:has(> .chat-card)` 这条限定**不能省**：只用后面三个 `:not()` 的话，
+   任何「子元素里没有 p/ul/ol」的网格都会命中，静默改掉它的 `gap`。 */
+.chat-cards:has(> .chat-card):not(:has(> .chat-card > p)):not(:has(> .chat-card > ul)):not(:has(> .chat-card > ol)) {
+  gap: 0.4em;
+}
+.chat-cards:has(> .chat-card):not(:has(> .chat-card > p)):not(:has(> .chat-card > ul)):not(:has(> .chat-card > ol)) > .chat-card {
+  padding: 0.7em;
+  justify-content: center;
+  text-align: center;
+}
+.chat-cards:has(> .chat-card):not(:has(> .chat-card > p)):not(:has(> .chat-card > ul)):not(:has(> .chat-card > ol)) > .chat-card > h3 {
+  margin-bottom: 0;
+}
+
+/* ② 单张只有标题（同组其他卡有内容）：垂直居中，否则它会与邻居等高时
+   「标题挂在顶上、下面一大片空」，看起来像漏写了。 */
+.chat-card:not(:has(p)):not(:has(ul)):not(:has(ol)) {
+  justify-content: center;
+  padding: 0.8em 0.7em;
+}
+.chat-card:not(:has(p)):not(:has(ul)):not(:has(ol)) > h3 {
+  margin-bottom: 0;
+}
+
+/* ③ 两段：段距收一档（0.25em ≈ 4px）—— 两段之间不是换了个话题，不需要整段间距。 */
+.chat-card:has(> p + p) > p {
+  margin-top: 0.25em;
+}
+
+/* ④ 长内容卡（4 个及以上直接子元素 = 标题 + 3 块，或纯 4 块）：
+   卡片头（满宽 + 淡底 + 底边线 + 顶部圆角）+ 正文两侧内缩。
+   ⚠️ 这是**变种**不是退化：外框、圆角、投影、并排关系全部保留，只把内部改成
+   「有头的面板」，读者一眼知道从哪儿开始读。 */
+.chat-card:has(> :nth-child(4)) {
+  padding: 0;
+}
+.chat-card:has(> :nth-child(4)) > h3 {
+  margin: 0;
+  padding: 0.5em 0.7em;
+  font-size: 0.98em;
+  background: color-mix(in srgb, var(--tk-hover) 55%, transparent);
+  border-bottom: 1px solid var(--tk-border-light);
+  /* 与卡片外框同半径、下方归零：差 1px 会露出一圈没被头部盖住的外框底色 */
+  border-radius: var(--card-radius) var(--card-radius) 0 0;
+}
+.chat-card:has(> :nth-child(4)) > p,
+.chat-card:has(> :nth-child(4)) > ul,
+.chat-card:has(> :nth-child(4)) > ol {
+  margin-left: 0.7em;
+  margin-right: 0.7em;
+}
+.chat-card:has(> :nth-child(4)) > h3 + p,
+.chat-card:has(> :nth-child(4)) > h3 + ul,
+.chat-card:has(> :nth-child(4)) > h3 + ol {
+  margin-top: 0.55em;
+}
+.chat-card:has(> :nth-child(4)) > :last-child {
+  margin-bottom: 0.6em;
+}
+
+/* ⑤ 整组退列：某张卡已经长成面板 / 有 7 项以上的列表时，并排会让邻居被它的
+   高度拖成一片空白。
+   ⚠️ 特异性 (0,3,0) 已高于上面的数量规则，但仍写在它们后面 —— 两条同时成立时
+   退列必须赢（顺序是第二道保险，别因为「特异性够了」就挪到前面）。 */
+.chat-cards:has(> .chat-card > :nth-child(4)) {
+  grid-template-columns: 1fr;
+}
+.chat-cards:has(> .chat-card > ul > li:nth-child(7)),
+.chat-cards:has(> .chat-card > ol > li:nth-child(7)) {
+  grid-template-columns: 1fr;
+}
+
+/* ⑥ 标题孤字：`balance` 让两行标题断得均匀（本来就是一行的短标题不受影响）。 */
+.chat-card > h3 {
+  text-wrap: balance;
 }
 
 /* ── 复制按钮（`ChatCopyButton`，两处宿主共用）────────────────────────
@@ -248,7 +397,7 @@
    单块容器：图标 + 内容。与卡片组同族，但**不做网格**（块内是一段连续的说明、
    一列要点或一段引用，没有可并排的多个对象）。
 
-   ⚠️ 五种共用 `.chat-block` 基座，**只有图标与左边框色不同** —— 见文件头的理由。 */
+   ⚠️ 五种共用 `.chat-block` 基座，**只有图标与四边框色不同** —— 见文件头的理由。 */
 
 .chat-block {
   position: relative;      /* 复制按钮的定位宿主 */
@@ -256,25 +405,42 @@
   gap: 0.5em;
   margin: 0.5em 0;
   padding: 0.55em 0.75em;
-  /* ⚠️ 左框加粗到 3px 是**语义色**的载体（`border-left-color` 由各变体给）。
-     整套 `--card-border` 为 `none` 时（apple / ink），这条左框也一并消失 ——
-     跟随该有的结果，此时语义由图标色承担。 */
-  border: var(--card-border);
-  border-left-width: 3px;
+  /* ⚠️ **自持四边框，不跟随 `--card-border`**（2026-10-17 由左边框改）：带图标的
+     块不该用「引用 / 强调」的左边框语言，而 `--card-border` 在 apple / ink 两套
+     方案下是 `none` —— 跟着它走，语义块就只剩一个图标悬在半空。宽度与样式
+     自己定，质感（圆角 / 底色 / 投影）继续跟随方案。
+     ⚠️ `--block-edge` 由下面五个变体给；未定义时兜底中性边框 —— 新增类型忘了
+     写变量时退化成「普通面板」而不是「没有边界」（失败形态不再静默）。 */
+  border: 1px solid var(--block-edge, var(--tk-border));
   border-radius: var(--card-radius);
   background: var(--card-bg);
   box-shadow: var(--card-shadow);
 }
 
-.chat-info-card { border-left-color: var(--tk-accent); }
-.chat-digest-card { border-left-color: var(--tk-muted); }
+/* ⚠️ 语义色以**混色**进边框，而不是直接用原色：1px 的纯 accent 边框在浅底上
+   过重（3px 左框承载得住纯色，1px 四边框承载不住）。混 22%～30% 到中性边框上，
+   得到「看得出偏色、仍然是一道边」—— 与产物侧语义块 7% 淡底是同一档克制。
+   ⚠️ 图标色仍是纯色（见下），两者分担「这是什么性质」：边框给整块定调，
+   图标给一眼识别。 */
+.chat-info-card {
+  --block-edge: color-mix(in srgb, var(--tk-accent) 28%, var(--tk-border));
+}
+.chat-digest-card {
+  --block-edge: var(--tk-border);
+}
 /* ⚠️ `caution` 用 `--tk-warning`（**不是** `--tk-error`）：严重度由**文字**承担，
    颜色不该替它分级 —— 与产物侧 `alert` 的判据同源（`blocks.css`）。 */
-.chat-caution { border-left-color: var(--tk-warning); }
-.chat-howto { border-left-color: var(--tk-accent); }
+.chat-caution {
+  --block-edge: color-mix(in srgb, var(--tk-warning) 30%, var(--tk-border));
+}
+.chat-howto {
+  --block-edge: color-mix(in srgb, var(--tk-accent) 22%, var(--tk-border));
+}
 /* ⚠️ `quote` 用中性 `--tk-border`：引用是「别人说的话」，不该带强调色 ——
    一强调读者会以为那是**结论**，而它恰恰是**论据**。 */
-.chat-quote { border-left-color: var(--tk-border); }
+.chat-quote {
+  --block-edge: var(--tk-border);
+}
 
 /* ⚠️ `flex: none` 不参与伸缩（否则长正文把它压扁）；`margin-top` 是为了与首行文字的
    视觉中线对齐，而不是与行框顶对齐。 */
@@ -288,10 +454,13 @@
 .chat-caution .chat-block-icon { color: var(--tk-warning); }
 .chat-quote .chat-block-icon { color: var(--tk-dimmed); }
 
-/* ⚠️ `min-width: 0` 与 `.chat-card` 同款：否则块内的长 URL / 代码把 flex 单元撑破 */
+/* ⚠️ `min-width: 0` 与 `.chat-card` 同款：否则块内的长 URL / 代码把 flex 单元撑破。
+   `overflow-wrap` 同理 —— 前者只管 flex 单元不被内容撑宽，后者管文字真的能在
+   单词中间断开（否则长串照样溢出）。 */
 .chat-block-body {
   flex: 1;
   min-width: 0;
+  overflow-wrap: break-word;
 }
 
 /* 块内首尾元素去掉多余外边距（否则卡片看起来上下不对称，与 `.chat-card` 同款） */
