@@ -92,16 +92,25 @@ describe('篇幅变体 —— 结构判据，不退化', () => {
     expect(CSS).toContain('.chat-card:has(> p + p) > p')
   })
 
-  it('4 个块以上 → 长内容卡变种（有头面板，**不**去外壳）', () => {
-    expect(CSS).toMatch(/\.chat-card:has\(> :nth-child\(4\)\)\s*\{[^}]*padding: 0/)
-    expect(CSS).toMatch(/\.chat-card:has\(> :nth-child\(4\)\) > h3\s*\{[^}]*border-bottom:/)
+  it('4 个内容块以上 → 长内容卡变种（有头面板，**不**去外壳）', () => {
+    // ⚠️ `nth-child(5)` 不是 (4)：`.chat-card` 的第一个子元素恒为复制按钮
+    // （流式期间 `display: none` 但仍占节点）。写成 (4) 时「标题 + 两段」这种
+    // 规范**鼓励**的写法会提前一格触发变种并整组退列 —— 这条守卫钉住「数的是
+    // DOM 子节点、含按钮」。
+    expect(CSS).toMatch(/\.chat-card:has\(> :nth-child\(5\)\)\s*\{[^}]*padding: 0/)
+    expect(CSS).toMatch(/\.chat-card:has\(> :nth-child\(5\)\) > h3\s*\{[^}]*border-bottom:/)
+    // 内缩覆盖「非 h3 的一切内容元素」（代码块 / 表格同样要内缩），
+    // 但必须排除复制按钮（absolute，margin 会改变定位）。
+    expect(CSS).toMatch(
+      /\.chat-card:has\(> :nth-child\(5\)\) > :not\(h3\):not\(\.chat-card-copy\)\s*\{[^}]*margin-left/,
+    )
     // 反向断言：没有被拆回普通段落的规则（`display: contents` 会让外框消失，
     // 那正是用户明确否掉的「退化成分节正文」）。
     expect(CSS).not.toContain('display: contents')
   })
 
   it('整组退列：长内容卡 / 7 项以上列表', () => {
-    expect(CSS).toContain('.chat-cards:has(> .chat-card > :nth-child(4))')
+    expect(CSS).toContain('.chat-cards:has(> .chat-card > :nth-child(5))')
     expect(CSS).toContain('.chat-cards:has(> .chat-card > ul > li:nth-child(7))')
     expect(CSS).toContain('.chat-cards:has(> .chat-card > ol > li:nth-child(7))')
   })
@@ -111,6 +120,31 @@ describe('篇幅变体 —— 结构判据，不退化', () => {
     // 只写一处的话另一类块里的长 URL 照样撑破（零报错）。
     expect((CSS.match(/overflow-wrap: break-word/g) ?? []).length).toBeGreaterThanOrEqual(2)
     expect(CSS).toContain('text-wrap: balance')
+  })
+})
+
+describe('结构判据与 DOM 同源（2026-10-18）', () => {
+  // ⚠️ 读组件源码而不是渲染快照：要钉住的正是「按钮不被条件挂载」这个结构事实。
+  // 若有人把卡片里的按钮改回 `{!streaming && <ChatCopyButton/>}`，CSS 的
+  // `:nth-child(5)` 会在流式与结束时数出不同的子节点数 —— 卡片在流式结束那一帧
+  // 跳变并让整组退列，且零报错、tsc 与其余测试全绿。
+  const COMPONENT = read('src/components/ai-chat/ChatMarkerContent.tsx')
+  const cardBody = (() => {
+    const start = COMPONENT.indexOf('function ChatCard(')
+    const end = COMPONENT.indexOf('\nfunction ', start + 1)
+    return COMPONENT.slice(start, end === -1 ? undefined : end)
+  })()
+
+  it('`ChatCard` 的复制按钮在流式期间**隐藏不卸载**（判据靠它恒占一个子节点）', () => {
+    expect(cardBody).toContain('chat-card-copy--streaming')
+    // 反向：函数体内不得再出现 `!streaming` —— 那是「条件挂载」的信号。
+    // ⚠️ 只查 ChatCard 的函数体：ChatPre 的代码块按钮**应该**是条件挂载的
+    // （它不参与任何 nth-child 判据），全局断言会误伤。
+    expect(cardBody).not.toContain('!streaming')
+  })
+
+  it('隐藏用自带类名（(0,2,0)）而不是 Tailwind `hidden`（(0,1,0) 胜负取决于加载顺序）', () => {
+    expect(CSS).toMatch(/\.chat-card-copy\.chat-card-copy--streaming\s*\{[^}]*display: none/)
   })
 })
 

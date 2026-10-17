@@ -6,6 +6,83 @@
 
 ---
 
+## 2026-10-18 — 卡片体系形态整合 + 格式选项自报块类型 + 判据污染修复
+
+### 起因
+
+三套卡片体系（产物章节卡片 `cards.css` / 产物语义块 `blocks.css` / 对话语义块
+`chat-blocks.css`）各自演进到能用后，留下了六处可观测的漂移：
+
+1. `blocks.css` 的 metric 数字固定 `--tk-success`，**不随主题色变化** —— 而同文件的
+   `steps` 注释自己写着「accent 留给 key-takeaway / metric 的数字」，是落地时写偏。
+2. 对话侧五个 `.chat-block` 全用**左边框**表达语义 —— 左边框是引用/强调的语言，
+   带图标的卡片应该是四边简单边框（用户已明确）。
+3. `.chat-block` 的 `border` 跟随 `--card-border`，而 `apple` / `ink` 两套把它设为
+   `none` ⇒ 语义块**整块没有边界**，只剩一个图标悬空。
+4. `.chat-cards` 按**宽度**定列数（`auto-fit minmax`）⇒ 同样 3 张卡，浮窗宽窄不同
+   列数就不同，同一内容在两台机器上长得不一样。
+5. `.chat-card` / `.md-card` 缺 `overflow-wrap`，长 URL 撑破卡片。
+6. 极端篇幅（整组只有标题 / 单张只有标题 / 4+ 块 / 7+ 列表项）没有任何变种。
+
+两侧 prompt 另有两处「注释说限制了、正文没写」：`steps` 注释声称已限项数，正文只限了
+**每项字数**；`metric` 只说「少量」，没有可执行的量。
+
+最后一条是本轮审查新代码时抓到的 P0：`ChatCard` 的复制按钮是 `.chat-card` 的
+**第一个子元素**，而长内容卡 / 整组退列判据写的是 `:nth-child(4)` —— 实际含义是
+「3 个内容块」，规范**鼓励**的「标题 + 两段」会提前一格触发变种并整组退列。更糟的是
+按钮当时是**条件挂载**（`{!streaming && …}`），同一个判据在流式与结束时数出不同的
+子节点数，卡片在流式结束那一帧突然变身。
+
+### 做什么
+
+| # | 改动 | 落点 |
+|---|---|---|
+| 1 | 对话侧 `.chat-block` 由左边框改**四边框**：`border: 1px solid var(--block-edge)`，五个变体各自定义 `--block-edge`（accent / warning 与 `--tk-border` 混色）。**自持边框、不跟随 `--card-border`** | `chat-blocks.css` |
+| 2 | `.chat-cards` 列数改**按张数**（1 / 2 / 3 / 2×2 / 5+ 单列），删 `auto-fit`；`.chat-card-group` 加 `container-type: inline-size`，`@container (max-width: 320px)` 兜底退单列 | `chat-blocks.css` |
+| 3 | 篇幅变体六组（整组仅标题 / 单张仅标题 / 两段 / 4+ 内容块转长内容卡 / 5–6 项列表 / 7+ 项退列）+ `overflow-wrap` + `text-wrap: balance`，全部纯 `:has()` 结构判据 | `chat-blocks.css` |
+| 4 | **P0 修复**：长内容卡 / 退列判据 `:nth-child(4)` → **`(5)`**（4 个内容块 + 常驻复制按钮）；内缩规则改 `> :not(h3):not(.chat-card-copy)`（代码块 / 表格也要内缩，按钮是 `absolute` 必须排除） | `chat-blocks.css` |
+| 5 | 卡片复制按钮**流式期间隐藏但不卸载**（`.chat-card-copy--streaming`，`display: none`，特异性 (0,2,0)）—— 两态子节点数一致，消除流式结束跳变 | `ChatMarkerContent.tsx` / `chat-blocks.css` |
+| 6 | 产物侧 metric 数字 `--tk-success` → **`--tk-accent`** + `font-variant-numeric: tabular-nums`；宽表 `overflow-x: auto` + 首列 `sticky`；大图 `max-height: 70vh` + 等比；`.md-card` 补 `overflow-wrap` / `text-wrap` | `blocks.css` / `cards.css` |
+| 7 | `get_summary_format()` 教模型给 `## AI 总结` 写 `card` 节修饰符（唯一能对上骨架轴的格式选项）；顺带修「整个视频」→「整份材料」（该函数被 7 种来源共用） | `generation/prompt.py` |
+| 8 | `get_markdown_block_format()`：`metric` 补「1–4 个指标、数字带单位」；`steps` 补「不超过 6 个、更多改用 `timeline`」；`image` 补反向指路（图表管道生成的图不要再包壳） | `generation/prompt.py` |
+| 9 | 对话侧 `formats.md`：`card-group` 补篇幅（每张一两段 / 3–5 个要点）；`digest` 与 `card-group` 加交叉分野（要比要选 → 卡片组；只要整体印象 → 摘要卡） | `agent/prompts/formats.md` |
+| 10 | 安装路径告警**关过就不再提示**（`limo_install_warning_dismissed`，跨会话）；读取失败退化为「每次都提示」而非「视为已关闭」 | `App.tsx` / `lib/installWarning.ts` |
+| 11 | 测试：新增 `chatCardShape.test.ts` / `artifactCardShape.test.ts`；`chatBlocks.test.tsx` 的流式断言改为「按钮在、带 `--streaming`」；新增源码守卫钉住 `ChatCard` 按钮不得条件挂载 | 前端 |
+
+`PROMPT_VERSION` 由 `"13"` → `"14"`（metric / steps 补量）→ `"15"`（格式选项自报块类型）。
+
+### 为什么这么设计
+
+- **复杂度留在样式层**：篇幅变体全部是结构判据（`:has()` 看有没有 `p` / 第几个子节点），
+  不看字数、不数行 —— 规范于是不必新增篇幅硬约束，模型也不用猜「多长算长」。
+- **`.chat-block` 自持边框、只跟随质感**：卡片组里的 `.chat-card` 是页面级卡片，跟随
+  `--card-border` 是对的；气泡内的语义块在 `apple` / `ink` 下消失是**缺陷**不是风格，
+  故 `border` 自持，而 `border-radius` / `background` / `box-shadow` 继续跟随。
+- **按张数分列**：数量与 prompt 的「2–4 个对象」一致，且同一内容在任何窗口宽度下
+  列数相同；窄到放不下时由 `@container` 兜底退单列，不再回到宽度驱动。
+- **按钮隐藏不卸载**：`display: none` 不参与布局与无障碍，视觉上等价于不渲染，但**仍
+  计入 `nth-child`** —— 判据在流式与结束时同源。刻意不用 Tailwind `hidden`：它与
+  `.chat-card-copy` 的 `display: flex` 同为 (0,1,0)，胜负取决于样式表加载顺序。
+- **产物侧 CSS 是导出单一真相源**：`blocks.css` / `cards.css` 被 `export.py` 读盘内联，
+  改样式即两侧生效（Word 不读 CSS，零影响）；`chat-blocks.css` 仍**不进导出**。
+
+### 影响范围
+
+- 前端对话浮窗与预览区观感；导出 HTML / PDF 随之生效（metric 色、宽表滚动、首图限高）。
+- 产物 prompt 输出形态（`PROMPT_VERSION` `"15"`）；对话侧 prompt 不 bump。
+- 不碰 `VERSION`，不涉及数据格式迁移。
+- 门禁：`bash scripts/check-all frontend` / `docs` 全绿（1096 项前端测试）。
+
+### 已知偏差（刻意不做）
+
+- **`overflow-x: auto` 管不到打印/PDF**：打印媒体没有滚动机制，长宽表右侧列仍会被裁切。
+  不在 `_PRINT_CSS` 里改 `visible` —— 那只是把裁切从容器边界换成纸张边界，且溢出内容会
+  改变分页、可能凭空多出空白页。待实机导出一篇长表 PDF 后再定方案（缩字号 / 横版 / 拆表）。
+- 对话侧表格横向溢出是改造前就有的行为，`display: block` 方案会破坏列宽分配，本轮不做。
+- `@container` 的窄浮窗兜底依赖实机验收（TS 测不到布局）；即便不生效，数量分列规则独立成立。
+
+---
+
 ## 2026-10-16 — 主题系统优化：JS 里只剩 label + 轴注册表 + 导出跟随应用主题
 
 ### 起因

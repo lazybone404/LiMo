@@ -237,7 +237,18 @@ describe('ChatMarkerContent — 卡片整体复制', () => {
   })
 
   it('流式中不显示复制按钮（复制的会是半截内容）', () => {
-    expect(renderChat(CARD_GROUP, true).container.querySelectorAll('.chat-card-copy').length).toBe(0)
+    // ⚠️ 卡片按钮**仍在 DOM 里**、只是带 `--streaming` 修饰类（`chat-blocks.css`
+    // 令其 `display: none`，jsdom 不加载样式故这里断言类名）。它与「长内容卡 /
+    // 整组退列」的 `:nth-child(5)` 判据同源 —— 条件卸载会让那个判据在流式与
+    // 结束时数出不同的子节点数，卡片在结束那一帧跳变且零报错
+    // （`chatCardShape.test.ts` 有源码守卫钉住这一条）。
+    const btns = renderChat(CARD_GROUP, true).container.querySelectorAll('.chat-card-copy')
+    expect(btns.length).toBe(2)
+    expect(Array.from(btns).every((b) => b.classList.contains('chat-card-copy--streaming'))).toBe(true)
+    // 非流式：同一批按钮不带修饰类（= 可见）
+    const normal = renderChat(CARD_GROUP).container.querySelectorAll('.chat-card-copy')
+    expect(Array.from(normal).some((b) => b.classList.contains('chat-card-copy--streaming'))).toBe(false)
+    // 块级按钮（quote 等外壳）仍是条件挂载 —— 它们不参与 `nth-child` 判据
     expect(renderChat('<!-- limo-block:v1 type="quote" -->\n> 原话。\n<!-- /limo-block -->', true)
       .container.querySelectorAll('.chat-block-copy').length).toBe(0)
   })

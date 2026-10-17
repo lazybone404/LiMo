@@ -141,18 +141,26 @@ function ChatText({ content, streaming, statusText }: ChatMarkerContentProps) {
  *
  * ⚠️ 按钮**常驻**而不是 hover 浮现：卡里是一段完整、可整块搬走的内容，而 hover
  * 浮现意味着它在触摸屏上**永不出现**。代价是右上角多一个小图标，故用低对比色 +
- * 指针经过才转前景色（`chat-blocks.css`）压住存在感。 */
+ * 指针经过才转前景色（`chat-blocks.css`）压住存在感。
+ *
+ * ⚠️ **流式期间按钮也挂在 DOM 里，只是 `.chat-card-copy--streaming`（`display:
+ * none`）**（2026-10-18）：`chat-blocks.css` 的长内容卡 / 退列判据是
+ * `:nth-child(5)`（4 个内容块 + 这个按钮）。若条件挂载，同一个判据在流式与结束时
+ * 数出不同的子节点数 —— 卡片会在流式结束那一帧突然变身并让整组退列。
+ * `display: none` 不参与布局与无障碍，视觉上与「不渲染」等价，但它**仍计入
+ * `nth-child`**，两态因此一致。改这里必须同步 CSS 的 `5`。
+ * ⚠️ 刻意不用 Tailwind 的 `hidden`：它与 `.chat-card-copy` 的 `display: flex`
+ * 同为 (0,1,0)，胜负取决于两张样式表的加载顺序 —— 那种失效形态是「按钮在流式
+ * 期间一直亮着」，零报错且只在特定导入顺序下出现。 */
 function ChatCard({ content, streaming }: ChatMarkerContentProps) {
   const ref = useRef<HTMLDivElement>(null)
   return (
     <div className="chat-card" ref={ref}>
-      {!streaming && (
-        <ChatCopyButton
-          getText={() => ref.current?.textContent ?? ''}
-          label="复制这张卡"
-          className="chat-card-copy"
-        />
-      )}
+      <ChatCopyButton
+        getText={() => ref.current?.textContent ?? ''}
+        label="复制这张卡"
+        className={streaming ? 'chat-card-copy chat-card-copy--streaming' : 'chat-card-copy'}
+      />
       {/* ⚠️ 保留 `### ` 前缀原样交给渲染器 —— 卡内仍是那条 `<h3>`，
           紧凑靠 CSS 覆盖，**不新起第二条标题渲染路径**（与 `splitByH2` 同一纪律） */}
       <ChatText content={content} streaming={streaming} statusText="" />

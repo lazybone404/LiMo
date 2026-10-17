@@ -201,14 +201,24 @@
   margin-top: 0.25em;
 }
 
-/* ④ 长内容卡（4 个及以上直接子元素 = 标题 + 3 块，或纯 4 块）：
-   卡片头（满宽 + 淡底 + 底边线 + 顶部圆角）+ 正文两侧内缩。
+/* ④ 长内容卡（**4 个内容块以上**）：卡片头（满宽 + 淡底 + 底边线 + 顶部圆角）+
+   正文两侧内缩。
    ⚠️ 这是**变种**不是退化：外框、圆角、投影、并排关系全部保留，只把内部改成
-   「有头的面板」，读者一眼知道从哪儿开始读。 */
-.chat-card:has(> :nth-child(4)) {
+   「有头的面板」，读者一眼知道从哪儿开始读。
+
+   ⚠️ **`nth-child` 数的是 DOM 子节点，不是内容块** —— `ChatCard` 的第一个子元素
+   恒为复制按钮（`.`chat-card-copy`，流式期间 `display: none` 但**仍在 DOM 里**，
+   见组件注释）。故「4 个内容块」= 第 5 个子元素。此前写成 `nth-child(4)` 时，
+   规范鼓励的「标题 + 两段」与「标题 + 段 + 列表」都会提前一格触发变种并整组
+   退列；而流式期间按钮若按条件不挂载，同一个判据在两态下还不一致（流式结束瞬间
+   卡片跳变）。**改 `ChatCard` 的结构必须同步这里**。
+   ⚠️ 内容两侧内缩用 `:not(h3):not(.chat-card-copy)` 而不是逐个列 `p/ul/ol`：
+   代码块（`ChatPre` 渲染成 `div`）、`table` 等同样需要内缩，逐个列会漏（漏了
+   就贴着卡片边框）。按钮必须排除 —— 它是 `absolute`，margin 会改变它的定位。 */
+.chat-card:has(> :nth-child(5)) {
   padding: 0;
 }
-.chat-card:has(> :nth-child(4)) > h3 {
+.chat-card:has(> :nth-child(5)) > h3 {
   margin: 0;
   padding: 0.5em 0.7em;
   font-size: 0.98em;
@@ -217,26 +227,26 @@
   /* 与卡片外框同半径、下方归零：差 1px 会露出一圈没被头部盖住的外框底色 */
   border-radius: var(--card-radius) var(--card-radius) 0 0;
 }
-.chat-card:has(> :nth-child(4)) > p,
-.chat-card:has(> :nth-child(4)) > ul,
-.chat-card:has(> :nth-child(4)) > ol {
+.chat-card:has(> :nth-child(5)) > :not(h3):not(.chat-card-copy) {
   margin-left: 0.7em;
   margin-right: 0.7em;
 }
-.chat-card:has(> :nth-child(4)) > h3 + p,
-.chat-card:has(> :nth-child(4)) > h3 + ul,
-.chat-card:has(> :nth-child(4)) > h3 + ol {
+.chat-card:has(> :nth-child(5)) > h3 + p,
+.chat-card:has(> :nth-child(5)) > h3 + ul,
+.chat-card:has(> :nth-child(5)) > h3 + ol {
   margin-top: 0.55em;
 }
-.chat-card:has(> :nth-child(4)) > :last-child {
+.chat-card:has(> :nth-child(5)) > :last-child {
   margin-bottom: 0.6em;
 }
 
 /* ⑤ 整组退列：某张卡已经长成面板 / 有 7 项以上的列表时，并排会让邻居被它的
    高度拖成一片空白。
-   ⚠️ 特异性 (0,3,0) 已高于上面的数量规则，但仍写在它们后面 —— 两条同时成立时
-   退列必须赢（顺序是第二道保险，别因为「特异性够了」就挪到前面）。 */
-.chat-cards:has(> .chat-card > :nth-child(4)) {
+   ⚠️ 特异性 (0,3,0) 与上面的**数量分列规则相等**（不是更高 —— 那边 `:has()` 与
+   `:not(:has())` 各贡献 (0,1,0)）。胜负**只靠源顺序**，所以这条必须留在它们后面；
+   别因为「特异性够了」就挪到前面（挪了 = 数量规则赢回列数，零报错）。
+   ⚠️ `nth-child(5)` = 4 个内容块 + 常驻复制按钮，与 ④ 同一条判据（别改单边）。 */
+.chat-cards:has(> .chat-card > :nth-child(5)) {
   grid-template-columns: 1fr;
 }
 .chat-cards:has(> .chat-card > ul > li:nth-child(7)),
@@ -276,6 +286,16 @@
 .chat-card-copy:focus-visible,
 .chat-block-copy:focus-visible {
   opacity: 1;
+}
+
+/* 流式中隐藏卡片的复制按钮 —— ⚠️ **只隐藏、不卸载**（2026-10-18）。
+   上面的长内容卡 / 退列判据是 `:nth-child(5)`，靠这个按钮恒占一个子节点位置；
+   条件挂载会让同一个判据在流式与结束时数出不同的数（流式结束那一帧卡片跳变）。
+   `display: none` 不参与布局与无障碍，视觉上与「不渲染」等价，但仍计入 `nth-child`。
+   ⚠️ 用 (0,2,0) 压过上面 `.chat-card-copy` 的 `display: flex` —— 不依赖两张样式
+   表的加载顺序（Tailwind 的 `hidden` 同为 (0,1,0)，胜负不可控）。 */
+.chat-card-copy.chat-card-copy--streaming {
+  display: none;
 }
 
 .chat-card-copy:hover,
