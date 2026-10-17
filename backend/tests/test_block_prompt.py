@@ -32,6 +32,7 @@ from app.core.artifact_blocks import (
 from app.generation.prompt import (
     AVAILABLE_OPTIONS, _ALL_FORMAT_FNS, build_excel_summary_prompt,
     build_notes_prompt, build_polish_prompt, get_markdown_block_format,
+    get_summary_format,
 )
 
 
@@ -129,6 +130,47 @@ def test_规范教了节级修饰符_card():
     assert '下面一行' in spec          # 位置：标题之下
     assert '没有闭合标记' in spec      # 形态：不是包裹式
     assert '1–3' in spec or '1-3' in spec
+
+
+def test_格式选项自己说出它是什么块():
+    """`summary` 是**唯一**能直接对上 `card` 节修饰符的格式选项（2026-10-18）。
+
+    要防的失败：`get_summary_format()` 退回成「末尾加一个 ## AI 总结 段落」——
+    那样产物里 AI 总结与普通章节**长得一模一样**，读者得靠标题文字猜这一节的性质，
+    勾选项对产物的**形态**零影响。
+
+    ⚠️ 三条都要断：名字（`type="card"`）、位置（写在标题之下）、形态（没有闭合标记）
+    —— 只断名字的话，模型按包裹式写会退化成「不成卡，但内容一字不少」（有宽容兜底，
+    不是灾难，但等于这个功能白做）。与 `test_规范教了节级修饰符_card` 同一个理由。
+    """
+    s = get_summary_format()
+    assert 'type="card"' in s
+    assert '下面一行' in s
+    assert '没有闭合标记' in s
+
+
+def test_格式选项的卡片指示不泄漏进整理版():
+    """`summary` 不在 `_POLISH_FORMAT_FNS` 里 —— 整理版是「忠实整理」，不该凭空
+    多出一节 AI 总结（更不该多出一张卡）。这条同时钉住「summary 的 card 指示
+    不会因为函数被两侧共用而漏到 polished」。
+
+    ⚠️ 传 `formats=['summary']` 是**故意**的：调用方确实可能这样传（前端在
+    「只生成整理版」模式下仍会带上已勾选项），由 `_POLISH_FORMAT_FNS` 静默过滤。
+    """
+    p = build_polish_prompt('正文内容', '标题', 'plain', 'video', formats=['summary'])
+    assert 'AI 总结' not in p
+    assert 'type="card"' not in p
+
+
+def test_自己生成的图表不要再包_image_块():
+    """`image` 块与 `chart` 选项会同时在场（标记规范无条件注入、图表勾选后注入）。
+
+    失效形态：模型把 ```fig 围栏包进 `image` 块里 → 后处理把围栏换成 PNG 之后，
+    得到「图片块外壳 + 图表」，而块内的说明文字又是模型自己编的（不是材料原文）。
+    规范里那句反向指路是这个问题唯一的防线。
+    """
+    spec = get_markdown_block_format()
+    assert '已经自成一块' in spec
 
 
 def test_取向_两侧规范都不再有反复劝退的措辞():
