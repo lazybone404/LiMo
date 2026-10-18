@@ -255,6 +255,30 @@ export function DocLibrary() {
   const tagsEditRef = useRef<EditState | null>(null)
   // 删除确认（单条 = 长度为 1）
   const [deleteTargets, setDeleteTargets] = useState<string[] | null>(null)
+  /**
+   * 文件夹批量删除的确认目标 —— 打开那一刻**定格**的 `selectedFolderIds`
+   * （与 `synthIds` 同一条理由：确认框里报的数字与实际删的必须是同一批）。
+   * 存的是用户选中的原始集合；「哪些是根、会连带多少」由 `folderDeletePlan` 现算。
+   */
+  const [folderDeleteTargets, setFolderDeleteTargets] = useState<string[] | null>(null)
+  /**
+   * 两个删除确认框都支持 Esc 关闭 —— 它们是**模态**遮罩，键盘用户没有别的方式退出，
+   * 而鼠标用户早已习惯按 Esc 取消。`setState(null)` 这类 setter 引用稳定，可以进依赖。
+   * ⚠️ 监听挂在 `document` 且不加 capture：内层的就地输入框（重命名 / 新建子夹）在
+   * 自己的 onKeyDown 里处理 Esc，那条路径上不会同时开着确认框。
+   */
+  useEffect(() => {
+    if (!deleteTargets) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDeleteTargets(null) }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [deleteTargets])
+  useEffect(() => {
+    if (!folderDeleteTargets) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFolderDeleteTargets(null) }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [folderDeleteTargets])
   const [batchBusy, setBatchBusy] = useState(false)
   // 合成对话框 —— null = 关闭；打开中由 synthStage 区分「待确认」与「进行中」
   // （非 null 即进行中，同时承载 stage 文案）
@@ -341,10 +365,11 @@ export function DocLibrary() {
    * 除了一列标题什么信息都不给，用户在文件堆里翻找的成本远高于几行分组头的高度。
    * 简略模式本来就不渲染「排列方式」旋钮，也就没有「跟随那个偏好」的必要。
    */
-  const grouped: DocGroup[] | null = useMemo(() => {
-    const by = density === 'compact' ? 'folder' : groupBy
-    return by === 'none' ? null : groupDocs(visible, by, folders, undefined, tree)
-  }, [density, groupBy, visible, folders, tree])
+  const arrangeBy = density === 'compact' ? 'folder' : groupBy
+  const grouped: DocGroup[] | null = useMemo(
+    () => (arrangeBy === 'none' ? null : groupDocs(visible, arrangeBy, folders, undefined, tree)),
+    [arrangeBy, visible, folders, tree],
+  )
 
   /**
    * 分组头徽标数字 —— 两种维度**语义不同且都有意如此**：
@@ -372,10 +397,40 @@ export function DocLibrary() {
   // 每次渲染都给个新数组会让那个 effect 每帧都白跑一次。
   const visibleIds = useMemo(() => visible.map(d => d.id), [visible])
 
+  /**
+   * 文件夹的显示顺序（前序，只含**文件夹组**）—— 文件夹 Shift 区间靠它算。
+   * ⚠️ 平铺（`grouped === null`）时为空数组：那时没有分组头，用户也选不到文件夹，
+   * 区间自然退化（`useDocSelection` 里回退成单点 toggle）。
+   */
+  const folderOrder = useMemo(
+    () => (grouped ?? []).filter(g => g.editable && g.ref).map(g => g.ref),
+    [grouped],
+  )
+
   const {
-    selectedIds, hasSelection, toggle: toggleSelect, setAll: setSelectionAll,
-    clear: clearSelection, handleRowClick, handleRowMouseDown, handleRowDoubleClick, onListKeyDown,
-  } = useDocSelection(visibleIds, openDocTab)
+    selectedIds, selectedFolderIds, hasSelection, toggle: toggleSelect, setAll: setSelectionAll,
+    clear: clearSelection, handleRowClick, handleRowMouseDown, handleRowDoubleClick,
+    handleFolderSelect, onListKeyDown,
+  } = useDocSelection(visibleIds, openDocTab, folderOrder)
+
+  /**
+   * 当前排列**不是「按文件夹」**时清掉文件夹选择。
+   *
+   * 只有按文件夹排列才渲染可选的文件夹分组头。切到平铺 / 按类型 / 按时间时，残留的
+   * `selectedFolderIds` 会让批量条上挂着一个「删除 N 个文件夹」——作用在用户此刻完全
+   * 看不见的对象上。这与「筛选变更在同一次 set 里清空选择」是同一条理由，只是那一批
+   * 走的是 docsSlice 的 setter，而排列偏好住在本组件外侧（`docLibraryPrefs`）。
+   *
+   * ⚠️ 判据必须是 `arrangeBy === 'folder'`，**不是 `grouped === null`**：按类型 / 按时间
+   * 排列时 `grouped` 同样非 null，但那些组的 `editable` 是 false、复选框根本不渲染
+   * —— 用 `grouped` 判会让「切到按类型」这条路径静默漏掉，而界面上那些文件夹已经消失。
+   * 简略模式强制按文件夹（见上方 `arrangeBy`），所以它也走保留分支。
+   */
+  const setSelectedFolderIds = useStore(s => s.setSelectedFolderIds)
+  useEffect(() => {
+    if (arrangeBy === 'folder') return
+    if (useStore.getState().selectedFolderIds.size) setSelectedFolderIds(new Set())
+  }, [arrangeBy, setSelectedFolderIds])
 
   // ── 分批渲染 ──
   // 深度活在 store 里：面板折叠会卸载组件，留在本地等于「收起再展开，滚到哪全忘了」。
@@ -387,20 +442,37 @@ export function DocLibrary() {
   }, [searchQuery, activeType, activeTags, activeFolderId, titleFilter, dateFrom, dateTo, sort, groupBy, setLimit])
   const rendered = visible.slice(0, limit)
   const hasMore = limit < visible.length
-  const sentinelRef = useRef<HTMLDivElement>(null)
-  // ⚠️ 必须显式传 `root`：不传时以 **viewport** 为基准，而哨兵在一个 `overflow-y-auto`
-  // 的容器里 —— 容器内的滚动不会触发 viewport 交叉，判定只在页面级滚动时才对。
-  const scrollRef = useRef<HTMLDivElement>(null)
+  /**
+   * 哨兵 / 滚动容器 —— **必须用 callback ref + state 持有元素本身**，不能用 `useRef` 对象。
+   *
+   * ⚠️ 观察关系绑的是**某个具体 DOM 元素**，而 effect 的依赖只有 `[hasMore, limit]`。
+   * 只要元素被替换而这两个值没变，effect 就不会重跑 —— 旧 observer 继续观察一个
+   * 已经从文档里移除的元素，交叉事件**再也不会触发**。
+   *
+   * 而这个替换是真实存在的：简略 / 详细是两条不同的 JSX 分支，切换密度时
+   * `DocList` 整个重挂载（换了一棵子树），哨兵与滚动容器都是新元素。
+   * 症状：切过一次密度之后，列表永远停在第一屏的 60 行 —— 滚到底什么都不发生、
+   * 零报错，看起来像「显示的文件数有限」。
+   *
+   * 把「元素是谁」放进依赖，换掉即重建 observer，是唯一不会漏的判据
+   * （依赖里列 `density` 只是记住今天有这个分支，下次加分支照样会漏）。
+   */
+  const [sentinelEl, setSentinelEl] = useState<HTMLDivElement | null>(null)
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null)
+  /** ⚠️ 引用必须稳定：内联箭头函数会让 React 每次渲染都 `old(null)` → `new(el)`，白刷两轮 */
+  const sentinelRef = useCallback((el: HTMLDivElement | null) => setSentinelEl(el), [])
+  const scrollRef = useCallback((el: HTMLDivElement | null) => setScrollEl(el), [])
   useEffect(() => {
-    const el = sentinelRef.current
-    if (!el || !hasMore) return
+    if (!sentinelEl || !scrollEl || !hasMore) return
+    // ⚠️ 必须显式传 `root`：不传时以 **viewport** 为基准，而哨兵在一个 `overflow-y-auto`
+    // 的容器里 —— 容器内的滚动不会触发 viewport 交叉，判定只在页面级滚动时才对。
     const io = new IntersectionObserver(
       entries => { if (entries[0].isIntersecting) setLimit(limit + PAGE_SIZE) },
-      { root: scrollRef.current, rootMargin: '240px' },
+      { root: scrollEl, rootMargin: '240px' },
     )
-    io.observe(el)
+    io.observe(sentinelEl)
     return () => io.disconnect()
-  }, [hasMore, limit, setLimit])
+  }, [sentinelEl, scrollEl, hasMore, limit, setLimit])
 
   // 选择（常态多选，无模式开关）。⚠️ 「筛选变更清空选择」不在这里做 effect——那有一帧的
   // 时序窗口（勾选还在、被勾的文档已不可见），改由 docsSlice 的筛选 setter 内联完成。
@@ -496,6 +568,13 @@ export function DocLibrary() {
 
   /** 移动文件夹到另一个父级（'' = 根级）。移到自己或后代由后端拒绝（400） */
   const moveFolderById = useCallback(async (id: string, parentId: string) => {
+    // ⚠️ 目标就是当前父级时 PATCH 是静默 no-op：不发请求，并明确说一句——
+    // 否则用户点了「移动」却什么都没发生，看起来像功能坏了
+    if ((folders.find(f => f.id === id)?.parentId || '') === parentId) {
+      const target = parentId ? `「${folderLabel(parentId)}」` : '根级'
+      addToast(`「${folderLabel(id)}」已经在${target}里，无需移动`)
+      return false
+    }
     let ok = false
     await withFolderBusy(id, async () => {
       try {
@@ -507,7 +586,7 @@ export function DocLibrary() {
       } catch (err) { addToast(getErrorMessage(err), 'error') }
     })
     return ok
-  }, [withFolderBusy, refreshFolders, addToast, revealFolders])
+  }, [folders, withFolderBusy, refreshFolders, addToast, revealFolders, folderLabel])
 
   const deleteFolderById = useCallback((id: string) => {
     void withFolderBusy(id, async () => {
@@ -702,6 +781,140 @@ export function DocLibrary() {
         addToast(getErrorMessage(err), 'error')
       }
     }), [selectedIds, runBatch, addToast, setDocs])
+
+  // ── 文件夹批量动作 ──
+  //
+  // ⚠️ 与文档批量**刻意分成两条路**：作用对象不同（文件夹本身 vs 文档），payload 也不同
+  // （文件夹是一个一个 PATCH/DELETE，没有批量端点）。合并成一个「批量」入口就得在每个
+  // 消费方里按 id 前缀分流，漏一处就是把 `fd_xxx` 当文档 id 发出去。
+
+  /**
+   * 批量移动的禁用集 = 选中夹 ∪ 各自全部后代（移进自己的子树 → 后端 `FOLDER_CYCLE`）。
+   * 与单夹的 `folderMoveExclude` 同一判据，只是起点是多个。
+   */
+  const folderBatchExclude = useMemo(() => {
+    if (!selectedFolderIds.size) return undefined
+    const s = new Set<string>()
+    for (const id of selectedFolderIds) {
+      s.add(id)
+      for (const d of tree.descendantIds(id)) s.add(d)
+    }
+    return s
+  }, [selectedFolderIds, tree])
+
+  /**
+   * 删除确认框里的数字 —— **先去后代化，再统计**。
+   *
+   * ⚠️ 选中 `{技术, 技术 › 前端}` 时只该删「技术」一次：两个都发 DELETE 的话第二次必然
+   * 404（它已随父级消失）。故先滤掉「祖先也在选中集里」的那些，只留根。
+   * ⚠️ 数字必须与真正执行的集合同源（都用这里算出的 `roots`），否则确认框说 5 个、
+   * 实际删 3 个。
+   */
+  const folderDeletePlan = useMemo(() => {
+    if (!folderDeleteTargets) return null
+    const sel = new Set(folderDeleteTargets)
+    const roots = folderDeleteTargets.filter(id => !tree.ancestorIds(id).some(a => sel.has(a)))
+    const gone = new Set<string>()
+    for (const id of roots) {
+      gone.add(id)
+      for (const d of tree.descendantIds(id)) gone.add(d)
+    }
+    // 只算「会被搬回未分类」的那些（未分类本身不在任何被删夹里）
+    const docsInScope = docs.filter(d => d.folderId && gone.has(d.folderId)).length
+    return { roots, folderCount: gone.size, docsInScope }
+  }, [folderDeleteTargets, tree, docs])
+
+  /**
+   * 批量删除文件夹 —— 逐个调 DELETE（没有批量端点，且级联范围在服务端算）。
+   *
+   * ⚠️ 传进来的是**去后代化后的根**（见 `folderDeletePlan`）。
+   * ⚠️ 文档回落范围**只认每次后端返回的 `deletedFolderIds`**（与单删同一条判据：
+   * 自己用本地 `descendantIds` 再算一遍 = 第二个真相来源）。
+   * ⚠️ 部分失败必须点名：静默丢弃会让用户以为那几个夹也删掉了。
+   */
+  const runDeleteFolders = useCallback(async (roots: string[]) => {
+    setFolderDeleteTargets(null)
+    if (!roots.length) return
+    await runBatch(async () => {
+      const gone = new Set<string>()
+      /** 删除失败的根 —— 保留在选中集里，用户不必重新找一遍 */
+      const failed = new Set<string>()
+      let rows = 0
+      let moved = 0
+      const failures: string[] = []
+      for (const id of roots) {
+        try {
+          const r = await deleteFolder(id)
+          rows += r.deletedFolders || 1
+          moved += r.moved || 0
+          // 老后端不返回集合时至少把自身算进去，否则本地文档会指着已不存在的 folderId
+          const ids = r.deletedFolderIds?.length ? r.deletedFolderIds : [id]
+          for (const g of ids) gone.add(g)
+        } catch (err) {
+          failed.add(id)
+          failures.push(`${folderLabel(id)}：${getErrorMessage(err)}`)
+        }
+      }
+      await refreshFolders()
+      setDocs(useStore.getState().docs.map(d =>
+        d.folderId && gone.has(d.folderId) ? { ...d, folderId: '' } : d))
+      // 当前筛的夹被删掉（含被祖先连带删掉）→ 清筛选，否则列表永远空白
+      if (activeFolderId && gone.has(activeFolderId)) setActiveFolderId(null)
+      if (failures.length) {
+        addToast(`已删除 ${rows} 个文件夹，${failures.length} 个失败（${failures[0]}`
+          + `${failures.length > 1 ? ' 等' : ''}），${moved} 个文档已移到未分类`, 'error')
+      } else {
+        addToast(`已删除 ${rows} 个文件夹，${moved} 个文档已移到未分类`)
+      }
+      clearSelection()
+      // ⚠️ 部分失败时把失败项**放回**选中集：与「成功那批的文档选择一起清掉」不冲突，
+      // 只是让用户能直接重试。全清会让失败的那几个夹在列表里重新变成「找不到了」。
+      if (failed.size) setSelectedFolderIds(failed)
+    })
+  }, [runBatch, refreshFolders, setDocs, activeFolderId, setActiveFolderId,
+      folderLabel, addToast, clearSelection, setSelectedFolderIds])
+
+  /**
+   * 批量移动文件夹到 `parentId`（'' = 根级）—— 逐个 PATCH。
+   *
+   * ⚠️ 目标不可能落在选中夹的子树内（`folderBatchExclude` 已把它们禁掉），但后端仍会
+   * 再校验一次 —— 前端禁用是「让用户看得懂为什么不行」，不是安全边界。
+   */
+  const runMoveFolders = useCallback(async (parentId: string) => {
+    const all = [...selectedFolderIds]
+    if (!all.length) return
+    /**
+     * ⚠️ 已经在目标父级下的夹要**先摘掉**：PATCH 是一次静默 no-op，但 toast 会说
+     * 「已移动 N 个」，而用户看到的树没有任何变化。全部都是 no-op 时连请求都不发。
+     * 判据与后端同源（`parentId` 缺省视为根 `""`）。
+     */
+    const ids = all.filter(id => (folders.find(f => f.id === id)?.parentId || '') !== parentId)
+    const unchanged = all.length - ids.length
+    if (!ids.length) {
+      const target = parentId ? `「${folderLabel(parentId)}」` : '根级'
+      addToast(`选中的 ${all.length} 个文件夹已经在${target}里，无需移动`)
+      return
+    }
+    await runBatch(async () => {
+      let ok = 0
+      /** 移动失败的夹 —— 保留在选中集里供重试（与删除同一取舍） */
+      const failed = new Set<string>()
+      const failures: string[] = []
+      for (const id of ids) {
+        try { await moveFolder(id, parentId); ok++ }
+        catch (err) { failed.add(id); failures.push(`${folderLabel(id)}：${getErrorMessage(err)}`) }
+      }
+      await refreshFolders()
+      // 移进一个收起的父级里 = 移完就找不着了
+      revealFolders([parentId])
+      const target = parentId ? folderLabel(parentId) : '根级'
+      if (failures.length) addToast(`已移动 ${ok} 个文件夹，${failures.length} 个失败（${failures[0]}）`, 'error')
+      else addToast(`已移动 ${ok} 个文件夹到「${target}」${unchanged ? `（${unchanged} 个已在该位置）` : ''}`)
+      clearSelection()
+      if (failed.size) setSelectedFolderIds(failed)
+    })
+  }, [selectedFolderIds, folders, runBatch, refreshFolders, revealFolders, folderLabel,
+      addToast, clearSelection, setSelectedFolderIds])
 
   // ── 合成对比综述（多篇 → 一个新文档） ──
 
@@ -1233,6 +1446,8 @@ export function DocLibrary() {
 
   const listProps = {
     collapsedGroups, countOf, folderBusy, docsLoading, hasMore,
+    // 文件夹选择集与文档选择集分开（见 docsSlice），分组头复选框读的是这一个
+    selectedFolderIds, onFolderSelect: handleFolderSelect,
     emptyText, truncated: hitsTruncated,
     draggingCategorized,
     // 简略模式的形态是 IDE 文件树：分组子行缩进 + 缩进线，分组头当父节点（见 grouped）
@@ -1294,6 +1509,11 @@ export function DocLibrary() {
           onDelete={() => setDeleteTargets([...selectedIds])}
           onClear={clearSelection}
           onCreateFolder={name => createNewFolder(name)}
+          // ── 文件夹（第二个集合）──
+          folderCount={selectedFolderIds.size}
+          onMoveFolders={parentId => void runMoveFolders(parentId)}
+          onDeleteFolders={() => setFolderDeleteTargets([...selectedFolderIds])}
+          folderExcludeIds={folderBatchExclude}
         />
       ) : (
         <DocLibraryToolbar
@@ -1392,6 +1612,44 @@ export function DocLibrary() {
               <button onClick={() => setDeleteTargets(null)}
                 className="px-4 py-2 text-[13px] text-dimmed hover:bg-surface rounded-lg transition-colors">取消</button>
               <button data-confirm-delete onClick={() => runDelete(deleteTargets)}
+                className="px-4 py-2 bg-error text-white text-[13px] font-medium rounded-lg hover:bg-error/80 transition-colors">删除</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {/* 文件夹批量删除确认 —— 同样 Portal 到 body（理由见 `<aside>` 的注释）。
+          ⚠️ 文案必须报**子树**口径：删一个夹会连带它全部子夹，只说「N 个文件夹」
+          会让用户以为是点选的那几个；而「文档不会被删除」这句是这个动作唯一能给的
+          保证，必须写在确认框里而不是只写在 toast 里。 */}
+      {folderDeleteTargets && folderDeletePlan && createPortal(
+        <div className="fixed inset-0 z-300 flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => setFolderDeleteTargets(null)}>
+          <div className="bg-elevated rounded-2xl shadow-2xl border border-border-light p-6 max-w-85 w-full mx-4 animate-[fadeIn_0.15s_ease-out]" onClick={e => e.stopPropagation()}>
+            <h3 className="text-[17px] font-semibold mb-2">
+              {folderDeletePlan.roots.length > 1 ? `删除 ${folderDeletePlan.roots.length} 个文件夹` : '删除文件夹'}
+            </h3>
+            <p className="text-[13px] text-dimmed mb-6">
+              确定要删除
+              {folderDeletePlan.roots.length === 1
+                ? `「${folderLabel(folderDeletePlan.roots[0])}」`
+                : `选中的 ${folderDeletePlan.roots.length} 个文件夹`}
+              {folderDeletePlan.folderCount > folderDeletePlan.roots.length
+                ? `及其 ${folderDeletePlan.folderCount - folderDeletePlan.roots.length} 个子文件夹`
+                : ''}
+              吗？其中 {folderDeletePlan.docsInScope} 个文档将移到未分类
+              （<span className="font-medium">文档不会被删除</span>）。
+              {folderDeleteTargets.length > folderDeletePlan.roots.length && (
+                <span className="block mt-1 text-[12px]">
+                  另有 {folderDeleteTargets.length - folderDeletePlan.roots.length} 个选中的子文件夹
+                  已包含在上面，将一并删除。
+                </span>
+              )}
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setFolderDeleteTargets(null)}
+                className="px-4 py-2 text-[13px] text-dimmed hover:bg-surface rounded-lg transition-colors">取消</button>
+              <button data-confirm-delete-folders onClick={() => void runDeleteFolders(folderDeletePlan.roots)}
                 className="px-4 py-2 bg-error text-white text-[13px] font-medium rounded-lg hover:bg-error/80 transition-colors">删除</button>
             </div>
           </div>

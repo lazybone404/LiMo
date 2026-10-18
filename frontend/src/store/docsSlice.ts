@@ -64,8 +64,13 @@ function applyPendingClose(tabs: DocTab[], p: NonNullable<PendingClose>): DocTab
  *
  * ⚠️ 做成**函数**而不是共享常量：共享的 Set 对象一旦被谁就地 `add` 一次就永久污染
  * 全局（`set` 只做浅合并，不会克隆）。
+ *
+ * ⚠️ **文档选择与文件夹选择必须在这里一起清**：两者都在列表中可见，任何一条筛选
+ * 变更都可能让被选中的那一半从列表里消失 —— 只清文档会把「选中的文件夹」留在
+ * 看不见的地方，批量条上还挂着一个对不可见对象生效的删除按钮。
  */
-const noSelection = (): { selectedIds: Set<string> } => ({ selectedIds: new Set() })
+const noSelection = (): { selectedIds: Set<string>; selectedFolderIds: Set<string> } =>
+  ({ selectedIds: new Set(), selectedFolderIds: new Set() })
 
 export interface DocsSlice {
   docs: DocEntry[]
@@ -89,6 +94,16 @@ export interface DocsSlice {
   // ── 多选（常态，无模式开关）──
   selectedIds: Set<string>
   setSelectedIds: (ids: Set<string>) => void
+  /**
+   * 文件夹选择 —— **与文档选择刻意分成两个集合**。
+   *
+   * 合并成一个会让每一个消费方（导出、合成、智能分类、批量打标签、拖拽 payload）
+   * 都必须自己过滤「这个 id 是文档还是文件夹」，漏一处就是把 `fd_xxx` 当文档 id
+   * 发给后端（200 或 404，取决于端点，但界面上看不出异常）。分开之后，
+   * 既有文档动作天然只作用于文档，文件夹动作单独一段。
+   */
+  selectedFolderIds: Set<string>
+  setSelectedFolderIds: (ids: Set<string>) => void
   clearSelection: () => void
 
   // ── 面板状态 ──
@@ -144,6 +159,8 @@ export const createDocsSlice: StateCreator<Store, [], [], DocsSlice> = (set, get
 
   selectedIds: new Set(),
   setSelectedIds: (ids) => set({ selectedIds: ids }),
+  selectedFolderIds: new Set(),
+  setSelectedFolderIds: (ids) => set({ selectedFolderIds: ids }),
   clearSelection: () => set(noSelection()),
 
   listLimit: PAGE_SIZE,

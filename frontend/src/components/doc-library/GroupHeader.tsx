@@ -17,7 +17,7 @@
  * 常量是因为它们落在两个不同组件的 Tailwind 类里，抽出来反而要绕过 Tailwind 的静态扫描。
  */
 import { useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight, Folder, FolderPlus, Pencil, Trash2, Check, X } from 'lucide-react'
+import { Check, CheckSquare, ChevronDown, ChevronRight, Folder, FolderPlus, Pencil, Square, Trash2, X } from 'lucide-react'
 import type { DocGroup } from './useDocQuery'
 
 /** 缩进最多推到这一层（再深就只剩图标了，完整路径见 `title`） */
@@ -52,6 +52,15 @@ export interface GroupHeaderProps {
    */
   descendantCount?: number
   onToggle: (key: string) => void
+  /**
+   * 文件夹选中态与切换入口 —— 只有文件夹组（`group.editable`）才渲染这一列。
+   *
+   * ⚠️ 它与 `onToggle`（折叠/展开）是**两个不同的点击目标**：复选框是一列独立按钮，
+   * 点它不折叠。合并成一个「点分组头就选中」就没有展开折叠的入口了。
+   * ⚠️ 文件夹选择集**与文档选择集分开**（见 docsSlice），故这里没有 `selectedIds`。
+   */
+  selected?: boolean
+  onToggleSelect?: (e: React.MouseEvent, id: string) => void
   /** 以下四项只有文件夹组会传（`group.editable` 时） */
   onRename?: (id: string, name: string) => Promise<boolean>
   onDelete?: (id: string) => void
@@ -71,7 +80,8 @@ export interface GroupHeaderProps {
 
 export function GroupHeader({
   group, expanded, count, busy, compact, depth = 0, path, descendantCount = 0,
-  onToggle, onRename, onDelete, onDropDocs, onNewChild, onContextMenu,
+  onToggle, selected, onToggleSelect,
+  onRename, onDelete, onDropDocs, onNewChild, onContextMenu,
   actionFor, onActionConsumed,
 }: GroupHeaderProps) {
   const [renaming, setRenaming] = useState(false)
@@ -191,6 +201,24 @@ export function GroupHeader({
           />
         ) : (
           <>
+            {/* 文件夹复选框列 —— 与 `DocRow` 的同名列同一套交互：整列可点（不只是图标），
+                未选中时图标随行 hover 出现，选中后常显。
+                ⚠️ 列宽 `w-6` 与 `DocRow` 的复选框列**同值**：两者在同一个缩进流里上下相邻，
+                分组头窄一档会让它的勾比下面文档行的勾左移 4px，整棵树的竖线就对不齐了。
+                ⚠️ 只有文件夹组有：类型/时间是派生值，删掉「PDF 组」没有语义。 */}
+            {group.editable && onToggleSelect && (
+              <button
+                data-folder-select-toggle={group.ref}
+                onClick={e => onToggleSelect(e, group.ref)}
+                aria-pressed={!!selected}
+                title={selected ? '取消选择此文件夹' : '选择此文件夹（Shift 选区间）'}
+                className={`w-6 shrink-0 -ml-1 flex items-center justify-center rounded hover:bg-surface ${compact ? 'h-6.5' : 'h-5'}`}
+              >
+                {selected
+                  ? <CheckSquare size={compact ? 14 : 15} className="text-accent" />
+                  : <Square size={compact ? 14 : 15} className="text-disabled opacity-0 transition-opacity group-hover/g:opacity-100" />}
+              </button>
+            )}
             <button
               data-group-toggle={group.key}
               onClick={() => onToggle(group.key)}

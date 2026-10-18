@@ -127,9 +127,17 @@ function DocRowImpl({
         density === 'compact' ? 'w-6 h-6.5' : 'w-6 h-6'
       }`}
     >
+      {/* ⚠️ 未选中时**只在悬停 / 行内有焦点时可见**（VS Code 的行首列行为）：
+          整列热区 + Ctrl 划选已经覆盖了「怎么选」，一个常驻的空方框只是每行重复的噪音。
+          图标仍留在布局里（只改透明度）—— 否则隐藏时标题会左移、hover 时又弹回来。
+          `focus-within` 是给键盘用户的：Tab 进来必须看得见。
+          选中态**常显**：勾了却要 hover 才看得见，等于不告诉用户选了谁。 */}
       {selected
         ? <CheckSquare size={density === 'compact' ? 14 : 18} className="text-accent" />
-        : <Square size={density === 'compact' ? 14 : 18} className="text-disabled" />}
+        : <Square
+            size={density === 'compact' ? 14 : 18}
+            className="text-disabled opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+          />}
     </button>
   )
 
@@ -256,8 +264,9 @@ function DocRowImpl({
         <>
           {/* 主行：复选框 + 缩略图 + 标题 + 操作按钮 */}
           <div className="flex items-start gap-2.5">
-            {/* 复选框**常驻**（不是只在某个「批量模式」里出现）：它既是鼠标用户
-                唯一「只选不开」的路径，也是触屏与键盘用户的唯一选择入口。 */}
+            {/* 复选框**常驻在 DOM 里**（不是只在某个「批量模式」里出现）：它既是鼠标用户
+                唯一「只选不开」的路径，也是键盘用户的唯一选择入口。
+                视觉上未选中时随行 hover 出现（见 `selectedBox`），选中后常显。 */}
             <span className="mt-0.5">{selectedBox}</span>
             {doc.coverUrl ? (
               <img src={appUrl(doc.coverUrl)} alt="" referrerPolicy="no-referrer"
