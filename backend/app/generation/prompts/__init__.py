@@ -141,4 +141,15 @@ from .notes_styles import (
 #   ⚠️ 顺带修一个既有事实错误：`get_summary_format()` 原文写「整个视频的核心内容」，
 #   而该函数被 video / audio / webpage / pdf / docx / pptx / text **共用** ——
 #   PDF 笔记里被要求总结「整个视频」。改为中性说法「整份材料」。
-PROMPT_VERSION = "15"
+# "16"（2026-10-18，多篇合成的**产物形态契约 + 证据块**）：
+#   · 骨架从「一套六节」改为**按读者意图分派五套**（`_SHAPE_SKELETONS`）——
+#     `article` 综合文章 / `claims` 观点综合 / `comparison` 比较简报 /
+#     `controversy` 争议分析 / `decision` 决策与行动简报。改前无论选「找争议」还是
+#     「理解主题」，正文长得一样（组织单位没变，只换了 `<task>` 一句措辞）。
+#   · 新增四条**通用规则**（连续优先 / 分歧显式 / 结论可溯 / 完整性）与**证据块规范**
+#     （`type="evidence"`，紧跟论断、块内写方法 / 样本 / 范围 / 局限 / 反例）。
+#   · 共用尾（材料索引 + 各篇速查）去掉「读者问题」硬引用，改形态中性的「正文主体」。
+#   ⚠️ 只影响**多篇合成**（`build_synthesis_prompt`）；单篇笔记 / 整理版零变化
+#   （证据块刻意不进 `get_markdown_block_format()`，详见 `artifact_blocks` 的
+#   `SYNTHESIS_BLOCK_TYPES` 注释）。
+PROMPT_VERSION = "16"

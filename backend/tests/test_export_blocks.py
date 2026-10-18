@@ -86,6 +86,32 @@ _STORE.save_markdown(MarkdownView(
     style=Style.DETAILED, mode=GenerateMode.NOTES,
 ))
 
+#: 证据块夹具（2026-10-18，多篇合成专用）。两篇：
+#: `tr_ev001` 只有证据块（用来证明「线性化后已无块 ⇒ 不注入 blocks.css」），
+#: `tr_evmix1` 证据块 + 强调块共存（用来证明只消解 evidence、其余块照常渲染）。
+_EV_OPEN = '<!-- limo-block:v1 type="evidence" -->'
+_EV_CLOSE = '<!-- /limo-block -->'
+EVIDENCE_MD = (
+    "论断：A 优于 B [文档 2]。\n\n"
+    f"{_EV_OPEN}\n- 样本：N=120，跨 3 年\n- 局限：单一中心\n{_EV_CLOSE}\n\n"
+    "后续正文。\n"
+)
+EV_MIXED_MD = EVIDENCE_MD + "\n" + BLOCK + "\n"
+
+for _tid, _md, _hash in (
+    ('tr_ev001', EVIDENCE_MD, 'ev1'),
+    ('tr_evmix1', EV_MIXED_MD, 'ev2'),
+):
+    _STORE.save_transcript(RawTranscript(
+        id=_tid, title='证据样例', source_type=SourceType.WEBPAGE,
+        engine='trafilatura', raw_text='# 原文\n\n正文', content_hash=_hash,
+        metadata=RawMetadata(),
+    ))
+    _STORE.save_markdown(MarkdownView(
+        id=f'md_{_tid}', transcript_id=_tid, content=_md,
+        style=Style.DETAILED, mode=GenerateMode.NOTES,
+    ))
+
 app = FastAPI()
 app.include_router(E.router, prefix="/api")
 app.dependency_overrides[get_store] = lambda: _STORE
@@ -104,7 +130,10 @@ client = TestClient(app)
 
 
 def _export(**kw) -> dict[str, bytes]:
-    body = {'doc_ids': ['tr_blk001'], 'content_tabs': ['summary'], **kw}
+    # `doc_ids` 允许覆盖（证据块那组用例消费的是另一篇夹具文档），默认保持原样 ——
+    # 本文件前面十几条用例的输入不该因为新增一组用例而改变。
+    doc_ids = kw.pop('doc_ids', ['tr_blk001'])
+    body = {'doc_ids': doc_ids, 'content_tabs': ['summary'], **kw}
     r = client.post('/api/export/custom', json=body)
     assert r.status_code == 200, f"{r.status_code} {r.text[:300]}"
     with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
@@ -579,6 +608,125 @@ def test_chars_不把标记行算进去():
     assert 'limo-block' in raw, "夹具失效：产物里没有标记，这条测不到东西"
     assert entry['chars'] == len(strip_blocks(raw))
     assert len(raw) - entry['chars'] == len(_OPEN) + 1 + len(_CLOSE) + 1
+
+
+# ═══════════════════════════════════════════════════════════════
+# F. 证据块线性化（合成专用类型，**导出四入口统一降级**）
+# ═══════════════════════════════════════════════════════════════
+#
+# 判据本身（编号、来源、幂等、围栏内零触碰）在 `test_artifact_blocks.py`，读的是与
+# 前端共享的 `evidence-linearize.json`。**本节测的是「四个入口谁真的调了它」** ——
+# 协议层全绿而某一个入口漏接线，是本轮最容易漏、且**完全静默**的一类失败：
+# 那种情况下导出成功、文件正常，只是折叠的内容在 md 里彻底消失。
+
+def test_证据块_md_导出_原位占位加文末附录():
+    """用户拍板「所有格式统一，Markdown 也一样」：md 里绝不能只剩折叠内容被吞掉。"""
+    out = _only(_export(formats=['md'], doc_ids=['tr_ev001']))
+    assert '[证据 1]' in out
+    assert '## 证据附录' in out
+    # 来源取自块**之前**那段正文的锚点（模型把来源写在论断旁，块内只写方法/样本）
+    assert '**证据 1**（文档 2）' in out
+    assert '样本：N=120' in out, "证据内容没有搬进附录"
+    assert 'limo-block' not in out, "标记行漏进了 .md 文件"
+    # 原位占位必须在附录之前 —— 顺序反了读者顺着 `[证据 1]` 往下翻什么也找不到
+    assert out.index('[证据 1]') < out.index('## 证据附录')
+
+
+def test_证据块_plain_导出同样线性化():
+    """纯文本里折叠内容同样**没有**任何承载方式 —— 不线性化等于直接丢内容。"""
+    out = _only(_export(formats=['plain'], doc_ids=['tr_ev001']))
+    assert '[证据 1]' in out
+    assert '## 证据附录' in out
+    assert '样本：N=120' in out
+    assert '<!' not in out
+
+
+def test_证据块_html_导出_是纯文本引用而非折叠元素():
+    """HTML 侧**刻意不还原成 `<details>`**：导出文件没有主题系统与交互，折叠 =
+    默认收起 = 读者看不到依据（且打印/PDF 也拿不到）。线性化后 HTML 与其它格式读到的
+    是同一份内容。"""
+    body = _body(_only(_export(formats=['html'], doc_ids=['tr_ev001'])))
+    assert '[证据 1]' in body
+    assert '证据附录' in body
+    assert '样本：N=120' in body
+    assert '<details' not in body, "导出侧不该有折叠元素（预览侧才折叠）"
+
+
+def test_只有证据块时导出不注入_blocks_css():
+    """线性化后文档里**已经没有块**了 → `_has_blocks` 为假 → 不注入 `blocks.css`。
+
+    ⚠️ 这条不只是「省一段 CSS」：`_has_blocks` 若为保持为真而偷偷留着围栏，HTML 导出
+    会把标记行原样吐给读者（正是本文件开头 A 类失败）。判据与内容必须同时干净。
+    """
+    html = _only(_export(formats=['html'], doc_ids=['tr_ev001']))
+    assert 'data-marker-decor' not in html
+    assert 'class="md-block' not in _body(html)
+
+
+def test_证据块与强调块共存时只有证据被消解():
+    """同一个文档里两种块并存：证据被线性化，强调块照常包成 `md-block`。
+
+    ⚠️ 这条挡的是「一刀切」实现：把整篇的 `has_blocks` 当开关，要么全消解要么全保留。
+    两种情况都有一部分读者看到协议标记或丢内容，且各自只在一半文档上发作。
+    """
+    html = _only(_export(formats=['html'], doc_ids=['tr_evmix1']))
+    assert '<div class="md-block" data-block-type="key-takeaway">' in html
+    assert '[证据 1]' in html
+    assert 'class="md-block" data-block-type="evidence"' not in html
+    # 还有块 ⇒ blocks.css 照常注入（上面那条是「一个块都不剩」才不注入）
+    assert 'data-marker-decor' in html
+
+
+def test_证据块_docx_导出也拿到附录():
+    """⚠️ Word 分支用的是**原始 content**（不是 `processed`，图片内嵌要原始引用）——
+    线性化必须改 `content` 本身。只改 `processed` 时 md / html / plain 三条全对、
+    Word 静默错（拿到含围栏的原文，或者对已经线性化的正文再剥一遍标记）。"""
+    blob = next(iter(_export(formats=['docx'], doc_ids=['tr_ev001']).values()))
+    texts = "\n".join(_paragraph_texts(blob))
+    assert '[证据 1]' in texts
+    assert '证据附录' in texts
+    assert '样本：N=120' in texts
+    assert 'limo-block' not in texts
+
+
+def test_单文档导出端点也线性化():
+    """`GET /export/{id}`（ExportMenu 的快捷导出 + PDF 两条路径的共同上游）。"""
+    r = client.get('/api/export/tr_ev001', params={'format': 'md'})
+    assert r.status_code == 200, r.text[:300]
+    assert '[证据 1]' in r.text
+    assert '## 证据附录' in r.text
+    assert 'limo-block' not in r.text
+
+
+def test_导出全部产物端点也线性化():
+    """`GET /export/{id}/all` 走 `_collect_doc_products` —— 与 `/export/batch` **同一个**
+    收集函数，故这一条同时覆盖两条路由。"""
+    r = client.get('/api/export/tr_ev001/all')
+    assert r.status_code == 200, r.text[:300]
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        names = [n for n in zf.namelist() if n.endswith('-笔记.md')]
+        assert names, f"压缩包里没有笔记产物：{zf.namelist()}"
+        text = zf.read(names[0]).decode('utf-8')
+        # ⚠️ 转录原文**不该**被线性化（它不是产物，本来就没有证据块）—— 一并处理是
+        # 「少一处就少一次误伤」的反面：动它没有任何收益，只会多一条可能改错的路径。
+        raw_names = [n for n in zf.namelist() if n.endswith('-转录原文.md')]
+        assert raw_names, zf.namelist()
+        raw_text = zf.read(raw_names[0]).decode('utf-8')
+    assert '[证据 1]' in text
+    assert '## 证据附录' in text
+    assert 'limo-block' not in text
+    assert '证据附录' not in raw_text
+
+
+def test_无证据块的文档导出不受线性化影响():
+    """零回归：`tr_blk001`（只有 key-takeaway）的导出与改造前一致 —— 强调块照常
+    包成 `md-block`、正文里没有多出一节「证据附录」。"""
+    out = _only(_export(formats=['md']))
+    assert '## 证据附录' not in out
+    assert '核心结论' in out
+    html = _only(_export(formats=['html']))
+    assert 'class="md-block" data-block-type="key-takeaway"' in _body(html)
+    assert '证据附录' not in _body(html)
 
 
 def teardown_module(module):

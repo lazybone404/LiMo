@@ -130,6 +130,50 @@ CSS 归零**），块内内容照常输出。前端同样「关掉才发」（`p
 | 思维导图 | 显式 `strip_blocks`（替换掉对通用 `<[^>]+>` 规则的隐式依赖） |
 | md / 纯文本 | **剥离**标记行（客户端 `stripMarkers` / 后端 `_strip_blocks`） |
 
+#### 证据块例外：**所有格式统一线性化**（2026-10-18）
+
+合成产物的 `type="evidence"` 块是**唯一**不走上表那一套的类型（它来自
+`SYNTHESIS_BLOCK_TYPES`，不在 `ARTIFACT_BLOCK_TYPES` 里）。用户已拍板：**导出统一降级，
+Markdown 也一样** —— 证据移到文末并标引用号。
+
+| 路径 | 动作 |
+|---|---|
+| 全部（md / html / docx / pdf） | **线性化**：原位替换为 `[证据 N]` + 文末追加 `## 证据附录` |
+
+- 实现：[artifact_blocks.py](../backend/app/core/artifact_blocks.py) 的 `linearize_evidence(md)`，
+  前端对应 [markdown-markers.ts](../frontend/src/lib/markdown-markers.ts) 的 `linearizeEvidence()`。
+- **编号由结构派生**：模型不写 `[证据 N]`，编号按围栏**出现顺序**在代码侧生成 —— 生成完再补
+  引用（事后匹配）与「保留来源与论点的关联」是两回事，前者会漂移。
+- **幂等**：无 evidence 围栏时**原样返回入参 `md` 本身**（不返回规范化后的副本 —— CRLF 会被
+  改，逐字节零回归当场失败）；已有 `## 证据附录` 时不追加第二次。
+- ⚠️ **先 linearize、后 strip**：反过来围栏已被剥掉，附录永远不生成且零报错。
+- ⚠️ **绝不塞进 `strip_blocks`**：它同时被合成输入（`latest_notes_text`）、对话导出、字数统计
+  消费 —— 放进去会污染非导出链路（合成会把附录当原料再喂一遍）。
+- **四个后端接入点**：`GET /export/{id}`（空内容检查后立即线性化，html/docx/md 三支共用）、
+  `_build_export_zip`（改 `content` 本身而非 `processed` —— docx 分支用原始 `content`）、
+  `_collect_doc_products`（`/all` 与 `/batch`，只处理笔记产物那一行，转录原文/图片处理结果不动）。
+  PDF 走 HTML 端点自动继承。
+- ⚠️ **`blocks_present` 会因此变假**：文档只有 evidence 块时，线性化后已无块 → 不注入
+  `blocks.css`。这是正确行为（已无块），测试钉住，不要为保持为真而偷偷留着围栏。
+
+**「预览所见 = 导出所得」在证据块上的定性**（矩阵同文见
+[CLAUDE.md](../CLAUDE.md)、`linearize_evidence` docstring、`EvidenceBlock` 注释与
+`ExportMenu` 注释 —— 四处，模式 #54 的反向用法：同一判据要能被四个落点的人看到）：
+
+| 维度 | 预览 | 导出 | 允许不同 |
+|---|---|---|---|
+| 内容字符 | 全在 DOM | 全在文件 | 否 |
+| H2 节数与顺序 | 原文 | 原文 + 文末 `## 证据附录` | 允许（唯一例外） |
+| 证据位置 | 原位 `<details>` 折叠卡 | 原位 `[证据 N]` + 附录 | 允许（用户已拍板） |
+| 编号 | 无 | 全局顺序编号 | 允许（导出派生） |
+| 协议标记行 | 不显示 | 不显示 | 否 |
+| 交互 | 可折叠 | 不可折叠 | 必然不同 |
+
+⚠️ **预览不编号是刻意的**：`CardSections` 对每节各跑一次 `MarkerContent`，组件内部按局部顺序
+编号会**跨节重号**；空间上紧贴论断，关联足够。编号只在导出侧出现。
+
+⚠️ **PDF 用户困惑是已知代价**：PDF 走 HTML 端点，拿到的是线性化版本而非折叠版本。
+
 **HTML 侧**：分段与包裹收口在 [artifact_blocks.py](../backend/app/core/artifact_blocks.py) 的
 `render_blocks_html(md, render_fragment)` —— `export.py` 只提供**本侧的渲染回调**（KaTeX 保护链），
 Word 侧提供自己的（无代码高亮）。⚠️ **这不是过度抽象**：两个消费点各写一遍消费循环就是模式 #54
@@ -251,6 +295,11 @@ Tabs: `summary`, `transcript`（**恰好两个**）
 **没有 polished**：它是 N 篇的综述，**没有「原文」可整理**——后端 `build_both()` 对 composite 返回 `(sp, sp)`，前端 `getTypeMeta` 也不给入口，两层一致。
 
 ⚠️ **tab 注册是导出链路最容易漏的一环**：`sourceTypes` 不含新类型 → 预览区**一个 tab 都没有**（静默空屏，无报错），导出侧也就无从取材。故 composite **只**加在 `summary` 与 `transcript` 两处，**绝不可加进 `DOC_TYPES`**（它被 `ALL_TEXT` 展开，会把 polished / mindmap 一并送出）；`summary` 的 `defaultFor` 也要加（`forSourceType` 与 `defaultFor` 是两件事）。详见 CHANGELOG 2026-10-01。
+
+⚠️ **2026-10-18 起合成产物可能带 `evidence` 块**（形态契约的一部分，见 §1「证据块例外」）：
+预览侧渲染成可折叠的 `<details>`，导出侧四种格式统一线性化为「原位 `[证据 N]` + 文末
+`## 证据附录`」。**导出内容源不变**（仍是 `summary` tab → notes 产物），变的是那份产物在
+导出管线里多过一道 `linearize_evidence`。
 
 ### 2.6 前端 Tab 注册表 + 内容源（2026-08-14 重写）
 
@@ -853,6 +902,19 @@ ExportMenu 从客户端 store 读数据（即时），ExportPanel 把 tab 名发
 4. **后端 `export_custom`**（`POST /api/export/custom`，第 1166 行起）：如需批量/自定义导出，在 `tab_contents` 收集循环加 `elif tab == "xxx":` 分支
 5. **后端 `services/markdown_render.py`**：若新内容引入新的 GFM 风格语法，在 `preprocess_gfm` 补对应预处理（删除线/任务列表/时间戳 badge 模式）—— **一处生效，HTML + Word 两条导出路径同时受益**
 6. **本文档第 2 节**：更新内容源映射表
+
+### 新增语义块类型（以 2026-10-18 的 `evidence` 为例）
+
+| # | 落点 | 说明 |
+|---|------|------|
+| 1 | `core/artifact_blocks.py` 的类型集合 | 先回答「**哪一侧的**块」：产物侧九种进 `ARTIFACT_BLOCK_TYPES`（会被无条件注入给所有 notes）；合成专用进 `SYNTHESIS_BLOCK_TYPES`（**不进**前者 —— 否则单篇笔记也学会写它，且 `test_block_prompt.py` 的遍历断言会红）。三集合**不相交**，`KNOWN_BLOCK_TYPES` 取并集只为解析宽进 |
+| 2 | 对应的 prompt 规范 | 产物侧 → `get_markdown_block_format()`；合成专用 → `_SYNTHESIS_EVIDENCE_FORMAT` 拼进合成的 `hard_constraints`（`build_synthesis_prompt` **不调用** `get_markdown_block_format()`）。⚠️ `PROMPT_VERSION` 必须 bump |
+| 3 | 是否线性化 | 需要「原位占位 + 文末附录」的走 `linearize_evidence` 同款模式，并**接进全部四个后端入口**（见 §1 的证据块例外）+ 前端两条（MD 下载 / 复制）；不需要的走 §1 的通用转换表 |
+| 4 | 前端解析集合 | [markdown-scan.ts](../frontend/src/lib/markdown-scan.ts) 同构加一类，**必须与后端集合逐项相等** |
+| 5 | 预览渲染 | `MarkerContent.tsx` 加分支（证据块是 `<details>`，其余九种是 `<div class="md-block">`）；`blocks.css` 加样式 + `[data-marker-decor="off"]` 归零规则（**新增 type 漏写归零规则不报错**，只是那一种永远带装饰） |
+| 6 | 共享 fixture | `limo-blocks.json` 的 `meta` 加集合字段与关系断言 + 至少一条用例（既有守卫强制「白名单每类型必须有用例」）；线性化另设 `evidence-linearize.json` |
+| 7 | 测试 | 解析/编号/幂等/零回归（**无该类型时逐字节不变**）+「关掉装饰后内容仍在 DOM」+ `blocks_present` 变化的影响 |
+| 8 | 文档 | 本文档 + CHANGELOG + CLAUDE.md + prompts-inventory §13 |
 
 ### 新增导出格式（以 2026-09-21 的 Word 为例）
 

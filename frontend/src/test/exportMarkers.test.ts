@@ -103,15 +103,25 @@ describe('导出页的令牌注入', () => {
 })
 
 describe('客户端导出 — 标记行必须被剥掉', () => {
-  it('Markdown 下载前剥标记', () => {
+  // ⚠️ 顺序是**先 linearize、后 strip**：反过来的话 evidence 围栏已被剥掉，
+  // `linearizeEvidence` 找不到围栏 → 附录永远不生成，而两条链都「跑成功了」。
+  // 故这里断的是**嵌套写法本身**，不是两个函数各自在场（后者对顺序完全不设防）。
+  it('Markdown 下载前先线性化证据块、再剥标记', () => {
     // ⚠️ MD 与复制是**客户端直读 store** 的两条路，后端碰不到它们 ——
     // 后端那三条（html/word/pdf）测不到这里的漏接线。
-    expect(MENU_TSX).toContain('stripMarkers(exportContent)')
+    expect(MENU_TSX).toContain('stripMarkers(linearizeEvidence(exportContent))')
   })
 
-  it('复制到剪贴板前同样剥标记', () => {
-    // 「复制」的语义是「复制用户看到的内容」，而标记行在预览里本就不显示
+  it('复制到剪贴板前同样「先线性化、后剥标记」', () => {
+    // 「复制」的语义是「复制用户看到的内容」，而标记行在预览里本就不显示；
+    // 证据块在预览里可展开、在纯文本里没处折叠 ⇒ 必须走同一条线性化。
     const copyBlock = MENU_TSX.slice(MENU_TSX.indexOf('const handleCopy'))
-    expect(copyBlock).toContain('stripMarkers(')
+    expect(copyBlock).toContain('stripMarkers(linearizeEvidence(')
+  })
+
+  it('反序写法不存在（linearize 放在 strip 外面 = 附录永远不生成）', () => {
+    // 对照实验：把两个函数调换顺序时本条红，而它在导出产物上**零报错**——
+    // md 里只剩标记被剥掉、证据内容原样留在原位（看似正常，附录整节消失）。
+    expect(MENU_TSX).not.toContain('linearizeEvidence(stripMarkers(')
   })
 })

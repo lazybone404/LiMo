@@ -188,3 +188,95 @@ describe('MarkerContent', () => {
     expect(container.textContent).toContain('加载中')
   })
 })
+
+/**
+ * 证据块（`evidence`，2026-10-18，多篇合成专用）—— 唯一一个在**预览里有结构**而不只是
+ * CSS 外壳的产物侧块：折叠本身就是语义（用户拍板「正文流畅优先，依据可展开」）。
+ *
+ * ⚠️ 与其余九种的关键差别：它们的失效是「样式没生效」，证据块的失效是**内容看不见**
+ * 或**编号错位**。两条都必须断在这里（编号由导出侧的 `linearizeEvidence` 生成，
+ * 预览侧**刻意不编号** —— `CardSections` 对每节各调一次本组件，组件内部按局部顺序
+ * 编号会跨节重号）。
+ */
+describe('MarkerContent — 证据块（合成专用）', () => {
+  const EV = (body: string) => `<!-- limo-block:v1 type="evidence" -->\n${body}\n<!-- /limo-block -->`
+
+  it('渲染成 <details>，且块内内容**真的在 DOM 里**（折叠 ≠ 内容缺席）', () => {
+    // ⚠️ 这是本类型的空壳检测：`<details>` 没展开时视觉上是收起的，若实现不小心
+    // 把 body 挂到别处（或只在 open 时渲染），页面能显示、DOM 里却没有内容 ——
+    // 而「折叠卡里有东西」正是这个形态存在的全部意义。
+    const md = `论断 [文档 2]。\n\n${EV('- 样本：N=120\n- 局限：单一中心')}\n`
+    const { container } = render(<MarkerContent content={md} meta={META} />)
+    const details = container.querySelector('details.md-evidence')
+    expect(details, '证据块没有渲染成 <details>').not.toBeNull()
+    expect(details!.getAttribute('data-block-type')).toBe('evidence')
+    const body = details!.querySelector('.md-evidence-body')
+    expect(body, '缺少 .md-evidence-body').not.toBeNull()
+    expect(body!.textContent).toContain('样本：N=120')
+    expect(body!.textContent).toContain('局限：单一中心')
+    // 块外正文一个字不少
+    expect(container.textContent).toContain('论断 [文档 2]。')
+  })
+
+  it('summary 显示「依据 · 文档 N」但**不含序号**（编号只在导出侧生成）', () => {
+    const md = `论断 [文档 2]。\n\n${EV('- 样本：N=120')}\n`
+    const { container } = render(<MarkerContent content={md} meta={META} />)
+    const summary = container.querySelector('.md-evidence-summary')!
+    expect(summary.textContent).toMatch(/^依据/)
+    expect(summary.textContent).toContain('文档 2')   // 来源取自块前的正文段落
+    // ⚠️ 断言「没有 `证据 N`」而不是「没有数字」—— 来源标注本身就带数字（文档 2）。
+    expect(summary.textContent).not.toMatch(/证据\s*\d/)
+  })
+
+  it('来源写在块内时优先用块内的锚点', () => {
+    const md = `论断。\n\n${EV('- 来自 [文档 3] 的访谈')}\n`
+    const { container } = render(<MarkerContent content={md} meta={META} />)
+    expect(container.querySelector('.md-evidence-summary')!.textContent).toContain('文档 3')
+  })
+
+  it('两侧都提不到来源时 summary 只剩「依据」（不伪造来源）', () => {
+    const md = `${EV('- 样本：N=120')}\n`
+    const { container } = render(<MarkerContent content={md} meta={META} />)
+    const summary = container.querySelector('.md-evidence-summary')!
+    expect(summary.textContent!.trim()).toBe('依据')
+  })
+
+  it('两个相邻证据块：第二个不继承前一个的依据（前一段不是正文）', () => {
+    // ⚠️ 与后端 fixture 的 `two-adjacent` 对应。若实现成「往前找第一个含锚点的段」，
+    // 第二个块会顶着第一个块的来源 —— 读者会以为两条证据出自同一篇文档。
+    const md = `论断 [文档 2]。\n\n${EV('甲')}\n\n${EV('乙')}\n`
+    const { container } = render(<MarkerContent content={md} meta={META} />)
+    const summaries = [...container.querySelectorAll('.md-evidence-summary')].map(e => e.textContent!.trim())
+    expect(summaries[0]).toContain('文档 2')
+    expect(summaries[1]).toBe('依据')
+  })
+
+  it('evidence 与普通强调块共存 —— 各渲染成各自形态，内容都在', () => {
+    const md = `${EV('样本：N=40')}\n\n<!-- limo-block:v1 type="key-takeaway" -->\n重点\n<!-- /limo-block -->\n`
+    const { container } = render(<MarkerContent content={md} meta={META} />)
+    expect(container.querySelectorAll('details.md-evidence').length).toBe(1)
+    expect(container.querySelectorAll('div.md-block[data-block-type="key-takeaway"]').length).toBe(1)
+    expect(container.textContent).toContain('样本：N=40')
+    expect(container.textContent).toContain('重点')
+  })
+
+  it('装饰开关关掉时，内容与折叠结构仍在 DOM（开关是纯 CSS 层，不在 JS 里藏内容）', () => {
+    // ⚠️ 与文件头那条同款：`data-marker-decor="off"` 由 `blocks.css` 消费，组件**不读**它。
+    // 若哪天有人为了「省掉箭头」在 JS 里改成条件渲染，后端导出侧就得再实现一遍，
+    // 且「关掉装饰 = 内容少一点」是产品上不能接受的（关掉的只是装饰）。
+    document.documentElement.setAttribute('data-marker-decor', 'off')
+    try {
+      const md = `论断 [文档 2]。\n\n${EV('- 样本：N=120')}\n`
+      const { container } = render(<MarkerContent content={md} meta={META} />)
+      expect(container.querySelector('details.md-evidence')).not.toBeNull()
+      expect(container.querySelector('.md-evidence-body')!.textContent).toContain('样本：N=120')
+    } finally {
+      document.documentElement.removeAttribute('data-marker-decor')
+    }
+  })
+
+  it('没有标记的文档不会凭空出现证据卡', () => {
+    const { container } = render(<MarkerContent content={'# 标题\n\n普通正文。\n'} meta={META} />)
+    expect(container.querySelectorAll('.md-evidence').length).toBe(0)
+  })
+})

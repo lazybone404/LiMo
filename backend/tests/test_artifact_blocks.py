@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -17,12 +18,16 @@ import pytest
 from app.core.artifact_blocks import (
     ARTIFACT_BLOCK_TYPES,
     CHAT_BLOCK_TYPES,
+    EVIDENCE_APPENDIX_HEADING,
+    EVIDENCE_BLOCK_TYPE,
     KNOWN_BLOCK_TYPES,
     PROTOCOL_VERSION,
     SECTION_CARD_TYPE,
+    SYNTHESIS_BLOCK_TYPES,
     has_blocks,
     is_known_type,
     is_section_card,
+    linearize_evidence,
     match_open,
     parse_blocks,
     strip_blocks,
@@ -40,6 +45,14 @@ FIXTURE = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 CASES = FIXTURE["cases"]
 H2_CASES = FIXTURE["h2Cases"]
 
+#: 证据线性化的共享 fixture —— 与 `frontend/src/test/markdownMarkers.test.ts` 同源。
+LINEARIZE_FIXTURE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "frontend" / "src" / "test" / "fixtures" / "evidence-linearize.json"
+)
+LINEARIZE_FIXTURE = json.loads(LINEARIZE_FIXTURE_PATH.read_text(encoding="utf-8"))
+LINEARIZE_CASES = LINEARIZE_FIXTURE["cases"]
+
 
 def test_fixture_可读且用例没被删空():
     """防「用例被删空后整组测试静默变成空跑」—— 参数化到空列表时 pytest 报 0 个
@@ -47,6 +60,8 @@ def test_fixture_可读且用例没被删空():
     assert FIXTURE_PATH.is_file(), f"共享 fixture 不存在：{FIXTURE_PATH}"
     assert len(CASES) >= 20, f"用例太少（{len(CASES)}），可能被误删"
     assert len(H2_CASES) >= 6, f"h2 用例太少（{len(H2_CASES)}），可能被误删"
+    assert LINEARIZE_FIXTURE_PATH.is_file(), f"共享 fixture 不存在：{LINEARIZE_FIXTURE_PATH}"
+    assert len(LINEARIZE_CASES) >= 10, f"线性化用例太少（{len(LINEARIZE_CASES)}）"
 
 
 def test_用例覆盖到那几类关键行为():
@@ -95,7 +110,7 @@ def test_节级修饰符与_fixture_同源_且不在块白名单里():
 
 
 def test_三个集合的关系与_fixture_同源():
-    """`ARTIFACT ∪ CHAT == KNOWN`、两者**不相交**、各等于 fixture 的子集。
+    """`ARTIFACT ∪ CHAT ∪ SYNTHESIS == KNOWN`、两两**不相交**、各等于 fixture 的子集。
 
     ⚠️ 这条挡住的是「加了 type 却漏写渲染器」—— 那种失效**零报错**：协议认识它，
     某一侧把它当普通正文吐出来，看起来像「模型没写标记」（`limo-blocks.json` 的
@@ -104,8 +119,16 @@ def test_三个集合的关系与_fixture_同源():
     meta = FIXTURE["meta"]
     assert ARTIFACT_BLOCK_TYPES == frozenset(meta["artifactTypes"])
     assert CHAT_BLOCK_TYPES == frozenset(meta["chatTypes"])
-    assert KNOWN_BLOCK_TYPES == ARTIFACT_BLOCK_TYPES | CHAT_BLOCK_TYPES
+    assert SYNTHESIS_BLOCK_TYPES == frozenset(meta["synthesisTypes"])
+    assert KNOWN_BLOCK_TYPES == (
+        ARTIFACT_BLOCK_TYPES | CHAT_BLOCK_TYPES | SYNTHESIS_BLOCK_TYPES
+    )
     assert not (ARTIFACT_BLOCK_TYPES & CHAT_BLOCK_TYPES)
+    # ⚠️ 合成侧与产物侧**必须不相交**：`evidence` 若被并进 `ARTIFACT_BLOCK_TYPES`，
+    # 单篇的 `get_markdown_block_format()` 就会被 `test_block_prompt.py` 追着教证据块
+    # （而单篇材料没有跨文档分歧可写）—— 那条断言是产品边界的守卫，不只是集合卫生。
+    assert not (ARTIFACT_BLOCK_TYPES & SYNTHESIS_BLOCK_TYPES)
+    assert not (CHAT_BLOCK_TYPES & SYNTHESIS_BLOCK_TYPES)
     # 两侧的类型都在协议白名单里（`is_known_type` 是渲染方唯一的查询入口）
     for t in KNOWN_BLOCK_TYPES:
         assert is_known_type(t), t
@@ -231,3 +254,83 @@ def test_iter_headings_不被标记块内的假标题骗到():
         "## 块内假标题\n<!-- /limo-block -->\n\n## 真二\n"
     )
     assert [t for _n, _lv, t in iter_headings(md, 2, 2)] == ["真", "真二"]
+
+
+# ── 证据块线性化（导出专用，与前端 markdownMarkers.test.ts 同源）─────────
+
+def test_证据块常量与_fixture_同源():
+    """`evidence` 是 `SYNTHESIS_BLOCK_TYPES` 的**唯一**成员，附录标题两侧同字。
+
+    ⚠️ 附录标题是跨语言的字面量（前端 `EVIDENCE_APPENDIX_HEADING`、后端同常量）——
+    写死两份就是模式 #54：改一侧后另一侧静默不同，症状是「同一个文档，md 导出与
+    前端复制出来的附录节名不一样」，两个产物都看起来正常。
+    """
+    meta = LINEARIZE_FIXTURE["meta"]
+    assert SYNTHESIS_BLOCK_TYPES == frozenset({EVIDENCE_BLOCK_TYPE})
+    assert meta["blockType"] == EVIDENCE_BLOCK_TYPE
+    assert meta["appendixHeading"] == EVIDENCE_APPENDIX_HEADING
+
+
+@pytest.mark.parametrize("case", LINEARIZE_CASES, ids=[c["name"] for c in LINEARIZE_CASES])
+def test_linearize_与前端同形(case):
+    """逐字节比对 —— 断言的是「前端那份实现会得到什么」，不是「后端自己觉得对」。
+
+    ⚠️ 这一组用例里**必须**有「无证据块 + CRLF」那条：线性化的零回归承诺是
+    「原样返回入参」，而任何走规范化中间副本的实现都会把 CRLF 改成 LF，
+    对全部历史产物生效却零报错。
+    """
+    assert linearize_evidence(case["md"]) == case["linearized"]
+
+
+@pytest.mark.parametrize("case", LINEARIZE_CASES, ids=[c["name"] for c in LINEARIZE_CASES])
+def test_linearize_幂等(case):
+    """对**已线性化**的文本再调一次必须逐字节不变。
+
+    ⚠️ 幂等不是洁癖：`linearize_evidence` 会在四个导出入口各调一次，而 `_collect_doc_products`
+    的结果还可能被批量导出再消费一遍。不幂等的实现会追加第二个「## 证据附录」。
+    """
+    once = linearize_evidence(case["md"])
+    assert linearize_evidence(once) == once
+
+
+@pytest.mark.parametrize("case", LINEARIZE_CASES, ids=[c["name"] for c in LINEARIZE_CASES])
+def test_linearize_后再_strip_零残留(case):
+    """导出链是 `strip_blocks(linearize_evidence(md))`（顺序不能反）。
+
+    ⚠️ 这条钉的是**组合后**的性质：任意一份合成产物走完导出链后，读者可见正文里
+    不得残留任何协议标记行。单个函数各自正确、组合起来仍可能漏（例如未闭合块的
+    开标记由谁剥）。
+
+    ⚠️ **含代码围栏的用例反向断言**：围栏内是用户内容，`strip_blocks` 刻意不碰它
+    （「围栏内零触碰」是协议的第一条不变量）。在那里断言「不得残留」等于要求实现
+    去改写用户代码块 —— 方向反了。⚠️ 写成 `pytest.skip` 不行：跳过的断言与没有的
+    断言在报告上长得一样，而这条恰恰要证明「剥标记的射程**止于**围栏边界」。
+    """
+    out = strip_blocks(linearize_evidence(case["md"]))
+    if "```" in case["md"]:
+        assert "<!-- limo-block" in out, "围栏内的假标记被改写了 —— 违反「围栏内零触碰」"
+        assert "<!-- /limo-block" in out, case["name"]
+        return
+    assert "<!-- limo-block" not in out, case["name"]
+    assert "<!-- /limo-block" not in out, case["name"]
+
+
+def _evidence_blk(body: str) -> str:
+    return f'<!-- limo-block:v1 type="evidence" -->\n{body}\n<!-- /limo-block -->'
+
+
+def test_线性化编号与出现顺序双向对齐且无孤儿():
+    """正文的 `[证据 N]` 与附录的 `**证据 N**` 必须**同序同集**。
+
+    ⚠️ 只断「编号从 1 开始递增」是不够的：那样「正文有 [证据 3]、附录只有 1~2」照样绿，
+    而读者顺着 [证据 3] 往下翻什么也找不到 —— 这正是「编号由结构派生」这条设计
+    唯一可能失效的方式。
+    """
+    out = linearize_evidence(
+        f"前言 [文档 1]。\n\n{_evidence_blk('甲')}\n\n"
+        f"{_evidence_blk('乙')}\n\n{_evidence_blk('丙')}\n"
+    )
+    in_body = re.findall(r"\[证据 (\d+)\]", out)
+    in_appendix = re.findall(r"^\*\*证据 (\d+)\*\*", out, re.MULTILINE)
+    assert in_body == ["1", "2", "3"]
+    assert in_appendix == in_body, f"正文编号 {in_body} 与附录条目 {in_appendix} 不同源"

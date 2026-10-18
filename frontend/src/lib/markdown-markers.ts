@@ -158,3 +158,129 @@ export function stripMarkers(md: string): string {
   }
   return out.join('\n')
 }
+
+/** 证据块类型名（`SYNTHESIS_BLOCK_TYPES` 的唯一成员） */
+export const EVIDENCE_BLOCK_TYPE = 'evidence'
+
+/** 线性化后追加到文末的附录节标题 */
+export const EVIDENCE_APPENDIX_HEADING = '## 证据附录'
+
+/** 合成产物里的文档锚点（`[文档 2]`） */
+const DOC_ANCHOR_RE = /\[文档\s*(\d+)\]/g
+
+/** 提取文档锚点并拼成 `文档 2、文档 5`；提不到返回空串。
+ *
+ *  预览侧（`EvidenceBlock` 的 summary）与线性化侧共用同一份，别在组件里再写一遍。 */
+export function evidenceSourceNote(text: string): string {
+  const nums = [...new Set(Array.from(text.matchAll(DOC_ANCHOR_RE), (m) => Number(m[1])))]
+    .sort((a, b) => a - b)
+  return nums.map((n) => `文档 ${n}`).join('、')
+}
+
+/** 块**之前最近一段正文**（回溯到上一个空行为止）里的文档锚点。
+ *
+ *  模型把来源写在**论断旁**比写进证据块自然得多，只看块内会让附录条目标题几乎永远是空的。 */
+export function nearestDocAnchors(lines: string[]): string {
+  const buf: string[] = []
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].trim()) {
+      if (buf.length) break
+      continue
+    }
+    buf.push(lines[i])
+  }
+  return evidenceSourceNote(buf.reverse().join('\n'))
+}
+
+/**
+ * 把 `evidence` 围栏**线性化**：原位留 `[证据 N]`，内容按序搬到文末 `## 证据附录`。
+ *
+ * ⚠️ **与后端 `artifact_blocks.py::linearize_evidence` 逐字同构**（跨语言无法共享代码，
+ * 靠 `test/fixtures/evidence-linearize.json` 钉住两侧行为）。
+ *
+ * 这是「导出与预览刻意不同」的**唯一落点**：预览里证据是可展开的 `<details>`，而任何
+ * 导出格式（md / 纯文本 / HTML / Word / PDF）都没有交互 —— 折叠内容在 md 里更是直接
+ * 消失。线性化把「按需展开」降级成「原位占位 + 文末附录」。
+ *
+ * ⚠️ **无证据块时原样返回入参**（连 CRLF 都不动）—— 零回归；**幂等**（已线性化的
+ * 文本没有围栏，再调用一次命中早返回）。
+ * ⚠️ **顺序不能反**：先 `linearizeEvidence`、再 `stripMarkers`。反过来围栏已被剥掉，
+ * 附录永远不生成，而两条链都「跑成功了」，零报错。
+ * ⚠️ 只消解 evidence，其余标记行原样保留（预览要照常渲染它们）。
+ */
+export function linearizeEvidence(md: string): string {
+  if (!md.includes(EVIDENCE_BLOCK_TYPE)) return md
+
+  const out: string[] = []
+  const collected: { body: string; note: string }[] = []
+  let evLines: string[] = []
+  let inEvidence = false
+  let inFence = false
+
+  for (const raw of normalize(md).split('\n')) {
+    // ⚠️ 围栏判定排在标记判定之前，且对块内同样生效 —— 与 `parseMarkers` 同款。
+    if (FENCE_TOGGLE_RE.test(raw)) {
+      inFence = !inFence
+      ;(inEvidence ? evLines : out).push(raw)
+      continue
+    }
+    if (inFence) {
+      ;(inEvidence ? evLines : out).push(raw)
+      continue
+    }
+
+    if (inEvidence) {
+      if (isBlockClose(raw)) {
+        const body = evLines.join('\n').replace(/^\n+|\n+$/g, '')
+        if (body.trim()) {
+          const note = evidenceSourceNote(body) || nearestDocAnchors(out)
+          collected.push({ body, note })
+          out.push(`[证据 ${collected.length}]`)
+        } else if (out.length > 0 && out[out.length - 1].trim() !== '') {
+          // 空壳：不留占位、不编号。只有「上一行是正文」时才补一个空行防段落粘连 ——
+          // 无条件补的话，块前后本就各有一个空行，正文里会留下连续三个空行
+          // （语义无害但让产物多出一处肉眼可见的怪缝）。与后端逐字同构。
+          out.push('')
+        }
+        inEvidence = false
+        evLines = []
+        continue
+      }
+      // 块内嵌套 / 畸形的标记行 → 剥掉（与 `parseMarkers` 同口径）
+      if (isMarkerLine(raw)) continue
+      evLines.push(raw)
+      continue
+    }
+
+    const m = matchBlockOpen(raw)
+    if (m !== null && m.type === EVIDENCE_BLOCK_TYPE) {
+      inEvidence = true
+      evLines = []
+      continue
+    }
+    out.push(raw)
+  }
+
+  // 只有未闭合块 / 围栏内假标记 → 什么都没改，原样返回入参（含 CRLF）
+  if (!collected.length) return md
+
+  if (inEvidence) {
+    // 末尾未闭合：内容降级为普通正文（开标记已在上面被丢弃）
+    out.push(...evLines)
+  }
+
+  const bodyText = out.join('\n').replace(/\n+$/, '')
+  const heading = /^##\s+证据附录\s*$/m.test(bodyText)
+    ? `${EVIDENCE_APPENDIX_HEADING}（续）`
+    : EVIDENCE_APPENDIX_HEADING
+
+  const appendix: string[] = []
+  collected.forEach(({ body, note }, i) => {
+    appendix.push(`**证据 ${i + 1}**${note ? `（${note}）` : ''}`)
+    appendix.push('')
+    appendix.push(body)
+    appendix.push('')
+  })
+
+  return [bodyText, heading, appendix.join('\n').replace(/\n+$/, '')].join('\n\n') + '\n'
+}

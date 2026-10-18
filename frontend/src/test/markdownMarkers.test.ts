@@ -18,13 +18,21 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { hasBlocks, parseMarkers, stripMarkers } from '../lib/markdown-markers'
+import {
+  EVIDENCE_APPENDIX_HEADING,
+  EVIDENCE_BLOCK_TYPE,
+  hasBlocks,
+  linearizeEvidence,
+  parseMarkers,
+  stripMarkers,
+} from '../lib/markdown-markers'
 import {
   ARTIFACT_BLOCK_TYPES,
   CHAT_BLOCK_TYPES,
   KNOWN_BLOCK_TYPES,
   PROTOCOL_VERSION,
   SECTION_CARD_TYPE,
+  SYNTHESIS_BLOCK_TYPES,
   isSectionCard,
   matchBlockOpen,
 } from '../lib/markdown-scan'
@@ -41,6 +49,7 @@ const FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf-8')) as {
     knownTypes: string[]
     artifactTypes: string[]
     chatTypes: string[]
+    synthesisTypes: string[]
     sectionTypes: string[]
   }
   cases: {
@@ -62,18 +71,29 @@ describe('limo-block — 白名单与协议版本的跨语言守卫', () => {
     expect([...KNOWN_BLOCK_TYPES].sort()).toEqual([...FIXTURE.meta.knownTypes].sort())
   })
 
-  it('KNOWN = ARTIFACT ∪ CHAT，且两两不相交 —— 「协议知道」≠「某侧实现了」', () => {
+  it('KNOWN = ARTIFACT ∪ CHAT ∪ SYNTHESIS，且两两不相交 —— 「协议知道」≠「某侧实现了」', () => {
     // ⚠️ 挡的是**静默失效**：把一个 type 加进 KNOWN_BLOCK_TYPES 等于宣称「有人处理它」，
     // 而某个渲染方其实没有分支 → 该 type 被原样当正文吐出来、零报错。
-    // 这里核对三者关系；**各侧是否真有渲染分支**由 chatBlocks.test.tsx /
+    // 这里核对四者关系；**各侧是否真有渲染分支**由 chatBlocks.test.tsx /
     // markerContent.test.tsx 的渲染断言承担（两条一起才闭环）。
     expect([...ARTIFACT_BLOCK_TYPES].sort()).toEqual([...FIXTURE.meta.artifactTypes].sort())
     expect([...CHAT_BLOCK_TYPES].sort()).toEqual([...FIXTURE.meta.chatTypes].sort())
+    expect([...SYNTHESIS_BLOCK_TYPES].sort()).toEqual([...FIXTURE.meta.synthesisTypes].sort())
     expect([...KNOWN_BLOCK_TYPES].sort()).toEqual(
-      [...new Set([...ARTIFACT_BLOCK_TYPES, ...CHAT_BLOCK_TYPES])].sort(),
+      [...new Set([
+        ...ARTIFACT_BLOCK_TYPES,
+        ...CHAT_BLOCK_TYPES,
+        ...SYNTHESIS_BLOCK_TYPES,
+      ])].sort(),
     )
+    // ⚠️ 产物侧与合成侧必须不相交：`evidence` 若被并进 ARTIFACT_BLOCK_TYPES，单篇笔记的
+    // `get_markdown_block_format()` 也会开始教证据块（产品边界，不是集合卫生）。
     for (const t of ARTIFACT_BLOCK_TYPES) {
-      expect(CHAT_BLOCK_TYPES.has(t), `两侧类型重叠：${t}`).toBe(false)
+      expect(CHAT_BLOCK_TYPES.has(t), `产物/对话类型重叠：${t}`).toBe(false)
+      expect(SYNTHESIS_BLOCK_TYPES.has(t), `产物/合成类型重叠：${t}`).toBe(false)
+    }
+    for (const t of CHAT_BLOCK_TYPES) {
+      expect(SYNTHESIS_BLOCK_TYPES.has(t), `对话/合成类型重叠：${t}`).toBe(false)
     }
   })
 
@@ -216,5 +236,58 @@ describe('splitByH2 × 标记块 —— 块内的 `##` 不是文档结构', () =
     // 标记行落在前言里（它没有被当成块的开始）—— 渲染层的 `parseMarkers` 会把它剥掉，
     // 切分器这一层不去管它（两层的分工：切分看结构，渲染看显示）。
     expect(preamble).toContain('limo-block')
+  })
+})
+
+/**
+ * 证据块线性化 —— 与后端 `linearize_evidence` **逐字节同源**。
+ *
+ * ⚠️ 为什么前端也要有一份：快捷「下载 MD」「复制」走的是**纯前端**路径（不经后端），
+ * 两条路径给出的附录必须一模一样。两份实现 + 一份共享 fixture，是这个约定的唯一证据。
+ */
+const LINEARIZE_FIXTURE = JSON.parse(
+  readFileSync(resolve(process.cwd(), 'src/test/fixtures/evidence-linearize.json'), 'utf-8'),
+) as {
+  meta: { blockType: string; appendixHeading: string }
+  cases: { name: string; md: string; linearized: string }[]
+}
+
+describe('linearizeEvidence — 证据块线性化（与后端同源）', () => {
+  it('常量与 fixture 一致（附录标题是跨语言字面量，写死两份必然漂移）', () => {
+    expect([...SYNTHESIS_BLOCK_TYPES]).toEqual([LINEARIZE_FIXTURE.meta.blockType])
+    expect(EVIDENCE_BLOCK_TYPE).toBe(LINEARIZE_FIXTURE.meta.blockType)
+    expect(EVIDENCE_APPENDIX_HEADING).toBe(LINEARIZE_FIXTURE.meta.appendixHeading)
+  })
+
+  it('fixture 用例没被删空', () => {
+    expect(LINEARIZE_FIXTURE.cases.length).toBeGreaterThanOrEqual(10)
+    const names = LINEARIZE_FIXTURE.cases.map(c => c.name).join('\n')
+    // 零回归、幂等前提、围栏内零触碰 —— 三类关键行为缺一不可
+    expect(names).toContain('CRLF')
+    expect(names).toContain('围栏内')
+    expect(names).toContain('未闭合')
+  })
+
+  for (const c of LINEARIZE_FIXTURE.cases) {
+    it(c.name, () => {
+      expect(linearizeEvidence(c.md)).toBe(c.linearized)
+    })
+
+    it(`${c.name} —— 幂等`, () => {
+      const once = linearizeEvidence(c.md)
+      expect(linearizeEvidence(once)).toBe(once)
+    })
+  }
+
+  it('正文 `[证据 N]` 与附录 `**证据 N**` 同序同集（无孤儿编号）', () => {
+    // ⚠️ 只断「从 1 开始递增」不够：那样「正文有 [证据 3]、附录只有 1~2」照样绿，
+    // 而读者顺着 [证据 3] 往下翻什么也找不到。
+    const blk = (body: string) =>
+      `<!-- limo-block:v1 type="evidence" -->\n${body}\n<!-- /limo-block -->`
+    const out = linearizeEvidence(`前言 [文档 1]。\n\n${blk('甲')}\n\n${blk('乙')}\n\n${blk('丙')}\n`)
+    const inBody = [...out.matchAll(/\[证据 (\d+)\]/g)].map(m => m[1])
+    const inAppendix = [...out.matchAll(/^\*\*证据 (\d+)\*\*/gm)].map(m => m[1])
+    expect(inBody).toEqual(['1', '2', '3'])
+    expect(inAppendix).toEqual(inBody)
   })
 })

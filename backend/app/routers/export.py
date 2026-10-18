@@ -42,6 +42,7 @@ from app.services.markdown_sections import split_by_h2  # noqa: E402
 # 「预览里是强调块、导出里是一行注释文字」正是这条链最容易出的岔子。
 from app.core.artifact_blocks import (  # noqa: E402
     has_blocks as _has_blocks,
+    linearize_evidence as _linearize_evidence,
     render_blocks_html as _render_blocks_html,
     strip_blocks as _strip_blocks,
 )
@@ -245,6 +246,16 @@ async def export_content(
         raise AppError("EXPORT_NO_CONTENT", "无可导出内容",
                         status_code=404, recoverable=True)
 
+    # 证据块的导出线性化（2026-10-18，用户拍板「所有格式统一，含 Markdown」）：
+    # 预览里证据是可展开的 `<details>`，而任何导出格式都没有交互 —— 原位换成
+    # `[证据 N]`、内容按序搬到文末 `## 证据附录`，于是「按需展开」降级成
+    # 「原位占位 + 文末附录」，任何格式都读得到依据。
+    # ⚠️ **必须排在 `_strip_blocks` 与 `render_blocks_html` 之前**：反过来的话围栏
+    # 已被剥掉，附录永远不生成 —— 而两条链都「跑成功了」，零报错。
+    # ⚠️ 无证据块时原样返回 `content`（连 CRLF 都不动）⇒ 逐字节零回归。
+    # ⚠️ 只消解 evidence，其余九种块仍原样交给下面各自的渲染路径。
+    content = _linearize_evidence(content)
+
     # 骨架轴 / 卡片视觉方案 —— **HTML 与 Word 两条链共用**，故读在分支之前。
     # ⚠️ 默认值与前端 `CARD_DEFAULTS` **必须同值**（`paper` / `gpt`）：任何没带参数的
     # 调用方（历史前端、第三方脚本、PDF 导出链）拿到的都必须是今天这份产物。
@@ -381,7 +392,13 @@ def _collect_doc_products(store, tx_id: str) -> dict[str, str]:
         # 不剥的话「一键导出所有产物」的 md 里留着 `<!-- limo-block:v1 … -->`，
         # 而「按设置导出」的 md 是干净的 —— 同一条「预览所见 = 导出所得」的约束
         # 在两条链上给出相反结果（2026-10-11 实跑查出）。
-        products[f"{title}-{mode_label}{ver}.md"] = _strip_blocks(md["content"])
+        # ⚠️ **先线性化、后剥标记**（顺序不能反，见 `linearize_evidence` 的 docstring）：
+        # 证据块要变成 `[证据 N]` + 文末附录，其余标记照旧剥掉。
+        # ⚠️ 只处理**笔记产物**这一行 —— 上面的转录原文 / 下面的图片处理结果不是产物，
+        # 它们本来就不该有证据块，一并不动（少一处就少一次误伤）。
+        products[f"{title}-{mode_label}{ver}.md"] = _strip_blocks(
+            _linearize_evidence(md["content"])
+        )
 
     # 图片处理结果
     for pr in store.get_process_results(tx_id):
@@ -1694,6 +1711,12 @@ def _build_export_zip(
                     zf.writestr(f"{doc_title}/{doc_title}_{safe_tab}.html", content)
                     total_files += 1
                     continue
+                # 证据块线性化（2026-10-18）—— ⚠️ 改的是 `content` **本身**、不是
+                # `processed`：下面 docx 分支用的是**原始 content**（图片内嵌要原始
+                # 引用），只改 processed 会让 Word 拿到含围栏的原文，而 md / html /
+                # plain 三条都对 —— 一处漏改、三种格式正常、一种静默错。
+                # ⚠️ 必须在 `for fmt` 之前：processed 初值就是 content。
+                content = _linearize_evidence(content)
                 for fmt in data.formats:
                     processed = content
                     ext = fmt

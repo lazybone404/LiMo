@@ -94,7 +94,23 @@ export const CHAT_BLOCK_TYPES: ReadonlySet<string> = new Set([
 ])
 
 /**
- * v1 协议定义的**全部**块类型 = 上两者之并。
+ * **合成侧**（多篇合成产物）专用的块类型 —— 第四类（2026-10-18）。
+ *
+ * 目前只有一个成员 `evidence`：正文里紧跟所支撑的论断，块内写方法 / 样本 / 范围 /
+ * 局限 / 反例。预览渲染成 `<details>` 折叠卡（`preview/MarkerContent.tsx`），导出由
+ * `linearizeEvidence()` 统一线性化（原位 `[证据 N]` + 文末 `## 证据附录`）。
+ *
+ * ⚠️ **刻意不进 `ARTIFACT_BLOCK_TYPES`**：那个集合是「产物侧通用」（任何产物都可能
+ * 出现），证据块是**多篇合成形态契约**的一部分 —— 单篇材料没有「跨文档分歧」可写。
+ * 后端同族的 `test_block_prompt.py` 会遍历 `ARTIFACT_BLOCK_TYPES` 断言每个 type 都
+ * 出现在单篇的 `get_markdown_block_format()` 里，加进去就等于让单篇笔记也学证据块。
+ *
+ * ⚠️ 与后端 `artifact_blocks.py::SYNTHESIS_BLOCK_TYPES` 同源（fixture `meta` 钉住）。
+ */
+export const SYNTHESIS_BLOCK_TYPES: ReadonlySet<string> = new Set(['evidence'])
+
+/**
+ * v1 协议定义的**全部**块类型 = 上三者之并。
  *
  * ⚠️ **「协议知道这个 type」与「某一侧实现了渲染」是两件事**，故拆成三个集合。混为一谈
  * 的失效方式是静默的：把 type 加进这里就等于宣称「有人处理它」，而某个渲染方其实没有
@@ -109,6 +125,7 @@ export const CHAT_BLOCK_TYPES: ReadonlySet<string> = new Set([
 export const KNOWN_BLOCK_TYPES: ReadonlySet<string> = new Set([
   ...ARTIFACT_BLOCK_TYPES,
   ...CHAT_BLOCK_TYPES,
+  ...SYNTHESIS_BLOCK_TYPES,
 ])
 
 /**

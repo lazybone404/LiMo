@@ -399,9 +399,11 @@ assert '## 各篇速查' in sp, '工具区必须独立成节（用户拍板：�
 assert '只列每篇各自有取值的维度' in sp, \
     '必须排除关系性维度（「关键差异」「共同点」在逐篇取值上没有落点，' \
     '不排除就会为凑小节硬写，速查区退化成空话）'
-assert '不要复述前面几节的分析' in sp, \
+assert '不要复述正文主体已经给出的判断' in sp, \
     '文章区「说明什么」与速查区「各自是什么」必须显式分工——' \
-    '这是本节最大的回归风险，没有这条禁令就等于没有护栏'
+    '这是本节最大的回归风险，没有这条禁令就等于没有护栏。' \
+    '⚠️ 措辞刻意是**形态中性**的「正文主体」而不是「前面几节 / 读者问题」：' \
+    '共用尾被五种形态共用，写死节名后另外四种会指名一个不存在的节'
 assert '（未涉及）' in sp, \
     '某篇在某维度无内容时必须有明确写法，否则模型会编（且不能用表格时代的「未提及」）'
 assert '不要编' in sp, '「不知道就说不知道」在工具区同样适用'
@@ -729,6 +731,191 @@ assert '不要出现字段名、标签名或内部标记' in _索引节, \
     '必须点名禁止字段名/标签名——只写「直接给结论」没点到「别引用 source_content」这个具体形态'
 print('PASS: 覆盖说明要求「直接给结论、不提内部标签名」（实测 source_content 泄漏的对策）')
 print('PASS: 覆盖说明在「材料索引」表下（非开场）；元数据开场禁令在')
+
+# ═══════════════════════════════════════════════════════════════
+# 7.10 产物形态契约（2026-10-18）：意图 → 形态 → 骨架
+# ═══════════════════════════════════════════════════════════════
+#
+# 改造前的样子：意图只改 `<task>` 段一句「读者目的」，**骨架恒为同一套**——
+# 于是「找争议」和「理解主题」拿到的正文长得一样，只是措辞换了。本节钉住的是
+# 「构建出的 prompt 真的换了另一套节标题」，不是「映射 dict 里有五个键」：
+# 后者哪怕把 shape 值与骨架表一起写死在不被读取的地方，也照样绿（循环论证）。
+import re as _re  # noqa: E402
+from app.generation.synthesis import OUTPUT_SHAPES, resolve_output_shape  # noqa: E402
+from app.generation.prompt import (  # noqa: E402
+    _SHAPE_SKELETONS, _SHAPE_TASK_BASE, _build_synthesis_output,
+    _SYNTHESIS_EVIDENCE_FORMAT, _SYNTHESIS_UNIVERSAL_RULES,
+)
+
+# ── 7.10.1 契约自洽：意图 → 形态双向覆盖，默认意图与读回兜底不变 ──
+assert all(v["shape"] in OUTPUT_SHAPES for v in READER_INTENTS.values()), \
+    '意图引用了不存在的形态——组装 prompt 时 KeyError，整条合成流会挂'
+assert {v["shape"] for v in READER_INTENTS.values()} == set(OUTPUT_SHAPES), \
+    '有形态没有任何意图可达（界面看起来支持五种，实际只有四种）'
+assert set(_SHAPE_SKELETONS) == set(_SHAPE_TASK_BASE) == set(OUTPUT_SHAPES), \
+    '骨架 / task 基串 / 形态契约三处不同源——漏一个键会在组装时静默回退 article，' \
+    '用户选了「找争议」却拿到文章骨架，而产物上看不出异常'
+for _k, _v in OUTPUT_SHAPES.items():
+    assert _v["label"] and _v["unit"] and _v["description"], \
+        f'{_k} 的形态文案不全——capabilities 直接转发，空值会原样下发到对话框'
+assert next(iter(READER_INTENTS)) == "understand", \
+    '第一个意图必须仍是「理解主题」：前端用 readerIntents[0] 预填，换序 = 换了默认'
+# 「入口严、读回宽」：请求入口对非法意图报错（`normalize_reader_intent`），而**读历史
+# 产物**时没有 intent 字段（旧文档）或值不认识，必须回退 article 而不是崩。两件事
+# 语义不同，故不是同一条判据的两处副本。
+assert resolve_output_shape(None) == "article"
+assert resolve_output_shape("不存在的意图") == "article"
+assert resolve_output_shape("compare") == "comparison"
+assert resolve_output_shape("custom") == "article", '自定义意图按最通用的文章骨架'
+print('PASS: 形态契约 — 意图/形态双向覆盖、五套骨架齐、文案非空、读回宽回退')
+
+# ── 7.10.2 五套骨架：构建产物里**只有自己那套**的节标题 ──
+#
+# ⚠️ 判据必须是**带 `##` 的节标题**而非裸词：task 基串里也有「比较轴」「观点」
+# 「争议」这类词（「按**比较轴**组织」），断裸词会让五套互相误命中，于是「形态根本
+# 没换」这个真缺陷被自己的判别式掩盖——正是 #38「断言存在 ≠ 断言有效」的形态。
+_SHAPE_SECTIONS = {
+    "article": ("## 读者问题", "## 材料作用不同"),
+    "claims": ("## 各方观点", "## 这些观点如何彼此关联"),
+    "comparison": ("## 比较轴", "## 差异说明了什么"),
+    "controversy": ("## 争议一：<冲突点>", "## 哪些分歧其实不成立"),
+    "decision": ("## 结论与建议", "## 建议的行动与条件", "## 什么情况下这个建议会变"),
+}
+# task 基串的判别片段（同样取该形态独有的短语，见 `_SHAPE_TASK_BASE`）
+_SHAPE_TASK_MARK = {
+    "article": "横向对比与综合",
+    "claims": "观点梳理",
+    "comparison": "横向比较",
+    "controversy": "争议分析",
+    "decision": "决策综合",
+}
+# 降级出口（计划 2.3）：材料不支持所选形态时**允许改口**，否则模型只能硬造——
+# 「选找争议而材料高度一致」「选比较而两篇不可比」都是最常见的实机场景。
+_SHAPE_FALLBACK = {
+    "article": "材料之间没有分歧时不写这一节",
+    "claims": "如果材料没有明确的立场或主张",
+    "comparison": "如果这批材料不能被直接比较",
+    "controversy": "如果材料之间不存在实质性冲突",
+    "decision": "如果材料不足以支撑行动建议",
+}
+# 形态 → 一个可达它的意图（`custom` 排除：它的形态也是 article，与 understand 重复）
+_INTENT_OF_SHAPE = {
+    v["shape"]: k for k, v in READER_INTENTS.items() if k != "custom"
+}
+
+for _shape, _intent in _INTENT_OF_SHAPE.items():
+    _raw = build_composite_raw_text(
+        ["tr_a", "tr_b"], ["h1", "h2"],
+        [{"title": "论文A"}, {"title": "论文B"}], "正文甲\n\n正文乙",
+        reader_intent=_intent,
+    )
+    _sp = build_synthesis_prompt(_raw, "T")
+    assert resolve_output_shape(_intent) == _shape, f'{_intent} 应映射到 {_shape}'
+    for _sec in _SHAPE_SECTIONS[_shape]:
+        assert _sec in _sp, f'{_shape} 形态缺自己的节标题：{_sec}'
+    for _other, _secs in _SHAPE_SECTIONS.items():
+        if _other == _shape:
+            continue
+        for _sec in _secs:
+            assert _sec not in _sp, \
+                f'{_shape} 的 prompt 里出现了 {_other} 形态的节标题「{_sec}」——' \
+                f'骨架没分派，或两套共用了一份文本'
+    assert _SHAPE_TASK_MARK[_shape] in _sp, f'{_shape} 的 task 基串未注入'
+    for _other, _mark in _SHAPE_TASK_MARK.items():
+        if _other != _shape:
+            assert _mark not in _sp, \
+                f'{_shape} 的 task 段混进了 {_other} 的基串「{_mark}」'
+    # 共用尾：五套里各**恰好一次**——写成 `in` 时「同一节写两遍」照样绿，
+    # 而那正是「把共用尾又抄一份进骨架」这个改动的形态。
+    # ⚠️ 数的是**独立成行的节标题**（`^## X$`），不是裸子串：两套骨架会在正文里
+    # 提到「文末『## 各篇速查』」（那是分工说明，正确），证据规范也提到「『## 材料
+    # 索引』不放证据块」。裸子串计数会把这两类**正确的提及**报成重复。
+    _skel = _build_synthesis_output(["维度甲"], _shape)
+    assert len(_re.findall(r"^## 材料索引$", _skel, _re.M)) == 1, \
+        f'{_shape}：材料索引节重复或缺席'
+    assert len(_re.findall(r"^## 各篇速查$", _skel, _re.M)) == 1, \
+        f'{_shape}：各篇速查节重复或缺席'
+    assert _SHAPE_FALLBACK[_shape] in _sp, f'{_shape} 缺少「材料不支持」的降级出口'
+print(f'PASS: 五套形态骨架互斥（{len(_INTENT_OF_SHAPE)} 套；节标题 / task 基串 / 共用尾 / 降级出口）')
+
+# ── 7.10.3 通用规则 + 证据规范：拼接路径上各**恰好一次** ──
+# ⚠️ 这两块与形态无关，住 `hard_constraints`。若被复制进各骨架，改一处、其余四套
+# 静默陈旧。故判据是「在构建产物里出现且只出现一次」，不是「常量非空」。
+assert _sp0.count(_SYNTHESIS_UNIVERSAL_RULES) == 1, \
+    '四条通用规则必须原样进 hard_constraints，且只拼一次'
+assert _sp0.count(_SYNTHESIS_EVIDENCE_FORMAT) == 1, \
+    '证据块规范必须原样进 hard_constraints，且只拼一次'
+# 规范里的硬判据逐条在场（少一条 = 模型按自己的理解写块，而导出侧线性化拿到的东西
+# 不在预期形状上——例如块内写了 `###` 标题，搬进附录后会突然变成真章节标题）。
+for _must in (
+    "① 材料之间存在实质分歧",
+    '<!-- limo-block:v1 type="evidence" -->',
+    "不要写编号",
+    "不要写 `##` 或 `###` 标题",
+    "只在正文主体里用",
+):
+    assert _must in _sp0, f'证据块规范缺关键句：{_must}'
+print('PASS: 通用规则 + 证据规范原样进 constraints（各一次），硬判据齐')
+
+# ── 7.10.4 `article` 的节顺序与 2026-10-05 定稿一致 ──
+# 它是五套里唯一经过两批实机验收的形态，措辞与顺序一动就是「同一份材料、
+# 同一个按钮，行为变了」。其余四套允许后续按实测调，这一套不许。
+_article_skel = _SHAPE_SKELETONS["article"]("1. 维度甲")
+_article_order = [
+    "## 这批材料放在一起说明了什么", "## 分歧在哪", "## 读者问题",
+    "## 材料作用不同", "## 材料索引", "## 各篇速查",
+]
+
+
+def _heading_pos(text: str, heading: str) -> int:
+    """节标题**独立成行**时的位置。
+
+    ⚠️ 不能用 `text.index(heading)`：骨架正文里会先提到「同一批维度在文末
+    『## 各篇速查』里逐条成节」，那句是**分工说明**、出现在 `## 材料索引` 之前，
+    用裸子串定位会把「各篇速查」判到材料索引前面，顺序断言当场误红。
+    """
+    m = _re.search(rf"^{_re.escape(heading)}$", text, _re.M)
+    assert m is not None, f'article 骨架缺节标题：{heading}'
+    return m.start()
+
+
+_pos = [_heading_pos(_article_skel, s) for s in _article_order]
+assert _pos == sorted(_pos), f'article 骨架的节顺序被改动：{_pos}'
+print('PASS: article 骨架六节顺序与 2026-10-05 定稿一致')
+
+# ── 7.10.5 负向对照：证明上面读到的是**构建路径上的那个值** ──
+#
+# 三条断言各自都可能「恒绿」：形态映射改了但构建不读它、证据规范常量存在但没被
+# 拼进去——两种失效在产物上都表现为「结构不对」，而断言全绿。故各做一次受控扰动：
+# 改了它，构建产物必须跟着变。
+# ⚠️ 扰动对象必须是**构建时实际读取的那个名字**：`build_synthesis_prompt` 内联引用
+# 模块级 `_SYNTHESIS_EVIDENCE_FORMAT`；形态则走 `resolve_output_shape` 读
+# `READER_INTENTS` 里的**同一个 dict 对象**（不是导入时的浅拷贝）。
+_orig_compare_shape = READER_INTENTS["compare"]["shape"]
+try:
+    READER_INTENTS["compare"]["shape"] = "article"
+    # `_CMP_I2`（7.5 节构造）的意图就是 `compare`
+    _sp_shift = build_synthesis_prompt(_CMP_I2, "T")
+finally:
+    READER_INTENTS["compare"]["shape"] = _orig_compare_shape
+assert "## 比较轴" not in _sp_shift and "## 读者问题" in _sp_shift, \
+    '把 compare 的形态改成 article 后构建产物没变——说明形态根本不是这条映射驱动的'
+# 还原后必须回到比较骨架：不验这一步时，上面那段即使把 dict 改坏也照样「绿」
+_sp_back = build_synthesis_prompt(_CMP_I2, "T")
+assert "## 比较轴" in _sp_back and "## 读者问题" not in _sp_back, \
+    '扰动后未正确还原（后续所有用例都会跟着错）'
+
+import app.generation.prompt as _pm2  # noqa: E402
+_orig_evidence = _pm2._SYNTHESIS_EVIDENCE_FORMAT
+try:
+    _pm2._SYNTHESIS_EVIDENCE_FORMAT = ""
+    _sp_noev = _pm2.build_synthesis_prompt(_COMP_RAW, "T")
+finally:
+    _pm2._SYNTHESIS_EVIDENCE_FORMAT = _orig_evidence
+assert 'type="evidence"' not in _sp_noev, \
+    '删掉证据规范后产物毫无变化——说明它根本没进约束段（7.10.3 的断言读了个孤儿常量）'
+assert 'type="evidence"' in _sp0
+print('PASS: 负向对照 — 改形态映射 / 删证据规范都会让构建产物跟着变（断言有区分力）')
 
 # ═══════════════════════════════════════════════════════════════
 # 8. 新骨架的形态约束 + 默认风格档 plain（2026-10-05）

@@ -9,10 +9,12 @@
   "meta": {
     "protocolVersion": "v1",
     "_knownTypes_comment": "**协议并集**的跨语言守卫：前端与后端的 KNOWN_BLOCK_TYPES 都必须等于 knownTypes，且必须满足「== artifactTypes ∪ chatTypes」与「两者不相交」。加类型时改这里 + 两侧各改一处 + **写渲染器**，漏改任一处即红。",
-    "knownTypes": ["key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "table", "code", "image", "card-group", "follow-up", "info", "digest", "caution", "how-to", "quote"],
+    "knownTypes": ["key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "table", "code", "image", "card-group", "follow-up", "info", "digest", "caution", "how-to", "quote", "evidence"],
     "_sideTypes_comment": "⚠️ **「协议知道这个 type」与「某一侧实现了渲染」是两件事**：这两个子集是各侧真写了渲染分支的类型。把两者混为一谈的失效方式是静默的 —— 只进 knownTypes 而不写渲染器，等于宣称「有人处理它」，实际会被原样当正文吐出来（零报错）。故拆开、由断言核对。",
     "artifactTypes": ["key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "table", "code", "image"],
     "chatTypes": ["card-group", "follow-up", "info", "digest", "caution", "how-to", "quote"],
+    "_synthesisTypes_comment": "⚠️ **第四类：合成侧专用**（2026-10-18）—— 目前只有 `evidence`。它**刻意不进 `artifactTypes`**：那个集合被后端 `test_block_prompt.py` 遍历断言「每个 type 都出现在**单篇**的 `get_markdown_block_format()` 里」，加进去等于让单篇笔记也学证据块，而证据块只属于多篇合成（单篇材料没有「跨文档分歧」可写）。",
+    "synthesisTypes": ["evidence"],
     "_sectionTypes_comment": "⚠️ **第三节集合：节级修饰符**（2026-10-11）—— 它们**不是块**：`matchBlockOpen` / `match_open` 对它们返回 null（标记行对标题扫描完全透明，因此模型把标记写在标题**之前**也不会吞掉那个标题），而是改「**这一节**渲染成什么」的修饰符。`card` 写在 `##` 标题之下 ⇒ 该节成卡。⚠️ **刻意不进 `knownTypes`** —— 那个集合的语义是「块类型」，而 `is_known_type` 决定的是「包不包强调块外壳」，两种判定混在一起会让「card 不开块」这条静默失效。",
     "sectionTypes": ["card"]
   },
@@ -261,6 +263,20 @@
         }
       ],
       "stripped": "> 过早优化是万恶之源。\n\n—— Donald Knuth"
+    },
+    {
+      "name": "证据块（evidence，合成专用）—— 解析成 block 段，其余类型照常",
+      "md": "论断 [文档 2]。\n<!-- limo-block:v1 type=\"evidence\" -->\n- 样本：N=120，横跨 3 年\n- 局限：单一中心\n<!-- /limo-block -->\n",
+      "segments": [
+        { "kind": "text", "content": "论断 [文档 2]。" },
+        {
+          "kind": "block",
+          "type": "evidence",
+          "content": "- 样本：N=120，横跨 3 年\n- 局限：单一中心"
+        },
+        { "kind": "text", "content": "" }
+      ],
+      "stripped": "论断 [文档 2]。\n- 样本：N=120，横跨 3 年\n- 局限：单一中心\n"
     }
   ],
   "h2Cases": [

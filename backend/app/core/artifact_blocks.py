@@ -67,6 +67,20 @@ CHAT_BLOCK_TYPES = frozenset(
     {"card-group", "follow-up", "info", "digest", "caution", "how-to", "quote"}
 )
 
+#: **合成侧**（多篇合成产物）专用的块类型 —— 第四类（2026-10-18）。
+#:
+#: 目前只有一个成员 `evidence`：**证据块**。正文里紧跟它所支撑的论断，块内写
+#: 方法 / 样本 / 范围 / 局限 / 反例（不是逐字原文 —— 那是引用，留在正文）。
+#: 预览渲染成 `<details>` 折叠卡，导出由 `linearize_evidence()` 统一线性化。
+#:
+#: ⚠️ **刻意不进 `ARTIFACT_BLOCK_TYPES`**，两个理由缺一不可：
+#: ① 那个集合被 `test_block_prompt.py` 遍历断言「每个 type 都出现在
+#:    `get_markdown_block_format()` 里」，加进去就得把证据规范写进**单篇笔记**的提示词
+#:    —— 而证据块只属于多篇合成（单篇材料没有「跨文档分歧」可写）；
+#: ② 那 9 种是**产物侧通用**的（任何产物都可能出现），证据块是**合成形态契约**的一部分，
+#:    归属不同的产品边界。拆开后「协议知道」与「某侧实现了」仍然分得开。
+SYNTHESIS_BLOCK_TYPES = frozenset({"evidence"})
+
 #: **节级修饰符** `card` —— 唯一的「不是块」的 type（2026-10-11）。
 #:
 #: ⚠️ 它与上面两族的区别是**粒度**：那两族标记的是**块**（一段内容），`card` 标记的是
@@ -86,20 +100,20 @@ CHAT_BLOCK_TYPES = frozenset(
 #: ⚠️ 与前端 `markdown-scan.ts::SECTION_CARD_TYPE` 同源（fixture 的 `meta.section_types` 钉住）。
 SECTION_CARD_TYPE = "card"
 
-#: **协议已知**的全部块类型 = 上两者之并。
+#: **协议已知**的全部块类型 = 四个集合之并（产物 / 对话 / 合成 + 节修饰符单列）。
 #:
-#: ⚠️ **「协议知道这个 type」与「某一侧实现了渲染」是两件事**，故拆成三个集合。混为一谈的
+#: ⚠️ **「协议知道这个 type」与「某一侧实现了渲染」是两件事**，故拆成三个块集合。混为一谈的
 #: 失效方式是静默的：把一个 type 加进这里就等于宣称「有人处理它」，而某个渲染方其实没有
 #: 分支 → 该 type 被原样当正文吐出来，**零报错**。拆开后测试可以机器核对
 #: 「并集相等 + 两两不相交」。
 #:
-#: ⚠️ **Python 侧只消费本集合**（`is_known_type`），另两个是**镜像声明** —— 产物导出
+#: ⚠️ **Python 侧只消费本集合**（`is_known_type`），另几个是**镜像声明** —— 产物导出
 #: （`render_blocks_html`）对任何 type 都一视同仁地包 `md-block`，不认识的在 CSS 层退化成
-#: 普通内容。保留它们是为了让「并集 == 两侧之和」这条断言在**两侧都成立**。
+#: 普通内容。保留它们是为了让「并集 == 各族之和」这条断言在**两侧都成立**。
 #:
-#: ⚠️ 与前端 `markdown-scan.ts` 的三个同名集合**必须同源**，由
-#: `frontend/src/test/fixtures/limo-blocks.json` 的 `meta` 三者钉住。
-KNOWN_BLOCK_TYPES = ARTIFACT_BLOCK_TYPES | CHAT_BLOCK_TYPES
+#: ⚠️ 与前端 `markdown-scan.ts` 的同名集合**必须同源**，由
+#: `frontend/src/test/fixtures/limo-blocks.json` 的 `meta` 逐族钉住。
+KNOWN_BLOCK_TYPES = ARTIFACT_BLOCK_TYPES | CHAT_BLOCK_TYPES | SYNTHESIS_BLOCK_TYPES
 
 #: 开标记：`<!-- limo-block:vN type="xxx" -->`，独占一行。
 #: ⚠️ 与前端 `markdown-markers.ts::OPEN_RE` **逐字同构**（同一份 fixture 钉住）。
@@ -308,6 +322,148 @@ def strip_blocks(md: str) -> str:
             continue
         out.append(raw)
     return "\n".join(out)
+
+
+#: 证据块类型名（`SYNTHESIS_BLOCK_TYPES` 的唯一成员）。
+EVIDENCE_BLOCK_TYPE = "evidence"
+
+#: 线性化后追加到文末的附录节标题。
+#:
+#: ⚠️ 与原位 `[证据 N]` **成对**：读者顺着 `[证据 3]` 往下翻能找到 `**证据 3**`。
+EVIDENCE_APPENDIX_HEADING = "## 证据附录"
+
+#: 合成产物里的文档锚点（`[文档 2]`）—— 用来给附录条目标出「这条证据来自哪几篇」。
+_DOC_ANCHOR_RE = re.compile(r"\[文档\s*(\d+)\]")
+
+
+def _evidence_source_note(text: str) -> str:
+    """从一段文本里提取文档锚点，拼成 `文档 2、文档 5`；提不到返回空串。
+
+    ⚠️ 提不到**不是失败**：模型可能整段都没写锚点。空串只是「不给来源标注」，
+    条目照常收录。
+    """
+    nums = sorted({int(n) for n in _DOC_ANCHOR_RE.findall(text)})
+    return "、".join(f"文档 {n}" for n in nums)
+
+
+def _nearest_doc_anchors(lines: list[str]) -> str:
+    """证据块**之前最近一段正文**（回溯到上一个空行为止）里的文档锚点。
+
+    为什么要有这一步：模型把来源写在**论断旁**（`……这一结论 [文档 2]`）比写进证据块
+    自然得多，而块内写的是方法 / 样本 / 局限。只看块内会让附录条目标题几乎永远是空的。
+    """
+    buf: list[str] = []
+    for line in reversed(lines):
+        if not line.strip():
+            if buf:
+                break
+            continue
+        buf.append(line)
+    return _evidence_source_note("\n".join(reversed(buf)))
+
+
+def linearize_evidence(md: str) -> str:
+    """把 `evidence` 围栏**线性化**：原位留 `[证据 N]`，内容按序搬到文末 `## 证据附录`。
+
+    这是「导出与预览刻意不同」的**唯一落点**（用户 2026-10-18 拍板）：预览里证据是可
+    展开的 `<details>`，而任何导出格式（md / 纯文本 / HTML / Word / PDF）都没有交互，
+    折叠内容在 md 里更是直接消失。线性化把「按需展开」降级成「原位占位 + 文末附录」，
+    于是**任何格式都读得到依据**，且正文的连续阅读不被来源信息打断。
+
+    矩阵（同一份写进 `docs/export-pipeline.md` 与前端 `EvidenceBlock` 注释）::
+
+        | 维度          | 预览            | 导出                        | 允许不同 |
+        | 内容字符      | 全在 DOM        | 全在文件                    | 否       |
+        | H2 节数与顺序 | 原文            | 原文 + 文末「证据附录」     | 允许     |
+        | 证据位置      | 原位 details    | 原位 [证据 N] + 附录        | 允许     |
+        | 编号          | 无              | 全局顺序编号（导出派生）    | 允许     |
+        | 协议标记行    | 不显示          | 不显示                      | 否       |
+        | 交互          | 可折叠          | 不可折叠                    | 必然不同 |
+
+    ⚠️ **无证据块时原样返回入参 `md` 本身** —— 不返回规范化后的中间副本（CRLF 会被改，
+    「导出与改造前逐字节等价」当场失败）。有证据块时才走规范化（要逐行重建）。
+    ⚠️ **幂等**：已线性化的文本里没有围栏，再调用一次命中上面那条早返回。
+    ⚠️ **未闭合块不编号**：开标记已剥（零残留），块内内容当普通正文留在原位。
+    ⚠️ **空壳块不编号**：没有内容就不占号（否则附录里出现空条目，编号与内容错位）。
+    ⚠️ **代码围栏内的假标记不处理**（与 `parse_blocks` 同一份围栏感知）。
+    ⚠️ **顺序不能反**：先 `linearize_evidence`、再 `strip_blocks`。反过来的话围栏已被
+       剥掉，附录永远不生成 —— 而两边都「跑成功了」，零报错。
+    ⚠️ **绝不塞进 `strip_blocks`**：它同时被合成输入（`latest_notes_text`）、对话导出、
+       字数统计消费；放进去会让合成把附录当成原料再喂一遍。
+    """
+    if EVIDENCE_BLOCK_TYPE not in md:
+        return md
+
+    out: list[str] = []
+    #: `(块内正文, 来源标注)` —— 来源优先取块内锚点，其次取前一段正文的锚点。
+    collected: list[tuple[str, str]] = []
+    ev_lines: list[str] = []
+    in_ev = False
+    in_fence = False
+
+    for raw in _normalize(md).split("\n"):
+        # ⚠️ 围栏判定排在标记判定之前，且对块内同样生效 —— 与 `parse_blocks` 同款。
+        if FENCE_RE.match(raw):
+            in_fence = not in_fence
+            (ev_lines if in_ev else out).append(raw)
+            continue
+        if in_fence:
+            (ev_lines if in_ev else out).append(raw)
+            continue
+
+        if in_ev:
+            if closes_block(raw):
+                body = "\n".join(ev_lines).strip("\n")
+                if body.strip():
+                    note = _evidence_source_note(body) or _nearest_doc_anchors(out)
+                    collected.append((body, note))
+                    out.append(f"[证据 {len(collected)}]")
+                elif out and out[-1].strip():
+                    # 空壳：不留占位、不编号。只有「上一行是正文」时才补一个空行防段落
+                    # 粘连 —— 无条件补的话，块前后本就各有一个空行，正文里会留下
+                    # 连续三个空行（语义无害但让产物多出一处肉眼可见的怪缝）。
+                    out.append("")
+                in_ev = False
+                ev_lines = []
+                continue
+            # 块内嵌套 / 畸形的标记行 → 剥掉（与 `parse_blocks` 同口径）。
+            if MARKER_LINE_RE.match(raw):
+                continue
+            ev_lines.append(raw)
+            continue
+
+        m = match_open(raw)
+        if m is not None and m.group("type") == EVIDENCE_BLOCK_TYPE:
+            in_ev = True
+            ev_lines = []
+            continue
+        # ⚠️ 其余标记行（另外九种块、`card` 节修饰符、未知版本）**原样保留** ——
+        # 它们要照常走 `render_blocks_html` 的块渲染，这里只消解证据块。
+        out.append(raw)
+
+    if not collected:
+        # 只有未闭合块 / 围栏内假标记 → 什么都没改，原样返回入参（含 CRLF）。
+        return md
+
+    if in_ev:
+        # 末尾未闭合：内容降级为普通正文（开标记已在上面被丢弃）。
+        out.extend(ev_lines)
+
+    body_text = "\n".join(out).rstrip("\n")
+
+    # 用户自己写了一节叫「证据附录」时，不产生两个同名 H2 —— 改用「（续）」，内容不丢。
+    heading = EVIDENCE_APPENDIX_HEADING
+    if re.search(r"^##\s+证据附录\s*$", body_text, re.MULTILINE):
+        heading = EVIDENCE_APPENDIX_HEADING + "（续）"
+
+    appendix: list[str] = []
+    for i, (body, note) in enumerate(collected, 1):
+        appendix.append(f"**证据 {i}**" + (f"（{note}）" if note else ""))
+        appendix.append("")
+        appendix.append(body)
+        appendix.append("")
+
+    return "\n\n".join([body_text, heading, "\n".join(appendix).rstrip("\n")]) + "\n"
 
 
 def render_blocks_html(md: str, render_fragment) -> str:

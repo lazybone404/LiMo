@@ -1,0 +1,70 @@
+{
+  "_comment": "证据块线性化的跨语言共享 fixture —— 后端 app/core/artifact_blocks.py::linearize_evidence 与前端 lib/markdown-markers.ts::linearizeEvidence 是同一份判据的两份实现，本文件是它们唯一的一致性证据。⚠️ 「两边写得像」不是证据。改动任一侧都必须先改这里，两侧测试会同时红。",
+  "_why": "导出与预览刻意不同的唯一落点：预览把证据渲染成可展开的 <details>，导出必须线性化成「原位 [证据 N] + 文末 ## 证据附录」，否则 md / 纯文本里折叠内容直接消失。",
+  "meta": {
+    "blockType": "evidence",
+    "appendixHeading": "## 证据附录"
+  },
+  "cases": [
+    {
+      "name": "无证据块且含 CRLF —— 原样返回入参（逐字节，零回归）",
+      "md": "普通文章\r\n\r\n没有证据块",
+      "linearized": "普通文章\r\n\r\n没有证据块"
+    },
+    {
+      "name": "只有别的块（key-takeaway）—— 原样返回，其余块照常留给块渲染",
+      "md": "开场\n\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n重点\n<!-- /limo-block -->\n",
+      "linearized": "开场\n\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n重点\n<!-- /limo-block -->\n"
+    },
+    {
+      "name": "证据块在开头 —— 前面没有正文，来源标注取不到（标题不带括号）",
+      "md": "<!-- limo-block:v1 type=\"evidence\" -->\n- 样本：N=120\n<!-- /limo-block -->\n\n论断正文 [文档 2]。\n",
+      "linearized": "[证据 1]\n\n论断正文 [文档 2]。\n\n## 证据附录\n\n**证据 1**\n\n- 样本：N=120\n"
+    },
+    {
+      "name": "证据块在中间，来源写在论断旁 —— 回退取块之前最近一段正文的锚点",
+      "md": "论断 [文档 2] 认为成本更低。\n\n<!-- limo-block:v1 type=\"evidence\" -->\n- 样本：N=120，跨 3 年\n- 局限：单一中心\n<!-- /limo-block -->\n\n后续正文。\n",
+      "linearized": "论断 [文档 2] 认为成本更低。\n\n[证据 1]\n\n后续正文。\n\n## 证据附录\n\n**证据 1**（文档 2）\n\n- 样本：N=120，跨 3 年\n- 局限：单一中心\n"
+    },
+    {
+      "name": "来源写在块内 —— 优先用块内锚点",
+      "md": "论断。\n\n<!-- limo-block:v1 type=\"evidence\" -->\n- 来自 [文档 3] 的访谈\n<!-- /limo-block -->\n",
+      "linearized": "论断。\n\n[证据 1]\n\n## 证据附录\n\n**证据 1**（文档 3）\n\n- 来自 [文档 3] 的访谈\n"
+    },
+    {
+      "name": "两个相邻块 —— 按出现顺序编号，编号与附录条目双向对应",
+      "md": "论断 [文档 1]。\n\n<!-- limo-block:v1 type=\"evidence\" -->\n证据甲\n<!-- /limo-block -->\n\n<!-- limo-block:v1 type=\"evidence\" -->\n证据乙\n<!-- /limo-block -->\n",
+      "linearized": "论断 [文档 1]。\n\n[证据 1]\n\n[证据 2]\n\n## 证据附录\n\n**证据 1**（文档 1）\n\n证据甲\n\n**证据 2**\n\n证据乙\n"
+    },
+    {
+      "name": "代码围栏内的假标记 —— 零触碰，原样返回",
+      "md": "```md\n<!-- limo-block:v1 type=\"evidence\" -->\n假\n<!-- /limo-block -->\n```\n\n论断。\n",
+      "linearized": "```md\n<!-- limo-block:v1 type=\"evidence\" -->\n假\n<!-- /limo-block -->\n```\n\n论断。\n"
+    },
+    {
+      "name": "只有一个未闭合块 —— 什么都没改成，原样返回（开标记交给 strip_blocks 剥）",
+      "md": "论断。\n\n<!-- limo-block:v1 type=\"evidence\" -->\n未闭合的内容\n",
+      "linearized": "论断。\n\n<!-- limo-block:v1 type=\"evidence\" -->\n未闭合的内容\n"
+    },
+    {
+      "name": "未闭合块与真块共存 —— 真块编号，未闭合的内容降级为普通正文",
+      "md": "论断 [文档 2]。\n\n<!-- limo-block:v1 type=\"evidence\" -->\n真证据\n<!-- /limo-block -->\n\n<!-- limo-block:v1 type=\"evidence\" -->\n未闭合的内容\n",
+      "linearized": "论断 [文档 2]。\n\n[证据 1]\n\n未闭合的内容\n\n## 证据附录\n\n**证据 1**（文档 2）\n\n真证据\n"
+    },
+    {
+      "name": "空壳块与真块共存 —— 空壳不占号（否则附录里出现空条目、编号与内容错位）",
+      "md": "论断。\n\n<!-- limo-block:v1 type=\"evidence\" -->\n\n<!-- /limo-block -->\n\n<!-- limo-block:v1 type=\"evidence\" -->\n真证据\n<!-- /limo-block -->\n",
+      "linearized": "论断。\n\n\n[证据 1]\n\n## 证据附录\n\n**证据 1**\n\n真证据\n"
+    },
+    {
+      "name": "用户自己写了「## 证据附录」—— 改用「（续）」，内容不丢也不产生同名 H2",
+      "md": "## 证据附录\n\n用户自己写的。\n\n<!-- limo-block:v1 type=\"evidence\" -->\n证据\n<!-- /limo-block -->\n",
+      "linearized": "## 证据附录\n\n用户自己写的。\n\n[证据 1]\n\n## 证据附录（续）\n\n**证据 1**\n\n证据\n"
+    },
+    {
+      "name": "evidence 与 key-takeaway 共存 —— 只有证据被消解，其余块标记原样保留",
+      "md": "论断 [文档 4]。\n\n<!-- limo-block:v1 type=\"evidence\" -->\n样本：N=40\n<!-- /limo-block -->\n\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n重点\n<!-- /limo-block -->\n",
+      "linearized": "论断 [文档 4]。\n\n[证据 1]\n\n<!-- limo-block:v1 type=\"key-takeaway\" -->\n重点\n<!-- /limo-block -->\n\n## 证据附录\n\n**证据 1**（文档 4）\n\n样本：N=40\n"
+    }
+  ]
+}

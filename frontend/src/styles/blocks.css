@@ -438,3 +438,76 @@
 [data-marker-decor="off"] .md-block[data-block-type="image"] {
   text-align: inherit;
 }
+
+/* ── 证据块（evidence，2026-10-18）────────────────────────────────────────
+   多篇合成专用：正文里**紧跟它支撑的论断**，块内写方法 / 样本 / 范围 / 局限 / 反例
+   （逐字原话仍留正文，那是引用不是证据）。
+
+   它是产物侧**唯一有结构**的块（前端渲染成 `<details>`，见 `preview/MarkerContent`）
+   —— 折叠本身就是语义，而其余九种纯 CSS 的块没有可折叠的东西。
+   ⚠️ 导出侧没有 `<details>`：`linearize_evidence()` 把围栏换成 `[证据 N]` 并把内容
+   搬到文末「## 证据附录」（任何导出格式都没有交互，折叠内容会直接消失）。
+
+   ⚠️ 容器边框用 `--tk-border` 而不是 light 档（与 metric / table / code / image 同一
+   判据）：light 档在 warm 基调下离正文底只差 9 个灰阶，叠上 `--tk-elevated` 的底色后
+   等于没有容器（2026-10-11 实机修正）。
+
+   ⚠️ **折叠在 `decor=off` 下保留**：装饰开关的语义是「隐藏装饰」不是「隐藏功能」，
+   归零规则里**不得**出现 `display: none`（那会让依据彻底读不到）。 */
+.md-block[data-block-type="evidence"] {
+  margin: 16px 0;
+  border: 1px solid var(--tk-border);
+  border-radius: 8px;
+  background: var(--tk-elevated);
+}
+
+.md-evidence-summary {
+  padding: 8px 14px;
+  font-size: 0.85em;
+  color: var(--tk-dimmed);
+  cursor: pointer;
+  user-select: none;
+  /* 去掉默认三角：它在各浏览器里尺寸与基线不一致，而这一行是正文里的一枚小标签，
+     要跟着正文字号缩放。箭头改由 `::before` 画，方向随 `[open]` 切换。 */
+  list-style: none;
+}
+
+.md-evidence-summary::-webkit-details-marker {
+  display: none;
+}
+
+.md-evidence-summary::before {
+  content: '▸ ';
+  color: var(--tk-accent);
+}
+
+.md-block[data-block-type="evidence"][open] > .md-evidence-summary::before {
+  content: '▾ ';
+}
+
+.md-evidence-body {
+  padding: 10px 14px 12px;
+  /* 分隔细线用 light 档 —— 与 `timeline` 的竖连线同理：细线本就该淡。 */
+  border-top: 1px solid var(--tk-border-light);
+  font-size: 0.92em;
+}
+
+/* 关掉装饰：外壳全归零，**折叠与内容保留**。 */
+[data-marker-decor="off"] .md-block[data-block-type="evidence"] {
+  border: none;
+  border-radius: 0;
+  background: none;
+}
+
+[data-marker-decor="off"] .md-evidence-summary {
+  padding: 0;
+}
+
+[data-marker-decor="off"] .md-evidence-summary::before {
+  content: none;
+}
+
+[data-marker-decor="off"] .md-evidence-body {
+  padding: 0;
+  border-top: none;
+}

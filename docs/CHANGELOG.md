@@ -6,6 +6,104 @@
 
 ---
 
+## 2026-10-18 — 多篇合成：产物形态契约 + 证据折叠卡 + 导出线性化
+
+### 起因
+
+三个问题都是**结构性的**，不是措辞不够好：
+
+1. **读者意图只换措辞、不换组织单位**。骨架只有一套（`_build_synthesis_output`，六节固定），
+   意图只改 `<task>` 段一句「读者目的」。于是选「找争议」和选「理解主题」拿到的正文**结构
+   逐字相同** —— 「比较材料」本该以比较轴为骨架、「提炼行动建议」本该以决策与条件为骨架，
+   现在全塞进「## 读者问题」的 3–6 个 `###` 里。用户看不出自己所选的意义。
+2. **证据没有去处**。正文只有 `[文档 i]` 一种锚点，而方法 / 样本 / 范围 / 局限 / 反例这些
+   读者**需要**但**不想每段都读**的东西，模型只能二选一：揉进正文（打断阅读）或干脆不写
+   （丢掉依据）。后者更常见，也更危险 —— 产物读起来流畅，但结论无从检验。
+3. **导出无法承载折叠**。Markdown / 纯文本里没有 `<details>`，若证据块只做预览侧折叠，
+   导出就是无解的。
+
+**用户已定的产品决策**（实施未改动）：主题驱动的连续文章（不是逐篇摘要拼接）｜证据按需展开｜
+来源与论点的关联不能事后再补（编号由结构派生）｜导出统一降级、**Markdown 也一样**｜
+区分「原文引用」（逐字原话，留正文）与「证据」（可折叠）｜可追溯性放轻为兜底，
+硬指标是理解效率 / 结构连贯 / 信息完整 / 阅读负担。
+
+### 做什么
+
+| # | 改动 | 落点 |
+|---|---|---|
+| 1 | `OUTPUT_SHAPES` 五种形态（label / unit / description）+ `resolve_output_shape()` 唯一入口 | `generation/synthesis.py` |
+| 2 | `READER_INTENTS` 每项加 `shape`，新增「**梳理观点**」（`claims`，排在 `understand` 之后 ⇒ 前端默认项不变）；`custom` → `article` | 同上 |
+| 3 | `_SHAPE_SKELETONS` 五套骨架（article 的节标题与顺序**逐字保留**）+ `_SHAPE_TASK_BASE` 五条形态基串 | `generation/prompt.py` |
+| 4 | 每套骨架**各有降级出口**（材料不支持该形态时直说、不得硬造） | 同上 |
+| 5 | `_SYNTHESIS_UNIVERSAL_RULES` 四条（连续优先 / 分歧显式 / 结论可溯 / 完整性） | 同上 |
+| 6 | `_SYNTHESIS_EVIDENCE_FORMAT` 证据块规范（紧跟论断 / 块内 2–5 条 / **不写编号** / 块内不用 `##`/`###` / 只在正文主体放） | 同上 |
+| 7 | 共用尾 `_synthesis_tool_layer()` 去掉「读者问题」硬引用 → 「正文主体」；文风第 9 条同步中性化 | 同上 |
+| 8 | `SYNTHESIS_BLOCK_TYPES = {"evidence"}` 第四类集合（**不进** `ARTIFACT_BLOCK_TYPES`），`KNOWN_BLOCK_TYPES` 取并集 | `core/artifact_blocks.py` |
+| 9 | `linearize_evidence(md)`：原位 `[证据 N]` + 文末 `## 证据附录`；幂等（无围栏原样返回入参） | 同上 |
+| 10 | 导出四个入口接线性化：`GET /export/{id}` / `_build_export_zip` / `_collect_doc_products` / PDF（走 HTML） | `routers/export.py` |
+| 11 | capabilities 下发 `shape` / `shapeLabel` / `shapeDescription` | `routers/capabilities.py` |
+| 12 | 前端 `SYNTHESIS_BLOCK_TYPES` + `linearizeEvidence()`（与后端共享 fixture） | `lib/markdown-scan.ts` / `markdown-markers.ts` |
+| 13 | `EvidenceBlock`：预览渲染成 `<details><summary>依据 · 文档 2</summary>` 折叠卡 | `preview/MarkerContent.tsx` |
+| 14 | `.md-evidence` 样式 + `[data-marker-decor="off"]` 归零规则（**只去装饰，折叠保留**） | `styles/blocks.css` |
+| 15 | MD 下载与**复制**：`stripMarkers(linearizeEvidence(...))`（顺序不可反） | `ExportMenu.tsx` / `DocLibrary.tsx` |
+| 16 | 合成对话框：意图组下方**只读**形态提示（含「自定义 → 综合文章」的说明） | `doc-library/DocLibrary.tsx` |
+| 17 | `PROMPT_VERSION` `"15"` → `"16"` | `generation/prompts/__init__.py` |
+| 18 | 测试：`test_prompt.py` 新增 7.10 节（契约自洽 / 五套互斥 / 共用尾各一次 / article 顺序 / **两条负向对照**）；`test_export_blocks.py` 扩写；`test_block_prompt.py` 的合成判据改为集合驱动 | 两侧 |
+
+### 为什么这么设计
+
+- **形态由代码与 prompt 契约确定，不靠模型自由发挥**：`READER_INTENTS[*].shape` →
+  `_SHAPE_SKELETONS` 是**代码侧映射**，用户看不到形态选择器（两个旋钮必然出现「意图说理解、
+  形态选比较」的错配）。⚠️ 入口严、读回宽：请求入口对非法意图**报错**，读历史 meta 时对
+  `None` / 未知 key **回退 `article`**（旧文档没有该字段，读了不能崩）。
+- **降级出口是每套骨架的必需部件**：没有它，用户选「找争议」而材料高度一致时，模型会
+  **硬造对立** —— 这是本功能最容易实机翻车的一处，且产物上看不出异常。
+- **编号由结构派生**：模型不写 `[证据 N]`，编号按围栏出现顺序在代码侧生成。「生成完再补
+  引用」与「保留来源与论点的关联」是两回事，前者会漂移（材料有增删就对不上）。
+- **导出统一线性化、含 Markdown**：「原位 `[证据 N]` + 文末附录」在纯文本里也能读到依据，
+  而预览保持折叠（连续阅读优先）。这是本轮**唯一**允许「预览与导出不同」的维度，矩阵写在
+  [export-pipeline.md](export-pipeline.md) §1 与本文末。
+- **证据块不进 `get_markdown_block_format()`**：那一份是 `build_notes_prompt` **无条件**注入给
+  所有 notes 的（九种产物侧块 + `card` 节修饰符），混进去等于单篇笔记也开始学证据块。
+  归属用集合表达（三集合不相交），有守卫钉住。
+- **刻意不新增用户开关**（证据块 / 工具层 / 形态选择器 / 篇幅档位）：证据「按需自动出现」
+  才是它存在的理由，开关化退回「模型不判断、全靠用户猜」；篇幅档位与文风第 9 条冲突。
+
+### 修复的既有缺陷
+
+- **「复制」从未剥离协议标记**：`DocLibrary.tsx` 的 `copyMarkdown` 直接复制磁盘原文，用户
+  粘出去的是一段带 `<!-- limo-block:v1 … -->` 的文本。本轮接上
+  `stripMarkers(linearizeEvidence(raw))`，顺手修掉。⚠️ 顺序不可反 —— 反了围栏已被剥掉、
+  附录永远不生成，而两条链都「跑成功了」。
+- **`test_prompt.py` 的旧判据用裸子串定位节**：正文里**合法提及**节名（如骨架里那句
+  「同一批维度在文末『## 各篇速查』里逐条成节」）会让 `.index()` / `count()` 命中早期提及，
+  造成误红。本轮新增 `_heading_pos()` 用「独立成行」正则 —— 这类误红容易被误读为「实现坏了」。
+
+### 影响范围
+
+- **只影响多篇合成**（`build_synthesis_prompt` 与合成对话框）；单篇笔记 / 整理版 / Excel
+  数据摘要零变化（`test_block_prompt.py` 有守卫）。
+- 导出：四种格式的证据块处理变了（线性化），**无 evidence 围栏的产物逐字节零回归**。
+- `PROMPT_VERSION` `"16"`；不碰 `VERSION`；无数据格式迁移（历史产物无证据块，读取路径
+  对未知/缺失字段一律宽容）。
+- 门禁：`bash scripts/check-all backend`（pytest 全绿）/ `frontend`（tsc + lint + vitest）/
+  `docs` 三层全绿。
+
+### 已知偏差（刻意不做）
+
+- **四套新形态尚无实机样本**：本轮只保证「契约正确、结构在场、降级出口有」，观感要靠真实
+  重跑（选「比较材料」「梳理观点」各合成一次）后再调。
+- **`claims` 与 `controversy` 没有共用生成器**：计划原定 `_build_positions_skeleton(focus, …)`
+  参数化，实施时改为各写一份完整骨架 —— 两者分组单位（按观点 vs 按冲突）、收尾节（关系 vs
+  假分歧）、每项步骤都不同，参数化后占位符只剩一句话，两份半成品比两份完整文本更难维护。
+  理由写在 `_synthesis_claims_body` 的 docstring 里。
+- **预览不编号**（导出才编）：`CardSections` 对每节各调一次 `MarkerContent`，组件内部按局部
+  顺序编号会跨节重号；空间上紧贴论断，关联足够。
+- **PDF 不能折叠**：走 HTML 端点，拿到的是线性化版本。已知代价，导出菜单与文档写明。
+- **证据块不做机械校验**：「没有证据块」不是失败（三种场景写进 prompt，由模型判断）。
+
+---
+
 ## 2026-10-18 — 卡片体系形态整合 + 格式选项自报块类型 + 判据污染修复
 
 ### 起因
@@ -5907,7 +6005,7 @@ app/services/chart_layout/
 
 ## 2026-08-25 — 视频直传模型 阶段 A（Qwen 打通，DashScope SDK 原生通道）
 
-> 主流模型原生支持视频输入，服务端抽帧比本地 ffmpeg 截帧更稳定（自动选帧），省截帧调参/拼图/质量依赖。方案 [pi-docs/视频直传模型方案.md](pi-docs/视频直传模型方案.md) 已定稿。本地视频 >7MB 无法走 OpenAI 兼容（base64 不实用），必须走 DashScope SDK `MultiModalConversation` 原生通道（file:// ≤100MB）。
+> 主流模型原生支持视频输入，服务端抽帧比本地 ffmpeg 截帧更稳定（自动选帧），省截帧调参/拼图/质量依赖。方案 `pi-docs/视频直传模型方案.md` 已定稿（该目录已于 2026-10-18 随一次性文档清理删除）。本地视频 >7MB 无法走 OpenAI 兼容（base64 不实用），必须走 DashScope SDK `MultiModalConversation` 原生通道（file:// ≤100MB）。
 
 ### 实现（增量，不替代）
 - **视频直传 = 独立「视频画面理解」预处理**，不混入生成调用：视频(≤100MB) → SDK 视频理解 → 描述文本注入 `clean_text` → 生成调用照常（流式保留）

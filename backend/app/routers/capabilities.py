@@ -19,6 +19,7 @@ from app.generation.synthesis import (
     CONTENT_TYPES,
     DIMENSION_PRESET_LABELS,
     DIMENSION_PRESETS,
+    OUTPUT_SHAPES,
     READER_INTENTS,
 )
 from app.generation.product_registry import to_capability_list
@@ -75,6 +76,12 @@ def _reader_intents() -> list[dict]:
     `defaultContentType` 为 `None` = **不预设体裁**：「理解主题」「比较材料」是读者
     的动作，不指示材料是什么体裁。前端据此留空高级区，而不是替用户猜一个——
     静默预填 paper 对视频转写稿毫无意义，而用户看不出为什么。
+
+    `shape` / `shapeLabel` / `shapeDescription`（2026-10-18）：产物形态**由意图派生**
+    （不是独立旋钮，见 `synthesis.OUTPUT_SHAPES` 的说明）。前端只拿它在意图组下方
+    显示一行只读提示「产物形态：比较简报 · 正文以比较轴组织」，**不据此改任何请求
+    参数** —— 形态在生成侧由 meta 里的意图 key 重新解析，前端多传一份就是第二真相源。
+    ⚠️ 文案只在 `OUTPUT_SHAPES` 写一份，这里原样转发，不在本文件复述。
     """
     return [
         {
@@ -82,6 +89,9 @@ def _reader_intents() -> list[dict]:
             "label": v["label"],
             "purpose": v["purpose"],
             "defaultContentType": v["default_content_type"],
+            "shape": v["shape"],
+            "shapeLabel": OUTPUT_SHAPES[v["shape"]]["label"],
+            "shapeDescription": OUTPUT_SHAPES[v["shape"]]["description"],
         }
         for k, v in READER_INTENTS.items()
     ]

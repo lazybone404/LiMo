@@ -1,5 +1,9 @@
 import { useMemo } from 'react'
-import { parseMarkers } from '../../lib/markdown-markers'
+import {
+  evidenceSourceNote,
+  nearestDocAnchors,
+  parseMarkers,
+} from '../../lib/markdown-markers'
 import { MarkdownPreview } from './MarkdownPreview'
 
 /**
@@ -43,6 +47,33 @@ export function MarkerContent({ content, meta, sourceUrl, isVideo }: MarkerConte
         if (seg.content.trim() === '') return null
         if (seg.kind === 'text') {
           return <MarkdownPreview key={i} content={seg.content} meta={meta} sourceUrl={sourceUrl} isVideo={isVideo} />
+        }
+        if (seg.type === 'evidence') {
+          // ── 证据块（2026-10-18，多篇合成专用）：**按需展开**的折叠卡 ──
+          // 用户拍板：正文流畅优先，依据可展开。它是唯一一个在预览里有**结构**
+          // （`<details>`）而不只是 CSS 外壳的产物侧块 —— 折叠本身就是语义。
+          //
+          // ⚠️ **summary 不显示序号**：`CardSections` 对每节各调一次本组件，组件内部
+          // 按局部顺序编号会跨节重号。编号只在导出侧由 `linearizeEvidence` 全局生成。
+          // ⚠️ **`decor=off`（内容块装饰关）只去边框/箭头，折叠保留** —— 折叠是产品
+          // 决策不是装饰（`blocks.css` 的归零规则里不得出现 `display: none`）。
+          // ⚠️ 块内仍跑**现有的** `MarkdownPreview`（不新写渲染层），故表格/代码/公式
+          // 与正文逐字一致。
+          const own = evidenceSourceNote(seg.content)
+          const prev = segments[i - 1]
+          const note = own || (prev && prev.kind === 'text'
+            ? nearestDocAnchors(prev.content.split('\n'))
+            : '')
+          return (
+            <details key={i} className="md-block md-evidence" data-block-type="evidence">
+              <summary className="md-evidence-summary">
+                依据{note ? ` · ${note}` : ''}
+              </summary>
+              <div className="md-evidence-body">
+                <MarkdownPreview content={seg.content} meta={meta} sourceUrl={sourceUrl} isVideo={isVideo} />
+              </div>
+            </details>
+          )
         }
         return (
           // ⚠️ `data-block-type` 原样透传解析出来的类型（**包括白名单外的**）——

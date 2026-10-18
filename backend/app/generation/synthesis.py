@@ -140,6 +140,42 @@ assert set(CONTENT_TYPES) == set(CONTENT_TYPE_LABELS), (
     f"体裁与文案不配对：{set(CONTENT_TYPES) ^ set(CONTENT_TYPE_LABELS)}"
 )
 
+# ── 产物形态（意图决定「完成什么」，形态决定「正文以什么为组织单位」）──
+#
+# ⚠️ **形态不是用户可选项**：它由 `READER_INTENTS[*]["shape"]` 映射得来。若把它做成
+# 第二个下拉，必然出现「意图说理解、形态选比较」这种自相矛盾的组合，而产物上完全
+# 看不出哪个赢了。
+#
+# ⚠️ 文案只在这里写一份：`prompt.py` 的骨架按 key 取 `unit`，capabilities 直接转发
+# `label` / `description`。任何一侧另存一份 = 改了一处、另一处静默陈旧。
+OUTPUT_SHAPES: dict[str, dict] = {
+    "article": {
+        "label": "综合文章",
+        "unit": "解释主线",
+        "description": "以读者最关心的问题为主线组织，正文是一篇能连续读下来的文章。",
+    },
+    "claims": {
+        "label": "观点综合",
+        "unit": "观点及其关系",
+        "description": "按材料表达的观点归并组织，说明每个观点的依据以及彼此是什么关系。",
+    },
+    "comparison": {
+        "label": "比较简报",
+        "unit": "比较轴与差异",
+        "description": "按比较轴逐个对照，说明差异及其来源，而不是逐篇平铺。",
+    },
+    "controversy": {
+        "label": "争议分析",
+        "unit": "冲突及其成立条件",
+        "description": "围绕真正互斥的冲突展开，说明各方依据与这些分歧在什么条件下成立。",
+    },
+    "decision": {
+        "label": "决策与行动简报",
+        "unit": "决策、行动及其条件",
+        "description": "给出可执行的结论与下一步动作，并交代前提、风险与失效条件。",
+    },
+}
+
 # ── 读者意图（设计 §7.8.3：落进 `<task>` 的「读者目的」）──
 #
 # 用户在合成对话框里选一个意图：`purpose` 文本进 `task` 段（决定文章围绕读者的什么
@@ -156,28 +192,51 @@ READER_INTENTS: dict[str, dict] = {
         "label": "理解主题",
         "purpose": "读完能准确复述这批材料的核心议题，以及各自的实际立场与依据。",
         "default_content_type": None,
+        "shape": "article",
+    },
+    # ⚠️ 位置刻意排在 `understand` 之后：前端用 `readerIntents[0]` 预填，默认值
+    # 必须仍是「理解主题」。插到最前面 = 后端换了默认、前端却在静默预填另一项。
+    "claims": {
+        "label": "梳理观点",
+        "purpose": "读完能说清各篇主张了什么、这些主张彼此是什么关系，以及各自依据与成立条件。",
+        "default_content_type": None,
+        "shape": "claims",
     },
     "compare": {
         "label": "比较材料",
         "purpose": "读完能说清各篇在同一组维度上的异同与分歧点，以及这些差异各自依据什么。",
         "default_content_type": None,
+        "shape": "comparison",
     },
     "controversy": {
         "label": "找争议",
         "purpose": "读完能指出材料之间真正冲突的地方、各自依据，以及这些分歧在什么条件下成立。",
         "default_content_type": "media",
+        "shape": "controversy",
     },
     "action": {
         "label": "提炼行动建议",
         "purpose": "读完能带走可以落地的判断与下一步动作，并知道每个判断的适用条件与风险。",
         "default_content_type": "product",
+        "shape": "decision",
     },
     "custom": {
         "label": "自定义",
         "purpose": "",          # 由用户填写，见 `reader_intent_text`
         "default_content_type": None,
+        "shape": "article",     # 自由文本意图给不出形态依据，按最通用的文章骨架
     },
 }
+
+# 成对不变量（与 `CONTENT_TYPES` 那组断言同款）：形态表与意图映射必须双向覆盖。
+# 漏一个 `shape` 会在 prompt 组装时 KeyError；多一个没人用的形态则是死配置
+# （看起来支持五种，实际只有四种可达），两种都不会在别处报错。
+assert all(v["shape"] in OUTPUT_SHAPES for v in READER_INTENTS.values()), (
+    f"意图引用了不存在的形态：{set(v['shape'] for v in READER_INTENTS.values()) - set(OUTPUT_SHAPES)}"
+)
+assert {v["shape"] for v in READER_INTENTS.values()} == set(OUTPUT_SHAPES), (
+    f"有形态没有任何意图可达：{set(OUTPUT_SHAPES) - set(v['shape'] for v in READER_INTENTS.values())}"
+)
 
 # 未选意图时的默认（历史请求 / 旧前端）。`understand` 的 purpose 最中性。
 DEFAULT_READER_INTENT = "understand"
@@ -1080,6 +1139,23 @@ def normalize_reader_intent(value: str | None) -> str:
             recoverable=True,
         )
     return key
+
+
+def resolve_output_shape(intent: str | None) -> str:
+    """意图 key → 产物形态 key。**唯一入口**。
+
+    ⚠️ 与 `normalize_reader_intent` 的严格度**刻意不同**，两者不是同一件事：
+
+    - 那个在**请求入口**校验，非法值显式报错——用户选了「找争议」却按「理解主题」
+      生成时，产物上看不出任何异常，只能靠报错拦住。
+    - 这个服务于**读回历史**：旧文档的 meta 里可能根本没有 `reader_intent`
+      （或来自更早版本的键）。读历史崩掉比形态回退严重得多，故缺失 / 未知一律
+      回退 `article`（最通用的骨架）。
+
+    入口严、读回宽——判据是「这个值错了会不会改变**当前这次请求**的产物性质」。
+    """
+    entry = READER_INTENTS.get((intent or "").strip())
+    return entry["shape"] if entry else "article"
 
 
 def clean_content_types(values: list[str] | None) -> list[str]:

@@ -5,7 +5,7 @@ import { getTypeMeta } from '../gen-panel/constants'
 import { TabRegistry } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
 import { downloadText, downloadFromUrl, sanitizeExportName } from '../../lib/download'
-import { stripMarkers } from '../../lib/markdown-markers'
+import { linearizeEvidence, stripMarkers } from '../../lib/markdown-markers'
 import { serializeCardVars } from '../../lib/card-prefs'
 import { getSavedIntensity, textureOpacity } from '../../lib/texture'
 import { exportPdfFromUrl } from '../../lib/print'
@@ -222,12 +222,17 @@ export function ExportMenu() {
       return
     }
 
-    // ⚠️ **剥掉语义标记行**再落盘（用户拍板：导出的文件应当是干净正文）：`.md` 里
-    // 留一行 `<!-- limo-block:v1 … -->` 只会让下游工具和读者困惑。剥的是**标记行**，
-    // 块内文字一个字不少。后端三条路径（html/word/pdf）走**转换**而非剥离，
-    // 所以这个开关**只在这里**——它们是两回事。后端 md 分支同样是剥（`_strip_blocks`），
-    // 故上面那条路径与这里在「标记怎么办」上一致。
-    const result = downloadText(stripMarkers(exportContent), makeFileName('md'), 'text/markdown')
+    // ⚠️ **先线性化证据块、再剥掉其余标记行**（用户拍板：导出的文件应当是干净正文）：
+    // `.md` 里留一行 `<!-- limo-block:v1 … -->` 只会让下游工具和读者困惑。剥的是
+    // **标记行**，块内文字一个字不少。
+    // ⚠️ **顺序不能反**：`linearizeEvidence` 靠围栏识别证据块，先剥就永远生成不出
+    // 文末的「## 证据附录」（而两条链都「跑成功了」，零报错）。
+    // 后端三条路径（html/word/pdf）走**转换**而非剥离，md 分支同样是
+    // `linearize_evidence` + `strip_blocks`（`export.py`），故上一条走后端的路径与
+    // 这里在「标记怎么办」上一致。
+    const result = downloadText(
+      stripMarkers(linearizeEvidence(exportContent)), makeFileName('md'), 'text/markdown',
+    )
     if (result.ok) {
       addToast('Markdown 已下载，请查看下载文件夹')
     } else {
@@ -296,8 +301,9 @@ export function ExportMenu() {
   const handleCopy = async () => {
     if (!exportContent) return
     try {
-      // 与 md 下载同源：复制的是「用户看到的内容」，标记行在预览里本就不显示
-      await navigator.clipboard.writeText(stripMarkers(exportContent))
+      // 与 md 下载同源：复制的是「用户看到的内容」，标记行在预览里本就不显示。
+      // ⚠️ 证据块同样线性化 —— 剪贴板里没有折叠，照搬围栏会让依据整段消失。
+      await navigator.clipboard.writeText(stripMarkers(linearizeEvidence(exportContent)))
       addToast('已复制到剪贴板')
     } catch {
       addToast('复制失败，请手动复制', 'error')

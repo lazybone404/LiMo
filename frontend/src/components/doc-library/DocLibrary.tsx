@@ -22,6 +22,7 @@ import {
   getMarkdown,
 } from '../../api/client'
 import { cancelTask } from '../../api/taskManager'
+import { linearizeEvidence, stripMarkers } from '../../lib/markdown-markers'
 import { ContextMenu } from '../ui/ContextMenu'
 import {
   Pencil, Trash2, BookOpen, MessageSquare, RefreshCw, Tag, Clipboard, FolderInput, Layers,
@@ -941,9 +942,16 @@ export function DocLibrary() {
   const copyMarkdown = useCallback(async (docId: string) => {
     try {
       const md = await getMarkdown(docId, 'notes')
-      const content = md?.content?.trim()
-      if (!content) { addToast('该文档暂无笔记内容', 'info'); return }
-      await navigator.clipboard.writeText(content)
+      const content = md?.content
+      if (!content?.trim()) { addToast('该文档暂无笔记内容', 'info'); return }
+      // ⚠️ **复制也是「导出」**（正文离开应用），与 md 下载同一条判据：
+      // ① 证据块先线性化（原位 `[证据 N]` + 文末附录）—— 剪贴板里没有折叠；
+      // ② 再剥掉其余标记行。**顺序不能反**（反过来围栏已剥、附录不生成）。
+      // ⚠️ 2026-10-18 前这里**连剥标记都没做** —— 复制出去的是带
+      // `<!-- limo-block:v1 … -->` 的磁盘原文（既有缺陷，本轮顺手修）。
+      await navigator.clipboard.writeText(
+        stripMarkers(linearizeEvidence(content)).trim(),
+      )
       addToast('已复制到剪贴板')
     } catch (err) {
       addToast(getErrorMessage(err), 'error')
@@ -1362,6 +1370,17 @@ export function DocLibrary() {
                       {activeIntent?.purpose && (
                         <p data-synth-intent-purpose className="text-[10px] text-disabled mt-1 mb-3 leading-relaxed">
                           {activeIntent.purpose}
+                        </p>
+                      )}
+                      {/* 产物形态提示（2026-10-18）—— **只读**，不给用户选。
+                          形态由意图派生（`synthesis.OUTPUT_SHAPES`），两个旋钮必然
+                          出现「意图说理解、形态选比较」这种自相矛盾的组合。
+                          文案来自 capabilities 的 `shapeLabel` / `shapeDescription`，
+                          前端不硬编码（后端加了形态这里自动跟上）。 */}
+                      {activeIntent?.shapeLabel && (
+                        <p data-synth-shape className="text-[10px] text-disabled -mt-2 mb-3 leading-relaxed">
+                          产物形态：<span className="text-dimmed">{activeIntent.shapeLabel}</span>
+                          {activeIntent.shapeDescription ? ` · ${activeIntent.shapeDescription}` : ''}
                         </p>
                       )}
                       {synthIntent === 'custom' && (

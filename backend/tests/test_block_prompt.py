@@ -8,8 +8,10 @@
 
   A. 顺手把它塞进 `_ALL_FORMAT_FNS` / `AVAILABLE_OPTIONS` → 变成「用户勾了才有」，
      功能等于没做（而且界面上看不出少了什么）。
-  B. 漏进 composite —— 合成产物有自己的骨架（读者问题驱动五节 + 各篇速查），
-     多一条「写出重点块」的指令会与那个骨架正面打架。
+  B. 漏进 composite —— 合成产物有自己的骨架（五形态之一 + 各篇速查），
+     多一条「写出重点块」的指令会与那个骨架正面打架。⚠️ 2026-10-18 起合成
+     **有自己的** `evidence` 块（`SYNTHESIS_BLOCK_TYPES`，与产物侧集合不相交），
+     故这条判据是「产物侧九种**不**出现」，而不是「合成里不许有 limo-block」。
   C. 漏进 polished —— 「忠实整理」被塞进模型主观的「这是重点」判断，
      而整理版的契约正是「不改写、不评价」。
   D. 漏进 Excel 数据摘要 —— 结构化摘要里出现语义标记毫无意义。
@@ -61,8 +63,17 @@ def test_整理版不注入():
 
 def test_合成不注入():
     """对照 B：composite 在 `build_notes_prompt` 顶部就被拦下走独立骨架了。
-    标记规范若加在那拦截**之前**，合成产物会同时收到两套互相矛盾的写法要求。"""
-    assert 'limo-block' not in build_notes_prompt('## 来源文档\n材料正文', '标题', 'plain', 'composite')
+    产物侧标记规范若加在那拦截**之前**，合成产物会同时收到两套互相矛盾的写法要求。
+
+    ⚠️ 判据是「产物侧九种**类型**一个都不出现」，**不是**「不含 `limo-block`」
+    （2026-10-18 起合成有自己的 `evidence` 块，裸串判定会把正确的证据规范
+    报成越界）。两个判据的区别正是本文件要守的边界：**协议共享、类型不共享**。
+    """
+    p = build_notes_prompt('## 来源文档\n材料正文', '标题', 'plain', 'composite')
+    for t in ARTIFACT_BLOCK_TYPES:
+        assert f'type="{t}"' not in p, f'合成产物收到了产物侧的 {t} 块规范'
+    # 整段规范也不该被拼进来（`type=` 判定抓的是示例；这份抓的是条款正文）
+    assert get_markdown_block_format() not in p
 
 
 def test_Excel_数据摘要不注入():

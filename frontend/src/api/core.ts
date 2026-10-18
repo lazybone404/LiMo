@@ -146,6 +146,19 @@ export interface ReaderIntentOption {
    * （静默预填「论文」对一叠视频转写稿毫无意义，而用户看不出为什么）。
    */
   defaultContentType: string | null
+  /**
+   * 该意图派生的**产物形态** key（`article` / `claims` / `comparison` /
+   * `controversy` / `decision`）。
+   *
+   * ⚠️ **只读展示用**：形态由意图在**生成侧**重新解析（meta 里的意图 key 是唯一真相源），
+   * 前端拿到它只为了在意图组下方显示一行提示，**不据此传任何请求参数** —— 多传一份
+   * 就是第二真相源（模式 #54）。
+   */
+  shape: string
+  /** 形态的中文名（「比较简报」），与 `shapeDescription` 一起作提示 */
+  shapeLabel: string
+  /** 形态的一句话说明（「按比较轴逐个对照…」） */
+  shapeDescription: string
 }
 
 export interface Capabilities {

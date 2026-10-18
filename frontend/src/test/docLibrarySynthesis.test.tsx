@@ -395,13 +395,32 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
 })
 
 describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
-  /** 五项意图 + 四项体裁，形状与后端 `READER_INTENTS` / `CONTENT_TYPES` 一致 */
+  /** 六项意图 + 两项体裁，形状与后端 `READER_INTENTS` / `CONTENT_TYPES` 一致。
+   *
+   *  ⚠️ 顺序与后端**逐项相同**（前端默认取 `[0]`，排错顺序等于换掉默认意图）。
+   *  `shape*` 三字段是 2026-10-18 起 capabilities 下发的**只读展示**（形态由意图派生，
+   *  前端不据此传参）—— 少写它们时对话框不报错、只是提示那行不渲染。
+   */
   const withIntents = (): Capabilities => ({
     llmModels: {},
     readerIntents: [
-      { key: 'understand', label: '理解主题', purpose: '读完能准确复述核心议题。', defaultContentType: null },
-      { key: 'controversy', label: '找争议', purpose: '读完能指出真正冲突的地方。', defaultContentType: 'media' },
-      { key: 'custom', label: '自定义', purpose: '', defaultContentType: null },
+      { key: 'understand', label: '理解主题', purpose: '读完能准确复述核心议题。',
+        defaultContentType: null, shape: 'article', shapeLabel: '综合文章',
+        shapeDescription: '正文以解释主线组织' },
+      { key: 'claims', label: '梳理观点', purpose: '读完能说清各篇主张什么。',
+        defaultContentType: null, shape: 'claims', shapeLabel: '观点综合',
+        shapeDescription: '正文以观点及其关系组织' },
+      { key: 'compare', label: '比较材料', purpose: '读完能说清关键差异。',
+        defaultContentType: null, shape: 'comparison', shapeLabel: '比较简报',
+        shapeDescription: '正文以比较轴组织' },
+      { key: 'controversy', label: '找争议', purpose: '读完能指出真正冲突的地方。',
+        defaultContentType: 'media', shape: 'controversy', shapeLabel: '争议分析',
+        shapeDescription: '正文以冲突及成立条件组织' },
+      { key: 'action', label: '提炼行动建议', purpose: '读完知道该做什么。',
+        defaultContentType: null, shape: 'decision', shapeLabel: '决策与行动简报',
+        shapeDescription: '正文以结论、依据、行动组织' },
+      { key: 'custom', label: '自定义', purpose: '', defaultContentType: null,
+        shape: 'article', shapeLabel: '综合文章', shapeDescription: '正文以解释主线组织' },
     ],
     contentTypes: [
       { key: 'paper', label: '论文' },
@@ -416,11 +435,39 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     fireEvent.click(synthBtn(container))
 
     const radios = [...allInDialog('[data-synth-intent]')] as HTMLInputElement[]
-    // ⚠️ 对照：前端硬编码五档意图 → capabilities 换了标签它不变 → 红
-    expect(radios.map(r => r.parentElement!.textContent)).toEqual(['理解主题', '找争议', '自定义'])
+    // ⚠️ 对照：前端硬编码意图列表 → capabilities 换了标签它不变 → 红
+    expect(radios.map(r => r.parentElement!.textContent)).toEqual([
+      '理解主题', '梳理观点', '比较材料', '找争议', '提炼行动建议', '自定义',
+    ])
+    // 默认取 `[0]` —— 与后端把 `general` 排在字典第一位是**同一条纪律**（排错顺序
+    // 等于悄悄换掉默认意图，且零报错）
     expect(radios[0].checked).toBe(true)
     expect(inDialog('[data-synth-intent-purpose]')!.textContent)
       .toContain('准确复述')
+  })
+
+  it('形态提示随意图变化（选「梳理观点」→ 观点综合），且**不参与请求**', async () => {
+    // 形态由**代码与 prompt 契约**确定、不由用户选（两个旋钮必然出现「意图说理解、
+    // 形态选比较」这种自相矛盾的组合）。故它只读展示，body 里不该多出 shape 字段。
+    useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+
+    // 默认意图的形态：理解主题 → 综合文章
+    expect(inDialog('[data-synth-shape]')!.textContent).toContain('综合文章')
+
+    fireEvent.click(inDialog('[data-synth-intent="claims"]')!)
+    const hint = inDialog('[data-synth-shape]')!
+    expect(hint.textContent).toContain('观点综合')
+    expect(hint.textContent).toContain('观点及其关系')
+
+    fireEvent.click(inDialog('[data-confirm-synth]')!)
+    await vi.waitFor(() => expect(streamCall()).toBeTruthy())
+    const body = JSON.parse(String(streamCall()!.init.body))
+    expect(body.reader_intent).toBe('claims')
+    expect(body).not.toHaveProperty('shape')
+    expect(body).not.toHaveProperty('output_shape')
   })
 
   it('切意图 → body 带出该 key；选「自定义」才出现文本框并带出文本', async () => {
