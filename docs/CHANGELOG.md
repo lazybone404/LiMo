@@ -6,6 +6,119 @@
 
 ---
 
+## 2026-10-18 — 修复：表格卡片被压成「很小的一行」，关掉装饰后整块消失
+
+> **两个现象，一个根因。** 第二个形态是用户当天追加报告的：「之前被压缩的那个表格，
+> 关掉装饰之后不见了」。
+
+**现象**：笔记里被 `limo-block` `table` 围栏包住的表格，预览时高度只剩几条行高，
+剩余部分要鼠标在卡片内部滚动才能看到（用户原话：「显示成了很小的一行，必须得翻动
+用鼠标滚动内部卡片，不会全部显示」）。内容没丢、零报错。
+
+**根因**：2026-10-17 给 `.md-block[data-block-type="table"]` 加的 `overflow-x: auto`
+把 `overflow-y` 一并算成了 `auto`，而**预览区的内容容器是 `flex flex-col
+overflow-y-scroll`**（`PreviewArea` 的 `.preview-content`），表格块是它的 flex item：
+
+1. flex item 默认 `flex-shrink: 1`；
+2. 没有 overflow 的 item 靠 `min-height: auto`（= 内容高度）挡住收缩；
+3. `overflow` 非 visible 的 item 自动最小尺寸按 **0** 算 ⇒ 可被压到任意小，
+   溢出内容进自己的滚动条。
+
+实测（无头 Chrome，600px 高容器 + 20 行表格）：块高 **246px** / 内容 **834px**；
+加 `flex-shrink: 0` 后 **834px**，纵向滚动条消失。
+
+**修法**：`blocks.css` 那条规则里补 `flex-shrink: 0`，作为 `overflow-x` 的必要配套。
+只对 `table` 块成立 —— `code` / `image` 块没有容器级 overflow，最小高度仍是内容
+高度；导出侧是普通块流，该属性无副作用。
+
+**第二形态：关装饰 → 块高恰好 0**（2026-10-18 追加定位）：`[data-marker-decor="off"]`
+的归零规则把 `padding` 设为 0、`border` 设为 none。未修复时，被 flex 压缩的块原本还剩
+`padding: 12px 16px` + 1px 边撑出的 **26px** 可视高度（即「很小的一行」）；关掉装饰后这
+26px 也归零 ⇒ **块高 0，整块从页面上消失**，而内容完整躺在自己的 `scrollHeight` 里。
+同一容器（600px / 24 行正文 + 5 行表格）下的四组对照实测：
+
+| CSS | 装饰 | flex-shrink | 块高 | 表格内容高 |
+|---|---|---|---|---|
+| 修复前 | 开 | 1 | **26px** | 242px |
+| 修复前 | 关 | 1 | **0px** | 242px |
+| 修复后 | 开 | 0 | 268px | 242px |
+| 修复后 | 关 | 0 | 242px | 242px |
+
+⚠️ 所以「关装饰吞卡片」**不是装饰开关的问题**，缺的就是 `flex-shrink: 0` 这一个属性
+（跟「关掉装饰后内容降级」的既定语义无关）。用户当时跑的是不含修复的构建（`dist/` 里
+那条规则只有 `overflow-x: auto`）。
+
+**守卫**：`artifactCardShape.test.ts` 加三条，均做过对照实验（改坏 → 红 → 还原）：
+① table 专项 `flex-shrink: 0`；② **通用版** —— 任何 `.md-block` 本体上的非 visible
+`overflow` 都必须配 `flex-shrink: 0`（防止将来给别的块加 overflow 时漏配套）；
+③ 关装饰规则里**不得**出现 `display: none` / `visibility: hidden` / `opacity: 0` /
+`height: 0`（开关语义是「隐藏装饰」，不是「隐藏内容」）。
+
+## 2026-10-18 — 智能分类：细分程度交给用户选，默认只允许一级子文件夹
+
+上一批把「已有更深结构不往回退」修好之后，暴露出一个更基本的问题：**细分这件事
+用户全程没有发言权**——新建到几层由代码写死 3 层，模型想分多深就分多深。用户拍板
+三档由用户在配置阶段选：
+
+| 档位 | 语义 |
+|---|---|
+| 1 `不建子文件夹` | 只归类到主文件夹，名字里不出现 `/` |
+| 2 `允许一级` | 主文件夹 + 一级子文件夹 —— **默认** |
+| 3 `允许两级` | 主文件夹 + 两级子文件夹（绝对上限） |
+
+⚠️ **默认档从 3 层改为 2 层，这是行为变化，零回归不成立**：同一批文档、同一句建议，
+升级后会比升级前少建一层。用户明确要求了这个默认值。
+
+**新增的东西**：
+- `classifier.CLASSIFY_MAX_DEPTH_DEFAULT = 2` / `CLASSIFY_MAX_DEPTH_LIMIT =
+  folder_tree.MAX_PATH_SEGMENTS`（3，不另写一个字面量——它就是 `ensure-path` 的拒绝线）
+- `clamp_max_depth()`：非法值静默夹紧到 `[1, 3]`——错的是**量**不是性质，判据同
+  `notesChars`（对比 `folder_mode` / `tag_mode` 错的是性质 → 显式报 `CLASSIFY_BAD_OPTION`）
+- `_depth_rule(max_depth)`：prompt 规则第 4 条的**前半句**按档位插值（三档措辞各不相同；
+  1 档明确要求「名字里不要用 `/`」）
+- `max_depth` 贯穿 `classify_documents` → `build_classify_prompt` → `normalize_suggestions`
+  → `_plan_new_paths` / `_normalize_one` → `resolve_new_target`
+- 路由 `maxDepth` 字段 + `limits.maxDepth` / `limits.maxDepthLimit` 回显（回显**本次生效值**，
+  与 `maxNewFolders` 同款判据——回显常量会让用户选了两级而摘要写着「允许一级」）
+- 前端配置阶段「细分程度」三档段控（`DEPTH_LEVEL_OPTIONS` / `MAX_DEPTH_DEFAULT = 2`）
+
+**两处刻意的语义分离**：
+- **`maxDepth` 只约束新建**：`resolve_new_target` 用 `limit = max(max_depth, existed)` ——
+  选「不建子夹」也不会把文档从已有的深层结构里赶回浅层（上一批那件事的延续）。warning
+  文案用 `limit` 而非 `max_depth`，否则「已有恰好 N 层」会被说成「已截断」而实际是归入。
+- **不建夹时传中性值**：`reuse_only` / `tags_only` 下 `start()` 传 `maxDepth: 1`（「不新建」），
+  与 `maxNewFolders: 0` 同款——否则响应里回显一个用户根本没选过的层数。
+
+**影响范围**：后端分类管线 + 路由；前端分类对话框。**零迁移**：该值不落库、不进产物，
+历史分类结果不受影响。`ensure-path` 的 3 段上限不变。
+
+测试：`test_classify_paths.py` 原「超 3 段截断」一条拆成四条（默认档 2 层 / 3 档 / 1 档 /
+已有更深不受档位影响）+ prompt 三档措辞；前端补默认档、三档可选、请求体、零额度禁用四条。
+
+## 2026-10-18 — 智能分类层数口径：已有更深结构时不往回退
+
+用户拍板：智能分类新建最多到**主文件夹 + 两级子夹**（3 层）；用户自己已经建了更深的
+文件夹时，**优先复用已有的那一层**。细分只发生在用户主动点「智能分类」时，别的流程
+不会自己去建夹——这一条现状本就如此，无需改动。
+
+改动只有一处逻辑：[`resolve_new_target`](backend/app/generation/classifier.py) 的截断点
+从固定的 `MAX_PATH_SEGMENTS` 改为 `max(MAX_PATH_SEGMENTS, 最深已存在前缀长度)`。
+
+此前模型建议 `A/B/C/D/E` 而库里已有 `A/B/C/D` 时会被截到 `A/B/C` —— 文档落进**更浅**
+的层，而结果看起来只是一次再普通不过的归属，用户无从知道模型指的是 D 那一类。现在
+归入 `A/B/C/D`（`reuse`）。
+
+warning 文案随之按「**截断后落在哪**」二分：命中现有夹 → 「已归入已有的『…』」；否则
+才是「已截断为『…』」。判据不能写成 `existed > MAX_PATH_SEGMENTS`——已有恰好 3 层时
+截断点也是已有路径，那同样是一次归入。
+
+prompt 规则第 4 条补一句「清单里已有更深的文件夹且合适时直接复用它的 id，不要在它下面
+再新建」（「最多 3 层」不变）。
+
+**影响范围**：后端分类管线；`ensure-path` 的 3 段上限**不变**（`new` 的路径长度仍然最多
+3 段，因为更长时要么被截到第 3 层、要么命中已有夹），前端零改动。测试新增 2 条
+（已有 3 层→第 4 层归入、已有 4 层→第 5 层归入且不倒回）。
+
 ## 2026-10-18 — 划选与文件夹多选：八项修补
 
 上一批（划选三补）交付后自审出的缺陷与手感问题，逐条修完。按危害排序。

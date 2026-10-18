@@ -27,8 +27,13 @@ from uuid import uuid4
 
 ROOT = ""
 
-# 新建路径最多 3 段（prompt 引导）。超出时**由调用方决定**：classifier 截断 + warning
-# （文档仍被分类，只是层级变浅），ensure-path 端点显式 400（用户可改）。
+# **智能分类**新建路径最多 3 段 = 一个主文件夹 + 两级子文件夹（prompt 引导）。
+# 超出时**由调用方决定**：classifier 截断 + warning（文档仍被分类，只是层级变浅；
+# ⚠️ 已有的更深结构不往回退，见 `classifier.resolve_new_target`），ensure-path 端点
+# 显式 400（用户可改）。
+#
+# ⚠️ 这只是**分类建议**的上限，不是树的深度上限——用户手动建夹可以任意深（每层
+# 走 `create_folder`，它是单层的）。
 MAX_PATH_SEGMENTS = 3
 
 # 单段名字上限。取 80 与 `prompt.sanitize_reference_name` 的截断长度**同值**——

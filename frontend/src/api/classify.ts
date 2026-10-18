@@ -54,6 +54,10 @@ export interface ClassifyLimits {
   maxNewFolders: number
   /** 「最多新建」滑条的上界 */
   maxNewFoldersLimit: number
+  /** 本次生效的细分程度（新建最多到第几层，含主文件夹） */
+  maxDepth: number
+  /** 细分程度的上界（3） */
+  maxDepthLimit: number
   /** 夹紧后的实际取材深度 */
   notesChars: number
   notesCharsMax: number
@@ -94,6 +98,14 @@ export interface ClassifyOptions {
   notesChars: number
   folderMode: FolderMode
   maxNewFolders: number
+  /**
+   * 「细分程度」= 本次新建最多到第几层（**含主文件夹**）：
+   * `1` 只建主夹 / `2` 主 + 一级子（默认）/ `3` 主 + 两级子（硬上限）。
+   *
+   * ⚠️ 它只约束**新建**：库里已有更深的夹时仍优先复用（后端 `resolve_new_target`
+   * 的 `existed`），否则用户选「别分太细」会把文档从已有结构里赶回浅层。
+   */
+  maxDepth: number
   tagMode: TagMode
   /** 仅 `tagMode === 'seed'` 时有意义 */
   seedTags: string[]

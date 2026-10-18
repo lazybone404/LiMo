@@ -30,7 +30,9 @@ import {
 } from 'lucide-react'
 import { streamSynthesis, previewSynthesis, type SynthesisPreview, type SourceMode } from '../../api/synthesis'
 import { classifyPreview, commitClassifications, type ClassifyOptions, type ClassifyPreview } from '../../api/classify'
-import { ClassifyDialog, MAX_NEW_FOLDERS_DEFAULT, type ClassifyPlanRow } from './ClassifyDialog'
+import {
+  ClassifyDialog, MAX_DEPTH_DEFAULT, MAX_NEW_FOLDERS_DEFAULT, type ClassifyPlanRow,
+} from './ClassifyDialog'
 import type { DocEntry } from '../../store/types'
 import { BatchBar } from './BatchBar'
 import { FolderPicker } from './FolderPicker'
@@ -1127,7 +1129,7 @@ export function DocLibrary() {
   /**
    * 审定阶段切取材深度 → 重跑。
    *
-   * ⚠️ 只换 `notesChars`，其余三项沿用**上一次实际请求的**那套（`classifyOpts`）。
+   * ⚠️ 只换 `notesChars`，其余各项沿用**上一次实际请求的**那套（`classifyOpts`）。
    * 少了这个沿用，切档就会把用户的文件夹/标签策略悄悄打回默认——而界面上那三个
    * 选择器此时并不在场（在配置阶段），用户看不到它们变了。
    *
@@ -1141,6 +1143,7 @@ export function DocLibrary() {
       notesChars: chars,
       folderMode: classifyOpts?.folderMode ?? 'reuse_or_new',
       maxNewFolders: classifyOpts?.maxNewFolders ?? MAX_NEW_FOLDERS_DEFAULT,
+      maxDepth: classifyOpts?.maxDepth ?? MAX_DEPTH_DEFAULT,
       tagMode: classifyOpts?.tagMode ?? 'vocab',
       seedTags: classifyOpts?.seedTags ?? [],
     }

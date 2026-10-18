@@ -28,6 +28,8 @@ from app.core.disconnect import disconnect_watcher
 from app.core.errors import AppError
 from app.core.model_resolver import resolve_llm_config
 from app.generation.classifier import (
+    CLASSIFY_MAX_DEPTH_DEFAULT,
+    CLASSIFY_MAX_DEPTH_LIMIT,
     FOLDER_MODE_REUSE_OR_NEW,
     FOLDER_MODES,
     MAX_NEW_FOLDERS,
@@ -38,6 +40,7 @@ from app.generation.classifier import (
     NOTES_CHARS_MAX,
     TAG_MODE_VOCAB,
     TAG_MODES,
+    clamp_max_depth,
     clamp_max_new_folders,
     clamp_notes_chars,
     clamp_seed_tags,
@@ -66,6 +69,9 @@ class ClassifyPreviewRequest(BaseModel):
     #    这个错的是**性质**。
     folderMode: str = FOLDER_MODE_REUSE_OR_NEW
     maxNewFolders: int = MAX_NEW_FOLDERS
+    # 「细分程度」= 本次新建最多到第几层（含主文件夹）：1 / 2（默认）/ 3。
+    # 超区间由 `clamp_max_depth` 夹紧——错的是**量**不是性质，判据同 `notesChars`。
+    maxDepth: int = CLASSIFY_MAX_DEPTH_DEFAULT
     tagMode: str = TAG_MODE_VOCAB
     # 仅 `tagMode="seed"` 时有意义：用户手填的基础标签
     seedTags: list[str] = []
@@ -104,6 +110,7 @@ async def classify_preview(
                                 FOLDER_MODE_REUSE_OR_NEW, "文件夹策略")
     tag_mode = validate_mode(req.tagMode, TAG_MODES, TAG_MODE_VOCAB, "标签策略")
     max_new = clamp_max_new_folders(req.maxNewFolders)
+    max_depth = clamp_max_depth(req.maxDepth)
     seed_tags = clamp_seed_tags(req.seedTags)
 
     cancel_event = asyncio.Event()
@@ -114,6 +121,7 @@ async def classify_preview(
                 store, llm_config, llm, req.docIds, notes_chars,
                 folder_mode=folder_mode,
                 max_new_folders=max_new,
+                max_depth=max_depth,
                 tag_mode=tag_mode,
                 seed_tags=seed_tags,
                 cancel_event=cancel_event,
@@ -129,6 +137,9 @@ async def classify_preview(
         "limits": {
             "maxNewFolders": max_new,
             "maxNewFoldersLimit": MAX_NEW_FOLDERS_LIMIT,
+            # 同上：回显**本次生效**的层级档位（不是默认常量）
+            "maxDepth": max_depth,
+            "maxDepthLimit": CLASSIFY_MAX_DEPTH_LIMIT,
             "notesChars": notes_chars,
             "notesCharsMax": NOTES_CHARS_MAX,
             "maxTagsPerDoc": MAX_TAGS_PER_DOC,

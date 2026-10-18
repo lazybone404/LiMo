@@ -95,6 +95,21 @@ TAG_MODES = (TAG_MODE_VOCAB, TAG_MODE_SEED, TAG_MODE_FREE)
 
 # 用户可调的新建上限的**夹紧**区间（默认仍是 `MAX_NEW_FOLDERS`）
 MAX_NEW_FOLDERS_LIMIT = 10
+
+# ── 用户在开始分析之前选的「细分程度」（本次最多建到第几层，含主文件夹）──
+#
+# 1 = 只建主文件夹（名字里不出现 `/`）
+# 2 = 主文件夹 + 一级子文件夹（**默认**）
+# 3 = 主文件夹 + 两级子文件夹（硬上限，同 `folder_tree.MAX_PATH_SEGMENTS`）
+#
+# ⚠️ 这是**用户旋钮**，不是系统上限：默认 2（2026-10-18 用户拍板「默认只允许一级」）。
+# `folder_tree.MAX_PATH_SEGMENTS = 3` 是绝对上限，也是 `ensure-path` 的拒绝线 ——
+# 分类侧永远不可能超过它，故 `3` 档直接取那个常量而不是再写一个 3。
+#
+# ⚠️ 与「已有更深结构不往回退」是两件事：本值只约束**新建**；已有的夹深于本值时
+# 仍优先复用（见 `resolve_new_target` 的 `existed`）。
+CLASSIFY_MAX_DEPTH_DEFAULT = 2
+CLASSIFY_MAX_DEPTH_LIMIT = folder_tree.MAX_PATH_SEGMENTS
 # 用户手填基础标签的条数上限（超出静默截断——清洗不改变语义，同 `clean_dimensions`）
 MAX_SEED_TAGS = 50
 
@@ -209,7 +224,24 @@ def per_batch_new_limit(max_new_folders: int, batch_count: int) -> int:
     return max(1, -(-max_new_folders // max(1, batch_count)))     # ceil 除法
 
 
-def _folder_section(folders: list[dict], mode: str, max_new: int) -> str:
+def _depth_rule(max_depth: int) -> str:
+    """规则第 4 条的**前半句** —— 按用户选的细分程度插值。
+
+    三档措辞刻意只差在「能不能用 `/` 和最多几层」：其余条件（已有层级不重复创建、
+    有更深的就复用）在三档下**完全一致**，所以它们留在模板里而不是复制三遍
+    （拆成三段整句会让「哪一句适用于哪档」变成三份要对齐的东西）。
+    """
+    if max_depth <= 1:
+        # ⚠️ **不带结尾句号**：模板在 `{_depth_rule(...)}` 后面固定接 `；`，
+        # 带上就是「……不要用 `/`。；上面已经存在的……」这种双标点
+        return "本次**不要新建子文件夹**：新建的文件夹一律放在根级，名字里不要用 `/`"
+    level = "一级子文件夹" if max_depth == 2 else "两级子文件夹"
+    return (f"新建时可以用 `/` 表示层级（如「技术/前端」），**最多 {max_depth} 层**"
+            f"（一个主文件夹 + {level}）")
+
+
+def _folder_section(folders: list[dict], mode: str, max_new: int,
+                    max_depth: int = CLASSIFY_MAX_DEPTH_DEFAULT) -> str:
     """文件夹那段上下文 + 规则。三种策略各一份，**与 `_normalize_one` 的收口同源**。"""
     if mode == FOLDER_MODE_TAGS_ONLY:
         return _FOLDER_SECTION_NONE
@@ -247,7 +279,7 @@ def _folder_section(folders: list[dict], mode: str, max_new: int) -> str:
 1. **优先复用**上面列出的文件夹。只有确实没有合适归处时，才新建。
 2. 你这一批最多新建 {max_new} 个文件夹（全部分批共享一个总上限，故每批只提最必要的；**多层路径按实际要新建的层数计**，例如「技术/前端」在「技术」已存在时算 1 个、两层都不存在时算 2 个）。需要更多归处时，把相近的合并成同一类，或对该篇用 "none" 表示不归入。
 3. 复用时必须**逐字复制**上面列出的 id（形如 fd_xxxxxxxxxxxx），**绝不自己编造 id**。
-4. 新建时可以用 `/` 表示层级（如「技术/前端」），**最多 3 层**；上面已经存在的层级不要重复创建，只写到最具体的那一层即可。每层名字 12 字以内，描述这一类材料的共同主题。
+4. {_depth_rule(max_depth)}；上面已经存在的层级不要重复创建，只写到最具体的那一层即可。**清单里已有更深的文件夹、且它确实合适时，直接复用它的 id**，不要在它下面再新建。每层名字 12 字以内，描述这一类材料的共同主题。
 5. 上面列出的「含子文件夹共 N 篇」是整棵子树的规模（含所有子文件夹），不是该夹直接挂的篇数。
 6. 把整批材料都看完之后，如果仍有一小批内容零散、各自都撑不起一个分类，可以把它们一起放进一个名为「{MISC_FOLDER_NAME}」的文件夹兜底。**它只用于确实没有合适归处的少数材料，尽量少放**；这个文件夹**不占**上面第 2 条的数量。"""
 
@@ -388,16 +420,19 @@ def collect_tag_vocab(store) -> list[str]:
 def build_classify_prompt(docs: list[dict], folders: list[dict],
                           tag_vocab: list[str], max_new: int, *,
                           folder_mode: str = FOLDER_MODE_REUSE_OR_NEW,
-                          tag_mode: str = TAG_MODE_VOCAB) -> str:
+                          tag_mode: str = TAG_MODE_VOCAB,
+                          max_depth: int = CLASSIFY_MAX_DEPTH_DEFAULT) -> str:
     """组装分类 prompt。三块上下文（文件夹 / 标签 / 待分类材料）都是**必给**的。
 
     ⚠️ `max_new` 是**这一批**的额度（由 `per_batch_new_limit` 分配），不是全局上限
     —— 收口侧 `normalize_suggestions` 收到的才是全局值。两者分工见 `per_batch_new_limit`。
 
-    ⚠️ `folder_mode` / `tag_mode` 与 `normalize_suggestions` **必须收到同一份取值**：
-    前者决定「怎么要求模型」，后者决定「模型不遵守时怎么收口」。只改一边的失效是
-    **静默的**——譬如 prompt 说「只复用」而 normalize 照收 `new`，用户会在结果里看到
-    自己刚刚明确禁止过的新文件夹，且全程零提示（模式 #54）。
+    ⚠️ `folder_mode` / `tag_mode` / `max_depth` 与 `normalize_suggestions`
+    **必须收到同一份取值**：前者决定「怎么要求模型」，后者决定「模型不遵守时怎么收口」。
+    只改一边的失效是**静默的**——譬如 prompt 说「只复用」而 normalize 照收 `new`，
+    用户会在结果里看到自己刚刚明确禁止过的新文件夹，且全程零提示（模式 #54）。
+    `max_depth` 同理：prompt 说「最多 2 层」而收口按 3 层截，模型照写过深路径时
+    文档会落进一个用户没被允许的层级。
     """
     parts: list[str] = []
     for i, d in enumerate(docs, 1):
@@ -408,7 +443,7 @@ def build_classify_prompt(docs: list[dict], folders: list[dict],
         parts.append(f"【文档 {i}】id={d['id']} 标题={d['title']} 取材={d['chars']} 字\n{body}")
 
     return CLASSIFY_PROMPT.substitute(
-        folder_section=_folder_section(folders, folder_mode, max_new),
+        folder_section=_folder_section(folders, folder_mode, max_new, max_depth),
         tag_section=_tag_section(tag_vocab, tag_mode),
         docs="\n\n".join(parts),
     )
@@ -508,13 +543,16 @@ _REJECT_REASON_TEXT = {
 
 
 def resolve_new_target(name: str, folders: list[dict],
-                       path_index: dict[tuple, list[str]]) -> dict:
+                       path_index: dict[tuple, list[str]],
+                       max_depth: int = CLASSIFY_MAX_DEPTH_DEFAULT) -> dict:
     """模型给的新建名 → 归宿。`folder_tree.parse_path` 是路径解析的**唯一实现**。
 
     返回值 `outcome`：
       - `"reuse"` : 指向一个已存在的夹（`folderId` 在场）
       - `"new"`   : 需要新建（`segments` 是**已截断到上限**的逐段原串，
-                    交给前端 `ensure-path` 一次建完）
+                    交给前端 `ensure-path` 一次建完）。上限 = `max_depth`
+                    （用户选的细分程度），但**已有的更深结构不往回退**
+                    （见下方 `existed` 计算）
       - `"none"`  : 不归入（`reason ∈ {empty, empty_segment, segment_too_long,
                     ambiguous}`）—— 每条都必须带一句能让人看懂原因的 warning，
                     否则用户看到的是「模型没建议」，而它其实建议了一个我们不能接受的东西
@@ -539,13 +577,36 @@ def resolve_new_target(name: str, folders: list[dict],
 
     segments = list(parsed["segments"])
     warnings: list[str] = []
-    if len(segments) > folder_tree.MAX_PATH_SEGMENTS:
+
+    # 已有的**最深**前缀（段数）。分类新建最多到 `max_depth` 层（用户选的细分程度），
+    # 但「用户已经有更深的结构」时**不往回退**：路径 `技术/前端/React/Hooks` 配
+    # 已有 `技术 › 前端 › React`，正确的归宿是那个已有夹（复用），而固定截到
+    # `max_depth` 会让文档落到更浅的 `技术 › 前端` —— 那是一次**静默的降级**，
+    # 用户看到的只是一次再普通不过的归属。
+    existed = 0
+    for i in range(1, len(segments) + 1):
+        if tuple(folder_tree.path_key(s) for s in segments[:i]) in path_index:
+            existed = i
+        else:
+            break
+
+    limit = max(max_depth, existed)
+    if len(segments) > limit:
         # 截断而不是整篇不归入：层级变浅**仍然是一次有效的分类**，而 `none` 会让这篇
         # 掉回未分类。降级是显式的（warning 里给出截断后的路径），不是静默的。
-        segments = segments[:folder_tree.MAX_PATH_SEGMENTS]
-        warnings.append(
-            f"模型建议的新建路径超过 {folder_tree.MAX_PATH_SEGMENTS} 层，"
-            f"已截断为「{_display_path(segments)}」")
+        segments = segments[:limit]
+        # 文案看**截断后落在哪**：命中现有夹是「归入已有的」，否则才是「新建被截短」。
+        # 判据不能写成 `existed > max_depth` —— 已有恰好 `max_depth` 层时截断点也是
+        # 已有路径（`A/B`），那同样是一次归入，而文案会说成「已截断」。
+        landed = tuple(folder_tree.path_key(s) for s in segments) in path_index
+        if landed:
+            warnings.append(
+                f"模型建议的层级超过 {limit} 层，"
+                f"已归入已有的「{_display_path(segments)}」")
+        else:
+            warnings.append(
+                f"模型建议的新建路径超过 {limit} 层，"
+                f"已截断为「{_display_path(segments)}」")
 
     key = tuple(folder_tree.path_key(s) for s in segments)
     hits = path_index.get(key) or []
@@ -582,7 +643,8 @@ def resolve_new_target(name: str, folders: list[dict],
 def _normalize_one(item: dict, by_id: dict, folders: list[dict],
                    path_index: dict[tuple, list[str]],
                    rejected_paths: set[tuple], max_new: int,
-                   folder_mode: str = FOLDER_MODE_REUSE_OR_NEW
+                   folder_mode: str = FOLDER_MODE_REUSE_OR_NEW,
+                   max_depth: int = CLASSIFY_MAX_DEPTH_DEFAULT
                    ) -> tuple[dict, list[str], list[str]]:
     """归一化单篇的文件夹建议 → `(folder, tags, warnings)`。
 
@@ -622,7 +684,7 @@ def _normalize_one(item: dict, by_id: dict, folders: list[dict],
             # 归宿判定只此一处（`resolve_new_target`），规划额度的预扫描与这里收口
             # 共用它 —— 两处各解析一次的话，「这条路径算几行新建」迟早与「它到底是
             # reuse 还是 new」分歧（模式 #54）。
-            target = resolve_new_target(name, folders, path_index)
+            target = resolve_new_target(name, folders, path_index, max_depth)
             warnings.extend(target.get("warnings") or [])
             outcome = target["outcome"]
             segments = target.get("segments") or []
@@ -670,7 +732,8 @@ def _normalize_one(item: dict, by_id: dict, folders: list[dict],
 
 
 def _plan_new_paths(docs: list[dict], seen: dict[str, dict], folders: list[dict],
-                    path_index: dict[tuple, list[str]], max_new: int
+                    path_index: dict[tuple, list[str]], max_new: int,
+                    max_depth: int = CLASSIFY_MAX_DEPTH_DEFAULT
                     ) -> tuple[set[tuple], list[tuple]]:
     """按文档顺序规划「这批实际会新建哪些文件夹行」→ `(被拒路径, 已规划路径)`。
 
@@ -697,7 +760,7 @@ def _plan_new_paths(docs: list[dict], seen: dict[str, dict], folders: list[dict]
         name = str(item.get("newFolderName") or "").strip()
         if not name:
             continue
-        target = resolve_new_target(name, folders, path_index)
+        target = resolve_new_target(name, folders, path_index, max_depth)
         if target["outcome"] != "new":
             continue
         segments = target["segments"]
@@ -723,7 +786,8 @@ def _plan_new_paths(docs: list[dict], seen: dict[str, dict], folders: list[dict]
 
 def normalize_suggestions(raw, docs: list[dict], folders: list[dict],
                           max_new: int, *,
-                          folder_mode: str = FOLDER_MODE_REUSE_OR_NEW) -> dict:
+                          folder_mode: str = FOLDER_MODE_REUSE_OR_NEW,
+                          max_depth: int = CLASSIFY_MAX_DEPTH_DEFAULT) -> dict:
     """把模型输出归一成「每篇必有一条」的方案 → `{suggestions, warnings}`。
 
     **不变式**：`suggestions` 的长度与顺序**恒等于** `docs`——模型漏了哪篇，这里
@@ -770,7 +834,8 @@ def normalize_suggestions(raw, docs: list[dict], folders: list[dict],
     #    `max_new` 被用光而多打一条「超过上限（N 个）」的全局警告——而真正的原因与
     #    上限无关（用户禁止了新建）。策略降级由 `_normalize_one` 逐篇承担。
     if folder_mode == FOLDER_MODE_REUSE_OR_NEW:
-        rejected, planned = _plan_new_paths(docs, seen, folders, path_index, max_new)
+        rejected, planned = _plan_new_paths(docs, seen, folders, path_index,
+                                            max_new, max_depth)
     else:
         rejected, planned = set(), []
     if rejected:
@@ -787,7 +852,8 @@ def normalize_suggestions(raw, docs: list[dict], folders: list[dict],
             folder, tags = {"action": "none"}, []
         else:
             folder, tags, extra = _normalize_one(item, by_id, folders, path_index,
-                                                 rejected, max_new, folder_mode)
+                                                 rejected, max_new, folder_mode,
+                                                 max_depth)
             warnings.extend(extra)
         suggestions.append({**d, "folder": folder, "tags": tags, "warnings": warnings})
 
@@ -840,6 +906,22 @@ def clamp_max_new_folders(value: int | None) -> int:
     return max(0, min(int(value), MAX_NEW_FOLDERS_LIMIT))
 
 
+def clamp_max_depth(value: int | None) -> int:
+    """夹紧用户传来的「细分程度」（最多几层，含主文件夹）。
+
+    ⚠️ 非法输入**静默夹紧**而不是报错：层级选错不改变产物的**性质**（不像
+    `folder_mode` 那样把「动文件夹」变成「只打标签」），判据同
+    `clamp_max_new_folders` / `clamp_notes_chars`。
+    """
+    if value is None:
+        return CLASSIFY_MAX_DEPTH_DEFAULT
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return CLASSIFY_MAX_DEPTH_DEFAULT
+    return max(1, min(n, CLASSIFY_MAX_DEPTH_LIMIT))
+
+
 def clamp_seed_tags(values) -> list[str]:
     """用户手填的基础标签。名称清洗走 `clean_tag_names`（唯一内核），
     这里只施加**用户侧特有**的条数上限 `MAX_SEED_TAGS`。
@@ -867,6 +949,7 @@ async def classify_documents(store, llm_config: dict, llm,
                              doc_ids: list[str], notes_chars: int,
                              *, folder_mode: str = FOLDER_MODE_REUSE_OR_NEW,
                              max_new_folders: int = MAX_NEW_FOLDERS,
+                             max_depth: int = CLASSIFY_MAX_DEPTH_DEFAULT,
                              tag_mode: str = TAG_MODE_VOCAB,
                              seed_tags: list[str] | None = None,
                              cancel_event=None) -> dict:
@@ -908,7 +991,7 @@ async def classify_documents(store, llm_config: dict, llm,
     log.info("自动分类请求", docs=len(docs), batches=len(batches),
              batch_size=CLASSIFY_BATCH_SIZE, notes_chars=notes_chars,
              folders=len(folders), tag_vocab=len(tag_vocab),
-             folder_mode=folder_mode, tag_mode=tag_mode)
+             folder_mode=folder_mode, max_depth=max_depth, tag_mode=tag_mode)
 
     merged_raw_docs: list[dict] = []
     # (批序号, 错误码, 原因) —— 只收「这批没成」的事实，失败语义在循环后统一决定
@@ -918,7 +1001,8 @@ async def classify_documents(store, llm_config: dict, llm,
         async with asyncio.timeout(CLASSIFY_TOTAL_TIMEOUT):
             for bi, batch in enumerate(batches, 1):
                 prompt = build_classify_prompt(batch, folders, tag_vocab, per_batch_new,
-                                               folder_mode=folder_mode, tag_mode=tag_mode)
+                                               folder_mode=folder_mode, tag_mode=tag_mode,
+                                               max_depth=max_depth)
                 try:
                     async with asyncio.timeout(CLASSIFY_TIMEOUT):
                         text = await llm.call(
@@ -974,7 +1058,7 @@ async def classify_documents(store, llm_config: dict, llm,
         raise AppError(code, f"模型没有返回可用的分类结果（{why}），请重试", recoverable=True)
 
     result = normalize_suggestions({"docs": merged_raw_docs}, docs, folders, max_new_folders,
-                                   folder_mode=folder_mode)
+                                   folder_mode=folder_mode, max_depth=max_depth)
     if failed:
         # **部分批失败**：结果照给，但必须显式说明哪几批没成 —— 否则用户会把那些篇
         # 的「不归入」当成模型的判断，而它其实根本没被分析过（静默降级）。

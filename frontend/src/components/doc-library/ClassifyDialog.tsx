@@ -70,6 +70,24 @@ export const DEPTH_OPTIONS = [
 export const MAX_NEW_FOLDERS_DEFAULT = 5
 export const MAX_NEW_FOLDERS_LIMIT = 10
 
+/**
+ * 细分程度档位（值 = 后端 `maxDepth`，**含主文件夹**）。
+ *
+ * ⚠️ **默认档是 2，不是第一项**（2026-10-18 用户拍板「默认只允许一级」）——
+ * 所以这里显式写 `MAX_DEPTH_DEFAULT`，不要照 `DEPTH_OPTIONS` 那样取 `[0]`：
+ * 那个数组的第一项恰好是默认档，这两者的「顺序即默认」只是巧合，不能推广。
+ *
+ * ⚠️ 与后端 `classifier.CLASSIFY_MAX_DEPTH_DEFAULT` **同值但不同源**（理由同上面
+ * `MAX_NEW_FOLDERS_DEFAULT` 那段）：配置阶段早于 preview，拿不到 `limits` 回显。
+ */
+export const DEPTH_LEVEL_OPTIONS = [
+  { value: 1, label: '不建子文件夹', hint: '只归类到主文件夹' },
+  { value: 2, label: '允许一级', hint: '主文件夹 + 一级子文件夹（默认）' },
+  { value: 3, label: '允许两级', hint: '主文件夹 + 两级子文件夹' },
+] as const
+export const MAX_DEPTH_DEFAULT = 2
+export const MAX_DEPTH_LIMIT = 3
+
 /** 一行审定后的方案。`newFolderName` 非空 = 需要调用方先建夹再写入。 */
 export interface ClassifyPlanRow {
   id: string
@@ -102,6 +120,8 @@ interface ConfigDraft {
   notesChars: number
   folderMode: FolderMode
   maxNewFolders: number
+  /** 新建最多到第几层（含主文件夹）：1 / 2（默认）/ 3 */
+  maxDepth: number
   tagMode: TagMode
   /** 文本框原文；**只在 `start()` 里拆一次**，拆法见 `splitSeedTags` */
   seedTagsText: string
@@ -224,6 +244,7 @@ export function ClassifyDialog({
     notesChars: DEPTH_OPTIONS[0].value,
     folderMode: 'reuse_or_new',
     maxNewFolders: MAX_NEW_FOLDERS_DEFAULT,
+    maxDepth: MAX_DEPTH_DEFAULT,
     // 库里一个标签都没有时，默认落到「我给几个基础标签」——否则 `vocab` 拿到的是
     // 一张空词表，界面上写着「复用现有标签」而实际什么都没提供
     tagMode: tagCount > 0 ? 'vocab' : 'seed',
@@ -265,6 +286,8 @@ export function ClassifyDialog({
       folderMode: cfg.folderMode,
       // 不适用时传中性值：后端会忽略，但传了可避免响应里回显一个无意义的数字
       maxNewFolders: cfg.folderMode === 'reuse_or_new' ? cfg.maxNewFolders : 0,
+      // 同理：`reuse_only` / `tags_only` 下「建到几层」没有落点，传 1 表示「不新建」
+      maxDepth: cfg.folderMode === 'reuse_or_new' ? cfg.maxDepth : 1,
       tagMode: cfg.tagMode,
       seedTags: cfg.tagMode === 'seed' ? splitSeedTags(cfg.seedTagsText) : [],
     })
@@ -347,7 +370,7 @@ export function ClassifyDialog({
               </div>
 
               {preview && (
-                <p className="mt-1.5 text-[11px] text-disabled">
+                <p data-classify-summary className="mt-1.5 text-[11px] text-disabled">
                   {STRATEGY_SUMMARY(preview, ids.length)}
                   {preview.tagVocab.length > 0 && ` · 已提供 ${preview.tagVocab.length} 个标签供复用`}
                 </p>
@@ -413,18 +436,45 @@ export function ClassifyDialog({
 
                 {/* 「要不要建夹、建几个」——用户明确提出的那一问 */}
                 {cfg.folderMode === 'reuse_or_new' && (
-                  <div data-classify-max-new-wrap className="mt-2 flex items-center gap-2.5 pl-4">
-                    <span className="text-[12px] text-dimmed shrink-0">最多新建</span>
-                    <input data-classify-max-new type="range" min={0}
-                      max={MAX_NEW_FOLDERS_LIMIT} step={1} disabled={busy}
-                      value={cfg.maxNewFolders}
-                      onChange={e => set({ maxNewFolders: Number(e.target.value) })}
-                      className="flex-1 accent-(--tk-accent)" />
-                    <span data-classify-max-new-value
-                      className="text-[12px] font-medium w-8 text-right">
-                      {cfg.maxNewFolders === 0 ? '不建' : `${cfg.maxNewFolders} 个`}
-                    </span>
-                  </div>
+                  <>
+                    <div data-classify-max-new-wrap className="mt-2 flex items-center gap-2.5 pl-4">
+                      <span className="text-[12px] text-dimmed shrink-0">最多新建</span>
+                      <input data-classify-max-new type="range" min={0}
+                        max={MAX_NEW_FOLDERS_LIMIT} step={1} disabled={busy}
+                        value={cfg.maxNewFolders}
+                        onChange={e => set({ maxNewFolders: Number(e.target.value) })}
+                        className="flex-1 accent-(--tk-accent)" />
+                      <span data-classify-max-new-value
+                        className="text-[12px] font-medium w-8 text-right">
+                        {cfg.maxNewFolders === 0 ? '不建' : `${cfg.maxNewFolders} 个`}
+                      </span>
+                    </div>
+
+                    {/* 「建到第几层」—— 默认**只允许一级子文件夹**（用户 2026-10-18 拍板） */}
+                    <div data-classify-depth-level-wrap className="mt-2 flex items-center gap-2.5 pl-4">
+                      <span className="text-[12px] text-dimmed shrink-0">细分程度</span>
+                      <div className="flex rounded-md border border-border-light overflow-hidden">
+                        {DEPTH_LEVEL_OPTIONS.map(o => (
+                          <button key={o.value} data-classify-depth-level={o.value}
+                            disabled={busy || cfg.maxNewFolders === 0}
+                            onClick={() => set({ maxDepth: o.value })}
+                            className={`px-2.5 py-1 text-[11px] disabled:opacity-50 ${
+                              cfg.maxDepth === o.value && cfg.maxNewFolders > 0
+                                ? 'bg-accent/15 text-accent font-medium'
+                                : 'text-muted hover:bg-surface-hover'}`}>
+                            {o.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {/* 说明文案跟**当前档**走（不写死默认档，否则选了两级还写着「只允许一级」） */}
+                    <p data-classify-depth-level-hint
+                      className="mt-1 pl-4 text-[11px] text-disabled">
+                      {cfg.maxNewFolders === 0
+                        ? '不新建文件夹，细分程度无影响'
+                        : DEPTH_LEVEL_OPTIONS.find(o => o.value === cfg.maxDepth)?.hint}
+                    </p>
+                  </>
                 )}
               </section>
 
@@ -619,8 +669,11 @@ function Label({ children }: { children: React.ReactNode }) {
  * 措辞用中文，不暴露 `reuse_or_new` 这类内部枚举名。
  */
 function STRATEGY_SUMMARY(p: ClassifyPreview, count: number): string {
+  // 档位文案与配置阶段的 `DEPTH_LEVEL_OPTIONS` 同源（读回显值，读不到就不提）
+  const level = DEPTH_LEVEL_OPTIONS.find(o => o.value === p.limits.maxDepth)?.label
   const f = p.folderMode === 'reuse_or_new'
     ? `文件夹：复用为主，最多新建 ${p.limits.maxNewFolders} 个`
+      + (level && p.limits.maxNewFolders > 0 ? `（${level}）` : '')
     : p.folderMode === 'reuse_only' ? '文件夹：只用现有的'
       : '文件夹：本次不动'
   const t = p.tagMode === 'vocab' ? '标签：复用现有词表'

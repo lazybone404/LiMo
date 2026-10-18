@@ -352,6 +352,22 @@
    边框令牌，放在前面会让它抓到这条、以为面板没写边框（零报错，测试红得莫名其妙）。 */
 .md-block[data-block-type="table"] {
   overflow-x: auto;
+  /* ⚠️ `flex-shrink: 0` 不是可选项，是上面那条 `overflow-x` 的**必要配套**（2026-10-18 实测）：
+     预览区的内容容器是 `flex flex-col overflow-y-scroll`（PreviewArea 的 `.preview-content`），
+     `.md-block` 是它的 flex item ⇒ 默认 `flex-shrink: 1`。**没有 overflow 的 flex item**
+     靠 `min-height: auto`（= 内容高度）挡住收缩；而 `overflow-x: auto` 会让 `overflow-y`
+     计算为 `auto`，此时自动最小尺寸按 **0** 处理 —— 于是这张表可以被压到任意小，
+     溢出部分进自己的滚动条。实测（600px 高容器、20 行表格）：块高 246px / 内容 834px，
+     读者看到「表格只剩一行、还得滚它内部」，且**零报错**。
+     ⚠️ **同一个 bug 有第二形态，且更严重**（2026-10-18 用户报告「关掉内容块装饰后
+     那个表格不见了」）：关装饰时本文件下方的归零规则把 `padding` 设为 0、`border` 设为
+     none ⇒ 被压缩后连 padding+border 那 26px 的可视高度都没了，块高**恰好 0**，整块从
+     页面上消失（内容仍完整躺在自己的 `scrollHeight` 里）。同一容器下的对照实测：
+     修复后 装饰开 268px / 装饰关 242px；去掉本行 装饰开 26px / 装饰关 **0px**。
+     所以「关装饰吞卡片」不是开关的问题，缺的就是这一个属性。
+     ⚠️ 只对 table 块成立：code / image 块没有容器级 overflow，普通内容块也没有 ——
+     它们的最小高度仍是内容高度，不会被收缩。导出侧是普通块流，此属性无副作用。 */
+  flex-shrink: 0;
 }
 
 /* 横向滚动时首列留在视野里（第一列通常是「名字」，翻到右边就不知道行对应谁了）。

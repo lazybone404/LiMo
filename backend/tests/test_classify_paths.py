@@ -52,8 +52,28 @@ def test_prompt_shows_paths_and_subtree_counts():
     assert "技术 › 前端" in p
     assert "含子文件夹共 40 篇" in p
     assert "含子文件夹共 2 篇" not in p
-    # 规则段必须教模型用 `/` 分层且限深（否则它只会继续往根上加平铺夹）
-    assert "最多 3 层" in p
+    # 规则段必须教模型用 `/` 分层且限深（否则它只会继续往根上加平铺夹）。
+    # 默认档是 2（主 + 一级子），见 `CLASSIFY_MAX_DEPTH_DEFAULT`。
+    assert "最多 2 层" in p
+
+
+def test_prompt_depth_rule_follows_selected_level():
+    """三档细分程度各自对应一份措辞，且与收口的截断上限同源。
+
+    ⚠️ 「不建子文件夹」那一档必须**明确禁止 `/`** —— 只说「最多 1 层」的话，模型
+    仍可能写出 `技术/前端`（它认为自己只建了两层），而收口会把它截成 `技术` 并记
+    warning：用户选的是「不建子夹」，拿到的却是一条「已截断」的提示，像是系统出错。
+    """
+    p1 = build_classify_prompt(_docs("tx_a"), _TREE, [], MAX_NEW_FOLDERS, max_depth=1)
+    assert "不要新建子文件夹" in p1
+    assert "不要用 `/`" in p1
+    assert "最多 2 层" not in p1
+
+    p2 = build_classify_prompt(_docs("tx_a"), _TREE, [], MAX_NEW_FOLDERS, max_depth=2)
+    assert "最多 2 层" in p2 and "一级子文件夹" in p2
+
+    p3 = build_classify_prompt(_docs("tx_a"), _TREE, [], MAX_NEW_FOLDERS, max_depth=3)
+    assert "最多 3 层" in p3 and "两级子文件夹" in p3
 
 
 def test_prompt_schema_does_not_add_parent_fields():
@@ -169,14 +189,106 @@ def test_malformed_path_is_rejected_with_a_reason():
     assert any("名为空" in w for w in out["suggestions"][1]["warnings"])
 
 
-def test_path_deeper_than_three_levels_is_truncated_with_warning():
-    """超过 3 段 → 截断并记 warning：文档仍被分类，只是层级变浅（比整篇不归入有用）。"""
+def test_default_depth_truncates_to_two_levels():
+    """**默认**档是 2 层（主 + 一级子）—— 模型给 4 段 → 截到 2 段并记 warning。
+
+    文档仍被分类，只是层级变浅（比整篇不归入有用）。
+    """
     raw = {"docs": [{"id": "tx_a", "folderAction": "new",
                      "newFolderName": "一级/二级/三级/四级"}]}
     out = normalize_suggestions(raw, _docs("tx_a"), [], MAX_NEW_FOLDERS)
     s = out["suggestions"][0]
+    assert s["folder"] == {"action": "new", "name": "一级/二级"}, s["folder"]
+    assert any("超过 2 层" in w for w in s["warnings"])
+
+
+def test_depth_three_allows_three_levels():
+    """选「允许两级子文件夹」时 3 段放行、4 段仍截断。"""
+    raw = {"docs": [{"id": "tx_a", "folderAction": "new",
+                     "newFolderName": "一级/二级/三级/四级"}]}
+    out = normalize_suggestions(raw, _docs("tx_a"), [], MAX_NEW_FOLDERS, max_depth=3)
+    s = out["suggestions"][0]
     assert s["folder"] == {"action": "new", "name": "一级/二级/三级"}, s["folder"]
     assert any("超过 3 层" in w for w in s["warnings"])
+
+
+def test_depth_one_forbids_subfolders():
+    """选「不建子文件夹」时任何带 `/` 的路径都截成主文件夹。
+
+    对照（已验证有区分力）：把 `limit` 写死成 `MAX_PATH_SEGMENTS` → 本条红
+    （`folder` 变成 `一级/二级/三级`）。
+    """
+    raw = {"docs": [{"id": "tx_a", "folderAction": "new",
+                     "newFolderName": "一级/二级"}]}
+    out = normalize_suggestions(raw, _docs("tx_a"), [], MAX_NEW_FOLDERS, max_depth=1)
+    s = out["suggestions"][0]
+    assert s["folder"] == {"action": "new", "name": "一级"}, s["folder"]
+    assert any("超过 1 层" in w for w in s["warnings"])
+
+
+def test_depth_option_does_not_override_deeper_existing_folder():
+    """档位只约束**新建**：已有 4 层时，哪怕选「不建子文件夹」也归入已有的第 4 层。
+
+    否则用户选了个「别分太细」，反而让一批文档从已有结构里掉回浅层 ——
+    而「优先复用已有文件夹」是比档位更强的一条规则。
+    """
+    folders = [
+        {"id": "fd_a", "name": "A", "count": 0},
+        {"id": "fd_b", "name": "B", "parentId": "fd_a", "count": 0},
+        {"id": "fd_c", "name": "C", "parentId": "fd_b", "count": 0},
+        {"id": "fd_d", "name": "D", "parentId": "fd_c", "count": 0},
+    ]
+    raw = {"docs": [{"id": "tx_a", "folderAction": "new",
+                     "newFolderName": "A/B/C/D/E"}]}
+    out = normalize_suggestions(raw, _docs("tx_a"), folders, MAX_NEW_FOLDERS, max_depth=1)
+    s = out["suggestions"][0]
+    assert s["folder"]["action"] == "reuse", s["folder"]
+    assert s["folder"]["id"] == "fd_d", s["folder"]
+
+
+def test_three_level_existing_folder_is_not_deepened():
+    """已有 3 层（主 + 两级子）→ 模型建议第 4 层时归入已有的第 3 层，不再往下建。
+
+    「智能分类最多到主文件夹往下两级子文件夹」——已有 3 层就是那个上限，
+    第 4 层不该由模型自己开。
+    """
+    folders = [
+        {"id": "fd_a", "name": "A", "count": 0},
+        {"id": "fd_b", "name": "B", "parentId": "fd_a", "count": 0},
+        {"id": "fd_c", "name": "C", "parentId": "fd_b", "count": 0},
+    ]
+    raw = {"docs": [{"id": "tx_a", "folderAction": "new",
+                     "newFolderName": "A/B/C/D"}]}
+    out = normalize_suggestions(raw, _docs("tx_a"), folders, MAX_NEW_FOLDERS)
+    s = out["suggestions"][0]
+    assert s["folder"]["action"] == "reuse", s["folder"]
+    assert s["folder"]["id"] == "fd_c", s["folder"]
+    assert any("已归入已有的「A/B/C」" in w for w in s["warnings"])
+
+
+def test_deeper_existing_folder_is_reused_not_truncated_back():
+    """已有 **4 层**时，模型建议第 5 层 → 归入已有的第 4 层，**不倒回第 3 层**。
+
+    用户自己建得比分类上限更深时，规则是「优先复用已有文件夹」。固定截到
+    `MAX_PATH_SEGMENTS` 会让文档落进更浅的 `A/B/C` —— 而结果看起来只是一次
+    再普通不过的归属，用户无从知道模型指的是 D 那一类。
+
+    对照（已验证有区分力）：把 `limit` 改回固定 `MAX_PATH_SEGMENTS` → 本条红
+    （`folder` 变成复用 `A/B/C`）。
+    """
+    folders = [
+        {"id": "fd_a", "name": "A", "count": 0},
+        {"id": "fd_b", "name": "B", "parentId": "fd_a", "count": 0},
+        {"id": "fd_c", "name": "C", "parentId": "fd_b", "count": 0},
+        {"id": "fd_d", "name": "D", "parentId": "fd_c", "count": 0},
+    ]
+    raw = {"docs": [{"id": "tx_a", "folderAction": "new",
+                     "newFolderName": "A/B/C/D/E"}]}
+    out = normalize_suggestions(raw, _docs("tx_a"), folders, MAX_NEW_FOLDERS)
+    s = out["suggestions"][0]
+    assert s["folder"]["action"] == "reuse", s["folder"]
+    assert s["folder"]["id"] == "fd_d", s["folder"]
+    assert any("已归入已有的「A/B/C/D」" in w for w in s["warnings"])
 
 
 # ─────────────────────────────────────────────────────────────

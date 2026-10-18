@@ -56,6 +56,15 @@ describe('内容卡片 —— 宽表与大图', () => {
     expect(BLOCKS).toMatch(/\.md-block\[data-block-type="table"\]\s*\{[^}]*overflow-x: auto/)
   })
 
+  it('横向溢出容器必须 `flex-shrink: 0`（否则被预览区的 flex column 压扁）', () => {
+    // ⚠️ 对照实验：删掉 `flex-shrink: 0`（`overflow-x: auto` 留着）→ 红。
+    // 失效形态（2026-10-18 实测）：预览区内容容器是 `flex flex-col overflow-y-scroll`，
+    // 而 overflow 非 visible 的 flex item 自动最小尺寸按 **0** 算 —— 表格块被压到几行高、
+    // 内部出现纵向滚动条。内容完整、零报错，只是读者「看不全还得多滚一次」。
+    // 与上一条成对：`overflow-x` 是「宽表别撑破版心」，这一条是「别把自己缩没了」。
+    expect(BLOCKS).toMatch(/\.md-block\[data-block-type="table"\]\s*\{[^}]*flex-shrink: 0/)
+  })
+
   it('首列 sticky，且 `td` 自带不透明底色（否则滚动时叠字）', () => {
     expect(BLOCKS).toContain('.md-block[data-block-type="table"] thead th:first-child')
     expect(BLOCKS).toContain('.md-block[data-block-type="table"] tbody td:first-child')
@@ -70,11 +79,48 @@ describe('内容卡片 —— 宽表与大图', () => {
     )
   })
 
+  it('任何 `.md-block` 本体上的非 visible overflow 都必须配 `flex-shrink: 0`', () => {
+    // 上一条只钉 table；这条是它的**通用版**，防止将来给别的块加 `overflow` 时漏配套。
+    // 判据：非 visible 的 overflow 让该盒的自动最小尺寸按 **0** 解析 ⇒ 在预览区的
+    // `flex flex-col` 里可被压到 0。2026-10-18 实测（600px 容器 / 24 行正文 + 5 行表格）：
+    //   修复后   装饰开 268px / 装饰关 242px（完整）
+    //   去掉这条 装饰开  26px（只剩 padding+border，被读成「很小的一行」）
+    //            装饰关   0px（padding 一并归零 ⇒ 整块消失，内容仍在 scrollHeight 里）
+    const bodies = [...BLOCKS.matchAll(/(?:^|\n)\s*\.md-block\[data-block-type="[a-z-]+"\]\s*\{([^}]*)\}/g)]
+    const risky = bodies.filter((m) => /overflow(?:-[xy])?:\s*(?:auto|scroll|hidden)/.test(m[1]))
+    expect(risky.length, '一个溢出容器都没找到，正则或文件结构变了').toBeGreaterThan(0)
+    for (const m of risky) {
+      expect(m[1], `规则缺 flex-shrink: 0：${m[0].trim().split('\n')[0]}`).toContain('flex-shrink: 0')
+    }
+  })
+
   it('大图限高且等比缩放（长截图不把一张卡拉成几个屏幕）', () => {
     const body = ruleBody(BLOCKS, '.md-block[data-block-type="image"] img')
     expect(body).toContain('max-height: 70vh')
     expect(body).toContain('width: auto')
     expect(body).toContain('max-width: 100%')
+  })
+})
+
+describe('内容块装饰开关 —— 只收装饰，绝不吞内容', () => {
+  // 开关语义（`lib/marker-prefs.ts` 文件头）是「隐藏标记产生的附加物」，内容一律保留。
+  // 归零只允许改 margin / padding / border / border-radius / background / 伪元素 content。
+  const offBodies = [...BLOCKS.matchAll(/\[data-marker-decor="off"\][^{]*\{([^}]*)\}/g)].map((m) => m[1])
+
+  it('关装饰规则里不得出现 `display: none`', () => {
+    // 用 display:none 实现归零 = 「关掉装饰后整块消失」，正是 2026-10-18 用户报告的现象
+    // （那一例的真实成因是 flex 压到 0，见上面通用守卫；这条挡住下一次用更直白的方式复现）。
+    expect(offBodies.length, '一条关装饰规则都没有，判据失效').toBeGreaterThan(5)
+    for (const body of offBodies) expect(body).not.toMatch(/display:\s*none/)
+  })
+
+  it('关装饰规则不得改 `visibility` / `opacity` / `height`（同样会隐形）', () => {
+    // `height: 0` 与 `display: none` 对读者是同一件事；`opacity: 0` 更糟（还在占位）。
+    for (const body of offBodies) {
+      expect(body).not.toMatch(/visibility:\s*hidden/)
+      expect(body).not.toMatch(/(?:^|;)\s*opacity:\s*0\b/)
+      expect(body).not.toMatch(/(?:^|;)\s*height:\s*0(?:px)?\b/)
+    }
   })
 })
 

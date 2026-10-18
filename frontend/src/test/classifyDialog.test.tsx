@@ -112,8 +112,8 @@ function defaultPreview(): Record<string, unknown> {
     status: 'ok',
     model: '测试模型',
     limits: {
-      maxNewFolders: 5, maxNewFoldersLimit: 10, notesChars: 600,
-      notesCharsMax: 2000, maxTagsPerDoc: 8, maxSeedTags: 50,
+      maxNewFolders: 5, maxNewFoldersLimit: 10, maxDepth: 2, maxDepthLimit: 3,
+      notesChars: 600, notesCharsMax: 2000, maxTagsPerDoc: 8, maxSeedTags: 50,
     },
     folderMode: 'reuse_or_new',
     tagMode: 'vocab',
@@ -270,6 +270,8 @@ describe('智能分类 — 配置阶段（先选，后开始）', () => {
     expect(body.seedTags).toEqual(['论文', '综述', '工具链'])
     // 不动文件夹时不该传一个新建额度——后端会忽略，但传了响应里就回显一个无意义的数
     expect(body.maxNewFolders).toBe(0)
+    // 细分程度同理：不建夹时「建到几层」没有落点，传中性值 1（而不是把用户选的档位带上）
+    expect(body.maxDepth).toBe(1)
     expect(body.docIds).toEqual(['tr_a', 'tr_b'])
   })
 
@@ -294,6 +296,47 @@ describe('智能分类 — 配置阶段（先选，后开始）', () => {
 
     fireEvent.click(dlg('[data-classify-folder-opt="tags_only"]') as HTMLElement)
     expect(dlg('[data-classify-max-new-wrap]')).toBeNull()
+    // 细分程度同理——不建夹时它没有落点，整组跟着藏起来
+    expect(dlg('[data-classify-depth-level-wrap]')).toBeNull()
+  })
+
+  /**
+   * **细分程度**（2026-10-18）：本次新建最多到第几层（**含主文件夹**）。
+   *
+   * 用户拍板「默认只允许一级」→ 默认档是 **2**，而它恰好排在数组第二项。
+   * 判据因此落在**默认档的取值**上而不是「有几个按钮」：三档全在、默认却悄悄
+   * 落到 1 或 3 时，界面上高亮照样在某个档上，看起来完全正常——只有请求体能分辨。
+   */
+  it('细分程度三档在场，默认「允许一级」（2 层），切档原样随请求发出', async () => {
+    useStore.setState({ docs: twoDocs() })
+    await openClassify(2)
+
+    expect(dlgAll('[data-classify-depth-level]').length).toBe(3)
+    // ⚠️ 对照：`maxDepth: MAX_DEPTH_DEFAULT` 改回 1（= 数组首项那种「顺序即默认」写法）→ 红
+    expect(dlg('[data-classify-depth-level="2"]')!.className).toContain('accent')
+    expect(dlg('[data-classify-depth-level="1"]')!.className).not.toContain('accent')
+    expect(dlg('[data-classify-depth-level="3"]')!.className).not.toContain('accent')
+    // 说明文案跟当前档走，不写死默认档
+    expect(dlg('[data-classify-depth-level-hint]')!.textContent).toContain('一级子文件夹')
+
+    fireEvent.click(dlg('[data-classify-depth-level="3"]') as HTMLElement)
+    expect(dlg('[data-classify-depth-level="3"]')!.className).toContain('accent')
+    expect(dlg('[data-classify-depth-level-hint]')!.textContent).toContain('两级子文件夹')
+
+    fireEvent.click(dlg('[data-start-classify]') as HTMLElement)
+    await waitPreviewSettled()
+    // ⚠️ 对照：`start()` 里漏掉 `maxDepth` → 后端收默认值 2，界面选的两级被静默吞掉 → 红
+    expect(JSON.parse(String(previewCalls()[0].init.body)).maxDepth).toBe(3)
+  })
+
+  it('「最多新建」调到 0 时细分程度整组禁用并说明无影响', async () => {
+    useStore.setState({ docs: twoDocs() })
+    await openClassify(2)
+
+    fireEvent.change(dlg('[data-classify-max-new]') as HTMLInputElement, { target: { value: '0' } })
+    // 不建夹时选「建到几层」是个点不动的选项（与「只用现有文件夹」在空库时禁用同款）
+    expect((dlg('[data-classify-depth-level="2"]') as HTMLButtonElement).disabled).toBe(true)
+    expect(dlg('[data-classify-depth-level-hint]')!.textContent).toContain('无影响')
   })
 
   it('裁定阶段可「返回设置」改配置，再按下按钮时是**重新分析**', async () => {
@@ -323,6 +366,8 @@ describe('智能分类 — 请求形状与失败', () => {
     expect(body.folderMode).toBe('reuse_or_new')
     expect(body.tagMode).toBe('vocab')
     expect(body.maxNewFolders).toBe(5)
+    // 细分程度默认**只允许一级子文件夹**（= 2 层，含主文件夹）
+    expect(body.maxDepth).toBe(2)
     expect(previewCalls()[0].url).toContain('/classify/preview')
     expect(previewCalls()[0].init.method).toBe('POST')
   })
@@ -352,6 +397,8 @@ describe('智能分类 — 请求形状与失败', () => {
     //    少了这个沿用，切档就把用户的策略悄悄打回默认而界面上看不见
     expect(second.folderMode).toBe('reuse_only')
     expect(second.tagMode).toBe('free')
+    // 细分程度也属于「沿用上一次请求的」那一组：本次没有建夹语义，故是中性值 1
+    expect(second.maxDepth).toBe(1)
   })
 
   it('preview 业务失败（HTTP 200 + code）→ 停在配置阶段显示错误，且不发 commit', async () => {
@@ -441,6 +488,9 @@ describe('智能分类 — 逐篇呈现（取材徽标 / 三类文件夹建议�
     expect(dlg('[data-classify-folder-mode="reuse"]')!.textContent).toContain('建议')
     // ⚠️ 对照：按钮改回光秃秃的「应用」→ 红。写明确认范围，顺带让「还没确认」更显眼
     expect(dlg('[data-confirm-classify]')!.textContent).toContain('2 篇')
+    // 头部策略摘要读**后端回显**的 `limits.maxDepth`（不是本地草稿）——它是
+    // 「这一次模型到底按几层分」的唯一明示。⚠️ 对照：把摘要改成读本地 cfg → 红
+    expect(dlg('[data-classify-summary]')!.textContent).toContain('允许一级')
   })
 })
 
@@ -448,8 +498,8 @@ describe('ClassifyDialog — 审定编辑（纯组件，直测）', () => {
   const base = (over: Partial<ClassifyPreview> = {}): ClassifyPreview => ({
     status: 'ok', model: 'm',
     limits: {
-      maxNewFolders: 5, maxNewFoldersLimit: 10, notesChars: 600,
-      notesCharsMax: 2000, maxTagsPerDoc: 8, maxSeedTags: 50,
+      maxNewFolders: 5, maxNewFoldersLimit: 10, maxDepth: 2, maxDepthLimit: 3,
+      notesChars: 600, notesCharsMax: 2000, maxTagsPerDoc: 8, maxSeedTags: 50,
     },
     folderMode: 'reuse_or_new', tagMode: 'vocab',
     folders: [{ id: 'fd_1', name: '研究', count: 3 }],
@@ -613,8 +663,8 @@ describe('ClassifyDialog — 审定编辑（纯组件，直测）', () => {
    */
   it('切档后段控高亮跟随**后端回显**的档位', () => {
     mount(base({ limits: {
-      maxNewFolders: 5, maxNewFoldersLimit: 10, notesChars: 0,
-      notesCharsMax: 2000, maxTagsPerDoc: 8, maxSeedTags: 50,
+      maxNewFolders: 5, maxNewFoldersLimit: 10, maxDepth: 2, maxDepthLimit: 3,
+      notesChars: 0, notesCharsMax: 2000, maxTagsPerDoc: 8, maxSeedTags: 50,
     } }))
     // ⚠️ 对照：把 activeDepth 改回 `cfg.notesChars`（恒为 600）→ 高亮停在 600 → 红
     expect(dlg('[data-classify-depth="0"]')!.className).toContain('accent')
