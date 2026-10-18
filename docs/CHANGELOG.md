@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-10-18 — 仓库清理：一次性文档与构建残留
+
+| 对象 | 处理 |
+|---|---|
+| `pi-docs/`（18 份设计稿，368K） | 删除。8–10 月的设计过程文档，未被 git 跟踪；用户确认清理 |
+| `dist/`（799MB） | 删除。7 月 9 日旧项目名 `DeepDraftBackend` 的构建产物，PyInstaller 可重建 |
+| `_pyi_build.log`（42K） | 删除。PyInstaller 打包日志 |
+| `backend/__pycache__/_*.pyc` ×4 | 删除。`_chart_stress` / `_old_export` / `_render_compare` / `_vision_check` 的孤儿字节码，源脚本早已删除 |
+| `backend/_export_probe.py` | 删除。本轮导出探针，按「`_` 前缀、用完即删」约定移除 |
+| 仓库根 `_*.md` ×5 | **保留**。送外部模型评审的材料，属用户资产（见 `.gitignore` 中 `/_*.md` 的注释） |
+| `backend/_type_demo_gen.py` | **保留**。CLAUDE.md 明示的保留例外 |
+| `调研/` | **保留**（用户选择） |
+
+顺带修两处指向 `pi-docs/` 的 markdown 死链：CLAUDE.md 图表围栏协议收紧的出处、CHANGELOG 视频直传方案链接 —— 改为纯文本并注明目录已于本日清理。`.gitignore` 的 `pi-docs/` 与 `调研/` 条目保留，防止将来同名目录被误提交。
+
+---
+
 ## 2026-10-18 — 多篇合成：产物形态契约 + 证据折叠卡 + 导出线性化
 
 ### 起因
