@@ -25,6 +25,7 @@ from app.core.errors import AppError
 from app.core.text_utils import parse_json_object, sanitize_reference_name, smart_truncate
 from app.generation.doc_text import latest_notes_text
 from app.llm import CancelledError
+from app.storage import folder_tree
 
 # **每批**的超时（秒）——**独立成层**，理由与 `COMPRESS_TIMEOUT` 相同：不设它就
 # 只有 SDK 的请求超时兜底，模型挂起时用户要干等到那儿才知道。
@@ -111,14 +112,19 @@ MAX_SEED_TAGS = 50
 #
 # ⚠️ 识别**只认确切的名字**（`is_misc_folder_name`）：模型若写成「其他」「未分类」，
 #    就按普通新建走（占额度、受上限约束）—— 零残留降级，不会误判成一个口袋夹。
-#    若库里**已有**一个叫「杂项」的文件夹，则建议会先被 `by_name` 命中并转成 `reuse`,
-#    这正是想要的行为（复用已有口袋夹，而不是再造一个）。
+#    若库里**已有**一个路径以「杂项」结尾的文件夹，则建议会先被 `parse_path` 命中并
+#    转成 `reuse`，这正是想要的行为（复用已有口袋夹，而不是再造一个）。
 MISC_FOLDER_NAME = "杂项"
 MISC_MAX_DENOMINATOR = 3        # 进杂项的篇数 × 3 > 总篇数 ⇒ 超过 1/3
 
 
 def is_misc_folder_name(name: str) -> bool:
-    """模型给的「新建」名是不是口袋夹 —— **只认确切的名字**，不做同义猜测。"""
+    """名字是不是口袋夹 —— **只认确切的名字**，不做同义猜测。
+
+    ⚠️ 入参是**单个段名**，嵌套深度与它无关：`技术/杂项` 由调用方传末段 `杂项` 进来。
+    闸门统计、不占额度这两件事按**完整路径**分组（`技术/杂项` 与 `生活/杂项` 是两个
+    独立口袋，各自判 1/3），但「这是不是口袋」永远只看末段。
+    """
     return str(name or "").strip().lower() == MISC_FOLDER_NAME.lower()
 
 # ⚠️ 用 `string.Template` 而不是 `str.format`：下面 JSON schema 里全是花括号，
@@ -209,9 +215,19 @@ def _folder_section(folders: list[dict], mode: str, max_new: int) -> str:
         return _FOLDER_SECTION_NONE
 
     if folders:
+        # ⚠️ 展示的是**路径**（`父 › 子`）而不是裸名：嵌套之后「前端」可能同时活在
+        # 好几个父级下，裸名在 prompt 里读起来完全一样，模型只能靠猜。
+        # `totalCount`（含子树）而不是 `count`（直接）—— 模型判断「这个夹有多大」时，
+        # 一个只有 2 篇直接文档、但下挂 40 篇的三层夹，按直接数看会被误判成冷门。
+        path_labels = folder_tree.paths(folders)
         listing = "\n".join(
-            f"- id={f['id']} 名称={sanitize_reference_name(f.get('name'))}"
-            f"（现有 {f.get('count', 0)} 篇）"
+            # ⚠️ `sanitize_reference_name` 的默认 max_len=80 会**把路径切在半路**：
+            # 每段上限 80 字、最多 3 段 + `›` 分隔，一条合法路径可以到 250 字，
+            # 被切掉的正好是末段 —— 模型看到「A › B › …」前半截像完整路径，
+            # 却拿它去匹配/新建，凭空多出一个夹。这里保留它的清洗（换行/引号/【】），
+            # 只把上界抬到 512（仍是一个有限值，防脏数据撑爆 prompt）。
+            f"- id={f['id']} 路径={sanitize_reference_name(path_labels.get(f['id'], f.get('name')), 512)}"
+            f"（含子文件夹共 {f.get('totalCount', f.get('count', 0))} 篇）"
             for f in folders
         )
     elif mode == FOLDER_MODE_REUSE_ONLY:
@@ -228,11 +244,12 @@ def _folder_section(folders: list[dict], mode: str, max_new: int) -> str:
 3. 宁可多几篇 "none"，也不要把不相干的材料硬塞进同一个文件夹。"""
     else:
         rules = f"""文件夹规则（重要）：
-1. **优先复用**上面列出的文件夹。只有确实没有合适归处时，才新建一个。
-2. 你这一批最多新建 {max_new} 个文件夹（全部分批共享一个总上限，故每批只提最必要的）。需要更多归处时，把相近的合并成同一类，或对该篇用 "none" 表示不归入。
+1. **优先复用**上面列出的文件夹。只有确实没有合适归处时，才新建。
+2. 你这一批最多新建 {max_new} 个文件夹（全部分批共享一个总上限，故每批只提最必要的；**多层路径按实际要新建的层数计**，例如「技术/前端」在「技术」已存在时算 1 个、两层都不存在时算 2 个）。需要更多归处时，把相近的合并成同一类，或对该篇用 "none" 表示不归入。
 3. 复用时必须**逐字复制**上面列出的 id（形如 fd_xxxxxxxxxxxx），**绝不自己编造 id**。
-4. 新建时给一个短名（12 字以内），描述这一类材料的共同主题。
-5. 把整批材料都看完之后，如果仍有一小批内容零散、各自都撑不起一个分类，可以把它们一起放进一个名为「{MISC_FOLDER_NAME}」的文件夹兜底。**它只用于确实没有合适归处的少数材料，尽量少放**；这个文件夹**不占**上面第 2 条的数量。"""
+4. 新建时可以用 `/` 表示层级（如「技术/前端」），**最多 3 层**；上面已经存在的层级不要重复创建，只写到最具体的那一层即可。每层名字 12 字以内，描述这一类材料的共同主题。
+5. 上面列出的「含子文件夹共 N 篇」是整棵子树的规模（含所有子文件夹），不是该夹直接挂的篇数。
+6. 把整批材料都看完之后，如果仍有一小批内容零散、各自都撑不起一个分类，可以把它们一起放进一个名为「{MISC_FOLDER_NAME}」的文件夹兜底。**它只用于确实没有合适归处的少数材料，尽量少放**；这个文件夹**不占**上面第 2 条的数量。"""
 
     return f"<现有文件夹>\n{listing}\n</现有文件夹>\n\n{rules}"
 
@@ -406,7 +423,7 @@ def parse_classify_response(text: str):
 
 
 def clean_tag_names(names) -> list[str]:
-    """标签名清洗内核：trim → 去空 → 去重 → 截长到 `MAX_TAG_LEN`。**全项目唯一一份**。
+    """标签名清洗内核：trim → **截长** → 去空 → 去重（比较截长后的形态）。**全项目唯一一份**。
 
     ⚠️ **只管「什么算一个合法的标签名」，不管数量** —— 条数上限是**策略特有**的
     （模型输出 8 个 / 用户手填 50 个 / commit 侧不设），由各调用方自己施加。
@@ -427,10 +444,13 @@ def clean_tag_names(names) -> list[str]:
     for v in names:
         if not isinstance(v, str):
             continue
-        t = v.strip()
+        # ⚠️ **先截长、再去重**：反过来的话，两条只在前 30 字之外不同的长标签
+        #    会各自通过去重、再被截成同一个字符串（同一批里出现两条一模一样的标签），
+        #    而一条超长标签换个尾部也会被当成两个不同的词。去重必须比较**最终入库形态**。
+        t = v.strip()[:MAX_TAG_LEN].rstrip()
         if not t or t in out:
             continue
-        out.append(t[:MAX_TAG_LEN])
+        out.append(t)
     return out
 
 
@@ -445,8 +465,123 @@ def _clean_tags(item: dict) -> tuple[list[str], list[str]]:
     return tags, warnings
 
 
-def _normalize_one(item: dict, by_id: dict, by_name: dict,
-                   rejected_new: set[str], max_new: int,
+def _build_path_index(folders: list[dict]) -> dict[tuple, list[str]]:
+    """`归一化路径元组 → folder id 列表`。**同名路径可能有多个 id**（文件夹允许重名）。
+
+    路径元组逐段走 `folder_tree.path_key`（与 `parse_path` 同一套归一），于是
+    「技术 / 前端」「技术/前端 」与「技术/前端」在这里是同一个键。
+
+    ⚠️ 同一父级下可以有两个都叫「前端」的夹 —— 它们的路径元组**完全相同**，
+    故值一定是列表而不是单个 id。任何「取第一个」的写法都是**按数组顺序裁决歧义**，
+    而那正是本轮要消灭的静默行为。
+    """
+    if not folders:
+        return {}
+    parent = folder_tree.normalize_parents(folders)
+    by_id = {f["id"]: f for f in folders}
+    out: dict[tuple, list[str]] = {}
+    for f in folders:
+        segs = tuple(folder_tree.path_key(by_id[a].get("name"))
+                     for a in folder_tree.ancestor_ids(folders, f["id"], parent))
+        segs += (folder_tree.path_key(f.get("name")),)
+        out.setdefault(segs, []).append(f["id"])
+    return out
+
+
+def _display_path(segments: list[str]) -> str:
+    """路径的**展示**形式（`技术/前端`）。
+
+    逐段折叠空白而不是整串 `sanitize_reference_name`：后者默认截 80 字，3 层的路径
+    会被切在半路（前半截看着像一条完整路径，用户据此改出来的夹是错的）。
+    段内换行也一并折掉——它会把对话框里的 `<option>` 撑成两行。
+    """
+    return "/".join(" ".join(s.split()) for s in segments)
+
+
+# `parse_path` 的 reject 原因 → 给用户看的一句话。**不是同义改写**：每条对应一个
+# 用户实际能看到并改掉的动作（那段路径串就摆在他眼前）。
+_REJECT_REASON_TEXT = {
+    "empty": "路径为空",
+    "empty_segment": "路径里有空的层级（多余的 /）",
+    "segment_too_long": f"某一层名字超过 {folder_tree.MAX_SEGMENT_LEN} 字",
+}
+
+
+def resolve_new_target(name: str, folders: list[dict],
+                       path_index: dict[tuple, list[str]]) -> dict:
+    """模型给的新建名 → 归宿。`folder_tree.parse_path` 是路径解析的**唯一实现**。
+
+    返回值 `outcome`：
+      - `"reuse"` : 指向一个已存在的夹（`folderId` 在场）
+      - `"new"`   : 需要新建（`segments` 是**已截断到上限**的逐段原串，
+                    交给前端 `ensure-path` 一次建完）
+      - `"none"`  : 不归入（`reason ∈ {empty, empty_segment, segment_too_long,
+                    ambiguous}`）—— 每条都必须带一句能让人看懂原因的 warning，
+                    否则用户看到的是「模型没建议」，而它其实建议了一个我们不能接受的东西
+
+    ⚠️ **六种情形与处置**（与 `_normalize_one` 的 warning 文案一一对应）：
+      单段唯一 → reuse ｜ 单段多个同名 → none（歧义）｜ 整条路径已存在 → reuse ｜
+      父路径存在、末段不存在 → new（只建末段）｜ 中间层缺失 → new（整条路径）｜
+      省略了前缀的路径命中多个分支 → none（歧义）
+    """
+    parsed = folder_tree.parse_path(name, folders)
+    kind = parsed["kind"]
+
+    if kind == "reject":
+        return {"outcome": "none", "reason": parsed.get("reason") or "reject",
+                "segments": parsed.get("segments") or []}
+    if kind == "ambiguous":
+        return {"outcome": "none", "reason": "ambiguous",
+                "segments": parsed.get("segments") or []}
+    if kind == "existing":
+        return {"outcome": "reuse", "folderId": parsed["folderId"],
+                "segments": parsed.get("segments") or []}
+
+    segments = list(parsed["segments"])
+    warnings: list[str] = []
+    if len(segments) > folder_tree.MAX_PATH_SEGMENTS:
+        # 截断而不是整篇不归入：层级变浅**仍然是一次有效的分类**，而 `none` 会让这篇
+        # 掉回未分类。降级是显式的（warning 里给出截断后的路径），不是静默的。
+        segments = segments[:folder_tree.MAX_PATH_SEGMENTS]
+        warnings.append(
+            f"模型建议的新建路径超过 {folder_tree.MAX_PATH_SEGMENTS} 层，"
+            f"已截断为「{_display_path(segments)}」")
+
+    key = tuple(folder_tree.path_key(s) for s in segments)
+    hits = path_index.get(key) or []
+    if len(hits) == 1:
+        return {"outcome": "reuse", "folderId": hits[0], "segments": segments,
+                "warnings": warnings}
+    if len(hits) > 1:
+        return {"outcome": "none", "reason": "ambiguous", "segments": segments,
+                "warnings": warnings}
+
+    # 省略前缀的路径：库里没有 `技术/前端`，但 `A/技术/前端` 与 `B/技术/前端` 都在。
+    # 此时**不能**当作「根级下新建一条 技术/前端」——模型十有八九指的是分支之一，
+    # 只是没说全。建第三条同名结构比明说「有歧义」更糟（而且它长得完全正常）。
+    n = len(key)
+    suffix_matches = [(p, fid) for p, ids in path_index.items()
+                      if len(p) > n and p[-n:] == key for fid in ids]
+    if len(suffix_matches) > 1:
+        return {"outcome": "none", "reason": "ambiguous", "segments": segments,
+                "warnings": warnings}
+    if len(suffix_matches) == 1:
+        # ⚠️ 唯一后缀命中**仍然新建**（不自动复用）：模型没写全前缀，归入哪个分支
+        #    是我们猜的，而猜错的代价是一个长得完全正常的错归属。但「静默新建」
+        #    更糟 —— 用户看到的是一条再普通不过的「新建文件夹」，无从知道模型
+        #    其实指向一个已存在的夹。故：行为不变，把它说出来。
+        _p, _ = suffix_matches[0]
+        warnings.append(
+            f"库里已有「{_display_path(list(_p))}」，"
+            f"但模型只写了「{_display_path(segments)}」——"
+            f"将在根级新建，而不是归入已有的那个")
+
+    return {"outcome": "new", "segments": segments, "warnings": warnings}
+
+
+def _normalize_one(item: dict, by_id: dict, folders: list[dict],
+                   path_index: dict[tuple, list[str]],
+                   rejected_paths: set[tuple], max_new: int,
                    folder_mode: str = FOLDER_MODE_REUSE_OR_NEW
                    ) -> tuple[dict, list[str], list[str]]:
     """归一化单篇的文件夹建议 → `(folder, tags, warnings)`。
@@ -483,35 +618,107 @@ def _normalize_one(item: dict, by_id: dict, by_name: dict,
         elif not name:
             folder = {"action": "none"}
             warnings.append("模型给的新文件夹名为空，已改为不归入")
-        elif name.lower() in by_name:
-            # 「优先复用」的兜底：模型没看出同名，我们替它归并——这正是词表机制要的效果
-            existing = by_name[name.lower()]
-            folder = {"action": "reuse", "id": existing,
-                      "name": by_id[existing].get("name") or name}
-            warnings.append("建议的新文件夹与现有文件夹同名，已改为归入它")
-        elif name.lower() in rejected_new:
-            # ⚠️ **候补名必须带出去**（`candidate`）。只说「已改为不归入」，用户就看不到
-            # 模型本来想把它放进哪 —— 91 篇实测时 14 个候选只留 5 个，被拒的 60+ 篇在
-            # 对话框里只剩一句「不归入」，模型的分类意图整个丢失（F7）。
-            cand = sanitize_reference_name(name)
-            folder = {"action": "none", "candidate": cand}
-            warnings.append(f"模型原本建议新建「{cand}」，但新建数量已超过上限"
-                            f"（{max_new} 个），已改为不归入")
-        elif is_misc_folder_name(name):
-            # 口袋夹：**不占额度**（故这一支排在 `rejected_new` 判定之后也不受它影响 ——
-            # 它压根不参与 `new_order` 计数），泛滥与否由 `normalize_suggestions` 的
-            # 机械闸门统一裁决。名字规范成常量，免得模型给的「杂项 」带空格进产物。
-            folder = {"action": "new", "name": MISC_FOLDER_NAME, "misc": True}
         else:
-            folder = {"action": "new", "name": name}
+            # 归宿判定只此一处（`resolve_new_target`），规划额度的预扫描与这里收口
+            # 共用它 —— 两处各解析一次的话，「这条路径算几行新建」迟早与「它到底是
+            # reuse 还是 new」分歧（模式 #54）。
+            target = resolve_new_target(name, folders, path_index)
+            warnings.extend(target.get("warnings") or [])
+            outcome = target["outcome"]
+            segments = target.get("segments") or []
+
+            if outcome == "reuse":
+                # 「优先复用」的兜底：模型没看出同路径/同名，我们替它归并
+                rid = target["folderId"]
+                folder = {"action": "reuse", "id": rid,
+                          "name": by_id.get(rid, {}).get("name")
+                          or _display_path(segments) or name}
+                warnings.append("建议的新文件夹与现有文件夹同名（或同路径），已改为归入它")
+            elif outcome == "none":
+                folder = {"action": "none"}
+                if target.get("reason") == "ambiguous":
+                    # 歧义**必须明示**：静默按数组顺序取第一个，会让「存在多个同名
+                    # 文件夹」这个事实在界面上完全不可见，而文档已经被塞进了其中一个。
+                    warnings.append("存在多个同名文件夹，无法确定归属，本篇已改为不归入")
+                else:
+                    why = _REJECT_REASON_TEXT.get(target.get("reason") or "")
+                    warnings.append(f"模型给的新文件夹路径不合法（{why}），已改为不归入")
+            else:
+                display = _display_path(segments)
+                key = tuple(folder_tree.path_key(s) for s in segments)
+                if key in rejected_paths:
+                    # ⚠️ **候补路径必须带出去**（`candidate`）。只说「已改为不归入」，
+                    # 用户就看不到模型本来想把它放进哪 —— 91 篇实测时 14 个候选只留 5 个，
+                    # 被拒的 60+ 篇在对话框里只剩一句「不归入」，模型的分类意图整个丢失。
+                    folder = {"action": "none", "candidate": display}
+                    warnings.append(f"模型原本建议新建「{display}」，但新建数量已超过上限"
+                                    f"（{max_new} 个文件夹），已改为不归入")
+                elif is_misc_folder_name(segments[-1]):
+                    # 口袋夹：**不占额度**（规划阶段就不把它计入），泛滥与否由
+                    # `normalize_suggestions` 的机械闸门按**完整路径**分组裁决。
+                    folder = {"action": "new", "name": display, "misc": True}
+                else:
+                    folder = {"action": "new", "name": display}
+                if segments and len(segments[-1]) > 12:
+                    warnings.append("新建的文件夹名偏长，建议适当缩短")
     else:
         folder = {"action": "none"}
 
     tags, tag_warnings = _clean_tags(item)
     warnings.extend(tag_warnings)
-    if folder["action"] == "new" and len(name) > 12:
-        warnings.append("新建的文件夹名偏长，建议适当缩短")
     return folder, tags, warnings
+
+
+def _plan_new_paths(docs: list[dict], seen: dict[str, dict], folders: list[dict],
+                    path_index: dict[tuple, list[str]], max_new: int
+                    ) -> tuple[set[tuple], list[tuple]]:
+    """按文档顺序规划「这批实际会新建哪些文件夹行」→ `(被拒路径, 已规划路径)`。
+
+    ⚠️ **计数单位是行，不是名字**：`技术/前端` 在 `技术` 已存在时算 1 行、两层都不
+    存在时算 2 行。改造前按名字计（一条路径 = 1 个额度），「最多新建 5 个」实际能
+    长出 15 个夹 —— 上限在嵌套之后名存实亡，而且从结果上看不出它失效了。
+
+    ⚠️ 被拒的是**整条路径**而不是它的某一层：留下 `技术` 却没有 `技术/前端`，
+    等于把一条本来完整的分类拆成半截，用户还得手动收拾。
+
+    ⚠️ 判定归宿**复用 `resolve_new_target`**（与 `_normalize_one` 同一份实现）：
+    只有 `outcome == "new"` 才占额度，`reuse` / 歧义一律不占（口径同收口侧）。
+    """
+    taken: set[tuple] = set(path_index)      # 现有完整路径
+    planned: list[tuple] = []
+    rejected: set[tuple] = set()
+    used = 0
+    for d in docs:
+        item = seen.get(d["id"])
+        if item is None:
+            continue
+        if str(item.get("folderAction") or "").strip().lower() != "new":
+            continue
+        name = str(item.get("newFolderName") or "").strip()
+        if not name:
+            continue
+        target = resolve_new_target(name, folders, path_index)
+        if target["outcome"] != "new":
+            continue
+        segments = target["segments"]
+        if is_misc_folder_name(segments[-1]):
+            continue                          # 口袋夹不占额度，由机械闸门单独裁决
+        key = tuple(folder_tree.path_key(s) for s in segments)
+        if key in rejected:
+            continue
+        # 逐层前缀：已有 / 本轮已规划过的层不再计 —— 同一路径被多篇建议时只付一次
+        adds: list[tuple] = []
+        for i in range(1, len(key) + 1):
+            prefix = key[:i]
+            if prefix not in taken and prefix not in adds:
+                adds.append(prefix)
+        if used + len(adds) > max_new:
+            rejected.add(key)
+            continue
+        used += len(adds)
+        taken.update(adds)
+        planned.extend(adds)
+    return rejected, planned
 
 
 def normalize_suggestions(raw, docs: list[dict], folders: list[dict],
@@ -527,12 +734,9 @@ def normalize_suggestions(raw, docs: list[dict], folders: list[dict],
     """
     global_warnings: list[str] = []
     by_id = {f["id"]: f for f in folders}
-    # 名字 → id，trim + 大小写不敏感；同名文件夹取第一个（id 才是身份，名字允许重复）
-    by_name: dict[str, str] = {}
-    for f in folders:
-        key = (f.get("name") or "").strip().lower()
-        if key and key not in by_name:
-            by_name[key] = f["id"]
+    # 完整路径（逐段 `path_key`）→ id 列表。**同名路径可能多个**（同一父级下允许重名），
+    # 故值一定是列表 —— 任何「取第一个」都是按数组顺序裁决歧义（见 resolve_new_target）。
+    path_index = _build_path_index(folders)
 
     raw_docs = raw.get("docs") if isinstance(raw, dict) else None
     if not isinstance(raw_docs, list):
@@ -560,33 +764,19 @@ def normalize_suggestions(raw, docs: list[dict], folders: list[dict],
     if dup:
         global_warnings.append(f"模型对同一篇文档返回了多条结果，已取第一条（{dup} 条被忽略）")
 
-    # 新建**按名字**去重计数（多篇归同一个新文件夹只算 1 个），保序，超上限的整名拒绝
+    # 新建**按行**规划（多篇建议同一条路径只付一次），超上限的**整条路径**拒绝
     #
     # ⚠️ **只在 `reuse_or_new` 下计数**：另两种策略根本不允许新建，走了这段只会因为
     #    `max_new` 被用光而多打一条「超过上限（N 个）」的全局警告——而真正的原因与
     #    上限无关（用户禁止了新建）。策略降级由 `_normalize_one` 逐篇承担。
-    new_order: list[str] = []
-    new_keys: set[str] = set()
     if folder_mode == FOLDER_MODE_REUSE_OR_NEW:
-        for d in docs:
-            item = seen.get(d["id"])
-            if item is None:
-                continue
-            if str(item.get("folderAction") or "").strip().lower() != "new":
-                continue
-            name = str(item.get("newFolderName") or "").strip()
-            key = name.lower()
-            if not name or key in new_keys or key in by_name:
-                continue                  # 空名 / 重名 / 与现有同名 → 不占上限
-            if is_misc_folder_name(name):
-                continue                  # 口袋夹不占额度，由机械闸门单独裁决
-            new_keys.add(key)
-            new_order.append(name)
-    rejected = {n.lower() for n in new_order[max_new:]}
+        rejected, planned = _plan_new_paths(docs, seen, folders, path_index, max_new)
+    else:
+        rejected, planned = set(), []
     if rejected:
         global_warnings.append(
-            f"模型建议新建 {len(new_order)} 个文件夹，超过上限（{max_new} 个），"
-            f"超出的 {len(rejected)} 个已改为不归入")
+            f"模型建议新建的文件夹超过上限（{max_new} 个，按层级计），"
+            f"有 {len(rejected)} 条分类路径已改为不归入")
 
     suggestions: list[dict] = []
     for d in docs:
@@ -596,8 +786,8 @@ def normalize_suggestions(raw, docs: list[dict], folders: list[dict],
             warnings.append("模型没有返回本篇的分类结果")
             folder, tags = {"action": "none"}, []
         else:
-            folder, tags, extra = _normalize_one(item, by_id, by_name, rejected, max_new,
-                                                 folder_mode)
+            folder, tags, extra = _normalize_one(item, by_id, folders, path_index,
+                                                 rejected, max_new, folder_mode)
             warnings.extend(extra)
         suggestions.append({**d, "folder": folder, "tags": tags, "warnings": warnings})
 
@@ -605,15 +795,23 @@ def normalize_suggestions(raw, docs: list[dict], folders: list[dict],
     # 「尽量少放」**不能只写在 prompt 里**。整批看完之后若发现进杂项的篇数超过 1/3，
     # 说明它已经不是在兜底、而是在吸走本该分开的内容 —— 整夹撤下、退回候补
     # （带 `candidate`，用户仍看得到模型的意图，只是不自动采纳）。
-    misc_rows = [s for s in suggestions if s["folder"].get("misc")]
-    if len(misc_rows) * MISC_MAX_DENOMINATOR > len(suggestions):
-        for s in misc_rows:
-            s["folder"] = {"action": "none", "candidate": MISC_FOLDER_NAME}
-            s["warnings"].append(
-                f"归入「{MISC_FOLDER_NAME}」的文档过多，该文件夹已整体撤下，本篇改为不归入")
-        global_warnings.append(
-            f"模型把 {len(misc_rows)}/{len(suggestions)} 篇归入了口袋文件夹"
-            f"（「{MISC_FOLDER_NAME}」），超过 1/{MISC_MAX_DENOMINATOR}，已整体撤下")
+    # ⚠️ 按**完整路径**分组：`技术/杂项` 与 `生活/杂项` 是两个独立口袋，各自判 1/3。
+    # 按末段名合在一起统计会让两个都很健康的口袋互相连坐（一起被撤下，而任何一个
+    # 单独看都没超），也会让一个真正泛滥的口袋被另一个稀释掉。
+    misc_groups: dict[str, list[dict]] = {}
+    for s in suggestions:
+        if s["folder"].get("misc"):
+            label = s["folder"].get("name") or MISC_FOLDER_NAME
+            misc_groups.setdefault(label, []).append(s)
+    for label, misc_rows in misc_groups.items():
+        if len(misc_rows) * MISC_MAX_DENOMINATOR > len(suggestions):
+            for s in misc_rows:
+                s["folder"] = {"action": "none", "candidate": label}
+                s["warnings"].append(
+                    f"归入「{label}」的文档过多，该文件夹已整体撤下，本篇改为不归入")
+            global_warnings.append(
+                f"模型把 {len(misc_rows)}/{len(suggestions)} 篇归入了口袋文件夹"
+                f"（「{label}」），超过 1/{MISC_MAX_DENOMINATOR}，已整体撤下")
 
     return {"suggestions": suggestions, "warnings": global_warnings}
 

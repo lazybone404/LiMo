@@ -274,7 +274,10 @@ class Store:
 ### 关键决策
 
 - **版本归档**（2026-10-10，前身「两版制」）：同 mode 每版独立归档 `{mode}/v{N}.md`、**全部保留不设上限**；头是真相、index 只是缓存（删 index 重建后版本序与生成时间仍在）；生成追加新版、编辑 `replace_version` 就地覆盖当前版（**不产生版本**）；切换是纯视图操作故无「当前版指针」
-- **索引重建**：`_rebuild_index` 扫描根目录含 `transcript.md` 的目录反推；产物的版本序/时间/风格**读各自文件头的自证头**还原（此前跳过 `.prev.md` 且不读头，删一次 index 即全丢）
+- **索引重建**：`_rebuild_index` 扫描根目录含 `transcript.md` 的目录反推。**不可从磁盘重推的四类字段各自有真相源**，重建是「读它们」不是「补救」：
+  - 文件夹归属 / 标签 / 创建时间 / 来源字段 → `{doc_dir}/meta.json`（文档级，跟着文档走）+ `{root}/folders.json`（库级树）。⚠️ **恢复主键是 `dir_name` 不是文档 id** —— 重建把 id 由正文 sha256 重推、必然变。⚠️ **刻意不从 `index.json.bak` 回落**：那份备份存的是**损坏原文**（拷它是为了给人人工抢救），捞不出东西
+  - 产物的版本序 / 生成时间 / 风格 → **读各自文件头的自证头**（2026-10-10，此前删一次 index 即全丢）
+  - 真相文件由 `_save_index` 同步（**先 folders.json 后 index.json**，真相领先缓存）与启动迁移 `_migrate_classification_sidecars`（幂等，只补读不出来的那些）落盘；读入口收口 `storage/doc_meta.py`
 - **处理结果覆盖**：同 mode 覆盖不版本化（OCR 确定性的）
 - **去重两层**：URL 去重 + SHA256 contentHash 去重（空文本固定 hash 需在 TextAdapter 层防碰撞）
 

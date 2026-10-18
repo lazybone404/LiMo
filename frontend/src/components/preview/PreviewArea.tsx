@@ -32,6 +32,7 @@ import { EmptyState } from './EmptyState'
 import { ProcessingPlaceholder } from './ProcessingPlaceholder'
 import { VersionSwitcher } from './VersionSwitcher'
 import { ArtifactMetaBar } from './ArtifactMetaBar'
+import { TagSuggestions } from './TagSuggestions'
 import { TranscriptQualityNote } from './TranscriptQualityNote'
 import { ImageResultView } from './ImageResultView'
 import { CopyContentBtn } from './CopyContentBtn'
@@ -835,8 +836,12 @@ export function PreviewArea() {
                   ⚠️ 流式生成中**不显示**：这时 `markdownMeta` 还是**上一版**的数
                   （store 只在生成完成时被更新），配着新流入的正文显示是错位读数。 */}
               {!isStreaming && (
-                <div className="mb-2 px-1">
+                <div className="mb-2 px-1 flex flex-wrap items-center gap-x-3 gap-y-1.5">
                   <ArtifactMetaBar meta={markdownMeta} versions={markdownVersions} />
+                  {/* 标签建议：库里已有标签 ∩ 这篇正文里出现过的。点一下直接加。
+                      ⚠️ 与自证条同排、同款小徽章 —— 它是「顺手可做的一件事」，
+                      不该单占一行把正文推下去。无建议时整个组件返回 null。 */}
+                  <TagSuggestions content={displayContent} />
                 </div>
               )}
               {/* 内容区工具条：已编辑徽章 + 编辑按钮（Excel 数据摘要走 summary 内容源但不可编辑，方案范围表） */}

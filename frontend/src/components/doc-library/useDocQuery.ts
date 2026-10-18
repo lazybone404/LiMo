@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { searchDocs, type SearchHit } from '../../api/search'
 import type { DocEntry } from '../../store/types'
 import { SRC_LABEL } from './docMeta'
+import { buildFolderTree, type FolderNode, type FolderTree } from './folderTree'
 
 export type SortKey = 'date' | 'title' | 'type' | 'relevance'
 
@@ -45,19 +46,55 @@ export interface DocFilter {
   type: string
   /** 用户标签筛选（多选，AND 语义），[] = 不限 */
   tags: string[]
-  /** null = 全部；'' = 未分类；其他 = 文件夹 id（三态必须区分） */
+  /**
+   * null = 全部；'' = 未分类；其他 = 文件夹 id（**含全部子文件夹**）。
+   *
+   * ⚠️ 三态必须用 `!== null` 区分 —— `''` 是有效筛选值（只看未分类），
+   * 写成真值判断会让「未分类」视图永远退化成看全部，而且后端 200、前端毫无察觉。
+   */
   folderId: string | null
   /** 日期范围（闭区间，`YYYY-MM-DD`）。null = 不限 */
   dateFrom: string | null
   dateTo: string | null
 }
 
-/** 内存过滤（**不含关键词**）：文件夹 / 来源类型 / 标签 / 标题关键词 / 日期范围。0ms，不动网络。 */
-export function filterDocs(docs: DocEntry[], q: DocFilter): DocEntry[] {
+/**
+ * 内存过滤（**不含关键词**）：文件夹 / 来源类型 / 标签 / 标题关键词 / 日期范围。0ms，不动网络。
+ *
+ * @param folders 文件夹清单（用于**展开子树**与**归化悬空 folderId**）。
+ *  ⚠️ **不传 = 改造前的严格等值**（只看 `folderId` 恰好相等的）——既有纯函数测试与
+ *  所有还没接树的调用点因此零改动。传了才启用两条新语义：
+ *    - 非空 `folderId` → 命中该夹**及其全部后代**；
+ *    - `folderId === ''` → 空串**与悬空 id** 都算未分类（与 `countByFolder` /
+ *      `groupDocs` 同源；后端删夹时会归化，但本地乐观更新可能先到中间态）。
+ */
+export function filterDocs(
+  docs: DocEntry[], q: DocFilter, folders?: FolderNode[],
+  /**
+   * 调用方**已经建好**的树（可选）。传了就不在本函数里重建 —— 一次列表渲染里
+   * `filterDocs` / `countByFolder` / `groupDocs` 各建一次树是 O(3n)，而它们的
+   * 输入是同一个 `folders`。不传仍照旧自建，纯函数测试与外部调用零改动。
+   */
+  tree?: FolderTree,
+): DocEntry[] {
   let result = docs
   if (q.folderId !== null) {
-    // ⚠️ 空串是有效值（未分类）。悬空 folderId 由后端归化为未分类，两侧语义一致。
-    result = result.filter(d => (d.folderId || '') === q.folderId)
+    if (!folders && !tree) {
+      // 旧路径：悬空 folderId 由后端归化为未分类，两侧语义一致。
+      result = result.filter(d => (d.folderId || '') === q.folderId)
+    } else {
+      const t = tree ?? buildFolderTree(folders!)
+      if (q.folderId === '') {
+        result = result.filter(d => {
+          const df = d.folderId || ''
+          return df === '' || !t.byId.has(df)
+        })
+      } else {
+        const scope = t.descendantIds(q.folderId)
+        scope.add(q.folderId)
+        result = result.filter(d => scope.has(d.folderId || ''))
+      }
+    }
   }
   if (q.type) {
     result = result.filter(d => d.sourceType === q.type)
@@ -155,8 +192,11 @@ export function buildResultSet(
   filter: DocFilter,
   query: string,
   hits: SearchHit[],
+  folders?: FolderNode[],
+  /** 已建好的树（见 `filterDocs` 的同名参数） */
+  tree?: FolderTree,
 ): ResultSet {
-  const eligible = filterDocs(docs, filter)
+  const eligible = filterDocs(docs, filter, folders, tree)
   const rankOf = new Map(hits.map((h, i) => [h.id, i]))
   const snippetById = new Map<string, string>()
   for (const h of hits) { if (h.snippet) snippetById.set(h.id, h.snippet) }
@@ -185,10 +225,21 @@ export interface DocQueryInput extends DocFilter {
   /** 搜索框关键词 */
   query: string
   sort: SortKey
+  /**
+   * 文件夹清单（含 **全部**文件夹，不是筛选后的）。用于「筛文件夹 = 含子树」。
+   * ⚠️ 调用方必须传**引用稳定**的值（从 store 取），否则每次渲染都会重建树。
+   */
+  folders?: FolderNode[]
+  /**
+   * 已建好的文件夹树（可选）。调用方若已经 memo 了一份（列表渲染通常都需要它，
+   * 用于路径标签 / 祖先展开 / 移动禁用集），传进来即可让本次查询复用它，
+   * 而不是在 `filterDocs` 里再建一次。
+   */
+  tree?: FolderTree
 }
 
 export function useDocQuery(input: DocQueryInput) {
-  const { docs, query, title, type, tags, folderId, dateFrom, dateTo, sort } = input
+  const { docs, query, title, type, tags, folderId, dateFrom, dateTo, sort, folders, tree } = input
 
   const [hits, setHits] = useState<SearchHit[]>([])
   const [searching, setSearching] = useState(false)
@@ -217,8 +268,9 @@ export function useDocQuery(input: DocQueryInput) {
   // ⚠️ `tags` 是数组：调用方必须传引用稳定的值（从 store 取，勿在渲染里写 `[]` 字面量），
   // 否则每次渲染都重算一遍过滤。
   const { result, matchedIds, snippetById, rankOf } = useMemo(
-    () => buildResultSet(docs, { title, type, tags, folderId, dateFrom, dateTo }, query, hits),
-    [docs, title, type, tags, folderId, dateFrom, dateTo, query, hits],
+    () => buildResultSet(docs, { title, type, tags, folderId, dateFrom, dateTo },
+      query, hits, folders, tree),
+    [docs, title, type, tags, folderId, dateFrom, dateTo, query, hits, folders, tree],
   )
   const visible = useMemo(() => sortDocs(result, sort, rankOf), [result, sort, rankOf])
 
@@ -248,8 +300,10 @@ export function collectTagFacets(docs: DocEntry[]): { tag: string; count: number
 }
 
 export interface FolderCounts {
-  /** 文件夹 id → 文档数 */
+  /** 文件夹 id → **直接**挂在该夹下的文档数 */
   byFolder: Map<string, number>
+  /** 文件夹 id → 含全部后代的文档数（筛选 chip 与分组头读这个） */
+  totalByFolder: Map<string, number>
   /** 未分类（含 folderId 悬空的——后端删夹时会把文档归化，但前端可能先于刷新拿到中间态） */
   uncategorized: number
 }
@@ -257,20 +311,35 @@ export interface FolderCounts {
 /**
  * 文件夹计数 —— **唯一来源**。筛选小节的 chip、列表分组头、工具栏总数全部读它。
  *
- * ⚠️ 不能读后端的 `folder.count`：那是上一次拉取的快照，而本地的 `moveDocs` 是乐观更新
- * （移完立刻改 `docs` 里的 folderId，不 refetch）。两边各读各的，移动瞬间计数互相矛盾——
- * 典型表现是「拖进文件夹，文档行已经进去了，文件夹后面的数字还是旧的」。
+ * ⚠️ 不能读后端的 `folder.count` / `totalCount`：那是上一次拉取的快照，而本地的
+ * `moveDocs` 是乐观更新（移完立刻改 `docs` 里的 folderId，不 refetch）。两边各读各的，
+ * 移动瞬间计数互相矛盾——典型表现是「拖进文件夹，文档行已经进去了，文件夹后面的
+ * 数字还是旧的」。
+ *
+ * ⚠️ `byFolder` 与 `totalByFolder` **必须分开给**：验收对账（Σ 各夹 + 未分类 = 文档总数）
+ * 只能用直接数求和，把 `totalByFolder` 加起来会把每篇文档数 N 遍（它的语义本就是
+ * 「这个子树有多少篇」）。
  */
-export function countByFolder(docs: DocEntry[], folders: { id: string }[]): FolderCounts {
-  const ids = new Set(folders.map(f => f.id))
+export function countByFolder(
+  docs: DocEntry[], folders: FolderNode[], tree?: FolderTree,
+): FolderCounts {
+  const t = tree ?? buildFolderTree(folders)
   const byFolder = new Map<string, number>()
   let uncategorized = 0
   for (const d of docs) {
     const fid = d.folderId || ''
-    if (!fid || !ids.has(fid)) { uncategorized++; continue }
+    if (!fid || !t.byId.has(fid)) { uncategorized++; continue }
     byFolder.set(fid, (byFolder.get(fid) || 0) + 1)
   }
-  return { byFolder, uncategorized }
+  // 子树求和：前序保证后代总在祖先之后，反向走一遍把每个夹的计数累加到父级
+  // （与后端 `folder_tree.total_counts` 同构，环已由 normalizeParents 打断）
+  const totalByFolder = new Map(byFolder)
+  for (let i = t.preorder.length - 1; i >= 0; i--) {
+    const id = t.preorder[i]
+    const p = t.parentOf.get(id) || ''
+    if (p) totalByFolder.set(p, (totalByFolder.get(p) ?? 0) + (totalByFolder.get(id) ?? 0))
+  }
+  return { byFolder, totalByFolder, uncategorized }
 }
 
 // ── 列表排列（独立于筛选的旋钮）──────────────────────────────────
@@ -296,6 +365,17 @@ export interface DocGroup {
    *  ⚠️ 用显式标志而不是让调用方 `groupBy === 'folder'` 到处判：后者散落三处，必然漏一处。 */
   editable: boolean
   docs: DocEntry[]
+  /** 树形层级（0 = 根级）。只有文件夹维度可能非 0，其余恒 0。 */
+  depth: number
+  /** 父分组的 `key`（`f:xxx`）；根级与「未分类」恒 `null`。 */
+  parentKey: string | null
+  /**
+   * **整棵子树里的文件夹行数**（不含自身）。删除确认文案读它，必须与后端
+   * `delete_folder` 的 `deletedFolders - 1` 同源 —— 删除是整棵子树一起删的，
+   * 说「N 个子文件夹」时 N 是后代总数，不是直接子级（那会让用户少算一大截）。
+   * 非文件夹维度恒 0。
+   */
+  descendantCount: number
 }
 
 /** 时间分桶：今天 / 本周 / 本月 / 更早。⚠️「本周」= 本自然周（周一起），与日期筛选同义 */
@@ -329,26 +409,38 @@ function dateBucket(createdAt: string, now: Date): { key: string; label: string 
 export function groupDocs(
   docs: DocEntry[],
   by: Exclude<GroupBy, 'none'>,
-  folders: { id: string; name: string }[],
+  folders: FolderNode[],
   now: Date = new Date(),
+  /** 调用方**已经建好**的树（同一批 `folders` 下重复建树纯属浪费；见 `filterDocs`） */
+  prebuilt?: FolderTree,
 ): DocGroup[] {
   if (by === 'folder') {
-    const ids = new Set(folders.map(f => f.id))
+    const tree = prebuilt ?? buildFolderTree(folders)
     const buckets = new Map<string, DocEntry[]>()
-    for (const f of folders) buckets.set(f.id, [])
+    for (const id of tree.preorder) buckets.set(id, [])
     buckets.set('', [])                        // 未分类
     for (const d of docs) {
-      // 悬空 folderId 归入未分类 —— 与后端删夹时的归化、与 countByFolder 三处同源
-      const fid = d.folderId && ids.has(d.folderId) ? d.folderId : ''
+      // 悬空 folderId 归入未分类 —— 与后端删夹时的归化、与 countByFolder 两处同源
+      const fid = d.folderId && tree.byId.has(d.folderId) ? d.folderId : ''
       buckets.get(fid)!.push(d)
     }
-    const named = folders
-      .filter(f => buckets.has(f.id))
-      .map(f => ({
-        key: `f:${f.id}`, label: f.name, ref: f.id, editable: true, docs: buckets.get(f.id)!,
-      }))
+    // ⚠️ 顺序**必须**是前序（`tree.preorder`），不能是 `folders` 数组顺序：
+    // 子夹排在父夹之前的话，折叠父级时 `DocList` 的「父已隐藏 → 自己也隐藏」
+    // 那趟单向前推会失效（它假设父一定先出现），子夹就会从收起的父级里漏出来。
+    const named = tree.preorder.map(id => {
+      const p = tree.parentOf.get(id) || ''
+      return {
+        key: `f:${id}`, label: tree.byId.get(id)!.name, ref: id, editable: true,
+        docs: buckets.get(id)!,
+        depth: tree.depthOf.get(id) ?? 0,
+        parentKey: p ? `f:${p}` : null,
+        descendantCount: tree.descendantIds(id).size,
+      }
+    })
     return [...named, {
       key: 'f:', label: '未分类', ref: '', editable: false, docs: buckets.get('')!,
+      // 未分类不是实体，永不参与层级（不变量 5）：它固定最后、恒根级
+      depth: 0, parentKey: null, descendantCount: 0,
     }]
   }
 
@@ -360,7 +452,9 @@ export function groupDocs(
       : (() => { const b = dateBucket(d.createdAt, now); return { key: `d:${b.key}`, label: b.label, ref: b.key } })()
     const cur = buckets.get(g.key)
     if (cur) cur.docs.push(d)
-    else buckets.set(g.key, { ...g, editable: false, docs: [d] })
+    else buckets.set(g.key, {
+      ...g, editable: false, docs: [d], depth: 0, parentKey: null, descendantCount: 0,
+    })
   }
   return [...buckets.values()]
 }

@@ -96,12 +96,19 @@ def require_ident(value: str, label: str, *, code: str) -> str:
     return value
 
 
-def _page_args(source_type, tag, folder_id, query, cursor) -> dict:
+def _page_args(source_type, tag, folder_id, query, cursor,
+               include_descendants=False) -> dict:
     """两个 Source 共用的筛选参数归一 —— 尤其 `folder_id` 的**三态**。
 
     ⚠️ `folder_id` 的三态是 `None`（不过滤）/ `""`（只看未分类）/ `值`（该文件夹），
     不能写 `folder_id or None`：那会把「只看未分类」这个**有效筛选**变成「不过滤」，
     而结果看起来完全正常（多给了几篇）。
+
+    ⚠️ `include_descendants` 归一成 `True | None`（**不是** `True | False`）：
+    HTTP 侧 `_get` 靠「值为 None 就不进 query string」表达「不传」，而这个参数的
+    默认值就是 False —— 传不传结果一样，但少一个参数就少一次「后端默认值改了而
+    CLI 还在显式传旧值」的漂移面。本地侧拿到 `None` 时 `QueryService` 的
+    `if include_descendants and ...` 同样判假，两侧语义一致。
 
     ⚠️ **`limit` / `--all` 刻意不在这里**：两个 Source 表达「一次取全」的方式
     **不同**——本地是 `limit=None`（`QueryService` 的语义），HTTP 是 `all=true` 且
@@ -114,6 +121,7 @@ def _page_args(source_type, tag, folder_id, query, cursor) -> dict:
         "tag": tag or None,
         "folder_id": folder_id,
         "query": query or None,
+        "include_descendants": True if include_descendants else None,
         "cursor": cursor,
     }
 
@@ -209,9 +217,12 @@ class HttpSource:
         return self._get("status")
 
     def list_resources(self, *, source_type=None, tag=None, folder_id=None, query=None,
-                       limit=50, all_pages=False, cursor=None) -> dict:
+                       include_descendants=False, limit=50, all_pages=False,
+                       cursor=None) -> dict:
         # `all_pages` → `all=true` 且**不传** limit（见 `_page_args` 的 ⚠️）
-        return self._get("resources", **_page_args(source_type, tag, folder_id, query, cursor),
+        return self._get("resources",
+                         **_page_args(source_type, tag, folder_id, query, cursor,
+                                      include_descendants),
                          limit=None if all_pages else limit,
                          all="true" if all_pages else None)
 
@@ -300,9 +311,11 @@ class LocalSource:
         return {"schema_version": SCHEMA_VERSION, **self._run(self._svc.stats)}
 
     def list_resources(self, *, source_type=None, tag=None, folder_id=None, query=None,
-                       limit=50, all_pages=False, cursor=None) -> dict:
+                       include_descendants=False, limit=50, all_pages=False,
+                       cursor=None) -> dict:
         page = self._run(self._svc.list_resources,
-                         **_page_args(source_type, tag, folder_id, query, cursor),
+                         **_page_args(source_type, tag, folder_id, query, cursor,
+                                      include_descendants),
                          limit=None if all_pages else limit)
         return page.to_dict()
 

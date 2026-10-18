@@ -66,6 +66,7 @@ vi.mock('../api/client', async (importOriginal) => {
     listTranscripts: vi.fn().mockResolvedValue([]),
     getMarkdown: vi.fn(),
     createFolder: vi.fn(),
+    ensureFolderPath: vi.fn(),
     renameFolder: vi.fn(),
     deleteFolder: vi.fn(),
     updateTranscript: vi.fn(),
@@ -78,6 +79,7 @@ const { ClassifyDialog, DEPTH_OPTIONS } = await import('../components/doc-librar
 const client = await import('../api/client')
 
 const createFolderMock = client.createFolder as unknown as Mock
+const ensurePathMock = client.ensureFolderPath as unknown as Mock
 
 /**
  * 对话框是 **Portal 到 `document.body`** 的（父级 `DocLibrary` 的根 `<aside>` 带
@@ -90,7 +92,7 @@ const dlgAll = (sel: string) => document.body.querySelectorAll(sel)
 
 interface Captured { url: string; init: RequestInit }
 let captured: Captured[] = []
-/** 写入顺序的两个时间戳（createFolder 与 commit 各打一个） */
+/** 写入顺序（ensure-path 与 commit 各打一个） */
 let order: string[] = []
 
 /** preview 端点返回的 payload —— 各用例按需覆写（业务失败 / 三态 / 新建夹） */
@@ -138,9 +140,15 @@ beforeEach(() => {
   previewData = defaultPreview()
   commitData = { status: 'ok', affected: 2, failed: [] }
   createFolderMock.mockReset()
-  createFolderMock.mockImplementation(async (name: string) => {
-    order.push(`create:${name}`)
-    return { id: `fd_new_${name}`, name, count: 0 }
+  ensurePathMock.mockReset()
+  ensurePathMock.mockImplementation(async (path: string) => {
+    order.push(`ensure:${path}`)
+    // 形状照抄端点：`created` 是**这次真正新建的文件夹行**（已有则空数组）
+    return {
+      id: `fd_new_${path}`,
+      segments: path.split('/'),
+      created: [{ id: `fd_new_${path}`, name: path, count: 0 }],
+    }
   })
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
     const u = String(url)
@@ -468,6 +476,30 @@ describe('ClassifyDialog — 审定编辑（纯组件，直测）', () => {
     return { ...r, onConfirm }
   }
 
+  /**
+   * 复审下拉显示**路径**：嵌套之后两个同名「前端」在同一个下拉里长得一模一样，
+   * 用户选中的究竟是哪一个不可知（与 prompt 侧同一个理由，见 classifier 的清单）。
+   *
+   * 对照（已验证有区分力）：`<option>` 改回 `{f.name}` → 本条两条断言同时红。
+   */
+  it('复用下拉显示**路径**（技术 › 前端），不是裸名', () => {
+    mount(base({
+      folders: [
+        { id: 'fd_tech', name: '技术', count: 2, parentId: '', totalCount: 40 },
+        { id: 'fd_fe', name: '前端', count: 38, parentId: 'fd_tech', totalCount: 38 },
+      ],
+      suggestions: [
+        { id: 'tr_a', title: '论文 A', source: 'notes', chars: 600,
+          folder: { action: 'reuse', id: 'fd_fe', name: '前端' }, tags: [], warnings: [] },
+      ],
+    }))
+    const sel = dlg('[data-classify-folder-select="tr_a"]') as HTMLSelectElement
+    const texts = Array.from(sel.options).map(o => o.textContent?.trim())
+    expect(texts).toContain('技术 › 前端')
+    // 裸「前端」不该作为独立选项出现（它是路径的一部分，不是另一项）
+    expect(texts.filter(t => t === '前端')).toEqual([])
+  })
+
   it('DEPTH_OPTIONS 首项即默认档 600（初值取 `[0].value`，故**顺序即默认值**）', () => {
     // ⚠️ 这条钉的是「调序 = 静默改默认档」这个隐式契约：把「仅标题」提到首位，
     //    所有用户的初始取材深度会悄悄变成 0，而界面上没有任何异常。
@@ -620,9 +652,9 @@ describe('智能分类 — 写入（建夹 → commit）', () => {
 
     // ⚠️ 对照 B：把建夹挪到 commit 之后 → order 变成 ['commit', ...] → 红。
     // 顺序反了的失效是「第一次新建夹必然整批失败」，而界面照样关闭对话框。
-    expect(order).toEqual(['create:新主题', 'commit'])
-    // 同名只建一次（两篇都要「新主题」→ 一个夹）
-    expect(createFolderMock).toHaveBeenCalledTimes(1)
+    expect(order).toEqual(['ensure:新主题', 'commit'])
+    // 同名只请求一次（两篇都要「新主题」→ 一条路径）
+    expect(ensurePathMock).toHaveBeenCalledTimes(1)
 
     const body = JSON.parse(String(commitCalls()[0].init.body))
     const a = body.assignments.find((x: { id: string }) => x.id === 'tr_a')
@@ -631,7 +663,7 @@ describe('智能分类 — 写入（建夹 → commit）', () => {
     expect(a.tags).toEqual(['x'])
   })
 
-  it('库里已有同名夹 → 直接复用，不重复建', async () => {
+  it('库里已有同名夹 → 仍交给后端 ensure-path 裁决（前端**不做**本地同名预查）', async () => {
     previewData = {
       ...defaultPreview(),
       folders: [{ id: 'fd_same', name: ' 新主题 ', count: 1 }],
@@ -640,6 +672,11 @@ describe('智能分类 — 写入（建夹 → commit）', () => {
           folder: { action: 'new', name: '新主题' }, tags: [], warnings: [] },
       ],
     }
+    // 后端行为：同父同级同名 → 复用，`created` 为空
+    ensurePathMock.mockImplementation(async (path: string) => {
+      order.push(`ensure:${path}`)
+      return { id: 'fd_same', segments: [path], created: [] }
+    })
     useStore.setState({
       docs: twoDocs(),
       folders: [{ id: 'fd_same', name: ' 新主题 ', count: 1, createdAt: '2026-01-01T00:00:00' }],
@@ -650,10 +687,43 @@ describe('智能分类 — 写入（建夹 → commit）', () => {
     fireEvent.click(dlg('[data-confirm-classify]') as HTMLElement)
     await vi.waitFor(() => expect(commitCalls().length).toBe(1))
 
-    // 判据是 trim + 大小写不敏感（用户建过的夹不该因为多个空格就再建一个）
+    // ⚠️ 对照（已验证有区分力）：恢复「本地 trim + toLowerCase 预查，命中就跳过请求」——
+    // `ensurePathMock` 调用数变成 0，本断言红。
+    // 为什么要把这份「看起来更快」的优化让出去：它的归一实现是 `path_key` 的第二份副本，
+    // 而两者在「名字里含全角空格 / 特殊大小写 / 历史夹名本身含 `/`」上会分道扬镳 ——
+    // 前端认为「不同」就多发一次请求（幂等，无害），认为「相同」就会把一个本该新建的
+    // 路径静默并进另一个夹（**有损**，且分类结果看起来完全正常）。
+    expect(ensurePathMock).toHaveBeenCalledTimes(1)
     expect(createFolderMock).not.toHaveBeenCalled()
     const body = JSON.parse(String(commitCalls()[0].init.body))
     expect(body.assignments[0].folderId).toBe('fd_same')
+  })
+
+  it('嵌套路径**原串**交给端点，前端不拆 `/`', async () => {
+    previewData = {
+      ...defaultPreview(),
+      folders: [],
+      suggestions: [
+        { id: 'tr_a', title: '论文 A', source: 'notes', chars: 600,
+          folder: { action: 'new', name: '技术/前端' }, tags: [], warnings: [] },
+      ],
+    }
+    useStore.setState({ docs: twoDocs() })
+    await runClassify(1)
+    await vi.waitFor(() => expect(dlg('[data-classify-row="tr_a"]')).toBeTruthy())
+
+    fireEvent.click(dlg('[data-confirm-classify]') as HTMLElement)
+    await vi.waitFor(() => expect(commitCalls().length).toBe(1))
+
+    // ⚠️ 判据是「**一条**请求、参数是原串」：前端若自己按 `/` 拆成两次 `createFolder`，
+    // 就同时犯两个错 —— ① 建夹不再是「全有或全无」（第一层落了盘、第二层失败）；
+    // ② 历史里本来就叫「前端/后端」的夹会被拆成两层（后端 `parse_path` 的
+    //    「整串优先命中现有夹名」这条保护，前端根本无从得知）。
+    expect(ensurePathMock).toHaveBeenCalledTimes(1)
+    expect(ensurePathMock).toHaveBeenCalledWith('技术/前端')
+    expect(createFolderMock).not.toHaveBeenCalled()
+    const body = JSON.parse(String(commitCalls()[0].init.body))
+    expect(body.assignments[0].folderId).toBe('fd_new_技术/前端')
   })
 
   it('部分失败 → **只回滚失败项**，成功项留在新夹里', async () => {
@@ -694,7 +764,7 @@ describe('智能分类 — 写入（建夹 → commit）', () => {
           folder: { action: 'new', name: '新主题' }, tags: [], warnings: [] },
       ],
     }
-    createFolderMock.mockRejectedValue(new Error('磁盘满了'))
+    ensurePathMock.mockRejectedValue(new Error('磁盘满了'))
     useStore.setState({ docs: twoDocs() })
     await runClassify(1)
     await vi.waitFor(() => expect(dlg('[data-classify-row="tr_a"]')).toBeTruthy())

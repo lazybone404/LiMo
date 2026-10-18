@@ -12,6 +12,17 @@
 **没有写操作**（不做 import / generate / edit / delete）—— 成本、并发、幂等、
 agent 误触发的风险都在写侧的账上，那份账还没算。
 
+### 文件夹是一棵树
+
+`folders` 返回的每项是 `{id, name, parentId, count, totalCount}`：`parentId` 为 `""`
+表示根级；`count` 是**直接**挂在该夹下的篇数，`totalCount` 是**含全部子文件夹**的篇数。
+两个数都保留，是因为「这个夹自己有多少」与「这棵子树多大」是两个问题（模式 #54：
+消费方要知道自己拿的是哪一个）。人类可读输出按前序缩进，能直接看出层级。
+
+`limo list --folder-id X` **默认只列直接属于 X 的文档**（与 `count` 同口径）；
+要整棵子树加 `--recursive`（透传 `include_descendants=true`）。⚠️ `--recursive`
+必须配合 `--folder-id`：单给时它什么都不做，而结果看起来完全正常。
+
 ## 三层结构（改任何一处前先认清自己在哪层）
 
 ```

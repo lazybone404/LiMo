@@ -11,6 +11,7 @@ import {
   filterDocs, matchesQuery, sortDocs, buildResultSet, collectTagFacets, countByFolder, groupDocs,
   type DocFilter,
 } from '../components/doc-library/useDocQuery'
+import { buildFolderTree } from '../components/doc-library/folderTree'
 import type { SearchHit } from '../api/search'
 import type { DocEntry } from '../store/types'
 
@@ -216,7 +217,7 @@ describe('collectTagFacets', () => {
 
 describe('countByFolder', () => {
   it('悬空 folderId 归入未分类（与后端删夹时的归化、与 groupDocs 三处同源）', () => {
-    const folders = [{ id: 'f1' }, { id: 'f2' }]
+    const folders = [{ id: 'f1', name: '一' }, { id: 'f2', name: '二' }]
     const docs = [
       doc({ id: 'a', folderId: 'f1' }),
       doc({ id: 'b', folderId: 'f1' }),
@@ -294,5 +295,164 @@ describe('groupDocs', () => {
     const now = new Date('2026-01-15T12:00:00')
     expect(groupOf([doc({ id: 'x', createdAt: '' })], 'date', now))
       .toEqual([['d:unknown', '无日期', ['x']]])
+  })
+})
+
+// ── 嵌套文件夹（2026-10-18）────────────────────────────────────
+//
+// ⚠️ 下面这棵树在 `folders` 数组里**刻意把子夹排在父夹前面**（fe 在 tech 之前）：
+// 前序重排是「折叠父级 → 子夹一起隐藏」能成立的前提（`DocList` 那趟单向前推假设
+// 父一定先出现）。用自然顺序（父在前）做 fixture 的话，漏掉重排也照样绿。
+
+const TREE = [
+  { id: 'fe', name: '前端', parentId: 'tech' },
+  { id: 'tech', name: '技术', parentId: '' },
+  { id: 'react', name: 'React', parentId: 'fe' },
+  { id: 'be', name: '后端', parentId: 'tech' },
+]
+
+const TREE_DOCS = [
+  doc({ id: 't1', folderId: 'tech' }),
+  doc({ id: 'f1', folderId: 'fe' }),
+  doc({ id: 'r1', folderId: 'react' }),
+  doc({ id: 'b1', folderId: 'be' }),
+  doc({ id: 'none', folderId: '' }),
+  doc({ id: 'ghost', folderId: 'gone' }),   // 文件夹已删，索引还没刷新
+]
+
+describe('filterDocs：筛文件夹 = 含全部子文件夹', () => {
+  const ids = (folderId: string, folders = TREE) =>
+    filterDocs(TREE_DOCS, F({ folderId }), folders).map(d => d.id)
+
+  it('筛父级 → 整棵子树都在', () => {
+    expect(ids('tech')).toEqual(['t1', 'f1', 'r1', 'b1'])
+  })
+
+  it('筛中间层 → 含自己的子夹，但**不含兄弟分支**', () => {
+    // 对照实验的方向：把 `descendantIds` 写成「返回全库」时这条会多出 b1
+    expect(ids('fe')).toEqual(['f1', 'r1'])
+  })
+
+  it('筛叶子 → 只有它自己', () => {
+    expect(ids('react')).toEqual(['r1'])
+  })
+
+  it('未分类 → 空串**与悬空 id** 都算（与 countByFolder / groupDocs 同源）', () => {
+    expect(ids('')).toEqual(['none', 'ghost'])
+  })
+
+  it('⚠️ 不传 folders = 改造前的严格等值（旧调用点与既有测试零改动）', () => {
+    // 悬空 id 在旧路径上**不算**未分类——这是刻意保留的旧行为，不是遗漏
+    expect(filterDocs(TREE_DOCS, F({ folderId: '' })).map(d => d.id)).toEqual(['none'])
+    expect(filterDocs(TREE_DOCS, F({ folderId: 'tech' })).map(d => d.id)).toEqual(['t1'])
+  })
+})
+
+describe('countByFolder：直接数与子树数必须分开', () => {
+  const { byFolder, totalByFolder, uncategorized } = countByFolder(TREE_DOCS, TREE)
+
+  it('byFolder 是**直接**挂载数', () => {
+    expect(byFolder.get('tech')).toBe(1)
+    expect(byFolder.get('fe')).toBe(1)
+    expect(byFolder.get('react')).toBe(1)
+    // 没有直接文档的夹不出现在 map 里（调用方一律 `?? 0`）
+    expect(byFolder.get('nope')).toBeUndefined()
+  })
+
+  it('totalByFolder 逐层累加', () => {
+    expect(totalByFolder.get('react')).toBe(1)
+    expect(totalByFolder.get('fe')).toBe(2)     // f1 + r1
+    expect(totalByFolder.get('tech')).toBe(4)   // t1 + f1 + r1 + b1
+  })
+
+  it('⚠️ 对账只能用 byFolder 求和 —— 相加 totalByFolder 会把文档数多遍', () => {
+    const directSum = [...byFolder.values()].reduce((a, b) => a + b, 0)
+    const totalSum = [...totalByFolder.values()].reduce((a, b) => a + b, 0)
+    expect(directSum + uncategorized).toBe(TREE_DOCS.length)
+    // 对照：子树求和必然大于文档总数（三条文档各被数了 3/2/1 次）
+    expect(totalSum).toBeGreaterThan(TREE_DOCS.length)
+  })
+
+  it('未分类含悬空 id', () => {
+    expect(uncategorized).toBe(2)
+  })
+
+  it('成环数据不死循环，也不丢计数', () => {
+    // a ⇄ b 互相当爹：断环点取数组下标最小的（a），b 留在 a 下
+    const cyclic = [{ id: 'a', name: 'A', parentId: 'b' }, { id: 'b', name: 'B', parentId: 'a' }]
+    const c = countByFolder([doc({ id: 'x', folderId: 'a' }), doc({ id: 'y', folderId: 'b' })], cyclic)
+    expect(c.uncategorized).toBe(0)
+    expect(c.byFolder.get('b')).toBe(1)
+    expect(c.totalByFolder.get('a')).toBe(2)   // a 自身 1 + b 的 1
+  })
+})
+
+describe('groupDocs：树形结构字段', () => {
+  const groups = groupDocs(TREE_DOCS, 'folder', TREE)
+
+  it('前序遍历：父一定排在子之前（与 folders 数组顺序无关）', () => {
+    expect(groups.map(g => g.ref).slice(0, -1)).toEqual(['tech', 'fe', 'react', 'be'])
+  })
+
+  it('未分类固定最后、恒根级', () => {
+    const last = groups[groups.length - 1]
+    expect(last.key).toBe('f:')
+    expect(last.depth).toBe(0)
+    expect(last.parentKey).toBeNull()
+  })
+
+  it('depth / parentKey / descendantCount', () => {
+    const byRef = new Map(groups.map(g => [g.ref, g]))
+    expect(byRef.get('tech')!.depth).toBe(0)
+    expect(byRef.get('tech')!.parentKey).toBeNull()
+    // ⚠️ **后代总数**不是直接子级数：tech ⊃ {fe ⊃ react, be} ⇒ 3 行。
+    // 删除确认说「及其 N 个子文件夹」，而删除是整棵子树一起删（后端
+    // `deletedFolders - 1` 也是 3），两边必须同源 —— 写成直接子级会少报。
+    expect(byRef.get('tech')!.descendantCount).toBe(3)
+    expect(byRef.get('fe')!.depth).toBe(1)
+    expect(byRef.get('fe')!.parentKey).toBe('f:tech')
+    expect(byRef.get('react')!.depth).toBe(2)
+    expect(byRef.get('react')!.descendantCount).toBe(0)
+  })
+
+  it('空组保留（它是拖拽落点）且结构字段照给', () => {
+    const g = groupDocs([], 'folder', TREE)
+    expect(g.filter(x => x.key !== 'f:').length).toBe(4)
+    expect(g.find(x => x.ref === 'react')!.depth).toBe(2)
+  })
+
+  it('非文件夹维度：depth 恒 0、parentKey 恒 null', () => {
+    for (const by of ['type', 'date'] as const) {
+      const gs = groupDocs(TREE_DOCS, by, TREE)
+      expect(gs.every(g => g.depth === 0 && g.parentKey === null && g.descendantCount === 0)).toBe(true)
+    }
+  })
+})
+
+describe('传入已建好的树（避免同一批 folders 反复建树）', () => {
+  // `DocLibrary` 里 `buildFolderTree(folders)` 只算一次，`filterDocs` / `countByFolder` /
+  // `groupDocs` 三处共用。它们**必须**与「自己现建一棵」逐项相等 —— 否则复用就成了
+  // 一条静默分叉：界面用的是 prebuilt，单测用的是现建，两边各对一半。
+  const prebuilt = buildFolderTree(TREE)
+
+  it('filterDocs 传/不传 tree 结果一致', () => {
+    expect(filterDocs(TREE_DOCS, F({ folderId: 'tech' }), TREE, prebuilt))
+      .toEqual(filterDocs(TREE_DOCS, F({ folderId: 'tech' }), TREE))
+    expect(filterDocs(TREE_DOCS, F({ folderId: '' }), TREE, prebuilt))
+      .toEqual(filterDocs(TREE_DOCS, F({ folderId: '' }), TREE))
+  })
+
+  it('countByFolder 传/不传 tree 结果一致', () => {
+    const withTree = countByFolder(TREE_DOCS, TREE, prebuilt)
+    const withoutTree = countByFolder(TREE_DOCS, TREE)
+    expect([...withTree.byFolder]).toEqual([...withoutTree.byFolder])
+    expect([...withTree.totalByFolder]).toEqual([...withoutTree.totalByFolder])
+    expect(withTree.uncategorized).toBe(withoutTree.uncategorized)
+  })
+
+  it('groupDocs 传/不传 tree 结果一致', () => {
+    // `undefined` 显式占住第 4 位（`now`），防止将来给 `now` 换默认值时串位
+    expect(groupDocs(TREE_DOCS, 'folder', TREE, undefined, prebuilt))
+      .toEqual(groupDocs(TREE_DOCS, 'folder', TREE))
   })
 })

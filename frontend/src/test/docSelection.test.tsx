@@ -163,6 +163,109 @@ describe('选择模型 — Ctrl+A 的领地', () => {
   })
 })
 
+describe('选择模型 — Ctrl 拖动划选', () => {
+  /**
+   * ⚠️ jsdom 没有 `document.elementFromPoint`（未实现布局），实现里对它做了 function
+   * 判据并回退到 `ev.target` —— 把 mousemove 派发到**行元素**上，正好走回退分支。
+   * 真实浏览器里走的是 elementFromPoint，两条分支指向同一件事：「指针下面是哪一行」。
+   */
+  const dragOver = (from: number, to: number, c: HTMLElement) => {
+    fireEvent.mouseDown(rowOf(c, from), { button: 0, ctrlKey: true })
+    fireEvent.mouseMove(rowOf(c, to), { buttons: 1 })
+    fireEvent.mouseUp(rowOf(c, to))
+  }
+
+  it('Ctrl 从 d1 拖到 d4 = 区间**加选**，原有的选中不被取消', () => {
+    useStore.setState({ docs: makeDocs(6), selectedIds: new Set(['d0']) })
+    const { container } = render(<DocLibrary />)
+
+    dragOver(1, 4, container)
+
+    // ⚠️ 对照（已验证有区分力）：把加选写成 `new Set(range)`（替换语义），d0 会消失；
+    // 而「从第 3 行拖到第 9 行，原本勾着的不该被取消」正是用户要的手感。
+    expect(selected()).toEqual(['d0', 'd1', 'd2', 'd3', 'd4'])
+  })
+
+  it('划选结束那一下 click 被吞掉 —— 起点行不被二次 toggle', () => {
+    useStore.setState({ docs: makeDocs(6) })
+    const { container } = render(<DocLibrary />)
+
+    fireEvent.mouseDown(rowOf(container, 1), { button: 0, ctrlKey: true })
+    fireEvent.mouseMove(rowOf(container, 3), { buttons: 1 })
+    fireEvent.mouseUp(rowOf(container, 3))
+    // 浏览器在 mouseup 之后照样派发一次带 Ctrl 的 click
+    fireEvent.click(rowOf(container, 1), { ctrlKey: true })
+
+    // ⚠️ 对照（已验证有区分力）：去掉 suppressUntil 判定，d1 会被 toggle 掉，
+    // 结果变成 ['d2','d3'] —— 用户看到的是「拖了一圈，第一行没选上」。
+    expect(selected()).toEqual(['d1', 'd2', 'd3'])
+    // 划选不是「打开文档」
+    expect(useStore.getState().currentDocId).toBeNull()
+  })
+
+  it('划选中按 Esc = 回到按下前的选择集（不是清空）', () => {
+    useStore.setState({ docs: makeDocs(6), selectedIds: new Set(['d0']) })
+    const { container } = render(<DocLibrary />)
+
+    fireEvent.mouseDown(rowOf(container, 2), { button: 0, ctrlKey: true })
+    fireEvent.mouseMove(rowOf(container, 4), { buttons: 1 })
+    expect(selected()).toEqual(['d0', 'd2', 'd3', 'd4'])
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(selected()).toEqual(['d0'])
+
+    // 松手时监听已撤掉，不会把刚取消的区间又加回来
+    fireEvent.mouseUp(rowOf(container, 4))
+    expect(selected()).toEqual(['d0'])
+  })
+
+  it('从标题编辑框里 Ctrl+按下不起划选（那是选中文字）', () => {
+    useStore.setState({ docs: makeDocs(3) })
+    const { container } = render(<DocLibrary />)
+
+    fireEvent.click(rowOf(container, 0).querySelector('[title="编辑标题"]') as HTMLElement)
+    const input = container.querySelector('input[value="文档 0"]') as HTMLElement
+    fireEvent.mouseDown(input, { button: 0, ctrlKey: true })
+    fireEvent.mouseMove(rowOf(container, 2), { buttons: 1 })
+
+    expect(selected()).toEqual([])
+  })
+
+  it('点复选框热区 = toggle，不启动划选（否则单击热区会被抑制掉）', () => {
+    useStore.setState({ docs: makeDocs(3) })
+    const { container } = render(<DocLibrary />)
+
+    fireEvent.mouseDown(toggleOf(container, 0), { button: 0, ctrlKey: true })
+    fireEvent.mouseMove(rowOf(container, 2), { buttons: 1 })
+    fireEvent.mouseUp(rowOf(container, 2))
+    fireEvent.click(toggleOf(container, 0))
+
+    // 只有热区那一次点击生效；拖动没有把 d1/d2 也划进来
+    expect(selected()).toEqual(['d0'])
+  })
+
+  it('无修饰键的拖动仍走 DnD —— 且 Ctrl+拖动不产生 DnD', () => {
+    useStore.setState({ docs: makeDocs(3), selectedIds: new Set(['d1']) })
+    const { container } = render(<DocLibrary />)
+
+    const plain = { setData: vi.fn(), effectAllowed: '' }
+    fireEvent.dragStart(rowOf(container, 1), { dataTransfer: plain })
+    // 拖已选中的项 = 整批拖（既有语义不变）
+    expect(plain.setData).toHaveBeenCalledWith('application/x-limo-doc', 'd1')
+
+    // ⚠️ jsdom **没有 DragEvent**，`fireEvent.dragStart(..., { ctrlKey: true })` 会退化成
+    // 裸 Event，修饰键被静默丢弃（断言会假绿/假红）。这里手动派发 MouseEvent。
+    const withCtrl = { setData: vi.fn(), effectAllowed: '' }
+    const ev = new MouseEvent('dragstart', { bubbles: true, cancelable: true, ctrlKey: true })
+    Object.defineProperty(ev, 'dataTransfer', { value: withCtrl })
+    rowOf(container, 0).dispatchEvent(ev)
+
+    // ⚠️ 对照（已验证有区分力）：去掉 handleDragStart 的 ctrlKey 守卫，这里会再调一次
+    // setData —— 划选手势途中弹出拖拽幽灵图，两套语义同时生效。
+    expect(withCtrl.setData).not.toHaveBeenCalled()
+  })
+})
+
 describe('选择模型 — 状态归属', () => {
   it('选择存在 store 里：组件卸载重挂载后仍在（等价于面板收起再展开）', () => {
     useStore.setState({ docs: makeDocs(3), selectedIds: new Set(['d0', 'd1']) })

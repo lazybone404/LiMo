@@ -26,11 +26,12 @@ AGENTS_MD = """# LiMo 知识库 —— 给 agent 的使用说明
 limo status                       # 库里有什么：计数 + 类型分布
 limo list --limit 20              # 最近的文档
 limo list --type video --tag AI   # 按来源类型 / 标签筛
+limo list --folder-id <id> -r     # 该文件夹**及其所有子文件夹**里的文档
 limo search 关键词                 # 全文搜索（FTS，命中带原文摘要）
 limo get <docId>                  # 一篇的元数据 + **有哪些产物**
 limo get <docId> --part notes     # 取它的笔记正文
 limo export <docId> --part notes -o notes.md   # 取出来落成文件
-limo folders                      # 文件夹清单
+limo folders                      # 文件夹清单（树形缩进，`--json` 带 parentId）
 limo doctor                       # 出问题时先跑这个
 ```
 

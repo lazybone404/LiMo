@@ -16,7 +16,7 @@
 import { useState } from 'react'
 import { FolderInput } from 'lucide-react'
 import type { DocEntry } from '../../store/types'
-import { GroupHeader } from './GroupHeader'
+import { GroupHeader, type HeaderAction } from './GroupHeader'
 import { SEARCH_LIMIT, type DocGroup } from './useDocQuery'
 
 export interface DocListProps {
@@ -47,6 +47,15 @@ export interface DocListProps {
    * 26px 行之间再插 6px 就成了一串卡片，反而看不出父子关系。
    */
   treeIndent?: boolean
+  /** 完整路径（`父 › 子`）—— 分组头的 `title`，缩进夹紧后靠它读全 */
+  folderPath?: (id: string) => string
+  /** 就地新建子文件夹（父级 id, 名字） */
+  onFolderNewChild?: (parentId: string, name: string) => Promise<boolean>
+  /** 右键分组头（文件夹菜单） */
+  onFolderContextMenu?: (e: React.MouseEvent, id: string) => void
+  /** 「请某个分组头进入就地状态」的信号，见 `HeaderAction` */
+  headerAction?: HeaderAction | null
+  onHeaderActionConsumed?: () => void
   onDropToUncategorized: (e: React.DragEvent) => void
   onToggleGroup: (key: string) => void
   onFolderRename: (id: string, name: string) => Promise<boolean>
@@ -58,9 +67,14 @@ export interface DocListProps {
   onListKeyDown: (e: React.KeyboardEvent) => void
 }
 
+/** 子行缩进的上限层数（与 `GroupHeader` 的夹紧同值，两边必须一起改） */
+const MAX_INDENT_DEPTH = 6
+
 export function DocList({
   groups, rendered, limit, collapsedGroups, countOf, folderBusy, docsLoading, hasMore,
-  emptyText, truncated, draggingCategorized, treeIndent, onDropToUncategorized, onToggleGroup,
+  emptyText, truncated, draggingCategorized, treeIndent, folderPath,
+  onFolderNewChild, onFolderContextMenu, headerAction, onHeaderActionConsumed,
+  onDropToUncategorized, onToggleGroup,
   onFolderRename, onFolderDelete, onFolderDrop, renderRow, scrollRef, sentinelRef, onListKeyDown,
 }: DocListProps) {
   const [padHover, setPadHover] = useState(false)
@@ -79,11 +93,20 @@ export function DocList({
   const renderGroups = () => {
     let budget = limit
     const out: React.ReactNode[] = []
+    // ⚠️ 「父级被隐藏 ⇒ 自己也被隐藏」必须沿前序**单向前推**：`groupDocs` 保证父一定
+    // 排在子之前（`tree.preorder`），所以一趟就够。父级收起时它的整棵子树连**分组头**
+    // 都不进 DOM —— 只藏它的行、留着孙子的头，会得到一串悬空的标题。
+    const hidden = new Set<string>()
     for (const g of groups ?? []) {
+      if (g.parentKey && (collapsedGroups.includes(g.parentKey) || hidden.has(g.parentKey))) {
+        hidden.add(g.key)
+        continue
+      }
       const open = !collapsedGroups.includes(g.key)
       // ⚠️ 收起时**一行都不进 `rows`**：这样 `budget` 也不会被一个折叠的组吃掉
       const rows = open ? g.docs.slice(0, Math.max(0, budget)) : []
       budget -= rows.length
+      const indent = Math.min(g.depth, MAX_INDENT_DEPTH)
       out.push(
         <div key={g.key} data-doc-group={g.key}>
           <GroupHeader
@@ -92,17 +115,30 @@ export function DocList({
             expanded={open}
             busy={folderBusy.has(g.ref)}
             compact={treeIndent}
+            depth={g.depth}
+            path={g.ref ? folderPath?.(g.ref) : undefined}
+            descendantCount={g.descendantCount}
             onToggle={onToggleGroup}
             onRename={onFolderRename}
             onDelete={onFolderDelete}
             onDropDocs={onFolderDrop}
+            onNewChild={onFolderNewChild}
+            onContextMenu={onFolderContextMenu}
+            actionFor={headerAction}
+            onActionConsumed={onHeaderActionConsumed}
           />
-          {/* IDE 树形态：子行缩进一层，左侧画一条 1px 参考线把「父节点」和它的孩子连起来。
-              ⚠️ 线用 `aria-hidden` 纯装饰；缩进靠容器 `pl-4`，不是给每行加 className——
-              每行加了的话，行自身的 hover 圆角底会跟着缩进，看起来像「缩进的块」而不是树。 */}
+          {/* IDE 树形态：子行缩进「父级深度 + 1」层，左侧画一条 1px 参考线把父节点和
+              它的孩子连起来。⚠️ 线用 `aria-hidden` 纯装饰；缩进靠容器内联 padding，
+              **不是**给每行加 className——每行加了的话，行自身的 hover 圆角底会跟着缩进，
+              看起来像「缩进的块」而不是树。详细模式的卡片行不缩进（缩进会破坏卡片对齐），
+              层级只由分组头的缩进表达。 */}
           {rows.length > 0 && (treeIndent ? (
-            <div data-tree-indent className="relative pl-4">
-              <span aria-hidden className="absolute left-2 top-0.5 bottom-0.5 w-px bg-border-light" />
+            <div data-tree-indent className="relative" style={{ paddingLeft: (indent + 1) * 16 }}>
+              <span
+                aria-hidden
+                className="absolute top-0.5 bottom-0.5 w-px bg-border-light"
+                style={{ left: indent * 16 + 8 }}
+              />
               {rows.map(d => renderRow(d, seq++))}
             </div>
           ) : rows.map(d => renderRow(d, seq++)))}

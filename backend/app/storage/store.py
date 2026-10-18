@@ -19,8 +19,10 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
+from app.core.atomic_io import atomic_write_text
 from app.core.markdown_assets import rewrite_asset_urls  # noqa: F401  (re-export，见下)
 from app.core.types import RawTranscript, MarkdownView, ProcessResult, Style, GenerateMode
+from app.storage import doc_meta, folder_tree
 from app.core.errors import AppError, StoreError
 from app.core.transcript_meta import parse_meta, dump_meta, parse_artifact_meta, strip_meta
 from app.core.artifact_blocks import strip_blocks
@@ -212,12 +214,22 @@ class Store:
         # 本进程内「已建目录、正文尚未落盘」的 id（P1-3）。导入窗口可能很长（视频
         # 下载 + 转写），带年龄宽限仍可能误判 → 会话内豁免是**精确**的那一半。
         self._pending_ids: set[str] = set()
+        # 已经报过的文件夹层级异常签名（进程内去重）—— 见 `_log_folder_anomalies`。
+        self._logged_folder_anomalies: set[tuple] = set()
         self._load_index()
+        # 索引里不可用的 parentId（悬空 / 自引用 / 环）：读路径按根级归化，**不写盘**。
+        # 放在 `_load_index` 之后 —— 两条加载路径（正常读盘 / 故障重建）都要覆盖。
+        self._log_folder_anomalies()
         # 一次性修正：索引里**重复的文档 id**（历史重建留下的脏数据，见方法 docstring）。
         # 放在 `_load_index` **之后**——两条加载路径（正常读盘 / 故障重建）都要覆盖。
         # ⚠️ 它是**定点改字段**，不是重建：绝不重扫磁盘、绝不碰 tags/folderId/来源
         #    （第 3 轮审计 P0 的教训正是「启动迁移里整库重建，把分类全抹掉」）。
         self._dedupe_transcript_ids()
+        # 把 index 里的分类信息补写到 sidecar（folderId / tags / 来源 → meta.json，
+        # folders → folders.json）。⚠️ 只写 sidecar、不碰 index.json —— 正常启动时
+        # 索引文件必须逐字节不变。放在 `_load_index` **之后**：两条加载路径
+        # （正常读盘 / 故障重建）都要覆盖，且重建出来的条目同样需要落底。
+        self._migrate_classification_sidecars()
         # 一次性布局迁移：两版制（{mode}.md + {mode}.prev.md）→ 版本归档（{mode}/v{N}.md）。
         # 放在 `_load_index` **之后**：即便 index 丢了，`_load_index` 已先做过常规重建，
         # 这里搬完文件再重建一次，产物版本即可正确出现。幂等，详见方法 docstring。
@@ -280,8 +292,9 @@ class Store:
         if n:
             logger.warning(
                 "索引不可用（%s），已按磁盘重建 %d 篇文档（原文备份为 %s）。"
-                "⚠️ 重建**有损**：文档 id 由正文 sha256 重推（与旧 id 不同），"
-                "文档级字段（文件夹归属 / 标签 / 来源类型与 URL / 创建时间）无法还原；"
+                "文档 id 由正文 sha256 重推（与旧 id 不同）；"
+                "文件夹归属 / 标签 / 创建时间 / 来源字段由 meta.json 与 folders.json 恢复"
+                "（2026-10-18 起，此前一律清空）；"
                 "产物的**版本序 / 生成时间 / 风格档**改由各自文件头的自证头还原"
                 "（2026-10-10 起，此前一并丢失）。",
                 reason, n, backup_name or "（备份失败）",
@@ -291,11 +304,68 @@ class Store:
                            reason)
 
     def _save_index(self):
-        """原子写入统一 index.json"""
+        """原子写入统一 index.json，并同步库级真相 `folders.json`。
+
+        ⚠️ **顺序固定：先 folders.json，后 index.json。** 两者不一致时（写到一半
+        崩了 / 第二个写失败），`folders.json` 是**真相**、index 里的 `folders`
+        只是缓存 —— 让真相领先于缓存，下次启动仍读到完整的树；反过来则是
+        「刚建的夹在重建后消失」。
+
+        ⚠️ 空库不凭空造文件（与 `_load_index` 对 index.json 的取舍同一条判据）：
+        只有确实有夹、或文件已存在时才写。后者保证「删光所有夹」会落一个空表
+        （语义是「库里确实没有夹」，而不是「不知道」）。
+        """
+        folders = self._index.get("folders") or []
+        if folders or doc_meta.folders_exist(self.root):
+            doc_meta.write_folders(self.root, folders)
         self._atomic_write(
             self._index_path,
             json.dumps(self._index, ensure_ascii=False, indent=2),
         )
+
+    def _persist_doc_meta(self, entry: dict) -> None:
+        """把条目的文档级字段落到 `{doc_dir}/meta.json`（真相源）。
+
+        调用点恒在 `self._lock` 内（与 `_save_index` 同处），本函数自身不碰索引、
+        不取锁。写失败只记 warning：index 这份缓存已经写成功，当次体验不受影响，
+        代价推迟到「万一以后重建」（判据见 `storage/doc_meta.py` 模块 docstring）。
+        """
+        dir_name = entry.get("dir_name") or ""
+        if not dir_name:
+            return
+        doc_meta.write_doc_meta(self.root / dir_name, entry)
+
+    def _migrate_classification_sidecars(self) -> None:
+        """把 index 里的分类信息补写到 sidecar（幂等，启动时跑一次）。
+
+        正常启动的第一天 sidecar 还是空的，而 index 里什么都有 —— 这条迁移负责把
+        真相搬过去，否则**下一次重建**仍然是有损的。
+
+        ⚠️ **一个字节都不碰 index.json**：正常启动时索引文件必须逐字节不变
+        （`test_store_index_recovery.py::test_valid_index_is_left_alone` 钉着）。
+        迁移只写 sidecar，下一次 `_save_index` 时两者自然一致。
+
+        幂等：只补**读不出来的**文件。判据用「读的结果」而不是「文件在不在」——
+        损坏的 sidecar（半截 JSON / 版本不认识）同样返回 None / {}，一并重写。
+        合法文件不会触发重写：写出去的 meta 至少含 `schema` 与若干空串字段
+        （`read_doc_meta` 只会在这两种反常情况下返回 `{}`）。
+        """
+        if doc_meta.read_folders(self.root) is None:
+            folders = self._index.get("folders") or []
+            # 空库不写（全新用户不该凭空多一个 folders.json）——与 `_save_index` 同判据。
+            # ⚠️ 这里的失败只记 warning：迁移跑在启动路径上，不能因为它起不来。
+            if folders:
+                try:
+                    doc_meta.write_folders(self.root, folders)
+                except AppError as e:
+                    logger.warning("文件夹树迁移失败（下次索引重建会丢分类）: %s", e)
+        for entry in self._index["transcripts"]:
+            dir_name = entry.get("dir_name") or ""
+            if not dir_name:
+                continue
+            d = self.root / dir_name
+            if d.is_dir() and not doc_meta.read_doc_meta(d):
+                doc_meta.write_doc_meta(d, entry)
 
     def _dedupe_transcript_ids(self) -> None:
         """把索引里**重复的文档 id** 就地改成唯一（幂等，启动时跑一次）。
@@ -461,10 +531,25 @@ class Store:
 
         `save=False` 供 `_load_index` 的「先扫一眼看有没有文档、再决定要不要落盘」用
         —— 那条路径上写盘与否取决于扫描结果，不能无条件下手。
+
+        ## 分类信息的来源（两级）
+
+        文件夹树与文档的分类字段**不再恒为空**：真相在 `folders.json` 与
+        `{doc_dir}/meta.json`（`storage/doc_meta.py`）。读不到就如实写空（不猜）。
+
+        ⚠️ **刻意不从 `index.json.bak` 回落**：那份备份存的是**损坏原文**
+        （`_load_index` 拷它是为了给人抢救，不是给代码读），从中捞不出任何东西。
+        写一条「有兜底」的分支只会让人以为这条路径有救。
+
+        ⚠️ 主键是 **`dir_name`**，不是文档 id —— 重建时 id 由正文内容重推必然变化，
+        按 id 关联等于什么都对不上。这也解释了为什么 sidecar 必须住在**目录**里。
         """
         self._index = _empty_index()
         # 本次扫描已分配的 id（⚠️ 每次重建都重置，故只需记本轮的）——见 `_unique_tx_id`
         taken_ids: set[str] = set()
+
+        # 库级真相：文件夹树（None / [] 都是「没有」）
+        self._index["folders"] = doc_meta.read_folders(self.root) or []
 
         for d in sorted(self.root.iterdir()):
             if not d.is_dir():
@@ -488,7 +573,14 @@ class Store:
             tx_id = _unique_tx_id(raw_text, taken_ids)
             taken_ids.add(tx_id)
 
+            # 文档级真相：`meta.json`（读不到就是空 —— 老库在升级前就坏了索引的话，
+            # 那一部分分类确实回不来，而且在这条路径诞生之前也回不来）
+            meta = doc_meta.read_doc_meta(d)
+
             # 构建 transcript index 条目
+            # ⚠️ `title` 的初值是从目录名推的（**有损**：`_compute_dir_name` 截 30 字
+            #    且剥特殊字符），随后被下面的 `DOC_FIELDS` 循环用 meta.json 里的真值覆盖。
+            #    老库没有该字段时自然回落到这里 —— 渐进兼容，不需要迁移。
             tx_entry = {
                 "id": tx_id, "title": dir_name.rsplit("-", 1)[0],
                 "sourceType": "", "sourceUrl": "", "sourceFileName": "",
@@ -496,9 +588,11 @@ class Store:
                 "language": "", "duration": None, "coverUrl": "",
                 "sourceTitle": "", "contentHash": hashlib.sha256(raw_text.encode()).hexdigest(),
                 "metadata": {}, "tags": [], "createdAt": "",
-                # 文件夹归属只存在于 index.json（文件夹是纯逻辑分类，不落磁盘），
-                # 故重建必然丢失分类——这里写空串是为保持条目 schema 完整，
-                # 让下游 e.get("folderId") 永远拿到字符串而非 KeyError 之外的意外。
+                # 文件夹归属 / 标签 / 创建时间 / 来源字段的真相在 `{doc_dir}/meta.json`
+                # （2026-10-18 起，见 storage/doc_meta.py）。此前这里写死空串，
+                # 于是「删一次 index.json，整理工作全部归零」——而那条路径不需要
+                # 用户做错任何事，一次断电就够。默认值仍铺满，是为了让下游
+                # e.get(...) 拿到的类型稳定（`metadata` 本身不落 sidecar：可能很大）。
                 "folderId": "",
                 # 合成来源身份（模式 #44 的第三处构造点，必须与 _transcript_index_entry 同构）
                 "sourceDocIds": [], "sourceTitles": [], "sourceHashes": [],
@@ -508,6 +602,9 @@ class Store:
                 # 故恒 True（与 `_transcript_index_entry` 同构，见那里的说明）。
                 "ready": True,
             }
+            for _key in doc_meta.DOC_FIELDS:
+                if _key in meta:
+                    tx_entry[_key] = meta[_key]
             # ── 出处头是重建后**唯一**能还原合成身份的来源 ──
             # 重建时 id 由内容 sha256 重推、sourceType 被写死为空、非内容派生字段全丢，
             # 只有 transcript.md 第一行还留着「我是哪几篇合成的」。解析失败不猜，标损坏。
@@ -628,37 +725,12 @@ class Store:
 
     @staticmethod
     def _atomic_write(path: Path, content: str):
-        """原子写入 + StoreError 保护。
+        """原子写入 —— 实现见 `core/atomic_io.py`（全项目唯一一份）。
 
-        ⚠️ 临时名必须**每次唯一**（`mkstemp`），不能用固定的 `path.with_suffix(".tmp")`：
-        两个写者（多进程 / 并发测试）撞上同一路径时都写同一个临时文件，内容交错，
-        后一个 `replace` 把**半截内容**原子地换上去 —— 原子性只保证了「换」这一步，
-        保证不了「换上去的东西是完整的」，而症状是一份解析不了的 index.json
-        （即 `_load_index` 那条自愈路径，代价是全盘重建 + 分类丢失）。
-
-        ⚠️ 别想着「顺手加个锁更稳」：`self._lock` 是**非重入** `threading.Lock`，而
-        `_save_index` 恒在**已持锁**时调到本函数 —— 加锁即死锁（本函数还是
-        `@staticmethod`，本来也拿不到 `self`）。并发安全由唯一临时名 + `os.replace`
-        的原子性承担，不需要互斥。
+        保留这层薄包装是因为 Store 内有二十余处调用；真正的坑（临时名必须每次
+        唯一、以及为什么不能在这里加锁）写在那个模块的 docstring 里。
         """
-        tmp_path: str | None = None
-        try:
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-            os.replace(tmp_path, path)
-            tmp_path = None          # 已改名，finally 不该再去删它
-        except OSError as e:
-            # 按 errno 细分（ENOSPC / 占用 / 路径过长 / 权限 / 未知）——「一律磁盘
-            # 空间不足」会让用户朝错误的方向行动，见 StoreError.write_failed。
-            raise StoreError.write_failed(f"写入 {path.name}", e) from e
-        finally:
-            if tmp_path:
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
+        atomic_write_text(path, content)
 
     @staticmethod
     def _transcript_index_entry(data: dict) -> dict:
@@ -905,6 +977,8 @@ class Store:
                     break
             else:
                 self._index["transcripts"].append(entry)
+            # 真相先于缓存：meta.json 写不进去只是 warning，index 这一份照写
+            self._persist_doc_meta(entry)
             self._save_index()
             # 正文已落盘 → 摘掉会话级豁免（P1-3）。此后若目录再消失，那就是真的
             # 被外力删了，按幽灵条目清理是对的。
@@ -1037,7 +1111,22 @@ class Store:
             if "query" in filters:
                 q = filters["query"].lower()
                 result = [e for e in result if q in e.get("title", "").lower()]
-            if "folderId" in filters:
+            # 文件夹筛选：`folderIds`（集合，含子树）与 `folderId`（单值，精确）**互斥**。
+            #
+            # ⚠️ 必须写成 `elif` 而不是两条独立的 `if`：两者同时给时若都生效，
+            # 「最终结果等于哪一条」取决于书写顺序——那是一个静默分支。取「集合优先」
+            # 的语义，因为它是更宽的判据（`folderIds = folder_scope(id)` 天然含 `id`）。
+            if "folderIds" in filters:
+                # 用 `in` 判定而非 `is not None`：空集合是**有效筛选值**（什么都不匹配），
+                # 与「不传该键 = 不过滤」必须区分开。
+                allowed = filters["folderIds"]
+                known = {f["id"] for f in self._index.get("folders", [])}
+                result = [
+                    e for e in result
+                    if (e.get("folderId", "") if e.get("folderId", "") in known else "")
+                    in allowed
+                ]
+            elif "folderId" in filters:
                 # 用 `in` 判定而非 `is not None`：空串是**有效筛选值**（只看未分类），
                 # 与「不传该键 = 不过滤」必须区分开。路由层据此只在显式传参时塞进来。
                 #
@@ -1109,21 +1198,59 @@ class Store:
                     if "metadataCorrupt" not in tx_data:
                         new_entry["metadataCorrupt"] = entry.get("metadataCorrupt", False)
                     self._index["transcripts"][i] = new_entry
+                    # 真相先于缓存（同 save_transcript）：目录可能刚被重命名，
+                    # 但 `dir_name` 已是新名字，meta.json 落在新目录里。
+                    self._persist_doc_meta(new_entry)
                     self._save_index()
                     return True
         return False
 
-    # ── 文件夹（单层逻辑分类）──
+    # ── 文件夹（可嵌套的逻辑分类）──
     #
     # 设计约束：文件夹是**纯逻辑分类**，永不映射为磁盘目录。
     # 每个文档已有独立目录 {sanitized_title}-{hex6}/（含 transcript.md / assets /
     # process / 版本归档产物），把文件夹做成目录会同时破坏目录命名规则、assets 相对
     # 引用、版本归档——移动文档要重写全部 index 路径。故 folders 只活在 index.json 里。
+    #
+    # 层级用条目的 `parentId` 表达（`""` = 根）。树的推导、环的打断、路径标签全部走
+    # `folder_tree` 的纯函数，本类只负责**持久化与锁**。
+    # ⚠️ 读一律用 `f.get("parentId", "")`：老 index 没有这个键，零迁移靠的就是它。
+    # ⚠️ **不要 bump INDEX_VERSION**：bump 会触发 `_rebuild_index`，而那个函数会清空
+    #    整个 folders 表（既有有损行为，见 `_loaded` 的 docstring）。
+
+    def _log_folder_anomalies(self) -> None:
+        """索引里不可用的 parentId（悬空 / 自引用 / 环）各记一条 warning。
+
+        ⚠️ **只记日志，不改磁盘**。读路径按 `folder_tree.normalize_parents` 归化；
+        把脏值原地改写会让「读坏了还能回滚」变成默认，而这类脏值往往正是用户
+        手工编辑 index.json 想抢救的对象。
+        """
+        folders = self._index.get("folders", [])
+        if not folders:
+            return
+        parent = folder_tree.normalize_parents(folders)
+        bad = [(f["id"], f.get("name", ""), f.get("parentId"))
+               for f in folders if (f.get("parentId") or "") != parent[f["id"]]]
+        if not bad:
+            return
+        sig = tuple(sorted(b[0] for b in bad))
+        if sig in self._logged_folder_anomalies:      # 列表刷新不会刷屏
+            return
+        self._logged_folder_anomalies.add(sig)
+        preview = ", ".join(f"{name}({fid})→{raw or '空'}" for fid, name, raw in bad[:5])
+        logger.warning("文件夹层级有 %d 处不可用的 parentId（已按根级处理，索引文件未改动）：%s",
+                       len(bad), preview)
 
     def list_folders(self) -> list[dict]:
-        """列出全部文件夹，附带各自文档数。count 现算（文件夹数远少于文档数）。"""
+        """列出全部文件夹。
+
+        - `count`      = **直接**挂在这个夹下的文档数（历史口径，CLI 与旧消费方依赖）
+        - `totalCount` = 含全部后代的总数
+        - `parentId`   = **规范化后的**父级（悬空 / 环已按根级处理）；原始脏值仍留在
+          index.json 里便于人工抢救
+        """
         with self._lock:
-            folders = list(self._index.get("folders", []))
+            folders = [dict(f) for f in self._index.get("folders", [])]
             known = {f["id"] for f in folders}
             counts: dict[str, int] = {}
             for e in self._index["transcripts"]:
@@ -1132,60 +1259,199 @@ class Store:
                 # 真正保证「悬空 = 未分类」的是 list_transcripts 里的归化（见那里）。
                 if fid in known:
                     counts[fid] = counts.get(fid, 0) + 1
-        return [{**f, "count": counts.get(f["id"], 0)} for f in folders]
+        parent = folder_tree.normalize_parents(folders)
+        totals = folder_tree.total_counts(folders, counts, parent)
+        return [{**f, "parentId": parent[f["id"]],
+                 "count": counts.get(f["id"], 0),
+                 "totalCount": totals.get(f["id"], 0)} for f in folders]
 
     def folder_exists(self, folder_id: str) -> bool:
         return any(f["id"] == folder_id for f in self._index.get("folders", []))
 
-    def create_folder(self, name: str) -> dict:
+    def folder_scope(self, folder_id: str) -> set[str]:
+        """`{id} ∪ 全部后代` —— 「筛选含子文件夹」时的允许集合。"""
+        with self._lock:
+            folders = list(self._index.get("folders", []))
+        return folder_tree.folder_scope(folders, folder_id)
+
+    def create_folder(self, name: str, parent_id: str = "") -> dict:
         """新建文件夹。允许重名——id 是身份，名字只是给用户看的标签。"""
         name = (name or "").strip()
         if not name:
             raise AppError("FOLDER_NAME_EMPTY", "文件夹名不能为空",
                            recoverable=True, status_code=400)
-        entry = {
-            "id": f"fd_{uuid4().hex[:12]}",
-            "name": name,
-            "createdAt": datetime.now().isoformat(),
-        }
         with self._lock:
+            if parent_id and not any(f["id"] == parent_id
+                                     for f in self._index.get("folders", [])):
+                raise AppError("FOLDER_PARENT_NOT_FOUND", "父文件夹不存在",
+                               status_code=404, recoverable=True)
+            entry = folder_tree.make_folder_entry(name, parent_id)
             self._index.setdefault("folders", []).append(entry)
             self._save_index()
-        return entry
+        # ⚠️ 补上 `count` / `totalCount` 再返回：`list_folders` / `create` / `rename` /
+        # `ensure-path` 四个出口的**条目形状必须相同**，否则前端拿到新建的夹时这两个键
+        # 是 undefined（类型说有、实际没有），而计数渲染出的是空白而不是 0。
+        # 新夹必然是 0 / 0，不必为它跑一次全表统计。
+        return {**entry, "count": 0, "totalCount": 0}
 
-    def rename_folder(self, folder_id: str, name: str) -> Optional[dict]:
-        """重命名。返回更新后的条目；文件夹不存在返回 None（由路由层转 404）。"""
-        name = (name or "").strip()
-        if not name:
-            raise AppError("FOLDER_NAME_EMPTY", "文件夹名不能为空",
+    def rename_folder(self, folder_id: str, name: Optional[str] = None,
+                      parent_id: Optional[str] = None) -> Optional[dict]:
+        """重命名 / 移动文件夹。返回更新后的条目；不存在返回 None（路由层转 404）。
+
+        ⚠️ **全部校验都在锁内、且在所有字段写入之前**：先改 `name` 再发现 parent 成环
+        抛异常的话，内存里的条目已经被改了而磁盘没有（下一次任意写盘就把它带出去）。
+        ⚠️ 未变化的字段**不触发写盘**：前端拖一下又拖回原处不该产生一次全量 index 写。
+        """
+        if name is None and parent_id is None:
+            raise AppError("FOLDER_NOTHING_TO_UPDATE", "没有要更新的字段",
                            recoverable=True, status_code=400)
-        with self._lock:
-            for f in self._index.get("folders", []):
-                if f["id"] == folder_id:
-                    f["name"] = name
-                    self._save_index()
-                    return dict(f)
-        return None
+        if name is not None:
+            name = (name or "").strip()
+            if not name:
+                raise AppError("FOLDER_NAME_EMPTY", "文件夹名不能为空",
+                               recoverable=True, status_code=400)
 
-    def delete_folder(self, folder_id: str) -> Optional[int]:
-        """删除文件夹，其下文档回落未分类。返回迁走的文档数；不存在返回 None。
+        with self._lock:
+            folders = self._index.get("folders", [])
+            target = next((f for f in folders if f["id"] == folder_id), None)
+            if target is None:
+                return None
+
+            new_parent: Optional[str] = None
+            if parent_id is not None:
+                new_parent = parent_id or ""
+                if new_parent:
+                    if new_parent == folder_id:
+                        raise AppError("FOLDER_CYCLE", "不能把文件夹移动到它自己里面",
+                                       status_code=400, recoverable=True)
+                    if not any(f["id"] == new_parent for f in folders):
+                        raise AppError("FOLDER_PARENT_NOT_FOUND", "父文件夹不存在",
+                                       status_code=404, recoverable=True)
+                    if new_parent in folder_tree.descendant_ids(folders, folder_id):
+                        raise AppError("FOLDER_CYCLE",
+                                       "不能把文件夹移动到它自己的子文件夹里",
+                                       status_code=400, recoverable=True)
+
+            # 触碰即补字段：老 index 的条目本来没有 parentId。**改什么都补**——
+            # 只补「改父级」那条路的话，「原地改名」过的条目仍然缺这个键，
+            # 落盘形状就依赖用户改的是哪个字段（两版 index 并存，读侧还得多想一层）。
+            target.setdefault("parentId", "")
+
+            changed = False
+            if name is not None and target.get("name") != name:
+                target["name"] = name
+                changed = True
+            if new_parent is not None and (target.get("parentId") or "") != new_parent:
+                target["parentId"] = new_parent
+                changed = True
+            if changed:
+                self._save_index()
+            updated = dict(target)
+
+        # 计数与 `totalCount` 按**全表重算**，与 `list_folders` 同源 —— 在锁内另算一份
+        # 父级断环与子树求和就是第二份判据（而它和 `list_folders` 在环数据上必然分叉）。
+        # 挂到 `list_folders()` 之后取，只为让四个出口的条目形状一致（见 `create_folder`）。
+        view = next((f for f in self.list_folders() if f["id"] == folder_id), None)
+        return view or updated
+
+    def delete_folder(self, folder_id: str) -> Optional[dict]:
+        """删除文件夹**及其整棵子树**，各层文档全部回落未分类。
+
+        返回 `{moved, deletedFolders, deletedFolderIds}`；不存在返回 None。
 
         ⚠️ 绝不删文档——文件夹只是分类标签。搬移与删行在同一锁区内完成，
         中途崩溃也不会留下悬空引用（读路径另有兜底，见 list_transcripts）。
+        ⚠️ `deletedFolderIds` 是**前端本地回落的唯一依据**：让前端自己拿
+        `descendantIds` 再算一遍，「哪些文档要回落」就有了第二个真相来源。
         """
         with self._lock:
             folders = self._index.get("folders", [])
-            idx = next((i for i, f in enumerate(folders) if f["id"] == folder_id), None)
-            if idx is None:
+            if not any(f["id"] == folder_id for f in folders):
                 return None
+            doomed = folder_tree.folder_scope(folders, folder_id)
             moved = 0
+            changed: list[dict] = []
             for e in self._index["transcripts"]:
-                if e.get("folderId") == folder_id:
+                if e.get("folderId") in doomed:
                     e["folderId"] = ""
+                    changed.append(e)
                     moved += 1
-            del folders[idx]
+            names = [f.get("name", "") for f in folders if f["id"] in doomed]
+            self._index["folders"] = [f for f in folders if f["id"] not in doomed]
+            for e in changed:
+                self._persist_doc_meta(e)
             self._save_index()
-        return moved
+        return {"moved": moved, "deletedFolders": len(names),
+                "deletedFolderIds": sorted(doomed)}
+
+    def ensure_folder_path(self, raw: str, parent_id: str = "") -> dict:
+        """确保一条路径存在（逐段复用同名兄弟，缺哪层建哪层）。
+
+        返回 `{id, segments, created}`（`created` 是本轮新建的条目，供前端并入本地表）。
+
+        ⚠️ **一次加锁、一次写盘**。逐段调用 `create_folder` 会是「建一层写一次盘」，
+        既慢又让「全有或全无」失效：任一层失败时前面几层**已经落盘**，用户看到的是
+        「分类失败，但库里多了两个空夹」。
+        ⚠️ 所有可能抛异常的检查都在**写入之前**完成 —— 循环体内不会再失败，
+        所以「一个字节都不写」是结构保证的，不是靠 try/except 回滚。
+        """
+        with self._lock:
+            folders = self._index.setdefault("folders", [])
+            parsed = folder_tree.parse_path(raw, folders)
+            kind = parsed["kind"]
+
+            if kind == "reject":
+                reason = parsed.get("reason") or "invalid"
+                raise AppError("FOLDER_PATH_INVALID", f"文件夹路径不合法：{reason}",
+                               detail=str(parsed.get("segments", [])),
+                               status_code=400, recoverable=True)
+
+            # `parent_id` 非空时，全库范围的「整串命中 / 同名歧义」都不适用 ——
+            # 我们要的是「在该父级下确保这个单段名存在」，交给下面的逐段 ensure。
+            if not parent_id:
+                if kind == "ambiguous":
+                    raise AppError("FOLDER_PATH_AMBIGUOUS",
+                                   "存在多个同名文件夹，无法确定归属",
+                                   detail=", ".join(parsed.get("candidates") or []),
+                                   status_code=400, recoverable=True)
+                if kind == "existing":
+                    return {"id": parsed["folderId"], "segments": parsed["segments"],
+                            "created": []}
+
+            segments = parsed["segments"]
+            if len(segments) > folder_tree.MAX_PATH_SEGMENTS:
+                raise AppError("FOLDER_PATH_TOO_DEEP",
+                               f"文件夹路径最多 {folder_tree.MAX_PATH_SEGMENTS} 层",
+                               detail="/".join(segments),
+                               status_code=400, recoverable=True)
+            if parent_id and not any(f["id"] == parent_id for f in folders):
+                raise AppError("FOLDER_PARENT_NOT_FOUND", "父文件夹不存在",
+                               status_code=404, recoverable=True)
+
+            created: list[dict] = []
+            cur = parent_id or ""
+            for seg in segments:
+                key = folder_tree.path_key(seg)
+                hit = next(
+                    (f for f in folders
+                     if folder_tree.path_key(f.get("name")) == key
+                     and (f.get("parentId") or "") == cur),
+                    None,
+                )
+                if hit is not None:
+                    cur = hit["id"]
+                    continue
+                entry = folder_tree.make_folder_entry(seg, cur)
+                folders.append(entry)
+                created.append(entry)
+                cur = entry["id"]
+
+            if created:
+                self._save_index()
+        # `created` 的条目也要补齐计数键（形状同 `create_folder`）：前端拿它直接并入
+        # 本地 folders 表，缺这两个键的表现是「新建的夹计数渲染成空白」。
+        return {"id": cur, "segments": segments,
+                "created": [{**e, "count": 0, "totalCount": 0} for e in created]}
 
     # ── 批量操作（一次加锁、一次写盘）──
     #
@@ -1196,14 +1462,19 @@ class Store:
         """批量移动文档到指定文件夹（""=移出到未分类）。返回命中数。"""
         targets = set(ids)
         with self._lock:
-            n = 0
+            changed: list[dict] = []
             for e in self._index["transcripts"]:
                 if e["id"] in targets:
                     e["folderId"] = folder_id
-                    n += 1
-            if n:
+                    changed.append(e)
+            if changed:
+                # 批量操作同样逐篇落真相：500 篇 = 500 个小文件，仍比 N 次全量
+                # index.json 便宜得多；漏掉这一步的失效形态是「移动过的那批文档
+                # 在索引重建后全部回到未分类」。
+                for e in changed:
+                    self._persist_doc_meta(e)
                 self._save_index()
-        return n
+        return len(changed)
 
     def _merge_tags(self, entry: dict, tags: list[str], mode: str) -> None:
         """把 tags 合进某条 transcript。`add` = 并入去重 / `replace` = 整体替换。
@@ -1226,15 +1497,17 @@ class Store:
         """批量打标签。mode="add" 并入去重 / mode="replace" 整体替换。返回命中数。"""
         targets = set(ids)
         with self._lock:
-            n = 0
+            changed: list[dict] = []
             for e in self._index["transcripts"]:
                 if e["id"] not in targets:
                     continue
                 self._merge_tags(e, tags, mode)
-                n += 1
-            if n:
+                changed.append(e)
+            if changed:
+                for e in changed:
+                    self._persist_doc_meta(e)
                 self._save_index()
-        return n
+        return len(changed)
 
     def apply_classifications(self, assignments: list[dict]) -> int:
         """按**逐篇异构**的方案写入（每篇各自的文件夹 + 各自的标签）。返回命中数。
@@ -1251,17 +1524,19 @@ class Store:
         """
         by_id = {a["id"]: a for a in assignments}
         with self._lock:
-            n = 0
+            changed: list[dict] = []
             for e in self._index["transcripts"]:
                 a = by_id.get(e["id"])
                 if a is None:
                     continue
                 e["folderId"] = a.get("folder_id") or ""
                 self._merge_tags(e, a.get("tags") or [], "add")
-                n += 1
-            if n:
+                changed.append(e)
+            if changed:
+                for e in changed:
+                    self._persist_doc_meta(e)
                 self._save_index()
-        return n
+        return len(changed)
 
     # ── MarkdownView CRUD ──
 

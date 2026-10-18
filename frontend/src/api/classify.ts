@@ -106,8 +106,18 @@ export interface ClassifyPreview {
   /** 策略回显：前端据此知道「这一次模型到底看到了什么」 */
   folderMode: FolderMode
   tagMode: TagMode
-  /** 喂给模型的分类空间（回显，供 UI 显示「已归入现有文件夹」） */
-  folders: { id: string; name: string; count: number }[]
+  /**
+   * 喂给模型的分类空间（回显，供 UI 显示「已归入现有文件夹」）。
+   * ⚠️ `parentId` / `totalCount` 是嵌套之后**复审下拉画路径**所必需的：
+   * 裸名在两层同名时界面上无法区分（与 prompt 侧同一个理由）。
+   */
+  folders: {
+    id: string
+    name: string
+    count: number
+    parentId?: string
+    totalCount?: number
+  }[]
   /** 喂给模型的标签词表（回显） */
   tagVocab: string[]
   /** **不变式**：长度与顺序恒等于请求里的 docIds */

@@ -170,7 +170,9 @@ describe('DocLibrary — 移动的部分失败', () => {
     fireEvent.click(screen.getByTitle('移动到文件夹'))
     // ⚠️ 按 `data-move-target`（id）而非文案定位：文件夹允许重名，且分组头
     // 里同时渲染着同名的一行，`getByText('目标夹')` 会命中多个元素。
-    fireEvent.click(container.querySelector('[data-move-target="f2"]') as HTMLElement)
+    // ⚠️ 查 `document` 而不是 `container`：移动浮层是树形 `FolderPicker`，
+    // **Portal 到 body**（面板的 backdrop-blur 会把它锁进面板大小）。
+    fireEvent.click(document.querySelector('[data-move-target="f2"]') as HTMLElement)
     await vi.waitFor(() => expect(batchMock).toHaveBeenCalled())
     expect(batchMock).toHaveBeenCalledWith({ action: 'move', ids: ['d0', 'd1'], folderId: 'f2' })
 
@@ -192,7 +194,7 @@ describe('DocLibrary — 移动的部分失败', () => {
     fireEvent.click(container.querySelectorAll('[data-select-toggle]')[0] as HTMLElement)
     fireEvent.click(screen.getByTitle(/全选当前筛选结果/))
     fireEvent.click(screen.getByTitle('移动到文件夹'))
-    fireEvent.click(container.querySelector('[data-move-target="f2"]') as HTMLElement)
+    fireEvent.click(document.querySelector('[data-move-target="f2"]') as HTMLElement)
 
     // ⚠️ 断言的是 store 而不是 DOM：`<Toast />` 挂在 App 上，单独 render DocLibrary
     // 时它根本不在树里——用 getByText 找 toast 永远是「找不到」，与实现对不对无关。
@@ -224,7 +226,11 @@ describe('DocLibrary — 文件夹操作失败', () => {
   })
 
   it('新建成功后输入框才收起', async () => {
-    vi.mocked(createFolder).mockResolvedValue(undefined as never)
+    // 返回值必须带 `id`：`createNewFolder` 现在回传新夹 id（`FolderPicker` 的
+    // 「新建并移过去」要拿它立即选中），失败/无 id 一律按「没建成」处理
+    vi.mocked(createFolder).mockResolvedValue({
+      id: 'f9', name: '已建成', createdAt: '2026-01-01T00:00:00', count: 0,
+    })
     useStore.setState({ docs: [], folders: [], currentDocId: null })
     render(<DocLibrary />)
 

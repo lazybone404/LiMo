@@ -48,9 +48,17 @@ export interface DocEntry {
   modes?: string[];
 }
 
-/** 单层文件夹（纯逻辑分类，不映射磁盘目录） */
+/** 文件夹（可嵌套的纯逻辑分类，不映射磁盘目录） */
 export interface FolderEntry {
-  id: string; name: string; createdAt: string; count: number;
+  id: string; name: string; createdAt: string
+  /** 父文件夹 id；`''` = 根级。后端返回的是**规范化后**的值（悬空/环已按根级处理）。
+   *  ⚠️ 可选是**兼容旧后端 / 测试 mock**用的，消费方一律写 `f.parentId || ''`。 */
+  parentId?: string
+  /** **直接**挂在该夹下的文档数（不含子树） */
+  count: number
+  /** 含全部后代的文档数。⚠️ 验收对账必须用 `count`（求和 `totalCount` 会重复计数）。
+   *  可选理由同 `parentId`；缺失时由前端 `countByFolder` 本地派生。 */
+  totalCount?: number
 }
 
 export interface TaskInfo {

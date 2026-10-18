@@ -232,13 +232,23 @@ export interface DocEntry {
   metadataCorrupt?: boolean
 }
 
-/** 单层文件夹（纯逻辑分类，不映射磁盘目录） */
+/**
+ * 文件夹（可嵌套的纯逻辑分类，不映射磁盘目录）
+ *
+ * ⚠️ 与 `store/types.ts` 的 `FolderEntry` 是**两份**（项目既有的重复），加字段必须
+ * 两处一起加——只加一处的表现是「运行时字段存在而类型不认」，`tsc` 静默放行。
+ */
 export interface FolderEntry {
   id: string
   name: string
   createdAt: string
-  /** 该文件夹下文档数（后端现算） */
+  /** 父文件夹 id；`''` = 根级（后端已按根级归化过悬空 / 成环的脏值）。
+   *  可选是兼容旧后端 / 测试 mock，消费方一律写 `f.parentId || ''`。 */
+  parentId?: string
+  /** **直接**挂在该夹下的文档数（不含子树） */
   count: number
+  /** 含全部后代的文档数（缺失时前端 `countByFolder` 本地派生） */
+  totalCount?: number
 }
 
 export interface TranscriptFull extends DocEntry {

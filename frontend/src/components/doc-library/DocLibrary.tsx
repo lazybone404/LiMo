@@ -18,8 +18,8 @@ import { createPortal } from 'react-dom'
 import { useStore } from '../../store'
 import {
   updateTranscript, exportBatch, getErrorMessage,
-  listFolders, listTranscripts, createFolder, renameFolder, deleteFolder, batchTranscripts,
-  getMarkdown,
+  listFolders, listTranscripts, createFolder, renameFolder, moveFolder, deleteFolder, batchTranscripts,
+  ensureFolderPath, getMarkdown,
 } from '../../api/client'
 import { cancelTask } from '../../api/taskManager'
 import { linearizeEvidence, stripMarkers } from '../../lib/markdown-markers'
@@ -33,6 +33,9 @@ import { classifyPreview, commitClassifications, type ClassifyOptions, type Clas
 import { ClassifyDialog, MAX_NEW_FOLDERS_DEFAULT, type ClassifyPlanRow } from './ClassifyDialog'
 import type { DocEntry } from '../../store/types'
 import { BatchBar } from './BatchBar'
+import { FolderPicker } from './FolderPicker'
+import { buildFolderTree } from './folderTree'
+import type { HeaderAction } from './GroupHeader'
 import { DocRow, type DocRowActions } from './DocRow'
 import {
   useDocQuery, countByFolder, collectTagFacets, groupDocs, type DocGroup, type SortKey,
@@ -234,8 +237,15 @@ export function DocLibrary() {
     patchPrefs({ collapsedGroups: cur.includes(key) ? cur.filter(k => k !== key) : [...cur, key] })
   }, [prefs.collapsedGroups, patchPrefs])
 
-  // 右键菜单
+  // 右键菜单（文档 / 文件夹各一个，互斥：打开其一时另一个必然已被关闭）
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; docId: string } | null>(null)
+  const [folderCtx, setFolderCtx] = useState<{ x: number; y: number; id: string } | null>(null)
+  /** 文档移动浮层（树形）；`ids` 在打开那一刻定格，与选择集变化解耦 */
+  const [docMove, setDocMove] = useState<{ ids: string[]; x: number; y: number } | null>(null)
+  /** 文件夹移动浮层；`id` 是**被移动的那个夹**，禁用集由它派生 */
+  const [folderMove, setFolderMove] = useState<{ id: string; x: number; y: number } | null>(null)
+  /** 「请某个分组头进入就地状态」的信号，交给 `GroupHeader` 消费（见 `HeaderAction`） */
+  const [headerAction, setHeaderAction] = useState<HeaderAction | null>(null)
   // 内联编辑 —— state 供渲染，ref 供回调读取。
   // ⚠️ 回调**不能**直接闭包 state：那样每次按键都会重建 rowActions 引用，
   // DocRow 的 memo 就白加了（编辑一个标题会让 60 行全部重渲染）。
@@ -292,9 +302,17 @@ export function DocLibrary() {
   // 拖拽 —— onDragOver 阶段读不到 payload，放置区的显隐/高亮只能靠这个 state
   const [draggingIds, setDraggingIds] = useState<Set<string>>(new Set())
 
+  /** 文件夹树 —— 路径标签 / 祖先展开 / 移动禁用集都从它派生，不各算一份 */
+  const tree = useMemo(() => buildFolderTree(folders), [folders])
+
+  // ⚠️ `folders` 必须传：不传时 `filterDocs` 退化成**改造前的严格等值**（只看 `folderId`
+  // 恰好相等的），点「技术」就看不到「技术/前端」里的文档。它是本次改动的核心语义。
+  // ⚠️ `tree` 也传：`filterDocs` / `countByFolder` / `groupDocs` 三处原本各自
+  // `buildFolderTree(folders)`，输入是同一个 `folders` ⇒ 同一批数据建三遍树。
+  // 建好的那一份就住在这里（它本来就有），转手给它们即可。
   const { visible, matchedIds, snippetById, rankOf, searching, hitsTruncated } = useDocQuery({
     docs, query: searchQuery, title: titleFilter, type: activeType, tags: activeTags,
-    folderId: activeFolderId, dateFrom, dateTo, sort,
+    folderId: activeFolderId, dateFrom, dateTo, sort, folders, tree,
   })
 
   /**
@@ -302,7 +320,7 @@ export function DocLibrary() {
    * ⚠️ 不读后端的 `folder.count`：那是上次拉取的快照，而 `moveDocs` 是乐观更新
    * （改完立刻改本地 `docs`、不 refetch）。两边各读各的，移动那一瞬间计数就互相矛盾。
    */
-  const counts = useMemo(() => countByFolder(docs, folders), [docs, folders])
+  const counts = useMemo(() => countByFolder(docs, folders, tree), [docs, folders, tree])
 
   /**
    * 库里的**去重标签数** —— 分类对话框拿它决定「标签」一栏的默认档与措辞。
@@ -325,8 +343,8 @@ export function DocLibrary() {
    */
   const grouped: DocGroup[] | null = useMemo(() => {
     const by = density === 'compact' ? 'folder' : groupBy
-    return by === 'none' ? null : groupDocs(visible, by, folders)
-  }, [density, groupBy, visible, folders])
+    return by === 'none' ? null : groupDocs(visible, by, folders, undefined, tree)
+  }, [density, groupBy, visible, folders, tree])
 
   /**
    * 分组头徽标数字 —— 两种维度**语义不同且都有意如此**：
@@ -337,7 +355,10 @@ export function DocLibrary() {
    */
   const countOf = useCallback((g: DocGroup) =>
     g.editable
-      ? (g.ref ? counts.byFolder.get(g.ref) || 0 : counts.uncategorized)
+      // ⚠️ 文件夹组读**含子树**的总数：点「技术」筛出的是整棵子树的文档，徽标若只报
+      // 直接数，就会出现「技术（3）」点开列出 12 篇。直接数（`byFolder`）另有用途 ——
+      // 对账求和只能用那一份，把 `totalByFolder` 加起来会把每篇文档数 N 遍。
+      ? (g.ref ? counts.totalByFolder.get(g.ref) || 0 : counts.uncategorized)
       : g.docs.length,
   [counts])
 
@@ -353,7 +374,7 @@ export function DocLibrary() {
 
   const {
     selectedIds, hasSelection, toggle: toggleSelect, setAll: setSelectionAll,
-    clear: clearSelection, handleRowClick, handleRowDoubleClick, onListKeyDown,
+    clear: clearSelection, handleRowClick, handleRowMouseDown, handleRowDoubleClick, onListKeyDown,
   } = useDocSelection(visibleIds, openDocTab)
 
   // ── 分批渲染 ──
@@ -408,21 +429,61 @@ export function DocLibrary() {
     try { setDocs(await listTranscripts()) } catch { /* 保持本地视图，比清空好 */ }
   }, [setDocs])
 
-  /** 文件夹 id → 展示名（toast 用；'' = 未分类） */
+  /** 文件夹 id → 展示**路径**（toast 用；'' = 未分类）。
+   *  ⚠️ 用路径不用裸名：文件夹允许重名，`技术 › 前端` 与 `生活 › 前端` 在 toast 里
+   *  必须能区分，否则用户看到「已移动到『前端』」根本不知道是哪一个。 */
   const folderLabel = useCallback((id: string) =>
-    id === '' ? '未分类' : (folders.find(f => f.id === id)?.name ?? '文件夹'), [folders])
+    id === '' ? '未分类' : (tree.pathOf.get(id) || '文件夹'), [tree])
 
   // ── 文件夹增删改 ──
 
-  /** ⚠️ 返回是否成功：调用方（工具栏输入行）**成功才**清草稿，失败保留让用户重试 */
-  const createNewFolder = useCallback(async (name: string) => {
-    let ok = false
+  /**
+   * 把若干文件夹**及其全部祖先**从「收起」集合里移除。
+   *
+   * 收起集合存的是分组 **key**（`f:${id}`，见 `groupDocs`），不是裸 id。
+   *
+   * 三处共用：新建子夹后（否则新夹藏在收起的父级里，看起来像没建成）、移动文件夹后
+   * （同上）、筛选到某夹时（否则「筛到子级而父级收着」= 空白列表）。
+   * ⚠️ 幂等：没有需要展开的就**不调 `patchPrefs`** —— 该方法会写 localStorage，
+   * 每次筛选变更都白写一次盘没有意义，而挂在 effect 里的版本还会多绕一圈。
+   */
+  const revealFolders = useCallback((ids: string[]) => {
+    const want = new Set<string>()
+    for (const id of ids) {
+      if (!id) continue
+      want.add(`f:${id}`)
+      for (const a of tree.ancestorIds(id)) want.add(`f:${a}`)
+    }
+    if (!want.size) return
+    const cur = prefs.collapsedGroups
+    const next = cur.filter(k => !want.has(k))
+    if (next.length !== cur.length) patchPrefs({ collapsedGroups: next })
+  }, [tree, prefs.collapsedGroups, patchPrefs])
+
+  // 筛到子夹时自动展开祖先。⚠️ 不展开的话列表是空的，而用户看到的是「这个夹一篇都没有」，
+  // 与「文档都在、只是父级收着」完全无法区分。
+  useEffect(() => {
+    if (activeFolderId) revealFolders([activeFolderId])
+  }, [activeFolderId, revealFolders])
+
+  /**
+   * 新建文件夹（`parentId` 省略 = 根级）。返回**新夹 id**，失败返回 `null`。
+   *
+   * ⚠️ 返回 id 而不只是 boolean：`FolderPicker` 的「新建并移过去」要拿它立即选中
+   * （否则用户还得再点一次刚建出来的那一行）。工具栏那条路只关心成功与否，包一层即可。
+   */
+  const createNewFolder = useCallback(async (name: string, parentId = '') => {
+    let newId: string | null = null
     await withFolderBusy('create', async () => {
-      try { await createFolder(name); await refreshFolders(); ok = true }
-      catch (err) { addToast(getErrorMessage(err), 'error') }
+      try {
+        const f = await createFolder(name, parentId)
+        newId = f?.id ?? null
+        await refreshFolders()
+        revealFolders([parentId])
+      } catch (err) { addToast(getErrorMessage(err), 'error') }
     })
-    return ok
-  }, [withFolderBusy, refreshFolders, addToast])
+    return newId
+  }, [withFolderBusy, refreshFolders, addToast, revealFolders])
 
   const renameFolderById = useCallback(async (id: string, name: string) => {
     let ok = false
@@ -433,22 +494,43 @@ export function DocLibrary() {
     return ok
   }, [withFolderBusy, refreshFolders, addToast])
 
+  /** 移动文件夹到另一个父级（'' = 根级）。移到自己或后代由后端拒绝（400） */
+  const moveFolderById = useCallback(async (id: string, parentId: string) => {
+    let ok = false
+    await withFolderBusy(id, async () => {
+      try {
+        await moveFolder(id, parentId)
+        await refreshFolders()
+        ok = true
+        // 移进一个收起的父级里 = 移完就找不着了
+        revealFolders([parentId])
+      } catch (err) { addToast(getErrorMessage(err), 'error') }
+    })
+    return ok
+  }, [withFolderBusy, refreshFolders, addToast, revealFolders])
+
   const deleteFolderById = useCallback((id: string) => {
     void withFolderBusy(id, async () => {
-      const name = folders.find(f => f.id === id)?.name ?? '文件夹'
+      const label = folderLabel(id)
       try {
         const r = await deleteFolder(id)
         await refreshFolders()
-        // 文档回落未分类——本地同步，否则当前文件夹视图里还挂着已删文件夹的文档
+        // ⚠️ 回落范围**只认后端返回的 `deletedFolderIds`**（含自身与全部后代）。
+        // 用本地 `descendantIds` 再算一遍 = 第二个真相来源：后端改删除语义时前端会
+        // 静默停在旧规则上，「删了父夹、子夹里的文档还指着已不存在的 folderId」。
+        const gone = new Set(r.deletedFolderIds || [])
         setDocs(useStore.getState().docs.map(d =>
-          d.folderId === id ? { ...d, folderId: '' } : d))
-        if (activeFolderId === id) setActiveFolderId(null)
-        addToast(`已删除「${name}」，${r.moved} 个文档已移到未分类`)
+          gone.has(d.folderId || '') ? { ...d, folderId: '' } : d))
+        // 当前筛的夹被删掉（含被当成祖先连带删掉）→ 清筛选，否则列表永远空白
+        if (activeFolderId && gone.has(activeFolderId)) setActiveFolderId(null)
+        const kids = (r.deletedFolders || 1) - 1
+        addToast(`已删除「${label}」${kids > 0 ? `及其 ${kids} 个子文件夹` : ''}，` +
+          `${r.moved} 个文档已移到未分类`)
       } catch (err) {
         addToast(getErrorMessage(err), 'error')
       }
     })
-  }, [folders, withFolderBusy, refreshFolders, setDocs, activeFolderId, setActiveFolderId, addToast])
+  }, [folderLabel, withFolderBusy, refreshFolders, setDocs, activeFolderId, setActiveFolderId, addToast])
 
   // ── 单条编辑 ──
 
@@ -519,6 +601,14 @@ export function DocLibrary() {
   }, [addToast, setDocs, refreshFolders, refreshDocs, folderLabel])
 
   const handleDragStart = useCallback((e: React.DragEvent, doc: DocEntry) => {
+    // 按住 Ctrl/Cmd 拖 = **划选**（useDocSelection），不是把文档拖去文件夹：
+    // 同一个手势在两套语义下含义不同，不掐掉 DnD 会一边划选一边显示拖拽幽灵图。
+    if (e.ctrlKey || e.metaKey) { e.preventDefault(); return }
+    // 从复选框热区起手同理 —— 那里按下是「选中这一行」，不该变成拖动它
+    if (e.target instanceof Element && e.target.closest('[data-select-toggle]')) {
+      e.preventDefault()
+      return
+    }
     // 拖已选中的项 = 整批拖；拖未选中的项 = 只拖它自己
     const ids = selectedIds.has(doc.id) ? [...selectedIds] : [doc.id]
     setDraggingIds(new Set(ids))
@@ -866,26 +956,29 @@ export function DocLibrary() {
     if (!plan.length) return
     setClassifyCommitting(true)
     try {
-      // ① 新建名 → id。先在本地的 folders 里按 trim + 大小写不敏感查同名，
-      //    命中就复用（用户可能已经建过同名夹，只是模型没看出来）
-      const nameToId = new Map(
-        useStore.getState().folders.map(f => [f.name.trim().toLowerCase(), f.id]))
+      // ① 新建名 → id。**整条路径交给后端 `ensure-path`**（缺哪层建哪层，已有则复用）。
+      //
+      // ⚠️ 前端**刻意不解析路径**（不切 `/`、不比名字）：解析只活在
+      // `folder_tree.parse_path` 一处。前端自己实现一份的话，它的失效形态是静默的
+      // ——「历史里本来就叫『前端/后端』的夹」会被拆成两层，而分类结果看起来完全正常。
+      //
+      // ⚠️ 也**不再做本地同名预查**：ensure-path 本身幂等（同父同级同名复用），
+      // 而本地查重需要一份与 `path_key` 同构的归一实现 —— 那正是第二份判据。
       const newNames = [...new Set(plan.map(r => r.newFolderName.trim()).filter(Boolean))]
-      const createdNames: string[] = []
+      const nameToId = new Map<string, string>()
+      let createdRows = 0
       for (const name of newNames) {
-        const hit = nameToId.get(name.toLowerCase())
-        if (hit) continue
-        const entry = await createFolder(name)
-        if (!entry?.id) throw new Error(`新建文件夹「${name}」失败`)
-        nameToId.set(name.toLowerCase(), entry.id)
-        createdNames.push(name)
+        const res = await ensureFolderPath(name)
+        if (!res?.id) throw new Error(`新建文件夹「${name}」失败`)
+        nameToId.set(name, res.id)
+        createdRows += res.created?.length ?? 0
       }
 
       const assignments = plan.map(r => ({
         id: r.id,
         // 新建名留空 = 实际不归入（`folderId: ''` 就是未分类，不会误建空名夹）
         folderId: r.newFolderName.trim()
-          ? (nameToId.get(r.newFolderName.trim().toLowerCase()) ?? r.folderId)
+          ? (nameToId.get(r.newFolderName.trim()) ?? r.folderId)
           : r.folderId,
         tags: r.tags,
       }))
@@ -912,7 +1005,8 @@ export function DocLibrary() {
             ? { ...d, folderId: beforeFolder.get(d.id) ?? '', tags: beforeTags.get(d.id) ?? [] }
             : d))
         // 建了夹却一篇都没写进去 → 会留下空文件夹，**说出来**而不是让用户自己发现
-        const orphan = createdNames.length ? `（新建的 ${createdNames.length} 个文件夹已保留）` : ''
+        // 计数用**实际新建的文件夹行数**（与后端额度口径一致：`技术/前端` 两层都缺时算 2）
+        const orphan = createdRows ? `（新建的 ${createdRows} 个文件夹已保留）` : ''
         addToast(`已分类 ${r.affected} 篇，${failed.length} 篇失败${orphan}`, 'error')
       } else {
         addToast(`已分类 ${r.affected} 篇`)
@@ -959,37 +1053,119 @@ export function DocLibrary() {
   }, [addToast])
 
   const ctxDoc = docs.find(d => d.id === ctxMenu?.docId)
+  /**
+   * 文档右键菜单 —— **按用途分五段**（打开 / 生成 / 整理 / 输出 / 危险）。
+   *
+   * 九项连成一长条时，用户每次都得从头扫一遍找「移动到文件夹」；分段后眼睛有落点，
+   * 而「删除」不再紧挨着「编辑标签」。分段的依据同批量条（见 `BatchBar` 文件头）：
+   * 误点的代价。
+   */
   const ctxItems = useMemo(() => {
     if (!ctxDoc) return []
     return [
+      // ── 打开 ──
       // ⚠️ 右键是**显式动作**，一律钉成常驻标签（'pinned'）——不像单击那样会被
       // 下一次单击顶掉。用户从菜单里点「打开」，意图显然比随手点一行更明确。
       { label: '打开', icon: <BookOpen size={14} />, onClick: () => openDocTab(ctxDoc.id, 'pinned') },
+      { label: '在 AI 中提问', icon: <MessageSquare size={14} />, onClick: () => { openDocTab(ctxDoc.id, 'pinned'); useStore.getState().setAiVisible(true) } },
+
+      { label: '', onClick: () => {}, divider: true },
+
+      // ── 生成 ──
       // ⚠️ 走统一入口 `openPanel`（不是旧别名）：互斥模式下它同时把左侧切到生成面板，
       // 而「重新生成」的下一步按钮就在那个面板里 —— 这正是用户此刻要去的地方。
       { label: '重新生成', icon: <RefreshCw size={14} />, onClick: () => { openDocTab(ctxDoc.id, 'pinned'); useStore.getState().openPanel('genPanel') } },
-      { label: 'AI 对话', icon: <MessageSquare size={14} />, onClick: () => { openDocTab(ctxDoc.id, 'pinned'); useStore.getState().setAiVisible(true) } },
+
       { label: '', onClick: () => {}, divider: true },
+
+      // ── 整理 ──
       {
-        // ⚠️ 非拖拽的移动路径：只做 DnD 会让键盘/触屏用户完全无法移动文档
-        label: '移动到文件夹', icon: <FolderInput size={14} />,
-        submenu: [
-          { label: '未分类（移出文件夹）', onClick: () => moveDocs([ctxDoc.id], '') },
-          ...folders.map(f => ({ label: f.name, onClick: () => moveDocs([ctxDoc.id], f.id) })),
-        ],
+        // ⚠️ 非拖拽的移动路径：只做 DnD 会让键盘/触屏用户完全无法移动文档。
+        // 打开**树形浮层**而不是子菜单：文件夹可嵌套后，扁平子菜单里 `前端`/`后端`/`React`
+        // 全在同一层，选中哪个全凭记忆（`FolderPicker` 文件头有完整理由）。
+        label: '移动到文件夹…', icon: <FolderInput size={14} />,
+        onClick: () => {
+          setDocMove({ ids: [ctxDoc.id], x: ctxMenu?.x ?? 0, y: ctxMenu?.y ?? 0 })
+          setCtxMenu(null)
+        },
       },
       { label: '编辑标题', icon: <Pencil size={14} />, onClick: () => applyTitleEdit({ id: ctxDoc.id, value: ctxDoc.title }) },
       { label: '编辑标签', icon: <Tag size={14} />, onClick: () => applyTagsEdit({ id: ctxDoc.id, value: (ctxDoc.tags || []).join(', ') }) },
-      { label: '复制 Markdown', icon: <Clipboard size={14} />, onClick: () => { void copyMarkdown(ctxDoc.id) } },
+
       { label: '', onClick: () => {}, divider: true },
+
+      // ── 输出 ──
+      { label: '复制 Markdown', icon: <Clipboard size={14} />, onClick: () => { void copyMarkdown(ctxDoc.id) } },
+
+      { label: '', onClick: () => {}, divider: true },
+
+      // ── 危险 ──
       { label: '删除', icon: <Trash2 size={14} />, onClick: () => setDeleteTargets([ctxDoc.id]), danger: true },
     ]
-  }, [ctxDoc, folders, moveDocs, openDocTab, copyMarkdown, applyTitleEdit, applyTagsEdit])
+  }, [ctxDoc, ctxMenu, openDocTab, copyMarkdown, applyTitleEdit, applyTagsEdit])
 
   const onContextMenu = useCallback((e: React.MouseEvent, docId: string) => {
     e.preventDefault()
+    setFolderCtx(null)         // 两个菜单互斥：右键文档时把文件夹菜单收掉
     setCtxMenu({ x: e.clientX, y: e.clientY, docId })
   }, [])
+
+  const onFolderContextMenu = useCallback((e: React.MouseEvent, id: string) => {
+    e.preventDefault()
+    setCtxMenu(null)
+    setFolderCtx({ x: e.clientX, y: e.clientY, id })
+  }, [])
+
+  /**
+   * 文件夹右键菜单 —— 四项：新建子文件夹 / 重命名 / 移动到… / 删除。
+   *
+   * ⚠️ 三个就地项（新建子夹 / 重命名 / 删除确认）的状态都住在 `GroupHeader` 内部，
+   * 这里只负责**递信号**（`HeaderAction`），先展开该夹保证分组头已渲染出来。
+   */
+  const folderCtxItems = useMemo(() => {
+    if (!folderCtx) return []
+    const id = folderCtx.id
+    const name = tree.pathOf.get(id) || '文件夹'
+    const ask = (kind: HeaderAction['kind']) => {
+      revealFolders([id])
+      setHeaderAction({ kind, id })
+      setFolderCtx(null)
+    }
+    return [
+      { label: '新建子文件夹', icon: <FolderInput size={14} />, onClick: () => ask('newChild') },
+      { label: '重命名', icon: <Pencil size={14} />, onClick: () => ask('rename') },
+      {
+        label: '移动到…', icon: <FolderInput size={14} />,
+        onClick: () => { setFolderMove({ id, x: folderCtx.x, y: folderCtx.y }); setFolderCtx(null) },
+      },
+      { label: '', onClick: () => {}, divider: true },
+      {
+        // ⚠️ 删除走分组头的行内确认（那里已写好「及其 N 个子文件夹 / M 个文档移到未分类」
+        // 的文案，再写一份就是第二个真相源）
+        label: `删除「${name}」`, icon: <Trash2 size={14} />, danger: true,
+        onClick: () => ask('delete'),
+      },
+    ]
+  }, [folderCtx, tree, revealFolders])
+
+  /** 就地新建子夹（分组头输入框提交） */
+  const createChildFolder = useCallback(async (parentId: string, name: string) => {
+    const id = await createNewFolder(name, parentId)
+    if (id) {
+      // 新夹默认展开（否则它自己收着，看着像没建成）
+      revealFolders([id])
+      return true
+    }
+    return false
+  }, [createNewFolder, revealFolders])
+
+  /** 移动浮层的禁用集：自身 + 全部后代（移进自己的肚子里 → 后端 `FOLDER_CYCLE`） */
+  const folderMoveExclude = useMemo(() => {
+    if (!folderMove) return undefined
+    const s = tree.descendantIds(folderMove.id)
+    s.add(folderMove.id)
+    return s
+  }, [folderMove, tree])
 
   const handleRowDelete = useCallback((id: string) => setDeleteTargets([id]), [])
 
@@ -998,6 +1174,7 @@ export function DocLibrary() {
     onRowClick: handleRowClick,
     onRowDoubleClick: handleRowDoubleClick,
     onToggleSelect: toggleSelect,
+    onRowMouseDown: handleRowMouseDown,
     onContextMenu,
     onEditTitle: d => applyTitleEdit({ id: d.id, value: d.title }),
     onEditTags: d => applyTagsEdit({ id: d.id, value: (d.tags || []).join(', ') }),
@@ -1022,7 +1199,7 @@ export function DocLibrary() {
       if (cur) saveTags(cur.id, cur.value)
     },
     onTagsCancel: () => applyTagsEdit(null),
-  }), [handleRowClick, handleRowDoubleClick, toggleSelect, onContextMenu, applyTitleEdit, applyTagsEdit, handleRowDelete,
+  }), [handleRowClick, handleRowMouseDown, handleRowDoubleClick, toggleSelect, onContextMenu, applyTitleEdit, applyTagsEdit, handleRowDelete,
        handleDragStart, handleDragEnd, saveTitle, saveTags])
 
   /**
@@ -1060,6 +1237,12 @@ export function DocLibrary() {
     draggingCategorized,
     // 简略模式的形态是 IDE 文件树：分组子行缩进 + 缩进线，分组头当父节点（见 grouped）
     treeIndent: density === 'compact',
+    // 完整路径：缩进夹紧到 6 层后，深层的同名夹只能靠 title 读全
+    folderPath: (id: string) => tree.pathOf.get(id) || '',
+    onFolderNewChild: createChildFolder,
+    onFolderContextMenu,
+    headerAction,
+    onHeaderActionConsumed: () => setHeaderAction(null),
     onDropToUncategorized: handleDropToUncategorized,
     onToggleGroup: toggleGroup,
     onFolderRename: renameFolderById,
@@ -1110,13 +1293,15 @@ export function DocLibrary() {
           onClassify={handleOpenClassify}
           onDelete={() => setDeleteTargets([...selectedIds])}
           onClear={clearSelection}
+          onCreateFolder={name => createNewFolder(name)}
         />
       ) : (
         <DocLibraryToolbar
           density={density}
           onDensity={setDensity}
           busy={folderBusy.has('create')}
-          onCreateFolder={createNewFolder}
+          // 工具栏只关心「成没成」（成功才清草稿）；`FolderPicker` 那边才需要新夹 id
+          onCreateFolder={async name => (await createNewFolder(name)) !== null}
         />
       )}
 
@@ -1158,6 +1343,34 @@ export function DocLibrary() {
       )}
 
       {ctxMenu && <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={ctxItems} onClose={() => setCtxMenu(null)} />}
+      {folderCtx && <ContextMenu x={folderCtx.x} y={folderCtx.y} items={folderCtxItems} onClose={() => setFolderCtx(null)} />}
+
+      {/* 文档移动浮层（右键「移动到文件夹…」）。批量条那个是它自己的实例（锚在按钮上），
+          两者共用同一个组件、同一个 `data-move-target` 契约。 */}
+      {docMove && (
+        <FolderPicker
+          folders={folders}
+          rootLabel="未分类（移出文件夹）"
+          x={docMove.x}
+          y={docMove.y}
+          onPick={id => { const ids = docMove.ids; setDocMove(null); void runBatch(() => moveDocs(ids, id)) }}
+          onClose={() => setDocMove(null)}
+          onCreate={name => createNewFolder(name)}
+        />
+      )}
+
+      {/* 文件夹移动浮层 —— **不提供「新建」**：移动是把已有东西挪过去，新建是另一件事 */}
+      {folderMove && (
+        <FolderPicker
+          folders={folders}
+          rootLabel="根级（移出当前层级）"
+          excludeIds={folderMoveExclude}
+          x={folderMove.x}
+          y={folderMove.y}
+          onPick={parentId => { const id = folderMove.id; setFolderMove(null); void moveFolderById(id, parentId) }}
+          onClose={() => setFolderMove(null)}
+        />
+      )}
 
       {/* 删除确认 —— **必须 Portal 到 body**，理由见 `<aside>` 的注释（它带
           `backdrop-blur-[20px]`，会把 `fixed` 后代锁在面板内） */}

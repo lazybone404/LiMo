@@ -317,6 +317,31 @@ assert _cli_hits["items"] == _http_hits, "搜索两侧条目同源（第 4 节�
 assert C.get("/api/cli/folders").json() == \
     {"schema_version": SCHEMA_VERSION, "items": svc.list_folders()}
 
+# ── 8.6b 嵌套筛选：`include_descendants`（`limo list -r` 的唯一数据路径）──
+# 判据三件：默认仍是**精确**（老调用方零变化）、true 时含子树、
+# 未分类（`folder_id=""`）**不受影响**——未分类不是实体，没有后代可展开。
+_sub = S.create_folder("契约子", fid)["id"]
+_grand = S.create_folder("契约孙", _sub)["id"]
+S.set_transcripts_folder(["tr_c1"], _sub)
+S.set_transcripts_folder(["tr_c2"], _grand)
+
+_exact = svc.list_resources(folder_id=fid, limit=None)
+assert [e["id"] for e in _exact.items] == ["tr_c0"], \
+    f"默认必须精确（老调用方零回归），实际 {[e['id'] for e in _exact.items]}"
+_tree = svc.list_resources(folder_id=fid, include_descendants=True, limit=None)
+assert {e["id"] for e in _tree.items} == {"tr_c0", "tr_c1", "tr_c2"}, \
+    f"含子树应覆盖三层，实际 {[e['id'] for e in _tree.items]}"
+_uncat = svc.list_resources(folder_id="", include_descendants=True, limit=None)
+assert all(e.get("folderId", "") == "" for e in _uncat.items) and _uncat.items, \
+    "未分类没有子文件夹，include_descendants 对它必须是空操作"
+
+# CLI 路由与 service 同源（Pattern #61：两侧各读各的迟早分叉）
+_cli_tree = C.get("/api/cli/resources",
+                  params={"folder_id": fid, "include_descendants": "true", "all": "true"}).json()
+assert _cli_tree["items"] == _tree.to_dict()["items"], "/api/cli/resources 未透传 include_descendants"
+
+print("PASS: include_descendants 默认精确 / true 含子树 / 未分类不受影响")
+
 # ── 8.7 schema_version 守卫：**每一条** cli 响应顶层都得有 ──
 # 这条单独存在是因为「漏掉一个端点」不会让上面任何一节变红：CLI 对它免检，而免检的
 # 正是那条会读错字段的路径。

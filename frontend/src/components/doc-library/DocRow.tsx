@@ -36,6 +36,12 @@ export interface DocRowActions {
    */
   onRowDoubleClick: (e: React.MouseEvent, id: string) => void
   onToggleSelect: (id: string) => void
+  /**
+   * 行根 mousedown —— **只给 Ctrl/Cmd 拖动划选用**，不改变点击语义。
+   * 修饰键判定与「点热区不算划选」的守卫都在 `useDocSelection` 里，
+   * 这里只负责把事件连同 id 送过去。
+   */
+  onRowMouseDown: (e: React.MouseEvent, id: string) => void
   onContextMenu: (e: React.MouseEvent, docId: string) => void
   onEditTitle: (doc: DocEntry) => void
   onEditTags: (doc: DocEntry) => void
@@ -114,7 +120,12 @@ function DocRowImpl({
       aria-label={selected ? `取消选择 ${doc.title}` : `选择 ${doc.title}`}
       aria-pressed={selected}
       onClick={e => { e.stopPropagation(); actions.onToggleSelect(doc.id) }}
-      className="shrink-0 flex items-center"
+      // ⚠️ 热区是**整列**（24px 宽），不是图标那 14/18px：用户原话「勾选的小勾那个
+      // 操作逻辑有点反人类」，实际痛点是那个小勾根本点不中。图标尺寸不变，只把可点区域
+      // 撑到行高；`-ml-1` 收回行内 padding，让热区贴住面板边缘（VS Code 的行首列）。
+      className={`shrink-0 -ml-1 flex items-center justify-center rounded-md hover:bg-surface-hover ${
+        density === 'compact' ? 'w-6 h-6.5' : 'w-6 h-6'
+      }`}
     >
       {selected
         ? <CheckSquare size={density === 'compact' ? 14 : 18} className="text-accent" />
@@ -127,9 +138,11 @@ function DocRowImpl({
     return (
       <div
         data-doc-row
+        data-doc-id={doc.id}
         draggable={!titleDraft}
         onDragStart={e => actions.onDragStart(e, doc)}
         onDragEnd={actions.onDragEnd}
+        onMouseDown={e => actions.onRowMouseDown(e, doc.id)}
         onClick={e => actions.onRowClick(e, doc.id)}
         onDoubleClick={handleRowDoubleClick}
         onContextMenu={e => actions.onContextMenu(e, doc.id)}
@@ -201,9 +214,11 @@ function DocRowImpl({
   return (
     <div
       data-doc-row
+      data-doc-id={doc.id}
       draggable={!titleDraft}
       onDragStart={e => actions.onDragStart(e, doc)}
       onDragEnd={actions.onDragEnd}
+      onMouseDown={e => actions.onRowMouseDown(e, doc.id)}
       onClick={e => actions.onRowClick(e, doc.id)}
       onDoubleClick={handleRowDoubleClick}
       onContextMenu={e => actions.onContextMenu(e, doc.id)}

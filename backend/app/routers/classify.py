@@ -137,7 +137,13 @@ async def classify_preview(
         # 策略回显：前端据此知道「这一次模型到底看到了什么」（见 classifier 的枚举）
         "folderMode": folder_mode,
         "tagMode": tag_mode,
-        "folders": [{"id": f["id"], "name": f.get("name") or "", "count": f.get("count", 0)}
+        # ⚠️ `parentId` 是**嵌套之后**前端唯一还能画出层级的字段（它必须回显，
+        # 否则复审下拉里两个同名「前端」在界面上长得一模一样）；`totalCount`
+        # 是「整棵子树多少篇」，与喂给模型的口径同源。
+        "folders": [{"id": f["id"], "name": f.get("name") or "",
+                     "count": f.get("count", 0),
+                     "parentId": f.get("parentId") or "",
+                     "totalCount": f.get("totalCount", f.get("count", 0))}
                     for f in result["folders"]],
         "tagVocab": result["tag_vocab"],
         "suggestions": result["suggestions"],

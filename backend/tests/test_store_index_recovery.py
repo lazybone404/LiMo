@@ -7,7 +7,8 @@
 
 ⚠️ 用例**双向**断言，缺一不可：
   · 损坏/缺失时文档必须回来（防「静默空库」）
-  · 正常索引**原样不动**（防「无脑重建」——重建会重推 id、丢分类，比不修更糟）
+  · 正常索引**原样不动**（防「无脑重建」——重建会重推 id，比不修更糟；
+    分类本身自 2026-10-18 起由 sidecar 承接，见 `test_classification_survives_rebuild`）
 
 运行：python -m pytest tests/test_store_index_recovery.py
 """
@@ -59,11 +60,12 @@ def test_corrupt_index_is_backed_up_and_rebuilt(tmp_path, caplog):
     # ② 文档回来了（这条就是「静默空库」的反面）
     assert len(st2.list_transcripts()) == 2, "损坏后文档全没了"
 
-    # ③ 降级项写清楚了：用户知道「回来了，但丢了什么」，才能判断要不要去翻备份
+    # ③ 变的是 id、不是分类：warning 要说清楚「哪些回不来、哪些从哪恢复」，
+    #    用户才能判断要不要去翻备份（2026-10-18 起分类由 sidecar 承接，不再是「有损」）
     msg = " ".join(r.getMessage() for r in caplog.records)
-    assert "有损" in msg, f"warning 没说明重建有损: {msg!r}"
-    for field in ("文件夹归属", "标签", "sha256"):
-        assert field in msg, f"warning 没列出降级字段 {field}: {msg!r}"
+    assert "sha256" in msg, f"warning 没说明 id 会变: {msg!r}"
+    for field in ("文件夹归属", "标签", "meta.json", "folders.json"):
+        assert field in msg, f"warning 没说明 {field} 的去向: {msg!r}"
 
 
 def test_rebuild_is_what_recovers_the_docs(tmp_path, monkeypatch):
@@ -251,3 +253,162 @@ def test_dedupe_is_idempotent_and_silent_when_clean(tmp_path, monkeypatch):
 
     assert idx_path.read_text(encoding="utf-8") == fixed, "第二次打开又改了索引"
     assert writes == [], f"干净的索引被重写了（每启动一次重写全库）：{writes}"
+
+
+# ── 5. 分类的真相源：`meta.json` / `folders.json`（2026-10-18）──
+#
+# index.json 的定位一直是「缓存」，但分类此前**只**存在它里面 —— 重建只能清空。
+# 于是「删一次 index.json，整理工作全部归零」，而那条路径不需要用户做错任何事。
+# 现在真相住在文档目录里（跟着文档走）和库根上；重建是**读它**，不是补救。
+
+def _doc_metas(root):
+    return sorted(root.glob("*/meta.json"))
+
+
+def test_classification_survives_rebuild(tmp_path):
+    """删 index.json 后：文件夹树 / 归属 / 标签 / 创建时间 / 来源全部回来。
+
+    ⚠️ 恢复主键是 **`dir_name`** 而不是文档 id —— 重建把 id 由正文重推成新值，
+    按 id 恢复等于什么都对不上。这条也是 sidecar 必须住在**目录**里的原因。
+    """
+    st = _lib(tmp_path, n=1)
+    fid = st.create_folder("论文")["id"]
+    st.set_transcripts_folder(["tx_0"], fid)
+    st.update_transcripts_tags(["tx_0"], ["重要", "待读"])
+    before = st.get_transcript("tx_0")
+    assert before["createdAt"] and before["sourceUrl"], "装置没造出可断言的字段"
+
+    (st.root / "index.json").unlink()
+    st2 = Store(str(st.root))
+
+    entries = st2.list_transcripts()
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["folderId"] == fid, "重建后文件夹归属丢了"
+    assert e["tags"] == ["重要", "待读"], "重建后标签丢了"
+    assert e["createdAt"] == before["createdAt"], "重建后创建时间丢了"
+    # 来源字段同样从 meta 恢复：否则一篇网页文档会变成「无来源的文本」，
+    # `find_by_url` 随之失效（同一 URL 再导入一次就会多出一篇）。
+    assert e["sourceType"] == before["sourceType"], "重建后来源类型丢了"
+    assert e["sourceUrl"] == before["sourceUrl"], "重建后来源 URL 丢了"
+    assert [f["name"] for f in st2.list_folders()] == ["论文"], "重建后文件夹树丢了"
+
+
+def test_title_survives_rebuild(tmp_path):
+    """标题也住 sidecar：**目录名是有损的**，不能拿它当真相。
+
+    `_compute_dir_name` 截到 30 字、剥掉 `<>:"/\\|?*`（它是磁盘目录名，必须合法）。
+    没有这条恢复路径时，「用户起了 40 字标题」或「标题里带斜杠」→ 删一次
+    `index.json`（或损坏一次）→ 标题永久变成截断/改写版，而界面上看不出是被
+    重建改的、用户也从没编辑过它。
+    """
+    long_title = "标题" * 20                    # 40 字 → 目录名只留前 30
+    slash_title = "前端/后端 对照笔记"          # `/` 会被剥成「前端后端」
+    st = Store(str(tmp_path / "lib"))
+    import_doc(st, "tx_a", title=long_title)
+    import_doc(st, "tx_b", title=slash_title)
+
+    # ⚠️ **前提断言**：先证明目录名确实是有损的，否则这条测试是空转 ——
+    # 将来放宽 `_compute_dir_name` 时它会一直绿，而绿的原因已经和标题无关。
+    dirs = [p.name for p in st.root.iterdir() if p.is_dir()]
+    assert not any(long_title in d for d in dirs), "前提不成立：目录名没被截断"
+    assert not any("/" in d for d in dirs), "前提不成立：目录名没被剥掉斜杠"
+
+    (st.root / "index.json").unlink()
+    titles = {e["title"] for e in Store(str(st.root)).list_transcripts()}
+    assert titles == {long_title, slash_title}, f"重建后标题被目录名污染了：{titles}"
+
+
+def test_rebuild_without_sidecar_degrades_to_empty(tmp_path):
+    """**已知边界**：升级前索引就坏了的老库，那一部分分类确实回不来。
+
+    这条记录的是「放弃在哪」，不是期望行为 —— 也钉住「别加一条假的兜底」：
+    `index.json.bak` 存的是**损坏原文**（拷它是为了给人抢救），从里面捞不出东西。
+    正常升级路径是「索引还好时打开一次」，那时 `_migrate_classification_sidecars`
+    已把真相写成 sidecar（见上一条）。
+    """
+    st = _lib(tmp_path, n=1)
+    fid = st.create_folder("论文")["id"]
+    st.set_transcripts_folder(["tx_0"], fid)
+    (st.root / "folders.json").unlink()             # 退化成「升级前的库」
+    for p in _doc_metas(st.root):
+        p.unlink()
+
+    _corrupt(st.root)
+    st2 = Store(str(st.root))
+
+    assert len(st2.list_transcripts()) == 1, "文档本身必须还在"
+    assert st2.list_transcripts()[0]["folderId"] == ""
+    assert st2.list_folders() == []
+    assert fid not in {e["folderId"] for e in st2.list_transcripts()}
+
+
+def test_corrupt_sidecars_are_healed_on_startup(tmp_path):
+    """sidecar 自身损坏：启动迁移按索引重写（判据是**读不出来**，不是「文件不在」）。"""
+    st = _lib(tmp_path, n=1)
+    fid = st.create_folder("论文")["id"]
+    st.set_transcripts_folder(["tx_0"], fid)
+
+    (st.root / "folders.json").write_text("{半截", encoding="utf-8")
+    for p in _doc_metas(st.root):
+        p.write_text("{半截", encoding="utf-8")
+
+    st2 = Store(str(st.root))          # 索引是好的 → 不重建，只走迁移
+
+    assert [f["name"] for f in st2.list_folders()] == ["论文"]
+    assert st2.list_transcripts()[0]["folderId"] == fid
+    assert json.loads((st.root / "folders.json").read_text(encoding="utf-8"))["schema"] == 1
+    for p in _doc_metas(st.root):
+        data = json.loads(p.read_text(encoding="utf-8"))
+        assert data["schema"] == 1 and data["folderId"] == fid
+
+
+def test_migration_writes_sidecars_without_touching_index(tmp_path):
+    """启动迁移：补写 sidecar，**一个字节都不碰 index.json**，且幂等。"""
+    st = _lib(tmp_path, n=2)
+    fid = st.create_folder("论文")["id"]
+    st.set_transcripts_folder(["tx_0"], fid)
+
+    (st.root / "folders.json").unlink()
+    for p in _doc_metas(st.root):
+        p.unlink()
+    raw = (st.root / "index.json").read_bytes()
+
+    Store(str(st.root))
+
+    assert (st.root / "index.json").read_bytes() == raw, "迁移改动了索引文件"
+    assert (st.root / "folders.json").exists()
+    assert len(_doc_metas(st.root)) == 2
+
+    mtimes = {p: p.stat().st_mtime_ns for p in _doc_metas(st.root)}
+    Store(str(st.root))                       # 第二次：没有可补的
+    assert {p: p.stat().st_mtime_ns for p in _doc_metas(st.root)} == mtimes, \
+        "幂等性破了：每次启动都重写全库的 meta.json"
+
+
+def test_fresh_store_creates_no_sidecars(tmp_path):
+    """全新用户不该凭空多出 folders.json / meta.json（同 index.json 的取舍）。"""
+    root = tmp_path / "lib"
+    root.mkdir()
+
+    Store(str(root))
+
+    assert not (root / "folders.json").exists()
+    assert _doc_metas(root) == []
+
+
+def test_folders_sidecar_follows_every_folder_write(tmp_path):
+    """`folders.json` 与内存里的树同频（建 / 改 / 删三条路径）。"""
+    st = _lib(tmp_path, n=1)
+    fid = st.create_folder("论文")["id"]
+
+    def rows():
+        return json.loads((st.root / "folders.json").read_text(encoding="utf-8"))["folders"]
+
+    assert [(f["id"], f["name"]) for f in rows()] == [(fid, "论文")]
+
+    st.rename_folder(fid, name="论文（二）")
+    assert rows()[0]["name"] == "论文（二）"
+
+    st.delete_folder(fid)
+    assert rows() == [], "删光所有夹后应落一个空表（不是把文件删掉）"

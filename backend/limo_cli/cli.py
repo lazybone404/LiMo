@@ -67,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--tag", default="", help="按标签筛")
     sp.add_argument("--folder-id", dest="folder_id", default=None,
                     help="按文件夹筛（ID 见 `limo folders`）")
+    sp.add_argument("--recursive", "-r", action="store_true",
+                    help="配合 --folder-id：连同所有子文件夹里的文档一并列出")
     sp.add_argument("--uncategorized", action="store_true", help="只看未分类")
     sp.add_argument("--query", "-q", default="", help="按标题关键词筛（不搜正文）")
     sp.add_argument("--limit", type=int, default=50, help="本页条数（默认 50）")
@@ -127,6 +129,10 @@ def _validate(args) -> str:
     if args.command == "list":
         if args.uncategorized and args.folder_id is not None:
             return "--uncategorized 与 --folder-id 只能用一个"
+        # `--recursive` 必须挂在某个文件夹上：单给时它什么都不做，而结果看起来
+        # 完全正常（用户会以为已经按子树筛过了）。未分类没有子夹，同理。
+        if args.recursive and args.folder_id is None:
+            return "--recursive 需要配合 --folder-id（未分类没有子文件夹，不是它的用途）"
         if args.limit < 1:
             return "--limit 必须 ≥ 1（要一次取全用 --all）"
         if args.all_pages and args.cursor:

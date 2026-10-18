@@ -239,12 +239,17 @@ class QueryService:
 
     def list_resources(self, *, source_type: str | None = None, tag: str | None = None,
                        folder_id: str | None = None, query: str | None = None,
+                       include_descendants: bool = False,
                        limit: int | None = DEFAULT_PAGE_SIZE,
                        cursor: str | None = None) -> Page:
         """列出文档（分页）。
 
         ⚠️ `folder_id=""` 是**有效筛选值**（只看未分类），与「不传 = 不过滤」是两种
         语义——故用 `is not None` 判定，不能靠真值。
+
+        `include_descendants=True` → 该文件夹**及其所有后代**里的文档。
+        ⚠️ `folder_id=""`（未分类）**永远精确**、不受此开关影响：未分类不是一个实体，
+        它没有后代可展开（见 `folder_tree` 不变量 5）。默认 False ⇒ 老调用方零变化。
 
         `limit=None` = **一次给全**（不分页）。HTTP 侧的 `GET /api/transcripts` 用它：
         那个端点今天的契约就是「返回全部」，而前端已自行做了分批渲染（60 条一个
@@ -260,7 +265,12 @@ class QueryService:
         if query:
             filters["query"] = query
         if folder_id is not None:
-            filters["folderId"] = folder_id
+            # 展开与精确在这里分叉**一次**，而不是让两个键同时进 filters ——
+            # store 侧的 `folderIds` 优先是兜底，不是本层的判据来源。
+            if include_descendants and folder_id:
+                filters["folderIds"] = self._store.folder_scope(folder_id)
+            else:
+                filters["folderId"] = folder_id
 
         entries = self._store.list_transcripts(filters or None)
         # ⚠️ **按游标判据重新排序**：`store.list_transcripts` 用的是
@@ -356,6 +366,10 @@ class QueryService:
         HTTP 报 12 篇、本地报 11 篇，两边都"看起来对"。
         """
         entries = self._store.list_transcripts()
+        # 悬空 folderId 与「空串」同为未分类 —— 判据必须与 `store.list_transcripts`
+        # 的筛选归化**同源**，否则同一篇文档会被两个桶同时漏掉（既不进任何夹、
+        # 也不进未分类），而两个数字看起来都正常。
+        known_folders = {f["id"] for f in self._store.list_folders()}
         by_type: dict[str, int] = {}
         tags: set[str] = set()
         uncategorized = 0
@@ -363,7 +377,7 @@ class QueryService:
             st = e.get("sourceType") or "(未标注)"
             by_type[st] = by_type.get(st, 0) + 1
             tags.update(e.get("tags") or [])
-            if not e.get("folderId"):
+            if (e.get("folderId") or "") not in known_folders:
                 uncategorized += 1
         created = sorted(e.get("createdAt") or "" for e in entries)
         return {

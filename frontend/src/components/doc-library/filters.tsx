@@ -12,6 +12,7 @@ import { useMemo, useState } from 'react'
 import { useStore } from '../../store'
 import { SOURCE_FILTERS, IconByName } from './docMeta'
 import { collectTagFacets, countByFolder } from './useDocQuery'
+import { buildFolderTree } from './folderTree'
 import { FilterSection } from './FilterSection'
 import type { SectionId } from './docLibraryPrefs'
 
@@ -25,16 +26,19 @@ interface SectionProps {
  * `value` 只用于测试定位（`[data-chip]`）：文件夹允许重名、标签可能与文件夹同名，
  * 按文本定位会命中多个元素。
  */
-function Chip({ value, on, onClick, children }: {
+function Chip({ value, on, onClick, children, title }: {
   value: string
   on: boolean
   onClick: () => void
   children: React.ReactNode
+  /** 悬停说明（文件夹用完整路径：同名夹靠它区分） */
+  title?: string
 }) {
   return (
     <button
       data-chip={value}
       onClick={onClick}
+      title={title}
       className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] transition-colors ${
         on ? 'bg-accent/10 text-accent font-medium' : 'text-dimmed hover:bg-surface-hover'
       }`}
@@ -51,12 +55,18 @@ export function FolderFilter({ expanded, onToggle }: SectionProps) {
   const folders = useStore(s => s.folders)
   const activeFolderId = useStore(s => s.activeFolderId)
   const setActiveFolderId = useStore(s => s.setActiveFolderId)
-  const { byFolder, uncategorized } = useMemo(() => countByFolder(docs, folders), [docs, folders])
+  const tree = useMemo(() => buildFolderTree(folders), [folders])
+  // ⚠️ chip 上的数字必须是**含子树**的总数：点一个文件夹筛出的是它**整棵子树**的文档，
+  // 只显示直接数会让「技术（3）」点开列出 12 篇。直接数（`byFolder`）另有用途——
+  // 对账求和只能用那一份，把 `totalByFolder` 加起来会把每篇文档数 N 遍。
+  const { totalByFolder, uncategorized } = useMemo(
+    () => countByFolder(docs, folders, tree), [docs, folders, tree])
 
-  // 摘要写**具体名字**（写「已筛选」等于什么都没说——收起后这是唯一的线索）
+  // 摘要写**具体名字**（写「已筛选」等于什么都没说——收起后这是唯一的线索）。
+  // 非根文件夹用路径：同名夹在不同父级下光看名字区分不出是哪一个。
   const summary = activeFolderId === null ? null
     : activeFolderId === '' ? '未分类'
-      : folders.find(f => f.id === activeFolderId)?.name || '已删除的文件夹'
+      : tree.pathOf.get(activeFolderId) || '已删除的文件夹'
 
   return (
     <FilterSection
@@ -69,14 +79,23 @@ export function FolderFilter({ expanded, onToggle }: SectionProps) {
       <Chip value="__uncat__" on={activeFolderId === ''} onClick={() => setActiveFolderId('')}>
         未分类 <span className="text-disabled">{uncategorized}</span>
       </Chip>
-      {folders.map(f => (
-        <Chip
-          key={f.id} value={f.id} on={activeFolderId === f.id}
-          onClick={() => setActiveFolderId(activeFolderId === f.id ? null : f.id)}
-        >
-          {f.name} <span className="text-disabled">{byFolder.get(f.id) || 0}</span>
-        </Chip>
-      ))}
+      {/* 前序输出（父在子前）：chip 本身不缩进，但相邻父子排在一起时层级一眼可读 */}
+      {tree.preorder.map(id => {
+        const path = tree.pathOf.get(id) || tree.byId.get(id)!.name
+        return (
+          <Chip
+            key={id} value={id} on={activeFolderId === id}
+            onClick={() => setActiveFolderId(activeFolderId === id ? null : id)}
+            title={path}
+          >
+            {/* ⚠️ 路径要能截断：三层以上（`技术 › 前端 › React`）的 chip 会把整块
+                筛选区撑得很宽，而同行还有其他 chip 与「已激活 N 项」摘要。完整路径在
+                `title` 里（同名夹的区分全靠它），chip 上只保留能扫一眼的前缀。 */}
+            <span className="truncate max-w-48">{path}</span>
+            <span className="text-disabled shrink-0">{totalByFolder.get(id) || 0}</span>
+          </Chip>
+        )
+      })}
     </FilterSection>
   )
 }

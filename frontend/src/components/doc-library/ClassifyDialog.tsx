@@ -38,9 +38,10 @@
  * 取材与建议都可能不同 —— 保留旧编辑等于把新旧两批建议混在一起。这与合成对话框
  * 「切原料模式重拉预览」是同一条规则。
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { FolderPlus, FolderTree, FolderX, Loader2, Sparkles } from 'lucide-react'
+import { buildFolderTree } from './folderTree'
 import type {
   ClassifyOptions, ClassifyPreview, ClassifySource, ClassifySuggestion,
   FolderMode, TagMode,
@@ -243,6 +244,13 @@ export function ClassifyDialog({
   const set = (next: Partial<ConfigDraft>) => setCfg(prev => ({ ...prev, ...next }))
 
   const folders = preview?.folders ?? []
+  /**
+   * 复审下拉显示**路径**（`技术 › 前端`）而不是裸名：嵌套之后两个「前端」在同一个
+   * 下拉里长得一模一样，用户选中的是哪一个是不可知的（prompt 侧同一个理由）。
+   * ⚠️ 复用 `buildFolderTree.pathOf` 而不是在这里拼字符串 —— 拼一份就是第二份判据，
+   * 而它的失效形态是「界面显示的层级和真实父子关系对不上」，看起来却完全正常。
+   */
+  const folderPaths = useMemo(() => buildFolderTree(folders).pathOf, [folders])
   // ⚠️ **刻意不含 `!error`**（P1-2）：`error` 只在「审定阶段重跑失败」时非空，而那时
   // 屏幕上的草稿是**可用的**——父组件 `loadClassifyPreview` 的 `.catch` 只设 error、
   // 不碰 preview（注释明写「旧的留在屏幕上 + 顶部一条错误行，用户可以先用手上的」）。
@@ -528,7 +536,9 @@ export function ClassifyDialog({
                               className="flex-1 text-[12px] bg-elevated border border-border-light rounded-md px-1.5 py-1 outline-none">
                               <option value="none">未分类</option>
                               {folders.map(f => (
-                                <option key={f.id} value={`reuse:${f.id}`}>{f.name}</option>
+                                <option key={f.id} value={`reuse:${f.id}`}>
+                                  {folderPaths.get(f.id) || f.name}
+                                </option>
                               ))}
                               {/* 「保留新建」只在模型确实建议了新建时出现 */}
                               {d.mode === 'new' && <option value="new">新建：{d.newName || '（未命名）'}</option>}
@@ -540,7 +550,7 @@ export function ClassifyDialog({
                             {d.mode === 'new' && (
                               <input data-classify-new-name={d.id} value={d.newName}
                                 onChange={e => patch(d.id, { newName: e.target.value })}
-                                placeholder="新文件夹名"
+                                placeholder="新文件夹名，可用 / 分层"
                                 className="w-28 text-[12px] bg-elevated border border-warning/40 rounded-md px-1.5 py-1 outline-none" />
                             )}
                           </div>

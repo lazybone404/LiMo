@@ -190,6 +190,104 @@ def test_delete_folder_keeps_docs_over_http():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_folder_nesting_over_http():
+    """嵌套的三条链路：创建带父级 / PATCH 移动 / 删除整棵子树。"""
+    c, _, d = _setup()
+    try:
+        tech = c.post("/api/folders", json={"name": "技术"}).json()["id"]
+        r = c.post("/api/folders", json={"name": "前端", "parentId": tech})
+        assert r.status_code == 200 and r.json()["parentId"] == tech, r.text
+        fe = r.json()["id"]
+        react = c.post("/api/folders", json={"name": "React", "parentId": fe}).json()["id"]
+
+        # 父级不存在 → 404（不能静默建成根级——那会让「孤儿夹」正好落在用户没看的地方）
+        assert c.post("/api/folders",
+                      json={"name": "孤儿", "parentId": "fd_nope"}).status_code == 404
+
+        # PATCH 只给 parentId = 移动（name 保持不变）
+        r = c.patch(f"/api/folders/{react}", json={"parentId": tech})
+        assert r.status_code == 200 and r.json()["parentId"] == tech, r.text
+        assert r.json()["name"] == "React", "只移动不该把名字弄丢"
+
+        # 移到自己 / 自己的后代 → 400（否则整棵子树变孤儿，数据看着还正常）
+        assert c.patch(f"/api/folders/{tech}", json={"parentId": tech}).status_code == 400
+        assert c.patch(f"/api/folders/{tech}", json={"parentId": react}).status_code == 400
+
+        # 两项都不给 → 400
+        assert c.patch(f"/api/folders/{tech}", json={}).status_code == 400
+
+        # 各层各放一篇，删根 → 三篇全回落 + 返回被删的完整 id 集合
+        c.patch("/api/transcripts/tr_0", json={"folderId": tech})
+        c.patch("/api/transcripts/tr_1", json={"folderId": fe})
+        c.patch("/api/transcripts/tr_2", json={"folderId": react})
+        body = c.delete(f"/api/folders/{tech}").json()
+        assert body["moved"] == 3, body
+        assert body["deletedFolders"] == 3, body
+        assert sorted(body["deletedFolderIds"]) == sorted([tech, fe, react]), body
+
+        docs = c.get("/api/transcripts").json()
+        assert len(docs) == 3 and all(e["folderId"] == "" for e in docs), \
+            "各层文档都必须回落未分类，且一篇都不能少"
+        assert c.get("/api/folders").json() == []
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_folder_list_exposes_counts_and_parent():
+    c, _, d = _setup()
+    try:
+        tech = c.post("/api/folders", json={"name": "技术"}).json()["id"]
+        fe = c.post("/api/folders", json={"name": "前端", "parentId": tech}).json()["id"]
+        c.patch("/api/transcripts/tr_0", json={"folderId": tech})
+        c.patch("/api/transcripts/tr_1", json={"folderId": fe})
+
+        by_id = {f["id"]: f for f in c.get("/api/folders").json()}
+        assert by_id[tech]["count"] == 1 and by_id[tech]["totalCount"] == 2
+        assert by_id[fe]["count"] == 1 and by_id[fe]["totalCount"] == 1
+        assert by_id[tech]["parentId"] == ""
+
+        # 对账：Σ 直接 count + 未分类 = 文档总数
+        uncat = len(c.get("/api/transcripts", params={"folderId": ""}).json())
+        assert sum(f["count"] for f in by_id.values()) + uncat == 3
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_ensure_path_endpoint():
+    """多层建夹的唯一写入口。前端**不解析路径**，整串交给后端。"""
+    c, _, d = _setup()
+    try:
+        r = c.post("/api/folders/ensure-path", json={"path": "技术/前端/React"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["segments"] == ["技术", "前端", "React"]
+        assert len(body["created"]) == 3
+        leaf = body["id"]
+
+        # 幂等：第二次不新建、末端相同
+        again = c.post("/api/folders/ensure-path", json={"path": "技术/前端/React"}).json()
+        assert again["id"] == leaf and again["created"] == []
+        assert len(c.get("/api/folders").json()) == 3
+
+        # 非法路径族：空 / 空段 / 超 3 段 / 父级不存在
+        assert c.post("/api/folders/ensure-path", json={"path": ""}).status_code == 400
+        assert c.post("/api/folders/ensure-path",
+                      json={"path": "a//b"}).status_code == 400
+        assert c.post("/api/folders/ensure-path",
+                      json={"path": "a/b/c/d"}).status_code == 400
+        assert c.post("/api/folders/ensure-path",
+                      json={"path": "x", "parentId": "fd_nope"}).status_code == 404
+        assert len(c.get("/api/folders").json()) == 3, "被拒的调用不该留下任何条目"
+
+        # 停在父级上逐段 ensure：返回已有夹而不是新建
+        top = c.get("/api/folders").json()[0]["id"]
+        got = c.post("/api/folders/ensure-path",
+                     json={"path": "前端/React", "parentId": top}).json()
+        assert got["created"] == [] and len(c.get("/api/folders").json()) == 3
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     import traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

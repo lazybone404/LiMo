@@ -2,9 +2,9 @@
 
 一次完整的打包流程：PyInstaller → 复制 ffmpeg → Tauri。
 
-产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)（当前版本 0.5.7，2026-10-12 对话侧卡片三形态 + 视觉跟随 + 文档 id 唯一化后）：
-- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.5.7_x64-setup.exe`，~147MB）
-- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.5.7_x64_en-US.msi`，~194MB）
+产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)（当前版本 0.5.8，2026-10-18 文档库嵌套文件夹 + 索引 sidecar + 工作树审计修复后）：
+- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.5.8_x64-setup.exe`，~147MB）
+- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.5.8_x64_en-US.msi`，~194MB）
 
 > **体积优化（2026-08-14）**：docling/pytesseract 依赖残留清理 + ffmpeg 换精简版后，安装包从 ~265M/~366M 降到 ~148M/~195M。详见 [CHANGELOG.md](CHANGELOG.md)（2026-08-14 打包体积优化条目）。
 

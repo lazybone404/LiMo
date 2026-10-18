@@ -893,6 +893,24 @@ def test_clean_tag_names_is_shared_by_model_and_user_sites():
     assert clamp_seed_tags(dirty) == expected, "用户手填 seed 侧"
 
 
+def test_clean_tag_names_dedupes_after_truncating():
+    """去重比较的是**最终入库形态**（截长之后），不是原始串。
+
+    ⚠️ 顺序反过来的两种失效（都不会报错，只是库里多一条看起来一模一样的标签）：
+    - 两条只在前 30 字之外不同的长标签 → 各自通过去重，再被截成同一个字符串；
+    - 一条 30 字与一条 40 字、前者是后者前缀 → 截长后相等却当成两个词。
+
+    对照（已验证有区分力）：把循环体改回 `if t in out: continue` 放在截长之前 → 本条红。
+    """
+    a = "甲" * MAX_TAG_LEN + "X"
+    b = "甲" * MAX_TAG_LEN + "Y"
+    assert clean_tag_names([a, b]) == ["甲" * MAX_TAG_LEN]
+
+    c = "乙" * MAX_TAG_LEN
+    d = "乙" * (MAX_TAG_LEN + 10)
+    assert clean_tag_names([c, d]) == [c]
+
+
 def test_commit_cleans_tag_names_with_the_same_kernel():
     """**第三落点**：commit 端点入库的 tags 必须与内核逐字相同。
 

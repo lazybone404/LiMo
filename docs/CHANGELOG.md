@@ -6,6 +6,337 @@
 
 ---
 
+## 2026-10-18 — 审计修复：四条 P2 + 十条 P3（工作树自查）
+
+### 起因
+
+对当日工作树（文件夹嵌套 / 索引 sidecar / 标签建议三批改动）做一次代码质量与漏洞
+自查，**写入语义从「新建文件」变成「就地覆盖 / 重建恢复」放大了旧假设的危害**：
+几处「看起来只是少写一个字段」的地方，失效形态都是**静默**的（产物正常、界面无报错）。
+
+### P2（用户可见或数据受损）
+
+| 项 | 问题 | 修法 |
+|---|---|---|
+| **标题不进 sidecar** | `DOC_FIELDS` 不含 `title`，重建只能拿**有损**的目录名兜底（`_compute_dir_name` 截 30 字、剥 `<>:"/\\|?*`）→ 40 字标题或带斜杠的标题被静默改写，而用户从没编辑过它 | `title` 进 `DOC_FIELDS`（16 → 17）。老库缺该字段自然回落到目录名，**渐进兼容、无需迁移** |
+| **删除确认计数口径** | `GroupHeader` 收的是直接子级数，而删除是**整棵子树**一起删（toast 用 `deletedFolders - 1`）→ 确认框少报 | `childCount` → **`descendantCount`**（`descendantIds().size`），与后端同源；`docQuery.test.ts` 断言 tech = 3 |
+| **切文档竞态** | `TagSuggestions.accept` 在 `await` 期间用户切了文档 → 上一篇的标签记进新文档的本地记账，新文档同一词被 `existing` 过滤掉（只是「少一条建议」） | 回填前校验 `currentDocId` 仍是发起时那一篇 |
+| **唯一后缀命中静默新建** | 模型漏写前缀、后缀在库里唯一 → 仍在根级新建，用户看到的是一条再普通不过的「新建文件夹」 | **行为不变**（自动复用是猜），但补一条 warning 点名已存在的路径 |
+
+### P3（静默失效 / 死代码 / 重复实现）
+
+- **`ensure_folder_path` 的 `segments` 双语义**：`existing` 分支是 `[整串名]`（不是逐层），
+  `parent_id` 非空时靠它跳过短路、在指定父级下建出**单层**的「前端/后端」。docstring 写死，
+  并补测试（含负向面：拆成两层时树看起来完全正常）。
+- **`folderPathLabel` 死导出**：全仓无生产调用点（`useDocQuery` 只是再导出一次），删除；
+  测试改为直接断言 `tree.pathOf`。
+- **同一批 folders 建三次树**：`filterDocs` / `countByFolder` / `groupDocs` 各自
+  `buildFolderTree(folders)`。三者加可选的 `tree` 参数，`DocLibrary` 把已有的那份传下去
+  （`filters.tsx` 传自己的 memo）。新增「传 / 不传逐项等价」测试。
+- **`_folder_section` 路径截断**：`sanitize_reference_name` 默认 80 字，3 层路径会被切在
+  半路、末段丢失。展示路径改传 512。
+- **标签清洗顺序**：`clean_tag_names` 必须先**截长**再去重。反过来的失效是两条只在前 30 字
+  之外不同的长标签各过各的、再被截成同一串（库里出现两条一模一样的标签）。补测试 + 负向对照。
+- **`limo folders` 的 O(n²)**：`ids.index(i)` 在循环里 → 建 `index_of` 字典；顺带让重复 id
+  不再丢行。
+- **`tagSuggest` 弱断言**：`not.toThrow()` 换成具体次数，并加「`XC++` 不算命中」证明词边界
+  判据没被转义逻辑吃掉。
+- **`GroupHeader` 依赖过宽**：`onActionConsumed` 每次父级渲染都是新闭包 → effect 在用户正在
+  输入框里改名时重跑、`setDraft(group.label)` 覆盖已打的字。依赖只留 `[actionFor, group.ref]`。
+- **划选边缘手势**：① Esc 取消后仍按着鼠标，松手那一下 click 会走 `toggle`（刚恢复的行又被勾上）
+  → 设 `suppressUntilRef`；② 拖到一半切窗口收不到 `mouseup`，`mousemove` 与
+  `body.userSelect='none'` 残留 → 监听 `window` 的 `blur` 按松手处理。
+- **筛选 chip 撑宽**：三层路径把「文件夹范围」撑得很宽 → 路径 `truncate max-w-48`，
+  完整路径仍在 `title` 里。
+
+### 测试
+
+- 新增：标题跨重建保真（含「目录名确实有损」的前提断言）/ 唯一后缀 warning /
+  `ensure_path + parent` 的单层语义 / 截长后去重 / 预建树与现建树等价。
+- 三条负向对照实测（移出 `title`、删 warning、反转清洗顺序 → 对应测试各自变红）。
+- 门禁：`bash scripts/check-all` 六项全绿。
+
+---
+
+## 2026-10-18 — 文档库：文件夹嵌套 + 操作逻辑改造 + 智能分类长出层级
+
+### 起因
+
+两件事在长期使用里同时暴露：
+
+1. **文件夹是单层平铺的**。文档涨到几百篇后，「技术」「技术/前端」「技术/后端」只能挤成
+   三个同级名字，靠命名前缀假装层级；筛选也只能精确命中一个夹。而**文件夹在库里本来就
+   只是 `index.json` 里的一个数组**（纯逻辑分类、永不映射磁盘目录），加一层父子关系
+   不需要动任何存储布局。
+2. **四处交互磨手**：移动文档只能从平铺列表里挑、文件夹没有就地创建入口、右键菜单九项
+   连成一长条、勾选得瞄准那个 14px 的小勾（用户原话：「勾选的小勾那个操作逻辑有点反人类，
+   可以考虑做成像 VS Code 那样点击那一列文件栏的那个地方能选中，然后按住 Ctrl 滑动可以
+   快速选择」）。
+
+**已拍板的语义**（实施时未改动）：点一个文件夹 = 看它**及其所有子文件夹**；
+删一个文件夹 = **整棵子树一起删**，各层文档全部回落未分类、**绝不删文档**。
+
+### 数据模型：零迁移
+
+- `FolderEntry` 增加 `parentId: string`（`""` = 根级），不新增 `path` / `depth` / `order`，全部派生。
+- **不 bump `INDEX_VERSION`** —— bump 会触发 `_rebuild_index`，而那个函数当时就会清空 folders 表。
+  （该有损行为已于**同日晚些时候**修复：真相搬进 `meta.json` / `folders.json`，见下一条记录。）
+- 读：一律 `f.get("parentId", "")`；写：`create_folder` 总写该字段，`rename_folder` 对旧条目
+  `setdefault`（触碰即补）。**不在 `_load_index` 里重写 index 补字段**（那会把「读坏了还能回滚」变成默认）。
+- 条目形状有三个落点（后端 `make_folder_entry` / 前端 `store/types.ts` / `api/core.ts`），
+  后端抽 `folder_tree.make_folder_entry` 是为了让「构造」也只此一处。
+
+### 新增 `folder_tree.py` / `folderTree.ts`（两端同构）
+
+纯函数层：`normalize_parents` / `children_map` / `preorder` / `descendant_ids` /
+`ancestor_ids` / `paths`（`父 › 子`）/ `total_counts` / `folder_scope` / `parse_path` / `path_key`。
+五条不变量写在两份文件头（逐字同源）：
+
+1. 缺 `parentId` / 悬空 id / 指向自己 → 视为根；
+2. 环：在 **folders 数组下标最小**的节点处断开（确定性，不是随机）；
+3. 兄弟顺序 = 数组顺序，前序保证父在子前；
+4. `descendantIds` 不含自身，`totalCount` = 直接数 + 各后代求和；
+5. 未分类不是实体、永不在树里、固定最后。
+
+两份实现靠**共享 fixture** `frontend/src/test/fixtures/folder-tree.json` 钉住（后端测试直接读这个路径）。
+⚠️ **前端不做路径解析**：`parse_path` 只活在后端一处（见下）。
+
+### 后端
+
+| 位置 | 改动 |
+|---|---|
+| `store.create_folder` | `parent_id` 非空须存在（`FOLDER_PARENT_NOT_FOUND` 404）；写入 `parentId` |
+| `store.rename_folder` | 支持改 `parentId`；须存在、非自身、非自身后代（`FOLDER_CYCLE` 400）；**校验与写入同一把锁**（防 TOCTOU） |
+| `store.delete_folder` | 收集 `{id} ∪ 后代`，**一次锁一次写盘**：命中文档 `folderId=""` → 删集合内全部 folder 行；返回 `{moved, deletedFolders, deletedFolderIds}` |
+| `store.list_folders` | `count` **保持直接计数**（兼容 CLI/旧消费方），新增 `totalCount`（含子树）；返回规范化后的 `parentId`（原始脏值留在 index 里便于抢救） |
+| `store.list_transcripts` | 新增内部键 `folderIds: set`；⚠️ **与 `folderId` 互斥**：`folderIds` 存在时忽略 `folderId`（入口注释写死 + 测试钉住，否则行为取决于哪条 `if` 在前） |
+| `store.ensure_folder_path` | `parse_path` → 逐段在锁内 ensure（同父同级同名复用），**最后一次写盘**。幂等；任何一段非法 → `AppError` 且**一个字节都不写**。⚠️ **不复用 `create_folder`**（它每次写盘，逐段调既慢又让「全有或全无」失效） |
+| `POST /api/folders/ensure-path` | 新增。**智能分类建夹的唯一写入口** —— 前端逐层调 `POST /folders` 是 N 次独立事务，任一层失败时前面几层已落盘 |
+| `query.list_resources(include_descendants=)` | `folder_id == ""` **永远精确未分类**（不展开）；`True and 非空` → `folderIds = folder_scope(id)`；默认 `False` ⇒ 旧行为逐字节不变 |
+| `query.stats()` | 未分类判据改成「空串**或悬空 id**」，与 `list_transcripts` 的归化同源。⚠️ **这是用户可见的数字变化**：悬空 `folderId` 的文档从未分类里「回来」了（此前两边都不算），见下方「已知偏差」|
+| `GET /api/cli/resources` | 加 `include_descendants`；`limo list --recursive` 透传；`limo folders` 按层级缩进、列用 `totalCount` |
+
+### 前端
+
+- **树形渲染**（`DocList`）：折叠父级 → 后代 header 与 row **都不进 DOM**、也不消耗分批预算
+  （`collapsed`/`hidden` 两个集合 + 前序保证父必先出现）；缩进 `min(depth, 6) * 16px`（简略）/
+  `* 12px`（详细），完整路径放 `title`。26px 行高与分组头同高的成对常量**未动**。
+- **自动展开祖先**：`activeFolderId` 变化时把自身与全部祖先移出 `collapsedGroups` —— 否则
+  「筛到子文件夹而父级收着」就是空白列表。
+- **删除回落只认后端返回的 `deletedFolderIds`**：不再用前端 `descendantIds` 自己算一份
+  （那会让「哪些文档要回落」出现第二个真相来源，后端改语义时前端静默停在旧规则上）；
+  `descendantIds` 只保留纯视觉用途（picker 禁用自身与后代）。
+- **`FolderPicker`（新组件，三处共用）**：右键「移动到文件夹…」/ 批量条移动 / 右键文件夹
+  「移动到…」。前序树形 + 本地折叠箭头 + `totalCount` 右列 + `excludeIds` 禁用；
+  首行对文档是「未分类（移出文件夹）」、对文件夹是「根级」。⚠️ **不做成 `ContextMenu.submenu`**：
+  子菜单 hover 展开、鼠标一动就关，而这里有折叠/输入框/长列表滚动三种交互都会把鼠标带出去。
+- **右键菜单按用途分四段**（打开 / 生成 / 整理 / 输出 / 危险），文件夹另有四项；
+  **批量条分三段**（产出 / 整理 / 危险）。
+- **分组头就地新建子夹**：新建后把新建父级**及其祖先**移出 `collapsedGroups`
+  （否则新夹藏在收起的父级里，看起来像没建成）。
+- **VS Code 式勾选**：复选框热区从「图标大小」扩成**整列**（简略 `w-6 h-6.5` / 详细 `w-6 h-6`，
+  图标仍 14/18px）；按住 `Ctrl`/`Cmd` 在行上按下并跨行拖动 = **整段加选**（`base ∪ 区间`，
+  不是替换）；mouseup 后 300ms 内的 click 被吞掉（否则起点行刚划进选中集又被 toggle 掉）；
+  `Esc` 恢复按下前的集合；编辑框内 Ctrl+按下仍走「选中文字」。⚠️ 普通拖动（无修饰键）仍是
+  原生 DnD，划选与它互不干扰。
+- **`filters.tsx`**：chip 用 `totalByFolder` 计数；非根文件夹显示路径。
+- **`useDocQuery`**：`filterDocs(docs, q, folders = [])` 非空 `folderId` → `{id} ∪ 后代`，
+  **`folders` 默认 `[]` 时退化为原严格等值**（既有纯函数测试零改动）；`countByFolder` 返回
+  `{byFolder, totalByFolder, uncategorized}`；`groupDocs` 输出 `depth` / `parentKey` / `childCount`。
+
+### 智能分类：让结果能长出层级
+
+**已拍板**：允许模型建议嵌套路径；同名按**路径精确匹配**，歧义**明示**而不是静默取第一个。
+
+- **路径的表达**：`newFolderName` 仍是**一个字符串**，模型输出 schema 不变，层级用 `/`
+  表达（`技术/前端`）。**不新增 `parentId`/`parentPath` 结构化字段**（加字段放大编造面）。
+- **解析优先级**（`parse_path`，唯一实现）：**整串先逐字匹配某个现有文件夹名**（保护历史里
+  本来就叫「前端/后端」的夹）→ 匹配不到才按 `/` 切分、逐段 trim。`kind ∈ {existing, ambiguous, path, reject}`。
+- **`path_key`** = strip + 空白折叠 + casefold，**不含结构替换、不含截断**。⚠️ **不用
+  `sanitize_reference_name`**：它替换 `【】`、截 80 字，拿来做匹配会让这批「当年随手起的名字」
+  永远对不上；后者继续只用于 prompt 展示。
+- **prompt 清单**改为 `id=… 路径=技术 › 前端（含子文件夹共 N 篇）` —— 裸名在嵌套后无法区分
+  （「前端」可能活在多个父级下）；规模用 `totalCount` 而非 `count`（只有 2 篇直接文档、下挂
+  40 篇的三层夹按直接数看会被误判成冷门）。规则段补「用 `/` 分层、最多 3 层、已有层级不重复创建」。
+- **六种情形**：单段唯一 → reuse；单段多个同名 → none + warning；整条路径已存在 → reuse；
+  父存在末段不存在 / 中间层缺失 → new 带整条路径（前端调 ensure-path）；**省略前缀但后缀命中
+  多个分支** → none + warning（否则会在根级造出第三个「长得完全正常」的结构）。
+- **额度按「实际新建的文件夹行数」**（`_plan_new_paths`）：`技术/前端` 在「技术」已存在时算 1、
+  两层都不存在算 2。⚠️ **同一条路径多篇只付一次**（`taken` 持久集合）；超限时**整条路径**进
+  rejected，`candidate` 保留完整路径（对话框预填）。
+- **超过 3 段 → 截断 + warning**（文档仍被分类，只是层级变浅，比整篇不归入有用）。
+- **口袋夹按完整路径分组**：`技术/杂项` 与 `生活/杂项` 是两个独立口袋，各自判 1/3，互不连坐；
+  **嵌套口袋整条路径不占额度**（含它要新建的父层）。
+- **前端建夹改走 `ensure-path`**：收集本批**去重后的原串**（不解析、不再做本地同名预查），
+  一次调用建完整条路径。⚠️ 前端刻意不实现路径解析 —— 自己拆 `/` 会同时犯两个错：建夹不再是
+  「全有或全无」，且历史里本名就含 `/` 的夹会被拆开（后端的「整串优先」保护前端无从得知）。
+- **复审下拉显示路径**（`技术 › 前端`，复用 `buildFolderTree.pathOf`），否则两个同名「前端」
+  在界面上无法区分；新建输入框 placeholder 改「新文件夹名，可用 / 分层」。
+- `POST /api/classify/preview` 的 `folders` 回显补 `parentId` / `totalCount`（画路径所必需）。
+
+### 测试
+
+- 新增 `test_folder_tree.py`（含 `parse_path` 的镜像 fixture ——「整串优先命中现有夹名」**依赖
+  运行时 folders**，只写「输入串 → 期望切分」钉不住这条历史数据保护）。
+- 新增 `test_classify_paths.py`（14 条）：prompt 路径与子树规模 / 精确复用 / 单段唯一复用 /
+  同名歧义 + warning / 后缀歧义不造第三条分支 / 非法路径显式 / 3 段截断 / **额度按行** /
+  同一路径只付一次 / 整条路径拒绝 / 口袋夹按路径分组 / 嵌套口袋不占额度。
+  ⚠️ 关键判据都做了**对照实验**（去掉「口袋不占额度」→ 1 条红；口袋按末段名分组 → 2 条红）。
+- 前端：`folderTree.test.ts`（镜像 fixture）、`docQuery.test.ts` / `docSelection.test.tsx` /
+  `docLibrary.test.tsx` 扩、`classifyDialog.test.tsx` 扩（含「嵌套路径**原串**交给端点、
+  前端不拆 `/`」与「复用下拉显示路径」两条，后者做了对照）。
+
+### 已知偏差（刻意，不是遗漏）
+
+| 项 | 说明 |
+|---|---|
+| **未分类计数会变大** | `stats()` 修正后，`folderId` 悬空的文档从未分类里回来了（此前 `stats` 只判空串、`list_folders.count` 也不含它们，两边都漏）。**这是修正不是回归**；验收按「Σ 各夹直接 `count` + 未分类 = 文档总数」对账（用 `totalCount` 求和会重复计数） |
+| ~~`_rebuild_index` 仍会丢整个文件夹树~~ | **当日晚些时候已修**（真相搬进 `meta.json` / `folders.json`），见下一条记录 |
+| 父子徽标「重复计数」 | 刻意：每个头回答「这个子树多少篇」，tooltip 标「含子文件夹」 |
+| 深嵌套挤压标题 | 视觉夹紧 6 层，完整路径进 `title` |
+| 拖到折叠子树内 | 需先展开父级（不做自动悬停展开） |
+| 文件夹排序 / 拖拽调序 | 不做（顺序 = 创建顺序，不引入 `order`） |
+| 触屏划选 | 不做（复选框仍是唯一触屏入口） |
+
+---
+
+## 2026-10-18 — 标签建议：从库里已有的标签中挑出正文真提到过的
+
+### 起因
+
+产物生成完之后，打标签是纯手工的：翻回文档库、选中、点批量条、手打。而**用户自己攒的标签词表
+才是这篇文档最可能的归属**——正文里提到了 React，库里三十篇都打了「React」，这件事机器一眼就能看见。
+
+原始设想是让模型在生成正文时顺手把标签也判了。否掉的理由不是钱：输出几十 token 确实便宜，
+真正的代价是**注意力从正文上被分走**，而这件事在产物上完全看不出来——没有任何对照组能证明
+「正文质量没下降」。同一个坑追问侧踩过一次（思考模式会把输出预算烧在推理链上，正文 0 字符）。
+
+于是定为**只做第一层：本地词表命中**。零 LLM、零网络、零磁盘。
+
+### 做法
+
+| 层 | 内容 |
+|---|---|
+| 判据 | `lib/tag-suggest.ts::suggestTags` —— 纯函数，可单测 |
+| UI | `components/preview/TagSuggestions.tsx`，挂在产物自证条**同一行**后面 |
+| 采纳 | `POST /api/transcripts/batch` `{action:'tag', tagMode:'add'}` |
+| 落盘 | **无** |
+
+四条匹配规则，每条都对应一种「不做就全是噪音」的失败：
+
+1. **ASCII 标签走词边界**：`AI` 不能命中 `MAIL` / `said`，`React` 不能命中 `Reaction`。
+   库里最常见的标签恰好是英文缩写，漏了这条整排建议都不可信。
+2. **中文走子串**：中文没有词边界，套 `\b` 会让「前端」这类正常标签永远匹配不上。
+   ⚠️ 两支判据不同源是**刻意的**，不是漏改一处。
+3. **标题命中优先于正文命中**：缓解「正文顺带提了一句 React」。
+4. **去冗余**：`前端` 与 `前端框架` 同时命中、且前者的每次出现都在后者内部（出现次数相同）
+   ⇒ 丢掉短的。否则一排 chip 里一半是彼此的前缀。
+
+### 三条边界（都是刻意的）
+
+- **不落盘**：建议是**可重算的派生视图**。正文一改（编辑就地覆盖当前版）、词表一变，
+  缓存立刻过时且看不出来。判据与 `chars` / `edited` 现算、`followUps` 落旁路文件同源：
+  **重算要花钱的才存**。
+- **只能复用已有标签**：发现不了新词。这与既有产品判据一致（智能分类的 `tagMode` 默认就是
+  「优先复用」），新词发现留给智能分类——用户主动触发、一次处理 N 篇、带审定环节。
+- **不参与导出、不改正文、不改文件夹归属**。它是视图上的一次性操作入口。
+
+### ⚠️ 采纳为什么不能走 `/classify/commit`
+
+`commit` 走 `store.apply_classifications`，那里是
+`e["folderId"] = a.get("folder_id") or ""` —— **无条件覆盖**。只带 tags 不带 `folder_id`，
+会把这篇文档从它所在的文件夹里踢回未分类；而界面上只看到「标签加上了」，看不出它还顺手
+改了归属。`batch` 的 `tag` action 走 `update_transcripts_tags(..., 'add')`，只动标签。
+
+### 测试
+
+`test/tagSuggest.test.ts`（16 条）：词边界正反例、中文子串、大小写、正则元字符（`C++` / `C#`）、
+排除已有标签、标题优先、次数排序、去冗余（含「短标签还有独立出现时保留」的对照）、
+词表去重、`limit`、空词表/空正文。
+
+---
+
+## 2026-10-18 — 索引重建不再有损：分类真相搬进 `meta.json` / `folders.json`
+
+### 起因
+
+`index.json` 一直被称作「缓存」，但它此前**是**文件夹归属、标签、创建时间、来源信息的
+**唯一**存放处。于是 `_rebuild_index`（index 缺失 / 损坏 / 旧格式时自动触发）只能把它们
+清空：
+
+```python
+self._index = _empty_index()          # folders 整表归零
+"tags": [], "createdAt": "",
+"folderId": "",                       # 每篇的归属归零
+```
+
+而这条路径**不需要用户做错任何事** —— 一次断电、一次异常退出就够。上一轮做文件夹嵌套时
+把它记进了「已知偏差」，但真正的判断是：这不是「有损」，是**把不该它保管的东西交给了它**。
+
+### 做法：让不可重建的字段变成可重建的，而不是「重建时补救」
+
+真相搬回各自的自然归属地，于是重建从「补救」退化为「读文件」：
+
+| 数据 | 落点 | 为什么是这里 |
+|---|---|---|
+| `folderId` / `tags` / `createdAt` / 来源字段 | `{doc_dir}/meta.json` | **这篇文档**的属性，跟着文档走（搬目录即搬分类） |
+| `folders` 树 | `{root}/folders.json` | **整个库**的属性，只有库根有资格放 |
+
+`index.json` 仍保留这些字段作为**运行时缓存**（`folderId` / `tags` 参与过滤与计数，
+每次列 N 篇都读文件太慢）；只有 `_rebuild_index` 才回落到真相文件。
+
+⚠️ **主键是 `dir_name` 而不是文档 id**：重建时 id 由正文内容 sha256 重推，必然变 ——
+按 id 关联等于什么都对不上。这也是 sidecar 必须住在**目录**里、而不是一个集中清单里的原因。
+
+⚠️ `transcript.md` **不能**加自证头（它会进模型 Prompt，加头 = 改生成输入），故文档侧
+必须是独立文件。
+
+### 新增文件
+
+- **`core/atomic_io.py`**：`atomic_write_text` —— 全项目唯一原子写。`Store._atomic_write`
+  改为委托它（`mkstemp + os.replace` 的坑只要有一份漏了，另一份的失效方式这边看不出来）。
+- **`storage/doc_meta.py`**：`read_doc_meta` / `write_doc_meta` / `read_folders` /
+  `write_folders` + `DOC_FIELDS`（16 个字段：分类 3 + 来源 13）。`SCHEMA = 1`，
+  读到不认识的版本按「没有可恢复信息」处理（不猜、不报错 —— 它必须能走完）。
+  - `metadata` 整个 dict **不存**（可能很大），只摘其中四个会被当顶层字段消费的值。
+  - `read_folders` 的 **`None` 与 `[]` 刻意区分**：前者 = 文件不存在/读不出来，后者 =
+    库里确实没有夹。
+  - **失败策略两边刻意不同**：`write_folders` 抛（库级、低频，失败意味着下次重建丢整棵树）；
+    `write_doc_meta` 记 warning 不抛（批量时逐篇调用，一篇写不进去不该让整批失败）。
+
+### `Store` 改动
+
+- `_save_index()` 追加 `doc_meta.write_folders(...)`，**顺序固定：先 folders.json 后
+  index.json** —— 两者不一致时让**真相领先缓存**。空库不凭空造文件（文件已存在才写，
+  于是「删光所有夹」会落一个空表而不是删文件）。
+- `_rebuild_index()`：`folders` 从 `read_folders()` 取，每篇的字段从 `read_doc_meta()` 取，
+  再按 `DOC_FIELDS` 覆盖到条目上。⚠️ **刻意不从 `index.json.bak` 回落**：那份备份存的是
+  **损坏原文**（拷它是为了给人抢救，不是给代码读），从中捞不出东西 —— 写一条「有兜底」的
+  分支只会让人以为这条路径有救。
+- **新增 `_persist_doc_meta(entry)`**，六个写点接入：`save_transcript` /
+  `save_transcript_full` / `set_transcripts_folder` / `update_transcripts_tags` /
+  `apply_classifications` / `delete_folder`（批量操作收集命中项后统一落盘，仍是**一次**
+  index 写盘）。
+- **新增 `_migrate_classification_sidecars()`**（启动时、`_load_index` 之后）：把 index 里
+  已有的分类补写成 sidecar。**只写 sidecar、一个字节都不碰 index.json**（正常启动时索引
+  文件必须逐字节不变）。幂等判据用「**读的结果**」而不是「文件在不在」—— 损坏的 sidecar
+  同样返回 `None` / `{}`，一并重写。
+
+### 已知边界
+
+升级到本版本**之前**索引就已经坏了的老库，那部分分类确实回不来（那时 sidecar 还没诞生，
+`.bak` 里是损坏原文）。正常升级路径是「索引还好时打开一次」，那一刻迁移已经把真相写好。
+这条写在 `test_rebuild_without_sidecar_degrades_to_empty` 里 —— 记录「放弃在哪」，不粉饰。
+
+### 测试
+
+`test_store_index_recovery.py` +6 条：分类重建后全在（含来源与 createdAt）/ 无 sidecar 时
+如实降级 / sidecar 损坏被启动迁移修好 / 迁移不碰 index.json 且幂等 / 全新库不产生 sidecar /
+`folders.json` 随建改删三条路径同频。`test_folders.py::test_rebuild_keeps_schema_complete`
+从「断言分类必然丢失」改为「断言分类必须回来」。
+
+---
+
 ## 2026-10-18 — 仓库清理：一次性文档与构建残留
 
 | 对象 | 处理 |

@@ -69,7 +69,9 @@
 
 43. **嵌套函数内给外层变量赋值 = 该名在整个嵌套函数里变成局部变量**：`generate_stream` 顶层的 `ref_texts`，被嵌套函数 `merged_stream` 里的一句 `ref_texts = await compress_references_if_needed(...)` 拽成了后者的局部变量 → 上一行的 `if ref_texts` 在任何赋值之前读取它 → **UnboundLocalError（必然，非偶发）**。Python 的规则是「函数体内出现对该名的赋值 → 整个函数内它都是局部」，**与赋值语句在不在前面无关**。修法：嵌套函数内用局部名承接（`refs = ref_texts`），不要写回外层。**这是 #26（函数内重复 import 造成同名局部）的跨作用域版本**——同一根因；同一文件此前已在 `video_path` 上栽过一次（条件分支内赋值 + finally 引用，属同作用域变体）。⚠️ **测试测不到它**：不是逻辑错，而是运行时必炸、读代码与跑单测都正常的作用域错误，且流式端点的真实运行路径此前没有覆盖。已补 `tests/test_closure_shadowing.py`（AST 全库扫描，判据 = 外层赋值名 ∩ 嵌套赋值名 ∩ **嵌套内读早于写**）——**必须按执行顺序而非 AST 子节点顺序展开读写**（`ast.Assign._fields` 是 `('targets','value')` 而语义上 value 先求值，直接 `ast.walk` 会把 `x = x + 1` 判成「先写后读」，正好漏掉最该抓的一类；`AugAssign` 同为先读后写；形参算「进入即绑定」）。（2026-09-23 流式生成必炸修复）
 
-44. **索引是「手工逐字段构造」的，新增字段必须三处同改**：`index.json` 的每条 transcript 由 `_empty_index()`（顶层键）/ `_transcript_index_entry()`（正常读写路径）/ **`_rebuild_index()`（删 index.json 后全盘重扫）** 三个地方分别构造，后者是手工写的字面量。只改前两处 → **一切正常，直到有人删了 index.json**，重建后全部分类丢失。凡给 transcript 条目加字段，必须同时改三处 + 补一条「删除 index.json 后重建，断言字段仍在」的测试（只改 `_transcript_index_entry` 的实现必失败）。（2026-09-23 文件夹功能）
+44. **索引是「手工逐字段构造」的，新增字段必须三处同改**：`index.json` 的每条 transcript 由 `_empty_index()`（顶层键）/ `_transcript_index_entry()`（正常读写路径）/ **`_rebuild_index()`（删 index.json 后全盘重扫）** 三个地方分别构造，后者是手工写的字面量。只改前两处 → **一切正常，直到有人删了 index.json**。凡给 transcript 条目加字段，必须同时改三处 + 补一条「删除 index.json 后重建，断言字段仍在」的测试（只改 `_transcript_index_entry` 的实现必失败）。
+
+    ⚠️ **2026-10-18 起第四处**：重建时那批**从磁盘重推不出来**的字段（分类 / 标签 / 创建时间 / 来源）改由 `storage/doc_meta.py` 的 `DOC_FIELDS` 从 sidecar 覆写。于是「新增这类字段」还要多问一句：**它在 `DOC_FIELDS` 里吗？** 不在的话重建后依然丢，而且现在**丢得更隐蔽** —— 别处（sidecar）看起来什么都有，只有这一处缺。测试同样适用：`test_store_index_recovery.py::test_classification_survives_rebuild` 是模板。
 
 45. **data-uri 体积上限约束的是「base64 之后的字符串」，不是原始文件**：厂商报的字节数（或 20 MiB 这类上限）作用在编码后的 payload 上，PDF base64 膨胀 4/3。按 `len("data:<mime>;base64,") + 4*ceil(N/3) ≤ LIMIT` 反解原字节上限，**取整要向下留余量**——贴着理论边界取（15 MiB）算出来比上限多 25 字节，照样被拒。**贴边的常量等于一个随机失效的开关**：它不是「成功率低」，而是「取决于文件大小的最后几个字节」，测试与实测都可能恰好抽到通过的那一侧。（2026-09-23 PDF 直传）
 

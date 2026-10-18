@@ -44,6 +44,7 @@ async def cli_list_resources(
     tag: str = "",
     folder_id: Optional[str] = None,
     q: str = "",
+    include_descendants: bool = False,
     limit: int = DEFAULT_PAGE_SIZE,
     all: bool = False,
     cursor: Optional[str] = None,
@@ -53,12 +54,17 @@ async def cli_list_resources(
     `all=true` = 一次给全（`limit` 被忽略）。⚠️ `folder_id` 的三态语义由
     `QueryService` 的 `is not None` 保证：「不传 = 不过滤 / `""` = 只看未分类 /
     `值` = 该文件夹」，故这里**原样透传**，不能写 `folder_id or None`。
+
+    `include_descendants=true` → 连同子文件夹里的文档一并返回（CLI 的 `--recursive`）。
+    ⚠️ 默认 false 是刻意与前端对齐的：前端全量拉取后在内存里按树筛，不需要这个参数；
+    它是给「不想把所有文档拉下来」的 CLI 用的。
     """
     page = svc.list_resources(
         source_type=source_type or None,
         tag=tag or None,
         folder_id=folder_id,
         query=q or None,
+        include_descendants=include_descendants,
         limit=None if all else limit,
         cursor=cursor,
     )

@@ -101,8 +101,10 @@ def test_delete_folder_moves_docs_not_deletes():
 
         assert s.list_folders()[0]["count"] == 2
 
-        moved = s.delete_folder(fid)
-        assert moved == 2, f"应迁走 2 个文档，实际 {moved}"
+        res = s.delete_folder(fid)
+        assert res["moved"] == 2, f"应迁走 2 个文档，实际 {res}"
+        assert res["deletedFolders"] == 1
+        assert res["deletedFolderIds"] == [fid]
         assert s.list_folders() == [], "文件夹应已删除"
         assert s.count == 3, "文档数必须不变——删除文件夹绝不删文档"
         assert s.get_transcript("tr_a") is not None
@@ -271,6 +273,401 @@ def test_batch_tags_add_and_replace():
         shutil.rmtree(d, ignore_errors=True)
 
 
+# ── 嵌套：创建 / 移动 / 计数 ──
+
+def _parent_of(s: Store, folder_id: str) -> str:
+    """规范化后的父级（`folder_tree.normalize_parents` 的口径）。"""
+    return next((f["parentId"] for f in s.list_folders() if f["id"] == folder_id), "")
+
+
+def _tree(s: Store) -> dict:
+    """建一棵 技术 ⊃ 前端 ⊃ React（+ 兄弟 技术 ⊃ 后端）"""
+    tech = s.create_folder("技术")["id"]
+    fe = s.create_folder("前端", tech)["id"]
+    react = s.create_folder("React", fe)["id"]
+    be = s.create_folder("后端", tech)["id"]
+    return {"tech": tech, "fe": fe, "react": react, "be": be}
+
+
+def test_create_with_parent_and_bad_parent():
+    """parent 必须存在，否则 404；不传 parentId = 根级（老前端零回归）。"""
+    s, d = _new_store()
+    try:
+        t = _tree(s)
+        assert _parent_of(s, t["fe"]) == t["tech"]
+        assert _parent_of(s, t["tech"]) == "", "不传 parentId 必须是根级"
+
+        try:
+            s.create_folder("孤儿", "fd_nope")
+            assert False, "父级不存在竟被接受"
+        except AppError as e:
+            assert e.status_code == 404, f"应为 404，实为 {e.status_code}"
+        assert len(s.list_folders()) == 4, "失败的那次不该留下任何条目"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_rename_can_move_folder():
+    s, d = _new_store()
+    try:
+        t = _tree(s)
+        moved = s.rename_folder(t["be"], parent_id="")
+        assert moved["parentId"] == "", "移到根级"
+        assert _parent_of(s, t["be"]) == ""
+
+        again = s.rename_folder(t["be"], parent_id=t["fe"])
+        assert again["parentId"] == t["fe"], "挂到另一个父级下"
+        assert _parent_of(s, t["be"]) == t["fe"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_rename_rejects_cycle():
+    """移到自己 / 自己的后代 → 400 FOLDER_CYCLE。
+
+    ⚠️ 少了这条，`技术` 被移到 `React` 下之后整棵子树从所有视图里消失
+    （树根没了），而数据看起来完全正常——是最典型的「静默变孤儿」。
+    """
+    s, d = _new_store()
+    try:
+        t = _tree(s)
+        for target in (t["tech"], t["react"]):
+            try:
+                s.rename_folder(t["tech"], parent_id=target)
+                assert False, f"把 技术 移到 {target} 下竟被接受"
+            except AppError as e:
+                assert e.status_code == 400 and e.code == "FOLDER_CYCLE", \
+                    f"应为 400 FOLDER_CYCLE，实为 {e.status_code} {e.code}"
+        # 失败后内存里的父级一点没变（校验全部先于写入）
+        assert _parent_of(s, t["tech"]) == ""
+        assert _parent_of(s, t["react"]) == t["fe"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_rename_requires_at_least_one_field():
+    s, d = _new_store()
+    try:
+        fid = s.create_folder("甲")["id"]
+        try:
+            s.rename_folder(fid)
+            assert False, "两项都不给应被拒"
+        except AppError as e:
+            assert e.status_code == 400
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_rename_unchanged_writes_nothing():
+    """前端拖一下又拖回原处不该产生一次全量 index 写。"""
+    s, d = _new_store()
+    try:
+        t = _tree(s)
+        calls = _count_saves(s)
+        s.rename_folder(t["fe"], "前端", t["tech"])
+        assert len(calls) == 0, f"值没变却写了盘：{len(calls)} 次"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_legacy_folder_without_parentid_is_root_and_not_rewritten():
+    """零迁移：老 index 的文件夹条目没有 parentId。
+
+    ① 读回必须是根级（否则整库夹子同时消失）；
+    ② **加载不得改写磁盘**——把「读坏了还能回滚」变成默认是把脏值洗白的开始。
+    """
+    s, d = _new_store()
+    try:
+        s.create_folder("老夹")
+        p = os.path.join(d, "index.json")
+        data = json.loads(open(p, encoding="utf-8").read())
+        for f in data["folders"]:
+            f.pop("parentId", None)      # 模拟上一版写出的条目
+        open(p, "w", encoding="utf-8").write(json.dumps(data, ensure_ascii=False))
+        before = open(p, encoding="utf-8").read()
+
+        s2 = Store(d)
+        folders = s2.list_folders()
+        assert folders[0]["parentId"] == "", "缺 parentId 必须归化为根级"
+        assert open(p, encoding="utf-8").read() == before, "加载不该改写 index.json"
+
+        # 触碰即补字段：读回后改一次名，磁盘上就该带上 parentId
+        s2.rename_folder(folders[0]["id"], "新夹")
+        data2 = json.loads(open(p, encoding="utf-8").read())
+        assert data2["folders"][0]["parentId"] == "", "改过之后应显式写出 parentId 键"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_count_is_direct_total_is_subtree():
+    """`count` 只算直接子级（历史口径），`totalCount` 含整棵子树。
+
+    ⚠️ 两列并存是刻意的：把它们合并成一个会让「分组头显示几篇」与
+    「文件夹 chip 显示几篇」只能取一个口径，而验收对账要用**直接数**
+    （Σ 各夹直接 count + 未分类 = 文档总数；用 totalCount 求和会重复计数）。
+    """
+    s, d = _new_store()
+    try:
+        t = _tree(s)
+        _add_doc(s, "tr_a", "A", "h_a")
+        _add_doc(s, "tr_b", "B", "h_b")
+        _add_doc(s, "tr_c", "C", "h_c")
+        s.set_transcripts_folder(["tr_a"], t["tech"])
+        s.set_transcripts_folder(["tr_b", "tr_c"], t["react"])
+
+        by_id = {f["id"]: f for f in s.list_folders()}
+        assert by_id[t["tech"]]["count"] == 1
+        assert by_id[t["tech"]]["totalCount"] == 3, "技术 = 1 直接 + React 下 2 篇"
+        assert by_id[t["fe"]]["count"] == 0 and by_id[t["fe"]]["totalCount"] == 2
+        assert by_id[t["react"]]["count"] == 2 and by_id[t["react"]]["totalCount"] == 2
+
+        # 对账硬断言：直接数求和 + 未分类 = 文档总数
+        direct_sum = sum(f["count"] for f in by_id.values())
+        assert direct_sum + len(s.list_transcripts({"folderId": ""})) == s.count
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+# ── 嵌套：级联删除 ──
+
+def test_delete_subtree_moves_all_levels_one_write():
+    """删「技术」= 整棵子树一起删，各层文档全部回落未分类，文档一篇都不少。
+
+    ⚠️ 判据三件缺一不可：① 文档总数不变（防级联删文档）；② **每一层**的文档都回落
+    （只处理直接子级会让孙级文档留在已不存在的夹里 → 悬空 → 只能靠「全部」找到）；
+    ③ `deletedFolderIds` 精确等于 {自身} ∪ 后代（前端本地回落只认它）。
+    """
+    s, d = _new_store()
+    try:
+        t = _tree(s)
+        生活 = s.create_folder("生活")["id"]       # 树外的夹，必须毫发无伤
+        for i, fid in enumerate([t["tech"], t["fe"], t["react"], 生活]):
+            _add_doc(s, f"tr_{i}", f"文档{i}", f"h_{i}")
+            s.set_transcripts_folder([f"tr_{i}"], fid)
+
+        calls = _count_saves(s)
+        res = s.delete_folder(t["tech"])
+        assert len(calls) == 1, f"级联删除必须只写盘 1 次，实际 {len(calls)} 次"
+
+        assert res["moved"] == 3, f"三层各 1 篇，应迁走 3 篇，实际 {res['moved']}"
+        assert res["deletedFolders"] == 4, "技术 ⊃ {前端 ⊃ React, 后端}，共 4 行"
+        assert res["deletedFolderIds"] == sorted(
+            [t["tech"], t["fe"], t["react"], t["be"]])
+
+        assert s.count == 4, "文档数必须不变——删除文件夹绝不删文档"
+        assert all(s.get_transcript(f"tr_{i}")["folderId"] == "" for i in range(3)), \
+            "各层文档都必须回落未分类"
+        remaining = [f["id"] for f in s.list_folders()]
+        assert remaining == [生活], f"只剩树外的 生活，实际 {remaining}"
+        assert s.get_transcript("tr_3")["folderId"] == 生活, "树外文档不该被动到"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+# ── 嵌套：folderIds 集合筛选 ──
+
+def test_folder_ids_filter_includes_descendants():
+    s, d = _new_store()
+    try:
+        t = _tree(s)
+        for i, fid in enumerate([t["tech"], t["fe"], t["react"], t["be"]]):
+            _add_doc(s, f"tr_{i}", f"文档{i}", f"h_{i}")
+            s.set_transcripts_folder([f"tr_{i}"], fid)
+        _add_doc(s, "tr_unc", "未分类", "h_unc")
+
+        scope = s.folder_scope(t["tech"])
+        assert scope == {t["tech"], t["fe"], t["react"], t["be"]}, f"scope 不对：{scope}"
+
+        got = {e["id"] for e in s.list_transcripts({"folderIds": scope})}
+        assert got == {"tr_0", "tr_1", "tr_2", "tr_3"}, "含子树筛选漏掉了某一层"
+        assert "tr_unc" not in got
+
+        # 单个子夹的 scope 不含叔伯
+        assert {e["id"] for e in s.list_transcripts({"folderIds": s.folder_scope(t["fe"])})} \
+            == {"tr_1", "tr_2"}
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_folder_ids_wins_over_folder_id():
+    """两者同时给时 `folderIds` 胜 —— 且这个先后**不取决于书写顺序**（elif 钉住）。
+
+    这是刻意选的语义：`folderIds` 是更宽的判据，调用方给了它就说明想要子树口径。
+    若写成两条独立 `if`，结果会随书写顺序变化而不报错——那是一个静默分支。
+    """
+    s, d = _new_store()
+    try:
+        t = _tree(s)
+        _add_doc(s, "tr_a", "A", "h_a")
+        _add_doc(s, "tr_b", "B", "h_b")
+        s.set_transcripts_folder(["tr_a"], t["tech"])
+        s.set_transcripts_folder(["tr_b"], t["react"])
+
+        got = s.list_transcripts({"folderIds": {t["react"]}, "folderId": t["tech"]})
+        assert [e["id"] for e in got] == ["tr_b"], \
+            f"folderIds 应优先（只命中 React 下那篇），实际 {[e['id'] for e in got]}"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+# ── ensure_folder_path ──
+
+def test_ensure_path_creates_chain_and_is_idempotent():
+    s, d = _new_store()
+    try:
+        r1 = s.ensure_folder_path("技术/前端/React")
+        assert len(r1["created"]) == 3, f"应新建 3 层，实际 {len(r1['created'])}"
+        assert r1["segments"] == ["技术", "前端", "React"]
+
+        calls = _count_saves(s)
+        r2 = s.ensure_folder_path("技术/前端/React")
+        assert r2["id"] == r1["id"], "同一条路径必须复用同一个末端夹"
+        assert r2["created"] == [], "重复调用不该新建任何夹（幂等）"
+        assert len(calls) == 0, "幂等调用不该写盘"
+
+        assert len(s.list_folders()) == 3
+        by_id = {f["id"]: f for f in s.list_folders()}
+        assert by_id[r1["id"]]["parentId"] != "", "末端夹必须有父级（否则链条没连上）"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_ensure_path_one_write_for_whole_chain():
+    """整条路径一次写盘 —— 逐段 run 的时候中途失败会留下半条链。"""
+    s, d = _new_store()
+    try:
+        calls = _count_saves(s)
+        s.ensure_folder_path("a/b/c")
+        assert len(calls) == 1, f"三层应只写盘 1 次，实际 {len(calls)} 次"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_ensure_path_reuses_sibling_case_insensitively():
+    """段内匹配走 path_key（大小写 + 空白折叠），不是逐字相等。"""
+    s, d = _new_store()
+    try:
+        first = s.ensure_folder_path("Tech Notes")
+        again = s.ensure_folder_path("  tech   notes ")
+        assert again["id"] == first["id"], "path_key 归一后应复用"
+        assert again["created"] == []
+        assert len(s.list_folders()) == 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_ensure_path_invalid_writes_nothing():
+    """任何一段非法 → AppError，且**一个字节都不写**。
+
+    ⚠️ 这是「全有或全无」的真正判据：只看异常类型的话，一个「先建了前两层再抛错」
+    的实现照样能通过，而用户看到的是「分类失败，但库里多了两个空夹」。
+    """
+    s, d = _new_store()
+    try:
+        for bad, code in [
+            ("", "FOLDER_PATH_INVALID"),
+            ("技术//前端", "FOLDER_PATH_INVALID"),
+            ("/技术", "FOLDER_PATH_INVALID"),
+            ("a/b/c/d", "FOLDER_PATH_TOO_DEEP"),
+        ]:
+            calls = _count_saves(s)
+            before = len(s.list_folders())
+            try:
+                s.ensure_folder_path(bad)
+                assert False, f"{bad!r} 竟被接受"
+            except AppError as e:
+                assert e.code == code, f"{bad!r} 应为 {code}，实为 {e.code}"
+            assert len(calls) == 0, f"{bad!r} 拒绝时不该写盘"
+            assert len(s.list_folders()) == before
+
+        try:
+            s.ensure_folder_path("技术", "fd_nope")
+            assert False, "父级不存在竟被接受"
+        except AppError as e:
+            assert e.status_code == 404
+        assert s.list_folders() == []
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_ensure_path_ambiguous_is_explicit():
+    """同名夹出现在多个父级下 → 明示歧义，**绝不按数组顺序取第一个**。
+
+    ⚠️ 静默取第一个的失效形态：文档被塞进一个用户根本没打算用的夹，产物上
+    看不出任何异常——而这正是「允许模型建议嵌套路径」必然会遇到的场景。
+    """
+    s, d = _new_store()
+    try:
+        a = s.create_folder("甲")["id"]
+        b = s.create_folder("乙")["id"]
+        s.create_folder("杂项", a)
+        s.create_folder("杂项", b)
+
+        try:
+            s.ensure_folder_path("杂项")
+            assert False, "歧义路径竟被静默接受"
+        except AppError as e:
+            assert e.code == "FOLDER_PATH_AMBIGUOUS"
+            assert e.status_code == 400
+        assert len(s.list_folders()) == 4, "歧义时不该新建任何东西"
+
+        # 同一份输入在明确的父级下就没有歧义（parentId 走单段 ensure）
+        got = s.ensure_folder_path("杂项", a)
+        assert got["created"] == [], "甲 下已有 杂项，应复用"
+        assert got["id"] != "" and _parent_of(s, got["id"]) == a
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_ensure_path_whole_match_protects_legacy_slash_names():
+    """历史数据里本来就叫「前端/后端」的夹不能被拆成两层。
+
+    ⚠️ 这条是「整串优先命中现有夹名」唯一的存在理由：老用户当年用一个带斜杠的
+    名字表达层级，现在照原样再跑一次分类，必须还是那个夹。
+    """
+    s, d = _new_store()
+    try:
+        legacy = s.create_folder("前端/后端")["id"]
+        got = s.ensure_folder_path("前端/后端")
+        assert got["id"] == legacy
+        assert got["created"] == []
+        assert len(s.list_folders()) == 1, "不该拆成 前端 + 后端"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_ensure_path_with_parent_keeps_slashed_name_as_one_segment():
+    """`parent_id` 非空时，本名含 `/` 的夹名**不被拆开**。
+
+    `parse_path` 的 `segments` 在两个分支里是**两种语义**：`existing` 是整串名的一项
+    （`["前端/后端"]`），`path` 才是逐层切开。`ensure_folder_path` 的 `parent_id` 分支
+    跳过 `existing` 短路、直接拿这份 segments 逐段 ensure —— 于是在指定父级下建出的
+    仍是**单层**的「前端/后端」夹。
+
+    若把 `existing` 的 segments 当逐层路径再切一次，这里会变成两层
+    （`前端 › 后端`），而树长得完全正常、没有任何报错。
+    """
+    s, d = _new_store()
+    try:
+        legacy = s.create_folder("前端/后端")["id"]      # 根级、名字含斜杠的历史夹
+        parent = s.create_folder("资料")["id"]
+
+        got = s.ensure_folder_path("前端/后端", parent)
+        assert got["segments"] == ["前端/后端"], (
+            f"existing 分支的 segments 是整串名一项，实际 {got['segments']}")
+        assert len(got["created"]) == 1, "指定父级下应新建**一层**"
+        assert got["created"][0]["name"] == "前端/后端", "名字不该被拆开"
+        assert got["created"][0]["parentId"] == parent
+        assert got["id"] != legacy, "不该复用根级的同名夹（父级不同）"
+        assert len(s.list_folders()) == 3, "总共三个单层夹，不该多出「前端」这一层"
+
+        # 幂等：同一父级下再跑一次不新建
+        again = s.ensure_folder_path("前端/后端", parent)
+        assert again["id"] == got["id"] and again["created"] == []
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 # ── 过滤 ──
 
 def test_folder_filter_three_states():
@@ -294,17 +691,18 @@ def test_folder_filter_three_states():
 # ── 索引重建 / schema 完整性 ──
 
 def test_rebuild_keeps_schema_complete():
-    """删掉 index.json 后重建：条目必须仍带 folderId 键。
+    """删掉 index.json 后重建：**分类与文件夹树都回来**，条目 schema 仍完整。
 
-    ⚠️ 分类本身必然丢失——文件夹归属只存在于 index.json，磁盘上没有任何痕迹
-    （文件夹是纯逻辑分类，不落目录）。这里断言的是 **schema 完整**：
-    下游 e.get("folderId") 拿到的永远是字符串，不会是缺失键带来的意外。
+    ⚠️ 2026-10-18 起：文件夹归属与标签的真相在 `{doc_dir}/meta.json`、文件夹树在
+    `{root}/folders.json`（见 `storage/doc_meta.py`）。此前这里断言的正是
+    「分类必然丢失」—— 而那条路径不需要用户做错任何事，一次断电就够。
     """
     s, d = _new_store()
     try:
         fid = s.create_folder("论文")["id"]
         _add_doc(s, "tr_a", "文档A", "h_a")
         s.set_transcripts_folder(["tr_a"], fid)
+        s.update_transcripts_tags(["tr_a"], ["重要"], mode="add")
 
         os.remove(os.path.join(d, "index.json"))
         s2 = Store(d)
@@ -313,8 +711,9 @@ def test_rebuild_keeps_schema_complete():
         entries = s2.list_transcripts()
         assert len(entries) == 1, f"应重建出 1 个条目，实际 {len(entries)}"
         assert "folderId" in entries[0], "重建条目缺 folderId 键（schema 不一致）"
-        assert entries[0]["folderId"] == ""
-        assert s2.list_folders() == [], "文件夹列表随 index 丢失，但不应抛错"
+        assert entries[0]["folderId"] == fid, "重建后文件夹归属丢了"
+        assert entries[0]["tags"] == ["重要"], "重建后标签丢了"
+        assert [f["name"] for f in s2.list_folders()] == ["论文"], "重建后文件夹树丢了"
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

@@ -105,10 +105,14 @@ def _render_status(d: dict) -> str:
 # ── list ──
 
 def cmd_list(src, out, args) -> int:
+    # `--uncategorized` → `folder_id=""`（**有效筛选值**，不是「不过滤」）。
+    # ⚠️ 这个参数此前只存在于 argparse 与校验里、**没有任何消费点**：`limo list
+    # --uncategorized` 会静默列出全部文档，看起来像「未分类有这么多篇」。
+    folder_id = "" if args.uncategorized else args.folder_id
     page = src.list_resources(
-        source_type=args.source_type, tag=args.tag, folder_id=args.folder_id,
-        query=args.query, limit=args.limit, all_pages=args.all_pages,
-        cursor=args.cursor,
+        source_type=args.source_type, tag=args.tag, folder_id=folder_id,
+        query=args.query, include_descendants=args.recursive,
+        limit=args.limit, all_pages=args.all_pages, cursor=args.cursor,
     )
     out.data(page, render=_render_list)
     return EXIT.OK
@@ -286,5 +290,48 @@ def _render_folders(d: dict) -> str:
     items = d.get("items") or []
     if not items:
         return "还没有文件夹。"
-    rows = [[f.get("id", ""), f.get("name", ""), str(f.get("count", 0))] for f in items]
-    return table(rows, ["ID", "名称", "文档"])
+    # 层级缩进 + 前序：平铺输出里「技术」「前端」「React」三行看不出谁是谁的子夹，
+    # 而用户看 `limo folders` 的第一诉求就是「现在长什么样」。
+    #
+    # ⚠️ 树的推导**复用 `app.storage.folder_tree`**，不在 CLI 里另写一遍排序与断环
+    #   （环数据下自写的 DFS 会死循环）。`limo_cli` 与 `app` 同仓分发，这条 import
+    #   失败只会发生在「只装了 CLI」的场景——那时回落成平铺输出，而不是崩掉整条命令。
+    # ⚠️ 先按 id 去重：`index.json` 被手改坏时可能出现重复 id，而下面的
+    # `index_of` 是 dict —— 重复 id 会让前一条被静默丢出渲染（它的行消失，
+    # 而文件夹总数又没变，用户以为 CLI 少读了一个）。只读命令不报错，去重展示。
+    _seen: set[str] = set()
+    _uniq = []
+    for f in items:
+        fid = f.get("id", "")
+        if fid and fid in _seen:
+            continue
+        _seen.add(fid)
+        _uniq.append(f)
+    items = _uniq
+
+    depth_of: dict[str, int] = {}
+    order = list(range(len(items)))
+    try:
+        from app.storage.folder_tree import preorder, normalize_parents
+        parent = normalize_parents(items)
+        ids = [f["id"] for f in items]
+        # ⚠️ id → 下标用 map：`ids.index(i)` 在列表里是 O(n)，外面再套一层
+        # 就是 O(n²)（几百个夹时 `limo folders` 明显变慢，且随库增长线性恶化）。
+        index_of = {fid: i for i, fid in enumerate(ids)}
+        order = [index_of[i] for i in preorder(items)]
+        for i in ids:
+            n, cur = 0, parent.get(i, "")
+            while cur and n < len(ids):          # 断环已在上一步做完，这里只是防御
+                n += 1
+                cur = parent.get(cur, "")
+            depth_of[i] = n
+    except Exception:                            # noqa: BLE001 —— 渲染降级，不吞业务错误
+        pass
+
+    rows = []
+    for idx in order:
+        f = items[idx]
+        name = "  " * depth_of.get(f.get("id", ""), 0) + f.get("name", "")
+        rows.append([f.get("id", ""), name, str(f.get("count", 0)),
+                     str(f.get("totalCount", f.get("count", 0)))])
+    return table(rows, ["ID", "名称", "文档", "含子文件夹"])

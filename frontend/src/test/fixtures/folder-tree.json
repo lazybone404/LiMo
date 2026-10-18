@@ -1,0 +1,235 @@
+{
+  "_note": "文件夹树纯函数的共享 fixture —— 后端 backend/tests/test_folder_tree.py 与前端 src/test/folderTree.test.ts **读同一份**（后端直接读这个路径，见该测试的 FIXTURE_PATH）。任一侧实现漂移都会红。⚠️ 前端只消费 trees（它不做路径解析），parsePaths 仅供后端 —— 路径解析**只有** backend/app/storage/folder_tree.py::parse_path 一处实现。",
+  "trees": [
+    {
+      "name": "空库",
+      "folders": [],
+      "directCounts": {},
+      "expect": {
+        "preorder": [],
+        "paths": {},
+        "totalCounts": {},
+        "descendants": {},
+        "ancestors": {}
+      }
+    },
+    {
+      "name": "平铺：无 parentId 字段的老数据（零迁移路径）",
+      "folders": [
+        { "id": "fd_a", "name": "论文" },
+        { "id": "fd_b", "name": "书" },
+        { "id": "fd_c", "name": "其他" }
+      ],
+      "directCounts": { "fd_a": 2, "fd_c": 1 },
+      "expect": {
+        "preorder": ["fd_a", "fd_b", "fd_c"],
+        "paths": { "fd_a": "论文", "fd_b": "书", "fd_c": "其他" },
+        "totalCounts": { "fd_a": 2, "fd_b": 0, "fd_c": 1 },
+        "descendants": { "fd_a": [], "fd_b": [], "fd_c": [] },
+        "ancestors": { "fd_a": [], "fd_b": [], "fd_c": [] }
+      }
+    },
+    {
+      "name": "三层嵌套 + 兄弟顺序 = 数组顺序",
+      "folders": [
+        { "id": "fd_a", "name": "技术", "parentId": "" },
+        { "id": "fd_b", "name": "前端", "parentId": "fd_a" },
+        { "id": "fd_c", "name": "React", "parentId": "fd_b" },
+        { "id": "fd_d", "name": "后端", "parentId": "fd_a" },
+        { "id": "fd_e", "name": "生活", "parentId": "" }
+      ],
+      "directCounts": { "fd_a": 1, "fd_b": 2, "fd_c": 3, "fd_e": 5 },
+      "expect": {
+        "preorder": ["fd_a", "fd_b", "fd_c", "fd_d", "fd_e"],
+        "paths": {
+          "fd_a": "技术",
+          "fd_b": "技术 › 前端",
+          "fd_c": "技术 › 前端 › React",
+          "fd_d": "技术 › 后端",
+          "fd_e": "生活"
+        },
+        "totalCounts": { "fd_a": 6, "fd_b": 5, "fd_c": 3, "fd_d": 0, "fd_e": 5 },
+        "descendants": {
+          "fd_a": ["fd_b", "fd_c", "fd_d"],
+          "fd_b": ["fd_c"],
+          "fd_c": [],
+          "fd_d": [],
+          "fd_e": []
+        },
+        "ancestors": {
+          "fd_a": [],
+          "fd_b": ["fd_a"],
+          "fd_c": ["fd_a", "fd_b"],
+          "fd_d": ["fd_a"],
+          "fd_e": []
+        }
+      }
+    },
+    {
+      "name": "不变量 1：缺字段 / 悬空 / 自引用一律视为根",
+      "folders": [
+        { "id": "fd_a", "name": "缺字段" },
+        { "id": "fd_b", "name": "悬空", "parentId": "fd_gone" },
+        { "id": "fd_c", "name": "自引用", "parentId": "fd_c" }
+      ],
+      "directCounts": { "fd_a": 1, "fd_b": 1, "fd_c": 1 },
+      "expect": {
+        "preorder": ["fd_a", "fd_b", "fd_c"],
+        "paths": { "fd_a": "缺字段", "fd_b": "悬空", "fd_c": "自引用" },
+        "totalCounts": { "fd_a": 1, "fd_b": 1, "fd_c": 1 },
+        "descendants": { "fd_a": [], "fd_b": [], "fd_c": [] },
+        "ancestors": { "fd_a": [], "fd_b": [], "fd_c": [] }
+      }
+    },
+    {
+      "name": "不变量 2：2 环断在数组下标最小者",
+      "folders": [
+        { "id": "fd_a", "name": "甲", "parentId": "fd_b" },
+        { "id": "fd_b", "name": "乙", "parentId": "fd_a" }
+      ],
+      "directCounts": { "fd_a": 0, "fd_b": 1 },
+      "expect": {
+        "preorder": ["fd_a", "fd_b"],
+        "paths": { "fd_a": "甲", "fd_b": "甲 › 乙" },
+        "totalCounts": { "fd_a": 1, "fd_b": 1 },
+        "descendants": { "fd_a": ["fd_b"], "fd_b": [] },
+        "ancestors": { "fd_a": [], "fd_b": ["fd_a"] }
+      }
+    },
+    {
+      "name": "不变量 2：3 环断在数组下标最小者（不是遍历起点）",
+      "folders": [
+        { "id": "fd_a", "name": "甲", "parentId": "fd_c" },
+        { "id": "fd_b", "name": "乙", "parentId": "fd_a" },
+        { "id": "fd_c", "name": "丙", "parentId": "fd_b" }
+      ],
+      "directCounts": { "fd_a": 0, "fd_c": 2 },
+      "expect": {
+        "preorder": ["fd_a", "fd_b", "fd_c"],
+        "paths": { "fd_a": "甲", "fd_b": "甲 › 乙", "fd_c": "甲 › 乙 › 丙" },
+        "totalCounts": { "fd_a": 2, "fd_b": 2, "fd_c": 2 },
+        "descendants": { "fd_a": ["fd_b", "fd_c"], "fd_b": ["fd_c"], "fd_c": [] },
+        "ancestors": { "fd_a": [], "fd_b": ["fd_a"], "fd_c": ["fd_a", "fd_b"] }
+      }
+    },
+    {
+      "name": "不变量 2：环上挂着一条尾巴（尾巴仍随环一起归位）",
+      "folders": [
+        { "id": "fd_t", "name": "尾巴", "parentId": "fd_a" },
+        { "id": "fd_a", "name": "甲", "parentId": "fd_b" },
+        { "id": "fd_b", "name": "乙", "parentId": "fd_a" }
+      ],
+      "directCounts": { "fd_t": 1, "fd_a": 0, "fd_b": 0 },
+      "expect": {
+        "preorder": ["fd_a", "fd_t", "fd_b"],
+        "paths": { "fd_a": "甲", "fd_t": "甲 › 尾巴", "fd_b": "甲 › 乙" },
+        "totalCounts": { "fd_a": 1, "fd_t": 1, "fd_b": 0 },
+        "descendants": { "fd_a": ["fd_t", "fd_b"], "fd_t": [], "fd_b": [] },
+        "ancestors": { "fd_a": [], "fd_t": ["fd_a"], "fd_b": ["fd_a"] }
+      }
+    }
+  ],
+  "parsePaths": [
+    {
+      "name": "空串",
+      "folders": [],
+      "input": "",
+      "expect": { "kind": "reject", "reason": "empty" }
+    },
+    {
+      "name": "纯空白",
+      "folders": [],
+      "input": "   ",
+      "expect": { "kind": "reject", "reason": "empty" }
+    },
+    {
+      "name": "单段",
+      "folders": [],
+      "input": "论文",
+      "expect": { "kind": "path", "segments": ["论文"] }
+    },
+    {
+      "name": "两段",
+      "folders": [],
+      "input": "技术/前端",
+      "expect": { "kind": "path", "segments": ["技术", "前端"] }
+    },
+    {
+      "name": "段首尾空白逐段 trim",
+      "folders": [],
+      "input": "  技术 / 前端  ",
+      "expect": { "kind": "path", "segments": ["技术", "前端"] }
+    },
+    {
+      "name": "首斜杠 = 空段",
+      "folders": [],
+      "input": "/技术",
+      "expect": { "kind": "reject", "reason": "empty_segment" }
+    },
+    {
+      "name": "尾斜杠 = 空段",
+      "folders": [],
+      "input": "技术/",
+      "expect": { "kind": "reject", "reason": "empty_segment" }
+    },
+    {
+      "name": "连续斜杠 = 空段",
+      "folders": [],
+      "input": "技术//前端",
+      "expect": { "kind": "reject", "reason": "empty_segment" }
+    },
+    {
+      "name": "四段：parse_path 不截断，由调用方决定（分类侧截断 / ensure-path 拒绝）",
+      "folders": [],
+      "input": "a/b/c/d",
+      "expect": { "kind": "path", "segments": ["a", "b", "c", "d"] }
+    },
+    {
+      "name": "整串命中某个现有夹名：历史数据里就叫「前端/后端」的夹不被拆开",
+      "folders": [
+        { "id": "fd_slash", "name": "前端/后端", "parentId": "" }
+      ],
+      "input": "前端/后端",
+      "expect": { "kind": "existing", "folderId": "fd_slash" }
+    },
+    {
+      "name": "整串命中做 path_key 归一（大小写 + 空白折叠）",
+      "folders": [
+        { "id": "fd_tech", "name": "Tech Notes", "parentId": "" }
+      ],
+      "input": "  tech   notes ",
+      "expect": { "kind": "existing", "folderId": "fd_tech" }
+    },
+    {
+      "name": "单段命中现有夹名也算 existing（不是新建）",
+      "folders": [
+        { "id": "fd_paper", "name": "论文", "parentId": "" }
+      ],
+      "input": "论文",
+      "expect": { "kind": "existing", "folderId": "fd_paper" }
+    },
+    {
+      "name": "同名多个 → ambiguous，绝不按数组顺序取第一个",
+      "folders": [
+        { "id": "fd_x", "name": "杂项", "parentId": "fd_p" },
+        { "id": "fd_y", "name": "杂项", "parentId": "fd_q" }
+      ],
+      "input": "杂项",
+      "expect": { "kind": "ambiguous", "candidates": ["fd_x", "fd_y"] }
+    },
+    {
+      "name": "路径里的中间层已存在也不影响切分（parse_path 只切分，不查中间层是否存在）",
+      "folders": [
+        { "id": "fd_tech", "name": "技术", "parentId": "" }
+      ],
+      "input": "技术/前端",
+      "expect": { "kind": "path", "segments": ["技术", "前端"] }
+    },
+    {
+      "name": "单段超长 → reject",
+      "folders": [],
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expect": { "kind": "reject", "reason": "segment_too_long" }
+    }
+  ]
+}
