@@ -140,6 +140,38 @@ def _has_chart_fence(text: str) -> bool:
     return any(mark in (text or "") for mark in CHART_FENCE_MARKS)
 
 
+#: 勾选图表后**合法地不画图**的语义块 —— 就是「用列表代替画图」那一族
+#: （`steps` / `timeline` / `cycle` / `sequence` / `quadrant`，见
+#: `get_markdown_block_format` 与 `get_chart_format` 的分工）。
+_CHART_ALTERNATIVE_BLOCKS = ("steps", "timeline", "cycle", "sequence", "quadrant")
+
+
+def _chart_missing_warning(text: str) -> str | None:
+    """勾了图表但产物里没有图 → 返回 warning 文案；否则 `None`。
+
+    ⚠️ **两处调用点共用这一份**（非流式 done 与流式 done，模式 #54）：此前是两段
+    逐字重复的「判定 + 选原因 + 拼文案」，加一条判据就得改两处，漏一处就是
+    「一条路径报假警、另一条不报」这种只在特定入口才出现的偏差。
+
+    ⚠️ 判据是「**既**没有图表围栏、**也**没有任何『用列表代替画图』的块」：
+    2026-10-20 起 prompt 明确把这些关系引向语义块，把「照做了引导」报成
+    「图表未生成」就是惩罚正确行为。反过来，既没图也没块、才是真的漏了。
+
+    ⚠️ 块判定走 `parse_blocks` 而不是子串（`"timeline" in md` 会被正文里**提到**
+    这个词命中），与 `artifact_blocks.has_block` 同源。
+    """
+    if _has_chart_fence(text):
+        return None
+    src = text or ""
+    if any(seg.get("type") in _CHART_ALTERNATIVE_BLOCKS
+           for seg in parse_blocks(src) if seg.get("kind") == "block"):
+        return None
+    _judged_unsuitable = "图表说明" in src or "不适合图表化" in src
+    _reason = ("模型判断内容不适合图表化" if _judged_unsuitable
+               else "未输出图表围栏，也没有可替代的可视化块")
+    return f"图表未生成：{_reason}，请重新生成"
+
+
 async def _do_followup(store, llm, tx_id: str, tx: dict, notes_content: str,
                        cancel_event) -> dict:
     """产出追问建议（**独立第二次调用** → 写旁路文件），返回 `followup` 事件的 payload。
@@ -1061,13 +1093,12 @@ async def generate_stream(transcript_id: str, request: Request,
                     log.info("Generate stream done", tx_id=transcript_id, mode="notes",
                              chars=len(notes_content),
                              blocks=_n_blocks, block_types=_block_types)
-                    # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出图表围栏
-                    # （旧习惯 svg 围栏 / 裸内联 / 没画）→ warning 提示重新生成
-                    if "chart" in format_list and not _has_chart_fence(raw_notes):
-                        _judged_unsuitable = "图表说明" in raw_notes or "不适合图表化" in raw_notes
-                        _reason = "模型判断内容不适合图表化" if _judged_unsuitable else "LLM 未输出图表围栏"
-                        log.warning("图表未生成", source_type=source_type, reason=_reason)
-                        yield f"data: {json.dumps({'type': 'warning', 'kind': 'chart_missing', 'message': f'图表未生成：{_reason}，请重新生成'}, ensure_ascii=False)}\n\n"
+                    # 图表未生成兜底（P1-3）：勾选图表但既没出图、也没走「用列表代替
+                    # 画图」那条引导 → warning 提示重新生成（判据与文案见 helper）
+                    _chart_warn = _chart_missing_warning(raw_notes) if "chart" in format_list else None
+                    if _chart_warn:
+                        log.warning("图表未生成", source_type=source_type, message=_chart_warn)
+                        yield f"data: {json.dumps({'type': 'warning', 'kind': 'chart_missing', 'message': _chart_warn}, ensure_ascii=False)}\n\n"
 
                 # 直传成功但本地抽取近乎为空 → 显式提示（双真相源的可观测出口）
                 _raw_warn = _doc_direct_raw_warning(document, epub_text)
@@ -1278,12 +1309,12 @@ async def generate_stream(transcript_id: str, request: Request,
                 # 检索根本没跑，web_param 恒为 None（`compact_params` 会丢掉空值）。
                 extra_params={"webSearch": web_param}))
             _auto_title(store, transcript_id, mv.content)
-            # 图表未生成兜底（P1-3）：勾选图表但 LLM 未输出图表围栏 → warning
-            if "chart" in format_list and stream_mode != "polished" and not _has_chart_fence(raw_content):
-                _judged_unsuitable = "图表说明" in raw_content or "不适合图表化" in raw_content
-                _reason = "模型判断内容不适合图表化" if _judged_unsuitable else "LLM 未输出图表围栏"
-                log.warning("图表未生成", source_type=source_type, reason=_reason)
-                yield f"data: {json.dumps({'type': 'warning', 'kind': 'chart_missing', 'message': f'图表未生成：{_reason}，请重新生成'}, ensure_ascii=False)}\n\n"
+            # 图表未生成兜底（P1-3）：判据与文案与上面非流式路径同源（同一个 helper）
+            _chart_warn = (_chart_missing_warning(raw_content)
+                           if "chart" in format_list and stream_mode != "polished" else None)
+            if _chart_warn:
+                log.warning("图表未生成", source_type=source_type, message=_chart_warn)
+                yield f"data: {json.dumps({'type': 'warning', 'kind': 'chart_missing', 'message': _chart_warn}, ensure_ascii=False)}\n\n"
             # 直传成功但本地抽取近乎为空 → 显式提示（双真相源的可观测出口）
             _raw_warn = _doc_direct_raw_warning(document, epub_text)
             if _raw_warn:

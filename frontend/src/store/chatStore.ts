@@ -232,7 +232,7 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
     const convId = s.currentId || undefined
     // ⚠️ **在发送这一刻读**（不是订阅）：偏好变了只影响之后的请求，进行中的那一轮
     // 用的仍是发起时的取值 —— 下面 `onFollowUp` 的守卫也读同一个变量。
-    // 两项一起读，一次 `loadChatPrefs()`（两次调用是同一个结果，只是白读一次）。
+    // 三项一起读，一次 `loadChatPrefs()`（多次调用是同一个结果，只是白读几次）。
     const prefs = loadChatPrefs()
     const wantFollowUp = prefs.followUp
 
@@ -328,7 +328,8 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
           followUpError: error || undefined,
         }))
       },
-    }, { signal: controller.signal, conversationId: convId, docRefs, followUp: wantFollowUp, webSearch: prefs.webSearch })
+    }, { signal: controller.signal, conversationId: convId, docRefs, followUp: wantFollowUp, webSearch: prefs.webSearch,
+      answerMode: prefs.answerMode })
   }
 
   return {

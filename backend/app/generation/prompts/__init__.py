@@ -152,4 +152,29 @@ from .notes_styles import (
 #   ⚠️ 只影响**多篇合成**（`build_synthesis_prompt`）；单篇笔记 / 整理版零变化
 #   （证据块刻意不进 `get_markdown_block_format()`，详见 `artifact_blocks` 的
 #   `SYNTHESIS_BLOCK_TYPES` 注释）。
-PROMPT_VERSION = "16"
+#
+# "17"（2026-10-20，语义块新增 `cycle`）：
+#   · `get_markdown_block_format()` 新增第十种块 `cycle` —— 首尾相接的因果循环，
+#     写成 3–6 项**有序列表**，环形布局由 `blocks.css` 算（模型只写环节与顺序，
+#     坐标 / 半径 / 连线完全不经模型之手）。
+#   · 动因是**图表的失败面**：管道从来没有环形算子，`flowchart` 遇环直接抛错、
+#     `state` 只适合状态迁移图 ⇒ 模型想表达「A→B→C→A」时只能硬套 `state`，
+#     层级一深就撞 `nrow > 7` 的硬上限（实测失败产物里 2 条正是这个）。
+#   · 连带改 `get_chart_format()`：把「首尾相接的因果循环」从图表职责里分出去
+#     （与 `steps`/`timeline` 的分家同款 —— 那边教「线性用列表」，这边不再教
+#     「线性画成图」，两侧不许打架）；`state` 的示例标题由「状态与回环」改准为
+#     「状态机（带判定的迁移，可含回环）」，避免与 `cycle` 抢同一批内容。
+# "18"（2026-10-20，语义块 +2、图表引导 7 → 3、删两条层数闸门）：
+#   · `get_markdown_block_format()` 新增第十一、十二种块：
+#     `sequence`（两方往来的消息流，有序列表 + `**发送方 → 接收方**：内容`）与
+#     `quadrant`（两维交叉的四格评估，**恰好 4 项**有序列表，按左上/右上/左下/右下）。
+#   · `get_chart_format()` 由七种收缩到**三种**（`grid` / `flowchart` / `state`），
+#     撤掉的四种全部有列表出口：`layers`/`tree` → 嵌套列表、`sequence`/`quadrant` → 新块。
+#     判据是「**文本结构能否保真表达这个关系**」——不是复杂度、不是垂直/水平。
+#   · 连带的真 bug：`layouts.py` 删掉两条写死的层数闸门（`state` 的 `nrow > 7`、
+#     `flowchart` 的 `nlayer > 5`）。它们在 `expand()` 的「压行距 + 等比缩放」之前
+#     就抛错，是同一件事的第二套判据且严格更严 —— 实测 8 层纯矩形只需 564px。
+#   · 完成期 warning 判据同步放宽（`_chart_missing_warning`）：勾了图表但产出
+#     steps/timeline/cycle/sequence/quadrant 之一是**照做了引导**，不再报「未生成」。
+PROMPT_VERSION = "18"
+

@@ -270,6 +270,244 @@
   background: var(--tk-border-light);
 }
 
+/* ── 环形（cycle）────────────────────────────────────────────────────────
+   形态 = 块内**有序列表**绕成一圈，节点串在虚线圆环上，中心一个 `↻`。取代的是
+   「模型想表达循环关系时的唯一出口」：图表管道没有环形算子，`flowchart` 遇环直接
+   抛错、`state` 只适合状态迁移图 —— 模型表达「A→B→C→A」时只能硬套 `state`，层级
+   一深就撞 `nrow > 7` 的硬上限（实测失败产物里两条正是这个）。
+
+   ⚠️ **模型只填空**：它写的是「有哪几个环节、顺序如何」，节点坐标、圆环半径、连线
+   全部在这里算 —— 与 `chart_layout` 那条「只教语义、坐标由后端算」同一条纪律，
+   只是这次连后端都不用。故 `get_markdown_block_format` 里 `cycle` 的规范**只有**
+   「3–6 项的有序列表」这一条，没有任何造型描述。
+
+   ⚠️ **角度档靠 `:nth-last-child` 判项数，不用 `:has()`**：`li:first-child:nth-last-child(3)`
+   的语义是「第一项恰好也是倒数第三项」= **恰好 3 项**，是 CSS3 就有的写法；本文件
+   同时被导出 HTML 消费（会在任意浏览器里打开），`:has()` 虽已在各现代浏览器落地，
+   但为一条可优雅降级（退回普通列表）的装饰去赌目标浏览器版本不值得。
+   ⚠️ **只覆盖 3–6 项**：prompt 已把范围限死在这四档；项数不匹配或超出时**所有节点
+   都落在 `--cyc-a: 0deg`** —— 也就是叠在环顶同一处。那不好看，但**内容一字不少**
+   （「内容永远不该因为渲染不认识而消失」这条判据优先于观感），且 `ol` 的 340×340
+   尺寸会让它明显不对，用户会重新生成而不是拿到一张看起来正常的错图。
+
+   ⚠️ **`overflow-x: auto` + `flex-shrink: 0` 是成对的**（与 `table` 同款，理由见那边
+   的长注释）：预览区内容容器是 flex column，`.md-block` 是 flex item；没有 overflow
+   时它靠内容高度挡住收缩，一旦有了 `overflow-x` 自动最小尺寸按 0 算 ⇒ 会被压扁。
+   ⚠️ 更关键的是**窄面板下的兜底**：环是固定 340px 的绝对定位布局，缩不了；容器比它
+   窄时宁可横向滚动，也不要让节点叠成一团或溢出到正文外。 */
+.md-block[data-block-type="cycle"] {
+  --cyc-r: 120px;
+  --cyc-node-w: 92px;
+  --cyc-node-h: 40px;
+
+  margin: 16px 0;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.md-block[data-block-type="cycle"] ol {
+  position: relative;
+  width: 340px;
+  height: 340px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+
+/* 虚线圆环：直径 = 2R，穿过各节点中心（节点盖住虚线，看上去就是「串在环上」）。
+   ⚠️ 用 `--tk-border` 而不是 light 档：light 档在 warm 基调下离正文底只差 9 个灰阶，
+   一条 2px 虚线会淡到看不见 —— 而它正是「这是个环」唯一的形状提示。 */
+.md-block[data-block-type="cycle"] ol::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--cyc-r) * 2);
+  height: calc(var(--cyc-r) * 2);
+  transform: translate(-50%, -50%);
+  border: 2px dashed var(--tk-border);
+  border-radius: 50%;
+}
+
+/* 中心的 `↻`：环心空着 240px 直径会显得空，这个符号是「循环」的视觉锚点。
+   字体没有该字形时浏览器会回落到 Segoe UI Symbol（Windows）—— 不便指定家族。 */
+.md-block[data-block-type="cycle"] ol::after {
+  content: "↻";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 22px;
+  color: var(--tk-dimmed);
+}
+
+.md-block[data-block-type="cycle"] li {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  box-sizing: border-box;
+  width: var(--cyc-node-w);
+  min-height: var(--cyc-node-h);
+  padding: 6px 4px;
+  text-align: center;
+  background: var(--tk-elevated);
+  border: 1px solid var(--tk-border);
+  border-radius: 8px;
+  font-size: 0.9em;
+  line-height: 1.3;
+  /* 顺序：先绕环（rotate → 上移 R → 转回来保持文字水平），再整体居中到容器中点。
+     `translate(-50%, -50%)` 基于元素**实际尺寸**，故标签折行变高时仍居中。 */
+  transform: translate(-50%, -50%)
+    rotate(var(--cyc-a, 0deg))
+    translateY(calc(-1 * var(--cyc-r)))
+    rotate(calc(-1 * var(--cyc-a, 0deg)));
+}
+
+/* 块内可能有 `<p>`（Markdown 列表项里写多行时会包一层），收掉它的外边距，
+   否则节点高度被撑开、与 `--cyc-node-h` 的假设脱节。 */
+.md-block[data-block-type="cycle"] li > p {
+  margin: 0;
+}
+
+/* 角度档：0° 起、顺时针等分（360° / N）。`~ li` 链逐项递增特异性，
+   故「第 k 项」那条总会压过前面的通配。 */
+/* 恰好 3 项 → 120° */
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(3) { --cyc-a: 0deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(3) ~ li { --cyc-a: 120deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(3) ~ li ~ li { --cyc-a: 240deg; }
+/* 恰好 4 项 → 90° */
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(4) { --cyc-a: 0deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(4) ~ li { --cyc-a: 90deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(4) ~ li ~ li { --cyc-a: 180deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(4) ~ li ~ li ~ li { --cyc-a: 270deg; }
+/* 恰好 5 项 → 72° */
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(5) { --cyc-a: 0deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(5) ~ li { --cyc-a: 72deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(5) ~ li ~ li { --cyc-a: 144deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(5) ~ li ~ li ~ li { --cyc-a: 216deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(5) ~ li ~ li ~ li ~ li { --cyc-a: 288deg; }
+/* 恰好 6 项 → 60° */
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(6) { --cyc-a: 0deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(6) ~ li { --cyc-a: 60deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(6) ~ li ~ li { --cyc-a: 120deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(6) ~ li ~ li ~ li { --cyc-a: 180deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(6) ~ li ~ li ~ li ~ li { --cyc-a: 240deg; }
+.md-block[data-block-type="cycle"] li:first-child:nth-last-child(6) ~ li ~ li ~ li ~ li ~ li { --cyc-a: 300deg; }
+
+/* ── 交互时序（sequence，2026-10-20）─────────────────────────────────────
+   形态 = 块内**有序列表**，每项以 `**发送方 → 接收方**：内容` 开头。取代图表管道里的
+   `sequence` 布局（多参与者消息往来）—— 那种关系的**方向**用一句文字就说清了，不值得
+   付一整条渲染链。
+
+   ⚠️ 它**不是**生命线时序图：那需要按参与者分列、把每条消息画到对应列之间，而参与者
+   列位只能从消息文本里推导 ⇒ 必须结构分派（遍历列表项、切分 `**` 前后、建立列索引），
+   那会直接打破「形态差异全在 CSS」这条纪律（本文件同时是导出侧读的单一真相源，结构
+   一分叉，Python 的 `render_blocks_html` 就得复刻一份 React 结构 —— 模式 #54）。
+   故这里只做「带方向的消息流」：竖向主线 + 圆点 + `strong`（发送方 → 接收方）做成
+   小徽章，顺序即时间顺序。
+
+   ⚠️ 圆点与竖线用 `--tk-border` / `--tk-dimmed` 而**不是** accent：accent 留给
+   key-takeaway / metric 的数字（同 `steps` 的既有判据），这里是**结构**不是语义强调。 */
+.md-block[data-block-type="sequence"] {
+  margin: 16px 0;
+}
+
+.md-block[data-block-type="sequence"] ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.md-block[data-block-type="sequence"] li {
+  position: relative;
+  padding: 4px 0 14px 24px;
+}
+
+.md-block[data-block-type="sequence"] li:last-child {
+  padding-bottom: 0;
+}
+
+/* 消息节点：小方块（与 timeline 的圆徽标区分开 —— 一个是「阶段」，一个是「一封信」）。 */
+.md-block[data-block-type="sequence"] li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 9px;
+  width: 7px;
+  height: 7px;
+  border: 2px solid var(--tk-dimmed);
+  border-radius: 2px;
+  background: var(--tk-elevated);
+}
+
+.md-block[data-block-type="sequence"] li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 20px;
+  bottom: 0;
+  width: 1px;
+  background: var(--tk-border-light);
+}
+
+/* `**发送方 → 接收方**` 做成胶囊徽章：方向信息是这一项**唯一**的结构性信息，
+   让它在视觉上先被看见。块内其余文字照常。 */
+.md-block[data-block-type="sequence"] li strong:first-child {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 9px;
+  border-radius: 999px;
+  background: var(--tk-hover);
+  font-size: 0.85em;
+}
+
+.md-block[data-block-type="sequence"] li > p {
+  margin: 0;
+}
+
+/* ── 二维评估（quadrant，2026-10-20）────────────────────────────────────
+   形态 = 块内**恰好 4 项有序列表**，按「左上 / 右上 / 左下 / 右下」排成 2×2 网格。
+   取代图表管道里的 `quadrant` 布局（四象限评估）：四个格子、每个格子一句话，用列表
+   就说得清，不必付一整条渲染链。
+
+   ⚠️ **不画坐标轴**：象限名（「重要且紧急」这类）自己说清了位置，画两条轴反而多一组
+   需要解释的刻度（而刻度值模型往往编）。这也是它与图表版 `quadrant` 的形态差异来源 ——
+   图表版能画连续坐标，语义块版回答的是「这四个格子各放什么」。
+
+   ⚠️ **项数不是 4 时**（模型多写少写）：`grid` 自然排成两列多行/少一格，**内容一字
+   不少** —— 与 `cycle` 项数不匹配时的取向一致（「内容永远不该因为渲染不认识而消失」
+   优先于观感）。故这里**不需要**任何项数判据，也就没有失效形态。
+
+   ⚠️ `minmax(0, 1fr)` 而不是 `1fr`：`1fr` 的隐含最小尺寸是内容的最小内容宽度，
+   长英文单词/URL 会把某一列撑爆、把另一列挤到 0。 */
+.md-block[data-block-type="quadrant"] {
+  margin: 16px 0;
+}
+
+.md-block[data-block-type="quadrant"] ol {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.md-block[data-block-type="quadrant"] li {
+  padding: 10px 12px;
+  background: var(--tk-elevated);
+  /* 边框用 `--tk-border` 而不是 light 档（与 metric / table 同一条判据）：light 档
+     配 `--tk-elevated` 底色在 warm 基调下等于没有容器。 */
+  border: 1px solid var(--tk-border);
+  border-radius: 8px;
+  font-size: 0.92em;
+  line-height: 1.5;
+}
+
+.md-block[data-block-type="quadrant"] li > p {
+  margin: 0;
+}
+
 /* ── 内容卡片（table / code / image）──────────────────────────────────
    形态 = **中性面板**（四边浅边框 + 浅底 + 圆角），与 `metric` 同款手法、与上面
    几个强调块**刻意分家**：强调块回答「这段文字是什么性质」（结论 / 风险 / 建议），
@@ -429,6 +667,79 @@
 [data-marker-decor="off"] .md-block[data-block-type="timeline"] li::before,
 [data-marker-decor="off"] .md-block[data-block-type="timeline"] li::after {
   content: none;
+}
+
+/* `cycle` 的「原样」同样是**有序列表** —— 归零退回默认数字编号的竖排列表，
+   与 `timeline` 同款。⚠️ 归零必须把 `position` / 尺寸 / `transform` 全撤掉：
+   环是绝对定位布局，只撤装饰的话节点仍叠在环顶那一处（内容在、但读不了）。 */
+[data-marker-decor="off"] .md-block[data-block-type="cycle"] {
+  margin: 16px 0;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="cycle"] ol {
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding-left: 1.5em;
+  list-style: decimal;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="cycle"] li {
+  position: static;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  font-size: inherit;
+  line-height: inherit;
+  text-align: inherit;
+  transform: none;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="cycle"] ol::before,
+[data-marker-decor="off"] .md-block[data-block-type="cycle"] ol::after {
+  content: none;
+}
+
+/* `sequence` / `quadrant` 的「原样」都是**有序列表** —— 归零退回默认数字编号的竖排
+   列表（与 timeline / cycle 同出口）。⚠️ 两者都要把 `position` / 网格 / 徽章一并撤掉：
+   只撤边框的话，`sequence` 的圆点与竖线仍挂在每一项左侧，`quadrant` 的两列网格也还在
+   —— 内容在，但那已经不是「没包过围栏」的样子了。 */
+[data-marker-decor="off"] .md-block[data-block-type="sequence"],
+[data-marker-decor="off"] .md-block[data-block-type="quadrant"] {
+  margin: 16px 0;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="sequence"] ol,
+[data-marker-decor="off"] .md-block[data-block-type="quadrant"] ol {
+  display: block;
+  padding-left: 1.5em;
+  list-style: decimal;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="sequence"] li,
+[data-marker-decor="off"] .md-block[data-block-type="quadrant"] li {
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="sequence"] li::before,
+[data-marker-decor="off"] .md-block[data-block-type="sequence"] li::after {
+  content: none;
+}
+
+[data-marker-decor="off"] .md-block[data-block-type="sequence"] li strong:first-child {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  background: none;
+  font-size: inherit;
 }
 
 /* ── 关掉装饰：table / code / image 退回「内容原样」──────────────────────

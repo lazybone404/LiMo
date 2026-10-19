@@ -24,6 +24,7 @@ from .geometry import (
     _path_bbox,
     _path_segments,
     _ROW_GAP,
+    _shift_space_x,
     _shift_title_space,
     _shrink_labels,
     r4,
@@ -323,8 +324,9 @@ def assert_layout(nodes, W, height, edges=None, labels=None, shapes=None) -> Non
             raise LayoutError(f"布局器 bug：装饰元素越界 {sh!r}")
 
 
-def _trim_width(nodes, labels, W: int, shapes=None, edges=None, min_w: int = 0) -> int:
-    """按内容右边界裁剪画布宽度（保留 MARGIN），消除窄图右侧的大片空白。
+def _trim_canvas(nodes, labels, W: int, shapes=None, edges=None,
+                 min_w: int = 0) -> tuple[int, int]:
+    """按内容包围盒裁剪画布宽度，并给出让内容居中的水平位移 → ``(width, dx)``。
 
     固定 640 画布下，timeline / layers 这类内容只占左侧的布局会右半幅全空——
     「先完整画出来再缩放」应当连**宽度**也按内容裁，否则缩放只是等比缩小了空白。
@@ -334,14 +336,31 @@ def _trim_width(nodes, labels, W: int, shapes=None, edges=None, min_w: int = 0) 
     更会把超出节点右缘的连线与 shapes 切掉——state 的回边沟槽、象限的轴线框
     都在节点之外。下限 ``_MIN_CANVAS_W`` 防止单节点图被裁得过窄。
 
+    ⚠️ **必须先算 minx 再定宽**（2026-10-20）：只按 ``maxx + MARGIN`` 定宽的版本
+    会保留算子排布时的左侧偏移，裁剪后内容整体偏右（实测 flowchart：画布 412px、
+    左侧空 232px）——「右侧空白」只是被换成了「左侧空白」。宽度按**内容跨度**
+    算、再用 ``dx`` 把 minx 拉回 MARGIN，两侧留白才真的对称。
+    画布被 ``_MIN_CANVAS_W`` / 标题宽度撑宽时，``dx`` 让内容在新画布里居中。
+
     ``min_w``：裁剪**下界**。标题居中绘制、不构成右边界，但画布窄过它就会把
     标题两端裁掉——故它只抬下界，不参与上界。
     """
     ext = _extent(nodes, labels, shapes, edges)
     floor = max(_MIN_CANVAS_W, min_w)
     if ext is None:
-        return max(floor, W)
-    return max(floor, min(W, int(math.ceil(ext[2])) + MARGIN))
+        return max(floor, W), 0
+    minx = int(math.floor(ext[0]))
+    maxx = int(math.ceil(ext[2]))
+    span = maxx - minx
+    width = max(floor, min(W, span + 2 * MARGIN))
+    # 内容比画布宽时（span + 2M > W）只能左对齐；否则居中于最终画布。
+    dx = max(MARGIN, (width - span) // 2) - minx
+    return width, dx
+
+
+def _trim_width(nodes, labels, W: int, shapes=None, edges=None, min_w: int = 0) -> int:
+    """只要宽度、不管平移的薄委托（公开契约保留给测试/外部调用点）。"""
+    return _trim_canvas(nodes, labels, W, shapes, edges, min_w)[0]
 
 
 # ── 主入口 ────────────────────────────────────────────────
@@ -405,7 +424,9 @@ def expand(spec: dict, width: int = DEFAULT_WIDTH, height_cap: int = DEFAULT_HEI
         nodes, edges, labels, shapes, height = _snapshot(nodes, edges, labels, shapes)
         best = (nodes, edges, labels, shapes, height)
         if height <= height_cap:
-            W2 = _trim_width(nodes, labels, W, shapes=shapes, edges=edges, min_w=title_w)
+            W2, dx = _trim_canvas(nodes, labels, W, shapes=shapes, edges=edges,
+                                  min_w=title_w)
+            _shift_space_x(nodes, edges, labels, shapes, dx)   # 裁剪后把内容拉回 MARGIN
             # ⚠️ 必须传全量：不传则后三条不变量一条都不执行（见 assert_layout 文档）
             assert_layout(nodes, W2, height, edges, labels, shapes)
             _shrink_labels(nodes, measure)   # 定稿后按最终宽度兜底截断文字
@@ -428,7 +449,8 @@ def expand(spec: dict, width: int = DEFAULT_WIDTH, height_cap: int = DEFAULT_HEI
         raise LayoutError(
             f"节点过多，图过高（自然高 {height}px，需缩到 {scale:.0%} 才能放下，"
             f"低于 {_MIN_SCALE:.0%} 下限会看不清），请拆分成多张图")
-    W2 = _trim_width(nodes, labels, W, shapes=shapes, edges=edges, min_w=title_w)
+    W2, dx = _trim_canvas(nodes, labels, W, shapes=shapes, edges=edges, min_w=title_w)
+    _shift_space_x(nodes, edges, labels, shapes, dx)   # 同上：先平移，再按最终画布校验
     # 在**自然坐标**下校验（几何正确性与缩放无关）
     assert_layout(nodes, W2, height, edges, labels, shapes)
     _shrink_labels(nodes, measure)

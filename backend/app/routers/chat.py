@@ -37,6 +37,27 @@ class ChatRequest(BaseModel):
     history: list[dict] = []
     mode: str = "single"
     model_id: int | None = None
+    answer_mode: str = "strict"
+
+
+_ANSWER_MODES = ("strict", "open", "free")
+
+
+def _answer_mode(value: str) -> str:
+    """校验「回答依据」开关的取值 —— 入口严、读回宽。
+
+    ⚠️ **非法值不静默退化成 `strict`**：那会让「用户开了发散，产物上却看不出任何
+    区别」（严格模式的回答与发散模式在前几轮可能长得一样），是**零报错**的失效。
+    判据同 `normalize_reader_intent`：请求入口对非法值报错，读历史时才对 `None`/
+    未知值回退默认。三档只有三个合法值，显式报错不增加任何前端负担。
+    """
+    if value not in _ANSWER_MODES:
+        raise AppError(
+            "CHAT_BAD_ANSWER_MODE",
+            f"answer_mode 只接受 {' 或 '.join(_ANSWER_MODES)}",
+            recoverable=False,
+        )
+    return value
 
 
 # ── Tool 工厂函数 ──
@@ -212,7 +233,7 @@ async def chat(req: ChatRequest, request: Request, store=Depends(get_store), con
     _, budget = compute_budget(config, model_id)
     cc = config.get("chat_context") or {}
     doc_text, _ = build_doc_context(store, req.doc_ids, budget, cc.get("doc_mode", "auto"))
-    system = prompt_loader.build(doc_text)
+    system = prompt_loader.build(doc_text, answer_mode=_answer_mode(req.answer_mode))
     history = trim_history(req.history or [], budget, history_limit=cc.get("history_limit", 0))
 
     agent = AgentRunner(llm, max_rounds=3)
@@ -222,6 +243,8 @@ async def chat(req: ChatRequest, request: Request, store=Depends(get_store), con
     # 但记一笔：将来 SDK / 脚本直接调它时，「关掉联网开关后 AI 不能上网」这句承诺
     # 在它上面**不成立**。真要用起来，得照 `chat_stream` 的做法把 `allow_web` 一路
     # 传给这两处（那个局部变量驱动的两处必须同时改，见 `web_search` 查询参数的注释）。
+    # ⚠️ 「回答依据」是例外：它随 `ChatRequest.answer_mode` 一路传给了 `build`，
+    # 故「严格 / 发散」这条承诺在本端点上**成立**（联网那条仍然不成立）。
     _build_registry(store).apply_to(agent)
 
     log.info("Chat start", question_len=len(req.question), docs=len(req.doc_ids))
@@ -252,6 +275,7 @@ async def chat_stream(
     conversation_id: str = Query(""),
     follow_up: int = Query(0),
     web_search: int = Query(1),
+    answer_mode: str = Query("strict"),
     store=Depends(get_store),
     config=Depends(get_config),
 ):
@@ -264,7 +288,13 @@ async def chat_stream(
     system prompt 的联网层换成离线声明。**默认 1 = 改造前的现状**（联网一直可用）。
     ⚠️ 这个默认值与产物侧 `GenerateRequest.web_search`（默认 `False`）**方向相反且都是对的**
     —— 那边是**新增能力**（默认关 = 零回归），这边是**给已有能力加开关**（默认开 = 零回归）。
+
+    `answer_mode`：`strict`（默认，只用知识库）/ `open`（知识库优先，可补充）/
+    `free`（自由对话，不围绕知识库）。**默认 `strict` = 改造前的行为**（原 `rules.md` 就是
+    「无来源不说话」），非法值显式报错、不静默退回 `strict`（见 `_answer_mode`）。
     """
+
+    mode = _answer_mode(answer_mode)
 
     doc_list = [d.strip() for d in doc_ids.split(",") if d.strip()]
 
@@ -318,7 +348,7 @@ async def chat_stream(
     summary = conv.get("summary") or ""
     system_text = "\n\n".join(
         x for x in [doc_text, f"[历史摘要]\n{summary}" if summary else None] if x)
-    system = prompt_loader.build(system_text, web_search=allow_web)
+    system = prompt_loader.build(system_text, web_search=allow_web, answer_mode=mode)
     tool_defs = agent._tool_defs
     used = estimate_tokens(system) + sum(estimate_tokens(json.dumps(t, ensure_ascii=False)) for t in tool_defs)
     hist_budget = max(0, budget - used)

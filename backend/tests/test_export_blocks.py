@@ -270,23 +270,45 @@ def _md_of(type_: str, body: str = "块内内容") -> str:
 _LIST_BODY = {
     "steps": "- 输入\n- 清洗\n- 输出",
     "timeline": "1. **导入**\n2. **解析**",
+    "cycle": "1. 压力大\n2. 皮质醇升高\n3. 食欲增加",
 }
 
 
-def test_html_新增八种类型都包成_md_block_而不是裸露的标记行():
-    """**「解析器对 type 无感知」这条设计在导出侧的证据**：八种新形态在 Python 侧
-    一行分支都没有，走的正是 key-takeaway 的同一条包装路径，形态差异全在 CSS。
+def test_html_其余类型都包成_md_block_而不是裸露的标记行():
+    """**「解析器对 type 无感知」这条设计在导出侧的证据**：key-takeaway 之外的每一种
+    在 Python 侧一行分支都没有，走的正是 key-takeaway 的同一条包装路径，形态差异全在 CSS。
 
     ⚠️ 断两件事：包装在（结构）+ 标记行不在读者可见正文里（症状）。只断前者的话
     「包了一层但仍把注释拼进正文」照样绿 —— 与 `key-takeaway` 那条同款。
+    ⚠️ 名单从 `ARTIFACT_BLOCK_TYPES` **派生**（排除 `key-takeaway` —— 它由 `MD` 那条
+    覆盖）。此前这里是八种手写名单，加第十种 `cycle` 时会绿着失去意义（模式 #54）。
     """
-    for t in ("alert", "recommend", "metric", "steps", "timeline",
-              "table", "code", "image"):
+    for t in sorted(ARTIFACT_BLOCK_TYPES - {"key-takeaway"}):
         html = _build_selfcontained_html(_md_of(t), "标题")
         assert f'<div class="md-block" data-block-type="{t}">' in html, t
         assert '<!-- limo-block' not in _body(html), t
         assert '<!-- /limo-block' not in _body(html), t
         assert '块内内容' in html, t
+
+
+def test_html_列表型块内的列表结构原样穿过导出链():
+    """`steps` / `timeline` / `cycle` 的**形状**全靠块内是 `<ul>` 还是 `<ol>`
+    （`blocks.css` 按子元素类型区分：`steps` 用无序 → 箭头横排，`timeline` / `cycle`
+    用有序 → 编号竖排 / 环形）。
+
+    纯 CSS 方案的前提是「Markdown 的列表结构在导出链路上不被压扁」—— 这条断言此前
+    只有一句愿望（`_LIST_BODY` 定义了却没有任何消费点，是死常量）。压扁后文字一字不少、
+    `data-block-type` 包装断言照样绿，只有视觉上退回成普通段落。
+    """
+    from bs4 import BeautifulSoup
+
+    for t, body in _LIST_BODY.items():
+        html = _build_selfcontained_html(_md_of(t, body), "标题")
+        blk = BeautifulSoup(html, "html.parser").find(
+            "div", attrs={"data-block-type": t})
+        assert blk is not None, f"{t} 块没包上"
+        tag = "ul" if t == "steps" else "ol"
+        assert blk.find(tag) is not None, f"{t} 块内的 <{tag}> 丢了（形状靠它判）"
 
 
 #: `table` / `code` / `image` 的**全部增量就是一层外壳** —— 块内那张表、那段代码、

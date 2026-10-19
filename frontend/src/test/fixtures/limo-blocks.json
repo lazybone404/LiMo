@@ -9,9 +9,9 @@
   "meta": {
     "protocolVersion": "v1",
     "_knownTypes_comment": "**协议并集**的跨语言守卫：前端与后端的 KNOWN_BLOCK_TYPES 都必须等于 knownTypes，且必须满足「== artifactTypes ∪ chatTypes」与「两者不相交」。加类型时改这里 + 两侧各改一处 + **写渲染器**，漏改任一处即红。",
-    "knownTypes": ["key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "table", "code", "image", "card-group", "follow-up", "info", "digest", "caution", "how-to", "quote", "evidence"],
+    "knownTypes": ["key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "cycle", "sequence", "quadrant", "table", "code", "image", "card-group", "follow-up", "info", "digest", "caution", "how-to", "quote", "evidence"],
     "_sideTypes_comment": "⚠️ **「协议知道这个 type」与「某一侧实现了渲染」是两件事**：这两个子集是各侧真写了渲染分支的类型。把两者混为一谈的失效方式是静默的 —— 只进 knownTypes 而不写渲染器，等于宣称「有人处理它」，实际会被原样当正文吐出来（零报错）。故拆开、由断言核对。",
-    "artifactTypes": ["key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "table", "code", "image"],
+    "artifactTypes": ["key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "cycle", "sequence", "quadrant", "table", "code", "image"],
     "chatTypes": ["card-group", "follow-up", "info", "digest", "caution", "how-to", "quote"],
     "_synthesisTypes_comment": "⚠️ **第四类：合成侧专用**（2026-10-18）—— 目前只有 `evidence`。它**刻意不进 `artifactTypes`**：那个集合被后端 `test_block_prompt.py` 遍历断言「每个 type 都出现在**单篇**的 `get_markdown_block_format()` 里」，加进去等于让单篇笔记也学证据块，而证据块只属于多篇合成（单篇材料没有「跨文档分歧」可写）。",
     "synthesisTypes": ["evidence"],
@@ -191,6 +191,42 @@
         }
       ],
       "stripped": "1. **导入文档**\n   保存原始资料及来源元信息。\n2. **解析与清洗**\n   提取正文并整理文档结构。"
+    },
+    {
+      "name": "产物环形（cycle）—— 块内有序列表原样保留（CSS 靠 `<ol>` 判环节数与顺序，故结构是判据）",
+      "md": "<!-- limo-block:v1 type=\"cycle\" -->\n1. 压力大\n2. 皮质醇升高\n3. 食欲增加\n4. 体重上升\n<!-- /limo-block -->",
+      "segments": [
+        {
+          "kind": "block",
+          "type": "cycle",
+          "content": "1. 压力大\n2. 皮质醇升高\n3. 食欲增加\n4. 体重上升"
+        }
+      ],
+      "stripped": "1. 压力大\n2. 皮质醇升高\n3. 食欲增加\n4. 体重上升"
+    },
+    {
+      "name": "产物交互时序（sequence）—— 块内有序列表原样保留（方向由 `**发送方 → 接收方**` 文字承担，故结构是判据）",
+      "md": "<!-- limo-block:v1 type=\"sequence\" -->\n1. **用户 → 服务端**：提交订单\n2. **服务端 → 用户**：返回订单号\n3. **用户 → 服务端**：发起支付\n<!-- /limo-block -->",
+      "segments": [
+        {
+          "kind": "block",
+          "type": "sequence",
+          "content": "1. **用户 → 服务端**：提交订单\n2. **服务端 → 用户**：返回订单号\n3. **用户 → 服务端**：发起支付"
+        }
+      ],
+      "stripped": "1. **用户 → 服务端**：提交订单\n2. **服务端 → 用户**：返回订单号\n3. **用户 → 服务端**：发起支付"
+    },
+    {
+      "name": "产物二维评估（quadrant）—— 块内恰好 4 项有序列表原样保留（CSS 按项序排成 2×2，故结构与顺序是判据）",
+      "md": "<!-- limo-block:v1 type=\"quadrant\" -->\n1. **重要且紧急**：修线上故障\n2. **重要不紧急**：架构重构\n3. **不重要但紧急**：临时报表\n4. **不重要不紧急**：整理旧文档\n<!-- /limo-block -->",
+      "segments": [
+        {
+          "kind": "block",
+          "type": "quadrant",
+          "content": "1. **重要且紧急**：修线上故障\n2. **重要不紧急**：架构重构\n3. **不重要但紧急**：临时报表\n4. **不重要不紧急**：整理旧文档"
+        }
+      ],
+      "stripped": "1. **重要且紧急**：修线上故障\n2. **重要不紧急**：架构重构\n3. **不重要但紧急**：临时报表\n4. **不重要不紧急**：整理旧文档"
     },
     {
       "name": "产物表格卡（table）—— 块内 Markdown 表格连表头分隔行一起原样保留",

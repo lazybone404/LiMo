@@ -218,15 +218,25 @@ _raises(lambda: L.expand({"layout": "flowchart", "nodes": [{"label": "无id"}],
 _raises(lambda: L.expand({"layout": "flowchart", "nodes": [
     {"id": "a", "label": "A"}, {"id": "a", "label": "B"}], "edges": []}),
     'id 重复', '重复 id 会静默连错节点，必须拒')
-_raises(lambda: L.expand({"layout": "flowchart", "nodes": [
+# ⚠️ **「层数过深」这条闸门已在 2026-10-20 删除**（原先这里是 `nlayer > 5` 的
+# 负向断言）。它和 `expand()` 的「压行距 + 等比缩放 + `_MIN_SCALE`」不同源且严格更严：
+# 6 层纯矩形 round1 只要 520px（scale=1.0）就装得下，却被判「层数过深」。故这条改为
+# **正向断画得出来**，负向断言改为「真的缩不动才报」——那才是唯一真相源的判据。
+_r6 = L.expand({"layout": "flowchart", "nodes": [
     {"id": f"n{i}", "label": f"步骤{i}"} for i in range(6)],
-    "edges": [{"from": f"n{i}", "to": f"n{i + 1}"} for i in range(5)]}),
-    '拆分成多张图', '6 层链超深应被拒')
+    "edges": [{"from": f"n{i}", "to": f"n{i + 1}"} for i in range(5)]})
+assert len(_by_y(_r6['nodes'])) == 6, '6 层链应正常分层'
+assert _r6['scale'] == 1.0, f"6 层链不该触发缩放，实际 {_r6['scale']}"
+_raises(lambda: L.expand({"layout": "flowchart", "nodes": [
+    {"id": f"n{i}", "label": f"步骤{i}"} for i in range(18)],
+    "edges": [{"from": f"n{i}", "to": f"n{i + 1}"} for i in range(17)]}),
+    '拆分成多张图', '18 层链超出缩放下限（0.65）时仍应报「请拆图」')
 _raises(lambda: L.expand({"layout": "flowchart", "nodes": [
     {"id": f"d{i}", "label": f"判定{i}?", "type": "decision"} for i in range(4)],
     "edges": [{"from": "d0", "to": "d1"}]}),
     '判定节点过多', 'decision > 3 应被拒（菱形太占高度）')
-print("PASS: flowchart 负向用例 — 环 / 未知 id / 缺 id / 重复 id / 层过深 / 判定过多")
+print("PASS: flowchart 负向用例 — 环 / 未知 id / 缺 id / 重复 id / 缩不下限 / 判定过多"
+      "（+ 6 层可画：层数闸门已删）")
 
 # ── 2d. state — 状态机（允许环与自环，回边走右侧沟槽）──
 r_st = L.expand({"layout": "state", "title": "订单状态", "states": [
@@ -269,11 +279,18 @@ _raises(lambda: L.expand({"layout": "state", "states": [
     {"id": f"s{i}", "label": f"状态{i}"} for i in range(3)],
     "transitions": [{"from": f"s{i}", "to": f"s{i}"} for i in range(3)]}),
     '自环过多', '自环 > 2 应被拒（每个自环都在右缘外占 28px）')
-_raises(lambda: L.expand({"layout": "state", "states": [
+# ⚠️ **`nrow > 7` 闸门已在 2026-10-20 删除**（原先这里是「9 层超深应被拒」）。
+# 8 层正是用户实际撞到的那条假失败：round1 需 760px，但 round2（行距减半）只需 564px
+# ⇒ scale=1.0 完全画得下，闸门却在缩放之前就把它拒了。故改成正向断言。
+_r9 = L.expand({"layout": "state", "states": [
     {"id": f"s{i}", "label": f"状态{i}"} for i in range(9)],
-    "transitions": [{"from": f"s{i}", "to": f"s{i + 1}"} for i in range(8)]}),
-    '拆分成多张图', '9 层状态链超深应被拒')
-print("PASS: state 负向用例 — 未知 id / 自环过多 / 层过深")
+    "transitions": [{"from": f"s{i}", "to": f"s{i + 1}"} for i in range(8)]})
+assert len(_by_y(_r9['nodes'])) == 9, '9 层状态链应正常分层'
+_raises(lambda: L.expand({"layout": "state", "states": [
+    {"id": f"s{i}", "label": f"状态{i}"} for i in range(18)],
+    "transitions": [{"from": f"s{i}", "to": f"s{i + 1}"} for i in range(17)]}),
+    '拆分成多张图', '18 层状态链超出缩放下限（0.65）时仍应报「请拆图」')
+print("PASS: state 负向用例 — 未知 id / 自环过多 / 缩放下限（+ 9 层可画：层数闸门已删）")
 
 # ── 2e. sequence — 时序图（生命线走 shapes，消息顺序即时间顺序）──
 r_sq = L.expand({"layout": "sequence", "title": "登录时序", "actors": [
@@ -710,6 +727,35 @@ rl = L.expand({"layout": "grid",
 for _lb in rl['labels']:
     assert _lb['x'] >= 0 and _lb['x'] + _lb['w'] <= rl['width'], f"裁剪把边标签切出界：{_lb}"
 print("PASS: 边标签计入裁剪边界（不会只按节点裁而把标签切出界）")
+
+# ── 裁剪必须把内容**拉回来**，不是把右空白换成左空白（2026-10-20）──
+# 算子按 640 宽排布（内容居中），只收窄画布而不动坐标的话，窄图内容整体
+# 偏移到画布右侧：右侧空白确实没了，但左侧凭空出现一大片（实测 flowchart
+# 画布 412px、左侧空 232px —— 观感比不裁还差）。宽度要按**内容跨度**算，
+# 再用 dx 把 minx 拉回 MARGIN；四类元素（nodes/labels/shapes/edges）必须
+# 一起平移，漏掉任何一类都会让连线与节点错位。
+_rst = L.expand({"layout": "state", "states": [
+    {"id": "new", "label": "新建", "type": "start"},
+    {"id": "paid", "label": "已支付"},
+    {"id": "ship", "label": "已发货"},
+    {"id": "done", "label": "已完成", "type": "end"}],
+    "transitions": [{"from": "new", "to": "paid", "label": "付款"},
+                    {"from": "paid", "to": "ship"},
+                    {"from": "ship", "to": "done"},
+                    {"from": "done", "to": "new", "label": "退货"}]})
+_ext = L._extent(_rst['nodes'], _rst['labels'], _rst['shapes'], _rst['edges'])
+_left, _right = _ext[0], _rst['width'] - _ext[2]
+assert abs(_left - L.MARGIN) <= 1 and abs(_right - L.MARGIN) <= 1, \
+    f"裁剪后左右留白应对称（左 {_left:.0f} / 右 {_right:.0f}，画布 {_rst['width']}px）"
+for _e in _rst['edges']:
+    _ex, _ey = _e['end']
+    assert any(n['x'] <= _ex <= n['x'] + n['w'] and n['y'] <= _ey <= n['y'] + n['h']
+               for n in _rst['nodes']), f"平移后连线终点与节点错位：{_e['end']}"
+    _sx, _sy = L._path_segments(_e['d'])[0][:2]
+    assert any(n['x'] <= _sx <= n['x'] + n['w'] and n['y'] <= _sy <= n['y'] + n['h']
+               for n in _rst['nodes']), f"平移后连线起点与节点错位：{_e['d']}"
+print(f"PASS: 裁剪后内容拉回 MARGIN（state 左右 {_left:.0f}/{_right:.0f}px，"
+      "连线随节点同步平移）")
 
 # ── 10. 节点形状层（shape / decor）──
 # 形状只改「画成什么样」与「文字余量」，几何仍用外接矩形 —— 故这里验证的是

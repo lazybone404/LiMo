@@ -325,8 +325,10 @@ def _flowchart(spec, W, measure=None, row_gap=48):
             f"流程存在环（{'、'.join(str(c) for c in cyc[:3])}）——"
             "有回环/自环的结构请改用 state 布局")
     nlayer = max(layer.values()) + 1
-    if nlayer > 5:
-        raise LayoutError(f"流程层数过深（{nlayer} 层 > 5），请拆分成多张图")
+    # ⚠️ 这里**不再**有「层数过深（> N）」的闸门（2026-10-20 删）：高度是否装得下
+    # 由 `engine.expand()` 的「压行距（三轮）+ 等比缩放 + `_MIN_SCALE`」统一裁决，
+    # 那是唯一真相源。写死一个层数阈值的直接后果是**与缩放链不同源**且严格更严 ——
+    # 实测 8 层纯矩形只需 564px（scale=1.0），却被判「层数过深」。
 
     def _shp(it):
         return _FLOW_SHAPES.get(str(it.get('type') or 'process'), "rect")
@@ -492,8 +494,10 @@ def _state(spec, W, measure=None, row_gap=56):
     pairs = [(e['u'], e['v']) for e in all_edges]
     rank = _bfs_rank(ids, pairs)
     nrow = max(rank.values()) + 1
-    if nrow > 7:
-        raise LayoutError(f"状态层数过深（{nrow} 层 > 7），请拆分成多张图")
+    # ⚠️ 同样**不再**有「层数过深（> 7）」的闸门（2026-10-20 删）：高度由
+    # `engine.expand()` 的压行距 + 等比缩放 + `_MIN_SCALE` 统一裁决。这条阈值与
+    # 缩放链不同源且严格更严 —— 实测 8 层纯矩形只需 564px（scale=1.0）就装得下，
+    # 却被判「层数过深」。自然上限约 13 层，真装不下时缩放链会报「图过高，请拆图」。
 
     self_loops = {u for u, v in pairs if u == v}
     # 节点区再往左收一档：自环占右缘外 28px，回边占更外侧的沟槽

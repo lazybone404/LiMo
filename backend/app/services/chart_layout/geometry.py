@@ -482,6 +482,46 @@ def _shift_path_y(d: str, dy: int) -> str:
     return " ".join(parts)
 
 
+def _shift_path_x(d: str, dx: int) -> str:
+    """路径整体右移 dx，重建为只含 M/H/V 的正交路径（``_shift_path_y`` 的横轴版）。"""
+    segs = _path_segments(d)
+    if not segs:
+        return d
+    parts = [f"M{_num(segs[0][0] + dx)} {_num(segs[0][1])}"]
+    for (x0, y0, x1, y1) in segs:
+        if x1 != x0:
+            parts.append(f"H{_num(x1 + dx)}")
+        elif y1 != y0:
+            parts.append(f"V{_num(y1)}")
+    return " ".join(parts)
+
+
+def _shift_space_x(nodes, edges, labels, shapes, dx) -> None:
+    """所有元素整体右移 dx —— 画布按内容裁剪后，把内容拉回 MARGIN 起点。
+
+    ⚠️ **没有这一步，裁剪只是把右边的空白挪到了左边**：算子按 ``DEFAULT_WIDTH``
+    排布（内容居中或铺满），裁剪把画布收窄到内容右缘后，坐标却没动 ——
+    窄图内容整体偏右，左侧留一大片空白（实测 flowchart：画布 412px，左侧空 232px）。
+    四类元素必须**全部**平移（nodes / labels / shapes / edges），否则连线与节点错位。
+    """
+    if not dx:
+        return
+    for n in nodes:
+        n['x'] += dx
+    for lb in labels:
+        lb['x'] += dx
+    for sh in shapes:
+        if sh.get('kind') == 'line':
+            sh['x1'] += dx
+            sh['x2'] += dx
+        else:
+            sh['x'] += dx
+    for e in edges:
+        e['d'] = _shift_path_x(e['d'], dx)
+        if e.get('end'):
+            e['end'] = (e['end'][0] + dx, e['end'][1])
+
+
 def _shift_title_space(nodes, edges, labels, shapes, dy) -> None:
     """所有元素整体下移 dy，让出顶部标题空间（title 非空时由 expand 调用）。
 

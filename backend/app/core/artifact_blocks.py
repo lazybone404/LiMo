@@ -36,7 +36,7 @@ PROTOCOL_VERSION = "v1"
 
 #: **产物侧**（预览 / HTML / Word 导出）真写了渲染分支的块类型。
 #:
-#: ⚠️ 这六种在预览侧**全部是纯 CSS 形态**（`styles/blocks.css`），产物侧刻意不做 DOM
+#: ⚠️ 这些类型在预览侧**全部是纯 CSS 形态**（`styles/blocks.css`），产物侧刻意不做 DOM
 #: 结构分派 —— 那份 CSS 同时是导出侧读的单一真相源，而导出 HTML 由本模块的
 #: `render_blocks_html` 生成。Python 这边**对所有 type 一视同仁**地包 `md-block`
 #: （见 `render_blocks_html`），形态差异全留给 CSS。
@@ -48,15 +48,40 @@ PROTOCOL_VERSION = "v1"
 #: 产物，预览（React）与导出（`markdown_render.py`）两侧同构 —— 故仍是纯 CSS，
 #: 不需要 Python 侧任何分支。
 #:
-#: ⚠️ `table` / `code` / `image`（2026-10-11 补）与上面六个**性质不同族**：前六个
-#: 标记的是**普通段落**（「这一段文字是什么性质」），块内原本就是散文；这三个标记的
-#: 是**富内容** —— 表格 / 代码块 / 图片本来就与正文不同质，加标记的全部作用就是外面
-#: 多一层壳，块内一个字节都不动。⚠️ 导出侧对本族**也同样零分支**：`render_blocks_html`
+#: ⚠️ `cycle`（2026-10-20 补）是同一判据的第三个成员，但方向不同：它替代的**不是**
+#: 某张图，而是「模型想表达循环关系时的唯一可用出口」。图表管道从来就没有环形算子
+#: （`_LAYOUTS` 十个：hchain/layers/timeline/grid/branch/tree/flowchart/state/
+#: sequence/quadrant），而 `flowchart` 遇环直接抛错、`state` 只适合带状态的迁移图
+#: —— 于是模型表达「A→B→C→A」时只能硬套 `state`，层级一深就撞 `nrow > 7` 的硬上限
+#: （实测失败产物里 2 条正是这个）。`cycle` 把这条路变成**填空**：模型只写「有哪几个
+#: 环节、顺序如何」（有序列表），环形布局由 `blocks.css` 的 `:nth-child` 角度档算，
+#: 节点坐标、圆环半径、连接全部不经模型之手 —— 与图表管道的「只教语义、坐标由后端算」
+#: 是同一条纪律，只是这次连后端都不用，纯 CSS 就够。
+#: ⚠️ 块内仍是**有序列表**（`<ol>`），与 `timeline` 同形态、同归零出口 —— 但两者
+#: **语义不同、不能互替**：`timeline` 是一条有始有终的线，`cycle` 是首尾相接的环。
+#: 模型写错类型时降级形态相同（普通列表），区别只在「读起来是否成立」。
+#:
+#: ⚠️ `sequence` / `quadrant`（2026-10-20 补）是「用卡片代替画图」这条判据的第四、五个
+#: 成员 —— 与 `steps` / `timeline` / `cycle` 同一批思路：图表管道里那两种布局（多参与者
+#: 消息往来、二维四象限）的关系，Markdown 结构本身就能保真表达，不值得付一整条渲染链。
+#:   · `sequence` 的骨架也是**有序列表**（按发生顺序），每项以 `**发送方 → 接收方**：`
+#:     开头 —— 方向由文字承担，故它仍是纯 CSS（与 `timeline` 同出口：块内是 `<ol>`）。
+#:     它**不是**生命线时序图：参与者列位需要结构分派，而那会打破「形态差异全在 CSS」
+#:     这条纪律（`blocks.css` 同时是导出侧读的单一真相源）。
+#:   · `quadrant` 的骨架仍是**有序列表**，恰好 4 项、顺序固定为左上 / 右上 / 左下 / 右下
+#:     （与 `chart_layout` 的 `quadrant` 算子同序）。CSS 把它排成 2×2 网格。
+#: ⚠️ 两者的**算子都还在** `chart_layout` 的 `_LAYOUTS` 里 —— 删的是 prompt 引导，
+#: 不是能力（同 `hchain` / `timeline` 的先例，历史产物与手工调用不受影响）。
+#:
+#: ⚠️ `table` / `code` / `image`（2026-10-11 补）与上面九个**性质不同族**：那九个
+#: 标记的是**普通段落**（「这一段文字是什么性质」），块内原本就是散文 / 列表；这三个
+#: 标记的是**富内容** —— 表格 / 代码块 / 图片本来就与正文不同质，加标记的全部作用就是
+#: 外面多一层壳，块内一个字节都不动。⚠️ 导出侧对本族**也同样零分支**：`render_blocks_html`
 #: 一视同仁地包 `md-block`，块内的 `<table>` / `<pre><code>` / `<img>` 由各自的渲染
 #: 路径产出，与「有没有标记」无关。
 ARTIFACT_BLOCK_TYPES = frozenset(
-    {"key-takeaway", "alert", "recommend", "metric", "steps", "timeline",
-     "table", "code", "image"}
+    {"key-takeaway", "alert", "recommend", "metric", "steps", "timeline", "cycle",
+     "sequence", "quadrant", "table", "code", "image"}
 )
 
 #: **对话侧**（前端 `ai-chat/ChatMarkerContent.tsx`）真写了渲染分支的块类型。
@@ -77,7 +102,7 @@ CHAT_BLOCK_TYPES = frozenset(
 #: ① 那个集合被 `test_block_prompt.py` 遍历断言「每个 type 都出现在
 #:    `get_markdown_block_format()` 里」，加进去就得把证据规范写进**单篇笔记**的提示词
 #:    —— 而证据块只属于多篇合成（单篇材料没有「跨文档分歧」可写）；
-#: ② 那 9 种是**产物侧通用**的（任何产物都可能出现），证据块是**合成形态契约**的一部分，
+#: ② 那 10 种是**产物侧通用**的（任何产物都可能出现），证据块是**合成形态契约**的一部分，
 #:    归属不同的产品边界。拆开后「协议知道」与「某侧实现了」仍然分得开。
 SYNTHESIS_BLOCK_TYPES = frozenset({"evidence"})
 
@@ -437,7 +462,7 @@ def linearize_evidence(md: str) -> str:
             in_ev = True
             ev_lines = []
             continue
-        # ⚠️ 其余标记行（另外九种块、`card` 节修饰符、未知版本）**原样保留** ——
+        # ⚠️ 其余标记行（产物侧其余块、`card` 节修饰符、未知版本）**原样保留** ——
         # 它们要照常走 `render_blocks_html` 的块渲染，这里只消解证据块。
         out.append(raw)
 

@@ -7,6 +7,7 @@ import { BASE_OPTIONS } from '../../lib/theme-base'
 import { PARA_STYLE_OPTIONS, LINE_HEIGHT_RANGE, MEASURE_RANGE, MEASURE_DEFAULT_ON, FONT_SCALE_RANGE, READING_DEFAULTS } from '../../lib/reading-prefs'
 import { SKELETON_OPTIONS, CARD_STYLE_OPTIONS, CARD_BG_OPTIONS, CARD_BORDER_OPTIONS, isLiftDisabled } from '../../lib/card-prefs'
 import { LAYOUT_OPTIONS } from '../../lib/layout-prefs'
+import { useChatPrefs, saveChatPrefs, ANSWER_MODE_OPTIONS } from '../../lib/chat-prefs'
 import { THEME_PRESETS } from '../../lib/theme-presets'
 import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette, Puzzle } from 'lucide-react'
 import { ProviderSettings } from './ProviderSettings'
@@ -101,6 +102,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const setLayout = useStore(s => s.setLayout)
   const exportPrefs = useStore(s => s.exportPrefs)
   const setExportPrefs = useStore(s => s.setExportPrefs)
+  // 对话侧三项偏好 —— 与输入框里的按钮**同一份状态**（订阅，不是各存一份初值）
+  const chatPrefs = useChatPrefs()
   const applyPreset = useStore(s => s.applyPreset)
   const [intensity, setIntensity] = useState(getSavedIntensity())
 
@@ -224,9 +227,12 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
             </div>
           </div>
         ) : (
-        <div className="max-w-3xl mx-auto px-8 py-10">
-          {/* 标题 + 保存按钮 */}
-          <div className="flex items-center justify-between mb-8">
+        <div className="max-w-3xl mx-auto px-8 pb-10">
+          {/* 标题 + 保存按钮 —— **吸顶**（2026-10-20 用户反馈「要保存得滚回顶部」）。
+              ⚠️ 用不透明 `bg-surface` 而不是 `backdrop-blur`：`backdrop-filter` 会**创建包含块**，
+              把 `fixed` 后代锁进这条 60px 高的横条里（模式 #67，文档库那边已踩过）。
+              ⚠️ `-mx-8 px-8` 只是为了底色铺满内容宽度，不改变内容对齐。 */}
+          <div className="sticky top-0 z-10 -mx-8 mb-6 flex items-center justify-between border-b border-border-light bg-surface px-8 pb-4 pt-6">
             <div>
               <h1 className="text-[28px] font-semibold">
                 {MENU.find(m => m.key === tab)?.label || '设置'}
@@ -304,6 +310,75 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
           {/* 外观 */}
           {tab === 'appearance' && (
             <div className="space-y-6">
+              {/* ── 主题 ──────────────────────────────────────────────────────
+                  2026-10-20 重排（用户：「外观设置的各种设置的排布你可以优化一下」）：
+                  「推荐搭配」**从最底部提到最前** —— 它是这类页面最常见的第一个动作
+                  （「换个好看的」），此前要滚过五张卡才看得到。20 套预设同时由 2 列大卡
+                  改成 4 列小卡（每组一行），总高约减半，滚动距离随之缩短。
+                  分组标题只是**视觉上的两段**，不新增导航层级。 */}
+              <h3 className="text-[11px] font-medium text-disabled uppercase tracking-wide -mb-2">主题</h3>
+
+              {/* 推荐搭配 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-4">
+                <div>
+                  <label className="text-[15px] font-medium mb-1 block">推荐搭配</label>
+                  <p className="text-[12px] text-muted mb-4">
+                    一键设定全局基调、配色、纹理和字体；下面各轴也可以单独微调
+                  </p>
+                  {(() => {
+                    const renderCard = (p: typeof THEME_PRESETS[number]) => {
+                      const fontLabel = FONT_OPTIONS.find(f => f.key === p.font)
+                      const textureLabel = TEXTURE_OPTIONS.find(t => t.key === p.texture)
+                      // 三轴属性挂在卡片自己身上（与设置页各色卡同款），色值一律 `var()` ——
+                      // 这个文件里**一个色值都不许再写**（2026-10-16 档 A）。
+                      // ⚠️ 4 列布局下「圆点 + 文字」只能竖排（横排在 ~150px 宽里会挤成两行）；
+                      // 文字用 span + `truncate` 而不是 div —— button 的内容模型是 phrasing
+                      // content，能不用块级元素就不用。
+                      return (
+                        <button
+                          key={p.name}
+                          onClick={() => applyPreset(p.name)}
+                          data-texture={p.texture}
+                          data-base={p.base}
+                          data-accent={p.accent}
+                          data-font={p.font}
+                          title={`${p.label} · ${fontLabel?.label || p.font} · ${textureLabel?.label || p.texture}`}
+                          className="tex-card flex flex-col items-center gap-2 p-3 rounded-xl transition-all border border-border-light overflow-hidden relative hover:brightness-[0.97]"
+                        >
+                          <span
+                            className="shrink-0 relative z-10 block w-9 h-9 rounded-full border-2 border-border-light"
+                            style={{
+                              backgroundImage: 'conic-gradient(var(--tk-accent) 0deg 180deg, var(--tk-surface) 180deg 360deg)',
+                            }}
+                          />
+                          <span className="min-w-0 w-full relative z-10">
+                            <span className="text-[12.5px] font-medium block truncate" style={{ fontFamily: 'var(--font-reading, inherit)' }}>{p.label}</span>
+                            <span className="text-[10px] text-dimmed block truncate mt-0.5">
+                              {fontLabel?.label || p.font} · {textureLabel?.label || p.texture}
+                            </span>
+                          </span>
+                        </button>
+                      )
+                    }
+                    const groups = [
+                      { label: '护眼', presets: ['roulv', 'nuanyang', 'zhenzhu', 'bohe'] },
+                      { label: '经典', presets: ['shuxiang', 'jianjing', 'fugu', 'qingzhu'] },
+                      { label: '粉色', presets: ['yingchui', 'taoyao', 'dingxiang', 'mudan'] },
+                      { label: '雅致', presets: ['songyan', 'tanxiang', 'yunxiu', 'shazhou'] },
+                      { label: '国风', presets: ['zhusha', 'dianlan', 'mailang', 'meigui'] },
+                    ]
+                    return groups.map(g => (
+                      <div key={g.label}>
+                        <span className="text-[11px] font-medium text-disabled uppercase tracking-wide block mb-2">{g.label}</span>
+                        <div className="grid grid-cols-4 gap-2">
+                          {g.presets.map(name => renderCard(THEME_PRESETS.find(p => p.name === name)!))}
+                        </div>
+                      </div>
+                    ))
+                  })()}
+                </div>
+              </div>
+
               {/* 界面基调 */}
               <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
                 <div>
@@ -343,8 +418,11 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                 </div>
               </div>
 
-              {/* 主色调 */}
-              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
+              {/* 主色调 —— 与「界面基调」「背景纹理」并列的内容轴。
+                  ⚠️ 2026-10-20 重排前，背景纹理与阅读字体都**塞在这张卡里**、只靠内部
+                  小标题分隔，卡片边界和视觉层级都对不上（「纹理」看起来像主色调的子项）。
+                  现在一轴一卡，卡标题就是那条轴的名字。 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6">
                 <div>
                   <label className="text-[15px] font-medium mb-1 block">主色调</label>
                   <p className="text-[12px] text-muted mb-5">
@@ -392,8 +470,10 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                     </div>
                   ))}
                 </div>
+              </div>
 
-                {/* 背景纹理 */}
+              {/* 背景纹理 —— 独立卡（原本住在「主色调」卡里，见上） */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6">
                 <div>
                   <label className="text-[15px] font-medium mb-1 block">背景纹理</label>
                   <p className="text-[12px] text-muted mb-5">
@@ -467,11 +547,25 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                     </div>
                   )}
                 </div>
+              </div>
 
-                {/* 阅读字体 */}
+              {/* ── 阅读与产物 ────────────────────────────────────────────
+                  「阅读字体」原本住在「主色调」卡里、「阅读版式」是独立卡 —— 同一件
+                  事的两半分居两处。现在合一张卡：字体是「用什么字」，版式是「怎么排」，
+                  调其中一项时另一项就在手边。 */}
+              <h3 className="text-[11px] font-medium text-disabled uppercase tracking-wide -mb-2 pt-2">阅读与产物</h3>
+
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
                 <div>
-                  <label className="text-[15px] font-medium mb-1 block">阅读字体</label>
-                  <p className="text-[12px] text-muted mb-4">
+                  <label className="text-[15px] font-medium mb-1 block">阅读</label>
+                  <p className="text-[12px] text-muted">
+                    预览区正文用什么字、怎么排 —— 两项都只影响阅读区，不改界面与产物
+                  </p>
+                </div>
+
+                <div>
+                  <div className="text-[13px] font-medium mb-2">阅读字体</div>
+                  <p className="text-[12px] text-muted mb-3">
                     选择 Markdown 预览区的正文字体。web 字体会在首次使用时加载
                   </p>
                   <div className="space-y-1">
@@ -496,41 +590,15 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                     })}
                   </div>
                 </div>
-              </div>
 
-              {/* 侧栏布局 —— 左侧面板是互斥切换还是允许并排。
-                  ⚠️ 与「阅读版式」的「默认即现状」**相反**：这里默认互斥是**有意的默认
-                  变更**（2026-10-10 用户拍板），所以必须给一条随时改回去的路，而不是
-                  让不习惯的人只能去改 localStorage。 */}
-              <div className="bg-elevated rounded-xl border border-border-light p-6">
-                <label className="text-[15px] font-medium mb-1 block">侧栏布局</label>
-                <p className="text-[12px] text-muted mb-4">
-                  左侧面板（生成 / 文档库）的展开方式。入口是最左边的活动栏图标
-                </p>
-                <div className="space-y-1">
-                  {LAYOUT_OPTIONS.map(o => {
-                    const selected = layout.leftPanelsExclusive === o.key
-                    return (
-                      <button
-                        key={String(o.key)}
-                        onClick={() => setLayout({ leftPanelsExclusive: o.key })}
-                        className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors ${selected ? 'bg-accent/10' : 'hover:bg-surface-hover'}`}
-                      >
-                        <div className={`text-[14px] ${selected ? 'text-accent font-medium' : 'text-dimmed'}`}>{o.label}</div>
-                        <div className="text-[11px] text-disabled mt-0.5">{o.hint}</div>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-
-              {/* 阅读版式 — 沉浸阅读的「纸感」实质（行高 / 每行字数 / 段落区隔）。
-                  ⚠️ 刻意做成独立卡片、且**不进「推荐搭配」主题包**：版式关乎阅读生理，
-                  不该被「换一个主题包」连带重置。默认值全部等于改造前的现状，
-                  所以「不动它」= 零变化（见 lib/reading-prefs.ts 的注释）。 */}
-              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
+              {/* 阅读版式 —— 沉浸阅读的「纸感」实质（行高 / 每行字数 / 段落区隔），
+                  与上面的阅读字体同卡：一个管「用什么字」，一个管「怎么排」。
+                  ⚠️ 仍**不进「推荐搭配」主题包**：版式关乎阅读生理，不该被「换一个
+                  主题包」连带重置。默认值全部等于改造前的现状，所以「不动它」= 零变化
+                  （见 lib/reading-prefs.ts 的注释）。 */}
+              <div className="pt-5 border-t border-border-light">
                 <div>
-                  <label className="text-[15px] font-medium mb-1 block">阅读版式</label>
+                  <div className="text-[13px] font-medium mb-2">阅读版式</div>
                   <p className="text-[12px] text-muted mb-4">
                     调整 Markdown 预览区的正文排版。默认与改造前一致，按需微调即可
                   </p>
@@ -659,16 +727,24 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                   </div>
                 </div>
               </div>
+              </div>
 
-              {/* 产物骨架 + 卡片视觉方案 —— 与「阅读版式」同族的独立卡片，
+              {/* 产物版式（骨架 + 卡片方案 + 内容块装饰）—— 与「阅读版式」同族，
                   **刻意不进「推荐搭配」主题包**（换主题包不该把产物骨架连带重置）。
-                  默认 skeleton='paper' = 改造前逐像素一致（见 lib/card-prefs.ts）。 */}
+                  默认 skeleton='paper' = 改造前逐像素一致（见 lib/card-prefs.ts）。
+                  ⚠️ 「内容块装饰」2026-10-20 起并入本卡（原先是独立卡）：卡名从「产物骨架」
+                  改成「产物版式」之后，它与骨架/卡片明确同族。此前分住两卡的理由是
+                  「塞进骨架卡片会暗示它只对卡片生效」—— 那个歧义来自卡名只写了「骨架」。 */}
               <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
                 <div>
-                  <label className="text-[15px] font-medium mb-1 block">产物骨架</label>
-                  <p className="text-[12px] text-muted mb-4">
-                    笔记、整理版原文的排版方式。默认「整篇」与改造前完全一致
+                  <label className="text-[15px] font-medium mb-1 block">产物版式</label>
+                  <p className="text-[12px] text-muted">
+                    笔记、整理版原文的排版方式与内容块装饰。默认与改造前完全一致
                   </p>
+                </div>
+
+                <div>
+                  <div className="text-[13px] font-medium mb-2">产物骨架</div>
                   <div className="space-y-1">
                     {SKELETON_OPTIONS.map(o => {
                       const selected = skeleton === o.key
@@ -795,17 +871,15 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                     </div>
                   </div>
                 )}
-              </div>
 
-              {/* 产物语义标记的装饰开关 —— 与「产物骨架」并列而**不塞进去**：
-                  标记块与骨架轴正交（「整篇」下它也在正文流里），塞进骨架卡片会
-                  暗示它只对卡片生效。默认开启 = 与改造前一致（那边根本没有块）。
-                  ⚠️ 2026-10-11 起射程含**内容卡片族**（表格 / 代码 / 图片）—— 关掉后
-                  它们还原成「没包过围栏」的排版，这正是用户要的「保留原来的形式」。 */}
-              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-4">
-                <div>
-                  <label className="text-[15px] font-medium mb-1 block">内容块装饰</label>
-                  <p className="text-[12px] text-muted mb-4">
+                {/* 内容块装饰 —— 与骨架/卡片同属「产物怎么呈现」，但**与骨架轴正交**
+                    （「整篇」下它也在正文流里），故是同一张卡里的一节、不是骨架的子项。
+                    默认开启 = 与改造前一致（那边根本没有块）。
+                    ⚠️ 2026-10-11 起射程含**内容卡片族**（表格 / 代码 / 图片）—— 关掉后
+                    它们还原成「没包过围栏」的排版，这正是用户要的「保留原来的形式」。 */}
+                <div className="pt-5 border-t border-border-light">
+                  <div className="text-[13px] font-medium mb-2">内容块装饰</div>
+                  <p className="text-[12px] text-muted mb-3">
                     模型在笔记里标出的重点、提醒、指标等段落，以及对照表、代码、图片，
                     显示成带装饰的块
                   </p>
@@ -826,64 +900,37 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                 </div>
               </div>
 
-              {/* 推荐搭配 */}
-              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
-                <div>
-                  <label className="text-[15px] font-medium mb-1 block">推荐搭配</label>
-                  <p className="text-[12px] text-muted mb-4">
-                    一键设定全局基调、配色、纹理和字体，也可单独微调
-                  </p>
-                  {(() => {
-                    const renderCard = (p: typeof THEME_PRESETS[number]) => {
-                      const fontLabel = FONT_OPTIONS.find(f => f.key === p.font)
-                      const textureLabel = TEXTURE_OPTIONS.find(t => t.key === p.texture)
-                      // 三轴属性挂在卡片自己身上（与设置页各色卡同款），色值一律 `var()` ——
-                      // 这个文件里**一个色值都不许再写**（2026-10-16 档 A）。
-                      return (
-                        <button
-                          key={p.name}
-                          onClick={() => applyPreset(p.name)}
-                          data-texture={p.texture}
-                          data-base={p.base}
-                          data-accent={p.accent}
-                          data-font={p.font}
-                          className="tex-card flex items-center gap-4 p-4 rounded-xl transition-all border border-border-light text-left overflow-hidden relative hover:brightness-[0.97]"
-                        >
-                          <div className="shrink-0 relative z-10">
-                            <div
-                              className="w-12 h-12 rounded-full border-2 border-border-light"
-                              style={{
-                                backgroundImage: 'conic-gradient(var(--tk-accent) 0deg 180deg, var(--tk-surface) 180deg 360deg)',
-                              }}
-                            />
-                          </div>
-                          <div className="min-w-0 relative z-10">
-                            <span className="text-[15px] font-medium block" style={{ fontFamily: 'var(--font-reading, inherit)' }}>{p.label}</span>
-                            <span className="text-[11px] text-dimmed block leading-relaxed">
-                              {fontLabel?.label || p.font} · {textureLabel?.label || p.texture}
-                            </span>
-                          </div>
-                        </button>
-                      )
-                    }
-                    const groups = [
-                      { label: '护眼', presets: ['roulv', 'nuanyang', 'zhenzhu', 'bohe'] },
-                      { label: '经典', presets: ['shuxiang', 'jianjing', 'fugu', 'qingzhu'] },
-                      { label: '粉色', presets: ['yingchui', 'taoyao', 'dingxiang', 'mudan'] },
-                      { label: '雅致', presets: ['songyan', 'tanxiang', 'yunxiu', 'shazhou'] },
-                      { label: '国风', presets: ['zhusha', 'dianlan', 'mailang', 'meigui'] },
-                    ]
-                    return groups.map(g => (
-                      <div key={g.label}>
-                        <span className="text-[11px] font-medium text-disabled uppercase tracking-wide block mb-2">{g.label}</span>
-                        <div className="grid grid-cols-2 gap-3">
-                          {g.presets.map(name => renderCard(THEME_PRESETS.find(p => p.name === name)!))}
-                        </div>
-                      </div>
-                    ))
-                  })()}
+              {/* ── 界面 ──────────────────────────────────────────────────
+                  与正文观感无关的界面结构选项放最后：它最少改，混在主题轴里
+                  只会让「找个好看的配色」这件事多绕两道。 */}
+              <h3 className="text-[11px] font-medium text-disabled uppercase tracking-wide -mb-2 pt-2">界面</h3>
+
+              {/* 侧栏布局 —— 左侧面板是互斥切换还是允许并排。
+                  ⚠️ 与「阅读版式」的「默认即现状」**相反**：这里默认互斥是**有意的默认
+                  变更**（2026-10-10 用户拍板），所以必须给一条随时改回去的路，而不是
+                  让不习惯的人只能去改 localStorage。 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6">
+                <label className="text-[15px] font-medium mb-1 block">侧栏布局</label>
+                <p className="text-[12px] text-muted mb-4">
+                  左侧面板（生成 / 文档库）的展开方式。入口是最左边的活动栏图标
+                </p>
+                <div className="space-y-1">
+                  {LAYOUT_OPTIONS.map(o => {
+                    const selected = layout.leftPanelsExclusive === o.key
+                    return (
+                      <button
+                        key={String(o.key)}
+                        onClick={() => setLayout({ leftPanelsExclusive: o.key })}
+                        className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors ${selected ? 'bg-accent/10' : 'hover:bg-surface-hover'}`}
+                      >
+                        <div className={`text-[14px] ${selected ? 'text-accent font-medium' : 'text-dimmed'}`}>{o.label}</div>
+                        <div className="text-[11px] text-disabled mt-0.5">{o.hint}</div>
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
+
             </div>
           )}
 
@@ -919,6 +966,63 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                     </span>
                   </span>
                 </label>
+              </div>
+
+              {/* AI 对话偏好 —— ⚠️ 与输入框里那三个按钮**同一份状态**（`lib/chat-prefs.ts`
+                  的订阅）：在这改，已经打开的输入框会立刻跟着变。三项都是本机偏好、
+                  即时生效、不进 config.yaml（同上面「导出行为」那一张卡的性质）。 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
+                <p className="text-[13px] text-muted">
+                  AI 对话（改动立即生效）。输入框里也有同样的开关，两边是同一份设置。
+                </p>
+
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input type="checkbox" checked={chatPrefs.webSearch}
+                    onChange={e => saveChatPrefs({ webSearch: e.target.checked })}
+                    className="mt-1 w-4 h-4 accent-accent shrink-0" />
+                  <span>
+                    <span className="text-[15px] font-medium block">允许联网</span>
+                    <span className="text-[12px] text-muted block mt-1 leading-relaxed">
+                      开启后，AI 在文档不够时可以搜索互联网、打开外部链接（搜到的东西会在回答的工具气泡里列出链接）。
+                      关闭则只能使用你导入的文档。
+                    </span>
+                  </span>
+                </label>
+
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input type="checkbox" checked={chatPrefs.followUp}
+                    onChange={e => saveChatPrefs({ followUp: e.target.checked })}
+                    className="mt-1 w-4 h-4 accent-accent shrink-0" />
+                  <span>
+                    <span className="text-[15px] font-medium block">追问建议</span>
+                    <span className="text-[12px] text-muted block mt-1 leading-relaxed">
+                      开启后，每轮回答末尾给出 4～6 个可以接着问的问题，点一下就发送。
+                    </span>
+                  </span>
+                </label>
+
+                <div>
+                  <span className="text-[15px] font-medium block">回答依据</span>
+                  <span className="text-[12px] text-muted block mt-1 mb-2 leading-relaxed">
+                    决定 AI 在知识库里找不到答案时怎么办 —— 这是三档唯一的区别。
+                  </span>
+                  <div className="space-y-1">
+                    {ANSWER_MODE_OPTIONS.map(o => (
+                      <label key={o.key}
+                        className={`flex items-start gap-3 cursor-pointer rounded-lg px-2 py-1.5 transition-colors hover:bg-surface-hover ${chatPrefs.answerMode === o.key ? 'bg-accent/5' : ''}`}>
+                        <input type="radio" name="chatAnswerMode" checked={chatPrefs.answerMode === o.key}
+                          onChange={() => saveChatPrefs({ answerMode: o.key })}
+                          className="mt-1 w-4 h-4 accent-accent shrink-0" />
+                        <span>
+                          <span className={`text-[13px] block ${chatPrefs.answerMode === o.key ? 'text-accent font-medium' : 'text-dimmed'}`}>
+                            {o.label}
+                          </span>
+                          <span className="text-[12px] text-muted block leading-relaxed">{o.desc}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           )}

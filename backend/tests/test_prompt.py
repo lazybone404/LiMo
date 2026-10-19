@@ -269,10 +269,12 @@ assert '```chart' not in cf, '不应再引导手写 SVG 的 chart 围栏'
 # 算子**仍在** `chart_layout`（历史产物、插件、将来别的入口照样能渲染），只是从 prompt
 # 里删了引导 —— 单链的线性关系改由语义块 `steps` / `timeline` 承担，而语义块规范是
 # **无条件注入**的，两边都教就是互斥指令。故这里维护的名单是**引导名单**，不是算子名单。
-_NOT_EXPOSED = {'branch', 'hchain', 'timeline'}
+# ⚠️ **2026-10-20 起再撤四种引导**（层级 / 分类 / 消息流 / 二维评估 → 嵌套列表与新语义块）：
+# 判据统一为「**文本结构能否保真表达这个关系**」，不是复杂度也不是垂直/水平。
+_NOT_EXPOSED = {'branch', 'hchain', 'timeline', 'layers', 'tree', 'sequence', 'quadrant'}
 _exposed = [lay for lay in _LAYOUTS if lay not in _NOT_EXPOSED]
-assert len(_exposed) == 7, f'引导给模型的布局应为 7 种，实际 {_exposed}'
-assert '七种结构' in cf, 'prompt 的「七种结构」文案须与引导规模同步'
+assert len(_exposed) == 3, f'引导给模型的布局应为 3 种，实际 {_exposed}'
+assert '三种结构' in cf, 'prompt 的「三种结构」文案须与引导规模同步'
 for lay in _exposed:
     assert f'"{lay}"' in cf, f'缺少 layout {lay} 的说明'
 assert '"branch"' not in cf, 'branch 已实现但不暴露给模型（防用上未文档化算子）'
@@ -282,9 +284,17 @@ assert '"branch"' not in cf, 'branch 已实现但不暴露给模型（防用上�
 # 有区分力 —— 这是「判据得自证能区分」的一个实例。
 assert '"hchain"' not in cf, 'hchain 引导已删（线性流程改走语义块 steps）'
 assert '"timeline"' not in cf, 'timeline 引导已删（先后阶段改走语义块 timeline）'
+assert '"layers"' not in cf, 'layers 引导已删（分层/包含用嵌套列表）'
+assert '"tree"' not in cf, 'tree 引导已删（分类/目录用嵌套列表）'
+assert '"sequence"' not in cf, 'sequence 引导已删（消息流改走语义块 sequence）'
+assert '"quadrant"' not in cf, 'quadrant 引导已删（四格评估改走语义块 quadrant）'
 assert 'steps' in cf and '不要画图' in cf, '删了引导必须补指路语（否则模型两头都不知道该用哪个）'
-# 自证：删的是**引导**不是**能力** —— 两个算子在 `_LAYOUTS` 里必须仍然健在
-assert 'hchain' in _LAYOUTS and 'timeline' in _LAYOUTS, '移除的是引导，不是算子能力'
+# 自证：删的是**引导**不是**能力** —— 被撤的算子在 `_LAYOUTS` 里必须仍然健在
+for _lay in ('hchain', 'timeline', 'layers', 'tree', 'sequence', 'quadrant'):
+    assert _lay in _LAYOUTS, f'{_lay} 移除的是引导，不是算子能力'
+# 五种「用列表代替画图」的出口必须在指路语里点名（否则撤了引导却没给出路）
+for _alt in ('steps', 'timeline', 'cycle', 'sequence', 'quadrant'):
+    assert _alt in cf, f'指路语未提 {_alt}，撤掉引导后模型没有出口'
 assert '1~N' in cf, '应说明可输出多张（1~N）'
 assert '禁止输出坐标' in cf, '应禁止模型自写坐标'
 assert '不需要写任何坐标' in cf, '应明确减负：不写坐标/尺寸/SVG'
@@ -292,17 +302,18 @@ assert '不适合图表化' in cf, '逃生口必须保留（chart_missing 的 _j
 assert '#f5f5f5' not in cf and '#2d3142' not in cf, 'skin 由 chart_svg 固定，不该再教模型配色'
 assert '<svg' not in cf, 'prompt 里不该再出现 SVG 教学样板'
 assert '拆成多个围栏' in cf, '节点超限要引导拆图（多图触发条件）'
-assert '字符串 id' in cf, 'flowchart/state/sequence 用 id 引用是它们最易写错的点，必须点名'
+assert '字符串 id' in cf, 'flowchart/state 用 id 引用是它们最易写错的点，必须点名'
 # 来源引导按 source_type 分流，且落到具体 layout 建议
-assert 'grid' in get_chart_format('pdf') or 'layers' in get_chart_format('pdf')
+assert 'flowchart' in get_chart_format('pdf')
 assert 'flowchart' in get_chart_format('webpage')
-assert 'sequence' in get_chart_format('video')
-# 被删的两种在**来源引导段**里也不能残留 —— 那是同一件事的第二个落点，
+assert 'state' in get_chart_format('video')
+# 被撤的六种在**来源引导段**里也不能残留 —— 那是同一件事的第二个落点，
 # 只改 base 不动 diff 就是「删了一处留了一处」，而 diff 段短、最容易被跳过。
 for _st in ('video', 'webpage', 'pdf', 'text', 'link'):
-    assert '"hchain"' not in get_chart_format(_st), f'来源引导 {_st} 仍推荐 hchain'
-    assert '"timeline"' not in get_chart_format(_st), f'来源引导 {_st} 仍推荐 timeline'
-print(f'PASS: get_chart_format — fig 协议 / {len(_exposed)} 种 layout 引导 / 1~N / 禁坐标 / 无 branch·hchain·timeline')
+    _cf = get_chart_format(_st)
+    for _lay in ('hchain', 'timeline', 'layers', 'tree', 'sequence', 'quadrant'):
+        assert f'"{_lay}"' not in _cf, f'来源引导 {_st} 仍推荐 layout {_lay}'
+print(f'PASS: get_chart_format — fig 协议 / {len(_exposed)} 种 layout 引导 / 1~N / 禁坐标 / 无 branch 与六种已撤布局')
 
 # 两条围栏路径都在 _ALL_FORMAT_FNS 里挂着（chart 是 format key，与围栏名同源）
 assert 'chart' in _ALL_FORMAT_FNS, 'chart 格式函数应已注册'

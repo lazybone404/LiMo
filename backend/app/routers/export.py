@@ -253,7 +253,7 @@ async def export_content(
     # ⚠️ **必须排在 `_strip_blocks` 与 `render_blocks_html` 之前**：反过来的话围栏
     # 已被剥掉，附录永远不生成 —— 而两条链都「跑成功了」，零报错。
     # ⚠️ 无证据块时原样返回 `content`（连 CRLF 都不动）⇒ 逐字节零回归。
-    # ⚠️ 只消解 evidence，其余九种块仍原样交给下面各自的渲染路径。
+    # ⚠️ 只消解 evidence，其余块仍原样交给下面各自的渲染路径。
     content = _linearize_evidence(content)
 
     # 骨架轴 / 卡片视觉方案 —— **HTML 与 Word 两条链共用**，故读在分支之前。

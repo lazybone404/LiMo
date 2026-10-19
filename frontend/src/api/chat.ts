@@ -4,6 +4,7 @@
 import { apiFetch, getErrorMessage, BASE, type ChatResult } from './core'
 import { parseSSEStream } from './sse'
 import { toChatSources, type ChatSource } from '../lib/chat-sources'
+import type { AnswerMode } from '../lib/chat-prefs'
 
 // -- chat --
 
@@ -71,6 +72,12 @@ export interface StreamChatOptions {
    * **参数只在偏离默认时才发出去**（少一个参数是「与改造前逐字相同」里可被断言的那种）。
    */
   webSearch?: boolean
+  /**
+   * 「回答依据」。**只有 `free` / `open` 才带参数** —— `strict` 是默认（改造前的行为），
+   * 不带参数就是「与改造前逐字相同」（同 `webSearch` 的同一条纪律，方向也一致：
+   * 默认档不发参数）。
+   */
+  answerMode?: AnswerMode
 }
 
 export function streamChat(
@@ -79,7 +86,7 @@ export function streamChat(
   callbacks: StreamChatCallbacks,
   options: StreamChatOptions = {},
 ): void {
-  const { signal, conversationId, docRefs, followUp, webSearch } = options
+  const { signal, conversationId, docRefs, followUp, webSearch, answerMode } = options
   const params = new URLSearchParams({ question })
   if (docIds.length > 0) params.set('doc_ids', docIds.join(','))
   if (conversationId) params.set('conversation_id', conversationId)
@@ -90,6 +97,9 @@ export function streamChat(
   // ⚠️ 同理但方向相反：**开着**（＝默认）时根本不设参数，只有 `false` 才带 `=0`。
   // `undefined` 视为默认（开）—— 与后端 `Query(1)` 同源，别写成 `if (!webSearch)`。
   if (webSearch === false) params.set('web_search', '0')
+  // ⚠️ 与上面同一条纪律：默认档（`strict`）**根本不设这个参数**。
+  // 写成 `answer_mode=strict` 与不写是同一件事，而少一个参数是可被断言的形式。
+  if (answerMode && answerMode !== 'strict') params.set('answer_mode', answerMode)
 
   // 追踪 SSE 是否正常结束（收到 done/error）— 对齐 generate.ts。
   // 断连时 onDone/onError 都不会触发，若不追踪则聊天 UI 永久卡加载

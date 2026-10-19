@@ -2,7 +2,8 @@
 
 > 完整记录项目中所有 LLM 提示词，供审视和优化。
 > 生成日期：2026-07-15
-> 最后更新：2026-10-18（§13 版本 `"15"` → `"16"` —— **多篇合成形态契约 + 证据块**：骨架按读者意图分派五套（综合文章 / 观点综合 / 比较简报 / 争议分析 / 决策与行动简报），每套带「材料不支持该形态」的降级出口；新增四条通用规则与 `type="evidence"` 证据块规范（紧跟论断、不写编号）；共用尾去掉「读者问题」硬引用。⚠️ 只影响 `build_synthesis_prompt`，单篇笔记零变化）
+> 最后更新：2026-10-20（§13 版本 `"16"` → `"18"` —— **图表引导 7 → 3 + 语义块补 `sequence` / `quadrant`**：判据统一为「**文本结构能否保真表达这个关系**」，`layers`/`tree` 改走嵌套列表、`sequence`/`quadrant` 改走新块；同批删掉 `layouts.py` 两条写死的层数闸门（它们在缩放链之前抛错，8 层纯矩形被人为判死）。此前 `"17"`：新增 `cycle` 环形块）
+> 此前 2026-10-18（§13 版本 `"15"` → `"16"` —— **多篇合成形态契约 + 证据块**：骨架按读者意图分派五套（综合文章 / 观点综合 / 比较简报 / 争议分析 / 决策与行动简报），每套带「材料不支持该形态」的降级出口；新增四条通用规则与 `type="evidence"` 证据块规范（紧跟论断、不写编号）；共用尾去掉「读者问题」硬引用。⚠️ 只影响 `build_synthesis_prompt`，单篇笔记零变化）
 > 此前 2026-10-18（§13 版本 `"14"` → `"15"` —— **格式选项对齐语义块**：`get_summary_format()` 明写 `## AI 总结` 用 `card` 节修饰符；`image` 条目补「保留文档图片时用它包」+「自己生成的图表不要再包」；顺带修「整个视频」这个跨来源的事实错误。⚠️ `card` 是否显示成卡取决于**骨架轴**，prompt 只负责标出来）
 > 此前 2026-10-17（§13 版本 `"13"` → `"14"` —— 产物侧 `metric` / `steps` 补**可执行的量**：指标卡 1–4 个且数字带单位、步骤卡不超过 6 个环节（更多改 `timeline`）。同轮对话侧 `agent/prompts/formats.md` 补 card-group 的篇幅量与 digest/card-group 交叉分野（那侧本就没有 `PROMPT_VERSION`，不单独标记）；批 2 的样式改动（metric 数字改随 accent、宽表滚动/首列固定、大图限高、`.md-card` 长串与标题平衡）**只影响渲染、不 bump**）
 > 此前 2026-10-12（新增 §15 联网检索的抽词 `QUERY_PROMPT` —— 生成前**附带**一次调用从正文抽 2 个检索词；产出的词**不进产物**、只驱动搜索，故 **不 bump `PROMPT_VERSION`**，判据锚是「产物变了没有」而不是「动了几段 prompt」）
@@ -151,19 +152,23 @@
 - 格式选项从 `AVAILABLE_OPTIONS` 动态过滤，使用 `_ALL_FORMAT_FNS`（全部 7 种格式可用）
 - **参考文件**：仅 Notes 注入 `<reference_texts>` 节（user_request 前）；polished/Excel 不注入
 - **语义标记 `limo-block`**（`get_markdown_block_format()`，2026-10-10；2026-10-11 由 1 种扩到
-  **9 种块 + 1 种节修饰符**：`key-takeaway` / `alert` / `recommend` / `metric` / `steps` /
-  `timeline` / `table` / `code` / `image` + ⚠️ **`card`**）：
+  9 种，2026-10-20 补 `cycle` / `sequence` / `quadrant` → **12 种块 + 1 种节修饰符**：
+  `key-takeaway` / `alert` / `recommend` / `metric` / `steps` / `timeline` / `cycle` /
+  `sequence` / `quadrant` / `table` / `code` / `image` + ⚠️ **`card`**）：
   **无条件追加**到 `hard_constraints` 末尾 —— ⚠️ **与 `AVAILABLE_OPTIONS` / `_ALL_FORMAT_FNS`
   无关**（没有勾选项，见 §13 `"7"`–`"15"`）。它是**独立追加**而非经格式过滤，
   故「不勾任何格式」时同样注入。
-  ⚠️ **`steps` / `timeline` 与 `get_chart_format` 是成对的**：前者**无条件**注入、后者**勾选后**
-  才注入 —— 故「线性步骤/阶段不要画图」这条指令删/改时，`get_chart_format` 里对应的
-  `hchain` / `timeline` 引导**必须同批**删/改，否则勾了图表的那批产物会同时收到两条互斥指令
-  ⚠️ **后三个（`table` / `code` / `image`）与前六个性质不同族**：前六个标的是**普通段落**、
+  ⚠️ **`steps` / `timeline` / `cycle` / `sequence` / `quadrant` 与 `get_chart_format` 是成对的**：
+  前者**无条件**注入、后者**勾选后**才注入 —— 故「这些关系用列表/块表达」这条指令删/改时，
+  `get_chart_format` 里对应的布局引导（`hchain` / `timeline` / `layers` / `tree` / `sequence` /
+  `quadrant`）**必须同批**删/改，否则勾了图表的那批产物会同时收到两条互斥指令。
+  ⚠️ 2026-10-20 起 `get_chart_format` 只暴露**三种**（`grid` / `flowchart` / `state`），
+  撤掉的四种出口即上面这五个块与「嵌套列表」—— 详见 §7。
+  ⚠️ **后三个（`table` / `code` / `image`）与前九个性质不同族**：前六个标的是**普通段落**、
   后三个标的是**内容本身**（表格 / 代码 / 图片本来就与正文不同质），故规范对它们额外明写
   「块内照原样写」、「`image` 的地址原样照抄」—— 前者防模型把表格改写成卡片，后者防它
   自己编一个看起来合理的图片路径（那就是一张裂图）
-  ⚠️ **`card` 又是第三种性质**：前九个标的是**块**（一段内容，包裹式、有闭合标记），
+  ⚠️ **`card` 又是第三种性质**：其余十一种标的是**块**（一段内容，包裹式、有闭合标记），
   `card` 标的是**节**（一个 `##` 标题及其全部后续内容），写法是「写在标题**下面一行**」、
   **没有闭合标记**。它是**前端骨架轴 `card` 的唯一触发源**（没有勾选项）—— 模型不写它，
   那个轴就等于什么都不做。**刻意不进** `ARTIFACT_BLOCK_TYPES`（当块处理会让行分类器
@@ -547,18 +552,20 @@ POST /process/{id}
 
 ### 9.1 分层 System Prompt（`app/agent/prompts/`）
 
-**文件**：`app/agent/prompts/base.md`（角色定义）+ `web_tools.md` / `no_web.md`（**联网层，一对互斥文件，二选一注入**）+ `rules.md`（硬约束）+ `formats.md`（可选呈现）+ `__init__.py`（`PromptLoader`）
+**文件**：`app/agent/prompts/base.md`（角色定义）+ `web_tools.md` / `no_web.md`（**联网层，一对互斥文件，二选一注入**）+ `scope_strict.md` / `scope_open.md` / `scope_free.md`（**回答依据层，三选一注入**）+ `rules.md`（硬约束）+ `formats.md`（可选呈现）+ `__init__.py`（`PromptLoader`）
 
-不再用 chat.py 内联 `SYSTEM_PROMPT` 字符串——**五层叠加**（参照 AGENTS.md 模式）：
+不再用 chat.py 内联 `SYSTEM_PROMPT` 字符串——**六层叠加**（参照 AGENTS.md 模式）：
 
 ```python
 loader = PromptLoader()          # 模块级单例
-system = loader.build(doc_context, web_search=allow_web)  # base + 联网层 + rules + formats + 当前文档
+# base + 联网层 + 回答依据层 + rules + formats + 当前文档
+system = loader.build(doc_context, web_search=allow_web, answer_mode=mode)
 ```
 
 - `base.md` → 角色定义
 - **联网层**（2026-10-12）→ `web_tools.md`（能用 `search_web` / `fetch_url` + 搜索结果的使用规则）**或** `no_web.md`（明确声明没有联网能力，不许声称「根据最新数据」、不许编造来源）
-- `rules.md` → 硬约束（禁止编造、先查再答…）
+- **回答依据层**（2026-10-20）→ `scope_strict.md`（只用知识库：库里没有就说没找到）**或** `scope_open.md`（允许补充，文档优先、标明出处）**或** `scope_free.md`（自由对话，不要求先查库）
+- `rules.md` → 硬约束（禁止编造、区分出处…）
 - `formats.md` → 回答可用的**语义块**（`limo-block` 的**七个**对话侧类型：`card-group` 卡片组 / `follow-up` 追问建议 / `info` 信息卡 / `digest` 摘要卡 / `caution` 注意事项 / `how-to` 操作步骤 / `quote` 引用出处），见 9.5
 - `doc_context` → 运行时注入的文档内容（`smart_truncate(rawText, 1000)` 按句子边界截断）
 
@@ -572,6 +579,19 @@ system = loader.build(doc_context, web_search=allow_web)  # base + 联网层 + r
 ⚠️ 因此 **`base.md` / `rules.md` 里不许再出现 `search_web` / `fetch_url`**（那两份两种模式下
 **都**注入，漏一句 = 开关只关了一半）；`tests/test_chat_web_search.py` 有源码守卫钉住。
 ⚠️ 反问句也搬到 `no_web.md`（原 `rules.md` §4 末条「禁止在未搜索的情况下声称『根据最新数据…』」）。
+
+⚠️ **回答依据为什么是三档文件而不是一个开关**（2026-10-20）：用户要求「严格遵循还是发散」，
+随后补充「顺便问问的那些需要极致的发散」—— 前两档都还要求「先看库」，而「顺口问个事」
+那条路上那恰恰是噪音。三档不是**程度递增的同一根轴**（`open` 是「文档优先 + 补充」，
+`free` 是「根本不围绕文档」），故是枚举而不是数字滑条。
+- **拆分判据**：这个取值变了，**模型该做的事会不会变**。「库里没有时怎么办」三档各不相同 ⇒ 必须拆；
+  「禁止编造」三档都成立（发散 ≠ 编造）⇒ 留在共用层。
+- ⚠️ **`rules.md` 第 1 条的标题是「引用文档时」而不是「文档存在时」**：后者的含义读起来是
+  「先查库」，与 `free` 档正面冲突。`tests/test_chat_answer_mode.py` 有源码守卫反向钉住
+  「文档存在时」「无来源不说话」不得回到 `base.md` / `rules.md`（同联网层那组守卫的道理）。
+- **入口严、读回宽**：路由对非法 `answer_mode` 显式报 `CHAT_BAD_ANSWER_MODE`（`_answer_mode`），
+  而前端 `loadChatPrefs` 读到磁盘上的未知值只退回默认档 —— 一边是「用户刚选的值」，
+  一边是「磁盘上可能过期的值」，判据不同。
 
 ### 9.2 运行时扩充
 
@@ -606,7 +626,7 @@ compressed  → 长对话 LLM 压缩通知（agent.py 发）
 | `how-to` | 主体是**一组有先后顺序的操作步骤**（照做即成一件事） | 同上 → 编号列表卡（⚠️ 规范要求块内写**有序**列表，CSS 的编号样式靠 `<ol>` 认） |
 | `quote` | 要**引用一段原文或他人观点**并标明出处 | 同上 → 引用卡（出处小字靠 `blockquote + p` 相邻兄弟选择器） |
 
-⚠️ **新增的三种（2026-10-12）名字刻意避开产物侧九种**：`caution` 而非语义相近的
+⚠️ **新增的三种（2026-10-12）名字刻意避开产物侧类型**（当时九种，现十二种）：`caution` 而非语义相近的
 `alert`、`how-to` 而非产物侧的 `steps`。两侧集合本就**刻意不相交**（见下方「与产物侧的关系」），
 名字撞上等于「同一套渲染器服务两种语义」—— 而它们的判据、CSS 归宿、导出待遇都不同。
 
@@ -867,7 +887,7 @@ key **回退 `article`** —— 旧文档没有 `shape` 字段，读了不能崩
 结构）、**只在正文主体放**（材料索引 / 各篇速查不放）、**不强制**（没有就不写，不得凑数）。
 
 ⚠️ **证据块刻意不写进 `get_markdown_block_format()`** —— 那份是 `build_notes_prompt` 无条件
-注入给**所有** notes 的（九种产物侧块 + `card` 节修饰符），混进去等于单篇笔记也开始学证据
+注入给**所有** notes 的（十二种产物侧块 + `card` 节修饰符），混进去等于单篇笔记也开始学证据
 块。归属由 `core/artifact_blocks.py` 的 `SYNTHESIS_BLOCK_TYPES = {"evidence"}` 表达，
 与 `ARTIFACT_BLOCK_TYPES` / `CHAT_BLOCK_TYPES` **三集合不相交**（`KNOWN_BLOCK_TYPES` 取并集
 只为解析宽进）。有守卫 `test_合成不注入` 钉住两侧边界。
@@ -947,6 +967,9 @@ key **回退 `article`** —— 旧文档没有 `shape` 字段，读了不能崩
 | `"14"` | 2026-10-17 `metric` / `steps` 补**可执行的量**（修「判据有、量没有」）：① `metric` 原只有「少量关键数字」，模型不知道「少量」是几个 → 明写「**一个指标块放 1–4 个指标**」、数字**带单位**（`0.32` 写成 `32%` 比裸小数更好读）；② `steps` 原文的「不超过 6 字」限制的是**每项标签长度**、不是**项数** —— 而项数是渲染侧真正在乎的量（横向步骤条一多就挤成两行、箭头指向混乱）→ 明写「**不超过 6 个**」，更多改用 `timeline`。⚠️ **这不是篇幅硬约束**：限制的是**结构性数量**（几个指标 / 几个步骤，决定渲染形态），与「每段几行、全文多少字」（由样式层的变种卡片适配）是两回事。⚠️ 「CSS 能兜住 8 个指标」不等于「8 个指标更好读」—— `blocks.css` 的多指标纵向排列是**兜底**，不是**目标态**。同一轮对话侧 `agent/prompts/formats.md`：`card-group` 补「每张卡一两段说明或 3–5 个要点」（让正常态落进 CSS 已验证区间），`digest` 补与 `card-group` 的**交叉分野**（「要比要选 → 卡片组；只要整体印象 → 摘要卡」，两块同时出现等于把同一层信息说两遍） |
 | `"15"` | 2026-10-18 **格式选项对齐语义块**：把「勾选项 → 注入的 prompt → 那一节的形态」打通 —— 该成块的节自己说出它是什么块。① `get_summary_format()` 明写 `## AI 总结` 用 `card` 节修饰符（写在标题**下面一行**）：它是**唯一**能直接对上节级修饰符的选项（`card` 的触发判据原文就是「核心结论」），且用户勾了就一定出现 ⇒ 标记一定在，不会出现「模型没标 → 骨架轴静默不生效」。⚠️ **其余按性质不映射**：`toc` / `formulas` / `references` 是**工具区**（查资料用，同合成产物的「各篇速查」——醒目外壳只会跟正文抢注意力）；`link` / `screenshot` 是**行内标记**（时间戳 badge，已有专用渲染）；`chart` 生成的图本身已自成一块。② `get_markdown_block_format()` 的 `image` 条目补「勾选了保留文档图片时，信息量大的图用它包起来」+ 反向一句「你自己用 ```fig 生成的图表**已经自成一块**，不要再包」（同时在场时模型容易壳套壳）。⚠️ **card 是否真的显示成卡取决于设置里的骨架轴**（`data-skeleton="card"`，默认 `paper` 不显示）—— prompt 只负责标出来，显示与否是用户的观感选择，别在 prompt 里承诺视觉。⚠️ 顺带修事实错误：`get_summary_format()` 原文写「整个视频的核心内容」，而它被 video/audio/webpage/pdf/docx/pptx/text **共用**（PDF 笔记被要求总结「整个视频」）→ 改「整份材料」 |
 | `"16"` | 2026-10-18 **多篇合成：产物形态契约 + 证据块**。① 骨架由「一套六节」改为**按读者意图分派五套**（`_SHAPE_SKELETONS`）：`article` 综合文章 / `claims` 观点综合 / `comparison` 比较简报 / `controversy` 争议分析 / `decision` 决策与行动简报。⚠️ **改前的问题是「意图只换措辞不换组织单位」**——选「找争议」与选「理解主题」拿到的正文结构逐字相同，只差 `<task>` 段一句读者目的；形态契约把「意图 → 组织方式」写成代码侧的映射（`READER_INTENTS[*].shape` → `resolve_output_shape`），不再靠模型自由发挥。② **每套骨架各有「材料不支持该形态」的降级出口**（选「找争议」而材料高度一致时直说无实质冲突，不得虚构对立；选「比较材料」而两篇不可比时先说明不可比的原因再列可对照的方面）—— 这是最容易实机翻车的一处：没有出口时模型会**硬造**结构。③ 新增 `_SYNTHESIS_UNIVERSAL_RULES` 四条（连续优先 / 分歧显式 / 结论可溯 / 完整性）与 `_SYNTHESIS_EVIDENCE_FORMAT`（`type="evidence"` 证据块：紧跟论断、块内写方法 / 样本 / 范围 / 局限 / 反例、**不写编号**、块内不用 `##`/`###`）。④ 共用尾（`## 材料索引` + `## 各篇速查`）去掉对「读者问题」节的硬引用（`claims`/`comparison`/`controversy`/`decision` 根本没这一节，模型会去找一个不存在的节）→ 改形态中性的「正文主体」；文风第 9 条同步中性化。⚠️ **只影响多篇合成**（`build_synthesis_prompt`）；单篇笔记 / 整理版零变化 —— 证据块刻意**不进** `get_markdown_block_format()`（那一份是无条件注入给所有 notes 的），而是由 `core/artifact_blocks.py` 的 `SYNTHESIS_BLOCK_TYPES` 单列一类。⚠️ `article` 的节标题与顺序**逐字保留**（已两批实机验收）。 |
+
+| `"17"` | 2026-10-20 语义块新增 `cycle`：`get_markdown_block_format()` 扩到 10 种。首尾相接的因果循环写成 3–6 项**有序列表**，环由 CSS 排（模型只写环节与顺序）。动因是图表的失败面：`flowchart` 拒绝任何环、`state` 只适合状态迁移，模型只能硬套 `state`。同批 `get_chart_format()` 把「环形循环」从图表职责里分出去，`state` 示例标题改准为「状态机（带判定的迁移，可含回环）」 |
+| `"18"` | 2026-10-20 语义块 +2、图表引导 **7 → 3**、删两条层数闸门：① 新增 `sequence`（消息流：有序列表 + `**发送方 → 接收方**：`）/ `quadrant`（二维评估：**恰好 4 项**、左上/右上/左下/右下）→ 共 12 种块；② `get_chart_format()` 只留 `grid` / `flowchart` / `state`，撤下的 `layers`/`tree` 改走嵌套列表、`sequence`/`quadrant` 改走新块 —— 判据是「**文本结构能否保真表达这个关系**」（不是复杂度、不是垂直/水平），算子一个没删；③ `layouts.py` 删 `flowchart` 的 `nlayer > 5` 与 `state` 的 `nrow > 7`：它们在 `expand()` 的压行距 + 等比缩放**之前**就抛错，是同一件事的第二套判据且严格更严（实测 8 层纯矩形只需 564px）。④ 完成期 warning 判据放宽（产出五种替代块之一不再报「图表未生成」） |
 
 ⚠️ **同一轮还有一处 CSS 改动，不 bump**：中性面板族（`metric` / `table` / `code` / `image`）
 的容器边框由 `--tk-border-light` 换成 `--tk-border`（[blocks.css](../frontend/src/styles/blocks.css)）。
@@ -1183,9 +1206,11 @@ process 产物确实带 `promptVersion`，而分类根本没有产物可带。
 | [backend/app/routers/process.py](backend/app/routers/process.py) | IMAGE_PROMPTS — 4 种图片处理模式（与 ocr.py 重复） |
 | [backend/app/engines/ocr.py](backend/app/engines/ocr.py) | DashScopeOCREngine — 4 种图片处理模式（与 process.py 重复） |
 | [backend/app/agent/prompts/base.md](backend/app/agent/prompts/base.md) | Agent 角色定义层（分层 System Prompt 第一层） |
-| [backend/app/agent/prompts/rules.md](backend/app/agent/prompts/rules.md) | Agent 硬约束层（禁止编造、先查再答…第二层） |
-| [backend/app/agent/prompts/formats.md](backend/app/agent/prompts/formats.md) | Agent 回答的语义块规范（`limo-block` 的七个对话侧类型 `card-group` / `follow-up` / `info` / `digest` / `caution` / `how-to` / `quote`，第三层；见 9.5） |
-| [backend/app/agent/prompts/__init__.py](backend/app/agent/prompts/__init__.py) | `PromptLoader` — 组装 base + rules + formats + 动态 doc_context（chat.py 的旧内联 SYSTEM_PROMPT 已迁移至此） |
+| [backend/app/agent/prompts/web_tools.md](backend/app/agent/prompts/web_tools.md) / [no_web.md](backend/app/agent/prompts/no_web.md) | 联网层（一对互斥文件，第二层；由 `web_search` 二选一注入） |
+| [backend/app/agent/prompts/scope_strict.md](backend/app/agent/prompts/scope_strict.md) / [scope_open.md](backend/app/agent/prompts/scope_open.md) / [scope_free.md](backend/app/agent/prompts/scope_free.md) | 回答依据层（三选一注入，第三层；由 `answer_mode` 决定，见 9.1） |
+| [backend/app/agent/prompts/rules.md](backend/app/agent/prompts/rules.md) | Agent 硬约束层（禁止编造、区分出处…第四层；⚠️ 三档共用，不得写入任何一档的专属措辞） |
+| [backend/app/agent/prompts/formats.md](backend/app/agent/prompts/formats.md) | Agent 回答的语义块规范（`limo-block` 的七个对话侧类型 `card-group` / `follow-up` / `info` / `digest` / `caution` / `how-to` / `quote`，第五层；见 9.5） |
+| [backend/app/agent/prompts/__init__.py](backend/app/agent/prompts/__init__.py) | `PromptLoader` — 组装 base + 联网层 + 回答依据层 + rules + formats + 动态 doc_context（chat.py 的旧内联 SYSTEM_PROMPT 已迁移至此） |
 | [backend/app/agent/tools.py](backend/app/agent/tools.py) | 5 个工具 ToolDef + 工具描述（search_docs / lookup_doc / list_docs / search_web / fetch_url） |
 | [backend/app/llm/agent.py](backend/app/llm/agent.py) | AgentRunner — SSE 事件流（agent_status / tool_start / tool_result / thinking / text / done） |
 | [backend/app/llm/service.py](backend/app/llm/service.py) | LLMService — 续写机制 |

@@ -8,16 +8,35 @@
  * 发送时 docRefs 随 sendMessage 传入，docIds = 当前选中文档 + 本条引用（chatStore 组合去重）。
  */
 import { useEffect, useRef, useState } from 'react'
-import { Send, Square, AtSign, FileText, X, MessageCircleQuestion, Globe } from 'lucide-react'
+import {
+  Send, Square, AtSign, FileText, X, MessageCircleQuestion, Globe,
+  BookOpen, Sparkles, Wand2, Check,
+} from 'lucide-react'
 import { useChatStore, type DocRef } from '../../store/chatStore'
 import { useStore, type DocEntry } from '../../store'
-import { loadChatPrefs, saveChatPrefs } from '../../lib/chat-prefs'
+import { useChatPrefs, saveChatPrefs, ANSWER_MODE_OPTIONS, type AnswerMode } from '../../lib/chat-prefs'
 import { SCALES, type ChatScale } from './scale'
 import { estimateTokenLength, formatTokens } from '../../utils/token'
 
 interface ChatInputProps {
   scale: ChatScale
 }
+
+/**
+ * 「回答依据」三档 —— 用户看到的名字刻意**不是**内部 key，而是这一档到底怎么答。
+ *
+ * ⚠️ 三档做成**下拉选择**而不是像联网那样的两态切换按钮：三态按钮点一下循环一档，
+ * 用户点两下就不知道自己在哪一档了（且误点一次要多点两次才回来）。
+ * 下拉直接把三句话摆出来，选哪档一目了然。
+ *
+ * ⚠️ 描述文字写「库里没有时怎么办」—— 那是三档**唯一**的区别，也是用户真正在意的
+ * 那个差别（「严格 vs 发散」这个说法本身太抽象）。
+ */
+/** 三档的图标 — **只属于这一处**的视觉细节（文案在 `lib/chat-prefs.ts`，两处共用） */
+const MODE_ICONS: Record<AnswerMode, typeof BookOpen> = {
+  strict: BookOpen, open: Sparkles, free: Wand2,
+}
+const ANSWER_MODES = ANSWER_MODE_OPTIONS.map(o => ({ ...o, Icon: MODE_ICONS[o.key] }))
 
 export function ChatInput({ scale }: ChatInputProps) {
   const s = SCALES[scale]
@@ -31,11 +50,11 @@ export function ChatInput({ scale }: ChatInputProps) {
   const [docRefs, setDocRefs] = useState<DocRef[]>([])
   const [refOpen, setRefOpen] = useState(false)
   const [refSearch, setRefSearch] = useState('')
-  // 两个发送偏好开关（`lib/chat-prefs.ts` 持久化；发送时由 `dispatchSend` 现读一次）
-  // ⚠️ 这里是**受控回显**：真正的生效点是发送那一刻读 localStorage（见 chatStore），
-  // 本地 state 只负责把开关画出来 —— 两者共用同一份 key，不会分叉。
-  const [followUp, setFollowUp] = useState(() => loadChatPrefs().followUp)
-  const [webSearch, setWebSearch] = useState(() => loadChatPrefs().webSearch)
+  // 三项发送偏好（`lib/chat-prefs.ts`）——⚠️ **订阅**而不是各自 `useState(初值)`：
+  // 设置页是第二个入口，改完必须让这里跟着变（见 `useChatPrefs` 的注释）。
+  // 真正的生效点仍是发送那一刻 `dispatchSend` 现读（那个位置要的是「此刻」）。
+  const { followUp, webSearch, answerMode } = useChatPrefs()
+  const [modeOpen, setModeOpen] = useState(false)
   const taRef = useRef<HTMLTextAreaElement>(null)
   // 输入区 + @ 浮层的共同祖先：判断「点在内部还是外部」的界
   const rootRef = useRef<HTMLDivElement>(null)
@@ -45,15 +64,18 @@ export function ChatInput({ scale }: ChatInputProps) {
   // 后代锁进浮窗自身的大小——`fixed inset-0` 遮罩实际只盖住对话窗那一块，点窗口外
   // 关不掉 @ 浮层（模式 #67）。浮层本身 `absolute bottom-full` 定位在这个输入区上，
   // Portal 到 body 会失去定位基准，故改为监听 document、用 `contains` 划内外界。
+  // ⚠️ 两个浮层（@ 引用 / 回答依据）共用这一个监听：它们都锚在同一个 `rootRef` 上、
+  // 都不该 Portal，各挂一个 document 监听只是让「什么时候该关」有两份实现。
   useEffect(() => {
-    if (!refOpen) return
+    if (!refOpen && !modeOpen) return
     const onDown = (e: MouseEvent) => {
       if (rootRef.current?.contains(e.target as Node)) return
       setRefOpen(false)
+      setModeOpen(false)
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
-  }, [refOpen])
+  }, [refOpen, modeOpen])
 
   // 上下文占用进度（C4）— 前端字符估算仅供参考，实际裁剪以后端 tiktoken 为准
   const messages = useChatStore(st => st.messages)
@@ -86,19 +108,23 @@ export function ChatInput({ scale }: ChatInputProps) {
 
   const filteredDocs = refSearch ? docs.filter(d => d.title.toLowerCase().includes(refSearch.toLowerCase())) : docs
 
+  // 当前档（找不到时退回第一项 —— 枚举只有三个值，`??` 只是为了让类型收窄）
+  const modeMeta = ANSWER_MODES.find(m => m.key === answerMode) ?? ANSWER_MODES[0]
+  const ModeIcon = modeMeta.Icon
+
   // ⚠️ `saveChatPrefs` 是**合并式**保存（参数 `Partial`），所以这里只写自己这一项 ——
   // 早先它是整对象覆盖，加第二个开关的那一刻就会「切 A 开关时把 B 开关重置回默认」，
   // 而那件事既没报错也没提示（用户的联网开关会自己打开）。合并搬进了函数内部。
-  const toggleFollowUp = () => {
-    const next = !followUp
-    setFollowUp(next)
-    saveChatPrefs({ followUp: next })
-  }
+  const toggleFollowUp = () => saveChatPrefs({ followUp: !followUp })
 
-  const toggleWebSearch = () => {
-    const next = !webSearch
-    setWebSearch(next)
-    saveChatPrefs({ webSearch: next })
+  const toggleWebSearch = () => saveChatPrefs({ webSearch: !webSearch })
+
+  // 选档即落盘并收起浮层（与 @ 浮层选完文档就关一致）。
+  // ⚠️ 不用 toggle —— 连点同一档不该变成「无档」，三档必须恒有一档。
+  const chooseMode = (m: AnswerMode) => {
+    saveChatPrefs({ answerMode: m })
+    setModeOpen(false)
+    taRef.current?.focus()
   }
 
   const addRef = (doc: DocEntry) => {
@@ -145,6 +171,24 @@ export function ChatInput({ scale }: ChatInputProps) {
         </div>
       )}
 
+      {/* 回答依据浮层 —— 三档各占一行，直接把「库里没有时怎么办」写出来。
+          ⚠️ `absolute` 锚在输入区上、不 Portal（同 @ 浮层，见上面 effect 的注释）。 */}
+      {modeOpen && (
+        <div className="absolute bottom-full left-3 z-10 mb-2 w-64 overflow-hidden rounded-xl border border-border-light bg-elevated p-1 shadow-xl">
+          {ANSWER_MODES.map(({ key, label, desc, Icon }) => (
+            <button key={key} onClick={() => chooseMode(key)} data-answer-mode-option={key}
+              className={`flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-surface-hover ${key === answerMode ? 'bg-accent/5' : ''}`}>
+              <Icon size={14} className={`mt-0.5 shrink-0 ${key === answerMode ? 'text-accent' : 'text-muted'}`} />
+              <span className="min-w-0 flex-1">
+                <span className={`block text-[12px] ${key === answerMode ? 'text-accent' : 'text-dimmed'}`}>{label}</span>
+                <span className="mt-0.5 block text-[10px] leading-snug text-disabled">{desc}</span>
+              </span>
+              {key === answerMode && <Check size={12} className="mt-0.5 shrink-0 text-accent" />}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="flex items-end gap-2">
         <button onClick={() => { setRefOpen(v => !v); setRefSearch('') }} title="引用文档"
           className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${docRefs.length ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
@@ -168,6 +212,13 @@ export function ChatInput({ scale }: ChatInputProps) {
             : '联网已关闭：模型只能使用已导入的文档（点击开启）'}
           className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${webSearch ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
           <Globe size={s.btn} />
+        </button>
+        {/* 回答依据（三档）。⚠️ 图标随档变化 —— 光靠高亮分不出「当前是哪一档」，
+            而这三档对用户的意义差别很大（尤其 free：它压根不查库）。 */}
+        <button onClick={() => setModeOpen(v => !v)} data-answer-mode={answerMode}
+          title={`回答依据：${modeMeta.label}（${modeMeta.desc}）—— 点击切换`}
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${answerMode === 'strict' ? 'text-muted hover:bg-surface-hover' : 'bg-accent/10 text-accent'}`}>
+          <ModeIcon size={s.btn} />
         </button>
         <textarea
           ref={taRef}

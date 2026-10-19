@@ -90,13 +90,15 @@ from .geometry import (  # noqa: E402  —— 私有工具，测试直接用
     _path_segments,
     _shape_inner_w,
     _shape_min_w,
+    _shift_path_x,
     _shift_path_y,
+    _shift_space_x,
     _shift_title_space,
     _shrink_labels,
     _truncate_to_width,
     _wrap_rows,
 )
-from .engine import _count_nodes, _trim_width  # noqa: E402
+from .engine import _count_nodes, _trim_canvas, _trim_width  # noqa: E402
 from .layouts import (  # noqa: E402
     _corridor_index,
     _CORRIDOR_PITCH,
@@ -123,12 +125,12 @@ __all__ = [
     "_norm_node", "_norm_tree", "_tree_stats", "_topo_layers", "_bfs_rank",
     "_grid_edge_label", "_corridor_index", "_CORRIDOR_PITCH",
     # 引擎内部
-    "_count_nodes", "_trim_width",
+    "_count_nodes", "_trim_canvas", "_trim_width",
     # 几何工具（私有但被测试/渲染链直接使用）
     "_measure", "_truncate_to_width", "_distribute", "_wrap_rows",
     "_fit_labels", "_shrink_labels", "_make_edge", "_edge_path",
     "_path_segments", "_path_bbox", "_extent", "_overlap",
-    "_shift_path_y", "_shift_title_space",
+    "_shift_path_x", "_shift_path_y", "_shift_space_x", "_shift_title_space",
     "_LAYOUTS", "_ROW_GAP", "_MAX_NODES", "_EDGE_LABEL_MAX",
     "_MIN_NODE_W", "_MIN_CANVAS_W", "_MIN_SCALE", "_GRID_GAP_MAX", "_GUTTER_W",
 ]

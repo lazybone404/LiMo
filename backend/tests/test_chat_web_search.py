@@ -364,7 +364,10 @@ def test_接线_开关同时驱动_prompt():
     （工具摘了、prompt 还写着能用）。同一条 `test_接线_开关驱动工具表` 的理由。
     """
     body = _chat_py()
-    assert "prompt_loader.build(system_text, web_search=allow_web)" in body
+    # ⚠️ 2026-10-20 起这一行多了 `answer_mode=mode`（同一个 `build` 调用点）。
+    # 断言贴着**完整调用**写，是因为它的目的是「流式那处没漏传」——
+    # 只断言 `web_search=allow_web` 在场的话，将来有人重写这一行仍会漏掉别的参数。
+    assert "prompt_loader.build(system_text, web_search=allow_web, answer_mode=mode)" in body
 
 
 def test_接线_落盘走两个模块级函数():

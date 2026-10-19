@@ -649,6 +649,12 @@ _MARKER_COLORS: dict[str, tuple[str, str]] = {
     "metric": ("F5F5F7", "C7C7CC"),
     "steps": ("EEF4FB", "5B8DEF"),
     "timeline": ("F3F0FA", "8B7BD8"),
+    "cycle": ("EFF8F5", "2FA88A"),
+    # `sequence` 与 `quadrant`（2026-10-20）同样只在这里配色不同 —— 预览侧一个是
+    # 「主线 + 圆点 + 徽章」、一个是 2×2 网格，两者都靠伪元素与 grid，Word 里没有
+    # 对应表达（同上面 `steps` / `timeline` 那条注释的能力边界，不是实现省略）。
+    "sequence": ("F2F6FA", "5B8DEF"),
+    "quadrant": ("F7F4FB", "8B7BD8"),
     # ⚠️ `table` / `code` / `image`（内容卡片族）取**中性色**，不是语义色 —— 它们标的
     # 是内容本身，没有「风险 / 建议」那层意思，染色等于替它加一层它没有的意思。
     # ⚠️ **Word 侧表达不了这一族的预览形态**：`table` 卡在预览里是「面板里一张真表格」，
