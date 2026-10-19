@@ -8,7 +8,7 @@ import { getStreamBuffer } from '../../store/streamBuffers'
 import type { MarkdownMeta, MarkdownVersion, TaskInfo } from '../../store/types'
 import { TabRegistry, type TabDef } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Minimize2, Expand, Pencil, Highlighter, LayoutGrid } from 'lucide-react'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Minimize2, Expand, Pencil, Highlighter } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -173,7 +173,6 @@ export function PreviewArea() {
   // ⚠️ 刻意不在 MarkdownPreview 内部按骨架分派：那会静默扩散到 Excel 数据摘要与
   //    原始转录两处调用点，而它们都不是 LLM 产物。
   const skeleton = useStore(s => s.skeleton)
-  const setCard = useStore(s => s.setCard)
   // 语义标记的装饰开关（`limo-block`）。⚠️ 与 skeleton 不同，它**只影响装饰**：
   // 关掉后块内文字照常显示，只是没有左边框/淡底（见 lib/marker-prefs.ts 文件头）。
   const markerDecor = useStore(s => s.markerDecor)
@@ -1055,25 +1054,10 @@ export function PreviewArea() {
           >
             {contentWidth === 'narrow' ? <AlignCenter size={15} /> : contentWidth === 'wide' ? <Maximize2 size={15} /> : <Columns size={15} />}
           </button>
-          {/* 产物骨架切换 —— 「章节卡片」的一键开关。
-              ⚠️ 2026-10-11 起它只回答**「要不要按标记显示卡片」**：哪几节成卡由模型在
-              产物里标（`limo-block:v1 type="card"` 写在标题之下），未标记的章节在两种
-              骨架下长得一样。
-              ⚠️ 门控与正文里的骨架分派**同源**：只有 notes/polished 的非 Excel 路径会
-              渲染骨架（见下方 `skeleton === 'card'` 分派），其余 tab（数据预览/转录/
-              思维导图/图片/Excel 数据摘要）切了没有任何效果 —— 那种只在**设置页**能调
-              是可以接受的，摆在正文工具栏上就成了「调了没反应的死旋钮」（模式 #53）。
-              ⚠️ 高亮语义与右侧装饰开关一致：**高亮 = 已改变默认**（默认 `paper`）。
-              这里只切开关；8 套视觉方案在 设置 → 阅读与产物 里选。 */}
-          {activeTabDef?.isStandardMarkdown && !typeMeta.isExcel && (
-            <button
-              onClick={() => setCard({ skeleton: skeleton === 'card' ? 'paper' : 'card' })}
-              className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors ${skeleton === 'card' ? 'bg-accent/10 text-accent' : 'text-dimmed hover:bg-surface-hover'}`}
-              title={skeleton === 'card' ? '章节卡片：已开启（模型标为重点的章节显示为卡片，点击还原为连续正文）' : '章节卡片：已关闭（点击按标记显示卡片）'}
-            >
-              <LayoutGrid size={15} />
-            </button>
-          )}
+          {/* ⚠️ 2026-10-20 移除了工具栏上的「章节卡片」一键开关（用户要求）：
+              骨架只在 summary / polished 的非 Excel 路径生效，摆在正文工具栏上就是
+              一个在多数 tab 上「点了没反应」的死旋钮（模式 #53）。开关仍住在
+              设置 → 阅读与产物 → 产物骨架，唯一消费点见下方 `skeleton === 'card'` 分派。 */}
           {/* 内容块装饰开关 —— 只影响「标记块产生的附加物」（边框/淡底/居中），
               **内容一字不减**。⚠️ 2026-10-11 起射程含内容卡片族（表格/代码/图片），
               关掉后它们**还原成没包过围栏的样子**；见 `lib/marker-prefs.ts` 文件头。

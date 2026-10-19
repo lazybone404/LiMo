@@ -49,9 +49,6 @@ export interface TabDef {
    */
   contentSource: ContentSource
 
-  /** 是否为"标准 Markdown 渲染"tab（summary/polished 路径，含流式 + PartialBanner） */
-  isStandardMarkdown?: boolean
-
   // ── 导出 ──
 
   /** HTML 导出 mode 参数。'__mindmap__' 走专用端点。空字符串 = HTML 导出不可用 */
@@ -150,7 +147,7 @@ TabRegistry.register({
   defaultFor: ['video', 'webpage', 'text', 'link', 'epub', 'composite'],
   priority: 10,
   contentSource: 'notes', htmlMode: 'notes', exportSuffix: '', exportLabel: '笔记',
-  isStandardMarkdown: true, showBanner: true, showTOC: true, showVersionSwitcher: 'notes',
+  showBanner: true, showTOC: true, showVersionSwitcher: 'notes',
   processingKinds: ['import', 'retranscribe', 'generate'],
 })
 
@@ -161,7 +158,7 @@ TabRegistry.register({
   defaultFor: ['pdf', 'docx', 'pptx', 'document'],
   priority: 11,
   contentSource: 'polished', htmlMode: 'polished', exportSuffix: '-整理版原文', exportLabel: '整理版原文',
-  isStandardMarkdown: true, showBanner: true, showTOC: true, showVersionSwitcher: 'polished',
+  showBanner: true, showTOC: true, showVersionSwitcher: 'polished',
   processingKinds: ['import', 'retranscribe', 'generate'],
 })
 
