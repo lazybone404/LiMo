@@ -84,6 +84,27 @@ ARTIFACT_BLOCK_TYPES = frozenset(
      "sequence", "quadrant", "table", "code", "image"}
 )
 
+#: **「用列表代替画图」那一族** —— 勾了图表却产出这几种块，是照做了引导，不是漏了。
+#:
+#: 由来：这些关系过去要付一整条渲染链（语义 JSON → `chart_layout` → `chart_svg` →
+#: PIL），而 Markdown 列表本身就能保真表达。2026-10-11 起 `steps` / `timeline`、
+#: 2026-10-20 起 `cycle` / `sequence` / `quadrant` 陆续从图表引导迁移到语义块。
+#:
+#: ⚠️ **是 tuple 不是 frozenset**：顺序要稳定 —— `get_markdown_block_format()` 的
+#: 「用列表表达就够了」那句文案由它拼出来，集合的迭代序在不同进程间不保证一致。
+#: `in` 判定对 5 个元素完全够用，不需要哈希。
+#:
+#: ⚠️ **单一真相源**：判据在 `routers/generate.py::_chart_missing_warning`（完成期
+#: warning）、文案在 `generation/prompt.py`（教模型用哪些块）。三处手抄的失效形态是
+#: 「prompt 教了第五种、warning 只认前四种」→ 用户照做反而被报「图表未生成」。
+CHART_ALTERNATIVE_BLOCK_TYPES: tuple[str, ...] = (
+    "steps", "timeline", "cycle", "sequence", "quadrant",
+)
+
+assert set(CHART_ALTERNATIVE_BLOCK_TYPES) <= ARTIFACT_BLOCK_TYPES, (
+    "「用列表代替画图」族必须是产物侧块类型的子集 —— 否则 prompt 在教一个"
+    "渲染层不认识的 type")
+
 #: **对话侧**（前端 `ai-chat/ChatMarkerContent.tsx`）真写了渲染分支的块类型。
 #: ⚠️ 与 `ARTIFACT_BLOCK_TYPES` **刻意不相交** —— 产物 prompt 与对话 prompt 各教各的。
 #: ⚠️ `caution` / `how-to` / `quote`（2026-10-12 补）与 `info` / `digest` 同族：
@@ -102,7 +123,7 @@ CHAT_BLOCK_TYPES = frozenset(
 #: ① 那个集合被 `test_block_prompt.py` 遍历断言「每个 type 都出现在
 #:    `get_markdown_block_format()` 里」，加进去就得把证据规范写进**单篇笔记**的提示词
 #:    —— 而证据块只属于多篇合成（单篇材料没有「跨文档分歧」可写）；
-#: ② 那 10 种是**产物侧通用**的（任何产物都可能出现），证据块是**合成形态契约**的一部分，
+#: ② `ARTIFACT_BLOCK_TYPES` 那批是**产物侧通用**的（任何产物都可能出现），证据块是**合成形态契约**的一部分，
 #:    归属不同的产品边界。拆开后「协议知道」与「某侧实现了」仍然分得开。
 SYNTHESIS_BLOCK_TYPES = frozenset({"evidence"})
 

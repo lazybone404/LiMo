@@ -136,6 +136,20 @@ function subscribeChatPrefs(fn: () => void): () => void {
   return () => { _listeners.delete(fn) }
 }
 
+// ⚠️ **跨标签页同步**（2026-10-20 补）：上面的缓存注释承诺过「另一个标签页写入也必须
+// 立刻读到新值」，但 `useSyncExternalStore` **不会自己**再调 `getSnapshot` —— 没有订阅
+// 通知就没有重渲染，另一页改了偏好、这一页的按钮还显示旧档，而发送走 `loadChatPrefs()`
+// 现读（`getSnapshot` 一调就发现 raw 变了）⇒ 又是那个「显示一档、实际按另一档跑」的病症。
+// `storage` 事件**只在别的标签页/窗口写入时触发**（本页写入不触发），所以它与
+// `saveChatPrefs` 末尾的手动通知**不重叠**，不会同一件事通知两遍。
+// `e.key === null` 是 `localStorage.clear()`（此时所有 key 都可能变了，一律刷新）。
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== null && e.key !== CHAT_KEY) return
+    for (const fn of _listeners) fn()
+  })
+}
+
 /**
  * 订阅对话偏好的 hook —— **两处入口（输入框 / 设置页）看到同一份状态**的唯一办法。
  *

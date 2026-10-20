@@ -45,11 +45,9 @@ class DocumentAdapter(PipelineAdapter):
 
     def _download_url(self, url: str, on_progress=None) -> Path:
         """下载 URL 指向的文件到临时目录"""
-        from app.utils.url_security import validate_url
-        try:
-            validate_url(url)
-        except ValueError as e:
-            raise RuntimeError(f"URL 安全校验失败: {str(e)[:150]}") from e
+        # ⚠️ 用 safe_get 逐跳校验重定向（裸 requests.get 默认跟随，公网 URL
+        # 302 到 127.0.0.1 就绕过了首跳校验）
+        from app.utils.url_security import safe_get
 
         import requests
         tmp = Path(tempfile.mkdtemp(prefix="doc_dl_"))
@@ -61,8 +59,11 @@ class DocumentAdapter(PipelineAdapter):
             on_progress(ProgressEvent(phase="download", status="running",
                                       message=f"下载文档: {fname}"))
         try:
-            resp = requests.get(url, timeout=120, stream=True)
+            resp = safe_get(url, timeout=120, stream=True)
             resp.raise_for_status()
+        except ValueError as e:
+            # 安全校验失败（含重定向跳到内网）不是「网络不好」，分开报
+            raise RuntimeError(f"URL 安全校验失败: {str(e)[:150]}") from e
         except requests.RequestException as e:
             logger.warning("文档下载失败: %s — %s", url[:80], str(e)[:120])
             raise RuntimeError(f"文档下载失败: {str(e)[:150]}") from e

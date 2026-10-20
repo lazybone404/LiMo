@@ -25,6 +25,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+from conftest import normalize_export_nonce
 from app.routers.export import (                        # noqa: E402
     HTML_THEMES, _AXIS_VALUE_RE, _TEXTURE_OPACITY_RE, _build_selfcontained_html,
     _load_block_css, _load_card_css, _load_theme_layer_css,
@@ -56,8 +57,9 @@ def test_零参数_导出与改造前逐字节相同():
     # 「`<html` 之前的一切 + 开标签」，而它前面永远有 `<!DOCTYPE html>\n`。
     assert zero.startswith('<!DOCTYPE html>\n<html lang="zh-CN">')
     # 显式传空串 = 不传（六个参数的默认值就是空串）
-    assert zero == _build_selfcontained_html(MD, "标题", theme_mode="", accent="", base="",
-                                             font="", texture="", texture_opacity="")
+    assert normalize_export_nonce(zero) == normalize_export_nonce(
+        _build_selfcontained_html(MD, "标题", theme_mode="", accent="", base="",
+                                  font="", texture="", texture_opacity=""))
     # 主题层没被注入 —— 判据用主题层里独有的字样（不是 `--tk-`，那是两个来源共有的）
     assert '--accent-hue' not in zero
     # 未跟随 + paper + 无标记 ⇒ 中性令牌也不注入

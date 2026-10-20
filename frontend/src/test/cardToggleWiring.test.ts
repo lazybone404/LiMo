@@ -14,7 +14,7 @@
  */
 /// <reference types="node" />
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 /** 读源码并剥注释 —— 本文件断言的字符串在文档注释里也出现过（照 docTabsWiring 纪律）。 */
@@ -43,5 +43,34 @@ describe('工具栏不再有章节卡片开关', () => {
     const settings = src('src/components/settings/SettingsPage.tsx')
     expect(settings).toContain('setCard({ skeleton: o.key })')
     expect(settings).toContain('SKELETON_OPTIONS')
+  })
+
+  /**
+   * ⚠️ **射程覆盖整个 `components/` 目录**（2026-10-20 修）：上面那条只钉住
+   * `PreviewArea.tsx` 一个文件 —— 但「把开关加回工具栏」未必发生在那里。
+   * 正文工具栏不止一处（`MarkerContent` / `CardSections` / 将来的新预览组件），
+   * 而**任何**组件里一句 `setCard({ skeleton: … })` 都能把那个死旋钮带回来，
+   * 上面那条照样绿。判据改成「整棵组件树里，骨架的写入点只允许出现一次」。
+   */
+  it('反向断言：整个 components/ 目录里骨架写入点只有设置页一处', () => {
+    const root = resolve(process.cwd(), 'src/components')
+    const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(e => {
+      const p = resolve(dir, e.name)
+      if (e.isDirectory()) return walk(p)
+      return /\.tsx?$/.test(e.name) ? [p] : []
+    })
+    // ⚠️ 基准必须是 `root`：写成 `resolve('settings', …)` 会按 **CWD** 解析成
+    // `frontend/settings/SettingsPage.tsx`，与真实路径对不上 ⇒ 设置页自己被当成违规者。
+    const allowed = resolve(root, 'settings', 'SettingsPage.tsx')
+    const offenders = walk(root)
+      // 设置页是唯一允许的写点
+      .filter(f => f !== allowed)
+      .filter(f => /setCard\(\s*\{[^}]*skeleton:/.test(
+        readFileSync(f, 'utf-8')
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .replace(/^\s*\/\/.*$/gm, ''),
+      ))
+    // 对照实验：在任一组件里加回 `setCard({ skeleton: … })` → 这条红。
+    expect(offenders).toEqual([])
   })
 })

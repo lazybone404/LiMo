@@ -9,6 +9,17 @@ const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 /** API 基础路径 — 模块内部共享（不对外导出） */
 export const BASE = isTauri ? 'http://127.0.0.1:7413/api' : '/api'
 
+/**
+ * 客户端标记头 —— **每个请求都要带**。
+ *
+ * 后端对「有副作用的 GET」（`/chat/stream`、`/generate/{id}/stream`）做了来源校验：
+ * 跨站 `<img>` / `<script>` 是 no-cors 请求、无法携带自定义头，用它把「恶意网页
+ * 让本地后端开始计费」这条路堵死（CORS 只挡读响应、不挡发出）。
+ * 缺失时后端回落到 Origin/Referer 判定，但那条路可被 no-referrer 抹掉 —— 所以这里
+ * 是主防线，**新增裸 `fetch` 时别漏掉**。
+ */
+export const CLIENT_HEADERS: Record<string, string> = { 'X-LiMo-Client': '1' }
+
 /** 拼接 API 完整 URL（Tauri 补全域名，浏览器用相对路径走 Vite proxy） */
 export function apiUrl(path: string): string {
   return path.startsWith('http') ? path : `${BASE}${path}`
@@ -58,7 +69,8 @@ export function getErrorMessage(err: unknown): string {
 export async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
   let r: Response
   try {
-    r = await fetch(url, init)
+    // 统一带上客户端标记头（后端对计费端点做来源校验，见 CLIENT_HEADERS）
+    r = await fetch(url, { ...init, headers: { ...CLIENT_HEADERS, ...(init?.headers as Record<string, string> | undefined) } })
   } catch (err) {
     // P1-16：瞬时网络抖动/后端未启动 → fetch 抛 TypeError（Failed to fetch）。
     // 归一为可恢复错误：用户看到中文提示 + 可重试，而非全屏「内容加载失败」红屏。

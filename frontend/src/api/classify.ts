@@ -7,7 +7,7 @@
  * ⚠️ **字段名跟 camelCase**（与本域的 `BatchTranscriptsRequest` 的 `tagMode`/`folderId`
  * 对齐）。`synthesis.*` 那份是合成域的历史写法（snake_case），不要照抄过来。
  */
-import { BASE } from './core'
+import { BASE, CLIENT_HEADERS } from './core'
 
 /** 取材来源三态。`shortened` = 被上下文预算缩减（**不是**用户选的那个数）。 */
 export type ClassifySource = 'notes' | 'shortened' | 'title_only'
@@ -169,7 +169,7 @@ export async function classifyPreview(
 ): Promise<ClassifyPreview> {
   const response = await fetch(`${BASE}/classify/preview`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
     body: JSON.stringify({ docIds, ...opts }),
     signal,
   })
@@ -193,7 +193,7 @@ export async function commitClassifications(
 ): Promise<ClassifyCommitResult> {
   const response = await fetch(`${BASE}/classify/commit`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
     body: JSON.stringify({ assignments }),
   })
   let body: Record<string, unknown> = {}

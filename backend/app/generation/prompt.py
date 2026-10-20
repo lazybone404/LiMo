@@ -16,6 +16,7 @@ from .prompts.notes_styles import (
 )
 from .prompts.common import PromptComposer
 from app.core.types import DOC_SOURCE_TYPES
+from app.core.artifact_blocks import CHART_ALTERNATIVE_BLOCK_TYPES
 # 原在本文件定义，2026-10-01 下沉到 core（transcript_meta 需复用同一份清洗），此处 re-export
 from app.core.text_utils import sanitize_reference_name
 from app.core.transcript_meta import parse_meta
@@ -549,9 +550,12 @@ def get_markdown_block_format() -> str:
         "成本/收益、频率/影响）。写成**有序列表**，**恰好 4 项**，顺序固定为"
         "**左上、右上、左下、右下**；每项用 `**格名**：` 起头，冒号后写落在这一格"
         "的对象。⚠️ 四格的名字要能自己说清位置（如「重要且紧急」），不必也不能画坐标轴。\n"
-        "- ⚠️ `steps` / `timeline` / `cycle` / `sequence` / `quadrant` **用列表表达"
-        "就够了，不要为它们画图**；反过来，**同一层会出现多个节点**、有分支汇合或"
-        "有回边的关系**不要**塞进这五种，那是图表该做的事。\n"
+        # ⚠️ 名单由 `CHART_ALTERNATIVE_BLOCK_TYPES` 拼出，不手抄 —— 与
+        # `routers/generate.py::_chart_missing_warning` 共用同一份（三处手抄的失效
+        # 形态是「这里教了第五种、那边只认前四种」→ 用户照做反被报「图表未生成」）。
+        "- ⚠️ " + " / ".join(f"`{t}`" for t in CHART_ALTERNATIVE_BLOCK_TYPES) +
+        " **用列表表达就够了，不要为它们画图**；反过来，**同一层会出现多个节点**、"
+        "有分支汇合或有回边的关系**不要**塞进这几种，那是图表该做的事。\n"
         "- `table` —— 材料里有（或你整理出的）一张**值得单独交代的对照表**：几个对象、"
         "几项相同字段的横向比较。写成标准 Markdown 表格，表前或表后可以有一句话说明"
         "这张表在比什么。\n"

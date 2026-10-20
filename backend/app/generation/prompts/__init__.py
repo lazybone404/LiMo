@@ -176,5 +176,14 @@ from .notes_styles import (
 #     就抛错，是同一件事的第二套判据且严格更严 —— 实测 8 层纯矩形只需 564px。
 #   · 完成期 warning 判据同步放宽（`_chart_missing_warning`）：勾了图表但产出
 #     steps/timeline/cycle/sequence/quadrant 之一是**照做了引导**，不再报「未生成」。
-PROMPT_VERSION = "18"
+# "19"（2026-10-20，措辞中性化，判据一字未改）：
+#   · `get_markdown_block_format()` 的「用列表表达就够了」那句，块名单改由
+#     `core/artifact_blocks.py::CHART_ALTERNATIVE_BLOCK_TYPES` 拼出，并把手写的
+#     「不要塞进这**五种**」改成「这**几种**」。起因是这条名单在 prompt 文案、
+#     `_chart_missing_warning` 判据、模块注释三处各抄了一份 —— 加第六种时漏改
+#     任一处都是静默分叉（prompt 教了、完成期 warning 不认 → 用户照做反被报
+#     「图表未生成」）。
+#   · 输出字节与 "18" 只差这一个词（判据 / 示例 / 触发条件全部不变），bump 是因为
+#     纪律是「发给模型的文本变了就 bump」，不是因为行为变了。
+PROMPT_VERSION = "19"
 

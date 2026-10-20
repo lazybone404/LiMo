@@ -281,14 +281,17 @@
    只是这次连后端都不用。故 `get_markdown_block_format` 里 `cycle` 的规范**只有**
    「3–6 项的有序列表」这一条，没有任何造型描述。
 
-   ⚠️ **角度档靠 `:nth-last-child` 判项数，不用 `:has()`**：`li:first-child:nth-last-child(3)`
-   的语义是「第一项恰好也是倒数第三项」= **恰好 3 项**，是 CSS3 就有的写法；本文件
-   同时被导出 HTML 消费（会在任意浏览器里打开），`:has()` 虽已在各现代浏览器落地，
-   但为一条可优雅降级（退回普通列表）的装饰去赌目标浏览器版本不值得。
-   ⚠️ **只覆盖 3–6 项**：prompt 已把范围限死在这四档；项数不匹配或超出时**所有节点
-   都落在 `--cyc-a: 0deg`** —— 也就是叠在环顶同一处。那不好看，但**内容一字不少**
-   （「内容永远不该因为渲染不认识而消失」这条判据优先于观感），且 `ol` 的 340×340
-   尺寸会让它明显不对，用户会重新生成而不是拿到一张看起来正常的错图。
+   ⚠️ **角度档靠 `:nth-last-child` 判项数**：`li:first-child:nth-last-child(3)` 的语义是
+   「第一项恰好也是倒数第三项」= **恰好 3 项**，是 CSS3 就有的写法，不吃 `:has()`。
+   ⚠️ **但「这是不是环」这个判据必须看 `ol` 自己有几个子项**，而那只能由 `:has()` 回答
+   —— 2026-10-20 之前的写法是「基础 `li` 就 `position: absolute`」，于是项数不匹配
+   （2 项 / 7 项）时**全部节点叠在环顶同一处**，340×340 的框里只剩一团互相遮挡的文字。
+   注释当时写「内容一字不少」，字确实一个不少 —— 但「内容不消失」的标准不是 DOM 里
+   还留着那个 `<li>`，而是**人读得出来**。
+   现在的降级目标是**真正的普通有序列表**：环形那几条全部挂在 `:has()` 选择器下，
+   项数不匹配、或浏览器不支持 `:has()`，都自动退回编号 + 缩进 + 正常换行。
+   （`chat-blocks.css` 早已在用 `:has()`；这里唯一的额外顾虑是导出 HTML 会在任意浏览器
+   打开，而「失效 = 退回普通列表」正是可接受的降级形态。）
 
    ⚠️ **`overflow-x: auto` + `flex-shrink: 0` 是成对的**（与 `table` 同款，理由见那边
    的长注释）：预览区内容容器是 flex column，`.md-block` 是 flex item；没有 overflow
@@ -305,11 +308,34 @@
   flex-shrink: 0;
 }
 
+/* ── 基础形态 = 普通有序列表（项数不匹配 / 无 `:has()` 时的降级目标）── */
 .md-block[data-block-type="cycle"] ol {
   position: relative;
+  margin: 0 auto;
+  padding-left: 1.6em;   /* 有序列表的编号要有地方放 */
+}
+
+.md-block[data-block-type="cycle"] li {
+  box-sizing: border-box;
+  padding: 2px 0;
+}
+
+/* ── 环形增强：恰好 3 / 4 / 5 / 6 项时启用 ──
+   ⚠️ **`ol:is(:has(> li:first-child:nth-last-child(N)))` 是整组环形样式的唯一闸门**：
+   项数不匹配或浏览器不支持 `:has()` 时这些规则一律不命中，上面那两条就是全部样式
+   ⇒ 退回普通有序列表（编号、缩进、换行都正常）。**不要**把其中任何一条
+   （`position: absolute` / 固定宽高 / 伪元素）挪回基础规则 —— 那样「不匹配」
+   又会变成「全部叠在环顶」。
+   ⚠️ 用 `:is()` 包住四档是为了只写一次规则体；特异性取参数中最高者
+   （`li:first-child:nth-last-child(N)`），恒高于上面的基础规则。 */
+.md-block[data-block-type="cycle"] ol:is(
+  :has(> li:first-child:nth-last-child(3)),
+  :has(> li:first-child:nth-last-child(4)),
+  :has(> li:first-child:nth-last-child(5)),
+  :has(> li:first-child:nth-last-child(6))
+) {
   width: 340px;
   height: 340px;
-  margin: 0 auto;
   padding: 0;
   list-style: none;
 }
@@ -317,7 +343,12 @@
 /* 虚线圆环：直径 = 2R，穿过各节点中心（节点盖住虚线，看上去就是「串在环上」）。
    ⚠️ 用 `--tk-border` 而不是 light 档：light 档在 warm 基调下离正文底只差 9 个灰阶，
    一条 2px 虚线会淡到看不见 —— 而它正是「这是个环」唯一的形状提示。 */
-.md-block[data-block-type="cycle"] ol::before {
+.md-block[data-block-type="cycle"] ol:is(
+  :has(> li:first-child:nth-last-child(3)),
+  :has(> li:first-child:nth-last-child(4)),
+  :has(> li:first-child:nth-last-child(5)),
+  :has(> li:first-child:nth-last-child(6))
+)::before {
   content: "";
   position: absolute;
   left: 50%;
@@ -331,7 +362,12 @@
 
 /* 中心的 `↻`：环心空着 240px 直径会显得空，这个符号是「循环」的视觉锚点。
    字体没有该字形时浏览器会回落到 Segoe UI Symbol（Windows）—— 不便指定家族。 */
-.md-block[data-block-type="cycle"] ol::after {
+.md-block[data-block-type="cycle"] ol:is(
+  :has(> li:first-child:nth-last-child(3)),
+  :has(> li:first-child:nth-last-child(4)),
+  :has(> li:first-child:nth-last-child(5)),
+  :has(> li:first-child:nth-last-child(6))
+)::after {
   content: "↻";
   position: absolute;
   left: 50%;
@@ -341,11 +377,15 @@
   color: var(--tk-dimmed);
 }
 
-.md-block[data-block-type="cycle"] li {
+.md-block[data-block-type="cycle"] ol:is(
+  :has(> li:first-child:nth-last-child(3)),
+  :has(> li:first-child:nth-last-child(4)),
+  :has(> li:first-child:nth-last-child(5)),
+  :has(> li:first-child:nth-last-child(6))
+) li {
   position: absolute;
   left: 50%;
   top: 50%;
-  box-sizing: border-box;
   width: var(--cyc-node-w);
   min-height: var(--cyc-node-h);
   padding: 6px 4px;

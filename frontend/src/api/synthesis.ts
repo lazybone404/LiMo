@@ -6,7 +6,7 @@
  * 代价是必须自己拼 `Content-Type: application/json` —— 照抄 `streamChat` 的 GET 写法
  * 会得到一个 422。
  */
-import { BASE, getErrorMessage } from './core'
+import { BASE, CLIENT_HEADERS, getErrorMessage } from './core'
 import { parseSSEStream } from './sse'
 
 /** 原料模式：原文转录 / 已生成的笔记。**互斥不混合**（见设计 §19.2）。 */
@@ -76,7 +76,7 @@ export async function previewSynthesis(
 ): Promise<SynthesisPreview> {
   const response = await fetch(`${BASE}/synthesis/preview`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       doc_ids: docIds,
       model_id: modelId ?? null,
@@ -157,7 +157,7 @@ export function streamSynthesis(
 
   fetch(`${BASE}/synthesis/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
     // ⚠️ 字段名与后端 `SynthesisRequest` 逐字对齐（doc_ids / title / model_id /
     // dimensions / source_mode / reader_intent / reader_intent_text / content_type）
     body: JSON.stringify({

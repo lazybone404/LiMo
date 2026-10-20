@@ -279,18 +279,27 @@ def _ddg_search_sync(query: str, max_results: int, proxy: str) -> str:
 def _trafilatura_fetch(url: str, proxy: str) -> str:
     """用 trafilatura 提取网页正文（同步，由 run_in_executor 调用）"""
     import trafilatura
-    # 用 httpx 先下载（支持 proxy），再用 trafilatura 提取
-    client_kwargs: dict = {"timeout": 15.0, "follow_redirects": True}
+    from app.utils.url_security import safe_get_httpx
+
+    # 用 httpx 先下载（支持 proxy），再用 trafilatura 提取。
+    # ⚠️ `follow_redirects` 已交给 safe_get_httpx 逐跳校验 —— 裸
+    # `httpx.get(follow_redirects=True)` 会让公网 URL 302 到 127.0.0.1 绕过首跳校验。
+    client_kwargs: dict = {"timeout": 15.0}
     if proxy:
         client_kwargs["proxy"] = proxy
     try:
-        resp = httpx.get(url, **client_kwargs)
+        resp = safe_get_httpx(url, **client_kwargs)
         resp.raise_for_status()
         text = trafilatura.extract(resp.text, output_format="markdown")
+    except ValueError:
+        # 安全校验失败必须冒出去 —— 回退路径同样是网络请求，不能拿它兜底
+        raise
     except Exception:
-        # httpx 下载失败时回退 trafilatura 原生方式（无 proxy）
-        html = trafilatura.fetch_url(url)
-        text = trafilatura.extract(html, output_format="markdown")
+        # 下载失败时回退（无 proxy）。⚠️ 不用 `trafilatura.fetch_url`：它自己
+        # 发请求且跟随重定向，等于把刚校验过的那一跳换成一条未校验的路。
+        resp = safe_get_httpx(url, timeout=15.0)
+        resp.raise_for_status()
+        text = trafilatura.extract(resp.text, output_format="markdown")
     result = (text or "无内容")[:4000]
     logger.info("trafilatura: %d 字", len(result))
     return result

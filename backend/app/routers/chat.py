@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from app.llm import LLMService, AgentRunner
 from app.core.errors import AppError
+from app.core.origin import ensure_trusted_request
 from app.core import logging as log
 from app.core.chat_context import compute_budget, build_doc_context, trim_history
 from app.core.token import estimate_tokens
@@ -41,6 +42,23 @@ class ChatRequest(BaseModel):
 
 
 _ANSWER_MODES = ("strict", "open", "free")
+
+# ⚠️ **同一份枚举的第二处落点就在 `agent/prompts/__init__.py` 的 `scopes` 字典里**
+# （那边决定加载哪份 `scope_*.md`）。两处必须同键集：只加一边的失效形态是
+# 「模板写了但请求 400」或「请求通了、加载到的是 `None`→ValueError」，两种都不在
+# 正常路径上出现，直到用户真的选那一档。反向 import（prompts → routers）会成环，
+# 故在这里做模块级体检 —— 键集分叉时**导入即炸**，比留到运行时好。
+
+
+def _check_scope_keys() -> None:
+    """`_ANSWER_MODES` 与 prompt 层的 `scopes` 键集必须相等（对照见 test_chat_answer_mode.py）。"""
+    if set(_ANSWER_MODES) != set(prompt_loader.scopes):
+        raise RuntimeError(
+            f"answer_mode 枚举与 prompt 层分叉：{sorted(_ANSWER_MODES)} != "
+            f"{sorted(prompt_loader.scopes)} —— 改档位时两处必须一起改")
+
+
+_check_scope_keys()   # 导入即体检（见上一条注释）
 
 
 def _answer_mode(value: str) -> str:
@@ -281,6 +299,9 @@ async def chat_stream(
 ):
     """SSE 流式对话 — 实时推送回答 + 工具调用进度 + 自动持久化
 
+    ⚠️ **入口先过来源守卫**（`ensure_trusted_request`）：这是个 GET 且**有副作用**
+    （计费 + 会话写入），跨站 `<img src>` 就能触发。CORS 只挡读响应、不挡发出。
+
     `follow_up=1` = 用户开启了「追问建议」：回答结束后若模型没自己写可用的 `follow-up`
     块，由后端**补调一次** LLM 并推 `followup` 事件（见 `agent/followup.py`）。
 
@@ -294,6 +315,7 @@ async def chat_stream(
     「无来源不说话」），非法值显式报错、不静默退回 `strict`（见 `_answer_mode`）。
     """
 
+    ensure_trusted_request(request)
     mode = _answer_mode(answer_mode)
 
     doc_list = [d.strip() for d in doc_ids.split(",") if d.strip()]

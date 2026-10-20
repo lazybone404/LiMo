@@ -615,6 +615,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | **分类真相源**（文档级 `{doc_dir}/meta.json` + 库级 `{root}/folders.json`） | [storage/doc_meta.py](backend/app/storage/doc_meta.py)。`DOC_FIELDS`（17 个**从磁盘重推不出来**的字段，含 `title`——目录名是**有损**的，见该文件注释）与读写入口只此一份；`read_folders` 的 **`None`（不可用）与 `[]`（确实没有夹）刻意分开**。⚠️ **`index.json` 只是缓存**，`_rebuild_index` 回落到这里 —— 别在别处再造一份 sidecar 格式 |
 | 原子写（临时名唯一 + `os.replace`） | [core/atomic_io.py](backend/app/core/atomic_io.py) 的 `atomic_write_text`。`Store._atomic_write` 是它的薄委托；`doc_meta` 直接调它 |
 | 产物正文协议标记（`limo-block`）解析/剥离/渲染 | [core/artifact_blocks.py](backend/app/core/artifact_blocks.py) ↔ [lib/markdown-markers.ts](frontend/src/lib/markdown-markers.ts)（前后端各一份，共享 fixture `limo-blocks.json` 钉住） |
+| 「用列表代替画图」的块族（`steps` / `timeline` / `cycle` / `sequence` / `quadrant`） | [core/artifact_blocks.py](backend/app/core/artifact_blocks.py) 的 `CHART_ALTERNATIVE_BLOCK_TYPES`。⚠️ **tuple 不是 frozenset**（prompt 文案由它 join 拼出，要稳定顺序）；prompt 文案 / `_chart_missing_warning` 判据 / 模块注释三处共用 —— 手抄一份的失效形态是「prompt 教了、完成期 warning 不认 → 用户照做反被报『图表未生成』」 |
 | `limo-block` 存在性 / 按类型判据 | [core/artifact_blocks.py](backend/app/core/artifact_blocks.py) 的 `has_blocks`（有无）/ `has_block(md, type)`（**按类型**）。⚠️ **不要写 `"follow-up" in md` 子串判** —— 正文里讨论本协议时也会出现这个词 |
 | 追问建议的生成层（prompt 拼装 / 列表项抽取 / 清洗 / 去重 / 过短过滤 / 超时与非阻塞） | [agent/followup.py](backend/app/agent/followup.py) 的 `extract_followup_items` / `_run_followup_llm`。**对话侧与产物侧共用同一份**（两侧都从 `FOLLOWUP_RULES` 拼 prompt、都走 `_run_followup_llm`）；后端**抽取层**与前端 `parseFollowUpItems` 逐字同源（共享 fixture `follow-up-parse.json`），而**清洗/去重/过短三条只在服务端**（前端解析器还要服务「模型自主写的块」，那条路上「原样呈现」才对）。⚠️ **对外载荷形状**（`{"type", "questions", "error"}` + 失败文案）也收在同一文件：`followup_payload` **只此一份** —— 对话 SSE 的 `followup` 事件与 `POST /api/chat/followups`（「换一批」）**共用**，拆成两个函数的直接后果是「什么算失败、失败说哪句话」出现第二处判据，而两个消费点渲染的是**同一张卡**（模式 #54） |
 | 产物侧联网检索（抽检索词 / 并发搜索去重 / 组料 / 自证头字段） | [generation/web_search.py](backend/app/generation/web_search.py)。⚠️ 结果拼成**一份**参考资料走**既有** `reference_texts` 通道（不新建注入通道，超窗压缩与注入防御免费继承）；搜索实现**委托** [agent/tools.py](backend/app/agent/tools.py) 的 `search_web`（三级降级只此一份，另写 = 模式 #54） |
@@ -791,7 +792,10 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 ### 安全
 - **敏感信息脱敏**：LLM Key / Cookie / Tavily Key 在 `GET /api/config` 中统一脱敏返回（`mask_sensitive`），保存时 `merge_sensitive` 防 `***` 覆盖真实值
-- **SSRF 防护**：`url_security.validate_url()` — 14 个内网/保留 IP 段黑名单 + DNS 解析二次校验 + 协议白名单。⚠️ WebpageAdapter 曾遗漏 SSRF 校验（已修复），新增管道必须加
+- **SSRF 防护**：`url_security.validate_url()` — 内网/保留 IP 段黑名单（**v4 + v6 双栈**，`::ffff:a.b.c.d` 按内嵌 v4 判）+ DNS 解析二次校验 + 协议白名单。⚠️ WebpageAdapter 曾遗漏（已修复），新增管道必须加。⚠️ **重定向必须逐跳校验**：`safe_get` / `safe_get_httpx`（`allow_redirects=False` + 每跳 `validate_url`），`requests` 默认自动跟随会让公网 URL 一跳 302 到 `127.0.0.1`
+- **导出 HTML 的 CSP + nonce**（2026-10-20）：`export.py::_csp_meta` 注入 `script-src 'nonce-<每次随机>'`，我们自己的 `<script>` 全带 nonce，**正文里的 `<script>` / `on*=` 一律不执行**。⚠️ 为什么必须：导出 HTML 是「模型/用户内容原样渲染」，而 Tauri 的 PDF 路径在**同源**上下文里导航到它 —— 一段脚本就能读全库、调写接口。⚠️ **HTML 内容一个字都不改**（保「预览所见 = 导出所得」），`style-src 'unsafe-inline'` 必需
+- **有副作用的 GET 的来源守卫**（2026-10-20）：`core/origin.py`，`X-LiMo-Client` 头（主判据 —— 跨站 `<img>`/`<script>` 是 no-cors、带不了自定义头）+ Origin/Referer 白名单兜底。CORS 只拦跨站**读响应**，不拦请求发出。⚠️ 白名单正则与 `main.py` 的 CORS **同一份**
+- **日志值必须截断（含容器）**：`core/logging.py::_val` 字符串 80 / 容器 300。⚠️ 容器曾经不截断 ⇒ `log.info("Tool", args={...})` 把整段工具入参打进环形缓冲，`GET /api/logs` 交给前端 LogPanel，用户贴日志时顺带外泄会话内容
 - **路径遍历防护**：`_safe_filename()` 取文件名末段 + `resolve().relative_to()` 双重校验，图片/文件服务均防护
 - **Markdown XSS 防护**：前端 `<a>` 组件拒绝 `javascript:`/`data:` 协议，ReactMarkdown 默认不渲染原始 HTML
 - **SSL 证书 (PyInstaller)**：启动时从 `certifi.where()` 设 `SSL_CERT_FILE` + `REQUESTS_CA_BUNDLE` 环境变量。缺此则 dashscope SDK / openai / yt-dlp 的 HTTPS 请求全部失败

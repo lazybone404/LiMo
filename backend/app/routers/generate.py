@@ -22,6 +22,7 @@ from datetime import datetime
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.core.dependencies import get_store, get_config, get_guard, get_query_service
 from app.core.errors import GenerateError, AppError
+from app.core.origin import ensure_trusted_request
 from app.core.reference_store import get_references
 from app.core import logging as log
 from app.core.model_resolver import resolve_llm_config, resolve_context_window
@@ -33,7 +34,7 @@ from app.services.chart_renderer import render_charts, CHART_FENCE_MARKS
 from app.services.doc_understand import DOC_DIRECT_GEN_TIMEOUT, DOC_DIRECT_MIN_RAW_CHARS
 from app.generation.content_preparer import ContentPreparer
 from app.generation.prompt_builder import PromptBuilder
-from app.core.artifact_blocks import parse_blocks
+from app.core.artifact_blocks import CHART_ALTERNATIVE_BLOCK_TYPES, parse_blocks
 from app.generation.prompt import build_polish_prompt, build_notes_prompt
 from app.generation.prompts import coerce_style
 from app.agent.followup import generate_artifact_followups
@@ -140,16 +141,16 @@ def _has_chart_fence(text: str) -> bool:
     return any(mark in (text or "") for mark in CHART_FENCE_MARKS)
 
 
-#: 勾选图表后**合法地不画图**的语义块 —— 就是「用列表代替画图」那一族
-#: （`steps` / `timeline` / `cycle` / `sequence` / `quadrant`，见
-#: `get_markdown_block_format` 与 `get_chart_format` 的分工）。
-_CHART_ALTERNATIVE_BLOCKS = ("steps", "timeline", "cycle", "sequence", "quadrant")
+#: 勾选图表后**合法地不画图**的语义块 —— 见 `core/artifact_blocks.py` 的同名常量
+#: （判据、prompt 文案、这里三处共用那一份；此处只留别名便于本模块内阅读）。
+_CHART_ALTERNATIVE_BLOCKS = CHART_ALTERNATIVE_BLOCK_TYPES
 
 
 def _chart_missing_warning(text: str) -> str | None:
     """勾了图表但产物里没有图 → 返回 warning 文案；否则 `None`。
 
-    ⚠️ **两处调用点共用这一份**（非流式 done 与流式 done，模式 #54）：此前是两段
+    ⚠️ **两处调用点共用这一份**（流式端点的**双产物分支**与**单产物分支**，
+    模式 #54）：此前是两段
     逐字重复的「判定 + 选原因 + 拼文案」，加一条判据就得改两处，漏一处就是
     「一条路径报假警、另一条不报」这种只在特定入口才出现的偏差。
 
@@ -629,6 +630,10 @@ async def generate_stream(transcript_id: str, request: Request,
     取消逻辑：前端 abort() → SSE 断开 → CancelledError → 保存残缺产物(partial)。
     续写：continue_from=partial → 加载残缺产物 → 拼"继续"上下文 → 流式。
     """
+    # ⚠️ 有副作用的 GET：跨站 `<img src>` 能触发一次计费生成（CORS 只挡读响应、
+    # 不挡请求发出），入口先过来源守卫。
+    ensure_trusted_request(request)
+
     store = request.app.state.store
     config = request.app.state.config
 
@@ -1309,7 +1314,7 @@ async def generate_stream(transcript_id: str, request: Request,
                 # 检索根本没跑，web_param 恒为 None（`compact_params` 会丢掉空值）。
                 extra_params={"webSearch": web_param}))
             _auto_title(store, transcript_id, mv.content)
-            # 图表未生成兜底（P1-3）：判据与文案与上面非流式路径同源（同一个 helper）
+            # 图表未生成兜底（P1-3）：判据与文案与上面双产物分支同源（同一个 helper）
             _chart_warn = (_chart_missing_warning(raw_content)
                            if "chart" in format_list and stream_mode != "polished" else None)
             if _chart_warn:

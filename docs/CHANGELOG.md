@@ -6,6 +6,55 @@
 
 ---
 
+## 2026-10-20 — 代码审查（安全 / 前端 / 后端三路）后的整改
+
+**起因**：用户「然后你再大致的去进行代码质量和漏洞审查」，三路审查列出 15 条问题，
+本轮全部修掉。**没有一条是「新功能」** —— 这批的共同形态是「机制看着在、实际不生效」
+或「同一份判据住了两处」。
+
+### 安全（4 条 + 4 条纵深）
+
+| # | 问题 | 修法 |
+|---|---|---|
+| S1 | **导出 HTML 直通原始正文**：`GET /export/{id}?format=html` 把模型/用户内容原样渲染，产物里若出现 `<script>` 或 `onerror=`，打开导出文件即执行。Tauri 的 PDF 路径走同一个 URL，且它在**同源**（`127.0.0.1:7413`）上下文里导航 —— 一段脚本就能 `fetch('/api/cli/resources')` 读出整库、或调写接口 | 加 **CSP + 一次性 nonce**（[export.py](../backend/app/routers/export.py)::`_csp_meta`）：`script-src 'nonce-<随机>'`，我们自己的脚本全带 nonce，正文里的 `<script>`（内联/外链/带 `onerror`）一律不执行。⚠️ **HTML 内容一个字都不改**（保「预览所见 = 导出所得」）；`style-src 'unsafe-inline'` 必需（KaTeX / Pygments / cards.css 全是内联）；每次导出新 nonce |
+| S2 | **IPv6 完全绕过 SSRF 黑名单**：旧实现只列 IPv4 网段、DNS 也只查 `AF_INET` | [url_security.py](../backend/app/utils/url_security.py) 重写：`ipaddress.ip_address` 统一判 v4/v6（`is_private` 覆盖 ULA/link-local）+ `::ffff:a.b.c.d` **按内嵌的 v4 判**（否则一条 v6 写法绕过整张 v4 表）+ DNS 双栈解析 |
+| S3 | **重定向不校验**：`requests.get(url, allow_redirects=True)` 让公网 URL 一跳 302 到 `127.0.0.1` | `safe_get` / `safe_get_httpx` **逐跳自己跟**（`allow_redirects=False` + 每跳 `validate_url`），次数上限 `MAX_REDIRECTS` |
+| S4 | **有副作用的 GET 无来源校验**：CORS 只拦跨站**读响应**，`<img src="…/api/generate/{id}/stream">` 照样发出 —— 用户的钱和产物都花了，页面什么都看不到 | [core/origin.py](../backend/app/core/origin.py)：`X-LiMo-Client` 头（主判据，no-cors 请求带不了自定义头）+ Origin/Referer 白名单兜底；白名单正则与 `main.py` 的 CORS **同一份**。前端所有请求经 `CLIENT_HEADERS` 带上 |
+
+纵深四条：`_val` 容器截断（见下）｜`card_vars` 拦 `expression(` / `url(`（字符集全合法、连起来是调用，见下）｜IPv6 日志语义改准（不再把「是 IPv6」记成「不是 IP」）｜未预期异常回显截到 300 字符。
+
+### 前端（4 条）
+
+- **F1 两个浮层可同时打开**：`@ 引用` 与 `回答依据` 都 `absolute bottom-full` 锚在同一块输入区，两个独立 boolean ⇒ 精确重叠，后渲染那张盖住前一张（症状是「点 @ 没反应」）。改为**一个 `'ref' | 'mode' | null` 选择器字段**，「同一时刻至多一张」由类型本身保证。⚠️ 改完漏删旧 `useState` 撞名，`tsc` 当场报 `Identifier 'modeOpen' has already been declared`。
+- **F2 `cycle` 项数越界时全叠在环顶**：注释写着「内容一字不少」，但 7 个环节挤在同一个角度档上，**视觉上是一坨**。加 `:has()` 闸门：项数不在 3–6 → 退回**普通有序列表**（与 `timeline` 同出口，「内容永远不该因为渲染不认识而消失」）。
+- **F3 `chat-prefs` 承诺跨标签页同步却无 `storage` 监听**：`useSyncExternalStore` 的快照以「磁盘原始串」为键，另一标签页写入后本页缓存永远命中。补 `storage` 事件订阅。
+- **F4a 「回答依据」浮层无 Escape**：隔壁 `@` 浮层有（input 自带 `onKeyDown`），两隔壁行为不一致。Esc 收口到 `document` 监听那一处。**F4b `cardToggleWiring` 守卫射程只覆盖 `PreviewArea.tsx` 一个文件**：改开关未必发生在那里 —— 判据改成「整个 `components/` 里骨架写入点只允许设置页一处」。⚠️ 路径基准必须是 `resolve(root, …)`，写成 `resolve('settings', …)` 会按 **CWD** 解析、把设置页自己当成违规者。
+
+### 后端（7 条）
+
+- **B1 `_ANSWER_MODES` 与 prompt 层 `scopes` 是同一枚举的两份**：`routers/chat.py` 导入即体检（`_check_scope_keys()` 在模块级直接调用），`test_chat_answer_mode.py` 补「键集相等」+ monkeypatch 让体检真炸的对照实验。
+- **B2 `CHART_ALTERNATIVE_BLOCK_TYPES` 名单在三处手抄**（prompt 文案 / `_chart_missing_warning` 判据 / 模块注释）：收口到 [core/artifact_blocks.py](../backend/app/core/artifact_blocks.py)，prompt 文案由它 `join` 拼出。⚠️ 用 **tuple 不用 frozenset** —— prompt 文案需要稳定顺序。失效形态：加第六种时漏改任一处 = prompt 教了而完成期 warning 不认，**用户照做反被报「图表未生成」**。
+- **B3** `artifact_blocks.py` 注释「那 10 种」实际 12 种 → 改写为集合名（数量词是第二真相源，`"17"`/`"18"` 两轮各加一种都没人回头改它）。
+- **B4** `_MARKER_COLORS`（Word 导出配色表）无键集守卫 → 加双向断言（缺项 / 多项都红）。
+- **B5** `_LIST_BODY`（测试里的块示例表）缺 `sequence` / `quadrant`。
+- **B6** `_chart_missing_warning` 注释把「双产物 / 单产物分支」误称「非流式 / 流式」。
+- **B7** `agent/prompts/__init__.py` docstring 的「六层叠加」与「对话侧两种 type」都已过时（现在是三选一 / 二选一 + 七种 type）。
+
+**另有两条判据收口**：
+
+- **`logging._val` 的容器不截断**：`log.info("Tool", args={...})` 能把整段工具入参打进日志（1000 条环形缓冲 + 滚动文件），而 `GET /api/logs` 会把它们交给前端 LogPanel —— 用户贴日志排查时就顺带外泄了会话内容。字符串一直截断、容器不截断，**不是有意的例外，是那条判据当时只写了 `str` 分支**。现在字符串 80 / 容器 300（容器要给括号引号键名留位置）。⚠️ 顺带把 `bool` 分支挪到数字分支**之前**（`bool` 是 `int` 子类，写反时靠 `str(True)` 恰好也能对，所以一直没人发现）。
+- **`card_vars` 允许 `expression(...)` / `url(...)`**：每个字符都在 `_CARD_VAR_VALUE_RE` 白名单里，**光看字符集判不出来**。值里含这两个调用直接丢弃该项（逐项丢弃、同串其余项照常 —— 判据同 `card_style`）。
+
+### 测试与文档
+
+- **`normalize_export_nonce`**（[conftest.py](../backend/tests/conftest.py)）：CSP nonce 每次导出都新，四条「逐字节相等」断言因此全红。归一**两种形态**——CSP 指令里的 `'nonce-…'` 与标签属性 `nonce="…"`。⚠️ 只归一前者是实测踩到的坑：diff 会吐 148 万字符「相同」+ 一行差异，因为差异点正好落在 `<script nonce="…">` 之后。归一后 meta 标签仍在串里，CSP 缺失照样被抓。
+- **`PROMPT_VERSION` `"18"` → `"19"`**：B2 让 prompt 文案里手写的「这**五种**」变成由常量拼出的「这**几种**」。输出与 `"18"` 只差这一个词，判据/示例/触发条件全不变 —— bump 走的是「发给模型的文本变了就 bump」这条纪律，不是行为变了。
+- 新增 `test_logging_val.py`；`test_export_cards.py` 补「字符全合法、连起来是调用」一组。
+
+**影响范围**：导出 HTML 多一个 `<meta>` 与 nonce 属性（内容不变）；所有 HTTP 请求多一个 `X-LiMo-Client` 头；SSRF/重定向校验覆盖 IPv6 与跳转；其余为判据收口与注释修正，**无 UI 变化、无存储变更**。
+
+---
+
 ## 2026-10-20 — 移除预览工具栏的「章节卡片」开关
 
 **诉求**：用户「章节卡片那个按钮移除」。

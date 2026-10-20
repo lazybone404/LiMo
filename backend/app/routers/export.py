@@ -1118,6 +1118,13 @@ def _parse_card_vars(raw: str) -> str:
             continue
         if not value or not _CARD_VAR_VALUE_RE.match(value):
             continue
+        # ⚠️ 字符集挡不住的两类「值本身就是可执行/可外联的函数调用」：
+        # `expression(...)` 是 IE 时代的 CSS 内脚本（现代引擎不执行，但它出现在
+        # 白名单里说明字符集判据只说了「这些字符安全」，没说「这些形状安全」）；
+        # `url(...)` 能把 `<style>` 变成外联点（图片/字体请求 = 一次带 Referer 的外泄）。
+        # 前端 `serializeCardVars` 只发自己算出来的值，这里是**手工构造请求**的纵深。
+        if "expression(" in value.lower() or "url(" in value.lower():
+            continue
         decls.append(f"{name}:{value}")
     return ":root{" + ";".join(decls) + "}" if decls else ""
 
@@ -1223,6 +1230,42 @@ def _render_md_with_blocks(md: str) -> str:
     return _render_blocks_html(md, _render)
 
 
+def _csp_meta(nonce: str) -> str:
+    """导出 HTML 的内容安全策略 —— **只允许我们自己生成的脚本执行**。
+
+    威胁模型（2026-10-20 审查发现）：`markdown` 的 `md_in_html` 扩展**保留用户内容里的
+    原始 HTML**，而导出的 HTML 在 Tauri 的 PDF 通路里是被 WebView2 **同源导航**打开的
+    （目标就是 `http://127.0.0.1:7413/api/export/...`）—— 正文里一段 `<script>` 就能以
+    同源身份读整个本地库、调写接口，CORS 一点忙都帮不上（同源根本不发 preflight）。
+
+    修法刻意**不是净化 HTML**：净化器要么引一份重依赖（bleach/nh3），要么把用户自己写的
+    `<details>` / `<kbd>` / `<span style>` 一起误伤，且"允许清单"会变成第二份需要维护的
+    真相源。改用一次性 nonce —— 我们自己的 `<script>` 全部带上它，正文里的 `<script>`
+    （内联或外链、有没有 `onerror=`）一律无 nonce ⇒ 不执行。**HTML 内容一个字都不改**，
+    所以「预览所见 = 导出所得」在这条路上不受影响。
+
+    ⚠️ `style-src` **必须** `'unsafe-inline'`：KaTeX / Pygments / cards.css / blocks.css
+    全是内联注入的 `<style>`，且 KaTeX 的客户端渲染在运行时会再注入样式。
+    ⚠️ `img-src` **刻意放开 http(s)**：绝大多数图片已 base64 内联，但内联失败的会保留
+    原始 URL，收紧到 `data:` 会让它们集体裂图，而收益为零 —— 没有脚本就构造不出带数据的
+    `<img src>`，静态预埋的图片地址读不到任何响应。
+    ⚠️ `object-src` / `frame-src` / `base-uri` / `form-action` 全 `'none'`：导出页不需要
+    它们，而这些是同一个"加载并执行"家族的其它入口（`<base href>` 劫持相对链接尤其阴）。
+    """
+    return (
+        '<meta http-equiv="Content-Security-Policy" content="'
+        "default-src 'none'; "
+        f"script-src 'nonce-{nonce}'; "
+        "style-src 'unsafe-inline'; "
+        "img-src data: blob: http: https:; "
+        "font-src data:; "
+        "connect-src 'none'; "
+        "object-src 'none'; frame-src 'none'; "
+        "base-uri 'none'; form-action 'none'"
+        '">'
+    )
+
+
 def _build_selfcontained_html(md: str, title: str, theme: str = "limo",
                               skeleton: str = "paper", card_style: str = "gpt",
                               marker_decor: bool = True, card_vars: str = "",
@@ -1250,6 +1293,12 @@ def _build_selfcontained_html(md: str, title: str, theme: str = "limo",
     未跟随时取到的就是今天那批硬编码色值，**零回归不靠分支靠 `var()` 兜底**。
     """
     import html as html_mod
+    import secrets
+
+    # 一次性 nonce：本函数生成的每个 `<script>` 都要带（见 `_csp_meta` 的模块文档）。
+    # ⚠️ **每次导出都重新生成** —— 复用会让"一次泄露的 nonce 永久有效"，
+    # 而它本来只是个 16 字节随机串，成本为零。
+    nonce = secrets.token_urlsafe(16)
 
     theme_css = HTML_THEMES.get(theme, HTML_THEMES["github"])
     safe_title = html_mod.escape(title or "导出")
@@ -1290,13 +1339,16 @@ def _build_selfcontained_html(md: str, title: str, theme: str = "limo",
     body = _render_formulas_katex(body)
 
     # 公式：优先本地 KaTeX，不可用时 CDN 回退
+    # ⚠️ **每个 `<script>` 都要带 nonce**（`_csp_meta` 的 `script-src 'nonce-…'` 会把
+    # 不带它的脚本静默拦掉）—— 漏一个的表现是"有些公式不渲染"，页面本身完全正常。
+    # 外链 `<script src>` 同样吃 nonce（CSP 对内外链一视同仁），所以不需要为 CDN 开域名白名单。
     if katex_js:
-        footer_script = f"<script>{katex_js}</script><script>renderMathInElement(document.body,{{delimiters:[{{left:'$$',right:'$$',display:true}},{{left:'$',right:'$',display:false}}]}})</script>"
+        footer_script = f'<script nonce="{nonce}">{katex_js}</script><script nonce="{nonce}">renderMathInElement(document.body,{{delimiters:[{{left:\'$$\',right:\'$$\',display:true}},{{left:\'$\',right:\'$\',display:false}}]}})</script>'
     else:
-        footer_script = """<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-<script>renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]})</script>"""
+        footer_script = f"""<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script nonce="{nonce}" src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script nonce="{nonce}" src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script nonce="{nonce}">renderMathInElement(document.body,{{delimiters:[{{left:'$$',right:'$$',display:true}},{{left:'$',right:'$',display:false}}]}})</script>"""
 
     # ── 主题跟随：五条轴各自独立，非空且合法才写 ──
     # ⚠️ 白名单只做**字符**校验、**刻意不持有 key 列表**（那是 CSS 那份真相源的第二份
@@ -1386,6 +1438,7 @@ def _build_selfcontained_html(md: str, title: str, theme: str = "limo",
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+{_csp_meta(nonce)}
 <title>{safe_title}</title>
 {style_block}
 </head>

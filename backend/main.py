@@ -24,7 +24,7 @@ from app.core.concurrency import ExecutionGuard
 from app.core.logging import request_id, init_request_id_logging, RequestIDFilter
 from app.storage.store import Store
 
-app = FastAPI(title="LiMo", version="0.5.10")
+app = FastAPI(title="LiMo", version="0.5.11")
 
 @app.middleware("http")
 async def add_request_id(request, call_next):
@@ -71,12 +71,9 @@ def _log_request(request, status: int, duration_ms: float, response_headers=None
         log.info("HTTP", **kw)
 
 # CORS Origin 白名单 — 只允许本机与 Tauri 壳来源，阻隔任意网页跨站访问本地后端。
-# - Tauri v2 生产 WebView2 实际 origin: http://tauri.localhost（Windows 实测）、https://tauri.localhost（macOS/Linux）
-# - 部分平台/custom protocol 用 tauri://localhost
-# - 开发 Vite devUrl: http://localhost:<任意端口>（端口通配）
-_CORS_ALLOWED_ORIGIN_RE = re.compile(
-    r'^(https?://(localhost|127\.0\.0\.1)(:\d+)?|https?://tauri\.localhost|tauri://localhost)$'
-)
+# ⚠️ 正则住在 `app/core/origin.py`（与「有副作用的 GET」守卫**共用同一份**）：
+# 两处各写一份时，改一处漏一处的表现是「CORS 放行了、守卫拦了」或反过来。
+from app.core.origin import ALLOWED_ORIGIN_RE as _CORS_ALLOWED_ORIGIN_RE  # noqa: E402
 
 app.add_middleware(
     CORSMiddleware,
@@ -321,7 +318,7 @@ async def startup():
 @app.get("/health")
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.5.10", "started_at": app.state.started_at}
+    return {"status": "ok", "version": "0.5.11", "started_at": app.state.started_at}
 
 
 # 路由（files 在 ingest 之前——/files/{id}/original 比 /files/{id}/{name} 更具体，必须先匹配）

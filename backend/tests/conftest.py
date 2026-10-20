@@ -13,6 +13,7 @@ CLI 门禁脚本），而每个文件各自拼一遍「建临时 Store + 塞几�
 写了一行同样的 `sys.path.insert`。新文件**不要再写那一行**（pytest 会先加载本文件）。
 """
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -31,6 +32,32 @@ from app.core.types import RawMetadata, RawTranscript, SourceType  # noqa: E402
 from app.storage.store import Store  # noqa: E402
 
 _TMP: list[str] = []
+
+
+#: 导出 HTML 的 CSP nonce，**两种形态都要归一**（顺序无关：两个字符集互不包含）：
+#:   · CSP 指令里的 `'nonce-<token>'`（`<meta http-equiv="Content-Security-Policy">`）
+#:   · 标签属性里的 `nonce="<token>"`（`<script nonce="…">`）
+#: ⚠️ 只归一前者是**实测踩到的坑**：逐字节断言照样红，而 diff 会把 1.4MB 的 KaTeX
+#: bundle 整段吐出来 —— 差异点正好落在 `<script nonce="…">` 之后，148 万字符「相同」。
+_CSP_NONCE_ATTR_RE = re.compile(r'nonce="[A-Za-z0-9_-]+"')
+_CSP_NONCE_DIRECTIVE_RE = re.compile(r"nonce-[A-Za-z0-9_-]+")
+
+
+def normalize_export_nonce(html: str) -> str:
+    """把导出 HTML 里的 CSP nonce 归一成固定占位符。
+
+    导出 HTML 每次调用都生成**新的随机 nonce**（`secrets.token_urlsafe(16)`，见
+    `routers/export.py::_csp_meta`）—— 那是「正文里的 `<script>` 一律不执行」的
+    实现手段，不是不稳定。于是任何「两次导出逐字节相等」的断言都会被它打破，
+    而那条断言真正想钉的是**样式/结构没有多一段**，与 nonce 无关。
+
+    ⚠️ 归一化**只动 nonce 值**，meta 标签本身仍在串里 —— 于是「CSP 缺失」这类
+    回归（比如某次重构把注入闸门写歪）依然会被逐字节断言抓到。
+    ⚠️ 需要区分「两次 nonce 是否相同」的用例（nonce 复用 = 可预测 = 防护失效）
+    不要用本函数，直接比对原文。
+    """
+    return _CSP_NONCE_DIRECTIVE_RE.sub(
+        "nonce-{NONCE}", _CSP_NONCE_ATTR_RE.sub('nonce="{NONCE}"', html))
 
 
 def make_store() -> Store:

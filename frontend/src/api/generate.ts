@@ -1,7 +1,7 @@
 /**
  * generate 域 — 生成 / 图片处理（流式端点）。
  */
-import { apiFetch, getErrorMessage, BASE, type GenerateResult, type MarkdownView } from './core'
+import { apiFetch, getErrorMessage, BASE, CLIENT_HEADERS, type GenerateResult, type MarkdownView } from './core'
 import { parseSSEStream } from './sse'
 
 /**
@@ -190,7 +190,7 @@ export function streamGenerate(
   callbacks.onDone = (...args) => { receivedDoneOrError = true; origOnDone(...args) }
   callbacks.onError = (msg) => { receivedDoneOrError = true; origOnError(msg) }
 
-  fetch(`${BASE}/generate/${transcriptId}/stream${qs ? '?' + qs : ''}`, { signal })
+  fetch(`${BASE}/generate/${transcriptId}/stream${qs ? '?' + qs : ''}`, { signal, headers: CLIENT_HEADERS })
     .then(async (response) => {
       if (!response.ok) {
         let body: any = {}

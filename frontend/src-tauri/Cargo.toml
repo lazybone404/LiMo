@@ -1,6 +1,6 @@
 [package]
 name = "limo"
-version = "0.5.10"
+version = "0.5.11"
 description = "LiMo — AI 知识管理系统"
 authors = ["lazybone404"]
 license = ""

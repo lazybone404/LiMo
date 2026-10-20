@@ -1,7 +1,7 @@
 """
 分层 System Prompt 加载器 — 参照 Pi 的 AGENTS.md + APPEND_SYSTEM.md + environment.md
 
-六层叠加：
+分层叠加（下面每一行是一层；`scope_*` 三选一、`web_tools` / `no_web` 二选一）：
   base.md          → 角色定义
   web_tools.md     → 联网能力（**仅在联网开关打开时注入**）
   no_web.md        → 离线声明（**仅在联网开关关闭时注入**，与上一条互斥）
@@ -14,7 +14,8 @@
 
 ⚠️ `formats.md` 是**静态**层，不含 `doc_context`。对话侧与产物侧**刻意不共用同一份
 规范文本**：产物那边由 `generation/prompt.py::get_markdown_block_format` 注入
-（只教 `key-takeaway`），这里是对话侧的两种 type。两侧的块类型集合不相交
+（产物侧的 type 全集见 `ARTIFACT_BLOCK_TYPES`），这里是对话侧的 type 全集
+（见 `CHAT_BLOCK_TYPES`）—— 两侧的块类型集合不相交
 （见 `core/artifact_blocks.py` 的 `ARTIFACT_BLOCK_TYPES` / `CHAT_BLOCK_TYPES`），
 措辞、触发条件与示例也各不相同 —— 共用一份会让某一侧被迫接受另一侧的纪律。
 

@@ -2,7 +2,7 @@
  * API 客户端 barrel — 全部公共符号在此聚合，15 个消费方零改动。
  * 按域拆分见 api/ 子文件（core/capabilities/transcripts/ingest/generate/chat/settings/export）。
  */
-export { apiUrl, appUrl, ApiErrorException, getErrorMessage, apiFetch } from './core'
+export { apiUrl, appUrl, ApiErrorException, getErrorMessage, apiFetch, CLIENT_HEADERS } from './core'
 export type {
   ApiError, EngineOption, EngineProviderInfo, Capabilities,
   DocEntry, TranscriptFull, GenerateResult, MarkdownView, ChatResult,

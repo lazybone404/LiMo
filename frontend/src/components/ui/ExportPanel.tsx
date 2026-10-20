@@ -3,7 +3,7 @@ import { useStore } from '../../store'
 import { X, Download, FileText, Globe, File, Archive, Search, ChevronUp, ChevronDown, Film, PenLine, Image, BarChart3, BookOpen, FileType } from 'lucide-react'
 import { getTypeMeta } from '../gen-panel/constants'
 import { downloadFromUrl, downloadBlob, sanitizeExportName } from '../../lib/download'
-import { apiUrl } from '../../api/client'
+import { apiUrl, CLIENT_HEADERS } from '../../api/client'
 import { serializeCardVars } from '../../lib/card-prefs'
 import { getSavedIntensity, textureOpacity } from '../../lib/texture'
 
@@ -380,7 +380,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
                 } else {
                   // 多文档：POST /export/batch
                   const r = await fetch(apiUrl('/export/batch'), {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    method: 'POST', headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ids: selectedIds }),
                   })
                   if (!r.ok) { const err = await r.json().catch(() => ({ detail: `HTTP ${r.status}` })); addToast(err.detail || '导出失败', 'error'); return }
@@ -400,7 +400,7 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
               try {
                 const tabs = Array.from(new Set(typeGroups.flatMap(g => groupTabs[g.type] || [])))
                 const r = await fetch(apiUrl('/export/custom'), {
-                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  method: 'POST', headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
                   // skeleton / card_style / marker_decor / 主题六轴跟随预览（与 ExportMenu 同源）——
                   // ⚠️ 默认值（`paper` / 装饰开）时后端走的仍是那条逐字未改的分支。
                   // 主题六轴**无条件发**（跟随是产品决策不是开关），后端逐项白名单校验。

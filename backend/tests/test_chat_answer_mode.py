@@ -174,3 +174,37 @@ def test_接线_非流式端点也传了():
     body = _chat_body()
     assert 'answer_mode: str = "strict"' in body
     assert "_answer_mode(req.answer_mode)" in body
+
+
+# ═══════════════════════════════════════════════════════════
+# 5. 两处枚举必须键集相等（B1）
+# ═══════════════════════════════════════════════════════════
+
+def test_枚举与_prompt_层_scope_键集相等():
+    """`routers/chat.py::_ANSWER_MODES` 与 `PromptLoader.scopes` 是**同一份三档**的
+    两处落点：前者决定请求收不收，后者决定加载哪份 `scope_*.md`。
+
+    只改一边的两种失效形态都不在正常路径上：模板新加了而枚举没加 → 请求 400
+    （用户选不到那一档）；枚举加了而模板没加 → `scopes[mode]` 取到 `None`，
+    在生成 path 上抛错。两者都要等用户真的选那一档才现形。
+
+    ⚠️ 断言走**真实实现** `_check_scope_keys()`（它也是模块导入时的那一次体检），
+    不是在这里复刻一遍集合比较 —— 复刻出来的那份绿了只能说明测试自己算对了。
+    """
+    from app.routers.chat import _ANSWER_MODES, _check_scope_keys
+
+    assert set(_ANSWER_MODES) == set(PromptLoader().scopes)
+    _check_scope_keys()  # 正常键集下不抛
+
+
+def test_键集分叉时体检真的会炸(monkeypatch):
+    """对照实验：把枚举砍掉一档 → `_check_scope_keys()` 必须抛。
+
+    没有这条，「体检函数存在」与「体检函数有用」是两件事 —— 常量比对写错了
+    （比如拿 `_ANSWER_MODES` 跟自己比）时上面那条照样绿。
+    """
+    from app.routers import chat as chat_router
+
+    monkeypatch.setattr(chat_router, "_ANSWER_MODES", ("strict", "open"))
+    with pytest.raises(RuntimeError):
+        chat_router._check_scope_keys()

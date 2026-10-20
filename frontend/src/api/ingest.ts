@@ -5,7 +5,7 @@
  * （仅 body 类型与 header 不同），手写 SSE 解析统一走 sse.ts 的 parseSSEStream。
  * 已知微小差异：console.error 文案从两份统一为一条。
  */
-import { BASE } from './core'
+import { BASE, CLIENT_HEADERS } from './core'
 import { parseSSEStream } from './sse'
 
 type ProgressCb = (ev: { phase: string; status: string; percent?: number; message?: string }) => void
@@ -68,7 +68,7 @@ async function ingestStream(
   let receivedProgress = false
   try {
     // 优先尝试 SSE 流式端点
-    const response = await fetch(url + '/stream', { method: 'POST', body, headers, signal })
+    const response = await fetch(url + '/stream', { method: 'POST', body, headers: { ...CLIENT_HEADERS, ...headers }, signal })
     const contentType = response.headers.get('content-type') || ''
     if (contentType.includes('text/event-stream')) {
       const reader = response.body?.getReader()
@@ -134,7 +134,7 @@ async function fallbackJson(
     const headers = body instanceof URLSearchParams
       ? { 'Content-Type': 'application/x-www-form-urlencoded' }
       : undefined
-    const r = await fetch(url, { method: 'POST', body, headers, signal })
+    const r = await fetch(url, { method: 'POST', body, headers: { ...CLIENT_HEADERS, ...headers }, signal })
     const data = await r.json()
     // 同上（主路径那份注释解释了判据为什么不能含 `message`）——两处同源，改一处
     // 另一处仍漏：`fallbackJson` 是**流式失败才走**的兜底路径，漏了它等于「SSE

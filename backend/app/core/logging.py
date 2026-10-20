@@ -99,13 +99,26 @@ def _format(msg: str, kwargs: dict) -> str:
     return f"{msg} | {pairs}"
 
 
+#: 单值截断长度。字符串 80 是既有取值；**容器给 300** 是因为 `json.dumps` 的括号、
+#: 引号、键名本身就占掉一大截，80 常常只够留下半个值，而容器里承载的恰恰是「这条日志
+#: 到底在记哪一次调用」的辨识信息。
+_MAX_STR = 80
+_MAX_CONTAINER = 300
+
+
 def _val(v) -> str:
-    if isinstance(v, (int, float)):
-        return str(v)
+    """日志值 → 单行短串。
+
+    ⚠️ **容器也必须截断**（2026-10-20 修）：此前 dict/list 直接 `json.dumps` 原样返回，
+    于是一条 `log.info("Tool", args={...})` 能把整段工具入参打进日志（默认 1000 条
+    环形缓冲 + 滚动文件），而 `GET /api/logs` 会把它们交给前端 LogPanel —— 用户分享
+    日志排查问题时就顺带外泄了会话内容。字符串一直是截断的，容器漏掉不是「有意的
+    例外」，是这条判据当时只写了 str 分支。
+    """
     if isinstance(v, bool):
         return str(v)
-    if isinstance(v, str) and len(v) <= 80:
-        return v
-    if isinstance(v, str):
-        return v[:77] + "..."
-    return json.dumps(v, default=str, ensure_ascii=False)
+    if isinstance(v, (int, float)):
+        return str(v)
+    s = v if isinstance(v, str) else json.dumps(v, default=str, ensure_ascii=False)
+    limit = _MAX_STR if isinstance(v, str) else _MAX_CONTAINER
+    return s if len(s) <= limit else s[: limit - 3] + "..."

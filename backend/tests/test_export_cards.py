@@ -20,6 +20,7 @@ import pytest
 from docx import Document
 from docx.oxml.ns import qn
 
+from conftest import normalize_export_nonce
 from app.core.errors import AppError
 from app.routers import export
 from app.routers.export import _build_selfcontained_html, _load_card_css, _parse_card_vars
@@ -179,8 +180,10 @@ def test_load_card_css_读到的是真文件():
 
 def test_显式传_paper_与不传参数逐字节等价():
     """「默认值就是 paper」这条契约本身要能被证伪 —— 不传即走用户今天拿到的那条路。"""
-    assert (_build_selfcontained_html(MD, "标题")
-            == _build_selfcontained_html(MD, "标题", skeleton="paper", card_style="ink"))
+    # 每次导出都换 CSP nonce（见 `export.py::_csp_meta`），比的是归一化后的串
+    assert (normalize_export_nonce(_build_selfcontained_html(MD, "标题"))
+            == normalize_export_nonce(
+                _build_selfcontained_html(MD, "标题", skeleton="paper", card_style="ink")))
 
 
 def test_打包路径_MEIPASS_下也读得到(tmp_path, monkeypatch):
@@ -280,6 +283,24 @@ def test_微调_值里的逃逸字符全被拦下(evil):
         assert bad not in css, f"{bad!r} 混进去了：{css}"
 
 
+def test_微调_字符集合法但形状危险的调用也被拦下():
+    """对照：去掉 `expression(` / `url(` 这两条检查 → `url(x)` 那条能原样进 `<style>`。
+
+    ⚠️ 与上一条**判据不同层**：上一条测「字符集」（`<` `;` `/` `*` 这些根本没被允许），
+    这一条测「**字符全合法、连起来却是个调用**」—— `expression(x)` 与 `url(x)` 的每一个
+    字符都在 `_CARD_VAR_VALUE_RE` 的白名单里，光看字符集判不出来。
+    """
+    assert _parse_card_vars("--card-border:expression(alert(1))") == ""
+    assert _parse_card_vars("--card-bg-base:url(evil)") == ""
+    # 逐项丢弃：同串里的合法项照常生效
+    css = _parse_card_vars("--card-bg-base:url(evil);--card-lift:40%")
+    assert "url(" not in css and "--card-lift:40%" in css
+    # 反面对照：`var(...)` / `color-mix(...)` 是**真实取值**，不能被误伤
+    assert "--card-bg-base:var(--tk-hover)" in _parse_card_vars(_LEGAL_VARS)
+    mix = "--card-lift:color-mix(in srgb, var(--tk-accent) 8%, var(--tk-elevated))"
+    assert _parse_card_vars(mix).startswith(":root{--card-lift:color-mix(")
+
+
 def test_微调_必须排在_cards_css_之后():
     """⚠️ 顺序即优先级：方案块 `[data-card-style="x"]` 与微调的 `:root` **特异性相同**
     （都是 0,1,0），同特异性下后者胜。放到前面会被方案原样压住 ——
@@ -292,8 +313,9 @@ def test_微调_必须排在_cards_css_之后():
 
 def test_微调_没传时与改造前逐字节等价():
     """零回归：`card_vars` 默认空串 ⇒ 多出来的那个 `<style>` 根本不存在。"""
-    assert (_build_selfcontained_html(MD, "标题", skeleton="card")
-            == _build_selfcontained_html(MD, "标题", skeleton="card", card_vars=""))
+    assert (normalize_export_nonce(_build_selfcontained_html(MD, "标题", skeleton="card"))
+            == normalize_export_nonce(
+                _build_selfcontained_html(MD, "标题", skeleton="card", card_vars="")))
 
 
 def test_微调_paper_模式下不注入():

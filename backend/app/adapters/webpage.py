@@ -129,16 +129,15 @@ class WebpageAdapter(PipelineAdapter):
         if on_progress:
             on_progress(ProgressEvent(phase="download", status="running", message="下载网页..."))
 
-        # SSRF 防护
-        from app.utils.url_security import validate_url
-        validate_url(url)
+        # SSRF 防护（⚠️ 用 safe_get 而不是裸 requests.get：后者默认跟随重定向，
+        # 公网 URL 302 到 127.0.0.1 就绕过了首跳校验）
+        from app.utils.url_security import safe_get
 
         # 下载（to_thread 释放事件循环，否则 requests 最长 30s 阻塞整个后端）
         # 使用 requests 而非 trafilatura.fetch_url，后者编码处理不稳定
-        import requests as _requests
         def _download() -> str:  # 同步函数（asyncio.to_thread 期望同步；async def 会返回未 await 的 coroutine）
             try:
-                resp = _requests.get(
+                resp = safe_get(
                     url,
                     timeout=30,
                     headers={
@@ -152,10 +151,19 @@ class WebpageAdapter(PipelineAdapter):
                 # 优先使用响应头声明的编码，回退到 UTF-8
                 resp.encoding = resp.apparent_encoding or "utf-8"
                 return resp.text
+            except ValueError:
+                # ⚠️ 安全校验失败**不许回退**：`trafilatura.fetch_url` 会自己发请求
+                # 并跟随重定向，正是刚刚被 safe_get 拦下的那条路。直接抛出去。
+                raise
             except Exception as e:
-                # 回退到 trafilatura.fetch_url
-                logger.warning("requests 下载失败 (%s)，回退到 trafilatura.fetch_url", str(e)[:80])
-                return trafilatura.fetch_url(url)
+                # 回退：换成不带伪装 UA 的普通请求（原来的回退走
+                # `trafilatura.fetch_url`，而它**自己发请求并跟随重定向** ——
+                # 攻击者返回一个 500 就能把请求推到那条未校验的路径上）。
+                logger.warning("requests 下载失败 (%s)，回退为普通请求", str(e)[:80])
+                resp = safe_get(url, timeout=30)
+                resp.raise_for_status()
+                resp.encoding = resp.apparent_encoding or "utf-8"
+                return resp.text
         downloaded = await asyncio.to_thread(_download)
 
         if not downloaded:

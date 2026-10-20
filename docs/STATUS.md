@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-10-18 | **版本**: 0.5.10
+**更新**: 2026-10-18 | **版本**: 0.5.11
 
 ---
 
@@ -11,17 +11,17 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 125（11 子目录：adapters 8 / agent 7 / core 29 / downloaders 1 / engines 15 / generation 18 / llm 4 / routers 20 / storage 3 / utils 6 / services 14）+ `limo_cli/` 9（CLI，独立于 `app/`） |
-| 前端 TS/TSX/CSS 文件 | 231（225 ts/tsx + 6 css；业务 146，测试 78，`setup.ts` 1） |
-| 前端测试文件 | 79（78 测试文件 + `setup.ts`；1212 个测试用例，vitest 全绿） |
-| 后端测试文件 | 80（含 `conftest.py` 共享 fixture；2026-10 新增 `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_classify_paths` / `test_folder_tree` / `test_export_md_images` / `test_export_tab_applicability` / `test_followup` / `test_artifact_followup` / `test_web_search_reference` / `test_chat_web_search` / `test_chat_followups` / `test_export_theme`） |
+| 后端 Python 文件 | 128（11 子目录：adapters 8 / agent 7 / core 31 / downloaders 1 / engines 15 / generation 18 / llm 4 / routers 20 / storage 4 / utils 6 / services 14）+ `limo_cli/` 9（CLI，独立于 `app/`） |
+| 前端 TS/TSX/CSS 文件 | 232（226 ts/tsx + 6 css；业务 146，测试 79，`setup.ts` 1） |
+| 前端测试文件 | 80（79 测试文件 + `setup.ts`；1244 个测试用例，vitest 全绿） |
+| 后端测试文件 | 82（含 `conftest.py` 共享 fixture；2026-10 新增 `test_logging_val` /  `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_classify_paths` / `test_folder_tree` / `test_export_md_images` / `test_export_tab_applicability` / `test_followup` / `test_artifact_followup` / `test_web_search_reference` / `test_chat_web_search` / `test_chat_followups` / `test_export_theme` / `test_chat_answer_mode`） |
 | API 路由模块 | 19 业务模块（+ `__init__.py`，共 20 个 .py） |
 | API 端点 | 93（`@router.` 装饰器计数；含 `/api/cli/*` 七端点） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR) | 10 内置（+三方插件 pymupdf4llm） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 17（docs/ 目录 .md 计数：architecture / frontend-patterns / export-pipeline / patterns / 对话协议 / AGENT-ONBOARDING / user-scenarios / plugins / prompts-inventory / BUILD / qianwen-models / ACKNOWLEDGMENTS / code-audit 1-3 + CHANGELOG / STATUS；design/ 另计） |
-| 代码行数 | 后端 app 35,525 + CLI 1,407 / 前端业务 25,801 / 前端测试 15,025（`wc -l` 累加；前端业务 = `src/` 下 ts/tsx **排除 `*.test.*` 与 `setup.ts`**，2026-10-18 按此口径实测重算） |
+| 代码行数 | 后端 app 36,612 + CLI 1,423 / 前端业务 26,172 / 前端测试 15,448（`wc -l` 累加；前端业务 = `src/` 下 ts/tsx **排除 `*.test.*` 与 `setup.ts`**，2026-10-20 按此口径实测重算） |
 
 ---
 
@@ -164,8 +164,8 @@
 | FastAPI Depends 依赖注入 | ✅ 18/19 路由用 `Depends`（未迁：generate/ingest/search；`references.py` 本就不需要） |
 | disconnect_watcher 公共工具 | ✅ 6 端点统一（新增 classify/preview），修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 19/19 路由全量完成，0 处 `HTTPException`（2026-10-11 复核） |
-| 前端测试 | ✅ vitest + 1212 tests（78 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/tagSuggest/文档库 6 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/classifyDialog/readingPrefs/readingLayout/**chatFont（对话字号，含与阅读字号互不干扰的双向断言）/chatMessageList（滚轮 / 回到最新 / 代码块复制）/chatWebSearch（联网开关 + 公网来源呈现：开关→请求参数、两开关互不影响、URL 安全、四种 rebuild 不丢来源）**/docTabs 3 个/字号、接线与快捷键守卫 3 个/版本切换与预览同步 2 个/卡片偏好、切分器、骨架组件 3 个/标记解析、偏好、组件、导出接线 4 个/HTML 注释 1 个/**产物元数据 2 个**/导出偏好 1 个/**themeAxisSync（轴注册表 key 集合 ↔ CSS `[data-*]` 跨语言一致，2026-10-16）**/onAccent/installWarning） |
-| 后端测试 | ✅ 80 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io；版本布局 2 个：store_version_layout/store_legacy_migration；导出与网络 8 个：export_by_version/proxy_exemption/youtube_subtitle/markdown_sections/export_cards/export_md_images/export_tab_applicability/**export_theme（导出跟随主题，18 用例：零回归 / 五条轴属性 / 强度走行内 / 各轴独立 / 白名单边界 / 注入闸门 / 主题层两个 `@media screen` / 跨语言成对守卫，2026-10-16）**；**产物标记 3 个**：artifact_blocks/export_blocks/block_prompt；**智能分类 1 个**：classify，57 用例；**联网检索 1 个**：web_search_reference，39 用例（纯函数 / 检索层 / 编排 / 端点四段，含 9 条对照实验 + `search_web` 返回结构的源码哨兵；2026-10-12 审查后补「整体超时闸门 / 取消透传（起跑前、检索中）/ 显式关闭联网」5 条）；**对话联网 1 个**：chat_web_search，38 用例（工具表开关 / prompt 五层叠加 / `_safe_http_url` / `_extract_sources` / 落盘白名单 / 接线守卫六组，含 4 条对照实验，2026-10-12）；2026-10-11 代码审查修 `fit_to_budget` 分批预算 + 每批新建额度 + 空词表兜底；同日五轮/六轮补策略矩阵、候补与口袋夹、回显同源、标签清洗同源，+10） |
+| 前端测试 | ✅ vitest + 1244 tests（79 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/tagSuggest/文档库 6 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/classifyDialog/readingPrefs/readingLayout/**chatFont（对话字号，含与阅读字号互不干扰的双向断言）/chatMessageList（滚轮 / 回到最新 / 代码块复制）/chatWebSearch（联网开关 + 公网来源呈现：开关→请求参数、两开关互不影响、URL 安全、四种 rebuild 不丢来源）**/docTabs 3 个/字号、接线与快捷键守卫 3 个/版本切换与预览同步 2 个/卡片偏好、切分器、骨架组件 3 个/标记解析、偏好、组件、导出接线 4 个/HTML 注释 1 个/**产物元数据 2 个**/导出偏好 1 个/**themeAxisSync（轴注册表 key 集合 ↔ CSS `[data-*]` 跨语言一致，2026-10-16）**/onAccent/installWarning） |
+| 后端测试 | ✅ 81 文件（含合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io；版本布局 2 个：store_version_layout/store_legacy_migration；导出与网络 8 个：export_by_version/proxy_exemption/youtube_subtitle/markdown_sections/export_cards/export_md_images/export_tab_applicability/**export_theme（导出跟随主题，18 用例：零回归 / 五条轴属性 / 强度走行内 / 各轴独立 / 白名单边界 / 注入闸门 / 主题层两个 `@media screen` / 跨语言成对守卫，2026-10-16）**；**产物标记 3 个**：artifact_blocks/export_blocks/block_prompt；**智能分类 1 个**：classify，57 用例；**联网检索 1 个**：web_search_reference，39 用例（纯函数 / 检索层 / 编排 / 端点四段，含 9 条对照实验 + `search_web` 返回结构的源码哨兵；2026-10-12 审查后补「整体超时闸门 / 取消透传（起跑前、检索中）/ 显式关闭联网」5 条）；**对话联网 1 个**：chat_web_search，38 用例（工具表开关 / prompt 五层叠加 / `_safe_http_url` / `_extract_sources` / 落盘白名单 / 接线守卫六组，含 4 条对照实验，2026-10-12）；2026-10-11 代码审查修 `fit_to_budget` 分批预算 + 每批新建额度 + 空词表兜底；同日五轮/六轮补策略矩阵、候补与口袋夹、回显同源、标签清洗同源，+10） |
 | CLI 契约门禁 | ✅ `scripts/check-cli` 16 项全绿（含 3 条负向对照：后端不可达 / 坏 ID / 截断显式化）；`test_query_contract.py` §8 覆盖 `/api/cli/*` 七端点 + 两条对照实验（2026-10-04） |
 | 产物自证头 | ✅ `notes`/`polished`/`process` 落盘带 `<!-- limo-meta -->` 首行（从哪来/怎么来的/是什么/可信度边界四条），`core/transcript_meta.py` 拆出 envelope 层统一编解码；历史无头产物**不判损坏**；编辑保存带回原头；思维导图等派生视图剥头（2026-10-04）。⚠️ **预览侧**（2026-10-11）：自证头信息由**产物自证条**（正文上方一横排带图标小标签：版本/时间/字数/模型）呈现，展示判据收口 `lib/artifactMeta.ts`；纯视图装饰、**不参与导出** |
 | 共享查询层 | ✅ `services/query.py::QueryService` 收口全部读路径（HTTP 与 CLI **同一份**实现）；顺带修掉存活四个月的 `search.py` 双 `prefix` 导致 `/api/api/search`（前端搜索一直 404 而两侧测试全绿，2026-10-04） |

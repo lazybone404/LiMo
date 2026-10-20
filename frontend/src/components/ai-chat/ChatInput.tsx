@@ -48,13 +48,22 @@ export function ChatInput({ scale }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [composing, setComposing] = useState(false)
   const [docRefs, setDocRefs] = useState<DocRef[]>([])
-  const [refOpen, setRefOpen] = useState(false)
+  // ⚠️ **两个浮层共用一个「当前开着哪个」的选择器字段**（`'ref' | 'mode' | null`），
+  // 不是两个独立 boolean：它们都 `absolute bottom-full` 锚在同一块输入区上，独立 boolean
+  // 允许同时为真 ⇒ 两张浮层**精确重叠**，后渲染的那张盖住前一张，看上去像「点 @ 没反应、
+  // 点开的是回答依据」（两个按钮紧挨着，用户根本分不清是谁开的）。
+  // 改成单选后「同一时刻至多一张」由类型本身保证，不需要在每次 toggle 里手写互斥。
+  const [openMenu, setOpenMenu] = useState<'ref' | 'mode' | null>(null)
+  const refOpen = openMenu === 'ref'
+  const modeOpen = openMenu === 'mode'
+  // 派生的打开/关闭：JSX 与 effect 继续读这两个名字，语义不变。
+  const setRefOpen = (v: boolean) => setOpenMenu(v ? 'ref' : null)
+  const setModeOpen = (v: boolean) => setOpenMenu(v ? 'mode' : null)
   const [refSearch, setRefSearch] = useState('')
   // 三项发送偏好（`lib/chat-prefs.ts`）——⚠️ **订阅**而不是各自 `useState(初值)`：
   // 设置页是第二个入口，改完必须让这里跟着变（见 `useChatPrefs` 的注释）。
   // 真正的生效点仍是发送那一刻 `dispatchSend` 现读（那个位置要的是「此刻」）。
   const { followUp, webSearch, answerMode } = useChatPrefs()
-  const [modeOpen, setModeOpen] = useState(false)
   const taRef = useRef<HTMLTextAreaElement>(null)
   // 输入区 + @ 浮层的共同祖先：判断「点在内部还是外部」的界
   const rootRef = useRef<HTMLDivElement>(null)
@@ -66,16 +75,25 @@ export function ChatInput({ scale }: ChatInputProps) {
   // Portal 到 body 会失去定位基准，故改为监听 document、用 `contains` 划内外界。
   // ⚠️ 两个浮层（@ 引用 / 回答依据）共用这一个监听：它们都锚在同一个 `rootRef` 上、
   // 都不该 Portal，各挂一个 document 监听只是让「什么时候该关」有两份实现。
+  // ⚠️ **Esc 也挂在这里**：回答依据浮层里没有任何可聚焦控件（三档是 `<button>`，
+  // 但按钮不消费 Esc），没有这条监听时它只能靠再点一次按钮或点外面关闭 —— 用户对
+  // 弹出层的直觉是「Esc 关掉」，而这个直觉在隔壁 @ 浮层上恰好成立（那里有个 input
+  // 自带 onKeyDown），于是两隔壁行为不一致。收口到同一处即可，@ 浮层那条 input 上的
+  // 监听保留无害（Esc 在两个层面都会关掉同一个东西）。
   useEffect(() => {
-    if (!refOpen && !modeOpen) return
+    if (!openMenu) return
     const onDown = (e: MouseEvent) => {
       if (rootRef.current?.contains(e.target as Node)) return
-      setRefOpen(false)
-      setModeOpen(false)
+      setOpenMenu(null)
     }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpenMenu(null) }
     document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [refOpen, modeOpen])
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [openMenu])
 
   // 上下文占用进度（C4）— 前端字符估算仅供参考，实际裁剪以后端 tiktoken 为准
   const messages = useChatStore(st => st.messages)
@@ -190,7 +208,7 @@ export function ChatInput({ scale }: ChatInputProps) {
       )}
 
       <div className="flex items-end gap-2">
-        <button onClick={() => { setRefOpen(v => !v); setRefSearch('') }} title="引用文档"
+        <button onClick={() => { setOpenMenu(m => (m === 'ref' ? null : 'ref')); setRefSearch('') }} title="引用文档"
           className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${docRefs.length ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
           <AtSign size={s.btn} />
         </button>
@@ -215,7 +233,7 @@ export function ChatInput({ scale }: ChatInputProps) {
         </button>
         {/* 回答依据（三档）。⚠️ 图标随档变化 —— 光靠高亮分不出「当前是哪一档」，
             而这三档对用户的意义差别很大（尤其 free：它压根不查库）。 */}
-        <button onClick={() => setModeOpen(v => !v)} data-answer-mode={answerMode}
+        <button onClick={() => setOpenMenu(m => (m === 'mode' ? null : 'mode'))} data-answer-mode={answerMode}
           title={`回答依据：${modeMeta.label}（${modeMeta.desc}）—— 点击切换`}
           className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${answerMode === 'strict' ? 'text-muted hover:bg-surface-hover' : 'bg-accent/10 text-accent'}`}>
           <ModeIcon size={s.btn} />

@@ -33,6 +33,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
+from conftest import normalize_export_nonce
 from app.core.artifact_blocks import ARTIFACT_BLOCK_TYPES, strip_blocks
 from app.core.dependencies import get_store
 from app.core.errors import AppError
@@ -174,8 +175,14 @@ def test_无标记_html_导出逐字节不变():
     都凭空多一段 CSS，没有任何断言会红、也没有任何用户会察觉（样式恰好没生效）。
     """
     base = _build_selfcontained_html(PLAIN, "标题")
-    assert base == _build_selfcontained_html(PLAIN, "标题", marker_decor=False)
-    assert base == _build_selfcontained_html(PLAIN, "标题", marker_decor=True)
+    # ⚠️ 比的是**归一化后**的串：`_build_selfcontained_html` 每次生成新的 CSP nonce
+    # （正文里的脚本一律不执行，见 `export.py::_csp_meta`），而这条断言要钉的是
+    # 「样式没多一段」。归一化只动 nonce 值、meta 标签仍在串里 —— CSP 整段缺失
+    # 或闸门写歪时本条照样红。
+    assert normalize_export_nonce(base) == normalize_export_nonce(
+        _build_selfcontained_html(PLAIN, "标题", marker_decor=False))
+    assert normalize_export_nonce(base) == normalize_export_nonce(
+        _build_selfcontained_html(PLAIN, "标题", marker_decor=True))
     # ⚠️ 判据**必须精确到 class 属性**，不能用裸子串 `'md-block' in html`：
     # limo 主题自 2026-10-16 起有 `--md-blockquote-border` / `--md-blockquote-bg`，
     # 它**含**这个子串 —— 裸子串版本当场变红，而它红的原因是**判据太宽**，
@@ -271,6 +278,12 @@ _LIST_BODY = {
     "steps": "- 输入\n- 清洗\n- 输出",
     "timeline": "1. **导入**\n2. **解析**",
     "cycle": "1. 压力大\n2. 皮质醇升高\n3. 食欲增加",
+    # `sequence` / `quadrant`（2026-10-20）：两者的环形 / 2×2 形态在 CSS 里**靠列表
+    # 类型与项数**判定（`ol` + `:nth-last-child`），所以「结构在链路上没被压扁」同样是
+    # 它们成立的前提 —— 漏掉它们时上面的遍历照样绿，只是这两个类型的形状从来没被测过。
+    "sequence": "1. **用户 → 服务端**：提交订单\n2. **服务端 → 用户**：返回结果",
+    "quadrant": "1. **重要且紧急**：线上故障\n2. **重要不紧急**：架构重构\n"
+                "3. **紧急不重要**：临时会议\n4. **不重要不紧急**：闲聊",
 }
 
 
@@ -484,6 +497,24 @@ def test_word_各类型的配色互不相同():
     got = {t: _marker_colors(markdown_to_docx(_md_of(t), "标题")) for t in types}
     assert len(set(got.values())) == len(types), \
         f"有类型共用同一套配色（漏查表的症状）：{got}"
+
+
+def test_word_配色表覆盖全部产物块类型():
+    """`_MARKER_COLORS` 的键集必须**等于** `ARTIFACT_BLOCK_TYPES`。
+
+    漏一个类型的症状是静默的：`_render_marker_block` 对查不到的 type **回退到
+    `key-takeaway` 的配色**（那是为「本版还不认识的未来类型」准备的兜底，不是给
+    「自己刚加的类型」用的）—— 于是新块在 Word 里与重点块长得一模一样，
+    上面那条「两两不同」的用例也照样绿（它遍历的是表里的键，漏掉的类型根本不在集合里）。
+
+    ⚠️ **两个方向都要断**：多出来一个键说明表里有已删/已改名的死条目（Word 侧
+    永远走不到），少一个才是上面那个静默失效。
+    """
+    from app.services.docx_export import _MARKER_COLORS
+    missing = set(ARTIFACT_BLOCK_TYPES) - set(_MARKER_COLORS)
+    extra = set(_MARKER_COLORS) - set(ARTIFACT_BLOCK_TYPES)
+    assert not missing, f"这些块类型在 Word 侧会静默走兜底配色：{sorted(missing)}"
+    assert not extra, f"配色表里有协议不认识的死条目：{sorted(extra)}"
 
 
 def test_word_新增类型的块内文字一字不少():

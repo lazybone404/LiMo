@@ -1,7 +1,7 @@
 /**
  * chat 域 — 对话（流式/非流式）+ 对话持久化 CRUD。
  */
-import { apiFetch, getErrorMessage, BASE, type ChatResult } from './core'
+import { apiFetch, getErrorMessage, BASE, CLIENT_HEADERS, type ChatResult } from './core'
 import { parseSSEStream } from './sse'
 import { toChatSources, type ChatSource } from '../lib/chat-sources'
 import type { AnswerMode } from '../lib/chat-prefs'
@@ -109,7 +109,7 @@ export function streamChat(
   callbacks.onDone = () => { receivedDoneOrError = true; origOnDone() }
   callbacks.onError = (msg) => { receivedDoneOrError = true; origOnError(msg) }
 
-  fetch(`${BASE}/chat/stream?${params}`, { signal })
+  fetch(`${BASE}/chat/stream?${params}`, { signal, headers: CLIENT_HEADERS })
     .then(async (response) => {
       if (!response.ok) {
         let body: any = {}
