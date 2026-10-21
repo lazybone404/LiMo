@@ -42,6 +42,15 @@ struct StartupFailure {
     /// 在界面上只是一句「没能启动」。
     log_tail: String,
     log_path: String,
+    /// 实际使用的日志目录（可能与 `%LOCALAPPDATA%\LiMo\logs` 不同 —— 首选不可写时
+    /// 会回退到 `%TEMP%\LiMo\logs` 或安装目录旁的 `logs\`）。
+    log_dir: String,
+    /// 日志目录是否真的可写。**日志为空时它是唯一的解释**：
+    /// false = 日志系统自己没能落盘（安全软件拦截 / 磁盘满 / 环境变量异常），
+    /// true 且两份文件都不存在 = 后端一行输出都没产生（DLL 缺失等的典型形态）。
+    log_dir_writable: bool,
+    launcher_log_exists: bool,
+    backend_log_exists: bool,
     exe_path: String,
     /// TCP 能连上 7413 但 /health 不通 —— 通常是端口被别的程序占着
     port_occupied: bool,
@@ -65,10 +74,72 @@ fn user_data_dir() -> PathBuf {
     PathBuf::from(base).join("LiMo").join("logs")
 }
 
-fn app_log(_dir: &Path, msg: &str) {
-    let log_dir = user_data_dir();
-    let _ = std::fs::create_dir_all(&log_dir);
-    let log_path = log_dir.join("limo_startup.log");
+/// 日志目录候选（按优先级）。
+///
+/// ⚠️ 这是「日志系统自己失败」的那条路：`%LOCALAPPDATA%` 不可写（被安全软件拦、
+/// 磁盘满、环境变量缺失时 `user_data_dir()` 会退到 `"."` 即安装目录、而安装目录
+/// 常常只读）时，日志会**一条都留不下**，失败屏上看起来就是「没有任何日志」——
+/// 用户与开发者同时失去唯一的证据。所以日志目录不能只有一个。
+fn log_dir_candidates() -> Vec<PathBuf> {
+    let mut v = vec![user_data_dir()];
+    // %TEMP% 基本总是可写，且与安装位置、账户同步策略都无关。
+    v.push(env::temp_dir().join("LiMo").join("logs"));
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            v.push(dir.join("logs"));
+        }
+    }
+    v
+}
+
+/// 目录能不能真正写进去（`create_dir_all` 成功 ≠ 可写）。
+fn dir_writable(dir: &Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(".limo_log_probe");
+    let ok = std::fs::write(&probe, b"x").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    ok
+}
+
+/// 从候选里挑第一个真正可写的。
+///
+/// ⚠️ **接收入参而不是自己去取环境**：这是整条回退链里唯一有分支的判定，
+/// 写成 `log_dir()` 的内联循环就只剩「跑一次看日志落哪」这一种验证方式，
+/// 而那条路要坏环境（`%LOCALAPPDATA%` 只读）—— 开发机上根本造不出来。
+/// 传一个假的候选列表，就能在 CI 上钉住「第一个写不进去时必须换下一个」。
+fn pick_log_dir(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates.iter().find(|d| dir_writable(d)).cloned()
+}
+
+/// 本次会话实际使用的日志目录：第一个真正可写的候选。
+/// 全部不可写时返回首选路径 —— 此时日志内容为空，而失败屏上的
+/// `log_dir_writable=false` 就是「为什么没有日志」的答案。
+///
+/// ⚠️ **会话内缓存**：`dir_writable` 每次都要写一个探针文件。不缓存的话
+/// `app_log` 每打一行就要写+删一次探针（`limo_startup.log` 一轮启动十几行）。
+/// 更要紧的是**一致性**：启动器日志、后端 stderr、失败屏读回必须落在同一个目录，
+/// 每次重算等于让它们在目录状态变化时各走各的。
+/// 诊断字段 `log_dir_writable` 仍是**现测**的（见 `build_startup_failure`）——
+/// 那一项要反映此刻的真实状态，而不是选目录时的快照。
+fn log_dir() -> PathBuf {
+    static CACHED: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    CACHED
+        .get_or_init(|| pick_log_dir(&log_dir_candidates()).unwrap_or_else(user_data_dir))
+        .clone()
+}
+
+/// 启动器自己的日志（`limo_startup.log`）。
+///
+/// ⚠️ **目录不由调用方给**：此前签名是 `app_log(dir: &Path, msg)`，而函数体早就不看
+/// 那个参数了 —— 十二个调用点都传 `exe_dir`，读起来像「日志写在安装目录里」，实际
+/// 写在 `log_dir()`（回退链挑出来的那个）。日志往哪写只有一处判据，就不该在签名上
+/// 留一个会被误读的入口。
+fn app_log(msg: &str) {
+    let dir = log_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let log_path = dir.join("limo_startup.log");
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
     let line = format!("[{}] {}\n", ts, msg);
@@ -108,7 +179,7 @@ fn fmt_ts(secs: u64) -> String {
 /// 重试往往又失败 → **屏幕上只剩空白，第一次的证据在用户眼前被抹掉**。
 /// 崩溃日志必须活过重启，这是「让用户能排障」的前提。
 fn open_backend_log() -> Option<std::fs::File> {
-    let dir = user_data_dir();
+    let dir = log_dir();
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("limo_backend_stderr.log");
     if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > BACKEND_LOG_ROTATE_BYTES {
@@ -146,7 +217,7 @@ fn read_session_log(path: &Path, max_bytes: u64) -> String {
 /// 组装失败屏要显示的日志：启动器（在哪个目录、拉哪个 exe、为什么拉不起来）
 /// 在前，后端自己的输出在后 —— 两段连起来就是一条完整的启动时间线。
 fn build_log_tail() -> String {
-    let dir = user_data_dir();
+    let dir = log_dir();
     let mut parts: Vec<String> = Vec::new();
     let launcher = read_session_log(&dir.join("limo_startup.log"), STDERR_TAIL_BYTES);
     if !launcher.trim().is_empty() {
@@ -183,13 +254,13 @@ pub fn run() {
             let exe_path = env::current_exe().unwrap_or_default();
             let exe_dir = exe_path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
             // 会话分隔行：失败屏只显示**本次**启动的启动器日志（见 read_session_log）。
-            app_log(&exe_dir, SESSION_MARKER);
-            app_log(&exe_dir, &format!("LiMo dir={}", exe_dir.display()));
+            app_log(SESSION_MARKER);
+            app_log(&format!("LiMo dir={}", exe_dir.display()));
 
             // 安装路径诊断
             let diag = analyze_install_path(&exe_path);
             if diag.path_has_space || diag.path_has_non_ascii || !diag.parent_writable {
-                app_log(&exe_dir, &format!("WARNING space={} nonascii={} writable={}",
+                app_log(&format!("WARNING space={} nonascii={} writable={}",
                     diag.path_has_space, diag.path_has_non_ascii, diag.parent_writable));
                 let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
@@ -205,11 +276,11 @@ pub fn run() {
             //    进程没创建出来时句柄为 None，探测线程据此立刻收工（不再干等 45s）。
             let (child_opt, startup_failure) = match spawn_backend(&exe_dir) {
                 Ok(child) => {
-                    app_log(&exe_dir, "spawn ok");
+                    app_log("spawn ok");
                     (Some(child), None)
                 }
                 Err(e) => {
-                    app_log(&exe_dir, &format!("spawn FAILED: {}", e));
+                    app_log(&format!("spawn FAILED: {}", e));
                     eprintln!("后端启动失败: {}", e);
                     let failure = build_startup_failure(&exe_dir, "spawn", false, None, Some(e.as_str()));
                     (None, Some(failure))
@@ -234,7 +305,7 @@ pub fn run() {
             // 否则 `App.tsx::handleAppKeyDown` 在打包版根本不触发（详见 webview_keys 注释）
             if let Some(w) = app.get_webview_window("main") {
                 if let Err(e) = w.with_webview(|pw| webview_keys::allow_app_shortcuts(&pw)) {
-                    app_log(&exe_dir, &format!("webview_keys 注册失败: {}", e));
+                    app_log(&format!("webview_keys 注册失败: {}", e));
                 }
             }
 
@@ -300,13 +371,13 @@ fn resolve_backend_exe(exe_dir: &Path) -> PathBuf {
 fn spawn_backend(exe_dir: &Path) -> Result<Child, String> {
     let backend_exe = resolve_backend_exe(exe_dir);
     if backend_exe.exists() {
-        let log_path = user_data_dir().join("limo_backend_stderr.log");
-        app_log(exe_dir, &format!("spawning {} -> {}", backend_exe.display(), log_path.display()));
+        let log_path = log_dir().join("limo_backend_stderr.log");
+        app_log(&format!("spawning {} -> {}", backend_exe.display(), log_path.display()));
 
         // 追加而非截断；失败则丢弃输出（但启动器日志仍记着这件事）
         let log_file = open_backend_log();
         if log_file.is_none() {
-            app_log(exe_dir, "WARNING 后端日志文件打不开，后端输出将被丢弃");
+            app_log("WARNING 后端日志文件打不开，后端输出将被丢弃");
         }
         let mut cmd = Command::new(&backend_exe);
         cmd.current_dir(exe_dir);
@@ -331,14 +402,14 @@ fn spawn_backend(exe_dir: &Path) -> Result<Child, String> {
         }
 
         let child = cmd.spawn().map_err(|e| format!("启动失败: {}", e))?;
-        app_log(exe_dir, &format!("spawn ok pid={:?}", child.id()));
+        app_log(&format!("spawn ok pid={:?}", child.id()));
         return Ok(child);
     }
 
     // 回退：本地 Python（开发用）
     let python_exe = exe_dir.join("backend").join("python").join("python.exe");
     if python_exe.exists() {
-        app_log(exe_dir, &format!("fallback python: {}", python_exe.display()));
+        app_log(&format!("fallback python: {}", python_exe.display()));
         let mut cmd = Command::new(&python_exe);
         cmd.args(["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "7413"])
             .current_dir(exe_dir.join("backend"))
@@ -457,9 +528,17 @@ fn build_startup_failure(
     // 「为什么」（拒绝访问 / 文件被占用 / 杀软拦截）丢掉了。
     spawn_error: Option<&str>,
 ) -> StartupFailure {
-    let log_dir = user_data_dir();
-    let log_path = log_dir.join("limo_backend_stderr.log");
+    let ldir = log_dir();
+    let log_path = ldir.join("limo_backend_stderr.log");
+    let launcher_log_path = ldir.join("limo_startup.log");
     let log_tail = build_log_tail();
+    // 「日志为空」必须能自证原因，而不是让用户以为界面坏了：
+    //   - `log_dir_writable=false`        → 目录就写不进去，日志系统自己失败了
+    //   - 可写但两份文件都不存在          → 后端一行输出都没产生（DLL 缺失等的典型形态）
+    //   - 文件存在但 tail 为空            → 文件里确实没内容
+    let log_dir_writable = dir_writable(&ldir);
+    let launcher_log_exists = launcher_log_path.exists();
+    let backend_log_exists = log_path.exists();
     let exe_path = resolve_backend_exe(exe_dir);
     let addr: SocketAddr = format!("127.0.0.1:{}", BACKEND_PORT).parse().unwrap();
     // 只在进程已退出时才有意义 —— 进程还活着时 7413 当然可能是它自己在监听。
@@ -507,6 +586,10 @@ fn build_startup_failure(
         exit_code,
         log_tail,
         log_path: log_path.to_string_lossy().to_string(),
+        log_dir: ldir.to_string_lossy().to_string(),
+        log_dir_writable,
+        launcher_log_exists,
+        backend_log_exists,
         exe_path: exe_path.to_string_lossy().to_string(),
         port_occupied,
         install_dir_writable: probe_dir_writable(exe_dir),
@@ -544,7 +627,7 @@ fn get_backend_startup_failure(state: tauri::State<'_, BackendStartupState>) -> 
 /// 打开日志目录 —— 用户在界面上直接够到 `limo_startup.log` / `limo_backend_stderr.log`。
 #[tauri::command]
 fn open_log_dir() -> Result<(), String> {
-    let dir = user_data_dir();
+    let dir = log_dir();
     let _ = std::fs::create_dir_all(&dir);
     Command::new("explorer")
         .arg(&dir)
@@ -846,10 +929,7 @@ mod pdf_export {
 
         let dispatched = window.with_webview(move |pw| {
             if let Err(e) = print_now(&pw, &out_for_print, tx_outer.clone(), win_for_print) {
-                app_log(
-                    &env::current_exe().unwrap_or_default(),
-                    &format!("pdf export failed: {}", e),
-                );
+                app_log(&format!("pdf export failed: {}", e));
                 let _ = tx_outer.send(Err(e));
                 let _ = err_win.close();
             }
@@ -1115,4 +1195,69 @@ fn enhance_path(current_path: &str) -> String {
     parts.extend(system_paths.iter().map(|s| s.to_string()));
     if !current_path.is_empty() { parts.push(current_path.to_string()); }
     parts.join(sep)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 唯一的临时路径（不引 `tempfile`：这里只要「测试之间不撞名」）。
+    fn tmp_path(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        env::temp_dir().join(format!("limo-test-{}-{}-{}", tag, std::process::id(), nanos))
+    }
+
+    /// 造一个**一定写不进去**的目录路径：把普通文件当父级。
+    ///
+    /// ⚠️ 不用 chmod / 只读属性造「不可写」—— CI（或以管理员身份）跑时那条路会
+    /// 静默变成可写，测试照样绿而没有测到任何东西。「父级是个文件」这条判据与
+    /// 权限无关，到哪都一样。
+    fn blocked_dir(tag: &str) -> PathBuf {
+        let file = tmp_path(tag);
+        std::fs::write(&file, b"x").unwrap();
+        file.join("sub")
+    }
+
+    #[test]
+    fn dir_writable_能写时返回_true_且不留探针() {
+        let d = tmp_path("writable");
+        assert!(dir_writable(&d));
+        assert!(d.exists());
+        assert!(!d.join(".limo_log_probe").exists(), "探针文件必须被清掉");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn dir_writable_建不出目录时返回_false() {
+        assert!(!dir_writable(&blocked_dir("blocked")));
+    }
+
+    // ⚠️ 本轮的核心不变量：首选目录写不进去时，日志必须落到**下一个**候选上，
+    // 而不是「一条都不留」。开发机上造不出「%LOCALAPPDATA% 不可写」这个环境，
+    // 所以这条只能靠传假的候选列表来钉 —— 它是「别人机器上没有日志」的唯一防线。
+    #[test]
+    fn pick_log_dir_跳过写不进去的候选() {
+        let blocked = blocked_dir("skip");
+        let ok = tmp_path("ok");
+        assert_eq!(pick_log_dir(&[blocked.clone(), ok.clone()]), Some(ok.clone()));
+        assert!(!blocked.exists(), "写不进去的候选不该被留下半个目录");
+        let _ = std::fs::remove_dir_all(&ok);
+    }
+
+    #[test]
+    fn pick_log_dir_全部不可写时返回_none() {
+        assert_eq!(pick_log_dir(&[blocked_dir("none-a"), blocked_dir("none-b")]), None);
+    }
+
+    // 回退链本身要有第二、第三站，否则 `pick_log_dir` 再正确也没得换。
+    #[test]
+    fn log_dir_candidates_首选应用数据目录_其次临时目录() {
+        let c = log_dir_candidates();
+        assert!(c.len() >= 2, "至少两个候选，回退链才成立");
+        assert_eq!(c[0], user_data_dir());
+        assert_eq!(c[1], env::temp_dir().join("LiMo").join("logs"));
+    }
 }

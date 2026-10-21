@@ -28,6 +28,15 @@ export interface StartupFailure {
    */
   log_tail: string
   log_path: string
+  /** 实际使用的日志目录（首选不可写时会回退到 %TEMP% 或安装目录旁） */
+  log_dir?: string
+  /**
+   * 日志目录是否真的可写 —— **日志为空时它是唯一的解释**（见 `logDisplayText`）。
+   * 旧版本 Rust 不带这三个字段，故可选。
+   */
+  log_dir_writable?: boolean
+  launcher_log_exists?: boolean
+  backend_log_exists?: boolean
   exe_path: string
   /** TCP 能连上 7413 但 /health 不通 —— 通常是端口被别的程序占着 */
   port_occupied: boolean
@@ -36,20 +45,37 @@ export interface StartupFailure {
 }
 
 /**
- * 是否「已经救不回来」—— 据此决定要不要自动放行到主界面。
- *
- * ⚠️ 判据是 `alive` 而不是 `stage`：进程还在跑就还有希望（可能只是首次启动慢，
- * 45s 是经验值不是硬上限）；进程已经退了，放行进去只会让用户面对一屏无意义的
- * 连接错误，而真正的失败原因留在这一屏上。
+ * ⚠️ 这里**刻意没有**「是否致命 → 要不要自动放行」的判据函数（`isFatalStartupFailure`
+ * 已于 2026-10-21 删除）：只要有诊断就停在失败屏，放行改由用户点「仍然继续」。
+ * 那个函数当时的判据是 `alive`，而它正是「timeout 后自动放行、用户看不到任何原因」
+ * 的来源 —— 判据存在一天，就有人会把它当成「什么时候能放行」的权威。
  */
-export function isFatalStartupFailure(f: StartupFailure | null | undefined): boolean {
-  return !!f && !f.alive
-}
 
 /** 日志区文案 —— 没有输出时要说出来，而不是渲染一块空白让用户以为界面坏了。 */
 export function logDisplayText(f: StartupFailure): string {
   const text = (f.log_tail || '').trim()
   if (text) return text
+
+  // ⚠️ 「日志为空」有三种完全不同的原因，而用户看到的都是一块空白。
+  // 区分它们靠 Rust 侧回传的三个事实（旧版本不带 → 退回最后的兜底文案）：
+  //   ① 目录根本写不进去   → 日志系统自己失败了，这是**另一条**独立故障
+  //   ② 可写但文件不存在   → 后端一行输出都没有（DLL/运行库缺失的典型形态）
+  //   ③ 文件在但 tail 空   → 写了但没内容（极端情况：刚创建就被杀软清空）
+  if (f.log_dir_writable === false) {
+    const dir = f.log_dir || f.log_path
+    return (
+      `（日志目录写不进去：${dir}\n`
+      + '这本身就是一条失败原因 —— 安全软件拦截、磁盘已满或用户环境变量异常都可能造成它。\n'
+      + '这也解释了为什么启动器与后端两段日志同时为空。请把这条信息发给开发者。）'
+    )
+  }
+  if (f.launcher_log_exists === false && f.backend_log_exists === false) {
+    return (
+      '（日志目录可写，但启动器与后端都没留下任何输出 —— 常见于：缺少 VC++ 运行库、'
+      + 'DLL 缺失、被安全软件拦截，或安装不完整。可尝试重装到纯英文无空格的目录，'
+      + '或查看安全软件的隔离记录。）'
+    )
+  }
   // 「两段日志都一行没有」是 DLL 缺失 / 运行库缺失 / 安全软件拦截的典型形态 ——
   // 这些故障在进程看来只是「退出」，只有这句话能把用户的下一个动作从
   // 「再点一次」指向「装运行库 / 查隔离记录 / 换个安装目录」。

@@ -6,6 +6,108 @@
 
 ---
 
+## 2026-10-21 — 0.5.14 启动即退：`startup()` 内的 import 遮蔽（UnboundLocalError）
+
+**症状**（用户另一台机器，日志来自上一轮刚上线的失败屏）：
+
+```
+[后端]   File "main.py", line 267, in startup
+[后端] UnboundLocalError: cannot access local variable 'logging' where it is not associated with a value
+[后端] ERROR:    Application startup failed. Exiting.
+```
+
+后端进程退出码 3，界面停在启动失败屏。**这正是上一轮「日志可见化」要接住的那类故障** ——
+先有失败屏与两段日志，才第一次看见它。
+
+**根因**：`startup()` 里有两处 `import logging`（FTS5 全文搜索那次提交 `0ada1ef` 引入，
+位于 SearchEngine rebuild 的 `try` / `except` 分支里）。Python 的规则是**函数体内任意位置的
+赋值都会让该名在整个函数里成为局部变量** —— `import` 也是赋值。于是 `startup` 前半段
+凭据自检分支里的 `logging.getLogger(__name__)` 在它被绑定前读取，抛 `UnboundLocalError`。
+
+**为什么本地复现不出来**：那条分支（`if _secret_problems:`）只在
+`config_io.startup_check()` 报出「磁盘配置里有明文凭据」时执行。开发机的配置早已迁移到
+DPAPI 密钥库，自检永远返回空 ⇒ 根本走不到那一行。缺陷自 **0.4.12**（凭据自检上线，
+`a831c26`）起就潜伏，只要那台机器的配置里出现过明文凭据，启动就必退。
+
+**修复**（`backend/main.py`）：删掉两处 `import logging`（模块顶部第 5 行早已有），
+原地留注释写明这个坑。顺带删掉 `startup()` 顶部冗余的 `import os as _os`（模块顶部第 6 行已有）
+—— 它是「函数内可随手 import 模块」这一习惯的示范源，而这次事故正是那个习惯的代价。
+
+**验证**：临时脚本把 `startup_check` patch 成报一条问题，用 `TestClient` 触发 lifespan ——
+修复前抛 `UnboundLocalError`，修复后两条路径（报问题 / 不报问题）都能正常启动、`/health` 返回 ok。
+脚本用完即删，未提交。
+
+**守卫**（`backend/tests/test_closure_shadowing.py` 从「一种形态」扩到「一整类」）：
+
+- 新增 `find_import_shadowing`：函数**自身**作用域内 `import` 绑定的名字，若在同一函数内更早
+  被读取 → 违规。与既有的嵌套遮蔽判据**职责不重叠**（有断言钉住：给对方的违规样本，自己必须不响）。
+- **扫描范围从 `backend/app/` 扩到 `backend/main.py` + `backend/limo_cli/`** —— 上次「全绿」
+  与「看不见出事的地方」是同一件事；新增断言保证 `main.py` 在扫描清单里（否则文件被排除时照样绿）。
+- 自证区分力（模式 #38）：两种违规形态（分支早读 + `try` 内 import、`from m import x` 别名遮蔽）
+  必被抓到；四种安全写法（先 import 后用、别名、嵌套函数内 import、形参同名）不误报。
+  **对照实验**：把 `import logging` 临时加回 `main.py`，守卫立刻变红并指出
+  「读@序26 < import@序61」；还原后全绿（138 个文件）。
+- 扩范围时抓到一处**误报**并修掉：`limo_cli/output.py::table()` 的 `line()` 里
+  `[pad(cells[i], widths[i]) for i in range(...)]` —— 推导式的循环变量在 Python 3 是
+  **推导式自己的作用域**，不会让外层同名变量变成局部变量。两个判据都改为跳过它，并补了负例。
+
+**影响范围**：仅启动路径。修复前「配置含明文凭据」的机器 100% 起不来，其余机器行为不变。
+0.5.13 安装包同样作废（它含此缺陷），以 **0.5.14** 为准 —— 本条目与上一条（日志回退链）
+同属 0.5.14。
+
+---
+
+## 2026-10-21 — 启动失败「仍然没有任何日志」：日志目录回退链 + 失败屏自证 + timeout 不再静默放行
+
+**症状**：上一轮的失败屏上线后，用户在**另一台电脑**上仍然拿不到任何日志；
+控制台显示的是：
+
+```
+后端启动超时，强制加载
+127.0.0.1:7413/api/capabilities:1  Failed to load resource: net::ERR_CONNECTION_REFUSED
+```
+
+**两个独立成因**（不是同一件事）：
+
+| # | 成因 | 为什么上一轮没接住 |
+|---|---|---|
+| 1 | **日志目录写不进去** | 日志只往 `%LOCALAPPDATA%\LiMo\logs` 写。该目录不可写（安全软件拦截 / 磁盘满 / `LOCALAPPDATA` 缺失时 `user_data_dir()` 退到 `"."` 即只读的安装目录）时，**启动器与后端两段日志同时为空** —— 而失败屏渲染出一块空白，看起来像界面坏了，读不出「日志系统自己失败了」这层意思 |
+| 2 | **timeout 路径仍然自动放行** | 「失败屏」只在进程已退出时显示；`alive=true`（进程还在、只是没在 45s 内响应）走的是 `console.warn` + `initOnce()` —— 诊断只进了控制台，用户界面上一句原因都没有 |
+
+**修复**：
+
+1. **日志目录回退链**（`lib.rs`）：候选依次为 `%LOCALAPPDATA%\LiMo\logs` → `%TEMP%\LiMo\logs` →
+   安装目录旁 `logs\`，取第一个**真正写得进去**的（探针文件验证，`create_dir_all` 成功 ≠ 可写）。
+   全部不可写时返回首选路径 —— 此时内容为空，但失败屏上的 `log_dir_writable=false` 就是答案。
+   `app_log` / `open_backend_log` / `build_log_tail` / `spawn_backend` / `open_log_dir` 五处统一走它。
+   ⚠️ **结果在会话内缓存**（`OnceLock`）：探针要写磁盘，`app_log` 一轮启动十几行，不缓存就是十几次
+   写+删；更要紧的是**一致性** —— 启动器日志、后端 stderr、失败屏读回必须是同一个目录。
+   诊断字段 `log_dir_writable` 仍现测（那一项要反映此刻状态，不是选目录时的快照）。
+2. **失败屏自证**（`startupFailure.ts::logDisplayText`）：日志为空时区分三种成因 ——
+   目录写不进去（本身就是故障）／目录可写但两份文件都没生成（DLL、运行库、杀软隔离的典型形态）／
+   写了但没内容。旧版启动器不带这些字段（`undefined`）时**走原兜底，不误报**。
+3. **timeout 不再静默放行**（`App.tsx`）：`backend-startup-timeout` 改为停在失败屏；
+   硬兜底拉到任何诊断都停屏，只有**拉不到**才「强制加载」。放行能力保留为按钮「仍然继续」，
+   由用户在**知道发生了什么**之后自己选。`alive=true` 时失败屏额外说明「进程仍在运行，
+   可能只是启动慢」。
+
+**顺带清掉两处**：
+
+- `isFatalStartupFailure`（判据 `alive`）**删除** —— 它唯一的用途就是「什么时候自动放行」，
+  而判据存在一天，就有人会把它当成权威。删除它的注释写明了这一点。
+- `app_log(dir, msg)` 的 `dir` 参数**删除** —— 函数体早就不看它，十二个调用点都传 `exe_dir`，
+  读签名会以为日志写在安装目录里。日志往哪写只有 `log_dir()` 一处判据。
+
+**守卫**：
+- **Rust 单测**（`lib.rs::tests`，5 条）：`pick_log_dir` 跳过写不进去的候选（用**假候选列表**，
+  因为开发机上造不出「LOCALAPPDATA 只读」）、全不可写返回 `None`、`dir_writable` 真写探针并清理、
+  「不可写」用**父级是文件**构造（chmod 在管理员身份下会静默变成可写，测了等于没测）、候选链至少两站。
+- **前端单测**（`startupFailure.test.ts`）：`logDisplayText` 三个新分支 + 旧版字段缺失的对照实验。
+
+**影响范围**：启动失败路径；正常运行零影响（日志目录首选仍是 `%LOCALAPPDATA%`，回退链只在它写不进去时生效）。
+
+---
+
 ## 2026-10-21 — 修复 0.5.12 打包版启动即崩（`RuntimeError: sys.stderr is None`）
 
 **症状**：0.5.12 安装包启动时后端秒退，日志只有一行：

@@ -34,7 +34,7 @@ from app.core.concurrency import ExecutionGuard
 from app.core.logging import request_id, init_request_id_logging, RequestIDFilter
 from app.storage.store import Store
 
-app = FastAPI(title="LiMo", version="0.5.13")
+app = FastAPI(title="LiMo", version="0.5.14")
 
 @app.middleware("http")
 async def add_request_id(request, call_next):
@@ -249,7 +249,8 @@ async def startup():
     app.state.config = config
 
     # PyInstaller 打包后 SSL 证书路径丢失，显式设置
-    import os as _os
+    # ⚠️ 不要在这里写 `import os as _os` —— 模块顶部第 6 行已有，函数内重复 import
+    # 是上一个改名事故的温床（见下方 SearchEngine 段的注释）。
     try:
         import certifi
         _os.environ["SSL_CERT_FILE"] = certifi.where()
@@ -318,17 +319,20 @@ async def startup():
             tx = app.state.store.get_transcript(tx_id)
             return tx.get("rawText", "") if tx else ""
         _search_engine.rebuild(_transcripts, _get_content)
-        import logging
+        # ⚠️ **不要在这里写 `import logging`**（2026-10-21 事故）：函数体内任意位置的
+        # `import logging` 会让 `logging` 成为 `startup` 的**局部变量**，于是本函数里
+        # 更早的那次读取（凭据自检分支，`logging.getLogger(__name__)`）抛
+        # `UnboundLocalError` —— 后端启动即退，且**只在「配置里有明文凭据」的机器上触发**
+        # （其余机器根本不进那个分支，本地永远复现不出来）。模块顶部第 5 行已有 import。
         logging.getLogger(__name__).info("Search index ready (%d docs)", len(_transcripts))
     except Exception as e:
-        import logging
         logging.getLogger(__name__).warning("Search index rebuild failed: %s", e)
 
 
 @app.get("/health")
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.5.13", "started_at": app.state.started_at}
+    return {"status": "ok", "version": "0.5.14", "started_at": app.state.started_at}
 
 
 # 路由（files 在 ingest 之前——/files/{id}/original 比 /files/{id}/{name} 更具体，必须先匹配）

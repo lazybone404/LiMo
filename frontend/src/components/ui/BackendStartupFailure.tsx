@@ -1,16 +1,21 @@
 import { useState } from 'react'
-import { AlertCircle, FolderOpen, RotateCw, ArrowRight, Copy, Check, TriangleAlert } from 'lucide-react'
+import { AlertCircle, FolderOpen, RotateCw, ArrowRight, Copy, Check, Info, TriangleAlert } from 'lucide-react'
 import {
   logDisplayText, failureDetailLines, installPathWarning, diagnosticsText,
   type StartupFailure,
 } from '../../lib/startupFailure'
 
 /**
- * 后端启动失败屏 —— 冷启动时后端没能起来，且**已经确定救不回来**（进程已退出）时显示。
+ * 后端启动失败屏 —— 冷启动时后端没能就绪时显示：进程已退出、或 45s 超时仍在运行
+ * 但没响应，**两种都停在这里**。
  *
- * ⚠️ 与「正在启动后端服务…」加载屏的判别条件是 `alive`（见 `isFatalStartupFailure`），
- * 不是「有没有收到失败事件」：进程还活着只是慢，仍然自动放行（用户至少能进界面）；
- * 进程已经退了，放行只会换来满屏 ERR_CONNECTION_REFUSED，而原因就在这一屏上。
+ * ⚠️ 判据从「进程是否已死」改成了「有没有诊断」：此前 `alive=true`（进程还在、
+ * 只是慢或卡住）会被自动放行，结果是一屏 ERR_CONNECTION_REFUSED + 一句
+ * console.warn —— 用户既看不到原因、也不知道日志在哪。放行能力保留为「仍然继续」，
+ * 让用户在**知道发生了什么**之后再选。
+ *
+ * ⚠️ `alive` 仍有用：它决定顶部那句「进程仍在运行」的提示 —— 「还没起来」与
+ * 「起来又死了」的下一步动作不一样（等/重试 vs 装运行库/查隔离）。
  *
  * ⚠️ 这里是**极少数必须给「日志路径」的用户可见位置**：多数故障（缺 DLL / 缺运行库 /
  * 杀软拦截 / 端口占用）在后端看来只是一次退出，只有 stderr 或退出码能说清原因。
@@ -92,6 +97,19 @@ export function BackendStartupFailure({ failure, onRetryStarted, onFailureUpdate
             <span key={line} className="font-mono break-all">{line}</span>
           ))}
         </div>
+
+        {/* 进程还在 = 「慢」与「死」的处置不同：慢可以先等/重试，死了才要查运行库与隔离记录。
+            ⚠️ 这句只在 `alive` 时出现 —— 进程已退出时说「可能只是慢」是误导。 */}
+        {failure.alive && (
+          <div className="flex items-start gap-1.5 rounded-lg border border-border-light bg-surface px-2.5 py-2 text-[12px] text-muted">
+            <Info size={13} className="mt-0.5 shrink-0" />
+            <span>
+              后端进程<strong className="font-medium text-foreground">仍在运行</strong>，只是没在预期时间内响应 —— 可能只是启动慢
+              （首次启动、或杀毒软件正在扫描时会明显变慢），也可能已经卡住。
+              可以先「重试启动」；或者点「仍然继续」进入界面，等它起来后刷新。
+            </span>
+          </div>
+        )}
 
         {pathWarning && (
           <div className="flex items-start gap-1.5 rounded-lg border border-border-light bg-surface px-2.5 py-2 text-[12px] text-muted">

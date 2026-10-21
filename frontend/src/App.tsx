@@ -19,7 +19,7 @@ import {
   type InstallPathWarning,
 } from './lib/installWarning'
 import { BackendStartupFailure } from './components/ui/BackendStartupFailure'
-import { isFatalStartupFailure, type StartupFailure } from './lib/startupFailure'
+import type { StartupFailure } from './lib/startupFailure'
 import { Archive, X } from 'lucide-react'
 
 // 冷启动静默期（ms）：后端实测 ~2s 就绪，这段窗口内**故意一条请求都不发** ——
@@ -234,12 +234,14 @@ export default function App() {
       import('@tauri-apps/api/event').then(({ listen }) => {
         // ① 主路径：后端就绪即唤醒（冷启动 2s 左右），此前一条请求都不用发
         listen('backend-ready', () => initOnce()).then(un => { unlistenReady = un })
-        // ② Rust 探测 45s 超时 —— 此进程**还活着**（只是慢），保留强制加载：
-        //    用户至少能进界面看缓存内容，比死等强。诊断信息一并收下，横幅里会用到。
+        // ② Rust 探测 45s 超时 —— 进程**还活着但没就绪**。**停在诊断屏，不自动放行**：
+        //    放行的结果是满屏 ERR_CONNECTION_REFUSED + 一句 console.warn，
+        //    用户既看不到原因、也不知道日志在哪（实测反馈正是「还是没有任何日志」）。
+        //    失败屏上有一句话结论、两段日志、退出码与日志路径，「仍然继续」按钮
+        //    保留改造前的放行能力 —— 知情之后再选，而不是被推着往前走。
         listen<StartupFailure>('backend-startup-timeout', e => {
           setStartupFailure(e.payload)
-          console.warn('后端启动超时，强制加载')
-          initOnce()
+          console.warn('后端启动超时（进程仍在运行）—— 停在诊断屏')
         }).then(un => { unlistenTimeout = un })
         // ③ 确定失败（进程根本没起来 / 起来就退）—— **不放行**，停在失败屏上。
         //    放行只会换来满屏 ERR_CONNECTION_REFUSED，而原因就在那一屏里。
@@ -276,8 +278,10 @@ export default function App() {
           const { invoke } = await import('@tauri-apps/api/core')
           const f = await invoke<StartupFailure | null>('get_backend_startup_failure')
           if (f) {
+            // 有任何诊断都停屏 —— `alive` 只决定文案，不再决定「要不要让用户看见」。
             setStartupFailure(f)
-            if (isFatalStartupFailure(f)) { console.error('后端启动失败:', f.summary); return }
+            console.error('后端启动失败:', f.summary)
+            return
           }
         } catch { /* 拿不到诊断就退回改造前的行为 */ }
         console.warn('后端就绪信号超时，强制加载')
@@ -302,10 +306,11 @@ export default function App() {
   }, [refreshCapabilities])
 
   // Tauri 冷启动：后端未就绪时显示加载屏，避免组件提前发请求导致 CONNECTION_REFUSED。
-  // ⚠️ 若已确定后端起不来（进程退出），换失败屏 —— 那一屏上有退出码与 stderr 尾部，
+  // ⚠️ **有任何诊断就换失败屏**（不再只判 `alive`）——那一屏上有退出码与两段日志，
   //    是用户唯一够得到的排查入口（详见 `lib/startupFailure.ts` 的模块注释）。
+  //    `alive` 只影响失败屏上那句「进程仍在运行」的提示（慢 vs 死的下一步动作不同）。
   if (!backendReady) {
-    if (startupFailure && isFatalStartupFailure(startupFailure)) {
+    if (startupFailure) {
       return (
         <BackendStartupFailure
           failure={startupFailure}

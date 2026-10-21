@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  isFatalStartupFailure, logDisplayText, failureDetailLines,
+  logDisplayText, failureDetailLines,
   exitCodeHint, installPathWarning, diagnosticsText,
   type StartupFailure,
 } from '../lib/startupFailure'
@@ -19,24 +19,6 @@ function make(over: Partial<StartupFailure> = {}): StartupFailure {
     ...over,
   }
 }
-
-describe('isFatalStartupFailure', () => {
-  it('进程已退出 → 致命（不进主界面）', () => {
-    expect(isFatalStartupFailure(make({ alive: false }))).toBe(true)
-  })
-
-  // ---- 对照实验：判据必须是 alive，不是「收到了失败事件」 ----
-  // 进程还在跑只是慢，放行进去至少能看缓存内容；把它判成致命会让「首次启动慢
-  // 一点的机器」直接卡在失败屏上 —— 那是比原行为更糟的回归。
-  it('进程仍存活（timeout）→ 不致命', () => {
-    expect(isFatalStartupFailure(make({ stage: 'timeout', alive: true, exit_code: null }))).toBe(false)
-  })
-
-  it('没有诊断信息 → 不致命', () => {
-    expect(isFatalStartupFailure(null)).toBe(false)
-    expect(isFatalStartupFailure(undefined)).toBe(false)
-  })
-})
 
 describe('logDisplayText', () => {
   it('有输出时原样返回（去首尾空白）', () => {
@@ -60,6 +42,35 @@ describe('logDisplayText', () => {
   // 启动器日志必须在场 —— 它是「exe 存在但被拒绝访问」这类故障的唯一记录。
   it('保留启动器那一行的来源前缀', () => {
     expect(logDisplayText(make())).toContain('[启动器]')
+  })
+
+  // ---- 「日志为空」有三种成因，而用户看到的都是一块空白 ----
+  // 这条是「别人机器上没有任何日志」的直接回答：目录都写不进去时，
+  // 空白本身就是故障，得说出来并附上目录。
+  it('日志目录不可写 → 说这是失败原因，并给出目录', () => {
+    const text = logDisplayText(make({
+      log_tail: '', log_dir_writable: false, log_dir: 'D:\\lockdown\\logs',
+    }))
+    expect(text).toContain('写不进去')
+    expect(text).toContain('D:\\lockdown\\logs')
+  })
+
+  it('目录可写但两份日志都没生成 → 指向 DLL / 运行库 / 杀软隔离', () => {
+    const text = logDisplayText(make({
+      log_tail: '', log_dir_writable: true,
+      launcher_log_exists: false, backend_log_exists: false,
+    }))
+    expect(text).toContain('都没留下任何输出')
+    expect(text).toContain('VC++')
+  })
+
+  // 对照实验：旧版 Rust 不带这三个自检字段，undefined 不能被当成 false ——
+  // 否则老启动器 + 新前端会误报「日志目录写不进去」，把用户引去查一个
+  // 根本不存在的问题。
+  it('旧版启动器不带自检字段 → 走原兜底，不误报不可写', () => {
+    const text = logDisplayText(make({ log_tail: '' }))
+    expect(text).not.toContain('写不进去')
+    expect(text).toContain('没有留下任何错误输出')
   })
 })
 
