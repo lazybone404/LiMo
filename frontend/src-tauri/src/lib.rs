@@ -1,5 +1,5 @@
 use std::env;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -9,8 +9,49 @@ use tauri::{Emitter, Manager};
 
 const BACKEND_STARTUP_TIMEOUT_SECS: u64 = 45;
 const BACKEND_PORT: u16 = 7413;
+/// 诊断里回传的日志尾部字节数。取 8 KiB 足够装下一条 Python traceback，
+/// 又不会让事件 payload 大到前端渲染卡顿（日志文件本身可能几十 MB）。
+const STDERR_TAIL_BYTES: u64 = 8 * 1024;
+/// 后端日志超过这个大小就轮转一份 `.1.log` —— 它是**追加**写入的（见
+/// `open_backend_log`），不设上限会随使用年限无限长，而用户并不会清理它。
+const BACKEND_LOG_ROTATE_BYTES: u64 = 4 * 1024 * 1024;
+/// 每次冷启动在 `limo_startup.log` 里留的会话分隔行。
+/// ⚠️ 那份日志是**跨会话累积**的（append），失败屏只该显示**本次**启动的信息 ——
+/// 否则上周那次成功启动的 `spawning ...` 会混进来，看起来像本次的证据。
+const SESSION_MARKER: &str = "===== LiMo 启动 =====";
 
 struct SidecarHandle(Mutex<Option<Child>>);
+
+/// 后端启动失败的原因 —— 与 `backend-startup-failed` 事件同形，也存进
+/// `BackendStartupState` 供前端在事件早于监听时主动拉取（进程在 WebView
+/// 加载完成前就死掉，emit 会被丢掉，故事件与 state 两条路缺一不可）。
+#[derive(serde::Serialize, Clone)]
+struct StartupFailure {
+    /// `spawn`（进程都没创建出来）/ `exited`（起来后死掉）/ `timeout`（还活着但没就绪）
+    stage: String,
+    /// 给用户看的一句话结论
+    summary: String,
+    /// 后端进程此刻是否还活着（`timeout` 下为 true，另两种为 false）
+    alive: bool,
+    exit_code: Option<i32>,
+    /// **两段日志的尾部**，各自带 `[启动器]` / `[后端]` 行首前缀（无输出时为空串）。
+    ///
+    /// ⚠️ 不只是后端 stderr：启动器自己那份才是「在哪个目录、拉起哪个 exe、为什么
+    /// 拉不起来」的唯一记录 —— `spawn_backend` 返回的错误字符串此前只写进
+    /// `limo_startup.log`，失败屏上看不到，等于「exe 存在但被拒绝访问」这类故障
+    /// 在界面上只是一句「没能启动」。
+    log_tail: String,
+    log_path: String,
+    exe_path: String,
+    /// TCP 能连上 7413 但 /health 不通 —— 通常是端口被别的程序占着
+    port_occupied: bool,
+    /// 安装目录是否可写（在它旁边写一个探针文件来判）。
+    /// ⚠️ 只回**这一个布尔**、不回完整路径诊断：`exe_path` 已经在前端，
+    /// 「含空格 / 含非 ASCII」由它当场算得出来 —— 同一个事实不回两遍。
+    install_dir_writable: bool,
+}
+
+struct BackendStartupState(Mutex<Option<StartupFailure>>);
 
 /// 用户数据目录 — 有写入权限（Program Files 只读）
 fn user_data_dir() -> PathBuf {
@@ -36,6 +77,97 @@ fn app_log(_dir: &Path, msg: &str) {
         .map(|mut f| { let _ = f.write_all(line.as_bytes()); });
 }
 
+/// UNIX 秒 → `YYYY-MM-DD HH:MM:SS UTC`。
+///
+/// 不引 chrono：这里只要一个能跟用户口述的「几点钟」对上号的时间戳，
+/// 民用历法换算十几行算术就够。**标 UTC 是为了不骗人** —— 本地时区要用
+/// Windows API 才拿得到，写个假本地时间比写清楚 UTC 更糟。
+fn fmt_ts(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    // 民用历法（Howard Hinnant: days_from_civil 的逆运算）
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { yoe + era * 400 + 1 } else { yoe + era * 400 };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+        y, m, d, rem / 3600, (rem % 3600) / 60, rem % 60
+    )
+}
+
+/// 打开后端日志 —— **追加**写入，并在开头留一行时间分隔。
+///
+/// ⚠️ 这里曾是 `File::create`（每次 spawn 截断）。后果是：用户看到失败屏、
+/// 读到崩溃日志，点「重试启动」→ 下一次 `spawn_backend` 先把那份日志清空 →
+/// 重试往往又失败 → **屏幕上只剩空白，第一次的证据在用户眼前被抹掉**。
+/// 崩溃日志必须活过重启，这是「让用户能排障」的前提。
+fn open_backend_log() -> Option<std::fs::File> {
+    let dir = user_data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("limo_backend_stderr.log");
+    if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > BACKEND_LOG_ROTATE_BYTES {
+        // 只留一份历史：排障关心的是「最近一次」，而不是一整部编年史。
+        let _ = std::fs::rename(&path, dir.join("limo_backend_stderr.1.log"));
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()?;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let _ = writeln!(f, "\n===== 后端启动 {} =====", fmt_ts(secs));
+    Some(f)
+}
+
+/// 给多行文本逐行加来源前缀，让两段日志拼在一起后仍分得清谁说。
+fn prefix_lines(tag: &str, text: &str) -> String {
+    text.lines()
+        .map(|l| format!("[{}] {}", tag, l))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 读 `limo_startup.log` 里**本次启动以来**的尾部。
+///
+/// 那份日志跨会话累积，直接取尾部会把上周的启动混进来。每次冷启动写一行
+/// `SESSION_MARKER`，这里只取最后一个标记之后的内容；找不到标记（老版本留下的
+/// 日志 / 标记行恰好被截断）就退回整段尾部 —— 有总比没有好。
+fn read_session_log(path: &Path, max_bytes: u64) -> String {
+    let text = read_tail(path, max_bytes);
+    match text.rfind(SESSION_MARKER) {
+        Some(i) => text[i..].to_string(),
+        None => text,
+    }
+}
+
+/// 组装失败屏要显示的日志：启动器（在哪个目录、拉哪个 exe、为什么拉不起来）
+/// 在前，后端自己的输出在后 —— 两段连起来就是一条完整的启动时间线。
+fn build_log_tail() -> String {
+    let dir = user_data_dir();
+    let mut parts: Vec<String> = Vec::new();
+    let launcher = read_session_log(&dir.join("limo_startup.log"), STDERR_TAIL_BYTES);
+    if !launcher.trim().is_empty() {
+        parts.push(prefix_lines("启动器", &launcher));
+    }
+    let backend = read_tail(&dir.join("limo_backend_stderr.log"), STDERR_TAIL_BYTES);
+    if !backend.trim().is_empty() {
+        parts.push(prefix_lines("后端", &backend));
+    }
+    parts.join("\n")
+}
+
+/// 在安装目录旁边写一个探针文件，判断它可不可写。
+fn probe_dir_writable(dir: &Path) -> bool {
+    let probe = dir.join(".limo_write_probe");
+    match std::fs::write(&probe, b"x") {
+        Ok(_) => { let _ = std::fs::remove_file(&probe); true }
+        Err(_) => false,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -50,6 +182,8 @@ pub fn run() {
 
             let exe_path = env::current_exe().unwrap_or_default();
             let exe_dir = exe_path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+            // 会话分隔行：失败屏只显示**本次**启动的启动器日志（见 read_session_log）。
+            app_log(&exe_dir, SESSION_MARKER);
             app_log(&exe_dir, &format!("LiMo dir={}", exe_dir.display()));
 
             // 安装路径诊断
@@ -66,18 +200,35 @@ pub fn run() {
                 });
             }
 
-            match spawn_backend(&exe_dir) {
+            // ⚠️ SidecarHandle 与 BackendStartupState 都**必须无条件 manage**：
+            //    `manage` 同一类型两次会 panic，所以不能一边 manage 一边不 manage。
+            //    进程没创建出来时句柄为 None，探测线程据此立刻收工（不再干等 45s）。
+            let (child_opt, startup_failure) = match spawn_backend(&exe_dir) {
                 Ok(child) => {
-                    app.manage(SidecarHandle(Mutex::new(Some(child))));
                     app_log(&exe_dir, "spawn ok");
+                    (Some(child), None)
                 }
                 Err(e) => {
                     app_log(&exe_dir, &format!("spawn FAILED: {}", e));
                     eprintln!("后端启动失败: {}", e);
+                    let failure = build_startup_failure(&exe_dir, "spawn", false, None, Some(e.as_str()));
+                    (None, Some(failure))
                 }
-            }
+            };
+            app.manage(SidecarHandle(Mutex::new(child_opt)));
+            app.manage(BackendStartupState(Mutex::new(startup_failure.clone())));
 
-            spawn_backend_ready_probe(app.handle().clone());
+            // spawn 阶段就失败时 WebView 还没加载完，emit 会被丢掉 —— 延时重发，
+            // 前端另有 `get_backend_startup_failure` 主动拉取兜底（两条路缺一不可）。
+            if let Some(failure) = startup_failure {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    emit_startup_failure(&app_handle, &failure);
+                });
+            } else {
+                spawn_backend_ready_probe(app.handle().clone());
+            }
 
             // 打包版：把 Ctrl+W / Ctrl+± / Ctrl+0 等从 WebView2 加速键手里放行到网页，
             // 否则 `App.tsx::handleAppKeyDown` 在打包版根本不触发（详见 webview_keys 注释）
@@ -93,6 +244,8 @@ pub fn run() {
             restart_backend_sidecar,
             detect_components,
             export_pdf,
+            get_backend_startup_failure,
+            open_log_dir,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -119,12 +272,14 @@ fn kill_backend_sidecar(app_handle: &tauri::AppHandle) {
 
 // ── 启动后端 ──
 
-fn spawn_backend(exe_dir: &Path) -> Result<Child, String> {
+/// 定位后端可执行文件 —— `spawn_backend` 与启动失败诊断**共用同一份**，
+/// 否则诊断里报的路径可能不是实际尝试拉起的那一个。
+fn resolve_backend_exe(exe_dir: &Path) -> PathBuf {
     // 优先 PyInstaller 打包的 exe（Tauri v2 externalBin 会自动加平台后缀）
     let plain_exe = exe_dir.join("LiMoBackend.exe");
     let target_exe = exe_dir.join(format!("LiMoBackend-{}.exe", std::env::consts::ARCH));
     // 实际上 Tauri 加的是完整 target triple，尝试匹配
-    let backend_exe = if target_exe.exists() {
+    if target_exe.exists() {
         target_exe
     } else if plain_exe.exists() {
         plain_exe
@@ -139,15 +294,20 @@ fn spawn_backend(exe_dir: &Path) -> Result<Child, String> {
                 })
             }))
             .unwrap_or(plain_exe)
-    };
+    }
+}
+
+fn spawn_backend(exe_dir: &Path) -> Result<Child, String> {
+    let backend_exe = resolve_backend_exe(exe_dir);
     if backend_exe.exists() {
-        let log_dir = user_data_dir();
-        let _ = std::fs::create_dir_all(&log_dir);
-        let log_path = log_dir.join("limo_backend_stderr.log");
+        let log_path = user_data_dir().join("limo_backend_stderr.log");
         app_log(exe_dir, &format!("spawning {} -> {}", backend_exe.display(), log_path.display()));
 
-        // 尝试创建日志文件并重定向 stdout/stderr；失败则丢弃输出
-        let log_file = std::fs::File::create(&log_path).ok();
+        // 追加而非截断；失败则丢弃输出（但启动器日志仍记着这件事）
+        let log_file = open_backend_log();
+        if log_file.is_none() {
+            app_log(exe_dir, "WARNING 后端日志文件打不开，后端输出将被丢弃");
+        }
         let mut cmd = Command::new(&backend_exe);
         cmd.current_dir(exe_dir);
         match log_file {
@@ -211,6 +371,11 @@ fn spawn_backend(exe_dir: &Path) -> Result<Child, String> {
 fn spawn_backend_ready_probe(app: tauri::AppHandle) {
     let addr: SocketAddr = format!("127.0.0.1:{}", BACKEND_PORT).parse().unwrap();
     let timeout = Duration::from_secs(BACKEND_STARTUP_TIMEOUT_SECS);
+    let exe_dir = env::current_exe()
+        .unwrap_or_default()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
 
     std::thread::spawn(move || {
         let start = Instant::now();
@@ -222,16 +387,170 @@ fn spawn_backend_ready_probe(app: tauri::AppHandle) {
                 println!("Backend ready on {} after {:?}", BACKEND_PORT, start.elapsed());
                 return;
             }
+
+            // 子进程已退出 → **立刻**报失败，不再干等满 45s。
+            // 这是「后端一启动就挂」最常见的样子：进程创建成功、几百毫秒后
+            // 因 DLL 缺失 / 端口占用 / 依赖问题退出，而 traceback 只躺在 stderr 文件里。
+            if let Some(code) = backend_child_exit_code(&app) {
+                let failure = build_startup_failure(&exe_dir, "exited", false, Some(code), None);
+                record_startup_failure(&app, failure);
+                return;
+            }
+
             if start.elapsed() >= timeout {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.emit("backend-startup-timeout",
-                        &format!("后端 {}s 内未就绪", timeout.as_secs()));
-                }
+                // 到点时再确认一次：可能恰好在最后一轮退出。
+                let exit_code = backend_child_exit_code(&app);
+                let alive = exit_code.is_none();
+                let stage = if alive { "timeout" } else { "exited" };
+                let failure = build_startup_failure(&exe_dir, stage, alive, exit_code, None);
+                record_startup_failure(&app, failure);
                 return;
             }
             std::thread::sleep(Duration::from_millis(500));
         }
     });
+}
+
+/// 后端进程的退出码；`None` = 仍在运行（或主线程正持锁，下一轮再看）。
+fn backend_child_exit_code(app: &tauri::AppHandle) -> Option<i32> {
+    let state = app.try_state::<SidecarHandle>()?;
+    let mut guard = state.0.try_lock().ok()?;
+    let child = guard.as_mut()?;
+    match child.try_wait() {
+        Ok(Some(status)) => Some(status.code().unwrap_or(-1)),
+        _ => None,
+    }
+}
+
+/// 读日志尾部。截断点可能落在行中或多字节字符中间，所以丢掉不完整的首行。
+fn read_tail(path: &Path, max_bytes: u64) -> String {
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return String::new(),
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(max_bytes);
+    if start > 0 && file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut buf = Vec::new();
+    if file.read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    if start > 0 {
+        if let Some(i) = text.find('\n') {
+            return text[i + 1..].to_string();
+        }
+    }
+    text
+}
+
+/// 组装启动失败诊断 —— 路径解析与 `spawn_backend` 同源（`resolve_backend_exe`）。
+fn build_startup_failure(
+    exe_dir: &Path,
+    stage: &str,
+    alive: bool,
+    exit_code: Option<i32>,
+    // `spawn_backend` 返回的原始错误（仅 spawn 失败时有）。此前它**只进
+    // `limo_startup.log`**，失败屏上一句「没能启动后端进程」把最关键的
+    // 「为什么」（拒绝访问 / 文件被占用 / 杀软拦截）丢掉了。
+    spawn_error: Option<&str>,
+) -> StartupFailure {
+    let log_dir = user_data_dir();
+    let log_path = log_dir.join("limo_backend_stderr.log");
+    let log_tail = build_log_tail();
+    let exe_path = resolve_backend_exe(exe_dir);
+    let addr: SocketAddr = format!("127.0.0.1:{}", BACKEND_PORT).parse().unwrap();
+    // 只在进程已退出时才有意义 —— 进程还活着时 7413 当然可能是它自己在监听。
+    let port_occupied =
+        !alive && TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok();
+
+    let summary = if stage == "spawn" {
+        // 「找不到 exe」与「exe 在但起不来」是两件处置完全不同的事：
+        // 前者是安装不完整/被隔离（重装），后者是权限/占用/杀软（改环境）。
+        // 此前两者共用一句「没能启动后端进程（路径）」，用户只能猜。
+        if !exe_path.exists() {
+            format!(
+                "安装目录里找不到 {} —— 安装可能不完整，或被安全软件隔离了",
+                exe_path.file_name().map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| exe_path.display().to_string())
+            )
+        } else if let Some(err) = spawn_error.filter(|e| !e.trim().is_empty()) {
+            format!("后端程序存在，但启动被拒绝：{}", err)
+        } else {
+            format!("没能启动后端进程（{}）", exe_path.display())
+        }
+    } else if stage == "exited" {
+        let base = match exit_code {
+            Some(c) => format!("后端进程启动后立即退出（退出码 {}）", c),
+            None => "后端进程启动后立即退出".to_string(),
+        };
+        if port_occupied {
+            format!("{}，端口 {} 已被其他程序占用", base, BACKEND_PORT)
+        } else {
+            base
+        }
+    } else if port_occupied {
+        format!("端口 {} 被其他程序占用，后端无法监听", BACKEND_PORT)
+    } else {
+        format!(
+            "后端 {}s 内没有就绪（进程仍在运行）",
+            BACKEND_STARTUP_TIMEOUT_SECS
+        )
+    };
+
+    StartupFailure {
+        stage: stage.to_string(),
+        summary,
+        alive,
+        exit_code,
+        log_tail,
+        log_path: log_path.to_string_lossy().to_string(),
+        exe_path: exe_path.to_string_lossy().to_string(),
+        port_occupied,
+        install_dir_writable: probe_dir_writable(exe_dir),
+    }
+}
+
+/// 写进 managed state（供前端主动拉取）+ emit 事件（供已挂载的前端即时收到）。
+fn record_startup_failure(app: &tauri::AppHandle, failure: StartupFailure) {
+    if let Some(state) = app.try_state::<BackendStartupState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            *guard = Some(failure.clone());
+        }
+    }
+    emit_startup_failure(app, &failure);
+}
+
+fn emit_startup_failure(app: &tauri::AppHandle, failure: &StartupFailure) {
+    if let Some(w) = app.get_webview_window("main") {
+        // timeout 事件名保持不变（前端已监听）；确定失败走新事件，语义上分得开：
+        // timeout = 进程还活着但慢，可能再等等；failed = 已经救不回来了。
+        let event = if failure.stage == "timeout" {
+            "backend-startup-timeout"
+        } else {
+            "backend-startup-failed"
+        };
+        let _ = w.emit(event, failure);
+    }
+}
+
+#[tauri::command]
+fn get_backend_startup_failure(state: tauri::State<'_, BackendStartupState>) -> Option<StartupFailure> {
+    state.0.lock().ok().and_then(|g| g.clone())
+}
+
+/// 打开日志目录 —— 用户在界面上直接够到 `limo_startup.log` / `limo_backend_stderr.log`。
+#[tauri::command]
+fn open_log_dir() -> Result<(), String> {
+    let dir = user_data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    Command::new("explorer")
+        .arg(&dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("打开日志目录失败: {}", e))
 }
 
 fn probe_health(addr: &SocketAddr) -> bool {
@@ -265,8 +584,19 @@ fn restart_backend_sidecar(
         let mut guard = state.0.lock().map_err(|e| format!("{}", e))?;
         if let Some(ref mut child) = *guard { let _ = child.kill(); }
     }
+    // 清掉上一次的失败记录 —— 否则前端「重试」后立刻又拉到旧结论。
+    if let Some(st) = app.try_state::<BackendStartupState>() {
+        if let Ok(mut g) = st.0.lock() { *g = None; }
+    }
     let exe_dir = env::current_exe().unwrap().parent().map(|p| p.to_path_buf()).unwrap();
-    let new_child = spawn_backend(&exe_dir)?;
+    let new_child = match spawn_backend(&exe_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            let failure = build_startup_failure(&exe_dir, "spawn", false, None, Some(e.as_str()));
+            record_startup_failure(&app, failure);
+            return Err(e);
+        }
+    };
     {
         let mut guard = state.0.lock().map_err(|e| format!("{}", e))?;
         *guard = Some(new_child);
@@ -291,13 +621,7 @@ fn analyze_install_path(exe_path: &Path) -> InstallPathDiagnostics {
     InstallPathDiagnostics {
         path_has_non_ascii: path_str.chars().any(|c| !c.is_ascii()),
         path_has_space: path_str.contains(' '),
-        parent_writable: exe_path.parent().map_or(false, |p| {
-            let probe = p.join(".dd_probe");
-            match std::fs::write(&probe, b"x") {
-                Ok(_) => { let _ = std::fs::remove_file(&probe); true }
-                Err(_) => false,
-            }
-        }),
+        parent_writable: exe_path.parent().map_or(false, probe_dir_writable),
         exe_path: path_str,
         platform: std::env::consts::OS.to_string(),
     }

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useStore } from './store'
 import { onConfigChanged } from './lib/configEvents'
 import { Toast } from './components/ui/Toast'
@@ -18,6 +18,8 @@ import {
   installWarningText, isInstallWarningDismissed, dismissInstallWarning,
   type InstallPathWarning,
 } from './lib/installWarning'
+import { BackendStartupFailure } from './components/ui/BackendStartupFailure'
+import { isFatalStartupFailure, type StartupFailure } from './lib/startupFailure'
 import { Archive, X } from 'lucide-react'
 
 // 冷启动静默期（ms）：后端实测 ~2s 就绪，这段窗口内**故意一条请求都不发** ——
@@ -90,6 +92,12 @@ export default function App() {
   const [showExport, setShowExport] = useState(false)
   // 安装路径告警（Rust `backend-warning`）—— 空串 = 无告警、整条不渲染
   const [installWarning, setInstallWarning] = useState('')
+  // 后端启动失败诊断（Rust `backend-startup-failed`）—— 非空且进程已退出时停在失败屏
+  const [startupFailure, setStartupFailure] = useState<StartupFailure | null>(null)
+  // `initOnce` 活在启动 effect 的闭包里（`done` 标志保证只跑一次），
+  // 失败屏的「仍然继续」够不到它 —— 用 ref 把同一个入口透出来，而不是在外层
+  // 再写一份「设 ready + init」，那会绕开 `done` 让它有机会跑两次。
+  const continueStartupRef = useRef<(() => void) | null>(null)
   const [showSetup, setShowSetup] = useState(() => {
     try { return !localStorage.getItem('limo_setup_done') } catch { return false }
   })
@@ -217,19 +225,29 @@ export default function App() {
       setBackendReady(false)  // 纵深防御：初值已按环境判定，这里再复位一次
       let done = false
       const initOnce = () => { if (!done) { done = true; setBackendReady(true); init() } }
+      continueStartupRef.current = initOnce
 
       let unlistenReady = () => {}
       let unlistenTimeout = () => {}
+      let unlistenFailed = () => {}
       let unlistenWarning = () => {}
       import('@tauri-apps/api/event').then(({ listen }) => {
         // ① 主路径：后端就绪即唤醒（冷启动 2s 左右），此前一条请求都不用发
         listen('backend-ready', () => initOnce()).then(un => { unlistenReady = un })
-        // ② Rust 探测 45s 超时同样会 emit（此前前端没监听，等于白发）
-        listen('backend-startup-timeout', () => {
+        // ② Rust 探测 45s 超时 —— 此进程**还活着**（只是慢），保留强制加载：
+        //    用户至少能进界面看缓存内容，比死等强。诊断信息一并收下，横幅里会用到。
+        listen<StartupFailure>('backend-startup-timeout', e => {
+          setStartupFailure(e.payload)
           console.warn('后端启动超时，强制加载')
           initOnce()
         }).then(un => { unlistenTimeout = un })
-        // ③ 安装路径告警 —— Rust 一直在发，此前前端零监听（等于白发）。故意
+        // ③ 确定失败（进程根本没起来 / 起来就退）—— **不放行**，停在失败屏上。
+        //    放行只会换来满屏 ERR_CONNECTION_REFUSED，而原因就在那一屏里。
+        listen<StartupFailure>('backend-startup-failed', e => {
+          setStartupFailure(e.payload)
+          console.error('后端启动失败:', e.payload.summary)
+        }).then(un => { unlistenFailed = un })
+        // ④ 安装路径告警 —— Rust 一直在发，此前前端零监听（等于白发）。故意
         //    **不挂 init**：它描述的正是「后端可能起不来」的原因，等 init 就太晚了。
         listen<InstallPathWarning>('backend-warning', e => {
           const text = installWarningText(e.payload)
@@ -249,17 +267,31 @@ export default function App() {
         } catch { /* 仍未就绪 —— 继续等 backend-ready 事件 */ }
       }, BACKEND_PROBE_DELAY_MS)
 
-      // ④ 硬兜底：两个事件都没到达时也不能永久停在加载屏
-      const hardTimer = setTimeout(() => {
-        if (!done) { console.warn('后端就绪信号超时，强制加载'); initOnce() }
+      // ④ 硬兜底：两个事件都没到达时也不能永久停在加载屏。
+      //    多半是「进程在 WebView 加载完成前就死了、emit 被丢掉」—— 主动拉一次
+      //    managed state 里的诊断；拉到**确定失败**就停在失败屏，而不是放行。
+      const hardTimer = setTimeout(async () => {
+        if (done) return
+        try {
+          const { invoke } = await import('@tauri-apps/api/core')
+          const f = await invoke<StartupFailure | null>('get_backend_startup_failure')
+          if (f) {
+            setStartupFailure(f)
+            if (isFatalStartupFailure(f)) { console.error('后端启动失败:', f.summary); return }
+          }
+        } catch { /* 拿不到诊断就退回改造前的行为 */ }
+        console.warn('后端就绪信号超时，强制加载')
+        initOnce()
       }, BACKEND_HARD_TIMEOUT_MS)
 
       return () => {
         done = true
         clearTimeout(probeTimer)
         clearTimeout(hardTimer)
+        continueStartupRef.current = null
         unlistenReady()
         unlistenTimeout()
+        unlistenFailed()
         unlistenWarning()
         unsubConfig()
       }
@@ -269,8 +301,20 @@ export default function App() {
     return unsubConfig
   }, [refreshCapabilities])
 
-  // Tauri 冷启动：后端未就绪时显示加载屏，避免组件提前发请求导致 CONNECTION_REFUSED
+  // Tauri 冷启动：后端未就绪时显示加载屏，避免组件提前发请求导致 CONNECTION_REFUSED。
+  // ⚠️ 若已确定后端起不来（进程退出），换失败屏 —— 那一屏上有退出码与 stderr 尾部，
+  //    是用户唯一够得到的排查入口（详见 `lib/startupFailure.ts` 的模块注释）。
   if (!backendReady) {
+    if (startupFailure && isFatalStartupFailure(startupFailure)) {
+      return (
+        <BackendStartupFailure
+          failure={startupFailure}
+          onRetryStarted={() => setStartupFailure(null)}
+          onFailureUpdate={setStartupFailure}
+          onContinue={() => continueStartupRef.current?.()}
+        />
+      )
+    }
     return (
       <div className="h-screen flex flex-col items-center justify-center gap-4 bg-surface">
         <img src="/logo.png" className="w-16 h-16 rounded-xl object-cover animate-pulse" alt="LiMo" />

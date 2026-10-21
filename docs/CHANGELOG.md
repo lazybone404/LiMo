@@ -6,6 +6,89 @@
 
 ---
 
+## 2026-10-21 — 后端启动失败可见化（用户界面直接给出原因）
+
+**起因**：用户在另一台电脑上启动 0.5.11 打包版，前端满屏 `ERR_CONNECTION_REFUSED`，
+界面只有一句「后端启动超时，强制加载」。用户的原话把它说透了：
+
+> 如果用户一启动后端就挂，没法根据日志排查原因，因为日志是后端写的
+
+**先纠正一半事实**：日志**一直在写** —— `lib.rs::spawn_backend` 早就把后端 stdout/stderr
+重定向到 `%LOCALAPPDATA%\LiMo\logs\limo_backend_stderr.log`。真正断掉的是后半句：
+**没有任何路径把它带到用户面前**。「有日志」与「够得到日志」是两件事。
+
+**四个断点**：
+
+| 断点 | 改造前 | 改造后 |
+|---|---|---|
+| `spawn_backend` 返回 Err | 只写 `limo_startup.log`，前端完全不知道 | 写入 managed state + emit `backend-startup-failed` |
+| 进程起来后立刻退出 | traceback 躺在文件里，界面干等 45s | 探测循环每 500ms `try_wait`，**退出即报**（不再干等） |
+| 45s 没就绪 | emit 一句 `后端 45s 内未就绪`（字符串） | emit `StartupFailure`：退出码 / stderr 尾部 / 日志与程序路径 / 端口占用推断 |
+| 事件早于 WebView 加载完成 | emit 被静默丢弃 | state 兜底 + 命令 `get_backend_startup_failure` 主动拉取 |
+
+**判据（刻意改的语义）**：`alive` 决定要不要放行 —— 进程**还活着**只是慢 → 保留强制加载
+（至少能进界面看缓存）；进程**已退出** → 停在失败屏，不放行。放行只会把「一个原因明确的
+失败」变成「一屏无意义的连接错误」。
+
+**新界面**（`components/ui/BackendStartupFailure.tsx`）：一句话结论 + 退出码/路径 + stderr
+尾部（8 KiB，可滚动）+ 三个动作（重试启动 / 打开日志文件夹 / 仍然继续）。⚠️ stderr **为空**
+时显式写「后端没有留下任何错误输出 —— 常见于缺少 VC++ 运行库、被安全软件拦截，或安装目录
+不完整」：一行都不打印正是这三类故障的典型形态，留白会让用户以为界面坏了。
+
+**落点**：`frontend/src-tauri/src/lib.rs`（`StartupFailure` / `BackendStartupState` /
+`read_tail` / `resolve_backend_exe` 抽取 / 探测循环 / 两个新命令）、
+`lib/startupFailure.ts`（纯函数判据）、`components/ui/BackendStartupFailure.tsx`、
+`App.tsx`（事件监听 + 渲染分支 + 硬兜底拉取）、`test/startupFailure.test.ts`（8 条，含
+「进程存活不判致命」的对照实验）。
+
+### 二轮：日志不丢 + 排障闭环（同日）
+
+用户追问「后端一启动就挂如何记录日志以及让用户排障」，与「用户可能选非初始安装位置」
+一并处理。第一轮解决了「把日志带到用户面前」，这一轮解决**日志本身靠不靠得住**。
+
+**修掉的四个缺陷**（都在日志/诊断这条链上，全部静默）：
+
+| # | 缺陷 | 后果 | 修法 |
+|---|---|---|---|
+| L1 | `spawn_backend` 用 `File::create` 打开后端日志 | **每次 spawn 截断**。用户看到失败屏、点「重试启动」→ 刚读到的崩溃日志被清空 → 重试往往又失败 → **屏幕上只剩空白，第一次的证据在用户眼前被抹掉** | `open_backend_log()`：追加 + 时间分隔行 + 4 MiB 轮转一份 `.1.log` |
+| L2 | 失败屏只读 `limo_backend_stderr.log` | 启动器那份（在哪个目录、拉起哪个 exe、为什么拉不起来）**看不到**；而 DLL 缺失型故障后端**一行都不打印**，只读后端日志恰好会在最需要证据时空白 | `build_log_tail()` 拼两段，行首加 `[启动器]` / `[后端]` 前缀；启动器那段用 `SESSION_MARKER` 只取**本次**启动（文件是跨会话 append 的） |
+| L3 | `spawn_backend` 返回的 Err 字符串被丢弃 | 「exe 在但起不来」的**真实原因**（拒绝访问 os error 5 / 被占用 / 杀软拦截）只在 `limo_startup.log` 里，界面上是一句光秃秃的「没能启动后端进程」 | `build_startup_failure` 加 `spawn_error` 参数，summary 带上原文 |
+| L4 | 「找不到 exe」与「exe 在但起不来」共用一句文案 | 处置完全不同（重装 vs 改环境），用户只能猜 | summary 按 `exe_path.exists()` 分两支：「安装目录里找不到 LiMoBackend.exe —— 安装可能不完整，或被安全软件隔离了」 |
+
+**让用户能排障的三处**：
+
+- **NTSTATUS 退出码翻译**（`exitCodeHint`）：`-1073741515` 对用户毫无意义，它对应
+  `0xC0000135`（缺 DLL / 没装 VC++ 运行库）—— 而这正是「一行日志都没有」的主力成因。
+  六条常见码（0xC0000135 / 7B / 0142 / 0005 / 0409 / 0417）翻成人话，**普通退出码
+  不硬套解读**（有对照实验：`1` 必须返回空串）。
+- **复制诊断信息**按钮：结论 + 阶段 + 路径 + 退出码解读 + 安装路径警告 + 两段日志，
+  一整块进剪贴板。用户不必在 `<pre>` 里跨行拖选（长日志很难拖准，而漏掉的恰是开头那几行）。
+- **安装路径警告进失败屏**：复用 `installWarningText` 的判据（**不新建第二份文案**），
+  输入是 `exe_path` + Rust 新回的 `install_dir_writable`（含空格 / 非 ASCII 前端当场算得出来，
+  同一个事实不回两遍）。⚠️ **不看顶栏横幅的「已关闭」记忆** —— 那里关掉的是「每次开机
+  提醒一次」，这里是**解释当前这次失败**的证据，关过横幅不该让失败屏失去线索。
+
+**顺带**：`analyze_install_path` 的探针文件实现抽成 `probe_dir_writable`（`.dd_probe` →
+`.limo_write_probe`），与失败屏共用一份；重试又失败时主动拉新诊断回填
+（`onFailureUpdate`），否则屏幕上是上一次的退出码，看起来像「重试没生效」。
+
+**字段改名**：`StartupFailure.stderr_tail` → `log_tail`（内容已不只是 stderr）。
+`stderrDisplayText` → `logDisplayText`。两处都是内部字段，无外部消费方。
+
+**为什么这些能解释「另一台电脑」的故障**：如果后端在解释器起来之前就被加载器判死
+（缺运行库 / 路径含中文 / 被杀软拦截），**它的 stderr 一定是空的** —— 第一轮那条兜底
+文案只提了「缺 VC++ 运行库 / 杀软 / 安装不完整」，漏了**中文路径**，而中文用户名会让
+**默认**安装路径（`%LOCALAPPDATA%\Programs\LiMo`）就含非 ASCII。现在它被点名，且
+失败屏会直接把路径打出来。
+
+**落点**：`lib.rs`（`open_backend_log` / `fmt_ts` / `prefix_lines` / `read_session_log` /
+`build_log_tail` / `probe_dir_writable` / `SESSION_MARKER` / `BACKEND_LOG_ROTATE_BYTES`）、
+`lib/startupFailure.ts`（`logDisplayText` / `exitCodeHint` / `installPathWarning` /
+`diagnosticsText`）、`components/ui/BackendStartupFailure.tsx`（警告条 + 复制按钮 +
+`onFailureUpdate`）、`test/startupFailure.test.ts`（**8 → 22 条**）。
+
+---
+
 ## 2026-10-20 — 代码审查（安全 / 前端 / 后端三路）后的整改
 
 **起因**：用户「然后你再大致的去进行代码质量和漏洞审查」，三路审查列出 15 条问题，
