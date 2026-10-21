@@ -10,6 +10,16 @@ import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+# PyInstaller console=False 时 sys.stdout / sys.stderr 为 None（桌面壳未重定向时，
+# 例如用户直接双击 exe，或日志文件建不出来）。归一化必须在**最早**处：
+#   - `faulthandler.enable()` 默认取 sys.stderr，为 None 时抛 RuntimeError 直接打死启动；
+#   - uvicorn 的默认 logging 同样写 sys.stderr。
+# 正常情况下 Tauri 把 stderr 重定向到 limo_backend_stderr.log，此时不触发。
+if sys.stdout is None:
+    sys.stdout = open(_os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(_os.devnull, "w")
+
 # PyInstaller 打包版：Python 原生崩溃（segfault/abort）时 dump 线程栈到 stderr
 # （Tauri 重定向到 limo_backend_stderr.log）——否则静默退出无法定位。
 if getattr(sys, "frozen", False):
@@ -24,7 +34,7 @@ from app.core.concurrency import ExecutionGuard
 from app.core.logging import request_id, init_request_id_logging, RequestIDFilter
 from app.storage.store import Store
 
-app = FastAPI(title="LiMo", version="0.5.12")
+app = FastAPI(title="LiMo", version="0.5.13")
 
 @app.middleware("http")
 async def add_request_id(request, call_next):
@@ -318,7 +328,7 @@ async def startup():
 @app.get("/health")
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.5.12", "started_at": app.state.started_at}
+    return {"status": "ok", "version": "0.5.13", "started_at": app.state.started_at}
 
 
 # 路由（files 在 ingest 之前——/files/{id}/original 比 /files/{id}/{name} 更具体，必须先匹配）
@@ -375,11 +385,7 @@ async def view_logs(request: Request):
 
 
 if __name__ == "__main__":
-    import os as _os
-    # PyInstaller console=False 时 sys.stderr 为 None，uvicorn logging 会崩溃
-    if sys.stderr is None:
-        sys.stderr = open(_os.devnull, "w")
-    if sys.stdout is None:
-        sys.stdout = open(_os.devnull, "w")
+    # sys.stdout / sys.stderr 的 None 兜底已在模块顶部完成（faulthandler 之前）——
+    # 这里不再重复，避免同一判据两处实现。
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=7413)

@@ -6,6 +6,38 @@
 
 ---
 
+## 2026-10-21 — 修复 0.5.12 打包版启动即崩（`RuntimeError: sys.stderr is None`）
+
+**症状**：0.5.12 安装包启动时后端秒退，日志只有一行：
+
+```
+File "main.py", line 17, in <module>
+RuntimeError: sys.stderr is None
+```
+
+**根因**：本轮为「原生崩溃可定位」新加的 `faulthandler.enable()` 在模块顶部（第 17 行）
+执行，而 `sys.stderr is None` 的兜底当时留在文件末尾的 `__main__` 段（第 379 行）——
+**晚于它**。`faulthandler.enable()` 默认取 `sys.stderr`，打包版（`console=False`）
+在桌面壳没有把 stderr 重定向过去时（用户直接双击 exe 验证；或 `open_backend_log()`
+建不出文件、Rust 侧退回 `Stdio::null()` 之外的场景）拿到 `None` 就直接抛错。
+
+**为什么源码读起来没问题**：两段各自都是对的，错的是**顺序**——兜底必须在所有
+「假设 stderr 存在」的代码之前。这与「判据看的输入不是它以为的那个」是同一类失效：
+代码存在、逻辑正确、执行时机不对。
+
+**修复**：`backend/main.py` 顶部把 `sys.stdout` / `sys.stderr` 的 None 兜底提到
+`faulthandler.enable()` **之前**，并删掉 `__main__` 段里的重复实现（同一判据不留两处）。
+
+**守卫**（`backend/tests/test_main_entry.py`，2 条）：
+1. **源码顺序**：第一处 `sys.stderr = open(` 必须早于第一处 `faulthandler.enable()` 代码行
+   （排除注释——写这条时它先被自己的注释骗过一次）；
+2. **运行时**：子进程里伪造 `sys.frozen = True` + `stdout/stderr = None` 后 `import main`
+   必须成功退出——顺序对了但换个写法绕过去的，由它兜住。
+
+**影响范围**：仅打包版（开发版有控制台，stderr 不为 None）。0.5.12 安装包作废，以 0.5.13 为准。
+
+---
+
 ## 2026-10-21 — 后端启动失败可见化（用户界面直接给出原因）
 
 **起因**：用户在另一台电脑上启动 0.5.11 打包版，前端满屏 `ERR_CONNECTION_REFUSED`，
