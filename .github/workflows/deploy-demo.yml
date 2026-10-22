@@ -1,0 +1,75 @@
+# 演示站部署 —— 把 `npm run build:demo` 的产物发到 GitHub Pages。
+#
+# ⚠️ **只发布演示站，不发布安装包**：这里没有任何打包/上传 Release 的步骤。
+#    发行版流程仍以 CLAUDE.md「发行规则」为准（打包 ≠ 发布，需用户主动提出）。
+#
+# ⚠️ **base 必须是 `/LiMo/`**：项目页挂在 `lazybone404.github.io/LiMo/` 这个子路径下，
+#    写成 `/` 会让 `index.html` 去根路径找 `assets/`，整站白屏（静态托管不会 404 提示，
+#    只会是空白页）。`VITE_DEMO_BASE` 覆盖 `.env.demo` 里的默认 `/`。
+#
+# ⚠️ **`--mode demo` 与 `.env.demo` 是一对**：前者让 Vite 加载后者、后者打开
+#    `VITE_DEMO=1` 编译期开关，`main.tsx` 才会安装 mock fetch。少任何一半，
+#    构建出来的都是**真**前端（首屏就去连 127.0.0.1:7413，然后空站）。
+name: Deploy demo
+
+on:
+  push:
+    branches: [main]
+    # 只有前端或本文件变动才重建；改后端/文档不触发（省 runner）
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy-demo.yml"
+  workflow_dispatch:
+
+# Pages 部署需要这三个权限，缺 pages:write 会在 deploy 步骤 403
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 构建演示站
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖
+        working-directory: frontend
+        run: npm ci
+
+      - name: 构建（mock 数据版）
+        working-directory: frontend
+        env:
+          VITE_DEMO: "1"
+          VITE_DEMO_BASE: /LiMo/
+        # `build:demo` = `tsc -b && vite build --mode demo`，与本地同一条命令。
+        # ⚠️ 不用 `npm run build` —— 那是正式包，不含 mock 层。
+        run: npm run build:demo
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist-demo
+
+  deploy:
+    name: 发布到 GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

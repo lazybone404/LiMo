@@ -1,0 +1,1199 @@
+{
+ "adapters": [
+  "video",
+  "document",
+  "image",
+  "webpage",
+  "text"
+ ],
+ "engines": {
+  "asr": {
+   "dashscope-asr": {
+    "supported_modes": [],
+    "capabilities": [
+     "asr"
+    ]
+   },
+   "bcut-asr": {
+    "supported_modes": [],
+    "capabilities": [
+     "asr"
+    ]
+   }
+  },
+  "doc": {
+   "pypdfium2": {
+    "supported_modes": [],
+    "capabilities": [
+     "text",
+     "image",
+     "pdf"
+    ]
+   },
+   "pdf-image": {
+    "supported_modes": [],
+    "capabilities": [
+     "pdf",
+     "image"
+    ]
+   },
+   "markitdown": {
+    "supported_modes": [],
+    "capabilities": [
+     "text",
+     "table",
+     "image",
+     "office"
+    ]
+   },
+   "python-docx": {
+    "supported_modes": [],
+    "capabilities": [
+     "text",
+     "table",
+     "image",
+     "office"
+    ]
+   },
+   "python-pptx": {
+    "supported_modes": [],
+    "capabilities": [
+     "text",
+     "table",
+     "office"
+    ]
+   },
+   "openpyxl": {
+    "supported_modes": [],
+    "capabilities": [
+     "text",
+     "table",
+     "office"
+    ]
+   },
+   "epub-container": {
+    "supported_modes": [],
+    "capabilities": [
+     "text",
+     "image",
+     "office"
+    ]
+   },
+   "pymupdf4llm": {
+    "supported_modes": [],
+    "capabilities": []
+   }
+  },
+  "ocr": {
+   "dashscope-ocr": {
+    "supported_modes": [
+     "extract",
+     "table",
+     "digitize",
+     "understand"
+    ],
+    "capabilities": [
+     "text",
+     "table",
+     "ocr",
+     "image"
+    ]
+   }
+  }
+ },
+ "engineProviders": {
+  "bcut": {
+   "name": "B站必剪（免费云转写）",
+   "type": "cloud",
+   "keyConfigured": true,
+   "capabilities": [
+    "asr"
+   ]
+  },
+  "dashscope": {
+   "name": "阿里云 DashScope",
+   "type": "cloud",
+   "keyConfigured": true,
+   "capabilities": [
+    "asr",
+    "ocr"
+   ]
+  },
+  "doc-local": {
+   "name": "本地文档引擎组（PyPdfium2 + MarkItDown + python-docx 等）",
+   "type": "local",
+   "capabilities": [
+    "doc"
+   ]
+  }
+ },
+ "engineOptions": {
+  "asr": [
+   {
+    "id": 2379113230,
+    "provider": "bcut",
+    "name": "bcut",
+    "desc": "免费云转写 · 中文优化",
+    "capabilities": [],
+    "license": null,
+    "plugin": false,
+    "displayName": "bcut",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 2263837564,
+    "provider": "dashscope",
+    "name": "paraformer-v2",
+    "desc": "离线语音转文字 · 支持大文件",
+    "capabilities": [],
+    "license": null,
+    "plugin": false,
+    "displayName": "paraformer-v2",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 1738020093,
+    "provider": "__registry__",
+    "name": "dashscope-asr",
+    "desc": "",
+    "capabilities": [
+     "asr"
+    ],
+    "license": null,
+    "plugin": false,
+    "displayName": "dashscope-asr",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 2088269706,
+    "provider": "__registry__",
+    "name": "bcut-asr",
+    "desc": "",
+    "capabilities": [
+     "asr"
+    ],
+    "license": null,
+    "plugin": false,
+    "displayName": "bcut-asr",
+    "userDesc": "",
+    "configSchema": []
+   }
+  ],
+  "doc": [
+   {
+    "id": 706363162,
+    "provider": "doc-local",
+    "name": "pypdfium2",
+    "desc": "PDF 极速纯文字（BSD-3）",
+    "capabilities": [
+     "text",
+     "image",
+     "pdf"
+    ],
+    "license": null,
+    "plugin": false,
+    "displayName": "pypdfium2",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 1424337326,
+    "provider": "doc-local",
+    "name": "python-docx",
+    "desc": "Word .docx 文字+表格+图片",
+    "capabilities": [
+     "text",
+     "table",
+     "image",
+     "office"
+    ],
+    "license": null,
+    "plugin": false,
+    "displayName": "python-docx",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 3580788081,
+    "provider": "doc-local",
+    "name": "python-pptx",
+    "desc": "PPT .pptx 文字+图片+备注",
+    "capabilities": [
+     "text",
+     "table",
+     "office"
+    ],
+    "license": null,
+    "plugin": false,
+    "displayName": "python-pptx",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 1686788763,
+    "provider": "doc-local",
+    "name": "openpyxl",
+    "desc": "Excel .xlsx 表格数据提取",
+    "capabilities": [
+     "text",
+     "table",
+     "office"
+    ],
+    "license": null,
+    "plugin": false,
+    "displayName": "openpyxl",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 622193541,
+    "provider": "doc-local",
+    "name": "pymupdf4llm",
+    "desc": "",
+    "capabilities": [],
+    "license": "AGPL-3.0",
+    "plugin": true,
+    "displayName": "pymupdf4llm",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 4069404934,
+    "provider": "doc-local",
+    "name": "epub-container",
+    "desc": "EPUB 电子书 · 章节+图片+元数据（自研）",
+    "capabilities": [
+     "text",
+     "image",
+     "office"
+    ],
+    "license": null,
+    "plugin": false,
+    "displayName": "epub-container",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 2490465594,
+    "provider": "doc-local",
+    "name": "markitdown",
+    "desc": "Office/EPUB 转 Markdown",
+    "capabilities": [
+     "text",
+     "table",
+     "image",
+     "office"
+    ],
+    "license": null,
+    "plugin": false,
+    "displayName": "markitdown",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 2062758109,
+    "provider": "__registry__",
+    "name": "pdf-image",
+    "desc": "",
+    "capabilities": [
+     "pdf",
+     "image"
+    ],
+    "license": null,
+    "plugin": false,
+    "displayName": "pdf-image",
+    "userDesc": "",
+    "configSchema": []
+   }
+  ],
+  "ocr": [
+   {
+    "id": 1055148340,
+    "provider": "dashscope",
+    "name": "qwen-vl-ocr-latest",
+    "desc": "纯OCR识别 · 文档/表格/公式",
+    "capabilities": [],
+    "license": null,
+    "plugin": false,
+    "displayName": "qwen-vl-ocr-latest",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 3097338164,
+    "provider": "dashscope",
+    "name": "qwen-vl-max",
+    "desc": "旗舰视觉 · 文字提取",
+    "capabilities": [],
+    "license": null,
+    "plugin": false,
+    "displayName": "qwen-vl-max",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 1474474406,
+    "provider": "dashscope",
+    "name": "qwen-vl-plus",
+    "desc": "轻量视觉 · 文字提取",
+    "capabilities": [],
+    "license": null,
+    "plugin": false,
+    "displayName": "qwen-vl-plus",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 460898815,
+    "provider": "dashscope",
+    "name": "qwen3-vl-flash",
+    "desc": "快速视觉 · 最低成本",
+    "capabilities": [],
+    "license": null,
+    "plugin": false,
+    "displayName": "qwen3-vl-flash",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 1784412287,
+    "provider": "dashscope",
+    "name": "qwen3.5-ocr",
+    "desc": "视觉 · 卡证票据OCR",
+    "capabilities": [],
+    "license": null,
+    "plugin": false,
+    "displayName": "qwen3.5-ocr",
+    "userDesc": "",
+    "configSchema": []
+   },
+   {
+    "id": 1384897456,
+    "provider": "__registry__",
+    "name": "dashscope-ocr",
+    "desc": "",
+    "capabilities": [
+     "text",
+     "table",
+     "ocr",
+     "image"
+    ],
+    "license": null,
+    "plugin": false,
+    "displayName": "dashscope-ocr",
+    "userDesc": "",
+    "configSchema": []
+   }
+  ]
+ },
+ "engineBindings": {
+  "asr": 2379113230,
+  "ocr": 1055148340,
+  "doc": 706363162,
+  "doc:epub": 4069404934,
+  "doc:excel": 1686788763,
+  "doc:pdf": 706363162,
+  "doc:ppt": 3580788081,
+  "doc:word": 1424337326
+ },
+ "styles": [
+  "plain",
+  "detailed",
+  "business",
+  "academic",
+  "tutorial",
+  "task_oriented",
+  "minimal",
+  "meeting",
+  "life",
+  "xiaohongshu"
+ ],
+ "docStyles": [
+  "plain",
+  "detailed",
+  "business",
+  "academic",
+  "tutorial",
+  "task_oriented",
+  "minimal",
+  "meeting",
+  "imrad"
+ ],
+ "excelStyles": [
+  "detailed",
+  "plain",
+  "minimal",
+  "business"
+ ],
+ "genOptions": {
+  "video": [
+   "toc",
+   "link",
+   "screenshot",
+   "summary",
+   "chart",
+   "followup"
+  ],
+  "audio": [
+   "toc",
+   "summary",
+   "formulas",
+   "followup"
+  ],
+  "webpage": [
+   "toc",
+   "summary",
+   "formulas",
+   "chart",
+   "followup"
+  ],
+  "pdf": [
+   "toc",
+   "formulas",
+   "references",
+   "summary",
+   "images",
+   "chart",
+   "followup"
+  ],
+  "docx": [
+   "toc",
+   "summary",
+   "images",
+   "formulas",
+   "chart",
+   "followup"
+  ],
+  "pptx": [
+   "toc",
+   "summary",
+   "images",
+   "formulas",
+   "chart",
+   "followup"
+  ],
+  "xlsx": [],
+  "text": [
+   "toc",
+   "summary",
+   "formulas",
+   "chart",
+   "followup"
+  ]
+ },
+ "llmModels": {
+  "deepseek": [
+   {
+    "desc": "1M上下文",
+    "id": "deepseek-v4-flash",
+    "name": "V4 Flash",
+    "retired": "2026-09-10",
+    "retired_note": "官方改名，请改用 deepseek-flash"
+   },
+   {
+    "capabilities": [
+     "text",
+     "reasoning"
+    ],
+    "context_window": 1000000,
+    "desc": "1M上下文 · 纯文本 · 推理强",
+    "id": "deepseek-v4-pro",
+    "name": "V4 Pro"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image"
+    ],
+    "context_window": 1000000,
+    "desc": "视觉实验 · 图片理解(强制800×800)",
+    "id": "deepseek-v4-flash-vision-exp",
+    "name": "V4 Flash Vision",
+    "retired": "2026-09-10",
+    "retired_note": "原生多模态已并入 deepseek-flash"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image",
+     "reasoning"
+    ],
+    "context_window": 1000000,
+    "desc": "1M上下文 · 原生多模态 · 快",
+    "id": "deepseek-flash",
+    "name": "V4.1 Flash"
+   }
+  ],
+  "dashscope": [
+   {
+    "capabilities": [
+     "text"
+    ],
+    "context_window": 1000000,
+    "desc": "纯文本 · 旗舰推理",
+    "id": "qwen3.7-max",
+    "name": "Qwen3.7 Max"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image",
+     "video"
+    ],
+    "context_window": 1000000,
+    "desc": "多模态+视频 · 日常推荐",
+    "id": "qwen3.7-plus",
+    "name": "Qwen3.7 Plus"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image",
+     "video"
+    ],
+    "context_window": 1000000,
+    "desc": "视觉+视频 · 极速响应",
+    "id": "qwen3.7-flash",
+    "name": "Qwen3.7 Flash"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image",
+     "video"
+    ],
+    "context_window": 1000000,
+    "desc": "视觉+视频 · 轻量快速",
+    "id": "qwen3.6-flash",
+    "name": "Qwen3.6 Flash"
+   },
+   {
+    "capabilities": [
+     "text"
+    ],
+    "context_window": 1000000,
+    "desc": "纯文本 · 最便宜",
+    "id": "qwen-flash",
+    "name": "Qwen Flash"
+   },
+   {
+    "capabilities": [
+     "text"
+    ],
+    "context_window": 1000000,
+    "desc": "纯文本 · 低成本推理",
+    "id": "qwen-plus",
+    "name": "Qwen Plus"
+   },
+   {
+    "capabilities": [
+     "text"
+    ],
+    "context_window": 131072,
+    "desc": "纯文本 · 极低成本",
+    "id": "qwen-turbo",
+    "name": "Qwen Turbo"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image"
+    ],
+    "context_window": 38192,
+    "desc": "视觉 · 纯OCR识别",
+    "id": "qwen-vl-ocr-latest",
+    "name": "Qwen VL OCR"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image"
+    ],
+    "context_window": 65536,
+    "desc": "视觉 · 卡证票据OCR",
+    "id": "qwen3.5-ocr",
+    "name": "Qwen3.5 OCR"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image",
+     "video"
+    ],
+    "context_window": 1000000,
+    "desc": "视觉+视频 · Flash多模态",
+    "id": "qwen3.5-flash",
+    "name": "Qwen3.5 Flash"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image",
+     "video"
+    ],
+    "context_window": 262144,
+    "desc": "视觉+视频 · 最快最便宜（视频 2秒-1小时）",
+    "id": "qwen3-vl-flash",
+    "name": "Qwen3 VL Flash"
+   },
+   {
+    "capabilities": [
+     "text"
+    ],
+    "context_window": 1000000,
+    "desc": "纯文本 · 代码生成",
+    "id": "qwen3-coder-plus",
+    "name": "Qwen3 Coder Plus"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image",
+     "video"
+    ],
+    "context_window": 131072,
+    "desc": "视觉+视频 · 旗舰图片理解（视频 2秒-20分）",
+    "id": "qwen-vl-max",
+    "name": "Qwen-VL Max"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image",
+     "video",
+     "document"
+    ],
+    "context_window": 1000000,
+    "desc": "视觉+视频 · 旗舰 · PDF直传",
+    "id": "qwen3.8-max",
+    "name": "Qwen3.8 Max"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image",
+     "video",
+     "document"
+    ],
+    "context_window": 1000000,
+    "desc": "视觉+视频 · PDF直传 · 快",
+    "id": "qwen3.8-flash",
+    "name": "Qwen3.8 Flash"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image",
+     "video",
+     "document"
+    ],
+    "context_window": 1000000,
+    "desc": "视觉+视频 · PDF直传 · 开源版",
+    "id": "qwen3.8-27b",
+    "name": "Qwen3.8 27B"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image",
+     "video"
+    ],
+    "context_window": 1000000,
+    "desc": "全模态 · 文本输出 · 1M",
+    "id": "qwen3.8-omni-flash",
+    "name": "Qwen3.8 Omni Flash"
+   }
+  ],
+  "openai": [
+   {
+    "context_window": 128000,
+    "desc": "文本+视觉",
+    "id": "gpt-4o",
+    "name": "GPT-4o"
+   },
+   {
+    "context_window": 128000,
+    "desc": "文本",
+    "id": "gpt-4o-mini",
+    "name": "GPT-4o Mini"
+   },
+   {
+    "context_window": 1050000,
+    "desc": "文本+视觉 · 旗舰",
+    "id": "gpt-6-astra",
+    "name": "GPT-6 Astra"
+   },
+   {
+    "context_window": 1050000,
+    "desc": "文本+视觉 · 主力",
+    "id": "gpt-6.1-sol",
+    "name": "GPT-6.1 Sol"
+   },
+   {
+    "context_window": 1050000,
+    "desc": "文本+视觉 · 低价",
+    "id": "gpt-6-luna",
+    "name": "GPT-6 Luna"
+   }
+  ],
+  "anthropic": [
+   {
+    "context_window": 1000000,
+    "desc": "文本+视觉",
+    "id": "claude-sonnet-4-6",
+    "name": "Sonnet 4.6"
+   },
+   {
+    "context_window": 1000000,
+    "desc": "文本+视觉",
+    "id": "claude-opus-4-8",
+    "name": "Opus 4.8"
+   },
+   {
+    "context_window": 200000,
+    "desc": "文本",
+    "id": "claude-haiku-4-5",
+    "name": "Haiku 4.5"
+   },
+   {
+    "context_window": 1000000,
+    "desc": "文本+视觉 · 旗舰",
+    "id": "claude-fable-5-1",
+    "name": "Fable 5.1"
+   },
+   {
+    "context_window": 1000000,
+    "desc": "文本+视觉 · 官方推荐默认",
+    "id": "claude-opus-5-5",
+    "name": "Opus 5.5"
+   },
+   {
+    "context_window": 1000000,
+    "desc": "文本+视觉 · 均衡",
+    "id": "claude-sonnet-5-5",
+    "name": "Sonnet 5.5"
+   }
+  ],
+  "google": [
+   {
+    "context_window": 1000000,
+    "desc": "文本+视觉",
+    "id": "gemini-3.5-flash",
+    "name": "Gemini 3.5 Flash"
+   },
+   {
+    "context_window": 1000000,
+    "desc": "文本+视觉",
+    "id": "gemini-3.1-pro",
+    "name": "Gemini 3.1 Pro"
+   },
+   {
+    "context_window": 1000000,
+    "desc": "文本+视觉",
+    "id": "gemini-2.5-flash",
+    "name": "Gemini 2.5 Flash"
+   },
+   {
+    "context_window": 1048576,
+    "desc": "文本+视觉+视频",
+    "id": "gemini-3.8-flash",
+    "name": "Gemini 3.8 Flash"
+   }
+  ],
+  "zhipu": [
+   {
+    "context_window": 1000000,
+    "desc": "1M上下文",
+    "id": "glm-5.2",
+    "name": "GLM-5.2"
+   },
+   {
+    "context_window": 200000,
+    "desc": "推理+编程",
+    "id": "glm-4.7",
+    "name": "GLM-4.7"
+   },
+   {
+    "context_window": 131072,
+    "desc": "视觉理解（官方已下架）",
+    "id": "glm-4v-plus",
+    "name": "GLM-4V-Plus",
+    "retired": "2026-10-02",
+    "retired_note": "已从官方在售视觉模型表移除，建议改用 GLM-4.6V"
+   },
+   {
+    "context_window": 1000000,
+    "desc": "纯文本 · 长程 Agent",
+    "id": "glm-5.3",
+    "name": "GLM-5.3"
+   },
+   {
+    "context_window": 1000000,
+    "desc": "原生多模态 · 1M",
+    "id": "glm-5.3-flash",
+    "name": "GLM-5.3 Flash"
+   }
+  ],
+  "moonshot": [
+   {
+    "capabilities": [
+     "text",
+     "image"
+    ],
+    "context_window": 262144,
+    "desc": "编程+智能体 · 支持视觉",
+    "id": "kimi-k2.6",
+    "name": "Kimi K2.6"
+   },
+   {
+    "context_window": 131072,
+    "desc": "深度推理（官方已下线）",
+    "id": "kimi-k2-thinking",
+    "name": "Kimi K2 Thinking",
+    "retired": "2026-05-25",
+    "retired_note": "官方已下线，建议改用 kimi-k3"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image"
+    ],
+    "context_window": 1000000,
+    "desc": "2.8万亿参数 · 原生视觉 · 1M",
+    "id": "kimi-k3",
+    "name": "Kimi K3"
+   },
+   {
+    "context_window": 262144,
+    "desc": "编程优化 · 256k",
+    "id": "kimi-k2.7-code",
+    "name": "Kimi K2.7 Code"
+   }
+  ],
+  "opencode": [
+   {
+    "context_window": 131072,
+    "desc": "推理更强",
+    "id": "deepseek-v4-pro",
+    "name": "DeepSeek V4 Pro"
+   },
+   {
+    "context_window": 131072,
+    "desc": "快速便宜",
+    "id": "deepseek-v4-flash",
+    "name": "DeepSeek V4 Flash"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image"
+    ],
+    "context_window": 131072,
+    "desc": "旗舰 · 可图片",
+    "id": "qwen3.8-max",
+    "name": "Qwen3.8 Max"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image"
+    ],
+    "context_window": 131072,
+    "desc": "旗舰推理 · 可图片",
+    "id": "qwen3.7-max",
+    "name": "Qwen3.7 Max"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image"
+    ],
+    "context_window": 131072,
+    "desc": "日常推荐 · 可图片",
+    "id": "qwen3.7-plus",
+    "name": "Qwen3.7 Plus"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image"
+    ],
+    "context_window": 131072,
+    "desc": "低配 · 可图片",
+    "id": "qwen3.6-plus",
+    "name": "Qwen3.6 Plus"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image"
+    ],
+    "context_window": 131072,
+    "desc": "旗舰 · 可图片",
+    "id": "glm-5.3",
+    "name": "GLM-5.3"
+   },
+   {
+    "capabilities": [
+     "text",
+     "image"
+    ],
+    "context_window": 131072,
+    "desc": "推理 · 可图片",
+    "id": "glm-5.2",
+    "name": "GLM-5.2"
+   },
+   {
+    "context_window": 131072,
+    "desc": "轻量推理",
+    "id": "glm-5.1",
+    "name": "GLM-5.1"
+   },
+   {
+    "context_window": 131072,
+    "desc": "深度推理",
+    "id": "kimi-k3",
+    "name": "Kimi K3"
+   },
+   {
+    "context_window": 131072,
+    "desc": "编程优化",
+    "id": "kimi-k2.7-code",
+    "name": "Kimi K2.7 Code"
+   },
+   {
+    "context_window": 131072,
+    "desc": "编程+智能体",
+    "id": "kimi-k2.6",
+    "name": "Kimi K2.6"
+   },
+   {
+    "context_window": 131072,
+    "desc": "通用",
+    "id": "minimax-m3",
+    "name": "MiniMax M3"
+   },
+   {
+    "context_window": 131072,
+    "desc": "通用",
+    "id": "minimax-m2.7",
+    "name": "MiniMax M2.7"
+   },
+   {
+    "context_window": 131072,
+    "desc": "高性价比",
+    "id": "mimo-v2.5",
+    "name": "MiMo-V2.5"
+   }
+  ]
+ },
+ "products": [
+  {
+   "name": "notes",
+   "label": "笔记",
+   "category": "core",
+   "inputs": [],
+   "description": "结构化笔记：提取关键信息，组织为层次清晰的 Markdown"
+  },
+  {
+   "name": "polished",
+   "label": "整理版原文",
+   "category": "core",
+   "inputs": [],
+   "description": "整理版原文：去噪音、修正错别字、合并段落，保留完整信息"
+  }
+ ],
+ "version": "0.5.14",
+ "fileTypeMap": {
+  "pdf": [
+   "pypdfium2",
+   "pymupdf4llm"
+  ],
+  "word": [
+   "python-docx",
+   "markitdown"
+  ],
+  "ppt": [
+   "python-pptx",
+   "markitdown"
+  ],
+  "excel": [
+   "openpyxl",
+   "markitdown"
+  ],
+  "epub": [
+   "epub-container",
+   "markitdown"
+  ]
+ },
+ "scenarioLabels": {
+  "doc:pdf": "PDF",
+  "doc:word": "Word",
+  "doc:ppt": "PPT",
+  "doc:excel": "Excel",
+  "doc:epub": "EPUB"
+ },
+ "engineLabels": {
+  "text": "文字",
+  "table": "表格",
+  "image": "图片",
+  "ocr": "OCR",
+  "pdf": "PDF",
+  "office": "文档",
+  "asr": "语音"
+ },
+ "styleLabels": {
+  "none": "无",
+  "plain": "通俗",
+  "minimal": "精简",
+  "detailed": "全文精要",
+  "academic": "学术",
+  "life": "生活",
+  "tutorial": "教程",
+  "xiaohongshu": "小红书",
+  "business": "商务",
+  "meeting": "会议纪要",
+  "task_oriented": "任务",
+  "imrad": "IMRaD 精读"
+ },
+ "dimensionPresets": [
+  {
+   "key": "general",
+   "label": "通用资料 / 综合阅读",
+   "dimensions": [
+    "核心主题 / 要解决的问题",
+    "主要结论",
+    "关键差异",
+    "共同点与一致信息",
+    "重要限制 / 条件 / 风险",
+    "适用场景或行动影响",
+    "仍无法从材料确定的信息"
+   ]
+  },
+  {
+   "key": "paper",
+   "label": "论文综述",
+   "dimensions": [
+    "研究问题",
+    "方法",
+    "数据",
+    "主要发现",
+    "局限"
+   ]
+  },
+  {
+   "key": "tech",
+   "label": "技术资料",
+   "dimensions": [
+    "解决的问题",
+    "技术方案",
+    "关键设计",
+    "效果",
+    "限制"
+   ]
+  },
+  {
+   "key": "product",
+   "label": "产品评测",
+   "dimensions": [
+    "目标用户",
+    "核心功能",
+    "实现方式",
+    "优劣",
+    "适用场景"
+   ]
+  },
+  {
+   "key": "media",
+   "label": "内容观点",
+   "dimensions": [
+    "主题",
+    "主要观点",
+    "论据素材",
+    "立场倾向",
+    "局限"
+   ]
+  }
+ ],
+ "contentTypes": [
+  {
+   "key": "paper",
+   "label": "论文"
+  },
+  {
+   "key": "tech",
+   "label": "技术资料"
+  },
+  {
+   "key": "product",
+   "label": "产品评测"
+  },
+  {
+   "key": "media",
+   "label": "观点内容"
+  }
+ ],
+ "readerIntents": [
+  {
+   "key": "understand",
+   "label": "理解主题",
+   "purpose": "读完能准确复述这批材料的核心议题，以及各自的实际立场与依据。",
+   "defaultContentType": null,
+   "shape": "article",
+   "shapeLabel": "综合文章",
+   "shapeDescription": "以读者最关心的问题为主线组织，正文是一篇能连续读下来的文章。"
+  },
+  {
+   "key": "claims",
+   "label": "梳理观点",
+   "purpose": "读完能说清各篇主张了什么、这些主张彼此是什么关系，以及各自依据与成立条件。",
+   "defaultContentType": null,
+   "shape": "claims",
+   "shapeLabel": "观点综合",
+   "shapeDescription": "按材料表达的观点归并组织，说明每个观点的依据以及彼此是什么关系。"
+  },
+  {
+   "key": "compare",
+   "label": "比较材料",
+   "purpose": "读完能说清各篇在同一组维度上的异同与分歧点，以及这些差异各自依据什么。",
+   "defaultContentType": null,
+   "shape": "comparison",
+   "shapeLabel": "比较简报",
+   "shapeDescription": "按比较轴逐个对照，说明差异及其来源，而不是逐篇平铺。"
+  },
+  {
+   "key": "controversy",
+   "label": "找争议",
+   "purpose": "读完能指出材料之间真正冲突的地方、各自依据，以及这些分歧在什么条件下成立。",
+   "defaultContentType": "media",
+   "shape": "controversy",
+   "shapeLabel": "争议分析",
+   "shapeDescription": "围绕真正互斥的冲突展开，说明各方依据与这些分歧在什么条件下成立。"
+  },
+  {
+   "key": "action",
+   "label": "提炼行动建议",
+   "purpose": "读完能带走可以落地的判断与下一步动作，并知道每个判断的适用条件与风险。",
+   "defaultContentType": "product",
+   "shape": "decision",
+   "shapeLabel": "决策与行动简报",
+   "shapeDescription": "给出可执行的结论与下一步动作，并交代前提、风险与失效条件。"
+  },
+  {
+   "key": "custom",
+   "label": "自定义",
+   "purpose": "",
+   "defaultContentType": null,
+   "shape": "article",
+   "shapeLabel": "综合文章",
+   "shapeDescription": "以读者最关心的问题为主线组织，正文是一篇能连续读下来的文章。"
+  }
+ ],
+ "missingKeys": {
+  "llm": [],
+  "engine": []
+ }
+}

@@ -15,8 +15,25 @@ import './styles/blocks.css'
 import './styles/chat-blocks.css'
 import App from './App.tsx'
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-)
+/**
+ * 静态演示站（`npm run build:demo`，见 `VITE_DEMO`）—— 在挂载 React **之前**装上假后端。
+ *
+ * ⚠️ 顺序不能颠倒：`App` 的启动链在首次 effect 里就发请求（health / capabilities /
+ * transcripts / folders），晚一步会先打到不存在的后端上，页面上表现为「后端离线」横幅
+ * 闪一下再消失。
+ * 正式构建里 `import.meta.env.VITE_DEMO` 是编译期常量，Rollup 会把整个分支连同
+ * `./demo/*` 一起摇掉 —— 演示数据不进正式包。
+ */
+async function bootstrap() {
+  if (import.meta.env.VITE_DEMO === '1') {
+    const { installDemoFetch } = await import('./demo/mock')
+    installDemoFetch()
+  }
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  )
+}
+
+void bootstrap()

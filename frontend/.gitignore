@@ -10,6 +10,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+# 静态演示站产物（npm run build:demo）——由 CI 重新构建，不进仓库
+dist-demo
 *.local
 
 # Editor directories and files
