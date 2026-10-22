@@ -231,8 +231,14 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
           {/* 标题 + 保存按钮 —— **吸顶**（2026-10-20 用户反馈「要保存得滚回顶部」）。
               ⚠️ 用不透明 `bg-surface` 而不是 `backdrop-blur`：`backdrop-filter` 会**创建包含块**，
               把 `fixed` 后代锁进这条 60px 高的横条里（模式 #67，文档库那边已踩过）。
-              ⚠️ `-mx-8 px-8` 只是为了底色铺满内容宽度，不改变内容对齐。 */}
-          <div className="sticky top-0 z-10 -mx-8 mb-6 flex items-center justify-between border-b border-border-light bg-surface px-8 pb-4 pt-6">
+              ⚠️ `-mx-8 px-8` 只是为了底色铺满内容宽度，不改变内容对齐。
+              ⚠️ **`z-20` 不是随手取的**：下面推荐搭配卡的色环与文字带 `relative z-10`
+              （原本只为浮在纹理背景之上）。这些元素与这条吸顶横条**同处一个层叠上下文**
+              （`main` / `max-w-3xl` 都没创建新的），z-index 相同便由 DOM 顺序裁决 ——
+              卡片在文档里更靠后，于是滚动时**卡片的色环和文字直接画在标题与保存按钮之上**，
+              而横条自己的不透明 `bg-surface` 却压不住它们（2026-10-22 用户反馈
+              「颜色的色例会透过某些栏」）。横条必须严格高于内容里的装饰层，故取 `z-20`。 */}
+          <div className="sticky top-0 z-20 -mx-8 mb-6 flex items-center justify-between border-b border-border-light bg-surface px-8 pb-4 pt-6">
             <div>
               <h1 className="text-[28px] font-semibold">
                 {MENU.find(m => m.key === tab)?.label || '设置'}
