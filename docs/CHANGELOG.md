@@ -6,6 +6,37 @@
 
 ---
 
+## 2026-10-22 — Linux CI 长期红：`test_config_io.py` 的 11 条契约改由假 DPAPI 顶替
+
+**症状**：自 2026-10-17 起每次 push，GitHub Actions 上 `test_config_io.py` 固定 11 条失败：
+
+```
+app.core.secrets.SecretsUnavailable: DPAPI 仅 Windows 可用（当前平台 linux）
+```
+
+**这不是缺陷，是平台不支持**：`test_secrets.py` 早已用模块级 `skipif(not S.is_available())`
+绕开，但这个文件没有 —— 而它的 11 条契约（抽 ↔ 填、磁盘形态、启动自检）恰好都要经过
+`save_config → save_secrets → protect`。
+
+**修法不是 skip 而是替换**（`tests/test_config_io.py` 新增 autouse fixture）：非 Windows 平台
+把 `protect` / `unprotect` 换成可逆假原语，契约照常跑。理由是这个文件测的是**三张成对表的两侧**
+与磁盘形态，**DPAPI 本身不是被测对象**（它的往返由 `secrets.selftest()` 负责）；skip 掉会把
+7 条与加密无关的纯逻辑用例一并丢掉。
+
+⚠️ **三条一起换，缺一不可**：只换 `protect`/`unprotect` 而 `_DPAPI_READY` 仍是 False 时，
+`selftest()` 第一行就返回不可用 → `startup_check` 多报一条「DPAPI 不可用」→
+`test_startup_check_*` 的 `== []` 继续红，**而红的原因看起来与加密毫无关系**。
+
+**两条对照实验**（都在本地用 `cp` 备份还原，未用 `git checkout`）：
+① 强制走假分支（模拟 Linux）→ 18 passed，证明假原语足以支撑全部契约；
+② 强制 `_DPAPI_READY = False` 且**不**替换 → **11 failed / 7 passed**，与 CI 报的失败数
+逐条吻合，证明修的是那个问题、且没有多跳。
+
+**影响范围**：仅测试基础设施。Windows 上 `is_available()` 为真，fixture 原样返回，
+真实 DPAPI 路径零改动。`bash scripts/check-all backend` 全绿。
+
+---
+
 ## 2026-10-22 — 设置页吸顶横条被主题卡片的色环与文字穿透
 
 **症状**（用户反馈：「设置页面有些元素比如外观的那些颜色色例会透过某些栏」）：设置 → 外观，

@@ -46,6 +46,29 @@ TAVILY = "tvly-dev-99887766554433221100"
 
 
 @pytest.fixture(autouse=True)
+def _fake_dpapi_when_unavailable(monkeypatch):
+    """非 Windows 平台用可逆假原语顶上，让这套契约照常在 CI 上跑。
+
+    这个文件测的是**三张成对表的两侧**（抽 ↔ 填 / 剥 ↔ 重算 / 类型 ↔ 用法）与磁盘形态，
+    DPAPI 本身不是被测对象 —— 它的往返由 `secrets.selftest()` 自己负责。若在 Linux
+    上不替换，整份契约会齐刷刷以 `SecretsUnavailable` 全红，而**那不是发现了缺陷，
+    只是把「这台机器没有 DPAPI」算进了结果**；一片天天红的用例等于没有用例。
+
+    ⚠️ **三条一起换，缺一不可**：只换 `protect` / `unprotect` 而 `_DPAPI_READY` 仍是
+    False 时，`selftest()` 在第一行就返回不可用 → `startup_check` 多报一条
+    「DPAPI 不可用」→ `test_startup_check_*` 的 `== []` 继续红，且红的原因看起来
+    与加密毫无关系（这正是最容易把人带偏的形态）。
+
+    Windows 上 `is_available()` 为真，本 fixture 原样返回 —— 真实 DPAPI 路径零改动。
+    """
+    if secrets_mod.is_available():
+        return
+    monkeypatch.setattr(secrets_mod, "_DPAPI_READY", True)
+    monkeypatch.setattr(secrets_mod, "protect", lambda s: b"FAKE" + s.encode("utf-8"))
+    monkeypatch.setattr(secrets_mod, "unprotect", lambda b: bytes(b)[4:].decode("utf-8"))
+
+
+@pytest.fixture(autouse=True)
 def _clean():
     """每条测试都从「干净的盘 + 干净的库」开始 —— 这些断言大多在看**盘上残留**。"""
     _CONFIG.unlink(missing_ok=True)
