@@ -33,6 +33,11 @@ const BACKEND_PROBE_DELAY_MS = 2500
 // （窗口句柄取不到时 Rust 的 emit 会静默丢弃），也不能让加载屏永远停住。
 const BACKEND_HARD_TIMEOUT_MS = 50_000
 
+// logo 在 `public/` 下，必须跟着构建 base 走。
+// ⚠️ 写死 `/logo.png` 在 Tauri / 本地 `/` 下正常，但在**子路径部署**（演示站的
+// `/LiMo/`）会去站点根找 —— 一条 404，图标不显示，界面其他部分完全正常。
+const LOGO_SRC = `${import.meta.env.BASE_URL}logo.png`
+
 // 文件夹加载失败的提示只发一次（模块级而非组件级：effect 在开发模式会跑两遍，
 // 且这只是降级能力——文档列表本身好着，重复弹窗比不弹更烦人）。
 let folderLoadWarned = false
@@ -322,7 +327,7 @@ export default function App() {
     }
     return (
       <div className="h-screen flex flex-col items-center justify-center gap-4 bg-surface">
-        <img src="/logo.png" className="w-16 h-16 rounded-xl object-cover animate-pulse" alt="LiMo" />
+        <img src={LOGO_SRC} className="w-16 h-16 rounded-xl object-cover animate-pulse" alt="LiMo" />
         <div className="text-[15px] font-medium text-dimmed">正在启动后端服务…</div>
         <div className="text-[13px] text-muted">首次启动可能需要 10-30 秒</div>
       </div>
@@ -341,7 +346,7 @@ export default function App() {
       {/* 顶部栏（沉浸下不渲染 —— 它不在插槽系统里，`hideSlots` 管不到，必须显式控制） */}
       {!immersive && <header className="glass border-b border-border-light h-12 flex items-center px-4 shrink-0 z-10">
         <div className="flex items-center gap-2.5">
-          <img src="/logo.png" className="w-7 h-7 rounded-lg object-cover" alt="LiMo" />
+          <img src={LOGO_SRC} className="w-7 h-7 rounded-lg object-cover" alt="LiMo" />
           <span className="font-semibold text-[15px]">LiMo</span>
         </div>
         {/* 顶栏只留「全局工具」。面板入口（生成 / 文档库 / AI / 设置）已全部收进左侧
