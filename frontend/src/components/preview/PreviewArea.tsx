@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../../store'
-import { getTranscript, getMarkdown, saveMarkdownContent, fetchProcessResults, apiUrl, getErrorMessage, ApiErrorException } from '../../api/client'
+import { getTranscript, getMarkdown, saveMarkdownContent, fetchProcessResults, getErrorMessage, ApiErrorException } from '../../api/client'
+import { docAssetUrl } from '../../lib/doc-asset'
 import ReactMarkdown from 'react-markdown'
 import { REMARK_PLUGINS, REHYPE_PLUGINS } from '../../lib/markdown-plugins'
 import { createMarkdownComponents } from '../../lib/markdown-components'
@@ -915,7 +916,7 @@ export function PreviewArea() {
           <div className="flex-1 flex items-center justify-center bg-surface-hover p-6">
             <Zoom>
               <img
-                src={apiUrl(`/assets/${currentDocId}/original.png`)}
+                src={docAssetUrl(currentDocId || '', 'original.png')}
                 alt={currentDoc?.title || '原图'}
                 className="max-w-full max-h-[calc(100vh-140px)] object-contain rounded-xl shadow-lg cursor-zoom-in"
               />
