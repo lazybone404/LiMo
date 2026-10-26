@@ -78,10 +78,27 @@ hiddenimports = [
     'app.services.chart_renderer',  # 图表渲染（PIL 自绘；PIL 已随图片优化收集）
     'app.services.markdown_render', # Markdown→HTML 公共渲染（HTML/Word 导出共用）
     'app.services.docx_export',     # Word 导出（python-docx + bs4）
+    # 语义检索（2026-10-26 阶段 1-4）—— 全部在函数内延迟导入
+    # （`main.py` 的 startup/shutdown 与 routers/search.py），PyInstaller 静态
+    # 分析追踪不到。⚠️ 少了这四行，**开发版全绿而装好的版本设置页直接塌**
+    # （开了向量开关、worker 起不来，且界面上只说「不可用」）。
+    # ⚠️ 刻意**不加** `onnxruntime` / `tokenizers` 进 collect_all —— 它们不在
+    # `pyproject.toml`，本地 embedding 引擎在打包版按设计**不可用**
+    # （缺依赖时 `embedding_local` 抛 MissingDependency，设置页显式说明）。
+    'app.core.vector_store', 'app.core.vector_index',
+    'app.services.vector_runtime', 'app.services.vector_worker',
+    'app.services.vector_search',
+    # 全文索引的写入入口（`core/search.py::update_index` 被五个写点延迟导入）
+    'app.core.search',
     # 引擎模块（init_engines() 函数内动态导入，PyInstaller 无法静态追踪）
     'app.engines.doc_types', 'app.engines.doc_markitdown',
     'app.engines.doc_docx', 'app.engines.doc_pptx', 'app.engines.doc_excel',
     'app.engines.epub', 'app.engines.epub_container',  # EPUB 自研解析器（2026-08-26）
+    # 向量化引擎（`init_engines()` 函数内延迟导入，同上一组）
+    # ⚠️ `embedding_local` 顶部**零重依赖 import**（onnxruntime / tokenizers 都在
+    # `Embedder.__init__` 里惰性载入），故它本身能安全进包；打包版调用时才抛
+    # MissingDependency 并给出安装命令。
+    'app.engines.embedding_dashscope', 'app.engines.embedding_local',
 ]
 
 # 引擎相关

@@ -6,6 +6,63 @@
 
 ---
 
+## 2026-10-27 — 0.5.15 打包准备：spec 补向量模块 + 清理无用文件
+
+这一版是**发行整理**，不是功能改动。两件事：补打包配置，删磁盘上的历史残留。
+
+### ① `LiMoBackend.spec` 补 8 个模块（打包版会塌的一处）
+
+语义检索（2026-10-26 阶段 1–4）新增的模块 **全部在函数体内延迟导入**：
+
+| 模块 | 导入位置 |
+|---|---|
+| `app.core.vector_store` / `vector_index` | `main.py` 的 startup / shutdown |
+| `app.services.vector_runtime` / `vector_worker` / `vector_search` | 同上 + `routers/search.py` |
+| `app.engines.embedding_dashscope` / `embedding_local` | `engines/__init__.py::init_engines()` |
+| `app.core.search` | 五个写点（`update_index`） |
+
+这与 spec 里**已列**的那批（`app.engines.doc_*`、`app.services.docx_export`、
+`app.generation.generator` ……）是同一形态 —— 它们之所以被逐条列进 `hiddenimports`，
+正是因为 PyInstaller 对函数体内导入的追踪不可靠。本轮按同一惯例补齐 8 条。
+
+⚠️ **失效形态**：开发版全绿，装好的版本点开「检索索引」开关后 worker 起不来，
+界面上只说「不可用」，日志里是一行 `ModuleNotFoundError` —— 只有打了包才看得见。
+
+⚠️ 刻意**没有**把 `onnxruntime` / `tokenizers` 加进 `collect_all`：本地 embedding 引擎
+在打包版按设计不可用（两者不在 `pyproject.toml`，且桌面安装版没有 pip）。`embedding_local`
+本身顶部零重依赖 import，进包是安全的 —— 调用时才抛 `MissingDependency` 并给出安装命令。
+
+### ② 清理无用文件（约 300 MB）
+
+全部已在 `.gitignore` 内、且**零引用**（`grep` 覆盖 `*.md` / `*.spec` / `*.sh` / `*.json` / `*.toml`）：
+
+| 删除 | 原因 |
+|---|---|
+| `build/`（272 MB） | PyInstaller 中间产物，且含旧项目名 `DeepDraftBackend/`（175 MB） |
+| `frontend/dist-demo/`（29 MB） | 构建产物副本，非 `frontendDist` 指向的目录 |
+| `backend/test_images/`（0.9 MB） | DSpark 论文测试图，一次性素材 |
+| `backend/data/` | 2026-06~07 的旧运行数据（`transcripts/` 只剩 1 个空壳、31 张旧截图）。真实库在 `~/.limo/` |
+| `data/`（根） | 只有一个空的 `screenshots/` |
+| `backend_err.log` | 2026-06-28 的旧 uvicorn 日志（端口 8484，早期测试） |
+| `test_export.html` | 2026-07-05 的导出测试产物（还引用 CDN，与现在的自包含导出完全不同代） |
+| `backend/tests/TEST_REPORT.md` | 0.1.0 时代的测试报告，`.gitignore` 里本就有 `TEST_REPORT.md` |
+| `frontend/gen-panel-demo.html` / `image-preview-demo.html` | 2026-06-30 的设计 demo |
+
+**保留**：`backend/python/`（715 MB 嵌入式 Python，2026-07-09，全仓零引用）——
+体积大且删除不可逆，留待用户确认；`_interview/` / `_experiments/` / `_archive/` /
+根 `_*.md`（评审与实验材料，见 `.gitignore` 注释）；`design/`（`cards.md` 是文档索引
+里的一等公民）；`测试用例/` / `调研/`（用户资料）。
+
+### ③ 文档同步
+
+`STATUS.md` 更新日期与版本；`README.md` / `CLAUDE.md` 经核对与现状一致（规模数字
+136 / 90 / 243 / 82 / 97 / 20 逐项实测对得上）。
+
+**影响范围**：运行时行为零改动。①只影响打包产物能否启动新功能，②只删磁盘残留。
+版本 `0.5.14 → 0.5.15`（patch）。
+
+---
+
 ## 2026-10-27 — 图表：flowchart 示例改成「分支 + 汇合」（`PROMPT_VERSION` 20 → 21）
 
 用户报「环形图偶尔还是会失败」，贴出的实际产物是：

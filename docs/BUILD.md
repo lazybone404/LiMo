@@ -2,9 +2,9 @@
 
 一次完整的打包流程：PyInstaller → 复制 ffmpeg → Tauri。
 
-产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)（当前版本 0.5.10，2026-10-18 表格块 flex 压缩与关装饰消失修复后）：
-- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.5.10_x64-setup.exe`，~148MB）
-- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.5.10_x64_en-US.msi`，~194MB）
+产物在 [bundle/](../frontend/src-tauri/target/release/bundle/)（当前版本见根目录 [VERSION](../VERSION)，本文示例按 0.5.15）：
+- NSIS → [nsis/](../frontend/src-tauri/target/release/bundle/nsis/)（`LiMo_0.5.15_x64-setup.exe`，~148MB）
+- MSI → [msi/](../frontend/src-tauri/target/release/bundle/msi/)（`LiMo_0.5.15_x64_en-US.msi`，~194MB）
 
 > **体积优化（2026-08-14）**：docling/pytesseract 依赖残留清理 + ffmpeg 换精简版后，安装包从 ~265M/~366M 降到 ~148M/~195M。详见 [CHANGELOG.md](CHANGELOG.md)（2026-08-14 打包体积优化条目）。
 
@@ -72,6 +72,14 @@ rg "^\s+from app\.\S+ import" --glob '*.py' app/
 - `app.llm`、`app.llm.service`、`app.llm.agent`、`app.llm.errors`
 - `app.agent`、`app.agent.tools`
 - `app.engines.*`（doc_types/doc_markitdown/doc_docx/doc_pptx/doc_excel/epub 等，`init_engines()` 动态导入）
+- `app.engines.embedding_dashscope` / `app.engines.embedding_local`（同上，2026-10-26 语义检索）
+- `app.core.vector_store` / `app.core.vector_index`、`app.services.vector_runtime` / `vector_worker` /
+  `vector_search`（`main.py` 的 startup/shutdown 与 `routers/search.py` 函数内导入）
+- `app.core.search`（五个写点延迟导入 `update_index`）
+
+⚠️ **`onnxruntime` / `tokenizers` 刻意不进 `collect_all`** —— 本地 embedding 引擎在打包版
+按设计不可用（两者不在 `pyproject.toml`，桌面安装版没有 pip）。`embedding_local` 顶部零重依赖
+import，进包安全，调用时才抛 `MissingDependency`。
 
 ### 验证 exe 能启动
 
