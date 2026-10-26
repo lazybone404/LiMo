@@ -29,6 +29,7 @@ from typing import Optional
 
 from app.core.registry import EngineRegistry
 from app.core.protocols import Engine
+from app.core.deps import probe_venv
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,28 @@ class EnginePlugin:
     def process(self, file_path: str, config: dict):
         """进程内模式实现（trusted 例外）。返回 str（text）或 dict（segments 等）。"""
         raise NotImplementedError
+
+    def precheck(self) -> Optional[str]:
+        """就绪自检（可选）。返回**给用户看的**不可用原因，`None` = 可以跑。
+
+        默认实现返回 `None`（没有额外前置条件）—— 插件作者不重写它，语义就是
+        「装上了就能用」。需要外部依赖 / 模型文件 / 密钥的插件重写它。
+
+        ⚠️ **必须「报告」而不是「第一次调用时抛异常」**：抛异常的那条路上，用户
+        已经选好了引擎、点了生成，代价是一次失败任务；而自检发生在设置页/启动时，
+        用户还没付出任何东西。这也是 `core/deps.probe()` 那个形状的来源 ——
+        两者都返回 `None | str`，消费方不需要转译。
+
+        ⚠️ **这一条进契约、而 `precheck`/`warmup`/`release` 三个同类钩子不进
+        `EmbeddingEngine` 协议，不是双标**：那个协议是 `runtime_checkable`，
+        加成员会让**云端引擎不再满足它**（云端确实没有「依赖装没装」这回事）；
+        而 `EnginePlugin` 是普通基类，加一个有默认实现的成员不会排斥任何子类。
+
+        ⚠️ 会被 `GET /api/plugins`（设置页插件页）调用，故**必须轻**：不要在这里
+        加载模型 / 起子进程。`core.deps.probe()` 的「真 import 一次」是可接受的上界，
+        它的第二次及以后由 `sys.modules` 命中。
+        """
+        return None
 
 
 # ── 加载门控 ──
@@ -201,6 +224,18 @@ class _PluginEngineAdapter:
             # dict 透传（trusted asr 引擎返回 segments dict 场景）；str 包 {"text"}
             payload = out if isinstance(out, dict) else {"text": out}
         return _dispatch_result(self._plugin.category, payload, self.name)
+
+    def precheck(self) -> Optional[str]:
+        """转发插件的自检。异常兜成「不可用」—— 自检自己炸了，结论就是不可用。
+
+        ⚠️ **兜底必须在这里、而不是指望每个消费方**：`GET /api/plugins` 与
+        `vector_runtime` 都会调它，而插件是任意第三方 Python —— 其中一处的
+        try/except 漏了，症状就是「打开设置页 500」，看起来像主程序坏了。
+        """
+        try:
+            return self._plugin.precheck()
+        except Exception as e:  # noqa: BLE001
+            return f"插件自检失败：{type(e).__name__}: {e}"
 
     def _run_external(self, file_path: str, config: dict, cancel_event=None) -> str:
         """进程外执行：subprocess Popen 调用独立 venv，stdin 传 JSON config。
@@ -483,11 +518,29 @@ PIP_MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
 
 def _plugin_subdir(adapter) -> Path:
-    """插件执行子目录（声明文件同名的子目录，含 engine.py / requirements.txt / .venv）。
+    """插件执行子目录（含 engine.py / requirements.txt / .venv）。
 
-    用声明文件 stem（而非 adapter.name）——name 可与声明文件名不同
-    （如 pymupdf4llm_heavy.py 里 name=pymupdf4llm，子目录却是 pymupdf4llm_heavy/）。
+    **优先从 `command` 推导**：那里的相对路径就是 `_run_external` 执行时真正
+    解析的那个（`self._plugin_dir / part`），两处必须同源。推导不出才回退到
+    声明文件 stem。
+
+    ⚠️ 此前只看 stem，于是 `pymupdf4llm_plugin.py` + `pymupdf4llm/` 这种最常见
+    的写法在「一键安装依赖」上**静默失效**：`requirements.txt` 按
+    `pymupdf4llm_plugin/` 去找、找不到 → 接口返回 `no-requirements` → 前端
+    **根本不显示安装按钮**。而插件本身照样能加载（command 是对的），所以从
+    界面上看是「这个插件不需要依赖」。模板也因此一直没被发现。
     """
+    plugin = getattr(adapter, "_plugin", None)
+    for part in getattr(plugin, "command", None) or []:
+        p = Path(part)
+        if p.is_absolute() or len(p.parts) < 2:
+            continue
+        if any(seg in (".venv", "venv") for seg in p.parts):
+            continue          # `xxx/.venv/Scripts/python.exe` —— 解释器，不是脚本
+        return adapter._plugin_dir / p.parent
+
+    # 回退：声明文件 stem（name 可与文件名不同，如 pymupdf4llm_heavy.py 里
+    # name=pymupdf4llm，子目录却是 pymupdf4llm_heavy/）
     stem = adapter._source_file.stem if adapter._source_file else adapter.name
     return adapter._plugin_dir / stem
 
@@ -506,36 +559,22 @@ def _venv_pip(pkg_dir: Path) -> Path:
 
 
 def _venv_valid(pkg_dir: Path) -> bool:
-    """venv 是否可用：python 存在 + pyvenv.cfg 的 base python（home）存在。
+    """venv 是否可用 —— 判据唯一实现在 `core.deps.probe_venv`（含 base python 校验）。
 
-    venv 的 python.exe 存在不等于可用——若 base python 路径失效（如 uv 管理的
-    python 被升级/清理），启动 venv python 会报 "No Python at ..."。
-    2026-08-06：修复——失效 venv 视为未安装（前端显示「一键安装依赖」可自愈）。
-    2026-08-14：修复——路径遍历失败（WinError 448 不受信任装入点，如
-    AppData 下 uv 托管 python）同样视为不可用，抛给上层会变成 /api/plugins 500。
+    ⚠️ **不要在这里再读一遍 `pyvenv.cfg`**：本函数与插件声明文件里的
+    `precheck()`（`probe_venv`）回答的是同一个问题。两份实现的失效形态是
+    「设置页说依赖已装、自检说没装」——同一个 venv，两个答案，而两边都不报错。
+
+    历史（判据搬走前记在这里）：2026-08-06 修复失效 venv（uv 管理的 python 被
+    升级/清理 → "No Python at ..."）视为未安装；2026-08-14 修复 WinError 448
+    （不受信任装入点）→ 视为不可用，避免冒到 `/api/plugins` 变成 500。
     """
-    try:
-        venv_py = _venv_python(pkg_dir)
-        if not venv_py.exists():
-            return False
-        cfg = pkg_dir / ".venv" / "pyvenv.cfg"
-        if not cfg.exists():
-            return False
-        home = None
-        for line in cfg.read_text(encoding="utf-8").splitlines():
-            s = line.strip()
-            if s.startswith("home ="):
-                home = s.split("=", 1)[1].strip()
-                break
-        if not home:
-            return False
-        base_py = Path(home) / ("python.exe" if os.name == "nt" else "python3")
-        return base_py.exists()
-    except OSError as e:
-        # WinError 448（不受信任装入点）等路径遍历异常 → 视为不可用，
-        # 前端显示「一键安装依赖」可自愈（重建 venv 会用可访问的 base python）
-        logger.warning("Plugin %s venv 检查失败（视为未安装）: %s", pkg_dir.name, e)
-        return False
+    venv = pkg_dir / ".venv"
+    reason = probe_venv(venv)
+    # 「压根没建」是常态（用户还没点一键安装），不打日志；「建过却不可用」才值得记
+    if reason and venv.is_dir():
+        logger.warning("Plugin %s venv 不可用（视为未安装）: %s", pkg_dir.name, reason)
+    return reason is None
 
 
 def _deps_installed(adapter) -> bool:
@@ -696,8 +735,16 @@ def enumerate_plugins() -> list[dict]:
                 "execMode": None,
                 "hasRequirements": False,
                 "depsInstalled": False,
+                # `None` = **无法判断**（代码没加载，自检也就无从调用）——
+                # 与 `False`（自检说不可用）刻意分开：前端只渲染 false，
+                # 「问不到」不该长成一条点不动的「不可用」。
+                "ready": None,
+                "precheckReason": "",
             })
             continue
+        # 自检（`EnginePlugin.precheck`）。放在这里而不是路由里：它是插件卡片
+        # 「为什么用不了」的唯一数据源，任何枚举方（含将来的 CLI）都该拿到同一份。
+        precheck_reason = adapter.precheck() or ""
         result.append({
             "name": name,
             "namespace": adapter.namespace,
@@ -715,6 +762,8 @@ def enumerate_plugins() -> list[dict]:
             "config": adapter.plugin_config,
             "reason": entry.get("reason", ""),
             "execMode": adapter._exec_mode,
+            "ready": precheck_reason == "",
+            "precheckReason": precheck_reason,
             # 依赖一键安装状态（进程外插件）：requirements.txt 存在？venv 已建？
             "hasRequirements": _has_requirements(adapter),
             "depsInstalled": _deps_installed(adapter),

@@ -21,3 +21,13 @@ class SimpleTextPlugin(EnginePlugin):
         with open(file_path, encoding="utf-8", errors="ignore") as f:
             text = f.read()
         return f"```text\n{text}\n```"
+
+    # ── 就绪自检（本插件零依赖，无需重写；有依赖时照下面这行写）──
+    #
+    #     from app.core.deps import probe
+    #     def precheck(self):
+    #         return probe("markdown_it", attrs=("MarkdownIt",))
+    #
+    # ⚠️ **trusted（进程内）插件用 `probe`，进程外插件用 `probe_venv`**：
+    #    前者的依赖就在主进程 `sys.path` 里，后者在子 venv 里（主进程 import 不到，
+    #    用 `probe` 会永远报「无法导入」）。见 `app/core/deps.py` 两个函数的文档。

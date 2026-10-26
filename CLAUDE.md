@@ -102,7 +102,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)（仓库根） | **发行包内嵌**第三方组件的许可证清单（与上一条**分工不同**：这条面向发行合规，逐项标「全文位置」） | 打包/发布、增删内嵌依赖（ffmpeg / KaTeX / 字体…）时 |
 | [SECURITY_AUDIT.md](SECURITY_AUDIT.md)（仓库根） | **时点**安全审计报告（2026-07-08 起，逐条标 ✅ 已修）；⚠️ 不随代码更新，当前状态以本文件「安全」段为准 | 排查某类漏洞「是不是早就查过/修过」 |
 | [user-scenarios.md](docs/user-scenarios.md) | 10 个用户场景及实现状态 | 理解产品需求 |
-| [plugins.md](docs/plugins.md) | 插件系统标准 — 开发 API + GitHub 安装流程 + 安全声明 | 开发/安装/调试插件 |
+| [plugins.md](docs/plugins.md) | 插件系统标准 — **四种形态**（pymupdf4llm PDF / faster-whisper 本地转写 / tesseract 本地 OCR / trusted 进程内，模板在 [backend/plugins/examples/](backend/plugins/examples/README.md)）+ 开发 API + **`precheck` 就绪自检（进程外 `probe_venv` / 进程内 `probe`）** + GitHub 安装流程 + 安全声明 | 开发/安装/调试插件 |
 | [prompts-inventory.md](docs/prompts-inventory.md) | 全部 LLM 提示词清单 + 审视点清单（9 已修复/8 待处理）+ 温度参数速查 + PromptComposer 标签速查 + Agent SSE 事件流 | 审视/优化 prompt、新增管道需要参考 prompt 风格 |
 | [BUILD.md](docs/BUILD.md) | PyInstaller + Tauri 完整打包流程，常见陷阱 | 打包/发布 |
 | [qianwen-models.md](docs/qianwen-models.md) | 千问平台模型速查（文本/OCR/ASR）含价格+调用方式 | 配模型/选引擎 |
@@ -578,7 +578,7 @@ Store / SearchEngine（数据真相）
 ### 引擎系统
 
 `app/engines/__init__.py` → `EngineRegistry.register()`。四类引擎：
-- **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）。faster-whisper 已从内置移除（本地转写需自行安装）
+- **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）。faster-whisper 已从内置移除（本地转写需自行安装；官方模板 [faster_whisper_plugin.py](backend/plugins/examples/faster_whisper_plugin.py)，进程外 + 一键装依赖）
 - **OCR**：dashscope-ocr（云端，需 API Key，model_name 透传——`engine_bindings.ocr` 可绑 OCR 专用模型）。**OCR 名称检测**（2026-08-04）：`_PROVIDER_IMAGE_RULES` dashscope 匹配 `ocr` → qwen3.5-ocr 等自动标 image（生成时「OCR 模型」可选到图片转文字小模型）；检测结果用户可手动取消/标记（updateModel capabilities）。**默认绑定**：未绑定时自动绑 `qwen-vl-ocr-latest`（图片转文字专用）。**Tesseract 已从内置移除**（2026-08-02，体积修剪 + 插件化方向）——无 dashscope key 时本地 OCR 能力消失，扫描件出占位文本；需本地 OCR 请装三方插件参考模板 `backend/plugins/examples/tesseract_plugin.py`
 - **Doc**（全 MIT/BSD，AGPL 引擎不内置）：
   - **pypdfium2**（BSD-3，默认）：C 引擎直读文字 + 嵌入原图，毫秒级。pdfplumber (MIT) 辅助表格提取。**docling 已移除**（2026-08-03，依赖 torch ~2GB 无法打包，打包版一直不可用）
@@ -656,6 +656,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 模型能力位判据（image / document / reasoning / video） | [core/model_caps.py](backend/app/core/model_caps.py) |
 | 资产路径正则（Markdown 图片改写 + tx 反向） | [core/markdown_assets.py](backend/app/core/markdown_assets.py) |
 | 资源 id 校验（前后端同源，含长度上限） | [core/resource_id.py](backend/app/core/resource_id.py) |
+| **第三方依赖可用性探测**（两个函数，按运行模式二选一） | [core/deps.py](backend/app/core/deps.py)。**进程内 → `probe(module, attrs=…)`**（真 import 一次 + 查属性）；**进程外插件 → `probe_venv(venv_dir, modules=…)`**（纯文件系统：目录 / 解释器 / `pyvenv.cfg` 的 base python / site-packages / 依赖名）。⚠️ **选错方向必错**：子 venv 的依赖不在主进程 `sys.path`，对进程外插件用 `probe` 会**永远**报「无法导入」——每个**装好了**的插件都显示不可用，用户照着提示反复重装而东西一直是好的。⚠️ **不要写 `find_spec(...) is not None`** —— 它对 namespace package 返回非 None 而里面一个属性都没有（2026-10-27 实测于安装版 `_internal/tokenizers/`：只有 `.pyd`、无 `__init__.py`），失效形态是「检查说就绪、一编码就报缺依赖」。`Embedder.__init__` 也必须经它判（`except ImportError` 抓不到 DLL 缺失的 `OSError`） |
 | `provider.base_url` 归一（判据是「路径是否已含版本段」） | [core/url_utils.py](backend/app/core/url_utils.py) |
 | 内置厂商默认表（名字 / base_url / 类型） | [core/provider_defaults.py](backend/app/core/provider_defaults.py) |
 | 上下文窗口默认表 / token 估算 | [core/token.py](backend/app/core/token.py) |
@@ -974,7 +975,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 引擎绑定只取第一个 | 绑定解析首个可用引擎，失败直接报错，不再静默降级 |
 | ✅ | 视频帧提取 | ffmpeg 抽帧 + 网格拼接 + 去重（无 opencv 依赖） |
 | ✅ | 模糊帧过滤 | Laplacian 方差 + 熵 + 边缘密度评分，丢弃低质量帧 |
-| ✅ | 插件系统 | EnginePlugin v1 进程外（默认）/trusted 例外 + 一键安装依赖（镜像源）+ 三方插件发布（pymupdf4llm） |
+| ✅ | 插件系统 | EnginePlugin v1 进程外（默认）/trusted 例外 + 一键安装依赖（镜像源）+ 三方插件发布（pymupdf4llm）。**官方模板四份**（[examples/](backend/plugins/examples/README.md)）：pymupdf4llm PDF / **faster-whisper 本地语音转写** / tesseract 本地 OCR / trusted 进程内；每份都带 `precheck` 就绪自检（**进程外 `probe_venv`、进程内 `probe`**，选错方向 = 装好了却显示不可用） |
 
 ### ✨ LLM 生成
 

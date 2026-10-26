@@ -41,8 +41,14 @@ def _require_plugin(name: str) -> None:
 
 @router.get("/plugins")
 async def list_plugins():
-    """插件列表（含禁用/门控拒绝的，按 category+name 排序）"""
-    return {"plugins": enumerate_plugins()}
+    """插件列表（含禁用/门控拒绝的，按 category+name 排序）
+
+    ⚠️ 放线程池（模式 15）：`enumerate_plugins` 会调每个插件的 `precheck()`，
+    而它是**任意第三方代码** —— 真 import 一个原生库要几百毫秒，`deps_installed`
+    还要 stat 文件系统。放在事件循环上会让整个后端在那几百毫秒里不响应
+    （SSE 心跳、健康检查一起停），现象是「打开插件设置页时应用卡一下」。
+    """
+    return {"plugins": await asyncio.to_thread(enumerate_plugins)}
 
 
 @router.post("/plugins/install")

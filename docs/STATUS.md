@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-10-27 | **版本**: 0.5.15
+**更新**: 2026-10-27 | **版本**: 0.5.18
 
 ---
 
@@ -14,7 +14,7 @@
 | 后端 Python 文件 | 136（11 子目录：adapters 8 / agent 7 / core 33 / downloaders 1 / engines 18 / generation 18 / llm 4 / routers 20 / storage 4 / utils 6 / services 17）+ `limo_cli/` 9（CLI，独立于 `app/`；口径 = `find app -name '*.py'`，不含 `main.py`） |
 | 前端 TS/TSX/CSS 文件 | 243（237 ts/tsx + 6 css；业务 154，测试 82，`setup.ts` 1） |
 | 前端测试文件 | 83（82 测试文件 + `setup.ts`；1290 个测试用例，vitest 全绿） |
-| 后端测试文件 | 91（90 个 `test_*.py` + `conftest.py` 共享 fixture；2026-10 新增 `test_logging_val` /  `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_classify_paths` / `test_folder_tree` / `test_export_md_images` / `test_export_tab_applicability` / `test_followup` / `test_artifact_followup` / `test_web_search_reference` / `test_chat_web_search` / `test_chat_followups` / `test_export_theme` / `test_chat_answer_mode` / `test_embedding_engine` / `test_embedding_local` / `test_vector_index` / `test_vector_store` / `test_vector_worker` / `test_vector_search` / `test_search_api` / `test_vector_runtime`） |
+| 后端测试文件 | 93（92 个 `test_*.py` + `conftest.py` 共享 fixture；2026-10 新增 `test_logging_val` /  `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_classify_paths` / `test_folder_tree` / `test_export_md_images` / `test_export_tab_applicability` / `test_followup` / `test_artifact_followup` / `test_web_search_reference` / `test_chat_web_search` / `test_chat_followups` / `test_export_theme` / `test_chat_answer_mode` / `test_embedding_engine` / `test_embedding_local` / `test_vector_index` / `test_vector_store` / `test_vector_worker` / `test_vector_search` / `test_search_api` / `test_vector_runtime` / `test_deps` / `test_plugin_examples`） |
 | API 路由模块 | 19 业务模块（+ `__init__.py`，共 20 个 .py） |
 | API 端点 | 97（`@router.` 装饰器计数；含 `/api/cli/*` 七端点、语义检索的 `/search/vector` 与 `/search/vector/rebuild`） |
 | 适配器 | 5 |
@@ -58,7 +58,7 @@
 >
 > Embedding 引擎源码：[embedding_base.py](../backend/app/engines/embedding_base.py)（`EmbeddingEngine` Protocol + `l2_normalize`）、[embedding_dashscope.py](../backend/app/engines/embedding_dashscope.py)。⚠️ 它**刻意不继承** `core.protocols.Engine` —— 那个 ABC 的 `execute()` 对本类是永不被调用的空壳。
 >
-> 引擎计数方式：`EngineRegistry.register()` 调用次数。ASR 2 + Doc 7 + OCR 1 + Embedding 1 = 11 内置（插件 pymupdf4llm 动态注册，不计数）。faster-whisper 与 tesseract 已从内置移除（分别需自行安装 / 三方插件模板 `examples/tesseract_plugin.py`）；docling 已移除（2026-08-03，依赖 torch ~2GB 无法打包）。
+> 引擎计数方式：`EngineRegistry.register()` 调用次数。ASR 2 + Doc 7 + OCR 1 + Embedding 1 = 11 内置（插件 pymupdf4llm 动态注册，不计数）。faster-whisper 与 tesseract 已从内置移除（分别需自行安装 / 三方插件模板 `examples/tesseract_plugin.py` / `examples/faster_whisper_plugin.py`）；docling 已移除（2026-08-03，依赖 torch ~2GB 无法打包）。
 
 ## 管道
 
@@ -258,7 +258,7 @@ backend/app/
   services/      共享查询层（query，HTTP 与 CLI 同一份读路径）+ 视频直传理解（video_understand）+ 文档直传（doc_understand，PDF file 块）+ 图表（chart_layout/ 包：geometry 几何 + layouts 算子 + engine 校验 / chart_svg 生成 / chart_renderer 渲染）+ epub 解读 + markdown_render（HTML/Word 共用渲染）+ markdown_sections（H2 切分 + `card` 节修饰符判据，导出卡片骨架与统计脚本共用）+ docx_export（Word 导出）+ vector_worker（向量索引后台 worker：分块 → 块级 hash 增量 → 编码 → 每篇 checkpoint → 失败上限 → 启动对账 → **模型内存释放（`never`/`idle`/`immediate` 三档 + `release_now` 供「关掉功能」这条路）**）+ vector_search（查询融合：字面 ∪ 语义 RRF，`depth=max(limit,50)` / `k=10` / 三档前置校验拦在编码之前 / 失败显式化）+ vector_runtime（语义检索开关的**唯一维护点**：worker 与融合层成对启停，口径不符只停用不重建）+ 错误体系
   storage/       文件系统存储 + folder_tree（文件夹树纯函数：归化 / 前序 / 后代 / 路径标签 / `parse_path` + `path_key`，与前端 `folderTree.ts` 同构）+ doc_meta（分类真相源：文档级 `{doc_dir}/meta.json` + 库级 `{root}/folders.json`，`DOC_FIELDS` 17 字段，含 `title`）
 backend/limo_cli/  只读命令行（cli 入口 / commands 七命令 / doctor 诊断 / output 输出契约 / sources 两个传输层 / agents_md 契约文档模板 / exit_codes）
-backend/tests/     后端测试（88 个 .py，含 conftest.py 共享 fixture；test_e2e_smoke 经 collect_ignore 排除）
+backend/tests/     后端测试（93 个 .py，含 conftest.py 共享 fixture；test_e2e_smoke 经 collect_ignore 排除）
 frontend/src/
   components/    UI 组件（ui/ 布局层：SlotLayout 布局引擎 + ActivityBar 活动栏 + PanelStrip 折叠条；preview/ 下 6 个展示组件拆分 + CardSections 卡片骨架 + MarkerContent 标记渲染 + ArtifactMetaBar 产物自证条；ai-chat/ 对话组件 + ChatMarkerContent 对话块渲染；doc-library/ 20 文件拆分（含 folderTree 建树 / FolderPicker 树形选择））
   store/         Zustand 状态（types.ts + 7 slices + chatStore + streamBuffers）

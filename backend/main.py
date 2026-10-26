@@ -21,6 +21,26 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(_os.devnull, "w")
 
+# 编码：Windows 上 Python 的 stdout/stderr 默认用 **locale 编码**（简体中文系统 = GBK）。
+# 两个后果都是静默的 ——
+#   - 日志里出现 emoji / 生僻字（示例文档标题带 ✨）→ UnicodeEncodeError，
+#     `logging` 把它打成 "--- Logging error ---"，**真正的消息反而不见了**；
+#   - Tauri 把 stderr 重定向到 limo_backend_stderr.log，而 Rust 侧按 UTF-8 读
+#     （`String::from_utf8_lossy`）→ 所有中文在「启动失败」屏上都成了 `���`。
+# 故：**非 tty**（重定向到文件/管道）统一 UTF-8 —— 那是文件，不是给人眼看的终端；
+# **tty 保持终端自己的编码**（老 cmd 的代码页是 936，强行 UTF-8 会满屏乱码）。
+# 两种都把 errors 设成 backslashreplace：写不出的字符输出 `\u2728` 这样的转义，
+# 而不是让整次日志调用炸掉（`logging` 只会吞掉它、留一行 "Logging error"）。
+# UTF-8 本身能编码任何字符，所以这条**只在 tty（GBK 终端）分支真正起作用**。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        if _stream.isatty():
+            _stream.reconfigure(errors="backslashreplace")
+        else:
+            _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass  # 非 TextIOWrapper（测试替身 / 被换掉的流）—— 无需处理
+
 # PyInstaller 打包版：Python 原生崩溃（segfault/abort）时 dump 线程栈到 stderr
 # （Tauri 重定向到 limo_backend_stderr.log）——否则静默退出无法定位。
 if getattr(sys, "frozen", False):
@@ -35,7 +55,7 @@ from app.core.concurrency import ExecutionGuard
 from app.core.logging import request_id, init_request_id_logging, RequestIDFilter
 from app.storage.store import Store
 
-app = FastAPI(title="LiMo", version="0.5.15")
+app = FastAPI(title="LiMo", version="0.5.18")
 
 @app.middleware("http")
 async def add_request_id(request, call_next):
@@ -373,7 +393,7 @@ async def shutdown():
 @app.get("/health")
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.5.15", "started_at": app.state.started_at}
+    return {"status": "ok", "version": "0.5.18", "started_at": app.state.started_at}
 
 
 # 路由（files 在 ingest 之前——/files/{id}/original 比 /files/{id}/{name} 更具体，必须先匹配）

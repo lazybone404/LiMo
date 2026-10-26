@@ -95,7 +95,7 @@ LiMo 的「口子原则」要求重依赖、AGPL/协议风险项目**进程外�
 
 | 项目 | 许可证 | 状态 | 留下的经验 |
 |------|--------|------|-----------|
-| faster-whisper | MIT | 已从内置移除 | 本地转写能力，用户可自行安装插件 |
+| faster-whisper (+ CTranslate2) | MIT | 已从内置移除 | 本地转写能力，用户可自行安装插件；官方模板 `examples/faster_whisper_plugin.py`（进程外 + 一键装依赖） |
 | Tesseract | Apache-2.0 | 已从内置移除 | 本地 OCR 插件模板（`examples/tesseract_plugin.py`） |
 | docling | MIT | 已移除 | torch ~2GB 无法打包的教训 → 轻量引擎优先 |
 | pymupdf4llm | AGPL-3.0 | **进程外插件**（`~/.limo/plugins/`） | AGPL 隔离模式，官方只维护契约 + 加载 + 文档 |

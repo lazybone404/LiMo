@@ -300,9 +300,10 @@ async def my_stream(request: Request):
 
 ### 5.8 开发一个插件
 
-读 [plugins.md](plugins.md) + `backend/plugins/examples/` 三个模板（pymupdf4llm 进程外 / tesseract 本地 OCR / trusted 进程内）。要点：
+读 [plugins.md](plugins.md) + `backend/plugins/examples/` **四个模板**（pymupdf4llm 进程外 / faster-whisper 本地转写 / tesseract 本地 OCR / trusted 进程内）。要点：
 - 进程外：`command` 指向子目录 venv，stdin JSON 协议，stdout JSON 结果
 - 依赖重/协议问题选进程外；轻量选 `trusted=True`；都没有 → 拒绝加载
+- **`precheck()` 就绪自检按运行模式二选一**：进程外 `probe_venv(venv_dir, modules=…)`（子 venv 的依赖不在主进程 `sys.path`，用 `probe` 会永远报「无法导入」）、进程内 `probe(module, attrs=…)`
 - `~/.limo/plugins/` 扫描，重启生效，zip 安装有 zip-slip 防护
 
 ---
@@ -549,7 +550,7 @@ bash scripts/check-cli 9        # 只跑第 9 项（调试用）
 5. **加一个预览 tab**：按 5.6 步骤，tabRegistry + contentSources
 6. **加一个 slot 面板**：slotRegistry 注册 SlotDef，观察布局自动变化
 7. **做一次完整打包**：按第 6 章走 ①→②→③，验证产物
-8. **写一个插件**：仿 `examples/tesseract_plugin.py`，做本地 OCR 插件
+8. **写一个插件**：仿 `examples/faster_whisper_plugin.py`（进程外 + `precheck` + 一键装依赖，契约最完整的一份）
 
 每完成一步，跑对应测试 + `npm run build` 保证不破坏现有功能。
 

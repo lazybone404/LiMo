@@ -12,6 +12,8 @@ from app.engines.plugin_loader import (
     _dispatch_result,
     _resolve_exec_mode,
     _peek_plugin_meta,
+    _plugin_subdir,
+    _PluginEngineAdapter,
     init_plugins,
     enumerate_plugins,
     set_plugin_config,
@@ -336,3 +338,177 @@ def test_set_plugin_config_on_disabled_plugin_is_noop(tmp_path):
     set_plugin_config("p102-setter", {"k": "v"})   # 不该抛
 
     assert PLUGIN_REGISTRY["p102-setter"]["adapter"] is None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 就绪自检（`EnginePlugin.precheck` → `enumerate_plugins.ready`）
+# ══════════════════════════════════════════════════════════════════════
+#
+# 这条契约存在的理由：插件可能装着、加载着，但**用不了**（缺 tesseract 二进制、
+# 缺模型文件、缺 API Key）。没有自检的话，用户会「启用 → 选它 → 点生成」走完三步
+# 才发现不行，代价是一次失败任务；有自检则是设置页上一句话。
+#
+# ⚠️ 三态刻意分开：`ready=true`（就绪）/ `false`（自检说不可用）/ `null`（**无法判断**
+# —— 插件被禁用、代码没加载，自检根本没机会跑）。把 null 折成 false 会让每个被禁用的
+# 插件都挂一条点不动的「不可用」。
+
+def _write_precheck_plugin(data_dir: Path, name: str, body: str) -> Path:
+    """写一个实现了 `precheck()` 的插件声明文件（`body` 是方法体，已含缩进前的原文）。"""
+    d = data_dir / "plugins"
+    d.mkdir(parents=True, exist_ok=True)
+    src = (
+        "from app.engines.plugin_loader import EnginePlugin\n\n\n"
+        "class P(EnginePlugin):\n"
+        f"    name = {name!r}\n"
+        "    category = 'doc'\n"
+        '    command = ["python", "engine.py"]\n\n'
+        "    def precheck(self):\n"
+        + "".join(f"        {ln}\n" for ln in body.splitlines())
+    )
+    (d / f"{name}.py").write_text(src, encoding="utf-8")
+    return data_dir
+
+
+def test_precheck_默认实现返回就绪():
+    """不重写 `precheck` 的插件 = 「装上了就能用」，不必写空方法。
+
+    ⚠️ 默认值必须是 `None`（就绪）而不是 `"未实现"`：后者会把所有存量插件一次性
+    标成不可用，而它们本来跑得好好的。
+    """
+    assert EnginePlugin().precheck() is None
+    assert _DocPlugin().precheck() is None
+
+
+def test_enumerate_自检通过时_ready_为_真(tmp_path):
+    data = _write_precheck_plugin(tmp_path, "pc-ok", "return None")
+    init_plugins({"data_dir": str(data)})
+
+    it = {p["name"]: p for p in enumerate_plugins()}["pc-ok"]
+    assert it["ready"] is True
+    assert it["precheckReason"] == ""
+
+
+def test_enumerate_自检不通过时带出原因(tmp_path):
+    """`ready=false` + **可直接展示的原因** —— 前端那一行渲染的就是它。"""
+    data = _write_precheck_plugin(tmp_path, "pc-bad", 'return "缺少 tesseract 二进制"')
+    init_plugins({"data_dir": str(data)})
+
+    it = {p["name"]: p for p in enumerate_plugins()}["pc-bad"]
+    assert it["ready"] is False
+    assert "缺少 tesseract 二进制" in it["precheckReason"]
+
+
+def test_自检自己炸了不连累插件列表(tmp_path):
+    """插件是**任意第三方 Python**，它的 `precheck` 抛异常必须在这里被兜住。
+
+    没有这一层兜底，症状是「打开插件设置页整页 500」—— 看起来像主程序坏了，
+    而真正的原因在一个用户自己装的插件里。
+    """
+    data = _write_precheck_plugin(tmp_path, "pc-boom", 'raise RuntimeError("boom")')
+    init_plugins({"data_dir": str(data)})
+
+    it = {p["name"]: p for p in enumerate_plugins()}["pc-boom"]
+    assert it["ready"] is False
+    assert "插件自检失败" in it["precheckReason"]
+    assert "boom" in it["precheckReason"], "原始信息要带出来，否则无从排查"
+
+
+def test_禁用插件的_ready_是_null_不是_false(tmp_path):
+    """`null` = 无法判断（代码没加载）。
+
+    ⚠️ 反向断言（`is not False`）是本条的全部意义：改成 `False` 后列表照样渲染、
+    所有断言看起来都成立，只是每个被禁用的插件上多了一条点不动的「不可用」。
+    """
+    data = _write_plugin(tmp_path, "pc-off")
+    init_plugins({"data_dir": str(data), "plugin_states": {"pc-off": False}})
+
+    it = {p["name"]: p for p in enumerate_plugins()}["pc-off"]
+    assert it["ready"] is None
+    assert it["ready"] is not False
+    assert it["precheckReason"] == ""
+
+
+# ── 子目录解析（「一键安装依赖」找 requirements.txt 的地方）──
+#
+# ⚠️ 这一族守的失效形态**完全没有征兆**：子目录算错时，`requirements.txt` 找不到 →
+# `install-deps` 返回 `no-requirements` → 前端**根本不渲染安装按钮**。插件本身照样
+# 能加载（command 是对的），于是整件事看起来就是「这个插件不需要依赖」。
+# 此前三个官方模板全中这一条。
+
+class _CmdPlugin(EnginePlugin):
+    """`command` 可配的最小插件（其余字段随便，本段只关心子目录推导）。"""
+
+    def __init__(self, command):
+        self.name = "cmd-plugin"
+        self.category = "doc"
+        self.command = command
+
+
+def _adapter(tmp_path: Path, command, source_name: str = "cmd_plugin.py"):
+    src = tmp_path / source_name
+    src.write_text("", encoding="utf-8")
+    return _PluginEngineAdapter(_CmdPlugin(command), tmp_path, src)
+
+
+def test_subdir_从_command_推导而不是_stem(tmp_path):
+    """`pymupdf4llm_plugin.py` + `pymupdf4llm/` —— 官方模板的真实形态。
+
+    stem 推导会得到 `pymupdf4llm_plugin/`，而那个目录**不存在**。
+    """
+    a = _adapter(tmp_path, ["pymupdf4llm/.venv/Scripts/python.exe", "pymupdf4llm/engine.py"])
+    assert _plugin_subdir(a) == tmp_path / "pymupdf4llm"
+
+
+def test_subdir_跳过_venv_段(tmp_path):
+    """第一个相对路径参数是解释器，它的 parent 是 `.venv/Scripts` —— 不是插件目录。"""
+    a = _adapter(tmp_path, ["pkg/.venv/Scripts/python.exe", "pkg/engine.py"])
+    assert _plugin_subdir(a) == tmp_path / "pkg"
+
+
+def test_subdir_支持更深一层(tmp_path):
+    a = _adapter(tmp_path, [".venv/Scripts/python.exe", "scripts/engine.py"])
+    # `.venv` 段跳过 → 落到 `scripts/`（它在 .venv 之外，是同源的那个）
+    assert _plugin_subdir(a) == tmp_path / "scripts"
+
+
+def test_subdir_全部绝对路径时回退_stem(tmp_path):
+    """系统 python + 绝对脚本路径：推导不出插件目录，回退声明文件 stem。"""
+    a = _adapter(tmp_path, ["C:/Python311/python.exe" if os.name == "nt" else "/usr/bin/python3"])
+    assert _plugin_subdir(a) == tmp_path / "cmd_plugin"
+
+
+def test_subdir_单段相对路径回退_stem(tmp_path):
+    """`["python", "engine.py"]`（模板里的最简写法）—— 单段没有目录信息。"""
+    a = _adapter(tmp_path, ["python", "engine.py"])
+    assert _plugin_subdir(a) == tmp_path / "cmd_plugin"
+
+
+def test_subdir_无声明文件时回退_name(tmp_path):
+    p = _CmdPlugin(["pkg/.venv/Scripts/python.exe", "pkg/engine.py"])
+    a = _PluginEngineAdapter(p, tmp_path, None)
+    assert _plugin_subdir(a) == tmp_path / "pkg", "command 能推导时根本不看 stem"
+
+
+def test_对照实验_官方模板的子目录与_command_一致():
+    """拿**真实模板文件**跑一遍：三个进程外模板的 command 子目录都必须存在。
+
+    这一条是「模板自己不会漂」的守卫 —— 上一族用假 adapter 测的是算法，这一条
+    测的是仓库里那三个文件**真的写对了**。缺少 `requirements.txt` 的模板（tesseract
+    的 venv 无第三方依赖，只有注释）也必须有那个目录。
+    """
+    import importlib.util
+    ex = Path(__file__).resolve().parent.parent / "plugins" / "examples"
+    for decl in ("pymupdf4llm_plugin.py", "tesseract_plugin.py", "faster_whisper_plugin.py"):
+        spec = importlib.util.spec_from_file_location(f"_tpl_{decl[:-3]}", ex / decl)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)          # 只求类定义，不跑引擎
+        cls = next(
+            v for v in vars(mod).values()
+            if isinstance(v, type) and issubclass(v, EnginePlugin) and v is not EnginePlugin
+        )
+        a = _PluginEngineAdapter(cls(), ex, ex / decl)
+        sub = _plugin_subdir(a)
+        assert sub.is_dir(), f"{decl} 的子目录不存在：{sub}"
+        assert (sub / "engine.py").is_file(), f"{decl} 的子目录缺 engine.py：{sub}"
+        assert (sub / "requirements.txt").is_file(), \
+            f"{decl} 的子目录缺 requirements.txt（一键安装会返回 no-requirements）"

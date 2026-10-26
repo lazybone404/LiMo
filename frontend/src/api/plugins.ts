@@ -25,6 +25,18 @@ export interface PluginInfo {
   hasRequirements: boolean
   /** 进程外插件：venv 是否已创建（依赖是否已尝试安装） */
   depsInstalled: boolean
+  /**
+   * 就绪自检（`EnginePlugin.precheck`）。
+   * - `true` = 可以跑
+   * - `false` = 自检说不可用，具体看 `precheckReason`
+   * - `null` = **无法判断**（插件被禁用/未加载，自检根本没机会跑）
+   *
+   * ⚠️ 只渲染 `false`。把 `null` 也渲染成「不可用」的话，每个被禁用的插件都会挂一条
+   * 点不动的红字 —— 与 `lib/search-health.ts` 的「问不到 ≠ 坏了」同一条纪律。
+   */
+  ready: boolean | null
+  /** `ready === false` 时给用户看的**原因**（可直接展示，含补齐办法）；其余情况为空串 */
+  precheckReason: string
 }
 
 export interface PluginListResponse {

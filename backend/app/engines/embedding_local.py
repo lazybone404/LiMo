@@ -43,11 +43,12 @@ ONNX 推理是同步 CPU 计算：首次加载模型 3–5 秒，全库 3.5 万�
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import sys
 import threading
 import time
 from pathlib import Path
+
+from app.core.deps import probe
 
 #: 模型目录与文件名。**与 `scripts/embed_local.py` 同一份**（那边转出本模块的常量），
 #: 评测脚本与产品引擎必须指向同一个模型，否则「评测 83%」描述的是另一套权重。
@@ -66,9 +67,18 @@ DIMENSION = 512
 #: —— 检索质量轻微下降、零报错。换量化档必须同时改这个名字。
 MODEL_ID = "bge-small-zh-v1.5-int8"
 
-#: 依赖是否装齐（`find_spec` 只查存在性，**不加载 DLL** —— 设置页每次读状态都会调，
-#: `import onnxruntime` 要几百毫秒，而这里只需回答「装没装」）。
+#: 依赖清单。判据是 `core.deps.probe()`（**真 import 一次**），不是 `find_spec` ——
+#: 后者对 namespace package 返回非 None 却在里面找不到任何东西，于是安装版里
+#: 「检查说就绪、一编码就报缺依赖」（2026-10-27 实测于 `_internal/tokenizers/`：
+#: 只有 7.5MB 的 `tokenizers.pyd`、没有 `__init__.py`）。
 _REQUIRED_MODULES = ("onnxruntime", "tokenizers")
+
+#: 每个模块**真正会被用到**的属性（`Embedder.__init__` 里 import 的就是这两个名字）。
+#: 只问「模块在不在」正是上面那条 bug 的形状，所以探测必须问到属性这一层。
+_REQUIRED_ATTRS: dict[str, tuple[str, ...]] = {
+    "onnxruntime": ("InferenceSession", "SessionOptions"),
+    "tokenizers": ("Tokenizer",),
+}
 
 #: 「空闲多久算真的用不着了」的默认门槛（秒）。**策略本身由用户选**
 #: （`search.vector_release`，见 `vector_worker.RELEASE_POLICIES`），这个数只是
@@ -101,8 +111,8 @@ def _fix_hint(missing: list[str], model_dir: Path, onnx_name: str,
                      + " -i https://pypi.tuna.tsinghua.edu.cn/simple")
     if lacks:
         steps.append(f"把 tokenizer.json 与 {onnx_name} 放进 {model_dir}")
-    # 装完必须重启：`find_spec` 查的是**当前进程**的 `sys.path`，新装的包不重启
-    # 就看不见 —— 那时界面会继续显示「缺依赖」，像是没装上。
+    # 装完必须重启：探测走的是**当前进程**的 `sys.path` / `sys.modules`，新装的包
+    # 不重启就看不见 —— 那时界面会继续显示「缺依赖」，像是没装上。
     return "补齐后重启应用生效：" + "；".join(steps) + "。"
 
 
@@ -115,15 +125,19 @@ class Embedder:
 
     def __init__(self, model_dir: str = DEFAULT_MODEL_DIR,
                  onnx_name: str = DEFAULT_ONNX):
-        try:
-            import onnxruntime as ort
-            from tokenizers import Tokenizer
-        except ImportError as exc:  # 失败显式化：不静默退化成纯字面
+        # 与 `precheck` **同一个判据**（`deps.probe`）。原先这里是 `except ImportError`
+        # —— 而 DLL 缺失抛的是 `OSError`、命名空间包干脆不抛，两种都漏网到别处报错。
+        # probe 通过之后下面这两行必然成功（它刚刚 import 过，`sys.modules` 命中）。
+        reason = (probe("onnxruntime", attrs=_REQUIRED_ATTRS["onnxruntime"])
+                  or probe("tokenizers", attrs=_REQUIRED_ATTRS["tokenizers"]))
+        if reason:  # 失败显式化：不静默退化成纯字面
             raise MissingDependency(
-                f"本地向量模型需要 onnxruntime 与 tokenizers：{exc}。"
+                f"本地向量模型需要 onnxruntime 与 tokenizers。{reason}"
                 + _fix_hint(list(_REQUIRED_MODULES), Path(model_dir).expanduser(),
                             onnx_name, [])
-            ) from exc
+            )
+        import onnxruntime as ort
+        from tokenizers import Tokenizer
 
         d = Path(model_dir).expanduser()
         tok_file, model_file = d / "tokenizer.json", d / onnx_name
@@ -292,7 +306,12 @@ class LocalEmbeddingEngine:
         （失败显式化：宁可说「这里没有」，也别给一条走不通的路）。
         """
         d = Path(self.model_dir).expanduser()
-        missing = [m for m in _REQUIRED_MODULES if importlib.util.find_spec(m) is None]
+        # 判据是 `deps.probe()`（**真 import 一次 + 查属性**），不是 `find_spec`：
+        # 后者对 namespace package 说「找得到」，而里面一个属性都没有 —— 那条路
+        # 上自检报就绪、用户切过去、编码那一刻才炸（2026-10-27 实测于安装版）。
+        fails = [(m, r) for m in _REQUIRED_MODULES
+                 if (r := probe(m, attrs=_REQUIRED_ATTRS[m])) is not None]
+        missing = [m for m, _ in fails]
         lacks = [n for n in ("tokenizer.json", self.onnx_name) if not (d / n).exists()]
         if not missing and not lacks:
             return None
@@ -305,8 +324,12 @@ class LocalEmbeddingEngine:
         if lacks:
             need.append("模型文件")
 
+        # 具体原因（DLL 缺失 / 安装残缺）单独补一句：只列模块名会让人以为
+        # 「这个包没装」，于是去装一个**已经装着**的包，装完现象一模一样。
+        detail = ("原因：" + "；".join(r for _, r in fails) + "。") if fails else ""
+
         return ("本地向量模型不随应用分发，需自行准备：" + "、".join(need) + "。"
-                + _fix_hint(missing, d, self.onnx_name, lacks))
+                + detail + _fix_hint(missing, d, self.onnx_name, lacks))
 
     # ── 协议入口 ──
 

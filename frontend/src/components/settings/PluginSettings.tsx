@@ -184,6 +184,13 @@ function PluginCard({ plugin, onChanged }: { plugin: PluginInfo; onChanged: () =
               未加载：{plugin.reason === 'no-command-no-trusted' ? '无 command 且未声明 trusted=true' : plugin.reason}
             </p>
           )}
+          {/* 自检未通过。⚠️ 只渲染 `false` —— `null` 是「插件没加载、自检无从判断」，
+              渲染成不可用会让每个被禁用的插件都挂一条点不动的红字。 */}
+          {plugin.ready === false && (
+            <p data-plugin-not-ready className="text-[11px] text-warning mt-1 leading-relaxed">
+              不可用：{plugin.precheckReason || '插件自检未通过'}
+            </p>
+          )}
           <p className="text-[10px] text-disabled mt-1.5 font-mono truncate" title={plugin.path}>{plugin.path}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">

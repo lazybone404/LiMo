@@ -1,7 +1,7 @@
 # 插件系统 — 契约 · 安装 · 发布（EnginePlugin v1）
 
 > 加载器：[plugin_loader.py](../backend/app/engines/plugin_loader.py)，启动时 `init_plugins()` 自动扫描 `~/.limo/plugins/`。
-> 参考模板：[backend/plugins/examples/](../backend/plugins/examples/README.md)（照抄即用；含 pymupdf4llm PDF / tesseract 本地 OCR / trusted 进程内 三种形态）。
+> 参考模板：[backend/plugins/examples/](../backend/plugins/examples/README.md)（照抄即用；含 pymupdf4llm PDF / faster-whisper 本地语音转写 / tesseract 本地 OCR / trusted 进程内 四种形态）。
 
 ## 设计初衷
 
@@ -92,7 +92,45 @@ class MyEngine(EnginePlugin):
         {"name": "format", "type": "select", "label": "格式", "default": "png", "options": ["png", "jpeg"]},
     ]
     timeout = 600                   # 子进程超时（秒，默认 300）
+
+    # ── 就绪自检（可选，强烈建议）──
+    def precheck(self):
+        """返回**给用户看的**不可用原因；`None` = 可以跑。
+
+        装得上 ≠ 用得了：缺外部二进制（tesseract / ffmpeg）、缺模型文件、
+        缺 API Key 都是这一档。不写它，用户要「启用 → 选它 → 点生成」走完三步
+        才发现跑不了，代价是一次失败任务。
+
+        ⚠️ 必须**报告**而不是「第一次执行时抛异常」—— 自检发生在设置页，
+        用户还没付出任何东西。
+
+        ⚠️ 会被 `GET /api/plugins` 调用，必须轻：不要在这里加载模型 / 起子进程。
+        依赖探测用 `app.core.deps` 里现成的两个函数，它们返回的形状与本方法一致
+        （`None` = 就绪）—— **按运行模式二选一，选错会把装好的插件报成不可用**：
+
+          - **进程外（command 有值）** → `probe_venv(venv_dir, modules=("import名",))`
+            依赖装在**子 venv** 里，主进程 `sys.path` 没有它们。用 `probe` 会**永远**
+            报「无法导入」—— 用户照着提示反复重装，而东西一直是好的。
+          - **进程内（trusted=true）** → `probe(module, attrs=("真正会调用的属性",))`
+            依赖就在主进程里；`attrs` 别省，只问「模块在不在」会被 namespace
+            package 骗过（安装版 `_internals/x/` 里有 `.pyd` 没 `__init__.py`）。
+        """
+        # 进程外（最常见）：
+        return probe_venv(
+            Path(__file__).resolve().parent / "my_engine" / ".venv",
+            modules=("pymupdf4llm",),
+            hint="在 设置 → 插件 里点「一键安装依赖」",
+        )
 ```
+
+`precheck` 的结果经 `GET /api/plugins` 的 `ready`（`true`/`false`/`null`）+
+`precheckReason` 下发到设置页卡片。⚠️ `null` 是「**无法判断**」（插件被禁用、代码没加载，
+自检无从调用），与 `false`（自检说不可用）刻意分开 —— 前端只渲染 `false`。
+
+⚠️ **`probe_venv` 只做文件系统检查**（不起子进程 —— 那会让设置页等一次 Python 冷启动）。
+它是**近似**：目录在 ≠ 一定能 import（DLL 缺失时目录也在）。真正的失败仍由首次执行
+显式报错兜底，区别只是把「没建 venv / 没装依赖 / base python 已失效」这几种最常见的
+缺失从「点了生成才知道」提前到设置页。
 
 ### 进程外 engine.py 约定
 

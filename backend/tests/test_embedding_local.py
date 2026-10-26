@@ -19,7 +19,6 @@
 是测试自己决定的，验不到产品代码（该用例在缺依赖 / 缺模型时 skip，不伪装成通过）。
 """
 import asyncio
-import importlib.util
 import os
 import sys
 import time
@@ -30,14 +29,17 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import app.engines.embedding_local as embedding_local          # noqa: E402
+from app.core.deps import probe                                # noqa: E402
 from app.engines.embedding_local import (                     # noqa: E402
     DEFAULT_MODEL_DIR,
     DEFAULT_ONNX,
     LocalEmbeddingEngine,
 )
 
-#: 与产品侧 `precheck` **同一份判据**（`importlib.util.find_spec` 只查存在性、不加载）。
-_HAS_DEPS = all(importlib.util.find_spec(m) is not None
+#: 与产品侧 `precheck` **同一份判据**（`deps.probe`：真 import 一次 + 查属性）。
+#: ⚠️ 从前这里是 `find_spec` —— 它和产品侧一样会被 namespace package 骗过，
+#: 于是「本文件 skip 掉了真模型用例」与「产品说就绪」会同时发生，两边一起错。
+_HAS_DEPS = all(probe(m, attrs=embedding_local._REQUIRED_ATTRS[m]) is None
                 for m in embedding_local._REQUIRED_MODULES)
 
 
@@ -242,17 +244,30 @@ def test_warmup_已加载时是纯内存快路():
 
 def test_precheck_缺依赖给安装命令(monkeypatch):
     """依赖没装时给出**可直接粘贴的命令**，而不是一句「不可用」。"""
-    real = embedding_local.importlib.util.find_spec
-    monkeypatch.setattr(
-        embedding_local.importlib.util, "find_spec",
-        lambda name, *a, **k: (None if name in embedding_local._REQUIRED_MODULES
-                               else real(name, *a, **k)))
+    monkeypatch.setattr(embedding_local, "probe", lambda name, **k: f"{name} 无法导入")
 
     reason = LocalEmbeddingEngine().precheck()
     assert reason, "缺依赖必须返回原因"
     assert "pip install onnxruntime tokenizers" in reason
     assert "pypi.tuna.tsinghua.edu.cn" in reason, "国内镜像（全局约定）"
     assert "不随应用分发" in reason, "使用条件必须说出来，不能只报缺哪个包"
+
+
+def test_precheck_导入成功但缺属性也算不可用(monkeypatch):
+    """namespace package 形态：`import` 成功、里面没有 `Tokenizer`。
+
+    ⚠️ 这是 2026-10-27 在安装版上实测到的真实形态（`_internal/tokenizers/` 只有
+    `tokenizers.pyd`、没有 `__init__.py`）：只问「模块在不在」的判据会在这里说就绪，
+    用户切过去、编码那一刻才炸。本用例钉住「probe 的第二种失败必须也进 precheck」。
+    """
+    monkeypatch.setattr(
+        embedding_local, "probe",
+        lambda name, **k: (None if name == "onnxruntime"
+                           else "tokenizers 已导入但缺少 Tokenizer"))
+
+    reason = LocalEmbeddingEngine().precheck()
+    assert reason and "已导入但缺少 Tokenizer" in reason, \
+        "具体原因要展示出来 —— 否则用户会去装一个已经装着的包"
 
 
 def test_precheck_打包版不给跑不了的命令(monkeypatch):
@@ -263,11 +278,7 @@ def test_precheck_打包版不给跑不了的命令(monkeypatch):
     就是全部意义（改回「一律给命令」→ 立刻红）。
     """
     monkeypatch.setattr(embedding_local.sys, "frozen", True, raising=False)
-    real = embedding_local.importlib.util.find_spec
-    monkeypatch.setattr(
-        embedding_local.importlib.util, "find_spec",
-        lambda name, *a, **k: (None if name in embedding_local._REQUIRED_MODULES
-                               else real(name, *a, **k)))
+    monkeypatch.setattr(embedding_local, "probe", lambda name, **k: f"{name} 无法导入")
 
     reason = LocalEmbeddingEngine().precheck()
     assert reason

@@ -6,6 +6,235 @@
 
 ---
 
+## 2026-10-27 — 插件模板「装得上却用不了」三个静默缺陷 + 新增本地转写模板（0.5.17 → 0.5.18）
+
+上一轮把 `precheck` 和依赖探测做进了契约，这一轮去验**官方模板是不是真的能用**。
+结果是三个都不行 —— 而且三个缺陷的共同点是「界面上完全看不出问题」。
+
+### ① 「一键安装依赖」永远找不到目录（最严重）
+
+`_plugin_subdir` 此前用**声明文件 stem** 推子目录：`pymupdf4llm_plugin.py` → 找
+`pymupdf4llm_plugin/requirements.txt`。但官方模板的目录叫 `pymupdf4llm/`（没有
+`_plugin` 后缀），于是：
+
+```
+requirements.txt 找不到 → install-deps 返回 {"status": "no-requirements"}
+                        → 前端**根本不渲染安装按钮**
+                        → 用户以为这个插件不需要依赖
+```
+
+插件本身照样能加载（`command` 里的路径是对的），所以整件事从界面上看就是
+「这个插件零依赖」。而用户照着 README 手动建 venv 又会绕过它，于是模板长期没被发现。
+
+**修法**：优先从 `command` 里的相对路径推导（跳过 `.venv` 段、绝对路径、单段路径），
+推导不出才回退 stem。理由是**同源** —— `_run_external` 执行时解析的就是
+`self._plugin_dir / part`，两处必须指向同一个目录；让「安装」与「执行」各算一次
+目录，迟早分叉。
+
+### ② 三个模板都没有 `precheck`，依赖没装也显示「就绪」
+
+`precheck` 是上一轮刚进契约的能力，模板没跟进 —— 用户看到绿灯、切到引擎、点生成，
+才发现 `No module named 'pymupdf4llm'`。现在 pymupdf4llm / tesseract 都补上了
+（后者还额外查 tesseract 二进制），trusted 模板用注释示范正确写法。
+
+⚠️ **进程外插件必须用 `probe_venv` 而不是 `probe`**：依赖在**子 venv** 里，主进程
+`sys.path` 没有它们，用 `probe` 会**永远**报「无法导入」—— 那是与「检查不出来」
+相反的失效：用户照着提示反复重装，而东西一直是好的。`docs/plugins.md` 的示例
+此前正是错的那一版（`probe("pytesseract")` 配进程外形态），一并改正。
+
+### ③ venv 判据有两份实现
+
+`plugin_loader._venv_valid`（设置页的 `depsInstalled` 字段）与插件 `precheck`
+回答的是**同一个问题**。两份实现的失效形态是「设置页说依赖已装、自检说没装」——
+同一个 venv，两个答案，两边都不报错。
+
+**修法**：判据整体搬进 `core.deps.probe_venv`（含 `pyvenv.cfg` / base python 校验 /
+WinError 448 的 `OSError` 兜底），`_venv_valid` 变成薄委托。顺带把 `home` 的解析
+从 `startswith("home =")` 改成按 key 判（`=` 两侧空格在各家工具下不一致）。
+
+⚠️ 探的是**文件系统**而不是真起子进程：`precheck` 被 `GET /api/plugins` 调用，
+契约明写「必须轻」。它是近似（目录在 ≠ 一定能 import），真正的失败仍由首次执行
+显式报错兜底 —— 只是把最常见的几种缺失提前到设置页。
+
+### ④ 新增 faster-whisper 本地转写模板（第四个模板）
+
+核心已移除 whisper（CUDA 依赖打爆安装包），内置两个 ASR 引擎都是云端的。于是
+「离线、零费用、不外发」的本地转写在**核心里是真空缺口** —— 正是口子原则该管的
+那类能力。
+
+`plugins/examples/faster_whisper/`：`faster-whisper`（CTranslate2 推理）跑在独立
+venv 里，`ctranslate2` / `onnxruntime` / `tokenizers` 数百 MB 不进主包。
+配置项含模型规格 / device / compute_type / language / VAD / HF 镜像与缓存目录。
+
+三条设计取舍：
+- **逐段轮询 `cancel_file`**（转写是流式生成器，解码发生在迭代时），命中即退出且
+  **零输出** —— 交出半截 `segments` 会被主进程当成成功落库，用户以为转完了。
+- **`device=cuda` 失败绝不静默退回 CPU**：缺 cuBLAS/cuDNN、compute_type 非法、
+  模型下载失败，四种原因的处置完全不同，混成「慢一点」会让用户以为 GPU 在跑。
+- **HF 镜像只在子进程设 `os.environ`**，不污染主进程、不写用户的系统变量。
+
+⚠️ **首次转写要下载模型**（默认 small 约 250MB），这件事**不在**「一键安装依赖」里
+—— 模型跟着 `model` 配置项走、缓存可被 `download_root` 指到别处，放进安装步骤会让
+「装好但换模型又没下载」显得莫名其妙。README 里单列一节说明。
+
+### 测试
+
+- `test_deps.py` 新增 13 条 `probe_venv` 用例（没建 / 缺解释器 / 缺 pyvenv.cfg /
+  base python 已失效 / 缺 site-packages / 缺依赖 / 单文件包 / OSError 兜底），
+  含**对照实验**：同一个 venv，`probe` 说没装而 `probe_venv` 说装好了。
+- `test_plugin_loader.py` 新增 6 条 `_plugin_subdir` 用例 + 1 条**拿真实模板文件跑**
+  的守卫（子目录存在、`engine.py` 与 `requirements.txt` 都在）。
+- 新增 `test_plugin_examples.py`：用**假的 `faster_whisper` 包**把 `engine.py` 真跑一遍
+  —— 契约 key 名、空白段丢弃、取消零输出、两种失败显式报错。纯静态断言对这些
+  **全部看不出来**。
+
+### 影响范围
+
+- 修复对**存量用户零行为变化**：`_plugin_subdir` 只在「一键安装」链路上被调用，
+  而它此前在三个官方模板上都是错的（用户要么手动装、要么根本没装成）。
+- `probe_venv` 是新函数，`_venv_valid` 的调用方接口不变。
+- faster-whisper 是**新增模板**，不安装就完全不存在。
+
+### 验证
+
+后端门禁 `check-all backend` 全绿（1400+ 用例，含新增 27 条）。
+模板本身**尚未在真机装依赖跑过**（需下载约 400MB 依赖 + 250MB 模型），
+`engine.py` 的契约由假包端到端覆盖。
+
+---
+
+## 2026-10-27 — 打包版日志编码：GBK → UTF-8（0.5.16 → 0.5.17）
+
+装完 0.5.16 第一件事就撞上了。`limo_backend_stderr.log` 里躺着的是
+
+```
+--- Logging error ---
+UnicodeEncodeError: 'gbk' codec can't encode character '✨' in position 69
+Call stack:
+  File "app\core\sample_doc.py", line 125, in seed_sample_doc
+```
+
+而不是那句本该出现的「示例文档已创建: ✨ 使用说明（示例）」。
+
+### 根因
+
+PyInstaller 是 `console=False`，Tauri 把后端的 stdout/stderr **重定向到文件**。
+Windows 上 Python 的流在**非 tty** 时按 locale 编码（简体中文系统 = GBK），于是
+emoji / 生僻字统统编不进去 → `UnicodeEncodeError` → `logging` 把它吞成一行
+"Logging error"，**真正的消息反而消失了**。
+
+同一件事还有第二个面：Rust 侧读日志用 `String::from_utf8_lossy`
+（[lib.rs](../frontend/src-tauri/src/lib.rs) 的 `read_tail`），GBK 内容在「启动失败」
+屏上全是 `���` —— 那份日志存在的意义就是给人看，读出来是乱码等于没有。
+
+⚠️ 功能本身没受影响：出错的 `logger.info` 在 `seed_sample_doc` 的 `try` 块**末尾**，
+写盘早已完成，后续照常打出 `Search index ready (143 docs)` 与
+`Application startup complete`。但「启动失败」屏拿到的证据里混着一串
+"Logging error"，正好在最需要读日志的时候变成噪音。
+
+### 修法
+
+`backend/main.py` 的流归一化（紧接 `sys.stdout is None` 兜底之后）分两支：
+
+| 流 | 处置 | 理由 |
+|---|---|---|
+| **非 tty**（重定向到文件 / 管道） | `reconfigure(encoding="utf-8")` | 那是文件不是终端；UTF-8 是唯一能让 Rust 侧正确读回的编码 |
+| **tty**（终端里直接跑） | **保持终端编码**，只设 `errors="backslashreplace"` | 老 cmd 代码页 936，强行 UTF-8 会满屏乱码；backslashreplace 让写不出的字符变成 `\u2728` 而不是炸掉整次日志调用 |
+
+⚠️ 两支都设 `errors`：UTF-8 本身什么字符都能编码，所以这条**只在 tty 分支真正起作用**，
+非 tty 分支留着兜 lone surrogate 这类边界。
+
+### 影响范围
+
+- 只改输出的**字节表示**，不碰任何业务逻辑
+- 历史日志文件不迁移，下次启动追加时才变 UTF-8（同一文件里前后两段编码不同 —— 按行读仍然清楚，
+  而真正要紧的是**下一次崩溃的证据**里不再有噪音）
+- **开发环境行为完全不变**：终端里跑 uvicorn 走的是 tty 分支，与改造前逐字相同
+
+### 验证
+
+对照实验：同一份 `open(path, "w", encoding="cp936")` 流，写 `✨` 在归一前抛
+`UnicodeEncodeError`、归一后正常落盘并按 UTF-8 读回；tty 分支断言 `encoding` 仍是
+`cp936`、只有 `errors` 变成 `backslashreplace`。后端门禁 `check-all backend` 全绿。
+
+---
+
+## 2026-10-27 — 插件/引擎「就绪自检」进契约 + 依赖探测换成真 import（0.5.15 → 0.5.16）
+
+起因是实测出来的一个谎：安装版里 `tokenizers` 的目录只有 7.5MB 的 `tokenizers.pyd`、
+**没有 `__init__.py`**。`importlib.util.find_spec` 说「找得到」，`import` 也成功
+（拿到一个空壳 namespace package），于是本地向量引擎的自检报「就绪」——用户切过去，
+编码那一刻才炸。代价已经付了（选了引擎、点了开始、一次失败任务）。
+
+### ① `core/deps.py::probe()` —— 依赖可用性的唯一判据
+
+`probe(module, attrs=(...))`：**真 import 一次并查关键属性**，返回 `None`（可用）
+或一句可直接展示的原因。三种 `find_spec` 看不出来的形态一并覆盖：namespace package
+（导入成功但缺属性）、DLL 缺失（`__init__` 抛 `OSError`）、包的 `__init__` 自己炸。
+
+代价是首次 import 会执行包的顶层代码（onnxruntime 约几百毫秒），故只给「回答就绪与否」
+用；第二次及以后由 `sys.modules` 天然命中，**不需要另做缓存层**。
+
+⚠️ `Embedder.__init__` 同步改成走它：原先写的是 `except ImportError`，而 DLL 缺失抛的是
+`OSError` —— 抓不到，错误会在更远的地方以更难懂的形式出现。
+
+### ② `EnginePlugin.precheck()` 进契约
+
+```python
+def precheck(self) -> Optional[str]:   # None = 就绪，str = 给用户看的不可用原因
+    return None
+```
+
+默认实现返回 `None`（「装上了就能用」），存量插件零改动、零回归。需要外部二进制 /
+模型文件 / Key 的插件重写它。**必须「报告」而不是「第一次执行时抛异常」**——自检在
+设置页跑，用户还没付出任何代价。
+
+⚠️ 这一条进契约、而 `precheck`/`warmup`/`release` 三个同类钩子**刻意不进**
+`EmbeddingEngine` 协议，**不是双标**：那个协议是 `runtime_checkable`，加成员会让云端
+引擎不再满足它；`EnginePlugin` 是普通基类，加一个有默认实现的成员不排斥任何子类。
+
+⚠️ `_PluginEngineAdapter.precheck()` 把插件的异常兜成「不可用」。兜底放在这一层而非
+各消费方 —— 插件是任意第三方 Python，任一处漏了 try/except 的症状都是「打开插件设置页
+整页 500」，看起来像主程序坏了。
+
+### ③ 三态 `ready` 下发到设置页
+
+`GET /api/plugins` 每条新增 `ready` / `precheckReason`：
+
+| `ready` | 含义 | 前端 |
+|---|---|---|
+| `true` | 自检通过 | 无 |
+| `false` | 自检说不可用 | 卡片上渲染 `precheckReason` |
+| `null` | **无法判断**（插件被禁用、代码没加载，自检无从调用） | **不渲染** |
+
+⚠️ `null` 不能折成 `false`：那会让每个被禁用的插件都挂一条点不动的「不可用」。
+同 `lib/search-health.ts` 的「问不到 ≠ 坏了」。测试有反向断言（`is not False`）钉住。
+
+⚠️ `/api/plugins` 改走 `asyncio.to_thread`：`enumerate_plugins` 现在会调第三方
+`precheck()`，真 import 一个原生库几百毫秒，放在事件循环上会让 SSE 心跳与健康检查
+一起停住（现象：「打开插件页时应用卡一下」）。
+
+### ④ 文档同步
+
+- **内置示例文档**（`sample_docs/notes.md` / `polished.md`，即文档库里那篇「✨ 使用说明（示例）」）：
+  清掉三处「AI 审核」残留（该功能 2026-08-16 已移除，读者一直被告知有一个并不存在的功能）；
+  补上文档库整理、多篇合成、追问建议、语义检索（两个向量引擎 + 本地引擎要自备
+  `onnxruntime` / `tokenizers` 与模型文件）、插件系统；导出一栏补 Word / PDF。
+  顺手修一处过期表述：「图片 OCR（本地引擎）开箱即用」—— 本地 OCR 自 2026-08-02 起已不在内置。
+  ⚠️ 内容指纹变了，用户库里的那篇示例文档**下次启动会被自动更新**（这是 `sample_doc.py`
+  的既有设计：示例文档兼作「更新说明」）；指纹无变化时仍尊重用户的删除。
+- `README.md` 新增「插件」一节：安装方式、进程外/进程内两种形态、**不可用原因直接写在插件卡片上**。
+- 版本 `0.5.15 → 0.5.16`（`scripts/sync-version.py patch`，本次是修复不是新功能）。
+
+### 影响范围
+
+`core/deps.py`（新）、`plugin_loader.py`（契约 + adapter + 枚举）、`routers/plugins.py`
+（线程池）、`engines/embedding_local.py`（`precheck` 与 `Embedder.__init__` 的判据）、
+前端 `api/plugins.ts` + `PluginSettings.tsx`（卡片多一行原因）。插件列表接口**只增字段**，
+旧消费方零影响。`docs/plugins.md` 补 `precheck` 的写法与理由。
+
+---
+
 ## 2026-10-27 — 0.5.15 打包准备：spec 补向量模块 + 清理无用文件
 
 这一版是**发行整理**，不是功能改动。两件事：补打包配置，删磁盘上的历史残留。
