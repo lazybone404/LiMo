@@ -12,6 +12,7 @@ import { THEME_PRESETS } from '../../lib/theme-presets'
 import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette, Puzzle } from 'lucide-react'
 import { ProviderSettings } from './ProviderSettings'
 import { PluginSettings } from './PluginSettings'
+import { SearchIndexCard } from './SearchIndexCard'
 
 /**
  * 卡片「逐维度微调」的档位按钮 —— 与方案按钮同一视觉语言但更小（它是次级控件）。
@@ -953,6 +954,10 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                   </select>
                 </div>
               </div>
+
+              {/* 检索索引 —— 状态可见 + 手动重建。索引坏掉时后端不炸启动、只是搜不到，
+                  而「搜不到」与「库里没有」在界面上是同一句话（见组件文件头）。 */}
+              <SearchIndexCard />
 
               {/* 导出行为 —— 即时生效（与上面需要点「保存」的配置项不同：这一项存的是本机偏好，
                   不走 config.yaml）。见 lib/export-prefs.ts 的文件头。 */}

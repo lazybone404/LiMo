@@ -2,6 +2,7 @@
 LiMo — FastAPI 入口
 """
 
+import asyncio
 import logging
 import os as _os
 import re
@@ -332,7 +333,41 @@ async def startup():
         # （其余机器根本不进那个分支，本地永远复现不出来）。模块顶部第 5 行已有 import。
         logging.getLogger(__name__).info("Search index ready (%d docs)", len(_transcripts))
     except Exception as e:
+        # ⚠️ 光打一行 warning 不够：`app.state.search_engine` 已在 try **之外**赋值，
+        # 后续每次写入都会往这个半坏的库走，而用户侧看到的只是「搜不到东西」。
+        # `note_error` 把原因记进引擎状态 → `GET /api/search/status` 能读到 →
+        # 设置页能显示「索引不可用 + 原因 + 重建按钮」，而不是一句「没搜到」。
+        _search_engine.note_error(f"启动重建失败：{e}")
         logging.getLogger(__name__).warning("Search index rebuild failed: %s", e)
+
+    # 向量索引库（`vec.db`）— 与 `search.db` **异库**，理由见 `core/vector_store` 模块文档。
+    # 这里**只构造，不建向量**：一次 embedding 往返会卡住启动，且用户没打开语义检索时
+    # 我们不该花任何钱。构造失败不抛（VectorStore 内部接住），坏掉的 `vec.db` 不该让
+    # 应用起不来。
+    from app.core.vector_store import VectorStore
+    app.state.vector_store = VectorStore(config.get("data_dir", "data"))
+
+    # 向量子系统的启停（后台 worker + 查询融合层）**只有一处** ——
+    # `services/vector_runtime.py`。⚠️ 刻意不在 startup 里内联判断：
+    # 设置页的开关在运行时也要启停同一对东西，两处各写一遍迟早分叉
+    # （最典型的是漏存 `vector_task` → 关掉开关后 worker 还在花钱）。
+    from app.services.vector_runtime import sync_vector_runtime
+    _runtime = await sync_vector_runtime(app)
+    if _runtime["reason"]:
+        logging.getLogger(__name__).warning("语义检索未启用：%s", _runtime["reason"])
+    elif _runtime["enabled"]:
+        logging.getLogger(__name__).info("向量索引 worker 已启动")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """停掉后台任务（目前只有向量索引 worker）。
+
+    具体的停法（`set()` 与 `cancel()` **两个都要**、以及为什么）住在
+    `vector_runtime._stop_worker` —— 运行时关开关走的是同一个函数。
+    """
+    from app.services.vector_runtime import stop_vector_runtime
+    await stop_vector_runtime(app)
 
 
 @app.get("/health")

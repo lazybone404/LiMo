@@ -1,8 +1,24 @@
-"""全文搜索端点 — GET /api/search?q=关键词"""
+"""检索端点 —— `GET /api/search`（字面 ∪ 语义融合）+ 索引健康 / 重建 + 向量开关。"""
 
-from fastapi import APIRouter, Depends, Query
+import asyncio
 
-from app.core.dependencies import get_query_service
+from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel
+
+from app.core.config_io import save_config
+from app.core.dependencies import (
+    get_config,
+    get_config_lock,
+    get_query_service,
+    get_search_engine,
+    get_store,
+    get_vector_searcher,
+)
+from app.core.errors import AppError
+from app.core.origin import ensure_trusted_request
+from app.core.vector_store import DEFAULT_CHUNK_SIZE
+from app.generation.doc_text import search_index_text
+from app.services.vector_search import DEFAULT_DEPTH
 
 # ⚠️ **不要在这里写 `prefix="/api"`**：`main.py` 用 `include_router(..., prefix="/api")`
 # 统一挂载（全仓 17 个 router 里另外 16 个都是裸 `APIRouter()`）。两处都写会得到
@@ -12,19 +28,218 @@ from app.core.dependencies import get_query_service
 # 在用它」的又一形态）。同类事故在 2026-07-10 已发生过一次（那次在前端侧，6 处）。
 router = APIRouter(tags=["search"])
 
+#: 单次返回条数上限。⚠️ **与前端 `useDocQuery.ts::SEARCH_LIMIT` 必须同值** ——
+#: 前端要 100 条是「大列表分批渲染 60 条」的下限需求，而这里曾写 `le=50`，
+#: 于是**文档库搜索框每次都是 422、一条结果都没有**。三条测试路径全都绕过了它：
+#: 前端测试 mock 掉 `api/search`、`test_search.py` 测 `SearchEngine` 类而非 HTTP
+#: 路径、评测脚本直调 `engine.search()`。改这个数之前先问：哪条测试真的会因此变红。
+SEARCH_MAX_LIMIT = 100
+
 
 @router.get("/search")
 async def search_transcripts(
     q: str = Query(default="", min_length=1, description="搜索关键词"),
-    limit: int = Query(default=20, ge=1, le=50),
+    limit: int = Query(default=20, ge=1, le=SEARCH_MAX_LIMIT),
     svc=Depends(get_query_service),
+    searcher=Depends(get_vector_searcher),
 ):
-    """全文搜索已导入的文档内容。**返回裸 list**（`[{id,title,snippet}]`）——保持既有
-    响应形状，前端 `SearchBar` 与文档库都按数组消费。
+    """全文搜索已导入的文档内容 —— **字面（FTS5）与语义（向量）RRF 融合**。
 
-    ⚠️ 通过 `QueryService` 而不是直接 `app.state.search_engine`：搜索同样是**读路径**，
-    它要跟 CLI 的 `limo search` 共用一条实现（否则就是第二份「怎么搜」的判据）。
-    `truncated` 提示在 HTTP 侧被丢弃——前端的做法是「限 100 条 + 到顶时提示细化关键词」，
-    它的阈值与 CLI 不同，故由各自的 adapter 决定怎么表达「没给全」。
+    响应 `{hits, semantic}`：
+
+    - `hits`：`[{id, title, snippet}]`，按融合后的相关性排序，最多 `limit` 条。
+    - `semantic`：`null` = 语义检索未开启；否则 `{error, hits}`。`error` 非空时
+      表示**本次只用了字面结果**（原因逐档见 `VectorSearcher._precheck`）；
+      `hits` 是语义路**本次参与融合**的篇数（按 `depth = max(limit, 50)` 取，
+      不是全库命中总数），`0` 且 `error` 为空 = 索引还没有可比向量。
+
+    ⚠️ **两路取同样深度**（`depth = max(limit, DEFAULT_DEPTH)`）：RRF 的 `1/(k+rank)`
+    只有在两路基线一致时才可比。字面取 20 条、向量取 50 条会让「字面第 20 名」
+    与「向量第 20 名」拿到不同的分数，排序就取决于谁取了更深的那个巧合。
+
+    ⚠️ **语义独有的命中要回补 title**：向量能召回「一个词都没出现」的文档，
+    而那些文档在字面结果里没有条目可继承。`snippet` 留空 —— FTS 的摘要取自
+    检索 token 串（`core/search.py` 三列分工），语义命中没有可截取的高亮位置，
+    硬造一个摘要等于凭空发明「为什么匹配」。
     """
-    return svc.search_resources(q, limit=limit).items
+    depth = max(limit, DEFAULT_DEPTH)
+    # 字面路先跑：它自己处理空查询 / 缺引擎 / 索引坏（坏索引是 503 + 可恢复标记，
+    # 语义路健康也不该把它掩盖成「能搜」——那是两条独立的库）。
+    lexical = svc.search_resources(q, limit=depth).items
+    if searcher is None:
+        return {"hits": lexical[:limit], "semantic": None}
+
+    ids, semantic = await searcher.fuse(
+        q, [h["id"] for h in lexical], limit=limit, depth=depth)
+
+    by_id = {h["id"]: h for h in lexical}
+    hits: list[dict] = []
+    for doc_id in ids:
+        hit = by_id.get(doc_id) or _hit_from_store(svc, doc_id)
+        if hit is not None:
+            hits.append(hit)
+    return {"hits": hits, "semantic": semantic}
+
+
+def _hit_from_store(svc, doc_id: str) -> dict | None:
+    """语义路独有命中 → 列表项形状。
+
+    `None` = 向量库里有、文档表里没有（孤儿）。**不抛错**：孤儿由 worker 的对账
+    清理，此刻把它变成一次 500 会让「一个已被删除的文档」毁掉整次搜索。
+
+    ⚠️ `snippet` 给**空串而不是省掉这个键**：前端只取非空 snippet 渲染第二行，
+    两者行为相同；但省键会让 `SearchHit` 的 `snippet` 变成可选字段，在下游
+    （导出、引用 chip）多出一处 `?? ''`。
+    """
+    try:
+        r = svc.get_resource(doc_id)
+    except AppError:
+        return None
+    return {"id": doc_id, "title": r.get("title") or "", "snippet": ""}
+
+
+@router.get("/search/status")
+async def search_status(request: Request, engine=Depends(get_search_engine)):
+    """检索索引状态：字面（FTS5）可用性 / 篇数 / 体积 / 上次重建 + **向量侧**状态。
+
+    ⚠️ **这个端点存在的理由不是「好看」**：索引库坏掉时 `SearchEngine.__init__`
+    不再炸启动（文档照样能从磁盘读），检索能力却是没了 —— 而「没搜到」与
+    「索引坏了」在界面上是**同一句话**。没有这一份状态，用户永远不知道
+    自己该点一下重建。
+
+    ⚠️ `vector` 段的字段全部来自 `app.state`，**不在这里另算一遍判据**：
+    `enabled` 是「运行时真的启用了吗」（`sync_vector_runtime` 的结论），
+    `reason` 是它给出的原因。照配置重新判一次就会出现「设置页说开着、状态说不开」。
+    """
+    out = engine.status()
+    out["vector"] = _vector_status(request)
+    return out
+
+
+def _vector_status(request: Request) -> dict:
+    vec = getattr(request.app.state, "vector_store", None)
+    state = getattr(request.app.state, "vector_runtime", None)
+    if vec is None:
+        return {"enabled": False, "reason": "向量索引库未初始化", "docs": {}, "chunks": 0,
+                "sizeBytes": 0, "identity": None, "lastError": None}
+    st = vec.status()
+    runtime = state or {}
+    st["enabled"] = bool(runtime.get("enabled"))
+    st["reason"] = runtime.get("reason")
+    return st
+
+
+@router.post("/search/reindex")
+async def search_reindex(
+    request: Request,
+    engine=Depends(get_search_engine),
+    store=Depends(get_store),
+):
+    """全量重建**全文**索引（用户主动触发，**带 VACUUM 回收空间**）。
+
+    ⚠️ **有副作用的 POST 必须过来源守卫**：跨站页面能发 POST（CORS 只拦「读响应」），
+    而重建会重写整个 `search.db`。同 `chat` / `generate` 的做法（`core/origin.py`）。
+
+    ⚠️ **显式失败**：重建抛错时让它冒成 HTTP 错误，不返回「部分成功」。索引只有
+    「全对」与「坏的」两态，中间态（灌了一半）对用户没有可采取的行动。
+
+    ⚠️ **只管字面索引**。向量索引的重建是另一件事（要花 embedding 的钱），走
+    `POST /search/vector/rebuild` —— 两个按钮两种成本，不能藏在同一个动作后面。
+    """
+    ensure_trusted_request(request)
+    transcripts = store.list_transcripts()
+
+    def _get_content(tx_id: str) -> str:
+        return search_index_text(store, tx_id)
+
+    # vacuum=True：这是**用户主动**点的，代价（一次全库重写）已经在确认框里告知过。
+    # 启动路径**不传**，那里等一次全库重写等于让「打开应用」变慢（见 `rebuild` 注释）。
+    # ⚠️ **必须 `to_thread`**：`rebuild` 是同步的整库重写（千篇库几秒到十几秒），
+    # 直接 await 一个同步函数会把事件循环整个占住 —— 期间所有请求（含 SSE 心跳）
+    # 一起停住，前端表现为「点重建后整个应用卡住」。导出侧同一处已有先例。
+    await asyncio.to_thread(engine.rebuild, transcripts, _get_content, vacuum=True)
+    return await search_status(request, engine)
+
+
+class VectorToggleBody(BaseModel):
+    enabled: bool
+
+    model_config = {"extra": "forbid"}      # 拒绝未预期的 key（同 `ConfigUpdate`）
+
+
+@router.post("/search/vector")
+async def search_vector_toggle(
+    body: VectorToggleBody,
+    request: Request,
+    config=Depends(get_config),
+    config_lock=Depends(get_config_lock),
+):
+    """开 / 关语义检索 —— 落盘配置 + **就地启停后台 worker 与融合层**。
+
+    ⚠️ 只改配置不启停 worker 是一个静默失效：用户打开开关、界面显示已开启，
+    而索引永远没人建（要等重启才生效）。反向同理：关掉后 worker 还在跑，
+    **继续花钱**且状态显示「已关闭」。
+
+    ⚠️ **开关打开本身不花钱**，它只是允许 worker 开始编码；已索引过的篇目
+    （块 hash 全中）一次调用都不发。首次全库编码的成本由设置页的开关旁说明，
+    不在这个端点的返回值里编故事。
+
+    ⚠️ **`save_config` 必须拿到 `app.state.config` 这个内存对象**（`get_config`
+    返回的正是它）：拿磁盘 YAML 直调会让密钥库那条隐藏前提失效（见 CLAUDE.md
+    「配置唯一入口」）。这里先改内存、再落盘，与 `config.py::update_config` 同款。
+    """
+    ensure_trusted_request(request)
+    from app.services.vector_runtime import sync_vector_runtime
+
+    with config_lock:
+        config.setdefault("search", {})["vector_enabled"] = bool(body.enabled)
+        save_config(config)
+
+    runtime = await sync_vector_runtime(request.app)
+    return {"enabled": bool(runtime.get("enabled")), "reason": runtime.get("reason"),
+            "status": _vector_status(request)}
+
+
+@router.post("/search/vector/rebuild")
+async def search_vector_rebuild(request: Request):
+    """**重建**向量索引 —— 清空口径与全部块，重新排队（**要花一遍全库编码的钱**）。
+
+    与 `POST /search/reindex` 刻意分成两个端点：那个是字面的、免费的、毫秒级；
+    这个是**计费的全库 embedding**。合成一个端点等于把「刷新」和「付费重算」
+    藏在同一个按钮后面。
+
+    ⚠️ 三步的顺序都是有理由的，且**错了都不报错**：
+
+    1. **先停 worker**：它在跑的话，`reset_identity` 之后 `vec_state` 是空的，而
+       对账（补 pending）只在 `loop()` 的最外层跑一次 —— 不重启就没有下一轮队列，
+       索引永远建不起来，而状态显示「已启用、0 篇待索引」。
+    2. 再 `reset_identity`：反过来会让 `ensure_identity` 拿旧身份比对失败，
+       于是刚点完重建却仍然「口径不符」。
+    3. 最后 `sync_vector_runtime`：它拉起的新 worker 第一件事就是 `reconcile()`，
+       把「文档表有、`vec_state` 无」的全部补成 pending —— 这正是重建后要的那批。
+       手写一遍 `mark_pending` 循环就是第二份「谁该被索引」的判据（模式 #54）。
+    """
+    ensure_trusted_request(request)
+    from app.services.vector_runtime import (
+        DEFAULT_ENGINE,
+        stop_vector_runtime,
+        sync_vector_runtime,
+    )
+
+    from app.core.registry import EngineRegistry
+
+    vec = getattr(request.app.state, "vector_store", None)
+    if vec is None:
+        raise AppError("VECTOR_UNAVAILABLE", "向量索引库未初始化", status_code=503)
+
+    cfg = (getattr(request.app.state, "config", None) or {}).get("search") or {}
+    name = cfg.get("vector_model") or DEFAULT_ENGINE
+    engine = EngineRegistry.get("embedding", name)
+    if engine is None:
+        raise AppError("VECTOR_NO_ENGINE", f"未找到向量化引擎：{name}", status_code=503)
+
+    await stop_vector_runtime(request.app)
+    vec.reset_identity(engine.model_id, engine.dimension, DEFAULT_CHUNK_SIZE)
+    runtime = await sync_vector_runtime(request.app)
+    return {"enabled": bool(runtime.get("enabled")), "reason": runtime.get("reason"),
+            "status": _vector_status(request)}

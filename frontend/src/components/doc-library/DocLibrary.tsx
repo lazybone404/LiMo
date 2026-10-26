@@ -53,6 +53,7 @@ import { ListToolbar } from './ListToolbar'
 import { FilterArea } from './FilterArea'
 import { FilterPopover } from './FilterPopover'
 import { SearchField } from './SearchField'
+import { SearchIndexBanner } from './SearchIndexBanner'
 import { DocLibraryToolbar } from './DocLibraryToolbar'
 import { PAGE_SIZE } from '../../store/docsSlice'
 
@@ -336,7 +337,7 @@ export function DocLibrary() {
   // ⚠️ `tree` 也传：`filterDocs` / `countByFolder` / `groupDocs` 三处原本各自
   // `buildFolderTree(folders)`，输入是同一个 `folders` ⇒ 同一批数据建三遍树。
   // 建好的那一份就住在这里（它本来就有），转手给它们即可。
-  const { visible, matchedIds, snippetById, rankOf, searching, hitsTruncated } = useDocQuery({
+  const { visible, matchedIds, snippetById, rankOf, searching, hitsTruncated, searchError, semanticNote } = useDocQuery({
     docs, query: searchQuery, title: titleFilter, type: activeType, tags: activeTags,
     folderId: activeFolderId, dateFrom, dateTo, sort, folders, tree,
   })
@@ -1451,7 +1452,7 @@ export function DocLibrary() {
     collapsedGroups, countOf, folderBusy, docsLoading, hasMore,
     // 文件夹选择集与文档选择集分开（见 docsSlice），分组头复选框读的是这一个
     selectedFolderIds, onFolderSelect: handleFolderSelect,
-    emptyText, truncated: hitsTruncated,
+    emptyText, truncated: hitsTruncated, searchError, semanticNote,
     draggingCategorized,
     // 简略模式的形态是 IDE 文件树：分组子行缩进 + 缩进线，分组头当父节点（见 grouped）
     treeIndent: density === 'compact',
@@ -1491,6 +1492,9 @@ export function DocLibrary() {
      * 对话侧的三个小对话框同因同修。
      */
     <aside className="w-full h-full border-r border-border-light flex flex-col bg-elevated/60 backdrop-blur-[20px]">
+      {/* 索引坏了要主动说 —— 不等用户搜空了才在列表底部看见（见组件文件头）。
+          放在工具栏**之上**：它与「有没有选中」无关，两种密度下都该出现。 */}
+      <SearchIndexBanner />
       {/* 标题栏 / 批量工具条
           ⚠️ 显隐**派生自 `hasSelection`**，没有「批量模式」开关：勾中任意一行，工具条
           自己出现；取消到 0 条，自己消失。若要「一条没勾时也能点全选」，那条路径是

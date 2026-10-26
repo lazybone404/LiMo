@@ -20,8 +20,21 @@ class IO {
 ;(globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = IO
 
 const searchMock = vi.fn()
+/** 语义（向量）路的状态：默认 `null` = 未启用。用例里换成 `{error, hits}` 验退化提示。 */
+const semanticMock = vi.fn()
 vi.mock('../api/search', () => ({
-  searchDocs: (q: string, limit?: number, signal?: AbortSignal) => searchMock(q, limit, signal),
+  // 桩返回 **hits 数组**（用例只关心命中与排名），包装层补 `semantic`（默认 null
+  // = 未启用语义检索）。真实 `searchDocs` 返回 `{hits, semantic}` —— 直接透传
+  // 裸数组会让 `buildResultSet` 把数组当对象取 `.hits` 而崩。
+  searchDocs: async (q: string, limit?: number, signal?: AbortSignal) => ({
+    hits: await searchMock(q, limit, signal),
+    semantic: semanticMock(),
+  }),
+  // 见 docLibraryFilters 同名注释：`DocLibrary` 挂了索引健康横幅，这里给「正常」答复。
+  getSearchStatus: async () => ({
+    available: true, docCount: 0, sizeBytes: 0, lastError: null, rebuiltAt: null,
+  }),
+  reindexSearch: async () => { throw new Error('本用例不应触发索引重建') },
 }))
 
 vi.mock('../api/client', async (importOriginal) => {
@@ -62,6 +75,8 @@ beforeEach(() => {
   localStorage.clear()
   searchMock.mockReset()
   searchMock.mockResolvedValue([])
+  semanticMock.mockReset()
+  semanticMock.mockReturnValue(null)
   useStore.setState({
     docs: [], folders: [], currentDocId: null, toasts: [],
     selectedIds: new Set(), listLimit: 60, docsLoading: false,
@@ -148,6 +163,41 @@ describe('相关度与「排列」正交', () => {
     // ⚠️ 对照（有区分力）：排序被分组覆盖（组内恒按时间，即 `sortDocs` 只作用于平铺）→
     // 组内首行是 B，红。
     expect(rows(container, '[data-doc-group="f:f1"]')[0].textContent).toContain('A')
+  })
+})
+
+/**
+ * 语义（向量）路退化 —— 与字面检索失败是**两件事**：
+ * 字面结果完整、只是没多出向量那一份助力，严重度不同、用户该做的事也不同。
+ * 合成一条提示会让「索引坏了要动手修」和「后台还在建、等等就好」读起来一样。
+ */
+describe('语义路退化提示', () => {
+  const note = (c: HTMLElement) => c.querySelector('[data-search-semantic-note]')
+
+  it('semantic.error 非 null → 底部出现提示，且**不**冒充检索失败', async () => {
+    seedPrefs({ groupBy: 'none' })
+    useStore.setState({ docs: [doc({ id: 'a', title: 'A' })] })
+    searchMock.mockResolvedValue([hit('a')])
+    semanticMock.mockReturnValue({ error: '语义索引尚未建立（后台正在处理）', hits: 0 })
+    const { container } = render(<DocLibrary />)
+
+    fireEvent.change(searchBox(container), { target: { value: '关键词' } })
+    await waitFor(() => expect(note(container)?.textContent).toContain('语义索引尚未建立'), { timeout: 2000 })
+    // 对照（有区分力）：两条提示合成一个状态 → 这里会同时冒出 `[data-search-error]`，红。
+    expect(container.querySelector('[data-search-error]')).toBeNull()
+  })
+
+  it('semantic 为 null 或 error 为 null → 一个字都不渲染（零回归）', async () => {
+    seedPrefs({ groupBy: 'none' })
+    useStore.setState({ docs: [doc({ id: 'a', title: 'A' })] })
+    searchMock.mockResolvedValue([hit('a')])
+    // `{error: null, hits: 0}` = 开了、跑通了、索引还空 —— 不是错误，不该提示。
+    semanticMock.mockReturnValue({ error: null, hits: 0 })
+    const { container } = render(<DocLibrary />)
+
+    fireEvent.change(searchBox(container), { target: { value: '关键词' } })
+    await waitFor(() => expect(rows(container).length).toBe(1), { timeout: 2000 })
+    expect(note(container)).toBeNull()
   })
 })
 

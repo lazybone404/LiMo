@@ -93,7 +93,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 |------|------|--------|
 | [README.md](README.md)（**面向用户**） | 产品介绍：能做什么 / 安装 / 首次使用 / 快捷键 | ⚠️ **改任何用户可见能力时必须同步**（它是用户的唯一入口）|
 | [architecture.md](docs/architecture.md) | 六层分层架构，每层模块职责、交互、陷阱 | 理解整体架构和模块边界 |
-| [search-retrieval.md](docs/search-retrieval.md) | **全文检索**：字面检索现状（三列分工 / 二字组 OR / 五个写点）+ **向量扩展计划**（`EmbeddingEngine` 云端内置 + 本地插件、向量存储、RRF 融合、索引时机、分期） | 改检索逻辑、做向量化、查「为什么搜不到」 |
+| [search-retrieval.md](docs/search-retrieval.md) | **全文检索**：字面检索现状（三列分工 / 二字组 OR / 五个写点）+ **索引健康三态与手动重建**（§1.1 / §1.2：坏索引必须能被看见、VACUUM 只在主动重建时做）+ **向量检索**（**阶段 1–3 已落地 2026-10-26**：`EmbeddingEngine` 云端内置、向量存储三表、增量 worker、RRF 查询融合与开关；**阶段 4 = 本地插件仍在计划**，设计见 §6.1）+ **建索引门槛与规模上限 §3.2.1/3.2.2** + **增量机制 §4.4-4.6**（块级 hash / worker 五纪律 / 对账 vs 重建）+ 落地记录 §4.8 | 改检索逻辑、做向量化、查「为什么搜不到」、**定索引生命周期** |
 | [frontend-patterns.md](docs/frontend-patterns.md) | 状态管理、取消机制、TaskPanel、apiUrl | 改前端状态/任务相关代码 |
 | [export-pipeline.md](docs/export-pipeline.md) | 导出架构、两条路径设计、Tab→内容映射表、KaTeX/Pygments、HTML/Word 共用解析器、**PDF 导出（WebView2 PrintToPdf / 打印对话框双路径）**、打印 CSS 三处落点、**卡片骨架跟随（`skeleton=card` 参数贯通 + `data-skeleton` 主作用域 + 导出侧 `--tk-*` 令牌补齐）**、新增导出格式落点清单 | 改导出功能、新增 tab、**新增导出格式**、改打印样式/PDF 导出、改卡片导出 |
 | [CHANGELOG.md](docs/CHANGELOG.md) | 修改记录：做了什么、为什么、影响范围 | 了解历史决策、避免重复踩坑 |
@@ -497,6 +497,17 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
   - **索引文本 = rawText + 最新版笔记**（`doc_text.search_index_text`）。⚠️ 只索引 rawText 等于「只搜用户没写过的那部分」：实测 29 题含笔记 83% vs 不含 66%。**五个写点全部经 `update_index()`**（见「公共常量的家」表）。
   - **查询侧：二字组 + OR**（`_tokenize` / `_escape_fts5`）。⚠️ 逐字 AND 召回高但区分度为零（「的/是/不」全库都有），目标文档常被 BM25 挤到第 13、33 名；二字组 AND 则一票否决，语义型查询直接归零（15 题 7→**0**）。**区分度来自二字组，召回来自 OR，排序交给 BM25**，三者缺一不可。⚠️ `_tokenize` 的 `limit` 默认 **None**（索引侧必须收全文），只有 `search()` 传 64 —— 曾经无条件 `uniq[:64]` 导致每篇只索引开头 64 个 token，而所有单测都是短文本、全绿。
   - 结果集**单一化**：`eligible`（类型/标签/文件夹/日期/标题，**不含关键词**）∩（关键词内存命中 ∪ FTS 命中）——命中行统一走 `DocRow`（有复选框/右键/拖拽，不再是不能选的裸按钮）且**受筛选约束**；标题类命中加「**原文**」角标（措辞非「正文」：`title` 与 `toks` 两列都会命中而一次查询无法判定来自哪列），纯原文命中加 `SearchSnippet` 第二行。结果限 100 条，到顶时底部提示细化关键词（静默截断 = 用户以为「就这些」）
+- **索引健康三态 + 两处提示**（2026-10-26）：`GET /api/search/status`（`available` / `docCount` / `sizeBytes` / `lastError` / `rebuiltAt`）+ `POST /api/search/reindex`（`X-LiMo-Client` 头守卫）。三态是**可用 / 索引不可用（坏库，用户可自助重建）/ 引擎不在场（开发者问题）**——后两态此前都汇成「搜不到」，与「库里真没有」逐字相同。提示分两层：设置页 `SearchIndexCard` 是**拉取**（用户主动走进来才看得见），文档库顶部 `SearchIndexBanner` 是**推送**（索引已经坏了、用户还没意识到）。⚠️ 两者共用 [lib/search-health.ts](frontend/src/lib/search-health.ts)（`useSyncExternalStore`，模块级快照）与 `reindexSearch`，判据只有一处 `status.available`。⚠️ **刻意不轮询**（对照 `lib/health.ts` 的后端探活：进程真的会掉）：索引可用性只在启动重建 / 手动重建 / 外部删 `search.db` 三个时刻变化，故用 30s TTL 去重 + 挂载取一次 + 503 时强制刷新 + 重建后写回。⚠️ **`null`（还没取到 / 取不到）一律不渲染**——「问不到」不等于「坏了」，反过来写会在后端没起的几十秒里挂一条点不动的「去重建索引」。⚠️ `useDocQuery` 的 `isIndexUnavailable` 同时喂「提示文案」与「是否刷新健康状态」两处（拆开会出现「列表说索引坏了、顶部却没动静」）。⚠️ 接线有守卫：`docLibraryLayout.test.tsx` 两条断言「横幅真的挂在文档库里」+「索引正常时零渲染」，做过摘掉组件的对照实验
+- **语义检索（向量，阶段 1–3 已落地 2026-10-26，阶段 4 = 本地插件未做）**：与字面检索**并列的第二路**，只在开关打开时参与融合，**默认关 = 零回归**（`config.search.vector_enabled: false`，UI 在 设置 → 通用 → 检索索引）。
+  - **存储**：`~/.limo/vec.db` 三表（[core/vector_store.py](backend/app/core/vector_store.py)：`vec_meta` 身份 / `vec_docs` 状态机 / `vec_chunks` 块）。⚠️ **四元组 `(model_id, dimension, chunk_size, schema_version)` 是整体身份**，任一不符即整体不可用 —— **不自动重建**（重建是计费调用），换模型后由用户点「重建向量索引」。⚠️ `mark_pending` 三条写死语义：**清空 `content_hash`**（留旧值会让 worker 的「hash 相等跳过整篇」误命中）、**不删 `vec_chunks`**（块级增量靠旧块比对）、**归零 `fail_count`**（内容变了是新机会）。
+  - **写点只打 `pending` 不编码；编码归后台 worker**（[services/vector_worker.py](backend/app/services/vector_worker.py)）：启动对账 → 分块（flat / h2，`DEFAULT_CHUNK_SIZE=200` 字）→ **块级 hash 增量** → 编码（`text-embedding-v4`，1024 维）→ **每篇 checkpoint** → `MAX_FAIL=3` 连续失败停该篇（60s 一轮 / 失败冷却 300s）。⚠️ **`BATCH_SIZE=10` 是服务端硬上限不是调优旋钮**（超了 HTTP 400）。
+  - **查询融合**（[services/vector_search.py](backend/app/services/vector_search.py)）：`depth = max(limit, 50)` **两路同深度**（否则「字面第 20 名」与「向量第 20 名」拿到不同的 `1/(k+rank)`，排序取决于谁取了更深的巧合）、`RRF_K = 10`（29 题实测优于 60）。**只用排名不用分数** —— BM25 与余弦量纲不可比，归一化等于引入新超参。纯算子 `core/vector_index.py::rrf` **与评测同一份**。
+  - **失败一律显式且不花钱**：`_precheck` 三档（库不可用 / 没建过 / 口径不符）**拦在编码之前**，命中即字面结果照给 + `semantic.error` 文案；`semantic.hits` **恒在**（`0` 是「开了但索引还空」，整个 `semantic: null` 才是「压根没开」——同 `webSearch.hits: 0` 的取舍）。`load_matrix` 走 `asyncio.to_thread`（同步读盘几十到几百毫秒，放事件循环里会让 worker 的 await 与 SSE 心跳一起停住）。
+  - **删除侧与写入侧成对**（2026-10-26 审查 P1-01）：[routers/ingest.py](backend/app/routers/ingest.py)::`_drop_vectors(request, tx_id)` 在**单删与批量删两条路径**上各调一次 `vector_store.delete_doc`。漏了**不报错** —— 孤块继续参与融合、挤占 `depth` 名额，要等下次启动 `reconcile()` 才清（桌面应用能开好几天），而设置页那句「删除文档时对应的向量也会一并清掉」是当面承诺。**新增任何删除路径时先看这里。** ⚠️ 它吞异常只记 warning：文档已经删了、回滚不了，抛出去只是把「向量没清干净」变成用户看不懂的 500。
+  - **`SearchEngine.status()` 是纯只读**（同日审查 P1-02）：读状态失败只记进返回的 `statusError`，**不碰 `_last_error`** —— `available` 的定义就是 `_last_error is None`，一次瞬时读失败写进去 = 「点开设置页看一眼」换来一个只有手动重建能解除的不可用状态，而界面上不会说发生了什么。`VectorStore.status()` 同款做法。
+  - **开关的唯一维护点**：[services/vector_runtime.py](backend/app/services/vector_runtime.py)::`sync_vector_runtime` —— worker 与融合层**成对**启停（只起融合层 = 查询在用一份永不更新的索引），`get_vector_searcher` 直接读 `app.state.vector_search`、**不按配置现造**。两个端点 `POST /api/search/vector`（开关）与 `/search/vector/rebuild`（先停 worker → `reset_identity` → 再同步）。
+  - **前端**：设置页 `SearchIndexCard` 的向量段（`vBusy` / `vConfirming` / `vError` 三个独立状态，`runVector` 刻意不写 `setSearchHealth` —— 共享健康状态只关心字面 `available`）；文档库底部**语义退化提示** `[data-search-semantic-note]`（muted）与 `searchError`（warning）**刻意分家**：字面索引坏了要**动手修**，语义退化多半等后台建完就好 —— 合成一条会让两件事读起来一样。
+  - **已知边界**：`limo search` **不接融合**（`QueryService` 是同步纯读层，两个传输层共用；见 [AGENTS.md](AGENTS.md)）；真实库端到端实测（131 篇 ≈ 2 元 / 3 分钟）与 `eval_search.py --vector` 产品侧同轮对照**待做**，但 **2026-10-26 用户决定本轮先不做** —— 跳过的是**产品链路**（开关 → worker → 搜索），算法正确性由评测侧同源算子 + 20 条单测覆盖，理由见 CHANGELOG 同日条目。
 - **⛔ 「正文匹配（N）」独立分组已取消**（2026-09-25）：它固定追加在下方、**不受筛选约束**（筛了 PDF 照样列出网页和视频）、行是裸 `<button>`、还与「排列」旋钮直接打架——是第三个维度的系统分组。三项缺陷都修，唯一值得保的性质（FTS 的 `ORDER BY rank` 相关性序）由**「相关度」排序键**承接：rank 取自 `hits` 的**数组索引**（零后端改动），非命中最末；搜索词从空变非空时自动切过去（= 原「最相关的在最前」的默认体验），用户手动改回后**本次搜索内不再回切**；无命中时该键**不出现**在选项里（所有 rank 都是 MAX，排序退化成保持原序，是个点不动的死键）
 - **单击行 = 打开文档，不动选择集**（2026-09-25 定死，此前语义未定义且与 `selectMode` 自相矛盾）：复选框**列**常驻、**图标**未选中时只在 hover / 行内焦点出现（选中后常显；图标仍占布局位置，故标题不会横跳 —— `focus-within` 是给键盘用户的），Ctrl/Cmd 点击 toggle、Shift 点击区间（anchor 留组件本地——跨折叠退化为单点 toggle 可接受）、Ctrl+A 全选（**焦点在输入框内不劫持**，与 Ctrl+K 相反）、Esc 清空。**`selectMode` 已删除**——批量条由 `hasSelection = selectedIds.size > 0 || selectedFolderIds.size > 0` 派生：要"原子修改"来防的漂移，因为漂移的载体本身没了。`active`（预览目标）与 `selected`（批量目标）是两个正交维度，视觉分离且可叠加。⚠️ **Ctrl/Cmd + 按住拖动 = 划选（2026-10-18）**：方向由**起点行**决定 —— 起点已选中 → 整段**取消**，未选中 → 整段**加选**；**刻意不逐行取反**（在既有已选又有未选的行上会得到「选中/取消交错」，而手势意图是「刷一段」）。每次都从按下时的 `base` 快照重算 ⇒ 幂等（拖出去再拖回来一致）；`mousemove` 与「滚动后重算」**共用同一个 `applyTo`** —— `scroll` 不冒泡故走 `document` + `capture`、等一帧再 `elementFromPoint`（同一帧内只留一个重算，`scrollFrame` 合并）；`mousemove` 在没有布局的宿主（jsdom）用 `ev.target` 兜底，**滚动重算刻意不传 fallback**（那会锁在滚动前的行上）。⚠️ **区间的两端按「屏幕上看到的顺序」算**（`domOrder`，从 `[data-doc-list] [data-doc-id]` 实测取）：默认排列按文件夹会把列表按树前序重排、未分类排最后，**折叠组更是根本不在 DOM 里** —— 拿 `visibleIds`（数据顺序）当基准会选中另一段文档、并把看不见的文档划进批量删除名单（`Ctrl+A` 例外：全选 = 跨分批的全部匹配项，刻意不走它）。⚠️ **划选结束那一下 `click` 的抑制绑「起点行 id」**（`{id, until}` 而非纯时间窗）：浏览器在 mouseup 后必派发一次 click，只有起点行的那一下需要吞，其余行立刻可点。⚠️ **文件夹是第二个选择集**（`selectedFolderIds`，入口是分组头左侧复选框：点 toggle / Shift 区间；**不参与 Ctrl 划选** —— 分组头与文档行在同一列流里交错，混进同一条区间后「第 3 行到第 9 行」取决于中间夹了几个分组头）。批量条分开计数（「已选 3 项 · 2 个文件夹」），文件夹只做**移动**（`FolderPicker`，禁用自身与全部后代；**目标即当前父级 = no-op**：先摘掉已在该位置的夹，全是 no-op 时**不发请求**只提示，部分时文案附「N 个已在该位置」）与**删除**（二次确认；先**去后代化**只发根，本地回落范围**只认后端 `deletedFolderIds`**）；两者**部分失败时把失败项放回选择集**供直接重试；`arrangeBy !== 'folder'` 时文件夹分组头不渲染 ⇒ 自动清空残留选择（⚠️ 判据是 `arrangeBy`，**不是 `grouped === null`** —— 按类型/按时间排列时 `grouped` 同样非 null 但组不可勾选）；筛选变更时两个集合**一起清**（`noSelection()` 同源）；两个删除确认框都认 `Esc`
 - **密度**：详细（默认，卡片）/ **简略**（26px 单行，复选框图标留在布局里防标题横跳，筛选区收成一行入口 + 浮层复用同一批小节组件，排列旋钮与分隔条不渲染）。**简略模式 = IDE 文件树**：**固定按文件夹分组、无视「排列方式」偏好**（那个旋钮在简略下本就不渲染，也就没有跟随它的必要），分组头是父节点、其下子行缩进一层 + 一条 1px 缩进参考线（`treeIndent`，只给**有行的组**画）。⚠️ **分组头 26px 与文件行 26px 是成对常量**，改一处必须改另一处——否则父节点比子节点矮，树形就散了（`GroupHeader.compact` / `DocRow` 紧凑分支，两处都有注释指路）。⚠️ 曾设计为「简略一律平铺不分组」（省下分组头的高度），那样省掉的是**结构**：一个文件夹 30 篇时，平铺列表除了一列标题什么信息都不给
@@ -541,7 +552,7 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **ProductRegistry**（`app/generation/product_registry.py`）— 产物注册表，定义 notes/polished 及其依赖拓扑。新增产物类型只需加一个 `ProductDef` 即可，无需改分发逻辑或前端 UI。
 - **ToolRegistry**（`app/agent/tool_registry.py`）— Agent 工具注册中心，替代硬编码的 `_register_chat_tools()`。每个工具是独立 `ToolDef`，注册后自动被发现和调用。
 
-FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` / `get_query_service` 依赖，消除路由函数中 `request.app.state.xxx` 样板代码。**19 个路由模块中 18 个用 `Depends`**（`references.py` 两者都没用——它只有进程内暂存，不碰 store/config，本来就不需要）；仍有 `request.app.state` 残留的 **3 个**：`generate.py`（7 处）、`ingest.py`、`search.py`。⚠️ 计数以 `ls backend/app/routers/*.py` + `grep -l "app\.state"` 的输出为准（**该 `ls` 把 `__init__.py` 也算进去**，故文件数 = 模块数 + 1；2026-10-11 实测 **20 文件 = 19 模块 + 1**，`grep -l "Depends("` 命中 18 个，`app.state` 残留 3 个 / 共 11 处）——此处曾写「15 个里 12 个已迁移、ingest 已迁移」，而 ingest 至今仍有残留（模式 #54：有几处同源是搜索题）。
+FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` / `get_query_service` / `get_search_engine` 依赖，消除路由函数中 `request.app.state.xxx` 样板代码。**19 个路由模块中 18 个用 `Depends`**（`references.py` 两者都没用——它只有进程内暂存，不碰 store/config，本来就不需要）；仍有 `request.app.state` 残留的 **3 个**：`generate.py`（7 处）、`ingest.py`、`markdown_edit.py`（1 处，`update_index` 的 `getattr(..., None)` 兜底，那个 `None` 是有意的：检索坏了不该让编辑保存失败）。⚠️ 计数以 `ls backend/app/routers/*.py` + `grep -l "app\.state"` 的输出为准（**该 `ls` 把 `__init__.py` 也算进去**，故文件数 = 模块数 + 1；2026-10-26 实测 **20 文件 = 19 模块 + 1**，`grep -l "Depends("` 命中 18 个，`app.state` 残留 3 个）。⚠️ `search.py` 2026-10-26 已迁（新增的两个端点用 `get_search_engine`）—— 当时它那份**只出现在注释里**，而 grep 认不出注释，所以「按 grep 计数」这条纪律遇到「注释里讨论这个属性」时会假阳性：改的是措辞，不是判据。此前写的「15 个里 12 个已迁移、ingest 已迁移」也是同一类错误（模式 #54：有几处同源是搜索题）。
 
 ### 只读命令行（`limo`，2026-10-04 三期）
 
@@ -563,7 +574,7 @@ Store / SearchEngine（数据真相）
 
 ### 引擎系统
 
-`app/engines/__init__.py` → `EngineRegistry.register()`。三类引擎：
+`app/engines/__init__.py` → `EngineRegistry.register()`。四类引擎：
 - **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）。faster-whisper 已从内置移除（本地转写需自行安装）
 - **OCR**：dashscope-ocr（云端，需 API Key，model_name 透传——`engine_bindings.ocr` 可绑 OCR 专用模型）。**OCR 名称检测**（2026-08-04）：`_PROVIDER_IMAGE_RULES` dashscope 匹配 `ocr` → qwen3.5-ocr 等自动标 image（生成时「OCR 模型」可选到图片转文字小模型）；检测结果用户可手动取消/标记（updateModel capabilities）。**默认绑定**：未绑定时自动绑 `qwen-vl-ocr-latest`（图片转文字专用）。**Tesseract 已从内置移除**（2026-08-02，体积修剪 + 插件化方向）——无 dashscope key 时本地 OCR 能力消失，扫描件出占位文本；需本地 OCR 请装三方插件参考模板 `backend/plugins/examples/tesseract_plugin.py`
 - **Doc**（全 MIT/BSD，AGPL 引擎不内置）：
@@ -571,6 +582,7 @@ Store / SearchEngine（数据真相）
   - **pdf-image**（2026-08-04）：整体转图片——渲染每页为 PNG 嵌入 markdown（供 OCR/多模态），绑定 `doc:pdf` 替代文字提取，对纯图片/扫描 PDF 更稳（绕开提取嵌入图的坏图问题）；document.py 跳过其重复渲染+OCR
   - **markitdown**（MIT）：Office/EPUB 转 Markdown
   - **python-docx** / **python-pptx** / **openpyxl** / **epub-container**（自研，2026-08-26 替代 ebooklib）：各格式专用引擎
+- **Embedding**（2026-10-26，语义检索；**阶段 1 引擎 + 阶段 2 worker + 阶段 3 查询融合均已落地**，见「文档库」段的语义检索条目）：`dashscope-embedding`（`text-embedding-v4`，1024 维，云端，零新依赖）。⚠️ **与前三类性质不同**——asr/ocr/doc 是「文件 → 文本」、受 `engine_bindings` 子场景管辖；embedding 吃**文本**吐**向量**，前端不渲染它（各处按具体 category 取，无「遍历所有类别」的消费方）。⚠️ **刻意不继承 `core.protocols.Engine`**（那个 ABC 的 `execute()` 对本类是永不被调用的空壳）→ [`engines/embedding_base.py`](backend/app/engines/embedding_base.py) 用 Protocol。⚠️ **三条契约**（`test_embedding_engine.py` 逐条钉住）：**按 `resp.data` 的 `index` 重排**（端点带 index 但**不保证有序**，按返回顺序 append = 文本与向量错位、零报错）/ **已 L2 归一化**（余弦退化成点积；归一化住协议模块，两份实现会在极小模长上分叉）/ **空输入返回空且不发起调用**。⚠️ **Key 的抛点在 `client` property 不在 `__init__`**（无条件注册，设置页要在没 Key 时也能列出）；`max_retries=0`（重试纪律归上层）。⚠️ **阶段 1 不写 `engine_models` / `engine_bindings`** —— 没人绑定 = 等于不存在，写进去会让末尾那次 `save_config` 判定翻转。详见 [search-retrieval.md](docs/search-retrieval.md) §3.1 / §六
 - **插件引擎**：AGPL 引擎（pymupdf4llm）以插件形式进程外加载（`~/.limo/plugins/`，command 指向子目录 venv 隔离依赖），`plugin_loader.py` 动态注册进 EngineRegistry，capabilities 的 fileTypeMap 自动追加
 
 引擎绑定通过 `engine_bindings` 动态 key 分配，doc 拆为子场景（`doc:pdf` / `doc:word` / `doc:ppt` / `doc:excel` / `doc:epub`，text 变体引擎已删除无意义），设置页可独立配置。绑定值支持字符串/数字/列表三种格式，`init_engines` 启动时清理失效 key 与无效 id。
@@ -671,7 +683,12 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | **六轴的键与 label**（key / attr / storageKey / options / fallback / apply） | [lib/theme-axes.ts](frontend/src/lib/theme-axes.ts)。⚠️ **只放 label、不放色值** —— 值只有 CSS 一份（下一行），前端再存一个色值就是本轮删掉的那份副本 |
 | **六轴的 CSS 数据**（accent 原语 + 派生 + 浅色底盘 + 14 条基调 + 暗色 + `--md-*` + 字体 + 纹理） | [styles/theme-layer.css](frontend/src/styles/theme-layer.css)。**前端 `@import` 与后端导出读同一份**（`_load_theme_layer_css`）；⚠️ 打包须在 `LiMoBackend.spec` 的 datas 里带上，否则**开发版全绿、打包版导出直接 500** |
 | **纹理强度 → `--texture-opacity` 的反转映射** | [lib/texture.ts](frontend/src/lib/texture.ts) 的 `textureOpacity()`（**DOM 写入与导出参数共用一份**；`toFixed(2)` 是为了过后端 `_TEXTURE_OPACITY_RE`，它刻意不收科学计数法） |
-| **本地 embedding（评测专用）**：ONNX 句柄 / 切块（flat + h2）/ 向量排名 / `rrf` | [scripts/embed_local.py](backend/scripts/embed_local.py)。⚠️ **只此一份** —— `eval_search.py --vector` 与 `_experiments/02-embedding-rrf/eval_ab.py` 都 import 它（后者曾自带一份，正是 40pp 落差的同款形态）。⚠️ `onnxruntime` / `tokenizers` **刻意不在 `pyproject.toml`**（本地 embedding 走插件口子，阶段 4），构造时惰性 import、缺失显式报错 |
+| **向量索引纯算子**：切块（flat + h2）/ 分组排名 / `rrf` | [core/vector_index.py](backend/app/core/vector_index.py)。⚠️ **只此一份** —— 产品侧（后台 worker 切块 + 查询融合）与评测侧（`eval_search.py --vector`、`_experiments/02-embedding-rrf/eval_ab.py`）都 import 它。抄一份的失效形态不是「多几十行」，而是**评测与产品的切块规则悄悄分叉** —— 那时 93% / 83% 描述的是另一套实现，而两边都报成功（`test_vector_index.py` 有 AST 守卫钉住 `embed_local.py` 不得再 `def` 一遍） |
+| **向量索引的写入编排**（启动对账 / 分块 / 块级增量 / 编码 / 每篇 checkpoint / 失败上限） | [services/vector_worker.py](backend/app/services/vector_worker.py)。唯一会**发起计费编码调用**的地方（除查询侧的一次 query embed）。⚠️ `MAX_FAIL` 与重试冷却住在这里、不散在调用点 |
+| **查询融合的编排**（两路同深度 / RRF / 前置校验 / 超时 / `semantic` 形状） | [services/vector_search.py](backend/app/services/vector_search.py)::`VectorSearcher.fuse`。⚠️ `DEFAULT_DEPTH` / `RRF_K` / `QUERY_TIMEOUT` 三个数值只此一份；纯算子（切块 / rrf）在上一行，两者分工是「数值与编排 vs 算法」 |
+| **语义检索开关的维护点**（worker + 融合层**成对**启停） | [services/vector_runtime.py](backend/app/services/vector_runtime.py)::`sync_vector_runtime`。⚠️ 启动（`main.py`）与设置页开关（`POST /api/search/vector`）**共用这一份** —— 各写一份的失效形态是「只起了一半」（融合层在用一份永不更新的索引，或 worker 在写一份没人读的库） |
+| **向量索引的唯一落盘点**（`vec.db` 三表 / 四元组身份 / 状态机 / 块读写） | [core/vector_store.py](backend/app/core/vector_store.py)。与上一行**分工不同**：上一行是**纯算子**（不碰盘、产品与评测共用），这一行是**唯一碰 `vec.db` 的地方**（谁要读写向量都经它，别在 router / worker 里另写 sqlite）。⚠️ 三条写死的语义：`mark_pending` **清空 `content_hash`**（留旧值会让 worker 的「hash 相等跳过整篇」误命中）、**不删 `vec_chunks`**（块级 hash 增量靠旧块比对）、**归零 `fail_count`**（内容变了是新机会，而 `fail_count` 是「花钱的闸门」——向量重试每次都是计费调用）。⚠️ 四元组（`model_id`/`dimension`/`chunk_size`/`schema_version`）是**整体身份**，任一不符即整体不可用，**没有降级用这一档**，也**不自动重建**（重建要花钱） |
+| **本地 embedding 的 ONNX 句柄**（评测专用） | [scripts/embed_local.py](backend/scripts/embed_local.py)。算子已迁往上一行，这里只剩 `Embedder` + 评测形状的 `build_vectors`。⚠️ `onnxruntime` / `tokenizers` **刻意不在 `pyproject.toml`**（本地 embedding 走插件口子，阶段 4），构造时惰性 import、缺失显式报错 |
 | 风格档 / 引擎标签 / 域列表 / 公式集 / 体裁 / 读者意图 / 维度预设 | **capabilities 下发**（`GET /api/capabilities`），前端**不硬编码** |
 
 ⚠️ **最后一行的意思是「不要去前端建第二份表」**：凡是「后端注册了什么，前端就要列什么」的
@@ -1031,11 +1048,11 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 思维导图 | SVG 下载 + markmap 交互式 HTML (~980KB，暗色自适应) |
 | ✅ | 对话导出 | Markdown + JSON，支持批量 ZIP |
 | ✅ | Word 导出 | Markdown→HTML→docx（共用解析器 `markdown_render.py`）；标题大纲级别/嵌套列表/表格/代码块/引用/超链接/☑任务列表/时间戳双色 badge/图片等比内嵌；公式保留 LaTeX 原文（2026-09-21） |
-| 🟡 | 导出进度反馈 | ⚠️ **后端就绪、前端未接线**（2026-10-06 P1-12 核实）：`POST /export/custom/stream`（SSE 进度）+ `GET /export/download/{temp_id}` 端点完备，打包已 `await asyncio.to_thread(_build_export_zip, ...)`（不再阻塞事件循环），但前端 `api/export.ts::streamExportProgress` **零调用者** —— `ExportPanel` 的「详细导出」走的是**同步** `POST /export/custom`。如实标注，**不写成已可用**；要用起来需先制定进度 UI |
+| 🟡 | 导出进度反馈 | ⚠️ **后端就绪、前端未接线**（2026-10-06 P1-12 核实，2026-10-26 复核）：`POST /export/custom/stream`（SSE 进度）+ `GET /export/download/{temp_id}` 端点完备，打包已 `await asyncio.to_thread(_build_export_zip, ...)`（不再阻塞事件循环），但前端**零调用** —— 那个 `streamExportProgress` 封装已作为死代码删除（抄回来仍是零调用，死代码只换了个地方躺），`ExportPanel` 的「详细导出」走**同步** `POST /export/custom`。如实标注，**不写成已可用**；要用起来要做的是**把 UI 接起来** |
 | ❌ | 图片预处理复用 | 导入时已 optimize_images，导出 ZIP 未复用压缩后图片 |
 | ✅ | 详细导出判据修复（2026-10-11） | 审查查出六条：跨类型 tab 并集不再产出「名字对不上、内容是同一段原文」的假文件（前端滤 `contentSource='none'` + 后端不回退 rawText）/「原图」「OCR」摘出导出清单（它们本就没有内容源）/ `/export/batch` 空结果 404（与 `/all`、`/custom` 统一）/ 一键导出剥 `limo-block`（与定制导出同源）/ `_inline_images` 补 `doc_dir`（成对守卫）/ 只勾 Word 时不再写无人引用的 `images/`。⚠️ **同一批发现三个导出测试文件在门禁里空跑**（模块级裸断言 → pytest 收集数 0），已加适配层 |
 | ✅ | PDF 导出 | 两条路径共用一份自包含 HTML——**Tauri**：Rust `export_pdf` → 屏幕外窗口 → `ICoreWebView2_7::PrintToPdf` **免对话框直接落文件**（A4 + 背景保留 + 无页眉页脚，存系统「下载」目录、同名加序号）；**浏览器**：屏幕外 iframe → 打印对话框。打印样式三处落点（`_PRINT_CSS` + Pygments 浅底 defs + limo 暗色还原）。两条链均已实测（2026-09-21） |
-| ❌ | md 公式渲染修复 | `formula_md=render` 依赖 matplotlib 而它不在依赖里 → 该选项自上线起从未生效（静默降级）；合理修法是切到 KaTeX 图片管线并删掉 matplotlib 分支 |
+| ✅ | md 公式「render」通道已移除 | ~~`formula_md=render` 依赖 matplotlib 而它不在依赖里 → 该选项自上线起从未生效（静默降级）~~ —— 2026-10-26 复核时**通道已整体移除**（函数 + 四处调用点 + 前端选项与类型，`tests/test_export_formula.py` 源码级守卫，含「删多了」的对照）。**「切到 KaTeX 图片管线」这个修法本身不成立**：`_render_formulas_katex` 靠 WebView 在客户端渲染，服务端拿不到 SVG/PNG；为「保留原文也能接受」的选项补 2GB 依赖不值得。保留 `keep` / `remove` 两条通道 |
 
 ### 🎨 前端 UI/UX
 
@@ -1095,7 +1112,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| 🟡 | embedding 语义搜索 | **字面检索已重做并实测**（2026-10-26，29 题 41% → 83%：二字组 OR + 去两个截断 + 笔记入索引，见 [search-retrieval.md](docs/search-retrieval.md)）。**向量侧设计完成、未实施**：`EmbeddingEngine` 云端内置（dashscope，零新依赖）+ 本地模型走插件口子、向量存储、RRF 融合（理论上限 97%）；本地插件的「何时建 / 何时用 / 何时触发」待详细设计 |
+| 🟡 | embedding 语义搜索 | **字面检索已重做并实测**（2026-10-26，29 题 41% → 83%）。**向量侧阶段 1–3 已落地**（同日：`EmbeddingEngine` 云端内置 + `vec.db` 三表 + 增量 worker + RRF 查询融合 + 设置页开关，**默认关**；见 [search-retrieval.md](docs/search-retrieval.md) §4.8）；评测侧 RRF 理论上限 97%。**仍未做**：真实库（131 篇）端到端实测（**2026-10-26 用户决定本轮先不做**，缺的是产品链路观测而非算法验证）、`eval_search.py --vector` 产品侧同轮对照、**阶段 4 本地插件**（本地模型的「何时建 / 何时用 / 何时触发」待详细设计） |
 | ❌ | 更多导入源 | RSS / 播客转录 / 学术论文(arXiv)，复用现有管线 |
 | ❌ | 知识图谱 / 反向链接 | 文档间引用关系可视化，依赖 `#标签` 语法先落地 |
 | ❌ | Markdown 渲染风格预设 | 多套 CSS 变量集（行高/间距/标题比例），与主题六轴正交 |
@@ -1117,8 +1134,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 10 | 10 | 100% |
 | 📊 图表生成 | 11 | 12 | 92% |
-| 📤 导出 | 11 | 12 | 92% |
+| 📤 导出 | 12 | 12 | 100% |
 | 🎨 前端 UI/UX | 21 | 21 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
 | 🧩 产物复用 | 4 | 5 | 80% |
-| **合计** | **124** | **127** | **98%** |
+| **合计** | **125** | **127** | **98%** |

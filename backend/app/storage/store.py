@@ -1969,22 +1969,6 @@ class Store:
         except OSError:
             return False
 
-    # ── 缓存（按 contentHash） ──
-
-    def cache_put(self, content_hash: str, data: dict):
-        prefix = content_hash[:2]
-        d = self.root / "cache" / prefix
-        d.mkdir(parents=True, exist_ok=True)
-        self._atomic_write(
-            d / f"{content_hash}.json",
-            json.dumps(data, ensure_ascii=False, indent=2),
-        )
-
-    def cache_get(self, content_hash: str) -> Optional[dict]:
-        path = self.root / "cache" / content_hash[:2] / f"{content_hash}.json"
-        if not path.exists():
-            return None
-        return self._safe_load_json(path)
 
     # ── 对话 (Conversation) CRUD ──
 

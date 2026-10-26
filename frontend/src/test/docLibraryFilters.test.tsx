@@ -21,7 +21,18 @@ class IO {
 
 const searchMock = vi.fn()
 vi.mock('../api/search', () => ({
-  searchDocs: (q: string, limit?: number, signal?: AbortSignal) => searchMock(q, limit, signal),
+  // 桩返回 **hits 数组**，包装层补 `semantic: null`（= 未启用语义检索）——
+  // 真实 `searchDocs` 返回 `{hits, semantic}`，理由见 `docLibrarySearch` 同名注释。
+  searchDocs: async (q: string, limit?: number, signal?: AbortSignal) => ({
+    hits: await searchMock(q, limit, signal),
+    semantic: null,
+  }),
+  // `DocLibrary` 顶部挂了一条索引健康横幅，它挂载时会取一次状态。这些用例关心的是
+  // 筛选/列表，给「一切正常」的固定答复即可 —— `available: true` 时横幅**一个字都不渲染**。
+  getSearchStatus: async () => ({
+    available: true, docCount: 0, sizeBytes: 0, lastError: null, rebuiltAt: null,
+  }),
+  reindexSearch: async () => { throw new Error('本用例不应触发索引重建') },
 }))
 
 vi.mock('../api/client', async (importOriginal) => {

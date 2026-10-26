@@ -11,7 +11,7 @@ from .types import PipelineInput
 
 # -- 引擎类别清单 --
 
-# 引擎类别的**唯一真相源**（`asr` / `ocr` / `doc`）。
+# 引擎类别的**唯一真相源**（`asr` / `ocr` / `doc` / `embedding`）。
 #
 # ⚠️ **两个视图并存是刻意的，不要合并成一个容器**：set 与 tuple 的语义不同 ——
 #   - `ENGINE_CATEGORIES`（frozenset）：**成员判据**（`if cat not in ...: continue`），
@@ -24,8 +24,16 @@ from .types import PipelineInput
 # ⚠️ 收敛前这三处（`routers/capabilities.py` 两处 + `core/config.py` 一处）各写一份，
 #   且**其中一处是 list 形态**（语义已经分叉）。新增类别时漏改任一处的症状是
 #   「该类别在设置页看不见」或「分组顺序变了」，**两处都不报错**（模式 #54）。
-ENGINE_CATEGORIES: frozenset[str] = frozenset({"asr", "ocr", "doc"})
-ENGINE_CATEGORY_ORDER: tuple[str, ...] = ("asr", "ocr", "doc")
+#
+# ⚠️ `embedding`（2026-10-26）与前三类**性质不同**：asr / ocr / doc 都是「文件 → 文本」，
+#   受 `engine_bindings` 的子场景绑定（`doc:pdf` 之类）管辖；embedding 吃的是**文本**、
+#   吐的是**向量**，只有「云端 / 本地」二选一（`search-retrieval.md` §3.1 / §6.1）。
+#   仍放进这张表，是因为**发现机制完全一样**（注册 → capabilities 下发 → 前端可见），
+#   而另建一张「另一种引擎类别」的表正是模式 #54 的入口。放在 ORDER 末尾：
+#   前端各处都按具体 category 取（`engineOptions.doc` / `.asr` / `.ocr`），
+#   没有「遍历所有 key 渲染」的消费方，故新增末位对现有界面零影响。
+ENGINE_CATEGORIES: frozenset[str] = frozenset({"asr", "ocr", "doc", "embedding"})
+ENGINE_CATEGORY_ORDER: tuple[str, ...] = ("asr", "ocr", "doc", "embedding")
 
 
 # 引擎**能力位**（不是类别）→ 中文标签。经 capabilities 下发，前端引擎下拉里
@@ -48,6 +56,10 @@ ENGINE_CAPABILITY_LABELS: dict[str, str] = {
     "pdf": "PDF",
     "office": "文档",
     "asr": "语音",
+    # 向量化引擎（2026-10-26）。**引擎侧独有** —— `lib/modelCaps.ts` 的模型能力位
+    # 没有它（"这个模型能吐向量"不是用户会分组挑选的维度），故不会撞上那条
+    # 「两套词汇各有独有项」的守卫。
+    "embedding": "向量",
 }
 
 

@@ -338,6 +338,211 @@ def test_schema_migration_drops_old_table():
         shutil.rmtree(d, ignore_errors=True)
 
 
+# ── 健康状态 / 自愈 / 手动重建（2026-10-26） ──
+#
+# 这一组的共同前提：**坏掉的索引不该炸启动**。文档全在磁盘上，没有检索只是一个
+# 能力缺失 —— 但「缺了」必须能被看见，否则用户看到的永远是「搜不到」。
+
+def _freelist_pages(db_path) -> int:
+    """`search.db` 里空闲页的数量（VACUUM 的**精确**判据）。
+
+    ⚠️ 不用「文件大小变小」当判据：页大小、WAL 残留、平台差异都会影响字节数，
+    断言阈值只能写成「大概」，而一个大概的断言在实现退化时也照样可能绿。
+    `freelist_count` 是 SQLite 自己数的「可回收页数」，VACUUM 后必为 0。
+    """
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return conn.execute("PRAGMA freelist_count").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_status_reports_counts():
+    """`status()` 给出篇数 / 体积 / 可用性，且**不抛错**（设置页直接渲染它）。"""
+    eng, d = _engine()
+    try:
+        eng.index("tr_1", "标题一", "正文一")
+        eng.index("tr_2", "标题二", "正文二")
+        st = eng.status()
+        assert st["available"] is True
+        assert st["docCount"] == 2, f"篇数应 2，实际 {st['docCount']}"
+        assert st["sizeBytes"] > 0, "体积应大于 0（文件已落盘）"
+        assert st["lastError"] is None
+        assert st["rebuiltAt"] is None, "还没 rebuild 过，时间应为空（不是编一个时间）"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_status_read_failure_does_not_poison_available():
+    """`status()` 自己读失败 → 只写进快照，**不把引擎判成不可用**。
+
+    缺陷形状（第四轮审查 P1-02）：`status()` 的 `except` 里写 `self._last_error`，
+    而 `available` 的定义就是 `_last_error is None` —— 一次瞬时 I/O 失败
+    （库被别的进程占着、磁盘抖动）会让全文检索**永久** 503：
+    `QueryService.search_resources` 一进来就抛 `index_unavailable`。
+    用户看到的只是「搜索坏了」，唯一出路是手动重建索引。
+
+    对照实验：把那行改回 `self._last_error = ...` → 本条红（`eng.available` 变 False）。
+    """
+    eng, d = _engine()
+    try:
+        eng.index("tr_1", "标题一", "正文一")
+
+        def _boom():
+            raise sqlite3.OperationalError("disk I/O error")
+
+        original = eng._conn
+        eng._conn = _boom
+        try:
+            st = eng.status()
+        finally:
+            eng._conn = original
+
+        assert st["docCount"] == 0, "读不到就给 0（状态里少个数，不是引擎坏了）"
+        assert st["statusError"] and "disk I/O error" in st["statusError"], \
+            f"失败原因要能带出去给诊断看：{st}"
+        # ★ 核心断言：可用性不受影响
+        assert st["available"] is True, f"一次读失败不该让索引变不可用：{st}"
+        assert eng.available is True, f"实例状态也不能被毒化：last_error={eng.last_error!r}"
+        assert eng.last_error is None
+
+        # 恢复后一切照旧（证明这只是「这一次没读到」，不是持续状态）
+        st2 = eng.status()
+        assert st2["docCount"] == 1 and st2["statusError"] is None, st2
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_corrupt_db_does_not_crash_construction():
+    """⚠️ 索引文件损坏时构造**不抛**，而是标记不可用。
+
+    改造前 `SearchEngine(...)` 在 `main.py` 的 try **之外**：一个坏掉的
+    `search.db`（磁盘写坏、被别的程序占用、手工清了一半）会让整个 FastAPI
+    startup 崩 —— 用户的知识库**打不开**，而所有文档其实好好躺在磁盘上。
+
+    构造方式：往 `search.db` 写垃圾字节。`sqlite3.connect` 是惰性的，只有真正
+    执行 SQL 才会报 `file is not a database` —— 所以这条也顺带钉住「构造期真的
+    碰了库」（写成纯惰性构造的话，异常要到第一次搜索才炸，那时在请求里）。
+    """
+    d = tempfile.mkdtemp(prefix="limo_search_test_")
+    try:
+        Path(d, "search.db").write_bytes(b"this is definitely not a sqlite file" * 100)
+        eng = SearchEngine(d)                      # ← 不许抛
+        assert eng.available is False, "损坏的库应标记为不可用"
+        assert eng.last_error and "索引库打不开" in eng.last_error, (
+            f"应记录原因，实际 {eng.last_error!r}"
+        )
+        # 不可用时三个入口都短路，**不抛**（写入端抛错会让「导入文档」连带失败，
+        # 那是把一个可修复的检索问题升级成数据写入问题）
+        assert eng.search("任何词", limit=10) == [], "不可用时搜索返回空而不是抛错"
+        eng.index("tr_1", "标题", "正文")            # 不抛即可
+        eng.delete("tr_1")                          # 不抛即可
+        st = eng.status()
+        assert st["available"] is False and st["docCount"] == 0
+        assert st["lastError"], "状态里必须带原因，否则界面上只有『不可用』三个字"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_rebuild_recovers_from_corrupt_db():
+    """重建能把坏掉的库修回来（删文件 → 重新建表 → 重灌）。
+
+    ⚠️ 这是「用户在设置页点一下重建」的后端语义。**只有 rebuild 会自愈**：
+    `index()` 走的是短路分支（它没有「从头灌一遍」的能力），所以「重建」按钮
+    是唯一的出路 —— 这条正是把那个按钮接上的依据。
+    """
+    d = tempfile.mkdtemp(prefix="limo_search_test_")
+    try:
+        Path(d, "search.db").write_bytes(b"garbage" * 500)
+        eng = SearchEngine(d)
+        assert eng.available is False
+
+        eng.rebuild([{"id": "tr_1", "title": "恢复后的标题"}],
+                    lambda _id: "恢复后的正文有 needle 这个词")
+        assert eng.available is True, f"重建后应恢复可用，实际 {eng.last_error!r}"
+        assert len(eng.search("needle", limit=10)) == 1, "重建后的内容必须可搜"
+        assert eng.status()["rebuiltAt"], "重建成功要记下时间（设置页显示『上次重建于』）"
+
+        # 坏文件真的被换掉了（不是「在垃圾文件上又建了一层」）。
+        # ⚠️ `-wal` / `-shm` 一并删掉才成立：只删主文件的话，SQLite 打开时会把
+        # 旧 WAL 拿来回放，可能把刚重建的库再弄坏一次。
+        head = Path(d, "search.db").read_bytes()[:16]
+        assert head == b"SQLite format 3\x00", f"重建后应是真的 SQLite 文件，头部是 {head!r}"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_vacuum_reclaims_pages_only_on_demand():
+    """⚠️ `vacuum=True` 才回收空间，默认（启动路径）不回收。
+
+    实测背景：一个 137 行 / 14.7MB 的 `search.db` 里 **23% 是空闲页** ——
+    `auto_vacuum=0` 且从不 VACUUM，删掉的正文一直躺在文件里（索引里的正文是
+    近全文副本，删一篇就留一大块）。所以「用户主动重建」必须带上回收。
+
+    两段断言，缺一不可：
+    - 不传 vacuum → freelist 仍 > 0（否则「只有主动重建才回收」这个区别不存在）
+    - 传 vacuum    → freelist 归 0
+    """
+    eng, d = _engine()
+    try:
+        big = "填充内容" * 20000
+        eng.index("tr_1", "大文档", big)
+        db = Path(d, "search.db")
+        assert _freelist_pages(db) == 0, "全新库不该有空闲页"
+
+        eng.rebuild([], lambda _id: "")                    # 默认：不 VACUUM
+        assert _freelist_pages(db) > 0, (
+            "删空后应留下空闲页（这是 auto_vacuum=0 的既有行为）"
+        )
+
+        eng.rebuild([], lambda _id: "", vacuum=True)       # 主动重建：回收
+        assert _freelist_pages(db) == 0, "vacuum=True 后空闲页应归零"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_query_service_raises_when_index_unavailable():
+    """⚠️ 索引不可用时 `QueryService` 抛**显式错误**，不是返回空结果。
+
+    这是整组的落点：「搜不到」与「索引坏了」必须能分开。此前这条路径上
+    `search()` 短路返回 `[]`，于是 CLI 的 `limo search` 会 exit 0 + 空结果，
+    前端显示「没有匹配」—— 三条路都指向「库里没有这个词」，全都是谎话。
+
+    ⚠️ 错误码与「缺引擎」**必须不同**（`QUERY_INDEX_UNAVAILABLE` vs
+    `QUERY_NO_SEARCH_ENGINE`）：前者用户点重建能修（recoverable），后者是
+    代码构造时机错了。合并成一条等于让用户去查一个他并不拥有的初始化顺序。
+    """
+    from app.services.query import QueryError, QueryService
+
+    d = tempfile.mkdtemp(prefix="limo_search_test_")
+    try:
+        Path(d, "search.db").write_bytes(b"garbage" * 500)
+        eng = SearchEngine(d)
+        svc = QueryService(None, eng)                      # store 在这条路径上用不到
+
+        # 空查询仍然先返回：它根本不碰 FTS，把参数问题说成配置问题是误导
+        assert svc.search_resources("").items == []
+
+        try:
+            svc.search_resources("任意词")
+        except QueryError as e:
+            assert e.code == "QUERY_INDEX_UNAVAILABLE", f"错误码不对：{e.code}"
+            assert e.recoverable is True, "这条是用户能自助修的，必须标 recoverable"
+            assert "重建" in (e.detail or ""), "detail 要给出出路（设置页在哪）"
+        else:
+            raise AssertionError("索引不可用时必须抛错，不能静默返回空结果")
+
+        # 对照：引擎整个不在场时是**另一个**错误码
+        try:
+            QueryService(None, None).search_resources("任意词")
+        except QueryError as e:
+            assert e.code == "QUERY_NO_SEARCH_ENGINE", f"错误码不对：{e.code}"
+        else:
+            raise AssertionError("缺引擎时必须抛错")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     import traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

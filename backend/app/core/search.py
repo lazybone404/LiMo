@@ -11,6 +11,8 @@
 import sqlite3
 import re
 import threading
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from app.core import logging as log
@@ -43,7 +45,19 @@ class SearchEngine:
     def __init__(self, data_dir: str):
         self._db_path = Path(data_dir) / "search.db"
         self._lock = threading.Lock()
-        self._init_db()
+        #: 上一次失败的原因（`None` = 当前可用）。**构造失败不抛** ——
+        #: 一个坏掉的索引文件不该让整个应用起不来：所有文档仍能从磁盘读到，
+        #: 只有检索这一项能力没了。调用方靠 `available` / `status()` 判断，
+        #: 再由 `QueryService` 把它变成**显式错误**而不是「没搜到」。
+        self._last_error: str | None = None
+        #: 上次成功重建的时间（本地时间 ISO 串），供设置页显示「上次重建于…」。
+        self._rebuilt_at: str | None = None
+        try:
+            self._init_db()
+        except Exception as e:  # noqa: BLE001 —— 任何异常都降级，不炸启动
+            self._last_error = f"索引库打不开：{e}"
+            log.warning("全文索引库打不开，检索将不可用（可在设置页重建索引）",
+                        err=str(e)[:200])
 
     def _init_db(self):
         """创建 FTS5 虚拟表（如果不存在）。
@@ -56,10 +70,112 @@ class SearchEngine:
             conn.execute(_CREATE_SQL)
             conn.commit()
 
-    def _conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self):
+        """开一个连接，**并保证关闭**。
+
+        ⚠️ **必须真关**：`with sqlite3.Connection` 只做 commit / rollback，**不关闭
+        文件句柄**（此前正是这么写的）。Windows 上句柄没释放时 `_recover_db()` 删不掉
+        损坏的 `search.db`（`WinError 32 另一个程序正在使用此文件`）⇒ 「坏库自愈」
+        这条路根本走不通，而它的表现只是「重建后依然不可用」—— 没有任何线索指向
+        「文件被自己占着」。2026-10-26 由 `test_rebuild_recovers_from_corrupt_db` 实测抓到。
+
+        顺带的好处：关闭连接会触发 WAL checkpoint，`-wal` 不会无限长大。
+        """
         conn = sqlite3.connect(str(self._db_path))
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            try:
+                yield conn
+                conn.commit()
+            except BaseException:
+                # 连接本身已坏（文件被换掉 / 被占用）时 rollback 也会抛，
+                # 不能让它盖住原始异常 —— 那会把「为什么失败」换成一个无关的错。
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
+        finally:
+            conn.close()
+
+    # ── 健康状态 ──
+
+    @property
+    def available(self) -> bool:
+        """索引当前是否可用于检索。"""
+        return self._last_error is None
+
+    @property
+    def last_error(self) -> str | None:
+        """最近一次失败原因（`None` = 一切正常）。"""
+        return self._last_error
+
+    def note_error(self, message: str) -> None:
+        """由调用方（启动流程）记录失败，使状态可见。
+
+        ⚠️ 这条路径替代了此前 `main.py` 里「只打一条 warning 然后继续」的做法：
+        那时用户看到的是**搜索永远没结果**，没有诊断、也没有修复入口。
+        """
+        self._last_error = message
+        log.warning("全文索引不可用", err=message[:200])
+
+    def status(self) -> dict:
+        """给设置页 / 诊断用的只读快照（不抛错）。
+
+        ⚠️ **只读是认真的**：这里遇到的失败只写进返回的 dict（`statusError`），
+        **不碰 `self._last_error`**。`available` 的定义就是 `_last_error is None`
+        —— 让它被一次瞬时读失败毒化，等于「打开设置页看一眼，全文检索就被永久判死」，
+        而解除它只有手动重建一条路（用户完全不知道发生了什么）。
+        `VectorStore.status()` 同款做法，两处判据一致。
+        """
+        size = 0
+        try:
+            size = self._db_path.stat().st_size
+        except OSError:
+            pass
+        doc_count = 0
+        status_error: str | None = None
+        if self.available:
+            try:
+                with self._lock, self._conn() as conn:
+                    doc_count = conn.execute(
+                        "SELECT count(*) FROM transcripts_fts"
+                    ).fetchone()[0]
+            except Exception as e:  # noqa: BLE001 —— 状态查询自己失败也只是状态里少个数
+                doc_count = 0
+                status_error = f"读索引失败：{e}"
+        return {
+            "available": self.available,
+            "docCount": doc_count,
+            "sizeBytes": size,
+            "lastError": self._last_error,
+            "statusError": status_error,
+            "rebuiltAt": self._rebuilt_at,
+        }
+
+    def _recover_db(self) -> bool:
+        """索引库不可用时删掉重建。
+
+        ⚠️ **只在 `rebuild()` 里调** —— 那是「推倒重来」的语义，用户已经在
+        重建入口上按了确认。不要在构造 / 读路径上调：删文件是不可逆动作。
+        """
+        for suffix in ("", "-wal", "-shm"):
+            p = Path(str(self._db_path) + suffix)
+            try:
+                if p.exists():
+                    p.unlink()
+            except OSError as e:
+                self._last_error = f"无法删除损坏的索引文件：{e}"
+                return False
+        try:
+            self._init_db()
+            self._last_error = None
+            log.warning("索引库已重建（旧的损坏文件已删除）")
+            return True
+        except Exception as e:  # noqa: BLE001
+            self._last_error = f"重建索引库失败：{e}"
+            return False
 
     # ── 结构 ──
 
@@ -99,6 +215,10 @@ class SearchEngine:
 
     def index(self, tx_id: str, title: str, content: str):
         """新增或更新一条索引。正文清洗进 `body`，分词结果进 `toks`。"""
+        if not self.available:
+            # 索引不可用时**不写**：往坏库里灌数据既救不回检索，又让状态更难查。
+            # 重建会从 store 读全部文档补全，所以跳过是安全的。
+            return
         body = _clean_for_search(content)
         toks = " ".join(_tokenize(f"{title or ''}\n{body}"))
         with self._lock, self._conn() as conn:
@@ -112,15 +232,27 @@ class SearchEngine:
 
     def delete(self, tx_id: str):
         """删除一条索引（删除文档时调用）"""
+        if not self.available:
+            return
         with self._lock, self._conn() as conn:
             conn.execute("DELETE FROM transcripts_fts WHERE id = ?", (tx_id,))
             conn.commit()
 
-    def rebuild(self, transcripts: list[dict], get_content):
+    def rebuild(self, transcripts: list[dict], get_content, *, vacuum: bool = False):
         """从零重建全部索引（初始化/恢复时调用）。
         transcripts: store.list_transcripts() 返回的元数据列表
         get_content: (tx_id) -> str，返回原始文本
+        vacuum: 重建后回收空间（`VACUUM`）。
+
+        ⚠️ **`vacuum=True` 只在用户主动点「重建索引」时传**：`search.db` 的
+        `auto_vacuum=0`，删掉的正文页会留在文件里（实测一个 137 行 / 14.7MB 的库
+        有 23% 是空闲页）。启动时每次都 VACUUM 会让「打开应用」等一次全库重写，
+        而用户主动重建时这笔开销已经被告知过。
         """
+        if not self.available and not self._recover_db():
+            # 恢复失败 → 让调用方拿到错误。**不能静默继续**：往一个坏库里灌数据
+            # 会掩盖「索引不可用」这个事实，用户仍然搜不到任何东西。
+            raise RuntimeError(self._last_error or "索引库不可用")
         with self._lock, self._conn() as conn:
             conn.execute("DELETE FROM transcripts_fts")
             for tx in transcripts:
@@ -137,11 +269,23 @@ class SearchEngine:
                     (tx["id"], title, body, toks),
                 )
             conn.commit()
+            if vacuum:
+                # ⚠️ 必须在上面的 commit 之后 —— 事务里执行 VACUUM 会报
+                # `cannot VACUUM from within a transaction`。
+                conn.execute("VACUUM")
+        self._last_error = None
+        self._rebuilt_at = datetime.now().isoformat(timespec="seconds")
+        log.info("全文索引重建完成", docs=len(transcripts), vacuum=vacuum)
 
     # ── 搜索 ──
 
     def search(self, query: str, limit: int = 20) -> list[dict]:
         """全文搜索，返回 [{id, title, snippet}, ...]，按相关性排序"""
+        if not self.available:
+            # 防御性短路（`QueryService` 会先抛显式错误，正常走不到这里）：
+            # 直接调本类的调用方拿到空结果，而不是一个 sqlite 异常。
+            log.warning("全文索引不可用，搜索返回空", q=query[:50])
+            return []
         if not query.strip():
             return []
         # 查询侧封顶 64：用户可能直接把一整段粘贴进来当查询，OR 串会膨胀到
@@ -189,8 +333,9 @@ class SearchEngine:
 
 # ── 写入口 ──
 
-def update_index(engine: "SearchEngine | None", store, tx_id: str) -> None:
-    """把一篇文档的**当前**状态写进全文索引。失败只留痕，不抛。
+def update_index(engine: "SearchEngine | None", store, tx_id: str,
+                 vec=None) -> None:
+    """把一篇文档的**当前**状态写进全文索引（并给向量侧打 `pending`）。失败只留痕，不抛。
 
     ⚠️ **五个写点共用这一个入口**（摄入 / 重新转录 / 生成完成 / 编辑保存 /
     启动重建）：内容是什么只有一处判据（`doc_text.search_index_text`）。
@@ -203,16 +348,26 @@ def update_index(engine: "SearchEngine | None", store, tx_id: str) -> None:
     ⚠️ `doc_text` 在函数内导入：`app/core/` 概念上不依赖 `app/generation/`，而
     「索引文本 = rawText + 最新笔记」这条判据必须和「剥自证头 / 剥语义标记」
     住在一起（那两样都是 core 内协议，各自的剥法只该有一份）。
+
+    `vec` = `VectorStore` 或 `None`（**默认 None = 改造前的行为**）。给了就只给该篇
+    打一个 `pending` 标记 —— **一次 embedding 调用都不发**（那次往返会卡住「保存」
+    按钮，用户会以为卡死了），真正的编码归后台 worker。字面索引与向量标记**各自
+    独立 try**：向量侧坏掉不该让字面索引白写，反过来也一样。
     """
-    if engine is None or store is None:
-        return
-    try:
-        from app.generation.doc_text import search_index_text
-        tx = store.get_transcript(tx_id) or {}
-        engine.index(tx_id, tx.get("title", ""), search_index_text(store, tx_id))
-    except Exception as e:
-        log.warning("全文索引写入失败，该文档可能搜不到",
-                    tx_id=tx_id, err=str(e)[:120])
+    if store is not None and engine is not None:
+        try:
+            from app.generation.doc_text import search_index_text
+            tx = store.get_transcript(tx_id) or {}
+            engine.index(tx_id, tx.get("title", ""), search_index_text(store, tx_id))
+        except Exception as e:
+            log.warning("全文索引写入失败，该文档可能搜不到",
+                        tx_id=tx_id, err=str(e)[:120])
+    if vec is not None:
+        try:
+            vec.mark_pending(tx_id)
+        except Exception as e:
+            log.warning("向量索引标记失败，该文档可能不出现在语义检索里",
+                        tx_id=tx_id, err=str(e)[:120])
 
 
 # ── 工具函数 ──

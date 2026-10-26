@@ -413,7 +413,38 @@ async function route(method: string, path: string, url: URL, body: () => Promise
   }
 
   // -- 全文搜索 --
-  if (path === '/search') return json(searchDocs(url.searchParams.get('q') || '').slice(0, url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : 100))
+  // 响应形状是 `{hits, semantic}`（不是裸数组）：`semantic: null` = 未启用语义检索。
+  // 演示站没有向量索引，故这一项恒为 null —— 它同时是「压根没开」与「开了但零命中」的
+  // 唯一区分点，不是可以随手省略的字段。
+  if (path === '/search') {
+    const limit = url.searchParams.get('limit')
+    const hits = searchDocs(url.searchParams.get('q') || '').slice(0, limit ? Number(limit) : 100)
+    return json({ hits, semantic: null })
+  }
+  // 演示站没有真实的索引文件，状态是常量：字面索引「正常」（否则顶部横幅会浮出来，
+  // 而演示站里那条横幅指向的「去重建」按钮背后什么都不存在）；向量侧「未接入」。
+  if (path === '/search/status') {
+    return json({
+      available: true,
+      docCount: docs.length,
+      sizeBytes: 0,
+      lastError: null,
+      rebuiltAt: null,
+      vector: {
+        enabled: false,
+        reason: '演示站未接入向量索引（需要后端与 embedding 模型）',
+        available: false,
+        lastError: null,
+        identity: null,
+        docs: { total: docs.length, ok: 0, pending: 0, failed: 0 },
+        chunks: 0,
+        sizeBytes: 0,
+      },
+    })
+  }
+  if (path === '/search/reindex') return readonly('重建索引')
+  if (path === '/search/vector') return readonly('语义检索开关')
+  if (path === '/search/vector/rebuild') return readonly('重建向量索引')
 
   // -- 对话 --
   if (path === '/chat/stream') {

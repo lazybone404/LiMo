@@ -249,6 +249,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "search": {"provider": "duckduckgo", "searxng_url": "http://127.0.0.1:18080", "tavily_api_key": ""},
         "fetch":  {"provider": "trafilatura"},
     },
+    # 检索 — 字面（FTS5，始终开启）与语义（向量，**默认关闭**）
+    # ⚠️ 默认关不是谨慎，是「默认值必须等于改造前的行为」：打开它意味着后台 worker
+    #    把整个库送去做云端编码（**计费**），而用户此刻还不知道自己开了什么。
+    "search": {
+        "vector_enabled": False,
+        # `EngineRegistry` 的 embedding 引擎名。换它 = 换模型 = 四元组不符 = 需重建。
+        "vector_model": "dashscope-embedding",
+    },
     # 插件系统（EnginePlugin v1）
     "plugin_states": {},    # name → bool（false=禁用，重启后生效；未配置默认 enabled）
     "plugin_configs": {},   # name → dict（插件自身配置，经进程外 stdin JSON config 传给引擎）

@@ -23,6 +23,23 @@ agent 误触发的风险都在写侧的账上，那份账还没算。
 要整棵子树加 `--recursive`（透传 `include_descendants=true`）。⚠️ `--recursive`
 必须配合 `--folder-id`：单给时它什么都不做，而结果看起来完全正常。
 
+### 搜索是**纯字面**的（语义融合只在 HTTP 侧）
+
+`limo search` 走 `QueryService.search_resources` → FTS5 二字组 OR + BM25，**不接向量**。
+这不是遗漏：融合要读向量矩阵（几十到几百毫秒）并编码查询串（一次网络调用），
+两件都是异步的，而 `QueryService` 是同步纯读层 —— 它同时被 `LocalSource`
+（`doctor --local`，没有事件循环）使用。于是形状上分成两处：
+
+| | 谁做融合 | 形状 |
+|---|---|---|
+| `GET /api/search`（前端） | `routers/search.py` 的异步编排 | `{hits, semantic}` |
+| `GET /api/cli/search`（CLI） | **不做** | 纯字面 hits |
+
+⚠️ 把融合塞进 `QueryService` 会让 `LocalSource` 被迫处理「模型不可用 / 库没建过」，
+而那份语义状态在 CLI 的契约里**没有位置**（加了就是给两个传输层同时加一个
+`semantic` 字段，等于让 `limo --json` 的输出形状取决于用户开没开一个 UI 开关）。
+真要让 CLI 也吃到语义，先改契约、再同时改两个 Source —— 而不是在命令层拼一份。
+
 ## 三层结构（改任何一处前先认清自己在哪层）
 
 ```

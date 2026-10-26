@@ -144,13 +144,22 @@ _ENG.index("tr_c0", "文档 tr_c0", "契约搜索 关键词甲")
 _ENG.index("tr_c1", "文档 tr_c1", "契约搜索 关键词乙")
 _ENG.index("tr_c2", "文档 tr_c2", "契约搜索 关键词丙")
 
-_http_hits = C.get("/api/search", params={"q": "契约搜索", "limit": 2}).json()
+_body = C.get("/api/search", params={"q": "契约搜索", "limit": 2}).json()
+_http_hits = _body["hits"]
 _svc_hits = svc.search_resources("契约搜索", limit=2).items
 assert _http_hits == _svc_hits, f"搜索响应两侧不一致: HTTP={_http_hits} svc={_svc_hits}"
 assert len(_http_hits) == 2, "limit 必须透传到 FTS（写死默认值的实现会多返回）"
 
-# 空结果与「引擎缺失」是两种不同的东西——前者 200 + 空数组
-assert C.get("/api/search", params={"q": "绝无此词xyz"}).json() == []
+# 响应外套了一层 `{hits, semantic}`（语义融合）。字面那一半仍必须逐字段等于
+# service；`semantic` 在未启用向量时**必须是 None** —— 它是「压根没开」与
+# 「开了但零命中（`{error: null, hits: 0}`）」的唯一区分点。
+assert _body["semantic"] is None, f"未启用语义检索时 semantic 应为 null：{_body['semantic']}"
+# ⚠️ 「字面路按 `depth = max(limit, DEFAULT_DEPTH)` 取样」这条不在这里验
+# （本文件的 svc 是真的，观察不到入参）—— 守卫在
+# `test_vector_search.py::test_字面路按_depth_取样而不是_limit`。
+
+# 空结果与「引擎缺失」是两种不同的东西——前者 200 + 空列表
+assert C.get("/api/search", params={"q": "绝无此词xyz"}).json()["hits"] == []
 
 print("PASS: GET /api/search 与 service 同源、limit 透传")
 

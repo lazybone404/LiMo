@@ -29,6 +29,29 @@ def get_config_lock(request: Request):
     return request.app.state.config_lock
 
 
+def get_search_engine(request: Request):
+    """注入 `SearchEngine`（索引健康状态 / 重建这两个端点用）。
+
+    ⚠️ 与 `get_query_service` 的 `getattr` 兜底**刻意不同**：这里直接取属性。
+    健康状态端点的语义就是「把搜索引擎的真实状态报出来」，取不到实例时报
+    `AttributeError`（500）比返回一个假的 `{"available": true}` 诚实得多 ——
+    后者会让「索引坏到连实例都没建」这一档显示成一切正常。
+    """
+    return request.app.state.search_engine
+
+
+def get_vector_searcher(request: Request):
+    """注入语义融合层；未启用时 `None`（`/search` 据此返回 `semantic: null`）。
+
+    ⚠️ **直接读 `app.state.vector_search`，不按配置现造一个**：融合层与后台 worker
+    必须**成对存在** —— 只有融合层而没有 worker 的话，查询在用一份永远不再更新的
+    索引，产物上表现为「刚编辑过的文档搜不到（语义路）」，而字面路是对的，于是
+    看起来像「语义检索时灵时不灵」。这对状态由 `vector_runtime.sync_vector_runtime`
+    唯一维护（启动一次、每次开关一次）。
+    """
+    return getattr(request.app.state, "vector_search", None)
+
+
 def get_query_service(request: Request) -> QueryService:
     """注入查询层服务 —— HTTP 与 CLI 共用的只读契约（见 `app/services/query.py`）。
 

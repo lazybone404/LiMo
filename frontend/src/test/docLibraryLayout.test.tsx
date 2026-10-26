@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { useStore } from '../store'
+import { ApiErrorException } from '../api/core'
 import type { DocEntry } from '../store/types'
 
 class IO {
@@ -36,11 +37,26 @@ vi.mock('../api/client', async (importOriginal) => {
 })
 
 const searchMock = vi.fn()
+/** 索引健康状态（可变：默认「一切正常」，接线用例里临时改成不可用）。 */
+const statusMock = vi.fn()
 vi.mock('../api/search', () => ({
-  searchDocs: (q: string, limit?: number, signal?: AbortSignal) => searchMock(q, limit, signal),
+  // 桩返回 **hits 数组**，包装层补 `semantic: null`（= 未启用语义检索）——
+  // 真实 `searchDocs` 返回 `{hits, semantic}`，理由见 `docLibrarySearch` 同名注释。
+  searchDocs: async (q: string, limit?: number, signal?: AbortSignal) => ({
+    hits: await searchMock(q, limit, signal),
+    semantic: null,
+  }),
+  getSearchStatus: () => statusMock(),
+  reindexSearch: async () => { throw new Error('本用例不应触发索引重建') },
 }))
 
+/** `getSearchStatus` 的默认答复：索引正常 ⇒ 横幅一个字都不渲染（零回归）。 */
+const STATUS_OK = {
+  available: true, docCount: 0, sizeBytes: 0, lastError: null, rebuiltAt: null,
+}
+
 const { DocLibrary } = await import('../components/doc-library/DocLibrary')
+const { __resetSearchHealthForTest: resetSearchHealth } = await import('../lib/search-health')
 
 /** 与 `docLibraryPrefs.ts` 的私有 KEY 同值（那是模块内常量，未导出） */
 const PREFS_KEY = 'mbw_docLibPrefs'
@@ -60,6 +76,11 @@ beforeEach(() => {
   localStorage.clear()
   searchMock.mockReset()
   searchMock.mockResolvedValue([])
+  statusMock.mockReset()
+  statusMock.mockResolvedValue(STATUS_OK)
+  // 状态住在 `lib/search-health` 的模块级变量里（30s TTL），不清就会让
+  // 「本次挂载到底探测了没有」取决于用例执行顺序。
+  resetSearchHealth()
   batchMock.mockReset()
   batchMock.mockResolvedValue({ status: 'ok', affected: 1, failed: [] })
   useStore.setState({
@@ -399,5 +420,64 @@ describe('计数同源', () => {
     // 「其中 1 个文档将移到未分类」，而实际搬走 3 篇——用户按 1 篇的心理预期点下去。
     const header = container.querySelector('[data-group-header="f:f1"]') as HTMLElement
     expect(header.textContent).toContain('3')
+  })
+})
+
+describe('索引健康横幅的**接线**', () => {
+  /**
+   * ⚠️ 这条守的是「组件写好了、也测过了，但根本没挂上去」——那种情况下
+   * `searchHealth.test.tsx` 全绿、用户却永远看不到横幅。判据只能落在
+   * 「渲染 `DocLibrary` 之后它里面有没有这段文字」上。
+   */
+  it('索引不可用 → 横幅出现在文档库顶部，并给出原因', async () => {
+    statusMock.mockResolvedValue({
+      available: false, docCount: 0, sizeBytes: 0,
+      lastError: '索引库打不开：malformed', rebuiltAt: null,
+    })
+    render(<DocLibrary />)
+    await waitFor(() => expect(screen.getByText('全文检索不可用')).toBeInTheDocument())
+    expect(screen.getByText(/malformed/)).toBeInTheDocument()
+  })
+
+  it('索引正常 → 顶部没有任何横幅（零回归）', async () => {
+    render(<DocLibrary />)
+    // 等一次挂载探测落地，再断言「探测确实发生了、但什么都没渲染」
+    await waitFor(() => expect(statusMock).toHaveBeenCalled())
+    expect(screen.queryByText('全文检索不可用')).toBeNull()
+  })
+
+  /**
+   * 搜索撞上「索引不可用」时**必须强制刷新**健康状态 —— 否则横幅只在启动那一次
+   * 探过，用户搜索失败、横幅却仍显示「正常」，两处说法打架。
+   *
+   * ⚠️ 这条守的是一个**曾经恒假**的判据：旧实现是
+   * `String(e).includes('503')`，而 `apiFetch` 抛的 `ApiErrorException.message`
+   * 取的是后端 `message` 字段（「索引不可用 —— 可在设置里重建」），**从来不含 503**
+   * ⇒ 分支永不进入、横幅永不浮出，而当时的单测只断言「横幅能渲染」、测不到这个。
+   */
+  it('搜索撞上 503（ApiErrorException）→ 强制刷新后横幅浮出', async () => {
+    // 首次（挂载探测）说正常，强制刷新时才拿到「坏了」——两次答复必须不同，
+    // 否则「刷新过没有」无从分辨（横幅本来就会因为首次结果出现）。
+    statusMock.mockResolvedValueOnce(STATUS_OK)
+    statusMock.mockResolvedValue({
+      available: false, docCount: 0, sizeBytes: 0,
+      lastError: '索引库已损坏：database disk image is malformed', rebuiltAt: null,
+    })
+    // message 里**刻意不含 503**：判据只能读 apiError.status / code。
+    searchMock.mockRejectedValue(new ApiErrorException({
+      code: 'QUERY_INDEX_UNAVAILABLE',
+      message: '全文索引不可用 —— 可在 设置 → 通用 → 检索索引 里重建',
+      recoverable: true, status: 503,
+    }))
+    const { container } = render(<DocLibrary />)
+
+    await waitFor(() => expect(statusMock).toHaveBeenCalled(), { timeout: 2000 })
+    expect(screen.queryByText('全文检索不可用')).toBeNull()
+
+    fireEvent.change(container.querySelector('[data-search-input]') as HTMLElement, {
+      target: { value: '关键词' },
+    })
+
+    await waitFor(() => expect(screen.getByText('全文检索不可用')).toBeInTheDocument(), { timeout: 2000 })
   })
 })

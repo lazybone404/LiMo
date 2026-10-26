@@ -9,7 +9,9 @@
  * - 故：内存过滤结果**立刻**渲染，停手 250ms 后再打后端，把多出来的命中并进同一结果集。
  */
 import { useEffect, useMemo, useState } from 'react'
+import { ApiErrorException } from '../../api/core'
 import { searchDocs, type SearchHit } from '../../api/search'
+import { refreshSearchHealth } from '../../lib/search-health'
 import type { DocEntry } from '../../store/types'
 import { SRC_LABEL } from './docMeta'
 import { buildFolderTree, type FolderNode, type FolderTree } from './folderTree'
@@ -243,10 +245,19 @@ export function useDocQuery(input: DocQueryInput) {
 
   const [hits, setHits] = useState<SearchHit[]>([])
   const [searching, setSearching] = useState(false)
+  /** 全文检索失败的提示（`null` = 正常）。**不吞错**：索引坏了时用户必须知道
+   *  「列表里少的是没搜到，还是搜索本身没跑」—— 两者在界面上原本逐字相同。 */
+  const [searchError, setSearchError] = useState<string | null>(null)
+  /** 语义路**本次**退化的提示（`null` = 语义正常 / 未启用）。
+   *
+   *  ⚠️ 与 `searchError` **刻意分开**：那个是「字面这一路压根没跑」（结果集是残的），
+   *  这个是「字面结果完整、只是没多出语义那一份助力」。合成一行会让「索引坏了」
+   *  与「向量暂不可用」看起来一样严重，而前者要用户动手、后者多半等一会儿就好。 */
+  const [semanticNote, setSemanticNote] = useState<string | null>(null)
 
   useEffect(() => {
     const q = query.trim()
-    if (!q) { setHits([]); setSearching(false); return }
+    if (!q) { setHits([]); setSearching(false); setSearchError(null); setSemanticNote(null); return }
     const ctl = new AbortController()
     const timer = setTimeout(async () => {
       setSearching(true)
@@ -254,9 +265,24 @@ export function useDocQuery(input: DocQueryInput) {
         const r = await searchDocs(q, SEARCH_LIMIT, ctl.signal)
         // ⚠️ 竞态：换关键词会 abort 上一次请求，但它的 catch/finally 仍会执行。
         // 不做 aborted 判定的话，旧请求会把新请求的结果清成空数组。
-        if (!ctl.signal.aborted) setHits(r)
-      } catch {
-        if (!ctl.signal.aborted) setHits([])
+        if (!ctl.signal.aborted) {
+          setHits(r.hits)
+          setSearchError(null)
+          setSemanticNote(r.semantic?.error ?? null)
+        }
+      } catch (e) {
+        // ⚠️ `hits` 必须清空（否则上一次关键词的结果会与新关键词的内存匹配混在一起，
+        // 出现不相关的文档）；但**不能只是清空** —— 内存过滤（标题/类型/标签）仍在跑，
+        // 用户看到的是「少了正文命中」，所以另配一条 `searchError` 说明原因。
+        if (!ctl.signal.aborted) {
+          setHits([])
+          setSearchError(describeSearchError(e))
+          setSemanticNote(null)
+          // 只有 503（后端明确说索引不可用）才刷新健康状态 —— 它平时只在挂载时取一次
+          // （见 `lib/search-health.ts`），不 refresh 的话文档库顶部那条横幅不会浮出来。
+          // 其余失败（网络抖动 / 500）不代表索引坏了，刷新只是白打一个请求。
+          if (isIndexUnavailable(e)) void refreshSearchHealth(true)
+        }
       } finally {
         if (!ctl.signal.aborted) setSearching(false)
       }
@@ -285,7 +311,41 @@ export function useDocQuery(input: DocQueryInput) {
 
   // `rankOf` 也回传：调用方用它判断「这次搜索有没有真命中」——
   // 「相关度」排序键该不该出现在选项里，只有它知道（见 SORT_OPTIONS）。
-  return { visible, matchedIds, snippetById, rankOf, searching, hitsTruncated }
+  return { visible, matchedIds, snippetById, rankOf, searching, hitsTruncated, searchError, semanticNote }
+}
+
+/**
+ * 这个失败是不是「后端明确说索引不可用」（`QUERY_INDEX_UNAVAILABLE` → HTTP 503）。
+ *
+ * ⚠️ 它同时喂两处判据（提示文案 / 是否刷新健康状态），所以抽出来而不是在两处
+ * 各写一遍 —— 两处一旦分叉，就会出现「提示说索引坏了、横幅却没出来」这种
+ * 自相矛盾的界面。
+ *
+ * ⚠️ **判据必须读结构化的 `apiError`，不能读 message**：`apiFetch` 在非 2xx 时抛的是
+ * `ApiErrorException`，它的 message 取自后端的 `detail`/`message`（这里是
+ * 「全文索引不可用 —— 可在 设置 → 通用 → 检索索引 里重建」），**从来不含 "503"**。
+ * 早先写成 `message.includes('503')` 的后果是这条分支恒假 —— 文案看起来还凑合
+ * （后端把出路也写进 detail 了），真正失效的是**顶部横幅永不浮出**，即「索引坏了」
+ * 这件事只能靠用户主动去搜一次才被发现。非 `ApiErrorException`（测试里的裸 Error、
+ * 非 JSON 响应）仍按文本兜底，那条路是给外部调用方留的。
+ */
+function isIndexUnavailable(e: unknown): boolean {
+  if (e instanceof ApiErrorException) {
+    return e.apiError.status === 503 || e.apiError.code === 'QUERY_INDEX_UNAVAILABLE'
+  }
+  const raw = e instanceof Error ? e.message : String(e)
+  return raw.includes('503')
+}
+
+/** 把搜索失败的异常翻成用户能据此行动的一句话（判断分支只在错误形态上，不猜原因）。 */
+function describeSearchError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e)
+  // 503 = 后端明确说「索引不可用」。给它一句带出路的文案；
+  // 其余（网络抖动、500）原样带上，别硬猜成索引坏了。
+  if (isIndexUnavailable(e)) {
+    return '全文检索不可用（索引可能已损坏或占用）——可在 设置 → 通用 → 检索索引 里重建'
+  }
+  return `全文检索失败：${raw}`
 }
 
 /** 从文档集合聚合用户标签频次（用于标签筛选行的 facet），频次降序、同频按字典序。 */

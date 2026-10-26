@@ -33,7 +33,10 @@ from app.routers.capabilities import engine_registry
 _BACKEND = Path(__file__).resolve().parent.parent
 _APP = _BACKEND / "app"
 
-_CATS = ("asr", "ocr", "doc")
+# 刻意的「第二双眼睛」：类别清单改了这里必须跟着改。
+# ⚠️ `embedding`（2026-10-26）与前三类性质不同（吃文本吐向量，不作用于文件），
+#    但它仍是**同一张表里的一个类别**——发现机制一视同仁，另建一张表才是模式 #54。
+_CATS = ("asr", "ocr", "doc", "embedding")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -88,14 +91,22 @@ def test_category_literal_defined_exactly_once():
 
 
 def test_control_detector_has_discrimination():
-    """对照实验：守卫能抓到内联形态，且不误伤注释与「部分匹配」（模式 #38）。"""
-    inline = ast.parse('X = {"asr", "ocr", "doc"}')
+    """对照实验：守卫能抓到内联形态，且不误伤注释与「部分匹配」（模式 #38）。
+
+    ⚠️ 样例串**从 `_CATS` 现拼**，不手写 `{"asr", "ocr", "doc"}` ——
+    手写的那份在本轮加 `embedding` 时当场失效（样例不再等于完整清单，于是
+    「守卫抓不到最简单的内联形态」为真而红）。对照实验的输入必须跟着被测清单走，
+    否则它守的是**过去的**那一版清单。
+    """
+    full = "{" + ", ".join(f'"{c}"' for c in _CATS) + "}"
+    inline = ast.parse(f"X = {full}")
     found = [n for n in ast.walk(inline) if isinstance(n, ast.Set)
              and {e.value for e in n.elts} == set(_CATS)]
-    assert len(found) == 1, "守卫抓不到最简单的内联形态"
+    assert len(found) == 1, f"守卫抓不到最简单的内联形态：{full}"
 
-    # 只写了两个类别 → **不该**被当成完整清单（否则将来加类别时会被误判为重复定义）
-    partial = ast.parse('X = {"asr", "ocr"}')
+    # 少一个类别 → **不该**被当成完整清单（否则将来加类别时会被误判为重复定义）
+    fewer = ", ".join(f'"{c}"' for c in _CATS[:-1])
+    partial = ast.parse(f"X = {{{fewer}}}")
     assert not [n for n in ast.walk(partial) if isinstance(n, ast.Set)
                 and {e.value for e in n.elts} == set(_CATS)]
 

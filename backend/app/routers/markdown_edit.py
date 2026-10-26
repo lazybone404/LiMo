@@ -136,7 +136,8 @@ async def edit_markdown(transcript_id: str, req: MarkdownEditRequest, request: R
 
     # 笔记正文变了 → 全文索引跟着更新。漏了这行的症状很具体：用户刚在笔记里写了
     # 一个新词，转头搜它搜不到（索引里还是编辑前那份），而「保存成功」看起来完全正常。
-    update_index(getattr(request.app.state, "search_engine", None), store, transcript_id)
+    update_index(getattr(request.app.state, "search_engine", None), store, transcript_id,
+                 vec=getattr(request.app.state, "vector_store", None))
 
     # 返回对齐 GET /api/markdown：**被编辑的那一版** + 完整版本列表。
     # ⚠️ 返回编辑的版本而不是 `mds[0]`（最新）：用户可能正停在 v1 上编辑，返回最新版

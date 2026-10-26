@@ -22,6 +22,9 @@ SearchEngine —— 与 `test_folders_api.py` 同一手法，理由见该文件�
   A. 把删除分支改回 `except Exception: pass` 且不记 warning
      → `test_warns_*` 两条红
   B. 删掉 `engine.delete(tx_id)` 调用 → `test_delete_via_http_removes_hit` 红
+  C. 删掉两条删除路径里的 `_drop_vectors(request, tx_id)` 调用
+     → `test_delete_drops_vectors` / `test_batch_delete_drops_vectors` 红
+     （这两条守的是第四轮审查的 P1-01：全文索引清了、向量没清）
 """
 import os
 import shutil
@@ -78,8 +81,25 @@ def _capture_ingest_log():
         ingest_mod.log = original
 
 
-def _setup(*, with_engine: bool = True) -> tuple[TestClient, str]:
-    """临时 Store + （可选）SearchEngine，返回 (client, 临时目录)。"""
+class _FakeVec:
+    """只实现 `delete_doc` —— `_drop_vectors` 接触的唯一方法。
+
+    用假对象而不是真 `VectorStore`：这里要断言的是**路由层有没有调用它**，
+    真库会顺带考一遍编码/状态机，把两件事混在一条用例里。
+    """
+
+    def __init__(self, error: str | None = None):
+        self.deleted: list[str] = []
+        self.error = error
+
+    def delete_doc(self, tx_id: str) -> None:
+        if self.error:
+            raise RuntimeError(self.error)
+        self.deleted.append(tx_id)
+
+
+def _setup(*, with_engine: bool = True, with_vec: bool = True) -> tuple[TestClient, str]:
+    """临时 Store + （可选）SearchEngine + （可选）假 VectorStore，返回 (client, 临时目录)。"""
     d = tempfile.mkdtemp(prefix="limo_del_index_")
     store = Store(d)
     app.state.store = store
@@ -87,6 +107,9 @@ def _setup(*, with_engine: bool = True) -> tuple[TestClient, str]:
     # 测试留下的、指向已删临时目录的实例（顺序依赖，见 `test_folders_api.py`）。
     engine = SearchEngine(d) if with_engine else None
     app.state.search_engine = engine
+    # ⚠️ `vector_store` 同款：`_drop_vectors` 会真的去调它，残留实例指向别人的
+    # 临时库 → 本用例静默写到别处，而断言看起来照样成立。
+    app.state.vector_store = _FakeVec() if with_vec else None
 
     store.save_transcript(RawTranscript(
         id="tr_1", title="标题", source_type=SourceType.WEBPAGE,
@@ -106,14 +129,14 @@ def test_delete_via_http_removes_hit():
     """
     c, d = _setup()
     try:
-        hits = c.get("/api/search", params={"q": _NEEDLE}).json()
+        hits = c.get("/api/search", params={"q": _NEEDLE}).json()["hits"]
         assert len(hits) == 1 and hits[0]["id"] == "tr_1", f"前提不成立：{hits}"
 
         with _capture_ingest_log() as fake:
             r = c.delete("/api/transcripts/tr_1")
         assert r.status_code == 200 and r.json()["status"] == "deleted", r.text
 
-        assert c.get("/api/search", params={"q": _NEEDLE}).json() == [], \
+        assert c.get("/api/search", params={"q": _NEEDLE}).json()["hits"] == [], \
             "删文档后仍能搜到 → 幽灵命中（路由层漏调 search_engine.delete）"
         assert fake.warnings == [], f"正常路径不该有 warning：{fake.warnings}"
     finally:
@@ -170,6 +193,76 @@ def test_delete_warns_when_index_fails():
         assert len(fake.warnings) == 1, f"索引删除失败必须留 warning：{fake.warnings}"
         assert "db is locked" in str(fake.warnings[0][1].get("err", "")), \
             f"异常原因必须带上（否则排查不了是哪一步断的）：{fake.warnings}"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+# ── 向量侧（第四轮审查 P1-01）────────────────────────────────────────────
+#
+# 全文索引清了、向量没清 → 语义检索仍会召回一篇已经不存在的文档。
+# `vector_worker.reconcile` 会清孤儿，但它只在 worker 循环**开始时**跑一次，
+# 桌面应用开着好几天的话这期间一直是脏的；而且设置页写的是「删文档时
+# 对应向量一并清掉」——那是**立即**的承诺。
+
+
+def test_delete_drops_vectors():
+    """单删路径必须把文档从向量索引摘掉。
+
+    对照实验：删掉 `ingest.py` 里 `_drop_vectors(request, tx_id)` 那行 → 本条红。
+    """
+    c, d = _setup()
+    try:
+        vec = app.state.vector_store
+        r = c.delete("/api/transcripts/tr_1")
+        assert r.status_code == 200, r.text
+        assert vec.deleted == ["tr_1"], \
+            f"删除文档后必须清掉它的向量，实际调用：{vec.deleted}"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_batch_delete_drops_vectors():
+    """批量删除路径同样要清（两条路径分别写，所以分别钉）。
+
+    ⚠️ 只测单删是不够的：批量分支是**另一段代码**，历史缺陷正是「单删做了、批量没做」
+    这一类分叉（本项目里已经踩过若干次，模式 #54）。
+    """
+    c, d = _setup()
+    try:
+        store = app.state.store
+        store.save_transcript(RawTranscript(
+            id="tr_2", title="标题2", source_type=SourceType.WEBPAGE,
+            engine="trafilatura", raw_text=_BODY + "2", content_hash="h2",
+            metadata=RawMetadata(),
+        ))
+        vec = app.state.vector_store
+        r = c.post("/api/transcripts/batch", json={"action": "delete", "ids": ["tr_1", "tr_2"]})
+        assert r.status_code == 200 and r.json()["affected"] == 2, r.text
+        assert sorted(vec.deleted) == ["tr_1", "tr_2"], \
+            f"批量删除后必须清掉每篇的向量，实际调用：{vec.deleted}"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_delete_succeeds_when_vector_delete_fails():
+    """向量清理抛错 → 删除仍成功且留 warning，**不能**因此返回 500 或记成 failed。
+
+    语义：文档已经从 store 删了、回滚不了。抛出去只是把一个「清得不彻底」
+    变成一个用户看不懂的 500，而真正该做的是留痕 + 由下次启动对账兜底。
+    """
+    c, d = _setup()
+    try:
+        app.state.vector_store = _FakeVec(error="vec.db is locked")
+        with _capture_ingest_log() as fake:
+            r = c.delete("/api/transcripts/tr_1")
+        assert r.status_code == 200, r.text
+        assert app.state.store.get_transcript("tr_1") is None, "文档本身应已删除"
+
+        assert len(fake.warnings) == 1, \
+            f"向量清理失败必须留 warning（另两条 warning 路径此时都不该触发）：{fake.warnings}"
+        assert fake.warnings[0][1].get("tx_id") == "tr_1", fake.warnings
+        assert "vec.db is locked" in str(fake.warnings[0][1].get("err", "")), \
+            f"异常原因必须带上：{fake.warnings}"
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

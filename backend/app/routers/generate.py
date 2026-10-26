@@ -576,7 +576,8 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
             # 重新写进全文索引。放在 return 之前、追问之后 —— 追问写的是旁路文件，
             # 不影响索引内容，但保持「所有落盘动作之后」这条纪律更好读。
             update_index(getattr(request.app.state, "search_engine", None), store,
-                         transcript_id)
+                         transcript_id,
+                         vec=getattr(request.app.state, "vector_store", None))
 
             return {
                 "id": notes_mv.id if notes_mv else (polished_mv.id if polished_mv else ""),
@@ -1155,7 +1156,8 @@ async def generate_stream(transcript_id: str, request: Request,
                 # save_markdown 之后** —— 双产物会写两次，而索引只需要反映最终状态，
                 # 且取消路径（partial）也该被索引到，它同样汇到这里。
                 update_index(getattr(request.app.state, "search_engine", None), store,
-                             transcript_id)
+                             transcript_id,
+                             vec=getattr(request.app.state, "vector_store", None))
 
                 # 追问建议（勾选 followup）—— 上面三个 done 出口汇到这里的**统一收尾**，
                 # 不插在任一 done 之后（插三处 = 三个可能漏改的点）。

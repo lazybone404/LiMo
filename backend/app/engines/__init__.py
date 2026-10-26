@@ -447,6 +447,25 @@ def init_engines(config: dict | None = None):
     # Tesseract 已从内置移除（2026-08-02，体积修剪 + 插件化方向）。
     # 需本地 OCR 请使用三方插件参考模板：backend/plugins/examples/tesseract_plugin.py
 
+    # 向量化（embedding）— 语义检索用，**不作用于文件**（2026-10-26，search-retrieval.md §6.1 阶段 1）
+    #
+    # ⚠️ **无条件注册**（与 OCR 同款）：没配 Key 时也要列得出来，设置页才能显示「未配置」；
+    #    抛点刻意放在真正要联网的那一刻（`DashScopeEmbeddingEngine.client`），
+    #    见 embedding_dashscope.py 模块文档「没有 key 时不在这抛、也不在 init 里抛」。
+    #
+    # ⚠️ **刻意不写 engine_models / engine_bindings** —— 那是阶段 2 的事。本阶段它
+    #    「注册了但没人绑定」= 等于不存在，对现有行为零变更（不触发末尾那次 save_config）。
+    try:
+        from .embedding_dashscope import DashScopeEmbeddingEngine
+        emb_engine = DashScopeEmbeddingEngine(api_key=dashscope_ocr_key)
+        EngineRegistry.register("embedding", emb_engine.name, emb_engine)
+        logger.info("Embedding engines: dashscope-embedding (key=%s)",
+                    "configured" if dashscope_ocr_key else "NOT SET")
+    except ImportError as e:
+        logger.warning(f"DashScope Embedding unavailable: {e}")
+    except Exception as e:
+        logger.warning(f"DashScope Embedding init failed: {e}")
+
     # 持久化 — 只保存引擎相关字段，保护敏感信息（LLM Key 等）不被覆盖
     # migrated_changed 计入判定：faster-whisper/tesseract 迁移清理有真实变更时必须落盘
     if asr_changed or models_changed or doc_bindings_changed or migrated_changed:

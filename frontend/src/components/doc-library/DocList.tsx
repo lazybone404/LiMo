@@ -41,6 +41,12 @@ export interface DocListProps {
   emptyText: string | null
   /** FTS 结果被截断（取回条数达到上限）——静默截断会让用户以为「就这些」 */
   truncated: boolean
+  /** 全文检索失败的提示（`null` = 正常）。**必须显示**：否则「索引坏了」与
+   *  「没有匹配」在界面上是同一句话，用户不会知道自己该去重建索引。 */
+  searchError: string | null
+  /** 语义（向量）路本次退化的提示（`null` = 未启用或正常）。**与 `searchError` 分家**：
+   *  字面结果完整、只是没多出语义那一份助力，严重度不同、要用户做的事也不同。 */
+  semanticNote?: string | null
   /** 拖着**已归类**的文档时才需要「移出文件夹」这个落点 */
   draggingCategorized: boolean
   /**
@@ -82,7 +88,7 @@ const MAX_INDENT_DEPTH = 6
 export function DocList({
   groups, rendered, limit, collapsedGroups, countOf, selectedFolderIds, onFolderSelect,
   folderBusy, docsLoading, hasMore,
-  emptyText, truncated, draggingCategorized, treeIndent, folderPath,
+  emptyText, truncated, searchError, semanticNote, draggingCategorized, treeIndent, folderPath,
   onFolderNewChild, onFolderContextMenu, headerAction, onHeaderActionConsumed,
   onDropToUncategorized, onToggleGroup,
   onFolderRename, onFolderDelete, onFolderDrop, renderRow, scrollRef, sentinelRef, onListKeyDown,
@@ -246,10 +252,28 @@ export function DocList({
         </div>
       )}
 
+      {/* 全文检索失败 —— 与「截断」并排但**不同性质**：截断是「给了前 N 条」，
+          失败是「正文这一路压根没跑」。之前这个错误被 `catch { setHits([]) }` 咽掉，
+          界面与「没有匹配」逐字相同。 */}
+      {searchError && (
+        <p data-search-error className="text-[11px] text-warning text-center py-2 px-3">
+          {searchError}
+        </p>
+      )}
+
+      {/* 语义路退化 —— 与 `searchError` **不同性质**：字面结果完整，只是没多出
+          向量那一份助力。用 muted 而非 warning：它能自愈（后台正在建索引时属正常），
+          而 warning 会让人以为得动手做点什么。 */}
+      {semanticNote && (
+        <p data-search-semantic-note className="text-[11px] text-muted text-center py-2 px-3">
+          {semanticNote}
+        </p>
+      )}
+
       {/* 截断提示 —— 只在**取回条数达到上限**时出现。判据见 useDocQuery（`>=` 而非 `>`） */}
       {truncated && (
         <p data-search-truncated className="text-[11px] text-disabled text-center py-2">
-          原文匹配结果已截断，仅显示前 {SEARCH_LIMIT} 条 — 请细化关键词
+          正文匹配结果已截断，仅显示前 {SEARCH_LIMIT} 条 — 请细化关键词
         </p>
       )}
     </div>

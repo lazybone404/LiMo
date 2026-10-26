@@ -140,6 +140,11 @@ async def delete_transcript(tx_id: str, request: Request, store=Depends(get_stor
         except Exception as e:
             log.warning("从全文索引移除失败，搜索可能仍命中该文档",
                         tx_id=tx_id, err=str(e)[:120])
+    # 向量索引同理，且**必须在这里做**：`vector_worker.reconcile` 虽然会清孤儿，
+    # 但它只在 worker 循环**开始时**跑一次 —— 桌面应用能开着好几天，
+    # 这期间孤块既会被语义检索召回到「点进去文档不存在」，也与设置页那句
+    # 「删除文档时对应的向量也会一并清掉」不符。
+    _drop_vectors(request, tx_id)
     return {"status": "deleted", "id": tx_id}
 
 
@@ -209,6 +214,9 @@ async def batch_transcripts(data: BatchTranscriptsRequest, request: Request,
                 # ⚠️ 漏掉这行 = 全文搜索留下幽灵命中（搜得到，点开 404）
                 if engine:
                     engine.delete(tx_id)
+                # 向量侧同理。它自己吞异常不回滚 —— 文档已经删了，
+                # 让这条记成 failed 只会诱导用户重试，而重试只会得到「文档不存在」。
+                _drop_vectors(request, tx_id)
                 affected += 1
             except Exception as e:      # 单条失败不拖垮整批
                 failed.append({"id": tx_id, "error": str(e)[:120]})
@@ -235,13 +243,32 @@ async def batch_transcripts(data: BatchTranscriptsRequest, request: Request,
 
 
 def _index_for_search(request: Request, tx_id: str):
-    """把一篇文档写进全文索引（薄委托：只负责从 request 里取出两个依赖）。
+    """把一篇文档写进全文索引，并给向量侧打 `pending`（薄委托：只负责取依赖）。
 
     内容判据在 `app.core.search.update_index` → `doc_text.search_index_text`，
-    五个写点共用那一份。
+    五个写点共用那一份。向量侧只打标记、不在这里编码（见 `core/vector_store`）。
     """
     update_index(getattr(request.app.state, 'search_engine', None),
-                 getattr(request.app.state, 'store', None), tx_id)
+                 getattr(request.app.state, 'store', None), tx_id,
+                 vec=getattr(request.app.state, 'vector_store', None))
+
+
+def _drop_vectors(request: Request, tx_id: str) -> None:
+    """把一篇文档从向量索引里摘掉（薄委托：只负责取依赖 + 不冒 500）。
+
+    与上一条**成对**：写入侧打 `pending`、删除侧摘块，两条路径都不能漏。
+    ⚠️ 吞异常是刻意的 —— 走到这里文档已经从 store 里删了、回滚不了，
+    抛出去只是把「文档删掉了但向量没清干净」变成一个用户看不懂的 500。
+    残留由 `vector_worker.reconcile` 在下次启动对账时兜底。
+    """
+    vec = getattr(request.app.state, 'vector_store', None)
+    if vec is None:
+        return
+    try:
+        vec.delete_doc(tx_id)
+    except Exception as e:
+        log.warning("从向量索引移除失败，语义检索可能仍命中该文档",
+                    tx_id=tx_id, err=str(e)[:120])
 
 
 _ADAPTER_SOURCE_MAP = {

@@ -99,6 +99,18 @@ class QueryError(AppError):
                    detail="SearchEngine 尚未初始化（检查 QueryService 的构造时机）",
                    status_code=500, recoverable=False)
 
+    @classmethod
+    def index_unavailable(cls, reason: str | None) -> "QueryError":
+        """索引库存在但打不开（文件损坏 / 无权限 / 磁盘满）。
+
+        ⚠️ 与 `no_search_engine` **分开**：那条是「代码构造时机错了」（非 recoverable，
+        用户无动作可做）；这条是「用户点一下重建就能修」（recoverable）。
+        合并成一条的失效形态是用户被叫去查一个他并不拥有的初始化顺序。
+        """
+        return cls("QUERY_INDEX_UNAVAILABLE", "全文索引不可用",
+                   detail=f"{reason}——可在 设置 → 通用 → 检索索引 里重建",
+                   status_code=503, recoverable=True)
+
 
 @dataclass
 class Page:
@@ -333,6 +345,12 @@ class QueryService:
             return Page(items=[])
         if self._search is None:
             raise QueryError.no_search_engine()
+        # ⚠️ 「引擎在场但索引打不开」与「引擎不在场」**必须分开**：前者用户点一下
+        # 重建就能修（recoverable），后者是代码构造时机错了（他要查的是初始化顺序）。
+        # 不加这一条时 `search()` 内部短路返回 `[]` ⇒ 用户看到的是「没搜到」，
+        # 而这句谎话会把「索引坏了」永远藏起来。
+        if not self._search.available:
+            raise QueryError.index_unavailable(self._search.last_error)
 
         size = self._clamp_limit(limit)
         # 多取一条只为**探测**还有没有更多（不返回给调用方）
