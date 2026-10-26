@@ -23,6 +23,7 @@ from app.core.resource_id import is_valid_resource_id
 from app.core.config import build_engine_models
 from app.core.disconnect import disconnect_watcher
 from app.core import logging as log
+from app.core.search import update_index
 from app.storage.store import rewrite_asset_urls
 
 router = APIRouter()
@@ -111,7 +112,7 @@ async def update_transcript(tx_id: str, request: Request, store=Depends(get_stor
     if not store.save_transcript_full(tx):
         raise AppError("INGEST_DOC_NOT_FOUND", "文档目录不存在（可能已被外部删除），修改未保存",
                        status_code=404, recoverable=True)
-    _index_for_search(request, tx_id, tx.get("title", ""), tx.get("rawText", ""))
+    _index_for_search(request, tx_id)
 
     return {"status": "ok", "title": tx.get("title", ""), "tags": tx.get("tags", []),
             "folderId": tx.get("folderId", "")}
@@ -233,14 +234,14 @@ async def batch_transcripts(data: BatchTranscriptsRequest, request: Request,
     return {"status": "ok", "affected": affected, "failed": failed}
 
 
-def _index_for_search(request: Request, tx_id: str, title: str, raw_text: str):
-    """向全文搜索引擎添加/更新索引（静默失败，不影响主流程）"""
-    try:
-        engine = getattr(request.app.state, 'search_engine', None)
-        if engine:
-            engine.index(tx_id, title, raw_text)
-    except Exception:
-        pass  # 索引失败不阻塞摄入
+def _index_for_search(request: Request, tx_id: str):
+    """把一篇文档写进全文索引（薄委托：只负责从 request 里取出两个依赖）。
+
+    内容判据在 `app.core.search.update_index` → `doc_text.search_index_text`，
+    五个写点共用那一份。
+    """
+    update_index(getattr(request.app.state, 'search_engine', None),
+                 getattr(request.app.state, 'store', None), tx_id)
 
 
 _ADAPTER_SOURCE_MAP = {
@@ -730,7 +731,7 @@ async def ingest(
         result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir)
         persisted = True
         if result.get("status") == "done" and "id" in result:
-            _index_for_search(request, result["id"], result.get("title", ""), output.raw_text)
+            _index_for_search(request, result["id"])
         return result
     finally:
         # ── 临时文件收口（P1-10）──
@@ -841,7 +842,7 @@ async def retranscribe(tx_id: str, request: Request, store=Depends(get_store), c
                 f"重新转录已成功（{output.engine}），但保存失败：文档目录不存在。旧内容已保留。",
                 recoverable=False,
             )
-        _index_for_search(request, tx_id, tx.get("title", ""), output.raw_text)
+        _index_for_search(request, tx_id)
 
         log.info("重新转录完成", title=tx.get("title", tx_id)[:40],
                  engine=output.engine, chars=len(output.raw_text))

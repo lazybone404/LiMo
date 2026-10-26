@@ -311,13 +311,19 @@ async def startup():
 
     # 全文搜索引擎 — 从已有转录重建索引（后台不阻塞启动）
     from app.core.search import SearchEngine
+    from app.generation.doc_text import search_index_text
     _search_engine = SearchEngine(config.get("data_dir", "data"))
     app.state.search_engine = _search_engine
     try:
+        # 结构升级（2026-10-26：单字 → 二字组）会丢弃旧索引，故**只在这里做** ——
+        # `limo_cli --local` 也构造 SearchEngine，但它是只读工具，不能顺手 DROP 用户库。
+        # 迁移后紧接着的 `rebuild` 就是数据来源，两步必须成对。
+        _search_engine.migrate_schema()
         _transcripts = app.state.store.list_transcripts()
         def _get_content(tx_id: str) -> str:
-            tx = app.state.store.get_transcript(tx_id)
-            return tx.get("rawText", "") if tx else ""
+            # 索引文本 = rawText + 最新版笔记，判据只有 `search_index_text` 一处
+            # （与摄入 / 生成完成 / 编辑保存三个增量写点同源）。
+            return search_index_text(app.state.store, tx_id)
         _search_engine.rebuild(_transcripts, _get_content)
         # ⚠️ **不要在这里写 `import logging`**（2026-10-21 事故）：函数体内任意位置的
         # `import logging` 会让 `logging` 成为 `startup` 的**局部变量**，于是本函数里

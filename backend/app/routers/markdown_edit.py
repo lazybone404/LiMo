@@ -15,12 +15,13 @@ import logging
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from app.core.dependencies import get_store
 from app.core.errors import AppError
 from app.core.markdown_assets import rewrite_asset_urls, unrewrite_asset_urls
+from app.core.search import update_index
 from app.core.transcript_meta import mark_edited, parse_artifact_meta, strip_meta
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.generation.prompts import normalize_style
@@ -55,7 +56,7 @@ class MarkdownEditRequest(BaseModel):
 
 
 @router.put("/markdown/{transcript_id}")
-async def edit_markdown(transcript_id: str, req: MarkdownEditRequest,
+async def edit_markdown(transcript_id: str, req: MarkdownEditRequest, request: Request,
                         store=Depends(get_store)) -> dict:
     """保存 notes/polished 的手动编辑：覆盖当前版本 + 置 edited 标记。"""
     if req.mode not in _EDITABLE_MODES:
@@ -132,6 +133,10 @@ async def edit_markdown(transcript_id: str, req: MarkdownEditRequest,
     # `replace_version` = 覆盖这一版；版本号**不变**（这正是「编辑不产生版本」）。
     if not store.save_markdown(mv, file_meta=head, replace_version=version):
         raise AppError("MD_EDIT_SAVE_FAILED", "保存失败，请重试", recoverable=True)
+
+    # 笔记正文变了 → 全文索引跟着更新。漏了这行的症状很具体：用户刚在笔记里写了
+    # 一个新词，转头搜它搜不到（索引里还是编辑前那份），而「保存成功」看起来完全正常。
+    update_index(getattr(request.app.state, "search_engine", None), store, transcript_id)
 
     # 返回对齐 GET /api/markdown：**被编辑的那一版** + 完整版本列表。
     # ⚠️ 返回编辑的版本而不是 `mds[0]`（最新）：用户可能正停在 v1 上编辑，返回最新版

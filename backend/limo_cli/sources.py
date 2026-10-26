@@ -280,7 +280,12 @@ class LocalSource:
         self._search = None
         if db.exists():
             from app.core.search import SearchEngine
-            self._search = SearchEngine(str(self.data_dir))
+            eng = SearchEngine(str(self.data_dir))
+            # 结构对不上（索引还没被应用升级）就当「没建过索引」——如实说没有，
+            # ⚠️ **绝不在这里 DROP 重建**：那正是上面注释里「不该顺手改库」的第二种形态，
+            # 而且 `--local` 手上没有 content getter，DROP 完就再也补不回来。
+            if eng.is_schema_current():
+                self._search = eng
 
         self._svc = QueryService(self._store, self._search)
 
