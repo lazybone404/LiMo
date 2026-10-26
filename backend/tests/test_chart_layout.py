@@ -292,6 +292,66 @@ _raises(lambda: L.expand({"layout": "state", "states": [
     '拆分成多张图', '18 层状态链超出缩放下限（0.65）时仍应报「请拆图」')
 print("PASS: state 负向用例 — 未知 id / 自环过多 / 缩放下限（+ 9 层可画：层数闸门已删）")
 
+# ── 2d'. 同节点多条回边 → 走廊分道（2026-10-26）──
+# 熔断器三态：关闭 → 打开 → 半开，而「半开」又同时连回两者 —— 两条回边同从**末行**
+# 节点出发，各自还有一条「进入目标层」的水平段。修复前 `corr_y`/`entry` 都只依赖
+# 层号 ⇒ 这两条边的两段水平线分别完全重合（沟槽 x 只差 6px），画面上并成一条横线；
+# 标签只能靠 `engine._relax_labels` 上下让位，让开就**悬空**（读者分不出哪个标签说
+# 的是哪条线），而 `assert_layout` 在让位之前就因「标签遮罩重叠」整图失败 ——
+# 用户 2026-10-26 报告的实证产物里 4 条正是这个（降级成「📊 图表生成失败」占位）。
+_CIRCUIT = {"layout": "state", "title": "熔断器三态", "states": [
+    {"id": "closed", "label": "关闭"},
+    {"id": "open", "label": "打开"},
+    {"id": "half", "label": "半开"}],
+    "transitions": [
+        {"from": "closed", "to": "open", "label": "错误率超阈值"},
+        {"from": "open", "to": "half", "label": "等待时间到"},
+        {"from": "half", "to": "closed", "label": "试探成功"},
+        {"from": "half", "to": "open", "label": "试探失败"}]}
+r_cb = L.expand(_CIRCUIT)
+_check_common('state', r_cb)
+assert [l['text'] for l in r_cb['labels']] == ['错误率超阈值', '等待时间到',
+                                               '试探成功', '试探失败'], r_cb['labels']
+_cb = [l for l in r_cb['labels'] if l['text'].startswith('试探')]
+assert len(_cb) == 2, '两个分支标签都应保住（丢掉就只剩两条分不清的线）'
+assert not L._overlap(_cb[0]['x'], _cb[0]['y'], _cb[0]['w'], _cb[0]['h'],
+                      _cb[1]['x'], _cb[1]['y'], _cb[1]['w'], _cb[1]['h']), \
+    f'两个标签仍重叠：{_cb}'
+# ⚠️ 关键：**不是让位让开的**，是算子自己分了道。判据取「两条回边的水平段 y」——
+# 从路径里抽，因为标签的 y 是 lane_y-8 派生的，两者同源但只有 lane 是根因。
+def _h_segs(d):
+    """路径里所有水平段的 y（`H` 之前的那个 y；纯竖线段的 H 与前后同 x 时被省略）。"""
+    out, y = [], 0
+    for tok in d.replace('M', ' M').split():
+        if tok[0] == 'H':
+            out.append(y)
+        elif tok[0] in 'MV':
+            y = int(tok[1:])
+    return out
+
+
+_backs = [e for e in r_cb['edges'] if _h_segs(e['d'])]
+_cb_edges = sorted((_h_segs(e['d'])[0], _h_segs(e['d'])[-1]) for e in _backs
+                   if len(_h_segs(e['d'])) >= 2)
+assert len(_cb_edges) == 2, f'应恰有两条回边（各含两段水平线）：{_backs}'
+assert _cb_edges[0][0] != _cb_edges[1][0], \
+    f'两条回边仍共用同一条走廊水平线（未分道）：{_cb_edges}'
+assert _cb_edges[0][1] != _cb_edges[1][1], \
+    f'两条回边仍共用同一条进入段水平线（未分道）：{_cb_edges}'
+# 对照实验：让位逻辑**不**参与这次成功 —— 把两条回边的标签强行摆到同一处，
+# `_relax_labels` 仍然能把它们分开（说明它是兜底，不是这条用例的主角）。
+_fake = [{"x": 100, "y": 200, "w": 64, "h": 16, "text": "A"},
+         {"x": 100, "y": 200, "w": 64, "h": 16, "text": "B"}]
+_relaxed = L._relax_labels(_fake, r_cb['nodes'], 640, W)
+assert len(_relaxed) == 2 and not L._overlap(
+    _relaxed[0]['x'], _relaxed[0]['y'], _relaxed[0]['w'], _relaxed[0]['h'],
+    _relaxed[1]['x'], _relaxed[1]['y'], _relaxed[1]['w'], _relaxed[1]['h']), \
+    f'让位兜底失效：{_relaxed}'
+assert _relaxed[0]['x'] == 100 and _relaxed[0]['y'] == 200, \
+    '让位只该动后一个（先到先得），不该挪已经放好的那个'
+print(f"PASS: 回边分道 — 熔断器三态两条回边各自占走廊（水平段 "
+      f"{_cb_edges[0]} / {_cb_edges[1]}），标签 y {_cb[0]['y']}/{_cb[1]['y']} 且兜底让位可用")
+
 # ── 2e. sequence — 时序图（生命线走 shapes，消息顺序即时间顺序）──
 r_sq = L.expand({"layout": "sequence", "title": "登录时序", "actors": [
     {"id": "u", "label": "用户"}, {"id": "s", "label": "服务端"},

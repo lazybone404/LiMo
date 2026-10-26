@@ -137,8 +137,10 @@ export interface StreamGenerateCallbacks {
   onStage?: (message: string) => void
   /** 追问建议（用户勾了「追问卡片」）。**推在 `done` 之后**——`parseSSEStream` 读到
    *  reader 关闭才 break，故这里收得到。`error` 非空表示这一版没产出（超时/模型没按
-   *  格式输出/版本号无法确定），`questions` 为空数组。 */
-  onFollowUp?: (questions: string[], error?: string | null) => void
+   *  格式输出/版本号无法确定），`questions` 为空数组。
+   *  `version` 是这批建议所属的产物版本（后端从 index 的版本号带出，`0` = 无法确定）
+   *  —— 追问**按版本各存**，消费方必须按它落位，否则切到别的版本会串。 */
+  onFollowUp?: (questions: string[], error: string | null | undefined, version: number) => void
 }
 
 export function streamGenerate(
@@ -222,7 +224,7 @@ export function streamGenerate(
         } else if (data.type === 'followup') {
           // 追问建议（payload 带 mode —— **必须在 data.mode 判断之前**，否则会被下面
           // 那支当成正文 chunk 塞进笔记，且零报错。与 stage / reasoning 同款陷阱）
-          callbacks.onFollowUp?.(data.questions || [], data.error ?? null)
+          callbacks.onFollowUp?.(data.questions || [], data.error ?? null, Number(data.version) || 0)
         } else if (data.mode) {
           callbacks.onChunk(data.text || '', data.mode)
         } else if (data.text) {

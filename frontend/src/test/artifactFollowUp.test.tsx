@@ -25,6 +25,8 @@ import { getTypeMeta, isFormatVisible } from '../components/gen-panel/constants'
 import { GenerateOptions } from '../components/gen-panel/GenerateOptions'
 import { ChatFollowUpList } from '../components/ai-chat/ChatMarkerContent'
 import { useChatStore } from '../store/chatStore'
+import { useStore } from '../store'
+import { followUpsKey } from '../store/contentSlice'
 
 // ═══════════════════════════════════════════════════════════
 // 1. SSE 分发 —— `followup` 必须走 `onFollowUp`，**不能**掉进 `data.mode` 那支
@@ -51,7 +53,7 @@ const settle = async (rounds = 10) => {
 
 interface Spy {
   chunks: [string, string?][]
-  followUps: [string[], string | null | undefined][]
+  followUps: [string[], string | null | undefined, number][]
   errors: string[]
   done: number
   cb: StreamGenerateCallbacks
@@ -68,7 +70,7 @@ async function run(events: unknown[]): Promise<Spy> {
     onDone: () => { done += 1 },
     onError: m => { errors.push(m) },
     onCancelled: () => {},
-    onFollowUp: (qs, err) => { followUps.push([qs, err]) },
+    onFollowUp: (qs, err, version) => { followUps.push([qs, err, version]) },
   }
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, body: sseBody(events) }) as unknown as Response))
   streamGenerate('doc1', { mode: 'notes', formats: 'followup' }, cb)
@@ -87,7 +89,7 @@ describe('followup 事件的 SSE 分发', () => {
     // `else if (data.mode)` **之后** → chunks 里会多出一条 `['', 'notes']`，本条红。
     const s = await run([{ text: '正文' }, { type: 'done' }, followupEvt])
 
-    expect(s.followUps).toEqual([[QS, null]])
+    expect(s.followUps).toEqual([[QS, null, 1]])
     expect(s.chunks.map(c => c[0])).toEqual(['正文'])   // 只有真正文那一条
     expect(s.done).toBe(1)
     expect(s.errors).toEqual([])
@@ -104,7 +106,7 @@ describe('followup 事件的 SSE 分发', () => {
       { type: 'done' },
       { type: 'followup', mode: 'notes', version: 1, questions: [], error: '追问建议生成失败' },
     ])
-    expect(s.followUps).toEqual([[[], '追问建议生成失败']])
+    expect(s.followUps).toEqual([[[], '追问建议生成失败', 1]])
   })
 
   it('追问推在 done 之后**不**触发「连接意外断开」（done 已置终态标记）', async () => {
@@ -357,5 +359,66 @@ describe('ChatFollowUpList — 产物侧复用', () => {
   it('⚠️ 零回归：不传 label 时文案仍是「继续追问」', () => {
     const { container } = render(<ChatFollowUpList items={ITEMS} streaming={false} />)
     expect(container.querySelector('.chat-followup-label')!.textContent).toContain('继续追问')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════
+// 6. 晚到通道 —— 事件到达时，用户可能已经不在那个 tab / 那一篇
+//
+// 这是用户 2026-10-26 报的「勾了追问偶发不生成」的前端那一半：追问推在 `done`
+// **之后**（独立一次 LLM 调用，几十秒），而 `markdownMeta` 是**单槽**（只装当前
+// tab 那个 mode）。原来 `GenPanel.onFollowUp` 首行 `if (!isSameDoc) return`、
+// 随后又要求 `markdownMeta.mode === 'notes'` —— 两条任一命中就永久丢失，且
+// 「数据已在盘上，切回来能拿到」这个理由不成立：切回来时产物 tab 若已在内存里，
+// 走的是 `perModeMetaRef` 同步、**不再发 GET**。
+//
+// 现在改为无条件写进按 `docId::mode::version` 索引的 `followUpsByVersion`，
+// 预览区按**当前显示的那一版**回退取。
+// ═══════════════════════════════════════════════════════════
+
+describe('追问的晚到通道', () => {
+  beforeEach(() => { useStore.setState({ followUpsByVersion: {} }) })
+
+  it('SSE 的 version 原样交给回调（缺失归一成 0）', async () => {
+    const s = await run([
+      { type: 'done' },
+      { type: 'followup', mode: 'notes', version: 3, questions: ['q'], error: null },
+    ])
+    expect(s.followUps).toEqual([[['q'], null, 3]])
+
+    const s2 = await run([{ type: 'done' }, { type: 'followup', mode: 'notes', questions: ['q'], error: null }])
+    expect(s2.followUps[0][2]).toBe(0)
+  })
+
+  it('按键存：同一篇文档的不同版本互不覆盖（回退取错版本 = 给旧版挂新问句）', () => {
+    useStore.getState().setVersionFollowUps('docA', 'notes', 1, ['v1 的问题'])
+    useStore.getState().setVersionFollowUps('docA', 'notes', 2, ['v2 的问题'])
+    const m = useStore.getState().followUpsByVersion
+    expect(m[followUpsKey('docA', 'notes', 1)]).toEqual(['v1 的问题'])
+    expect(m[followUpsKey('docA', 'notes', 2)]).toEqual(['v2 的问题'])
+    // 对照：**不能**只按 docId 索引 —— 那样上面两条会互相覆盖，而 m[...] 仍是真值
+    expect(m[followUpsKey('docB', 'notes', 2)]).toBeUndefined()
+  })
+
+  /** 剥注释：注释里本身在讨论这些字样，不剥会被自己绊倒 */
+  const strip = (s: string) => s
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+
+  it('GenPanel：写通道**之前**不得有 `isSameDoc` 早退（否则切走就永久丢失）', () => {
+    const src = strip(readFileSync(resolve(process.cwd(), 'src/components/gen-panel/GenPanel.tsx'), 'utf-8'))
+    const iFn = src.indexOf('onFollowUp(questions, error, version)')
+    const iWrite = src.indexOf('setVersionFollowUps(capturedId')
+    expect(iFn, '找不到 onFollowUp —— 守卫本身失效了').toBeGreaterThan(-1)
+    expect(iWrite, '找不到 setVersionFollowUps 落点 —— 守卫本身失效了').toBeGreaterThan(-1)
+    expect(iWrite).toBeGreaterThan(iFn)
+    // 反向断言：这中间不许有「不在同一篇就 return」
+    expect(src.slice(iFn, iWrite)).not.toMatch(/isSameDoc\([^)]*\)\s*\)?\s*return/)
+  })
+
+  it('预览区渲染的是合并后的 `followUpItems`，不是裸 `markdownMeta.followUps`', () => {
+    const src = strip(readFileSync(resolve(process.cwd(), 'src/components/preview/PreviewArea.tsx'), 'utf-8'))
+    expect(src).toContain('items={followUpItems}')
+    expect(src).not.toContain('items={markdownMeta.followUps}')
   })
 })

@@ -93,6 +93,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 |------|------|--------|
 | [README.md](README.md)（**面向用户**） | 产品介绍：能做什么 / 安装 / 首次使用 / 快捷键 | ⚠️ **改任何用户可见能力时必须同步**（它是用户的唯一入口）|
 | [architecture.md](docs/architecture.md) | 六层分层架构，每层模块职责、交互、陷阱 | 理解整体架构和模块边界 |
+| [search-retrieval.md](docs/search-retrieval.md) | **全文检索**：字面检索现状（三列分工 / 二字组 OR / 五个写点）+ **向量扩展计划**（`EmbeddingEngine` 云端内置 + 本地插件、向量存储、RRF 融合、索引时机、分期） | 改检索逻辑、做向量化、查「为什么搜不到」 |
 | [frontend-patterns.md](docs/frontend-patterns.md) | 状态管理、取消机制、TaskPanel、apiUrl | 改前端状态/任务相关代码 |
 | [export-pipeline.md](docs/export-pipeline.md) | 导出架构、两条路径设计、Tab→内容映射表、KaTeX/Pygments、HTML/Word 共用解析器、**PDF 导出（WebView2 PrintToPdf / 打印对话框双路径）**、打印 CSS 三处落点、**卡片骨架跟随（`skeleton=card` 参数贯通 + `data-skeleton` 主作用域 + 导出侧 `--tk-*` 令牌补齐）**、新增导出格式落点清单 | 改导出功能、新增 tab、**新增导出格式**、改打印样式/PDF 导出、改卡片导出 |
 | [CHANGELOG.md](docs/CHANGELOG.md) | 修改记录：做了什么、为什么、影响范围 | 了解历史决策、避免重复踩坑 |
@@ -340,14 +341,44 @@ python scripts/migrate-secrets.py --rollback  # 还原：密钥库的值填回 Y
 
 ⚠️ **迁移前必读**：迁移工具**刻意不写明文备份**（那等于在磁盘上新增一份静默的明文副本，正是要消灭的东西）——需要额外保险请**手动**把 `config.yaml` 复制到库目录之外；回滚由 `--rollback` 承担。幂等的前提是「先把密钥库的值 inject 回来再 save」，**密钥库解不开时必须中止**（继续下去 `save_config` 会把它删掉）。
 
-### 临时调试脚本约定
+### 临时/实验脚本约定（两条路，判据是「三个月后还要不要它」）
+
+**分流判据**：*这个脚本的产出，会不会在三个月后被用来回答「当时为什么这么选」？*
+
+| 会 | 不会 |
+|---|---|
+| → `_experiments/NN-主题/`（**长期保留**） | → `backend/_*.py`（**用完即删**） |
+| 有对照、有量化结果、结论影响技术选型 | 打印一下、看一眼、确认某处行为 |
+
+#### A. 探索性调试 → `_` 前缀，用完即删
 
 后端/前端根目录允许存在 `_` 前缀的一次性验证脚本（如 `backend/_chart_verify.py`），用于逐点排查（渲染验证、像素体检、API 探活）：
 - **命名**：一律 `_` 前缀（`backend/_*.py`），git status 一眼可辨
-- **用完即删**：验证结论得出后立即删除，不留残骸。少数用户明确要求保留的（如 `_type_demo_gen.py`）例外，但**绝不提交 git**
+- **用完即删**：结论得出后立即删除，不留残骸。少数用户明确要求保留的（如 `_type_demo_gen.py`）例外，但**绝不提交 git**
 - **绝不进打包**：PyInstaller/`tsc` 不收集 `_` 前缀文件；`git add` 时显式排除
 - **结论沉淀**：有价值的排查结论写回 CHANGELOG 或对应模块注释，脚本本身不保留
-- ⚠️ **隔离要自证，不能靠直觉**：验证脚本动的是**真实路径还是沙箱**必须由**断言**回答。2026-10-04 一期验证时，`env = dict(os.environ, LIMO_CONFIG=..., LIMO_SECRETS=...)` **只传给了 subprocess**，当前进程里 `save_config()` 用的是真实路径 → 写出了 `%LOCALAPPDATA%\LiMo\secrets.bin`。「我设了环境变量」是直觉，「当前进程的 `os.environ` 里确实有」才是事实 —— 验证脚本跑完先断言「未污染真实位置」（模式 #58）
+
+#### B. 验证性实验 → `_experiments/`，可复现、可复盘
+
+**「跑过一次得到一串数字」不是实验，是观察。** 实验 = 有对照组 + 有量化结果 + 有「与预期的偏差」，
+且**三个月后换个 agent 照着 README 能重跑出同一个结论**。每个实验目录必须回答五段：
+
+1. **怎么测的** —— 数据从哪来、判据是什么、对照组怎么设、哪些变量被固定
+2. **测出来的结构如何** —— 变量怎么组合、每个格子跑的是什么、样本量
+3. **得出的结果如何** —— 表格 + 结论 + **与预期的偏差**（偏差比符合预期更有信息量）
+4. **已知边界** —— 这个结论在什么条件下不成立
+5. **怎么复现** —— 一条命令 + 跑之前要准备什么
+
+约定（详见 [_experiments/README.md](_experiments/README.md)）：
+- 脚本**不写死绝对路径**（用 `Path(__file__).resolve().parents[N]` 推导仓库根），整个目录挪位置也能跑
+- `results/` 存**原始 stdout**，不存手工整理的摘要 —— 摘要进 README，原始输出用来核对「当时真的跑出来了」
+- 改了脚本就重跑、换新日期文件，**旧的不要删**（能看出结论是否随时间漂移）
+- ⚠️ **判据与数据不许复制第二份**：实验脚本应当 `import` 产品侧已有的评测脚本（`backend/scripts/eval_search.py` 的 `EVAL` / `_load`）。
+  抄一份的失效形态是「产品侧改了题，实验还在跑旧题，两边都算对了」
+
+#### 两条路共用：隔离要自证，不能靠直觉
+
+验证脚本动的是**真实路径还是沙箱**必须由**断言**回答。2026-10-04 一期验证时，`env = dict(os.environ, LIMO_CONFIG=..., LIMO_SECRETS=...)` **只传给了 subprocess**，当前进程里 `save_config()` 用的是真实路径 → 写出了 `%LOCALAPPDATA%\LiMo\secrets.bin`。「我设了环境变量」是直觉，「当前进程的 `os.environ` 里确实有」才是事实 —— 脚本跑完先断言「未污染真实位置」（模式 #58）
 
 ### 模型预设核对（开发期脚本）
 
@@ -461,7 +492,11 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **可嵌套文件夹**（2026-10-18；`routers/folders.py` + store 层 + `storage/folder_tree.py`）：**纯逻辑分类，永不映射为磁盘目录** —— 每个文档已有独立目录（含 `assets` 相对引用与版本归档产物），做成目录会同时破坏三样东西。`index.json` 顶层 `folders`（条目带 `parentId`，`""` = 根）+ transcript 条目 `folderId`（`""` = 未分类，**UI 派生视图而非实体**）；允许重名（id 是身份）；**悬空 folderId 双向容错**；`delete_folder` 同锁区内**整棵子树一起删**（各层文档回落 `""`、**绝不删文档**，返回 `{moved, deletedFolders, deletedFolderIds}`）。⚠️ **零迁移**：读一律 `f.get("parentId","")`，**不 bump `INDEX_VERSION`**（bump 会触发 `_rebuild_index`，而它今天就会清空 folders 表）。⚠️ 五条不变量（缺/悬空/自引 → 根；环在下标最小处断开；前序保证父在子前；`descendantIds` 不含自身、`totalCount` = 直接数 + 后代求和；未分类不入树）写在 [folder_tree.py](backend/app/storage/folder_tree.py) 与 [folderTree.ts](frontend/src/components/doc-library/folderTree.ts) 两份文件头，**逐字同源**，靠共享 fixture `folder-tree.json` 钉住。⚠️ **前端不做路径解析**：`parse_path` / `path_key` 只活在后端一处，建夹一律走 `POST /api/folders/ensure-path`（全有或全无）。⚠️ 见「关键模式」#44（三处构造点 + `DOC_FIELDS` 第四处）
 - **排列 ⊥ 排序**（两个独立旋钮）：**排列**（`groupBy`：平铺 / 按文件夹 / 按类型 / 按时间）管**横向归类**，**排序**管**组内纵向顺序**。刻意**没有「筛选时退化成扁平」的特殊模式**——筛了 PDF 而排列仍是按文件夹时，列表按文件夹分组、每组只显 PDF、空组自动隐藏；那种退化正是「树和筛选打架」的来源。「按文件夹」= IDE 一体化树（文件夹是可折叠分组头）。分组头三维度共用（`GroupHeader`）但**增删改只对文件夹组开放**（`group.editable` 显式标志——「把 PDF 组改叫视频」没有语义）；文件夹组**保留空组**（它是拖拽放置目标），类型/时间组隐藏空组
 - **筛选区**：五个可折叠小节（文件夹范围 / 文件类型 / 标签 / 标题关键词 / 日期范围）+ **两级折叠**（整区 + 各小节），小节收起时标题行仍显示**激活摘要**（`文件类型 · PDF ×`——否则收起后不知道在筛什么）+ 区头「已激活 N 项 · 清除全部」。**文件夹刻意保留两个入口**：「文件夹范围」（**过滤**「只看这些」）与「排列：按文件夹」（**归类呈现**）——不采用「排列=folder 时隐藏该小节」，切换排列时筛选区突然多/少一节比多读一个词更困惑。**标签无 12 上限**（全量滚动 + 已选置顶）；**标题关键词纯内存零网络、不触发 FTS**，与搜索框的分工是「筛标题」vs「找内容」，二者可同时生效（AND）；**日期范围**「本周」= 本自然周（周一起），**不是**最近 7 天
-- **全文搜索**：内存过滤（0ms）**立刻**渲染 → 停手 250ms 打 `GET /api/search` → 合并。⚠️ `docs` 数组**没有正文**（白名单序列化器只存元数据），故正文搜索客户端**不可能**实现 —— FTS5 是唯一可行解不是优化。结果集**单一化**：`eligible`（类型/标签/文件夹/日期/标题，**不含关键词**）∩（关键词内存命中 ∪ FTS 命中）——命中行统一走 `DocRow`（有复选框/右键/拖拽，不再是不能选的裸按钮）且**受筛选约束**；标题类命中加「**原文**」角标（措辞非「正文」：FTS5 索引 title+content 两列，一次查询无法判定命中来自哪列），纯原文命中加 `SearchSnippet` 第二行。结果限 100 条，到顶时底部提示细化关键词（静默截断 = 用户以为「就这些」）
+- **全文搜索**：内存过滤（0ms）**立刻**渲染 → 停手 250ms 打 `GET /api/search` → 合并。⚠️ `docs` 数组**没有正文**（白名单序列化器只存元数据），故正文搜索客户端**不可能**实现 —— FTS5 是唯一可行解不是优化。
+  - **索引三列各司其职**（`core/search.py`，2026-10-26 实测重做）：`title` 原文标题（索引）/ `body` 清洗后原文 **UNINDEXED**（只存不搜，**唯一用途是生成摘要** —— 中文在此保持连续）/ `toks` 检索 token 串（**唯一匹配列**）。⚠️ 摘要**不用 FTS5 `snippet()`**：它只能从被索引列取文本，而那是二字组串，摘要会变成 `机器 器学 学习` —— **token 化是检索的内部表示，不该泄漏到展示层**。
+  - **索引文本 = rawText + 最新版笔记**（`doc_text.search_index_text`）。⚠️ 只索引 rawText 等于「只搜用户没写过的那部分」：实测 29 题含笔记 83% vs 不含 66%。**五个写点全部经 `update_index()`**（见「公共常量的家」表）。
+  - **查询侧：二字组 + OR**（`_tokenize` / `_escape_fts5`）。⚠️ 逐字 AND 召回高但区分度为零（「的/是/不」全库都有），目标文档常被 BM25 挤到第 13、33 名；二字组 AND 则一票否决，语义型查询直接归零（15 题 7→**0**）。**区分度来自二字组，召回来自 OR，排序交给 BM25**，三者缺一不可。⚠️ `_tokenize` 的 `limit` 默认 **None**（索引侧必须收全文），只有 `search()` 传 64 —— 曾经无条件 `uniq[:64]` 导致每篇只索引开头 64 个 token，而所有单测都是短文本、全绿。
+  - 结果集**单一化**：`eligible`（类型/标签/文件夹/日期/标题，**不含关键词**）∩（关键词内存命中 ∪ FTS 命中）——命中行统一走 `DocRow`（有复选框/右键/拖拽，不再是不能选的裸按钮）且**受筛选约束**；标题类命中加「**原文**」角标（措辞非「正文」：`title` 与 `toks` 两列都会命中而一次查询无法判定来自哪列），纯原文命中加 `SearchSnippet` 第二行。结果限 100 条，到顶时底部提示细化关键词（静默截断 = 用户以为「就这些」）
 - **⛔ 「正文匹配（N）」独立分组已取消**（2026-09-25）：它固定追加在下方、**不受筛选约束**（筛了 PDF 照样列出网页和视频）、行是裸 `<button>`、还与「排列」旋钮直接打架——是第三个维度的系统分组。三项缺陷都修，唯一值得保的性质（FTS 的 `ORDER BY rank` 相关性序）由**「相关度」排序键**承接：rank 取自 `hits` 的**数组索引**（零后端改动），非命中最末；搜索词从空变非空时自动切过去（= 原「最相关的在最前」的默认体验），用户手动改回后**本次搜索内不再回切**；无命中时该键**不出现**在选项里（所有 rank 都是 MAX，排序退化成保持原序，是个点不动的死键）
 - **单击行 = 打开文档，不动选择集**（2026-09-25 定死，此前语义未定义且与 `selectMode` 自相矛盾）：复选框**列**常驻、**图标**未选中时只在 hover / 行内焦点出现（选中后常显；图标仍占布局位置，故标题不会横跳 —— `focus-within` 是给键盘用户的），Ctrl/Cmd 点击 toggle、Shift 点击区间（anchor 留组件本地——跨折叠退化为单点 toggle 可接受）、Ctrl+A 全选（**焦点在输入框内不劫持**，与 Ctrl+K 相反）、Esc 清空。**`selectMode` 已删除**——批量条由 `hasSelection = selectedIds.size > 0 || selectedFolderIds.size > 0` 派生：要"原子修改"来防的漂移，因为漂移的载体本身没了。`active`（预览目标）与 `selected`（批量目标）是两个正交维度，视觉分离且可叠加。⚠️ **Ctrl/Cmd + 按住拖动 = 划选（2026-10-18）**：方向由**起点行**决定 —— 起点已选中 → 整段**取消**，未选中 → 整段**加选**；**刻意不逐行取反**（在既有已选又有未选的行上会得到「选中/取消交错」，而手势意图是「刷一段」）。每次都从按下时的 `base` 快照重算 ⇒ 幂等（拖出去再拖回来一致）；`mousemove` 与「滚动后重算」**共用同一个 `applyTo`** —— `scroll` 不冒泡故走 `document` + `capture`、等一帧再 `elementFromPoint`（同一帧内只留一个重算，`scrollFrame` 合并）；`mousemove` 在没有布局的宿主（jsdom）用 `ev.target` 兜底，**滚动重算刻意不传 fallback**（那会锁在滚动前的行上）。⚠️ **区间的两端按「屏幕上看到的顺序」算**（`domOrder`，从 `[data-doc-list] [data-doc-id]` 实测取）：默认排列按文件夹会把列表按树前序重排、未分类排最后，**折叠组更是根本不在 DOM 里** —— 拿 `visibleIds`（数据顺序）当基准会选中另一段文档、并把看不见的文档划进批量删除名单（`Ctrl+A` 例外：全选 = 跨分批的全部匹配项，刻意不走它）。⚠️ **划选结束那一下 `click` 的抑制绑「起点行 id」**（`{id, until}` 而非纯时间窗）：浏览器在 mouseup 后必派发一次 click，只有起点行的那一下需要吞，其余行立刻可点。⚠️ **文件夹是第二个选择集**（`selectedFolderIds`，入口是分组头左侧复选框：点 toggle / Shift 区间；**不参与 Ctrl 划选** —— 分组头与文档行在同一列流里交错，混进同一条区间后「第 3 行到第 9 行」取决于中间夹了几个分组头）。批量条分开计数（「已选 3 项 · 2 个文件夹」），文件夹只做**移动**（`FolderPicker`，禁用自身与全部后代；**目标即当前父级 = no-op**：先摘掉已在该位置的夹，全是 no-op 时**不发请求**只提示，部分时文案附「N 个已在该位置」）与**删除**（二次确认；先**去后代化**只发根，本地回落范围**只认后端 `deletedFolderIds`**）；两者**部分失败时把失败项放回选择集**供直接重试；`arrangeBy !== 'folder'` 时文件夹分组头不渲染 ⇒ 自动清空残留选择（⚠️ 判据是 `arrangeBy`，**不是 `grouped === null`** —— 按类型/按时间排列时 `grouped` 同样非 null 但组不可勾选）；筛选变更时两个集合**一起清**（`noSelection()` 同源）；两个删除确认框都认 `Esc`
 - **密度**：详细（默认，卡片）/ **简略**（26px 单行，复选框图标留在布局里防标题横跳，筛选区收成一行入口 + 浮层复用同一批小节组件，排列旋钮与分隔条不渲染）。**简略模式 = IDE 文件树**：**固定按文件夹分组、无视「排列方式」偏好**（那个旋钮在简略下本就不渲染，也就没有跟随它的必要），分组头是父节点、其下子行缩进一层 + 一条 1px 缩进参考线（`treeIndent`，只给**有行的组**画）。⚠️ **分组头 26px 与文件行 26px 是成对常量**，改一处必须改另一处——否则父节点比子节点矮，树形就散了（`GroupHeader.compact` / `DocRow` 紧凑分支，两处都有注释指路）。⚠️ 曾设计为「简略一律平铺不分组」（省下分组头的高度），那样省掉的是**结构**：一个文件夹 30 篇时，平铺列表除了一列标题什么信息都不给
@@ -613,6 +648,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 产物自证头编解码 | [core/transcript_meta.py](backend/app/core/transcript_meta.py) |
 | 产物元数据的**展示判据**（时间/字数格式化 + 取哪几项、什么顺序） | [lib/artifactMeta.ts](frontend/src/lib/artifactMeta.ts)（预览区自证条与 `VersionSwitcher` 共用；`fmtTime`/`fmtChars` 曾在后者里各有一份） |
 | JSON 对象抽取（逐 `{` 试 `raw_decode`，容错前置说明/围栏） | [core/text_utils.py](backend/app/core/text_utils.py)（`chart_renderer` 的私有副本已改为一行委托，有身份断言钉住） |
+| **全文索引的文本内容** = rawText + 最新版笔记 | [generation/doc_text.py](backend/app/generation/doc_text.py)::`search_index_text`。⚠️ 这是**唯一判据**，五个写点（摄入 / 重新转录 / 生成完成 / 编辑保存 / 启动重建）**全部**经 [core/search.py](backend/app/core/search.py)::`update_index()` 走它。各自拼一份的失效形态是「生成后搜得到、编辑后又搜不到」，两次写都报成功，用户只看到搜索「时灵时不灵」 |
+| 全文索引的**写入口**（从 store 取当前状态 + 失败只留痕） | [core/search.py](backend/app/core/search.py)::`update_index(engine, store, tx_id)`。⚠️ **不接收调用方手上的文本**（那份常常还没落盘）；⚠️ `doc_text` 在函数内导入（`core/` 概念上不依赖 `generation/`） |
 | 「**关闭思考**」的 `extra_body` 形状 | [llm/service.py](backend/app/llm/service.py) 的 `DISABLE_THINKING_EXTRA`。⚠️ `stream(disable_thinking=True)` 与 [agent/followup.py](backend/app/agent/followup.py) **共用同一份** —— 后者直调 `client.chat.completions.create`、**走不到 `LLMService`**，故形状必须抽出来（抄一份就是模式 #54）。`test_followup.py` 有源码守卫钉住字面量只此一处 |
 | 「最新版笔记正文」（版本序判据） | [generation/doc_text.py](backend/app/generation/doc_text.py)（智能分类与合成共用；`synthesis` 的私有副本已改为委托） |
 | 文件夹树（父子归化 / 前序 / 后代 / `父 › 子` 路径标签 / `totalCount` / **路径解析 `parse_path` + `path_key`**） | [storage/folder_tree.py](backend/app/storage/folder_tree.py) ↔ [doc-library/folderTree.ts](frontend/src/components/doc-library/folderTree.ts)。⚠️ **`parse_path` / `path_key` 只活在后端一处**（前端刻意不实现：两份要靠 fixture 防漂移，而它的失效形态是「历史里本名就含 `/` 的夹被拆开」这种静默错分）；其余结构函数两端同构，靠共享 fixture `folder-tree.json` 钉住 |
@@ -634,6 +671,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | **六轴的键与 label**（key / attr / storageKey / options / fallback / apply） | [lib/theme-axes.ts](frontend/src/lib/theme-axes.ts)。⚠️ **只放 label、不放色值** —— 值只有 CSS 一份（下一行），前端再存一个色值就是本轮删掉的那份副本 |
 | **六轴的 CSS 数据**（accent 原语 + 派生 + 浅色底盘 + 14 条基调 + 暗色 + `--md-*` + 字体 + 纹理） | [styles/theme-layer.css](frontend/src/styles/theme-layer.css)。**前端 `@import` 与后端导出读同一份**（`_load_theme_layer_css`）；⚠️ 打包须在 `LiMoBackend.spec` 的 datas 里带上，否则**开发版全绿、打包版导出直接 500** |
 | **纹理强度 → `--texture-opacity` 的反转映射** | [lib/texture.ts](frontend/src/lib/texture.ts) 的 `textureOpacity()`（**DOM 写入与导出参数共用一份**；`toFixed(2)` 是为了过后端 `_TEXTURE_OPACITY_RE`，它刻意不收科学计数法） |
+| **本地 embedding（评测专用）**：ONNX 句柄 / 切块（flat + h2）/ 向量排名 / `rrf` | [scripts/embed_local.py](backend/scripts/embed_local.py)。⚠️ **只此一份** —— `eval_search.py --vector` 与 `_experiments/02-embedding-rrf/eval_ab.py` 都 import 它（后者曾自带一份，正是 40pp 落差的同款形态）。⚠️ `onnxruntime` / `tokenizers` **刻意不在 `pyproject.toml`**（本地 embedding 走插件口子，阶段 4），构造时惰性 import、缺失显式报错 |
 | 风格档 / 引擎标签 / 域列表 / 公式集 / 体裁 / 读者意图 / 维度预设 | **capabilities 下发**（`GET /api/capabilities`），前端**不硬编码** |
 
 ⚠️ **最后一行的意思是「不要去前端建第二份表」**：凡是「后端注册了什么，前端就要列什么」的
@@ -652,7 +690,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **模型解析唯一入口**：`app/core/model_resolver.py` → `resolve_model()`。generate/chat/process 统一调用
 - **引擎映射唯一入口**：`_resolve_doc_engine` 用 `model_name` 查找（非 `provider_id`），支持字符串/数字/列表三种绑定格式
 - **读路径唯一入口**：`app/services/query.py` → `QueryService`（2026-10-04）。分页 / ID 解析 / 版本编排 / meta 装配 / 截断标记全部收口在此，**HTTP 与将来的 CLI import 同一份实现**（不是「写法相似」）。`app/services/*.py` **零 FastAPI import**（同 `services/epub_pipeline.py` 一分层），分层照抄 `routers/epub.py`（薄）→ `services/epub_pipeline.py`（厚）——router 留在 `routers/`，`services/` 不放 router。惰性构造在 `core/dependencies.py::get_query_service`（`main.py` 先建 `Store`、后建 `SearchEngine`，提前构造会拿到 `None` → **静默空结果**）
-- **产物自证头**：`notes`/`polished`/`process` 落盘时首行写 `<!-- limo-meta {json} -->`（从哪来 / 怎么来的 / 是什么 / 可信度边界四条）。编解码收口 `core/transcript_meta.py`（`_parse_envelope` 只认「第一行 + HTML 注释 + JSON + dict + 有 `v`」，`parse_meta`（composite）与 `parse_artifact_meta`（产物）各在 envelope 上做自己的 schema 校验）；装配用 `generation/provenance.py::artifact_meta()` + `PROMPT_VERSION`（**当前 `"18"`**，2026-10-20；逐档记录以 [prompts/__init__.py](backend/app/generation/prompts/__init__.py) 的版本注释为准 —— 本行曾长期停在 `"5"`。2026-10-05 一天内连推四档：骨架/文风/风格表改动 → "2"，同日验收修订 → "3"，新增速查区 → "4"，真实重跑验收后收紧材料索引措辞（禁提内部标签名）→ "5"；改任何发给模型的文本都要 bump，纪律见 [prompts-inventory.md](docs/prompts-inventory.md) §13）。**普通 `transcript.md` 刻意不加**（它会进模型 Prompt，加头 = 改生成输入）；**无头 ≠ 损坏**；编辑保存必须**带回原头**；**派生视图（思维导图）必须剥头**。⚠️ **渲染层另有一条统一规则**（2026-10-11）：**正文里的 HTML 注释一律不显示**（前端 `markdown-plugins.ts::rehypeStripComments` + 后端 `docx_export.py` 剥 bs4 `Comment` 节点），但 **`.md` / `.html` 导出刻意保留**自证头（`_pick_artifact` 用 `raw_content`）—— 两者不矛盾：注释是**文本源**里的元信息，docx 是纯渲染格式没有源码可留
+- **产物自证头**：`notes`/`polished`/`process` 落盘时首行写 `<!-- limo-meta {json} -->`（从哪来 / 怎么来的 / 是什么 / 可信度边界四条）。编解码收口 `core/transcript_meta.py`（`_parse_envelope` 只认「第一行 + HTML 注释 + JSON + dict + 有 `v`」，`parse_meta`（composite）与 `parse_artifact_meta`（产物）各在 envelope 上做自己的 schema 校验）；装配用 `generation/provenance.py::artifact_meta()` + `PROMPT_VERSION`（**当前 `"20"`**，2026-10-26；逐档记录以 [prompts/__init__.py](backend/app/generation/prompts/__init__.py) 的版本注释为准 —— 本行曾长期停在 `"5"`。2026-10-05 一天内连推四档：骨架/文风/风格表改动 → "2"，同日验收修订 → "3"，新增速查区 → "4"，真实重跑验收后收紧材料索引措辞（禁提内部标签名）→ "5"；改任何发给模型的文本都要 bump，纪律见 [prompts-inventory.md](docs/prompts-inventory.md) §13）。**普通 `transcript.md` 刻意不加**（它会进模型 Prompt，加头 = 改生成输入）；**无头 ≠ 损坏**；编辑保存必须**带回原头**；**派生视图（思维导图）必须剥头**。⚠️ **渲染层另有一条统一规则**（2026-10-11）：**正文里的 HTML 注释一律不显示**（前端 `markdown-plugins.ts::rehypeStripComments` + 后端 `docx_export.py` 剥 bs4 `Comment` 节点），但 **`.md` / `.html` 导出刻意保留**自证头（`_pick_artifact` 用 `raw_content`）—— 两者不矛盾：注释是**文本源**里的元信息，docx 是纯渲染格式没有源码可留
 - **引擎绑定保存合并**：`set_engine_bindings` 合并而非替换 — 保存 OCR 绑定不会删除 ASR 绑定。`cfg["engine_bindings"] = stored`（全量替换）→ `existing.update(stored)`（增量合并）
 - **LLM Key 双向同步**：`update_provider` 自动同步到 `llm.api_key`；generate router 在 `llm.api_key` 为空时从 providers 回退
 - **引擎前端后端驱动**：`GET /api/capabilities` 返回 `fileTypeMap`/`scenarioLabels`/`engineLabels`/`styleLabels` 等完整元数据，前端 `constants.ts` 不再硬编码引擎名/文件类型。新增引擎只需后端注册 + `config.py` builtin_models 加一行 desc，前端自动发现
@@ -972,6 +1010,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | **语义化布局**（2026-09-19） | LLM 只输出 ` ```fig ` 语义 JSON（**不写任何坐标**）→ `chart_layout` 算几何 → `chart_svg` 生成 → PIL 渲染。几何错误从结构上不可能发生 |
 | ✅ | **类型 4 → 9**（2026-09-19 续） | 新增 tree/flowchart/state/sequence/quadrant + 形状层（diamond/stadium/circle）+ `shapes` 通道（轴线/生命线/分组框）。A/B 实测出图率零下降、类型从 1 种扩到 7 种 |
 | ✅ | **几何缺陷五修**（2026-09-19 续） | 同行跨列边穿节点 / 走廊边叠同一 y / 隔行边穿中间行 / edges·shapes 不参与 bbox（回边沟槽被裁）/ 报错文案误导（「节点过多」掩盖「有环」）。另补三条 `assert_layout` 不变量 |
+| ✅ | **回边分道 + 标签让位**（2026-10-26） | `_state` 的 `corr_y`/`entry` 原先**只依赖层号** ⇒ 同一节点发出的多条回边水平段完全重合、沟槽 x 只差 6px，两个标签必然叠死 → `assert_layout` 硬失败 → **整张图降级成失败占位**（用户报的「偶发」4/6 条）。改为**走廊车道池统一分道**（前向边占 1 段、回边占 2 段，走廊高度按段数增长；纯前向图逐值不变）+ `engine._relax_labels` 兜底（标签仍重叠则上下让位 ±20/±40/±60，让不开就**丢弃标签**、连线仍在，同 `_grid_edge_label` 的 `None` 取舍）。顺带修 `_trim_canvas` 的 `dx` 被宽标签拉成非 4 倍数 → 整图节点脱格。⚠️ **判据是「让位只是兜底」**：主修在算子分道，有对照断言钉住，别把让位当主角 |
 | ✅ | **`title` 渲染**（2026-09-19 续） | 此前解析了从不绘制；`TITLE_H=24` 在 `expand` 计入。**接受 3.75% 容量损失（640→616），不动 `_MIN_SCALE`** |
 | ✅ | **多图**（2026-09-19） | 每个围栏 = 1 张图，1~N 张；单围栏 ≤9 节点超出须拆图；编号按文档顺序递增、失败不跳号。实测 6 张图 9.8s |
 | ✅ | **自然尺寸 + 等比缩放**（2026-09-19） | 高度超 640 不再失败，按自然高度定稿 + `<g transform="scale(k)">`；`_MIN_SCALE=0.65` 下限；宽度按内容跨度裁剪 **并把内容平移回 MARGIN**（2026-10-20 修：此前只裁右不裁左，窄图左侧反而留白） |
@@ -1056,7 +1095,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| ❌ | embedding 语义搜索 | 关键词全文搜索（FTS5，`GET /api/search` + SearchBar）**已实现**（2026-08-04）；embedding 向量化 + 相似度搜索「搜意思不搜字」未做 |
+| 🟡 | embedding 语义搜索 | **字面检索已重做并实测**（2026-10-26，29 题 41% → 83%：二字组 OR + 去两个截断 + 笔记入索引，见 [search-retrieval.md](docs/search-retrieval.md)）。**向量侧设计完成、未实施**：`EmbeddingEngine` 云端内置（dashscope，零新依赖）+ 本地模型走插件口子、向量存储、RRF 融合（理论上限 97%）；本地插件的「何时建 / 何时用 / 何时触发」待详细设计 |
 | ❌ | 更多导入源 | RSS / 播客转录 / 学术论文(arXiv)，复用现有管线 |
 | ❌ | 知识图谱 / 反向链接 | 文档间引用关系可视化，依赖 `#标签` 语法先落地 |
 | ❌ | Markdown 渲染风格预设 | 多套 CSS 变量集（行高/间距/标题比例），与主题六轴正交 |

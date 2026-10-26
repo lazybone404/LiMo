@@ -390,9 +390,10 @@ export default function App() {
         {/* 活动栏常驻最左（沉浸下让位，与顶栏一致 —— 沉浸要藏掉所有面板入口）。
             它**不是** slot：图标来自 `SlotRegistry.grouped().left` 的派生，不加新机制。 */}
         {!immersive && <ActivityBar onOpenSettings={() => setShowSettings(true)} />}
-        {/* hideSlots 是**真卸载**（SlotLayout 直接 return null），不是 CSS 隐藏 —— 故进入
-            沉浸前要过 processingTasks 守卫（见 uiSlice.toggleImmersive），否则正在跑的
-            任务会因 GenPanel 卸载变僵尸。预览区（center）不在隐藏名单里。 */}
+        {/* hideSlots 是**真卸载**（SlotLayout 直接 return null），不是 CSS 隐藏。它**不会**
+            让正在跑的任务变僵尸：abort 表在 `api/taskManager.ts` 模块级、SSE 回调直接写 store、
+            收尾在 `finally` 里 —— 三条都与挂载无关（详见 uiSlice.ts 里 immersive 那段注释）。
+            故进入沉浸**不需要**任何守卫。预览区（center）不在隐藏名单里。 */}
         <SlotLayout hideSlots={immersive ? ['genPanel', 'docLib'] : undefined} />
       </div>
 

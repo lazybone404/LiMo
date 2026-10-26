@@ -41,6 +41,15 @@ backend/_*.py
 # 「同样不进 git」。⚠️ 不写这条时它们以 `??` 躺在 `git status` 里，而「记得别 add」
 # 是记忆题：一条 `git add -A` 就进版本库了，且**看起来毫无异常**。
 /_*.md
+# 面试材料（求职期准备，含简历/讲稿/复盘）。`/_*.md` 只匹配根目录文件、不覆盖子目录，
+# 故目录必须单独写一条 —— 否则七个文件会以 `??` 挂在 git status 里等着被 `git add -A` 带走。
+/_interview/
+# 过期评审材料归档（时点快照，见 `_archive/README.md`）。同样需要单列：`/_*.md` 管不到子目录。
+/_archive/
+# 验证性实验（有对照、有数字、结论影响选型）。⚠️ **与本文件上方 `backend/_*.py` 那条语义不同**：
+# 那边是「用完即删」的一次性探针，这边是**长期保留**的复现资料（实验记录 + 脚本 + 原始输出）。
+# 相同点只有「不进 git」—— 同样必须单列，否则整个实验目录以 `??` 挂在 status 里等被 `git add -A` 带走。
+/_experiments/
 backend/data/
 backend/test_images/
 tests/generation/outputs/

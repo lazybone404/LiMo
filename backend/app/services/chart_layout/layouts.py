@@ -426,6 +426,16 @@ _LOOP_W = 28            # 自环在节点右缘之外占的宽度（不占位就
 _LOOP_H = 20            # 自环环路的高度
 
 
+def _entry_corr(rv):
+    """回边进入第 ``rv`` 层时用的走廊索引。
+
+    目标不在最顶层时从它**上方**那条走廊进入（走廊 r 在第 r 行之下、第 r+1 行
+    之上）；最顶层上面没有走廊，改从第 0 行**下方**进入并在那里拐弯 —— 两种情况
+    与 `_state` 里 `entry` 段落的算法成对。
+    """
+    return rv - 1 if rv > 0 else 0
+
+
 def _bfs_rank(ids, pairs):
     """有向图的 **BFS 分层**（首次到达距离）。
 
@@ -510,17 +520,36 @@ def _state(spec, W, measure=None, row_gap=56):
         members[r].append(k)
         row_h[r] = max(row_h[r], shape_h(items[k]['shape'], items[k].get('sub')))
 
-    # 只有前向边（必然相邻层，见 _bfs_rank）走行间走廊，回边/自环不进走廊
-    corr: dict[int, int] = {}
-    for u, v in pairs:
-        if u != v and rank[v] == rank[u] + 1:
-            corr[rank[u]] = corr.get(rank[u], 0) + 1
+    # 走廊里的**每条水平段**都要占一条车道 —— 前向边一条、回边两条（先从源节点
+    # 下到本层走廊，再从目标层上方的走廊进入目标）。⚠️ 回边必须进这个池子：
+    # 只给前向边分道时，同一节点发出的多条回边共用 `_below(rank[u])`（只依赖层
+    # 号），水平段 y 完全相同、沟槽 x 只差 6px，画面上并成一条横线；它们的标签
+    # 只能靠 `engine._relax_labels` 上下让位，让开之后就「悬空」——读者分不出
+    # 哪个标签说的是哪条线（2026-10-26 熔断器三态实机）。自环走节点右缘外，不占。
+    segs: dict[int, list[tuple[int, int]]] = {}      # 走廊 r -> [(边下标, 段号)]
+    for i, e in enumerate(all_edges):
+        u, v = e['u'], e['v']
+        if u == v:
+            continue
+        segs.setdefault(rank[u], []).append((i, 0))
+        if rank[v] != rank[u] + 1:                   # 回边：另有「进入目标层」那段
+            segs.setdefault(_entry_corr(rank[v]), []).append((i, 1))
+
+    def _corr_top(r):
+        return row_y[r] + row_h[r]
+
+    def _corr_bot(r):
+        """走廊 r 的下边界。末行下面没有行，按它自己的段数取（原来一律按半格，
+        够一条边；同一节点两条回边就叠死）。"""
+        if r + 1 < nrow:
+            return row_y[r + 1]
+        return _corr_top(r) + max(row_gap, len(segs.get(r, [])) * _CORRIDOR_PITCH)
+
     row_y: list[int] = []
     y = MARGIN
     for r in range(nrow):
         row_y.append(y)
-        y += row_h[r] + (max(row_gap, corr.get(r, 0) * _CORRIDOR_PITCH)
-                         if r + 1 < nrow else 0)
+        y += row_h[r] + max(row_gap, len(segs.get(r, [])) * _CORRIDOR_PITCH)
 
     ws = [_shape_min_w(items[k].get('label', ''), items[k].get('sub'), measure,
                        items[k]['shape']) for k in range(len(items))]
@@ -548,23 +577,13 @@ def _state(spec, W, measure=None, row_gap=56):
                         shape=items[k]['shape'])
              for k in range(len(items))]
 
-    def _below(r):
-        """第 r 行**下方**走廊的中线 y（末行则凭空取半格，让回边有地方拐）。"""
-        if r + 1 < nrow:
-            return r4_down((row_y[r] + row_h[r] + row_y[r + 1]) / 2)
-        return r4_down(row_y[r] + row_h[r] + row_gap / 2)
-
-    # 每条走廊里的前向边再分车道 —— 与 grid 同理：不分道时同走廊的边水平段
-    # 全落在同一个 y 上，画面上并成一条长横线、标签叠成一团
-    buckets: dict[int, list[int]] = {}
-    for i, e in enumerate(all_edges):
-        if e['u'] != e['v'] and rank[e['v']] == rank[e['u']] + 1:
-            buckets.setdefault(rank[e['u']], []).append(i)
-    lane: dict[int, int] = {}
-    for r, idxs in buckets.items():
-        top, bot = row_y[r] + row_h[r], row_y[r + 1]
-        for j, i in enumerate(idxs):
-            lane[i] = r4_down(top + (bot - top) * (j + 1) / (len(idxs) + 1))
+    # 每条水平段在它所属走廊里取一条车道（等距均分，顺序即 `all_edges` 顺序）。
+    # 纯前向图的 lane 值与改造前逐值相同（段数、顺序、均分公式都没变）。
+    lane: dict[tuple[int, int], int] = {}
+    for r, seg_list in segs.items():
+        top, bot = _corr_top(r), _corr_bot(r)
+        for j, key in enumerate(seg_list):
+            lane[key] = r4_down(top + (bot - top) * (j + 1) / (len(seg_list) + 1))
 
     edges, labels = [], []
     back_n = 0
@@ -579,20 +598,18 @@ def _state(spec, W, measure=None, row_gap=56):
             d = f"M{rx} {cy} H{rx + _LOOP_W} V{cy - _LOOP_H} H{rx}"
             end, dr = (rx, cy - _LOOP_H), (-1, 0)
         elif rank[v] == rank[u] + 1:                 # 前向：走廊里直接拐过去
-            ly = lane[i]
+            ly = lane[(i, 0)]
             d = f"M{acx} {a['y'] + a['h']} V{ly} H{bxc} V{b['y']}"
             end, dr = (bxc, b['y']), (0, 1)
             lane_y, mid_x = ly, (acx + bxc) // 2
         else:                                        # 回边：绕右侧沟槽
             back_n += 1
             gx = W - MARGIN - _GUTTER_W + 4 + (back_n - 1) * 6
-            corr_y = _below(rank[u])
+            corr_y = lane[(i, 0)]
+            entry = lane[(i, 1)]
             if rank[v] > 0:                          # 从目标层**上方**进入
-                entry = r4_down((row_y[rank[v] - 1] + row_h[rank[v] - 1]
-                                 + row_y[rank[v]]) / 2)
                 end, dr = (bxc, b['y']), (0, 1)
             else:                                    # 目标在最顶层：上面没走廊，改从下方进
-                entry = _below(rank[v])
                 end, dr = (bxc, b['y'] + b['h']), (0, -1)
             d = (f"M{acx} {a['y'] + a['h']} V{corr_y} H{gx} V{entry}"
                  f" H{bxc} V{end[1]}")

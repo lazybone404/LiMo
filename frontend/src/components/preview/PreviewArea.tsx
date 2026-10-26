@@ -40,6 +40,7 @@ import { CopyContentBtn } from './CopyContentBtn'
 import 'katex/dist/katex.min.css'
 import { IMAGE_MODES, IMAGE_MODE_LABELS, type ImageMode } from '../../lib/imageModes'
 import { toMarkdownMeta } from '../../lib/markdownMeta'
+import { followUpsKey } from '../../store/contentSlice'
 import { ChatFollowUpList } from '../ai-chat/ChatMarkerContent'
 import { useChatStore } from '../../store/chatStore'
 
@@ -159,6 +160,21 @@ export function PreviewArea() {
   const currentRawText = useStore(s => s.currentRawText)
   const markdownMeta = useStore(s => s.markdownMeta)
   const markdownVersions = useStore(s => s.markdownVersions)
+  const followUpsByVersion = useStore(s => s.followUpsByVersion)
+  /**
+   * 笔记末尾那一排追问 chip 要显示的条目。
+   *
+   * `markdownMeta.followUps` 是**当前显示那一版**的权威（随产物一起从后端返回）；
+   * 它缺席时才回退到「晚到通道」（追问事件先到、后端那份 meta 还没加载回来 ——
+   * 详见 store/contentSlice.ts 里 `followUpsByVersion` 的来由）。
+   * ⚠️ 回退**必须按 `markdownMeta.version`**：追问按版本各存，拿错版本等于给旧版
+   * 挂上新版的问句（而那看起来完全正常）。
+   */
+  const followUpItems = markdownMeta?.followUps?.length
+    ? markdownMeta.followUps
+    : (currentDocId && markdownMeta?.mode === 'notes'
+        ? followUpsByVersion[followUpsKey(currentDocId, 'notes', markdownMeta.version)]
+        : undefined)
   // 订阅 streamTick 以在 flush 时重读 getStreamBuffer（Module Map 非响应式）
   useStore(s => s.streamTick)
   const isStreaming = useStore(s => {
@@ -878,10 +894,10 @@ export function PreviewArea() {
                   ⚠️ **编辑态不渲染**：用户在改正文，末尾挂一排 chip 只是干扰。 */}
               {!inEditing && !isStreaming
                 && TabRegistry.get(activeView)?.htmlMode === 'notes'
-                && !!markdownMeta?.followUps?.length && (
+                && !!followUpItems?.length && (
                 <div className="mt-5 pt-3 border-t border-border-light px-1">
                   <ChatFollowUpList
-                    items={markdownMeta.followUps}
+                    items={followUpItems}
                     streaming={chatStreaming}
                     onSelect={handleFollowUpSelect}
                   />
@@ -1073,8 +1089,8 @@ export function PreviewArea() {
           >
             <Highlighter size={15} />
           </button>
-          {/* 沉浸阅读 —— 与 Ctrl+\ 共用同一个 `toggleImmersive`（它带 processingTasks
-              守卫：有任务在跑时拒绝进入并 toast，否则 GenPanel 卸载会让任务变僵尸）。
+          {/* 沉浸阅读 —— 与 Ctrl+\ 共用同一个 `toggleImmersive`（**无守卫**：卸载 GenPanel
+              不会中断任务，依据见 uiSlice.ts 里 immersive 那段注释）。
               ⚠️ 这条按钮只在**非沉浸**时可见（整条工具栏在沉浸下不渲染），所以它实际
               只承担「进入」；「退出」由右上角常驻角标 / Esc / Ctrl+\ 承担 —— 三者与这里
               在 store 上收口于同一对 action。 */}

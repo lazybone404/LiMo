@@ -377,17 +377,18 @@ describe('主题轴冷启动恢复 — 阅读版式', () => {
   })
 })
 
-// ── 沉浸阅读的进入守卫 ──
+// ── 沉浸阅读：进入**不设限**（2026-10-26 移除旧守卫） ──
 //
-// ⚠️ 为什么守卫是**硬需求**而不是贴心提示：`SlotLayout` 的 `hideSlots` 是**真卸载**
-// （命中即 `return null`），不是 CSS 隐藏 —— 正在跑的生成/转录任务会因 GenPanel
-// 卸载而变成僵尸。项目对同一件事早已做过选择：Ctrl+G 在 processingTasks 非空时
-// 拦截 + toast（「操作进行中，请完成或取消后再切换面板」）。沉浸绕开它 = 绕过
-// 一个被明确选择过的保护。
+// 旧守卫的判据是 `Object.keys(processingTasks).length > 0` —— 一个**全局**判据，
+// 分不清「当前文档的任务」与「别的文档的任务」。于是文档 A 在转录/生成时，用户
+// 连文档 B 的沉浸阅读都进不去，而这两个任务毫无关系。这是用户实际报告的问题。
 //
-// 退出方向**刻意不设限**：否则有任务在跑时用户被永远困在沉浸里 —— 那是比僵尸任务
-// 更糟的失败形态（用户看得见却出不去）。
-describe('沉浸阅读 — toggleImmersive 的守卫', () => {
+// 它宣称要防的「GenPanel 卸载 ⇒ 任务僵尸」在当前架构下不成立（三条依据都与组件
+// 是否挂载无关）：abort 表在 `api/taskManager.ts` 模块级 / SSE 回调直接写 store /
+// 收尾 `setProcessing(key, null)` 在 `finally` 里。详见 store/uiSlice.ts 的 immersive 段。
+//
+// ⚠️ 下面的断言方向与旧版**恰好相反**，这是有意的 —— 守卫一旦被加回来，这里立刻红。
+describe('沉浸阅读 — 进入不设限', () => {
   beforeEach(() => {
     useStore.setState({ immersive: false, toasts: [] })
   })
@@ -397,28 +398,26 @@ describe('沉浸阅读 — toggleImmersive 的守卫', () => {
     expect(useStore.getState().immersive).toBe(true)
   })
 
-  it('有任务在跑时拒绝进入，并给出 toast', () => {
-    // 对照：只断言 store flag 的测试**看不见这个缺陷的另一半** —— 真正危险的是
-    // SlotLayout 卸载，而卸载发生在渲染层。所以 flag + toast 两条一起断。
+  it('有任务在跑时**仍然**能进入，且不弹「操作进行中」', () => {
+    // 对照：只断 flag 会漏掉「进来了但同时被 toast 骂一句」这种半吊子实现。
     useStore.getState().setProcessing('d1__generate', { kind: 'generate', title: 'T' })
     useStore.getState().toggleImmersive()
-    expect(useStore.getState().immersive).toBe(false)
-    expect(useStore.getState().toasts.some(t => t.message.includes('进入沉浸阅读'))).toBe(true)
+    expect(useStore.getState().immersive).toBe(true)
+    expect(useStore.getState().toasts.some(t => t.message.includes('进入沉浸阅读'))).toBe(false)
   })
 
-  it('退出方向不受守卫限制（有任务时也能退出）', () => {
+  it('toggle 是纯翻转（有任务时也能退出）', () => {
     useStore.getState().setProcessing('d1__generate', { kind: 'generate', title: 'T' })
     useStore.setState({ immersive: true })
     useStore.getState().toggleImmersive()
     expect(useStore.getState().immersive).toBe(false)
   })
 
-  it('setImmersive(true) 同守卫，setImmersive(false) 不设限', () => {
+  it('setImmersive 直接写入（true/false 双向）', () => {
     useStore.getState().setProcessing('d1__generate', { kind: 'generate', title: 'T' })
     useStore.getState().setImmersive(true)
-    expect(useStore.getState().immersive).toBe(false)
+    expect(useStore.getState().immersive).toBe(true)
 
-    useStore.setState({ immersive: true })
     useStore.getState().setImmersive(false)
     expect(useStore.getState().immersive).toBe(false)
   })

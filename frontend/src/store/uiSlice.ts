@@ -86,9 +86,18 @@ export interface UiSlice {
   cycleContentWidth: () => void
 
   // ── 沉浸阅读（去噪容器：藏两侧面板 + 顶栏 + 预览工具条/TOC） ──
-  // ⚠️ 进/出**不对称**：进入要过 processingTasks 守卫（与 Ctrl+G 同一判据），因为沉浸
-  // 会让 SlotLayout 真卸载 GenPanel（hideSlots 是卸载，不是 CSS 隐藏）——正在跑的任务
-  // 会变僵尸；退出绝不能设限，否则用户被困在沉浸里出不来。
+  // ⚠️ 进出**都不设限**（2026-10-26 移除进入侧的 processingTasks 守卫）。它原来的理由
+  // 是「SlotLayout 真卸载 GenPanel ⇒ 正在跑的任务变僵尸」，但那个理由在当前架构下不成立，
+  // 而代价是真实的功能损失：A 文档在转录/生成时去看 B 的沉浸阅读会被拒 —— 判据是**全局**的
+  // （`Object.keys(processingTasks).length > 0`），根本分不清是哪个文档的任务。
+  // 不会僵尸的三条依据，**每条都与组件是否挂载无关**：
+  //   1. abort 控制器活在 `api/taskManager.ts` 的模块级 Map，卸载 GenPanel 不 abort 任何请求
+  //      （GenPanel 唯一的 cleanup 是摘 window 监听）；
+  //   2. SSE 回调直接往 store 写（`appendStreamBuffer` / `setProcessing` / `refreshSaved` 的
+  //      setter），闭包在组件卸载后依然有效；
+  //   3. 收尾 `setProcessing(key, null)` 在 `finally` 里，同样不依赖挂载。
+  // 唯一残留代价：沉浸期间看不到任务进度与取消按钮 —— 按 Esc 退出即可，
+  // 不值得用「一律禁止」来换。退出方向**仍然**不能设限（否则用户会被困在沉浸里出不来）。
   // 版式（--read-*）**不在这里管**：它常驻生效，与沉浸刻意解耦（见计划 §16.0）。
   // 不持久化 —— 沉浸是会话态，重启回到常规视图。
   immersive: boolean
@@ -146,9 +155,6 @@ const DEFAULT_LEFT_PANEL = 'docLib'
  * —— 模式读出「互斥」而激活项按「并排」算，且这种不一致只在改过偏好的机器上出现。
  */
 const INITIAL_LAYOUT = getSavedLayout()
-
-/** 有任务在跑时拒绝进入沉浸 —— 与 App.tsx 里 Ctrl+G 的守卫同一语义（防 GenPanel 卸载致任务僵尸） */
-const IMMERSIVE_BUSY_MSG = '操作进行中，请完成或取消后再进入沉浸阅读'
 
 export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set, get) => ({
   activeView: 'polished',
@@ -268,24 +274,9 @@ export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set, get) =>
   },
 
   immersive: false,
-  toggleImmersive: () => {
-    const s = get()
-    // 退出方向不检查 —— 进入才需要守卫（见 interface 上的注释）
-    if (s.immersive) { set({ immersive: false }); return }
-    if (Object.keys(s.processingTasks).length > 0) {
-      s.addToast(IMMERSIVE_BUSY_MSG, 'info')
-      return
-    }
-    set({ immersive: true })
-  },
-  setImmersive: (v) => {
-    const s = get()
-    if (v && Object.keys(s.processingTasks).length > 0) {
-      s.addToast(IMMERSIVE_BUSY_MSG, 'info')
-      return
-    }
-    set({ immersive: v })
-  },
+  // 不设任何进入守卫 —— 理由与依据见 interface 上那段注释（2026-10-26）
+  toggleImmersive: () => set(s => ({ immersive: !s.immersive })),
+  setImmersive: (v) => set({ immersive: v }),
 
   capabilities: null,
   setCapabilities: (c) => set({ capabilities: c }),

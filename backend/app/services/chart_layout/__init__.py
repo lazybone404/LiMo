@@ -98,7 +98,12 @@ from .geometry import (  # noqa: E402  —— 私有工具，测试直接用
     _truncate_to_width,
     _wrap_rows,
 )
-from .engine import _count_nodes, _trim_canvas, _trim_width  # noqa: E402
+from .engine import (  # noqa: E402
+    _count_nodes,
+    _relax_labels,
+    _trim_canvas,
+    _trim_width,
+)
 from .layouts import (  # noqa: E402
     _corridor_index,
     _CORRIDOR_PITCH,

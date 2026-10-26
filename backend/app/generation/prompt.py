@@ -639,7 +639,8 @@ def get_chart_format(source_type: str) -> str:
         "- 三种结构，选最贴合的一种：\n"
         '  · 依赖/调用网络 → {"layout":"grid","rows":[["前端"],["接口层"]],'
         '"edges":[{"from":[0,0],"to":[1,0],"label":"调用"}]}\n'
-        '  · 带分支与汇合的流程 → {"layout":"flowchart","nodes":['
+        '  · 带分支与汇合的流程（**单向前进，不能有回边/自环**；有回环的是状态机，'
+        '改用下面的 state）→ {"layout":"flowchart","nodes":['
         '{"id":"a","label":"提交","type":"start"},{"id":"b","label":"通过?","type":"decision"}],'
         '"edges":[{"from":"a","to":"b"}]}（type: start/process/decision/end）\n'
         '  · 带判定、可能有回边的状态迁移 → {"layout":"state","states":['

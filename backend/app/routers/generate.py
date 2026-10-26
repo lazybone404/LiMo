@@ -26,6 +26,7 @@ from app.core.origin import ensure_trusted_request
 from app.core.reference_store import get_references
 from app.core import logging as log
 from app.core.model_resolver import resolve_llm_config, resolve_context_window
+from app.core.search import update_index
 from app.llm import LLMService, CancelledError
 from app.generation.generator import Generator, _post_process_content_markers, _post_process_screenshots
 from app.generation.effort import effort_for, chunk_timeout_for
@@ -570,6 +571,12 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
             #    分支（`notes_mv` 为 None）天然跳过 —— 追问只作用于笔记（用户已定）。
             if _want_followup and notes_mv is not None and notes_mv.content:
                 await _do_followup(store, llm, transcript_id, tx, notes_mv.content, None)
+
+            # 索引收尾（与流式端点的统一收尾同源）：笔记已落盘，把「rawText + 最新笔记」
+            # 重新写进全文索引。放在 return 之前、追问之后 —— 追问写的是旁路文件，
+            # 不影响索引内容，但保持「所有落盘动作之后」这条纪律更好读。
+            update_index(getattr(request.app.state, "search_engine", None), store,
+                         transcript_id)
 
             return {
                 "id": notes_mv.id if notes_mv else (polished_mv.id if polished_mv else ""),
@@ -1142,6 +1149,13 @@ async def generate_stream(transcript_id: str, request: Request,
                     yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
                 else:
                     yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+
+                # 索引收尾：笔记刚落盘，把「rawText + 最新笔记」重新写进全文索引。
+                # ⚠️ 只在这里做一次（三个 done 出口的统一收尾处），**不挂在每个
+                # save_markdown 之后** —— 双产物会写两次，而索引只需要反映最终状态，
+                # 且取消路径（partial）也该被索引到，它同样汇到这里。
+                update_index(getattr(request.app.state, "search_engine", None), store,
+                             transcript_id)
 
                 # 追问建议（勾选 followup）—— 上面三个 done 出口汇到这里的**统一收尾**，
                 # 不插在任一 done 之后（插三处 = 三个可能漏改的点）。

@@ -818,16 +818,25 @@ export function GenPanel() {
         if (!isSameDoc(capturedId)) return
         addToast(msg, 'error')
       },
-      onFollowUp(questions, error) {
+      onFollowUp(questions, error, version) {
         // 追问建议 —— **推在 `done` 之后**（此刻 processingTask 已清、流式 buffer 已删，
         // 故这里只碰 `markdownMeta`，绝不再动流式状态）。
-        // ⚠️ 用户已切走则**丢弃 UI 更新**（数据已在盘上，切回来时走加载路径拿到）——刻意。
-        if (!isSameDoc(capturedId)) return
         // ⚠️ 失败必须让用户看见：追问是**用户开了开关的承诺**，静默失败等于「勾了但没有」。
         //    与对话侧不同，这里没有气泡可挂小字，故走 toast（不进预览区留长期噪音）。
-        if (error) { addToast(error, 'error'); return }
-        if (!questions.length) return
+        //    ⚠️ 但只在**用户还看着这篇**时弹 —— 否则他在 B 文档里会收到 A 的报错。
+        if (error) { if (isSameDoc(capturedId)) addToast(error, 'error'); return }
+        // `version` 为 0 = 后端无法确定产物版本（那里同批会给 error，走到上面那支），
+        // 这里只作防御：没有版本号就无处落位，写进去也永远读不到。
+        if (!questions.length || version <= 0) return
         followUpsRef.current = questions
+        // ⚠️ **不能因为用户已切走/切了 tab 就丢弃这批**（2026-10-26 修）：
+        // 追问是一次独立 LLM 调用，等它回来的几十秒里切 tab、切文档都是常态。原来这里
+        // 首行 `if (!isSameDoc) return`，紧接着又要求 `markdownMeta.mode === 'notes'`
+        // —— 两条都命中就永久丢失（「数据已在盘上、切回来能拿到」这个理由不成立：
+        // 切回来时产物 tab 若已在内存里，走的是 ref 同步而**不再发 GET**）。现改为
+        // 无条件写进按 `docId::mode::version` 索引的晚到通道，预览区按当前显示的版本回退取。
+        useStore.getState().setVersionFollowUps(capturedId, 'notes', version, questions)
+        if (!isSameDoc(capturedId)) return
         const meta = useStore.getState().markdownMeta
         // ⚠️ **必须判 `meta.mode === 'notes'`**：`markdownMeta` 是**当前 tab 那份**，
         // 用户在等追问的这几十秒里若切到整理版 tab，无条件写会把笔记的追问塞给整理版。

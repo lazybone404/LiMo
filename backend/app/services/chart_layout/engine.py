@@ -11,6 +11,7 @@ from .geometry import (
     DEFAULT_WIDTH,
     MARGIN,
     TITLE_H,
+    UNIT,
     TITLE_SIZE,
     LayoutError,
     _EDGE_LABEL_MAX,
@@ -324,6 +325,51 @@ def assert_layout(nodes, W, height, edges=None, labels=None, shapes=None) -> Non
             raise LayoutError(f"布局器 bug：装饰元素越界 {sh!r}")
 
 
+# 标签让位步长：遮罩高固定 16，故 20 一档就够（含 4px 缝）。⚠️ 必须是 `UNIT`(4) 的
+# 倍数 —— 否则让位后 y 脱格，`_check_common` 的 4px 网格不变式当场红。先近后远、
+# 先下后上（上方往往贴着节点或另一条边）。
+_LABEL_RELAX_DY = (20, -20, 40, -40, 60, -60)
+
+
+def _relax_labels(labels, nodes, height, W):
+    """标签遮罩互相重叠时先上下让位，让不开就**丢弃这个标签**。
+
+    遮罩是**不透明**的（PIL 铺白底）：两块叠在一起 = 两段文字互相涂掉，用户读到
+    一坨认不出的色块。而 ``assert_layout`` 对「标签重叠」是**硬失败** ⇒ 整张图退化
+    成一个「图表生成失败」占位（用户 2026-10-26 撞到的「试探成功 / 试探失败」正是
+    这个：熔断器三态里同一个「半开」节点发出两条回边，两者共用同一个走廊中线
+    ``_below(rank)``，水平段只差 6px ⇒ 标签必然叠死）。
+
+    对这类**合法输入的必然结果**，让位（读得清但位置略偏）远比零张图好 ——
+    与 ``_grid_edge_label``「钳不住就返回 None、只留连线」是同一个取舍。
+
+    ⚠️ **只管「标签 × 标签」**：原位置就压住节点的标签**不在这里救** —— 那是布局器
+    把标签放错了地方（真正的 bug），让位只会把它藏起来。候选位置同样要求不压节点。
+
+    幂等：无重叠时元素对象原样返回（不复制、不改 x）。
+    """
+    kept = []
+    for lb in labels:
+        if not any(_overlap(lb['x'], lb['y'], lb['w'], lb['h'],
+                            k['x'], k['y'], k['w'], k['h']) for k in kept):
+            kept.append(lb)
+            continue
+        for dy in _LABEL_RELAX_DY:
+            y = lb['y'] + dy
+            if y < 0 or y + lb['h'] > height:
+                continue
+            if any(_overlap(lb['x'], y, lb['w'], lb['h'],
+                            k['x'], k['y'], k['w'], k['h']) for k in kept):
+                continue
+            if any(_overlap(lb['x'], y, lb['w'], lb['h'],
+                            n['x'], n['y'], n['w'], n['h']) for n in nodes):
+                continue
+            kept.append({**lb, 'y': y})
+            break
+        # 让不开 ⇒ 丢弃：连线仍在，只是没有文字（同 _grid_edge_label 的 None 分支）
+    return kept
+
+
 def _trim_canvas(nodes, labels, W: int, shapes=None, edges=None,
                  min_w: int = 0) -> tuple[int, int]:
     """按内容包围盒裁剪画布宽度，并给出让内容居中的水平位移 → ``(width, dx)``。
@@ -355,6 +401,10 @@ def _trim_canvas(nodes, labels, W: int, shapes=None, edges=None,
     width = max(floor, min(W, span + 2 * MARGIN))
     # 内容比画布宽时（span + 2M > W）只能左对齐；否则居中于最终画布。
     dx = max(MARGIN, (width - span) // 2) - minx
+    # ⚠️ 平移量必须落回 4px 网格：边标签遮罩宽 = 文字宽 + 20（任意整数），比节点宽时
+    # 会把 minx（进而 dx）拉到非 4 倍数上，**整张图的节点跟着脱格**（实测熔断器三态
+    # x=29）。向下取整最多让居中偏 3px（不可见），换回网格一致。
+    dx -= dx % UNIT
     return width, dx
 
 
@@ -427,6 +477,9 @@ def expand(spec: dict, width: int = DEFAULT_WIDTH, height_cap: int = DEFAULT_HEI
             W2, dx = _trim_canvas(nodes, labels, W, shapes=shapes, edges=edges,
                                   min_w=title_w)
             _shift_space_x(nodes, edges, labels, shapes, dx)   # 裁剪后把内容拉回 MARGIN
+            # 让位在 assert **之前**：标签互不重叠是「空间不足」的必然结果，
+            # 该让位/省略，不该让整张图失败（见 _relax_labels 文档）
+            labels = _relax_labels(labels, nodes, height, W2)
             # ⚠️ 必须传全量：不传则后三条不变量一条都不执行（见 assert_layout 文档）
             assert_layout(nodes, W2, height, edges, labels, shapes)
             _shrink_labels(nodes, measure)   # 定稿后按最终宽度兜底截断文字
@@ -451,6 +504,7 @@ def expand(spec: dict, width: int = DEFAULT_WIDTH, height_cap: int = DEFAULT_HEI
             f"低于 {_MIN_SCALE:.0%} 下限会看不清），请拆分成多张图")
     W2, dx = _trim_canvas(nodes, labels, W, shapes=shapes, edges=edges, min_w=title_w)
     _shift_space_x(nodes, edges, labels, shapes, dx)   # 同上：先平移，再按最终画布校验
+    labels = _relax_labels(labels, nodes, height, W2)  # 同正常路径：让位后再校验
     # 在**自然坐标**下校验（几何正确性与缩放无关）
     assert_layout(nodes, W2, height, edges, labels, shapes)
     _shrink_labels(nodes, measure)
