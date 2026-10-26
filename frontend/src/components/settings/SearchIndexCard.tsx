@@ -23,6 +23,7 @@ import {
   type VectorStatus,
 } from '../../api/search'
 import { setSearchHealth } from '../../lib/search-health'
+import { useStore } from '../../store'
 
 /** 字节数 → 人类可读（1 位小数，够用且不抖动）。 */
 function fmtBytes(n: number): string {
@@ -66,6 +67,13 @@ export function SearchIndexCard() {
   const [vBusy, setVBusy] = useState(false)
   const [vConfirming, setVConfirming] = useState(false)
   const [vError, setVError] = useState<string | null>(null)
+  // 三档释放策略的 label / hint **由后端下发**（`Capabilities.releasePolicies`）。
+  // ⚠️ 前端不存第二份文案：`VectorWorker.maybe_release` 按 key 分派，加一档要改后端 ——
+  // 前端再存一份的话，加档时设置页永远看不到它（用户选不到就等于没加）。
+  // ⚠️ 空数组 = 「问不到」（capabilities 还没加载 / 老后端）→ 整组按钮不渲染。
+  // 与 `lib/search-health` 的 `null` 同款判据：问不到不等于坏了，也不该摆一排出点不动的按钮。
+  // ⚠️ selector 只取稳定引用的 `capabilities`，派生在外部做 —— 否则每次渲染都返回新数组。
+  const releaseOptions = useStore(s => s.capabilities)?.releasePolicies ?? []
 
   useEffect(() => {
     let alive = true
@@ -111,6 +119,16 @@ export function SearchIndexCard() {
 
   const unavailable = status ? !status.available : false
   const vec = status?.vector
+  // 可选的向量化引擎（云端 / 本地）。`current` 决定成本文案走哪一套 ——
+  // ⚠️ 按 `local` 字段分支，**不按名字前缀猜**（改名即失效，且猜错的方向是
+  // 「把免费的本地模型说成要花钱」）。
+  const models = vec?.models ?? []
+  const current = models.find(m => m.name === vec?.model)
+  // 「你选中的这个引擎此刻用不了」必须**不点下拉也能看见**。
+  // ⚠️ 只在 `vec.reason` 缺席时回落到引擎自己的 reason：开关开着却起不来时，
+  // `sync_vector_runtime` 的 reason **就是** precheck 的原话（它在 `ensure_identity`
+  // 之前），两处同时渲染等于同一句话连说两遍。
+  const notReady = vec?.reason ?? (current && !current.ready ? current.reason : null)
 
   return (
     <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-4" data-search-index-card>
@@ -216,17 +234,90 @@ export function SearchIndexCard() {
             </button>
           </div>
 
-          {/* 成本与隐私必须在**开启之前**说清楚：它要花钱、且会把正文发给第三方模型。 */}
+          {/* 引擎选择。⚠️ 切换**会因口径不符而停用**（云端 1024 维 ↔ 本地 512 维），
+              需要重新建一次索引 —— 那句话由后端的 `reason` 给出，这里不另写一份。 */}
+          {models.length > 0 && (
+            <label className="flex items-center gap-2 text-[12px] text-muted" data-vector-model>
+              <span className="shrink-0">向量化引擎</span>
+              <select
+                value={vec.model}
+                disabled={vBusy}
+                onChange={e => {
+                  const name = e.target.value
+                  if (name === vec.model) return
+                  const opt = models.find(m => m.name === name)
+                  // 未就绪的不发请求：切过去只会把一个**正在工作**的索引停掉，
+                  // 而原因与「装了之后再来」的建议挡在这里说更直接。
+                  if (opt && !opt.ready) {
+                    setVError(`${opt.label} 当前不可用：${opt.reason ?? '未就绪'}`)
+                    return
+                  }
+                  runVector(() => setVectorSearch(vec.enabled, name))
+                }}
+                className="flex-1 min-w-0 px-2 py-1 text-[12px] rounded-lg border border-border-default bg-surface disabled:opacity-50"
+              >
+                {models.map(m => (
+                  <option key={m.name} value={m.name}>
+                    {m.label}{m.ready || m.name === vec.model ? '' : '（未就绪）'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {/* 成本与隐私必须在**开启之前**说清楚：云端要花钱、且会把正文发给第三方；
+              本地则是「本机算、不上传、不计费」—— 两件事的措辞相反，**不能共用一段**。 */}
           <p className="text-[11px] text-muted leading-relaxed" data-vector-notice>
-            开启后，文档的正文与最新版笔记会被发送到向量化模型并按字数计费；
-            首次会为全库建立索引，之后只有新增或改动的文档才重新编码。
-            索引本身存在本机，删除文档时对应的向量也会一并清掉。
+            {current?.local
+              ? '开启后，文档的正文与最新版笔记只在这台电脑上编码 —— 内容不会上传、不产生费用，断网也能用。'
+                + '首次会为全库建立索引（占用本机 CPU 一段时间），之后只有新增或改动的文档才重新编码。'
+                + '索引本身存在本机，删除文档时对应的向量也会一并清掉。'
+              : '开启后，文档的正文与最新版笔记会被发送到向量化模型并按字数计费；'
+                + '首次会为全库建立索引，之后只有新增或改动的文档才重新编码。'
+                + '索引本身存在本机，删除文档时对应的向量也会一并清掉。'}
           </p>
 
-          {vec.reason && (
-            <p className="text-[12px] text-warning flex items-start gap-2">
+          {/* 模型内存（只在**本地**引擎下渲染）。云端引擎的「模型」在服务端，本机
+              一个字节都不占 —— 把三档摆给它看，用户会以为某个按钮能省下点什么。
+              ⚠️ 中间那档是默认，故 `vec.release` 缺失（老后端）时按 `idle` 显示。
+              ⚠️ **档位清单来自 capabilities**（不是本地常量），取不到时整组不渲染 ——
+              见组件顶部 `releaseOptions` 的注释。 */}
+          {current?.local && releaseOptions.length > 0 && (() => {
+            const release = vec.release ?? 'idle'
+            const hint = releaseOptions.find(o => o.key === release)?.hint
+            return (
+              <div className="space-y-1.5" data-vector-release>
+                <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted">
+                  <span className="shrink-0">模型内存</span>
+                  <div className="flex gap-1">
+                    {releaseOptions.map(o => (
+                      <button
+                        key={o.key}
+                        data-release-option={o.key}
+                        aria-pressed={release === o.key}
+                        disabled={vBusy}
+                        onClick={() => {
+                          if (release === o.key) return
+                          runVector(() => setVectorSearch(vec.enabled, undefined, o.key))
+                        }}
+                        className={release === o.key
+                          ? 'px-2 py-0.5 text-[11px] rounded-md bg-accent text-on-accent disabled:opacity-50'
+                          : 'px-2 py-0.5 text-[11px] rounded-md border border-border-default disabled:opacity-50'}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {hint && <p className="text-[11px] text-muted leading-relaxed">{hint}</p>}
+              </div>
+            )
+          })()}
+
+          {notReady && (
+            <p className="text-[12px] text-warning flex items-start gap-2" data-vector-requirement>
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-              {vec.reason}
+              {notReady}
             </p>
           )}
 
@@ -258,8 +349,12 @@ export function SearchIndexCard() {
             <div className="rounded-lg border border-border-default p-3 space-y-2" data-vector-rebuild-confirm>
               <p className="text-[12px] text-muted leading-relaxed">
                 重建会清空现有向量并<strong className="font-medium">重新编码全库</strong> ——
-                这会产生一次完整的计费（与首次建立索引相当）。文档本身不会被改动。
-                确定重建？
+                {/* 成本文案与上面那条 notice 同源（都按引擎的 `local` 分支）。
+                    本地引擎下写「计费」是**错话**：它一分钱不花，只是占本机 CPU。 */}
+                {current?.local
+                  ? '全程在本机跑，不产生费用，但要花上一段时间（与首次建立索引相当）。'
+                  : '这会产生一次完整的计费（与首次建立索引相当）。'}
+                文档本身不会被改动。确定重建？
               </p>
               <div className="flex gap-2">
                 <button onClick={() => runVector(rebuildVectorIndex)} disabled={vBusy}

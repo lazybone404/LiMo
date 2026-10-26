@@ -303,6 +303,32 @@ assert '#f5f5f5' not in cf and '#2d3142' not in cf, 'skin 由 chart_svg 固定�
 assert '<svg' not in cf, 'prompt 里不该再出现 SVG 教学样板'
 assert '拆成多个围栏' in cf, '节点超限要引导拆图（多图触发条件）'
 assert '字符串 id' in cf, 'flowchart/state 用 id 引用是它们最易写错的点，必须点名'
+# ⚠️ **2026-10-27：`flowchart` 的示例必须是「分支 + 汇合」，不能是一条链。**
+# 曾有两份 flowchart 示例（清单行 + 末尾「照改文字」）都是 `a→b→c` 单链 —— 而描述写的是
+# 「带分支与汇合」。模型学到的是「flowchart = 一条链」，于是把**带环**的结构也塞进
+# flowchart，被 `_topo_layers` 拦下 → 整张图降级成「图表生成失败（流程存在环）」。
+# 判据走**结构**而不是字符串：解析每份 flowchart JSON，看是否存在一个节点出 ≥2 条边
+# （分支）、以及一个节点入 ≥2 条边（汇合）。改文案不会误红，退回单链会立刻红。
+import json as _json
+import re as _re
+
+_flow_specs = _re.findall(r'\{"layout":"flowchart".*?"edges":\[.*?\]\}', cf)
+assert _flow_specs, 'flowchart 必须给出可照抄的完整 JSON 示例'
+for _raw in _flow_specs:
+    _sp = _json.loads(_raw)
+    _outs = {}
+    _ins = {}
+    for _e in _sp['edges']:
+        _outs[_e['from']] = _outs.get(_e['from'], 0) + 1
+        _ins[_e['to']] = _ins.get(_e['to'], 0) + 1
+    assert max(_outs.values()) >= 2, (
+        f'flowchart 示例必须体现**分支**（一个节点出两条线），实际 {_outs}；'
+        '单链示例正是 2026-10-27 那次「偶发环失败」的根因')
+    assert max(_ins.values()) >= 2, (
+        f'flowchart 示例必须体现**汇合**（两条线回到同一节点），实际 {_ins}')
+# 边界句必须明写：只写「单向前进」而不给「那该用哪个」，模型没有出口。
+assert '单向前进' in cf and '回边' in cf and 'state' in cf, (
+    '必须明写 flowchart 与 state 的边界（回边一律改用 state），否则模型只知道「不许」不知道「去哪」')
 # 来源引导按 source_type 分流，且落到具体 layout 建议
 assert 'flowchart' in get_chart_format('pdf')
 assert 'flowchart' in get_chart_format('webpage')

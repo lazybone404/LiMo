@@ -15,7 +15,7 @@ import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
 import { CONTENT_WIDTH_RATIO, computeContentMaxW, measurePxOf } from '../../lib/reading-prefs'
 import { planArtifactRequests } from '../../lib/artifactModes'
-import { VideoBanner } from './VideoBanner'
+import { ContentBanner } from './ContentBanner'
 import { DocTabBar } from './DocTabBar'
 import { LogPanel } from '../ui/LogPanel'
 import { ExportMenu } from '../ui/ExportMenu'
@@ -713,6 +713,18 @@ export function PreviewArea() {
   // 当前 activeView 对应的 TabDef
   const activeTabDef: TabDef | undefined = TabRegistry.get(activeView)
 
+  // ── 产物编辑入口（住在顶部窄条里，不再单占正文上方一行）──
+  // 三条判据缺一条就会出现「按钮在、点了没用」：
+  //   1. 只有 notes / polished 两个 tab 有可编辑产物；
+  //   2. Excel 数据摘要走 summary 内容源但**不可编辑**（它是数据的整理，不是可改文档）；
+  //   3. 编辑态下不显示 —— 此时正文区整个被编辑器接管。
+  const artifactEditMode: 'notes' | 'polished' = activeView === 'polished' ? 'polished' : 'notes'
+  const canEditArtifact = (activeView === 'summary' || activeView === 'polished') && !typeMeta.isExcel
+  const editingThisMode = editing?.mode === artifactEditMode
+  // 顶部窄条：视频照旧（`showBanner` + video）；其余类型**只在有编辑入口时**才出现 ——
+  // 否则等于给每篇非视频文档平白加一条标题栏。
+  const showContentBanner = !!activeTabDef?.showBanner && (isVideo || canEditArtifact)
+
   // 切换文档时，如果当前 activeView 不在新文档的 Tab 列表中，回退到第一个 Tab
   useEffect(() => {
     const validKeys = tabs.map(t => t.key)
@@ -818,20 +830,19 @@ export function PreviewArea() {
           </>
         }
         if (!displayContent) {
-          if (isStreaming) return <ProcessingPlaceholder task={taskForView(activeView)} mode={activeView === 'polished' ? 'polished' : 'notes'} />
+          if (isStreaming) return <ProcessingPlaceholder task={taskForView(activeView)} mode={artifactEditMode} />
           if (contentLoadError) {
             return <EmptyState icon={<AlertTriangle size={16} className="text-warning" />} title="内容加载失败" description="请检查后端是否正常运行，然后刷新页面重试" action={<button onClick={() => window.location.reload()} className="px-4 py-1.5 bg-accent text-on-accent text-[12px] rounded-full hover:bg-accent-hover">刷新页面</button>} />
           }
           return <EmptyState title="尚未生成" description="点击左侧「生成」按钮为本文档生成 Markdown 笔记" />
         }
-        // 编辑模式判定：summary tab 编辑 notes；polished tab 编辑 polished
-        const editMode = activeView === 'polished' ? 'polished' : 'notes'
-        const inEditing = editing?.mode === editMode
+        // 编辑模式判定见组件级 `artifactEditMode` / `editingThisMode`（窄条与正文两处同源，
+        // 各写一份的话「窄条说没在编辑、正文却已是编辑器」这类分叉会静默发生）
         return <>
           {/* P2-1：继续生成入口——通知 GenPanel 以 continue_from=partial 续写残缺产物 */}
           <PartialBanner versions={markdownVersions} isStreaming={isStreaming}
             onContinue={() => window.dispatchEvent(new CustomEvent('limo:continue-generate'))} />
-          {inEditing ? (
+          {editingThisMode ? (
             <TextareaMarkdownEditor
               value={editValue}
               onChange={(v) => { setEditValue(v); setEditDirty(v !== displayContent) }}
@@ -860,18 +871,8 @@ export function PreviewArea() {
                   <TagSuggestions content={displayContent} />
                 </div>
               )}
-              {/* 内容区工具条：已编辑徽章 + 编辑按钮（Excel 数据摘要走 summary 内容源但不可编辑，方案范围表） */}
-              <div className="flex items-center justify-end gap-2 mb-1 px-1 -mt-0.5">
-                {markdownEdited[editMode] && (
-                  <span className="text-[11px] text-warning flex items-center gap-1"><Pencil size={11} /> 已手动编辑</span>
-                )}
-                <button
-                  onClick={startEditing}
-                  disabled={isStreaming || isViewProcessing(activeView)}
-                  className="px-2.5 py-1 text-[11px] text-dimmed hover:text-foreground hover:bg-surface-hover rounded-md transition-colors disabled:opacity-40 disabled:pointer-events-none flex items-center gap-1"
-                  title="编辑产物（源码 + 分屏预览）"
-                ><Pencil size={12} /> 编辑</button>
-              </div>
+              {/* 编辑按钮搬到了顶部窄条（与「原链接」同一行）—— 见 `showContentBanner`
+                  与 `ContentBanner` 的 `actions` 槽。这里不再留空行占位。 */}
               {/* 骨架轴分派 —— **唯一接入点**。两条分支都过 `MarkerContent`（语义标记
                   与骨架轴正交：`paper` 下强调块在正文流里，`card` 下它在卡内）。
                   ⚠️ `paper` 且**无标记**时 `MarkerContent` 走快路径，渲染树与改造前逐字
@@ -892,7 +893,7 @@ export function PreviewArea() {
                   ⚠️ **流式生成中不渲染**：此刻 `markdownMeta` 还是上一版，配新流入的正文
                   是错位读数（与上面的 `ArtifactMetaBar` 同款理由）。
                   ⚠️ **编辑态不渲染**：用户在改正文，末尾挂一排 chip 只是干扰。 */}
-              {!inEditing && !isStreaming
+              {!editingThisMode && !isStreaming
                 && TabRegistry.get(activeView)?.htmlMode === 'notes'
                 && !!followUpItems?.length && (
                 <div className="mt-5 pt-3 border-t border-border-light px-1">
@@ -1130,10 +1131,32 @@ export function PreviewArea() {
           )
         )}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          {/* VideoBanner — 窄条，由 TabDef.showBanner 驱动 */}
-          {activeTabDef?.showBanner && currentDoc?.sourceType === 'video' && (
-            <VideoBanner title={currentDoc.title}
-              sourceUrl={currentDoc.sourceUrl} sourceType={currentDoc.sourceType} />
+          {/* 顶部窄条：标题 + 原链接 + 右侧动作（编辑 / 已手动编辑）。
+              ⚠️ 编辑按钮此前**单占正文上方一行**（右对齐），把正文往下推；它与「原链接」
+              同属「针对这个文档/这一版」的东西，放同一行 —— 净省一行高度。
+              ⚠️ 显示判据见 `showContentBanner`：视频照旧，其余类型只在有编辑入口时出现。 */}
+          {showContentBanner && currentDoc && (
+            <ContentBanner
+              title={currentDoc.title}
+              sourceUrl={currentDoc.sourceUrl}
+              sourceType={currentDoc.sourceType}
+              actions={canEditArtifact && !editingThisMode ? (
+                <>
+                  {markdownEdited[artifactEditMode] && (
+                    <span className="text-[11px] text-warning flex items-center gap-1">
+                      <Pencil size={11} /> 已手动编辑
+                    </span>
+                  )}
+                  <button
+                    onClick={startEditing}
+                    disabled={isStreaming || isViewProcessing(activeView)}
+                    /* 底色已经是 `bg-surface-hover`，hover 再用同一个色等于没有反馈 —— 换 elevated */
+                    className="px-2.5 py-1 text-[11px] text-dimmed hover:text-foreground hover:bg-elevated rounded-md transition-colors disabled:opacity-40 disabled:pointer-events-none flex items-center gap-1"
+                    title="编辑产物（源码 + 分屏预览）"
+                  ><Pencil size={12} /> 编辑</button>
+                </>
+              ) : undefined}
+            />
           )}
           <div
             ref={containerRef}

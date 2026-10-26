@@ -26,8 +26,40 @@ from app.generation.product_registry import to_capability_list
 from app.routers.model import _get_providers
 # 产物布局判据的家（`{mode}/v{N}.md`）——不要在本文件内联 md 文件路径
 from app.storage.store import MARKDOWN_MODES, markdown_dir_has_version
+# 模型内存释放策略的取值表。⚠️ **只取 key 集合，不取文案** —— 文案住下面那张元数据表，
+# 键集相等有模块级断言钉住（两处漂移的失效形态见 `_RELEASE_POLICY_META` 注释）。
+from app.services.vector_worker import RELEASE_POLICIES
 
 router = APIRouter()
+
+#: 模型内存三档的**展示元数据**（设置页「模型内存」那组按钮的全部文案）。
+#:
+#: ⚠️ **为什么在后端**：`RELEASE_POLICIES` 是后端拥有的枚举（`VectorWorker.maybe_release`
+#: 按 key 分派），前端硬编码一份 = 「后端加了一档，设置页永远看不到它，用户选不到，
+#: 也就等于没加」——与本文件里 `styleLabels` / `dimensionPresets` 同一条纪律。
+#:
+#: ⚠️ **每一档都必须写清代价**：三档真正的差别只有「哪一刻要等模型载入」，
+#: 只写「省内存 / 不省内存」等于把选择压成一个没有信息的偏好。
+_RELEASE_POLICY_META = {
+    "never": ("常驻内存",
+              "建完索引后模型一直留着，之后每次搜索都无需等待。代价是这几十 MB 常驻不还。"),
+    "idle": ("闲置后释放",
+             "一段时间没人用就释放。日常用起来大约就是「建完就放」，而刚建完顺手搜一下仍然是快的。"),
+    "immediate": ("建完即释放",
+                  "索引一建完立刻释放，内存马上降下来。代价是之后第一次搜索要等几秒重新载入模型。"),
+}
+
+# ⚠️ 模块级断言（不是测试里）：漏一档的后果是「设置页少了那个按钮」，
+# 编译期与运行期都不会有任何报错，而它只在用户想选那一档时才暴露。
+assert set(_RELEASE_POLICY_META) == set(RELEASE_POLICIES), \
+    f"_RELEASE_POLICY_META 与 vector_worker.RELEASE_POLICIES 键集必须相等：" \
+    f"{sorted(_RELEASE_POLICY_META)} vs {sorted(RELEASE_POLICIES)}"
+
+
+def _release_policies() -> list[dict]:
+    """三档的展示顺序 = `RELEASE_POLICIES` 的声明顺序（后端定义界面顺序）。"""
+    return [{"key": k, "label": _RELEASE_POLICY_META[k][0], "hint": _RELEASE_POLICY_META[k][1]}
+            for k in RELEASE_POLICIES]
 
 # 内置厂商名映射兜底（llm_models 有 key 但 providers 无该条时用；正常由 _get_providers 补全 name）
 _LLM_PROVIDER_NAMES = {
@@ -362,6 +394,9 @@ async def capabilities(config=Depends(get_config)):
         "contentTypes": _content_types(),
         # 读者意图（对话框主控件）——决定 task 段的「读者目的」
         "readerIntents": _reader_intents(),
+        # 本地 embedding 模型的内存释放策略（设置页「模型内存」三档）。
+        # ⚠️ 顺序 = 后端 `RELEASE_POLICIES` 声明顺序；文案只住 `_RELEASE_POLICY_META`。
+        "releasePolicies": _release_policies(),
         # ── 未完成生成标记（应用重启/崩溃时残留，前端启动提示）──
         "interruptedGenerations": _scan_interrupted_generations(config),
         # ── 缺 key 项（P2.1 主动提示：配置向导第三屏 + 操作前 toast）──

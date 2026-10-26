@@ -247,3 +247,31 @@ def test_init_engines_后注册可见(monkeypatch):
     assert eng is not None
     assert eng.dimension == DIM
     assert write_attempts, "init_engines 没走到保存分支？那条路径是打桩自证的锚点"
+
+
+def test_本地引擎也无条件注册(monkeypatch):
+    """`local-bge-small` 与云端**同款纪律**：无条件注册，构造零副作用。
+
+    ⚠️ 这条守的是「用户没装 onnxruntime 时，设置页里那一项消失了」—— 而设置页
+    正是告诉他去装什么的地方。构造一抛就同时失去了「列出」与「说明」两件事。
+
+    ⚠️ 与云端分支**各自一个 try**（`engines/__init__.py` 里是两段）：共用的话，
+    dashscope 分支抛错会把本地引擎一起吞掉，而「云端不可用」与「本地不可用」
+    是两件无关的事。
+    """
+    import app.core.config_io as config_io
+
+    monkeypatch.setattr(config_io, "save_config", lambda cfg: None)
+    init_engines({})
+
+    names = EngineRegistry.list_category("embedding")
+    assert "local-bge-small" in names, f"未注册，实际 {names}"
+    eng = EngineRegistry.get("embedding", "local-bge-small")
+    assert eng is not None
+    # 协议字段（不做 onnxruntime 是否在场的假设 —— 那是 precheck 的答案）
+    assert eng.model_id == "bge-small-zh-v1.5-int8"
+    assert eng.dimension == 512
+    assert eng.capabilities == ["embedding"]
+    assert eng.is_local is True, "前端据此选「免费 / 零外发」文案，不能靠名字前缀猜"
+    # 顺序 = 注册顺序：云端在前 ⇒ 默认值 `dashscope-embedding` 仍落在第一位（零迁移）
+    assert names.index("dashscope-embedding") < names.index("local-bge-small")

@@ -256,6 +256,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "vector_enabled": False,
         # `EngineRegistry` 的 embedding 引擎名。换它 = 换模型 = 四元组不符 = 需重建。
         "vector_model": "dashscope-embedding",
+        # 本地向量模型的内存释放策略（`never` / `idle` / `immediate`，见
+        # `services/vector_worker.RELEASE_POLICIES`）。**只对占本机内存的引擎有意义**：
+        # 云端引擎没有 `release` 钩子，三档下它一行都不会多跑 ⇒ 本键的默认值不影响
+        # 任何既有用户（`local-bge-small` 与本键同批落地）。
+        "vector_release": "idle",
     },
     # 插件系统（EnginePlugin v1）
     "plugin_states": {},    # name → bool（false=禁用，重启后生效；未配置默认 enabled）

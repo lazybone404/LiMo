@@ -10,6 +10,7 @@
  * 不要合并成「重建索引」一个按钮。
  */
 import { apiFetch, BASE } from './core'
+import type { ReleasePolicy } from './core'
 
 export interface SearchHit {
   id: string
@@ -54,6 +55,22 @@ export interface VectorIdentity {
   builtAt: string
 }
 
+/** 一个可选的向量化引擎（`GET /api/search/status` 的 `vector.models`）。 */
+export interface VectorModelOption {
+  /** 引擎名 —— 切引擎时把它原样发回 `POST /api/search/vector` 的 `model` 字段 */
+  name: string
+  /** 展示名（含「免费 / 按量计费」这类成本线索） */
+  label: string
+  modelId: string
+  dimension: number
+  /** 本地引擎：不联网、不计费、零外发。**成本文案按它分支，不按名字前缀猜** */
+  local: boolean
+  /** 引擎自检通过与否（来自引擎自己的 `precheck()`） */
+  ready: boolean
+  /** `ready` 为 false 时的原因 —— 通常是一句「装什么 / 缺哪个文件」 */
+  reason: string | null
+}
+
 /** 向量侧的只读状态（`GET /api/search/status` 的 `vector` 段）。 */
 export interface VectorStatus {
   /** **运行时**是否真的启用了（含「配置开着但引擎/索引不可用」这一档），
@@ -68,7 +85,20 @@ export interface VectorStatus {
   docs: { total: number; ok: number; pending: number; failed: number }
   chunks: number
   sizeBytes: number
+  /** 当前**选中**的引擎名。⚠️ 读配置而不是读 runtime —— 还没启用时下拉也必须
+   *  显示用户选中的那项，否则「开着但下拉是空的」。 */
+  model: string
+  /** 可选引擎清单（设置页下拉的数据源，顺序 = 后端注册顺序）。 */
+  models: VectorModelOption[]
+  /** 本地模型的内存释放策略（**配置值**，不是运行时状态 —— 开关关着时也要显示
+   *  用户选中的那一档）。三档的 label / hint 由 capabilities 下发
+   *  （`Capabilities.releasePolicies`，设置页渲染那一组按钮的唯一数据源）。 */
+  release: ReleasePolicy
 }
+
+/** 释放策略的类型住在 `core`（与它一起下发的 `ReleasePolicyOption` 和
+ *  `Capabilities` 同处），这里转出以免消费方多记一个 import 路径。 */
+export type { ReleasePolicy }
 
 /** 检索索引的只读状态（`GET /api/search/status`）。 */
 export interface SearchStatus {
@@ -129,12 +159,24 @@ export async function reindexSearch(): Promise<SearchStatus> {
 }
 
 /** 开 / 关语义检索。后端会**就地**启停后台索引 worker 与查询融合层。
- *  ⚠️ 打开本身不花钱，它只是允许 worker 开始编码；首次全库编码的成本在卡片上告知。 */
-export async function setVectorSearch(enabled: boolean): Promise<VectorActionResult> {
+ *  ⚠️ 打开本身不花钱，它只是允许 worker 开始编码；首次全库编码的成本在卡片上告知。
+ *
+ *  `model` 传了就是**同时切引擎**（不传 = 保持当前配置）。⚠️ 切换会让口径不符
+ *  （云端 1024 维 ↔ 本地 512 维），后端据此停用并给出「需要重建」的 reason ——
+ *  这是预期语义，不是错误。
+ *
+ *  `release` 传了就是**同时改释放策略**（不传 = 保持当前配置）。后端非法值 400 ——
+ *  与 `model` 同一条纪律（错的是性质，静默退化会让用户以为改成功了）。 */
+export async function setVectorSearch(
+  enabled: boolean, model?: string, release?: ReleasePolicy,
+): Promise<VectorActionResult> {
+  const body: { enabled: boolean; model?: string; release?: ReleasePolicy } = { enabled }
+  if (model) body.model = model
+  if (release) body.release = release
   return (await apiFetch(`${BASE}/search/vector`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify(body),
   })).json() as Promise<VectorActionResult>
 }
 

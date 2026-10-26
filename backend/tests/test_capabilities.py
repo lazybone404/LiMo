@@ -125,6 +125,30 @@ def test_reader_intents_default_content_type_within_enum():
         "除 custom（用户自填）外，每个意图都必须自带读者目的文案"
 
 
+def test_release_policies_from_vector_worker():
+    """三档释放策略的清单必须**逐档来自** `vector_worker.RELEASE_POLICIES`。
+
+    ⚠️ 这是「后端拥有的枚举经 capabilities 下发」那条纪律的守卫：`maybe_release`
+    按 key 分派，加一档只改后端 —— 若这里手抄一份（哪怕今天逐字相同），加档时
+    设置页就永远看不到它，而**没有任何东西会报错**（同 `styleLabels` /
+    `dimensionPresets` / `readerIntents`）。顺序也要跟：前端按下发顺序渲染。
+    """
+    from app.routers.capabilities import _release_policies
+    from app.services.vector_worker import DEFAULT_RELEASE, RELEASE_POLICIES
+
+    policies = _release_policies()
+    assert [p["key"] for p in policies] == list(RELEASE_POLICIES), \
+        "键与顺序必须来自 vector_worker.RELEASE_POLICIES（前端按此顺序渲染）"
+    assert all(p["label"] for p in policies), "不得有空白档位标签"
+    # 只写「省内存 / 不省内存」等于把选择压成一个没有信息的偏好 ——
+    # 三档真正的差别是「哪一刻要等模型载入」，必须说清代价。
+    assert all(len(p["hint"]) > 10 for p in policies), "每档都必须说清代价，不能是占位文案"
+
+    # 默认档必须在下发清单里：前端把它当作 `vec.release` 缺失时的兜底高亮，
+    # 漏了会渲染出一组「一个都没选中」的按钮。
+    assert DEFAULT_RELEASE in {p["key"] for p in policies}
+
+
 def test_dimension_presets_are_copies():
     """返回值不得与模块常量共享可变对象——否则调用方一次 append 污染全局预设"""
     ps = _dimension_presets()

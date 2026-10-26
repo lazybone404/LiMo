@@ -56,12 +56,29 @@ DEFAULT_INTERVAL = 60.0
 #: （Key 过期 / 网络 / 配额），一分钟内自愈的概率很低，而重试是计费的。
 RETRY_COOLDOWN = 300.0
 
+#: 模型内存的释放策略（`search.vector_release`，设置页可改）。**只有占本地内存的引擎
+#: 有实际差别** —— 云端引擎没有 `release` 钩子，三档下它一行都不会多跑。
+#:
+#: - `never`      建完索引后模型一直留着。**每次搜索都是即时响应**，代价是那 ~90MB 常驻。
+#: - `idle`（默认）闲置一段时间后释放。日常（低频、天级）等于「建完就放」，而
+#:                「刚建完顺便搜一下」那次仍然是热的。
+#: - `immediate` **建完索引立刻释放**。内存回到「只有字面检索」的水平，代价是之后
+#:                **第一次搜索要等 3–5 秒加载**（这一次由 `VectorSearcher` 显式承担，
+#:                不会伪装成「超时」）。
+#:
+#: ⚠️ **默认 `idle` 不是零回归的妥协，是「默认值 = 改造前行为」这条纪律在此处的正确读法**：
+#: 改造前根本没有本地引擎（`vector_release` 是本轮随本地引擎一起加的），云端引擎三档
+#: 行为逐字相同 ⇒ 存量用户的观感一个字节都没变。
+RELEASE_POLICIES = ("never", "idle", "immediate")
+DEFAULT_RELEASE = "idle"
+
 
 class VectorWorker:
     """把 `vec_state` 里的 `pending` 推进到 `ok`。**不持队列、不做超时之外的调度**。"""
 
     def __init__(self, store, vec, engine, *, chunk_size: int = DEFAULT_CHUNK_SIZE,
-                 max_fail: int = MAX_FAIL, batch_docs: int = BATCH_DOCS):
+                 max_fail: int = MAX_FAIL, batch_docs: int = BATCH_DOCS,
+                 release: str = DEFAULT_RELEASE):
         if engine is None:
             raise ValueError("VectorWorker 需要一个 embedding 引擎")
         self._store = store
@@ -70,6 +87,17 @@ class VectorWorker:
         self._chunk_size = int(chunk_size)
         self._max_fail = int(max_fail)
         self._batch_docs = int(batch_docs)
+        #: 模型内存释放策略，见 `RELEASE_POLICIES`。**入口已校验**（路由侧对非法值报
+        #: `VECTOR_BAD_RELEASE`），这里不再兜底 —— 静默退化成 `never` 会让「关掉释放
+        #: 开关」与「写了错的值」看起来一样，而前者是用户的选择、后者是他的笔误。
+        self.release = release
+        #: 引擎预热只做一次（见 `_warm`）。失败时不置位 —— 依赖若在此后被装上，
+        #: 下一轮（冷却 300s 后）还有机会恢复。**释放模型后会清回 False**：
+        #: 下一轮有活时重新预热，而不是让每篇都在 `_index_one` 里各自等一次加载。
+        self._warmed = False
+        #: `immediate` 档的触发器：**本轮真的建过东西**才置位。没有它，每一轮空转
+        #: 都会把用户刚查询时加载的模型踢掉 ⇒ 每次搜索都冷启动。
+        self._pending_release = False
 
     # ── 一轮 ──
 
@@ -91,6 +119,13 @@ class VectorWorker:
             ids = self._next_ids(attempted)
             if not ids:
                 break
+            # ⚠️ **预热排在「确认有活」之后**（不是 `run_once` 开头）。队列空着时
+            # 加载 22.8MB 权重纯属浪费：`never` 档下它会在每次启动后白占 ~90MB，
+            # 而 `immediate` / `idle` 档下更是**每轮空转都加载一次再释放一次**
+            # （60 秒一轮，CPU 与内存来回抖）。语义上「第一次 embed 之前预热到」
+            # 完全没有变化，只是不再为空转买单。
+            if not self._warmed and not await self._warm(stats):
+                return stats
             for tx_id in ids:
                 attempted.add(tx_id)
                 try:
@@ -113,6 +148,105 @@ class VectorWorker:
                     consecutive_failures = 0
                     stats["indexed" if changed else "skipped"] += 1
         return stats
+
+    async def _warm(self, stats: dict) -> bool:
+        """把引擎预热到「第一次编码不用等模型加载」。`False` = 预热失败，本轮放弃。
+
+        ⚠️ **只在有 `warmup` 钩子的引擎上做事**（`getattr` 而非改协议，理由见
+        `vector_runtime._engine_precheck`）。云端引擎没有这个钩子，一次调用都不会多。
+
+        ⚠️ **预热失败的后果不是「慢」而是「第一次查询必定超时」**：本地模型加载
+        3–5 秒，而 `VectorSearcher.QUERY_TIMEOUT = 3.0` —— 用户开启语义检索后第一次
+        搜索会退回纯字面，提示写成「语义检索超时」，读起来像网络问题（而他刚开的
+        本地模型根本不联网）。
+
+        ⚠️ **失败绝不进 `fail_count`**：依赖缺失 / 模型文件丢失是「这台机器上跑不了」，
+        不是「这一篇编不出来」。记进每篇的失败闸门会让 3 篇之后整库停摆，而真正的
+        原因只留在最后三篇的 `error` 字段里 —— 一个把「装个依赖」显示成「3 篇文档
+        编码失败」的失败分类错误。
+        """
+        if self._warmed:
+            return True
+        warm = getattr(self._engine, "warmup", None)
+        if warm is not None:
+            try:
+                await warm()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 —— 见 docstring 最后一段
+                stats["stopped"] = f"向量化模型加载失败：{type(e).__name__}: {e}"
+                return False
+        self._warmed = True
+        return True
+
+    # ── 释放 ──
+
+    def maybe_release(self) -> bool:
+        """按 `self.release` 策略决定要不要把模型放掉。返回「这次真的释放了吗」。
+
+        **只在 `loop` 每轮末尾调一次**，不放在 `run_once` 里：单轮 `run_once` 有三种
+        退出路径（队列空 / 失败闸门 / 索引库不可用），而「这轮结束了」是 `loop` 才知道的。
+
+        ⚠️ **调用方不传门槛数字**：`idle` 档直接 `release()`，用的是引擎自己的默认
+        空闲门槛（`embedding_local.DEFAULT_IDLE_RELEASE`）。门槛「多久算闲置」是
+        **引擎的属性**（不同引擎加载代价不同），写进 worker 就是第二真相源 ——
+        哪天本地模型换个更小的权重、门槛该变时，改错地方的后果是「闲置判据变了但
+        没人发现」。
+
+        ⚠️ **没有 `release` 钩子的引擎一律不做事**（`getattr`，同 `warmup` / `precheck`）：
+        云端引擎的「模型」是服务端的事，它连本地内存都不占。
+        """
+        if self.release == "never":
+            return False
+        if self.release == "immediate":
+            # 只在「刚建完一轮东西」之后放一次。空转轮次一律不动 —— 否则用户搜索时
+            # 加载的模型会被下一圈空转踢掉，每次搜索都冷启动（而他刚开的是
+            # `immediate`，本来只期望「建库完放掉」这一个代价）。
+            if not self._pending_release:
+                return False
+            self._pending_release = False
+            return self._do_release(0.0, reason=f"策略 {self.release}")
+        # idle：`after_idle=None` = 交给引擎的默认门槛
+        return self._do_release(None, reason=f"策略 {self.release}")
+
+    def release_now(self) -> bool:
+        """**不看 `self.release` 策略**，立刻把模型放掉。返回「这次真的释放了吗」。
+
+        唯一的调用方是「语义检索被关掉」这条路径（`vector_runtime._stop_worker`）。
+        ⚠️ 刻意绕开策略：`never` 的意思是「**平时**建完索引也留着」，而关掉功能是
+        另一个动作 —— 用户不再用这个能力了，**没有「下次搜索」可以等**。用策略挡住
+        它就是「选了常驻内存的用户关掉语义检索后，那几十 MB 一直不还」，而界面上
+        不会留下任何痕迹。
+
+        ⚠️ 传 `after_idle=0.0` 而不是不传：不传走引擎默认门槛（600s），刚放下键盘
+        就关功能时引擎会以「还在闲置期内」为由拒绝 —— 一次什么都不做的释放。
+        """
+        return self._do_release(0.0, reason="语义检索已关闭")
+
+    def _do_release(self, after_idle: float | None, *, reason: str) -> bool:
+        """真正的释放动作（`maybe_release` 与 `release_now` 共用）。
+
+        `after_idle=None` = 不传门槛、由引擎按自己的默认值判闲置。
+        """
+        release = getattr(self._engine, "release", None)
+        if release is None:
+            # 云端引擎的「模型」跑在服务端，本机不占内存 —— 三档下它一行都不多跑。
+            return False
+        try:
+            freed = bool(release() if after_idle is None
+                         else release(after_idle=after_idle))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 —— 释放失败不影响索引本身
+            log.warning("向量模型释放失败", err=f"{type(e).__name__}: {e}"[:200])
+            return False
+        if freed:
+            # 下一轮有活时重新预热。⚠️ 不清回 False 的话，`_warm` 会以为模型还在，
+            # 于是每篇都在 `_index_one` 里惰性加载 —— 第一次 embed 白等 3–5 秒，
+            # 而 worker 侧没有任何提示。
+            self._warmed = False
+            log.info(f"向量模型已释放（{reason}）")
+        return freed
 
     def _next_ids(self, attempted: set[str]) -> list[str]:
         """取下一批待办：先 `pending`，不够再拿「失败但未到上限」。
@@ -225,6 +359,12 @@ class VectorWorker:
             if stats["indexed"] or stats["failed"]:
                 log.info("向量索引进度", indexed=stats["indexed"],
                          skipped=stats["skipped"], failed=stats["failed"])
+                # `immediate` 档的触发器：这一轮真的动过队列 ⇒ 允许本轮结束后释放。
+                self._pending_release = True
+
+            # 每轮末尾试一次（`never` 档是一次字符串比较，可忽略）。**必须在
+            # `run_once` 之外**：那一轮已经推到队列空，此刻才是「建完了」。
+            self.maybe_release()
 
             if stats["stopped"]:
                 log.warning("向量索引 worker 暂停", reason=stats["stopped"])

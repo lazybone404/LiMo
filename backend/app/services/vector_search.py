@@ -45,6 +45,16 @@ RRF_K = 10
 #: 再长就是「用户以为搜索卡住了」而不是「网络慢」。
 QUERY_TIMEOUT = 3.0
 
+#: **模型载入**的超时（秒），与 `QUERY_TIMEOUT` 刻意分成两个常量 —— 它们管的不是
+#: 同一件事：一个是「一条短文本算得多慢」，一个是「把 22.8MB 权重读进内存要多久」
+#: （实测 3–5 秒，慢盘 / 首次冷读可能更久）。
+#:
+#: ⚠️ **不合并、也不放宽 `QUERY_TIMEOUT`**：模型被释放后（`search.vector_release`）
+#: 第一次查询必须先加载，而加载 3–5 秒 > 3.0 秒。共用一个超时的后果是**那次查询
+#: 必定超时并退回纯字面**，提示还写着「语义检索超时」—— 读起来像网络问题，而本地
+#: 模型根本不联网。把载入单独拎出来，冷查询是「慢一次」，而不是「静默失效」。
+LOAD_TIMEOUT = 30.0
+
 
 class VectorSearcher:
     """把一条查询拿去和全库向量比，再与字面结果做 RRF。
@@ -55,7 +65,7 @@ class VectorSearcher:
     """
 
     def __init__(self, vec, engine, *, chunk_size: int = DEFAULT_CHUNK_SIZE,
-                 timeout: float = QUERY_TIMEOUT):
+                 timeout: float = QUERY_TIMEOUT, load_timeout: float = LOAD_TIMEOUT):
         if engine is None:
             raise ValueError("VectorSearcher 需要一个 embedding 引擎")
         self._vec = vec
@@ -65,6 +75,7 @@ class VectorSearcher:
         # worker 同源，故这个参数只在将来真的改切块规则时才需要显式传。
         self._chunk_size = int(chunk_size)
         self._timeout = float(timeout)
+        self._load_timeout = float(load_timeout)
 
     async def fuse(self, query: str, lexical_ids: list[str], *,
                    limit: int, depth: int | None = None) -> tuple[list[str], dict]:
@@ -81,6 +92,11 @@ class VectorSearcher:
         semantic: dict = {"error": None, "hits": 0}
 
         reason = self._precheck()
+        if reason:
+            semantic["error"] = reason
+            return lexical_ids[:limit], semantic
+
+        reason = await self._ensure_loaded()
         if reason:
             semantic["error"] = reason
             return lexical_ids[:limit], semantic
@@ -131,6 +147,34 @@ class VectorSearcher:
         if not self._vec.identity_ok(self._engine.model_id, self._engine.dimension,
                                      self._chunk_size):
             return "向量索引口径与当前模型不符（需在「设置 → 检索索引」里重建）"
+        return None
+
+    async def _ensure_loaded(self) -> str | None:
+        """确保模型已在内存里。返回**给用户看的原因**（None = 可以编码）。
+
+        **为什么每次查询都调**：模型可能刚被 `vector_worker.maybe_release` 放掉
+        （策略 `idle` / `immediate`），而查询侧无从知道。本地引擎的 `warmup()`
+        已加载时是纯内存判断直接返回，云端引擎根本没有这个钩子 —— 两侧都接近零成本，
+        所以不需要「是否已加载」这第二份状态（它会和引擎里的 `_inst` 分叉）。
+
+        ⚠️ 超时用 `self._load_timeout` 而**不是** `self._timeout`（见 `LOAD_TIMEOUT`）。
+        载入失败/超时的后果只有一次降级，文案必须点明是**载入**而不是「检索超时」——
+        后者会把「模型正在读盘」误导成「网络慢」。
+        """
+        warm = getattr(self._engine, "warmup", None)
+        if warm is None:
+            return None                        # 云端引擎：模型在服务端，无需载入
+        try:
+            await asyncio.wait_for(warm(), timeout=self._load_timeout)
+        except asyncio.TimeoutError:
+            log.warning("语义模型载入超时", timeout=self._load_timeout)
+            return (f"语义模型载入超时（>{self._load_timeout:.0f}s），"
+                    "本次仅用字面结果")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 —— 载入失败只降级这一次查询
+            log.warning("语义模型载入失败", err=f"{type(e).__name__}: {e}"[:200])
+            return f"语义模型载入失败（{type(e).__name__}），本次仅用字面结果"
         return None
 
     async def _embed_query(self, query: str) -> np.ndarray:

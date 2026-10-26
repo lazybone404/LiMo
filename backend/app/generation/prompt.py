@@ -624,36 +624,58 @@ def get_chart_format(source_type: str) -> str:
     ⚠️ 2026-08-16 的教训是「堆规则 ↔ 出图率是 trade-off」，故本题唯一的取舍
     是长度而非规则数：三行示例是**引导**（告诉它有什么可画），不是**约束**
     （要求它必须画成什么样）。约束仍只有 4 条 —— 而且**变短本身就是收益**。
+
+    ⚠️ **2026-10-27：示例的形状比限制语管用**（`PROMPT_VERSION` "20" → "21"）。
+    第 20 版给 flowchart 加了「单向前进，不能有回边/自环」的括注，**没治住** —— 用户
+    仍撞到 `流程存在环（c、d、e）`。根因是两份 flowchart 示例都是 `a→b→c` 单链：
+    描述说「分支与汇合」，示例给的是一条链，模型学的是示例。本轮把两份示例都换成
+    5 节点「提交 → 通过? →（发布 / 退回）→ 上线」（真分支、真汇合、无环，已用
+    `chart_layout.expand` 实测 `scale=1.0` 通过），并抽出一行边界句明写「任何一条边
+    指回自己的上游就是环，整张图会被丢弃，有回边一律改用 state」。
+    ⚠️ 同时把 `cycle` 块的指路补成「**没有分支的**首尾相接循环」——`cycle` 块只有
+    3–6 个有序项，**装不下带分支的环**；那一类归 `state` 布局，不归块。
+    `test_prompt.py` 的新守卫解析示例 JSON 断言「有分支、有汇合」，退回单链立刻红。
     """
     base = (
-        "**图表**：有**分支、汇合或回边**的复杂关系时，用 ```fig 围栏输出语义 JSON"
+        "**图表**：有**分支与汇合**、或**状态之间来回迁移**的复杂关系时，"
+        "用 ```fig 围栏输出语义 JSON"
         "（后端自动算坐标画图，**你不需要写任何坐标、尺寸或 SVG**）。"
         "每个围栏 = 1 张图，可按内容需要输出 1~N 张。\n"
-        "- ⚠️ 先判断这张图有没有必要：**同一层会出现第二个节点、或关系里有回边**才值得画。"
+        "- ⚠️ 先判断这张图有没有必要：**同一层会出现第二个节点、或关系不是一条线**才值得画。"
         "下列情况**不要画图**，用上文「语义块」或普通 Markdown 表达即可——\n"
         "  · 「一条线走到底」的步骤 / 先后阶段 → `steps` / `timeline` 块\n"
-        "  · 首尾相接的因果循环 → `cycle` 块\n"
+        "  · **没有分支的**首尾相接因果循环 → `cycle` 块\n"
         "  · 分层、包含、目录、分类（谁在谁里面）→ **嵌套列表**，连块都不必标\n"
         "  · 两方之间有来有回的消息 → `sequence` 块\n"
         "  · 两个维度交叉的四格评估 → `quadrant` 块\n"
         "- 三种结构，选最贴合的一种：\n"
         '  · 依赖/调用网络 → {"layout":"grid","rows":[["前端"],["接口层"]],'
         '"edges":[{"from":[0,0],"to":[1,0],"label":"调用"}]}\n'
-        '  · 带分支与汇合的流程（**单向前进，不能有回边/自环**；有回环的是状态机，'
-        '改用下面的 state）→ {"layout":"flowchart","nodes":['
-        '{"id":"a","label":"提交","type":"start"},{"id":"b","label":"通过?","type":"decision"}],'
-        '"edges":[{"from":"a","to":"b"}]}（type: start/process/decision/end）\n'
+        '  · 带分支与汇合的流程（一个节点分出两条线、最后汇到一处，'
+        '**比如下面的示例**）→ {"layout":"flowchart",'
+        '"nodes":[{"id":"a","label":"提交","type":"start"},'
+        '{"id":"b","label":"通过?","type":"decision"},'
+        '{"id":"c","label":"发布","type":"process"},{"id":"d","label":"退回","type":"process"},'
+        '{"id":"e","label":"上线","type":"end"}],'
+        '"edges":[{"from":"a","to":"b"},{"from":"b","to":"c","label":"是"},'
+        '{"from":"b","to":"d","label":"否"},{"from":"c","to":"e"},{"from":"d","to":"e"}]}'
+        "（type: start/process/decision/end）\n"
         '  · 带判定、可能有回边的状态迁移 → {"layout":"state","states":['
         '{"id":"a","label":"新建","type":"start"},{"id":"b","label":"完成","type":"end"}],'
         '"transitions":[{"from":"a","to":"b"},{"from":"b","to":"a","label":"重来"}]}\n'
+        "- ⚠️ 两者边界：flowchart **只许单向前进** —— 任何一条边指回它自己的上游"
+        "（a→b→…→a）就是环，**整张图会被丢弃**；有回边一律改用 state"
+        "（state 的示例里就带一条回边）。\n"
         "- 约束：label ≤8 字；单个围栏的节点 ≤9 个，超过就拆成多个围栏；focus 最多 2 个；"
         "grid 的 [行号,列号] 从 0 起且必须指向 rows 里真实存在的节点；"
         "flowchart / state 一律用**字符串 id** 互相引用（不要用下标）。\n"
         "- 示例（照改文字）：\n"
         "```fig\n"
         '{"layout":"flowchart","nodes":[{"id":"a","label":"提交","type":"start"},'
-        '{"id":"b","label":"通过?","type":"decision"},{"id":"c","label":"发布","type":"end"}],'
-        '"edges":[{"from":"a","to":"b"},{"from":"b","to":"c","label":"是"}]}\n'
+        '{"id":"b","label":"通过?","type":"decision"},{"id":"c","label":"发布","type":"process"},'
+        '{"id":"d","label":"退回","type":"process"},{"id":"e","label":"上线","type":"end"}],'
+        '"edges":[{"from":"a","to":"b"},{"from":"b","to":"c","label":"是"},'
+        '{"from":"b","to":"d","label":"否"},{"from":"c","to":"e"},{"from":"d","to":"e"}]}\n'
         "```\n"
         "- 无合适结构时输出 `> 图表说明：内容不适合图表化`。禁止输出坐标、像素或 SVG。"
     )

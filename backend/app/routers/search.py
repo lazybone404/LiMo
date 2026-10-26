@@ -16,9 +16,12 @@ from app.core.dependencies import (
 )
 from app.core.errors import AppError
 from app.core.origin import ensure_trusted_request
+from app.core.registry import EngineRegistry
 from app.core.vector_store import DEFAULT_CHUNK_SIZE
 from app.generation.doc_text import search_index_text
+from app.services.vector_runtime import DEFAULT_ENGINE
 from app.services.vector_search import DEFAULT_DEPTH
+from app.services.vector_worker import DEFAULT_RELEASE, RELEASE_POLICIES
 
 # ⚠️ **不要在这里写 `prefix="/api"`**：`main.py` 用 `include_router(..., prefix="/api")`
 # 统一挂载（全仓 17 个 router 里另外 16 个都是裸 `APIRouter()`）。两处都写会得到
@@ -120,13 +123,77 @@ def _vector_status(request: Request) -> dict:
     vec = getattr(request.app.state, "vector_store", None)
     state = getattr(request.app.state, "vector_runtime", None)
     if vec is None:
-        return {"enabled": False, "reason": "向量索引库未初始化", "docs": {}, "chunks": 0,
-                "sizeBytes": 0, "identity": None, "lastError": None}
-    st = vec.status()
-    runtime = state or {}
-    st["enabled"] = bool(runtime.get("enabled"))
-    st["reason"] = runtime.get("reason")
-    return st
+        out = {"enabled": False, "reason": "向量索引库未初始化", "docs": {}, "chunks": 0,
+               "sizeBytes": 0, "identity": None, "lastError": None}
+    else:
+        out = vec.status()
+        runtime = state or {}
+        out["enabled"] = bool(runtime.get("enabled"))
+        out["reason"] = runtime.get("reason")
+    # 引擎选择（2026-10-26 阶段 4）。⚠️ 两个键**在早退分支上也要给** —— 前端类型里
+    # 它们是必填，缺键会让「后端没接向量库」与「字段忘了给」在界面上长得一模一样。
+    out["model"] = _configured_model(request)
+    out["models"] = _embedding_models()
+    # 释放策略同理读**配置**而不是 worker：开关关着时也要把用户选的那档显示出来，
+    # 而且读 worker 需要它正活着（关了就没有 worker 了）。
+    out["release"] = _configured_release(request)
+    return out
+
+
+def _configured_model(request: Request) -> str:
+    """当前配置的向量化引擎名。
+
+    ⚠️ **读配置而不是读 `runtime`**：`runtime` 只回答「跑起来了吗」，没跑起来时
+    设置页的下拉仍需把用户选中的那项显示出来。两者混用会得到「开着但下拉是空的」。
+    """
+    cfg = (getattr(request.app.state, "config", None) or {}).get("search") or {}
+    return cfg.get("vector_model") or DEFAULT_ENGINE
+
+
+def _configured_release(request: Request) -> str:
+    """当前配置的模型释放策略（`never` / `idle` / `immediate`）。
+
+    ⚠️ **回退判据与 `vector_runtime._release_policy` 同源**（都读
+    `vector_worker.RELEASE_POLICIES` / `DEFAULT_RELEASE`），但不复用它：那个函数的
+    职责是「运行时把配置变成 worker 参数」，顺手记一条 warning；这里只回答「界面上
+    该选中哪一档」，不该因为读状态而打日志（设置页每次打开都会读一次）。
+    """
+    cfg = (getattr(request.app.state, "config", None) or {}).get("search") or {}
+    raw = cfg.get("vector_release")
+    return raw if raw in RELEASE_POLICIES else DEFAULT_RELEASE
+
+
+def _embedding_models() -> list[dict]:
+    """可选的向量化引擎清单（设置页下拉的数据源）。
+
+    ⚠️ **`ready` 来自引擎自己的 `precheck()`**，不在这里另判一次「依赖装没装」——
+    两处判据的失效形态是「下拉说可用、开起来报缺依赖」，而这两个界面隔着一个
+    点击动作，用户不会把两句话联系起来。
+
+    ⚠️ **顺序 = 注册顺序**（`EngineRegistry._stores` 是 dict，插入序稳定）：
+    云端在前、本地在后 ⇒ 默认值 `dashscope-embedding` 落在第一位，零迁移。
+    """
+    out: list[dict] = []
+    for name in EngineRegistry.list_category("embedding"):
+        e = EngineRegistry.get("embedding", name)
+        if e is None:
+            continue
+        check = getattr(e, "precheck", None)
+        try:
+            reason = check() if check is not None else None
+        except Exception as exc:  # noqa: BLE001 —— 自检自己炸了也只是「不可用」
+            reason = f"自检失败：{type(exc).__name__}: {exc}"
+        out.append({
+            "name": name,
+            "label": getattr(e, "display_name", "") or name,
+            "modelId": getattr(e, "model_id", ""),
+            "dimension": int(getattr(e, "dimension", 0) or 0),
+            # 前端据此选「免费 / 零外发」那套成本文案 —— 不靠名字前缀猜（改名就失效）
+            "local": bool(getattr(e, "is_local", False)),
+            "ready": reason is None,
+            "reason": reason,
+        })
+    return out
 
 
 @router.post("/search/reindex")
@@ -163,6 +230,12 @@ async def search_reindex(
 
 class VectorToggleBody(BaseModel):
     enabled: bool
+    #: 切换到哪个向量化引擎（不传 = 保持当前配置）。与 `enabled` 独立 —— 用户可以在
+    #: 关着的状态下先把引擎选好，也可以开着时直接切（切完会因口径不符停用，见 reason）。
+    model: str | None = None
+    #: 本地模型的内存释放策略（不传 = 保持当前配置）。三档见 `vector_worker.RELEASE_POLICIES`；
+    #: 非法值**显式 400**，不静默退化 —— 用户以为关掉了释放、产物上看不出区别。
+    release: str | None = None
 
     model_config = {"extra": "forbid"}      # 拒绝未预期的 key（同 `ConfigUpdate`）
 
@@ -191,8 +264,25 @@ async def search_vector_toggle(
     ensure_trusted_request(request)
     from app.services.vector_runtime import sync_vector_runtime
 
+    # 校验放在锁外：引擎名不合法就**一个字节都不写**（同 `_normalize_and_validate_style`
+    # 的取向 —— 错的是「性质」而非「量」时显式报错，不静默夹紧）。
+    if body.model is not None and EngineRegistry.get("embedding", body.model) is None:
+        raise AppError("VECTOR_NO_ENGINE", f"未找到向量化引擎：{body.model}",
+                       status_code=400)
+    if body.release is not None and body.release not in RELEASE_POLICIES:
+        # 与 `model` 同一条纪律：错的是**性质**（用户以为关掉了释放），不是量。
+        raise AppError("VECTOR_BAD_RELEASE",
+                       f"未知的释放策略：{body.release}"
+                       f"（可选 {' / '.join(RELEASE_POLICIES)}）",
+                       status_code=400)
+
     with config_lock:
-        config.setdefault("search", {})["vector_enabled"] = bool(body.enabled)
+        s = config.setdefault("search", {})
+        s["vector_enabled"] = bool(body.enabled)
+        if body.model is not None:
+            s["vector_model"] = body.model
+        if body.release is not None:
+            s["vector_release"] = body.release
         save_config(config)
 
     runtime = await sync_vector_runtime(request.app)
@@ -220,13 +310,10 @@ async def search_vector_rebuild(request: Request):
        手写一遍 `mark_pending` 循环就是第二份「谁该被索引」的判据（模式 #54）。
     """
     ensure_trusted_request(request)
-    from app.services.vector_runtime import (
-        DEFAULT_ENGINE,
-        stop_vector_runtime,
-        sync_vector_runtime,
-    )
-
-    from app.core.registry import EngineRegistry
+    # ⚠️ 只 import 本函数用到的两个：`DEFAULT_ENGINE` 与 `EngineRegistry` 已在模块级
+    # 导入，在函数体内再导一次会让 `test_closure_shadowing.py` 判「同函数内 import 遮蔽」
+    # （那类形态在别的函数里正是 UnboundLocalError 的来源，守卫一律不接受）。
+    from app.services.vector_runtime import stop_vector_runtime, sync_vector_runtime
 
     vec = getattr(request.app.state, "vector_store", None)
     if vec is None:

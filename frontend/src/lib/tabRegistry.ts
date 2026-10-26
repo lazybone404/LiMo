@@ -60,7 +60,9 @@ export interface TabDef {
 
   // ── 条件 UI ──
 
-  /** 是否显示 VideoBanner */
+  /** 是否显示顶部窄条（`ContentBanner`：标题 + 原链接 + 右侧动作）。
+   *  ⚠️ 它只是**必要条件** —— 真正的显示判据在 `PreviewArea.showContentBanner`
+   *  （视频照旧，其余类型只在有编辑入口时出现）。 */
   showBanner?: boolean
   /** 是否显示 TOC 目录侧边栏 */
   showTOC?: boolean

@@ -173,6 +173,33 @@ export interface ReaderIntentOption {
   shapeDescription: string
 }
 
+/**
+ * 生成本地向量后，模型本体在内存里留多久（`search.vector_release`）。
+ *
+ * - `never`：一直留着 —— 每次搜索都是热的，代价是那几十 MB 常驻。
+ * - `idle`（默认）：闲置一段时间后释放。
+ * - `immediate`：建完索引立刻释放 —— 内存回到字面检索的水平，代价是下一次搜索
+ *   要等模型重新载入。
+ *
+ * ⚠️ **只对本地引擎有实际差别**：云端引擎不占本机内存，三档下行为完全相同。
+ * ⚠️ 这个联合类型与后端 `RELEASE_POLICIES` 是**编译期 / 运行期**两层，天然无法合并；
+ * 而**展示列表**（label / hint / 顺序）一律走 capabilities 下发（见 `ReleasePolicyOption`）。
+ */
+export type ReleasePolicy = 'never' | 'idle' | 'immediate'
+
+/**
+ * 释放策略的一档（后端 `capabilities.py::_RELEASE_POLICY_META` 下发）。
+ *
+ * ⚠️ **前端不硬编码这三档的文案**：后端 `VectorWorker.maybe_release` 按 key 分派，
+ * 加一档要改后端 —— 前端再存一份文案，加档时设置页就永远看不到它（用户选不到
+ * 就等于没加），而同一条纪律下 `styleLabels` / `dimensionPresets` 早已是下发的。
+ */
+export interface ReleasePolicyOption {
+  key: ReleasePolicy
+  label: string
+  hint: string
+}
+
 export interface Capabilities {
   adapters: string[]
   engines: Record<string, Record<string, { supported_modes: string[] }>>
@@ -216,6 +243,8 @@ export interface Capabilities {
   contentTypes?: ContentTypeOption[]
   /** 读者意图选项（对话框主控件）。可选理由同上。 */
   readerIntents?: ReaderIntentOption[]
+  /** 本地 embedding 模型的内存释放策略三档（设置页「模型内存」）。可选理由同上。 */
+  releasePolicies?: ReleasePolicyOption[]
   /** 缺 key 项（P2.1 主动提示）：llm 未配 key 的厂商 + 未配 key 的引擎（dashscope） */
   missingKeys: {
     llm: { id: string; name: string }[]

@@ -466,6 +466,25 @@ def init_engines(config: dict | None = None):
     except Exception as e:
         logger.warning(f"DashScope Embedding init failed: {e}")
 
+    # 本地向量模型（2026-10-26，search-retrieval.md §6.1 阶段 4）—— 进程内 ONNX，
+    # **免费 / 不上传 / 无需 Key**，是「离线可用」那档语义检索的全部实现。
+    #
+    # ⚠️ 与云端那支**同款纪律**：无条件注册（用户没装 onnxruntime 时，设置页也得能把它
+    #    列出来并显示「装什么」），构造零副作用（不 import onnxruntime、不加载 22.8MB
+    #    权重、不碰磁盘），抛点推迟到 `precheck()` / `warmup()` / `embed()`。
+    # ⚠️ **单独一个 try**：与上面共用的话，dashscope 分支抛错会把本地引擎一起吞掉 ——
+    #    而「云端不可用」与「本地不可用」是两件无关的事。
+    # ⚠️ 重依赖仍不进 `pyproject.toml`、模型仍不随包分发 —— 口子原则的实质是
+    #    「重依赖不进核心打包」，不是「代码必须放在 ~/.limo/plugins/ 下」。
+    #    详见 embedding_local.py 模块文档的三条理由。
+    try:
+        from .embedding_local import LocalEmbeddingEngine
+        local_emb = LocalEmbeddingEngine()
+        EngineRegistry.register("embedding", local_emb.name, local_emb)
+        logger.info("Embedding engines: local-bge-small (model=%s)", local_emb.model_id)
+    except Exception as e:
+        logger.warning(f"Local Embedding init failed: {e}")
+
     # 持久化 — 只保存引擎相关字段，保护敏感信息（LLM Key 等）不被覆盖
     # migrated_changed 计入判定：faster-whisper/tesseract 迁移清理有真实变更时必须落盘
     if asr_changed or models_changed or doc_bindings_changed or migrated_changed:

@@ -25,6 +25,8 @@ import shutil
 import sys
 import tempfile
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from fastapi.testclient import TestClient
@@ -123,3 +125,222 @@ def test_status_reports_vector_block_when_uninitialized():
         assert vec["docs"] == {} and vec["chunks"] == 0 and vec["sizeBytes"] == 0, vec
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+# ── 向量化引擎选择（2026-10-26 阶段 4：云端 / 本地二选一） ──
+
+class _CloudEmb:
+    """**没有** `precheck` 的引擎 —— 云端形状（Key 的问题在第一次编码时才该显式报）。"""
+
+    is_local = False
+
+    def __init__(self, name):
+        self.name = name
+        self.display_name = f"{name}（云端）"
+        self.model_id = f"{name}-model"
+        self.dimension = 1024
+
+
+class _LocalEmb(_CloudEmb):
+    """**有** `precheck` 的引擎 —— 本地形状（依赖 / 模型文件可能不在场）。"""
+
+    # ⚠️ 类属性而非 `__init__` 里赋值：子类的实例属性会**遮蔽**父类同名的类属性，
+    # 在上面那样写（父 `__init__` 设 `self.is_local = False`）时子类无论怎么声明都是 False。
+    is_local = True
+
+    def __init__(self, name, reason=None):
+        super().__init__(name)
+        self.display_name = f"{name}（本地）"
+        self.dimension = 512
+        self._reason = reason
+
+    def precheck(self):
+        return self._reason
+
+
+@pytest.fixture()
+def fake_embeddings(monkeypatch):
+    """把注册表换成两个可控替身（`EngineRegistry` 是进程内单例，别的测试文件可能
+    已经注册过真引擎 —— 不隔离的话这里断言的「有哪些」会随测试顺序变化）。"""
+    from app.core.registry import EngineRegistry
+
+    engines = {"cloud-x": _CloudEmb("cloud-x"),
+               "local-x": _LocalEmb("local-x", reason="缺 onnxruntime")}
+    monkeypatch.setattr(EngineRegistry, "_stores", {"embedding": dict(engines)})
+    return engines
+
+
+def test_status_lists_embedding_engines(fake_embeddings):
+    """`status.vector` 给出 `model`（当前选中）+ `models`（下拉数据源）。
+
+    ⚠️ 两个键**在 `vector_store is None` 的早退分支上也要有**：前端类型里它们是
+    必填，缺键会让「后端没接向量库」与「字段忘了给」在界面上长得一模一样。
+    """
+    c, d = _setup()                     # 注意：`vector_store = None`，走早退分支
+    try:
+        vec = c.get("/api/search/status").json()["vector"]
+
+        assert vec["model"] == "dashscope-embedding", "配置没设时给默认引擎"
+        models = {m["name"]: m for m in vec["models"]}
+        assert set(models) == {"cloud-x", "local-x"}
+
+        assert models["local-x"]["local"] is True
+        assert models["local-x"]["ready"] is False
+        assert models["local-x"]["reason"] == "缺 onnxruntime"
+        assert models["local-x"]["dimension"] == 512
+        assert models["local-x"]["modelId"] == "local-x-model"
+        assert models["local-x"]["label"] == "local-x（本地）"
+
+        # ⚠️ 没有 `precheck` 的引擎 = 视为就绪（不是「未知」）—— 云端确实没有
+        # 「依赖装没装」这回事，报不可用会让用户去找一个不存在的开关。
+        assert models["cloud-x"]["ready"] is True
+        assert models["cloud-x"]["reason"] is None
+        assert models["cloud-x"]["local"] is False
+
+        # 顺序 = 注册顺序（dict 插入序）：云端在前 ⇒ 默认项落在第一位，零迁移
+        assert [m["name"] for m in vec["models"]] == ["cloud-x", "local-x"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_status_model_reflects_config(fake_embeddings):
+    """`model` 读的是**配置**而不是 runtime —— 用户切到本地后即使还没启用，
+    下拉也必须显示他选中的那项。"""
+    c, d = _setup()
+    app.state.config = {"search": {"vector_enabled": False, "vector_model": "local-x"}}
+    try:
+        vec = c.get("/api/search/status").json()["vector"]
+        assert vec["model"] == "local-x"
+        assert vec["enabled"] is False           # 选中 ≠ 启用，两件事
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+        del app.state.config
+
+
+def test_status_reports_release_policy():
+    """`vector.release` 是**配置值**：默认 `idle`、合法值原样、脏值回退 `idle`。
+
+    ⚠️ 脏值回退**不抛**（与请求入口的 400 刻意不同）：这里是「磁盘上可能过期的值」，
+    为了一个读不懂的键让设置页整块报错，用户无从下手；而 `idle` 的语义是安全的
+    （闲置后不占内存）。
+    """
+    c, d = _setup()
+    app.state.config = {}
+    try:
+        assert c.get("/api/search/status").json()["vector"]["release"] == "idle"
+
+        app.state.config = {"search": {"vector_release": "never"}}
+        assert c.get("/api/search/status").json()["vector"]["release"] == "never"
+
+        app.state.config = {"search": {"vector_release": "手改出来的值"}}
+        assert c.get("/api/search/status").json()["vector"]["release"] == "idle"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+        del app.state.config
+
+
+def test_vector_toggle_sets_release(monkeypatch):
+    """释放策略随开关一起落盘；非法值 400 `VECTOR_BAD_RELEASE` 且**零写盘**。
+
+    静默退化的失效形态：用户以为关掉了释放、界面上「已保存」，而那几十 MB
+    一直在内存里 —— 产物与日志上都看不出任何异常。
+    """
+    import threading
+
+    import app.routers.search as search_router
+
+    writes: list[dict] = []
+    monkeypatch.setattr(search_router, "save_config",
+                        lambda cfg: writes.append(dict(cfg["search"])))
+
+    c, d = _setup()
+    app.state.config = {"search": {"vector_enabled": False}}
+    app.state.config_lock = threading.Lock()
+    try:
+        r = c.post("/api/search/vector", headers=_CLIENT,
+                   json={"enabled": False, "release": "immediate"})
+        assert r.status_code == 200, r.text
+        assert writes == [{"vector_enabled": False, "vector_release": "immediate"}]
+        assert r.json()["status"]["release"] == "immediate"
+
+        writes.clear()
+        r = c.post("/api/search/vector", headers=_CLIENT,
+                   json={"enabled": False, "release": "sometimes"})
+        assert r.status_code == 400, r.text
+        assert r.json()["code"] == "VECTOR_BAD_RELEASE"
+        assert writes == [], "非法策略不该产生任何写盘"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+        del app.state.config
+        del app.state.config_lock
+
+
+def test_默认配置的释放策略与常量同源():
+    """`DEFAULT_CONFIG` 里的字面量与 `vector_worker.DEFAULT_RELEASE` 必须相等。
+
+    两处各写一份时漂移是零报错的：默认配置写着 `never` 而常量是 `idle` ⇒ 用户从没
+    碰过这个设置，worker 按 `idle` 跑而设置页显示「常驻内存」。
+    """
+    from app.core.config import DEFAULT_CONFIG
+    from app.services.vector_worker import DEFAULT_RELEASE
+
+    assert DEFAULT_CONFIG["search"]["vector_release"] == DEFAULT_RELEASE
+
+
+def test_vector_toggle_switches_engine(fake_embeddings, monkeypatch):
+    """切引擎 = 写配置 + 就地重新同步运行时（下一个用例验非法值）。"""
+    import threading
+
+    import app.routers.search as search_router
+
+    writes: list[dict] = []
+    monkeypatch.setattr(search_router, "save_config",
+                        lambda cfg: writes.append(dict(cfg["search"])))
+
+    c, d = _setup()
+    app.state.config = {"search": {"vector_enabled": False,
+                                   "vector_model": "dashscope-embedding"}}
+    app.state.config_lock = threading.Lock()
+    try:
+        r = c.post("/api/search/vector", headers=_CLIENT,
+                   json={"enabled": True, "model": "local-x"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"]["model"] == "local-x"
+        # ⚠️ 写盘的是 `app.state.config` 这个内存对象（`save_config` 的隐藏前提）
+        assert writes == [{"vector_enabled": True, "vector_model": "local-x"}]
+
+        # `vector_store = None` ⇒ 运行时给不出「已启用」，但**原因必须在场**
+        assert body["enabled"] is False and body["reason"] == "向量索引库未初始化"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+        del app.state.config
+        del app.state.config_lock
+
+
+def test_vector_toggle_rejects_unknown_engine(fake_embeddings, monkeypatch):
+    """非法引擎名 → 400 `VECTOR_NO_ENGINE`，**一个字节都不写**。
+
+    ⚠️ 显式报错而非静默夹紧：错的是「性质」（切到一个不存在的引擎）不是「量」。
+    静默退回默认值会让用户以为换成功了，而界面上的下拉从此对他撒谎。
+    """
+    import threading
+
+    import app.routers.search as search_router
+
+    writes: list[dict] = []
+    monkeypatch.setattr(search_router, "save_config", lambda cfg: writes.append(cfg))
+
+    c, d = _setup()
+    app.state.config = {"search": {"vector_enabled": False}}
+    app.state.config_lock = threading.Lock()
+    try:
+        r = c.post("/api/search/vector", headers=_CLIENT,
+                   json={"enabled": True, "model": "nope"})
+        assert r.status_code == 400, r.text
+        assert r.json()["code"] == "VECTOR_NO_ENGINE"
+        assert writes == [], "非法引擎名不该产生任何写盘"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+        del app.state.config
+        del app.state.config_lock

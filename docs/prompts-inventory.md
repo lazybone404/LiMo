@@ -945,7 +945,7 @@ key **回退 `article`** —— 旧文档没有 `shape` 字段，读了不能崩
 
 ## 13. 提示词版本（PROMPT_VERSION）
 
-**定义**：[backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) — 当前值 `"19"`
+**定义**：[backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) — 当前值 `"21"`
 
 这个常量只有一个用途：写进产物自证头的 `generated.promptVersion`（装配在 `generation/provenance.py`），回答「这份产物是凭哪版提示词生成的」。**它对 prompt 本身零影响**——改它不会让任何一次调用产生不同结果，但会让此后落盘的产物如实标出新版本。
 
@@ -971,6 +971,8 @@ key **回退 `article`** —— 旧文档没有 `shape` 字段，读了不能崩
 | `"17"` | 2026-10-20 语义块新增 `cycle`：`get_markdown_block_format()` 扩到 10 种。首尾相接的因果循环写成 3–6 项**有序列表**，环由 CSS 排（模型只写环节与顺序）。动因是图表的失败面：`flowchart` 拒绝任何环、`state` 只适合状态迁移，模型只能硬套 `state`。同批 `get_chart_format()` 把「环形循环」从图表职责里分出去，`state` 示例标题改准为「状态机（带判定的迁移，可含回环）」 |
 | `"18"` | 2026-10-20 语义块 +2、图表引导 **7 → 3**、删两条层数闸门：① 新增 `sequence`（消息流：有序列表 + `**发送方 → 接收方**：`）/ `quadrant`（二维评估：**恰好 4 项**、左上/右上/左下/右下）→ 共 12 种块；② `get_chart_format()` 只留 `grid` / `flowchart` / `state`，撤下的 `layers`/`tree` 改走嵌套列表、`sequence`/`quadrant` 改走新块 —— 判据是「**文本结构能否保真表达这个关系**」（不是复杂度、不是垂直/水平），算子一个没删；③ `layouts.py` 删 `flowchart` 的 `nlayer > 5` 与 `state` 的 `nrow > 7`：它们在 `expand()` 的压行距 + 等比缩放**之前**就抛错，是同一件事的第二套判据且严格更严（实测 8 层纯矩形只需 564px）。④ 完成期 warning 判据放宽（产出五种替代块之一不再报「图表未生成」） |
 | `"19"` | 2026-10-20 **措辞中性化，判据一字未改**：`get_markdown_block_format()` 的「用列表表达就够了」那句，块名单改由 `core/artifact_blocks.py::CHART_ALTERNATIVE_BLOCK_TYPES` **拼出**，手写的「不要塞进这**五种**」改成「这**几种**」。起因是这条名单在 prompt 文案 / `_chart_missing_warning` 判据 / 模块注释三处各抄了一份 —— 加第六种时漏改任一处都是静默分叉（prompt 教了、完成期 warning 不认 → 用户照做反被报「图表未生成」）。⚠️ 输出字节与 `"18"` 只差这一个词，bump 走的是「发给模型的文本变了就 bump」这条纪律，不是行为变了 |
+| `"20"` | 2026-10-26 `get_chart_format()` 的 flowchart 行加一句硬边界「**单向前进，不能有回边/自环**，有回环改用 state」。`flowchart` 算子结构性拒绝任何环（`_topo_layers` 排不出拓扑序就抛错），而原引导只说了「带分支与汇合」——模型表达「请求下行 / 响应上行」这类往返路径时会自然画出回边，整张图降级成「图表生成失败」。⚠️ 只加括注、不动结构，因为 2026-08-16 的教训是「堆规则 ↔ 出图率」直接 trade-off |
+| `"21"` | 2026-10-27 **flowchart 示例改成「分支 + 汇合」**（`"20"` 的括注没治住，用户仍撞到「流程存在环（c、d、e）」）。根因是**示例形状与描述矛盾**：两份 flowchart JSON（清单行 + 末尾「照改文字」）都是 `a→b→c` 单链，既无分支也无汇合，模型从示例里学到的就是「一条链」。① 两份示例换成 5 节点「提交 → 通过? →（发布 / 退回）→ 上线」（真分支、真汇合、无环，`chart_layout.expand` 实测 `scale=1.0`）；② 抽一行边界句「任何一条边指回自己的上游就是环，整张图会被丢弃，有回边一律改用 state」；③ `cycle` 块的指路补「**没有分支的**」——它有 3–6 个有序项，装不下带分支的环，那一类归 `state`。⚠️ `test_prompt.py` 的新守卫**解析示例 JSON** 断言「有分支、有汇合」，退回单链立刻红（已用旧示例做对照实验确认有区分力） |
 
 ⚠️ **同一轮还有一处 CSS 改动，不 bump**：中性面板族（`metric` / `table` / `code` / `image`）
 的容器边框由 `--tk-border-light` 换成 `--tk-border`（[blocks.css](../frontend/src/styles/blocks.css)）。

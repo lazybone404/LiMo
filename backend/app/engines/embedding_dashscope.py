@@ -54,6 +54,10 @@ class DashScopeEmbeddingEngine:
     model_id = "text-embedding-v4"
     dimension = 1024
     capabilities = ["embedding"]
+    #: 展示名（设置页的引擎下拉，`routers/search.py::_embedding_models` 读它）。
+    #: 缺了它下拉里会显示裸的 `dashscope-embedding` —— 两个引擎并排时用户看不出
+    #: 哪个在花钱、哪个在本机跑，而那正是这个下拉存在的全部理由。
+    display_name = "云端（DashScope · 按字数计费）"
 
     def __init__(self, api_key: str = ""):
         self.api_key = api_key

@@ -6,6 +6,394 @@
 
 ---
 
+## 2026-10-27 — 图表：flowchart 示例改成「分支 + 汇合」（`PROMPT_VERSION` 20 → 21）
+
+用户报「环形图偶尔还是会失败」，贴出的实际产物是：
+
+```
+📊 图表生成失败（布局失败：流程存在环（c、d、e）——有回环/自环的结构请改用 state 布局）
+```
+
+### ① 根因不是布局算子，是 prompt 的示例形状
+
+先排除了算子：对 `state` 布局跑确定性压力测试（链 + 多条回边、节点数 4/6/8/9、回边数最多 8 条，
+共 4320 + 24 例）**零失败**，带标签的边标签 100% 保留（`_relax_labels` 一条都没丢）。
+仅有的 2 例失败是「自然高 1024px，需缩到 62%」—— 那是 `_MIN_SCALE=0.65` 的**设计认可**
+的显式失败（可读性下限），不是缺陷。
+
+真正的问题是：**模型把带环的流程写成了 `flowchart`**。而 `_flowchart` 结构性地拒绝任何环
+（`_topo_layers` 排不出拓扑序就抛 `LayoutError`），整张图就降级成占位文本。
+
+为什么模型会这么写？看 `get_chart_format()` 里那两处 flowchart —— 描述写的是「带分支与汇合」，
+但**给的两份示例都是 `a→b→c` 单链**（清单行一份、末尾「示例（照改文字）」一份），既无分支
+也无汇合。模型从示例里学到的形状就是「一条链」，于是遇到「有分支 + 有回退」的流程时继续套
+flowchart。⚠️ 而 `PROMPT_VERSION` "20"（2026-10-26）已经加过一句「单向前进，不能有回边/自环」
+的括注 —— **没治住**。这轮的结论是：**示例的形状比限制语的措辞管用**。
+
+### ② 改了什么（三处文本，零代码逻辑）
+
+- 两份 flowchart 示例都换成 5 节点「提交 → 通过? →（发布 / 退回）→ 上线」：真的分支
+  （`b` 出两条边）、真的汇合（`c`/`d` 都进 `e`）、无环。已用 `chart_layout.expand` 实测
+  `width=176 height=372 scale=1.0`，5 个节点全部落地、2 个边标签都在。
+- 抽出一行**边界句**：「flowchart 只许单向前进，任何一条边指回它自己的上游（a→b→…→a）
+  就是环，**整张图会被丢弃**；有回边一律改用 state」。
+- 指路语里的「首尾相接的因果循环 → `cycle` 块」补上「**没有分支的**」——`cycle` 块只有
+  3–6 个有序项，**装不下带分支的环**；那一类归 `state` 布局，不归块。这同时回答了
+  「不是已经用卡片代替了一部分图吗」：替代的是无分支纯闭环，带分支的有向图本来就得画。
+
+### ③ 守卫（`test_prompt.py`）
+
+新断言**解析示例 JSON 看结构**，而不是比对字符串：每份 flowchart 都必须存在一个节点出 ≥2
+条边（分支）、一个节点入 ≥2 条边（汇合）。改文案不会误红，退回单链立刻红 —— 已用旧单链
+示例做对照实验确认判据有区分力（`outs`/`ins` 全是 1，两条判据都 False）。
+另加「单向前进 / 回边 / state」三词必须同场，防止只留「不许」而没给出路。
+
+### ④ 顺带：`test_url_security.py` 改为零网络依赖
+
+门禁曾在**收集阶段** `Interrupted`：`pytest` 导入该模块时，第一组「公网 URL 应通过」对
+`api.openai.com` 做真实 DNS，本机把它污染到 `2001::6ca0:aa2c`（Teredo，`ipaddress` 判
+`is_private`）→ 被 `validate_url` 正确拦下 → 断言失败 → 整个 `pytest tests/` 收集中断。
+一个与仓库代码无关的网络状况把门禁打成红，且报错位置指向不了真因。
+
+改为 `unittest.mock.patch` 掉 `socket.getaddrinfo`（公网组返回 `93.184.216.34`，内网组返回
+`127.0.0.1`）。**判据一字不变**（解析到公网 → 通过，解析到环回 → 阻止），换台机器结果相同；
+`is_private_ip` 本身不 mock（那是本文件下半段要直接验证的对象）。
+
+**影响范围**：只改 prompt 文本与测试；`chart_layout` / `chart_svg` / 渲染链路零改动；
+历史产物不受影响（它们已渲染成 PNG 或已带失败占位）。`PROMPT_VERSION` 20 → 21 是纪律要求
+（发给模型的文本变了就 bump），不代表生成行为有确定性变化。
+
+---
+
+## 2026-10-27 — 编辑入口搬进顶部窄条（`VideoBanner` → `ContentBanner`）
+
+产物预览区的「编辑」按钮原先**单占正文上方一整行**（右对齐、只为放两个小元素），
+而它上面那条窄条里正好有「原链接」—— 两者都是「针对这个文档 / 这一版」的东西，
+分成两行只是把正文白白往下推。现在合成一行：`标题 …… 原链接  ｜  已手动编辑  编辑`。
+
+### ① 组件改名与泛化
+
+`preview/VideoBanner.tsx` → `preview/ContentBanner.tsx`，新增 `actions` 槽
+（右侧整块 `ml-auto` 包住「原链接 + actions」）。它的形状没变，变的只是**谁在用**。
+
+⚠️ 改名不是洁癖：编辑按钮在**非视频**文档上同样需要落点，而窄条原先被
+`currentDoc?.sourceType === 'video'` 收窄成「视频专属」。名字继续叫 `VideoBanner`
+会把这条新语义埋进一个说谎的标识符里。
+
+### ② 显示判据：`video` 收窄 → `isVideo || canEditArtifact`
+
+```ts
+showContentBanner = !!activeTabDef?.showBanner && (isVideo || canEditArtifact)
+```
+
+- 视频：照旧（`showBanner` 已有，与改造前逐项相同）
+- 非视频：**只在有编辑入口时**才出现。若改成「去掉 video 限制让所有 tab 都显示」，
+  图片 / 转录 / 原始数据这些 tab 会平白多一条标题栏 —— 那是另一件事。
+
+`canEditArtifact` 三条判据缺一条就是「按钮在、点了没用」：只有 `summary` / `polished`
+两个 tab 有可编辑产物；Excel 数据摘要走 `summary` 内容源但**不可编辑**（`typeMeta.isExcel`
+早退，与下方正文分支同源）；编辑态下不显示（正文区整个被编辑器接管）。
+
+⚠️ 窄条 hover 色从 `hover:bg-surface-hover` 改成 `hover:bg-elevated` —— 容器的底色
+**本身就是** `bg-surface-hover`，同色 hover 等于没有反馈。
+
+### ③ 顺带收口一处重复判据
+
+正文分支里原有的局部 `editMode` / `inEditing` 与新加的组件级 `artifactEditMode` /
+`editingThisMode` 是同一份判断的两份写法。全部改用组件级变量（窄条与正文两处同源）——
+各写一份的失效形态是「窄条说没在编辑、正文却已是编辑器」这类静默分叉。
+
+**影响范围**：仅预览区 UI。导出、生成、版本、编辑落盘逻辑零改动（`startEditing` /
+`handleSaveEdit` 原样复用）。`TabDef.showBanner` 语义从「是否显示 VideoBanner」改为
+「是否**允许**显示顶部窄条」（必要条件，充分判据在 `PreviewArea`）。
+
+---
+
+## 2026-10-26（同日续十一） — 释放策略收口：关掉功能也释放、档位改由 capabilities 下发
+
+续十把「建完索引之后放不放」做成了三档设置，但收尾时盘出四条欠账，本轮一并补上。
+
+### ① 关掉语义检索后，模型**不会被释放**（真缺陷）
+
+`release` 三档此前只在 `VectorWorker.maybe_release` 里生效，而那条路径只有 worker
+**在跑**时才走得到。用户一旦关掉开关，worker 被 `_stop_worker` 取消，模型句柄却留在
+`LocalEmbeddingEngine` 里 —— 那几十 MB 一直不还，而界面上所有痕迹都消失了。
+
+⚠️ **不能靠 `never` 档挡住它**：`never` 的意思是「**平时**常驻内存」，不是「关掉这个
+功能之后还占着」。用户选常驻是因为还要用；关掉之后再占着，没有任何「下次搜索」可以等。
+所以新增 `VectorWorker.release_now()`：**不看策略**，无条件 `after_idle=0.0` 释放。
+
+`_stop_worker` 加 `release_model` 参数（**默认 False**），调用方的语义各不同：
+
+| 路径 | 释放？ | 理由 |
+|---|---|---|
+| `sync_vector_runtime` 的**六条**「不在用」（关开关 / 库未初始化 / 引擎找不到 / 库不可用 / 自检不过 / 口径不符） | ✅ | 共同含义是「语义检索现在不工作」 |
+| `_ensure_worker` 的策略变化重启 | ❌ | 用户可能刚把 `immediate` 改成 `never`（明确要它常驻），这次重启正是为落实那个选择 |
+| `stop_vector_runtime`（停机 / 重建向量索引） | ❌ | 停机放不放没区别；而「重建」马上就是一轮全库编码，放掉等于白付一次加载 |
+
+⚠️ `release_now()` 传 `after_idle=0.0` 而不是不传：不传走引擎默认门槛（600s），刚
+放下键盘就关功能时引擎会以「还在闲置期内」为由拒绝 —— 一次什么都不做的释放。
+
+### ② `_stop_worker` 只清了 `vector_stop` / `vector_task`，留下 `vector_worker`
+
+指向已死 task 的 `vector_worker` 是一颗定时炸弹：将来任何按它读 `worker.release` 或
+`worker.stats` 的代码都会拿到上一个实例的陈旧值，**且不会有任何报错**。现在三个引用
+一起清，且**先清引用再 cancel**（`_start_worker` 的「已在跑」判据读的正是这个引用）。
+
+顺带：原先的 `if task is None or task.done(): return` 会把释放整个跳过 —— 改成
+`if task is not None and not task.done():` 包住 cancel/await，释放排在块外。
+
+⚠️ **释放必须在 `await task` 之后**：worker 活着时可能正用着这份 ONNX 句柄，先放再
+cancel 会让那次编码在半路失去模型（在 ONNX 上表现为崩溃而非异常）。
+
+### ③ 三档的文案在前端硬编码了第二份 → 改由 capabilities 下发
+
+`SearchIndexCard` 里手写了一组 `RELEASE_OPTIONS`（key + label + hint）。后端
+`maybe_release` 是按 key 分派的 —— **加一档要改后端**，而前端那份不改，设置页就永远
+看不到它（用户选不到等于没加），且编译期与运行期都不报错。
+
+现在 `GET /api/capabilities` 下发 `releasePolicies`（`_RELEASE_POLICY_META` 是文案唯一
+出处，模块级 `assert` 守键集与 `RELEASE_POLICIES` 相等），前端照单渲染、**顺序也用后端
+的**。同一条纪律下 `styleLabels` / `dimensionPresets` / `readerIntents` 早已是下发的。
+
+⚠️ 前端 `ReleasePolicy` 联合类型留在 `api/core.ts`（它是编译期的东西，与运行期枚举天然
+无法合并）；`Capabilities` 里该字段是**可选**的，消费处 `?? []` —— **取不到就整组不渲染**，
+不拿本地默认表兜底（那恰好会把这条纪律悄悄废掉，而测试照样全绿）。同 `lib/search-health`
+的 `null`：问不到不等于坏了。
+
+### ④ 补测试（此前 `vector_runtime` **零覆盖**）
+
+- 新增 `test_vector_runtime.py`（11 条）：六条停用路径都释放 / 重建与重启路径不释放 /
+  `never` 档关掉功能也释放 / 策略变了才重启 / 三个引用都清干净 / 库不可用·引擎找不到·
+  口径不符各有出口。
+- 新增 `searchIndexCard.test.tsx`（6 条）：档位顺序与文案照后端下发 / capabilities 缺失时
+  整组不渲染 / 云端引擎不渲染 / `release` 缺失按 `idle` 高亮 / 切档时**不传模型名**
+  （传了会走「切引擎」分支，口径必然不符、索引被停掉）/ 点已选中那档不发请求。
+- `test_capabilities.py` 加一条：键与顺序必须来自 `vector_worker.RELEASE_POLICIES`，
+  且 `DEFAULT_RELEASE` 在清单里（前端拿它做兜底高亮，漏了会渲染出「一个都没选中」）。
+
+**四组对照实验**（都实测判红后还原）：去掉「取不到就不渲染」的守卫 → 只有那条红；
+切档时误传 `vec.model` → 只有那条红；`_release_policies` 少一档 → 只有那条红；
+`_stop_worker` 的释放判据改成 `if False` → 5 红 6 绿。
+
+### 影响范围
+
+- 后端：`services/vector_runtime.py`（`release_model` 参数 + 三个引用）、
+  `services/vector_worker.py`（`release_now` / `_do_release`）、
+  `routers/capabilities.py`（`releasePolicies`）
+- 前端：`api/core.ts`（`ReleasePolicy` / `ReleasePolicyOption`）、`api/search.ts`（转出类型）、
+  `components/settings/SearchIndexCard.tsx`（删本地常量、改读 capabilities）
+- 文档：`docs/STATUS.md` 计数（后端 91 / 前端 83；`vector_runtime` 与 `releasePolicies` 补进清单）
+- 用户可见：无新增控件 —— 只是「关掉语义检索后那几十 MB 真的还回去」
+
+## 2026-10-26（同日续十） — 建完索引后释放模型内存（三档策略，用户可选）
+
+承接上一条的 arena 修复（686MB → 92MB）：建完库之后那 92MB 其实也**可以还回去**。
+用户提了两件事——「建完库之后其实可以释放掉」，以及「用户开启/关闭相关设置这方面
+可能得有详细的设置」——合起来就是：**释放不硬编码，做成带代价说明的三档设置**。
+
+### ① 三档策略（`search.vector_release`）
+
+| 档 | 行为 | 代价 |
+|---|---|---|
+| `never` | 模型一直留着 | 那几十 MB 常驻不还 |
+| `idle`（**默认**） | 闲置超过阈值就释放 | 日常约等于「建完就放」，但刚建完顺手搜一下仍然快 |
+| `immediate` | 建完立刻释放 | 之后第一次搜索等几秒重新载入 |
+
+三档的实质是「**哪一刻要等模型载入**」，所以界面文案讲的是等待，不是「省不省内存」——
+只写省不省等于把选择压成一个没有信息的偏好。
+
+⚠️ **默认 `idle` 而非 `never`**：默认值要等于「用户什么都不做时的合理行为」，而 worker
+跑完不退出进程、模型一旦加载就一直占着，正是上一轮 arena 修复要治的那个病的残余。
+⚠️ 阈值（600s）住在**引擎侧**（`embedding_local.DEFAULT_IDLE_RELEASE`），worker 刻意不知道
+——「多久算闲置」是本地引擎的属性，云端引擎根本没有「加载」这回事。`idle` 档调
+`release()` 时**不传 `after_idle`**，传了就是第二份判据。
+
+### ② 释放之后查询必然超时 —— `LOAD_TIMEOUT` 是一档独立的超时
+
+`QUERY_TIMEOUT = 3.0`，而模型加载 3–5 秒。释放后第一次查询**必超时**，而错误文案还是
+「语义检索超时」——读起来像网络问题，用户会去查网。
+
+`VectorSearcher._ensure_loaded()` 在 `_precheck` 之后、编码之前调 `warmup()`，用**独立的**
+`LOAD_TIMEOUT = 30.0` 包住。载入超时 / 载入失败各自成一句文案（「语义模型载入超时（>30s）」
+/「语义模型载入失败（RuntimeError）」），与真正的查询超时分开。失败只降级这一次查询
+（字面结果照给 + `semantic.error`），不写 `mark_failed` —— 模型没起来不是这篇文档的错。
+
+⚠️ **不是放宽 `QUERY_TIMEOUT`**：那会让「一次查询真的卡住」也要干等 30 秒。
+
+### ③ `immediate` 只在**本轮真有推进**之后释放一次
+
+`run_once` 空转（队列空 / 全部跳过）时不该释放：用户可能刚刚搜过一次把模型载进了内存，
+一轮空转把它踢掉 = 「明明刚用过，下一次搜索又要等几秒」。`loop` 在
+`if stats["indexed"] or stats["failed"]` 之后才置 `_pending_release`，`maybe_release()`
+消费一次即复位。
+
+释放后 `_warmed = False` —— 下一轮走 `_warm()` 而不是每篇惰性加载。
+
+### ④ 顺带：`_warm` 从 `run_once` 开头挪到「确认有活之后」
+
+原来无条件预热，队列空着时每 60 秒加载一次模型（22.8MB 读盘）再释放一次。现在排在
+`_next_ids` 之后。这条与释放策略是同一个病的两面：**内存花在没人用的地方**。
+
+### ⑤ 入口严、读回宽
+
+- `POST /api/search/vector` 的非法 `release` → **400 `VECTOR_BAD_RELEASE`，零写盘**
+  （错的是性质：用户以为改成功了，而内存回收行为一点没变）。
+- `GET /api/search/status` 读配置时对脏值**静默回退 `idle`**（那是「磁盘上可能过期的值」，
+  为一个读不懂的键让整张卡报错，用户无从下手）。
+- `vector_runtime._ensure_worker` 在**策略变化时重启 worker** —— 原先的「已在跑不重启」
+  会让配置改了行为不变，是最典型的静默失效。
+
+### 影响范围
+
+- 后端：`engines/embedding_local.py`（`release()` 钩子）、`services/vector_worker.py`
+  （三档 + `maybe_release`）、`services/vector_search.py`（`LOAD_TIMEOUT`）、
+  `services/vector_runtime.py`（策略变化重启）、`routers/search.py`（校验 + 状态回显）、
+  `core/config.py`（默认值）
+- 前端：`api/search.ts`（`ReleasePolicy` / `setVectorSearch(envelope, model?, release?)`）、
+  `SearchIndexCard`（三档按钮 + 代价说明，**仅本地引擎下渲染**）
+- 测试：`test_embedding_local.py`(4) / `test_vector_worker.py`(6) / `test_vector_search.py`(4) /
+  `test_search_api.py`(3)，含「默认配置的字面量与常量同源」一条守卫
+- 用户可见：README「语义检索」条补一段；设置页多一行「模型内存」
+
+## 2026-10-26（同日续九） — 本地引擎的内存与使用条件
+
+用户问「这 22 兆大概需要多少运存，可不可以进（发进安装包）」，两问都答了「不行 / 不该」，
+连带修了一个**量级差 7 倍**的缺陷，并把「本地引擎不是装上就能用」这件事写到了用户眼前。
+
+### ① ONNX Runtime 的 CPU arena：686MB 常驻 → 92MB
+
+**22.8MB 是磁盘上的权重，不是内存。** 实测（Win11 / 本机 / 工作集，3.5 万块外推全库）：
+
+| bs | `enable_cpu_mem_arena` | 加载后 | 建库跑完常驻 | 全库耗时 |
+|---|---|---|---|---|
+| 32 | on（**原状**） | 87.8MB | **686.4MB** | 3.8 分钟 |
+| 16 | on | 87.6MB | 388.1MB | 4.6 分钟 |
+| 8 | on | 87.9MB | 239.6MB | 3.4 分钟 |
+| 4 | on | 88.2MB | 165.0MB | 3.3 分钟 |
+| 32 | **off** | 87.2MB | **92.7MB** | 4.6 分钟 |
+| 8 | **off** | 87.1MB | **92.3MB** | 4.7 分钟 |
+
+根因是 ORT 默认把每次推理申请的缓冲留在自己的 arena 里复用、**永不归还系统**，而
+embedding 的中间激活比权重本身大一个量级（bs=32 × 202 token 的注意力矩阵就是几百 MB）。
+`Embedder.__init__` 现在设 `SessionOptions().enable_cpu_mem_arena = False`。
+
+取舍：**多花 20% 的一次性建库时间，换掉 600MB 常驻** —— 建库是一次性的，内存是终身的
+（worker 跑完不退出进程）。副作用是 `bs` 不必再为内存调小（关掉 arena 后 bs=4 与 32 的驻留差不到 1MB）。
+
+### ② `precheck` 把「使用条件」说全，且**打包版不给做不到的命令**
+
+原文案只报「缺少 onnxruntime」并给 `pip install`。两个问题：
+
+- **只报缺哪个包，读起来像「这次漏打了、下次更新会带上」** —— 而本地引擎是**刻意不随包**的
+  （模型 22.8MB + ORT 的 CPU 原生库都不进安装包），它对谁都不是「装上就能用」。
+- **冻结环境没有 pip**：`LiMoBackend.exe` 跑在冻结的 Python 里，用户机器上通常也没有第二个
+  Python。给一条跑不了的命令比不给更糟 —— 他会以为是操作错了、反复试。
+
+现在：前半句「不随应用分发，需自行准备：运行库 X 与 Y、模型文件」，后半句由
+[`_fix_hint`](../backend/app/engines/embedding_local.py) 给补法 —— 源码模式给镜像源命令 +
+模型文件落点 + 「补齐后重启应用生效」（`find_spec` 查的是**当前进程**的 `sys.path`，不重启看不见新包）；
+`sys.frozen` 时**直说做不到**并给出路（改用云端引擎）。
+
+⚠️ `_fix_hint` 是**唯一一份**补法文案：`precheck`（设置页那行）与 `Embedder.__init__` 抛的
+`MissingDependency` 共用。两处各写一份的失效形态是「设置页说这里装不了、真跑起来又让你 pip install」。
+
+### ③ 前端：未就绪原因**不用点下拉就看得见** + 重建确认框不再说「计费」
+
+- **`SearchIndexCard`**：新增 `notReady` 派生 = `vec.reason ?? (选中引擎未就绪 ? 它的 reason : null)`。
+  此前未就绪原因只在「开关开着却起不来」时通过 `vec.reason` 出现 —— 用户没开语义检索时
+  **只能靠去点一下下拉才发现**自己选的引擎用不了（`sync_vector_runtime` 在 `vector_enabled=false`
+  时 reason 恒为 `None`）。那块 `data-vector-requirement` 现在常驻。
+  两处同时渲染是同一句话连说两遍，所以判据是「`vec.reason` 缺席才回落」。
+- **向量重建确认框**：原写「这会产生一次完整的计费」——**本地引擎下一分钱不花**，是错话。
+  现在与 `data-vector-notice` 同源，按引擎的 `local` 分支（「全程在本机跑，不产生费用，但要花上一段时间」）。
+
+### ④ 决策记录：为什么不进包、为什么不做成插件
+
+| 方案 | 没 Python 的用户 | 装了 Python 的用户 | 核心纯净度 |
+|---|---|---|---|
+| **现状（核心引擎、自己备环境）** ← 用户拍板 | ❌ | ✅ | 引擎代码在核心，重依赖不在 |
+| 做成常驻插件 | ❌ **同样装不了** | ✅ | ✅ |
+| 内置进安装包 | ✅ | ✅ | ❌（+80MB、原生 DLL 风险） |
+
+- **进包**：技术可行（模型 23MB + ORT 解包 50–60MB + tokenizers 5MB，许可证 MIT/MIT/Apache-2.0
+  无冲突），但 ORT 是原生 DLL，与已踩过的 OpenSSL DLL 冲突同类，且与口子原则正面冲突。
+- **插件**：`plugin_loader._resolve_venv_base_python()` 在 frozen 下**只能找系统 Python**，
+  找不到就 `no-python` 直接返回 —— 插件路线的覆盖范围**一点没扩大**。加上现有插件是
+  一次性 `Popen`，而 embedding 要常驻（加载 3–5s > `QUERY_TIMEOUT = 3.0`）。
+
+结论：**现状 + 把使用条件说清楚**。
+
+### 影响范围
+
+`engines/embedding_local.py`（arena / precheck / `_fix_hint`）、`settings/SearchIndexCard.tsx`、
+`README.md` 语义检索那条（「该跑什么命令」在安装版下不成立，已改为如实描述两档）、
+`tests/test_embedding_local.py` +1（`test_precheck_打包版不给跑不了的命令`，反向断言
+`"pip install" not in reason`）。**行为变更**：本地引擎在安装版下从「报缺依赖 + 一条跑不了的命令」
+变成「直说安装版补不了、请用云端」。
+
+---
+
+## 2026-10-26（同日续八） — 语义检索阶段 4：本地向量引擎
+
+用户原话「用本地的插件吧这样方便一些」。落地结果是**本地引擎**，但**没有做成
+`~/.limo/plugins/` 的 `EnginePlugin`** —— 判据是口子原则的**实质**（重依赖不进核心打包），
+不是「文件放在哪个目录」。三条硬理由写在模块文档里：
+
+1. **签名形状不对**：`EnginePlugin.execute(file_path, **kwargs)` 是「一个文件 → 一段文本」，
+   embedding 是「一组文本 → 一组向量」，连「文件」这个概念都没有；
+2. **查询侧扛不住进程启动**：进程外每次 `Popen` + 模型加载 3–5 秒，而
+   `VectorSearcher.QUERY_TIMEOUT = 3.0` —— 第一次搜索必然超时；
+3. **口子原则已经满足**：`onnxruntime` / `tokenizers` **不在 `pyproject.toml`**，
+   模型 22.8MB 在 `~/.limo/models/`、**不随包分发**。
+
+### 动了什么
+
+| 条目 | 落点 | 变化 |
+|---|---|---|
+| 新引擎 | [`engines/embedding_local.py`](../backend/app/engines/embedding_local.py) | `Embedder`（ONNX 句柄：CLS pooling + 逐行归一化 + `max_length=512`）+ `LocalEmbeddingEngine`（`name=local-bge-small` / `model_id=bge-small-zh-v1.5-int8` / 512 维 / `is_local=True` / `display_name`） |
+| 两个可选钩子 | 同一文件 + `services/vector_runtime.py` + `services/vector_worker.py` | `precheck() -> str \| None`（就绪自检）与 `warmup()`（加载模型）；**用 `getattr` 消费，不进 `EmbeddingEngine` Protocol** |
+| 注册 | `engines/__init__.py` | 与云端**各自一个 `try`** —— 共用的话 dashscope 分支抛错会把本地一起吞掉，而「云端不可用」与「本地不可用」是两件无关的事 |
+| 预热 | `services/vector_worker.py::run_once` | 每轮开跑前 `_warm()` 一次；失败写 `stats["stopped"]` 且**不** `mark_failed` |
+| 前置闸门 | `services/vector_runtime.py::sync_vector_runtime` | `_engine_precheck` 排在 `ensure_identity` **之前** |
+| 可切换 | `routers/search.py` | `POST /api/search/vector` 收 `model`；非法值 → 400 `VECTOR_NO_ENGINE` 且**零写盘**；`status.vector` 加 `model`（读**配置**不读 runtime）与 `models`（`label` / `modelId` / `dimension` / `local` / `ready` / `reason`） |
+| 前端 | `api/search.ts` + `components/settings/SearchIndexCard.tsx` | 引擎下拉 + 成本文案按 `local` 二分 |
+| 评测脚本 | `scripts/embed_local.py` | 算子早已在 `core/vector_index.py`，`Embedder` 改为**从产品引擎转出** —— 评测与产品共用同一份权重与同一份实现 |
+
+配套用例：**新建 `test_embedding_local.py`（12 条）**、`test_vector_worker.py` +3、
+`test_embedding_engine.py` +1、`test_search_api.py` +4。
+
+### 三个判据，每个都对应一种「不报错、只是不成立」
+
+**① `precheck` 必须排在 `ensure_identity` 之前。** 反过来的失效形态很隐蔽：引擎起不来
+（没装 onnxruntime）时先把四元组身份**写成了新口径**，于是用户装完依赖回来，看到的是
+「口径不符，需要重建」—— 而其实一个向量都还没编码过。顺序换了之后，引擎不可用时
+`ensure_identity` 一次都不跑，装上依赖即恢复。
+
+**② 预热失败不能 `mark_failed`。** `fail_count` 是「花钱的闸门」（连续失败 3 次停该篇），
+而模型没加载起来**不是这篇文档的错** —— 标上去等于用掉 3 次重试额度里的一格，
+且用户修好依赖后那批文档已经躺在 `failed` 里不会再自动重试。
+
+**③ 不预热不是「慢」，是「第一次查询必定退回纯字面」。** 加载 3–5 秒 > `QUERY_TIMEOUT = 3.0`，
+用户看到的提示是「语义检索超时」—— 读起来像网络问题，而他刚开的本地模型**根本不联网**。
+所以预热挂在 worker 开跑前：开启向量检索必然产生一批 `pending`，模型一定在用户第一次
+查询之前就绪。
+
+### 两处刻意的不对称
+
+- **云端引擎没有 `precheck`** = 视为**就绪**（不是「未知」）：云端确实没有「依赖装没装」
+  这回事，报不可用会让用户去找一个不存在的开关。Key 的问题在第一次编码时才该显式报。
+- **切引擎不改 `vector_enabled`、也不自动重建。** 两个是独立旋钮；切过去会因维度不符
+  （1024 ↔ 512）被显式停用并给出「需要重建」的原因 —— 重建是花钱的动作，只能由用户点。
+
+### 已知边界
+
+- 本地引擎**首次**跑真实库需要用户自己装依赖（`pip install onnxruntime tokenizers`）
+  并放好模型文件；两条缺失各有自己的文案（装什么 / 缺哪个文件），**不合并成一句**。
+- 本轮**没做**真实库端到端实测（同前几轮的取舍：验证的是契约与编排，不是 ONNX 数值）。
+
+---
+
 ## 2026-10-26（同日续七） — 第四轮代码审查的整改：7 条缺陷
 
 审查对象是刚落地的向量检索（阶段 1–3），报告见 [code-audit-4.md](code-audit-4.md)。

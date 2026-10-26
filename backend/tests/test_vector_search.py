@@ -63,6 +63,28 @@ class _QueryEngine:
         return [list(self.vec) for _ in texts]
 
 
+class _LocalQueryEngine(_QueryEngine):
+    """本地引擎的形状：`warmup` 要花几秒把权重读进内存。
+
+    同 `test_vector_worker.py::_LocalEngine` 用子类 —— 云端引擎**没有**这个钩子，
+    而 `_ensure_loaded` 的 `warm is None` 分支正是为它存在的（给基类加上就等于
+    所有用例都只在有钩子的那条路上跑）。
+    """
+
+    def __init__(self, *a, warm_delay=0.0, warm_error=None, **kw):
+        super().__init__(*a, **kw)
+        self.warm_delay = warm_delay
+        self.warm_error = warm_error
+        self.warm_calls = 0
+
+    async def warmup(self):
+        self.warm_calls += 1
+        if self.warm_delay:
+            await asyncio.sleep(self.warm_delay)
+        if self.warm_error is not None:
+            raise self.warm_error
+
+
 class _DownVec:
     """索引库不可用（文件被删 / 权限坏了）—— 真 `VectorStore` 的 `available=False` 分支。"""
     available = False
@@ -102,8 +124,14 @@ def _corpus(vs: VectorStore) -> None:
     _put(vs, "b", [0.0, 1.0])
 
 
-def _fuse(vs, engine, lexical, *, limit, depth=None, chunk_size=SIZE):
-    searcher = VectorSearcher(vs, engine, chunk_size=chunk_size)
+def _fuse(vs, engine, lexical, *, limit, depth=None, chunk_size=SIZE,
+          timeout=None, load_timeout=None):
+    kw: dict = {}
+    if timeout is not None:
+        kw["timeout"] = timeout
+    if load_timeout is not None:
+        kw["load_timeout"] = load_timeout
+    searcher = VectorSearcher(vs, engine, chunk_size=chunk_size, **kw)
     return asyncio.run(searcher.fuse("q", lexical, limit=limit, depth=depth))
 
 
@@ -223,6 +251,65 @@ def test_编码契约违约_退化为字面():
             ids, sem = _fuse(vs, _QueryEngine(mode=mode), ["b", "c"], limit=2)
         assert ids == ["b", "c"], mode
         assert sem["error"], f"{mode} 必须显式退化，实际 {sem}"
+
+
+# ── 模型载入（本地引擎被 `vector_worker.maybe_release` 放掉之后） ──
+
+def test_查询前先把模型载入():
+    """模型被释放后，查询侧必须**先载入再编码**（`_ensure_loaded`）。
+
+    漏了这条的失效形态：`embed()` 自己惰性加载 3–5 秒，全部耗在 `QUERY_TIMEOUT`
+    里 ⇒ **每次冷查询都必然超时**并退回纯字面，而提示写着「语义检索超时」，
+    读起来像网络问题（可本地模型根本不联网）。
+    """
+    with _vec() as vs:
+        _corpus(vs)
+        eng = _LocalQueryEngine()
+        ids, sem = _fuse(vs, eng, ["b", "c", "a"], limit=3)
+    assert sem == {"error": None, "hits": 4}, sem
+    assert ids[0] == "a"
+    assert eng.warm_calls == 1 and eng.calls == 1, (eng.warm_calls, eng.calls)
+
+
+def test_载入失败只降级这一次查询():
+    """载入失败 ≠ 索引坏了：字面照给，文案点明是**载入**。"""
+    with _vec() as vs:
+        _corpus(vs)
+        eng = _LocalQueryEngine(warm_error=RuntimeError("模型文件不见了"))
+        ids, sem = _fuse(vs, eng, ["b", "c", "a"], limit=2)
+    assert ids == ["b", "c"]
+    assert "载入失败" in sem["error"], sem
+    assert "RuntimeError" in sem["error"], "原因要带上异常类型，否则排查只能靠猜"
+    assert eng.calls == 0, "载入失败时绝不能发编码请求（引擎内部会再加载一次）"
+
+
+def test_载入超时是独立的一档():
+    """载入超出 `load_timeout` → 单独一句「载入超时」，不与「检索超时」混为一谈。"""
+    with _vec() as vs:
+        _corpus(vs)
+        eng = _LocalQueryEngine(warm_delay=0.3)
+        ids, sem = _fuse(vs, eng, ["b", "c"], limit=2, load_timeout=0.05)
+    assert ids == ["b", "c"]
+    assert "载入超时" in sem["error"], sem
+    assert eng.calls == 0
+
+
+def test_载入耗时不计入查询超时():
+    """⚠️ 两个超时是**两个常量**：载入用 `load_timeout`，编码用 `timeout`。
+
+    这里把 `timeout` 压到 0.01 而让载入花 0.2 秒 —— 若两者共用一个时钟，载入
+    就会被 0.01 打断、报成「载入超时」（那正是这条要区分的两句话）；分开后载入
+    顺利通过，超时发生在**编码**那一步。
+    """
+    with _vec() as vs:
+        _corpus(vs)
+        # 载入与编码各慢 0.2s，查询超时 0.01s：只有「编码那一步」该被判超时
+        eng = _LocalQueryEngine(warm_delay=0.2, delay=0.2)
+        ids, sem = _fuse(vs, eng, ["b", "c"], limit=2, timeout=0.01, load_timeout=30)
+    assert ids == ["b", "c"]
+    assert "载入" not in sem["error"], f"载入不该被查询超时打断：{sem}"
+    assert "超时" in sem["error"], sem
+    assert eng.warm_calls == 1
 
 
 # ── 四元组比对：查询侧只读 ──

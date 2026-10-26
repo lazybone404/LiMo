@@ -74,6 +74,42 @@ class _FakeEngine:
         return out[:-1] if self._short else out
 
 
+class _WarmEngine(_FakeEngine):
+    """带 `warmup` 钩子的假引擎 —— 本地引擎的钩子形状（见 `engines/embedding_local.py`）。
+
+    用子类而不是给 `_FakeEngine` 加方法：云端引擎**没有**这个钩子，而 `_warm` 的
+    `getattr` 分支正是为这一点存在的（给基类加上就等于所有测试都只在有钩子的那条路上跑）。
+    """
+
+    def __init__(self, *a, warm_error=None, **kw):
+        super().__init__(*a, **kw)
+        self.warm_calls = 0
+        self.warm_error = warm_error
+
+    async def warmup(self):
+        self.warm_calls += 1
+        if self.warm_error is not None:
+            raise self.warm_error
+
+
+class _LocalEngine(_WarmEngine):
+    """本地引擎的**完整**钩子形状：`warmup` + `release`。
+
+    同 `_WarmEngine` 用子类而不是给基类加方法 —— `release` 的消费方同样走 `getattr`，
+    而云端引擎没有这个钩子（它的「模型」在服务端，本机一个字节都不占）。
+    """
+
+    def __init__(self, *a, release_ret=True, **kw):
+        super().__init__(*a, **kw)
+        #: 每次调用的 kwargs。空 dict = 用引擎自己的默认空闲门槛（idle 档要的正是这个）
+        self.releases: list[dict] = []
+        self._release_ret = release_ret
+
+    def release(self, **kw):
+        self.releases.append(kw)
+        return self._release_ret
+
+
 @contextlib.contextmanager
 def _setup(docs, *, engine=None, chunk_size=SIZE, pending=True, **kw):
     d = tempfile.mkdtemp(prefix="limo_vec_worker_")
@@ -297,6 +333,144 @@ def test_reconcile_is_idempotent():
         assert w.reconcile() == {"orphans": 0, "unmarked": 0}
         assert w.reconcile() == {"orphans": 0, "unmarked": 0}
         assert vs.get_state("t1")["status"] == "ok"
+
+
+# ── 引擎预热（本地模型的 3–5 秒加载） ──
+
+def test_warmup_called_once_per_worker():
+    """预热只做一次 —— 每轮都重载模型会让「60s 轮询」变成每 60s 卡 3–5 秒。"""
+    eng = _WarmEngine()
+    with _setup({"t1": _p("A")}, engine=eng) as (w, vs, _eng, _store):
+        asyncio.run(w.run_once())
+        asyncio.run(w.run_once())
+        assert eng.warm_calls == 1
+        assert vs.get_state("t1")["status"] == "ok"
+
+
+def test_warmup_failure_stops_without_marking_failed():
+    """⚠️ 预热失败**绝不进 `fail_count`**。
+
+    依赖没装是「这台机器跑不了」，不是「这一篇编不出来」。记进闸门的话，3 篇之后
+    整库停摆，而真正的原因只留在最后三篇的 `error` 字段里 —— 一个把「装个依赖」
+    显示成「3 篇文档编码失败」的分类错误（`MAX_FAIL` 是按篇设计的）。
+    """
+    eng = _WarmEngine(warm_error=RuntimeError("onnxruntime 未安装"))
+    with _setup({"t1": _p("A")}, engine=eng) as (w, vs, _eng, _store):
+        stats = asyncio.run(w.run_once())
+
+        assert stats["stopped"] and "加载失败" in stats["stopped"]
+        assert stats["failed"] == 0                          # 不是「篇失败」
+        st = vs.get_state("t1")
+        assert st["failCount"] == 0                          # 闸门没被消耗
+        assert st["status"] == "pending"                     # 这篇压根没被碰过
+        assert eng.calls == []                               # 一次编码都没发
+
+
+def test_warmup_retried_after_failure():
+    """失败不置 `_warmed` —— 依赖此后装上时，下一轮还有机会恢复。
+
+    ⚠️ 反过来（失败也置位）的失效形态是静默的：用户装了 onnxruntime、重启都不用，
+    而 worker 永远认为自己「已经预热过了」，第一次查询照旧超时。
+    """
+    eng = _WarmEngine(warm_error=RuntimeError("暂时不行"))
+    with _setup({"t1": _p("A")}, engine=eng) as (w, vs, _eng, _store):
+        assert asyncio.run(w.run_once())["stopped"]
+
+        eng.warm_error = None
+        stats = asyncio.run(w.run_once())
+        assert stats == {"indexed": 1, "skipped": 0, "failed": 0, "stopped": None}
+        assert eng.warm_calls == 2
+        assert vs.get_state("t1")["status"] == "ok"
+
+
+# ── 模型内存释放（`search.vector_release` 三档） ──
+
+def test_never_策略一次都不释放():
+    """`never` 档：连 `release()` 都不该被调用（每次搜索都是热的，代价是常驻）。"""
+    eng = _LocalEngine()
+    with _setup({"t1": _p("A")}, engine=eng, release="never") as (w, vs, _eng, _store):
+        asyncio.run(w.run_once())
+        assert w.maybe_release() is False
+        assert eng.releases == []
+
+
+def test_idle_策略把空闲门槛交给引擎():
+    """`idle` 档调 `release()` **不传 `after_idle`** —— 门槛是引擎的属性。
+
+    反向失效形态：worker 自己写死一个门槛（比如 60s），哪天本地模型换个更小的权重、
+    该动那个数时，改的是引擎、生效的是 worker，两端看起来都对。那正是模式 #54。
+    """
+    eng = _LocalEngine()
+    with _setup({"t1": _p("A")}, engine=eng, release="idle") as (w, vs, _eng, _store):
+        assert w.maybe_release() is True
+        assert eng.releases == [{}], "不该传门槛（否则就是第二份判据）"
+
+
+def test_immediate_只在建过东西之后释放一次():
+    """`immediate` 档的两条语义缺一不可。
+
+    - **空转轮不释放**：用户搜索时把模型拉起来了，下一个 60 秒空转轮把它踢掉 ⇒
+      每次搜索都冷启动，而用户选 `immediate` 只期望「建库完放掉」这一个代价。
+    - **放完就复位**：不复位的话每一轮都会再放一次（虽然第二次已无模型可放，
+      但「一次性」这件事就没人钉着了）。
+    """
+    eng = _LocalEngine()
+    with _setup({"t1": _p("A")}, engine=eng, release="immediate") as (w, vs, _eng, _store):
+        assert w.maybe_release() is False, "空转轮不应释放"
+        assert eng.releases == []
+
+        w._pending_release = True             # ← 平时由 `loop` 在「本轮有推进」时置位
+        assert w.maybe_release() is True
+        assert eng.releases == [{"after_idle": 0.0}], "immediate 是「立刻」，不是默认门槛"
+        assert w._warmed is False, "释放后必须回落到「需要重新预热」"
+        assert w.maybe_release() is False, "一次性：放完复位"
+
+
+def test_loop_建完之后真的释放():
+    """`_pending_release` 的置位发生在 `loop` 里 —— 这条钉的是那条联动。
+
+    直调 `maybe_release` 的用例覆盖不到它：漏了置位，`immediate` 档就是
+    「配置改了、界面写着建完即释放、实际永远不释放」的静默失效。
+    """
+    eng = _LocalEngine()
+    with _setup({"t1": _p("A")}, engine=eng, release="immediate") as (w, vs, _eng, _store):
+        stop = asyncio.Event()
+
+        async def _drive():
+            task = asyncio.create_task(w.loop(stop, interval=5.0))
+            for _ in range(50):                              # 最多等 0.5s
+                if (vs.get_state("t1") or {}).get("status") == "ok":
+                    break
+                await asyncio.sleep(0.01)
+            stop.set()
+            await asyncio.wait_for(task, timeout=2)
+
+        asyncio.run(_drive())
+        assert vs.get_state("t1")["status"] == "ok"
+        assert eng.releases == [{"after_idle": 0.0}], eng.releases
+
+
+def test_云端引擎没有释放钩子时静默不做():
+    """`_FakeEngine` 是云端的形状（只有 `embed`）：不抛、也不假装释放了。"""
+    eng = _FakeEngine()
+    with _setup({"t1": _p("A")}, engine=eng, release="immediate") as (w, vs, _eng, _store):
+        asyncio.run(w.run_once())
+        w._pending_release = True
+        assert w.maybe_release() is False
+        assert w._warmed is True, "什么都没释放，就不该让下一轮重新预热"
+
+
+def test_空队列不预热模型():
+    """⚠️ 预热排在「确认有活」之后：队列空着时加载 22.8MB 纯属浪费。
+
+    在 `immediate` / `idle` 档下更是**每 60 秒加载一次再释放一次**（CPU 与内存来回抖），
+    而 `never` 档下是「启动后白占 90MB 直到退出」。
+    """
+    eng = _LocalEngine()
+    with _setup({}, pending=False, engine=eng) as (w, vs, _eng, _store):
+        stats = asyncio.run(w.run_once())
+        assert stats == {"indexed": 0, "skipped": 0, "failed": 0, "stopped": None}
+        assert eng.warm_calls == 0
 
 
 # ── 常驻循环 ──
