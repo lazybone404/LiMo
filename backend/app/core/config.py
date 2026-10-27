@@ -261,6 +261,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # 云端引擎没有 `release` 钩子，三档下它一行都不会多跑 ⇒ 本键的默认值不影响
         # 任何既有用户（`local-bge-small` 与本键同批落地）。
         "vector_release": "idle",
+        # 触发方式（`auto` / `manual`，见 `services/vector_worker.TRIGGERS`）。
+        # `auto` = 待编码篇数攒到 `vector_threshold` 时自动建一轮；`manual` = 永不自动建，
+        # 只有用户在设置页点「立即建立索引」才跑。**两者都不影响「立即建立」按钮**。
+        "vector_trigger": "auto",
+        # `auto` 档的篇数阈值。**它是闸门不是节拍**：达不到就不加载模型（本地引擎
+        # 的 ONNX 加载 3–5 秒、常驻约 90MB），攒够一批再一次性处理 —— 加载次数与
+        # 批次数成正比，而不是与文档篇数成正比。
+        "vector_threshold": 100,
     },
     # 插件系统（EnginePlugin v1）
     "plugin_states": {},    # name → bool（false=禁用，重启后生效；未配置默认 enabled）

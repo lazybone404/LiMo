@@ -243,7 +243,7 @@ class MyEmbedding(EmbeddingPlugin):
 | 响应 | ← 插件 | `{"id": 1, "vectors": [[...], ...]}` |
 | 单次失败 | ← 插件 | `{"id": 1, "error": "..."}`（**进程保留**，下一批继续用） |
 
-三条硬要求，任缺一条都是「主进程永远等不到响应」：
+四条硬要求。前三条缺一条是「主进程永远等不到响应」，第四条缺了则**什么都不报**：
 
 1. **`command` 必须带 `-u`**（Python 无缓冲）**且**每行 `flush()` —— 两层保险
    （`-u` 关了缓冲，`flush` 保证协议行立刻出去）
@@ -251,6 +251,18 @@ class MyEmbedding(EmbeddingPlugin):
    约 64KB 不会阻塞）；混进非 JSON 行 = 适配器判定协议损坏、丢弃进程
 3. **`id` 必须原样回传**：对不上的响应对应「管道错位」，适配器杀掉进程重来
    （留着只会让每一轮都读到上一条的结果）
+4. **三个流都 `reconfigure(encoding="utf-8")`**（含 **stdin**）：
+   ```python
+   sys.stdin.reconfigure(encoding="utf-8")
+   sys.stdout.reconfigure(encoding="utf-8")
+   sys.stderr.reconfigure(encoding="utf-8")
+   ```
+   Windows 上 Python 未开 UTF-8 模式时 stdio 是 **GBK**。只配 stdout/stderr 是
+   最常见也最坏的写法：**进来的** UTF-8 字节被 GBK 解码、`errors='surrogateescape'`
+   把无法解码的字节留成代理字符 —— `json.loads` 照样成功，于是「编码出来的是乱码
+   文本的向量」：检索质量下降、日志一片绿、一个异常都没有。
+   主进程已设 `PYTHONUTF8=1`，这一条是纵深防御（插件不该依赖启动方式）。
+   **文件引擎同样适用**（`json.load(sys.stdin)` 那一侧）。
 
 **失败语义**（与文件引擎「一个进程一次调用」不同，这里要区分「进程坏了」与「这批文本编码失败」）：
 
@@ -270,6 +282,12 @@ class MyEmbedding(EmbeddingPlugin):
 `config_schema` 的保存值经**环境变量 `LIMO_PLUGIN_CONFIG`**（JSON）传给子进程，在**启动时读一次**
 —— 改了配置要等下次起进程（用户重启后端，或等模型闲置 `release` 后重起）才生效。
 
+⚠️ **`config_schema` 里不要放密钥**。插件配置**明文**存在 `~/.limo/config.yaml` 的
+`plugin_configs` 段（主程序的 LLM / DashScope Key 走 DPAPI 密钥库，插件配置不在那条
+链上 —— 它是任意形状的嵌套 dict，进不了那套按扁平键名组织的成对表）。
+需要凭据的插件请让用户通过**环境变量**或系统凭据管理器提供，配置项只放路径、模型名、
+行为开关这类非敏感值。
+
 声明层的 `precheck()` 能直接读 `self.plugin_config`：适配器在设置配置时会把它同步给插件实例
 （`_PluginEngineAdapter.plugin_config` 是 property + setter）。两个理由：自检发生在设置页，
 那时配置已经回填过；而 adapter 手上的值与插件手上的值若各是各的，`precheck` 判的就是另一份配置。
@@ -278,8 +296,21 @@ class MyEmbedding(EmbeddingPlugin):
 
 `warmup()` / `release(after_idle)` 由适配器提供：`warmup` 提前起子进程（后台 worker 有空活时调用），
 `release` 按闲置时长杀进程释放内存（`vector_release = immediate` 时每轮结束后调一次）。
-**插件侧什么都不用写** —— 它们不在 `EmbeddingEngine` Protocol 里，消费方用 `getattr` 取，
+**进程外插件什么都不用写** —— 它们不在 `EmbeddingEngine` Protocol 里，消费方用 `getattr` 取，
 插件没有就是「视为无需预热 / 无需释放」。
+
+**进程内（`trusted`）插件**如果要自己管理权重驻留，可以实现同名同签名的两个钩子：
+
+```python
+def warmup(self): ...                    # 提前加载，避免第一次 embed 白等
+def release(self, *, after_idle: float = 600.0) -> bool:
+    """释放模型；返回「这次真的释放了吗」。"""
+```
+
+适配器对进程内与进程外**转发方式一致**（`warmup` / `release` 都 `getattr` 后调用），
+只是进程外的默认实现是「起 / 杀常驻子进程」，进程内的默认是「没有这个钩子」。
+⚠️ 两处**必须成对**：只实现 `warmup` 而不实现 `release`，选了「常驻内存」的用户就永远
+等不到释放 —— 而外部模式那份工作正常，插件作者换个形态发布才发现。
 
 ⚠️ **模型放哪、叫什么由插件自己定**（`precheck()` 里判文件），**不要**把路径写死在适配器里：
 内置引擎与插件版默认指向同一个目录（`~/.limo/models/bge-small-zh-v1.5-onnx/`），

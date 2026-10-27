@@ -11,6 +11,9 @@ import sys
 
 
 def main():
+    # 三个流都要：stdin 漏了会让进来的 UTF-8 字节按 GBK + surrogateescape 解成
+    # 代理字符（`json.loads` 照样成功，路径/参数变成乱码，零报错）。
+    sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 

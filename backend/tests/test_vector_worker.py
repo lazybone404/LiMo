@@ -110,6 +110,21 @@ class _LocalEngine(_WarmEngine):
         return self._release_ret
 
 
+class _FailOnceEngine(_FakeEngine):
+    """第一次 `embed` 必失败、之后正常 —— 造「坏一轮、下一轮自愈」的场景。"""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._failed = False
+
+    async def embed(self, texts):
+        if not self._failed:
+            self._failed = True
+            self.calls.append(list(texts))
+            raise RuntimeError("第一次必失败")
+        return await super().embed(texts)
+
+
 @contextlib.contextmanager
 def _setup(docs, *, engine=None, chunk_size=SIZE, pending=True, **kw):
     d = tempfile.mkdtemp(prefix="limo_vec_worker_")
@@ -433,7 +448,10 @@ def test_loop_建完之后真的释放():
     「配置改了、界面写着建完即释放、实际永远不释放」的静默失效。
     """
     eng = _LocalEngine()
-    with _setup({"t1": _p("A")}, engine=eng, release="immediate") as (w, vs, _eng, _store):
+    # `threshold=1`：这条测的是「建完之后真的释放」，不是攒批闸门。默认阈值 100
+    # 会让单篇的测试库永远攒不够 —— 那是**另一条**要单独钉的语义。
+    with _setup({"t1": _p("A")}, engine=eng, release="immediate",
+                threshold=1) as (w, vs, _eng, _store):
         stop = asyncio.Event()
 
         async def _drive():
@@ -486,8 +504,11 @@ def test_loop_exits_when_stop_is_set():
 
 
 def test_loop_indexes_then_waits():
-    """循环里真的会推进队列（并且 `stop` 能中断睡眠）。"""
-    with _setup({"t1": _p("A")}) as (w, vs, eng, _store):
+    """循环里真的会推进队列（并且 `stop` 能中断睡眠）。
+
+    `threshold=1`：闸门本身由下面「调度」那组用例单独钉住，这条只管「循环能动」。
+    """
+    with _setup({"t1": _p("A")}, threshold=1) as (w, vs, eng, _store):
         stop = asyncio.Event()
 
         async def _drive():
@@ -502,6 +523,143 @@ def test_loop_indexes_then_waits():
         asyncio.run(_drive())
         assert vs.get_state("t1")["status"] == "ok"
         assert len(eng.calls) == 1
+
+
+# ── 调度：攒批闸门 / 手动档 / 立即建立 ──
+
+def test_auto_档攒不够阈值就空转且不加载模型():
+    """核心判据：**达不到阈值时连模型都不该加载**。
+
+    「模型只在建索引时加载」不是约定，是结构保证 —— 闸门排在 `_next_ids` / `_warm`
+    之前。⚠️ 这条同时钉住 `_warm` 一次都没被调用：只断言「没编码」是不够的，
+    实现若把闸门挪到 `_warm` 之后，编码数照样是 0（队列被取走了但没处理），
+    而模型已经被白载入一次。
+    """
+    eng = _LocalEngine()
+    docs = {f"t{i}": _p("A") for i in range(3)}
+    with _setup(docs, engine=eng, threshold=100) as (w, vs, _eng, _store):
+        stats = asyncio.run(w.run_once(force=False))
+        assert stats == {"indexed": 0, "skipped": 0, "failed": 0, "stopped": None}
+        assert eng.calls == [], "没到阈值就一次编码都不该发"
+        assert eng.warm_calls == 0, "⚠️ 模型都不该加载 —— 这才是「只在重建时加载」"
+        assert vs.get_state("t0")["status"] == "pending", "标记要留着，攒够了再建"
+
+
+def test_auto_档攒够阈值就跑():
+    eng = _LocalEngine()
+    docs = {f"t{i}": _p("A") for i in range(3)}
+    with _setup(docs, engine=eng, threshold=3) as (w, vs, _eng, _store):
+        stats = asyncio.run(w.run_once(force=False))
+        assert stats["indexed"] == 3
+        assert vs.get_state("t0")["status"] == "ok"
+
+
+def test_manual_档永不自动跑():
+    """即使远超阈值也不动 —— 用户选的就是「我说了才建」。"""
+    eng = _LocalEngine()
+    docs = {f"t{i}": _p("A") for i in range(5)}
+    with _setup(docs, engine=eng, trigger="manual", threshold=1) as (w, vs, _eng, _store):
+        stats = asyncio.run(w.run_once(force=False))
+        assert stats["indexed"] == 0
+        assert eng.warm_calls == 0
+        assert vs.get_state("t0")["status"] == "pending"
+
+
+def test_manual_档下_force_仍能推完():
+    """「立即建立索引」在 manual 档下是**唯一**通路，所以 `force` 必须穿透闸门。"""
+    docs = {f"t{i}": _p("A") for i in range(3)}
+    with _setup(docs, trigger="manual", threshold=1000) as (w, vs, eng, _store):
+        stats = asyncio.run(w.run_once(force=True))
+        assert stats["indexed"] == 3
+        assert vs.get_state("t0")["status"] == "ok"
+
+
+def test_重试不受阈值约束():
+    """已失败过一次的篇目是**纠错**不是增长：攒不到 100 篇也该重试。
+
+    否则 `failed` 会在界面上挂着「失败 1」直到用户碰巧导入 99 篇新文档 ——
+    一个可自愈的失败被拖成「这功能坏了」。
+    """
+    eng = _FailOnceEngine()
+    docs = {f"t{i}": _p("A") for i in range(3)}
+    with _setup(docs, engine=eng, threshold=100) as (w, vs, _eng, _store):
+        asyncio.run(w.run_once(force=True))                  # 第一块失败，其余成功
+        assert vs.get_state("t0")["status"] == "failed"
+        assert vs.get_state("t1")["status"] == "ok"
+        # 阈值仍是 100（远远不够），但 retry 那一路必须放行
+        stats = asyncio.run(w.run_once(force=False))
+        assert stats["indexed"] == 1, "失败过的那篇重试不该被攒批闸门挡住"
+        assert vs.get_state("t0")["status"] == "ok"
+
+
+def test_actionable_counts_不受批次上限影响():
+    """⚠️ 阈值判据不能拿 `take_pending(limit)` 的长度代替。
+
+    `take_pending` 默认只取 20 条，攒到 500 篇时它也只会说 20 —— 阈值设成 100
+    就**永远触发不了**，而界面上「待索引 500」看起来一切正常。
+    """
+    docs = {f"t{i}": _p("A") for i in range(45)}
+    with _setup(docs, batch_docs=20) as (w, vs, _eng, _store):
+        pending, retry = vs.actionable_counts()
+        assert (pending, retry) == (45, 0), "计数必须是全量，不是一批的条数"
+        assert len(vs.take_pending(20)) == 20, "对照组：批次取数本来就该受限"
+        assert w._should_run() is False, "45 < 100，闸门该说不"
+
+
+def test_request_sync_叫醒循环并跳过闸门():
+    """「立即建立索引」= 置旗标 + 叫醒，**不是**自己 `await run_once()`。
+
+    这条同时钉住两件事：
+    1. 叫醒是**立刻**的（不等 `interval`，这里给 60 秒）；
+    2. 它跳过了攒批闸门（阈值 1000，库里只有 1 篇）。
+    """
+    docs = {"t1": _p("A")}
+    with _setup(docs, engine=_LocalEngine(), threshold=1000) as (w, vs, eng, _store):
+        stop = asyncio.Event()
+
+        async def _drive():
+            task = asyncio.create_task(w.loop(stop, interval=60.0))
+            await asyncio.sleep(0.15)                        # 让第一轮空转完、进入睡眠
+            assert vs.get_state("t1")["status"] == "pending", "闸门先挡住了"
+            w.request_sync()                                 # 用户点了「立即建立索引」
+            for _ in range(100):                             # 最多等 1s
+                if vs.get_state("t1")["status"] == "ok":
+                    break
+                await asyncio.sleep(0.01)
+            stop.set()
+            await asyncio.wait_for(task, timeout=2)
+
+        asyncio.run(_drive())
+        assert vs.get_state("t1")["status"] == "ok", "被叫醒后必须立刻跑，不等 60 秒"
+        assert eng.warm_calls == 1
+
+
+def test_mark_pending_会叫醒_worker():
+    """写点的唤醒通路：`mark_pending` → 注册的回调。**锁外**调用、异常吞掉。
+
+    ⚠️ 只断言「回调被调过」是不够的 —— 还要断言**回调抛异常时 `mark_pending`
+    照样成功**：叫不醒 worker 只是慢一点，而让异常冒出去会把「标记」这一步整个
+    弄失败，那才是真的丢索引。
+    """
+    docs = {"t1": _p("A")}
+    with _setup(docs, pending=False) as (_w, vs, _eng, _store):
+        hits: list[int] = []
+        vs.set_wake_callback(lambda: hits.append(1))
+        vs.mark_pending("t1")
+        assert hits == [1]
+        vs.mark_pending("t1")
+        assert hits == [1, 1], "重复标记也要叫 —— 内容可能刚变过"
+
+        def _boom():
+            raise RuntimeError("回调炸了")
+
+        vs.set_wake_callback(_boom)
+        vs.mark_pending("t1")                                # 不抛
+        assert vs.get_state("t1")["status"] == "pending", "标记本身必须成功"
+
+        vs.set_wake_callback(None)                           # 摘掉之后不再叫
+        vs.mark_pending("t1")
+        assert len(hits) == 2
 
 
 if __name__ == "__main__":

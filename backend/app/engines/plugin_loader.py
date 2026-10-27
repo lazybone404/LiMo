@@ -279,6 +279,25 @@ def _resolve_command(plugin: EnginePlugin, plugin_dir: Path) -> list[str]:
     return out
 
 
+def _plugin_env() -> dict[str, str]:
+    """子进程环境：在继承的基础上**强制 UTF-8 模式**。
+
+    ⚠️ **不设它的后果是静默的乱码，不是报错**。Windows 上 Python 未开 UTF-8 模式时
+    `sys.stdin.encoding` 是 `gbk`、`errors` 是 `surrogateescape` —— 主进程写进去的
+    UTF-8 字节被 GBK 解码成一串代理字符而不抛异常，`json.loads` 照样成功，于是
+    「编码出来的是乱码文本的向量」：检索质量下降，日志一片绿。
+
+    `PYTHONUTF8=1` 让子进程的 stdio 一律 UTF-8，与父进程 Popen 的 `encoding="utf-8"`
+    成对；插件自己再 reconfigure 一次是纵深防御（不依赖启动方式）。
+
+    两处共用（`_run_external` 的一次性调用 / `_spawn_locked` 的常驻进程）—— 只改一处
+    的失效形态是「文件引擎好好的、向量插件全是乱码」。
+    """
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
 class _PluginEngineAdapter:
     """将 EnginePlugin 适配为 EngineRegistry 兼容的 Engine 协议。
 
@@ -417,6 +436,7 @@ class _PluginEngineAdapter:
             text=True,
             encoding="utf-8",
             cwd=str(self._plugin_dir),
+            env=_plugin_env(),
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
 
@@ -472,8 +492,18 @@ EMBED_REQUEST_TIMEOUT = 180.0
 
 #: `idle` 档的默认空闲门槛（秒）。**与内置本地引擎 `DEFAULT_IDLE_RELEASE` 同值**：
 #: 两者承载的是同一份使用节奏（低频、天级），门槛不同会让「换插件前后行为变了」
-#: 且没人说得清为什么。
+#: 且没人说得清为什么。相等由 `test_plugin_embedding.py` 的守卫钉住。
 EMBED_IDLE_RELEASE = 600.0
+
+#: `release()` 抢 `_proc_lock` 的等待上限（秒）。抢不到就返回 `False`（=「正在编码中，
+#: 这次不释放」）。
+#:
+#: ⚠️ **不能无限等**：`release` 是同步方法，唯一调用链是 `vector_worker._do_release`
+#: ← `_stop_worker`，而它跑在**事件循环线程**上。锁可能被一次编码往返持有到
+#: `EMBED_REQUEST_TIMEOUT`（180 秒）—— 无超时的话，用户点一下关掉语义检索，整个后端
+#: 就停摆三分钟（健康探测超时 → 顶栏「正在重试」），而真正的原因是「在等编码」。
+#: 抢不到只是「这一轮不释放」，下一轮 `maybe_release` 还会再来。
+RELEASE_LOCK_TIMEOUT = 5.0
 
 
 class _PluginEmbeddingAdapter(_PluginEngineAdapter):
@@ -541,24 +571,38 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
             await asyncio.to_thread(warm)
 
     def release(self, *, after_idle: float = EMBED_IDLE_RELEASE) -> bool:
-        """空闲够久就杀掉子进程，归还内存。返回「这次真的释放了吗」。
+        """空闲够久就释放模型，归还内存。返回「这次真的释放了吗」。
 
-        ⚠️ **同步方法**（`vector_worker._do_release` 直接调，不 await）：杀进程是
-        微秒级操作，包成 async 反而让调用方多一次线程切换。
+        ⚠️ **同步方法**（`vector_worker._do_release` 直接调，不 await）：真正的动作
+        要么是「杀一个进程」（毫秒级），要么是「丢掉一个对象引用」（微秒级）。
 
         ⚠️ 外部模式下「释放」比内置引擎更彻底 —— 杀掉的进程把 ONNX Session、
         tokenizer、numpy 缓冲一起还回去。这也让三档策略（`never` / `idle` /
         `immediate`）的语义与内置引擎自然对齐，不需要第二套解释。
+
+        ⚠️ **进程内模式必须转发**（与 `warmup()` 成对）：不转发时 `EmbeddingPlugin`
+        的 `release` 钩子写了也永不被调用，而外部模式那份工作正常 —— 插件作者换个
+        形态发布就发现「选常驻内存时它永远不还」。
         """
+        if self._exec_mode != "external":
+            rel = getattr(self._plugin, "release", None)
+            if rel is None:
+                return False          # 没实现钩子 = 无可释放（同 `warmup` 的 getattr）
+            return bool(rel(after_idle=after_idle))
         if after_idle > 0 and self._proc is not None:
             if (time.monotonic() - self._last_used) < after_idle:
                 return False
-        with self._proc_lock:
+        # 抢锁**必须有上限**，理由见 `RELEASE_LOCK_TIMEOUT`。
+        if not self._proc_lock.acquire(timeout=RELEASE_LOCK_TIMEOUT):
+            return False
+        try:
             if self._proc is None:
                 return False
             if after_idle > 0 and (time.monotonic() - self._last_used) < after_idle:
                 return False          # 等锁期间又被用过
             return self._kill_locked()
+        finally:
+            self._proc_lock.release()
 
     def precheck(self) -> Optional[str]:
         """返回**给用户看的**不可用原因（`None` = 就绪）。
@@ -627,7 +671,7 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
         # 插件配置走**环境变量**而不是首行请求：首行是 ready 握手，两边都按固定形状
         # 解析；把配置混进去会让「协议」多一条随插件变化的约定。文件引擎走的是
         # stdin 里的 `config` 字段（一次性调用，请求本身就是那条消息）。
-        env = os.environ.copy()
+        env = _plugin_env()
         if self.plugin_config:
             env["LIMO_PLUGIN_CONFIG"] = json.dumps(
                 self.plugin_config, ensure_ascii=False
@@ -644,10 +688,15 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         self._proc = proc
-        self._stderr_tail = []
+        # drain 线程**拿这个局部 list**而不是每次读 `self._stderr_tail`：重启时
+        # （`_ensure_proc_locked` 收残骸 → `_spawn_locked`）旧进程的 drain 线程可能
+        # 还活着几毫秒，用属性的话它的最后几行会串进新进程的尾部，错误消息里就出现
+        # 「上一个进程的 stderr 配这一个进程的失败」。
+        stderr_tail: list[str] = []
+        self._stderr_tail = stderr_tail
         # stderr 必须**持续读走**：管道写满（Windows 约 64KB）会让子进程阻塞在日志
         # 输出上，表现为「编码卡住」，而真正的错误恰恰在那段没人读的内容里。
-        threading.Thread(target=self._drain_stderr, args=(proc,), daemon=True).start()
+        threading.Thread(target=self._drain_stderr, args=(proc, stderr_tail), daemon=True).start()
 
         line = self._readline_locked(proc, EMBED_READY_TIMEOUT)
         ready: Optional[dict] = None
@@ -668,12 +717,22 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
         # 声明值与实际值不符必须当场报：写进库之后口径不符是**静默**的
         # （表现为检索质量下降，而不是报错）。
         got_dim, got_model = ready.get("dimension"), ready.get("model_id")
-        if got_dim is not None and int(got_dim) != self.dimension:
-            self._kill_locked()
-            raise RuntimeError(
-                f"向量插件 {self.name} 报告的维度是 {got_dim}，"
-                f"声明的是 {self.dimension}"
-            )
+        if got_dim is not None:
+            try:
+                reported_dim = int(got_dim)
+            except (TypeError, ValueError):
+                # 非法值（`"512"` 之外的东西）不能让它冒成裸 ValueError —— 那样
+                # 报的是「invalid literal for int()」，而真正的原因是插件写错了协议。
+                self._kill_locked()
+                raise RuntimeError(
+                    f"向量插件 {self.name} 报告的维度不是整数：{got_dim!r}"
+                ) from None
+            if reported_dim != self.dimension:
+                self._kill_locked()
+                raise RuntimeError(
+                    f"向量插件 {self.name} 报告的维度是 {got_dim}，"
+                    f"声明的是 {self.dimension}"
+                )
         if got_model is not None and self.model_id and got_model != self.model_id:
             self._kill_locked()
             raise RuntimeError(
@@ -726,14 +785,18 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
             return ""
         return box.get("line", "") or ""
 
-    def _drain_stderr(self, proc: subprocess.Popen) -> None:
-        """把子进程 stderr 读走并留最后 20 行（失败时拼进错误消息）。"""
+    def _drain_stderr(self, proc: subprocess.Popen, stderr_tail: list[str]) -> None:
+        """把子进程 stderr 读走并留最后 20 行（失败时拼进错误消息）。
+
+        `stderr_tail` 由 `_spawn_locked` 传进来（**不是** `self._stderr_tail`）：旧进程
+        的 drain 线程可能活过重启那一刻，用属性就会串到新进程的尾部。
+        """
         try:
             assert proc.stderr is not None
             for line in proc.stderr:
-                self._stderr_tail.append(line)
-                if len(self._stderr_tail) > 20:
-                    del self._stderr_tail[0]
+                stderr_tail.append(line)
+                if len(stderr_tail) > 20:
+                    del stderr_tail[0]
         except Exception:  # noqa: BLE001 —— 进程被杀时这里抛什么都无关紧要
             pass
 
@@ -1204,7 +1267,6 @@ def install_plugin_deps(name: str) -> dict:
             # 失效 venv（base python 不可用，如 uv 管理的 python 被清理）→ 删除重建，
             # 用当前可用的 base python，避免「No Python at ...」无法自愈
             if venv_py.exists():
-                import shutil
                 shutil.rmtree(pkg_dir / ".venv", ignore_errors=True)
                 logger.warning("Plugin %s: 失效 venv（base python 不可用）已删除，重建中", name)
             base_py = _resolve_venv_base_python()
@@ -1361,7 +1423,6 @@ def uninstall_plugin(name: str, cfg: dict) -> list[str]:
         if base != target and base not in target.parents:
             raise AppError("PLUGIN_PATH_OUTSIDE", f"插件路径越界，拒绝删除: {target}")
         if p.is_dir():
-            import shutil
             shutil.rmtree(p)
         else:
             p.unlink(missing_ok=True)

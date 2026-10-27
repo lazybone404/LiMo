@@ -109,7 +109,11 @@ def load_embedder(model_dir: Path, onnx_name: str):
 
 
 def main() -> int:
-    # Windows 上 stdout/stderr 默认是 GBK，中文进 JSON 会炸。
+    # Windows 上 stdio 默认是 GBK：中文进 JSON 会炸，**进来的** UTF-8 字节则会被
+    # 静默解成代理字符（`errors='surrogateescape'`）—— 后者更坏，`json.loads` 照样
+    # 成功，编码出来的是乱码文本的向量，检索质量下降而零报错。三个流一个都不能少。
+    # 主进程也设了 `PYTHONUTF8=1`，这里是纵深防御（不依赖启动方式）。
+    sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
@@ -134,7 +138,14 @@ def main() -> int:
 
     # 先跑一条：既是预热（第一个真实请求不必等 warmup），也顺手拿到**真实维度**
     # —— 声明值与实际值不符时主进程会当场报错（写进库之后口径不符是静默的）。
-    dim = len(embed(["就绪自检"])[0])
+    # ⚠️ 这一步也在 try 里：推理失败（ONNX 与 tokenizer 不配套、显存/内存不足）时
+    # 必须走 `ready:false` 那条协议，否则进程带着 traceback 退出，主进程只能报
+    # 「启动失败（进程无输出）」—— 真正的原因一个字都不在错误消息里。
+    try:
+        dim = len(embed(["就绪自检"])[0])
+    except Exception as e:  # noqa: BLE001
+        emit({"ready": False, "error": f"预推理失败 {type(e).__name__}: {e}"})
+        return 1
     emit({"ready": True, "model_id": model_id, "dimension": dim})
     log(f"ready: {model_dir} / {onnx_name} / dim={dim}")
 

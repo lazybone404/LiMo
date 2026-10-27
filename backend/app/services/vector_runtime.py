@@ -24,7 +24,14 @@ from app.core import logging as log
 from app.core.registry import EngineRegistry
 from app.core.vector_store import DEFAULT_CHUNK_SIZE
 from app.services.vector_search import VectorSearcher
-from app.services.vector_worker import DEFAULT_RELEASE, RELEASE_POLICIES, VectorWorker
+from app.services.vector_worker import (
+    DEFAULT_RELEASE,
+    DEFAULT_THRESHOLD,
+    DEFAULT_TRIGGER,
+    RELEASE_POLICIES,
+    TRIGGERS,
+    VectorWorker,
+)
 
 #: 默认向量化引擎。刻意不走 `engine_bindings`（那是「文件 → 文本」的子场景管辖），
 #: 与 `search.vector_model` 配置项成对 —— 前者是默认值，后者是用户覆盖。
@@ -46,6 +53,8 @@ async def sync_vector_runtime(app) -> dict:
     cfg = (getattr(app.state, "config", None) or {}).get("search") or {}
     vec = getattr(app.state, "vector_store", None)
     release = _release_policy(cfg.get("vector_release"))
+    trigger = _trigger(cfg.get("vector_trigger"))
+    threshold = _threshold(cfg.get("vector_threshold"))
 
     def _off(reason: str | None) -> dict:
         app.state.vector_search = None
@@ -78,7 +87,7 @@ async def sync_vector_runtime(app) -> dict:
                           "需要重建向量索引后才能使用")
         else:
             app.state.vector_search = VectorSearcher(vec, engine)
-            await _ensure_worker(app, vec, engine, release)
+            await _ensure_worker(app, vec, engine, release, trigger, threshold)
             result = {"enabled": True, "reason": None}
 
     app.state.vector_runtime = result
@@ -113,6 +122,37 @@ def _release_policy(raw) -> str:
     return DEFAULT_RELEASE
 
 
+def _trigger(raw) -> str:
+    """配置里的触发方式 → 合法值。**读回宽**，理由同 `_release_policy`。
+
+    ⚠️ 与请求入口的 `VECTOR_BAD_TRIGGER` 显式 400 **刻意不同**：那里是「用户刚
+    点的值」（点错了要当场告诉他没生效），这里是「磁盘上可能过期/手改坏的值」。
+    旧配置根本没有这个键，回退默认就是改造前的行为。
+    """
+    if raw in TRIGGERS:
+        return raw
+    if raw is not None:
+        log.warning("未知的向量触发方式，已回退默认", value=str(raw)[:40],
+                    fallback=DEFAULT_TRIGGER)
+    return DEFAULT_TRIGGER
+
+
+def _threshold(raw) -> int:
+    """配置里的攒批阈值 → 合法值（≥ 1）。**读回宽**。
+
+    ⚠️ 会夹紧而不是报错：错的是**量**不是性质（判据同 `notesChars` / `maxNewFolders`）。
+    `0` 或负数会让闸门恒真，等于把「攒批」悄悄关掉 —— 界面上看起来一切正常。
+    """
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        if raw is not None:
+            log.warning("非法的向量攒批阈值，已回退默认", value=str(raw)[:40],
+                        fallback=DEFAULT_THRESHOLD)
+        return DEFAULT_THRESHOLD
+    return max(1, v)
+
+
 def _engine_precheck(engine) -> str | None:
     """引擎自检 —— **可选钩子**，返回给用户看的没就绪原因（`None` = 可以跑）。
 
@@ -136,32 +176,56 @@ def _engine_precheck(engine) -> str | None:
 
 # ── worker 启停 ──
 
-async def _ensure_worker(app, vec, engine, release: str) -> None:
+async def _ensure_worker(app, vec, engine, release: str, trigger: str,
+                         threshold: int) -> None:
     """worker 该在就在、该重启就重启。**唯一一处**把策略送进 `VectorWorker`。
 
     ⚠️ **策略变了必须真的重启**：`loop` 每轮读的是 `worker.release`，只写配置
     不重建 worker 的话，用户改了设置、界面上「已保存」、行为却一点没变 —— 一个
     零报错、也零效果的失效形态。而 `_start_worker` 原本的「已在跑就不动」正是
     为此加了一层判断：**它挡的是「每次开会话都重启」的噪音，不是「策略变了也不动」**。
+
+    ⚠️ **三项都要比**（`release` / `trigger` / `threshold`）：只比 `release` 的话，
+    用户把触发方式从 `auto` 改成 `manual`、或把阈值从 100 改到 20，界面上「已保存」、
+    worker 照旧按旧值跑 —— 与只比 release 时漏掉 release 是同一种失效，只是换了个键。
     """
     task = getattr(app.state, "vector_task", None)
     worker = getattr(app.state, "vector_worker", None)
     if task is not None and not task.done():
-        if worker is not None and worker.release == release:
+        if (worker is not None and worker.release == release
+                and worker.trigger == trigger and worker.threshold == threshold):
             return                              # 已在跑且策略未变：不重启
         # ⚠️ **重启不释放模型**（默认 `release_model=False`）：用户可能刚把
         # `immediate` 改成 `never`（明确要它常驻），这次重启正是为落实那个选择 ——
         # 顺手放掉模型与他的意愿正好相反，而且下一次编码还要白付一次加载。
         await _stop_worker(app)
-    _start_worker(app, vec, engine, release)
+    _start_worker(app, vec, engine, release, trigger, threshold)
 
 
-def _start_worker(app, vec, engine, release: str) -> None:
+def _start_worker(app, vec, engine, release: str, trigger: str,
+                  threshold: int) -> None:
     worker = VectorWorker(app.state.store, vec, engine,
-                          chunk_size=DEFAULT_CHUNK_SIZE, release=release)
+                          chunk_size=DEFAULT_CHUNK_SIZE, release=release,
+                          trigger=trigger, threshold=threshold)
     stop = asyncio.Event()
     app.state.vector_worker = worker
     app.state.vector_stop = stop
+
+    # ⚠️ **唤醒回调必须由这里注册，且必须包 `call_soon_threadsafe`**：
+    # `mark_pending` 的唯一生产调用点（`core/search.py::update_index`）常跑在
+    # `asyncio.to_thread` 里，而 `asyncio.Event.set()` **不是线程安全的** ——
+    # 从线程池直接 set，事件循环可能收不到这次通知（表现为「唤醒时灵时不灵」，
+    # 而兜底心跳会让它看起来只是慢）。
+    # ⚠️ 注册在 `create_task` **之前**：反过来的话，task 首次调度前到达的写点
+    # 就永远叫不醒它（窗口很小，但顺序不要钱）。
+    # ⚠️ 用 `getattr` 而不是直接调：**唤醒是可选优化，不是 `VectorStore` 对外的契约**
+    # （同本模块对 `precheck` / `warmup` / `release` 的取向）。没有它，worker 仍能
+    # 靠兜底心跳建索引，只是晚一点 —— 而不存在的对象不该让整个运行时起不来。
+    register = getattr(vec, "set_wake_callback", None)
+    if register is not None:
+        loop = asyncio.get_running_loop()
+        register(lambda: loop.call_soon_threadsafe(worker.wake))
+
     app.state.vector_task = asyncio.create_task(worker.loop(stop))
 
 
@@ -185,6 +249,13 @@ async def _stop_worker(app, *, release_model: bool = False) -> None:
     app.state.vector_stop = None
     app.state.vector_task = None
     app.state.vector_worker = None
+    # ⚠️ **注销唤醒回调**：`_stop_worker` 是唯一摘下 worker 的地方，所以注销也在这。
+    # 不注销的话 `mark_pending` 会继续 `call_soon_threadsafe` 到一个已死的实例上 ——
+    # 不报错、不花钱，但每写一篇文档就在事件循环里排一个空操作，而且下次
+    # `_start_worker` 之前的那段时间里「看起来有人会响应」是假的。
+    clear = getattr(getattr(app.state, "vector_store", None), "set_wake_callback", None)
+    if clear is not None:
+        clear(None)
     if stop is not None:
         stop.set()
     if task is not None and not task.done():
@@ -200,5 +271,9 @@ async def _stop_worker(app, *, release_model: bool = False) -> None:
             log.warning("向量索引 worker 退出异常", err=f"{type(e).__name__}: {e}"[:200])
     # ⚠️ **释放排在 await 之后**：worker 活着的时候可能正用着这份句柄，
     # 先放再 cancel 会让那一次编码在半路失去模型（在 ONNX 上表现为崩溃而非异常）。
+    # ⚠️ **必须 `to_thread`**：`task.cancel()` 打断不了已经跑在 `to_thread` 里的编码线程，
+    # 它可能仍持有引擎的进程锁等到一次往返结束（上限 180 秒）。在这里同步调用就是把
+    # 整个事件循环挂住三分钟 —— 健康探测超时、顶栏弹「正在重试」，而真正的原因是
+    # 「在等一次编码」。引擎侧还有一层抢锁超时（`RELEASE_LOCK_TIMEOUT`），两层都要。
     if release_model and worker is not None:
-        worker.release_now()
+        await asyncio.to_thread(worker.release_now)

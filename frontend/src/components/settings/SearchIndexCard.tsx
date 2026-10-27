@@ -13,12 +13,13 @@
  * 实时变化的东西（它要么一开始就坏了，要么被手动重建修好）。
  */
 import { useEffect, useState } from 'react'
-import { AlertTriangle, CheckCircle, Cpu, Database, Loader2, RefreshCw, Sparkles } from 'lucide-react'
+import { AlertTriangle, CheckCircle, Cpu, Database, Loader2, RefreshCw, Sparkles, Zap } from 'lucide-react'
 import {
   getSearchStatus,
   rebuildVectorIndex,
   reindexSearch,
   setVectorSearch,
+  syncVectorIndex,
   type SearchStatus,
   type VectorStatus,
 } from '../../api/search'
@@ -49,8 +50,10 @@ function vectorSummary(v: VectorStatus): string {
   const { total, ok, pending, failed } = v.docs
   const parts = [`已索引 ${ok}/${total} 篇`, `${v.chunks} 块`, fmtBytes(v.sizeBytes)]
   if (pending) parts.push(`待索引 ${pending}`)
-  // `failed` 单独强调：这些篇**不会再自动重试**（worker 的失败闸门），
-  // 混进「待索引」里会让人一直等一个不会自己好的东西。
+  // `failed` 单独强调：其中 `fail_count >= MAX_FAIL` 的篇**不会再自动重试**（worker 的
+  // 失败闸门），混进「待索引」里会让人一直等一个不会自己好的东西；未到上限的仍会被重试
+  // （`auto` 档下一次心跳、`manual` 档点「立即建立索引」）。⚠️ 本函数拿不到当前档位，
+  // 也不区分这两类 —— 故这里只报数、不下「会不会重试」的结论（`docs.failed` 是全部失败合计）。
   if (failed) parts.push(`失败 ${failed}`)
   return parts.join(' · ')
 }
@@ -74,6 +77,21 @@ export function SearchIndexCard() {
   // 与 `lib/search-health` 的 `null` 同款判据：问不到不等于坏了，也不该摆一排出点不动的按钮。
   // ⚠️ selector 只取稳定引用的 `capabilities`，派生在外部做 —— 否则每次渲染都返回新数组。
   const releaseOptions = useStore(s => s.capabilities)?.releasePolicies ?? []
+  // 触发方式两档同理走下发的 `triggerPolicies`（空数组 = 问不到 → 整组不渲染）。
+  const triggerOptions = useStore(s => s.capabilities)?.triggerPolicies ?? []
+
+  const vec = status?.vector
+
+  // 攒批阈值的输入草稿。**必须本地暂存**：直接受控到 `vec.threshold` 的话，
+  // 每敲一个数字都会发一次请求（后端每次都要跑一次 `sync_vector_runtime`），
+  // 而输入框还来不及显示用户敲的第二位。提交时机 = 失焦 / 回车。
+  const [thresholdDraft, setThresholdDraft] = useState('')
+  // 后端值变了（首次加载 or 提交成功）就同步草稿；⚠️ 依赖写成 `vec?.threshold`
+  // 这个**数值**而不是 `vec` 对象 —— 每次 status 更新都是新对象，会让它不停重置，
+  // 用户正在输入的内容被抹掉。
+  useEffect(() => {
+    if (vec?.threshold !== undefined) setThresholdDraft(String(vec.threshold))
+  }, [vec?.threshold])
 
   useEffect(() => {
     let alive = true
@@ -117,8 +135,18 @@ export function SearchIndexCard() {
     }
   }
 
+  /** 攒批阈值的提交点（失焦 / 回车）。**非法输入回弹到后端值**而不是报错：
+   *  用户想改的是「几篇」，敲进一个字母并不是他要表达的意思；反过来若把空值当 1
+   *  提交，「清空重输」的中途状态就会被悄悄写进配置。两者都不是显式化能帮上忙的场景。 */
+  function commitThreshold() {
+    if (!vec) return
+    const n = Number.parseInt(thresholdDraft, 10)
+    if (!Number.isFinite(n) || n < 1) { setThresholdDraft(String(vec.threshold)); return }
+    if (n === vec.threshold) return
+    runVector(() => setVectorSearch(vec.enabled, undefined, undefined, undefined, n))
+  }
+
   const unavailable = status ? !status.available : false
-  const vec = status?.vector
   // 可选的向量化引擎（云端 / 本地）。`current` 决定成本文案走哪一套 ——
   // ⚠️ 按 `local` 字段分支，**不按名字前缀猜**（改名即失效，且猜错的方向是
   // 「把免费的本地模型说成要花钱」）。
@@ -314,6 +342,61 @@ export function SearchIndexCard() {
             )
           })()}
 
+          {/* ── 建索引时机（2026-10-27）──
+              两档 + 一个阈值。判据是「模型只为一批加载一次」：本地 bge-small 加载要
+              3–5 秒、常驻约 90MB，为一两篇反复「载入 → 编码 → 释放」是纯浪费。
+              ⚠️ 阈值输入框只在 `auto` 档渲染 —— `manual` 档下它没有任何作用，摆着会
+              让人以为「攒够 N 篇还是会自动跑」，而那正是 `manual` 承诺不会发生的事。
+              ⚠️ 档位清单与文案来自 capabilities，本地不存第二份（同 `模型内存`）。 */}
+          {triggerOptions.length > 0 && (() => {
+            const trigger = vec.trigger ?? 'auto'
+            const hint = triggerOptions.find(o => o.key === trigger)?.hint
+            return (
+              <div className="space-y-1.5" data-vector-trigger>
+                <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted">
+                  <span className="shrink-0">建索引时机</span>
+                  <div className="flex gap-1">
+                    {triggerOptions.map(o => (
+                      <button
+                        key={o.key}
+                        data-trigger-option={o.key}
+                        aria-pressed={trigger === o.key}
+                        disabled={vBusy}
+                        onClick={() => {
+                          if (trigger === o.key) return
+                          runVector(() => setVectorSearch(
+                            vec.enabled, undefined, undefined, o.key))
+                        }}
+                        className={trigger === o.key
+                          ? 'px-2 py-0.5 text-[11px] rounded-md bg-accent text-on-accent disabled:opacity-50'
+                          : 'px-2 py-0.5 text-[11px] rounded-md border border-border-default disabled:opacity-50'}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                  {trigger === 'auto' && (
+                    <label className="inline-flex items-center gap-1">
+                      <span>攒够</span>
+                      <input
+                        type="number" min={1} step={1}
+                        data-vector-threshold
+                        value={thresholdDraft}
+                        disabled={vBusy}
+                        onChange={e => setThresholdDraft(e.target.value)}
+                        onBlur={commitThreshold}
+                        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                        className="w-14 px-1.5 py-0.5 text-[11px] rounded-md border border-border-default bg-surface disabled:opacity-50"
+                      />
+                      <span>篇</span>
+                    </label>
+                  )}
+                </div>
+                {hint && <p className="text-[11px] text-muted leading-relaxed">{hint}</p>}
+              </div>
+            )
+          })()}
+
           {notReady && (
             <p className="text-[12px] text-warning flex items-start gap-2" data-vector-requirement>
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
@@ -336,6 +419,24 @@ export function SearchIndexCard() {
                 ? `${vec.identity.modelId} · ${vec.identity.dimension} 维 · ${vec.identity.chunkSize} 字/块`
                 : '尚未建立'}
             </span>
+          </div>
+
+          {/* 立即建立：`auto` 档下是「不想等攒够」的加速器，`manual` 档下是**唯一**通路。
+              与下面的「重建向量索引」是两件事 —— 这个只补还没建的部分（已建过的块
+              hash 全中，一次编码调用都不发），那个清空重来、重花一遍全库的钱。 */}
+          <div className="flex flex-wrap items-center gap-2" data-vector-sync>
+            <button
+              onClick={() => runVector(syncVectorIndex)}
+              disabled={vBusy || !vec.enabled}
+              title={vec.enabled ? undefined : '先开启语义检索'}
+              className="px-3 py-1.5 text-[12px] rounded-lg border border-border-default inline-flex items-center gap-1.5 disabled:opacity-50"
+            >
+              {vBusy ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
+              立即建立索引
+            </button>
+            {vec.docs.pending > 0 && (
+              <span className="text-[11px] text-muted">待索引 {vec.docs.pending} 篇</span>
+            )}
           </div>
 
           {vError && (

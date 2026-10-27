@@ -14,6 +14,7 @@ cp -r local_embedding_plugin.py local_embedding ~/.limo/plugins/
 cd ~/.limo/plugins/local_embedding
 python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+#    Linux/macOS：.venv/bin/pip install -r requirements.txt -i https://...
 
 # 3. 模型文件（见下）
 
@@ -59,6 +60,7 @@ int8 与 fp32 的向量并不相同，而 `model_id` 不变时 `ensure_identity`
 # 直接跑服务（手动验证协议）
 cd ~/.limo/plugins/local_embedding
 echo '{"id":1,"texts":["你好"]}' | .venv/Scripts/python.exe -u server.py
+# Linux/macOS：echo '{"id":1,"texts":["你好"]}' | .venv/bin/python3 -u server.py
 
 # 期望输出两行：
 # {"ready": true, "model_id": "bge-small-zh-v1.5-int8", "dimension": 512}

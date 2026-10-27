@@ -21,7 +21,13 @@ from app.core.vector_store import DEFAULT_CHUNK_SIZE
 from app.generation.doc_text import search_index_text
 from app.services.vector_runtime import DEFAULT_ENGINE
 from app.services.vector_search import DEFAULT_DEPTH
-from app.services.vector_worker import DEFAULT_RELEASE, RELEASE_POLICIES
+from app.services.vector_worker import (
+    DEFAULT_RELEASE,
+    DEFAULT_THRESHOLD,
+    DEFAULT_TRIGGER,
+    RELEASE_POLICIES,
+    TRIGGERS,
+)
 
 # ⚠️ **不要在这里写 `prefix="/api"`**：`main.py` 用 `include_router(..., prefix="/api")`
 # 统一挂载（全仓 17 个 router 里另外 16 个都是裸 `APIRouter()`）。两处都写会得到
@@ -137,6 +143,10 @@ def _vector_status(request: Request) -> dict:
     # 释放策略同理读**配置**而不是 worker：开关关着时也要把用户选的那档显示出来，
     # 而且读 worker 需要它正活着（关了就没有 worker 了）。
     out["release"] = _configured_release(request)
+    # 触发方式与攒批阈值同理读配置（未启用时也要显示用户选的那档）。前端据此决定
+    # 「阈值输入框」显不显示、「立即建立索引」要不要提示「还没到阈值」。
+    out["trigger"] = _configured_trigger(request)
+    out["threshold"] = _configured_threshold(request)
     return out
 
 
@@ -161,6 +171,24 @@ def _configured_release(request: Request) -> str:
     cfg = (getattr(request.app.state, "config", None) or {}).get("search") or {}
     raw = cfg.get("vector_release")
     return raw if raw in RELEASE_POLICIES else DEFAULT_RELEASE
+
+
+def _configured_trigger(request: Request) -> str:
+    """当前配置的触发方式（`auto` / `manual`）。与 `_configured_release` 同款：
+    **读配置不打日志**，回退判据与 `vector_runtime._trigger` 同源（同一批常量）。
+    """
+    cfg = (getattr(request.app.state, "config", None) or {}).get("search") or {}
+    raw = cfg.get("vector_trigger")
+    return raw if raw in TRIGGERS else DEFAULT_TRIGGER
+
+
+def _configured_threshold(request: Request) -> int:
+    """当前配置的攒批阈值（≥ 1）。回退/夹紧规则与 `vector_runtime._threshold` 同源。"""
+    cfg = (getattr(request.app.state, "config", None) or {}).get("search") or {}
+    try:
+        return max(1, int(cfg.get("vector_threshold")))
+    except (TypeError, ValueError):
+        return DEFAULT_THRESHOLD
 
 
 def _embedding_models() -> list[dict]:
@@ -236,6 +264,12 @@ class VectorToggleBody(BaseModel):
     #: 本地模型的内存释放策略（不传 = 保持当前配置）。三档见 `vector_worker.RELEASE_POLICIES`；
     #: 非法值**显式 400**，不静默退化 —— 用户以为关掉了释放、产物上看不出区别。
     release: str | None = None
+    #: 触发方式（不传 = 保持当前配置）。`auto` / `manual` 见 `vector_worker.TRIGGERS`；
+    #: 非法值**显式 400** —— 用户以为改成了手动，而 worker 照旧自动花钱建索引。
+    trigger: str | None = None
+    #: `auto` 档的攒批阈值（不传 = 保持当前配置）。**非法/越界静默夹紧** ——
+    #: 错的是**量**不是性质（判据同 `maxNewFolders`）：`0` 会让闸门恒真、把攒批关掉。
+    threshold: int | None = None
 
     model_config = {"extra": "forbid"}      # 拒绝未预期的 key（同 `ConfigUpdate`）
 
@@ -275,6 +309,12 @@ async def search_vector_toggle(
                        f"未知的释放策略：{body.release}"
                        f"（可选 {' / '.join(RELEASE_POLICIES)}）",
                        status_code=400)
+    if body.trigger is not None and body.trigger not in TRIGGERS:
+        # 同 `release`：改了触发方式而没生效，界面上完全看不出来（只是「怎么还没建」）。
+        raise AppError("VECTOR_BAD_TRIGGER",
+                       f"未知的触发方式：{body.trigger}"
+                       f"（可选 {' / '.join(TRIGGERS)}）",
+                       status_code=400)
 
     with config_lock:
         s = config.setdefault("search", {})
@@ -283,11 +323,43 @@ async def search_vector_toggle(
             s["vector_model"] = body.model
         if body.release is not None:
             s["vector_release"] = body.release
+        if body.trigger is not None:
+            s["vector_trigger"] = body.trigger
+        if body.threshold is not None:
+            # 静默夹紧（≥ 1）：`0` / 负数会让闸门恒真，等于把「攒批」悄悄关掉 ——
+            # 而界面上仍然显示用户填的那个数，看不出它没有生效。
+            s["vector_threshold"] = max(1, int(body.threshold))
         save_config(config)
 
     runtime = await sync_vector_runtime(request.app)
     return {"enabled": bool(runtime.get("enabled")), "reason": runtime.get("reason"),
             "status": _vector_status(request)}
+
+
+@router.post("/search/vector/sync")
+async def search_vector_sync(request: Request):
+    """**立即建立索引** —— 叫后台 worker 跳过闸门跑一轮增量。
+
+    - 与 `/rebuild` 的区别：那个清空口径与全部块、重花一遍全库的钱；这个**只补
+      还没建的那部分**（已建过的篇目块 hash 全中，一次编码调用都不发）。
+    - 与「等自动触发」的区别：`auto` 档要攒够 `vector_threshold` 篇才动手，
+      `manual` 档压根不会自动动手 —— 这个按钮是**两条路上都唯一能立刻推进**的出口。
+      `auto` 档下它是兜底（小库永远攒不到 100 篇），少了它小库用户会把「没到阈值」
+      读成「这功能坏了」。
+
+    ⚠️ **它不直接跑一轮，只是置旗标 + 叫醒循环**：直接 `await run_once()` 会与
+    `loop` 里正在跑的那一轮并发，两轮的 `attempted` 集合互不可见 ⇒ 同一篇文档被
+    编码两次，计费翻倍而产物完全正常（日志里也看不出异常）。
+    ⚠️ **worker 没在跑时显式 400**，不临时造一个：worker 的生命周期归
+    `sync_vector_runtime` 管，这里另起一个就是第二份「什么时候该跑」的判据。
+    """
+    ensure_trusted_request(request)
+    worker = getattr(request.app.state, "vector_worker", None)
+    if worker is None:
+        raise AppError("VECTOR_DISABLED", "语义检索未启用（或索引库不可用）",
+                       status_code=400)
+    worker.request_sync()
+    return {"requested": True, "status": _vector_status(request)}
 
 
 @router.post("/search/vector/rebuild")

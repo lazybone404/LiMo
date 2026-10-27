@@ -55,6 +55,7 @@ def _setup() -> tuple[TestClient, str]:
     app.state.vector_store = None
     app.state.vector_runtime = None
     app.state.vector_search = None
+    app.state.vector_worker = None
 
     for i in (1, 2):
         store.save_transcript(RawTranscript(
@@ -285,6 +286,152 @@ def test_默认配置的释放策略与常量同源():
     from app.services.vector_worker import DEFAULT_RELEASE
 
     assert DEFAULT_CONFIG["search"]["vector_release"] == DEFAULT_RELEASE
+
+
+def test_status_reports_trigger_and_threshold():
+    """`vector.trigger` / `vector.threshold` 读的是**配置**：未启用时也要显示用户选的那档。
+
+    ⚠️ 与 `release` 同一组判据：`vector_store = None`（早退分支）时字段必须仍然在 ——
+    前端类型里它们必填，缺键会让「后端没接向量库」与「字段忘了给」在界面上长得一模一样。
+
+    ⚠️ 脏值一律回退 / 夹紧（**读回宽**），理由同 `test_status_reports_release_policy`：
+    这是「磁盘上可能过期的值」，为一个读不懂的键让设置页整块报错，用户无从下手。
+    """
+    from app.services.vector_worker import DEFAULT_THRESHOLD, DEFAULT_TRIGGER
+
+    c, d = _setup()
+    app.state.config = {}
+    try:
+        v = c.get("/api/search/status").json()["vector"]
+        assert v["trigger"] == DEFAULT_TRIGGER
+        assert v["threshold"] == DEFAULT_THRESHOLD
+
+        app.state.config = {"search": {"vector_trigger": "manual", "vector_threshold": 20}}
+        v = c.get("/api/search/status").json()["vector"]
+        assert v["trigger"] == "manual"
+        assert v["threshold"] == 20
+
+        # 非法档 → 回退默认；`0`（与负数同族）→ 夹紧到 1
+        app.state.config = {"search": {"vector_trigger": "手改出来的值", "vector_threshold": 0}}
+        v = c.get("/api/search/status").json()["vector"]
+        assert v["trigger"] == DEFAULT_TRIGGER
+        assert v["threshold"] == 1, "0 会让闸门恒真（等于悄悄关掉攒批），必须夹紧"
+
+        app.state.config = {"search": {"vector_threshold": "abc"}}
+        assert c.get("/api/search/status").json()["vector"]["threshold"] == DEFAULT_THRESHOLD
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+        del app.state.config
+
+
+def test_vector_toggle_sets_trigger_and_clamps_threshold(monkeypatch):
+    """触发方式随开关落盘：非法值 400 `VECTOR_BAD_TRIGGER` 且**零写盘**；阈值静默夹紧。
+
+    ⚠️ 两条判据**刻意不同**（与 `release` / `threshold` 的分野同源）：
+    「错的是性质」（切到一个不存在的触发方式）→ 显式报错，否则用户以为改成了手动档，
+    而 worker 还在自动跑、继续花钱；「错的是量」（阈值 0）→ 夹紧到 1，因为 `0` 会让
+    闸门恒真，等于把攒批悄悄关掉 —— 报错反而让用户无从下手（他要的就是「多建点」）。
+    """
+    import threading
+
+    import app.routers.search as search_router
+
+    writes: list[dict] = []
+    monkeypatch.setattr(search_router, "save_config",
+                        lambda cfg: writes.append(dict(cfg["search"])))
+
+    c, d = _setup()
+    app.state.config = {"search": {"vector_enabled": False}}
+    app.state.config_lock = threading.Lock()
+    try:
+        r = c.post("/api/search/vector", headers=_CLIENT,
+                   json={"enabled": False, "trigger": "manual", "threshold": 20})
+        assert r.status_code == 200, r.text
+        assert writes == [{"vector_enabled": False, "vector_trigger": "manual",
+                           "vector_threshold": 20}]
+        v = r.json()["status"]
+        assert v["trigger"] == "manual" and v["threshold"] == 20
+
+        writes.clear()
+        r = c.post("/api/search/vector", headers=_CLIENT,
+                   json={"enabled": False, "trigger": "每周一次"})
+        assert r.status_code == 400, r.text
+        assert r.json()["code"] == "VECTOR_BAD_TRIGGER"
+        assert writes == [], "非法触发方式不该产生任何写盘"
+
+        writes.clear()
+        r = c.post("/api/search/vector", headers=_CLIENT,
+                   json={"enabled": False, "threshold": 0})
+        assert r.status_code == 200, r.text
+        # ⚠️ 只带 `threshold` 时**不该抹掉**上一轮写的 `vector_trigger`（合并式写入，
+        # 同 `saveChatPrefs` 的教训：整对象覆盖会让「改 A 把 B 重置」零报错）。
+        assert writes == [{"vector_enabled": False, "vector_trigger": "manual",
+                           "vector_threshold": 1}]
+        assert r.json()["status"]["threshold"] == 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+        del app.state.config
+        del app.state.config_lock
+
+
+class _StubWorker:
+    """只回答「被叫过几次」—— `/search/vector/sync` 的全部行为就是这一次调用。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def request_sync(self) -> None:
+        self.calls += 1
+
+
+def test_vector_sync_rejects_when_disabled():
+    """worker 没在跑 → 400 `VECTOR_DISABLED`（**不现场造一个**）。
+
+    ⚠️ 临时造一个会连带引擎、口径、库一起要求就绪 —— 而「语义检索没启用」可能正是
+    库不可用或口径不符，那时起 worker 只会在下一轮静默失败，用户看到的是
+    「点了一下，什么也没发生」。
+    """
+    c, d = _setup()
+    try:
+        r = c.post("/api/search/vector/sync", headers=_CLIENT)
+        assert r.status_code == 400, r.text
+        assert r.json()["code"] == "VECTOR_DISABLED"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_vector_sync_wakes_worker():
+    """worker 在跑 → 叫它一次并回 `requested`。
+
+    ⚠️ 这里断的是「**端点把话递过去了**」而不是「索引真的建完了」—— 后者由
+    `test_vector_worker.py::test_request_sync_叫醒循环并跳过闸门` 端到端钉住
+    （那条有真 worker + 真循环）。端点这层只负一次调用，不要在这里复刻调度判据。
+    """
+    c, d = _setup()
+    stub = _StubWorker()
+    app.state.vector_worker = stub
+    try:
+        r = c.post("/api/search/vector/sync", headers=_CLIENT)
+        assert r.status_code == 200, r.text
+        assert r.json()["requested"] is True
+        assert stub.calls == 1
+    finally:
+        app.state.vector_worker = None
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_默认配置的触发方式与常量同源():
+    """`DEFAULT_CONFIG` 里的触发方式 / 阈值必须与 `vector_worker` 的常量相等。
+
+    与 `test_默认配置的释放策略与常量同源` 成对：两处各写一份时漂移**零报错** ——
+    默认配置写着 100 而常量是 20，用户从没碰过这个设置，worker 按 20 攒批，
+    而设置页显示「攒够 100 篇」。
+    """
+    from app.core.config import DEFAULT_CONFIG
+    from app.services.vector_worker import DEFAULT_THRESHOLD, DEFAULT_TRIGGER
+
+    assert DEFAULT_CONFIG["search"]["vector_trigger"] == DEFAULT_TRIGGER
+    assert DEFAULT_CONFIG["search"]["vector_threshold"] == DEFAULT_THRESHOLD
 
 
 def test_vector_toggle_switches_engine(fake_embeddings, monkeypatch):

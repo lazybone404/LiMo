@@ -200,6 +200,27 @@ export interface ReleasePolicyOption {
   hint: string
 }
 
+/**
+ * 索引触发方式（2026-10-27）。
+ *
+ * - `auto`（默认）：待索引文档**攒够一批**才建一轮 —— 本地模型只为一批加载一次，
+ *   不会为一两篇反复「载入 → 编码 → 释放」。
+ * - `manual`：永不自动建，只有用户点「立即建立索引」才跑。
+ *
+ * ⚠️ 与 `ReleasePolicy` 同为「后端拥有的枚举 + 前端只存联合类型、文案走 capabilities」。
+ * 攒批阈值（`threshold`）是 `auto` 档的**量**，不是第三档 —— 把它做成档位会让
+ * 「不改阈值」与「关了攒批」在界面上长得一样。
+ */
+export type TriggerPolicy = 'auto' | 'manual'
+
+/** 触发方式的一档（后端 `capabilities.py::_TRIGGER_META` 下发）。前端不存文案，理由同
+ *  `ReleasePolicyOption`：加一档要改后端，前端再存一份则设置页永远看不到它。 */
+export interface TriggerPolicyOption {
+  key: TriggerPolicy
+  label: string
+  hint: string
+}
+
 export interface Capabilities {
   adapters: string[]
   engines: Record<string, Record<string, { supported_modes: string[] }>>
@@ -245,6 +266,8 @@ export interface Capabilities {
   readerIntents?: ReaderIntentOption[]
   /** 本地 embedding 模型的内存释放策略三档（设置页「模型内存」）。可选理由同上。 */
   releasePolicies?: ReleasePolicyOption[]
+  /** 索引触发方式两档（设置页「什么时候建索引」）。可选理由同上。 */
+  triggerPolicies?: TriggerPolicyOption[]
   /** 缺 key 项（P2.1 主动提示）：llm 未配 key 的厂商 + 未配 key 的引擎（dashscope） */
   missingKeys: {
     llm: { id: string; name: string }[]

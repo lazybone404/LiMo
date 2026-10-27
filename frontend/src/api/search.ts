@@ -10,7 +10,7 @@
  * 不要合并成「重建索引」一个按钮。
  */
 import { apiFetch, BASE } from './core'
-import type { ReleasePolicy } from './core'
+import type { ReleasePolicy, TriggerPolicy } from './core'
 
 export interface SearchHit {
   id: string
@@ -94,11 +94,17 @@ export interface VectorStatus {
    *  用户选中的那一档）。三档的 label / hint 由 capabilities 下发
    *  （`Capabilities.releasePolicies`，设置页渲染那一组按钮的唯一数据源）。 */
   release: ReleasePolicy
+  /** 索引触发方式（**配置值**，理由同 `release`）。两档文案由
+   *  `Capabilities.triggerPolicies` 下发。 */
+  trigger: TriggerPolicy
+  /** 攒批阈值（**配置值**，`auto` 档下「攒够几篇才建一轮」）。
+   *  ⚠️ 后端对非正数**静默夹紧到 1**（错的是量不是性质）—— 这里拿到的永远是 ≥ 1。 */
+  threshold: number
 }
 
-/** 释放策略的类型住在 `core`（与它一起下发的 `ReleasePolicyOption` 和
+/** 释放策略 / 触发方式的类型住在 `core`（与它们一起下发的选项类型和
  *  `Capabilities` 同处），这里转出以免消费方多记一个 import 路径。 */
-export type { ReleasePolicy }
+export type { ReleasePolicy, TriggerPolicy }
 
 /** 检索索引的只读状态（`GET /api/search/status`）。 */
 export interface SearchStatus {
@@ -166,18 +172,46 @@ export async function reindexSearch(): Promise<SearchStatus> {
  *  这是预期语义，不是错误。
  *
  *  `release` 传了就是**同时改释放策略**（不传 = 保持当前配置）。后端非法值 400 ——
- *  与 `model` 同一条纪律（错的是性质，静默退化会让用户以为改成功了）。 */
+ *  与 `model` 同一条纪律（错的是性质，静默退化会让用户以为改成功了）。
+ *
+ *  `trigger` / `threshold` 同理（不传 = 保持当前配置）。⚠️ 两者非法值**语义不同**：
+ *  非法 `trigger` → 400 `VECTOR_BAD_TRIGGER`（错的是性质；静默退回 `auto` 会让
+ *  「选了手动档」变成一句谎话，而 worker 继续自动花钱）；`threshold` 非正数则
+ *  **静默夹紧到 1**（错的是量，0 只是让闸门恒真 —— 用户要的就是「多建点」）。 */
 export async function setVectorSearch(
   enabled: boolean, model?: string, release?: ReleasePolicy,
+  trigger?: TriggerPolicy, threshold?: number,
 ): Promise<VectorActionResult> {
-  const body: { enabled: boolean; model?: string; release?: ReleasePolicy } = { enabled }
+  const body: {
+    enabled: boolean; model?: string; release?: ReleasePolicy
+    trigger?: TriggerPolicy; threshold?: number
+  } = { enabled }
   if (model) body.model = model
   if (release) body.release = release
+  if (trigger) body.trigger = trigger
+  // ⚠️ 用 `!== undefined` 而不是真值判断：`0` 是合法入参（后端会夹紧成 1），
+  // 而 `if (threshold)` 会把它静默丢掉 —— 用户以为改了、请求里根本没这个字段。
+  if (threshold !== undefined) body.threshold = threshold
   return (await apiFetch(`${BASE}/search/vector`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })).json() as Promise<VectorActionResult>
+}
+
+/** **立即建立索引** —— 叫后台 worker 跳过攒批闸门跑一轮**增量**。
+ *
+ *  - 与 `rebuildVectorIndex` 的区别：那个清空口径与全部块、重花一遍全库的钱；
+ *    这个只补还没建的部分（已建过的块 hash 全中，一次编码调用都不发）。
+ *  - 与「等自动触发」的区别：`auto` 档要攒够阈值才动手；`manual` 档则**只有**
+ *    这条路。
+ *
+ *  ⚠️ 返回的 `requested` 只表示「话递到了 worker」，**不代表编码已完成** ——
+ *  之后要么轮询 `getSearchStatus()` 看 `docs.pending` 下降，要么就等着。
+ *  worker 没在跑（语义检索未启用 / 索引库不可用）时后端 400 `VECTOR_DISABLED`。 */
+export async function syncVectorIndex(): Promise<VectorActionResult & { requested: boolean }> {
+  return (await apiFetch(`${BASE}/search/vector/sync`, { method: 'POST' }))
+    .json() as Promise<VectorActionResult & { requested: boolean }>
 }
 
 /** **重建**向量索引 —— 清空旧口径与全部块、重新排队（要花一遍全库编码的钱）。

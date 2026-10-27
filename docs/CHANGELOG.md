@@ -6,6 +6,170 @@
 
 ---
 
+## 2026-10-27 — 索引触发方式可配：攒批 / 手动 + 「立即建立索引」（0.5.19 内续）
+
+**起因**：向量端到端验证跑通后，汇报里那句「worker 是 60 秒轮询，导入新文档后最多等一分钟才建索引」
+引出了用户的直接要求 ——「**自动的话应该看累积到多少程度，比如每 100 篇重建一次；手动的话就是
+用户手动触发重建一次；模型只在重建的时候加载**」。
+
+第三条是判据，前两条是它的两个形态：本地 bge-small 是 22.8MB 的 ONNX，加载 3–5 秒、常驻约 90MB，
+**为一两篇反复「加载 → 编码 → 释放」是纯浪费**。为此付出的代价是「零星几篇可能一直不建」——
+而这必须**能被看见**，于是同一批做了「立即建立索引」这条显式通路。
+
+### ① 两档触发方式 + 篇数阈值
+
+`vector_worker.py` 新增 `TRIGGERS = ("auto", "manual")` / `DEFAULT_TRIGGER = "auto"` /
+`DEFAULT_THRESHOLD = 100`；配置键 `search.vector_trigger` / `search.vector_threshold`。
+
+- `auto`（默认）：`pending` + 尚可重试的 `failed` 攒够阈值才跑一轮。
+- `manual`：**永不自动跑**，只有用户点「立即建立索引」才动。
+
+⚠️ **这是本轮唯一一处「默认值 ≠ 改造前行为」，且是用户拍板的语义变更**：改造前是「有活就干」，
+现在默认攒到 100 篇 —— 对小于 100 篇的库，等于**不会自动建索引**。三条补偿缺一不可：
+设置页的「待索引 N 篇」计数（不建也要看得见）、「立即建立索引」按钮（恒在，`auto` 档下是兜底、
+`manual` 档下是唯一通路）、状态区 `trigger` / `threshold` 回显（改了要能确认改到了）。
+⚠️ **「重建」与「建索引」在这里是两件事**：用户口语里的「重建」指的是「跑一轮」，
+不是 `rebuildVectorIndex`（那个清空口径与全部块、重花一遍全库的钱）。文案与代码都按后者区分。
+
+### ② 闸门住在执行层之外 ⇒「达不到阈值就不加载模型」是结构保证
+
+`_should_run()` 排在 `_next_ids` 与 `_warm` **之前**：达到阈值才取活、才预热模型。
+顺序反过来的失效形态是「每轮都先把 22.8MB 载进内存再判断没事干」，行为上看不出区别，
+只有内存曲线知道。`test_vector_worker.py` 用 `eng.warm_calls == 0` 钉住。
+
+⚠️ **重试不受闸门约束**：`failed` 且 `fail_count < MAX_FAIL` 是**纠错**不是**增长**，
+被闸门挡住会让一篇坏文档永远等不到重试，而 `fail_count` 本来就是它的上限。
+
+### ③ 写点叫醒 worker（那 60 秒的去向）
+
+`VectorStore.set_wake_callback()` / `_notify_wake()`：`mark_pending` 末尾回调一次，
+于是「攒够阈值的那一瞬间」就开工，不必等下一次心跳。
+
+⚠️ `mark_pending` 可能跑在 `asyncio.to_thread` 里（写点全在同步路径上），而
+`asyncio.Event.set()` **不是线程安全的** ⇒ `vector_runtime._start_worker` 用
+`loop.call_soon_threadsafe` 包一层。⚠️ 两个注册点都走
+`getattr(vec, "set_wake_callback", None)` 兜底：唤醒是**可选优化**，不是 `VectorStore`
+的对外契约（同 `precheck` / `warmup` / `release` 三个钩子的取向），测试里的假 store 没有它也不该炸。
+
+`DEFAULT_INTERVAL = 60.0` 语义随之变更：从「唯一触发方式」退化为**纯兜底心跳**
+（唤醒丢失 / 外部改了 `vec.db` / 启动瞬间漏标）。
+
+### ④ 「立即建立索引」不能直接 `await run_once()`
+
+`run_once` 的 `attempted` 集合是**每轮私有**的。另起一条协程跑它，会与 `loop` 里那一轮并发，
+两轮互不可见 ⇒ **同一篇在两条协程里各编码一次，计费翻倍而产物完全正常**。
+故手动触发走「置 `_force` 旗标 + 唤醒 `loop`」，执行永远留在 `loop` 这一条线上。
+
+新端点 `POST /api/search/vector/sync`；worker 没在跑（未启用 / 索引不可用）时
+400 `VECTOR_DISABLED` —— **不现场造一个 worker**（那会绕过开关与 precheck）。
+
+### ⑤ 校验分野：`trigger` 显式报错，`threshold` 静默夹紧
+
+判据是「**这个值错了会不会改变产物的性质**」：
+- 非法 `trigger` → 400 `VECTOR_BAD_TRIGGER`，**零写盘**。静默退回 `auto` 会让「选了手动档」
+  变成一句谎话，而 worker 继续自动花钱。
+- `threshold ≤ 0` → 夹紧到 1。0 只是让闸门恒真（= 用户想要「多建点」），错的是**量**不是性质。
+- 状态侧读回一律宽：`vector_runtime._trigger` 脏值回退 `auto`、`_threshold` 非法值回退默认
+  —— 一边是「用户刚选的值」，一边是「磁盘上可能过期的值」。
+- 写入是**合并式**：只带 `threshold` 不会抹掉上一轮写的 `vector_trigger`
+  （`test_vector_toggle_sets_trigger_and_clamps_threshold` 顺带钉住这条，同 `saveChatPrefs` 的教训）。
+
+### ⑥ 前端：设置页「建索引时机」
+
+- 两档文案由 **capabilities** 下发（`triggerPolicies` / `_TRIGGER_META`），前端只存联合类型
+  `TriggerPolicy` —— 与 `ReleasePolicy` 同一条纪律（加一档要改后端，前端再存一份则设置页
+  永远看不到它，而界面上看不出少了一档）。
+- **阈值输入框只在 `auto` 档渲染**：`manual` 承诺「永不自动跑」，摆着只会让人以为
+  「攒够 N 篇还是会自动跑」，而那正是这一档保证不会发生的事。
+- 阈值**失焦/回车才提交**（输入过程中零请求），非法值或未改动则回弹到后端值 ——
+  受控到后端值会让每敲一位就发一次请求。
+- 「立即建立索引」在「建索引时机」段下方，语义检索未开启时**禁用**（否则撞后端 400）。
+
+⚠️ **`threshold` 的前端判空用 `!== undefined` 而不是真值判断**：`0` 是合法入参（后端夹紧成 1），
+`if (threshold)` 会把它静默丢掉。
+
+⚠️ **它与 §4.5 砍掉的「积压阈值（pending ≥ 50% 才显示进度条）」不是同一件事**：那条是**显示**的
+阈值（结论是「永远显示更好」），这条是**执行**的闸门。
+
+**影响范围**：`app/services/vector_worker.py`、`app/services/vector_runtime.py`、
+`app/core/vector_store.py`、`app/core/config.py`、`app/routers/search.py`、`app/routers/capabilities.py`、
+`frontend/src/api/{core,search}.ts`、`frontend/src/components/settings/SearchIndexCard.tsx`
++ 两侧测试（后端 `test_vector_worker.py` 8 条 / `test_search_api.py` 5 条，前端 7 条）。
+前端全量 **82 files / 1297 tests** 全绿。
+
+---
+
+## 2026-10-27 — 插件系统审查修复：编码、锁超时、钩子成对（0.5.19 内续）
+
+**起因**：向量化插件落地后做了一轮代码质量与漏洞审查，两条 P1 都是**静默类**——
+一条不报错地把乱码文本送进编码器，一条把整个后端卡住三分钟。用户拍板全修。
+
+### ① P1 子进程 stdin 编码（`PYTHONUTF8` + 三个流都 reconfigure）
+
+父进程 `Popen(..., encoding="utf-8")` 只管**父侧**。子进程未开 UTF-8 模式的 Windows 上
+`sys.stdin.encoding == "gbk"`、`errors == "surrogateescape"`：进来的 UTF-8 字节被 GBK 解码、
+解不掉的留成代理字符而**不抛异常**，`json.loads` 照样成功 ⇒ **编码出来的是乱码文本的向量**，
+检索质量下降、日志一片绿。开发机因 `PYTHONUTF8=1` 从未复现，假 server 又全 ASCII。
+
+三处修：
+- `plugin_loader._plugin_env()`（新）—— `os.environ.copy()` + `PYTHONUTF8=1`，
+  `_run_external` 与 `_spawn_locked` **共用一份**（只改一处 = 「文件引擎好好的、向量插件全是乱码」）
+- `local_embedding/server.py` 补 `sys.stdin.reconfigure(...)`（此前只配了 stdout/stderr）
+- 三个文件引擎模板（pymupdf4llm / faster_whisper / tesseract）同款补齐 —— 它们的
+  `json.load(sys.stdin)` 走的是同一条盲区
+- [plugins.md](plugins.md) 的「三条硬要求」→ **四条**，第四条专讲编码，并写明文件引擎同样适用
+
+### ② P1 `release()` 抢锁无超时 → 阻塞事件循环
+
+`vector_runtime._stop_worker` 在 `await task` 之后**同步**调 `worker.release_now()`。而
+`task.cancel()` 打断不了已经跑在 `asyncio.to_thread` 里的编码线程，它可能仍持着 `_proc_lock`
+等到一次往返结束（上限 `EMBED_REQUEST_TIMEOUT = 180s`）⇒ 整个事件循环停摆，用户看到顶栏
+「正在重试」而真正的原因是「在等一次编码」。原注释「杀进程是微秒级」忽略了还有 `proc.wait(3)`。
+
+三处修（两层都要，缺一层就有漏网场景）：
+- `_PluginEmbeddingAdapter.release()` 改为 `acquire(timeout=RELEASE_LOCK_TIMEOUT)`（新常量 5s），
+  抢不到返回 `False`（语义：正在编码中，这次不释放，下一轮 `maybe_release` 再来）
+- `_stop_worker` 的 `release_now()` → `await asyncio.to_thread(...)`
+- `VectorWorker.loop` 的 `maybe_release()` → `await asyncio.to_thread(...)`
+
+### ③ P2 三条
+
+- **闲置门槛守卫**：`EMBED_IDLE_RELEASE` 与 `embedding_local.DEFAULT_IDLE_RELEASE` 都是 600，
+  但此前**没有任何东西钉住这个相等**。`idle` 档由引擎自己判门槛（worker 刻意不传数字），
+  分叉时零报错而「换引擎后释放节奏变了」。加 `test_idle_release_threshold_matches_builtin`。
+- **进程内 `release` 没转发**：`warmup()` 用 `getattr` 转发了插件钩子，`release()` 没有 ⇒
+  `EmbeddingPlugin` 写了 `release` 也永不被调用，而外部模式那份工作正常（插件换个形态发布
+  才发现「选常驻内存就永远不还」）。补转发，[plugins.md](plugins.md) 同步写进程内插件可以
+  自己实现 `warmup` / `release` 两个钩子。
+- **模板 `command` 写死 Windows 路径**：`probe_venv` 是纯文件系统检查、不读 `command`，
+  两边判据不同源 ⇒ Linux/macOS 上「自检说就绪、一 spawn 就 FileNotFoundError」。
+  `local_embedding_plugin` 的类属性保留 Windows 版，`__init__` 里按 `os.name` 换 POSIX 版。
+
+### ④ P2 插件配置明文（文档明示，不动密钥库）
+
+`plugin_configs` 明文落 `config.yaml`，**不走 DPAPI 密钥库** —— 那套成对表按扁平键名组织，
+装不下任意形状的嵌套 dict。改密钥库是另一个工程，本轮把它从「隐含风险」变成**显式约定**：
+[plugins.md](plugins.md) 与 `routers/plugins.py` 的保存端点各写一句「`config_schema` 里不要放
+密钥，凭据请走环境变量或系统凭据管理器」。
+
+### ⑤ P3 四条
+
+- `server.py` 的预推理 `dim = ...` 挪进 `try` —— 推理失败时走 `{"ready": false}`，
+  否则进程带 traceback 退出，主进程只能报「（进程无输出）」，原因一个字都不在消息里
+- `_drain_stderr` 改收**局部 list**（`_spawn_locked` 传参）—— 旧进程的 drain 线程可能活过
+  重启那一刻，用 `self._stderr_tail` 会让它的最后几行串进新进程的尾部
+- `ready` 里的 `dimension` 非整数时显式报「报告的维度不是整数」
+  （此前 `int()` 抛裸 `ValueError`，把「插件写错协议」显示成主程序内部错误）
+- 删 `plugin_loader.py` 两处重复 `import shutil`、删 `test_plugin_embedding.py`
+  一个未使用的 fixture 参数
+
+**影响范围**：`app/engines/plugin_loader.py`、`app/services/vector_runtime.py`、
+`app/services/vector_worker.py`、`app/routers/plugins.py`、四个插件模板、`docs/plugins.md`。
+行为变更只有一条：Linux/macOS 上本地向量化插件现在真能起来（此前必定 FileNotFoundError）。
+其余全是「本该如此」的修正，正向路径逐字节不变。`bash scripts/check-all backend` 全绿（44s）。
+
+---
+
 ## 2026-10-27 — 向量化插件：`EmbeddingPlugin` + 常驻子进程（0.5.19 内续）
 
 **起因**：打包版的本地向量检索一直不可用 —— 内置的 `local-bge-small` 依赖

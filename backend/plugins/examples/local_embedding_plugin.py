@@ -15,6 +15,7 @@
 覆盖内置。于是打包版（内置那份缺 `tokenizers` 而不可用）装上插件后**真能离线跑**；
 源码版不装插件则继续用内置那份，两者行为一致。
 """
+import os
 from pathlib import Path
 
 from app.engines.plugin_loader import EmbeddingPlugin
@@ -32,12 +33,15 @@ class LocalBgeSmallPlugin(EmbeddingPlugin):
 
     # 进程外 + 常驻：`-u` 关掉 Python 的 stdout 缓冲（主进程按行等响应，
     # 留在缓冲区里的一行等于没发）。server.py 自己每行也 flush，两层保险。
+    #
+    # ⚠️ **解释器路径按平台选**（见下面 `__init__`）：venv 的目录布局在 Windows 与
+    # POSIX 上不同（`Scripts/python.exe` vs `bin/python3`）。写死 Windows 版而
+    # `probe_venv` 按平台判的失效形态是「自检说就绪，一 spawn 就 FileNotFoundError」。
     command = [
         "local_embedding/.venv/Scripts/python.exe",
         "-u",
         "local_embedding/server.py",
     ]
-    # Linux/macOS: ["local_embedding/.venv/bin/python3", "-u", "local_embedding/server.py"]
 
     license = "MIT"
     display_name = "本地模型（bge-small-zh · 免费 · 不上传）"
@@ -78,6 +82,19 @@ class LocalBgeSmallPlugin(EmbeddingPlugin):
     ]
 
     timeout = 300
+
+    def __init__(self):
+        # venv 的目录布局按平台不同：Windows 是 `Scripts/python.exe`，
+        # POSIX 是 `bin/python3`。类属性留 Windows 版（本项目的发行目标），
+        # 其余平台在实例上换掉 —— 不这么做的话 Linux/macOS 上会「自检说就绪、
+        # 一 spawn 就 FileNotFoundError」（`probe_venv` 是纯文件系统检查，
+        # 它不读 `command`，两边判据根本不同源）。
+        if os.name != "nt":
+            self.command = [
+                "local_embedding/.venv/bin/python3",
+                "-u",
+                "local_embedding/server.py",
+            ]
 
     def precheck(self):
         """模型文件在不在。依赖检查由 adapter 按 `requires_modules` 做完了。

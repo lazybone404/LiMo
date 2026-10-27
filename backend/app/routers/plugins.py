@@ -196,6 +196,11 @@ async def save_plugin_config(name: str, data: dict[str, Any],
     """保存插件配置 — 写 plugin_configs 落盘 + set_plugin_config 内存即时生效。
 
     下一次插件执行时 stdin JSON 即含新 config（断链 2 闭合）。
+
+    ⚠️ **这份配置是明文**（`config.yaml` 的 `plugin_configs`），**不走 DPAPI 密钥库** ——
+    那套成对表按扁平键名组织，装不下任意形状的嵌套 dict。插件作者应在 `config_schema`
+    里只放路径 / 模型名 / 枚举这类非敏感值；需要凭据的走环境变量或系统凭据管理器。
+    见 `docs/plugins.md`「插件配置怎么进子进程」。
     """
     _require_plugin(name)
     with cfg_lock:

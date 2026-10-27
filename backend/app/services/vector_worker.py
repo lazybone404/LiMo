@@ -47,9 +47,14 @@ MAX_FAIL = 3
 #: 一轮取多少篇。20 篇 × 每篇 1 次 `embed()`（引擎内部再按 10 条分批）≈ 可控的单轮耗时
 BATCH_DOCS = 20
 
-#: 队列空时的轮询间隔（秒）。本库的使用节奏是「低频、天级」（§4.5 实测：同 mode 相邻
-#: 版本间隔 >1 天占 53%、中位 5 天），所以这里**故意不做 debounce / 积压阈值** ——
-#: 那是为秒级编辑频率设计的机制，在这里只会增加状态。
+#: **兜底**轮询间隔（秒）。主触发是事件唤醒（`VectorStore.mark_pending` →
+#: `loop` 正在等的那两个事件），**毫秒级**；这里只防三件事：唤醒丢失、外部改了
+#: `vec.db`、启动瞬间漏标。所以它有多长其实无所谓 —— **它不决定「什么时候建」**。
+#:
+#: ⚠️ 改造前这里是「唯一触发方式」：写点只打标记不叫醒任何人，于是新导入一篇
+#: 最多要等满 60 秒才建索引，而用户完全无从得知（界面上只是「待索引 1」）。
+#: 现在「什么时候真的干活」由 `search.vector_trigger` / `vector_threshold` 决定
+#: （见 `_should_run`），`interval` 退化成纯粹的心跳。
 DEFAULT_INTERVAL = 60.0
 
 #: 触发「连续失败」后的冷却（秒）。比 `DEFAULT_INTERVAL` 长：连续失败几乎总是外部原因
@@ -72,13 +77,39 @@ RETRY_COOLDOWN = 300.0
 RELEASE_POLICIES = ("never", "idle", "immediate")
 DEFAULT_RELEASE = "idle"
 
+#: **触发方式**（`search.vector_trigger`，设置页可改）。
+#:
+#: - `auto`（默认）  待编码篇数攒到 `vector_threshold` 时自动建一轮。
+#: - `manual`        永不自动建，只有用户点「立即建立索引」才跑。
+#:
+#: ⚠️ **为什么默认是「攒批」而不是「有活就干」**：本地引擎的模型是 22.8MB 的
+#: ONNX，加载要 3–5 秒、常驻约 90MB。为了一篇刚导入的文档反复「加载 → 编码一篇
+#: → 闲置释放」是纯浪费，而且 `immediate` / `idle` 两档下它会随每一轮抖动。
+#: 攒到一批再一次性处理，加载次数与批次数量成正比而不是与文档篇数成正比。
+#:
+#: ⚠️ **阈值不是「多久检查一次」**：它与 `DEFAULT_INTERVAL` 是两件事 ——
+#: 后者是心跳，前者是闸门。放在一起理解会得出「改成 600 秒也能达到目的」，
+#: 那只让单个文档更晚被索引，抖动一点没少。
+TRIGGERS = ("auto", "manual")
+DEFAULT_TRIGGER = "auto"
+
+#: `auto` 档的篇数阈值（`search.vector_threshold`）。攒够这么多篇待编码的文档，
+#: 才值得为它加载一次模型。
+#:
+#: ⚠️ **达不到阈值 ≠ 建不了索引**：设置页的「立即建立索引」按钮恒在，
+#: 它会跳过闸门跑一轮（见 `request_sync`）——「手动」在 `auto` 档下是**兜底**，
+#: 在 `manual` 档下是**唯一**通路。少了那个按钮，小库用户会把「没到 100 篇」
+#: 读成「这功能坏了」。
+DEFAULT_THRESHOLD = 100
+
 
 class VectorWorker:
     """把 `vec_state` 里的 `pending` 推进到 `ok`。**不持队列、不做超时之外的调度**。"""
 
     def __init__(self, store, vec, engine, *, chunk_size: int = DEFAULT_CHUNK_SIZE,
                  max_fail: int = MAX_FAIL, batch_docs: int = BATCH_DOCS,
-                 release: str = DEFAULT_RELEASE):
+                 release: str = DEFAULT_RELEASE,
+                 trigger: str = DEFAULT_TRIGGER, threshold: int = DEFAULT_THRESHOLD):
         if engine is None:
             raise ValueError("VectorWorker 需要一个 embedding 引擎")
         self._store = store
@@ -98,19 +129,42 @@ class VectorWorker:
         #: `immediate` 档的触发器：**本轮真的建过东西**才置位。没有它，每一轮空转
         #: 都会把用户刚查询时加载的模型踢掉 ⇒ 每次搜索都冷启动。
         self._pending_release = False
+        #: 触发方式与阈值，见 `TRIGGERS` / `DEFAULT_THRESHOLD`。**入口已校验**
+        #: （路由侧对非法 trigger 报 `VECTOR_BAD_TRIGGER`），这里 clamp 的是**量**
+        #: （阈值 ≤ 0 会让闸门永远放行，等于把「攒批」关掉而界面上看不出来）。
+        self.trigger = trigger
+        self.threshold = max(1, int(threshold))
+        #: 「下一轮立刻跑一次，跳过闸门」的旗标（`request_sync` 置位，`loop` 消费即复位）。
+        #: ⚠️ **不能直接在这儿 `await run_once()`**：那样会与 `loop` 里的那一轮并发，
+        #: 两轮的 `attempted` 集合互不可见 ⇒ 同一篇在两条协程里各编码一次，计费翻倍
+        #: 而产物完全正常。所有真正的执行必须留在 `loop` 这一条线上。
+        self._force = False
+        #: 唤醒事件，在 `loop` 里创建（`asyncio.Event` 只管「有没有人叫过我」）。
+        #: `None` = 还没进循环（`request_sync` 在这之前被调用时只置 `_force`）。
+        self._wake: asyncio.Event | None = None
 
     # ── 一轮 ──
 
-    async def run_once(self) -> dict:
+    async def run_once(self, force: bool = True) -> dict:
         """把当前队列推到底（或推到失败闸门）。返回 `{indexed, skipped, failed, stopped}`。
 
         - `indexed` = 真的调了编码的篇数；`skipped` = 块 hash 全中、零调用的篇数
           （空文档也落在这里 —— 它同样「无需编码」，只是块数为 0）
-        - `stopped` = 非 None 时表示本轮被闸门中断，值是给用户看的原因
+        - `stopped` = 非 None 时表示本轮被闸门中断，值是给用户看的原因；
+          空转（下面那条）**不算**被中断，`stopped` 留 `None`
+
+        ⚠️ **`force` 默认 `True`**：这个方法的名字是「跑一轮」，它是**执行层**；
+        「什么时候该跑」是**调度层**（`loop`）的事。默认 `False` 会让每个直接调用
+        它的脚本/测试都得先想「我的阈值够不够」，而它们要的明明是「现在就推完」。
+        ⚠️ 空转是**真的什么都不做** —— 它连 `_warm` 都到不了（`_should_run` 排在
+        `_next_ids` 之前），所以「达不到阈值就不加载模型」是结构保证的，不是约定。
         """
         stats = {"indexed": 0, "skipped": 0, "failed": 0, "stopped": None}
         if not self._vec.available:
             stats["stopped"] = "向量索引库不可用"
+            return stats
+
+        if not force and not self._should_run():
             return stats
 
         attempted: set[str] = set()
@@ -148,6 +202,72 @@ class VectorWorker:
                     consecutive_failures = 0
                     stats["indexed" if changed else "skipped"] += 1
         return stats
+
+    # ── 调度 ──
+
+    def _should_run(self) -> bool:
+        """这一轮该不该真的干活。**闸门排在编码与预热之前**（见 `run_once`）。
+
+        判据两条，第二优先：
+
+        1. `manual` 档 = 永不自动跑。用户要的是「我说了才建」，那就一次都别自作主张。
+        2. `auto` 档 = 待编码数够阈值，**或**有待重试的篇目。
+
+        ⚠️ **重试不受阈值约束**：那批文档已经编码失败过一次（模型为此加载过一回），
+        一错一修是纠错不是增长。让它们等攒够 100 篇才重试，等于把可自愈的失败
+        拖成「要等一个月」——而 `failed` 在界面上是「失败 N」，用户会以为它坏了。
+        数量上限是 `MAX_FAIL` 轮，不会变成长期抖动源。
+        """
+        if self.trigger == "manual":
+            return False
+        pending, retry = self._vec.actionable_counts(self._max_fail)
+        return retry > 0 or pending >= self.threshold
+
+    def request_sync(self) -> None:
+        """请求「下一轮**立刻**跑一次并跳过闸门」（设置页的「立即建立索引」按钮）。
+
+        ⚠️ **只置旗标 + 叫醒循环，绝不自己 `await run_once()`**：那会与 `loop`
+        里的那一轮并发，而两轮的 `attempted` 互不可见 ⇒ 同一篇文档被编码两次，
+        计费翻倍、产物完全正常、日志里也看不出异常（见 `self._force` 的注释）。
+        """
+        self._force = True
+        self.wake()
+
+    def wake(self) -> None:
+        """叫醒循环。**必须在事件循环线程里调用**（`asyncio.Event` 不是线程安全的）。
+
+        跨线程来的那一路（`mark_pending` 常跑在 `asyncio.to_thread` 里）由
+        `vector_runtime._start_worker` 注册的回调包了 `call_soon_threadsafe`。
+        """
+        if self._wake is not None:
+            self._wake.set()
+
+    async def _sleep_until(self, stop: asyncio.Event, delay: float) -> None:
+        """睡到「超时 / 被叫醒 / 要求停止」三者任一发生。
+
+        ⚠️ **必须同时等 `stop`**：只等 `_wake` 的话，`stop.set()` 之后这个循环
+        还要睡满 `delay`（最长 300 秒）才退出。`_stop_worker` 的 `task.cancel()`
+        确实能打断它，但那是兜底 —— 而取消会顺带打断正在进行的 `run_once`。
+        """
+        wake = self._wake
+        if wake is None:                       # 理论上进不来（`loop` 开头就建了）
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass
+            return
+        tasks = [asyncio.ensure_future(stop.wait()), asyncio.ensure_future(wake.wait())]
+        try:
+            await asyncio.wait(tasks, timeout=delay, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for t in tasks:
+                t.cancel()
+            # `return_exceptions=True` 把取消产生的 CancelledError 一并收掉，
+            # 否则会留下 "Task was destroyed but it is pending" 的日志噪音。
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # ⚠️ **无条件 clear**：这一轮马上就要跑，留着「已叫醒」的标记会让
+            # 下一次空转立刻被消费掉 —— 等于每次唤醒都白跑一轮闸门判断。
+            wake.clear()
 
     async def _warm(self, stats: dict) -> bool:
         """把引擎预热到「第一次编码不用等模型加载」。`False` = 预热失败，本轮放弃。
@@ -334,10 +454,14 @@ class VectorWorker:
 
     async def loop(self, stop: asyncio.Event, interval: float = DEFAULT_INTERVAL,
                    cooldown: float = RETRY_COOLDOWN) -> None:
-        """常驻：对账一次 → 推队列 → 空闲轮询。`stop.set()` 或 task cancel 即退出。
+        """常驻：对账一次 → 推队列 → 等「被叫醒 / 心跳到期 / 要求停止」。
 
         节奏由「上一轮做了什么」决定，而不是固定节拍：有进展就立刻继续（消化积压），
-        队列空就等 `interval`，被闸门 halt 就等 `cooldown`。
+        队列空就睡到下一次唤醒或兜底心跳，被闸门 halt 就等 `cooldown`。
+
+        ⚠️ **主触发是事件唤醒**（`mark_pending` → `wake()`），`interval` 只是兜底心跳。
+        但**唤醒不等于干活**：每轮都要过 `_should_run` 闸门，攒不够阈值照样空转 ——
+        这正是「模型只在建索引时才加载」的落点（闸门排在 `_warm` 之前）。
         """
         try:
             r = self.reconcile()
@@ -347,9 +471,18 @@ class VectorWorker:
         except Exception as e:  # noqa: BLE001 —— 对账失败不该让 worker 不起
             log.warning("向量索引对账失败（继续跑）", err=f"{type(e).__name__}: {e}"[:200])
 
+        # ⚠️ 必须在**进循环之前**建好：`request_sync` 与写点的唤醒回调都可能在
+        # reconcile 期间被调用（那时 `_wake is None`，`wake()` 静默丢弃；但 `_force`
+        # 照置位，第一次迭代读得到，不会漏）。
+        self._wake = asyncio.Event()
+
         while not stop.is_set():
+            # 旗标**先取后清**：`request_sync` 若在本轮 `run_once` 执行期间到达，
+            # 会落到下一轮（那时它该跳过闸门 —— 第一轮的 `_next_ids` 早已取过）。
+            force = self._force
+            self._force = False
             try:
-                stats = await self.run_once()
+                stats = await self.run_once(force=force)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 —— 单轮异常不能让常驻任务死掉
@@ -364,7 +497,10 @@ class VectorWorker:
 
             # 每轮末尾试一次（`never` 档是一次字符串比较，可忽略）。**必须在
             # `run_once` 之外**：那一轮已经推到队列空，此刻才是「建完了」。
-            self.maybe_release()
+            # ⚠️ 放线程池：插件引擎的 `release()` 要抢进程锁，而锁可能被一次编码往返
+            # 持有到 180 秒 —— 在事件循环里直接调，等于这段时间整个后端不动。
+            # （引擎侧另有 `RELEASE_LOCK_TIMEOUT` 兜底，两层都要。）
+            await asyncio.to_thread(self.maybe_release)
 
             if stats["stopped"]:
                 log.warning("向量索引 worker 暂停", reason=stats["stopped"])
@@ -377,9 +513,7 @@ class VectorWorker:
             if delay <= 0:
                 await asyncio.sleep(0)     # 让出一次控制权，避免长时间独占事件循环
                 continue
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=delay)
-            except asyncio.TimeoutError:
-                pass                       # 正常到期，继续下一轮
+
+            await self._sleep_until(stop, delay)
 
         log.info("向量索引 worker 已停止")

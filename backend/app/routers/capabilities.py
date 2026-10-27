@@ -28,7 +28,7 @@ from app.routers.model import _get_providers
 from app.storage.store import MARKDOWN_MODES, markdown_dir_has_version
 # 模型内存释放策略的取值表。⚠️ **只取 key 集合，不取文案** —— 文案住下面那张元数据表，
 # 键集相等有模块级断言钉住（两处漂移的失效形态见 `_RELEASE_POLICY_META` 注释）。
-from app.services.vector_worker import RELEASE_POLICIES
+from app.services.vector_worker import RELEASE_POLICIES, TRIGGERS
 
 router = APIRouter()
 
@@ -60,6 +60,34 @@ def _release_policies() -> list[dict]:
     """三档的展示顺序 = `RELEASE_POLICIES` 的声明顺序（后端定义界面顺序）。"""
     return [{"key": k, "label": _RELEASE_POLICY_META[k][0], "hint": _RELEASE_POLICY_META[k][1]}
             for k in RELEASE_POLICIES]
+
+
+#: 索引触发两档的**展示元数据**（设置页「什么时候建索引」那组按钮的全部文案）。
+#:
+#: ⚠️ 与 `_RELEASE_POLICY_META` 同一条纪律：`TRIGGERS` 是后端拥有的枚举
+#: （`VectorWorker._should_run` 按 key 分派），前端硬编码一份 = 「后端加了一档，
+#: 设置页永远看不到它」。键集相等同样有模块级断言钉住。
+#:
+#: ⚠️ **两档都必须说清「什么时候会花钱」**：本地引擎是加载模型的时间，云端引擎是
+#: 每次编码的计费。只写「自动 / 手动」等于把选择压成一个没有信息的偏好。
+_TRIGGER_META = {
+    "auto": ("攒够一批自动建",
+             "待索引文档攒到下面的篇数时自动建一轮，不必盯着。本地模型只为一批加载一次，"
+             "不会为了一两篇反复载入又释放。"),
+    "manual": ("只在手动时建",
+               "永不自动建索引 —— 新导入的文档不会进语义搜索，直到你点「立即建立索引」。"),
+}
+
+# ⚠️ 模块级断言（同 `_RELEASE_POLICY_META`）：漏一档 = 设置页少一个按钮，零报错。
+assert set(_TRIGGER_META) == set(TRIGGERS), \
+    f"_TRIGGER_META 与 vector_worker.TRIGGERS 键集必须相等：" \
+    f"{sorted(_TRIGGER_META)} vs {sorted(TRIGGERS)}"
+
+
+def _trigger_policies() -> list[dict]:
+    """两档的展示顺序 = `TRIGGERS` 的声明顺序。"""
+    return [{"key": k, "label": _TRIGGER_META[k][0], "hint": _TRIGGER_META[k][1]}
+            for k in TRIGGERS]
 
 # 内置厂商名映射兜底（llm_models 有 key 但 providers 无该条时用；正常由 _get_providers 补全 name）
 _LLM_PROVIDER_NAMES = {
@@ -397,6 +425,9 @@ async def capabilities(config=Depends(get_config)):
         # 本地 embedding 模型的内存释放策略（设置页「模型内存」三档）。
         # ⚠️ 顺序 = 后端 `RELEASE_POLICIES` 声明顺序；文案只住 `_RELEASE_POLICY_META`。
         "releasePolicies": _release_policies(),
+        # 索引触发方式两档（设置页「什么时候建索引」）。同 releasePolicies：
+        # 顺序 = `TRIGGERS` 声明顺序，文案只住 `_TRIGGER_META`。
+        "triggerPolicies": _trigger_policies(),
         # ── 未完成生成标记（应用重启/崩溃时残留，前端启动提示）──
         "interruptedGenerations": _scan_interrupted_generations(config),
         # ── 缺 key 项（P2.1 主动提示：配置向导第三屏 + 操作前 toast）──

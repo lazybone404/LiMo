@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -334,7 +335,7 @@ def test_precheck_reports_missing_venv_deps(tmp_path):
     assert reason and "venv" in reason.lower()
 
 
-def test_precheck_forwards_plugin_precheck(make_adapter):
+def test_precheck_forwards_plugin_precheck():
     plugin = _EmbPlugin()
     a = _PluginEmbeddingAdapter(plugin, Path("."), None)
     plugin.precheck = lambda: "模型没下载"
@@ -431,3 +432,96 @@ def test_init_plugins_skips_base_class_import(tmp_path):
         PLUGIN_REGISTRY.update(reg)
         EngineRegistry._stores.clear()
         EngineRegistry._stores.update(stores)
+
+
+# ── 本轮审查修复的守卫 ──
+
+def test_idle_release_threshold_matches_builtin():
+    """两份「闲置多久算久」必须相等。
+
+    `idle` 档由**引擎自己**判门槛（worker 刻意不传数字，见 `maybe_release` 的文档）：
+    内置引擎读 `embedding_local.DEFAULT_IDLE_RELEASE`，插件适配器读
+    `plugin_loader.EMBED_IDLE_RELEASE`。分叉时**什么都不报** —— 用户换了个引擎，
+    「闲置后释放」的节奏就变了，而设置页那三档文案说的是同一件事。
+    """
+    from app.engines.embedding_local import DEFAULT_IDLE_RELEASE
+    assert pl.EMBED_IDLE_RELEASE == DEFAULT_IDLE_RELEASE
+
+
+def test_plugin_env_forces_utf8():
+    """子进程环境必须带 `PYTHONUTF8=1`。
+
+    缺了它，Windows 上子进程 stdio 是 GBK + `surrogateescape`：主进程写进去的 UTF-8
+    被解成代理字符而**不抛异常**，`json.loads` 照样成功 —— 编码出来的是乱码文本的
+    向量，检索质量下降、日志全绿。stdout 那一侧有 `encoding="utf-8"` 管着，stdin 没有。
+    """
+    assert pl._plugin_env()["PYTHONUTF8"] == "1"
+
+
+def test_release_gives_up_when_encoding_in_flight(make_adapter, monkeypatch):
+    """锁被一次编码往返占着时，`release` 立刻返回 False 而不是把调用方挂住。
+
+    消费方 `vector_runtime._stop_worker` 跑在**事件循环线程**上（用户点「关掉语义
+    检索」的那条路径），挂住 = 整个后端停摆到那次往返结束（上限 180 秒），顶栏弹
+    「正在重试」而原因不是后端死了。
+    """
+    a = make_adapter()
+    monkeypatch.setattr(pl, "RELEASE_LOCK_TIMEOUT", 0.05)
+    assert a._proc_lock.acquire(blocking=False), "前置：锁空闲"
+    try:
+        t0 = time.monotonic()
+        assert a.release(after_idle=0) is False
+        assert time.monotonic() - t0 < 1.0, "抢锁失败必须是「马上说不」"
+    finally:
+        a._proc_lock.release()
+
+
+def test_inproc_release_forwards_plugin_hook():
+    """进程内插件实现了 `release` 就必须被调到（与 `warmup` 成对）。
+
+    不转发时 `EmbeddingPlugin` 的钩子写了也永不被调用，而**外部模式那份工作正常** ——
+    插件作者换个形态发布才发现「选了常驻内存就永远不还」。
+    """
+    plugin = _EmbPlugin()
+    plugin.trusted = True
+    plugin.command = []
+    calls = []
+
+    def _release(*, after_idle=600.0):
+        calls.append(after_idle)
+        return True
+
+    plugin.release = _release
+    a = _PluginEmbeddingAdapter(plugin, Path("."), None)
+    assert a.release(after_idle=0) is True
+    assert calls == [0]
+
+
+def test_inproc_release_without_hook_is_noop():
+    """没实现钩子 = 无可释放（同 `warmup` / `precheck` 的 `getattr` 取舍）。"""
+    plugin = _EmbPlugin()
+    plugin.trusted = True
+    plugin.command = []
+    a = _PluginEmbeddingAdapter(plugin, Path("."), None)
+    assert a.release(after_idle=0) is False
+
+
+def test_ready_with_non_integer_dimension_is_reported_clearly(tmp_path):
+    """`dimension` 不是整数时必须是「报告值不对」，不是裸 `ValueError`。
+
+    裸 `invalid literal for int()` 会把「插件写错了协议」显示成主程序内部的错误。
+    """
+    script = tmp_path / "bad_dim.py"
+    script.write_text(
+        "import json, sys\n"
+        "sys.stdin.reconfigure(encoding='utf-8')\n"
+        "sys.stdout.reconfigure(encoding='utf-8')\n"
+        "print(json.dumps({'ready': True, 'dimension': 'abc'}), flush=True)\n"
+        "sys.stdin.read()\n",
+        encoding="utf-8",
+    )
+    plugin = _EmbPlugin()
+    plugin.command = [sys.executable, "-u", str(script)]
+    a = _PluginEmbeddingAdapter(plugin, tmp_path, script)
+    with pytest.raises(RuntimeError, match="不是整数"):
+        a._embed_external(["x"])

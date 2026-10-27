@@ -141,6 +141,10 @@ class VectorStore:
         self._db_path = Path(data_dir) / "vec.db"
         self._lock = threading.Lock()
         self._last_error: str | None = None
+        #: 「有新东西排队了」的通知，由 `vector_runtime` 在起 worker 时注册
+        #: （见 `set_wake_callback`）。它是**唯一**能让 worker 立刻开工的东西 ——
+        #: 没有它，`mark_pending` 之后只能等兜底轮询（改造前就是 60 秒）。
+        self._wake_cb = None
         try:
             self._init_db()
         except Exception as e:  # noqa: BLE001 —— 任何异常都降级，不炸启动
@@ -157,6 +161,32 @@ class VectorStore:
     @property
     def db_path(self) -> Path:
         return self._db_path
+
+    # ── 唤醒通知 ──
+
+    def set_wake_callback(self, fn) -> None:
+        """注册「有新东西排队了」的通知（传 `None` 摘掉）。
+
+        ⚠️ **回调可能在别的线程里被调用**：`mark_pending` 的唯一生产调用点是
+        `core/search.py::update_index`，而它常跑在 `asyncio.to_thread` 里
+        （摄入/生成完成两条路径）。实现方必须自己处理线程安全 ——
+        `vector_runtime._start_worker` 用 `loop.call_soon_threadsafe` 包了一层。
+
+        ⚠️ **它只是「叫醒」，不是「必须被听见」**：回调异常一律在 `_notify_wake`
+        吞掉。叫不醒 worker 的代价是等一次兜底轮询，而让异常冒出去会把
+        「生产标记」这一步整个弄失败 —— 那才是真的丢索引。
+        """
+        self._wake_cb = fn
+
+    def _notify_wake(self) -> None:
+        """叫醒 worker。**必须在锁外调用**（见 `mark_pending` 末尾）。"""
+        cb = self._wake_cb
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception as e:  # noqa: BLE001 —— 见 `set_wake_callback` 的注释
+            log.warning("向量索引唤醒失败（等兜底轮询）", err=f"{type(e).__name__}: {e}"[:200])
 
     @contextmanager
     def _conn(self):
@@ -310,6 +340,10 @@ class VectorStore:
                 "   fail_count = 0, error = NULL",
                 (tx_id,),
             )
+        # ⚠️ **在锁外**：回调最终会 `call_soon_threadsafe(Event.set)`，而线程池里的
+        # 事件循环可能正在等这把锁 —— 拿着锁去排队一个回调不会死锁，但会把
+        # 「标记完成」与「worker 醒来」这件事的顺序绑在一起，没有必要。
+        self._notify_wake()
 
     def mark_ok(self, tx_id: str, chunk_count: int, content_hash: str | None = None) -> None:
         """该篇编码完成。`content_hash` 是快速路径用的整篇指纹（§4.4）。"""
@@ -395,6 +429,34 @@ class VectorStore:
                 (int(max_fail), int(limit)),
             ).fetchall()
         return [r[0] for r in rows]
+
+    def actionable_counts(self, max_fail: int = 3) -> tuple[int, int]:
+        """返回 `(待编码, 待重试)` 篇数 —— 给 worker 的阈值闸门用（`_should_run`）。
+
+        ⚠️ **不能拿 `take_pending(limit)` 的长度代替**：那个有 `limit`（默认 20），
+        攒到 500 篇时它也只会说 20 —— 阈值判据会永远卡在 20 附近，用户把阈值
+        设成 100 就再也触发不了，而界面上「待索引 500」看起来一切正常。
+        ⚠️ 也不复用 `status()`：它为了给设置页看多读了身份与文件体积，而这里
+        **每轮空转都要调一次**（60 秒一回），不该付那份开销。
+        """
+        if not self.available:
+            return (0, 0)
+        try:
+            with self._lock, self._conn() as conn:
+                pending = conn.execute(
+                    "SELECT count(*) FROM vec_state WHERE status = 'pending'"
+                ).fetchone()[0]
+                retry = conn.execute(
+                    "SELECT count(*) FROM vec_state WHERE status = 'failed'"
+                    " AND fail_count < ?", (int(max_fail),)
+                ).fetchone()[0]
+            return (int(pending), int(retry))
+        except Exception as e:  # noqa: BLE001 —— 计数失败按「这轮没活」处理
+            # ⚠️ **不写 `_last_error`**：同 `status()` 的纪律 —— `available` 的定义是
+            # 「`_last_error is None`」，一次瞬时读失败会让语义检索进入只有手动重建
+            # 才能解除的「不可用」态，而界面上不会说发生了什么。
+            log.warning("向量索引计数失败（这轮跳过）", err=f"{type(e).__name__}: {e}"[:200])
+            return (0, 0)
 
     # ── 块 ──
 
