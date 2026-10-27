@@ -9,10 +9,12 @@
  * `search.db`）：启动路径不 VACUUM —— 那会让每次「打开应用」多等一次全库重写。
  * 代价在这里已被告知，故要一次二次确认。
  *
- * ⚠️ 状态**只在打开这张卡时取一次 + 重建后刷新**，不做轮询：索引的可用性不是
+ * ⚠️ 状态**只在打开这张卡时取一次 + 重建后刷新**，不做常驻轮询：字面索引的可用性不是
  * 实时变化的东西（它要么一开始就坏了，要么被手动重建修好）。
+ * ⚠️ 唯一的例外是向量索引**还在建的时候**（`docs.pending > 0`）——那是真的在往下走的
+ * 进度，且有明确终点，见下方 `hasPending` 那段 effect。
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle, Cpu, Database, Loader2, RefreshCw, RotateCcw, Sparkles, Zap } from 'lucide-react'
 import {
   getSearchStatus,
@@ -45,6 +47,10 @@ function fmtTime(iso: string | null): string {
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
+
+/** 有活没干完时看它的间隔。3 秒 = 本地编码一篇的量级 —— 比这一拍还细只是
+ *  反复读一个几乎不变的数字；粗到 10 秒则会出现「明明建完了、界面还挂着待索引」。 */
+const PENDING_POLL_MS = 3000
 
 /** 向量侧一行状态里最需要被看见的那个数（优先级：失败 > 待索引 > 已索引）。 */
 function vectorSummary(v: VectorStatus): string {
@@ -81,6 +87,7 @@ export function SearchIndexCard() {
   const releaseOptions = useStore(s => s.capabilities)?.releasePolicies ?? []
   // 触发方式两档同理走下发的 `triggerPolicies`（空数组 = 问不到 → 整组不渲染）。
   const triggerOptions = useStore(s => s.capabilities)?.triggerPolicies ?? []
+  const addToast = useStore(s => s.addToast)
 
   const vec = status?.vector
 
@@ -103,6 +110,54 @@ export function SearchIndexCard() {
     return () => { alive = false }
   }, [])
 
+  // ── 建索引的进度与完成提示 ──
+  // 向量索引由后台 worker 异步建立：点「立即建立索引」只是把话递过去
+  // （`syncVectorIndex` 的注释写明 `requested` 不代表编码完成）。没有这段之前，
+  // 界面上的「待索引 N 篇」会永远停在点击那一刻的数字 —— 用户既看不到进度，
+  // 也不知道什么时候可以开始用。于是这里只做一件很窄的事：**有活没干完就看着它**。
+  //
+  // ⚠️ 与 `lib/search-health` 那条「刻意不轮询」不是一回事：那条说的是字面索引的
+  // `available`，它只在三个时刻变化、没有「进行中」这个状态；而向量的 `pending`
+  // 是真的在往下走的，且有明确终点（归零即停止）。
+  //
+  // ⚠️ 依赖是**布尔** `hasPending` 而不是 `pending` 数值：写成数值的话每降一篇就
+  // 清掉定时器重设一个，等于用 setInterval 模拟 setTimeout 链。
+  //
+  // ⚠️ 只看 `pending` 不够，还得要求「真的有人在干」：开关关掉或索引不可用时，
+  // `pending` 会**一直停在那儿**（worker 没在跑，这个数永远不会自己降）。
+  // 那时轮询换不来任何变化，只会变成一张永远在后台读盘的卡片。
+  const hasPending = !!vec?.enabled && !!vec.available && vec.docs.pending > 0
+  useEffect(() => {
+    if (!hasPending) return
+    let alive = true
+    const timer = window.setInterval(() => {
+      getSearchStatus()
+        .then(next => { if (alive) setStatus(next) })
+        .catch(() => {}) // 瞬时读失败不上报：下一拍自然重试，不打扰用户
+    }, PENDING_POLL_MS)
+    return () => { alive = false; window.clearInterval(timer) }
+  }, [hasPending])
+
+  // 完成提示：只在「从有活 → 没活」那一次报。挂载时本来就 pending=0 不该弹「建立完成」。
+  const prevPendingRef = useRef(0)
+  useEffect(() => {
+    const pending = vec?.docs.pending ?? 0
+    const prev = prevPendingRef.current
+    prevPendingRef.current = pending
+    if (prev <= 0 || pending > 0) return
+    if (!vec?.enabled || !vec.available) return // 停用 / 不可用不是「建完了」
+    const { ok, failed } = vec.docs
+    addToast(
+      failed > 0
+        ? `向量索引已建立：${ok} 篇完成，${failed} 篇失败（可点「重试失败项」）`
+        : `向量索引已建立完成 · ${ok} 篇`,
+      failed > 0 ? 'info' : 'success',
+    )
+    // ⚠️ 依赖刻意只写 pending：`ok` / `failed` 是同一份 status 里的伴随读数，
+    // 为它们各加一个依赖只会让这条「一次性提示」在别的字段变化时再多跑几次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vec?.docs.pending])
+
   async function runReindex() {
     setBusy(true)
     setActionError(null)
@@ -113,6 +168,9 @@ export function SearchIndexCard() {
       // （否则用户修完了横幅还在，会以为没修好）。
       setSearchHealth(next)
       setConfirming(false)
+      // 同步动作没有「进行中」这个状态，用户点完只看到卡片上的「上次重建」
+      // 时间跳了一下 —— 那是要刻意去比对才看得见的变化。给一句明确的收尾。
+      addToast(`索引已重建完成 · ${next.docCount} 篇`, 'success')
     } catch (e) {
       setActionError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -211,7 +269,7 @@ export function SearchIndexCard() {
             文档本身不会被改动。确定现在重建？
           </p>
           <div className="flex gap-2">
-            <button onClick={runReindex} disabled={busy}
+            <button onClick={runReindex} disabled={busy} data-reindex-confirm
               className="px-3 py-1.5 text-[12px] rounded-lg bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-50 inline-flex items-center gap-1.5">
               {busy && <Loader2 size={12} className="animate-spin" />}开始重建
             </button>
@@ -222,7 +280,7 @@ export function SearchIndexCard() {
           </div>
         </div>
       ) : (
-        <button onClick={() => { setActionError(null); setConfirming(true) }} disabled={busy || !status}
+        <button onClick={() => { setActionError(null); setConfirming(true) }} disabled={busy || !status} data-reindex
           className="px-3 py-1.5 text-[12px] rounded-lg border border-border-default inline-flex items-center gap-1.5 disabled:opacity-50">
           {busy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
           重建索引

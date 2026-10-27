@@ -13,9 +13,9 @@
 //    否则「测试通过」与「测试根本没在检查」无法区分（key-patterns #38/#39）。
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, fireEvent } from '@testing-library/react'
+import { act, render, fireEvent } from '@testing-library/react'
 import { SearchIndexCard } from '../components/settings/SearchIndexCard'
-import { getSearchStatus, retryFailedVectors, setVectorSearch, syncVectorIndex } from '../api/search'
+import { getSearchStatus, reindexSearch, retryFailedVectors, setVectorSearch, syncVectorIndex } from '../api/search'
 import { useStore } from '../store'
 import type { Capabilities } from '../api/core'
 import type { VectorActionResult, VectorStatus } from '../api/search'
@@ -309,5 +309,131 @@ describe('SearchIndexCard — 建索引时机两档 + 攒批阈值', () => {
       RELEASE_CAPS, TRIGGER_CAPS,
     )
     expect(off.container.querySelector<HTMLButtonElement>('[data-vector-retry]')!.disabled).toBe(true)
+  })
+})
+
+// ── 建索引的进度与完成提示（2026-10-27）──
+//
+// 背景：点「立即建立索引」只是把话递给后台 worker（`syncVectorIndex` 的 `requested`
+// 不代表编码完成）。没有这一组之前，卡片上的「待索引 N 篇」会永远停在点击那一刻的
+// 数字，用户既看不到进度，也不知道什么时候可以开始用。
+describe('SearchIndexCard — 建索引的进度与完成提示', () => {
+  let toast: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useStore.setState({ capabilities: null })
+    toast = vi.fn()
+    useStore.setState({ addToast: toast as unknown as (m: string, t?: 'success' | 'error' | 'info') => void })
+  })
+
+  it('字面索引重建成功 → 给一句明确的收尾（失败则不给）', async () => {
+    const { container } = await renderWith(vecStatus(), RELEASE_CAPS, TRIGGER_CAPS)
+
+    vi.mocked(reindexSearch).mockResolvedValue({
+      available: true, docCount: 42, sizeBytes: 4096, lastError: null,
+      rebuiltAt: '2026-10-27T10:00:00', vector: vecStatus(),
+    })
+    fireEvent.click(container.querySelector('[data-reindex]')!)
+    fireEvent.click(container.querySelector('[data-reindex-confirm]')!)
+
+    await vi.waitFor(() => expect(toast).toHaveBeenCalledTimes(1))
+    // 报的是**重建后**的篇数（`next.docCount`），不是点击前的快照
+    expect(String(toast.mock.calls[0][0])).toContain('42')
+    expect(toast.mock.calls[0][1]).toBe('success')
+
+    // 对照组：失败时只留在卡片内的 actionError，不弹「完成」
+    toast.mockClear()
+    vi.mocked(reindexSearch).mockRejectedValue(new Error('索引文件被占用'))
+    fireEvent.click(container.querySelector('[data-reindex]')!)
+    fireEvent.click(container.querySelector('[data-reindex-confirm]')!)
+    await vi.waitFor(() => expect(container.textContent).toContain('索引文件被占用'))
+    expect(toast).not.toHaveBeenCalled()
+  })
+
+  it('待索引归零那一刻提示完成（这是用户唯一能知道「可以开始用了」的时刻）', async () => {
+    const { container } = await renderWith(
+      vecStatus({ docs: { total: 5, ok: 3, pending: 2, failed: 0 } }), RELEASE_CAPS, TRIGGER_CAPS,
+    )
+    // 有活没干完时不该提前报「完成」
+    expect(toast).not.toHaveBeenCalled()
+
+    // 动作返回的已经是建完之后的状态（pending 归零）—— 与真实后端的形状一致
+    vi.mocked(syncVectorIndex).mockImplementation(async () => ({
+      requested: true, enabled: true, reason: null,
+      status: vecStatus({ docs: { total: 5, ok: 5, pending: 0, failed: 0 } }),
+    }))
+    fireEvent.click(container.querySelector('[data-vector-sync] button')!)
+
+    await vi.waitFor(() => expect(toast).toHaveBeenCalledTimes(1))
+    expect(String(toast.mock.calls[0][0])).toContain('5 篇')
+    expect(toast.mock.calls[0][1]).toBe('success')
+  })
+
+  it('有失败项时用 info 且点名「重试失败项」（混进一句「完成」会掩盖还差几篇）', async () => {
+    const { container } = await renderWith(
+      vecStatus({ docs: { total: 5, ok: 2, pending: 3, failed: 0 } }), RELEASE_CAPS, TRIGGER_CAPS,
+    )
+    vi.mocked(syncVectorIndex).mockImplementation(async () => ({
+      requested: true, enabled: true, reason: null,
+      status: vecStatus({ docs: { total: 5, ok: 4, pending: 0, failed: 1 } }),
+    }))
+    fireEvent.click(container.querySelector('[data-vector-sync] button')!)
+
+    await vi.waitFor(() => expect(toast).toHaveBeenCalledTimes(1))
+    const [msg, type] = toast.mock.calls[0]
+    expect(String(msg)).toContain('失败')
+    expect(String(msg)).toContain('重试失败项')
+    expect(type).toBe('info')
+  })
+
+  it('挂载时就已建完 → 不弹「建立完成」', async () => {
+    // 打开设置页不该收到一条「刚刚建好了」—— 那件事可能发生在三天前。
+    await renderWith(vecStatus(), RELEASE_CAPS, TRIGGER_CAPS)
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(toast).not.toHaveBeenCalled()
+  })
+
+  it('还有待索引 → 每 3 秒看一次进度；没有就不看（不做常驻心跳）', async () => {
+    vi.useFakeTimers()
+    try {
+      await renderWith(
+        vecStatus({ docs: { total: 5, ok: 2, pending: 3, failed: 0 } }), RELEASE_CAPS, TRIGGER_CAPS,
+      )
+      const before = vi.mocked(getSearchStatus).mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+      // 6 秒 = 两拍
+      expect(vi.mocked(getSearchStatus).mock.calls.length).toBe(before + 2)
+    } finally {
+      vi.useRealTimers()
+    }
+
+    // 对照组：同一张卡、只把 pending 归零 —— 一拍都不该有（否则就是常驻轮询）
+    vi.useFakeTimers()
+    try {
+      vi.clearAllMocks()
+      await renderWith(vecStatus(), RELEASE_CAPS, TRIGGER_CAPS)
+      const idle = vi.mocked(getSearchStatus).mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+      expect(vi.mocked(getSearchStatus).mock.calls.length).toBe(idle)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('开关关掉 / 索引不可用时也不轮询（`pending` 那时永远不会自己降）', async () => {
+    // 这两档下 worker 根本没在跑，`pending` 是个静止的数字 —— 轮询换不来任何变化。
+    vi.useFakeTimers()
+    try {
+      await renderWith(
+        vecStatus({ enabled: false, docs: { total: 5, ok: 2, pending: 3, failed: 0 } }),
+        RELEASE_CAPS, TRIGGER_CAPS,
+      )
+      const before = vi.mocked(getSearchStatus).mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+      expect(vi.mocked(getSearchStatus).mock.calls.length).toBe(before)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
