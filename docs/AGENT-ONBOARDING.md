@@ -520,7 +520,7 @@ bash scripts/check-cli 9        # 只跑第 9 项（调试用）
 | 前端 401/跨域 | 检查后端 Origin 白名单（CORS）：生产必须是 `http://tauri.localhost` |
 | API 404 | 前端禁止 `/api/api/`——`apiUrl()` 已拼接 BASE，传路径别带 `/api` |
 | 导出内容不对 | 看 `export-pipeline.md` §13 速查表（预览 vs 导出差异） |
-| 请求日志 | middleware 计时（status/duration_ms），SSE 长连接不判慢 |
+| 哪类操作慢 | 日志面板「性能」标签页（`GET /api/perf`），详见 8.4 |
 
 ### 8.2 模型/LLM 问题
 
@@ -538,6 +538,32 @@ bash scripts/check-cli 9        # 只跑第 9 项（调试用）
 - `AdapterRegistry` 存**类**（route 时实例化）**≠** `EngineRegistry` 存**实例**
 - `disconnect_watcher`（`core/disconnect.py`）**替代**旧的 `_watch_disconnect` 闭包（6 端点统一）
 - 引擎绑定只取第一个 + 失败报错；「自动降级链」已移除（2026-08-03）
+
+### 8.4 性能数据怎么看
+
+「到底哪类操作慢」不用开终端 curl：日志面板切到**「性能」标签页**（右上角日志按钮 → 性能），
+按 **p95 降序**排（最该看的在最前），一键复制成 Markdown 表，直接贴给 agent 就能定位。
+
+数据有两条轨，别混为一谈：
+
+| 轨 | 位置 | 生命周期 | 内容 |
+|---|---|---|---|
+| 进程内 | `GET /api/perf`（日志面板读它） | **重启清零** | 每组最多 500 样本的分位数 |
+| 全量留档 | `{data_dir}/perf.log`（默认 `~/.limo/perf.log`） | 按天滚动**保留 14 天** | 每一条原始打点，JSON Lines |
+
+三个必读的口径：
+
+| 现象 | 原因 |
+|---|---|
+| `… [ttfb]` 结尾的分组只有几毫秒 | 流式端点量到的是**建连时间**，不是流总时长。`BaseHTTPMiddleware.call_next` 在 `http.response.start` 就返回了 —— 实测 SSE 2–14ms，而生成实际跑几十秒。**想看一次生成到底跑了多久，这条打点给不出**，得看 `app.log` 里首个 chunk 与 `done` 的时间差 |
+| 分组名是 `GET /generate/{tx_id}/stream` 而不是具体的 id | key 用**路由模板**归一化（否则几千篇文档就是几千个统计组），`[ttfb]` 同理是分组名的一部分 |
+| 面板说「暂无打点数据」 | 后端刚起、还没有请求进来；或该分组的 500 样本已满（新样本不进分位数，但照样落盘） |
+
+- ⚠️ **`perf.log` 要重启后端才会新建**（`TimedRotatingFileHandler(delay=True)`：没有第一次写入就不建文件）——
+  目录里看不到它不是坏了
+- ⚠️ **表格刻意不做颜色分级**：阈值该由看数据的人按分位数定，不由写代码的人猜一个数（`core/perf.py` 纪律 1）
+- 落盘不可用（目录不可写）时面板写「落盘不可用（仅进程内统计）」而不是假装有文件 —— 纪律 2 的显式化
+- 除 HTTP 横切外，只有**没有请求边界**的三处手动打点：`startup.store` / `Store._save_index` / `vector.worker_round`
 
 ---
 

@@ -11,17 +11,17 @@
 
 | 指标 | 数量 |
 |------|------|
-| 后端 Python 文件 | 136（11 子目录：adapters 8 / agent 7 / core 33 / downloaders 1 / engines 18 / generation 18 / llm 4 / routers 20 / storage 4 / utils 6 / services 17）+ `limo_cli/` 9（CLI，独立于 `app/`；口径 = `find app -name '*.py'`，不含 `main.py`） |
-| 前端 TS/TSX/CSS 文件 | 243（237 ts/tsx + 6 css；业务 154，测试 82，`setup.ts` 1） |
-| 前端测试文件 | 83（82 测试文件 + `setup.ts`；1290 个测试用例，vitest 全绿） |
-| 后端测试文件 | 95（94 个 `test_*.py` + `conftest.py` 共享 fixture；2026-10 新增 `test_logging_val` /  `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_classify_paths` / `test_folder_tree` / `test_export_md_images` / `test_export_tab_applicability` / `test_followup` / `test_artifact_followup` / `test_web_search_reference` / `test_chat_web_search` / `test_chat_followups` / `test_export_theme` / `test_chat_answer_mode` / `test_embedding_engine` / `test_embedding_local` / `test_vector_index` / `test_vector_store` / `test_vector_worker` / `test_vector_search` / `test_search_api` / `test_vector_runtime` / `test_deps` / `test_plugin_examples` / **`test_plugin_embedding`（27 条：`EmbeddingPlugin` 契约 / 常驻子进程 IPC / 进程生命周期 / 协议违例四档 / 配置传递 / 自检 / 静态解析与分派，2026-10-27）** / **`test_plugins_guard`（9 条：六个写端点的来源守卫 + 「守卫早于存在性校验」顺序判据 + 两条反向对照，2026-10-27）**） |
+| 后端 Python 文件 | 138（11 子目录：adapters 8 / agent 7 / core 35 / downloaders 1 / engines 18 / generation 18 / llm 4 / routers 20 / storage 4 / utils 6 / services 17）+ `limo_cli/` 9（CLI，独立于 `app/`；口径 = `find app -name '*.py'`，不含 `main.py`） |
+| 前端 TS/TSX/CSS 文件 | 244（238 ts/tsx + 6 css；业务 154，测试 83，`setup.ts` 1） |
+| 前端测试文件 | 84（83 测试文件 + `setup.ts`；1312 个测试用例，vitest 全绿） |
+| 后端测试文件 | 96（95 个 `test_*.py` + `conftest.py` 共享 fixture；2026-10 新增 `test_logging_val` /  `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_classify_paths` / `test_folder_tree` / `test_export_md_images` / `test_export_tab_applicability` / `test_followup` / `test_artifact_followup` / `test_web_search_reference` / `test_chat_web_search` / `test_chat_followups` / `test_export_theme` / `test_chat_answer_mode` / `test_embedding_engine` / `test_embedding_local` / `test_vector_index` / `test_vector_store` / `test_vector_worker` / `test_vector_search` / `test_search_api` / `test_vector_runtime` / `test_deps` / `test_plugin_examples` / **`test_plugin_embedding`（27 条：`EmbeddingPlugin` 契约 / 常驻子进程 IPC / 进程生命周期 / 协议违例四档 / 配置传递 / 自检 / 静态解析与分派，2026-10-27）** / **`test_plugins_guard`（9 条：六个写端点的来源守卫 + 「守卫早于存在性校验」顺序判据 + 两条反向对照，2026-10-27）** / **`test_perf`（17 条：打点三条纪律 —— 记录不判断 / 写失败不影响业务 / 独立文件不传播，外加 HTTP 路由模板归一化、`[ttfb]` 后缀、JSON Lines 落盘形态，2026-10-27）**） |
 | API 路由模块 | 19 业务模块（+ `__init__.py`，共 20 个 .py） |
-| API 端点 | 99（`@router.` 装饰器计数；含 `/api/cli/*` 七端点、语义检索的 `/search/vector`、`/search/vector/sync`（2026-10-27 立即建索引）、`/search/vector/retry-failed`（同日重试失败项）与 `/search/vector/rebuild`） |
+| API 端点 | 99（`@router.` 装饰器计数；含 `/api/cli/*` 七端点、语义检索的 `/search/vector`、`/search/vector/sync`（2026-10-27 立即建索引）、`/search/vector/retry-failed`（同日重试失败项）与 `/search/vector/rebuild`）。⚠️ **不在这个口径里的 app 级端点**：`GET /api/perf`（打在 `main.py` 的 `@app.get` 上，见下方「性能打点」） |
 | 适配器 | 5 |
 | 引擎 (ASR/Doc/OCR/Embedding) | 11 内置（+三方插件 pymupdf4llm、本地方案模板 local_embedding） |
 | LLM Agent 工具 | 5 |
 | 设计文档 | 19（docs/ 目录 .md 计数：architecture / frontend-patterns / export-pipeline / patterns / search-retrieval / 对话协议 / AGENT-ONBOARDING / user-scenarios / plugins / prompts-inventory / BUILD / qianwen-models / ACKNOWLEDGMENTS / code-audit 1-4 + CHANGELOG / STATUS；design/ 另计） |
-| 代码行数 | 后端 app 39,103 + CLI 1,428 / 前端业务 28,516 / 前端测试 15,939（`wc -l` 累加；前端业务 = `src/` 下 ts/tsx **排除 `*.test.*` 与 `setup.ts`**，2026-10-26 按此口径实测重算） |
+| 代码行数 | 后端 app 41,091 + CLI 1,428 / 前端业务 29,056 / 前端测试 16,543（`wc -l` 累加；前端业务 = `src/` 下 ts/tsx **排除 `*.test.*` 与 `setup.ts`**；css 另计 2,607，2026-10-27 按此口径实测重算） |
 
 ---
 
@@ -82,6 +82,27 @@
 - `app/services/*.py` **零 FastAPI import**（与 `services/epub_pipeline.py` 同层），API adapter 与将来的 CLI 直接 import 同一 service —— 两侧不是「实现相似」，是**同一份**（`tests/test_query_contract.py` 逐字段比对 HTTP 响应与 service 输出）
 - 惰性构造在 `core/dependencies.py::get_query_service`：`main.py` 先建 `Store`、后建 `SearchEngine`，提前构造会让 `search_resources` 拿到 `None` → 静默空结果
 
+### 性能打点（2026-10-27，1 个 app 级端点）
+
+`app/core/perf.py` —— **只记录，不判断**的诊断层。没有「慢」阈值、没有采样率：快样本与慢样本一样记，
+阈值由看数据的人按分位数定（改造前中间件是「≥2000ms 才 WARN」，于是 1900ms 的退化和 12ms 的正常请求在数据上长得一样）。
+
+- **横切优先**：HTTP 那一层由 `main.py::add_request_id` 中间件统一记（每请求一条），**不给每个端点各加一个 timer**。
+  只有「没有请求边界」的地方才手动 `with perf.timer(...)` —— 目前三处：启动加载（`startup.store`）、
+  `Store._save_index`、向量 worker 一轮（`vector.worker_round`，只在真有推进时记）
+- **双轨**：进程内分位数（`GET /api/perf` → `snapshot()`，按 p95 降序，每组保留 500 样本、组数上限 200）
+  + 全量留档 `{data_dir}/perf.log`（JSON Lines，`TimedRotatingFileHandler` 按天滚动保留 14 天）
+- **独立文件**：`limo.perf` 的 `propagate = False` —— 不进 app.log（5×2MB 业务日志）、不进 `/api/logs`
+  的 1000 条内存环形缓冲（几秒就能把日志面板刷空，而界面上看不出异常）
+- **失败显式化**：落盘不可写（磁盘满 / 权限）只记一次 warning，之后静默；`snapshot()["logFile"]`
+  如实为 `null`，前端据此显示「落盘不可用（仅进程内统计）」，不冒充有文件
+- **两个口径坑**：① key 用**路由模板**（`GET /transcripts/{tx_id}`）不是原始 path，否则一篇文档一个统计组；
+  ② SSE 的耗时是**建连（TTFB）不是流总时长**（`BaseHTTPMiddleware.call_next` 在 `http.response.start` 就返回，
+  实测 2–14ms vs 生成几十秒），故 key 加 ` [ttfb]` 后缀，免得这些样本把普通请求的分位数整体拉低
+- **前端入口**：日志面板（`components/ui/LogPanel.tsx`）新增「性能」标签页，表格 + 一键复制成 Markdown；
+  **刻意不做颜色分级**（染红某个数字就是在替用户决定「多少算慢」）
+- ⚠️ **`perf.log` 要重启后端才会新建**（`delay=True`：没有第一次写入就不建文件，全新用户不会凭空多一个空文件）
+
 ### 只读命令行（2026-10-04 三期，7 个端点）
 
 `limo` —— 只读 CLI（`backend/limo_cli/`，9 个 .py / 1,356 行），三层：命令层 → `QueryService` → `Store`。**不解析库格式**（不读 `index.json` / `search.db` / 不拼磁盘路径），两个传输层同契约（`HttpSource` 默认 / `LocalSource` 仅 `doctor --local`）。
@@ -133,7 +154,7 @@
 | ExportMenu | 快捷导出（MD/HTML/Word/PDF/ZIP/复制）；`backendParams()` 一并带六条轴参数（HTML/Word/PDF 共用） |
 | ExportPanel | 自定义导出（tab选择/格式 MD·HTML·Word·纯文本/主题）+ SSE 进度反馈；POST body 同样带六条轴参数，主题下拉 `limo` 项文案为「跟随应用主题」 |
 | EngineSelect | 引擎绑定下拉（含"当前引擎"标签） |
-| LogPanel | 实时日志查看 |
+| LogPanel | 实时日志查看（「系统日志」/「性能」两个标签页：后者读 `GET /api/perf` 呈现各分组的 p50/p95/max，一键复制为 Markdown；**不做颜色分级**，理由见 `core/perf.py` 模块 docstring） |
 | OnboardingWizard | 首次启动向导（三屏） |
 
 ## 进度
@@ -152,12 +173,12 @@
 | 前端 UI/UX | 21 | 21 | 100% |
 | 安全 & 运维 | 8 | 8 | 100% |
 | 产物复用 | 4 | 5 | 80% |
-| **合计** | **124** | **127** | **98%** |
+| **合计** | **125** | **128** | **98%** |
 
 > 进度说明：
 > - 产物复用（4/5）：已落地**产物自证头 + 共享查询层**（一期）、**密钥与凭据卫生**（二期）、**CLI + 契约文档 + 门禁**（三期），均 2026-10-04；待做**导出 meta 承载 + 渠道扩展**（四期）。路线图见 [CHANGELOG.md](CHANGELOG.md) 2026-10-04 条目
 > - AI 审核域已移除（2026-08-16，方案：图表功能与 fact_check 移除）——事实核查产物转历史，历史 fact_check.md 保留不删
-> - 导出：11/12 — **打印样式 + PDF 导出已落地**（2026-09-21）：Tauri 内走 WebView2 PrintToPdf 直接落文件（**真实文档已端到端实测**，期间修掉 `Content-Disposition: attachment` 导致打印白纸的伪成功），浏览器内退回打印对话框（原「打印 / 另存为 PDF」与「PDF 一键导出」两行已合并为一，因为它们是同一个按钮的两条分支）；待完成**图片预处理复用**（ZIP 导出复用导入时的 optimize_images 结果）与 **md 公式渲染修复**（`formula_md=render` 依赖不在依赖树里的 matplotlib，自上线起从未生效）
+> - 导出：11/12 — **打印样式 + PDF 导出已落地**（2026-09-21）：Tauri 内走 WebView2 PrintToPdf 直接落文件（**真实文档已端到端实测**，期间修掉 `Content-Disposition: attachment` 导致打印白纸的伪成功），浏览器内退回打印对话框（原「打印 / 另存为 PDF」与「PDF 一键导出」两行已合并为一，因为它们是同一个按钮的两条分支）；待完成**图片预处理复用**（ZIP 导出复用导入时的 optimize_images 结果）。⚠️ 原列的「md 公式渲染修复」**已关闭**（2026-10-26 复核时 `formula_md=render` 通道**已整体移除** —— 函数 + 四处调用点 + 前端选项与类型，`tests/test_export_formula.py` 源码级守卫；「切到 KaTeX 图片管线」这个修法本身不成立：`_render_formulas_katex` 靠 WebView 在客户端渲染，服务端拿不到 SVG/PNG）。另：**导出进度反馈**后端（`/export/custom/stream` + `/export/download/{temp_id}`）完备但**前端尚未接线**，`ExportPanel` 仍走同步路径
 > - 不做的项目：PDF Layer 2（pdfplumber 已成熟提取表格）、VL 帧过滤（成本/收益不成正比）
 
 ## 工程质量（2026-10-16 状态）
@@ -167,8 +188,8 @@
 | FastAPI Depends 依赖注入 | ✅ 18/19 路由用 `Depends`（未迁：generate/ingest/markdown_edit；`references.py` 本就不需要。`search.py` 2026-10-26 已迁——那残留的一处 `app.state` 在 `markdown_edit.py` 的 `update_index`，`getattr` 兜底是有意的） |
 | disconnect_watcher 公共工具 | ✅ 6 端点统一（新增 classify/preview），修复 2 个 bug |
 | 错误体系统一（AppError） | ✅ 19/19 路由全量完成，0 处 `HTTPException`（2026-10-11 复核） |
-| 前端测试 | ✅ vitest + 1284 tests（81 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/tagSuggest/文档库 6 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/classifyDialog/readingPrefs/readingLayout/**chatFont（对话字号，含与阅读字号互不干扰的双向断言）/chatMessageList（滚轮 / 回到最新 / 代码块复制）/chatWebSearch（联网开关 + 公网来源呈现：开关→请求参数、两开关互不影响、URL 安全、四种 rebuild 不丢来源）/searchHealth（索引健康横幅：渲染判据 / 懒探测 / 重建成功与失败 / 关闭 / 30s TTL / 取不到状态不误判，2026-10-26）**/**语义检索退化的两条提示不混（`docLibrarySearch` 2 条：`semantic.error` 出提示且**不**冒充检索失败 / 未启用或零命中零渲染）与 503 强制刷新（`docLibraryLayout` 1 条：`ApiErrorException.status=503` → 刷新健康状态 → 横幅浮出；判据只读 `status`，对照实验改回 `message.includes('503')` 即红，2026-10-26）**/docTabs 3 个/字号、接线与快捷键守卫 3 个/版本切换与预览同步 2 个/卡片偏好、切分器、骨架组件 3 个/标记解析、偏好、组件、导出接线 4 个/HTML 注释 1 个/**产物元数据 2 个**/导出偏好 1 个/**themeAxisSync（轴注册表 key 集合 ↔ CSS `[data-*]` 跨语言一致，2026-10-16）**/onAccent/installWarning） |
-| 后端测试 | ✅ 94 文件（含**插件 2 个**：plugin_loader（39 条：门控 / 一键装依赖 / 进程内三条边界）/ **plugin_embedding（27 条：`EmbeddingPlugin` 契约 / 常驻子进程 IPC / 进程生命周期 / 协议违例四档 / 配置传递 / 自检 / 静态解析与分派，2026-10-27）**；含**向量检索 8 个**：embedding_engine（三条契约：按 `index` 重排 / 已 L2 归一化 / 空输入不发起调用）/**embedding_local（16 条：协议三条契约 / 条数与维度不符显式报错 / 不阻塞事件循环 / 并发预热只构造一次 / `precheck` 缺依赖与缺模型两种文案 / 构造零副作用 / 真模型已归一化，2026-10-26）**/ vector_index（切块 flat+h2 / 分组排名 / rrf，产品与评测共用同一份）/ vector_store（四元组身份 / 状态机 / 块读写 / **`requeue_failed`（重试失败项）：清 `fail_count` + 清 `content_hash` + **保块** 三条同断、已成功与已在队列的篇不受影响、再调返回 0 幂等，2026-10-27**）/ vector_worker（块级 hash 增量 / 每篇 checkpoint / 失败上限 / 启动对账 / **预热：只调一次、失败写 `stopped` 而不 `mark_failed`、修好后下一轮重试** / **模型内存三档：`never` 不动 / `idle` 交给引擎判闲置 / `immediate` 只在建完一轮之后放一次（空转轮次不动，否则每次搜索都冷启动）** / **触发调度 8 条（2026-10-27）：攒批闸门（`warm_calls == 0` 钉住「不到阈值就不加载模型」）/ `manual` 档永不自动跑 / 重试不受闸门约束 / `request_sync` 的 `_force` 只跑一轮 / 写点唤醒穿透心跳**）/ **vector_runtime（11 条：语义检索开关的唯一维护点 —— **六条「不在用」路径都释放模型（`never` 档也释放，关功能 ≠ 平时常驻）** / 重建与重启路径**不**释放 / 策略变了才重启 worker / 停机清干净 `vector_stop`·`vector_task`·`vector_worker` 三个引用 / 库不可用·引擎找不到·口径不符各有出口，2026-10-26）** / **vector_search（24 用例：`_precheck` 三档拦在编码之前 / 两路同深度 / RRF 只吃排名 / 超时与失败显式化 / `hits` 恒在，2026-10-26）** / **search_api（18 条：`POST /search/reindex` 走 HTTP 真的灌满（篇数 + 可搜性两条都断）/ 陌生 Origin → 403 且索引未被重建 / 向量未初始化时状态段给出明确原因——此前这两个端点**零 HTTP 层覆盖**；**+5 条触发方式（2026-10-27）：status 回报 `trigger`/`threshold` 且脏值回退或夹紧 / 开关请求落盘两字段（非法 `trigger` → 400 且零写盘、`threshold: 0` 夹紧成 1、只带一项不抹掉另一项）/ `/search/vector/sync` 两态（未启用 400 `VECTOR_DISABLED` / 在跑则调用一次 `request_sync`）/ 默认配置与常量同源**；**+4 条引擎切换（2026-10-26 阶段 4）：非法 `model` → 400 `VECTOR_NO_ENGINE` 且零写盘 / `status.models` 两个引擎都在且 `local` 标志由引擎给出 / 切到本地引擎后 `model` 与成本分支跟着变 / 切引擎不改 `vector_enabled` 也不自动重建（必然口径不符、`reason` 明说要重建）**；**+3 条释放策略：`/search/status` 回报当前档 / 开关请求里的 `release` 真的落进配置并重启 worker / 默认配置的档位与 `DEFAULT_RELEASE` 同源**；**+3 条重试失败项（2026-10-27）：有失败项 → 重排 N 篇并叫醒 worker 一次（`request_sync` 调用数 = 1，状态从 failed 变 pending）/ 无失败项 → `requeued: 0` 且**一次都不叫醒** / worker 未启用 → 400 `VECTOR_DISABLED`**）**；合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io；版本布局 2 个：store_version_layout/store_legacy_migration；导出与网络 8 个：export_by_version/proxy_exemption/youtube_subtitle/markdown_sections/export_cards/export_md_images/export_tab_applicability/**export_theme（导出跟随主题，18 用例：零回归 / 五条轴属性 / 强度走行内 / 各轴独立 / 白名单边界 / 注入闸门 / 主题层两个 `@media screen` / 跨语言成对守卫，2026-10-16）**；**产物标记 3 个**：artifact_blocks/export_blocks/block_prompt；**智能分类 1 个**：classify，57 用例；**联网检索 1 个**：web_search_reference，39 用例（纯函数 / 检索层 / 编排 / 端点四段，含 9 条对照实验 + `search_web` 返回结构的源码哨兵；2026-10-12 审查后补「整体超时闸门 / 取消透传（起跑前、检索中）/ 显式关闭联网」5 条）；**对话联网 1 个**：chat_web_search，38 用例（工具表开关 / prompt 五层叠加 / `_safe_http_url` / `_extract_sources` / 落盘白名单 / 接线守卫六组，含 4 条对照实验，2026-10-12）；2026-10-11 代码审查修 `fit_to_budget` 分批预算 + 每批新建额度 + 空词表兜底；同日五轮/六轮补策略矩阵、候补与口袋夹、回显同源、标签清洗同源，+10）；**检索索引 1 个**：search，含 2026-10-26 新增的 5 条（状态端点 / 坏库不炸构造 / 坏库自愈 + 文件头魔数 / VACUUM 按需（`PRAGMA freelist_count` 精确判据）/ `QueryError.index_unavailable` 与 `no_search_engine` 的对照）） |
+| 前端测试 | ✅ vitest + 1312 tests（83 个测试文件 + `setup.ts`：store/theme/api/contentSources/streamBuffers/tabRegistry/chatStore/docQuery/genParams/docLibrary/tagSuggest/文档库 6 个/contextMenu/组件/synthesis/getTypeMeta/docLibrarySynthesis/classifyDialog/readingPrefs/readingLayout/**chatFont（对话字号，含与阅读字号互不干扰的双向断言）/chatMessageList（滚轮 / 回到最新 / 代码块复制）/chatWebSearch（联网开关 + 公网来源呈现：开关→请求参数、两开关互不影响、URL 安全、四种 rebuild 不丢来源）/searchHealth（索引健康横幅：渲染判据 / 懒探测 / 重建成功与失败 / 关闭 / 30s TTL / 取不到状态不误判，2026-10-26）**/**语义检索退化的两条提示不混（`docLibrarySearch` 2 条：`semantic.error` 出提示且**不**冒充检索失败 / 未启用或零命中零渲染）与 503 强制刷新（`docLibraryLayout` 1 条：`ApiErrorException.status=503` → 刷新健康状态 → 横幅浮出；判据只读 `status`，对照实验改回 `message.includes('503')` 即红，2026-10-26）**/docTabs 3 个/字号、接线与快捷键守卫 3 个/版本切换与预览同步 2 个/卡片偏好、切分器、骨架组件 3 个/标记解析、偏好、组件、导出接线 4 个/HTML 注释 1 个/**产物元数据 2 个**/导出偏好 1 个/**themeAxisSync（轴注册表 key 集合 ↔ CSS `[data-*]` 跨语言一致，2026-10-16）**/onAccent/installWarning/**searchIndexCard（21 条：释放策略三档 / 触发方式两档——顺序与文案照后端下发、云端引擎与缺 capabilities 时整组不渲染、阈值只在 auto 档 / 「立即建索引」与「重试失败项」/ ⚠️ 建到一半每 3 秒轮询，`pending` 归零那一刻才提示完成、失败走 info 不混一句「完成」，2026-10-27）**/**logPanel（性能标签页：默认停在日志页不发 `/perf` / 分组与表头 / ⚠️ 不做颜色分级 / `logFile` 为 null 如实说「落盘不可用」/ `[ttfb]` 说明按需出现 / 空态不渲染空表头 / 复制为 Markdown，2026-10-27）**） |
+| 后端测试 | ✅ 95 文件（含**性能打点 1 个**：**perf（17 条：三条纪律 —— 记录不判断 / 写失败不影响业务 / 独立文件不传播，外加 HTTP 路由模板归一化、`[ttfb]` 后缀、JSON Lines 落盘形态、组数上限与幂等，2026-10-27）**；含**插件 2 个**：plugin_loader（39 条：门控 / 一键装依赖 / 进程内三条边界）/ **plugin_embedding（27 条：`EmbeddingPlugin` 契约 / 常驻子进程 IPC / 进程生命周期 / 协议违例四档 / 配置传递 / 自检 / 静态解析与分派，2026-10-27）**；含**向量检索 8 个**：embedding_engine（三条契约：按 `index` 重排 / 已 L2 归一化 / 空输入不发起调用）/**embedding_local（16 条：协议三条契约 / 条数与维度不符显式报错 / 不阻塞事件循环 / 并发预热只构造一次 / `precheck` 缺依赖与缺模型两种文案 / 构造零副作用 / 真模型已归一化，2026-10-26）**/ vector_index（切块 flat+h2 / 分组排名 / rrf，产品与评测共用同一份）/ vector_store（四元组身份 / 状态机 / 块读写 / **`requeue_failed`（重试失败项）：清 `fail_count` + 清 `content_hash` + **保块** 三条同断、已成功与已在队列的篇不受影响、再调返回 0 幂等，2026-10-27**）/ vector_worker（块级 hash 增量 / 每篇 checkpoint / 失败上限 / 启动对账 / **预热：只调一次、失败写 `stopped` 而不 `mark_failed`、修好后下一轮重试** / **模型内存三档：`never` 不动 / `idle` 交给引擎判闲置 / `immediate` 只在建完一轮之后放一次（空转轮次不动，否则每次搜索都冷启动）** / **触发调度 8 条（2026-10-27）：攒批闸门（`warm_calls == 0` 钉住「不到阈值就不加载模型」）/ `manual` 档永不自动跑 / 重试不受闸门约束 / `request_sync` 的 `_force` 只跑一轮 / 写点唤醒穿透心跳**）/ **vector_runtime（11 条：语义检索开关的唯一维护点 —— **六条「不在用」路径都释放模型（`never` 档也释放，关功能 ≠ 平时常驻）** / 重建与重启路径**不**释放 / 策略变了才重启 worker / 停机清干净 `vector_stop`·`vector_task`·`vector_worker` 三个引用 / 库不可用·引擎找不到·口径不符各有出口，2026-10-26）** / **vector_search（24 用例：`_precheck` 三档拦在编码之前 / 两路同深度 / RRF 只吃排名 / 超时与失败显式化 / `hits` 恒在，2026-10-26）** / **search_api（18 条：`POST /search/reindex` 走 HTTP 真的灌满（篇数 + 可搜性两条都断）/ 陌生 Origin → 403 且索引未被重建 / 向量未初始化时状态段给出明确原因——此前这两个端点**零 HTTP 层覆盖**；**+5 条触发方式（2026-10-27）：status 回报 `trigger`/`threshold` 且脏值回退或夹紧 / 开关请求落盘两字段（非法 `trigger` → 400 且零写盘、`threshold: 0` 夹紧成 1、只带一项不抹掉另一项）/ `/search/vector/sync` 两态（未启用 400 `VECTOR_DISABLED` / 在跑则调用一次 `request_sync`）/ 默认配置与常量同源**；**+4 条引擎切换（2026-10-26 阶段 4）：非法 `model` → 400 `VECTOR_NO_ENGINE` 且零写盘 / `status.models` 两个引擎都在且 `local` 标志由引擎给出 / 切到本地引擎后 `model` 与成本分支跟着变 / 切引擎不改 `vector_enabled` 也不自动重建（必然口径不符、`reason` 明说要重建）**；**+3 条释放策略：`/search/status` 回报当前档 / 开关请求里的 `release` 真的落进配置并重启 worker / 默认配置的档位与 `DEFAULT_RELEASE` 同源**；**+3 条重试失败项（2026-10-27）：有失败项 → 重排 N 篇并叫醒 worker 一次（`request_sync` 调用数 = 1，状态从 failed 变 pending）/ 无失败项 → `requeued: 0` 且**一次都不叫醒** / worker 未启用 → 400 `VECTOR_DISABLED`**）**；合成 6 个：transcript_meta/budget/store_composite/synthesis/generate_gate/synthesis_api；查询层 3 个：artifact_meta/query_service/query_contract；密钥 3 个：secrets/config_mask/config_io；版本布局 2 个：store_version_layout/store_legacy_migration；导出与网络 8 个：export_by_version/proxy_exemption/youtube_subtitle/markdown_sections/export_cards/export_md_images/export_tab_applicability/**export_theme（导出跟随主题，18 用例：零回归 / 五条轴属性 / 强度走行内 / 各轴独立 / 白名单边界 / 注入闸门 / 主题层两个 `@media screen` / 跨语言成对守卫，2026-10-16）**；**产物标记 3 个**：artifact_blocks/export_blocks/block_prompt；**智能分类 1 个**：classify，57 用例；**联网检索 1 个**：web_search_reference，39 用例（纯函数 / 检索层 / 编排 / 端点四段，含 9 条对照实验 + `search_web` 返回结构的源码哨兵；2026-10-12 审查后补「整体超时闸门 / 取消透传（起跑前、检索中）/ 显式关闭联网」5 条）；**对话联网 1 个**：chat_web_search，38 用例（工具表开关 / prompt 五层叠加 / `_safe_http_url` / `_extract_sources` / 落盘白名单 / 接线守卫六组，含 4 条对照实验，2026-10-12）；2026-10-11 代码审查修 `fit_to_budget` 分批预算 + 每批新建额度 + 空词表兜底；同日五轮/六轮补策略矩阵、候补与口袋夹、回显同源、标签清洗同源，+10）；**检索索引 1 个**：search，含 2026-10-26 新增的 5 条（状态端点 / 坏库不炸构造 / 坏库自愈 + 文件头魔数 / VACUUM 按需（`PRAGMA freelist_count` 精确判据）/ `QueryError.index_unavailable` 与 `no_search_engine` 的对照）） |
 | CLI 契约门禁 | ✅ `scripts/check-cli` 16 项全绿（含 3 条负向对照：后端不可达 / 坏 ID / 截断显式化）；`test_query_contract.py` §8 覆盖 `/api/cli/*` 七端点 + 两条对照实验（2026-10-04） |
 | 产物自证头 | ✅ `notes`/`polished`/`process` 落盘带 `<!-- limo-meta -->` 首行（从哪来/怎么来的/是什么/可信度边界四条），`core/transcript_meta.py` 拆出 envelope 层统一编解码；历史无头产物**不判损坏**；编辑保存带回原头；思维导图等派生视图剥头（2026-10-04）。⚠️ **预览侧**（2026-10-11）：自证头信息由**产物自证条**（正文上方一横排带图标小标签：版本/时间/字数/模型）呈现，展示判据收口 `lib/artifactMeta.ts`；纯视图装饰、**不参与导出** |
 | 共享查询层 | ✅ `services/query.py::QueryService` 收口全部读路径（HTTP 与 CLI **同一份**实现）；顺带修掉存活四个月的 `search.py` 双 `prefix` 导致 `/api/api/search`（前端搜索一直 404 而两侧测试全绿，2026-10-04） |
@@ -197,7 +218,7 @@
 | 默认 Tab 优化 | ✅ PDF→整理版原文 / 视频→转录 / 图片→原图 |
 | 暗色纹理 | ✅ ::after 遮罩 2-3% 透明度保留质感 |
 | 转录完成提示 | ✅ Toast 引导用户点击生成按钮 |
-| 请求级日志 | ✅ middleware 计时 + status/duration_ms + SSE 长连接不判慢（2026-08-13） |
+| 请求级日志 | ✅ middleware 计时 + status/duration_ms + SSE 标 `[ttfb]`（2026-08-13 建立；2026-10-27 另加全量打点，`≥2s` 才 WARN 仍保留 —— 那是给人看的日志判断） |
 | 前端持续探活 | ✅ 10s 轮询 /api/health + down/crashed 分级横幅（2026-08-13） |
 | 缺 key 主动提示 | ✅ missingKeys 检测 + ImportSection 内联提示条 + chatStore 首提 toast（2026-08-13） |
 | 健壮性三批优化 | ✅ 45 项（P0 崩溃/安全 + P1 图表/泄漏/UX 竞态 + P2 中断恢复/死代码）——错误中文化 + ingest 资产服务去重 + 日志风格收敛（2026-08-16） |
@@ -247,18 +268,18 @@
 ```
 backend/app/
   adapters/      5 个适配器（8 个 py 文件，含 BilibiliSubtitle/YouTubeSubtitle）
-  engines/       12 个内置引擎 + 插件加载器 + transcript 契约（含 embedding_base 协议 + embedding_dashscope + embedding_local，2026-10-26）
+  engines/       11 个内置引擎 + 插件加载器 + transcript 契约（含 embedding_base 协议 + embedding_dashscope + embedding_local，2026-10-26）
   routers/       19 个路由模块（含 folders/plugins/references/search/epub/markdown_edit/cli/classify）
   generation/    生成/处理/OCR预处理/prompt/参考文件超窗压缩/思考档位/provenance（自证头装配 + PROMPT_VERSION）/classifier（智能分类）/doc_text（最新版笔记正文 + **全文索引文本**，分类 / 合成 / 检索共用）/web_search（产物侧联网检索：抽检索词 + 并发搜索去重 + 组料，2026-10-12）（fact_check/review 已移除 2026-08-16）
   agent/         LLM Agent 工具 + 会话管理（tools/tool_registry/compress/session）
   downloaders/   平台下载器（yt-dlp 通用路径；抖音走同一 `_download` 的 UA/Referer 覆盖。⚠️ 自研 `douyin_downloader` + `douyin_helper/abogus`（GPL-3.0 声明）已于 2026-10-06 整体删除）
   llm/           LLMService + agent 循环
-  core/          配置/类型/注册/错误/disconnect/搜索（FTS5 三列：title 索引 / body UNINDEXED 供摘要 / toks 二字组匹配）/cookie/sample_doc + vector_index（向量纯算子：切块 flat+h2 / 分组排名 / rrf，产品与评测共用同一份）+ vector_store（`vec.db` 三表：四元组身份 / 状态机 / 块读写；写点只打 `pending` 不编码）+ transcript_meta（产物自证头编解码）+ artifact_blocks（产物正文协议标记 limo-block）+ resource_id（读路径 ID 校验）+ text_utils（JSON 对象抽取等公共纯函数，图表/分类共用）+ atomic_io（全项目唯一原子写：临时名唯一 + `os.replace`）
+  core/          配置/类型/注册/错误/disconnect/搜索（FTS5 三列：title 索引 / body UNINDEXED 供摘要 / toks 二字组匹配）/cookie/sample_doc + vector_index（向量纯算子：切块 flat+h2 / 分组排名 / rrf，产品与评测共用同一份）+ vector_store（`vec.db` 三表：四元组身份 / 状态机 / 块读写；写点只打 `pending` 不编码）+ transcript_meta（产物自证头编解码）+ artifact_blocks（产物正文协议标记 limo-block）+ resource_id（读路径 ID 校验）+ text_utils（JSON 对象抽取等公共纯函数，图表/分类共用）+ atomic_io（全项目唯一原子写：临时名唯一 + `os.replace`）+ perf（性能打点：只记录不判断，进程内分位数 + `perf.log` 全量留档双轨，2026-10-27）
   utils/         视频管线（video_reader/video_helper/screenshot_marker/frame_quality）
   services/      共享查询层（query，HTTP 与 CLI 同一份读路径）+ 视频直传理解（video_understand）+ 文档直传（doc_understand，PDF file 块）+ 图表（chart_layout/ 包：geometry 几何 + layouts 算子 + engine 校验 / chart_svg 生成 / chart_renderer 渲染）+ epub 解读 + markdown_render（HTML/Word 共用渲染）+ markdown_sections（H2 切分 + `card` 节修饰符判据，导出卡片骨架与统计脚本共用）+ docx_export（Word 导出）+ vector_worker（向量索引后台 worker：分块 → 块级 hash 增量 → 编码 → 每篇 checkpoint → 失败上限 → 启动对账 → **模型内存释放（`never`/`idle`/`immediate` 三档 + `release_now` 供「关掉功能」这条路）**）+ vector_search（查询融合：字面 ∪ 语义 RRF，`depth=max(limit,50)` / `k=10` / 三档前置校验拦在编码之前 / 失败显式化）+ vector_runtime（语义检索开关的**唯一维护点**：worker 与融合层成对启停，口径不符只停用不重建）+ 错误体系
   storage/       文件系统存储 + folder_tree（文件夹树纯函数：归化 / 前序 / 后代 / 路径标签 / `parse_path` + `path_key`，与前端 `folderTree.ts` 同构）+ doc_meta（分类真相源：文档级 `{doc_dir}/meta.json` + 库级 `{root}/folders.json`，`DOC_FIELDS` 17 字段，含 `title`）
 backend/limo_cli/  只读命令行（cli 入口 / commands 七命令 / doctor 诊断 / output 输出契约 / sources 两个传输层 / agents_md 契约文档模板 / exit_codes）
-backend/tests/     后端测试（94 个 .py，含 conftest.py 共享 fixture；test_e2e_smoke 经 collect_ignore 排除）
+backend/tests/     后端测试（95 个 `test_*.py` + conftest.py 共享 fixture；test_e2e_smoke 经 collect_ignore 排除）
 frontend/src/
   components/    UI 组件（ui/ 布局层：SlotLayout 布局引擎 + ActivityBar 活动栏 + PanelStrip 折叠条；preview/ 下 6 个展示组件拆分 + CardSections 卡片骨架 + MarkerContent 标记渲染 + ArtifactMetaBar 产物自证条；ai-chat/ 对话组件 + ChatMarkerContent 对话块渲染；doc-library/ 20 文件拆分（含 folderTree 建树 / FolderPicker 树形选择））
   store/         Zustand 状态（types.ts + 7 slices + chatStore + streamBuffers）
@@ -266,8 +287,8 @@ frontend/src/
   hooks/         useTaskRunner 等自定义 hook
   lib/           tabRegistry / contentSources / slotRegistry（持有 SlotDef.component）/ panelToggle（开合判据）/ layout-prefs（侧栏布局偏好）/ slotMetrics / modelCaps / markdown-scan（围栏感知标题扫描 + limo-block 行分类/半截标记判据）/ markdown-sections（H2 与任意层级切分，含 `card` 节修饰符判据）/ marker-prefs（标记装饰开关）/ markdown-markers（limo-block 解析/剥离）/ chat-block-content（追问项抽取）/ **chat-font（对话正文字号倍率，独立于阅读字号；档位换算复用 reading-prefs）** / card-prefs（骨架轴偏好 + 底/抬升/边微调与 `serializeCardVars`）/ **artifactMeta（产物元数据展示判据：时间/字数格式化 + 取哪几项；自证条与 VersionSwitcher 共用）** / export-prefs（快捷导出偏好，`embedImages` 默认开）/ 主题模块（accent / theme-base / theme-presets / theme，外加 **theme-axes 轴注册表** —— key / attr / storageKey / options / fallback / apply，**只放 label 不放色值**，启动链与预设遍历它）/ health / download / print
   styles/        主题层（theme-layer.css：六轴纯声明层，前端 `@import` 与后端 `_load_theme_layer_css()` 读**同一份**，打包须在 spec datas）+ 卡片骨架 CSS（cards.css）+ 语义标记 CSS（blocks.css，进导出）+ 对话块 CSS（chat-blocks.css，**不进导出**），前后端共用单一真相源 —— 后端导出时从磁盘读它
-  test/          前端测试（81 测试文件 + setup.ts + fixtures 目录，含组件测试；fixtures/h2-sections.json 与 limo-blocks.json 前后端共享；themeAxisSync 守卫轴注册表 key 集合 ↔ CSS `[data-*]` 跨语言一致）
-docs/            设计文档（13 份）
+  test/          前端测试（83 测试文件 + setup.ts + fixtures 目录，含组件测试；fixtures/h2-sections.json 与 limo-blocks.json 前后端共享；themeAxisSync 守卫轴注册表 key 集合 ↔ CSS `[data-*]` 跨语言一致）
+docs/            设计文档（19 份 .md）
 design/          引擎实测标准 + 卡片视觉方案（cards.md）
 scripts/         门禁与工具（check-all / check-cli / check-secrets / check-artifact-structure 产物结构统计 等）
 ```

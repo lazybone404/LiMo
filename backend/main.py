@@ -52,6 +52,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import load_config
 from app.core.concurrency import ExecutionGuard
+from app.core import perf
 from app.core.logging import request_id, init_request_id_logging, RequestIDFilter
 from app.storage.store import Store
 
@@ -85,6 +86,8 @@ def _log_request(request, status: int, duration_ms: float, response_headers=None
     - SSE 识别按响应头 content-type: text/event-stream（通用，非路径白名单——
       路径判断会漏新增流式端点）
     - 跳过高频噪音：health 探活 / static 静态资源 / assets 图片渲染
+    - **全量打点**另走 `perf.record`（见 app/core/perf.py）：日志那条是给人看的、
+      带「慢/不慢」判断；打点那条不做判断、只记录，供 `GET /api/perf` 算分位数。
     """
     from app.core import logging as log
     path = request.url.path
@@ -100,6 +103,32 @@ def _log_request(request, status: int, duration_ms: float, response_headers=None
         log.warning("HTTP", **kw)
     else:
         log.info("HTTP", **kw)
+
+    # 性能打点 —— 两条判据都写在 app/core/perf.py 的模块 docstring 里：
+    # ① 用**路由模板**（`/transcripts/{tx_id}`）而不是原始 path，否则一篇文档一个
+    #    统计组，`snapshot()` 会返回一张没人看得懂的表；
+    # ② SSE 加 `[ttfb]` 后缀。`BaseHTTPMiddleware.call_next` 等到响应头就返回，
+    #    所以这里量到的是**建连时间**而非流总时长 —— 2026-10-27 实测
+    #    `/api/generate/{id}/stream` 恒在 2–14ms，而生成要跑几十秒。混在一起会把
+    #    普通请求的分位数整体拉低。
+    #
+    # ⚠️ `route.path` 在 FastAPI 0.139 里**不含** `include_router(prefix="/api")` 的前缀：
+    #    `include_router` 挂的是 `_IncludedRouter`（prefix 收进 include_context，
+    #    `scope["route"]` 仍是子路由的原始对象），且 `scope["root_path"]` 是空串 ——
+    #    2026-10-27 实测 `GET /api/folders` 拿到的是 `/folders`。
+    #    故这里**统一剥掉 `/api`**：无论将来库变回「展开后含前缀」还是维持现状，
+    #    统计口径都稳定为 `GET /transcripts/{tx_id}`，不会因为一次依赖升级
+    #    把历史分位数劈成两半（`/folders` 与 `/api/folders` 各算一组）。
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None) or path
+    if route_path == "/api":
+        route_path = "/"
+    elif route_path.startswith("/api/"):
+        route_path = route_path[4:]
+    name = f"{request.method} {route_path}"
+    if is_sse:
+        name += " [ttfb]"
+    perf.record(name, duration_ms, status=status, sse=True if is_sse else None)
 
 # CORS Origin 白名单 — 只允许本机与 Tauri 壳来源，阻隔任意网页跨站访问本地后端。
 # ⚠️ 正则住在 `app/core/origin.py`（与「有副作用的 GET」守卫**共用同一份**）：
@@ -289,6 +318,10 @@ async def startup():
     _init_logging(config)
     init_request_id_logging()  # 注入 RequestID 过滤器
 
+    # 性能打点落盘 —— 必须排在 `Store(...)` **之前**：启动加载是启动路径上最慢的
+    # 一步（索引一旦不可用就是全库扫描重建），恰恰是最该留下数据的地方。
+    perf.setup(config.get("data_dir", "data"))
+
     # 凭据卫生自检 —— 位置有意义：配置已载（知道 data_dir 与 secrets_ref）、logger 就绪
     # （报得出来）、**早于任何业务写盘**（不会先写出明文再报警）。
     # ⚠️ 只报告、不阻断：明文凭据是**卫生问题**不是功能故障，为它拒绝启动等于让用户
@@ -303,8 +336,9 @@ async def startup():
             "凭据自检：打开设置页点一次「保存」即可把明文凭据迁移到 DPAPI 加密存储"
             "（开发环境可先跑 scripts/migrate-secrets.py --check 看会改什么）")
 
-    # 存储
-    app.state.store = Store(config.get("data_dir", "data"))
+    # 存储（这一步含索引加载 + 四类一次性迁移，慢的时候就是全库扫描 —— 计时留着）
+    with perf.timer("startup.store"):
+        app.state.store = Store(config.get("data_dir", "data"))
 
     # 适配器
     from app.adapters import init_adapters
@@ -425,6 +459,18 @@ app.include_router(cli_router.router, prefix="/api")
 # ── 日志查看端点 ──
 
 from fastapi.responses import JSONResponse as _JSONResponse
+
+@app.get("/api/perf")
+async def view_perf():
+    """进程内性能打点 —— 打开看一眼用的，重启清零。
+
+    只读端点，不加 `X-LiMo-Client` 守卫（那条守卫是给**有副作用**的 GET 用的）。
+    跨会话的趋势看 `{data_dir}/perf.log`（JSON Lines，按天滚动保留 14 天）。
+    """
+    data = perf.snapshot()
+    data["startedAt"] = getattr(app.state, "started_at", None)
+    return data
+
 
 @app.get("/api/logs")
 async def view_logs(request: Request):

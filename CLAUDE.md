@@ -497,7 +497,7 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
   - **索引文本 = rawText + 最新版笔记**（`doc_text.search_index_text`）。⚠️ 只索引 rawText 等于「只搜用户没写过的那部分」：实测 29 题含笔记 83% vs 不含 66%。**五个写点全部经 `update_index()`**（见「公共常量的家」表）。
   - **查询侧：二字组 + OR**（`_tokenize` / `_escape_fts5`）。⚠️ 逐字 AND 召回高但区分度为零（「的/是/不」全库都有），目标文档常被 BM25 挤到第 13、33 名；二字组 AND 则一票否决，语义型查询直接归零（15 题 7→**0**）。**区分度来自二字组，召回来自 OR，排序交给 BM25**，三者缺一不可。⚠️ `_tokenize` 的 `limit` 默认 **None**（索引侧必须收全文），只有 `search()` 传 64 —— 曾经无条件 `uniq[:64]` 导致每篇只索引开头 64 个 token，而所有单测都是短文本、全绿。
   - 结果集**单一化**：`eligible`（类型/标签/文件夹/日期/标题，**不含关键词**）∩（关键词内存命中 ∪ FTS 命中）——命中行统一走 `DocRow`（有复选框/右键/拖拽，不再是不能选的裸按钮）且**受筛选约束**；标题类命中加「**原文**」角标（措辞非「正文」：`title` 与 `toks` 两列都会命中而一次查询无法判定来自哪列），纯原文命中加 `SearchSnippet` 第二行。结果限 100 条，到顶时底部提示细化关键词（静默截断 = 用户以为「就这些」）
-- **索引健康三态 + 两处提示**（2026-10-26）：`GET /api/search/status`（`available` / `docCount` / `sizeBytes` / `lastError` / `rebuiltAt`）+ `POST /api/search/reindex`（`X-LiMo-Client` 头守卫）。三态是**可用 / 索引不可用（坏库，用户可自助重建）/ 引擎不在场（开发者问题）**——后两态此前都汇成「搜不到」，与「库里真没有」逐字相同。提示分两层：设置页 `SearchIndexCard` 是**拉取**（用户主动走进来才看得见），文档库顶部 `SearchIndexBanner` 是**推送**（索引已经坏了、用户还没意识到）。⚠️ 两者共用 [lib/search-health.ts](frontend/src/lib/search-health.ts)（`useSyncExternalStore`，模块级快照）与 `reindexSearch`，判据只有一处 `status.available`。⚠️ **刻意不轮询**（对照 `lib/health.ts` 的后端探活：进程真的会掉）：索引可用性只在启动重建 / 手动重建 / 外部删 `search.db` 三个时刻变化，故用 30s TTL 去重 + 挂载取一次 + 503 时强制刷新 + 重建后写回。⚠️ **`null`（还没取到 / 取不到）一律不渲染**——「问不到」不等于「坏了」，反过来写会在后端没起的几十秒里挂一条点不动的「去重建索引」。⚠️ `useDocQuery` 的 `isIndexUnavailable` 同时喂「提示文案」与「是否刷新健康状态」两处（拆开会出现「列表说索引坏了、顶部却没动静」）。⚠️ 接线有守卫：`docLibraryLayout.test.tsx` 两条断言「横幅真的挂在文档库里」+「索引正常时零渲染」，做过摘掉组件的对照实验
+- **索引健康三态 + 两处提示**（2026-10-26）：`GET /api/search/status`（`available` / `docCount` / `sizeBytes` / `lastError` / `rebuiltAt`）+ `POST /api/search/reindex`（`X-LiMo-Client` 头守卫）。三态是**可用 / 索引不可用（坏库，用户可自助重建）/ 引擎不在场（开发者问题）**——后两态此前都汇成「搜不到」，与「库里真没有」逐字相同。提示分两层：设置页 `SearchIndexCard` 是**拉取**（用户主动走进来才看得见），文档库顶部 `SearchIndexBanner` 是**推送**（索引已经坏了、用户还没意识到）。⚠️ 两者共用 [lib/search-health.ts](frontend/src/lib/search-health.ts)（`useSyncExternalStore`，模块级快照）与 `reindexSearch`，判据只有一处 `status.available`。⚠️ **刻意不轮询**（对照 `lib/health.ts` 的后端探活：进程真的会掉）：索引可用性只在启动重建 / 手动重建 / 外部删 `search.db` 三个时刻变化，故用 30s TTL 去重 + 挂载取一次 + 503 时强制刷新 + 重建后写回。⚠️ **唯一的轮询是向量索引「建到一半」的时候**（2026-10-27）：`SearchIndexCard` 在 `vec.enabled && vec.available && docs.pending > 0` 时每 3 秒读一次状态，`pending` 归零那一刻弹一次完成提示（伴随失败项走 info 并点名「重试失败项」），归零即停 —— 判据分界是「这个数会不会自己变」：`available` 不会，`pending` 会且有明确终点。⚠️ 只判 `pending > 0` 不够，开关关掉 / 索引不可用时它是个静止的数字，会变成一张后台读盘的卡片⚠️ **`null`（还没取到 / 取不到）一律不渲染**——「问不到」不等于「坏了」，反过来写会在后端没起的几十秒里挂一条点不动的「去重建索引」。⚠️ `useDocQuery` 的 `isIndexUnavailable` 同时喂「提示文案」与「是否刷新健康状态」两处（拆开会出现「列表说索引坏了、顶部却没动静」）。⚠️ 接线有守卫：`docLibraryLayout.test.tsx` 两条断言「横幅真的挂在文档库里」+「索引正常时零渲染」，做过摘掉组件的对照实验
 - **语义检索（向量，阶段 1–4 已全部落地 2026-10-26）**：与字面检索**并列的第二路**，只在开关打开时参与融合，**默认关 = 零回归**（`config.search.vector_enabled: false`，UI 在 设置 → 通用 → 检索索引）。
   - **两个引擎可选**（2026-10-26 阶段 4）：`dashscope-embedding`（云端 1024 维，按字数计费）与 `local-bge-small`（[engines/embedding_local.py](backend/app/engines/embedding_local.py)，bge-small-zh-v1.5 ONNX int8 · 512 维 · 免费 · 零外发）。配置键 `config.search.vector_model`；`POST /api/search/vector` 的 `model` 字段切引擎，非法值 400 `VECTOR_NO_ENGINE` 且零写盘。⚠️ **切换必然「口径不符」**（1024 ↔ 512），后端给 `reason` 提示需要重建、**不自动重建**。⚠️ **刻意不是 `~/.limo/plugins/` 的 `EnginePlugin`**：那个签名是「一个文件 → 一段文本」，装不下「一组文本 → 一组向量」，且进程外每次 `Popen` + 加载 3–5 秒会撞 `QUERY_TIMEOUT = 3.0`；口子原则的实质（重依赖不进打包）由「`onnxruntime`/`tokenizers` 不在 `pyproject.toml` + 模型 22.8MB 不随包」满足。
   - **三个可选钩子**（`precheck()` / `warmup()` / `release()`，**不进 Protocol** —— `runtime_checkable` 加成员会让云端引擎不再满足，消费方一律 `getattr`）：`precheck` 的读法在 [`vector_runtime`](backend/app/services/vector_runtime.py)::`_engine_precheck`、**排在 `ensure_identity` 之前**（否则引擎起不来时先把身份写成新口径，用户装完依赖看到的是「需要重建」而实际一个向量都没编码过）；`warmup` 在 [`vector_worker`](backend/app/services/vector_worker.py)::`_warm`（**排在 `_next_ids` 确认有活之后** —— 队列空着时加载 22.8MB 纯属浪费；已加载时是纯内存快路，查询侧每次都会调）；⚠️ **预热失败不 `mark_failed`** —— `fail_count` 是花钱的闸门，模型没起来不是这篇文档的错。`release` 见下一条。
@@ -672,6 +672,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 文件夹树（父子归化 / 前序 / 后代 / `父 › 子` 路径标签 / `totalCount` / **路径解析 `parse_path` + `path_key`**） | [storage/folder_tree.py](backend/app/storage/folder_tree.py) ↔ [doc-library/folderTree.ts](frontend/src/components/doc-library/folderTree.ts)。⚠️ **`parse_path` / `path_key` 只活在后端一处**（前端刻意不实现：两份要靠 fixture 防漂移，而它的失效形态是「历史里本名就含 `/` 的夹被拆开」这种静默错分）；其余结构函数两端同构，靠共享 fixture `folder-tree.json` 钉住 |
 | **分类真相源**（文档级 `{doc_dir}/meta.json` + 库级 `{root}/folders.json`） | [storage/doc_meta.py](backend/app/storage/doc_meta.py)。`DOC_FIELDS`（17 个**从磁盘重推不出来**的字段，含 `title`——目录名是**有损**的，见该文件注释）与读写入口只此一份；`read_folders` 的 **`None`（不可用）与 `[]`（确实没有夹）刻意分开**。⚠️ **`index.json` 只是缓存**，`_rebuild_index` 回落到这里 —— 别在别处再造一份 sidecar 格式 |
 | 原子写（临时名唯一 + `os.replace`） | [core/atomic_io.py](backend/app/core/atomic_io.py) 的 `atomic_write_text`。`Store._atomic_write` 是它的薄委托；`doc_meta` 直接调它 |
+| **性能打点**（`record` / `timer` / `snapshot` / 落盘位置 / 三条纪律） | [core/perf.py](backend/app/core/perf.py)。⚠️ **只记录不判断**（没有「慢」阈值 —— 阈值该由看数据的人按分位数定，不是写代码的人猜一个 2000ms）；**写失败只 warning 一次、不影响业务**；**独立文件** `{data_dir}/perf.log`（`limo.perf` 的 `propagate=False`，不进 app.log、不进 `/api/logs` 的 1000 条内存缓冲）。⚠️ **HTTP 那一层是横切的**（`main.py::_log_request` 每请求一条），**不给端点各加 timer**；只有没有请求边界的三处才手动 `with perf.timer(...)`。⚠️ 两个口径坑写在模块 docstring 里：key 用**路由模板**（否则一篇文档一个统计组）、**SSE 是 TTFB 不是流总时长**（key 加 `[ttfb]` 后缀） |
 | 产物正文协议标记（`limo-block`）解析/剥离/渲染 | [core/artifact_blocks.py](backend/app/core/artifact_blocks.py) ↔ [lib/markdown-markers.ts](frontend/src/lib/markdown-markers.ts)（前后端各一份，共享 fixture `limo-blocks.json` 钉住） |
 | 「用列表代替画图」的块族（`steps` / `timeline` / `cycle` / `sequence` / `quadrant`） | [core/artifact_blocks.py](backend/app/core/artifact_blocks.py) 的 `CHART_ALTERNATIVE_BLOCK_TYPES`。⚠️ **tuple 不是 frozenset**（prompt 文案由它 join 拼出，要稳定顺序）；prompt 文案 / `_chart_missing_warning` 判据 / 模块注释三处共用 —— 手抄一份的失效形态是「prompt 教了、完成期 warning 不认 → 用户照做反被报『图表未生成』」 |
 | `limo-block` 存在性 / 按类型判据 | [core/artifact_blocks.py](backend/app/core/artifact_blocks.py) 的 `has_blocks`（有无）/ `has_block(md, type)`（**按类型**）。⚠️ **不要写 `"follow-up" in md` 子串判** —— 正文里讨论本协议时也会出现这个词 |
@@ -871,6 +872,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 ### 其他
 - **数学公式**：全局 `remark-math` + `rehype-katex`，LaTeX `$$` 块自动排版
 - **日志系统**：`contextvars.ContextVar` 注入 `request_id` → ASGI middleware，全链路追踪。`MemoryHandler`（`main.py` 中配置）缓存最近 1000 条日志供前端 LogPanel 轮询（`GET /api/logs`），重启后清空
+- **性能打点**（2026-10-27）：`GET /api/perf`（**app 级端点**，不在 `@router.` 的 99 个口径里）→ `perf.snapshot()`，按 p95 降序给各分组的 `count/min/p50/p95/max/avg`；数据双轨 —— 进程内分位数（每组 500 样本 / 组数上限 200，重启清零）+ 全量留档 `{data_dir}/perf.log`（JSON Lines，按天滚动保留 14 天）。**入口是日志面板的「性能」标签页**（`components/ui/LogPanel.tsx`，一键复制为 Markdown），⚠️ 表格**刻意不做颜色分级**。⚠️ `perf.log` 要**重启后端**才新建（`delay=True`，没有第一次写入就不建文件）。详见「公共常量的家」表的 perf 行
 - **客户端断连监测**：`app/core/disconnect.py` — `@asynccontextmanager` 封装，5 个 SSE 端点复用，新增端点直接 `async with disconnect_watcher(request, cancel_event):`
 - **Tesseract 移除**：本地 OCR 已从内置移除（2026-08-02），`backend/bin/tesseract/` 不再随包分发。**行为变更**：无 dashscope key 时扫描件 OCR 从「本地可用」变「占位文本（原图 + _所有 OCR 引擎均失败_）」，直到用户装三方插件模板
 - **EPUB 一键解读**：epub-container（自研解析器，2026-08-26 起替代 ebooklib AGPL）章节提取；生成走独立管道（`app/services/epub_pipeline.py` + `app/routers/epub.py`）——阶段 1 逐章解读落盘 → 阶段 2 归并全书总结（notes=总结 / polished=逐章），全部章处理过即触发归并（失败章跳过并在 polished 按序插失败标注），中断续跑 + 软取消（`cancel_event`），产物必定落盘。三端点 `/api/epub/generate|task|cancel/{doc_id}`，前端 GenPanel epub 专属入口三态 UI（进度条 / 继续上次解读 / 一键解读）
@@ -1135,15 +1137,15 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 域 | 完成 | 总计 | 进度 |
 |----|------|------|------|
 | 📥 内容导入 | 8 | 8 | 100% |
-| 📚 文档库 | 9 | 9 | 100% |
+| 📚 文档库 | 10 | 10 | 100% |
 | 🔗 多篇合成 | 16 | 16 | 100% |
 | 📝 转录 & 引擎 | 8 | 8 | 100% |
 | ✨ LLM 生成 | 14 | 14 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 10 | 10 | 100% |
 | 📊 图表生成 | 11 | 12 | 92% |
-| 📤 导出 | 12 | 12 | 100% |
+| 📤 导出 | 11 | 12 | 92% |
 | 🎨 前端 UI/UX | 21 | 21 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
 | 🧩 产物复用 | 4 | 5 | 80% |
-| **合计** | **125** | **127** | **98%** |
+| **合计** | **125** | **128** | **98%** |

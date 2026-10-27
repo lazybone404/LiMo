@@ -35,8 +35,10 @@ worker 看到的 `contentHash` **恒为 None**。写了它就是一段永不执�
 from __future__ import annotations
 
 import asyncio
+import time
 
 from app.core import logging as log
+from app.core import perf
 from app.core.vector_index import chunk_flat
 from app.core.vector_store import DEFAULT_CHUNK_SIZE, chunk_hash, pack_vec
 from app.generation.doc_text import search_index_text
@@ -481,6 +483,8 @@ class VectorWorker:
             # 会落到下一轮（那时它该跳过闸门 —— 第一轮的 `_next_ids` 早已取过）。
             force = self._force
             self._force = False
+            t_round = time.perf_counter()
+            crashed = False
             try:
                 stats = await self.run_once(force=force)
             except asyncio.CancelledError:
@@ -488,6 +492,18 @@ class VectorWorker:
             except Exception as e:  # noqa: BLE001 —— 单轮异常不能让常驻任务死掉
                 log.warning("向量索引 worker 本轮异常", err=f"{type(e).__name__}: {e}"[:200])
                 stats = {"indexed": 0, "skipped": 0, "failed": 0, "stopped": "异常"}
+                crashed = True
+
+            # 打点**只记真干活的轮次**：空转（攒不够阈值 / 队列空）与「hash 全中」
+            # 都是接近 0ms 的，记进去只会把这条数据淹掉。崩掉的那轮要记 ——
+            # 「跑了 180 秒然后抛了」正是最该看见的形状。
+            if stats["indexed"] or stats["failed"] or crashed:
+                perf.record(
+                    "vector.worker_round",
+                    (time.perf_counter() - t_round) * 1000,
+                    indexed=stats["indexed"], skipped=stats["skipped"],
+                    failed=stats["failed"], error=True if crashed else None,
+                )
 
             if stats["indexed"] or stats["failed"]:
                 log.info("向量索引进度", indexed=stats["indexed"],

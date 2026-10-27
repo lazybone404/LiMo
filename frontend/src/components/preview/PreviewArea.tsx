@@ -1105,7 +1105,7 @@ export function PreviewArea() {
           <button
             onClick={() => setShowLogs(!showLogs)}
             className={`px-3 py-1.5 text-[12px] rounded-full transition-colors ${showLogs ? 'bg-accent/10 text-accent' : 'text-dimmed hover:bg-surface-hover'}`}
-            title="系统日志"
+            title="系统日志与性能"
           ><Terminal size={14} /></button>
         </div>
       </div>}

@@ -482,6 +482,21 @@ class GenerateError(AppError): ...   # 生成特定
 - `MemoryHandler` 缓存最近 1000 条，前端 LogPanel 轮询 `GET /api/logs`
 - `log.warning(msg, **kwargs)` 只接受 1 个位置参数，多参数用 f-string
 
+### 性能打点（2026-10-27，`core/perf.py`）
+
+**只记录，不判断** —— 没有「慢」阈值、没有采样率。改造前 `_log_request` 是「≥2000ms 才 WARN」，
+于是 1900ms 的退化和 12ms 的正常请求在数据上长得一模一样；阈值该由看数据的人按分位数定。
+⚠️ 那条 WARN **保留着** —— 它是给人看的**日志**判断，perf 是另一条**数据**轨，两者不冲突。
+
+- **横切优先**：HTTP 那一层由 `main.py::_log_request` 每请求记一条，**不给端点各加 timer**。
+  只有没有请求边界的三处才手动 `with perf.timer(...)`：`startup.store` / `Store._save_index` / `vector.worker_round`
+- **双轨**：进程内分位数（`GET /api/perf`，每组 500 样本、组数上限 200，重启清零）
+  + 全量留档 `{data_dir}/perf.log`（JSON Lines，按天滚动保留 14 天）
+- **独立文件**：`limo.perf` 的 `propagate = False`，不进 app.log、不进 `GET /api/logs` 的 1000 条环形缓冲
+- **失败显式化**：落盘挂不上时 `snapshot()["logFile"]` 为 `null`，前端如实写「落盘不可用」
+- **两个口径坑**：① key 用**路由模板**（否则几千篇文档就是几千个统计组）；② SSE 量到的是
+  **TTFB 不是流总时长**（`BaseHTTPMiddleware.call_next` 在 `response.start` 就返回）→ key 加 ` [ttfb]` 后缀
+
 ---
 
 ## 前端分层

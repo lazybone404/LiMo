@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
+from app.core import perf
 from app.core.atomic_io import atomic_write_text
 from app.core.markdown_assets import rewrite_asset_urls  # noqa: F401  (re-export，见下)
 from app.core.types import RawTranscript, MarkdownView, ProcessResult, Style, GenerateMode
@@ -315,13 +316,17 @@ class Store:
         只有确实有夹、或文件已存在时才写。后者保证「删光所有夹」会落一个空表
         （语义是「库里确实没有夹」，而不是「不知道」）。
         """
-        folders = self._index.get("folders") or []
-        if folders or doc_meta.folders_exist(self.root):
-            doc_meta.write_folders(self.root, folders)
-        self._atomic_write(
-            self._index_path,
-            json.dumps(self._index, ensure_ascii=False, indent=2),
-        )
+        # 打点：全量重写 index.json（每次 N 篇文档的完整 JSON + 写盘），批量操作
+        # 里一次加锁一次写盘就是为了不把它做 N 次。规模涨到「一次几十毫秒」时，
+        # 这里是第一个该被看见的地方 —— 判据与两步走方案见 CHANGELOG 2026-10-27。
+        with perf.timer("store.save_index", docs=len(self._index.get("transcripts") or [])):
+            folders = self._index.get("folders") or []
+            if folders or doc_meta.folders_exist(self.root):
+                doc_meta.write_folders(self.root, folders)
+            self._atomic_write(
+                self._index_path,
+                json.dumps(self._index, ensure_ascii=False, indent=2),
+            )
 
     def _persist_doc_meta(self, entry: dict) -> None:
         """把条目的文档级字段落到 `{doc_dir}/meta.json`（真相源）。
