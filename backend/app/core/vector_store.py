@@ -430,6 +430,40 @@ class VectorStore:
             ).fetchall()
         return [r[0] for r in rows]
 
+    def requeue_failed(self) -> int:
+        """把全部失败项重新排队（设置页「重试失败项」按钮）。返回重排的篇数。
+
+        存在的理由：`retry_ids` 只返回 `fail_count < max_fail` 的篇，那些连续失败
+        到上限的**在任何档位、点任何按钮都不会再被尝试一次**（`force` 跳过的是
+        闸门，不是取件范围）。没有这个入口，用户唯一的出路是删掉重导。
+
+        ⚠️ **与 `mark_pending` 同款清空 `content_hash`，但这里不是「内容变了」**：
+        失败项里可能有「先成功后失败」的篇，它的 hash 还是上次成功时的值 —— 留着
+        会让 worker 的整篇快速路径判「hash 相等、无需重编」，于是立刻 `mark_ok`
+        跳过：**一次编码都不发却显示成功**（用户点了重试而没重试，零报错）。
+        清空后走正常的分块比对，`vec_chunks` 仍在 ⇒ 没变的块不重编码，
+        重试不是「整篇重花一遍钱」。
+
+        ⚠️ **不按 `fail_count` 分两支**：未到上限的本来就会被自动重试，一起重排
+        只是把计数归零（无害）；已达上限的正是这个按钮存在的理由。分开会让
+        「点了有没有用」取决于一个用户看不见的字段。
+
+        ⚠️ **一条 UPDATE 一次事务**，不是逐篇 `mark_pending` —— N 篇失败时那是
+        N 次写盘 + N 次唤醒。
+        """
+        if not self.available:
+            return 0
+        with self._lock, self._conn() as conn:
+            n = conn.execute(
+                "UPDATE vec_state SET content_hash = NULL, status = 'pending',"
+                " fail_count = 0, error = NULL WHERE status = 'failed'"
+            ).rowcount or 0
+        if n:
+            log.info("向量索引失败项已重新排队", count=n)
+            # 与 `mark_pending` 同款：状态变了就叫醒（锁外）。
+            self._notify_wake()
+        return int(n)
+
     def actionable_counts(self, max_fail: int = 3) -> tuple[int, int]:
         """返回 `(待编码, 待重试)` 篇数 —— 给 worker 的阈值闸门用（`_should_run`）。
 

@@ -33,6 +33,7 @@ from fastapi.testclient import TestClient
 
 from app.core.search import SearchEngine
 from app.core.types import RawMetadata, RawTranscript, SourceType
+from app.core.vector_store import VectorStore
 from app.storage.store import Store
 from main import app
 
@@ -417,6 +418,64 @@ def test_vector_sync_wakes_worker():
         assert stub.calls == 1
     finally:
         app.state.vector_worker = None
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_vector_retry_failed_requeues_and_wakes():
+    """失败项重排 → 回 pending、**并叫醒 worker**（不能只重排不跑）。
+
+    ⚠️ 第二个断言不是「顺手加的」：`manual` 档下重排完它们只是 `pending`，没有
+    `request_sync` 就永远等不到下一次心跳 —— 按钮点了没反应，而状态里 pending
+    数是涨的（看起来像正在建）。反向：`request_sync` 而无重排 = 跑一轮空转。
+    两者缺一，用户看到的都是「点了，什么也没发生」。
+    """
+    c, d = _setup()
+    stub = _StubWorker()
+    app.state.vector_worker = stub
+    # `_setup()` 把 vector_store 显式置 None（防串到上个测试的临时目录），
+    # 这里要一个真库来行使重排 —— 临时目录同一个，用完一起删。
+    vec = VectorStore(d)
+    app.state.vector_store = vec
+    try:
+        vec.mark_failed("tr_a", "boom")
+        vec.mark_failed("tr_b", "boom")
+        r = c.post("/api/search/vector/retry-failed", headers=_CLIENT)
+        assert r.status_code == 200, r.text
+        assert r.json()["requeued"] == 2
+        assert stub.calls == 1
+        assert r.json()["status"]["docs"]["failed"] == 0
+        assert r.json()["status"]["docs"]["pending"] == 2
+    finally:
+        app.state.vector_worker = None
+        app.state.vector_store = None
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_vector_retry_failed_noop_does_not_wake():
+    """没有失败项时返回 0 且**不叫醒**（叫醒一轮空转没有意义）。"""
+    c, d = _setup()
+    stub = _StubWorker()
+    app.state.vector_worker = stub
+    app.state.vector_store = VectorStore(d)
+    try:
+        r = c.post("/api/search/vector/retry-failed", headers=_CLIENT)
+        assert r.status_code == 200, r.text
+        assert r.json()["requeued"] == 0
+        assert stub.calls == 0
+    finally:
+        app.state.vector_worker = None
+        app.state.vector_store = None
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_vector_retry_failed_rejects_when_disabled():
+    """worker 没在跑 → 400 `VECTOR_DISABLED`（同 `/sync`，不现场造一个）。"""
+    c, d = _setup()
+    try:
+        r = c.post("/api/search/vector/retry-failed", headers=_CLIENT)
+        assert r.status_code == 400, r.text
+        assert r.json()["code"] == "VECTOR_DISABLED"
+    finally:
         shutil.rmtree(d, ignore_errors=True)
 
 

@@ -151,6 +151,49 @@ def test_mark_failed_accumulates():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_requeue_failed_清空计数与哈希但保留块():
+    """「重试失败项」：失败项全部回 pending，**其余状态一条都不动**。
+
+    三条都要断，且每条修错的失效形态都不同：
+    - `fail_count` 不清零 → 仍 ≥ 上限，下一轮 `_next_ids` 照样不取它，按钮点了没用；
+    - `content_hash` 不清空 → 「先成功后失败」的篇会被整篇快速路径判「hash 相等」
+      直接 `mark_ok`，**一次编码都不发却显示成功**；
+    - `vec_chunks` 被删 → 块级增量失效，重试等于整库重花一遍钱。
+    """
+    vs, d = _store()
+    try:
+        # 先成功后失败：hash 留着上一次成功的值（这正是要清掉的那个）
+        vs.mark_ok("tr_sel", chunk_count=1, content_hash="deadbeef")
+        vs.replace_chunks("tr_sel", [{
+            "idx": 0, "text": "正文", "hash": chunk_hash("正文"),
+            "vec": pack_vec([0.1, 0.2]),
+        }])
+        for _ in range(5):
+            vs.mark_failed("tr_sel", "boom")
+        for _ in range(3):
+            vs.mark_failed("tr_dead", "boom")
+        vs.mark_ok("tr_ok", chunk_count=1, content_hash="keepme")
+        vs.mark_pending("tr_pending")
+
+        assert vs.requeue_failed() == 2
+        sel = vs.get_state("tr_sel")
+        assert (sel["status"], sel["failCount"], sel["error"]) == ("pending", 0, None)
+        assert sel["contentHash"] is None
+        assert sel["chunkCount"] == 1          # 块数不属于「状态」，不该被抹
+        st = vs.get_state("tr_dead")
+        assert (st["status"], st["failCount"], st["error"]) == ("pending", 0, None)
+        # 块还在（块级增量照旧生效）
+        assert [c["textHash"] for c in vs.get_chunks("tr_sel")] == [chunk_hash("正文")]
+        # 已成功 / 已在队列的篇不受影响
+        assert vs.get_state("tr_ok")["status"] == "ok"
+        assert vs.get_state("tr_ok")["contentHash"] == "keepme"
+        assert vs.get_state("tr_pending")["status"] == "pending"
+        # 再点一次：没有失败项了，返回 0（幂等）
+        assert vs.requeue_failed() == 0
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_take_pending_does_not_consume():
     """`take_pending` **只读不写**：worker 崩在中途时这条必须还在队列里。
 

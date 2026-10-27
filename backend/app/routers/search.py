@@ -362,6 +362,36 @@ async def search_vector_sync(request: Request):
     return {"requested": True, "status": _vector_status(request)}
 
 
+@router.post("/search/vector/retry-failed")
+async def search_vector_retry_failed(request: Request):
+    """**重试失败项** —— 把失败的篇目全部重新排队，并立刻跑一轮。
+
+    这是「失败篇没有自助出口」的补丁：`_next_ids` 只取 `pending` 与
+    `retry_ids(max_fail)`，故 `fail_count >= MAX_FAIL` 的篇在**任何档位、点任何
+    按钮**下都不会再被尝试一次（`force` 跳过的是闸门，不是取件范围）。用户原先
+    能做的只有删掉重导。
+
+    ⚠️ **不是「忽略上限」**：重排只是把 `fail_count` 归零，仍是逐篇调用、再次失败
+    仍会回到上限 —— 与「放宽 `force` 成无限重试」的区别是**这一次由用户点击背书**，
+    一次误点不会变成一次自动计费扫描。
+
+    ⚠️ **必须接着 `request_sync()`**：重排完它们只是 `pending`；`manual` 档下 worker
+    没有这个旗标不会醒，`auto` 档下也不该等攒够阈值（失败的篇数多半远小于 100）。
+    """
+    ensure_trusted_request(request)
+    worker = getattr(request.app.state, "vector_worker", None)
+    if worker is None:
+        raise AppError("VECTOR_DISABLED", "语义检索未启用（或索引库不可用）",
+                       status_code=400)
+    vec = getattr(request.app.state, "vector_store", None)
+    if vec is None:
+        raise AppError("VECTOR_UNAVAILABLE", "向量索引库未初始化", status_code=503)
+    requeued = vec.requeue_failed()
+    if requeued:
+        worker.request_sync()
+    return {"requeued": requeued, "status": _vector_status(request)}
+
+
 @router.post("/search/vector/rebuild")
 async def search_vector_rebuild(request: Request):
     """**重建**向量索引 —— 清空口径与全部块，重新排队（**要花一遍全库编码的钱**）。

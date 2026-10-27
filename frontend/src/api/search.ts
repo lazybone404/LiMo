@@ -81,7 +81,9 @@ export interface VectorStatus {
   available: boolean
   lastError: string | null
   identity: VectorIdentity | null
-  /** `pending` = 已排队待编码；`failed` = 连续失败达上限（worker 不再自动重试） */
+  /** `pending` = 已排队待编码；`failed` = 编码失败（**全部失败合计**，其中
+   *  `fail_count >= MAX_FAIL` 的篇不再自动重试，未到上限的仍会重试）。
+   *  「重试失败项」按钮会把它们一起重新排队，见 `retryFailedVectors`。 */
   docs: { total: number; ok: number; pending: number; failed: number }
   chunks: number
   sizeBytes: number
@@ -212,6 +214,21 @@ export async function setVectorSearch(
 export async function syncVectorIndex(): Promise<VectorActionResult & { requested: boolean }> {
   return (await apiFetch(`${BASE}/search/vector/sync`, { method: 'POST' }))
     .json() as Promise<VectorActionResult & { requested: boolean }>
+}
+
+/** **重试失败项** —— 把失败的篇目全部重新排队并立刻跑一轮。
+ *
+ *  为什么需要它：连续失败到上限的篇**不会再被自动重试**（worker 的失败闸门），
+ *  「立即建立索引」也只取 `pending` 与尚未到上限的失败项 —— 没有这个出口，
+ *  用户只能删掉重导。重排会把失败计数归零，块级增量照旧生效（没变的块不重编）。
+ *
+ *  ⚠️ 与「重建」不同：不清理已成功的篇、不重花全库的钱；也**不是**「忽略上限」——
+ *  它由用户的一次点击背书，再失败仍会回到上限。
+ *  worker 没在跑时后端 400 `VECTOR_DISABLED`。 */
+export async function retryFailedVectors():
+  Promise<VectorActionResult & { requeued: number }> {
+  return (await apiFetch(`${BASE}/search/vector/retry-failed`, { method: 'POST' }))
+    .json() as Promise<VectorActionResult & { requeued: number }>
 }
 
 /** **重建**向量索引 —— 清空旧口径与全部块、重新排队（要花一遍全库编码的钱）。

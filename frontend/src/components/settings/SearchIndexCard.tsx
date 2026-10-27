@@ -13,11 +13,12 @@
  * 实时变化的东西（它要么一开始就坏了，要么被手动重建修好）。
  */
 import { useEffect, useState } from 'react'
-import { AlertTriangle, CheckCircle, Cpu, Database, Loader2, RefreshCw, Sparkles, Zap } from 'lucide-react'
+import { AlertTriangle, CheckCircle, Cpu, Database, Loader2, RefreshCw, RotateCcw, Sparkles, Zap } from 'lucide-react'
 import {
   getSearchStatus,
   rebuildVectorIndex,
   reindexSearch,
+  retryFailedVectors,
   setVectorSearch,
   syncVectorIndex,
   type SearchStatus,
@@ -54,6 +55,7 @@ function vectorSummary(v: VectorStatus): string {
   // 失败闸门），混进「待索引」里会让人一直等一个不会自己好的东西；未到上限的仍会被重试
   // （`auto` 档下一次心跳、`manual` 档点「立即建立索引」）。⚠️ 本函数拿不到当前档位，
   // 也不区分这两类 —— 故这里只报数、不下「会不会重试」的结论（`docs.failed` 是全部失败合计）。
+  // 真正的出路是旁边那个 `data-vector-retry` 按钮：它把全部失败项重新排队（含已达上限的）。
   if (failed) parts.push(`失败 ${failed}`)
   return parts.join(' · ')
 }
@@ -436,6 +438,22 @@ export function SearchIndexCard() {
             </button>
             {vec.docs.pending > 0 && (
               <span className="text-[11px] text-muted">待索引 {vec.docs.pending} 篇</span>
+            )}
+            {/* 失败项的自助出口：连续失败到上限的篇不会再被任何自动路径尝试
+                （「立即建立索引」也只取 pending 与未到上限的失败项），没有这个
+                按钮用户只能删掉重导。`docs.failed > 0` 才渲染 —— 它含未到上限的
+                那些，但一起重排只是把计数归零，不会多花钱（块级增量仍在）。 */}
+            {vec.docs.failed > 0 && (
+              <button
+                data-vector-retry
+                onClick={() => runVector(retryFailedVectors)}
+                disabled={vBusy || !vec.enabled}
+                title="把失败的篇目全部重新排队并立刻跑一轮（含已停止自动重试的）"
+                className="px-3 py-1.5 text-[12px] rounded-lg border border-border-default inline-flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {vBusy ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
+                重试失败项 {vec.docs.failed}
+              </button>
             )}
           </div>
 

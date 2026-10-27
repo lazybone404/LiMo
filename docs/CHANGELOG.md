@@ -6,6 +6,73 @@
 
 ---
 
+## 2026-10-27 — 「重试失败项」：给已达上限的失败篇一条自助出口（0.5.19 内续）
+
+**起因**：上一轮把触发方式做成两档时，那条已知边界是**明确记下来的** ——
+`fail_count >= MAX_FAIL` 的篇在**任何档位、点任何按钮**都不会再被尝试一次，设置页会长期显示
+「失败 N 篇」而**没有自助出口**。当时的处置是「先记着，正确的落点是『显式重试失败项』按钮」。
+本轮就是把这个出口补上。
+
+### ① 为什么不是「把 `force` 放宽成忽略上限」
+
+`force` 跳过的是**闸门**（`_should_run`），不是 `_next_ids` 的取件范围 —— 后者只取 `pending`
+与 `retry_ids(max_fail)`。把 `force` 改成忽略上限，等于**一次误点就对全部坏文档发起一次计费扫描**，
+且没有任何一步是用户明确要求的。判据同「失败显式化」：**决定权在用户手上，不在默认行为里**。
+
+于是正确的形状是「用户点一下 → 重置这些篇的状态 → 再跑一轮」，即 `requeue_failed()`。
+
+### ② `VectorStore.requeue_failed()`：一条 UPDATE，三条语义
+
+```sql
+UPDATE vec_state SET content_hash = NULL, status = 'pending',
+       fail_count = 0, error = NULL WHERE status = 'failed'
+```
+
+- **必须清 `content_hash`**：失败项里有「先成功后失败」的篇（改了内容、第二次编码失败），
+  hash 还是上次成功时的值 ⇒ worker 的整篇快速路径判「hash 相等」直接 `mark_ok`，
+  **一次编码都不发却显示成功**。清空后走块级比对。
+- **不删 `vec_chunks`**：块级 hash 增量靠旧块比对 —— 重试的是「没编码成功的那些块」，
+  不是整篇重花钱。
+- **归零 `fail_count` 与 `error`**：前者是门槛，不归零则下一轮照样取不到；后者是给用户看的，
+  不清则「重试成功了但状态里仍挂着上次的错」。
+- **一条 UPDATE 一次事务**，不是逐篇 `mark_pending`（那会是 N 次写盘 + N 次唤醒）；
+  锁外 `_notify_wake()`，与 `mark_pending` 同款。
+- `available is False` 时返回 0，不抛 —— 同该文件其余方法（坏库只让语义检索不可用）。
+
+### ③ 端点 `POST /api/search/vector/retry-failed`
+
+`ensure_trusted_request` → 取 worker（None → 400 `VECTOR_DISABLED`，与 `/sync` 一致：
+**不现场造 worker**）→ 取 `vector_store`（None → 503 `VECTOR_UNAVAILABLE`）→
+`requeue_failed()` → **仅当 `requeued > 0`** 才 `worker.request_sync()` → 返回 `{requeued, status}`。
+
+⚠️ **必须是 `request_sync()` 而不是 `await run_once()`**：理由与 `/sync` 逐字相同 ——
+`attempted` 每轮私有，并发两条协程会让同一篇编码两次、计费翻倍而产物完全正常。
+⚠️ **`requeued == 0` 时不叫醒**：没有要干的事，叫醒只是白跑一轮。
+
+### ④ 前端：「重试失败项 N」
+
+设置页语义检索状态区，**只在 `docs.failed > 0` 时渲染**（常驻只是噪音 —— 旁边的「待索引 N 篇」
+已承担常态进度提示），数量直接写在按钮上，用户不必回上面那行状态里数。
+动作结果就地生效（`runVector` 的既有路径），失败项归零后按钮自己消失。
+语义检索未开启时 `disabled`（后端会 400，别让用户撞墙 —— 同「立即建立索引」）。
+
+### ⑤ 测试与对照实验
+
+- `test_vector_store.py::test_requeue_failed_清空计数与哈希但保留块`：一篇「先成功后失败」+
+  一篇连失败三次 + 一篇成功 + 一篇已在队列，断言四篇各自不受影响、块仍在、再调返回 0（幂等）。
+- `test_search_api.py` 三条：有失败项 → 重排 2 篇且 `request_sync` 恰好一次、状态从 failed 变 pending ｜
+  无失败项 → `requeued: 0` 且**一次都不叫醒** ｜ worker 未启用 → 400 `VECTOR_DISABLED`。
+- 前端 `searchIndexCard.test.tsx` 一条（含三态：无失败不渲染 / 有失败点一下 / 未开启禁用）。
+- **两条对照实验**（都实测判红后还原）：SQL 去掉 `content_hash = NULL,` → 后端用例红；
+  前端把 `{vec.docs.failed > 0 && (` 改成 `{false && (` → 前端用例红。
+
+**影响范围**：`app/core/vector_store.py`、`app/routers/search.py`、`app/services/vector_worker.py`（未改，
+仅复用 `request_sync`）、`frontend/src/api/search.ts`、
+`frontend/src/components/settings/SearchIndexCard.tsx` + 两侧测试（后端 4 条 / 前端 1 条）。
+文档：`docs/search-retrieval.md` §4.2 / §4.2.1（已知边界 → 已有出口）、`README.md`、`CLAUDE.md`、`docs/STATUS.md`。
+
+---
+
 ## 2026-10-27 — 索引触发方式可配：攒批 / 手动 + 「立即建立索引」（0.5.19 内续）
 
 **起因**：向量端到端验证跑通后，汇报里那句「worker 是 60 秒轮询，导入新文档后最多等一分钟才建索引」

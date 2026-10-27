@@ -15,7 +15,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, fireEvent } from '@testing-library/react'
 import { SearchIndexCard } from '../components/settings/SearchIndexCard'
-import { getSearchStatus, setVectorSearch, syncVectorIndex } from '../api/search'
+import { getSearchStatus, retryFailedVectors, setVectorSearch, syncVectorIndex } from '../api/search'
 import { useStore } from '../store'
 import type { Capabilities } from '../api/core'
 import type { VectorActionResult, VectorStatus } from '../api/search'
@@ -24,6 +24,7 @@ vi.mock('../api/search', () => ({
   getSearchStatus: vi.fn(),
   reindexSearch: vi.fn(),
   rebuildVectorIndex: vi.fn(),
+  retryFailedVectors: vi.fn(),
   setVectorSearch: vi.fn(),
   syncVectorIndex: vi.fn(),
 }))
@@ -87,6 +88,11 @@ async function renderWith(
   }) as VectorActionResult)
   vi.mocked(syncVectorIndex).mockImplementation(async () => ({
     requested: true, enabled: true, reason: null, status: vecStatus(),
+  }))
+  // 重排后：失败项归零、回到待索引（真实后端就是这个结果）
+  vi.mocked(retryFailedVectors).mockImplementation(async () => ({
+    requeued: vector.docs.failed, enabled: true, reason: null,
+    status: vecStatus({ docs: { ...vector.docs, pending: vector.docs.pending + vector.docs.failed, failed: 0 } }),
   }))
 
   const view = render(<SearchIndexCard />)
@@ -277,5 +283,31 @@ describe('SearchIndexCard — 建索引时机两档 + 攒批阈值', () => {
     const off = await renderWith(vecStatus({ enabled: false }), RELEASE_CAPS, TRIGGER_CAPS)
     const btn = off.container.querySelector<HTMLButtonElement>('[data-vector-sync] button')!
     expect(btn.disabled).toBe(true)
+  })
+
+  it('失败项：「重试失败项」只在有失败时出现，点了调 retryFailedVectors', async () => {
+    // 无失败项 → 不渲染。这条按钮是「有需要才出现」的出口，常驻只是噪音
+    // （且它旁边的「待索引 N 篇」已经承担了常态进度提示）。
+    const clean = await renderWith(vecStatus(), RELEASE_CAPS, TRIGGER_CAPS)
+    expect(clean.container.querySelector('[data-vector-retry]')).toBeNull()
+
+    const { container } = await renderWith(
+      vecStatus({ docs: { total: 5, ok: 3, pending: 0, failed: 2 } }),
+      RELEASE_CAPS, TRIGGER_CAPS,
+    )
+    const btn = container.querySelector<HTMLButtonElement>('[data-vector-retry]')!
+    // 数量就在按钮上：用户不必再回上面那行状态里数
+    expect(btn.textContent).toContain('2')
+    fireEvent.click(btn)
+    await vi.waitFor(() => expect(retryFailedVectors).toHaveBeenCalledTimes(1))
+    // 动作返回的新状态就地生效 → 没有失败项了，按钮消失
+    await vi.waitFor(() => expect(container.querySelector('[data-vector-retry]')).toBeNull())
+
+    // 语义检索没开启时后端会 400 `VECTOR_DISABLED` —— 直接禁用，别让用户撞墙。
+    const off = await renderWith(
+      vecStatus({ enabled: false, docs: { total: 5, ok: 3, pending: 0, failed: 2 } }),
+      RELEASE_CAPS, TRIGGER_CAPS,
+    )
+    expect(off.container.querySelector<HTMLButtonElement>('[data-vector-retry]')!.disabled).toBe(true)
   })
 })
