@@ -6,7 +6,72 @@
 
 ---
 
-## 2026-10-27 — 「重试失败项」：给已达上限的失败篇一条自助出口（0.5.19 内续）
+## 2026-10-27 — 插件管理端点补来源守卫（0.5.20 内续）
+
+**起因**：打包验收时顺手审了一遍 `routers/plugins.py`，发现**六个写端点一个都没过
+`ensure_trusted_request`** —— 而它们是全应用副作用最大的一组：
+`POST /plugins/install` 往 `~/.limo/plugins/` 解压任意 zip（重启后那份 `.py` 被 `exec_module` 执行）、
+`install-deps` 在插件目录里建 venv 并 pip install、`DELETE` 直接删目录、`enable/disable/config`
+改启动行为。
+
+### 为什么这条链真的能被跨站触发
+
+CORS 只拦跨站**读响应**，不拦请求**发出**（见 `app/core/origin.py` 模块文档）。而下面两种形态
+属于**简单请求**、不触发 preflight、浏览器直接发：
+
+- `POST /plugins/{name}/enable`、`/disable`、`/install-deps` —— **无 body、无自定义头**
+- `POST /plugins/install` —— `multipart/form-data`（表单上传也是简单请求）
+
+于是任意一个恶意页面（或 `file://` 打开的一份 HTML）只要知道客户端在 7413 上，
+就能推动「装一个插件 → 重启后任意代码执行」的完整链条，**用户什么都不会看到**。
+这与 2026-10-20 给 `/api/search/reindex` 补守卫是**同一类判据**：有副作用的端点，
+守卫是主防线而非纵深防御。
+
+### 改了什么
+
+六个写端点各加 `request: Request` + 函数体**首行** `ensure_trusted_request(request)`。
+`GET /plugins`（只读）不加 —— 它不改任何状态，加了只会让 `curl` 排障多一步。
+
+⚠️ **位置在 `_require_plugin(name)` 之前**是刻意的：先判来源再查存在性，攻击者拿不到
+「这个插件名存不存在」的探测信号。
+
+### 影响面
+
+前端零改动 —— `apiFetch` 对**每个**请求都带 `X-LiMo-Client: 1`（`api/core.ts::CLIENT_HEADERS`），
+而它是 `is_trusted_request` 的第一判据。开发模式（Vite，`Origin: http://localhost:5173`）
+与 Tauri（`tauri.localhost`）都在白名单里。
+
+### 测试
+
+新增 `backend/tests/test_plugins_guard.py`（9 例）：六个端点参数化断言陌生 Origin → 403
+`UNTRUSTED_ORIGIN`；一条钉**顺序**（evil origin + 不存在的插件名 → 403 而非 `PLUGIN_NOT_FOUND`）；
+两条**反向对照**（带 `X-LiMo-Client` / 带 `localhost` Origin → 不被拦，防「写成一律 403 也全绿」）。
+对照实验实测：删掉 `install-deps` 那一行 → 正好那一条红、其余 8 绿；把 `enable` 的守卫挪到
+`_require_plugin` 之后 → `test_守卫排在存在性校验之前` 红。
+
+### ⚠️ 同批审计出的、**本轮刻意不修**的一条（留给下一轮）
+
+按 `bash` 统计（`grep -cE '^@router\.(post|put|delete|patch)'` vs `grep -c ensure_trusted_request`），
+其余路由的写端点**同样没有来源守卫**：`model.py` 14 / `conversations.py` 7 / `ingest.py` 6 /
+`export.py` 4 / `folders.py` 4 / `chat.py` · `classify.py` · `config.py` · `epub.py` · `synthesis.py` 各 2 /
+`markdown_edit.py` · `process.py` · `references.py` · `generate.py` 各 1（`generate` 的两处守卫是
+流式 GET 用的）。**为什么本轮只修插件**：
+
+- 危害差一个量级 —— 插件链的终点是 `exec_module`（任意代码执行），其余最坏是改配置 / 删文档；
+- 覆盖面差在**简单请求**这一条缝上：`PUT` / `DELETE` / `application/json` 的 `POST` 都会触发
+  preflight，被 CORS 白名单挡下；真正能裸发的只有「`POST` + 无 body / 表单 body」的形态
+  （插件那 4 个正好都在这一类）；
+- 正确的修法大概率**不是逐个端点加两行**，而是一条 ASGI 中间件（`method not in GET/HEAD/OPTIONS`
+  + `path.startswith("/api/")` → `is_trusted_request`），一处实现不可能漏 —— 但那要单独评估
+  SSE / 导出下载 / CLI 无 Origin 三类路径，不该夹在打包中途做。
+
+⚠️ **DNS rebinding 是这套守卫防不住的残余风险**（攻击者让页面占住 `evil.com:7413`，rebinding 后
+同源、无 `Origin` 头 → 三条判据全放行）。正解是校验 `Host` 头必须是 `127.0.0.1` / `localhost` /
+`tauri.localhost`，同样待单独评估（WebView2 的实际 Host 形态需实测）。两条一并记进下一轮议题。
+
+---
+
+## 2026-10-27 — 「重试失败项」：给已达上限的失败篇一条自助出口（0.5.20 内续）
 
 **起因**：上一轮把触发方式做成两档时，那条已知边界是**明确记下来的** ——
 `fail_count >= MAX_FAIL` 的篇在**任何档位、点任何按钮**都不会再被尝试一次，设置页会长期显示
@@ -73,7 +138,7 @@ UPDATE vec_state SET content_hash = NULL, status = 'pending',
 
 ---
 
-## 2026-10-27 — 索引触发方式可配：攒批 / 手动 + 「立即建立索引」（0.5.19 内续）
+## 2026-10-27 — 索引触发方式可配：攒批 / 手动 + 「立即建立索引」（0.5.20 内续）
 
 **起因**：向量端到端验证跑通后，汇报里那句「worker 是 60 秒轮询，导入新文档后最多等一分钟才建索引」
 引出了用户的直接要求 ——「**自动的话应该看累积到多少程度，比如每 100 篇重建一次；手动的话就是
@@ -166,7 +231,7 @@ UPDATE vec_state SET content_hash = NULL, status = 'pending',
 
 ---
 
-## 2026-10-27 — 插件系统审查修复：编码、锁超时、钩子成对（0.5.19 内续）
+## 2026-10-27 — 插件系统审查修复：编码、锁超时、钩子成对（0.5.20 内续）
 
 **起因**：向量化插件落地后做了一轮代码质量与漏洞审查，两条 P1 都是**静默类**——
 一条不报错地把乱码文本送进编码器，一条把整个后端卡住三分钟。用户拍板全修。
@@ -237,7 +302,7 @@ UPDATE vec_state SET content_hash = NULL, status = 'pending',
 
 ---
 
-## 2026-10-27 — 向量化插件：`EmbeddingPlugin` + 常驻子进程（0.5.19 内续）
+## 2026-10-27 — 向量化插件：`EmbeddingPlugin` + 常驻子进程（0.5.20 内续）
 
 **起因**：打包版的本地向量检索一直不可用 —— 内置的 `local-bge-small` 依赖
 `onnxruntime` / `tokenizers`，而冻结的 `LiMoBackend.exe` **没有 pip**，用户补不了。

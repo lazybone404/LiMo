@@ -44,6 +44,12 @@
 
 门控全类别统一（doc/ocr/asr/embedding 引擎不特殊）。进程内 import = 等同主程序权限，`trusted` 是唯一防线。
 
+⚠️ **防线不止 `trusted` 一层**：`/api/plugins/*` 的**六个写端点**（install / enable / disable /
+delete / install-deps / config）都过 `ensure_trusted_request` 来源守卫（2026-10-27 补，此前一个都没过）。
+不加的话，任意恶意页面用**跨站简单请求**（无 body 的 POST、`multipart/form-data` 上传 —— 都不触发
+preflight）就能推着客户端「装插件 → 重启后任意代码执行」，而 CORS 只拦读响应、拦不住请求发出。
+`GET /plugins` 只读，刻意不加。
+
 **进程内的两条硬边界**（2026-10-27 明确）：
 
 - **依赖必须在主环境**：进程内插件没有独立 venv，`requirements.txt` 不参与「一键安装」——

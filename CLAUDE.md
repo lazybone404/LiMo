@@ -861,7 +861,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **敏感信息脱敏**：LLM Key / Cookie / Tavily Key 在 `GET /api/config` 中统一脱敏返回（`mask_sensitive`），保存时 `merge_sensitive` 防 `***` 覆盖真实值
 - **SSRF 防护**：`url_security.validate_url()` — 内网/保留 IP 段黑名单（**v4 + v6 双栈**，`::ffff:a.b.c.d` 按内嵌 v4 判）+ DNS 解析二次校验 + 协议白名单。⚠️ WebpageAdapter 曾遗漏（已修复），新增管道必须加。⚠️ **重定向必须逐跳校验**：`safe_get` / `safe_get_httpx`（`allow_redirects=False` + 每跳 `validate_url`），`requests` 默认自动跟随会让公网 URL 一跳 302 到 `127.0.0.1`
 - **导出 HTML 的 CSP + nonce**（2026-10-20）：`export.py::_csp_meta` 注入 `script-src 'nonce-<每次随机>'`，我们自己的 `<script>` 全带 nonce，**正文里的 `<script>` / `on*=` 一律不执行**。⚠️ 为什么必须：导出 HTML 是「模型/用户内容原样渲染」，而 Tauri 的 PDF 路径在**同源**上下文里导航到它 —— 一段脚本就能读全库、调写接口。⚠️ **HTML 内容一个字都不改**（保「预览所见 = 导出所得」），`style-src 'unsafe-inline'` 必需
-- **有副作用的 GET 的来源守卫**（2026-10-20）：`core/origin.py`，`X-LiMo-Client` 头（主判据 —— 跨站 `<img>`/`<script>` 是 no-cors、带不了自定义头）+ Origin/Referer 白名单兜底。CORS 只拦跨站**读响应**，不拦请求发出。⚠️ 白名单正则与 `main.py` 的 CORS **同一份**
+- **有副作用的 GET 的来源守卫**（2026-10-20）：`core/origin.py`，`X-LiMo-Client` 头（主判据 —— 跨站 `<img>`/`<script>` 是 no-cors、带不了自定义头）+ Origin/Referer 白名单兜底。CORS 只拦跨站**读响应**，不拦请求发出。⚠️ 白名单正则与 `main.py` 的 CORS **同一份**。**2026-10-27 起覆盖 `/api/plugins/*` 六个写端点**（install / enable / disable / delete / install-deps / config —— 此前一个都没过，而 install 的载荷是「重启后 `exec_module` 执行的任意 `.py`」；`GET /plugins` 只读，刻意不加）。⚠️ **新增任何写端点先看这里**
 - **日志值必须截断（含容器）**：`core/logging.py::_val` 字符串 80 / 容器 300。⚠️ 容器曾经不截断 ⇒ `log.info("Tool", args={...})` 把整段工具入参打进环形缓冲，`GET /api/logs` 交给前端 LogPanel，用户贴日志时顺带外泄会话内容
 - **路径遍历防护**：`_safe_filename()` 取文件名末段 + `resolve().relative_to()` 双重校验，图片/文件服务均防护
 - **Markdown XSS 防护**：前端 `<a>` 组件拒绝 `javascript:`/`data:` 协议，ReactMarkdown 默认不渲染原始 HTML

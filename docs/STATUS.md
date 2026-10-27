@@ -3,7 +3,7 @@
 > 纯事实清单。设计决策见 [CLAUDE.md](../CLAUDE.md)，分层架构见 [architecture.md](architecture.md)。
 > 修改历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-**更新**: 2026-10-27 | **版本**: 0.5.19
+**更新**: 2026-10-27 | **版本**: 0.5.20
 
 ---
 
@@ -14,7 +14,7 @@
 | 后端 Python 文件 | 136（11 子目录：adapters 8 / agent 7 / core 33 / downloaders 1 / engines 18 / generation 18 / llm 4 / routers 20 / storage 4 / utils 6 / services 17）+ `limo_cli/` 9（CLI，独立于 `app/`；口径 = `find app -name '*.py'`，不含 `main.py`） |
 | 前端 TS/TSX/CSS 文件 | 243（237 ts/tsx + 6 css；业务 154，测试 82，`setup.ts` 1） |
 | 前端测试文件 | 83（82 测试文件 + `setup.ts`；1290 个测试用例，vitest 全绿） |
-| 后端测试文件 | 94（93 个 `test_*.py` + `conftest.py` 共享 fixture；2026-10 新增 `test_logging_val` /  `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_classify_paths` / `test_folder_tree` / `test_export_md_images` / `test_export_tab_applicability` / `test_followup` / `test_artifact_followup` / `test_web_search_reference` / `test_chat_web_search` / `test_chat_followups` / `test_export_theme` / `test_chat_answer_mode` / `test_embedding_engine` / `test_embedding_local` / `test_vector_index` / `test_vector_store` / `test_vector_worker` / `test_vector_search` / `test_search_api` / `test_vector_runtime` / `test_deps` / `test_plugin_examples` / **`test_plugin_embedding`（27 条：`EmbeddingPlugin` 契约 / 常驻子进程 IPC / 进程生命周期 / 协议违例四档 / 配置传递 / 自检 / 静态解析与分派，2026-10-27）**） |
+| 后端测试文件 | 95（94 个 `test_*.py` + `conftest.py` 共享 fixture；2026-10 新增 `test_logging_val` /  `test_store_version_layout` / `test_store_legacy_migration` / `test_export_by_version` / `test_proxy_exemption` / `test_youtube_subtitle` / `test_markdown_sections` / `test_export_cards` / `test_artifact_blocks` / `test_export_blocks` / `test_block_prompt` / `test_classify` / `test_classify_paths` / `test_folder_tree` / `test_export_md_images` / `test_export_tab_applicability` / `test_followup` / `test_artifact_followup` / `test_web_search_reference` / `test_chat_web_search` / `test_chat_followups` / `test_export_theme` / `test_chat_answer_mode` / `test_embedding_engine` / `test_embedding_local` / `test_vector_index` / `test_vector_store` / `test_vector_worker` / `test_vector_search` / `test_search_api` / `test_vector_runtime` / `test_deps` / `test_plugin_examples` / **`test_plugin_embedding`（27 条：`EmbeddingPlugin` 契约 / 常驻子进程 IPC / 进程生命周期 / 协议违例四档 / 配置传递 / 自检 / 静态解析与分派，2026-10-27）** / **`test_plugins_guard`（9 条：六个写端点的来源守卫 + 「守卫早于存在性校验」顺序判据 + 两条反向对照，2026-10-27）**） |
 | API 路由模块 | 19 业务模块（+ `__init__.py`，共 20 个 .py） |
 | API 端点 | 99（`@router.` 装饰器计数；含 `/api/cli/*` 七端点、语义检索的 `/search/vector`、`/search/vector/sync`（2026-10-27 立即建索引）、`/search/vector/retry-failed`（同日重试失败项）与 `/search/vector/rebuild`） |
 | 适配器 | 5 |

@@ -15,11 +15,12 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 
 from app.core.dependencies import get_config as get_config_dep, get_config_lock
 from app.core.config_io import save_config
 from app.core.errors import AppError
+from app.core.origin import ensure_trusted_request
 from app.engines.plugin_loader import (
     PLUGIN_REGISTRY,
     enumerate_plugins,
@@ -52,7 +53,7 @@ async def list_plugins():
 
 
 @router.post("/plugins/install")
-async def install_plugin_zip(file: UploadFile = File(...),
+async def install_plugin_zip(request: Request, file: UploadFile = File(...),
                              cfg=Depends(get_config_dep)):
     """从 zip 插件包安装插件 — 解压到 ~/.limo/plugins/，重启后端后生效。
 
@@ -60,6 +61,7 @@ async def install_plugin_zip(file: UploadFile = File(...),
     插件声明 .py 是用户主动选择的第三方代码（固有风险自担），但解压路径安全由本端保证。
     返回 hasRequirements 供前端提示「重启后一键安装依赖」。
     """
+    ensure_trusted_request(request)
     fname = (file.filename or "").lower()
     if not fname.endswith(".zip"):
         raise AppError("PLUGIN_ZIP_REQUIRED", "请上传 .zip 插件包（从插件仓库 Release 下载）", recoverable=True)
@@ -130,8 +132,9 @@ async def install_plugin_zip(file: UploadFile = File(...),
 
 
 @router.post("/plugins/{name}/enable")
-async def enable_plugin(name: str, cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
+async def enable_plugin(request: Request, name: str, cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
     """启用插件 — 写 plugin_states + 同步内存态，重启后引擎注册生效"""
+    ensure_trusted_request(request)
     _require_plugin(name)
     with cfg_lock:
         cfg.setdefault("plugin_states", {})[name] = True
@@ -141,8 +144,9 @@ async def enable_plugin(name: str, cfg=Depends(get_config_dep), cfg_lock=Depends
 
 
 @router.post("/plugins/{name}/disable")
-async def disable_plugin(name: str, cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
+async def disable_plugin(request: Request, name: str, cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
     """禁用插件 — 写 plugin_states + 同步内存态，重启后引擎注销生效"""
+    ensure_trusted_request(request)
     _require_plugin(name)
     with cfg_lock:
         cfg.setdefault("plugin_states", {})[name] = False
@@ -152,12 +156,13 @@ async def disable_plugin(name: str, cfg=Depends(get_config_dep), cfg_lock=Depend
 
 
 @router.delete("/plugins/{name}")
-async def delete_plugin(name: str, cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
+async def delete_plugin(request: Request, name: str, cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
     """卸载插件 — 删 ~/.limo/plugins/ 下声明文件 + 同名目录（含 venv/模型）
 
     路径穿越防护在 uninstall_plugin（resolve 后校验在插件目录内）。
     Windows 删除运行中 venv 可能占用失败 → 给前端可读反馈。
     """
+    ensure_trusted_request(request)
     _require_plugin(name)
     try:
         removed = uninstall_plugin(name, cfg)
@@ -180,18 +185,19 @@ async def delete_plugin(name: str, cfg=Depends(get_config_dep), cfg_lock=Depends
 
 
 @router.post("/plugins/{name}/install-deps")
-async def install_deps(name: str):
+async def install_deps(request: Request, name: str):
     """一键安装插件依赖 — 建 venv + pip install（国内镜像源）。
 
     耗时操作放线程池（模式 15）；失败显式化：返回 status=error/no-python + 原因/引导。
     打包版无系统 Python → no-python 降级引导（不静默失败）。
     """
+    ensure_trusted_request(request)
     _require_plugin(name)
     return await asyncio.to_thread(install_plugin_deps, name)
 
 
 @router.put("/plugins/{name}/config")
-async def save_plugin_config(name: str, data: dict[str, Any],
+async def save_plugin_config(request: Request, name: str, data: dict[str, Any],
                              cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
     """保存插件配置 — 写 plugin_configs 落盘 + set_plugin_config 内存即时生效。
 
@@ -202,6 +208,7 @@ async def save_plugin_config(name: str, data: dict[str, Any],
     里只放路径 / 模型名 / 枚举这类非敏感值；需要凭据的走环境变量或系统凭据管理器。
     见 `docs/plugins.md`「插件配置怎么进子进程」。
     """
+    ensure_trusted_request(request)
     _require_plugin(name)
     with cfg_lock:
         cfg.setdefault("plugin_configs", {})[name] = dict(data)
