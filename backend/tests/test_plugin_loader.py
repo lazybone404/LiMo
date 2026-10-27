@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.core.registry import EngineRegistry
+from app.core.errors import FatalError
 from app.engines.plugin_loader import (
     _parse_stdout,
     _dispatch_result,
@@ -16,6 +17,7 @@ from app.engines.plugin_loader import (
     _PluginEngineAdapter,
     init_plugins,
     enumerate_plugins,
+    install_plugin_deps,
     set_plugin_config,
     set_plugin_enabled,
     EnginePlugin,
@@ -512,3 +514,85 @@ def test_对照实验_官方模板的子目录与_command_一致():
         assert (sub / "engine.py").is_file(), f"{decl} 的子目录缺 engine.py：{sub}"
         assert (sub / "requirements.txt").is_file(), \
             f"{decl} 的子目录缺 requirements.txt（一键安装会返回 no-requirements）"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 进程内（trusted）执行边界 —— 第三方代码跑在主进程里
+# ══════════════════════════════════════════════════════════════════════
+#
+# 进程外插件崩了，只是一个子进程退出；进程内插件崩了，异常会顺着调用链一路
+# 冒到 adapter 层，而那里只留得下一句 `str(e)[:100]`（document.py 的兜底）——
+# traceback 全丢，用户读到的是半句话。边界放在 adapter 才能两头都保住：
+# 日志留住原始 traceback，用户拿到带插件名的原因。
+
+class _BoomTrusted(EnginePlugin):
+    name = "test-boom"
+    category = "doc"
+    trusted = True
+
+    def process(self, file_path, config):
+        raise ValueError("插件内部炸了")
+
+
+class _BadReturnTrusted(EnginePlugin):
+    name = "test-bad-return"
+    category = "doc"
+    trusted = True
+
+    def process(self, file_path, config):
+        return 123        # 契约要求 str 或 dict
+
+
+def test_inproc_异常带出插件名与原始原因(tmp_path):
+    adapter = _PluginEngineAdapter(_BoomTrusted(), tmp_path)
+    with pytest.raises(FatalError) as ei:
+        adapter.execute("x.pdf")
+    msg = str(ei.value)
+    assert "test-boom" in msg, "用户要知道是哪个插件"
+    assert "ValueError" in msg, "类型名是排查的起点"
+    assert "插件内部炸了" in msg, "原始原因不能丢"
+
+
+def test_inproc_返回类型非法时显式报错(tmp_path):
+    """插件返回 `None` 曾被包成 `{"text": None}` → 上层报「返回空结果」。
+
+    那个说法把「插件坏了」讲成了「这份文件没内容」，而且零报错地放行到
+    后续链路。这条钉住「错在插件」必须当场说清，而不是等到上层猜。
+    """
+    adapter = _PluginEngineAdapter(_BadReturnTrusted(), tmp_path)
+    with pytest.raises(FatalError) as ei:
+        adapter.execute("x.pdf")
+    msg = str(ei.value)
+    assert "test-bad-return" in msg
+    assert "int" in msg, "要说出实际类型，否则插件作者不知道该返回什么"
+
+
+def test_进程内插件不提供一键安装(tmp_path, monkeypatch):
+    """`hasRequirements` 的语义是「能不能一键安装」，不是「目录里有没有那个文件」。
+
+    ⚠️ 直接答「有没有 requirements.txt」会让进程内插件也亮起安装按钮，而依赖
+    会被装进一个它**根本不加载**的 venv —— 界面说成功、插件仍不可用、零报错。
+    """
+    (tmp_path / "requirements.txt").write_text("somepkg==1.0\n", encoding="utf-8")
+    adapter = _PluginEngineAdapter(_TrustedPlugin(), tmp_path)
+    monkeypatch.setitem(PLUGIN_REGISTRY, "test-trusted",
+                        {"adapter": adapter, "enabled": True, "loaded": True})
+
+    it = {p["name"]: p for p in enumerate_plugins()}["test-trusted"]
+    assert it["hasRequirements"] is False
+
+
+def test_install_deps_拒绝进程内插件(tmp_path, monkeypatch):
+    """入口严：前端门控之外，接口自己也要拒绝。
+
+    没有这一条，curl 一下就能在插件目录里堆出一个永远不会被加载的 .venv，
+    而界面上什么都不显示 —— 装的人以为成功了。
+    """
+    (tmp_path / "requirements.txt").write_text("somepkg==1.0\n", encoding="utf-8")
+    adapter = _PluginEngineAdapter(_TrustedPlugin(), tmp_path)
+    monkeypatch.setitem(PLUGIN_REGISTRY, "test-trusted",
+                        {"adapter": adapter, "enabled": True, "loaded": True})
+
+    res = install_plugin_deps("test-trusted")
+    assert res["status"] == "inproc"
+    assert not (tmp_path / ".venv").exists(), "拒绝之后不能留下任何 venv 目录"

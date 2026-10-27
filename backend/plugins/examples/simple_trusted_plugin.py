@@ -4,6 +4,15 @@ trusted=true 是显式信任声明（**纯技术含义**）：允许进程内 im
 适用：轻量逻辑、无重依赖的自研代码（简单格式转换、纯文本处理）。
 进程内 import = 等同主程序权限，崩溃/依赖风险由插件作者自担。
 
+⚠️ 依赖装在哪：进程内插件**没有独立 venv**，`requirements.txt` 不参与「一键安装」
+（接口对进程内返回 `status="inproc"`，一个目录都不建 —— 装进 venv 也没人从那里加载）。
+源码运行时用后端自身的 Python 装；**打包版主环境是 exe，装不了** ⇒ 自带依赖的插件
+请改用进程外模式（`command` + `requirements.txt`）。
+
+⚠️ 异常与返回值：`process()` 抛出的任何异常都由加载器包成 `FatalError`（带插件名，
+原始 traceback 进日志）；返回值必须是 `str` 或 `dict`，返回别的类型会当场报错
+（不会被当成「这份文件没内容」放行到后续链路）。
+
 照抄即用：拷贝本文件到 ~/.limo/plugins/，重启 LiMo 即生效。
 """
 from app.engines.plugin_loader import EnginePlugin

@@ -224,9 +224,15 @@ class EmbeddingEngine(Protocol):
 设置页要在「没配 Key」时也能列出并显示「未配置」。搬到 `__init__` 会被那里 `except Exception`
 吞掉 → 引擎整个消失，用户看不到「有这个东西、只是没配」。
 
-**本地模型走插件口子**（`EnginePlugin v1`）：bge-m3 / ollama 等 1–2GB 依赖、有 CPU/GPU 差异 → 插件化。
-索引时机 / 触发方式 / 使用时机（何时建、何时用、增量还是全量）**已设计，见 §6.1**；
-本阶段只保证引擎接口能容纳它，不实现加载路径。
+**本地模型走插件口子**（`EnginePlugin v1` 的 embedding 分支）：bge-m3 / ollama 等 1–2GB 依赖、
+有 CPU/GPU 差异 → 插件化。索引时机 / 触发方式 / 使用时机（何时建、何时用、增量还是全量）
+**已设计，见 §6.1**。
+
+⚠️ **2026-10-27 状态已变**：插件加载路径**已实现** —— `plugin_loader.EmbeddingPlugin` 基类 +
+`_PluginEmbeddingAdapter`（进程外常驻子进程），参考实现
+[local_embedding_plugin.py](../backend/plugins/examples/local_embedding_plugin.py)。
+内置的 `local-bge-small` 与插件版**并存**（同名覆盖，§6.1（6）），契约见
+[plugins.md](plugins.md#向量化插件embeddingplugin-v1)。
 
 ### 3.2 向量存储
 
@@ -748,7 +754,7 @@ test_reconcile_does_not_reset_fail_count` 钉住这条。
 | **1** | `EmbeddingEngine` 接口 + `dashscope-embedding` 内置 + 引擎注册 / capabilities 下发 | ✅ **已落地（2026-10-26）**，见 §3.1 末表：`test_embedding_engine.py` 11 条（接口契约 / L2 归一化 / 空输入不发起调用 / 批 ≤10 / 按 index 重排 / 条数·维度不符显式报错 / 注册可见）。⚠️ 未接 `engine_models` / `engine_bindings`，也没有任何查询路径调用它 —— 等于不存在，零行为变更 |
 | **2** | 向量存储 + 分块 + 批量 embed + 缓存 + 待办表与后台补索引 | **第 1 步已落地（2026-10-26）**：算子搬到 `core/vector_index.py`，产品与评测同一份。**第 2 步已落地（同日）**：三表 + 写点打 `pending`（见 §3.2 末小节，`test_vector_store.py` 17 条）。**第 3 步已落地（同日）**：后台 worker（分块 → 块级 hash 增量 → 编码 → 每篇 checkpoint → 失败上限 → 对账，见 §4.7，`test_vector_worker.py` 18 条）。⚠️ 仍**待做**：分块边界单测（`chunk_flat` 的段落累积 / 超长段硬切） |
 | **3** | 查询融合（RRF）+ 开关 + 状态可见 | ✅ **已落地（2026-10-26）**，见 §3.3 末 + §4.3 细化 + §4.8：算子与评测**同一份**（`core/vector_index.py`），`test_vector_search.py` 20 条（融合排序 / 五档退化且零编码 / 四元组只读 / HTTP 端点形状）+ 前端 `docLibrarySearch` 语义提示 2 条 + `docLibraryLayout` 的 503 强制刷新守卫 1 条。⚠️ **待做**（**2026-10-26 用户决定本轮先不做**）：真实库端到端实测（131 篇 ≈ 2 元 / 3 分钟，用户手动开启后观测）与 `eval_search.py --vector` 的产品侧同轮对照 |
-| **4** | 本地引擎（原计划「本地插件口子」） | ✅ **已落地（2026-10-26）**，见 §6.1 末：`engines/embedding_local.py`（`local-bge-small`，bge-small-zh-v1.5 ONNX int8，512 维），进程内 + 惰性重依赖；设置页可切换引擎（`POST /api/search/vector` 的 `model`）。⚠️ **与本节原设计的一处偏离**：不做进程外 `EnginePlugin`，理由见 §6.1 末「为什么不是插件目录」。`test_embedding_local.py` 12 条 / `test_search_api.py` +4 / `test_vector_worker.py` +3 / `test_embedding_engine.py` +1 |
+| **4** | 本地引擎（原计划「本地插件口子」） | ✅ **已落地（2026-10-26，2026-10-27 补插件版）**，见 §6.1（6）：内置 `engines/embedding_local.py`（`local-bge-small`，bge-small-zh-v1.5 ONNX int8，512 维，进程内 + 惰性重依赖）；**外加进程外插件版** `local_embedding_plugin.py`（`EmbeddingPlugin` + 常驻子进程），同名覆盖内置、`model_id` 与维度一致 ⇒ 向量库不必重建。设置页可切换引擎（`POST /api/search/vector` 的 `model`）。`test_embedding_local.py` 12 条 / `test_search_api.py` +4 / `test_vector_worker.py` +3 / `test_embedding_engine.py` +1 / `test_plugin_embedding.py` 27 条 |
 
 ⚠️ **每阶段独立可停**：阶段 1–2 落地后即使不做融合，也不影响现有字面检索。
 阶段 3 的开关默认关 ⇒ 未开启的用户行为逐字节零回归。
@@ -813,7 +819,7 @@ test_reconcile_does_not_reset_fail_count` 钉住这条。
 
 ⚠️ **但不要因此省掉 batch**：那是吞吐问题不是成本问题，逐条编码比 batch 慢 3–5 倍。
 
-#### （4）进程外带来的两个后果
+#### （4）进程外带来的两个后果 —— **2026-10-27 已实现**（`_PluginEmbeddingAdapter`）
 
 `EnginePlugin v1` 默认进程外，对 embedding 有三处影响：
 
@@ -821,6 +827,12 @@ test_reconcile_does_not_reset_fail_count` 钉住这条。
 - ⚠️ **代价**：每次编码一次 IPC（batch 64 块 ≈ 13 KB 文本 + 130 KB 向量，可接受）
 - ⚠️ **必须常驻**：插件进程生命周期 = 应用生命周期，**不能每次编码重载模型**（3–5 秒/次）。
   探测到僵死 → 重启一次；连续崩 3 次 → 停用 + 显式提示（同 §4.5 的失败上限语义）
+
+落地形态是**常驻子进程 + NDJSON over stdio**（不是每次 `Popen`，也不是一次一进程）：
+启动握手 `{"ready":…,"dimension":…}` → 每次 `{"id","texts"}` / `{"id","vectors"}` 一问一答。
+`id` 错位或非 JSON 行视为管道损坏（杀进程重来），单条 `error` 只报错不杀进程 ——
+这两类失败的**下一步动作不同**。协议表与三条硬要求（`-u`、flush、stdout 只写协议行）见
+[plugins.md](plugins.md#常驻子进程协议进程外模式)。
 
 **查询侧的分工**：IPC 只用来拿 **query 向量**，余弦由主进程在 sqlite 读出的矩阵上算。
 不把整个向量库搬进插件进程 —— 那会让每次查询都传几十 MB。
@@ -830,20 +842,29 @@ test_reconcile_does_not_reset_fail_count` 钉住这条。
 `onnxruntime` / `tokenizers` **继续不进 `pyproject.toml`**（现有纪律，见 §七），
 装在插件自己的 venv 里。核心只认 `EmbeddingEngine` 协议，不知道对面是云端还是 ONNX。
 
-#### （6）已落地（2026-10-26）：本地引擎，**不是**插件目录
+#### （6）落地形态：内置引擎（2026-10-26）+ 进程外插件版（2026-10-27）
 
-上面（1）–（5）写的是「进程外插件」的设想。落地时改成了**进程内引擎 + 惰性重依赖**，
-三条理由都不在图省事：
+上面（1）–（5）写的是「进程外插件」的设想。**第一版落成了「进程内引擎 + 惰性重依赖」**，
+当时给了三条理由；2026-10-27 补了 `EmbeddingPlugin` 基类与 `local_embedding` 插件模板后，
+前两条不再是拦路石 —— 现在是**内置与插件并存**（插件同名覆盖内置，见 §7）。
 
-1. **签名形状不对**：`EnginePlugin.execute(file_path, **kwargs)` 是「一个文件 → 一段文本」，
-   embedding 是「一组文本 → 一组向量」，连「文件」概念都没有；
-2. **（2）里选的「worker 预热」那条路在进程外救不了查询侧**：预热只解决 worker 自己，
-   而 `vector_search.fuse()` 的 query 编码是**另一条路**，每次都要跨进程；
-   `QUERY_TIMEOUT = 3.0` 装不下一次 `Popen` + 模型加载；
-3. **口子原则的实质已满足**：判据是「重依赖不进核心打包」而不是「文件放在哪个目录」——
-   `onnxruntime` / `tokenizers` 不在 `pyproject.toml`（模块导入零重依赖，构造 `Embedder`
-   时才惰性 import，缺失抛 `MissingDependency` —— **补法文案由 `_fix_hint` 唯一一份给出**），
-   模型文件在 `~/.limo/models/` 且不随包分发。
+| 当时那条理由 | 现在 |
+|---|---|
+| ① **签名形状不对**：`EnginePlugin.execute(file_path)` 是「一个文件 → 一段文本」，装不下「一组文本 → 一组向量」 | **已解决**：`EmbeddingPlugin` 是 `EnginePlugin` 的**子类**（扫描 / 门控 / 启用 / 卸载 / 一键装依赖全部复用），只把入口换成 `embed(texts)` |
+| ② **进程外救不了查询侧**：预热只解决 worker，而 `fuse()` 的 query 编码每次都要跨进程，`QUERY_TIMEOUT = 3.0` 装不下一次 `Popen` + 模型加载 | **已解决**：进程外 embedding 是**常驻子进程**（NDJSON over stdio 一问一答），不再是每次 `Popen`。查询侧只多一次管道往返（毫秒级） |
+| ③ **口子原则的实质已满足**：`onnxruntime` / `tokenizers` 不进 `pyproject.toml`，模型不随包 | **仍成立，但只覆盖源码版**：打包版的主环境是冻结的 exe，用户补不了这两个包 —— 所以要的不是「重依赖不进包」，而是「**能让用户自己补**」，这一条只有插件能给 |
+
+**于是两者分工**：
+
+- **源码版**：内置引擎零安装可用（`pip install onnxruntime tokenizers` + 模型文件即可）
+- **打包版**：内置那份缺依赖时，`precheck` 会指两条路 —— 云端，或**装 `local_embedding` 插件**
+  （插件带自己的 venv，依赖装得进去）。装了之后同名覆盖内置，下拉里只剩插件那条，
+  且 `model_id` / 维度 / 模型目录与内置完全一致 ⇒ **向量库不必重建**
+- **内置那份仍然保留**：它不是插件的备份，而是「源码运行的零安装路径」；删掉它等于让
+  每个源码用户先去装插件
+
+插件侧契约（常驻协议、`-u`、`LIMO_PLUGIN_CONFIG`、`requires_modules` 与 `probe_venv` 的分工）
+见 [plugins.md](plugins.md#向量化插件embeddingplugin-v1)。
 
 | 项 | 云端 `dashscope-embedding` | 本地 `local-bge-small` |
 |---|---|---|
@@ -851,7 +872,7 @@ test_reconcile_does_not_reset_fail_count` 钉住这条。
 | 单条输入上限 | 8192 token | **512 token ≈ 400–500 中文字** |
 | 切块 | `DEFAULT_CHUNK_SIZE = 200` 字 | **同一份**（正好落在本地能力内） |
 | 成本 | 按字数计费 | 0（CPU） |
-| 使用条件 | 只需 API Key | **需自备依赖 + 模型文件；安装版补不了** |
+| 使用条件 | 只需 API Key | **需自备依赖 + 模型文件；源码版可 pip 补，安装版靠插件版** |
 | 代价 | 全库正文外发 | 首次加载 3–5 秒 + CPU 占一段时间 |
 
 ⚠️ **「使用条件」对所有用户可见、不静默**（2026-10-26 用户拍板：不做内置、不做插件，
@@ -860,9 +881,11 @@ test_reconcile_does_not_reset_fail_count` 钉住这条。
 - **源码模式**：镜像源的 `pip install` + 模型文件落点 +「补齐后重启应用生效」——
   最后半句不是客套，`find_spec` 查的是**当前进程**的 `sys.path`，装完不重启就看不见新包，
   界面上会继续显示「缺依赖」，像没装上。
-- **`sys.frozen`（打包版）**：**直说补不了**并给出路（改用云端）。这不是措辞问题 ——
-  `LiMoBackend.exe` 跑在冻结的 Python 里**没有 pip**，用户机器上通常也没有第二个 Python，
-  给一条跑不了的命令比不给更糟（用户会以为是自己操作错了、反复试）。
+- **`sys.frozen`（打包版）**：**直说应用内补不了**并给出路（改用云端，或装本地向量化插件）。
+  这不是措辞问题 —— `LiMoBackend.exe` 跑在冻结的 Python 里**没有 pip**，用户机器上通常也没有
+  第二个 Python，给一条跑不了的命令比不给更糟（用户会以为是自己操作错了、反复试）。
+  ⚠️ **只说云端是不够的**（2026-10-27 修）：那会让人以为离线选项在安装版上不存在，
+  而装一次 `local_embedding` 插件之后本地能力一样有。
 
 设置页一侧，「选中引擎未就绪」的原因**常驻显示**（`SearchIndexCard` 的 `data-vector-requirement`）：
 `vector_enabled=false` 时 `sync_vector_runtime` 的 reason 恒为 `None`，只靠那段用户

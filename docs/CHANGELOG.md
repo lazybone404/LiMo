@@ -6,6 +6,171 @@
 
 ---
 
+## 2026-10-27 — 向量化插件：`EmbeddingPlugin` + 常驻子进程（0.5.19 内续）
+
+**起因**：打包版的本地向量检索一直不可用 —— 内置的 `local-bge-small` 依赖
+`onnxruntime` / `tokenizers`，而冻结的 `LiMoBackend.exe` **没有 pip**，用户补不了。
+设置页那句 precheck 只能指一条路：「改用云端」。用户拍板：**改成进程外插件包**
+（离线能力不该只有源码版有）。
+
+### ① 新基类 `EmbeddingPlugin`（`EnginePlugin` 的子类）
+
+原先「本地模型走插件口子」这条设计**一直是空的**，理由写在 [search-retrieval.md](search-retrieval.md)
+§6.1：`EnginePlugin.execute(file_path)` 是「一个文件 → 一段文本」，装不下「一组文本 → 一组向量」。
+
+新基类只换入口，**扫描 / 门控 / 启用停用 / 卸载 / 一键装依赖全部复用**（`issubclass` 一脉相承）：
+
+```python
+class EmbeddingPlugin(EnginePlugin):
+    category = "embedding"
+    model_id: str = ""      # 四元组身份之一
+    dimension: int = 0      # 不声明会被自检拦下
+    is_local: bool = True
+    requires_modules: tuple[str, ...] = ()   # 交给 adapter 用 probe_venv 查
+    requires_files: tuple[str, ...] = ()
+    def embed(self, texts) -> list[list[float]]: ...
+```
+
+⚠️ 声明文件 `from app.engines.plugin_loader import EmbeddingPlugin` 会把**基类本身**带进模块命名空间，
+而它也是 `EnginePlugin` 子类 ⇒ 原判据 `obj is not EnginePlugin` 拦不住，会被当成插件实例化
+（幽灵条目 `name=""`）。`init_plugins` 改判 `obj not in (EnginePlugin, EmbeddingPlugin)`，
+`test_init_plugins_skips_base_class_import` 钉住。
+
+`_peek_plugin_meta` 同步放宽：识别 `EmbeddingPlugin` 基类名，并**补上继承来的 `category`**
+（否则「禁用即不加载」对这类插件失效、禁用条目还会分错组）。
+
+### ② `_PluginEmbeddingAdapter`：常驻子进程 + NDJSON over stdio
+
+**为什么必须常驻**：模型加载 3–5 秒，而查询侧 `QUERY_TIMEOUT = 3.0` —— 每次搜索现起一个进程
+等于每次搜索都超时。**为什么不是一次一进程**：同上，且每次要重载 22.8MB。
+
+| 时机 | 一行 JSON |
+|---|---|
+| 启动 | `{"ready": true, "model_id": ..., "dimension": N}` / `{"ready": false, "error": ...}` |
+| 请求 | `{"id": N, "texts": [...]}` |
+| 响应 | `{"id": N, "vectors": [[...]]}` / `{"id": N, "error": "..."}` |
+
+**失败分两档，判据是「下一步动作是否相同」**：
+
+- **单条 `error` / 条数不符 / 维度不符** → 抛错但**进程保留**（下一批继续用）
+- **非 JSON 行 / `id` 错位 / 请求超时** → 抛错并**杀进程**（管道状态已不可信；留着只会让每一轮
+  都读到上一条的结果）。子进程被外部杀掉（OOM）时下次调用自动重起。
+
+**两个静默坑各有对策**：
+- `stderr` 必须有**后台 drain 线程** —— Windows 管道约 64KB 写满，子进程卡在写日志上，
+  `ready` 永远读不到，现象是「启动超时」而真因在没人读的那段里（测试用 200KB stderr 灌入钉住）；
+- 声明的 `dimension` / `model_id` 与 `ready` 报告不符时**启动即失败** —— 写进库之后口径不符
+  是**静默的**（检索质量下降，不报错）。
+
+`warmup()` / `release(after_idle)` / `precheck()` 三个可选钩子齐备（**不进 Protocol**，
+消费方 `getattr`），于是 `vector_worker` / `vector_search` / `vector_runtime` **零改动**即可消费插件引擎。
+
+### ③ `plugin_config` 同步给插件实例（同时修好文件引擎插件的同类问题）
+
+`precheck()` 要按用户配置判断（模型目录、ONNX 文件名），而配置此前只存在 adapter 上 ——
+插件自己读到的是类默认值，自检判的是**另一份配置**。
+
+`_PluginEngineAdapter.plugin_config` 改成 **property + setter**：写入时同步给插件实例；
+`EnginePlugin` 基类补类属性兜底（`__slots__` / 只读属性的插件退回默认值，不炸）。
+
+**配置怎么进子进程**：环境变量 `LIMO_PLUGIN_CONFIG`（JSON），在子进程启动时读一次。
+没往 ready 握手行里混配置 —— 那是协议行，混进去等于让「协议」与「配置」互相耦合版本。
+
+### ④ `_resolve_command` 把命令行开关当成了路径
+
+`command = ["…/python.exe", "-u", "server.py"]` 里 `-u` 不是绝对路径 → 被拼成
+`<插件目录>/-u`，Python 报 `can't open file '...\-u'`（读起来像「解释器找不到脚本」）。
+修法是 `-` 开头或绝对路径一律原样保留。这同样会打中带 flag 的文件引擎插件。
+
+### ⑤ 模板：`local_embedding_plugin.py` + `local_embedding/`
+
+- 声明文件：`name = "local-bge-small"` **刻意与内置同名**（用户优先覆盖内置），
+  `model_id` / `dimension` / 默认模型目录与内置**完全一致** ⇒ 装了插件不必重建向量库
+- `server.py`：CLS pooling + L2 归一化 + `enable_cpu_mem_arena=False`（照抄内置 `Embedder`，
+  它是产品与评测共用的唯一一份实现），每行 flush，日志走 stderr
+- `requirements.txt` / `README.md`（安装四步 / 模型来源 / **换权重必须改 `model_id`** / 三个常见故障）
+
+### ⑥ 内置引擎的 precheck 文案补上第二条出路
+
+打包版此前只说「可改用云端向量化引擎」—— 那会让人以为离线选项在安装版上不存在。
+现在给两条：云端，或装本地向量化插件。
+
+**影响范围**：`backend/app/engines/plugin_loader.py`（`EmbeddingPlugin` / `_PluginEmbeddingAdapter` /
+`_peek_plugin_meta` / `init_plugins` / `plugin_config` property / `_resolve_command`）、
+`backend/app/engines/embedding_local.py`（`_fix_hint` 文案）、
+`backend/plugins/examples/`（`local_embedding_plugin.py` + `local_embedding/` 四文件 + README 两处）、
+`backend/tests/test_plugin_embedding.py`（新增 27 条，全绿：契约 / 进程生命周期 / 协议违例 /
+配置传递 / 自检 / 进程内路径 / 静态解析与分派）、`docs/plugins.md`（新增「向量化插件」整节）、
+`docs/search-retrieval.md`（§3.1 状态、§6.1（4）（6）重写、阶段表第 4 行）。
+
+**前端零改动**：`routers/search.py::_embedding_models` 只读 `display_name` / `model_id` /
+`dimension` / `is_local` / `precheck()`，插件 adapter 全部具备。
+
+**未做**：rerank 仍未实现；真实库（131 篇）端到端实测与 `eval_search.py --vector` 产品侧对照
+仍是待办（2026-10-26 用户决定本轮先不做）。
+
+---
+
+## 2026-10-27 — 进程内（trusted）插件补三条边界：异常 / 返回值 / 依赖（0.5.18 → 0.5.19）
+
+上一轮让 `precheck` 进了契约、四个模板都能自检了。这一轮补的是**「trusted 插件可以当代码跑」
+的前提** —— 前两条是既有的静默失效点，第三条是昨天新能力的边界没划干净。
+
+### ① 进程内插件的异常没有边界（最严重）
+
+`_PluginEngineAdapter.execute` 的 inproc 分支此前是**裸调用** `self._plugin.process(...)`。
+进程外插件崩了只是子进程退出（stderr 带回来），进程内插件崩了，异常顺着调用链冒到
+adapter 层，而那里只留得下一句：
+
+```python
+raise FatalError(f"Doc 引擎 {eng_name} 失败: {str(e)[:100]}") from e   # document.py
+```
+
+**traceback 全丢、原因截到 100 字符**。第三方代码最需要的就是那两样。
+
+**修法**：边界放在 adapter（唯一同时看得见插件名与原始异常的地方）——
+`logger.exception` 留住完整 traceback，对外抛
+`FatalError("插件 <name> 执行失败：<类型>: <原因>")`。上游那句 `[:100]` 因此拿到的是
+一句已经说清了「哪个插件、什么错」的话，而不是一段被腰斩的第三方栈顶。
+
+### ② 返回值类型非法时，错误被讲成了「文件没内容」
+
+旧代码把任何返回值按 `str` / `dict` 三元包装：
+
+```python
+payload = out if isinstance(out, dict) else {"text": out}   # out=None → {"text": None}
+```
+
+插件返回 `None`（忘了 return、或某条分支漏了）→ `DocResult(text=None)` → 上层报
+**「返回空结果」**。那句话把「插件坏了」讲成了「这份文件没内容」，用户会去换文件、
+重试、以为是 PDF 的问题。现在非 `str` / `dict` 当场抛
+`FatalError("插件 <name> 返回了不支持的类型 <T>（契约要求 str 或 dict）")`。
+
+### ③ 「一键安装依赖」不该出现在进程内插件上
+
+`hasRequirements` 的判据此前是**「子目录里有没有 requirements.txt」**，而它真正要回答的是
+**「能不能一键安装」**。进程内插件不从 venv 加载，给它装依赖只会造出一个用不上的 `.venv`：
+界面显示「已安装」、插件 `import` 仍然失败、两边都不报错。
+
+前端其实早有门控（`PluginSettings.tsx` 的 `execMode === 'external'`），**但接口本身没校验** ——
+`curl` 一下就能在插件目录里堆出那个 venv。故：
+
+- 抽 `_deps_installable(adapter)` 作为**唯一判据**（`external` + 有 `requirements.txt`），
+  `hasRequirements` 从它取值；
+- `install_plugin_deps` 早退返回 `status="inproc"` 并说明原因，**一个目录都不建**。
+  ⚠️ 早退**只判 execMode**，不判 `_deps_installable` —— 否则「进程外但没有 requirements.txt」
+  会被错说成「在进程内运行」，而那条路径本来有自己的 `no-requirements` 状态。
+
+**影响范围**：`backend/app/engines/plugin_loader.py`（4 处）、`backend/tests/test_plugin_loader.py`
+（新增 4 条：异常带插件名 / 类型非法 / 进程内无安装入口 / 接口拒绝且零写入，39 passed）、
+`docs/plugins.md`（核心边界补「进程内的两条硬边界」+ 安装段 + 端点表）、
+`frontend/src/api/plugins.ts`（`hasRequirements` 注释改准）、
+`backend/plugins/examples/simple_trusted_plugin.py`（模板补依赖与异常说明）。
+
+**未做**（下一步）：`on_load` / `on_unload` 生命周期钩子、超时、失败熔断。
+
+---
+
 ## 2026-10-27 — 插件模板「装得上却用不了」三个静默缺陷 + 新增本地转写模板（0.5.17 → 0.5.18）
 
 上一轮把 `precheck` 和依赖探测做进了契约，这一轮去验**官方模板是不是真的能用**。

@@ -1,7 +1,11 @@
 # 插件系统 — 契约 · 安装 · 发布（EnginePlugin v1）
 
 > 加载器：[plugin_loader.py](../backend/app/engines/plugin_loader.py)，启动时 `init_plugins()` 自动扫描 `~/.limo/plugins/`。
-> 参考模板：[backend/plugins/examples/](../backend/plugins/examples/README.md)（照抄即用；含 pymupdf4llm PDF / faster-whisper 本地语音转写 / tesseract 本地 OCR / trusted 进程内 四种形态）。
+> 参考模板：[backend/plugins/examples/](../backend/plugins/examples/README.md)（照抄即用；含 pymupdf4llm PDF / faster-whisper 本地语音转写 / tesseract 本地 OCR / local_embedding 本地向量化 / trusted 进程内 五种形态）。
+>
+> **两类基类**：`EnginePlugin`（doc / ocr / asr，「一个文件 → 一段文本」）与
+> `EmbeddingPlugin`（embedding，「一组文本 → 一组向量」）。同一条扫描 / 门控 / 启用 / 卸载链路，
+> 契约不同 —— 后半部分见「[向量化插件](#向量化插件embeddingplugin-v1)」。
 
 ## 设计初衷
 
@@ -38,7 +42,18 @@
 | **进程内**（显式例外） | `trusted=true` | 允许进程内 import — **纯技术声明**（可进程内 import，崩溃/依赖风险插件作者自担），**不涉及任何协议判断** |
 | **拒绝** | 无 `command` 且未 `trusted` | 加载时 WARNING 日志，不注册 |
 
-门控全类别统一（doc/ocr/asr 引擎不特殊）。进程内 import = 等同主程序权限，`trusted` 是唯一防线。
+门控全类别统一（doc/ocr/asr/embedding 引擎不特殊）。进程内 import = 等同主程序权限，`trusted` 是唯一防线。
+
+**进程内的两条硬边界**（2026-10-27 明确）：
+
+- **依赖必须在主环境**：进程内插件没有独立 venv，`requirements.txt` 不参与「一键安装」——
+  `install-deps` 对进程内插件直接返回 `status="inproc"`，**一个目录都不建**（否则会造出一个
+  插件根本不会加载的 `.venv`：界面显示已装、插件仍然 import 失败、两边都不报错）。
+  源码运行时用后端自身的 Python 装；打包版主环境是 exe，装不了 → **自带依赖的插件请用进程外**。
+- **执行异常由加载器兜住**：`process()` 抛出的任何异常都被包成
+  `FatalError("插件 <name> 执行失败：<类型>: <原因>")`，原始 traceback 进日志；
+  返回值不是 `str` / `dict` 时同样是显式错误（旧行为会把它包成 `{"text": None}`，
+  上层读起来像「这份文件没内容」而不是「插件坏了」）。
 
 ## 安装（用户）
 
@@ -59,7 +74,9 @@ cd <repo> && python -m venv .venv
 
 **zip 安装**（推荐）：插件页点「安装插件」→ 选插件 zip 包（声明 `.py` + 子目录，或 GitHub Release 下载的 source zip）→ 自动解压到 `~/.limo/plugins/` → 提示重启生效。**zip slip 防护**：非法路径条目（`../`/绝对路径）拒绝解压。
 
-**一键安装依赖**：子目录含 `requirements.txt` 的进程外插件，前端插件页显示「一键安装」——自动建 venv + `pip install`（国内镜像源），失败显式反馈 + 手动命令兜底。桌面打包版无系统 Python 时降级引导（先装 Python 或手动执行）。
+**一键安装依赖**：子目录含 `requirements.txt` 的**进程外**插件，前端插件页显示「一键安装」——自动建 venv + `pip install`（国内镜像源），失败显式反馈 + 手动命令兜底。桌面打包版无系统 Python 时降级引导（先装 Python 或手动执行）。
+
+⚠️ **进程内（`trusted=true`）插件不适用**：它不从独立 venv 加载，依赖必须装在后端自身环境。接口对它会返回 `status="inproc"` 并说明原因，**一个目录都不建**（见上文「进程内的两条硬边界」）。
 
 **卸载**：删除 `~/.limo/plugins/` 下对应文件/目录 + 重启；或前端插件页「卸载」。
 
@@ -173,16 +190,121 @@ if __name__ == "__main__":
 
 **v0 兼容**：旧插件（纯文本 stdout、仅读 `--input`）零改动可用；升级到 JSON 契约可获得 `pages`/`is_scanned`/`segments` 元数据。
 
+## 向量化插件（`EmbeddingPlugin` v1）
+
+**同样是 `EnginePlugin` 的子类**（扫描 / 门控 / 启用 / 卸载 / 一键装依赖全部复用），
+只是入口从 `process(file_path)` 换成 `embed(texts) -> list[list[float]]`：
+「一个文件 → 一段文本」装不下「一组文本 → 一组向量」。参考实现
+[local_embedding_plugin.py](../backend/plugins/examples/local_embedding_plugin.py)。
+
+**注册在 `embedding` 类别**，出现在 设置 → 通用 → 检索索引 → 向量引擎 的下拉里
+（`routers/search.py::_embedding_models` 只读 `display_name` / `model_id` / `dimension` /
+`is_local` / `precheck()`，**前端零改动**）。
+
+```python
+from app.engines.plugin_loader import EmbeddingPlugin
+
+class MyEmbedding(EmbeddingPlugin):
+    name = "my-embedding"
+    command = ["my_embedding/.venv/Scripts/python.exe", "-u", "my_embedding/server.py"]
+    license = "MIT"
+    display_name = "本地模型（…）"
+
+    # ── 向量契约：四元组身份的两项 ──
+    model_id = "my-model-int8"    # 换权重必须改它，否则新旧向量混表（见下）
+    dimension = 512               # 不声明 → 自检直接拦下
+    is_local = True               # 前端据此显示「免费 / 零外发」
+
+    # ── 自检材料（依赖由 adapter 用 probe_venv 查，不必自己写）──
+    requires_modules = ("onnxruntime", "tokenizers")
+    requires_files = ()           # 固定路径的必需文件；用户可配的路径写进 precheck()
+
+    config_schema = [
+        {"name": "model_dir", "type": "str", "label": "模型目录", "default": "~/…"},
+    ]
+
+    def precheck(self):
+        cfg = self.plugin_config or {}         # 已回填用户保存的配置
+        ...                                     # 只查文件在不在，不加载模型
+        return None
+```
+
+### 常驻子进程协议（进程外模式）
+
+**进程外 embedding 是「常驻」而不是「一次调用一个进程」**：模型加载 3–5 秒，而查询侧
+`VectorSearcher` 的 `QUERY_TIMEOUT = 3.0` —— 每次搜索都现起进程等于每次搜索都超时。
+适配器 `_PluginEmbeddingAdapter` 维护一个长驻子进程，用 NDJSON over stdio 一问一答：
+
+| 时机 | 方向 | 一行 JSON |
+|------|------|-----------|
+| 启动 | ← 插件 | `{"ready": true, "model_id": "...", "dimension": 512}` |
+| 启动失败 | ← 插件 | `{"ready": false, "error": "..."}`，然后 exit 1 |
+| 请求 | → 插件 | `{"id": 1, "texts": ["...", "..."]}` |
+| 响应 | ← 插件 | `{"id": 1, "vectors": [[...], ...]}` |
+| 单次失败 | ← 插件 | `{"id": 1, "error": "..."}`（**进程保留**，下一批继续用） |
+
+三条硬要求，任缺一条都是「主进程永远等不到响应」：
+
+1. **`command` 必须带 `-u`**（Python 无缓冲）**且**每行 `flush()` —— 两层保险
+   （`-u` 关了缓冲，`flush` 保证协议行立刻出去）
+2. **stdout 只写协议行**：日志一律 stderr（适配器有后台 drain 线程，Windows 管道写满
+   约 64KB 不会阻塞）；混进非 JSON 行 = 适配器判定协议损坏、丢弃进程
+3. **`id` 必须原样回传**：对不上的响应对应「管道错位」，适配器杀掉进程重来
+   （留着只会让每一轮都读到上一条的结果）
+
+**失败语义**（与文件引擎「一个进程一次调用」不同，这里要区分「进程坏了」与「这批文本编码失败」）：
+
+| 情形 | 处置 |
+|------|------|
+| 响应 `error` 字段 | 抛错，**进程保留** |
+| 条数 / 维度不符 | 抛错，进程保留（不补、不猜、不截断） |
+| 非 JSON 行 / `id` 错位 / 超时 | 抛错，**杀掉进程**（下次调用自动重起） |
+| 子进程自己退出（OOM / 被外部杀掉） | 下次调用时检测到并自动重起 |
+| 声明的 `dimension` / `model_id` 与 ready 报告不符 | **启动即失败**（不静默接受） |
+
+维度与模型必须对得上，因为四元组 `(model_id, dimension, chunk_size, schema_version)` 是向量库的
+**整体身份** —— 口径不符写进库之后是**静默的**（表现为检索质量下降，而不是报错）。
+
+### 插件配置怎么进子进程
+
+`config_schema` 的保存值经**环境变量 `LIMO_PLUGIN_CONFIG`**（JSON）传给子进程，在**启动时读一次**
+—— 改了配置要等下次起进程（用户重启后端，或等模型闲置 `release` 后重起）才生效。
+
+声明层的 `precheck()` 能直接读 `self.plugin_config`：适配器在设置配置时会把它同步给插件实例
+（`_PluginEngineAdapter.plugin_config` 是 property + setter）。两个理由：自检发生在设置页，
+那时配置已经回填过；而 adapter 手上的值与插件手上的值若各是各的，`precheck` 判的就是另一份配置。
+
+### 生命周期钩子（不用实现）
+
+`warmup()` / `release(after_idle)` 由适配器提供：`warmup` 提前起子进程（后台 worker 有空活时调用），
+`release` 按闲置时长杀进程释放内存（`vector_release = immediate` 时每轮结束后调一次）。
+**插件侧什么都不用写** —— 它们不在 `EmbeddingEngine` Protocol 里，消费方用 `getattr` 取，
+插件没有就是「视为无需预热 / 无需释放」。
+
+⚠️ **模型放哪、叫什么由插件自己定**（`precheck()` 里判文件），**不要**把路径写死在适配器里：
+内置引擎与插件版默认指向同一个目录（`~/.limo/models/bge-small-zh-v1.5-onnx/`），
+用户此前用过内置版的话装插件不必重新下载 22.8MB。
+
+### 与内置引擎同名
+
+模板里的 `name = "local-bge-small"` **刻意与内置引擎同名**，按「用户优先」规则覆盖内置。
+于是打包版（内置那份缺 `tokenizers` 而不可用）装上插件后**真能离线跑**；
+源码版不装插件则继续用内置那份，两者指向同一个 `model_id` / 维度，向量库不必重建。
+
+⚠️ **换权重必须改 `model_id`**（例如 int8 → fp32 写成 `…-fp32`），否则 `ensure_identity`
+判「口径没变」，新老向量混在同一张表里 —— 检索质量下降、零报错。换完在设置页点
+「重建向量索引」（重建是计费/耗时动作，**不会自动发生**）。
+
 ## 管理 API
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/api/plugins` | GET | 插件列表（含禁用，按 category 分组） |
 | `/api/plugins/install` | POST | 上传 zip 安装（解压到 `~/.limo/plugins/`，zip slip 防护） |
-| `/api/plugins/{name}/install-deps` | POST | 一键安装依赖（子目录 `requirements.txt` → 建 venv + pip install 镜像源） |
+| `/api/plugins/{name}/install-deps` | POST | 一键安装依赖（**仅进程外**：子目录 `requirements.txt` → 建 venv + pip install 镜像源；进程内返回 `status="inproc"` 且零写入） |
 | `/api/plugins/{name}/enable` / `disable` | POST | 写 `plugin_states`，**重启后生效** |
 | `/api/plugins/{name}` | DELETE | 卸载（删 `~/.limo/plugins/` 下声明文件 + 同名目录含 venv/模型） |
-| `/api/plugins/{name}/config` | PUT | 保存插件配置（`plugin_configs`，落盘 + 内存即时生效，下次执行 stdin 即含新 config） |
+| `/api/plugins/{name}/config` | PUT | 保存插件配置（`plugin_configs`，落盘 + 内存即时生效，下次执行 stdin 即含新 config；**embedding 插件走环境变量 `LIMO_PLUGIN_CONFIG`**，在子进程启动时读取） |
 
 前端：设置页「插件」tab —— 按 category 分组卡片、启用开关、卸载二次确认、config_schema 表单。
 
@@ -203,6 +325,9 @@ cd ~/.limo/plugins/<repo>
 - **Command not found**：venv 路径与 `command` 声明不一致（Windows `Scripts/python.exe`，Linux `bin/python3`）
 - **不显示在 UI**：`file_types` 未设置或未匹配该文件类型；重启后端
 - **被拒绝加载**：无 `command` 且未声明 `trusted=true`——进程外配置 command，或轻量插件声明 trusted
+- **向量插件卡在启动 / 每次搜索都超时**：`command` 里的 `-u` 漏了，或 server 忘了 `flush()`
+  （主进程按行阻塞等待，留在缓冲区里的一行等于没发）；现象是「启动超时」，真因在那条没人收到的行里
+- **向量插件每轮都重起进程**：stdout 混进了非协议内容（日志必须写 stderr）；或响应 `id` 没原样回传
 
 ## 发布指南（插件作者）
 
@@ -216,4 +341,4 @@ cd ~/.limo/plugins/<repo>
 - **覆盖**：插件与内置引擎同名（category + name）时，插件覆盖内置（用户优先）
 - **绑定**：`engine_bindings` 三种格式都支持插件——字符串（插件名直接查注册表）/ 整数（engine_models id）/ 列表（旧格式）
 - **失败语义**：绑定只取第一个可用引擎，插件失败直接报错（引擎自动降级已移除）
-- **fileTypeMap**：插件按 `file_types` 扩展名自动归入对应文件类型下拉，无需改 capabilities 代码
+- **fileTypeMap**：插件按 `file_types` 扩展名自动归入对应文件类型下拉，无需改 capabilities 代码（`embedding` 类别不吃文件类型，走设置页的向量引擎下拉）

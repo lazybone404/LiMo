@@ -11,9 +11,16 @@ EnginePlugin v1 契约（2026-08-02 正式化，以用户定稿 v2 为准）：
 - v0 兼容：stdin 仍带 `--input <path>` argv；stdout 非 JSON 回退纯文本（旧插件零改动可用）
 - 主程序不处理任何插件协议维度（不判断/不警告/不声明），license 字段仅前端展示
 - PLUGIN_REGISTRY 登记所有已发现插件（含门控拒绝/禁用的），供管理 API 枚举
+
+**两类 plugin 基类**（同一条扫描 / 门控 / 启用 / 卸载链路，契约不同）：
+  - `EnginePlugin`：doc / ocr / asr —— 「一个文件 → 一段文本」，入口 `process()`
+  - `EmbeddingPlugin`：embedding —— 「一组文本 → 一组向量」，入口 `embed()`
+    ⚠️ 进程外模式下它**不是**一次性 stdin/stdout，而是常驻子进程 + 按行 JSON 往返
+    （模型加载 3–5 秒 > 查询侧 `QUERY_TIMEOUT = 3.0`，每次 Popen 等于每次搜索都超时）
 """
 
 import ast
+import asyncio
 import importlib.util
 import json
 import logging
@@ -30,6 +37,7 @@ from typing import Optional
 from app.core.registry import EngineRegistry
 from app.core.protocols import Engine
 from app.core.deps import probe_venv
+from app.core.errors import FatalError
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +81,11 @@ class EnginePlugin:
 
     timeout: int = 300                    # 子进程超时秒数（仅进程外模式）
 
+    #: 用户在设置页保存的配置（`config_schema` 表单值）。**由 adapter 回填** ——
+    #: 插件自己不要给它初始赋值；没配过时是空 dict，读到就用默认值。
+    #: 声明层的 `precheck()` 可以直接读它（自检发生在设置页，那时配置已回填）。
+    plugin_config: dict = {}
+
     # ── Engine 协议适配 ──
 
     def accept(self, file_path: str) -> bool:
@@ -105,6 +118,76 @@ class EnginePlugin:
         它的第二次及以后由 `sys.modules` 命中。
         """
         return None
+
+
+class EmbeddingPlugin(EnginePlugin):
+    """向量化插件基类 —— **一组文本 → 一组向量**。
+
+    与 doc / ocr / asr 的区别不是「分类不同」，而是**形状不同**：那三类都是
+    「一个文件 → 一段文本」，走 `process()`（进程内）或一次性 stdin/stdout（进程外）；
+    这一类吃的是文本、吐的是向量，连「文件」这个概念都没有。
+
+    ## 进程外模式：常驻子进程 + 按行 JSON（**不是每次 Popen**）
+
+    每次 `Popen` 都要重新加载模型（3–5 秒），而查询侧
+    `VectorSearcher.QUERY_TIMEOUT = 3.0` —— 那样每次搜索都会超时并退回纯字面，
+    用户看到的提示是「语义检索超时」（他会以为是网络问题，而插件根本不联网）。
+    故外部模式下的协议是：
+
+    ```
+    启动   → 子进程 stdout 第一行：{"ready": true, "model_id": "...", "dimension": 512}
+    请求   → stdin:  {"id": 1, "texts": ["...", "..."]}
+    响应   → stdout: {"id": 1, "vectors": [[...], [...]], "dimension": 512}
+    出错   → stdout: {"id": 1, "error": "原因"}
+    ```
+
+    ⚠️ `id` 必须原样回传：它是「这条响应属于哪次请求」的唯一判据。管道一旦错位
+    （超时后被丢下的半条响应），后续每一轮都会读到上一条的结果，而形状完全合法
+    —— 那会是「检索结果莫名其妙」，不像错误。adapter 发现 `id` 不符会丢弃子进程。
+
+    ## 实现注意
+
+    - 子进程**必须无缓冲**：`command` 里带 `-u`（或 `PYTHONUNBUFFERED=1`），
+      否则按行往返会一直等在缓冲区里。
+    - 每条向量**必须已 L2 归一化**：余弦退化成点积，未归一化的向量不会报错，
+      只会让排序静默变差。
+    """
+
+    #: 覆盖父类的 `doc` —— 注册表按它分派到 `_PluginEmbeddingAdapter`。
+    category = "embedding"
+    capabilities = ["embedding"]
+
+    #: 落库的模型标识（`vector_store` 四元组身份之一）。
+    #: ⚠️ **换权重或量化档（int8 ↔ fp32）必须改它**：两套权重共用一个 id 时
+    #: `ensure_identity` 会判「没变」，而向量已经换了 —— 检索质量轻微下降、零报错。
+    model_id = ""
+
+    #: 输出维度。与 `model_id` 一起构成索引口径；**不声明会在自检里被拦下**
+    #: （维度 0 写进库之后，余弦会在不同维度之间静默算错）。
+    dimension = 0
+
+    #: 是否本地推理。前端据此显示「免费 / 零外发」的成本文案（不靠名字前缀猜）。
+    is_local = True
+
+    #: 进程外模式下 `precheck` 要检查的子 venv 依赖（**import 名**，不是 PyPI 包名）。
+    #: ⚠️ 非空时才做 venv 检查 —— `command` 指向自带二进制的插件（如 tesseract 那种
+    #: 没有 venv 的形态）不会因此被误报成「未创建独立环境」。
+    requires_modules: tuple[str, ...] = ()
+
+    #: 进程外模式下 `precheck` 要检查的必需文件（相对插件子目录，或绝对 / `~` 路径）。
+    #: 模型文件这类「装了依赖也还不一定能跑」的东西写在这里。
+    requires_files: tuple[str, ...] = ()
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """同步实现 —— adapter 负责丢线程池（ONNX 推理是阻塞 CPU 计算）。
+
+        契约（与 `engines/embedding_base.py` 同一份）：
+
+        1. 顺序与入参**一一对应**；
+        2. 每条**已 L2 归一化**；
+        3. 空输入返回 `[]`，且**不发起任何调用**（不该为了一个空批把模型拉进内存）。
+        """
+        raise NotImplementedError
 
 
 # ── 加载门控 ──
@@ -175,6 +258,27 @@ def _dispatch_result(category: str, payload: dict, engine_name: str):
 
 # ── Plugin adapter: wraps EnginePlugin into Engine protocol ──
 
+def _resolve_command(plugin: EnginePlugin, plugin_dir: Path) -> list[str]:
+    """`command` 里的相对路径按插件目录解析成绝对路径。
+
+    **两处共用**（`_PluginEngineAdapter._run_external` 的一次性调用 /
+    `_PluginEmbeddingAdapter` 的常驻子进程）—— 各写一份的失效形态是
+    「文件引擎能跑、向量插件找不到解释器」，而两边都不报错。
+
+    Windows `CreateProcess` 对带子目录的相对路径参数解析不可靠，故必须绝对化。
+    """
+    out: list[str] = []
+    for part in plugin.command or []:
+        # `-u` / `--model-dir` 这类开关**原样保留**：它们不是路径，拼成
+        # `<插件目录>/-u` 之后 Python 会去开一个叫「-u」的文件（实测报
+        # `can't open file '...\-u'`，看起来像「解释器找不到脚本」）。
+        if part.startswith("-") or Path(part).is_absolute():
+            out.append(part)
+        else:
+            out.append(str(plugin_dir / part))
+    return out
+
+
 class _PluginEngineAdapter:
     """将 EnginePlugin 适配为 EngineRegistry 兼容的 Engine 协议。
 
@@ -204,8 +308,30 @@ class _PluginEngineAdapter:
         self.api_version = plugin.api_version or PLUGIN_API_VERSION
         self.trusted = plugin.trusted
         # 插件自身配置（Phase 4 由 cfg["plugin_configs"] 填充；空 dict 时插件用默认值）
-        self.plugin_config: dict = {}
+        self._plugin_config: dict = {}
         self._exec_mode = _resolve_exec_mode(plugin)
+
+    # ── 插件配置（写一次，两处都拿到）──
+
+    @property
+    def plugin_config(self) -> dict:
+        return self._plugin_config
+
+    @plugin_config.setter
+    def plugin_config(self, value: dict) -> None:
+        """设置配置时**同步给插件实例**。
+
+        两个消费方：执行路径读 `adapter.plugin_config`（塞进 stdin / 环境变量），
+        **`precheck()` 在声明层跑**（设置页自检）—— 只有 adapter 有配置的话，自检
+        只能拿写死的默认值判断，用户把模型 / 二进制放到配置指定的位置后会被报
+        「缺文件」，而实际完全能用（`precheck` 的失效方向反过来也就是「说就绪、
+        一跑就报错」）。
+        """
+        self._plugin_config = dict(value or {})
+        try:
+            self._plugin.plugin_config = self._plugin_config
+        except Exception:  # noqa: BLE001 —— `__slots__` / 只读属性的插件：退回默认值
+            pass
 
     def accept(self, file_path: str) -> bool:
         return self._plugin.accept(file_path)
@@ -218,11 +344,32 @@ class _PluginEngineAdapter:
         cancel_event = kwargs.pop("cancel_event", None)
         if self._exec_mode == "external":
             raw = self._run_external(file_path, kwargs, cancel_event)
-            payload = _parse_stdout(raw)
-        else:  # inproc（trusted 例外）
+            return _dispatch_result(self._plugin.category, _parse_stdout(raw), self.name)
+
+        # ── inproc（trusted 例外）──
+        # 插件代码跑在主进程里，异常会顺着调用链冒到 adapter 层，而那里只会
+        # 留一句 `str(e)[:100]`（document.py 的兜底），traceback 全丢。边界放在
+        # 这里才能同时做到：日志留住原始 traceback、用户看到带插件名的原因。
+        #
+        # ⚠️ **返回值类型也必须守**：插件返回 `None` 时，旧代码会包成
+        # `{"text": None}` → DocResult(text=None) → 上层报「返回空结果」，
+        # 读起来像「这份文件没内容」而不是「插件坏了」。这个错误必须当场说清。
+        try:
             out = self._plugin.process(file_path, kwargs)
-            # dict 透传（trusted asr 引擎返回 segments dict 场景）；str 包 {"text"}
-            payload = out if isinstance(out, dict) else {"text": out}
+        except Exception as e:  # noqa: BLE001 —— 第三方代码，什么异常都可能有
+            logger.exception("插件 %s 执行失败（进程内）", self.name)
+            raise FatalError(
+                f"插件 {self.name} 执行失败：{type(e).__name__}: {str(e)[:200]}"
+            ) from e
+        if isinstance(out, dict):
+            payload = out
+        elif isinstance(out, str):
+            payload = {"text": out}
+        else:
+            raise FatalError(
+                f"插件 {self.name} 返回了不支持的类型 {type(out).__name__}"
+                f"（契约要求 str 或 dict）"
+            )
         return _dispatch_result(self._plugin.category, payload, self.name)
 
     def precheck(self) -> Optional[str]:
@@ -260,12 +407,8 @@ class _PluginEngineAdapter:
             )
             safe["cancel_file"] = cancel_file
 
-        # command 相对路径 → 基于插件目录解析为绝对路径
-        # Windows CreateProcess 对带子目录的相对路径参数解析不可靠
-        cmd = [
-            str(self._plugin_dir / part) if not Path(part).is_absolute() else part
-            for part in self._plugin.command
-        ]
+        # command 相对路径 → 基于插件目录解析为绝对路径（唯一实现在 `_resolve_command`）
+        cmd = _resolve_command(self._plugin, self._plugin_dir)
         proc = subprocess.Popen(
             cmd + ["--input", file_path],
             stdin=subprocess.PIPE,
@@ -317,6 +460,374 @@ class _PluginEngineAdapter:
         return out
 
 
+# ── 向量化插件适配（常驻子进程 + NDJSON over stdio）──
+
+#: 子进程吐出 ready 行之前的等待上限。模型加载实测 3–5 秒，慢盘 / 首次冷读更久。
+EMBED_READY_TIMEOUT = 30.0
+
+#: 单次编码往返的等待上限。**不是「正常该多久」而是「多久算卡死」**：超时后会丢弃
+#: 子进程（管道里残留的半条响应会让后续每一轮都错位）—— 宁可重起一次，也不留一个
+#: 「形状合法但内容错位」的进程。
+EMBED_REQUEST_TIMEOUT = 180.0
+
+#: `idle` 档的默认空闲门槛（秒）。**与内置本地引擎 `DEFAULT_IDLE_RELEASE` 同值**：
+#: 两者承载的是同一份使用节奏（低频、天级），门槛不同会让「换插件前后行为变了」
+#: 且没人说得清为什么。
+EMBED_IDLE_RELEASE = 600.0
+
+
+class _PluginEmbeddingAdapter(_PluginEngineAdapter):
+    """把 `EmbeddingPlugin` 适配成 `EmbeddingEngine` 协议（`embed` + 三个可选钩子）。
+
+    继承 `_PluginEngineAdapter` 只为复用**元数据装配与自检转发**（`display_name` /
+    `config_schema` / `plugin_config` / `_exec_mode` 那些，`enumerate_plugins` 与
+    设置页都按这些字段读数）。`execute()` 被覆盖成显式错误 —— 向量引擎不接受文件。
+
+    ⚠️ **进程生命周期由本类独占管理**：`warmup()` 拉起、`release()` 杀掉、
+    `embed()` 按需重启。不把子进程交给 `subprocess.run` 的一次性模型，因为
+    「每次冷启动 3–5 秒」正是查询侧超时的来源（见 `EmbeddingPlugin` 文档）。
+    """
+
+    def __init__(self, plugin: EnginePlugin, plugin_dir: Path,
+                 source_file: Path | None = None):
+        super().__init__(plugin, plugin_dir, source_file)
+        self.model_id = getattr(plugin, "model_id", "") or plugin.name
+        self.dimension = int(getattr(plugin, "dimension", 0) or 0)
+        self.capabilities = ["embedding"]
+        self.is_local = bool(getattr(plugin, "is_local", True))
+        self._proc: Optional[subprocess.Popen] = None
+        #: 一把锁串行化「进程生命周期 + 一次完整的写/读往返」。用一把而不是两把：
+        #: 分成「生命周期锁 + IO 锁」时，`release` 杀掉进程的那一刻必须同时持有两把，
+        #: 而它们的获取顺序在 `embed` 与 `release` 之间相反 —— 那就是死锁。
+        self._proc_lock = threading.Lock()
+        self._next_id = 0
+        self._last_used = 0.0
+        self._stderr_tail: list[str] = []
+
+    # ── Engine 协议：向量引擎不接受文件 ──
+
+    def execute(self, file_path: str, **kwargs):
+        raise FatalError(
+            f"插件 {self.name} 是向量化引擎（category=embedding），不接受文件输入"
+        )
+
+    # ── 契约入口 ──
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """编码文本 → L2 归一化向量（顺序与入参一一对应）。
+
+        契约 3（空输入返回空、**不发起任何调用**）在这里短路：连子进程都不拉起。
+        """
+        if not texts:
+            return []
+        batch = [str(t) for t in texts]
+        if self._exec_mode == "external":
+            vecs = await asyncio.to_thread(self._embed_external, batch)
+        else:
+            vecs = await asyncio.to_thread(self._embed_inproc, batch)
+        return self._check_vectors(vecs, len(batch))
+
+    async def warmup(self) -> None:
+        """把模型预热到「第一次编码不用等加载」。
+
+        ⚠️ 不预热的后果不是「慢」而是「第一次查询必定退回纯字面」（加载 3–5 秒 >
+        `QUERY_TIMEOUT = 3.0`），提示还写着「语义检索超时」。见 `vector_worker._warm`。
+        """
+        if self._exec_mode == "external":
+            await asyncio.to_thread(self._warm_external)
+            return
+        warm = getattr(self._plugin, "warmup", None)
+        if warm is not None:
+            await asyncio.to_thread(warm)
+
+    def release(self, *, after_idle: float = EMBED_IDLE_RELEASE) -> bool:
+        """空闲够久就杀掉子进程，归还内存。返回「这次真的释放了吗」。
+
+        ⚠️ **同步方法**（`vector_worker._do_release` 直接调，不 await）：杀进程是
+        微秒级操作，包成 async 反而让调用方多一次线程切换。
+
+        ⚠️ 外部模式下「释放」比内置引擎更彻底 —— 杀掉的进程把 ONNX Session、
+        tokenizer、numpy 缓冲一起还回去。这也让三档策略（`never` / `idle` /
+        `immediate`）的语义与内置引擎自然对齐，不需要第二套解释。
+        """
+        if after_idle > 0 and self._proc is not None:
+            if (time.monotonic() - self._last_used) < after_idle:
+                return False
+        with self._proc_lock:
+            if self._proc is None:
+                return False
+            if after_idle > 0 and (time.monotonic() - self._last_used) < after_idle:
+                return False          # 等锁期间又被用过
+            return self._kill_locked()
+
+    def precheck(self) -> Optional[str]:
+        """返回**给用户看的**不可用原因（`None` = 就绪）。
+
+        两层：先查「这个插件包本身装齐了吗」（外部模式才有的 venv / 依赖 / 文件），
+        再转发插件自己的 `precheck()`（模型路径之类的插件私有条件）。
+
+        ⚠️ 会被 `GET /api/plugins` 与 `GET /api/search` 调用，**必须轻**：不 import、
+        不起子进程。`probe_venv` 是纯文件系统检查（见 `core.deps` 的模块文档）。
+        """
+        if self.dimension <= 0:
+            # 维度 0 写进库之后，余弦会在不同维度之间静默算错 —— 拦在建索引之前。
+            return f"插件 {self.name} 未声明 dimension（向量维度）"
+        if self._exec_mode == "external":
+            reason = self._precheck_external()
+            if reason:
+                return reason
+        try:
+            return self._plugin.precheck()
+        except Exception as e:  # noqa: BLE001 —— 自检自己炸了，结论就是不可用
+            return f"插件自检失败：{type(e).__name__}: {e}"
+
+    # ── 自检辅助 ──
+
+    def _precheck_external(self) -> Optional[str]:
+        modules = tuple(getattr(self._plugin, "requires_modules", ()) or ())
+        pkg_dir = _plugin_subdir(self)
+        if modules:
+            reason = probe_venv(
+                pkg_dir / ".venv", modules=modules,
+                hint="在 设置 → 插件 里点「一键安装依赖」",
+            )
+            if reason:
+                return reason
+        missing = []
+        for name in getattr(self._plugin, "requires_files", ()) or ():
+            p = Path(name).expanduser()
+            if not p.is_absolute():
+                p = pkg_dir / p
+            if not p.exists():
+                missing.append(str(p))
+        if missing:
+            return "缺少必需文件：" + "、".join(missing)
+        return None
+
+    # ── 进程管理（调用方必须已持有 `_proc_lock`）──
+
+    def _warm_external(self) -> None:
+        with self._proc_lock:
+            self._ensure_proc_locked()
+
+    def _ensure_proc_locked(self) -> subprocess.Popen:
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            return proc
+        if proc is not None:
+            # 进程自己死了（依赖缺失 / 模型文件坏 / 被外部杀掉）—— 先收残骸再起新的，
+            # 否则下一轮又会去读一个已关闭的管道。
+            self._kill_locked()
+        self._spawn_locked()
+        assert self._proc is not None      # _spawn_locked 失败会抛，不会返回 None
+        return self._proc
+
+    def _spawn_locked(self) -> None:
+        cmd = _resolve_command(self._plugin, self._plugin_dir)
+        # 插件配置走**环境变量**而不是首行请求：首行是 ready 握手，两边都按固定形状
+        # 解析；把配置混进去会让「协议」多一条随插件变化的约定。文件引擎走的是
+        # stdin 里的 `config` 字段（一次性调用，请求本身就是那条消息）。
+        env = os.environ.copy()
+        if self.plugin_config:
+            env["LIMO_PLUGIN_CONFIG"] = json.dumps(
+                self.plugin_config, ensure_ascii=False
+            )
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            cwd=str(self._plugin_dir),
+            env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        self._proc = proc
+        self._stderr_tail = []
+        # stderr 必须**持续读走**：管道写满（Windows 约 64KB）会让子进程阻塞在日志
+        # 输出上，表现为「编码卡住」，而真正的错误恰恰在那段没人读的内容里。
+        threading.Thread(target=self._drain_stderr, args=(proc,), daemon=True).start()
+
+        line = self._readline_locked(proc, EMBED_READY_TIMEOUT)
+        ready: Optional[dict] = None
+        if line:
+            try:
+                parsed = json.loads(line)
+                ready = parsed if isinstance(parsed, dict) else None
+            except json.JSONDecodeError:
+                ready = None
+        if ready is None or not ready.get("ready"):
+            tail = "".join(self._stderr_tail[-5:]).strip()
+            self._kill_locked()
+            raise RuntimeError(
+                f"向量插件 {self.name} 启动失败"
+                + (f"：{ready.get('error')}" if isinstance(ready, dict) and ready.get("error") else "")
+                + (f"（stderr: {tail[:300]}）" if tail else "（进程无输出）")
+            )
+        # 声明值与实际值不符必须当场报：写进库之后口径不符是**静默**的
+        # （表现为检索质量下降，而不是报错）。
+        got_dim, got_model = ready.get("dimension"), ready.get("model_id")
+        if got_dim is not None and int(got_dim) != self.dimension:
+            self._kill_locked()
+            raise RuntimeError(
+                f"向量插件 {self.name} 报告的维度是 {got_dim}，"
+                f"声明的是 {self.dimension}"
+            )
+        if got_model is not None and self.model_id and got_model != self.model_id:
+            self._kill_locked()
+            raise RuntimeError(
+                f"向量插件 {self.name} 报告的模型是 {got_model}，"
+                f"声明的是 {self.model_id}"
+            )
+        self._last_used = time.monotonic()
+
+    def _kill_locked(self) -> bool:
+        """杀掉当前子进程并清空句柄。返回「原本有进程可杀吗」。"""
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return False
+        try:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=3)
+        except Exception:  # noqa: BLE001 —— 已经死了 / 拒绝访问，都只有「收尸失败」这一个后果
+            pass
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return True
+
+    def _readline_locked(self, proc: subprocess.Popen, timeout: float) -> str:
+        """带超时地读一行。**超时返回空串**（调用方负责丢弃进程）。
+
+        ⚠️ `readline()` 没有超时参数，而 Windows 上 `select` 不能用于管道 ——
+        只能另起线程读、主线程等 Event。超时后那个线程仍卡在 readline 上，
+        但它持的是**已死进程**的管道：调用方 kill 之后它会读到 EOF 自行退出。
+        """
+        box: dict[str, str] = {}
+        done = threading.Event()
+
+        def _read() -> None:
+            try:
+                box["line"] = proc.stdout.readline() if proc.stdout is not None else ""
+            except Exception as e:  # noqa: BLE001
+                box["line"] = ""
+                box["err"] = f"{type(e).__name__}: {e}"
+            finally:
+                done.set()
+
+        threading.Thread(target=_read, daemon=True).start()
+        if not done.wait(timeout):
+            return ""
+        return box.get("line", "") or ""
+
+    def _drain_stderr(self, proc: subprocess.Popen) -> None:
+        """把子进程 stderr 读走并留最后 20 行（失败时拼进错误消息）。"""
+        try:
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                self._stderr_tail.append(line)
+                if len(self._stderr_tail) > 20:
+                    del self._stderr_tail[0]
+        except Exception:  # noqa: BLE001 —— 进程被杀时这里抛什么都无关紧要
+            pass
+
+    # ── 编码 ──
+
+    def _embed_external(self, texts: list[str]) -> list[list[float]]:
+        with self._proc_lock:
+            proc = self._ensure_proc_locked()
+            self._next_id += 1
+            rid = self._next_id
+            req = json.dumps({"id": rid, "texts": texts}, ensure_ascii=False)
+            try:
+                assert proc.stdin is not None
+                proc.stdin.write(req + "\n")
+                proc.stdin.flush()
+            except (BrokenPipeError, OSError) as e:
+                self._kill_locked()        # 下轮重起，别在坏管道上反复失败
+                raise RuntimeError(f"向量插件 {self.name} 子进程不可用：{e}") from e
+
+            line = self._readline_locked(proc, EMBED_REQUEST_TIMEOUT)
+            if not line:
+                self._kill_locked()
+                raise RuntimeError(
+                    f"向量插件 {self.name} 编码超时（{EMBED_REQUEST_TIMEOUT:.0f}s 无响应）"
+                )
+
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                # 非 JSON 行 = 协议破了。丢弃进程：留在管道里的后续内容同样不可信。
+                self._kill_locked()
+                raise RuntimeError(
+                    f"向量插件 {self.name} 返回了非 JSON 行：{line[:120]!r}"
+                ) from None
+            if not isinstance(msg, dict):
+                self._kill_locked()
+                raise RuntimeError(f"向量插件 {self.name} 返回的不是 JSON 对象")
+            if msg.get("id") != rid:
+                # 残留响应错位 —— 每一轮都会读到上一条的结果，而形状完全合法。
+                self._kill_locked()
+                raise RuntimeError(
+                    f"向量插件 {self.name} 响应错位（请求 id={rid}、响应 id={msg.get('id')}）"
+                )
+            if msg.get("error"):
+                # 单次编码失败（不是协议坏了）：进程留着，下一批继续用
+                raise RuntimeError(f"向量插件 {self.name} 编码失败：{msg['error']}")
+            vectors = msg.get("vectors")
+            if not isinstance(vectors, (list, tuple)):
+                self._kill_locked()
+                raise RuntimeError(f"向量插件 {self.name} 响应缺少 vectors 数组")
+            self._last_used = time.monotonic()
+            return [list(v) if isinstance(v, (list, tuple)) else v for v in vectors]
+
+    def _embed_inproc(self, texts: list[str]) -> list[list[float]]:
+        """进程内（trusted）编码。异常包成 `FatalError`（留 traceback、带插件名）。"""
+        try:
+            vectors = self._plugin.embed(texts)
+        except Exception as e:  # noqa: BLE001 —— 第三方代码，什么异常都可能有
+            logger.exception("插件 %s 编码失败（进程内）", self.name)
+            raise FatalError(
+                f"插件 {self.name} 编码失败：{type(e).__name__}: {str(e)[:200]}"
+            ) from e
+        self._last_used = time.monotonic()
+        if not isinstance(vectors, (list, tuple)):
+            raise FatalError(
+                f"插件 {self.name} 返回了不支持的类型 {type(vectors).__name__}"
+                f"（契约要求 list[list[float]]）"
+            )
+        return [list(v) if isinstance(v, (list, tuple)) else v for v in vectors]
+
+    def _check_vectors(self, vectors, n: int) -> list[list[float]]:
+        """契约 1 与维度校验。**不补不猜**：少一条会让后续向量与文本整体错位，
+        而错位在检索时表现为「结果莫名其妙」，不像错误。"""
+        if len(vectors) != n:
+            raise RuntimeError(
+                f"向量插件 {self.name} 条数不符：送 {n} 条、回 {len(vectors)} 条"
+            )
+        out: list[list[float]] = []
+        for i, vec in enumerate(vectors):
+            try:
+                row = [float(x) for x in vec]
+            except (TypeError, ValueError) as e:
+                raise RuntimeError(
+                    f"向量插件 {self.name} 第 {i} 条不是数字序列：{e}"
+                ) from e
+            if self.dimension and len(row) != self.dimension:
+                raise RuntimeError(
+                    f"向量插件 {self.name} 第 {i} 条维度 {len(row)}，"
+                    f"与声明的 {self.dimension} 不符"
+                )
+            out.append(row)
+        return out
+
+
 # ── 插件注册表（Phase 4 管理 API 的数据基础）──
 # name → {adapter, meta, path, source, enabled, loaded}
 #   enabled — config 期望状态（运行时 enable/disable 同步；前端开关位置）
@@ -353,7 +864,12 @@ def _peek_plugin_meta(py_file: Path) -> Optional[dict]:
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
             continue
-        if not any(_base_name(b) == "EnginePlugin" for b in node.bases):
+        # `EmbeddingPlugin` 是 `EnginePlugin` 的**子类**，声明文件通常直接继承它
+        # （`category` / `capabilities` 由基类给出）。漏掉这一支的失效形态是
+        # 「向量插件被禁用后仍然加载」—— 因为 peek 解析不出 name，调用方退回
+        # 「先执行再判」，而禁用路径的全部意义正是不执行。
+        bases = {_base_name(b) for b in node.bases}
+        if not (bases & {"EnginePlugin", "EmbeddingPlugin"}):
             continue
         meta: dict = {}
         for stmt in node.body:
@@ -363,6 +879,11 @@ def _peek_plugin_meta(py_file: Path) -> Optional[dict]:
                     and isinstance(stmt.value.value, str)):
                 meta[stmt.targets[0].id] = stmt.value.value
         if "name" in meta:
+            # 继承来的类属性在这里读不到（只有 AST 上的字面量）。`category` 缺席会让
+            # `PLUGIN_REGISTRY` 的禁用条目里 category 为空串、前端分组落到「其他」，
+            # 而重启启用后又会跳到「向量」—— 同一个插件两个分组。基类默认是 embedding。
+            if "category" not in meta and "EmbeddingPlugin" in bases:
+                meta["category"] = "embedding"
             return meta
     return None
 
@@ -434,12 +955,15 @@ def init_plugins(config: dict):
             spec.loader.exec_module(mod)
 
             # 查找 EnginePlugin 子类
+            # ⚠️ 基类本身也要排除：声明文件写 `from ... import EmbeddingPlugin` 之后，
+            # 那个名字就住在模块命名空间里，而它同样是 `EnginePlugin` 的子类 ——
+            # 不排除就会把**基类**当插件实例化（得到一个 name="" 的幽灵条目）。
             found = False
             for obj in vars(mod).values():
                 if (
                     isinstance(obj, type)
                     and issubclass(obj, EnginePlugin)
-                    and obj is not EnginePlugin
+                    and obj not in (EnginePlugin, EmbeddingPlugin)
                 ):
                     found = True
                     try:
@@ -450,7 +974,15 @@ def init_plugins(config: dict):
                         )
                         continue
 
-                    adapter = _PluginEngineAdapter(instance, py_file.parent, py_file)
+                    # 向量化插件与文件引擎的适配器不同（常驻子进程 + NDJSON，见
+                    # `_PluginEmbeddingAdapter` 文档）。按**实例**的 category 分派而不是
+                    # 按基类：有的插件会继承 EnginePlugin 却写 category="embedding"。
+                    adapter_cls = (
+                        _PluginEmbeddingAdapter
+                        if getattr(instance, "category", "") == "embedding"
+                        else _PluginEngineAdapter
+                    )
+                    adapter = adapter_cls(instance, py_file.parent, py_file)
                     # 回填落盘配置（P1-02）：此前只有 `PUT /plugins/{name}/config` 会写
                     # `adapter.plugin_config`（内存），启动路径从不读 `plugin_configs`
                     # → 重启后插件拿到的恒是空 dict，用户保存的配置静默丢失（插件退回
@@ -587,6 +1119,23 @@ def _has_requirements(adapter) -> bool:
     return (_plugin_subdir(adapter) / "requirements.txt").exists()
 
 
+def _deps_installable(adapter) -> bool:
+    """「一键安装依赖」是否适用于这个插件 —— 唯一判据。
+
+    ⚠️ **前提是进程外**。这个能力做的事是「建 venv + pip install」，而进程内
+    （trusted）插件根本不会从那个 venv 加载 —— 给它装依赖只会造出一个用不上的
+    venv：界面显示「已安装」、插件 import 仍然失败，两边都不报错，用户只会
+    觉得「怎么装都没用」。进程内插件的依赖必须在主环境里，这是它「零额外 venv」
+    的另一面，不是遗漏。
+
+    唯一消费方是 `enumerate_plugins` 的 `hasRequirements` 字段（决定前端是否渲染
+    安装按钮）。`install_plugin_deps` 的入口校验**刻意只判 execMode** —— 在那条
+    路径上「没有 requirements.txt」另有自己的状态（`no-requirements`），并进
+    「进程内」会让两种完全不同的原因说同一句话。
+    """
+    return adapter._exec_mode == "external" and _has_requirements(adapter)
+
+
 def _resolve_venv_base_python() -> Optional[str]:
     """建 venv 用的 base python 路径。
 
@@ -626,6 +1175,21 @@ def install_plugin_deps(name: str) -> dict:
     if not entry:
         raise AppError("PLUGIN_NOT_FOUND", f"插件不存在: {name}")
     adapter = entry["adapter"]
+    if adapter is None:
+        return {"status": "error", "python": "",
+                "error": "插件未加载（可能已禁用），请先启用并重启后端"}
+    # 进程内插件不从 venv 加载 —— 装到这里只会造出一个用不上的 venv。
+    # ⚠️ 前端虽已按 `execMode === 'external'` 门控按钮，但**接口本身不能只靠前端**
+    # （入口严）：否则 curl 一下就能在 `~/.limo/plugins/<name>/.venv` 里堆出
+    # 一份插件永远不会加载的依赖，而界面上什么都不显示。
+    if adapter._exec_mode != "external":
+        return {
+            "status": "inproc",
+            "python": "",
+            "error": "该插件在进程内运行，依赖需装在后端自身环境，不能一键安装",
+            "hint": ("进程内插件（trusted=true）没有独立 venv；打包版无法追加依赖，"
+                     "如需自带依赖请改用进程外模式（command + requirements.txt）"),
+        }
     pkg_dir = _plugin_subdir(adapter)
     req = pkg_dir / "requirements.txt"
     if not req.exists():
@@ -764,8 +1328,9 @@ def enumerate_plugins() -> list[dict]:
             "execMode": adapter._exec_mode,
             "ready": precheck_reason == "",
             "precheckReason": precheck_reason,
-            # 依赖一键安装状态（进程外插件）：requirements.txt 存在？venv 已建？
-            "hasRequirements": _has_requirements(adapter),
+            # 依赖一键安装状态：仅**进程外 + 有 requirements.txt** 才适用
+            # （判据见 `_deps_installable`）
+            "hasRequirements": _deps_installable(adapter),
             "depsInstalled": _deps_installed(adapter),
         })
     result.sort(key=lambda p: (p["category"], p["name"]))

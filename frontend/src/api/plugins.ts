@@ -21,7 +21,13 @@ export interface PluginInfo {
   config: Record<string, unknown>
   reason?: string
   execMode: string | null
-  /** 进程外插件：子目录是否有 requirements.txt（一键安装前提） */
+  /**
+   * 「一键安装依赖」是否可用 = **进程外 + 子目录有 requirements.txt**。
+   *
+   * ⚠️ 不是「目录里有没有 requirements.txt」——进程内（`trusted`）插件不从那 venv
+   * 加载，让它亮安装按钮会造出一个用不上的 venv：界面说成功、插件仍 import 失败。
+   * 判据在后端 `_deps_installable` 一处，前端只消费。
+   */
   hasRequirements: boolean
   /** 进程外插件：venv 是否已创建（依赖是否已尝试安装） */
   depsInstalled: boolean
