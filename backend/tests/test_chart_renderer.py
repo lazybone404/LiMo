@@ -422,6 +422,67 @@ for label, body in (('JSON 语法错', '{这不是 JSON'), ('未知 layout', '{"
         assert _charts(tmp) == [], f'{label}: 失败不应写任何文件'
 print('PASS: fig 的 JSON 损坏 / 未知 layout / 空对象 / 非对象 → 失败文本零残留')
 
+# ── 2026-10-29 布局名写成了「用列表代替画图」族的块类型 ──
+# 实测来源：一篇真实产物里模型写 {"layout":"cycle", …} —— 它认出了那段内容
+# （「记住小圆点 → 干扰题 → 新小圆点 → 再记 → 再做干扰题」）是首尾相接的循环，
+# 也照 prompt 选了 cycle，只是把**块名当成了 layout 名**（get_chart_format 整段
+# 都在教 fig JSON，那句「→ cycle 块」夹在其中）。而 _LAYOUTS 从来没有环形算子
+# （2026-10-20 决策：这种关系用列表表达就够了），于是整段降级成「图表生成失败」
+# ——用户拿到的是一句他无法处理的错误。转换是无损的：节点文字原样搬进列表项。
+
+from app.services import chart_renderer as _cr
+
+# ⑥ 派生集合自证：只有**后端没有算子**的块类型才被接管
+assert _cr._BLOCK_ONLY_LAYOUTS == ('steps', 'cycle'), \
+    f"派生结果变了：{_cr._BLOCK_ONLY_LAYOUTS}（新增块/新增算子时要回来看这行）"
+assert not (set(_cr._BLOCK_ONLY_LAYOUTS) & set(_cr.chart_layout._LAYOUTS)), \
+    '被接管的类型与既有算子有交集 —— 那会把合法的图表用法截走'
+
+# ⑦ cycle → 有序列表块（blocks.css 靠 <ol> 认环形布局）
+with tempfile.TemporaryDirectory() as tmp:
+    with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+        out = render_charts(_fig('{"layout":"cycle","nodes":[{"label":"记住小圆点位置"},'
+                                '{"label":"做一道干扰题"},{"label":"出现新的小圆点"}]}'), tmp)
+    assert '```fig' not in out and 'layout' not in out, f'围栏与 JSON 都应零残留: {out}'
+    assert '<!-- limo-block:v1 type="cycle" -->' in out, f'应转成 cycle 块: {out}'
+    assert '<!-- /limo-block -->' in out, '块必须闭合'
+    assert '\n1. 记住小圆点位置\n2. 做一道干扰题\n3. 出现新的小圆点\n' in out, \
+        f'cycle 必须是**有序**列表（<ol> 是 CSS 的判据）且顺序原样: {out}'
+    assert '📊 图表生成失败' not in out, '认得模型想表达什么时不该报错'
+    assert '![图表](assets/' not in out and _charts(tmp) == [], '转换不产生图/文件'
+print('PASS: fig layout=cycle → 无损转成语义块（有序列表），不报错不写文件')
+
+# ⑧ steps → 无序列表块（判据是 <ul>，写错就退化成普通列表：内容不丢但白标了一个块）
+with tempfile.TemporaryDirectory() as tmp:
+    with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+        out = render_charts(_fig('{"layout":"steps","steps":["确认地址","提交表单"]}'), tmp)
+    assert '<!-- limo-block:v1 type="steps" -->' in out, out
+    assert '\n- 确认地址\n- 提交表单\n' in out, f'steps 必须是**无序**列表: {out}'
+print('PASS: fig layout=steps → 语义块（无序列表），容器键 steps 也认')
+
+# ⑨ 负向对照（本组最重要的一条）：timeline / sequence / quadrant 在 _LAYOUTS 里
+# **有算子**，写 fig 是合法用法，绝不能被上面的转换截走。
+# 改回「手写名单」或「整族接管」时这条会红。
+with tempfile.TemporaryDirectory() as tmp:
+    with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+        out = render_charts(_fig('{"layout":"timeline","nodes":[{"label":"周一"},{"label":"周二"}]}'), tmp)
+    assert 'limo-block' not in out, f'timeline 有算子，必须照常出图而非转块: {out}'
+    assert _REF_RE.search(out), f'timeline 应产出图片引用: {out}'
+    assert len(_charts(tmp)) == 1, '应写出 1 个 PNG'
+print('PASS: 负向对照 —— 有算子的 timeline 不被截走，照常出图')
+
+# ⑩ 抽不出节点时不硬造空块：给指路式失败文案（旧文案「未知布局 x（可用：十个…）」
+# 里 7/10 是 prompt 早已撤下引导的算子，对用户是无意义噪音）
+for label, body in (('无 nodes', '{"layout":"cycle"}'), ('nodes 全空', '{"layout":"cycle","nodes":[]}')):
+    with tempfile.TemporaryDirectory() as tmp:
+        with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):
+            out = render_charts(_fig(body), tmp)
+        assert '📊 图表生成失败' in out, f'{label}: 抽不出节点应显式失败: {out}'
+        assert 'cycle 不是图表布局' in out, f'{label}: 文案应指路而非罗列算子: {out}'
+        assert 'limo-block' not in out, f'{label}: 不该造一个空块: {out}'
+        assert _charts(tmp) == [], f'{label}: 失败不写文件'
+print('PASS: 抽不出节点 → 指路式失败文案（不造空块），旧「可用：十个算子」噪音已消失')
+
 # 未选图表 / 不是专用围栏 → 仍不处理（协议隔离不因新增 fig 而放松）
 with tempfile.TemporaryDirectory() as tmp:
     with mock.patch('app.services.chart_renderer._render_png', return_value=PNG):

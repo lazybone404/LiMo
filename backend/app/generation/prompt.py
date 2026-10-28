@@ -648,7 +648,9 @@ def get_chart_format(source_type: str) -> str:
         "  · 分层、包含、目录、分类（谁在谁里面）→ **嵌套列表**，连块都不必标\n"
         "  · 两方之间有来有回的消息 → `sequence` 块\n"
         "  · 两个维度交叉的四格评估 → `quadrant` 块\n"
-        "- 三种结构，选最贴合的一种：\n"
+        "- 三种结构，`layout` **只能是** `grid` / `flowchart` / `state` 这三个值之一 ——"
+        "上面那几种该用列表表达的关系（steps / timeline / cycle / sequence / quadrant）"
+        "**不是布局名**，写进 fig 也画不出图。\n"
         '  · 依赖/调用网络 → {"layout":"grid","rows":[["前端"],["接口层"]],'
         '"edges":[{"from":[0,0],"to":[1,0],"label":"调用"}]}\n'
         '  · 带分支与汇合的流程（一个节点分出两条线、最后汇到一处，'

@@ -6,6 +6,80 @@
 
 ---
 
+## 2026-10-29 — 图表：块名被当成了布局名（认得模型想表达什么，而不是报错）
+
+**起因**：用户贴来一条产物里的报错——
+
+```
+📊 图表生成失败（布局失败：未知布局 'cycle'（可用：hchain / layers / timeline /
+grid / branch / tree / flowchart / state / sequence / quadrant））
+```
+
+### 诊断：模型写对了内容、选对了块，只填错了字段
+
+溯源到 `~/.limo/宝洁测评速通经验分享-ac259f/notes/v1.md` 第 131 行（`promptVersion:"21"`，
+`2026-10-28T23:23:02`，`deepseek-flash`）。紧接报错的那句正文是：
+
+> 实际顺序为：记住小圆点位置 → 做一道干扰题 → 出现新的小圆点 → 再记 → 再做干扰题，如此循环。
+
+这正是 `get_chart_format()` 明写「**没有分支的**首尾相接因果循环 → `cycle` 块」的那一类。
+模型写出的 fig 是 `{"layout":"cycle","nodes":[…]}` —— 它把**块名当成了布局名**。
+
+根因不在措辞（"21" 那轮刚把「没有分支的」补上），在**位置**：整段 `get_chart_format()` 都在教
+fig JSON，那句「→ `cycle` 块」夹在中间，而 `cycle` 和 `grid` / `flowchart` 长得一样是个单词，
+最容易被读成「一种新的 layout」。`_LAYOUTS` 从来没有环形算子（2026-10-20 的决策是：这种关系
+用列表表达就够了），于是 `validate_spec` 判「未知布局」，整段降级成失败文本。
+
+⚠️ **报错里的十个算子有七个是 prompt 早已撤下引导的**（`hchain` / `layers` / `timeline` /
+`branch` / `tree` / `sequence` / `quadrant`）—— 对用户是无意义噪音，也无法据此采取任何行动。
+
+### 改了什么
+
+**① 后端兜底：认得出来就转换（`chart_renderer.py`）**
+
+新增 `_fig_as_alternative_block()`：当 fig 的 `layout` 是**「用列表代替画图」族里后端没有算子的
+类型**时，把节点文字**无损**搬进同名语义块，而不是失败占位。
+
+```
+⟶ <!-- limo-block:v1 type="cycle" -->
+  1. 记住小圆点位置
+  2. 做一道干扰题
+  …
+  <!-- /limo-block -->
+```
+
+- **判据从两个集合派生**：`_BLOCK_ONLY_LAYOUTS = tuple(t for t in CHART_ALTERNATIVE_BLOCK_TYPES
+  if t not in chart_layout._LAYOUTS)`，当前只剩 `steps` / `cycle`。⚠️ **必须派生不能手写** ——
+  `timeline` / `sequence` / `quadrant` 在 `_LAYOUTS` 里**有算子**，写 `{"layout":"timeline"}` 是
+  合法用法，手写名单会把它们一起截走（测试有负向对照钉住）。
+- **列表类型是 CSS 判据**：`steps` → 无序（`<ul>`）、`cycle` → 有序（`<ol>`），写错就退化成普通
+  列表（内容不丢，但白标了一个块）。
+- **抽不出节点不硬造空块**：给指路式文案 `"{layout} 不是图表布局（这种关系用同名语义块表达）"`，
+  替掉那句罗列十个算子的旧文案。
+- ⚠️ **这不违反「失败显式化」**：不是把失败藏起来，是**已经知道它该落在哪里**。真正的失败
+  （JSON 坏、布局装不下、抽不出节点）照旧零残留替换。
+
+**② prompt 减少复发（`prompt.py` + `PROMPT_VERSION` `"21"` → `"22"`）**
+
+「三种结构，选最贴合的一种」→ 明写封闭枚举：
+
+> `layout` **只能是** `grid` / `flowchart` / `state` 这三个值之一 —— 上面那几种该用列表表达的关系
+> （steps / timeline / cycle / sequence / quadrant）**不是布局名**，写进 fig 也画不出图。
+
+⚠️ **两侧不互相替代**：prompt 侧是「别写错」，后端是「写错了也认得出」。只有后者能救历史行为与
+换模型后的新形态。
+
+### 影响范围
+
+- `backend/app/services/chart_renderer.py`（+1 派生常量、+2 函数、`_process_fig` 加一个分支）
+- `backend/app/generation/prompt.py`（一行措辞）
+- `backend/app/generation/prompts/__init__.py`（`PROMPT_VERSION` → `"22"` + 版本注释）
+- `backend/tests/test_chart_renderer.py`（+5 组断言：派生集合自证 / cycle 有序 / steps 无序 /
+  **timeline 有算子不得被截走** / 抽不出节点给指路文案且不造空块）
+- ⚠️ 已有的历史产物**不回溯修改** —— 那句失败文本已经写进 `v1.md` 了，重新生成才会有新行为
+
+---
+
 ## 2026-10-29 — 合成入口：装得下就是「选好 → 合并」
 
 **起因**：用户原话「我在想我们合成是不是做的太复杂了，有时候用户就是只是想把几篇文档

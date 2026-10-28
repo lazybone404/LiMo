@@ -164,6 +164,11 @@
   `quadrant`）**必须同批**删/改，否则勾了图表的那批产物会同时收到两条互斥指令。
   ⚠️ 2026-10-20 起 `get_chart_format` 只暴露**三种**（`grid` / `flowchart` / `state`），
   撤掉的四种出口即上面这五个块与「嵌套列表」—— 详见 §7。
+  ⚠️ **块名不是 layout 名**（2026-10-29，`PROMPT_VERSION` `"21"` → `"22"`）：引导语里
+  「`layout` **只能是** `grid` / `flowchart` / `state` 这三个值之一」是**必须留着**的一句。
+  删掉它，模型会把 `cycle` 这类块名填进 `layout`（实测：整段都在教 fig JSON，块名夹在中间
+  → 被读成「一种新布局」），整段降级成「📊 图表生成失败」。后端有兜底
+  （`chart_renderer._fig_as_alternative_block` 无损转成同名块），但那是**补救不是用法**。
   ⚠️ **后三个（`table` / `code` / `image`）与前九个性质不同族**：前六个标的是**普通段落**、
   后三个标的是**内容本身**（表格 / 代码 / 图片本来就与正文不同质），故规范对它们额外明写
   「块内照原样写」、「`image` 的地址原样照抄」—— 前者防模型把表格改写成卡片，后者防它
@@ -945,7 +950,7 @@ key **回退 `article`** —— 旧文档没有 `shape` 字段，读了不能崩
 
 ## 13. 提示词版本（PROMPT_VERSION）
 
-**定义**：[backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) — 当前值 `"21"`
+**定义**：[backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) — 当前值 `"22"`
 
 这个常量只有一个用途：写进产物自证头的 `generated.promptVersion`（装配在 `generation/provenance.py`），回答「这份产物是凭哪版提示词生成的」。**它对 prompt 本身零影响**——改它不会让任何一次调用产生不同结果，但会让此后落盘的产物如实标出新版本。
 
@@ -973,6 +978,7 @@ key **回退 `article`** —— 旧文档没有 `shape` 字段，读了不能崩
 | `"19"` | 2026-10-20 **措辞中性化，判据一字未改**：`get_markdown_block_format()` 的「用列表表达就够了」那句，块名单改由 `core/artifact_blocks.py::CHART_ALTERNATIVE_BLOCK_TYPES` **拼出**，手写的「不要塞进这**五种**」改成「这**几种**」。起因是这条名单在 prompt 文案 / `_chart_missing_warning` 判据 / 模块注释三处各抄了一份 —— 加第六种时漏改任一处都是静默分叉（prompt 教了、完成期 warning 不认 → 用户照做反被报「图表未生成」）。⚠️ 输出字节与 `"18"` 只差这一个词，bump 走的是「发给模型的文本变了就 bump」这条纪律，不是行为变了 |
 | `"20"` | 2026-10-26 `get_chart_format()` 的 flowchart 行加一句硬边界「**单向前进，不能有回边/自环**，有回环改用 state」。`flowchart` 算子结构性拒绝任何环（`_topo_layers` 排不出拓扑序就抛错），而原引导只说了「带分支与汇合」——模型表达「请求下行 / 响应上行」这类往返路径时会自然画出回边，整张图降级成「图表生成失败」。⚠️ 只加括注、不动结构，因为 2026-08-16 的教训是「堆规则 ↔ 出图率」直接 trade-off |
 | `"21"` | 2026-10-27 **flowchart 示例改成「分支 + 汇合」**（`"20"` 的括注没治住，用户仍撞到「流程存在环（c、d、e）」）。根因是**示例形状与描述矛盾**：两份 flowchart JSON（清单行 + 末尾「照改文字」）都是 `a→b→c` 单链，既无分支也无汇合，模型从示例里学到的就是「一条链」。① 两份示例换成 5 节点「提交 → 通过? →（发布 / 退回）→ 上线」（真分支、真汇合、无环，`chart_layout.expand` 实测 `scale=1.0`）；② 抽一行边界句「任何一条边指回自己的上游就是环，整张图会被丢弃，有回边一律改用 state」；③ `cycle` 块的指路补「**没有分支的**」——它有 3–6 个有序项，装不下带分支的环，那一类归 `state`。⚠️ `test_prompt.py` 的新守卫**解析示例 JSON** 断言「有分支、有汇合」，退回单链立刻红（已用旧示例做对照实验确认有区分力） |
+| `"22"` | 2026-10-29 **`layout` 明写成封闭枚举 —— 块名被当成了布局名**。`"21"` 把指路语补成「**没有分支的**首尾相接循环 → `cycle` 块」，措辞是对的，但**位置**让它被读成了另一种 layout：整段 `get_chart_format()` 都在教 fig JSON，那句夹在中间、`cycle` 又和 `grid`/`flowchart` 一样是个单词 → 模型写出 `{"layout":"cycle",…}`，被 `validate_spec` 判「未知布局」，整段降级成「📊 图表生成失败」（实测来源：`~/.limo/宝洁测评速通经验分享-ac259f` 的 notes v1，`promptVersion:"21"`）。清单行「三种结构，选最贴合的一种」→ 明写「`layout` **只能是** `grid` / `flowchart` / `state` 这三个值之一 —— steps / timeline / cycle / sequence / quadrant **不是布局名**」。⚠️ **只改 prompt 不够**：模型已经写对内容、选对了块，只是填错了字段的取值域，出错时用户拿到的是一句无法处理的错误 → 后端同批加兜底（`chart_renderer._fig_as_alternative_block` 无损转成同名块）。prompt 侧减少复发、后端认得出模型想表达什么，**两件事不互相替代** |
 
 ⚠️ **同一轮还有一处 CSS 改动，不 bump**：中性面板族（`metric` / `table` / `code` / `image`）
 的容器边框由 `--tk-border-light` 换成 `--tk-border`（[blocks.css](../frontend/src/styles/blocks.css)）。

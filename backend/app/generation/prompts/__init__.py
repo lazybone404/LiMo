@@ -208,5 +208,19 @@ from .notes_styles import (
 #   · ⚠️ 这是**示例修正**不是规则追加：规则仍是 4 条，净增约 2 行（flowchart 示例节点
 #     从 2 个变 5 个）。`test_prompt.py` 的新守卫解析示例 JSON 断「有分支、有汇合」，
 #     退回单链立刻红。
-PROMPT_VERSION = "21"
+# "22"（2026-10-29，`layout` 明写成封闭枚举——块名被当成了布局名）：
+#   · "21" 把指路语补成「**没有分支的**首尾相接循环 → `cycle` 块」，措辞是对的，但
+#     **位置**让它被读成了另一种 layout：整段 `get_chart_format()` 都在教 fig JSON，
+#     那句「→ `cycle` 块」夹在中间、`cycle` 又和 `grid` / `flowchart` 长得一样是个单词
+#     → 模型写出 `{"layout":"cycle","nodes":[…]}`，被 `validate_spec` 判「未知布局」，
+#     整段降级成「📊 图表生成失败」。实测来源：`~/.limo/宝洁测评速通经验分享-ac259f`
+#     的 notes v1（`promptVersion:"21"`，2026-10-28）。
+#   · 改法：清单行「三种结构」→ 明写「`layout` **只能是** `grid` / `flowchart` / `state`
+#     这三个值之一 —— steps / timeline / cycle / sequence / quadrant **不是布局名**」。
+#   · ⚠️ **只改 prompt 不够**：模型已经写对内容、选对了块，只是填错了字段的取值域，
+#     而那条路上一旦出错用户拿到的是一句他无法处理的错误。故后端同批加了兜底
+#     （`chart_renderer._fig_as_alternative_block`：布局名是「无算子」的块类型时**无损
+#     转成同名语义块**，抽不出节点才给指路式文案）。prompt 侧是**减少复发**，后端是
+#     **认得出模型想表达什么**，两件事不互相替代。
+PROMPT_VERSION = "22"
 

@@ -36,6 +36,7 @@ import xml.etree.ElementTree as ET
 
 from PIL import Image, ImageDraw, ImageFont  # PIL 已随图片优化打包，是硬依赖
 
+from app.core.artifact_blocks import CHART_ALTERNATIVE_BLOCK_TYPES
 from app.core.text_utils import parse_json_object  # ⚠️ 本模块曾自带一份私有实现（2026-10-11 提升为公共）
 from app.services import chart_layout, chart_svg  # 语义围栏链路（chart_layout 零依赖）
 
@@ -50,6 +51,17 @@ CHART_FENCE_MARKS = ("```chart", "```fig")
 
 # 画布上限（逻辑像素，方案 §2.4：≤640×640 上限，非固定值）
 MAX_CANVAS = 640.0
+
+#: 「用列表代替画图」那一族里**后端根本没有图表算子**的类型（当前 `steps` / `cycle`）。
+#:
+#: ⚠️ 从两个集合**派生**，不手写：`CHART_ALTERNATIVE_BLOCK_TYPES` 里的
+#: `timeline` / `sequence` / `quadrant` 在 `_LAYOUTS` 里**有算子** —— 模型写
+#: `{"layout":"timeline"}` 是合法用法，照常出图，不能被下面的转换截走。
+#: 手写的失效形态是：将来某个块补了算子（或某个算子被撤），这里仍按旧名单转，
+#: 而两处都不报错。
+_BLOCK_ONLY_LAYOUTS = tuple(
+    t for t in CHART_ALTERNATIVE_BLOCK_TYPES if t not in chart_layout._LAYOUTS
+)
 
 # 单个 SVG 围栏内容长度上限（LLM 输出无显式 token cap，与超大画布叠加成 DoS 面）
 MAX_SVG_BYTES = 64 * 1024
@@ -180,6 +192,70 @@ def _font_measure(text: str, size: float) -> float:
     return _load_font(_detect_chinese_font(), int(size)).getlength(text)
 
 
+def _fig_node_labels(obj: dict) -> list[str]:
+    """从 fig 里尽量抽出可读的节点文字。
+
+    容忍模型各种写法：`{"label": …}` / 纯字符串；容器键取 `nodes`，退而求其次
+    `items` / `steps`（模型把布局名当块名写时，容器名也跟着飘）。
+    """
+    raw = None
+    for key in ("nodes", "items", "steps"):
+        if isinstance(obj.get(key), list):
+            raw = obj[key]
+            break
+    if raw is None:
+        return []
+    out: list[str] = []
+    for it in raw:
+        if isinstance(it, str):
+            label = it
+        elif isinstance(it, dict):
+            label = it.get("label") or it.get("text") or ""
+        else:
+            label = ""
+        label = " ".join(str(label).split()).strip()
+        if label:
+            out.append(label)
+    return out
+
+
+def _fig_as_alternative_block(obj: dict) -> str | None:
+    """把「误用成 layout 的块类型」转成语义块标记；不适用时返回 `None`。
+
+    2026-10-29 实测：一篇真实产物里模型写了 `{"layout":"cycle","nodes":[…]}`。
+    它认出了那段内容（「记住小圆点 → 干扰题 → 新小圆点 → 再记 → 再做干扰题」）
+    是**首尾相接的循环**，也照 prompt 选了 `cycle`，只是把**块名当成了布局名**
+    —— `get_chart_format` 整段都在教 fig JSON，那句「→ `cycle` 块」夹在其中，
+    最容易被读成「一种新的 layout」。而 `_LAYOUTS` 从来没有环形算子
+    （2026-10-20 的决策：这种关系用列表表达就够了），于是整段降级成
+    「📊 图表生成失败」，**用户拿到的是一句他无法处理的错误**。
+
+    转换是**无损**的：节点文字原样搬进列表项，一个字节都不丢。这条与
+    「失败显式化」不冲突 —— 我们不是把失败藏起来，是**认得模型想表达什么**，
+    并且已经知道它该落在哪里。
+
+    ⚠️ 只接管 `_BLOCK_ONLY_LAYOUTS`：`timeline` / `sequence` / `quadrant` 在
+    `_LAYOUTS` 里有算子，写 fig 是合法用法，不能被这里截走。
+    """
+    layout = obj.get("layout")
+    if layout not in _BLOCK_ONLY_LAYOUTS:
+        return None
+    items = _fig_node_labels(obj)
+    if not items:
+        return None
+    # ⚠️ **不按块的项数上限截断**（`cycle` 是 3–6 项）：超了 `blocks.css` 会把节点
+    # 全叠在环顶 —— 那是有意接受的降级，「内容永远不该因为渲染不认识而消失」优先于
+    # 观感。这里截断反而是**丢内容**，比叠在一起更糟。
+    # `steps` 是**无序**列表、`cycle` 是**有序**列表 —— `blocks.css` 分别靠
+    # `<ul>` / `<ol>` 认形态，写错就退化成普通列表（内容不丢，但白标了一个块）。
+    if layout == "steps":
+        lines = [f"- {t}" for t in items]
+    else:
+        lines = [f"{i}. {t}" for i, t in enumerate(items, 1)]
+    return (f'<!-- limo-block:v1 type="{layout}" -->\n'
+            + "\n".join(lines) + "\n<!-- /limo-block -->")
+
+
 def _process_fig(body: str, assets_dir: str, counter: int) -> tuple[str, int, str | None]:
     """语义 JSON → 布局 → SVG → 复用 _process_svg 的校验/渲染/落盘。
 
@@ -190,6 +266,19 @@ def _process_fig(body: str, assets_dir: str, counter: int) -> tuple[str, int, st
     if not isinstance(obj, dict):
         logger.info("图表 fig 围栏 JSON 解析失败 → 替换为失败文本")
         return None, counter, "图表数据格式错误"
+
+    # 布局名写成了「用列表代替画图」那一族的块类型（实测 `cycle`）→ 落成块。
+    # 抽不出节点时给专门指路：「未知布局 'cycle'（可用：hchain / …）」把十个算子
+    # 全列出来，其中七个 prompt 早已撤下引导，对用户是无意义噪音。
+    if obj.get("layout") in _BLOCK_ONLY_LAYOUTS:
+        alt = _fig_as_alternative_block(obj)
+        if alt is None:
+            logger.info("图表 fig 用了块类型 %s 但抽不出节点 → 替换为失败文本",
+                        obj.get("layout"))
+            return None, counter, f"{obj.get('layout')} 不是图表布局（这种关系用同名语义块表达）"
+        logger.info("图表 fig 用了块类型 %s 作布局 → 转成语义块（不画图）",
+                    obj.get("layout"))
+        return alt, counter, None
 
     try:
         spec = chart_layout.expand(obj, width=int(MAX_CANVAS), height_cap=int(MAX_CANVAS),
