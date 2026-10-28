@@ -380,7 +380,13 @@ def _is_cjk(ch: str) -> bool:
 
 #: 英文词 / 数字串。数字单列一支，是因为 `1048` 这种纯数字查询必须能匹配到自己
 #: （unicode61 把 `1,048` 切成 `1` + `048`，故 `_clean_for_search` 会先去掉千分位）。
-_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.]*|\d+(?:\.\d+)?")
+#:
+#: ⚠️ **`_` 刻意不在字符类里**（2026-10-29）：`_clean_for_search` 把 `_` 换成空格，
+#: 故索引侧 `merge_sensitive` 存的是 `merge` + `sensitive` 两个 token；而查询侧若把
+#: `_` 留在 token 里，就会去匹配 `"merge_sensitive"` 这一个不存在的 token ——
+#: **正文里逐字存在的标识符，搜出来是空，且与「库里没有」逐字相同**。
+#: `.` 保留在两侧（索引侧不替换它），故 `limo_startup.log` 两侧都是 `limo` + `startup.log`。
+_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9.]*|\d+(?:\.\d+)?")
 
 
 def _clean_for_search(text: str) -> str:

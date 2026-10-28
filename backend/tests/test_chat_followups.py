@@ -56,6 +56,10 @@ class FakeLLM:
         self.model_id = model_id
         self.model = "fake-model"
         self.api_key = api_key
+        #: 端点会调 `provider_requires_api_key(llm.provider)`（2026-10-29 起 keyless
+        #: 厂商要豁免空 key 检查）。真 `LLMService` 一定有它 —— 替身缺了这条，
+        #: 「缺 key 报错」这类用例会以 `AttributeError` 失败，看着像被测逻辑坏了。
+        self.provider = "dashscope"
         #: 能力位 `reasoning`（= 认 `reasoning_effort`）。设 False 走「不传 `extra_body`」
         #: 那条 —— 本文件不验档位语义（那在 `test_followup.py`），只需要一个确定的分支。
         self.supports_reasoning = False

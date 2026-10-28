@@ -15,7 +15,7 @@ from app.core.errors import AppError
 from app.core.cookie_parser import auto_parse
 from app.core.config_io import save_config as _save_config, mask_sensitive, merge_sensitive
 from app.core.url_utils import api_root
-from app.core.provider_defaults import default_base_url
+from app.core.provider_defaults import default_base_url, provider_requires_api_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -243,7 +243,7 @@ async def detect_models(data: dict, request: Request, cfg=Depends(get_config_dep
     api_key = data.get("api_key", "")
     base_url = data.get("base_url", "")
 
-    if not api_key:
+    if provider_requires_api_key(provider) and not api_key:
         raise AppError("DETECT_NO_API_KEY", "请先填写 API Key")
 
     # 构建 base_url（三档回退见 `_resolve_detect_base_url`）
@@ -271,7 +271,9 @@ async def detect_models(data: dict, request: Request, cfg=Depends(get_config_dep
 
     try:
         import requests as req
-        resp = req.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=15)
+        # keyless 厂商不发 Authorization 头 —— 与 `routers/model.py::test_connection` 同一判据
+        headers = {"Authorization": f"Bearer {api_key}"} if provider_requires_api_key(provider) else {}
+        resp = req.get(url, headers=headers, timeout=15)
         if resp.status_code != 200:
             raise AppError("DETECT_REQUEST_FAILED", f"请求失败 ({resp.status_code}): {resp.text[:200]}")
 

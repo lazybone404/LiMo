@@ -17,7 +17,7 @@ from app.core.registry import EngineRegistry, ENGINE_CATEGORIES
 from app.core.url_utils import api_root
 # 内置厂商默认表已下沉 core（P1-14）——`routers/config.py` 也要用它，
 # 而路由模块之间互相 import 在本项目没有先例（共享常量一贯放 core/）。
-from app.core.provider_defaults import PROVIDER_DEFAULTS
+from app.core.provider_defaults import PROVIDER_DEFAULTS, provider_requires_api_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -107,6 +107,10 @@ def list_providers(request: Request, config=Depends(get_cfg)):
         p = dict(p)
         if p.get("api_key"):
             p["api_key"] = mask_sensitive(p["api_key"])
+        # 派生字段（**不落盘**，只给前端）：这一家的 Key 是不是必填。
+        # ⚠️ 前端**不要**自己维护一份「哪些厂商不需要 Key」的名单 —— 那是第二份表，
+        #    后端加一家而前端不认，失效形态是「输入框还在要求必填 Key」。
+        p["requiresApiKey"] = provider_requires_api_key(p["id"])
         result.append(p)
     return result
 
@@ -198,13 +202,17 @@ def test_connection(provider_id: str, request: Request, config=Depends(get_cfg),
 
     base_url = api_root(prov.get("base_url"))
     api_key = prov.get("api_key", "")
-    if not api_key:
+    if provider_requires_api_key(provider_id) and not api_key:
         return {"ok": False, "error": "未配置 API Key"}
+
+    # ⚠️ keyless 厂商（本地推理）**不发 Authorization 头**：送一个占位 Bearer 给 Ollama
+    # 无害但会让日志/抓包看起来像「配了个假 Key」。判据与上面同一处。
+    headers = {"Authorization": f"Bearer {api_key}"} if provider_requires_api_key(provider_id) else {}
 
     try:
         resp = requests.get(
             f"{base_url}/models",
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=headers,
             timeout=15,
         )
         if resp.status_code in (200, 401):
@@ -222,7 +230,7 @@ def test_connection(provider_id: str, request: Request, config=Depends(get_cfg),
                 probe_model = (cfg.get("llm_models", {}).get(provider_id, [{"id": "gpt-4o-mini"}])[0] or {}).get("id", "gpt-4o-mini")
                 r2 = requests.post(
                     f"{base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}"},
+                    headers=headers,
                     json={"model": probe_model, "max_tokens": 1,
                           "messages": [{"role": "user", "content": "ping"}]},
                     timeout=15,

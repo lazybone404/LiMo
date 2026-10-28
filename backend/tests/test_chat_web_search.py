@@ -351,7 +351,10 @@ def test_接线_开关驱动工具表():
     把 `allow_web=allow_web` 去掉 -> 工具表恒为全量，上面第 1 组**照样全绿**。
     """
     body = _chat_py()
-    assert "_build_registry(store, allow_web=allow_web)" in body
+    # ⚠️ 2026-10-29 起这一行多了 `svc=svc, searcher=searcher`（`search_docs` 要接真检索），
+    # 故断言从「带右括号的完整调用」改成「同一行还接着别的参数」—— 两者都能证明
+    # `allow_web` 真的传下去了，而后一条顺便证明检索依赖也没丢（去掉它们会退回这个形态）。
+    assert "_build_registry(store, allow_web=allow_web," in body
     # 判据必须来自请求参数，不能写死
     assert "allow_web = bool(web_search)" in body
     # ⚠️ 不断言「`_build_registry(store)` 不存在」：非流式 `POST /chat` 那处**刻意**

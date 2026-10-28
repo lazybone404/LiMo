@@ -13,6 +13,10 @@ from openai import AsyncOpenAI
 
 from app.core.model_caps import has_capability
 from app.core.model_resolver import resolve_model
+from app.core.provider_defaults import (
+    KEYLESS_API_KEY_PLACEHOLDER,
+    provider_requires_api_key,
+)
 from app.llm.errors import CancelledError, LLMError
 
 logger = logging.getLogger(__name__)
@@ -111,13 +115,13 @@ class LLMService:
     @property
     def client(self) -> AsyncOpenAI:
         if self._client is None:
-            if not self.api_key:
+            if not self.api_key and provider_requires_api_key(self.provider):
                 raise LLMError(
                     f"缺少 API Key: provider={self.provider}",
                     provider=self.provider, model=self.model,
                 )
-            kwargs = {"api_key": self.api_key, "timeout": self._request_timeout,
-                      "max_retries": 0}
+            kwargs = {"api_key": self.api_key or KEYLESS_API_KEY_PLACEHOLDER,
+                      "timeout": self._request_timeout, "max_retries": 0}
             if self.base_url:
                 kwargs["base_url"] = self.base_url
             self._client = AsyncOpenAI(**kwargs)

@@ -33,6 +33,8 @@ export function ProviderSettings() {
   const [sceneModels, setScene] = useState<SceneModels>({ generate: null, chat: null, image_process: null })
   const [selectedLlmId, setSelectedLlmId] = useState('deepseek')
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({})
+  /** Base URL 编辑态（本地推理常要改成别的端口/主机，默认值不是唯一答案） */
+  const [baseUrls, setBaseUrls] = useState<Record<string, string>>({})
   const [refreshing, setRefreshing] = useState(false)
   const [refreshResult, setRefreshResult] = useState<{ id: string; owned_by: string }[]>([])
 
@@ -191,6 +193,28 @@ export function ProviderSettings() {
     await updateProvider(selectedLlmId, { api_key: k }); await loadAll()
     addToast('API Key 已保存')
   })
+  /**
+   * Base URL 保存（2026-10-29，本地推理接入的配套）。
+   *
+   * ⚠️ **空串必须拦在客户端**：后端 `update_provider` 是 `if data.base_url is not None: p["base_url"] = data.base_url`
+   *    —— 空串会被原样落盘，之后每次请求都打到 `""`。界面上**完全看不出异常**（输入框空了而已），
+   *    直到某次「测试连接」报「无法连接」。故空值不保存、输入框回弹成当前值。
+   * ⚠️ 清空 `baseUrls[id]` 让输入框回落到 `selLlm.base_url`（保存后的服务端值）——
+   *    不保留本地副本，否则「改了又改回去」会一直显示本地值，与服务端脱钩。
+   */
+  const handleSaveLlmBaseUrl = () => runWrite('保存 Base URL', async () => {
+    const current = llmProviders.find(p => p.id === selectedLlmId)?.base_url || ''
+    const typed = baseUrls[selectedLlmId]
+    if (typed === undefined) return  // 没动过
+    const v = typed.trim()
+    const drop = () => setBaseUrls(k => { const n = { ...k }; delete n[selectedLlmId]; return n })
+    if (!v) { drop(); addToast('Base URL 不能为空', 'error'); return }  // drop 后输入框回弹成 current
+    if (v === current) { drop(); return }  // 未变更，跳过
+    await updateProvider(selectedLlmId, { base_url: v })
+    await loadAll()
+    drop()
+    addToast('Base URL 已保存')
+  })
   const handleAddLlmProv = () => runWrite('添加 LLM 厂商', async () => {
     if (!newLlmName.trim()) return
     await addProvider({ name: newLlmName.trim(), base_url: newLlmBaseUrl, api_key: newLlmApiKey, type: 'custom' })
@@ -280,9 +304,12 @@ export function ProviderSettings() {
   })
 
   // 组件卸载时兜底保存未提交的 Key（用户输入后直接关设置不丢）
+  // ⚠️ Base URL 同样要兜底：它是**纯客户端输入框**，不 blur 就卸挂 = 改了一半丢了，
+  //    而用户以为已经生效（下次对话还打旧地址）。
   const refSaveLlm = useRef(handleSaveLlmKey); refSaveLlm.current = handleSaveLlmKey
+  const refSaveLlmBase = useRef(handleSaveLlmBaseUrl); refSaveLlmBase.current = handleSaveLlmBaseUrl
   const refSaveEngine = useRef(handleSaveEngineKey); refSaveEngine.current = handleSaveEngineKey
-  useEffect(() => () => { refSaveLlm.current(); refSaveEngine.current() }, [])
+  useEffect(() => () => { refSaveLlm.current(); refSaveLlmBase.current(); refSaveEngine.current() }, [])
 
   // Derived data
   const selLlm = llmProviders.find(p => p.id === selectedLlmId)
@@ -360,10 +387,18 @@ export function ProviderSettings() {
             {selLlm && (
               <>
                 <div className="flex items-center gap-2">
+                  {selLlm.requiresApiKey === false ? (
+                    // 本地推理（Ollama）—— 不收 Key，但要能让用户看见「为什么没有输入框」，
+                    // 否则会以为界面坏了。判据来自后端 `requiresApiKey`，前端不自己列名单。
+                    <div className="flex-1 px-3 py-2 bg-surface border border-border-light rounded-[10px] text-[12px] text-dimmed">
+                      本地服务，无需 API Key
+                    </div>
+                  ) : (
                   <input type="password" value={apiKeys[selectedLlmId] ?? selLlm.api_key}
                     onChange={e => setApiKeys(k => ({ ...k, [selectedLlmId]: e.target.value }))}
                     onBlur={() => handleSaveLlmKey()}
                     placeholder="API Key（输入后自动保存）" className="flex-1 px-3 py-2 bg-surface border border-border-default rounded-[10px] text-[13px] font-mono outline-none" />
+                  )}
                   <button onClick={() => testProviderConnection(selectedLlmId)}
                     className="px-3 py-2 text-[12px] text-dimmed hover:bg-surface-hover rounded-lg flex items-center gap-1"><Wifi size={12} />测试</button>
                   {selLlm?.type !== 'built-in' && (
@@ -374,6 +409,17 @@ export function ProviderSettings() {
                     className="flex items-center gap-1 px-3 py-1.5 text-[12px] text-accent hover:bg-accent/5 rounded-lg">
                     <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />刷新
                   </button>
+                </div>
+                {/* Base URL 可编辑 —— 本地推理（Ollama / vLLM）常要改成别的端口或另一台机器，
+                    默认值不是唯一答案。云端厂商同样成立（中转/代理地址）。 */}
+                <div className="flex items-center gap-2">
+                  <span className="w-[64px] shrink-0 text-[11px] text-dimmed">Base URL</span>
+                  <input value={baseUrls[selectedLlmId] ?? selLlm.base_url}
+                    onChange={e => setBaseUrls(k => ({ ...k, [selectedLlmId]: e.target.value }))}
+                    onBlur={() => handleSaveLlmBaseUrl()}
+                    onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                    placeholder="API 地址（输入后自动保存）"
+                    className="flex-1 px-3 py-2 bg-surface border border-border-default rounded-[10px] text-[12px] font-mono outline-none" />
                 </div>
                 {allLlmNames.size > 0 && (
                   <div className="max-h-48 overflow-y-auto space-y-1 border border-border-light rounded-[10px] p-2">

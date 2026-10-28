@@ -20,6 +20,10 @@ DEFAULT_CONTEXT = {
     "moonshot": 131_072,
     "opencode": 131_072,
     "zhipu": 131_072,
+    # Ollama（本地）—— 本地模型的窗口**差异极大**（qwen3 系 32k–128k，llama 系 8k）。
+    # 兜底层取 32k：宁可低估（截断早）也不要高估（本地服务直接 400 超窗）。
+    # 用户可以让「刷新模型」拉到真实 `num_ctx`，或在设置页手填 context_window 覆盖这层。
+    "ollama": 32_768,
 }
 
 try:

@@ -492,6 +492,40 @@ rerank 是在**已有候选集内部**精排，收益上限取决于候选集里
 - `RRF_K = 10`（29 题实测优于 60）。
 - `QUERY_TIMEOUT = 3.0` 秒 —— 单条短文本一次往返，正常 <500ms；再长就是「用户以为搜索卡住了」。
 
+#### 两个消费方，同一份编排（2026-10-29）
+
+上面说的是**怎么融**；「一次融合检索按什么顺序做哪几步」抽在
+[`services/search_fuse.py`](../backend/app/services/search_fuse.py)::`fused_search`：
+
+```
+GET /api/search  ─┐
+                  ├─→ fused_search(svc, searcher, q, limit) ─→ {hits, semantic}
+对话侧 search_docs┘      ├─ 字面先跑（svc.search_resources，depth 条）
+                         ├─ searcher is None → semantic: null，纯字面结束
+                         ├─ searcher.fuse(...) → RRF 定序
+                         └─ 语义独有命中 → get_resource 回补 title
+```
+
+**抽出来的理由是修一个静默失效，不是整理代码**：对话侧的 `search_docs` 此前走
+`store.list_transcripts({"query": q})` —— 那是**标题子串过滤**，既不碰 FTS5 也不碰向量。
+正文里逐字存在的词只要标题没有就搜不到，而界面上表现为「AI 说库里没有，可我用搜索框
+自己搜得到」，两边都不报错。两处各写一遍编排的失效形态正是这个：**一边在融合、一边没在
+检索**，而两者都「能搜到东西」（模式 #54）。
+
+四个成对要点：
+
+1. **结果带 `snippet` 不带 `sourceType`** —— 后者在对话侧零消费方（grep 过 prompt 与前端），
+   留着只会让下游多一处 `?? ''`。
+2. **`found` 与 `hasMore` 分开** —— `found` 是「返回了几条」（对话侧上限 5），不是「命中了几篇」。
+   不拆开时「命中 200 篇」会被摘要说成「找到 5 个相关文档」，那不是省略，是说假话。
+   探测法同产品侧 `search_resources` 的 `size+1`：请求 `limit=6`，拿到 6 条即知还有更多。
+3. **索引坏时降级为标题过滤并标 `degraded`** —— `fused_search` 刻意**不吞** `QueryError`：
+   `/api/search` 要把它变 503（可恢复标记），对话侧要降级（抛出去会被 `agent.py` 吞成
+   `{"error": …}` ⇒ 索引坏一次，对话从此搜不到任何文档）。两种处置都对，差别只能由调用方
+   决定。但降级**必须说出来**——静默降级会让模型把「没搜到」当事实。
+4. **向量开着时每次工具调用花一次 query embedding** —— 改造前这条路径纯内存、零成本。
+   默认关 ⇒ 默认零成本；开了就是已知代价（一次短文本编码）。
+
 ---
 
 ## 四、索引时机（云端内置这一支必须先定）
@@ -1010,6 +1044,44 @@ test_reconcile_does_not_reset_fail_count` 钉住这条。
 ---
 
 ## 七、测评方法（改检索前必跑）
+
+### 7.0 门禁层：`bash scripts/check-all search`（2026-10-29）
+
+上面那两个脚本跑的是**真实库**（要有库、要有 `~/.limo`），因此进不了 CI。故另有一层
+**离线可跑、约 1 秒**的门禁：
+
+| 件 | 位置 | 是什么 |
+|---|---|---|
+| 语料快照 | `backend/tests/fixtures/search_eval_corpus.json` | 10 份 md 的 81 条 H2 切片（100–3000 字，剥围栏后计长） |
+| 查询集 | `backend/tests/fixtures/search_eval_queries.json` | 30 题（语义 12 / 精确 10 / 混合 8），手写评审 |
+| 基线 | `backend/tests/fixtures/search_eval_baseline.json` | `{topk, corpusHash, overall, perKind, ranks}`，实测 `23/30` |
+| 生成器 | `backend/scripts/build_search_eval.py` | `--corpus` 重建快照 / `--update-baseline` 写基线 |
+| 判据 | `backend/tests/test_search_eval.py` + `eval_search._score` | **打分同源**，只有数据是自己的一份 |
+
+**⚠️ 三条边界，别读成「检索好不好」的结论：**
+
+1. **它测的是字面层**（`SearchEngine.search`），**不含向量与 RRF 融合**，也不含对话侧。
+   `VectorSearcher.fuse` 的编排（depth / RRF k / 语义独有回补）**一个字都不会反映到
+   分数上** —— 那些由各自的单测守。
+2. **绝对分数不可迁移**。切片把 H2 当「一篇文档」（几百到三千字），而真实库里一篇
+   transcript 是整段视频转录（上万字）。BM25 的长度归一化让检索单元变小 ⇒ 命中显著更容易
+   —— 这正是本项目踩过的 **40pp 落差**形态。**只在同一份语料的前后对比里有意义**，
+   不要拿去跟 §2.2 的 29 题真实库分数比。
+3. **它用快照而不是现切**。现切的失效形态是「改一句文档 → 语料变 → 基线漂移 → 门禁因
+   无关改动变红」。代价是快照会随时间脱节，由 `--corpus` 显式重建承担（重建后**必须**
+   同时 `--update-baseline`，基线里存了语料指纹，对不上会直接报错）。
+
+**⚠️ 更新基线必须在 `docs/CHANGELOG.md` 记一句理由。** 否则开发者看到一片红，唯一能干的
+就是随手 `--update-baseline`，基线就成了橡皮图章。
+
+自证有区分力：一条负向对照（把每题的目标整体错位一位）—— 实测 `4/30`（基线 `23/30`）。
+实测把 `ORDER BY rank` 改成 `ORDER BY id DESC` 时：合计 `10/30`，两个用例同时红并打出
+完整掉队清单（哪题、从第几名掉到第几名）。
+
+⚠️ **`check-all all` 里它跑两次**（`pytest` 层也会收集到 `tests/test_search_eval.py`）。
+这是刻意的：`search` 层的价值在**失败时那一屏输出**，不在另起一套判据。
+
+### 7.1 真实库评测（29 题）
 
 ```bash
 cd backend

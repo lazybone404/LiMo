@@ -45,9 +45,10 @@ PROVIDER_MAP = {
     "moonshot": "moonshotai",    # 月之暗面 = models.dev 的 moonshotai（注意不是 moonshot）
 }
 
-# 聚合网关：models.dev 没有它们的上游目录，B 类核对对它们无意义。
-# 它们列出的模型来自各上游，窗口值只能按上游判断。
-NO_UPSTREAM = {"opencode"}
+# 聚合网关 / 本地推理：models.dev 没有它们的上游目录，B 类核对对它们无意义。
+# 前者的模型来自各上游，窗口值只能按上游判断；后者（2026-10-29 加的 ollama）
+# 跑在用户机器上，模型清单由本地服务自己给，与 models.dev 毫无关系。
+NO_UPSTREAM = {"opencode", "ollama"}
 
 
 # ── 数据源 ──────────────────────────────────────────────────────────

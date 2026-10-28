@@ -91,6 +91,9 @@ class _FakeLLM:
     def __init__(self, reply: str = "", *, api_key: str = "fake-key", error=None):
         self.api_key = api_key
         self.model = "fake-model"
+        #: 端点会调 `provider_requires_api_key(llm.provider)`（keyless 厂商豁免空 key
+        #: 检查）。真 `LLMService` 一定有它。
+        self.provider = "dashscope"
         self._reply = reply
         self._error = error
         self.calls: list[tuple[str, dict]] = []
@@ -112,6 +115,7 @@ class _ScriptedLLM:
     def __init__(self, script: list):
         self.api_key = "fake-key"
         self.model = "fake-model"
+        self.provider = "dashscope"
         self._script = list(script)
         self.calls: list[tuple[str, dict]] = []
 

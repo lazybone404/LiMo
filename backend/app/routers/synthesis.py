@@ -25,6 +25,7 @@ from app.core import logging as log
 from app.core.dependencies import get_config, get_guard, get_store
 from app.core.disconnect import disconnect_watcher
 from app.core.errors import AppError
+from app.core.provider_defaults import provider_requires_api_key
 from app.generation.synthesis import (
     SYNTH_QUIET_TIMEOUT,
     SYNTH_TOTAL_TIMEOUT,
@@ -116,7 +117,7 @@ async def synthesis_stream(
             log.info("合成请求", docs=len(req.doc_ids), model_id=req.model_id,
                      title=req.title[:60], dims=len(dimensions), source_mode=source_mode,
                      intent=reader_intent, genres=len(content_type))
-            if not llm.api_key:
+            if provider_requires_api_key(llm.provider) and not llm.api_key:
                 raise AppError("SYNTH_NO_API_KEY", "LLM API Key 未配置，请在设置中填写",
                                recoverable=False)
             # 软 deadline：到点后管线停止发起新调用、剩余篇截断，让流程走到落库。

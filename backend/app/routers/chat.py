@@ -9,7 +9,12 @@ import json
 import asyncio
 
 from fastapi import APIRouter, Request, Query, Depends
-from app.core.dependencies import get_store, get_config
+from app.core.dependencies import (
+    get_config,
+    get_query_service,
+    get_store,
+    get_vector_searcher,
+)
 
 from app.core.disconnect import disconnect_watcher
 from fastapi.responses import StreamingResponse
@@ -20,6 +25,7 @@ from app.core.errors import AppError
 from app.core.origin import ensure_trusted_request
 from app.core import logging as log
 from app.core.chat_context import compute_budget, build_doc_context, trim_history
+from app.core.provider_defaults import provider_requires_api_key
 from app.core.token import estimate_tokens
 from app.agent.tools import search_web, fetch_url
 from app.agent.tool_registry import ToolRegistry, ToolDef
@@ -28,6 +34,7 @@ from app.agent.compress import should_compress, compress_history
 from app.agent.followup import followup_payload, generate_followups, should_attempt
 from app.agent.prompts import loader as prompt_loader
 from app.core.artifact_blocks import parse_blocks
+from app.services.search_fuse import fused_search
 
 router = APIRouter()
 
@@ -80,16 +87,74 @@ def _answer_mode(value: str) -> str:
 
 # ── Tool 工厂函数 ──
 
-def _make_search_docs(store: object):
-    def search_docs(query: str) -> str:
-        results = store.list_transcripts({"query": query})
-        if not results:
-            return json.dumps({"found": 0, "results": []}, ensure_ascii=False)
+#: `search_docs` 一次交给模型几条。**不是可调的性能旋钮**：模型每一轮都会读到全部
+#: 结果，条数涨上去是拿上下文换边际收益，而 5 条已经够它判断「该用哪篇」。
+#: ⚠️ 请求时传 `+1` 条，多出来的那条**只用来判 `hasMore`**（本身不进结果）。
+SEARCH_DOCS_LIMIT = 5
+
+
+def _title_search(store: object, query: str) -> list[dict]:
+    """降级路径 —— 改造前的行为原样保留（`list_transcripts` 的**标题子串过滤**）。
+
+    ⚠️ **它不检索**，只是「有总比没有好」。降级时模型会同时拿到 `degraded` 标记，
+    所以它不会被误导成「库里确实没有」（那正是改造前那种静默的失效形态）。
+    """
+    results = store.list_transcripts({"query": query})
+    return [{"id": r["id"], "title": r["title"], "snippet": ""} for r in results]
+
+
+def _make_search_docs(store: object, svc: object = None, searcher: object = None):
+    """`search_docs` 工具 —— 与 `GET /api/search` 走**同一份**融合检索（2026-10-29）。
+
+    ⚠️ **改造前它根本不走检索**：`store.list_transcripts({"query": q})` 是标题子串
+    过滤，正文里逐字存在的词只要标题没有就搜不到。而界面上那个搜索框走的是
+    FTS5 ∪ 向量 —— 于是「AI 说库里没有，可我用搜索框自己搜得到」，两边都不报错。
+    `tests/test_chat_search_docs.py` 钉住接线（`fused_search` 必须被调用）。
+
+    ⚠️ **降级而不是抛错**：工具里抛的异常会被 `agent.py` 的 `except` 变成
+    `{"error": ...}` 喂给模型 —— 索引坏一次，对话从此一篇文档都搜不到。标题过滤
+    虽弱，仍好过零结果；但**必须标 `degraded`**，否则模型会把「没搜到」说成事实。
+
+    ⚠️ **`found` 与 `hasMore` 是两件事**：改造前 `found = len(items)` 而 `items` 已
+    `results[:5]`，上限恒 5。接上真检索后 5 条几乎恒满 —— 不拆开的话「命中 200 篇」
+    会被说成「找到 5 个」。多要的那一条就是为它准备的。
+
+    ⚠️ **结果不带 `sourceType`，换成 `snippet`**（刻意的交换）：前者在 prompt 与前端
+    chat 侧都**零消费方**（grep 确认），而后者让模型知道「正文里为什么匹配」——
+    改造前模型只看到标题，只能凭标题猜内容。语义命中的 snippet 是空串（没有可截取的
+    高亮位置），字面命中才是 FTS 给的 90 字摘要。
+
+    ⚠️ **这条路上会花钱**（改造前是纯内存零成本）：向量检索开着时，每次调用都会发
+    **一次 query embedding**（`VectorSearcher.fuse` 里那一次）。单条短文本，量级可以
+    忽略；但它不再免费这件事得写在这里，否则「对话为什么开始有 embedding 账单」
+    只能靠猜。向量开关默认关 ⇒ 默认仍是零成本（`searcher is None` 走字面路）。
+    """
+    async def search_docs(query: str) -> str:
+        hits = None
+        degraded = None
+        if svc is not None:
+            try:
+                hits = (await fused_search(
+                    svc, searcher, query, limit=SEARCH_DOCS_LIMIT + 1))["hits"]
+            except AppError:
+                # 字面索引坏 / 搜索引擎不在场。`fused_search` 刻意不吞，由这里决定
+                # 怎么处置（`/api/search` 那边是 503，这边是降级）。
+                degraded = "index_unavailable"
+        else:
+            degraded = "no_query_service"
+        if hits is None:
+            hits = _title_search(store, query)
+
         items = [
-            {"id": r["id"], "title": r["title"], "sourceType": r["sourceType"]}
-            for r in results[:5]
+            {"id": h["id"], "title": h["title"], "snippet": h.get("snippet") or ""}
+            for h in hits[:SEARCH_DOCS_LIMIT]
         ]
-        return json.dumps({"found": len(items), "results": items}, ensure_ascii=False)
+        return json.dumps({
+            "found": len(items),
+            "hasMore": len(hits) > SEARCH_DOCS_LIMIT,
+            "degraded": degraded,
+            "results": items,
+        }, ensure_ascii=False)
     return search_docs
 
 
@@ -127,7 +192,8 @@ def _make_list_docs(store: object):
     return list_docs
 
 
-def _build_registry(store: object, *, allow_web: bool = True) -> ToolRegistry:
+def _build_registry(store: object, *, allow_web: bool = True,
+                    svc: object = None, searcher: object = None) -> ToolRegistry:
     """构建工具注册中心 — 参照 Pi 的扩展工具动态注册。
 
     `allow_web=False` 时**整组**摘掉 `search_web` / `fetch_url`（不是只摘搜索）——
@@ -138,12 +204,17 @@ def _build_registry(store: object, *, allow_web: bool = True) -> ToolRegistry:
     `prompt_loader.build`，否则 system prompt 里还写着「可使用 search_web…」而工具表
     里已经没有它 —— 模型会调用一个不存在的工具（轻则白写一段，重则服务端 400）。
     两个开关在 `chat_stream` 里由**同一个**布尔量驱动（见该函数）。
+
+    `svc` / `searcher` 只喂 `search_docs`（`QueryService` + 可选的 `VectorSearcher`）。
+    ⚠️ **默认 `None` 是刻意的**：`test_chat_web_search.py` 用 `_build_registry(None)`
+    检查工具表，那些用例不该为了一个检索依赖而全部改签名；`None` 时 `search_docs`
+    走降级路径并标 `no_query_service`，与「索引坏」同样可观测。
     """
     reg = ToolRegistry()
     reg.register(ToolDef(
         "search_docs", "跨所有文档搜索相关内容",
         {"type": "object", "properties": {"query": {"type": "string", "description": "搜索关键词"}}, "required": ["query"]},
-        _make_search_docs(store),
+        _make_search_docs(store, svc, searcher),
     ))
     reg.register(ToolDef(
         "lookup_doc", "查看指定文档的完整内容",
@@ -237,14 +308,16 @@ def _record_tool_result(tool_calls: list[dict], event: dict) -> None:
 
 
 @router.post("/chat")
-async def chat(req: ChatRequest, request: Request, store=Depends(get_store), config=Depends(get_config)) -> dict[str, object]:
+async def chat(req: ChatRequest, request: Request, store=Depends(get_store),
+               config=Depends(get_config), svc=Depends(get_query_service),
+               searcher=Depends(get_vector_searcher)) -> dict[str, object]:
 
     model_id = req.model_id
     if not model_id:
         model_id = config.get("scene_models", {}).get("chat")
 
     llm = LLMService(config, model_id=model_id)
-    if not llm.api_key:
+    if provider_requires_api_key(llm.provider) and not llm.api_key:
         raise AppError("CHAT_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
     # 上下文预算组装（C2）
@@ -263,7 +336,7 @@ async def chat(req: ChatRequest, request: Request, store=Depends(get_store), con
     # 传给这两处（那个局部变量驱动的两处必须同时改，见 `web_search` 查询参数的注释）。
     # ⚠️ 「回答依据」是例外：它随 `ChatRequest.answer_mode` 一路传给了 `build`，
     # 故「严格 / 发散」这条承诺在本端点上**成立**（联网那条仍然不成立）。
-    _build_registry(store).apply_to(agent)
+    _build_registry(store, svc=svc, searcher=searcher).apply_to(agent)
 
     log.info("Chat start", question_len=len(req.question), docs=len(req.doc_ids))
     try:
@@ -296,6 +369,8 @@ async def chat_stream(
     answer_mode: str = Query("strict"),
     store=Depends(get_store),
     config=Depends(get_config),
+    svc=Depends(get_query_service),
+    searcher=Depends(get_vector_searcher),
 ):
     """SSE 流式对话 — 实时推送回答 + 工具调用进度 + 自动持久化
 
@@ -340,7 +415,7 @@ async def chat_stream(
         model_id = config.get("scene_models", {}).get("chat")
 
     llm = LLMService(config, model_id=model_id)
-    if not llm.api_key:
+    if provider_requires_api_key(llm.provider) and not llm.api_key:
         raise AppError("CHAT_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
     # ── 工具注册 + 上下文预算组装（C2：预算 = 窗口×0.7，分配 system→doc→history）──
@@ -348,7 +423,7 @@ async def chat_stream(
     #    `prompt_loader.build`）。拆成两个变量就是同源漂移的入口。
     allow_web = bool(web_search)
     agent = AgentRunner(llm, max_rounds=3)
-    _build_registry(store, allow_web=allow_web).apply_to(agent)
+    _build_registry(store, allow_web=allow_web, svc=svc, searcher=searcher).apply_to(agent)
 
     window, budget = compute_budget(config, model_id)
     cc = config.get("chat_context") or {}
@@ -522,7 +597,7 @@ async def refresh_followups(req: FollowUpRequest, config=Depends(get_config)) ->
 
     model_id = req.model_id or config.get("scene_models", {}).get("chat")
     llm = LLMService(config, model_id=model_id)
-    if not llm.api_key:
+    if provider_requires_api_key(llm.provider) and not llm.api_key:
         raise AppError("CHAT_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
     try:

@@ -27,6 +27,7 @@ from app.core.dependencies import get_config, get_guard, get_store
 from app.core.disconnect import disconnect_watcher
 from app.core.errors import AppError
 from app.core.model_resolver import resolve_llm_config
+from app.core.provider_defaults import provider_requires_api_key
 from app.generation.classifier import (
     CLASSIFY_MAX_DEPTH_DEFAULT,
     CLASSIFY_MAX_DEPTH_LIMIT,
@@ -101,7 +102,7 @@ async def classify_preview(
     #    假 LLMService，压根碰不到这个构造）。实机验证抓到的就是这一处。
     #    全项目其余 10 处调用点（chat / generate / process / synthesis / epub …）都传顶层 config。
     llm = LLMService(config, model_id=req.modelId)
-    if not llm.api_key:
+    if provider_requires_api_key(llm.provider) and not llm.api_key:
         raise AppError("CLASSIFY_NO_API_KEY", "LLM API Key 未配置，请在设置中填写",
                        recoverable=False)
 

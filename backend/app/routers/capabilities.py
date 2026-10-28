@@ -23,6 +23,7 @@ from app.generation.synthesis import (
     READER_INTENTS,
 )
 from app.generation.product_registry import to_capability_list
+from app.core.provider_defaults import provider_requires_api_key
 from app.routers.model import _get_providers
 # 产物布局判据的家（`{mode}/v{N}.md`）——不要在本文件内联 md 文件路径
 from app.storage.store import MARKDOWN_MODES, markdown_dir_has_version
@@ -168,7 +169,7 @@ def _compute_missing_keys(config: dict) -> dict:
     missing_llm = []
     for pid in config.get("llm_models", {}):
         p = providers_map.get(pid)
-        if not p or not p.get("api_key"):
+        if not p or (provider_requires_api_key(pid) and not p.get("api_key")):
             missing_llm.append({
                 "id": pid,
                 "name": (p or {}).get("name") or _LLM_PROVIDER_NAMES.get(pid, pid),

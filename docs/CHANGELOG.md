@@ -6,6 +6,91 @@
 
 ---
 
+## 2026-10-29 — 对话侧检索：`search_docs` 接上真检索（它此前根本没在检索）
+
+**起因**：做规划调研时读到 `chat.py::_make_search_docs`，发现它调的是
+`store.list_transcripts({"query": q})` —— 那是**标题子串过滤**，既不碰 FTS5 也不碰
+向量。同一时刻文档库搜索框走的是 `GET /api/search`（字面 ∪ 语义 RRF 融合）。
+
+失效形态很具体：**正文里逐字存在的词，只要标题没有就搜不到**。而界面上表现为
+「AI 说库里没有，可我用搜索框自己搜得到」—— 两边都不报错，用户只能靠对比结果察觉。
+这不是「检索不够好」，是**两处入口根本不是同一件事**（模式 #54 的同源漂移）。
+
+### 改了什么
+
+**① 抽出 `app/services/search_fuse.py`（新增）**
+
+把 `routers/search.py:74-90` 那十几行编排（两路同深度取数 → `VectorSearcher.fuse` →
+按融合顺序组装、语义独有命中回补 title）抽成 `fused_search(svc, searcher, q, *, limit, depth)`。
+**RRF 算子一个都不在这里**（仍在 `core/vector_index.py` / `services/vector_search.py`），
+它只回答「一次融合检索按什么顺序做哪几步」。
+
+⚠️ **抽出的理由不是文件变小**，是对话侧要做同一件事。两处各写一遍的失效形态正是上面那条。
+
+⚠️ **字面索引坏时这里不吞异常**（`QueryError` 照抛）：`/api/search` 要把它变成 503 +
+可恢复标记，对话侧要把它降级成标题过滤并**标明降级**。两种处置都对，差别只能由调用方
+决定 —— 在这里吞掉等于替两边选了一个，且选错的那一边完全看不出来。
+
+**② `routers/search.py` 改为调用它**（不留第二份，行为逐字不变）
+
+**③ `routers/chat.py::_make_search_docs` 改 async，走 `fused_search`**
+
+- `AgentRunner` 有 `asyncio.iscoroutinefunction(fn)` 分支，工具可以是 async，核心循环零改动。
+- 每条结果带 **`snippet`**（FTS 的 90 字摘要），模型不再只能凭标题猜内容。
+- **移除 `sourceType`**（刻意的交换）：grep 确认 prompt 与前端 chat 侧都零消费方。
+- **`found` 与 `hasMore` 拆开**：改造前 `found = len(items)` 而 `items` 已 `results[:5]`，
+  上限恒 5。接上真检索后 5 条几乎恒满 —— 不拆开的话「命中 200 篇」会被说成
+  「找到 5 个相关文档」，那不是省略，是**说假话**。故请求 `limit=6`，多的一条只判 `hasMore`。
+- **降级可观测**：`AppError` → 回退标题过滤 + `degraded: "index_unavailable"`。
+  抛错会被 `agent.py` 吞成 `{"error":...}`（索引坏一次，对话从此一篇都搜不到）；
+  静默降级会让模型把「没搜到」当事实。两条都不行。
+- `_build_registry` 增 `svc` / `searcher`（**默认 `None`**：既有 `_build_registry(None)` 用例
+  不必改签名，`None` 时降级并标 `no_query_service`，与「索引坏」同样可观测）。
+
+**④ `llm/agent.py::_tool_summary` 跟随新字段**
+
+`hasMore` → 「找到 5 个以上相关文档」；`degraded` → 「检索不可用，按标题找到 N 个文档」；
+其余不变。
+
+### 影响与代价
+
+- ⚠️ **对话侧不再免费**：向量检索开着时，每次 `search_docs` 会发**一次 query embedding**。
+  单条短文本量级可忽略，但这条成本是新增的。向量开关默认关 ⇒ 默认仍零成本。
+- ⚠️ **延迟**：改造前纯内存过滤（毫秒），现在一次 50 深 FTS（+ 可选的 3 秒语义上限）。
+  换来的正确性收益是主诉求。
+- ⚠️ **`test_chat_web_search.py::test_接线_开关驱动工具表` 的断言放宽了一个字符**：
+  调用点从 `_build_registry(store, allow_web=allow_web)` 变成多了两个参数，故断言从
+  「带右括号的完整调用」改为「同一行还接着别的参数」。区分力不降反升：去掉检索依赖会退回原形态。
+
+### 顺带修的欠账（① 引入）
+
+本地大模型接入时把 13 处空 key 检查换成 `provider_requires_api_key(llm.provider)`，
+但 `test_chat_followups.py` / `test_classify.py` 的 LLM 替身没有 `provider` 属性 →
+15 个用例以 `AttributeError` 失败（看着像被测逻辑坏了）。给三个替身补上 `provider = "dashscope"`。
+**教训**：改「所有调用点都要传的东西」时必须跑一次全量，单个测试文件全绿说明不了什么。
+
+### 验证
+
+- `backend/tests/test_chat_search_docs.py`（新增，13 用例）：async 化 / 接线守卫 /
+  `hasMore` 边界（不足·恰好·超出）/ 降级三态 / 注册表里挂的就是它 / 路由层两个端点都传了依赖。
+- 后端全量 `1260 passed`；`check-all search` 绿。
+- **未做**：真实库端到端手验（`hasMore` 场景需要一篇正文关键字命中而标题不含的文档）。
+
+---
+
+## 2026-10-29 — 规划：把 AI 应用能力评估的结论写进待办
+
+检索了 2026 年的 AI 应用 / RAG / MCP 生态现状，把「值得在本项目落地」的能力按成本分两档写进 CLAUDE.md 的「🚀 规划中」，并给出建议推进顺序。
+
+- **【一】** 本地大模型接入（Ollama 等 OpenAI 兼容端点）· 检索查询改写 · RSS 与 arXiv 导入 —— 半天到三天，不新增架构概念
+- **【二】** Reranker 重排（新增第三族插件 `RerankPlugin`）· MCP 服务端（`QueryService` 的第三个传输层）· 跨会话记忆 —— 三到七天，会动架构
+- **横切**：检索质量门禁（29 题评测接进 `check-all`）排在所有检索改动之前
+- 原有「更多导入源」三合一拆开：RSS / arXiv 同一档成本，播客需 ASR 就位后再评估
+
+⚠️ 梯队只表达实施顺序、不表达价值高低；「表格顺序即建议推进顺序」写进文档，避免后人以为可以按喜好挑。⚠️ 三项剔除的理由也记了：知识图谱/GraphRAG 在几百篇规模的个人库上索引成本与收益不成正比，MCP 客户端排在服务端之后，TTS/发布归另一条产品线。
+
+---
+
 ## 2026-10-29 — 图表：块名被当成了布局名（认得模型想表达什么，而不是报错）
 
 **起因**：用户贴来一条产物里的报错——

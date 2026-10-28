@@ -430,13 +430,19 @@ rg "^\s+from app\.\S+ import" --glob '*.py' app/
 ## 7. 测试门禁
 
 ```bash
-bash scripts/check-all            # 全部六项（约 60s）—— 提交前跑这个
+bash scripts/check-all            # 全部七项（约 60s）—— 提交前跑这个
 bash scripts/check-all frontend   # 只改前端时
 bash scripts/check-all backend    # 只改后端时
 bash scripts/check-all cli        # 只改 limo_cli / QueryService 时
+bash scripts/check-all search     # 改检索时（字面层质量，约 1s；⚠️ 边界见下）
 bash scripts/check-all docs       # 只改文档时（「第 N 节」交叉引用，约 0.2s）
 bash scripts/check-all quick      # 约 5s，仅 tsc + lint
 ```
+
+⚠️ **`search` 层只测字面检索**（`SearchEngine.search`）：向量、RRF 融合、对话侧
+`search_docs` **一个字都不反映到分数上**，且它的绝对分数**不可迁移**（切片把 H2 当
+一篇文档，与真实库的整段转录不是一个检索单元）。它守的是「这条链路别退化」，不是
+「检索好不好」。细节见 [search-retrieval.md](search-retrieval.md) §7.0。
 
 ⚠️ **分层的轴是「域」不是「快慢」**：每一层都是该域的**完整验证**。`quick` 是唯一
 例外——它只看得到类型 / lint 能看见的东西。2026-10-06 那轮 25 项审计发现里**没有
@@ -493,7 +499,7 @@ bash scripts/check-cli 9        # 只跑第 9 项（调试用）
 
 ### 7.4 改动后自测原则
 
-- **提交前** → `bash scripts/check-all`（约 60s，六项全跑）
+- **提交前** → `bash scripts/check-all`（约 60s，七项全跑）
 - 改后端路由/引擎/适配器 → `bash scripts/check-all backend` + 手动 curl 端点
 - 改前端状态 → `bash scripts/check-all frontend` + 手动跑链路
 - 改 `limo_cli/` 或 `app/routers/cli.py` 或 `services/query.py` → `bash scripts/check-all cli`

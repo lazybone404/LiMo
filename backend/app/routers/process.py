@@ -21,6 +21,7 @@ from app.core import logging as log
 
 from app.core.registry import EngineRegistry
 from app.core.config import build_engine_models
+from app.core.provider_defaults import provider_requires_api_key
 from app.core.dependencies import get_store, get_config, get_guard
 from app.core.disconnect import disconnect_watcher
 from app.core.types import ProcessResult
@@ -139,7 +140,7 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
             # ── LLM 路径（使用统一的 LLMService）──
             if model_id:
                 llm = LLMService(config, model_id=model_id)
-                if not llm.api_key:
+                if provider_requires_api_key(llm.provider) and not llm.api_key:
                     log.warning("图片处理: 模型缺少 API Key，回退 Engine", model_id=model_id)
                     llm_degraded = True
                 elif not llm.supports_vision:

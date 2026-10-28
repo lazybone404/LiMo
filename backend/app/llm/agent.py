@@ -83,9 +83,18 @@ def _tool_summary(tool_name: str, result: str) -> str:
         return f"已读取网页，约 {len(text)} 字"
 
     if tool_name == "search_docs":
-        if isinstance(data, dict):
-            return f"找到 {data.get('found', 0)} 个相关文档"
-        return "搜索完成"
+        if not isinstance(data, dict):
+            return "搜索完成"
+        found = data.get("found", 0)
+        # ⚠️ **`hasMore` 必须读**：`found` 是「返回了几条」（上限 `SEARCH_DOCS_LIMIT`），
+        # 不是「命中了多少篇」。不读它时，一个命中 200 篇的查询会显示成「找到 5 个
+        # 相关文档」—— 那不是省略，是**说假话**：用户会以为库里就这 5 篇。
+        if data.get("hasMore"):
+            return f"找到 {found} 个以上相关文档"
+        # 降级时结果来自标题子串过滤，说「找到」会让用户以为检索跑过了。
+        if data.get("degraded"):
+            return f"检索不可用，按标题找到 {found} 个文档"
+        return f"找到 {found} 个相关文档"
 
     if tool_name == "lookup_doc":
         if isinstance(data, dict):

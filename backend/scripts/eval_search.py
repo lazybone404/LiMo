@@ -126,10 +126,15 @@ def _text_getter(store, mode: str):
     return lambda tid: store.get_transcript(tid)["rawText"]
 
 
-def _score(get_ids, topk: int) -> dict:
-    """按「目标进前 topk」打分，分三类统计。`get_ids(query) -> [id...]`（按相关度降序）。"""
+def _score(get_ids, topk: int, items=None) -> dict:
+    """按「目标进前 topk」打分，分三类统计。`get_ids(query) -> [id...]`（按相关度降序）。
+
+    `items` 缺省为 `EVAL`（真实库那 29 题）—— **门禁侧（`tests/test_search_eval.py`）
+    把自己的题集传进来**，走的是同一个打分函数：判据只能有一份，各写一遍的失效形态
+    是「门禁说没退、真实库说退了」，而两边都觉得自己对。
+    """
     per_kind, misses, ranks = {}, [], []
-    for kind, query, want in EVAL:
+    for kind, query, want in (items if items is not None else EVAL):
         ids = get_ids(query)
         rank = ids.index(want) + 1 if want in ids else 0
         ranks.append(rank)

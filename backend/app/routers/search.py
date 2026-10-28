@@ -19,8 +19,8 @@ from app.core.origin import ensure_trusted_request
 from app.core.registry import EngineRegistry
 from app.core.vector_store import DEFAULT_CHUNK_SIZE
 from app.generation.doc_text import search_index_text
+from app.services.search_fuse import fused_search
 from app.services.vector_runtime import DEFAULT_ENGINE
-from app.services.vector_search import DEFAULT_DEPTH
 from app.services.vector_worker import (
     DEFAULT_RELEASE,
     DEFAULT_THRESHOLD,
@@ -71,40 +71,11 @@ async def search_transcripts(
     检索 token 串（`core/search.py` 三列分工），语义命中没有可截取的高亮位置，
     硬造一个摘要等于凭空发明「为什么匹配」。
     """
-    depth = max(limit, DEFAULT_DEPTH)
-    # 字面路先跑：它自己处理空查询 / 缺引擎 / 索引坏（坏索引是 503 + 可恢复标记，
-    # 语义路健康也不该把它掩盖成「能搜」——那是两条独立的库）。
-    lexical = svc.search_resources(q, limit=depth).items
-    if searcher is None:
-        return {"hits": lexical[:limit], "semantic": None}
-
-    ids, semantic = await searcher.fuse(
-        q, [h["id"] for h in lexical], limit=limit, depth=depth)
-
-    by_id = {h["id"]: h for h in lexical}
-    hits: list[dict] = []
-    for doc_id in ids:
-        hit = by_id.get(doc_id) or _hit_from_store(svc, doc_id)
-        if hit is not None:
-            hits.append(hit)
-    return {"hits": hits, "semantic": semantic}
-
-
-def _hit_from_store(svc, doc_id: str) -> dict | None:
-    """语义路独有命中 → 列表项形状。
-
-    `None` = 向量库里有、文档表里没有（孤儿）。**不抛错**：孤儿由 worker 的对账
-    清理，此刻把它变成一次 500 会让「一个已被删除的文档」毁掉整次搜索。
-
-    ⚠️ `snippet` 给**空串而不是省掉这个键**：前端只取非空 snippet 渲染第二行，
-    两者行为相同；但省键会让 `SearchHit` 的 `snippet` 变成可选字段，在下游
-    （导出、引用 chip）多出一处 `?? ''`。
-    """
-    try:
-        r = svc.get_resource(doc_id)
-    except AppError:
-        return None
-    return {"id": doc_id, "title": r.get("title") or "", "snippet": ""}
+    # ⚠️ **编排已抽到 `services/search_fuse.py`**（2026-10-29）：对话侧的
+    # `search_docs` 工具要做**同一件事**，此前它走的是标题子串过滤，于是「AI 说库里
+    # 没有、可搜索框自己搜得到」。两处各写一遍的失效形态是**一边在融合、一边没在
+    # 检索**，而两边都能"搜到东西"，只能靠对比结果察觉（模式 #54）。
+    return await fused_search(svc, searcher, q, limit=limit)
 
 
 @router.get("/search/status")

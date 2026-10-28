@@ -36,6 +36,9 @@ export async function detectModels(provider: string, apiKey: string): Promise<{
 export interface Provider {
   id: string; name: string; api_key: string; base_url: string
   type: string; enabled: number
+  /** 后端派生：这一家的 Key 是否必填。本地推理（Ollama）为 false。
+   *  ⚠️ 前端**不要**自己维护名单 —— 那是第二份表，后端加一家而前端不认。 */
+  requiresApiKey?: boolean
 }
 
 export interface EnabledModel {

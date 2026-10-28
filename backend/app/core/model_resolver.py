@@ -4,6 +4,7 @@ generate / chat / process 三处统一使用，避免代码重复。
 """
 
 import logging
+from app.core.provider_defaults import provider_requires_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ def resolve_llm_config(config: dict, model_id: int | None = None,
         )
 
     # 回退 API key
-    if not llm_config.get("api_key"):
+    if provider_requires_api_key(llm_config.get("provider", "")) and not llm_config.get("api_key"):
         from app.routers.model import _get_providers
         default_provider = llm_config.get("provider", "deepseek")
         for p in _get_providers(config):

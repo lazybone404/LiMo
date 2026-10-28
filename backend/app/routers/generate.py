@@ -26,6 +26,7 @@ from app.core.origin import ensure_trusted_request
 from app.core.reference_store import get_references
 from app.core import logging as log
 from app.core.model_resolver import resolve_llm_config, resolve_context_window
+from app.core.provider_defaults import provider_requires_api_key
 from app.core.search import update_index
 from app.llm import LLMService, CancelledError
 from app.generation.generator import Generator, _post_process_content_markers, _post_process_screenshots
@@ -344,7 +345,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         tx = store.get_transcript(transcript_id)
         if not tx:
             raise AppError("GEN_NOT_FOUND", "文档不存在，请先导入内容")
-        if not llm_config.get("api_key"):
+        if provider_requires_api_key(llm_config.get("provider", "")) and not llm_config.get("api_key"):
             raise AppError("GEN_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
         # ── 参考文件：**只解析一次**（下面双产物支与 notes-only 支共用）──
@@ -737,7 +738,7 @@ async def generate_stream(transcript_id: str, request: Request,
     # 此刻还拿不到；且闸门没过时多留的余量无害（放宽只影响最坏等待，不影响正常路径）。
     llm = LLMService(config, model_id=model_id,
                      request_timeout=_gen_timeout(format_list, doc_direct=doc_direct))
-    if not llm.api_key:
+    if provider_requires_api_key(llm.provider) and not llm.api_key:
         raise AppError("GEN_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
     # ── 内容准备 + Prompt 构建 ──

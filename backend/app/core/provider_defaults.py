@@ -47,7 +47,35 @@ PROVIDER_DEFAULTS = {
     #    列表格式：id/object/created/owned_by，**不含 context_length**）。
     #    故「刷新模型」对本 provider 是**可用**的，不需要走 404 兜底那条路。
     "opencode": {"name": "OpenCode Go", "base_url": "https://opencode.ai/zen/go/v1", "type": "built-in"},
+    # Ollama（本地推理，2026-10-29）—— 本地优先的知识库连模型都要上云是最刺眼的缺口。
+    # ⚠️ `/v1` 不能省：Ollama 的 OpenAI 兼容层就挂在 `/v1`，缺了会打到 404。
+    # ⚠️ 它**不需要 API Key**，但「不要 Key」这个性质刻意**不写进这张表**（见下）。
+    "ollama": {"name": "Ollama（本地）", "base_url": "http://localhost:11434/v1", "type": "built-in"},
 }
+
+
+# ── 「不需要 API Key」的厂商 ──
+#
+# ⚠️ **刻意不写成 `PROVIDER_DEFAULTS` 里的字段**：`routers/model.py:151-152` 那句
+#    `default = dict(PROVIDER_DEFAULTS[provider_id])` 会把表里的**全部键**展开进
+#    `providers` 数组并落盘 —— 加个 `requires_api_key` 等于往用户的 `config.yaml`
+#    里写一个纯运行时概念。而 `test_table_shape` 是子集断言（`set(info) >= {...}`），
+#    加字段**不会红**，所以也没有守卫会提醒这件事。
+#
+# ⚠️ 判据收口在这里，**13 处调用点一律调 `provider_requires_api_key()`**，不要各写
+#    `if provider == "ollama"` —— 那是模式 #54（同源判据散落）。漏改一处的失效形态是
+#    「那个入口对本地模型报未配置 Key」，而界面完全正常。
+KEYLESS_PROVIDERS: frozenset[str] = frozenset({"ollama"})
+
+#: 构造 `AsyncOpenAI` 时给 keyless 厂商用的占位串。
+#: ⚠️ `api_key=None` 会被 SDK 直接拒绝（`OpenAIError`）；空串能构造出来，但会被服务端
+#: 当成非法凭据。占位串让「不需要真 Key」这件事在传输层也成立。
+KEYLESS_API_KEY_PLACEHOLDER = "sk-no-key-required"
+
+
+def provider_requires_api_key(provider_id: str) -> bool:
+    """这个厂商是否需要用户填 API Key。无 Key 检查处一律调它。"""
+    return provider_id not in KEYLESS_PROVIDERS
 
 
 def default_base_url(provider_id: str) -> str:
