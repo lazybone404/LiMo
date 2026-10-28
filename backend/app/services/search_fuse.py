@@ -35,6 +35,7 @@ from collections.abc import Sequence
 from app.core import logging as log
 from app.core.errors import AppError
 from app.core.search import rerank_window
+from app.core.text_utils import split_segments_json
 from app.core.vector_index import rrf
 from app.services.vector_search import DEFAULT_DEPTH, RRF_K
 
@@ -161,6 +162,34 @@ def _hit_from_store(svc, doc_id: str) -> dict | None:
     return {"id": doc_id, "title": r.get("title") or "", "snippet": ""}
 
 
+def _plain_body(body: str) -> str:
+    """把「字幕 JSON + 笔记」展开成连续的自然语言；不是那种结构就原样返回。
+
+    ⚠️ **这是本轮实验查出来的产品缺陷，不是实验侧的取巧**：库里 **93%
+    （141/152）** 的文档 rawText 是 B 站/YouTube 的 `{"segments": [...]}` 字幕
+    JSON。字面检索不受影响（二字组照样匹配片段），但 cross-encoder 判的是
+    「这段文字是否回答了这个问题」—— 喂给它 `{"start": 21.18, "text": "那我的
+    视频里面有一个评论呢"}` 这种语法碎片，等于让它瞎猜。
+
+    实测后果：15 题里「学外语和学理科其实是同一套办法」的正确文档从第 1 名被
+    推到第 35 名 —— 而同一份候选、同一个模型，只是窗口内容不同。
+
+    ⚠️ 展开**不丢笔记**：`search_index_text` 拼的是 `rawText + "\\n\\n" + 笔记`，
+    `split_segments_json` 会把手写字幕后面的 markdown 原样接回来（笔记里才有
+    「用户自己记下的那个词」，是字面命中 83% 的主要来源）。
+    """
+    parsed = split_segments_json(body)
+    if not parsed:
+        return body
+    segments, rest = parsed
+    lines = [(s.get("text") or "").strip() for s in segments]
+    text = "\n".join(ln for ln in lines if ln)
+    rest = rest.strip()
+    if rest:
+        text = f"{text}\n\n{rest}" if text else rest
+    return text
+
+
 def _candidate_texts(svc, q: str, hits: list[dict]) -> list[str]:
     """给每条候选取一段**与查询最相关**的正文窗口，作为送进重排的文本。
 
@@ -205,7 +234,7 @@ def _candidate_texts(svc, q: str, hits: list[dict]) -> list[str]:
                 body = ""
             except Exception:  # noqa: BLE001 —— 与上一条同义：拿不到就走下一档
                 body = ""
-        text = rerank_window(body, q) if body else ""
+        text = rerank_window(_plain_body(body), q) if body else ""
         if not text:
             text = _MARK_RE.sub("", h.get("snippet") or "").strip()
         if not text:

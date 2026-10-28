@@ -5,7 +5,6 @@ Prompt 构建器 — 模块化分节格式
 风格体系已迁移至 prompts/notes_styles.py。
 """
 
-import json
 import logging
 from typing import Callable
 
@@ -18,7 +17,7 @@ from .prompts.common import PromptComposer
 from app.core.types import DOC_SOURCE_TYPES
 from app.core.artifact_blocks import CHART_ALTERNATIVE_BLOCK_TYPES
 # 原在本文件定义，2026-10-01 下沉到 core（transcript_meta 需复用同一份清洗），此处 re-export
-from app.core.text_utils import sanitize_reference_name
+from app.core.text_utils import sanitize_reference_name, split_segments_json
 from app.core.transcript_meta import parse_meta
 # ⚠️ 单真相源：维度预设定义在 `synthesis.py`（合成侧写入 meta 的就是它），
 # 生成侧读回后若拿不到，回退的必须是**同一个**常量——两处各写一份论文维度，
@@ -913,20 +912,25 @@ _POLISH_FORMAT_FNS = {
 
 
 def _format_segments(raw_text: str) -> str:
-    """将 raw_text 格式化为 BiliNote 风格的时间戳文本（MM:SS - 内容）"""
-    try:
-        data = json.loads(raw_text)
-        segments = data.get("segments", [])
-        if segments:
-            lines = []
-            for s in segments:
-                start = s.get("start", 0)
-                m, sec = divmod(int(start), 60)
-                lines.append(f"{m:02d}:{sec:02d} - {s.get('text', '')}")
-            return "\n".join(lines)
-    except (json.JSONDecodeError, TypeError):
-        pass
-    return raw_text
+    """将 raw_text 格式化为 BiliNote 风格的时间戳文本（MM:SS - 内容）。
+
+    「什么算字幕 JSON」由 `core.text_utils.split_segments_json` 一处判定 —— 重排侧
+    (`services/search_fuse._plain_body`) 认的是同一件事，只是它要纯文本、不要时间戳。
+    两份各写一遍 `json.loads` + `data["segments"]` 的话，判据演化时漏改一处是静默的。
+    """
+    parsed = split_segments_json(raw_text)
+    if not parsed:
+        return raw_text
+    segments, _ = parsed
+    lines = []
+    for s in segments:
+        try:
+            start = int(s.get("start") or 0)
+        except (TypeError, ValueError):
+            start = 0
+        m, sec = divmod(start, 60)
+        lines.append(f"{m:02d}:{sec:02d} - {s.get('text', '')}")
+    return "\n".join(lines)
 
 
 def _build_hard_constraints(

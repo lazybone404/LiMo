@@ -116,3 +116,46 @@ def parse_json_object(body: str):
         except ValueError:
             continue
     return None
+
+
+def split_segments_json(raw: str) -> tuple[list[dict], str] | None:
+    """从文本**开头**解析视频字幕的 `{"segments": [...]}`，返回 `(segments, 剩余文本)`。
+
+    不是这种结构（普通网页正文 / 纯 markdown / `segments` 为空）返回 `None`。
+
+    ⚠️ **为什么必须容忍尾随内容**：一篇文档进全文索引的正文是
+    `rawText + "\\n\\n" + 最新版笔记`（`generation/doc_text.search_index_text`
+    是唯一判据）。`json.loads` 整串解析对这些文档**必然失败** —— 字幕 JSON 后面
+    还跟着 markdown 笔记。而重排需要的是「这段文字在讲什么」，笔记部分同样有效，
+    所以只展开开头那段 JSON、把余下的原样接回去，比丢弃整篇合理。
+
+    ⚠️ **与 `generation/prompt.py::_format_segments` 是同一判据的两种呈现**：
+    那个给生成 prompt 看，逐条带 `MM:SS - ` 时间戳前缀；本函数给 cross-encoder 看，
+    只要连续的自然语言（时间戳对判断「这段话是否回答了问题」是纯噪音）。
+    解析层（认哪个键、什么算有效）只应存在一份，故 `_format_segments` 现在也走
+    本函数 —— 改判据只改这里。
+
+    ⚠️ 本函数**不判断该不该用它**。字面检索是二字组匹配，JSON 语法碎片照样命中，
+    所以只在「把文本交给模型读」的地方（重排候选窗口）才有意义。
+    """
+    if not raw:
+        return None
+    head = raw.lstrip()
+    if not head.startswith("{"):
+        return None
+    try:
+        obj, end = json.JSONDecoder().raw_decode(head)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    segments = obj.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return None
+    clean = [s for s in segments if isinstance(s, dict)]
+    if not clean:
+        return None
+    rest = head[end:]
+    if not rest.strip():
+        rest = ""
+    return clean, rest

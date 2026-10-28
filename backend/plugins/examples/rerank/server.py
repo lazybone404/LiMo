@@ -87,6 +87,13 @@ def load_reranker(model_dir: Path, onnx_name: str):
     so.enable_cpu_mem_arena = False
     sess = ort.InferenceSession(str(model_file), so, providers=["CPUExecutionProvider"])
 
+    # ⚠️ **按模型实际的输入名构造 feed，不要写死三个**。同一个模型的不同 ONNX 导出
+    # 输入集合并不一致 —— 实测 `onnx-community/bge-reranker-v2-m3-ONNX` 的 int8 导出
+    # **没有 `token_type_ids`**，写死三个的后果是启动自检直接失败、插件永远显示不可用，
+    # 而报错是 ORT 的 `Invalid input name: token_type_ids`，读起来像模型文件坏了，
+    # 实际是插件多送了一个输入。
+    input_names = [i.name for i in sess.get_inputs()]
+
     def rerank(query: str, documents: list[str]) -> list[list[float]]:
         pairs = [(query, d) for d in documents]
         out: list[list[float]] = []
@@ -94,7 +101,8 @@ def load_reranker(model_dir: Path, onnx_name: str):
             chunk = pairs[i:i + BATCH]
             encs = tokenizer.encode_batch(chunk)
             n = max(1, max(len(e.ids) for e in encs))
-            feed = {
+            # 三个都构造、再按实际输入名过滤：多送一个会报错，少送一个也用不上。
+            full = {
                 "input_ids": np.array(
                     [e.ids + [0] * (n - len(e.ids)) for e in encs], dtype=np.int64),
                 "attention_mask": np.array(
@@ -104,6 +112,12 @@ def load_reranker(model_dir: Path, onnx_name: str):
                     [e.type_ids + [0] * (n - len(e.type_ids)) for e in encs],
                     dtype=np.int64),
             }
+            missing = [k for k in input_names if k not in full]
+            if missing:
+                # 显式点名，别让 ORT 那句 `Invalid input name` 把人引偏
+                raise RuntimeError(
+                    f"模型要求插件没有构造的输入 {missing}（已知输入 {input_names}）")
+            feed = {k: full[k] for k in input_names}
             logits = sess.run(None, feed)[0]
             # 每个模型输出的形状不同（[B,1] / [B,2] / [B]）；
             # 统一取第 0 列或标量，只为**排序**用 —— 分数之间的大小关系才是有意义的。

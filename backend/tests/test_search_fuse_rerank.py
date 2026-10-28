@@ -164,6 +164,86 @@ def test_候选文本按原词选窗():
 
 
 # ═══════════════════════════════════════════════════════════
+# 2b. 字幕 JSON 必须先展开成自然语言
+# ═══════════════════════════════════════════════════════════
+#
+# ⚠️ 这一组守的是一个**产品缺陷**（2026-10-29 由 07-rerank 实验查出）：
+# 库里 93%（141/152）的文档 rawText 是视频字幕的 `{"segments": [...]}`。字面检索
+# 不受影响（二字组照样命中），但 cross-encoder 判的是「这段文字是否回答了问题」。
+# 把 JSON 语法碎片喂进去之后，实测正确文档从第 1 名掉到第 35 名 —— 而同一份候选、
+# 同一个模型，区别只在窗口内容。测试若不钉住这一点，修好之后任何人优化选窗
+# 都可能顺手把它改回去，且全部指标只会「莫名为难」地差，不会报错。
+
+_SUB_JSON = (
+    '{"segments": ['
+    '{"start": 0.0, "end": 2.5, "text": "今天聊聊大家最关心的问题"},'
+    '{"start": 2.5, "end": 6.0, "text": "学外语和学理科其实是同一套办法"},'
+    '{"start": 6.0, "end": 9.0, "text": "都是把零散的事实压缩成可复用的规则"}'
+    ']}'
+)
+
+
+class _SubSvc(_Svc):
+    """`bodies` 返回字幕 JSON + 笔记 —— 与 `search_index_text` 的真实拼装同形。"""
+
+    def bodies(self, ids):
+        return {i: f'{_SUB_JSON}\n\n## 我的笔记\n\n抽象与规则化是共通的。' for i in ids}
+
+
+def test_字幕_JSON_先展开成自然语言再选窗():
+    svc, rr = _SubSvc(), _Reranker()
+    _run(svc, _Searcher(), q="学外语和学理科", reranker=rr)
+
+    text = rr.calls[0][1][0]
+    assert '"start"' not in text and '"segments"' not in text, (
+        f"送进重排的还是 JSON 碎片：{text[:80]!r}"
+    )
+    assert "同一套办法" in text, "展开后应能取到说这句话的那一段"
+
+
+def test_展开后笔记仍接在后面():
+    """`search_index_text` 拼的是 rawText + 笔记；展开字幕不能把笔记一起丢掉
+    —— 用户自己记下的那个词是字面命中的主要来源。"""
+    svc, rr = _SubSvc(), _Reranker()
+    _run(svc, _Searcher(), q="抽象与规则化", reranker=rr)
+
+    text = rr.calls[0][1][0]
+    assert "抽象与规则化是共通的" in text, "笔记被丢掉了"
+
+
+def test_非字幕文档逐字不变():
+    """普通网页/PDF 的 rawText 不是这种结构 —— 展开必须是**无操作**。"""
+    from app.services.search_fuse import _plain_body
+
+    plain = "## 标题\n\n这是一篇普通的网页文章，讲的是注意力机制。" * 30
+    assert _plain_body(plain) == plain
+
+
+def test_展开与生成侧的时间戳格式同源():
+    """`generation/prompt._format_segments` 与 `_plain_body` 认的是同一件事。
+
+    停掉同源之后，一处改了「什么算字幕 JSON」而另一处没改，失效是静默的：
+    生成侧拿到原文、或重排侧拿到 JSON，两边都不报错。
+    """
+    from app.core.text_utils import split_segments_json
+    from app.generation.prompt import _format_segments
+    from app.services.search_fuse import _plain_body
+
+    parsed = split_segments_json(_SUB_JSON)
+    assert parsed is not None and len(parsed[0]) == 3
+
+    # 同一份输入：生成侧出时间戳、重排侧出纯文本，但「认不认这份 JSON」必须一致
+    assert "00:02 - 学外语和学理科其实是同一套办法" in _format_segments(_SUB_JSON)
+    assert "同一套办法" in _plain_body(_SUB_JSON)
+
+    # 负向对照：不是字幕结构时两边都不认
+    plain = "普通正文，没有 segments 字段"
+    assert split_segments_json(plain) is None
+    assert _format_segments(plain) == plain
+    assert _plain_body(plain) == plain
+
+
+# ═══════════════════════════════════════════════════════════
 # 3. 候选池与结果截断
 # ═══════════════════════════════════════════════════════════
 
