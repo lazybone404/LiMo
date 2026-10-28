@@ -35,6 +35,7 @@ from app.agent.followup import followup_payload, generate_followups, should_atte
 from app.agent.prompts import loader as prompt_loader
 from app.core.artifact_blocks import parse_blocks
 from app.services.search_fuse import fused_search
+from app.services.query_rewrite import rewrite_queries
 
 router = APIRouter()
 
@@ -103,7 +104,18 @@ def _title_search(store: object, query: str) -> list[dict]:
     return [{"id": r["id"], "title": r["title"], "snippet": ""} for r in results]
 
 
-def _make_search_docs(store: object, svc: object = None, searcher: object = None):
+def _rewrite_enabled(config: object) -> bool:
+    """对话侧查询改写开关（`config["search"]["rewrite_queries"]`，**默认关**）。
+
+    抽成函数是因为两个端点都要读它。在端点里各写一次 `.get(...)` 的失效形态是
+    「键名换了，另一处还在读旧的」—— 零报错，只是那个入口的改写静默失效。
+    """
+    return bool((config.get("search") or {}).get("rewrite_queries", False))
+
+
+def _make_search_docs(store: object, svc: object = None, searcher: object = None, *,
+                      llm: object = None, rewrite: bool = False,
+                      cancel_event: object = None):
     """`search_docs` 工具 —— 与 `GET /api/search` 走**同一份**融合检索（2026-10-29）。
 
     ⚠️ **改造前它根本不走检索**：`store.list_transcripts({"query": q})` 是标题子串
@@ -128,14 +140,28 @@ def _make_search_docs(store: object, svc: object = None, searcher: object = None
     **一次 query embedding**（`VectorSearcher.fuse` 里那一次）。单条短文本，量级可以
     忽略；但它不再免费这件事得写在这里，否则「对话为什么开始有 embedding 账单」
     只能靠猜。向量开关默认关 ⇒ 默认仍是零成本（`searcher is None` 走字面路）。
+
+    ⚠️ **查询改写（`rewrite=True`）在这条路上才多花一次 LLM 调用**：用户的口语问题
+    先被换成 2–3 条「库里可能出现」的说法，各检索一次后与原词一起进 RRF。
+    实测融合路 H@1 52.3% → 75.0%、H@5 88.6% → 97.7%（`_experiments/06-query-rewrite/`），
+    代价是中位 1.06s。**默认关**（`config["search"]["rewrite_queries"]`）；
+    改写拿不到结果时 `rewrite_queries` 返回 `[]`，这里就退化成纯原词检索 ——
+    与「没开这个开关」逐字相同，故不需要额外的失败分支。
     """
     async def search_docs(query: str) -> str:
+        # 改写放在 `try` 之外：它自己的失败已经吞成 `[]`（见 `query_rewrite` 的
+        # docstring），能穿到这里来的只有取消 —— 那个应该打断整轮对话，不该被
+        # 当成「索引坏了」降级掉。
+        extras = (await rewrite_queries(llm, query, cancel_event=cancel_event)
+                  if rewrite and llm is not None else [])
+
         hits = None
         degraded = None
         if svc is not None:
             try:
                 hits = (await fused_search(
-                    svc, searcher, query, limit=SEARCH_DOCS_LIMIT + 1))["hits"]
+                    svc, searcher, query, limit=SEARCH_DOCS_LIMIT + 1,
+                    extra_queries=extras))["hits"]
             except AppError:
                 # 字面索引坏 / 搜索引擎不在场。`fused_search` 刻意不吞，由这里决定
                 # 怎么处置（`/api/search` 那边是 503，这边是降级）。
@@ -193,7 +219,9 @@ def _make_list_docs(store: object):
 
 
 def _build_registry(store: object, *, allow_web: bool = True,
-                    svc: object = None, searcher: object = None) -> ToolRegistry:
+                    svc: object = None, searcher: object = None,
+                    llm: object = None, rewrite: bool = False,
+                    cancel_event: object = None) -> ToolRegistry:
     """构建工具注册中心 — 参照 Pi 的扩展工具动态注册。
 
     `allow_web=False` 时**整组**摘掉 `search_web` / `fetch_url`（不是只摘搜索）——
@@ -209,12 +237,16 @@ def _build_registry(store: object, *, allow_web: bool = True,
     ⚠️ **默认 `None` 是刻意的**：`test_chat_web_search.py` 用 `_build_registry(None)`
     检查工具表，那些用例不该为了一个检索依赖而全部改签名；`None` 时 `search_docs`
     走降级路径并标 `no_query_service`，与「索引坏」同样可观测。
+
+    `llm` / `rewrite` / `cancel_event` 同样只喂 `search_docs`（查询改写，**默认关**）。
+    `llm is None` 与 `rewrite=False` 等价 ⇒ 全部默认值下工具表与改造前逐字相同。
     """
     reg = ToolRegistry()
     reg.register(ToolDef(
         "search_docs", "跨所有文档搜索相关内容",
         {"type": "object", "properties": {"query": {"type": "string", "description": "搜索关键词"}}, "required": ["query"]},
-        _make_search_docs(store, svc, searcher),
+        _make_search_docs(store, svc, searcher, llm=llm, rewrite=rewrite,
+                          cancel_event=cancel_event),
     ))
     reg.register(ToolDef(
         "lookup_doc", "查看指定文档的完整内容",
@@ -336,7 +368,8 @@ async def chat(req: ChatRequest, request: Request, store=Depends(get_store),
     # 传给这两处（那个局部变量驱动的两处必须同时改，见 `web_search` 查询参数的注释）。
     # ⚠️ 「回答依据」是例外：它随 `ChatRequest.answer_mode` 一路传给了 `build`，
     # 故「严格 / 发散」这条承诺在本端点上**成立**（联网那条仍然不成立）。
-    _build_registry(store, svc=svc, searcher=searcher).apply_to(agent)
+    _build_registry(store, svc=svc, searcher=searcher, llm=llm,
+                    rewrite=_rewrite_enabled(config)).apply_to(agent)
 
     log.info("Chat start", question_len=len(req.question), docs=len(req.doc_ids))
     try:
@@ -422,8 +455,15 @@ async def chat_stream(
     # ⚠️ `allow_web` 驱动**两处**：工具表（这里）与 system prompt 的联网层（下方
     #    `prompt_loader.build`）。拆成两个变量就是同源漂移的入口。
     allow_web = bool(web_search)
+    # ⚠️ `cancel_event` 必须**先于工具注册**创建：`search_docs` 的查询改写要拿到它
+    # （用户按了停止就别再发起一次新调用）。原先它在 `sse_stream` 前面几行才建，
+    # 而注册点在它之前。上移而不是在 `search_docs` 里另建一个 —— `disconnect_watcher`
+    # 要置的就是**这一个**事件，两个就分叉了。
+    cancel_event = asyncio.Event()
     agent = AgentRunner(llm, max_rounds=3)
-    _build_registry(store, allow_web=allow_web, svc=svc, searcher=searcher).apply_to(agent)
+    _build_registry(store, allow_web=allow_web, svc=svc, searcher=searcher,
+                    llm=llm, rewrite=_rewrite_enabled(config),
+                    cancel_event=cancel_event).apply_to(agent)
 
     window, budget = compute_budget(config, model_id)
     cc = config.get("chat_context") or {}
@@ -467,8 +507,6 @@ async def chat_stream(
 
     # ── 保存用户消息（刷新不丢）──
     sessions.append_user_message(conversation_id, question, doc_refs=doc_ref_list or None)
-
-    cancel_event = asyncio.Event()
 
     async def sse_stream():
         full_answer: list[str] = []

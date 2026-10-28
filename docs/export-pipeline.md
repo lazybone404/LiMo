@@ -24,7 +24,7 @@ PreviewArea 工具栏             ExportMenu（下拉菜单）        GET /expor
 
 顶部工具栏 Download 按钮       ExportPanel（侧边面板）       POST /export/custom
   ├─ 导出全部产物      →      downloadFromUrl() / fetch →  GET /export/{id}/all 或 POST /export/batch
-  └─ 详细导出 (ZIP)    →      进度反馈 ⚠️ 未接线        →     POST /export/custom/stream（SSE 进度）
+  └─ 详细导出 (ZIP)    →      进度条 ✓ 已接线          →     POST /export/custom/stream（SSE 进度）
                                                         →     GET /export/download/{temp_id}（临时下载）
 
 AI 对话右键菜单                 ChatCore                     GET /export/conversation/{id}
@@ -34,7 +34,16 @@ AI 对话右键菜单                 ChatCore                     GET /export/c
 
 > **9 个导出端点**：`GET /export/{id}`（单文件）、`GET /export/{id}/all`（全产物）、`POST /export/batch`（多文档）、`GET /export/{id}/mindmap`、`GET /export/conversation/{id}`、`POST /export/conversations/batch`、`POST /export/custom`、`POST /export/custom/stream`（SSE 进度）、`GET /export/download/{temp_id}`。
 >
-> ⚠️ **`/export/custom/stream` 与 `/export/download/{temp_id}` 当前无前端调用者**（2026-10-06 P1-12 核实：`api/export.ts::streamExportProgress` 零 import）。端点本身完备（打包已 `to_thread` 不阻塞事件循环），但 `ExportPanel` 的「详细导出」走的是**同步** `POST /export/custom` —— 上表那条「进度反馈」是**能力**不是**现状**。
+> ✓ **进度反馈已于 2026-10-29 接线**：`ExportPanel::handleCustomExport` 走
+> `POST /export/custom/stream` + `parseSSEStream`，进度条跟 `{phase, doc, total}`、
+> `done` 事件拿 `download_url` 再 `GET /export/download/{temp_id}` 落盘。
+>
+> ⚠️ **刻意只保留这一条路径**，同步 `POST /export/custom` 不再是 UI 的调用方：
+> 流式端点内部调的就是 `_build_export_zip` 那一份，留两条只会在某次改动时分叉（模式 #54）。
+>
+> ⚠️ **事件形状踩过一次**：`{"type":"progress","phase":"collecting","doc":N,"total":M,"message":…}`。
+> 第一版按 `ev.type === 'collecting'` + `ev.current` 写 —— 那样进度条永远停在 `0/N`、
+> 分支根本进不去，**静默失效零报错**。改判定/改字段名前先看一眼 `export.py` 里的 `yield`。
 
 ### 快捷 MD 的图片内嵌（2026-10-11）
 

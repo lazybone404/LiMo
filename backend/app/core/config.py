@@ -269,6 +269,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # 的 ONNX 加载 3–5 秒、常驻约 90MB），攒够一批再一次性处理 —— 加载次数与
         # 批次数成正比，而不是与文档篇数成正比。
         "vector_threshold": 100,
+        # 对话侧查询改写（**默认关 = 零回归**）：`search_docs` 工具在检索前先让 LLM
+        # 把口语问题换成库里可能出现的说法（2–3 条），各检索一次后与原词一起进 RRF。
+        # 依据见 `_experiments/06-query-rewrite/`（融合路 H@1 52.3% → 75.0%、
+        # H@5 88.6% → 97.7%）。打开它 = 每轮 `search_docs` 多一次 LLM 调用
+        # （实测中位 1.06s，flash 模型 + 关思考）。
+        # ⚠️ **刻意只作用于对话侧**：文档库搜索框是逐字联想，多等一秒会直接毁掉
+        # 输入体验；而对话里用户本来就在等一次工具调用。同一份能力不需要两处 UI。
+        "rewrite_queries": False,
     },
     # 插件系统（EnginePlugin v1）
     "plugin_states": {},    # name → bool（false=禁用，重启后生效；未配置默认 enabled）

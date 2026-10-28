@@ -1,9 +1,10 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useStore } from '../../store'
 import { X, Download, FileText, Globe, File, Archive, Search, ChevronUp, ChevronDown, Film, PenLine, Image, BarChart3, BookOpen, FileType } from 'lucide-react'
 import { getTypeMeta } from '../gen-panel/constants'
 import { downloadFromUrl, downloadBlob, sanitizeExportName } from '../../lib/download'
 import { apiUrl, CLIENT_HEADERS } from '../../api/client'
+import { parseSSEStream } from '../../api/sse'
 import { serializeCardVars } from '../../lib/card-prefs'
 import { getSavedIntensity, textureOpacity } from '../../lib/texture'
 
@@ -140,6 +141,12 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
 
   // ── 预览 ──
   const [exporting, setExporting] = useState(false)
+  /** 详细导出的进度（只在 SSE 那条路上有值；一键导出仍是同步的，走 null） */
+  const [progress, setProgress] = useState<{ current: number; total: number; message: string } | null>(null)
+  // 关面板 = 放弃这次导出：断开 SSE → 后端 `disconnect_watcher` 置 cancel_event
+  // → `_build_export_zip` 中途撤离。没有这一行，用户关掉面板后 node 子进程会继续跑完。
+  const abortRef = useRef<AbortController | null>(null)
+  useEffect(() => () => { abortRef.current?.abort() }, [])
   // ── 导出摘要 ──
   const previewLines = useMemo(() => {
     const lines: string[] = []
@@ -169,6 +176,77 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
     return sum + tabs.length * g.docs.length * formats.length
   }, 0)
   const canExport = totalFiles > 0
+
+  /**
+   * 详细导出 —— 走 `POST /export/custom/stream`（SSE 进度 + 临时 ZIP）。
+   *
+   * ⚠️ 这条链路此前**前端零调用**（后端两个端点早已完备、打包早已 `to_thread`，
+   * 只是 UI 一直走同步的 `/export/custom`）。这里接线而不是再写一份打包逻辑：
+   * 流式端点内部调的是**同一个** `_build_export_zip`，只多了一个进度回调。
+   *
+   * ⚠️ `download_url` 后端给的是 `/api/export/download/{id}`，而 `downloadFromUrl`
+   * 内部会拼 BASE → 直接传就是 `/api/api/...`（404，且报错文案是「导出失败」，
+   * 看起来像打包失败）。剥掉 `/api` 前缀，与 `appUrl` 里那条同款处理对齐。
+   */
+  const handleCustomExport = async () => {
+    if (!canExport) return
+    setExporting(true)
+    setProgress(null)
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    try {
+      const tabs = Array.from(new Set(typeGroups.flatMap(g => groupTabs[g.type] || [])))
+      const r = await fetch(apiUrl('/export/custom/stream'), {
+        method: 'POST',
+        headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
+        // skeleton / card_style / marker_decor / 主题六轴跟随预览（与 ExportMenu 同源）——
+        // ⚠️ 默认值（`paper` / 装饰开）时后端走的仍是那条逐字未改的分支。
+        // 主题六轴**无条件发**（跟随是产品决策不是开关），后端逐项白名单校验。
+        body: JSON.stringify({ doc_ids: selectedIds, formats, content_tabs: tabs, formula_md: formulaMd, image_md: imageMd, formula_plain: formulaPlain, html_theme: htmlTheme, skeleton, card_style: cardStyle, marker_decor: markerDecor, card_vars: cardVars, theme_mode: resolvedTheme, accent, base, font, texture, texture_opacity: textureOpacityValue, filename }),
+        signal: ctrl.signal,
+      })
+      if (!r.ok || !r.body) {
+        const err = await r.json().catch(() => ({ detail: `HTTP ${r.status}` }))
+        addToast(err.detail || '导出失败', 'error')
+        return
+      }
+
+      // 事件收口：`done` 只记地址（它由后端最后一次推），下载放在流结束后 await ——
+      // 在回调里发起的话 `finally` 会先跑，`exporting` 提前复位。
+      let downloadPath = ''
+      let totalExported = 0
+      await parseSSEStream(r.body.getReader(), (ev) => {
+        if (ev.type === 'done') {
+          const url = String(ev.download_url || '')
+          downloadPath = url.startsWith('/api/') ? url.slice(4) : url
+          totalExported = Number(ev.total_files) || 0
+        } else if (ev.type === 'error') {
+          addToast(ev.message || '导出失败', 'error')
+        } else if (ev.type === 'cancelled') {
+          // 用户自己按的取消（关面板），不该报成失败
+        } else if (ev.type === 'progress') {
+          // ⚠️ 字段是 `doc` 不是 `current`（`export.py::_push` 的形状），
+          // `phase` 是 `collecting`/`images`/`zipping`，`total` 是**文档数**
+          setProgress({ current: Number(ev.doc) || 0, total: Number(ev.total) || 0, message: String(ev.message || '') })
+        }
+        // `: heartbeat` 注释行不以 `data: ` 开头，`parseSSEStream` 已跳过
+      })
+
+      if (!downloadPath) return  // error / cancelled 已各自提示过
+      // `preferSuggestedName` —— 后端给的是 `export-{temp_id}.zip`，这里要给用户设的文件名
+      const result = await downloadFromUrl(downloadPath, `${filename}.zip`, { preferSuggestedName: true })
+      if (result.ok) addToast(`已导出 ${totalExported} 个文件，请查看下载文件夹`)
+      else addToast(result.error || '导出失败', 'error')
+    } catch (e) {
+      // 关闭面板触发的 abort 不是错误
+      if ((e as Error)?.name === 'AbortError') return
+      addToast('导出失败: ' + (e as Error).message, 'error')
+    } finally {
+      abortRef.current = null
+      setExporting(false)
+      setProgress(null)
+    }
+  }
 
   return (
     <>
@@ -367,6 +445,20 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
 
         {/* ── 底部 ── */}
         <footer className="border-t px-5 py-4 shrink-0">
+          {/* 详细导出进度 —— 只在 SSE 那条路上有值。`total` 是**文档数**（后端逐篇推），
+              不是文件数，所以它和按钮上那个「N 个文件」不是同一个数，别混着显示。 */}
+          {exporting && progress && progress.total > 0 && (
+            <div className="mb-3">
+              <div className="flex items-baseline justify-between gap-2 mb-1.5">
+                <span className="text-[11px] text-dimmed truncate">{progress.message}</span>
+                <span className="text-[11px] text-disabled tabular-nums shrink-0">{progress.current}/{progress.total}</span>
+              </div>
+              <div className="h-1 rounded-full bg-surface overflow-hidden">
+                <div className="h-full bg-accent transition-[width] duration-300"
+                  style={{ width: `${Math.min(100, (progress.current / progress.total) * 100)}%` }} />
+              </div>
+            </div>
+          )}
           <div className="flex gap-2">
             <button disabled={selectedIds.length === 0 || exporting} onClick={async () => {
               if (selectedIds.length === 0) return
@@ -395,31 +487,12 @@ export function ExportPanel({ onClose }: { onClose: () => void }) {
               className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 bg-surface text-dimmed text-[13px] font-medium rounded-xl hover:bg-surface-hover transition-colors ${selectedIds.length === 0 ? 'opacity-30' : ''}`}>
               {exporting ? '打包中...' : <><Archive size={14} /> 一键导出所有产物 (ZIP)</>}
             </button>
-            <button disabled={!canExport || exporting} onClick={async () => {
-              setExporting(true)
-              try {
-                const tabs = Array.from(new Set(typeGroups.flatMap(g => groupTabs[g.type] || [])))
-                const r = await fetch(apiUrl('/export/custom'), {
-                  method: 'POST', headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
-                  // skeleton / card_style / marker_decor / 主题六轴跟随预览（与 ExportMenu 同源）——
-                  // ⚠️ 默认值（`paper` / 装饰开）时后端走的仍是那条逐字未改的分支。
-                  // 主题六轴**无条件发**（跟随是产品决策不是开关），后端逐项白名单校验。
-                  body: JSON.stringify({ doc_ids: selectedIds, formats, content_tabs: tabs, formula_md: formulaMd, image_md: imageMd, formula_plain: formulaPlain, html_theme: htmlTheme, skeleton, card_style: cardStyle, marker_decor: markerDecor, card_vars: cardVars, theme_mode: resolvedTheme, accent, base, font, texture, texture_opacity: textureOpacityValue, filename }),
-                })
-                if (!r.ok) { const err = await r.json().catch(() => ({ detail: `HTTP ${r.status}` })); addToast(err.detail || '导出失败', 'error'); return }
-                const blob = await r.blob()
-                const result = downloadBlob(blob, `${filename}.zip`)
-                if (result.ok) {
-                  addToast(`已导出 ${totalFiles} 个文件，请查看下载文件夹`)
-                } else {
-                  addToast(result.error || '导出失败', 'error')
-                }
-              } catch (e) { addToast('导出失败: ' + (e as Error).message, 'error') }
-              finally { setExporting(false) }
-            }}
+            <button disabled={!canExport || exporting} onClick={handleCustomExport}
               className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 bg-accent text-on-accent text-[13px] font-medium rounded-xl hover:bg-accent-hover disabled:opacity-30 transition-colors">
               <Download size={14} />
-              {exporting ? '导出中...' : `按上方设置导出 ${totalFiles} 个文件 ${formats.length > 1 || totalFiles > 1 ? '(ZIP)' : ''}`}
+              <span className="truncate">
+                {exporting ? '导出中...' : `按上方设置导出 ${totalFiles} 个文件 ${formats.length > 1 || totalFiles > 1 ? '(ZIP)' : ''}`}
+              </span>
             </button>
           </div>
         </footer>

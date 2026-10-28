@@ -15,16 +15,25 @@
 ⚠️ **字面索引坏掉时这里不吞异常**（`QueryError` 照抛）：`/api/search` 要把它变成
 503 + 可恢复标记，对话侧要把它降级成标题过滤并**标明降级**。两种处置都对，差别只能
 由调用方决定 —— 在这里吞掉等于替两边选了一个，且选错的那一边完全看不出来。
+
+⚠️ `extra_queries`（2026-10-29）是「原词 + 改写」的落点：同一个问题的其他说法各检索
+一次，再把几条 id 序列交给 `core/vector_index.rrf` 合并。**RRF 本体仍不在这里**，
+这里只多跑几次 `_one`。做法与数字见 `_experiments/06-query-rewrite/`；
+只有对话侧用它（`routers/chat.py::_make_search_docs`），`/api/search` 不传。
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from app.core.errors import AppError
-from app.services.vector_search import DEFAULT_DEPTH
+from app.core.vector_index import rrf
+from app.services.vector_search import DEFAULT_DEPTH, RRF_K
 
 
 async def fused_search(svc, searcher, q: str, *, limit: int,
-                       depth: int | None = None) -> dict:
+                       depth: int | None = None,
+                       extra_queries: Sequence[str] = ()) -> dict:
     """跑一次「字面 ∪（可选的）语义」检索。
 
     返回 `{"hits": [{id, title, snippet}], "semantic": dict | None}` —— 与
@@ -37,16 +46,56 @@ async def fused_search(svc, searcher, q: str, *, limit: int,
     ⚠️ **两路取同样深度**（`depth = max(limit, DEFAULT_DEPTH)`）：RRF 的
     `1/(k+rank)` 只有在两路基线一致时才可比。字面取 20 条、向量取 50 条会让
     「字面第 20 名」与「向量第 20 名」拿到不同的分数，排序就取决于谁取了更深的巧合。
+
+    `extra_queries`（2026-10-29）：同一问题的其他说法（来自 `services/query_rewrite`），
+    **各检索一次后与原词一起进 RRF**。合并时不加权重 —— 实验里「原词 + 3 条改写」
+    的推荐形态就是等权，而给原词加权是一个没测过的超参（见
+    `_experiments/06-query-rewrite/`）。空序列 ⇒ 与改造前**逐字相同**的最后一步。
     """
     depth = max(int(limit), int(depth or DEFAULT_DEPTH))
-    # 字面路先跑：它自己处理空查询 / 缺引擎 / 索引坏（坏索引是 503 + 可恢复标记，
-    # 语义路健康也不该把它掩盖成「能搜」——那是两条独立的库）。
-    lexical = svc.search_resources(q, limit=depth).items
+    extras = [t for t in extra_queries if t and t != q]
+    if not extras:
+        hits, semantic = await _one(svc, searcher, q, limit, depth)
+        return {"hits": hits, "semantic": semantic}
+
+    # ⚠️ **串行而非 `asyncio.gather`**：耗时大头是前面那次 LLM 调用（实测 1.06s），
+    # 这 4 次检索并发到顶也省不到 1 秒；而向量路的 `_ensure_loaded` 没有锁，四条同时
+    # 进冷启动会把 22.8MB 权重读四遍（同一进程内 warmup 已加载时才是纯内存快路）。
+    groups: list[list[str]] = []
+    pool: dict[str, dict] = {}
+    semantic: dict | None = None
+    for term in [q, *extras]:
+        hits, sem = await _one(svc, searcher, term, depth, depth)
+        groups.append([h["id"] for h in hits])
+        for h in hits:
+            pool.setdefault(h["id"], h)
+        if semantic is None:
+            # `semantic` 自证段取**原词那次**：口径不符 / 没建过 / 库不可用都是全局
+            # 状态，改写那几次只会重复同一句话；只有「query embedding 超时」可能
+            # 个别失败，而那种情况报不报都在 error 与 hits 上分得清。
+            semantic = sem
+
+    merged = rrf(groups, RRF_K)[:limit]
+    return {"hits": [pool[i] for i in merged if i in pool], "semantic": semantic}
+
+
+async def _one(svc, searcher, term: str, take: int,
+               depth: int) -> tuple[list[dict], dict | None]:
+    """单个检索式走一遍「字面 → （可选）语义融合」。
+
+    `take` 是返回条数、`depth` 是两路各取多少条。两者分开是为了合并场景：
+    每一路都要拿到 `depth` 条才能让 RRF 真的在 50 名以内排序，
+    而最终结果只要 `limit` 条（见 `fused_search` 的调用点）。
+
+    字面路先跑：它自己处理空查询 / 缺引擎 / 索引坏（坏索引是 503 + 可恢复标记，
+    语义路健康也不该把它掩盖成「能搜」——那是两条独立的库）。
+    """
+    lexical = svc.search_resources(term, limit=depth).items
     if searcher is None:
-        return {"hits": lexical[:limit], "semantic": None}
+        return lexical[:take], None
 
     ids, semantic = await searcher.fuse(
-        q, [h["id"] for h in lexical], limit=limit, depth=depth)
+        term, [h["id"] for h in lexical], limit=take, depth=depth)
 
     by_id = {h["id"]: h for h in lexical}
     hits: list[dict] = []
@@ -54,7 +103,7 @@ async def fused_search(svc, searcher, q: str, *, limit: int,
         hit = by_id.get(doc_id) or _hit_from_store(svc, doc_id)
         if hit is not None:
             hits.append(hit)
-    return {"hits": hits, "semantic": semantic}
+    return hits, semantic
 
 
 def _hit_from_store(svc, doc_id: str) -> dict | None:

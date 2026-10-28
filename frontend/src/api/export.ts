@@ -2,10 +2,10 @@
  * export 域 — 导出 ZIP 下载。
  *
  * ⚠️ 这里原有一个 `streamExportProgress`（POST `/export/custom/stream` 收进度 SSE），
- * **全前端零调用**，已删除（P1-12）。后端那两个端点（SSE 进度 + 临时 ZIP 下载）
- * 仍然存在且行为正确，只是 UI 从未接线 —— 见 docs/export-pipeline.md。
- * 将来若要接进度反馈，要做的是**把 UI 接起来**，而不是把这个封装函数抄回来：
- * 抄回来仍是零调用，死代码只是换了个地方躺。
+ * **全前端零调用**，已删除（P1-12）。此后**进度反馈已接线（2026-10-29）**——
+ * 落点在 `components/ui/ExportPanel.tsx::handleCustomExport`，它自己 `fetch` +
+ * `api/sse.ts::parseSSEStream`，**没有把封装函数抄回来**：那份封装当年零调用的根因
+ * 是没人需要它，不是因为函数写得不好；现在需要的地方只有一个，再抽一层就是纯转发。
  */
 import { apiFetch, BASE } from './core'
 

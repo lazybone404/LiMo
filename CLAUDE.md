@@ -696,6 +696,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | **向量索引的写入编排**（启动对账 / 分块 / 块级增量 / 编码 / 每篇 checkpoint / 失败上限） | [services/vector_worker.py](backend/app/services/vector_worker.py)。唯一会**发起计费编码调用**的地方（除查询侧的一次 query embed）。⚠️ `MAX_FAIL` 与重试冷却住在这里、不散在调用点 |
 | **查询融合的编排**（两路同深度 / RRF / 前置校验 / 超时 / `semantic` 形状） | [services/vector_search.py](backend/app/services/vector_search.py)::`VectorSearcher.fuse`。⚠️ `DEFAULT_DEPTH` / `RRF_K` / `QUERY_TIMEOUT` 三个数值只此一份；纯算子（切块 / rrf）在上一行，两者分工是「数值与编排 vs 算法」 |
 | **一次融合检索的编排**（字面先跑 → 语义 fuse → 语义独有命中回补 title） | [services/search_fuse.py](backend/app/services/search_fuse.py)::`fused_search`。⚠️ **只此一份**：`GET /api/search` 与对话侧 `search_docs` 工具**共用**（2026-10-29 抽出）。此前对话侧走标题子串过滤 ⇒「AI 说库里没有、搜索框自己搜得到」。⚠️ **它不吞索引异常** —— 两个消费方的处置不同（503 vs 降级），差别只能由调用方决定 |
+| **对话侧查询改写**（口语问题 → 2–3 条检索式 + prompt + 超时 + 清洗） | [services/query_rewrite.py](backend/app/services/query_rewrite.py)::`rewrite_queries`。⚠️ **只管「生成检索式」**，怎么用是调用方的事（`fused_search` 的 `extra_queries`）；**失败返回 `[]` 而不是抛错**（调用方按原词检索 = 原设计），只有 `CancelledError` 上抛。⚠️ **关思考无条件**（`disable_thinking=True`，写 `=llm.supports_reasoning` 会让 DeepSeek 烧光 token 预算 ⇒ 空串）。⚠️ `REWRITE_PROMPT` 与 `_experiments/06-query-rewrite/eval_rewrite.py` **逐字一致**，`tests/test_query_rewrite.py` 有比对（缺文件时跳过）—— 改 prompt 必须重跑实验 |
 | **语义检索开关的维护点**（worker + 融合层**成对**启停） | [services/vector_runtime.py](backend/app/services/vector_runtime.py)::`sync_vector_runtime`。⚠️ 启动（`main.py`）与设置页开关（`POST /api/search/vector`）**共用这一份** —— 各写一份的失效形态是「只起了一半」（融合层在用一份永不更新的索引，或 worker 在写一份没人读的库） |
 | **向量索引的唯一落盘点**（`vec.db` 三表 / 四元组身份 / 状态机 / 块读写） | [core/vector_store.py](backend/app/core/vector_store.py)。与上一行**分工不同**：上一行是**纯算子**（不碰盘、产品与评测共用），这一行是**唯一碰 `vec.db` 的地方**（谁要读写向量都经它，别在 router / worker 里另写 sqlite）。⚠️ 三条写死的语义：`mark_pending` **清空 `content_hash`**（留旧值会让 worker 的「hash 相等跳过整篇」误命中）、**不删 `vec_chunks`**（块级 hash 增量靠旧块比对）、**归零 `fail_count`**（内容变了是新机会，而 `fail_count` 是「花钱的闸门」——向量重试每次都是计费调用）。⚠️ `requeue_failed`（「重试失败项」）复用**同一组三条**（清 hash / 不删块 / 归零计数）并多清一个 `error` —— 它和 `mark_pending` 的差别只在**筛选条件**（`status = 'failed'` vs 单篇 id）与**是否叫醒 worker**，语义上是同一个动作，别把它写成另一套。⚠️ 四元组（`model_id`/`dimension`/`chunk_size`/`schema_version`）是**整体身份**，任一不符即整体不可用，**没有降级用这一档**，也**不自动重建**（重建要花钱） |
 | **本地 embedding 引擎 + ONNX 句柄**（产品与评测**同一份**） | [engines/embedding_local.py](backend/app/engines/embedding_local.py) 的 `Embedder`（CLS pooling + 逐行归一化 + `max_length=512`）与 `LocalEmbeddingEngine`。⚠️ `scripts/embed_local.py` 已改为**从本模块转出**（`Embedder` + 评测形状的 `build_vectors`）—— 它此前是那 40pp 落差之后唯一还活着的「第二份 embedder」，评测与产品指向不同权重时「83%」描述的是另一套实现。⚠️ `onnxruntime` / `tokenizers` **刻意不在 `pyproject.toml`**，构造时惰性 import、缺失抛 `MissingDependency` 带安装命令 |
@@ -1062,7 +1063,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 思维导图 | SVG 下载 + markmap 交互式 HTML (~980KB，暗色自适应) |
 | ✅ | 对话导出 | Markdown + JSON，支持批量 ZIP |
 | ✅ | Word 导出 | Markdown→HTML→docx（共用解析器 `markdown_render.py`）；标题大纲级别/嵌套列表/表格/代码块/引用/超链接/☑任务列表/时间戳双色 badge/图片等比内嵌；公式保留 LaTeX 原文（2026-09-21） |
-| 🟡 | 导出进度反馈 | ⚠️ **后端就绪、前端未接线**（2026-10-06 P1-12 核实，2026-10-26 复核）：`POST /export/custom/stream`（SSE 进度）+ `GET /export/download/{temp_id}` 端点完备，打包已 `await asyncio.to_thread(_build_export_zip, ...)`（不再阻塞事件循环），但前端**零调用** —— 那个 `streamExportProgress` 封装已作为死代码删除（抄回来仍是零调用，死代码只换了个地方躺），`ExportPanel` 的「详细导出」走**同步** `POST /export/custom`。如实标注，**不写成已可用**；要用起来要做的是**把 UI 接起来** |
+| ✅ | 导出进度反馈（2026-10-29 接线） | 后端 `POST /export/custom/stream`（SSE 进度）+ `GET /export/download/{temp_id}` 早已就绪，缺的只是前端 —— `ExportPanel::handleCustomExport` 改为 `fetch` + `parseSSEStream`，进度条跟 `{phase, doc, total}`、`done` 拿 `download_url` 落盘。**刻意只留这一条路径**（流式端点内部调的就是 `_build_export_zip` 那一份，留同步端点当回退只会在某次改动时分叉） |
 | ❌ | 图片预处理复用 | 导入时已 optimize_images，导出 ZIP 未复用压缩后图片 |
 | ✅ | 详细导出判据修复（2026-10-11） | 审查查出六条：跨类型 tab 并集不再产出「名字对不上、内容是同一段原文」的假文件（前端滤 `contentSource='none'` + 后端不回退 rawText）/「原图」「OCR」摘出导出清单（它们本就没有内容源）/ `/export/batch` 空结果 404（与 `/all`、`/custom` 统一）/ 一键导出剥 `limo-block`（与定制导出同源）/ `_inline_images` 补 `doc_dir`（成对守卫）/ 只勾 Word 时不再写无人引用的 `images/`。⚠️ **同一批发现三个导出测试文件在门禁里空跑**（模块级裸断言 → pytest 收集数 0），已加适配层 |
 | ✅ | PDF 导出 | 两条路径共用一份自包含 HTML——**Tauri**：Rust `export_pdf` → 屏幕外窗口 → `ICoreWebView2_7::PrintToPdf` **免对话框直接落文件**（A4 + 背景保留 + 无页眉页脚，存系统「下载」目录、同名加序号）；**浏览器**：屏幕外 iframe → 打印对话框。打印样式三处落点（`_PRINT_CSS` + Pygments 浅底 defs + limo 暗色还原）。两条链均已实测（2026-09-21） |
@@ -1128,10 +1129,10 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| 🟡 | embedding 语义搜索 | **字面检索已重做并实测**（2026-10-26，29 题 41% → 83%）。**向量侧阶段 1–4 已全部落地**（同日：`EmbeddingEngine` 云端内置 + `vec.db` 三表 + 增量 worker + RRF 查询融合 + 设置页开关 + **本地引擎 `local-bge-small` 与引擎切换，外加 **2026-10-27 进程外插件版（打包版离线可用）****，**默认关**；见 [search-retrieval.md](docs/search-retrieval.md) §4.8 / §6.1）；评测侧 RRF 理论上限 97%。**仍未做**：真实库（131 篇）端到端实测（**2026-10-26 用户决定本轮先不做**，缺的是产品链路观测而非算法验证）、`eval_search.py --vector` 产品侧同轮对照、本地引擎的真实库**数值**验证（本轮只验契约与编排） |
+| 🟡 | embedding 语义搜索 | **字面检索已重做并实测**（2026-10-26，29 题 41% → 83%）。**向量侧阶段 1–4 已全部落地**（同日：`EmbeddingEngine` 云端内置 + `vec.db` 三表 + 增量 worker + RRF 查询融合 + 设置页开关 + **本地引擎 `local-bge-small` 与引擎切换，外加 **2026-10-27 进程外插件版（打包版离线可用）****，**默认关**；见 [search-retrieval.md](docs/search-retrieval.md) §4.8 / §6.1）；评测侧 RRF 理论上限 97%。**真实库端到端实测已完成**（`_experiments/05-real-library-product-path/`，2026-10-27）：145 篇真实库 + 36,861 块 + 44 题，走**产品 `VectorSearcher.fuse`** —— 字面 H@5 77.3% / 纯向量 84.1% / **融合 88.6%**（H@50 三路 97.7% / 93.2% / **100.0%**，单路的洞不重叠 ⇒ 融合的价值是互补不是更强）。本地引擎的数值验证同轮覆盖。**仍未做**：云端 `text-embedding-v4` 在这个库上的数值对照（要花钱，02 已有同口径算法对照）；`0.8/1.2` 偏向量加权在更大样本上的验证（**不改产品** —— 权重是在这 44 题上后验挑出来的） |
 | ✅ | 本地大模型接入【一】（2026-10-29） | Ollama 一类本地端点全走 **OpenAI 兼容 `/v1`**：`PROVIDER_DEFAULTS` 加一条 + `core/token.py` 的 `DEFAULT_CONTEXT` 补窗口 + **`provider_requires_api_key()` 收口空 Key 检查**（13 处，此前各写一遍）—— **不需要伪造 API Key** 是这项的验收点。⚠️ 本地 provider 不在 models.dev 库里，`context_window` 必须由预设给值 —— 缺了它按保守 32k 裁历史，现象是「本地模型明明支持 128k 却总是忘事」，零报错 |
 | ✅ | 检索质量门禁（横切，2026-10-29） | `bash scripts/check-all search`（独立层，约 1s）：81 条切片语料 + 30 题 + 基线，`SearchEngine.search` 退化就红。⚠️ **只测字面层** —— 向量 / RRF / 对话侧一个字都不反映到分数上。⚠️ **绝对分数不可迁移**（切片把 H2 当一篇文档，BM25 长度归一化让命中更容易）。⚠️ **更新基线必须在 CHANGELOG 记理由**，否则基线变橡皮图章 |
-| 🟡 | 检索查询改写【一】 | 前置缺陷**已修**（2026-10-29）：`search_docs` 此前是**标题子串过滤**，根本不走检索 —— 现在与 `GET /api/search` 共用 `services/search_fuse.py::fused_search`。改写本身仍待做，且**先做实验再决定**：需要比较「原词直搜 / LLM 改写成 2–3 个检索式 / 只做关键词抽取」三条路径的真实增量，判据是**增量能否覆盖它引入的 2–6 秒延迟**。⚠️ 语料词表未知时，改写的收益可能不如「抽取关键词」那一半 |
+| ✅ | 检索查询改写（2026-10-29） | 前置缺陷先修：`search_docs` 此前是**标题子串过滤**，根本不走检索 —— 现与 `GET /api/search` 共用 `services/search_fuse.py::fused_search`。改写本身已实施：`services/query_rewrite.py` 一次 LLM 调用出 2–3 条检索式，形态是**「原词 + 改写一起进 RRF」**（`fused_search` 的 `extra_queries`），**不是替掉原词** —— 实验 44 题真实库：融合路 H@1 52.3% → 75.0%、H@5 88.6% → 97.7%，而「只改写」H@5 反而更低（95.5%）且丢了原词兜底。⚠️ **默认关**（`config.search.rewrite_queries`，打开 = 每轮多一次计费调用）；**只挂对话侧**（文档库搜索框是逐字联想，多一秒会毁掉输入体验）。实验否决了「规则去口语词」（负收益，二字组 OR 已被砍）与「只做关键词抽取」（H@5 打平但 H@1 低 7–9pp）。见 `_experiments/06-query-rewrite/` |
 | ❌ | 更多导入源【一】 | **RSS / 学术论文(arXiv) 复用现有 Adapter 管线**（`accept()` + `adapt()` 注册即生效，主流程零改动）；播客转录需 ASR 引擎就位后再评估。⚠️ 原写「RSS / 播客转录 / 学术论文」三合一，2026-10-29 拆开：前两项是同一档成本，播客不是 |
 | ❌ | Reranker 重排【二】 | 现有检索链路止于 RRF（**只用排名不用分数**），而 2026 生产级标准是 `混合检索 → RRF → cross-encoder 重排`（实测 NDCG@5 0.75 → 0.92）。**新增第三族插件基类 `RerankPlugin`**（与 `EnginePlugin` / `EmbeddingPlugin` 并列：进程外 + 常驻子进程 + `precheck`）—— 本地 `bge-reranker` 2.3GB 正是口子原则的实例。⚠️ 排在 RRF 之后而不是替代它：RRF 负责融合两路异构结果，rerank 负责在同一批候选里重新定序，**两件事** |
 | ❌ | MCP 服务端【二】 | 把库暴露给 Claude / Cursor 等外部 agent：`QueryService` 外层加 **JSON-RPC over stdio 传输层**（第三个传输层，与 `HttpSource` / `LocalSource` 同契约，**不改 `QueryService` 一行**）——「读路径唯一入口」架构的自然产物。MCP 2026-01 已成为 Linux Foundation 标准。⚠️ 与 `limo` CLI 的分工：CLI 是**人**用的终端命令，MCP 是**agent**用的工具调用，消费者不同故不合并 |
@@ -1156,8 +1157,8 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 10 | 10 | 100% |
 | 📊 图表生成 | 11 | 12 | 92% |
-| 📤 导出 | 11 | 12 | 92% |
+| 📤 导出 | 12 | 12 | 100% |
 | 🎨 前端 UI/UX | 21 | 21 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
 | 🧩 产物复用 | 4 | 5 | 80% |
-| **合计** | **125** | **128** | **98%** |
+| **合计** | **126** | **128** | **98%** |
