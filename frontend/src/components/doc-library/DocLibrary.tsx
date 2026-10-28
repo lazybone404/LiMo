@@ -306,6 +306,19 @@ export function DocLibrary() {
   // 维度与体裁都归高级区：读者意图才是主控件，这两项是「想微调才展开」的修正项。
   const [synthGenres, setSynthGenres] = useState<string[]>([])
   const [synthAdvanced, setSynthAdvanced] = useState(false)
+  /**
+   * 「调整选项」是否展开。
+   *
+   * 装得下（`mode === 'stuff'` —— 零 LLM 调用、纯字符串拼接）时配置区**默认收起**：
+   * 多数合并就是「选好几篇 → 合并」，读者意图 / 对比原料 / 维度都是「想微调才展开」
+   * 的修正项，摊在主区会让一件简单的事看起来复杂。
+   *
+   * ⚠️ 收起**不减任何能力**：收起时发出的就是打开那一刻的默认值
+   * （原文 / 首预设维度 / 首个意图），与「展开了但一个都不改」逐字相同。
+   * ⚠️ 需要压缩时（`map_reduce` / `reject`）**强制展开且不可收起** ——
+   * 会压缩、会截断、可能要换模型，那是用户该知道的事。
+   */
+  const [synthTuneOpen, setSynthTuneOpen] = useState(false)
   // 合成前预览（每篇 token / 预计处理方式）：零 LLM 调用、零副作用，
   // 让用户在花 token 之前就知道该不该换模型（设计 §17.4）
   const [synthPreview, setSynthPreview] = useState<SynthesisPreview | null>(null)
@@ -959,6 +972,7 @@ export function DocLibrary() {
     setSynthIntentText('')
     setSynthStage(null)
     setSynthAdvanced(false)
+    setSynthTuneOpen(false)
     // 每次打开都回到「原文 + 首个预设 + 首个意图」：这些是**现场决定**，不该继承
     // 上次（否则用户上次改成「笔记」后这次静默沿用，会莫名其妙少几篇）
     setSynthSourceMode('raw')
@@ -1717,6 +1731,16 @@ export function DocLibrary() {
           }
         }
         const canRun = !running && !reject && synthPreviewErr === null
+        /**
+         * 需要压缩（`map_reduce` / `reject`）时**强制展开**配置且不给收起入口：
+         * 会压缩、会截断、可能要换模型 —— 那是用户该知道的事，不该藏在「调整选项」后面。
+         *
+         * 其余情形（含 preview 还没回来）按**简单模式**渲染：默认路径就该是最短那条。
+         * preview 未返回时先收起，避免「先完整后收起」的跳动；`synthPreviewErr` 那种
+         * 情况编辑钮本来就被禁用，收起也无害。
+         */
+        const needsTuning = synthPreview?.mode === 'map_reduce' || reject
+        const simpleMode = !needsTuning && !synthTuneOpen
         const activeIntent = readerIntents.find(i => i.key === synthIntent)
         // 当前生效的材料体裁（高级区折叠时也要看得见——它是**实际生效值**，
         // 比「意图建议值」更有用：用户手改过体裁后，这里显示的是改后的样子）
@@ -1741,7 +1765,8 @@ export function DocLibrary() {
             <div data-synth-dialog className="bg-elevated rounded-2xl shadow-2xl border border-border-light p-6 max-w-180 w-full mx-4 max-h-[85vh] overflow-y-auto animate-[fadeIn_0.15s_ease-out]"
               onClick={e => e.stopPropagation()}>
               <h3 className="text-[17px] font-semibold mb-2 flex items-center gap-2">
-                <Layers size={16} className="text-accent" />合成 {ids.length} 篇对比综述
+                <Layers size={16} className="text-accent" />
+                {simpleMode ? `合并 ${ids.length} 篇文档` : `合成 ${ids.length} 篇对比综述`}
               </h3>
 
               {running ? (
@@ -1805,6 +1830,31 @@ export function DocLibrary() {
                   <label className="text-[12px] font-medium text-dimmed block mb-1">标题</label>
                   <input data-synth-title value={synthTitle} onChange={e => setSynthTitle(e.target.value)}
                     className="w-full px-2 py-1.5 mb-3 text-[13px] bg-elevated border border-border-light rounded-md outline-none focus:border-accent" />
+
+                  {/* ── 简单模式：装得下（stuff）就是「选好几篇 → 合并」，配置区默认收起。
+                      收起时发出的就是打开那一刻的默认值（原文 / 首预设维度 / 首个意图），
+                      与「展开了但一个都不改」逐字相同 —— 减的是摩擦，不是能力。 */}
+                  {simpleMode ? (
+                    <div data-synth-simple className="mb-3">
+                      <p className="text-[11px] text-disabled leading-relaxed mb-1.5">
+                        全部原样合并，不压缩、不改写；默认按「通读理解」组织。
+                      </p>
+                      <button type="button" data-synth-tune onClick={() => setSynthTuneOpen(true)}
+                        className="text-[11px] text-accent hover:underline">
+                        调整选项（读者意图 / 对比原料 / 对比维度）
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      {!needsTuning && (
+                        <button type="button" data-synth-tune onClick={() => setSynthTuneOpen(false)}
+                          className="block mb-2 text-[11px] text-disabled hover:text-dimmed transition-colors">
+                          收起选项（回到直接合并）
+                        </button>
+                      )}
+
+                      {/* ⚠️ 以下三块（原料 / 意图 / 高级区）的缩进沿用原级别，没有随这层包裹
+                          重排：纯为保持 diff 可读，结构上没有含义。 */}
 
                   {/* 原料模式 —— 比维度更基础（先决定「用什么材料」，再决定「按什么比」），故在它之上。
                       刻意**互斥不混合**：混合会让等比配额的前提失效、产物标注不可解释（设计 §19.2） */}
@@ -1926,12 +1976,14 @@ export function DocLibrary() {
                       </p>
                     </div>
                   )}
+                    </>
+                  )}
 
                   <div className="flex gap-2 justify-end">
                     <button onClick={() => setSynthOpen(false)}
                       className="px-4 py-2 text-[13px] text-dimmed hover:bg-surface rounded-lg transition-colors">取消</button>
                     <button data-confirm-synth onClick={runSynthesize} disabled={!canRun}
-                      className="px-4 py-2 bg-accent text-on-accent text-[13px] font-medium rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed">合成</button>
+                      className="px-4 py-2 bg-accent text-on-accent text-[13px] font-medium rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed">{simpleMode ? '合并' : '合成'}</button>
                   </div>
                 </>
               )}

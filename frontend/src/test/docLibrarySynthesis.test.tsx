@@ -164,12 +164,24 @@ const synthBtn = (container: HTMLElement) =>
   container.querySelector('button[title*="对比综述"]') as HTMLButtonElement
 
 /**
+ * 展开「调整选项」——装得下（`mode === 'stuff'`）时配置区**默认收起**（2026-10-29）。
+ *
+ * 判据用 `[data-synth-simple]` 是否存在而不是给按钮判空：那个锚点同时说明「当前处于
+ * 简单模式」，于是「需要压缩时强制展开」的情形会自动跳过（那里没有这个按钮，也不该有）。
+ */
+function openTune() {
+  if (!inDialog('[data-synth-simple]')) return
+  fireEvent.click(inDialog('[data-synth-tune]') as HTMLElement)
+}
+
+/**
  * 展开「高级选项」——对比维度与材料体裁都移进了这个折叠区（读者意图才是主控件）。
  *
  * ⚠️ 折叠用的是**条件渲染**（`{synthAdvanced && …}`）而不是 CSS 隐藏：收起时那两个
  * 控件**根本不在 DOM 里**，所以「维度默认不可见」这条判据才有硬证据（见 §18.1）。
  */
 function openAdvanced() {
+  openTune()
   fireEvent.click(inDialog('[data-synth-advanced-toggle]') as HTMLElement)
 }
 
@@ -218,6 +230,94 @@ describe('DocLibrary — 合成请求形状', () => {
     expect(body).not.toHaveProperty('user_notes')
     expect(call.init.method).toBe('POST')
     expect(call.url).toContain('/synthesis/stream')
+  })
+})
+
+/**
+ * 简单模式（2026-10-29）—— 装得下（`mode === 'stuff'`）时配置区**默认收起**。
+ *
+ * 用户原话：「有时候用户就是只是想把几篇文档单纯的合在一起」。那件事**功能上早就成立**
+ * （`build_stuff_text` 是零 LLM 调用的纯字符串拼接，后端所有参数都有默认值），
+ * 卡的是入口：一屏原料单选 / 读者意图 / 高级区，让一件简单的事看起来复杂。
+ *
+ * ⚠️ 收起的判据是「**不减能力**」：收起时发出的仍是打开那一刻的默认值，与「展开了但
+ *    一个都不改」逐字相同（见第 3 条）。
+ * ⚠️ 但**需要压缩时不许收起**（map_reduce / reject）：会压缩、会截断、可能要换模型，
+ *    那是用户该知道的事，藏进「调整选项」等于没说（见第 4 条）。
+ */
+describe('DocLibrary — 简单模式：装得下时配置区默认收起', () => {
+  const caps = (): Capabilities => ({
+    llmModels: {},
+    dimensionPresets: [{ key: 'paper', label: '论文综述', dimensions: ['研究问题', '方法'] }],
+    readerIntents: [
+      { key: 'understand', label: '理解主题', purpose: '读懂主线。', defaultContentType: null,
+        shape: 'article', shapeLabel: '综合文章', shapeDescription: '' },
+    ],
+    contentTypes: [{ key: 'paper', label: '论文' }],
+  } as unknown as Capabilities)
+
+  function openDialog() {
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+    return container
+  }
+
+  it('三项配置都不在 DOM，只剩清单 / 标题 / 一句说明；主按钮是「合并」', () => {
+    useStore.setState({ docs: twoDocs(), capabilities: caps() })
+    openDialog()
+
+    // ⚠️ 对照：把 `simpleMode` 恒设为 false → 下面三条全部非 null → 红
+    expect(inDialog('[data-synth-intent]')).toBeNull()
+    expect(inDialog('[data-synth-source="raw"]')).toBeNull()
+    expect(inDialog('[data-synth-advanced-toggle]')).toBeNull()
+    // 收起的代价必须被说清（「不压缩」），否则用户不知道自己在合并什么
+    expect(inDialog('[data-synth-simple]')!.textContent).toContain('不压缩')
+    // 清单与标题照旧 —— 它们才是「选对了吗」的核对点
+    expect(inDialog('[data-synth-sources]')).toBeTruthy()
+    expect(inDialog('[data-synth-title]')).toBeTruthy()
+    expect((inDialog('[data-confirm-synth]') as HTMLButtonElement).textContent).toBe('合并')
+  })
+
+  it('点「调整选项」→ 三项出现；点「收起选项」→ 又收起', () => {
+    useStore.setState({ docs: twoDocs(), capabilities: caps() })
+    openDialog()
+
+    openTune()
+    expect(inDialog('[data-synth-intent]')).toBeTruthy()
+    expect(inDialog('[data-synth-source="raw"]')).toBeTruthy()
+    expect(inDialog('[data-synth-advanced-toggle]')).toBeTruthy()
+    // 展开后标题与按钮都回到「合成」语义（这时候做的确实是份对比综述）
+    expect((inDialog('[data-confirm-synth]') as HTMLButtonElement).textContent).toBe('合成')
+
+    fireEvent.click(inDialog('[data-synth-tune]')!)
+    expect(inDialog('[data-synth-intent]')).toBeNull()
+  })
+
+  it('收起状态下直接合并：body 里是默认值，与「展开但一个都不改」逐字相同', async () => {
+    useStore.setState({ docs: twoDocs(), capabilities: caps() })
+    openDialog()
+    fireEvent.click(inDialog('[data-confirm-synth]')!)
+
+    await vi.waitFor(() => expect(streamCall()).toBeTruthy())
+    const body = JSON.parse(String(streamCall()!.init.body))
+    // ⚠️ 对照：收起时少发参数（例如只在展开时才带 dimensions）→ 后端走自己的默认
+    //    → 用户那套维度静默失效，而界面上完全看不出来
+    expect(body.source_mode).toBe('raw')
+    expect(body.reader_intent).toBe('understand')
+    expect(body.dimensions).toEqual(['研究问题', '方法'])
+    expect(body.content_type).toEqual([])
+  })
+
+  it('需要压缩（map_reduce）时强制展开，且**没有**收起入口', async () => {
+    previewData = { ...previewData, mode: 'map_reduce', total_tokens: 200000 }
+    useStore.setState({ docs: twoDocs(), capabilities: caps() })
+    openDialog()
+
+    // ⚠️ 对照：把 `needsTuning` 从 `simpleMode` 判据里去掉 → 收起来 → 红
+    await vi.waitFor(() => expect(inDialog('[data-synth-intent]')).toBeTruthy())
+    expect(inDialog('[data-synth-simple]')).toBeNull()
+    expect(inDialog('[data-synth-tune]')).toBeNull()
   })
 })
 
@@ -344,6 +444,7 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
 
     // ⚠️ 对照：把维度留在外面（不折叠）→ 此处非 null → 红
     expect(inDialog('[data-synth-dims]')).toBeNull()
+    openTune()
     expect(inDialog('[data-synth-advanced-toggle]')).toBeTruthy()
     openAdvanced()
     expect(inDialog('[data-synth-dims]')).toBeTruthy()
@@ -433,6 +534,7 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
+    openTune()
 
     const radios = [...allInDialog('[data-synth-intent]')] as HTMLInputElement[]
     // ⚠️ 对照：前端硬编码意图列表 → capabilities 换了标签它不变 → 红
@@ -453,6 +555,7 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
+    openTune()
 
     // 默认意图的形态：理解主题 → 综合文章
     expect(inDialog('[data-synth-shape]')!.textContent).toContain('综合文章')
@@ -475,6 +578,7 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
+    openTune()
 
     // 非「自定义」意图没有文本框（后端按意图取预设文案，用户没东西可填）
     expect(inDialog('[data-synth-intent-text]')).toBeNull()
@@ -495,6 +599,7 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
+    openTune()
 
     fireEvent.click(inDialog('[data-synth-intent="custom"]')!)
     fireEvent.change(inDialog('[data-synth-intent-text]')!,
@@ -579,6 +684,7 @@ describe('DocLibrary — 对比原料可选（§19）', () => {
     selectRows(container, 2)
     fireEvent.click(synthBtn(container))
 
+    openTune()
     const radioNotes = inDialog('[data-synth-source="notes"]') as HTMLInputElement
     fireEvent.click(radioNotes)
 

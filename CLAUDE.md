@@ -486,6 +486,7 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **资产搬运**：源 `assets/xxx` 复制到新文档并加源序号前缀（`d1_`/`d2_`），**引用必须同步改写**（只复制不改写 = 与不搬运完全一样，却零报错）；⚠️ **每个路径都要 `relative_to` 守卫**（现存同款正则已有 5 个副本，新副本不带守卫 = 新开一条任意文件读取通道）
 - **生成闸门**（`generate.py`）：composite → 不产 polished、清空 `format_list`、跳过 `_auto_title`；`metadataCorrupt` 推 warning 但不阻断
 - 前端入口在**文档库 BatchBar**（选中 ≥ 2 篇）而非 GenPanel——输入的 N 篇是已入库文档，Attention 在文档库。**确认对话框消费预览端点**：逐篇 token + 处理方式（数据只有后端有——`docs` 是白名单序列化、**不含正文**）、窗口 banner、读者意图单选组（+「自定义」文本框）、原料单选组、**折叠的「高级」区**（维度预设下拉 + 维度列表 textarea 每行一个、切换预设=覆盖；体裁多选，由所选意图的 `defaultContentType` 预填、切意图即重置）——**前端不本地重算 `plan`**（那是复刻 `plan_synthesis`，成对逻辑禁止）。⚠️ `tabRegistry` **只**给 summary/transcript 加 composite，**绝不动 `DOC_TYPES`**（会被 `ALL_TEXT` 展开、白送 polished/mindmap）；`summary.defaultFor` 也要加（`forSourceType` 与 `defaultFor` 是两件事）。详见 CHANGELOG 2026-10-01 / 2026-10-02
+- **简单模式（2026-10-29）**：`simpleMode = !needsTuning && !synthTuneOpen` —— 装得下（`mode === 'stuff'`，或预览还没回来）时配置区**默认收起**，只留清单 + 标题 + 「调整选项」链接，标题/按钮叫「合并」。⚠️ **三条判据**：① **收起不减能力**（发的是打开那一刻的默认值，与「展开了但一个不改」逐字相同，测试断言收起态 body 的四个字段）；② **`map_reduce` / `reject` 强制展开且不渲染 `data-synth-tune`**（会压缩/截断/换模型是用户该知道的事）；③ 预览未返回时先按简单模式渲染（避免「先完整后收起」的跳动）。⚠️ **不要改成「合并后自动生成」** —— D7（`describe('done 之后不自动生成（D7）')`）钉住「一次 `/generate/` 都不许有」，技术上还要复刻 `GenPanel::handleGenerate` 的 20+ 参数（模式 #54）
 
 ### 文档库（组织能力 2026-09-23；前端交互重设计 2026-09-25）
 
@@ -958,7 +959,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 降级显式化 | 被压缩/截断的篇逐条标 `✓/⚠` 落进「## 来源文档」；抽取失败也显式标注，不静默跳过 |
 | ✅ | 资产搬运 | 源 `assets/` 复制 + **引用同步改写** + 源序号前缀防重名；⚠️ **每个路径都过 `relative_to` 守卫**（防路径穿越） |
 | ✅ | 生成闸门 | composite → 不产 polished / 清空 `format_list` / 跳过 `_auto_title`；`metadataCorrupt` 推 warning 不阻断 |
-| ✅ | 前端入口 | BatchBar 合成按钮（≥2 篇）+ 确认对话框（已选清单/标题/对比指引 + **逐篇 token/处理方式 + 原料单选 + 维度列表**）；DocRow「N 合 1」徽章；「合成」筛选项；tab 只注册 summary/transcript + `defaultFor` |
+| ✅ | 前端入口 | BatchBar 合成按钮（≥2 篇）+ 确认对话框（已选清单/标题/对比指引 + **逐篇 token/处理方式 + 原料单选 + 维度列表**）；DocRow「N 合 1」徽章；「合成」筛选项；tab 只注册 summary/transcript + `defaultFor`。**2026-10-29 加简单模式**：装得下时配置区默认收起，只剩标题 + 「合并」按钮；`map_reduce`/`reject` 强制展开（详见合成管道段） |
 | ✅ | 超窗分层（2026-10-02） | 单篇超窗 → **篇内分块归并**（配额内覆盖全文）；病态长文 → **软 deadline**（剩余篇截断而非整次作废）；降级状态 **3 态 → 8 态**（原 `truncated` 是垃圾桶）+ 基础状态回退 |
 | ✅ | 预览端点（2026-10-02） | `POST /api/synthesis/preview`（零 LLM 调用/零副作用）：逐篇 token + 处理方式 + `stuff_window`；判据与执行**同源**（同一个 `_classify`）；banner 触发集只含 `over_window`/`reject` |
 | ✅ | 维度可控（2026-10-02） | `DIMENSION_PRESETS` 四套经 capabilities 下发；用户给定则跳过维度发现调用；**Stuff 路径也注入**（修复前为零）；维度落出处头 meta |
