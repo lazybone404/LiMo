@@ -412,6 +412,18 @@ async def startup():
     elif _runtime["enabled"]:
         logging.getLogger(__name__).info("向量索引 worker 已启动")
 
+    # 对话侧检索重排（默认关）。与向量同款：**启停判据只有一处** ——
+    # `services/rerank_runtime.py`，设置页的开关也调它。两处各写一遍的失效形态是
+    # 「配置写着开着、`app.state.rerank_search` 是 None」，对话检索里一次都不重排，
+    # 而界面上看不出任何异常。
+    # ⚠️ 没有 `await`：它不起后台任务（理由见该模块文档）。
+    from app.services.rerank_runtime import sync_rerank_runtime
+    _rerank = sync_rerank_runtime(app)
+    if _rerank["reason"]:
+        logging.getLogger(__name__).warning("重排未启用：%s", _rerank["reason"])
+    elif _rerank["enabled"]:
+        logging.getLogger(__name__).info("对话侧检索重排已启用")
+
 
 @app.on_event("shutdown")
 async def shutdown():

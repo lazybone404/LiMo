@@ -6,6 +6,194 @@
 
 ---
 
+## 2026-10-29 — 检索重排（rerank）：全套落地但**默认关**，要不要开交实验裁决
+
+**起因**：`_experiments/05` 那张表的读法是 —— **等权 RRF 是用 H@5 的召回换来的 H@1 稳定性**。
+H@50 已经 100%（好东西全在候选池里），H@1 却掉到 52.3%、与纯字面并列最低；两个方向
+逐题可见：字面把向量给的 2 名拖到 12 名，向量把字面给的 2 名拖到 15 名。
+
+⚠️ **这不是「只能上 cross-encoder」的局面** —— `0.8/1.2` 加权零延迟零费用就把 H@1 抬到
+63.6%。所以本轮的目标不是「装上就算改进」，而是**把重排做成可测的一臂**：它治的是
+「排第一那篇不对」，**不动召回**，因此 **H@50 必须逐字不变**（这是实验的第一条自证不变式）。
+
+### 改了什么
+
+**① 第三族插件基类 `RerankPlugin` + 协议 `engines/rerank_base.py`**
+
+契约是「一个查询 + 一组候选 → 一组 `[原始下标, 分数]`」—— `EnginePlugin` 的
+`process(file_path)`（一个文件 → 一段文本）装不下，`EmbeddingPlugin`（一组文本 → 一组
+向量）也装不下。常驻子进程的理由同 embedding：本地重排权重 544MB，冷读几十秒，撞
+`RERANK_TIMEOUT = 5.0` 会每次都超时。
+
+三条契约（`test_plugin_rerank.py` 逐条钉）：**`results` 的第一个数是「入参下标」不是
+「结果里的新位置」**（搞反 = 整张排名表错位，而每行看起来都合法 ⇒ 越界/重复必须**显式抛**）/
+**空输入返回 `[]` 且连子进程都不拉起** / **允许只返回前 k 条**（尾部由调用方按原序补齐，
+**不许补假分数凑满**）。
+
+`precheck` / `warmup` / `release` 同 embedding —— **一律 `getattr`，不进 Protocol**
+（`runtime_checkable` 加成员会让云端引擎不再满足）。`dimension` / `capabilities` 也刻意不放：
+前者 rerank 没有维度、后者没人读。
+
+**② 云端引擎 `engines/rerank_dashscope.py`（`gte-rerank-v2`）**
+
+- **用 `AioTextReRank` 不用 `TextReRank`** —— 同步版走 `requests`，在事件循环里调它会把
+  SSE 心跳与 worker 的 await 一起阻塞。
+- **先判 `resp.status_code` 再碰 `resp.output`** —— 非 200 时 SDK 的 `from_api_response`
+  else 分支**根本不给 `output` 赋值**，直接读是 `AttributeError` 而不是可读的服务端错误。
+- `max_documents = 500` 是**实测的服务端硬上限**（500 条 200 / 501 与 800 条 400），
+  不是本地保守值 —— 计划里写的「执行时递增探测」探出来的就是这个数。
+
+**③ `SearchEngine.bodies(ids)` + `core/search.py::rerank_window`**
+
+取候选正文走**新的批量查询**，**刻意不让 body 搭 `search_resources` 的 `Page` 车**：省下的
+只是 50 个 id 的 `IN`（FTS 表上 <1ms，旁边就是几百毫秒到几秒的网络调用），换来的是
+「`Page` 形状随参数变」+「必须靠测试守住的正文泄漏点」。**结构上不可能泄漏 > 省 1ms。**
+
+⚠️ **选窗口绝不能复用 `_make_snippet` 的定位逻辑**（本条最要命的坑）：它 `re.split(r"\s+")`
+后逐词 `body.find`，中文口语查询**没有空格** ⇒ terms 是一个整句 ⇒ 必然失败 ⇒ **窗口恒等于
+正文开头**，而长文档的答案通常不在开头。后果不是报错，是**系统性压低实测收益**，最坏让
+阶段 5 得出「rerank 没用」的**假阴性**。`rerank_window` 改用 `_tokenize` 的二字组算**覆盖
+不同 token 数最多**的 480 字窗口（判据是覆盖数不是命中次数 —— 同一个高频词出现十次不说明
+这段更相关）。
+
+**④ 编排 `services/rerank_search.py` + 插点**
+
+`RERANK_TIMEOUT = 5.0`（在线检索不能等 SDK 默认的 300s，那是批处理级）/
+`RERANK_LOAD_TIMEOUT = 60.0`（本地 544MB 比 embedding 的 22.8MB 大得多，不能沿用 30s）/
+`DEFAULT_CANDIDATES = 50`。**不重试** —— 重试把延迟和费用翻倍，而失败语义已经明确。
+
+`fused_search` 加 `reranker=` 参数，**两条分支都覆盖**（单查询与多查询）。多查询分支原来
+是 `rrf(...)[:limit]` 先截再返回 —— 不改的话候选池只剩 `limit` 条，重排等于没做。
+
+⚠️ **`rerank` 是返回值的顶层键，不塞进 `semantic`**：那会让「向量路失败」与「重排失败」
+共用同一个 `error` 字段，而两件事用户该做的动作不同。四态：`null`（压根没开）/
+`{error: null, applied: true}` / `{error: null, candidates: 0|1, applied: false}`（候选不足）/
+`{error: "...", applied: false}`（失败或超时，**保留 RRF 原序**）。
+
+**⑤ 配置 + 运行时 + 端点 + 前端**
+
+`config["search"]` 追加 `rerank_enabled`（**默认 `False`**）/ `rerank_model` /
+`rerank_candidates`；`services/rerank_runtime.py::sync_rerank_runtime`（形态照
+`vector_runtime`）；`POST /api/search/rerank`；`GET /api/search/status` 增 `rerank` 段。
+
+⚠️ **入口严、读回宽**：端点对非法 `model` 报 400 `RERANK_NO_ENGINE` 且**零写盘**；但
+`candidates <= 0` 夹到 **1**（错的是「量」不是「性质」），而磁盘上的脏值回退
+`DEFAULT_CANDIDATES = 50` 而**不是 1** —— 「用户刚提交的值」与「磁盘上可能过期的值」是两回事，
+后者落回 1 会让功能在、效果没了。
+
+⚠️ **只挂对话侧**（判据与 `query_rewrite` 逐字相同）：`/api/search` 是 250ms 防抖逐字联想，
+接了 = 打五个字发五次重排请求 × 50 篇 × 480 字。写进设置页文案**不是防线**。
+
+**⑥ 引擎族原子变更**
+
+`ENGINE_CATEGORIES` 加 `rerank` + `_PluginRerankAdapter` + `plugin_loader` 的
+`_RESIDENT_ADAPTERS` 分派 —— **必须同批**：只交付插件模板而不加分派，用户把模板拷进
+`{data_dir}/plugins/` 的那一刻它会被以 **doc 契约静默注册成功**（形状合法、零报错，而每次
+调用都在要求一个它永远收不到的文件路径）。
+
+### 影响范围
+
+- **零回归是结构保证**：`reranker=None` 时 `fused_search` 的返回值与改造前逐字节相同，
+  `rerank` 恒为 `null`；配置默认关，回退成本 = 一行配置。
+- 新增 `/api/search/rerank` 端点（99 → 100）；`GET /api/capabilities` 的 `engines` 多一个
+  `rerank` 组 —— 前端各处按具体 key 取，**无遍历全部 key 的消费方**。
+- ⚠️ **要不要默认开、加权 `0.8/1.2` 要不要进产品，交 `_experiments/07-rerank/` 四臂实验
+  裁决**（A0 等权 / W 加权 / B 等权+rerank / B+W）。**只看 A0 vs B 会把「排序本来就该调」
+  那 11.3pp 算成 rerank 的收益**，结论会人为指向「必须上模型」。实验是门禁不是可选项；
+  若 B+W 不比 W 高，结论就是「先采纳加权、rerank 缓做」，必须如实记录。
+
+---
+
+## 2026-10-29 — RSS / Atom 与 arXiv 导入：都不新增适配器类型
+
+**起因**：梯队一两项导入源，成本都在「复用现有管线」这一档。
+
+### RSS / Atom —— 走 `WebpageAdapter` 的内部分支
+
+**不新建适配器**：`WebpageAdapter.accept()` 接受任何 http URL，新适配器与它**必然打架**
+（同一 URL 两个 `accept()` 都返回 True，谁赢取决于注册顺序）。走内部分支还能**免费继承**
+SSRF 防护 / 逐跳重定向校验 / 编码处理。
+
+- `_download()` 签名从 `-> str` 改成 `-> tuple[str, dict]` —— 原先只 `return resp.text`，
+  **响应头在闭包里就丢了**；主路径与回退路径两处 return 都改。
+- 嗅探：`Content-Type` 含 `xml`，或响应体**前 2KB** 含 `<rss` / `<feed` / `<rdf:rdf`
+  （只看开头 —— 全文扫描会让「正文里引用了 `<rss>` 字样的博客文章」误入）。⚠️ 这只是
+  第一道筛，**真判据是 `feedparser.parse()` 出不出 `entries`**，出不来就回退普通网页提取。
+- 合并成**一篇**（用户选定，不是一条一个文档）：`# {feed 标题}` + 每条 `## {标题}` /
+  链接 / 摘要，上限 `RSS_MAX_ENTRIES = 20`、每条截 `RSS_ENTRY_CHARS = 2000`。这样一份
+  「订阅聚合」直接可喂生成管道。
+- 新依赖 `feedparser`（BSD-2-Clause，纯 Python）→ `pyproject.toml` + `LiMoBackend.spec`
+  的 `hiddenimports`，许可证同步进 `ACKNOWLEDGMENTS.md` / `THIRD-PARTY-NOTICES.md`。
+  不用 `xml.etree` 手写：RSS 0.9/1.0/2.0/Atom/RDF 五种变体 + 日期格式 + 编码全得自己处理。
+
+### arXiv —— 新适配器，委托 `DocumentAdapter`
+
+`accept()` 同步纯正则、**不发网络请求**；`adapt()` 抽 id → 构造
+`https://arxiv.org/pdf/{id}` → `safe_get` → 临时文件 → **委托 `DocumentAdapter`**
+（零复制引擎链逻辑）。
+
+⚠️ **必须注册在 Document 之前** —— `/pdf/2401.12345v1.pdf` 这种带扩展名的形态会被
+DocumentAdapter 按扩展名抢走。
+
+### ⚠️ 刻意不新增 SourceType
+
+`rss` / `arxiv` 会触发 `sourceTypeCoverage.test.ts` 强制同步 `SOURCE_FILTERS` +
+`TYPE_COLORS` + `tabRegistry`，漏一处就是预览区白屏。故 RSS 记作 `webpage`、arXiv 记作
+`pdf`（`_ADAPTER_SOURCE_MAP` 加一行 `"arxiv": "pdf"`），既有能力自动可用。
+
+⚠️ **措辞要准确**：arXiv 的效果是「**与现有 URL 导入 PDF 行为一致**」，不是「PDF 专属能力
+全部可用」—— 现有 URL 导入 PDF 同样不持久化源文件，所以依赖原始文件的那部分（PDF 直传、
+重新解析）在这里同样受限。
+
+### 影响范围
+
+适配器 5 → 6；`_download()` 签名变更（唯一的调用方在同一个类里）。普通网页路径
+**逐字节零回归**（`test_adapter_rss.py` 断）。
+
+---
+
+## 2026-10-29 — DeepSeek 搜索接入：搜索 provider 从三选一变四选一
+
+**起因**：用户提出。现有 `search_web` 的降级链里没有一家是「原生 JSON API + 按成功请求
+计费」的搜索引擎，而 DeepSeek 的 Search / Fetch 还带两个适合喂模型的字段：`summary`
+（官方写明 *intended to be read by a model*，600–800 字）与 `authority`（0–4）。
+
+### 改了什么
+
+`app/agent/tools.py`（**唯一改动点** —— 生成侧的 `_search_all` 直接 import 它）：
+
+- `_deepseek_search`：`POST https://api.deepseek.com/v1/tools/search`，body
+  `{query, count, need_content: false}` → 归一成现有契约
+  `{"results": [{title, url, snippet, summary}]}`。
+- `_deepseek_fetch`：`POST /v1/tools/fetch {url}` → `{title, content}`。
+- `search_web` / `fetch_url` 各加一个 `elif provider == "deepseek":`，**失败统一降级 DDG**
+  （search）/ trafilatura（fetch），同 tavily / searxng 的处理。
+
+⚠️ **`need_content: false`**：`summary` 已经够用，`content` 是整页正文，白烧 token。
+⚠️ **`fetch_url` 开头的 `validate_url` 是「已知满足」不是新增工作** —— 记这一条只为提醒
+**不要在新分支里提前于它发请求**。
+
+**Key 两级来源**：`agent_tools.search.deepseek_api_key` 显式优先，为空回退 `providers` 里
+`id == "deepseek"` 那一项（**只认 `id`，不按 `base_url` 猜**）；该键已进
+`config_io.SECRET_SCALARS`（走 DPAPI 密钥库，不落 YAML）。`fetch` 与 `search` **共用同一把
+Key** —— 同一个账户，配两把只会让用户多抄一遍。
+
+**`compose_reference` 优先用 `summary`**：`snippet = summary or snippet or ""`。
+⚠️ 对 tavily / searxng / ddg **逐字零回归**（它们没有 `summary` 键）。
+`SNIPPET_CHARS = 400` 不变 —— summary 600–800 字会被截到 400，这是**有意的预算控制**。
+
+**前端**：`SettingsPage.tsx` 的下拉加 `deepseek` 选项 + Key 输入框（选中时显示），文案标明
+计费（$0.75 / 1000 次**成功**请求，失败与超时不收费）与限流。
+
+### 影响范围
+
+- **默认 provider 仍是 `duckduckgo`**（零回归）。
+- 计费口径与别的 provider 不同（按成功请求、不看 `count`），所以设置页文案必须写清。
+- 官方重试策略：408/429/5xx 等待重试、402 充值、**其它 4xx 不要重试** —— 本轮不实现重试
+  （降级 DDG 更快更明确）。
+
+---
+
 ## 2026-10-29 — 查询改写接进对话侧检索：把「口语问题」换成库里可能出现的说法
 
 **起因**：`search_docs` 接上真检索（同前一条）之后，剩下的那个洞是**词汇鸿沟** ——

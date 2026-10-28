@@ -27,6 +27,11 @@ dependencies = [
     "openpyxl>=3.1",
     # 适配器
     "trafilatura>=2.1",
+    # RSS / Atom / RDF 订阅解析（BSD-2-Clause，纯 Python，无编译扩展）。
+    # 不用 xml.etree 手写：五种 feed 变体 + 多种日期格式 + 编码 sniff 全得自己处理，
+    # 而那正是这个库存在的理由。⚠️ 打包版要能在 `_internal/` 里 import ——
+    # 见 LiMoBackend.spec 的 hiddenimports。
+    "feedparser>=6.0",
     # ⚠️ 下界必须 >=1.0：1.x 是破坏性重写（list/fetch 变实例方法、片段变 dataclass、
     # 代理走 proxy_config），代码已按 1.x 适配。曾因 `>=0.6` 松到实际装 1.x 而代码没跟，
     # 字幕路径每次都抛 TypeError 被吞 → 静默回退下载（2026-10-10 修复）

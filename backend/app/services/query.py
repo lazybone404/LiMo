@@ -367,6 +367,23 @@ class QueryService:
             } if truncated else None,
         )
 
+    def bodies(self, ids: list[str]) -> dict[str, str]:
+        """批量取这些文档的**清洗后正文**，给重排当候选文本（薄转发到索引层）。
+
+        ⚠️ **零引擎 / 索引坏时返回 `{}` 而不是抛**：与 `search_resources` 的处置
+        刻意不同。那条路是「用户要的东西」，索引坏了必须显式报（503 + 可恢复标记）；
+        这条是「重排的输入料」，少了它重排的兜底链会退到读库，而**搜索本身照常
+        可用**。把它抛出去 = 一次重排的准备工作毁掉整次搜索。
+
+        ⚠️ 它**不读库、不解析磁盘**：只查 FTS 表的 `body` 列（`UNINDEXED`，见
+        `core/search.py` 的建表语句）。CLI 的 `LocalSource` 也拿得到（`QueryService`
+        两个传输层共用），不过**重排只在对话侧**，CLI 链路没人调它。
+        """
+        ids = [i for i in (ids or []) if i]
+        if not ids or self._search is None:
+            return {}
+        return self._search.bodies(ids)
+
     def list_folders(self) -> list[dict]:
         """全部文件夹（含各自文档数）。
 

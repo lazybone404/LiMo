@@ -1,11 +1,13 @@
 # 插件系统 — 契约 · 安装 · 发布（EnginePlugin v1）
 
 > 加载器：[plugin_loader.py](../backend/app/engines/plugin_loader.py)，启动时 `init_plugins()` 自动扫描 `~/.limo/plugins/`。
-> 参考模板：[backend/plugins/examples/](../backend/plugins/examples/README.md)（照抄即用；含 pymupdf4llm PDF / faster-whisper 本地语音转写 / tesseract 本地 OCR / local_embedding 本地向量化 / trusted 进程内 五种形态）。
+> 参考模板：[backend/plugins/examples/](../backend/plugins/examples/README.md)（照抄即用；含 pymupdf4llm PDF / faster-whisper 本地语音转写 / tesseract 本地 OCR / local_embedding 本地向量化 / rerank 本地重排 / trusted 进程内 六种形态）。
 >
-> **两类基类**：`EnginePlugin`（doc / ocr / asr，「一个文件 → 一段文本」）与
-> `EmbeddingPlugin`（embedding，「一组文本 → 一组向量」）。同一条扫描 / 门控 / 启用 / 卸载链路，
-> 契约不同 —— 后半部分见「[向量化插件](#向量化插件embeddingplugin-v1)」。
+> **三类基类**：`EnginePlugin`（doc / ocr / asr，「一个文件 → 一段文本」）、
+> `EmbeddingPlugin`（embedding，「一组文本 → 一组向量」）与
+> `RerankPlugin`（rerank，「一个查询 + 一组候选 → 一组 `[下标, 分数]`」）。
+> 同一条扫描 / 门控 / 启用 / 卸载链路，契约不同 —— 后两者见
+> 「[向量化插件](#向量化插件embeddingplugin-v1)」与「[重排插件](#重排插件rerankplugin-v1)」。
 
 ## 设计初衷
 
@@ -331,6 +333,68 @@ def release(self, *, after_idle: float = 600.0) -> bool:
 ⚠️ **换权重必须改 `model_id`**（例如 int8 → fp32 写成 `…-fp32`），否则 `ensure_identity`
 判「口径没变」，新老向量混在同一张表里 —— 检索质量下降、零报错。换完在设置页点
 「重建向量索引」（重建是计费/耗时动作，**不会自动发生**）。
+
+## 重排插件（`RerankPlugin` v1）
+
+**第三类基类**，同样是 `EnginePlugin` 的子类（扫描 / 门控 / 启用 / 卸载 / 一键装依赖
+全部复用），入口从 `process(file_path)` 换成
+`rerank(query, documents) -> list[tuple[int, float]]`。参考实现
+[rerank_plugin.py](../backend/plugins/examples/rerank_plugin.py) +
+[rerank/](../backend/plugins/examples/rerank/)（含 `server.py` / `requirements.txt` / README）。
+
+```python
+from app.engines.plugin_loader import RerankPlugin
+
+class MyReranker(RerankPlugin):
+    name = "my-reranker"
+    command = ["rerank/.venv/Scripts/python.exe", "-u", "rerank/server.py"]
+    model_id = "bge-reranker-v2-m3"    # 归因用
+    max_documents = 100                 # 能力声明，不是调优旋钮
+    is_local = True
+    requires_modules = ("onnxruntime", "tokenizers")
+    requires_files = ()
+    config_schema = [...]               # 同 EmbeddingPlugin
+    timeout = 300
+
+    def rerank(self, query, documents):
+        raise NotImplementedError       # 走 command（进程外）
+```
+
+**注册在 `rerank` 类别**，出现在 设置 → 通用 → 检索索引 → **重排引擎** 的下拉里
+（`routers/search.py::_rerank_models` 只读 `display_name` / `model_id` / `is_local` /
+`precheck()` ⇒ **前端零改动**）。
+
+### 协议（常驻子进程，NDJSON over stdio）
+
+与向量化那一族同一套骨架，**只有载荷不同**：
+
+| 时机 | 方向 | 一行 JSON |
+|------|------|-----------|
+| 启动 | ← 插件 | `{"ready": true, "model_id": "bge-reranker-v2-m3"}` |
+| 启动失败 | ← 插件 | `{"ready": false, "error": "..."}`，然后 exit 1 |
+| 请求 | → 插件 | `{"id": 1, "query": "...", "documents": ["...", "..."], "top_n": 20}` |
+| 响应 | ← 插件 | `{"id": 1, "results": [[0, 0.83], [3, 0.71]]}` |
+| 单次失败 | ← 插件 | `{"id": 1, "error": "..."}`（**进程保留**） |
+
+**为什么必须常驻**：bge-reranker 量级 500MB+，冷读几十秒，而重排发生在**一次在线
+检索里**（`RERANK_TIMEOUT = 5.0` 秒）。每轮现起进程 = 每次搜索都超时，而提示会写成
+「重排超时」，用户去查网络 —— 插件根本不联网。
+
+三条与向量化完全相同的纪律（`-u` + 每行 flush / stdout 只写协议行 / `id` 原样回传）
+之外，**这一族独有两条**：
+
+- ⚠️ **`results` 的第一个数是「入参下标」，不是结果里的新位置**。搞反的结果是整张
+  排名表错位，而每一行看起来都合法（分数是真的、下标是合法整数）。适配器对**越界
+  与重复下标直接抛错**（`_PluginRerankAdapter._check_results`）—— 抛出去之后整次
+  重排降级为「沿用融合顺序」，那是可接受的；不抛则是一次看不出来的错序。
+- **允许只返回前 `top_n` 条**（契约 3）：调用方把缺失下标按原序补到尾部。
+  **不要补假分数凑满** —— 那会让尾部候选莫名排到前面。
+
+重排**不落盘任何东西**，所以没有向量那种「身份四元组」需要重建；`model_id` 的
+唯一用途是**归因**（分数漂移只有它能回答「这轮换的是哪一份权重」）。
+
+⚠️ `onnxruntime` / `tokenizers` **不进 `pyproject.toml`**（插件自带 venv）。
+官方只交付模板与契约测试，真实权重（约 544MB）由用户按需下载 —— 见模板 README。
 
 ## 管理 API
 

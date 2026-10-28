@@ -19,6 +19,8 @@ from app.core.origin import ensure_trusted_request
 from app.core.registry import EngineRegistry
 from app.core.vector_store import DEFAULT_CHUNK_SIZE
 from app.generation.doc_text import search_index_text
+from app.services.rerank_runtime import DEFAULT_ENGINE as RERANK_DEFAULT_ENGINE
+from app.services.rerank_search import DEFAULT_CANDIDATES as RERANK_DEFAULT_CANDIDATES
 from app.services.search_fuse import fused_search
 from app.services.vector_runtime import DEFAULT_ENGINE
 from app.services.vector_worker import (
@@ -93,6 +95,7 @@ async def search_status(request: Request, engine=Depends(get_search_engine)):
     """
     out = engine.status()
     out["vector"] = _vector_status(request)
+    out["rerank"] = _rerank_status(request)
     return out
 
 
@@ -193,6 +196,145 @@ def _embedding_models() -> list[dict]:
             "reason": reason,
         })
     return out
+
+
+# ═══════════════════════════════════════════════════════════════
+# 重排（rerank）—— 对话侧检索的可选后置一层
+# ═══════════════════════════════════════════════════════════════
+
+def _rerank_status(request: Request) -> dict:
+    """重排侧状态。**字段的来历与 `_vector_status` 一一对应**：
+
+    - `enabled` / `reason` 读 **runtime**（`sync_rerank_runtime` 的结论），不在这里
+      照配置重判一次 —— 两处判据分叉的失效形态是「设置页说开着、状态说不开」。
+    - `model` / `candidates` 读**配置**：没启用时下拉与输入框仍要显示用户选中的值。
+    - `ready` 单独给一个：`enabled` 回答「用户想不想开」，`ready` 回答「现在真的
+      能跑吗」。二者只在启动/开关那一刻同步，中间被引擎自检挡住时 `enabled` 是
+      `False` —— 那种情况下 `reason` 一定有话，界面上不会出现「开着但没生效」。
+
+    ⚠️ 这个段存在的理由与 `vector` 段相同：**对话检索里重排失败只会在
+    `tool_result` 里留一句话**，用户不会去翻日志。没有这个段，他打开了开关却发现
+    引用排序毫无变化，无处可查。
+    """
+    state = getattr(request.app.state, "rerank_runtime", None) or {}
+    searcher = getattr(request.app.state, "rerank_search", None)
+    return {
+        "enabled": bool(state.get("enabled")),
+        "ready": searcher is not None,
+        "reason": state.get("reason"),
+        "model": _configured_rerank_model(request),
+        "candidates": _configured_rerank_candidates(request),
+        "models": _rerank_models(),
+    }
+
+
+def _configured_rerank_model(request: Request) -> str:
+    """当前配置的重排引擎名。读**配置**而不是 runtime（理由同 `_configured_model`）。"""
+    cfg = (getattr(request.app.state, "config", None) or {}).get("search") or {}
+    return cfg.get("rerank_model") or RERANK_DEFAULT_ENGINE
+
+
+def _configured_rerank_candidates(request: Request) -> int:
+    """当前配置的候选窗口。
+
+    ⚠️ **磁盘脏值回退默认值，不是夹到 1** —— 与端点入口的分野：那里是「用户刚刚
+    提交的值」（`1` 是最接近他意思的合法值），这里是「磁盘上可能过期的值」（手改的
+    字符串、旧版本的 `null` 该被当成没设过）。判据同 `vector_threshold` 的读回宽。
+    """
+    cfg = (getattr(request.app.state, "config", None) or {}).get("search") or {}
+    try:
+        n = int(cfg.get("rerank_candidates"))
+    except (TypeError, ValueError):
+        return RERANK_DEFAULT_CANDIDATES
+    return n if n > 0 else RERANK_DEFAULT_CANDIDATES
+
+
+def _rerank_models() -> list[dict]:
+    """可选的重排引擎清单（设置页下拉）。范式与 `_embedding_models` 相同，
+    **去掉 `dimension`** —— 重排不产生向量，那一列在这里是死字段。
+
+    ⚠️ `ready` 同样来自引擎自己的 `precheck()`，不在这里另判一次依赖。
+    """
+    out: list[dict] = []
+    for name in EngineRegistry.list_category("rerank"):
+        e = EngineRegistry.get("rerank", name)
+        if e is None:
+            continue
+        check = getattr(e, "precheck", None)
+        try:
+            reason = check() if check is not None else None
+        except Exception as exc:  # noqa: BLE001 —— 自检自己炸了也只是「不可用」
+            reason = f"自检失败：{type(exc).__name__}: {exc}"
+        out.append({
+            "name": name,
+            "label": getattr(e, "display_name", "") or name,
+            "modelId": getattr(e, "model_id", ""),
+            "local": bool(getattr(e, "is_local", False)),
+            "ready": reason is None,
+            "reason": reason,
+        })
+    return out
+
+
+class RerankToggleBody(BaseModel):
+    enabled: bool
+    #: 切换到哪个重排引擎（不传 = 保持当前配置）。非法值 **400 `RERANK_NO_ENGINE`
+    #: 且零写盘** —— 与 `model` 在向量端点里的处置一致（错的是**性质**）。
+    model: str | None = None
+    #: 送进重排的候选条数（不传 = 保持当前配置）。`<= 0` / 非整数 → **静默夹紧到 1**
+    #: —— 错的是**量**不是性质（判据同 `threshold`）。⚠️ 夹到 `1` 而不是默认值：
+    #: 这是用户刚提交的值，`1` 是「最接近他意思的合法值」；磁盘上的脏值才回退默认
+    #: （见 `_configured_rerank_candidates`）。
+    candidates: int | None = None
+
+    model_config = {"extra": "forbid"}      # 拒绝未预期的 key（同 `VectorToggleBody`）
+
+
+@router.post("/search/rerank")
+async def search_rerank_toggle(
+    body: RerankToggleBody,
+    request: Request,
+    config=Depends(get_config),
+    config_lock=Depends(get_config_lock),
+):
+    """开 / 关**对话侧检索重排** —— 落盘配置 + 就地重建编排对象。
+
+    ⚠️ **只挂对话侧**：文档库搜索框是 250ms 防抖的逐字联想，打「机器学习」五个字
+    就是五次重排请求 × 50 篇正文送去云端 —— 又慢又贵，且是用户没主动选择的成本。
+    与 `rewrite_queries` 只挂对话侧的判据完全相同。
+
+    ⚠️ **隐私面与向量检索不是一回事**：向量那只把 query 编码后上传，这里是把
+    **候选文档的正文**发出去。设置页文案必须说清这一点，否则用户会以为两者等价。
+
+    ⚠️ **打开开关本身不花钱** —— 只有真的发生对话检索时才付一次调用费。与
+    「打开语义检索不花钱、建索引才花钱」是同一条边界，但**恰好相反**：那边的
+    成本在开关之后，这边的成本在开关之前就已经由用户触发了（他得先提问）。
+
+    ⚠️ 与向量端点同一条：`save_config` 必须拿到 `app.state.config` 这个**内存
+    对象**（`get_config` 返回的正是它），先改内存再落盘。
+    """
+    ensure_trusted_request(request)
+    from app.services.rerank_runtime import sync_rerank_runtime
+
+    # 校验放锁外：引擎名不合法就一个字节都不写（错的是「性质」）
+    if body.model is not None and EngineRegistry.get("rerank", body.model) is None:
+        raise AppError("RERANK_NO_ENGINE", f"未找到重排引擎：{body.model}",
+                       status_code=400)
+
+    with config_lock:
+        s = config.setdefault("search", {})
+        s["rerank_enabled"] = bool(body.enabled)
+        if body.model is not None:
+            s["rerank_model"] = body.model
+        if body.candidates is not None:
+            s["rerank_candidates"] = max(1, int(body.candidates))
+        save_config(config)
+
+    # ⚠️ `sync_rerank_runtime` 是**同步**函数（没有后台任务要 await），别照抄
+    # 向量那行加 `await` —— 那会得到「coroutine 对象 is not subscriptable」。
+    runtime = sync_rerank_runtime(request.app)
+    return {"enabled": bool(runtime.get("enabled")), "reason": runtime.get("reason"),
+            "status": _rerank_status(request)}
 
 
 @router.post("/search/reindex")

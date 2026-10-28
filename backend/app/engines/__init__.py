@@ -485,6 +485,25 @@ def init_engines(config: dict | None = None):
     except Exception as e:
         logger.warning(f"Local Embedding init failed: {e}")
 
+    # 重排（rerank，2026-10-29）—— 对话侧检索的可选后置一层。
+    #
+    # ⚠️ 与 embedding 同款三条纪律：**无条件注册**（没配 Key 时设置页也要列得出来）、
+    #    构造零副作用（抛点推迟到 `client` property / `precheck()`）、
+    #    **刻意不写 engine_models / engine_bindings**（没人绑定 = 等于不存在，
+    #    写进去会让末尾那次 save_config 判定翻转为真）。
+    # ⚠️ 单独一个 try：与 embedding 那两支互不相关，共用时一支抛错会把另一支吞掉。
+    # Key 复用 `dashscope_ocr_key`（与 embedding / OCR 同源，用户只配一处）。
+    try:
+        from .rerank_dashscope import DashScopeRerankEngine
+        rerank_eng = DashScopeRerankEngine(api_key=dashscope_ocr_key)
+        EngineRegistry.register("rerank", rerank_eng.name, rerank_eng)
+        logger.info("Rerank engines: dashscope-rerank (key=%s)",
+                    "configured" if dashscope_ocr_key else "NOT SET")
+    except ImportError as e:
+        logger.warning(f"DashScope Rerank unavailable: {e}")
+    except Exception as e:
+        logger.warning(f"DashScope Rerank init failed: {e}")
+
     # 持久化 — 只保存引擎相关字段，保护敏感信息（LLM Key 等）不被覆盖
     # migrated_changed 计入判定：faster-whisper/tesseract 迁移清理有真实变更时必须落盘
     if asr_changed or models_changed or doc_bindings_changed or migrated_changed:

@@ -52,6 +52,21 @@ def get_vector_searcher(request: Request):
     return getattr(request.app.state, "vector_search", None)
 
 
+def get_rerank_searcher(request: Request):
+    """注入重排编排层；未启用时 `None`（`fused_search` 据此返回 `rerank: null`）。
+
+    ⚠️ 与 `get_vector_searcher` 同款：**直接读 `app.state`，不按配置现造一个** ——
+    两者都是「开关 → 运行时对象」的产物，由 `rerank_runtime.sync_rerank_runtime`
+    唯一维护。现造一份的失效形态是「配置关着、这里却给了个能跑的对象」，于是
+    用户明明关了重排，每次对话检索仍在把候选正文发出去并计费。
+
+    ⚠️ **只有对话侧拿它**。`/api/search` 刻意不注入（那是 250ms 防抖的逐字联想，
+    见 `routers/search.py::search_rerank_toggle` 的文档）—— 那边的 `fused_search`
+    调用不传 `reranker`，走默认 `None` 分支，与改造前逐字节相同。
+    """
+    return getattr(request.app.state, "rerank_search", None)
+
+
 def get_query_service(request: Request) -> QueryService:
     """注入查询层服务 —— HTTP 与 CLI 共用的只读契约（见 `app/services/query.py`）。
 

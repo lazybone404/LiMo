@@ -372,6 +372,29 @@ def test_组料_无标题时不漏条目():
         "标题为空但有摘要的条目不能整条丢掉"
 
 
+def test_组料_summary优先于snippet():
+    """`summary` 只有 DeepSeek 给（官方写明是给模型读的 600-800 字摘要）。
+
+    ⚠️ 写的是 `summary or snippet` 而不是 `snippet or summary`：两者都在时取密度高的。
+    ⚠️ 而 tavily / searxng / ddg **没有这个键** ⇒ 对它们逐字零回归（下面第二条断言）。
+    """
+    with_summary = W.compose_reference(
+        ["词"], [{"title": "T", "snippet": "短片段", "summary": "长摘要", "url": "u"}])
+    assert "长摘要" in with_summary["content"]
+    assert "短片段" not in with_summary["content"], "summary 在场时不该再拼 snippet"
+
+    no_summary = W.compose_reference(["词"], [{"title": "T", "snippet": "短片段", "url": "u"}])
+    assert "短片段" in no_summary["content"]
+
+
+def test_组料_summary同样受SNIPPET_CHARS约束():
+    """600-800 字的 summary 会被截到 400 —— **有意的预算控制**（6 条共约 2400 字）。"""
+    long_summary = "字" * 2000
+    ref = W.compose_reference(["词"], [{"title": "T", "summary": long_summary, "url": "u"}])
+    got = ref["content"].count("字")
+    assert got <= W.SNIPPET_CHARS, f"摘要需截到 {W.SNIPPET_CHARS} 字以内；实际 {got}"
+
+
 def test_参考资料名_超长退化成通用名而非截半句():
     """⚠️ **不能依赖 `sanitize_reference_name` 的 80 字截断** —— 那会截在词中间，
     用户看到的是半句话。名称是我们自己组装的，超长就退化成完整但不带关键词的名字。

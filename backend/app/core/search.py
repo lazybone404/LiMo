@@ -330,6 +330,39 @@ class SearchEngine:
             for r in rows
         ]
 
+    def bodies(self, ids: list[str]) -> dict[str, str]:
+        """批量取这些文档的**清洗后正文**（`body` 列），给重排当候选文本。
+
+        返回 `{id: body}`；**查不到的不出现在结果里**（调用方按 `dict.get`
+        走兜底链），索引不可用时返回 `{}` **而不是抛错** —— 重排是可选增强，
+        它取不到文本时该退化成「不重排」，而不是让整次检索失败。
+
+        ⚠️ **刻意不做成 `search_resources(include_body=True)` 的参数**：那样
+        省下的只是这 50 个 id 的一次 `IN` 查询（FTS 表上 <1ms，旁边就是个几百
+        毫秒到几秒的**网络调用**），换来的是「`Page` 的形状随参数变」+「正文
+        经 HTTP 层泄漏到前端的风险点」+ 三个 fake `search_resources` 签名要改。
+        结构上不可能泄漏 > 省 1ms。
+
+        ⚠️ 取的是 `body`（`_clean_for_search` 的产物）而不是 `toks`：后者是
+        二字组串 `机器 器学 学习`，喂给重排模型等于喂噪音。
+        """
+        ids = [i for i in (ids or []) if i]
+        if not ids or not self.available:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        try:
+            with self._lock, self._conn() as conn:
+                rows = conn.execute(
+                    f"SELECT id, body FROM transcripts_fts WHERE id IN ({placeholders})",
+                    ids,
+                ).fetchall()
+        except sqlite3.Error as e:
+            # 只留痕不抛：重排侧的失败语义是「这一次不重排」，而检索本身
+            # （字面 + 向量）已经拿到结果了。
+            log.warning("取候选正文失败，本次不重排", err=str(e)[:120])
+            return {}
+        return {r[0]: (r[1] or "") for r in rows}
+
 
 # ── 写入口 ──
 
@@ -507,3 +540,89 @@ def _make_snippet(body: str, query: str, width: int = 90) -> str:
         frag = re.sub(re.escape(t), lambda m: f"<mark>{m.group(0)}</mark>",
                       frag, flags=re.IGNORECASE)
     return ("…" if start > 0 else "") + frag + ("…" if end < len(body) else "")
+
+
+#: 送进重排模型的候选文本长度（字符）。rerank 的计费与延迟都线性于它，
+#: 而 480 字在中文里约等于一个完整小节 —— 再长只是把「不相关但同主题」
+#: 的段落也塞进去，那些段落的分数反而会干扰排序。
+RERANK_WINDOW_CHARS = 480
+
+
+def rerank_window(body: str, query: str, width: int = RERANK_WINDOW_CHARS) -> str:
+    """从正文里挑一段**最可能包含答案**的窗口，给重排模型当候选文本。
+
+    ## 为什么不能用 `_make_snippet`
+
+    它按 `re.split(r"\\s+", query)` 切词再逐词 `body.find()`。**中文口语查询
+    没有空格** ⇒ 整个查询是一个 term ⇒ `find` 必然失败 ⇒ 退化成
+    `body[:width * 2]`，也就是**恒等于正文开头**。而长文档的答案通常不在开头，
+    所以那样做的后果不是报错，是**系统性地压低重排的实测收益** —— 最坏情况
+    让实验得出「rerank 没用」的假阴性。
+
+    这里改用 `_tokenize`（同文件，输出 CJK 二字组 + 英文词）定位，对中文和
+    英文都成立，不需要两条分支。
+
+    ## 算法
+
+    收集每个 token 在正文里的全部出现位置 → 按位置排序 → 两指针滑窗找
+    「窗口跨度 ≤ width 且**覆盖不同 token 数最多**」的区间 → 以它为中心取
+    `width` 个字符。
+
+    判据是「覆盖多少个**不同** token」而不是「命中多少次」：一个词在一段里
+    出现 20 次，不如五个不同的词各出现一次更能说明这一段讲的就是这件事。
+
+    没有任何 token 命中时退化取开头（与 `_make_snippet` 的退化方向一致）。
+    """
+    body = body or ""
+    if not body or width <= 0:
+        return ""
+    if len(body) <= width:
+        return body.strip()
+
+    tokens = _tokenize(query or "", limit=32)
+    low = body.lower()
+    #: (位置, token 序号)。上限防止「的」这类高频二字组在长文档里被收集几十万次
+    #: —— 收集到上限后不再找，滑窗仍然有效（只是位置样本变稀）。
+    hits: list[tuple[int, int]] = []
+    for ti, t in enumerate(tokens):
+        needle = t.lower()
+        if not needle:
+            continue
+        start = 0
+        while len(hits) < 4000:
+            p = low.find(needle, start)
+            if p < 0:
+                break
+            hits.append((p, ti))
+            start = p + 1
+        if len(hits) >= 4000:
+            break
+    if not hits:
+        return body[:width].strip()
+
+    hits.sort()
+    counts: dict[int, int] = {}
+    distinct = 0
+    left = 0
+    best_left, best_right, best_cover = hits[0][0], hits[0][0], 1
+    for p, ti in hits:
+        counts[ti] = counts.get(ti, 0) + 1
+        if counts[ti] == 1:
+            distinct += 1
+        # 收缩左端，让窗口跨度回到 ≤ width
+        while p - hits[left][0] > width:
+            lt = hits[left][1]
+            counts[lt] -= 1
+            if counts[lt] == 0:
+                distinct -= 1
+            left += 1
+        if distinct > best_cover:
+            best_cover, best_left, best_right = distinct, hits[left][0], p
+
+    # 以命中区的**中点**为中心取窗口，而不是以最左命中为起点：后者把 3/4 的
+    # 预算留给命中之后，答案稍长一点就在右边缘被截掉（而左半边的「前文」往往
+    # 只是一段引入）。居中让两边的截断风险对称。
+    centre = (best_left + best_right) // 2
+    start = max(0, centre - width // 2)
+    start = min(start, len(body) - width)
+    return body[start:start + width].strip()

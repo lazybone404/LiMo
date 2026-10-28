@@ -15,14 +15,16 @@
  * 进度，且有明确终点，见下方 `hasPending` 那段 effect。
  */
 import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, CheckCircle, Cpu, Database, Loader2, RefreshCw, RotateCcw, Sparkles, Zap } from 'lucide-react'
+import { AlertTriangle, ArrowUpDown, CheckCircle, Cpu, Database, Loader2, RefreshCw, RotateCcw, Sparkles, Zap } from 'lucide-react'
 import {
   getSearchStatus,
   rebuildVectorIndex,
   reindexSearch,
   retryFailedVectors,
+  setRerankSearch,
   setVectorSearch,
   syncVectorIndex,
+  type RerankStatus,
   type SearchStatus,
   type VectorStatus,
 } from '../../api/search'
@@ -78,6 +80,11 @@ export function SearchIndexCard() {
   const [vBusy, setVBusy] = useState(false)
   const [vConfirming, setVConfirming] = useState(false)
   const [vError, setVError] = useState<string | null>(null)
+  // 重排侧同理但**只有两个**：它没有「重建」（不动任何存量数据，开关就是全部），
+  // 所以不需要 `rConfirming` —— 为了对齐而摆一个用不上的确认框，
+  // 用户每次点开关都要多点一下，换来的只是代码看起来整齐。
+  const [rBusy, setRBusy] = useState(false)
+  const [rError, setRError] = useState<string | null>(null)
   // 三档释放策略的 label / hint **由后端下发**（`Capabilities.releasePolicies`）。
   // ⚠️ 前端不存第二份文案：`VectorWorker.maybe_release` 按 key 分派，加一档要改后端 ——
   // 前端再存一份的话，加档时设置页永远看不到它（用户选不到就等于没加）。
@@ -90,6 +97,7 @@ export function SearchIndexCard() {
   const addToast = useStore(s => s.addToast)
 
   const vec = status?.vector
+  const rerank = status?.rerank
 
   // 攒批阈值的输入草稿。**必须本地暂存**：直接受控到 `vec.threshold` 的话，
   // 每敲一个数字都会发一次请求（后端每次都要跑一次 `sync_vector_runtime`），
@@ -101,6 +109,13 @@ export function SearchIndexCard() {
   useEffect(() => {
     if (vec?.threshold !== undefined) setThresholdDraft(String(vec.threshold))
   }, [vec?.threshold])
+
+  // 候选窗口的输入草稿，与 `thresholdDraft` 同款同理由（每敲一位就发一次请求
+  // 等于每敲一位都跑一次 `sync_rerank_runtime`，而输入框还来不及显示第二位）。
+  const [candidatesDraft, setCandidatesDraft] = useState('')
+  useEffect(() => {
+    if (rerank?.candidates !== undefined) setCandidatesDraft(String(rerank.candidates))
+  }, [rerank?.candidates])
 
   useEffect(() => {
     let alive = true
@@ -204,6 +219,33 @@ export function SearchIndexCard() {
     if (!Number.isFinite(n) || n < 1) { setThresholdDraft(String(vec.threshold)); return }
     if (n === vec.threshold) return
     runVector(() => setVectorSearch(vec.enabled, undefined, undefined, undefined, n))
+  }
+
+  /** 重排的三个动作（开关 / 换引擎 / 改候选窗口）共用一个出口：动作返回的是
+   *  **动作之后**的状态，就地换掉那一段。⚠️ 同 `runVector`：不写 `setSearchHealth`
+   *  —— 文档库顶部横幅只关心字面索引的 `available`。 */
+  async function runRerank(action: () => Promise<{ status: RerankStatus }>) {
+    setRBusy(true)
+    setRError(null)
+    try {
+      const r = await action()
+      setStatus(s => (s ? { ...s, rerank: r.status } : s))
+    } catch (e) {
+      setRError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRBusy(false)
+    }
+  }
+
+  /** 候选窗口的提交点（失焦 / 回车）。非法输入**回弹到后端值**而不是报错 ——
+   *  与 `commitThreshold` 同款判据（敲进一个字母不是他要表达的意思；把空值当 1
+   *  提交则会让「清空重输」的中途状态被悄悄写进配置）。 */
+  function commitCandidates() {
+    if (!rerank) return
+    const n = Number.parseInt(candidatesDraft, 10)
+    if (!Number.isFinite(n) || n < 1) { setCandidatesDraft(String(rerank.candidates)); return }
+    if (n === rerank.candidates) return
+    runRerank(() => setRerankSearch(rerank.enabled, undefined, n))
   }
 
   const unavailable = status ? !status.available : false
@@ -558,6 +600,126 @@ export function SearchIndexCard() {
           )}
         </div>
       )}
+
+      {/* ── 检索重排（rerank） ──
+          与上面两段都不同：它**不建任何索引**（不动存量数据、没有「重建」），
+          只是在对话侧检索的末尾多一次「同一批候选重新排序」的调用。
+          所以这里只有开关 + 两个参数。
+
+          ⚠️ 文案必须写清两件事，否则用户会按向量检索的直觉去理解它：
+          ① 它发出去的是**候选文档的正文**（向量检索只发 query 向量）—— 隐私面完全不同；
+          ② 它**只作用于 AI 对话**，文档库搜索框全程不重排。 */}
+      {rerank && (() => {
+        const rModels = rerank.models
+        const rCurrent = rModels.find(m => m.name === rerank.model)
+        // 同 `notReady` 的判据：开关开着却起不来时，`reason` 就是引擎 precheck 的原话，
+        // 两处同时渲染等于同一句话说两遍。
+        const rNotReady = rerank.reason ?? (rCurrent && !rCurrent.ready ? rCurrent.reason : null)
+        return (
+          <div className="border-t border-border-light pt-4 space-y-3" data-rerank>
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-[14px]">
+                  <ArrowUpDown size={16} className="text-muted shrink-0" />
+                  <span className="font-medium">检索重排</span>
+                  <span className={
+                    rerank.enabled
+                      ? 'text-[11px] px-1.5 py-0.5 rounded bg-accent/10 text-accent'
+                      : 'text-[11px] px-1.5 py-0.5 rounded bg-elevated text-muted border border-border-light'
+                  }>
+                    {rerank.enabled ? '已开启' : '未开启'}
+                  </span>
+                </div>
+                <p className="text-[12px] text-muted leading-relaxed">
+                  AI 对话每问一次，会先检索出一批候选文档再交给模型 ——
+                  开启重排后，这批候选会先由重排模型按「与问题的相关程度」重新排一次，
+                  排在第一的那篇更可能是你真正想找的。
+                </p>
+              </div>
+              <button
+                data-rerank-toggle
+                onClick={() => runRerank(() => setRerankSearch(!rerank.enabled))}
+                disabled={rBusy}
+                className="shrink-0 px-3 py-1.5 text-[12px] rounded-lg border border-border-default inline-flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {rBusy ? <Loader2 size={12} className="animate-spin" /> : <ArrowUpDown size={12} />}
+                {rerank.enabled ? '关闭' : '开启'}
+              </button>
+            </div>
+
+            {/* 引擎选择。⚠️ 与向量侧同一条纪律：未就绪的不发请求 —— 切过去只会
+                让「下次对话检索」白等一次超时，而原因挡在这里说更直接。 */}
+            {rModels.length > 0 && (
+              <label className="flex items-center gap-2 text-[12px] text-muted" data-rerank-model>
+                <span className="shrink-0">重排引擎</span>
+                <select
+                  value={rerank.model}
+                  disabled={rBusy}
+                  onChange={e => {
+                    const name = e.target.value
+                    if (name === rerank.model) return
+                    const opt = rModels.find(m => m.name === name)
+                    if (opt && !opt.ready) {
+                      setRError(`${opt.label} 当前不可用：${opt.reason ?? '未就绪'}`)
+                      return
+                    }
+                    runRerank(() => setRerankSearch(rerank.enabled, name))
+                  }}
+                  className="flex-1 min-w-0 px-2 py-1 text-[12px] rounded-lg border border-border-default bg-surface disabled:opacity-50"
+                >
+                  {rModels.map(m => (
+                    <option key={m.name} value={m.name}>
+                      {m.label}{m.ready || m.name === rerank.model ? '' : '（未就绪）'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {/* 候选窗口：送进重排的篇数。太小则目标文档根本进不了重排（召回白给），
+                太大则一次请求的费用与延迟跟着涨。失焦 / 回车才提交。 */}
+            <label className="flex items-center gap-2 text-[12px] text-muted" data-rerank-candidates>
+              <span className="shrink-0">候选窗口</span>
+              <input
+                type="number" min={1} step={1}
+                data-rerank-candidates-input
+                value={candidatesDraft}
+                disabled={rBusy}
+                onChange={e => setCandidatesDraft(e.target.value)}
+                onBlur={commitCandidates}
+                onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                className="w-16 px-1.5 py-0.5 text-[11px] rounded-md border border-border-default bg-surface disabled:opacity-50"
+              />
+              <span>篇（每次重排最多看这么多候选）</span>
+            </label>
+
+            {/* 成本与隐私：与向量检索那段**措辞刻意不同** —— 那边只发 query 向量，
+                这边发的是候选文档的正文，两件事不能共用一句话。 */}
+            <p className="text-[11px] text-muted leading-relaxed" data-rerank-notice>
+              {rCurrent?.local
+                ? '开启后，候选文档的正文只在这台电脑上参与重排 —— 内容不会上传、不产生费用。'
+                  + '只作用于 AI 对话的检索；文档库的搜索框不重排（那里是逐字联想，每次输入都重排会明显变慢）。'
+                : '开启后，每次 AI 对话检索都会把候选文档的正文发送到重排模型并按用量计费'
+                  + '（与语义检索只发送查询向量不同，这里发的是文档正文）。'
+                  + '只作用于 AI 对话的检索；文档库的搜索框不重排（那里是逐字联想，每次输入都重排会明显变慢）。'}
+            </p>
+
+            {rNotReady && (
+              <p className="text-[12px] text-warning flex items-start gap-2" data-rerank-reason>
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                {rNotReady}
+              </p>
+            )}
+
+            {rError && (
+              <p className="text-[12px] text-warning flex items-start gap-2">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                {rError}
+              </p>
+            )}
+          </div>
+        )
+      })()}
     </div>
   )
 }

@@ -52,6 +52,7 @@
 | Pygments | BSD-2 | 代码高亮 |
 | python-markdown | BSD-3 | Markdown 渲染 |
 | duckduckgo-search | MIT | 搜索降级链末端 |
+| feedparser | BSD-2-Clause | RSS / Atom 订阅源解析（WebpageAdapter 的 feed 分支，2026-10-29） |
 | certifi | MPL-2.0 | SSL 证书（PyInstaller 打包） |
 | pytest / PyInstaller | MIT / GPL-2.0 (bootloader 例外) | 测试 / 打包 |
 

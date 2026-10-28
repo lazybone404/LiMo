@@ -140,6 +140,97 @@ def _get_config() -> dict:
 
 # ── 公共工具 ──
 
+#: DeepSeek 的 Search / Fetch 端点。
+#:
+#: ⚠️ **刻意不从 `providers[].base_url` 拼**：那是 `chat/completions` 的根，而这两条是
+#: 独立的工具端点（同一把 Key、不同的服务）。用户自建的 OpenAI 兼容代理通常只转发
+#: chat，拿它的根去拼 `/tools/search` 会 404；要过代理请配 `config.fetch.proxy`。
+_DEEPSEEK_SEARCH_URL = "https://api.deepseek.com/v1/tools/search"
+_DEEPSEEK_FETCH_URL = "https://api.deepseek.com/v1/tools/fetch"
+
+
+def _deepseek_key(sc: dict, cfg: dict) -> str:
+    """DeepSeek Key —— 显式配置优先，为空则回退 `providers` 里 `id == "deepseek"` 那一项。
+
+    回退的理由与 `routers/generate.py` 的「`llm.api_key` 为空时从 providers 回退」
+    同款：用户已经为对话配过一次 DeepSeek Key，再让他为联网搜索抄一遍是纯负担。
+    ⚠️ **只认 `id == "deepseek"`**，不按 `base_url` 猜 —— `id` 是唯一身份，而同一家
+    用户完全可能配两条不同 base_url 的 provider。
+    """
+    key = (sc.get("deepseek_api_key") or "").strip()
+    if key:
+        return key
+    for p in cfg.get("providers") or []:
+        if isinstance(p, dict) and p.get("id") == "deepseek":
+            return (p.get("api_key") or "").strip()
+    return ""
+
+
+async def _deepseek_search(query: str, max_results: int, api_key: str,
+                           proxy: str = "") -> str:
+    """DeepSeek Search API — 原生 JSON，**按成功请求计费**（$0.75 / 1000 次）。
+
+    ⚠️ `need_content: False`：`summary`（600-800 字，官方写明 *intended to be read
+    by a model*）已经够用；`content` 是整页正文，多取等于多花 token 却换不来信息密度
+    （`compose_reference` 无论如何只取 400 字）。
+
+    ⚠️ 计费口径决定了两件事：① **失败 / 空结果 / 超时都不收费**，所以「失败就降级」
+       的代价只有延迟，不必为省钱在这里重试；② `count` **不影响单价**，取几条是纯质量
+       决策。官方重试策略同样照此：408/429/5xx 才值得等，402 是充值，其余 4xx 不重试。
+    """
+    async with httpx.AsyncClient(timeout=15, proxy=proxy or None) as client:
+        r = await client.post(
+            _DEEPSEEK_SEARCH_URL,
+            json={"query": query, "count": max_results, "need_content": False},
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        r.raise_for_status()
+        data = r.json()
+    items = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        # 显式抛而不是返回空列表：`_search_all` 对「结构异常」与「真的没搜到」
+        # 的处置不同（前者要留日志证据），而空列表会把两件事抹平。
+        raise ValueError(f"DeepSeek 返回结构异常: {str(data)[:120]}")
+    return json.dumps({
+        "results": [
+            {
+                "title": x.get("title", ""),
+                "url": x.get("url", ""),
+                "snippet": (x.get("snippet") or "")[:300],
+                # summary 是 DeepSeek 独有的「给模型读的摘要」；留在这里由
+                # `compose_reference` 决定用不用（它对别家逐字零回归）。
+                "summary": (x.get("summary") or "")[:800],
+            }
+            for x in items if isinstance(x, dict)
+        ],
+        "source": "deepseek",
+    }, ensure_ascii=False)
+
+
+async def _deepseek_fetch(url: str, api_key: str, proxy: str = "") -> str:
+    """DeepSeek Fetch API — 返回该页正文的 Markdown（截断 4000 字，与 trafilatura 同档）。
+
+    ⚠️ 计费与 Search 同价；失败不收费。超时给 30s（与 Jina 同档）—— 抓取比搜索慢。
+    """
+    async with httpx.AsyncClient(timeout=30, proxy=proxy or None) as client:
+        r = await client.post(
+            _DEEPSEEK_FETCH_URL,
+            json={"url": url},
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        r.raise_for_status()
+        data = r.json()
+    if not isinstance(data, dict):
+        raise ValueError(f"DeepSeek 返回结构异常: {str(data)[:120]}")
+    content = (data.get("content") or "").strip()
+    if not content:
+        raise ValueError("DeepSeek 未返回正文")
+    title = (data.get("title") or "").strip()
+    result = (f"# {title}\n\n{content}" if title else content)[:4000]
+    logger.info("DeepSeek Fetch: %d 字", len(result))
+    return result
+
+
 async def _tavily_search(query: str, max_results: int, api_key: str,
                         proxy: str = "") -> str:
     """Tavily Search API — AI 优化搜索，返回结构化结果"""
@@ -167,6 +258,7 @@ async def search_web(query: str, max_results: int = 5) -> str:
     按 agent_tools.search.provider 选择方案：
       tavily → Tavily API（AI 优化，需 API Key）
       searxng → 本地 SearXNG（免费），不可达时降级 DuckDuckGo
+      deepseek → DeepSeek Search API（原生 JSON，按成功请求计费）
       duckduckgo → 直接 DDG
     """
     cfg = _get_config()
@@ -185,6 +277,15 @@ async def search_web(query: str, max_results: int = 5) -> str:
                 return await _tavily_search(query, max_results, api_key, proxy)
             except Exception as e:
                 logger.warning("Tavily 不可达，降级 DuckDuckGo: %s", str(e)[:80])
+    elif provider == "deepseek":
+        api_key = _deepseek_key(sc, cfg)
+        if not api_key:
+            logger.warning("DeepSeek API key 未配置，降级 DuckDuckGo")
+        else:
+            try:
+                return await _deepseek_search(query, max_results, api_key, proxy)
+            except Exception as e:
+                logger.warning("DeepSeek 不可达，降级 DuckDuckGo: %s", str(e)[:80])
     elif provider == "searxng":
         url = sc.get("searxng_url", "http://127.0.0.1:18080")
         await _ensure_searxng()
@@ -212,6 +313,20 @@ async def fetch_url(url: str) -> str:
     proxy = cfg.get("fetch", {}).get("proxy", "")
     fc = cfg.get("agent_tools", {}).get("fetch", {})
     provider = fc.get("provider", "trafilatura")
+
+    # ⚠️ Key 住在 `agent_tools.search` 段（与搜索共用同一把），不是 `fetch` 段 ——
+    # 两个 provider 各配一把 Key 只会让用户多抄一遍，而它们本来就是同一个账户。
+    if provider == "deepseek":
+        api_key = _deepseek_key(cfg.get("agent_tools", {}).get("search", {}), cfg)
+        if not api_key:
+            # 与 `search_web` 同款：没 Key 就降级而不是报错（抓取是工具调用，
+            # 返回纯文本比返回错误串更有用）。日志留证据。
+            logger.warning("DeepSeek API key 未配置，抓取降级 trafilatura")
+        else:
+            try:
+                return await _deepseek_fetch(url, api_key, proxy)
+            except Exception as e:
+                logger.warning("DeepSeek 抓取不可达，降级 trafilatura: %s", str(e)[:80])
 
     try:
         if provider == "jina":

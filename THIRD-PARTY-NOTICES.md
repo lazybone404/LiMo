@@ -16,6 +16,7 @@ LiMo 不主张任何归属。各许可证全文随发行包附带，位置见各
 |------|--------|---------|
 | magika | Apache-2.0 | `_internal/licenses/Apache-2.0.txt` |
 | markitdown | MIT | `_internal/licenses/MIT-markitdown.txt` |
+| feedparser | BSD-2-Clause | `_internal/feedparser-*.dist-info/licenses/` |
 | 其余包（aiohttp/dashscope/numpy/lxml/cryptography 等） | 各许可证 | `_internal/*.dist-info/licenses/` |
 
 ## 2. 前端组件

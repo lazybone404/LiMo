@@ -108,6 +108,10 @@ hiddenimports += [
     'markitdown',
     # faster_whisper/ctranslate2/av/tokenizers 已移除（faster-whisper 不再内置）
     'trafilatura',
+    # RSS / Atom 订阅源解析（2026-10-29）。⚠️ 在 `webpage.py::_merge_feed` 里是
+    # **函数内延迟导入**，PyInstaller 静态分析追踪不到 —— 少了这行，开发版导 RSS
+    # 全绿而打包版一导就 ModuleNotFoundError（且只在这一条路径上炸）。
+    'feedparser',
     'dashscope', 'dashscope.audio.asr',
     'youtube_transcript_api',
     'onnxruntime',  # magika 文件类型检测依赖（markitdown），必须保留
@@ -128,6 +132,7 @@ hiddenimports += [
 # docling/docling_parse/rapidocr 已随 DoclingEngine 移除（2026-08-02，依赖 torch ~2GB 无法打包）
 for pkg in ['duckduckgo_search', 'dashscope',
             'youtube_transcript_api', 'trafilatura',
+            'feedparser',
             'onnxruntime', 'tiktoken',
             'markitdown', 'lxml',
             'courlan', 'justext', 'htmldate', 'magika', 'babel',

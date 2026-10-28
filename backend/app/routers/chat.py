@@ -13,6 +13,7 @@ from app.core.dependencies import (
     get_config,
     get_query_service,
     get_store,
+    get_rerank_searcher,
     get_vector_searcher,
 )
 
@@ -115,7 +116,7 @@ def _rewrite_enabled(config: object) -> bool:
 
 def _make_search_docs(store: object, svc: object = None, searcher: object = None, *,
                       llm: object = None, rewrite: bool = False,
-                      cancel_event: object = None):
+                      cancel_event: object = None, reranker: object = None):
     """`search_docs` 工具 —— 与 `GET /api/search` 走**同一份**融合检索（2026-10-29）。
 
     ⚠️ **改造前它根本不走检索**：`store.list_transcripts({"query": q})` 是标题子串
@@ -147,6 +148,12 @@ def _make_search_docs(store: object, svc: object = None, searcher: object = None
     代价是中位 1.06s。**默认关**（`config["search"]["rewrite_queries"]`）；
     改写拿不到结果时 `rewrite_queries` 返回 `[]`，这里就退化成纯原词检索 ——
     与「没开这个开关」逐字相同，故不需要额外的失败分支。
+
+    ⚠️ **重排（`reranker`，默认关）也只在这一条路上**：它把候选文档的**正文**送去
+    云端打分，隐私面与向量检索（只上传 query 向量）完全不同。文档库搜索框不接它
+    —— 那是逐字联想，每次输入都送 50 篇正文出去又慢又贵（见 `routers/search.py`
+    的 `search_rerank_toggle`）。`reranker=None` 时 `fused_search` 走的还是改造前
+    那条路，逐字节相同。
     """
     async def search_docs(query: str) -> str:
         # 改写放在 `try` 之外：它自己的失败已经吞成 `[]`（见 `query_rewrite` 的
@@ -161,7 +168,7 @@ def _make_search_docs(store: object, svc: object = None, searcher: object = None
             try:
                 hits = (await fused_search(
                     svc, searcher, query, limit=SEARCH_DOCS_LIMIT + 1,
-                    extra_queries=extras))["hits"]
+                    extra_queries=extras, reranker=reranker))["hits"]
             except AppError:
                 # 字面索引坏 / 搜索引擎不在场。`fused_search` 刻意不吞，由这里决定
                 # 怎么处置（`/api/search` 那边是 503，这边是降级）。
@@ -221,7 +228,7 @@ def _make_list_docs(store: object):
 def _build_registry(store: object, *, allow_web: bool = True,
                     svc: object = None, searcher: object = None,
                     llm: object = None, rewrite: bool = False,
-                    cancel_event: object = None) -> ToolRegistry:
+                    cancel_event: object = None, reranker: object = None) -> ToolRegistry:
     """构建工具注册中心 — 参照 Pi 的扩展工具动态注册。
 
     `allow_web=False` 时**整组**摘掉 `search_web` / `fetch_url`（不是只摘搜索）——
@@ -240,13 +247,16 @@ def _build_registry(store: object, *, allow_web: bool = True,
 
     `llm` / `rewrite` / `cancel_event` 同样只喂 `search_docs`（查询改写，**默认关**）。
     `llm is None` 与 `rewrite=False` 等价 ⇒ 全部默认值下工具表与改造前逐字相同。
+
+    `reranker` 是重排编排层（`app.state.rerank_search`，**默认关**）——同样**只**喂
+    `search_docs`，且**只有对话侧传**（见 `get_rerank_searcher` 的文档）。
     """
     reg = ToolRegistry()
     reg.register(ToolDef(
         "search_docs", "跨所有文档搜索相关内容",
         {"type": "object", "properties": {"query": {"type": "string", "description": "搜索关键词"}}, "required": ["query"]},
         _make_search_docs(store, svc, searcher, llm=llm, rewrite=rewrite,
-                          cancel_event=cancel_event),
+                          cancel_event=cancel_event, reranker=reranker),
     ))
     reg.register(ToolDef(
         "lookup_doc", "查看指定文档的完整内容",
@@ -342,7 +352,8 @@ def _record_tool_result(tool_calls: list[dict], event: dict) -> None:
 @router.post("/chat")
 async def chat(req: ChatRequest, request: Request, store=Depends(get_store),
                config=Depends(get_config), svc=Depends(get_query_service),
-               searcher=Depends(get_vector_searcher)) -> dict[str, object]:
+               searcher=Depends(get_vector_searcher),
+               reranker=Depends(get_rerank_searcher)) -> dict[str, object]:
 
     model_id = req.model_id
     if not model_id:
@@ -369,7 +380,8 @@ async def chat(req: ChatRequest, request: Request, store=Depends(get_store),
     # ⚠️ 「回答依据」是例外：它随 `ChatRequest.answer_mode` 一路传给了 `build`，
     # 故「严格 / 发散」这条承诺在本端点上**成立**（联网那条仍然不成立）。
     _build_registry(store, svc=svc, searcher=searcher, llm=llm,
-                    rewrite=_rewrite_enabled(config)).apply_to(agent)
+                    rewrite=_rewrite_enabled(config),
+                    reranker=reranker).apply_to(agent)
 
     log.info("Chat start", question_len=len(req.question), docs=len(req.doc_ids))
     try:
@@ -404,6 +416,7 @@ async def chat_stream(
     config=Depends(get_config),
     svc=Depends(get_query_service),
     searcher=Depends(get_vector_searcher),
+    reranker=Depends(get_rerank_searcher),
 ):
     """SSE 流式对话 — 实时推送回答 + 工具调用进度 + 自动持久化
 
@@ -463,7 +476,7 @@ async def chat_stream(
     agent = AgentRunner(llm, max_rounds=3)
     _build_registry(store, allow_web=allow_web, svc=svc, searcher=searcher,
                     llm=llm, rewrite=_rewrite_enabled(config),
-                    cancel_event=cancel_event).apply_to(agent)
+                    cancel_event=cancel_event, reranker=reranker).apply_to(agent)
 
     window, budget = compute_budget(config, model_id)
     cc = config.get("chat_context") or {}

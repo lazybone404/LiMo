@@ -142,7 +142,9 @@ def test_faster_whisper_缺依赖时说人话(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "decl", ["pymupdf4llm_plugin.py", "tesseract_plugin.py", "faster_whisper_plugin.py"],
+    "decl",
+    ["pymupdf4llm_plugin.py", "tesseract_plugin.py", "faster_whisper_plugin.py",
+     "local_embedding_plugin.py", "rerank_plugin.py"],
 )
 def test_模板声明文件可被加载器解析(decl):
     """AST 静态解析（`_peek_plugin_meta`）必须能从每个模板读出 name —— 它决定

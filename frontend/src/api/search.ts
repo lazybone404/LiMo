@@ -108,6 +108,36 @@ export interface VectorStatus {
  *  `Capabilities` 同处），这里转出以免消费方多记一个 import 路径。 */
 export type { ReleasePolicy, TriggerPolicy }
 
+/** 一个可选的重排引擎（`GET /api/search/status` 的 `rerank.models`）。
+ *  ⚠️ 比 `VectorModelOption` **少一个 `dimension`** —— 重排不产生向量，
+ *  摆一个永远为 0 的字段只会让人以为「有个参数能调」。 */
+export interface RerankModelOption {
+  name: string
+  label: string
+  modelId: string
+  local: boolean
+  ready: boolean
+  reason: string | null
+}
+
+/** 重排侧的只读状态（`GET /api/search/status` 的 `rerank` 段）。
+ *
+ *  ⚠️ `enabled` 与 `ready` 回答两个不同的问题，**都要有**：
+ *  `enabled` 是「用户想不想开」（配置 + 引擎能否找到 + 自检过没过），
+ *  `ready` 是「现在真的能跑吗」（`app.state.rerank_search` 在不在）。
+ *  只留一个的话，「打开了但没生效」在界面上与「没打开」逐字相同 —— 而用户
+ *  该做的事完全不同（一个去查原因、一个去点开关）。 */
+export interface RerankStatus {
+  enabled: boolean
+  ready: boolean
+  reason: string | null
+  /** 当前**选中**的引擎名（读配置：未启用时下拉也要显示用户选中的那项）。 */
+  model: string
+  /** 送进重排的候选窗口（读配置；后端对脏值回退默认 50）。 */
+  candidates: number
+  models: RerankModelOption[]
+}
+
 /** 检索索引的只读状态（`GET /api/search/status`）。 */
 export interface SearchStatus {
   /** 字面索引当前是否可用于检索 */
@@ -127,6 +157,8 @@ export interface SearchStatus {
   rebuiltAt: string | null
   /** 向量侧状态。老后端没有这一段时为 `undefined`，UI 按「未启用」处理。 */
   vector?: VectorStatus
+  /** 重排侧状态。同上，老后端没有这一整段。 */
+  rerank?: RerankStatus
 }
 
 /** 开关 / 重建两个动作的共同返回（都带上动作之后的完整状态，省一次往返）。 */
@@ -199,6 +231,30 @@ export async function setVectorSearch(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })).json() as Promise<VectorActionResult>
+}
+
+/** 开 / 关**对话侧检索重排**（`POST /api/search/rerank`）。
+ *
+ *  ⚠️ 重排**只作用于对话侧检索**，文档库搜索框全程不重排 —— 那是 250ms 防抖的
+ *  逐字联想，打「机器学习」五个字就是五次重排 × 候选篇数 × 数百字送云端。
+ *  这条判据在后端，前端改不了，文案也据此写。
+ *
+ *  `model` / `candidates` 不传 = 保持当前配置。⚠️ 两者非法值的**语义不同**
+ *  （同一处分野，别统一）：非法 `model` → 400 `RERANK_NO_ENGINE`（错的是性质）；
+ *  `candidates` 非正数 → 后端**静默夹紧到 1**（错的是量）。 */
+export async function setRerankSearch(
+  enabled: boolean, model?: string, candidates?: number,
+): Promise<{ enabled: boolean; reason: string | null; status: RerankStatus }> {
+  const body: { enabled: boolean; model?: string; candidates?: number } = { enabled }
+  if (model) body.model = model
+  // ⚠️ `!== undefined` 而不是真值判断：`0` 是合法入参（后端夹紧成 1），
+  // 而 `if (candidates)` 会把它静默丢掉 —— 用户以为改了、请求里根本没这个字段。
+  if (candidates !== undefined) body.candidates = candidates
+  return (await apiFetch(`${BASE}/search/rerank`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })).json() as Promise<{ enabled: boolean; reason: string | null; status: RerankStatus }>
 }
 
 /** **立即建立索引** —— 叫后台 worker 跳过攒批闸门跑一轮**增量**。

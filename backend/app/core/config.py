@@ -246,7 +246,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     # Agent 工具配置 — 网络搜索 + 网页抓取
     "agent_tools": {
-        "search": {"provider": "duckduckgo", "searxng_url": "http://127.0.0.1:18080", "tavily_api_key": ""},
+        # `deepseek_api_key` 与 `tavily_api_key` 同档：留空则回退 `providers` 里
+        # `id == "deepseek"` 那一项的 Key（`agent/tools.py::_deepseek_key`）。
+        "search": {
+            "provider": "duckduckgo",
+            "searxng_url": "http://127.0.0.1:18080",
+            "tavily_api_key": "",
+            "deepseek_api_key": "",
+        },
         "fetch":  {"provider": "trafilatura"},
     },
     # 检索 — 字面（FTS5，始终开启）与语义（向量，**默认关闭**）
@@ -277,6 +284,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # ⚠️ **刻意只作用于对话侧**：文档库搜索框是逐字联想，多等一秒会直接毁掉
         # 输入体验；而对话里用户本来就在等一次工具调用。同一份能力不需要两处 UI。
         "rewrite_queries": False,
+        # 对话侧检索重排（**默认关 = 零回归**）：融合出一条结果后，再用重排模型
+        # 在**同一批候选内**按相关性重新定序（`services/rerank_search.py`）。
+        # 与 `rewrite_queries` 同一条纪律 —— **只作用于对话侧**：文档库搜索框是
+        # 250ms 防抖的逐字联想，每次输入都送 50 篇正文去云端既慢又贵，且是用户
+        # 没主动选择的成本。
+        # ⚠️ **隐私面与向量检索完全不同**：向量检索只把 query 编码后上传，这里
+        # 是把**候选文档的正文**发出去。设置页文案必须说清这一点。
+        "rerank_enabled": False,
+        # `EngineRegistry` 的 rerank 引擎名。
+        "rerank_model": "dashscope-rerank",
+        # 送进重排的候选条数（**必须 ≥ 返回条数**，否则只在切过的那几条里排）。
+        # 默认值与 `services/rerank_search.DEFAULT_CANDIDATES` 同源。
+        "rerank_candidates": 50,
     },
     # 插件系统（EnginePlugin v1）
     "plugin_states": {},    # name → bool（false=禁用，重启后生效；未配置默认 enabled）

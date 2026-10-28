@@ -37,6 +37,7 @@ SECRET_SCALARS: tuple[str, ...] = (
     "auth.youtube",
     "auth.douyin",
     "agent_tools.search.tavily_api_key",
+    "agent_tools.search.deepseek_api_key",
 )
 
 #: 列表里的敏感字段 —— `(容器键, 条目 id 字段, 值字段)`。按 id 索引，顺序无关。

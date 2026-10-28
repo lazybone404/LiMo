@@ -312,7 +312,10 @@ def compose_reference(queries: list[str], results: list[dict]) -> dict | None:
     n = 0
     for r in results:
         title = " ".join((r.get("title") or "").split())
-        snippet = " ".join((r.get("snippet") or "").split())[:SNIPPET_CHARS]
+        # `summary` 只有 DeepSeek 给（官方写明是给模型读的 600-800 字摘要，比 snippet
+        # 信息密度高得多）。tavily / searxng / ddg 没有这个键 ⇒ 逐字零回归。
+        snippet = " ".join(
+            (r.get("summary") or r.get("snippet") or "").split())[:SNIPPET_CHARS]
         url = (r.get("url") or "").strip()
         if not title and not snippet:
             continue

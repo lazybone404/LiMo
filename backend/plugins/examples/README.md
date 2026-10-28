@@ -4,7 +4,7 @@
 > 插件由三方开源发布（GitHub 等），用户拷贝到 `~/.limo/plugins/` 自装。
 > **主程序不做任何插件协议判断**（license 仅前端展示）。
 
-## 五个模板
+## 六个模板
 
 | 模板 | 形态 | 适用 |
 |------|------|------|
@@ -12,6 +12,7 @@
 | `faster_whisper_plugin.py` + `faster_whisper/` | 进程外（`command` + 独立 venv） | **本地语音转写**（核心只留云端 ASR） |
 | `tesseract_plugin.py` + `tesseract/` | 进程外（subprocess 调自带 tesseract.exe） | 本地 OCR（需自备便携版） |
 | `local_embedding_plugin.py` + `local_embedding/` | **进程外 + 常驻子进程**（`EmbeddingPlugin`） | **本地向量化**（语义检索，免 API、零外发） |
+| `rerank_plugin.py` + `rerank/` | **进程外 + 常驻子进程**（`RerankPlugin`） | **本地重排**（对话侧检索，免 API、零外发） |
 | `simple_trusted_plugin.py` | 进程内（`trusted=true`） | 轻量、无重依赖自研代码 |
 
 ⚠️ **进程内模板没有「一键安装依赖」**：进程内插件不从独立 venv 加载，`requirements.txt`
@@ -21,10 +22,11 @@
 > `category` 决定结果分派：`doc` / `ocr` → `{"text", ...}`；`asr` → `{"segments": [...]}`。
 > 走 `asr` 的插件在 设置 → 引擎绑定 → 语音转写 里被选中。
 >
-> ⚠️ **`embedding` 是另一族**：它的基类是 `EmbeddingPlugin`（`EnginePlugin` 的子类），
-> 入口是 `embed(texts) -> list[list[float]]` 而不是 `process(file_path)` ——
-> 「一个文件 → 一段文本」装不下「一组文本 → 一组向量」。它出现在
-> 设置 → 通用 → 检索索引 → 向量引擎 的下拉里。
+> ⚠️ **`embedding` / `rerank` 是另外两族**：基类分别是 `EmbeddingPlugin` 与
+> `RerankPlugin`（都是 `EnginePlugin` 的子类），入口是 `embed(texts) -> list[list[float]]`
+> 与 `rerank(query, documents) -> list[(下标, 分数)]` 而不是 `process(file_path)` ——
+> 「一个文件 → 一段文本」既装不下「一组文本 → 一组向量」，也装不下「比较」。
+> 两者都出现在 设置 → 通用 → 检索索引 的下拉里（向量引擎 / 重排引擎）。
 
 ## 安装（进程外模板为例）
 
@@ -84,6 +86,32 @@ python -m venv .venv
 - `precheck()` 只需查**插件私有的**外部条件（模型文件、外部二进制）；
   子 venv 的依赖由声明里的 `requires_modules` 交给适配器检查（用 `probe_venv`，
   **不要**在插件里再写一遍 `probe`）
+
+## 重排插件契约速查（`RerankPlugin`）
+
+同样**常驻子进程**，理由更硬：bge-reranker 量级 500MB+，冷读几十秒，而重排发生在
+**一次在线检索里**（`RERANK_TIMEOUT = 5.0` 秒）。每轮现起进程 = 每次搜索都超时，
+而提示会写成「重排超时」，用户去查网络 —— 插件根本不联网。
+
+| 时机 | 方向 | 一行 JSON |
+|------|------|-----------|
+| 启动 | ← 插件 | `{"ready": true, "model_id": "..."}` |
+| 启动失败 | ← 插件 | `{"ready": false, "error": "..."}`，然后 exit 1 |
+| 请求 | → 插件 | `{"id": 1, "query": "...", "documents": ["...", "..."], "top_n": 20}` |
+| 响应 | ← 插件 | `{"id": 1, "results": [[0, 0.83], [3, 0.71]]}` |
+| 单次失败 | ← 插件 | `{"id": 1, "error": "..."}`（**进程保留**） |
+
+- ⚠️ **`results` 的第一个数是「入参下标」，不是结果里的新位置**。搞反的结果是整张
+  排名表错位，而每一行看起来都合法（分数是真的、下标是合法整数）
+- **允许只返回前 `top_n` 条**：调用方把缺失下标按原序补到尾部。**不要补假分数凑满**
+  —— 那会让尾部候选莫名排到前面
+- **空 `documents` 直接返回 `[]`**，别为它起一次推理
+- 与向量化那节的三条通用纪律完全相同（`-u` + 每行 flush / stdout 只写协议行 /
+  `id` 原样回传）
+- 声明 `model_id`（归因用）与 `max_documents`（**能力声明不是调优旋钮**：编小会让
+  调用方白丢候选，编大则 OOM 或超时）
+- 重排**不落盘**，所以没有向量那种「身份四元组」—— 换权重改 `model_id` 即可，
+  不需要重建任何东西
 
 ## 发布指南（插件作者）
 

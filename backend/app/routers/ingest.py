@@ -274,6 +274,10 @@ def _drop_vectors(request: Request, tx_id: str) -> None:
 _ADAPTER_SOURCE_MAP = {
     "video": "video", "webpage": "webpage",
     "image": "image", "text": "text",
+    # arXiv 论文走 PDF 引擎、产物是 PDF 文本 ⇒ 用既有的 `pdf` 而非新增 SourceType
+    # （新 SourceType 会强制同步前端 SOURCE_FILTERS / TYPE_COLORS / tabRegistry，
+    #  漏一处就是预览区白屏）
+    "arxiv": "pdf",
 }
 
 # ── 共享辅助函数 ──

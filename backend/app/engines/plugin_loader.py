@@ -190,6 +190,73 @@ class EmbeddingPlugin(EnginePlugin):
         raise NotImplementedError
 
 
+class RerankPlugin(EnginePlugin):
+    """重排插件基类 —— **一个查询 + 一组候选文本 → 一组「下标 + 分数」**。
+
+    ## 第三种形状
+
+    doc / ocr / asr 是「一个文件 → 一段文本」（`process()`），embedding 是
+    「一组文本 → 一组向量」（`embed()`），这一类是「比较」—— 它同时吃查询与
+    候选，输出的是**候选之间的相对次序**。三者共用同一条扫描 / 门控 / 启用 /
+    卸载链路，只有契约入口不同。
+
+    ## 进程外模式：同样是常驻子进程 + NDJSON（不是每次 Popen）
+
+    每轮 Popen 都要重载权重（bge-reranker 量级 500MB+，冷读几十秒），而重排
+    发生在**一次在线检索里**，`RERANK_TIMEOUT = 5.0` 秒 —— 每次起进程等于
+    每次搜索都超时。协议：
+
+    ```
+    启动   → stdout 第一行：{"ready": true, "model_id": "bge-reranker-v2-m3"}
+    请求   → stdin:  {"id": 1, "query": "...", "documents": ["...", "..."], "top_n": 20}
+    响应   → stdout: {"id": 1, "results": [[0, 0.83], [3, 0.71]]}
+    出错   → stdout: {"id": 1, "error": "原因"}
+    ```
+
+    ⚠️ `results` 里的**第一个数是入参下标**，不是结果里的新位置 —— 搞反的结果
+    是整张排名表错位，而每一行看起来都合法。`id` 必须原样回传（同 `EmbeddingPlugin`）。
+
+    ## 实现注意
+
+    - 子进程**必须无缓冲**（`command` 里带 `-u`），否则按行往返会卡在缓冲区。
+    - **允许只返回前 k 条**（`top_n` 语义），调用方会把缺失下标按原序补到尾部
+      —— 但不要用「补一个假分数」的方式凑满，那会让尾部候选莫名排到前面。
+    """
+
+    #: 覆盖父类的 `doc` —— 注册表按它分派到 `_PluginRerankAdapter`。
+    category = "rerank"
+    capabilities = ["rerank"]
+
+    #: 权重标识。换权重 / 换量化档（int8 ↔ fp32）**必须改它**：两套权重共用一个
+    #: id 时实验记录与日志里分不出「这次用的是哪一份」，分数漂移无从归因。
+    model_id = ""
+
+    #: 单次请求能吃的候选条数上限，`0` = 不确定 / 不设限（由服务端兜底）。
+    #: ⚠️ 这是**能力声明不是调优旋钮**：编小会让调用方白丢候选（重排只能在
+    #: 召回内挑），编大则会拿到 400。
+    max_documents = 0
+
+    #: 是否本地推理。前端据此显示「免费 / 零外发」的成本文案（不靠名字前缀猜）。
+    is_local = True
+
+    #: 进程外模式下 `precheck` 要检查的子 venv 依赖（**import 名**，不是 PyPI 包名）。
+    requires_modules: tuple[str, ...] = ()
+
+    #: 进程外模式下 `precheck` 要检查的必需文件（相对插件子目录，或绝对 / `~` 路径）。
+    requires_files: tuple[str, ...] = ()
+
+    def rerank(self, query: str, documents: list[str]) -> list[tuple[int, float]]:
+        """同步实现 —— adapter 负责丢线程池（打分是阻塞 CPU / 网络计算）。
+
+        契约（与 `engines/rerank_base.py` 同一份）：
+
+        1. 返回 `[(原始下标, 分数)]`，下标在 `[0, len(documents))` 且互不重复；
+        2. 空 `documents` 返回 `[]`，且**不发起任何调用**；
+        3. 允许返回子集（前 k 条），尾部由调用方补齐。
+        """
+        raise NotImplementedError
+
+
 # ── 加载门控 ──
 
 def _resolve_exec_mode(plugin: EnginePlugin) -> Optional[str]:
@@ -506,62 +573,61 @@ EMBED_IDLE_RELEASE = 600.0
 RELEASE_LOCK_TIMEOUT = 5.0
 
 
-class _PluginEmbeddingAdapter(_PluginEngineAdapter):
-    """把 `EmbeddingPlugin` 适配成 `EmbeddingEngine` 协议（`embed` + 三个可选钩子）。
+class _PluginResidentAdapter(_PluginEngineAdapter):
+    """常驻子进程 + NDJSON over stdio 的公共骨架（向量化 / 重排两族共用）。
 
-    继承 `_PluginEngineAdapter` 只为复用**元数据装配与自检转发**（`display_name` /
+    继承 `_PluginEngineAdapter` 只为复用**元数据装配**（`display_name` /
     `config_schema` / `plugin_config` / `_exec_mode` 那些，`enumerate_plugins` 与
-    设置页都按这些字段读数）。`execute()` 被覆盖成显式错误 —— 向量引擎不接受文件。
+    设置页都按这些字段读数）。`execute()` 被覆盖成显式错误 —— 这一族不吃文件。
 
-    ⚠️ **进程生命周期由本类独占管理**：`warmup()` 拉起、`release()` 杀掉、
-    `embed()` 按需重启。不把子进程交给 `subprocess.run` 的一次性模型，因为
-    「每次冷启动 3–5 秒」正是查询侧超时的来源（见 `EmbeddingPlugin` 文档）。
+    ⚠️ **进程生命周期与管道协议只有这一份**，不是「胶水可以各写一遍」：`id` 回传
+    校验、非 JSON 行即丢进程、stderr 持续 drain（管道写满会让子进程阻塞在日志输出
+    上，表现为「卡住」）、UTF-8 强制。抄两份的失效形态是「一族正常、另一族偶发
+    错位 / 全是乱码」，而两边都不报错。子类只回答三件事：**请求长什么样**
+    （`_roundtrip_locked` 里那次 `_send_locked`）、**响应里的业务字段怎么解释**
+    （各自的 `_check_*`）、**ready 握手要校验什么**（`_verify_ready_locked`）。
+
+    ⚠️ **一把锁串行化「进程生命周期 + 一次完整的写/读往返」**。用一把而不是两把：
+    分成「生命周期锁 + IO 锁」时，`release` 杀掉进程的那一刻必须同时持有两把，而
+    它们的获取顺序在往返与 `release` 之间相反 —— 那就是死锁。
     """
+
+    #: 日志与错误文案里的类别名（「向量插件」/「重排插件」）。只影响措辞。
+    KIND = "插件"
+
+    #: 失败文案里的动作名（「编码」/「重排」）。拼成「{KIND} {name} {VERB}失败」。
+    VERB = "调用"
+
+    #: 子进程吐出 ready 行之前的等待上限（秒）。子类按模型量级覆盖 ——
+    #: 22.8MB 的 bge-small 冷读 3–5 秒，544MB 的 reranker 是另一个量级。
+    READY_TIMEOUT = 30.0
 
     def __init__(self, plugin: EnginePlugin, plugin_dir: Path,
                  source_file: Path | None = None):
         super().__init__(plugin, plugin_dir, source_file)
         self.model_id = getattr(plugin, "model_id", "") or plugin.name
-        self.dimension = int(getattr(plugin, "dimension", 0) or 0)
-        self.capabilities = ["embedding"]
         self.is_local = bool(getattr(plugin, "is_local", True))
         self._proc: Optional[subprocess.Popen] = None
-        #: 一把锁串行化「进程生命周期 + 一次完整的写/读往返」。用一把而不是两把：
-        #: 分成「生命周期锁 + IO 锁」时，`release` 杀掉进程的那一刻必须同时持有两把，
-        #: 而它们的获取顺序在 `embed` 与 `release` 之间相反 —— 那就是死锁。
         self._proc_lock = threading.Lock()
         self._next_id = 0
         self._last_used = 0.0
         self._stderr_tail: list[str] = []
 
-    # ── Engine 协议：向量引擎不接受文件 ──
+    # ── Engine 协议：这一族引擎不接受文件 ──
 
     def execute(self, file_path: str, **kwargs):
         raise FatalError(
-            f"插件 {self.name} 是向量化引擎（category=embedding），不接受文件输入"
+            f"插件 {self.name} 是{self.KIND}（category={self._plugin.category}），"
+            f"不接受文件输入"
         )
 
-    # ── 契约入口 ──
-
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        """编码文本 → L2 归一化向量（顺序与入参一一对应）。
-
-        契约 3（空输入返回空、**不发起任何调用**）在这里短路：连子进程都不拉起。
-        """
-        if not texts:
-            return []
-        batch = [str(t) for t in texts]
-        if self._exec_mode == "external":
-            vecs = await asyncio.to_thread(self._embed_external, batch)
-        else:
-            vecs = await asyncio.to_thread(self._embed_inproc, batch)
-        return self._check_vectors(vecs, len(batch))
+    # ── 生命周期 ──
 
     async def warmup(self) -> None:
-        """把模型预热到「第一次编码不用等加载」。
+        """把模型预热到「第一次调用不用等加载」。
 
-        ⚠️ 不预热的后果不是「慢」而是「第一次查询必定退回纯字面」（加载 3–5 秒 >
-        `QUERY_TIMEOUT = 3.0`），提示还写着「语义检索超时」。见 `vector_worker._warm`。
+        ⚠️ 不预热的后果不是「慢」而是「第一次查询必定退回退化路径」（加载 3–5 秒 >
+        `QUERY_TIMEOUT = 3.0` / `RERANK_TIMEOUT = 5.0`），而提示写的是「超时」。
         """
         if self._exec_mode == "external":
             await asyncio.to_thread(self._warm_external)
@@ -576,13 +642,12 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
         ⚠️ **同步方法**（`vector_worker._do_release` 直接调，不 await）：真正的动作
         要么是「杀一个进程」（毫秒级），要么是「丢掉一个对象引用」（微秒级）。
 
-        ⚠️ 外部模式下「释放」比内置引擎更彻底 —— 杀掉的进程把 ONNX Session、
-        tokenizer、numpy 缓冲一起还回去。这也让三档策略（`never` / `idle` /
-        `immediate`）的语义与内置引擎自然对齐，不需要第二套解释。
+        ⚠️ 外部模式下「释放」比内置引擎更彻底 —— 杀掉的进程把 Session、tokenizer、
+        numpy 缓冲一起还回去。这也让三档策略（`never` / `idle` / `immediate`）的
+        语义与内置引擎自然对齐，不需要第二套解释。
 
-        ⚠️ **进程内模式必须转发**（与 `warmup()` 成对）：不转发时 `EmbeddingPlugin`
-        的 `release` 钩子写了也永不被调用，而外部模式那份工作正常 —— 插件作者换个
-        形态发布就发现「选常驻内存时它永远不还」。
+        ⚠️ **进程内模式必须转发**：不转发时插件写的 `release` 钩子永不被调用，而
+        外部模式那份工作正常 —— 插件作者换个形态发布就发现「选常驻内存时它永远不还」。
         """
         if self._exec_mode != "external":
             rel = getattr(self._plugin, "release", None)
@@ -607,15 +672,15 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
     def precheck(self) -> Optional[str]:
         """返回**给用户看的**不可用原因（`None` = 就绪）。
 
-        两层：先查「这个插件包本身装齐了吗」（外部模式才有的 venv / 依赖 / 文件），
-        再转发插件自己的 `precheck()`（模型路径之类的插件私有条件）。
+        三层：子类自己的前置条件（`_precheck_local`）→ 「这个插件包装齐了吗」
+        （外部模式才有的 venv / 依赖 / 文件）→ 插件自己的 `precheck()`。
 
-        ⚠️ 会被 `GET /api/plugins` 与 `GET /api/search` 调用，**必须轻**：不 import、
-        不起子进程。`probe_venv` 是纯文件系统检查（见 `core.deps` 的模块文档）。
+        ⚠️ 会被 `GET /api/plugins` 与 `GET /api/search/status` 调用，**必须轻**：
+        不 import、不起子进程。`probe_venv` 是纯文件系统检查（见 `core.deps`）。
         """
-        if self.dimension <= 0:
-            # 维度 0 写进库之后，余弦会在不同维度之间静默算错 —— 拦在建索引之前。
-            return f"插件 {self.name} 未声明 dimension（向量维度）"
+        reason = self._precheck_local()
+        if reason:
+            return reason
         if self._exec_mode == "external":
             reason = self._precheck_external()
             if reason:
@@ -625,7 +690,9 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
         except Exception as e:  # noqa: BLE001 —— 自检自己炸了，结论就是不可用
             return f"插件自检失败：{type(e).__name__}: {e}"
 
-    # ── 自检辅助 ──
+    def _precheck_local(self) -> Optional[str]:
+        """子类自己的前置条件（默认没有）。返回给用户看的原因。"""
+        return None
 
     def _precheck_external(self) -> Optional[str]:
         modules = tuple(getattr(self._plugin, "requires_modules", ()) or ())
@@ -695,10 +762,10 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
         stderr_tail: list[str] = []
         self._stderr_tail = stderr_tail
         # stderr 必须**持续读走**：管道写满（Windows 约 64KB）会让子进程阻塞在日志
-        # 输出上，表现为「编码卡住」，而真正的错误恰恰在那段没人读的内容里。
+        # 输出上，表现为「卡住」，而真正的错误恰恰在那段没人读的内容里。
         threading.Thread(target=self._drain_stderr, args=(proc, stderr_tail), daemon=True).start()
 
-        line = self._readline_locked(proc, EMBED_READY_TIMEOUT)
+        line = self._readline_locked(proc, self.READY_TIMEOUT)
         ready: Optional[dict] = None
         if line:
             try:
@@ -710,36 +777,21 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
             tail = "".join(self._stderr_tail[-5:]).strip()
             self._kill_locked()
             raise RuntimeError(
-                f"向量插件 {self.name} 启动失败"
+                f"{self.KIND} {self.name} 启动失败"
                 + (f"：{ready.get('error')}" if isinstance(ready, dict) and ready.get("error") else "")
                 + (f"（stderr: {tail[:300]}）" if tail else "（进程无输出）")
             )
-        # 声明值与实际值不符必须当场报：写进库之后口径不符是**静默**的
-        # （表现为检索质量下降，而不是报错）。
-        got_dim, got_model = ready.get("dimension"), ready.get("model_id")
-        if got_dim is not None:
-            try:
-                reported_dim = int(got_dim)
-            except (TypeError, ValueError):
-                # 非法值（`"512"` 之外的东西）不能让它冒成裸 ValueError —— 那样
-                # 报的是「invalid literal for int()」，而真正的原因是插件写错了协议。
-                self._kill_locked()
-                raise RuntimeError(
-                    f"向量插件 {self.name} 报告的维度不是整数：{got_dim!r}"
-                ) from None
-            if reported_dim != self.dimension:
-                self._kill_locked()
-                raise RuntimeError(
-                    f"向量插件 {self.name} 报告的维度是 {got_dim}，"
-                    f"声明的是 {self.dimension}"
-                )
-        if got_model is not None and self.model_id and got_model != self.model_id:
+        # 声明值与实际值不符必须当场报：写进库 / 记进实验之后口径不符是**静默**的
+        # （表现为质量下降，而不是报错）。校验内容由子类决定。
+        reason = self._verify_ready_locked(ready)
+        if reason:
             self._kill_locked()
-            raise RuntimeError(
-                f"向量插件 {self.name} 报告的模型是 {got_model}，"
-                f"声明的是 {self.model_id}"
-            )
+            raise RuntimeError(reason)
         self._last_used = time.monotonic()
+
+    def _verify_ready_locked(self, ready: dict) -> Optional[str]:
+        """握手校验。返回错误原因（调用方负责杀进程 + 抛）；`None` = 通过。"""
+        return None
 
     def _kill_locked(self) -> bool:
         """杀掉当前子进程并清空句柄。返回「原本有进程可杀吗」。"""
@@ -760,6 +812,59 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
             except Exception:  # noqa: BLE001
                 pass
         return True
+
+    # ── 一次往返（调用方必须已持有 `_proc_lock`）──
+
+    def _roundtrip_locked(self, proc: subprocess.Popen, payload: dict,
+                          timeout: float) -> dict:
+        """写一条请求、读一条响应，返回**已校验过协议**的 dict。
+
+        这一段的每条分支都是「不校验也不报错，只是结果悄悄不对」：
+        非 JSON 行留在管道里 → 后续每一轮都读到它；`id` 错位 → 读到上一条的结果
+        而形状完全合法；`error` 分支不区分「单次失败」与「协议坏了」→ 好进程被
+        无辜丢弃 / 坏进程被反复复用。
+        """
+        self._next_id += 1
+        rid = self._next_id
+        payload = dict(payload, id=rid)
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError) as e:
+            self._kill_locked()        # 下轮重起，别在坏管道上反复失败
+            raise RuntimeError(f"{self.KIND} {self.name} 子进程不可用：{e}") from e
+
+        line = self._readline_locked(proc, timeout)
+        if not line:
+            self._kill_locked()
+            raise RuntimeError(
+                f"{self.KIND} {self.name} {self.VERB}超时（{timeout:.0f}s 无响应）"
+            )
+
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            # 非 JSON 行 = 协议破了。丢弃进程：留在管道里的后续内容同样不可信。
+            self._kill_locked()
+            raise RuntimeError(
+                f"{self.KIND} {self.name} 返回了非 JSON 行：{line[:120]!r}"
+            ) from None
+        if not isinstance(msg, dict):
+            self._kill_locked()
+            raise RuntimeError(f"{self.KIND} {self.name} 返回的不是 JSON 对象")
+        if msg.get("id") != rid:
+            # 残留响应错位 —— 每一轮都会读到上一条的结果，而形状完全合法。
+            self._kill_locked()
+            raise RuntimeError(
+                f"{self.KIND} {self.name} 响应错位"
+                f"（请求 id={rid}、响应 id={msg.get('id')}）"
+            )
+        if msg.get("error"):
+            # 单次失败（不是协议坏了）：进程留着，下一批继续用
+            raise RuntimeError(f"{self.KIND} {self.name} {self.VERB}失败：{msg['error']}")
+        self._last_used = time.monotonic()
+        return msg
 
     def _readline_locked(self, proc: subprocess.Popen, timeout: float) -> str:
         """带超时地读一行。**超时返回空串**（调用方负责丢弃进程）。
@@ -800,54 +905,90 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
         except Exception:  # noqa: BLE001 —— 进程被杀时这里抛什么都无关紧要
             pass
 
+
+class _PluginEmbeddingAdapter(_PluginResidentAdapter):
+    """把 `EmbeddingPlugin` 适配成 `EmbeddingEngine` 协议（`embed` + 三个可选钩子）。
+
+    「常驻子进程 + NDJSON」那套全部在 `_PluginResidentAdapter`（向量化 / 重排两族
+    共用）。这里只回答 embedding 独有的三件事：握手要校验 `dimension`、响应里是
+    `vectors`、前置条件多一条「必须声明维度」。
+
+    ⚠️ **进程生命周期由基类独占管理**：`warmup()` 拉起、`release()` 杀掉、
+    `embed()` 按需重启。不把子进程交给 `subprocess.run` 的一次性模型，因为
+    「每次冷启动 3–5 秒」正是查询侧超时的来源（见 `EmbeddingPlugin` 文档）。
+    """
+
+    # 措辞与协议两处都按族给定 —— 错误文案是用户唯一能看到的线索，
+    # 「重排插件 编码失败」这种混搭会让人以为装错了族。
+    KIND = "向量插件"
+    VERB = "编码"
+    READY_TIMEOUT = EMBED_READY_TIMEOUT
+
+    def __init__(self, plugin: EnginePlugin, plugin_dir: Path,
+                 source_file: Path | None = None):
+        super().__init__(plugin, plugin_dir, source_file)
+        self.dimension = int(getattr(plugin, "dimension", 0) or 0)
+        self.capabilities = ["embedding"]
+
+    def _precheck_local(self) -> Optional[str]:
+        # 维度 0 写进库之后，余弦会在不同维度之间静默算错 —— 拦在建索引之前。
+        if self.dimension <= 0:
+            return f"插件 {self.name} 未声明 dimension（向量维度）"
+        return None
+
+    def _verify_ready_locked(self, ready: dict) -> Optional[str]:
+        """握手校验：声明值与实际值不符必须当场报。
+
+        写进库之后口径不符是**静默**的（表现为检索质量下降，而不是报错）。
+        """
+        got_dim, got_model = ready.get("dimension"), ready.get("model_id")
+        if got_dim is not None:
+            try:
+                reported_dim = int(got_dim)
+            except (TypeError, ValueError):
+                # 非法值（`"512"` 之外的东西）不能让它冒成裸 ValueError —— 那样
+                # 报的是「invalid literal for int()」，而真正的原因是插件写错了协议。
+                return f"向量插件 {self.name} 报告的维度不是整数：{got_dim!r}"
+            if reported_dim != self.dimension:
+                return (
+                    f"向量插件 {self.name} 报告的维度是 {got_dim}，"
+                    f"声明的是 {self.dimension}"
+                )
+        if got_model is not None and self.model_id and got_model != self.model_id:
+            return (
+                f"向量插件 {self.name} 报告的模型是 {got_model}，"
+                f"声明的是 {self.model_id}"
+            )
+        return None
+
+    # ── 契约入口 ──
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        """编码文本 → L2 归一化向量（顺序与入参一一对应）。
+
+        契约 3（空输入返回空、**不发起任何调用**）在这里短路：连子进程都不拉起。
+        """
+        if not texts:
+            return []
+        batch = [str(t) for t in texts]
+        if self._exec_mode == "external":
+            vecs = await asyncio.to_thread(self._embed_external, batch)
+        else:
+            vecs = await asyncio.to_thread(self._embed_inproc, batch)
+        return self._check_vectors(vecs, len(batch))
+
     # ── 编码 ──
 
     def _embed_external(self, texts: list[str]) -> list[list[float]]:
         with self._proc_lock:
             proc = self._ensure_proc_locked()
-            self._next_id += 1
-            rid = self._next_id
-            req = json.dumps({"id": rid, "texts": texts}, ensure_ascii=False)
-            try:
-                assert proc.stdin is not None
-                proc.stdin.write(req + "\n")
-                proc.stdin.flush()
-            except (BrokenPipeError, OSError) as e:
-                self._kill_locked()        # 下轮重起，别在坏管道上反复失败
-                raise RuntimeError(f"向量插件 {self.name} 子进程不可用：{e}") from e
-
-            line = self._readline_locked(proc, EMBED_REQUEST_TIMEOUT)
-            if not line:
-                self._kill_locked()
-                raise RuntimeError(
-                    f"向量插件 {self.name} 编码超时（{EMBED_REQUEST_TIMEOUT:.0f}s 无响应）"
-                )
-
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                # 非 JSON 行 = 协议破了。丢弃进程：留在管道里的后续内容同样不可信。
-                self._kill_locked()
-                raise RuntimeError(
-                    f"向量插件 {self.name} 返回了非 JSON 行：{line[:120]!r}"
-                ) from None
-            if not isinstance(msg, dict):
-                self._kill_locked()
-                raise RuntimeError(f"向量插件 {self.name} 返回的不是 JSON 对象")
-            if msg.get("id") != rid:
-                # 残留响应错位 —— 每一轮都会读到上一条的结果，而形状完全合法。
-                self._kill_locked()
-                raise RuntimeError(
-                    f"向量插件 {self.name} 响应错位（请求 id={rid}、响应 id={msg.get('id')}）"
-                )
-            if msg.get("error"):
-                # 单次编码失败（不是协议坏了）：进程留着，下一批继续用
-                raise RuntimeError(f"向量插件 {self.name} 编码失败：{msg['error']}")
+            # 协议层的校验（非 JSON / id 错位 / error 分支 / 超时丢进程）在基类，
+            # 这里只解释 `vectors` 这个业务字段。
+            msg = self._roundtrip_locked(proc, {"texts": texts}, EMBED_REQUEST_TIMEOUT)
             vectors = msg.get("vectors")
             if not isinstance(vectors, (list, tuple)):
                 self._kill_locked()
                 raise RuntimeError(f"向量插件 {self.name} 响应缺少 vectors 数组")
-            self._last_used = time.monotonic()
             return [list(v) if isinstance(v, (list, tuple)) else v for v in vectors]
 
     def _embed_inproc(self, texts: list[str]) -> list[list[float]]:
@@ -891,6 +1032,126 @@ class _PluginEmbeddingAdapter(_PluginEngineAdapter):
         return out
 
 
+#: 重排插件子进程吐出 ready 行之前的等待上限（秒）。
+#:
+#: ⚠️ **不是 30 秒**（embedding 那个值）：这一类要加载的是 bge-reranker 一档的
+#: 权重（数百 MB，冷读几十秒），22.8MB 的 bge-small 不在同一个量级。沿用 30 会
+#: 让「第一次搜索就超时」，而提示写的是「启动失败」——用户不知道该等还是该改。
+RERANK_READY_TIMEOUT = 180.0
+
+#: 单次重排往返的等待上限（秒）。取得比编排层的 `RERANK_TIMEOUT = 5.0` 宽：
+#: 编排层那个是**用户可感知的**时间预算（超了就退回融合顺序），这里是**协议层**
+#: 的卡死判定。刻意不 `<` 5.0 —— 否则编排层永远先超时，子进程烂在管道里的半条
+#: 响应没人收，下一轮起就错位。
+RERANK_REQUEST_TIMEOUT = 15.0
+
+
+class _PluginRerankAdapter(_PluginResidentAdapter):
+    """把 `RerankPlugin` 适配成 `RerankEngine` 协议（`rerank` + 三个可选钩子）。
+
+    「常驻子进程 + NDJSON」那套全部在 `_PluginResidentAdapter`。这里只回答重排
+    独有的三件事：请求里同时带 query 与 candidates、响应里是 `results` 的
+    `[[下标, 分数], ...]` 表、前置条件一条都没有（权重在插件自己手里）。
+
+    ⚠️ **允许只返回前 k 条**（`top_n` 语义）。尾部由 `RerankSearcher` 按原序补齐
+    —— 那一层负责「一个都不能丢」，这里负责「拿到的那几条下标是对的」。
+    """
+
+    KIND = "重排插件"
+    VERB = "重排"
+    READY_TIMEOUT = RERANK_READY_TIMEOUT
+
+    def __init__(self, plugin: EnginePlugin, plugin_dir: Path,
+                 source_file: Path | None = None):
+        super().__init__(plugin, plugin_dir, source_file)
+        self.max_documents = int(getattr(plugin, "max_documents", 0) or 0)
+
+    # ── 契约入口 ──
+
+    async def rerank(self, query: str,
+                     documents: list[str]) -> list[tuple[int, float]]:
+        """契约 2：空输入返回 `[]` 且**不发起任何调用**（连子进程都不拉起）。
+
+        省的不是钱，是「一条必失败的请求」与「为它白加载一次模型」。
+        """
+        if not documents:
+            return []
+        batch = [str(d) for d in documents]
+        q = str(query)
+        if self._exec_mode == "external":
+            rows = await asyncio.to_thread(self._rerank_external, q, batch)
+        else:
+            rows = await asyncio.to_thread(self._rerank_inproc, q, batch)
+        return self._check_results(rows, len(batch))
+
+    # ── 打分 ──
+
+    def _rerank_external(self, query: str,
+                         documents: list[str]) -> list[tuple[int, float]]:
+        with self._proc_lock:
+            proc = self._ensure_proc_locked()
+            # 协议层的校验（非 JSON / id 错位 / error 分支 / 超时丢进程）在基类。
+            msg = self._roundtrip_locked(
+                proc,
+                {"query": query, "documents": documents},
+                RERANK_REQUEST_TIMEOUT,
+            )
+            results = msg.get("results")
+            if not isinstance(results, (list, tuple)):
+                self._kill_locked()
+                raise RuntimeError(f"重排插件 {self.name} 响应缺少 results 数组")
+            return list(results)
+
+    def _rerank_inproc(self, query: str,
+                       documents: list[str]) -> list[tuple[int, float]]:
+        """进程内（trusted）打分。异常包成 `FatalError`（留 traceback、带插件名）。"""
+        try:
+            rows = self._plugin.rerank(query, documents)
+        except Exception as e:  # noqa: BLE001 —— 第三方代码，什么异常都可能有
+            logger.exception("插件 %s 重排失败（进程内）", self.name)
+            raise FatalError(
+                f"插件 {self.name} 重排失败：{type(e).__name__}: {str(e)[:200]}"
+            ) from e
+        self._last_used = time.monotonic()
+        if not isinstance(rows, (list, tuple)):
+            raise FatalError(
+                f"插件 {self.name} 返回了不支持的类型 {type(rows).__name__}"
+                f"（契约要求 list[tuple[int, float]]）"
+            )
+        return list(rows)
+
+    def _check_results(self, rows, n: int) -> list[tuple[int, float]]:
+        """契约 1：下标在 `[0, n)` 内且**互不重复**，分数是数字。
+
+        ⚠️ **越界与重复都直接抛**（与 `rerank_dashscope` 同一条判据）：下标算错
+        时**别人的分数会贴到这篇头上**，而结果列表看起来完全正常。抛出去之后
+        整次重排降级为「沿用融合顺序」—— 那是可接受的；不抛则是一次**看不出来
+        的错序**。条数少于 `n` 是合法的（契约 3），不在这里判。
+        """
+        out: list[tuple[int, float]] = []
+        seen: set[int] = set()
+        for pos, item in enumerate(rows):
+            try:
+                idx, score = int(item[0]), float(item[1])
+            except (TypeError, ValueError, IndexError) as e:
+                raise RuntimeError(
+                    f"重排插件 {self.name} 第 {pos} 条不是 [下标, 分数]："
+                    f"{type(e).__name__}: {e}"
+                ) from e
+            if not (0 <= idx < n):
+                raise RuntimeError(
+                    f"重排插件 {self.name} 返回的下标 {idx} 越界"
+                    f"（候选共 {n} 条）"
+                )
+            if idx in seen:
+                raise RuntimeError(
+                    f"重排插件 {self.name} 返回了重复的下标 {idx}"
+                )
+            seen.add(idx)
+            out.append((idx, score))
+        return out
+
+
 # ── 插件注册表（Phase 4 管理 API 的数据基础）──
 # name → {adapter, meta, path, source, enabled, loaded}
 #   enabled — config 期望状态（运行时 enable/disable 同步；前端开关位置）
@@ -899,6 +1160,36 @@ PLUGIN_REGISTRY: dict[str, dict] = {}
 
 
 # ── 加载入口 ──
+
+#: 三族插件的基类本体。**加一族只改这里**（下面的 `_PLUGIN_BASES` 由它派生）：
+#: `init_plugins` 要排除基类本身不被当成插件实例化，`_peek_plugin_meta` 要认得
+#: 声明类继承的是哪一族。两处各抄一份名单的失效形态不同但同样静默 ——
+#: 排除名单漏了 = 多一个 `name=""` 的幽灵条目；识别集合漏了 = 「那一族插件被
+#: 禁用后仍然加载」（peek 解析不出 name → 退回先执行再判）。
+_PLUGIN_BASE_CLASSES: tuple[type, ...] = (EnginePlugin, EmbeddingPlugin, RerankPlugin)
+
+#: 基类**名字**（AST 层只有名字）。由 `_PLUGIN_BASE_CLASSES` 派生，不手写。
+_PLUGIN_BASES: frozenset[str] = frozenset(c.__name__ for c in _PLUGIN_BASE_CLASSES)
+
+#: 基类名 → 该族默认 `category`。AST 读不到继承来的类属性，只能按基类回填；
+#: 漏填的那一族在**禁用条目**里 category 是空串（前端落到「其他」分组），
+#: 而重启启用后又跳到正确分组 —— 同一个插件两个位置。
+_BASE_DEFAULT_CATEGORY: dict[str, str] = {
+    "EmbeddingPlugin": "embedding",
+    "RerankPlugin": "rerank",
+}
+
+#: `category` → 常驻子进程适配器。**不在这张表里的 category 一律走
+#: `_PluginEngineAdapter`（doc 契约：`execute(file_path)`）**。
+#:
+#: ⚠️ 新增一族时这里和 `_PLUGIN_BASE_CLASSES` 必须**同批**改。只加基类不加这一条，
+#: 用户把模板拷进 `{data_dir}/plugins/` 的那一刻它被以 doc 契约**静默注册成功**
+#: （形状合法、零报错），而每次调用都在要求一个它永远不会收到的文件路径。
+_RESIDENT_ADAPTERS: dict[str, type] = {
+    "embedding": _PluginEmbeddingAdapter,
+    "rerank": _PluginRerankAdapter,
+}
+
 
 def _base_name(node: ast.expr) -> str:
     """基类表达式的名字：`EnginePlugin` / `sdk.EnginePlugin` 都返回 `EnginePlugin`。"""
@@ -927,12 +1218,12 @@ def _peek_plugin_meta(py_file: Path) -> Optional[dict]:
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
             continue
-        # `EmbeddingPlugin` 是 `EnginePlugin` 的**子类**，声明文件通常直接继承它
-        # （`category` / `capabilities` 由基类给出）。漏掉这一支的失效形态是
-        # 「向量插件被禁用后仍然加载」—— 因为 peek 解析不出 name，调用方退回
-        # 「先执行再判」，而禁用路径的全部意义正是不执行。
+        # `EmbeddingPlugin` / `RerankPlugin` 都是 `EnginePlugin` 的**子类**，声明文件
+        # 通常直接继承它们（`category` / `capabilities` 由基类给出）。漏掉某一支的
+        # 失效形态是「那一族插件被禁用后仍然加载」—— 因为 peek 解析不出 name，调用方
+        # 退回「先执行再判」，而禁用路径的全部意义正是不执行。
         bases = {_base_name(b) for b in node.bases}
-        if not (bases & {"EnginePlugin", "EmbeddingPlugin"}):
+        if not (bases & _PLUGIN_BASES):
             continue
         meta: dict = {}
         for stmt in node.body:
@@ -942,11 +1233,15 @@ def _peek_plugin_meta(py_file: Path) -> Optional[dict]:
                     and isinstance(stmt.value.value, str)):
                 meta[stmt.targets[0].id] = stmt.value.value
         if "name" in meta:
-            # 继承来的类属性在这里读不到（只有 AST 上的字面量）。`category` 缺席会让
-            # `PLUGIN_REGISTRY` 的禁用条目里 category 为空串、前端分组落到「其他」，
-            # 而重启启用后又会跳到「向量」—— 同一个插件两个分组。基类默认是 embedding。
-            if "category" not in meta and "EmbeddingPlugin" in bases:
-                meta["category"] = "embedding"
+            # 继承来的类属性在这里读不到（只有 AST 上的字面量），按**基类**回填。
+            # `EnginePlugin` 的默认是 `doc`（与基类本体一致），故不在表里。
+            if "category" not in meta:
+                # 按表的**键序**匹配而不是遍历 `bases`（set 顺序不确定）：多重继承时
+                # 结果不该取决于哈希。
+                for base_name_, default_cat in _BASE_DEFAULT_CATEGORY.items():
+                    if base_name_ in bases:
+                        meta["category"] = default_cat
+                        break
             return meta
     return None
 
@@ -1026,7 +1321,7 @@ def init_plugins(config: dict):
                 if (
                     isinstance(obj, type)
                     and issubclass(obj, EnginePlugin)
-                    and obj not in (EnginePlugin, EmbeddingPlugin)
+                    and obj not in _PLUGIN_BASE_CLASSES
                 ):
                     found = True
                     try:
@@ -1037,13 +1332,16 @@ def init_plugins(config: dict):
                         )
                         continue
 
-                    # 向量化插件与文件引擎的适配器不同（常驻子进程 + NDJSON，见
-                    # `_PluginEmbeddingAdapter` 文档）。按**实例**的 category 分派而不是
-                    # 按基类：有的插件会继承 EnginePlugin 却写 category="embedding"。
-                    adapter_cls = (
-                        _PluginEmbeddingAdapter
-                        if getattr(instance, "category", "") == "embedding"
-                        else _PluginEngineAdapter
+                    # 适配器按**实例**的 category 分派而不是按基类：有的插件会继承
+                    # `EnginePlugin` 却写 `category="embedding"`。
+                    #
+                    # ⚠️ 未列出的 category 一律落到 `_PluginEngineAdapter`（doc 契约）。
+                    # 新增一族时**必须同批**加进这张表 —— 只交付基类而漏了这里，用户
+                    # 把模板拷进 `{data_dir}/plugins/` 的那一刻，它被以 doc 契约
+                    # **静默注册成功**（形状合法、零报错），而每次调用都会要求一个
+                    # 文件路径。
+                    adapter_cls = _RESIDENT_ADAPTERS.get(
+                        getattr(instance, "category", ""), _PluginEngineAdapter
                     )
                     adapter = adapter_cls(instance, py_file.parent, py_file)
                     # 回填落盘配置（P1-02）：此前只有 `PUT /plugins/{name}/config` 会写

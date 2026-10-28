@@ -71,6 +71,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const [searchProvider, setSearchProvider] = useState('duckduckgo')
   const [searxngUrl, setSearxngUrl] = useState('http://127.0.0.1:18080')
   const [tavilyApiKey, setTavilyApiKey] = useState('')
+  const [deepseekApiKey, setDeepseekApiKey] = useState('')
   const [fetchProvider, setFetchProvider] = useState('trafilatura')
   const [targetLanguage, setTargetLanguage] = useState('zh-CN')
   const [loading, setLoading] = useState(true)
@@ -130,6 +131,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
           setSearchProvider(cfg.agent_tools.search.provider || 'duckduckgo')
           setSearxngUrl(cfg.agent_tools.search.searxng_url || 'http://127.0.0.1:18080')
           setTavilyApiKey(cfg.agent_tools.search.tavily_api_key || '')
+          setDeepseekApiKey(cfg.agent_tools.search.deepseek_api_key || '')
         }
         if (cfg.agent_tools.fetch) {
           setFetchProvider(cfg.agent_tools.fetch.provider || 'trafilatura')
@@ -146,7 +148,10 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
         fetch: { proxy: proxyEnabled ? proxyUrl : '' },
         auth: { bilibili: bilibiliCookie, youtube: youtubeCookie, douyin: douyinCookie },
         agent_tools: {
-          search: { provider: searchProvider, searxng_url: searxngUrl, tavily_api_key: tavilyApiKey },
+          search: {
+            provider: searchProvider, searxng_url: searxngUrl,
+            tavily_api_key: tavilyApiKey, deepseek_api_key: deepseekApiKey,
+          },
           fetch: { provider: fetchProvider },
         },
       })
@@ -1044,7 +1049,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
             <div className="space-y-4">
               <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
                 <p className="text-[13px] text-muted">
-                  搜索网络用于 AI 对话和生成笔记时的联网检索，网页抓取仅用于 AI 对话。DuckDuckGo 免费零配置，SearXNG 需本地部署，Tavily 需 API Key 但质量最高。
+                  搜索网络用于 AI 对话和生成笔记时的联网检索，网页抓取仅用于 AI 对话。DuckDuckGo 免费零配置，SearXNG 需本地部署，Tavily 与 DeepSeek 需 API Key（DeepSeek 按成功请求计费）。选中的方案失败时会自动降级到 DuckDuckGo。
                 </p>
 
                 {/* 搜索方案 */}
@@ -1053,6 +1058,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                   <select value={searchProvider} onChange={e => setSearchProvider(e.target.value)}
                     className="w-full px-3 py-2.5 bg-surface border border-border-default rounded-[10px] text-[14px] outline-none">
                     <option value="tavily">Tavily（AI 优化搜索，需 API Key）</option>
+                    <option value="deepseek">DeepSeek（原生 JSON，按成功请求计费）</option>
                     <option value="searxng">SearXNG（本地免费，自动启动便携版）</option>
                     <option value="duckduckgo">DuckDuckGo（免费零配置，真实网页搜索）</option>
                   </select>
@@ -1060,6 +1066,17 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                     <input type="password" value={tavilyApiKey} onChange={e => setTavilyApiKey(e.target.value)}
                       placeholder="tvly-xxxxxxxxxxxxxxxxxxxxxxxx"
                       className="w-full mt-2 px-3 py-2 bg-surface border border-border-default rounded-[10px] text-[14px] outline-none font-mono" />
+                  )}
+                  {searchProvider === 'deepseek' && (
+                    <div className="mt-2 space-y-1.5">
+                      <input type="password" value={deepseekApiKey} onChange={e => setDeepseekApiKey(e.target.value)}
+                        placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx（留空则复用 DeepSeek 模型的 Key）"
+                        className="w-full px-3 py-2 bg-surface border border-border-default rounded-[10px] text-[14px] outline-none font-mono" />
+                      <p className="text-[12px] text-muted">
+                        计费 $0.75 / 1000 次<strong>成功</strong>请求（失败、空结果、超时不收费）；
+                        取多少条不影响单价。结果带官方摘要，注入笔记时比片段更有用。
+                      </p>
+                    </div>
                   )}
                   {searchProvider === 'searxng' && (
                     <input type="text" value={searxngUrl} onChange={e => setSearxngUrl(e.target.value)}
@@ -1075,7 +1092,13 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                     className="w-full px-3 py-2.5 bg-surface border border-border-default rounded-[10px] text-[14px] outline-none">
                     <option value="trafilatura">trafilatura（本地提取，需代理）</option>
                     <option value="jina">Jina Reader（免费在线服务）</option>
+                    <option value="deepseek">DeepSeek（复用上面的 Key，按成功请求计费）</option>
                   </select>
+                  {fetchProvider === 'deepseek' && (
+                    <p className="text-[12px] text-muted mt-2">
+                      Key 与「网络搜索」共用一把（那里留空则复用 DeepSeek 模型的 Key）。失败时自动降级到 trafilatura。
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

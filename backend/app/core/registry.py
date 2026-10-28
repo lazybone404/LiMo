@@ -32,8 +32,14 @@ from .types import PipelineInput
 #   而另建一张「另一种引擎类别」的表正是模式 #54 的入口。放在 ORDER 末尾：
 #   前端各处都按具体 category 取（`engineOptions.doc` / `.asr` / `.ocr`），
 #   没有「遍历所有 key 渲染」的消费方，故新增末位对现有界面零影响。
-ENGINE_CATEGORIES: frozenset[str] = frozenset({"asr", "ocr", "doc", "embedding"})
-ENGINE_CATEGORY_ORDER: tuple[str, ...] = ("asr", "ocr", "doc", "embedding")
+#
+# ⚠️ `rerank`（2026-10-29）与前四类的**发现机制相同、契约不同**：它吃的是
+#   「一个查询 + 一组候选文本」、吐的是「候选的下标顺序」，既不是文件→文本，
+#   也不是文本→向量。加进化名表只为「注册 → capabilities 下发 → 设置页可见」
+#   这一条共用机制；**它的契约在 `engines/rerank_base.py`，不在 `core/protocols.py`**。
+#   同样放末位（前端各处按具体 key 取，无遍历全部 key 的消费方）。
+ENGINE_CATEGORIES: frozenset[str] = frozenset({"asr", "ocr", "doc", "embedding", "rerank"})
+ENGINE_CATEGORY_ORDER: tuple[str, ...] = ("asr", "ocr", "doc", "embedding", "rerank")
 
 
 # 引擎**能力位**（不是类别）→ 中文标签。经 capabilities 下发，前端引擎下拉里
@@ -60,6 +66,8 @@ ENGINE_CAPABILITY_LABELS: dict[str, str] = {
     # 没有它（"这个模型能吐向量"不是用户会分组挑选的维度），故不会撞上那条
     # 「两套词汇各有独有项」的守卫。
     "embedding": "向量",
+    # 重排引擎（2026-10-29）。同样**引擎侧独有** —— 重排不是模型的模态能力。
+    "rerank": "重排",
 }
 
 
