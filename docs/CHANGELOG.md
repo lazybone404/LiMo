@@ -6,6 +6,119 @@
 
 ---
 
+## 2026-10-29 — MCP 服务端：把库只读暴露给 Claude Code / Cursor
+
+**起因**：`limo` CLI 的消费者是**人**。Claude Code 这类 agent 要读这个库，今天只能 shell 调
+`limo --json` 再自己解析 —— 每个 agent 各自拼一次命令、各自处理 `exit 3` 与 `truncated`。
+MCP 是 agent 的工具调用标准，Claude Code 原生支持。加一层消费者即可。
+
+⚠️ **口径先纠正**：规划表里这条曾写作「`QueryService` 的第三个传输层」，不准确。`Source`
+契约只有**两个实现**（`HttpSource` / `LocalSource`），`limo` CLI 与 MCP 是它们的**两个消费者**。
+**`QueryService` 一行未改** —— 这是「读路径唯一入口」架构的自然产物，不是巧合。
+
+### 改了什么
+
+**① `limo_cli/mcp_server.py`（协议层，约 330 行）+ `limo_cli/mcp_tools.py`（能力层）**
+
+刻意分家：前者喂 `StringIO` 就能测，后者给个 fake `Source` 就能测。混在一起则测一个工具
+要先拼 JSON 再起子进程。
+
+**双栈**：`server/discover`（`2026-07-28`，stateless）+ legacy `initialize` 握手。Claude Code
+逐服务器协商、新协议失败自动回退 legacy —— 少一条栈，一半客户端连不上。
+
+⚠️ **`initialize` 的 `protocolVersion` 原样回显客户端请求值，而 `supportedVersions` 只列
+核实过的版本**。两者刻意不是一份东西：后者是「我们实现了哪些」（写一个没实现的版本号 =
+承诺一套没实现的行为，客户端协商到它之后按那套规范发请求、我们按这套回，**双方都不报错、
+语义全错**），前者是「本次会话按哪个版本走」。有源码守卫钉住。
+
+**② 六工具只读**：`limo_status` / `limo_list` / `limo_search` / `limo_get` / `limo_read` /
+`limo_folders`。四个要命的细节：
+
+- `limo_read` 的 `part` 合法值 = `mcp_tools.PARTS`，由 `commands.ALL_PARTS` **派生**再追加
+  `commands.RAW_PART`。手抄那六个的失效形态是「`ALL_PARTS` 加了第七种产物而 MCP 悄悄
+  不认它」，两边都不报错（有 `monkeypatch ALL_PARTS` 的对照实验钉住）。
+- **`part="raw"` 是补缺口不是加功能**：它走 `get_resource()` 而非 `get_artifact()` —— 文档
+  原文不是产物（无版本、无自证头）。没有它，刚导入、还没生成过笔记的文档，六个产物 part
+  一个都不存在，agent 只能看到「有这篇」却读不到一个字。
+- `limo_get` **摘掉 `rawText`**，只留长度 + 300 字预览：一篇长视频转录几十万字符，透传等于
+  一次工具调用灌满上下文。
+- `limo_read` 的 `max_chars` **必须显式给 20000** —— 传 `None` 在 `LocalSource` 里的语义是
+  「用后端默认上限（256K）」，不是「不截断」。
+
+**搜索只走字面**（`QueryService.search_resources`）：不接向量 / 改写 / 重排。MCP 进程随客户端
+起停，加载 22.8MB embedding 引擎或每次查询花一次云端计费，对这个场景都不划算。
+
+**③ `LocalHolder` / `StaticHolder`（快照问题）**
+
+Claude Code 的 MCP 子进程是常驻的，用户可能中途在 LiMo 里导入新文档。`SearchEngine` 天然
+新鲜（每次查询新建连接），但 `Store` 把 `index.json` 读进内存 —— 故 `LocalHolder` 每次工具
+调用前 `stat` 一次 `(mtime, size)`，变了就**重建整个 `LocalSource`**（实测 0.13s）。
+
+⚠️ **不为省那几毫秒去拆 `LocalSource` 的内部结构** —— 拆了就是「MCP 版 LocalSource」，
+第二份真相源。⚠️ **重建时传首次解析出的具体路径而非 `None`**：`LocalSource(None)` 会
+`load_config()`，而它每次都 `copy2` 一份 `config.yaml.bak` —— 一个只读服务端不该因为「库里有
+新文档」就反复写配置文件。
+
+⚠️ **诚实记录的边界**：`Store.__init__` **不是纯只读**，库处于异常状态时四条迁移自检会写盘
+（索引自愈重建 / 重复 id 去重 / 分类 sidecar 补写 / 遗留布局迁移）。它们幂等、走
+`atomic_write_text`、且正是 LiMo 应用自己启动时也会写的同一批东西 —— 不想让它修就先开一次 LiMo。
+
+**④ 两条入口**：源码 `python -m limo_cli.mcp_server`（入口点 `limo-mcp`）/ 安装版
+`LiMoBackend.exe --mcp`。后者靠 `main.py` 顶部的短路。
+
+⚠️ **那条短路必须排在 `main.py` 自己的 `sys.stdout is None → devnull` 归一化之前**：windowed
+打包下 `sys.stdout` 就是 `None`，归一化会把它换成 devnull，而 MCP 的协议通道**就是** stdout ——
+换掉之后所有响应写进黑洞、客户端只看到「连不上」，我们这边一切正常（零报错）。这是本特性
+最容易静默失效的一处。
+
+**⑤ stdout 三重保护**：`main()` 第一件事抢下 `sys.stdout` 给协议独占并把 `sys.stdout` 改成
+stderr / 协议写入只经 `_write()` 一个函数 / 门禁里一条负向对照（让工具故意 `print` 噪音，
+断言 stdout 仍只有 1 行 JSON）。
+
+**⑥ `scripts/check-mcp`（8 项）+ `check-all` 的 `mcp` 层**
+
+起真子进程、**不需要后端在跑**（默认走 `LocalSource`）—— 它验证的场景是「Claude Code 冷不丁
+拉起这个进程」，那时 LiMo 应用本来就是关着的。两条负向对照：stdout 纯净性（噪声落 stderr 仍
+只有 1 行 JSON）、摘掉 `server/discover` 分支后第 1 项必须红（证明判据有区分力）。
+
+**⑦ 打包**：`LiMoBackend.spec` 的 `hiddenimports` 加 `limo_cli.mcp_server` / `mcp_tools` /
+`sources`（`main.py` 的 import 是**运行期条件分支**，静态分析未必跟得进去；漏了的表现是
+`--mcp` 报 ModuleNotFoundError 而应用本身一切正常）；datas 加 `('../VERSION', '.')`
+（`limo_cli._read_version()` 新增 frozen 分支，取不到会退回 `unknown`）。
+
+### 影响范围
+
+- **对现有功能零影响**：`QueryService` / `Store` / `SearchEngine` 一行未改；CLI 的行为、输出、
+  退出码全部不变；不新增任何运行时依赖（手写 JSON-RPC，**刻意不引入 `mcp` SDK**）。
+- `main.py` 只多了 5 行短路，且被 `__name__ == "__main__"` 圈住 —— `uvicorn main:app`
+  （`__name__ == "main"`）完全不受影响。
+- 打包产物多带 `VERSION` 一个文件，后端启动路径不变。
+
+### 实测
+
+冷启动 **0.26s**（`--mcp` 直开 152 篇的真库，无需 LiMo 在跑）；`pytest tests/test_mcp_protocol.py
+tests/test_mcp_tools.py` 60 passed；`bash scripts/check-mcp` 8/8，`bash scripts/check-all mcp`
+3s。
+
+### 已知边界（写进 README，不当成缺陷）
+
+1. **搜索是纯字面**，语义型提问可能搜不到 —— 与 `limo search` 完全同源，用 `limo_list` 按
+   主题 / 标签 / 文件夹浏览来补。
+2. `limo_read` 单次默认 20000 字符（上限 200000），长笔记要多次 `offset` 续读。
+3. **只读**。agent 不能导入、打标签、生成笔记 —— 一次误调用就是一次计费 + 一次改库，而 MCP
+   的工具调用失败用户不会看见。将来要放开，加显式 `--allow-write` 开关、默认关。
+4. `--http` 模式要求 LiMo 在跑；错误文案必须说「LiMo 应用没在运行」而不是笼统的连接失败。
+
+### 刻意不做
+
+- ❌ **引入 `mcp` Python SDK**：协议面只有四条方法，手写换来零新依赖 + 打包少一次 `collect_all`。
+- ❌ **MCP Resources / Prompts 原语**：只做 Tools。Resources 是「把库当文件系统挂载」，与
+  agent 的检索习惯不符。
+- ❌ **`notifications/tools/list_changed`**：工具集是静态的。
+- ❌ **HTTP/SSE 传输**：`--http` 指的是**后端**走 HTTP，不是 MCP 走 HTTP。MCP 只做 stdio。
+
+---
+
 ## 2026-10-29 — 检索重排（rerank）：全套落地但**默认关**，四臂实验裁决为**不采纳**
 
 **起因**：`_experiments/05` 那张表的读法是 —— **等权 RRF 是用 H@5 的召回换来的 H@1 稳定性**。

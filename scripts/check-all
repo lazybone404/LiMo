@@ -6,6 +6,7 @@
 #   bash scripts/check-all backend      # 后端 pytest
 #   bash scripts/check-all frontend     # 前端 tsc + lint + vitest
 #   bash scripts/check-all cli          # CLI 契约（scripts/check-cli）
+#   bash scripts/check-all mcp          # MCP 服务端契约（scripts/check-mcp，约 2s）
 #   bash scripts/check-all docs         # 文档交叉引用（scripts/check-doc-refs.py）
 #   bash scripts/check-all search       # 检索质量（字面层，约 1s）
 #
@@ -102,6 +103,13 @@ stage_cli(){
   [ -n "$PY" ] || { echo "找不到 Python 解释器（可用 LIMO_PY=... 指定）"; return 2; }
   ( cd "$ROOT" && bash scripts/check-cli )
 }
+# ⚠️ **与 cli 层一样不在这里重新实现**（同一条理由：编排脚本复刻被编排的脚本
+#    是「同源漂移」最经典的入口）。域是「我在改 MCP 服务端」—— 它验证的
+#    stdout 纯净性与双栈握手，`pytest` 层的 StringIO 单测看不见。
+stage_mcp(){
+  [ -n "$PY" ] || { echo "找不到 Python 解释器（可用 LIMO_PY=... 指定）"; return 2; }
+  ( cd "$ROOT" && bash scripts/check-mcp )
+}
 # ⚠️ **不加 cd**：check-doc-refs.py 用 `__file__` 自定位仓库根，在哪个目录跑都一样。
 #    docs 是**独立的一层**（域 =「我在改文档」），不并进 quick/frontend —— 那两层的
 #    语义是「前端代码没问题」，而文档引用失效与前端类型毫无关系。
@@ -143,6 +151,9 @@ case "$TARGET" in
   cli)
     run_stage "check-cli" stage_cli
     ;;
+  mcp)
+    run_stage "check-mcp" stage_mcp
+    ;;
   docs)
     run_stage "check-doc-refs" stage_docrefs
     ;;
@@ -156,11 +167,12 @@ case "$TARGET" in
     run_stage "pytest"              stage_pytest
     run_stage "检索质量（字面层）"   stage_search
     run_stage "check-cli"           stage_cli
+    run_stage "check-mcp"           stage_mcp
     run_stage "check-doc-refs"      stage_docrefs
     ;;
   *)
     echo "未知目标：$TARGET" >&2
-    echo "可用：quick | backend | frontend | cli | docs | search |（留空 = 全部）" >&2
+    echo "可用：quick | backend | frontend | cli | mcp | docs | search |（留空 = 全部）" >&2
     exit 2
     ;;
 esac

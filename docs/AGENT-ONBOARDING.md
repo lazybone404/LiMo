@@ -527,6 +527,7 @@ bash scripts/check-cli 9        # 只跑第 9 项（调试用）
 | API 404 | 前端禁止 `/api/api/`——`apiUrl()` 已拼接 BASE，传路径别带 `/api` |
 | 导出内容不对 | 看 `export-pipeline.md` §13 速查表（预览 vs 导出差异） |
 | 哪类操作慢 | 日志面板「性能」标签页（`GET /api/perf`），详见 8.4 |
+| MCP 连不上 / agent 读不到库 | `bash scripts/check-mcp`（8 项，不启后端）；手工喂帧见 8.5 |
 
 ### 8.2 模型/LLM 问题
 
@@ -570,6 +571,30 @@ bash scripts/check-cli 9        # 只跑第 9 项（调试用）
 - ⚠️ **表格刻意不做颜色分级**：阈值该由看数据的人按分位数定，不由写代码的人猜一个数（`core/perf.py` 纪律 1）
 - 落盘不可用（目录不可写）时面板写「落盘不可用（仅进程内统计）」而不是假装有文件 —— 纪律 2 的显式化
 - 除 HTTP 横切外，只有**没有请求边界**的三处手动打点：`startup.store` / `Store._save_index` / `vector.worker_round`
+
+### 8.5 MCP 服务端怎么手工调
+
+它是 stdio 的，没有端口、没有 URL，所以「打开浏览器看一眼」那条路不存在。最小手法是直接喂帧：
+
+```bash
+cd backend
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"server/discover"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"limo_status","arguments":{}}}' \
+  | python -m limo_cli.mcp_server
+```
+
+每行输入应得一行 JSON 输出，**顺序一致**（主循环是串行的）。喂完 EOF 进程退 0。
+
+| 症状 | 先看这里 |
+|---|---|
+| Claude Code 说「连不上」，本地跑却一切正常 | stdout 被污染了。`main()` 若不先把 `sys.stdout` 换成 stderr，任何一次 `print` / 第三方库的输出都会插进协议流。`bash scripts/check-mcp 7` 有负向对照钉这一点（工具故意打噪音，断言 stdout 仍只有 1 行 JSON） |
+| 打包版 `LiMoBackend.exe --mcp` 一行不输出、客户端直接断开 | `main.py` 的 `--mcp` 短路是否排在它自己的 `sys.stdout is None → devnull` 归一化**之前**。排后面 = 协议通道被换成黑洞，两边都不报错 |
+| agent 读不到刚在 LiMo 里导入的新文档 | `LocalHolder` 靠 `index.json` 的 `(mtime, size)` 判重建；`--http` 模式用 `StaticHolder`（后端天然新鲜）。先确认是不是 `--http` 打到了没在跑的后端 |
+| 工具调用失败但 Claude Code 只显示空了 | 工具级错误走 `isError: true`（模型看得见原因），协议级走 JSON-RPC `error`。放错层会让模型收到「出错了」却拿不到可行动线索 |
+
+⚠️ **它不需要后端在跑**（默认 `LocalSource` 直开本机库），所以 `check-mcp` 与 `check-cli` 不共享任何前置条件 —— 排查 MCP 问题时先跑它，别先怀疑 LiMo 应用。
 
 ---
 

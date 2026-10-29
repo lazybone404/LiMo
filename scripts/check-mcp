@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# LiMo MCP 服务端门禁 —— 起真实子进程，喂 JSON 行，断言协议契约。
+#
+#   bash scripts/check-mcp            # 全跑
+#   bash scripts/check-mcp 7          # 只跑第 7 项（调试用）
+#
+# ⚠️ **为什么起真子进程而不是直接调 `serve()`**：单测已经覆盖了「一行进一行出」的
+# 逻辑（`tests/test_mcp_protocol.py`）。这一层多出来的、也是唯一值得它单独存在的
+# 变量是 **stdout 是否真的干净** —— 协议通道被一行意外输出污染时，客户端直接断开，
+# 而本地终端里只是多了一行字（零报错）。那个性质只有真跑进程才看得见。
+#
+# ⚠️ **不需要后端在跑**：默认走 `LocalSource` 直开本机库。故本脚本与 `check-cli`
+# 的结构差别在于**不占端口、不启后端** —— 它验证的是「Claude Code 冷不丁拉起这个
+# 进程时会发生什么」，而那个场景里 LiMo 应用本来就是关着的。
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ONLY="${1:-}"
+
+PY="${LIMO_PY:-}"
+if [ -z "$PY" ]; then
+  for cand in "$ROOT/backend/.venv/Scripts/python.exe" "$ROOT/backend/.venv/bin/python" \
+              python3 python; do
+    if command -v "$cand" >/dev/null 2>&1; then PY="$cand"; break; fi
+  done
+fi
+if [ -z "$PY" ]; then echo "找不到 Python 解释器（可用 LIMO_PY=... 指定）" >&2; exit 2; fi
+
+PASS=0; FAIL=0; N=0
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
+
+ok()   { PASS=$((PASS+1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
+bad()  { FAIL=$((FAIL+1)); printf '  \033[31m✗\033[0m %s\n' "$1"; [ -n "${2:-}" ] && printf '      %s\n' "$2"; }
+case_start() { N=$((N+1)); if [ -z "$ONLY" ] || [ "$ONLY" = "$N" ]; then echo "[$N] $1"; SKIP=0; else SKIP=1; fi; }
+skip() { [ "$SKIP" = 1 ]; }
+
+# ── 起一次服务端：喂若干行 JSON，收 stdout/stderr/退出码 ──
+# RC 取的是管道末端（Python 进程）的退出码，不是 printf 的。
+mcp_pipe() {
+  RC=0
+  printf '%s\n' "$@" | ( cd "$ROOT/backend" && "$PY" -m limo_cli.mcp_server ) \
+      >"$TMP/out" 2>"$TMP/err" || RC=$?
+}
+# 跑一段**临时代码**当入口（负向对照用：在 import 之后 monkeypatch，再进 main()）
+mcp_script() {
+  RC=0
+  local code="$1"; shift
+  printf '%s\n' "$@" | ( cd "$ROOT/backend" && "$PY" -c "$code" ) \
+      >"$TMP/out" 2>"$TMP/err" || RC=$?
+}
+# 第 N 行响应（1 起）
+body() { sed -n "${1}p" "$TMP/out"; }
+# 判据：从 stdin 读一条响应 JSON，跑一段 Python 断言
+jqf() { "$PY" -c "import json,sys;d=json.load(sys.stdin);$1"; }
+
+note() { printf '      \033[2m%s\033[0m\n' "$1"; }
+
+echo "LiMo MCP 门禁 · 解释器 $PY"
+echo
+
+# ⚠️ 用 `cd` 而不是往 sys.path 里插 `$ROOT`：Git Bash 的 `$ROOT` 是 MSYS 风格
+# （`/c/...`），Windows 版 Python 不认那个前缀，`sys.path.insert` 会静默失败。
+PROTO_VERSION="$( cd "$ROOT/backend" && "$PY" -c \
+  "from limo_cli import mcp_server; print(mcp_server.PROTOCOL_VERSION)" 2>/dev/null )"
+if [ -z "$PROTO_VERSION" ]; then
+  echo "无法从 limo_cli.mcp_server 读到 PROTOCOL_VERSION —— 检查 sys.path / 导入错误" >&2
+  exit 2
+fi
+note "协议版本 $PROTO_VERSION"
+
+# ══ 1 ══ server/discover
+case_start "server/discover 返回 resultType / supportedVersions / capabilities"
+if ! skip; then
+  mcp_pipe '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}'
+  if [ "$RC" = 0 ] && body 1 | jqf "
+r = d['result']
+assert r['resultType'] == 'complete'
+assert '$PROTO_VERSION' in r['supportedVersions']
+assert r['capabilities'] == {'tools': {}}
+assert r['_meta']['io.modelcontextprotocol/serverInfo']['name'] == 'limo'
+assert r['instructions'].strip()
+" 2>/dev/null; then
+    ok "六项齐全"
+  else bad "退出 $RC / 字段不符" "$(body 1 | head -c 200)"; fi
+fi
+
+# ══ 2 ══ legacy initialize
+case_start "initialize（legacy）回显客户端版本并声明 tools 能力"
+if ! skip; then
+  mcp_pipe '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
+  if [ "$RC" = 0 ] && body 1 | jqf "
+r = d['result']
+assert r['protocolVersion'] == '2025-06-18', r['protocolVersion']
+assert r['capabilities'] == {'tools': {}}
+assert r['serverInfo']['name'] == 'limo'
+" 2>/dev/null; then
+    ok "回显 2025-06-18，serverInfo + capabilities 在场"
+  else bad "退出 $RC / 握手字段不符" "$(body 1 | head -c 200)"; fi
+fi
+
+# ══ 3 ══ tools/list
+case_start "tools/list 恰好六个只读工具"
+if ! skip; then
+  mcp_pipe '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+  names="$(body 1 | jqf "print(' '.join(sorted(t['name'] for t in d['result']['tools'])))" 2>/dev/null)"
+  want="limo_folders limo_get limo_list limo_read limo_search limo_status"
+  if [ "$RC" = 0 ] && [ "$names" = "$want" ]; then
+    ok "六个，名字与约定一致"
+  else bad "退出 $RC" "实得「$names」/ 期望「$want」"; fi
+fi
+
+# ══ 4 ══ limo_status 真读库
+case_start "tools/call limo_status 真读到库（docCount 为非负整数）"
+if ! skip; then
+  mcp_pipe '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"limo_status","arguments":{}}}'
+  # ⚠️ 断言 >= 0 而不是 > 0：新装的空库也要能跑这道门禁，
+  #    「有没有内容」是用户的事，不是协议的事。
+  if [ "$RC" = 0 ] && body 1 | jqf "
+r = d['result']
+assert r['resultType'] == 'complete'
+assert r['isError'] is False, r['content'][0]['text']
+sc = r['structuredContent']
+assert isinstance(sc['docCount'], int) and sc['docCount'] >= 0
+assert json.loads(r['content'][0]['text']) == sc
+" 2>/dev/null; then
+    ok "docCount=$(body 1 | jqf 'print(d["result"]["structuredContent"]["docCount"])')，content 与 structuredContent 同源"
+  else bad "退出 $RC / 载荷不符" "$(body 1 | head -c 240)"; fi
+fi
+
+# ══ 5 ══ 不存在的 id → 工具级错误
+case_start "limo_get 不存在的 id → isError（不是 JSON-RPC error）"
+if ! skip; then
+  mcp_pipe '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"limo_get","arguments":{"id":"tr_doesnotexist_000"}}}'
+  if [ "$RC" = 0 ] && body 1 | jqf "
+assert 'result' in d, '走到了协议级 error，模型看不到原因'
+assert d['result']['isError'] is True
+assert d['result']['content'][0]['text'].strip()
+" 2>/dev/null; then
+    ok "isError=true 且带可读文案"
+  else bad "退出 $RC / 错误语义走错通道" "$(body 1 | head -c 240)"; fi
+fi
+
+# ══ 6 ══ 未知方法 → 协议级 error
+case_start "未知方法 → JSON-RPC error -32601"
+if ! skip; then
+  mcp_pipe '{"jsonrpc":"2.0","id":1,"method":"resources/list"}'
+  if [ "$RC" = 0 ] && body 1 | jqf "
+assert d['error']['code'] == -32601
+assert 'result' not in d
+" 2>/dev/null; then
+    ok "-32601，且没有伪造 result"
+  else bad "退出 $RC / 错误码不符" "$(body 1 | head -c 200)"; fi
+fi
+
+# ══ 7 ══ 负向对照 · stdout 纯净性
+# 让工具**故意**往 stdout 打一行噪音，断言协议流依然只有 JSON 行。
+# ⚠️ 这是全套里唯一一条「stdout 被污染会静默失败」的守卫 —— 客户端直接断开，
+#    而终端里只是多了一行字，本地看不出任何异常。
+case_start "负向对照：工具往 stdout 打噪音时，协议流出力仍全为纯 JSON"
+if ! skip; then
+  mcp_script "
+import sys
+from limo_cli import mcp_tools, mcp_server
+_real = mcp_tools.call_tool
+def noisy(name, arguments, holder):
+    print('NOISE_FROM_TOOL')          # 故意写 stdout
+    sys.stdout.flush()
+    return _real(name, arguments, holder)
+mcp_tools.call_tool = noisy
+raise SystemExit(mcp_server.main([]))
+" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"limo_status","arguments":{}}}'
+  if [ "$RC" = 0 ] \
+     && grep -q 'NOISE_FROM_TOOL' "$TMP/err" \
+     && "$PY" -c "
+import json,sys
+lines = [l for l in open(sys.argv[1],encoding='utf-8').read().splitlines() if l.strip()]
+assert len(lines) == 1, 'stdout 混入了额外行：%r' % lines
+d = json.loads(lines[0])
+assert 'result' in d
+" "$TMP/out" 2>/dev/null; then
+    ok "噪音落在 stderr，stdout 只有 1 行 JSON"
+  else bad "退出 $RC" "stdout=$(head -c 200 "$TMP/out") / stderr=$(head -c 120 "$TMP/err")"; fi
+fi
+
+# ══ 8 ══ 负向对照 · 第 1 项真有区分力
+# 把 `_discover` 从模块里摘掉（等价于「这个分支不存在」），断言第 1 项会红。
+# ⚠️ 一条永远绿的断言与没有这条断言等价 —— 这里用同一段判据跑反例，自证它能红。
+case_start "负向对照：摘掉 server/discover 分支后，第 1 项的判据必须失败"
+if ! skip; then
+  mcp_script "
+import sys
+from limo_cli import mcp_server
+delattr(mcp_server, '_discover')
+raise SystemExit(mcp_server.main([]))
+" '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}'
+  if body 1 | jqf "
+r = d['result']
+assert r['resultType'] == 'complete'
+" 2>/dev/null; then
+    bad "摘掉分支之后判据竟然还通过 —— 第 1 项是个永远绿的假断言"
+  else
+    ok "判据如预期失败（响应为非 result：$(body 1 | head -c 100)）"
+  fi
+fi
+
+echo
+echo "──────────────  $PASS 通过 / $FAIL 失败  ──────────────"
+[ "$FAIL" = 0 ] || exit 1

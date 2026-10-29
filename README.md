@@ -188,6 +188,45 @@ limo doctor                     # 诊断（--local 可绕过后端直开本机�
 
 加 `--json` 得到机器可读输出——此时标准输出只有 JSON，日志与错误全走标准错误，可以直接 `| jq`。
 
+### 接入 AI 编程助手（MCP）
+
+LiMo 内置一个 **MCP 服务端**，把知识库**只读**暴露给 Claude Code / Cursor 这类 agent——它可以直接搜你的库、读某篇的笔记，不用你手动复制粘贴。
+
+**安装版**（不需要 Python）：
+
+```bash
+claude mcp add limo -- "<安装目录>\LiMoBackend.exe" --mcp
+```
+
+**源码运行**：
+
+```bash
+claude mcp add limo -e PYTHONPATH=<仓库根>/backend -- python -m limo_cli.mcp_server
+```
+
+（`pip install -e backend` 装过入口点的话，最后两个参数换成 `-- limo-mcp` 即可。）
+
+**Cursor / 其他客户端**改 `mcpServers` 配置：
+
+```json
+{
+  "mcpServers": {
+    "limo": {
+      "command": "C:\\Program Files\\LiMo\\LiMoBackend.exe",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+接上后可以直接说「我库里关于 RAG 的笔记有哪些，把第一篇的要点讲给我」——agent 会自己走「搜索 → 看产物清单 → 读正文」。
+
+**不需要先打开 LiMo**：默认直开本机库（冷启动约 0.3 秒），库文件变了会自动重读。也可以加 `--http` 让它转去问正在运行的 LiMo（那样就必须先开着应用）。
+
+⚠️ **只读**：agent 不能导入、打标签或生成笔记——一次误调用就是一次计费加一次改库，而 MCP 的工具调用失败你未必看得见。
+⚠️ **搜索是字面的**：语义型提问（「那篇讲缓存穿透的」）可能搜不到，换关键词或让它按文件夹 / 标签浏览。
+⚠️ **单次读正文上限 2 万字符**，长笔记它会自己按续读位置往下翻。
+
 ---
 
 ## 首次使用

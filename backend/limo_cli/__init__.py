@@ -22,22 +22,27 @@
 幂等、误触发风险都另算，不在这层（详见 `AGENTS.md`）。
 """
 
+import sys
 from pathlib import Path
 
 
 def _read_version() -> str:
     """版本号取自仓库根的 `VERSION`（`sync-version.py` 的唯一版本源）。
 
-    ⚠️ **当前打包产物不含 CLI**：PyInstaller 从 `main.py` 出发做依赖分析，不会收集
-    `limo_cli`。故「桌面版用户也能敲 `limo`」这件事**尚未决策**（要么把它加进 spec，
-    要么接受它只面向仓库/开发机）—— 别把现状读成设计意图。今天从仓库跑
-    `python -m limo_cli` 或 `pip install -e backend/` 都可用。
+    ⚠️ **打包产物含 `limo_cli` 这个包，但不含 `limo` 命令**（2026-10-29 起）：`main.py`
+    顶部的 `--mcp` 短路会 import `limo_cli.mcp_server`，故 spec 已把它收进
+    `hiddenimports`；而 `[project.scripts]` 的 `limo` 只对 `pip install -e` 的环境生效，
+    安装版用户桌面上没有那条命令。**别把「包在」读成「CLI 能用」**。
 
-    读不到 `VERSION` 时给 `unknown` 而不是抛错：版本号缺失不该让一条 `limo list` 失败。
+    frozen 下没有仓库根，改从 `sys._MEIPASS/VERSION` 取（spec 的 datas 把它带进包内）。
+    两条都读不到时给 `unknown` 而不是抛错：版本号缺失不该让一条 `limo list` 失败。
     """
     try:
-        root = Path(__file__).resolve().parents[2]
-        return (root / "VERSION").read_text(encoding="utf-8").strip()
+        if getattr(sys, "frozen", False):
+            base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        else:
+            base = Path(__file__).resolve().parents[2]
+        return (base / "VERSION").read_text(encoding="utf-8").strip()
     except OSError:
         return "unknown"
 

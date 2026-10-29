@@ -269,8 +269,15 @@ class LocalSource:
         # 这里没有 #26 的阴影风险 —— 模块顶部本来就没有同名的 app.* 导入。
         self._default_max_chars = DEFAULT_MAX_CHARS
 
-        cfg = load_config()
-        self.data_dir = Path(data_dir or cfg.get("data_dir") or (Path.home() / ".limo"))
+        if data_dir:
+            # ⚠️ **显式给了就不读配置**：MCP 服务端（`mcp_server.py`）在 `index.json`
+            # 变化时会重建整个 `LocalSource`，而 `load_config()` 每次都会 `copy2` 一份
+            # `config.yaml.bak` —— 一个只读服务端不该因为「库里有新文档」就反复写配置文件。
+            # CLI 侧的调用点只有 `cli.py` 的 `LocalSource()`（无参），这条分支今天恒不命中。
+            self.data_dir = Path(data_dir)
+        else:
+            cfg = load_config()
+            self.data_dir = Path(cfg.get("data_dir") or (Path.home() / ".limo"))
         self._store = Store(str(self.data_dir))
 
         # ⚠️ 存在才构造。`SearchEngine.__init__` 会 `CREATE TABLE IF NOT EXISTS` 并

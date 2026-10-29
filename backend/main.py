@@ -11,6 +11,16 @@ import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+# ⚠️ MCP 服务端模式（`LiMoBackend.exe --mcp`）：短路必须排在下面那段 stdout 归一化
+# **之前**。windowed 打包下 `sys.stdout is None`，归一化会把它换成 devnull —— 而 MCP
+# 的协议通道**就是** stdout，换掉之后所有响应写进黑洞、客户端只看到「连不上」，
+# 我们这边零报错（这是本特性最容易静默失效的一处，`_proto_stream()` 的 docstring 有同名警告）。
+# `__name__ == "__main__"` 保证 `uvicorn main:app`（`__name__ == "main"`）不受影响。
+if __name__ == "__main__" and "--mcp" in sys.argv[1:]:
+    from limo_cli.mcp_server import main as _mcp_main
+
+    raise SystemExit(_mcp_main())
+
 # PyInstaller console=False 时 sys.stdout / sys.stderr 为 None（桌面壳未重定向时，
 # 例如用户直接双击 exe，或日志文件建不出来）。归一化必须在**最早**处：
 #   - `faulthandler.enable()` 默认取 sys.stderr，为 None 时抛 RuntimeError 直接打死启动；

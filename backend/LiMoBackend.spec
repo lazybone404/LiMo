@@ -35,6 +35,11 @@ datas = [
     # ⚠️ 少了这一行，**开发版全绿而打包版导出直接 500**（读不到文件时按纪律显式
     # 抛错，不静默输出无主题的 HTML）—— 那个 500 只会在用户装了安装包之后出现。
     ('../frontend/src/styles/theme-layer.css', 'styles'),
+    # 版本号（`sync-version.py` 的唯一源）—— `limo_cli/__init__.py::_read_version()`
+    # 在 frozen 下按 `sys._MEIPASS/VERSION` 取（见那里的分支），取不到会退回
+    # "unknown"：那会让 MCP 的 `serverInfo.version` 与 `--version` 都显示 unknown，
+    # 功能不受影响但排查时读不出装的是哪一版。
+    ('../VERSION', '.'),
 ]
 # tiktoken_ext / dateparser_data — namespace package，collect_all 不会自动收集
 # PyInstaller 对 namespace package 的处理不可靠，显式添加每个文件
@@ -99,6 +104,12 @@ hiddenimports = [
     # `Embedder.__init__` 里惰性载入），故它本身能安全进包；打包版调用时才抛
     # MissingDependency 并给出安装命令。
     'app.engines.embedding_dashscope', 'app.engines.embedding_local',
+    # MCP 服务端（2026-10-29）—— 只在 `main.py` 顶部那条
+    # `if __name__ == "__main__" and "--mcp" in sys.argv[1:]:` 里被 import。
+    # ⚠️ 那是个**运行期条件**分支，静态分析未必跟得进去；漏了它的表现是
+    # `LiMoBackend.exe --mcp` 报 ModuleNotFoundError 而应用本身一切正常。
+    'limo_cli.mcp_server', 'limo_cli.mcp_tools',
+    'limo_cli.sources',
 ]
 
 # 引擎相关

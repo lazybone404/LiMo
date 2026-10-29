@@ -110,7 +110,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [cards.md](design/cards.md) | 卡片视觉语言参考（19 种）：共享视觉语法 + `--card-*`/`--sh-*` 令牌 + 视觉方案轴（**§0.7**，默认取值的落定见其注）+ **骨架轴的触发方式 §0.9** + 按 LiMo 现状分桶（✅3 已有等价 / ⛔3 不该由模型产出 / ✅10 已落地【比较卡组 + 追问 chips（2026-10-11 对话侧）；提醒/推荐/指标 + 信息卡/摘要卡（2026-10-11 续，产物侧 3 + 对话侧 2）；工作流/时间线卡（2026-10-11 三批，`steps` + `timeline`，**性质是迁移不是新增**——从图表管道挪来）；数据表格 / 代码面板 / 媒体卡外框层（2026-10-11 四批，`table` + `code` + `image`，**给现成形态加壳、块内一字不动**）】/ 🆕3 全新【13 媒体卡**同时在两边**——只落了最外层的框】）+ 两种判据的分野（产物侧按**结构**切节 vs 对话侧按**内容形态**吐围栏）。⚠️ **是素材库不是实施计划** —— 落地哪些取决于真实产物的形态分布 | 做卡片形态、改 [styles/cards.css](frontend/src/styles/cards.css)、讨论对话侧卡片化 |
 | [对话协议.md](docs/对话协议.md) | 对话 SSE 事件协议 + 会话 CRUD API + 前端映射 | 改对话流式/会话管理代码 |
 | [AGENT-ONBOARDING.md](docs/AGENT-ONBOARDING.md) | 上手教程：从零跑通 → 架构 → 注册表 → 数据流 → How-to → 打包发布 → 测试门禁 → 调试速查 | 新 agent 快速上手、打包/发布 |
-| [AGENTS.md](AGENTS.md)（仓库根） | CLI 这条链的开发文档：三层结构 / 改 CLI 的六条硬约束 / 门禁怎么跑。⚠️ 与库内 `~/.limo/AGENTS.md`（`limo doctor --write-agents` 生成）**读者不同、内容不重叠** | 改 `limo_cli` / `/api/cli/*` / `QueryService` |
+| [AGENTS.md](AGENTS.md)（仓库根） | **CLI + MCP 这两条链**的开发文档：三层结构 / 改 CLI 的六条硬约束 / **MCP 四节**（stdout 是协议通道 / `supportedVersions` 只列核实过的版本 / `Store` 快照问题只在直开那一路 / 工具集的形状）/ 门禁怎么跑。⚠️ 与库内 `~/.limo/AGENTS.md`（`limo doctor --write-agents` 生成）**读者不同、内容不重叠** | 改 `limo_cli` / `mcp_server.py` / `mcp_tools.py` / `/api/cli/*` / `QueryService` |
 | [code-audit.md](docs/code-audit.md) | 代码质量与缺陷扫描（第一轮）：**24 项带证据发现**（P0 可直接触发 4 / P1 静默失效·死代码 10 / P2 无机制·重复实现 10，每项含稳定 slug + 五段式）+ 「刻意为之」判据 + 已剔除的假阳性。⚠️ **是 `4174166` 时点的快照，不随代码更新** | 排查已知缺陷、修复前查有无现成记录 |
 | [code-audit-2.md](docs/code-audit-2.md) | 代码质量外部审查（第二轮）：**35 项发现** + **8 条纠偏**（照报告改会引入新问题）+ **6 条描述与现状不符**。⚠️ 与第一轮一样是**时点快照**（`6c2ef28` / 0.4.16），不随代码更新 | 回溯本轮修了什么、为什么这么修 |
 | [code-audit-3.md](docs/code-audit-3.md) | 代码质量自查（第三轮，**对象是刚落地的新代码**）：**10 项**（P0 启动迁移调 `_rebuild_index(save=True)` 抹掉全库标签/文件夹/来源 + P1 前端跨 mode 版本滞后致编辑覆盖用户没在看的版本 + `chars` 伪造 0 + 版本切换竞态 + 导出测试脚本式假绿 + 4 条 P2）+ **记录不修 5 条** + **对照实验 6 条** + **已知缺口 1 条**（前端 P1 无组件级行为测试）。⚠️ **本轮的新意是「写入语义从新建改为就地覆盖」放大了旧假设的危害**，故四处旧假设被重新评估。⚠️ **时点快照**（`cde70b8` 之上的工作树 / 0.5.0） | 下次自查前查清单、避免重复论证「为什么不修」 |
@@ -577,11 +577,27 @@ Store / SearchEngine（数据真相）
 
 - **七命令**：`status / list / search / get / export / folders / doctor`。**不做写操作**（import/generate/edit/delete）——成本、并发、超时、幂等、误触发的风险都在写侧
 - **⛔ CLI 不解析库格式**：不读 `index.json`、不读 `search.db`、不拼磁盘路径。照着复刻一遍 = 第 6 个副本（现有 5 处），而副本的失效方式是「格式演进时漏改一处，它静默读错」
-- **两个传输层同一契约**：`HttpSource`（默认，`GET /api/cli/*`）与 `LocalSource`（仅 `doctor --local`，后端没起时直开本机库）。形状由 `QueryService.to_dict()` 定义，`sources.py` 只搬运。⚠️ 但**「一次取全」两边的表达不同源**（本地 `limit=None` / HTTP `all=true` 且不传 `limit`）——模式 #61
+- **两个实现、多个消费者**：`HttpSource`（默认，`GET /api/cli/*`）与 `LocalSource`（仅 `doctor --local`，后端没起时直开本机库）是 **`Source` 契约的两个实现**，`limo` CLI 与 [MCP 服务端](#mcp-服务端2026-10-29limo_climcp_serverpy)是它们的**两个消费者**。形状由 `QueryService.to_dict()` 定义，`sources.py` 只搬运。⚠️ 但**「一次取全」两边的表达不同源**（本地 `limit=None` / HTTP `all=true` 且不传 `limit`）——模式 #61
 - **输出契约**：`--json` 时 **stdout 只有 JSON**、诊断与错误全走 stderr（**不用 TTY 检测**）；顶层恒有 `schema_version`（CLI 侧 `EXPECTED_SCHEMA` **刻意不 import 后端常量**——同仓 import 会让「用户机器上的旧 exe」永远检测不出来）；`Page` 上 `has_more`+`next_cursor`（**能继续翻**）与 `truncated`+`continuation`（**到头但没给完**）并排不混用
 - **退出码** `0/2/3/4/5/6`（+130 SIGINT）：0 成功**含空结果**｜2 用法｜3 未找到｜4 后端不可达｜5 数据/响应异常｜6 内部错误。⚠️ **按 `code` 判不按 HTTP 状态**（`recoverable=True` 且未显式 status 的 AppError 返回 **HTTP 200**，按状态判会把「找不到」读成成功）
 - **契约文档两处**：库内 `~/.limo/AGENTS.md`（`limo doctor --write-agents` 安装，**默认不覆盖**，`--force` 先备份）+ 仓库根 [`AGENTS.md`](AGENTS.md)（读者是改这条链的人）
 - **门禁** [`scripts/check-cli`](scripts/check-cli) 16 项：自启**独立端口 7419**（借用户的 7413 会让「后端不可达 → exit 4」永远绿、而绿的原因是错的）；每项同时查退出码 + 结构化标记 + **是不是假成功**；含 3 条负向对照
+
+### MCP 服务端（2026-10-29，`limo_cli/mcp_server.py`）
+
+```
+Claude Code ──stdio──▶ mcp_server（帧 / 分派 / 错误码）──▶ mcp_tools（六工具）──▶ Source ──▶ QueryService
+                                                                        HttpSource ──▶ 127.0.0.1:7413
+                                                                        LocalSource ──▶ 直开本机库
+```
+
+- **它不是一个新实现，是一个新消费者**：`Source` 七方法契约有两个实现（`HttpSource` / `LocalSource`），`limo` CLI 是第一个消费者、MCP 是第二个。**`QueryService` 一行未改** —— 这是「读路径唯一入口」架构的自然产物
+- **两个文件刻意分家**：`mcp_server.py` 管帧 / 方法分派 / 错误码（喂 `StringIO` 就能测），`mcp_tools.py` 管「一个工具该返回什么」（fake `Source` 就能测）。混在一起的话，测一个工具要先拼 JSON、再起子进程
+- **双栈**：`server/discover`（`2026-07-28`，stateless）+ legacy `initialize` 握手 —— Claude Code 逐服务器协商，新协议失败自动回退 legacy，少一条栈一半客户端连不上。⚠️ `initialize` 的 `protocolVersion` **原样回显客户端请求值**，而 `supportedVersions` **只列核实过的版本**：后者是「我们实现了哪些」（写一个没实现的版本号 = 承诺一套没实现的行为，协商到它之后双方都不报错、语义全错），前者是「本次会话按哪个版本走」。**别为了「统一」把它们并成一份**
+- **六工具只读**：`limo_status` / `limo_list` / `limo_search` / `limo_get` / `limo_read` / `limo_folders`。`limo_read` 的 `part` 从 `commands.ALL_PARTS` **派生**再追加一个 `raw`；`raw` 走 `get_resource` 而非 `get_artifact`，切窗由 MCP 层自己做（字段形状与 `Artifact._build` 的 `continuation` 一致）。⚠️ `limo_get` **必须摘掉 `rawText`**（一篇长视频转录几十万字符，透传等于一次调用灌满上下文），只留长度
+- **⚠️ stdout 是协议通道**：`main()` 第一件事把 `sys.stdout` 换成 stderr，协议写入只经 `_write()` 一个函数。**`main.py` 的 `--mcp` 短路必须排在它自己的 `sys.stdout is None → devnull` 归一化之前** —— windowed 打包下 protocol 通道就是 stdout，归一化会把响应全写进黑洞、客户端只看到「连不上」，而我们这边一切正常（零报错）
+- **搜索只走字面**：不接向量 / 改写 / 重排 —— MCP 进程随客户端起停，加载 22.8MB embedding 引擎或每次查询花一次云端计费，对这个场景都不划算
+- **门禁** [`scripts/check-mcp`](scripts/check-mcp) 8 项（`bash scripts/check-all mcp`）：起真子进程、不需要后端在跑（默认走 `LocalSource`）。含两条**负向对照** —— 工具往 stdout 打噪音时协议流仍全为纯 JSON（证明那条重定向真的在生效）、摘掉 `server/discover` 分支后第 1 项必须红（证明判据有区分力）
 
 ### 引擎系统
 
@@ -712,6 +728,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | **重排端的三个数值**（`RERANK_TIMEOUT = 5.0` / `RERANK_LOAD_TIMEOUT = 60.0` / `DEFAULT_CANDIDATES = 50`）与排序编排 | [services/rerank_search.py](backend/app/services/rerank_search.py)::`RerankSearcher`。⚠️ 两个超时**刻意分开**（同 `vector_search.QUERY_TIMEOUT` vs `LOAD_TIMEOUT` 的理由）：本地 544MB 读盘几十秒，撞 5 秒会**每次都超时**而提示写着「重排超时」。⚠️ `_clamp_candidates` 是**唯一夹紧点**，脏值落回 `DEFAULT_CANDIDATES` 而**不是 1**（1 会让功能在、效果没了）。⚠️ `candidates` 属性被 `fused_search` 用 `getattr` 读 —— 缺了它 `want` 退化成 `limit`，实验会得出偏低收益且看不出来源 |
 | **候选窗口的选文本判据**（二字组密度选窗，480 字） | [core/search.py](backend/app/core/search.py)::`rerank_window`（+ `RERANK_WINDOW_CHARS`）。⚠️ **绝不能拿 `_make_snippet` 的定位逻辑顶替** —— 它 `split(r"\s+")` 后逐词 `find`，中文无空格查询下恒退化成正文开头，后果是**系统性压低重排收益**（不是报错）。⚠️ `bodies()`（`SearchEngine`）是候选正文的唯一来源，**刻意不让 body 搭 `search_resources` 的 `Page` 车**（结构上不可能泄漏 > 省 1ms） |
 | **重排开关的维护点** | [services/rerank_runtime.py](backend/app/services/rerank_runtime.py)::`sync_rerank_runtime`（**同步函数**，调用点别加 `await`）。启动（`main.py`）与 `POST /api/search/rerank` **共用这一份**，形态照 `vector_runtime` |
+| **MCP 的协议版本 / 服务端信息 / 工具定义** | [limo_cli/mcp_server.py](backend/limo_cli/mcp_server.py)（`PROTOCOL_VERSION` / `SUPPORTED_VERSIONS` / `SERVER_INFO` / `INSTRUCTIONS`）+ [limo_cli/mcp_tools.py](backend/limo_cli/mcp_tools.py)（`_TOOL_DEFS` 六工具 schema + `_HANDLERS` 分派表，两者键集由测试钉住相等）。⚠️ `limo_read` 的 `part` 合法值 = `mcp_tools.PARTS`，由 [commands.py](backend/limo_cli/commands.py)::`ALL_PARTS` **派生**再追加 `commands.RAW_PART` —— 手抄那六个的失效形态是「`ALL_PARTS` 加了产物而 agent 读不到，两边都不报错」。⚠️ `SUPPORTED_VERSIONS` **只列核实过的版本**（写一个没实现的历史版本 = 承诺一套没实现的行为，协商到它之后双方都不报错、语义全错），`test_mcp_protocol.py` 钉着 |
 | 风格档 / 引擎标签 / 域列表 / 公式集 / 体裁 / 读者意图 / 维度预设 | **capabilities 下发**（`GET /api/capabilities`），前端**不硬编码** |
 
 ⚠️ **最后一行的意思是「不要去前端建第二份表」**：凡是「后端注册了什么，前端就要列什么」的
@@ -1145,7 +1162,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | RSS + arXiv 导入源【一】（2026-10-29） | **RSS/Atom 走 WebpageAdapter 的内部分支**（不新建适配器 —— 同一 URL 两个 `accept()` 必然打架）→ N 条合并成一篇（上限 20）；**arXiv 是新适配器、委托 `DocumentAdapter`**（`/abs/` 与 `/pdf/` 两形态，注册在 Document 之前）。⚠️ **刻意不新增 SourceType**（会触发 `sourceTypeCoverage.test.ts` 要求同步三处，漏一处白屏）—— RSS 用 `webpage`、arXiv 用 `pdf`，既有能力自动可用。⚠️ 措辞：arXiv 的效果是「**与现有 URL 导入 PDF 行为一致**」，不是「PDF 专属能力全部可用」（源文件同样不持久化） |
 | 🟡 | 播客转录导入 | 需 ASR 引擎就位后再评估 —— 2026-10-29 从「更多导入源」三合一里拆出来单独列，它和前两项**不是同一档成本** |
 | ✅ | Reranker 重排【二】（2026-10-29，**默认关，实验裁决为不采纳**） | 第三族插件基类 `RerankPlugin` + 云端 `dashscope-rerank`（`gte-rerank-v2`）+ 编排 + 开关 + 本地插件模板，**全套落地但默认关**。**四臂实验结论（15 题方向性）**：`B+W` 的 H@1 比 `W` 低 **20pp**、MRR 低 **13.8pp**；`B` 也不如 `A0` —— 重排在调过权重的基线上是净损害，**保持关**（代码保留，回退成本零）。⚠️ 同轮查出并修掉一个真缺陷：库里 93% 文档 `rawText` 是字幕 JSON，被直接切窗喂 cross-encoder；修复让 B 臂 H@5 从 73.3% 拉回 86.7%，**但不足以反转结论**。⚠️ 同一实验里**加权 `0.8/1.2` 把 H@1 从 46.7% 抬到 66.7%**，是唯一干净的赢家 —— 但它是后验挑的权重，独立证据（留出集）**还没跑**，故**不算已采纳**。⚠️ **只挂对话侧**（文档库搜索框是逐字联想）。⚠️ 隐私面**与向量检索完全不同**：重排把候选正文发到云端并计费。详见 [search-retrieval.md](docs/search-retrieval.md) §九 / §9.9 |
-| ❌ | MCP 服务端【二】 | 把库暴露给 Claude / Cursor 等外部 agent：`QueryService` 外层加 **JSON-RPC over stdio 传输层**（第三个传输层，与 `HttpSource` / `LocalSource` 同契约，**不改 `QueryService` 一行**）——「读路径唯一入口」架构的自然产物。MCP 2026-01 已成为 Linux Foundation 标准。⚠️ 与 `limo` CLI 的分工：CLI 是**人**用的终端命令，MCP 是**agent**用的工具调用，消费者不同故不合并 |
+| ✅ | MCP 服务端【二】（2026-10-29） | 把库暴露给 Claude Code / Cursor 等外部 agent：`QueryService` 外层加 **JSON-RPC over stdio**（**不是新实现，是 `Source` 契约的第二个消费者** —— 第一个是 `limo` CLI，两个实现是 `HttpSource` / `LocalSource`；**不改 `QueryService` 一行**）。手写协议层、零新依赖（**刻意不引入 `mcp` SDK**）。**双栈**：`server/discover`（`2026-07-28`，stateless）+ legacy `initialize` 握手 —— Claude Code 逐服务器协商、失败自动回退，少一条栈一半客户端连不上。**六工具只读**：`limo_status` / `limo_list` / `limo_search` / `limo_get` / `limo_read` / `limo_folders`；`limo_read` 多一个 `part="raw"`（读原文，走 `get_resource` 而非 `get_artifact`）。⚠️ **默认直开本机库**（冷启动 0.3s，不必先开应用）、`--http` 才转去问 7413。⚠️ **`main.py` 的 `--mcp` 短路必须排在它自己的 `sys.stdout is None → devnull` 归一化之前**（windowed 打包下协议通道就是 stdout，换掉之后全写进黑洞且**零报错**）。⚠️ 与 `limo` CLI 的分工：CLI 是**人**用的终端命令，MCP 是**agent**用的工具调用，消费者不同故不合并 |
 | ❌ | 跨会话记忆【二】 | 对话侧目前会话彼此隔离，模型记不住「这个人偏好简洁回答」这类长期事实。**先做「显式记忆条目」一档**（可写入的长期事实 + 对话时按相关度注入），不抄 Mem0 的语义/情节/程序三层。⚠️ 与 `search_docs` 的分工必须写死：**记忆是「关于用户的」，库是「关于内容的」** —— 混一起会让模型把用户偏好当成知识库依据引用 |
 | ❌ | 知识图谱 / 反向链接 | 文档间引用关系可视化，依赖 `#标签` 语法先落地 |
 | ❌ | Markdown 渲染风格预设 | 多套 CSS 变量集（行高/间距/标题比例），与主题六轴正交 |
