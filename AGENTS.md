@@ -92,7 +92,7 @@ python -m limo_cli.mcp_server --http # 改走 127.0.0.1:7413（要求 LiMo 在�
 
 安装版是 `LiMoBackend.exe --mcp`（`main.py` 顶部短路，见下节）。
 
-## MCP 服务端（改它之前先读这四节）
+## MCP 服务端（改它之前先读这五节）
 
 `mcp_server.py`（协议层）与 `mcp_tools.py`（能力层）刻意分家 —— 前者喂 `StringIO`
 就能测，后者给个 fake `Source` 就能测；混在一起则测一个工具要先拼 JSON 再起子进程。
@@ -147,9 +147,10 @@ Claude Code 的 MCP 子进程是常驻的，用户可能中途在 LiMo 里导入
   追加 `commands.RAW_PART`。手抄那六个的失效形态是「`ALL_PARTS` 加了第七种产物而 MCP
   悄悄不认」，两边都不报错。
 - `part="raw"` 是**文档原文**（`transcript.md`），走 `get_resource()` 而非 `get_artifact()`
-  —— 它不是产物（无版本、无自证头），切窗由 MCP 层自己做，但 `truncated` / `continuation`
-  的形状与 `QueryService._build` 逐一对应。没有它，刚导入、还没生成过笔记的文档
-  agent 一个字都读不到。
+  —— 它不是产物（无版本、无自证头）。切窗与 `continuation` 形状走
+  `app/core/text_window.py::window_text`，与 `QueryService._build` **是同一份实现**（不是
+  「两份碰巧一样」；`test_mcp_tools.py` 用 AST 钉住 `next_offset` 这个字面量只许住在那里）。
+  没有它，刚导入、还没生成过笔记的文档 agent 一个字都读不到。
 - `limo_get` **必须摘掉 `rawText`**（只留长度 + 300 字预览）：一篇长视频转录几十万字符，
   透传等于一次工具调用灌满上下文。
 - `limo_read` 的 `max_chars` **必须显式给默认值 20000** —— 传 `None` 在 `LocalSource`
@@ -161,6 +162,24 @@ Claude Code 的 MCP 子进程是常驻的，用户可能中途在 LiMo 里导入
 并能自我纠正）；未知方法 / 参数不是对象 / JSON 坏 → JSON-RPC `error`。放错层的后果是
 「模型看到『出错了』但拿不到任何可行动的线索」。`CLI_NO_LOCAL_INDEX` 的 hint 在 MCP 层
 **改写**（`_HINT_OVERRIDES`），不改 `sources.py` —— CLI 那份文案对 CLI 是对的。
+
+⚠️ **`holder.get()` 也单独一层**：直开本机库时它要现造 `LocalSource`（连带 `Store`），
+打不开（数据目录没权限 / 路径不可达 / 磁盘满）是**预期内**的失败。不单独处理的话
+`PermissionError` 会冒到协议层变成 `-32603` + 一个裸类名，模型既不知道能重试、也不知道
+还有 `--http`。所以它走 `SourceError` → `_source_error_text`，其余 → `isError` + 指名动作。
+⚠️ 那条 `isError` 文案**只回 `type(e).__name__`，不回 `str(e)`** —— `PermissionError` 的
+文案带绝对路径（含用户名），而它进的是 agent 上下文。与 `_handle` 的 `-32603` 同一条纪律，
+堆栈留 stderr。`test_mcp_tools.py` 有反向断言（喂一个带用户名与路径的异常，断言两者都不出现）。
+
+### 五、两条已知的效率边界（**不是缺陷，别照着「优化」**）
+
+- `limo_read(part="raw")` 是**先取全文、再切窗**：`get_resource` 返回整篇 `rawText`。
+  本地直开是读一个已打开文件（微秒级），看不出代价；`--http` 上是「为一万字的窗口搬
+  几十万字过 RPC」。真优化要改 `Source` 契约或加一个「原文带 offset」的端点，成本远大于
+  今天的收益 —— 而 `limo_get` 的 300 字预览已经把「要不要读这篇」的判断提前了。
+- `limo_get` 走**两次** `Source` 调用（`get_resource` + `list_artifacts`）。合成一个
+  「元数据 + 产物清单」的方法要动契约的七个方法（CLI 与两个 Source 都跟着改），
+  换来的只是 `--http` 下少一次本机 RTT。
 
 ## 门禁
 

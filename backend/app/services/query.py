@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 
 from app.core.errors import AppError
 from app.core.resource_id import is_valid_resource_id
+from app.core.text_window import window_text
 from app.core.transcript_meta import parse_artifact_meta, strip_meta
 
 # 查询层契约版本。CLI 的 `--json` 输出带它，消费方据此判断字段集是否还认得。
@@ -646,21 +647,12 @@ class QueryService:
             meta.setdefault("identity", {})["version"] = version
 
         total = len(content)
-        start = max(0, int(offset or 0))
-        window = content[start:]
-        truncated = max_chars is not None and len(window) > max_chars
-        continuation = None
-        if truncated:
-            window = window[:max_chars]
-            next_offset = start + len(window)
-            continuation = {
-                "reason": "char_limit",
-                "limit": max_chars,
-                "next_offset": next_offset,
-                "remaining_chars": total - next_offset,
-                "hint": (f"续读：offset={next_offset}"
-                         f"（或调大 max_chars 一次取全，全文 {total} 字符）"),
-            }
+        # ⚠️ 切窗与 `continuation` 形状**不在这里定义**：`limo_cli/mcp_tools.py`
+        # 的 `limo_read(part="raw")` 也要给出同一个形状（它读的是文档原文，
+        # 走 `get_resource` 而非 `get_artifact`）。两处各写一遍就是第二份实现。
+        # 返回的 `start` 已夹紧（负数当 0）—— 回显 `offset` 用它，别自己再算。
+        start, window, continuation = window_text(content, offset, max_chars)
+        truncated = continuation is not None
 
         return Artifact(
             id=artifact_id, doc_id=doc_id, kind=kind, version=version,

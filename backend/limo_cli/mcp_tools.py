@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -312,27 +313,18 @@ def _read_raw(src: Any, doc_id: str, offset: int, max_chars: int) -> dict:
     没有这一条就是个真缺口：刚导入、还没生成过笔记的文档，六个产物 part 一个都不存在，
     agent 就只能从 `limo_get` 里看到「有这篇文档」却读不到任何内容。
 
-    切窗字段与 `QueryService._build` 的 `truncated` / `continuation` **逐一对应**
-    （`reason` / `limit` / `next_offset` / `remaining_chars` / `hint`）：同一套语义在两个
-    入口长成两个形状，模型就得记住哪份是哪份。
+    ⚠️ 切窗与 `continuation` 形状走 `app.core.text_window::window_text` ——
+    与 `QueryService._build` **同一份**。此前这里逐字重写了一遍，`_build` 演化时
+    这个副本不会跟着变，同一个「还剩多少字 / 下次从哪读」在两个入口形状分叉，
+    而两边都不报错。
     """
+    from app.core.text_window import window_text
+
     res = src.get_resource(doc_id)
     content = _strip_meta(res.get("rawText") or "")
     total = len(content)
-    window = content[offset:]
-    truncated = len(window) > max_chars
-    continuation = None
-    if truncated:
-        window = window[:max_chars]
-        nxt = offset + len(window)
-        continuation = {
-            "reason": "char_limit",
-            "limit": max_chars,
-            "next_offset": nxt,
-            "remaining_chars": total - nxt,
-            "hint": (f"续读：offset={nxt}"
-                     f"（或调大 max_chars 一次取全，全文 {total} 字符）"),
-        }
+    start, window, continuation = window_text(content, offset, max_chars)
+    truncated = continuation is not None
     return {
         "schema_version": res.get("schema_version"),
         "id": res.get("id", doc_id),
@@ -344,7 +336,7 @@ def _read_raw(src: Any, doc_id: str, offset: int, max_chars: int) -> dict:
         "metaCorrupt": False,
         "truncated": truncated,
         "totalChars": total,
-        "offset": offset,
+        "offset": start,
         "continuation": continuation,
     }
 
@@ -366,8 +358,32 @@ def call_tool(name: str, arguments: Any, holder: Any) -> dict:
     if not isinstance(arguments, dict):
         raise McpInvalidArguments("arguments 必须是 JSON 对象")
 
+    # `holder.get()` 单独一层：直开本机库时它要现造 `LocalSource`（连带 `Store`），
+    # 打不开（数据目录没权限 / 路径不可达 / 磁盘满）是**预期内**的失败。此前它与
+    # handler 共用下面那个 `except`，而 `except Exception` 支只放行 `AppError` ——
+    # 于是 `PermissionError` 一路冒到协议层变成 `-32603` + 一个裸类名，模型拿到
+    # 「PermissionError」既不知道能重试，也不知道还有 `--http` 这条路。
     try:
-        text, structured = handler(holder.get(), arguments)
+        src = holder.get()
+    except SourceError as e:
+        return _error_result(_source_error_text(e))
+    except Exception as e:
+        # ⚠️ **只回类型名，不回 `str(e)`**：`PermissionError` / `FileNotFoundError`
+        # 的文案里带本地绝对路径（含用户名），而这段文字会进 agent 的上下文、还可能被
+        # 用户贴进 issue。与 `mcp_server._handle` 的 `-32603` 分支同一条纪律 ——
+        # 那里早就是这么写的，这里曾漏了。全文留 stderr（`main()` 已把 stdout 换成
+        # stderr，故 `print_exc()` 的默认落点是安全的）。
+        import traceback
+
+        traceback.print_exc(file=sys.stderr)
+        return _error_result(
+            f"无法打开本机知识库（{type(e).__name__}）。\n"
+            "可以用 `--http` 连正在运行的 LiMo 应用，"
+            "或检查数据目录（~/.limo）的读写权限（详细堆栈见 stderr）。"
+        )
+
+    try:
+        text, structured = handler(src, arguments)
     except McpToolError as e:
         return _error_result(str(e))
     except SourceError as e:

@@ -12,6 +12,8 @@
 | `SourceError` → `isError: true` | 走 JSON-RPC error 模型读不到原因，只会反复重试 |
 | `CLI_NO_LOCAL_INDEX` 的 hint 被改写 | 模型被告知去「改用 --local」，而它就是本地模式 |
 | `PARTS` 从 `commands` 派生 | `ALL_PARTS` 加第七种产物后 MCP 悄悄不认 |
+| `continuation` 字段名不在本模块 | 改回手搓，`_build` 演化时副本不跟着变（模式 #54） |
+| `holder.get()` 失败 → `isError` | 冒成 `-32603` + 裸类名，模型不知道要换 `--http` |
 | `LocalHolder` 按签名重建 | 用户在应用里新导入的文档，MCP 永远看不到 |
 """
 import importlib
@@ -298,6 +300,52 @@ def test_raw_读完不给_continuation():
     assert sc["continuation"] is None
 
 
+def test_raw_切窗与产物读取共用同一份实现():
+    """⚠️ 守的是「只有一份实现」，不是「两份碰巧一样」。
+
+    逐字段相等只是**当前快照**；真正的保证是那份字面量不在本模块里（见下一条）。
+    """
+    from app.core.text_window import window_text
+
+    src, h = _holder()
+    res = mcp_tools.call_tool("limo_read", {"id": "tr_1", "part": "raw",
+                                            "offset": 3, "max_chars": 7}, h)
+    plain = mcp_tools._strip_meta(RAW_TEXT)
+    _, expected_text, expected_cont = window_text(plain, 3, 7)
+    assert res["content"][0]["text"] == expected_text
+    assert res["structuredContent"]["continuation"] == expected_cont
+
+
+def test_window_text_夹紧负_offset_并把它交出去回显():
+    """起点由 `window_text` 返回，调用方**不许自己再算** `max(0, …)`。
+
+    两份夹紧的失效形态很轻但很典型：回显说 `offset: -5`、实际从 0 读，
+    结构完整、值不对 —— 与 `continuation` 是同一类问题。
+    """
+    from app.core.text_window import window_text
+
+    start, window, cont = window_text("abcdef", -5, 3)
+    assert (start, window) == (0, "abc")
+    assert cont["next_offset"] == 3
+
+
+def test_continuation_的字段名只住在_core_text_window():
+    """改回手搓必然要写 `next_offset` 这个键名 —— 字面量不在场就是判据。
+
+    此前 `_read_raw` 与 `QueryService._build` 各拼了一遍，`_build` 演化时副本不会
+    跟着变，同一个「还剩多少字 / 下次从哪读」在两个入口形状分叉，两边都不报错。
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    for rel in ("limo_cli/mcp_tools.py", "app/services/query.py"):
+        tree = ast.parse((root / rel).read_text(encoding="utf-8"))
+        hits = [n.lineno for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and n.value == "next_offset"]
+        assert not hits, f"{rel} 又自己拼 continuation 了（行 {hits}）"
+
+
 def test_raw_剥掉了自证头():
     src, h = _holder()
     res = mcp_tools.call_tool("limo_read", {"id": "tr_1", "part": "raw",
@@ -351,6 +399,52 @@ def test_AppError_也是工具级错误():
     assert res["isError"] is True
     assert "存储坏了" in res["content"][0]["text"]
     assert "磁盘满" in res["content"][0]["text"]
+
+
+class _BrokenHolder:
+    """`holder.get()` 自己就失败 —— 打不开库，不是某个工具调不通。"""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def get(self):
+        raise self._exc
+
+
+def test_打不开本机库是_isError_而不是协议错误():
+    """`PermissionError` 此前冒到协议层 → `-32603` + 一个裸类名。
+
+    模型拿到「PermissionError」既不知道能重试，也不知道还有 `--http` 这条路 ——
+    而它是**预期内**的失败（目录没权限 / 路径不可达 / 磁盘满），不是内部缺陷。
+    """
+    res = mcp_tools.call_tool("limo_status", {},
+                              _BrokenHolder(PermissionError(13, "拒绝访问")))
+    assert res["isError"] is True
+    text = res["content"][0]["text"]
+    assert "PermissionError" in text
+    assert "--http" in text
+
+
+def test_打不开本机库时不回显异常文案里的本地路径():
+    """`str(PermissionError)` 带绝对路径（含**用户名**），而这段文字会进 agent 上下文，
+    还可能被用户原样贴进 issue。
+
+    `mcp_server._handle` 的 `-32603` 分支早就只回类型名（那里写着「异常文案可能夹带
+    本地路径」），这条工具级文案曾把 `{e}` 拼进去 —— 同一个纪律漏了一处，等于没有。
+    """
+    exc = PermissionError(13, "拒绝访问", r"C:\Users\alice\.limo\index.json")
+    text = mcp_tools.call_tool(
+        "limo_status", {}, _BrokenHolder(exc))["content"][0]["text"]
+    assert "PermissionError" in text          # 类型名是排障需要的那一位
+    assert "alice" not in text                # 用户名不外泄
+    assert "index.json" not in text           # 路径不外泄
+
+
+def test_holder_抛_SourceError_走同一套错误文案():
+    res = mcp_tools.call_tool("limo_status", {}, _BrokenHolder(
+        SourceError(4, "找不到数据目录", code="CLI_NO_DATA_DIR", detail="~/.limo")))
+    assert res["isError"] is True
+    assert "找不到数据目录" in res["content"][0]["text"]
 
 
 def test_非_AppError_异常继续上抛():

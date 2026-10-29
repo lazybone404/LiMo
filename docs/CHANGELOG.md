@@ -100,6 +100,56 @@ stderr / 协议写入只经 `_write()` 一个函数 / 门禁里一条负向对�
 tests/test_mcp_tools.py` 60 passed；`bash scripts/check-mcp` 8/8，`bash scripts/check-all mcp`
 3s。
 
+### 同日代码审查（5 条 → 3 修 / 2 条记为已知边界）
+
+**① `HttpSource` 的关键词筛选一直是空的**（真 bug，**不是本轮引入**）
+
+`_page_args` 产出的键叫 `query`，而 `routers/cli.py::cli_list_resources` 的形参叫 **`q`**。
+此前原样 `**params` 传下去：**FastAPI 对未知查询参数静默忽略** —— HTTP 200、契约字段齐全、
+`page` 结构完全合法，只是筛选凭空消失、返回全库。
+
+⚠️ 修法不能只改 `_page_args`：那个函数同时喂着 `LocalSource` 那边
+`QueryService.list_resources(query=…)` 的**关键字参数**，名字动不得。所以映射只放在
+`HttpSource.list_resources` 一处（`params["q"] = params.pop("query")`），`_page_args` 的键不变。
+`tests/test_cli_sources.py`（新文件，4 条）钉住：`q` 在 URL 里、`query` 不在、`folder_id=""`
+保留、`all_pages` 只发 `all=true` 且**不传** `limit`。
+
+影响面：`limo list --query`（2026-10-04 起的既有缺陷）与 MCP 的 `limo_list(query=…)` 同病。
+
+**② `continuation` 的形状此前有两份实现**（模式 #54）
+
+`QueryService._build` 与 `mcp_tools._read_raw` 逐字同构却互不相认。抽成
+[`core/text_window.py`](backend/app/core/text_window.py)::`window_text`，两个调用点都改。
+
+⚠️ **签名是三元组 `(start, window, continuation)`**，不是「返回 continuation 就完了」：
+offset 夹紧（负数当 0）原本也在两处各写一遍，`max(0, …)` 的两份失效形态是「回显说 -5、
+实际从 0 读」—— 结构完整、值不对。让函数把夹紧后的起点交出去，调用方**没有机会**再算一遍。
+⚠️ **住 `core/` 不住 `services/`**：MCP 的 `--http` 模式只为切一段窗口，不值得拉起
+`query.py` 的整条 import 链（store / search）。该模块零依赖。
+
+`test_mcp_tools.py` 加了一条 AST 守卫：`"next_offset"` 这个字面量只许住在 `text_window.py`。
+
+**③ 打不开本机库只回一个裸类名**
+
+`call_tool` 里 `holder.get()` 与 handler 共用 `except`，而 `except Exception` 支只放行
+`AppError` —— `PermissionError` 一路冒到协议层变成 `-32603` + `PermissionError`。模型拿到这个
+既不知道能重试，也不知道还有 `--http` 这条路。拆成独立一层：`SourceError` 走
+`_source_error_text`，其余回 `isError` + 中文文案（点名 `--http` 与 `~/.limo` 读写权限）。
+
+⚠️ 顺带一处**信息泄露**（安全审查时发现）：第一版把 `{e}` 拼进了文案，而
+`str(PermissionError)` 是 `[Errno 13] 拒绝访问: 'C:\\Users\\<用户名>\\.limo\\index.json'`
+—— 这段文字会进 agent 的上下文，还可能被用户原样贴进 issue。`mcp_server._handle` 的
+`-32603` 分支早就写着「只回类型名：异常文案可能夹带本地路径」，工具层这条漏了。
+现改为只回 `type(e).__name__`，堆栈留 stderr（`main()` 已把 stdout 换成 stderr，
+故 `traceback.print_exc()` 的默认落点是安全的）。`test_mcp_tools.py` 用一条含用户名与
+路径的 `PermissionError` 反向断言「`alice` 与 `index.json` 都不在文案里」。
+
+**④⑤ 两条效率问题 → 记为已知边界，不当缺陷修**
+
+`limo_read(part="raw")` 先取全文再切窗、`limo_get` 走两次 `Source` 调用。改它们要动 `Source`
+契约的七个方法或加端点，成本远大于今天的收益。写进 `AGENTS.md` 第五节，措辞是
+「**不是缺陷，别照着「优化」**」—— 免得下次有人当成待办直接改契约。
+
 ### 已知边界（写进 README，不当成缺陷）
 
 1. **搜索是纯字面**，语义型提问可能搜不到 —— 与 `limo search` 完全同源，用 `limo_list` 按

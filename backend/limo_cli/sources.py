@@ -219,10 +219,17 @@ class HttpSource:
     def list_resources(self, *, source_type=None, tag=None, folder_id=None, query=None,
                        include_descendants=False, limit=50, all_pages=False,
                        cursor=None) -> dict:
+        params = _page_args(source_type, tag, folder_id, query, cursor,
+                            include_descendants)
+        # ⚠️ 后端这个端点的形参叫 **`q`**（`routers/cli.py::cli_list_resources`），
+        # 而 `_page_args` 产出的键是 `query` —— 它还喂着 `LocalSource` 那边
+        # `QueryService.list_resources(query=…)` 的**关键字参数**，那个名字动不得。
+        # 曾经原样 `**params` 传下去：FastAPI 对未知查询参数**静默忽略**，`q` 保持
+        # 默认空串 ⇒ 关键词筛选凭空消失、返回全库而结构完全合法（`limo list --query`
+        # 与 MCP 的 `limo_list(query=…)` 同病，两边都不报错）。
+        params["q"] = params.pop("query")
         # `all_pages` → `all=true` 且**不传** limit（见 `_page_args` 的 ⚠️）
-        return self._get("resources",
-                         **_page_args(source_type, tag, folder_id, query, cursor,
-                                      include_descendants),
+        return self._get("resources", **params,
                          limit=None if all_pages else limit,
                          all="true" if all_pages else None)
 
