@@ -2,6 +2,16 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useStore, type DocEntry } from '../../store'
 import { cancelTask } from '../../api/taskManager'
 import { X, GripHorizontal, FileText, Image, RefreshCw, ListTodo, Check, AlertTriangle } from 'lucide-react'
+import { useElapsed } from '../../hooks/useElapsed'
+
+/**
+ * 已用时。抽成组件而不是在 `entries.map` 里直接调 hook —— map 回调里调 hook
+ * 违反 hook 规则（条目数会变）。`startedAt` 缺失时不渲染。
+ */
+function Elapsed({ startedAt }: { startedAt?: number }) {
+  const text = useElapsed(startedAt)
+  return text ? <span> · 已用 {text}</span> : null
+}
 
 const KIND_META: Record<string, { label: string; Icon: typeof FileText; color: string; bg: string }> = {
   import:     { label: '导入',    Icon: RefreshCw, color: 'text-accent',   bg: 'bg-accent/10' },
@@ -122,6 +132,7 @@ export function TaskPanel() {
                       <span className="flex items-center gap-1 text-disabled">
                         <span className="inline-block w-1 h-1 rounded-full bg-success animate-pulse" />
                         {meta.label}{task.mode ? ` · ${task.mode}` : ''}
+                        <Elapsed startedAt={task.startedAt} />
                       </span>
                     )}
                   </p>

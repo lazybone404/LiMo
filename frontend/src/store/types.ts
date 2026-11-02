@@ -75,6 +75,14 @@ export interface TaskInfo {
   /** 生成前置阶段提示（如「参考文件超出模型上下文，正在压缩…」）——单值不区分产物。
    *  setProcessing 是全量替换语义：正式 chunk 到达后不再携带本字段 → 提示自动消失 */
   stage?: string
+  /**
+   * 任务开始时间（epoch ms），UI 据此显示「已用时」。
+   *
+   * ⚠️ **不是 ETA** —— 生成 SSE 只有 `stage` 文本、模型自己也不知道会写多长，
+   * 编一个剩余时间就是误导。能诚实给的只有「已经转了几分钟」。
+   * ⚠️ 由 `setProcessing` 维护（唯一写入点），调用方不必传。
+   */
+  startedAt?: number
 }
 
 export interface ProgressEvent {
@@ -97,6 +105,11 @@ export interface ChatMessage {
 
 export interface ToastItem {
   id: number; message: string; type: 'success' | 'error' | 'info'
+  /** 可选动作按钮的文案（如「撤销」）。与 `onAction` 成对出现 —— 只有文案没有
+   *  回调是个点不动的按钮，只有回调没有文案是个空白按钮，两种都不渲染。 */
+  actionLabel?: string
+  /** 点动作按钮时执行。执行后 toast 自行消失（调用方不必再 `dismissToast`）。 */
+  onAction?: () => void
 }
 
 // ── 具名类型（原 Store 接口内联类型抽离，解除 Store['xxx'] 自引用）──

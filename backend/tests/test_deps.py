@@ -226,16 +226,49 @@ def test_对照实验_同一个_venv_probe_说没装而_probe_venv_说装好了(
         "同一份依赖，主进程视角就是「没有」—— 这正是裸用 probe 的失效形态"
 
 
-def test_probe_venv_自检自己炸了不会抛出去(tmp_path, monkeypatch):
-    """WinError 448（不受信任装入点）这类 `OSError` 同样只该是「不可用」。"""
+def test_probe_venv_venv_自身路径不可访问时判死(tmp_path, monkeypatch):
+    """venv 自身路径（`~/.limo/plugins/...`）遍历失败 = 确实用不了，不能冒成 500。
+
+    ⚠️ 与下一条**方向相反**：base python 的校验抛异常是「验证手段失效」，
+    venv 本身好好的；而这里连 venv 目录都碰不到，那就是真不可用。
+    """
     import app.core.deps as deps
 
     def boom(_):
-        raise OSError("WinError 448: 该装入点不受信任")
+        raise OSError("拒绝访问")
 
     monkeypatch.setattr(deps, "venv_python", boom)
     reason = probe_venv(tmp_path)
-    assert reason and "WinError 448" in reason
+    assert reason and "不可访问" in reason
+
+
+def test_probe_venv_base_校验抛_OSError_时不判死(tmp_path, monkeypatch):
+    """⚠️ 真实踩过的假阴性（2026-10-29，安装版）：`local_embedding` / `rerank`
+    两个插件明明能用，却都被判「视为未安装」。
+
+    根因是 uv 用 **junction** 做版本别名（`cpython-3.12-windows-x86_64-none`
+    → `cpython-3.12.13-windows-x86_64-none`），而 Windows 在部分进程上下文
+    （实测：未签名的打包 exe；dev 的签名 python 反而不触发）遍历联接点时抛
+    `WinError 448`（不受信任的装入点）。实测那台 base python 与 venv 都能正常跑。
+
+    **判据**：`base.exists()` 抛异常只说明「测不了」，不说明「没了」。
+    真没了走 `not base.exists()` 返回 False 那条路（上一条测试钉着）。
+    """
+    import pathlib
+
+    venv = _make_venv(tmp_path, modules=("onnxruntime",))
+    base_py_name = "python.exe" if os.name == "nt" else "python3"
+    real_exists = pathlib.Path.exists
+
+    def flaky_exists(self):
+        # 只对 base python 抛，venv 自己的 python.exe 与目录照常
+        if self.name == base_py_name and os.sep + "base" + os.sep in str(self):
+            raise OSError(448, "无法遍历该路径，因为它包含不受信任的装入点。", str(self))
+        return real_exists(self)
+
+    monkeypatch.setattr(pathlib.Path, "exists", flaky_exists)
+    assert probe_venv(venv, modules=("onnxruntime",)) is None, \
+        "base 校验被 Windows 挡住时 venv 仍是可用的 —— 判死就是「装好了却显示不可用」"
 
 
 if __name__ == "__main__":

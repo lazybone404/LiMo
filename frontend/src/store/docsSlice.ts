@@ -16,6 +16,7 @@
  */
 import type { StateCreator } from 'zustand'
 import type { Store, DocEntry, FolderEntry } from './types'
+import { pushRecentDoc } from '../lib/recent-docs'
 
 /** 首次渲染的行数；到底部哨兵可见时每次追加这么多（组件与 store 共用同一常量来源） */
 export const PAGE_SIZE = 60
@@ -207,6 +208,10 @@ export const createDocsSlice: StateCreator<Store, [], [], DocsSlice> = (set, get
       if (id) localStorage.setItem('mbw_lastDocId', id)
       else localStorage.removeItem('mbw_lastDocId')
     } catch { /* quota exceeded */ }
+    // 「最近打开」与 `mbw_lastDocId` **成对维护**：两者都是「用户此刻在看哪篇」的派生物，
+    // 分开写就是两份同源判据。标题在这里现查 —— 本函数只收 id，而启动恢复那一刻
+    // `docs` 可能还没拉回来，此时传空串，`pushRecentDoc` 会保留旧条目的标题。
+    if (id) pushRecentDoc(id, get().docs.find(d => d.id === id)?.title ?? '')
     set({ currentDocId: id })
   },
 

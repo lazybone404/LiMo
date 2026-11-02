@@ -7,20 +7,96 @@ import asyncio
 import json
 import logging
 import os
-import re
 import subprocess
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from app.core.types import PipelineInput, AdapterOutput, RawMetadata, InputType, ProgressEvent
 from app.core.protocols import PipelineAdapter
 from app.core.registry import EngineRegistry
 from app.core.errors import RetryableError, FatalError, retry
+from app.core.net import proxy_for
 
 logger = logging.getLogger(__name__)
 
-VIDEO_DOMAINS = {"youtube.com", "youtu.be", "bilibili.com", "douyin.com", "tiktok.com"}
+# 能交给 yt-dlp 的站点。**只列「有专用提取器」或「已知会重定向到有提取器域名的短链」**
+# —— `accept()` 放行等于承诺「这个链接能转写」，放进来却下不来时用户看到的是
+# 「视频下载失败」，比当成网页抓一篇空壳更接近事实，但仍然是一次失败的承诺。
+#
+# 2026-11-03 用 `yt_dlp.extractor.gen_extractor_classes()` 的 `ie.suitable(url)` 逐个核实
+# （注意 `generic` 对任何 URL 都返回 True，判定必须排除它）：
+#   bilibili.com → BiliBili ／ bilibili.tv → BiliIntl ／ live.bilibili.com → BiliLive
+#   b23.tv → **无**专用提取器，但 generic 跟随 302 落到 www.bilibili.com 后由 BiliBili 接手
+#   douyin.com → Douyin ／ iesdouyin.com → 分享页，同样靠重定向
+#   ixigua.com → Ixigua ／ xiaohongshu.com → XiaoHongShu ／ m.weibo.cn → Weibo
+#   acfun.cn → AcFunVideo ／ v.qq.com → vqq:video ／ youku.com → youku ／ iqiyi.com → iqiyi
+#   douyu.com → DouyuTV ／ huya.com → huya:live ／ tiktok.com → TikTok
+#   youtube.com / youtu.be / youtube-nocookie.com → youtube
+#   vimeo / twitch / twitter(=x.com) / instagram / facebook / dailymotion / nicovideo
+VIDEO_DOMAINS = frozenset({
+    # B 站（b23.tv 是官方短链，bilibili.tv 是海外版）
+    "bilibili.com", "b23.tv", "bilibili.tv",
+    # YouTube
+    "youtube.com", "youtu.be", "youtube-nocookie.com",
+    # 抖音 / TikTok（iesdouyin.com 是分享页域名）
+    "douyin.com", "iesdouyin.com", "tiktok.com",
+    # 国内其他有 yt-dlp 提取器的站点
+    "ixigua.com", "xiaohongshu.com", "xhslink.com", "weibo.com", "weibo.cn",
+    "acfun.cn", "v.qq.com", "youku.com", "iqiyi.com", "douyu.com", "huya.com",
+    # 海外
+    "vimeo.com", "twitch.tv", "twitter.com", "x.com", "instagram.com",
+    "facebook.com", "dailymotion.com", "nicovideo.jp",
+})
+
+# B 站字幕直拉认这两个域名。⚠️ **不含 `bilibili.tv`** —— 海外版没有这套 API，
+# 它走 yt-dlp 的 BiliIntl 提取器，硬拉字幕只会白等一次超时。
+BILIBILI_SUBTITLE_DOMAINS = frozenset({"bilibili.com", "b23.tv"})
+
+YOUTUBE_DOMAINS = frozenset({"youtube.com", "youtu.be", "youtube-nocookie.com"})
+
+DOUYIN_DOMAINS = frozenset({"douyin.com", "iesdouyin.com"})
+
+# 同域但**不是视频**的路径 —— B 站专栏（`/read/cv…`）与动态图文（`/opus/…`）该走网页适配器。
+# ⚠️ 判据必须按域名成对给：只写路径前缀的话，别的站同名前缀会被一起排除。
+_NON_VIDEO_PATHS: tuple[tuple[str, str], ...] = (
+    ("bilibili.com", "/read/"),
+    ("bilibili.com", "/opus/"),
+)
+
+
+def _url_host(url: str) -> str:
+    """URL → 小写主机名（无端口）。解析不出来返回空串。
+
+    ⚠️ **判据必须是主机名，不能是 `d in url` 子串**：子串写法下
+    `https://example.com/?ref=bilibili.com` 会被当成 B 站链接送去下视频 ——
+    既不报错，也不会有正确结果（真正的主人在 `example.com`）。
+    """
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except ValueError:      # 畸形 URL（如 `http://[::1`）的 hostname 会抛
+        return ""
+
+
+def _host_in(url: str, domains) -> bool:
+    """主机名命中集合。`bilibili.com` 覆盖 `m.bilibili.com`，**不**覆盖 `notbilibili.com`。"""
+    host = _url_host(url)
+    if not host:
+        return False
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
+def _is_video_url(url: str) -> bool:
+    """URL 是否指向一个能交给 yt-dlp 的视频页。"""
+    if not _host_in(url, VIDEO_DOMAINS):
+        return False
+    host = _url_host(url)
+    path = (urlparse(url).path or "").lower()
+    for d, prefix in _NON_VIDEO_PATHS:
+        if (host == d or host.endswith("." + d)) and path.startswith(prefix):
+            return False
+    return True
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -29,17 +105,6 @@ _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
-
-
-def _extract_bvid(url: str) -> str | None:
-    if "b23.tv" in url.lower():
-        try:
-            import requests as req
-            url = req.head(url, allow_redirects=True, timeout=10, headers={"User-Agent": _HEADERS["User-Agent"]}).url
-        except Exception:
-            logger.warning("Failed to follow b23.tv redirect for BVID extraction", exc_info=True)
-    m = re.search(r"BV([0-9A-Za-z]+)", url)
-    return f"BV{m.group(1)}" if m else None
 
 
 def _cookie_header(cookie_str: str) -> str | None:
@@ -86,10 +151,9 @@ class VideoAdapter(PipelineAdapter):
         if input.type == InputType.FILE:
             ext = Path(input.file_path or "").suffix.lower()
             return ext in {".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv"}
-        # 视频 URL
+        # 视频 URL —— 按主机名判，不按子串（见 `_url_host` 的说明）
         if input.type == InputType.URL:
-            url = input.url or ""
-            return any(d in url for d in VIDEO_DOMAINS)
+            return _is_video_url(input.url or "")
         return False
 
     async def adapt(self, input: PipelineInput, on_progress=None,
@@ -110,8 +174,10 @@ class VideoAdapter(PipelineAdapter):
         )
 
         # ── Step 0: 字幕优先（B站 / YouTube）──
-        is_bilibili = "bilibili.com" in url
-        is_youtube = "youtube.com" in url or "youtu.be" in url
+        # 判据与 `accept()` 同源（同一个 `_host_in`）——分开写会得到「短链能进门、
+        # 但进门后不认它是 B 站」这种只在 b23.tv 上复现的静默分叉。
+        is_bilibili = _host_in(url, BILIBILI_SUBTITLE_DOMAINS)
+        is_youtube = _host_in(url, YOUTUBE_DOMAINS)
 
         if is_bilibili:
             pg("fetching_subtitles", "running", "正在拉取B站字幕...", 10)
@@ -148,7 +214,7 @@ class VideoAdapter(PipelineAdapter):
             try:
                 from .youtube_subtitle import fetch_subtitles as fetch_yt_subtitles, get_video_info, _extract_video_id
                 # 字幕 + 元数据（传入 cookie + proxy；to_thread 释放事件循环）
-                yt_proxy = self._get_proxy()
+                yt_proxy = self._get_proxy(url)
                 sub = await asyncio.to_thread(fetch_yt_subtitles, url, cookie, yt_proxy)
                 # 获取视频元数据（用 oEmbed API，零成本，失败不阻塞）
                 vid = _extract_video_id(url)
@@ -237,13 +303,13 @@ class VideoAdapter(PipelineAdapter):
             except OSError:
                 pass
 
-        # 确定平台
+        # 确定平台 —— 与 accept / 字幕分支共用同一批域名判据
         platform = ""
-        if "bilibili" in url:
+        if is_bilibili:
             platform = "bilibili"
-        elif "youtube" in url or "youtu.be" in url:
+        elif is_youtube:
             platform = "youtube"
-        elif "douyin" in url:
+        elif _host_in(url, DOUYIN_DOMAINS):
             platform = "douyin"
 
         return AdapterOutput(
@@ -258,10 +324,18 @@ class VideoAdapter(PipelineAdapter):
             engine=asr_result.get("engine_used", "asr"),
         )
 
-    def _get_proxy(self) -> str:
-        """从注入的配置中读取代理设置（ingest route 注入 > 环境变量）"""
+    def _get_proxy(self, url: str = "") -> str:
+        """从注入的配置中读取代理设置（ingest route 注入 > 环境变量），并按直连域名判据豁免。
+
+        ⚠️ **调用必须把 url 传进来**：yt-dlp 的显式 `proxy=` **优先于 `NO_PROXY`**
+        （源码 `clean_proxies` 原话 *"takes preference over everything, including
+        NO_PROXY"*），环境变量那层豁免对它完全无效。只改 `net.py` 的现象是
+        「SDK 走了直连、视频下载仍走代理」—— 用户看到的是 B 站导入照样失败。
+
+        url 为空时 `proxy_for` 原样返回 proxy（判据全部落空），与改造前逐值等价。
+        """
         proxy = getattr(self, 'proxy', '') or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or ""
-        return proxy
+        return proxy_for(url, proxy) or ""
 
     @retry(max_attempts=3, base_delay=2.0)
     def _download(self, url: str, cookie: str = "",
@@ -275,7 +349,7 @@ class VideoAdapter(PipelineAdapter):
 
         # 抖音反爬严格，需要更真实的浏览器 UA（覆盖默认的 yt-dlp UA）
         headers = dict(_HEADERS)
-        if "douyin" in url:
+        if _host_in(url, DOUYIN_DOMAINS):
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 "Referer": "https://www.douyin.com/",
@@ -283,8 +357,8 @@ class VideoAdapter(PipelineAdapter):
         cookie_hdr = _cookie_header(cookie)
         if cookie_hdr:
             headers["Cookie"] = cookie_hdr
-        # 代理优先级：config.yaml > 环境变量
-        proxy = self._get_proxy()
+        # 代理优先级：config.yaml > 环境变量；直连域名在这里豁免（yt-dlp 不吃 NO_PROXY）
+        proxy = self._get_proxy(url)
 
         # ── 预取视频大小（快速元数据请求，不下载）→ 决定超时 + 前端提示 ──
         filesize = 0

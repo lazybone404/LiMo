@@ -66,6 +66,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const [douyinCookie, setDouyinCookie] = useState('')
   const [proxyEnabled, setProxyEnabled] = useState(false)
   const [proxyUrl, setProxyUrl] = useState('http://127.0.0.1:7890')
+  // 直连域名（每行一个）—— textarea 里保持原始文本，提交时才切行，避免边打字边吃掉换行
+  const [proxyBypass, setProxyBypass] = useState('')
   const [saved, setSaved] = useState(false)
   const [cookieConfigured, setCookieConfigured] = useState<Record<string, boolean>>({})
   const [searchProvider, setSearchProvider] = useState('duckduckgo')
@@ -86,6 +88,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const setBase = useStore(s => s.setBase)
   const reading = useStore(s => s.reading)
   const setReading = useStore(s => s.setReading)
+  // 快捷键一览与 `Ctrl+/` 共用同一个 store 字段（对话框由 App 渲染，见 `uiSlice` 注释）
+  const setShortcutHelpOpen = useStore(s => s.setShortcutHelpOpen)
   const skeleton = useStore(s => s.skeleton)
   const cardStyle = useStore(s => s.cardStyle)
   const cardBg = useStore(s => s.cardBg)
@@ -114,6 +118,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
       if (cfg.fetch) {
         setProxyUrl(cfg.fetch.proxy || 'http://127.0.0.1:7890')
         setProxyEnabled(!!cfg.fetch.proxy)
+        setProxyBypass((cfg.fetch.proxy_bypass || []).join('\n'))
       }
       if (cfg.auth) {
         setCookieConfigured({
@@ -145,7 +150,11 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
     try {
       await updateConfig({
         target_language: targetLanguage,
-        fetch: { proxy: proxyEnabled ? proxyUrl : '' },
+        fetch: {
+          proxy: proxyEnabled ? proxyUrl : '',
+          // 空数组 = 一条都不豁免（后端据此区分「没配过」与「用户清空了」）
+          proxy_bypass: proxyBypass.split('\n').map(s => s.trim()).filter(Boolean),
+        },
         auth: { bilibili: bilibiliCookie, youtube: youtubeCookie, douyin: douyinCookie },
         agent_tools: {
           search: {
@@ -314,6 +323,21 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
               {proxyEnabled && (
                 <input type="text" value={proxyUrl} onChange={e => setProxyUrl(e.target.value)}
                   placeholder="http://127.0.0.1:7890" className="w-full px-3 py-2.5 bg-surface border border-border-default rounded-[10px] text-[15px] outline-none" />
+              )}
+              {proxyEnabled && (
+                <div className="space-y-2">
+                  <label className="text-[15px] font-medium block">直连域名</label>
+                  <p className="text-[12px] text-muted">
+                    这些域名<b>不走代理</b>，每行一个，子域名一并生效（填 <code>bilibili.com</code> 即含 <code>api.bilibili.com</code>）。
+                    国内站点经代理通常更慢，代理没开时还会整条链路失败。留空 = 全部走代理。
+                  </p>
+                  <textarea value={proxyBypass} onChange={e => setProxyBypass(e.target.value)}
+                    rows={8} spellCheck={false}
+                    className="w-full px-3 py-2.5 bg-surface border border-border-default rounded-[10px] text-[13px] font-mono outline-none resize-y" />
+                  <p className="text-[12px] text-muted">
+                    改完保存即对网页抓取、视频下载、LLM API 生效；正在进行的任务不受影响。
+                  </p>
+                </div>
               )}
             </div>
           )}
@@ -1039,6 +1063,25 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                     ))}
                   </div>
                 </div>
+              </div>
+
+              {/* 快捷键入口 —— 与 `Ctrl+/` 打开的是**同一个**对话框（数据同出
+                  `lib/shortcuts.ts`）。放在设置里是因为「不记得那个键是什么」的人
+                  往往也想不到还有这么一个键（可发现性是它存在的全部理由）。 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6 flex items-center justify-between gap-4">
+                <div>
+                  <span className="text-[15px] font-medium block">键盘快捷键</span>
+                  <span className="text-[12px] text-muted block mt-1 leading-relaxed">
+                    查看可用的快捷键。任何时候按 Ctrl+/ 也能打开。
+                  </span>
+                </div>
+                <button
+                  onClick={() => setShortcutHelpOpen(true)}
+                  data-settings-shortcuts
+                  className="shrink-0 px-3 py-1.5 rounded-lg border border-border-default text-[13px] text-foreground hover:bg-surface-hover transition-colors"
+                >
+                  查看
+                </button>
               </div>
             </div>
           )}

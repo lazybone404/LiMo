@@ -77,6 +77,13 @@ def env(monkeypatch):
     saved: list[dict] = []
     monkeypatch.setattr(cfg_router, "_save_config",
                         lambda c: saved.append(copy.deepcopy(c)))
+    # ⚠️ `POST /config` 会调 `configure_proxy` —— 它写的是**真实的** `os.environ`
+    #   （以及模块级豁免表）。不挡住的话，一条 POST 就把 `HTTP_PROXY` 塞进 pytest
+    #   进程，之后任何读环境的用例看到的都不是它以为的值，而红/绿取决于测试顺序。
+    #   `configure_proxy` 体内按模块全局名找 `apply_proxy_env`，故挡这里就够。
+    from app.core import net as _net
+    monkeypatch.setattr(_net, "apply_proxy_env", lambda *a, **k: None)
+    monkeypatch.setattr(_net, "_BYPASS_SUFFIXES", _net.DEFAULT_BYPASS_SUFFIXES)
 
     app = FastAPI()
     app.include_router(cfg_router.router)
@@ -136,6 +143,36 @@ def test_proxy_masks_password_keeps_host(env):
     assert data["fetch"]["proxy"] == "http://user:***@127.0.0.1:7890"
 
 
+def test_get_proxy_bypass_defaults_when_key_missing(env):
+    """老配置没有 `fetch.proxy_bypass` 这个键 → 回落到默认表（不能返回 None，前端会崩）。"""
+    assert "proxy_bypass" not in env.cfg["fetch"]
+    rules = env.client.get("/config").json()["fetch"]["proxy_bypass"]
+    assert isinstance(rules, list)
+    assert "bilibili.com" in rules
+
+
+def test_get_proxy_bypass_empty_list_stays_empty(env):
+    """⚠️ `[]`（用户清空 = 全部走代理）与 `None`（没配过）是两件事。
+
+    写成 `... or DEFAULT_BYPASS_SUFFIXES` 时这里会变成默认表 —— 用户清空了直连域名，
+    重新打开设置页又看见一整排域名，再点保存就静默变回「默认豁免」。
+    """
+    env.cfg["fetch"]["proxy_bypass"] = []
+    assert env.client.get("/config").json()["fetch"]["proxy_bypass"] == []
+
+
+def test_get_proxy_bypass_returns_user_rules(env):
+    env.cfg["fetch"]["proxy_bypass"] = ["example.cn"]
+    assert env.client.get("/config").json()["fetch"]["proxy_bypass"] == ["example.cn"]
+
+
+def test_get_proxy_bypass_treats_dirty_value_as_missing(env):
+    """非 list/tuple 的脏值按「缺键」处理 —— 与启动时 `configure_proxy` 的回落同源。"""
+    env.cfg["fetch"]["proxy_bypass"] = "bilibili.com"
+    rules = env.client.get("/config").json()["fetch"]["proxy_bypass"]
+    assert rules == list(cfg_router.DEFAULT_BYPASS_SUFFIXES)
+
+
 def test_parsed_becomes_summary_without_secret_keys(env):
     bp = env.client.get("/config").json()["auth"]["bilibili_parsed"]
     assert bp is not None
@@ -185,6 +222,28 @@ def test_post_keeps_real_change(env):
     """回填不能把「用户真的改了」也吃掉。"""
     env.client.post("/config", json={"fetch": {"proxy": "http://newuser:newpw@10.0.0.1:8080"}})
     assert env.cfg["fetch"]["proxy"] == "http://newuser:newpw@10.0.0.1:8080"
+
+
+def test_post_does_not_touch_process_env(env, monkeypatch):
+    """隔离**自证**（不是靠「我 monkeypatch 了」这句直觉）：
+
+    保存配置会调 `configure_proxy`，而它默认写 `os.environ`。fixture 若哪天被删掉
+    那行挡板，这条会红 —— 那时现象是「跑完全量测试，进程里多了一组 HTTP_PROXY」，
+    红/绿取决于测试顺序。
+    """
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    env.client.post("/config", json={"fetch": {"proxy": "http://u:p@10.0.0.1:8080"}})
+    assert "HTTP_PROXY" not in os.environ
+    assert "HTTPS_PROXY" not in os.environ
+
+
+def test_post_empty_bypass_clears_rules(env):
+    """清空直连域名 → 存 `[]`（全部走代理），且回读仍是空的（与 GET 那几条成对）。"""
+    r = env.client.post("/config", json={"fetch": {"proxy": "", "proxy_bypass": []}})
+    assert r.status_code == 200
+    assert env.cfg["fetch"]["proxy_bypass"] == []
+    assert env.client.get("/config").json()["fetch"]["proxy_bypass"] == []
 
 
 # ══ mask_proxy 边界 ════════════════════════════════════════════════

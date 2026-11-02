@@ -12,6 +12,8 @@ import yaml
 
 from app.core import config_io as _config_io
 from app.core import secrets as _secrets
+# `net` 只依赖标准库 —— 不成环；默认直连域名住它那儿（判据的唯一入口）
+from app.core.net import DEFAULT_BYPASS_SUFFIXES
 # `registry` 只依赖 `protocols`/`types`（纯类型模块），零 config 依赖 —— 不成环
 from app.core.registry import ENGINE_CATEGORIES, ENGINE_CATEGORY_ORDER
 
@@ -201,7 +203,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
             {"id": "mimo-v2.5",         "name": "MiMo-V2.5",         "desc": "高性价比",            "context_window": 131072},
         ],
     },
-    "fetch": {"proxy": ""},
+    # `proxy_bypass`：这些域名后缀**不走代理**（设置 → 代理 → 直连域名）。
+    # 默认值来自 core/net.py，那里同时是判据的唯一入口（新增通道必须同时接上）。
+    "fetch": {"proxy": "", "proxy_bypass": list(DEFAULT_BYPASS_SUFFIXES)},
     "auth": {"bilibili": "", "youtube": "", "douyin": ""},
     "cloud": {"alibaba": "", "dashscope": ""},
     # 引擎厂商（内置 + 用户自定义）

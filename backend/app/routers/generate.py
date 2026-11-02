@@ -81,6 +81,39 @@ def _block_stats(md: str) -> tuple[int, str]:
     return len(blocks), ",".join(sorted({s["type"] for s in blocks})) or "-"
 
 
+def _sse_error_line(exc: AppError) -> str:
+    """把 `AppError` 转成一条 SSE `error` 事件（带 `code` / `recoverable` / `hint`）。
+
+    ⚠️ **它只服务流内那一半**（`merged_stream` 的 `except AppError`）。
+
+    生成侧有**两个**错误出口，别弄混：
+      ① **入口段**（`tx` 不存在 / 缺 API Key）跑在 `StreamingResponse` 构造**之前** ——
+         那里 `raise` 会被 `main.py` 的 AppError 处理器接住，返回一个带
+         `code` / `hint` / `recoverable` 的 **JSON 错误体**。本文具箱里的函数**够不着**它，
+         也**不该**够：在 `generate_stream` 里写 `yield` 会把它变成 async generator，
+         末尾 `return StreamingResponse(...)` 当场 SyntaxError。
+      ② **流内**（任何已经 `yield` 过 chunk 之后抛的）只能走 SSE —— 那时 HTTP 200
+         与 event-stream 响应头都已发出，`raise` 只会让客户端看到一条断流。
+         本文具箱把 `AppError` 的结构化字段还原成一条 `error` 事件。
+
+      ⚠️ 改造前 ② 由 catch-all 的 `str(e)[:200]` 兜着，而 `AppError.__init__` 末尾的
+      `super().__init__(message)` 让 `str(e)` 恰好只剩 message —— `code` / `recoverable` /
+      `hint` 一个都传不出去。那不是「报错」，是「报错但说不清是什么」，
+      于是「Key 没配」与「网络抖动」在用户眼里长得一模一样。
+    """
+    payload: dict[str, object] = {
+        "type": "error",
+        "message": exc.message,
+        "code": exc.code,
+        "recoverable": exc.recoverable,
+    }
+    if exc.hint:
+        payload["hint"] = exc.hint
+    if exc.detail:
+        payload["detail"] = exc.detail
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 async def _watch_disconnect(request: Request, cancel_event: asyncio.Event, interval: float = 0.5) -> None:
     """后台轮询客户端断连，断开时 set cancel_event"""
     while not cancel_event.is_set():
@@ -651,7 +684,16 @@ async def generate_stream(transcript_id: str, request: Request,
 
     tx = store.get_transcript(transcript_id)
     if not tx:
-        raise AppError("GEN_NOT_FOUND", "文档不存在，请先导入内容")
+        # ⚠️ 这里**必须 raise、不能 yield**：`generate_stream` 本身是**普通 async 函数**
+        # （返回 `StreamingResponse(merged_stream())`），真正被迭代的生成器是内部的
+        # `merged_stream`。入口这段跑在 StreamingResponse 构造**之前**，raise 会被
+        # `main.py` 的 AppError 处理器接住 → 一个带 code/hint/recoverable 的 JSON 错误体。
+        # 一旦在这里写 `yield`，整个函数就被 Python 当成 async generator，
+        # 末尾那句 `return StreamingResponse(...)` 直接变成 **SyntaxError**
+        # （"'return' with value in async generator"）——整个 router 都 import 不进来。
+        raise AppError(
+            "GEN_NOT_FOUND", "文档不存在，请先导入内容",
+            hint="回文档库确认这篇还在；如果已删除，重新导入一次即可")
 
     # 文档直传的触发源：本地原件路径。文档没有 sourceUrl，只能用它。
     # ⚠️ 该路径在 ingest 落盘时已是绝对路径（基于 store.root 拼接，模式 #24），
@@ -739,7 +781,11 @@ async def generate_stream(transcript_id: str, request: Request,
     llm = LLMService(config, model_id=model_id,
                      request_timeout=_gen_timeout(format_list, doc_direct=doc_direct))
     if provider_requires_api_key(llm.provider) and not llm.api_key:
-        raise AppError("GEN_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
+        # 同上：入口段 raise（走 JSON 错误体），**不是** yield —— 理由见上面 GEN_NOT_FOUND
+        raise AppError(
+            "GEN_NO_API_KEY", "LLM API Key 未配置，生成需要它",
+            recoverable=False,
+            hint=f"去 设置 → 模型 & 引擎 里给 {llm.provider} 填一个 API Key")
 
     # ── 内容准备 + Prompt 构建 ──
     # source_type 已在上方（mode 解析前）取好：ContentPreparer 要按它决定预算
@@ -1374,6 +1420,13 @@ async def generate_stream(transcript_id: str, request: Request,
                 yield f"data: {json.dumps({'type': 'cancelled', 'saved_partial': True, 'id': mv.id}, ensure_ascii=False)}\n\n"
             else:
                 yield f"data: {json.dumps({'type': 'cancelled'}, ensure_ascii=False)}\n\n"
+        except AppError as e:
+            # 业务异常走结构化事件（code / recoverable / hint 都带出去）。
+            # ⚠️ 必须排在 `except Exception` **之前** —— 反过来会被压回 `str(e)[:200]`，
+            # 而那种写法看起来完全正常，只是前端永远拿不到 hint（静默失效）。
+            log.warning("Generate stream failed (AppError)", tx_id=transcript_id,
+                        code=e.code, err=e.message[:120])
+            yield _sse_error_line(e)
         except Exception as e:
             log.exception("Generate stream failed", tx_id=transcript_id)
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:200]}, ensure_ascii=False)}\n\n"

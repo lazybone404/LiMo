@@ -6,6 +6,152 @@
 
 ---
 
+## 2026-11-03 — 六条体验补齐：错误可行动 / 生成重试 / 回收站 / 最近打开 / 已用时 / 快捷键一览
+
+**起因**：上一轮盘点「还有哪些用户体验可以优化」得到六条。它们的共同点是**都不报错、都能用，只是在关键时刻让用户卡住**：删了没有后悔药、导入失败只给一行后端原文、生成失败只能从头点一遍、找不到昨天看的那篇、长任务在转圈但不知道转了几分钟、快捷键只存在于代码里。
+
+**排期**是 `2a → 2b → 3 → 1 → 4 → 5 → 6`：错误可行动性与重试同属一条链路，连着做不重复读代码；回收站要动存储层，独立成段；后三条是纯前端增量。
+
+### ① 错误要能告诉用户「那我现在该做什么」
+
+**先修链路（2a），再补文案（2b）** —— 理由很硬：改之前生成侧的错误在到达前端时**已经没有结构了**。
+
+| 现状（改前） | 后果 |
+|---|---|
+| `GEN_NO_API_KEY` 在第一个 `yield` **之前** `raise` | 流直接断，前端只能报「连接意外断开」，连缺 Key 都看不出来 |
+| catch-all `except Exception` 把 AppError 压成 `str(e)[:200]` | `code` / `recoverable` 全丢（`AppError.__init__` 末尾 `super().__init__(message)`，`str(e)` 只剩 message） |
+| SSE error 只发 `{type,message,code}` | `detail` 丢失 |
+
+现在 `generate.py` 在 catch-all **之前**加了 `except AppError`，yield `{type:'error', message, code, detail, hint, recoverable}`；入口那处 `raise` 挪进流内。`ingest.py` 的 SSE error 同理补齐。
+
+**`AppError` 加可选 `hint`**（[core/errors.py](backend/app/core/errors.py)），`to_dict()` **仅在有值时**输出该键 —— 没填的错误**逐字节零回归**，而「有没有 hint」始终是可判据的事实。**刻意不做**「错误码 → 文案」全局映射表：那是新架构，且一次性补全所有错误不现实；先做可选字段，一期补一点。
+
+本轮实际补了 hint 的只有三处（都核实过 code）：生成时文档已不存在、生成时该 provider 没有 API Key、导入失败。其余错误今天什么样、之后还是什么样。
+
+**前端解析顺序翻正**（[api/core.ts](frontend/src/api/core.ts)）：此前是 `body.detail || body.message` —— `detail` 是给开发者看的原始报错，拿它当用户文案等于把栈信息怼到脸上。现在 `message` 优先、`detail` 降为补充行。⚠️ 必须带 `typeof` 判据：FastAPI 的校验失败返回 `{detail: [...]}`（**数组**），直接塞进 `message: string` 会在渲染处出洋相。
+
+导入失败展示改成**小卡片**：主文案 + hint 行（有才显示）+「重试」（用当前输入重发，不复用生成侧的重试 —— 那是另一条链路）。参照物是 `document.py` 里那句「暂不支持旧版 .doc 格式，请用 Word/WPS 另存为 .docx 后导入」—— 全仓唯一做对的形态，说清怎么了 + 怎么办。
+
+### ② 生成失败后一键重试
+
+GenPanel 失败红框旁边加「重试」（按原来那套参数重发）。**只做这一个入口**，不做跨组件事件桥接：`SlotLayout` 是 `collapsed ? <PanelStrip/> : <Comp/>`，面板收起即卸载，`window.dispatchEvent` 会被静默丢弃。
+
+⚠️ **四个拦截全部保留，一个都不跳**。其中两个是 `window.confirm`（未保存编辑 / 已手动编辑），保留是刻意的：它们拦的是「**会丢掉你已经写下的东西**」，而用户点重试时最容易发生的正是「失败后忍不住去编辑器里改了几笔，然后回来重试」。跳过 confirm 等于在用户最没防备的时刻静默吞掉编辑。
+
+失败 toast 补一句「可在生成面板重试」，让用户知道去哪。
+
+### ③ 删除 → 完整回收站（保留 7 天）
+
+`store.delete_transcript` 此前直接 `shutil.rmtree`，UI 上那句「不可撤销」不是提示、是**事实**。
+
+```
+{root}/trash/{tx_id}/
+    trash-meta.json     ← { id, deletedAt, dirName, entry: <原 index 条目全量> }
+    doc/                ← 原 doc_dir 整体搬进来
+```
+
+四条约束都是从读码得出的，不是猜的：
+
+1. **`trash-meta.json` 住在目录里，`index.json` 不加键** —— 与 `doc_meta.py` 同理：index 是缓存不是真相，删一次就丢。
+2. **条目原样保存、原样写回**。恢复**绝不能靠 `_rebuild_index` 重建条目** —— 那里 `tx_id` 由正文 sha256 重推，**id 必变**，前端引用 / 标签 / 文件夹归属全部错位。
+3. **`_rebuild_index` 跳过名单显式加 `"trash"`**。一层扫描本来碰不到它，这是**防御**：哪天有人把扫描改成递归，已删文档会被当成正常文档重建回来，且零报错。
+4. **过期清理不碰 `index.json`** —— trash 里的东西不在索引里，删目录是纯文件操作。
+
+**删除顺序刻意绕开了三种残局**：`move` 失败 → 回退成原行为物理删除 + warning（回收站坏了不该让删除失败）；`trash-meta.json` 写失败 → 尝试搬回去，搬不回去就**照常从 index 摘除**（目录已在 trash 里，index 留着会指向不存在的路径，那是更糟的状态）。所有「在 trash 但没 meta」的残局由 `_purge_expired_trash` 的 **mtime 兜底**收拾 —— 没有它，这些目录会永不过期、永不显示、永不清理。
+
+**边界写清楚**：回收站只管文档目录，**不管** `{root}/files/{hash}/{name}` 上传原始文件（`delete_transcript` 今天就不删它，是既有行为）。要治它得先答「同一 hash 是否被多篇引用」，单独一轮。
+
+**恢复会重新编码向量**（花钱）。这是正确的：删的时候 `delete_doc` 已经把块清了，不重编码就是「恢复了但语义检索搜不到」。撤销是显式动作，可接受。
+
+前端：删除成功挂 8 秒撤销 toast；工具栏加回收站入口（`TrashDialog`，逐条恢复 / 彻底删除 / 清空）。撤销与对话框**走同一组 API**，不各写一套恢复逻辑。⚠️ 前置修复了 `Toast` 的 `info` 类型 —— 它此前没有样式分支，会落到 `else` 渲染成**红色报错**。
+
+### ④ 最近打开
+
+`mbw_lastDocId` 早就在记「上次打开的那一篇」，缺的只是「最近 N 篇」。新增 [lib/recent-docs.ts](frontend/src/lib/recent-docs.ts)（`mbw_recentDocs`，上限 12），`selectDoc` 里与写 `mbw_lastDocId` 同一处调用。**标题也存一份** —— 文档可能已被删，此时 id 查不到，但用户仍想知道「我昨天看的是什么」；查不到就传空串，`pushRecentDoc` 保留旧标题。
+
+启动恢复路径也写入、不跳过：那篇本来就在第一位（上次退出前刚 push 过），去重后顺序不变、仅 `at` 刷新，逐字幂等。跳过反而会让「最近」列表缺掉用户睁眼看到的那一篇。
+
+浮层照 `FilterPopover` 的现成范式写（`absolute` 锚在按钮上 + `document` mousedown + `contains` 划内外界，模式 #67 的例外写法），**不抽新 hook、不改 FilterPopover** —— 那是一个已经在工作的组件，动它的风险大于照抄的成本。
+
+### ⑤ 长任务的「已用时」（不是 ETA）
+
+原以为缺口是「没有时间预期」。实际是**生成任务的 SSE 只有 `stage` 文本、没有百分比**，模型自己也不知道会写多长 —— 编一个剩余时间就是误导。故只做**已用时**。
+
+`TaskInfo` 加 `startedAt?`；`setProcessing` **只对这一个字段做继承**，其余仍是全量替换。⚠️ **继承判据是「现有任务 `status === 'running'`」，不能只看「这个 key 有任务」**：`failTask` 保留条目 5 秒且不清 `startedAt`，而重试按钮最可能的用法正是**失败后 5 秒内点** —— 只看「有任务」会让重试的「已用时」从上次任务开头起算（一上来就显示 3 分 05 秒），**比不显示更误导**。
+
+两处渲染（TaskPanel / ProcessingPlaceholder）共用 [hooks/useElapsed.ts](frontend/src/hooks/useElapsed.ts)，不各写一份计时逻辑。
+
+### ⑥ 快捷键可发现（`Ctrl+/`）
+
+真相源一直是 `App.tsx::handleAppKeyDown` 的 case 列表，用户只能读代码或猜。
+
+新增 [lib/shortcuts.ts](frontend/src/lib/shortcuts.ts)（展示表）+ `ShortcutHelpDialog`（Portal 到 body —— `backdrop-blur` 祖先会创建包含块，模式 #67）+ 设置 → 通用入口。
+
+⚠️ **全局快捷键现在是三份同源，必须一起改**，这是本轮最容易打红测试的一条：
+
+| 位置 | 作用 | 漏了的现象 |
+|---|---|---|
+| `App.tsx::handleAppKeyDown` | 真正干活 | 键没反应 |
+| `src-tauri/src/lib.rs::webview_keys::is_app_shortcut` | 打包版从 WebView2 加速键手里放行 | **开发模式正常、打包版没反应，零报错** |
+| `test/appShortcutKeys.test.ts` 的 `KEY_TO_VK` | 跨语言守卫 | 上两项不一致时无人发现 |
+
+**同一个物理键的 Shift 变体共用同一个 VK**：`'+'` 是 Shift+`'='`、`'?'` 是 Shift+`'/'` —— 前端要两个 case，Rust 侧只需一个 `VK_OEM_2`。
+
+表里存的是 `e.key` **字面量**而不是 `Ctrl+G` 这种展示串（展示由 `formatShortcut()` 负责），否则守卫核对不上。一条动作可有多个等价键（`keys: ['=', '+']`），展示时只取第一个 ——`Ctrl+= / Ctrl++` 是噪音。
+
+新增守卫 `test/shortcutHelp.test.ts`（**刻意不叫 `shortcutKeys.test.ts`**，与既有 `appShortcutKeys.test.ts` 只差前缀、一定会被看混）：**App.tsx 认的每个键都必须在 `SHORTCUTS` 里**。反向不强制 —— 局部快捷键要不要收录是产品取舍。
+
+### 影响范围
+
+- 后端：`core/errors.py`、`routers/generate.py`、`routers/ingest.py`（含 4 个新 trash 端点）、`storage/store.py`（trash 五方法 + 启动清理 + 跳过名单）。
+- 前端：`api/core.ts`、`api/ingest.ts`、`api/trash.ts`（新）、`store/toastSlice.ts` + `types.ts`、`store/tasksSlice.ts`、`store/docsSlice.ts`、`store/uiSlice.ts`、`ImportSection.tsx`、`GenPanel.tsx`、`DocLibrary.tsx`、`BatchBar.tsx`、`DocLibraryToolbar.tsx`、`TrashDialog.tsx`（新）、`RecentDocsPopover.tsx`（新）、`ShortcutHelpDialog.tsx`（新）、`hooks/useElapsed.ts`（新）、`lib/recent-docs.ts`（新）、`lib/shortcuts.ts`（新）、`SettingsPage.tsx`、`App.tsx`、`src-tauri/src/lib.rs`。
+- **零回归点**：`trash/` 不在 `_rebuild_index` 扫描范围内（且已进跳过名单）；没填 hint 的错误响应逐字节不变；`addToast` 的前 3 个参数语义不变；`Ctrl+/` 是新增键，不改任何既有键的行为。
+
+---
+
+## 2026-11-03 — 代理直连域名：国内站不再被塞进代理（+ 修 WinError 448 假阴性）
+
+**起因**：B 站视频导入连续三次失败，链路是 `ProxyError` → `127.0.0.1:7890` 无监听 → `WinError 10061`。代理本身**没配错**（那台机器确实在用 7890），是代理软件没开；真正的问题是**代理无差别注入** —— 连 B 站这类国内站也一并塞进去，于是「代理软件没开」变成「什么都导入不了」。用户配代理的目的几乎总是访问境外服务，国内站经代理本来就更慢。
+
+### ① 直连域名（`fetch.proxy_bypass`，用户可编辑）
+
+判据收口在 [core/net.py](backend/app/core/net.py)：`DEFAULT_BYPASS_SUFFIXES` 是默认表，`configure_proxy()` 是**唯一**的写入点。三条通道都要吃到它，少一条的现象都不一样：
+
+| 通道 | 谁在用 | 漏了的现象 |
+|---|---|---|
+| `proxy_for()` | 自己的 httpx / yt-dlp | 网页抓取仍走代理 |
+| `NO_PROXY` 环境变量 | openai / dashscope / requests | SDK 仍走代理（B 站字幕 API 走这条） |
+| **yt-dlp 的 `proxy=` 显式参数** | `video.py::_download` | **视频下载仍走代理** |
+
+⚠️ 第三条是本轮最容易漏的：yt-dlp 源码 `clean_proxies` 明写 *"Ytdl-Request-Proxy takes preference over everything, including NO_PROXY"*。只改环境变量时，SDK 和网页抓取都对了、B 站下载照样 10061 —— 而那正是用户最初报的那个操作。故 `_get_proxy(url)` 现在必须收 url，有源码守卫钉住「被改回 `_get_proxy()` 就会红」。
+
+**默认表故意不遵守 `_LOCAL_DOMAIN_SUFFIXES` 那条纪律**（只收有 RFC 依据的后缀）：那里问「这台主机是不是内网」（猜错 = 把要走代理的网关也豁免），这里问「用户配代理时想不想让这些站走代理」。覆盖的是「导入来源 + 它们实际会请求的 CDN」（`bilivideo.com` 不豁免等于没豁免）。用户清空输入框 = `[]` = 一条都不豁免；老配置缺该键 = `None` = 用默认表，两者**刻意可区分**。
+
+**生效时机不同源**（写进设置页文案）：模块级规则（yt-dlp / `proxy_for`）保存即生效；环境变量那半由 `apply_proxy_env` 写，`proxy` 为空时**不清**既有变量（可能是用户自己在 shell 里设的）⇒ 关掉代理仍需重启后端。这个语义是改造前就有的，本轮不动。
+
+**接线**：`main.py` 启动调 `configure_proxy`（替换 `apply_proxy_env`，两个通道一起装）；`POST /api/config` 保存后调一次（用**回填过密钥的** cfg，不是请求体）；`GET /api/config` 下发 `proxy_bypass`（不敏感，原样）；设置 → 代理 → 「直连域名」textarea 按行编辑。
+
+⚠️ **GET 侧的 `[]` 陷阱（同轮修）**：初版写的是 `cfg.get(...) or DEFAULT_BYPASS_SUFFIXES`，于是用户清空规则 → 存 `[]` → 下次打开设置页又看见一整排默认域名 → 再点保存就**静默变回默认豁免**，界面上没有任何异常。判据抽成 `routers/config.py::_bypass_rules`，按 `is None` 分（脏值按缺键处理），与 `net.configure_proxy` 的 `bypass is None` 同源。三条 GET 守卫（缺键 / `[]` / 用户规则）+ 一条 POST 回读守卫。
+
+⚠️ **测试侧顺带补的隔离**：`POST /config` 会调 `configure_proxy`，而它默认写**真实的** `os.environ`。`test_config_mask.py` 的 fixture 现在挡住 `net.apply_proxy_env` 并复位模块级豁免表，另加一条 `test_post_does_not_touch_process_env` **自证**挡板真在生效（拿掉它这条会红）—— 否则一条 POST 就把 `HTTP_PROXY` 塞进 pytest 进程，红/绿取决于测试顺序。
+
+### ② 修 `probe_venv` 把「验证失败」当成「对象失效」（上一轮遗留，同批提交）
+
+uv 用 junction 做版本别名，Windows 在部分进程上下文（**未签名的打包 exe**，dev 的签名 python 反而不触发）遍历联接点时抛 WinError 448。`base_py.exists()` 在 `try` 外 ⇒ 折成「独立环境不可访问」⇒ **两个已经装好的插件显示未安装**，用户照着提示反复重装而东西一直是好的。
+
+修法是把两种 OSError 分开：**base python 校验抛异常 → 放行**（验证手段失效，不代表对象失效）；**venv 自身路径不可访问 → 判死**（那确实用不了）。两条正反守卫在 `test_deps.py`。
+
+### 影响范围
+
+`core/net.py`（判据 + 默认表）/ `core/config.py`（默认配置）/ `main.py`（启动接线）/ `routers/config.py`（GET/POST + `_bypass_rules`）/ `adapters/video.py`（yt-dlp）/ `agent/tools.py`（五个 httpx 调用点）/ `SettingsPage.tsx`（编辑 UI）/ `core/deps.py`（448）。测试 `test_proxy_exemption.py` 36 条（含正反对照与三条接线守卫）+ `test_config_mask.py` 补 6 条（`proxy_bypass` 三态 + POST 回读 + 环境隔离自证）。
+
+### 已知边界
+
+- 只按**主机名后缀**匹配，不做端口 / 路径维度；`cn` 这条国家级后缀会豁免所有 `.cn`，嫌宽就删掉它。
+- 正在进行的任务不受保存影响（代理参数在发起时确定）。
+
+---
+
 ## 2026-10-29 — MCP 服务端：把库只读暴露给 Claude Code / Cursor
 
 **起因**：`limo` CLI 的消费者是**人**。Claude Code 这类 agent 要读这个库，今天只能 shell 调

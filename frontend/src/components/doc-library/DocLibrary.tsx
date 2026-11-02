@@ -20,6 +20,7 @@ import {
   updateTranscript, exportBatch, getErrorMessage,
   listFolders, listTranscripts, createFolder, renameFolder, moveFolder, deleteFolder, batchTranscripts,
   ensureFolderPath, getMarkdown,
+  restoreTrash,
 } from '../../api/client'
 import { cancelTask } from '../../api/taskManager'
 import { linearizeEvidence, stripMarkers } from '../../lib/markdown-markers'
@@ -55,6 +56,7 @@ import { FilterPopover } from './FilterPopover'
 import { SearchField } from './SearchField'
 import { SearchIndexBanner } from './SearchIndexBanner'
 import { DocLibraryToolbar } from './DocLibraryToolbar'
+import { TrashDialog } from './TrashDialog'
 import { PAGE_SIZE } from '../../store/docsSlice'
 
 /** 某文档是否有进行中的任务（键是 `${docId}__${kind}`，导入是裸 key） */
@@ -258,6 +260,8 @@ export function DocLibrary() {
   const tagsEditRef = useRef<EditState | null>(null)
   // 删除确认（单条 = 长度为 1）
   const [deleteTargets, setDeleteTargets] = useState<string[] | null>(null)
+  /** 回收站对话框。状态住在这一层而不是工具栏：它要 Portal，且恢复后要重拉文档列表 */
+  const [trashOpen, setTrashOpen] = useState(false)
   /**
    * 文件夹批量删除的确认目标 —— 打开那一刻**定格**的 `selectedFolderIds`
    * （与 `synthIds` 同一条理由：确认框里报的数字与实际删的必须是同一批）。
@@ -742,8 +746,39 @@ export function DocLibrary() {
       // 却不会激活邻居。「删除后的归属」（含邻居选择与 `mbw_lastDocId`）由 purge 独占。
       // 只清真正删掉的那些的产物残留（失败的还留着，清了等于把好数据丢了）
       purgeDocArtifacts(okIds)
-      if (failed.length) addToast(`已删除 ${r.affected} 个，${failed.length} 个失败`, 'error')
-      else addToast(`已删除 ${r.affected} 个文档`)
+      // ⚠️ 「能不能撤销」以后端返回的 `trashedIds` 为准，**不是** `ids`：回收站没建成时
+      // 删除会回退成物理删除，那几条照着 ids 挂「撤销」必然报「回收站里没有这篇」。
+      const trashed = r.trashedIds ?? []
+      const msg = failed.length
+        ? `已删除 ${r.affected} 个，${failed.length} 个失败`
+        : `已删除 ${r.affected} 个文档`
+      if (trashed.length) {
+        addToast(msg, failed.length ? 'error' : 'info', {
+          actionLabel: '撤销',
+          // 8 秒：默认 3 秒对「读完一句 + 决定要不要撤销」太短，而这是**不可逆动作**的
+          // 唯一后悔药 —— 按钮还在、用户没来得及点，就等于没给。
+          duration: 8000,
+          onAction: () => {
+            void (async () => {
+              try {
+                const res = await restoreTrash(trashed)
+                if (res.failed?.length) {
+                  addToast(`已恢复 ${res.restored.length} 个，${res.failed.length} 个失败`, 'error')
+                } else {
+                  addToast(`已恢复 ${res.restored.length} 个文档`)
+                }
+                // 本地视图刚把它们摘掉了，必须以服务端为准重拉（否则恢复成功但列表里没有）
+                await refreshDocs()
+                refreshFolders()
+              } catch (e) {
+                addToast(getErrorMessage(e), 'error')
+              }
+            })()
+          },
+        })
+      } else {
+        addToast(msg, failed.length ? 'error' : 'success')
+      }
     } catch (err) {
       addToast(getErrorMessage(err), 'error')
     } finally {
@@ -751,7 +786,7 @@ export function DocLibrary() {
       clearSelection()
       refreshFolders()
     }
-  }, [addToast, setDocs, refreshFolders, purgeDocArtifacts, clearSelection])
+  }, [addToast, setDocs, refreshFolders, refreshDocs, purgeDocArtifacts, clearSelection])
 
   // ── 批量 ──
 
@@ -1543,6 +1578,7 @@ export function DocLibrary() {
           busy={folderBusy.has('create')}
           // 工具栏只关心「成没成」（成功才清草稿）；`FolderPicker` 那边才需要新夹 id
           onCreateFolder={async name => (await createNewFolder(name)) !== null}
+          onOpenTrash={() => setTrashOpen(true)}
         />
       )}
 
@@ -1623,11 +1659,14 @@ export function DocLibrary() {
             </h3>
             <p className="text-[13px] text-dimmed mb-6">
               {deleteTargets.length > 1
-                ? <>确定要删除选中的 {deleteTargets.length} 个文档吗？关联的 Markdown 也会被删除。</>
-                : <>确定要删除「{docs.find(d => d.id === deleteTargets[0])?.title}」吗？关联的 Markdown 也会被删除。</>}
+                ? <>确定要删除选中的 {deleteTargets.length} 个文档吗？关联的笔记也会一并移入回收站。</>
+                : <>确定要删除「{docs.find(d => d.id === deleteTargets[0])?.title}」吗？关联的笔记也会一并移入回收站。</>}
               {deleteTargets.some(isDocBusy)
                 ? <span className="text-warning mt-1 block">其中部分文档有进行中的任务，删除将同时取消。</span>
-                : '此操作不可撤销。'}
+                // ⚠️ **刻意不写具体天数**：保留期是后端常量（`TRASH_RETENTION_DAYS`），
+                // 前端写死「7 天」就是第二真相源 —— 改常量时这里会静默变成谎话。
+                // 确切天数由回收站列表逐条显示（`daysLeft` 是后端算好的）。
+                : <span className="mt-1 block">删除后可在回收站中恢复，超过保留期自动清理。</span>}
             </p>
             <div className="flex gap-2 justify-end">
               <button onClick={() => setDeleteTargets(null)}
@@ -1638,6 +1677,16 @@ export function DocLibrary() {
           </div>
         </div>,
         document.body,
+      )}
+
+      {/* 回收站 —— 与上面的「撤销」toast 共用 `api/trash.ts` 那一组函数。
+          `onRestored` 必须重拉列表：恢复的条目刚被本地视图摘掉，不重拉就是
+          「恢复成功但列表里没有」。 */}
+      {trashOpen && (
+        <TrashDialog
+          onClose={() => setTrashOpen(false)}
+          onRestored={() => { void refreshDocs(); refreshFolders() }}
+        />
       )}
 
       {/* 文件夹批量删除确认 —— 同样 Portal 到 body（理由见 `<aside>` 的注释）。

@@ -39,8 +39,9 @@ export function appUrl(path: string): string {
 
 export interface ApiError {
   code: string           // 错误码: GEN_API_TIMEOUT / PROC_NOT_FOUND / ...
-  message: string        // 用户可读的中文错误消息
-  detail?: string        // 技术细节
+  message: string        // 用户可读的中文错误消息（「发生了什么」）
+  detail?: string        // 技术细节（给开发者看，用户侧只作补充行）
+  hint?: string          // 「那我现在该做什么」——后端可选给，没给就不渲染
   recoverable: boolean   // 是否可重试
   status: number         // HTTP 状态码
 }
@@ -52,6 +53,59 @@ export class ApiErrorException extends Error {
     this.name = 'ApiErrorException'
     this.apiError = apiError
   }
+}
+
+/**
+ * 错误信封里 `message` 之外的**结构化补充字段** —— 后端 `AppError.to_dict()` 的可选部分。
+ *
+ * 流式端点拿不到 `apiFetch`（响应是 SSE，不是一个完整的 JSON 体），所以错误信封在
+ * 三个地方被手工解包：`ingest.ts` 的 SSE `error` 事件 / 非 SSE 的 JSON 主路径与回退、
+ * `generate.ts` 的 `!response.ok` 与「200 但 body 是 JSON」。**四处共用这一份判据** ——
+ * 各写一遍的失效形态是「某一条路径上 hint 静默消失」，而那正是本轮要修的病。
+ */
+export interface ApiErrorInfo {
+  code?: string
+  detail?: string
+  hint?: string
+  recoverable?: boolean
+}
+
+/**
+ * 从后端错误信封里取结构化补充字段。
+ *
+ * ⚠️ 逐字段 `typeof` 判据，不做 `data.hint || undefined`：信封来自网络，形状不可信；
+ * 尤其 `detail` 在 FastAPI 校验失败时是**数组**，原样透传会让渲染处出现
+ * `[object Object]`（同 `apiFetch` 的 ② 号判据）。
+ */
+export function errorInfoOf(data: unknown): ApiErrorInfo {
+  const d = (data ?? {}) as Record<string, unknown>
+  return {
+    code: typeof d.code === 'string' ? d.code : undefined,
+    detail: typeof d.detail === 'string' ? d.detail : undefined,
+    hint: typeof d.hint === 'string' ? d.hint : undefined,
+    recoverable: typeof d.recoverable === 'boolean' ? d.recoverable : undefined,
+  }
+}
+
+/**
+ * 从错误信封里取**用户可读文案** —— `message` 优先，`detail` 只作降级。
+ *
+ * ⚠️ 顺序与 `apiFetch` 的 ① 号判据同源：`detail` 是给开发者看的原始报错
+ * （`ProxyError: … WinError 10061`），把它排在 `message` 前面就是「用户读到一屏英文，
+ * 而我们以为已经解释清楚了」。流式端点此前正是这个顺序。
+ *
+ * ⚠️ `code` 排在**最后**、再之后才是调用方给的 `fallback`：只有「后端什么都没给」时
+ * 才会走到它，那时 `GEN_NO_API_KEY` 这类标识仍比一句泛泛的「导入失败」更可能让人
+ * 搜到原因。位置放在 detail 之后是刻意的 —— detail 是同一件事的原始报错，更有内容。
+ */
+export function errorMessageOf(data: unknown, fallback: string): string {
+  const d = (data ?? {}) as Record<string, unknown>
+  if (typeof d.message === 'string' && d.message) return d.message
+  // 旧信封 `{error: "…"}` 没有 message —— 它是个**正常的人话文案**，排在 detail 前面
+  if (typeof d.error === 'string' && d.error) return d.error
+  if (typeof d.detail === 'string' && d.detail) return d.detail
+  if (typeof d.code === 'string' && d.code) return d.code
+  return fallback
 }
 
 /** 从任意错误中提取用户可读消息（用于 Toast 显示） */
@@ -83,14 +137,23 @@ export async function apiFetch(url: string, init?: RequestInit): Promise<Respons
     })
   }
   if (!r.ok) {
-    let body: Partial<ApiError> = {}
+    let body: Partial<ApiError> & { detail?: unknown } = {}
     try { body = await r.json() } catch { /* body 非 JSON */ }
+    // ⚠️ 三项判据，缺一项都会出洋相：
+    //  ① **message 优先于 detail**。改造前是 `detail || message` —— 而 `detail` 是
+    //    给开发者看的原始报错（`ProxyError: … WinError 10061`），把它当用户文案，
+    //     就是「用户读到一屏英文，而我们以为已经解释清楚了」。
+    //  ② **detail 必须是字符串**。FastAPI 的校验失败返回 `{detail: [{loc, msg, type}]}`
+    //     是**数组**，直接塞进 `message: string` 会在渲染处变成 `[object Object]`。
+    //  ③ 全都没有时仍保留旧的 `JSON.stringify` 兜底（未知错误形状至少能看见内容）。
+    const detailStr = typeof body.detail === 'string' ? body.detail : undefined
     const apiError: ApiError = {
       code: body.code || `HTTP_${r.status}`,
-      message: body.detail || body.message || (Object.keys(body).length > 0
-        ? JSON.stringify(body)
-        : `请求失败 (${r.status})`),
-      detail: body.detail,
+      message: (typeof body.message === 'string' && body.message)
+        || detailStr
+        || (Object.keys(body).length > 0 ? JSON.stringify(body) : `请求失败 (${r.status})`),
+      detail: detailStr,
+      hint: typeof body.hint === 'string' ? body.hint : undefined,
       recoverable: body.recoverable ?? (r.status < 500),
       status: r.status,
     }

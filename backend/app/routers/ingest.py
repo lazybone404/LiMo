@@ -24,7 +24,7 @@ from app.core.config import build_engine_models
 from app.core.disconnect import disconnect_watcher
 from app.core import logging as log
 from app.core.search import update_index
-from app.storage.store import rewrite_asset_urls
+from app.storage.store import rewrite_asset_urls, TRASH_RETENTION_DAYS
 
 router = APIRouter()
 
@@ -34,6 +34,19 @@ MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 STREAM_THRESHOLD = 100 * 1024 * 1024  # 100MB
 # 流式写入每次读取的块大小
 STREAM_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB
+
+# 「适配器抛了个我们没有专门处理过的异常」的统一口径。
+#
+# ⚠️ 两处消费（非流式端点、流式端点的后台管道）**必须共用这一份**：分开写时，
+# 一侧改了文案另一侧没改，用户从不同入口导入同一支视频会看到两句不同的话，
+# 而两边都不报错（模式 #54）。
+#
+# hint 指向「代理直连名单」是有依据的：国内站点被代理拖住是这类失败里最常见的
+# 一种，而它恰好是用户自己就能改的 —— 只说「导入失败」等于让人去猜。
+_INGEST_FAILED_MSG = "导入失败，没有取到可用的内容"
+_INGEST_FAILED_HINT = (
+    "换个链接或文件再试一次；如果是国内站点反复失败，"
+    "去 设置 → 代理 把它的域名加进「直连」名单")
 
 def _safe_filename(filename: str) -> str:
     """从用户提供的文件名中提取安全的文件名部分，防路径遍历"""
@@ -145,7 +158,10 @@ async def delete_transcript(tx_id: str, request: Request, store=Depends(get_stor
     # 这期间孤块既会被语义检索召回到「点进去文档不存在」，也与设置页那句
     # 「删除文档时对应的向量也会一并清掉」不符。
     _drop_vectors(request, tx_id)
-    return {"status": "deleted", "id": tx_id}
+    # `trashed` 让前端知道「这次删除是可以撤销的」——回收站没建成（`_move_to_trash`
+    # 回退到物理删除）时它是 False，前端就不该挂「撤销」按钮（点了必然失败）。
+    trashed = (store._trash_dir(tx_id) / "doc").exists()
+    return {"status": "deleted", "id": tx_id, "trashed": trashed}
 
 
 # ── 批量操作 ──
@@ -164,6 +180,70 @@ class BatchTranscriptsRequest(BaseModel):
     # ⚠️ Optional 而非默认 ""：move 时空串是有效值（移出到未分类），
     # 用默认空串就无法区分「没传」与「明确要求移出未分类」。
     folderId: Optional[str] = None
+
+
+# ── 回收站 ──
+#
+# 与删除端点放在一起：删除与恢复是一对，分开会让「删了怎么恢复」有第二个落点。
+# 也直接复用现成的 `_index_for_search` / `_drop_vectors`（写入侧与删除侧成对）。
+
+class TrashIdsRequest(BaseModel):
+    ids: list[str] = []
+
+
+@router.get("/trash")
+async def list_trash(store=Depends(get_store)) -> dict[str, Any]:
+    """回收站列表（按删除时间倒序）。"""
+    items = store.list_trash()
+    return {"items": items, "retentionDays": TRASH_RETENTION_DAYS}
+
+
+@router.post("/trash/restore")
+async def restore_trash(data: TrashIdsRequest, request: Request,
+                        store=Depends(get_store)) -> dict[str, Any]:
+    """从回收站恢复。批量形状与 `/transcripts/batch` 同款（逐条 failed、全失败 400）。
+
+    恢复后逐条 `_index_for_search` —— 它同时重建全文索引 + 给向量打 `pending`
+    （向量块在删除时已清，不重新编码就是「恢复了但语义检索搜不到」）。
+    """
+    if not data.ids:
+        raise AppError("TRASH_NO_IDS", "未指定要恢复的文档",
+                       status_code=400, recoverable=True)
+    restored: list[str] = []
+    failed: list[dict] = []
+    for tx_id in data.ids:
+        try:
+            entry = store.restore_transcript(tx_id)
+            if entry is None:
+                failed.append({"id": tx_id, "error": "回收站里没有这篇，或恢复失败"})
+                continue
+            _index_for_search(request, tx_id)
+            restored.append(tx_id)
+        except Exception as e:
+            failed.append({"id": tx_id, "error": str(e)[:120]})
+            log.warning("从回收站恢复单条失败", tx_id=tx_id, err=str(e)[:120])
+
+    if not restored and failed:
+        raise AppError("TRASH_ALL_FAILED", f"全部 {len(failed)} 条恢复失败",
+                       status_code=400, recoverable=True)
+    log.info("回收站恢复", restored=len(restored), failed=len(failed))
+    return {"status": "ok", "restored": restored, "failed": failed}
+
+
+@router.delete("/trash/{tx_id}")
+async def purge_trash_one(tx_id: str, store=Depends(get_store)) -> dict[str, Any]:
+    """彻底删除一条（不可恢复）。"""
+    if not store.purge_trash(tx_id):
+        raise AppError("TRASH_NOT_FOUND", "回收站里没有这篇",
+                       status_code=404, recoverable=True)
+    return {"status": "purged", "id": tx_id}
+
+
+@router.delete("/trash")
+async def purge_trash_all(store=Depends(get_store)) -> dict[str, Any]:
+    """清空回收站。"""
+    n = store.purge_all_trash()
+    return {"status": "purged", "count": n}
 
 
 @router.post("/transcripts/batch")
@@ -202,6 +282,10 @@ async def batch_transcripts(data: BatchTranscriptsRequest, request: Request,
 
     affected = 0
     failed: list[dict] = []
+    # 真正进了回收站的 id（只有 delete 分支会填）。⚠️ 不能拿 `data.ids` 顶替：
+    # `_move_to_trash` 失败时会回退成物理删除，那几条**撤销不了** —— 前端照着
+    # `data.ids` 挂「撤销」必然对它们报「回收站里没有这篇」。
+    trashed_ids: list[str] = []
 
     if data.action == "delete":
         engine = getattr(request.app.state, "search_engine", None)
@@ -217,6 +301,9 @@ async def batch_transcripts(data: BatchTranscriptsRequest, request: Request,
                 # 向量侧同理。它自己吞异常不回滚 —— 文档已经删了，
                 # 让这条记成 failed 只会诱导用户重试，而重试只会得到「文档不存在」。
                 _drop_vectors(request, tx_id)
+                # 同一判据与单删端点：`trash/{id}/doc` 在 = 这次删除可撤销
+                if (store._trash_dir(tx_id) / "doc").exists():
+                    trashed_ids.append(tx_id)
                 affected += 1
             except Exception as e:      # 单条失败不拖垮整批
                 failed.append({"id": tx_id, "error": str(e)[:120]})
@@ -239,7 +326,13 @@ async def batch_transcripts(data: BatchTranscriptsRequest, request: Request,
                        status_code=400, recoverable=True)
 
     log.info("批量操作", action=data.action, affected=affected, failed=len(failed))
-    return {"status": "ok", "affected": affected, "failed": failed}
+    out: dict[str, Any] = {"status": "ok", "affected": affected, "failed": failed}
+    if data.action == "delete":
+        # ⚠️ 加在**批量**端点而不是只加单删端点：UI 的删除走的是这里
+        # （`DocLibrary.tsx` 的 `batchTranscripts({action:'delete'})`），
+        # 只改单删前端永远拿不到这个字段。
+        out["trashedIds"] = trashed_ids
+    return out
 
 
 def _index_for_search(request: Request, tx_id: str):
@@ -757,7 +850,12 @@ async def ingest(
             raise
         except Exception as e:
             log.exception("Ingest failed", error=str(e)[:200])
-            raise AppError("INGEST_FAILED", f"导入失败: {str(e)[:200]}") from e
+            # ⚠️ 改造前这里把 `str(e)[:200]` 直接拼进 message —— 用户看到的是一句
+            # 后端原文（`ProxyError: … WinError 10061`），既不知道发生了什么，也不知道
+            # 下一步该做什么。原始错误降到 `detail`（前端作为补充行展示，仍是可查的证据）。
+            raise AppError("INGEST_FAILED", _INGEST_FAILED_MSG,
+                           detail=f"{type(e).__name__}: {e}"[:300],
+                           hint=_INGEST_FAILED_HINT) from e
 
         result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir)
         persisted = True
@@ -971,10 +1069,26 @@ async def ingest_stream(
             persisted = True
             queue.put_nowait({"type": "done", **result})
         except AppError as e:
-            queue.put_nowait({"type": "error", "message": e.message, "code": e.code})
+            # 结构化字段一个都不能省：`recoverable` 决定前端是否给「重试」，
+            # `hint` 是「那我现在该做什么」的那一句。只发 message 时，用户在导入框
+            # 底部看到的是一句后端原文，而两侧都不报错 —— 看起来只是「文案不够好」。
+            _evt: dict = {"type": "error", "message": e.message,
+                          "code": e.code, "recoverable": e.recoverable}
+            if e.hint:
+                _evt["hint"] = e.hint
+            if e.detail:
+                _evt["detail"] = e.detail
+            queue.put_nowait(_evt)
         except Exception as e:
             log.exception("Ingest stream failed", error=str(e)[:200])
-            queue.put_nowait({"type": "error", "message": str(e)})
+            # 与非流式端点同一口径（见 `_INGEST_FAILED_MSG`）。改造前这里发的是
+            # **原始异常字符串**，连「导入失败」四个字都没有。
+            queue.put_nowait({
+                "type": "error", "message": _INGEST_FAILED_MSG,
+                "code": "INGEST_FAILED", "recoverable": True,
+                "detail": f"{type(e).__name__}: {e}"[:300],
+                "hint": _INGEST_FAILED_HINT,
+            })
         finally:
             # ① 未成功持久化 → 删上传的源文件（成功时它已被登记，不能删）
             if not persisted:

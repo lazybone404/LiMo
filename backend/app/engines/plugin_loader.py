@@ -1461,6 +1461,13 @@ def _venv_valid(pkg_dir: Path) -> bool:
     历史（判据搬走前记在这里）：2026-08-06 修复失效 venv（uv 管理的 python 被
     升级/清理 → "No Python at ..."）视为未安装；2026-08-14 修复 WinError 448
     （不受信任装入点）→ 视为不可用，避免冒到 `/api/plugins` 变成 500。
+
+    ⚠️ **2026-10-29 修正了 448 那一条的后果**：它此前把「base python 的 `exists()`
+    抛异常」也判成「不可用」，而 uv 用 junction 做版本别名（`cpython-3.12-*`
+    → `cpython-3.12.13-*`），Windows 在打包版进程里遍历联接点时抛 448 ——
+    于是**装好的**插件显示未安装，用户点「一键安装」还会走到下面的
+    `shutil.rmtree` 把好 venv 删掉重下。现在 base 校验抛异常=「测不了」不判死，
+    只有 venv 自身路径不可访问才判死（判据在 `core.deps.probe_venv`）。
     """
     venv = pkg_dir / ".venv"
     reason = probe_venv(venv)

@@ -7,6 +7,24 @@ import { formatSize } from '../../lib/format'
 
 const MEDIA_INPUT_TYPES = ['video', 'image', 'file']
 
+/**
+ * 导入失败的展示形状。
+ *
+ * ⚠️ 从 `string` 升级成对象是因为「一句话 + 一个 X 图标」装不下三件事：**发生了什么**
+ * （`message`）、**那我现在该做什么**（`hint`，后端可选给）、**能不能直接再试**
+ * （`recoverable`）。全塞进一条 message 会让卡片变成一段读不完的长句，而用户在
+ * 失败当下最需要的恰恰是能一眼扫到的那句「下一步」。
+ */
+export interface ImportError {
+  message: string
+  /** 后端给的可行动文案（`AppError.hint`）。没给就不渲染那一行 */
+  hint?: string
+  /** 原始报错（`ProxyError: … WinError 10061`）—— 降为补充行，不再当唯一文案 */
+  detail?: string
+  /** `false` = 后端明确说重试没用（如格式不支持）。**缺失时按可重试处理** */
+  recoverable?: boolean
+}
+
 function validateDropFile(file: File, inputType: string): boolean {
   const exts = DROP_ACCEPT[inputType]
   if (!exts) return true // link/text 不应该有拖拽
@@ -19,7 +37,7 @@ interface Props {
   fileObj: File | null; setFileObj: (f: File | null) => void
   fileSubType: string; setFileSubType: (t: string) => void
   importInput: string; setImportInput: (v: string) => void
-  importing: boolean; importError: string; importProgress: string
+  importing: boolean; importError: ImportError | null; importProgress: string
   importPercent: number | null
   engineOptions: Record<string, EngineOption[]>
   engineBindings: Record<string, number | null>
@@ -323,8 +341,30 @@ export function ImportSection(props: Props) {
         </div>
       )}
       {p.importError && (
-        <div className="text-[11px] text-error flex items-center gap-1">
-          <X size={11} />{p.importError}
+        <div className="rounded-lg border border-border-default bg-error/5 px-2.5 py-2 space-y-1">
+          <div className="flex items-start gap-1.5 text-[11px] text-error">
+            <X size={11} className="mt-[3px] shrink-0" />
+            <span className="flex-1 leading-relaxed break-words">{p.importError.message}</span>
+            {/* 重试 = 用**当前输入**重新发起同一次导入，故直接复用 handleImport ——
+                不另开一条链路（第 3 条的生成重试是另一件事，走 GenPanel 的失败红框）。
+                `recoverable` **缺失时照样显示**：宁多勿少，点了最多再失败一次。 */}
+            {p.importError.recoverable !== false && (
+              <button type="button" onClick={p.handleImport}
+                className="shrink-0 px-1.5 py-0.5 rounded font-medium hover:bg-error/10 transition-colors">
+                重试
+              </button>
+            )}
+          </div>
+          {p.importError.hint && (
+            <div className="pl-[17px] text-[11px] leading-relaxed text-muted break-words">
+              {p.importError.hint}
+            </div>
+          )}
+          {p.importError.detail && (
+            <div className="pl-[17px] text-[10px] leading-relaxed text-disabled break-all">
+              {p.importError.detail}
+            </div>
+          )}
         </div>
       )}
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { X, Copy, RefreshCw, Terminal, Gauge } from 'lucide-react'
 import { apiFetch, apiUrl } from '../../api/client'
 import { useStore } from '../../store'
+import { isNearBottom } from '../../lib/scroll'
 
 interface LogEntry {
   ts: number
@@ -70,6 +71,8 @@ export function LogPanel({ onClose }: { onClose: () => void }) {
   const [search, setSearch] = useState('')
   const addToast = useStore(s => s.addToast)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // 用户上滚看历史时暂停跟随 —— 判据与对话侧共用一份（lib/scroll.ts）
+  const stickToBottom = useRef(true)
   const intervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
   const logsEmptyRef = useRef(true)  // 用 ref 避免 setInterval 闭包陈旧问题
 
@@ -111,11 +114,20 @@ export function LogPanel({ onClose }: { onClose: () => void }) {
     return () => clearInterval(intervalRef.current)
   }, [tab, levelFilter, search])
 
-  // 新日志自动滚底（只对日志 tab；性能表是按 p95 排的，滚底没有意义）
+  // 新日志自动滚底 —— **只在用户仍贴着底部时**（只对日志 tab；性能表按 p95 排序，滚底没有意义）。
+  // 上滚看历史时不跟随：面板每 3 秒换一批日志，无条件滚底等于「用户刚翻到的位置被抢走一次」，
+  // 而且日志面板通常一开就是几分钟，翻历史这件事根本做不成。
+  // 换 tab / 改筛选 = 换了一批数据 ⇒ 重新贴底，否则一次上滚会让本次打开期间再也不跟随。
+  const filterKey = `${tab}|${levelFilter}|${search}`
+  const filterKeyRef = useRef(filterKey)
   useEffect(() => {
-    if (tab === 'logs' && scrollRef.current)
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-  }, [logs, tab])
+    if (filterKeyRef.current !== filterKey) {
+      filterKeyRef.current = filterKey
+      stickToBottom.current = true
+    }
+    const el = scrollRef.current
+    if (tab === 'logs' && el && stickToBottom.current) el.scrollTop = el.scrollHeight
+  }, [logs, tab, filterKey])
 
   const handleCopy = async () => {
     const text = tab === 'logs' ? logs.map(l => l.msg).join('\n') : perfToText(perf)
@@ -181,7 +193,10 @@ export function LogPanel({ onClose }: { onClose: () => void }) {
              级别色 `text-error/warning/success` 与正文 `text-disabled` **全是主题 token**，
              浅色主题下它们是深色 —— 配一块写死的深黑底必然看不清。
              「终端就该是黑的」在这里不成立：字不是终端色，底也不该自己定。 */
-          <div ref={scrollRef} className="flex-1 overflow-auto bg-surface p-3 font-mono text-xs leading-relaxed">
+          <div ref={scrollRef} onScroll={() => {
+            const el = scrollRef.current
+            if (el) stickToBottom.current = isNearBottom(el)
+          }} data-log-scroll className="flex-1 overflow-auto bg-surface p-3 font-mono text-xs leading-relaxed">
             {logs.length === 0 ? (
               <div className="text-dimmed italic pt-4 text-center">
                 {errorCount > 1 ? '日志加载失败，请检查后端是否运行' : '暂无日志'}

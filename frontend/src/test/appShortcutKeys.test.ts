@@ -42,6 +42,8 @@ const KEY_TO_VK: Record<string, number> = {
   '-': 0xbd,
   _: 0xbd,
   '\\': 0xdc,
+  '/': 0xbf,
+  '?': 0xbf,
 }
 
 /** `handleAppKeyDown` 里 `case 'x':` 认下的所有 key 字面量（已还原转义） */
@@ -95,8 +97,9 @@ describe('应用快捷键清单在 App.tsx 与 lib.rs 之间同步', () => {
   })
 
   it('App.tsx 的 Shift 变体与基础键共用同一个 VK（Rust 侧无需重复登记）', () => {
-    // `'+'`/`'_'` 不是独立的物理键，写两个 Rust 常量是错的
+    // `'+'`/`'_'`/`'?'` 不是独立的物理键，写两个 Rust 常量是错的
     expect(KEY_TO_VK['+']).toBe(KEY_TO_VK['='])
     expect(KEY_TO_VK['_']).toBe(KEY_TO_VK['-'])
+    expect(KEY_TO_VK['?']).toBe(KEY_TO_VK['/'])
   })
 })

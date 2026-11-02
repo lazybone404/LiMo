@@ -5,12 +5,24 @@
  * （仅 body 类型与 header 不同），手写 SSE 解析统一走 sse.ts 的 parseSSEStream。
  * 已知微小差异：console.error 文案从两份统一为一条。
  */
-import { BASE, CLIENT_HEADERS } from './core'
+import { BASE, CLIENT_HEADERS, errorInfoOf, errorMessageOf, type ApiErrorInfo } from './core'
 import { parseSSEStream } from './sse'
 
 type ProgressCb = (ev: { phase: string; status: string; percent?: number; message?: string }) => void
 type DoneCb = (doc: any) => void
-type ErrorCb = (err: string) => void
+
+/**
+ * 导入失败的结构化补充 —— 后端 `AppError` 的可选字段，**缺哪个就少哪个**。
+ *
+ * ⚠️ `message` 仍是第一参数，`info` 是**只增不改**的第二参数：既有调用方
+ * `(err) => …` 逐个都不用改（多出来的实参被忽略），而新调用方拿得到
+ * 「下一步该做什么」与「该不该给重试按钮」。
+ *
+ * ⚠️ 类型与解析函数住在 `core.ts`：`generate.ts` 的流式端点要解**同一个**信封
+ * （它也用裸 `fetch`，走不到 `apiFetch`）。这里保留别名只为不打断既有 import。
+ */
+export type IngestErrorInfo = ApiErrorInfo
+type ErrorCb = (err: string, info?: IngestErrorInfo) => void
 
 export function ingestURL(
   url: string,
@@ -84,8 +96,9 @@ async function ingestStream(
           onDone(data)
         } else if (data.type === 'error') {
           receivedDoneOrError = true
-          onProgress({ phase: 'error', status: 'error', message: data.message || '未知错误' })
-          onError?.(data.message || '未知错误')
+          const msg = data.message || '未知错误'
+          onProgress({ phase: 'error', status: 'error', message: msg })
+          onError?.(msg, errorInfoOf(data))
         }
       })
       if (!receivedDoneOrError) {
@@ -105,7 +118,10 @@ async function ingestStream(
     // `routers/ingest.py` 的 duplicate_url / duplicate_content 分支），拿它判会把
     // 正常去重当成失败。`message` 只在**已经确定是错误之后**用来取人话文案。
     if (data.error || data.code) {
-      onError?.(data.error || data.message || data.code)
+      // ⚠️ 判据仍是 `error || code`（**不能拿 `message` 当判据**：去重成功响应本来就带
+      // `message`，见下面 `duplicate_url` 分支），但**取文案**走 `errorMessageOf`
+      // —— `message` 优先于 `detail`，两个信封（旧 `{error}` / 新 `{code,message}`）都覆盖。
+      onError?.(errorMessageOf(data, '导入失败'), errorInfoOf(data))
       return
     }
     onDone(data)
@@ -140,7 +156,7 @@ async function fallbackJson(
     // 另一处仍漏：`fallbackJson` 是**流式失败才走**的兜底路径，漏了它等于「SSE
     // 正常时能报错、降级后不能报错」，而用户看到的都是同一个导入按钮。
     if (data.error || data.code) {
-      onError?.(data.error || data.message || data.code)
+      onError?.(errorMessageOf(data, '导入失败'), errorInfoOf(data))
       return
     }
     if (data.status === 'duplicate_url' || data.status === 'duplicate_content') {

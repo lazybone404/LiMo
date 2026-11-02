@@ -43,7 +43,18 @@ export const createTasksSlice: StateCreator<Store, [], [], TasksSlice> = (set) =
   processingTasks: {},
   setProcessing: (taskKey, task) => set(s => {
     const tasks = { ...s.processingTasks }
-    if (task) tasks[taskKey] = { status: 'running', ...task, title: task.title || '' }
+    if (task) {
+      // `startedAt` 是**唯一**做继承的字段（其余仍是全量替换）：进度事件每秒来好几条，
+      // 每次都取 `Date.now()` 会让「已用时」永远停在 0 秒。
+      // ⚠️ 继承判据必须是「上一条任务是 running」，**不能**只看「这个 key 有任务」：
+      // `failTask` 保留条目 5 秒且不清 `startedAt`，而「重试」最可能的用法正是失败后
+      // 5 秒内点 —— 只看「有任务」会让重试的计时从**上一次任务**的开头起算。
+      const prev = s.processingTasks[taskKey]
+      tasks[taskKey] = {
+        status: 'running', ...task, title: task.title || '',
+        startedAt: task.startedAt ?? (prev?.status === 'running' ? prev.startedAt : Date.now()),
+      }
+    }
     else {
       Object.keys(tasks).forEach(k => {
         if (k.startsWith(taskKey + '__') || k === taskKey) delete tasks[k]

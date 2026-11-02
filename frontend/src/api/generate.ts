@@ -1,7 +1,10 @@
 /**
  * generate 域 — 生成 / 图片处理（流式端点）。
  */
-import { apiFetch, getErrorMessage, BASE, CLIENT_HEADERS, type GenerateResult, type MarkdownView } from './core'
+import {
+  apiFetch, getErrorMessage, errorInfoOf, errorMessageOf, BASE, CLIENT_HEADERS,
+  type ApiErrorInfo, type GenerateResult, type MarkdownView,
+} from './core'
 import { parseSSEStream } from './sse'
 
 /**
@@ -124,7 +127,10 @@ export async function saveMarkdownContent(
 export interface StreamGenerateCallbacks {
   onChunk: (text: string, mode?: string) => void
   onDone: (result?: { id?: string }) => void
-  onError: (message: string) => void
+  /** 生成失败。`info` 是后端错误信封的结构化补充（`code` / `hint` / `recoverable`），
+   *  **可选** —— 既有调用方 `(msg) => …` 一行都不用改，而「该不该给重试按钮」
+   *  与「下一步该做什么」首次能被读到。 */
+  onError: (message: string, info?: ApiErrorInfo) => void
   onCancelled: (savedPartial: boolean) => void
   /** 部分产物失败/为空（另一产物成功）——用于 Toast 提示，不终止流程。
    * kind='chart_missing' 为图表未生成（可选组件缺失，产物本身成功），
@@ -190,14 +196,37 @@ export function streamGenerate(
   const origOnDone = callbacks.onDone
   const origOnError = callbacks.onError
   callbacks.onDone = (...args) => { receivedDoneOrError = true; origOnDone(...args) }
-  callbacks.onError = (msg) => { receivedDoneOrError = true; origOnError(msg) }
+  callbacks.onError = (msg, info) => { receivedDoneOrError = true; origOnError(msg, info) }
 
   fetch(`${BASE}/generate/${transcriptId}/stream${qs ? '?' + qs : ''}`, { signal, headers: CLIENT_HEADERS })
     .then(async (response) => {
-      if (!response.ok) {
-        let body: any = {}
-        try { body = await response.json() } catch { /* not JSON */ }
-        callbacks.onError(body.detail || body.message || `请求失败 (${response.status})`)
+      // ── 非 SSE 响应一律按 JSON 错误信封处理 ──
+      // 两种形态都要接住：
+      //  ① `!response.ok` —— 显式 4xx/5xx（`GEN_NO_API_KEY` 是这一类，recoverable=False）；
+      //  ② **HTTP 200 但 body 是 JSON** —— `errors.http_status()` 对「未显式 status +
+      //     recoverable」压成 200（`GEN_NOT_FOUND` 就是这一类）。改造前这里只看
+      //     `response.ok`，于是 JSON 被当成 SSE 逐行喂给 `parseSSEStream` —— 一个事件
+      //     都不命中、`receivedDoneOrError` 始终 false，最后报「连接意外断开，请重试」，
+      //     而真实的 code / hint 全部丢失。**那看起来和断流一模一样，但不是断流。**
+      //  ③ 文案用 `errorMessageOf`（`message` 优先），改造前这里是 `detail || message`
+      //     —— 顺序反了，用户会读到 `ProxyError: … WinError 10061`。
+      //
+      // ⚠️ 判据是「**明确是 JSON**」而不是「不是 SSE」。两者的差别在于**没有 content-type
+      //    时往哪边倒**：写成 `!contentType.includes('text/event-stream')` 时，任何省略了
+      //    该头的正常流（自建网关、某些代理会改写/剥掉它）都会被当成错误体吞掉 ——
+      //    一个 chunk 都不进 `onChunk`，用户看到的是「生成失败」，而服务端一切正常。
+      //    反过来误判（把 JSON 当 SSE）最坏只是老行为：解析不出事件 → 「连接意外断开」，
+      //    **流不会被丢弃**。故宁可往 SSE 那边倒。
+      //    `?.` 是给**测试替身**留的（`artifactFollowUp.test.tsx` 的假 Response 只有
+      //    `ok/status/body`）—— 真实 `Response.headers` 恒在，这不是运行时兜底。
+      const contentType = response.headers?.get?.('content-type') ?? ''
+      if (!response.ok || contentType.includes('application/json')) {
+        let body: unknown = null
+        try { body = await response.json() } catch { /* 非 JSON（如网关的 HTML 错误页） */ }
+        callbacks.onError(
+          errorMessageOf(body, `请求失败 (${response.status})`),
+          errorInfoOf(body),
+        )
         return
       }
 
@@ -208,7 +237,10 @@ export function streamGenerate(
         if (data.type === 'done') {
           if (!data.mode) { callbacks.onDone(data) }
         } else if (data.type === 'error') {
-          callbacks.onError(data.message || '未知错误')
+          // 后端 `_sse_error_line` 发的就是 `AppError.to_dict()` 的形状（含 code /
+          // recoverable / hint）—— 一并透传，否则流内错误与入口段错误会在前端
+          // 变成两种信息量（后者现在能带 hint，前者不能）。
+          callbacks.onError(data.message || '未知错误', errorInfoOf(data))
         } else if (data.type === 'warning') {
           callbacks.onWarning?.(data.message || '部分产物生成失败', data.kind)
         } else if (data.type === 'cancelled') {

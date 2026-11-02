@@ -1,20 +1,21 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useStore } from '../../store'
-import { streamGenerate, getMarkdown, listEnabledModels, listProviders, ingestURL, ingestText, ingestFile, processImage, saveEngineBindings, retranscribe, getTranscript, getErrorMessage, type EnabledModel, type Provider } from '../../api/client'
+import { streamGenerate, getMarkdown, listEnabledModels, listProviders, ingestURL, ingestText, ingestFile, processImage, saveEngineBindings, retranscribe, getTranscript, getErrorMessage, type EnabledModel, type Provider, type IngestErrorInfo } from '../../api/client'
 import { registerAbort } from '../../api/taskManager'
 import { cancelTask } from '../../api/taskManager'
 import { cancelEpubInterpret } from '../../api/epub'
 import { getStreamBuffer, appendStreamBuffer, setStreamBuffer, deleteStreamBuffer, scheduleFlush, flushImmediate } from '../../store/streamBuffers'
 import { onConfigChanged } from '../../lib/configEvents'
-import { PanelLeftClose, XCircle, Plus } from 'lucide-react'
+import { PanelLeftClose, XCircle, Plus, X } from 'lucide-react'
 import { loadGenPrefs, saveGenPrefs } from './genPrefs'
 import { EngineSelect, type EngineOption } from './EngineSelect'
-import { ImportSection } from './ImportSection'
+import { ImportSection, type ImportError } from './ImportSection'
 import { GenerateOptions } from './GenerateOptions'
 import { ImageModeCards } from './ImageModeCards'
 import { EpubInterpretPanel } from '../preview/EpubInterpretPanel'
 import { EXT_TO_SUBTYPE, getSubScenario, getTypeMeta, normalizeStyle, pickStyleKeys, reconcileStyle, styleOptions } from './constants'
 import { imageModeLabel } from '../../lib/imageModes'
+import { detectImportUrl } from '../../lib/url-detect'
 import { toMarkdownMeta } from '../../lib/markdownMeta'
 import { useTaskRunner } from '../../hooks/useTaskRunner'
 
@@ -23,6 +24,28 @@ import { useTaskRunner } from '../../hooks/useTaskRunner'
 let refNoNotesPrompted = false
 
 const _EMPTY_OBJ: Record<string, any> = {}
+
+/**
+ * 生成/处理失败的结构化形状（面板内直接渲染，故不跨文件）。
+ *
+ * ⚠️ `message` 之外全部**可选且缺省**：纯前端校验（「请先选择文档」）只填 message，
+ * 后端信封里没有 hint 的错误也只填 message —— 与改造前逐个字段一致。
+ *
+ * ⚠️ **`retry` 是「这条错误有没有一个可重试的动作」，不是「能不能重试」的方向** ——
+ * 这个红框同时服务**生成**与**图片处理**两条链路（两处都往同一个 `error` 里写）。
+ * 若按钮固定调 `handleGenerate`，图片处理失败时点它会在背后开始生成一篇笔记，
+ * 而界面上只是红框消失、任务栏多一条「生成中」—— 用户点的是「重试」，拿到的是别的事。
+ * 故**显式把重试动作挂在这条错误上**；没有 `retry` 的错误不渲染按钮。
+ * `recoverable === false`（后端明确说不可恢复 / 纯前端校验）同样不渲染。
+ */
+interface GenError {
+  message: string
+  hint?: string
+  detail?: string
+  recoverable?: boolean
+  /** 点「重试」要做的那件事。缺省 = 这条错误没有可重试的动作 */
+  retry?: () => void
+}
 
 export function GenPanel() {
   const caps = useStore(s => s.capabilities)
@@ -91,14 +114,25 @@ export function GenPanel() {
   const [imageMode, setImageMode] = useState<'extract' | 'table' | 'digitize' | 'understand'>(
     (['extract', 'table', 'digitize', 'understand'].includes(saved.imageMode) ? saved.imageMode : null) || 'extract'
   )
-  const [error, setError] = useState('')
+  // 生成/处理失败 —— **结构化**而非 string：与 `ImportError` 同款，一句话装不下
+  // 「发生了什么 + 下一步」（hint）+「能不能重试」（recoverable）。
+  // 纯前端文案（「请先选择文档」）只填 message，其余字段天然缺省。
+  const [error, setError] = useState<GenError | null>(null)
 
-  // ── 从 processingTasks 推导当前文档的活跃任务（per-doc，支持多任务并发）──
+  // ── 从 processingTasks 推导当前文档的**仍在跑**的任务（per-doc，支持多任务并发）──
+  //
+  // ⚠️ 必须滤掉 `status === 'failed'`：`failTask` 只把状态改成 failed、**条目保留 5 秒**
+  // （`tasksSlice.ts::failTask`）且 `kind` 不变。只按 kind 判定的那四个布尔量会在此后
+  // 5 秒里继续说「正在生成」，而第 3 条的重试按钮最可能的用法正是**失败后立刻点** ——
+  // 那一下会被 `handleGenerate` 首行的 `if (isGenerating) return` **静默拦下**
+  // （连 toast 都没有），用户看到的是「点了没反应」。与导入侧 `activeImports` /
+  // `sameSourceRunning` 同一处修法（`handleImport` 里那段注释）。
   const docTasks = useMemo(() => {
     if (!currentDocId) return []
     return Object.entries(processingTasks)
       .filter(([k]) => k.startsWith(currentDocId + '__'))
       .map(([, v]) => v)
+      .filter(t => t.status === 'running')
   }, [currentDocId, processingTasks])
   const isGenerating = docTasks.some(t => t.kind === 'generate')
   const isRetranscribing = docTasks.some(t => t.kind === 'retranscribe')
@@ -109,7 +143,8 @@ export function GenPanel() {
   const addDoc = useStore(s => s.addDoc)
   const selectDoc = useStore(s => s.selectDoc)
   const [importInput, setImportInput] = useState('')
-  const [importError, setImportError] = useState('')
+  // 结构化（不是 string）—— 见 `ImportError`：一句话装不下「发生了什么 + 下一步 + 能不能重试」
+  const [importError, setImportError] = useState<ImportError | null>(null)
   const [importProgress, setImportProgress] = useState('')
   const [importPercent, setImportPercent] = useState<number | null>(null)
   const activeImportKeyRef = useRef<string | null>(null)  // 当前显示的导入 key
@@ -345,7 +380,7 @@ export function GenPanel() {
     if (isEpub && currentDocId) {
       cancelEpubInterpret(currentDocId).catch(() => {})
     }
-    setImportProgress(''); setImportPercent(null); setImportError(''); setError('')
+    setImportProgress(''); setImportPercent(null); setImportError(null); setError(null)
     addToast('已取消', 'info')
   }
 
@@ -358,15 +393,21 @@ export function GenPanel() {
   // ── Handlers ──
   const handleRetranscribe = () => {
     if (!currentDocId) return
+    // 同 `handleProcessImage`：失败红框的「重试」绕过主按钮的 disabled
+    if (isRetranscribing) return
     const capturedId = currentDocId
     void runTask({
       taskKey: capturedId + '__retranscribe',
       taskInfo: { kind: 'retranscribe' },
       prepareAbort: createAbort,
-      onStart: () => { setError(''); setImportError('') },
+      onStart: () => { setError(null); setImportError(null) },
       run: (signal) => retranscribe(capturedId, signal),
       onSuccess: async (result) => {
-        if ('error' in result) { setError(result.error); addToast(result.error, 'error'); return }
+        if ('error' in result) {
+          setError({ message: result.error, retry: handleRetranscribe })
+          addToast(`${result.error}（可在生成面板重试）`, 'error')
+          return
+        }
         const tx = await getTranscript(capturedId)
         if (!isSameDoc(capturedId)) return
         if (tx) {
@@ -396,14 +437,19 @@ export function GenPanel() {
         }
         addToast('重新转录完成')
       },
-      onFail: (msg) => { setError(msg); addToast(msg, 'error') },
+      onFail: (msg) => {
+        setError({ message: msg, retry: handleRetranscribe })
+        addToast(`${msg}（可在生成面板重试）`, 'error')
+      },
     })
   }
 
   const handleImport = () => {
     // ── 并发上限检查 ──
-    const activeImports = Object.keys(useStore.getState().processingTasks)
-      .filter(k => k.startsWith('__import__'))
+    // ⚠️ 只数 `status === 'running'`：失败条目会保留 5 秒（见下条注释），把它算进来会让
+    // 「连挂三次 → 第四次重试」被一条**不存在**的并发上限拦住。
+    const activeImports = Object.values(useStore.getState().processingTasks)
+      .filter(t => t.kind === 'import' && t.status === 'running')
     if (activeImports.length >= MAX_CONCURRENT_IMPORTS) {
       addToast(`同时最多 ${MAX_CONCURRENT_IMPORTS} 个导入任务，请等待完成后再试`, 'info')
       return
@@ -411,9 +457,13 @@ export function GenPanel() {
 
     // P1-20：同源防重入——同一来源（文件名/URL/文本）已有导入任务在跑则忽略，
     // 防连按 Enter/连点按钮产生重复任务；不同来源的并发导入仍受 MAX_CONCURRENT_IMPORTS 约束
+    //
+    // ⚠️ 判据必须含 `status === 'running'`：`failTask` 把条目标成 failed 后还**保留 5 秒**
+    // （`tasksSlice.ts::failTask`），只判 kind/title 的话，用户看到错误卡片立刻点「重试」会被
+    // 当成「该内容正在导入中」拦掉 —— 什么都不会发生，只弹一条**恰好相反**的 toast。
     const pendingTitle = fileObj?.name || importInput.trim().slice(0, 40) || '导入'
     const sameSourceRunning = Object.values(useStore.getState().processingTasks)
-      .some(t => t.kind === 'import' && t.title === pendingTitle)
+      .some(t => t.kind === 'import' && t.title === pendingTitle && t.status === 'running')
     if (sameSourceRunning) {
       addToast('该内容正在导入中，请稍候', 'info')
       return
@@ -422,7 +472,7 @@ export function GenPanel() {
     if (inputType === 'file' || inputType === 'image' || inputType === 'video') {
       const url = importInput.trim()
       if (!fileObj && !url) return
-      setImportError(''); setError('')
+      setImportError(null); setError(null)
       const importTitle = fileObj?.name || importInput.slice(0, 40) || '导入'
       const importKey = `__import__${importSeqRef.current++}`
       const taskKey = importKey + '__import'
@@ -463,7 +513,9 @@ export function GenPanel() {
         }
       }
       // C3: 移除误吞错误守卫，始终重置状态
-      const onError = (err: string) => { setImportError(err); setImportProgress(''); failTask(taskKey, err) }
+      const onError = (err: string, info?: IngestErrorInfo) => {
+        setImportError({ message: err, ...info }); setImportProgress(''); failTask(taskKey, err)
+      }
       if (fileObj) {
         const signal = createAbort(taskKey)
         setImportProgress(inputType === 'video' ? '语音转写中...' : inputType === 'image' ? '导入中...' : '文档解析中...')
@@ -476,14 +528,17 @@ export function GenPanel() {
       return
     }
     if (!importInput.trim()) return
-    setImportError(''); setError('')
+    setImportError(null); setError(null)
     const text = importInput.trim()
     const importKey = `__import__${importSeqRef.current++}`
     const taskKey = importKey + '__import'
     activeImportKeyRef.current = importKey
     setProcessing(taskKey, { kind: 'import', title: text.slice(0, 40) })
     const signal = createAbort(taskKey)
-    const isURL = text.startsWith('http://') || text.startsWith('https://')
+    // 认得出就按 URL 走（含分享文案里夹的链接、丢了协议的裸域名），认不出才是纯文本。
+    // ⚠️ 必须用返回的 `url` 而不是 `text` —— 分享文案里 URL 之外还有标题，
+    // 把整段发去下载会得到一个 404，而界面上只显示「下载中…」。
+    const url = detectImportUrl(text)
     const onDone = (doc: any) => {
       const isDup = doc.status === 'duplicate_url' || doc.status === 'duplicate_content'
       const existing = useStore.getState().docs.find(d => d.id === doc.id)
@@ -507,22 +562,31 @@ export function GenPanel() {
       setProcessing(taskKey, null)
     }
     // C3: 移除误吞错误守卫
-    const onError = (err: string) => { setImportError(err); setImportProgress(''); failTask(taskKey, err) }
-    if (isURL) { setImportProgress('下载中...'); ingestURL(text, ev => updateImportProgress(ev), onDone, onError, signal) }
+    const onError = (err: string, info?: IngestErrorInfo) => {
+      setImportError({ message: err, ...info }); setImportProgress(''); failTask(taskKey, err)
+    }
+    if (url) { setImportProgress('下载中...'); ingestURL(url, ev => updateImportProgress(ev), onDone, onError, signal) }
     else { setImportProgress('导入中...'); ingestText(text, ev => updateImportProgress(ev), onDone, onError, signal) }
   }
 
   const handleProcessImage = () => {
     if (!currentDocId) return
+    // 与 `handleGenerate` 的 `if (isGenerating) return` 对称：失败红框的「重试」不受
+    // 主按钮的 `disabled` 约束，事件路径上的防重入只能写在这里
+    if (isImageProcessing) return
     const capturedId = currentDocId
     void runTask({
       taskKey: capturedId + '__process',
       taskInfo: { kind: 'process', mode: imageMode },
       prepareAbort: createAbort,
-      onStart: () => { setError(''); setImportError('') },
+      onStart: () => { setError(null); setImportError(null) },
       run: (signal) => processImage(capturedId, imageMode, selectedModelId ?? undefined, signal),
       onSuccess: (result) => {
-        if ('error' in result) { setError(result.error); addToast(result.error, 'error'); return }
+        if ('error' in result) {
+          setError({ message: result.error, retry: handleProcessImage })
+          addToast(`${result.error}（可在生成面板重试）`, 'error')
+          return
+        }
         setImageResult(capturedId, imageMode, { text: result.text, engine: result.engine || caps?.engineOptions?.ocr?.[0]?.name || 'ocr', id: result.result_id || '' })
         setActiveView(imageMode)
         // 降级提醒
@@ -531,7 +595,10 @@ export function GenPanel() {
         }
         addToast('处理完成')
       },
-      onFail: (msg) => { setError(msg); addToast(msg, 'error') },
+      onFail: (msg) => {
+        setError({ message: msg, retry: handleProcessImage })
+        addToast(`${msg}（可在生成面板重试）`, 'error')
+      },
     })
   }
 
@@ -540,7 +607,8 @@ export function GenPanel() {
   const handleGenerate = (continueFrom: '' | 'partial' = '') => {
     // P1-20：防重入（按钮 disabled 之外的事件路径——快捷键/双击兜底）
     if (isGenerating) return
-    if (!currentDocId) { setError('请先选择文档'); return }
+    // `recoverable: false` —— 原地重试必然同样失败（要先选文档），不给假出口
+    if (!currentDocId) { setError({ message: '请先选择文档', recoverable: false }); return }
 
     // ── 参考文件意图缺失提醒（会话内只弹一次；确认 → 降级为背景材料）──
     if (refFile && !userNotes.trim() && !refNoNotesPrompted) {
@@ -574,8 +642,13 @@ export function GenPanel() {
     }
 
     // ── 全局并发上限检查 ──
-    const activeGenerates = Object.keys(useStore.getState().processingTasks)
-      .filter(k => k.endsWith('__generate'))
+    // ⚠️ 只数 `status === 'running'`（与 `handleImport` 的 `activeImports` 同款）：
+    // `failTask` 的条目会保留 5 秒，把它算进来时「两个任务都失败 → 立刻重试」会被一条
+    // **不存在**的并发上限拦住，而提示语说的是「请等待完成后再试」——根本没东西在跑。
+    // 判 kind 走任务体而不是 key 后缀：key 的构造属于 `setProcessing` 的调用方，
+    // 值上的 `kind` 才是任务自己的属性。
+    const activeGenerates = Object.values(useStore.getState().processingTasks)
+      .filter(t => t.kind === 'generate' && t.status === 'running')
     if (activeGenerates.length >= MAX_CONCURRENT_GENERATES) {
       addToast(`同时最多 ${MAX_CONCURRENT_GENERATES} 个生成任务，请等待完成后再试`, 'info')
       return
@@ -587,13 +660,17 @@ export function GenPanel() {
 
     const rawText = useStore.getState().currentRawText
     if (!rawText || rawText.startsWith('[转录失败') || rawText === '[转录结果为空]' || rawText === '[无可用转录引擎，请在设置中配置文档引擎]') {
-      setError('当前文档无有效转录内容，请先导入或重新转录后再生成')
+      // 同上：重试这条路不可能自己变好（要用「重新转录」那条）
+      setError({
+        message: '当前文档无有效转录内容，请先导入或重新转录后再生成',
+        recoverable: false,
+      })
       return
     }
     const capturedId = currentDocId
     const taskKey = capturedId + '__generate'
     const signal = createAbort(taskKey)
-    setError(''); setImportError('')
+    setError(null); setImportError(null)
     productChars.current.set(taskKey, { notes: 0, polished: 0 })  // 新生成从 0 开始计数
     reasoningBuf.current.set(taskKey, { notes: '', polished: '' })  // 思考链清零（per-taskKey）
     cancelledHandled.current = false  // 并行双产物两路 cancelled 事件去重
@@ -792,7 +869,7 @@ export function GenPanel() {
         }
         genOutcomeRef.current = 'ok'
       },
-      onError(msg) {
+      onError(msg, info) {
         genOutcomeRef.current = 'error'
         failTask(taskKey, msg)
         productChars.current.delete(taskKey)
@@ -800,7 +877,17 @@ export function GenPanel() {
         deleteStreamBuffer(notesKey)
         deleteStreamBuffer(polishedKey)
         if (!isSameDoc(capturedId)) return
-        setError(msg); addToast(msg, 'error')
+        // 结构化落进红框（message + hint + detail），toast 仍只说「发生了什么」——
+        // toast 会飘走，而「下一步该做什么」需要留在原地让人照着做。
+        setError({
+          message: msg, hint: info?.hint, detail: info?.detail, recoverable: info?.recoverable,
+          // 重试 = 用当前面板参数再生成一次（四个拦截在 `handleGenerate` 里原样保留）
+          retry: () => handleGenerate(''),
+        })
+        // toast 补一句「去哪儿重试」：用户此刻可能正看着预览区（生成失败的红框在
+        // 左侧面板里，收起状态下根本看不见）。不可重试的错误不加这句 —— 说了只会
+        // 让人去点一个不存在的按钮。
+        addToast(info?.recoverable === false ? msg : `${msg}（可在生成面板重试）`, 'error')
       },
       onWarning(msg, kind) {
         // 图表未生成（kind=chart_missing，可选组件缺失）：产物本身成功，仅 info 提示
@@ -1063,8 +1150,43 @@ export function GenPanel() {
                 </>
               )}
 
-              {/* 错误提示 */}
-              {error && <div className="px-3 py-2 rounded-[10px] bg-error/10 text-[12px] text-error border border-error/30">{error}</div>}
+              {/* 错误提示 —— 结构化小卡片：主文案 + hint（下一步该做什么）+ detail（给开发者）
+                   +「重试」。与 `ImportSection` 的失败卡片是同一套形态与判据，两处刻意长得像：
+                  用户不该因为「这次是导入失败还是生成失败」而重新学一遍怎么读。
+
+                  ⚠️ 按钮调的是**这条错误自己带上的** `error.retry`（生成 / 重新转录 / 图片处理
+                  三条链路各挂各的，见 `GenError.retry` 的注释）—— 这个红框三者共用，
+                  写死成 `handleGenerate` 会让「图片处理失败 → 点重试」在背后开始生成笔记。
+                  生成那条挂的是 `handleGenerate('')` 本体，**四个拦截一个都不跳**
+                  （未保存编辑 / 已手动编辑 / 无有效转录内容 / 全局并发上限）——它们拦的是
+                  「会丢掉你已经写下的东西」与「真的没东西可生成」，而用户点重试时最容易
+                  发生的正是「失败后去编辑器里改了几笔再回来重试」。
+                  ⚠️ `recoverable` 缺失时**不因此隐藏按钮**（宁多勿少）：老后端/网关不回这个字段，
+                  「点了还是同样的错」比「明明能重试却没有按钮」轻。纯前端校验显式标
+                  `recoverable: false`（见上面几处 `setError({...})`）——它们要求先做别的事。 */}
+              {error && (
+                <div className="rounded-lg border border-border-default bg-error/5 px-2.5 py-2 space-y-1">
+                  <div className="flex items-start gap-1.5 text-[12px] text-error">
+                    <X size={12} className="mt-[3px] shrink-0" />
+                    <span className="flex-1 leading-relaxed break-words">{error.message}</span>
+                    {error.recoverable !== false && error.retry && (
+                      <button
+                        type="button"
+                        onClick={error.retry}
+                        className="shrink-0 px-1.5 py-0.5 rounded font-medium hover:bg-error/10 transition-colors"
+                      >
+                        重试
+                      </button>
+                    )}
+                  </div>
+                  {error.hint && (
+                    <div className="pl-[18px] text-[11px] leading-relaxed text-muted break-words">{error.hint}</div>
+                  )}
+                  {error.detail && (
+                    <div className="pl-[18px] text-[10px] leading-relaxed text-disabled break-all">{error.detail}</div>
+                  )}
+                </div>
+              )}
 
               {/* 流式显示开关 — epub 一键解读不走流式 generate，隐藏 */}
               {!typeMeta.isImage && !isEpub && (

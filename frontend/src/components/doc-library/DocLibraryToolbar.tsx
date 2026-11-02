@@ -10,15 +10,18 @@
  * 弹窗会打断视线流；行内输入 + Enter 提交 + Esc 取消与列表内的重命名行为一致。
  */
 import { useState } from 'react'
-import { FolderPlus, PanelLeftClose } from 'lucide-react'
+import { FolderPlus, PanelLeftClose, Trash2 } from 'lucide-react'
 import { useStore } from '../../store'
 import type { Density } from './docLibraryPrefs'
+import { RecentDocsPopover } from './RecentDocsPopover'
 
 export interface DocLibraryToolbarProps {
   density: Density
   onDensity: (d: Density) => void
   /** 返回是否成功 —— **成功才**清空草稿并收起输入行（失败保留，用户重试一次即可） */
   onCreateFolder: (name: string) => Promise<boolean>
+  /** 打开回收站对话框（状态由父组件持有 —— 它要 Portal，且恢复后要重拉文档列表） */
+  onOpenTrash: () => void
   /** 新建文件夹请求进行中 —— 禁用入口，防重复发起 */
   busy: boolean
 }
@@ -28,7 +31,7 @@ const DENSITY_OPTIONS: { key: Density; label: string; hint: string }[] = [
   { key: 'compact', label: '简略', hint: '单行视图，一屏看更多' },
 ]
 
-export function DocLibraryToolbar({ density, onDensity, onCreateFolder, busy }: DocLibraryToolbarProps) {
+export function DocLibraryToolbar({ density, onDensity, onCreateFolder, onOpenTrash, busy }: DocLibraryToolbarProps) {
   const [creating, setCreating] = useState(false)
   const [draft, setDraft] = useState('')
   /** 提交中 —— 防 Enter 提交与紧随的 blur 各发一次请求（与 GroupHeader 同理） */
@@ -62,6 +65,16 @@ export function DocLibraryToolbar({ density, onDensity, onCreateFolder, busy }: 
             title="新建文件夹"
           >
             <FolderPlus size={14} className="text-muted" />
+          </button>
+          {/* 最近打开 —— 便利入口，数据在 localStorage（`lib/recent-docs.ts`） */}
+          <RecentDocsPopover />
+          <button
+            data-open-trash
+            onClick={onOpenTrash}
+            className="w-6 h-6 rounded-md hover:bg-surface-hover flex items-center justify-center"
+            title="回收站（删除的文档可在此恢复）"
+          >
+            <Trash2 size={14} className="text-muted" />
           </button>
           {/* 密度切换 —— 两个 chip 而不是图标：文字比图标更能说明「详细/简略」的差别 */}
           <span className="flex items-center gap-0.5">

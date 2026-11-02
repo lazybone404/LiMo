@@ -318,12 +318,13 @@ async def startup():
     except Exception:
         pass
 
-    # 注入全局代理 → dashscope SDK / openai / yt-dlp 统一走 proxy
-    # 豁免表（回环地址不走代理）与合成逻辑都在 app/core/net.py::apply_proxy_env
-    _proxy = (config.get("fetch", {}) or {}).get("proxy", "").strip()
-    if _proxy:
-        from app.core.net import apply_proxy_env
-        apply_proxy_env(_proxy)
+    # 注入全局代理 → dashscope SDK / openai / yt-dlp 统一走 proxy。
+    # 豁免表（回环地址 + 直连域名）与合成逻辑都在 app/core/net.py::configure_proxy。
+    # ⚠️ **无条件调用**：`proxy` 为空时也要跑，否则「用户只改了直连域名」不会生效
+    #    （模块级规则由它写入；环境变量那半在空代理下本就是 no-op）。
+    _fetch = config.get("fetch", {}) or {}
+    from app.core.net import configure_proxy
+    configure_proxy(_fetch.get("proxy", ""), _fetch.get("proxy_bypass"))
 
     _init_logging(config)
     init_request_id_logging()  # 注入 RequestID 过滤器

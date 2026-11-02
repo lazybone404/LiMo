@@ -141,7 +141,16 @@ def probe_venv(venv_dir: Path | str, modules: tuple[str, ...] = (), *, hint: str
         if base is None:
             return (f"独立环境不完整：{venv.name} 缺 pyvenv.cfg 或其中的 home —— "
                     f"删掉该目录后重新「一键安装」") + (f"（{hint}）" if hint else "")
-        if not base.exists():
+        try:
+            base_missing = not base.exists()
+        except OSError:
+            # **验证失败 ≠ 对象失效**。uv 用 junction 做版本别名（`cpython-3.12-*`
+            # → `cpython-3.12.13-*`），Windows 在部分进程上下文（实测：未签名的
+            # 打包 exe，dev 的签名 python 反而不触发）遍历联接点时抛 WinError 448
+            # 「不受信任的装入点」。而 venv 的 python.exe 就在本地、实测能正常跑。
+            # 据此判死 = 「装好了却显示不可用」，用户照着提示反复重装东西一直是好的。
+            base_missing = False
+        if base_missing:
             return (f"独立环境已失效：它依赖的 Python（{base}）已被移动或删除 —— "
                     f"删掉 {venv.name} 后重新「一键安装」") + (f"（{hint}）" if hint else "")
 
@@ -159,6 +168,7 @@ def probe_venv(venv_dir: Path | str, modules: tuple[str, ...] = (), *, hint: str
                     + (f" —— {hint}" if hint else ""))
         return None
     except OSError as e:
-        # WinError 448（不受信任装入点，常见于 AppData 下 uv 托管的 python）——
-        # 路径遍历本身就可能抛，这同样是「用不了」，不能让它冒到 /api/plugins 变成 500
+        # 兜底：走到这里的是 venv 自身路径（`~/.limo/plugins/...`）不可访问，那确实
+        # 用不了 —— 与上面 base python 那条（验证手段失效，已放行）不是一回事。
+        # 不能让它冒到 /api/plugins 变成 500。
         return f"独立环境不可访问（{type(e).__name__}: {e}）" + (f" —— {hint}" if hint else "")

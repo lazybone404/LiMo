@@ -1117,11 +1117,12 @@ mod webview_keys {
     const VK_OEM_PLUS: u32 = 0xBB; // '='（Shift 下是 '+'，VK 与 Shift 无关）
     const VK_OEM_MINUS: u32 = 0xBD; // '-'（Shift 下是 '_'）
     const VK_OEM_5: u32 = 0xDC; // '\' —— 沉浸阅读
+    const VK_OEM_2: u32 = 0xBF; // '/'（Shift 下是 '?'，VK 与 Shift 无关）—— 快捷键一览
 
     fn is_app_shortcut(vk: u32) -> bool {
         matches!(
             vk,
-            VK_0 | VK_G | VK_I | VK_K | VK_W | VK_OEM_PLUS | VK_OEM_MINUS | VK_OEM_5
+            VK_0 | VK_G | VK_I | VK_K | VK_W | VK_OEM_PLUS | VK_OEM_MINUS | VK_OEM_5 | VK_OEM_2
         )
     }
 

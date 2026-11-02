@@ -147,6 +147,22 @@ def _empty_index() -> dict:
 # 本进程正在导入的（`Store._pending_ids`）一律豁免；跨进程的按年龄宽限。
 PENDING_GRACE_SECONDS = 3600
 
+# ── 回收站 ──
+#
+# 删除不再是物理销毁：文档目录整体搬进 `{root}/trash/{id}/doc/`，另存一份
+# `trash-meta.json`（原索引条目 + 删除时间 + 原目录名）。恢复 = 一次 `shutil.move`。
+#
+# ⚠️ **`trash-meta.json` 住在 trash 目录里，`index.json` 不加任何键** —— 理由与
+#    `doc_meta.py` 同源：index 是缓存不是真相，删一次就全丢。
+# ⚠️ **恢复绝不能靠 `_rebuild_index` 重建条目**：那里 `tx_id` 由正文 sha256 重推，
+#    **id 必变**，前端的引用、标签、文件夹归属全部错位 —— 所以条目要原样存、原样写回。
+# ⚠️ **回收站不是磁盘清理工具**：`{root}/files/{hash}/{name}`（上传原件）今天就不随
+#    文档删除，回收站也不管它。要治它得先答「同一 hash 是否被多篇引用」，单独一轮。
+TRASH_DIR_NAME = "trash"
+TRASH_META_NAME = "trash-meta.json"
+TRASH_DOC_SUBDIR = "doc"
+TRASH_RETENTION_DAYS = 7
+
 
 def _entry_age_seconds(entry: dict) -> float:
     """条目 `createdAt` 距今秒数；解析不了（空串 / 格式坏）→ 视为**很久以前**。
@@ -235,6 +251,10 @@ class Store:
         # 放在 `_load_index` **之后**：即便 index 丢了，`_load_index` 已先做过常规重建，
         # 这里搬完文件再重建一次，产物版本即可正确出现。幂等，详见方法 docstring。
         self._migrate_legacy_markdown_layout()
+        # 回收站过期清理。⚠️ 放在最后：它只碰 `trash/` 下的目录，**不碰 index.json**
+        # （trash 里的东西本来就不在索引里），因此不会与上面任何一个迁移打架。
+        # 幂等、稳态零动作（只 `stat` + 最多读一个小 JSON）。
+        self._purge_expired_trash()
 
     # ── 索引加载 / 保存 / 迁移 ──
 
@@ -559,8 +579,12 @@ class Store:
         for d in sorted(self.root.iterdir()):
             if not d.is_dir():
                 continue
+            # ⚠️ `trash` 必须在跳过名单里。一层扫描本来就碰不到 `trash/{id}/doc/`
+            # 这种二级目录，这条是**防御**：哪天有人把扫描改成递归，已删文档会被
+            # 当成正常文档重建回来，而且零报错（用户以为删掉了，其实只是搬了个地方）。
             if d.name.startswith(".") or d.name in ("logs", "tmp", "files",
-                                                      "conversations", "cache"):
+                                                      "conversations", "cache",
+                                                      TRASH_DIR_NAME):
                 continue
             tx_md = d / "transcript.md"
             if not tx_md.exists():
@@ -1041,13 +1065,44 @@ class Store:
         }
 
     def delete_transcript(self, id: str) -> bool:
-        """删除文档目录 + index 清理。"""
+        """删除文档 —— **搬进回收站**（`trash/{id}/doc/`），7 天后自动清理。
+
+        返回 `True` 表示已从文档库消失（无论落在回收站还是被物理删除）。
+
+        ## 三段的顺序与回退（meta 写失败不能变成永久黑洞）
+
+        ① `shutil.move(doc_dir → trash/{id}/doc)`
+             失败 → 回退原行为 `rmtree` + warning。**回收站坏了不该让删除失败**。
+        ② 写 `trash-meta.json`（原子写）
+             失败 → 尝试把目录搬回原位；搬回成功 = 这次删除没走回收站（照常物理删）。
+                    搬回也失败 → 记 error，**仍然继续 ③**：目录已经在 trash 里了，
+                    索引留着它只会指向一个不存在的路径（那是更糟的状态）。
+                    这两种残局都由 `_purge_expired_trash` 的 mtime 兜底。
+        ③ 从 index 摘除（不变量） + `_save_index()`
+
+        ⚠️ **条目原样存进 meta**（transcript / markdowns / processes 三份）——恢复时
+        原样写回。绝不能靠 `_rebuild_index` 重建：那里 id 由正文 sha256 重推，**id 必变**。
+        """
         doc_dir = self.get_doc_dir(id)
+        entry = next((e for e in self._index["transcripts"] if e["id"] == id), None)
+        # 先取出三份索引数据（`_move_to_trash` 要存进 meta，而它会做耗时的文件移动，
+        # 不该持锁）——`delete_transcript` 是同步方法，这段时间不会有第二个 RMW。
+        saved = {
+            "entry": entry,
+            "markdowns": self._index["markdowns"].get(id) or [],
+            "processes": self._index["processes"].get(id) or [],
+        }
+
         if doc_dir and doc_dir.exists():
-            try:
-                shutil.rmtree(doc_dir)
-            except OSError as e:
-                logger.warning("删除文档目录失败: %s — %s", doc_dir, e)
+            if not self._move_to_trash(id, doc_dir, saved) and doc_dir.exists():
+                # ⚠️ 回收站没建成。两种失败里，meta 写失败那一支会把目录**搬回原位**
+                # （`_move_to_trash` 返回 False 但 `doc_dir` 还在），此时不补这一刀
+                # 就留下一具「索引里没有、磁盘上还在」的残骸：删除报成功，而
+                # `_rebuild_index` 下次重建会把它整篇复活（id 还会变）。
+                # 这就是计划里「回滚成功 → 按原行为 rmtree」那一句。
+                shutil.rmtree(doc_dir, ignore_errors=True)
+        # doc_dir 不存在（幽灵条目）时没什么可搬的，直接走 ③
+
         with self._lock:
             self._index["transcripts"] = [
                 e for e in self._index["transcripts"] if e["id"] != id
@@ -1056,6 +1111,234 @@ class Store:
             self._index["processes"].pop(id, None)
             self._save_index()
         return True
+
+    # ── 回收站 ──────────────────────────────────────────────────────────────
+
+    def _trash_root(self) -> Path:
+        return self.root / TRASH_DIR_NAME
+
+    def _trash_dir(self, id: str) -> Path:
+        # `_sanitize_id` 是归一化器（永不失败）：trash 目录名由它派生，`..` 不可能越界
+        return self._trash_root() / self._sanitize_id(id)
+
+    def _move_to_trash(self, id: str, doc_dir: Path, saved: dict) -> bool:
+        """把 `doc_dir` 整体搬进回收站并写 meta。返回 True = 进了回收站。
+
+        失败一律回退到「照常物理删除」——回收站是便利设施，它坏了不该让删除失败。
+        """
+        tdir = self._trash_dir(id)
+        doc_sub = tdir / TRASH_DOC_SUBDIR
+        # 同 id 的历史残留（正常不该有：删完就从索引消失了）。不先清掉的话
+        # `shutil.move` 会试图往一个已存在的目录里嵌套，最终路径多一层、恢复时对不上。
+        if tdir.exists():
+            logger.warning("回收站里已有同 id 的残留目录，先清掉: %s", tdir)
+            shutil.rmtree(tdir, ignore_errors=True)
+
+        try:
+            doc_sub.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(doc_dir), str(doc_sub))
+        except OSError as e:
+            logger.warning("移入回收站失败，改为直接删除: %s — %s", doc_dir, e)
+            shutil.rmtree(doc_dir, ignore_errors=True)
+            shutil.rmtree(tdir, ignore_errors=True)
+            return False
+
+        meta = {
+            "id": id,
+            "deletedAt": datetime.now().isoformat(timespec="seconds"),
+            "dirName": doc_dir.name,
+            "entry": saved.get("entry") or {"id": id, "dir_name": doc_dir.name},
+            # markdowns / processes 也存 —— 它们在 index 里是**另一批键**，
+            # 删除时被 pop 掉了，不存就恢复不回来（正文文件还在，但版本列表是空的）。
+            "markdowns": saved.get("markdowns") or [],
+            "processes": saved.get("processes") or [],
+        }
+        try:
+            atomic_write_text(tdir / TRASH_META_NAME,
+                              json.dumps(meta, ensure_ascii=False, indent=2))
+        except Exception as e:
+            logger.warning("回收站元数据写入失败，回滚删除: %s — %s", tdir, e)
+            try:
+                shutil.move(str(doc_sub), str(doc_dir))
+                shutil.rmtree(tdir, ignore_errors=True)
+                return False        # 文件回到原位 = 这次删除没走回收站，由调用方照常物理删
+            except OSError as e2:
+                # 目录已经在 trash 里、回不去了。**仍然要摘索引**（调用方继续走 ③），
+                # 否则索引指向不存在的路径。这条残局由 `_purge_expired_trash` 的
+                # mtime 分支兜底：没有 meta 的目录也按目录时间过期。
+                logger.error("回收站回滚失败，文档留在 trash 但无 meta（将按目录时间过期）: "
+                             "%s — %s", tdir, e2)
+                return True
+        return True
+
+    def _load_trash_meta(self, tdir: Path) -> Optional[dict]:
+        """读 `trash-meta.json`。读不到 / 损坏 / 不是对象都返回 None（不抛）。"""
+        path = tdir / TRASH_META_NAME
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            logger.warning("回收站元数据损坏，按无 meta 处理: %s — %s", path, e)
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _read_trash_meta(self, tdir: Path, id: str) -> Optional[dict]:
+        """读 meta 并要求 `id` 相符（恢复路径用：错 id 不能把别人的目录搬走）。"""
+        data = self._load_trash_meta(tdir)
+        if data is None or data.get("id") != id:
+            return None
+        return data
+
+    def _trash_deleted_at(self, tdir: Path) -> Optional[datetime]:
+        """删除时间：优先 meta 的 `deletedAt`，缺失/损坏则用目录 mtime。
+
+        ⚠️ mtime 这一支是**必需的**，不是兜底洁癖：`_move_to_trash` 的 ② 失败时
+        目录已经在 trash 里却没有 meta —— 只认 meta 的话它会「永不过期、永不显示、
+        永不清理」，静默占着磁盘。
+        """
+        meta = self._load_trash_meta(tdir)
+        if meta:
+            raw = meta.get("deletedAt") or ""
+            try:
+                return datetime.fromisoformat(str(raw))
+            except ValueError:
+                pass
+        try:
+            return datetime.fromtimestamp(tdir.stat().st_mtime)
+        except OSError:
+            return None
+
+    def _purge_expired_trash(self) -> None:
+        """删掉超过保留期的回收站条目。幂等，稳态零动作（只 `stat` + 至多读一个小 JSON）。
+
+        ⚠️ **不碰 `index.json`**：trash 里的东西本来就不在索引里，删目录是纯文件操作。
+        这也是它能安全挂在 `__init__` 末尾的原因。
+        """
+        troot = self._trash_root()
+        if not troot.is_dir():
+            return
+        cutoff = datetime.now().timestamp() - TRASH_RETENTION_DAYS * 86400
+        purged = 0
+        for d in troot.iterdir():
+            if not d.is_dir():
+                continue
+            when = self._trash_deleted_at(d)
+            if when is None:
+                continue
+            if when.timestamp() < cutoff:
+                shutil.rmtree(d, ignore_errors=True)
+                purged += 1
+        if purged:
+            logger.info("回收站过期清理: %d 项（保留 %d 天）", purged, TRASH_RETENTION_DAYS)
+
+    def list_trash(self) -> list[dict]:
+        """回收站条目，按删除时间**倒序**。
+
+        形状 `{id, title, sourceType, deletedAt, expiresAt, daysLeft}` —— 只给前端
+        列表要用的字段，不回传整个 entry（那是恢复时的内部数据）。
+        """
+        troot = self._trash_root()
+        if not troot.is_dir():
+            return []
+        now = datetime.now()
+        out: list[dict] = []
+        for d in troot.iterdir():
+            if not d.is_dir():
+                continue
+            meta = self._load_trash_meta(d)
+            when = self._trash_deleted_at(d)
+            if when is None:
+                continue
+            entry = (meta or {}).get("entry") or {}
+            # 没有 meta 的残局（见 `_move_to_trash` ②）：标题退回目录名，
+            # 用户至少还能看出是哪个目录被删了。
+            title = entry.get("title") or (meta or {}).get("dirName") or d.name
+            expires = when.timestamp() + TRASH_RETENTION_DAYS * 86400
+            out.append({
+                "id": (meta or {}).get("id") or d.name,
+                "title": title,
+                "sourceType": entry.get("source_type", ""),
+                "deletedAt": when.isoformat(timespec="seconds"),
+                "expiresAt": datetime.fromtimestamp(expires).isoformat(timespec="seconds"),
+                "daysLeft": max(0, TRASH_RETENTION_DAYS
+                                - int((now - when).total_seconds() // 86400)),
+            })
+        out.sort(key=lambda x: x["deletedAt"], reverse=True)
+        return out
+
+    def restore_transcript(self, id: str) -> Optional[dict]:
+        """从回收站恢复一篇文档。返回恢复后的索引条目；找不到/失败返回 None。
+
+        ⚠️ **条目原样写回**（id 不变、文件夹归属不变、标签不变）——这是回收站的
+        全部意义。目录名冲突时加 `_1` / `_2` 后缀，**绝不覆盖**已存在的目录。
+        """
+        tdir = self._trash_dir(id)
+        meta = self._read_trash_meta(tdir, id)
+        doc_sub = tdir / TRASH_DOC_SUBDIR
+        if meta is None or not doc_sub.exists():
+            return None
+
+        dir_name = str(meta.get("dirName") or "").strip() or self._sanitize_id(id)
+        target = self.root / dir_name
+        if target.exists():
+            for i in range(1, 1000):
+                cand = target.with_name(f"{target.name}_{i}")
+                if not cand.exists():
+                    target = cand
+                    break
+            else:
+                logger.error("回收站恢复失败：同名目录已存在且找不到可用后缀: %s", target)
+                return None
+
+        with self._lock:
+            try:
+                shutil.move(str(doc_sub), str(target))
+            except OSError as e:
+                logger.warning("回收站恢复失败: %s — %s", tdir, e)
+                return None
+
+            entry = dict(meta.get("entry") or {})
+            entry["id"] = id
+            entry["dir_name"] = target.name
+            if not any(e["id"] == id for e in self._index["transcripts"]):
+                self._index["transcripts"].append(entry)
+            markdowns = meta.get("markdowns") or []
+            if markdowns:
+                self._index["markdowns"][id] = markdowns
+            processes = meta.get("processes") or []
+            if processes:
+                self._index["processes"][id] = processes
+            self._persist_doc_meta(entry)
+            self._save_index()
+
+        # trash 残壳清理（失败无妨：没有 doc/ 的目录下次启动会被 mtime 清掉）
+        try:
+            (tdir / TRASH_META_NAME).unlink(missing_ok=True)
+            tdir.rmdir()
+        except OSError:
+            pass
+        return entry
+
+    def purge_trash(self, id: str) -> bool:
+        """彻底删除回收站里的一条（不可恢复）。"""
+        tdir = self._trash_dir(id)
+        if not tdir.is_dir():
+            return False
+        shutil.rmtree(tdir, ignore_errors=True)
+        return True
+
+    def purge_all_trash(self) -> int:
+        """清空回收站。返回清掉的条目数。"""
+        troot = self._trash_root()
+        if not troot.is_dir():
+            return 0
+        n = 0
+        for d in list(troot.iterdir()):
+            if d.is_dir():
+                shutil.rmtree(d, ignore_errors=True)
+                n += 1
+        return n
 
     def list_transcripts(self, filters: dict | None = None) -> list[dict]:
         """列出文档条目（顺带清理幽灵条目）。

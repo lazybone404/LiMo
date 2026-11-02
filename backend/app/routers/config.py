@@ -16,6 +16,8 @@ from app.core.cookie_parser import auto_parse
 from app.core.config_io import save_config as _save_config, mask_sensitive, merge_sensitive
 from app.core.url_utils import api_root
 from app.core.provider_defaults import default_base_url, provider_requires_api_key
+# 代理 + 直连域名 —— 判据的唯一入口在 core/net.py（保存后立刻生效，见文件末尾）
+from app.core.net import DEFAULT_BYPASS_SUFFIXES, configure_proxy
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -80,6 +82,20 @@ def mask_proxy(url: str) -> str:
     return f"{scheme}{user}:***@{rest}"
 
 
+def _bypass_rules(cfg: dict) -> list[str]:
+    """读取直连域名规则 —— **`None`（老配置缺键）与 `[]`（用户清空）必须区分**。
+
+    ⚠️ 曾写成 `cfg.get(...) or DEFAULT_BYPASS_SUFFIXES`：用户清空规则 → 存 `[]` →
+    下次打开设置页又看见一整排默认域名 → 再点保存就静默变回「默认豁免」，
+    而界面上没有任何异常。判据与 `net.configure_proxy` 的 `bypass is None` 同源；
+    非 list/tuple 的脏值按「缺键」处理（回落到默认表，与启动时一致）。
+    """
+    rules = (cfg.get("fetch") or {}).get("proxy_bypass")
+    if not isinstance(rules, (list, tuple)):
+        return list(DEFAULT_BYPASS_SUFFIXES)
+    return [str(x) for x in rules]
+
+
 @router.get("/config")
 async def get_config(request: Request, cfg=Depends(get_config_dep), cfg_lock=Depends(get_config_lock)):
     llm_key = cfg.get("llm", {}).get("api_key", "")
@@ -97,6 +113,9 @@ async def get_config(request: Request, cfg=Depends(get_config_dep), cfg_lock=Dep
         "cloud": _mask_fields(cfg.get("cloud", {}), ("dashscope", "alibaba")),
         "fetch": {
             "proxy": mask_proxy(cfg.get("fetch", {}).get("proxy", "")),
+            # 直连域名不敏感（就是几张域名），原样返回 —— 前端要按行编辑它。
+            # ⚠️ `[]` 不等于「没配过」，判据见 `_bypass_rules`。
+            "proxy_bypass": _bypass_rules(cfg),
         },
         "auth": {
             "bilibili": mask_sensitive(cfg.get("auth", {}).get("bilibili", "")),
@@ -172,6 +191,11 @@ async def update_config(data: ConfigUpdate, request: Request, cfg=Depends(get_co
                 old_proxy = cfg.get("fetch", {}).get("proxy", "")
                 fetch_data["proxy"] = merge_sensitive(fetch_data["proxy"], old_proxy)
             cfg["fetch"] = {**cfg.get("fetch", {}), **fetch_data}
+            # 改完立刻生效：模块级规则（proxy_for / yt-dlp）无条件更新，环境变量那半
+            # 在 proxy 非空时才写（apply_proxy_env 空值直接 return，不清既有变量）。
+            # ⚠️ 必须用**回填后**的 cfg，不能用 fetch_data —— 后者可能仍是 `***`。
+            configure_proxy(cfg["fetch"].get("proxy", ""),
+                            cfg["fetch"].get("proxy_bypass"))
 
         # Auth — Cookie（脱敏保护）
         #

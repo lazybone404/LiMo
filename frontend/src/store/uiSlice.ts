@@ -104,6 +104,15 @@ export interface UiSlice {
   toggleImmersive: () => void
   setImmersive: (v: boolean) => void
 
+  /**
+   * 快捷键一览（`Ctrl+/`）。放在 store 而不是 App 的 `useState` 里，是因为
+   * `handleAppKeyDown` 是**具名导出的纯函数**（只依赖事件 + store 快照，可单测），
+   * 它够不到 App 的闭包 —— 其余所有 case 也都是转调 store action，这里保持同款。
+   */
+  shortcutHelpOpen: boolean
+  toggleShortcutHelp: () => void
+  setShortcutHelpOpen: (v: boolean) => void
+
   // ── 后端能力 ──
   capabilities: Capabilities | null
   setCapabilities: (c: Capabilities) => void
@@ -277,6 +286,10 @@ export const createUiSlice: StateCreator<Store, [], [], UiSlice> = (set, get) =>
   // 不设任何进入守卫 —— 理由与依据见 interface 上那段注释（2026-10-26）
   toggleImmersive: () => set(s => ({ immersive: !s.immersive })),
   setImmersive: (v) => set({ immersive: v }),
+
+  shortcutHelpOpen: false,
+  toggleShortcutHelp: () => set(s => ({ shortcutHelpOpen: !s.shortcutHelpOpen })),
+  setShortcutHelpOpen: (v) => set({ shortcutHelpOpen: v }),
 
   capabilities: null,
   setCapabilities: (c) => set({ capabilities: c }),

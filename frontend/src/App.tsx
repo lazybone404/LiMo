@@ -11,6 +11,7 @@ import { SlotLayout } from './components/ui/SlotLayout'
 import { ActivityBar } from './components/ui/ActivityBar'
 import { SearchBar } from './components/ui/SearchBar'
 import { ThemeToggle } from './components/ui/ThemeToggle'
+import { ShortcutHelpDialog } from './components/ui/ShortcutHelpDialog'
 import { fetchCapabilities, listTranscripts, listFolders, getMarkdown, getTranscript } from './api/client'
 import { startHealthPoll } from './lib/health'
 import { toMarkdownMeta } from './lib/markdownMeta'
@@ -85,6 +86,9 @@ export function handleAppKeyDown(e: React.KeyboardEvent) {
     case '=': case '+': e.preventDefault(); s.stepFontScale(1); break
     case '-': case '_': e.preventDefault(); s.stepFontScale(-1); break
     case '0': e.preventDefault(); s.resetFontScale(); break
+    // 快捷键一览。⚠️ `?` 是 Shift+`/` 的 e.key —— 与 `=`/`+` 同款，两个都列才算
+    // 「按住 Shift 也能开」。Rust 侧只需一个 `VK_OEM_2`（VK 与 Shift 无关）。
+    case '/': case '?': e.preventDefault(); s.toggleShortcutHelp(); break
   }
 }
 
@@ -110,6 +114,8 @@ export default function App() {
   const setBackendReady = useStore(s => s.setBackendReady)
   const backendStatus = useStore(s => s.backendStatus)
   const immersive = useStore(s => s.immersive)
+  const shortcutHelpOpen = useStore(s => s.shortcutHelpOpen)
+  const setShortcutHelpOpen = useStore(s => s.setShortcutHelpOpen)
 
   // 沉浸阅读的**逃生口**。沉浸会隐藏所有可见出口（顶栏 / 预览工具条 / 两侧面板），
   // 快捷键万一失效用户就被困住 —— 所以 Esc 退出是硬需求，不是锦上添花。
@@ -399,6 +405,9 @@ export default function App() {
 
       {/* AI 浮窗（唯一形态，2026-08-04 移除插槽面板） — 沉浸下让位（位置/尺寸本就持久化，退出即恢复） */}
       {aiVisible && !immersive && <FloatingAI />}
+
+      {/* 快捷键一览 —— 与沉浸正交（沉浸下更需要它：所有按钮都藏起来了） */}
+      {shortcutHelpOpen && <ShortcutHelpDialog onClose={() => setShortcutHelpOpen(false)} />}
 
       {/* Toast */}
       <Toast />

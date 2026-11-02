@@ -52,13 +52,23 @@ def retry(max_attempts: int = 3, base_delay: float = 2.0):
 
 
 class AppError(Exception):
-    """所有异常的基类"""
+    """所有异常的基类。
+
+    `hint` 是**给用户看的下一步**（「去 设置 → 模型 里填一个 Key」），与 `detail`
+    分工不同：`detail` 是给开发者看的原始报错（`str(exc)`、上游返回体），`message`
+    是「发生了什么」。三者里只有 `message` + `hint` 该被直接展示给用户。
+
+    ⚠️ **可选、默认空**：没填的错误与改造前**逐字节相同**（`to_dict()` 不输出该键），
+    所以补 hint 可以一点一点来，不必一次覆盖全部错误码。
+    """
     def __init__(self, code: str, message: str, detail: str = "",
-                 recoverable: bool = True, status_code: int | object = _UNSET):
+                 recoverable: bool = True, status_code: int | object = _UNSET,
+                 hint: str = ""):
         self.code = code
         self.message = message
         self.detail = detail
         self.recoverable = recoverable
+        self.hint = hint
         # 区分「显式指定 status_code」与「默认 400」——main.py 异常处理器据此决定
         # recoverable 时是否压成 200。用 sentinel 而非「≠400」判断，否则显式传
         # status_code=400 + recoverable=True（如 export_custom）会被误压成 200
@@ -72,12 +82,18 @@ class AppError(Exception):
         super().__init__(message)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "code": self.code,
             "message": self.message,
             "detail": self.detail,
             "recoverable": self.recoverable,
         }
+        # ⚠️ **有值才输出**。无条件写 `"hint": ""` 会让每个响应多一个恒空字段，
+        # 「有没有 hint」也就不再是可判据的事实；更实际的理由是没填错误码的响应
+        # 必须与改造前逐字节相同（前端有按响应体形状断言的测试）。
+        if self.hint:
+            d["hint"] = self.hint
+        return d
 
 
 def http_status(exc: AppError) -> int:

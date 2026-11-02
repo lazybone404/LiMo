@@ -178,7 +178,7 @@ export function BatchBar({
 
         <Sep />
 
-        {/* ── 危险段：不可从界面撤销 ── */}
+        {/* ── 危险段：删除会移入回收站（可撤销，到期自动清理） ── */}
         <button onClick={onDelete} disabled={busy || noDocs}
           title={noDocs ? '没有选中任何文档' : '删除选中文档'}
           className="w-6 h-6 rounded-md hover:bg-error/10 flex items-center justify-center disabled:opacity-50">

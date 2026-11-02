@@ -3,7 +3,8 @@ Agent 工具 — 网络搜索 + 网页抓取
 
 给 AgentRunner 注册用的 search_web / fetch_url。
 SearXNG 优先，不可达自动降级 DuckDuckGo。
-HTTP 请求统一走 config.fetch.proxy（**本地地址除外** —— 判据收口在 app/core/net.py）。
+HTTP 请求统一走 config.fetch.proxy，**本地地址与直连域名除外** —— 判据收口在
+app/core/net.py 的 `proxy_for()`，各调用点不再自己写 `if proxy:`。
 """
 
 import asyncio
@@ -145,6 +146,7 @@ def _get_config() -> dict:
 #: ⚠️ **刻意不从 `providers[].base_url` 拼**：那是 `chat/completions` 的根，而这两条是
 #: 独立的工具端点（同一把 Key、不同的服务）。用户自建的 OpenAI 兼容代理通常只转发
 #: chat，拿它的根去拼 `/tools/search` 会 404；要过代理请配 `config.fetch.proxy`。
+_TAVILY_URL = "https://api.tavily.com/search"
 _DEEPSEEK_SEARCH_URL = "https://api.deepseek.com/v1/tools/search"
 _DEEPSEEK_FETCH_URL = "https://api.deepseek.com/v1/tools/fetch"
 
@@ -178,7 +180,8 @@ async def _deepseek_search(query: str, max_results: int, api_key: str,
        的代价只有延迟，不必为省钱在这里重试；② `count` **不影响单价**，取几条是纯质量
        决策。官方重试策略同样照此：408/429/5xx 才值得等，402 是充值，其余 4xx 不重试。
     """
-    async with httpx.AsyncClient(timeout=15, proxy=proxy or None) as client:
+    async with httpx.AsyncClient(timeout=15,
+                                 proxy=proxy_for(_DEEPSEEK_SEARCH_URL, proxy)) as client:
         r = await client.post(
             _DEEPSEEK_SEARCH_URL,
             json={"query": query, "count": max_results, "need_content": False},
@@ -212,7 +215,8 @@ async def _deepseek_fetch(url: str, api_key: str, proxy: str = "") -> str:
 
     ⚠️ 计费与 Search 同价；失败不收费。超时给 30s（与 Jina 同档）—— 抓取比搜索慢。
     """
-    async with httpx.AsyncClient(timeout=30, proxy=proxy or None) as client:
+    async with httpx.AsyncClient(timeout=30,
+                                 proxy=proxy_for(_DEEPSEEK_FETCH_URL, proxy)) as client:
         r = await client.post(
             _DEEPSEEK_FETCH_URL,
             json={"url": url},
@@ -234,9 +238,10 @@ async def _deepseek_fetch(url: str, api_key: str, proxy: str = "") -> str:
 async def _tavily_search(query: str, max_results: int, api_key: str,
                         proxy: str = "") -> str:
     """Tavily Search API — AI 优化搜索，返回结构化结果"""
-    async with httpx.AsyncClient(timeout=15, proxy=proxy or None) as client:
+    async with httpx.AsyncClient(timeout=15,
+                                 proxy=proxy_for(_TAVILY_URL, proxy)) as client:
         r = await client.post(
-            "https://api.tavily.com/search",
+            _TAVILY_URL,
             json={"query": query, "max_results": max_results, "search_depth": "advanced"},
             headers={"Authorization": f"Bearer {api_key}"},
         )
@@ -400,8 +405,11 @@ def _trafilatura_fetch(url: str, proxy: str) -> str:
     # ⚠️ `follow_redirects` 已交给 safe_get_httpx 逐跳校验 —— 裸
     # `httpx.get(follow_redirects=True)` 会让公网 URL 302 到 127.0.0.1 绕过首跳校验。
     client_kwargs: dict = {"timeout": 15.0}
-    if proxy:
-        client_kwargs["proxy"] = proxy
+    # 按**用户要抓的那个 URL** 判 —— 这条路径请求的就是它本身（不像 `_jina_fetch`
+    # 请求的是 jina 的转发地址）。直连域名配上之后，抓国内网页不再经代理。
+    p = proxy_for(url, proxy)
+    if p:
+        client_kwargs["proxy"] = p
     try:
         resp = safe_get_httpx(url, **client_kwargs)
         resp.raise_for_status()
@@ -423,8 +431,11 @@ def _trafilatura_fetch(url: str, proxy: str) -> str:
 async def _jina_fetch(url: str, proxy: str) -> str:
     """用 Jina Reader 抓取（免费在线，URL 加前缀即可）"""
     client_kwargs: dict = {"timeout": 30.0}
-    if proxy:
-        client_kwargs["proxy"] = proxy
+    # 判的是 **jina 的地址**不是用户 URL：这条路径真正发出请求的对象是 r.jina.ai，
+    # 「目标站直连」在 Jina 路由下本来就实现不了（正文由 Jina 抓）。
+    p = proxy_for("https://r.jina.ai/", proxy)
+    if p:
+        client_kwargs["proxy"] = p
     async with httpx.AsyncClient(**client_kwargs) as c:
         r = await c.get(f"https://r.jina.ai/{url}")
         r.raise_for_status()

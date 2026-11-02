@@ -5,6 +5,7 @@
 import { Loader2 } from 'lucide-react'
 import type { TaskInfo } from '../../store/types'
 import { imageModeLabel } from '../../lib/imageModes'
+import { useElapsed } from '../../hooks/useElapsed'
 
 const LABELS: Record<string, string> = {
   'generate': '正在生成...',
@@ -14,6 +15,9 @@ const LABELS: Record<string, string> = {
 }
 
 export function ProcessingPlaceholder({ task, mode }: { task?: TaskInfo; mode?: string }) {
+  // 已用时（**不是 ETA**，理由见 `hooks/useElapsed.ts`）。hook 必须无条件调用，
+  // 故放在所有分支之前 —— `task` 可能为空，由 hook 自己返回 null。
+  const elapsed = useElapsed(task?.startedAt)
   let label = '处理中...'
   let reasoning = ''
   let stage = ''
@@ -42,6 +46,7 @@ export function ProcessingPlaceholder({ task, mode }: { task?: TaskInfo; mode?: 
     <div className="flex flex-col items-center justify-center h-64 gap-3 px-8">
       <Loader2 className="animate-spin text-accent" size={28} />
       <p className="text-[14px] font-medium text-foreground">{label}</p>
+      {elapsed && <p className="text-[11px] text-disabled -mt-1.5">已用时 {elapsed}</p>}
       {/* 前置阶段提示（如参考文件超窗压缩）优先于思考链——两者不会同时存在
           （压缩在 LLM 流式开始之前完成，正式 chunk 一到 stage 即被替换清除） */}
       {stage ? (

@@ -18,11 +18,9 @@ import { useStore } from '../../store'
 import { MessageItem } from './MessageItem'
 import { SCALES, type ChatScale } from './scale'
 import { applyChatFont, getSavedChatFont, nextFontScale, saveChatFont } from '../../lib/chat-font'
+import { isNearBottom } from '../../lib/scroll'
 
 const WINDOW = 50
-
-/** 「认为在底部」的容差（px）—— `stickToBottom` 与按钮显隐共用这一个判据 */
-const BOTTOM_EPSILON = 40
 
 interface MessageListProps {
   scale: ChatScale
@@ -83,7 +81,7 @@ export function MessageList({ scale }: MessageListProps) {
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_EPSILON
+    const near = isNearBottom(el)
     stickToBottom.current = near
     // 同值 bailout：onScroll 触发极频繁，值没变就别惊动 React
     setAtBottom(prev => (prev === near ? prev : near))

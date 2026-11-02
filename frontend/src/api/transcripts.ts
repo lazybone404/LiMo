@@ -144,6 +144,14 @@ export interface BatchResult {
   status: string
   affected: number
   failed: { id: string; error: string }[]
+  /**
+   * 真正进了回收站的 id（**只有 `action === 'delete'` 时后端才给这个键**）。
+   *
+   * ⚠️ 不能拿请求里的 `ids` 顶替：`_move_to_trash` 失败时删除会回退成物理删除，
+   * 那几条**撤销不了** —— 照着 ids 挂「撤销」必然对它们报「回收站里没有这篇」。
+   * 键缺失（老后端 / 非 delete 动作）时按「全都撤销不了」处理。
+   */
+  trashedIds?: string[]
 }
 
 /**
