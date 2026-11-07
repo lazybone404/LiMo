@@ -190,6 +190,21 @@ class SynthesisError(AppError):
         )
 
     @classmethod
+    def source_pending(cls, titles: list[str], detail: str = ""):
+        """已收纳但正文还没转录的篇（`transcribeState="pending"`）。
+
+        ⚠️ 这类篇的正文是**占位符**（`<!-- limo-pending:… -->` 加一句说明），
+        非空 —— 于是既不会被「正文为空」拦下，拼进产物后还会在 `## 来源文档`
+        里标成「✓ 未删节」。产物看起来完全正常，只是材料少了几篇。
+        """
+        return cls(
+            "SYNTH_SOURCE_PENDING",
+            f"有 {len(titles)} 篇文档还没有转录，无法参与合成。"
+            f"请先在这些文档的预览区点「开始转录」，或取消勾选它们。",
+            detail or ", ".join(titles),
+        )
+
+    @classmethod
     def too_many_calls(cls, estimated: int, limit: int, detail: str = ""):
         """预估调用数超上限。⚠️ 在**任何计费调用之前**抛出——让它跑到整体超时
         才发现，意味着钱已经花掉了（设计 §17.5 B5）。"""

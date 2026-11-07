@@ -1067,10 +1067,16 @@ def _load_sources(
 
     返回的 `titles` 覆盖**所有有效 doc_id**（含被排除的），供预览端点展示；
     `excluded` 是**被排除篇的 id**（不是标题——见 `Result.excluded` 的注释）。
+
+    ⚠️ `raw` 模式下 `transcribeState="pending"` 的篇**显式报错**，不是排除也不是
+    按空正文处理：收纳模式写下的占位正文非空（`<!-- limo-pending:… -->` 加一句说明），
+    会把占位符当材料拼进产物，而「## 来源文档」仍标「✓ 未删节」。`notes` 模式
+    不拦 —— 待转录的篇本来就没有笔记，走既有 `excluded` 语义。
     """
     sources: list[Source] = []
     missing: list[str] = []
     empty: list[str] = []
+    pending: list[str] = []
     excluded: list[str] = []
     titles: dict[str, str] = {}
 
@@ -1090,6 +1096,10 @@ def _load_sources(
                 excluded.append(did)
                 continue
         else:
+            # ⚠️ 判据必须**先于**读正文：待转录篇的占位正文非空，空串闸门拦不住它
+            if tx.get("transcribeState") == "pending":
+                pending.append(title)
+                continue
             text = tx.get("rawText", "") or ""
             if not text.strip():
                 empty.append(title)
@@ -1108,6 +1118,8 @@ def _load_sources(
     # 两者都上抛会让用户看到一堆失败 toast，而其实只有一部分篇不适用。
     if missing:
         raise SynthesisError.source_missing(missing)
+    if pending:
+        raise SynthesisError.source_pending(pending)
     if empty:
         raise SynthesisError.source_empty(empty)
     return sources, excluded, titles

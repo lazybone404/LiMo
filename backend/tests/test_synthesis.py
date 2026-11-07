@@ -843,6 +843,62 @@ for _g in ("media", "paper"):
     assert _SYNTHESIS_GENRE_CONSTRAINTS[_g][0] in _prompt_controversy, f"多体裁缺 {_g} 条款"
 print("PASS: 意图 purpose 与选中体裁条款经 meta 抵达 prompt（多标签各自注入）")
 
+# ═══════════════════════════════════════════════════════════════
+# 14. 待转录文档（transcribeState="pending"）
+# ═══════════════════════════════════════════════════════════════
+# 缺口：收纳模式写下的占位正文（`<!-- limo-pending:… -->` 加一句说明）**非空**，
+# 于是能顺利通过「正文为空」那道闸门，被当作材料拼进产物 —— 而「## 来源文档」
+# 仍标「✓ 未删节」。产物看起来完全正常，只是材料少了几篇。
+# 对照实验：把 `_load_sources` 里那条 `transcribeState == "pending"` 判断去掉，
+# 本节三条断言全部变红（占位文本会一路走到装载）。
+
+_ps = _new_store()
+_add_doc(_ps, "tr_ok1", "已转录文", "已完成转录的正文。")
+_add_doc(_ps, "tr_ok2", "已转录文二", "另一篇已完成转录的正文。")
+_PLACEHOLDER = (
+    "<!-- limo-pending:tr_wait -->\n"
+    "> 这篇文档已收纳，正文还没有转录。\n"
+    "> 在预览区点「开始转录」即可提取正文。"
+)
+_ps.save_transcript(RawTranscript(
+    id="tr_wait", title="待转录文", source_type=SourceType.VIDEO, engine="pending",
+    raw_text=_PLACEHOLDER, content_hash="", metadata=RawMetadata(), tags=[],
+    transcribe_state="pending"))
+
+# 先确认字段真的读得回来（防「写进去了但 `get_transcript` 不带出来」那种静默分叉：
+# 判据拿到的永远是缺省 "done"，而测试若只构造不读回，看不出区别）
+assert _ps.get_transcript("tr_wait")["transcribeState"] == "pending"
+assert _ps.get_transcript("tr_ok1")["transcribeState"] == "done", "缺键即 done"
+
+_ids_p = ["tr_ok1", "tr_wait"]
+# 三条端点路径共用 `_load_sources`，逐个走一遍 —— 只修其中一条的实现会在这里露馅
+for _label, _call in (
+    ("synthesize", lambda: _run(S.synthesize(_ps, cfg, FakeLLM(), mid, _ids_p))),
+    ("merge_sources", lambda: S.merge_sources(_ps, _ids_p)),
+    ("preview_synthesis", lambda: S.preview_synthesis(_ps, cfg, mid, _ids_p)),
+):
+    try:
+        _call()
+        assert False, f"{_label}: 待转录篇必须被拒绝（占位正文非空，会以「✓ 未删节」进产物）"
+    except Exception as e:
+        assert getattr(e, "code", "") == "SYNTH_SOURCE_PENDING", f"{_label}: {e}"
+        assert "待转录文" in (getattr(e, "detail", "") or ""), \
+            f"{_label}: detail 要点名是哪几篇（用户得知道去动哪一篇）"
+print("PASS: 待转录篇 → 三条路径各自 SYNTH_SOURCE_PENDING（不是「正文为空」）")
+
+# ── 对照实验：notes 模式不拦 ──
+# 待转录的篇本来就没有笔记，走既有 `excluded` 语义。把它一并硬拦会把
+# 「无笔记排除」变成「未转录报错」，破坏 §19.4 的既有可见行为。
+for _tid, _c in (("tr_ok1", "笔记一。"), ("tr_wait", "笔记二。")):
+    _ps.save_markdown(MarkdownView(
+        id=f"md_{_tid}", transcript_id=_tid, content=_c,
+        mode=GenerateMode.NOTES, style=Style.MINIMAL))
+_r_notes_p = _run(S.synthesize(_ps, cfg, FakeLLM(), mid, _ids_p,
+                               title="笔记模式", source_mode="notes"))
+assert "笔记二。" in _r_notes_p.raw_text, "notes 模式必须照常读到笔记（不该因 pending 被拦）"
+assert not _r_notes_p.excluded, "这一篇有笔记，不该被排除"
+print("PASS: notes 模式照常读取待转录篇的笔记（不误拦）")
+
 finally_ok = True
 for _t in _TMP:
     shutil.rmtree(_t, ignore_errors=True)
