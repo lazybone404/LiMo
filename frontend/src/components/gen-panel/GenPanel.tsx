@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useStore } from '../../store'
 import { streamGenerate, getMarkdown, listEnabledModels, listProviders, ingestURL, ingestText, ingestFile, processImage, saveEngineBindings, getErrorMessage, type EnabledModel, type Provider, type IngestErrorInfo } from '../../api/client'
-import { registerAbort } from '../../api/taskManager'
+import { registerAbort, unregisterAbort } from '../../api/taskManager'
 import { cancelTask } from '../../api/taskManager'
 import { cancelEpubInterpret } from '../../api/epub'
 import { getStreamBuffer, appendStreamBuffer, setStreamBuffer, deleteStreamBuffer, scheduleFlush, flushImmediate } from '../../store/streamBuffers'
@@ -497,6 +497,8 @@ export function GenPanel() {
       activeImportKeyRef.current = importKey
       setProcessing(taskKey, { kind: 'import', title: importTitle })
       const onDone = async (doc: any) => {
+        // 导入任务的 key 带自增序号，不释放就会在 taskManager 里永久留一条死条目。
+        unregisterAbort(taskKey)
         const isDup = doc.status === 'duplicate_url' || doc.status === 'duplicate_content'
         const existing = useStore.getState().docs.find(d => d.id === doc.id)
         if (isDup) {
@@ -541,6 +543,7 @@ export function GenPanel() {
       }
       // C3: 移除误吞错误守卫，始终重置状态
       const onError = (err: string, info?: IngestErrorInfo) => {
+        unregisterAbort(taskKey)
         setImportError({ message: err, ...info }); setImportProgress(''); failTask(taskKey, err)
       }
       if (fileObj) {
@@ -567,6 +570,7 @@ export function GenPanel() {
     // 把整段发去下载会得到一个 404，而界面上只显示「下载中…」。
     const url = detectImportUrl(text)
     const onDone = (doc: any) => {
+      unregisterAbort(taskKey)
       const isDup = doc.status === 'duplicate_url' || doc.status === 'duplicate_content'
       const existing = useStore.getState().docs.find(d => d.id === doc.id)
       if (isDup) {
@@ -592,6 +596,7 @@ export function GenPanel() {
     }
     // C3: 移除误吞错误守卫
     const onError = (err: string, info?: IngestErrorInfo) => {
+      unregisterAbort(taskKey)
       setImportError({ message: err, ...info }); setImportProgress(''); failTask(taskKey, err)
     }
     if (url) { setImportProgress('下载中...'); ingestURL(url, ev => updateImportProgress(ev), onDone, onError, signal, probeOpts) }

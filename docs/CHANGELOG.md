@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-11-07 — 导入结束后释放 AbortController（审查第 2 条）
+
+**起因**：导入任务在 `taskManager` 里的 key 是 `__import__{自增序号}__import`，序号只增不减。
+注册进去的 `AbortController` 在任务结算后**从不摘除**，于是每导入一次就在模块级 Map 里
+留一条永远不再被查询的条目。界面上看不见，也没有任何报错，只有会话开得足够久时那点
+内存能说明问题。文档任务没有这个问题 —— 它们的 key 归一化到 docId，会被下一次任务复用。
+
+### 新增 `unregisterAbort`，落点跟着「任务真的结束了」走
+
+`api/taskManager.ts` 加一个按 key 删除的函数。调用点必须与结算同处：提前调会让「取消」
+按钮点不动（找不到 controller），所以批量导入放在 `runOne` 的 `finally` —— 三种结局
+（`done` / `error` / `aborted`）都经过它，且此刻 controller 已经不会再被 abort 到。
+单篇导入没有统一的 `finally`，只能落在两个入口各自的 `onDone` / `onError` 四处。
+
+`taskManager.test.ts` 用 `cancelTask` 的布尔返回值当观测点：释放后返回 `false` 且 signal
+没有被 abort；释放一条不影响并发的另一条；释放未注册的 key 幂等。
+
+**影响范围**：仅前端任务表的内存占用，行为不变。
+
+---
+
 ## 2026-11-07 — 「导入视频后自动转录」这个开关此前关不掉（审查第 1 条）
 
 **起因**：两个档位参数的后端默认值相反 —— `media_probe_only` 默认 `True`（视频只收纳），

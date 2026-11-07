@@ -37,6 +37,20 @@ export function registerAbort(taskKey: string, ctrl: AbortController): AbortCont
 }
 
 /**
+ * 任务结算后释放它的 AbortController（**导入任务必需**）。
+ *
+ * ⚠️ 导入任务的 key 是 `__import__{自增序号}__import`，序号只增不减 —— 每完成一次导入
+ * 就在 `_importControllers` 里留下一张**永远不再被查询**的条目，一个会话里导入越多涨得越多。
+ * 文档任务不需要这一步：它的 key 归一化到 docId，同一篇反复生成只覆盖同一个位置。
+ *
+ * ⚠️ 必须与「任务真的结束了」同处：提前调等于让「取消」按钮点不动（表里找不着 controller），
+ * 而界面上任务还在跑。故调用点都在 `onDone` / `onError` 里。
+ */
+export function unregisterAbort(taskKey: string): void {
+  _importControllers.delete(taskKey)
+}
+
+/**
  * 取消指定 docId / baseKey 的操作
  */
 export function cancelTask(docId: string): boolean {

@@ -18,7 +18,7 @@ import { useCallback, useRef, useState } from 'react'
 import { useStore } from '../../store'
 import { ingestFile, ingestText, type ProbeOnlyOptions } from '../../api/ingest'
 import { processImage } from '../../api/generate'
-import { registerAbort } from '../../api/taskManager'
+import { registerAbort, unregisterAbort } from '../../api/taskManager'
 import { optimisticDoc } from '../../lib/docEntry'
 import {
   WARN_FILE_BYTES,
@@ -195,6 +195,9 @@ export function useBatchImport({ probeOpts, preOcr }: BatchImportOptions) {
         outcome = { type: 'error', message: (e as Error).message || '导入失败' }
       } finally {
         ctrlRef.current = null
+        // 结算即释放：本项三种结局（done / error / aborted）都走这里，且此时 controller
+        // 已经不会再被 abort 到，从表里摘掉不会让「取消」失效。
+        unregisterAbort(taskKey)
       }
 
       if (outcome.type === 'aborted') {
