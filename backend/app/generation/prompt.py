@@ -575,44 +575,6 @@ def get_markdown_block_format() -> str:
     )
 
 
-def get_fold_structure_format() -> str:
-    """Markdown 结构规范 —— **notes 与 polished 两侧都注入**（与 `get_markdown_block_format`
-    只进 notes 不同：那份教的是可选标记，这份教的是标题/段落/列表这些必用元素）。
-
-    ⚠️ **为什么要有这一条**：阅读器把产物按标题拆成一节一节，每节再折叠到不同深度
-    （只留标题 / 一句话 / 要点 / 全文）。折叠的上游输入就是这里的四种原生元素 ——
-    标题给层级、加粗给关键词、列表给要点、引用块给原文。三篇不同领域的真实产物实测
-    （2026-11-07）：notes 每节平均 2.3 个加粗片段、99 个加粗里只有 11 个超过 20 字，
-    按加粗取关键词成立；但同一篇里出现过「父节用中文序号、子节用阿拉伯数字」的混写，
-    按编号推层级时父子被并排 —— 这条规范就是为了让那种写法不再出现。
-
-    ⚠️ **只写判据，不写劝退话术**：与 `get_markdown_block_format` 同一条纪律 ——
-    堆规则与遵循率是直接 trade-off。故五条各自落到一个可检查的写法上，没有
-    「尽量」「适当」这类不可判定的说法。
-
-    ⚠️ **与既有条目同源**：各 `*_POLISH_TASK` 里已有一条「适度利用 Markdown 排版」
-    （讲的是「原文有列表/表格就保留」）。这份不重复它，讲的是**结构层级**。
-    两份并存时以本份为准的部分是标题层级与编号体系 —— 那一份没有涉及。
-    """
-    return (
-        "**结构规范**: 阅读器会把本文按标题拆成一节一节，每节可折叠到不同深度。"
-        "标题的分级必须真的是「父节—子节」关系，否则拆出来的层级是散的。\n"
-        "1. **标题只用三级**: `#` 文档标题（整篇一个）/ `##` 章 / `###` 节。"
-        "更细的层次改用加粗短句或列表，不再加 `####`。子节必须比父节低一级，"
-        "不许跳级，也不许把子节写成与父节同级。\n"
-        "2. **编号全文只用一套**: 阿拉伯（`1.` / `1.1`）或中文（`一、` / `（一）`）"
-        "选一种用到底，父节与子节不能混用。同一父节下的子节编号连续，"
-        "段数与级别对应 —— `1.` 是 `###`，`1.1` 才是下一级。\n"
-        "3. **每节的第一段是一句话概括**: 这一节要讲什么、得出了什么。"
-        "列表、表格、代码块不要放在一节的最前面。\n"
-        "4. **加粗只标术语、判据、数字**，一次不超过一行，不要整句整段加粗；"
-        "**引用块 `>` 只放原文里的话**（定义、金句、作者原话），不用它强调自己的结论。\n"
-        "5. **表格与代码围栏是整体块**: 要么整块给出、要么不写，不要拆成两半。"
-        "围栏只用于代码、伪代码、原样引用的文本（信件 / 条款 / 帖子原文），"
-        "不用来包装强调内容或清单。\n"
-    )
-
-
 def get_chart_format(source_type: str) -> str:
     """图表格式指令：语义 JSON 规范 + 来源差异段。仅 notes 注入（chart 不在 _POLISH_FORMAT_FNS）。
 
@@ -1096,11 +1058,6 @@ def build_polish_prompt(
 
     constraints = _build_hard_constraints(
         formats, _POLISH_FORMAT_FNS, video_understanding, source_type)
-    # 结构规范 —— **无条件注入**（与格式勾选项无关）。放在 hard_constraints 里而不是
-    # output_format：折叠靠的是标题/段落层级，属于「必须遵守」而非「表达偏好」。
-    # ⚠️ 与 notes 侧注入的是**同一个函数**（模式 #54）：两处各写一份文案时，
-    # 改了一侧另一侧继续按旧规则产出，而两份产物看起来都正常。
-    constraints = (constraints + "\n" if constraints else "") + get_fold_structure_format()
 
     sections = [
         ("role", role),
@@ -1238,16 +1195,12 @@ def build_notes_prompt(
     format_fns = {f: _ALL_FORMAT_FNS[f] for f in available if f in _ALL_FORMAT_FNS}
     constraints = _build_hard_constraints(
         formats, format_fns, video_understanding, source_type)
-    # 下面两份规范都**无条件注入**（上面两处 return 已把 composite / Excel 摘出去，
-    # 走到这里的一定是真正的「笔记」）。都挂在 hard_constraints 而非 output_format：
+    # 语义标记规范 —— **无条件注入**（上面两处 return 已把 composite / Excel 摘出去，
+    # 走到这里的一定是真正的「笔记」）。挂在 hard_constraints 而非 output_format：
     # 优先级顺序（hard_constraints > output_language > user_request > style_preference）
-    # 正是这两条需要的位置。
-    # ⚠️ 两者都与 `_ALL_FORMAT_FNS` **无关**（不参与 `AVAILABLE_OPTIONS`，没有勾选项）——
-    # 别顺手把它们塞进那张表，那会变成「用户勾了才有」。
-    # 结构规范排在语义标记**之前**：标题/段落层级是整篇的骨架（读完第 1 节就该知道
-    # 后面每一节怎么分），语义标记是逐处判断的可选项。顺序反过来时模型会先想「哪里
-    # 该标一个块」，再回来补标题层级。
-    constraints = (constraints + "\n" if constraints else "") + get_fold_structure_format()
+    # 正是「至多 1–3 处、不要滥用」这条需要的位置。
+    # ⚠️ 与 `_ALL_FORMAT_FNS` **无关**（不参与 `AVAILABLE_OPTIONS`，没有勾选项）——
+    # 别顺手把它塞进那张表，那会变成「用户勾了才有」。
     constraints = (constraints + "\n" if constraints else "") + get_markdown_block_format()
 
     sections = [
