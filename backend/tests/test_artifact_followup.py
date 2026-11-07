@@ -273,17 +273,41 @@ def test_不勾选时既不落盘也不推事件():
 
 
 # ═══════════════════════════════════════════════════════════════
-# 3-4. 两个闸门：composite / 只出整理版 —— 都不产追问
+# 3-4. 两个闸门：composite / 只出整理版
 # ═══════════════════════════════════════════════════════════════
 
-def test_合成文档不产追问_流式format_list被清空():
+def test_合成文档勾followup会产追问():
+    """2026-11-07 起 composite 的格式清单**不再清空**（链路「产物后处理交给用户」）。
+
+    ⚠️ 这条测试的前身断言的是「合成文档不产追问」，依据是当时的实现把 `format_list`
+    整个清空。清空语句已删，允许哪些格式改由 `AVAILABLE_OPTIONS["composite"]` 一处
+    决定（含 `followup`）—— 断言不改就成了「测试钉住一个已不存在的实现」，而它红在
+    编译/实现细节上，不是行为上。对照 §1 证明「产追问」这个条件不是恒真。
+    """
     _mk_doc("fu_comp", "甲乙对比", "【文档 1】甲\n正文甲", SourceType.COMPOSITE)
     events = _stream("fu_comp", "mode=notes&formats=followup&model_id=1")
 
     assert "done" in [e.get("type") for e in events], f"生成必须正常完成；实际 {events}"
-    assert not [e for e in events if e.get("type") == "followup"], \
-        "合成文档的 format_list 被清空 ⇒ 不产追问（对照 §1 证明这条件不是恒真）"
-    assert _all_fu_files("fu_comp") == []
+    fu = [e for e in events if e.get("type") == "followup"]
+    assert len(fu) == 1, f"勾了就该推恰好一个 followup 事件；实际 {events}"
+    assert _all_fu_files("fu_comp") == ["notes/v1.followups.json"], \
+        f"旁路文件应落在 notes 下；实际 {_all_fu_files('fu_comp')}"
+    assert _content("fu_comp", "polished") == "", \
+        "composite 仍只落 notes 槽 —— 这条闸门（`_single_product`）没放开"
+
+
+def test_合成文档不产整理版_polished槽为空():
+    """composite 的 `_single_product` 闸门：rawText 已是定稿输入，不另产一份综述。
+
+    ⚠️ 与上一条分工不同：上一条证明「格式清单放开了」，这条证明「产物槽位没放开」。
+    两者都被 2026-11-07 那批改动碰过，混成一条断言会在失败时分不清是哪一个回退了。
+    """
+    _mk_doc("fu_comp2", "甲乙对比二", "【文档 1】乙\n正文乙", SourceType.COMPOSITE)
+    events = _stream("fu_comp2", "mode=both&model_id=1")
+    assert "done" in [e.get("type") for e in events], f"生成必须正常完成；实际 {events}"
+    assert _content("fu_comp2", "notes") != "", "notes 必须落盘"
+    assert _content("fu_comp2", "polished") == "", \
+        "composite 不许产 polished（开放它等于同一功能两个入口）"
 
 
 def test_只生成整理版时不产追问_非流式():
