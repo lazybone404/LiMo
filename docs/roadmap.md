@@ -177,6 +177,7 @@
 | ✅ | 正文字号缩放（2026-10-05） | 补上**真实缺口**（vendor 硬写 `.markdown-body{font-size:16px}`，既有 `fontSizeScale` 对正文从未生效）；`Ctrl+滚轮` / `Ctrl+±` / `Ctrl+0`，只作用于 `.preview-area`；归入阅读版式族（`fontScale` 默认 1.0 = 零回归）；⚠️ px 非 em、版宽 `measurePxOf` 同源、滚轮走**原生** `passive:false`（模式 #63/#64）。⚠️ 键盘路径的 WebView2 宿主级加速键由 Rust 侧精准放行（`webview_keys`，模式 #65），**打包版生效与否待实测** |
 | ✅ | 对话浮窗三条交互（2026-10-12） | ① **对话自己的**字号缩放（`lib/chat-font.ts` → `--chat-font-scale` → `.chat-msg-*`，**与阅读字号刻意不共用**但档位换算复用 `reading-prefs.nextFontScale`）；② **「回到最新」按钮**（上滚后右下角浮现，⚠️ 显隐与自动跟随**同源**判据 `<40px`）；③ **代码块一键复制**（`ChatPre`，hover/focus 显示，⚠️ 挂 `pre` 不挂 `code`、**不复用**产物侧 `CodeBlock`、流式中隐藏）。三条都**不进导出**；键盘 `Ctrl+±/0` 仍只调阅读字号 |
 | ✅ | 产物章节卡片（2026-10-10；判据 2026-10-11 改由标记决定） | 骨架轴 `data-skeleton="card"`：**被 `card` 节修饰符标过的章节**渲染成一张卡，其余保持普通正文（**混排**，无外层容器）；8 套视觉方案（`styles/cards.css`，19 个 `--card-*` + 4 个 `--sh-*`），**默认 `gpt` = 「加重边线 + 与正文同底色」**（用户 2026-10-11 定），设置页每套带**迷你视觉小样**（`.card-preview`，与 `.md-card` 同一批变量）。⚠️ **默认 `paper` 零回归靠「选择器不匹配」而非「取值相同」**（paper 时两属性都 `removeAttribute`，cards.css 每条规则带 `[data-skeleton="card"]` 前缀）。切分器单一真相源 `markdown-scan.ts::scanHeadingLines`（围栏内 `## ` 不算标题）+ `markdown-sections.ts::splitByH2`（结果多一个 `card` 字段）；`CardSections.tsx` 每张卡各跑现有 `MarkdownPreview`；接入点只有 PreviewArea 的 notes/polished 只读态。**导出跟随**（HTML/Word/PDF，`skeleton`/`card_style`/`card_vars` 参数，PDF 自动跟随）。**逐维度微调（2026-10-11）**：底（基色）/ 抬升 / 边三根旋钮 —— 8 套方案**覆盖不到**的组合（抬升只有 0%/100% 两档、中间一整段为空）；`null` = 跟随方案（默认，零回归），切方案时清空；透明基色下抬升强制归零。⚠️ 详见 CHANGELOG 2026-10-11 |
+| ❌ | **预览区上方三条栏收窄**｜优先级：中 | 三条横栏约 136px，而用户视觉焦点在正文。逐条收：① **顶栏** [App.tsx:353](../frontend/src/App.tsx#L353) `h-12`（48px）→ `h-10`（40px），logo `w-7 h-7` → `w-6 h-6`，`text-[15px]` 品牌字 → `text-[14px]`，图标 15 → 14；② **文档标签栏** [DocTabBar.tsx:67](../frontend/src/components/preview/DocTabBar.tsx#L67) 容器 `pt-1.5` → `pt-1`、标签 `h-8`（32px）→ `h-[26px]`，标签内图标 12 → 11；③ **预览区工具栏** [PreviewArea.tsx:1045](../frontend/src/components/preview/PreviewArea.tsx#L1045) 容器 `py-2.5` → `py-1`、tab 按钮 `py-1.5` → `py-1`、右侧图标按钮 `w-7 h-7` → `w-6 h-6`、图标 15 → 13-14。合计约省 30px。⚠️ **纯尺寸改动，不动结构**：三条栏的**显示判据一个都不改**（`!immersive`、`showContentBanner`、`docTabs.length`）。⚠️ 收窄后要复核**点击热区**不小于 24×24（`h-[26px]` 的标签 + `w-6` 按钮正好在这条线上），以及**标签栏在窄窗口下的横向滚动**是否仍正常 —— 这是唯一的真实风险 |
 | ✅ | 产物自证条（2026-10-11） | 预览区正文上方一横排**图标 + 短文本**小标签：`v{n}` / 生成时间 / 字数 / 模型（lucide `History`·`Clock`·`AlignLeft`·`Cpu`）。它是 `<!-- limo-meta … -->` 自证头在**读者侧**的等价物 —— 上一轮让注释不再漏进渲染后，信息也随之消失，这一条把它以低干扰形态接回来。⚠️ **只取四项、缺就不给**（`params`/`promptVersion`/`sourceRefs` 是给 agent 读的，铺给用户是噪音）；**刻意不含「已编辑」**（同屏工具条已用 warning 色承担，相邻两行说同一件事只是噪音）。⚠️ 版本行按 **`(version, mode)` 双键**取（notes/polished 各自从 v1 起，只按 version 会让「笔记 v2」显示成整理版 v2 的时间，**无报错**）。⚠️ **流式生成中不显示**（`markdownMeta` 还是上一版，配新正文是错位读数）。⚠️ 展示判据收口 [lib/artifactMeta.ts](../frontend/src/lib/artifactMeta.ts)（`fmtTime`/`fmtChars` 从 `VersionSwitcher` 搬来，两处共用）；**不动后端**（字段早已从文件头现算派生）；**不参与导出**（视图装饰，同版本切换器） |
 
 ### 🛡️ 安全 & 运维
@@ -264,9 +265,9 @@
 | 💬 AI 对话 | 10 | 10 | 100% |
 | 📊 图表生成 | 11 | 12 | 92% |
 | 📤 导出 | 12 | 12 | 100% |
-| 🎨 前端 UI/UX | 21 | 21 | 100% |
+| 🎨 前端 UI/UX | 21 | 22 | 95% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
 | 🔄 分发与更新 | 0 | 1 | 0% |
 | 🔧 代码结构 | 0 | 4 | 0% |
 | 🧩 产物复用 | 4 | 5 | 80% |
-| **合计** | **126** | **133** | **95%** |
+| **合计** | **126** | **134** | **94%** |
