@@ -81,6 +81,9 @@ function streamOk(delay = 0) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // 队列快照落在 localStorage，用例之间必须清干净：上一条留在盘上的记录
+  // 会让「跑完清掉」那一条在前一条的残留上判出假绿。
+  localStorage.clear()
   prefs = {}
   listEnabledModelsMock.mockResolvedValue([])
   getMarkdownMock.mockImplementation(async (_id: string, mode: string) => ({
@@ -105,6 +108,25 @@ describe('useBatchGenerate', () => {
     expect(result.current.items?.[1].willRegenerate).toBe(true)
     expect(result.current.phase).toBe('confirm')
     expect(streamGenerateMock).not.toHaveBeenCalled()
+  })
+
+  it('队列快照：open() 落盘，跑完清掉', async () => {
+    streamGenerateMock.mockImplementation(streamOk())
+
+    const { result } = renderHook(() => useBatchGenerate())
+    // 挂载那一刻 items 是 null —— 一个字节都不该写，否则上次的记录当场被抹掉。
+    expect(localStorage.getItem('mbw_batchQueues')).toBeNull()
+
+    act(() => { result.current.open(targets) })
+    const saved = JSON.parse(localStorage.getItem('mbw_batchQueues') || '{}')
+    expect(saved.generate.items.map((i: { id: string }) => i.id)).toEqual([A.id, B.id])
+    // `sourceType` 与 `willRegenerate` 必须一起落盘：恢复时靠它们决定产物名与按钮文案。
+    expect(saved.generate.items[1]).toMatchObject({ sourceType: 'video', willRegenerate: true })
+
+    await act(async () => { await result.current.confirm() })
+    // 跑完必须清，否则下次打开文档库会提示恢复一个已经跑完的队列。
+    const after = JSON.parse(localStorage.getItem('mbw_batchQueues') || '{}')
+    expect(after.generate).toBeUndefined()
   })
 
   it('成功后每一篇都刷新产物 —— 包括用户没在看的那篇', async () => {

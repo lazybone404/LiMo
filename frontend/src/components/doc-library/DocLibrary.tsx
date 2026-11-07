@@ -45,6 +45,8 @@ import { GenerateDialog } from './GenerateDialog'
 import { FolderPicker } from './FolderPicker'
 import { useBatchTranscribe } from '../../hooks/useBatchTranscribe'
 import { useBatchGenerate } from '../../hooks/useBatchGenerate'
+import { BatchResumeBanner } from './BatchResumeBanner'
+import { clearQueue, restorableGenerate, restorableTranscribe } from '../../lib/batch-queue'
 import { buildFolderTree } from './folderTree'
 import type { HeaderAction } from './GroupHeader'
 import { DocRow, type DocRowActions } from './DocRow'
@@ -303,6 +305,18 @@ export function DocLibrary() {
   const batchTranscribe = useBatchTranscribe()
   /** 批量生成。队列同样自己持状态，见下方 `generateSelected`。 */
   const batchGenerate = useBatchGenerate()
+  /**
+   * 上次没跑完的清单（刷新页面后由 localStorage 读回）。两种队列各一份。
+   *
+   * 只读一次（`useState` 惰性初始化）：横幅显示期间不会有新的「上次残留」出现，
+   * 而每次渲染都同步读一遍 localStorage 没有道理。
+   *
+   * 点「继续运行」先清空本地这一份再调 `open()` —— 对话框本身零请求，用户在里面
+   * 取消还会走 `reset()` 清掉盘上快照；本地这份不清则会一直挂着「还有 N 篇没跑完」，
+   * 而队列其实已经跑完或被取消。
+   */
+  const [resumeTranscribe, setResumeTranscribe] = useState(() => restorableTranscribe())
+  const [resumeGenerate, setResumeGenerate] = useState(() => restorableGenerate())
   // 合成对话框 —— null = 关闭；打开中由 synthStage 区分「待确认」与「进行中」
   // （非 null 即进行中，同时承载 stage 文案）
   const [synthOpen, setSynthOpen] = useState(false)
@@ -1649,6 +1663,28 @@ export function DocLibrary() {
       {/* 索引坏了要主动说 —— 不等用户搜空了才在列表底部看见（见组件文件头）。
           放在工具栏**之上**：它与「有没有选中」无关，两种密度下都该出现。 */}
       <SearchIndexBanner />
+      {/* 上次的批量队列没跑完 —— 同为「与选中无关、两种密度都该出现」的顶部提示，
+          放在工具栏之上。两条横幅各自「忽略」，清一条不动另一条。 */}
+      <BatchResumeBanner
+        transcribeCount={resumeTranscribe.length}
+        generateCount={resumeGenerate.length}
+        onResumeTranscribe={() => {
+          setResumeTranscribe([])
+          batchTranscribe.open(resumeTranscribe)
+        }}
+        onResumeGenerate={() => {
+          setResumeGenerate([])
+          batchGenerate.open(resumeGenerate)
+        }}
+        onDismissTranscribe={() => {
+          clearQueue('transcribe')
+          setResumeTranscribe([])
+        }}
+        onDismissGenerate={() => {
+          clearQueue('generate')
+          setResumeGenerate([])
+        }}
+      />
       {/* 标题栏 / 批量工具条
           ⚠️ 显隐**派生自 `hasSelection`**，没有「批量模式」开关：勾中任意一行，工具条
           自己出现；取消到 0 条，自己消失。若要「一条没勾时也能点全选」，那条路径是

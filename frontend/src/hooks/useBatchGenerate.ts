@@ -33,7 +33,7 @@
  * 走的是同一份实现。抄一份的话，两边迟早分叉，而分叉的表现是「同一篇文档，
  * 单篇生成与批量生成产出的东西不一样」，界面上完全看不出来。
  */
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useStore } from '../store'
 import { streamGenerate, getMarkdown, listEnabledModels, getErrorMessage } from '../api/client'
@@ -42,6 +42,7 @@ import { buildGenOptions, supportsCapability } from '../components/gen-panel/gen
 import { loadGenPrefs } from '../components/gen-panel/genPrefs'
 import { getTypeMeta, type TypeMeta } from '../components/gen-panel/constants'
 import { toMarkdownMeta } from '../lib/markdownMeta'
+import { clearQueue, markQueueIdle, markQueueRunning, saveQueue } from '../lib/batch-queue'
 
 export type GeneratePhase = 'confirm' | 'running' | 'done'
 
@@ -151,6 +152,21 @@ export function useBatchGenerate() {
     setItems(prev => prev && prev.map(it => (it.id === id ? { ...it, ...next } : it)))
   }, [])
 
+  /**
+   * 队列快照落盘：刷新之后文档库读回这份记录，提示「还有 N 篇没生成完」。
+   *
+   * ⚠️ `items === null` 时**一个字节都不写**。挂载那一刻 items 就是 null，顺手写一份
+   * 空快照会把上次留下的记录当场抹掉，恢复入口永远看不到。
+   */
+  useEffect(() => {
+    if (phase === 'done') {
+      clearQueue('generate')
+      markQueueIdle('generate')
+      return
+    }
+    if (items && items.length) saveQueue('generate', items)
+  }, [items, phase])
+
   /** 打开确认对话框。零请求。 */
   const open = useCallback((docs: Omit<GenerateItem, 'status' | 'message'>[]) => {
     cancelledRef.current = false
@@ -160,6 +176,8 @@ export function useBatchGenerate() {
   }, [])
 
   const reset = useCallback(() => {
+    // 关掉对话框 = 用户不要这一轮了。快照一并清掉，否则下次打开文档库会提示恢复。
+    clearQueue('generate')
     setItems(null)
     setPhase('confirm')
     setBackground(false)
@@ -252,6 +270,8 @@ export function useBatchGenerate() {
     const caps = useStore.getState().capabilities?.genOptions ?? {}
 
     cancelledRef.current = false
+    // 本页此刻在跑：面板折叠后重新展开时，恢复入口不能再提供这一批（会跑第二遍）。
+    markQueueRunning('generate')
     setPhase('running')
 
     let done = 0
@@ -320,6 +340,11 @@ export function useBatchGenerate() {
 
     setPhase('done')
     setBackground(false)
+    // ⚠️ 这里必须显式清，不能只靠上面那个 effect：面板折叠时组件已卸载，`setPhase`
+    // 不会带来一次渲染，effect 也就不跑 ——「收起对话框在后台跑完 → 重新展开」会看到
+    // 一条指向已跑完队列的恢复横幅。
+    clearQueue('generate')
+    markQueueIdle('generate')
     const parts = [`完成 ${done} 篇`]
     if (failed > 0) parts.push(`失败 ${failed} 篇`)
     const skipped = list.length - done - failed

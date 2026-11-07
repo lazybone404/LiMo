@@ -52,6 +52,9 @@ const B = doc('doc-b', '第二篇')
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // 队列快照落在 localStorage，用例之间必须清干净：上一条留在盘上的记录
+  // 会让「跑完清掉」那一条在前一条（`open()` 后没跑完）的残留上判出假绿。
+  localStorage.clear()
   useStore.setState({
     currentDocId: A.id, currentRawText: '', docs: [A, B], processingTasks: {},
   })
@@ -121,6 +124,23 @@ describe('useBatchTranscribe', () => {
     expect(items[1].status).toBe('done')
     // 失败那篇保持 pending —— 后端没写盘，用户还能再点一次
     expect(useStore.getState().docs.find(d => d.id === A.id)?.transcribeState).toBe('pending')
+  })
+
+  it('队列快照：open() 落盘，跑完清掉', async () => {
+    retranscribeMock.mockResolvedValue({ status: 'done', engine: 'bcut' })
+    getTranscriptMock.mockResolvedValue({ rawText: 'x' })
+
+    const { result } = renderHook(() => useBatchTranscribe())
+    // 挂载那一刻 items 是 null —— 一个字节都不该写，否则上次的记录当场被抹掉。
+    expect(localStorage.getItem('mbw_batchQueues')).toBeNull()
+
+    act(() => { result.current.open(targets) })
+    const saved = JSON.parse(localStorage.getItem('mbw_batchQueues') || '{}')
+    expect(saved.transcribe.items.map((i: { id: string }) => i.id)).toEqual([A.id, B.id])
+
+    await act(async () => { await result.current.confirm() })
+    // 跑完必须清，否则下次打开文档库会提示恢复一个已经跑完的队列。
+    expect(JSON.parse(localStorage.getItem('mbw_batchQueues') || '{}').transcribe).toBeUndefined()
   })
 
   it('confirm 阶段按取消 = 关门，不算中断', () => {
