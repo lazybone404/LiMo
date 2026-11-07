@@ -1,7 +1,12 @@
-"""多篇文档合成 — POST /api/synthesis/stream
+"""多篇文档合成 — POST /api/synthesis/stream / /preview / /merge
 
 把用户选中的 N 篇文档读一遍，按 multi 预算组装成一份「对比综述」**正文**，
 落库为一个 `sourceType="composite"` 的新文档。**本端点不生成笔记。**
+
+合并（`/merge`）与合成的产物**同一种文档**（`sourceType="composite"`），区别只在
+正文怎么来：合成是模型按读者意图写的综述，合并是把各篇原文按顺序拼起来、**零模型
+调用**。两者共用同一套读取、资产搬运与出处头写法（见 `generation/synthesis.py`
+的 `merge_sources`），故下游（文档库 / 搜索 / 导出 / 对话引用 / 版本）零改动。
 
 设计要点：
 - **两步走**：这里只建文档；综述由用户在预览区确认「## 来源文档」清单后，
@@ -31,6 +36,7 @@ from app.generation.synthesis import (
     SYNTH_TOTAL_TIMEOUT,
     clean_content_types,
     clean_dimensions,
+    merge_sources,
     normalize_reader_intent,
     normalize_source_mode,
     preview_synthesis,
@@ -257,3 +263,50 @@ async def synthesis_preview(
         store, config, req.model_id, req.doc_ids,
         source_mode=normalize_source_mode(req.source_mode),
     )
+
+
+class MergeRequest(BaseModel):
+    doc_ids: list[str]
+    title: str = ""
+    source_mode: str = "raw"
+
+
+@router.post("/synthesis/merge")
+async def synthesis_merge(req: MergeRequest, store=Depends(get_store)):
+    """N 篇 → **一篇纯拼接的 composite 文档**（非流式，零模型调用）。
+
+    与 `/stream` 的分野是「正文出自谁手」：那边由模型按读者意图写综述，这边把各篇
+    原文按顺序拼起来、每篇一个 `## {序号}. {标题}` 开头。故本端点没有 stage 事件、
+    没有预算判定、没有降级——没有任何一步会因材料太长而失败。
+
+    **不返回 SSE**：拼接是磁盘操作，秒级完成；用流式反要让前端多接一条解析路径。
+
+    ⚠️ **业务失败走 `AppError` → HTTP 200 + `{code, message}`**（项目模式 #36），
+    前端必须检查 `body.code`：篇数不足与「选中的篇还没转录」都不是 500。
+
+    ⚠️ **不加 `guard.semaphore`**：信号量是给模型调用排队用的，这里一次都不调模型。
+    占一个槽位会让合并期间的一次生成排在它后面，而它实际只需要几毫秒。
+
+    ⚠️ **走 `asyncio.to_thread`**：函数里要逐篇复制资产文件并写盘，同步 I/O 直接在
+    事件循环里跑会卡住同一时刻的 SSE 心跳与 worker 的 await。
+
+    ⚠️ **`save_transcript(skip_dedup=True)` 之后不做「内容去重」**：合并产物的正文
+    由原文拼成，与任何一篇源文档都不相同，不撞去重；而它与**上一次合并**撞上反而
+    说明用户合并了同一批文档两次——按失败显式化原则，那是应当写进去的，不是静默跳过。
+    """
+    source_mode = normalize_source_mode(req.source_mode)
+    log.info("合并请求", docs=len(req.doc_ids), source_mode=source_mode,
+             title=(req.title or "")[:60])
+    result = await asyncio.to_thread(
+        merge_sources, store, req.doc_ids, req.title, source_mode,
+    )
+    log.info("合并完成", doc_id=result.transcript_id, docs=len(result.sources),
+             excluded=len(result.excluded))
+    return {
+        "id": result.transcript_id,
+        "title": result.title,
+        "mode": result.mode,
+        # notes 模式下因无笔记被排除的篇 id（设计 §19.4）。合并与合成共用这条
+        # 语义：它不是错误，但用户必须知道哪几篇没进来。
+        "excluded": result.excluded,
+    }

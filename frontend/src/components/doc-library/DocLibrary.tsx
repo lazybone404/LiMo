@@ -24,19 +24,27 @@ import {
 } from '../../api/client'
 import { cancelTask } from '../../api/taskManager'
 import { linearizeEvidence, stripMarkers } from '../../lib/markdown-markers'
+import { optimisticDoc } from '../../lib/docEntry'
 import { ContextMenu } from '../ui/ContextMenu'
 import {
   Pencil, Trash2, BookOpen, MessageSquare, RefreshCw, Tag, Clipboard, FolderInput, Layers,
   AlertTriangle, ChevronRight,
 } from 'lucide-react'
-import { streamSynthesis, previewSynthesis, type SynthesisPreview, type SourceMode } from '../../api/synthesis'
+import {
+  streamSynthesis, previewSynthesis, mergeSynthesis,
+  type SynthesisPreview, type SourceMode,
+} from '../../api/synthesis'
 import { classifyPreview, commitClassifications, type ClassifyOptions, type ClassifyPreview } from '../../api/classify'
 import {
   ClassifyDialog, MAX_DEPTH_DEFAULT, MAX_NEW_FOLDERS_DEFAULT, type ClassifyPlanRow,
 } from './ClassifyDialog'
 import type { DocEntry } from '../../store/types'
 import { BatchBar } from './BatchBar'
+import { TranscribeDialog } from './TranscribeDialog'
+import { GenerateDialog } from './GenerateDialog'
 import { FolderPicker } from './FolderPicker'
+import { useBatchTranscribe } from '../../hooks/useBatchTranscribe'
+import { useBatchGenerate } from '../../hooks/useBatchGenerate'
 import { buildFolderTree } from './folderTree'
 import type { HeaderAction } from './GroupHeader'
 import { DocRow, type DocRowActions } from './DocRow'
@@ -287,6 +295,13 @@ export function DocLibrary() {
     return () => document.removeEventListener('keydown', onKey)
   }, [folderDeleteTargets])
   const [batchBusy, setBatchBusy] = useState(false)
+  /**
+   * 批量转录。队列自己持状态（`useBatchTranscribe`），这里只负责「选中项里有哪几篇
+   * 待转录」与「什么时候把对话框挂出来」。
+   */
+  const batchTranscribe = useBatchTranscribe()
+  /** 批量生成。队列同样自己持状态，见下方 `generateSelected`。 */
+  const batchGenerate = useBatchGenerate()
   // 合成对话框 —— null = 关闭；打开中由 synthStage 区分「待确认」与「进行中」
   // （非 null 即进行中，同时承载 stage 文案）
   const [synthOpen, setSynthOpen] = useState(false)
@@ -301,6 +316,15 @@ export function DocLibrary() {
   const [synthIntent, setSynthIntent] = useState('')
   const [synthIntentText, setSynthIntentText] = useState('')
   const [synthStage, setSynthStage] = useState<string | null>(null)
+  /**
+   * 产物来路：合并（纯拼接，零模型调用）或综述（模型按读者意图写）。
+   *
+   * ⚠️ 两者的分野是**正文出自谁手**，不是「花不花钱」——合成在装得下时也零调用
+   * （stuff 路径直接拼 `【文档 i】` 标记喂模型）。真正的差别是合并**不跑预算判定**：
+   * 它不受窗口限制、不会 `reject`、不会摘要或截断，故那些只在综述里出现的控件
+   * （读者意图 / 维度 / 体裁 / 窗口 banner）在合并模式下**整块不渲染**。
+   */
+  const [synthMode, setSynthMode] = useState<'merge' | 'review'>('merge')
   // 原料模式（互斥，默认原文）与对比维度（每行一个）—— 都是**现场决定**，
   // 故放对话框本地 state，不做全局持久化（设计 §19.8）
   const [synthSourceMode, setSynthSourceMode] = useState<SourceMode>('raw')
@@ -432,6 +456,34 @@ export function DocLibrary() {
     clear: clearSelection, handleRowClick, handleRowMouseDown, handleRowDoubleClick,
     handleFolderSelect, onListKeyDown,
   } = useDocSelection(visibleIds, openDocTab, folderOrder)
+
+  /**
+   * 选中项里「待转录」的那几篇 —— 批量转录只跑它们。
+   *
+   * ⚠️ 已转录的不重跑：用户勾 10 篇只为补其中 3 篇的正文时，把 10 篇都重跑一遍
+   * 没人会这么期望，而「重跑」要重新下载视频并再付一次 ASR 的钱。
+   * ⚠️ 这里用的是 `selectedIds` 而不是 `visible`：选中项可以跨筛选、跨分批存在，
+   * 从 `visible` 里筛会漏掉当前没显示的那些。
+   */
+  const pendingSelected = useMemo(
+    () => docs.filter(d => selectedIds.has(d.id) && d.transcribeState === 'pending'),
+    [docs, selectedIds],
+  )
+
+  /**
+   * 选中项里能参与批量生成的文档。两类被排除，理由不同：
+   *
+   * - **待转录**：`rawText` 还是占位文本，拿它生成会得到一篇看起来完全正常、内容却是
+   *   「这篇文档已收纳」的笔记。`GenPanel` 的单篇入口也拦这一类。
+   * - **图片**：它的 `coreProducts` 是空数组，生成请求没有可下发的产物名。
+   *   图片要提取文字走的是图片处理，不是生成。
+   */
+  const generateSelected = useMemo(
+    () => docs.filter(d => selectedIds.has(d.id)
+      && d.transcribeState !== 'pending'
+      && d.sourceType !== 'image'),
+    [docs, selectedIds],
+  )
 
   /**
    * 当前排列**不是「按文件夹」**时清掉文件夹选择。
@@ -999,13 +1051,24 @@ export function DocLibrary() {
    * tab（= `## 来源文档` 清单），核对完再点「生成对比综述」。
    */
   const handleOpenSynthesize = useCallback(() => {
-    const ids = [...selectedIds]
-    if (ids.length < 2) return
+    const picked = [...selectedIds]
+    if (picked.length < 2) return
+    // 「只收纳」的文档正文还是占位文本，合进去等于让模型读一句「这篇还没有转录」。
+    // ⚠️ 判据读 `transcribeState`、**不能读正文** —— 占位正文非空且长得像正常内容，
+    // 任何「正文够不够长」的判据都会放行。
+    const ids = picked.filter(id => docs.find(d => d.id === id)?.transcribeState !== 'pending')
+    const skipped = picked.length - ids.length
+    if (skipped > 0) {
+      addToast(`${skipped} 篇尚未转录，已排除`, 'info')
+      if (ids.length < 2) return
+    }
     const first = docs.find(d => d.id === ids[0])?.title || ''
-    setSynthIds(ids)
-    setSynthTitle(first ? `${first} 等 ${ids.length} 篇对比` : `${ids.length} 篇对比`)
+    // 标题默认值**不含意图词**：同一份清单既能合并也能综述，写死「对比」会让合并
+    // 出来的文档叫「X 等 3 篇对比」而正文只是三段原文首尾相接。
+    setSynthTitle(first ? `${first} 等 ${ids.length} 篇` : `${ids.length} 篇`)
     setSynthIntentText('')
     setSynthStage(null)
+    setSynthMode('merge')
     setSynthAdvanced(false)
     setSynthTuneOpen(false)
     // 每次打开都回到「原文 + 首个预设 + 首个意图」：这些是**现场决定**，不该继承
@@ -1019,9 +1082,12 @@ export function DocLibrary() {
     const firstIntent = readerIntents[0]
     setSynthIntent(firstIntent?.key ?? '')
     setSynthGenres(firstIntent?.defaultContentType ? [firstIntent.defaultContentType] : [])
+    // 定格这一批 id：预览、切原料模式、执行三处都读它（漏了这行 `synthIds` 永远是空数组，
+    // 预览因为直接吃局部 `ids` 而看不出来，真正执行时却以 0 篇开跑）
+    setSynthIds(ids)
     setSynthOpen(true)
     loadSynthPreview(ids, 'raw')
-  }, [selectedIds, docs, dimensionPresets, readerIntents, loadSynthPreview])
+  }, [selectedIds, docs, dimensionPresets, readerIntents, loadSynthPreview, addToast])
 
   /** 切换原料模式 → 重拉预览（不可用的篇会在清单里标灰） */
   const changeSynthSourceMode = useCallback((mode: SourceMode) => {
@@ -1056,14 +1122,67 @@ export function DocLibrary() {
     setSynthGenres(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])
   }, [])
 
+  /**
+   * 新文档进库后，把它接进当前界面（两条路径共用）。
+   *
+   * ⚠️ 必须走 `useStore.getState()` 而不是组件作用域里的闭包：合成可能持续数分钟，
+   * 期间用户完全可能折叠文档库 —— 而折叠 = **卸载组件**（SlotLayout 是
+   * `collapsed ? <PanelStrip/> : <Comp/>`）。卸载后组件的回调全部失效：文档其实
+   * 已经落库，列表里却看不到，用户以为失败了。store 层调用不受组件生命周期影响。
+   */
+  const adoptNewDoc = useCallback((
+    doc: { id: string; title: string },
+    engine: string,
+    ids: string[],
+    excluded: string[],
+  ) => {
+    const s = useStore.getState()
+    const used = ids.filter(i => !excluded.includes(i))
+    s.addDoc(optimisticDoc({
+      id: doc.id, title: doc.title, sourceType: 'composite', engine,
+      // 正文在落库那一刻就是真的（由 N 篇已转录的文档拼出），显式写死 `done`
+      // —— 留空也会落到同一个兜底值，写出来是为了让读者不必去查兜底。
+      transcribeState: 'done',
+      // 来源清单以**实际参与**的篇为准——被排除的篇没进产物，记上会让「N 合 1」
+      // 徽章与来源芯片条指向一份它没读过的文档
+      sourceDocIds: used,
+      sourceTitles: used.map(i => docs.find(d => d.id === i)?.title || ''),
+    }, 'composite'))
+    s.selectDoc(doc.id)
+    s.clearSelection()
+    return used
+  }, [docs])
+
   const runSynthesize = useCallback(() => {
     const ids = synthIds
-    // 窗口不足时后端会拒绝，这里提前拦住，别让用户白等一次往返
-    const blocked = synthPreview?.mode === 'reject' || synthPreviewErr !== null
-    // `synthStage !== null` 防重复点击：这是计费调用，双击两次就是两份钱
+    const isMerge = synthMode === 'merge'
+    // 窗口不足只拦综述：合并不跑预算判定，材料再长也只是把原文按顺序拼起来，
+    // 不会因为窗口不够被拒绝。拿预览的 `reject` 去拦合并，会让一个必然成功的
+    // 操作点不动。而预览**请求本身**失败（源被删等）两条路径都要拦 —— 那说明
+    // 清单已经不成立了。
+    const blocked = synthPreviewErr !== null || (!isMerge && synthPreview?.mode === 'reject')
+    // `synthStage !== null` 防重复点击：综述是计费调用，双击两次就是两份钱
     if (ids.length < 2 || synthStage !== null || blocked) return
     const title = synthTitle.trim()
     setBatchBusy(true)
+
+    if (isMerge) {
+      setSynthStage('合并中…')
+      mergeSynthesis(ids, { title, sourceMode: synthSourceMode })
+        .then(doc => {
+          setBatchBusy(false); setSynthOpen(false); setSynthStage(null)
+          const used = adoptNewDoc(doc, 'merge', ids, doc.excluded)
+          addToast(doc.excluded.length
+            ? `已合并 ${used.length} 篇，${doc.excluded.length} 篇无笔记已跳过`
+            : `已合并 ${used.length} 篇`, doc.excluded.length ? 'info' : 'success')
+        })
+        .catch(err => {
+          setBatchBusy(false); setSynthOpen(false); setSynthStage(null)
+          addToast(getErrorMessage(err), 'error')
+        })
+      return
+    }
+
     setSynthStage('准备中…')
     streamSynthesis(ids, {
       title,
@@ -1078,22 +1197,7 @@ export function DocLibrary() {
       onStage: setSynthStage,
       onDone: (id, _mode, degraded, excluded) => {
         setBatchBusy(false); setSynthOpen(false); setSynthStage(null)
-        // ⚠️ 必须走 `useStore.getState()` 而不是组件作用域里的闭包：合成可能持续数分钟，
-        // 期间用户完全可能折叠文档库 —— 而折叠 = **卸载组件**（SlotLayout）。
-        // 卸载后组件的回调全部失效：文档其实已经落库，列表里却看不到，用户以为失败了。
-        // store 层调用不受组件生命周期影响，这条是「产物已落库但 UI 没接上」的防线。
-        const s = useStore.getState()
-        const used = ids.filter(i => !excluded.includes(i))
-        s.addDoc({
-          id, title: title || '对比综述', sourceType: 'composite', engine: 'llm',
-          contentHash: '', tags: [], createdAt: new Date().toISOString(),
-          // 来源清单以**实际参与**的篇为准——被排除的篇没进产物，
-          // 记上会让「N 合 1」徽章与来源芯片条指向一份它没读过的文档
-          sourceDocIds: used,
-          sourceTitles: used.map(i => docs.find(d => d.id === i)?.title || ''),
-        })
-        s.selectDoc(id)
-        s.clearSelection()
+        const used = adoptNewDoc({ id, title: title || '对比综述' }, 'llm', ids, excluded)
         // 降级可见（设计 §4.4.3）：SSE 一闪就没了，这里再提一次；主渠道是产物里的标注
         const notes: string[] = []
         if (degraded.length) notes.push(`${degraded.length} 篇为摘要输入`)
@@ -1107,9 +1211,9 @@ export function DocLibrary() {
         if (!cancelled) addToast(message, 'error')
       },
     })
-  }, [synthIds, synthTitle, synthIntent, synthIntentText, synthGenres,
+  }, [synthIds, synthMode, synthTitle, synthIntent, synthIntentText, synthGenres,
       synthDimsText, synthSourceMode, synthStage, synthPreview, synthPreviewErr,
-      docs, addToast])
+      adoptNewDoc, addToast])
 
   // ── 智能分类（模型建议 → 用户审定 → 一次写入）──
 
@@ -1559,6 +1663,20 @@ export function DocLibrary() {
           onToggleSelectAll={toggleSelectAll}
           onExport={handleBatchExport}
           onSynthesize={handleOpenSynthesize}
+          pendingCount={pendingSelected.length}
+          onTranscribe={() => batchTranscribe.open(pendingSelected.map(d => ({ id: d.id, title: d.title })))}
+          generateCount={generateSelected.length}
+          onGenerate={() => {
+            const excluded = selectedIds.size - generateSelected.length
+            if (excluded > 0) addToast(`已排除 ${excluded} 篇待转录或图片文档`, 'info')
+            batchGenerate.open(generateSelected.map(d => ({
+              id: d.id,
+              title: d.title,
+              sourceType: d.sourceType,
+              // `modes` 是 `undefined`（未知）时按「生成」显示，理由见 `GenerateItem` 注释。
+              willRegenerate: (d.modes?.length ?? 0) > 0,
+            })))
+          }}
           onMove={fid => runBatch(() => moveDocs([...selectedIds], fid))}
           onTag={handleBatchTag}
           onClassify={handleOpenClassify}
@@ -1679,6 +1797,33 @@ export function DocLibrary() {
         document.body,
       )}
 
+      {/* 批量转录 —— 对话框自己 Portal（理由同上），这里只管什么时候挂出来。
+          `background` 为真时收起、队列继续跑：进度留在任务面板与预览区的待转录卡片上，
+          它们读的是同一个 `processingTasks` 条目。 */}
+      {batchTranscribe.items && !batchTranscribe.background && (
+        <TranscribeDialog
+          items={batchTranscribe.items}
+          phase={batchTranscribe.phase}
+          onConfirm={() => void batchTranscribe.confirm()}
+          onCancel={batchTranscribe.cancel}
+          onClose={batchTranscribe.reset}
+          onBackground={batchTranscribe.sendToBackground}
+        />
+      )}
+
+      {/* 批量生成 —— 同上：对话框自己 Portal，`background` 为真时收起而队列继续跑。
+          收起后进度看预览区的生成占位与任务面板，它们读同一个 `processingTasks`。 */}
+      {batchGenerate.items && !batchGenerate.background && (
+        <GenerateDialog
+          items={batchGenerate.items}
+          phase={batchGenerate.phase}
+          onConfirm={() => void batchGenerate.confirm()}
+          onCancel={batchGenerate.cancel}
+          onClose={batchGenerate.reset}
+          onBackground={batchGenerate.sendToBackground}
+        />
+      )}
+
       {/* 回收站 —— 与上面的「撤销」toast 共用 `api/trash.ts` 那一组函数。
           `onRestored` 必须重拉列表：恢复的条目刚被本地视图摘掉，不重拉就是
           「恢复成功但列表里没有」。 */}
@@ -1779,7 +1924,10 @@ export function DocLibrary() {
             }
           }
         }
-        const canRun = !running && !reject && synthPreviewErr === null
+        const isMerge = synthMode === 'merge'
+        // 窗口不足只拦综述（理由见 `runSynthesize`）：合并不跑预算判定，材料再长
+        // 也只是按顺序拼起来
+        const canRun = !running && synthPreviewErr === null && (isMerge || !reject)
         /**
          * 需要压缩（`map_reduce` / `reject`）时**强制展开**配置且不给收起入口：
          * 会压缩、会截断、可能要换模型 —— 那是用户该知道的事，不该藏在「调整选项」后面。
@@ -1787,9 +1935,12 @@ export function DocLibrary() {
          * 其余情形（含 preview 还没回来）按**简单模式**渲染：默认路径就该是最短那条。
          * preview 未返回时先收起，避免「先完整后收起」的跳动；`synthPreviewErr` 那种
          * 情况编辑钮本来就被禁用，收起也无害。
+         *
+         * ⚠️ 合并模式**不走简单模式**：它本来就只有两个控件（原料 / 标题），
+         * 再套一层「调整选项」只是多一次点击。
          */
         const needsTuning = synthPreview?.mode === 'map_reduce' || reject
-        const simpleMode = !needsTuning && !synthTuneOpen
+        const simpleMode = !isMerge && !needsTuning && !synthTuneOpen
         const activeIntent = readerIntents.find(i => i.key === synthIntent)
         // 当前生效的材料体裁（高级区折叠时也要看得见——它是**实际生效值**，
         // 比「意图建议值」更有用：用户手改过体裁后，这里显示的是改后的样子）
@@ -1800,6 +1951,36 @@ export function DocLibrary() {
         // 这里算出的数字仅用于给用户一个「共几个维度」的即时反馈
         const dimsCount = parseDimensions(synthDimsText).length
         const fmtTok = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`
+        /**
+         * 原料单选 + 「N 篇无笔记」提示。
+         *
+         * 合并与综述都要选原料（`notes` 模式下无笔记的篇两条路径都会跳过），故抽成
+         * 一份常量两处共用 —— 复制一份的失效形态是改了一处、另一处还写着旧文案。
+         */
+        const sourceModeBlock = (
+          <>
+            <label className="text-[12px] font-medium text-dimmed block mb-1">
+              {isMerge ? '拼接原料' : '对比原料'}
+            </label>
+            <div className="flex gap-4 mb-3">
+              {([['raw', '原文（默认）'], ['notes', '已生成的笔记']] as const).map(([v, text]) => (
+                <label key={v} className="flex items-center gap-1.5 text-[12px] text-dimmed cursor-pointer">
+                  <input type="radio" name="synth-source-mode" value={v}
+                    data-synth-source={v}
+                    checked={synthSourceMode === v}
+                    onChange={() => changeSynthSourceMode(v)}
+                    className="accent-accent" />
+                  {text}
+                </label>
+              ))}
+            </div>
+            {unusableCount > 0 && (
+              <p data-synth-excluded className="mb-3 -mt-1.5 text-[11px] text-warning">
+                已选 {ids.length} 篇，其中 {unusableCount} 篇无笔记，{isMerge ? '合并时' : '合成时'}将跳过。
+              </p>
+            )}
+          </>
+        )
         // ⚠️ Portal 到 body：本对话框虽然写在 `<aside>`（带 `backdrop-blur-[20px]`）里，
         //    但 `backdrop-filter` 会为该元素创建**包含块**，`fixed` 后代将相对它定位，
         //    于是「全屏遮罩」被裁剪成面板大小的一小块。见 `<aside>` 的注释。
@@ -1815,7 +1996,7 @@ export function DocLibrary() {
               onClick={e => e.stopPropagation()}>
               <h3 className="text-[17px] font-semibold mb-2 flex items-center gap-2">
                 <Layers size={16} className="text-accent" />
-                {simpleMode ? `合并 ${ids.length} 篇文档` : `合成 ${ids.length} 篇对比综述`}
+                {isMerge ? `合并 ${ids.length} 篇文档` : `合成 ${ids.length} 篇对比综述`}
               </h3>
 
               {running ? (
@@ -1824,14 +2005,36 @@ export function DocLibrary() {
                     <RefreshCw size={13} className="animate-spin text-accent" />{synthStage}
                   </p>
                   <p className="text-[11px] text-disabled mt-3">
-                    合成期间可以离开本面板，完成后文档会自动进库。
+                    处理期间可以离开本面板，完成后文档会自动进库。
                   </p>
                 </div>
               ) : (
                 <>
+                  {/* 产物来路 —— 本对话框的**主选择**：它决定正文出自谁手，
+                      因而也决定下面还有哪些控件（综述要意图、维度、体裁，合并都不要）。
+                      ⚠️ 明确写出「不调用模型」，因为用户最关心的成本差别就在这里。 */}
+                  <div data-synth-modes className="flex gap-2 mb-3">
+                    {([['merge', '合并原文', '按顺序拼接，不调用模型'],
+                       ['review', '生成综述', '由模型按读者意图写']] as const).map(([v, label, hint]) => (
+                      <label key={v} data-synth-mode={v}
+                        className={`flex-1 cursor-pointer rounded-lg border px-3 py-2 transition-colors ${synthMode === v ? 'border-accent' : 'border-border-light hover:border-accent'}`}>
+                        <span className="flex items-center gap-1.5 text-[12px] text-dimmed">
+                          <input type="radio" name="synth-mode" value={v}
+                            checked={synthMode === v}
+                            onChange={() => setSynthMode(v)}
+                            className="accent-accent" />
+                          {label}
+                        </span>
+                        <span className="block text-[10px] text-disabled mt-0.5 pl-5">{hint}</span>
+                      </label>
+                    ))}
+                  </div>
+
                   {/* 已选清单 —— 用户在这里核对「选对了吗、会怎么处理」，这是本对话框存在的主要理由。
                       token 与处理方式来自预览端点（零 LLM 调用）——前端没有正文，算不出来 */}
-                  <p className="text-[11px] text-disabled mb-1">将按以下顺序合成：</p>
+                  <p className="text-[11px] text-disabled mb-1">
+                    {isMerge ? '将按以下顺序拼接：' : '将按以下顺序合成：'}
+                  </p>
                   <ul data-synth-sources className="mb-3 max-h-32 overflow-y-auto rounded-lg border border-border-light bg-surface px-3 py-2 space-y-0.5">
                     {ids.map((id, i) => {
                       const p = prevById.get(id)
@@ -1841,7 +2044,9 @@ export function DocLibrary() {
                           className={`text-[12px] truncate flex items-baseline gap-1 ${unavailable ? 'text-disabled' : 'text-dimmed'}`}>
                           <span className="text-disabled mr-1">{i + 1}.</span>
                           <span className="truncate flex-1">{docs.find(d => d.id === id)?.title || id}</span>
-                          {p && !unavailable && (
+                          {/* token 与处理方式是**综述**的成本预估；合并只拼原文，
+                              不压缩不截断，标「已压缩为摘要」会与实际产物矛盾 */}
+                          {!isMerge && p && !unavailable && (
                             <span data-synth-plan={p.plan} className={`shrink-0 text-[11px] ${p.plan === 'over_window' ? 'text-warning' : 'text-disabled'}`}>
                               {p.plan === 'full' ? '' : `${SYNTH_PLAN_LABEL[p.plan] ?? p.plan} · `}{fmtTok(p.tokens)} tokens
                             </span>
@@ -1852,8 +2057,10 @@ export function DocLibrary() {
                     })}
                   </ul>
 
-                  {/* 窗口类 banner —— 只有 `reject` / `over_window` 触发（见上）；`chunked` 不出 */}
-                  {showWindowBanner && (
+                  {/* 窗口类 banner —— 只有 `reject` / `over_window` 触发（见上）；`chunked` 不出。
+                      合并模式整块不渲染：它不跑预算判定，没删任何内容也没有窗口概念，
+                      摆一条「将被压缩」的警告等于在说一件不会发生的事。 */}
+                  {!isMerge && showWindowBanner && (
                     <div data-synth-window-banner
                       className="mb-3 px-3 py-2 rounded-lg bg-warning/10 text-warning text-[11px] leading-relaxed flex gap-1.5">
                       <AlertTriangle size={13} className="shrink-0 mt-0.5" />
@@ -1883,10 +2090,20 @@ export function DocLibrary() {
                   {/* ── 简单模式：装得下（stuff）就是「选好几篇 → 合并」，配置区默认收起。
                       收起时发出的就是打开那一刻的默认值（原文 / 首预设维度 / 首个意图），
                       与「展开了但一个都不改」逐字相同 —— 减的是摩擦，不是能力。 */}
-                  {simpleMode ? (
+                  {isMerge ? (
+                    /* 合并：只有「用什么原料」一个旋钮。窗口、维度、体裁、读者意图
+                       对一条不调用模型的拼接没有意义，一并省掉。 */
+                    <div data-synth-merge className="mb-3">
+                      <p className="text-[11px] text-disabled leading-relaxed mb-2">
+                        按顺序拼接每篇的{synthSourceMode === 'notes' ? '最新版笔记' : '正文原文'}，
+                        不改写、不摘要，不调用模型 —— 不消耗 token。
+                      </p>
+                      {sourceModeBlock}
+                    </div>
+                  ) : simpleMode ? (
                     <div data-synth-simple className="mb-3">
                       <p className="text-[11px] text-disabled leading-relaxed mb-1.5">
-                        全部原样合并，不压缩、不改写；默认按「通读理解」组织。
+                        全部原样送入模型，不压缩、不改写；默认按「通读理解」组织。
                       </p>
                       <button type="button" data-synth-tune onClick={() => setSynthTuneOpen(true)}
                         className="text-[11px] text-accent hover:underline">
@@ -1898,7 +2115,7 @@ export function DocLibrary() {
                       {!needsTuning && (
                         <button type="button" data-synth-tune onClick={() => setSynthTuneOpen(false)}
                           className="block mb-2 text-[11px] text-disabled hover:text-dimmed transition-colors">
-                          收起选项（回到直接合并）
+                          收起选项
                         </button>
                       )}
 
@@ -1906,25 +2123,9 @@ export function DocLibrary() {
                           重排：纯为保持 diff 可读，结构上没有含义。 */}
 
                   {/* 原料模式 —— 比维度更基础（先决定「用什么材料」，再决定「按什么比」），故在它之上。
-                      刻意**互斥不混合**：混合会让等比配额的前提失效、产物标注不可解释（设计 §19.2） */}
-                  <label className="text-[12px] font-medium text-dimmed block mb-1">对比原料</label>
-                  <div className="flex gap-4 mb-3">
-                    {([['raw', '原文（默认）'], ['notes', '已生成的笔记']] as const).map(([v, text]) => (
-                      <label key={v} className="flex items-center gap-1.5 text-[12px] text-dimmed cursor-pointer">
-                        <input type="radio" name="synth-source-mode" value={v}
-                          data-synth-source={v}
-                          checked={synthSourceMode === v}
-                          onChange={() => changeSynthSourceMode(v)}
-                          className="accent-accent" />
-                        {text}
-                      </label>
-                    ))}
-                  </div>
-                  {unusableCount > 0 && (
-                    <p data-synth-excluded className="mb-3 -mt-1.5 text-[11px] text-warning">
-                      已选 {ids.length} 篇，其中 {unusableCount} 篇无笔记，合成时将跳过。
-                    </p>
-                  )}
+                      刻意**互斥不混合**：混合会让等比配额的前提失效、产物标注不可解释（设计 §19.2）。
+                      ⚠️ 合并模式也用同一份（见 `sourceModeBlock`）。 */}
+                  {sourceModeBlock}
 
                   {/* 读者意图 —— 本对话框的**主控件**：它决定 task 段的「读者目的」，
                       即「这份综述写给谁读、读来完成什么」（设计 §7.8.3）。维度与体裁都是
@@ -2032,7 +2233,7 @@ export function DocLibrary() {
                     <button onClick={() => setSynthOpen(false)}
                       className="px-4 py-2 text-[13px] text-dimmed hover:bg-surface rounded-lg transition-colors">取消</button>
                     <button data-confirm-synth onClick={runSynthesize} disabled={!canRun}
-                      className="px-4 py-2 bg-accent text-on-accent text-[13px] font-medium rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed">{simpleMode ? '合并' : '合成'}</button>
+                      className="px-4 py-2 bg-accent text-on-accent text-[13px] font-medium rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed">{isMerge ? '合并' : '合成'}</button>
                   </div>
                 </>
               )}

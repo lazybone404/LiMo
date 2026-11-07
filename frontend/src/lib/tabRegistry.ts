@@ -138,9 +138,9 @@ const DOC_TYPES = ['pdf', 'docx', 'pptx', 'document', 'epub']
 const ALL_TEXT = ['video', 'webpage', 'text', 'link', ...DOC_TYPES]
 
 // ── 笔记 ──
-// ⚠️ `composite` 只加在这个 tab 与 transcript 上，**绝不能加进 DOC_TYPES / ALL_TEXT**——
-// 那两处是 `polished` / `mindmap` 的 sourceTypes 展开源，加进去会让合成文档凭空多出
-// 「整理版原文」与「思维导图」（它是 N 篇的综述，没有「原文」可言）。见 M8 测试。
+// ⚠️ `composite` 逐 tab 手写，**绝不能加进 DOC_TYPES / ALL_TEXT**——那是 `polished`
+// 的 sourceTypes 展开源，加进去会让合成文档凭空多出「整理版原文」（它是 N 篇的综述，
+// 没有「原文」可言）。要给它加 tab 就在这里显式列一项。见 M8 测试。
 TabRegistry.register({
   key: 'summary', label: '笔记',
   sourceTypes: ['video', 'webpage', 'text', 'link', 'pdf', 'docx', 'pptx', 'document', 'epub', 'xlsx', 'composite'],
@@ -187,9 +187,12 @@ TabRegistry.register({
 })
 
 // ── 思维导图 ──
+// ⚠️ `composite` 显式追加（2026-11-07），**不是**把它塞进 ALL_TEXT —— 那样会连带
+// 打开 `polished`。判据：思维导图消费的是 `notes`，而合成产物有 notes；「整理版原文」
+// 对合成则是另一份综述，不该出现。
 TabRegistry.register({
   key: 'mindmap', label: '思维导图',
-  sourceTypes: ALL_TEXT,
+  sourceTypes: [...ALL_TEXT, 'composite'],
   priority: 21,
   contentSource: 'notes', htmlMode: '__mindmap__', exportSuffix: '', exportLabel: '思维导图',
   visible: (ctx) => !!ctx.currentContent,

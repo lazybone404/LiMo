@@ -16,6 +16,7 @@
 import { useState } from 'react'
 import {
   Archive, FolderInput, FolderX, Move, Tag, Trash2, X, CheckSquare, Square, Layers, Sparkles,
+  AudioLines, Wand2,
 } from 'lucide-react'
 import type { FolderEntry } from '../../store/types'
 import { FolderPicker } from './FolderPicker'
@@ -31,8 +32,26 @@ export interface BatchBarProps {
   allSelected: boolean
   onToggleSelectAll: () => void
   onExport: () => void
-  /** 多篇合成对比综述（未选够 2 篇时按钮禁用，见下方 title） */
+  /** 多篇合成（合并原文或生成综述，对话框里选；未选够 2 篇时按钮禁用，见下方 title） */
   onSynthesize: () => void
+  /**
+   * 选中集合里「待转录」的篇数。
+   *
+   * 为 0 时转录按钮**整块不渲染** —— 选中的都已有正文，这个按钮点了也是空转。
+   * 这也是它与合成按钮的差别：合成是「没选够 2 篇就禁用」，转录是「没有可做的事就不出现」。
+   */
+  pendingCount: number
+  /** 打开批量转录的确认对话框（**零请求**，用户按「开始转录」才真的跑） */
+  onTranscribe: () => void
+  /**
+   * 选中集合里**能生成**的篇数（排除了待转录与图片文档）。
+   *
+   * 0 时按钮禁用而不是隐藏：与转录按钮不同，生成是这篇列表的常规动作，
+   * 整块消失会让人以为「这个版本没有批量生成」。
+   */
+  generateCount: number
+  /** 打开批量生成的确认对话框（**零请求**，用户按「开始生成」才真的跑） */
+  onGenerate: () => void
   onMove: (folderId: string) => void
   onTag: (tags: string[], mode: 'add' | 'replace') => void
   /** 智能分类（模型建议 + 用户审定）。**1 篇也能用**，没有合成那样的篇数门槛 */
@@ -61,6 +80,7 @@ function Sep() {
 export function BatchBar({
   selectedCount, renderedCount, totalMatches, folders, busy, allSelected,
   onToggleSelectAll, onExport, onMove, onTag, onClassify, onDelete, onClear, onSynthesize,
+  pendingCount, onTranscribe, generateCount, onGenerate,
   onCreateFolder,
   folderCount, onMoveFolders, onDeleteFolders, folderExcludeIds,
 }: BatchBarProps) {
@@ -111,8 +131,27 @@ export function BatchBar({
         <div className="flex-1" />
 
         {/* ── 产出段：产生新东西（点错的代价只是多一份产物）── */}
-        <button onClick={onSynthesize} disabled={busy || selectedCount < 2}
-          title={selectedCount < 2 ? '至少选择 2 篇才能生成对比综述' : `把选中的 ${selectedCount} 篇合成一篇对比综述`}
+        {/* 转录排在合成之前：它补的是材料本身（正文），合成与导出都建立在正文之上。
+            ⚠️ 只在真有待转录的文档时出现 —— 选中项都已有正文时留着它是噪音。 */}
+        {pendingCount > 0 && (
+          <button onClick={onTranscribe} disabled={busy} data-batch-transcribe
+            title={`转录选中的 ${pendingCount} 篇待转录文档`}
+            className="w-6 h-6 rounded-md hover:bg-accent/10 flex items-center justify-center disabled:opacity-50 disabled:hover:bg-transparent">
+            <AudioLines size={13} className="text-accent" />
+          </button>
+        )}
+        {/* 生成排在合成之前：它产出的笔记/整理版是每篇自己的下游，合成是跨篇的。
+            ⚠️ 禁用条件看 `generateCount` 而不是 `selectedCount` —— 选中的全是待转录
+            或图片文档时，点了也只会得到一条「没有可生成的产物」。 */}
+        <button onClick={onGenerate} disabled={busy || generateCount === 0} data-batch-generate
+          title={generateCount === 0
+            ? '选中的文档都没有可生成的内容（待转录或图片文档）'
+            : `生成选中的 ${generateCount} 篇（已有产物的会重新生成）`}
+          className="w-6 h-6 rounded-md hover:bg-accent/10 flex items-center justify-center disabled:opacity-50 disabled:hover:bg-transparent">
+          <Wand2 size={13} className="text-accent" />
+        </button>
+        <button onClick={onSynthesize} disabled={busy || selectedCount < 2} data-batch-synthesize
+          title={selectedCount < 2 ? '至少选择 2 篇才能合并或生成综述' : `把选中的 ${selectedCount} 篇合并原文或生成一篇综述`}
           className="w-6 h-6 rounded-md hover:bg-accent/10 flex items-center justify-center disabled:opacity-50 disabled:hover:bg-transparent">
           <Layers size={13} className="text-accent" />
         </button>

@@ -170,6 +170,19 @@ function DocRowImpl({
             {selectedBox}
             {/* 类型用 4×16 竖条而不是 16×16 方块：省 12px 横向空间，26px 行里这很值 */}
             <span aria-hidden className="w-1 h-4 rounded-full shrink-0" style={{ backgroundColor: colors.dot }} />
+            {/* 「待转录」（2026-11-07）：只收纳了、正文还是占位文本。
+                ⚠️ 用文字而不是图标 —— 这个词只有两个字，而对应的图标（时钟 / 音频波形）
+                在 26px 行里会被读成「时长」「音轨」之类完全不同的意思。
+                ⚠️ `transcribeState` 缺键 = 已转录（历史条目零迁移），故判据写
+                `=== 'pending'` 而不是 `!== 'done'`。 */}
+            {doc.transcribeState === 'pending' && (
+              <span
+                className="shrink-0 text-[9px] leading-none px-1 py-0.5 rounded bg-warning/15 text-warning"
+                title="正文还没有转录，点开后点「开始转录」"
+              >
+                待转录
+              </span>
+            )}
             {/* 紧凑行里只放一个图标，不放「N 合 1」全称——26px 行的横向空间要留给标题 */}
             {isMerged && <Layers size={11} className="text-accent/80 shrink-0" aria-label={`${sourceCount} 篇合成`} />}
             <span className="flex-1 min-w-0 text-[12px] truncate">{doc.title}</span>

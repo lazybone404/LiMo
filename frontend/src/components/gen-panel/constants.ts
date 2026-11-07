@@ -88,8 +88,12 @@ export function getTypeMeta(sourceType: string, genOptions: Record<string, strin
       { name: 'both', label: '数据摘要', description: '概况·关键指标·字段解读' },
     ] : isComposite ? [
       // 只有笔记（= 对比综述）。⚠️ 后端 `build_both()` 对 composite 返回 (sp, sp)，
-      // 前端不给 polished 入口，两层一致
-      { name: 'notes', label: '对比综述', description: '总表·分维度对比·共识与分歧·综合评价' },
+      // 前端不给 polished 入口，两层一致（`build_polish_prompt` 对 composite 返回的
+      // 其实是**另一份综述**，开放它等于同一个功能两个入口）。
+      // ⚠️ 描述写的是 `article` 形态的节名。2026-10-18 起骨架按读者意图分派五套
+      // （`_SHAPE_SKELETONS`），这里只说默认那一套，不逐形态罗列 —— 逐套列出来
+      // 一行放不下，而用户真正要的是「它会产出什么」而非节名清单。
+      { name: 'notes', label: '对比综述', description: '共同结论·分歧·读者问题·材料索引·各篇速查' },
     ] : [
       { name: 'notes', label: '笔记', description: '结构化笔记：提取关键信息' },
       { name: 'polished', label: '整理版原文', description: '去噪音、修正错别字、合并段落' },

@@ -15,51 +15,15 @@ import type { ToastSlice } from './toastSlice'
 
 // ── 公开类型 ──
 
-export interface DocEntry {
-  id: string; title: string; sourceType: string; sourceFileName?: string; sourceUrl?: string;
-  engine: string; language?: string; duration?: number; coverUrl?: string; contentHash: string;
-  tags: string[]; createdAt: string;
-  /** 所属文件夹 id；"" = 未分类 */
-  folderId?: string;
-  /**
-   * 合成文档的来源（`sourceType === 'composite'` 时非空）。
-   * ⚠️ 只有这三项 + metadataCorrupt 能判定「这份综述引用了哪几篇」——标题是**展示字段**，
-   * 重名与改名都会让它失效（设计 §4.2.2）。
-   */
-  sourceDocIds?: string[];
-  sourceTitles?: string[];
-  /** 各源 rawText 的 sha256 前 8 位。⚠️ 比 id 更可靠：id 由内容派生，重建索引会重推（§4.2.2） */
-  sourceHashes?: string[];
-  /** 出处头丢失/损坏 → 保留文档但**不猜**来源（§4.2.3） */
-  metadataCorrupt?: boolean;
-  /**
-   * 这篇**已有哪些生成产物**（`"notes"` / `"polished"`），由后端列表端点带出
-   * （`QueryService.list_resources` 取自 `index.json` 的产物索引，零额外读盘）。
-   *
-   * ⚠️ **`undefined` 与 `[]` 语义不同，消费方必须分流**：
-   *   - `undefined` = **未知**（旧后端 / 测试 mock / 乐观插入的新文档）→ 照旧发请求
-   *   - `[]`        = **确定没有产物** → 一个产物请求都不发
-   * 这把「尚未生成」还原成一个正常状态，而不是靠一个必然 404 的请求 + `recoverable`
-   * 把它静默掉（那会让浏览器网络层照打红字，见 [PreviewArea.loadDocContent]）。
-   *
-   * ⚠️ 由生成/解读链路在产物落盘后**追加**（见 store 的 `markArtifact`）——不追加的话
-   * 「生成完 → 切走 → 切回」会因 `[]` 而不请求，笔记看起来凭空消失（模式 #52）。
-   */
-  modes?: string[];
-}
-
-/** 文件夹（可嵌套的纯逻辑分类，不映射磁盘目录） */
-export interface FolderEntry {
-  id: string; name: string; createdAt: string
-  /** 父文件夹 id；`''` = 根级。后端返回的是**规范化后**的值（悬空/环已按根级处理）。
-   *  ⚠️ 可选是**兼容旧后端 / 测试 mock**用的，消费方一律写 `f.parentId || ''`。 */
-  parentId?: string
-  /** **直接**挂在该夹下的文档数（不含子树） */
-  count: number
-  /** 含全部后代的文档数。⚠️ 验收对账必须用 `count`（求和 `totalCount` 会重复计数）。
-   *  可选理由同 `parentId`；缺失时由前端 `countByFolder` 本地派生。 */
-  totalCount?: number
-}
+/**
+ * 文档 / 文件夹条目 —— **定义在 `api/core.ts`**（它们是后端响应的形状），此处只做
+ * re-export，不再保留第二份。
+ *
+ * ⚠️ 此前这里有一份独立定义，两份已经分叉过（本文件多 `sourceUrl` / `coverUrl` /
+ * `modes`，`api/core.ts` 缺），而 `tsc` 不会因为「两个结构兼容的同名 interface」
+ * 报错 —— 静默漂移只能在运行时看见。2026-11-07 合并，**加字段只改 `api/core.ts`**。
+ */
+export type { DocEntry, FolderEntry } from '../api/core'
 
 export interface TaskInfo {
   kind: string

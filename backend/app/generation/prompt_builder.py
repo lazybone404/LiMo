@@ -44,7 +44,7 @@ class PromptBuilder:
         if source_type == "composite":
             return build_synthesis_prompt(
                 clean_text, title, user_notes=user_notes,
-                target_language=self.target_language,
+                target_language=self.target_language, formats=formats,
             )
 
         if source_type == "xlsx":
@@ -85,7 +85,7 @@ class PromptBuilder:
             # 与 xlsx 同形：两份相同，只为一个产物写盘（生成侧另有闸门只跑 notes）
             sp = build_synthesis_prompt(
                 clean_text, title, user_notes=user_notes,
-                target_language=self.target_language,
+                target_language=self.target_language, formats=formats,
             )
             return sp, sp
 

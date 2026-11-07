@@ -15,7 +15,9 @@ from fastapi import APIRouter, Request, UploadFile, File, Form, Depends
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 
-from app.core.types import PipelineInput, InputType, RawTranscript, ProgressEvent
+from app.core.types import (
+    AdapterOutput, InputType, PipelineInput, ProgressEvent, RawMetadata, RawTranscript,
+)
 from app.core.registry import AdapterRegistry
 from app.core.dependencies import get_store, get_config, get_guard, get_query_service
 from app.core.errors import AppError
@@ -346,6 +348,26 @@ def _index_for_search(request: Request, tx_id: str):
                  vec=getattr(request.app.state, 'vector_store', None))
 
 
+def _index_if_persisted(request: Request, result: dict) -> None:
+    """导入结果「真的落库了」才写全文索引。**两个导入端点共用这一份**。
+
+    ⚠️ **收成一份的原因是本函数存在之前 SSE 路径压根没调索引**：非流式端点在
+    `_persist_ingest_result` 之后判 `status == "done"` 再 `_index_for_search`，
+    而 `ingest_stream::run_pipeline` 只 `queue.put_nowait({"type": "done", **result})`
+    —— 于是经 `/ingest/stream`（**前端 `api/ingest.ts` 的主路径**）导入的文档
+    在下次后端重启前不在全文索引里，重建时才补上。表现是「刚导入的搜不到、
+    重启后又能搜到」，与「库里真没有」逐字相同。
+
+    判据与改造前非流式端点那一行**逐字相同**：重复 URL / 重复内容两支的 `status`
+    不是 `"done"`，它们指向的是一篇早已入过索引的文档。
+
+    ⚠️ 索引失败只 `log.warning` 不抛（`update_index` 内部已如此）—— 不要把
+    「索引没写成」升级成「导入失败」，文档已经在库里了。
+    """
+    if result.get("status") == "done" and "id" in result:
+        _index_for_search(request, result["id"])
+
+
 def _drop_vectors(request: Request, tx_id: str) -> None:
     """把一篇文档从向量索引里摘掉（薄委托：只负责取依赖 + 不冒 500）。
 
@@ -372,6 +394,34 @@ _ADAPTER_SOURCE_MAP = {
     #  漏一处就是预览区白屏）
     "arxiv": "pdf",
 }
+
+# ── 收纳档位表（「导入与转录分开」，2026-11-07）──
+#
+# 判据是**成本**：媒体档要下载文件 + 跑 ASR（慢、可能计费），典型场景就是「先囤着」；
+# 文档 / 网页档的抓取与解析都在本地跑（毫秒到秒级），拆开没什么收益。
+#
+# ⚠️ **这张表住后端**。前端拿到一个 URL 时根本不知道它是 B 站视频还是博客文章 ——
+# 只有 `AdapterRegistry.route()` 选出了 adapter 才谈得上分档。前端只传两个布尔**偏好**。
+#
+# ⚠️ 音频今天走 `video` 适配器（`accept` 的 FILE 分支只列视频扩展名，播客导入
+# 还在待办里没做）。将来加独立 audio adapter 时把它加进 `_TIER_MEDIA` 一处即可。
+_TIER_MEDIA = frozenset({"video"})
+# `arxiv` 委托 `DocumentAdapter`（引擎链零复制），归文档档。
+_TIER_DOC = frozenset({"document", "arxiv", "webpage"})
+
+
+def _resolve_probe_only(adapter_name: str, media_probe_only: bool, doc_probe_only: bool) -> bool:
+    """按适配器归类决定这次导入要不要「只收纳」。
+
+    表外的（`text` / `image` / 将来新增的）一律 `False` —— 它们没有「只收纳」的意义：
+    文本本来就在手上、图片的正文就是 OCR 结果且没有独立的「晚点再转录」形态。
+    """
+    if adapter_name in _TIER_MEDIA:
+        return media_probe_only
+    if adapter_name in _TIER_DOC:
+        return doc_probe_only
+    return False
+
 
 # ── 共享辅助函数 ──
 
@@ -458,13 +508,79 @@ def _extract_title_from_rawtext(raw_text: str) -> str | None:
     return None
 
 
+def _pending_placeholder(tx_id: str) -> str:
+    """「只收纳、还没转录」那篇文档的占位正文。
+
+    ⚠️ 首行那段 HTML 注释里带 `tx_id` 是**刻意的**：它保证每篇 pending 文档的
+    `content_hash` 唯一，收纳模式下导入时不会被 `find_by_hash` 互相判重。
+    （已知副作用，接受：收纳模式下同一份文件导入两次会得到两篇 pending 文档 ——
+    内容去重在这条路径上失效，要等转录完成才可能撞上。URL 去重不受影响。）
+
+    ⚠️ 首行是注释 ⇒ `_extract_title_from_rawtext` 的 `^#{1,2}\\s+` 不匹配，
+    标题不会被占位文本污染。**别为了「防污染」去改那段正则。**
+    """
+    return (
+        f"<!-- limo-pending:{tx_id} -->\n"
+        "> 这篇文档已收纳，正文还没有转录。\n"
+        "> 在预览区点「开始转录」即可提取正文。\n"
+    )
+
+
+def _build_pending_output(adapter, inp: PipelineInput, tx_id: str) -> AdapterOutput:
+    """收纳模式：不调 `adapt()`（那会下载 + 转录），只探测元数据 + 落占位正文。
+
+    ⚠️ `probe` 是**可选钩子**（写法照 `precheck` / `warmup` / `release` 的既有惯例：
+    不进 Protocol、不改 `adapt()` 签名、消费方 `getattr`）。没有 `probe` 的适配器
+    （document / webpage / text / image）只是一篇标题走 `_build_title(inp)` 兜底 ——
+    「有没有 probe」**不是**能否收纳的条件，档位表才是。
+    """
+    probe_fn = getattr(adapter, "probe", None)
+    meta = (probe_fn(inp) if probe_fn else None) or {}
+    return AdapterOutput(
+        raw_text=_pending_placeholder(tx_id),
+        # 三个值都做 `or` 兜底：探测失败时传 `None` 进 index 会变成 `null`，
+        # 而前端 `DocEntry` 那边声明的是 `string` / `number`。
+        metadata=RawMetadata(
+            source_title=meta.get("title") or "",
+            duration=meta.get("duration") or 0,
+            cover_url=meta.get("cover_url") or "",
+        ),
+        engine="pending",
+    )
+
+
+async def _run_adapter(adapter, inp: PipelineInput, *, probe_only: bool, engine_cfg: dict,
+                       on_progress=None) -> tuple[AdapterOutput, str | None]:
+    """跑适配器；收纳模式改为「只探测」。
+
+    返回 `(output, 预生成的 tx_id)` —— `tx_id` 非 None 时调用方要把它传给
+    `_persist_ingest_result`（占位正文里的 hash 已经用了它，换了就对不上）。
+
+    ⚠️ **`adapt()` 的两个调用点必须共用这一份**：非流式 `ingest` 与 SSE 的
+    `run_pipeline` 此前是两段逐字同构的调用。只在一处加分叉 = 用户走另一条路时
+    行为完全不同，而两条路都不报错（前端永远走 SSE，所以「单测绿、实机不生效」
+    是最可能的形态）。
+
+    ⚠️ **收纳分支不发任何进度事件**：`on_progress` 是 `queue.put_nowait` 的闭包，
+    而从 `asyncio.to_thread` 的 worker 线程里调它不安全（`asyncio.Queue` 不保证跨线程）。
+    """
+    if probe_only:
+        tx_id = f"tr_{uuid.uuid4().hex[:12]}"
+        return await asyncio.to_thread(_build_pending_output, adapter, inp, tx_id), tx_id
+    return await adapter.adapt(inp, on_progress=on_progress,
+                               engine_config=engine_cfg), None
+
+
 async def _persist_ingest_result(
     store, output, adapter_name: str,
-    inp: PipelineInput, media_dir: str,
+    inp: PipelineInput, media_dir: str, tx_id: str | None = None,
 ) -> dict:
     """持久化适配器输出 → 内容去重 → 保存 RawTranscript → 返回结果 dict。
 
      ingest() 和 ingest_stream() 共用此函数。
+
+     `tx_id` 由调用方传入（收纳模式的占位正文里已经写了它）；不传则现生成 ——
+     生成逻辑原本就在这里，前移是**零行为变化**（它从来就不依赖 hash）。
     """
     output.raw_text = _persist_media_file(store, output.raw_text)
 
@@ -478,7 +594,10 @@ async def _persist_ingest_result(
             "message": f"内容与已有《{existing_hash.get('title', '')}》完全相同",
         }
 
-    tx_id = f"tr_{uuid.uuid4().hex[:12]}"
+    # 收纳模式的唯一信号：`_run_adapter` 只在 probe_only 时才预生成 tx_id。
+    # ⚠️ 必须在下面那行兜底**之前**取 —— 兜底之后它永远非 None，判据恒真。
+    probe_only = tx_id is not None
+    tx_id = tx_id or f"tr_{uuid.uuid4().hex[:12]}"
 
     # 提前计算标题（图片持久化需要 doc_dir）
     title = (output.metadata.source_title if output.metadata and output.metadata.source_title
@@ -514,6 +633,7 @@ async def _persist_ingest_result(
         source_url=inp.url,
         source_file_name=Path(inp.file_path).name if inp.file_path else None,
         source_file_path=inp.file_path,
+        transcribe_state="pending" if probe_only else "done",
     )
 
     if not store.save_transcript(tx):
@@ -534,6 +654,14 @@ async def _persist_ingest_result(
         "sourceUrl": tx.source_url,
         "coverUrl": tx.metadata.cover_url if tx.metadata else "",
         "engine": tx.engine, "count": store.count,
+        # ⚠️ 这是个**手写字面量**（不是 `{"status": "done", **entry}`），所以
+        # `transcribeState` 不会自动出现 —— 必须在这里单独写一行。漏了它的失效形态是
+        # 「库里是 pending、前端拿到的是 undefined」：导入那一刻（也就是用户唯一会
+        # 盯着看的那一刻）不显示「待转录」，切去文档库重新拉一次列表反而正常 ——
+        # 而那条路读的是 index，看起来一切正常，让人先怀疑前端。
+        # ⚠️ 刻意**不动 `status`**：上面两个调用点靠 `status == "done"` 判要不要写
+        # 全文索引（`_index_if_persisted`），把收纳改成 `"stored"` = 这篇文档搜不到。
+        "transcribeState": tx.transcribe_state,
     }
 
 def _adapter_to_source_type(name: str, file_path: str = "") -> str:
@@ -795,6 +923,11 @@ async def ingest(
     text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     force: bool = Form(False),
+    # 「导入与转录分开」的两个偏好位（2026-11-07）。**默认值就是产品默认值**：
+    # 媒体档默认只收纳、文档 / 网页档默认一键 —— 前端只在用户改过设置之后才发
+    # （与 `web_search=0` 同一条纪律）。分档判据见 `_resolve_probe_only`。
+    media_probe_only: bool = Form(True),
+    doc_probe_only: bool = Form(False),
     store=Depends(get_store),
     config=Depends(get_config),
 ):
@@ -843,9 +976,14 @@ async def ingest(
         import tempfile
         media_dir = tempfile.mkdtemp(prefix="mbw_img_")
 
+        # 收纳还是转录 —— 只有 adapter 选出来之后才谈得上分档（见 `_TIER_MEDIA`）
+        probe_only = _resolve_probe_only(adapter.name, media_probe_only, doc_probe_only)
+
         # AppError（适配器自己报的业务错误）不包装，直接穿透到 finally
         try:
-            output = await adapter.adapt(inp, engine_config=_build_engine_config(config, media_dir))
+            output, tx_id = await _run_adapter(
+                adapter, inp, probe_only=probe_only,
+                engine_cfg=_build_engine_config(config, media_dir))
         except AppError:
             raise
         except Exception as e:
@@ -857,10 +995,10 @@ async def ingest(
                            detail=f"{type(e).__name__}: {e}"[:300],
                            hint=_INGEST_FAILED_HINT) from e
 
-        result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir)
+        result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir,
+                                              tx_id=tx_id)
         persisted = True
-        if result.get("status") == "done" and "id" in result:
-            _index_for_search(request, result["id"])
+        _index_if_persisted(request, result)
         return result
     finally:
         # ── 临时文件收口（P1-10）──
@@ -952,6 +1090,11 @@ async def retranscribe(tx_id: str, request: Request, store=Depends(get_store), c
         tx["rawText"] = output.raw_text
         tx["engine"] = output.engine
         tx["contentHash"] = hashlib.sha256(output.raw_text.encode()).hexdigest()
+        # ⚠️ **必须显式写**：`save_transcript_full` 有「调用方没带这个字段就沿用旧值」
+        # 的守护（`store.py` 第六个守护），而这里的 `tx` 是从 `get_transcript` 读出来的、
+        # 旧值就是 `"pending"`。不写这一行 = 正文已经换成真正文、界面永远显示「待转录」，
+        # 而这条路径上**没有任何一处会报错**。这是本步最容易漏的一行。
+        tx["transcribeState"] = "done"
         metadata = tx.get("metadata", {})
         if output.metadata.pages:
             metadata["pages"] = output.metadata.pages
@@ -991,6 +1134,10 @@ async def ingest_stream(
     text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     force: bool = Form(False),
+    # 与非流式端点**逐字同款**（两处签名分开写，改一处必须改另一处 ——
+    # 前端三条导入入口里两条打的是 `/stream`）
+    media_probe_only: bool = Form(True),
+    doc_probe_only: bool = Form(False),
 ):
     """SSE 流式导入 — 实时推送进度"""
 
@@ -1032,6 +1179,9 @@ async def ingest_stream(
     import tempfile
     media_dir = tempfile.mkdtemp(prefix="mbw_img_")
 
+    # 收纳还是转录（判据同非流式端点，共用 `_resolve_probe_only`）
+    probe_only = _resolve_probe_only(adapter.name, media_probe_only, doc_probe_only)
+
     queue: asyncio.Queue = asyncio.Queue()
 
     def on_progress(ev: ProgressEvent):
@@ -1063,10 +1213,16 @@ async def ingest_stream(
         """
         persisted = False
         try:
-            output = await adapter.adapt(inp, on_progress=on_progress,
-                                          engine_config=_build_engine_config(config, media_dir))
-            result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir)
+            output, tx_id = await _run_adapter(
+                adapter, inp, probe_only=probe_only,
+                engine_cfg=_build_engine_config(config, media_dir),
+                on_progress=on_progress)
+            result = await _persist_ingest_result(store, output, adapter.name, inp, media_dir,
+                                                  tx_id=tx_id)
             persisted = True
+            # ⚠️ 顺序是「先 persist、后索引、再投 done」：done 一到前端就会去拉列表，
+            # 索引写晚了一步会出现「列表里有、搜不到」的瞬时空窗。索引失败只 warning。
+            _index_if_persisted(request, result)
             queue.put_nowait({"type": "done", **result})
         except AppError as e:
             # 结构化字段一个都不能省：`recoverable` 决定前端是否给「重试」，

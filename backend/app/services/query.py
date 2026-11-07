@@ -631,6 +631,9 @@ class QueryService:
             "sourceTitles": tx.get("sourceTitles", []),
             "sourceHashes": tx.get("sourceHashes", []),
             "metadataCorrupt": tx.get("metadataCorrupt", False),
+            # 转录状态（"pending" 的正文是占位文本）。白名单序列化 —— store 返回了
+            # 但这里不列，前端与 CLI 就永远拿不到，而两者都分辨不出占位与真正文。
+            "transcribeState": tx.get("transcribeState", "done"),
             "rawText": tx.get("rawText", ""),
         }
 

@@ -141,6 +141,25 @@ def _cookie_header(cookie_str: str) -> str | None:
     return "; ".join(pairs) if pairs else None
 
 
+def _request_headers(url: str, cookie: str = "") -> dict:
+    """给 yt-dlp 的请求头。**下载与探测两个消费方共用这一份**。
+
+    抖音反爬严格，需要更真实的浏览器 UA（覆盖默认的 yt-dlp UA）。分成两份的
+    失效形态是：收纳探测到的是「被拦下的页面标题」，而下载路径好得很 —— 两边
+    都报成功，只是文档标题莫名其妙。
+    """
+    headers = dict(_HEADERS)
+    if _host_in(url, DOUYIN_DOMAINS):
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Referer": "https://www.douyin.com/",
+        }
+    cookie_hdr = _cookie_header(cookie)
+    if cookie_hdr:
+        headers["Cookie"] = cookie_hdr
+    return headers
+
+
 class VideoAdapter(PipelineAdapter):
     name = "video"
     cookies: str = ""
@@ -155,6 +174,35 @@ class VideoAdapter(PipelineAdapter):
         if input.type == InputType.URL:
             return _is_video_url(input.url or "")
         return False
+
+    def probe(self, input: PipelineInput) -> dict | None:
+        """收纳模式下的元数据探测（「导入与转录分开」，2026-11-07）—— **不下载任何东西**。
+
+        ⚠️ **这是可选钩子，不进 `PipelineAdapter` 协议**，写法照 `precheck` /
+        `warmup` / `release` 的既有惯例（消费方 `getattr`）。其余五个 adapter 没有它
+        也能收纳，只是标题走 `_build_title(inp)` 兜底 —— 「有没有 `probe`」**不是**
+        能否只收纳的条件，档位表（`routers/ingest.py::_TIER_MEDIA`）才是。
+
+        返回的键用 **`RawMetadata` 的字段名**（`cover_url`，不是 yt-dlp 的 `thumbnail`）：
+        消费方 `_build_pending_output` 直接摊进 dataclass。
+
+        ⚠️ 文件输入直接 `None`：本地视频没有平台元数据，用文件路径喂 yt-dlp 只会
+        白花一次调用；标题走文件名兜底本来就更准。
+        """
+        if input.type != InputType.URL or not input.url:
+            return None
+        url = input.url
+        info = self._probe_info(url, _request_headers(url, getattr(self, "cookies", "")),
+                                self._get_proxy(url))
+        if not info:
+            return None
+        return {
+            "title": info.get("title") or "",
+            # `duration` 可能是 None（直播 / 损坏的 info）：调用方 `or 0` 兜底，
+            # 传 None 进 index 会变成 `null` 而前端 `DocEntry` 声明的是 `number`。
+            "duration": info.get("duration") or 0,
+            "cover_url": info.get("thumbnail") or "",
+        }
 
     async def adapt(self, input: PipelineInput, on_progress=None,
                     engine_config: dict | None = None) -> AdapterOutput:
@@ -337,6 +385,28 @@ class VideoAdapter(PipelineAdapter):
         proxy = getattr(self, 'proxy', '') or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or ""
         return proxy_for(url, proxy) or ""
 
+    def _probe_info(self, url: str, headers: dict, proxy: str) -> dict | None:
+        """`yt_dlp` 的快速元数据请求（`download=False`），失败返回 `None`。
+
+        ⚠️ **两个消费方共用这一份**：`_download` 只读 `filesize`（决定网络读超时），
+        `probe` 读标题 / 时长 / 封面。各写一份 `extract_info` 的失效形态是参数分叉 ——
+        `format` 必须与正式下载一致，否则 `download=False` 默认返回**完整视频**大小
+        （含视频轨），而 `bestaudio` 实际只下载音频轨（实测 391MB vs 1285MB）。
+        分叉之后超时档位选错、前端那句「视频约 N MB」也说错，两边都不报错。
+        """
+        import yt_dlp
+        probe_opts = {"quiet": True, "no_warnings": True, "noplaylist": True,
+                      "format": "bestaudio[ext=m4a]/bestaudio/best",
+                      "http_headers": headers}
+        if proxy:
+            probe_opts["proxy"] = proxy
+        try:
+            with yt_dlp.YoutubeDL(probe_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception:
+            return None
+        return info if isinstance(info, dict) else None
+
     @retry(max_attempts=3, base_delay=2.0)
     def _download(self, url: str, cookie: str = "",
                   on_progress=None) -> tuple[Path | None, dict]:
@@ -347,34 +417,15 @@ class VideoAdapter(PipelineAdapter):
         import yt_dlp
         tmp_dir = Path(tempfile.mkdtemp())
 
-        # 抖音反爬严格，需要更真实的浏览器 UA（覆盖默认的 yt-dlp UA）
-        headers = dict(_HEADERS)
-        if _host_in(url, DOUYIN_DOMAINS):
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                "Referer": "https://www.douyin.com/",
-            }
-        cookie_hdr = _cookie_header(cookie)
-        if cookie_hdr:
-            headers["Cookie"] = cookie_hdr
+        # 请求头与 `probe()` 共用一份（抖音 UA / Cookie 的判据别写第二遍）
+        headers = _request_headers(url, cookie)
         # 代理优先级：config.yaml > 环境变量；直连域名在这里豁免（yt-dlp 不吃 NO_PROXY）
         proxy = self._get_proxy(url)
 
         # ── 预取视频大小（快速元数据请求，不下载）→ 决定超时 + 前端提示 ──
-        filesize = 0
-        try:
-            # format 必须与正式下载一致——否则 download=False 默认返回完整视频大小（含视频轨），
-            # bestaudio 实际只下载音频轨（如 391MB vs 1285MB）
-            probe_opts = {"quiet": True, "no_warnings": True, "noplaylist": True,
-                          "format": "bestaudio[ext=m4a]/bestaudio/best",
-                          "http_headers": headers}
-            if proxy:
-                probe_opts["proxy"] = proxy
-            with yt_dlp.YoutubeDL(probe_opts) as ydl:
-                info_p = ydl.extract_info(url, download=False)
-            filesize = int(info_p.get("filesize") or info_p.get("filesize_approx") or 0)
-        except Exception:
-            pass  # 预取失败不阻塞，走默认超时
+        # 预取失败不阻塞，走默认超时
+        info_p = self._probe_info(url, headers, proxy) or {}
+        filesize = int(info_p.get("filesize") or info_p.get("filesize_approx") or 0)
 
         # 按大小分档网络读超时（越大容忍越久；下载持续有数据，此超时只在网络卡死时触发）
         size_mb = filesize / (1024 * 1024)

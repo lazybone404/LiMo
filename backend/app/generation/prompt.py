@@ -635,21 +635,39 @@ def get_chart_format(source_type: str) -> str:
     3–6 个有序项，**装不下带分支的环**；那一类归 `state` 布局，不归块。
     `test_prompt.py` 的新守卫解析示例 JSON 断言「有分支、有汇合」，退回单链立刻红。
     """
+    # ⚠️ 「不要画图」那一段按来源分两份（2026-11-07）：合成产物**没有注入语义块
+    # 规范**（`build_synthesis_prompt` 只注入证据块，不含 `get_markdown_block_format`），
+    # 照抄那串块名等于教模型写一个它没见过的标记 —— 末尾那句「不是布局名」也就
+    # 没有指代对象。分支只影响这一段，下面三种布局的引导与示例两条来源共用：
+    # 那部分是「画什么」，与有没有语义块无关。
+    if source_type == "composite":
+        _no_draw = (
+            "- ⚠️ 先判断这张图有没有必要：**同一层会出现第二个节点、或关系不是一条线**才值得画。"
+            "下列情况**不要画图**，用普通 Markdown 列表或表格表达即可——\n"
+            "  · 「一条线走到底」的步骤 / 先后阶段\n"
+            "  · 首尾相接的因果循环\n"
+            "  · 分层、包含、目录、分类（谁在谁里面）→ **嵌套列表**\n"
+            "- `layout` **只能是** `grid` / `flowchart` / `state` 这三个值之一。\n"
+        )
+    else:
+        _no_draw = (
+            "- ⚠️ 先判断这张图有没有必要：**同一层会出现第二个节点、或关系不是一条线**才值得画。"
+            "下列情况**不要画图**，用上文「语义块」或普通 Markdown 表达即可——\n"
+            "  · 「一条线走到底」的步骤 / 先后阶段 → `steps` / `timeline` 块\n"
+            "  · **没有分支的**首尾相接因果循环 → `cycle` 块\n"
+            "  · 分层、包含、目录、分类（谁在谁里面）→ **嵌套列表**，连块都不必标\n"
+            "  · 两方之间有来有回的消息 → `sequence` 块\n"
+            "  · 两个维度交叉的四格评估 → `quadrant` 块\n"
+            "- 三种结构，`layout` **只能是** `grid` / `flowchart` / `state` 这三个值之一 ——"
+            "上面那几种该用列表表达的关系（steps / timeline / cycle / sequence / quadrant）"
+            "**不是布局名**，写进 fig 也画不出图。\n"
+        )
     base = (
         "**图表**：有**分支与汇合**、或**状态之间来回迁移**的复杂关系时，"
         "用 ```fig 围栏输出语义 JSON"
         "（后端自动算坐标画图，**你不需要写任何坐标、尺寸或 SVG**）。"
         "每个围栏 = 1 张图，可按内容需要输出 1~N 张。\n"
-        "- ⚠️ 先判断这张图有没有必要：**同一层会出现第二个节点、或关系不是一条线**才值得画。"
-        "下列情况**不要画图**，用上文「语义块」或普通 Markdown 表达即可——\n"
-        "  · 「一条线走到底」的步骤 / 先后阶段 → `steps` / `timeline` 块\n"
-        "  · **没有分支的**首尾相接因果循环 → `cycle` 块\n"
-        "  · 分层、包含、目录、分类（谁在谁里面）→ **嵌套列表**，连块都不必标\n"
-        "  · 两方之间有来有回的消息 → `sequence` 块\n"
-        "  · 两个维度交叉的四格评估 → `quadrant` 块\n"
-        "- 三种结构，`layout` **只能是** `grid` / `flowchart` / `state` 这三个值之一 ——"
-        "上面那几种该用列表表达的关系（steps / timeline / cycle / sequence / quadrant）"
-        "**不是布局名**，写进 fig 也画不出图。\n"
+        + _no_draw +
         '  · 依赖/调用网络 → {"layout":"grid","rows":[["前端"],["接口层"]],'
         '"edges":[{"from":[0,0],"to":[1,0],"label":"调用"}]}\n'
         '  · 带分支与汇合的流程（一个节点分出两条线、最后汇到一处，'
@@ -873,6 +891,20 @@ def get_images_format() -> str:
 # continue` 会静默跳过它，这正是要的（追问由**独立第二次调用**产生，不进正文 prompt）。
 # 见 `agent/followup.py` 模块文档与 `generate.py::_emit_followup`。
 # ⚠️ `xlsx` 保持 `[]`：Excel 走数据摘要管道，没有笔记格式区。
+#
+# ⚠️ `composite`（合成产物）2026-11-07 起有四项，判据是「这条格式说明与合成骨架
+# 冲突不冲突」，不是「别家都有所以也给它」：
+#   · `toc` —— 加一个基于 `##` 的目录，与五节骨架并列不冲突
+#   · `formulas` —— 在末尾加「## 公式汇总」，同样不冲突（论文合成常用）
+#   · `chart` —— 与骨架不冲突；它对 composite 有专用措辞见 `get_chart_format`
+#   · `followup` —— 不进 prompt，靠生成完成后独立第二次调用，天然与骨架无关
+# 刻意不给的四项：
+#   · `summary` —— 合成骨架本身就是「这批材料放在一起说明了什么」，再加一节
+#     总结是同一件事写两遍
+#   · `references` —— 合成产物没有文献引用这回事，「## 材料索引」承担它的位置
+#   · `link` / `screenshot` —— 要视频时间点，合成文档没有
+#   · `images` —— 它的说明写的是保留 `/api/files/...` 引用，而合成产物的图是
+#     `assets/` 相对路径（合成时已复制并改写），路径形态对不上
 AVAILABLE_OPTIONS = {
     "video": ["toc", "link", "screenshot", "summary", "chart", "followup"],
     "audio": ["toc", "summary", "formulas", "followup"],
@@ -882,6 +914,7 @@ AVAILABLE_OPTIONS = {
     "pptx": ["toc", "summary", "images", "formulas", "chart", "followup"],
     "xlsx": [],
     "text": ["toc", "summary", "formulas", "chart", "followup"],
+    "composite": ["toc", "formulas", "chart", "followup"],
 }
 
 # ── 格式函数映射 ──
@@ -976,7 +1009,12 @@ def build_polish_prompt(
     # 正常路径由 PromptBuilder 在最外层拦下，此处是防御性兜底。
     # （build_synthesis_prompt 定义在本文件末尾，运行时解析，无问题。）
     if source_type == "composite":
-        return build_synthesis_prompt(raw_text, title, target_language=target_language)
+        # `formats` 一并传：composite 的整理版实际是「再写一份综述」，与笔记侧
+        # 走同一个函数。这条分支正常情况下不会被走到（生成侧只跑 notes 槽），
+        # 但两份兜底必须同源 —— 只给 notes 传 formats 的话，将来这条被行使时
+        # 两个产物对同一个勾选的处置不同，而界面上看不出区别。
+        return build_synthesis_prompt(
+            raw_text, title, target_language=target_language, formats=formats)
 
     is_doc = source_type in DOC_SOURCE_TYPES
 
@@ -1093,8 +1131,12 @@ def build_notes_prompt(
     # composite 都会落进末尾的 video/audio else 分支，被 `_format_segments` 当成
     # segments JSON 解析。正常路径由 PromptBuilder 在最外层分派，此处是防御性兜底。
     if source_type == "composite":
+        # `formats` 必须传（2026-11-07）：不传的话前端勾的「目录 / 公式汇总 /
+        # 图表 / 追问」在这一行被整批丢掉，而产物看起来只是「这次模型没写」。
+        # 允许哪些格式由 `AVAILABLE_OPTIONS["composite"]` 决定，不在这里筛。
         return build_synthesis_prompt(
-            raw_text, title, user_notes=user_notes, target_language=target_language)
+            raw_text, title, user_notes=user_notes, target_language=target_language,
+            formats=formats)
 
     # ── Excel 走数据摘要 prompt ──
     # ⚠️ 必须排在 `is_doc` **之前**：`xlsx` **在** `DOC_SOURCE_TYPES` 里（它确实算文档类
@@ -1861,6 +1903,7 @@ def build_synthesis_prompt(
     user_notes: str = "",
     target_language: str = "zh-CN",
     dimensions: list[str] | None = None,
+    formats: list[str] | None = None,
 ) -> str:
     """构建多篇文档对比综述 prompt（composite 专用）。
 
@@ -1882,6 +1925,12 @@ def build_synthesis_prompt(
     读回**（合成时写进去的那一份）——这样两个调用点无需各自解析，且「合成写什么、
     生成就读什么」由构造保证同源。这**正是签名不必扩张的理由**：新参数只走 meta。
     显式传参只用于测试与将来的覆写场景。
+
+    ⚠️ `formats` 是上面那条原则的**一处有意破例**（2026-11-07）。判据是「这个值能不能
+    从 rawText 推出来」：`dimensions` / `contentType` / `readerIntent` 都是**合成那一刻
+    用户选定、由合成方写进出处头**的，读到 rawText 就必然读得到；而「这次生成勾了哪些
+    笔记格式」只活在**生成请求参数**里，rawText 上一个字都没有 —— 走 meta 也就无从谈起。
+    不扩签名的话，前端勾了「目录」后端只会把它筛掉，产物上看不出任何异常（勾选静默失效）。
     """
     dims = list(dimensions) if dimensions else _read_synthesis_dimensions(raw_text)
     # 体裁与读者意图**一律从 meta 读回**——生成是第二次独立请求，只有 rawText 可按。
@@ -1892,15 +1941,27 @@ def build_synthesis_prompt(
     shape = resolve_output_shape(intent_key)
     task = _build_synthesis_task(intent_text, title, shape)
 
-    # 约束按「事实 → 通用规则 → 通用文风 → 证据块 → 体裁增量」拼接。
+    # 约束按「事实 → 通用规则 → 通用文风 → 证据块 → 体裁增量 → 格式说明」拼接。
     # 体裁块可能为空（未指定体裁，或旧文档没这个字段），空块直接跳过而不是留下一个
     # 空标题。
+    #
+    # 格式说明排在最后：它最具体（甚至给出 JSON 示例），越靠近输出位置的指令
+    # 越容易被遵守。未勾任何格式时 `_build_hard_constraints` 返回空串，
+    # `if p` 把它跳过 —— 于是「一个都不勾」的 prompt 逐字节等于改造前。
+    #
+    # 这里按 `AVAILABLE_OPTIONS["composite"]` 过滤一次：请求参数是外部输入，
+    # 而「合成能被要求写哪些格式」的答案只有那一张表一份。不认识的项静默丢弃
+    # （与 `_build_hard_constraints` 跳过无函数项同一条纪律）——前端只可能发来
+    # 表里的值，发来别的多半是旧客户端，为它整个失败没有意义。
+    _allowed_fmt = AVAILABLE_OPTIONS.get("composite", [])
+    _fmt = [f for f in (formats or []) if f in _allowed_fmt]
     constraints = "\n\n".join(p for p in (
         _SYNTHESIS_FACT_CONSTRAINTS,
         _SYNTHESIS_UNIVERSAL_RULES,
         _SYNTHESIS_STYLE_CONSTRAINTS,
         _SYNTHESIS_EVIDENCE_FORMAT,
         _select_genre_constraints(content_types),
+        _build_hard_constraints(_fmt, _ALL_FORMAT_FNS, source_type="composite"),
     ) if p)
 
     sections = [

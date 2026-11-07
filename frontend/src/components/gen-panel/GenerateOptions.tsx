@@ -231,8 +231,13 @@ export function GenerateOptions(props: Props) {
       </div>
     )}
 
-    {/* 文本/文件：简化格式（Excel 不适用）；epub 走独立解读管道，无图表勾选 */}
-    {!p.typeMeta.isExcel && p.typeMeta.sourceType !== 'epub' && (p.typeMeta.sourceType === 'text' || p.typeMeta.isDoc) && (
+    {/* 文本/文件/合成：简化格式（Excel 不适用）；epub 走独立解读管道，无图表勾选。
+        ⚠️ `isComposite` 单列一支（2026-11-07）：它不在 `isDoc` 里（那是「文档解析类型」
+        的集合，见 constants.ts），漏了它这一整块不渲染 —— 后端已经允许合成产物勾选
+        目录/公式集/图表/追问，界面上却一个选项都看不到，勾不上也就提交不出。
+        具体哪几项可见仍由 `isFormatVisible`（= 后端能力表）逐项裁定，这里只管区块开关。 */}
+    {!p.typeMeta.isExcel && p.typeMeta.sourceType !== 'epub'
+      && (p.typeMeta.sourceType === 'text' || p.typeMeta.isDoc || p.typeMeta.isComposite) && (
       <div className="pt-3 border-t border-border-light">
         <span className="text-[12px] font-medium text-dimmed mb-2 block">笔记格式</span>
         <div className="space-y-1.5">

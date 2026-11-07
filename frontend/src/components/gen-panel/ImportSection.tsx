@@ -45,6 +45,13 @@ interface Props {
   handleImport: () => void
   isImageType: boolean
   preOcr: boolean; setPreOcr: (v: boolean) => void
+  /**
+   * 一次拖入或选中多个文件时转交批量导入（2026-11-07）。
+   *
+   * 单个文件不走这条路，仍由 `pickFile` 填进当前表单。分开的理由：批量导入要先识别
+   * 每个文件的类型、在对话框里给用户确认，与「选好一个文件再点导入」是两种交互。
+   */
+  onBatchFiles: (files: File[]) => void
 }
 
 export function ImportSection(props: Props) {
@@ -76,13 +83,22 @@ export function ImportSection(props: Props) {
     }
     p.setFileObj(f); p.setImportInput('')
   }, [addToast, p.setFileObj, p.setImportInput])
+  /**
+   * 多个文件转批量，单个文件按当前标签页的扩展名过滤后填进表单。
+   *
+   * 多文件分支不过滤扩展名：批量导入按每个文件各自的扩展名决定走哪条通道，
+   * 拖进视频标签页的一张图片也该被识别成图片，而不是被静默丢掉。
+   */
+  const handlePickedFiles = useCallback((files: File[]) => {
+    if (files.length === 0) return
+    if (files.length > 1) { p.onBatchFiles(files); return }
+    const f = files[0]
+    if (validateDropFile(f, p.inputType)) pickFile(f)
+  }, [p.inputType, p.onBatchFiles, pickFile])
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setDragOver(false)
-    const f = e.dataTransfer.files?.[0]
-    if (f && validateDropFile(f, p.inputType)) {
-      pickFile(f)
-    }
-  }, [p.inputType, pickFile])
+    handlePickedFiles(Array.from(e.dataTransfer.files || []))
+  }, [handlePickedFiles])
   const dropHandlers = { onDragOver: handleDragOver, onDragLeave: handleDragLeave, onDrop: handleDrop }
 
   const dropZoneClass = (base: string) =>
@@ -211,10 +227,14 @@ export function ImportSection(props: Props) {
             <label className="flex items-center justify-center gap-1.5 py-2 px-3 border border-dashed border-border-default rounded-lg cursor-pointer
               hover:border-accent hover:bg-accent/10 transition-colors text-[11px] text-muted">
               <Upload size={12} />
-              <span>或上传 MD · TXT 文件</span>
-              <input type="file" className="hidden" accept=".md,.txt,.markdown,.rst"
+              <span>或上传 MD · TXT 文件（可多选）</span>
+              <input type="file" className="hidden" multiple accept=".md,.txt,.markdown,.rst"
                 onChange={e => {
-                  const f = e.target.files?.[0]
+                  const files = Array.from(e.target.files || [])
+                  // 清空 value：否则连续两次选同一个文件，第二次不触发 change。
+                  e.target.value = ''
+                  if (files.length > 1) { p.onBatchFiles(files); return }
+                  const f = files[0]
                   if (f) {
                     f.text().then(text => { p.setImportInput(text); p.setFileObj(null) }) // M7: 文本内容已提取到 input，不需保留 fileObj
                   }
@@ -259,13 +279,17 @@ export function ImportSection(props: Props) {
                 <Upload size={20} className="text-disabled" />
                 <div>
                   <div className="text-[12px] text-dimmed">拖拽或点击选择视频文件</div>
-                  <div className="text-[10px] text-disabled mt-0.5">MP4 · MKV · AVI · MOV · WebM</div>
+                  <div className="text-[10px] text-disabled mt-0.5">MP4 · MKV · AVI · MOV · WebM · 可多选</div>
                 </div>
               </>
             )}
-            <input type="file" className="hidden"
+            <input type="file" className="hidden" multiple
               accept=".mp4,.mkv,.avi,.mov,.webm,.flv,.wmv"
-              onChange={e => { const f = e.target.files?.[0]; if (f) pickFile(f) }} />
+              onChange={e => {
+                const files = Array.from(e.target.files || [])
+                e.target.value = ''
+                handlePickedFiles(files)
+              }} />
           </label>
           {p.fileObj && (
             <button onClick={() => p.setFileObj(null)}
@@ -295,14 +319,18 @@ export function ImportSection(props: Props) {
                 <div>
                   <div className="text-[12px] text-dimmed">{p.inputType === 'image' ? '拖拽图片到此处或点击选择' : '拖拽文件到此处或点击选择'}</div>
                   <div className="text-[10px] text-disabled mt-0.5">
-                    {p.inputType === 'image' ? 'PNG · JPG · WebP · BMP · TIFF' : 'PDF · Word · PPT · EPUB · Markdown'}
+                    {p.inputType === 'image' ? 'PNG · JPG · WebP · BMP · TIFF' : 'PDF · Word · PPT · EPUB · Markdown'} · 可多选
                   </div>
                 </div>
               </>
             )}
-            <input type="file" className="hidden"
+            <input type="file" className="hidden" multiple
               accept={p.inputType === 'image' ? '.png,.jpg,.jpeg,.webp,.bmp,.tiff,.gif' : '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.epub'}
-              onChange={e => { const f = e.target.files?.[0]; if (f) pickFile(f) }} />
+              onChange={e => {
+                const files = Array.from(e.target.files || [])
+                e.target.value = ''
+                handlePickedFiles(files)
+              }} />
           </label>
           {p.fileObj && (
             <button onClick={() => p.setFileObj(null)}

@@ -31,6 +31,7 @@ import { PartialBanner } from './PartialBanner'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { EmptyState } from './EmptyState'
 import { ProcessingPlaceholder } from './ProcessingPlaceholder'
+import { PendingTranscript } from './PendingTranscript'
 import { VersionSwitcher } from './VersionSwitcher'
 import { ArtifactMetaBar } from './ArtifactMetaBar'
 import { TagSuggestions } from './TagSuggestions'
@@ -983,6 +984,10 @@ export function PreviewArea() {
 
       case 'transcript':
         if (isViewProcessing(activeView)) return <ProcessingPlaceholder task={taskForView(activeView)} />
+        // 「只收纳」的文档：正文还是占位文本，先给一张卡片引导用户去转录。
+        // ⚠️ 抢在下面所有分支之前 —— 占位 Markdown 本身渲染出来是**正常内容**
+        // （一句「这篇文档已收纳」的引用块），不拦的话用户会以为转录已经完成了。
+        if (currentDoc?.transcribeState === 'pending') return <PendingTranscript doc={currentDoc} />
         // 文档类转录（PDF/Word等）→ 统一用 MarkdownPreview 渲染
         if (currentDoc?.sourceType && !['video', 'image', 'webpage', 'text'].includes(currentDoc.sourceType) && currentRawText) {
           let isJson = false

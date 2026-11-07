@@ -6,6 +6,389 @@
 
 ---
 
+## 2026-11-07 — 合成产物开放格式勾选与思维导图
+
+**起因**：合成的产物此前被系统替用户做了一批决定 —— 生成时把用户勾的笔记格式清单**整份清空**，
+预览区不给思维导图。理由是早期「合成就是一份综述，别的都不该加」。但合并与综述都落在
+`sourceType="composite"`，用户对这类文档的后续操作与普通文档并无不同：想要目录、想要公式汇总、
+想画张图、想从笔记生成思维导图。系统替它拦掉这些，用户既看不到选项也说不清为什么。
+
+这一条把决定权交回去：**能给的就给，给不了的说清理由**，不再一刀切。
+
+### 判据表：`AVAILABLE_OPTIONS["composite"]`
+
+| 格式 | 给不给 | 理由 |
+|---|---|---|
+| `toc` | 给 | 与五节骨架并列不冲突，只是加一份目录 |
+| `formulas` | 给 | 末尾加「## 公式汇总」，论文类合成常用 |
+| `chart` | 给（措辞另起一支） | 见下节。合成没有语义块规范，不能照抄其它来源那段 |
+| `followup` | 给 | 不进正文 prompt，是生成完成后独立的一次调用 |
+| `summary` | **不给** | 两条独立理由：合成骨架本身就是「这批材料说明了什么」，再加一节是写两遍；且它的说明文案里含 `limo-block:v1 type="card"`，而合成 prompt **从不注入**那套标记规范，给了等于教它写一个没定义过的语法 |
+| `references` | **不给** | 「## 材料索引」承担该位置 |
+| `link` / `screenshot` | **不给** | 两者的说明都要求视频时间点，合成产物没有 |
+| `images` | **不给** | 它的说明写的是 `/api/files/...` 引用，而合成搬运的图是 `assets/` 相对路径 |
+| 整理版原文（产物槽） | **不给** | 不是格式项，见下方「不能动的两处」 |
+
+这张表是**唯一判据**，经 `GET /api/capabilities` 的 `genOptions` 整表下发。前端的
+`isFormatVisible` 只查表，不另存一份；提交前的 `.filter(f => availableFormats.includes(f))`
+也因此不会抹掉任何一项。
+
+### 两处闸门放开，其余原样
+
+| 位置 | 改动 |
+|---|---|
+| `routers/generate.py` 非流式 | `formats_list = req.formats`（原先对 composite 清空） |
+| `routers/generate.py` 流式 | 删掉 `if source_type == "composite": format_list = []` 整段 |
+
+**不能动的两处**：`_single_product = source_type in ("composite", "xlsx")` 保留 ——
+composite 仍然只落 notes 槽（它的 rawText 就是定稿输入，没有「原文」可整理）；
+`_auto_title` 的 composite 跳过、`budget_profile="multi"` 也都保留。
+
+### `get_chart_format` 按来源分两支
+
+「用上文『语义块』表达即可」这句在 composite 上是**悬空指代**：合成 prompt 里没有那一节，
+也不含任何块名。故 `_no_draw` 拆成两支 —— composite 一支只说三种布局（`grid` / `flowchart` /
+`state`）与普通 Markdown，不提块名也不提「语义块」；其它来源逐字不变。
+
+⚠️ 两支共用的三种布局引导一个字没改。丢掉这个分叉的失效形态不是报错，而是合成产物里出现
+`steps` / `timeline` 这类它从没被告知过语义的标记，渲染侧照常降级成普通内容，**看起来只是
+「模型没用上块」**。
+
+### 前端三处
+
+| 文件 | 改动 |
+|---|---|
+| `lib/tabRegistry.ts` | 思维导图 `sourceTypes: [...ALL_TEXT, 'composite']`。**显式追加，不塞进 `ALL_TEXT`** —— 那会连带打开「整理版原文」 |
+| `gen-panel/GenerateOptions.tsx` | 笔记格式区的区块条件补 `isComposite`。`isComposite` 不在 `isDoc` 里，漏了它整块不渲染：后端允许勾，界面上一个选项都没有 |
+| `gen-panel/constants.ts` | `coreProducts` 的描述换成当前骨架的节名（共同结论·分歧·读者问题·材料索引·各篇速查），此前写的是 2026-10-05 之前的五段骨架 |
+
+导出清单**仍然没有思维导图**：`getTypeMeta` 调 `forSourceType(st)` 不传 `ctx`，而 mindmap 声明了
+`visible: (ctx) => !!ctx.currentContent`，没有 ctx 就一律被滤掉 —— 这对所有类型一致，不是合成例外。
+
+### `PROMPT_VERSION` `"22"` → `"23"`
+
+改的是发给模型的文本（新增 `formats` 参数与 composite 专用的图表措辞）。未勾任何格式时
+`_build_hard_constraints` 返回空串，prompt 与 `"22"` **逐字节相同**。
+
+### 测试
+
+- `backend/tests/test_prompt.py` 新增一段：判据表本身 / 表内注入 / 表外静默丢弃 /
+  未勾时逐字节零回归 / composite 图表措辞不含任何块名（对照：pdf 那份仍然含）/ 三条透传链路
+  （`PromptBuilder.build` / `build_notes_prompt` / `build_polish_prompt` 各自的 composite 分支）。
+- `backend/tests/test_generate_gate.py` 第 3 段**整段翻面**：此前钉的是「composite 不出图、
+  不推 chart_missing」，现在钉「与普通文档同一行为」。三条对照实验均已真跑：
+  删掉 `_allowed_fmt` 过滤 → 丢弃断言红；把 `_no_draw` 两支合并 → 块名断言红；
+  删掉 `build_notes_prompt` 的 `formats=formats` → 透传断言红。
+- `frontend/src/test/tabRegistry.test.ts` / `getTypeMeta.test.ts`：mindmap 出现在 composite 的
+  tab 列表里（且必须传 `ctx`，否则它被 `visible` 滤掉、断言退化成只验另外两个）；
+  跨语言守卫镜像表补 `composite` 一行。
+
+---
+
+## 2026-11-07 — 合并：把几篇拼成一份，不调用模型
+
+**起因**：批量收进来一批材料之后，最常见的下一步不是「写一篇对比综述」，而是「把它们接成一份长的我先通读一遍」。今天点「合成」只能得到综述：模型按读者意图重写一遍，长材料还要判窗口、压缩、截断，慢且要钱。
+
+### 分野只有一条：正文出自谁手
+
+两种产物都是 `sourceType="composite"` 的文档，落库形状相同，文档库 / 搜索 / 标签 / 导出 / 对话引用 / 版本管理全部照旧可用。区别只在正文怎么来的：
+
+| | 合并 | 综述 |
+|---|---|---|
+| 正文 | 各篇原文按 `doc_ids` 顺序拼接 | 模型按读者意图写 |
+| 请求 | `POST /api/synthesis/merge`，非流式 JSON | `POST /api/synthesis/stream`，SSE |
+| 模型调用 | 0 次 | 1 次起（超窗还要逐篇抽取） |
+| 窗口判定 | **不跑** | `plan_synthesis` |
+| 降级状态 | **恒为 `full`** | 八态 |
+
+### 后端：`generation/synthesis.py::merge_sources`
+
+三处复用既有的，不另写一份：
+
+| 复用 | 为什么 |
+|---|---|
+| `_load_sources` | 「哪几篇有正文 / 哪几篇没笔记」的判据 |
+| `relocate_assets` | 资产复制 + 引用改写 + 路径越界守卫 |
+| `build_composite_raw_text` | 出处头与「## 来源文档」清单 |
+
+`require_composite` 那类判据、出处头编码、来源清单的「✓ 未删节」全部走同一条路，于是合并产物与综述产物在下游完全等价。
+
+**出处头多一个 `outputMode: "merge"`**，三个月后能分清这份是模型写的还是拼的。⚠️ 它是**空串不写键**：`build_composite_raw_text(..., output_mode="")` 时整个键不出现，既有综述文档的出处头逐字节不变。缺键读作综述。
+
+**刻意不做三件事**（写在 `merge_sources` 的 docstring 里）：不跑 `plan_synthesis`（窗口与拼接无关）、不设 `MAX_SYNTH_CALLS`（一次调用都没有）、所有篇 `status` 保持 `full`（来源清单里恒为「未删节」，这是事实不是省略）。
+
+⚠️ 「不跑窗口判定」有一个连带后果：合并后的文档可能长到无法生成笔记。但那是用户下一次点生成时才知道的 —— 用窗口不足去拦合并，会让一个必然成功的操作被拒。
+
+### 前端：同一个对话框，顶部选「合并原文 / 合成综述」
+
+入口仍是文档库 BatchBar 的合成按钮（≥2 篇），对话框顶部一组二选一。选合并时，读者意图 / 对比维度 / 材料体裁 / 窗口 banner / 逐篇 token **整块不渲染** —— 那些控件描述的是「模型怎么写」，而合并不让模型写。**留下的是「用什么原料」**，因为 `notes` 模式下无笔记的篇两条路径都要跳过。
+
+⚠️ 窗口不足（预览里的 `reject`）**只拦综述**。拿它拦合并是同一个错位。
+
+### 测试
+
+- `backend/tests/test_merge_sources.py`（14 条）：产物形状与零调用 / 正文按序拼接 / 出处头 `outputMode` 与空串对照 / 资产复制**且**引用改写 / 不跑预算判定 / 篇数门槛 / `notes` 排除无笔记篇 / 端点失败走 200 + `code`。
+  文件头记了四条**已真跑**的对照实验（去掉 `output_mode` / 丢弃 `relocate_assets` 返回值 / `source_mode` 固定 `"raw"` / 函数体加一行 `plan_synthesis()`），每条都确认会让对应组变红。
+- `frontend/src/test/docLibrarySynthesis.test.tsx` 加合并模式的渲染与请求体断言。
+
+---
+
+## 2026-11-07 — 批量生成：勾几篇一次跑完，已有产物的重新生成
+
+**起因**：前两步把「囤材料」与「补正文」拆开之后，囤起来的下一篇是「给这十几篇都出一份笔记」。单篇生成要从文档库点进去、回到生成面板、点生成、等，再回到列表点下一篇。
+
+**语义由用户定死**：勾选多篇 → **有产物的重新生成，没有的直接生成** → 就是一个队列 → **执行前必须有一次确认**。这两件事都不需要新判据：后端的生成端点本来就按 `v{max+1}` 新建版本，**不会覆盖用户编辑过的那一版**，所以「重新生成」与「首次生成」在协议上是同一个请求，差别只落在对话框文案上。
+
+### 四个文件，零后端改动
+
+| 文件 | 职责 |
+|---|---|
+| `hooks/useBatchGenerate.ts` | 串行队列：逐篇发 `GET /generate/{id}/stream`、逐篇更新状态、可取消、可转后台 |
+| `doc-library/GenerateDialog.tsx` | 三阶段对话框（确认 / 进行中 / 完成） |
+| `doc-library/BatchBar.tsx` | 加「批量生成」按钮（**0 可生成时禁用，不隐藏** —— 见下） |
+| `doc-library/DocLibrary.tsx` | 打开对话框前排除待转录与图片文档；挂载对话框 |
+
+### 参数只有一份来源
+
+每篇的请求参数由 `genOptions.ts::buildGenOptions` 拼装，与 GenPanel 单篇生成走的是**同一份实现**。抄一份的话，两边迟早分叉，而分叉的表现是「同一篇文档，单篇生成与批量生成产出的东西不一样」，界面上完全看不出来。
+
+`frontend/src/test/genOptions.test.ts` 钉住这份拼装的取值形状：视频专属项在非视频下**一个都不出现**、视频下 `ocr_*` 一律不传、四个能力位按「选中就看它自己，未选中看任一启用模型」判、格式项只留能力表认的并逐项点名被丢的项。文件头三条对照实验（去掉 `!isVideo` / 不查能力表 / 未选中恒 false）均已实跑，分别红 1、2、1 条，还原后 13 条全绿。
+
+### 产物名按每篇的类型取（`coreFor`）
+
+`genPrefs`（含 `selectedCore`）是**跨类型持久化**的，而产物名并不跨类型通用：Excel 的唯一产物在 `coreProducts` 里叫 `both`（界面上显示「数据摘要」），合成文档只有 `notes`。直接拿 `selectedCore` 拼 `mode` 会把别的类型的选择送给这一篇，而这是一个**用户在产物上看不出异常**的错送。
+
+`coreFor(typeMeta, wanted)` 取交集，交集为空时退回该类型全部产物（与 `GenPanel` 在类型切换后重置 `selectedCore` 的判据相同）。图片类文档的 `coreProducts` 是空数组 → 返回空数组由循环标 `skipped` 并继续，而不是发出一次注定失败的请求。
+
+### 哪些篇不参与
+
+| 排除对象 | 理由 |
+|---|---|
+| `transcribeState === 'pending'` | `rawText` 还是占位文本，拿它生成会得到一篇看起来完全正常、内容却是「这篇文档已收纳」的笔记。GenPanel 的单篇入口也拦这一类 |
+| `sourceType === 'image'` | 没有可下发的产物名。图片要提取文字走的是图片处理 |
+
+两层：`DocLibrary` 打开对话框前排除（并 toast「已排除 N 篇待转录或图片文档」），队列循环里再拦一次（表现为一行说明而非一次错误请求）。
+
+**按钮 0 可生成时禁用而不是隐藏** —— 与转录按钮相反。转录是「没有待转录就点了空转」，生成是这篇列表的常规动作，整块消失会让人以为这个版本没有批量生成。
+
+### 为什么自己排队列，不用 `useTaskRunner`
+
+同批量转录：`useTaskRunner` 的成功回调带 `isSame()` 判断，批量场景下会把每一篇都判成「不是当前文档」，刷新产物那一步被跳过 → 跑完了列表上那篇仍显示「没有产物」。
+
+故刷新拆成两件事（`refreshArtifacts`）：
+
+1. **`markArtifact` 无条件调** —— 它写的是 `docs` 里这篇的 `modes`，也就是「切回这篇时要不要去拉这个产物」的判据；
+2. **预览区只在 `currentDocId` 就是这篇时刷新** —— 队列可能跑几分钟，期间用户完全可能切走，把别的文档的正文塞进预览区是最坏的一种「成功」。
+
+版本列表按 `mode` 合并：notes 与 polished 各自从 v1 起，整体替换会把另一个产物的版本项抹掉。
+
+### 取消不是失败
+
+`streamGenerate` 返回 `void`，三条路只有两条保证走到：`onDone` / `onError`。用户取消时它在 `.catch` 里判 `AbortError` 就 `return`，**一个回调都不发**。只等前两条的话，取消之后 `runOne` 的 Promise 永不落地、队列卡在当前篇，界面上表现为「点了取消，进度条不动了也不结束」。故 `runOne` 自己挂 `signal.addEventListener('abort', …)` 作为第三条出口，终态三值 `ok` / `error` / `aborted`。
+
+### ⚠️ 顺带修掉：`failTask` 之前一直被前一步的清理抹成空操作
+
+`failTask` 只改**已有**任务条目的状态（`if (tasks[taskKey])`），而 `useBatchTranscribe` 与 `useBatchImport` 都是先 `setProcessing(taskKey, null)` 再 `failTask` —— 条目已经删了，`failTask` 什么都不做，**任务面板上那条带重试按钮的失败记录从来没有出现过**。两处注释甚至写着「先清再写才不会被抹掉」，与实现正好相反。
+
+现在三处统一：**成功与取消清任务，失败只调 `failTask`**（它自己保留 5 秒后清除）。`useBatchGenerate` 的测试有一条钉住「失败篇仍留在 `processingTasks` 里且状态为 failed」。
+
+### 交互
+
+- 打开对话框**零请求**，按「开始生成 N 篇」才发第一个。
+- 确认页写明两件事：已有产物会新建一版（不覆盖已编辑的那一版）、参数取自生成面板当前设置。
+- `running` 期间 Esc 与点遮罩都不关闭，出口是「在后台继续」；进度留在任务面板与预览区的生成占位上，两处读同一份 `processingTasks`。
+- 结束 toast 汇总完成 / 失败 / 跳过三档。
+
+### 已知边界
+
+- 串行，不并发。并发跑只会同时吃满云端并发额度，而后端的降级与超时都是按「一次生成」设计的。
+- 取消后已完成的篇保留（产物已经写盘），当前与未开始的标成「已取消」。
+
+---
+
+## 2026-11-07 — 导入与转录分开（第一步）：视频默认只收纳
+
+**起因**：导入这件事今天一口气做完三件 —— 下载/提取、转录、落盘。用户要的是两站：先把材料收进库，正文想看了再提取。典型场景是「刷到十个视频先囤着」，而转写一个几十分钟的视频要等、会花钱，且此刻并不打算看。
+
+本轮只做第一步：**把状态拆出来 + 给一个单篇转录入口**。批量导入、批量转录、批量生成队列是后面的步。
+
+### 默认值按成本分两档，不是一刀切
+
+| 档 | 类型 | 默认 | 理由 |
+|---|---|---|---|
+| 媒体 | `video` | **只收纳** | 要下载文件 + 跑 ASR，慢且可能产生云端计费 |
+| 文档 | `document` / `arxiv` / `webpage` | 导入即提取 | 抓取与解析都在本地，秒级 |
+| 不参与 | `text` / `image` | 永远是 `done` | 没有「晚点再转录」的形态 |
+
+⚠️ **这是一次真实的行为变更**：升级后导入 B 站视频不再自动转录。已写进 [README](README.md)「导入内容」段 —— 那是用户可见能力的唯一入口。
+
+### `transcribeState` 与 `ready` 正交，刻意不合并
+
+| | `ready` | `transcribeState` |
+|---|---|---|
+| 值 | `True` / `False` | `"pending"` / `"done"`（**缺键 = done**） |
+| 谁维护 | store 内部 | 导入与转录两条业务路径显式写 |
+| 持续多久 | 几秒（导入窗口内） | 可能几天 |
+| 谁看得见 | 无人（`list_transcripts` 过滤掉） | 用户（列表徽章 + 预览卡片） |
+
+`ready=False` 的文档在库里根本不存在；`transcribeState="pending"` 的文档明明白白躺在库里。合并之后要么 pending 文档被幽灵清理扫掉，要么占位条目漏进列表。⚠️ 还有第三个同名概念 `store._pending_ids`（会话级豁免集合），三处都叫 pending，含义各不相同。
+
+### 九处落点
+
+`transcribeState` 要从 `RawTranscript` 一路走到前端，中间任何一处断掉都**不报错**：
+
+| 组 | 位置 |
+|---|---|
+| 写路径 | `RawTranscript.transcribe_state` / `save_transcript` 拼 `data` / `_transcript_index_entry` / `save_transcript_full` 第六个守护 |
+| 重建与读 | `_rebuild_index` 内联 `"done"` + `DOC_FIELDS` 回落 / `doc_meta.DOC_FIELDS` / `get_transcript` / `project_resource` 白名单 |
+| 返回前端 | `_persist_ingest_result` 的**手写返回 dict** |
+
+两条最容易漏的：
+
+- **第 1、2 行成对**。`save_transcript` 的 `data` 是从 dataclass 字段逐个拼出来的，dataclass 上没有字段就没有值可拼 → `_transcript_index_entry` 永远读到默认 `"done"`，收纳完的文档一进库就显示「已转录」。实测删掉第 2 处：**7 条测试红**。
+- **第 9 行是另一条独立断点**。库里对、前端看不到：导入那一刻（用户唯一盯着看的那一刻）不显示「待转录」，切去文档库重新拉列表反而正常 —— 而那条路读的是 index。实测删掉它：**8 条红**。
+
+### 第六个守护与 `retranscribe` 的显式写入（一处修正）
+
+`save_transcript_full` 是**整体替换** index 条目，于是加了第五个之后的第六个守护：「调用方没带这个字段就沿用旧值」。
+
+⚠️ **写这条时的说法需要修正**：当时写的是「去掉守护 → 改标题那条测试红」。实际做了对照实验 —— **去掉守护它照样绿**。三个调用方（PATCH / `retranscribe` / `_auto_title`）的 tx 全来自 `get_transcript()`，而它已经带出该字段，守护根本不触发。真正守住「改标题不抹状态」的是**第 7 处落点**；守护是它之上的第二道，针对「将来有人手工拼 tx 的调用方」。两者互为兜底，单摘任何一处端到端行为都不变。故测试拆成三条各考一件事（端到端回归 / 守护本身 / 读路径），并如实标注哪条有区分力。
+
+守护加上的连带后果：**`retranscribe` 必须显式写 `tx["transcribeState"] = "done"`**。不写会继承 pending —— 正文已更新、界面永远显示「待转录」，零报错。删掉这行做对照，对应测试红。
+
+### 分叉点只有一份实现，且必须在 `adapt()` 之前
+
+`adapt()` 的调用点在 `ingest.py` 有两处、逐字同构（非流式 `ingest` 与 SSE 的 `run_pipeline`）。只在其中一处加分叉 = 用户走另一条路时行为完全不同，而两条路都不报错 —— 前端主路径打的是 `/stream`，所以「单测绿、实机不生效」是最可能的形态。
+
+抽成 `_run_adapter(adapter, inp, *, probe_only, engine_cfg, on_progress=None) -> (AdapterOutput, tx_id | None)`，两处都调它。`tx_id` 的生成从持久化层**前移到调用方**（它本来就不依赖 hash，零行为变化），`probe_only` 由它派生（`probe_only = tx_id is not None`，必须在 `tx_id = tx_id or …` 兜底**之前**取）。
+
+⚠️ 收纳模式**不发进度事件**：`on_progress` 是 `queue.put_nowait` 的闭包，从 `asyncio.to_thread` 的 worker 线程调用它不安全（`asyncio.Queue` 不保证跨线程）。`_build_pending_output` 只调 `probe()`。
+
+### `probe` 是第四个可选钩子
+
+照 `precheck` / `warmup` / `release` 的惯例：**不进 Protocol、不改 `adapt()` 签名、消费方 `getattr`**，五个 adapter 一行不动。第一步只给 `VideoAdapter` 实现 —— 把已有那段 `extract_info(download=False)` 抽成 `_probe_info()`，`adapt()` 与 `probe()` 共用（一处实现两个消费方），只摘 `title` / `duration` / `thumbnail`，**不下载音频**。
+
+⚠️ 「有没有 `probe`」**不是**能否收纳的条件，档位表才是。`probe` 只决定标题好不好看；没有它的类型走既有 `_build_title` 兜底。
+
+### 顺带修一个既有缺口：SSE 导入路径从不写全文索引
+
+非流式 `ingest` 有 `_index_for_search`，SSE 的 `run_pipeline` **没有**。全仓四处调用里没有它，而前端主路径走 SSE ⇒ 今天经 SSE 导入的文档在重启前不在索引里，重启时那次全量 rebuild 才补上。
+
+抽 `_index_if_persisted(request, result)`，判据与原文逐字相同（`status == "done" and "id" in result`），两条路径共用。⚠️ 顺序保持「先 persist、后索引、再投 done」：done 一到前端就去拉列表，索引写晚了会出现「列表里有、搜不到」的瞬时空窗；索引失败只 `warning`，不把导入报成失败。
+
+⚠️ 这也说明收纳模式**绝不能把 `status` 改成 `"stored"`** —— 上面那条判据会让索引写入被静默跳过。
+
+### 前端
+
+- **偏好住 localStorage**（[lib/ingest-prefs.ts](frontend/src/lib/ingest-prefs.ts)，`mbw_ingestPrefs`：`autoTranscribeMedia: false` / `autoTranscribeDoc: true`）。不走 config.yaml：它是本机偏好，走 config 要为两个布尔开 `DEFAULT_CONFIG` + `ConfigUpdate`（`extra="forbid"`，漏了直接 422）+ GET 回显三个落点。
+- 形态照 `chat-prefs`：`useSyncExternalStore` + 模块内 listener + **快照稳定引用**（以磁盘原始串为键）。不用 `useState(loadIngestPrefs())` —— 设置页改完后已挂载的 GenPanel 不会重挂载，会显示旧值而导入按新值跑。
+- **参数只在偏离默认时才发**（`media_probe_only` 默认 True，传 `!autoTranscribeMedia`；`doc_probe_only` 默认 False，传 `!autoTranscribeDoc`）。少发一个键 = 与改造前逐字相同。
+- **乐观条目收成一处**：[lib/docEntry.ts](frontend/src/lib/docEntry.ts)::`optimisticDoc()`。此前五处手写字面量（`GenPanel` 四处 + `DocLibrary` 一处）不会自动带上新字段，漏了的失效形态是「刚导入的那篇不显示待转录徽章，切去文档库刷新后正常」。
+- **转录完怎么刷新只有一份**：[hooks/useStartTranscription.ts](frontend/src/hooks/useStartTranscription.ts)。两个入口（GenPanel 的「⟳ 重新转录」、预览区的待转录卡片）共用；成功后把 `docs` 里该条置回 `'done'`，否则后端已写回真正文、列表徽章还挂着「待转录」。
+- 预览区 `PendingTranscript` 卡片（`EmptyState` 形态）+ `DocRow` 的「待转录」小标签；生成前置判据加 `transcribeState === 'pending'` 拦截，否则会拿占位文本生成一篇笔记。
+
+### 已知副作用与边界
+
+- **收纳模式下同一份文件导入两次得两篇**：占位正文带 `tx_id` 保证 `content_hash` 唯一，内容去重在这条路径上失效，要等转录完成才可能撞上。URL 去重不受影响。**刻意如此**（同一材料可能真的要收两遍），已用测试钉住，防将来有人「顺手」改成按字节去重。
+- **不加 `failed` 状态**：转录失败时 `retranscribe` 抛 `AppError`、不写盘，文档保持 pending，用户重试。
+- **占位正文照进全文索引**：`SearchEngine.rebuild` 跳过的是「标题与正文都空」，pending 有标题 → 能搜到是对的（用户记得标题就该搜得到）。
+- 本步不做：批量导入 / 批量转录 / 批量生成队列 / 音频落盘 / 按转录状态筛选。
+
+---
+
+## 2026-11-07 — 批量导入：一次拖入多个文件
+
+**起因**：拖十个文件进来只有最后一个进了表单，前面九个静默消失。用户要的是「一次丢一堆进去，各自按类型走自己的通道」。
+
+### 零后端改动
+
+`/ingest` 与 `/ingest/stream` 每次只处理一个输入，批量在前端串成循环。这样改的理由：后端端点今天的形状是「一个输入 → 一篇文档」，为了批量在协议里加数组会让它的每一个字段都要处理「N 个」的语义，而前端串行调它本来就够快——瓶颈在下载与转写，不在请求编排。
+
+### 四个文件
+
+| 文件 | 职责 |
+|---|---|
+| `gen-panel/batchImport.ts` | 纯函数：按扩展名识别类别、截断到 50 个、把不可导入的原因标在条目上 |
+| `gen-panel/useBatchImport.ts` | 串行队列：逐项发请求、逐项更新状态、收尾切视图 |
+| `gen-panel/BatchImportDialog.tsx` | 三态对话框（确认 / 进行中 / 完成） |
+| `hooks/useStartTranscription.ts` | 上一步已有，本轮无改动 |
+
+### 三条必须写下来的约束
+
+**一、识别表复用 `DROP_ACCEPT` 与 `EXT_TO_SUBTYPE`，不另抄扩展名清单。** 抄一份的后果是两处慢慢分叉：单文件拖拽区接受 `.webm`，批量识别却说「不支持」，而两条路径都不报错。`batchImport.test.ts` 第一组测试直接遍历 `DROP_ACCEPT` 自己的每一项做断言，分叉那一刻就变红。
+
+**二、`.md` / `.txt` 必须前端读文本。** `TextAdapter.accept` 只认 `InputType.TEXT`，把 `File` 塞进 `ingestFile` 会被适配器路由判成不认识。批量这一路走 `file.text()` 之后调 `ingestText`，与文本标签页「上传 MD · TXT 文件」是同一件事。
+
+**三、串行，且取消要能被感知。** `ingestURL` / `ingestText` / `ingestFile` 三个入口在用户取消时**都不回调**——`ingestStream` 的 `AbortError || signal?.aborted` 分支直接 return。只等 `onDone` / `onError` 的话，取消会让 `runOne` 的 Promise 永远不落地、队列卡在第一项，界面上表现为「点了取消，进度条不动了，也不结束」。故 `runOne` 挂了第三条出口 `signal.addEventListener('abort', …)`，终态是三个值：`done` / `error` / `aborted`。
+
+同一个原因还有一处配套：`fallbackJson` 的 catch 不判 `AbortError`，会把取消报成「网络错误: …」。`onError` 里先判 `signal.aborted`，是取消就按取消处理，不往用户脸上甩一条假失败。
+
+### 交互
+
+- 拖拽区与三个上传 input 都改成 `multiple`；单文件仍走原来的 `validateDropFile` + `pickFile`（零回归），多文件才转交批量。
+- 多文件分支**不过滤扩展名**：批量按每个文件各自的扩展名决定通道，拖进视频标签页的一张 png 也该被识别成图片，而不是被静默丢掉。
+- `start()` **一个请求都不发**，只识别并打开确认对话框；用户按「开始导入」之后 `confirm()` 才发第一个请求。与批量生成队列同一条纪律。
+- 每个文件一个 `taskKey`（`__import__N__import`，`__import__` 前缀在 `taskManager` 里进独立 Map，不互相 abort），失败只把这一项标红，不影响后面的文件。
+
+### 已知边界
+
+- **上限 50 个**。超出的文件连条目都不生成（先截断再识别），对话框顶部说明「另有 N 个未加入清单」。不生成条目的理由：一屏全是「其实不会导入」的行比一句提示更难读。
+- **同一份内容在批量里导两次会得到一篇正常 + 一篇「已存在」**（走的是既有的 `duplicate_content` 分支）。与收纳模式那条已知副作用不是同一件事。
+- **图片的「导入后自动提取文字」跟着单文件路径的 `preOcr` 走**：批量里也跑，但失败只吞掉、不改变「已导入」的结论——提取失败 ≠ 导入失败。
+- 本步不做：批量转录、批量生成队列。它们是后面两步。
+
+---
+
+## 2026-11-07 — 批量转录：勾几篇一次补完正文
+
+**起因**：上一步让视频默认只收纳，于是一个典型场景变成「先囤十几篇，有空再一起转」。单篇转录入口已经是「点一篇、等一篇」的串行劳动，囤得越多越不想开始。
+
+### 零后端改动
+
+走的就是既有的 `POST /api/transcripts/{id}/retranscribe`。批量是前端串行循环，与批量导入同一条理由：后端端点今天的形状是「一篇文档 → 一次转录」，为批量在协议里加数组会让它的每个字段都要处理「N 个」的语义，而真正的瓶颈在下载与语音识别。
+
+### 四个文件
+
+| 文件 | 职责 |
+|---|---|
+| `hooks/useBatchTranscribe.ts` | 串行队列：逐篇发请求、逐篇更新状态、可取消、可转后台 |
+| `doc-library/TranscribeDialog.tsx` | 三态对话框（确认 / 进行中 / 完成） |
+| `doc-library/BatchBar.tsx` | 加「批量转录」按钮（只在选中项里有待转录文档时出现） |
+| `hooks/useStartTranscription.ts` | 抽出 `applyTranscriptionResult` —— 单篇与批量共用的那一份回填 |
+
+### 为什么不能复用 `useTaskRunner`
+
+单篇转录走 `useTaskRunner`，而它的成功回调带一个 `isSame()` 判断（`capturedDocId === currentDocId`），只在「跑完的这篇仍是你正看着的那篇」时执行。单篇场景下这个判断是对的 —— 用户切走了就别改预览区。
+
+批量场景下它会把**每一篇**都判成「不是当前文档」：你正在看第 5 篇，队列在跑第 2 篇，于是回填 `docs` 的那一步被跳过。**后端已经写回真正文、预览区也显示了，列表徽章还挂着「待转录」**，直到用户切去文档库重新拉一次列表。全程零报错。
+
+所以队列自己排，但把「转录完之后做什么」抽成模块级 `applyTranscriptionResult(docId)` —— 单篇、待转录卡片、批量队列三处调同一份。同一件事写在三处，失效形态正是「其中一条路忘了回填」。
+
+`batchTranscribe.test.tsx` 第 2 条用例钉的就是它：`currentDocId` 设成第一篇，断言**两篇**都变成 `done`。对照实验（把 `applyTranscriptionResult` 临时改成带 `isSame` 的写法）跑出来恰好这一条红、其余五条绿 —— 与实机上「第一篇正常、后面全挂」的形状一致。
+
+### 三条约束
+
+**一、只转录 `transcribeState === 'pending'` 的。** 用户勾 10 篇只为补其中 3 篇的正文时，把 10 篇都重跑一遍没人会这么期望，而「重跑」意味着重新下载视频、再付一次 ASR 的钱。按钮也只在 `pendingCount > 0` 时渲染 —— 选中的都已有正文时它点了是空转。
+
+**二、成功与取消才清 `processing`，失败只写 `failTask`。**（2026-11-07 当日更正：本节初稿写的「先清再写 `failTask`」是错的，当时的代码也照着错的写，详见本文件顶部「批量生成」一节。）`failTask` 的实现是 `if (tasks[taskKey]) { … }` —— 它只改**已有**条目的状态，条目已经被 `setProcessing(key, null)` 删掉时它什么都不做。于是那条带重试按钮的失败记录从来没有出现过，而代码看起来「清理与标记都做了」。`failTask` 自己保留条目 5 秒后清除，正好是给用户点重试的窗口。
+
+**三、取消不是失败。** 用户按取消时 `apiFetch` 抛 `AbortError`，不判它会被 `getErrorMessage` 报成一句看不懂的话，并把「取消」计进失败数。终态因此是三个值 `ok` / `error` / `aborted`，`aborted` 只标「已取消」、不进失败计数。
+
+### 交互
+
+- 确认对话框（**用户硬规则**：批量操作执行前必须有确认），`open()` 一个请求都不发；按「开始转录」才发第一个。
+- 进行中有一条**另外的出口**：「在后台继续」。转录一篇视频可能要好几分钟，把人锁在对话框里不合适。收起之后进度留在任务面板与预览区的待转录卡片上，因为 `taskKey` 沿用 `${docId}__retranscribe`，三处读的是同一个 `processingTasks` 条目。
+- `running` 期间 Esc 与点遮罩都不关闭（同批量导入），但「取消」与「在后台继续」都在。
+- 结束 toast 汇总成功、失败、跳过三档。
+
+### 已知边界
+
+- 串行，不并发。并发跑只会互相抢带宽与 CPU，而 AI 侧的并发信号量（`ExecutionGuard`）本来就是给「不同用户的不同操作」准备的，不是给同一个人刷队列用的。
+- 取消后**已完成的篇保留**（正文已经写盘），只有当前与未开始的被标成「已取消」。
+- 本步不做：批量生成队列（下一步）。
+
+---
+
 ## 2026-11-03 — 六条体验补齐：错误可行动 / 生成重试 / 回收站 / 最近打开 / 已用时 / 快捷键一览
 
 **起因**：上一轮盘点「还有哪些用户体验可以优化」得到六条。它们的共同点是**都不报错、都能用，只是在关键时刻让用户卡住**：删了没有后悔药、导入失败只给一行后端原文、生成失败只能从头点一遍、找不到昨天看的那篇、长任务在转圈但不知道转了几分钟、快捷键只存在于代码里。

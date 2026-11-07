@@ -109,10 +109,22 @@ describe('TabRegistry', () => {
 
 describe('TabRegistry — composite（多篇合成）', () => {
   // 对照实验（已验证有区分力）：把 'composite' 加进 `DOC_TYPES`（那会被 `ALL_TEXT`
-  // 展开给 polished），或给 mindmap 的 sourceTypes 也加上 → 本组两条**都会红**
-  // （多出 polished / mindmap）——这正是「顺手加进 DOC_TYPES 最省事」的代价。
-  it('composite 恰好只有 笔记 + 转录 两个 tab', () => {
-    expect(TabRegistry.forSourceType('composite').map(t => t.key)).toEqual(['summary', 'transcript'])
+  // 展开给 polished）→ 第二条**会红**（多出 polished）—— 这正是「顺手加进 DOC_TYPES
+  // 最省事」的代价。
+  it('composite 恰好是 笔记 + 转录 + 思维导图', () => {
+    // 思维导图 2026-11-07 显式加进来（它消费 notes，合成有 notes），而**整理版原文
+    // 仍然没有** —— 那一项对合成是另一份综述，不是「原文」。
+    // ⚠️ 必须传 ctx：mindmap 声明了 `visible: (ctx) => !!ctx.currentContent`，
+    // 不传就一律被滤掉，于是这条会退化成「只验了另外两个 tab」而看不出异常。
+    const ctx = { currentContent: 'x', imageResults: {} }
+    expect(TabRegistry.forSourceType('composite', ctx).map(t => t.key))
+      .toEqual(['summary', 'transcript', 'mindmap'])
+  })
+
+  it('composite 没有整理版原文', () => {
+    // 单列一条：上面那条的 `.toEqual` 已经覆盖它，但那条的失败信息看不出「多出来的
+    // 是哪一个」。这里把「绝不能有的那个」写成正向断言，报错直接点名。
+    expect(TabRegistry.forSourceType('composite').map(t => t.key)).not.toContain('polished')
   })
 
   it('composite 的 defaultFor 是 summary', () => {

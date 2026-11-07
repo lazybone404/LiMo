@@ -307,6 +307,7 @@ def build_composite_raw_text(
     content_type: list[str] | None = None,
     reader_intent: str | None = None,
     reader_intent_text: str = "",
+    output_mode: str = "",
 ) -> str:
     """组装合成文档的完整 rawText：出处头 + 「## 来源文档」列表 + 正文。
 
@@ -334,13 +335,18 @@ def build_composite_raw_text(
     存在的唯一理由是：`template`（Stuff 路径本就用模板）与 `template_fallback`
     （Map-Reduce 下发现失败退回模板）产出的 `dimensions` **逐元素相同**，没有来源
     就永久分不出「本就这样」与「降级了」——而降级正是用户可能想重跑的那种状态。
+
+    `output_mode` 标记这份 composite 文档是**怎么来的**：`"merge"` 表示纯拼接
+    （零模型调用），**空串表示对比综述**。空串时**不写这个键**，于是既有合成文档的
+    出处头逐字节不变。缺键读作综述，与 `transcribeState` 缺键读作 `"done"` 同一形态：
+    新键只描述新增的那一种来路，旧数据维持原义。
     """
     cleaned = [
         {"title": _clean_title(s.get("title")), "status": s.get("status", "full")}
         for s in sources
     ]
 
-    head = dump_meta({
+    meta: dict = {
         "sourceType": "composite",
         "sourceDocIds": list(source_doc_ids),
         "sourceTitles": [s["title"] for s in cleaned],
@@ -351,7 +357,11 @@ def build_composite_raw_text(
         "contentType": list(content_type or []),
         "readerIntent": reader_intent or "",
         "readerIntentText": reader_intent_text or "",
-    })
+    }
+    # 非空才写：空串时整个键不出现，既有综述的出处头因此一个字节都不变。
+    if output_mode:
+        meta["outputMode"] = output_mode
+    head = dump_meta(meta)
 
     lines = [head, "", "## 来源文档", ""]
     for i, s in enumerate(cleaned, 1):

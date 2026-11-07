@@ -29,7 +29,7 @@ import { render, fireEvent, cleanup } from '@testing-library/react'
 import { useStore } from '../store'
 import type { DocEntry } from '../store/types'
 import type { Capabilities } from '../api/core'
-import type { SynthesisPreview } from '../api/synthesis'
+import type { MergeResult, SynthesisPreview } from '../api/synthesis'
 
 // jsdom 没有 IntersectionObserver —— 空实现正好让渲染深度停在首页
 class IO {
@@ -76,6 +76,9 @@ let previewData: SynthesisPreview = {
 /** done 事件额外字段（如 excluded），由各用例覆写 */
 let streamExtra: Record<string, unknown> = {}
 
+/** 合并端点返回的文档（`excluded` 由各用例覆写） */
+let mergeResult: MergeResult = { id: 'tr_merged', title: '合并产物', mode: 'merge', excluded: [] }
+
 function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, json: async () => body } as unknown as Response
 }
@@ -101,9 +104,13 @@ function sseDone(id: string): Response {
 /** 取出「发往合成端点的那个请求」——打开对话框会先打一次 /synthesis/preview，不能按序号取 */
 const streamCall = () => captured.find(c => c.url.includes('/synthesis/stream'))
 
+/** 取出「发往合并端点的那个请求」（同上，不能按序号取） */
+const mergeCall = () => captured.find(c => c.url.includes('/synthesis/merge'))
+
 beforeEach(() => {
   captured = []
   streamExtra = {}
+  mergeResult = { id: 'tr_merged', title: '合并产物', mode: 'merge', excluded: [] }
   previewData = {
     context_window: 131072, budget: 63536, total_tokens: 1200,
     mode: 'stuff', reason: '', stuff_window: 2400, estimated_calls: 0,
@@ -118,6 +125,8 @@ beforeEach(() => {
     // ⚠️ 预览是 JSON、合成是 SSE —— 混在一起会让「预览」拿到 SSE body，
     // 于是 canRun 恒为 false，测试变成在测一个永远点不动的按钮
     if (String(url).includes('/synthesis/preview')) return jsonResponse(previewData)
+    // 合并是非流式 JSON（它与合成的区别不止正文来路，传输方式也是两条）
+    if (String(url).includes('/synthesis/merge')) return jsonResponse(mergeResult)
     return sseDone('tr_new')
   }))
   useStore.setState({
@@ -159,9 +168,41 @@ const inDialog = <T extends Element = HTMLElement>(sel: string): T | null =>
   document.body.querySelector<T>(sel)
 const allInDialog = (sel: string) => document.body.querySelectorAll(sel)
 
-/** 合成按钮：title 两种文案都含「对比综述」，故按它取（同时避开行内其它按钮） */
+/**
+ * 合成按钮：按 `data-batch-synthesize` 取。
+ *
+ * ⚠️ 曾按 `title*="对比综述"` 取。按钮支持「合并原文」之后 title 改成了
+ * 「合并原文或生成一篇综述」，那个选择器当场取到 null —— 而失败信息是
+ * 「provide a DOM element」，看起来像测试写坏了。锚点属性不随文案变。
+ */
 const synthBtn = (container: HTMLElement) =>
-  container.querySelector('button[title*="对比综述"]') as HTMLButtonElement
+  container.querySelector('[data-batch-synthesize]') as HTMLButtonElement
+
+/**
+ * 把对话框从默认的「合并原文」切到「生成综述」。
+ *
+ * 合并是默认档：不调用模型、没有前置条件，是多数人按下这个按钮想做的事。
+ * 凡是要考综述参数的用例（意图 / 维度 / 体裁 / 窗口 banner / 逐篇标注）都必须
+ * 先切过来 —— 那些控件在合并模式下**整块不渲染**。
+ *
+ * ⚠️ 点的是 radio 本体不是外层 label：label 的点击转发依赖 jsdom 的行为，
+ * 而这层转发一旦不生效，`onChange` 不触发、对话框停在合并模式，下游断言会
+ * 以「元素不存在」的形式失败，看起来像控件被删了。
+ */
+function pickReview() {
+  fireEvent.click(inDialog('[data-synth-mode="review"] input') as HTMLElement)
+}
+
+/**
+ * 打开对话框并切到「生成综述」——本文件里除合并档那组用例外，全部用例走这里。
+ *
+ * ⚠️ 合并是默认档（2026-11-07 起）。不先切过来，意图 / 维度 / 体裁 / 窗口 banner
+ * 一律不在 DOM 里，断言失败的形式是「元素不存在」，看起来像控件被删了。
+ */
+function openSynth(container: HTMLElement) {
+  fireEvent.click(synthBtn(container))
+  pickReview()
+}
 
 /**
  * 展开「调整选项」——装得下（`mode === 'stuff'`）时配置区**默认收起**（2026-10-29）。
@@ -210,7 +251,7 @@ describe('DocLibrary — 合成请求形状', () => {
     const { container } = render(<DocLibrary />)
 
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     // 对话框要先列出「将按以下顺序合成」，用户靠它核对选对没有
     expect(inDialog('[data-synth-sources]')!.textContent).toContain('论文 A')
     expect(inDialog('[data-synth-sources]')!.textContent).toContain('论文 B')
@@ -259,11 +300,11 @@ describe('DocLibrary — 简单模式：装得下时配置区默认收起', () =
   function openDialog() {
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     return container
   }
 
-  it('三项配置都不在 DOM，只剩清单 / 标题 / 一句说明；主按钮是「合并」', () => {
+  it('三项配置都不在 DOM，只剩清单 / 标题 / 一句说明；主按钮是「合成」', () => {
     useStore.setState({ docs: twoDocs(), capabilities: caps() })
     openDialog()
 
@@ -276,7 +317,7 @@ describe('DocLibrary — 简单模式：装得下时配置区默认收起', () =
     // 清单与标题照旧 —— 它们才是「选对了吗」的核对点
     expect(inDialog('[data-synth-sources]')).toBeTruthy()
     expect(inDialog('[data-synth-title]')).toBeTruthy()
-    expect((inDialog('[data-confirm-synth]') as HTMLButtonElement).textContent).toBe('合并')
+    expect((inDialog('[data-confirm-synth]') as HTMLButtonElement).textContent).toBe('合成')
   })
 
   it('点「调整选项」→ 三项出现；点「收起选项」→ 又收起', () => {
@@ -294,7 +335,7 @@ describe('DocLibrary — 简单模式：装得下时配置区默认收起', () =
     expect(inDialog('[data-synth-intent]')).toBeNull()
   })
 
-  it('收起状态下直接合并：body 里是默认值，与「展开但一个都不改」逐字相同', async () => {
+  it('收起状态下直接提交：body 里是默认值，与「展开但一个都不改」逐字相同', async () => {
     useStore.setState({ docs: twoDocs(), capabilities: caps() })
     openDialog()
     fireEvent.click(inDialog('[data-confirm-synth]')!)
@@ -326,7 +367,7 @@ describe('DocLibrary — 合成预览：每篇 token / 处理方式（§17.4）'
     useStore.setState({ docs: twoDocs() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
 
     // token 只能来自预览端点——`docs` 是白名单元数据、不含正文，前端算不出来
     await vi.waitFor(() => expect(inDialog('[data-synth-plan]')).toBeTruthy())
@@ -347,7 +388,7 @@ describe('DocLibrary — 合成预览：每篇 token / 处理方式（§17.4）'
     useStore.setState({ docs: twoDocs() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
 
     await vi.waitFor(() => expect(inDialog('[data-synth-plan="chunked"]')).toBeTruthy())
     // chunked 是设计认可的终态（用户无需行动）→ **不得**触发「换个模型吧」的 banner
@@ -367,7 +408,7 @@ describe('DocLibrary — 合成预览：每篇 token / 处理方式（§17.4）'
     useStore.setState({ docs: twoDocs() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
 
     await vi.waitFor(() => expect(inDialog('[data-synth-plan="chunked"]')).toBeTruthy())
     expect(inDialog('[data-synth-window-banner]')).toBeNull()
@@ -386,7 +427,7 @@ describe('DocLibrary — 合成预览：每篇 token / 处理方式（§17.4）'
     })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
 
     await vi.waitFor(() => expect(inDialog('[data-synth-window-banner]')).toBeTruthy())
     // 只提示、不给切换入口（§17.7）：推荐来自 capabilities.llmModels，不是前端写死的名单
@@ -418,7 +459,7 @@ describe('DocLibrary — 合成预览：每篇 token / 处理方式（§17.4）'
     })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
 
     await vi.waitFor(() => expect(inDialog('[data-synth-window-banner]')).toBeTruthy())
     const banner = inDialog('[data-synth-window-banner]')!.textContent!
@@ -440,7 +481,7 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
     useStore.setState({ docs: twoDocs(), capabilities: withPresets() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
 
     // ⚠️ 对照：把维度留在外面（不折叠）→ 此处非 null → 红
     expect(inDialog('[data-synth-dims]')).toBeNull()
@@ -454,7 +495,7 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
     useStore.setState({ docs: twoDocs(), capabilities: withPresets() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     openAdvanced()
 
     const select = inDialog('[data-synth-preset]') as HTMLSelectElement
@@ -471,7 +512,7 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
     useStore.setState({ docs: twoDocs(), capabilities: withPresets() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     openAdvanced()
 
     fireEvent.change(inDialog('[data-synth-dims]')!,
@@ -487,7 +528,7 @@ describe('DocLibrary — 对比维度可控（§18）', () => {
     useStore.setState({ docs: twoDocs(), capabilities: undefined })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     openAdvanced()
 
     expect(inDialog('[data-synth-preset]')).toBeNull()
@@ -533,7 +574,7 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     openTune()
 
     const radios = [...allInDialog('[data-synth-intent]')] as HTMLInputElement[]
@@ -554,7 +595,7 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     openTune()
 
     // 默认意图的形态：理解主题 → 综合文章
@@ -577,7 +618,7 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     openTune()
 
     // 非「自定义」意图没有文本框（后端按意图取预设文案，用户没东西可填）
@@ -598,7 +639,7 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     openTune()
 
     fireEvent.click(inDialog('[data-synth-intent="custom"]')!)
@@ -617,7 +658,7 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     openAdvanced()
 
     const checked = () => [...allInDialog('[data-synth-genre]')]
@@ -636,7 +677,7 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     openAdvanced()
 
     // 手动加一个 → 两个都在（多选是「修正」不是「替换」）
@@ -651,7 +692,7 @@ describe('DocLibrary — 读者意图与材料体裁（§7.8）', () => {
     useStore.setState({ docs: twoDocs(), capabilities: withIntents() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     openAdvanced()
 
     fireEvent.click(inDialog('[data-synth-intent="controversy"]')!)
@@ -682,7 +723,7 @@ describe('DocLibrary — 对比原料可选（§19）', () => {
     useStore.setState({ docs: twoDocs() })
     const { container } = render(<DocLibrary />)
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
 
     openTune()
     const radioNotes = inDialog('[data-synth-source="notes"]') as HTMLInputElement
@@ -713,7 +754,7 @@ describe('DocLibrary — done 之后不自动生成（D7）', () => {
     const { container } = render(<DocLibrary />)
 
     selectRows(container, 2)
-    fireEvent.click(synthBtn(container))
+    openSynth(container)
     fireEvent.click(inDialog('[data-confirm-synth]')!)
 
     // 先确认 done 链路真的走通了——否则「没有 generate 请求」可能只是「整个回调没跑」
@@ -729,5 +770,152 @@ describe('DocLibrary — done 之后不自动生成（D7）', () => {
     // ⚠️ 对照 C：在 onDone 里补一次 streamGenerate → 此处出现 /generate/ → 红。
     // 判据是「一次都不许有」而非「没有第二次」：D7 要的是**完全手工触发**。
     expect(captured.filter(c => /\/generate\//.test(c.url))).toEqual([])
+  })
+})
+
+/**
+ * 合并原文（2026-11-07）—— 对话框的**默认档**。
+ *
+ * 它与综述的分野不是「参数多少」，而是**正文出自谁手**：这边把各篇原文按顺序拼起来，
+ * 零模型调用、零预算判定；那边由模型按读者意图写。承认这一点之后，四件事同时成立：
+ * 综述独有的控件（读者意图 / 维度 / 体裁 / 窗口 banner）对它没有意义，窗口不足拦不住它，
+ * 请求走另一条端点。
+ *
+ * ⚠️ 四条判据各自的失效形态都是**静默**的：控件漏渲染不报错（只是用户选不到）、
+ * 参数漏发不报错（后端有默认值，产物只是少了个配置）、`reject` 拦下来也不报错
+ * （用户会以为点不动是 bug）。
+ */
+describe('DocLibrary — 合并原文（默认档）', () => {
+  /**
+   * 综述需要的元数据都在场（意图 / 维度预设 / 体裁）。
+   *
+   * ⚠️ 不给的话「意图组不渲染」会因为 `readerIntents.length === 0` 而恒真——那条断言
+   * 就变成了在测「没配置能力时没控件」，跟合并模式毫无关系。
+   */
+  const withCaps = (): Capabilities => ({
+    llmModels: {},
+    dimensionPresets: [{ key: 'paper', label: '论文综述', dimensions: ['研究问题', '方法'] }],
+    readerIntents: [
+      { key: 'understand', label: '理解主题', purpose: '读懂主线。', defaultContentType: null,
+        shape: 'article', shapeLabel: '综合文章', shapeDescription: '' },
+    ],
+    contentTypes: [{ key: 'paper', label: '论文' }],
+  } as unknown as Capabilities)
+
+  /** 打开对话框，**不切模式**——测的就是默认落在哪一档 */
+  function openMerge() {
+    const { container } = render(<DocLibrary />)
+    selectRows(container, 2)
+    fireEvent.click(synthBtn(container))
+  }
+
+  it('默认选中「合并原文」；综述独有的控件整块不渲染', async () => {
+    // 预览数据刻意「会出事」：窗口不够 + 有一篇在原文模式下不可用。
+    // 如果合并模式仍读预算，窗口 banner 与逐篇 token 标注就会冒出来。
+    previewData = {
+      ...previewData,
+      mode: 'reject',
+      reason: '部分文档超出当前模型窗口',
+      docs: [
+        { id: 'tr_a', title: '论文 A', tokens: 90000, plan: 'full', hasNotes: true, notesTokens: 200 },
+        { id: 'tr_b', title: '论文 B', tokens: 0, plan: 'unavailable', hasNotes: false, notesTokens: 0 },
+      ],
+      excluded: ['tr_b'],
+    }
+    useStore.setState({ docs: twoDocs(), capabilities: withCaps() })
+    openMerge()
+
+    expect((inDialog('[data-synth-mode="merge"] input') as HTMLInputElement).checked).toBe(true)
+    expect((inDialog('[data-synth-mode="review"] input') as HTMLInputElement).checked).toBe(false)
+    // 主按钮的文案跟着模式走：合并是一次磁盘操作，不该叫「合成」
+    expect(inDialog('[data-confirm-synth]')!.textContent).toBe('合并')
+
+    // 先等预览**真的回来**（`[data-synth-excluded]` 只在预览带回 excluded 之后才渲染），
+    // 否则下面每一条「不渲染」都可能是「还没渲染」
+    await vi.waitFor(() => expect(inDialog('[data-synth-excluded]')).toBeTruthy())
+
+    expect(inDialog('[data-synth-intents]')).toBeNull()
+    expect(inDialog('[data-synth-advanced-toggle]')).toBeNull()
+    expect(inDialog('[data-synth-plan]')).toBeNull()
+    expect(inDialog('[data-synth-window-banner]')).toBeNull()
+    // 原料单选是两条路径共用的，合并模式下**直接在外面**，不需要先展开什么
+    expect(inDialog('[data-synth-source="raw"]')).toBeTruthy()
+    // 综述的「简单模式」折叠层在这里没有意义（本来就只有两个控件）
+    expect(inDialog('[data-synth-simple]')).toBeNull()
+  })
+
+  it('请求打到 /synthesis/merge，body 只有三个键', async () => {
+    useStore.setState({ docs: twoDocs(), capabilities: withCaps() })
+    openMerge()
+
+    fireEvent.change(inDialog('[data-synth-title]')!, { target: { value: '两篇合并' } })
+    fireEvent.click(inDialog('[data-confirm-synth]')!)
+
+    await vi.waitFor(() => expect(mergeCall()).toBeTruthy())
+    const call = mergeCall()!
+    expect(call.init.method).toBe('POST')
+    // 逐键相等：多带一个 `reader_intent` 就说明前端还在按综述的形状拼 body，
+    // 而后端会忽略它 —— 用户填的意图对产物毫无影响，界面上看不出来
+    expect(JSON.parse(String(call.init.body))).toEqual({
+      doc_ids: ['tr_a', 'tr_b'],
+      title: '两篇合并',
+      source_mode: 'raw',
+    })
+    // 综述端点一次都不该被打到
+    expect(streamCall()).toBeUndefined()
+  })
+
+  it('窗口不足只拦综述：合并按钮照常可点、点了照常成功', async () => {
+    previewData = { ...previewData, mode: 'reject', reason: '窗口不够' }
+    useStore.setState({ docs: twoDocs(), capabilities: withCaps() })
+    openMerge()
+
+    // ⚠️ 对照：把 `reject` 也塞进合并的 blocked 判据 → 此处为 true → 红。
+    // 合并根本不跑预算判定，材料再长也只是把原文拼起来
+    expect((inDialog('[data-confirm-synth]') as HTMLButtonElement).disabled).toBe(false)
+    expect(inDialog('[data-synth-window-banner]')).toBeNull()
+
+    fireEvent.click(inDialog('[data-confirm-synth]')!)
+    await vi.waitFor(() => {
+      expect(useStore.getState().docs.some(d => d.id === 'tr_merged')).toBe(true)
+    })
+    // 建完自动选中，用户接着就能在预览区看产物
+    expect(useStore.getState().currentDocId).toBe('tr_merged')
+  })
+
+  it('切「已生成的笔记」重拉预览；无笔记的篇被排除出来源清单', async () => {
+    // notes 模式下 tr_b 没有笔记：预览与合并返回都把它标出来
+    previewData = {
+      ...previewData,
+      docs: [
+        { id: 'tr_a', title: '论文 A', tokens: 200, plan: 'full', hasNotes: true, notesTokens: 200 },
+        { id: 'tr_b', title: '论文 B', tokens: 0, plan: 'unavailable', hasNotes: false, notesTokens: 0 },
+      ],
+      excluded: ['tr_b'],
+    }
+    mergeResult = { ...mergeResult, excluded: ['tr_b'] }
+    useStore.setState({ docs: twoDocs(), capabilities: withCaps() })
+    openMerge()
+
+    // 合并模式下原料单选直接可点，不需要先展开配置区
+    fireEvent.click(inDialog('[data-synth-source="notes"]')!)
+
+    // ⚠️ 重拉预览而不是本地重算：`plan` 的规则在后端（成对逻辑必须同源）
+    await vi.waitFor(() => {
+      expect(captured.some(c =>
+        c.url.includes('/synthesis/preview') && String(c.init.body).includes('"source_mode":"notes"'))).toBe(true)
+    })
+    await vi.waitFor(() => expect(inDialog('[data-synth-excluded]')).toBeTruthy())
+    expect(inDialog('[data-synth-excluded]')!.textContent).toContain('1 篇无笔记')
+
+    fireEvent.click(inDialog('[data-confirm-synth]')!)
+    await vi.waitFor(() => expect(mergeCall()).toBeTruthy())
+    expect(JSON.parse(String(mergeCall()!.init.body)).source_mode).toBe('notes')
+
+    // ⚠️ 对照：把 excluded 也写进 sourceDocIds → 「2 合 1」徽章指向一篇没进产物的文档 → 红
+    await vi.waitFor(() => {
+      expect(useStore.getState().docs.some(d => d.id === 'tr_merged')).toBe(true)
+    })
+    expect(useStore.getState().docs.find(d => d.id === 'tr_merged')!.sourceDocIds).toEqual(['tr_a'])
   })
 })

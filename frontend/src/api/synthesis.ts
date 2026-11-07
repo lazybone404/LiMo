@@ -92,6 +92,46 @@ export async function previewSynthesis(
   return body as unknown as SynthesisPreview
 }
 
+export interface MergeResult {
+  id: string
+  /** 落库用的标题（用户没填时由后端补，前端不要自己拼一个同名规则）。 */
+  title: string
+  mode: string
+  /** `notes` 模式下因无笔记被排除的篇 id（不是标题——要拿它做差集）。 */
+  excluded: string[]
+}
+
+/**
+ * N 篇 → 一篇**纯拼接**的 composite 文档（非流式，零模型调用）。
+ *
+ * 与 `streamSynthesis` 产出同一种文档，区别只在正文怎么来：这边按顺序拼原文，
+ * 那边由模型写综述。故成功之后同样走「插一条乐观条目 + 选中它」，后续生成、
+ * 导出、搜索全部与合成文档一致。
+ *
+ * ⚠️ **业务失败是 HTTP 200 + `{code, message}`**（篇数不足 / 有篇还没转录），
+ * 判据与 `previewSynthesis` 逐字相同：只看 `response.ok` 会把失败当成功。
+ */
+export async function mergeSynthesis(
+  docIds: string[],
+  opts: { title?: string; sourceMode?: SourceMode } = {},
+): Promise<MergeResult> {
+  const response = await fetch(`${BASE}/synthesis/merge`, {
+    method: 'POST',
+    headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      doc_ids: docIds,
+      title: opts.title ?? '',
+      source_mode: opts.sourceMode ?? 'raw',
+    }),
+  })
+  let body: Record<string, unknown> = {}
+  try { body = await response.json() } catch { /* 非 JSON 响应体 */ }
+  if (!response.ok || typeof body.code === 'string') {
+    throw new Error(String(body.message || body.detail || `合并失败 (${response.status})`))
+  }
+  return body as unknown as MergeResult
+}
+
 export interface StreamSynthesisCallbacks {
   /** 阶段提示（读取源文档 / 分析对比维度 / 逐篇结构化抽取 i/N / 组装正文） */
   onStage?: (message: string) => void

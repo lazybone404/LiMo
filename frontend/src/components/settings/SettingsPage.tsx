@@ -8,6 +8,7 @@ import { PARA_STYLE_OPTIONS, LINE_HEIGHT_RANGE, MEASURE_RANGE, MEASURE_DEFAULT_O
 import { SKELETON_OPTIONS, CARD_STYLE_OPTIONS, CARD_BG_OPTIONS, CARD_BORDER_OPTIONS, isLiftDisabled } from '../../lib/card-prefs'
 import { LAYOUT_OPTIONS } from '../../lib/layout-prefs'
 import { useChatPrefs, saveChatPrefs, ANSWER_MODE_OPTIONS } from '../../lib/chat-prefs'
+import { useIngestPrefs, saveIngestPrefs } from '../../lib/ingest-prefs'
 import { THEME_PRESETS } from '../../lib/theme-presets'
 import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette, Puzzle } from 'lucide-react'
 import { ProviderSettings } from './ProviderSettings'
@@ -110,6 +111,9 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const setExportPrefs = useStore(s => s.setExportPrefs)
   // 对话侧三项偏好 —— 与输入框里的按钮**同一份状态**（订阅，不是各存一份初值）
   const chatPrefs = useChatPrefs()
+  // 导入行为两档 —— 与 GenPanel 的导入调用点**同一份状态**（订阅；用 `useState` 读一次
+  // 会让设置页改完之后已挂载的 GenPanel 仍按旧值跑，界面上完全看不出来）
+  const ingestPrefs = useIngestPrefs()
   const applyPreset = useStore(s => s.applyPreset)
   const [intensity, setIntensity] = useState(getSavedIntensity())
 
@@ -987,6 +991,45 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
               {/* 检索索引 —— 状态可见 + 手动重建。索引坏掉时后端不炸启动、只是搜不到，
                   而「搜不到」与「库里没有」在界面上是同一句话（见组件文件头）。 */}
               <SearchIndexCard />
+
+              {/* 导入行为 —— 「导入」与「转录」是两个动作，这里决定导入时要不要顺手把
+                  正文也取了。两档默认值**不同**，因为成本不同：
+                  视频要下载 + 跑 ASR（慢、可能计费），文档网页是本地抓取解析（秒级）。
+                  ⚠️ 本机偏好、即时生效、不走 config.yaml（同下面两张卡的性质）；
+                  分档规则本身住后端（`routers/ingest.py::_resolve_probe_only`）——
+                  前端拿到一个 URL 时并不知道它是视频还是文章。 */}
+              <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-5">
+                <p className="text-[13px] text-muted">
+                  导入行为（改动立即生效）。关掉的一项只把材料收进库里，正文等你在预览区点「开始转录」再提取。
+                </p>
+
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input type="checkbox" checked={ingestPrefs.autoTranscribeMedia}
+                    onChange={e => saveIngestPrefs({ autoTranscribeMedia: e.target.checked })}
+                    className="mt-1 w-4 h-4 accent-accent shrink-0" />
+                  <span>
+                    <span className="text-[15px] font-medium block">导入视频后自动转录</span>
+                    <span className="text-[12px] text-muted block mt-1 leading-relaxed">
+                      默认关闭。视频要先把整个文件拉下来再跑语音转写，耗时从几十秒到几分钟，
+                      用云端引擎还会产生费用，所以默认先只收录：标题和封面照常入库，正文等你有空再说。
+                      打开则与以前一样，导入完就等着看笔记。
+                    </span>
+                  </span>
+                </label>
+
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input type="checkbox" checked={ingestPrefs.autoTranscribeDoc}
+                    onChange={e => saveIngestPrefs({ autoTranscribeDoc: e.target.checked })}
+                    className="mt-1 w-4 h-4 accent-accent shrink-0" />
+                  <span>
+                    <span className="text-[15px] font-medium block">导入文档、网页后自动提取正文</span>
+                    <span className="text-[12px] text-muted block mt-1 leading-relaxed">
+                      默认开启。PDF / Word / 网页的正文提取都在本机完成，通常一两秒，
+                      拆开没什么收益。关掉则同样是「只收纳」，适合先批量囤一批资料再统一处理。
+                    </span>
+                  </span>
+                </label>
+              </div>
 
               {/* 导出行为 —— 即时生效（与上面需要点「保存」的配置项不同：这一项存的是本机偏好，
                   不走 config.yaml）。见 lib/export-prefs.ts 的文件头。 */}

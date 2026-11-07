@@ -339,17 +339,25 @@ export interface Capabilities {
 }
 
 /**
- * 列表返回的文档条目。
+ * 列表返回的文档条目 —— **全仓唯一真相源**。
  *
- * ⚠️ **store 侧另有一份同名定义**（`store/types.ts` 的 `DocEntry`），两者描述同一份
- * 后端 JSON、由 `listTranscripts()` 直接喂给 `setDocs()`（结构兼容所以没有编译错误）。
- * **改动必须两处同步**——否则会出现「类型上没这个字段，但运行时字段确实在」（或反过来
- * 「类型说有、实际后端没返回」），而 TS 一声不吭。已存在字段集漂移（store 侧多
- * `sourceUrl`），此处补 `source*` 时一并对齐。
+ * 此前 `store/types.ts` 另有一份同名定义，两份已经分叉（store 侧多 `sourceUrl` /
+ * `coverUrl` / `modes`），而 TS 对「两个结构兼容的同名 interface」不报错，
+ * 表现是「类型上没有这个字段，运行时确实在」。2026-11-07 合并到此处：
+ * `store/types.ts` 只做 re-export，**加字段只改这一处**。
+ *
+ * 字段来源：`sourceUrl` / `coverUrl` 在 `doc_meta.DOC_FIELDS`（index 直通投影带出）；
+ * `modes` 由 `QueryService.list_resources` 从产物索引派生后附加（不是 index 字段）。
  */
 export interface DocEntry {
-  id: string; title: string; sourceType: string; sourceFileName?: string; engine: string
-  language?: string; duration?: number; contentHash: string
+  id: string; title: string; sourceType: string; sourceFileName?: string
+  /** 来源 URL（网页 / 视频 / arXiv）；非 URL 导入恒为 "" */
+  sourceUrl?: string
+  engine: string
+  language?: string; duration?: number
+  /** 封面图 URL（视频平台），`project_resource` 从 `metadata.cover_url` 取 */
+  coverUrl?: string
+  contentHash: string
   tags: string[]; createdAt: string
   /** 所属文件夹 id；"" = 未分类（后端一律返回字符串，不返回 undefined） */
   folderId?: string
@@ -357,6 +365,33 @@ export interface DocEntry {
   sourceDocIds?: string[]; sourceTitles?: string[]; sourceHashes?: string[]
   /** 出处头丢失或损坏 → 保留文档但不猜来源（设计 §4.2.3） */
   metadataCorrupt?: boolean
+  /**
+   * 正文状态（「导入与转录分开」，2026-11-07）。
+   *
+   *   - `'pending'` = 只收纳了，`rawText` 是占位文本，正文还没提取；
+   *   - `'done'` / `undefined` = 正文是真的（**缺键即 done** —— 历史条目零迁移）。
+   *
+   * ⚠️ **与后端 store 内部的 `ready` 无关**（那个 `False` 的文档在列表里根本不存在）。
+   * 这是用户可见的持久态，由导入与转录两条路径显式写。
+   *
+   * ⚠️ 三处消费方都必须处理它：列表徽章（`DocRow`）、预览区卡片（`PreviewArea` 的
+   * transcript 分支）、生成前置拦截（`GenPanel`）—— 占位文本非空且不含失败前缀，
+   * 不拦的话会拿它生成一篇笔记，而产物看上去完全正常。
+   */
+  transcribeState?: 'pending' | 'done'
+  /**
+   * 这篇**已有哪些生成产物**（`"notes"` / `"polished"`），由 `QueryService.list_resources`
+   * 从产物索引带出（零额外读盘）。
+   *
+   * ⚠️ **`undefined` 与 `[]` 语义不同，消费方必须分流**：
+   *   - `undefined` = **未知**（旧后端 / 测试 mock / 乐观插入的新文档）→ 照旧发请求
+   *   - `[]`        = **确定没有产物** → 一个产物请求都不发
+   * 这把「尚未生成」还原成正常状态，而不是靠一个必然 404 的请求把它静默掉。
+   *
+   * ⚠️ 由生成/解读链路在产物落盘后**追加**（store 的 `markArtifact`）——不追加的话
+   * 「生成完 → 切走 → 切回」会因 `[]` 而不请求，笔记看起来凭空消失（模式 #52）。
+   */
+  modes?: string[]
 }
 
 /**

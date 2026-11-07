@@ -12,6 +12,27 @@ type ProgressCb = (ev: { phase: string; status: string; percent?: number; messag
 type DoneCb = (doc: any) => void
 
 /**
+ * 「导入与转录分开」的两个开关（2026-11-07）。
+ *
+ * ⚠️ **传的是「只收纳吗」，不是「要自动转录吗」** —— 与后端 `media_probe_only` /
+ * `doc_probe_only` 同名同义。调用方传 `!autoTranscribeMedia` / `!autoTranscribeDoc`
+ * （`lib/ingest-prefs.ts`）。
+ *
+ * ⚠️ **两档的默认值不同，所以「发不发」也不同**：后端的默认是
+ * `media_probe_only=True` / `doc_probe_only=False`（= 视频只收纳、文档一键），
+ * 故这里**只在偏离默认（值为 `true`）时才发** —— 少一个参数就是「与改造前逐字相同」
+ * 里可被断言的那种说法。`false` 不表示任何新语义，发出去只是多一个字节。
+ *
+ * ⚠️ **哪个 adapter 归哪一档由后端决定**（见 `routers/ingest.py::_resolve_probe_only`）：
+ * 前端拿到一个 URL 时不知道它是视频还是文章，只有后端选出 adapter 才谈得上分档。
+ * 这里传的是**用户的偏好**，不是分类结果。
+ */
+export interface ProbeOnlyOptions {
+  mediaProbeOnly?: boolean
+  docProbeOnly?: boolean
+}
+
+/**
  * 导入失败的结构化补充 —— 后端 `AppError` 的可选字段，**缺哪个就少哪个**。
  *
  * ⚠️ `message` 仍是第一参数，`info` 是**只增不改**的第二参数：既有调用方
@@ -30,9 +51,10 @@ export function ingestURL(
   onDone: DoneCb,
   onError?: ErrorCb,
   signal?: AbortSignal,
+  opts?: ProbeOnlyOptions,
 ) {
   const body = new URLSearchParams({ url })
-  return ingestStream(`${BASE}/ingest`, body, onProgress, onDone, onError, signal)
+  return ingestStream(`${BASE}/ingest`, body, onProgress, onDone, onError, signal, opts)
 }
 
 export function ingestText(
@@ -41,9 +63,10 @@ export function ingestText(
   onDone: DoneCb,
   onError?: ErrorCb,
   signal?: AbortSignal,
+  opts?: ProbeOnlyOptions,
 ) {
   const body = new URLSearchParams({ text })
-  return ingestStream(`${BASE}/ingest`, body, onProgress, onDone, onError, signal)
+  return ingestStream(`${BASE}/ingest`, body, onProgress, onDone, onError, signal, opts)
 }
 
 export function ingestFile(
@@ -52,10 +75,11 @@ export function ingestFile(
   onDone: DoneCb,
   onError?: ErrorCb,
   signal?: AbortSignal,
+  opts?: ProbeOnlyOptions,
 ) {
   const body = new FormData()
   body.append('file', file)
-  return ingestStream(`${BASE}/ingest`, body, onProgress, onDone, onError, signal)
+  return ingestStream(`${BASE}/ingest`, body, onProgress, onDone, onError, signal, opts)
 }
 
 /**
@@ -70,7 +94,13 @@ async function ingestStream(
   onDone: DoneCb,
   onError?: ErrorCb,
   signal?: AbortSignal,
+  opts?: ProbeOnlyOptions,
 ) {
+  // 「只收纳」两个开关 —— **只在该项偏离后端默认时才写**（理由见 `ProbeOnlyOptions`）。
+  // ⚠️ 写在 `fetch` **之前**：SSE 与下面的 JSON 回退**共用同一个 body**，一处写齐两条路。
+  // `URLSearchParams.set` 与 `FormData.set` 同名可用，故不需要分支。
+  if (opts?.mediaProbeOnly) body.set('media_probe_only', 'true')
+  if (opts?.docProbeOnly) body.set('doc_probe_only', 'true')
   // URLSearchParams 需显式 Content-Type；FormData 让浏览器自动设置 multipart
   const headers = body instanceof URLSearchParams
     ? { 'Content-Type': 'application/x-www-form-urlencoded' }

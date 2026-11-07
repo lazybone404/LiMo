@@ -256,7 +256,7 @@ python tests/test_transcript_meta.py # 出处头编解码（往返 / 标题含 -
 python tests/test_budget.py          # 统一预算（逐值等价 / 取小 / 窗口闸门 / single 不闭合的 xfail(strict) / cw 来源）
 python tests/test_store_composite.py # 合成文档存储（删 index.json 后重建字段仍在 / save_transcript_full 守卫 / 去重豁免 / 损坏标记）
 python tests/test_synthesis.py       # 合成管线（Step 0 分叉 / 预算收敛 / 资产搬运含路径穿越对照 / 降级显式化 / 篇内分块 / 软 deadline / 维度可控 / 原料可选 / 预览同源）
-python tests/test_generate_gate.py   # 生成闸门（产物裁剪 / 格式清空 / metadata_corrupt 提示 / 跳过 auto-title）
+python tests/test_generate_gate.py   # 生成闸门（产物裁剪 / 格式勾选【2026-11-07 起不再清空】/ metadata_corrupt 提示 / 跳过 auto-title）
 python tests/test_synthesis_api.py   # 合成端点（SSE 协议 / 业务错误走事件 / 槽位归还 / 异常哨兵）
 ```
 
@@ -472,6 +472,7 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 ```
 
 - **三条生命线**：① **合成产物 = 普通文档**（`sourceType="composite"`）→ 文档库/搜索/标签/文件夹/导出/对话引用/版本管理**全部免费获得**；② **两步走**（只建文档，生成走现成端点）→ 生成域**零批量概念**；③ **单真相源**（合成文档的 rawText **就是**模型输入，生成时不许再读原文）
+- **合并 ⊥ 综述（2026-11-07）**：同一入口（BatchBar 合成按钮）的两种产物，**分野只有「正文出自谁手」** —— `POST /api/synthesis/merge`（非流式 JSON、`merge_sources`、**零模型调用**、各篇原文按 `doc_ids` 顺序拼接）vs `POST /api/synthesis/stream`（SSE、模型按读者意图写）。产物**同为 `sourceType="composite"`**，下游零改动；出处头多一个 `outputMode: "merge"` 标来路，⚠️ **空串不写键**（`build_composite_raw_text(..., output_mode="")` 时整个键不出现 ⇒ 既有综述文档出处头逐字节不变，缺键读作综述，同 `transcribeState` 缺键读作 `"done"`）。⚠️ **合并刻意不做三件事**：不跑 `plan_synthesis`（窗口与拼接无关）、不设 `MAX_SYNTH_CALLS`（一次调用都没有）、所有篇 `status` 恒 `full`（来源清单里恒为「✓ 未删节」，这是事实不是省略）。连带后果：**窗口不足的 `reject` 只拦综述**，拿它拦合并会让一个必然成功的操作被拒。三处复用不另写：`_load_sources`（有无正文 / 有无笔记的判据）、`relocate_assets`（资产复制 + 引用改写 + 越界守卫）、`build_composite_raw_text`（出处头 + 来源清单）。前端合并模式下**读者意图 / 维度 / 体裁 / 窗口 banner / 逐篇 token 整块不渲染**，只留标题与「用什么原料」（`notes` 模式无笔记的篇两条路径都跳过）
 - **出处头嵌进正文第一行**（`<!-- limo-meta {json} -->` + `## 来源文档` 列表）：删 `index.json` 重建时 id 由 sha256 重推、`sourceType` 被写死空串，只有正文自身能扛住。编解码收口在 `core/transcript_meta.py`（写方读方必须同源）。⚠️ **头不剥离**（三位一体）；`parse_meta` **只认第一行**（防正文级伪造）；**无头 ≠ 损坏**（判据写错会让所有历史文档被标 corrupt）
 - **Step 0 分叉**（`generation/synthesis.py`）：`Σ token ≤ multi 预算` → **Stuff**（N 篇原样组装，**零 LLM 调用**）/ 超出 → **Map-Reduce**（维度发现 1 次 + 逐篇**固定维度结构化抽取** N 次）。Map **不是自由摘要**——自由摘要 = 另一台模型在最终模型看到之前就决定性地筛掉了信息
 - **预算同源**（`generation/budget.py`）：`single` = `int(cw×0.8)−2000−16384`（与既有逐值等价，**含已知低估**，D8 保持现状 + `xfail(strict)` 钉住）；`multi` = `min(int(cw×0.5), cw−65536−2000)`（**必须闭合**）。`cw < 102,536` 显式拒绝（`min()` 会静默取负值）。⚠️ **`cw` 由调用方从 `resolve_context_window()` 取后传入**——生成路径此前**根本没走四层解析**（`resolve_llm_config` 只查第 1 层，实际落 provider 兜底表，与预设差 7.6 倍）
@@ -486,8 +487,8 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **读者意图 ⊥ 材料体裁**（2026-10-04，产物形态重做的两只旋钮）：`READER_INTENTS` 六选一（2026-10-18 新增「梳理观点」`claims`，排在 `understand` 之后 ⇒ 前端默认项不变）决定 `<task>` 段的「读者目的」**与产物形态**，`CONTENT_TYPES` 多标签决定加载哪几类「体裁增量」条款（4 类 × 3 条，每类第三条是**停止条件**，多标签必须去重）。两者连同 `dimensions` / `source_mode` **全部只落出处头 meta**——生成是第二次独立请求，届时手里只有 rawText。⚠️ **错误语义刻意不同**：意图与原料模式非法**显式报错**（选错了产物的读者目的/性质就变了，而产物上看不出异常），维度与体裁**静默清洗**（多带一个不认识的值不该让整次合成失败）——判据是「**这个值错了会不会改变产物的性质**」。⚠️ 「理解主题 / 比较材料」的 `defaultContentType` 是 `None`、**刻意不预设体裁**（给「读者的动作」猜材料体裁，正是要消灭的那类错配）。⚠️ 历史字段 `user_notes`（「对比指引」）**已删除**——它是死链（签名里有、函数体零引用，链路看起来完整），位置由 `reader_intent_text` 承接
 - **内容约束三块**（2026-10-04；文风 2026-10-05 由 7 条增到 9 条）：`_SYNTHESIS_FACT_CONSTRAINTS`（事实 5 条）/ `_SYNTHESIS_STYLE_CONSTRAINTS`（通用文风 9 条）/ `_SYNTHESIS_GENRE_CONSTRAINTS`（体裁增量）。合成用 `_SYNTHESIS_INSTRUCTION_PRIORITY`（三层，无 style_preference 节，**必须保留 `output_language` 行**——读者意图是用户自由文本、进 `user_request` 节，正是「不可被用户备注覆盖」保护的场景）；全局 `_INSTRUCTION_PRIORITY` 四层不动（单篇零回归）。覆盖说明**换位置而非取消**：删 `<task>` 段的强制元数据开场，改在「## 综合评价」末尾一句话说明输入覆盖情况
 - **资产搬运**：源 `assets/xxx` 复制到新文档并加源序号前缀（`d1_`/`d2_`），**引用必须同步改写**（只复制不改写 = 与不搬运完全一样，却零报错）；⚠️ **每个路径都要 `relative_to` 守卫**（现存同款正则已有 5 个副本，新副本不带守卫 = 新开一条任意文件读取通道）
-- **生成闸门**（`generate.py`）：composite → 不产 polished、清空 `format_list`、跳过 `_auto_title`；`metadataCorrupt` 推 warning 但不阻断
-- 前端入口在**文档库 BatchBar**（选中 ≥ 2 篇）而非 GenPanel——输入的 N 篇是已入库文档，Attention 在文档库。**确认对话框消费预览端点**：逐篇 token + 处理方式（数据只有后端有——`docs` 是白名单序列化、**不含正文**）、窗口 banner、读者意图单选组（+「自定义」文本框）、原料单选组、**折叠的「高级」区**（维度预设下拉 + 维度列表 textarea 每行一个、切换预设=覆盖；体裁多选，由所选意图的 `defaultContentType` 预填、切意图即重置）——**前端不本地重算 `plan`**（那是复刻 `plan_synthesis`，成对逻辑禁止）。⚠️ `tabRegistry` **只**给 summary/transcript 加 composite，**绝不动 `DOC_TYPES`**（会被 `ALL_TEXT` 展开、白送 polished/mindmap）；`summary.defaultFor` 也要加（`forSourceType` 与 `defaultFor` 是两件事）。详见 CHANGELOG 2026-10-01 / 2026-10-02
+- **生成闸门**（`generate.py`）：composite → 不产 polished、跳过 `_auto_title`；`metadataCorrupt` 推 warning 但不阻断。⚠️ **格式清单不再清空**（2026-11-07，链路「产物后处理交给用户」）：两处清空语句（非流式 `formats_list` / 流式 `format_list`）已删除，允许哪些格式由 `AVAILABLE_OPTIONS["composite"]` = `toc` / `formulas` / `chart` / `followup` **一处**决定。**刻意不给**：`summary`（合成骨架本身就是总结；且它的文案教 `limo-block type="card"`，而合成 prompt 从不注入那套规范）/ `references`（`## 材料索引` 承担该位置）/ `link`·`screenshot`（要视频时间点）/ `images`（文案写 `/api/files/...`，合成图是 `assets/` 相对路径）。⚠️ `_single_product = source_type in ("composite", "xlsx")` **不能动** —— composite 仍只落 notes 槽（rawText 已是定稿输入；`build_polish_prompt` 对它返回的是**另一份综述**，开放它等于同一功能两个入口）。⚠️ `get_chart_format` 的 `_no_draw` **按来源分两支**：composite 那支不提任何语义块名、不提「语义块」——合成 prompt 里没有那一节，指代落空。`PROMPT_VERSION` 由此 `"23"`
+- 前端入口在**文档库 BatchBar**（选中 ≥ 2 篇）而非 GenPanel——输入的 N 篇是已入库文档，Attention 在文档库。**确认对话框消费预览端点**：逐篇 token + 处理方式（数据只有后端有——`docs` 是白名单序列化、**不含正文**）、窗口 banner、读者意图单选组（+「自定义」文本框）、原料单选组、**折叠的「高级」区**（维度预设下拉 + 维度列表 textarea 每行一个、切换预设=覆盖；体裁多选，由所选意图的 `defaultContentType` 预填、切意图即重置）——**前端不本地重算 `plan`**（那是复刻 `plan_synthesis`，成对逻辑禁止）。⚠️ `tabRegistry` 给 composite **逐 tab 手写**（summary / transcript / mindmap），**绝不动 `DOC_TYPES` / `ALL_TEXT`**（会被那两处展开成 polished）。mindmap 是 **`[...ALL_TEXT, 'composite']` 显式追加**（2026-11-07；它消费 notes，合成有 notes），不是因为「反正是文本类」。`summary.defaultFor` 也要加（`forSourceType` 与 `defaultFor` 是两件事）。⚠️ 前端笔记格式区的区块条件要**显式含 `isComposite`**（它不在 `isDoc` 里）——漏了整块不渲染，后端允许勾而界面上一个选项都没有。⚠️ 导出清单**仍不含 mindmap**：`getTypeMeta` 调 `forSourceType(st)` 不传 ctx，而 mindmap 有 `visible: (ctx) => !!ctx.currentContent`，对所有类型一致。详见 CHANGELOG 2026-10-01 / 2026-10-02 / 2026-11-07
 - **简单模式（2026-10-29）**：`simpleMode = !needsTuning && !synthTuneOpen` —— 装得下（`mode === 'stuff'`，或预览还没回来）时配置区**默认收起**，只留清单 + 标题 + 「调整选项」链接，标题/按钮叫「合并」。⚠️ **三条判据**：① **收起不减能力**（发的是打开那一刻的默认值，与「展开了但一个不改」逐字相同，测试断言收起态 body 的四个字段）；② **`map_reduce` / `reject` 强制展开且不渲染 `data-synth-tune`**（会压缩/截断/换模型是用户该知道的事）；③ 预览未返回时先按简单模式渲染（避免「先完整后收起」的跳动）。⚠️ **不要改成「合并后自动生成」** —— D7（`describe('done 之后不自动生成（D7）')`）钉住「一次 `/generate/` 都不许有」，技术上还要复刻 `GenPanel::handleGenerate` 的 20+ 参数（模式 #54）
 
 ### 文档库（组织能力 2026-09-23；前端交互重设计 2026-09-25）
@@ -698,7 +699,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | 「**关闭思考**」的 `extra_body` 形状 | [llm/service.py](backend/app/llm/service.py) 的 `DISABLE_THINKING_EXTRA`。⚠️ `stream(disable_thinking=True)` 与 [agent/followup.py](backend/app/agent/followup.py) **共用同一份** —— 后者直调 `client.chat.completions.create`、**走不到 `LLMService`**，故形状必须抽出来（抄一份就是模式 #54）。`test_followup.py` 有源码守卫钉住字面量只此一处 |
 | 「最新版笔记正文」（版本序判据） | [generation/doc_text.py](backend/app/generation/doc_text.py)（智能分类与合成共用；`synthesis` 的私有副本已改为委托） |
 | 文件夹树（父子归化 / 前序 / 后代 / `父 › 子` 路径标签 / `totalCount` / **路径解析 `parse_path` + `path_key`**） | [storage/folder_tree.py](backend/app/storage/folder_tree.py) ↔ [doc-library/folderTree.ts](frontend/src/components/doc-library/folderTree.ts)。⚠️ **`parse_path` / `path_key` 只活在后端一处**（前端刻意不实现：两份要靠 fixture 防漂移，而它的失效形态是「历史里本名就含 `/` 的夹被拆开」这种静默错分）；其余结构函数两端同构，靠共享 fixture `folder-tree.json` 钉住 |
-| **分类真相源**（文档级 `{doc_dir}/meta.json` + 库级 `{root}/folders.json`） | [storage/doc_meta.py](backend/app/storage/doc_meta.py)。`DOC_FIELDS`（17 个**从磁盘重推不出来**的字段，含 `title`——目录名是**有损**的，见该文件注释）与读写入口只此一份；`read_folders` 的 **`None`（不可用）与 `[]`（确实没有夹）刻意分开**。⚠️ **`index.json` 只是缓存**，`_rebuild_index` 回落到这里 —— 别在别处再造一份 sidecar 格式 |
+| **分类真相源**（文档级 `{doc_dir}/meta.json` + 库级 `{root}/folders.json`） | [storage/doc_meta.py](backend/app/storage/doc_meta.py)。`DOC_FIELDS`（18 个**从磁盘重推不出来**的字段，含 `title`——目录名是**有损**的，见该文件注释；`transcribeState` 是 2026-11-07 新增的第 18 个，也是重建后唯一能还原 pending 的来源）与读写入口只此一份；`read_folders` 的 **`None`（不可用）与 `[]`（确实没有夹）刻意分开**。⚠️ **`index.json` 只是缓存**，`_rebuild_index` 回落到这里 —— 别在别处再造一份 sidecar 格式 |
 | 原子写（临时名唯一 + `os.replace`） | [core/atomic_io.py](backend/app/core/atomic_io.py) 的 `atomic_write_text`。`Store._atomic_write` 是它的薄委托；`doc_meta` 直接调它 |
 | **性能打点**（`record` / `timer` / `snapshot` / 落盘位置 / 三条纪律） | [core/perf.py](backend/app/core/perf.py)。⚠️ **只记录不判断**（没有「慢」阈值 —— 阈值该由看数据的人按分位数定，不是写代码的人猜一个 2000ms）；**写失败只 warning 一次、不影响业务**；**独立文件** `{data_dir}/perf.log`（`limo.perf` 的 `propagate=False`，不进 app.log、不进 `/api/logs` 的 1000 条内存缓冲）。⚠️ **HTTP 那一层是横切的**（`main.py::_log_request` 每请求一条），**不给端点各加 timer**；只有没有请求边界的三处才手动 `with perf.timer(...)`。⚠️ 两个口径坑写在模块 docstring 里：key 用**路由模板**（否则一篇文档一个统计组）、**SSE 是 TTFB 不是流总时长**（key 加 `[ttfb]` 后缀） |
 | 产物正文协议标记（`limo-block`）解析/剥离/渲染 | [core/artifact_blocks.py](backend/app/core/artifact_blocks.py) ↔ [lib/markdown-markers.ts](frontend/src/lib/markdown-markers.ts)（前后端各一份，共享 fixture `limo-blocks.json` 钉住） |
@@ -761,6 +762,35 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **唯一导入入口**：GenPanel 是唯一导入入口，DocLibrary 只负责搜索/筛选/列表
 - **两层去重**：URL 去重（`find_by_url`）在请求到达时拦截；内容去重（SHA256 contentHash）在提取正文后拦截。Store 级拒绝写入
 - **导入区纯粹化**：ImportSection 不受 currentDoc 影响，按钮永远是「导入」
+
+### 导入与转录分开（2026-11-07，第一步）
+
+导入从「一件做完三件事」拆成两站：**收纳**（材料进库）与**转录**（正文晚点提取）。本步只做状态拆分 + 单篇转录入口，批量导入/批量转录/批量生成队列是后续。
+
+- **默认值按成本分两档**：媒体（`video`）**只收纳**；文档（`document` / `arxiv` / `webpage`）导入即提取；`text` / `image` 不参与、永远 `done`。⚠️ **这是一次真实的行为变更**（升级后导入 B 站视频不再自动转录），已写进 [README.md](README.md)。档位表 `_TIER_MEDIA` / `_TIER_DOC` + `_resolve_probe_only()` **住后端**（前端拿到一个 URL 时根本不知道它是视频还是文章，只有 adapter 选出来才谈得上分档），前端只传两个布尔偏好 `media_probe_only` / `doc_probe_only`，且**只在偏离默认时才发**（与 `web_search=0` 同一条纪律）。
+- **`ready` / `transcribeState` / `_pending_ids` 三个同名但正交，绝不能合并**：`ready=False` 是 `transcript.md` 未写的**进程内瞬时态**（`list_transcripts` 直接隐藏，库里根本不存在）；`transcribeState` 是**用户可见的持久态**（缺键 = `"done"`，可能有几天）；`store._pending_ids` 是会话级豁免集合。合并之后要么 pending 文档被幽灵清理扫掉，要么占位条目漏进列表。
+- **九处落点，断任何一处都不报错**：`RawTranscript.transcribe_state` / `save_transcript` 拼 `data` / `_transcript_index_entry` / `save_transcript_full` 第六个守护 ｜ `_rebuild_index` 内联字面量 + `DOC_FIELDS` 回落 / `doc_meta.DOC_FIELDS` / `get_transcript` / `project_resource` 白名单 ｜ `_persist_ingest_result` 的**手写返回 dict**。⚠️ **前两处成对**：`data` 是从 dataclass 字段逐个拼的，dataclass 上没有字段就没有值可拼 ⇒ 收纳完的文档一进库就显示「已转录」（实测删掉 → 7 条测试红）。⚠️ **返回 dict 那处是另一条独立断点**：库里对、导入那一刻前端看不到（切去文档库重新拉列表反而正常，因为那条路读 index；实测删掉 → 8 条红）。
+- **第六个守护的实际射程（与计划原文不符，已实测修正）**：`save_transcript_full` 的 `if "transcribeState" not in tx_data` 守护**对今天的三个调用方（PATCH 改标题 / `retranscribe` / `_auto_title`）从不触发** —— 它们的 tx 全来自 `get_transcript()`，而第 7 处落点让它本就带着该字段。真正守住「改标题不抹状态」的是**第 7 处落点**，守护是它之上的第二道，只对「将来手工拼 tx 的调用方」有意义。测试因此拆成三条各考一件事（端到端回归 / 守护本身 / 读路径），并如实标注哪条有区分力 —— **别照抄「去掉守护这条必须红」**。
+- **`retranscribe` 必须显式写 `tx["transcribeState"] = "done"`**（`ingest.py`）：守护让它继承旧值，不写则正文已更新、界面永远挂「待转录」，零报错。本步最容易漏的一行。
+- **`probe` 是 adapter 上的可选钩子**，写法照 `precheck` / `warmup` / `release` 的既有惯例（**不进 Protocol、不改 `adapt()` 签名、消费方 `getattr`**），五个 adapter 一行不动。本步只有 `VideoAdapter` 实现（把既有 `extract_info(download=False)` 抽成 `_probe_info()`，`adapt()` 与 `probe()` 共用，**不下载音频**）。⚠️ **「有没有 `probe`」不是能否收纳的条件**，档位表才是；它只决定标题好不好看，没有它的类型走既有 `_build_title` 兜底。
+- **分叉点必须在 `adapt()` 之前，且只有一份实现**：`adapt()` 在 `ingest.py` 有两个逐字同构的调用点（非流式 `ingest` 与 SSE 的 `run_pipeline`），只在其中一处加 = 用户走另一条路行为完全不同而两条路都不报错（**前端主路径打的是 `/stream`** ⇒ 「单测绿、实机不生效」是最可能的形态）。收口 `_run_adapter(adapter, inp, *, probe_only, engine_cfg, on_progress=None) -> (output, tx_id | None)`，`probe_only` 由它预生成的 `tx_id` 派生（`probe_only = tx_id is not None`，**必须在 `tx_id = tx_id or …` 兜底之前取**）。⚠️ 收纳模式**不发进度事件**：`on_progress` 是 `queue.put_nowait` 的闭包，从 `asyncio.to_thread` 的 worker 线程调它不安全。
+- **占位正文 `<!-- limo-pending:{tx_id} -->`**：带 `tx_id` 保证 `content_hash` 唯一（否则同一份文件两次收纳会互相判重）；首行是 HTML 注释 ⇒ 不被 `_extract_title_from_rawtext`（`^#{1,2}\s+`）污染，**别为防污染去改正则**。⚠️ **已知副作用（接受，有测试钉住）**：收纳模式下同一份文件导入两次得两篇 pending，内容去重要等转录完成才可能撞上；URL 去重不受影响。
+- **`status` 绝不能改成 `"stored"`**：索引闸门判据是 `result.get("status") == "done" and "id" in result`，改了会让这篇**不进全文索引**，而两条路径都报成功 —— 失效形态是「刚收纳的搜不到，重启重建后又能搜到」。
+- **顺带修一个既有缺口**：SSE 导入路径此前**从不写全文索引**（`_index_for_search` 只有非流式那条调，而前端主路径走 SSE ⇒ 今天经 SSE 导入的文档在下次重启前搜不到）。抽 `_index_if_persisted(request, result)`，判据与原文逐字相同，两条路径共用；顺序保持「先 persist、后索引、再投 done」，索引失败只 `warning` 不把导入报成失败。
+- **前端**：偏好住 localStorage（[lib/ingest-prefs.ts](frontend/src/lib/ingest-prefs.ts)，`mbw_ingestPrefs`）而非 config.yaml，形态照 `chat-prefs`（`useSyncExternalStore` + **快照稳定引用**，以磁盘原始串为键）。⚠️ **不能各自 `useState(loadIngestPrefs())`**：设置页改完后已挂载的 GenPanel 不会重挂载，显示旧值而导入按新值跑。**乐观条目收成一处** [lib/docEntry.ts](frontend/src/lib/docEntry.ts)::`optimisticDoc()`（此前五处手写字面量不会自动带上新字段，漏了的形态是「刚导入的那篇不显示待转录徽章，切去文档库刷新后又正常」）。**转录完怎么刷新只有一份** [hooks/useStartTranscription.ts](frontend/src/hooks/useStartTranscription.ts)（GenPanel 的「⟳ 重新转录」与预览区待转录卡片共用，成功后把 `docs` 该条置 `'done'`，否则正文已更新、列表徽章还挂着）。
+- **生成侧前置拦截**：`GenPanel` 生成前判据加 `transcribeState === 'pending'`，否则会拿占位文本生成一篇笔记。
+
+### 批量导入（2026-11-07，第二步）
+
+多个文件一次导入，**零后端改动**：`/ingest` 与 `/ingest/stream` 每次只处理一个输入，批量是前端的串行循环。四个文件：纯函数 [gen-panel/batchImport.ts](frontend/src/components/gen-panel/batchImport.ts)（识别 + 截断 + 标 reject）、串行队列 [gen-panel/useBatchImport.ts](frontend/src/components/gen-panel/useBatchImport.ts)、三态对话框 [gen-panel/BatchImportDialog.tsx](frontend/src/components/gen-panel/BatchImportDialog.tsx)，入口在 `ImportSection` 的 `onBatchFiles`。
+
+- **识别表复用 `DROP_ACCEPT` / `EXT_TO_SUBTYPE`，不另抄扩展名清单**：`batchImport.test.ts` 第一组测试直接遍历 `DROP_ACCEPT` 自己的每一项断言，两处分叉那一刻变红。
+- **`.md` / `.txt` 必须前端读文本再走 `ingestText`**：`TextAdapter.accept` 只认 `InputType.TEXT`，把 `File` 塞进 `ingestFile` 会被适配器路由判成不认识。
+- **取消必须由第三条出口接住**：三个入口在用户取消时**都不回调**（`ingestStream` 的 `AbortError || signal?.aborted` 分支直接 return）。只等 `onDone` / `onError` 的话 `runOne` 的 Promise 永不落地、队列卡在第一项，界面上表现为「点了取消，进度条不动了也不结束」。故 `runOne` 挂 `signal.addEventListener('abort', …)`，终态三值 `done` / `error` / `aborted`。配套一条：`fallbackJson` 的 catch 不判 `AbortError`，会把取消报成「网络错误」⇒ `onError` 里先判 `signal.aborted`。
+- **`start()` 零请求**，只识别并打开确认对话框；用户按「开始导入」之后 `confirm()` 才发第一个请求。与后续的批量生成队列同一条纪律。
+- **多文件分支不过滤扩展名**：批量按每个文件各自的扩展名决定通道，拖进视频标签页的一张 png 也该被识别成图片。单文件仍走原来的 `validateDropFile` + `pickFile`（零回归）。
+- **上限 50 个，先截断再识别**：超出的文件连条目都不生成，对话框顶部说明「另有 N 个未加入清单」。生成一屏「其实不会导入」的行比一句提示更难读。
+- **每个文件一个 `taskKey`**（`__import__N__import`，`__import__` 前缀在 `taskManager` 里进独立 Map 不互相 abort），失败只标红这一项。
 
 ### 生成与处理
 - **双产物并行**：非流式端点走 `generate_both()`（`asyncio.gather`）；流式端点（`/generate/{id}/stream`）用 `_run_product` 协程 ×2 + `asyncio.Queue` 汇合事件（chunk 交错到达 SSE 顺序安全）+ `asyncio.gather` 收拢。⚠️ **gather 返回顺序 = 任务创建顺序，解包变量名必须同序**（曾解包反了 → notes/polished 内容互换写进对方文件）。source_type 派发 prompt（视频/网页→通用，PDF/Document→文档 prompt，Excel→分析报告+数据摘要）
@@ -994,7 +1024,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 | ✅ | 预算同源 | `generation/budget.py`：`single` 逐值等价（含已知低估 + `xfail(strict)` 钉住）/ `multi` 闭合；`cw` 由调用方从 `resolve_context_window()` 传入（**修正生成路径此前根本没走四层解析**）；窗口 < 102,536 显式拒绝 |
 | ✅ | 降级显式化 | 被压缩/截断的篇逐条标 `✓/⚠` 落进「## 来源文档」；抽取失败也显式标注，不静默跳过 |
 | ✅ | 资产搬运 | 源 `assets/` 复制 + **引用同步改写** + 源序号前缀防重名；⚠️ **每个路径都过 `relative_to` 守卫**（防路径穿越） |
-| ✅ | 生成闸门 | composite → 不产 polished / 清空 `format_list` / 跳过 `_auto_title`；`metadataCorrupt` 推 warning 不阻断 |
+| ✅ | 生成闸门 | composite → 不产 polished / **格式清单照收**（允许哪些由 `AVAILABLE_OPTIONS["composite"]` 判，2026-11-07）/ 跳过 `_auto_title`；`metadataCorrupt` 推 warning 不阻断 |
 | ✅ | 前端入口 | BatchBar 合成按钮（≥2 篇）+ 确认对话框（已选清单/标题/对比指引 + **逐篇 token/处理方式 + 原料单选 + 维度列表**）；DocRow「N 合 1」徽章；「合成」筛选项；tab 只注册 summary/transcript + `defaultFor`。**2026-10-29 加简单模式**：装得下时配置区默认收起，只剩标题 + 「合并」按钮；`map_reduce`/`reject` 强制展开（详见合成管道段） |
 | ✅ | 超窗分层（2026-10-02） | 单篇超窗 → **篇内分块归并**（配额内覆盖全文）；病态长文 → **软 deadline**（剩余篇截断而非整次作废）；降级状态 **3 态 → 8 态**（原 `truncated` 是垃圾桶）+ 基础状态回退 |
 | ✅ | 预览端点（2026-10-02） | `POST /api/synthesis/preview`（零 LLM 调用/零副作用）：逐篇 token + 处理方式 + `stuff_window`；判据与执行**同源**（同一个 `_classify`）；banner 触发集只含 `over_window`/`reject` |

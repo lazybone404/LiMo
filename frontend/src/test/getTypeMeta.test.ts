@@ -37,7 +37,11 @@ describe('getTypeMeta — composite', () => {
     expect(m.isPDF).toBe(false)
   })
 
-  it('tab 与 TabRegistry 一致（笔记 + 转录）', () => {
+  it('导出 tab 清单与 TabRegistry 一致（笔记 + 转录）', () => {
+    // ⚠️ 思维导图**不在**这里（2026-11-07 起它对合成的预览区可见，但导出清单仍没有）：
+    // `getTypeMeta` 调 `forSourceType(st)` **不传 ctx**，而 mindmap 声明了
+    // `visible: (ctx) => !!ctx.currentContent` —— 没有 ctx 就一律滤掉，与它的
+    // sourceTypes 无关。对所有类型都是这个行为，不是合成独有的例外。
     expect(m.tabs.map(t => t.key)).toEqual(['summary', 'transcript'])
   })
 })
@@ -92,6 +96,12 @@ const EXPECTED_BACKEND_FORMATS: Record<string, string[]> = {
   pptx: ['toc', 'summary', 'images', 'formulas', 'chart', 'followup'],
   xlsx: [],
   text: ['toc', 'summary', 'formulas', 'chart', 'followup'],
+  // 合成产物 2026-11-07 开放格式勾选。四项与其它类型**不逐字相同**是判据的结果，
+  // 不是抄错：`summary` 不给（合成骨架本身就是总结，且它的文案教 `limo-block` 标记，
+  // 而合成 prompt 从不注入那套规范）/ `references` 不给（`## 材料索引` 承担该位置）/
+  // `link` `screenshot` 不给（要视频时间点）/ `images` 不给（它的文案写的是
+  // `/api/files/...` 引用，而合成图是 `assets/` 相对路径）。
+  composite: ['toc', 'formulas', 'chart', 'followup'],
 }
 
 /** 真去读后端源码（跨语言守卫，同 `appShortcutKeys.test.ts` 的手法）。 */

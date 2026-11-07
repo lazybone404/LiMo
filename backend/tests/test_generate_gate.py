@@ -1,4 +1,4 @@
-"""验证生成端点的**单产物闸门** — composite / xlsx 的产物裁剪 / 格式清空 / 出处头损坏提示
+"""验证生成端点的**单产物闸门** — composite / xlsx 的产物裁剪 / 格式勾选（不再清空） / 出处头损坏提示
 
 ⚠️ **不发起真实计费调用**：`LLMService` 被模块级替换为假类，只记调用次数。
 
@@ -163,20 +163,16 @@ assert _modes_plain == ["notes", "polished"], \
 print("PASS: 对照 —— 普通文档 mode=both 仍产 notes+polished（闸门没写宽）")
 
 # ═══════════════════════════════════════════════════════════════
-# 3. composite + formats=["chart"] → 不触发图表（format_list 被清空）
+# 3. composite + formats=["chart"] → 与普通文档**同一行为**（2026-11-07 起放开）
 #
-# ⚠️ **两条路径各有各的清空语句，必须各测各的**：流式端点 :516 清 `format_list`，
-# 非流式端点 :257 清 `formats_list`。把任一处改成 `if False:`（等于没清），
-# **另一处的测试照样全绿**——实测确认过两次。
+# 本段此前断言的是反过来的事（composite 不该出图、不该推 chart_missing），
+# 依据是当时两条生成路径各自把 composite 的格式清单清空。链路 ③ 把两处清空
+# 删掉了 ——『产物后处理交给用户勾选，不再由系统替它决定』，于是这一段跟着翻面：
+# 现在要钉住的是「清空语句没有以任何形式回来」，且普通文档一侧逐字未变。
 #
-# ⚠️⚠️ 更要紧的是**判据不能选在 prompt 上**：composite 的图表规范注入本来就
-# **被 prompt 层挡着**（`get_chart_format` 只在 `AVAILABLE_OPTIONS` 允许的
-# source_type 下注入，composite 不在其中）。于是「composite 的 prompt 里没有
-# ```fig」**恒为真**，与 format_list 清没清无关——第一版就是这么写的，把非流式的
-# 清空删掉它照样 PASS。本轮换成两条**各自路径独有**的产物级判据：
-#   3b 非流式 → 模型输出 ```fig 时**不渲染 PNG**（对照：普通文档渲染出 chart_1.png）
-#   3c 流式   → **不推** `chart_missing` 警告（对照：普通文档推，见 :1032）
-# 3a 只留「普通文档仍注入规范」这条对照（防「一律清空」），不再为 composite 断 prompt。
+# ⚠️ **两条路径各有各的出口，必须各测各的**：非流式看 `render_charts` 有没有落
+# PNG，流式看完成期有没有推 `chart_missing`（:1032）。只测一条时另一条被改坏
+# 照样全绿。
 # ═══════════════════════════════════════════════════════════════
 
 _calls: list[str] = []
@@ -188,23 +184,39 @@ async def _capture(self, *a, **kw):
     return "# 笔记\n\n正文"
 
 
-# ── 3a（对照）：普通文档勾图表仍**注入**规范 —— 防「一律清空 format_list」 ──
+# ── 3a：composite 勾图表 → prompt **注入**规范（清空 format_list 的实现会红） ──
+# 判据落在 prompt 上，因为这一条只有 prompt 层能看见：`_build_hard_constraints`
+# 拿到 `formats` 才会调 `get_chart_format("composite")`。
+# 普通文档同一请求也在断言里 —— 它才是「注入链路本来就没坏」的对照，
+# 光看 composite 一条的话，一个把 `_ALL_FORMAT_FNS` 整个掏空的实现也会 PASS。
+def _has_chart_spec(prompts: list[str]) -> bool:
+    return any("```fig" in p or "```chart" in p for p in prompts)
+
+
 FakeLLMService.call = _capture
 try:
-    _r3 = client.post("/api/generate/tr_plain",
+    _calls.clear()
+    _r3 = client.post("/api/generate/tr_comp",
                       json={"mode": "notes", "formats": ["chart"], "model_id": 1})
+    _comp_prompts = list(_calls)
+    _calls.clear()
+    _r3p = client.post("/api/generate/tr_plain",
+                       json={"mode": "notes", "formats": ["chart"], "model_id": 1})
+    _plain_prompts = list(_calls)
 finally:
     FakeLLMService.call = _orig_call
-assert _r3.status_code == 200, _r3.text
-assert _calls and any("```fig" in p or "```chart" in p for p in _calls), \
-    "对照失败：普通文档勾图表必须仍注入图表规范（一律清空的实现会红）"
-print("PASS: [3a 对照] 普通文档仍注入图表规范（防「一律清空」）")
+assert _r3.status_code == 200 and _r3p.status_code == 200, _r3.text
+assert _has_chart_spec(_comp_prompts), \
+    "composite 勾了图表却没注入规范（非流式路径把 formats_list 清空的实现会红）"
+assert _has_chart_spec(_plain_prompts), \
+    "对照失败：普通文档勾图表必须仍注入规范"
+print("PASS: [3a] composite 勾图表也注入规范（对照：普通文档同样注入）")
 
-# ── 3b（非流式，核心）：模型输出 ```fig → composite **不渲染** PNG ──
-# 假模型改为吐一段合法的 fig 围栏，模拟「模型自发画了图」。这是非流式路径上
-# `formats_list` 唯一可观测的出口：`generator.generate` 的
-# `if formats and "chart" in formats:` → `render_charts` 写 `assets/chart_N.png`。
-# （非流式**没有** chart_missing 兜底，那道只在流式端点 :845 / :1032。）
+# ── 3b（非流式）：模型输出 ```fig → composite **渲染** PNG ──
+# 假模型改为吐一段合法的 fig 围栏，模拟模型按规范作画。非流式路径上
+# `formats_list` 唯一可观测的出口就是 `generator.generate` 的
+# `if formats and "chart" in formats:` → `render_charts` 写 `assets/chart_*.png`。
+# （非流式**没有** chart_missing 兜底，那一道只在流式端点 :845 / :1032。）
 _CHART_BODY = ('# 笔记\n\n'
                '```fig\n{"type":"hchain","nodes":[{"label":"甲"},{"label":"乙"}]}\n```\n')
 
@@ -228,26 +240,28 @@ try:
 finally:
     FakeLLMService.call = _orig_call
 assert _r3b.status_code == 200 and _r3c.status_code == 200, _r3b.text
-assert _chart_pngs("tr_comp") == [], \
-    f"composite 不该渲染图表（漏清 formats_list 的实现会红）；实际 {_chart_pngs('tr_comp')}"
+assert _chart_pngs("tr_comp"), \
+    "composite 勾了图表却没渲染 PNG（非流式路径把 formats_list 清空的实现会红）"
 assert _chart_pngs("tr_plain"), \
     "对照失败：普通文档勾图表 + 模型输出 ```fig → 必须渲染出 chart_*.png"
-print(f"PASS: [3b 非流式] composite 不渲染图表（对照：普通文档产出 {_chart_pngs('tr_plain')}）")
+print(f"PASS: [3b 非流式] composite 与普通文档都渲染图表"
+      f"（{_chart_pngs('tr_comp')} / {_chart_pngs('tr_plain')}）")
 
-# ── 3c（流式）：`format_list` 里那个 "chart" 还驱动 :1032 的完成期兜底：
-# 「勾了图表但模型没输出图表围栏」→ 推 `chart_missing` 警告。
-# 假模型返回纯文本、必然无围栏 → **清了 format_list 就不该有这个警告**。
+# ── 3c（流式）：`format_list` 里的 "chart" 驱动 :1032 的完成期兜底 ──
+# 「勾了图表但模型没输出图表围栏」→ 推 `chart_missing` 警告。假模型返回纯文本、
+# 必然无围栏 ⇒ 两侧**都该**有这条警告。清空 format_list 的实现会让 composite
+# 那一半消失 —— 而用户勾了图表却什么都没得到，本该被明确告知。
+_calls.clear()
 with client.stream("GET", "/api/generate/tr_comp/stream?mode=notes&formats=chart&model_id=1") as _rs3d:
     _b3d = "".join(_rs3d.iter_text())
 assert "done" in _b3d, f"流式请求必须正常完成；实际 {_b3d[:300]}"
-assert "chart_missing" not in _b3d, \
-    "composite 的 format_list 没被清空（流式路径漏清 → 会误报「图表未生成」）"
-# 对照：普通文档走同一端点、同一 formats → **必须**推 chart_missing（证明这条出口是活的）
+assert "chart_missing" in _b3d, \
+    "composite 勾了图表而模型没出图时，必须与普通文档一样推「图表未生成」警告"
 with client.stream("GET", "/api/generate/tr_plain/stream?mode=notes&formats=chart&model_id=1") as _rs3e:
     _b3e = "".join(_rs3e.iter_text())
 assert "chart_missing" in _b3e, \
     "对照失败：普通文档勾图表而模型未出图时，必须照旧推 chart_missing"
-print("PASS: [3c 流式] composite 不推 chart_missing（对照：普通文档仍推）")
+print("PASS: [3c 流式] composite 与普通文档都推 chart_missing")
 
 # ═══════════════════════════════════════════════════════════════
 # 4. 出处头损坏 → 流式推 metadata_corrupt 提示，且**不阻断生成**
@@ -490,4 +504,4 @@ import shutil
 for _t in _TMP:
     shutil.rmtree(_t, ignore_errors=True)
 
-print("\n全部通过：生成闸门（产物裁剪 / 格式清空 / 出处头损坏提示 / 自动标题 / xlsx 单产物 / 逐路 status）")
+print("\n全部通过：生成闸门（产物裁剪 / 格式勾选 / 出处头损坏提示 / 自动标题 / xlsx 单产物 / 逐路 status）")

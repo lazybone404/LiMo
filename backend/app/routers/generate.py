@@ -438,11 +438,12 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
 
         # ── 合成文档闸门（设计 §14.6，与流式端点同源）──
         # 只有一个产物：对比综述（落 notes 槽）。它的 rawText 已是模型输入的最终形态
-        # （按 multi 预算恰好装满，§4.4.4 单真相源），polished 与任何格式处理都只会
-        # 在装配阶段改动它。改写 mode 的**源头**而非事后覆盖 want_*：
+        # （按 multi 预算恰好装满，§4.4.4 单真相源），polished 只会在装配阶段改动它。
+        # 改写 mode 的**源头**而非事后覆盖 want_*：
         # 下游 `if want_notes and want_polished` / `elif want_polished` / `elif want_notes`
         # 三分支全由它推导，改一处比打三个补丁清楚。
-        _is_composite = source_type == "composite"
+        # ⚠️ 格式列表**不在这里清空**（2026-11-07）：合成产物今天也接受用户勾选的
+        # 笔记格式，允许哪些由 `AVAILABLE_OPTIONS["composite"]` 一处决定。
         # ── Excel 闸门（与流式端点同源）──
         # Excel 的产物只有一个「数据摘要」（落 notes 槽）：`PromptBuilder` 对 xlsx
         # 直接返回 `build_excel_summary_prompt`，与 mode **无关**（xlsx 分支在 build 里
@@ -454,10 +455,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         # 都是「只有一个产物、落 notes 槽」，故共用同一个判据；两条理由各自成段，
         # 任一失效时看注释就知道该去哪一侧找。
         _single_product = source_type in ("composite", "xlsx")
-        # ⚠️ 上面 :198 的 `request_timeout` 仍按 `req.formats` 原样算，不随此处清空——
-        # 多留余量无害（与流式端点「闸门没过时多留余量无害」是同一取舍），
-        # 且非流式路径没有 asyncio 总超时，收紧它只会让长输入更容易撞死。
-        formats_list = [] if _is_composite else req.formats
+        formats_list = req.formats
 
         # ── 解析 mode 为产物列表（逗号分隔）──
         _raw_mode = "notes" if _single_product else (req.mode if req.mode else "")
@@ -467,8 +465,8 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         want_notes = "notes" in mode_list
         want_polished = "polished" in mode_list
         # 追问卡片（用户勾选的 format 项，2026-10-11）：**不注入 prompt**，由落盘后的
-        # 独立第二次调用产生。⚠️ `formats_list` 在 composite 时已被清空 ⇒ 合成文档
-        # 天然不产追问（同流式端点）。
+        # 独立第二次调用产生。合成文档今天同样可以勾它（2026-11-07），
+        # 两条端点对它的处置一致。
         _want_followup = "followup" in formats_list
 
         log.info("Generate start", tx_id=transcript_id, mode=mode_list,
@@ -763,14 +761,11 @@ async def generate_stream(transcript_id: str, request: Request,
     # ── LLMService ──
     # format_list 上移到构造之前：request_timeout 要按是否含 chart 分档。
     format_list = [f.strip() for f in formats.split(",") if f.strip()]
-    # 合成文档不支持任何格式处理（图表只入 notes、截图要视频、目录/翻译会改写正文）。
-    # 清在这里而非 prompt 层：`format_list` 同时驱动 request_timeout 与 format 注入，
-    # 只清一处会让「超时按图表档放宽、实际不生成图表」这种对不上的状态存在。
-    if source_type == "composite":
-        format_list = []
+    # ⚠️ 合成文档**不再清空** format_list（2026-11-07）。允许哪些格式由
+    # `AVAILABLE_OPTIONS["composite"]` 一处决定，prompt 层按它筛选；这里若再清一次，
+    # 就是同一个判据的第二份实现，而两边不一致时用户勾了却没有、界面看不出原因。
     # 追问卡片（用户勾选的 format 项，2026-10-11）：**不注入 prompt**，由落盘后的
-    # 独立第二次调用产生（`_emit_followup`）。⚠️ 上面 composite 已清空 format_list，
-    # 故合成文档天然不产追问 —— 正是要的。
+    # 独立第二次调用产生（`_emit_followup`）。
     _want_followup = "followup" in format_list
     # ⚠️ doc_direct 必须传（此前漏了，非流式那侧是传的）：request_timeout 是 httpx 的
     # read timeout，必须 ≥ 单 chunk 静默超时，否则直传时 SDK 会先于我们的 wait_for

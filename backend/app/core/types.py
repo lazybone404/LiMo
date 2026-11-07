@@ -141,6 +141,10 @@ class RawTranscript:
     source_file_path: Optional[str] = None  # 本地文件在服务端的路径（引用，不复制）
     engine_version: Optional[str] = None
     tags: list[str] = field(default_factory=list)
+    # 转录状态：`"done"` = 正文是真的；`"pending"` = 只收纳了、正文还是占位文本。
+    # 与 store 内部的 `ready` 正交 —— `ready=False` 的文档在库里不存在，pending 的文档
+    # 明明白白躺在库里等用户点「开始转录」。
+    transcribe_state: str = "done"
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
 @dataclass

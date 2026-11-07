@@ -1,23 +1,29 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useStore } from '../../store'
-import { streamGenerate, getMarkdown, listEnabledModels, listProviders, ingestURL, ingestText, ingestFile, processImage, saveEngineBindings, retranscribe, getTranscript, getErrorMessage, type EnabledModel, type Provider, type IngestErrorInfo } from '../../api/client'
+import { streamGenerate, getMarkdown, listEnabledModels, listProviders, ingestURL, ingestText, ingestFile, processImage, saveEngineBindings, getErrorMessage, type EnabledModel, type Provider, type IngestErrorInfo } from '../../api/client'
 import { registerAbort } from '../../api/taskManager'
 import { cancelTask } from '../../api/taskManager'
 import { cancelEpubInterpret } from '../../api/epub'
 import { getStreamBuffer, appendStreamBuffer, setStreamBuffer, deleteStreamBuffer, scheduleFlush, flushImmediate } from '../../store/streamBuffers'
 import { onConfigChanged } from '../../lib/configEvents'
 import { PanelLeftClose, XCircle, Plus, X } from 'lucide-react'
-import { loadGenPrefs, saveGenPrefs } from './genPrefs'
+import { loadGenPrefs, saveGenPrefs, type GenPrefs } from './genPrefs'
+import { buildGenOptions, pickFormats, supportsCapability } from './genOptions'
 import { EngineSelect, type EngineOption } from './EngineSelect'
 import { ImportSection, type ImportError } from './ImportSection'
+import { BatchImportDialog } from './BatchImportDialog'
+import { useBatchImport } from './useBatchImport'
 import { GenerateOptions } from './GenerateOptions'
 import { ImageModeCards } from './ImageModeCards'
 import { EpubInterpretPanel } from '../preview/EpubInterpretPanel'
-import { EXT_TO_SUBTYPE, getSubScenario, getTypeMeta, normalizeStyle, pickStyleKeys, reconcileStyle, styleOptions } from './constants'
+import { EXT_TO_SUBTYPE, getSubScenario, getTypeMeta, pickStyleKeys, reconcileStyle, styleOptions } from './constants'
 import { imageModeLabel } from '../../lib/imageModes'
 import { detectImportUrl } from '../../lib/url-detect'
 import { toMarkdownMeta } from '../../lib/markdownMeta'
+import { optimisticDoc } from '../../lib/docEntry'
+import { useIngestPrefs } from '../../lib/ingest-prefs'
 import { useTaskRunner } from '../../hooks/useTaskRunner'
+import { useStartTranscription } from '../../hooks/useStartTranscription'
 
 // 会话级标记：参考文件意图缺失提醒只弹一次（无论确认/取消，用户已理解机制）
 // 模块级变量 → 刷新页面清空（与 refFile 仅会话内不持久化一致）
@@ -61,13 +67,11 @@ export function GenPanel() {
   const imageResults = useStore(s => s.imageResults)
   const setImageResult = useStore(s => s.setImageResult)
   const setActiveView = useStore(s => s.setActiveView)
-  const setCurrentRawText = useStore(s => s.setCurrentRawText)
   const setProcessing = useStore(s => s.setProcessing)
   const failTask = useStore(s => s.failTask)
   const addToast = useStore(s => s.addToast)
   const docs = useStore(s => s.docs)
   const currentDoc = docs.find(d => d.id === currentDocId)
-  const isVideo = currentDoc?.sourceType === 'video'
   const isEpub = currentDoc?.sourceType === 'epub'
 
   // ── 从 localStorage 恢复 ──
@@ -142,6 +146,15 @@ export function GenPanel() {
   // 导入
   const addDoc = useStore(s => s.addDoc)
   const selectDoc = useStore(s => s.selectDoc)
+  // 「导入与转录分开」的两档偏好（设置页改完这里立刻生效 —— 走订阅，不是挂载时读一次）
+  const ingestPrefs = useIngestPrefs()
+  // 传的是「只收纳吗」：后端默认 视频只收纳 / 文档一键，故 media 传 `!auto`、doc 同理。
+  // ⚠️ 写成一个对象常量，三处调用点共用 —— 各写一遍的话，将来第三档出现时漏一处
+  // 就是「某个入口按旧行为跑」而界面上看不出来。
+  const probeOpts = {
+    mediaProbeOnly: !ingestPrefs.autoTranscribeMedia,
+    docProbeOnly: !ingestPrefs.autoTranscribeDoc,
+  }
   const [importInput, setImportInput] = useState('')
   // 结构化（不是 string）—— 见 `ImportError`：一句话装不下「发生了什么 + 下一步 + 能不能重试」
   const [importError, setImportError] = useState<ImportError | null>(null)
@@ -154,6 +167,9 @@ export function GenPanel() {
   const [fileObj, setFileObj] = useState<File | null>(null)
   const [fileSubType, setFileSubType] = useState('pdf')
   const [preOcr, setPreOcr] = useState(false)  // 导入图片时同时提取文字
+
+  // 批量导入：`start()` 只识别文件并打开确认对话框，用户按「开始导入」后才逐个发请求。
+  const batchImport = useBatchImport({ probeOpts, preOcr })
 
   // ── 引擎配置 ──
   const setCapabilities = useStore(s => s.setCapabilities)
@@ -272,28 +288,42 @@ export function GenPanel() {
     }
   }, [caps?.engineBindings, caps?.engineOptions])
 
-  // 持久化
+  // `formatTranslate` 是已废弃字段，面板里没有对应控件；原样从存档带过来，
+  // 免得一次保存就把它从 localStorage 里抹掉。只读一次（`saved` 每帧都是新对象）。
+  const legacyFormatTranslate = useRef(saved.formatTranslate).current
+
+  /**
+   * 全部持久化字段的一处汇总：既是 `saveGenPrefs` 的入参，也是批量生成
+   * `loadGenPrefs()` 读回来的那个形状。
+   *
+   * ⚠️ 它必须包含 `GenPrefs` 的**每一个**字段。此前这段是逐字段手写在 effect 里，
+   * 依赖数组有 `ocrEnabled` / `ocrModelId` 而入参对象里没有 —— 结果是 OCR 开关
+   * 刷新页面就丢，批量生成读存档永远拿到 `false` / `null`，两处都不报错。
+   */
+  const livePrefs = useMemo<GenPrefs>(() => ({
+    style, selectedCore,
+    formatToc, formatLink, formatSummary, formatScreenshot, formatChart, formatFollowUp,
+    formatTranslate: legacyFormatTranslate,
+    formatFormulas, formatReferences, formatImages,
+    imageAnalyze, imageOptimize,
+    ocrEnabled, ocrModelId,
+    selectedModelId,
+    videoUnderstanding, videoDirect, videoInterval,
+    docDirect, webSearch, reasoningEffort,
+    gridCols, gridRows, dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter,
+    imageMode, userNotes, notesExpanded, streamDisplay,
+  }), [style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot, formatChart,
+    formatFollowUp, legacyFormatTranslate, formatFormulas, formatReferences, formatImages,
+    imageAnalyze, imageOptimize, ocrEnabled, ocrModelId, selectedModelId,
+    videoUnderstanding, videoDirect, videoInterval, docDirect, webSearch, reasoningEffort,
+    gridCols, gridRows, dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter,
+    imageMode, userNotes, notesExpanded, streamDisplay])
+
   useEffect(() => {
-    saveGenPrefs({ style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot, formatChart,
-      formatFollowUp,
-      formatFormulas, formatReferences, formatImages,
-      imageAnalyze, imageOptimize,
-      selectedModelId, videoUnderstanding, videoDirect, videoInterval, gridCols, gridRows,
-      docDirect,
-      webSearch,
-      reasoningEffort,
-      dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter,
-      imageMode, userNotes, notesExpanded, streamDisplay })
-  }, [style, selectedCore, formatToc, formatLink, formatSummary, formatScreenshot, formatChart,
-      formatFollowUp,
-      formatFormulas, formatReferences, formatImages, imageAnalyze, imageOptimize,
-      ocrEnabled, ocrModelId,
-      selectedModelId,
-      videoUnderstanding, videoDirect, videoInterval, gridCols, gridRows, streamDisplay,
-      docDirect,
-      webSearch,
-      reasoningEffort,
-      dedupeEnabled, unitWidth, unitHeight, saveQuality, frameQualityFilter, userNotes, imageMode, notesExpanded])
+    saveGenPrefs(livePrefs)
+    // 批量生成的队列在 `DocLibrary` 里读同一份存档（`loadGenPrefs()`）——
+    // 它不重挂载，靠这次写盘拿到面板上的最新选项。
+  }, [livePrefs])
 
   const [enabledModels, setEnabledModels] = useState<EnabledModel[]>([])
   const [providers, setProviders] = useState<Provider[]>([])
@@ -315,24 +345,16 @@ export function GenPanel() {
   }, [])
 
   const providerName = (pid: string) => providers.find(p => p.id === pid)?.name || pid
-  const hasImageModel = selectedModelId
-    ? (enabledModels.find(m => m.id === selectedModelId)?.capabilities?.includes('image') ?? false)
-    : enabledModels.some(m => m.capabilities?.includes('image'))
-  // 视频直传：选中模型 capabilities 含 video（未选中模型时看任一启用模型，对齐 hasImageModel）
-  const hasVideoModel = selectedModelId
-    ? (enabledModels.find(m => m.id === selectedModelId)?.capabilities?.includes('video') ?? false)
-    : enabledModels.some(m => m.capabilities?.includes('video'))
-  // 思考强度：能力位由**模型**标注（不按 provider 判断）——与 hasImageModel/hasVideoModel 同构。
+  // 四个能力位共用一条判据（`genOptions.ts::supportsCapability`），批量生成也调它。
+  const hasImageModel = supportsCapability(enabledModels, selectedModelId, 'image')
+  const hasVideoModel = supportsCapability(enabledModels, selectedModelId, 'video')
+  // 思考强度：能力位由**模型**标注（不按 provider 判断）。
   // 未选中模型（走「场景默认」）时看任一启用模型是否支持，避免默认模型是 deepseek 却看不到档位。
-  const reasoningSupported = selectedModelId
-    ? (enabledModels.find(m => m.id === selectedModelId)?.capabilities?.includes('reasoning') ?? false)
-    : enabledModels.some(m => m.capabilities?.includes('reasoning'))
-  // PDF 直传：同上，能力位由模型标注（不按 provider 判断）。
+  const reasoningSupported = supportsCapability(enabledModels, selectedModelId, 'reasoning')
+  // PDF 直传：能力位由模型标注（不按 provider 判断）。
   // ⚠️ 刻意不复用 image 位——它 gate 着「AI 分析图片」「OCR 模型选择」等入口，
   // 拿它代指 file 块会把这些入口一起错误放开（后端 supports_document 同此约定）。
-  const hasDocumentModel = selectedModelId
-    ? (enabledModels.find(m => m.id === selectedModelId)?.capabilities?.includes('document') ?? false)
-    : enabledModels.some(m => m.capabilities?.includes('document'))
+  const hasDocumentModel = supportsCapability(enabledModels, selectedModelId, 'document')
 
   // ── 导入进度辅助 ──
   const updateImportProgress = (ev: { phase?: string; status?: string; percent?: number; message?: string }) => {
@@ -367,6 +389,9 @@ export function GenPanel() {
 
   const cancelOp = () => {
     const { processingTasks } = useStore.getState()
+    // 批量导入：中断当前文件，剩余项标为已取消。确认阶段的对话框有自己的「取消」按钮，
+    // 那里的取消是关门，不是中断，故只在跑的时候调。
+    if (batchImport.phase === 'running') batchImport.cancel()
     // 取消导入任务 — P2-7：只取消当前 active 那条（并发导入各自独立，不误伤其他）
     if (Object.keys(processingTasks).some(k => k.startsWith('__import__')) && activeImportKeyRef.current) {
       cancelTask(activeImportKeyRef.current)
@@ -390,57 +415,50 @@ export function GenPanel() {
   // ── C3: 任务执行公共骨架（retranscribe/process 复用，见 hooks/useTaskRunner.ts）──
   const { runTask } = useTaskRunner()
 
+  // 「转录 + 回填正文 + 复位 `transcribeState`」与预览区的「待转录」卡片共用一份实现。
+  // 这里只传面板特有的产物重载，别把那段逻辑抄回来（抄一份 = 两处徽章状态会分叉）。
+  const { start: startTranscription } = useStartTranscription()
+
   // ── Handlers ──
   const handleRetranscribe = () => {
     if (!currentDocId) return
     // 同 `handleProcessImage`：失败红框的「重试」绕过主按钮的 disabled
     if (isRetranscribing) return
     const capturedId = currentDocId
-    void runTask({
-      taskKey: capturedId + '__retranscribe',
-      taskInfo: { kind: 'retranscribe' },
-      prepareAbort: createAbort,
+    // ⚠️ 「转录成功之后做什么」只有一份实现（`hooks/useStartTranscription`）——
+    // 预览区那张「待转录」卡片走的是同一个 hook。这里只保留**面板特有**的部分：
+    // 清红框、把错误放进红框、以及重载笔记产物之后切到哪个视图。
+    void startTranscription(capturedId, {
       onStart: () => { setError(null); setImportError(null) },
-      run: (signal) => retranscribe(capturedId, signal),
-      onSuccess: async (result) => {
-        if ('error' in result) {
-          setError({ message: result.error, retry: handleRetranscribe })
-          addToast(`${result.error}（可在生成面板重试）`, 'error')
-          return
+      onProducts: async (id) => {
+        // 重新加载已有的笔记产物（重新转录不影响已生成的 markdown）
+        const [notes, polished] = await Promise.all([
+          getMarkdown(id),
+          getMarkdown(id, 'polished'),
+        ])
+        if (!isSameDoc(id)) return
+        if (notes) {
+          setCurrentContent(notes.content)
+          setMarkdownMeta(toMarkdownMeta(notes))
+          setMarkdownVersions([...(notes.versions || []), ...(polished?.versions || [])])
+        } else {
+          setCurrentContent(null)
+          setMarkdownMeta(null)
+          setMarkdownVersions(polished?.versions || [])
         }
-        const tx = await getTranscript(capturedId)
-        if (!isSameDoc(capturedId)) return
-        if (tx) {
-          setCurrentRawText(tx.rawText)
-          // 重新加载已有的笔记产物（重新转录不影响已生成的 markdown）
-          const [notes, polished] = await Promise.all([
-            getMarkdown(capturedId),
-            getMarkdown(capturedId, 'polished'),
-          ])
-          if (!isSameDoc(capturedId)) return
-          if (notes) {
-            setCurrentContent(notes.content)
-            setMarkdownMeta(toMarkdownMeta(notes))
-            setMarkdownVersions([...(notes.versions || []), ...(polished?.versions || [])])
-          } else {
-            setCurrentContent(null)
-            setMarkdownMeta(null)
-            setMarkdownVersions(polished?.versions || [])
-          }
-          if (polished && polished.content) {
-            setCurrentPolishedContent(polished.content)
-          } else {
-            setCurrentPolishedContent(null)
-          }
-          // 有产物就显示笔记，没有就显示转录
-          setActiveView(notes ? 'summary' : 'transcript')
+        if (polished && polished.content) {
+          setCurrentPolishedContent(polished.content)
+        } else {
+          setCurrentPolishedContent(null)
         }
-        addToast('重新转录完成')
+        // 有产物就显示笔记，没有就显示转录
+        setActiveView(notes ? 'summary' : 'transcript')
       },
-      onFail: (msg) => {
+      onError: (msg) => {
         setError({ message: msg, retry: handleRetranscribe })
         addToast(`${msg}（可在生成面板重试）`, 'error')
       },
+      successToast: '重新转录完成',
     })
   }
 
@@ -483,15 +501,24 @@ export function GenPanel() {
         const existing = useStore.getState().docs.find(d => d.id === doc.id)
         if (isDup) {
           if (existing) { selectDoc(doc.id) }
-          else { addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || inputType, sourceFileName: doc.sourceFileName || '', sourceUrl: doc.sourceUrl || '', coverUrl: doc.coverUrl || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() }); selectDoc(doc.id) }
+          else { addDoc(optimisticDoc(doc, inputType)); selectDoc(doc.id) }
           // P2-2：去重提示改 toast——3s 静默小字不可见，toast 明确告知已选中
           addToast(`该内容已导入，已为你选中 · ${doc.title}`, 'info')
           setImportProgress('')
         } else if (!existing) {
-          addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || inputType, sourceFileName: doc.sourceFileName || '', sourceUrl: doc.sourceUrl || '', coverUrl: doc.coverUrl || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() })
+          addDoc(optimisticDoc(doc, inputType))
           selectDoc(doc.id)
-          if (inputType !== 'image') setActiveView('transcript')
-          addToast(inputType === 'image' ? '导入完成' : '导入完成，点击左侧「生成」按钮生成笔记')
+          // 「导入与转录分开」：只收纳的那一批 `transcribeState === 'pending'`，
+          // 切到 transcript 看到的还是占位文本。预览区那张「待转录」卡片是抢在
+          // `case 'transcript'` 之前的，所以**停在当前视图**即可，不改 `activeView` 语义。
+          const isPending = doc.transcribeState === 'pending'
+          if (inputType !== 'image' && !isPending) setActiveView('transcript')
+          addToast(
+            isPending ? '已收纳，正文待转录'
+              : inputType === 'image' ? '导入完成'
+              : '导入完成，点击左侧「生成」按钮生成笔记',
+            isPending ? 'info' : 'success',
+          )
         } else {
           // M10: 已存在但非重复标记 → 直接选中
           selectDoc(doc.id)
@@ -519,11 +546,11 @@ export function GenPanel() {
       if (fileObj) {
         const signal = createAbort(taskKey)
         setImportProgress(inputType === 'video' ? '语音转写中...' : inputType === 'image' ? '导入中...' : '文档解析中...')
-        ingestFile(fileObj, ev => updateImportProgress(ev), onDone, onError, signal)
+        ingestFile(fileObj, ev => updateImportProgress(ev), onDone, onError, signal, probeOpts)
       } else {
         const signal = createAbort(taskKey)
         setImportProgress('下载中...')
-        ingestURL(url, ev => updateImportProgress(ev), onDone, onError, signal)
+        ingestURL(url, ev => updateImportProgress(ev), onDone, onError, signal, probeOpts)
       }
       return
     }
@@ -544,14 +571,16 @@ export function GenPanel() {
       const existing = useStore.getState().docs.find(d => d.id === doc.id)
       if (isDup) {
         if (existing) { selectDoc(doc.id) }
-        else { addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || 'webpage', sourceFileName: doc.sourceFileName || '', sourceUrl: doc.sourceUrl || '', coverUrl: doc.coverUrl || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() }); selectDoc(doc.id) }
+        else { addDoc(optimisticDoc(doc, 'webpage')); selectDoc(doc.id) }
         setImportProgress(`已导入过，帮你选中了 · ${doc.title}`)
         setTimeout(() => setImportProgress(''), 3000)
       } else if (!existing) {
-        addDoc({ id: doc.id, title: doc.title, sourceType: doc.sourceType || 'webpage', sourceFileName: doc.sourceFileName || '', sourceUrl: doc.sourceUrl || '', coverUrl: doc.coverUrl || '', engine: doc.engine || '', language: '', contentHash: '', tags: [], createdAt: new Date().toISOString() })
+        addDoc(optimisticDoc(doc, 'webpage'))
         selectDoc(doc.id)
-        setActiveView('transcript')
-        addToast('导入完成')
+        // 同文件导入那支：只收纳时停在当前视图，预览区会显示「待转录」卡片
+        const isPending = doc.transcribeState === 'pending'
+        if (!isPending) setActiveView('transcript')
+        addToast(isPending ? '已收纳，正文待转录' : '导入完成', isPending ? 'info' : 'success')
       } else {
         // M10
         selectDoc(doc.id)
@@ -565,8 +594,8 @@ export function GenPanel() {
     const onError = (err: string, info?: IngestErrorInfo) => {
       setImportError({ message: err, ...info }); setImportProgress(''); failTask(taskKey, err)
     }
-    if (url) { setImportProgress('下载中...'); ingestURL(url, ev => updateImportProgress(ev), onDone, onError, signal) }
-    else { setImportProgress('导入中...'); ingestText(text, ev => updateImportProgress(ev), onDone, onError, signal) }
+    if (url) { setImportProgress('下载中...'); ingestURL(url, ev => updateImportProgress(ev), onDone, onError, signal, probeOpts) }
+    else { setImportProgress('导入中...'); ingestText(text, ev => updateImportProgress(ev), onDone, onError, signal, probeOpts) }
   }
 
   const handleProcessImage = () => {
@@ -658,6 +687,19 @@ export function GenPanel() {
     if (isRetranscribing) { addToast('当前文档正在转录中，请等待完成后再生成', 'info'); return }
     if (isImageProcessing) { addToast('当前文档正在图片处理中，请等待完成后再生成', 'info'); return }
 
+    // ── 「只收纳」的文档不许生成 ──
+    // ⚠️ 下面那条 `!rawText` 判据**拦不住它** —— pending 文档的正文是**非空的占位
+    // Markdown**（`<!-- limo-pending:… -->` + 一句说明），既非空也不匹配那三个失败前缀
+    // ⇒ 放行后模型会拿「这篇文档已收纳，正文还没有转录」当素材生成一篇笔记，
+    // 产物看起来完全正常。所以判据只能读 `transcribeState`。
+    if (currentDoc?.transcribeState === 'pending') {
+      setError({
+        message: '这篇还没有转录，请先点「开始转录」',
+        recoverable: false,
+      })
+      return
+    }
+
     const rawText = useStore.getState().currentRawText
     if (!rawText || rawText.startsWith('[转录失败') || rawText === '[转录结果为空]' || rawText === '[无可用转录引擎，请在设置中配置文档引擎]') {
       // 同上：重试这条路不可能自己变好（要用「重新转录」那条）
@@ -685,24 +727,16 @@ export function GenPanel() {
     setStreamBuffer(notesKey, '')
     setStreamBuffer(polishedKey, '')
 
-    const formatStr = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
-      formatSummary && 'summary', formatChart && 'chart', formatFollowUp && 'followup',
-      formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
-    ].filter(Boolean).filter(f => typeMeta.availableFormats.includes(f as string)).join(',')
+    const { dropped } = pickFormats(livePrefs, typeMeta)
 
     // genPrefs 跨类型持久化会让「另一类型勾过的格式」跟着进来（如 PDF 勾过「保留文档图片」
-    // → 切到文本）。它们不在本类型的能力表里，上一行的 `.filter` 已清掉，此处只留一条
+    // → 切到文本）。它们不在本类型的能力表里，`pickFormats` 已清掉，此处只留一条
     // 开发者日志（不是给用户看的：该类型本就无处可勾，用户没有可采取的动作）。
     // ⚠️ 此前这里还有一条面向用户的 toast（「当前内容类型不支持：…」）——**已删**，不是
     // 丢了功能：它的触发条件是「UI 可见 **且** 不在能力表里」，而自 P0-01 起格式项的
     // UI 可见性直接由能力表派生（`constants.isFormatVisible`），两者互为充要 → 交集恒空。
-    const droppedAll = [formatToc && 'toc', formatLink && 'link', formatScreenshot && 'screenshot',
-      formatSummary && 'summary', formatChart && 'chart', formatFollowUp && 'followup',
-      formatFormulas && 'formulas', formatReferences && 'references', formatImages && 'images',
-    ].filter(Boolean).map(String).filter(f => !typeMeta.availableFormats.includes(f))
-    if (droppedAll.length > 0) console.warn('[GenPanel] 生成格式被当前类型过滤:', droppedAll, 'sourceType=', typeMeta.sourceType)
+    if (dropped.length > 0) console.warn('[GenPanel] 生成格式被当前类型过滤:', dropped, 'sourceType=', typeMeta.sourceType)
 
-    const streamMode = selectedCore.join(',')
     const isBoth = selectedCore.includes('notes') && selectedCore.includes('polished')
     const isPolishedOnly = selectedCore.includes('polished') && !selectedCore.includes('notes')
     // 跳转到能实时看到流式的 tab：polished-only → 整理版 tab；否则 → 笔记 tab
@@ -719,36 +753,13 @@ export function GenPanel() {
       setCurrentPolishedContent(null)
     }
 
-    streamGenerate(capturedId, {
-      mode: streamMode, style: normalizeStyle(style),
-      formats: formatStr || undefined,
-      model_id: selectedModelId || undefined,
-      // 只在模型支持时传：不支持还传只会让后端每次生成记一条「档位未生效」warning
-      reasoning_effort: reasoningSupported ? reasoningEffort : undefined,
-      user_notes: userNotes || undefined,
-      reference_ids: refFile ? [refFile.id] : undefined,
-      continue_from: continueFrom || undefined,
-      video_understanding: isVideo ? videoUnderstanding : undefined,
-      video_direct: isVideo && videoUnderstanding ? (videoDirect || undefined) : undefined,
-      video_interval: isVideo ? videoInterval : undefined,
-      grid_cols: isVideo ? gridCols : undefined,
-      grid_rows: isVideo ? gridRows : undefined,
-      dedupe_enabled: isVideo ? dedupeEnabled : undefined,
-      unit_width: isVideo ? unitWidth : undefined,
-      unit_height: isVideo ? unitHeight : undefined,
-      save_quality: isVideo ? saveQuality : undefined,
-      frame_quality_filter: isVideo ? frameQualityFilter : undefined,
-      image_analyze: isVideo ? videoUnderstanding : (imageAnalyze || undefined),
-      image_optimize: isVideo ? (videoUnderstanding ? imageOptimize : undefined) : (imageAnalyze ? imageOptimize : undefined),
-      ocr_enabled: isVideo ? undefined : (ocrEnabled || undefined),
-      ocr_model_id: isVideo ? undefined : (ocrEnabled ? ocrModelId ?? undefined : undefined),
-      // 仅 PDF 且模型支持时传（false 一律转 undefined = 不传 = 后端默认文本模式）
-      doc_direct: typeMeta.isPDF && hasDocumentModel && docDirect ? true : undefined,
-      // 联网检索（只注 notes，故整理版单独生成时传了也没用 —— 由后端 `stream_mode !=
-      // "polished"` 拦住；这里也不特判，用户切回 both/notes 时意图原样保留）。
-      // 与 doc_direct 同款：false 转 undefined = 不传 = 后端默认不开。
-      web_search: webSearch ? true : undefined,
-    }, {
+    streamGenerate(capturedId, buildGenOptions(livePrefs, {
+      typeMeta,
+      reasoningSupported,
+      hasDocumentModel,
+      referenceIds: refFile ? [refFile.id] : undefined,
+      continueFrom,
+    }), {
       onChunk(text, mode) {
         // 1. 无条件写 buffer（key 按 docId 隔离——切走期间流式内容不丢，切回显示完整）
         if (mode === 'polished') appendStreamBuffer(polishedKey, text)
@@ -1049,6 +1060,7 @@ export function GenPanel() {
             handleEngineChange={handleEngineChange} handleImport={handleImport}
             isImageType={inputType === 'image'}
             preOcr={preOcr} setPreOcr={setPreOcr}
+            onBatchFiles={batchImport.start}
           />
         )}
 
@@ -1076,9 +1088,15 @@ export function GenPanel() {
                         binding={engineBindings[cat] ?? null} onChange={handleEngineChange} variant="section" />
                     )
                   })()}
+                  {/* 待转录的文档没有「重新」可言 —— 它一次都没转录过。
+                      **只改文案，不改行为**：两个状态调的是同一个 `handleRetranscribe`，
+                      后端也是同一个端点（`retranscribe` 按 source_url / source_file_path
+                      重建输入，不关心旧正文是什么）。 */}
                   <button onClick={handleRetranscribe} disabled={isRetranscribing || isGenerating}
                     className="w-full py-2 text-[11px] font-medium text-warning bg-warning/10 rounded-lg hover:bg-warning/20 disabled:opacity-40 transition-colors">
-                    {isRetranscribing ? '转录中...' : '⟳ 重新转录'}
+                    {isRetranscribing
+                      ? '转录中...'
+                      : currentDoc.transcribeState === 'pending' ? '▶ 开始转录' : '⟳ 重新转录'}
                   </button>
                 </div>
               )}
@@ -1225,6 +1243,18 @@ export function GenPanel() {
           </>
         )}
       </div>
+
+      {/* 批量导入对话框。Portal 到 body，故放在面板 JSX 里的位置不影响显示。 */}
+      {batchImport.items && (
+        <BatchImportDialog
+          items={batchImport.items}
+          phase={batchImport.phase}
+          truncated={batchImport.truncated}
+          onConfirm={batchImport.confirm}
+          onCancel={batchImport.cancel}
+          onClose={batchImport.reset}
+        />
+      )}
     </aside>
   )
 }

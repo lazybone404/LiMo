@@ -87,6 +87,11 @@ DOC_FIELDS = (
     "engine", "engineVersion", "sourceTitle", "duration", "coverUrl", "language",
     # 合成文档的来源清单（出处头通常是第一真相，这里是副本）
     "sourceDocIds", "sourceTitles", "sourceHashes",
+    # 转录状态："pending" 的那一批正文是占位文本，磁盘上**重推不出来**
+    # （占位文本本身就是合法的 Markdown，看不出它是占位）。删一次 index.json 之后
+    # 它就只有这里能还原；缺了这一项，重建会把所有未转录文档改成「已转录」，
+    # 用户点开看到占位文本、而界面上一切正常。
+    "transcribeState",
 )
 
 _FOLDER_FIELDS = ("id", "name", "parentId", "createdAt")

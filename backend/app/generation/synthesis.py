@@ -369,6 +369,12 @@ class Result:
     # stuff = 0；map_reduce = 1（发现维度，用户给了维度时为 0）+ Σ 逐篇
     # （summarized=1；chunked=K 块 + 1 归并；full / over_window=0）。
     llm_call_count: int
+    # 落库用的标题（用户给的，或后端补的默认名）。
+    # ⚠️ 必须带出去而不是让调用方回读 index：SSE 的 done 事件与非流式的合并响应
+    # 都要用它，而前端不知道「用户没给标题时后端补了什么」。回读
+    # `get_transcript` 也能拿到，但那会把整份 rawText（合并时可能有几 MB）
+    # 再读一遍，只为一个几百字节的字段。
+    title: str = ""
     sources: list[Source] = field(default_factory=list)
     degraded: list[str] = field(default_factory=list)   # 被降级的篇目标题
     # `source_mode="notes"` 下因**没有笔记**被排除的篇 **id**（设计 §19.4）。
@@ -1324,8 +1330,110 @@ async def synthesize(
         raw_text=raw_text,
         mode=plan.mode,
         llm_call_count=calls,
+        title=merged_title,
         sources=sources,
         degraded=degraded,
+        excluded=excluded,
+    )
+
+
+def _merge_default_title(sources: list[Source]) -> str:
+    """用户没给标题时的默认名。与 `_default_title` 分开：合并产物不是「对比」。"""
+    if not sources:
+        return "合并文档"
+    return f"{sources[0].title} 等 {len(sources)} 篇合并"
+
+
+def build_merge_text(sources: list[Source]) -> str:
+    """N 篇原文按顺序拼接成正文，每篇以 `## {序号}. {标题}` 开头。
+
+    ⚠️ 与 `build_stuff_text` 的差别在**读者**：那一份是喂给模型的原料，`【文档 i】`
+    是并列研究对象的标记；这一份是给人读的成品正文，故用标题而不是标记 ——
+    打开合并文档的人应当能靠目录跳转，而不是在一段段 `【文档 i】` 里找边界。
+
+    ⚠️ 序号不能省：两篇同名文档各写一个 `## 同一标题` 时，正文里就没有任何东西
+    能把它们分开，而来源清单里那两行也长得一模一样。
+    """
+    return "\n\n".join(
+        f"## {i}. {s.title}\n\n{s.text}" for i, s in enumerate(sources, 1)
+    )
+
+
+def merge_sources(
+    store,
+    doc_ids: list[str],
+    title: str = "",
+    source_mode: str = "raw",
+) -> Result:
+    """N 篇文档 → **一篇纯拼接的 composite 文档**（零模型调用、零预算判定）。
+
+    与 `synthesize` 的分工：那个让模型做跨篇综述，这个只把正文按顺序接起来。
+    用户在两种意图之间选，默认是这一个 —— 拼接不花钱、不改写内容，大多数场景
+    要的就是「把这几篇放一起看」。
+
+    **复用而不是重写**（模式 #54）：原料读取走 `_load_sources`，资产搬运走
+    `relocate_assets`，出处头走 `build_composite_raw_text`。三处任何一处另写一份，
+    合并与合成的语义就会在某个无人察觉的时刻分叉（例如某一侧开始支持笔记原料、
+    另一侧仍只认原文）。
+
+    **刻意不做的事**：
+    - 不跑 `plan_synthesis`：拼接不发给模型，窗口大小与配额无关。超大文档合并后
+      可能长到无法生成笔记，但那是用户下一次点击时才知道的，不是合成本身的问题。
+    - 不设 `MAX_SYNTH_CALLS`：这里一次调用都没有。
+    - 所有篇的 `status` 保持 `full`：没有任何篇被摘要或截断，来源清单里的标注
+      因此恒为「未删节」—— 这是事实，不是省略。
+    """
+    if len(doc_ids) < 2:
+        raise SynthesisError.too_few_sources()
+    source_mode = normalize_source_mode(source_mode)
+
+    sources, excluded, titles = _load_sources(store, doc_ids, source_mode)
+    if len(sources) < 2:
+        if excluded:
+            raise SynthesisError.not_enough_notes(
+                len(sources), [titles.get(i, i) for i in excluded])
+        raise SynthesisError.too_few_sources()
+
+    # 先建目录再搬运资产：`_get_or_create_doc_dir` 幂等，`save_transcript` 会复用
+    # 同一个目录（与 `synthesize` 同一顺序，理由见那里的注释）。
+    tx_id = f"tr_{uuid.uuid4().hex[:12]}"
+    merged_title = (title or "").strip() or _merge_default_title(sources)
+    doc_dir = store._get_or_create_doc_dir(tx_id, merged_title)
+
+    for i, s in enumerate(sources, 1):
+        s.text = relocate_assets(s.raw_text, store.get_doc_dir(s.doc_id), doc_dir, f"d{i}_")
+
+    raw_text = build_composite_raw_text(
+        [s.doc_id for s in sources],
+        [s.content_hash for s in sources],
+        [{"title": s.title, "status": s.status} for s in sources],
+        build_merge_text(sources),
+        source_mode=source_mode,
+        output_mode="merge",
+    )
+
+    tx = RawTranscript(
+        id=tx_id,
+        title=merged_title,
+        source_type=SourceType.COMPOSITE,
+        engine="merge",
+        raw_text=raw_text,
+        content_hash="",          # 由 save_transcript 计算
+        metadata=RawMetadata(),
+        tags=[],
+    )
+    if not store.save_transcript(tx, skip_dedup=True):
+        raise SynthesisError("SYNTH_SAVE_REJECTED", "合并文档写入被拒绝", recoverable=False)
+
+    log.info("合并完成", docs=len(sources), mode=source_mode, chars=len(raw_text))
+    return Result(
+        transcript_id=tx_id,
+        raw_text=raw_text,
+        mode="merge",
+        llm_call_count=0,
+        title=merged_title,
+        sources=sources,
+        degraded=[],
         excluded=excluded,
     )
 

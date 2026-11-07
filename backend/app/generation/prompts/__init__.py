@@ -222,5 +222,15 @@ from .notes_styles import (
 #     （`chart_renderer._fig_as_alternative_block`：布局名是「无算子」的块类型时**无损
 #     转成同名语义块**，抽不出节点才给指路式文案）。prompt 侧是**减少复发**，后端是
 #     **认得出模型想表达什么**，两件事不互相替代。
-PROMPT_VERSION = "22"
+# "23"（2026-11-07，合成产物开放笔记格式勾选）：
+#   · `build_synthesis_prompt` 新增 `formats` 参数，把用户勾的格式说明拼进
+#     `hard_constraints` **末尾**（最具体、最靠近输出，便于遵守）。
+#   · 允许哪些格式由 `AVAILABLE_OPTIONS["composite"]` 一处决定：`toc` / `formulas` /
+#     `chart` / `followup`。**刻意不给** `summary`（合成骨架本身就是总结）/ `references`
+#     （材料索引承担该位置）/ `link` `screenshot`（要视频时间点）/ `images`（它的说明
+#     写的是 `/api/files/...` 引用，而合成产物的图是 `assets/` 相对路径）。
+#   · `get_chart_format("composite")` 不再提任何语义块名：合成 prompt **从不注入**
+#     `get_markdown_block_format()`，照抄那串块名等于教模型写一个它没见过的标记。
+#   · 未勾任何格式时 prompt 与 "22" 逐字节相同（`_build_hard_constraints` 返回空串）。
+PROMPT_VERSION = "23"
 

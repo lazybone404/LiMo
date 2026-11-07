@@ -499,6 +499,73 @@ assert '"segments"' in _jp, 'composite 的 rawText 必须原样进 prompt'
 assert '00:00 -' not in _jp, '落进 _format_segments 的实现会把它转成时间戳格式 → 红'
 print('PASS: composite rawText 不被 _format_segments 解析（未落进 video/audio 分支）')
 
+# ── 4b. 合成产物开放笔记格式勾选（2026-11-07）──
+from app.generation.prompt import AVAILABLE_OPTIONS, get_chart_format
+
+# 先钉住「允许哪些」这张表本身：判据表是这份实现的上游，表错了下面全对也没意义。
+assert AVAILABLE_OPTIONS['composite'] == ['toc', 'formulas', 'chart', 'followup'], \
+    f'composite 的可用格式表被改了：{AVAILABLE_OPTIONS["composite"]}'
+assert 'summary' not in AVAILABLE_OPTIONS['composite'], \
+    'AI 总结不能给 composite——合成骨架本身就是「这批材料说明了什么」，再加一节是写两遍'
+assert not ({'link', 'screenshot', 'images', 'references'} & set(AVAILABLE_OPTIONS['composite'])), \
+    '链接/截图要视频时间点、图片说明写的是 /api/files 引用、文献引用在合成里没有落点'
+
+_base_sp = build_synthesis_prompt(_COMP_RAW, "T")
+# 零回归：不勾任何格式时，prompt 必须与「没有这个参数」时逐字节相同
+assert build_synthesis_prompt(_COMP_RAW, "T", formats=None) == _base_sp
+assert build_synthesis_prompt(_COMP_RAW, "T", formats=[]) == _base_sp
+assert '自动生成一个基于 `##` 级标题的目录' not in _base_sp
+assert '## 公式汇总' not in _base_sp
+assert '```fig' not in _base_sp
+
+_toc_sp = build_synthesis_prompt(_COMP_RAW, "T", formats=["toc"])
+assert '自动生成一个基于 `##` 级标题的目录' in _toc_sp, '勾了目录就要有目录说明'
+assert _toc_sp.index('自动生成一个基于 `##` 级标题的目录') > _toc_sp.index('<hard_constraints>'), \
+    '格式说明应落在 hard_constraints 节内'
+assert '## 公式汇总' not in _toc_sp, '只勾目录时不得顺带注入公式说明'
+
+_fml_sp = build_synthesis_prompt(_COMP_RAW, "T", formats=["formulas"])
+assert '## 公式汇总' in _fml_sp
+
+# 表外的项静默丢弃（前端只可能发来表里的值；发来别的多半是旧客户端）
+_stray_sp = build_synthesis_prompt(
+    _COMP_RAW, "T", formats=["summary", "link", "screenshot", "images", "references"])
+assert _stray_sp == _base_sp, \
+    'AVAILABLE_OPTIONS["composite"] 之外的格式必须被静默丢弃——否则用户会看到一份' \
+    '它没被允许也没有渲染支撑的指令'
+
+# 图表：composite 的措辞**不提任何语义块名**（合成 prompt 从不注入 limo-block 规范）
+# ⚠️ 对照实验：把 get_chart_format 的 `_no_draw` 两支合并回一支 → 本段必红。
+_comp_chart = get_chart_format("composite")
+for _block in ("`steps`", "`timeline`", "`cycle`", "`sequence`", "`quadrant`"):
+    assert _block not in _comp_chart, \
+        f'composite 的图表说明不得引用 {_block}——它没见过那套标记规范，' \
+        '照抄块名等于教它写一个没有定义过的语法'
+assert "`grid`" in _comp_chart and "`flowchart`" in _comp_chart and "`state`" in _comp_chart, \
+    '三种布局的引导两条来源共用，不能一起删掉'
+_pdf_chart = get_chart_format("pdf")
+for _block in ("`steps`", "`timeline`", "`cycle`", "`sequence`", "`quadrant`"):
+    assert _block in _pdf_chart, \
+        f'其它来源仍应引用 {_block}（这一条同时是上一条的对照：证明断言有区分力）'
+assert '语义块' not in _comp_chart, \
+    'composite 的图表说明不得提「语义块」——合成 prompt 里没有那一节，指代落空'
+assert '语义块' in _pdf_chart, '其它来源仍应指路到语义块（这一条同时证明上一条有区分力）'
+
+_chart_sp = build_synthesis_prompt(_COMP_RAW, "T", formats=["chart"])
+assert '```fig' in _chart_sp and "`steps`" not in _chart_sp
+
+# 分派链路透传：builder 与两个底层函数都必须把 formats 交给 synthesis
+assert '自动生成一个基于 `##` 级标题的目录' in PromptBuilder().build(
+    "composite", "notes", _COMP_RAW, "T", formats=["toc"]), \
+    'PromptBuilder.build 的 composite 分支丢了 formats'
+assert '自动生成一个基于 `##` 级标题的目录' in build_notes_prompt(
+    _COMP_RAW, "T", "plain", "composite", formats=["toc"]), \
+    'build_notes_prompt 的 composite 兜底分支丢了 formats'
+assert '自动生成一个基于 `##` 级标题的目录' in build_polish_prompt(
+    _COMP_RAW, "T", "plain", "composite", formats=["toc"]), \
+    'build_polish_prompt 的 composite 兜底分支丢了 formats（两份兜底必须同源）'
+print('PASS: composite 笔记格式勾选——表内注入 / 表外丢弃 / 未勾逐字节零回归 / 图表措辞不提块名')
+
 # ── 5. 既有类型零影响（分派条件写宽会红）──
 assert 'composite' not in DOC_SOURCE_TYPES, \
     'composite 绝不能进 DOC_SOURCE_TYPES（它的 4 个消费点都是「更像文档」语义）'

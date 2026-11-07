@@ -626,6 +626,9 @@ class Store:
                 # 合成来源身份（模式 #44 的第三处构造点，必须与 _transcript_index_entry 同构）
                 "sourceDocIds": [], "sourceTitles": [], "sourceHashes": [],
                 "metadataCorrupt": False,
+                # 转录状态：默认 "done"，真值由下方 `DOC_FIELDS` 循环用 meta.json 覆盖
+                # （那个 sidecar 是重建后唯一还原得出 `pending` 的来源）。
+                "transcribeState": "done",
                 "dir_name": dir_name,
                 # 就绪标记（P1-3）：本函数只对**存在 transcript.md 的目录**建条目，
                 # 故恒 True（与 `_transcript_index_entry` 同构，见那里的说明）。
@@ -796,6 +799,9 @@ class Store:
             "sourceTitles": data.get("sourceTitles", []),
             "sourceHashes": data.get("sourceHashes", []),
             "metadataCorrupt": data.get("metadataCorrupt", False),
+            # 转录状态。**缺键 = "done"**：旧 index.json 里的历史条目没有这个键，
+            # 它们全都已经转录过（收纳模式是本轮才有的）—— 与 `ready` 同一条读侧纪律。
+            "transcribeState": data.get("transcribeState", "done"),
             "dir_name": data.get("dir_name", "") if "dir_name" in data else "",
             # 就绪标记（P1-3）：本函数只由 `save_transcript` 走到，此时 `transcript.md`
             # 已落盘 → 恒 True。与 `_get_or_create_doc_dir` 的占位条目（False）成对。
@@ -995,6 +1001,11 @@ class Store:
             "sourceTitles": list(head.get("sourceTitles") or []),
             "sourceHashes": list(head.get("sourceHashes") or []),
             "metadataCorrupt": head_corrupt,
+            # ⚠️ 这一行必须与 `RawTranscript.transcribe_state` **成对**：`data` 是从
+            # dataclass 字段逐个拼出来的（不是在 index 条目上打补丁），dataclass 上没有
+            # 这个字段就没有值可拼，`_transcript_index_entry` 会永远读到默认 "done"
+            # —— 收纳模式的文档一进库就显示「已转录」，而这条链上没有任何一处报错。
+            "transcribeState": tx.transcribe_state,
         }
         with self._lock:
             entry = self._transcript_index_entry(data)
@@ -1062,6 +1073,10 @@ class Store:
             "sourceTitles": list(head.get("sourceTitles") or entry.get("sourceTitles") or []),
             "sourceHashes": list(head.get("sourceHashes") or entry.get("sourceHashes") or []),
             "metadataCorrupt": head_corrupt or bool(entry.get("metadataCorrupt", False)),
+            # 转录状态。缺键 = "done"（历史条目）。⚠️ 与上面三条同理：PATCH /transcripts
+            # 拿到的就是这个 dict，改标题/标签后整体 `save_transcript_full` 回去 ——
+            # 少了它，改一次标题就把 pending 抹成 done。
+            "transcribeState": entry.get("transcribeState", "done"),
         }
 
     def delete_transcript(self, id: str) -> bool:
@@ -1485,6 +1500,13 @@ class Store:
                             new_entry[_f] = entry.get(_f, [])
                     if "metadataCorrupt" not in tx_data:
                         new_entry["metadataCorrupt"] = entry.get("metadataCorrupt", False)
+                    # 转录状态同理（第六个守护）。三个调用方 —— PATCH /transcripts 改标题、
+                    # retranscribe、_auto_title —— 都不带这个字段：漏守卫 = 改一次标题就把
+                    # pending 抹成 done，用户以为已转录，预览区却还是占位文本、零报错。
+                    # ⚠️ 连带后果：retranscribe 必须**显式**写 `"done"`，否则它继承了
+                    # pending，正文已更新而界面永远显示「待转录」（见 routers/ingest.py）。
+                    if "transcribeState" not in tx_data:
+                        new_entry["transcribeState"] = entry.get("transcribeState", "done")
                     self._index["transcripts"][i] = new_entry
                     # 真相先于缓存（同 save_transcript）：目录可能刚被重命名，
                     # 但 `dir_name` 已是新名字，meta.json 落在新目录里。
