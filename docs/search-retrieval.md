@@ -153,14 +153,14 @@ RRF 融合上限 **97%**（k=10，等权）。
 > 实验脚本 `_experiments/02-embedding-rrf/eval_ab.py` 仍保留（它做「多切块策略扫描」，
 > 产品脚本不做那件事），但两边的 `Embedder` / 切块 / `rrf` 已收编成同一份
 > `backend/scripts/embed_local.py` —— 各自抄一份正是
-> [01-lexical-search](../../_experiments/01-lexical-search/README.md) 里那 40pp 落差的成因。
+> [01-lexical-search](../_experiments/01-lexical-search/README.md) 里那 40pp 落差的成因。
 
 > ⚠️ **29 题样本小**，1 题 = 3.4pp，97% 的置信区间很宽，k=10 也未必是最优
 > （实测 k=60 是 90%，与业界默认相反 —— 因为一路第 1、另一路很差时会被拉平）。
 > 落地时保留 `k` 可配。
 
 > 🔬 **已在公开数据集上复核（2026-10-26，`mteb/EcomRetrieval`，10 万条 × 1000 题）**：
-> 详见 [_experiments/03-public-datasets/](../../_experiments/03-public-datasets/README.md)。
+> 详见 [_experiments/03-public-datasets/](../_experiments/03-public-datasets/README.md)。
 > 三条结论，两打折一条成立：
 >
 > | 结论 | 在 1000 题上 |
@@ -255,7 +255,7 @@ class EmbeddingEngine(Protocol):
 （删除文档时由 `ingest.py::_drop_vectors` 同步清两表；崩溃 / 半途失败留下的孤儿靠
 §4.6 的对账兜底）。
 
-⚠️ **DDL 的唯一真相源是 [`core/vector_store.py`](backend/app/core/vector_store.py) 的 `_CREATE_SQL`**，
+⚠️ **DDL 的唯一真相源是 [`core/vector_store.py`](../backend/app/core/vector_store.py) 的 `_CREATE_SQL`**，
 下面只记形状与理由（改表请改那份，别改这里 —— 设计稿与实现各存一份 DDL，两边都会「看起来对」）：
 
 ```sql
@@ -805,7 +805,7 @@ test_reconcile_does_not_reset_fail_count` 钉住这条。
    融合发生在 HTTP 层的异步编排里 ⇒ 开关打开时 `limo search` **仍是纯字面**。
    这是取舍不是遗漏，已写进仓库根 `AGENTS.md`。
 
-**同日后审查整改（第四轮，7 条，报告见 [code-audit-4.md](code-audit-4.md)）**：与本节直接相关的三条 ——
+**同日后审查整改（第四轮，7 条；报告原件是时点快照，2026-11-07 已删除）**：与本节直接相关的三条 ——
 删除文档现在**即时清向量**（`ingest.py::_drop_vectors`，见 §4.6 ①的注）；`SearchEngine.status()`
 改纯只读（§1.1 判据 4）；`semantic.hits` 措辞改准为「按 `depth` 取、**参与融合**的篇数」，
 不是全库命中总数。另 `POST /search/reindex` 的全量重建改走 `asyncio.to_thread` ——

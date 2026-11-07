@@ -34,8 +34,8 @@
 
 ### 1.1 视频/网页/文本/音频 Polish
 
-**文件**：[backend/app/generation/prompt.py:36-63](backend/app/generation/prompt.py#L36-L63)（section 定义）
-**构建函数**：`build_polish_prompt()` → [backend/app/generation/prompt.py:664-721](backend/app/generation/prompt.py#L664-L721)
+**文件**：[backend/app/generation/prompt.py:36-63](../backend/app/generation/prompt.py#L36-L63)（section 定义）
+**构建函数**：`build_polish_prompt()` → [backend/app/generation/prompt.py:664-721](../backend/app/generation/prompt.py#L664-L721)
 **触发场景**：sourceType ∈ {video, webpage, text, audio} + mode=polished
 **调参**：temperature=0.7, max_tokens=65536, max_continuations=3
 
@@ -114,7 +114,7 @@
 
 ### 1.2 PDF/文档 Polish
 
-**文件**：[backend/app/generation/prompt.py:98-121](backend/app/generation/prompt.py#L98-L121)（section 定义）
+**文件**：[backend/app/generation/prompt.py:98-121](../backend/app/generation/prompt.py#L98-L121)（section 定义）
 **触发场景**：sourceType ∈ {pdf, docx, pptx} + mode=polished（epub 已走独立一键解读管道，不经过 generate prompt 构建）
 **与视频版的差异**：角色定位"文档编辑"，任务包含 5 条文档特有约束
 
@@ -141,8 +141,8 @@
 
 ### 2.1 视频/网页/文本/音频 Notes
 
-**文件**：[backend/app/generation/prompt.py:69-92](backend/app/generation/prompt.py#L69-L92)（section 定义）
-**构建函数**：`build_notes_prompt()` → [backend/app/generation/prompt.py:744-820](backend/app/generation/prompt.py#L744-L820)
+**文件**：[backend/app/generation/prompt.py:69-92](../backend/app/generation/prompt.py#L69-L92)（section 定义）
+**构建函数**：`build_notes_prompt()` → [backend/app/generation/prompt.py:744-820](../backend/app/generation/prompt.py#L744-L820)
 **触发场景**：sourceType ∈ {video, webpage, text, audio} + mode=notes
 **调参**：temperature=0.7, max_tokens=65536, max_continuations=3
 
@@ -234,7 +234,7 @@
 
 ### 2.2 PDF/文档 Notes
 
-**文件**：[backend/app/generation/prompt.py:127-149](backend/app/generation/prompt.py#L127-L149)（section 定义）
+**文件**：[backend/app/generation/prompt.py:127-149](../backend/app/generation/prompt.py#L127-L149)（section 定义）
 **触发场景**：sourceType ∈ {pdf, docx, pptx} + mode=notes（epub 已走独立一键解读管道，不经过 generate prompt 构建）
 **与视频版的差异**：
 - 角色定位"文档阅读助手"
@@ -247,8 +247,8 @@
 
 ### 3.1 `build_excel_summary_prompt()`
 
-**文件**：[backend/app/generation/prompt.py:155-176](backend/app/generation/prompt.py#L155-L176)（section 定义）
-**构建函数**：[backend/app/generation/prompt.py:299-324](backend/app/generation/prompt.py#L299-L324)
+**文件**：[backend/app/generation/prompt.py:155-176](../backend/app/generation/prompt.py#L155-L176)（section 定义）
+**构建函数**：[backend/app/generation/prompt.py:299-324](../backend/app/generation/prompt.py#L299-L324)
 **触发场景**：sourceType=xlsx（任意 mode）
 **特殊处理**：原始 Markdown 表格被 `_build_data_summary()` 预处理为结构化摘要（sheet 结构 + 首尾各 3 行样品），大幅减少 token 消耗
 
@@ -263,7 +263,7 @@
 
 ## 4. 生成管道 — 格式选项
 
-**文件**：[backend/app/generation/prompt.py:562-620](backend/app/generation/prompt.py#L562-L620)
+**文件**：[backend/app/generation/prompt.py:562-620](../backend/app/generation/prompt.py#L562-L620)
 
 格式选项通过 `_build_hard_constraints()` 函数统一构建，放入 `<hard_constraints>` 节。
 
@@ -322,7 +322,7 @@ _POLISH_FORMAT_FNS = {
 
 ## 5. 生成管道 — 风格指令
 
-**文件**：[backend/app/generation/prompts/notes_styles.py](backend/app/generation/prompts/notes_styles.py)
+**文件**：[backend/app/generation/prompts/notes_styles.py](../backend/app/generation/prompts/notes_styles.py)
 
 ### 5.1 风格体系架构
 
@@ -392,10 +392,10 @@ PDF_STYLE_MAP = DOC_NOTE_STYLES        # deprecated
 ## 6. 生成管道 — Prompt 构建流程
 
 **文件**：
-- [backend/app/generation/prompts/common.py](backend/app/generation/prompts/common.py) — `PromptComposer` 工具类
-- [backend/app/generation/prompts/notes_styles.py](backend/app/generation/prompts/notes_styles.py) — 风格定义
-- [backend/app/generation/prompt.py:664-820](backend/app/generation/prompt.py#L664-L820) — `build_polish_prompt()` / `build_notes_prompt()`
-- [backend/app/generation/prompt_builder.py](backend/app/generation/prompt_builder.py) — `PromptBuilder` 调度层
+- [backend/app/generation/prompts/common.py](../backend/app/generation/prompts/common.py) — `PromptComposer` 工具类
+- [backend/app/generation/prompts/notes_styles.py](../backend/app/generation/prompts/notes_styles.py) — 风格定义
+- [backend/app/generation/prompt.py:664-820](../backend/app/generation/prompt.py#L664-L820) — `build_polish_prompt()` / `build_notes_prompt()`
+- [backend/app/generation/prompt_builder.py](../backend/app/generation/prompt_builder.py) — `PromptBuilder` 调度层
 
 ### 6.1 PromptComposer
 
@@ -469,8 +469,8 @@ def _build_hard_constraints(
 
 图片处理的 prompt 在**两个位置重复定义**：
 
-1. [backend/app/routers/process.py:33-73](backend/app/routers/process.py#L33-L73) — `IMAGE_PROMPTS` dict
-2. [backend/app/engines/ocr.py:70-113](backend/app/engines/ocr.py#L70-L113) — `DashScopeOCREngine.execute()` 内联
+1. [backend/app/routers/process.py:33-73](../backend/app/routers/process.py#L33-L73) — `IMAGE_PROMPTS` dict
+2. [backend/app/engines/ocr.py:70-113](../backend/app/engines/ocr.py#L70-L113) — `DashScopeOCREngine.execute()` 内联
 
 两处内容**完全相同**，但独立维护。
 
@@ -526,7 +526,7 @@ def _build_hard_constraints(
 
 ### 7.3 调度逻辑
 
-**文件**：[backend/app/routers/process.py:125-175](backend/app/routers/process.py#L125-L175)
+**文件**：[backend/app/routers/process.py:125-175](../backend/app/routers/process.py#L125-L175)
 
 ```
 POST /process/{id}
@@ -744,7 +744,7 @@ ACL 2025 industry（Bloom 递进与答对率）。
 
 ## 10. 合成管道 — 多篇对比综述 (Composite)
 
-**文件**：[backend/app/generation/prompt.py:936-1278](backend/app/generation/prompt.py#L936-L1278)
+**文件**：[backend/app/generation/prompt.py:936-1278](../backend/app/generation/prompt.py#L936-L1278)
 **触发**：`sourceType="composite"` 的文档点「生成」→ `PromptBuilder` 在最外层分派（两个 `build_*_prompt` 里各有一条防御性兜底，见 `:753` / `:865`）
 
 **两步走**：N 篇文档 → `POST /api/synthesis/stream`（**只组装、不生成**）→ composite 文档 → 用户
@@ -901,7 +901,7 @@ key **回退 `article`** —— 旧文档没有 `shape` 字段，读了不能崩
 
 ## 11. LLM 续写机制
 
-**文件**：[backend/app/llm/service.py:134-198](backend/app/llm/service.py#L134-L198)
+**文件**：[backend/app/llm/service.py:134-198](../backend/app/llm/service.py#L134-L198)
 
 （不变）
 
@@ -950,7 +950,7 @@ key **回退 `article`** —— 旧文档没有 `shape` 字段，读了不能崩
 
 ## 13. 提示词版本（PROMPT_VERSION）
 
-**定义**：[backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) — 当前值 `"22"`
+**定义**：[backend/app/generation/prompts/__init__.py](../backend/app/generation/prompts/__init__.py) — 当前值 `"22"`
 
 这个常量只有一个用途：写进产物自证头的 `generated.promptVersion`（装配在 `generation/provenance.py`），回答「这份产物是凭哪版提示词生成的」。**它对 prompt 本身零影响**——改它不会让任何一次调用产生不同结果，但会让此后落盘的产物如实标出新版本。
 
@@ -1206,28 +1206,28 @@ process 产物确实带 `promptVersion`，而分类根本没有产物可带。
 
 | 文件 | 包含的 Prompt / 模块 |
 |------|---------------------|
-| [backend/app/generation/prompt.py](backend/app/generation/prompt.py) | 全部 section 定义 + `build_polish_prompt()` / `build_notes_prompt()` / `build_excel_summary_prompt()` |
-| [backend/app/generation/prompts/__init__.py](backend/app/generation/prompts/__init__.py) | 包入口，导出 COMMON_NOTE_STYLES / VIDEO_NOTE_STYLES / DOC_NOTE_STYLES / normalize_style |
-| [backend/app/generation/prompts/common.py](backend/app/generation/prompts/common.py) | `PromptComposer` — 分节组装工具类 |
-| [backend/app/generation/prompts/notes_styles.py](backend/app/generation/prompts/notes_styles.py) | 风格定义：COMMON_NOTE_STYLES + VIDEO_NOTE_STYLES + DOC_NOTE_STYLES + STYLE_ALIAS + normalize_style |
-| [backend/app/generation/prompt_builder.py](backend/app/generation/prompt_builder.py) | `PromptBuilder` 调度层（source_type + mode → 正确 prompt 函数） |
-| [backend/app/generation/generator.py](backend/app/generation/generator.py) | LLM 调用编排，无独立 prompt |
-| [backend/app/routers/process.py](backend/app/routers/process.py) | IMAGE_PROMPTS — 4 种图片处理模式（与 ocr.py 重复） |
-| [backend/app/engines/ocr.py](backend/app/engines/ocr.py) | DashScopeOCREngine — 4 种图片处理模式（与 process.py 重复） |
-| [backend/app/agent/prompts/base.md](backend/app/agent/prompts/base.md) | Agent 角色定义层（分层 System Prompt 第一层） |
-| [backend/app/agent/prompts/web_tools.md](backend/app/agent/prompts/web_tools.md) / [no_web.md](backend/app/agent/prompts/no_web.md) | 联网层（一对互斥文件，第二层；由 `web_search` 二选一注入） |
-| [backend/app/agent/prompts/scope_strict.md](backend/app/agent/prompts/scope_strict.md) / [scope_open.md](backend/app/agent/prompts/scope_open.md) / [scope_free.md](backend/app/agent/prompts/scope_free.md) | 回答依据层（三选一注入，第三层；由 `answer_mode` 决定，见 9.1） |
-| [backend/app/agent/prompts/rules.md](backend/app/agent/prompts/rules.md) | Agent 硬约束层（禁止编造、区分出处…第四层；⚠️ 三档共用，不得写入任何一档的专属措辞） |
-| [backend/app/agent/prompts/formats.md](backend/app/agent/prompts/formats.md) | Agent 回答的语义块规范（`limo-block` 的七个对话侧类型 `card-group` / `follow-up` / `info` / `digest` / `caution` / `how-to` / `quote`，第五层；见 9.5） |
-| [backend/app/agent/prompts/__init__.py](backend/app/agent/prompts/__init__.py) | `PromptLoader` — 组装 base + 联网层 + 回答依据层 + rules + formats + 动态 doc_context（chat.py 的旧内联 SYSTEM_PROMPT 已迁移至此） |
-| [backend/app/agent/tools.py](backend/app/agent/tools.py) | 5 个工具 ToolDef + 工具描述（search_docs / lookup_doc / list_docs / search_web / fetch_url） |
-| [backend/app/llm/agent.py](backend/app/llm/agent.py) | AgentRunner — SSE 事件流（agent_status / tool_start / tool_result / thinking / text / done） |
-| [backend/app/llm/service.py](backend/app/llm/service.py) | LLMService — 续写机制 |
-| [backend/app/core/text_utils.py](backend/app/core/text_utils.py) | `smart_truncate()` — 按句子边界截断；`parse_json_object()` — JSON 对象抽取（图表 `chart_renderer` 与此处分类共用）；`sanitize_reference_name()` — 注入侧名字清洗 |
-| [backend/app/generation/classifier.py](backend/app/generation/classifier.py) | `CLASSIFY_PROMPT` + `build_classify_prompt()` + `_folder_section()` / `_tag_section()`（两段按用户策略生成）— 智能分类（见 §14）；另含 `collect_doc_inputs` / `fit_to_budget` / `normalize_suggestions` 纯函数与 `clamp_*` / `validate_mode` 四个入参收口 |
-| [backend/app/generation/reference_compressor.py](backend/app/generation/reference_compressor.py) | `COMPRESS_PROMPT` — 参考文件超窗摘要（与 §14 对照：那侧**失败降级返回 `None`**，分类侧**不降级**） |
-| [backend/app/agent/followup.py](backend/app/agent/followup.py) | `FOLLOWUP_PROMPT`（对话侧）/ `ARTIFACT_FOLLOWUP_PROMPT`（产物侧）—— 追问建议，两者**共用条款常量 `FOLLOWUP_RULES` 与解析层**，见 §9.6；另含 `digest_answer` / `extract_followup_items` / `has_usable_followup` / `should_attempt` / `thinking_extra` / `_run_followup_llm` / `generate_followups` / `generate_artifact_followups` |
-| [backend/app/generation/web_search.py](backend/app/generation/web_search.py) | `QUERY_PROMPT` + `build_query_prompt()` / `parse_queries()` — 产物侧联网检索的**抽检索词**调用（见 §15）；另含 `_search_all`（并发调 `agent.tools.search_web` + 按 URL 去重）/ `compose_reference`（拼成**一份**参考资料）/ `run_web_search` 异步生成器 / `outcome_param` 自证头字段 |
+| [backend/app/generation/prompt.py](../backend/app/generation/prompt.py) | 全部 section 定义 + `build_polish_prompt()` / `build_notes_prompt()` / `build_excel_summary_prompt()` |
+| [backend/app/generation/prompts/__init__.py](../backend/app/generation/prompts/__init__.py) | 包入口，导出 COMMON_NOTE_STYLES / VIDEO_NOTE_STYLES / DOC_NOTE_STYLES / normalize_style |
+| [backend/app/generation/prompts/common.py](../backend/app/generation/prompts/common.py) | `PromptComposer` — 分节组装工具类 |
+| [backend/app/generation/prompts/notes_styles.py](../backend/app/generation/prompts/notes_styles.py) | 风格定义：COMMON_NOTE_STYLES + VIDEO_NOTE_STYLES + DOC_NOTE_STYLES + STYLE_ALIAS + normalize_style |
+| [backend/app/generation/prompt_builder.py](../backend/app/generation/prompt_builder.py) | `PromptBuilder` 调度层（source_type + mode → 正确 prompt 函数） |
+| [backend/app/generation/generator.py](../backend/app/generation/generator.py) | LLM 调用编排，无独立 prompt |
+| [backend/app/routers/process.py](../backend/app/routers/process.py) | IMAGE_PROMPTS — 4 种图片处理模式（与 ocr.py 重复） |
+| [backend/app/engines/ocr.py](../backend/app/engines/ocr.py) | DashScopeOCREngine — 4 种图片处理模式（与 process.py 重复） |
+| [backend/app/agent/prompts/base.md](../backend/app/agent/prompts/base.md) | Agent 角色定义层（分层 System Prompt 第一层） |
+| [backend/app/agent/prompts/web_tools.md](../backend/app/agent/prompts/web_tools.md) / [no_web.md](../backend/app/agent/prompts/no_web.md) | 联网层（一对互斥文件，第二层；由 `web_search` 二选一注入） |
+| [backend/app/agent/prompts/scope_strict.md](../backend/app/agent/prompts/scope_strict.md) / [scope_open.md](../backend/app/agent/prompts/scope_open.md) / [scope_free.md](../backend/app/agent/prompts/scope_free.md) | 回答依据层（三选一注入，第三层；由 `answer_mode` 决定，见 9.1） |
+| [backend/app/agent/prompts/rules.md](../backend/app/agent/prompts/rules.md) | Agent 硬约束层（禁止编造、区分出处…第四层；⚠️ 三档共用，不得写入任何一档的专属措辞） |
+| [backend/app/agent/prompts/formats.md](../backend/app/agent/prompts/formats.md) | Agent 回答的语义块规范（`limo-block` 的七个对话侧类型 `card-group` / `follow-up` / `info` / `digest` / `caution` / `how-to` / `quote`，第五层；见 9.5） |
+| [backend/app/agent/prompts/__init__.py](../backend/app/agent/prompts/__init__.py) | `PromptLoader` — 组装 base + 联网层 + 回答依据层 + rules + formats + 动态 doc_context（chat.py 的旧内联 SYSTEM_PROMPT 已迁移至此） |
+| [backend/app/agent/tools.py](../backend/app/agent/tools.py) | 5 个工具 ToolDef + 工具描述（search_docs / lookup_doc / list_docs / search_web / fetch_url） |
+| [backend/app/llm/agent.py](../backend/app/llm/agent.py) | AgentRunner — SSE 事件流（agent_status / tool_start / tool_result / thinking / text / done） |
+| [backend/app/llm/service.py](../backend/app/llm/service.py) | LLMService — 续写机制 |
+| [backend/app/core/text_utils.py](../backend/app/core/text_utils.py) | `smart_truncate()` — 按句子边界截断；`parse_json_object()` — JSON 对象抽取（图表 `chart_renderer` 与此处分类共用）；`sanitize_reference_name()` — 注入侧名字清洗 |
+| [backend/app/generation/classifier.py](../backend/app/generation/classifier.py) | `CLASSIFY_PROMPT` + `build_classify_prompt()` + `_folder_section()` / `_tag_section()`（两段按用户策略生成）— 智能分类（见 §14）；另含 `collect_doc_inputs` / `fit_to_budget` / `normalize_suggestions` 纯函数与 `clamp_*` / `validate_mode` 四个入参收口 |
+| [backend/app/generation/reference_compressor.py](../backend/app/generation/reference_compressor.py) | `COMPRESS_PROMPT` — 参考文件超窗摘要（与 §14 对照：那侧**失败降级返回 `None`**，分类侧**不降级**） |
+| [backend/app/agent/followup.py](../backend/app/agent/followup.py) | `FOLLOWUP_PROMPT`（对话侧）/ `ARTIFACT_FOLLOWUP_PROMPT`（产物侧）—— 追问建议，两者**共用条款常量 `FOLLOWUP_RULES` 与解析层**，见 §9.6；另含 `digest_answer` / `extract_followup_items` / `has_usable_followup` / `should_attempt` / `thinking_extra` / `_run_followup_llm` / `generate_followups` / `generate_artifact_followups` |
+| [backend/app/generation/web_search.py](../backend/app/generation/web_search.py) | `QUERY_PROMPT` + `build_query_prompt()` / `parse_queries()` — 产物侧联网检索的**抽检索词**调用（见 §15）；另含 `_search_all`（并发调 `agent.tools.search_web` + 按 URL 去重）/ `compose_reference`（拼成**一份**参考资料）/ `run_web_search` 异步生成器 / `outcome_param` 自证头字段 |
 
 ## 附录 B: 温度参数速查
 

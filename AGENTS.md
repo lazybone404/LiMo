@@ -92,6 +92,18 @@ python -m limo_cli.mcp_server --http # 改走 127.0.0.1:7413（要求 LiMo 在�
 
 安装版是 `LiMoBackend.exe --mcp`（`main.py` 顶部短路，见下节）。
 
+## 七个命令，以及为什么全是只读
+
+`status` / `list` / `search` / `get` / `export` / `folders` / `doctor`。
+
+**不做写操作**（import / generate / edit / delete）的理由是风险不对称：读错了用户重跑
+一次就行，写错了要么产生计费调用、要么改动用户的库。成本、并发、超时、幂等、误触发
+这五件事全在写侧，而只读侧一件都没有。
+
+⚠️ **`schema_version` 顶层恒有**，CLI 侧比对用的 `EXPECTED_SCHEMA` **刻意不 import 后端
+常量** —— 同仓 import 会让「用户机器上跑着旧版 exe」这件事**永远检测不出来**：两边一起
+被改，比对恒成立。它必须是一份写死的字面量。
+
 ## MCP 服务端（改它之前先读这五节）
 
 `mcp_server.py`（协议层）与 `mcp_tools.py`（能力层）刻意分家 —— 前者喂 `StringIO`

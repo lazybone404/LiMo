@@ -20,7 +20,7 @@
 | 适配器 | 6（Video / **Arxiv** / Document / Image / Webpage / Text） |
 | 引擎 (ASR/Doc/OCR/Embedding/Rerank) | 13 内置（+三方插件 pymupdf4llm、本地方案模板 local_embedding / rerank） |
 | LLM Agent 工具 | 5 |
-| 设计文档 | 19（docs/ 目录 .md 计数：architecture / frontend-patterns / export-pipeline / patterns / search-retrieval / 对话协议 / AGENT-ONBOARDING / user-scenarios / plugins / prompts-inventory / BUILD / qianwen-models / ACKNOWLEDGMENTS / code-audit 1-4 + CHANGELOG / STATUS；design/ 另计） |
+| 设计文档 | 21（docs/ 目录 .md 计数：architecture / engines / constants-home / frontend-patterns / export-pipeline / patterns / search-retrieval / pipelines / doc-library / chart-pipeline / roadmap / 对话协议 / AGENT-ONBOARDING / user-scenarios / plugins / prompts-inventory / BUILD / qianwen-models / ACKNOWLEDGMENTS + CHANGELOG / STATUS；design/ 另计。2026-11-07 实计，同日删掉五份过期的 code-audit 报告） |
 | 代码行数 | 后端 app 44,303 + `limo_cli` 2,328（MCP 881）/ 前端业务 31,248 / 前端测试 17,852（`wc -l` 累加；前端业务 = `src/` 下 ts/tsx **排除 `*.test.*` 与 `setup.ts`**；css 另计 2,607，2026-11-07 按此口径实测重算） |
 
 ---
@@ -216,8 +216,8 @@
 | 对话语义标记 | ✅ 同一套 `limo-block` 协议、**另一套类型**（2026-10-11）：`card-group`（并列比较 2–4 个同级对象 → 块内 `###` 各成一张并排卡片）/ `follow-up`（2–4 个下一步问题 → 每项一颗 chip，点了直接发送）/ `info`（信息卡）/ `digest`（摘要卡）——后两种同日补，**规范带总量闸门**（四种合计不超两块）。⚠️ 两侧集合**不相交**，拆成 `ARTIFACT_BLOCK_TYPES` / `CHAT_BLOCK_TYPES` / `KNOWN_BLOCK_TYPES = 并集`（「协议知道」≠「某侧实现了」）；⚠️ **只共享判据不共享渲染器**（`ai-chat/ChatMarkerContent.tsx`，不复用产物侧 `MarkerContent` —— 它会波及全部历史消息）；⚠️ 流式**半截标记行整行抑制**（命名空间感知，只在对话且 streaming 时调用）；消费点：存储/LLM 历史/JSON 导出**保留**，`.md` 导出与复制**剥离**；规范走 `agent/prompts/formats.md`（system prompt 第四层）。⚠️ 顺带修**实时流引用 chips 不出现**（`api/chat.ts` 丢了 `tool_result.refs` 又在等一个不存在的 `ref` 事件）；实机验收待用户操作 |
 | 只读 CLI | ✅ `limo` 七命令 + `/api/cli/*` 七端点（只读，无写操作）；`--json` 时 stdout 纯 JSON、退出码 `0/2/3/4/5/6` 区分「空」与「坏」、`has_more`/`next_cursor` 与 `truncated`/`continuation` 不混用；契约文档两处（库内 `~/.limo/AGENTS.md` + 仓库根）；顺带修 3 缺陷（坏 ID 退出码分叉 / 子命令选项不可用 / `--all` HTTP 静默退化成第一页）（2026-10-04） |
 | MCP 服务端 | ✅ `limo_cli/mcp_server.py` + `mcp_tools.py`（`Source` 契约的**第二个消费者**，`QueryService` 一行未改）；双栈 `server/discover`（`2026-07-28`）+ legacy `initialize`；六工具只读（`limo_read` 的 `part` = `ALL_PARTS` 派生 + `raw`）；默认直开本机库、`--http` 才打 7413；`scripts/check-mcp` 8 项含 2 条负向对照（stdout 纯净性 / 去掉 `server/discover` 必红）（2026-10-29） |
-| 第三轮代码自查 | ✅ 10 条（P0 迁移调用整库重建抹掉标签/文件夹/来源 + P1 前端跨 mode 版本滞后 + `chars` 伪造 + 版本切换竞态 + 导出测试脚本式假绿 + 4 条 P2），另有 5 条「记录不修」，见 [code-audit-3.md](code-audit-3.md)；对照实验 6 条（2026-10-10） |
-| 第四轮代码审查 | ✅ 8 条（P1 两条：删文档不清向量 → 语义检索命中幽灵 / `status()` 一次读失败把全文检索永久判坏；P2 六条含密钥前 7 位进日志、`index` 集合不校验致文本与向量静默错位、重建阻塞事件循环），**修 7 条、`P2-05` 记录不修**，见 [code-audit-4.md](code-audit-4.md)；每条配能红的对照实验，后端全量 1065 passed（2026-10-26） |
+| 第三轮代码自查 | ✅ 10 条（P0 迁移调用整库重建抹掉标签/文件夹/来源 + P1 前端跨 mode 版本滞后 + `chars` 伪造 + 版本切换竞态 + 导出测试脚本式假绿 + 4 条 P2），另有 5 条「记录不修」，见下文「记录不修」条目（原报告 2026-11-07 已删）；对照实验 6 条（2026-10-10） |
+| 第四轮代码审查 | ✅ 8 条（P1 两条：删文档不清向量 → 语义检索命中幽灵 / `status()` 一次读失败把全文检索永久判坏；P2 六条含密钥前 7 位进日志、`index` 集合不校验致文本与向量静默错位、重建阻塞事件循环），**修 7 条、`P2-05` 记录不修**，原报告 2026-11-07 已删；每条配能红的对照实验，后端全量 1065 passed（2026-10-26） |
 | 对话重写 | ✅ 独立 chatStore + 消息层组件树 + 工具气泡/引用/思考折叠（2026-08-04） |
 | 对话上下文管理 | ✅ context_window 四层解析 + 预算引擎 + 历史压缩 + token 进度/费用（2026-08-04 C1-C5） |
 | AI 浮窗 | ✅ 移除插槽，统一浮窗（位置记忆/边界钳制/内部栏拖拽） |

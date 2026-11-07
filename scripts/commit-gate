@@ -68,12 +68,19 @@ RUNS=""
 [ "$MD" = 1 ] && RUNS="${RUNS:+$RUNS + }文档引用"
 echo "[commit-gate] 已暂存 $(printf '%s\n' "$STAGED" | wc -l | tr -d ' ') 个文件 → ${RUNS:-无代码检查}"
 
-# ── 提示（不拦截）：跨域与 CHANGELOG ──
+# ── 提示（不拦截）：跨域与提交正文 ──
 if [ "$FE" = 1 ] && [ "$BE" = 1 ]; then
   echo "[commit-gate] 注意：代码改动跨了 $DOMAINS —— 若不是同一个主题，拆开提交"
 fi
-if { [ "$FE" = 1 ] || [ "$BE" = 1 ]; } && ! printf '%s\n' "$STAGED" | grep -qx 'docs/CHANGELOG.md'; then
-  echo "[commit-gate] 注意：CHANGELOG 未暂存（若属用户可见变更，补一条）"
+# 2026-11-07 起提交信息是日常变更的唯一记录（CHANGELOG 只在发版时汇总），
+# 所以「只有一行标题」这件事值得提一句。读的是 git 自己的 COMMIT_EDITMSG，
+# 拿不到就静默跳过 —— 提示不该因为读不到消息就报错。
+MSG_FILE="$(git rev-parse --git-dir)/COMMIT_EDITMSG"
+if [ -f "$MSG_FILE" ]; then
+  BODY_LINES=$(awk 'BEGIN{seen=0} /^[[:space:]]*$/{next} {if(seen)print; seen=1}' "$MSG_FILE" | wc -l | tr -d ' ')
+  if [ "$BODY_LINES" -eq 0 ] && { [ "$FE" = 1 ] || [ "$BE" = 1 ]; }; then
+    echo "[commit-gate] 注意：提交正文是空的（改动为什么这么写、影响面多大）"
+  fi
 fi
 
 FAIL=0

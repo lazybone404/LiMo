@@ -54,6 +54,7 @@ AI 对话右键菜单                 ChatCore                     GET /export/c
 - 后端 `GET /export/{id}` 加 `image_md: str = Query("link")`：**只有 `inline` 才动图片**，`link`（默认）逐字节零回归 —— 详细导出面板的 `image_md` 是另一套（`separate`/`inline`/`none`），两者互不影响。
 - **内嵌与「重写为绝对 URL」互斥**：内嵌后引用是 data URI，不再重写。查不到的图与**越界路径**（`../`）退回绝对 URL，不静默丢引用（`_inline_images` 的 `relative_to` 守卫）。
 - **只影响 `format=md`**：HTML 导出早有自己的一套 base64 内联，两条路互不干扰。
+- ⚠️ **走后端时必须传 `preferSuggestedName: true`**：后端命名 `{标题}-{mode}.md` 与前端 `makeFileName` **不同源**，不传它就会出现「同一个按钮，只因为改了 `embedImages` 开关，下载的文件名也变了」。
 
 ### 按版本导出（2026-10-10）
 
