@@ -61,3 +61,42 @@ md / html / docx **保留**、纯 txt **剥离**（注释在纯文本里是可�
 ### 5. 图片预处理复用
 
 导入时已 `optimize_images`，导出 ZIP 未复用压缩后的图片，直接打包原图。
+
+### 6. 提示词版本标记：指纹守卫 + 预览区显示
+
+**现状**：每份产物首行的 `<!-- limo-meta -->` 里已经有 `generated.promptVersion`
+（`provenance.py:80`），但两处是断的。
+
+1. **它是手抄的**。`PROMPT_VERSION` 靠人记得改，已经漏过一次 —— `1ef7e23` 加了关键词
+   规范没 bump，「23」同时对应两种 prompt。手抄的版本号是 prompt 文本的第二份副本，
+   漂移不报错。
+2. **界面上一处都不显示**。`artifactMeta.ts` 的 `buildMetaChips` 把 `promptVersion`
+   与 `params` / `sourceRefs` 一起排除了，版本下拉列的是「时间 · 字数 · 模型」。
+   于是「这版是哪个提示词生成的」在界面上无从判断。
+
+**已定的两个选择**（2026-11-08）：版本号**保留手工 bump**（「v24」这种说法要留着），
+另存一份 prompt 文本指纹，用测试断言两者对得上；显示位置**只做预览区**，文档库列表
+不做（它按文档走，而 prompt 版本按产物版本走，一篇有 v1/v2/v3 时那一列该显示哪个
+需要另定，不在这一步）。
+
+**落点**：
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | 新增 `generation/prompts/fingerprint.py` | AST 扫 `generation/prompt.py` 与 `generation/prompts/*.py` 的字符串字面量（跳过 docstring），sha256 取前 8 位 |
+| 2 | `prompts/__init__.py` | 加 `PROMPT_FINGERPRINT`，与 `PROMPT_VERSION` 并排 |
+| 3 | 新增 `tests/test_prompt_fingerprint.py` | 声明值 == 计算值；外加对照实验（改一个常量 → 计算值必须变），证明守卫有区分力 |
+| 4 | `store._scan_markdown_versions`（重建路径） | 从自证头读 `generated.promptVersion` 进条目 |
+| 5 | `store.save_markdown` 的 index 写入（写路径） | 同一字段 —— **4 与 5 是同源的一对**，只改一处则重建后全空，且不报错 |
+| 6 | `QueryService.artifact_versions` | 白名单加 `promptVersion` |
+| 7 | `api/core.ts` 的 `MarkdownVersion` | 加 `promptVersion?: string` |
+| 8 | `VersionSwitcher.tsx` 每行 | `时间 · 字数 · 模型` 后加 `prompt 24` |
+| 9 | `artifactMeta.ts::buildMetaChips` | 加一个 chip（`MetaChipKey` 加 `prompt`；`CHIP_ICONS` 是穷尽映射，漏配图标会当场类型错） |
+
+⚠️ **第 9 条要顺手改掉那个文件里的旧注释**。`artifactMeta.ts:70-71` 现在写着
+「`params` / `promptVersion` / `sourceRefs` 是给 agent 读的，铺给用户只是噪音，刻意
+不进这张表」—— 不改，下一个人会照着注释把它删回去。
+
+⚠️ **历史产物读不出 `promptVersion`**（早于自证头那一批，以及 `_scan_markdown_versions`
+里已注明「产物 status 没有落进自证头」的同类情况）：缺就**不显示这个 chip**，不补默认值。
+补 `0` 或空串等于伪造「它来自第 0 版提示词」。
