@@ -71,6 +71,10 @@ function doc(id: string, title: string, sourceType = 'video'): DocEntry {
 const A = doc('doc-a', '第一篇')
 const B = doc('doc-b', '第二篇')
 
+// 有一条用例会把 `setProcessing` 临时换成抛错的版本（模拟循环体里一处意料之外的
+// 失败）。换掉的是 store 上的真实 action，不恢复会让后面的用例一起炸。
+const realSetProcessing = useStore.getState().setProcessing
+
 /** 每次生成都成功，并返回一个可在「下一条断言之前」等到的 Promise。 */
 function streamOk(delay = 0) {
   return (_id: string, _options: unknown, cb: { onDone: () => void }) =>
@@ -90,6 +94,7 @@ beforeEach(() => {
     id: 'md', mode, version: 1, content: `正文 ${mode}`, style: 'plain', versions: [],
   }))
   useStore.setState({
+    setProcessing: realSetProcessing,
     currentDocId: A.id, currentRawText: '', docs: [A, B], processingTasks: {},
   })
 })
@@ -229,5 +234,59 @@ describe('useBatchGenerate', () => {
     expect(result.current.phase).toBe('confirm')
     const toasts = useStore.getState().toasts
     expect(toasts[toasts.length - 1].message).toContain('没有勾选任何产物')
+  })
+
+  it('刷新产物失败不算这一篇生成失败，队列照常往下跑', async () => {
+    streamGenerateMock.mockImplementation(streamOk())
+    // 后端返回了意料之外的形状：`versions` 不是数组时下面那行展开会抛错。
+    // 这比「桩掉 getMarkdown 让它 reject」更接近真实 —— 后者已经被
+    // `refreshArtifacts` 内部的 try/catch 吞掉，走不到这里的判据。
+    getMarkdownMock.mockImplementation(async (_id: string, mode: string) => ({
+      id: 'md', mode, version: 1, content: `正文 ${mode}`, style: 'plain',
+      versions: {} as unknown as never[],
+    }))
+
+    const { result } = renderHook(() => useBatchGenerate())
+    act(() => { result.current.open(targets) })
+    await act(async () => { await result.current.confirm() })
+
+    const items = result.current.items!
+    // ⚠️ 是 `done` 不是 `failed`：产物已经在盘上，报失败会把用户引去重跑一次完整生成
+    // （要花钱），而笔记其实已经写好了。
+    expect(items[0]).toMatchObject({ status: 'done' })
+    expect(items[0].message).toContain('已生成，但刷新产物失败')
+    // ⚠️ `markArtifact` 排在刷新预览之前，所以状态已经回填了 —— 用户切回这篇
+    // 不会看到「没有产物」，只是正文可能还是旧的。
+    expect(useStore.getState().docs.find(d => d.id === A.id)?.modes).toContain('notes')
+    // 队列没有被这一篇带停
+    expect(items[1]).toMatchObject({ status: 'done', message: '' })
+    expect(result.current.phase).toBe('done')
+    // 收尾照做：快照清掉
+    expect(JSON.parse(localStorage.getItem('mbw_batchQueues') || '{}').generate).toBeUndefined()
+  })
+
+  it('循环里出现意料之外的抛错时，收尾照样执行', async () => {
+    streamGenerateMock.mockImplementation(streamOk())
+
+    const { result } = renderHook(() => useBatchGenerate())
+    act(() => { result.current.open(targets) })
+
+    // 造一处循环体里没被单独兜住的失败。`setProcessing` 是任务表入口，它坏了这一批
+    // 就没法继续跑 —— 但**收尾必须照做**。写成循环后面的普通语句时，这个用例会留下
+    // `phase === 'running'`：对话框出不来结果、快照还写着「在跑」、恢复入口也不会
+    // 再出现，而界面上没有任何报错。
+    act(() => {
+      useStore.setState({ setProcessing: () => { throw new Error('任务表不可用') } })
+    })
+
+    await act(async () => {
+      await expect(result.current.confirm()).rejects.toThrow('任务表不可用')
+    })
+
+    expect(result.current.phase).toBe('done')
+    // 没跑到的两篇标成「未执行」，而不是永远停在排队态 —— 对话框已经在显示结果了
+    expect(result.current.items!.map(i => [i.status, i.message]))
+      .toEqual([['skipped', '未执行'], ['skipped', '未执行']])
+    expect(JSON.parse(localStorage.getItem('mbw_batchQueues') || '{}').generate).toBeUndefined()
   })
 })

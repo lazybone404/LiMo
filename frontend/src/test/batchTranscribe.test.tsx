@@ -50,12 +50,17 @@ function doc(id: string, title: string): DocEntry {
 const A = doc('doc-a', '第一篇')
 const B = doc('doc-b', '第二篇')
 
+// 有一条用例会把 `setProcessing` 临时换成抛错的版本（模拟循环体里一处意料之外的
+// 失败）。换掉的是 store 上的真实 action，不恢复会让后面的用例一起炸。
+const realSetProcessing = useStore.getState().setProcessing
+
 beforeEach(() => {
   vi.clearAllMocks()
   // 队列快照落在 localStorage，用例之间必须清干净：上一条留在盘上的记录
   // 会让「跑完清掉」那一条在前一条（`open()` 后没跑完）的残留上判出假绿。
   localStorage.clear()
   useStore.setState({
+    setProcessing: realSetProcessing,
     currentDocId: A.id, currentRawText: '', docs: [A, B], processingTasks: {},
   })
 })
@@ -124,6 +129,58 @@ describe('useBatchTranscribe', () => {
     expect(items[1].status).toBe('done')
     // 失败那篇保持 pending —— 后端没写盘，用户还能再点一次
     expect(useStore.getState().docs.find(d => d.id === A.id)?.transcribeState).toBe('pending')
+  })
+
+  it('回填正文失败不算这一篇转录失败，队列照常往下跑', async () => {
+    retranscribeMock.mockResolvedValue({ status: 'done', engine: 'bcut' })
+    // 只有第一篇回填失败 —— 第二篇照常，才看得出「队列没被带停」
+    getTranscriptMock
+      .mockRejectedValueOnce(new Error('网络中断'))
+      .mockResolvedValue({ rawText: 'x' })
+
+    const { result } = renderHook(() => useBatchTranscribe())
+    act(() => { result.current.open(targets) })
+    await act(async () => { await result.current.confirm() })
+
+    const items = result.current.items!
+    // ⚠️ 是 `done` 不是 `failed`：后端已经写盘了，报失败会把用户引去重跑一次完整转录
+    // （几分钟 + 可能计费），而正文其实已经在那儿了。
+    expect(items[0]).toMatchObject({ status: 'done' })
+    expect(items[0].message).toContain('已转录，但刷新正文失败')
+    // 队列没有被这一篇带停
+    expect(items[1]).toMatchObject({ status: 'done', message: '' })
+    expect(result.current.phase).toBe('done')
+    // 第一篇确实没被回填（这正是 `message` 要说的那件事），第二篇照常回填
+    expect(useStore.getState().docs.find(d => d.id === A.id)?.transcribeState).toBe('pending')
+    expect(useStore.getState().docs.find(d => d.id === B.id)?.transcribeState).toBe('done')
+    // 收尾照做：快照清掉
+    expect(JSON.parse(localStorage.getItem('mbw_batchQueues') || '{}').transcribe).toBeUndefined()
+  })
+
+  it('循环里出现意料之外的抛错时，收尾照样执行', async () => {
+    retranscribeMock.mockResolvedValue({ status: 'done', engine: 'bcut' })
+    getTranscriptMock.mockResolvedValue({ rawText: 'x' })
+
+    const { result } = renderHook(() => useBatchTranscribe())
+    act(() => { result.current.open(targets) })
+
+    // 造一处循环体里没被单独兜住的失败。`setProcessing` 是任务表入口，它坏了这一批
+    // 就没法继续跑 —— 但**收尾必须照做**。写成循环后面的普通语句时，这个用例会留下
+    // `phase === 'running'`：对话框出不来结果、快照还写着「在跑」、恢复入口也不会
+    // 再出现，而界面上没有任何报错。
+    act(() => {
+      useStore.setState({ setProcessing: () => { throw new Error('任务表不可用') } })
+    })
+
+    await act(async () => {
+      await expect(result.current.confirm()).rejects.toThrow('任务表不可用')
+    })
+
+    expect(result.current.phase).toBe('done')
+    // 没跑到的两篇标成「未执行」，而不是永远停在排队态 —— 对话框已经在显示结果了
+    expect(result.current.items!.map(i => [i.status, i.message]))
+      .toEqual([['skipped', '未执行'], ['skipped', '未执行']])
+    expect(JSON.parse(localStorage.getItem('mbw_batchQueues') || '{}').transcribe).toBeUndefined()
   })
 
   it('队列快照：open() 落盘，跑完清掉', async () => {

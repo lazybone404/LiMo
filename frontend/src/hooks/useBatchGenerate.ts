@@ -277,82 +277,102 @@ export function useBatchGenerate() {
     let done = 0
     let failed = 0
 
-    for (const item of list) {
-      if (cancelledRef.current) {
-        patch(item.id, { status: 'skipped', message: '已取消' })
-        continue
-      }
+    try {
+      for (const item of list) {
+        if (cancelledRef.current) {
+          patch(item.id, { status: 'skipped', message: '已取消' })
+          continue
+        }
 
-      // 参数按这一篇的类型现算：`typeMeta` 决定哪些格式项可用、要不要走 PDF 直传，
-      // 也决定这一篇的产物名（Excel 叫 `both`，合成文档只有 `notes`）。
-      const typeMeta = getTypeMeta(item.sourceType, caps)
-      const core = coreFor(typeMeta, prefs.selectedCore)
-      if (!core.length) {
-        // 图片类文档没有可生成的产物。调用方本该在打开对话框前就排除它们，
-        // 这里再拦一次是为了让「排除了但漏了」表现为一行说明而不是一次错误的请求。
-        patch(item.id, { status: 'skipped', message: '这类文档没有可生成的产物' })
-        continue
-      }
-      const itemPrefs = { ...prefs, selectedCore: core }
-      const options = buildGenOptions(itemPrefs, {
-        typeMeta,
-        reasoningSupported,
-        hasDocumentModel,
-      })
-      const isPolishedOnly = core.length === 1 && core[0] === 'polished'
+        // 参数按这一篇的类型现算：`typeMeta` 决定哪些格式项可用、要不要走 PDF 直传，
+        // 也决定这一篇的产物名（Excel 叫 `both`，合成文档只有 `notes`）。
+        const typeMeta = getTypeMeta(item.sourceType, caps)
+        const core = coreFor(typeMeta, prefs.selectedCore)
+        if (!core.length) {
+          // 图片类文档没有可生成的产物。调用方本该在打开对话框前就排除它们，
+          // 这里再拦一次是为了让「排除了但漏了」表现为一行说明而不是一次错误的请求。
+          patch(item.id, { status: 'skipped', message: '这类文档没有可生成的产物' })
+          continue
+        }
+        const itemPrefs = { ...prefs, selectedCore: core }
+        const options = buildGenOptions(itemPrefs, {
+          typeMeta,
+          reasoningSupported,
+          hasDocumentModel,
+        })
+        const isPolishedOnly = core.length === 1 && core[0] === 'polished'
 
-      const taskKey = `${item.id}__generate`
-      const ctrl = new AbortController()
-      ctrlRef.current = ctrl
-      registerAbort(taskKey, ctrl)
-      setProcessing(taskKey, { kind: 'generate', title: item.title })
-      patch(item.id, { status: 'running', message: '' })
+        const taskKey = `${item.id}__generate`
+        const ctrl = new AbortController()
+        ctrlRef.current = ctrl
+        registerAbort(taskKey, ctrl)
+        setProcessing(taskKey, { kind: 'generate', title: item.title })
+        patch(item.id, { status: 'running', message: '' })
 
-      let outcome: RunOutcome
-      try {
-        outcome = await runOne(item.id, item.title, options, isPolishedOnly, ctrl.signal)
-      } catch (e) {
-        outcome = { type: 'error', message: getErrorMessage(e) }
-      } finally {
-        ctrlRef.current = null
-      }
+        let outcome: RunOutcome
+        try {
+          outcome = await runOne(item.id, item.title, options, isPolishedOnly, ctrl.signal)
+        } catch (e) {
+          outcome = { type: 'error', message: getErrorMessage(e) }
+        } finally {
+          ctrlRef.current = null
+        }
 
-      // ⚠️ 成功与取消才清任务；失败那条**不能清** —— `failTask` 只改已有条目的状态
-      // （`if (tasks[taskKey])`），先清就什么都不剩，任务面板上那条带重试按钮的记录
-      // 永远不会出现（`failTask` 刻意留 5 秒正是给用户点重试的）。失败条目由它自己定时清除。
-      if (outcome.type === 'aborted') {
+        // ⚠️ 成功与取消才清任务；失败那条**不能清** —— `failTask` 只改已有条目的状态
+        // （`if (tasks[taskKey])`），先清就什么都不剩，任务面板上那条带重试按钮的记录
+        // 永远不会出现（`failTask` 刻意留 5 秒正是给用户点重试的）。失败条目由它自己定时清除。
+        if (outcome.type === 'aborted') {
+          setProcessing(taskKey, null)
+          patch(item.id, { status: 'skipped', message: '已取消' })
+          continue
+        }
+        if (outcome.type === 'error') {
+          failTask(taskKey, outcome.message)
+          patch(item.id, { status: 'failed', message: outcome.message })
+          failed++
+          continue
+        }
+
         setProcessing(taskKey, null)
-        patch(item.id, { status: 'skipped', message: '已取消' })
-        continue
+        // 刷新产物失败**不算这一篇生成失败**：产物已经在盘上，失败的只是「读回来并更新
+        // 列表/预览」这一步。报成 `failed` 会把用户引去重跑一次完整生成（要花钱），
+        // 而笔记其实已经写好了。所以仍算完成，但把没做成的那一步写在行里 ——
+        // 不写的话，用户切回这篇会看到旧内容，以为压根没生成。
+        let message = ''
+        try {
+          await refreshArtifacts(item.id, modesOf(core))
+        } catch (e) {
+          message = `已生成，但刷新产物失败：${getErrorMessage(e)}`
+        }
+        patch(item.id, { status: 'done', message })
+        done++
       }
-      if (outcome.type === 'error') {
-        failTask(taskKey, outcome.message)
-        patch(item.id, { status: 'failed', message: outcome.message })
-        failed++
-        continue
-      }
-
-      setProcessing(taskKey, null)
-      await refreshArtifacts(item.id, modesOf(core))
-      patch(item.id, { status: 'done', message: '' })
-      done++
+    } finally {
+      // 收尾**无条件执行**。放在循环后面普通语句里的写法，只要循环体里有一处意料之外的
+      // 抛错，`phase` 就永远停在 `running`：对话框出不来结果、快照还写着「在跑」，
+      // 恢复入口也不会再出现，而界面上没有任何报错。
+      //
+      // 走到这里还剩 `queued` 的，只可能是上面抛了错 —— 标成「未执行」，不让它们
+      // 永远停在排队态（对话框已经在显示结果了）。
+      setItems(prev => prev && prev.map(it => (
+        it.status === 'queued' ? { ...it, status: 'skipped', message: '未执行' } : it
+      )))
+      setPhase('done')
+      setBackground(false)
+      // ⚠️ 这里必须显式清，不能只靠上面那个 effect：面板折叠时组件已卸载，`setPhase`
+      // 不会带来一次渲染，effect 也就不跑 ——「收起对话框在后台跑完 → 重新展开」会看到
+      // 一条指向已跑完队列的恢复横幅。
+      clearQueue('generate')
+      markQueueIdle('generate')
+      const parts = [`完成 ${done} 篇`]
+      if (failed > 0) parts.push(`失败 ${failed} 篇`)
+      const skipped = list.length - done - failed
+      if (skipped > 0) parts.push(`跳过 ${skipped} 篇`)
+      useStore.getState().addToast(
+        `批量生成${parts.join('，')}`,
+        failed > 0 ? 'error' : 'success',
+      )
     }
-
-    setPhase('done')
-    setBackground(false)
-    // ⚠️ 这里必须显式清，不能只靠上面那个 effect：面板折叠时组件已卸载，`setPhase`
-    // 不会带来一次渲染，effect 也就不跑 ——「收起对话框在后台跑完 → 重新展开」会看到
-    // 一条指向已跑完队列的恢复横幅。
-    clearQueue('generate')
-    markQueueIdle('generate')
-    const parts = [`完成 ${done} 篇`]
-    if (failed > 0) parts.push(`失败 ${failed} 篇`)
-    const skipped = list.length - done - failed
-    if (skipped > 0) parts.push(`跳过 ${skipped} 篇`)
-    useStore.getState().addToast(
-      `批量生成${parts.join('，')}`,
-      failed > 0 ? 'error' : 'success',
-    )
   }, [items, patch, runOne, setProcessing, failTask])
 
   /** 取消：中断当前请求，剩余项标为已跳过。对话框留着让用户看结果。 */
