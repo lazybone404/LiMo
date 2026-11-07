@@ -34,13 +34,14 @@ import { useTaskRunner } from './useTaskRunner'
  * 转录成功之后要做的两件事：回填正文、把列表里该条改成 `'done'`。
  *
  * 抽成模块级函数是因为它有**三个消费方**：单篇的 `start`（本文件）、待转录卡片、
- * 以及批量转录队列（`useBatchTranscribe`）。后者的处境与前两者不同 —— 它绕开了
- * `useTaskRunner`，因为那里的成功回调带 `isSame()` 判断（只在仍是当前文档时执行），
- * 而批量转录时用户看着的通常不是正在跑的那一篇，回调会被跳过 ⇒ 转录完了列表徽章
- * 还挂着。同一件事写在三处，失效形态就是「其中一条路忘了回填」。
+ * 以及批量转录队列（`useBatchTranscribe`）。批量那条自己排队列（它要三态结果与
+ * `failTask` 的重试条目），但「转录完了回填什么」与单篇共用这一份 —— 同一件事写在
+ * 三处，失效形态就是「其中一条路忘了回填」。
  *
  * ⚠️ 回填正文仍要判断 `currentDocId`：转录可能跑几分钟，期间用户完全可能切走。
  * 那一次判断属于「该不该改预览区」，与「该不该改列表」是两件事，不能合并。
+ * 调用方因此把它挂在 `runTask` 的 `onSuccessAlways` 上（不受导航约束），
+ * 内部这行判断才管预览区。
  */
 export async function applyTranscriptionResult(docId: string): Promise<void> {
   const tx = await getTranscript(docId)
@@ -85,12 +86,16 @@ export function useStartTranscription() {
         prepareAbort,
         onStart: opts.onStart,
         run: (signal) => retranscribe(docId, signal),
-        onSuccess: async (result) => {
+        onSuccessAlways: async (result) => {
           if ('error' in result) {
             // 抛出去交给 `runTask` 的 catch → `onFail`，别在这里再写一遍错误文案
             throw new Error(result.error)
           }
+          // 列表回填与「用户还在看这篇吗」无关：转录可能跑几分钟，切走是常态，
+          // 而 `docs` 里那条的状态在切走之后依然是真的。
           await applyTranscriptionResult(docId)
+        },
+        onSuccess: async () => {
           await opts.onProducts?.(docId)
           useStore.getState().addToast(opts.successToast || '转录完成')
         },

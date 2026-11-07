@@ -104,3 +104,35 @@ describe('useStartTranscription', () => {
     await waitFor(() => expect(onProducts).toHaveBeenCalledWith(DOC_ID))
   })
 })
+
+/**
+ * 用户切走之后 —— `onSuccessAlways` 的存在理由。
+ *
+ * 转录可能跑几分钟，期间切去看别的文档是常态。`useTaskRunner` 的成功回调带
+ * `isSame()` 判断（「还看着这篇吗」），对**预览区**是对的，对 **`docs` 列表**是错的：
+ * 列表里的状态在用户切走之后依然是真的。
+ *
+ * 对照实验：把 `applyTranscriptionResult` 挪回 `onSuccess` → 第 1 组红（徽章一直挂着
+ * 「待转录」，直到用户切去文档库重新拉一次列表）；其余断言仍然绿 —— 因为预览区与
+ * 产物重载本来就该跳过。
+ */
+describe('转录期间用户切走了', () => {
+  it('docs 里的状态照样回填，但预览区与产物重载不动', async () => {
+    let finish: (v: unknown) => void = () => {}
+    retranscribeMock.mockImplementation(() => new Promise(r => { finish = r }))
+    getTranscriptMock.mockResolvedValue({ rawText: '真正的正文' })
+    const onProducts = vi.fn()
+
+    const { result } = renderHook(() => useStartTranscription())
+    let task: Promise<void> = Promise.resolve()
+    await act(async () => { task = result.current.start(DOC_ID, { onProducts }) })
+
+    // 转录还没回来，用户点开了另一篇
+    await act(async () => { useStore.setState({ currentDocId: 'other-doc' }) })
+    await act(async () => { finish({ status: 'done' }); await task })
+
+    expect(useStore.getState().docs.find(d => d.id === DOC_ID)?.transcribeState).toBe('done')
+    expect(useStore.getState().currentRawText).toBe('')
+    expect(onProducts).not.toHaveBeenCalled()
+  })
+})

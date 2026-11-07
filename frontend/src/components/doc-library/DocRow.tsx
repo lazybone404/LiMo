@@ -329,6 +329,15 @@ function DocRowImpl({
               style={{ backgroundColor: colors.bg, color: colors.text }}>
               {SRC_LABEL[doc.sourceType] || doc.sourceType}
             </span>
+            {/* 「待转录」（2026-11-07）：与简略密度同一个判据、同一身配色。
+                ⚠️ 两处都必须有 —— 详细是**默认密度**，只在简略里加等于多数用户看不见。
+                ⚠️ 判据写 `=== 'pending'`：`transcribeState` 缺键 = 已转录（历史条目）。 */}
+            {doc.transcribeState === 'pending' && (
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-warning/15 text-warning"
+                title="正文还没有转录，点开后点「开始转录」">
+                待转录
+              </span>
+            )}
             {/* 「N 合 1」——合成文档的**结构**属性（由几篇合成），与左侧的**类型**标签是
                 两回事，故并排显示而不是合并进类型标签文案 */}
             {isMerged && (

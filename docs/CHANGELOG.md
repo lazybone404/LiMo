@@ -6,6 +6,55 @@
 
 ---
 
+## 2026-11-07 — 转录完的回填不再受「用户还看着这篇吗」约束（审查第 4 条）
+
+**起因**：转录成功之后要做两件事 —— 改预览区（`currentRawText`）与改 `docs` 列表里那条的
+`transcribeState`。这两件事被 `applyTranscriptionResult` 写在一起，而它挂在
+`useTaskRunner` 的 `onSuccess` 上，而 `onSuccess` 前面有一句 stale 检查：
+
+```ts
+const result = await run(signal)
+if (!isSame()) return          // 用户切走了？整个成功副作用都不跑
+await opts.onSuccess?.(result)
+```
+
+那句检查对**预览区**是对的（切走了就别动别人正在看的正文）。对**列表**是错的：
+`docs` 里那条的状态在切走之后依然是真的。转录动辄几分钟，期间切去看别的文档是常态，
+于是最常见的路径上徽章一直挂着「待转录」，直到用户切去文档库重新拉一次列表。
+
+### 修法：`useTaskRunner` 加 `onSuccessAlways`，在 stale 检查之前调用
+
+```ts
+const result = await run(signal)
+await opts.onSuccessAlways?.(result)   // 与导航无关的副作用
+if (!isSame()) return
+await opts.onSuccess?.(result)         // 只在仍看着这篇时执行
+```
+
+两个回调的**分工**来自「这件事在切走之后还成不成立」，不是「代码好不好拆」。同一件事
+写在一处就没法让一半受约束、一半不受。`useStartTranscription` 因此把
+`applyTranscriptionResult` 挪到 `onSuccessAlways`，`onProducts` 与 toast 留在 `onSuccess`
+—— 产物重载动的是预览区，切走了就不该跑。
+
+`applyTranscriptionResult` 内部**仍判 `currentDocId`**（决定改不改预览区），那属于
+「该不该改预览区」，与「该不该改列表」是两件事。批量转录（`useBatchTranscribe`）
+本来就走自己的队列，共用的是这同一个函数。
+
+### 顺带：详细密度没有「待转录」徽章
+
+徽章此前只加在简略（26px 单行）分支里，而**详细是默认密度** —— 多数用户根本看不到它。
+详细分支的底部元数据行补一个同判据、同配色的 `rounded-full` 标签。判据两处都写
+`=== 'pending'`：`transcribeState` 缺键是历史文档，读作已转录；写成 `!== 'done'` 会让
+升级后全部历史文档突然挂上「待转录」。
+
+**影响范围**：转录期间切走的场景下列表徽章会正常消失；详细密度现在显示徽章。
+已转录文档、不作切换的场景行为不变。测试：`startTranscription.test.tsx` 新增「转录期间
+用户切走了」一组，`transcribeBadge.test.tsx` 4 条（两种密度 + 已转录 + 缺键）。
+对照实验：把 `applyTranscriptionResult` 挪回 `onSuccess` → 前者红；删掉详细分支的
+`<span>` → 后者红。
+
+---
+
 ## 2026-11-07 — 只收纳的占位正文不再流进下游（审查第 3 条）
 
 **起因**：「导入与转录分开」之后，库里会长期存在一批 `transcribeState == "pending"` 的文档，
