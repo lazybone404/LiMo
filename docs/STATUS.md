@@ -20,7 +20,7 @@
 | 适配器 | 6（Video / **Arxiv** / Document / Image / Webpage / Text） |
 | 引擎 (ASR/Doc/OCR/Embedding/Rerank) | 13 内置（+三方插件 pymupdf4llm、本地方案模板 local_embedding / rerank） |
 | LLM Agent 工具 | 5 |
-| 设计文档 | 21（docs/ 目录 .md 计数：architecture / engines / constants-home / frontend-patterns / export-pipeline / patterns / search-retrieval / pipelines / doc-library / chart-pipeline / roadmap / 对话协议 / AGENT-ONBOARDING / user-scenarios / plugins / prompts-inventory / BUILD / qianwen-models / ACKNOWLEDGMENTS + CHANGELOG / STATUS；design/ 另计。2026-11-07 实计，同日删掉五份过期的 code-audit 报告） |
+| 设计文档 | 22（docs/ 目录 .md 计数：architecture / engines / constants-home / frontend-patterns / export-pipeline / patterns / search-retrieval / pipelines / doc-library / chart-pipeline / roadmap / desktop-shell / 对话协议 / AGENT-ONBOARDING / user-scenarios / plugins / prompts-inventory / BUILD / qianwen-models / ACKNOWLEDGMENTS + CHANGELOG / STATUS；design/ 另计。2026-11-07 实计） |
 | 代码行数 | 后端 app 44,303 + `limo_cli` 2,328（MCP 881）/ 前端业务 31,248 / 前端测试 17,852（`wc -l` 累加；前端业务 = `src/` 下 ts/tsx **排除 `*.test.*` 与 `setup.ts`**；css 另计 2,607，2026-11-07 按此口径实测重算） |
 
 ---
@@ -307,8 +307,8 @@ frontend/src/
   hooks/         useTaskRunner 等自定义 hook
   lib/           tabRegistry / contentSources / slotRegistry（持有 SlotDef.component）/ panelToggle（开合判据）/ layout-prefs（侧栏布局偏好）/ slotMetrics / modelCaps / markdown-scan（围栏感知标题扫描 + limo-block 行分类/半截标记判据）/ markdown-sections（H2 与任意层级切分，含 `card` 节修饰符判据）/ marker-prefs（标记装饰开关）/ markdown-markers（limo-block 解析/剥离）/ chat-block-content（追问项抽取）/ **chat-font（对话正文字号倍率，独立于阅读字号；档位换算复用 reading-prefs）** / card-prefs（骨架轴偏好 + 底/抬升/边微调与 `serializeCardVars`）/ **artifactMeta（产物元数据展示判据：时间/字数格式化 + 取哪几项；自证条与 VersionSwitcher 共用）** / export-prefs（快捷导出偏好，`embedImages` 默认开）/ 主题模块（accent / theme-base / theme-presets / theme，外加 **theme-axes 轴注册表** —— key / attr / storageKey / options / fallback / apply，**只放 label 不放色值**，启动链与预设遍历它）/ health / download / print
   styles/        主题层（theme-layer.css：六轴纯声明层，前端 `@import` 与后端 `_load_theme_layer_css()` 读**同一份**，打包须在 spec datas）+ 卡片骨架 CSS（cards.css）+ 语义标记 CSS（blocks.css，进导出）+ 对话块 CSS（chat-blocks.css，**不进导出**），前后端共用单一真相源 —— 后端导出时从磁盘读它
-  test/          前端测试（94 测试文件 + setup.ts + fixtures 目录，含组件测试；fixtures/h2-sections.json 与 limo-blocks.json 前后端共享；themeAxisSync 守卫轴注册表 key 集合 ↔ CSS `[data-*]` 跨语言一致）
-docs/            设计文档（19 份 .md）
+  test/          前端测试（102 测试文件 + setup.ts + fixtures 目录，含组件测试；fixtures/h2-sections.json 与 limo-blocks.json 前后端共享；themeAxisSync 守卫轴注册表 key 集合 ↔ CSS `[data-*]` 跨语言一致）
+docs/            设计文档（22 份 .md）
 design/          引擎实测标准 + 卡片视觉方案（cards.md）
 scripts/         门禁与工具（check-all / check-cli / check-secrets / check-artifact-structure 产物结构统计 等）
 ```

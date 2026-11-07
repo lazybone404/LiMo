@@ -100,3 +100,26 @@ import，进包安全，调用时才抛 `MissingDependency`。
 - **searxng**：不随包（AGPL-3.0，tauri resources 未配置）。如需手动部署到安装目录 `searxng/`：清理 `.git` 目录 + 附 AGPL-3.0 全文（从 [searxng 官方仓库](https://github.com/searxng/searxng) 获取；主包已零 AGPL 库，`licenses/` 不再附带 AGPL 全文）
 - **console=False**：PyInstaller 不弹黑框
 - **Tauri resources**：`_internal/` 和 `ffmpeg/` 已在 tauri.conf.json 配置
+
+---
+
+## 开发与构建命令（2026-11-07 从 CLAUDE.md 迁入）
+
+```bash
+cd frontend
+npx tauri dev       # Tauri 开发模式（需先启动后端 7413）
+npx tauri build     # 生产构建 → NSIS/MSI 安装包
+cargo check         # 仅 Rust 类型检查（不完整编译）
+```
+
+三条这里独有的约束：
+
+- **`collect_all` 的返回格式与 `Analysis(binaries=[])` 不同**：`collect_all` 返回
+  `(dest_name, src_path)`，而 `Analysis(binaries=[])` 期望 `(src_path, dest_dir)`。
+  追加 binaries 时用 `(abs_src_path, '.')`。
+- **OpenSSL DLL 版本冲突**：`cryptography` 携带的 `libcrypto-3-x64.dll`（~5MB）会覆盖
+  Python 原生的（~8MB），导致 `_ssl.pyd` 加载失败（`ImportError: DLL load failed`），
+  后端起不来。spec 中排除 cryptography 的 DLL，并显式添加 `sys.base_prefix/DLLs/` 下的原始版本。
+  **每次新增依赖后验证**：直接跑 `LiMoBackend.exe`，看到
+  `Uvicorn running on http://127.0.0.1:7413` 才算过。
+- **`--distpath` 不能省**：不指定时输出到 `dist/`，而 Tauri 打包的是 `bin/` 里的旧文件。

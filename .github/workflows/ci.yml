@@ -1,8 +1,7 @@
-# LiMo CI —— 三条门禁的机械替代（此前「39 个后端测试 + 39 个前端测试文件 +
-# 16 项 CLI 门禁全靠人记得跑」，见 docs/code-audit.md P2-24）。
+# LiMo CI —— 三条门禁的机械替代（此前全量测试与 16 项 CLI 门禁全靠人记得跑）。
 #
 # ⚠️ **与本地脚本是同一条命令，不另写一套判据**：
-#     后端 → `uv run pytest tests/`          （39 文件）
+#     后端 → `uv run pytest tests/`          （119 文件 / 1688 用例，2026-11-07 实测）
 #     前端 → `npm test` + `npx tsc -b` + `npm run lint`
 #     CLI  → `bash scripts/check-cli`        （16 项，自启 7419 端口的真后端）
 # CI 只负责「记得跑」。本地红了就别推——第二套判据正是漂移的来源（模式 #54）。

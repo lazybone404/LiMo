@@ -1,6 +1,7 @@
 # 管道总览
 
-> 本文是 [CLAUDE.md](../CLAUDE.md) 里「管道总览」一段的正文，2026-11-07 外移。
+> 本文收 [CLAUDE.md](../CLAUDE.md) 里与管道有关的正文，2026-11-07 外移：
+> 「管道总览」「导入与转录分开」「批量导入」「生成与处理」。
 > 读者是**要改生成 / 合成 / 处理 / 对话任何一条管道**的人。
 > 分层与模块职责见 [architecture.md](architecture.md)，提示词见 [prompts-inventory.md](prompts-inventory.md)。
 
@@ -92,4 +93,53 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **生成闸门**（`generate.py`）：composite → 不产 polished、跳过 `_auto_title`；`metadataCorrupt` 推 warning 但不阻断。⚠️ **格式清单不再清空**（2026-11-07，链路「产物后处理交给用户」）：两处清空语句（非流式 `formats_list` / 流式 `format_list`）已删除，允许哪些格式由 `AVAILABLE_OPTIONS["composite"]` = `toc` / `formulas` / `chart` / `followup` **一处**决定。**刻意不给**：`summary`（合成骨架本身就是总结；且它的文案教 `limo-block type="card"`，而合成 prompt 从不注入那套规范）/ `references`（`## 材料索引` 承担该位置）/ `link`·`screenshot`（要视频时间点）/ `images`（文案写 `/api/files/...`，合成图是 `assets/` 相对路径）。⚠️ `_single_product = source_type in ("composite", "xlsx")` **不能动** —— composite 仍只落 notes 槽（rawText 已是定稿输入；`build_polish_prompt` 对它返回的是**另一份综述**，开放它等于同一功能两个入口）。⚠️ `get_chart_format` 的 `_no_draw` **按来源分两支**：composite 那支不提任何语义块名、不提「语义块」——合成 prompt 里没有那一节，指代落空。`PROMPT_VERSION` 由此 `"23"`
 - 前端入口在**文档库 BatchBar**（选中 ≥ 2 篇）而非 GenPanel——输入的 N 篇是已入库文档，Attention 在文档库。**确认对话框消费预览端点**：逐篇 token + 处理方式（数据只有后端有——`docs` 是白名单序列化、**不含正文**）、窗口 banner、读者意图单选组（+「自定义」文本框）、原料单选组、**折叠的「高级」区**（维度预设下拉 + 维度列表 textarea 每行一个、切换预设=覆盖；体裁多选，由所选意图的 `defaultContentType` 预填、切意图即重置）——**前端不本地重算 `plan`**（那是复刻 `plan_synthesis`，成对逻辑禁止）。⚠️ `tabRegistry` 给 composite **逐 tab 手写**（summary / transcript / mindmap），**绝不动 `DOC_TYPES` / `ALL_TEXT`**（会被那两处展开成 polished）。mindmap 是 **`[...ALL_TEXT, 'composite']` 显式追加**（2026-11-07；它消费 notes，合成有 notes），不是因为「反正是文本类」。`summary.defaultFor` 也要加（`forSourceType` 与 `defaultFor` 是两件事）。⚠️ 前端笔记格式区的区块条件要**显式含 `isComposite`**（它不在 `isDoc` 里）——漏了整块不渲染，后端允许勾而界面上一个选项都没有。⚠️ 导出清单**仍不含 mindmap**：`getTypeMeta` 调 `forSourceType(st)` 不传 ctx，而 mindmap 有 `visible: (ctx) => !!ctx.currentContent`，对所有类型一致。详见 CHANGELOG 2026-10-01 / 2026-10-02 / 2026-11-07
 - **简单模式（2026-10-29）**：`simpleMode = !needsTuning && !synthTuneOpen` —— 装得下（`mode === 'stuff'`，或预览还没回来）时配置区**默认收起**，只留清单 + 标题 + 「调整选项」链接，标题/按钮叫「合并」。⚠️ **三条判据**：① **收起不减能力**（发的是打开那一刻的默认值，与「展开了但一个不改」逐字相同，测试断言收起态 body 的四个字段）；② **`map_reduce` / `reject` 强制展开且不渲染 `data-synth-tune`**（会压缩/截断/换模型是用户该知道的事）；③ 预览未返回时先按简单模式渲染（避免「先完整后收起」的跳动）。⚠️ **不要改成「合并后自动生成」** —— D7（`describe('done 之后不自动生成（D7）')`）钉住「一次 `/generate/` 都不许有」，技术上还要复刻 `GenPanel::handleGenerate` 的 20+ 参数（模式 #54）
+
+---
+
+### 导入与转录分开（2026-11-07，第一步）
+
+导入从「一件做完三件事」拆成两站：**收纳**（材料进库）与**转录**（正文晚点提取）。本步只做状态拆分 + 单篇转录入口，批量导入/批量转录/批量生成队列是后续。
+
+- **默认值按成本分两档**：媒体（`video`）**只收纳**；文档（`document` / `arxiv` / `webpage`）导入即提取；`text` / `image` 不参与、永远 `done`。⚠️ **这是一次真实的行为变更**（升级后导入 B 站视频不再自动转录），已写进 [README.md](README.md)。档位表 `_TIER_MEDIA` / `_TIER_DOC` + `_resolve_probe_only()` **住后端**（前端拿到一个 URL 时根本不知道它是视频还是文章，只有 adapter 选出来才谈得上分档），前端只传两个布尔偏好 `media_probe_only` / `doc_probe_only`，且**只在偏离默认时才发**（与 `web_search=0` 同一条纪律）。
+- **`ready` / `transcribeState` / `_pending_ids` 三个同名但正交，绝不能合并**：`ready=False` 是 `transcript.md` 未写的**进程内瞬时态**（`list_transcripts` 直接隐藏，库里根本不存在）；`transcribeState` 是**用户可见的持久态**（缺键 = `"done"`，可能有几天）；`store._pending_ids` 是会话级豁免集合。合并之后要么 pending 文档被幽灵清理扫掉，要么占位条目漏进列表。
+- **九处落点，断任何一处都不报错**：`RawTranscript.transcribe_state` / `save_transcript` 拼 `data` / `_transcript_index_entry` / `save_transcript_full` 第六个守护 ｜ `_rebuild_index` 内联字面量 + `DOC_FIELDS` 回落 / `doc_meta.DOC_FIELDS` / `get_transcript` / `project_resource` 白名单 ｜ `_persist_ingest_result` 的**手写返回 dict**。⚠️ **前两处成对**：`data` 是从 dataclass 字段逐个拼的，dataclass 上没有字段就没有值可拼 ⇒ 收纳完的文档一进库就显示「已转录」（实测删掉 → 7 条测试红）。⚠️ **返回 dict 那处是另一条独立断点**：库里对、导入那一刻前端看不到（切去文档库重新拉列表反而正常，因为那条路读 index；实测删掉 → 8 条红）。
+- **第六个守护的实际射程（与计划原文不符，已实测修正）**：`save_transcript_full` 的 `if "transcribeState" not in tx_data` 守护**对今天的三个调用方（PATCH 改标题 / `retranscribe` / `_auto_title`）从不触发** —— 它们的 tx 全来自 `get_transcript()`，而第 7 处落点让它本就带着该字段。真正守住「改标题不抹状态」的是**第 7 处落点**，守护是它之上的第二道，只对「将来手工拼 tx 的调用方」有意义。测试因此拆成三条各考一件事（端到端回归 / 守护本身 / 读路径），并如实标注哪条有区分力 —— **别照抄「去掉守护这条必须红」**。
+- **`retranscribe` 必须显式写 `tx["transcribeState"] = "done"`**（`ingest.py`）：守护让它继承旧值，不写则正文已更新、界面永远挂「待转录」，零报错。本步最容易漏的一行。
+- **`probe` 是 adapter 上的可选钩子**，写法照 `precheck` / `warmup` / `release` 的既有惯例（**不进 Protocol、不改 `adapt()` 签名、消费方 `getattr`**），五个 adapter 一行不动。本步只有 `VideoAdapter` 实现（把既有 `extract_info(download=False)` 抽成 `_probe_info()`，`adapt()` 与 `probe()` 共用，**不下载音频**）。⚠️ **「有没有 `probe`」不是能否收纳的条件**，档位表才是；它只决定标题好不好看，没有它的类型走既有 `_build_title` 兜底。
+- **分叉点必须在 `adapt()` 之前，且只有一份实现**：`adapt()` 在 `ingest.py` 有两个逐字同构的调用点（非流式 `ingest` 与 SSE 的 `run_pipeline`），只在其中一处加 = 用户走另一条路行为完全不同而两条路都不报错（**前端主路径打的是 `/stream`** ⇒ 「单测绿、实机不生效」是最可能的形态）。收口 `_run_adapter(adapter, inp, *, probe_only, engine_cfg, on_progress=None) -> (output, tx_id | None)`，`probe_only` 由它预生成的 `tx_id` 派生（`probe_only = tx_id is not None`，**必须在 `tx_id = tx_id or …` 兜底之前取**）。⚠️ 收纳模式**不发进度事件**：`on_progress` 是 `queue.put_nowait` 的闭包，从 `asyncio.to_thread` 的 worker 线程调它不安全。
+- **占位正文 `<!-- limo-pending:{tx_id} -->`**：带 `tx_id` 保证 `content_hash` 唯一（否则同一份文件两次收纳会互相判重）；首行是 HTML 注释 ⇒ 不被 `_extract_title_from_rawtext`（`^#{1,2}\s+`）污染，**别为防污染去改正则**。⚠️ **已知副作用（接受，有测试钉住）**：收纳模式下同一份文件导入两次得两篇 pending，内容去重要等转录完成才可能撞上；URL 去重不受影响。
+- **`status` 绝不能改成 `"stored"`**：索引闸门判据是 `result.get("status") == "done" and "id" in result`，改了会让这篇**不进全文索引**，而两条路径都报成功 —— 失效形态是「刚收纳的搜不到，重启重建后又能搜到」。
+- **顺带修一个既有缺口**：SSE 导入路径此前**从不写全文索引**（`_index_for_search` 只有非流式那条调，而前端主路径走 SSE ⇒ 今天经 SSE 导入的文档在下次重启前搜不到）。抽 `_index_if_persisted(request, result)`，判据与原文逐字相同，两条路径共用；顺序保持「先 persist、后索引、再投 done」，索引失败只 `warning` 不把导入报成失败。
+- **前端**：偏好住 localStorage（[lib/ingest-prefs.ts](frontend/src/lib/ingest-prefs.ts)，`mbw_ingestPrefs`）而非 config.yaml，形态照 `chat-prefs`（`useSyncExternalStore` + **快照稳定引用**，以磁盘原始串为键）。⚠️ **不能各自 `useState(loadIngestPrefs())`**：设置页改完后已挂载的 GenPanel 不会重挂载，显示旧值而导入按新值跑。**乐观条目收成一处** [lib/docEntry.ts](frontend/src/lib/docEntry.ts)::`optimisticDoc()`（此前五处手写字面量不会自动带上新字段，漏了的形态是「刚导入的那篇不显示待转录徽章，切去文档库刷新后又正常」）。**转录完怎么刷新只有一份** [hooks/useStartTranscription.ts](frontend/src/hooks/useStartTranscription.ts)（GenPanel 的「⟳ 重新转录」与预览区待转录卡片共用，成功后把 `docs` 该条置 `'done'`，否则正文已更新、列表徽章还挂着）。
+- **生成侧前置拦截**：`GenPanel` 生成前判据加 `transcribeState === 'pending'`，否则会拿占位文本生成一篇笔记。
+
+### 批量导入（2026-11-07，第二步）
+
+多个文件一次导入，**零后端改动**：`/ingest` 与 `/ingest/stream` 每次只处理一个输入，批量是前端的串行循环。四个文件：纯函数 [gen-panel/batchImport.ts](frontend/src/components/gen-panel/batchImport.ts)（识别 + 截断 + 标 reject）、串行队列 [gen-panel/useBatchImport.ts](frontend/src/components/gen-panel/useBatchImport.ts)、三态对话框 [gen-panel/BatchImportDialog.tsx](frontend/src/components/gen-panel/BatchImportDialog.tsx)，入口在 `ImportSection` 的 `onBatchFiles`。
+
+- **识别表复用 `DROP_ACCEPT` / `EXT_TO_SUBTYPE`，不另抄扩展名清单**：`batchImport.test.ts` 第一组测试直接遍历 `DROP_ACCEPT` 自己的每一项断言，两处分叉那一刻变红。
+- **`.md` / `.txt` 必须前端读文本再走 `ingestText`**：`TextAdapter.accept` 只认 `InputType.TEXT`，把 `File` 塞进 `ingestFile` 会被适配器路由判成不认识。
+- **取消必须由第三条出口接住**：三个入口在用户取消时**都不回调**（`ingestStream` 的 `AbortError || signal?.aborted` 分支直接 return）。只等 `onDone` / `onError` 的话 `runOne` 的 Promise 永不落地、队列卡在第一项，界面上表现为「点了取消，进度条不动了也不结束」。故 `runOne` 挂 `signal.addEventListener('abort', …)`，终态三值 `done` / `error` / `aborted`。配套一条：`fallbackJson` 的 catch 不判 `AbortError`，会把取消报成「网络错误」⇒ `onError` 里先判 `signal.aborted`。
+- **`start()` 零请求**，只识别并打开确认对话框；用户按「开始导入」之后 `confirm()` 才发第一个请求。与后续的批量生成队列同一条纪律。
+- **多文件分支不过滤扩展名**：批量按每个文件各自的扩展名决定通道，拖进视频标签页的一张 png 也该被识别成图片。单文件仍走原来的 `validateDropFile` + `pickFile`（零回归）。
+- **上限 50 个，先截断再识别**：超出的文件连条目都不生成，对话框顶部说明「另有 N 个未加入清单」。生成一屏「其实不会导入」的行比一句提示更难读。
+- **每个文件一个 `taskKey`**（`__import__N__import`，`__import__` 前缀在 `taskManager` 里进独立 Map 不互相 abort），失败只标红这一项。
+
+### 生成与处理
+- **双产物并行**：非流式端点走 `generate_both()`（`asyncio.gather`）；流式端点（`/generate/{id}/stream`）用 `_run_product` 协程 ×2 + `asyncio.Queue` 汇合事件（chunk 交错到达 SSE 顺序安全）+ `asyncio.gather` 收拢。⚠️ **gather 返回顺序 = 任务创建顺序，解包变量名必须同序**（曾解包反了 → notes/polished 内容互换写进对方文件）。source_type 派发 prompt（视频/网页→通用，PDF/Document→文档 prompt，Excel→分析报告+数据摘要）
+- **思考链（deepseek-v4）**：`reasoning_content` 逐段回调（`on_reasoning`，不混入正文）→ SSE `type=reasoning` → 前端 ProcessingPlaceholder"模型思考中"。思考链是临时展示，正式文本流式后直接替换。**思考强度**：`reasoning_effort` 经 `extra_body` 传递（qwen 忽略未知字段兼容），三档 low/high/max，**思考模式默认开启且 effort 默认 high**。polished 是忠实整理任务传 `"low"`（默认 high 思考静默 90s+）、参考文件摘要同传 `"low"`；chunk 间隔超时 150s 容忍长思考、总超时 330s（推理链 chunk 到达时 anext 正常返回不触发超时）。⚠️ **思考模式下 temperature / presence_penalty / frequency_penalty 不生效**（不报错，静默失效）——故续写时的 temperature 递减对 DeepSeek 是空操作（保留为兼容其他厂商）；`top_p` 相反，仅思考模式生效且 <0.95 按 0.95 处理（2026-09-23 依官方「思考模式」页补注）
+- **图片→LLM 双轨制**：视频和文档走不同路径。视频：「AI 画面理解」一键开关 = VL 管线 + 网格图发 LLM（对标 BiliNote），网格图不嵌入笔记。文档：保留文档图片→AI 分析图片→图片预处理三级，文档图片嵌入文章有价值。`send_to_llm = bool(image_analyze)`，前端保证门控。
+- **目标语言**：config.yaml `target_language` + prompt 参数化，8 语言可选
+- **LLM 续写**：`finish=length` → 自动续写 3 轮，temperature 递减
+- **流式 + 取消**：SSE 端点，cancel_event 真正中断 token 消耗，取消保存 partial 可续写
+- **Prompt XML 分节**：`PromptComposer.section()` + `compose()` 组装 10 个标签（role/task/source_content/instruction_priority/hard_constraints/output_language/style_preference/output_format/reference_texts/user_request），空节自动跳过。`_INSTRUCTION_PRIORITY` 声明**四层**优先级：hard_constraints > output_language > user_request > style_preference（合成管道另有 `_SYNTHESIS_INSTRUCTION_PRIORITY` 三层版，无 style_preference 节）
+- **参考文件（Reference Text）**：生成时注入参考资料（如评论区观点），仅 notes 注入 `<reference_texts>` section（user_request 前），polished/Excel 不注入。流式 GET 无法传大 JSON → `POST /api/references` 内存暂存（TTL 20 分钟）+ 短 id，生成传 `reference_ids`。前端参考文件 state 仅会话内不持久化。**单文件上限 1MB**（前后端同值，2026-09-23 由 200KB 放宽）
+- **参考文件暂存**（`core/reference_store.py`）：内存 dict + TTL，**过期项全表清理**（`_purge_expired_locked()`，save/get 两路径都调）+ 双闸门（条目 32 / 总量 32MB，超限 `AppError(REFERENCE_STORE_FULL)`，闸门在清理**之后**判）。⚠️ **不能按入参惰性清理**：前端一次只持一个 id，换文件即换 id → 旧 id 再不会被查询，只清入参的实现永远碰不到它（详见「关键模式」第 42 条）
+- **参考文件超窗压缩**（`generation/reference_compressor.py`，2026-09-23）：`原文 + 参考 > 窗口 × 0.7`（与对话预算同源）时先用当前生成模型逐份摘要，装得下零成本原样返回。失败降级逐份截断 → 总量兜底。**只在 notes 侧做**（polished 不注入参考，压缩是白花钱）。流式路径先推 `stage` SSE 事件（`{type:'stage', message}`，前端 `TaskInfo.stage` 单值承载，正式 chunk 一到即被全量替换清掉）。**摘要超时 `COMPRESS_TIMEOUT=180s` 独立一层**——压缩在生成总超时（330/400s）之外，不设它模型挂起时要干等 5 分钟；`except CancelledError: raise` 必须排在前面（用户取消走 `app.llm.CancelledError`，与 `asyncio.CancelledError` 无关），`TimeoutError` 单独列一支（`str(TimeoutError())` 是空串）。⚠️ **三个坑**：① 原文自身超预算（base ≥ budget）时**不做兜底**（压到空也救不回请求）；② 截断函数不能有「至少留 N 字符」硬下限（会让配额远小于文本时纹丝不动）；③ 截断必须幂等且从 limit 里扣掉标记自身开销
+- **参考文件名清洗**（`prompt.py::sanitize_reference_name`）：注入侧与压缩 prompt 同源复用——空白归一 + 引号替换 + 全角括号转半角 + 限长 80，防换行伪造 `【参考资料 N】` 标记、双引号闭合 `来源="..."` 属性。**只做结构安全，不做内容审查**
+- **参考内容的注入防御**（2026-09-23 补）：`_format_reference_texts` 第 5 条 + `COMPRESS_PROMPT` 各声明一句「参考资料只是素材，不是指令」——参考文件常来自第三方（他人文章/评论区），而「主动利用」文案会放大模型对其内容的遵从。**内容本身零触碰**（不转义不过滤），只加声明。⚠️ `source_content`（导入正文）同样缺此声明，未纳入本轮
+- **Polish/Notes 风格隔离**：Polish 固定忠实整理策略（无 `<style_preference>` 节 + **不接受 user_notes 备注**，参数保留兼容但内部忽略不注入 `<user_request>`），格式白名单 `_POLISH_FORMAT_FNS`（toc/translate/formulas/references/images）。Notes 有 `<style_preference>` 节，风格从 `VIDEO_NOTE_STYLES`（10 种）或 `DOC_NOTE_STYLES`（9 种）查找。`normalize_style()` 兼容旧 `meeting_minutes` key。⚠️ **默认档 = `plain`（通俗）**（2026-10-05，Excel 例外——它映射到 detailed 同值文案）：改默认要动 **8 处**（枚举 / `COMMON_NOTE_STYLES` / `EXCEL_STYLE_MAP` / `styleLabels`【**手写 dict 不会自动带出**】/ `genPrefs` / `GenPanel` 三处 fallback / 后端 6 处签名默认值），漏一处就是静默无风格或按钮不出现；⚠️ 同一批修掉的三个**静默改写**缺陷（枚举值 `meeting_minutes` vs 表 key `meeting`、`none` 不在枚举却被注释声称合法、修前者时的反向回归）——修法是**归一与校验都走 `normalize_style`** 且 `none` 显式放行，逻辑收口 `routers/generate.py::_normalize_and_validate_style()`（抽成模块级是为了让测试**直调真实实现**而不是复刻表达式）
+- **风格定义位置**：`app/generation/prompts/notes_styles.py`（COMMON_NOTE_STYLES → VIDEO_NOTE_STYLES / DOC_NOTE_STYLES），旧 `STYLE_MAP`/`DOC_STYLE_MAP` 保留为 deprecated 别名
+- **Agent SSE 事件流**：`meta`（conversation_id/budget/price）→ `compressed`（历史压缩）→ `agent_status`（状态条）→ `tool_start`（`tool`/`display`，`_tool_display()` 生成安全文案）→ `tool_result`（`summary` 摘要 + `refs` 引用文档 docId/title，完整结果只传 LLM）→ `thinking`（思考段，`reasoning_content`）→ `text` 流式 token → `done`（cancelled?）。**引用不独立成事件**，随 `tool_result.refs` 携带。C 端不暴露完整工具结果到前端 UI。协议详见 docs/对话协议.md
+- **对话文档注入**：`smart_truncate(rawText, 1000)` 按句子边界截断（优先级：`。` > `. ` > `\n\n` > `\n`），不再硬截 `[:1000]`
 
