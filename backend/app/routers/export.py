@@ -1805,6 +1805,17 @@ def _build_export_zip(
                         # 纯文本里 HTML 注释是**可见噪音**（`<!-- limo-block:v1 … -->`），
                         # 与 md 同理剥离 —— 剥的是标记行，块内文字一个字不少。
                         processed = _strip_blocks(processed)
+                        # 自证头同理剥离，**只在这一支做**：产物自证头的用处是「离开 .limo
+                        # 之后靠那一行说明来历」，而 `.txt` 没有 HTML 注释这层语义 ——
+                        # 打开就是一行 `<!-- limo-meta {"type":…} -->` 横在正文前面。
+                        # md / html / docx 三条链**保留**（`_pick_artifact` 返回
+                        # `raw_content` 就是为这个，见它的 docstring）：md 有源码可留、
+                        # html 渲染时注释不可见、docx 剥注释节点。四者在此处分岔，
+                        # 漏掉这一支的形态是「导出纯文本，开头多一行 JSON」。
+                        # ⚠️ 合成文档的出处头也走同一个信封，一并剥掉 —— 纯文本里它
+                        # 同样是不可见的注释被摊成可见字符。数据层（rawText 落盘、
+                        # 搜索、模型输入）不受影响，那里仍按「头不剥离」处理。
+                        processed = strip_meta(processed)
                         ext = "txt"
                     elif fmt == "docx":
                         # Word：用**原始 content**（非 processed）——image_md=inline 已把图片
