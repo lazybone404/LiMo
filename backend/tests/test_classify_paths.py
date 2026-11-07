@@ -409,3 +409,99 @@ def test_nested_misc_does_not_consume_quota():
     assert out["suggestions"][0]["folder"]["action"] == "new"
     assert out["suggestions"][1]["folder"] == {
         "action": "new", "name": "技术/杂项", "misc": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# 「选了子文件夹却一个没建」必须说出来（2026-11-07）
+# ─────────────────────────────────────────────────────────────
+#
+# `max_depth` 在收口侧只是**上限**：超了截断、不超照收。用户选了「允许子文件夹」，
+# 模型把「前端」「后端」摊平成两个根级夹，代码不会报错、界面也看不出区别 ——
+# 于是用户看到的结果与「选的是不建子文件夹」逐字相同，会认为自己的选择被忽略了。
+# 这里钉两件事：prompt 要把「什么时候该分层」讲成可执行的条件；收口侧要把
+# 「一条子文件夹都没产生」显式说出来。
+
+def test_prompt_tells_model_when_to_nest():
+    """≥2 层档的措辞是「必须按实际层次建」，不是「可以用 `/`」。
+
+    对照（已验证有区分力）：把 `_depth_rule` 的 ≥2 分支换回旧的「新建时可以用 `/`
+    表示层级」一句 → 本条红。「可以用」只说明了语法，没有给模型任何判断依据。
+    """
+    p2 = build_classify_prompt(_docs("tx_a"), _TREE, [], MAX_NEW_FOLDERS, max_depth=2)
+    assert "按主题的实际层次来建" in p2
+    assert "摊平到根级" in p2
+    # 不建子文件夹那档不该出现这些措辞（它讲的是相反的事）
+    p1 = build_classify_prompt(_docs("tx_a"), _TREE, [], MAX_NEW_FOLDERS, max_depth=1)
+    assert "摊平到根级" not in p1
+
+
+def test_flat_result_is_reported_when_user_asked_for_subfolders():
+    """选了 2 层、结果全是根级夹 → 必须有一条全局提示，并给出可采取的动作。
+
+    对照（已验证有区分力）：删掉 `normalize_suggestions` 末尾那段 `placed ... == 0`
+    的统计 → 本条红（`out["warnings"]` 里没有这条）。
+    """
+    raw = {"docs": [
+        {"id": "tx_a", "folderAction": "new", "newFolderName": "前端"},
+        {"id": "tx_b", "folderAction": "new", "newFolderName": "后端"},
+    ]}
+    out = normalize_suggestions(raw, _docs("tx_a", "tx_b"), [], MAX_NEW_FOLDERS,
+                               max_depth=2)
+    hit = [w for w in out["warnings"] if "没有产生任何子文件夹" in w]
+    assert hit, out["warnings"]
+    # 文案要给出下一步 —— 只说「没建」而不说怎么办，等于把问题丢回给用户
+    assert "重新分析" in hit[0]
+
+
+def test_nested_result_does_not_trigger_the_notice():
+    """对照：有一条多段路径就不该提示。
+
+    这条防的是「判据恒为真」—— 例如把统计写成「所有 new 都算根级」时，
+    明明建了子文件夹也照样提示，提示本身就没有信息量了。
+    """
+    raw = {"docs": [
+        {"id": "tx_a", "folderAction": "new", "newFolderName": "技术/前端"},
+        {"id": "tx_b", "folderAction": "new", "newFolderName": "生活"},
+    ]}
+    out = normalize_suggestions(raw, _docs("tx_a", "tx_b"), [], MAX_NEW_FOLDERS,
+                               max_depth=2)
+    assert not any("没有产生任何子文件夹" in w for w in out["warnings"]), out["warnings"]
+
+
+def test_reuse_into_existing_subfolder_counts_as_nested():
+    """复用已有的子文件夹同样算「有子文件夹」。
+
+    ⚠️ 这条钉的是两条判据不同源：`new` 的 `name` 是 `/` 连接的显示路径，可以直接数
+    斜杠；`reuse` 的 `name` 是**裸名**，而库存里的夹名本身就可能含 `/`。对 reuse 数
+    斜杠会把「名字带斜杠的根级夹」误判成子夹，故必须走 `folder_tree.paths()` 的
+    `父 › 子` 标签。
+    """
+    raw = {"docs": [
+        {"id": "tx_a", "folderAction": "reuse", "folderId": "fd_fe"},
+        {"id": "tx_b", "folderAction": "reuse", "folderId": "fd_life"},
+    ]}
+    out = normalize_suggestions(raw, _docs("tx_a", "tx_b"), _TREE, MAX_NEW_FOLDERS,
+                               max_depth=2)
+    assert not any("没有产生任何子文件夹" in w for w in out["warnings"]), out["warnings"]
+
+
+def test_no_notice_when_user_asked_for_flat():
+    """选了「不建子文件夹」那档 → 不提示（本来就不该有子文件夹）。
+
+    没有这条对照，把判据写成「只要没有子文件夹就提示」，会在用户明确选择扁平
+    的情况下反复劝他改 —— 那不是提示，是噪音。
+    """
+    raw = {"docs": [{"id": "tx_a", "folderAction": "new", "newFolderName": "前端"}]}
+    out = normalize_suggestions(raw, _docs("tx_a"), [], MAX_NEW_FOLDERS, max_depth=1)
+    assert not any("没有产生任何子文件夹" in w for w in out["warnings"]), out["warnings"]
+
+
+def test_no_notice_when_everything_is_unassigned():
+    """全部 `none`（没有产生任何文件夹）也不提示。
+
+    这时用户该看的提示是「模型没有给出分类」，而「没有子文件夹」是它的自然结果 ——
+    两条一起出现会让用户以为问题是层级选窄了。
+    """
+    raw = {"docs": [{"id": "tx_a", "folderAction": "none"}]}
+    out = normalize_suggestions(raw, _docs("tx_a"), [], MAX_NEW_FOLDERS, max_depth=2)
+    assert not any("没有产生任何子文件夹" in w for w in out["warnings"]), out["warnings"]

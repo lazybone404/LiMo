@@ -236,8 +236,16 @@ def _depth_rule(max_depth: int) -> str:
         # 带上就是「……不要用 `/`。；上面已经存在的……」这种双标点
         return "本次**不要新建子文件夹**：新建的文件夹一律放在根级，名字里不要用 `/`"
     level = "一级子文件夹" if max_depth == 2 else "两级子文件夹"
-    return (f"新建时可以用 `/` 表示层级（如「技术/前端」），**最多 {max_depth} 层**"
-            f"（一个主文件夹 + {level}）")
+    # ⚠️ **后半句不是客套的「可以用」**。`max_depth` 在收口侧只是上限，模型给一堆
+    # 根级夹也照收 —— 实测的失败形态是「把子类摊平成同级」：本该是 `技术/前端`、
+    # `技术/后端` 的材料，被建成三个并列的根级夹。用户明明选了含子文件夹的档位，
+    # 结果一个都没有，而收口侧不会报错（它只负责截断，不负责要求）。故这里必须把
+    # 「什么时候该分层」写成可执行的条件，而不是只说明「可以写 `/`」。
+    return (f"新建时用 `/` 表示层级（如「技术/前端」），**最多 {max_depth} 层**"
+            f"（一个主文件夹 + {level}）。既然选了含子文件夹的细分程度，就**按主题的"
+            f"实际层次来建**：若若干篇能归入同一个主文件夹、且组内还能明显分成两类"
+            f"以上，必须建成「主文件夹/子文件夹」，不要把本该是子类的东西（如「前端」"
+            f"「后端」）全部摊平到根级")
 
 
 def _folder_section(folders: list[dict], mode: str, max_new: int,
@@ -784,6 +792,28 @@ def _plan_new_paths(docs: list[dict], seen: dict[str, dict], folders: list[dict]
     return rejected, planned
 
 
+def _nested_placement_count(suggestions: list[dict], folders: list[dict]) -> int:
+    """本次有多少篇落进了**带层级的**文件夹。
+
+    ⚠️ 两种 action 的判据刻意不同，混用会让统计恒为 0 或恒为全体：
+      - `new` 的 `name` 是本模块用 `_display_path()` 拼出来的（`/` 连接），数斜杠即可；
+      - `reuse` 的 `name` 是**裸名**，而库存里的夹名本身就可能含 `/`（历史数据里就有）。
+        对裸名数斜杠会把「名字里带斜杠的根级夹」误判成子夹，故改走
+        `folder_tree.paths()` 的 `父 › 子` 标签 —— 它按 parentId 链构造，与名字内容无关。
+    """
+    labels = folder_tree.paths(folders) if folders else {}
+    count = 0
+    for s in suggestions:
+        folder = s.get("folder") or {}
+        if folder.get("action") == "new":
+            if "/" in str(folder.get("name") or ""):
+                count += 1
+        elif folder.get("action") == "reuse":
+            if " › " in (labels.get(folder.get("id")) or ""):
+                count += 1
+    return count
+
+
 def normalize_suggestions(raw, docs: list[dict], folders: list[dict],
                           max_new: int, *,
                           folder_mode: str = FOLDER_MODE_REUSE_OR_NEW,
@@ -878,6 +908,26 @@ def normalize_suggestions(raw, docs: list[dict], folders: list[dict],
             global_warnings.append(
                 f"模型把 {len(misc_rows)}/{len(suggestions)} 篇归入了口袋文件夹"
                 f"（「{label}」），超过 1/{MISC_MAX_DENOMINATOR}，已整体撤下")
+
+    # ── 「选了子文件夹却一个没建」的显式提示 ──────────────────────────
+    # `max_depth` 在收口侧只是**上限**（超了截断、不超照收），代码不该自作主张硬造
+    # 层级 —— 那需要语义判断，硬塞出来的分组是错的。但「用户选了含子文件夹的档位、
+    # 结果一条子文件夹都没有」若静默通过，界面上的结果与「选的是不建子文件夹」逐字
+    # 相同，用户会认为自己的选择被忽略了。故只提示、不强改，并给出可采取的动作。
+    #
+    # ⚠️ 判据限定在 `reuse_or_new`：另两种策略根本不允许新建，前端在它们下面传的是
+    # 中性值 `max_depth=1`（避免回显用户没选过的层数），这里再判一次是为了让语义
+    # 显式——不依赖「上游一定传了 1」这个外部前提。
+    # ⚠️ 放在口袋夹闸门**之后**：被撤下的那批已经改成 `action:"none"`，按最终结果
+    # 统计才对得上用户看到的那张表。
+    if folder_mode == FOLDER_MODE_REUSE_OR_NEW and max_depth >= 2:
+        placed = sum(1 for s in suggestions
+                     if s["folder"].get("action") in ("new", "reuse"))
+        if placed and _nested_placement_count(suggestions, folders) == 0:
+            global_warnings.append(
+                f"你选择的细分程度是「最多 {max_depth} 层」，但本次没有产生任何子文件夹，"
+                f"{placed} 篇都归在了一级文件夹里。如果这批材料的主题确实还能再分一层，"
+                f"可以返回重新分析；也可以先采纳，之后在文档库里手动调整")
 
     return {"suggestions": suggestions, "warnings": global_warnings}
 
