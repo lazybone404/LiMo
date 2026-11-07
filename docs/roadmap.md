@@ -201,6 +201,20 @@
 |------|------|------|
 | ❌ | **自动更新（安装版）**｜优先级：高 | 客户端读 GitHub Release 的 `latest.json`，与 `CARGO_PKG_VERSION` 比版本号，有新的就下载 → minisign 验签 → 安装 → 重启。**只做安装版**：LiMo 只发 NSIS 安装包（`bundle.targets` 写的是 `all`，实际产出只有 `LiMo_x.x.x_x64-setup.exe`），Tauri updater 插件承担全部下载 / 验签 / 替换 / 重启，不必自写便携版那套 helper 进程 + 备份回滚 —— P-ai 的 2,647 行里绝大部分是这一块。三处落点必须同批做：① `frontend/src-tauri/tauri.conf.json` 加 `bundle.createUpdaterArtifacts: true` 与 `plugins.updater.pubkey`（两者当前都不存在，`plugins` 是空对象）；② 发版流程加「签名 → 生成 `latest.json` → 随安装包一起上传」—— 现在 `scripts/` 下无任何 release 脚本，`.github/workflows/` 只有 `ci.yml` 与 `deploy-demo.yml`，发版靠手工 `gh release create`；③ 发版门禁加一条「`latest.json` 存在且 `signature` 非空」，与 `sync-version.py --check` 同性质。⚠️ **漏签是静默失效**：客户端只认为「没有新版本」并继续用旧版，全程不报错。⚠️ **私钥丢失不可逆**：存量客户端只认已内置的公钥，换密钥后它们再也收不到自动更新，只能手动重装 |
 
+### 🔧 代码结构
+
+> 这里只记**结构债**：不是缺功能，也不是坏掉了，而是「继续这么长下去会变贵」。
+> 已量过的基线（2026-11-07）：`backend/app/` 44,705 行，`frontend/src/` 53,226 行；
+> 后端最大文件 `storage/store.py` 2,350 行、`routers/export.py` 2,056 行、
+> `generation/prompt.py` 1,978 行、`engines/plugin_loader.py` 1,737 行。
+
+| 状态 | 功能 | 说明 |
+|------|------|------|
+| ❌ | **分层依赖守卫**（成本最低） | 写一条 AST 测试：遍历 `backend/app/` 下每个 `.py`，断言 `services/` 不出现 `fastapi` import、`storage/` 不出现 `app.routers` / `app.services` import。**只做这一条** —— 反方向（`storage` import `routers`、`adapters` 互相 import）破坏时 Python 会循环 import 当场崩，是响亮失败，不需要守卫。⚠️ 今天这两条约束**零自动检查**，全靠 CLAUDE.md 一句话与人的自觉；破坏形态是「加个 `from fastapi import Request` 做类型注解，测试全绿」，几周后才在「import `QueryService` 而不装 FastAPI」时暴露，报出来的是 `ModuleNotFoundError`，而原因隔了几十个提交。约十行 |
+| ❌ | `routers/export.py` 渲染层外移 | 该文件 2,056 行里 **:674-1623 这 950 行**是纯渲染：`_get_katex_assets()` 189 行 / `_build_selfcontained_html()` 186 行 / `_build_mindmap_html()` 121 行，外加 CSS 读取与 Markdown→HTML。同仓惯例是渲染住 services（`docx_export.py` 913 行、`chart_renderer.py` 1,101 行），**只有 HTML 导出是例外**。⚠️ **触发条件：第二次用到那段渲染代码**（CLI 要导出 HTML，或换掉 KaTeX 加载方式），届时抽成 `services/html_export.py`；没有第二个消费方之前拆只是搬代码 |
+| ❌ | `generate_stream` 拆分 | `routers/generate.py:672-1510`，**单个函数 838 行**，同时做 SSE 推送 / 断连监听 / 超时计算 / 图表校验 / 图片归一化 / 续写 / 自动标题；同文件 `generate()` 另有 293 行（:379-672）。⚠️ **触发条件：出现第二个流式生成入口** —— 那时共用部分才谈得上抽哪里，在那之前拆只能靠猜边界 |
+| ❌ | Controller→Service→Repository 分层 | generate.py 继续膨胀时 |
+
 ### 🧩 产物复用（2026-10-04 一期落地）
 
 > 源头是三份 pi-docs 约定（密钥存储 / CLI 设计 / 产物复用），共同目标是**让产物能被 agent 复用**：不是没人能读产物，是**读的人不知道读了什么**。
@@ -235,7 +249,6 @@
 | ❌ | remark-tag 标签插件 | `#标签` 语法在笔记中可点击（纯前端） |
 | ❌ | 组件/功能挂载插件系统 | 有第三方开发者时再做 |
 | ❌ | 后台任务队列 | 批量任务性能遇瓶颈时（arq/Redis） |
-| ❌ | Controller→Service→Repository 分层 | generate.py 继续膨胀时 |
 | ❌ | UI 大重构 | VSCode 式面板，有明确多工作流需求时 |
 
 ### 📊 汇总
@@ -254,5 +267,6 @@
 | 🎨 前端 UI/UX | 21 | 21 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
 | 🔄 分发与更新 | 0 | 1 | 0% |
+| 🔧 代码结构 | 0 | 4 | 0% |
 | 🧩 产物复用 | 4 | 5 | 80% |
-| **合计** | **126** | **129** | **98%** |
+| **合计** | **126** | **133** | **95%** |
