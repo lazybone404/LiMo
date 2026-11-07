@@ -1,8 +1,12 @@
-# 待办事项
+# 路线图
 
 > 本文是 [CLAUDE.md](../CLAUDE.md) 里「待办事项」段的正文，2026-11-07 外移。
 > 它是一张按域分组的进度表，改动频率高于规则类内容，留在 CLAUDE.md 里会让
 > 每次会话的固定开销随条目增长。**规则与踩坑不在本文**，那些在 CLAUDE.md。
+
+> ⚠️ **本文件只回答「这个方向做到哪了」与「有没有人想过要做」。** 已经决定要做、
+> 做法清楚的短期任务在 [TODO.md](TODO.md)，不在这里 —— 想法按季度记，待办按周记，
+> 混在一起写两边都读不出重点。
 
 > 图例：✅ 已完成　🟡 基础可用，待增强　❌ 未开始
 
@@ -147,7 +151,6 @@
 | ✅ | 对话导出 | Markdown + JSON，支持批量 ZIP |
 | ✅ | Word 导出 | Markdown→HTML→docx（共用解析器 `markdown_render.py`）；标题大纲级别/嵌套列表/表格/代码块/引用/超链接/☑任务列表/时间戳双色 badge/图片等比内嵌；公式保留 LaTeX 原文（2026-09-21） |
 | ✅ | 导出进度反馈（2026-10-29 接线） | 后端 `POST /export/custom/stream`（SSE 进度）+ `GET /export/download/{temp_id}` 早已就绪，缺的只是前端 —— `ExportPanel::handleCustomExport` 改为 `fetch` + `parseSSEStream`，进度条跟 `{phase, doc, total}`、`done` 拿 `download_url` 落盘。**刻意只留这一条路径**（流式端点内部调的就是 `_build_export_zip` 那一份，留同步端点当回退只会在某次改动时分叉） |
-| ❌ | 图片预处理复用 | 导入时已 optimize_images，导出 ZIP 未复用压缩后图片 |
 | ✅ | 详细导出判据修复（2026-10-11） | 审查查出六条：跨类型 tab 并集不再产出「名字对不上、内容是同一段原文」的假文件（前端滤 `contentSource='none'` + 后端不回退 rawText）/「原图」「OCR」摘出导出清单（它们本就没有内容源）/ `/export/batch` 空结果 404（与 `/all`、`/custom` 统一）/ 一键导出剥 `limo-block`（与定制导出同源）/ `_inline_images` 补 `doc_dir`（成对守卫）/ 只勾 Word 时不再写无人引用的 `images/`。⚠️ **同一批发现三个导出测试文件在门禁里空跑**（模块级裸断言 → pytest 收集数 0），已加适配层 |
 | ✅ | PDF 导出 | 两条路径共用一份自包含 HTML——**Tauri**：Rust `export_pdf` → 屏幕外窗口 → `ICoreWebView2_7::PrintToPdf` **免对话框直接落文件**（A4 + 背景保留 + 无页眉页脚，存系统「下载」目录、同名加序号）；**浏览器**：屏幕外 iframe → 打印对话框。打印样式三处落点（`_PRINT_CSS` + Pygments 浅底 defs + limo 暗色还原）。两条链均已实测（2026-09-21） |
 | ✅ | md 公式「render」通道已移除 | ~~`formula_md=render` 依赖 matplotlib 而它不在依赖里 → 该选项自上线起从未生效（静默降级）~~ —— 2026-10-26 复核时**通道已整体移除**（函数 + 四处调用点 + 前端选项与类型，`tests/test_export_formula.py` 源码级守卫，含「删多了」的对照）。**「切到 KaTeX 图片管线」这个修法本身不成立**：`_render_formulas_katex` 靠 WebView 在客户端渲染，服务端拿不到 SVG/PNG；为「保留原文也能接受」的选项补 2GB 依赖不值得。保留 `keep` / `remove` 两条通道 |
@@ -192,25 +195,17 @@
 | ✅ | 日志全链路追踪 | `contextvars.ContextVar` 注入 `request_id`，前端日志面板 |
 | ✅ | 旧格式错误迁移 | 19/19 个路由模块统一 AppError 体系（2026-10-11 复核无 `HTTPException` 残留） |
 
-### 🔄 分发与更新（2026-11-07 建立）
-
-> 与「打包 ≠ 发布」并列：打包是本地动作，发布才是对外动作。自动更新是**客户端**行为 ——
-> 没发布过新版本，客户端查到的就是当前版本，什么都不会发生。两者不冲突。
-
-| 状态 | 功能 | 说明 |
-|------|------|------|
-| ❌ | **自动更新（安装版）**｜优先级：高 | 客户端读 GitHub Release 的 `latest.json`，与 `CARGO_PKG_VERSION` 比版本号，有新的就下载 → minisign 验签 → 安装 → 重启。**只做安装版**：LiMo 只发 NSIS 安装包（`bundle.targets` 写的是 `all`，实际产出只有 `LiMo_x.x.x_x64-setup.exe`），Tauri updater 插件承担全部下载 / 验签 / 替换 / 重启，不必自写便携版那套 helper 进程 + 备份回滚 —— P-ai 的 2,647 行里绝大部分是这一块。三处落点必须同批做：① `frontend/src-tauri/tauri.conf.json` 加 `bundle.createUpdaterArtifacts: true` 与 `plugins.updater.pubkey`（两者当前都不存在，`plugins` 是空对象）；② 发版流程加「签名 → 生成 `latest.json` → 随安装包一起上传」—— 现在 `scripts/` 下无任何 release 脚本，`.github/workflows/` 只有 `ci.yml` 与 `deploy-demo.yml`，发版靠手工 `gh release create`；③ 发版门禁加一条「`latest.json` 存在且 `signature` 非空」，与 `sync-version.py --check` 同性质。⚠️ **漏签是静默失效**：客户端只认为「没有新版本」并继续用旧版，全程不报错。⚠️ **私钥丢失不可逆**：存量客户端只认已内置的公钥，换密钥后它们再也收不到自动更新，只能手动重装 |
-
-### 🔧 代码结构
+### 🔧 代码结构（重构，等触发条件）
 
 > 这里只记**结构债**：不是缺功能，也不是坏掉了，而是「继续这么长下去会变贵」。
 > 已量过的基线（2026-11-07）：`backend/app/` 44,705 行，`frontend/src/` 53,226 行；
 > 后端最大文件 `storage/store.py` 2,350 行、`routers/export.py` 2,056 行、
 > `generation/prompt.py` 1,978 行、`engines/plugin_loader.py` 1,737 行。
+>
+> ⚠️ 本节三条**都等触发条件**，不到条件时拆只是搬代码 —— 所以它们不进 [TODO.md](TODO.md)。
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| ❌ | **分层依赖守卫**（成本最低） | 写一条 AST 测试：遍历 `backend/app/` 下每个 `.py`，断言 `services/` 不出现 `fastapi` import、`storage/` 不出现 `app.routers` / `app.services` import。**只做这一条** —— 反方向（`storage` import `routers`、`adapters` 互相 import）破坏时 Python 会循环 import 当场崩，是响亮失败，不需要守卫。⚠️ 今天这两条约束**零自动检查**，全靠 CLAUDE.md 一句话与人的自觉；破坏形态是「加个 `from fastapi import Request` 做类型注解，测试全绿」，几周后才在「import `QueryService` 而不装 FastAPI」时暴露，报出来的是 `ModuleNotFoundError`，而原因隔了几十个提交。约十行 |
 | ❌ | `routers/export.py` 渲染层外移 | 该文件 2,056 行里 **:674-1623 这 950 行**是纯渲染：`_get_katex_assets()` 189 行 / `_build_selfcontained_html()` 186 行 / `_build_mindmap_html()` 121 行，外加 CSS 读取与 Markdown→HTML。同仓惯例是渲染住 services（`docx_export.py` 913 行、`chart_renderer.py` 1,101 行），**只有 HTML 导出是例外**。⚠️ **触发条件：第二次用到那段渲染代码**（CLI 要导出 HTML，或换掉 KaTeX 加载方式），届时抽成 `services/html_export.py`；没有第二个消费方之前拆只是搬代码 |
 | ❌ | `generate_stream` 拆分 | `routers/generate.py:672-1510`，**单个函数 838 行**，同时做 SSE 推送 / 断连监听 / 超时计算 / 图表校验 / 图片归一化 / 续写 / 自动标题；同文件 `generate()` 另有 293 行（:379-672）。⚠️ **触发条件：出现第二个流式生成入口** —— 那时共用部分才谈得上抽哪里，在那之前拆只能靠猜边界 |
 | ❌ | Controller→Service→Repository 分层 | generate.py 继续膨胀时 |
@@ -225,14 +220,10 @@
 | ✅ | 共享查询层 | `services/query.py::QueryService`（零 FastAPI import，CLI 可直接 import）收口全部读路径：分页 / ID 解析 / 版本编排 / meta 装配 / 截断标记。`core/dependencies.py::get_query_service` **惰性构造**（`main.py` 先建 Store 后建 SearchEngine，提前构造 = 静默空结果）。顺带修 `/api/api/search` 双前缀（**存活四个月**，模式 #56） |
 | ✅ | 密钥与凭据卫生（二期，2026-10-04） | `.limo` 内零明文：**先去重**（同一 key 写多份才是根因）→ DPAPI 外移（`ctypes` 直调 `crypt32.dll`，零新依赖）→ 只留 `secrets_ref`；四张成对表收口 `config_io.py`；启动自检 `startup_check` + `scripts/check-secrets.py`；迁移/回滚 `scripts/migrate-secrets.py`（幂等 + 无明文备份）；顺带修 **4** 缺陷（`GET /api/config` 脱敏缺口 / `merge_sensitive` 死调用 / cookie 明文临时文件 / `llm_models` 类型守卫=启动即崩）；`.bak` **同生同灭**无需特殊处理；测试 50 条含 6 条对照实验 |
 | ✅ | CLI + 契约文档（三期，2026-10-04） | Python 同仓 `backend/limo_cli/`（9 文件）；七命令 `status/list/search/get/export/folders/doctor`（**不做写操作**——成本/并发/幂等/误触发风险）。三层：CLI → `QueryService` → `Store`，**CLI 不解析库格式**（否则是第 6 个副本）。两个传输层（`HttpSource` / `LocalSource`）同契约。`--json` 时 **stdout 只有 JSON、日志全走 stderr**（**不用 TTY 检测**）；退出码 `0/2/3/4/5/6`（+130 SIGINT）区分「空」与「坏」，**按 `code` 判不按 HTTP 状态**；`Page` 上 `has_more`+`next_cursor`（能继续翻）与 `truncated`+`continuation`（到头但没给完）**并排且不混用**。契约文档两处：库内 `~/.limo/AGENTS.md`（`doctor --write-agents`，默认不覆盖）+ 仓库根 `AGENTS.md`（读者是改这条链的人）。门禁 `scripts/check-cli` 16 项（独立端口 7419，含 3 条负向对照）。**顺带修 3 缺陷**（模式 #59/#60/#61） |
-| ❌ | 导出 meta 承载（四期） | md / html / docx **保留**、纯 txt **剥离**（注释在纯文本里是可见噪音）；docx 走 `core_properties`（零新依赖）；`[文档 i]` 用 meta 的 `sourceRefs` 解析回稳定 id |
 
 ### 🚀 规划中
 
 > 合并自原 pi-docs/08-待做列表 + 09-设计提案（已归档删除）。需求驱动，不预建大教堂。
->
-> ⚠️ **本节只收「还没定要不要做」的方向。** 已经决定要做、做法清楚的，进 [TODO.md](TODO.md)，
-> 不进这里 —— 想法的寿命是几个月，待办的寿命是几天，混在一起写会两边都读不出重点。
 >
 > **2026-10-29 起按梯队排**：**一** = 成本低、见效快（半天到三天，不新增架构概念）｜**二** = 需新增插件族或新模块（三到七天，会动架构）。**梯队只表达实施顺序，不表达价值高低**；表格顺序即建议的推进顺序。
 
@@ -259,17 +250,22 @@
 | 域 | 完成 | 总计 | 进度 |
 |----|------|------|------|
 | 📥 内容导入 | 8 | 8 | 100% |
-| 📚 文档库 | 10 | 10 | 100% |
+| 📚 文档库 | 11 | 11 | 100% |
 | 🔗 多篇合成 | 16 | 16 | 100% |
 | 📝 转录 & 引擎 | 8 | 8 | 100% |
-| ✨ LLM 生成 | 14 | 14 | 100% |
+| ✨ LLM 生成 | 15 | 15 | 100% |
 | 🔍 图片处理 | 4 | 4 | 100% |
 | 💬 AI 对话 | 10 | 10 | 100% |
-| 📊 图表生成 | 11 | 12 | 92% |
+| 📊 图表生成 | 12 | 13 | 92% |
 | 📤 导出 | 12 | 12 | 100% |
-| 🎨 前端 UI/UX | 21 | 21 | 100% |
+| 🎨 前端 UI/UX | 22 | 22 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
-| 🔄 分发与更新 | 0 | 1 | 0% |
-| 🔧 代码结构 | 0 | 4 | 0% |
-| 🧩 产物复用 | 4 | 5 | 80% |
-| **合计** | **126** | **133** | **95%** |
+| 🔧 代码结构 | 0 | 3 | 0% |
+| 🧩 产物复用 | 4 | 4 | 100% |
+| **合计** | **130** | **134** | **97%** |
+
+> 本表由各域 `| ✅ |` / `| ❌ |` / `| 🟡 |` 行**逐行数出来**，不手填。改完任何一个域，
+> 重新数一遍再写 —— 2026-11-07 复核时发现三行数字比实际少（文档库 10 vs 11、
+> LLM 生成 14 vs 15、前端 UI/UX 21 vs 22），是此前手填漏改留下的。
+>
+> ⚠️ 「🚀 规划中」不计入本表 —— 那一节是想法池，不是进度。
