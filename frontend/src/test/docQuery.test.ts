@@ -24,7 +24,7 @@ function doc(over: Partial<DocEntry>): DocEntry {
 
 /** ⚠️ 筛选条件**不含关键词**（`query`）——这是本层的核心不变量，见 DocFilter 的注释 */
 const F = (over: Partial<DocFilter> = {}): DocFilter =>
-  ({ title: '', type: '', tags: [], folderId: null, dateFrom: null, dateTo: null, ...over })
+  ({ title: '', type: '', transcribe: '', tags: [], folderId: null, dateFrom: null, dateTo: null, ...over })
 
 /** ⚠️ `snippet` 是**必需字段**（`SearchHit`）；传空串表示「这一条没有摘要」，
  *  正好也覆盖了 `buildResultSet` 里 `if (h.snippet)` 那条空值判据 */
@@ -90,6 +90,22 @@ describe('filterDocs', () => {
     expect(filterDocs(mixed, F({ dateFrom: '2026-01-01' })).map(d => d.id)).toEqual(['y'])
     // 没设范围时它照常出现——排除只在「无法判定」真正成为一个问题时才发生
     expect(filterDocs(mixed, F()).map(d => d.id)).toEqual(['x', 'y'])
+  })
+
+  it('正文状态筛选：缺键读作已转录', () => {
+    const mixed = [
+      // ⚠️ `legacy` 模拟 `transcribeState` 上线前导入的文档：**整个字段都不存在**。
+      // 这类文档在真实库里占绝大多数，所以「已转录」这一档必须把它们算进来。
+      doc({ id: 'legacy' }),
+      doc({ id: 'stored', transcribeState: 'pending' }),
+      doc({ id: 'ready', transcribeState: 'done' }),
+    ]
+    expect(filterDocs(mixed, F({ transcribe: 'pending' })).map(d => d.id)).toEqual(['stored'])
+    // 这条是本项最容易写错的地方：写成 `d.transcribeState === 'done'` 会得到 ['ready']，
+    // 少了整批历史文档，而列表只是「看起来少了一截」，没有任何报错。
+    expect(filterDocs(mixed, F({ transcribe: 'done' })).map(d => d.id)).toEqual(['legacy', 'ready'])
+    expect(filterDocs(mixed, F({ transcribe: '' })).map(d => d.id))
+      .toEqual(['legacy', 'stored', 'ready'])
   })
 })
 

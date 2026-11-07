@@ -186,6 +186,7 @@ export function DocLibrary() {
   const titleFilter = useStore(s => s.titleFilter)
   const dateFrom = useStore(s => s.dateFrom)
   const dateTo = useStore(s => s.dateTo)
+  const activeTranscribe = useStore(s => s.activeTranscribe)
   const addToast = useStore(s => s.addToast)
   const docsLoading = useStore(s => s.docsLoading)
   const purgeDocArtifacts = useStore(s => s.purgeDocArtifacts)
@@ -380,7 +381,7 @@ export function DocLibrary() {
   // 建好的那一份就住在这里（它本来就有），转手给它们即可。
   const { visible, matchedIds, snippetById, rankOf, searching, hitsTruncated, searchError, semanticNote } = useDocQuery({
     docs, query: searchQuery, title: titleFilter, type: activeType, tags: activeTags,
-    folderId: activeFolderId, dateFrom, dateTo, sort, folders, tree,
+    folderId: activeFolderId, dateFrom, dateTo, transcribe: activeTranscribe, sort, folders, tree,
   })
 
   /**
@@ -511,7 +512,7 @@ export function DocLibrary() {
   // 筛选/排序/排列变化时重置——否则用户在新条件下看到的是「上次的加载深度」，像随机截断
   useEffect(() => {
     setLimit(PAGE_SIZE)
-  }, [searchQuery, activeType, activeTags, activeFolderId, titleFilter, dateFrom, dateTo, sort, groupBy, setLimit])
+  }, [searchQuery, activeType, activeTranscribe, activeTags, activeFolderId, titleFilter, dateFrom, dateTo, sort, groupBy, setLimit])
   const rendered = visible.slice(0, limit)
   const hasMore = limit < visible.length
   /**
@@ -1593,7 +1594,7 @@ export function DocLibrary() {
   ), [currentId, selectedIds, density, matchedIds, snippetById, titleEdit, tagsEdit, rowActions])
 
   const hasFilter = !!(
-    searchQuery.trim() || activeType || activeTags.length || activeFolderId !== null ||
+    searchQuery.trim() || activeType || activeTranscribe || activeTags.length || activeFolderId !== null ||
     titleFilter.trim() || dateFrom !== null || dateTo !== null
   )
 

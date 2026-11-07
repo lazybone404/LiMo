@@ -1,10 +1,10 @@
 /**
- * 筛选区五个小节 —— 文件夹范围 / 文件类型 / 标签 / 标题关键词 / 日期范围。
+ * 筛选区六个小节 —— 文件夹范围 / 文件类型 / 正文状态 / 标签 / 标题关键词 / 日期范围。
  *
  * 每个都**直接读 store**，不抽成受控组件：它们本就只服务文档库，
  * 外面再套一层 props 管道会比组件本身还长，且容易在中转时漏掉一个维度。
  *
- * ⚠️ 除了「标题关键词」和「日期范围」，其余三节都是原来的常驻行搬进来的。
+ * ⚠️ 除了「标题关键词」「日期范围」「正文状态」，其余三节都是原来的常驻行搬进来的。
  * 搬动时最容易出的错是把某个条件搬丢了（比如类型筛选的「全部」与文件夹的「未分类」
  * 都是 `''`，看着像同一个值，实际一个表示「不限」一个表示「一个真实分组」）。
  */
@@ -119,6 +119,63 @@ export function TypeFilter({ expanded, onToggle }: SectionProps) {
         // （这里是不限，那里是一个真实分组），故哨兵值也分开取。
         <Chip key={t.key} value={t.key || '__all__'} on={activeType === t.key} onClick={() => setActiveType(t.key)}>
           {t.icon && <IconByName name={t.icon} size={13} />} {t.label}
+        </Chip>
+      ))}
+    </FilterSection>
+  )
+}
+
+// ── 正文状态（已转录 / 待转录）────────────────────────────────
+
+/** 三档固定取值 —— `''` = 不限。顺序即渲染顺序。 */
+const TRANSCRIBE_OPTIONS: { key: '' | 'pending' | 'done'; label: string }[] = [
+  { key: '', label: '全部' },
+  { key: 'pending', label: '待转录' },
+  { key: 'done', label: '已转录' },
+]
+
+/**
+ * 正文状态筛选 —— 主要服务「攒了一批只收纳的视频，想一次性把它们转录掉」这个动作：
+ * 筛到「待转录」→ 全选 → 批量转录按钮就在批量条上。
+ *
+ * ⚠️ 计数与筛选**必须同源**（都按 `?? 'done'` 读）。计数用 `d.transcribeState === 'pending'`
+ * 数待转录（缺键天然不算）、用 `!== 'pending'` 数已转录，与 `filterDocs` 里那条
+ * `(d.transcribeState ?? 'done') === q.transcribe` 是同一件事的两种写法；写成
+ * 「已转录 = `=== 'done'`」会让计数比实筛少一整批（历史文档全部缺键），
+ * chip 上写 12、点进去列出 30，而两处都不报错。
+ */
+export function TranscribeFilter({ expanded, onToggle }: SectionProps) {
+  const docs = useStore(s => s.docs)
+  const activeTranscribe = useStore(s => s.activeTranscribe)
+  const setActiveTranscribe = useStore(s => s.setActiveTranscribe)
+
+  const { pending, done } = useMemo(() => {
+    let p = 0
+    for (const d of docs) { if (d.transcribeState === 'pending') p++ }
+    return { pending: p, done: docs.length - p }
+  }, [docs])
+
+  const countOf = (key: '' | 'pending' | 'done') =>
+    key === '' ? docs.length : key === 'pending' ? pending : done
+
+  const summary = activeTranscribe === '' ? null
+    : activeTranscribe === 'pending' ? '待转录' : '已转录'
+
+  return (
+    <FilterSection
+      id="transcribe" label="正文状态" summary={summary} expanded={expanded} onToggle={onToggle}
+      onClear={activeTranscribe ? () => setActiveTranscribe('') : undefined}
+    >
+      {TRANSCRIBE_OPTIONS.map(o => (
+        <Chip
+          key={o.key}
+          // 与类型筛选同款：`''`（不限）不能当 `data-chip` 的值，否则与「筛到某个具体值」
+          // 在测试里定位不开 —— 取哨兵。
+          value={o.key || '__all__'}
+          on={activeTranscribe === o.key}
+          onClick={() => setActiveTranscribe(o.key)}
+        >
+          {o.label} <span className="text-[10px] opacity-60">{countOf(o.key)}</span>
         </Chip>
       ))}
     </FilterSection>

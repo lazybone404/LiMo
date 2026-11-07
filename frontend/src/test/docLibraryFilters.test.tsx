@@ -77,7 +77,7 @@ beforeEach(() => {
     docs: [doc({ id: 'a', tags: ['重点'] })], folders: [], currentDocId: null, toasts: [],
     selectedIds: new Set(), listLimit: 60, docsLoading: false,
     searchQuery: '', activeType: '', activeTags: [], activeFolderId: null,
-    titleFilter: '', dateFrom: null, dateTo: null,
+    titleFilter: '', dateFrom: null, dateTo: null, activeTranscribe: '',
   })
 })
 
@@ -246,22 +246,57 @@ describe('日期范围', () => {
   })
 })
 
+describe('正文状态筛选', () => {
+  it('筛「待转录」只留只收纳的；筛「已转录」把缺键的历史文档也算进来', () => {
+    seedPrefs({ expandedSections: ['transcribe'] })
+    useStore.setState({
+      docs: [
+        // ⚠️ `legacy` 整个字段都没有 —— 真实库里这类文档占绝大多数
+        doc({ id: 'legacy' }),
+        doc({ id: 'stored', transcribeState: 'pending' }),
+        doc({ id: 'ready', transcribeState: 'done' }),
+      ],
+    })
+    const { container } = render(<DocLibrary />)
+
+    expect(rows(container).length).toBe(3)
+    // chip 上的计数与筛选同源：写成 `transcribeState === 'done'` 时这里会是 1，而实筛 2 条
+    const chip = (v: string) =>
+      container.querySelector(`[data-filter-section="transcribe"] [data-chip="${v}"]`) as HTMLElement
+    expect(chip('pending').textContent).toContain('1')
+    expect(chip('done').textContent).toContain('2')
+
+    fireEvent.click(chip('pending'))
+    expect(rows(container).length).toBe(1)
+    expect(rows(container)[0].textContent).toContain('文档 stored')
+
+    fireEvent.click(chip('done'))
+    // ⚠️ 对照（有区分力）：判据写成直接比 `d.transcribeState` 时这里只剩 1 条（只有 ready），
+    // 表面上「筛出来了」、不报错，少的却是整个历史库。
+    expect(rows(container).length).toBe(2)
+    const text = container.textContent || ''
+    expect(text).toContain('文档 legacy')
+    expect(text).toContain('文档 ready')
+  })
+})
+
 describe('清除全部', () => {
-  it('一次清掉五个维度，但**保留**搜索词（搜索框不在筛选区里）', () => {
+  it('一次清掉六个维度，但**保留**搜索词（搜索框不在筛选区里）', () => {
     seedPrefs({ expandedSections: ['folder'] })
     useStore.setState({
       docs: [doc({ id: 'a', folderId: 'f1' })],
       folders: [{ id: 'f1', name: '工作', createdAt: '2026-01-01T00:00:00', count: 0 }],
-      activeFolderId: 'f1', activeType: 'pdf', activeTags: ['重点'],
+      activeFolderId: 'f1', activeType: 'pdf', activeTranscribe: 'pending', activeTags: ['重点'],
       titleFilter: 'x', dateFrom: '2026-01-01', dateTo: null,
       searchQuery: '保留我', selectedIds: new Set(['a']),
     })
     const { container } = render(<DocLibrary />)
-    expect(container.querySelector('[data-filter-count]')?.textContent).toContain('5')
+    expect(container.querySelector('[data-filter-count]')?.textContent).toContain('6')
 
     fireEvent.click(container.querySelector('[data-filter-clear-all]') as HTMLElement)
     const s = useStore.getState()
-    expect([s.activeFolderId, s.activeType, s.titleFilter, s.dateFrom, s.dateTo]).toEqual([null, '', '', null, null])
+    expect([s.activeFolderId, s.activeType, s.activeTranscribe, s.titleFilter, s.dateFrom, s.dateTo])
+      .toEqual([null, '', '', '', null, null])
     expect(s.activeTags).toEqual([])
     // ⚠️ 对照（有区分力）：`clearAllFilters` 里直接 `setState({...})` 一把梭（绕过各 setter）——
     // 五个筛选确实都清空了、界面看起来完全正确，但**同时绕过了各 setter 内联的「清空选择」**，

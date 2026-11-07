@@ -58,10 +58,20 @@ export interface DocFilter {
   /** 日期范围（闭区间，`YYYY-MM-DD`）。null = 不限 */
   dateFrom: string | null
   dateTo: string | null
+  /**
+   * 正文状态：`''` = 不限；`'pending'` = 只收纳了、正文还是占位文本；`'done'` = 已有正文。
+   *
+   * ⚠️ 判据必须写成 `(d.transcribeState ?? 'done') === …`，不能直接比 `d.transcribeState`：
+   * 这个字段是**可选**的，缺键的含义是「已转录」（改造前导入的文档全都是缺键），
+   * 直接比会让「只看待转录」正确、而「只看已转录」把整个历史库全部漏掉 —— 后者
+   * 表现出来是「筛出来的列表少了一大截」，没有任何报错。
+   */
+  transcribe: '' | 'pending' | 'done'
 }
 
 /**
- * 内存过滤（**不含关键词**）：文件夹 / 来源类型 / 标签 / 标题关键词 / 日期范围。0ms，不动网络。
+ * 内存过滤（**不含关键词**）：文件夹 / 来源类型 / 标签 / 正文状态 / 标题关键词 / 日期范围。
+ * 0ms，不动网络。
  *
  * @param folders 文件夹清单（用于**展开子树**与**归化悬空 folderId**）。
  *  ⚠️ **不传 = 改造前的严格等值**（只看 `folderId` 恰好相等的）——既有纯函数测试与
@@ -103,6 +113,10 @@ export function filterDocs(
   }
   if (q.tags.length) {
     result = result.filter(d => q.tags.every(t => (d.tags || []).includes(t)))
+  }
+  if (q.transcribe) {
+    // 缺键读作 `'done'` —— 本字段上线前导入的文档全都没有这个键，它们都是有正文的。
+    result = result.filter(d => (d.transcribeState ?? 'done') === q.transcribe)
   }
   const titleNeedle = q.title.trim().toLowerCase()
   if (titleNeedle) {
@@ -241,7 +255,7 @@ export interface DocQueryInput extends DocFilter {
 }
 
 export function useDocQuery(input: DocQueryInput) {
-  const { docs, query, title, type, tags, folderId, dateFrom, dateTo, sort, folders, tree } = input
+  const { docs, query, title, type, tags, folderId, dateFrom, dateTo, transcribe, sort, folders, tree } = input
 
   const [hits, setHits] = useState<SearchHit[]>([])
   const [searching, setSearching] = useState(false)
@@ -294,9 +308,9 @@ export function useDocQuery(input: DocQueryInput) {
   // ⚠️ `tags` 是数组：调用方必须传引用稳定的值（从 store 取，勿在渲染里写 `[]` 字面量），
   // 否则每次渲染都重算一遍过滤。
   const { result, matchedIds, snippetById, rankOf } = useMemo(
-    () => buildResultSet(docs, { title, type, tags, folderId, dateFrom, dateTo },
+    () => buildResultSet(docs, { title, type, tags, folderId, dateFrom, dateTo, transcribe },
       query, hits, folders, tree),
-    [docs, title, type, tags, folderId, dateFrom, dateTo, query, hits, folders, tree],
+    [docs, title, type, tags, folderId, dateFrom, dateTo, transcribe, query, hits, folders, tree],
   )
   const visible = useMemo(() => sortDocs(result, sort, rankOf), [result, sort, rankOf])
 

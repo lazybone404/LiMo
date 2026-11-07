@@ -2,7 +2,7 @@
  * 简略模式下的筛选入口 —— 一个图标按钮 + 浮层，**内容复用同一批 `filters.tsx` 小节**。
  *
  * ⚠️ 浮层是**卸载式**的（`open && <div/>`），不是 CSS 隐藏：简略模式的全部意义是
- * 「省纵向空间、一屏看更多」，把 5 个小节留在 DOM 里就白省了；而且测试判据
+ * 「省纵向空间、一屏看更多」，把 6 个小节留在 DOM 里就白省了；而且测试判据
  * 「compact 下 `[data-filter-section]` 数为 0」正是在钉住这一点——改成 `hidden`
  * 会让这条判据失效（DOM 仍在，数得出来）。
  *
@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { SlidersHorizontal, X } from 'lucide-react'
 import { useStore } from '../../store'
-import { DateFilter, FolderFilter, TagFilter, TitleFilter, TypeFilter } from './filters'
+import { DateFilter, FolderFilter, TagFilter, TitleFilter, TranscribeFilter, TypeFilter } from './filters'
 import { clearAllFilters } from './FilterArea'
 import { SECTION_IDS, type SectionId } from './docLibraryPrefs'
 
@@ -44,6 +44,7 @@ export function FilterPopover() {
   const activeCount = useStore(s =>
     (s.activeFolderId !== null ? 1 : 0) +
     (s.activeType ? 1 : 0) +
+    (s.activeTranscribe ? 1 : 0) +
     (s.activeTags.length ? 1 : 0) +
     (s.titleFilter.trim() ? 1 : 0) +
     (s.dateFrom !== null || s.dateTo !== null ? 1 : 0),
@@ -93,6 +94,7 @@ export function FilterPopover() {
             </div>
             <FolderFilter expanded={isOpen('folder')} onToggle={toggleSection} />
             <TypeFilter expanded={isOpen('type')} onToggle={toggleSection} />
+            <TranscribeFilter expanded={isOpen('transcribe')} onToggle={toggleSection} />
             <TagFilter expanded={isOpen('tag')} onToggle={toggleSection} />
             <TitleFilter expanded={isOpen('title')} onToggle={toggleSection} />
             <DateFilter expanded={isOpen('date')} onToggle={toggleSection} />

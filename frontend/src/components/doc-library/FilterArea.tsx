@@ -7,7 +7,7 @@
  */
 import { ChevronDown, ChevronRight, X } from 'lucide-react'
 import { useStore } from '../../store'
-import { DateFilter, FolderFilter, TagFilter, TitleFilter, TypeFilter } from './filters'
+import { DateFilter, FolderFilter, TagFilter, TitleFilter, TranscribeFilter, TypeFilter } from './filters'
 import type { SectionId } from './docLibraryPrefs'
 
 export interface FilterAreaProps {
@@ -27,6 +27,7 @@ export function FilterArea({
   const activeCount = useStore(s =>
     (s.activeFolderId !== null ? 1 : 0) +
     (s.activeType ? 1 : 0) +
+    (s.activeTranscribe ? 1 : 0) +
     (s.activeTags.length ? 1 : 0) +
     (s.titleFilter.trim() ? 1 : 0) +
     (s.dateFrom !== null || s.dateTo !== null ? 1 : 0),
@@ -68,6 +69,7 @@ export function FilterArea({
         <div data-filter-body className="overflow-y-auto space-y-0.5" style={{ height }}>
           <FolderFilter expanded={isOpen('folder')} onToggle={onToggleSection} />
           <TypeFilter expanded={isOpen('type')} onToggle={onToggleSection} />
+          <TranscribeFilter expanded={isOpen('transcribe')} onToggle={onToggleSection} />
           <TagFilter expanded={isOpen('tag')} onToggle={onToggleSection} />
           <TitleFilter expanded={isOpen('title')} onToggle={onToggleSection} />
           <DateFilter expanded={isOpen('date')} onToggle={onToggleSection} />
@@ -89,6 +91,7 @@ export function clearAllFilters() {
   const s = useStore.getState()
   s.setActiveFolderId(null)
   s.setActiveType('')
+  s.setActiveTranscribe('')
   s.setActiveTags([])
   s.setTitleFilter('')
   s.setDateRange(null, null)

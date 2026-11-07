@@ -91,6 +91,8 @@ export interface DocsSlice {
   /** 日期范围（`YYYY-MM-DD`，闭区间）。null = 不限；无 createdAt 的文档在设了范围时被排除 */
   dateFrom: string | null
   dateTo: string | null
+  /** 正文状态：`''` = 不限；`'pending'` = 只收纳了；`'done'` = 已有正文 */
+  activeTranscribe: '' | 'pending' | 'done'
 
   // ── 多选（常态，无模式开关）──
   selectedIds: Set<string>
@@ -151,12 +153,13 @@ export interface DocsSlice {
   setActiveFolderId: (id: string | null) => void
   setTitleFilter: (v: string) => void
   setDateRange: (from: string | null, to: string | null) => void
+  setActiveTranscribe: (v: '' | 'pending' | 'done') => void
 }
 
 export const createDocsSlice: StateCreator<Store, [], [], DocsSlice> = (set, get) => ({
   docs: [], folders: [], currentDocId: null,
   searchQuery: '', activeType: '', activeTags: [], activeFolderId: null,
-  titleFilter: '', dateFrom: null, dateTo: null,
+  titleFilter: '', dateFrom: null, dateTo: null, activeTranscribe: '',
 
   selectedIds: new Set(),
   setSelectedIds: (ids) => set({ selectedIds: ids }),
@@ -350,4 +353,5 @@ export const createDocsSlice: StateCreator<Store, [], [], DocsSlice> = (set, get
   // 起止一次设完：快捷项（本周/本月）必须同时落两值，分两次 set 会各清一次选择，
   // 且中间那一帧的范围是「新起点 + 旧终点」——一个用户从没选过的区间。
   setDateRange: (from, to) => set({ ...noSelection(), dateFrom: from, dateTo: to }),
+  setActiveTranscribe: (v) => set({ ...noSelection(), activeTranscribe: v }),
 })

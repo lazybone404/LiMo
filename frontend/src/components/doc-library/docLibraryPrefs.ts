@@ -41,11 +41,16 @@ export interface DocLibraryPrefs {
 export const PREFS_VERSION = 1
 
 /**
- * 筛选小节的 id —— 顺序即渲染顺序（按使用频次排：文件夹范围 → 类型 → 标签 → 标题 → 日期）。
+ * 筛选小节的 id —— 顺序即渲染顺序（按使用频次排：文件夹范围 → 类型 → 正文状态 → 标签
+ * → 标题 → 日期）。
  * 放这里而不是 filters.tsx，是为了与下面的 `expandedSections` 默认值**同源**：
  * 「有哪些小节」和「默认展开哪个」分开写，早晚会有一边漏改。
+ *
+ * ⚠️ `transcribe` 插在 `type` 之后而不是追加到末尾：两者都回答「这篇文档本身是什么」，
+ * 挨着才读得顺。`expandedSections` 存的是 id，插入中间的已有用户零影响（那一节的
+ * 展开态按 id 找，位置变了也一样认）。
  */
-export const SECTION_IDS = ['folder', 'type', 'tag', 'title', 'date'] as const
+export const SECTION_IDS = ['folder', 'type', 'transcribe', 'tag', 'title', 'date'] as const
 export type SectionId = typeof SECTION_IDS[number]
 
 /** 筛选区默认高度 —— 双击分隔条复位到它（拖到极端值后不必手动找回来） */
