@@ -1220,13 +1220,21 @@ def build_notes_prompt(
     format_fns = {f: _ALL_FORMAT_FNS[f] for f in available if f in _ALL_FORMAT_FNS}
     constraints = _build_hard_constraints(
         formats, format_fns, video_understanding, source_type)
-    # 下面两份规范都**无条件注入**（上面两处 return 已把 composite / Excel 摘出去，
-    # 走到这里的一定是真正的「笔记」）。都挂在 hard_constraints 而非 output_format：
-    # 优先级顺序（hard_constraints > output_language > user_request > style_preference）
-    # 正是这两条需要的位置。
+    # 下面两份规范（关键词加粗、语义标记）都**无条件注入**（上面两处 return 已把
+    # composite / Excel 摘出去，走到这里的一定是真正的「笔记」）。都挂在
+    # hard_constraints 而非 output_format：优先级顺序（hard_constraints >
+    # output_language > user_request > style_preference）正是这两条需要的位置。
     # ⚠️ 都与 `_ALL_FORMAT_FNS` **无关**（不参与 `AVAILABLE_OPTIONS`，没有勾选项）——
     # 别顺手把它们塞进那张表，那会变成「用户勾了才有」。
     # 关键词加粗排在语义标记**之前**：它管的是每一节都要做的事，语义标记是可选的。
+    #
+    # ⚠️ **2026-11-08 撤回「每节首段」那条**（`get_section_lead_format`，曾在这里）。
+    # 实测两版尼采笔记，首句以冒号结尾（= 引导句，信息在冒号之后）的比例是
+    # v3 24% / v5 28% —— 规范没有把它降下来；其中一版还把整篇推成了要点列表
+    # （列表行占 55%，而 notes 的排版规范里本来就有「不要只用列表平铺内容」）。
+    # 结论：**首句写成什么，是生成侧约束不住的**，折叠阅读器要拿到「一句结论」
+    # 必须自己从正文里挑（跳过冒号结尾、跳过「接着 / 然后 / 回到」这类起头的句子），
+    # 不能指望产物里第一句就是它。
     constraints = (constraints + "\n" if constraints else "") + get_emphasis_format()
     constraints = (constraints + "\n" if constraints else "") + get_markdown_block_format()
 
