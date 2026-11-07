@@ -194,7 +194,7 @@ python scripts/sync-version.py
 |---|------|---------|
 | 1 | 版本门禁 | `python scripts/sync-version.py --check`（7 处一致）；产物文件名匹配 VERSION |
 | 2 | 验证门禁 | 后端测试全绿 + 前端测试全绿 + exe 启动 health 200 + 核心链路冒烟（导入→生成→导出） |
-| 3 | 文档同步 | `python scripts/changelog-build.py --write` 生成 `docs/changelog/releases/v{VERSION}.md` **并改写成用户视角**；STATUS 版本号已同步 |
+| 3 | 文档同步 | `python scripts/changelog-build.py --write` 生成 `docs/changelog/releases/v{VERSION}.md` **并改写成用户视角**（四条改写规则见 [CHANGELOG.md](docs/CHANGELOG.md) 头部）；STATUS 版本号已同步 |
 | 4 | Tag + Notes + 校验 | 打 `v{VERSION}` tag；Release notes 取自第 3 条那份文件；附安装包 SHA256 校验和 |
 
 ### 发布动作
