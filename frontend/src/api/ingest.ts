@@ -18,10 +18,17 @@ type DoneCb = (doc: any) => void
  * `doc_probe_only` 同名同义。调用方传 `!autoTranscribeMedia` / `!autoTranscribeDoc`
  * （`lib/ingest-prefs.ts`）。
  *
- * ⚠️ **两档的默认值不同，所以「发不发」也不同**：后端的默认是
+ * ⚠️ **两档的默认值不同，所以「发什么」也不同**：后端的默认是
  * `media_probe_only=True` / `doc_probe_only=False`（= 视频只收纳、文档一键），
- * 故这里**只在偏离默认（值为 `true`）时才发** —— 少一个参数就是「与改造前逐字相同」
- * 里可被断言的那种说法。`false` 不表示任何新语义，发出去只是多一个字节。
+ * 故每一档**只在偏离自己那一档的默认值时才发**：
+ *
+ * | 参数 | 后端默认 | 什么时候要发 |
+ * |---|---|---|
+ * | `media_probe_only` | `True` | 只有 `false`（用户打开「导入视频后自动转录」）|
+ * | `doc_probe_only` | `False` | 只有 `true`（用户关掉「导入文档后自动提取正文」）|
+ *
+ * ⚠️ **两个方向在这里恰好相反**，写成同一条「真值才发」会让媒体那一档永远发不出
+ * `false` —— 用户打开开关、界面显示已打开，导入时后端仍按只收纳跑，零报错。
  *
  * ⚠️ **哪个 adapter 归哪一档由后端决定**（见 `routers/ingest.py::_resolve_probe_only`）：
  * 前端拿到一个 URL 时不知道它是视频还是文章，只有后端选出 adapter 才谈得上分档。
@@ -96,11 +103,13 @@ async function ingestStream(
   signal?: AbortSignal,
   opts?: ProbeOnlyOptions,
 ) {
-  // 「只收纳」两个开关 —— **只在该项偏离后端默认时才写**（理由见 `ProbeOnlyOptions`）。
+  // 「只收纳」两个开关 —— **各按自己的后端默认值判方向**（对照表见 `ProbeOnlyOptions`）。
   // ⚠️ 写在 `fetch` **之前**：SSE 与下面的 JSON 回退**共用同一个 body**，一处写齐两条路。
   // `URLSearchParams.set` 与 `FormData.set` 同名可用，故不需要分支。
-  if (opts?.mediaProbeOnly) body.set('media_probe_only', 'true')
-  if (opts?.docProbeOnly) body.set('doc_probe_only', 'true')
+  // ⚠️ 媒体档默认是 `true`，所以**要发的是 `false`**；写成「真值才发」等于让这个开关
+  // 永远关不掉（后端读不到参数 → 用默认值 `True` → 仍然只收纳）。
+  if (opts?.mediaProbeOnly === false) body.set('media_probe_only', 'false')
+  if (opts?.docProbeOnly === true) body.set('doc_probe_only', 'true')
   // URLSearchParams 需显式 Content-Type；FormData 让浏览器自动设置 multipart
   const headers = body instanceof URLSearchParams
     ? { 'Content-Type': 'application/x-www-form-urlencoded' }
