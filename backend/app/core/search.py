@@ -387,15 +387,32 @@ def update_index(engine: "SearchEngine | None", store, tx_id: str,
     按钮，用户会以为卡死了），真正的编码归后台 worker。字面索引与向量标记**各自
     独立 try**：向量侧坏掉不该让字面索引白写，反过来也一样。
     """
+    tx: dict = {}
+    skip_vec = False
+    if store is not None:
+        try:
+            from app.generation.doc_text import transcript_pending
+            tx = store.get_transcript(tx_id) or {}
+            skip_vec = transcript_pending(tx)
+        except Exception as e:
+            # 取不到就按「不知道」处理：字面索引照旧跑（正文由 `search_index_text`
+            # 自己再取一次），向量侧**不标记** —— 宁可少标一次，也不要给一个
+            # 可能还没有正文的篇目排一次计费编码。
+            log.warning("读取文档状态失败，本次跳过向量标记",
+                        tx_id=tx_id, err=str(e)[:120])
+            skip_vec = True
+
     if store is not None and engine is not None:
         try:
             from app.generation.doc_text import search_index_text
-            tx = store.get_transcript(tx_id) or {}
             engine.index(tx_id, tx.get("title", ""), search_index_text(store, tx_id))
         except Exception as e:
             log.warning("全文索引写入失败，该文档可能搜不到",
                         tx_id=tx_id, err=str(e)[:120])
-    if vec is not None:
+    # 「只收纳」的篇目正文还是占位文本，给它打 `pending` 只会让 worker 去编码一句
+    # 「这篇文档已收纳」——云端 embedding 引擎下那是每篇一次计费调用，换回一堆
+    # 语义上毫无意义的向量。转录完成后 `retranscribe` 会再走一次本函数，那时正常标记。
+    if vec is not None and not skip_vec:
         try:
             vec.mark_pending(tx_id)
         except Exception as e:

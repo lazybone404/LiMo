@@ -19,6 +19,20 @@ from app.core.artifact_blocks import strip_blocks
 from app.core.transcript_meta import strip_meta
 
 
+def transcript_pending(tx: dict) -> bool:
+    """这篇文档的正文是不是还只是占位（「只收纳」尚未转录）。
+
+    ⚠️ **取值口径只此一份**：`transcribeState` 缺键读作 `"done"`（历史文档没有这个
+    字段），所以判据必须写成 `== "pending"` 而不是 `!= "done"` —— 后者会把全部
+    历史文档判成待转录，那些文档会突然搜不到自己的正文，且没有任何报错。
+
+    消费方：`search_index_text`（占位正文不进索引）、`core.search.update_index`
+    （不给占位篇打向量 `pending`，那是每篇一次计费编码）、
+    `routers/generate.py::_ensure_transcribed`（不接受占位正文生成笔记）。
+    """
+    return (tx or {}).get("transcribeState") == "pending"
+
+
 def latest_notes_text(store, tx_id: str) -> str:
     """取该文档 notes 的**最新版正文**；没有笔记返回空串。
 
@@ -63,6 +77,13 @@ def search_index_text(store, tx_id: str) -> str:
     而两次索引都看起来成功了（模式 #54）。
     """
     tx = store.get_transcript(tx_id)
+    if transcript_pending(tx):
+        # 「只收纳」的文档正文是占位注释，索引它等于让 `limo-pending:tr_…` 变成可搜噪音。
+        # ⚠️ 返回空串而**不是**跳过整条索引：`SearchEngine.index` 会照常写入标题列，
+        # 于是「记得标题就搜得到」这条仍然成立 —— 用户收纳完过几天回来找的正是它。
+        # ⚠️ 放在这里而不是各调用点：三个入口（`update_index` / 启动重建 /
+        # 手动重建的 `_get_content`）共用本函数，在调用点判就得分三处。
+        return ""
     raw = (tx or {}).get("rawText", "") or ""
     notes = latest_notes_text(store, tx_id)
     if not notes:

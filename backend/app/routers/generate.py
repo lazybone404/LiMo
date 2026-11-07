@@ -334,6 +334,27 @@ def _resolve_reference_texts(ids: list[str]) -> list[dict]:
     return get_references([r for r in ids if r])
 
 
+def _ensure_transcribed(tx: dict) -> None:
+    """拒绝用「只收纳」的占位正文生成笔记（两个入口共用这一份判据）。
+
+    ⚠️ **前端拦过不等于接口层不用拦**：`GenPanel` 的生成按钮在
+    `transcribeState === 'pending'` 时禁用，但批量队列、外部脚本、将来的其它入口
+    都会直接打这两个端点。放行的后果不是报错，而是**拿着
+    `<!-- limo-pending:… --> 这篇文档已收纳…` 生成一篇结构完整的笔记** ——
+    产物看起来正常，用户要读进去才发现整篇都在讲「这篇还没有转录」。
+
+    ⚠️ 判据取 `doc_text.transcript_pending`（缺键读作 `done`），不要在这里另写
+    `tx.get("transcribeState") == "pending"` —— 那边一条注释解释了为什么不能写成
+    `!= "done"`（会把全部历史文档判成待转录）。
+    """
+    from app.generation.doc_text import transcript_pending
+    if transcript_pending(tx):
+        raise AppError(
+            "GEN_NOT_TRANSCRIBED",
+            "这篇文档还没有转录，正文只有占位文本，无法生成笔记",
+            hint="在预览区点「开始转录」，或在文档库里选中它批量转录，完成后再生成")
+
+
 def _doc_direct_raw_warning(document: dict | None, raw_text: str) -> str | None:
     """直传成功但本地抽取文本近乎为空 → 返回提示文案，否则 None。
 
@@ -378,6 +399,7 @@ async def generate(transcript_id: str, req: GenerateRequest, request: Request) -
         tx = store.get_transcript(transcript_id)
         if not tx:
             raise AppError("GEN_NOT_FOUND", "文档不存在，请先导入内容")
+        _ensure_transcribed(tx)
         if provider_requires_api_key(llm_config.get("provider", "")) and not llm_config.get("api_key"):
             raise AppError("GEN_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
@@ -692,6 +714,8 @@ async def generate_stream(transcript_id: str, request: Request,
         raise AppError(
             "GEN_NOT_FOUND", "文档不存在，请先导入内容",
             hint="回文档库确认这篇还在；如果已删除，重新导入一次即可")
+    # 同上：raise 必须在 StreamingResponse 构造之前（理由见上一条注释）
+    _ensure_transcribed(tx)
 
     # 文档直传的触发源：本地原件路径。文档没有 sourceUrl，只能用它。
     # ⚠️ 该路径在 ingest 落盘时已是绝对路径（基于 store.root 拼接，模式 #24），
