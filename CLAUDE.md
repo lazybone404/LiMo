@@ -119,7 +119,8 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [export-pipeline.md](docs/export-pipeline.md) | 导出架构 / 两条路径 / Tab→内容映射 / PDF 导出 / 打印 CSS / 卡片骨架跟随 / 新增格式落点清单 | 改导出、新增 tab 或格式、改打印样式 |
 | [patterns.md](docs/patterns.md) | 关键模式 71 条：前端 #1-#8 / 后端 #9-#31 / 同源与成对判据 #32-#66 / CSS 宿主陷阱 #67-#71 | **写任何模块之前**；查「这个坑踩过没有」 |
 | [constants-home.md](docs/constants-home.md) | 公共常量与判据的「家」：60 余处唯一真相源逐条列表 | **写新代码前先查**；表里有的 import，不复制 |
-| [roadmap.md](docs/roadmap.md) | 待办与进度：按域分组的 ✅/🟡/❌ 清单 | 查「这个功能做了没有」。**不是规则文件** |
+| [roadmap.md](docs/roadmap.md) | 方向与进度：按域分组的 ✅/🟡/❌ 清单 + 「规划中」的想法池 | 查「这个功能做了没有」「有没有人想过要做」。**不是规则文件** |
+| [TODO.md](docs/TODO.md) | 短期待办：已决定要做、做法清楚的几条，做完即删 | 开工前看「眼下该做什么」。⚠️ 与 roadmap **不重叠**，同一条只住一处 |
 | [BUILD.md](docs/BUILD.md) | PyInstaller + Tauri 完整打包流程、`hiddenimports` 清单、常见陷阱 | 打包 / 发布 |
 | [desktop-shell.md](docs/desktop-shell.md) | 桌面壳启动链路 / 就绪探测 / 启动失败屏 / 进程管理 / 加速键放行 / CORS | 改启动链路、失败屏、Tauri Rust 侧 |
 | [AGENTS.md](AGENTS.md)（仓库根） | CLI + MCP 两条链：三层结构 / 改 CLI 的六条硬约束 / MCP 五节 / 门禁。⚠️ 与库内 `~/.limo/AGENTS.md` 读者不同 | 改 `limo_cli` / `mcp_server.py` / `/api/cli/*` / `QueryService` |
