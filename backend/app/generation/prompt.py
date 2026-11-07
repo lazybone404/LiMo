@@ -460,6 +460,31 @@ def get_summary_format() -> str:
     )
 
 
+def get_emphasis_format() -> str:
+    """关键词加粗规范 —— **只入 notes**（polished 是忠实整理，加粗只能保留原文已有的，
+    要求它「每节标 1–3 个」等于让它自己选重点，与「不总结不提炼」直接冲突）。
+
+    ⚠️ **先讲用途，再给数量，最后才是禁令**（2026-11-07 的教训）：此前一版把这条写成
+    「加粗只标术语、判据、数字，不要整句整段加粗」——只有上限没有下限、也没说加粗被
+    用来做什么。三篇实机重生成后，尼采那篇的加粗从 43 个塌到 1 个，同一篇的引用块
+    从 16 涨到 24：模型读到一条禁令，就把强调全部搬进了引用块。阅读器的主题视图
+    因此一张关键词标签都没有。
+    故这里第一句先说明「加粗会被当成什么用」，数量给区间（1–3 个），形状限制放最后。
+
+    ⚠️ **与实际消费方式对齐**：前端 `_fold-proto.html::boldWords()` 取每节的加粗片段
+    当卡片标签，超过 16 字的丢弃、伪代码保留字丢弃。这里的「不用整句」「保留字不要
+    加粗」两句，正是把那两条过滤前置到生成侧 —— 过滤在渲染侧是被动的，丢掉的词
+    不会有人知道它本来该出现。
+    """
+    return (
+        "**关键词加粗**: 阅读器会把每节里的加粗片段收成这一节的关键词标签，"
+        "读者只扫标签就知道这节讲什么。所以每节请把 **1–3 个**核心术语、判据或"
+        "关键数字加粗；加粗的是词或短语，不是整句 —— 一整句话都被加粗时，"
+        "只留其中最关键的那个词。代码里的保留字（for / if / return）与连接词"
+        "（然后 / 因此）不是关键词，不要加粗。"
+    )
+
+
 def get_markdown_block_format() -> str:
     """语义标记 `limo-block` 的使用规范 —— **只入 notes**（polished 是忠实整理，不该
     加入模型的主观「这是重点」判断；`_POLISH_FORMAT_FNS` 里没有它）。
@@ -1195,12 +1220,14 @@ def build_notes_prompt(
     format_fns = {f: _ALL_FORMAT_FNS[f] for f in available if f in _ALL_FORMAT_FNS}
     constraints = _build_hard_constraints(
         formats, format_fns, video_understanding, source_type)
-    # 语义标记规范 —— **无条件注入**（上面两处 return 已把 composite / Excel 摘出去，
-    # 走到这里的一定是真正的「笔记」）。挂在 hard_constraints 而非 output_format：
+    # 下面两份规范都**无条件注入**（上面两处 return 已把 composite / Excel 摘出去，
+    # 走到这里的一定是真正的「笔记」）。都挂在 hard_constraints 而非 output_format：
     # 优先级顺序（hard_constraints > output_language > user_request > style_preference）
-    # 正是「至多 1–3 处、不要滥用」这条需要的位置。
-    # ⚠️ 与 `_ALL_FORMAT_FNS` **无关**（不参与 `AVAILABLE_OPTIONS`，没有勾选项）——
-    # 别顺手把它塞进那张表，那会变成「用户勾了才有」。
+    # 正是这两条需要的位置。
+    # ⚠️ 都与 `_ALL_FORMAT_FNS` **无关**（不参与 `AVAILABLE_OPTIONS`，没有勾选项）——
+    # 别顺手把它们塞进那张表，那会变成「用户勾了才有」。
+    # 关键词加粗排在语义标记**之前**：它管的是每一节都要做的事，语义标记是可选的。
+    constraints = (constraints + "\n" if constraints else "") + get_emphasis_format()
     constraints = (constraints + "\n" if constraints else "") + get_markdown_block_format()
 
     sections = [
