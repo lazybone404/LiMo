@@ -139,8 +139,17 @@ export interface ClassifyPreview {
 
 export interface ClassifyAssignment {
   id: string
-  /** `''` = 未分类（移出文件夹）；非空必须是**已存在**的文件夹 id */
-  folderId: string
+  /**
+   * 三种取值，语义由后端 `store.apply_classifications` 一处解释：
+   * - **不传**（`undefined`，`JSON.stringify` 会丢掉这个键）= **不动**原归属；
+   * - `''` = 未分类（移出文件夹）；
+   * - 非空 = 移入，必须是**已存在**的文件夹 id。
+   *
+   * ⚠️ 「只打标签」策略下必须走第一种：「那个策略里模型对文件夹一律给 `none`」
+   * 而保存时若按 `''` 处理，整批文档会被从原文件夹清出去，界面上只看到
+   * 「标签加上了」——用户选的字面意思没兑现，且没有任何地方报错。
+   */
+  folderId?: string
   tags: string[]
 }
 

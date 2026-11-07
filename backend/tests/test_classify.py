@@ -854,6 +854,39 @@ def test_apply_classifications_is_add_and_skips_unknown_ids():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_apply_classifications_leaves_folder_alone_when_folder_id_is_none():
+    """`folder_id=None`（或键缺省）= **不动**原归属，与 `""`（移出）是两件事。
+
+    场景来自「只打标签」策略：那个策略下模型对文件夹一律给 `none`，路由层把
+    `folderId` 原样透传成 `None`。若这里按 `a.get("folder_id") or ""` 处理，
+    整批文档会被从原文件夹清出去 —— 而界面上只看到「标签加上了」，用户选的字面
+    意思没兑现，且没有任何地方报错。
+
+    对照：把 `if fid is not None:` 去掉 → 本条红；同时 `""` 仍在移出（下面第二段）。
+    """
+    s, d = _new_store()
+    try:
+        _add_doc(s, "tx_a", "甲")
+        f = s.create_folder("原文件夹")
+        s.apply_classifications([{"id": "tx_a", "folder_id": f["id"], "tags": []}])
+        assert _folder_of(s, "tx_a") == f["id"]
+
+        # 只打标签：folder_id 显式为 None
+        s.apply_classifications([{"id": "tx_a", "folder_id": None, "tags": ["新"]}])
+        assert _folder_of(s, "tx_a") == f["id"], "None 不该移动文件夹"
+        assert _tags_of(s, "tx_a") == ["新"]
+
+        # 键缺省同样是「不动」
+        s.apply_classifications([{"id": "tx_a", "tags": ["再一个"]}])
+        assert _folder_of(s, "tx_a") == f["id"], "缺键不该移动文件夹"
+
+        # 显式空串仍然移出（用户在选择器里选「未分类」）
+        s.apply_classifications([{"id": "tx_a", "folder_id": "", "tags": []}])
+        assert _folder_of(s, "tx_a") == ""
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_merge_tags_is_one_implementation_for_both_paths():
     """**同源证明**：两条写路径喂同样的 tags，结果必须逐字相同。
 

@@ -167,8 +167,13 @@ async def classify_preview(
 
 class ClassifyAssignment(BaseModel):
     id: str
-    # "" = 未分类（移出文件夹）；非空必须是已存在的文件夹 id
-    folderId: str = ""
+    # 三种取值，语义各不同：
+    # - `None`（键缺省）= **不动**原文件夹归属。前端在「只打标签」策略下传它
+    #   —— 那个策略的字面承诺就是只写标签，而模型对文件夹一律给 `none`，
+    #   照旧写成 `""` 会把每篇从原文件夹踢回未分类。
+    # - `""` = 移出文件夹（归入未分类），用户显式选的。
+    # - 非空 = 移入该文件夹，必须是已存在的 id（`folder_exists` 校验）。
+    folderId: str | None = None
     tags: list[str] = []
 
 
@@ -213,6 +218,8 @@ async def classify_commit(
         # 用户手打的原样入库（模式 #54）。commit 侧**不设条数上限**（用户主权）。
         assignments.append({"id": a.id, "folder_id": a.folderId,
                             "tags": clean_tag_names(a.tags)})
+        # ⚠️ `folder_id` 原样透传（None 也透传）：三种取值的语义由
+        # `store.apply_classifications` 一处解释，这里不做第二份判断。
 
     affected = store.apply_classifications(assignments) if assignments else 0
     if affected == 0 and failed:

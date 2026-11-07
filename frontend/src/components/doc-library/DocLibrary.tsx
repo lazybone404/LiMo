@@ -1382,6 +1382,8 @@ export function DocLibrary() {
       const assignments = plan.map(r => ({
         id: r.id,
         // 新建名留空 = 实际不归入（`folderId: ''` 就是未分类，不会误建空名夹）
+        // ⚠️ `r.folderId === undefined`（「只打标签」策略）时**保持 undefined**，
+        // `JSON.stringify` 会丢掉这个键，后端读作「不动原归属」。
         folderId: r.newFolderName.trim()
           ? (nameToId.get(r.newFolderName.trim()) ?? r.folderId)
           : r.folderId,
@@ -1396,7 +1398,13 @@ export function DocLibrary() {
       setDocs(before.map(d => {
         const a = byId.get(d.id)
         if (!a) return d
-        return { ...d, folderId: a.folderId, tags: [...new Set([...(d.tags || []), ...a.tags])] }
+        return {
+          ...d,
+          // `undefined` = 这一篇不写文件夹（「只打标签」），本地也**不许**先清空
+          // 再等后端纠正 —— 后端本来就不会纠正，它会一直错到用户刷新列表。
+          folderId: a.folderId === undefined ? d.folderId : a.folderId,
+          tags: [...new Set([...(d.tags || []), ...a.tags])],
+        }
       }))
 
       const r = await commitClassifications(assignments)

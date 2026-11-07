@@ -91,8 +91,11 @@ export const MAX_DEPTH_LIMIT = 3
 /** 一行审定后的方案。`newFolderName` 非空 = 需要调用方先建夹再写入。 */
 export interface ClassifyPlanRow {
   id: string
-  /** `''` = 未分类；`newFolderName` 非空时这里恒为 `''` */
-  folderId: string
+  /**
+   * `''` = 未分类；`newFolderName` 非空时这里恒为 `''`；
+   * **`undefined` = 不动原文件夹归属**（「只打标签」策略，见 `confirm`）。
+   */
+  folderId: string | undefined
   newFolderName: string
   tags: string[]
 }
@@ -295,9 +298,13 @@ export function ClassifyDialog({
 
   const confirm = () => {
     if (!canConfirm) return
+    // ⚠️ 「只打标签」下**整个 `folderId` 键都不发**（`JSON.stringify` 会丢掉
+    // `undefined`），后端读作「不动原归属」。这个策略的字面承诺就是只写标签，
+    // 而模型在它下面一律给 `none` —— 照旧发 `''` 会把每篇从原文件夹踢回未分类。
+    const keepsFolder = cfg.folderMode === 'tags_only'
     onConfirm(drafts.map(d => ({
       id: d.id,
-      folderId: d.mode === 'reuse' ? d.folderId : '',
+      folderId: keepsFolder ? undefined : (d.mode === 'reuse' ? d.folderId : ''),
       // 名字留空的新建 = 实际不归入（后端把 folderId='' 当未分类，不会误建空名夹）
       newFolderName: d.mode === 'new' ? d.newName.trim() : '',
       tags: d.tagsText.split(/[,，]/).map(t => t.trim()).filter(Boolean),
@@ -566,7 +573,12 @@ export function ClassifyDialog({
                             </span>
                           </div>
 
-                          {/* 文件夹选择：未分类 / 现有文件夹 / 保留新建 */}
+                          {/* 文件夹选择：未分类 / 现有文件夹 / 保留新建。
+                              ⚠️ 「只打标签」下**整行不渲染**，与 `confirm` 里
+                              「不发 `folderId`」是同一条判据的两个落点：那个策略
+                              不写文件夹，摆一个改了就丢的下拉等于在界面上承诺
+                              一件做不到的事（用户改完点确认，结果里看不出被忽略）。 */}
+                          {cfg.folderMode !== 'tags_only' && (
                           <div className="mt-1.5 flex items-center gap-1.5">
                             {d.mode === 'reuse'
                               ? <FolderTree size={12} className="text-accent shrink-0" />
@@ -604,6 +616,7 @@ export function ClassifyDialog({
                                 className="w-28 text-[12px] bg-elevated border border-warning/40 rounded-md px-1.5 py-1 outline-none" />
                             )}
                           </div>
+                          )}
 
                           <input data-classify-tags={d.id} value={d.tagsText}
                             onChange={e => patch(d.id, { tagsText: e.target.value })}

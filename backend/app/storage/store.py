@@ -1822,7 +1822,13 @@ class Store:
     def apply_classifications(self, assignments: list[dict]) -> int:
         """按**逐篇异构**的方案写入（每篇各自的文件夹 + 各自的标签）。返回命中数。
 
-        `assignments = [{"id": str, "folder_id": str, "tags": list[str]}]`。
+        `assignments = [{"id": str, "folder_id": str | None, "tags": list[str]}]`。
+
+        `folder_id` 的三种取值（**唯一解释点就在下面那一行**，路由层原样透传）：
+        `None` / 键缺省 = **不动**原归属 ｜ `""` = 移出文件夹 ｜ 非空 = 移入。
+        第一种是给「只打标签」策略用的：那个策略下模型对文件夹一律给 `none`，
+        把这些 `none` 当成「移出」会把整批文档从原文件夹里清出去，而界面上只看到
+        「标签加上了」——用户选的字面意思没有兑现，且没有任何地方报错。
 
         ⚠️ **为什么单开一个方法而不是循环调上面两个**：分类的每篇 folder 与 tags
         通常互不相同，用现有批量端点表达等于最坏 N×2 次**全量 index.json 写盘**
@@ -1839,7 +1845,9 @@ class Store:
                 a = by_id.get(e["id"])
                 if a is None:
                     continue
-                e["folderId"] = a.get("folder_id") or ""
+                fid = a.get("folder_id")
+                if fid is not None:
+                    e["folderId"] = fid or ""
                 self._merge_tags(e, a.get("tags") or [], "add")
                 changed.append(e)
             if changed:
