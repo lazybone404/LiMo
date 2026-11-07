@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Plus, Tag } from 'lucide-react'
+import { Plus, RefreshCw, Tag } from 'lucide-react'
 import { useStore } from '../../store'
 import { batchTranscripts } from '../../api/transcripts'
 import { getErrorMessage } from '../../api/core'
-import { suggestTags } from '../../lib/tag-suggest'
+import { suggestTags, TAG_SUGGEST_PAGE } from '../../lib/tag-suggest'
 
 /**
  * 标签建议条 —— 挂在产物自证条**同一行**后面，从库里**已有的**标签中挑出正文里
@@ -34,9 +34,15 @@ export function TagSuggestions({ content }: { content: string }) {
   /** 本次会话内已采纳的标签 —— 补上「后端已写、但 `docs` 还没重新拉」的那段空窗 */
   const [accepted, setAccepted] = useState<string[]>([])
   const [busy, setBusy] = useState<string | null>(null)
+  /**
+   * 当前显示第几批（「换一批」翻的页）。**只在本地**，不落盘、不发请求 ——
+   * 建议本身就是派生的，翻页状态跟着组件走。
+   */
+  const [page, setPage] = useState(0)
 
-  // 切文档就把本地记账清掉（同 `ArtifactMetaBar`：那些数都是这篇的）
-  useEffect(() => { setAccepted([]) }, [currentDocId])
+  // 切文档就把本地记账清掉（同 `ArtifactMetaBar`：那些数都是这篇的）。
+  // 页码一起归零：留着上一篇的页号，新文档一打开就停在第 3 批。
+  useEffect(() => { setAccepted([]); setPage(0) }, [currentDocId])
 
   const doc = useMemo(() => docs.find((d) => d.id === currentDocId), [docs, currentDocId])
 
@@ -47,7 +53,14 @@ export function TagSuggestions({ content }: { content: string }) {
     return [...seen]
   }, [docs])
 
-  const suggestions = useMemo(() => {
+  /**
+   * **全部**候选，不是一屏的量。翻页只做本地切片，不重算 —— 正则扫全文是这里
+   * 唯一的真实成本，翻一次页就重扫一遍没有道理。
+   *
+   * 传满额 `limit` 之所以正确，靠的是 `suggestTags` 的排序确定、截断只影响尾部：
+   * 前 `TAG_SUGGEST_PAGE` 个与默认调用逐字相同，后面的按相关度递减接续。
+   */
+  const candidates = useMemo(() => {
     if (!currentDocId) return []
     // 超长正文（原始转录可达数万字）截断：标签命中基本都在开头，尾部对判定的
     // 边际价值极低，而几百个标签 × 全文正则是同步阻塞主线程的。
@@ -57,8 +70,20 @@ export function TagSuggestions({ content }: { content: string }) {
       body,
       vocab,
       [...(doc?.tags ?? []), ...accepted],
+      Math.max(vocab.length, TAG_SUGGEST_PAGE),
     )
   }, [content, doc?.title, doc?.tags, vocab, accepted, currentDocId])
+
+  /**
+   * 页码取模而不是夹紧：采纳一个标签后候选会变少，夹紧会让「第 2 批」在
+   * 只剩 1 批时停在第 1 批（点「换一批」没反应）；取模则回到开头，永远有事发生。
+   */
+  const pageCount = Math.max(1, Math.ceil(candidates.length / TAG_SUGGEST_PAGE))
+  const safePage = page % pageCount
+  const suggestions = candidates.slice(
+    safePage * TAG_SUGGEST_PAGE,
+    (safePage + 1) * TAG_SUGGEST_PAGE,
+  )
 
   const accept = useCallback(async (tag: string) => {
     if (!currentDocId || busy) return
@@ -87,7 +112,7 @@ export function TagSuggestions({ content }: { content: string }) {
     }
   }, [currentDocId, busy, setDocs, addToast])
 
-  if (!suggestions.length) return null
+  if (!candidates.length) return null
 
   return (
     <div data-tag-suggestions className="flex flex-wrap items-center gap-1.5 min-w-0">
@@ -116,6 +141,21 @@ export function TagSuggestions({ content }: { content: string }) {
           {tag}
         </button>
       ))}
+      {/* 只有一批时不渲染：点了也不会有任何变化的按钮，比没有更糟 */}
+      {pageCount > 1 && (
+        <button
+          type="button"
+          data-tag-suggestion-shuffle
+          onClick={() => setPage((p) => p + 1)}
+          title={`共 ${candidates.length} 个候选，换一组`}
+          className="inline-flex items-center gap-1 h-[21px] px-1.5 rounded-md
+                     text-[11px] leading-none text-disabled
+                     transition-colors hover:text-accent"
+        >
+          <RefreshCw size={10} className="shrink-0" />
+          换一批
+        </button>
+      )}
     </div>
   )
 }

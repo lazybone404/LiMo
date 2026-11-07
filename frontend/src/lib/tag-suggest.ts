@@ -32,6 +32,12 @@ export interface TagSuggestion {
 }
 
 /**
+ * 一屏显示几个。UI 的「换一批」按它分页，`suggestTags` 的默认 `limit` 也取它 ——
+ * 两处若各写一个 4，改了一处另一处会静默停在旧值（少一个 chip 或多挤一个）。
+ */
+export const TAG_SUGGEST_PAGE = 4
+
+/**
  * 统计 `needle` 在 `haystack` 里的出现次数。0 = 没命中。
  *
  * ⚠️ **ASCII / 非 ASCII 两支判据不同源是刻意的**：中文没有词边界，
@@ -62,13 +68,17 @@ export function countOccurrences(haystack: string, needle: string): number {
  * @param vocab    库里全部标签（跨文档去重后）
  * @param existing 本文档**已有**的标签 —— 已打的不再建议
  * @param limit    最多给几个（默认 4：再多就是「一排噪音」，这正是要避免的）
+ *
+ * ⚠️ **排序是确定的、截断只影响尾部**。界面上的「换一批」就靠这一点：传一个更大的
+ * `limit` 拿到完整候选，前 4 个与默认调用逐字相同，后面的按相关度递减接续。
+ * 要改成随机抽样的话，这条性质会失效 —— 那时「换一批」会与首次给出的那批重叠。
  */
 export function suggestTags(
   title: string,
   content: string,
   vocab: string[],
   existing: string[] = [],
-  limit = 4,
+  limit = TAG_SUGGEST_PAGE,
 ): TagSuggestion[] {
   const t = title || ''
   const c = content || ''

@@ -82,6 +82,18 @@ describe('suggestTags', () => {
     expect(out).toHaveLength(3)
   })
 
+  it('扩大 limit 只接上后续候选，前 N 个逐字不变', () => {
+    // 界面的「换一批」完全靠这条：传满额拿全量、本地切片分页。
+    // 一旦排序变成随机的（或截断影响前段），第 2 批会与第 1 批重叠，
+    // 而 UI 上只是「有几个标签看着眼熟」，没有任何报错。
+    const vocab = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']
+    const body = 'a1 a2 a3 a4 a5 a6'
+    const first = suggestTags('', body, vocab)
+    const all = suggestTags('', body, vocab, [], vocab.length)
+    expect(all).toHaveLength(6)
+    expect(all.slice(0, first.length)).toEqual(first)
+  })
+
   it('空词表 / 空正文 / 全无命中 → 空数组（组件据此不渲染）', () => {
     expect(suggestTags('标题', '正文', [])).toEqual([])
     expect(suggestTags('标题', '正文', ['React'])).toEqual([])
