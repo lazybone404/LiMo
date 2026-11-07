@@ -17,7 +17,7 @@
  * 常量是因为它们落在两个不同组件的 Tailwind 类里，抽出来反而要绕过 Tailwind 的静态扫描。
  */
 import { useEffect, useState } from 'react'
-import { Check, CheckSquare, ChevronDown, ChevronRight, Folder, FolderPlus, Pencil, Square, Trash2, X } from 'lucide-react'
+import { Check, CheckSquare, ChevronDown, ChevronRight, Folder, FolderPlus, Pencil, Square, SquareMinus, Trash2, X } from 'lucide-react'
 import type { DocGroup } from './useDocQuery'
 
 /** 缩进最多推到这一层（再深就只剩图标了，完整路径见 `title`） */
@@ -61,6 +61,18 @@ export interface GroupHeaderProps {
    */
   selected?: boolean
   onToggleSelect?: (e: React.MouseEvent, id: string) => void
+  /**
+   * 组内文档的勾选状态 —— `group.docSelection` 为真时才有意义（未分类组）。
+   *
+   * ⚠️ 与上面的 `selected` 是**两个选择集**：`selected` 读的是文件夹选择集（勾的是
+   * 这个文件夹本身，用于移动/删除文件夹），这里读的是文档选择集（勾的是组内每一篇）。
+   * 未分类不是实体，勾它只能表达「选中文档」。
+   *
+   * 三态是必需的：组内部分文档被单独选中时，复选框既不能说「全选了」也不能说
+   * 「没选」，否则用户点一下会得到「把已选的取消、把没选的选上」这种反直觉结果。
+   */
+  docsSelected?: 'all' | 'some' | 'none'
+  onToggleDocs?: (e: React.MouseEvent) => void
   /** 以下四项只有文件夹组会传（`group.editable` 时） */
   onRename?: (id: string, name: string) => Promise<boolean>
   onDelete?: (id: string) => void
@@ -80,7 +92,7 @@ export interface GroupHeaderProps {
 
 export function GroupHeader({
   group, expanded, count, busy, compact, depth = 0, path, descendantCount = 0,
-  onToggle, selected, onToggleSelect,
+  onToggle, selected, onToggleSelect, docsSelected = 'none', onToggleDocs,
   onRename, onDelete, onDropDocs, onNewChild, onContextMenu,
   actionFor, onActionConsumed,
 }: GroupHeaderProps) {
@@ -201,12 +213,15 @@ export function GroupHeader({
           />
         ) : (
           <>
-            {/* 文件夹复选框列 —— 与 `DocRow` 的同名列同一套交互：整列可点（不只是图标），
+            {/* 复选框列 —— 与 `DocRow` 的同名列同一套交互：整列可点（不只是图标），
                 未选中时图标随行 hover 出现，选中后常显。
                 ⚠️ 列宽 `w-6` 与 `DocRow` 的复选框列**同值**：两者在同一个缩进流里上下相邻，
                 分组头窄一档会让它的勾比下面文档行的勾左移 4px，整棵树的竖线就对不齐了。
-                ⚠️ 只有文件夹组有：类型/时间是派生值，删掉「PDF 组」没有语义。 */}
-            {group.editable && onToggleSelect && (
+                ⚠️ **两种语义各一个分支，勾的对象不同**：
+                  · 文件夹组（`editable`）勾的是「这个文件夹」，进文件夹选择集；
+                  · 未分类（`docSelection`）勾的是「组内全部文档」，进文档选择集。
+                类型/时间组两个都不是 —— 它们是派生值，勾选没有任何可作用的对象。 */}
+            {group.editable && onToggleSelect ? (
               <button
                 data-folder-select-toggle={group.ref}
                 onClick={e => onToggleSelect(e, group.ref)}
@@ -218,7 +233,23 @@ export function GroupHeader({
                   ? <CheckSquare size={compact ? 14 : 15} className="text-accent" />
                   : <Square size={compact ? 14 : 15} className="text-disabled opacity-0 transition-opacity group-hover/g:opacity-100" />}
               </button>
-            )}
+            ) : group.docSelection && onToggleDocs ? (
+              <button
+                data-docs-select-toggle={group.key}
+                onClick={onToggleDocs}
+                aria-pressed={docsSelected === 'all'}
+                title={docsSelected === 'all' ? '取消选择本组文档' : '选择本组文档'}
+                className={`w-6 shrink-0 -ml-1 flex items-center justify-center rounded hover:bg-surface ${compact ? 'h-6.5' : 'h-5'}`}
+              >
+                {docsSelected === 'all'
+                  ? <CheckSquare size={compact ? 14 : 15} className="text-accent" />
+                  : docsSelected === 'some'
+                    /* 组内只有一部分被单独选中 —— 常显（它是一句读数，不是待发现的入口），
+                       点一下补成全选 */
+                    ? <SquareMinus size={compact ? 14 : 15} className="text-accent" />
+                    : <Square size={compact ? 14 : 15} className="text-disabled opacity-0 transition-opacity group-hover/g:opacity-100" />}
+              </button>
+            ) : null}
             <button
               data-group-toggle={group.key}
               onClick={() => onToggle(group.key)}

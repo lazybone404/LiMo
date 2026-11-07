@@ -438,6 +438,16 @@ export interface DocGroup {
   /** 只有文件夹组可增删改 —— 类型/时间是**派生值**，改名删「组」没有语义。
    *  ⚠️ 用显式标志而不是让调用方 `groupBy === 'folder'` 到处判：后者散落三处，必然漏一处。 */
   editable: boolean
+  /**
+   * 分组头的复选框**勾的是组内文档**（而不是「这个文件夹」）。
+   *
+   * ⚠️ 与 `editable` 是**两个概念，不能合并**：`editable` 说的是「它是一个可增删改的
+   * 实体」，而勾选文档跟增删改无关。目前只有「未分类」为真 —— 它不是一个实体（没有
+   * id、不能移动、不能删除），用户想从它那儿得到的只有一件事：一键选中里面的文档。
+   * 把它塞进文件夹选择集（`''`）会污染批量移动/删除两条路径（`deleteFolder('')`
+   * 没有语义，`FolderPicker` 也没有对应的目标）。
+   */
+  docSelection?: boolean
   docs: DocEntry[]
   /** 树形层级（0 = 根级）。只有文件夹维度可能非 0，其余恒 0。 */
   depth: number
@@ -512,7 +522,8 @@ export function groupDocs(
       }
     })
     return [...named, {
-      key: 'f:', label: '未分类', ref: '', editable: false, docs: buckets.get('')!,
+      key: 'f:', label: '未分类', ref: '', editable: false, docSelection: true,
+      docs: buckets.get('')!,
       // 未分类不是实体，永不参与层级（不变量 5）：它固定最后、恒根级
       depth: 0, parentKey: null, descendantCount: 0,
     }]

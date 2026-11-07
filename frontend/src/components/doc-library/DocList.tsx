@@ -31,6 +31,10 @@ export interface DocListProps {
   countOf: (group: DocGroup) => number
   /** 选中的文件夹 id（**与文档选择集分开**，见 docsSlice） */
   selectedFolderIds: Set<string>
+  /** 文档选择集（只读）—— 未分类组的复选框要靠它算「全选 / 部分 / 未选」 */
+  selectedIds: Set<string>
+  /** 勾选 / 取消「本组全部文档」（未分类组；文件夹组的勾选走 `onFolderSelect`） */
+  onToggleDocsSelect: (group: DocGroup) => void
   /** 文件夹复选框点击（Shift = 区间，其余 toggle） */
   onFolderSelect: (e: React.MouseEvent, id: string) => void
   /** 该文件夹的增删改进行中 —— 禁用分组头的入口 */
@@ -86,7 +90,8 @@ export interface DocListProps {
 const MAX_INDENT_DEPTH = 6
 
 export function DocList({
-  groups, rendered, limit, collapsedGroups, countOf, selectedFolderIds, onFolderSelect,
+  groups, rendered, limit, collapsedGroups, countOf, selectedFolderIds, selectedIds,
+  onFolderSelect, onToggleDocsSelect,
   folderBusy, docsLoading, hasMore,
   emptyText, truncated, searchError, semanticNote, draggingCategorized, treeIndent, folderPath,
   onFolderNewChild, onFolderContextMenu, headerAction, onHeaderActionConsumed,
@@ -117,6 +122,20 @@ export function DocList({
    * 放在截断点（第一个还有行没画出来的组）之后，新行就长在用户正盯着的位置下方。
    */
   const renderSentinel = () => <div ref={sentinelRef} data-doc-sentinel className="h-6" />
+
+  /**
+   * 组内文档的三态勾选读数。
+   *
+   * ⚠️ 基数是 `g.docs`（当前筛选后的全量组内文档），**不是** `rows`（预算截断后已画出的
+   * 那几行）：勾选动作作用于整组，读数却只数看得见的部分，会在「滚到底」时数字自己变。
+   * 空组恒 `none`。
+   */
+  const docsSelectedState = (g: DocGroup): 'all' | 'some' | 'none' => {
+    if (!g.docs.length) return 'none'
+    let n = 0
+    for (const d of g.docs) if (selectedIds.has(d.id)) n++
+    return n === 0 ? 'none' : n === g.docs.length ? 'all' : 'some'
+  }
 
   const renderGroups = () => {
     let budget = limit
@@ -154,6 +173,10 @@ export function DocList({
             descendantCount={g.descendantCount}
             selected={selectedFolderIds.has(g.ref)}
             onToggleSelect={g.editable ? onFolderSelect : undefined}
+            docsSelected={g.docSelection ? docsSelectedState(g) : undefined}
+            onToggleDocs={g.docSelection
+              ? (e: React.MouseEvent) => { e.stopPropagation(); onToggleDocsSelect(g) }
+              : undefined}
             onToggle={onToggleGroup}
             onRename={onFolderRename}
             onDelete={onFolderDelete}

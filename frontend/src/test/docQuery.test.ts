@@ -282,6 +282,20 @@ describe('groupDocs', () => {
     expect(groupDocs(docs, 'folder', folders).slice(0, 2).every(g => g.editable)).toBe(true)
   })
 
+  it('未分类组的复选框勾的是文档（docSelection），不是文件夹（editable）', () => {
+    const docs = [doc({ id: 'a', folderId: 'f1' }), doc({ id: 'b', folderId: '' })]
+    const groups = groupDocs(docs, 'folder', folders)
+    const uncategorized = groups.find(g => g.key === 'f:')!
+    // 未分类不是实体：不能重命名 / 删除 / 被移动
+    expect(uncategorized.editable).toBe(false)
+    // 但它要能「一次选中里面的文档」—— 用户从它那儿只可能想要这件事
+    expect(uncategorized.docSelection).toBe(true)
+    // 真实文件夹走另一条路：勾的是文件夹本身
+    expect(groups.find(g => g.key === 'f:f1')!.docSelection).toBeUndefined()
+    // 类型/时间组两个都不是：派生值勾选没有可作用的对象
+    expect(groupDocs(docs, 'type', folders).every(g => !g.docSelection)).toBe(true)
+  })
+
   it('组 key 带维度前缀 —— 分组头与文档行在同一数组里渲染，裸 key 会撞', () => {
     // 文档 id 恰好等于文件夹 id 的场景：key 不带前缀时 React 会警告重复 key
     const docs = [doc({ id: 'f1', folderId: 'f1' })]

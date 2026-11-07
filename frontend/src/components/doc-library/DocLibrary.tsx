@@ -473,6 +473,26 @@ export function DocLibrary() {
   } = useDocSelection(visibleIds, openDocTab, folderOrder)
 
   /**
+   * 勾选 / 取消「本组全部文档」—— 未分类分组头复选框的动作。
+   *
+   * ⚠️ 落点是**文档选择集**，不是文件夹选择集。未分类不是一个实体（没有 id、不能移动、
+   * 不能删除、`FolderPicker` 里没有它的位置），把 `''` 塞进 `selectedFolderIds` 会让
+   * 批量条上出现一个作用在空气里的「删除文件夹」。用户对它的需求只有一件：一次选中
+   * 里面的所有文档。
+   *
+   * 「已经全选就取消、否则补全」由**同一批 id** 现算，不读界面上那个三态读数 ——
+   * 读数来自 `g.docs`，与这里用的是同一份，但函数式地重算一次才不依赖渲染时序。
+   */
+  const toggleGroupDocs = useCallback((g: DocGroup) => {
+    const cur = useStore.getState().selectedIds
+    const ids = g.docs.map(d => d.id)
+    const all = ids.length > 0 && ids.every(id => cur.has(id))
+    const next = new Set(cur)
+    for (const id of ids) { if (all) next.delete(id); else next.add(id) }
+    useStore.getState().setSelectedIds(next)
+  }, [])
+
+  /**
    * 选中项里「待转录」的那几篇 —— 批量转录只跑它们。
    *
    * ⚠️ 已转录的不重跑：用户勾 10 篇只为补其中 3 篇的正文时，把 10 篇都重跑一遍
@@ -1618,8 +1638,10 @@ export function DocLibrary() {
 
   const listProps = {
     collapsedGroups, countOf, folderBusy, docsLoading, hasMore,
-    // 文件夹选择集与文档选择集分开（见 docsSlice），分组头复选框读的是这一个
-    selectedFolderIds, onFolderSelect: handleFolderSelect,
+    // 文件夹选择集与文档选择集分开（见 docsSlice）：
+    // 文件夹组的勾读 `selectedFolderIds`，未分类组的勾读 `selectedIds`
+    selectedFolderIds, selectedIds, onFolderSelect: handleFolderSelect,
+    onToggleDocsSelect: toggleGroupDocs,
     emptyText, truncated: hitsTruncated, searchError, semanticNote,
     draggingCategorized,
     // 简略模式的形态是 IDE 文件树：分组子行缩进 + 缩进线，分组头当父节点（见 grouped）
