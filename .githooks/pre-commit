@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# 提交前钩子（2026-11-07）—— 只转发，判据全部住在 scripts/commit-gate 一处。
+#
+# 装一次即可：
+#   git config core.hooksPath .githooks
+#
+# 钩子本体随仓库分发（`.githooks/`），`core.hooksPath` 是每台机器的本地配置，
+# 不会随 clone 自动生效——换机器时重跑上面那一行。
+#
+# ⚠️ 这里刻意只有一行 `exec`：把「跑什么检查」写进钩子，就会出现第二份判据，
+# 而手动跑 `bash scripts/commit-gate` 与提交时跑的行为会慢慢分叉（模式 #54）。
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec bash "$ROOT/scripts/commit-gate"

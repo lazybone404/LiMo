@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# 提交前的自动检查 —— 由 `.githooks/pre-commit` 调用，也可以手动跑：
+#
+#   bash scripts/commit-gate
+#
+# ## 它管什么
+#
+# 判据只有一条：**已暂存的文件**决定跑哪几层，不看工作区。跑的是「让这个提交
+# 自身站得住」的最低成本检查：
+#
+#   frontend/**            → scripts/check-all quick（tsc -b + oxlint，约 7s）
+#   backend/**/*.py        → compileall 语法检查（毫秒级）
+#   任何 *.md              → scripts/check-all docs（「第 N 节」交叉引用，约 0.2s）
+#
+# ## 它刻意不管什么
+#
+# **不跑 vitest / pytest / check-cli。** 那三层是完整域门禁，一次几十秒，逐提交跑
+# 会把提交本身变成负担；而它们能抓到的行为回归与静默失效，本来也不该等到「提交
+# 这一下」才发现。完整门禁的时机是：一个主题做完、打包前、改到 CLI / MCP 这类有
+# 契约测试的地方。分工写在 CLAUDE.md 的「提交纪律」里。
+#
+# **两条纪律它管不了**：一个提交是不是只有一个主题、改动有没有过夜。它们属于判断，
+# 不属于检查。这里只打印一条「代码改动跨了 前端 / 后端」的提示，由提交人自己确认。
+#
+# ## 跳过
+#
+#   git commit --no-verify
+#   LIMO_SKIP_COMMIT_GATE=1 git commit ...
+#
+# ⚠️ 跳过钩子不等于「这一下有风险」，它等于「这次没有 tsc/lint 兜底」——2026-11-07
+# 工作区里同时躺着 3 个 tsc 错误、直到拆分提交时才被发现，这条钩子正是为那一类
+# 而设：类型错误不该等到下次跑全量门禁才现形。
+
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT" || exit 0
+
+if [ "${LIMO_SKIP_COMMIT_GATE:-}" = "1" ]; then
+  echo "[commit-gate] LIMO_SKIP_COMMIT_GATE=1，跳过"
+  exit 0
+fi
+
+STAGED="$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null)"
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+FE=0; BE=0; MD=0
+BE_FILES=""
+DOMAINS=""
+while IFS= read -r f; do
+  case "$f" in
+    frontend/*)   FE=1 ;;
+    backend/*.py) BE=1; BE_FILES="$BE_FILES $f" ;;
+  esac
+  case "$f" in
+    *.md) MD=1 ;;
+  esac
+done <<< "$STAGED"
+
+[ "$FE" = 1 ] && DOMAINS="前端"
+[ "$BE" = 1 ] && DOMAINS="${DOMAINS:+$DOMAINS / }后端"
+
+RUNS=""
+[ "$FE" = 1 ] && RUNS="quick"
+[ "$BE" = 1 ] && RUNS="${RUNS:+$RUNS + }语法"
+[ "$MD" = 1 ] && RUNS="${RUNS:+$RUNS + }文档引用"
+echo "[commit-gate] 已暂存 $(printf '%s\n' "$STAGED" | wc -l | tr -d ' ') 个文件 → ${RUNS:-无代码检查}"
+
+# ── 提示（不拦截）：跨域与 CHANGELOG ──
+if [ "$FE" = 1 ] && [ "$BE" = 1 ]; then
+  echo "[commit-gate] 注意：代码改动跨了 $DOMAINS —— 若不是同一个主题，拆开提交"
+fi
+if { [ "$FE" = 1 ] || [ "$BE" = 1 ]; } && ! printf '%s\n' "$STAGED" | grep -qx 'docs/CHANGELOG.md'; then
+  echo "[commit-gate] 注意：CHANGELOG 未暂存（若属用户可见变更，补一条）"
+fi
+
+FAIL=0
+
+if [ "$FE" = 1 ]; then
+  if [ -d "$ROOT/frontend/node_modules" ]; then
+    if ! bash "$ROOT/scripts/check-all" quick; then
+      FAIL=1
+    fi
+  else
+    echo "[commit-gate] 前端依赖未安装，跳过 tsc / lint"
+  fi
+fi
+
+if [ "$BE" = 1 ]; then
+  PY="${LIMO_PY:-python}"
+  if command -v "$PY" >/dev/null 2>&1; then
+    # 只编译暂存的那几个文件：语法错误的判定与「整个包能不能 import」无关，
+    # 而全量 compileall 会把没改过的模块一起扫一遍，没有意义。
+    # shellcheck disable=SC2086  # BE_FILES 是刻意用空格拼的路径表
+    if ! "$PY" -m compileall -q $BE_FILES; then
+      FAIL=1
+    fi
+  else
+    echo "[commit-gate] 找不到 Python 解释器（可用 LIMO_PY=... 指定），跳过语法检查"
+  fi
+fi
+
+if [ "$MD" = 1 ]; then
+  if ! bash "$ROOT/scripts/check-all" docs; then
+    FAIL=1
+  fi
+fi
+
+if [ "$FAIL" != 0 ]; then
+  echo
+  echo "[commit-gate] 提交被拦下。修好再提交，或本次跳过：git commit --no-verify"
+  exit 1
+fi
