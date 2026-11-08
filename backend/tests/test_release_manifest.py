@@ -143,6 +143,22 @@ def test_manifest_version_never_carries_v_prefix(raw):
     assert manifest["version"] == "1.2.3"
 
 
+def test_manifest_notes_drops_title_and_range_lines():
+    """应用内那块是纯文本摘要，标题与「发布日期／范围」两行只会占地方。"""
+    raw = (
+        "# v1.2.3\n\n"
+        "发布日期：2026-11-08　｜　范围：`v0.5.21..HEAD`\n\n"
+        "安装版现在可以自己更新了。\n\n"
+        "## 新增\n\n- 一条用户看得懂的变化\n"
+    )
+    notes = release.manifest_notes(raw)
+    assert "# v1.2.3" not in notes
+    assert "发布日期" not in notes
+    # 小节标题与正文必须原样保留 —— 裁过头就成了「摘要里只剩一句话」。
+    assert "## 新增" in notes
+    assert notes.startswith("安装版现在可以自己更新了。")
+
+
 def test_print_upload_lists_all_three_artifacts(project, capsys):
     """CLAUDE.md 发布门禁第 5 条要求安装包 / `.sig` / `latest.json` 三样齐全。
 

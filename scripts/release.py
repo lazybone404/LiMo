@@ -92,6 +92,19 @@ def release_notes_path(root: Path, version: str) -> Path:
     return root / f"docs/changelog/releases/v{version}.md"
 
 
+def manifest_notes(raw: str) -> str:
+    """把 Release 正文裁成「应用内卡片能读的样子」。
+
+    发版文件以 `# v0.5.23` 开头，第二段还有一行「发布日期：…｜范围：`v0.5.21..HEAD`」。
+    应用内那一段是纯文本渲染的摘要，这两行只会占掉显示空间 —— 版本号卡片自己已经写了。
+    Release 页面上的正文用的仍是**原文件**（`gh release create --notes-file`），
+    与这里不是同一份，措辞上的取舍只影响应用内。
+    """
+    lines = [ln for ln in raw.splitlines() if not ln.lstrip().startswith("# ")]
+    lines = [ln for ln in lines if not ln.startswith("发布日期：")]
+    return "\n".join(lines).strip()
+
+
 def build_manifest(version: str, notes: str, signature: str, url: str,
                    pub_date: str | None = None) -> dict:
     """纯函数：只拼结构，不读文件。测试直接喂参数。"""
@@ -224,7 +237,8 @@ def cmd_write(root: Path = ROOT) -> int:
         return 1
 
     notes_file = release_notes_path(root, version)
-    notes = notes_file.read_text(encoding="utf-8").strip() if notes_file.exists() else f"LiMo v{version}"
+    notes = notes_file.read_text(encoding="utf-8") if notes_file.exists() else f"LiMo v{version}"
+    notes = manifest_notes(notes)
 
     manifest = build_manifest(
         version=version,
