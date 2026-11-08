@@ -53,8 +53,4 @@ import、`storage/` 不出现 `app.routers` / `app.services` import。**只做�
 `from fastapi import Request` 做类型注解，测试全绿」，几周后才在「import `QueryService`
 而不装 FastAPI」时暴露，报出来的是 `ModuleNotFoundError`，原因隔了几十个提交。
 
-### 4. 导出 meta 承载（四期）
-
-md / html / docx **保留**、纯 txt **剥离**（注释在纯文本里是可见噪音）；docx 走
-`core_properties`（零新依赖）；`[文档 i]` 用 meta 的 `sourceRefs` 解析回稳定 id。
 

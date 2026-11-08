@@ -172,6 +172,21 @@ def _parse_envelope(raw_text: str) -> tuple[dict | None, bool]:
     return meta, False
 
 
+def parse_header(raw_text: str) -> dict | None:
+    """取**任意种类**的头（只走信封层），无头或头坏时返回 `None`。
+
+    给「把整份头搬到另一种载体」的场景用 —— 目前只有 docx 导出：`.docx` 是纯渲染
+    格式，正文里没有 HTML 注释这层语义，头改放 `core_properties.comments`。搬的是
+    **同一个 dict**（经 `dump_meta` 序列化），故读方不需要知道它来自 Word 属性面板
+    还是 Markdown 首行 —— 同一套 `parse_artifact_meta` / `parse_meta` 都能解。
+
+    ⚠️ 刻意不区分种类（artifact / composite）：搬到别处时，头是什么种类由**内容**
+    决定，不取决于搬运者。要按种类校验的读方仍走 `parse_meta` / `parse_artifact_meta`。
+    """
+    meta, _corrupt = _parse_envelope(raw_text)
+    return meta
+
+
 def parse_meta(raw_text: str) -> tuple[dict | None, bool]:
     """解析**合成**出处头，返回 `(meta, corrupt)`。
 

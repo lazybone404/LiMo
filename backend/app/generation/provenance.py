@@ -42,6 +42,31 @@ def compact_params(**kwargs) -> dict:
     }
 
 
+def source_refs_of(tx: dict) -> list[dict]:
+    """合成文档的来源清单 → `[{"n": 1, "docId": …, "title": …}]`；非合成返回 `[]`。
+
+    `[文档 N]` 是**位置**锚点：N 是合成材料里的篇目序号（1 起，与正文里
+    `## 来源文档` 的编号、提示词里的 `【文档 i】` 同一个序）。产物离开 `.limo`
+    之后，只有把「位置 → 稳定 id」的映射跟着带走，`[文档 2]` 才还答得出是哪篇——
+    否则导出物里的锚点只是一串对谁都无意义的数字。
+
+    ⚠️ 标题可能比 id 少（历史合成文档），按位置对齐、缺的就不写 `title` 键；
+    **不拿占位文本凑位**（「文档 2」冒充标题会让读的人以为那真是标题）。
+    """
+    ids = list(tx.get("sourceDocIds") or [])
+    if not ids:
+        return []
+    titles = list(tx.get("sourceTitles") or [])
+    refs: list[dict] = []
+    for i, doc_id in enumerate(ids, 1):
+        ref: dict = {"n": i, "docId": doc_id}
+        title = titles[i - 1] if i - 1 < len(titles) else ""
+        if title:
+            ref["title"] = title
+        refs.append(ref)
+    return refs
+
+
 def artifact_meta(
     kind: str,
     *,
@@ -52,12 +77,13 @@ def artifact_meta(
     model: str = "",
     engine: str = "",
     params: dict | None = None,
+    source_refs: list[dict] | None = None,
 ) -> dict:
     """装配一份产物的自证头。
 
     | 条 | 内容 | 来源 |
     |---|---|---|
-    | ① 从哪来 | `source` | `doc_id`（= transcript id）+ 转录条目的 `sourceType` / `sourceUrl` |
+    | ① 从哪来 | `source` | `doc_id`（= transcript id）+ 转录条目的 `sourceType` / `sourceUrl`（+ 合成文档的 `sourceRefs`） |
     | ② 怎么来的 | `generated` | `model`（或 `engine`）+ `PROMPT_VERSION` + `params` + 时间 |
     | ③ 是什么 | `identity` | `mode`（version 见模块 docstring） |
     | ④ 可信度边界 | `trust` | **结构先留**：哪些是材料里说的、哪些是综合判断，需提示词侧配合标注 |
@@ -75,6 +101,10 @@ def artifact_meta(
         source["sourceType"] = source_type
     if source_url:
         source["sourceUrl"] = source_url
+    # 合成产物才有：`[文档 N]` → 稳定 id 的映射。**空列表不写键** —— 非合成文档
+    # （占绝大多数）的自证头因此逐字节不变。
+    if source_refs:
+        source["sourceRefs"] = list(source_refs)
 
     generated: dict = {
         "promptVersion": PROMPT_VERSION,
@@ -119,6 +149,8 @@ def markdown_meta(mv: Any, tx: dict, *,
         mode=mode,
         source_type=tx.get("sourceType", "") or "",
         source_url=tx.get("sourceUrl", "") or "",
+        # 合成文档：把「`[文档 N]` 是哪篇」一并写进头（见 `source_refs_of`）。
+        source_refs=source_refs_of(tx),
         model=getattr(mv, "generation_model", "") or "",
         params=compact_params(
             formats=list(formats or []),

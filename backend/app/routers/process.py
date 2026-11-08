@@ -25,7 +25,7 @@ from app.core.provider_defaults import provider_requires_api_key
 from app.core.dependencies import get_store, get_config, get_guard
 from app.core.disconnect import disconnect_watcher
 from app.core.types import ProcessResult
-from app.generation.provenance import artifact_meta
+from app.generation.provenance import artifact_meta, source_refs_of
 from app.llm import LLMService
 
 router = APIRouter(tags=["process"])
@@ -295,6 +295,8 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
                 mode=mode,
                 source_type=tx.get("sourceType", "") or "",
                 source_url=tx.get("sourceUrl", "") or "",
+                # 合成文档的 `[文档 N]` 映射（非合成返回空列表，头逐字节不变）
+                source_refs=source_refs_of(tx),
                 engine=engine_name,
             ))
 

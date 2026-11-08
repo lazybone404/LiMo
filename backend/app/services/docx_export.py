@@ -18,7 +18,9 @@ Markdown → Word (.docx) 导出
 import io
 import logging
 import re
+import zipfile
 from typing import Callable
+from xml.sax.saxutils import escape as _xml_escape
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 from docx import Document
@@ -28,6 +30,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
+from app.core.transcript_meta import dump_meta, parse_header
 from app.services.markdown_render import markdown_to_html
 from app.core.artifact_blocks import render_blocks_html as _render_blocks_html
 # H2 → 卡片切分：与前端 `splitByH2` / HTML 导出 `split_by_h2` **同一份判据**，
@@ -828,6 +831,67 @@ def _guess_lang(pre_tag) -> str:
 # 公开入口
 # ═══════════════════════════════════════════════════════════════
 
+#: 自证头在 docx 包里的落点：**自定义文档属性**（`docProps/custom.xml`）。
+#:
+#: ⚠️ **不能用 `core_properties.comments`** —— 那一族标准属性每项上限 255 字符
+#: （python-docx 自己会抛 `ValueError`，实测一条普通产物头就超了；带上合成文档的
+#: `sourceRefs` 更是差得远）。截断等于把自证信息改成半截假数据。自定义属性没有
+#: 这个限制，且是 OOXML 里**给应用自定义元信息**的正规位置。
+_CUSTOM_PART = "docProps/custom.xml"
+_CUSTOM_CT = "application/vnd.openxmlformats-officedocument.custom-properties+xml"
+_CUSTOM_REL = ("http://schemas.openxmlformats.org/officeDocument/2006/"
+               "relationships/custom-properties")
+#: 自定义属性固定的 fmtid（微软规定的通用 GUID，所有自定义属性都用它）。
+_CUSTOM_FMTID = "{D5CDD505-2E9C-101B-9397-08002B2CF9AE}"
+
+
+def _attach_custom_meta(data: bytes, value: str) -> bytes:
+    """把一段文本写进 docx 的**自定义文档属性**，返回新的包字节。
+
+    docx 是 zip：除了替换包本身，还要在 `[Content_Types].xml` 声明这个部件的类型、
+    在 `_rels/.rels` 建立包级关系 —— 少任何一处，Word 打开时看不到这条属性（而
+    python-docx 不校验，测试照样绿，是典型的静默失效）。
+
+    `value` 传的是 `dump_meta(head)` 的**原样字符串**（含 `<!-- limo-meta … -->`
+    信封）：与 `.md` 首行逐字同一种序列化，读方用同一套 `parse_header` /
+    `parse_artifact_meta` 就能解，不需要为 Word 造第二套 schema。
+    """
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/'
+        'custom-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/'
+        '2006/docPropsVTypes">'
+        f'<property fmtid="{_CUSTOM_FMTID}" pid="2" name="limo-meta">'
+        f"<vt:lpwstr>{_xml_escape(value)}</vt:lpwstr>"
+        "</property></Properties>"
+    )
+    src = zipfile.ZipFile(io.BytesIO(data))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            name = info.filename
+            if name == _CUSTOM_PART:
+                continue  # 已有的自定义属性部件由本函数重写
+            blob = src.read(name)
+            if name == "[Content_Types].xml":
+                if _CUSTOM_CT.encode() not in blob:
+                    blob = blob.replace(
+                        b"</Types>",
+                        f'<Override PartName="/{_CUSTOM_PART}" ContentType="{_CUSTOM_CT}"/>'
+                        "</Types>".encode(),
+                    )
+            elif name == "_rels/.rels":
+                if _CUSTOM_REL.encode() not in blob:
+                    blob = blob.replace(
+                        b"</Relationships>",
+                        f'<Relationship Id="rIdLimoMeta" Type="{_CUSTOM_REL}" '
+                        f'Target="{_CUSTOM_PART}"/></Relationships>'.encode(),
+                    )
+            dst.writestr(name, blob)
+        dst.writestr(_CUSTOM_PART, xml)
+    return out.getvalue()
+
+
 def markdown_to_docx(
     md: str,
     title: str = "",
@@ -862,6 +926,10 @@ def markdown_to_docx(
         except Exception:
             pass
 
+    # 自证头随包带走（2026-11-08）—— 去处见 `_attach_custom_meta`。
+    # ⚠️ 无头 / 头坏时**什么都不写**（`parse_header` 返回 None）：不伪造一份空头。
+    _head = parse_header(md)
+
     def _to_html(fragment: str) -> str:
         # Word 侧专用：`codehilite=False`（docx 里逐 token 的 `<span>` 是噪音）
         return markdown_to_html(fragment, codehilite=False)
@@ -892,7 +960,8 @@ def markdown_to_docx(
     #    ⚠️ 语义分工：注释是**文本源**里的元信息 —— `.md` 导出保留（让离开 `.limo`
     #    的产物自己说明来历）、HTML 导出保留（本就是 HTML 注释，浏览器不显示）。
     #    而 docx 是**纯渲染格式**，没有「源码」可留，故不进正文（与「预览所见 =
-    #    导出所得」一致：预览里也不该出现它）。
+    #    导出所得」一致：预览里也不该出现它）。⚠️ 不进正文 ≠ 丢掉自证：自证头改随
+    #    包走（`_attach_custom_meta` 写进自定义文档属性），见上方提取 `_head` 处。
     # ⚠️ 剥在**解析之后、取 body 之前**：`soup.body` 在无 `<body>` 标签时会退回
     #    `soup` 本身，先取 body 再剥会漏掉那些直接挂在根上的注释。
     for _comment in soup.find_all(string=lambda t: isinstance(t, Comment)):
@@ -910,4 +979,8 @@ def markdown_to_docx(
 
     buf = io.BytesIO()
     doc.save(buf)
-    return buf.getvalue()
+    data = buf.getvalue()
+    # 自证头：正文里放不下（见上面剥 `Comment` 处），改随 docx 包带走。
+    if _head:
+        data = _attach_custom_meta(data, dump_meta(_head))
+    return data

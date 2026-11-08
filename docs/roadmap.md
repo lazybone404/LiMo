@@ -223,6 +223,7 @@
 | ✅ | 产物自证头 | `notes`/`polished`/`process` 落盘首行 `<!-- limo-meta {json} -->`，回答「从哪来 / 怎么来的 / 是什么 / 可信度边界」；`core/transcript_meta.py` 拆出 envelope 层（`_parse_envelope` 只认第一行合法注释，`parse_meta` 与 `parse_artifact_meta` 各在其上做 schema 校验）；装配走 `generation/provenance.py::artifact_meta()` + `PROMPT_VERSION`。**普通 `transcript.md` 刻意不加**（会进 prompt）；**无头 ≠ 损坏**；编辑保存带回原头；**派生视图（思维导图）剥头**（模式 #57） |
 | ✅ | 共享查询层 | `services/query.py::QueryService`（零 FastAPI import，CLI 可直接 import）收口全部读路径：分页 / ID 解析 / 版本编排 / meta 装配 / 截断标记。`core/dependencies.py::get_query_service` **惰性构造**（`main.py` 先建 Store 后建 SearchEngine，提前构造 = 静默空结果）。顺带修 `/api/api/search` 双前缀（**存活四个月**，模式 #56） |
 | ✅ | 密钥与凭据卫生（二期，2026-10-04） | `.limo` 内零明文：**先去重**（同一 key 写多份才是根因）→ DPAPI 外移（`ctypes` 直调 `crypt32.dll`，零新依赖）→ 只留 `secrets_ref`；四张成对表收口 `config_io.py`；启动自检 `startup_check` + `scripts/check-secrets.py`；迁移/回滚 `scripts/migrate-secrets.py`（幂等 + 无明文备份）；顺带修 **4** 缺陷（`GET /api/config` 脱敏缺口 / `merge_sensitive` 死调用 / cookie 明文临时文件 / `llm_models` 类型守卫=启动即崩）；`.bak` **同生同灭**无需特殊处理；测试 50 条含 6 条对照实验 |
+| ✅ | 导出 meta 承载（四期，2026-11-08） | 自证头在四种导出格式里的去处定案：md / html **保留**（源码可留 / 注释不可见）、纯 txt **剥离**（会摊成可见的一行 JSON）、docx 正文不出现但写进 **`docProps/custom.xml` 自定义文档属性**。⚠️ **不能用 `core_properties`** —— 那一族标准属性每项上限 255 字符（python-docx 直接抛 `ValueError`），一条普通产物头就超了；自定义属性没有长度限制，但要三处一起改（新部件 + `[Content_Types].xml` 的 `<Override>` + `_rels/.rels` 的关系），少一处 Word 看不到而测试全绿。合成产物的自证头多一个 `source.sourceRefs`（`[文档 i]` 是位置锚点，`{"n","docId","title"}` 把它解析回稳定 id），非合成文档不写这个键。`tests/test_export_meta.py` 13 条 |
 | ✅ | CLI + 契约文档（三期，2026-10-04） | Python 同仓 `backend/limo_cli/`（9 文件）；七命令 `status/list/search/get/export/folders/doctor`（**不做写操作**——成本/并发/幂等/误触发风险）。三层：CLI → `QueryService` → `Store`，**CLI 不解析库格式**（否则是第 6 个副本）。两个传输层（`HttpSource` / `LocalSource`）同契约。`--json` 时 **stdout 只有 JSON、日志全走 stderr**（**不用 TTY 检测**）；退出码 `0/2/3/4/5/6`（+130 SIGINT）区分「空」与「坏」，**按 `code` 判不按 HTTP 状态**；`Page` 上 `has_more`+`next_cursor`（能继续翻）与 `truncated`+`continuation`（到头但没给完）**并排且不混用**。契约文档两处：库内 `~/.limo/AGENTS.md`（`doctor --write-agents`，默认不覆盖）+ 仓库根 `AGENTS.md`（读者是改这条链的人）。门禁 `scripts/check-cli` 16 项（独立端口 7419，含 3 条负向对照）。**顺带修 3 缺陷**（模式 #59/#60/#61） |
 
 ### 🚀 规划中
@@ -265,7 +266,7 @@
 | 🎨 前端 UI/UX | 22 | 22 | 100% |
 | 🛡️ 安全 & 运维 | 8 | 8 | 100% |
 | 🔧 代码结构 | 0 | 3 | 0% |
-| 🧩 产物复用 | 4 | 4 | 100% |
+| 🧩 产物复用 | 5 | 5 | 100% |
 | **合计** | **130** | **134** | **97%** |
 
 > 本表由各域 `| ✅ |` / `| ❌ |` / `| 🟡 |` 行**逐行数出来**，不手填。改完任何一个域，

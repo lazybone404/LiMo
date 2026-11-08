@@ -21,7 +21,7 @@
 | 内置厂商默认表（名字 / base_url / 类型） | [core/provider_defaults.py](../backend/app/core/provider_defaults.py) |
 | 上下文窗口默认表 / token 估算 | [core/token.py](../backend/app/core/token.py) |
 | 代理豁免判据（本地/内网 + **直连域名**不走代理）+ NO_PROXY 合成 + `configure_proxy`（唯一写入点；启动与保存配置各调一次） | [core/net.py](../backend/app/core/net.py)。⚠️ **三条通道必须一起接**：`proxy_for()` / `NO_PROXY` 环境变量 / **yt-dlp 的 `proxy=` 显式参数**（源码明写它优先于 NO_PROXY ⇒ `video.py::_get_proxy(url)` 必须自己判，只改 `net.py` 的现象是「SDK 直连了、B 站下载仍走代理」）。⚠️ **读回端** [routers/config.py](../backend/app/routers/config.py)::`_bypass_rules`：`None`（缺键 → 默认表）与 `[]`（用户清空 → 全部走代理）**刻意可区分**，写成 `or DEFAULT_…` 会让「清空后回读」静默变回默认表 |
-| 产物自证头编解码 | [core/transcript_meta.py](../backend/app/core/transcript_meta.py) |
+| 产物自证头编解码 | [core/transcript_meta.py](../backend/app/core/transcript_meta.py)。⚠️ `parse_header` 是**不分类别**的信封读取，只给「把整份头搬到另一种载体」用（目前只有 docx 的 `docProps/custom.xml`，见 [export-pipeline.md](export-pipeline.md) §11）——按类别校验仍走 `parse_meta` / `parse_artifact_meta` |
 | 产物元数据的**展示判据**（时间/字数格式化 + 取哪几项、什么顺序） | [lib/artifactMeta.ts](../frontend/src/lib/artifactMeta.ts)（预览区自证条与 `VersionSwitcher` 共用；`fmtTime`/`fmtChars` 曾在后者里各有一份） |
 | JSON 对象抽取（逐 `{` 试 `raw_decode`，容错前置说明/围栏） | [core/text_utils.py](../backend/app/core/text_utils.py)（`chart_renderer` 的私有副本已改为一行委托，有身份断言钉住） |
 | **全文索引的文本内容** = rawText + 最新版笔记 | [generation/doc_text.py](../backend/app/generation/doc_text.py)::`search_index_text`。⚠️ 这是**唯一判据**，五个写点（摄入 / 重新转录 / 生成完成 / 编辑保存 / 启动重建）**全部**经 [core/search.py](../backend/app/core/search.py)::`update_index()` 走它。各自拼一份的失效形态是「生成后搜得到、编辑后又搜不到」，两次写都报成功，用户只看到搜索「时灵时不灵」 |

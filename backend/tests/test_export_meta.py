@@ -6,13 +6,18 @@
 |---|---|---|
 | `.md` | 保留 | 有源码可留 —— 产物离开 `.limo` 之后靠那一行自己说明来历 |
 | `.html` | 保留 | 渲染时 HTML 注释不可见，读者看不到它 |
-| `.docx` | 保留在源、渲染时剥 | `docx_export` 剥 bs4 的 `Comment` 节点（纯渲染格式没有源码可留） |
+| `.docx` | 搬进文档属性 `core_properties.comments` | `docx_export` 剥 bs4 的 `Comment` 节点（纯渲染格式没有源码可留），改走 Word 自己的元信息字段 |
+
 | `.txt` | **剥离** | 纯文本没有「注释」这层语义 —— 打开就是一行 `<!-- limo-meta {…} -->` |
 
 ⚠️ 这一处最容易出的错是**只改一半**：给纯文本加了剥离，却顺手把 `.md` 也剥了
 （或者反过来，给 `_strip_blocks` 里塞进 `strip_meta` —— 那个函数被合成原料、
 对话导出、字数统计共用，塞进去会污染非导出链路）。故本文件把四种格式**成对**断言，
 断言的是「哪一档有、哪一档没有」，不是单独一句「纯文本里没有」。
+
+⚠️ **合成产物的 `[文档 N]` 靠自证头里的 `sourceRefs` 才解析得回稳定 id**（§末）：
+锚点 N 是篇目**位置**，离开 `.limo` 之后只有跟着头走的「位置 → docId」映射能回答
+「这是哪篇」。非合成文档不写这个键 —— 绝大多数文档的头因此逐字节不变。
 
 ⚠️ `.txt` 只出现在定制导出（`_build_export_zip`）的 `fmt == "plain"` 那一支；
 `GET /export/{id}` 的 `format` 只认 md / html / docx。夹具因此分两套：定制导出走
@@ -24,6 +29,7 @@ import io
 import shutil
 import tempfile
 import zipfile
+from xml.etree import ElementTree
 
 from docx import Document
 from fastapi import FastAPI
@@ -32,6 +38,8 @@ from fastapi.testclient import TestClient
 
 from app.core.dependencies import get_store
 from app.core.errors import AppError
+from app.core.transcript_meta import parse_artifact_meta
+from app.generation.provenance import markdown_meta, source_refs_of
 from app.core.types import (GenerateMode, MarkdownView, RawMetadata, RawTranscript,
                             SourceType, Style)
 from app.routers import export as E
@@ -160,6 +168,80 @@ def test_docx_渲染时不出现自证头文字():
     text = "\n".join(p.text for p in doc.paragraphs)
     assert 'limo-meta' not in text, text[:200]
     assert '这是笔记正文' in text
+
+
+def _docx_custom_meta(data: bytes) -> str:
+    """从 docx 包里取自定义属性 `limo-meta` 的值；没有这个属性返回空串。"""
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        if 'docProps/custom.xml' not in zf.namelist():
+            return ''
+        root = ElementTree.fromstring(zf.read('docProps/custom.xml'))
+    node = root.find(
+        ".//{http://schemas.openxmlformats.org/officeDocument/2006/custom-properties}"
+        "property[@name='limo-meta']/"
+        "{http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes}lpwstr"
+    )
+    return node.text if node is not None else ''
+
+
+def test_docx_自证头随包带走且能被同一套解析器解回():
+    """正文不放注释 ≠ 丢掉自证 —— 头的去处是 docx 的**自定义文档属性**。
+
+    ⚠️ 判据是「属性里的那段能被 `parse_artifact_meta` 解回**同一个 dict**」，
+    不是「属性里有字」：格式与 `.md` 首行不一致的话，读方得为 Word 再造一套
+    schema，那正是「同一份东西两份实现」。
+    ⚠️ **不能挪去 `core_properties`**（那一族标准属性每项上限 255 字符，一条普通
+    产物头就超了）—— 截断等于把自证信息改成半截假数据。
+    """
+    value = _docx_custom_meta(_custom('docx'))
+    assert value.startswith('<!-- limo-meta '), value[:80]
+    meta, corrupt = parse_artifact_meta(value)
+    assert not corrupt and meta is not None
+    assert meta['kind'] == 'notes'
+    assert meta['generated']['promptVersion'] == '22'
+
+
+def test_无自证头的_docx_不凭空造一份属性():
+    assert _docx_custom_meta(_custom('docx', doc='tr_meta02')) == ''
+
+
+# ═══════════════════════════════════════════════════════════════
+# 合成产物：`[文档 N]` → 稳定 id 的映射随头带走
+# ═══════════════════════════════════════════════════════════════
+
+class _MV:
+    """`markdown_meta` 的鸭子类型入参（只用到四个属性）。"""
+
+    mode = 'notes'
+    style = 'default'
+    transcript_id = 'tr_comp'
+    generation_model = 'qwen-max'
+
+
+_COMPOSITE_TX = {
+    'id': 'tr_comp', 'sourceType': 'composite',
+    'sourceDocIds': ['tr_a', 'tr_b', 'tr_c'],
+    'sourceTitles': ['论文 A', '论文 B', '论文 C'],
+}
+
+
+def test_合成产物的头带上_sourceRefs_编号从1起且与篇目同序():
+    refs = markdown_meta(_MV(), _COMPOSITE_TX)['source']['sourceRefs']
+    assert [r['n'] for r in refs] == [1, 2, 3]
+    assert [r['docId'] for r in refs] == ['tr_a', 'tr_b', 'tr_c']
+    # `[文档 2]` 因此解得出是哪篇 —— 这正是「解析回稳定 id」
+    assert refs[1] == {'n': 2, 'docId': 'tr_b', 'title': '论文 B'}
+
+
+def test_非合成产物的头不写_sourceRefs_键():
+    meta = markdown_meta(_MV(), {'id': 'tr_x', 'sourceType': 'webpage'})
+    assert 'sourceRefs' not in meta['source']
+
+
+def test_标题比_id_少时按位置对齐_不拿占位文本凑位():
+    refs = source_refs_of({'sourceDocIds': ['tr_a', 'tr_b'], 'sourceTitles': ['只有一篇']})
+    assert refs[0].get('title') == '只有一篇'
+    assert 'title' not in refs[1], '缺标题时不能塞占位文本 —— 读的人会以为那真是标题'
 
 
 # ═══════════════════════════════════════════════════════════════

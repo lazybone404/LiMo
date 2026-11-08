@@ -703,6 +703,33 @@ mindmap tab 始终输出为完整 `.html` 文件（跳过 markdown→HTML 转换
 
 **实现**：`backend/app/services/docx_export.py` —— `markdown_to_docx(md, title, *, images, resolver) -> bytes`
 
+### 自证头随包带走（2026-11-08）
+
+四种导出格式对 `<!-- limo-meta … -->` 的去留：md / html **保留**（前者有源码可留、
+后者渲染时注释不可见），纯 txt **剥离**（会被摊成可见的一行 JSON），docx 正文里
+**不出现**（纯渲染格式没有源码层），改走 **`docProps/custom.xml` 自定义文档属性**
+的 `limo-meta` 一项 —— Word 的「文件 → 信息 → 属性 → 自定义」里能读到。
+
+⚠️ **不能放 `core_properties`**：那一族标准属性每项上限 255 字符，python-docx 会
+直接抛 `ValueError`（一条普通产物头就超了，带 `sourceRefs` 的合成产物更差得远）；
+截断则等于把自证信息改成半截假数据。自定义属性没有长度限制。
+
+⚠️ 写这个部件要**三处一起改**，少任何一处 Word 都看不到它：新增
+`docProps/custom.xml`、在 `[Content_Types].xml` 加 `<Override>`、在 `_rels/.rels`
+加包级关系。少前两处 python-docx 仍能打开、测试仍绿，是静默失效。
+
+⚠️ 值就是 `dump_meta(head)` 的原样字符串（含信封），与 `.md` 首行同一种序列化 ——
+读方用同一套 `parse_header` / `parse_artifact_meta` 就能解，不需要为 Word 造第二套
+schema。
+
+### `[文档 i]` 锚点与 `sourceRefs`
+
+合成产物正文里的 `[文档 i]` 是**位置**锚点（i = 篇目序号，与 `## 来源文档` 的编号、
+提示词里的 `【文档 i】` 同序）。产物离开 `.limo` 之后，只有跟着头走的映射能回答
+「文档 2 是哪篇」—— 故合成文档的产物自证头 `source.docId` 旁边多一个
+`source.sourceRefs = [{"n":1,"docId":…,"title":…}, …]`（`generation/provenance.py`
+的 `source_refs_of`）。**非合成文档不写这个键**，绝大多数产物头逐字节不变。
+
 ### 为什么是两跳（Markdown → HTML → docx）
 
 不引入第二套 Markdown 解析器。LiMo 的 Markdown 是**方言**：表格前须补空行、`~~` 删除线、`- [ ]` 任务列表 checkbox、`Content-[mm:ss]` 时间戳 badge、`\[...\]` 公式分隔符 —— 这些全靠 `preprocess_gfm()` 处理。若 Word 导出另起一套解析，方言支持会分叉成两份需要同步维护的实现。
