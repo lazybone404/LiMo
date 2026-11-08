@@ -6,6 +6,7 @@ Prompt 构建器 — 模块化分节格式
 """
 
 import logging
+import re
 from typing import Callable
 
 from .prompts.notes_styles import (
@@ -481,10 +482,12 @@ def get_emphasis_format() -> str:
     因此一张关键词标签都没有。
     故这里第一句先说明「加粗会被当成什么用」，数量给区间（1–3 个），形状限制放最后。
 
-    ⚠️ **与实际消费方式对齐**：前端 `_fold-proto.html::boldWords()` 取每节的加粗片段
+    ⚠️ **与实际消费方式对齐**：前端 `lib/fold-scan.ts::boldWords()` 取每节的加粗片段
     当卡片标签，超过 16 字的丢弃、伪代码保留字丢弃。这里的「不用整句」「保留字不要
     加粗」两句，正是把那两条过滤前置到生成侧 —— 过滤在渲染侧是被动的，丢掉的词
     不会有人知道它本来该出现。
+    ⚠️ **只对长文注入**（2026-11-08，`build_notes_prompt` 里按 `_LONG_BODY_MIN_CHARS`
+    判断）：短文不显示折叠入口，也就没有标签可收。判据与分布见 `docs/TODO.md` 第 7 条。
     """
     return (
         "**关键词加粗**: 阅读器会把每节里的加粗片段收成这一节的关键词标签，"
@@ -770,7 +773,6 @@ def _parse_markdown_table(data_text: str) -> dict:
     现在：工作表只在见到 `## Sheet:` 时才建；无头数据（纯 Markdown 表格）在遇到
     第一行表格时惰性建一个兜底名 —— 保留原意图，但不制造空壳。
     """
-    import re
     sheets: list[dict] = []
     current_sheet: dict | None = None
     current_rows: list[list[str]] = []
@@ -997,6 +999,28 @@ def _format_segments(raw_text: str) -> str:
         m, sec = divmod(start, 60)
         lines.append(f"{m:02d}:{sec:02d} - {s.get('text', '')}")
     return "\n".join(lines)
+
+
+# 转录正文多长才值得要求「关键词加粗」—— 2026-11-08。
+#
+# 加粗唯一的消费者是折叠阅读器的主题档（每节的加粗片段被收成卡片标签），而折叠入口
+# 本身只对长产物出现。短文既用不上这个标签，产物还要被多一条规范推着走 —— 于是按
+# 长度门控。阈值、口径与它在全库的分布见 `docs/TODO.md` 第 7 条的「长文判据」：
+# 169 篇有正文的转录里切掉 27%，且只挡得住最短的四分之一。
+# ⚠️ **产物侧的量纲与这里不同**（压比 0.51，产物去标点后掉得更多），决定折叠入口
+# 出不出现时不能用这个 3000。
+_LONG_BODY_MIN_CHARS = 3000
+
+
+def _source_body(raw_text: str) -> str:
+    """送进 prompt 的正文，**不含时间戳** —— 与 `_format_segments` 同源。
+
+    ⚠️ 不能直接量 `_format_segments()` 的返回值：它给每段加了 `MM:SS - ` 前缀，
+    而时间戳里的数字属于 `\\w`，`re.sub(r"[^\\w]", "", ...)` 剔不掉。一段十来字的
+    字幕多出四五个字符，一小时视频凭空涨两三千 —— 阈值整体错位，而且不报错。
+    """
+    parsed = split_segments_json(raw_text)
+    return "\n".join(s.get("text", "") for s in parsed[0]) if parsed else raw_text
 
 
 def _build_hard_constraints(
@@ -1228,14 +1252,18 @@ def build_notes_prompt(
     format_fns = {f: _ALL_FORMAT_FNS[f] for f in available if f in _ALL_FORMAT_FNS}
     constraints = _build_hard_constraints(
         formats, format_fns, video_understanding, source_type)
-    # 下面两份规范（关键词加粗、语义标记）都**无条件注入**（上面两处 return 已把
-    # composite / Excel 摘出去，走到这里的一定是真正的「笔记」）。都挂在
-    # hard_constraints 而非 output_format：优先级顺序（hard_constraints >
-    # output_language > user_request > style_preference）正是这两条需要的位置。
+    # 下面两份规范（关键词加粗、语义标记）都挂在 hard_constraints 而非 output_format：
+    # 优先级顺序（hard_constraints > output_language > user_request > style_preference）
+    # 正是这两条需要的位置。上面两处 return 已把 composite / Excel 摘出去，走到这里的
+    # 一定是真正的「笔记」。
     # ⚠️ 都与 `_ALL_FORMAT_FNS` **无关**（不参与 `AVAILABLE_OPTIONS`，没有勾选项）——
     # 别顺手把它们塞进那张表，那会变成「用户勾了才有」。
     # 关键词加粗排在语义标记**之前**：它管的是每一节都要做的事，语义标记是可选的。
     #
+    # ⚠️ **关键词加粗按正文长度门控（2026-11-08）**，语义标记仍然无条件注入。
+    # 两者不是同一件事：加粗唯一服务于折叠的主题档，而折叠入口只对长产物出现；
+    # 语义标记服务于正常阅读（预览区把 `limo-block` 渲染成卡片），短文里同样有用。
+    # 长度判据用 `_source_body` 而不是 `source` —— 后者带时间戳，见那个函数的说明。
     # ⚠️ **2026-11-08 撤回「每节首段」那条**（`get_section_lead_format`，曾在这里）。
     # 实测两版尼采笔记，首句以冒号结尾（= 引导句，信息在冒号之后）的比例是
     # v3 24% / v5 28% —— 规范没有把它降下来；其中一版还把整篇推成了要点列表
@@ -1243,7 +1271,9 @@ def build_notes_prompt(
     # 结论：**首句写成什么，是生成侧约束不住的**，折叠阅读器要拿到「一句结论」
     # 必须自己从正文里挑（跳过冒号结尾、跳过「接着 / 然后 / 回到」这类起头的句子），
     # 不能指望产物里第一句就是它。
-    constraints = (constraints + "\n" if constraints else "") + get_emphasis_format()
+    is_long_body = len(re.sub(r"[^\w]", "", _source_body(raw_text))) >= _LONG_BODY_MIN_CHARS
+    if is_long_body:
+        constraints = (constraints + "\n" if constraints else "") + get_emphasis_format()
     constraints = (constraints + "\n" if constraints else "") + get_markdown_block_format()
 
     sections = [

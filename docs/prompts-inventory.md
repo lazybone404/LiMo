@@ -180,6 +180,15 @@
   吞掉标题），故它是**唯一没有集合守卫盯着**的类型，只能由
   `test_block_prompt.py::test_规范教了节级修饰符_card` 手写钉住（名字在场 + 「写在标题之下」
   + 「没有闭合标记」三条）
+- **关键词加粗**（`get_emphasis_format()`，2026-11-08 起）：**只有长文才追加**到
+  `hard_constraints`（正文去标点后 ≥ `prompt.py::_LONG_BODY_MIN_CHARS` = 3000）。
+  消费者是折叠阅读器的主题视图（每节的加粗片段被收成卡片标签），而折叠入口本身只对
+  长产物出现 —— 短文既用不上这个标签，产物还要多背一条规范。⚠️ 与它并列的
+  `get_markdown_block_format()` **仍然无条件注入**：语义块服务于正常阅读，与折叠无关，
+  门控它是另一件事。⚠️ 长度取自 `_source_body()` 而非 `_format_segments()` 的返回值 ——
+  后者给每段加了 `MM:SS - ` 前缀，数字属于 `\w`、去标点时剔不掉，一小时视频会凭空
+  多出两三千字符，阈值静默错位。判据的分布与边界见
+  [TODO.md](TODO.md) 第 7 条「长文判据」。
 - `_INSTRUCTION_PRIORITY` 声明了三层优先级
 
 ```xml
@@ -977,7 +986,7 @@ prompt 的人先看到它们，而不是同一件事再试第三遍。
 
 ## 13. 提示词版本（PROMPT_VERSION）
 
-**定义**：[backend/app/generation/prompts/__init__.py](../backend/app/generation/prompts/__init__.py) — 当前值 `"22"`
+**定义**：[backend/app/generation/prompts/__init__.py](../backend/app/generation/prompts/__init__.py) — 当前值 `"25"`
 
 这个常量只有一个用途：写进产物自证头的 `generated.promptVersion`（装配在 `generation/provenance.py`），回答「这份产物是凭哪版提示词生成的」。**它对 prompt 本身零影响**——改它不会让任何一次调用产生不同结果，但会让此后落盘的产物如实标出新版本。
 
@@ -1006,6 +1015,10 @@ prompt 的人先看到它们，而不是同一件事再试第三遍。
 | `"20"` | 2026-10-26 `get_chart_format()` 的 flowchart 行加一句硬边界「**单向前进，不能有回边/自环**，有回环改用 state」。`flowchart` 算子结构性拒绝任何环（`_topo_layers` 排不出拓扑序就抛错），而原引导只说了「带分支与汇合」——模型表达「请求下行 / 响应上行」这类往返路径时会自然画出回边，整张图降级成「图表生成失败」。⚠️ 只加括注、不动结构，因为 2026-08-16 的教训是「堆规则 ↔ 出图率」直接 trade-off |
 | `"21"` | 2026-10-27 **flowchart 示例改成「分支 + 汇合」**（`"20"` 的括注没治住，用户仍撞到「流程存在环（c、d、e）」）。根因是**示例形状与描述矛盾**：两份 flowchart JSON（清单行 + 末尾「照改文字」）都是 `a→b→c` 单链，既无分支也无汇合，模型从示例里学到的就是「一条链」。① 两份示例换成 5 节点「提交 → 通过? →（发布 / 退回）→ 上线」（真分支、真汇合、无环，`chart_layout.expand` 实测 `scale=1.0`）；② 抽一行边界句「任何一条边指回自己的上游就是环，整张图会被丢弃，有回边一律改用 state」；③ `cycle` 块的指路补「**没有分支的**」——它有 3–6 个有序项，装不下带分支的环，那一类归 `state`。⚠️ `test_prompt.py` 的新守卫**解析示例 JSON** 断言「有分支、有汇合」，退回单链立刻红（已用旧示例做对照实验确认有区分力） |
 | `"22"` | 2026-10-29 **`layout` 明写成封闭枚举 —— 块名被当成了布局名**。`"21"` 把指路语补成「**没有分支的**首尾相接循环 → `cycle` 块」，措辞是对的，但**位置**让它被读成了另一种 layout：整段 `get_chart_format()` 都在教 fig JSON，那句夹在中间、`cycle` 又和 `grid`/`flowchart` 一样是个单词 → 模型写出 `{"layout":"cycle",…}`，被 `validate_spec` 判「未知布局」，整段降级成「📊 图表生成失败」（实测来源：`~/.limo/宝洁测评速通经验分享-ac259f` 的 notes v1，`promptVersion:"21"`）。清单行「三种结构，选最贴合的一种」→ 明写「`layout` **只能是** `grid` / `flowchart` / `state` 这三个值之一 —— steps / timeline / cycle / sequence / quadrant **不是布局名**」。⚠️ **只改 prompt 不够**：模型已经写对内容、选对了块，只是填错了字段的取值域，出错时用户拿到的是一句无法处理的错误 → 后端同批加兜底（`chart_renderer._fig_as_alternative_block` 无损转成同名块）。prompt 侧减少复发、后端认得出模型想表达什么，**两件事不互相替代** |
+
+| `"23"` | 2026-11-07 **合成产物开放笔记格式勾选**：`build_synthesis_prompt` 新增 `formats` 参数，把用户勾的格式说明拼进 `hard_constraints` **末尾**（最具体、最靠近输出，便于遵守）。允许哪些格式由 `AVAILABLE_OPTIONS["composite"]` 一处决定：`toc` / `formulas` / `chart` / `followup`。**刻意不给** `summary`（合成骨架本身就是总结）/ `references`（材料索引承担该位置）/ `link` `screenshot`（要视频时间点）/ `images`（它的说明写的是 `/api/files/...` 引用，而合成产物的图是 `assets/` 相对路径） |
+| `"24"` | 2026-11-08 **notes 补关键词加粗规范 + 一轮精简**：`hard_constraints` 无条件追加 `get_emphasis_format()` —— 说用途（阅读器把加粗片段收成关键词标签）与数量（每节 1–3 个），禁令放最后，写法见 §12.4 的界线。同日撤回「每节首段」；`_POLISH_TASK` 两处重复编号改为 5–9 连续、`_NOTES_TASK` 合并同义条并删与排版重复的一条、排版建议抽成 `_LAYOUT_HINT` 由 polished 与 notes 共用（此前两处各写一份，静默漂移）、`cycle` 删掉与「3–6 项」重复的拆环说明。⚠️ `"23"` 期间 `1ef7e23` 加过关键词规范却没有 bump，即 `"23"` 对应过两种 prompt；从 `"24"` 起不再出现 |
+| `"25"` | 2026-11-08 **关键词加粗按正文长度门控**：`build_notes_prompt` 只在 `_source_body()` 去标点后 ≥ 3000 时注入 `get_emphasis_format()`，`get_markdown_block_format()` 仍无条件 —— 加粗唯一的消费者是折叠的主题档，而折叠入口只对长产物出现；语义块服务于正常阅读，与折叠无关。长度取自 `_source_body()` 而非 `_format_segments()`（后者带 `MM:SS`，数字属于 `\w`，去标点剔不掉，阈值静默错位）。⚠️ **从这一版起同一个版本号对应两种 prompt**（长文 / 短文），自证头只记 `promptVersion`，分不出来；要区分就在 `generated.params` 里加 `longText` |
 
 ⚠️ **同一轮还有一处 CSS 改动，不 bump**：中性面板族（`metric` / `table` / `code` / `image`）
 的容器边框由 `--tk-border-light` 换成 `--tk-border`（[blocks.css](../frontend/src/styles/blocks.css)）。

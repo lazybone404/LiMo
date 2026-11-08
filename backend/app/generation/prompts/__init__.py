@@ -254,5 +254,17 @@ from .notes_styles import (
 #     「章节标题」不要写成有序列表，块内要求的照常写。
 #   ⚠️ "23" 之后还有一次改动（`1ef7e23` 加入关键词规范）当时没有 bump，产物标的是
 #   "23" —— 即 "23" 这个值对应过两种 prompt。从 "24" 起不再出现这种情况。
-PROMPT_VERSION = "24"
+# "25"（2026-11-08，关键词加粗按正文长度门控）：
+#   · `build_notes_prompt` 改为**只有正文去标点后 ≥ 3000 字符**才注入
+#     `get_emphasis_format()`；语义标记 `get_markdown_block_format()` 仍无条件。
+#     起因是折叠阅读器：加粗唯一的消费者是它的主题档（每节的加粗片段被收成卡片
+#     标签），而折叠入口本身只对长产物出现 —— 短文既用不上这个标签，产物还要多背
+#     一条规范。判据的分布见 `docs/TODO.md` 第 7 条。
+#   · 长度取自新增的 `prompt.py::_source_body()`（= `split_segments_json` 拼回的
+#     正文，**不含时间戳**）。直接量 `_format_segments()` 的返回值不行：`MM:SS`
+#     里的数字属于 `\w`，去标点时剔不掉，一小时视频会凭空多出两三千字符。
+#   · ⚠️ 从这一版起，同一个版本号对应**两种** prompt（长文 / 短文）。产物自证头目前
+#     只记 `promptVersion`，读的人分不清是哪一种。要区分的话在 `generated.params`
+#     里加 `longText`（TODO 第 6、7 条），不加不会报错，只是复盘时答不出来。
+PROMPT_VERSION = "25"
 

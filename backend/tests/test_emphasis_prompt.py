@@ -1,8 +1,10 @@
 """关键词加粗规范（`get_emphasis_format`）的注入范围与措辞守卫。
 
 消费方是折叠阅读器的「主题」视图：它把每节的加粗片段收成卡片标签
-（`_fold-proto.html::boldWords()`）。故这份规范只该进 notes —— polished 是忠实整理，
+（`lib/fold-scan.ts::boldWords()`）。故这份规范只该进 notes —— polished 是忠实整理，
 要求它自己挑关键词与「不总结不提炼」直接冲突。
+且**只有长文才进**（2026-11-08）：折叠入口本身只对长产物出现，短文没有标签可收，
+还多背一条规范。阈值与分布见 `docs/TODO.md` 第 7 条。
 
 ⚠️ 本文件守的是一次**已经发生过**的失效（2026-11-07）：同一位置曾写过一版只有禁令
 没有用法与下限的文案，三篇实机重生成后尼采那篇的加粗从 43 个塌到 1 个 —— 模型把
@@ -11,9 +13,15 @@
 
 from __future__ import annotations
 
+import json
+import re
+
 import pytest
 
 from app.generation.prompt import (
+    _LONG_BODY_MIN_CHARS,
+    _format_segments,
+    _source_body,
     build_excel_summary_prompt,
     build_notes_prompt,
     build_polish_prompt,
@@ -22,10 +30,37 @@ from app.generation.prompt import (
 
 _NOTES_TYPES = ("video", "audio", "webpage", "text", "pdf", "docx", "pptx", "image", "epub")
 
+# 去标点后远超 `_LONG_BODY_MIN_CHARS` 的正文（19 字 × 200 ≈ 3600）
+_LONG_BODY = "这是一段足够长的转录内容，用来越过加粗的长度门槛。" * 200
+
 
 @pytest.mark.parametrize("source_type", _NOTES_TYPES)
-def test_notes_各来源类型都注入(source_type):
-    assert get_emphasis_format() in build_notes_prompt("正文内容", "标题", "plain", source_type)
+def test_notes_长文注入(source_type):
+    assert get_emphasis_format() in build_notes_prompt(_LONG_BODY, "标题", "plain", source_type)
+
+
+@pytest.mark.parametrize("source_type", _NOTES_TYPES)
+def test_notes_短文不注入(source_type):
+    """短产物不显示折叠入口，主题视图没有标签可收 —— 规范对它是多余的。"""
+    assert get_emphasis_format() not in build_notes_prompt("正文内容", "标题", "plain", source_type)
+
+
+def test_长度判据不把时间戳算进去():
+    """守的是 `_source_body` 的存在理由。
+
+    `_format_segments()` 给每段加 `MM:SS - ` 前缀，时间戳里的数字属于 `\\w`，
+    `re.sub(r"[^\\w]", "", ...)` 剔不掉。直接量它的返回值，一小时视频会凭空涨
+    两三千字符、静默越过阈值 —— 下面的对照断言证明这两个量法确实分叉。
+    """
+    segs = {"segments": [{"start": i * 10, "text": "这是一段字幕内容测试文字"}
+                         for i in range(240)], "language": "zh"}
+    raw = json.dumps(segs, ensure_ascii=False)
+
+    body_len = len(re.sub(r"[^\w]", "", _source_body(raw)))
+    formatted_len = len(re.sub(r"[^\w]", "", _format_segments(raw)))
+    assert body_len < _LONG_BODY_MIN_CHARS <= formatted_len, (
+        f"这组样本本应落在「正文短、带时间戳后过线」的区间：{body_len} / {formatted_len}")
+    assert get_emphasis_format() not in build_notes_prompt(raw, "标题", "plain", "video")
 
 
 @pytest.mark.parametrize("source_type", _NOTES_TYPES + ("xlsx",))
