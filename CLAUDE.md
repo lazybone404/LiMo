@@ -122,7 +122,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [roadmap.md](docs/roadmap.md) | 方向与进度：按域分组的 ✅/🟡/❌ 清单 + 「规划中」的想法池 | 查「这个功能做了没有」「有没有人想过要做」。**不是规则文件** |
 | [TODO.md](docs/TODO.md) | 短期待办：已决定要做、做法清楚的几条，做完即删 | 开工前看「眼下该做什么」。⚠️ 与 roadmap **不重叠**，同一条只住一处 |
 | [BUILD.md](docs/BUILD.md) | PyInstaller + Tauri 完整打包流程、`hiddenimports` 清单、常见陷阱 | 打包 / 发布 |
-| [desktop-shell.md](docs/desktop-shell.md) | 桌面壳启动链路 / 就绪探测 / 启动失败屏 / 进程管理 / 加速键放行 / CORS | 改启动链路、失败屏、Tauri Rust 侧 |
+| [desktop-shell.md](docs/desktop-shell.md) | 桌面壳启动链路 / 就绪探测 / 启动失败屏 / 进程管理 / 加速键放行 / CORS / 应用内更新 | 改启动链路、失败屏、Tauri Rust 侧、更新链路 |
 | [AGENTS.md](AGENTS.md)（仓库根） | CLI + MCP 两条链：三层结构 / 改 CLI 的六条硬约束 / MCP 五节 / 门禁。⚠️ 与库内 `~/.limo/AGENTS.md` 读者不同 | 改 `limo_cli` / `mcp_server.py` / `/api/cli/*` / `QueryService` |
 | [对话协议.md](docs/对话协议.md) | 对话 SSE 事件协议 + 会话 CRUD API + 前端映射 | 改对话流式 / 会话管理 |
 | [prompts-inventory.md](docs/prompts-inventory.md) | 全部 LLM 提示词清单 + 审视点 + 温度参数速查 + PromptComposer 标签 + Agent SSE | 审视 / 优化 prompt |
@@ -197,11 +197,19 @@ python scripts/sync-version.py
 | 2 | 验证门禁 | 后端测试全绿 + 前端测试全绿 + exe 启动 health 200 + 核心链路冒烟（导入→生成→导出） |
 | 3 | 文档同步 | `python scripts/changelog-build.py --write` 生成 `docs/changelog/releases/v{VERSION}.md` **并改写成用户视角**（四条改写规则见 [CHANGELOG.md](docs/CHANGELOG.md) 头部）；STATUS 版本号已同步 |
 | 4 | Tag + Notes + 校验 | 打 `v{VERSION}` tag；Release notes 取自第 3 条那份文件；附安装包 SHA256 校验和 |
+| 5 | 更新门禁 | `python scripts/release.py --check`（九条判据）；Release 上**必须**同时有安装包、`.sig` 与 `latest.json` 三样 |
+
+⚠️ **第 5 条漏了是静默失效**：没有 `latest.json` 或 `signature` 为空时，客户端只会认为
+「没有新版本」，继续用旧版，全程不报错。发版构建要走
+`npx tauri build --config src-tauri/tauri.release.conf.json`（日常 `npx tauri build`
+不签名），细节见 [BUILD.md](docs/BUILD.md) 的「发版：签名与 `latest.json`」。
 
 ### 发布动作
 
 用户提出发布后 → **先展示门禁清单**（版本/验证/文档/tag 状态）→ 用户确认 → 才执行：
 `git tag v{VERSION}` → `gh release create v{VERSION}`（notes 取自 `docs/changelog/releases/v{VERSION}.md`）→ 上传 NSIS/MSI 安装包 + SHA256。
+自动更新另需随安装包一起上传 `LiMo_{v}_x64-setup.exe.sig` 与 `dist-release/latest.json`
+（`python scripts/release.py --print-upload` 直接打印含这两样的完整命令）。
 
 ## 提交纪律（2026-11-07）
 

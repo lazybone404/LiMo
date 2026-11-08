@@ -7,6 +7,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
+mod updater;
+
 const BACKEND_STARTUP_TIMEOUT_SECS: u64 = 45;
 const BACKEND_PORT: u16 = 7413;
 /// 诊断里回传的日志尾部字节数。取 8 KiB 足够装下一条 Python traceback，
@@ -243,6 +245,7 @@ fn probe_dir_writable(dir: &Path) -> bool {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -317,6 +320,8 @@ pub fn run() {
             export_pdf,
             get_backend_startup_failure,
             open_log_dir,
+            updater::check_update,
+            updater::install_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -339,6 +344,30 @@ fn kill_backend_sidecar(app_handle: &tauri::AppHandle) {
             }
         }
     }
+}
+
+/// 取走 sidecar 并**等它真的退出**。只有自动更新用得上：
+/// 插件的 `install()` 在 `ShellExecuteW(安装器)` 之后立刻 `std::process::exit(0)`，
+/// 不等进程退出，安装器覆盖 `LiMoBackend.exe` 时文件还锁着 → NSIS 中途失败。
+///
+/// 与 `kill_backend_sidecar` 的差别是这里 `take()` + `wait()`：前者只发信号，
+/// 正常退出路径上操作系统会兜住，而安装器没有这个余地。
+pub(crate) fn stop_backend_sidecar_blocking(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<SidecarHandle>() else { return };
+    let Ok(mut guard) = state.0.lock() else { return };
+    let Some(mut child) = guard.take() else { return };
+    eprintln!("[updater] killing backend before install");
+    let _ = child.kill();
+    // 有界等待：TerminateProcess 之后正常是毫秒级，但真卡住也不能让更新停在这里。
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return,
+        }
+    }
+    eprintln!("[updater] backend did not exit in 5s, continuing anyway");
 }
 
 // ── 启动后端 ──

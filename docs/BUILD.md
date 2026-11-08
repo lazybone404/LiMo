@@ -52,6 +52,80 @@ npx tauri build
 
 ---
 
+## 发版：签名与 `latest.json`
+
+上面的 1→2→3 是**日常打包**（打了包不发）。发版要多做三件事：签名、生成清单、上传。
+
+### 为什么 `createUpdaterArtifacts` 不在主配置里
+
+它住在[独立片段](../frontend/src-tauri/tauri.release.conf.json)，发版时用 `--config` 打开。
+放进主配置的代价是：**每次** `npx tauri build` 都要求环境里有 `TAURI_SIGNING_PRIVATE_KEY`，
+缺了直接构建失败。本仓库的日常是「打包 ≠ 发布」，把发布私钥变成打包的前提，等于让
+「密钥丢了」升级成「连本地打包都做不了」。
+
+忘加 `--config` 的后果是**没有 `.sig` 文件** —— 这一步由 `release.py --check` 拦下（响亮），
+不会静默发出一个装不上的更新。
+
+### 发版构建
+
+```bash
+export TAURI_SIGNING_PRIVATE_KEY="C:/WorkPlace/Tool/LiMo/.release-keys/limo-updater.key"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat C:/WorkPlace/Tool/LiMo/.release-keys/password.txt)"
+
+cd frontend
+npx tauri build --config src-tauri/tauri.release.conf.json
+# → target/release/bundle/nsis/LiMo_{v}_x64-setup.exe
+#   target/release/bundle/nsis/LiMo_{v}_x64-setup.exe.sig   ← 少了它客户端验签必失败
+```
+
+### 生成并校验清单
+
+```bash
+python scripts/release.py --write          # → dist-release/latest.json
+python scripts/release.py --check          # 发版门禁，退出码 0/1/2
+python scripts/release.py --print-upload   # 打印 gh release create 命令 + SHA256
+```
+
+`--check` 的九条判据见脚本里 `collect_problems` 的注释。其中最关键的一条是
+**清单 `signature` 必须与 `.sig` 文件逐字相同**：重新构建后忘了重跑 `--write`，
+签名与包对不上，客户端下载完验签失败、更新装不上，而发版侧一切正常。
+
+`latest.json` 与 `*.sig` 都**不进 git**（见 `.gitignore`），它们只存在于 Release 上。
+
+### 密钥
+
+- 位置：`C:\WorkPlace\Tool\LiMo\.release-keys\`（仓库外）：`limo-updater.key` /
+  `limo-updater.key.pub` / `password.txt` / `README.md`。
+- **私钥与密码必须一起备份到仓库之外。**
+- **第一个带 updater 的版本发出去之前换钥零代价**，发出去之后就换不了 ——
+  存量客户端只认已内置的公钥，换钥后它们再也收不到自动更新。
+- 公钥有三处副本必须一致：`tauri.conf.json` 的 `plugins.updater.pubkey`、
+  `.release-keys/*.pub`、以及**每一台发版机**。`release.py --check` 的前两条判据就在查这个
+  （第 2 条另查 `Cargo.toml` 的 `repository` 与 `git remote` 是否指向同一个仓库 ——
+  客户端把仓库地址编译进了 `env!("CARGO_PKG_REPOSITORY")`，不一致的表现是「检查得到、下载 404」）。
+
+### 客户端怎么连（中文网络）
+
+清单 url 写的是**直连地址**，三个中转前缀（`gh-proxy.com` / `ghproxy.net` / `gh-proxy.org`）
+由客户端运行时拼 —— 不让所有人默认走第三方。检查时插件按顺序逐个 endpoint 试到成功为止，
+下载失败就换下一条；上次成功的线路记在 `app_local_data_dir()/update-route.json`，
+失败前进一格、成功保持不动（见 [desktop-shell.md](desktop-shell.md) 的「应用内更新」）。
+
+⚠️ **中转前缀只能用于资源下载，不能拿去当网页链接** —— 打开会是空白页。
+「在浏览器中打开 Releases」用的是直连地址。
+
+### 这条链路只有第一次真实发版才能完整验证
+
+`--check` 能证明清单是对的，但「下载 → 验签 → 装 → 重启」整条路只有走一次才知道。
+第一次发版时确认四件事：
+
+1. 旧版应用能检查到新版本（中转线路也在这一步被实测）；
+2. 下载过程中后端 sidecar 被正确杀掉（否则安装器覆盖 `LiMoBackend.exe` 会失败在半路）；
+3. 装在自定义目录的用户更新后仍在原目录（`/D=` 的作用）；
+4. 更新完成后应用自动重启、文档与配置完好。
+
+---
+
 ## 新增 Python 依赖时
 
 `uv add` 新包后，检查两件事：

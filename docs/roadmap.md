@@ -200,6 +200,7 @@
 | ✅ | 上下文窗口可配置 | `addModel()` API + ProviderSettings 展示 |
 | ✅ | 日志全链路追踪 | `contextvars.ContextVar` 注入 `request_id`，前端日志面板 |
 | ✅ | 旧格式错误迁移 | 19/19 个路由模块统一 AppError 体系（2026-10-11 复核无 `HTTPException` 残留） |
+| ✅ | 自动更新（安装版，2026-11-08） | `tauri-plugin-updater` 读 Release 的 `latest.json` → 下载 → minisign 验签 → NSIS 安装 → 重启。四条线路（直连 + 三个中转）按上次成功的那条起试；启动后静默检查（24h 节流）+ 设置页手动检查；`scripts/release.py` 管清单生成与发版门禁。见 [desktop-shell.md](desktop-shell.md) 的「应用内更新」 |
 
 ### 🔧 代码结构（重构，等触发条件）
 

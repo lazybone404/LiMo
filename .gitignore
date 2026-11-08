@@ -78,3 +78,13 @@ design/tokens.css
 .DS_Store
 Thumbs.db
 *.log
+
+# ── 发版产物 ──
+# Tauri 的更新签名文件（与安装包同目录，`LiMo_x.y.z_x64-setup.exe.sig`）。
+# ⚠️ 它必须随安装包**一起上传到 Release**，但那份记录在 `gh release create` 里，
+# 不进 git —— 提交进来只会让人误以为「签名已经发布过了」。
+*.sig
+# `scripts/release.py --write` 产出的更新清单（latest.json）。
+# 它是**发版现场的产物**，版本号、签名、sha 都随构建变化，提交进 git 等于每天一次
+# 无意义改动，而真正被客户端读取的永远是 Release 上那一份。
+/dist-release/

@@ -24,6 +24,10 @@ log = "0.4"
 tauri = { version = "2.11.3", features = ["devtools"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
+# 自动更新。签名校验（minisign）由它承担，我们不自己实现。
+tauri-plugin-updater = "2"
+# 只为 `Url::parse` 改写下载线路（中转前缀 + 直连地址）。它本来就在依赖树里。
+url = "2"
 
 # ── PDF 导出（WebView2 PrintToPdf）──
 # ⚠️ 这两个版本**必须与 tauri 内部使用的一致**（见 Cargo.lock：tauri 2.11.x → wry 0.55

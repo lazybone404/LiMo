@@ -13,6 +13,8 @@ import { SearchBar } from './components/ui/SearchBar'
 import { ThemeToggle } from './components/ui/ThemeToggle'
 import { ShortcutHelpDialog } from './components/ui/ShortcutHelpDialog'
 import { fetchCapabilities, listTranscripts, listFolders, getMarkdown, getTranscript } from './api/client'
+import { checkForUpdate, isDesktop } from './api/update'
+import { getUpdatePrefs, markChecked, markNotified, shouldAutoCheck } from './lib/update-prefs'
 import { startHealthPoll } from './lib/health'
 import { toMarkdownMeta } from './lib/markdownMeta'
 import {
@@ -33,6 +35,11 @@ const BACKEND_PROBE_DELAY_MS = 2500
 // 硬兜底（ms）：万一 backend-ready 与 backend-startup-timeout 都没到达
 // （窗口句柄取不到时 Rust 的 emit 会静默丢弃），也不能让加载屏永远停住。
 const BACKEND_HARD_TIMEOUT_MS = 50_000
+
+// 启动后多久做一次静默的更新检查（ms）。
+// 为什么要等：刚启动时后端在建索引、前端在拉文档列表，这时候再插一条对 GitHub 的
+// 请求只会和它们抢带宽；而更新这件事晚 20 秒知道完全不影响使用。
+const UPDATE_CHECK_DELAY_MS = 20_000
 
 // logo 在 `public/` 下，必须跟着构建 base 走。
 // ⚠️ 写死 `/logo.png` 在 Tauri / 本地 `/` 下正常，但在**子路径部署**（演示站的
@@ -97,7 +104,10 @@ export default function App() {
   const setCapabilities = useStore(s => s.setCapabilities)
   const setDocs = useStore(s => s.setDocs)
   const setFolders = useStore(s => s.setFolders)
-  const [showSettings, setShowSettings] = useState(false)
+  // 设置页停在哪一栏；`null` = 没打开。
+  // ⚠️ 用它取代布尔值，是因为「发现新版本 → 去更新」要直接落到「通用」那一栏 ——
+  // 布尔值表达不了「打开并停在这里」。活动栏图标仍按老行为落到「模型 & 引擎」。
+  const [settingsTab, setSettingsTab] = useState<string | null>(null)
   const [showExport, setShowExport] = useState(false)
   // 安装路径告警（Rust `backend-warning`）—— 空串 = 无告警、整条不渲染
   const [installWarning, setInstallWarning] = useState('')
@@ -160,6 +170,42 @@ export default function App() {
   useEffect(() => {
     if (!backendReady) return
     return startHealthPoll()
+  }, [backendReady])
+
+  // ── 启动时的静默更新检查 ──
+  // 三个前提缺一不可：桌面版（浏览器里没有 `invoke`）、后端已就绪（不然又要和冷启动抢）、
+  // 距上次检查超过 24 小时（节流，见 `lib/update-prefs.ts`）。
+  //
+  // ⚠️ **失败一律静默**：这也可能是没网、可能是公司网络挡了 GitHub —— 都是常态，
+  // 弹一句「检查更新失败」除了让用户以为软件坏了之外没有任何作用。手动检查在
+  // 设置 → 通用，那条路会把错误原样显示出来。
+  //
+  // ⚠️ **重复提醒的闸门在 `lib/update-prefs.ts`**，不在这个 effect 里：同一个版本
+  // 弹过一次、或被用户跳过，就都不再弹。少这两条，24 小时节流到期后用户会被同一个
+  // 版本反复提醒 —— 提醒本身成了噪音。
+  useEffect(() => {
+    if (!backendReady || !isDesktop() || !shouldAutoCheck()) return
+    const timer = window.setTimeout(() => {
+      checkForUpdate().then(s => {
+        markChecked()
+        const u = s.update
+        if (!u) return
+        const prefs = getUpdatePrefs()
+        if (u.version === prefs.skippedVersion || u.version === prefs.lastNotifiedVersion) return
+        markNotified(u.version)
+        useStore.getState().addToast(`发现新版本 v${u.version}`, 'info', {
+          actionLabel: '去更新',
+          // 直接落到「通用」那一栏 —— 那张更新卡就在这一栏的第一张。
+          onAction: () => setSettingsTab('general'),
+          // 比默认的 3 秒长得多：这条提醒带一个动作按钮，3 秒内点不到就等于没给。
+          duration: 10_000,
+        })
+      }).catch(() => {
+        // 失败也记时间，否则断网时每次启动都要把三条线路超时跑满。
+        markChecked()
+      })
+    }, UPDATE_CHECK_DELAY_MS)
+    return () => window.clearTimeout(timer)
   }, [backendReady])
 
   useEffect(() => {
@@ -395,7 +441,7 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         {/* 活动栏常驻最左（沉浸下让位，与顶栏一致 —— 沉浸要藏掉所有面板入口）。
             它**不是** slot：图标来自 `SlotRegistry.grouped().left` 的派生，不加新机制。 */}
-        {!immersive && <ActivityBar onOpenSettings={() => setShowSettings(true)} />}
+        {!immersive && <ActivityBar onOpenSettings={() => setSettingsTab('model')} />}
         {/* hideSlots 是**真卸载**（SlotLayout 直接 return null），不是 CSS 隐藏。它**不会**
             让正在跑的任务变僵尸：abort 表在 `api/taskManager.ts` 模块级、SSE 回调直接写 store、
             收尾在 `finally` 里 —— 三条都与挂载无关（详见 uiSlice.ts 里 immersive 那段注释）。
@@ -419,9 +465,9 @@ export default function App() {
       {showExport && !immersive && <ExportPanel onClose={() => setShowExport(false)} />}
 
       {/* 设置 — overlay，不卸载主界面 */}
-      {showSettings && (
+      {settingsTab !== null && (
         <div className="fixed inset-0 z-[10000] flex flex-col bg-surface">
-          <SettingsPage onBack={() => setShowSettings(false)} />
+          <SettingsPage initialTab={settingsTab} onBack={() => setSettingsTab(null)} />
         </div>
       )}
     </div>

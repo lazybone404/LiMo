@@ -14,6 +14,7 @@ import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench
 import { ProviderSettings } from './ProviderSettings'
 import { PluginSettings } from './PluginSettings'
 import { SearchIndexCard } from './SearchIndexCard'
+import { UpdateCard } from './UpdateCard'
 
 /**
  * 卡片「逐维度微调」的档位按钮 —— 与方案按钮同一视觉语言但更小（它是次级控件）。
@@ -59,8 +60,18 @@ const LANG_OPTIONS = [
   { value: 'es', label: 'Español' },
 ] as const
 
-export function SettingsPage({ onBack }: { onBack: () => void }) {
-  const [tab, setTab] = useState('model')
+/**
+ * @param initialTab 打开时停在哪一栏。默认「模型 & 引擎」（改造前的行为）。
+ *   给了它，`App.tsx` 的「发现新版本」提醒才能直接落到「通用」——
+ *   否则点「去更新」只是打开设置页，用户还得自己找到那张卡。
+ *   ⚠️ 只在**挂载时**生效（`useState` 初值）：设置页保持挂载期间再传新值不会切栏，
+ *   那也不是任何调用点需要的行为。
+ */
+export function SettingsPage({ onBack, initialTab = 'model' }: {
+  onBack: () => void
+  initialTab?: string
+}) {
+  const [tab, setTab] = useState(initialTab)
 
   const [bilibiliCookie, setBilibiliCookie] = useState('')
   const [youtubeCookie, setYoutubeCookie] = useState('')
@@ -268,6 +279,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                 {tab === 'auth' && '配置各平台的认证 Cookie'}
                 {tab === 'proxy' && '网络代理与访问控制'}
                 {tab === 'agent' && '配置 AI 对话中网络搜索和网页抓取的方案'}
+                {tab === 'general' && '语言、检索索引、导入与导出行为、应用更新'}
                 {tab === 'appearance' && '主题模式与主色调配色方案'}
               </p>
             </div>
@@ -976,6 +988,10 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
 
           {tab === 'general' && (
             <div className="space-y-4">
+              {/* 应用更新放在**最前**：启动时那条「发现新版本」提醒的「去更新」按钮
+                  直接落到这一栏，卡在第一张才不用往下滚去找。 */}
+              <UpdateCard />
+
               <div className="bg-elevated rounded-xl border border-border-light p-6 space-y-4">
                 <p className="text-[13px] text-muted">翻译目标语言及界面显示语言。</p>
                 <div>

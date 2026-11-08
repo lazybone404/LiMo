@@ -86,6 +86,8 @@
 |------|--------|------|
 | Tauri | MIT OR Apache-2.0 | 桌面应用框架（WebView2 + Rust 壳） |
 | tauri-plugin-log / shell | MIT OR Apache-2.0 | 日志 / 进程管理 |
+| tauri-plugin-updater | MIT OR Apache-2.0 | 应用内更新：读 Release 清单、下载、minisign 验签、启动安装器（2026-11-08） |
+| minisign-verify | MIT | 更新包签名校验（`tauri-plugin-updater` 的依赖，随它一起编译） |
 | serde / serde_json / log | MIT OR Apache-2.0 | 序列化 / 日志 |
 
 ---

@@ -28,3 +28,42 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **CORS**：`main.py` 使用 **Origin 白名单**（`http(s)://tauri.localhost` + `tauri://localhost` + 本机 localhost 任意端口）+ `_ForceCORSMiddleware` **仅白名单 origin 回显凭证**——阻隔任意恶意网页跨站读取本地后端（2026-08-02 从 `allow_origin_regex=".*"` 收紧；⚠️ 生产 WebView2 实际 origin 是 `http://tauri.localhost`，白名单必须含它）
 - **配置**：`tauri.conf.json` — 1400×900 窗口 + `maximized: true` + `com.limo.app` 标识
 - **依赖**：Rust 端 `tauri` (features=["devtools"]) + `tauri-plugin-shell` + `tauri-plugin-log`
+
+---
+
+## 应用内更新（2026-11-08）
+
+安装版可以从 GitHub Release 检查并安装新版本：读 `latest.json` → 比版本 → 下载 →
+minisign 验签 → 起 NSIS 安装器 → 重启。代码在 [src-tauri/src/updater.rs](../frontend/src-tauri/src/updater.rs)，
+发版侧（签名与生成清单）见 [BUILD.md](BUILD.md) 的「发版：签名与 latest.json」。
+
+- **两个命令，界线是「谁做决定」**：`check_update` 只查（返回 `currentVersion` 与可选的
+  `update`），`install_update` 才装（`Channel` 推进度）。检查可以静默，**安装必须由人点** ——
+  代码里没有任何自动下载的入口。
+- **线路表在 Rust 侧唯一一份**：`tauri.conf.json` 的 `plugins.updater` **不写 endpoints**，
+  由 `app.updater_builder().endpoints(...)` 运行时统一覆盖。仓库地址取自
+  `env!("CARGO_PKG_REPOSITORY")`，清单地址是 `{repo}/releases/latest/download/latest.json`。
+  四条线路 = 直连 + 三个中转前缀；上次成功的线路记在 `app_local_data_dir()/update-route.json`，
+  **失败前进一格并写回，成功保持不动**（不记的话，中文网络下每次启动都要先在直连上失败一轮）。
+- **检查用 builder 的 `timeout(12s)`，下载用 `update.timeout = Some(30min)`。**
+  插件 `update_from_release()` 里 `Update.timeout` 写死为 `None`，builder 的 timeout **不会**
+  带到下载请求上 —— 不显式设就是「永不超时」，卡住的连接会把界面挂死。这条此前判断错过一次。
+- **Windows 上 `install()` 会 `std::process::exit(0)`**，不经过 `RunEvent::Exit`。所以
+  `on_before_exit` 里先 `stop_backend_sidecar_blocking()`（`take()` → `kill()` → 有界等待
+  `try_wait` 5s），再手动调一次 `app.cleanup_before_exit()` —— **`on_before_exit` 是覆盖而非追
+  加**，插件 `UpdaterBuilder::new()` 默认挂的就是 `cleanup_before_exit`，不补这一句 Tauri 的
+  默认清理就丢了。后端没杀干净的表现是安装器覆盖 `LiMoBackend.exe` 时文件被锁、NSIS 中途
+  失败，留下一个半更新的安装目录。
+- **NSIS 补 `/D=<当前 exe 所在目录>`**（`installer_arg`，插件保证它排在内部参数之后）。
+  模板里的 `RestorePreviousInstallLocation` 从注册表恢复，但实测出现过「装在自定义目录、
+  更新后回落到默认目录」。
+- **前端不知道安装成功**：Windows 分支的 Promise 永远不会 resolve（进程已退出）。所以
+  `UpdateCard` 只用 `.catch()` 处理失败，**不能**在 `.then()` 里写「安装完成」——
+  那段代码不会执行（见 [api/update.ts](../frontend/src/api/update.ts) 的注释）。
+- **有任务在跑时禁用安装**：安装会让应用退出，正在跑的生成 / 转录 / 导入没有任何断点续传。
+  判据是 `processingTasks` 里任一条 `status === 'running'`（失败条目保留 5 秒，不算「在跑」）。
+- **启动时静默检查**：`App.tsx` 在后端就绪 20 秒后查一次，24 小时节流；同一个版本只提醒一次，
+  被跳过的版本不再提醒（三个字段都在 [lib/update-prefs.ts](../frontend/src/lib/update-prefs.ts)）。
+  检查失败**静默**，手动检查在 设置 → 通用，那条路会把错误原样显示出来。
+- **`update-route.json` 读失败一律回落 0（直连）** —— 线路偏好是纯优化，不能因为它坏掉就
+  检查不了更新。
