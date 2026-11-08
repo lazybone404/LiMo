@@ -317,7 +317,9 @@ export function PreviewArea() {
   // 真实归属文档为目标，而非 currentDocId——弹窗打开时 currentDocId 已被 selectDoc 切成
   // 新文档，用 currentDocId 会把 A 的编辑内容错存进 B（评审发现的数据污染根因）。
   // `version` 是**开始编辑时用户正在看的那一版**——编辑就地覆盖它（不产生新版本）。
-  const [editing, setEditing] = useState<{ mode: 'notes' | 'polished'; docId: string; version: number } | null>(null)
+  // `diskHash`：进入编辑那一刻这一版文件字节的哈希。保存时原样带回，后端据此判断
+  // 「你编辑期间有没有别的程序改过这个文件」——没有它，那次改动会被静默覆盖。
+  const [editing, setEditing] = useState<{ mode: 'notes' | 'polished'; docId: string; version: number; diskHash?: string } | null>(null)
   const [editValue, setEditValue] = useState('')
   const [editDirty, setEditDirty] = useState(false)
   const [savingEdit, setSavingEdit] = useState(false)
@@ -390,9 +392,12 @@ export function PreviewArea() {
     // ⚠️ 兜底 `0`（= 最新版）**不是无害的默认值**：就地覆盖语义下它会把用户没在看的那
     // 一版改掉、原文不可恢复（audit-3 P1 正是这条路径）。它是最后一道防线，不是正常路径。
     const version = markdownMeta && markdownMeta.mode === mode ? markdownMeta.version : 0
+    // 与 `version` 同一个判据：**必须是这个 mode 的**元数据里的哈希。取错了 mode 的
+    // 哈希，保存时恒判冲突（每篇都弹「被别的程序改过」），而文件一个字节都没动。
+    const diskHash = markdownMeta && markdownMeta.mode === mode ? markdownMeta.diskHash : undefined
     setEditValue(displayContent)
     setEditDirty(false)
-    setEditing({ mode, docId: currentDocId, version })
+    setEditing({ mode, docId: currentDocId, version, diskHash })
   }
 
   const cancelEditing = () => {
@@ -410,7 +415,7 @@ export function PreviewArea() {
    * 目标文档优先级：显式 saveDocId > 编辑态来源 editing.docId > currentDocId——
    *   编辑态来源保证 Ctrl+S/保存按钮永远写回编辑内容的真正归属文档。
    */
-  const handleSaveEdit = async (saveDocId?: string): Promise<boolean> => {
+  const handleSaveEdit = async (saveDocId?: string, force = false): Promise<boolean> => {
     // 防御：onClick 等 React 事件处理器可能把 MouseEvent 当首个参数传入（TS 无参函数
     // 赋给 onClick 逆变兼容不报错）——saveDocId 必须为 string 才视为显式目标，否则回退编辑态归属文档。
     const docId = typeof saveDocId === 'string' ? saveDocId : (editing?.docId || currentDocId)
@@ -420,7 +425,9 @@ export function PreviewArea() {
     if (typeof saveDocId !== 'string' && unsavedDialog) return false
     setSavingEdit(true)
     try {
-      const md = await saveMarkdownContent(docId, editing.mode, editValue, editing.version)
+      const md = await saveMarkdownContent(
+        docId, editing.mode, editValue, editing.version, editing.diskHash, force,
+      )
       if (editing.mode === 'polished') {
         setCurrentPolishedContent(md.content)
       } else {
@@ -436,7 +443,20 @@ export function PreviewArea() {
       useStore.getState().addToast('已保存', 'success')
       return true
     } catch (err) {
-      useStore.getState().addToast(getErrorMessage(err), 'error')
+      // ⚠️ 冲突**单独给出口**：这一版在你编辑期间被别的程序改过（或另一个窗口改过），
+      // 后端一个字节都没写。只提示「保存失败请重试」是骗人——重试**永远不会成功**
+      // （前提一直不成立），用户会以为是自己哪里点错了。
+      if (err instanceof ApiErrorException && err.apiError.code === 'MD_EDIT_CONFLICT') {
+        useStore.getState().addToast(err.apiError.message, 'error', {
+          actionLabel: '用我的覆盖',
+          // 15 秒：默认 6 秒对「读一句 + 决定要不要覆盖别人的改动」太短，而这是
+          // 一次**不可逆**的选择（磁盘上那份改动会被抹掉）。
+          duration: 15000,
+          onAction: () => { void handleSaveEdit(docId, true) },
+        })
+      } else {
+        useStore.getState().addToast(getErrorMessage(err), 'error')
+      }
       return false
     } finally {
       setSavingEdit(false)

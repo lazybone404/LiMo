@@ -162,9 +162,10 @@ assert "kind" not in entry3 and "type" not in entry3, \
 
 # ② index 条目的键集**精确等于**白名单 + 读时派生字段。多一个键意味着有东西
 #    绕过了白名单直接并进条目——那会是一份与文件头分叉的副本（软性双真相源）。
+#    `diskHash` 是后加的读时派生字段（编辑保存的乐观锁），与 `chars` 同档。
 assert set(entry3) == {"id", "transcriptId", "style", "mode", "version", "createdAt",
                        "status", "content", "chars", "edited", "source",
-                       "promptVersion"}, sorted(entry3)
+                       "promptVersion", "diskHash"}, sorted(entry3)
 
 print("PASS: file_meta 只进文件首行；index 条目键集受限（漏进即红）")
 

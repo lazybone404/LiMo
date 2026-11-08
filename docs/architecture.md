@@ -254,7 +254,9 @@ class Store:
     # Markdown（版本归档：{mode}/v{N}.md，一版一文件）
     get_markdown(id) -> str | None        # 路径由该条目自己的 (mode, version) 决定
     get_markdowns_by_transcript(tx_id, mode="", version=None) -> list  # 版本降序，[0] = 最新
-    save_markdown(mv, file_meta=None, *, replace_version=None) -> bool  # None = 追加新版；N = 就地覆盖第 N 版
+    save_markdown(mv, file_meta=None, *, replace_version=None, expected_hash=None) -> bool
+    #   replace_version：None = 追加新版；N = 就地覆盖第 N 版
+    #   expected_hash：编辑的乐观锁（上一条的 diskHash）；对不上抛 MD_EDIT_CONFLICT（409）
 
     # Process（{doc_dir}/process/{mode}.md）
     get_process_result(id) -> str | None

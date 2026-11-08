@@ -257,6 +257,19 @@ class StoreError(AppError):
     # 重建成没成、损失了什么，都从 `_load_index` 的 warning 里看。
 
     @classmethod
+    def markdown_conflict(cls, detail: str = ""):
+        """产物文件在编辑期间被**别的程序**改过，本次保存放弃。
+
+        ⚠️ 用 409 而不是默认的 400：请求本身没有错，是它依据的前提已经变了。
+        前端按 `code` 分叉 —— `MD_EDIT_CONFLICT` 弹「用我的覆盖 / 取消」，
+        其余保存失败只说「请重试」。混成一个码时，用户点重试会**再被拦一次**，
+        而重试永远不会成功（前提一直不成立）。
+        """
+        return cls("MD_EDIT_CONFLICT",
+                   "这一版在你编辑期间被其他程序改过了，尚未保存。",
+                   detail, status_code=409)
+
+    @classmethod
     def write_failed(cls, op: str, exc: OSError):
         """把 OSError 按**真实原因**分类 —— 而不是一律说「磁盘空间不足」。
 

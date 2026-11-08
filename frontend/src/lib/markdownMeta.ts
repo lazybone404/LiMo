@@ -33,5 +33,6 @@ export function toMarkdownMeta(md: MarkdownView): MarkdownMeta {
     chars: md.chars,
     source: md.source,
     followUps: md.followUps,
+    diskHash: md.diskHash,
   }
 }

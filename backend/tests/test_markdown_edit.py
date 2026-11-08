@@ -14,11 +14,11 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from app.core.dependencies import get_store
-from app.core.errors import AppError
+from app.core.errors import AppError, http_status
 from app.core.markdown_assets import rewrite_asset_urls, unrewrite_asset_urls
 from app.core.transcript_meta import parse_artifact_meta
 from app.core.types import RawTranscript, SourceType, RawMetadata, MarkdownView, Style, GenerateMode
-from app.storage.store import Store
+from app.storage.store import Store, markdown_version_path
 from app.routers import markdown_edit
 
 # ── 测试 app：只挂 markdown_edit 路由 + override get_store（不触发主 app startup）──
@@ -32,8 +32,10 @@ app.dependency_overrides[get_store] = lambda: s
 # main.py 的 AppError handler 在这里复制（测试 app 不挂主 app，需自行注册）
 @app.exception_handler(AppError)
 async def app_error_handler(request, exc: AppError):
-    http_status = 200 if exc.recoverable else exc.status_code
-    return JSONResponse(status_code=http_status, content=exc.to_dict())
+    # ⚠️ 状态码判据走生产那份 `errors.http_status`，不在这里复刻表达式（模式 #54）：
+    # 这里曾写死 `200 if exc.recoverable else exc.status_code`，于是**显式 409 的
+    # 冲突响应在测试里变成 200** —— 测试与线上判据不同，而两边都不报错。
+    return JSONResponse(status_code=http_status(exc), content=exc.to_dict())
 
 
 client = TestClient(app)
@@ -208,5 +210,73 @@ assert r_legacy.status_code == 200, r_legacy.text
 assert r_legacy.json()['style'] == 'meeting', \
     f"旧别名必须在读侧也归一（否则静默退化成 minimal）：{r_legacy.json()['style']!r}"
 print('PASS: 历史别名 style 编辑保存后归一为 meeting（不是静默变 minimal）')
+
+# ── 13. 外部改动检测（乐观锁）：读时给的 diskHash 对不上 → 409，且一个字节都不写 ──
+# 修复前的行为是**静默覆盖**：用户在别的编辑器里改过 v{N}.md，回到 LiMo 点保存，
+# 界面上「已保存」，而他那次改动画面上再无痕迹。
+s.save_transcript(RawTranscript(
+    id='tr_lock', title='Lock', source_type=SourceType.WEBPAGE,
+    engine='trafilatura', raw_text='原文', content_hash='h_lock', metadata=RawMetadata(),
+))
+s.save_markdown(MarkdownView(
+    id='md_lock', transcript_id='tr_lock', content='# 原文\n第一版',
+    style=Style.DETAILED, mode=GenerateMode.NOTES,
+))
+entry = s.get_markdowns_by_transcript('tr_lock', mode='notes')[0]
+hash_before = entry['diskHash']
+assert isinstance(hash_before, str) and len(hash_before) == 64, '读路径必须给出 diskHash'
+lock_path = markdown_version_path(s.get_doc_dir('tr_lock'), 'notes', entry['version'])
+
+# 13a. 哈希对得上 → 正常保存，且响应带回**新的**哈希（前端据此再存一次不用重新拉取）
+r = client.put('/api/markdown/tr_lock', json={
+    'mode': 'notes', 'content': '# 原文\n第一版（LiMo 改）', 'version': 1,
+    'expectedHash': hash_before,
+})
+assert r.status_code == 200, r.text
+assert r.json()['diskHash'] != hash_before, '保存后必须给出新哈希，否则第二次保存恒判冲突'
+hash_after_limo = r.json()['diskHash']
+
+# 13b. 文件被**外部**改动（这里直接写盘模拟另一个编辑器）
+lock_path.write_text(lock_path.read_text(encoding='utf-8') + '\n\n外部追加的一段\n',
+                     encoding='utf-8', newline='')
+r = client.put('/api/markdown/tr_lock', json={
+    'mode': 'notes', 'content': '# 原文\nLiMo 再改', 'version': 1,
+    'expectedHash': hash_after_limo,
+})
+assert r.status_code == 409, f'外部改动后必须拒绝覆盖，实际 {r.status_code}: {r.text}'
+assert r.json()['code'] == 'MD_EDIT_CONFLICT'
+on_disk = lock_path.read_text(encoding='utf-8')
+assert '外部追加的一段' in on_disk, '冲突时**一个字节都不能写**（外部改动已丢失）'
+assert 'LiMo 再改' not in on_disk
+print('PASS: 外部改动检测（409 + 未写盘）')
+
+# 13c. 用户选「用我的覆盖」（force）→ 跳过校验，确实覆盖掉
+r = client.put('/api/markdown/tr_lock', json={
+    'mode': 'notes', 'content': '# 原文\nLiMo 再改', 'version': 1,
+    'expectedHash': hash_after_limo, 'force': True,
+})
+assert r.status_code == 200, r.text
+on_disk = lock_path.read_text(encoding='utf-8')
+assert 'LiMo 再改' in on_disk and '外部追加的一段' not in on_disk
+print('PASS: force 覆盖外部改动')
+
+# ── 14. BOM 保真：带 BOM 的产物文件仍能读出**自证头** ──
+# 外部编辑器另存为「UTF-8 带 BOM」时，首字符多一个 ﻿。用 utf-8 解码时第一行
+# 不以 `<!-- limo-meta` 开头 → `parse_artifact_meta` 判「无头」→ source/edited 全丢，
+# **零报错**。判据落在「头还认不认得出」上，不是「有没有抛异常」。
+s.save_transcript(RawTranscript(
+    id='tr_bom', title='BOM', source_type=SourceType.WEBPAGE,
+    engine='trafilatura', raw_text='原文', content_hash='h_bom', metadata=RawMetadata(),
+))
+s.save_markdown(MarkdownView(
+    id='md_bom', transcript_id='tr_bom', content='# BOM 文档\n正文',
+    style=Style.DETAILED, mode=GenerateMode.NOTES,
+), file_meta={'type': 'artifact', 'edit': {'edited': True, 'editedAt': '2026-01-01T00:00:00'}})
+bom_path = markdown_version_path(s.get_doc_dir('tr_bom'), 'notes', 1)
+bom_path.write_bytes(b'\xef\xbb\xbf' + bom_path.read_bytes())
+bom_entry = s.get_markdowns_by_transcript('tr_bom', mode='notes')[0]
+assert bom_entry['edited'] is True, '带 BOM 时自证头丢了（有头被读成「无头」）'
+assert not bom_entry['content'].startswith('﻿'), '正文开头不能带 BOM 字符'
+print('PASS: BOM 文件的自证头仍可读')
 
 print('\n全部 PASS: test_markdown_edit')

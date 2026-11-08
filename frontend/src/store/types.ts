@@ -94,6 +94,9 @@ export interface MarkdownMeta {
   source?: string
   /** 追问建议（预览区笔记末尾的可点 chip）。`undefined` = 这一版没有（不是空数组） */
   followUps?: string[]
+  /** 这一版**磁盘字节**的 sha256（后端读盘时算）。编辑保存时原样带回，用于发现
+   *  「你编辑期间别的程序改过这个文件」。`undefined` = 后端没给，保存不做校验 */
+  diskHash?: string
 }
 
 export interface MarkdownVersion {

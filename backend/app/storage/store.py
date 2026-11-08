@@ -97,6 +97,31 @@ def list_version_files(doc_dir: Path, mode: str) -> list[tuple[int, Path]]:
     return sorted(found, key=lambda t: t[0])
 
 
+def read_artifact_file(path: Path) -> tuple[str, str]:
+    """读一份产物文件 → `(文本, 原始字节的 sha256)`。
+
+    ⚠️ **解码必须用 `utf-8-sig`**，不是 `utf-8`。自证头住在**首行**
+    （`parse_artifact_meta` 只认第一行），而外部编辑器另存的「UTF-8 带 BOM」文件在
+    首字符多一个 `\\ufeff`：用 `utf-8` 读出来的第一行不以 `<!-- limo-meta` 开头，
+    于是**有头被读成「无头（历史产物）」** —— `source` / `promptVersion` /
+    `edited` 一起消失，零报错；再保存一次，头还会被当成正文留在文件里。
+    写侧（`atomic_write_text`）一律写不带 BOM 的 UTF-8，所以保存一次即规范化。
+
+    ⚠️ 哈希算的是**原始字节**，不是解码后的文本：它用来判定「这一版在用户编辑
+    期间有没有被别的程序改过」，比文本多出的差异（BOM、换行风格、尾部空格）
+    同样算改动。拿文本哈希去比，恰好会漏掉「另一个编辑器只改了换行」这类改写。
+
+    ⚠️ **必须自己归一换行**：`Path.read_text()` 走的是 universal newlines
+    （`\\r\\n` → `\\n`），而 `bytes.decode()` 不会。少了这一步，Windows 上磁盘里
+    的 CRLF 会让首行变成 `<!-- limo-meta…--></r>` 一类形态，`parse_artifact_meta`
+    的第一行判据（`startswith` + `endswith`）整条失效 —— 现象与 BOM 那条一模一样：
+    自证头静默丢失，而代码看起来没有任何问题（这是本轮实测踩到的）。
+    """
+    raw = path.read_bytes()
+    text = raw.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+    return text, hashlib.sha256(raw).hexdigest()
+
+
 def markdown_dir_has_version(doc_dir: Path, mode: str) -> bool:
     """该文档该 mode 下有没有**任何**产物（新布局，或尚未迁移的遗留布局）。
 
@@ -731,7 +756,7 @@ class Store:
         for mode in MARKDOWN_MODES:
             for version, path in list_version_files(doc_dir, mode):
                 try:
-                    raw = path.read_text(encoding="utf-8")
+                    raw, _hash = read_artifact_file(path)
                 except OSError as e:
                     logger.warning("重建：跳过读不出的产物版本 %s（%s）", path, e)
                     continue
@@ -1864,6 +1889,7 @@ class Store:
         file_meta: dict | None = None,
         *,
         replace_version: int | None = None,
+        expected_hash: str | None = None,
     ) -> bool:
         """写入一份产物版本 → `{doc_dir}/{mode}/v{N}.md`。
 
@@ -1894,6 +1920,14 @@ class Store:
 
         ⚠️ 版本**全量归档、不设上限**（用户选择）——磁盘是本地 md，一篇文档即使攒到
         上百版也只有几 MB。
+
+        ⚠️ `expected_hash` 是**编辑**专用的乐观锁（生成路径恒为 `None`）：调用方
+        把「读这一版时文件字节的 sha256」（`get_markdowns_by_transcript` 的
+        `diskHash`）带回来，对不上就抛 `StoreError.markdown_conflict`，**一个字节
+        都不写**。没有它就是静默覆盖 —— 用户在别的编辑器里改过 `v{N}.md`，在这里
+        点一次保存，那次改动画面上有个「已保存」，实际已经被抹掉。
+        比对必须在**本函数的锁内**：锁是「算版本号 → 写盘 → 写 index」的唯一互斥点，
+        锁外的比对抓不到「比对与写入之间插进来的另一条编辑请求」。
         """
         doc_dir = self.get_doc_dir(mv.transcript_id)
         if not doc_dir:
@@ -1917,6 +1951,19 @@ class Store:
                                    doc_dir.name, mode, version)
                     return False
             target = markdown_version_path(doc_dir, mode, version)
+
+            # 外部改动检测（编辑专用的乐观锁，见 docstring）。判据是**原始字节**的
+            # 哈希，不是文本：换行风格 / BOM / 尾部空格的改写也算「被改过」。
+            if expected_hash is not None:
+                actual = (hashlib.sha256(target.read_bytes()).hexdigest()
+                          if target.is_file() else "")
+                if actual != expected_hash:
+                    logger.warning("save_markdown: 文件被外部改动，拒绝覆盖 %s/%s/v%d",
+                                   doc_dir.name, mode, version)
+                    raise StoreError.markdown_conflict(
+                        f"{target.name} 期望 {expected_hash[:12] or '(空)'}…、"
+                        f"实际 {actual[:12] or '(文件不存在)'}"
+                    )
 
             # 自证头注入**真实版本号** —— 版本号现在就是文件名，写盘前已知。
             # （`provenance.py` 里「写盘那刻不知道版本号」的说明据此失效，那里已改。）
@@ -1994,7 +2041,7 @@ class Store:
         path = markdown_version_path(doc_dir, target_entry.get("mode", ""),
                                      target_entry.get("version", 0))
         if path.exists():
-            return path.read_text(encoding="utf-8")
+            return read_artifact_file(path)[0]
         return None
 
     def list_markdown_entries(self, transcript_id: str) -> list[dict]:
@@ -2032,9 +2079,10 @@ class Store:
                                      mode: str = "", version: int | None = None) -> list[dict]:
         """该文档的产物版本（含正文），**版本降序**（`[0]` 即最新）。
 
-        每条 = index 条目 + `content`（含自证头）+ **五个附加字段**：
+        每条 = index 条目 + `content`（含自证头）+ **六个附加字段**：
         `chars`（纯正文字数）/ `edited` / `source`（生成用的模型）/
-        `promptVersion`（生成提示词版本）/ `followUps`（追问建议）。
+        `promptVersion`（生成提示词版本）/ `diskHash`（文件字节的 sha256，编辑
+        保存的乐观锁）/ `followUps`（追问建议）。
 
         ⚠️ 前四个从自证头**现算**，刻意**不进 index**：index 一删就丢，而这些全都
         写在文件里（`generatedAt` / `generated.model` / `generated.promptVersion` / `edit`）。
@@ -2071,11 +2119,17 @@ class Store:
                                          meta.get("version", 0))
             if not path.exists():
                 continue
-            text = path.read_text(encoding="utf-8")
+            text, disk_hash = read_artifact_file(path)
             head = parse_artifact_meta(text)[0] or {}
             item = {
                 **meta,
                 "content": text,
+                # ⚠️ **磁盘字节**的哈希，供编辑保存的乐观锁（`save_markdown` 的
+                # `expected_hash`）。它是读时派生值、不进 index（删 index 重建后
+                # 仍能算出来），与 `chars` / `edited` 同一档。
+                # 算的是原始字节而不是 `content`：`content` 到前端会被改写资产
+                # URL、被剥头，用它算的哈希回来必然对不上。
+                "diskHash": disk_hash,
                 # ⚠️ 标记行不算「正文字数」：它是协议元素，读者看不到它（`strip_blocks`
                 # 只剥标记行、块内文字照算）。
                 "chars": len(strip_blocks(strip_meta(text))),

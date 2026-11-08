@@ -46,6 +46,13 @@ class MarkdownEditRequest(BaseModel):
     # ⚠️ 前端送的是 `markdownMeta.version`（它正在看的那一版），不是「最新版」——
     # 用户切到 v1 再编辑，改的必须是 v1。
     version: int = 0
+    # 乐观锁：`GET /markdown/{id}` 带回来的 `diskHash`（文件字节的 sha256）。缺省
+    # `None` = 不校验（旧前端、直接用 curl 调都还能用）；带了就必须与磁盘上的当前
+    # 字节完全一致，否则 409 `MD_EDIT_CONFLICT`。
+    expectedHash: str | None = None
+    # 用户在冲突提示里选了「用我的覆盖」→ 跳过上面的校验。**只在冲突后由用户显式
+    # 触发**，前端不会在首次保存时就带它。
+    force: bool = False
 
 
 # ⚠️ 正/反两个改写（`assets/x` ↔ `/api/assets/{tx}/x`）都已下沉 `core/markdown_assets.py`
@@ -131,7 +138,13 @@ async def edit_markdown(transcript_id: str, req: MarkdownEditRequest, request: R
         content=body, style=style, mode=GenerateMode(req.mode),
     )
     # `replace_version` = 覆盖这一版；版本号**不变**（这正是「编辑不产生版本」）。
-    if not store.save_markdown(mv, file_meta=head, replace_version=version):
+    # `expected_hash` 交给 store 在**它的锁内**比对（不在本函数里先读一次）：
+    # 这里的读与那里的写之间隔着一次 `get_markdowns_by_transcript` 的读盘，比对的
+    # 窗口越靠前，漏掉的「同时写入」就越多。store 抛 `MD_EDIT_CONFLICT`（409）。
+    if not store.save_markdown(
+        mv, file_meta=head, replace_version=version,
+        expected_hash=None if req.force else req.expectedHash,
+    ):
         raise AppError("MD_EDIT_SAVE_FAILED", "保存失败，请重试", recoverable=True)
 
     # 笔记正文变了 → 全文索引跟着更新。漏了这行的症状很具体：用户刚在笔记里写了

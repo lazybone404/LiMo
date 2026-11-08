@@ -450,6 +450,10 @@ export interface MarkdownView {
    *  从旁路的 `{doc_dir}/{mode}/v{N}.followups.json` 读（不进正文/不进 index/不进自证头）。
    *  ⚠️ `undefined` = 这一版没有追问（没勾 / 生成失败 / 历史版本）——**与空数组合义不同**。 */
   followUps?: string[]
+  /** 这一版**文件字节**的 sha256（后端读盘时算）。编辑保存时原样带回，
+   *  用于判定「你编辑期间有没有别的程序改过这个文件」。`undefined` = 后端没给
+   *  （老后端 / 历史条目），此时保存不做校验。 */
+  diskHash?: string
 }
 
 export interface ChatResult {

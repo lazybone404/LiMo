@@ -107,17 +107,27 @@ export async function getMarkdown(transcriptId: string, mode?: string, version?:
  *
  * `version` 必传：它是**用户正在看的那一版**（`markdownMeta.version`）。不传会落到
  * 后端默认（最新版）——用户切到 v1 编辑却改掉了 v3，是最坏的一种成功。
+ *
+ * `expectedHash` 是读这一版时后端给的 `diskHash`：带上它，后端在写盘前会比对磁盘
+ * 字节，不一致就回 409 `MD_EDIT_CONFLICT`（有人在你编辑期间改过这个文件）。
+ * 不带就是无条件覆盖 —— 只在用户按下「用我的覆盖」时这么调（`force: true`）。
  */
 export async function saveMarkdownContent(
   docId: string,
   mode: 'notes' | 'polished',
   content: string,
   version: number,
+  expectedHash?: string,
+  force?: boolean,
 ): Promise<MarkdownView & { edited?: boolean; versions?: MarkdownVersionEntry[] }> {
   const r = await apiFetch(`${BASE}/markdown/${docId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode, content, version }),
+    body: JSON.stringify({
+      mode, content, version,
+      ...(expectedHash !== undefined ? { expectedHash } : {}),
+      ...(force ? { force } : {}),
+    }),
   })
   return r.json()
 }
