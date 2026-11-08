@@ -4,7 +4,10 @@
 //! 这些坑只有真发版才暴露，靠读代码发现不了。
 //!
 //! 关键判据（改动前先读）：
-//! - **检查可以静默，安装必须由人点**。这里只提供两个命令，什么时候调是前端的事。
+//! - **检查可以静默，安装必须由人点**。这里只提供四个命令（检查 / 下载 / 安装 / 查已备好），
+//!   什么时候调是前端的事。
+//! - **下载与安装是两个命令**（2026-11-08）：下载安全（不动任何进程），安装会退出应用。
+//!   拆开后用户能「先下好，忙完再装」，安装失败也不必重下 150 MB。
 //! - **Windows 上 `install()` 会 `std::process::exit(0)`**（插件源码 `install_inner`），
 //!   不经过 `RunEvent::Exit`。所以后端 sidecar 必须在 `on_before_exit` 里先杀掉并等它退出，
 //!   否则安装器覆盖 `LiMoBackend.exe` 时文件还被锁着，NSIS 中途失败 → 半更新的安装目录。
@@ -14,6 +17,7 @@
 //!   builder 的 `timeout` 只作用于检查请求。下载必须自己设一个上限，否则卡住的连接永不返回。
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -34,6 +38,30 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(12);
 /// 下载安装包的总时长上限。**必须显式给**：不设是「永不超时」。
 /// 30 分钟对 ~150 MB 在 100 KB/s 下仍有四倍余量。
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// 已下载、已验签、等人点「重启安装」的那一份。
+///
+/// **为什么下载与安装要拆成两个命令**（2026-11-08，照 P-ai 的做法）：
+/// 安装会让应用退出，而下载要几分钟。合成一步时，用户没法「先下好，等我手头的事做完再装」，
+/// 中途装失败还要重下 150 MB。拆开之后下载是安全的（不碰任何进程），只有最后那一下重启
+/// 才是不可撤销的。
+///
+/// ⚠️ **只活在进程内存里**：关掉应用就没了，下次要重新下载。落盘要自己管临时文件的
+/// 清理、磁盘配额与版本对不上时的失效判断，收益只是「关掉再打开还能接着装」——
+/// 不值得。P-ai 同样只放内存。
+struct PreparedUpdate {
+    update: Update,
+    /// 来自 `update.download()` 的返回值，**已经过签名校验**。
+    /// ⚠️ `install()` **不验签**（插件 2.12.0 源码：只有 `download()` 里调 `verify_signature`），
+    /// 所以这份字节绝不能来自别处 —— 自己攒、从磁盘读、跨进程传，都等于绕过验签且全程不报错。
+    bytes: Vec<u8>,
+}
+
+static PREPARED: Mutex<Option<PreparedUpdate>> = Mutex::new(None);
+
+fn take_prepared() -> Option<PreparedUpdate> {
+    PREPARED.lock().ok().and_then(|mut slot| slot.take())
+}
 
 /// 下载线路：第 0 条是直连，其余是「中转前缀 + 直连地址」。
 /// 中转只代理资源下载，**不能**拿去当网页链接（见 `docs/BUILD.md`）。
@@ -272,13 +300,17 @@ pub async fn check_update(app: AppHandle) -> Result<UpdateStatus, String> {
     })
 }
 
-/// 下载并安装。Windows 上成功时进程会在这里被安装器接管（`exit(0)`），
-/// 所以调用方**不要**等这个 Promise resolve。
+/// 下载安装包（含验签），存进 `PREPARED` 等用户点「重启安装」。
+/// **不启动安装器、不退出进程** —— 这一步是安全的，用户可以在下载时继续干活。
 #[tauri::command]
-pub async fn install_update(
+pub async fn download_update(
     app: AppHandle,
     on_event: Channel<UpdateProgress>,
 ) -> Result<(), String> {
+    // 先丢掉上一次的半成品：否则「已下载 v0.5.24」的旧包会一直留着，
+    // 而界面上显示的是新的版本号 —— 装下去的却是旧包。
+    let _ = take_prepared();
+
     // 重新检查而不是复用 `check_update` 的结果：两个命令之间隔着用户点击，
     // 期间可能又发了新版；多一次 1 KB 请求，换掉「装到一半版本对不上」。
     // 命中的那条线路就是下载的起点 —— 刚证通过的线路不该再被超时重试一次。
@@ -332,10 +364,10 @@ pub async fn install_update(
             Ok(bytes) => {
                 // 成功不推进线路 —— 下次还走这条（含中转）。
                 write_route(&app, route);
-                let _ = on_event.send(UpdateProgress::Installing {
-                    version: update.version.clone(),
-                });
-                return install(&app, &update, bytes);
+                if let Ok(mut slot) = PREPARED.lock() {
+                    *slot = Some(PreparedUpdate { update, bytes });
+                }
+                return Ok(());
             }
             Err(e) => {
                 // 失败前进一格并写回，下次先试下一条。
@@ -352,6 +384,34 @@ pub async fn install_update(
     Err(format!(
         "所有下载线路都失败了（{last_error}）。可在浏览器中打开 Releases 手动下载安装包"
     ))
+}
+
+/// 安装已下载的更新。Windows 上成功时进程会在这里被安装器接管（`exit(0)`），
+/// 所以调用方**不要**等这个 Promise resolve。
+#[tauri::command]
+pub async fn apply_update(
+    app: AppHandle,
+    on_event: Channel<UpdateProgress>,
+) -> Result<(), String> {
+    let Some(prepared) = take_prepared() else {
+        return Err("没有已下载的更新，请先下载".to_string());
+    };
+    let _ = on_event.send(UpdateProgress::Installing {
+        version: prepared.update.version.clone(),
+    });
+    install(&app, &prepared.update, prepared.bytes)
+}
+
+/// 有没有已下载待安装的更新（返回版本号）。
+///
+/// 前端在启动时调一次，把「已下载，等重启」这个状态捡回来 —— 单个 WebView 里页面
+/// 重新加载不会动这个进程，那份字节还在，而前端的内存状态已经没了。
+#[tauri::command]
+pub fn prepared_update() -> Option<String> {
+    PREPARED
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|p| p.update.version.clone()))
 }
 
 #[cfg_attr(target_os = "windows", allow(unused_variables))]

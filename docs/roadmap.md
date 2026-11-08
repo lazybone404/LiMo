@@ -201,6 +201,8 @@
 | ✅ | 日志全链路追踪 | `contextvars.ContextVar` 注入 `request_id`，前端日志面板 |
 | ✅ | 旧格式错误迁移 | 19/19 个路由模块统一 AppError 体系（2026-10-11 复核无 `HTTPException` 残留） |
 | ✅ | 自动更新（安装版，2026-11-08） | `tauri-plugin-updater` 读 Release 的 `latest.json` → 下载 → minisign 验签 → NSIS 安装 → 重启。四条线路（直连 + 三个中转）按上次成功的那条起试；启动后静默检查（24h 节流）+ 设置页手动检查；`scripts/release.py` 管清单生成与发版门禁。见 [desktop-shell.md](desktop-shell.md) 的「应用内更新」 |
+| ✅ | 更新流程的三个视图（2026-11-08） | 下载与安装拆成两步（`download_update` / `apply_update`），已下好的包存 Rust 内存，用户想什么时候装就什么时候装。状态提到 `store/updateSlice.ts`，设置卡 / 任务面板 / 顶栏提示读同一份 —— 离开设置页也能看见进度，不会再出现「它自己关了」。 |
+| ❌ | 取消下载 | 插件的 `download()` 是整段调用，没有中断点；要支持得自己写 reqwest 流式循环（P-ai 就是这么做的，约 80 行）。收益是「点错了能停」，代价是把下载逻辑搬进核心。暂不做 |
 
 ### 🔧 代码结构（重构，等触发条件）
 

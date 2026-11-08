@@ -321,7 +321,9 @@ pub fn run() {
             get_backend_startup_failure,
             open_log_dir,
             updater::check_update,
-            updater::install_update,
+            updater::download_update,
+            updater::apply_update,
+            updater::prepared_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

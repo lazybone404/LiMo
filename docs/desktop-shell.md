@@ -37,9 +37,18 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 minisign 验签 → 起 NSIS 安装器 → 重启。代码在 [src-tauri/src/updater.rs](../frontend/src-tauri/src/updater.rs)，
 发版侧（签名与生成清单）见 [BUILD.md](BUILD.md) 的「发版：签名与 latest.json」。
 
-- **两个命令，界线是「谁做决定」**：`check_update` 只查（返回 `currentVersion` 与可选的
-  `update`），`install_update` 才装（`Channel` 推进度）。检查可以静默，**安装必须由人点** ——
+- **四个命令，界线是「谁做决定」**：`check_update` 只查（返回 `currentVersion` 与可选的
+  `update`）、`download_update` 只下（`Channel` 推进度，结尾验签）、`apply_update` 才装、
+  `prepared_update` 只回答「有没有已下好的包」。检查可以静默，**下载与安装都必须由人点** ——
   代码里没有任何自动下载的入口。
+- **下载与安装拆成两步**（2026-11-08，照 P-ai 的做法）：下载安全（不碰任何进程，用户可以
+  一边下载一边干活），安装会让应用退出。拆开之后，用户能「先下好，忙完再装」；安装失败
+  也不必重下 150 MB。已下好的包存在 Rust 进程内存里（`static PREPARED`，**关掉应用就没了**，
+  刻意不落盘 —— 落盘要自己管临时文件清理、配额与版本失效判断）。`prepared_update` 是给它
+  配的读口：页面重新加载后前端 store 清零，但字节还在 Rust 进程里，不查就会显示「已是最新」
+  而包明明在下面躺着。
+- **`install()` 不验签，只有 `download()` 验**（插件 2.12.0 源码）。所以 `PREPARED` 里那份
+  字节只能来自 `download()` 的返回值 —— 自己攒、从磁盘读、跨进程传，都等于绕过验签且不报错。
 - **线路表在 Rust 侧唯一一份**：`tauri.conf.json` 的 `plugins.updater` **不写 endpoints**，
   由 `app.updater_builder().endpoints(...)` 运行时统一覆盖。仓库地址取自
   `env!("CARGO_PKG_REPOSITORY")`，清单地址是 `{repo}/releases/latest/download/latest.json`。
@@ -62,6 +71,13 @@ minisign 验签 → 起 NSIS 安装器 → 重启。代码在 [src-tauri/src/upd
   那段代码不会执行（见 [api/update.ts](../frontend/src/api/update.ts) 的注释）。
 - **有任务在跑时禁用安装**：安装会让应用退出，正在跑的生成 / 转录 / 导入没有任何断点续传。
   判据是 `processingTasks` 里任一条 `status === 'running'`（失败条目保留 5 秒，不算「在跑」）。
+  ⚠️ 这条只管**安装**（`ready` 之后那一下），不管下载 —— 下载不动任何进程。
+- **更新流程的状态在 store 里，不在组件里**：`store/updateSlice.ts` 的阶段是
+  `idle → checking → {up-to-date | available} → downloading → ready → installing →（退出）`，
+  失败落在任何一步都能就地重试。三个视图读同一份状态：设置卡（完整流程）、任务面板
+  （下载 / 已下载 / 失败各一行，与文档任务并列）、顶栏提示（有新版本时常驻，跳过的版本不提示）。
+  此前状态住在 `UpdateCard` 的局部 `useState`，卡片一卸载进度就断，而下载照常推进、
+  最后进程被 `exit(0)` 换掉 —— 用户看到的是「我什么都没点，它自己关了」。
 - **启动时静默检查**：`App.tsx` 在后端就绪 20 秒后查一次，24 小时节流；同一个版本只提醒一次，
   被跳过的版本不再提醒（三个字段都在 [lib/update-prefs.ts](../frontend/src/lib/update-prefs.ts)）。
   检查失败**静默**，手动检查在 设置 → 通用，那条路会把错误原样显示出来。

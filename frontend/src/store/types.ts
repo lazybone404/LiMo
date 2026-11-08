@@ -12,6 +12,7 @@ import type { TasksSlice } from './tasksSlice'
 import type { ChatSlice } from './chatSlice'
 import type { UiSlice } from './uiSlice'
 import type { ToastSlice } from './toastSlice'
+import type { UpdateSlice } from './updateSlice'
 
 // ── 公开类型 ──
 
@@ -145,4 +146,4 @@ export interface AppSlice {
 
 // ── Store 交集（各 slice 合并）──
 
-export type Store = ThemeSlice & DocsSlice & ContentSlice & TasksSlice & ChatSlice & UiSlice & ToastSlice & AppSlice
+export type Store = ThemeSlice & DocsSlice & ContentSlice & TasksSlice & ChatSlice & UiSlice & ToastSlice & UpdateSlice & AppSlice

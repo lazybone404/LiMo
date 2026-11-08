@@ -1,5 +1,5 @@
 /**
- * 应用内更新的前端入口 —— 薄薄一层，把两个 Tauri 命令包成普通 Promise。
+ * 应用内更新的前端入口 —— 薄薄一层，把四个 Tauri 命令包成普通 Promise。
  *
  * ## 为什么所有实现都在 Rust 侧
  *
@@ -66,19 +66,49 @@ export async function checkForUpdate(): Promise<UpdateStatus> {
 }
 
 /**
- * 下载并安装。进度通过 `Channel` 逐条推过来（512 KiB 一条）。
+ * 下载安装包（含验签）。进度通过 `Channel` 逐条推过来（512 KiB 一条）。
+ *
+ * **下载不等于安装**（2026-11-08）：这个 Promise resolve 时只是「包已经下好、验过签、
+ * 存在 Rust 进程内存里」，应用照常运行。装不装、什么时候装，由用户下一步决定。
+ * 好处是下载阶段可以随便离开页面、可以一边干活一边下；装失败也不必重下 150 MB。
+ */
+export async function downloadUpdate(
+  onProgress: (p: UpdateProgress) => void,
+): Promise<void> {
+  if (!isDesktop()) throw new Error('仅桌面版支持下载更新')
+  const { Channel, invoke } = await import('@tauri-apps/api/core')
+  const channel = new Channel<UpdateProgress>()
+  channel.onmessage = onProgress
+  await invoke('download_update', { onEvent: channel })
+}
+
+/**
+ * 安装已下载的更新并重启。
  *
  * ⚠️ **Windows 上这个 Promise 永远不会 resolve**：安装器起来之后插件直接
  * `std::process::exit(0)`，进程在 Promise 结算之前就没了。所以调用方只能用
  * `.catch()` 处理失败，**不能**在 `.then()` 里写「安装完成」—— 那行代码不会执行，
  * 于是「装完了」的状态永远停在界面上。成功路径的可见信号是「应用重启了」。
  */
-export async function installUpdate(
-  onProgress: (p: UpdateProgress) => void,
+export async function applyUpdate(
+  onEvent: (p: UpdateProgress) => void,
 ): Promise<void> {
   if (!isDesktop()) throw new Error('仅桌面版支持安装更新')
   const { Channel, invoke } = await import('@tauri-apps/api/core')
   const channel = new Channel<UpdateProgress>()
-  channel.onmessage = onProgress
-  await invoke('install_update', { onEvent: channel })
+  channel.onmessage = onEvent
+  await invoke('apply_update', { onEvent: channel })
+}
+
+/**
+ * 有没有已下载待安装的更新（版本号，没有则 null）。
+ *
+ * 用途是**页面重新加载后把状态捡回来**：那份字节活在 Rust 进程里，网页刷新不会动它，
+ * 而前端 store 里的状态已经清零了。不查的话，用户会看到一个「已是最新」的界面，
+ * 而后台明明躺着一个装了一半的包。
+ */
+export async function getPreparedUpdate(): Promise<string | null> {
+  if (!isDesktop()) return null
+  const { invoke } = await import('@tauri-apps/api/core')
+  return invoke<string | null>('prepared_update')
 }

@@ -1,8 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useStore, type DocEntry } from '../../store'
 import { cancelTask } from '../../api/taskManager'
-import { X, GripHorizontal, FileText, Image, RefreshCw, ListTodo, Check, AlertTriangle } from 'lucide-react'
+import {
+  X, GripHorizontal, FileText, Image, RefreshCw, ListTodo, Check, AlertTriangle,
+  Download, RotateCcw,
+} from 'lucide-react'
 import { useElapsed } from '../../hooks/useElapsed'
+import { isUpdateBusy } from '../../store/updateSlice'
+import { formatSize } from '../../lib/format'
 
 /**
  * 已用时。抽成组件而不是在 `entries.map` 里直接调 hook —— map 回调里调 hook
@@ -26,6 +31,9 @@ export function TaskPanel() {
   const open = useStore(s => s.taskPanelOpen)
   const setOpen = useStore(s => s.setTaskPanelOpen)
   const setProcessing = useStore(s => s.setProcessing)
+  // 应用更新是**另一种「进行中的长任务」**：不挂在某篇文档上，但同样要几分钟、
+  // 同样会在用户离开设置页之后继续跑。所以它在这个面板里占一行。
+  const update = useStore(s => s.update)
 
   // 拖动状态
   const panelRef = useRef<HTMLDivElement>(null)
@@ -36,6 +44,13 @@ export function TaskPanel() {
   posRef.current = pos
 
   const entries = Object.entries(tasks)
+  const showUpdate = isUpdateBusy(update)
+  // 「有东西在跑」的总行数 —— 自动关闭、头部角标、空态三处都看它。
+  // ⚠️ 只看 `entries.length` 时，更新下载中面板会在 1.5 秒后自己关掉，
+  // 而下载还在继续 —— 正好把「看不见但没停」这个毛病又做了一遍。
+  const rowCount = entries.length + (showUpdate ? 1 : 0)
+  // 安装会让应用退出，正在跑的生成 / 转录会断在半路（它们没有断点续传）。
+  const anyTaskRunning = entries.some(([, t]) => t.status === 'running')
 
   // 拖动
   const onDragStart = useCallback((e: React.MouseEvent) => {
@@ -60,11 +75,11 @@ export function TaskPanel() {
 
   // 无任务时自动关闭
   useEffect(() => {
-    if (open && entries.length === 0) {
+    if (open && rowCount === 0) {
       const t = setTimeout(() => setOpen(false), 1500)
       return () => clearTimeout(t)
     }
-  }, [open, entries.length, setOpen])
+  }, [open, rowCount, setOpen])
 
   // 默认显示位置：右上角
   useEffect(() => {
@@ -93,9 +108,9 @@ export function TaskPanel() {
             <ListTodo size={13} className="text-accent" />
           </div>
           <span className="text-[12px] font-semibold text-foreground">任务</span>
-          {entries.length > 0 && (
+          {rowCount > 0 && (
             <span className="inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 text-[9px] font-bold text-on-accent bg-accent rounded-full">
-              {entries.length}
+              {rowCount}
             </span>
           )}
         </div>
@@ -106,13 +121,14 @@ export function TaskPanel() {
       </header>
 
       {/* 列表 */}
-      {entries.length === 0 ? (
+      {rowCount === 0 ? (
         <div className="py-10 text-center">
           <Check size={20} className="text-disabled mx-auto mb-2 opacity-30" />
           <p className="text-[12px] text-disabled">无进行中的任务</p>
         </div>
       ) : (
         <div className="max-h-[300px] overflow-y-auto">
+          {showUpdate && <UpdateTaskRow anyTaskRunning={anyTaskRunning} />}
           {entries.map(([docId, task]) => {
             const meta = KIND_META[task.kind] || { label: task.kind, Icon: FileText, color: 'text-dimmed', bg: 'bg-surface-hover' }
             const title = getTitle(docId, task)
@@ -184,10 +200,104 @@ export function TaskPanel() {
   )
 }
 
-/** 触发 TaskPanel 的入口按钮 */
+/**
+ * 应用更新在任务面板里的那一行。
+ *
+ * 与文档任务的三处差别都是刻意的：
+ * ① **没有取消** —— 下载走的是插件的整体 `download()`，没有中断点（见 `updater.rs`）。
+ *    摆一个点了没反应的叉比不摆更糟。
+ * ② 失败后的出路是**重新下载**，不是「关掉」了事；「关掉」只清 UI 状态。
+ * ③ `ready` 时的动作是**重启安装**，它会关掉应用。所以有任务在跑时禁用并写明原因 ——
+ *    这里不做二次确认：面板里它就一个按钮，误触概率低，而真会出事的场景（有任务在跑）
+ *    已经由禁用挡住了。卡片那边有二次确认，是因为那一排按钮挨得更近。
+ */
+function UpdateTaskRow({ anyTaskRunning }: { anyTaskRunning: boolean }) {
+  const update = useStore(s => s.update)
+  const applyUpdate = useStore(s => s.applyUpdate)
+  const startDownload = useStore(s => s.startDownload)
+  const dismissUpdate = useStore(s => s.dismissUpdate)
+
+  const downloading = update.phase === 'downloading'
+  const ready = update.phase === 'ready'
+  const installing = update.phase === 'installing'
+  const failed = update.phase === 'failed'
+  const pct = downloading && update.total
+    ? Math.min(100, Math.round((update.downloaded / update.total) * 100))
+    : null
+
+  return (
+    <div
+      data-update-task
+      className={`group flex items-center gap-3 px-4 py-2.5 border-b border-black/[0.04] transition-colors last:border-b-0 ${failed ? 'bg-error/[0.04]' : 'hover:bg-surface-hover'}`}
+    >
+      <div className={`shrink-0 flex items-center justify-center w-8 h-8 rounded-xl ${failed ? 'bg-error/10' : 'bg-accent/10'}`}>
+        {failed
+          ? <AlertTriangle size={15} className="text-error" />
+          : ready
+            ? <Check size={15} className="text-accent" />
+            : <Download size={15} className="text-accent" />}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-[12px] font-medium text-foreground truncate leading-tight">
+          {update.version ? `应用更新 v${update.version}` : '应用更新'}
+        </p>
+        <p className="text-[11px] mt-0.5 min-w-0">
+          {failed ? (
+            <span className="text-error">{update.error || '未知错误'}</span>
+          ) : ready ? (
+            <span className="text-disabled">已下载完成 · 等待重启安装</span>
+          ) : installing ? (
+            <span className="text-disabled">正在安装，应用即将重启</span>
+          ) : (
+            <span className="flex items-center gap-1 text-disabled">
+              <span className="inline-block w-1 h-1 rounded-full bg-success animate-pulse" />
+              下载中{pct !== null ? ` ${pct}%` : ''}
+              {update.total ? ` · ${formatSize(update.downloaded)} / ${formatSize(update.total)}` : ''}
+              <Elapsed startedAt={downloading ? update.startedAt ?? undefined : undefined} />
+            </span>
+          )}
+        </p>
+      </div>
+      {ready ? (
+        <button
+          onClick={() => { void applyUpdate() }}
+          disabled={anyTaskRunning}
+          title={anyTaskRunning ? '有任务正在运行，完成后再安装' : '重启并安装'}
+          data-update-apply
+          className="shrink-0 opacity-50 group-hover:opacity-100 disabled:opacity-30 disabled:cursor-not-allowed p-1 rounded-md hover:bg-accent/10 text-disabled hover:text-accent transition-all"
+        >
+          <RotateCcw size={14} />
+        </button>
+      ) : failed ? (
+        <>
+          <button
+            onClick={() => { void startDownload() }}
+            title="重新下载"
+            data-update-retry
+            className="shrink-0 opacity-50 group-hover:opacity-100 p-1 rounded-md hover:bg-surface-hover text-disabled hover:text-foreground transition-all"
+          >
+            <RotateCcw size={14} />
+          </button>
+          <button
+            onClick={dismissUpdate}
+            title="关闭"
+            className="shrink-0 opacity-50 group-hover:opacity-100 p-1 rounded-md hover:bg-surface-hover text-disabled hover:text-foreground transition-all"
+          >
+            <X size={14} />
+          </button>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+/** 触发 TaskPanel 的入口按钮。
+ *  ⚠️ 角标计数必须与面板里的行数同源（`isUpdateBusy`），否则「面板里有一行、
+ *  入口显示 0」或者反过来 —— 两个数字各自算一份就是这种漂移的来历。 */
 export function TaskPanelToggle() {
   const tasks = useStore(s => s.processingTasks)
-  const count = Object.keys(tasks).length
+  const update = useStore(s => s.update)
+  const count = Object.keys(tasks).length + (isUpdateBusy(update) ? 1 : 0)
 
   return (
     <button

@@ -13,8 +13,8 @@ import { SearchBar } from './components/ui/SearchBar'
 import { ThemeToggle } from './components/ui/ThemeToggle'
 import { ShortcutHelpDialog } from './components/ui/ShortcutHelpDialog'
 import { fetchCapabilities, listTranscripts, listFolders, getMarkdown, getTranscript } from './api/client'
-import { checkForUpdate, isDesktop } from './api/update'
-import { getUpdatePrefs, markChecked, markNotified, shouldAutoCheck } from './lib/update-prefs'
+import { isDesktop } from './api/update'
+import { getUpdatePrefs, markNotified, shouldAutoCheck } from './lib/update-prefs'
 import { startHealthPoll } from './lib/health'
 import { toMarkdownMeta } from './lib/markdownMeta'
 import {
@@ -23,7 +23,7 @@ import {
 } from './lib/installWarning'
 import { BackendStartupFailure } from './components/ui/BackendStartupFailure'
 import type { StartupFailure } from './lib/startupFailure'
-import { Archive, X } from 'lucide-react'
+import { Archive, X, ArrowUpCircle } from 'lucide-react'
 
 // 冷启动静默期（ms）：后端实测 ~2s 就绪，这段窗口内**故意一条请求都不发** ——
 // 起步就探测的话，那一刻后端必然还没监听，会稳定产生一条无意义的失败；而 WebView 里
@@ -97,6 +97,36 @@ export function handleAppKeyDown(e: React.KeyboardEvent) {
     // 「按住 Shift 也能开」。Rust 侧只需一个 `VK_OEM_2`（VK 与 Shift 无关）。
     case '/': case '?': e.preventDefault(); s.toggleShortcutHelp(); break
   }
+}
+
+/**
+ * 顶栏的更新提示（照 P-ai 的常驻入口）：有新版本、或已下载等安装时，这里一直有个按钮。
+ *
+ * 为什么不能只靠 toast：toast 十秒后就没了，而「有新版本」这件事要持续到用户处理它。
+ * 也不能只靠设置页：用户得先知道入口在设置里。顶栏是唯一「一直在」的位置。
+ *
+ * 判据是 `available` / `ready` 两阶；**已跳过的版本不提示** —— 跳过就是「别再问我」，
+ * 再挂一个按钮等于没听。`ready` 时文案换成「更新待安装」，因为那件事已经不可忽略了。
+ */
+function UpdateNudge({ onOpen }: { onOpen: () => void }) {
+  const update = useStore(s => s.update)
+  const available = update.phase === 'available' && !!update.version
+    && update.version !== update.skippedVersion
+  const ready = update.phase === 'ready'
+  if (!available && !ready) return null
+  return (
+    <button
+      data-update-nudge
+      onClick={onOpen}
+      title={ready
+        ? `更新 v${update.version} 已下载，点此安装`
+        : `发现新版本 v${update.version}，点此查看`}
+      className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-surface-hover text-accent transition-colors"
+    >
+      <ArrowUpCircle size={14} />
+      <span className="text-[12px]">{ready ? '更新待安装' : `更新 v${update.version}`}</span>
+    </button>
+  )
 }
 
 export default function App() {
@@ -184,11 +214,17 @@ export default function App() {
   // 弹过一次、或被用户跳过，就都不再弹。少这两条，24 小时节流到期后用户会被同一个
   // 版本反复提醒 —— 提醒本身成了噪音。
   useEffect(() => {
-    if (!backendReady || !isDesktop() || !shouldAutoCheck()) return
+    if (!backendReady || !isDesktop()) return
+    // 页面重新加载后把「已下载，等重启」捡回来：那份字节活在 Rust 进程里，网页刷新
+    // 不会动它，而前端 store 已经清零了。不查就会显示「已是最新」而包明明在下面躺着。
+    void useStore.getState().recoverPrepared()
+    if (!shouldAutoCheck()) return
     const timer = window.setTimeout(() => {
-      checkForUpdate().then(s => {
-        markChecked()
-        const u = s.update
+      // ⚠️ 走 store 的 `checkNow(true)` 而不是直接调 `checkForUpdate()`：
+      // 检查结果同时是「更新卡 / 任务面板 / 顶栏提示」的数据源，绕开它调一次，
+      // 顶栏就不知道刚才查到了新版本（`markChecked` 也由 slice 负责，失败同样记）。
+      void useStore.getState().checkNow(true).then(s => {
+        const u = s?.update
         if (!u) return
         const prefs = getUpdatePrefs()
         if (u.version === prefs.skippedVersion || u.version === prefs.lastNotifiedVersion) return
@@ -200,9 +236,6 @@ export default function App() {
           // 比默认的 3 秒长得多：这条提醒带一个动作按钮，3 秒内点不到就等于没给。
           duration: 10_000,
         })
-      }).catch(() => {
-        // 失败也记时间，否则断网时每次启动都要把三条线路超时跑满。
-        markChecked()
       })
     }, UPDATE_CHECK_DELAY_MS)
     return () => window.clearTimeout(timer)
@@ -406,6 +439,7 @@ export default function App() {
             互斥、一处忘了宽度复位），而今天这份漂移是用户能直接看见的（两个面板同开）。 */}
         <div className="flex items-center gap-0.5 ml-6">
           <TaskPanelToggle />
+          <UpdateNudge onOpen={() => setSettingsTab('general')} />
           <div className="w-px h-4 bg-border-default" />
           <ThemeToggle />
           <button onClick={() => setShowExport(true)} className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-surface-hover text-muted hover:text-dimmed transition-colors" title="批量导出 · 侧边面板"><Archive size={14} /><span className="text-[12px]">导出</span></button>
