@@ -91,8 +91,9 @@ export function FoldView({ variant, content, meta, sourceUrl, isVideo }: FoldVie
                 variant === 'topic'
                   // 只有标题的节做成**整行分隔条**：它没有内容，占满一个格子会让网格
                   // 里出现一张空卡，读起来像渲染坏了。
-                  ? `md-card fold-card${isOpen ? ' is-open' : ''}${sec.hasBody ? '' : ' fold-hollow'}`
-                  : 'fold-row'
+                  // `fold-preamble`：引言抽出的 `# 文档标题` 不是节标题，整行一条、字号大一档
+                  ? `md-card fold-card${isOpen ? ' is-open' : ''}${sec.hasBody ? '' : ' fold-hollow'}${sec.key === 'pre' ? ' fold-preamble' : ''}`
+                  : `fold-row${sec.key === 'pre' ? ' fold-preamble' : ''}`
               }
               data-openable={openable ? 'true' : undefined}
               role={openable ? 'button' : undefined}

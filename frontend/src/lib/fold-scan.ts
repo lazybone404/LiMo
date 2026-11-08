@@ -53,7 +53,12 @@ export interface FoldSection {
    * 而用户没有任何办法判断「值不值得点开」。它只描述**类型**，不复述内容。
    */
   hint: string
-  /** 该节完整 Markdown（标题行 + 正文），展开时交给 `MarkerContent` */
+  /**
+   * 该节正文（**不含标题行**），展开时交给 `MarkerContent`。
+   *
+   * ⚠️ **不能把标题行拼进来**：折叠视图的标题行（`.fold-head`）一直在，展开时它并不消失，
+   * body 再带一次 `## 标题` 就会在同一张卡上画出两条一样的标题 —— 不报错，只是重复。
+   */
   body: string
   /**
    * 除标题行、标记行、注释、分隔线之外，还有看得见的内容吗。
@@ -372,29 +377,52 @@ export function foldSections(md: string | null | undefined): FoldSplit {
       // 兜底：有内容、但既抽不出一句话也认不出类型（例如整段只有一个行内公式）。
       // 不给兜底的话这张卡只有一个标题 —— 又是「看着像空卡、点开有内容」那类。
       hint: lead ? '' : (hint || (hasBody ? '展开查看' : '')),
-      // 展开时把**原始标题行**拼回去（含 `##`），交给 `MarkerContent` 后仍是那条 `<h2>`
-      body: `${s.heading}\n${s.body}`,
+      // 标题由 `FoldView` 的标题行画（带 id），这里只放正文
+      body: s.body,
       hasBody,
       expandable: isExpandable(s.body),
     }
   })
 
   const pre = preamble.trim()
-  const preLead = pre ? leadOf(pre) : ''
-  const preHasBody = hasRealContent(pre)
-  const preHint = preLead ? '' : contentHint(pre)
-  const preContent =
-    pre && preHasBody
-      ? {
-          key: 'pre', heading: '', headingId: '', card: false,
-          lead: preLead,
-          hint: preLead ? '' : (preHint || '展开查看'),
-          body: pre, hasBody: true, expandable: isExpandable(pre),
-        }
-      : null
+  // 引言常以 `# 文档标题` 开头：把第一个标题行抽出来当卡片的标题。
+  // ⚠️ 不抽的话它在折叠态完全不可见（正文只有展开才渲染），用户看到的第一张卡
+  // 叫不出名字；只剩这一个标题的引言还会变成一张什么都没有的空卡。
+  let preHeading = ''
+  let preHeadingId = ''
+  let preBody = pre
+  if (pre) {
+    const first = scanHeadingLines(pre, 1, 6).next()
+    if (!first.done) {
+      const text = stripHeadingDecor(first.value.text)
+      if (text) {
+        preHeading = text
+        preHeadingId = headingId(text)
+        const line = first.value.line
+        preBody = pre.split('\n').filter((_, i) => i !== line).join('\n').trim()
+      }
+    }
+  }
+  const preLead = preBody ? leadOf(preBody) : ''
+  const preHasBody = hasRealContent(preBody)
+  const preHint = preLead ? '' : contentHint(preBody)
+  // 只剩注释 / 标记行 / 分隔线的引言不渲染 —— 它没有标题也没有内容，就是一张空卡
+  const preContent: FoldSection | null = pre && (preHeading || preHasBody)
+    ? {
+        key: 'pre',
+        heading: preHeading,
+        headingId: preHeadingId,
+        card: false,
+        lead: preLead,
+        hint: preLead ? '' : (preHint || (preHasBody ? '展开查看' : '')),
+        body: preBody,
+        hasBody: preHasBody,
+        expandable: isExpandable(preBody),
+      }
+    : null
   return {
-    // 引言没有标题：`heading` 为空串，渲染层只画正文的一句话。
-    // 只有 `# 一级标题` / 注释 / 标记行的引言直接丢掉 —— 它渲染出来就是一张空卡。
+    // 引言没有 `##` 标题：`heading` 通常是空的，渲染层只画正文的一句话；
+    // 若引言开头是 `# 文档标题`，它被抽成 `heading` 显示在卡片上。
     preamble: preContent,
     sections: out,
   }

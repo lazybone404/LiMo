@@ -572,8 +572,9 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
   且**未展开时不把 Markdown 交给渲染器** —— 缩过的 Markdown 会散表格、废围栏、让单行图片凭空成图。
   展开的那一节走 `MarkerContent`。入口判据**只有「有 H2」**（不按字数 —— 那是提示词侧的判据），
   档位持久化但没有 H2 / 流式 / 编辑态**一律回落 `full`**。卡不能是空的：`hasBody` 由
-  `hasRealContent` 判（标题行 / 标记行 / 注释 / 分隔线不算内容），只剩标题的引言整张卡不渲染，
-  有内容却既抽不出句子也认不出类型时兜底「展开查看」。
+  `hasRealContent` 判（标题行 / 标记行 / 注释 / 分隔线不算内容），引言里的第一个标题抽成卡片
+  标题，有内容却既抽不出句子也认不出类型时兜底「展开查看」。`FoldSection.body` **不含标题行**
+  —— 标题行展开时一直都在，再画一条就是同一张卡两条标题。
 - **左侧面板互斥靠 `uiSlice.activeLeftPanel` 这个选择器字段**，不是「打开甲时遍历同侧把乙收起」
   —— 后者可被任何直接改单个 slot 的调用点绕过，而这样的调用点有四处在 CLAUDE.md 视野之外。
   统一入口 `openPanel` / `closePanel` / `togglePanel`。

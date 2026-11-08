@@ -67,6 +67,27 @@
   opacity: 1;
 }
 
+/* ── 引言：第一个 H2 之前的 `# 文档标题` ──
+   它不是某一节的标题，是整篇的名字。整行一条、字号比节标题大一档；
+   即使只有标题（没有正文）也保留实线 —— 虚线的语义是「分隔条」，这里不是分隔。 */
+.fold-root .fold-grid .md-card.fold-preamble {
+  grid-column: 1 / -1;
+  padding: 1em 1.6em;
+  border-style: solid;
+}
+
+.fold-root .fold-grid .md-card.fold-preamble .fold-title,
+.fold-root .fold-leads .fold-row.fold-preamble .fold-title {
+  font-size: 1.4em;
+  color: var(--md-h1);
+}
+
+.fold-root .fold-grid .md-card.fold-preamble .fold-title::before,
+.fold-root .fold-leads .fold-row.fold-preamble .fold-title::before {
+  background: var(--tk-accent);
+  opacity: 0.85;
+}
+
 /* ── 一句话档：每节一行 ── */
 
 .fold-leads {

@@ -75,6 +75,8 @@ describe('FoldView：主题档', () => {
     // 展开后整节正文都在（含折叠时藏起来的第二段）
     expect(container.textContent).toContain('第二段。')
     expect(container.textContent).toContain('风险内容')
+    // 标题只出现一次：标题行一直在，body 里不该再画一条同名标题
+    expect(container.querySelectorAll('.fold-body h2').length).toBe(0)
     expect(getByText('收起')).toBeTruthy()
     // 「收起」在标题行里（不是正文末尾），且这一节的展开提示同时消失
     expect(container.querySelectorAll('.fold-head .fold-close').length).toBe(1)
@@ -111,14 +113,18 @@ describe('FoldView：主题档', () => {
     expect(container.querySelectorAll('.fold-close').length).toBe(0)
   })
 
-  it('引言只有 `# 一级标题` → 不渲染那张只有箭头的空卡', () => {
+  it('引言里的 `# 文档标题` 显示在卡片上，不是一张只有箭头的空卡', () => {
     const { container } = render(
       <FoldView variant="topic" content={`# 标题\n\n## 甲\n第一段。\n\n第二段。\n`} meta={META} />,
     )
-    // 只有一节真正的内容；引言那张卡不出现（它只有一个标题，点开也没有新东西）
-    expect(container.querySelectorAll('.md-card').length).toBe(1)
-    expect(container.querySelectorAll('.fold-title').length).toBe(1)
-    expect(container.textContent).not.toContain('标题')
+    expect(container.querySelectorAll('.md-card').length).toBe(2)
+    const pre = container.querySelectorAll('.md-card')[0]
+    // 标题可见（此前它被整张卡丢掉，或只剩一个展开箭头）
+    expect(pre.textContent).toContain('标题')
+    expect(pre.classList.contains('fold-preamble')).toBe(true)
+    // 没有正文 → 不绑点击、不给展开标识
+    expect(pre.getAttribute('data-openable')).toBeNull()
+    expect(pre.querySelectorAll('.fold-hint').length).toBe(0)
   })
 
   it('引言是引用块 → 一句话来自引用，卡片不空', () => {

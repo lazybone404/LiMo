@@ -44,9 +44,9 @@ describe('foldSections：切节', () => {
     expect(preamble!.heading).toBe('')
   })
 
-  it('展开用的 body 带回原始标题行（交给 MarkerContent 后仍是那条 <h2>）', () => {
+  it('展开用的 body 不含标题行（标题行一直在，再画一次就是两条一样的标题）', () => {
     const { sections } = foldSections(`## 甲\n甲的内容。\n`)
-    expect(sections[0].body.startsWith('## 甲')).toBe(true)
+    expect(sections[0].body.startsWith('## 甲')).toBe(false)
     expect(sections[0].body).toContain('甲的内容。')
   })
 
@@ -185,13 +185,31 @@ describe('hasRealContent：除标题外还有看得见的东西吗', () => {
   })
 })
 
-describe('foldSections：引言里只剩标题时整张卡不渲染', () => {
-  it('只有 `# 一级标题` 的引言 → null（不生成一张什么都没有的卡）', () => {
-    expect(foldSections('# 标题\n\n## 甲\n甲的内容。\n').preamble).toBeNull()
+describe('foldSections：引言', () => {
+  it('`# 文档标题` 抽成卡片标题，正文留在 body 里', () => {
+    const p = foldSections('# 标题\n\n开头一段。\n\n## 甲\n甲的内容。\n').preamble
+    expect(p).not.toBeNull()
+    expect(p!.heading).toBe('标题')
+    expect(p!.headingId).toBe('标题')
+    expect(p!.lead).toBe('开头一段。')
+    expect(p!.hasBody).toBe(true)
+    // 标题行不再进 body（标题行在折叠态一直显示，body 里再来一条就是重复）
+    expect(p!.body).not.toContain('# 标题')
+    expect(p!.body).toContain('开头一段。')
   })
 
-  it('只有注释 / 标记行的引言 → null', () => {
+  it('只有 `# 一级标题` 的引言 → 保留标题、没有正文（不是可点空卡，也不是完全不显示）', () => {
+    const p = foldSections('# 标题\n\n## 甲\n甲的内容。\n').preamble
+    expect(p).not.toBeNull()
+    expect(p!.heading).toBe('标题')
+    expect(p!.hasBody).toBe(false)
+    expect(p!.expandable).toBe(false)
+    expect(p!.hint).toBe('')
+  })
+
+  it('只有注释 / 标记行的引言 → null（没标题也没内容，才是空卡）', () => {
     expect(foldSections('<!-- limo-meta -->\n\n## 甲\n甲的内容。\n').preamble).toBeNull()
+    expect(foldSections('---\n\n## 甲\n甲的内容。\n').preamble).toBeNull()
   })
 
   it('引用块写成的引言 → 保留，一句话来自引用', () => {
