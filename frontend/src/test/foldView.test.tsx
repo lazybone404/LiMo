@@ -47,6 +47,11 @@ describe('FoldView：主题档', () => {
     expect(h2[0].id).toBe('甲')
     expect(h2[1].id).toBe('乙')
 
+    // 可点的地方有标识（两张卡都能展开）
+    expect(container.querySelectorAll('.fold-hint').length).toBe(2)
+    // 标识在标题行里，不是浮在卡片角落
+    expect(container.querySelectorAll('.fold-head .fold-hint').length).toBe(2)
+
     // 对照 A：一句话在，正文其余部分**不在**（折叠态不渲染 Markdown）
     expect(container.textContent).toContain('第一段。')
     expect(container.textContent).not.toContain('第二段。')
@@ -67,6 +72,9 @@ describe('FoldView：主题档', () => {
     expect(container.textContent).toContain('第二段。')
     expect(container.textContent).toContain('风险内容')
     expect(getByText('收起')).toBeTruthy()
+    // 「收起」在标题行里（不是正文末尾），且这一节的展开提示同时消失
+    expect(container.querySelectorAll('.fold-head .fold-close').length).toBe(1)
+    expect(container.querySelectorAll('.fold-hint').length).toBe(1)
     // 只有被点的那一节展开，另一节仍是卡
     expect(container.querySelectorAll('.md-card').length).toBe(2)
   })
@@ -89,6 +97,8 @@ describe('FoldView：主题档', () => {
     expect(cards.length).toBe(2)
     expect(cards[0].getAttribute('data-openable')).toBe('true')
     expect(cards[1].getAttribute('data-openable')).toBeNull()
+    // 不可点的节连展开标识都不给 —— 给了就是「看起来能点、点了没反应」
+    expect(cards[1].querySelectorAll('.fold-hint').length).toBe(0)
     // 点它什么也不会发生（不变成空展开）
     fireEvent.click(cards[1])
     expect(container.querySelectorAll('.fold-close').length).toBe(0)

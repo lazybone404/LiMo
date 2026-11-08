@@ -71,6 +71,47 @@
   color: var(--tk-accent);
 }
 
+/* ── 标题行：标题 + 展开 / 收起标识 ──
+
+   标识贴在被作用的那一行上。放在正文末尾时，用户要读到卡片底部才找得到「收起」，
+   而那时他已经移开视线了。 */
+
+.fold-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6em;
+}
+
+.fold-head .fold-title {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 无标题的引言：没有左边的东西，让标识自己靠右 */
+.fold-head:not(:has(.fold-title)) {
+  justify-content: flex-end;
+}
+
+/* 未展开的可点提示 —— 纯装饰，不参与交互（section 自己已经是 role=button） */
+.fold-hint {
+  flex-shrink: 0;
+  margin-top: 0.25em;
+  color: var(--tk-dimmed);
+  transition: color 150ms ease-out;
+}
+
+.fold-root .md-card[data-openable='true']:hover .fold-hint,
+.fold-row[data-openable='true']:hover .fold-hint {
+  color: var(--tk-accent);
+}
+
+/* 图标尺寸跟着字号走（lucide 的 size 是 px） */
+.fold-hint svg,
+.fold-close svg {
+  width: 1em;
+  height: 1em;
+}
+
 /* ── 两档共用的标题与一句话 ── */
 
 .fold-title {
@@ -101,9 +142,12 @@
 }
 
 .fold-close {
-  display: inline-block;
-  margin-top: 0.9em;
-  padding: 0.25em 0.9em;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15em;
+  margin-top: 0.15em;
+  padding: 0.15em 0.7em;
   font-size: 0.85em;
   line-height: 1.6;
   color: var(--tk-dimmed);

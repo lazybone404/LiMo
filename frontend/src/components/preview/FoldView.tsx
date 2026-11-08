@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { ChevronDown, ChevronUp } from 'lucide-react'
 import { foldSections, type FoldSection } from '../../lib/fold-scan'
 import { MarkerContent } from './MarkerContent'
 
@@ -100,21 +101,33 @@ export function FoldView({ variant, content, meta, sourceUrl, isVideo }: FoldVie
                   }
                 : undefined}
             >
-              {sec.heading
-                ? <h2 className="fold-title" id={sec.headingId || undefined}>{sec.heading}</h2>
-                : null}
-              {isOpen
-                ? (
-                  <>
-                    <div className="fold-body">
-                      <MarkerContent content={sec.body} meta={meta} sourceUrl={sourceUrl} isVideo={isVideo} />
-                    </div>
+              {/* 标题与「展开 / 收起」同在标题行 —— 动作标识必须贴在被作用的那一行上，
+                  放在正文末尾时用户读到底部才找得到它。 */}
+              <div className="fold-head">
+                {sec.heading
+                  ? <h2 className="fold-title" id={sec.headingId || undefined}>{sec.heading}</h2>
+                  : null}
+                {isOpen
+                  ? (
                     <button
                       type="button"
                       className="fold-close"
                       onClick={(e) => { e.stopPropagation(); toggle(sec.key) }}
-                    >收起</button>
-                  </>
+                    >
+                      <ChevronUp size={14} aria-hidden />收起
+                    </button>
+                  )
+                  : openable
+                    // 纯提示，不参与交互：section 自己已经是 role=button，
+                    // 里面再放一个可聚焦元素会让键盘出现两个焦点站
+                    ? <span className="fold-hint" aria-hidden><ChevronDown size={14} /></span>
+                    : null}
+              </div>
+              {isOpen
+                ? (
+                  <div className="fold-body">
+                    <MarkerContent content={sec.body} meta={meta} sourceUrl={sourceUrl} isVideo={isVideo} />
+                  </div>
                 )
                 : sec.lead ? <p className="fold-lead">{sec.lead}</p> : null}
             </section>
