@@ -324,6 +324,20 @@ _expect_code("QUERY_NOT_FOUND", svc9.get_resource, "tr_nope")
 
 print("PASS: 单资源白名单契约 + 不存在 → QUERY_NOT_FOUND")
 
+# ═══════════════════════════════════════════════════════════════
+# 11. 版本列表：promptVersion 透传；历史产物读不出时**不给键**
+# ═══════════════════════════════════════════════════════════════
+
+_vs = QueryService.artifact_versions([
+    {"version": 1, "id": "md_a", "promptVersion": "26"},
+    {"version": 2, "id": "md_b", "promptVersion": ""},
+])
+assert _vs[0]["promptVersion"] == "26"
+# ⚠️ 补 "0" / 空串等于伪造「它来自第 0 版提示词」；前端靠 `undefined` 区分「不知道」
+assert "promptVersion" not in _vs[1], "读不出时不能给这个键"
+
+print("PASS: artifact_versions 透传 promptVersion（缺失 → 不给键）")
+
 cleanup_stores()
 
 print("\n全部通过：查询层（分页 / 版本 / 截断 / ID 校验 / 自证装配 / 引擎缺省）")

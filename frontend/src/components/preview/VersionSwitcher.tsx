@@ -72,7 +72,10 @@ export function VersionSwitcher({ mode, versions, activeMeta, loading, onSelect 
               const isActive = v.version === activeVersion
               const chars = fmtChars(v.chars)
               const time = fmtTime(v.createdAt)
-              const metaLine = [time, chars, v.source].filter(Boolean).join(' · ')
+              // 提示词版本排最后：`prompt 26`。历史产物读不出时不显示这一项，
+              // 不补「prompt 0」（见 store.get_markdowns_by_transcript 的说明）。
+              const prompt = v.promptVersion ? `prompt ${v.promptVersion}` : ''
+              const metaLine = [time, chars, v.source, prompt].filter(Boolean).join(' · ')
               return (
                 <button
                   key={v.id}

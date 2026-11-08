@@ -109,6 +109,10 @@ assert parsed["identity"]["version"] == 1, parsed["identity"]
 # ④ 可信度边界：结构在，值待提示词侧配合
 assert "trust" in parsed, parsed
 
+# ② 延伸：`promptVersion` 也走**读时派生**（与 source / chars / edited 同一条纪律，
+#    不进 index）。写路径漏写或读路径漏读都是静默的 —— 界面上只是少一个标签。
+assert got["promptVersion"] == PROMPT_VERSION, got.get("promptVersion")
+
 assert strip_meta(got["content"]) == BODY, "剥离后必须**逐字节**等于原文"
 
 print("PASS: 自证头落盘 → 读回 → 解析四条齐全（源/生成方式/身份/可信边界）")
@@ -159,7 +163,8 @@ assert "kind" not in entry3 and "type" not in entry3, \
 # ② index 条目的键集**精确等于**白名单 + 读时派生字段。多一个键意味着有东西
 #    绕过了白名单直接并进条目——那会是一份与文件头分叉的副本（软性双真相源）。
 assert set(entry3) == {"id", "transcriptId", "style", "mode", "version", "createdAt",
-                       "status", "content", "chars", "edited", "source"}, sorted(entry3)
+                       "status", "content", "chars", "edited", "source",
+                       "promptVersion"}, sorted(entry3)
 
 print("PASS: file_meta 只进文件首行；index 条目键集受限（漏进即红）")
 

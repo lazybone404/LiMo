@@ -21,36 +21,46 @@ const meta = (p: Partial<MarkdownMeta> = {}): MarkdownMeta =>
   ({ id: 'mk_1', style: 'plain', mode: 'notes', version: 3, ...p })
 
 const versions: MarkdownVersion[] = [
-  { version: 3, id: 'mk_1', createdAt: '2026-10-11T06:30:00.000Z', mode: 'notes', chars: 2480, source: 'qwen3.8-max' },
+  { version: 3, id: 'mk_1', createdAt: '2026-10-11T06:30:00.000Z', mode: 'notes', chars: 2480, source: 'qwen3.8-max', promptVersion: '26' },
 ]
 
 // ── 渲染 ─────────────────────────
 
 describe('ArtifactMetaBar', () => {
-  it('完整数据 → 四个标签齐备，key 与顺序固定', () => {
+  it('完整数据 → 五个标签齐备，key 与顺序固定', () => {
     const { container } = render(
       <ArtifactMetaBar meta={meta({ chars: 2480, source: 'qwen3.8-max' })} versions={versions} />,
     )
     const keys = [...container.querySelectorAll('[data-meta-chip]')].map(el => el.getAttribute('data-meta-chip'))
-    expect(keys).toEqual(['version', 'time', 'chars', 'model'])
+    expect(keys).toEqual(['version', 'time', 'chars', 'model', 'prompt'])
     expect(container.querySelector('[data-artifact-meta]')).not.toBeNull()
   })
 
   it('⚠️ 每个标签各配一个图标（数量恒等 —— 多一个少一个都是错位）', () => {
+    // `CHIP_ICONS` 是 `Record<MetaChipKey, …>`，缺一个键 tsc 就报错；这条钉的是
+    // **运行时**每个 chip 都真的渲染出了 svg（图标组件写错会是空白方块，不报错）
     const { container } = render(
       <ArtifactMetaBar meta={meta({ chars: 2480, source: 'qwen3.8-max' })} versions={versions} />,
     )
     const chips = container.querySelectorAll('[data-meta-chip]')
-    expect(chips).toHaveLength(4)
+    expect(chips).toHaveLength(5)
     for (const chip of chips) {
       expect(chip.querySelector('svg')).not.toBeNull()
     }
   })
 
-  it('文本落在标签里（版本带 v 前缀）', () => {
+  it('文本落在标签里（版本带 v 前缀，提示词带 prompt 前缀）', () => {
     const { container } = render(<ArtifactMetaBar meta={meta()} versions={versions} />)
     expect(container.querySelector('[data-meta-chip="version"]')?.textContent).toBe('v3')
     expect(container.querySelector('[data-meta-chip="model"]')?.textContent).toBe('qwen3.8-max')
+    expect(container.querySelector('[data-meta-chip="prompt"]')?.textContent).toBe('prompt 26')
+  })
+
+  it('⚠️ 历史产物（无 promptVersion）→ 不出现 prompt 标签', () => {
+    const { container } = render(
+      <ArtifactMetaBar meta={meta()} versions={[{ ...versions[0], promptVersion: undefined }]} />,
+    )
+    expect(container.querySelector('[data-meta-chip="prompt"]')).toBeNull()
   })
 
   it('meta 为 null → 整条不渲染（不留空白容器）', () => {

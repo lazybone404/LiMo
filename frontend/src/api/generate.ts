@@ -17,7 +17,7 @@ import { parseSSEStream } from './sse'
  */
 export type MarkdownVersionEntry = {
   version: number; id: string; createdAt: string; status?: string; mode?: string
-  chars?: number; source?: string; edited?: boolean
+  chars?: number; source?: string; edited?: boolean; promptVersion?: string
 }
 
 // -- generate types --

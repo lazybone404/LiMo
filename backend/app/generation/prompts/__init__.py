@@ -278,3 +278,15 @@ from .notes_styles import (
 #   · ⚠️ "25" 的产物真实存在（两篇短文各一版），故两个版本号并存，不合并。
 PROMPT_VERSION = "26"
 
+# 提示词文本指纹（2026-11-08）—— 手抄版本号的自动化对照物。
+#
+# `PROMPT_VERSION` 由人 bump，漏过一次（"23" 同时对应两种 prompt）；本值是提示词
+# 字面量排序后的 sha256 前 8 位，由 `tests/test_prompt_fingerprint.py` 断言
+# 「本常量 == 现算值」。改了 `generation/prompt.py` 或 `prompts/*.py` 里任何提示词
+# 字面量，测试会红，逼你确认这一版要不要 bump（文案错别字可以只更新本值不 bump，
+# 但 bump 必须伴随本值更新）。
+#
+# ⚠️ 更新方式：
+#   python -c "from app.generation.prompts.fingerprint import prompt_fingerprint; print(prompt_fingerprint())"
+PROMPT_FINGERPRINT = "a5f1866c"
+

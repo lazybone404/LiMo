@@ -1067,6 +1067,32 @@ light 档在默认 `warm` 基调下离正文底只差 9 个灰阶、底色差 6 
 
 2026-10-04 之前落盘的产物没有自证头（`parse_artifact_meta` → `(None, False)`，**无头 ≠ 损坏**）。把历史产物一律标成 `"1"` 是不诚实的——它们的真实版本已不可追溯，而**假数据比缺席更坏**（这也是 `identity.version` 刻意留空、由读路径补全的同一条理由）。
 
+### 13.3 指纹守卫（`PROMPT_FINGERPRINT`，2026-11-08）
+
+`PROMPT_VERSION` 是**手抄**的，它本身就是 prompt 文本的一份副本 —— `1ef7e23` 加过关键词
+规范却没 bump，于是 `"23"` 对应过两种 prompt。为此在
+[`generation/prompts/fingerprint.py`](../backend/app/generation/prompts/fingerprint.py)
+另算一份**自动**指纹，与 `PROMPT_VERSION` 并排存在
+[`prompts/__init__.py`](../backend/app/generation/prompts/__init__.py)：
+
+- **算法**：AST 扫 `generation/prompt.py` 与 `generation/prompts/*.py`（跳过 `__init__.py`
+  与 `fingerprint.py` 自身）里的字符串字面量，**跳过 docstring**，排序后 sha256 取前 8 位。
+  取值域是「发给模型的文本」，docstring 与函数名搬家都不影响。
+- **它是常量，不是函数调用**：不能写成 `PROMPT_FINGERPRINT = prompt_fingerprint()` ——
+  那样「声明值 == 计算值」恒真，守卫等于没有。
+- **测试判据**（[`tests/test_prompt_fingerprint.py`](../backend/tests/test_prompt_fingerprint.py)）：
+  声明值 == 现算值。所以改 prompt 文本后跑测试会红，提示你**要么 bump `PROMPT_VERSION`、
+  要么确认这次改动确实不 bump 并更新指纹**。它不自动判定「该不该 bump」—— 那条判据
+  是上一节的表格，指纹只负责让**忘记同步**变成一次响亮的失败，而不是静默漂移。
+- 更新方式：
+
+  ```bash
+  cd backend && python -c "from app.generation.prompts.fingerprint import prompt_fingerprint; print(prompt_fingerprint())"
+  ```
+
+⚠️ **指纹不写进产物自证头**：产物记录的是「哪一版提示词」（`generated.promptVersion`），
+指纹是**开发期**的对照物。两者都进自证头就是同一信息两个字段，而指纹在阅读侧没有用途。
+
 ---
 
 ## 14. 智能分类 — 文档归类（`CLASSIFY_PROMPT`，2026-10-11）

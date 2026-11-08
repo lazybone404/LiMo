@@ -2032,14 +2032,17 @@ class Store:
                                      mode: str = "", version: int | None = None) -> list[dict]:
         """该文档的产物版本（含正文），**版本降序**（`[0]` 即最新）。
 
-        每条 = index 条目 + `content`（含自证头）+ **四个附加字段**：
-        `chars`（纯正文字数）/ `edited` / `source`（生成用的模型）/ `followUps`（追问建议）。
+        每条 = index 条目 + `content`（含自证头）+ **五个附加字段**：
+        `chars`（纯正文字数）/ `edited` / `source`（生成用的模型）/
+        `promptVersion`（生成提示词版本）/ `followUps`（追问建议）。
 
-        ⚠️ 前三个从自证头**现算**，刻意**不进 index**：index 一删就丢，而这三个全都
-        写在文件里（`generatedAt` / `generated.model` / `edit`）。两处各存一份就是双真相源
-        （模式 #54），且漂移时**没有任何报错**——`chars` 会悄悄与正文对不上。
+        ⚠️ 前四个从自证头**现算**，刻意**不进 index**：index 一删就丢，而这些全都
+        写在文件里（`generatedAt` / `generated.model` / `generated.promptVersion` / `edit`）。
+        两处各存一份就是双真相源（模式 #54），且漂移时**没有任何报错**——`chars` 会悄悄
+        与正文对不上。⚠️ `promptVersion` 走同一条读时派生，**不要**再给写路径与重建
+        路径各加一处（那正是 `chars` 曾有两份实现的地方）。
 
-        ⚠️ `followUps` 是**第四个**，但**不是同一种东西**：它**不在自证头里**，住在
+        ⚠️ `followUps` 是**第五个**，但**不是同一种东西**：它**不在自证头里**，住在
         **第三个存储位置** `v{N}.followups.json`（旁路文件，见 `markdown_followup_path`）。
         同样不进 index（理由同上）。⚠️ 别把它当「删了能重算」的派生字段——**删掉旁路
         文件就真的没有了**，它本身就是真相源。
@@ -2078,6 +2081,9 @@ class Store:
                 "chars": len(strip_blocks(strip_meta(text))),
                 "edited": bool((head.get("edit") or {}).get("edited")),
                 "source": (head.get("generated") or {}).get("model", ""),
+                # ⚠️ 历史产物（早于自证头）读不出 → 空串，调用方据此**不显示**，
+                # 不要补 "0"（那等于伪造「它来自第 0 版提示词」）。
+                "promptVersion": (head.get("generated") or {}).get("promptVersion", ""),
             }
             # 追问旁路文件（本来就要逐版读盘，这里是搭车的一次 exists 快判）
             fu = self.read_artifact_followups(transcript_id, meta.get("mode", ""),

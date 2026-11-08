@@ -63,6 +63,18 @@ describe('字段取舍', () => {
     // 对照 D：加回来就与「已手动编辑」相邻两行重复
     expect(keysOf(meta({ edited: true }))).not.toContain('edited')
   })
+
+  it('promptVersion 有值 → 给「prompt 26」标签', () => {
+    const chips = buildMetaChips(meta(), [ver({ promptVersion: '26' })])
+    expect(chips.find(c => c.key === 'prompt')?.label).toBe('prompt 26')
+  })
+
+  it('⚠️ promptVersion 缺失（历史产物）→ 不给这个标签，也不补「prompt 0」', () => {
+    // 对照 E：写成 `promptVersion ?? '0'` 会给每一份历史产物编一个不存在的版本号
+    expect(keysOf(meta(), [ver({ promptVersion: undefined })])).not.toContain('prompt')
+    expect(keysOf(meta(), [ver({ promptVersion: '' })])).not.toContain('prompt')
+  })
+
 })
 
 // ── 版本行匹配：必须双键 ─────────────────────────
@@ -101,10 +113,10 @@ describe('版本行匹配', () => {
 // ── 顺序 ─────────────────────────
 
 describe('顺序', () => {
-  it('恒为 version → time → chars → model', () => {
+  it('恒为 version → time → chars → model → prompt', () => {
     // 对照 C：顺序随字段有无而变，读的人每次要重新认位置
-    const keys = keysOf(meta({ chars: 2480, source: 'qwen3.8-max' }))
-    expect(keys).toEqual(['version', 'time', 'chars', 'model'])
+    const keys = keysOf(meta({ chars: 2480, source: 'qwen3.8-max' }), [ver({ promptVersion: '26' })])
+    expect(keys).toEqual(['version', 'time', 'chars', 'model', 'prompt'])
   })
 
   it('缺中间项时，其余项的相对顺序不变', () => {

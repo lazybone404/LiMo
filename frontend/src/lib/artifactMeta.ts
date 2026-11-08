@@ -33,7 +33,7 @@ export function fmtChars(n?: number): string {
   return `${(n / 1000).toFixed(1)}k字`
 }
 
-export type MetaChipKey = 'version' | 'time' | 'chars' | 'model'
+export type MetaChipKey = 'version' | 'time' | 'chars' | 'model' | 'prompt'
 
 export interface MetaChip {
   key: MetaChipKey
@@ -67,8 +67,12 @@ function pickVersionRow(meta: MarkdownMeta, versions: MarkdownVersion[]): Markdo
  * 再加一个「已编辑」就是同一信息相邻两行重复——而它并不比工具条多说什么。
  *
  * 这条「缺就不给、绝不补位」的判据直接来自设计规范：`design/cards.md` 的 A 信息卡
- * 「不要为了填满卡片而添加无关字段」。同理，自证头里的 `params` / `promptVersion` /
- * `sourceRefs` 是**给 agent 读的**，铺给用户只是噪音，刻意不进这张表。
+ * 「不要为了填满卡片而添加无关字段」。自证头里的 `params` / `sourceRefs` 是给 agent
+ * 读的，铺给用户只是噪音，刻意不进这张表。
+ *
+ * ⚠️ `promptVersion` 2026-11-08 **进了**这张表：它回答「这一版是第几版提示词生成的」，
+ * 复盘时是有效信息（此前 `PROMPT_VERSION` 手抄漏 bump 过，界面上又一处都不显示，
+ * 等于两个断点）。历史产物读不出时**不显示这个 chip**，不补默认值。
  */
 export function buildMetaChips(
   meta: MarkdownMeta | null | undefined,
@@ -87,6 +91,12 @@ export function buildMetaChips(
 
   const model = (meta.source || row?.source || '').trim()
   if (model) chips.push({ key: 'model', label: model })
+
+  // 提示词版本（`prompt 26`）。⚠️ 只从版本行取，不从 `meta` 取：`MarkdownMeta`
+  // 是「当前选中版」的视图，而提示词版本按**产物版本**走 —— 两者混在同一字段上，
+  // 切版本时会出现「v1 的内容配 v3 的提示词版本」。
+  const prompt = (row?.promptVersion ?? '').trim()
+  if (prompt) chips.push({ key: 'prompt', label: `prompt ${prompt}` })
 
   return chips
 }

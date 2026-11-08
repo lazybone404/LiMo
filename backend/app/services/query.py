@@ -545,6 +545,9 @@ class QueryService:
                 **({"chars": e["chars"]} if "chars" in e else {}),
                 "edited": bool(e.get("edited")),
                 "source": e.get("source", ""),
+                # 与 `chars` 同款：缺失（历史产物读不出自证头）就**不给这个键**，
+                # 前端的 `undefined` 语义是「不知道」，与「第 0 版」不同。
+                **({"promptVersion": e["promptVersion"]} if e.get("promptVersion") else {}),
             }
             for e in entries
         ]

@@ -71,6 +71,13 @@ describe('VersionSwitcher', () => {
     expect(txt).toContain('2026')            // 本地化时间（具体格式交给 Intl）
   })
 
+  it('行内第二行末尾带「prompt N」；历史产物没有这一项时不补位', () => {
+    const { container } = renderSW({ versions: [v(2, { promptVersion: '26' }), v(1)] })
+    openMenu(container)
+    expect(row(container, 2)!.textContent).toContain('prompt 26')
+    expect(row(container, 1)!.textContent).not.toContain('prompt')
+  })
+
   it('「已编辑」徽标只出现在被编辑过的那一版', () => {
     const { container } = renderSW({ versions: [v(2), v(1, { edited: true })] })
     openMenu(container)

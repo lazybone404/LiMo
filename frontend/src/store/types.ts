@@ -102,6 +102,8 @@ export interface MarkdownVersion {
   chars?: number
   /** 该版由哪个模型生成 */
   source?: string
+  /** 生成该版所用的提示词版本；`undefined` = 历史产物读不出自证头（不是第 0 版） */
+  promptVersion?: string
   /** 该版被人工编辑过（编辑就地覆盖，不产生新版本） */
   edited?: boolean
 }
