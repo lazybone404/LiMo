@@ -69,8 +69,14 @@ export function UpdateCard() {
   const anyTaskRunning = useStore(s =>
     Object.values(s.processingTasks).some(t => t.status === 'running'))
 
-  const aliveRef = useRef(true)
-  useEffect(() => () => { aliveRef.current = false }, [])
+  // ⚠️ `true` 必须**在 effect 体里**赋：开发模式的 StrictMode 会「挂载 → 清理 → 再挂载」，
+  // 只在 cleanup 里置 false 的话，第二次挂载后它永远是 false，第一次检查的结果被悄悄丢掉
+  // —— 界面停在「检查中」，没有任何报错。
+  const aliveRef = useRef(false)
+  useEffect(() => {
+    aliveRef.current = true
+    return () => { aliveRef.current = false }
+  }, [])
 
   async function runCheck() {
     setChecking(true)
@@ -84,7 +90,12 @@ export function UpdateCard() {
       // 免得「刚在另一处清掉了、这里还显示已跳过」。
       setSkipped(getUpdatePrefs().skippedVersion)
     } catch (e) {
-      if (aliveRef.current) setError(errText(e))
+      if (!aliveRef.current) return
+      setError(errText(e))
+      // 清掉上一次的「发现新版本」：检查失败时我们并不知道现在还有没有新版，
+      // 把旧结论留在旁边就是让它与错误信息同时出现，用户会以为那个版本仍然可装。
+      // 只清 `update`、留 `currentVersion`，版本号那行不跟着消失。
+      setStatus(s => (s ? { ...s, update: null } : s))
     } finally {
       // ⚠️ 失败也记时间：不记的话，断网时每次启动都要完整跑一遍三条线路的超时，
       // 启动链被拖住而用户什么都得不到（见 lib/update-prefs.ts）。
@@ -189,8 +200,10 @@ export function UpdateCard() {
         </button>
       </div>
 
-      {/* 结果那一行。四种可能各说一句话，且**互斥**（不是叠加显示）：
-          已是最新 / 有新版本 / 已跳过 / 检查失败。 */}
+      {/* 结果那一行。四种**检查结果**各说一句话，且互斥（不是叠加显示）：
+          已是最新 / 有新版本 / 已跳过 / 检查失败（失败时 `update` 已被清空）。
+          例外是**安装**失败：那时 `update` 留着，错误条与「下载并安装」并存 ——
+          这是有意的，否则用户没有重试入口。 */}
       {!checking && !error && status && !update && (
         <p className="text-[13px] flex items-center gap-2 text-muted" data-update-uptodate>
           <CheckCircle size={14} className="text-accent shrink-0" />

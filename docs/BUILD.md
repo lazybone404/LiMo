@@ -86,6 +86,10 @@ python scripts/release.py --check          # 发版门禁，退出码 0/1/2
 python scripts/release.py --print-upload   # 打印 gh release create 命令 + SHA256
 ```
 
+`--print-upload` 打出来的命令含**三个文件**：安装包、`.sig`、`latest.json`。
+少一个 `.sig` 时脚本直接报错退出（退出码 1）而不打印半条命令 —— 缺签名的 Release
+在页面上看不出任何异常，只有客户端下载完才会「装不上」。
+
 `--check` 的九条判据见脚本里 `collect_problems` 的注释。其中最关键的一条是
 **清单 `signature` 必须与 `.sig` 文件逐字相同**：重新构建后忘了重跑 `--write`，
 签名与包对不上，客户端下载完验签失败、更新装不上，而发版侧一切正常。

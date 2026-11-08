@@ -286,13 +286,26 @@ def cmd_print_upload(root: Path = ROOT) -> int:
         print(f"[release] 安装包不存在：{exe.relative_to(root)}", file=sys.stderr)
         return 1
 
+    # 签名文件缺失就**不打印命令**：这条命令是要直接贴进终端的，缺参数的后果是
+    # 一个看起来发布成功、客户端却装不上的 Release。宁可现在报错。
+    sig = signature_path(exe)
+    if not sig.exists() or not sig.read_text(encoding="utf-8").strip():
+        print(f"[release] 签名文件缺失或为空：{sig.relative_to(root)}"
+              "（构建时漏了 --config src-tauri/tauri.release.conf.json）", file=sys.stderr)
+        return 1
+
     digest = hashlib.sha256(exe.read_bytes()).hexdigest()
     notes = release_notes_path(root, version)
     notes_arg = f"--notes-file {notes.relative_to(root).as_posix()}" if notes.exists() else f'--notes "LiMo v{version}"'
 
+    # ⚠️ 三样缺一不可（CLAUDE.md 发布门禁第 5 条）：安装包、`.sig`、`latest.json`。
+    # 漏了 `.sig` 不影响 Release 页面上的「已发布」，但客户端拿不到签名就无法装 ——
+    # 表现为「提示有新版本，下载完成后什么都没发生」。
     print("# 上传是对外动作，确认前先跑一遍 --check")
+    print("# ⚠️ 三样都要传：安装包 / .sig / latest.json（缺 .sig = 客户端下载完验签失败）")
     print(f"gh release create v{version} \\")
     print(f"  {exe.relative_to(root).as_posix()} \\")
+    print(f"  {sig.relative_to(root).as_posix()} \\")
     print(f"  {MANIFEST_PATH.as_posix()} \\")
     print(f"  --title \"LiMo {version}\" {notes_arg}")
     print()

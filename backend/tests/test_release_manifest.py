@@ -143,6 +143,35 @@ def test_manifest_version_never_carries_v_prefix(raw):
     assert manifest["version"] == "1.2.3"
 
 
+def test_print_upload_lists_all_three_artifacts(project, capsys):
+    """CLAUDE.md 发布门禁第 5 条要求安装包 / `.sig` / `latest.json` 三样齐全。
+
+    漏 `.sig` 时 Release 页面看起来完全正常，客户端却在下载完成后验签失败 ——
+    这条测试钉住的就是「打印出来的命令里到底有哪几个文件」。
+    """
+    root, _keys = project
+    assert release.cmd_print_upload(root) == 0
+    out = capsys.readouterr().out
+    assert "LiMo_1.2.3_x64-setup.exe" in out
+    assert "LiMo_1.2.3_x64-setup.exe.sig" in out
+    assert "dist-release/latest.json" in out
+    # 三个文件必须都在 `gh release create` 那一条命令里，而不是补在半个命令后面。
+    command = out.split("gh release create", 1)[1].split("--title", 1)[0]
+    for name in ("LiMo_1.2.3_x64-setup.exe", ".sig", "latest.json"):
+        assert name in command
+
+
+def test_print_upload_refuses_without_signature(project, capsys):
+    root, _keys = project
+    release.signature_path(release.installer_path(root, VERSION)).unlink()
+
+    assert release.cmd_print_upload(root) == 1
+    captured = capsys.readouterr()
+    assert "签名文件缺失" in captured.err
+    # 命令一个字都不该打印：它是要直接贴进终端的，打半条等于诱导发一个装不上的版本。
+    assert "gh release create" not in captured.out
+
+
 @pytest.mark.parametrize(
     ("url", "expected"),
     [

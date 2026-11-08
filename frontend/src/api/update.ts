@@ -9,11 +9,13 @@
  *
  * ## 判据：只在桌面版可用
  *
- * `isDesktop()` 读 `__TAURI_INTERNALS__`，与 `api/plugins.ts::restartBackend` 同款。
+ * `isDesktop` 就是 `api/core.ts::isTauriEnv` —— 判据全仓只写一份。
  * ⚠️ 浏览器里跑 `npm run dev` 时这两个函数会**抛错**而不是假装成功 —— 更新装不上
  * 是比「提示一句不支持」严重得多的失败。卡片自己先用 `isDesktop()` 把按钮挡掉
  * （见 `UpdateCard.tsx`），正常不会走到抛错这一支。
  */
+
+import { isTauriEnv } from './core'
 
 /** 与 `updater.rs::UpdateInfo` 的序列化形状一致（`rename_all = "camelCase"`）。 */
 export interface UpdateInfo {
@@ -39,10 +41,8 @@ export type UpdateProgress =
   | { kind: 'progress'; downloaded: number; total: number | null; viaProxy: boolean }
   | { kind: 'installing'; version: string }
 
-/** 只在 Tauri 里为真。⚠️ 判据用 `in` 而不是取真值：这个对象在部分版本里是空对象。 */
-export function isDesktop(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
-}
+/** 只在 Tauri 里为真。实现在 `api/core.ts::isTauriEnv`（全仓唯一判据）。 */
+export const isDesktop = isTauriEnv
 
 /**
  * 官方发布页（**直连**）。

@@ -67,3 +67,17 @@ minisign 验签 → 起 NSIS 安装器 → 重启。代码在 [src-tauri/src/upd
   检查失败**静默**，手动检查在 设置 → 通用，那条路会把错误原样显示出来。
 - **`update-route.json` 读失败一律回落 0（直连）** —— 线路偏好是纯优化，不能因为它坏掉就
   检查不了更新。
+- **检查与下载共用一格游标，且检查命中的线路当场写回**（`check_from`）。不让插件的
+  `check()` 自己去轮 endpoints，是因为那样只知道「有没有新版」、不知道「哪条线路通的」，
+  下载便又要从游标那条起撞一次超时。
+- **清单是不可信输入，下载地址必须钉在本仓库 + 本次版本上**（`validate_download_url`）。
+  清单本身**不签名**（`pubkey` 只覆盖安装包字节），能控制中转的人可以把它写成
+  `http://127.0.0.1:7413/...`（用户一点安装，客户端就从本机发一次 GET，盲 SSRF），
+  或者用旧产物的合法 `url`+`signature` 配一个抬高的 `version` 诱导降级。判据是
+  「host 为 `github.com` 且路径以 `/{owner}/{repo}/releases/download/v{version}/` 开头」——
+  旧产物的地址里是旧版本号，与抬高的 `version` 对不上；改回旧版本号则被「必须比当前新」
+  拦下。
+- **`requireSignedVersion` 刻意没开**，不是漏了：它要求签名 trusted comment 里带
+  `version:`，而本机 CLI 2.11.4 签出来的是 `timestamp:…\tfile:…`（2026-11-08 实测），
+  开了等于每个更新都报 `MissingSignedVersion`。上一条的地址校验补上了它挡的那个降级路径。
+  哪天确认打包用的 CLI 会写 `version:`，再打开它。

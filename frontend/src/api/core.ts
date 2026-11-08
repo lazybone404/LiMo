@@ -3,8 +3,20 @@
  * BASE 为模块内部共享（各域文件从这里 import），不通过 barrel 对外导出。
  */
 
-// Tauri 环境检测：生产模式用完整 URL，开发/Vite 模式用相对路径走 proxy
-const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+/**
+ * Tauri 环境检测 —— **全仓唯一判据**（`__TAURI_INTERNALS__` 还有几处私有副本，
+ * 新增代码一律 import 这个）。
+ *
+ * 写成**函数**而不是模块常量：调用方里既有「模块加载期算一次」（下面的 `BASE`），
+ * 也有「每次调用都重新读」（测试里 `delete window.__TAURI_INTERNALS__` 切换环境）。
+ * 常量会让后者永远读到第一次的结果，而那是静默的 —— 环境没切成功，代码也不报错。
+ */
+export function isTauriEnv(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+}
+
+// 生产模式用完整 URL，开发/Vite 模式用相对路径走 proxy
+const isTauri = isTauriEnv()
 
 /** API 基础路径 — 模块内部共享（不对外导出） */
 export const BASE = isTauri ? 'http://127.0.0.1:7413/api' : '/api'

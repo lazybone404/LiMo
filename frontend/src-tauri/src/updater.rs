@@ -27,7 +27,8 @@ use url::Url;
 /// 改仓库地址时两处一起看。
 const MANIFEST_SUFFIX: &str = "/releases/latest/download/latest.json";
 
-/// 检查更新的单次请求上限。插件会逐个 endpoint 试，三条线路最坏 36 秒。
+/// 检查更新的单次请求上限。一次只查一条线路，四条全不通最坏 48 秒
+/// （`route_count() = 1 + PROXY_PREFIXES.len()`，改线路表时这条注释要跟着算）。
 const CHECK_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// 下载安装包的总时长上限。**必须显式给**：不设是「永不超时」。
@@ -43,7 +44,8 @@ const PROXY_PREFIXES: &[&str] = &[
 ];
 
 /// 上次成功的线路记在这里。判据照抄 P-ai：失败前进一格并写回，成功**保持不动**。
-/// 不记住的代价是：中文网络下每次启动都要先在直连上失败一轮。
+/// 检查与下载两个阶段共用这一格 —— 检查命中的线路立即写回（`check_from`），
+/// 下载失败再推进。不记住的代价是：中文网络下每次启动都要先在直连上失败一轮。
 const ROUTE_FILE: &str = "update-route.json";
 
 fn route_count() -> usize {
@@ -135,13 +137,13 @@ pub enum UpdateProgress {
     },
 }
 
-/// 组装检查器。每次调用都从持久化的线路开始，把四条线路全部排进去 ——
-/// 插件 `check()` 自己就是「逐个 endpoint 试到成功为止」，我们不再写一层回退。
-fn build_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
-    let start = read_route(app);
-    let mut endpoints = Vec::with_capacity(route_count());
-    for i in 0..route_count() {
-        let route = (start + i) % route_count();
+/// 按给定线路顺序组装检查器。**一次只该放一条线路**，理由见 `check_from`。
+fn build_updater(
+    app: &AppHandle,
+    routes: &[usize],
+) -> Result<tauri_plugin_updater::Updater, String> {
+    let mut endpoints = Vec::with_capacity(routes.len());
+    for &route in routes {
         let url = Url::parse(&route_manifest_url(route)?)
             .map_err(|e| format!("更新清单地址无效：{e}"))?;
         endpoints.push(url);
@@ -174,18 +176,92 @@ fn build_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, Strin
     builder.build().map_err(|e| format!("构建更新检查器失败：{e}"))
 }
 
-async fn check_once(app: &AppHandle) -> Result<Option<Update>, String> {
-    build_updater(app)?
-        .check()
-        .await
-        .map_err(|e| format!("检查更新失败：{e}"))
+/// 校验清单里给出的下载地址。
+///
+/// **清单本身不签名**（插件的 `pubkey` 只覆盖安装包字节），所以它是不可信输入。危害有两条：
+///
+/// ① 中转被控时把 `url` 写成 `http://127.0.0.1:7413/...` 或内网地址 —— 用户一点安装，
+///    客户端就从**自己机器上**发一次 GET（盲 SSRF，响应在验签失败后被丢弃）。
+/// ② 把**旧版本**的 `url` + `signature`（两者都合法、都有签名）配上一个抬高的 `version`，
+///    诱导降级到真实签名但过时的构建。
+///
+/// 两条都靠「地址必须钉在**本仓库 + 本次 announced 版本**上」堵掉：旧产物的地址里带的是
+/// 旧版本号，与抬高的 `version` 对不上；而攻击者若把 `version` 改回旧值，插件的
+/// 「必须比当前新」这道闸又会拦下。
+///
+/// 这也是没有开 `requireSignedVersion` 的补偿：那条要求签名 trusted comment 里带 `version:`，
+/// 而本机 CLI 2.11.4 签出来的是 `timestamp:…\tfile:…`（2026-11-08 实测），开了等于每个
+/// 更新都报 `MissingSignedVersion`。等确认打包时的 CLI 会写 `version:` 再开。
+fn validate_release(update: &Update) -> Result<(), String> {
+    validate_download_url(&update.download_url, &update.version)
+}
+
+/// `validate_release` 的纯函数部分 —— 纯粹为了能直接测（`Update` 没有构造器）。
+///
+/// 判据是「地址钉在本仓库 + 本次版本上」，`slug` 从 `CARGO_PKG_REPOSITORY` 现算，
+/// 与 `scripts/release.py::repo_slug_from_url` 同判据（那边校验 `.sig` 与安装包）。
+fn validate_download_url(url: &Url, version: &str) -> Result<(), String> {
+    let repo = env!("CARGO_PKG_REPOSITORY").trim_end_matches('/');
+    // `https://github.com/owner/repo` → `owner/repo`
+    let slug = repo
+        .rsplit('/')
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("/");
+
+    if url.scheme() != "https" || url.host_str() != Some("github.com") {
+        return Err(format!("更新清单给出的下载地址不在 GitHub 上，已拒绝：{url}"));
+    }
+    if !url.path().starts_with(&format!("/{slug}/releases/download/v{version}/")) {
+        return Err(format!(
+            "更新清单给出的下载地址与版本 v{version} 不符，已拒绝：{url}"
+        ));
+    }
+    Ok(())
+}
+
+/// 从 `start` 起逐条线路检查，返回 `(检查结果, 命中的线路)`。
+///
+/// 为什么不把四条线路一次性塞给插件的 `check()`（它自己也会逐个 endpoint 试）：
+/// 那样只知道「有没有新版」，不知道**哪条线路通的**；而后面下载正是从游标那条起试，
+/// 于是会出现「刚证明直连不通，下载又先去撞直连」—— 多等一个 12 秒超时。
+/// 自己做这层循环还多一个好处：线路在那一次成功时就写回，不必等下载阶段。
+///
+/// 命中即返回，失败继续下一条；全部失败才返回错误。
+async fn check_from(app: &AppHandle, start: usize) -> Result<(Option<Update>, usize), String> {
+    let mut last_error = String::from("未知错误");
+    for i in 0..route_count() {
+        let route = (start + i) % route_count();
+        match build_updater(app, &[route])?.check().await {
+            Ok(found) => {
+                // 先验清单的成色再认这个结果：地址不对就不当作「有更新」，
+                // 更不会把它交到下载那一步。
+                if let Some(u) = &found {
+                    validate_release(u)?;
+                }
+                write_route(app, route);
+                return Ok((found, route));
+            }
+            Err(e) => {
+                last_error = if route == 0 {
+                    format!("直连：{e}")
+                } else {
+                    format!("第 {route} 条中转：{e}")
+                };
+            }
+        }
+    }
+    Err(format!("检查更新失败（最后一条线路报：{last_error}）"))
 }
 
 /// 查有没有新版本。**不吃任何节流**：节流只属于启动时的静默检查（前端 `update-prefs`），
 /// 手动点进来的人必须拿到刚才那一刻的真实结果 —— 返回缓存结论会让人以为新版本还没发。
 #[tauri::command]
 pub async fn check_update(app: AppHandle) -> Result<UpdateStatus, String> {
-    let update = check_once(&app).await?;
+    let (update, _route) = check_from(&app, read_route(&app)).await?;
     Ok(UpdateStatus {
         current_version: app.package_info().version.to_string(),
         update: update.map(|u| UpdateInfo {
@@ -205,12 +281,13 @@ pub async fn install_update(
 ) -> Result<(), String> {
     // 重新检查而不是复用 `check_update` 的结果：两个命令之间隔着用户点击，
     // 期间可能又发了新版；多一次 1 KB 请求，换掉「装到一半版本对不上」。
-    let Some(mut update) = check_once(&app).await? else {
+    // 命中的那条线路就是下载的起点 —— 刚证通过的线路不该再被超时重试一次。
+    let (found, start) = check_from(&app, read_route(&app)).await?;
+    let Some(mut update) = found else {
         return Err("没有可安装的更新".to_string());
     };
     update.timeout = Some(DOWNLOAD_TIMEOUT);
 
-    let start = read_route(&app);
     let mut last_error = String::from("未知错误");
 
     for i in 0..route_count() {
@@ -279,8 +356,10 @@ pub async fn install_update(
 
 #[cfg_attr(target_os = "windows", allow(unused_variables))]
 fn install(app: &AppHandle, update: &Update, bytes: Vec<u8>) -> Result<(), String> {
-    // `install()` 内部会再验一次签（源码第一行就是 `self.verify(bytes)?`），
-    // 所以手动下载这条路没有削弱签名校验。
+    // ⚠️ 验签发生在 `update.download()` 里（插件 `updater.rs` 的 download 内部调
+    // `verify_signature`），`install()` **不验签** —— 它只负责把字节交给安装器。
+    // 所以传进来的 `bytes` 必须来自 `download()` 的返回值，不能自己攒一份
+    // （自己攒就是绕过签名校验，而且全程不报错）。
     update
         .install(bytes)
         .map_err(|e| format!("安装更新失败：{e}"))?;
@@ -294,5 +373,63 @@ fn install(app: &AppHandle, update: &Update, bytes: Vec<u8>) -> Result<(), Strin
     {
         // 正常情况下走不到这里：`install()` 成功时已经 `std::process::exit(0)`。
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slug() -> String {
+        env!("CARGO_PKG_REPOSITORY")
+            .trim_end_matches('/')
+            .rsplit('/')
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    fn release_url(version: &str) -> String {
+        format!(
+            "https://github.com/{}/releases/download/v{version}/LiMo_{version}_x64-setup.exe",
+            slug()
+        )
+    }
+
+    fn check(url: &str, version: &str) -> Result<(), String> {
+        validate_download_url(&Url::parse(url).unwrap(), version)
+    }
+
+    #[test]
+    fn 正常清单地址通过() {
+        assert!(check(&release_url("0.5.23"), "0.5.23").is_ok());
+    }
+
+    #[test]
+    fn 非_https_被拒() {
+        let url = release_url("0.5.23").replace("https://", "http://");
+        assert!(check(&url, "0.5.23").is_err());
+    }
+
+    /// 中转被控时把 url 指向本机端口 —— 盲 SSRF 的入口，必须挡住。
+    #[test]
+    fn 非_github_主机被拒() {
+        assert!(check("http://127.0.0.1:7413/api/health", "0.5.23").is_err());
+        assert!(check("https://example.com/a/b/c.exe", "0.5.23").is_err());
+    }
+
+    /// 降级攻击：旧产物的 url 与 signature 都合法，清单却报一个新版本号。
+    #[test]
+    fn 地址里的版本与清单不符被拒() {
+        assert!(check(&release_url("0.5.1"), "0.5.23").is_err());
+    }
+
+    #[test]
+    fn 别的仓库被拒() {
+        let url = release_url("0.5.23").replace(&format!("github.com/{}", slug()), "github.com/attacker/LiMo");
+        assert!(check(&url, "0.5.23").is_err());
     }
 }

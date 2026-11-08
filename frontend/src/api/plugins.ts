@@ -1,7 +1,7 @@
 /**
  * 插件管理域 — 列表 / 启停 / 卸载 / 配置（EnginePlugin v1）。
  */
-import { apiFetch, BASE, type ConfigField } from './core'
+import { apiFetch, BASE, isTauriEnv, type ConfigField } from './core'
 
 export interface PluginInfo {
   name: string
@@ -114,7 +114,7 @@ export async function installPluginZip(file: File): Promise<InstallZipResult> {
 
 /** 重启后端 — 生产 Tauri 调 Rust `restart_backend_sidecar`；浏览器 dev 模式不可用（抛错） */
 export async function restartBackend(): Promise<void> {
-  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+  if (isTauriEnv()) {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('restart_backend_sidecar')
   } else {
