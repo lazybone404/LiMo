@@ -111,6 +111,23 @@ describe('FoldView：主题档', () => {
     expect(container.querySelectorAll('.fold-close').length).toBe(0)
   })
 
+  it('引言只有 `# 一级标题` → 不渲染那张只有箭头的空卡', () => {
+    const { container } = render(
+      <FoldView variant="topic" content={`# 标题\n\n## 甲\n第一段。\n\n第二段。\n`} meta={META} />,
+    )
+    // 只有一节真正的内容；引言那张卡不出现（它只有一个标题，点开也没有新东西）
+    expect(container.querySelectorAll('.md-card').length).toBe(1)
+    expect(container.querySelectorAll('.fold-title').length).toBe(1)
+    expect(container.textContent).not.toContain('标题')
+  })
+
+  it('引言是引用块 → 一句话来自引用，卡片不空', () => {
+    const { container } = render(
+      <FoldView variant="topic" content={`> 摘要一句。\n\n## 甲\n第一段。\n\n第二段。\n`} meta={META} />,
+    )
+    expect(container.textContent).toContain('摘要一句。')
+  })
+
   it('整节只有表格时，卡片上写着里面是什么（不是只剩标题）', () => {
     const { container } = render(
       <FoldView variant="topic" content={`## 甲\n| 列 | 值 |\n|---|---|\n| a | 1 |\n`} meta={META} />,

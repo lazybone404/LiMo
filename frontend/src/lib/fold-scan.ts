@@ -56,10 +56,11 @@ export interface FoldSection {
   /** 该节完整 Markdown（标题行 + 正文），展开时交给 `MarkerContent` */
   body: string
   /**
-   * 除标题行之外还有内容吗。
+   * 除标题行、标记行、注释、分隔线之外，还有看得见的内容吗。
    *
    * ⚠️ **不能拿 `body` 判**：`body` 必定含标题行，`'## 丙\n'.trim()` 永不为空，
    * 「只有标题的节」会变成可点 —— 点开只是把标题原地重画一遍，零报错。
+   * 判据见 `hasRealContent`。
    */
   hasBody: boolean
   /**
@@ -153,20 +154,26 @@ function firstCleanSentence(text: string): string {
  * 从一节正文里抽一句话。
  *
  * 规则（见文件头「一句话里不放 Markdown」）：
- *   1. 跳过空行、标题行、围栏内、`limo-block` 块内、表格行、分隔线、引用行；
+ *   1. 跳过空行、标题行、围栏内、`limo-block` 块内、表格行、分隔线；
  *   2. 优先普通段落；段落里取第一句不含 `$` / 图片的话；
- *   3. 没有可用段落 → 第一个列表项；
- *   4. 都没有 → 空串（**不要拿标题冒充一句话**）。
+ *   3. 没有可用段落 → 引用块（`>`）里的句子；
+ *   4. 再没有 → 第一个列表项；
+ *   5. 都没有 → 空串（**不要拿标题冒充一句话**）。
+ *
+ * ⚠️ **引用块必须可用**：产物的引言常常是一段 `>` 摘要（尤其在第一个 H2 之前），
+ * 早先把它整行跳过，于是一个有内容的引言在主题档里渲染成一张什么都没有的卡。
  */
 export function leadOf(body: string): string {
   const src = body.replace(/\r\n?/g, '\n')
   const lines = src.split('\n')
   const paras: string[] = []
+  const quotes: string[] = []
   const items: string[] = []
   let para: string[] = []
   let item: string[] | null = null
   let inFence = false
   let inBlock = false
+  let inComment = false
 
   const flushPara = () => {
     if (para.length) { paras.push(joinLines(para)); para = [] }
@@ -188,12 +195,26 @@ export function leadOf(body: string): string {
     if (matchBlockOpen(line)) { inBlock = true; flushPara(); flushItem(); continue }
     if (isMarkerLine(line)) continue
     if (!t) { flushPara(); flushItem(); continue }
-    // limo-meta / 其它 HTML 注释整行跳过（不是内容）
-    if (t.startsWith('<!--') && t.endsWith('-->')) { flushPara(); flushItem(); continue }
+    // limo-meta / 其它 HTML 注释跳过（不是内容）。跨行注释要跟状态，
+    // 只判「整行注释」时中间那几行会被当成段落，抽出一句注释文字。
+    if (inComment) {
+      if (t.includes('-->')) inComment = false
+      continue
+    }
+    if (t.startsWith('<!--')) {
+      flushPara(); flushItem()
+      if (!t.includes('-->')) inComment = true
+      continue
+    }
     if (HEADING_RE.test(t)) { flushPara(); flushItem(); continue }
     if (t.startsWith('|')) { flushPara(); flushItem(); continue }
     if (THEMATIC_BREAK_RE.test(t)) { flushPara(); flushItem(); continue }
-    if (t.startsWith('>')) { flushPara(); flushItem(); continue }
+    const q = /^>\s?(.*)$/.exec(t)
+    if (q) {
+      flushPara(); flushItem()
+      if (q[1].trim()) quotes.push(q[1].trim())
+      continue
+    }
     const li = /^(?:[-*+]|\d+[.)])\s+(.+)$/.exec(t)
     if (li) {
       flushPara()
@@ -208,6 +229,10 @@ export function leadOf(body: string): string {
   flushItem()
 
   for (const p of paras) {
+    const s = firstCleanSentence(p)
+    if (s) return s
+  }
+  for (const p of quotes) {
     const s = firstCleanSentence(p)
     if (s) return s
   }
@@ -240,6 +265,49 @@ export function contentHint(body: string): string {
   if (/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\S/m.test(outsideFences)) kinds.push('列表')
   if (/<!--[ \t]*limo-block:v\d+/.test(body)) kinds.push('要点块')
   return kinds.length ? `含${kinds.join('、')}` : ''
+}
+
+/**
+ * 这一节除了标题之外，还有**看得见的内容**吗。
+ *
+ * 「看得见」= 渲染出来之后屏幕上会多出东西。标题行、`limo-block` 标记行、HTML 注释、
+ * 水平分隔线、空行都不算 —— 一节如果只剩这些，展开与不展开看到的是同一张只有标题的卡。
+ *
+ * ⚠️ **不能拿 `body.trim() !== ''` 判**。`body` 必定含标题行，那句话永远为真；
+ * 于是「只有标题的节」被当成有正文：主题档里它占一个整格、显示成一个点开什么都没有的
+ * 空卡。截图上那张只有箭头的卡就是这一类（引言里只写了 `# 一级标题`）。
+ *
+ * 围栏里的内容（代码 / `fig` / `chart`）算内容 —— 判「有没有」只看围栏里是否至少有一行，
+ * 不解析它是什么。
+ */
+export function hasRealContent(body: string): boolean {
+  if (!body.trim()) return false
+  const lines = body.split('\n')
+  const headingLines = new Set<number>()
+  for (const h of scanHeadingLines(body, 1, 6)) headingLines.add(h.line)
+
+  let inFence = false
+  let inComment = false
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].replace(/\r$/, '').trim()
+    // 围栏开关先看：围栏里的 `<!--` 是代码内容，不是注释开头
+    if (FENCE_TOGGLE_RE.test(t)) { inFence = !inFence; continue }
+    if (inFence) { if (t) return true; continue }
+    if (inComment) {
+      if (t.includes('-->')) inComment = false
+      continue
+    }
+    if (t.startsWith('<!--')) {
+      if (!t.includes('-->')) inComment = true
+      continue
+    }
+    if (!t) continue
+    if (headingLines.has(i)) continue
+    if (isMarkerLine(t)) continue
+    if (THEMATIC_BREAK_RE.test(t)) continue
+    return true
+  }
+  return false
 }
 
 /**
@@ -293,31 +361,41 @@ export function foldSections(md: string | null | undefined): FoldSplit {
     const n = (seen.get(base) ?? 0) + 1
     seen.set(base, n)
     const lead = leadOf(s.body)
+    const hasBody = hasRealContent(s.body)
+    const hint = lead ? '' : contentHint(s.body)
     return {
       key: n === 1 ? base : `${base}-${n}`,
       heading: text,
       headingId: id,
       card: s.card,
       lead,
-      hint: lead ? '' : contentHint(s.body),
+      // 兜底：有内容、但既抽不出一句话也认不出类型（例如整段只有一个行内公式）。
+      // 不给兜底的话这张卡只有一个标题 —— 又是「看着像空卡、点开有内容」那类。
+      hint: lead ? '' : (hint || (hasBody ? '展开查看' : '')),
       // 展开时把**原始标题行**拼回去（含 `##`），交给 `MarkerContent` 后仍是那条 `<h2>`
       body: `${s.heading}\n${s.body}`,
-      hasBody: s.body.trim() !== '',
+      hasBody,
       expandable: isExpandable(s.body),
     }
   })
 
   const pre = preamble.trim()
   const preLead = pre ? leadOf(pre) : ''
-  return {
-    // 引言没有标题：`heading` 为空串，渲染层只画正文的一句话
-    preamble: pre
+  const preHasBody = hasRealContent(pre)
+  const preHint = preLead ? '' : contentHint(pre)
+  const preContent =
+    pre && preHasBody
       ? {
           key: 'pre', heading: '', headingId: '', card: false,
-          lead: preLead, hint: preLead ? '' : contentHint(pre),
+          lead: preLead,
+          hint: preLead ? '' : (preHint || '展开查看'),
           body: pre, hasBody: true, expandable: isExpandable(pre),
         }
-      : null,
+      : null
+  return {
+    // 引言没有标题：`heading` 为空串，渲染层只画正文的一句话。
+    // 只有 `# 一级标题` / 注释 / 标记行的引言直接丢掉 —— 它渲染出来就是一张空卡。
+    preamble: preContent,
     sections: out,
   }
 }

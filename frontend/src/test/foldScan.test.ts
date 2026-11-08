@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vitest'
 import {
   canFold,
   foldSections,
+  hasRealContent,
   leadOf,
   stripInlineMd,
 } from '../lib/fold-scan'
@@ -145,6 +146,65 @@ describe('hint：抽不出一句话时说明里面是什么', () => {
   it('只有标题 → 没有 hint（那一档走整行分隔条）', () => {
     expect(sec('').hint).toBe('')
   })
+
+  it('有内容但既抽不出一句话、也认不出类型 → 兜底「展开查看」', () => {
+    // 整段只有一个行内公式：句子被跳过，类型也认不出（`$$` 才算公式块）
+    const s = sec('$x^2$')
+    expect(s.hasBody).toBe(true)
+    expect(s.lead).toBe('')
+    expect(s.hint).toBe('展开查看')
+  })
+})
+
+describe('hasRealContent：除标题外还有看得见的东西吗', () => {
+  it('正文、列表、表格、图片、围栏里的代码都算内容', () => {
+    expect(hasRealContent('一句话。')).toBe(true)
+    expect(hasRealContent('- 一项')).toBe(true)
+    expect(hasRealContent('| 甲 | 乙 |\n|---|---|')).toBe(true)
+    expect(hasRealContent('![图](/a.png)')).toBe(true)
+    expect(hasRealContent('```\ncode\n```')).toBe(true)
+    expect(hasRealContent(`${ALERT_OPEN}\n警告\n${ALERT_CLOSE}`)).toBe(true)
+  })
+
+  it('标题行、标记行、注释、分隔线、空行都不算', () => {
+    expect(hasRealContent('')).toBe(false)
+    expect(hasRealContent('   \n\n')).toBe(false)
+    expect(hasRealContent('# 一级标题')).toBe(false)
+    expect(hasRealContent('### 三级标题\n')).toBe(false)
+    expect(hasRealContent(`${ALERT_OPEN}\n${ALERT_CLOSE}`)).toBe(false)
+    expect(hasRealContent('<!-- 一句注释 -->')).toBe(false)
+    expect(hasRealContent('<!--\n跨行注释\n-->')).toBe(false)
+    expect(hasRealContent('---')).toBe(false)
+    expect(hasRealContent('# 标题\n\n---\n<!-- 注释 -->')).toBe(false)
+  })
+
+  it('对照：拿 `trim()` 判会把「只有标题」当有内容（这正是空卡的来源）', () => {
+    const onlyHeading = '## 丙\n'
+    expect(onlyHeading.trim() !== '').toBe(true)
+    expect(hasRealContent(onlyHeading)).toBe(false)
+  })
+})
+
+describe('foldSections：引言里只剩标题时整张卡不渲染', () => {
+  it('只有 `# 一级标题` 的引言 → null（不生成一张什么都没有的卡）', () => {
+    expect(foldSections('# 标题\n\n## 甲\n甲的内容。\n').preamble).toBeNull()
+  })
+
+  it('只有注释 / 标记行的引言 → null', () => {
+    expect(foldSections('<!-- limo-meta -->\n\n## 甲\n甲的内容。\n').preamble).toBeNull()
+  })
+
+  it('引用块写成的引言 → 保留，一句话来自引用', () => {
+    const p = foldSections('> 摘要一句。\n\n## 甲\n甲的内容。\n').preamble
+    expect(p).not.toBeNull()
+    expect(p!.lead).toBe('摘要一句。')
+  })
+
+  it('只有注释 / 分隔线的节 → 无正文（走整行分隔条，不是可点空卡）', () => {
+    const s = foldSections('## 甲\n<!-- 注释 -->\n\n---\n').sections[0]
+    expect(s.hasBody).toBe(false)
+    expect(s.hint).toBe('')
+  })
 })
 
 describe('leadOf：一句话', () => {
@@ -156,9 +216,21 @@ describe('leadOf：一句话', () => {
     expect(leadOf('- 第一项\n- 第二项\n')).toBe('第一项')
   })
 
-  it('跳过表格、围栏、分隔线、引用', () => {
-    const body = '| 甲 | 乙 |\n|---|---|\n| 1 | 2 |\n\n---\n\n```\ncode\n```\n\n> 引用\n'
+  it('跳过表格、围栏、分隔线', () => {
+    const body = '| 甲 | 乙 |\n|---|---|\n| 1 | 2 |\n\n---\n\n```\ncode\n```\n'
     expect(leadOf(body)).toBe('')
+  })
+
+  it('没有可用段落时取引用块里的句子（引言常常就是一段 `>` 摘要）', () => {
+    expect(leadOf('> 这是一段摘要。\n>\n> 第二段。\n')).toBe('这是一段摘要。')
+    // 段落优先于引用
+    expect(leadOf('正文一句。\n\n> 引用一句。\n')).toBe('正文一句。')
+    // 只有 `>` 的空引用不算
+    expect(leadOf('>\n> \n')).toBe('')
+  })
+
+  it('跨行 HTML 注释里的话不被抽出来', () => {
+    expect(leadOf('<!--\n注释里的一句话。\n-->\n正文一句。')).toBe('正文一句。')
   })
 
   it('图片段落整段跳过，取下一段的句子', () => {

@@ -78,9 +78,10 @@ export function FoldView({ variant, content, meta, sourceUrl, isVideo }: FoldVie
       <div className={variant === 'topic' ? 'fold-grid' : 'fold-leads'}>
         {items.map(sec => {
           const isOpen = open.has(sec.key)
-          // 可点 = 展开后真的会多出东西。`hasBody`（有没有正文）不够：「只有一句话」
-          // 的节展开前后逐字一样，绑点击就是「点了没反应」。
-          const openable = sec.expandable && !isOpen
+          // 可点 = 展开后真的会多出东西。两条都不够单独用：`hasBody` 只说「有内容」，
+          // 「只有一句话」的节展开前后逐字一样；`expandable` 不说「有没有内容」，
+          // 只剩标记行的节也会被判可展开。两者同时成立才绑点击。
+          const openable = sec.hasBody && sec.expandable && !isOpen
           const onSelect = () => toggle(sec.key)
 
           return (
