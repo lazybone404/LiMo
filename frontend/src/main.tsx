@@ -13,6 +13,10 @@ import './styles/blocks.css'
 // ⚠️ 对话侧的两个卡片块形态（`ai-chat/ChatMarkerContent.tsx`）。与上两份**不同**：
 // 这份**不进导出**（`export.py` 不读它）—— 对话没有 HTML 导出形态，故可自由引用 `--tk-*`。
 import './styles/chat-blocks.css'
+// ⚠️ 折叠阅读的排布（`components/preview/FoldView.tsx`）—— 单文件、**不进导出**
+// （后端不读它：导出物里只有正文，与 `ArtifactMetaBar` 同一条纪律）。
+// 必须排在 cards.css 之后：它对本档覆盖 `.md-card` 的固定 px 留白。
+import './styles/fold.css'
 import App from './App.tsx'
 
 /**

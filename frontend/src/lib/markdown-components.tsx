@@ -6,11 +6,11 @@ import { scanHeadingLines } from './markdown-scan'
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import Zoom from 'react-medium-image-zoom'
 import { useStore } from '../store'
-
-/** 统一的标题 ID 生成 — 供 Markdown 渲染组件和 TOC 共享 */
-export function headingId(text: string) {
-  return text.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9一-鿿-]/g, '').replace(/-+/g, '-').replace(/^-|-$/g, '')
-}
+// ⚠️ 标题 id / 行内语法清洗住在 `lib/markdown-heading.ts`（2026-11-08 拆出）：
+// 渲染侧、TOC 侧、折叠阅读三处共用同一份。纯函数放独立的模块，折叠阅读才能不把
+// React 与 store 拉进依赖图。这里仍 re-export，既有 import 路径不变。
+export { headingId } from './markdown-heading'
+import { headingId, stripHeadingDecor } from './markdown-heading'
 
 /**
  * 递归取 React 子节点的纯文本（P1-15）。
@@ -27,45 +27,6 @@ export function nodeText(node: any): string {
   if (Array.isArray(node)) return node.map(nodeText).join('')
   if (typeof node === 'object' && 'props' in node) return nodeText(node.props?.children)
   return ''
-}
-
-/**
- * 剥掉标题里的行内 Markdown 语法（P1-15）。
- *
- * 源码侧（TOC 从 `## **重点** 内容` 取）拿到的是带标记的原文，渲染侧拿到的是已
- * 解析的节点树 —— 不剥的话两侧必然算出不同 id。
- *
- * ⚠️ 图片规则必须排在链接**之前**：`![alt](url)` 会被链接规则吃成 `![alt]`。
- */
-export function inlineText(md: string): string {
-  return md
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/`([^`]*)`/g, '$1')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/~~([^~]+)~~/g, '$1')
-    .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/<[^>]+>/g, '')
-}
-
-/**
- * 标题装饰剥离（时间戳 badge + 行内语法）——**渲染侧与 TOC 侧共用这一份**（P1-15）。
- *
- * ⚠️ 此前两侧各写一份、规则还有细微差别（一侧要求 `[▶ 12:30](#)` 的方括号形态，
- *    另一侧只剥行尾；`Screenshot-` 只有一侧认）→ 带时间戳的标题两侧 id 不同，
- *    而两边读起来都像「已经正确处理了时间戳」。
- *
- * 三种形态都要认（源码态 / 渲染后态各不同）：
- *   `[▶ 12:30](#)`（源码链接）→ inlineText 后是 `▶ 12:30`
- *   `Content-[12:30]` / `Screenshot-[12:30]`（badge 源码）
- *   `12:30`（渲染后 badge 只剩文本，且总在行尾）
- */
-export function stripHeadingDecor(text: string): string {
-  return inlineText(text)
-    .replace(/\s*\*?(?:Content|Screenshot)-\[\d{2}:\d{2}\]/g, '')
-    .replace(/\s*▶\s*\d{2}:\d{2}/g, '')
-    .replace(/\s*\d{2}:\d{2}\s*$/, '')
-    .trim()
 }
 
 /**

@@ -566,8 +566,11 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 > 任务生命周期，§9 是布局（活动栏 / 三栏插槽 / 文档标签栏 / AI 浮窗），§10 是主题轴、
 > 语义标记 `limo-block` 与十二种内容块。**改前端先读它。**
 
-四条会**在别的模块被违反**的约束：
+五条会**在别的模块被违反**的约束：
 
+- **折叠阅读的档位优先于骨架轴**（`topic` 自带 `data-skeleton="card"`，不看用户选的 paper/card），
+  且**未展开时不把 Markdown 交给渲染器** —— 缩过的 Markdown 会散表格、废围栏、让单行图片凭空成图。
+  展开的那一节走 `MarkerContent`。档位是持久化的，短文 / 流式 / 编辑态**一律回落 `full`**。
 - **左侧面板互斥靠 `uiSlice.activeLeftPanel` 这个选择器字段**，不是「打开甲时遍历同侧把乙收起」
   —— 后者可被任何直接改单个 slot 的调用点绕过，而这样的调用点有四处在 CLAUDE.md 视野之外。
   统一入口 `openPanel` / `closePanel` / `togglePanel`。

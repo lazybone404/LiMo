@@ -1,0 +1,120 @@
+/* ══ 产物折叠阅读（主题 / 一句话）═══════════════════════════════════════
+   只服务 `components/preview/FoldView.tsx`。不走 `--card-*` 之外的新配色，
+   零硬编码色值；一切尺寸用 `em`。
+
+   ⚠️ **根容器的 `font-size: var(--read-font-size)` 是这一档能否跟手 Ctrl+滚轮的唯一接点**。
+   `--read-font-size` 只写进 `.markdown-body`，而折叠态的标题与一句话是自己画的 DOM，
+   不在那条链里 —— 少了这一行，放大字号对折叠态完全不生效，而且**不报错**。
+
+   ⚠️ **卡片留白必须在这里覆盖**：`cards.css` 的 `--card-padding` 是固定 px
+   （30px 36px），字号调到 1.5 倍后卡片显得局促。那份 CSS **同时是后端导出的来源**，
+   不能改；所以只在本档、用更高的特异性覆盖。
+   ────────────────────────────────────────────────────────────────────── */
+
+.fold-root {
+  font-size: var(--read-font-size);
+}
+
+/* ── 主题档：卡片网格 ── */
+
+.fold-root .fold-grid {
+  display: grid;
+  /* `15em` 让列宽跟着字号走：放大 → 单卡变宽、列数自动减少；
+     `200px` 兜住极小字号下挤成「三字一行」。*/
+  grid-template-columns: repeat(auto-fill, minmax(max(15em, 200px), 1fr));
+  align-items: start;
+  gap: 1em;
+}
+
+/* 特异性 (0,3,0) > cards.css 的 `[data-skeleton="card"] .md-card` (0,2,0) */
+.fold-root .fold-grid .md-card {
+  margin-block: 0;
+  padding: 1.4em 1.8em;
+  transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+
+.fold-root .fold-grid .md-card[data-openable='true'] {
+  cursor: pointer;
+}
+
+.fold-root .fold-grid .md-card[data-openable='true']:hover {
+  border-color: var(--tk-accent);
+}
+
+/* 展开的卡横跨整行 —— 否则网格里一张高卡会把整行顶高，旁边留一大片空 */
+.fold-root .fold-grid .md-card.is-open {
+  grid-column: 1 / -1;
+  cursor: auto;
+}
+
+/* ── 一句话档：每节一行 ── */
+
+.fold-leads {
+  display: flex;
+  flex-direction: column;
+}
+
+.fold-row {
+  padding: 0.75em 0.2em;
+  border-bottom: 1px solid var(--tk-border-light);
+}
+
+.fold-row:last-child {
+  border-bottom: none;
+}
+
+.fold-row[data-openable='true'] {
+  cursor: pointer;
+}
+
+.fold-row[data-openable='true']:hover .fold-title {
+  color: var(--tk-accent);
+}
+
+/* ── 两档共用的标题与一句话 ── */
+
+.fold-title {
+  margin: 0 0 0.45em;
+  font-size: 1.15em;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--md-h2);
+  transition: color 150ms ease-out;
+  /* 展开后标题仍在，TOC 点击靠它；留一点上边距，别贴在容器顶上 */
+  scroll-margin-top: 24px;
+}
+
+.fold-row .fold-title {
+  margin-bottom: 0.25em;
+}
+
+.fold-lead {
+  margin: 0;
+  font-size: 1em;
+  line-height: 1.7;
+  color: var(--tk-dimmed);
+}
+
+/* 展开后的正文：卡片里已经是正文流，只要把上边距拉开一点 */
+.fold-body {
+  margin-top: 0.6em;
+}
+
+.fold-close {
+  display: inline-block;
+  margin-top: 0.9em;
+  padding: 0.25em 0.9em;
+  font-size: 0.85em;
+  line-height: 1.6;
+  color: var(--tk-dimmed);
+  border: 1px solid var(--tk-border);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  transition: color 150ms ease-out, border-color 150ms ease-out;
+}
+
+.fold-close:hover {
+  color: var(--tk-accent);
+  border-color: var(--tk-accent);
+}

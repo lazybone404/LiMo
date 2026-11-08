@@ -9,7 +9,7 @@ import { getStreamBuffer } from '../../store/streamBuffers'
 import type { MarkdownMeta, MarkdownVersion, TaskInfo } from '../../store/types'
 import { TabRegistry, type TabDef } from '../../lib/tabRegistry'
 import { getContentForView } from '../../lib/contentSources'
-import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, Package, AlertTriangle, FileText, Columns, AlignCenter, Maximize2, Minimize2, Expand, Pencil, Highlighter } from 'lucide-react'
+import { ScanText, Table, ScanLine, Eye, ChevronRight, Terminal, Image, Package, AlertTriangle, FileText, Columns, AlignCenter, AlignLeft, LayoutGrid, Maximize2, Minimize2, Expand, Pencil, Highlighter } from 'lucide-react'
 import Zoom from 'react-medium-image-zoom'
 import 'react-medium-image-zoom/dist/styles.css'
 import { getTypeMeta } from '../gen-panel/constants'
@@ -26,6 +26,9 @@ import { TranscriptView } from './TranscriptView'
 import { MarkdownPreview } from './MarkdownPreview'
 import { CardSections } from './CardSections'
 import { MarkerContent } from './MarkerContent'
+import { FoldView } from './FoldView'
+import { canFold } from '../../lib/fold-scan'
+import type { FoldLevel } from '../../lib/fold-prefs'
 import { TextareaMarkdownEditor } from './TextareaMarkdownEditor'
 import { PartialBanner } from './PartialBanner'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
@@ -53,6 +56,16 @@ import { useChatStore } from '../../store/chatStore'
 const IMAGE_MODE_ICONS: Record<ImageMode, typeof ScanText> = {
   extract: ScanText, table: Table, digitize: ScanLine, understand: Eye,
 }
+
+/**
+ * 折叠阅读的三档。⚠️ 键名与 `lib/fold-prefs.ts::FoldLevel` 同源（那里是真相源），
+ * 这里只补 label / icon；加一档时两处一起改，否则类型当场报错。
+ */
+const FOLD_OPTIONS: { key: FoldLevel; title: string; icon: typeof LayoutGrid }[] = [
+  { key: 'topic', title: '折叠：主题（卡片网格）', icon: LayoutGrid },
+  { key: 'lead', title: '折叠：每节一句话', icon: AlignLeft },
+  { key: 'full', title: '折叠：全文', icon: FileText },
+]
 
 // ── 欢迎文档（空态示例文档）内容 ──
 // 对齐 LiMo 双产物 + 转录结构：笔记（欢迎/简介）· 整理版原文（开发者全面功能）· 转录（更新记录）。
@@ -195,6 +208,10 @@ export function PreviewArea() {
   // 关掉后块内文字照常显示，只是没有左边框/淡底（见 lib/marker-prefs.ts 文件头）。
   const markerDecor = useStore(s => s.markerDecor)
   const setMarker = useStore(s => s.setMarker)
+  // 折叠阅读档位（`topic` / `lead` / `full`）。⚠️ 它是**用户选的**，不是最终生效的 ——
+  // 生效值 `foldActive` 还要过「这个 tab 支不支持 / 够不够长 / 在不在流式或编辑中」三道。
+  const fold = useStore(s => s.fold)
+  const setFold = useStore(s => s.setFold)
 
   // ratio 取自 lib/reading-prefs 的 CONTENT_WIDTH_RATIO（单源）——本表只补 label/icon
   const WIDTH_RATIO: Record<string, { label: string; icon: typeof Columns; ratio: number }> = {
@@ -242,11 +259,9 @@ export function PreviewArea() {
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
-  // 内容上限动态跟随面板宽度：小窗口保底 1100px；折叠 GenPanel/DocLibrary 后面板变宽 →
-  // 内容同步放宽（两侧各留 ~80px 边距）利用空白，而不是被固定 1100 钳制。
-  // 阅读版式另加一条**度量上限**（每行字数）：设置页调过时与比例值取小；没调过（null）
-  // 时逐值复现改造前的行为。数学见 lib/reading-prefs.ts 的 computeContentMaxW（纯函数、可单测）。
-  const contentMaxW = `${computeContentMaxW(containerWidth, WIDTH_RATIO[contentWidth].ratio, measurePx)}px`
+  // 内容上限 `contentMaxW` 在下方 `displayContent` 之后算 —— 主题档要另走一条更宽的
+  // 分支，而那条分支依赖「档位是否真的生效」（`foldActive`）。定义晚于本行的原因只是
+  // 这个依赖顺序，它只在 JSX 里被消费。
   const fontSizeScale: Record<string, number> = { narrow: 0.92, normal: 1.0, wide: 1.06 }
   const setCurrentContent = useStore(s => s.setCurrentContent)
   const setCurrentPolishedContent = useStore(s => s.setCurrentPolishedContent)
@@ -750,6 +765,31 @@ export function PreviewArea() {
         },
       })
     : currentContent
+
+  /**
+   * 折叠阅读：**用户选了什么 ≠ 现在生效什么**。
+   *
+   * 四道回落，缺一条就是「按钮在、行为没有」或「打开一篇短文只剩几张空卡」：
+   *   1. 只有 notes / polished 两个 tab 支持（`showVersionSwitcher` 是它们的标记）；
+   *   2. 短文不折叠（`canFold`：去标点 ≥ 3800 **且** 有 H2）——档位是持久化的，
+   *      昨天在长文里选的主题，今天打开一篇两千字的产物必须自动回到全文；
+   *   3. 流式生成中不折叠 —— 内容每帧变化，重扫昂贵，且半截 Markdown 切出来的节会抖；
+   *   4. 编辑态不折叠 —— 用户在改正文，折叠视图像素级地妨碍对照。
+   */
+  const canFoldHere = !!activeTabDef?.showVersionSwitcher && canFold(displayContent)
+  const foldActive: FoldLevel = (!canFoldHere || isStreaming || editingThisMode) ? 'full' : fold
+
+  // 内容上限动态跟随面板宽度：小窗口保底 1100px；折叠 GenPanel/DocLibrary 后面板变宽 →
+  // 内容同步放宽（两侧各留 ~80px 边距）利用空白，而不是被固定 1100 钳制。
+  // 阅读版式另加一条**度量上限**（每行字数）：设置页调过时与比例值取小；没调过（null）
+  // 时逐值复现改造前的行为。数学见 lib/reading-prefs.ts 的 computeContentMaxW（纯函数、可单测）。
+  // ⚠️ 主题档另走一条：卡片网格需要比正文更宽的列，而 `computeContentMaxW` 的上限与
+  // `measurePx`（每行字数）都会把网格卡在正文宽度。这条分支**不碰** `--read-*` 与
+  // `fontSizeScale` —— 只放宽容器。
+  const contentMaxW = foldActive === 'topic'
+    ? `${Math.min(containerWidth * 0.97, Math.max(1100, containerWidth - 48))}px`
+    : `${computeContentMaxW(containerWidth, WIDTH_RATIO[contentWidth].ratio, measurePx)}px`
+
   const processingTasks = useStore(s => s.processingTasks)
   // key 格式为 `${docId}__${kind}`，收集当前文档所有活跃任务
   const activeTasks = currentDocId
@@ -880,9 +920,16 @@ export function PreviewArea() {
                   相同（同组件、同 props、同顺序）—— 这是可断言的事实，见
                   `test/cardSections.test.tsx`。无 H2 时 CardSections **内部回落**到与
                   本行完全相同的路径。 */}
-              {skeleton === 'card'
-                ? <CardSections sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
-                : <MarkerContent sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />}
+              {/* 折叠档位**优先于**骨架轴：主题档自带卡片网格（它的 `.md-card` 直接
+                  吃 8 套视觉方案），一句话档是纯列表，两者都不看 `skeleton`。
+                  只有 `full` 才落到骨架轴的分派上 —— 那条路径逐字不变。 */}
+              {foldActive === 'topic'
+                ? <FoldView variant="topic" sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
+                : foldActive === 'lead'
+                  ? <FoldView variant="lead" sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
+                  : skeleton === 'card'
+                    ? <CardSections sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
+                    : <MarkerContent sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />}
               {/* 追问卡片 —— 生成时勾了「追问卡片」才有的 4~6 个可点问题（点了带这篇
                   文档直接问 AI）。它是**后端独立补调一次**产出的，住在旁路文件里，
                   **不在正文、不在导出**，故这里只是把它挂到笔记末尾。
@@ -1060,6 +1107,24 @@ export function PreviewArea() {
               loading={versionLoading || isStreaming}
               onSelect={(v) => loadVersion(v, activeTabDef.showVersionSwitcher!)}
             />
+          )}
+          {/* 折叠阅读三档 —— 只对 notes / polished 的**只读态**出现，与版本切换器同一条
+              纪律（编辑中隐藏：折叠视图像素级地妨碍对照正文）。
+              ⚠️ 短文 / 流式中 / 非产物 tab **整块不渲染**（不是禁用）：`canFoldHere` 就是
+              分派用的同一个判据，两处必须同源 —— 否则会出现「按钮能点、点了渲染没变」。
+              ⚠️ 沉浸态下整条工具栏不渲染，档位**保持当前值不改**：强行切全文会让
+              「退出沉浸后档案变了」这个副作用出现，而退出本来只需 Ctrl+\ 或右上角按钮。 */}
+          {canFoldHere && !editing && !isStreaming && (
+            <div className="flex items-center gap-0.5 bg-surface rounded-lg p-0.5">
+              {FOLD_OPTIONS.map(o => (
+                <button key={o.key}
+                  onClick={() => setFold(o.key)}
+                  title={o.title}
+                  aria-pressed={fold === o.key}
+                  className={`w-7 h-7 flex items-center justify-center rounded-md transition-all ${fold === o.key ? 'bg-elevated shadow-sm text-foreground' : 'text-dimmed hover:text-foreground'}`}
+                ><o.icon size={14} /></button>
+              ))}
+            </div>
           )}
         </div>
         <div className="flex items-center gap-1.5">

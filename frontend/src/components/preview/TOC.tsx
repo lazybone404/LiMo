@@ -17,6 +17,9 @@ export function TOC({ width = 160 }: { width?: number }) {
   const notesContent = useStore(s => s.currentContent)
   const polishedContent = useStore(s => s.currentPolishedContent)
   const setSlot = useStore(s => s.setSlot)
+  // 折叠态下深层标题（H3/H4）不在 DOM 里 —— 点击目录项要先切回全文，见下方 onClick
+  const fold = useStore(s => s.fold)
+  const setFold = useStore(s => s.setFold)
   const content = activeView === 'polished' ? polishedContent : notesContent
   const [activeId, setActiveId] = useState<string | null>(null)
   const observerRef = useRef<IntersectionObserver | null>(null)
@@ -82,7 +85,18 @@ export function TOC({ width = 160 }: { width?: number }) {
             href={`#${item.id}`}
             onClick={(e) => {
               e.preventDefault()
-              document.getElementById(item.id)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+              const el = document.getElementById(item.id)
+              if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); return }
+              // ── 折叠态：目标不在 DOM 里 ──
+              // 主题 / 一句话档只保留 H2 的 id，H3/H4 的标题根本没渲染。原先这里靠 `?.`
+              // 静默吞掉 null ——「点了目录没反应」，零报错。回落策略是**先切回全文再滚**：
+              // 用户的意图是「去那一节」，档位不该拦住它。切完全文要等两帧才有 DOM。
+              // 切完仍找不到就什么都不做（不抛错、不 toast）——目录条目可能来自流式旧内容。
+              if (fold === 'full') return
+              setFold('full')
+              requestAnimationFrame(() => requestAnimationFrame(() => {
+                document.getElementById(item.id)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+              }))
             }}
             className={`block text-[12px] py-0.5 leading-tight transition-colors hover:text-accent ${
               activeId === item.id

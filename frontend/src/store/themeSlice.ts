@@ -15,6 +15,7 @@ import { THEME_AXES, AXIS, type ThemeAxis } from '../lib/theme-axes'
 import { type ReadingPrefs, getSavedReading, applyReading, saveReading } from '../lib/reading-prefs'
 import { type Skeleton, type CardStyle, type CardPrefs, getSavedCard, applyCard, saveCard } from '../lib/card-prefs'
 import { type MarkerPrefs, getSavedMarkers, applyMarkers, saveMarkers } from '../lib/marker-prefs'
+import { type FoldLevel, getSavedFold, saveFold } from '../lib/fold-prefs'
 import { THEME_PRESETS } from '../lib/theme-presets'
 import type { Store } from './types'
 
@@ -69,6 +70,13 @@ export interface ThemeSlice {
   // 与骨架同款：不是新的一轴，**刻意不进 THEME_PRESETS**（换主题包不该重置它）。
   markerDecor: boolean
   setMarker: (patch: Partial<MarkerPrefs>) => void
+
+  // ── 产物折叠阅读档位（`topic` / `lead` / `full`） ──
+  // ⚠️ 与 skeleton 同款：不是新的一轴，**刻意不进 THEME_PRESETS**（换主题包不该重置
+  // 阅读密度）。它没有 DOM 副作用（不写 `data-*`），故不像 reading / card 那样有
+  // `applyXxx` —— 值是纯 React 输入，消费点只有 `PreviewArea` 的分派与工具栏。
+  fold: FoldLevel
+  setFold: (v: FoldLevel) => void
 
   // ── 一键主题包 ──
   applyPreset: (name: string) => void
@@ -158,6 +166,14 @@ export const createThemeSlice: StateCreator<Store, [], [], ThemeSlice> = (set) =
       applyMarkers(next)
       return { markerDecor: next.decor }
     }),
+
+    // 冷启动不写 DOM（没有 `data-*` 承载它），故不需要启动链另补一行 —— 与 reading /
+    // card / markers 那三处的「初值只进内存、DOM 靠启动链」不同，别照着抄。
+    fold: getSavedFold(),
+    setFold: (v) => {
+      saveFold(v)
+      set({ fold: v })
+    },
 
     applyPreset: (name) => {
       const p = THEME_PRESETS.find(pr => pr.name === name)
