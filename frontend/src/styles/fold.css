@@ -47,6 +47,19 @@
   cursor: auto;
 }
 
+/* 只有标题的节：整行一条分隔条。
+   给它一个格子的话，网格里会出现一张只有标题的空卡 —— 读起来像渲染坏了。 */
+.fold-root .fold-grid .md-card.fold-hollow {
+  grid-column: 1 / -1;
+  padding: 0.55em 1.1em;
+}
+
+.fold-root .fold-grid .md-card.fold-hollow .fold-title {
+  margin: 0;
+  font-size: 1em;
+  color: var(--tk-dimmed);
+}
+
 /* ── 一句话档：每节一行 ── */
 
 .fold-leads {

@@ -60,6 +60,14 @@ export interface FoldSection {
    * 「只有标题的节」会变成可点 —— 点开只是把标题原地重画一遍，零报错。
    */
   hasBody: boolean
+  /**
+   * 展开之后**会不会看到新东西**。
+   *
+   * `hasBody` 只回答「有没有正文」，不回答「点开值不值」。一节正文只有一句纯文本时，
+   * 展开前后看到的是同一句话（只是多了格式外壳），而折叠态已经把这句话显示出来了 ——
+   * 给它绑点击就是「点了没反应」。判据见 `isExpandable`。
+   */
+  expandable: boolean
 }
 
 export interface FoldSplit {
@@ -225,6 +233,31 @@ export function leadOf(body: string): string {
   return ''
 }
 
+/**
+ * 展开有没有意义。
+ *
+ * 判据是「展开后的渲染结果与折叠态显示的那句话是否等价」。**宁可多给点击，不可少给**：
+ * 折叠态是纯文本，凡是展开后会多出信息的东西都必须算可展开，否则那些信息就永远看不到。
+ *
+ * 因此下面每一种情况都返回 true：
+ *   1. 正文不止一行（多段 / 列表 / 表格 / 围栏）—— 行数本身就是折叠态丢掉的结构；
+ *   2. 单行但是围栏 / `limo-block` 标记 —— 展开才看得见块；
+ *   3. 单行里含行内记号（图片、链接、反引号、强调、删除线、`$`、HTML 标签）——
+ *      折叠态把它们剥成纯文本，展开后链接可点、强调可见、公式排版；
+ *   4. 单行太长被 `LEAD_MAX_CHARS` 截断 —— 折叠态只显示前半句。
+ *
+ * 只剩「单行、纯文本、不超长」这一种返回 false：那种节的展开前后逐字一样。
+ */
+function isExpandable(body: string): boolean {
+  const lines = body.split('\n').filter(l => l.trim() !== '')
+  if (lines.length === 0) return false
+  if (lines.length > 1) return true
+  const line = lines[0].trim()
+  if (FENCE_TOGGLE_RE.test(line) || matchBlockOpen(line) || isMarkerLine(line)) return true
+  if (/!\[|\[[^\]]*\]\(|`|\*\*|~~|\$|<\w/.test(line)) return true
+  return stripInlineMd(line).length > LEAD_MAX_CHARS
+}
+
 /** 标题行 → { text, id }，与 TOC / 渲染侧同一份清洗 */
 function headingOf(line: string): { text: string; id: string } {
   const m = HEADING_RE.exec(line)
@@ -259,6 +292,7 @@ export function foldSections(md: string | null | undefined): FoldSplit {
       // 展开时把**原始标题行**拼回去（含 `##`），交给 `MarkerContent` 后仍是那条 `<h2>`
       body: `${s.heading}\n${s.body}`,
       hasBody: s.body.trim() !== '',
+      expandable: isExpandable(s.body),
     }
   })
 
@@ -268,7 +302,7 @@ export function foldSections(md: string | null | undefined): FoldSplit {
     preamble: pre
       ? {
           key: 'pre', heading: '', headingId: '', card: false,
-          lead: leadOf(pre), body: pre, hasBody: true,
+          lead: leadOf(pre), body: pre, hasBody: true, expandable: isExpandable(pre),
         }
       : null,
     sections: out,

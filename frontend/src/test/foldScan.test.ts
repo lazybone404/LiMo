@@ -87,6 +87,41 @@ describe('foldSections：切节', () => {
   })
 })
 
+describe('expandable：展开后会不会看到新东西', () => {
+  const sec = (body: string) => foldSections(`## 甲\n${body}\n`).sections[0]
+
+  it('只有标题 → 无正文、不可展开', () => {
+    const s = sec('')
+    expect(s.hasBody).toBe(false)
+    expect(s.expandable).toBe(false)
+  })
+
+  it('一句纯文本 → 有正文但展开前后一样，不可展开', () => {
+    const s = sec('就这一句话。')
+    expect(s.hasBody).toBe(true)
+    expect(s.expandable).toBe(false)
+  })
+
+  it('单行里含链接 / 加粗 / 行内代码 → 可展开（折叠态把它们剥成纯文本了）', () => {
+    expect(sec('看 [这个](https://x)。').expandable).toBe(true)
+    expect(sec('**加粗**的一句。').expandable).toBe(true)
+    expect(sec('含 `代码` 的一句。').expandable).toBe(true)
+    expect(sec('含公式 $x$ 的一句。').expandable).toBe(true)
+  })
+
+  it('单段被截断（超 120 字）→ 可展开（折叠态只显示前半句）', () => {
+    expect(sec(`${'甲'.repeat(121)}。`).expandable).toBe(true)
+  })
+
+  it('多行 / 列表 / 表格 / 围栏 / 语义块 → 可展开', () => {
+    expect(sec('第一段。\n\n第二段。').expandable).toBe(true)
+    expect(sec('- 一项\n- 两项').expandable).toBe(true)
+    expect(sec('| 甲 | 乙 |\n|---|---|\n| 1 | 2 |').expandable).toBe(true)
+    expect(sec('```\ncode\n```').expandable).toBe(true)
+    expect(sec(`${ALERT_OPEN}\n警告内容\n${ALERT_CLOSE}`).expandable).toBe(true)
+  })
+})
+
 describe('leadOf：一句话', () => {
   it('段落优先于列表', () => {
     expect(leadOf('正文一句。\n\n- 列表项\n')).toBe('正文一句。')

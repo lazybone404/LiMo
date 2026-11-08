@@ -78,9 +78,9 @@ export function FoldView({ variant, content, meta, sourceUrl, isVideo }: FoldVie
       <div className={variant === 'topic' ? 'fold-grid' : 'fold-leads'}>
         {items.map(sec => {
           const isOpen = open.has(sec.key)
-          // 只有标题的节没有可展开的东西 —— 绑了点击也只是原地不动。
-          // ⚠️ 判据是 `hasBody` 而不是 `body`：body 必定含标题行，用它判永远为真。
-          const openable = sec.hasBody && !isOpen
+          // 可点 = 展开后真的会多出东西。`hasBody`（有没有正文）不够：「只有一句话」
+          // 的节展开前后逐字一样，绑点击就是「点了没反应」。
+          const openable = sec.expandable && !isOpen
           const onSelect = () => toggle(sec.key)
 
           return (
@@ -88,7 +88,9 @@ export function FoldView({ variant, content, meta, sourceUrl, isVideo }: FoldVie
               key={sec.key}
               className={
                 variant === 'topic'
-                  ? `md-card fold-card${isOpen ? ' is-open' : ''}`
+                  // 只有标题的节做成**整行分隔条**：它没有内容，占满一个格子会让网格
+                  // 里出现一张空卡，读起来像渲染坏了。
+                  ? `md-card fold-card${isOpen ? ' is-open' : ''}${sec.hasBody ? '' : ' fold-hollow'}`
                   : 'fold-row'
               }
               data-openable={openable ? 'true' : undefined}

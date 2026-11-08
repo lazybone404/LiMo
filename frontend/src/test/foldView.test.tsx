@@ -47,10 +47,14 @@ describe('FoldView：主题档', () => {
     expect(h2[0].id).toBe('甲')
     expect(h2[1].id).toBe('乙')
 
-    // 可点的地方有标识（两张卡都能展开）
-    expect(container.querySelectorAll('.fold-hint').length).toBe(2)
+    // 可点的地方有标识。⚠️ 只有「甲」有：乙的正文是一句纯文本，展开前后逐字一样，
+    // 给了标识就是「看起来能点、点开没新东西」。
+    expect(container.querySelectorAll('.fold-hint').length).toBe(1)
     // 标识在标题行里，不是浮在卡片角落
-    expect(container.querySelectorAll('.fold-head .fold-hint').length).toBe(2)
+    expect(container.querySelectorAll('.fold-head .fold-hint').length).toBe(1)
+    const cards = container.querySelectorAll('.md-card')
+    expect(cards[0].getAttribute('data-openable')).toBe('true')
+    expect(cards[1].getAttribute('data-openable')).toBeNull()
 
     // 对照 A：一句话在，正文其余部分**不在**（折叠态不渲染 Markdown）
     expect(container.textContent).toContain('第一段。')
@@ -74,7 +78,7 @@ describe('FoldView：主题档', () => {
     expect(getByText('收起')).toBeTruthy()
     // 「收起」在标题行里（不是正文末尾），且这一节的展开提示同时消失
     expect(container.querySelectorAll('.fold-head .fold-close').length).toBe(1)
-    expect(container.querySelectorAll('.fold-hint').length).toBe(1)
+    expect(container.querySelectorAll('.fold-hint').length).toBe(0)
     // 只有被点的那一节展开，另一节仍是卡
     expect(container.querySelectorAll('.md-card').length).toBe(2)
   })
@@ -91,12 +95,15 @@ describe('FoldView：主题档', () => {
 
   it('只有标题的节不可点（对照 C）', () => {
     const { container } = render(
-      <FoldView variant="topic" content={`## 甲\n内容一。\n\n## 丙\n`} meta={META} />,
+      <FoldView variant="topic" content={`## 甲\n内容一。\n\n内容二。\n\n## 丙\n`} meta={META} />,
     )
     const cards = container.querySelectorAll('.md-card')
     expect(cards.length).toBe(2)
     expect(cards[0].getAttribute('data-openable')).toBe('true')
     expect(cards[1].getAttribute('data-openable')).toBeNull()
+    // 只有标题的节做成整行分隔条，不占一个格子
+    expect(cards[1].classList.contains('fold-hollow')).toBe(true)
+    expect(cards[0].classList.contains('fold-hollow')).toBe(false)
     // 不可点的节连展开标识都不给 —— 给了就是「看起来能点、点了没反应」
     expect(cards[1].querySelectorAll('.fold-hint').length).toBe(0)
     // 点它什么也不会发生（不变成空展开）
