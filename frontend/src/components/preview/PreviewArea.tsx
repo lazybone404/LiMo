@@ -61,10 +61,10 @@ const IMAGE_MODE_ICONS: Record<ImageMode, typeof ScanText> = {
  * 折叠阅读的三档。⚠️ 键名与 `lib/fold-prefs.ts::FoldLevel` 同源（那里是真相源），
  * 这里只补 label / icon；加一档时两处一起改，否则类型当场报错。
  */
-const FOLD_OPTIONS: { key: FoldLevel; title: string; icon: typeof LayoutGrid }[] = [
-  { key: 'topic', title: '折叠：主题（卡片网格）', icon: LayoutGrid },
-  { key: 'lead', title: '折叠：每节一句话', icon: AlignLeft },
-  { key: 'full', title: '折叠：全文', icon: FileText },
+const FOLD_OPTIONS: { key: FoldLevel; label: string; title: string; icon: typeof LayoutGrid }[] = [
+  { key: 'topic', label: '主题', title: '折叠：主题（卡片网格）', icon: LayoutGrid },
+  { key: 'lead', label: '一句话', title: '折叠：每节一句话', icon: AlignLeft },
+  { key: 'full', label: '全文', title: '折叠：全文', icon: FileText },
 ]
 
 // ── 欢迎文档（空态示例文档）内容 ──
@@ -780,6 +780,10 @@ export function PreviewArea() {
    */
   const canFoldHere = !!activeTabDef?.showVersionSwitcher && canFold(displayContent)
   const foldActive: FoldLevel = (!canFoldHere || isStreaming || editingThisMode) ? 'full' : fold
+  // 滑块位置。控件只在 `canFoldHere && !editing && !isStreaming` 时渲染，那三种情况下
+  // `foldActive === fold`，所以直接用 `fold` 定位；`-1` 兜底成第一格（不会发生，但
+  // 将来加档位时忘了补 label 也不至于把滑块甩出容器）。
+  const foldIndex = Math.max(0, FOLD_OPTIONS.findIndex(o => o.key === fold))
 
   // 内容上限动态跟随面板宽度：小窗口保底 1100px；折叠 GenPanel/DocLibrary 后面板变宽 →
   // 内容同步放宽（两侧各留 ~80px 边距）利用空白，而不是被固定 1100 钳制。
@@ -1117,14 +1121,22 @@ export function PreviewArea() {
               ⚠️ 沉浸态下整条工具栏不渲染，档位**保持当前值不改**：强行切全文会让
               「退出沉浸后档案变了」这个副作用出现，而退出本来只需 Ctrl+\ 或右上角按钮。 */}
           {canFoldHere && !editing && !isStreaming && (
-            <div className="flex items-center gap-0.5 bg-surface rounded-lg p-0.5">
+            // 滑块：三格**固定等宽**，白块跟着当前档位平移。等宽是它能滑的前提 ——
+            // 按文字宽度自适应时（「一句话」比「主题」宽），translateX 的百分比
+            // 对不准格子，白块会偏到两格交界处。宽度用 rem，跟随界面缩放。
+            <div className="relative flex items-center bg-surface rounded-lg p-0.5" role="group" aria-label="阅读档位">
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-y-0.5 left-0.5 rounded-md bg-elevated shadow-sm transition-transform duration-200 ease-out"
+                style={{ width: 'calc((100% - 4px) / 3)', transform: `translateX(${foldIndex * 100}%)` }}
+              />
               {FOLD_OPTIONS.map(o => (
                 <button key={o.key}
                   onClick={() => setFold(o.key)}
                   title={o.title}
                   aria-pressed={fold === o.key}
-                  className={`w-7 h-7 flex items-center justify-center rounded-md transition-all ${fold === o.key ? 'bg-elevated shadow-sm text-foreground' : 'text-dimmed hover:text-foreground'}`}
-                ><o.icon size={14} /></button>
+                  className={`relative z-10 flex w-[4.6rem] items-center justify-center gap-1 py-1 text-[11px] leading-none rounded-md transition-colors ${fold === o.key ? 'text-foreground font-medium' : 'text-dimmed hover:text-foreground'}`}
+                ><o.icon size={12} className="shrink-0" />{o.label}</button>
               ))}
             </div>
           )}
