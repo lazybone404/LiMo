@@ -78,6 +78,7 @@ minisign 验签 → 起 NSIS 安装器 → 重启。代码在 [src-tauri/src/upd
   旧产物的地址里是旧版本号，与抬高的 `version` 对不上；改回旧版本号则被「必须比当前新」
   拦下。
 - **`requireSignedVersion` 刻意没开**，不是漏了：它要求签名 trusted comment 里带
-  `version:`，而本机 CLI 2.11.4 签出来的是 `timestamp:…\tfile:…`（2026-11-08 实测），
-  开了等于每个更新都报 `MissingSignedVersion`。上一条的地址校验补上了它挡的那个降级路径。
+  `version:`，而本机 CLI 2.11.4 签出来的是 `timestamp:…\tfile:…`（`signer sign` 与
+  `tauri build` 产出的 `.sig` 都是这个形状，2026-11-08 实测），开了等于每个更新都报
+  `MissingSignedVersion`。上一条的地址校验补上了它挡的那个降级路径。
   哪天确认打包用的 CLI 会写 `version:`，再打开它。
