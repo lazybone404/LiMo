@@ -15,7 +15,10 @@
  *   一张卡」，零报错。
  * - **一句话**：`leadOf` 是主题卡、一句话档、字数统计三处**唯一**的实现。各写一份时
  *   显示的不是同一句，不报错。
- * - **值不值得折叠**：`isFoldWorthy`，产物侧口径（去标点 ≥ 3800）。
+ * - **能不能折叠**：`canFold`，判据只有一条 —— **有 H2**。
+ *   ⚠️ **刻意不看字数**：按字数分是**提示词侧**的判据（哪些注入按长文才加），
+ *   与「入口要不要出现」是两回事。短产物也有分节，折叠成几张卡扫一眼照样有用，
+ *   而且默认档位是全文，多一个按钮没有副作用。
  *
  * ## 一句话里不放 Markdown
  *
@@ -28,14 +31,6 @@
 import { FENCE_TOGGLE_RE, HEADING_RE, isBlockClose, isMarkerLine, matchBlockOpen, scanHeadingLines } from './markdown-scan'
 import { splitByH2 } from './markdown-sections'
 import { headingId, stripHeadingDecor } from './markdown-heading'
-
-/**
- * 折叠入口的长文阈值 —— **产物侧口径，去标点字数**。
- *
- * ⚠️ 不可换用转录侧的 3000：转录→产物的压比是 0.51 而不是 0.70（去标点后 Markdown 的
- * `**` `#` `-` `|` 全被剔掉，产物掉得比转录多），两个口径互换会让一批短文被误判成长文。
- */
-export const FOLD_MIN_CHARS = 3800
 
 /** 一句话太长就截断 —— 卡片上一行放不下三行字。 */
 const LEAD_MAX_CHARS = 120
@@ -51,6 +46,13 @@ export interface FoldSection {
   card: boolean
   /** 一句话（纯文本）。该节只有图片/表格/公式时为空串 —— 渲染层回落到只显示标题 */
   lead: string
+  /**
+   * `lead` 为空时充当那一行的一句话：说明这一节里是什么（`含表格与公式`）。
+   *
+   * ⚠️ 没有它，一节全是图表/图片/语义块时卡片上只剩一个标题 —— 看起来像渲染坏了，
+   * 而用户没有任何办法判断「值不值得点开」。它只描述**类型**，不复述内容。
+   */
+  hint: string
   /** 该节完整 Markdown（标题行 + 正文），展开时交给 `MarkerContent` */
   body: string
   /**
@@ -81,37 +83,20 @@ const THEMATIC_BREAK_RE = /^\s{0,3}([-*_])\s*(?:\1\s*){2,}$/
 /** CJK 判定 —— 只影响「多行段落拼回时补不补空格」 */
 const CJK_END_RE = /[　-鿿＀-￯]$/
 
-/** 按 `lines` 的字数（去标点、去空白、去 HTML 注释） */
-export function foldCharCount(md: string): number {
-  return md
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/[^\p{L}\p{N}]/gu, '')
-    .length
-}
-
 /**
- * 这篇产物值不值得折叠。
+ * 这篇产物能不能折叠：**有 H2**。
  *
- * ⚠️ 前置短路用的是**原始长度**：去标点字数必定 ≤ 原始长度，所以「原始长度都不够」
- * 就可以直接判 false，不必跑正则。流式期间每一帧都会调用它，省这一次是必要的。
- */
-export function isFoldWorthy(md: string | null | undefined): boolean {
-  if (!md) return false
-  if (md.length < FOLD_MIN_CHARS) return false
-  return foldCharCount(md) >= FOLD_MIN_CHARS
-}
-
-/**
- * 这篇产物能不能折叠：**够长**且**有 H2**。
+ * ⚠️ 只有这一条判据。一个 H2 都没有时，折叠档会把整篇塞进一张卡，工具栏上那个按钮
+ * 点下去看不出任何变化 —— 那是最难查的一类（按钮在、行为没有）。
+ * H2 判定复用 `scanHeadingLines`（围栏内与 `limo-block` 块内的 `##` 不算），不另写正则。
  *
- * ⚠️ 两个判据缺一不可。只有「够长」而一个 H2 都没有时，折叠档会把整篇塞进一张卡，
- * 工具栏上那个按钮点下去看不出任何变化 —— 那是最难查的一类（按钮在、行为没有）。
- * H2 判定复用 `scanHeadingLines`，不另写正则。
+ * ⚠️ **不按字数**。字数判据住在提示词侧（哪些注入只对长文加），与这里无关；
+ * 把两者混在一起会让「同样能分节的短文」没有入口，而界面上没有任何解释。
  */
 export function canFold(md: string | null | undefined): boolean {
-  if (!isFoldWorthy(md)) return false
-  // 生成器只走到第一个 H2 就停 —— 长文上这也是一次 O(n) 的行扫描，别再叠一次 find
-  return !scanHeadingLines(md!, 2, 2).next().done
+  if (!md) return false
+  // 生成器只走到第一个 H2 就停，不必扫完整篇
+  return !scanHeadingLines(md, 2, 2).next().done
 }
 
 /**
@@ -233,6 +218,30 @@ export function leadOf(body: string): string {
   return ''
 }
 
+/** 围栏（代码块）整段 —— 描述内容类型时先把围栏挖掉，免得把代码里的 `|` 当表格 */
+const FENCED_BLOCK_RE = /^[ \t]{0,3}```[\s\S]*?^[ \t]{0,3}```/gm
+/** 只判「有没有代码块」。⚠️ 不复用上面那个：它带 `/g`，`test` 会留 `lastIndex` 状态 */
+const FENCE_START_RE = /^[ \t]{0,3}```/m
+
+/**
+ * 抽不出一句话时，用「里面是什么」充当那一行。
+ *
+ * 只在 `leadOf` 返回空串时使用（整节是图片 / 表格 / 公式 / 代码 / 语义块）。
+ * 顺序即展示顺序，认不出任何类型时返回空串（那说明这一节真的只有标题）。
+ */
+export function contentHint(body: string): string {
+  const kinds: string[] = []
+  // 围栏内的 `|` / `$` 是代码内容，不是表格与公式 —— 先把围栏挖掉再看
+  const outsideFences = body.replace(FENCED_BLOCK_RE, '')
+  if (/!\[[^\]]*\]\([^)]*\)/.test(outsideFences)) kinds.push('图片')
+  if (/^[ \t]*\|.+\|[ \t]*$/m.test(outsideFences)) kinds.push('表格')
+  if (/\$\$/.test(outsideFences)) kinds.push('公式')
+  if (FENCE_START_RE.test(body)) kinds.push('代码')
+  if (/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\S/m.test(outsideFences)) kinds.push('列表')
+  if (/<!--[ \t]*limo-block:v\d+/.test(body)) kinds.push('要点块')
+  return kinds.length ? `含${kinds.join('、')}` : ''
+}
+
 /**
  * 展开有没有意义。
  *
@@ -283,12 +292,14 @@ export function foldSections(md: string | null | undefined): FoldSplit {
     const base = id || `h2-${i}`
     const n = (seen.get(base) ?? 0) + 1
     seen.set(base, n)
+    const lead = leadOf(s.body)
     return {
       key: n === 1 ? base : `${base}-${n}`,
       heading: text,
       headingId: id,
       card: s.card,
-      lead: leadOf(s.body),
+      lead,
+      hint: lead ? '' : contentHint(s.body),
       // 展开时把**原始标题行**拼回去（含 `##`），交给 `MarkerContent` 后仍是那条 `<h2>`
       body: `${s.heading}\n${s.body}`,
       hasBody: s.body.trim() !== '',
@@ -297,12 +308,14 @@ export function foldSections(md: string | null | undefined): FoldSplit {
   })
 
   const pre = preamble.trim()
+  const preLead = pre ? leadOf(pre) : ''
   return {
     // 引言没有标题：`heading` 为空串，渲染层只画正文的一句话
     preamble: pre
       ? {
           key: 'pre', heading: '', headingId: '', card: false,
-          lead: leadOf(pre), body: pre, hasBody: true, expandable: isExpandable(pre),
+          lead: preLead, hint: preLead ? '' : contentHint(pre),
+          body: pre, hasBody: true, expandable: isExpandable(pre),
         }
       : null,
     sections: out,

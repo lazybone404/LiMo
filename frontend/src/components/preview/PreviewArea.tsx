@@ -769,12 +769,14 @@ export function PreviewArea() {
   /**
    * 折叠阅读：**用户选了什么 ≠ 现在生效什么**。
    *
-   * 四道回落，缺一条就是「按钮在、行为没有」或「打开一篇短文只剩几张空卡」：
+   * 四道回落，缺一条就是「按钮在、行为没有」：
    *   1. 只有 notes / polished 两个 tab 支持（`showVersionSwitcher` 是它们的标记）；
-   *   2. 短文不折叠（`canFold`：去标点 ≥ 3800 **且** 有 H2）——档位是持久化的，
-   *      昨天在长文里选的主题，今天打开一篇两千字的产物必须自动回到全文；
+   *   2. 没有 H2 不折叠（`canFold`）—— 切不出节，按钮点下去看不出任何变化；
    *   3. 流式生成中不折叠 —— 内容每帧变化，重扫昂贵，且半截 Markdown 切出来的节会抖；
    *   4. 编辑态不折叠 —— 用户在改正文，折叠视图像素级地妨碍对照。
+   *
+   * ⚠️ **不按字数回落**。字数判据住在提示词侧（哪些注入只对长文加），与入口无关；
+   * 混在一起会让能分节的短文没有按钮，而界面上没有任何解释。
    */
   const canFoldHere = !!activeTabDef?.showVersionSwitcher && canFold(displayContent)
   const foldActive: FoldLevel = (!canFoldHere || isStreaming || editingThisMode) ? 'full' : fold
@@ -1110,7 +1112,7 @@ export function PreviewArea() {
           )}
           {/* 折叠阅读三档 —— 只对 notes / polished 的**只读态**出现，与版本切换器同一条
               纪律（编辑中隐藏：折叠视图像素级地妨碍对照正文）。
-              ⚠️ 短文 / 流式中 / 非产物 tab **整块不渲染**（不是禁用）：`canFoldHere` 就是
+              ⚠️ 没有 H2 / 流式中 / 非产物 tab **整块不渲染**（不是禁用）：`canFoldHere` 就是
               分派用的同一个判据，两处必须同源 —— 否则会出现「按钮能点、点了渲染没变」。
               ⚠️ 沉浸态下整条工具栏不渲染，档位**保持当前值不改**：强行切全文会让
               「退出沉浸后档案变了」这个副作用出现，而退出本来只需 Ctrl+\ 或右上角按钮。 */}

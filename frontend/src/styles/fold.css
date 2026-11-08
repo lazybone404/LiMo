@@ -48,16 +48,23 @@
 }
 
 /* 只有标题的节：整行一条分隔条。
-   给它一个格子的话，网格里会出现一张只有标题的空卡 —— 读起来像渲染坏了。 */
+   给它一个格子的话，网格里会出现一张只有标题的空卡 —— 读起来像渲染坏了。
+   虚线把它与「一段内容」区分开：它是一条分隔，不是一个可读的单元。 */
 .fold-root .fold-grid .md-card.fold-hollow {
   grid-column: 1 / -1;
-  padding: 0.55em 1.1em;
+  padding: 0.5em 1.1em;
+  border-style: dashed;
 }
 
 .fold-root .fold-grid .md-card.fold-hollow .fold-title {
   margin: 0;
   font-size: 1em;
   color: var(--tk-dimmed);
+}
+
+.fold-root .fold-grid .md-card.fold-hollow .fold-title::before {
+  background: var(--tk-border);
+  opacity: 1;
 }
 
 /* ── 一句话档：每节一行 ── */
@@ -108,13 +115,22 @@
 /* 未展开的可点提示 —— 纯装饰，不参与交互（section 自己已经是 role=button） */
 .fold-hint {
   flex-shrink: 0;
-  margin-top: 0.25em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7em;
+  height: 1.7em;
+  margin-top: 0.1em;
+  border-radius: 999px;
+  background: var(--tk-hover);
   color: var(--tk-dimmed);
-  transition: color 150ms ease-out;
+  transition: background-color 150ms ease-out, color 150ms ease-out;
 }
 
+/* 用 mix 而不是 `transparent`：后者在 color-mix 里是透明黑，混出来发灰 */
 .fold-root .md-card[data-openable='true']:hover .fold-hint,
 .fold-row[data-openable='true']:hover .fold-hint {
+  background: color-mix(in srgb, var(--tk-accent) 14%, var(--tk-surface));
   color: var(--tk-accent);
 }
 
@@ -128,7 +144,9 @@
 /* ── 两档共用的标题与一句话 ── */
 
 .fold-title {
+  position: relative;
   margin: 0 0 0.45em;
+  padding-left: 0.7em;
   font-size: 1.15em;
   font-weight: 600;
   line-height: 1.45;
@@ -138,20 +156,49 @@
   scroll-margin-top: 24px;
 }
 
+/* 标题前的一小段强调竖条 —— 给卡片一个视觉起点，也把标题与一句话分开 */
+.fold-title::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.35em;
+  width: 0.22em;
+  height: 0.85em;
+  border-radius: 999px;
+  background: var(--tk-accent);
+  opacity: 0.6;
+}
+
 .fold-row .fold-title {
   margin-bottom: 0.25em;
 }
 
+/* 一句话：与标题文字左对齐（缩进值同 `.fold-title` 的 padding-left） */
 .fold-lead {
   margin: 0;
+  padding-left: 0.7em;
   font-size: 1em;
   line-height: 1.7;
   color: var(--tk-dimmed);
 }
 
-/* 展开后的正文：卡片里已经是正文流，只要把上边距拉开一点 */
+/* 只在主题档加左侧细线：一句话档每行都有一条会显得吵 */
+.fold-root[data-fold='topic'] .fold-lead {
+  padding-left: calc(0.7em - 2px);
+  border-left: 2px solid var(--tk-border-light);
+}
+
+/* 抽不出一句话时的内容类型说明（含表格 / 公式……）—— 比一句话再弱一档 */
+.fold-lead--kind {
+  font-size: 0.88em;
+  color: var(--tk-disabled);
+}
+
+/* 展开后的正文：与标题行之间加一道发丝线，读的时候分得清哪是标题哪是内容 */
 .fold-body {
   margin-top: 0.6em;
+  padding-top: 0.9em;
+  border-top: 1px solid var(--tk-border-light);
 }
 
 .fold-close {
@@ -159,7 +206,7 @@
   display: inline-flex;
   align-items: center;
   gap: 0.15em;
-  margin-top: 0.15em;
+  margin-top: 0.1em;
   padding: 0.15em 0.7em;
   font-size: 0.85em;
   line-height: 1.6;
@@ -168,10 +215,11 @@
   border-radius: 999px;
   background: transparent;
   cursor: pointer;
-  transition: color 150ms ease-out, border-color 150ms ease-out;
+  transition: color 150ms ease-out, border-color 150ms ease-out, background-color 150ms ease-out;
 }
 
 .fold-close:hover {
   color: var(--tk-accent);
   border-color: var(--tk-accent);
+  background: color-mix(in srgb, var(--tk-accent) 10%, var(--tk-surface));
 }

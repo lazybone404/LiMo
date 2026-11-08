@@ -131,7 +131,12 @@ export function FoldView({ variant, content, meta, sourceUrl, isVideo }: FoldVie
                     <MarkerContent content={sec.body} meta={meta} sourceUrl={sourceUrl} isVideo={isVideo} />
                   </div>
                 )
-                : sec.lead ? <p className="fold-lead">{sec.lead}</p> : null}
+                : sec.lead
+                  ? <p className="fold-lead">{sec.lead}</p>
+                  // 抽不出一句话（整节是图片/表格/公式）：说明里面是什么，
+                  // 否则卡片上只有一个标题，看起来像渲染坏了
+                  : sec.hint ? <p className="fold-lead fold-lead--kind">{sec.hint}</p>
+                  : null}
             </section>
           )
         })}

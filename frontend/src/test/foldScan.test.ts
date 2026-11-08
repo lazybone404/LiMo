@@ -16,10 +16,8 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  FOLD_MIN_CHARS,
-  foldCharCount,
+  canFold,
   foldSections,
-  isFoldWorthy,
   leadOf,
   stripInlineMd,
 } from '../lib/fold-scan'
@@ -122,6 +120,33 @@ describe('expandable：展开后会不会看到新东西', () => {
   })
 })
 
+describe('hint：抽不出一句话时说明里面是什么', () => {
+  const sec = (body: string) => foldSections(`## 甲\n${body}\n`).sections[0]
+
+  it('有可读句子时为空（不与一句话重复）', () => {
+    expect(sec('正文一句。').hint).toBe('')
+  })
+
+  it('整节是表格 / 图片 / 公式 / 代码时给出类型', () => {
+    expect(sec('| 甲 | 乙 |\n|---|---|\n| 1 | 2 |').hint).toBe('含表格')
+    expect(sec('![图](/a.png)').hint).toBe('含图片')
+    expect(sec('$$x^2$$').hint).toBe('含公式')
+    expect(sec('```py\nprint(1)\n```').hint).toBe('含代码')
+  })
+
+  it('多种并存时按固定顺序列出', () => {
+    expect(sec('![图](/a.png)\n\n| 甲 |\n|---|\n| 1 |').hint).toBe('含图片、表格')
+  })
+
+  it('代码块里的 `|` 不被当成表格', () => {
+    expect(sec('```\n| a | b |\n```').hint).toBe('含代码')
+  })
+
+  it('只有标题 → 没有 hint（那一档走整行分隔条）', () => {
+    expect(sec('').hint).toBe('')
+  })
+})
+
 describe('leadOf：一句话', () => {
   it('段落优先于列表', () => {
     expect(leadOf('正文一句。\n\n- 列表项\n')).toBe('正文一句。')
@@ -185,23 +210,22 @@ describe('stripInlineMd', () => {
   })
 })
 
-describe('isFoldWorthy：长文判据', () => {
-  it('去标点 3799 / 3800 / 3801 三侧', () => {
-    expect(foldCharCount('字'.repeat(3799))).toBe(3799)
-    expect(isFoldWorthy('字'.repeat(FOLD_MIN_CHARS - 1))).toBe(false)
-    expect(isFoldWorthy('字'.repeat(FOLD_MIN_CHARS))).toBe(true)
-    expect(isFoldWorthy('字'.repeat(FOLD_MIN_CHARS + 1))).toBe(true)
+describe('canFold：入口判据', () => {
+  it('有 H2 → 能折叠，与字数无关（两句话的产物照样有按钮）', () => {
+    expect(canFold('## 甲\n一句话。\n\n## 乙\n另一句。\n')).toBe(true)
+    expect(canFold(`## 标题\n${'字'.repeat(50)}`)).toBe(true)
   })
 
-  it('原始长度够、去标点不够 → 不算长文（标记与标点不计数）', () => {
-    const md = '字，'.repeat(FOLD_MIN_CHARS / 2)
-    expect(md.length).toBe(FOLD_MIN_CHARS)
-    expect(foldCharCount(md)).toBe(FOLD_MIN_CHARS / 2)
-    expect(isFoldWorthy(md)).toBe(false)
+  it('没有 H2 → 不能折叠（切不出节，按钮点了看不出变化）', () => {
+    expect(canFold('只有一段话。\n第二段。\n')).toBe(false)
+    // 围栏内的 `##` 不算标题
+    expect(canFold('```\n## 假标题\n```\n')).toBe(false)
+    // 块内的 `##` 也不算
+    expect(canFold(`${ALERT_OPEN}\n## 块里的\n${ALERT_CLOSE}\n`)).toBe(false)
   })
 
   it('null / 空串 → false', () => {
-    expect(isFoldWorthy(null)).toBe(false)
-    expect(isFoldWorthy('')).toBe(false)
+    expect(canFold(null)).toBe(false)
+    expect(canFold('')).toBe(false)
   })
 })

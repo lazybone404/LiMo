@@ -111,6 +111,14 @@ describe('FoldView：主题档', () => {
     expect(container.querySelectorAll('.fold-close').length).toBe(0)
   })
 
+  it('整节只有表格时，卡片上写着里面是什么（不是只剩标题）', () => {
+    const { container } = render(
+      <FoldView variant="topic" content={`## 甲\n| 列 | 值 |\n|---|---|\n| a | 1 |\n`} meta={META} />,
+    )
+    expect(container.textContent).toContain('含表格')
+    expect(container.querySelectorAll('.fold-lead--kind').length).toBe(1)
+  })
+
   it('无 H2 → 回落整篇（不渲染一片空白）', () => {
     const { container } = render(
       <FoldView variant="topic" content={'只有一段话。\n第二段。\n'} meta={META} />,
