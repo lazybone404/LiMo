@@ -1094,13 +1094,13 @@ export function PreviewArea() {
           ⚠️ 它不在插槽系统里（`hideSlots` 管不到），必须显式控制。
           ⚠️ TOC **刻意保留** —— 它是阅读导航（长文跳章），与「操作噪音」性质不同，
           且本就能折叠成 28px 竖条，空间成本由用户自己控制。隐藏它 = 功能损失而非去噪。 */}
-      {!immersive && <div className="flex items-center justify-between px-6 py-2.5 border-b border-border-light shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1 bg-surface rounded-lg p-0.5">
+      {!immersive && <div className="flex items-center justify-between px-4 py-1 border-b border-border-light shrink-0">
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-1 bg-surface rounded-md p-0.5">
             {tabs.map(t => (
               <button key={t.key}
                 onClick={() => handleTabSwitch(t.key)}
-                className={`px-3 py-1.5 rounded-md text-[12px] transition-all ${activeView === t.key ? 'bg-elevated font-medium shadow-sm' : 'text-dimmed hover:text-foreground'}`}
+                className={`px-2.5 py-1 rounded text-[12px] transition-all ${activeView === t.key ? 'bg-elevated font-medium shadow-sm' : 'text-dimmed hover:text-foreground'}`}
               >{t.label}</button>
             ))}
           </div>
@@ -1151,10 +1151,10 @@ export function PreviewArea() {
           {/* 阅读宽度切换 */}
           <button
             onClick={cycleContentWidth}
-            className="w-7 h-7 flex items-center justify-center text-dimmed hover:bg-surface-hover rounded-lg transition-colors"
+            className="w-6 h-6 flex items-center justify-center text-dimmed hover:bg-surface-hover rounded-md transition-colors"
             title={`阅读宽度：${WIDTH_RATIO[contentWidth].label}（Ctrl+W）`}
           >
-            {contentWidth === 'narrow' ? <AlignCenter size={15} /> : contentWidth === 'wide' ? <Maximize2 size={15} /> : <Columns size={15} />}
+            {contentWidth === 'narrow' ? <AlignCenter size={14} /> : contentWidth === 'wide' ? <Maximize2 size={14} /> : <Columns size={14} />}
           </button>
           {/* ⚠️ 2026-10-20 移除了工具栏上的「章节卡片」一键开关（用户要求）：
               骨架只在 summary / polished 的非 Excel 路径生效，摆在正文工具栏上就是
@@ -1169,10 +1169,10 @@ export function PreviewArea() {
               （设置页里有同一个开关，见 SettingsPage 的「阅读与产物」区）。 */}
           <button
             onClick={() => setMarker({ decor: !markerDecor })}
-            className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors ${markerDecor ? 'text-dimmed hover:bg-surface-hover' : 'bg-accent/10 text-accent'}`}
+            className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors ${markerDecor ? 'text-dimmed hover:bg-surface-hover' : 'bg-accent/10 text-accent'}`}
             title={markerDecor ? '内容块装饰：显示中（点击隐藏装饰）' : '内容块装饰：已隐藏（点击显示）'}
           >
-            <Highlighter size={15} />
+            <Highlighter size={14} />
           </button>
           {/* 沉浸阅读 —— 与 Ctrl+\ 共用同一个 `toggleImmersive`（**无守卫**：卸载 GenPanel
               不会中断任务，依据见 uiSlice.ts 里 immersive 那段注释）。
@@ -1181,14 +1181,14 @@ export function PreviewArea() {
               在 store 上收口于同一对 action。 */}
           <button
             onClick={toggleImmersive}
-            className="w-7 h-7 flex items-center justify-center text-dimmed hover:bg-surface-hover rounded-lg transition-colors"
+            className="w-6 h-6 flex items-center justify-center text-dimmed hover:bg-surface-hover rounded-md transition-colors"
             title="沉浸阅读（Ctrl+\）"
           >
-            <Expand size={15} />
+            <Expand size={14} />
           </button>
           <button
             onClick={() => setShowLogs(!showLogs)}
-            className={`px-3 py-1.5 text-[12px] rounded-full transition-colors ${showLogs ? 'bg-accent/10 text-accent' : 'text-dimmed hover:bg-surface-hover'}`}
+            className={`px-2.5 py-1 text-[12px] rounded-full transition-colors ${showLogs ? 'bg-accent/10 text-accent' : 'text-dimmed hover:bg-surface-hover'}`}
             title="系统日志与性能"
           ><Terminal size={14} /></button>
         </div>

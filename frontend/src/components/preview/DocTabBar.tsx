@@ -64,7 +64,7 @@ export function DocTabBar() {
     <>
       <div
         data-doc-tab-bar
-        className="flex items-stretch gap-0.5 px-2 pt-1.5 border-b border-border-light shrink-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex items-stretch gap-0.5 px-2 pt-1 border-b border-border-light shrink-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {docTabs.map(t => {
           const doc = docById.get(t.docId)
@@ -96,8 +96,8 @@ export function DocTabBar() {
               }}
               onContextMenu={e => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, docId: t.docId }) }}
               className={[
-                'group/tab relative flex items-center gap-1.5 px-3 h-8 rounded-t-md',
-                'text-[12px] max-w-[200px] min-w-[90px] cursor-pointer select-none transition-colors',
+                'group/tab relative flex items-center gap-1.5 px-2.5 h-7 rounded-t-md',
+                'text-[12px] max-w-[200px] min-w-[84px] cursor-pointer select-none transition-colors',
                 active
                   ? 'bg-elevated text-foreground shadow-sm'
                   : 'text-dimmed hover:bg-surface-hover hover:text-foreground',

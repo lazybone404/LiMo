@@ -25,8 +25,8 @@
  * ⚠️ 本模块**零依赖**（不 import react / 组件 / store），任何一侧都可安全 import。
  */
 
-/** 面板展开时的默认宽度 px */
-export const PANEL_DEFAULT_WIDTH = 260
+/** 面板展开时的默认宽度 px（2026-11-08 从 260 收到 240，与顶栏 / 工具栏收窄同一轮） */
+export const PANEL_DEFAULT_WIDTH = 240
 
 /** 最小宽度 px（小于 80 由 `uiSlice.setSlot` 自动标记折叠） */
 export const PANEL_MIN_WIDTH = 50

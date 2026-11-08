@@ -38,7 +38,7 @@ export function ActivityBar({ onOpenSettings }: Props) {
   return (
     <nav
       aria-label="活动栏"
-      className="flex flex-col items-center shrink-0 w-12 bg-surface border-r border-border-light"
+      className="flex flex-col items-center shrink-0 w-10 bg-surface border-r border-border-light"
     >
       <div className="flex flex-col items-center gap-0.5 py-1.5">
         {leftDefs.map(def => {
@@ -91,7 +91,7 @@ function ActivityItem({ id, icon: Icon, label, active, onClick }: {
       aria-label={label}
       aria-pressed={active}
       onClick={onClick}
-      className={`relative flex items-center justify-center w-12 h-11 transition-colors ${
+      className={`relative flex items-center justify-center w-10 h-10 transition-colors ${
         active ? 'text-accent' : 'text-muted hover:text-foreground hover:bg-surface-hover'
       }`}
     >
@@ -101,7 +101,7 @@ function ActivityItem({ id, icon: Icon, label, active, onClick }: {
           className="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-[2px] rounded-r bg-accent"
         />
       )}
-      <Icon size={19} />
+      <Icon size={18} />
     </button>
   )
 }

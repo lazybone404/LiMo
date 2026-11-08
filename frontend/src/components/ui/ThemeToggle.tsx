@@ -30,14 +30,14 @@ export function ThemeToggle() {
             onClick={() => setTheme(mode)}
             aria-label={label}
             aria-pressed={theme === mode}
-            className={`w-7 h-7 flex items-center justify-center rounded-md transition-all ${
+            className={`w-6 h-6 flex items-center justify-center rounded-md transition-all ${
               theme === mode
                 ? 'bg-elevated shadow-sm text-foreground'
                 : 'text-muted hover:text-dimmed hover:bg-surface-hover'
             }`}
             title={label}
           >
-            <Icon size={13} />
+            <Icon size={12} />
           </button>
         )
       })}

@@ -196,7 +196,7 @@ export function TaskPanelToggle() {
       className="relative p-1.5 rounded-lg hover:bg-surface-hover text-muted hover:text-dimmed transition-colors"
       title={`任务 (${count})`}
     >
-      <ListTodo size={15} />
+      <ListTodo size={14} />
       {count > 0 && (
         <span className="absolute -top-1 -right-1 flex items-center justify-center w-4 h-4 text-[9px] font-bold text-on-accent bg-accent rounded-full shadow-sm shadow-accent/20">
           {count > 9 ? '9+' : count}

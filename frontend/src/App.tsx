@@ -350,19 +350,19 @@ export default function App() {
         }} />
       )}
       {/* 顶部栏（沉浸下不渲染 —— 它不在插槽系统里，`hideSlots` 管不到，必须显式控制） */}
-      {!immersive && <header className="glass border-b border-border-light h-12 flex items-center px-4 shrink-0 z-10">
-        <div className="flex items-center gap-2.5">
-          <img src={LOGO_SRC} className="w-7 h-7 rounded-lg object-cover" alt="LiMo" />
-          <span className="font-semibold text-[15px]">LiMo</span>
+      {!immersive && <header className="glass border-b border-border-light h-10 flex items-center px-3 shrink-0 z-10">
+        <div className="flex items-center gap-2">
+          <img src={LOGO_SRC} className="w-6 h-6 rounded-md object-cover" alt="LiMo" />
+          <span className="font-semibold text-[14px]">LiMo</span>
         </div>
         {/* 顶栏只留「全局工具」。面板入口（生成 / 文档库 / AI / 设置）已全部收进左侧
             活动栏 —— 刻意**不在顶栏保留第二套按钮**：两处各写一遍必然漂移（一处忘了
             互斥、一处忘了宽度复位），而今天这份漂移是用户能直接看见的（两个面板同开）。 */}
         <div className="flex items-center gap-0.5 ml-6">
           <TaskPanelToggle />
-          <div className="w-px h-5 bg-border-default" />
+          <div className="w-px h-4 bg-border-default" />
           <ThemeToggle />
-          <button onClick={() => setShowExport(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-surface-hover text-muted hover:text-dimmed transition-colors" title="批量导出 · 侧边面板"><Archive size={15} /><span className="text-[12px]">导出</span></button>
+          <button onClick={() => setShowExport(true)} className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-surface-hover text-muted hover:text-dimmed transition-colors" title="批量导出 · 侧边面板"><Archive size={14} /><span className="text-[12px]">导出</span></button>
         </div>
         <SearchBar />
         <div className="flex-1" />

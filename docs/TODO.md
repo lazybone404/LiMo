@@ -35,22 +35,3 @@ Tauri updater 插件承担全部下载 / 验签 / 替换 / 重启。
 
 与「打包 ≠ 发布」不冲突：自动更新是客户端行为，没发布过新版本就什么都不会发生。
 
-### 2. 预览区上方三条栏收窄
-
-顶栏 `h-12`、文档标签栏标签 `h-8`、预览区工具栏 `py-2.5`（分别在 `App.tsx`、
-`components/preview/DocTabBar.tsx`、`components/preview/PreviewArea.tsx`），合计约 136px，
-压到约 106px，图标同步缩小一档。理由是这些入口的重要性低于正文，视线应落在预览内容上。
-
-落地时确认两件事：按钮热区不小于 24×24；窄窗口下标签栏仍能横向滚动。
-
-### 3. 分层依赖守卫
-
-写一条 AST 测试：遍历 `backend/app/` 下每个 `.py`，断言 `services/` 不出现 `fastapi`
-import、`storage/` 不出现 `app.routers` / `app.services` import。**只做这一条**，约十行。
-
-反方向（`storage` import `routers`、`adapters` 互相 import）破坏时 Python 会循环 import
-当场崩，是响亮失败，不需要守卫。⚠️ 今天这两条约束零自动检查，破坏形态是「加个
-`from fastapi import Request` 做类型注解，测试全绿」，几周后才在「import `QueryService`
-而不装 FastAPI」时暴露，报出来的是 `ModuleNotFoundError`，原因隔了几十个提交。
-
-
