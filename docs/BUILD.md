@@ -69,7 +69,10 @@ npx tauri build
 ### 发版构建
 
 ```bash
-export TAURI_SIGNING_PRIVATE_KEY="C:/WorkPlace/Tool/LiMo/.release-keys/limo-updater.key"
+# ⚠️ `TAURI_SIGNING_PRIVATE_KEY` 要的是**密钥内容**，不是路径。
+# 写成路径时 CLI 2.11.4 会拿它当 base64 解，报
+# `failed to decode base64 secret key: Invalid symbol 58, offset 1`（偏移 1 是 `C:` 的冒号）。
+export TAURI_SIGNING_PRIVATE_KEY="$(cat C:/WorkPlace/Tool/LiMo/.release-keys/limo-updater.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat C:/WorkPlace/Tool/LiMo/.release-keys/password.txt)"
 
 cd frontend
