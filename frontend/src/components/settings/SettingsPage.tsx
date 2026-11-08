@@ -4,7 +4,7 @@ import { useStore } from '../../store'
 import { ACCENT_GROUPS } from '../../lib/accent'
 import { TEXTURE_OPTIONS, FONT_OPTIONS, getSavedIntensity, applyIntensity, saveIntensity } from '../../lib/texture'
 import { BASE_OPTIONS } from '../../lib/theme-base'
-import { PARA_STYLE_OPTIONS, LINE_HEIGHT_RANGE, MEASURE_RANGE, MEASURE_DEFAULT_ON, FONT_SCALE_RANGE, READING_DEFAULTS } from '../../lib/reading-prefs'
+import { PARA_STYLE_OPTIONS, LINE_HEIGHT_RANGE, MEASURE_RANGE, MEASURE_DEFAULT_ON, FONT_SCALE_RANGE, READING_DEFAULTS, READING_PRESETS, matchReadingPreset } from '../../lib/reading-prefs'
 import { SKELETON_OPTIONS, CARD_STYLE_OPTIONS, CARD_BG_OPTIONS, CARD_BORDER_OPTIONS, isLiftDisabled } from '../../lib/card-prefs'
 import { LAYOUT_OPTIONS } from '../../lib/layout-prefs'
 import { useChatPrefs, saveChatPrefs, ANSWER_MODE_OPTIONS } from '../../lib/chat-prefs'
@@ -654,6 +654,40 @@ export function SettingsPage({ onBack, initialTab = 'model' }: {
                   <p className="text-[12px] text-muted mb-4">
                     调整 Markdown 预览区的正文排版。默认与改造前一致，按需微调即可
                   </p>
+
+                  {/* 快速预设 —— 一次设好下面三个旋钮。当前值三项全等于某一组时，
+                      那一组显示为选中；否则标题右侧标「自定义」。选中态是算出来的，
+                      不存标记位（见 lib/reading-prefs.ts 的 READING_PRESETS）。
+                      ⚠️ 预设**不含字号**：字号取决于屏幕与视力，不由预设替你决定。 */}
+                  <div className="mb-5">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[13px] font-medium">快速预设</span>
+                      {matchReadingPreset(reading) === null && (
+                        <span className="text-[11px] text-disabled">自定义</span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {READING_PRESETS.map(p => {
+                        const selected = matchReadingPreset(reading) === p.key
+                        return (
+                          <button
+                            key={p.key}
+                            onClick={() => setReading(p.layout)}
+                            className={`text-left px-2.5 py-2 rounded-lg border transition-colors ${
+                              selected
+                                ? 'bg-accent/10 border-accent/30'
+                                : 'border-border-light hover:bg-surface-hover'
+                            }`}
+                          >
+                            <span className={`block text-[13px] ${selected ? 'text-accent font-medium' : 'text-dimmed'}`}>
+                              {p.label}
+                            </span>
+                            <span className="block text-[10px] text-disabled mt-0.5 leading-snug">{p.hint}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
 
                   {/* 段落区隔 —— clreq：首行缩进与加大段距是两套并行传统，不建议混用，
                       故是二选一的单选，而不是两个可自由组合的旋钮 */}

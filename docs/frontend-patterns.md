@@ -303,7 +303,7 @@ export function appUrl(path: string): string {
 | `mbw_llm_hint_dismissed` | chatStore | 缺 LLM key 首提 toast 已关闭 |
 | `mbw_dashscope_hint_dismissed` | ImportSection | 缺 dashscope 内联提示条已关闭 |
 | `mbw_docLibPrefs` | doc-library/docLibraryPrefs.ts | 文档库偏好（密度/排列/排序/折叠小节/筛选区高度） |
-| `mbw_reading` | lib/reading-prefs.ts | 沉浸阅读版式（行高 / 每行字数 / 段落区隔 / **正文字号缩放 fontScale**） |
+| `mbw_reading` | lib/reading-prefs.ts | 沉浸阅读版式（行高 / 每行字数 / 段落区隔 / **正文字号缩放 fontScale**）。⚠️ 三组快速预设（`READING_PRESETS`）**不另存 key**，选中态由 `matchReadingPreset(reading)` 比较三项值得出 |
 
 **规则**：lib 层的持久化在 slice 的 setter 中调用（如 `setTheme` → `saveTheme` → `applyTheme` → `set`）；action 内的 localStorage 读写需 try/catch（quota）。LLM 设置、provider、引擎配置都在后端 `~/.limo/config.yaml`，不由前端持久化。
 

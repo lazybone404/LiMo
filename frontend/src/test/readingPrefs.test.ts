@@ -27,6 +27,8 @@ import {
   CONTENT_WIDTH_RATIO,
   READING_BASE_FONT_PX,
   PARA_STYLE_OPTIONS,
+  READING_PRESETS,
+  matchReadingPreset,
   computeContentMaxW,
   nextFontScale,
   measurePxOf,
@@ -267,5 +269,51 @@ describe('measurePxOf — 版宽上限与字号同源', () => {
     // 1.0 档 640 < 1040 → 受度量限；0.8 档 512 → 更窄
     expect(computeContentMaxW(1200, 0.90, measurePxOf(40, 1.0)!)).toBe(640)
     expect(computeContentMaxW(1200, 0.90, measurePxOf(40, 0.8)!)).toBe(512)
+  })
+})
+
+// ── 版式预设包 ────────────────────────────────────────────────
+
+describe('阅读版式预设包', () => {
+  it('「随应用」三字段逐值等于 READING_DEFAULTS —— 选了它 = 什么都没调', () => {
+    // 对照：预设里另写一份 { 1.5, null, 'web' } 字面量 → 将来默认值一改，
+    // 这组就叫「随应用」却与默认不一致，且没有任何判据会发现
+    const app = READING_PRESETS.find(p => p.key === 'app')
+    expect(app).toBeDefined()
+    expect(app!.layout).toEqual({
+      lineHeight: READING_DEFAULTS.lineHeight,
+      measure: READING_DEFAULTS.measure,
+      paraStyle: READING_DEFAULTS.paraStyle,
+    })
+  })
+
+  it('每组的值都落在对应旋钮的合法档位上', () => {
+    // 对照：把「书页」的 measure 写成 12 或把行高写成 1.9 —— 渲染不会报错，
+    // 但滑条钳在边界上，界面显示的值与预设声称的不是一回事
+    for (const p of READING_PRESETS) {
+      expect(PARA_STYLE_OPTIONS.some(o => o.key === p.layout.paraStyle)).toBe(true)
+      const lh = p.layout.lineHeight
+      expect(lh).toBeGreaterThanOrEqual(LINE_HEIGHT_RANGE.min)
+      expect(lh).toBeLessThanOrEqual(LINE_HEIGHT_RANGE.max)
+      const lhKicks = (lh - LINE_HEIGHT_RANGE.min) / LINE_HEIGHT_RANGE.step
+      expect(Math.abs(lhKicks - Math.round(lhKicks))).toBeLessThan(1e-9)
+      if (p.layout.measure !== null) {
+        expect(p.layout.measure).toBeGreaterThanOrEqual(MEASURE_RANGE.min)
+        expect(p.layout.measure).toBeLessThanOrEqual(MEASURE_RANGE.max)
+        expect(p.layout.measure % MEASURE_RANGE.step).toBe(0)
+      }
+    }
+  })
+
+  it('key 唯一（界面按 key 判选中）', () => {
+    const keys = READING_PRESETS.map(p => p.key)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  it('matchReadingPreset：各自命中自己，任一手调一项后返回 null（显示「自定义」）', () => {
+    for (const p of READING_PRESETS) expect(matchReadingPreset(p.layout)).toBe(p.key)
+    // 对照：实现里漏比 paraStyle → 只改段落区隔仍显示「书页」选中 → 红
+    expect(matchReadingPreset({ lineHeight: 1.8, measure: 34, paraStyle: 'web' })).toBe(null)
+    expect(matchReadingPreset({ ...READING_DEFAULTS, lineHeight: 1.65 })).toBe(null)
   })
 })

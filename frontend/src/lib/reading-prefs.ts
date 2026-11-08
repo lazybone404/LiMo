@@ -105,6 +105,77 @@ export const PARA_STYLE_OPTIONS: { key: ParaStyle; label: string; hint: string }
   { key: 'book', label: '书籍式', hint: '首行缩进 2 字 + 段距 ≈ 行距。中文出版物传统，最像纸书' },
 ]
 
+/** 版式三旋钮的取值。预设只覆盖这三项 —— 字号不在内（理由见 `READING_PRESETS`）。 */
+export type ReadingLayout = Pick<ReadingPrefs, 'lineHeight' | 'measure' | 'paraStyle'>
+
+export interface ReadingPreset {
+  key: string
+  label: string
+  /** 卡片上的一行说明。短，三列布局下放得下 */
+  hint: string
+  layout: ReadingLayout
+}
+
+/**
+ * 阅读版式预设包 —— 一次把「行高 / 每行字数 / 段落区隔」三旋钮设成一组。
+ *
+ * 与「一键主题包」同族（都是「一次设好一组值」），但**刻意分开两处**：
+ * 主题包换的是观感轴（底色 / 配色 / 纹理 / 字体），版式包换的是「一行放多少字、
+ * 行距多松」。后者关乎阅读生理，换主题包不该把它连带重置（见文件头那段注释）。
+ *
+ * ⚠️ 三项里**刻意不含 `fontScale`**：字号是「看得清不清」的问题，取决于屏幕尺寸
+ * 与视力，任何预设替你决定它都是越界。选完预设仍可单独调字号。
+ *
+ * ⚠️ 「随应用」直接取 `READING_DEFAULTS` 的三个字段，**不写第二份字面量** ——
+ * 它必须与「什么都没调」逐值相同，而两处各写一份的话，改了默认值就会得到一个
+ * 与默认不一致、却叫「随应用」的预设（静默漂移）。
+ *
+ * ⚠️ 选中态**不存在这里**，也不进 localStorage：由 `matchReadingPreset` 拿当前值
+ * 比较得出。存「当前是哪个预设」的标记位，会在用户手调任一旋钮后留下过期选中态。
+ */
+export const READING_PRESETS: ReadingPreset[] = [
+  {
+    key: 'app',
+    label: '随应用',
+    hint: '不缩进 · 跟随面板',
+    layout: {
+      lineHeight: READING_DEFAULTS.lineHeight,
+      measure: READING_DEFAULTS.measure,
+      paraStyle: READING_DEFAULTS.paraStyle,
+    },
+  },
+  {
+    key: 'book',
+    label: '书页',
+    hint: '缩进 · 每行 34 字',
+    // 行高 1.8 是 clreq 建议区间的上端（长文用宽行距更耐读），34 字落在
+    // 「每行 30-40 中文字」的建议区间内，段距由首行缩进承担（两套传统不混用）
+    layout: { lineHeight: 1.8, measure: 34, paraStyle: 'book' },
+  },
+  {
+    key: 'compact',
+    label: '紧凑',
+    hint: '窄行距 · 更密',
+    // 屏幕信息密度优先：行高压到区间下限，不设字数上限（跟随面板宽度），不缩进
+    layout: { lineHeight: 1.4, measure: null, paraStyle: 'web' },
+  },
+]
+
+/**
+ * 当前值命中哪一组预设；三项全部相等才算命中，否则返回 `null`（界面显示「自定义」）。
+ *
+ * ⚠️ 用**全等**而不是「接近」：手调后行高恰好停在同一档（滑条 step 0.05）就该
+ * 认成那一组 —— 这是用户看到的值确实相同，不是浮点巧合（值都经过
+ * `Math.round(...*100)/100` 或滑条 step 归一）。
+ */
+export function matchReadingPreset(p: ReadingLayout): string | null {
+  const hit = READING_PRESETS.find(x =>
+    x.layout.lineHeight === p.lineHeight
+    && x.layout.measure === p.measure
+    && x.layout.paraStyle === p.paraStyle)
+  return hit ? hit.key : null
+}
+
 const READING_KEY = 'mbw_reading'
 
 function clamp(v: number, min: number, max: number): number {
