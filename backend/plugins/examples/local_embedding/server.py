@@ -18,8 +18,11 @@
 
 1. **每行立刻 flush**。主进程是按行阻塞等待的，留在缓冲区里的一行等于没发。
    `command` 里的 `-u` 是第二层保险（双保险不冗余：用户手动跑时不会带 `-u`）。
-2. **stdout 只写协议行**，日志一律走 stderr。混进半行日志会让 JSON 解析失败，
-   而主进程对解析失败的处理是**杀掉这个进程** —— 现象是每次搜索都重新加载模型。
+2. **stdout 只写协议行**，日志一律走 stderr。`main()` 已经把 `sys.stdout` 换到
+   stderr、协议走私有句柄 `_proto`，所以本文件里的 `print()` 不会打坏协议；但
+   `sys.stdout` 被别处改回去、或直接写 `os.fdopen(1)` 时仍会污染。加载器会跳过
+   零星的脏行；连续超过 `MAX_NOISE_LINES = 20` 行即判定「stdout 不是协议通道」并
+   **杀掉这个进程** —— 现象是每次搜索都重新加载模型。
 3. **一个请求一个响应，顺序不能变**。主进程按 `id` 校验，错位即丢弃进程。
    所以这里是单线程顺序循环：**不要**为了吞吐改成线程池（并发写 stdout 会交错）。
 
@@ -49,6 +52,11 @@ MAX_TOKENS = 512
 BATCH = 32
 
 
+#: 协议通道。**必须在导入时占住**：`main()` 会把 `sys.stdout` 改成 stderr
+#: （见那里的说明），协议行只认这一个句柄。
+_proto = sys.stdout
+
+
 def log(msg: str) -> None:
     """诊断一律 stderr —— stdout 是协议通道，一个字都不能掺。"""
     print(msg, file=sys.stderr, flush=True)
@@ -56,8 +64,8 @@ def log(msg: str) -> None:
 
 def emit(obj: dict) -> None:
     """写一行协议消息。**必须 flush**（见模块文档第 1 条）。"""
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    _proto.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    _proto.flush()
 
 
 def load_embedder(model_dir: Path, onnx_name: str):
@@ -114,8 +122,14 @@ def main() -> int:
     # 成功，编码出来的是乱码文本的向量，检索质量下降而零报错。三个流一个都不能少。
     # 主进程也设了 `PYTHONUTF8=1`，这里是纵深防御（不依赖启动方式）。
     sys.stdin.reconfigure(encoding="utf-8")
-    sys.stdout.reconfigure(encoding="utf-8")
+    _proto.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
+    # ⚠️ **把 stdout 从协议通道上摘下来**：本文件之后的 `print()`，以及 import 的
+    # 库里任何一句 `print()`，默认都写 stdout —— 而 stdout 正是主进程按行读协议的
+    # 地方。加载器会跳过零星脏行（`plugin_loader.MAX_NOISE_LINES`），但连续超过 20
+    # 行就判定「stdout 不是协议通道」并杀掉进程，用户看到的现象是「插件装了但一次
+    # 都用不了」。改成：协议走 `_proto`，其余 stdout 一律进 stderr（日志仍然可达）。
+    sys.stdout = sys.stderr
 
     # 配置由主进程经环境变量传入（设置页表单 → `plugin_config` → `LIMO_PLUGIN_CONFIG`）。
     cfg: dict = {}

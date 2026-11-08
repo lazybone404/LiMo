@@ -572,6 +572,25 @@ EMBED_IDLE_RELEASE = 600.0
 #: 抢不到只是「这一轮不释放」，下一轮 `maybe_release` 还会再来。
 RELEASE_LOCK_TIMEOUT = 5.0
 
+#: 读到协议消息之前，stdout 上允许跳过的**杂散行**上限。
+#:
+#: 判据是「读满这么多行仍未出现协议消息」→ 认定这个子进程的 stdout 不是协议通道，
+#: 与「偶发一行脏输出」区分开。取 20 与 `_drain_stderr` 的尾部长度无关，只看一件事：
+#: 错误消息里给 20 行足够定位「它到底在打什么」。
+MAX_NOISE_LINES = 20
+
+
+def _noise_hint(noise: list[str], limit: int = 3) -> str:
+    """把跳过的杂散 stdout 行拼成一段线索。空列表返回空串。
+
+    只取尾部 `limit` 行：调试输出往往逐行重复，给最后几行就够认出它是谁打的。
+    """
+    if not noise:
+        return ""
+    shown = " | ".join(repr(line[:80]) for line in noise[-limit:])
+    more = f"共 {len(noise)} 行，" if len(noise) > limit else ""
+    return f"{more}最后几行：{shown}"
+
 
 class _PluginResidentAdapter(_PluginEngineAdapter):
     """常驻子进程 + NDJSON over stdio 的公共骨架（向量化 / 重排两族共用）。
@@ -765,21 +784,27 @@ class _PluginResidentAdapter(_PluginEngineAdapter):
         # 输出上，表现为「卡住」，而真正的错误恰恰在那段没人读的内容里。
         threading.Thread(target=self._drain_stderr, args=(proc, stderr_tail), daemon=True).start()
 
-        line = self._readline_locked(proc, self.READY_TIMEOUT)
-        ready: Optional[dict] = None
-        if line:
-            try:
-                parsed = json.loads(line)
-                ready = parsed if isinstance(parsed, dict) else None
-            except json.JSONDecodeError:
-                ready = None
+        # 握手行 = 第一个带 `ready` 键的 JSON 对象。**不等于「第一行」**：插件在 import
+        # 期打的调试输出会先落在 stdout 上（stdout 正是协议通道），旧实现读到它直接判
+        # 协议破损，错误消息还写「进程无输出」—— 明明输出了，只是没输出协议。
+        ready, noise, why = self._read_protocol_locked(
+            proc, self.READY_TIMEOUT, lambda m: "ready" in m
+        )
         if ready is None or not ready.get("ready"):
             tail = "".join(self._stderr_tail[-5:]).strip()
+            if isinstance(ready, dict) and ready.get("error"):
+                detail = f"：{ready['error']}"
+            elif noise:
+                detail = f"：{_noise_hint(noise)}"
+            elif why == "noise":
+                detail = f"：stdout 连续 {MAX_NOISE_LINES} 行都不是协议消息"
+            else:
+                detail = ""
             self._kill_locked()
             raise RuntimeError(
-                f"{self.KIND} {self.name} 启动失败"
-                + (f"：{ready.get('error')}" if isinstance(ready, dict) and ready.get("error") else "")
-                + (f"（stderr: {tail[:300]}）" if tail else "（进程无输出）")
+                f"{self.KIND} {self.name} 启动失败" + detail
+                + (f"（stderr: {tail[:300]}）" if tail
+                   else ("" if detail else "（进程无输出）"))
             )
         # 声明值与实际值不符必须当场报：写进库 / 记进实验之后口径不符是**静默**的
         # （表现为质量下降，而不是报错）。校验内容由子类决定。
@@ -835,24 +860,27 @@ class _PluginResidentAdapter(_PluginEngineAdapter):
             self._kill_locked()        # 下轮重起，别在坏管道上反复失败
             raise RuntimeError(f"{self.KIND} {self.name} 子进程不可用：{e}") from e
 
-        line = self._readline_locked(proc, timeout)
-        if not line:
+        # 响应 = 第一个带 `id` 键的 JSON 对象；其间的杂散行跳过（有界，见 `MAX_NOISE_LINES`）。
+        # 只跳过「不成消息」的行，`id` 对不上仍然一律丢进程 —— 那是真错位，不是噪音。
+        msg, noise, why = self._read_protocol_locked(
+            proc, timeout, lambda m: "id" in m
+        )
+        if msg is None:
             self._kill_locked()
+            hint = _noise_hint(noise)
+            if why == "noise":
+                raise RuntimeError(
+                    f"{self.KIND} {self.name} 的 stdout 不是协议通道"
+                    f"（连续 {MAX_NOISE_LINES} 行非协议消息"
+                    + (f"，{hint}）" if hint else "）")
+                )
             raise RuntimeError(
                 f"{self.KIND} {self.name} {self.VERB}超时（{timeout:.0f}s 无响应）"
+                + (f"；{hint}" if hint else "")
             )
-
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            # 非 JSON 行 = 协议破了。丢弃进程：留在管道里的后续内容同样不可信。
-            self._kill_locked()
-            raise RuntimeError(
-                f"{self.KIND} {self.name} 返回了非 JSON 行：{line[:120]!r}"
-            ) from None
-        if not isinstance(msg, dict):
-            self._kill_locked()
-            raise RuntimeError(f"{self.KIND} {self.name} 返回的不是 JSON 对象")
+        if noise:
+            logger.debug("%s %s 跳过 %d 行非协议 stdout：%s",
+                         self.KIND, self.name, len(noise), _noise_hint(noise))
         if msg.get("id") != rid:
             # 残留响应错位 —— 每一轮都会读到上一条的结果，而形状完全合法。
             self._kill_locked()
@@ -865,6 +893,45 @@ class _PluginResidentAdapter(_PluginEngineAdapter):
             raise RuntimeError(f"{self.KIND} {self.name} {self.VERB}失败：{msg['error']}")
         self._last_used = time.monotonic()
         return msg
+
+    def _read_protocol_locked(self, proc: subprocess.Popen, timeout: float,
+                              accept) -> tuple[Optional[dict], list[str], str]:
+        """读到一条 `accept()` 认可的 JSON 对象为止，**跳过**其间的杂散 stdout 行。
+
+        返回 `(消息, 跳过的行, 失败原因)`。失败原因取 `""`（成功）/ `"timeout"`
+        （预算耗尽仍没读到）/ `"noise"`（读满 `MAX_NOISE_LINES` 行仍没读到）。
+
+        ⚠️ **为什么要跳过而不是「非 JSON 即丢进程」**：stdout 是协议通道，而插件在
+        import 期、加载模型时随手 `print()` 的调试输出也落在同一个流上（Windows 上
+        不带 flush 的 `print` 更是攒够缓冲才吐一次）。旧实现在这两种形态下都是
+        「读到第一行非 JSON → 杀进程」，用户看到的是「装了插件但一次都用不了」，
+        错误消息却写着「进程无输出」—— 子进程明明有输出，只是没输出协议。
+        有界跳过把「偶发脏行」与「stdout 根本不是协议通道」分开：前者正常服务，
+        后者在错误消息里带上那些脏行。
+
+        `timeout` 是**整段预算**而不是每行预算：N 行杂散输出各自等满一个超时，
+        等于把 15 秒的失败拖成几分钟，而现象仍是「卡住了」。
+        """
+        noise: list[str] = []
+        deadline = time.monotonic() + timeout
+        for _ in range(MAX_NOISE_LINES + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None, noise, "timeout"
+            line = self._readline_locked(proc, remaining)
+            if not line:
+                return None, noise, "timeout"
+            stripped = line.strip()
+            if not stripped:
+                continue                      # 空行不算协议内容，也不占噪声额度
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict) and accept(parsed):
+                return parsed, noise, ""
+            noise.append(stripped)
+        return None, noise, "noise"
 
     def _readline_locked(self, proc: subprocess.Popen, timeout: float) -> str:
         """带超时地读一行。**超时返回空串**（调用方负责丢弃进程）。

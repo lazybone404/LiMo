@@ -33,7 +33,8 @@ from app.engines.plugin_loader import (
 
 # ── 假 server ──
 # 行为矩阵（FAKE_MODE）：ok / wrong_id / error_once / count_mismatch / bad_line /
-# slow / noisy_stderr。每条都对应适配器里一条**必须显式失败**的路径。
+# noisy_once / ready_noise / ready_noise_forever / slow / noisy_stderr。
+# 每条都对应适配器里一条**必须显式失败**（或必须放行）的路径。
 FAKE_SERVER = r'''
 import json, os, sys, time
 sys.stdout.reconfigure(encoding="utf-8")
@@ -51,6 +52,14 @@ if MODE == "noisy_stderr":
     for _ in range(2000):
         sys.stderr.write("x" * 100 + "\n")
     sys.stderr.flush()
+
+# ready 之前的杂散 stdout：插件在 import 期 / 加载模型时 print 的调试输出。
+if MODE in ("ready_noise", "ready_noise_forever"):
+    for i in range(100 if MODE == "ready_noise_forever" else 2):
+        sys.stdout.write(f"loading model chunk {i}\n")
+    sys.stdout.flush()
+    if MODE == "ready_noise_forever":
+        sys.exit(1)             # 永远不给 ready 行
 
 ready = {"ready": True, "dimension": int(os.environ.get("FAKE_READY_DIM", DIM))}
 mid = os.environ.get("FAKE_MODEL_ID")
@@ -82,9 +91,15 @@ for line in sys.stdin:
         emit({"id": rid, "vectors": [[0.0] * DIM]})
         continue
     if MODE == "bad_line":
-        sys.stdout.write("not json\n")
+        # 连续 100 行非协议内容：超过 MAX_NOISE_LINES(20) 即判「stdout 不是协议通道」。
+        for i in range(100):
+            sys.stdout.write(f"not json {i}\n")
         sys.stdout.flush()
         continue
+    if MODE == "noisy_once":
+        # 一行杂散输出，后面照常给正常响应 —— 必须被跳过而不是打掉进程。
+        sys.stdout.write("debug: batch received\n")
+        sys.stdout.flush()
     if MODE == "slow":
         time.sleep(3)
     # 每条文本 → 一个可辨认的向量（首元素是文本长度），用来验顺序
@@ -227,11 +242,45 @@ def test_wrong_id_kills_proc(make_adapter, monkeypatch):
     assert a._proc is None, "错位后必须丢弃进程"
 
 
-def test_non_json_line_kills_proc(make_adapter, monkeypatch):
+def test_noise_line_is_skipped(make_adapter, monkeypatch):
+    """一行杂散 stdout 不等于协议坏了：跳过它，这一轮照常拿到结果。
+
+    旧行为是「非 JSON 即丢进程」—— 插件里一句 `print()` 就能让它一次都用不了，
+    而且错误消息写「进程无输出」（子进程明明有输出）。
+    """
+    monkeypatch.setenv("FAKE_MODE", "noisy_once")
+    a = make_adapter()
+    assert _run(a.embed(["a"]))[0][0] == 1.0
+    assert a._proc is not None, "一行调试输出把进程打掉了"
+
+
+def test_endless_noise_kills_proc(make_adapter, monkeypatch):
+    """连续非协议行 = stdout 不是协议通道。有界截断后丢进程（别无限读）。"""
     monkeypatch.setenv("FAKE_MODE", "bad_line")
     a = make_adapter()
-    with pytest.raises(RuntimeError, match="非 JSON"):
+    with pytest.raises(RuntimeError, match="不是协议通道"):
         _run(a.embed(["a"]))
+    assert a._proc is None
+
+
+def test_noise_before_ready_is_skipped(make_adapter, monkeypatch):
+    """ready 之前的调试输出同样跳过 —— 握手行是「第一条带 ready 的 JSON」，不是第一行。"""
+    monkeypatch.setenv("FAKE_MODE", "ready_noise")
+    a = make_adapter()
+    _run(a.warmup())
+    assert a._proc is not None
+
+
+def test_ready_never_arrives_reports_the_noise(make_adapter, monkeypatch):
+    """stdout 上全是非协议内容时，错误消息必须**带上那些行**。
+
+    旧实现的文案是「进程无输出」，而子进程一直在打东西 —— 读的人会去查「为什么
+    子进程没起来」，真正的原因（它把日志打到了协议通道上）一个字都不在消息里。
+    """
+    monkeypatch.setenv("FAKE_MODE", "ready_noise_forever")
+    a = make_adapter()
+    with pytest.raises(RuntimeError, match="loading model chunk"):
+        _run(a.warmup())
     assert a._proc is None
 
 

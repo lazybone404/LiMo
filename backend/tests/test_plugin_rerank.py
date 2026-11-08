@@ -77,9 +77,14 @@ for line in sys.stdin:
         continue
     served += 1
     if MODE == "bad_line":
-        sys.stdout.write("not json\n")
+        # 连续 100 行非协议内容：超过 MAX_NOISE_LINES(20) 即判「stdout 不是协议通道」。
+        for i in range(100):
+            sys.stdout.write(f"not json {i}\n")
         sys.stdout.flush()
         continue
+    if MODE == "noisy_once":
+        sys.stdout.write("debug: batch received\n")
+        sys.stdout.flush()
     if MODE == "missing_results":
         emit({"id": rid})
         continue
@@ -215,10 +220,18 @@ def test_wrong_id_kills_proc(make_adapter, monkeypatch):
     assert a._proc is None
 
 
-def test_non_json_line_kills_proc(make_adapter, monkeypatch):
+def test_noise_line_is_skipped(make_adapter, monkeypatch):
+    """一行杂散 stdout 跳过即可（与向量化同源：`_read_protocol_locked` 只有一份）。"""
+    monkeypatch.setenv("FAKE_MODE", "noisy_once")
+    a = make_adapter()
+    assert _run(a.rerank("q", ["a"])) == [(0, 1.0)]
+    assert a._proc is not None
+
+
+def test_endless_noise_kills_proc(make_adapter, monkeypatch):
     monkeypatch.setenv("FAKE_MODE", "bad_line")
     a = make_adapter()
-    with pytest.raises(Exception, match="非 JSON"):
+    with pytest.raises(Exception, match="不是协议通道"):
         _run(a.rerank("q", ["a"]))
     assert a._proc is None
 
