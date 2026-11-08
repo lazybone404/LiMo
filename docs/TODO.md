@@ -58,6 +58,3 @@ import、`storage/` 不出现 `app.routers` / `app.services` import。**只做�
 md / html / docx **保留**、纯 txt **剥离**（注释在纯文本里是可见噪音）；docx 走
 `core_properties`（零新依赖）；`[文档 i]` 用 meta 的 `sourceRefs` 解析回稳定 id。
 
-### 5. 图片预处理复用
-
-导入时已 `optimize_images`，导出 ZIP 未复用压缩后的图片，直接打包原图。

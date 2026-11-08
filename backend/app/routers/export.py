@@ -49,6 +49,7 @@ from app.core.artifact_blocks import (  # noqa: E402
 from app.services.query import QueryService  # noqa: E402
 from app.core.transcript_meta import strip_meta  # noqa: E402
 from app.core.markdown_assets import ASSET_REF_RE  # noqa: E402
+from app.core.image_optimize import optimize_image_bytes  # noqa: E402
 from app.core.path_guard import resolve_within  # noqa: E402
 
 # ── Pygments 语法高亮（可选依赖）──
@@ -428,7 +429,8 @@ async def export_all_products(tx_id: str, request: Request, store=Depends(get_st
     for content in products.values():
         all_refs.extend(_find_image_refs(content))
     doc_dir = str(store.get_doc_dir(tx_id) or '')
-    imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
+    # ZIP 出口：长边超限的图在这里缩小一次（`optimize=True`），不打包原图
+    imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir, optimize=True)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -478,7 +480,7 @@ async def export_batch(data: dict, request: Request, store=Depends(get_store)):
             for content in products.values():
                 all_refs.extend(_find_image_refs(content))
             doc_dir = str(store.get_doc_dir(tid) or '')
-            imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
+            imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir, optimize=True)
 
             for fname, content in products.items():
                 if imgs:
@@ -794,8 +796,18 @@ def _find_image_refs(text: str) -> list[tuple[str, str, str]]:
 
 
 def _collect_images(refs: list[tuple[str, str, str]], store_root: str,
-                    doc_dir: str = ""
+                    doc_dir: str = "", *, optimize: bool = False,
                      ) -> tuple[dict[str, bytes], dict[str, str]]:
+    """收集图片字节 + `{源文件名: zip 内文件名}` 映射。
+
+    `optimize=True` 时，长边超过 `core.image_optimize.MAX_EDGE` 的图会等比缩小
+    （等宽高比例、保留原格式，见该模块）。**ZIP 导出三条入口全部开启** —— 打包
+    原图正是本轮要治的病：一份 PDF 笔记动辄十几张 2000px 截图，zip 几十 MB。
+
+    ⚠️ 缩小后**扩展名可能变**（TIFF/BMP → jpg），故 `final_name` 在拿到最终字节
+    之后才定；所有消费方都必须经 `name_map` 引用图片，不能假设名字与源文件同名
+    （`docx` 那条是例外，见 `_source_named`）。
+    """
     image_data: dict[str, bytes] = {}
     name_map: dict[str, str] = {}
     seen_names: set[str] = set()
@@ -824,6 +836,12 @@ def _collect_images(refs: list[tuple[str, str, str]], store_root: str,
         # （`assets/sub/../img.png` 解析后仍在 doc_dir 内，守卫会放行），原样写进
         # `{doc}/images/` 就是 zip-slip。导出物的图片本就是扁平目录，取 basename 不丢信息。
         final_name = Path(filename).name or "image"
+        data = src.read_bytes()
+        if optimize:
+            optimized = optimize_image_bytes(data, keep_format=True)
+            if optimized is not None:
+                data, ext = optimized
+                final_name = f"{Path(final_name).stem}.{ext}"
         parts = final_name.rsplit(".", 1)
         base = parts[0]
         ext = parts[1] if len(parts) > 1 else ""
@@ -833,8 +851,22 @@ def _collect_images(refs: list[tuple[str, str, str]], store_root: str,
             counter += 1
         seen_names.add(final_name)
         name_map[filename] = final_name
-        image_data[final_name] = src.read_bytes()
+        image_data[final_name] = data
     return image_data, name_map
+
+
+def _source_named(imgs: dict[str, bytes], name_map: dict[str, str]) -> dict[str, bytes]:
+    """`{源文件名: 字节}` —— 给按**正文原样引用**取图的消费方（`markdown_to_docx`）。
+
+    docx 那条链用的是**未改写引用的原文**（`![x](assets/img_1.png)`），它按 basename
+    查表（`_load_image_bytes`）。`_collect_images` 缩小后可能把 `img_1.tiff` 改名成
+    `img_1.jpg` —— 直接用新名做键，Word 里那张图会**静默缺失**（不报错、只是没有图）。
+    """
+    return {
+        Path(src).name: imgs[final]
+        for src, final in name_map.items()
+        if final in imgs
+    }
 
 
 def _rewrite_image_paths(text: str, name_map: dict[str, str],
@@ -900,7 +932,11 @@ def _inline_images(text: str, image_data: dict[str, bytes],
             if not data:
                 data = _read(resolve_within(store_root, f"files/{m.group(2)}/{filename}"))
         if data:
-            return f"![{alt}]({_data_uri(data, filename)})"
+            # ⚠️ MIME 用**最终名**（`fn`）而不是源文件名：缩小可能把 `.tiff` 改成
+            # `.jpg`，用源名的扩展名会拼出 `data:image/tiff;base64,<JPEG 字节>` ——
+            # 浏览器按声明的 MIME 解码，图直接裂开。走 `_read` 兜底时没有重编码，
+            # 用源名才对，故两支分开。
+            return f"![{alt}]({_data_uri(data, fn if image_data.get(fn) else filename)})"
         return m.group(0)
     text = ASSET_REF_RE.sub(_replace, text)
     text = _IMG_RE.sub(_replace, text)
@@ -1754,7 +1790,8 @@ def _build_export_zip(
                 if all_refs:
                     _push("images", idx + 1, total_docs, f"正在收集图片 ({len(all_refs)} 引用)...")
                     doc_dir = str(store.get_doc_dir(doc_id) or '')
-                    imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir)
+                    imgs, name_map = _collect_images(all_refs, store.root, doc_dir=doc_dir,
+                                                     optimize=True)
 
             # 写入
             _push("zipping", idx + 1, total_docs, f"正在打包...")
@@ -1822,8 +1859,12 @@ def _build_export_zip(
                         # 换成 base64 data URI，那条路是给自包含 HTML 用的；docx 只要原始
                         # `![alt](assets/x.png)` + 收集好的 imgs 字典即可内嵌。
                         # 公式恒保留 LaTeX 原文（md/html 侧的 render 路径已移除，见 CHANGELOG）。
+                        # ⚠️ `_source_named`：缩小把 `.tiff` 改成 `.jpg` 之后，用 `imgs`
+                        # 的原键（最终名）查不到原文里的 `assets/x.tiff` —— Word 里那张图
+                        # 会静默缺失（见该函数的 docstring）。
                         processed = markdown_to_docx(content, tx.get("title", doc_title),
-                                                      images=imgs, skeleton=data.skeleton)
+                                                      images=_source_named(imgs, name_map),
+                                                      skeleton=data.skeleton)
                         ext = "docx"
 
                     safe_tab = tab.replace("/", "-")

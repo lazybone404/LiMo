@@ -14,6 +14,7 @@
 |---|---|
 | 模型能力位判据（image / document / reasoning / video） | [core/model_caps.py](../backend/app/core/model_caps.py) |
 | 资产路径正则（Markdown 图片改写 + tx 反向） | [core/markdown_assets.py](../backend/app/core/markdown_assets.py) |
+| **图片缩小判据**（长边上限 1024 / 质量 80 / 动图·解不开·变大不换 / 透明合成白底） | [core/image_optimize.py](../backend/app/core/image_optimize.py)::`optimize_image_bytes`。三个消费方：生成前发给 LLM 的 data URI（统一 JPEG）、VL 截帧图嵌进正文、导出 ZIP 打包（后两者 `keep_format=True`）。⚠️ 各自写一份阈值时，「模型看到的图」与「用户导出的图」尺度会分叉，而两边都不报错 |
 | 资源 id 校验（前后端同源，含长度上限） | [core/resource_id.py](../backend/app/core/resource_id.py) |
 | **第三方依赖可用性探测**（两个函数，按运行模式二选一） | [core/deps.py](../backend/app/core/deps.py)。**进程内 → `probe(module, attrs=…)`**（真 import 一次 + 查属性）；**进程外插件 → `probe_venv(venv_dir, modules=…)`**（纯文件系统：目录 / 解释器 / `pyvenv.cfg` 的 base python / site-packages / 依赖名）。⚠️ **选错方向必错**：子 venv 的依赖不在主进程 `sys.path`，对进程外插件用 `probe` 会**永远**报「无法导入」——每个**装好了**的插件都显示不可用，用户照着提示反复重装而东西一直是好的。⚠️ **不要写 `find_spec(...) is not None`** —— 它对 namespace package 返回非 None 而里面一个属性都没有（2026-10-27 实测于安装版 `_internal/tokenizers/`：只有 `.pyd`、无 `__init__.py`），失效形态是「检查说就绪、一编码就报缺依赖」。`Embedder.__init__` 也必须经它判（`except ImportError` 抓不到 DLL 缺失的 `OSError`） |
 | `provider.base_url` 归一（判据是「路径是否已含版本段」） | [core/url_utils.py](../backend/app/core/url_utils.py) |

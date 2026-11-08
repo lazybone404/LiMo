@@ -197,7 +197,7 @@
 > 进度说明：
 > - 产物复用（4/5）：已落地**产物自证头 + 共享查询层**（一期）、**密钥与凭据卫生**（二期）、**CLI + 契约文档 + 门禁**（三期），均 2026-10-04；待做**导出 meta 承载 + 渠道扩展**（四期）。路线图见 [CHANGELOG.md](CHANGELOG.md) 2026-10-04 条目
 > - AI 审核域已移除（2026-08-16，方案：图表功能与 fact_check 移除）——事实核查产物转历史，历史 fact_check.md 保留不删
-> - 导出：11/12 — **打印样式 + PDF 导出已落地**（2026-09-21）：Tauri 内走 WebView2 PrintToPdf 直接落文件（**真实文档已端到端实测**，期间修掉 `Content-Disposition: attachment` 导致打印白纸的伪成功），浏览器内退回打印对话框（原「打印 / 另存为 PDF」与「PDF 一键导出」两行已合并为一，因为它们是同一个按钮的两条分支）；待完成**图片预处理复用**（ZIP 导出复用导入时的 optimize_images 结果）。⚠️ 原列的「md 公式渲染修复」**已关闭**（2026-10-26 复核时 `formula_md=render` 通道**已整体移除** —— 函数 + 四处调用点 + 前端选项与类型，`tests/test_export_formula.py` 源码级守卫；「切到 KaTeX 图片管线」这个修法本身不成立：`_render_formulas_katex` 靠 WebView 在客户端渲染，服务端拿不到 SVG/PNG）。另：**导出进度反馈已在 2026-10-29 接线**（`ExportPanel` 走 SSE 流 + `parseSSEStream`，同步端点不再被 UI 调用）
+> - 导出：12/12 — **打印样式 + PDF 导出已落地**（2026-09-21）：Tauri 内走 WebView2 PrintToPdf 直接落文件（**真实文档已端到端实测**，期间修掉 `Content-Disposition: attachment` 导致打印白纸的伪成功），浏览器内退回打印对话框（原「打印 / 另存为 PDF」与「PDF 一键导出」两行已合并为一，因为它们是同一个按钮的两条分支）；**图片预处理复用已落地**（2026-11-08，`core/image_optimize.py`）—— ⚠️ TODO 原写「导出 ZIP 复用导入时压缩过的图片」**前提不成立**：`optimize_images` 只作用于发给 LLM 的内存 data URI，落盘 `assets/*` 一直是原图，盘上没有压缩副本可复用；实际做法是导出打包时按**同一判据**（长边 > 1024 才处理、等比缩、动图/解不开/变大不换、保留原格式）现场缩小，三条 ZIP 入口（`/all`、`/batch`、`/custom`）都开启。⚠️ 原列的「md 公式渲染修复」**已关闭**（2026-10-26 复核时 `formula_md=render` 通道**已整体移除** —— 函数 + 四处调用点 + 前端选项与类型，`tests/test_export_formula.py` 源码级守卫；「切到 KaTeX 图片管线」这个修法本身不成立：`_render_formulas_katex` 靠 WebView 在客户端渲染，服务端拿不到 SVG/PNG）。另：**导出进度反馈已在 2026-10-29 接线**（`ExportPanel` 走 SSE 流 + `parseSSEStream`，同步端点不再被 UI 调用）
 > - 不做的项目：PDF Layer 2（pdfplumber 已成熟提取表格）、VL 帧过滤（成本/收益不成正比）
 
 ## 工程质量（2026-10-16 状态）

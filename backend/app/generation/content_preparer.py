@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from app.core.image_optimize import JPEG_QUALITY, MAX_EDGE, optimize_image_bytes
 from app.core.markdown_assets import ASSET_REF_RE
 from app.core.model_caps import has_capability
 from app.core.path_guard import resolve_within
@@ -26,32 +27,21 @@ logger = logging.getLogger(__name__)
 # 必须共用同一份预算函数，否则小窗口模型上会二次截断、后几篇凭空消失（设计 §4.4.5）。
 
 
-def _optimize_image_data(data_uri: str, max_dim: int = 1024, quality: int = 80) -> str:
-    """PIL 缩放 data URI 图片，长边 ≤ max_dim，输出 JPEG data URI。"""
+def _optimize_image_data(data_uri: str, max_dim: int = MAX_EDGE, quality: int = JPEG_QUALITY) -> str:
+    """PIL 缩放 data URI 图片，长边 ≤ max_dim，输出 JPEG data URI。
+
+    「长边上限 / 质量 / 何时不值得处理」由 `core/image_optimize` 一处决定 ——
+    导出 ZIP 打包图片走的是同一个函数，两处各调参数时导出的图与模型看到的图尺度
+    会分叉，而两边都不报错（见该模块的 docstring）。
+    """
     import base64
-    from PIL import Image
-    import io as _io
 
     header, b64 = data_uri.split(",", 1)
-    img_bytes = base64.b64decode(b64)
-    img = Image.open(_io.BytesIO(img_bytes))
-
-    w, h = img.size
-    if max(w, h) <= max_dim:
+    optimized = optimize_image_bytes(base64.b64decode(b64), max_edge=max_dim, quality=quality)
+    if optimized is None:
+        # 本来就不大 / 动图 / 解码失败 —— 原样返回，与改造前「不超限直接返回」同语义
         return data_uri
-
-    ratio = max_dim / max(w, h)
-    new_w, new_h = int(w * ratio), int(h * ratio)
-    if img.mode in ("RGBA", "P", "LA"):
-        img = img.convert("RGB")
-    img = img.resize((new_w, new_h), Image.LANCZOS)
-
-    buf = _io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality)
-    new_b64 = base64.b64encode(buf.getvalue()).decode()
-    logger.debug("图片预处理: %dx%d → %dx%d (%.1fKB → %.1fKB)", w, h, new_w, new_h,
-                 len(img_bytes) / 1024, buf.tell() / 1024)
-    return f"data:image/jpeg;base64,{new_b64}"
+    return f"data:image/jpeg;base64,{base64.b64encode(optimized[0]).decode()}"
 
 
 def _sanitize_image_uri(uri: str, optimize: bool) -> str | None:
@@ -381,24 +371,25 @@ class ContentPreparer:
         return "\n\n".join(parts)
 
     @staticmethod
-    def _optimize_data_uri(data_uri: str, max_edge: int = 1024) -> str:
-        """PIL 缩放 base64 图片，长边 ≤ max_edge px，返回优化后的 data URI"""
+    def _optimize_data_uri(data_uri: str, max_edge: int = MAX_EDGE) -> str:
+        """缩放 base64 截帧图，长边 ≤ max_edge px，返回优化后的 data URI。
+
+        ⚠️ 与 `_optimize_image_data` 的差别在 `keep_format=True`：这些图会**嵌进笔记
+        正文**（进而进导出），保留原格式；发给 LLM 的那条链路只给模型看，转 JPEG
+        无所谓。判据（上限 / 质量 / 不值得处理的情形）两处共用
+        `core/image_optimize`，只有格式策略不同。
+        """
         import base64
-        from io import BytesIO
-        from PIL import Image
+
         header, b64 = data_uri.split(",", 1)
-        img_data = base64.b64decode(b64)
-        img = Image.open(BytesIO(img_data))
-        w, h = img.size
-        if max(w, h) > max_edge:
-            ratio = max_edge / max(w, h)
-            img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
-        buf = BytesIO()
-        fmt = img.format or "JPEG"
-        if fmt.upper() in ("JPEG", "JPG") and img.mode in ("RGBA", "P", "LA"):
-            img = img.convert("RGB")
-        img.save(buf, format=fmt, quality=85, optimize=True)
-        return f"data:image/{fmt.lower()};base64,{base64.b64encode(buf.getvalue()).decode()}"
+        optimized = optimize_image_bytes(
+            base64.b64decode(b64), max_edge=max_edge, keep_format=True,
+        )
+        if optimized is None:
+            return data_uri
+        data_bytes, ext = optimized
+        mime = "jpeg" if ext == "jpg" else ext
+        return f"data:image/{mime};base64,{base64.b64encode(data_bytes).decode()}"
 
     # ── 图片剥离 ──
 

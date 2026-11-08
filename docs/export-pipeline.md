@@ -644,6 +644,28 @@ d3.js、markmap-view、markmap-lib 三个库优先从本地 `node_modules/` / `s
 - `inline`：base64 data URL 内嵌
 - `none`：不包含图片
 
+### 导出打包时缩小图片（2026-11-08）
+
+`_collect_images(..., optimize=True)` 读到字节后先过长边判据，超限的图等比缩到 1024 px
+再进包。判据本身住在 [core/image_optimize.py](../backend/app/core/image_optimize.py)，
+与「生成前把图片发给 LLM」「VL 截帧图嵌进正文」共用同一份，导出侧只决定**保留原格式**
+（PNG 仍 PNG、TIFF/BMP 转 JPEG），因为这是用户要打开的文件，不是只给模型看的内存数据。
+
+不处理的四种情况（原字节、原文件名原样进包）：本来就不超过 1024、PIL 解不开（损坏 /
+SVG）、动图（转静态等于丢帧）、重编码后反而更大（高分辨率线稿常见）。
+
+⚠️ 缩小时扩展名会跟着变（`.tiff` → `.jpg`），下游三处必须一起改，漏一处不报错：
+
+| 落点 | 漏了会怎样 |
+|---|---|
+| `name_map`（源名 → 最终名） | md 里的引用指向包内不存在的文件，图裂 |
+| `_inline_images` 的 MIME | 扩展名 jpg、MIME 还是 `image/tiff`，部分查看器不认 |
+| docx 的取图表（`_source_named`） | 按原文 `assets/x.tiff` 查找落空，Word 里那张图静默消失 |
+
+三条 ZIP 入口都开了 `optimize=True`：`GET /export/{id}/all`、`POST /export/batch`、
+`POST /export/custom`（含 SSE 流）。`tests/test_export_image_optimize.py` 有源码级守卫
+钉住这三处与上述下游改名的行为。
+
 ### mindmap 特殊处理
 
 mindmap tab 始终输出为完整 `.html` 文件（跳过 markdown→HTML 转换和格式选择），因为思维导图无法用纯文本/Markdown 表示。

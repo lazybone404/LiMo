@@ -147,6 +147,7 @@
 | ✅ | KaTeX 内联 | CSS/JS/字体(60个) base64 内联，零 CDN，断网可用 |
 | ✅ | MD 图片路径 | 导出时自动重写为绝对 URL，外部查看不裂图 |
 | ✅ | ZIP 批量 | 全部产物打包，图片独立文件夹 |
+| ✅ | 导出打包缩小图片（2026-11-08） | 三条 ZIP 入口（`/all`、`/batch`、`/custom`）读到的图先过长边判据，超 1024 px 等比缩后进包，判据与「发给 LLM 的图」「VL 截帧图」共用 [core/image_optimize.py](../backend/app/core/image_optimize.py)。⚠️ **TODO 原写的「复用导入时压缩过的图」前提不成立**：`optimize_images` 只作用于内存里的 data URI，落盘 `assets/*` 一直是原图，盘上没有压缩副本可复用，故改为导出时现场按同一判据缩小。扩展名随优化变化（`.tiff` → `.jpg`），`name_map` / 内联 MIME / docx 按源名查表三处同步改，`tests/test_export_image_optimize.py` 13 条守卫 |
 | ✅ | 思维导图 | SVG 下载 + markmap 交互式 HTML (~980KB，暗色自适应) |
 | ✅ | 对话导出 | Markdown + JSON，支持批量 ZIP |
 | ✅ | Word 导出 | Markdown→HTML→docx（共用解析器 `markdown_render.py`）；标题大纲级别/嵌套列表/表格/代码块/引用/超链接/☑任务列表/时间戳双色 badge/图片等比内嵌；公式保留 LaTeX 原文（2026-09-21） |
