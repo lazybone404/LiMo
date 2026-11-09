@@ -117,7 +117,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [plugins.md](docs/plugins.md) | 插件标准：六个模板 + 三类基类（含常驻子进程 NDJSON 协议）+ 开发 API + `precheck` + GitHub 安装 + 安全声明 | 开发 / 安装 / 调试插件 |
 | [frontend-patterns.md](docs/frontend-patterns.md) | 前端开发手册：状态管理 / 取消机制 / TaskPanel / 布局 / 主题轴 / `limo-block` / 十二种内容块 | 改前端任何东西；先读开头的「关键陷阱速查」 |
 | [export-pipeline.md](docs/export-pipeline.md) | 导出架构 / 两条路径 / Tab→内容映射 / PDF 导出 / 打印 CSS / 卡片骨架跟随 / 新增格式落点清单 | 改导出、新增 tab 或格式、改打印样式 |
-| [patterns.md](docs/patterns.md) | 关键模式 72 条：前端 #1-#8 / 后端 #9-#31 / 同源与成对判据 #32-#66 / CSS 宿主陷阱 #67-#71 / 字节读路径 #72 | **写任何模块之前**；查「这个坑踩过没有」 |
+| [patterns.md](docs/patterns.md) | 关键模式 73 条：前端 #1-#8 / 后端 #9-#31 / 同源与成对判据 #32-#66 / CSS 宿主陷阱 #67-#71 / 字节读路径 #72 / 状态寿命判据 #73 | **写任何模块之前**；查「这个坑踩过没有」 |
 | [constants-home.md](docs/constants-home.md) | 公共常量与判据的「家」：60 余处唯一真相源逐条列表 | **写新代码前先查**；表里有的 import，不复制 |
 | [roadmap.md](docs/roadmap.md) | 方向与进度：按域分组的 ✅/🟡/❌ 清单 + 「规划中」的想法池 | 查「这个功能做了没有」「有没有人想过要做」。**不是规则文件** |
 | [TODO.md](docs/TODO.md) | 短期待办：已决定要做、做法清楚的几条，做完即删 | 开工前看「眼下该做什么」。⚠️ 与 roadmap **不重叠**，同一条只住一处 |
@@ -533,7 +533,7 @@ models.dev 是社区聚合数据，实测三类问题：口径混用（1000000 v
 - **ProductRegistry**（`app/generation/product_registry.py`）— 产物注册表，定义 notes/polished 及其依赖拓扑。新增产物类型只需加一个 `ProductDef` 即可，无需改分发逻辑或前端 UI。
 - **ToolRegistry**（`app/agent/tool_registry.py`）— Agent 工具注册中心，替代硬编码的 `_register_chat_tools()`。每个工具是独立 `ToolDef`，注册后自动被发现和调用。
 
-FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` / `get_query_service` / `get_search_engine` 依赖，消除路由函数中 `request.app.state.xxx` 样板代码。**19 个路由模块中 18 个用 `Depends`**（`references.py` 两者都没用——它只有进程内暂存，不碰 store/config，本来就不需要）；仍有 `request.app.state` 残留的 **3 个**：`generate.py`（7 处）、`ingest.py`、`markdown_edit.py`（1 处，`update_index` 的 `getattr(..., None)` 兜底，那个 `None` 是有意的：检索坏了不该让编辑保存失败）。⚠️ 计数以 `ls backend/app/routers/*.py` + `grep -l "app\.state"` 的输出为准（**该 `ls` 把 `__init__.py` 也算进去**，故文件数 = 模块数 + 1；2026-10-26 实测 **20 文件 = 19 模块 + 1**，`grep -l "Depends("` 命中 18 个，`app.state` 残留 3 个）。⚠️ `search.py` 2026-10-26 已迁（新增的两个端点用 `get_search_engine`）—— 当时它那份**只出现在注释里**，而 grep 认不出注释，所以「按 grep 计数」这条纪律遇到「注释里讨论这个属性」时会假阳性：改的是措辞，不是判据。此前写的「15 个里 12 个已迁移、ingest 已迁移」也是同一类错误（模式 #54：有几处同源是搜索题）。
+FastAPI 依赖注入（`app/core/dependencies.py`）提供 `get_store` / `get_config` / `get_guard` / `get_config_lock` / `get_query_service` / `get_search_engine` / `get_job_queue` 依赖，消除路由函数中 `request.app.state.xxx` 样板代码。**20 个路由模块中 19 个用 `Depends`**（`references.py` 两者都没用——它只有进程内暂存，不碰 store/config，本来就不需要）；仍读 `request.app.state` 的 **5 个**：`generate.py`、`ingest.py`、`markdown_edit.py`（`update_index` 的 `getattr(..., None)` 兜底，那个 `None` 是有意的：检索坏了不该让编辑保存失败）、`search.py`（同样形态：`vector_store` / `vector_runtime` / `rerank_*` / `vector_worker` 这些**可选子系统**必须能缺席）、`plugins.py`（**刻意的例外**：`install_deps` 用 `request.app.state.job_queue` 而不是 `Depends` —— 依赖解析发生在函数体**之前**，最小测试 app 里没有 startup 就 500，会抢在 `ensure_trusted_request` 之前失败，打破「守卫先于存在性校验」那条保证；别的路由没有这个顺序要求，不要顺手统一）。⚠️ 计数以 `ls backend/app/routers/*.py` + `grep -l "Depends("` / `grep -c "app\.state"` 的输出为准（**该 `ls` 把 `__init__.py` 也算进去**，故文件数 = 模块数 + 1；2026-11-10 实测 **21 文件 = 20 模块 + 1**，`Depends(` 命中 19 个）。⚠️ grep 认不出注释：`chat.py` / `search.py` 里都有若干行是**注释或 docstring 在讨论** `app.state`，按命中数读会多算。此前写的「15 个里 12 个已迁移、ingest 已迁移」「3 个残留」都是同一类错误（模式 #54：有几处同源是搜索题；写数字前先跑一遍计数）。
 
 ### 只读命令行（`limo`）与 MCP 服务端
 
@@ -694,7 +694,7 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 - **并发安全**：Store `threading.Lock` 防 RMW 竞态；engine `copy.copy()` 防 api_key 串用
 - **安全加固**：path traversal 防护、上传 2GB 预检、SSRF 防护（`url_security` 共享校验，5 个下载入口全部加固）
 
-## 关键模式（72 条）
+## 关键模式（73 条）
 
 > **完整内容见 [docs/patterns.md](docs/patterns.md)** —— 实现中易错的关键约束，新增代码必须遵守。
 >
@@ -713,6 +713,9 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 > 不互斥 → 包 `@media screen`，别维护还原表）、**测试解析嵌套 CSS**（`@media` 会让判据恒 -1 而不报错）。
 > `#72` 是**字节读路径**：`bytes.decode()` 不会替你做 `Path.read_text()` 做的那两件事（剥 BOM、归一 CRLF），
 > 而产物自证头的判据就在**首行**上 —— 少做一步，头就静默消失。
+> `#73` 是**状态的寿命判据**：长操作的状态必须有一个组件之外的读口，判据是
+> 「组件卸载以后，这份状态还能从哪里读回来？」—— 答不上来就说明它住在 `useState` 里，
+> 而操作在后台照常推进。
 >
 > 本文件其余部分（架构、管道、导出、数据流）仍在下方，模式里的 `#NN` 交叉引用一律指
 > **[docs/patterns.md](docs/patterns.md)**。
