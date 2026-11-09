@@ -215,9 +215,10 @@ export default function App() {
   // 版本反复提醒 —— 提醒本身成了噪音。
   useEffect(() => {
     if (!backendReady || !isDesktop()) return
-    // 页面重新加载后把「已下载，等重启」捡回来：那份字节活在 Rust 进程里，网页刷新
-    // 不会动它，而前端 store 已经清零了。不查就会显示「已是最新」而包明明在下面躺着。
-    void useStore.getState().recoverPrepared()
+    // 页面重新加载后把整个更新流程捡回来（下载到一半 / 已下载待安装 / 上次失败）：
+    // 进度走的是上一次页面上的 Channel，刷新即断，而 Rust 侧的下载照常继续。
+    // 不读的话会显示「空闲」，后台却在下一百多 MB，下完之后进程突然重启。
+    void useStore.getState().recoverState()
     if (!shouldAutoCheck()) return
     const timer = window.setTimeout(() => {
       // ⚠️ 走 store 的 `checkNow(true)` 而不是直接调 `checkForUpdate()`：

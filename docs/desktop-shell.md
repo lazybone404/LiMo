@@ -37,16 +37,22 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 minisign 验签 → 起 NSIS 安装器 → 重启。代码在 [src-tauri/src/updater.rs](../frontend/src-tauri/src/updater.rs)，
 发版侧（签名与生成清单）见 [BUILD.md](BUILD.md) 的「发版：签名与 latest.json」。
 
-- **四个命令，界线是「谁做决定」**：`check_update` 只查（返回 `currentVersion` 与可选的
-  `update`）、`download_update` 只下（`Channel` 推进度，结尾验签）、`apply_update` 才装、
-  `prepared_update` 只回答「有没有已下好的包」。检查可以静默，**下载与安装都必须由人点** ——
-  代码里没有任何自动下载的入口。
+- **命令的界线是「谁做决定」**：`check_update` 只查（返回 `currentVersion` 与可选的
+  `update`）、`download_update` 只下（`Channel` 推进度，结尾验签）、`apply_update` 才装。
+  检查可以静默，**下载与安装都必须由人点** —— 代码里没有任何自动下载的入口。
+  另有两个**读口**，不成对地对应任何动作：`get_update_state` 与 `reset_update_state`。
 - **下载与安装拆成两步**（2026-11-08，照 P-ai 的做法）：下载安全（不碰任何进程，用户可以
   一边下载一边干活），安装会让应用退出。拆开之后，用户能「先下好，忙完再装」；安装失败
   也不必重下 150 MB。已下好的包存在 Rust 进程内存里（`static PREPARED`，**关掉应用就没了**，
-  刻意不落盘 —— 落盘要自己管临时文件清理、配额与版本失效判断）。`prepared_update` 是给它
-  配的读口：页面重新加载后前端 store 清零，但字节还在 Rust 进程里，不查就会显示「已是最新」
-  而包明明在下面躺着。
+  刻意不落盘 —— 落盘要自己管临时文件清理、配额与版本失效判断）。
+- **页面刷新之后状态从哪读**（2026-11-10）：`static SNAPSHOT` 是一份下载途中持续更新的
+  快照（阶段 / 版本 / 已下字节 / 总数 / 线路 / 上次错误），由进度回调顺手写、512 KiB 一次；
+  `get_update_state` 把快照与 `PREPARED` 合成一个回答（有包且快照没在跑 → `ready`）。
+  `updateSlice.recoverState()` 在挂载时读一次，还在 `downloading` 就每秒轮询到结束。
+  ⚠️ 不补这个读口的失效形态是静默的：进度回调走的是**发起 `invoke` 的那个页面**上的
+  `Channel`，刷新即断，而下载照常推进 —— 界面显示「已是最新版本」，后台在下一份 150 MB。
+  `reset_update_state` 只服务一处：用户点掉失败记录（`dismissUpdate`）或一次成功的检查
+  （`checkNow`）之后清掉它，否则刷新页面时那条旧的失败会作为「失败」重新出现。
 - **`install()` 不验签，只有 `download()` 验**（插件 2.12.0 源码）。所以 `PREPARED` 里那份
   字节只能来自 `download()` 的返回值 —— 自己攒、从磁盘读、跨进程传，都等于绕过验签且不报错。
 - **线路表在 Rust 侧唯一一份**：`tauri.conf.json` 的 `plugins.updater` **不写 endpoints**，

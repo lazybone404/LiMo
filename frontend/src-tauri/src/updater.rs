@@ -59,6 +59,37 @@ struct PreparedUpdate {
 
 static PREPARED: Mutex<Option<PreparedUpdate>> = Mutex::new(None);
 
+/// 下载 → 安装这条链路的**进程内快照**（2026-11-10 加）。
+///
+/// 为什么需要它：进度走的是 `Channel`，而 Channel 属于发起那次 `invoke` 的那个页面。
+/// 页面一刷新，通道就断了 —— 但 Rust 侧的下载**照常推进**（命令的 future 不随页面
+/// 卸载结束）。没有快照的话，刷新之后界面会显示「空闲」，而后台正在下 150 MB。
+///
+/// 与 `PREPARED` 的分工：`PREPARED` 只说「包下好了没有」（能不能装），
+/// 快照说「下到哪一步了」（正在发生什么）。两者由 `get_update_state` 合成一个回答。
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSnapshot {
+    /// idle / downloading / ready / installing / failed
+    phase: String,
+    version: Option<String>,
+    downloaded: u64,
+    total: Option<u64>,
+    // 同 `UpdateProgress`：enum 上的 `rename_all` 不改变体字段名。
+    #[serde(rename = "viaProxy")]
+    via_proxy: bool,
+    error: Option<String>,
+}
+
+static SNAPSHOT: Mutex<Option<UpdateSnapshot>> = Mutex::new(None);
+
+fn snapshot_set(f: impl FnOnce(&mut UpdateSnapshot)) {
+    // 锁中毒时静默跳过：快照是给「刷新后还能看见」用的，丢一条进度不该让下载失败。
+    if let Ok(mut slot) = SNAPSHOT.lock() {
+        f(slot.get_or_insert_with(UpdateSnapshot::default));
+    }
+}
+
 fn take_prepared() -> Option<PreparedUpdate> {
     PREPARED.lock().ok().and_then(|mut slot| slot.take())
 }
@@ -307,6 +338,24 @@ pub async fn download_update(
     app: AppHandle,
     on_event: Channel<UpdateProgress>,
 ) -> Result<(), String> {
+    // 快照从这一刻起进入 downloading：页面刷新后靠它把进度捡回来。
+    snapshot_set(|s| *s = UpdateSnapshot { phase: "downloading".into(), ..Default::default() });
+    let result = download_update_inner(&app, on_event).await;
+    // ⚠️ **失败必须落进快照**：命令的 Err 只回到发起它的那个页面，页面若已刷新就
+    // 没人接。快照留在 downloading 的话，新页面会一直显示「下载中」并永远轮询下去。
+    if let Err(e) = &result {
+        snapshot_set(|s| {
+            s.phase = "failed".into();
+            s.error = Some(e.clone());
+        });
+    }
+    result
+}
+
+async fn download_update_inner(
+    app: &AppHandle,
+    on_event: Channel<UpdateProgress>,
+) -> Result<(), String> {
     // 先丢掉上一次的半成品：否则「已下载 v0.5.24」的旧包会一直留着，
     // 而界面上显示的是新的版本号 —— 装下去的却是旧包。
     let _ = take_prepared();
@@ -314,11 +363,12 @@ pub async fn download_update(
     // 重新检查而不是复用 `check_update` 的结果：两个命令之间隔着用户点击，
     // 期间可能又发了新版；多一次 1 KB 请求，换掉「装到一半版本对不上」。
     // 命中的那条线路就是下载的起点 —— 刚证通过的线路不该再被超时重试一次。
-    let (found, start) = check_from(&app, read_route(&app)).await?;
+    let (found, start) = check_from(app, read_route(app)).await?;
     let Some(mut update) = found else {
         return Err("没有可安装的更新".to_string());
     };
     update.timeout = Some(DOWNLOAD_TIMEOUT);
+    snapshot_set(|s| s.version = Some(update.version.clone()));
 
     let mut last_error = String::from("未知错误");
 
@@ -350,6 +400,12 @@ pub async fn download_update(
                         return;
                     }
                     last_emitted.store(done, Ordering::Relaxed);
+                    // 快照与通道**同时**更新：通道给当前页面，快照给刷新之后的页面。
+                    snapshot_set(|s| {
+                        s.downloaded = done;
+                        s.total = total;
+                        s.via_proxy = via_proxy;
+                    });
                     let _ = channel.send(UpdateProgress::Progress {
                         downloaded: done,
                         total,
@@ -363,7 +419,14 @@ pub async fn download_update(
         match result {
             Ok(bytes) => {
                 // 成功不推进线路 —— 下次还走这条（含中转）。
-                write_route(&app, route);
+                write_route(app, route);
+                let size = bytes.len() as u64;
+                snapshot_set(|s| {
+                    s.phase = "ready".into();
+                    s.downloaded = size;
+                    s.total = Some(size);
+                    s.error = None;
+                });
                 if let Ok(mut slot) = PREPARED.lock() {
                     *slot = Some(PreparedUpdate { update, bytes });
                 }
@@ -371,7 +434,7 @@ pub async fn download_update(
             }
             Err(e) => {
                 // 失败前进一格并写回，下次先试下一条。
-                write_route(&app, (route + 1) % route_count());
+                write_route(app, (route + 1) % route_count());
                 last_error = if via_proxy {
                     format!("第 {route} 条中转线路下载失败：{e}")
                 } else {
@@ -396,22 +459,56 @@ pub async fn apply_update(
     let Some(prepared) = take_prepared() else {
         return Err("没有已下载的更新，请先下载".to_string());
     };
+    snapshot_set(|s| {
+        s.phase = "installing".into();
+        s.version = Some(prepared.update.version.clone());
+    });
     let _ = on_event.send(UpdateProgress::Installing {
         version: prepared.update.version.clone(),
     });
     install(&app, &prepared.update, prepared.bytes)
 }
 
-/// 有没有已下载待安装的更新（返回版本号）。
-///
-/// 前端在启动时调一次，把「已下载，等重启」这个状态捡回来 —— 单个 WebView 里页面
-/// 重新加载不会动这个进程，那份字节还在，而前端的内存状态已经没了。
-#[tauri::command]
-pub fn prepared_update() -> Option<String> {
+/// 有没有已下载待安装的更新（返回版本号）。内部读口，`get_update_state` 用它。
+fn prepared_update() -> Option<String> {
     PREPARED
         .lock()
         .ok()
         .and_then(|slot| slot.as_ref().map(|p| p.update.version.clone()))
+}
+
+/// 下载 / 安装这条链路的当前状态 —— **页面刷新后的唯一读口**。
+///
+/// 前端在挂载时调一次。快照只活在进程内存里，但页面刷新不会重启进程，所以它正好
+/// 补上「通道断了、事情还在继续」这一段。返回的 `phase` 与前端
+/// `updateSlice.UpdatePhase` 同名同义。
+#[tauri::command]
+pub fn get_update_state() -> UpdateSnapshot {
+    let mut snap = SNAPSHOT
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_default();
+    if snap.phase.is_empty() {
+        snap.phase = "idle".into();
+    }
+    // 「字节确实在进程里」是能装的唯一物证，比快照自述的 phase 更可信：
+    // 两者不一致时以 `PREPARED` 为准（例如上次下载成功、而进程内某处重置过快照）。
+    if let Some(version) = prepared_update() {
+        if matches!(snap.phase.as_str(), "idle" | "downloading" | "ready") {
+            snap.phase = "ready".into();
+            snap.version = Some(version);
+        }
+    }
+    snap
+}
+
+/// 清空快照。用户点掉「失败」那一条时调用 —— 否则下次刷新页面它又会冒出来。
+#[tauri::command]
+pub fn reset_update_state() {
+    if let Ok(mut slot) = SNAPSHOT.lock() {
+        *slot = None;
+    }
 }
 
 #[cfg_attr(target_os = "windows", allow(unused_variables))]

@@ -100,15 +100,35 @@ export async function applyUpdate(
   await invoke('apply_update', { onEvent: channel })
 }
 
+/** Rust 侧 `updater.rs::UpdateSnapshot` 的镜像。 */
+export interface UpdateSnapshot {
+  /** 与前端 `UpdatePhase` 同名同义；`idle` = 进程里没有任何下载 / 安装在进行 */
+  phase: 'idle' | 'downloading' | 'ready' | 'installing' | 'failed'
+  version: string | null
+  downloaded: number
+  total: number | null
+  viaProxy: boolean
+  error: string | null
+}
+
 /**
- * 有没有已下载待安装的更新（版本号，没有则 null）。
+ * 读下载 / 安装的当前状态。
  *
- * 用途是**页面重新加载后把状态捡回来**：那份字节活在 Rust 进程里，网页刷新不会动它，
- * 而前端 store 里的状态已经清零了。不查的话，用户会看到一个「已是最新」的界面，
- * 而后台明明躺着一个装了一半的包。
+ * 用途是**页面重新加载后把状态捡回来**：进度回调走的是发起 `invoke` 的那个页面上的
+ * `Channel`，页面一刷新就断了 —— 而 Rust 侧的下载照常继续。不读的话，用户会看到
+ * 一个空闲的界面，而后台正在下 150 MB，下完之后进程可能突然重启。
+ *
+ * 浏览器环境返回 `null`（与 `isDesktop()` 的判据一致，不抛错）。
  */
-export async function getPreparedUpdate(): Promise<string | null> {
+export async function getUpdateState(): Promise<UpdateSnapshot | null> {
   if (!isDesktop()) return null
   const { invoke } = await import('@tauri-apps/api/core')
-  return invoke<string | null>('prepared_update')
+  return invoke<UpdateSnapshot>('get_update_state')
+}
+
+/** 清空 Rust 侧快照。用户点掉一条失败记录时调用，否则下次刷新它又会出现。 */
+export async function resetUpdateState(): Promise<void> {
+  if (!isDesktop()) return
+  const { invoke } = await import('@tauri-apps/api/core')
+  await invoke('reset_update_state')
 }

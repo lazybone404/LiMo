@@ -26,7 +26,8 @@ vi.mock('../api/update', async (importOriginal) => {
     checkForUpdate: vi.fn(),
     downloadUpdate: vi.fn(),
     applyUpdate: vi.fn(),
-    getPreparedUpdate: vi.fn().mockResolvedValue(null),
+    getUpdateState: vi.fn().mockResolvedValue(null),
+    resetUpdateState: vi.fn().mockResolvedValue(undefined),
   }
 })
 

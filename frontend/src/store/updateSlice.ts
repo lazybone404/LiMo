@@ -37,7 +37,9 @@ import {
   applyUpdate as applyUpdateApi,
   checkForUpdate,
   downloadUpdate,
-  getPreparedUpdate,
+  getUpdateState,
+  resetUpdateState,
+  type UpdateSnapshot,
   type UpdateStatus,
 } from '../api/update'
 import {
@@ -135,13 +137,78 @@ export interface UpdateSlice {
   /** 跳过某个版本（写 localStorage + 改 store 状态，两件事一起做） */
   skipVersion: (version: string) => void
   unskipVersion: () => void
-  /** 页面重新加载后把「已下载待安装」捡回来（字节还在 Rust 进程里）。 */
-  recoverPrepared: () => Promise<void>
+  /**
+   * 页面重新加载后把整个流程状态捡回来（下载到一半 / 已下载待安装 / 上次失败）。
+   *
+   * 数据源是 Rust 侧的快照（`get_update_state`）：进度回调走的是上一次页面上的
+   * `Channel`，刷新即断，而下载照常继续 —— 不读的话界面显示「空闲」，后台却在
+   * 下 150 MB。还剩 `downloading` 时会继续轮询直到它结束。
+   */
+  recoverState: () => Promise<void>
   /** 关掉任务面板里那条失败条目 */
   dismissUpdate: () => void
 }
 
-export const createUpdateSlice: StateCreator<Store, [], [], UpdateSlice> = (set, get) => ({
+/** 恢复下载后的轮询间隔。快照与通道一样按 512 KiB 更新，1 秒足够跟上。 */
+const POLL_MS = 1000
+
+export const createUpdateSlice: StateCreator<Store, [], [], UpdateSlice> = (set, get) => {
+  let poll: ReturnType<typeof setTimeout> | null = null
+
+  const stopPolling = () => {
+    if (poll !== null) {
+      clearTimeout(poll)
+      poll = null
+    }
+  }
+
+  const schedulePoll = () => {
+    if (poll !== null) return
+    poll = setTimeout(() => {
+      poll = null
+      void pollOnce()
+    }, POLL_MS)
+  }
+
+  /** 把 Rust 快照并进 store。`idle` 不改任何东西（没有可恢复的流程）。 */
+  const applySnapshot = (snap: UpdateSnapshot) => {
+    if (snap.phase === 'idle') return
+    set(s => {
+      // 已经进入 `installing` 就不回退：安装期间进程随时会被替换掉，界面若退回
+      // `ready` 会重新长出「重启安装」按钮 —— 那一下已经执行过了。
+      if (s.update.phase === 'installing' && snap.phase !== 'installing') return {}
+      return {
+        update: {
+          ...s.update,
+          phase: snap.phase,
+          version: snap.version ?? s.update.version,
+          downloaded: snap.downloaded,
+          total: snap.total,
+          viaProxy: snap.viaProxy,
+          error: snap.error,
+          startedAt: snap.phase === 'downloading'
+            ? (s.update.startedAt ?? Date.now())
+            : s.update.startedAt,
+        },
+      }
+    })
+    if (get().update.phase === 'downloading') schedulePoll()
+    else stopPolling()
+  }
+
+  const pollOnce = async () => {
+    try {
+      const snap = await getUpdateState()
+      if (snap) applySnapshot(snap)
+      if (get().update.phase === 'downloading') schedulePoll()
+    } catch {
+      // 读不到就停：命令不存在（浏览器）或进程异常，下载本身由 Rust 继续，
+      // 界面上那一行会停在最后的进度 —— 比一直空转请求好。
+      stopPolling()
+    }
+  }
+
+  return {
   // 跳过记录是持久化的，冷启动时先读一次 —— 否则「已跳过」的版本在第一次检查回来之前
   // 会短暂地显示成「可以下载」。
   update: { ...UPDATE_IDLE, skippedVersion: getUpdatePrefs().skippedVersion },
@@ -164,6 +231,9 @@ export const createUpdateSlice: StateCreator<Store, [], [], UpdateSlice> = (set,
             }
           : { ...UPDATE_IDLE, skippedVersion, phase: 'up-to-date', currentVersion: st.currentVersion },
       })
+      // 一次成功的检查之后，Rust 快照里那条旧的下载失败已经没有意义了 ——
+      // 不清的话，用户下次刷新页面它会作为「失败」重新出现。
+      void resetUpdateState().catch(() => {})
       return st
     } catch (e) {
       const skippedVersion = getUpdatePrefs().skippedVersion
@@ -222,20 +292,18 @@ export const createUpdateSlice: StateCreator<Store, [], [], UpdateSlice> = (set,
     }
   },
 
-  recoverPrepared: async () => {
+  recoverState: async () => {
     const cur = get().update
     // 只捡「什么都没在跑」的时候：正在下载 / 正准备装的状态比 Rust 侧那份更新。
     if (cur.phase !== 'idle' && cur.phase !== 'up-to-date' && cur.phase !== 'available') return
-    let version: string | null = null
+    let snap: UpdateSnapshot | null = null
     try {
-      version = await getPreparedUpdate()
+      snap = await getUpdateState()
     } catch {
       return
     }
-    if (!version) return
-    set(s => ({
-      update: { ...s.update, phase: 'ready', version, downloaded: 0, total: null, error: null },
-    }))
+    if (!snap) return
+    applySnapshot(snap)
   },
 
   skipVersion: (version) => {
@@ -249,11 +317,18 @@ export const createUpdateSlice: StateCreator<Store, [], [], UpdateSlice> = (set,
     set(s => ({ update: { ...s.update, skippedVersion: '' } }))
   },
 
-  dismissUpdate: () => set(s => ({
-    update: {
-      ...UPDATE_IDLE,
-      currentVersion: s.update.currentVersion,
-      skippedVersion: s.update.skippedVersion,
-    },
-  })),
-})
+  dismissUpdate: () => {
+    // 三处一起清：轮询、Rust 快照、本地状态。只清本地的话，下次刷新页面
+    // `recoverState` 会把那条已经点掉的失败原样捡回来。
+    stopPolling()
+    void resetUpdateState().catch(() => {})
+    set(s => ({
+      update: {
+        ...UPDATE_IDLE,
+        currentVersion: s.update.currentVersion,
+        skippedVersion: s.update.skippedVersion,
+      },
+    }))
+  },
+  }
+}
