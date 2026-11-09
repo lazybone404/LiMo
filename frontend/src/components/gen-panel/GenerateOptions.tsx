@@ -87,6 +87,8 @@ export function GenerateOptions(props: Props) {
   const addToast = useStore(s => s.addToast)
   const [refExpanded, setRefExpanded] = useState(false)
   const [refLoading, setRefLoading] = useState(false)
+  // 风格档位默认收起：11 个档位平铺会占掉四行高度，而大多数用户只在换风格时点一次
+  const [styleExpanded, setStyleExpanded] = useState(false)
 
   const handleRefFile = async (e: ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
@@ -460,21 +462,36 @@ export function GenerateOptions(props: Props) {
       </div>
     )}
 
-    {/* 风格 — 仅 notes / both 模式显示；polished only 隐藏 */}
+    {/* 风格 — 仅 notes / both 模式显示；polished only 隐藏。
+        默认收起：11 个档位平铺占四行，而换风格是低频操作。
+        收起时要能看出当前选的是哪一档，否则用户会以为「没选风格」。 */}
     {!isPolishedOnly && (p.typeMeta.isMedia || p.typeMeta.sourceType === 'text' || p.typeMeta.isDoc) && (
       <div className="pt-3 border-t border-border-light">
-        <span className="text-[12px] font-medium text-dimmed mb-2 block">
-          {isBoth ? '笔记风格（整理版固定忠实整理）' : '风格'}
-        </span>
-        <div className="flex gap-1 flex-wrap">
-          {p.styleKeys.map(s => (
-            <button key={s} onClick={() => p.setStyle(normalizeStyle(s))}
-              className={`px-3 py-1.5 text-[13px] rounded-full font-medium transition-colors ${normalizedStyle === normalizeStyle(s) ? 'bg-accent text-on-accent' : 'text-dimmed hover:bg-surface-hover'}`}>
-              {caps?.styleLabels?.[s] || s}</button>
-          ))}
-        </div>
-        {isBoth && (
-          <p className="text-[11px] text-dimmed mt-1.5">风格选择仅影响「笔记」产物，「整理版」固定为忠实原文整理。</p>
+        <button type="button" onClick={() => setStyleExpanded(!styleExpanded)}
+          aria-expanded={styleExpanded}
+          className="flex items-center gap-1.5 text-[12px] font-medium text-dimmed hover:text-foreground transition-colors">
+          <ChevronDown size={12} className={`transition-transform ${styleExpanded ? '' : '-rotate-90'}`} />
+          <span>{isBoth ? '笔记风格' : '风格'}</span>
+          {!styleExpanded && (
+            <span className="px-1.5 py-px rounded-full text-[10px] leading-tight bg-accent/15 text-accent">
+              {caps?.styleLabels?.[p.style] || caps?.styleLabels?.[normalizedStyle] || normalizedStyle}
+            </span>
+          )}
+        </button>
+        {styleExpanded && (
+          <>
+            <div className="flex gap-1 flex-wrap mt-2">
+              {p.styleKeys.map(s => (
+                <button key={s} type="button"
+                  onClick={() => { p.setStyle(normalizeStyle(s)); setStyleExpanded(false) }}
+                  className={`px-2 py-0.5 text-[11px] rounded-full font-medium transition-colors ${normalizedStyle === normalizeStyle(s) ? 'bg-accent text-on-accent' : 'text-dimmed hover:bg-surface-hover'}`}>
+                  {caps?.styleLabels?.[s] || s}</button>
+              ))}
+            </div>
+            {isBoth && (
+              <p className="text-[10px] text-dimmed mt-1.5">风格选择仅影响「笔记」产物，「整理版」固定为忠实原文整理。</p>
+            )}
+          </>
         )}
       </div>
     )}
