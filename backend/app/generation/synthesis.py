@@ -48,9 +48,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.core import logging as log
-from app.core.errors import SynthesisError
+from app.core.errors import AppError, SynthesisError
 from app.core.markdown_assets import ASSET_REF_RE
 from app.core.path_guard import resolve_within
+from app.core.provider_defaults import provider_requires_api_key
 from app.core.text_utils import sanitize_reference_name, split_into_chunks
 from app.core.token import estimate_tokens
 from app.core.transcript_meta import build_composite_raw_text
@@ -289,6 +290,11 @@ assert max(EXTRACT_TIMEOUT, CHUNK_EXTRACT_TIMEOUT) < SYNTH_QUIET_TIMEOUT < SYNTH
     "静默阈值必须落在「单次调用上限」与「整体超时」之间："
     "太小 → 正常调用被判挂死；等于整体超时 → 两条错误同刻到期、由竞态决定"
 )
+
+#: 软 deadline 比硬超时提前这么多秒：留给「剩余篇硬截断 + 组装 + 落库」的时间。
+#: 没有它，硬超时一到就是**颗粒无收**——前面十几分钟与真实烧掉的 token 全部作废。
+#: 与上面两个常量同住一处：三者共同描述**一次合成的时序**，分开写就会漂。
+DEADLINE_RESERVE = 60
 
 # 分块的闸门与上限。
 # - 配额太小（< 此值）时分块无意义：切出来的块配额只够抽一句话
@@ -1194,6 +1200,132 @@ def clean_content_types(values: list[str] | None) -> list[str]:
             if len(out) >= len(CONTENT_TYPES):
                 break
     return out
+
+
+@dataclass(frozen=True)
+class SynthesisParams:
+    """一次合成请求的**清洗后**参数。任务 payload 与管线的共同形状。
+
+    ⚠️ 它存在的理由是「提交与执行要用同一份清洗」：`POST /api/synthesis/stream`
+    在提交任务**之前**预检（非法值当场拒绝，不必排到队列里才失败），任务 handler
+    从 `jobs.db` 读回 payload 时也要拿到同样的形状。两处各写一遍 `normalize_*`
+    的调用序列，就是两套判据 —— 它们会静默分叉成「端点拒绝了、队列接受了」。
+    """
+    doc_ids: list[str]
+    title: str = ""
+    model_id: int | None = None
+    dimensions: list[str] = field(default_factory=list)
+    source_mode: str = "raw"
+    reader_intent: str = DEFAULT_READER_INTENT
+    reader_intent_text: str = ""
+    content_type: list[str] = field(default_factory=list)
+
+    def to_payload(self) -> dict:
+        """→ `jobs.db` 的 payload（必须是纯 JSON：datetime / 对象都不行）。"""
+        return {
+            "doc_ids": list(self.doc_ids),
+            "title": self.title,
+            "model_id": self.model_id,
+            "dimensions": list(self.dimensions),
+            "source_mode": self.source_mode,
+            "reader_intent": self.reader_intent,
+            "reader_intent_text": self.reader_intent_text,
+            "content_type": list(self.content_type),
+        }
+
+    @classmethod
+    def from_payload(cls, raw: dict) -> "SynthesisParams":
+        raw = raw or {}
+        return prepare_synthesis(
+            raw.get("doc_ids") or [],
+            title=raw.get("title") or "",
+            model_id=raw.get("model_id"),
+            dimensions=raw.get("dimensions"),
+            source_mode=raw.get("source_mode"),
+            reader_intent=raw.get("reader_intent"),
+            reader_intent_text=raw.get("reader_intent_text") or "",
+            content_type=raw.get("content_type"),
+        )
+
+    def idempotency_key(self) -> str:
+        """「同一件事」的判据：**同一批文档 + 同一原料模式 + 同一读者意图**。
+
+        ⚠️ 比待办里记的「排序后的 docIds + 模式」多一维 `reader_intent`：换了意图
+        就是**另一种产物**，把它们去重等于把用户没要的那份结果返回给他。
+        标题 / 维度 / 自由文本**不进键** —— 它们是同一种产物的措辞差异，而键越细，
+        「双击两下花两次钱」的窗口就越大。
+        """
+        return f"synth:{','.join(sorted(self.doc_ids))}:{self.source_mode}:{self.reader_intent}"
+
+
+def prepare_synthesis(
+    doc_ids: list[str] | None,
+    title: str = "",
+    model_id: int | None = None,
+    dimensions: list[str] | None = None,
+    source_mode: str | None = "raw",
+    reader_intent: str | None = "",
+    reader_intent_text: str = "",
+    content_type: list[str] | None = None,
+) -> SynthesisParams:
+    """入口清洗 —— **唯一一份**（路由预检与任务 handler 共用）。
+
+    ⚠️ 四项的**错误语义刻意不同**：维度与体裁静默清洗（多带一个不认识的值不该让
+    整次合成失败），原料模式与读者意图**显式报错**（选错了产物性质 / 读者目的就
+    变了，而产物上看不出异常）。判据是「这个值错了会不会改变产物的性质」。
+    """
+    return SynthesisParams(
+        doc_ids=[s for s in (str(x).strip() for x in (doc_ids or [])) if s],
+        title=(title or "").strip(),
+        model_id=model_id,
+        dimensions=clean_dimensions(dimensions),
+        source_mode=normalize_source_mode(source_mode),
+        reader_intent=normalize_reader_intent(reader_intent),
+        # 自由文本限长：它要进提示词，不限长等于让一次请求把 prompt 撑爆。
+        reader_intent_text=(reader_intent_text or "").strip()[:2000],
+        content_type=clean_content_types(content_type),
+    )
+
+
+async def run_synthesis(
+    store,
+    config: dict,
+    llm,
+    params: SynthesisParams,
+    *,
+    cancel_event=None,
+    on_stage=None,
+) -> Result:
+    """跑完整条合成管线：计费闸门 + 软 deadline + 整体超时 + `synthesize`。
+
+    ⚠️ **这是唯一实现**。它此前住在 `routers/synthesis.py` 的 `runner()` 里，现在
+    搬到这里的唯一理由是「它跑在后端任务队列上，而不是跑在某条 HTTP 连接上」：
+    用户切走页面、刷新、关掉面板，这条管线照常推进，进度落在 `jobs.db`。
+    路由只负责提交任务与转推事件 —— 任何一处想「顺手再实现一遍」都是第二份判据。
+
+    超时/取消**不在这里翻译成用户文案**：`TimeoutError` 与 `LLMCancelledError`
+    原样上抛，由调用方按自己的语言说（任务 handler 落成 `JobFailed` / `JobCancelled`）。
+    """
+    if provider_requires_api_key(llm.provider) and not llm.api_key:
+        raise AppError("SYNTH_NO_API_KEY", "LLM API Key 未配置，请在设置中填写",
+                       recoverable=False)
+    log.info("合成开始", docs=len(params.doc_ids), model_id=params.model_id,
+             title=params.title[:60], dims=len(params.dimensions),
+             source_mode=params.source_mode, intent=params.reader_intent,
+             genres=len(params.content_type))
+    # 软 deadline：到点后管线停止发起新调用、剩余篇截断，让流程走到落库。
+    # ⚠️ 减去 DEADLINE_RESERVE 是刻意的——两者同刻到期就等于没有软降级。
+    deadline = asyncio.get_running_loop().time() + SYNTH_TOTAL_TIMEOUT - DEADLINE_RESERVE
+    async with asyncio.timeout(SYNTH_TOTAL_TIMEOUT):
+        return await synthesize(
+            store, config, llm, params.model_id, params.doc_ids,
+            title=params.title,
+            dimensions=params.dimensions, source_mode=params.source_mode,
+            content_type=params.content_type, reader_intent=params.reader_intent,
+            reader_intent_text=params.reader_intent_text,
+            cancel_event=cancel_event, on_stage=on_stage,
+            deadline=deadline,
+        )
 
 
 async def synthesize(

@@ -358,7 +358,13 @@ transcript × N ──→ synthesis ──→ 新的 composite transcript ──
 - **预算**（`generation/budget.py`）：`multi = min(int(cw×0.5), cw−65536−2000)`，`cw` 由调用方从 `resolve_context_window()` 取（⚠️ 生成路径此前**根本没调它**，实际落 provider 兜底表，与预设差 7.6 倍——已修）；窗口 `< 102,536` 显式拒绝
 - **出处头**（`core/transcript_meta.py`）：`<!-- limo-meta {json} -->` 写在 `transcript.md` **第一行**——删 `index.json` 重建时 id 会重推、`sourceType` 被写死空串，只有正文自身扛得住。⚠️ 头**不剥离**（三位一体）；`parse_meta` **只认第一行**；**无头 ≠ 损坏**
 - **降级落进产物**：被压缩/截断的篇在「## 来源文档」逐条标 `✓/⚠`（SSE 提示是一次性的）
-- 详见 [CHANGELOG](CHANGELOG.md) 2026-10-01 与 [CLAUDE.md](../CLAUDE.md)「合成管道」
+- **跑在后端任务队列里**（2026-11-10）：`/synthesis/stream` 只做「提交 → 轮询 → 翻译成原事件形状」，
+  管线本体是 `generation/synthesis.py::run_synthesis`，由 `job_handlers.py` 的 `synthesis` 处理器
+  调起并占云端槽位。由此三处语义变了（都与改造前**不同**，不是等价重构）：断开连接**不再取消**
+  合成（否则「离开界面就丢失」根本没被修掉，要停请点任务面板的取消）；同批文档 + 同原料模式 + 同
+  读者意图再点一次挂在同一条任务上（幂等键 `SynthesisParams.idempotency_key`）；进程崩溃后标
+  `failed`「进程中断」而**不自动重跑**（一次计费调用重跑等于让用户为一次崩溃付两次钱）。
+- 详见 [CHANGELOG](CHANGELOG.md) 2026-10-01 与 [pipelines.md](pipelines.md)「合成管道」
 
 ---
 
@@ -415,7 +421,7 @@ class ExecutionGuard:
 | Generate | `/generate/{id}` + `/stream` | cloud |
 | Process | `/process/{id}` | cloud |
 | Retranscribe | `/transcripts/{id}/retranscribe` | **local**（曾错误使用 cloud，已修复） |
-| Synthesis | `/synthesis/stream` | cloud（⚠️ 一次合成占 1/5 池子、持续 N+2 次调用 → 有 900s **整体超时**，显著紧于 `N×单篇超时` 的最坏值，见 `routers/synthesis.py`） |
+| Synthesis | `/synthesis/stream` | cloud（⚠️ 一次合成占 1/5 池子、持续 N+2 次调用 → 有 900s **整体超时**，显著紧于 `N×单篇超时` 的最坏值；槽位由任务队列的 handler 持有，不是这条 SSE 连接，见 `job_handlers.py`） |
 
 **陷阱**：`acquire()` 必须在 `try` 紧接之后，否则异常泄漏信号量（generate.py stream 已修复）。
 

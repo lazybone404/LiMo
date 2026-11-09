@@ -37,6 +37,19 @@ export async function listJobs(): Promise<JobInfo[]> {
   return data.jobs
 }
 
+/**
+ * 读一条任务的终态。
+ *
+ * 存在理由：上面那个列表**不含已完成的任务**，所以「一条任务结束了」在前端只表现为
+ * 「它从列表里消失了」—— 消失的那一下必须再问一次才知道它是完成、失败还是取消，
+ * 以及它产出了哪个文档（`result` 只有终态记录里才有）。
+ */
+export async function getJob(id: string): Promise<JobInfo> {
+  const r = await apiFetch(`${BASE}/jobs/${encodeURIComponent(id)}`)
+  const data = (await r.json()) as { job: JobInfo }
+  return data.job
+}
+
 export async function cancelJob(id: string): Promise<JobInfo> {
   const r = await apiFetch(`${BASE}/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
   const data = (await r.json()) as { job: JobInfo }

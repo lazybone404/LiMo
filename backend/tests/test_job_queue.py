@@ -277,6 +277,70 @@ def test_重启恢复后可重跑的任务真的会被再执行一次(tmp_path):
     asyncio.run(main())
 
 
+def test_JobFailed的结构化原因落进result的code(store):
+    """`error` 是给人读的一句话，`code` 是给消费方分类的 —— 两者不能挤在一个字符串里。"""
+    async def main():
+        q = JobQueue(store, poll_interval=0.02)
+
+        def handler(job, ctx):
+            raise JobFailed("当前模型上下文窗口不足", detail="32768 < 102536",
+                            code="SYNTH_WINDOW_TOO_SMALL")
+
+        q.register("coded", handler, label="带码失败")
+        await q.start()
+        try:
+            job, _ = q.submit("coded", {})
+            done = await _wait_terminal(store, job.id)
+        finally:
+            await q.stop()
+        assert done.status == FAILED
+        assert done.error == "当前模型上下文窗口不足"
+        assert done.result == {"code": "SYNTH_WINDOW_TOO_SMALL"}
+
+    asyncio.run(main())
+
+
+def test_handler自己抛的取消落成failed而不是永远running(store):
+    """`CancelledError` 有两种来源：队列停机（留 running 等恢复）与 handler 自己抛的
+    （没人收尾）。判据是 `Task.cancelling()` —— 混为一谈时后者会让任务永远「在跑」。"""
+    async def main():
+        q = JobQueue(store, poll_interval=0.02)
+
+        async def handler(job, ctx):
+            raise asyncio.CancelledError("库内部抛的，不是停机")
+
+        q.register("weird", handler, label="内部取消")
+        await q.start()
+        try:
+            job, _ = q.submit("weird", {})
+            done = await _wait_terminal(store, job.id)
+        finally:
+            await q.stop()
+        assert done.status == FAILED
+
+    asyncio.run(main())
+
+
+def test_停机取消把任务留在running等恢复(store):
+    """对照上一条：**真的停机**时不写终态，否则「重启后接着装」就不可能了。"""
+    async def main():
+        q = JobQueue(store, poll_interval=0.02)
+        started = asyncio.Event()
+
+        async def handler(job, ctx):
+            started.set()
+            await asyncio.sleep(30)
+
+        q.register("slow", handler, label="长操作")
+        await q.start()
+        job, _ = q.submit("slow", {})
+        await started.wait()
+        await q.stop()
+        assert store.get(job.id).status == RUNNING
+
+    asyncio.run(main())
+
+
 def test_JobCancelled不是错误(store):
     """handler 主动抛 `JobCancelled` 的语义与检查点一致，都是「用户不要了」。"""
     async def main():

@@ -17,46 +17,57 @@
 - **全部业务失败走 SSE error 事件而非 500**：篇数不足 / 源已删 / 正文为空 /
   模型窗口不够，都是**预期业务状态**（项目模式 #36：`recoverable` 与 `status_code`
   两维独立）。前端一律按 SSE 解析，中途换成 HTTP JSON 会让它解不出来。
+
+## `/stream` 是一层转推（2026-11-10）
+
+管线**跑在后端任务队列里**，不跑在这条连接上：切走页面、折叠面板、刷新浏览器，
+合成照常推进，进度落在 `{data_dir}/jobs.db`，任务面板能看见。这条 SSE 只负责
+「提交任务 → 轮询状态 → 翻译成原来的事件形状」，前端的事件消费一个字都不用改。
+
+⚠️ 三个由此而来的新语义（都与改造前**不同**，不是等价重构）：
+- **连接断开不再取消合成**。原来断开即 abort（省 token），现在断开只是「没人看」——
+  否则「离开界面就丢失」根本没被修掉。要停就点任务面板的取消。
+- **同一批文档 + 同一原料模式 + 读者意图再点一次 = 挂在同一条任务上**（幂等键，
+  见 `SynthesisParams.idempotency_key`），不再产生第二次计费。
+- **进程崩溃后不会自动重跑**：`synthesis` 的 `retry_on_restart=False`，重启时
+  标 `failed`「进程中断」。自动重跑一次计费调用等于让用户为一次崩溃付两次钱。
 """
 
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.core import logging as log
-from app.core.dependencies import get_config, get_guard, get_store
-from app.core.disconnect import disconnect_watcher
+from app.core.dependencies import get_config, get_job_queue, get_store
 from app.core.errors import AppError
-from app.core.provider_defaults import provider_requires_api_key
 from app.generation.synthesis import (
     SYNTH_QUIET_TIMEOUT,
-    SYNTH_TOTAL_TIMEOUT,
-    clean_content_types,
-    clean_dimensions,
     merge_sources,
-    normalize_reader_intent,
     normalize_source_mode,
+    prepare_synthesis,
     preview_synthesis,
-    synthesize,
 )
-from app.llm import CancelledError as LLMCancelledError
-from app.llm import LLMService
+from app.routers.jobs import _job_json
+from app.services.job_store import CANCELLED, DONE, FAILED, RUNNING
 
 router = APIRouter()
 
-# ⚠️ `SYNTH_TOTAL_TIMEOUT` 与 `SYNTH_QUIET_TIMEOUT` **已迁至 `generation/synthesis.py`**
-# 并与 `EXTRACT_TIMEOUT` / `CHUNK_EXTRACT_TIMEOUT` 一起用断言钉住序关系。搬家的理由：
-# 它们描述的是**管线自身的时序**（单次调用上限 vs 挂死判据 vs 整体超时），而
-# 「分块后一篇 = K 次调用串联」这件事只有管线自己知道——两个常量分处两地时，
-# 改了一处不会想起另一处（它们**曾经同为 900**，导致「挂死」与「整体超时」同刻到期，
-# 用户收到哪条错误由竞态决定）。
+# ⚠️ `SYNTH_TOTAL_TIMEOUT` / `SYNTH_QUIET_TIMEOUT` / `DEADLINE_RESERVE` 都在
+# `generation/synthesis.py`，并与 `EXTRACT_TIMEOUT` / `CHUNK_EXTRACT_TIMEOUT`
+# 用断言钉住序关系。理由：它们描述的是**管线自身的时序**（单次调用上限 vs 挂死
+# 判据 vs 整体超时），而「分块后一篇 = K 次调用串联」只有管线自己知道——常量分处
+# 两地时，改了一处不会想起另一处（它们**曾经同为 900**，导致「挂死」与「整体超时」
+# 同刻到期，用户收到哪条错误由竞态决定）。本文件只用到静默阈值。
 
-# 软 deadline 比硬超时提前这么多秒：留给「剩余篇硬截断 + 组装 + 落库」的时间。
-# 没有它，硬超时一到就是**颗粒无收**——前面十几分钟与真实烧掉的 token 全部作废。
-DEADLINE_RESERVE = 60
+#: 轮询任务状态的间隔。任务上报的粒度是「一次 LLM 调用」，0.5 秒足够让 stage
+#: 提示跟手；一次读取是一条 `jobs.db` 的索引查询。
+POLL_INTERVAL = 0.5
+
+#: SSE 心跳的间隔。轮询本身不发任何字节，长时间没有字节的流会被中间层掐断。
+HEARTBEAT_INTERVAL = 30.0
 
 
 class SynthesisRequest(BaseModel):
@@ -87,146 +98,118 @@ class SynthesisRequest(BaseModel):
 
 
 @router.post("/synthesis/stream")
-async def synthesis_stream(
-    req: SynthesisRequest,
-    request: Request,
-    store=Depends(get_store),
-    config=Depends(get_config),
-    guard=Depends(get_guard),
-):
-    """N 篇 → 一个新的 composite 文档（SSE：stage → done/error）。"""
-    llm = LLMService(config, model_id=req.model_id)
-    cancel_event = asyncio.Event()
+async def synthesis_stream(req: SynthesisRequest, queue=Depends(get_job_queue)):
+    """N 篇 → 一个新的 composite 文档（SSE：job → stage… → done/error）。
 
-    async def runner(queue: asyncio.Queue) -> None:
-        """⚠️ **入参清洗必须在这里面**，不能在路由函数体里：清洗是用户可控输入的第
-        一道处理，而 `normalize_*` 在非法值上是**显式抛错**的——放在函数体就等于在
-        `StreamingResponse` 构造之前抛出，FastAPI 把它转成 HTTP 500，而前端拿
-        `fetch` + reader 解这条流，**500 只表现为「连接中断」**，用户看不到
-        「不支持的读者意图：xxx（可选：…）」这种可行动的文案。本端点的纪律是
-        **业务失败一律走 SSE error 事件**（见文件顶部），清洗是最容易漏在门外的一步。
-        """
-        def on_stage(message: str) -> None:
-            queue.put_nowait({"type": "stage", "message": message})
-
-        try:
-            # 清洗放最前（在任何计费调用之前）。⚠️ 四项的**错误语义刻意不同**：
-            # 维度与体裁静默清洗（多带一个不认识的值不该让整次合成失败——
-            # 判据是「这个值错了会不会改变产物的性质」），原料模式与读者意图
-            # 显式报错（选错了产物性质/读者目的就变了，而产物上看不出异常）。
-            dimensions = clean_dimensions(req.dimensions)
-            source_mode = normalize_source_mode(req.source_mode)
-            reader_intent = normalize_reader_intent(req.reader_intent)
-            content_type = clean_content_types(req.content_type)
-            # 自由文本限长：它要进提示词，不限长等于让一次请求把 prompt 撑爆。
-            reader_intent_text = (req.reader_intent_text or "").strip()[:2000]
-            log.info("合成请求", docs=len(req.doc_ids), model_id=req.model_id,
-                     title=req.title[:60], dims=len(dimensions), source_mode=source_mode,
-                     intent=reader_intent, genres=len(content_type))
-            if provider_requires_api_key(llm.provider) and not llm.api_key:
-                raise AppError("SYNTH_NO_API_KEY", "LLM API Key 未配置，请在设置中填写",
-                               recoverable=False)
-            # 软 deadline：到点后管线停止发起新调用、剩余篇截断，让流程走到落库。
-            # ⚠️ 减去 DEADLINE_RESERVE 是刻意的——两者同刻到期就等于没有软降级。
-            deadline = asyncio.get_running_loop().time() + SYNTH_TOTAL_TIMEOUT - DEADLINE_RESERVE
-            async with disconnect_watcher(request, cancel_event):
-                async with asyncio.timeout(SYNTH_TOTAL_TIMEOUT):
-                    result = await synthesize(
-                        store, config, llm, req.model_id, req.doc_ids,
-                        title=req.title,
-                        dimensions=dimensions, source_mode=source_mode,
-                        content_type=content_type, reader_intent=reader_intent,
-                        reader_intent_text=reader_intent_text,
-                        cancel_event=cancel_event, on_stage=on_stage,
-                        deadline=deadline,
-                    )
-            log.info("合成完成", doc_id=result.transcript_id, mode=result.mode,
-                     calls=result.llm_call_count, degraded=len(result.degraded),
-                     excluded=len(result.excluded))
-            queue.put_nowait({
-                "type": "done",
-                "id": result.transcript_id,
-                "mode": result.mode,
-                # 被截断/摘要失败的篇目（设计 §4.4.3：降级必须可见）。
-                # ⚠️ 同一份信息也写进了正文的「## 来源文档」列表——SSE 一闪用户
-                # 没看见就永远不知道，故落进产物本身才是主渠道，这里是补充。
-                "degraded": result.degraded,
-                # notes 模式下因**没有笔记**被排除的篇（设计 §19.4）。它不是错误
-                # ——但没看预览就点了合成的用户必须知道，否则会以为它参与了对比。
-                "excluded": result.excluded,
-            })
-        except LLMCancelledError:
-            # 用户取消：不算错误，前端按「已取消」收尾
-            queue.put_nowait({"type": "error", "code": "SYNTH_CANCELLED",
-                              "message": "合成已取消"})
-        except TimeoutError:
-            # ⚠️ str(TimeoutError()) 是**空串**（与 reference_compressor 同款坑），
-            # 必须自己写文案
-            log.warning("合成整体超时", timeout=SYNTH_TOTAL_TIMEOUT, docs=len(req.doc_ids))
-            queue.put_nowait({
-                "type": "error", "code": "SYNTH_TIMEOUT",
-                "message": f"合成超时（超过 {SYNTH_TOTAL_TIMEOUT // 60} 分钟），"
-                           "请减少篇数或换用响应更快的模型",
-            })
-        except AppError as e:
-            # 业务状态（篇数不足 / 源已删 / 窗口不够）：结构化错误码给前端分类处理
-            log.info("合成未通过", code=e.code, message=e.message)
-            queue.put_nowait({"type": "error", **e.to_dict()})
-        except Exception as e:
-            log.exception("合成失败", error=str(e)[:200])
-            queue.put_nowait({"type": "error", "code": "SYNTH_FAILED",
-                              "message": f"合成失败: {str(e)[:200]}"})
-        finally:
-            # ⚠️ **结束哨兵**：上面每个分支都推了事件，但若哪天有人删掉某个 except
-            # （或抛出 BaseException 子类），runner 会**静默死掉**——队列再没有事件，
-            # 主循环只能靠 900s 静默超时收尾，用户对着进度条干等一刻钟。
-            # 哨兵让「任务结束」与「事件产出」解耦：无论怎么结束，主循环立刻收尾。
-            queue.put_nowait(None)
+    执行在任务队列里（见文件顶部的「`/stream` 是一层转推」）。
+    """
+    def emit(payload: dict) -> str:
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     async def event_generator():
-        # acquire 与 try 之间不留任何语句：中间抛异常会让槽位永久丢失
-        await guard.semaphore.acquire()
-        queue: asyncio.Queue = asyncio.Queue()
-        task = asyncio.create_task(runner(queue))
-        loop = asyncio.get_event_loop()
-        last_event = loop.time()
+        loop = asyncio.get_running_loop()
+        last_emit = loop.time()
+
+        # ① 预检。⚠️ 必须在这里（而不是路由函数体里）：在 `StreamingResponse`
+        #    建好之前抛错会被 FastAPI 转成 HTTP 4xx/500，而前端拿 `fetch` + reader
+        #    解这条流，**非 2xx 只表现为「连接中断」**——用户看不到「不支持的读者
+        #    意图：xxx（可选：…）」这种可行动的文案。本端点的纪律是业务失败一律走
+        #    SSE error 事件，预检是最容易漏在门外的一步。
+        #
+        #    预检**不替代**任务里的清洗（handler 里用同一个函数再跑一遍）：非法值
+        #    当场拒绝，不必排到队列里才失败；而 `jobs.db` 里的 payload 经过一轮
+        #    JSON，不能假定形状仍然合法。
         try:
-            while True:
-                try:
-                    data = await asyncio.wait_for(queue.get(), timeout=30)
-                except asyncio.TimeoutError:
-                    if loop.time() - last_event > SYNTH_QUIET_TIMEOUT:
-                        yield f"data: {json.dumps({'type': 'error', 'code': 'SYNTH_STALLED', 'message': '合成长时间无响应'}, ensure_ascii=False)}\n\n"
-                        break
-                    # SSE 注释作为心跳，保持连接不被代理/浏览器关闭
-                    yield ": heartbeat\n\n"
-                    continue
-                if data is None:
-                    # 结束哨兵：runner 已收尾却没产出 done/error（异常被漏捕获）——
-                    # 显式告知，不能让客户端把「流关了」当成成功
-                    log.warning("合成流结束但无结果事件", docs=len(req.doc_ids))
-                    break
-                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-                last_event = loop.time()
-                if data["type"] in ("done", "error"):
-                    break
-        finally:
-            # 客户端断开 → 取消后台协程（它会经 cancel_event 停止后续 LLM 调用）
-            if not task.done():
-                task.cancel()
-            try:
-                await asyncio.gather(task, return_exceptions=True)
-            except Exception:
-                pass
-            try:
-                await llm.aclose()
-            except Exception:
-                pass
-            # release 绝不能被异常逃逸，否则槽位永久丢失（同 generate.py 的教训）
-            try:
-                guard.semaphore.release()
-            except Exception:
-                pass
+            params = prepare_synthesis(
+                req.doc_ids, title=req.title, model_id=req.model_id,
+                dimensions=req.dimensions, source_mode=req.source_mode,
+                reader_intent=req.reader_intent,
+                reader_intent_text=req.reader_intent_text,
+                content_type=req.content_type,
+            )
+        except AppError as e:
+            log.info("合成未通过（预检）", code=e.code, message=e.message)
+            yield emit({"type": "error", **e.to_dict()})
+            return
+
+        # ② 提交（幂等键命中时拿回正在跑的那条）→ 先告诉前端任务 id。
+        #    前端据此把任务挂进任务面板：面板里那行与这条流看的是**同一条记录**。
+        job, created = queue.submit(
+            "synthesis", params.to_payload(), params.idempotency_key())
+        log.info("合成任务已入队", job=job.id[:8], created=created,
+                 docs=len(params.doc_ids), mode=params.source_mode,
+                 intent=params.reader_intent, model_id=params.model_id)
+        yield emit({"type": "job", "job": _job_json(job, queue)})
+        last_emit = loop.time()
+
+        # ③ 轮询到终态。⚠️ 静默判据只对 `running` 生效：在 `queued` 里等前面的任务
+        #    （队列是单消费者）是完全正常的，拿它判挂死会在排队时给一条假错误。
+        last_change = loop.time()
+        last_message = job.message
+        last_status = job.status
+        while True:
+            await asyncio.sleep(POLL_INTERVAL)
+            current = queue.store.get(job.id)
+            if current is None:
+                # 任务表被外部清空（`prune` 只删终态，走到这里说明有别的写入方）
+                log.warning("合成流找不到任务记录", job=job.id[:8])
+                yield emit({"type": "error", "code": "SYNTH_JOB_LOST",
+                            "message": "任务记录已丢失，请刷新文档库确认结果"})
+                return
+
+            # 状态切换本身也算「有动静」：排队 10 分钟之后刚开始跑（`queued` →
+            # `running`）时，静默计时必须从**这一次**开始，否则上一轮的排队时间
+            # 会把一次正常的首调用直接判成挂死。
+            if current.status != last_status:
+                last_status, last_change = current.status, loop.time()
+
+            if current.message and current.message != last_message:
+                last_message, last_change = current.message, loop.time()
+                yield emit({"type": "stage", "message": current.message})
+                last_emit = loop.time()
+
+            if current.status == DONE:
+                result = current.result if isinstance(current.result, dict) else {}
+                log.info("合成完成（流式）", job=job.id[:8], doc_id=result.get("id"))
+                yield emit({
+                    "type": "done",
+                    "id": result.get("id") or "",
+                    "mode": result.get("mode") or "",
+                    # 被截断/摘要失败的篇目（设计 §4.4.3：降级必须可见）。
+                    # ⚠️ 同一份信息也写进了正文的「## 来源文档」列表——SSE 一闪用户
+                    # 没看见就永远不知道，故落进产物本身才是主渠道，这里是补充。
+                    "degraded": result.get("degraded") or [],
+                    # notes 模式下因**没有笔记**被排除的篇（设计 §19.4）。它不是
+                    # 错误——但没看预览就点了合成的用户必须知道，否则会以为它参与了对比。
+                    "excluded": result.get("excluded") or [],
+                })
+                return
+            if current.status == FAILED:
+                # 结构化原因由 handler 放进 `result["code"]`（`JobFailed.code`）：
+                # 任务面板只显示一句话，而 SSE 的消费方可能要按原因分叉。
+                extra = current.result if isinstance(current.result, dict) else {}
+                yield emit({
+                    "type": "error",
+                    "code": extra.get("code") or "SYNTH_FAILED",
+                    "message": current.error or "合成失败",
+                })
+                return
+            if current.status == CANCELLED:
+                # 用户取消：不算错误，前端按「已取消」收尾（`code` 是判据）
+                yield emit({"type": "error", "code": "SYNTH_CANCELLED",
+                            "message": current.error or "合成已取消"})
+                return
+
+            if current.status == RUNNING and loop.time() - last_change > SYNTH_QUIET_TIMEOUT:
+                log.warning("合成流静默超时", job=job.id[:8], quiet=SYNTH_QUIET_TIMEOUT)
+                yield emit({"type": "error", "code": "SYNTH_STALLED",
+                            "message": "合成长时间无响应"})
+                return
+
+            if loop.time() - last_emit >= HEARTBEAT_INTERVAL:
+                # SSE 注释作为心跳，保持连接不被代理/浏览器关闭
+                yield ": heartbeat\n\n"
+                last_emit = loop.time()
 
     return StreamingResponse(
         event_generator(),

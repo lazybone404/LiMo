@@ -6,6 +6,11 @@
 `fetch` + reader 解这条流，中途换成 HTTP JSON 会让它解不出来（用户看到的是
 「连接中断」而不是「请至少选 2 篇」）。所以每条「X 失败」的断言都同时钉住
 ①事件存在 ②`type == "error"` ③错误码正确。
+
+⚠️ **2026-11-10 起合成跑在后端任务队列里**，这条端点只是「提交 + 轮询 + 转推」。
+本文件因此多测三件事：④第一个事件是 `job`（前端据此把任务挂进任务面板）；
+⑤任务真的落在 `jobs.db` 里（`status=done`，`kind=synthesis`）；⑥handler 抛出的
+**未被捕获**异常也会立刻变成一条 SSE error，而不是让客户端干等静默超时。
 """
 
 import asyncio
@@ -25,8 +30,13 @@ from app.core import transcript_meta as TM
 from app.core.concurrency import ExecutionGuard
 from app.core.types import RawMetadata, RawTranscript, SourceType
 from app.generation.synthesis import DEFAULT_READER_INTENT
+from app.services.job_handlers import register_builtin_handlers
+from app.services.job_queue import JobQueue
+from app.services.job_store import DONE, JobStore
 from app.storage.store import Store
 
+import app.generation.synthesis as GS
+import app.llm as llm_pkg
 import app.routers.synthesis as S
 
 _TMP: list[str] = []
@@ -87,8 +97,41 @@ app.state.store = _STORE
 app.state.config = _CFG
 app.state.guard = ExecutionGuard(cloud_max=5, local_max=2)
 
-S.LLMService = FakeLLMService
+# ── 任务队列（合成的执行者）──
+# ⚠️ 队列的后台循环必须起在**应用的那个事件循环**里（TestClient 在 portal 线程里
+# 跑 startup/shutdown），所以走 startup 事件而不是模块级 `asyncio.run`。
+_queue = JobQueue(JobStore(str(_STORE.root)), poll_interval=0.02)
+register_builtin_handlers(
+    _queue, store=_STORE,
+    config_getter=lambda: app.state.config,
+    guard=app.state.guard,
+)
+app.state.job_queue = _queue
+
+
+@app.on_event("startup")
+async def _start_queue():
+    await _queue.start()
+
+
+@app.on_event("shutdown")
+async def _stop_queue():
+    await _queue.stop()
+
+
+# ⚠️ handler 里是 `from app.llm import LLMService`（延迟 import，为了不让任何
+# import `job_handlers` 的调用方付初始化开销），所以补丁打在**包**上
+# （`llm_pkg`，即 `app.llm`），打在 `job_handlers` 上不会生效。
+# ⚠️ 不能写 `app.llm` —— 本文件下方 `app = FastAPI()` 覆盖了那个名字。
+llm_pkg.LLMService = FakeLLMService
+# 轮询间隔调小：端点每轮 `await asyncio.sleep(POLL_INTERVAL)`，0.5s × 十几条用例
+# 就是几秒的纯等待。
+S.POLL_INTERVAL = 0.01
 client = TestClient(app)
+# ⚠️ 队列的后台循环起在 startup 事件里，而 startup 只在 `TestClient` 作为**上下文
+# 管理器**进入时才跑。本文件是模块级脚本（三百行顶层断言，套一层 `with` 要整体缩进），
+# 故手动进入 —— 末尾的 `client.__exit__` 负责跑 shutdown 把循环停掉。
+client.__enter__()
 
 
 def _mk_doc(tx_id: str, title: str, raw: str) -> None:
@@ -123,9 +166,17 @@ _mk_doc("tr_b", "论文乙", "乙的研究问题与方法。" * 40)
 _code, _ev, _body = _synth({"doc_ids": ["tr_a", "tr_b"], "title": "甲乙对比", "model_id": 1})
 assert _code == 200, _code
 _types = [e["type"] for e in _ev]
+assert _types and _types[0] == "job", \
+    f"第一个事件必须是 `job`（前端据此把任务挂进任务面板）；实际 {_types}"
+assert _ev[0]["job"]["kind"] == "synthesis", _ev[0]
 assert "stage" in _types, f"长任务必须推 stage（否则用户只看到静止进度条）；实际 {_types}"
 assert "done" in _types, f"正常路径必须推 done；实际事件：{_ev}"
 assert "error" not in _types, f"正常路径不该有 error；实际 {_ev}"
+
+# ⚠️ 任务本身也要在 `jobs.db` 里留下记录：这条流只是转推，真正的状态在后端。
+_jobs = _queue.store.list(include_dismissed=True)
+assert [j for j in _jobs if j.kind == "synthesis" and j.status == DONE], \
+    f"合成必须落成一条 done 任务；实际 {[(j.kind, j.status) for j in _jobs]}"
 
 _done = next(e for e in _ev if e["type"] == "done")
 _new_id = _done["id"]
@@ -209,44 +260,45 @@ assert app.state.guard.semaphore._value == 5, \
 print("PASS: 五种结局（成功/篇数不足/源已删/窗口不足/缺Key）后信号量均归还")
 
 # ═══════════════════════════════════════════════════════════════
-# 7. ⚠️ 哨兵：runner 抛出**未被捕获**的异常时，客户端立刻收尾（不干等静默超时）
+# 7. ⚠️ 未被捕获的异常（BaseException 子类）→ 任务落成 failed，流立刻收到 error
 # ═══════════════════════════════════════════════════════════════
 
-# 这是本端点唯一会在「没有 done/error 事件」的情况下结束的路径。若哪天有人
-# 把 runner 的 `except Exception` 删掉、或抛出的不是 Exception 子类，
-# 没有哨兵的话主循环要等 SYNTH_QUIET_TIMEOUT（900s）——用户对着进度条干等 15 分钟。
-# 断言分两层：①能**立刻**结束 ②明确没有 done。
+# 抛出的是 `asyncio.CancelledError` —— 它**不是** `Exception` 的子类，handler 自己的
+# `except` 全部接不住。改造前这里靠一条「结束哨兵」兜底；现在兜底的是队列的
+# `_run`：它必须把「handler 自己抛的取消」与「队列被停机取消」分开 —— 前者落成
+# failed，后者留在 running 等 `recover`。判据是 `Task.cancelling()`（见 job_queue）。
 #
-# ⚠️ **对照实验的表现形式很特别，这里如实记下**：把哨兵删掉后，测试不是
-# 「断言失败」而是**整个挂死**（180s 被外部 timeout 杀掉）。因为缺哨兵时流
-# 根本不会结束——它每 30s 发一次心跳、永远等不到 done/error，`iter_text()`
-# 也就永远读不完。耗时断言（下面那 20s）在那种实现下**根本执行不到**。
-# 结论不变（哨兵是必需的），但排查时别去等一条红字断言：没有红字、只有不返回，
-# 本身就是「缺哨兵」的签名。
-_orig_synth = S.synthesize
+# ⚠️ **对照实验的表现形式很特别，这里如实记下**：如果哪天 `_run` 把这种取消也当成
+# 停机（无条件 `raise`），这条流不会「断言失败」，而是**整个挂死** —— 任务永远
+# `running`，端点一直轮询、每 30s 发一次心跳，`iter_text()` 永远读不完，最终被外部
+# timeout 杀掉。所以下面的耗时断言在错误实现下**根本执行不到**：没有红字、只有不返回，
+# 本身就是「这条兜底没了」的签名。
+_orig_synth = GS.synthesize
 
 
 async def _boom(*a, **kw):
     raise asyncio.CancelledError("模拟未被 except Exception 捕获的中断")
 
 
-S.synthesize = _boom
+GS.synthesize = _boom
 try:
     _t0 = time.monotonic()
     _code7, _ev7, _body7 = _synth({"doc_ids": ["tr_a", "tr_b"], "model_id": 1})
     _elapsed = time.monotonic() - _t0
 finally:
-    S.synthesize = _orig_synth
+    GS.synthesize = _orig_synth
 assert _code7 == 200, _code7
 assert "done" not in [e["type"] for e in _ev7], \
     f"任务异常结束却推了 done —— 前端会把它当成功；实际 {_ev7}"
-# ⚠️ **耗时判据是这里唯一的区分力**：删掉哨兵时主循环最终也会被静默超时兜底
-# （同样是 error、同样无 done），只断事件类型根本看不出来。缺哨兵的实现最快要
-# 30s（第一次心跳 wait_for 超时）——20s 是宽松阈值：正常路径 <1s，CI 再慢也不会误报。
+assert any(e["type"] == "error" for e in _ev7), f"异常路径必须给 error 事件；实际 {_ev7}"
+# 正常实现下这条流在**几十毫秒**内收尾（一次轮询）；20s 是宽松阈值。
 assert _elapsed < 20, \
-    f"runner 异常必须**立刻**收尾；实际耗时 {_elapsed:.1f}s（哨兵缺失时会干等超时兜底）"
+    f"未被捕获的异常必须立刻收尾；实际耗时 {_elapsed:.1f}s（兜底缺失时会干等静默超时）"
+_bad_job = _queue.store.list(include_dismissed=True)
+assert any(j.status == "failed" and "中断" in (j.error or "") for j in _bad_job), \
+    f"未捕获异常必须落成 failed 任务；实际 {[(j.status, j.error) for j in _bad_job]}"
 assert app.state.guard.semaphore._value == 5, "异常路径同样必须归还槽位"
-print(f"PASS: 未捕获异常 → 哨兵立即收尾（{_elapsed:.2f}s、不误报成功、归还槽位）")
+print(f"PASS: 未捕获异常 → 任务 failed + 流立即收尾（{_elapsed:.2f}s、不误报成功、归还槽位）")
 
 # ═══════════════════════════════════════════════════════════════
 # 8. 读者意图 / 材料体裁经 POST 落进产物 meta（设计 §7.8）
@@ -334,7 +386,10 @@ assert app.state.guard.semaphore._value == 5, \
     f"意图/体裁相关请求后槽位必须全部归还；实际剩 {app.state.guard.semaphore._value}"
 print("PASS: 意图/体裁相关请求（含非法意图失败路径）槽位均归还")
 
+client.__exit__(None, None, None)  # 跑 shutdown → 停队列循环（见文件头部的说明）
+
 for _t in _TMP:
     shutil.rmtree(_t, ignore_errors=True)
 
-print("\n全部通过：合成端点（SSE 协议 / 业务错误走事件 / 槽位释放 / 异常哨兵 / 意图与体裁透传）")
+print("\n全部通过：合成端点（SSE 协议 / 业务错误走事件 / 任务落库 / 槽位释放 / "
+      "未捕获异常兜底 / 意图与体裁透传）")

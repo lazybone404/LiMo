@@ -52,11 +52,17 @@ class JobFailed(Exception):
 
     裸异常的 `str()` 常是一串内部细节；这里允许 handler 把「用户该看到什么」
     和「日志里该记什么」分开。
+
+    `code` 是可选的结构化原因（如 `SYNTH_TOO_FEW_SOURCES`）。它落进 `result` 而不是
+    `error`：`error` 是给人读的一句话，而 `code` 是给消费方分类用的 —— 两者混在
+    一个字符串里，前端就只能靠匹配文案认原因（`"窗口" in message`），文案一改就断。
     """
 
-    def __init__(self, message: str, *, detail: str | None = None):
+    def __init__(self, message: str, *, detail: str | None = None,
+                 code: str | None = None):
         super().__init__(message)
         self.detail = detail
+        self.code = code
 
 
 @dataclass
@@ -96,6 +102,26 @@ class JobContext:
         """检查点。发现取消请求就抛 `JobCancelled`。"""
         if self._cancel.is_set():
             raise JobCancelled()
+
+    async def watch_cancel(self, event: asyncio.Event, interval: float = 0.5) -> None:
+        """把队列的取消旗标桥到 asyncio 侧（LLM 管线要的是 `asyncio.Event`）。
+
+        存在理由：取消的一端是 `threading.Event`（同步 handler 与 `to_thread` 里的
+        代码要在**不属于任何事件循环**的线程上读它），另一端是 LLM 管线在每个 chunk
+        之间 `await` 的 `asyncio.Event`。两者之间没有现成的等待原语，而
+        `run_in_executor(cancel.wait)` 会**永久占住一个线程池线程**（要等到 job
+        结束、旗标没人再 set 也等不到）。
+
+        0.5 秒的轮询对一个分钟级任务没有可感知的延迟；代价是每条约 2 次 SQLite
+        读之外的 `sleep`，与管线本身的 LLM 往返比可以忽略。
+
+        调用方负责 `task.cancel()` —— 它不会自己退出。
+        """
+        while not event.is_set():
+            if self._cancel.is_set():
+                event.set()
+                return
+            await asyncio.sleep(interval)
 
 
 class JobQueue:
@@ -272,17 +298,38 @@ class JobQueue:
             self._store.finish(job.id, CANCELLED, error="已取消")
             log.info("任务已取消", kind=job.kind, job=job.id[:8])
         except asyncio.TimeoutError:
-            self._store.finish(job.id, FAILED, error=f"执行超时（{spec.timeout:.0f} 秒）")
+            # ⚠️ `spec.timeout` 可能是 `None`（不限时的 kind），而 handler 自己也可能
+            # 抛 `TimeoutError`（`asyncio.timeout` 的语义）。直接 `:.0f` 格式化
+            # `None` 会 `TypeError` —— 于是「超时」这一档反而把任务留在 `running`。
+            if spec.timeout is None:
+                self._store.finish(job.id, FAILED, error="执行超时")
+            else:
+                self._store.finish(job.id, FAILED, error=f"执行超时（{spec.timeout:.0f} 秒）")
             log.warning("任务超时", kind=job.kind, job=job.id[:8])
         except JobFailed as e:
-            self._store.finish(job.id, FAILED, error=str(e))
+            self._store.finish(
+                job.id, FAILED,
+                # 结构化原因放 `result`（见 `JobFailed.code` 的说明）。没有 code
+                # 时保持 `None`，与改造前逐字节相同。
+                result={"code": e.code} if e.code else None,
+                error=str(e),
+            )
             log.warning("任务失败", kind=job.kind, job=job.id[:8],
-                        err=str(e)[:200], detail=(e.detail or "")[:300] or None)
+                        err=str(e)[:200], code=e.code,
+                        detail=(e.detail or "")[:300] or None)
         except asyncio.CancelledError:
-            # 进程在停机 / worker 被 cancel。任务留在 `running`，下次启动由
-            # `JobStore.recover` 按 kind 决定重跑还是标失败 —— 这里不写终态，
-            # 否则「重启后还能接着装」会变成不可能。
-            raise
+            # **两种来源，处置相反**：
+            # - 队列被停（停机 / 关窗口）：任务留在 `running`，下次启动由
+            #   `JobStore.recover` 按 kind 决定重跑还是标失败 —— 这里写终态，
+            #   「重启后还能接着装」就不可能了。
+            # - handler 自己抛的（库的内部 bug、或被包装成取消的中断）：没人会来
+            #   收尾，留在 `running` 就是「界面上永远在跑、只有重启才能消失」。
+            # 判据是 `cancelling()`：只有真正打到**本任务**身上的取消请求才 > 0。
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
+            self._store.finish(job.id, FAILED, error="任务被中断（非停机）")
+            log.warning("任务被中断且非停机", kind=job.kind, job=job.id[:8])
         except Exception as e:
             self._store.finish(job.id, FAILED, error=f"{type(e).__name__}: {e}"[:500])
             log.warning("任务失败", kind=job.kind, job=job.id[:8],

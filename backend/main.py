@@ -448,7 +448,16 @@ async def startup():
         from app.services.job_store import JobStore
 
         _queue = JobQueue(JobStore(config.get("data_dir", "data")))
-        register_builtin_handlers(_queue)
+        # ⚠️ `config_getter` 传的是**函数**不是启动时的快照：任务可能在用户改完
+        # 模型配置之后才排到（一次合成可以排在队列里十几分钟）。现状是 `/api/config`
+        # 原地修改同一个 dict，快照也能用；传函数是让「哪天改成整体替换
+        # `app.state.config`」不会静默变成「任务用着一份不存在的配置」。
+        register_builtin_handlers(
+            _queue,
+            store=app.state.store,
+            config_getter=lambda: app.state.config,
+            guard=app.state.guard,
+        )
         _recovered = await _queue.start()
         app.state.job_queue = _queue
         if _recovered["requeued"] or _recovered["failed"]:

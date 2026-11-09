@@ -29,6 +29,7 @@ const results: Array<{ type: string; args: unknown[] }> = []
 
 function cb(): StreamSynthesisCallbacks {
   return {
+    onJob: (j) => results.push({ type: 'job', args: [j] }),
     onStage: (m) => results.push({ type: 'stage', args: [m] }),
     onDone: (id, mode, degraded, excluded) =>
       results.push({ type: 'done', args: [id, mode, degraded, excluded] }),
@@ -153,6 +154,18 @@ describe('streamSynthesis — 事件分发', () => {
     const stages = results.filter((r) => r.type === 'stage').map((r) => r.args[0])
     // ⚠️ 顺序也要对：用户看到的是「读取源文档」先于「逐篇抽取」
     expect(stages).toEqual(['读取源文档…', '逐篇结构化抽取（1/3）…'])
+  })
+
+  it('job → onJob，且早于任何 stage（面板据此立刻挂上那一行）', async () => {
+    stubFetch(sseResponse([
+      'data: {"type":"job","job":{"id":"j1","kind":"synthesis","label":"合成对比综述","status":"queued","payload":{"doc_ids":["a","b"]},"progress":null,"message":null,"result":null,"error":null,"attempts":0,"cancel_requested":false,"dismissed":false,"created_at":1,"started_at":null,"finished_at":null}}\n\n',
+      'data: {"type":"stage","message":"读取源文档…"}\n\n',
+      'data: {"type":"done","id":"tr_new","mode":"stuff"}\n\n',
+    ]))
+    streamSynthesis(['a', 'b'], {}, cb())
+    await vi.waitFor(() => expect(results.some(r => r.type === 'done')).toBe(true))
+    expect(results[0].type).toBe('job')
+    expect(results[0].args[0]).toMatchObject({ id: 'j1', kind: 'synthesis', status: 'queued' })
   })
 
   it('done → onDone(id, mode, degraded, excluded)；两个数组缺省补空', async () => {

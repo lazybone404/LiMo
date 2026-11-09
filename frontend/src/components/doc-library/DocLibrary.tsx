@@ -1229,6 +1229,10 @@ export function DocLibrary() {
       contentType: synthGenres,
       sourceMode: synthSourceMode,
     }, {
+      // 合成跑在后端队列里：把那条任务交给任务面板，用户切走页面后它还在。
+      // ⚠️ 走 `getState()` 而不是组件作用域里的 `trackJob` —— 这条流的回调可能在
+      // 组件卸载（折叠侧栏）之后才到，闭包里的引用那时已经失效（同 `adoptNewDoc`）。
+      onJob: job => useStore.getState().trackJob(job),
       onStage: setSynthStage,
       onDone: (id, _mode, degraded, excluded) => {
         setBatchBusy(false); setSynthOpen(false); setSynthStage(null)

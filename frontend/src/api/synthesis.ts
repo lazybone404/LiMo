@@ -7,6 +7,7 @@
  * 会得到一个 422。
  */
 import { BASE, CLIENT_HEADERS, getErrorMessage } from './core'
+import type { JobInfo } from './jobs'
 import { parseSSEStream } from './sse'
 
 /** 原料模式：原文转录 / 已生成的笔记。**互斥不混合**（见设计 §19.2）。 */
@@ -133,6 +134,14 @@ export async function mergeSynthesis(
 }
 
 export interface StreamSynthesisCallbacks {
+  /**
+   * 任务已入队，随之带上后端那条任务记录（**流的第一个事件**，早于任何 stage）。
+   *
+   * 消费方应当把它交给 `trackJob`：合成现在跑在后端队列里（见后端 `synthesis.py`
+   * 模块文档），面板里那一行与这条流看的是**同一条记录**。不接的话，用户切走页面
+   * 之后，这场合成在界面上就完全不存在了。
+   */
+  onJob?: (job: JobInfo) => void
   /** 阶段提示（读取源文档 / 分析对比维度 / 逐篇结构化抽取 i/N / 组装正文） */
   onStage?: (message: string) => void
   /**
@@ -230,7 +239,8 @@ export function streamSynthesis(
       }
 
       await parseSSEStream(reader, (data) => {
-        if (data.type === 'stage') callbacks.onStage?.(data.message)
+        if (data.type === 'job') callbacks.onJob?.(data.job as JobInfo)
+        else if (data.type === 'stage') callbacks.onStage?.(data.message)
         else if (data.type === 'done') {
           callbacks.onDone(data.id, data.mode ?? '', data.degraded ?? [], data.excluded ?? [])
         } else if (data.type === 'error') {

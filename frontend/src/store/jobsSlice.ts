@@ -18,9 +18,22 @@
  * 增量合并要处理「后端删了 / 忽略了」这几种情况，而这些都是**以服务端为准**的事实。
  * 整体替换让「前端显示的任务」恒等于「后端那一秒的任务集合」，不会出现一条谁都没在
  * 跑的幽灵记录。
+ *
+ * ## 任务结束后谁把结果接回来
+ *
+ * 合成产出的是一篇**新文档**，而发起它的那次点击可能早就跟着页面一起没了（用户切走、
+ * 刷新、折叠面板）。默认列表只带「进行中 + 未忽略的失败」，所以结束在前端只表现为
+ * 「那行消失了」—— 于是 `refreshJobs` 每轮算一次差集，消失的逐条取回终态，
+ * 由 `settleVanished` 按 kind 补偿（目前只有 `synthesis` 需要）。
+ *
+ * ⚠️ 别把这件事挪进 SSE 回调：SSE 只在「有人正在看」时存在，而这里要解决的正是
+ * 「没人在看」。
  */
 import type { StateCreator } from 'zustand'
-import { cancelJob as cancelJobApi, dismissJob as dismissJobApi, listJobs, type JobInfo } from '../api/jobs'
+import {
+  cancelJob as cancelJobApi, dismissJob as dismissJobApi, getJob, listJobs, type JobInfo,
+} from '../api/jobs'
+import { listTranscripts } from '../api/transcripts'
 import type { Store } from './types'
 
 /** 轮询间隔。任务进度的上报粒度是「一次 pip 步骤 / 一次 LLM 调用」，1.5 秒完全够。 */
@@ -66,15 +79,64 @@ export const createJobsSlice: StateCreator<Store, [], [], JobsSlice> = (set, get
     }
   }
 
+  /**
+   * 一场「没人看着」的合成结束了：把它产出的文档接进列表。
+   *
+   * 判据是 **doc id 是否已在列表里**，不是「有没有收到过 SSE」：
+   * - 流还活着时 `DocLibrary.onDone` 会先把它插进去 —— 这里什么都不做，连 toast
+   *   都不发，否则同一件事提示两遍；
+   * - 流早就断了（用户切走 / 刷新过页面）时列表里没有它 —— 这才是本条存在的场景。
+   */
+  const adoptFinishedSynthesis = async (job: JobInfo) => {
+    const result = (job.result ?? {}) as { id?: unknown; title?: unknown }
+    const id = typeof result.id === 'string' ? result.id : ''
+    if (!id || get().docs.some(d => d.id === id)) return
+    try {
+      set({ docs: await listTranscripts() })
+    } catch {
+      // 拉不到列表就别报「完成」：用户点进去会找不到那篇。
+      return
+    }
+    if (!get().docs.some(d => d.id === id)) return
+    const title = typeof result.title === 'string' && result.title ? result.title : '对比综述'
+    get().addToast(`合成完成：${title}`, 'success')
+  }
+
+  /**
+   * 活跃任务从列表里消失之后要做的事。
+   *
+   * ⚠️ 消失**不等于**完成：默认列表只带「进行中 + 未忽略的失败」，所以完成、取消、
+   * 被忽略三种都会让它消失。判据是随后单条取回的 `status`。
+   */
+  const settleVanished = async (gone: JobInfo[]) => {
+    for (const old of gone) {
+      let job: JobInfo
+      try {
+        job = await getJob(old.id)
+      } catch {
+        // 记录已被 `prune` 清掉（终态只留最近 200 条）。没有结果可接，不算失败。
+        continue
+      }
+      // 失败 / 取消各有自己的出口：失败那行还留在面板上等人处理，取消是用户自己的动作。
+      if (job.status !== 'done') continue
+      if (job.kind === 'synthesis') await adoptFinishedSynthesis(job)
+    }
+  }
+
   return {
     jobs: {},
 
     refreshJobs: async () => {
       try {
         const list = await listJobs()
+        const prev = get().jobs
         const next: Record<string, JobInfo> = {}
         for (const job of list) next[job.id] = job
         set({ jobs: next })
+        // 「刚才还在跑、这一轮不见了」= 它结束了 —— 整体替换把这件事直接暴露成差集，
+        // 不需要另记一份「这条上次是什么状态」。
+        const gone = Object.values(prev).filter(p => isJobActive(p) && !next[p.id])
+        if (gone.length) void settleVanished(gone)
         // ⚠️ 只有还有活的才排下一轮；否则一个「全是失败」的列表会永远每 1.5 秒
         // 打一次请求 —— 而它已经不会有任何变化了。
         if (list.some(isJobActive)) scheduleNext()

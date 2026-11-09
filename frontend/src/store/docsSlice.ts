@@ -180,7 +180,12 @@ export const createDocsSlice: StateCreator<Store, [], [], DocsSlice> = (set, get
 
   setDocs: (docs) => set({ docs }),
   setFolders: (folders) => set({ folders }),
-  addDoc: (doc) => set(s => ({ docs: [doc, ...s.docs] })),
+  // 按 id 覆盖，**不是无条件前插**：同一篇文档可能由两条路先后插入（合成流活着时
+  // `onDone` 先插一次，`jobsSlice` 的终态补偿又插一次 —— 两条路各自都可能先到）。
+  // 无条件前插的结果是列表里出现两条同 id 的记录，点哪条都打开同一篇。
+  addDoc: (doc) => set(s => ({
+    docs: [doc, ...s.docs.filter(d => d.id !== doc.id)],
+  })),
   /**
    * 就地补记「这篇已有某产物」——生成 / EPUB 解读刚落盘时调用（**服务端确认存在后**才调）。
    *
