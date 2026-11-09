@@ -2,6 +2,7 @@
  * 插件管理域 — 列表 / 启停 / 卸载 / 配置（EnginePlugin v1）。
  */
 import { apiFetch, BASE, isTauriEnv, type ConfigField } from './core'
+import type { JobInfo } from './jobs'
 
 export interface PluginInfo {
   name: string
@@ -80,15 +81,19 @@ export async function savePluginConfig(name: string, config: Record<string, unkn
   return r.json()
 }
 
-export interface InstallDepsResult {
-  status: 'ok' | 'no-requirements' | 'error' | 'no-python'
-  python?: string
-  error?: string
-  hint?: string
+export interface InstallDepsAccepted {
+  job: JobInfo
+  /** false = 同一插件的安装任务已经在跑，返回的是那条已有任务（幂等） */
+  created: boolean
 }
 
-/** 一键安装插件依赖（建 venv + pip install 国内镜像源）— 耗时，前端需 loading */
-export async function installPluginDeps(name: string): Promise<InstallDepsResult> {
+/**
+ * 一键安装插件依赖（建 venv + pip install 国内镜像源）。
+ *
+ * ⚠️ **2026-11-10 起是异步的**：返回 202 + 任务本体，pip 跑在后端队列里。调用方
+ * 把 `job` 交给 `trackJob` 就能在任务面板看到进度；不能再用返回值判断「装好了没有」。
+ */
+export async function installPluginDeps(name: string): Promise<InstallDepsAccepted> {
   const r = await apiFetch(`${BASE}/plugins/${encodeURIComponent(name)}/install-deps`, {
     method: 'POST',
   })

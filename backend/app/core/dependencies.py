@@ -88,3 +88,14 @@ def get_query_service(request: Request) -> QueryService:
         request.app.state.store,
         getattr(request.app.state, "search_engine", None),
     )
+
+
+def get_job_queue(request: Request):
+    """注入任务队列（`services/job_queue.py`）。
+
+    ⚠️ **直接取属性，不做 `getattr(...)` 兜底，也不按需现造一个**：队列是「后台
+    循环 + 一张表」的成对存在（同 `get_vector_searcher` 那条）。现造一份的失效形态是
+    `POST /api/jobs` 建了一条 `queued` 记录，而**没有任何循环来认领它** —— 前端
+    看到任务永远「排队中」，不报错。取不到就 500，让部署/启动问题当场显形。
+    """
+    return request.app.state.job_queue

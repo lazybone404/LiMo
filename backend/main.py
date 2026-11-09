@@ -435,16 +435,43 @@ async def startup():
     elif _rerank["enabled"]:
         logging.getLogger(__name__).info("对话侧检索重排已启用")
 
+    # ── 任务队列（长操作托管）──
+    # `{data_dir}/jobs.db` 是**独立文件**：`search.db` 有损坏自愈（删库重建），
+    # 并进去的话一次自愈会连带清掉「上次那个安装到底成了没有」的唯一记录。
+    #
+    # ⚠️ 启动失败**不让应用起不来**（同 VectorStore 的取舍）：任务队列是增强，
+    # 一条坏的 jobs.db 不该把整个知识库挡在门外。但也不静默 —— 报 error，且
+    # `app.state.job_queue` 保持未设置，`/api/jobs` 会直接 500 而不是伪造空列表。
+    try:
+        from app.services.job_handlers import register_builtin_handlers
+        from app.services.job_queue import JobQueue
+        from app.services.job_store import JobStore
+
+        _queue = JobQueue(JobStore(config.get("data_dir", "data")))
+        register_builtin_handlers(_queue)
+        _recovered = await _queue.start()
+        app.state.job_queue = _queue
+        if _recovered["requeued"] or _recovered["failed"]:
+            logging.getLogger(__name__).info(
+                "任务队列恢复：重排队 %d 条，标记失败 %d 条",
+                _recovered["requeued"], _recovered["failed"],
+            )
+    except Exception as e:  # noqa: BLE001 —— 见上方注释
+        logging.getLogger(__name__).error("任务队列启动失败：%s", e)
+
 
 @app.on_event("shutdown")
 async def shutdown():
-    """停掉后台任务（目前只有向量索引 worker）。
+    """停掉后台任务：向量索引 worker + 任务队列。
 
     具体的停法（`set()` 与 `cancel()` **两个都要**、以及为什么）住在
-    `vector_runtime._stop_worker` —— 运行时关开关走的是同一个函数。
+    `vector_runtime._stop_worker` 与 `JobQueue.stop`。
     """
     from app.services.vector_runtime import stop_vector_runtime
     await stop_vector_runtime(app)
+    queue = getattr(app.state, "job_queue", None)
+    if queue is not None:
+        await queue.stop()
 
 
 @app.get("/health")
@@ -454,7 +481,8 @@ async def health():
 
 
 # 路由（files 在 ingest 之前——/files/{id}/original 比 /files/{id}/{name} 更具体，必须先匹配）
-from app.routers import ingest, generate, config as config_router, capabilities, chat, model, process, files, export, conversations, plugins, references, epub, markdown_edit, folders, synthesis, classify
+from app.routers import ingest, generate, config as config_router, capabilities, chat, model, process, files, export, conversations, plugins, references, epub, markdown_edit, folders, synthesis, classify, jobs
+app.include_router(jobs.router, prefix="/api")
 app.include_router(folders.router, prefix="/api")
 # 自动分类（preview 只建议不写、commit 一次写盘）——紧邻 synthesis，同属「文档库批量动作」
 app.include_router(classify.router, prefix="/api")

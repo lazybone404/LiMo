@@ -18,6 +18,7 @@ import { createChatSlice } from './chatSlice'
 import { createUiSlice } from './uiSlice'
 import { createToastSlice } from './toastSlice'
 import { createUpdateSlice } from './updateSlice'
+import { createJobsSlice } from './jobsSlice'
 import { deleteStreamBuffersForDoc } from './streamBuffers'
 import type { Store } from './types'
 
@@ -40,6 +41,7 @@ export const useStore = create<Store>()((...a) => {
     ...createUiSlice(...a),
     ...createToastSlice(...a),
     ...createUpdateSlice(...a),
+    ...createJobsSlice(...a),
 
     // 跨 slice 动作（类型见 types.ts 的 AppSlice）
     purgeDocArtifacts: (ids) => {

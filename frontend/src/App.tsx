@@ -202,6 +202,15 @@ export default function App() {
     return startHealthPoll()
   }, [backendReady])
 
+  // 后端任务（插件依赖安装等）在页面加载后先读一次：它们的状态住在后端 `jobs.db`，
+  // 页面刷新不会动它们，而前端 store 是空的。不读的话，昨天那个还在跑的安装
+  // 会一直看不见，直到某个页面恰好又提交了一次任务。
+  // 后续轮询由 `jobsSlice.refreshJobs` 自己在「还有活跃任务」时安排。
+  useEffect(() => {
+    if (!backendReady) return
+    void useStore.getState().refreshJobs()
+  }, [backendReady])
+
   // ── 启动时的静默更新检查 ──
   // 三个前提缺一不可：桌面版（浏览器里没有 `invoke`）、后端已就绪（不然又要和冷启动抢）、
   // 距上次检查超过 24 小时（节流，见 `lib/update-prefs.ts`）。

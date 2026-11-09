@@ -3,10 +3,12 @@ import { useStore, type DocEntry } from '../../store'
 import { cancelTask } from '../../api/taskManager'
 import {
   X, GripHorizontal, FileText, Image, RefreshCw, ListTodo, Check, AlertTriangle,
-  Download, RotateCcw,
+  Download, RotateCcw, Package,
 } from 'lucide-react'
 import { useElapsed } from '../../hooks/useElapsed'
 import { isUpdateBusy } from '../../store/updateSlice'
+import { isJobActive } from '../../store/jobsSlice'
+import type { JobInfo } from '../../api/jobs'
 import { formatSize } from '../../lib/format'
 
 /**
@@ -34,6 +36,9 @@ export function TaskPanel() {
   // 应用更新是**另一种「进行中的长任务」**：不挂在某篇文档上，但同样要几分钟、
   // 同样会在用户离开设置页之后继续跑。所以它在这个面板里占一行。
   const update = useStore(s => s.update)
+  // 后端任务（插件依赖安装等）。状态住在后端 `jobs.db`，这里只是镜像。
+  const jobs = useStore(s => s.jobs)
+  const cancelJobById = useStore(s => s.cancelJobById)
 
   // 拖动状态
   const panelRef = useRef<HTMLDivElement>(null)
@@ -45,12 +50,19 @@ export function TaskPanel() {
 
   const entries = Object.entries(tasks)
   const showUpdate = isUpdateBusy(update)
+  // 只显示「进行中 + 失败」：后端列表已经这么过滤，但 `trackJob` 可能塞进来一条
+  // 提交瞬间就结束的任务，那行不该赖在面板上等一次永远不会发生的轮询。
+  const jobList = Object.values(jobs).filter(j => isJobActive(j) || j.status === 'failed')
   // 「有东西在跑」的总行数 —— 自动关闭、头部角标、空态三处都看它。
   // ⚠️ 只看 `entries.length` 时，更新下载中面板会在 1.5 秒后自己关掉，
   // 而下载还在继续 —— 正好把「看不见但没停」这个毛病又做了一遍。
-  const rowCount = entries.length + (showUpdate ? 1 : 0)
-  // 安装会让应用退出，正在跑的生成 / 转录会断在半路（它们没有断点续传）。
+  // 三个来源（文档任务 / 应用更新 / 后端任务）必须**都算进来**，否则同一条
+  // 三个来源里有任何一个漏了，都会重现「自动关闭 + 任务还在跑」。
+  const rowCount = entries.length + (showUpdate ? 1 : 0) + jobList.length
+  // 安装会让应用退出，正在跑的生成 / 转录 / 后端任务会断在半路（没有断点续传）。
   const anyTaskRunning = entries.some(([, t]) => t.status === 'running')
+    || jobList.some(isJobActive)
+  const hasCancellable = entries.length > 0 || jobList.some(isJobActive)
 
   // 拖动
   const onDragStart = useCallback((e: React.MouseEvent) => {
@@ -129,6 +141,7 @@ export function TaskPanel() {
       ) : (
         <div className="max-h-[300px] overflow-y-auto">
           {showUpdate && <UpdateTaskRow anyTaskRunning={anyTaskRunning} />}
+          {jobList.map(job => <JobTaskRow key={job.id} job={job} />)}
           {entries.map(([docId, task]) => {
             const meta = KIND_META[task.kind] || { label: task.kind, Icon: FileText, color: 'text-dimmed', bg: 'bg-surface-hover' }
             const title = getTitle(docId, task)
@@ -180,7 +193,7 @@ export function TaskPanel() {
       )}
 
       {/* 底部 */}
-      {entries.length > 0 && (
+      {hasCancellable && (
         <footer className="border-t border-border-light px-4 py-2 bg-surface flex justify-between items-center">
           <span className="text-[10px] text-disabled">拖拽移动</span>
           <button
@@ -189,12 +202,90 @@ export function TaskPanel() {
               const baseKey = id.startsWith('__import__') ? id : id.includes('__') ? id.slice(0, id.indexOf('__')) : id
               cancelTask(baseKey)
               setProcessing(id, null)
-            }); }}
+            }); jobList.forEach(job => {
+              if (isJobActive(job)) void cancelJobById(job.id)
+            }) }}
             className="flex items-center gap-1 px-2.5 py-1 text-[10px] font-medium text-error hover:bg-error/10 rounded-md transition-colors">
             <AlertTriangle size={10} />
             取消全部
           </button>
         </footer>
+      )}
+    </div>
+  )
+}
+
+/** 后端任务的图标。**中文名不在这里** —— `job.label` 由后端注册表下发。
+ *  这张表只决定「用哪个图标、什么颜色」，不认识的 kind 走默认样式，文字仍然正确。 */
+const JOB_META: Record<string, { Icon: typeof Package; color: string; bg: string }> = {
+  'plugin.install': { Icon: Package, color: 'text-accent', bg: 'bg-accent/10' },
+}
+
+/**
+ * 后端任务（`jobs.db`）在任务面板里的那一行。
+ *
+ * 与文档任务的区别只在**动作**：失败的任务只能「忽略」（重试入口在它自己的页面，
+ * 比如设置 → 插件那张卡片），因为重试要带该业务自己的参数与幂等键 —— 任务面板
+ * 不认识「重新提交一个 plugin.install」意味着什么。
+ */
+function JobTaskRow({ job }: { job: JobInfo }) {
+  const cancelJobById = useStore(s => s.cancelJobById)
+  const dismissJobById = useStore(s => s.dismissJobById)
+
+  const meta = JOB_META[job.kind] || { Icon: ListTodo, color: 'text-dimmed', bg: 'bg-surface-hover' }
+  const active = isJobActive(job)
+  const failed = job.status === 'failed'
+  const queued = job.status === 'queued'
+  const pct = active && job.progress !== null ? Math.round(job.progress * 100) : null
+  // 插件依赖安装这类任务，光看「安装插件依赖」不知道是哪个插件。
+  const target = typeof job.payload?.name === 'string' ? job.payload.name : ''
+
+  return (
+    <div
+      data-job-task
+      className={`group flex items-center gap-3 px-4 py-2.5 border-b border-black/[0.04] transition-colors last:border-b-0 ${failed ? 'bg-error/[0.04]' : 'hover:bg-surface-hover'}`}
+    >
+      <div className={`shrink-0 flex items-center justify-center w-8 h-8 rounded-xl ${failed ? 'bg-error/10' : meta.bg}`}>
+        {failed
+          ? <AlertTriangle size={15} className="text-error" />
+          : <meta.Icon size={15} className={meta.color} />}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-[12px] font-medium text-foreground truncate leading-tight">
+          {job.label}{target ? ` · ${target}` : ''}
+        </p>
+        <p className="text-[11px] mt-0.5 min-w-0">
+          {failed ? (
+            <span className="text-error">{job.error || '未知错误'}</span>
+          ) : active ? (
+            <span className="flex items-center gap-1 text-disabled">
+              <span className="inline-block w-1 h-1 rounded-full bg-success animate-pulse" />
+              {job.cancel_requested ? '正在取消…' : (job.message || (queued ? '排队中' : '进行中'))}
+              {pct !== null ? ` ${pct}%` : ''}
+              {!queued && <Elapsed startedAt={job.started_at ?? undefined} />}
+            </span>
+          ) : (
+            <span className="text-disabled">{job.status === 'cancelled' ? '已取消' : '已完成'}</span>
+          )}
+        </p>
+      </div>
+      {active ? (
+        <button
+          onClick={() => { void cancelJobById(job.id) }}
+          disabled={job.cancel_requested}
+          title={job.cancel_requested ? '正在取消，当前步骤结束后停止' : '取消任务'}
+          className="shrink-0 opacity-50 group-hover:opacity-100 disabled:opacity-30 disabled:cursor-not-allowed p-1 rounded-md hover:bg-error/10 text-disabled hover:text-error transition-all"
+        >
+          <X size={14} />
+        </button>
+      ) : (
+        <button
+          onClick={() => { void dismissJobById(job.id) }}
+          title="关闭"
+          className="shrink-0 opacity-50 group-hover:opacity-100 p-1 rounded-md hover:bg-surface-hover text-disabled hover:text-foreground transition-all"
+        >
+          <X size={14} />
+        </button>
       )}
     </div>
   )
@@ -292,12 +383,15 @@ function UpdateTaskRow({ anyTaskRunning }: { anyTaskRunning: boolean }) {
 }
 
 /** 触发 TaskPanel 的入口按钮。
- *  ⚠️ 角标计数必须与面板里的行数同源（`isUpdateBusy`），否则「面板里有一行、
- *  入口显示 0」或者反过来 —— 两个数字各自算一份就是这种漂移的来历。 */
+ *  ⚠️ 角标计数必须与面板里的行数同源，否则「面板里有一行、入口显示 0」或者反过来 ——
+ *  两个数字各自算一份就是这种漂移的来历。三处来源（`processingTasks` / 更新 /
+ *  后端任务）都要算，且判定函数与面板里逐字相同（`isUpdateBusy` / `isJobActive`）。 */
 export function TaskPanelToggle() {
   const tasks = useStore(s => s.processingTasks)
   const update = useStore(s => s.update)
-  const count = Object.keys(tasks).length + (isUpdateBusy(update) ? 1 : 0)
+  const jobs = useStore(s => s.jobs)
+  const jobCount = Object.values(jobs).filter(j => isJobActive(j) || j.status === 'failed').length
+  const count = Object.keys(tasks).length + (isUpdateBusy(update) ? 1 : 0) + jobCount
 
   return (
     <button

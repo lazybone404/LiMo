@@ -24,7 +24,6 @@ from app.core.origin import ensure_trusted_request
 from app.engines.plugin_loader import (
     PLUGIN_REGISTRY,
     enumerate_plugins,
-    install_plugin_deps,
     set_plugin_config,
     set_plugin_enabled,
     uninstall_plugin,
@@ -184,16 +183,33 @@ async def delete_plugin(request: Request, name: str, cfg=Depends(get_config_dep)
     return {"status": "ok", "removed": removed}
 
 
-@router.post("/plugins/{name}/install-deps")
+@router.post("/plugins/{name}/install-deps", status_code=202)
 async def install_deps(request: Request, name: str):
-    """一键安装插件依赖 — 建 venv + pip install（国内镜像源）。
+    """一键安装插件依赖 — 建 venv + pip install（国内镜像源）。**提交后台任务，不等结果**。
 
-    耗时操作放线程池（模式 15）；失败显式化：返回 status=error/no-python + 原因/引导。
-    打包版无系统 Python → no-python 降级引导（不静默失败）。
+    ⚠️ **2026-11-10 起不再同步等 pip 跑完**。原先的问题有两个，第二个更要紧：
+    ① 用户切走页面时组件卸载，进度与结果一起丢了（而 pip 照常在跑）；
+    ② 回到设置页时按钮已复位，可以对**同一个插件**再点一次 —— 两个 pip 并发写
+       同一个 `.venv`，产物大概率坏掉而两次都「成功」。
+
+    现在返回 `{job, created}`（202），进度 / 结果 / 失败都在任务面板里。幂等键
+    `plugin.install:{name}` 保证同一插件同时只有一条安装任务（`created=false`
+    表示命中了正在跑的那条）。
     """
     ensure_trusted_request(request)
     _require_plugin(name)
-    return await asyncio.to_thread(install_plugin_deps, name)
+    # ⚠️ **刻意不用 `Depends(get_job_queue)`**：FastAPI 在进入函数体之前解析依赖，
+    # 于是「队列没起来」会先于 `ensure_trusted_request` 炸成一个 500 —— 陌生来源
+    # 拿到 500 而不是 403，守卫测试也会因此失去区分力（跨站请求本来什么都不该做）。
+    # 守卫必须排在最前，所以这里在函数体里取。
+    queue = request.app.state.job_queue
+    from app.routers.jobs import _job_json
+
+    job, created = queue.submit(
+        "plugin.install", {"name": name}, f"plugin.install:{name}",
+    )
+    logger.info("插件依赖安装已入队：%s (job=%s created=%s)", name, job.id[:8], created)
+    return {"job": _job_json(job, queue), "created": created}
 
 
 @router.put("/plugins/{name}/config")

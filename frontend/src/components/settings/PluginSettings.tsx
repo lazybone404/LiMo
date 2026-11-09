@@ -2,7 +2,7 @@
  * 插件管理页 — 设置页「插件」tab（EnginePlugin v1）
  * 按 category 分组渲染（类别无关），卡片含展示名/能力描述/license 徽章/启用开关/卸载/config_schema 表单。
  */
-import { useState, useEffect, useCallback, type ChangeEvent } from 'react'
+import { useState, useEffect, useCallback, useRef, type ChangeEvent } from 'react'
 import {
   listPlugins, setPluginEnabled, deletePlugin, savePluginConfig, restartBackend,
   installPluginDeps, installPluginZip,
@@ -10,6 +10,7 @@ import {
 } from '../../api/plugins'
 import { getErrorMessage } from '../../api/core'
 import { useStore } from '../../store'
+import { isJobActive } from '../../store/jobsSlice'
 import { Puzzle, Trash2, Loader2, RefreshCw, Upload } from 'lucide-react'
 
 const CAT_LABELS: Record<string, string> = {
@@ -105,27 +106,39 @@ function ConfigForm({ plugin }: { plugin: PluginInfo }) {
 
 function PluginCard({ plugin, onChanged }: { plugin: PluginInfo; onChanged: () => void }) {
   const addToast = useStore(s => s.addToast)
+  const jobs = useStore(s => s.jobs)
+  const trackJob = useStore(s => s.trackJob)
   const [busy, setBusy] = useState(false)
-  const [installing, setInstalling] = useState(false)
-  const [installError, setInstallError] = useState<string | null>(null)
+
+  // 「安装中 / 安装失败」**不在组件里存状态，而是从后端任务里读**：
+  // 用户切走这个页面时组件卸载，本地 state 会丢，而后端的 pip 还在跑 ——
+  // 状态只留一份（`jobs.db`），回来时按任务的真实状态重新渲染。
+  const installJob = Object.values(jobs).find(
+    j => j.kind === 'plugin.install' && j.payload?.name === plugin.name,
+  )
+  const installing = !!installJob && isJobActive(installJob)
+  const installError = installJob?.status === 'failed' ? installJob.error : null
+
+  // 任务结束时刷新插件列表（成功时 `depsInstalled` 会变 true）。
+  // ⚠️ 判据是「安装中 → 不安装中」这个**边沿**：成功的那条会从任务列表里消失
+  // （后端默认列表只留进行中 + 失败），所以看不到它的终态；而失败的那条仍留在
+  // `jobs` 里，同一帧里 `installError` 已经有值，不会误弹成功 toast。
+  const wasInstalling = useRef(false)
+  useEffect(() => {
+    if (wasInstalling.current && !installing) {
+      onChanged()
+      if (!installError) addToast('依赖安装完成，重启后端生效', 'success')
+    }
+    wasInstalling.current = installing
+  }, [installing, installError, onChanged, addToast])
 
   const handleInstallDeps = async () => {
-    setInstalling(true)
-    setInstallError(null)
     try {
-      const res = await installPluginDeps(plugin.name)
-      if (res.status === 'ok') {
-        addToast('依赖安装成功，重启后端生效', 'success')
-        onChanged()  // 重拉 → depsInstalled 变 true
-      } else if (res.status === 'no-python') {
-        setInstallError(`${res.error}\n${res.hint || ''}`)
-      } else if (res.status === 'error') {
-        setInstallError(`${res.error || '安装失败'}\n\n手动安装：cd ~/.limo/plugins/${plugin.name} && python -m venv .venv && .venv/Scripts/pip install -r requirements.txt`)
-      }
+      // 202 + 任务本体：把任务放进 store，进度与结果都在任务面板里看。
+      const { job } = await installPluginDeps(plugin.name)
+      trackJob(job)
     } catch (e) {
-      setInstallError(getErrorMessage(e))
-    } finally {
-      setInstalling(false)
+      addToast(`安装失败: ${getErrorMessage(e)}`, 'error')
     }
   }
 
