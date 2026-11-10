@@ -26,8 +26,9 @@
 | ②d | 索引就绪 → `GET /health` 200 | 0.46 |
 | | **合计** | **7.45** |
 
-②c 已在 0.5.26 处理掉：启动不再全量重排索引，改成按内容指纹对账，同一份库从 4.91s
-降到 **0.12s**（改法与四条判据见 [search-retrieval.md](search-retrieval.md) §1.3）。
+②c 已在 0.5.26 处理掉：启动不再全量重排索引，改成按内容指纹对账。热缓存配对实测
+全量 3.3s → 增量 **0.11s**（表里那个 4.91s 是冷缓存下的整链实测；改法与四条判据见
+[search-retrieval.md](search-retrieval.md) §1.3）。
 `perf.log` 同时新增三组打点：`startup.import` / `startup.engines` / `startup.search_index`。
 
 **还剩两段，都还没动：**
