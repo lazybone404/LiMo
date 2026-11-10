@@ -33,7 +33,9 @@
     "targets": "all",
     "windows": {
       "nsis": {
-        "template": "nsis/installer.nsi"
+        "template": "nsis/installer.nsi",
+        "installerHooks": "nsis/hooks.nsh",
+        "installMode": "perMachine"
       }
     },
     "externalBin": [

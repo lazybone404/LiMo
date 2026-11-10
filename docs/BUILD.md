@@ -52,6 +52,52 @@ npx tauri build
 
 ---
 
+## 安装器的两个必需配置（2026-11-10 实测得出）
+
+`tauri.conf.json` 的 `bundle.windows.nsis` 里有两项不是可选项，缺任何一项都会在真实装机上出问题，而构建过程不会报错。
+
+```json
+"nsis": {
+  "template": "nsis/installer.nsi",
+  "installerHooks": "nsis/hooks.nsh",
+  "installMode": "perMachine"
+}
+```
+
+### `installMode: "perMachine"` —— 不给它，装到一半就失败
+
+默认值是 `currentUser`，安装器落点是 `%LOCALAPPDATA%\LiMo`，而**那个目录同时是 LiMo 的数据目录**（`logs/`、`secrets.bin` 就住在那儿），程序文件和数据会混在一起。
+
+更麻烦的是升级路径：如果机器上原本有一份装在 `C:\Program Files\LiMo`（早期版本留下的），安装器会沿用那个目录，但自己的 manifest 是 `asInvoker` —— 不提权。结果就是往 Program Files 写第一个文件时被拒：
+
+```
+Error opening file for writing: C:\Program Files\LiMo\_internal\aiohttp\_headers.pxi
+```
+
+报错停留在哪个文件是随机的（取决于解包顺序），很容易被误判成「文件被占用」。实测排除过的说法：
+
+- **不是文件锁**：应用完全退出后跑，退出码仍是 1、零写入，`_headers.pxi` 在运行时也不会被任何进程打开；
+- **不是磁盘满**：当时 C 盘剩 133 GB；
+- **不是安装包损坏**：SHA256 与 Release 上的一致。
+
+根因是权限：`icacls "C:\Program Files\LiMo"` 显示 `BUILTIN\Users:(RX)`，普通用户只能读和执行。改成 `perMachine` 后 manifest 变成 `requireAdministrator`，双击直接弹 UAC，安装落点固定为 `Program Files`。
+
+> 验证方法不用装机：从 exe 里把 manifest 读出来看一行即可。`perMachine` 应为 `requireAdministrator`，默认值应为 `asInvoker`。
+
+### `installerHooks` —— 不给它，覆盖安装会留下占端口的孤儿
+
+模板自带的 `CheckIfAppIsRunning` 只按主程序名关进程，也就是只认识 `limo.exe`、不认识侧车 `LiMoBackend.exe`。覆盖安装时主程序被关掉，侧车继续活着并占着 `127.0.0.1:7413`，**安装器退出码 0、看起来一切正常**，但新版本启动时后端起不来，用户看到的是启动失败屏。
+
+`nsis/hooks.nsh` 在 `NSIS_HOOK_PREINSTALL` 与 `NSIS_HOOK_PREUNINSTALL` 里各杀一次侧车：
+
+```nsh
+nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM LiMoBackend.exe'
+```
+
+只在 PREINSTALL 杀侧车、不杀 `limo.exe`：主程序交给模板自己的检查处理，交互模式下它会先问「是否关闭正在运行的应用」，比直接杀掉礼貌。
+
+---
+
 ## 发版：签名与 `latest.json`
 
 上面的 1→2→3 是**日常打包**（打了包不发）。发版要多做三件事：签名、生成清单、上传。
