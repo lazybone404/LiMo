@@ -117,7 +117,7 @@ data-font="system|kaiti|wenkai|…" ← 阅读字体（5种，4系统+1web）
 | [plugins.md](docs/plugins.md) | 插件标准：六个模板 + 三类基类（含常驻子进程 NDJSON 协议）+ 开发 API + `precheck` + GitHub 安装 + 安全声明 | 开发 / 安装 / 调试插件 |
 | [frontend-patterns.md](docs/frontend-patterns.md) | 前端开发手册：状态管理 / 取消机制 / TaskPanel / 布局 / 主题轴 / `limo-block` / 十二种内容块 | 改前端任何东西；先读开头的「关键陷阱速查」 |
 | [export-pipeline.md](docs/export-pipeline.md) | 导出架构 / 两条路径 / Tab→内容映射 / PDF 导出 / 打印 CSS / 卡片骨架跟随 / 新增格式落点清单 | 改导出、新增 tab 或格式、改打印样式 |
-| [patterns.md](docs/patterns.md) | 关键模式 73 条：前端 #1-#8 / 后端 #9-#31 / 同源与成对判据 #32-#66 / CSS 宿主陷阱 #67-#71 / 字节读路径 #72 / 状态寿命判据 #73 | **写任何模块之前**；查「这个坑踩过没有」 |
+| [patterns.md](docs/patterns.md) | 关键模式 74 条：前端 #1-#8 / 后端 #9-#31 / 同源与成对判据 #32-#66 / CSS 宿主陷阱 #67-#71 / 字节读路径 #72 / 状态寿命判据 #73 / 新增长操作的五个落点 #74 | **写任何模块之前**；查「这个坑踩过没有」 |
 | [constants-home.md](docs/constants-home.md) | 公共常量与判据的「家」：60 余处唯一真相源逐条列表 | **写新代码前先查**；表里有的 import，不复制 |
 | [roadmap.md](docs/roadmap.md) | 方向与进度：按域分组的 ✅/🟡/❌ 清单 + 「规划中」的想法池 | 查「这个功能做了没有」「有没有人想过要做」。**不是规则文件** |
 | [TODO.md](docs/TODO.md) | 短期待办：已决定要做、做法清楚的几条，做完即删 | 开工前看「眼下该做什么」。⚠️ 与 roadmap **不重叠**，同一条只住一处 |
@@ -694,7 +694,7 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 - **并发安全**：Store `threading.Lock` 防 RMW 竞态；engine `copy.copy()` 防 api_key 串用
 - **安全加固**：path traversal 防护、上传 2GB 预检、SSRF 防护（`url_security` 共享校验，5 个下载入口全部加固）
 
-## 关键模式（73 条）
+## 关键模式（74 条）
 
 > **完整内容见 [docs/patterns.md](docs/patterns.md)** —— 实现中易错的关键约束，新增代码必须遵守。
 >
@@ -716,6 +716,8 @@ Provider → EnabledModel（能力标签）→ SceneModels（`generate` / `chat`
 > `#73` 是**状态的寿命判据**：长操作的状态必须有一个组件之外的读口，判据是
 > 「组件卸载以后，这份状态还能从哪里读回来？」—— 答不上来就说明它住在 `useState` 里，
 > 而操作在后台照常推进。
+> `#74` 是**新增一个长操作的完整五步**（判该不该进 → 注册 kind → 提交方 → 面板 → 结果补偿），
+> 是 `#73` 落在具体改动上的那张清单 —— 前三步做完任务能跑、能显示，**结果仍接不回来**。
 >
 > 本文件其余部分（架构、管道、导出、数据流）仍在下方，模式里的 `#NN` 交叉引用一律指
 > **[docs/patterns.md](docs/patterns.md)**。

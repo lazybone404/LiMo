@@ -1,4 +1,4 @@
-# 关键模式（73 条）
+# 关键模式（74 条）
 
 > 从 [CLAUDE.md](../CLAUDE.md) 拆出（2026-10-06）。原文件 184KB，而这一段的**起点已越过
 > 64KB** —— 等于日常根本不加载，偏偏它才是改代码时最该守的东西。拆开后按需读取，
@@ -13,6 +13,8 @@
 > `#72` 是**字节读路径**（`decode` 不替你做 `read_text` 做的两件事：剥 BOM、归一换行）；
 > `#73` 是**状态的寿命判据**（长操作的状态必须有一个组件之外的读口，判据是
 > 「组件卸载以后，这份状态还能从哪里读回来？」）。
+> `#74` 是**新增一个长操作的完整五步**（判该不该进 → 注册 kind → 提交方 → 面板 → 结果补偿），
+> 是 `#73` 落到具体改动上的那张清单。
 > 每条都带「为什么」与「怎么避开」，不是风格偏好。
 
 ---
@@ -150,3 +152,17 @@
     - `ExportPanel` / 分类预览：**刻意**留在组件里。写下来是为了让下一个人别再「顺手统一」——把无副作用的视图搬到 store 只是多一份要清的状态。
 
     **测试的形状只有一种**：挂载 → 启动 → 卸载 → 重挂载 → 断言状态还在。注意不能只断言「重新挂载后能渲染」，那在实现是「重挂载就重新发一次请求」时也通过；要断言的是**同一次操作的那份状态**（进度、已下字节、失败原因）原样回来。⚠️ 同一个错法还有第二面：**入口会有多个，状态必须只有一份**。更新流程有卡片 / 任务面板 / 顶栏三个视图，它们全部读写 `updateSlice` 的同一份 `update`；插件安装的「正在装」不是组件自己的 `installing` 布尔，而是**从 `jobs` 里按 `kind + payload.name` 查出来的**。任何一处各存一份，卸载 / 刷新后就只有那一处会坏。（2026-11-10 长操作托底）
+
+74. **新增一个长操作 = 五步，缺哪一步都是「看得到、接不回来」**：`#73` 回答「这种状态该住哪一层」，这条回答「照着改哪几处」。三步做完能让任务跑起来并显示在面板上，**但结果接不回来** —— 而那只在「用户切走 / 刷新过页面」时才出现，日常点一遍是绿的。五步依次是：
+
+    **① 判该不该进**（[job_handlers.py](../backend/app/services/job_handlers.py) 模块文档「哪些东西该迁到这里」）。主判据：**组件卸载之后，这个操作的结果从哪读回来**，答案必须指向一个具体的端点或文件。两条排除项：结果只活在这条连接上（批量导出，关掉面板等于放弃，那是模态语义）；已有等价读口（重新索引住 `VectorWorker`，导入 / 转录 / 生成住 `processingTasks`）。**时长不是判据** —— 队列是单消费者串行的，30 毫秒的写盘排在十几分钟的合成后面等于点了没反应，分类提交正是因此不进。
+
+    **② 注册 kind**：`queue.register(kind, handler, label=…, retry_on_restart=…, timeout=…)`，在 `register_builtin_handlers` 里。三件事各自有判据 —— `label` 是给人看的中文名（前端经 `GET /api/jobs/kinds` 取，**不抄第二份**）；`retry_on_restart` 问「重跑会不会再花钱 / 能不能容忍半程副作用」（`synthesis` 标 `False`：一次计费的重跑等于让用户为一次崩溃付两次钱；`epub.interpret` 标 `True`：它自己有检查点）；`timeout` 是兜底上限，管线自己的超时应当**先到**并给出可行动的文案（`SYNTH_JOB_TIMEOUT` > `SYNTH_TOTAL_TIMEOUT` 就是这个意思）。handler 是 `async (job, ctx)`，与外界只经 `ctx.report(progress, message)` / `ctx.check_cancel()` / `ctx.watch_cancel(event)` 交互；失败抛 `JobFailed(message, detail=, code=)`，取消抛 `JobCancelled`，**不要自己 try/except 吞成一条 done 任务**。⚠️ 可续跑的操作，**进度的真相源是管线自己的文件**（`{doc}/epub_task.json`），任务行只回答「在不在跑」—— 两处都存进度就必然对不上。
+
+    **③ 提交方**：`queue.submit(kind, payload, idempotency_key=…)` 返回 `(job, created)`。接口统一回 `{"job": job_json(job, queue), "created": created}`（`job_json` 住在 [routers/jobs.py](../backend/app/routers/jobs.py)，别的路由也用它，**别自己序列化一份**）。⚠️ `created=False` 是**正常语义**（同键上一条还在跑），不是错误 —— 提交方要把它翻译成「已接到那条任务上」，而不是弹报错；幂等键只在「进行中」时占位，上一条结束后同键建新的。⚠️ **不要再加文档专属的取消端点**：`POST /api/epub/cancel/{id}` 2026-11-10 已删除，取消只有 `/api/jobs/{id}/cancel` 一处；两个入口的下场是有一处忘记处理 `cancel_requested`。
+
+    **④ 面板**：[TaskPanel.tsx](../frontend/src/components/ui/TaskPanel.tsx) 的 `JOB_META` 加一项 `{ Icon, color, bg }`（图标颜色走 Tailwind token，**不写裸 hex**），目标行按 `payload` 挑一个给人看的值（缺了会退化成显示 kind 名）。组件侧只**订阅** `jobs` 里那条记录（`Object.values(s.jobs).find(j => j.kind === … && isJobActive(j))`），不要自己起 `useState` 布尔或定时器 —— 否则就退回 `#73` 的第①层。
+
+    **⑤ 结果补偿**：[jobsSlice.ts](../frontend/src/store/jobsSlice.ts) 的 `settleVanished` 加一个 kind 分支。默认任务列表只带「进行中 + 未忽略的失败」，**结束在前端只表现为「那行消失了」**，所以必须在这里取回终态、把结果接回界面（`adoptFinishedSynthesis` 拉文档列表 / `adoptFinishedEpub` 读 notes+polished 进预览），然后 `frontend/src/test/jobsSlice.test.ts` 补两条用例：**没开着这篇**（只刷新列表 + 提示）与**正开着这篇**（产物进预览）。⚠️ 这也别挪进 SSE 回调 —— SSE 只在「有人正在看」时存在，而这里要解决的正是「没人在看」。
+
+    三条已落地实例正好覆盖不同情况：`plugin.install`（结果是一个 `.venv`，回到设置页重新拉列表就看见）、`synthesis`（结果是一篇新文档）、`epub.interpret`（结果是当前文档的两个产物 + 一份可续跑的检查点）。（2026-11-10 长操作托管收尾）
