@@ -203,13 +203,13 @@ async def install_deps(request: Request, name: str):
     # 拿到 500 而不是 403，守卫测试也会因此失去区分力（跨站请求本来什么都不该做）。
     # 守卫必须排在最前，所以这里在函数体里取。
     queue = request.app.state.job_queue
-    from app.routers.jobs import _job_json
+    from app.routers.jobs import job_json
 
     job, created = queue.submit(
         "plugin.install", {"name": name}, f"plugin.install:{name}",
     )
     logger.info("插件依赖安装已入队：%s (job=%s created=%s)", name, job.id[:8], created)
-    return {"job": _job_json(job, queue), "created": created}
+    return {"job": job_json(job, queue), "created": created}
 
 
 @router.put("/plugins/{name}/config")

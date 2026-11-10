@@ -11,6 +11,7 @@ import type { JobInfo } from '../api/jobs'
 const listJobs = vi.fn()
 const getJob = vi.fn()
 const listTranscripts = vi.fn()
+const getMarkdown = vi.fn()
 
 vi.mock('../api/jobs', () => ({
   listJobs: () => listJobs(),
@@ -22,6 +23,13 @@ vi.mock('../api/jobs', () => ({
 vi.mock('../api/transcripts', () => ({
   listTranscripts: () => listTranscripts(),
 }))
+
+// 只替换 `getMarkdown`：`api/client` 还导出 `getErrorMessage` 等，整模块替掉会连带
+// 打断其它 slice 的 import（同一份 store 在这里被真实加载）。
+vi.mock('../api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/client')>()
+  return { ...actual, getMarkdown: (id: string, mode: string) => getMarkdown(id, mode) }
+})
 
 function job(patch: Partial<JobInfo>): JobInfo {
   return {
@@ -38,6 +46,7 @@ beforeEach(() => {
   listJobs.mockReset()
   getJob.mockReset()
   listTranscripts.mockReset()
+  getMarkdown.mockReset()
   useStore.setState({ jobs: {}, docs: [], toasts: [] })
 })
 
@@ -150,5 +159,71 @@ describe('任务结束后的补偿', () => {
     await flush()
 
     expect(listTranscripts).not.toHaveBeenCalled()
+  })
+})
+
+const doneEpub = (patch: Partial<JobInfo> = {}) => job({
+  id: 'e1', kind: 'epub.interpret', label: '电子书一键解读', status: 'done',
+  payload: { doc_id: 'd1', title: '测试书' },
+  result: { doc_id: 'd1', title: '测试书', chapters_done: 3, chapters_failed: 0 },
+  finished_at: Date.now(),
+  ...patch,
+})
+
+const activeEpub = () => job({
+  id: 'e1', kind: 'epub.interpret', payload: { doc_id: 'd1' }, status: 'running',
+})
+
+describe('电子书解读结束后的补偿', () => {
+  it('没开着这篇：只刷新文档列表并提示，不去读产物', async () => {
+    useStore.setState({ jobs: { e1: activeEpub() } })
+    listJobs.mockResolvedValue([])
+    getJob.mockResolvedValue(doneEpub())
+    listTranscripts.mockResolvedValue([doc('d1', '测试书')])
+
+    await useStore.getState().refreshJobs()
+    await flush()
+
+    // `modes` 是列表拉取那一刻的快照 —— 不刷新的话切回这篇时预览区以为「没有产物」
+    expect(listTranscripts).toHaveBeenCalled()
+    expect(getMarkdown).not.toHaveBeenCalled()
+    expect(useStore.getState().toasts.some(t => t.message.includes('解读完成'))).toBe(true)
+  })
+
+  it('正开着这篇：把 notes/polished 接进预览并跳到整理版', async () => {
+    useStore.setState({ jobs: { e1: activeEpub() }, currentDocId: 'd1' })
+    listJobs.mockResolvedValue([])
+    getJob.mockResolvedValue(doneEpub())
+    listTranscripts.mockResolvedValue([doc('d1', '测试书')])
+    getMarkdown.mockImplementation(async (_id: string, mode: string) => ({
+      id: mode, mode, style: '', version: 1, edited: false, versions: [],
+      content: mode === 'notes' ? '# 导读' : '## 第1章',
+    }))
+
+    await useStore.getState().refreshJobs()
+    await flush()
+
+    const st = useStore.getState()
+    expect(getMarkdown).toHaveBeenCalledWith('d1', 'notes')
+    expect(getMarkdown).toHaveBeenCalledWith('d1', 'polished')
+    expect(st.currentContent).toBe('# 导读')
+    expect(st.currentPolishedContent).toBe('## 第1章')
+    // 列表也要重拉：`modes` 是拉取那一刻的快照，产物落盘后不刷新的话切回来会以为没有
+    expect(listTranscripts).toHaveBeenCalled()
+    expect(st.activeView).toBe('polished')
+  })
+
+  it('有失败章时提示不是「全部成功」（口径跟着 result 走）', async () => {
+    useStore.setState({ jobs: { e1: activeEpub() } })
+    listJobs.mockResolvedValue([])
+    getJob.mockResolvedValue(doneEpub({
+      result: { doc_id: 'd1', title: '测试书', chapters_done: 2, chapters_failed: 1 },
+    }))
+    listTranscripts.mockResolvedValue([doc('d1', '测试书')])
+
+    await useStore.getState().refreshJobs()
+    await flush()
+
+    expect(useStore.getState().toasts.some(t => t.message.includes('1 章失败'))).toBe(true)
   })
 })

@@ -3,7 +3,7 @@ import { useStore } from '../../store'
 import { streamGenerate, getMarkdown, listEnabledModels, listProviders, ingestURL, ingestText, ingestFile, processImage, saveEngineBindings, getErrorMessage, type EnabledModel, type Provider, type IngestErrorInfo } from '../../api/client'
 import { registerAbort, unregisterAbort } from '../../api/taskManager'
 import { cancelTask } from '../../api/taskManager'
-import { cancelEpubInterpret } from '../../api/epub'
+import { isJobActive } from '../../store/jobsSlice'
 import { getStreamBuffer, appendStreamBuffer, setStreamBuffer, deleteStreamBuffer, scheduleFlush, flushImmediate } from '../../store/streamBuffers'
 import { onConfigChanged } from '../../lib/configEvents'
 import { PanelLeftClose, XCircle, Plus, X } from 'lucide-react'
@@ -401,9 +401,17 @@ export function GenPanel() {
       cancelTask(currentDocId)
       clearDocTasks(currentDocId)
     }
-    // epub 一键解读：任务状态在后端（不走 processingTasks/abort），软取消
+    // epub 一键解读：任务跑在后端队列里（不走 processingTasks/abort），
+    // 所以这里要按 `kind + payload.doc_id` 找到任务面板里那一条再取消 ——
+    // 它已经不再有「文档专属的取消端点」了（取消的唯一入口是 `/api/jobs/{id}/cancel`）。
     if (isEpub && currentDocId) {
-      cancelEpubInterpret(currentDocId).catch(() => {})
+      const st = useStore.getState()
+      const job = Object.values(st.jobs).find(
+        j => j.kind === 'epub.interpret'
+          && (j.payload.doc_id as string | undefined) === currentDocId
+          && isJobActive(j),
+      )
+      if (job) void st.cancelJobById(job.id)
     }
     setImportProgress(''); setImportPercent(null); setImportError(null); setError(null)
     addToast('已取消', 'info')

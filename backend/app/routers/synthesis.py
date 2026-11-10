@@ -50,7 +50,7 @@ from app.generation.synthesis import (
     prepare_synthesis,
     preview_synthesis,
 )
-from app.routers.jobs import _job_json
+from app.routers.jobs import job_json
 from app.services.job_store import CANCELLED, DONE, FAILED, RUNNING
 
 router = APIRouter()
@@ -139,7 +139,7 @@ async def synthesis_stream(req: SynthesisRequest, queue=Depends(get_job_queue)):
         log.info("合成任务已入队", job=job.id[:8], created=created,
                  docs=len(params.doc_ids), mode=params.source_mode,
                  intent=params.reader_intent, model_id=params.model_id)
-        yield emit({"type": "job", "job": _job_json(job, queue)})
+        yield emit({"type": "job", "job": job_json(job, queue)})
         last_emit = loop.time()
 
         # ③ 轮询到终态。⚠️ 静默判据只对 `running` 生效：在 `queued` 里等前面的任务

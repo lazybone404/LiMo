@@ -8,8 +8,16 @@
         完成条件 = 全部章处理过，无论是否有失败章 —— 产物必定落盘，永不因单章失败卡死。
 
 中断续跑：epub_task.json 落盘状态 + 片段文件双保险。
-取消唯一入口 = POST /api/epub/cancel（软取消：cancel_event 置位，当前章 LLM 调用
-逐 chunk 检查提前返回）。不挂 disconnect_watcher —— 打包端关窗即中断，续跑靠落盘检测。
+
+**执行在后台任务队列里（2026-11-10）**：本模块只提供 `preflight` /
+`load_or_init_state` / `run_epub_job` 三个入口，由 `services/job_handlers.py` 的
+`epub.interpret` 处理器调起。两个后果：
+
+- **「在不在跑」不在这里回答**。原先它是模块内的 `_tasks` 内存表，于是切走页面、
+  折叠侧栏都看不出来。现在这条事实住在 `jobs.db`，本模块只持有「这本书解读到哪了」
+  （`epub_task.json`，续跑的检查点）。
+- **断开连接不再等于中断**。取消走队列（任务面板 → `POST /api/jobs/{id}/cancel`），
+  经 `JobContext.watch_cancel` 桥到 `cancel_event`；关掉界面只是没人看。
 
 关键约定：
 - state.chapters_done / chapters_failed 存 chapters 数组的**位置索引**（0..N-1），
@@ -22,8 +30,7 @@ import asyncio
 import json
 import logging
 import uuid
-from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from app.core.text_utils import split_into_chunks
 from app.core.types import GenerateMode, MarkdownView, Style
@@ -43,18 +50,6 @@ SUMMARY_RETRY = 2
 CALL_MAX_TOKENS = 65536            # 对齐 LLMService.MAX_TOKENS
 SKELETON_CHARS_PER_SECTION = 1500  # 骨架输入单节安全阀（防异常超长节）
 EMPTY_CHAPTER_PLACEHOLDER = "> 本章无可用文字内容（可能为纯图片/扫描页），已自动跳过。"
-
-
-@dataclass
-class EpubTask:
-    doc_id: str
-    state: dict
-    cancel_event: asyncio.Event
-
-
-# 内存任务表：doc_id → EpubTask。任务结束（完成/取消/异常）时移除；
-# 状态恢复依赖落盘的 epub_task.json + 片段文件（重启后由前端检测触发续跑）。
-_tasks: dict[str, EpubTask] = {}
 
 
 def _llm_factory(config: dict, model_id: Optional[int]) -> LLMService:
@@ -157,9 +152,14 @@ def _build_sub_summary_prompt(book_title: str, group: int, total: int, chunk: st
 # ── 状态管理 ──
 
 
-def _load_or_init_state(store, doc_id: str, total: int,
-                        model_id: Optional[int], deep: bool) -> dict:
-    """加载已有任务状态或初始化。续跑保留进度；全新/已完成则清空片段整轮重跑。"""
+def load_or_init_state(store, doc_id: str, total: int,
+                       model_id: Optional[int], deep: bool) -> dict:
+    """加载已有任务状态或初始化。续跑保留进度；全新/已完成则清空片段整轮重跑。
+
+    这就是 `epub.interpret` 的 `retry_on_restart=True` 的依据：中断后重跑只补
+    没跑完的章，已落盘片段不重复计费。⚠️ 代价是「阶段 2 中断」会重跑一次归并
+    （章节全部跳过，只重新总结），接受它 —— 那一次调用远小于整本书。
+    """
     existing = store.load_epub_task(doc_id)
     if (existing and existing.get("stage") != "done"
             and isinstance(existing.get("chapters_done"), list)):
@@ -190,12 +190,17 @@ def _persist(store, doc_id: str, state: dict) -> None:
 
 # ── 任务生命周期 ──
 
+#: 进度回调：(阶段, 已完成章数, 总章数, 当前章标题)。阶段取 "chapters" / "summary"。
+ProgressFn = Callable[[str, int, int, str], None]
 
-def start_epub_task(store, config: dict, doc_id: str,
-                    model_id: Optional[int] = None, deep: bool = False) -> dict:
-    """启动/续跑 epub 解读任务（同步创建后台 task，立即返回）。"""
-    if doc_id in _tasks:
-        raise EpubError("EPUB_BUSY", "该文档正在解读中，请等待完成或取消后重试")
+
+def preflight(store, doc_id: str) -> tuple[dict, list]:
+    """取 transcript 与章节列表；不可解读时抛 `EpubError`。
+
+    路由与 `epub.interpret` 处理器**共用这一处**：路由用它当场给出可读的错误
+    （而不是「提交成功、几秒后任务失败」），处理器用它兜住「payload 从 `jobs.db`
+    读回来时文档已经被删了」。分成两份的失效形态是两边的判据慢慢不再是同一个。
+    """
     tx = store.get_transcript(doc_id)
     if not tx:
         raise EpubError("EPUB_TX_NOT_FOUND", "文档不存在", detail=doc_id)
@@ -204,65 +209,72 @@ def start_epub_task(store, config: dict, doc_id: str,
     chapters = _parse_chapters(tx.get("rawText", ""))
     if not chapters:
         raise EpubError("EPUB_NO_CHAPTERS", "未解析到电子书章节，无法解读")
-
-    if model_id is None:
-        model_id = config.get("scene_models", {}).get("generate")
-    # LLMService 构造时快照模型配置（解析到实例属性），中途改配置不影响进行中任务
-    llm = _llm_factory(config, model_id)
-
-    state = _load_or_init_state(store, doc_id, len(chapters), model_id, deep)
-    cancel_event = asyncio.Event()
-    task = asyncio.create_task(
-        _run_epub_task(store, llm, doc_id, chapters,
-                       tx.get("title", ""), state, cancel_event)
-    )
-    _tasks[doc_id] = EpubTask(doc_id=doc_id, state=state, cancel_event=cancel_event)
-    logger.info("epub 解读启动: %s total=%d deep=%s model=%s",
-                doc_id, len(chapters), deep, model_id)
-    return {"started": True, "total_chapters": len(chapters)}
+    return tx, chapters
 
 
-async def _run_epub_task(store, llm, doc_id: str, chapters: list, book_title: str,
-                         state: dict, cancel_event: asyncio.Event) -> None:
-    try:
-        # ── 阶段 1：逐章串行（跳过已成功，重试失败）──
-        for i, ch in enumerate(chapters):
-            if cancel_event.is_set():
-                break
-            if i in state["chapters_done"]:
-                logger.debug("epub 跳过已成功章 %d（续跑恢复）", i + 1)
-                continue
-            state["current_title"] = ch.get("title", "")
-            _persist(store, doc_id, state)
+async def run_epub_job(store, llm, doc_id: str, chapters: list, book_title: str,
+                       state: dict, cancel_event: asyncio.Event,
+                       on_progress: ProgressFn | None = None) -> dict:
+    """跑完整轮解读（阶段 1 逐章 + 阶段 2 归并）。
 
-            ok = await _interpret_chapter(store, llm, doc_id, i, ch,
-                                          book_title, state, cancel_event)
-            if ok:
-                if i in state["chapters_failed"]:
-                    state["chapters_failed"].remove(i)
-                if i not in state["chapters_done"]:
-                    state["chapters_done"].append(i)
-            else:
-                if i not in state["chapters_failed"]:
-                    state["chapters_failed"].append(i)
-            state["current_title"] = ""
-            _persist(store, doc_id, state)
+    **异常不吞** —— 交给调用方（任务队列）标失败。这是相对原先 `_run_epub_task`
+    的关键一处：它把异常 `logger.exception` 之后就没了，后台崩了而界面只会看到
+    「一键解读按钮又回来了」。
 
+    返回 `{"cancelled", "chapters_done", "chapters_failed"}`。取消只在**阶段 1 的
+    边界**生效（保留已落盘片段，下次从这里续跑）；进了阶段 2 就让它跑完，否则会
+    留下一份「章节解读都在、全书总结没有」的半程产物 —— 阶段 2 中途被取消时，
+    总结退化成那句明确的「生成失败」，产物照样落盘。
+    """
+    total = len(chapters)
+
+    def emit(stage: str, current: str = "") -> None:
+        if on_progress is not None:
+            on_progress(stage, len(state["chapters_done"]), total, current)
+
+    # ── 阶段 1：逐章串行（跳过已成功，重试失败）──
+    for i, ch in enumerate(chapters):
         if cancel_event.is_set():
-            logger.info("epub 解读已取消（保留进度）: %s done=%d failed=%d",
-                        doc_id, len(state["chapters_done"]), len(state["chapters_failed"]))
-            return  # 取消：保留进度，不入阶段 2
-
-        # ── 阶段 2：全部章处理完 → 归并全书总结 → 一次性落盘 ──
-        state["stage"] = "summary"
-        logger.info("epub 进入阶段 2 归并: done=%d failed=%d",
-                    len(state["chapters_done"]), len(state["chapters_failed"]))
+            break
+        if i in state["chapters_done"]:
+            logger.debug("epub 跳过已成功章 %d（续跑恢复）", i + 1)
+            continue
+        state["current_title"] = ch.get("title", "")
         _persist(store, doc_id, state)
-        await _finalize(store, llm, doc_id, chapters, book_title, state, cancel_event)
-    except Exception as e:
-        logger.exception("epub 解读管道异常: %s", str(e)[:200])
-    finally:
-        _tasks.pop(doc_id, None)
+        emit("chapters", state["current_title"])
+
+        ok = await _interpret_chapter(store, llm, doc_id, i, ch,
+                                      book_title, state, cancel_event)
+        if ok:
+            if i in state["chapters_failed"]:
+                state["chapters_failed"].remove(i)
+            if i not in state["chapters_done"]:
+                state["chapters_done"].append(i)
+        else:
+            if i not in state["chapters_failed"]:
+                state["chapters_failed"].append(i)
+        state["current_title"] = ""
+        _persist(store, doc_id, state)
+        emit("chapters")
+
+    result = {
+        "cancelled": cancel_event.is_set(),
+        "chapters_done": list(state["chapters_done"]),
+        "chapters_failed": list(state["chapters_failed"]),
+    }
+    if result["cancelled"]:
+        logger.info("epub 解读已取消（保留进度）: %s done=%d failed=%d",
+                    doc_id, len(state["chapters_done"]), len(state["chapters_failed"]))
+        return result  # 取消：保留进度，不入阶段 2
+
+    # ── 阶段 2：全部章处理完 → 归并全书总结 → 一次性落盘 ──
+    state["stage"] = "summary"
+    logger.info("epub 进入阶段 2 归并: done=%d failed=%d",
+                len(state["chapters_done"]), len(state["chapters_failed"]))
+    _persist(store, doc_id, state)
+    emit("summary")
+    await _finalize(store, llm, doc_id, chapters, book_title, state, cancel_event)
+    return result
 
 
 async def _interpret_chapter(store, llm, doc_id: str, i: int, ch: dict,
@@ -420,12 +432,16 @@ async def _llm_retry(llm, prompt: str, cancel_event: asyncio.Event,
 
 
 def get_epub_task(store, doc_id: str) -> dict:
-    """查询 epub 任务状态。内存态优先，其次落盘。"""
-    mem = _tasks.get(doc_id)
-    state = mem.state if mem else store.load_epub_task(doc_id)
+    """读这本书**上次解读到哪了**（落盘状态，无任务文件 → `stage=None`）。
+
+    ⚠️ 这里**不回答「现在在跑吗」** —— 那条事实住在 `jobs.db`（任务面板与
+    `GET /api/epub/task` 都从队列读）。在本函数里再判一次（曾经是内存 `_tasks`）
+    的失效形态是：面板说在跑、按钮说可以再点，两处都对不上。
+    """
+    state = store.load_epub_task(doc_id)
     if state is None:
         return {
-            "running": bool(mem), "stage": None,
+            "stage": None,
             "chapters_done": [], "chapters_failed": [], "total_chapters": 0,
             "current_title": "", "remaining_chapters": 0,
             "deep": False, "model_id": None,
@@ -433,7 +449,6 @@ def get_epub_task(store, doc_id: str) -> dict:
     total = state.get("total_chapters", 0)
     done = len(state.get("chapters_done", []))
     return {
-        "running": doc_id in _tasks,
         "stage": state.get("stage"),
         "chapters_done": state.get("chapters_done", []),
         "chapters_failed": state.get("chapters_failed", []),
@@ -443,16 +458,6 @@ def get_epub_task(store, doc_id: str) -> dict:
         "deep": state.get("deep", False),
         "model_id": state.get("model_id"),
     }
-
-
-def cancel_epub_task(doc_id: str) -> bool:
-    """软取消：置 cancel_event，当前章 LLM 调用逐 chunk 检查提前返回。"""
-    task = _tasks.get(doc_id)
-    if not task:
-        return False
-    task.cancel_event.set()
-    logger.info("epub 解读取消请求: %s", doc_id)
-    return True
 
 
 def _parse_chapters(raw_text: str) -> list:

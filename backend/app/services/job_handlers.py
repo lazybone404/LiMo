@@ -55,6 +55,30 @@ PLUGIN_INSTALL_TIMEOUT = 1800.0
 #: 值只防「超时机制本身失效」——留的余量是让管线那条先到。
 SYNTH_JOB_TIMEOUT = 1200.0
 
+#: EPUB 一键解读的**兜底**上限。它是逐章串行（每章最多 3 次尝试），一本书跑
+#: 几十分钟是常态；撞到这条基本是模型端悬挂。代价可控：已落盘的章不会重烧，
+#: 到点判失败之后用户点「继续上次解读」就从断点接着跑。
+EPUB_JOB_TIMEOUT = 7200.0
+
+
+def _epub_progress(ctx: JobContext) -> Callable[[str, int, int, str], None]:
+    """把管线的 (阶段, 已完成, 总数, 当前章) 翻成任务面板上的一行文案。
+
+    进度条封顶 95%：最后 5% 留给阶段 2（全书归并，超长时是 map-reduce 的多次
+    调用）。到 100% 的那一刻必须是**真的落盘完了**，所以由 handler 在收尾时给。
+    """
+
+    def report(stage: str, done: int, total: int, current: str) -> None:
+        if stage == "summary":
+            ctx.report(progress=0.95, message="阶段 2：全书总结归并中…")
+            return
+        msg = f"逐章解读 {done}/{total}"
+        if current:
+            msg += f" · 当前：{current}"
+        ctx.report(progress=0.02 + 0.93 * (done / max(total, 1)), message=msg)
+
+    return report
+
 
 def _plugin_install(job: Job, ctx: JobContext) -> dict[str, Any]:
     """跑 `pip install -r requirements.txt`（插件自己的 `.venv`）。"""
@@ -172,6 +196,63 @@ def register_builtin_handlers(
             except Exception:  # noqa: BLE001 —— 关不掉连接不该覆盖真正的失败原因
                 pass
 
+    async def _epub_interpret(job: Job, ctx: JobContext) -> dict[str, Any]:
+        """电子书一键解读：逐章解读 + 归并总结。**可续跑**，取消保留已落盘片段。"""
+        # 延迟 import：`epub_pipeline` 连带 `app.llm` 与提示词组装，而本模块被
+        # `main.py` 在 startup 里导入 —— 放在顶部等于每次启动都付一遍。
+        from app.llm import CancelledError as LLMCancelledError
+        from app.services import epub_pipeline
+        from app.services.errors import EpubError
+
+        doc_id = str(job.payload.get("doc_id") or "").strip()
+        if not doc_id:
+            raise JobFailed("缺少文档 id")
+        model_id = job.payload.get("model_id")
+        deep = bool(job.payload.get("deep"))
+
+        # payload 是从 `jobs.db` 读回来的，排队期间文档可能已被删除 —— 与路由
+        # **同一个** `preflight`，不另写一套判据。
+        try:
+            tx, chapters = epub_pipeline.preflight(store, doc_id)
+        except EpubError as e:
+            raise JobFailed(e.message, detail=e.detail or None, code=e.code) from None
+
+        if model_id is None:
+            model_id = config_getter().get("scene_models", {}).get("generate")
+        state = epub_pipeline.load_or_init_state(
+            store, doc_id, len(chapters), model_id, deep)
+        title = tx.get("title", "")
+        ctx.report(progress=0.02, message=f"准备解读《{title}》…")
+
+        # 模型在**任务启动时**快照（LLMService 构造时解析到实例属性），中途改配置
+        # 不影响这一轮 —— 否则一本书的后半程会换一只模型，风格在中间断开。
+        llm = epub_pipeline._llm_factory(config_getter(), model_id)
+        cancel_event = asyncio.Event()
+        watcher = asyncio.create_task(ctx.watch_cancel(cancel_event))
+        try:
+            result = await epub_pipeline.run_epub_job(
+                store, llm, doc_id, chapters, title, state, cancel_event,
+                on_progress=_epub_progress(ctx),
+            )
+        except LLMCancelledError:
+            raise JobCancelled() from None
+        finally:
+            watcher.cancel()
+            try:
+                await llm.aclose()
+            except Exception:  # noqa: BLE001 —— 关不掉连接不该覆盖真正的失败原因
+                pass
+
+        if result["cancelled"]:
+            raise JobCancelled()
+        ctx.report(progress=1.0, message="解读完成")
+        return {
+            "doc_id": doc_id,
+            "title": title,
+            "chapters_done": len(result["chapters_done"]),
+            "chapters_failed": len(result["chapters_failed"]),
+        }
+
     queue.register(
         "plugin.install",
         _plugin_install,
@@ -187,5 +268,15 @@ def register_builtin_handlers(
         # 一次计费 LLM 调用：进程中断后自动重跑 = 用户为一次崩溃付两次钱。
         retry_on_restart=False,
         timeout=SYNTH_JOB_TIMEOUT,
+    )
+    queue.register(
+        "epub.interpret",
+        _epub_interpret,
+        label="电子书一键解读",
+        # 中断后重跑只补没跑完的章：`epub_task.json` 里的 `chapters_done` 决定
+        # 从哪继续，已落盘片段不重复计费。这与合成那条判据的差别正是「重跑要
+        # 不要再花一遍钱」—— 这里不要，所以可以放心自动接上。
+        retry_on_restart=True,
+        timeout=EPUB_JOB_TIMEOUT,
     )
     log.debug("内置任务类型已注册", kinds=",".join(queue.kinds))

@@ -1,98 +1,61 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../../store'
-import { getMarkdown, getErrorMessage } from '../../api/client'
-import { startEpubInterpret, getEpubTask, cancelEpubInterpret, type EpubTaskStatus } from '../../api/epub'
-import { toMarkdownMeta } from '../../lib/markdownMeta'
+import { getErrorMessage } from '../../api/client'
+import { startEpubInterpret, getEpubTask, type EpubTaskStatus } from '../../api/epub'
+import { isJobActive } from '../../store/jobsSlice'
 
 /**
  * EPUB 一键解读入口 — GenPanel 生成区（epub 专属，替代 GenerateOptions + 生成按钮）。
  *
- * 三态 UI：
- *   - running=true                     → 进度条（阶段1「第 X/Y 章 + 当前章名」/ 阶段2「归并中」）+ 取消
- *   - stage != done（有任务文件未完成）→ 「继续上次解读（还剩 Y 章）」按钮
- *   - stage == done 或 null            → 「一键解读」按钮 + 深度开关
+ * 三态 UI，与以前相同：
+ *   - running                           → 进度条（文案来自 `job.message`）+ 取消
+ *   - stage 未完成且没有活跃任务         → 「继续上次解读（还剩 Y 章）」
+ *   - stage == done 或 null             → 「一键解读」按钮 + 深度开关
  *
- * 进度不走 SSE：启动后 2s 轮询 getEpubTask 驱动；完成后刷新 notes/polished 到预览并跳 polished。
- * 取消走后端软取消（POST cancel），不挂 abortController。
+ * ⚠️ **进度不再由本组件轮询**（原先 2s 一次 `getEpubTask`）。解读跑在后端任务队列里，
+ * 于是本组件卸载（折叠侧栏、切到别的文档）不影响它；任务结束后由 `jobsSlice` 的
+ * `settleVanished` 把产物接回预览（模式 #73：「卸载以后这份状态从哪读回来」）。
+ * 本组件只订阅 `jobs` 里那条记录，并在它消失时重读一次落盘状态。
  */
 export function EpubInterpretPanel({ docId, modelId }: { docId: string; modelId: number | null }) {
   const addToast = useStore(s => s.addToast)
+  const cancelJobById = useStore(s => s.cancelJobById)
+  const trackJob = useStore(s => s.trackJob)
+  // 订阅而不是拥有：本组件卸载之后，这条记录仍然在 store 里（由 jobsSlice 轮询维护）
+  const job = useStore(s => Object.values(s.jobs).find(
+    j => j.kind === 'epub.interpret'
+      && (j.payload.doc_id as string | undefined) === docId
+      && isJobActive(j),
+  ))
   const [deep, setDeep] = useState(false)
   const [task, setTask] = useState<EpubTaskStatus | null>(null)
   const [starting, setStarting] = useState(false)
-  const [cancelling, setCancelling] = useState(false)
 
-  const isSameDoc = () => docId === useStore.getState().currentDocId
+  const running = !!job || !!task?.running
 
-  // 打开文档时加载任务状态（三态判定起点）
+  // 打开文档时加载落盘状态（「继续上次解读」的起点）
   useEffect(() => {
     let cancelled = false
-    setTask(null); setStarting(false); setCancelling(false)
-    getEpubTask(docId).then(t => { if (!cancelled) setTask(t) }).catch(() => { /* 后端暂不可达，保持一键解读态 */ })
+    setTask(null); setStarting(false)
+    getEpubTask(docId)
+      .then(t => { if (!cancelled) setTask(t) })
+      .catch(() => { /* 后端暂不可达，保持一键解读态 */ })
     return () => { cancelled = true }
   }, [docId])
 
-  // running 时 2s 轮询驱动进度；结束（done/取消/中断）时停止
+  // 任务结束（那条 job 从列表里消失）时重读一次：按钮要变成「继续上次」或「一键解读」。
+  // 不做定时轮询 —— 结束只会由 `jobs` 的变化通知，轮询是 jobsSlice 的事。
+  const wasRunning = useRef(false)
   useEffect(() => {
-    if (!task?.running) return
-    let stopped = false
-    const timer = setInterval(async () => {
-      let t: EpubTaskStatus
-      try {
-        t = await getEpubTask(docId)
-      } catch { return }  // 后端暂不可达，下轮再试
-      if (stopped || !isSameDoc()) { clearInterval(timer); return }
-      setTask(t)
-      if (!t.running) {
-        clearInterval(timer)
-        setCancelling(false)
-        if (t.stage === 'done') {
-          handleDone(t)
-        }
-        // 取消/中断 → 保留落盘进度，UI 回到「继续上次解读」
-      }
-    }, 2000)
-    return () => { stopped = true; clearInterval(timer) }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task?.running, docId])
-
-  /** 任务完成：刷新 notes/polished 到预览 + 跳 polished tab + Toast（含失败章提示） */
-  const handleDone = (t: EpubTaskStatus) => {
-    Promise.all([getMarkdown(docId, 'notes'), getMarkdown(docId, 'polished')]).then(([notes, polished]) => {
-      if (!isSameDoc()) return
-      const st = useStore.getState()
-      if (notes) {
-        st.setCurrentContent(notes.content)
-        st.setMarkdownMeta(toMarkdownMeta(notes))
-        const prev = st.markdownVersions
-        st.setMarkdownVersions([...(notes.versions || []), ...prev.filter(v => v.mode !== 'notes')])
-      }
-      if (polished?.content) {
-        st.setCurrentPolishedContent(polished.content)
-        const prev = st.markdownVersions
-        st.setMarkdownVersions([...(polished.versions || []), ...prev.filter(v => v.mode !== 'polished')])
-      }
-      // 解读完成 → 新产物无 edited → 标记自动清除（方案 5.3）
-      st.setMarkdownEdited('notes', false)
-      st.setMarkdownEdited('polished', false)
-      // 产物已落盘 → 补记产物位（不补则切走再切回时 `modes` 还说「没有产物」，
-      // 预览区一个请求都不发 → 刚解读完的笔记不可见。见 `DocEntry.modes`）
-      if (notes) st.markArtifact(docId, 'notes')
-      if (polished) st.markArtifact(docId, 'polished')
-    }).catch(() => {})
-    if (!isSameDoc()) return
-    const failed = t.chapters_failed.length
-    if (failed > 0) {
-      addToast(`一键解读完成，${failed} 章解读失败已跳过（整理版原文中已标注）`, 'error')
-    } else {
-      addToast('一键解读完成', 'success')
+    if (wasRunning.current && !running) {
+      getEpubTask(docId).then(setTask).catch(() => {})
     }
-    useStore.getState().setActiveView('polished')
-  }
+    wasRunning.current = running
+  }, [running, docId])
 
   const handleStart = async () => {
     if (starting) return
-    // 覆盖保护：解读/继续上次/重跑都会归并覆盖 notes/polished → 已手动编辑则两态 confirm（方案 5.2）
+    // 覆盖保护：解读/继续上次/重跑都会归并覆盖 notes/polished → 已手动编辑则两态 confirm
     const ed = useStore.getState().markdownEdited
     if (ed.notes || ed.polished) {
       if (!window.confirm('重新解读将覆盖你手动编辑的内容（生成版自动保留为上一版可回退），继续？')) return
@@ -100,13 +63,9 @@ export function EpubInterpretPanel({ docId, modelId }: { docId: string; modelId:
     setStarting(true)
     try {
       const res = await startEpubInterpret(docId, { model_id: modelId ?? undefined, deep })
-      // AppError（recoverable，HTTP 200）会以 {code, message} 返回而非 {started}
-      if (res && 'code' in res && 'message' in (res as any)) {
-        addToast((res as any).message, 'error')
-        return
-      }
-      const t = await getEpubTask(docId)
-      if (isSameDoc()) setTask(t)
+      // 幂等命中（同一文档已在解读）时拿回的就是那条任务 —— 不报错，直接接上
+      trackJob(res.job)
+      if (!res.created) addToast('该文档正在解读中，已接到那条任务上', 'info')
     } catch (e) {
       addToast(getErrorMessage(e), 'error')
     } finally {
@@ -114,25 +73,16 @@ export function EpubInterpretPanel({ docId, modelId }: { docId: string; modelId:
     }
   }
 
-  const handleCancel = async () => {
-    if (cancelling) return
-    setCancelling(true)
-    try {
-      await cancelEpubInterpret(docId)
-      addToast('正在停止解读，已解读的章节进度已保存…', 'info')
-      // 当前章 LLM 调用无 chunk 返回时可能等一小段，轮询会直到 running=false
-    } catch (e) {
-      setCancelling(false)
-      addToast(getErrorMessage(e), 'error')
-    }
+  const handleCancel = () => {
+    if (!job) return
+    // 取消的软语义不变：置旗标、当前章结束后停、已落盘章节保留
+    void cancelJobById(job.id)
+    addToast('正在停止解读，已解读的章节进度已保存…', 'info')
   }
 
-  const running = !!task?.running
   const canResume = !running && !!task?.stage && task.stage !== 'done'
-  const doneCount = task?.chapters_done?.length || 0
-  const total = task?.total_chapters || 0
-  const failedCount = task?.chapters_failed?.length || 0
-  const percent = !total ? 0 : task?.stage === 'summary' ? 100 : Math.min(Math.round((doneCount / total) * 100), 99)
+  const percent = job?.progress != null ? Math.min(Math.round(job.progress * 100), 99) : 0
+  const cancelling = !!job?.cancel_requested
 
   return (
     <div className="space-y-2">
@@ -146,14 +96,9 @@ export function EpubInterpretPanel({ docId, modelId }: { docId: string; modelId:
       {running ? (
         <div className="space-y-1.5 bg-surface rounded-[10px] p-3 border border-border-light">
           <div className="flex items-center justify-between text-[11px]">
-            <span className="text-dimmed">
-              {task?.stage === 'summary' ? '阶段 2：全书总结归并中…' : `阶段 1：逐章解读 ${doneCount}/${total}`}
-            </span>
-            {failedCount > 0 && <span className="text-warning">{failedCount} 章失败已跳过</span>}
+            <span className="text-dimmed truncate">{job?.message || '解读进行中…'}</span>
+            {job?.progress != null && <span className="text-disabled shrink-0">{percent}%</span>}
           </div>
-          {task?.stage === 'chapters' && task.current_title && (
-            <div className="text-[11px] text-disabled truncate">当前：{task.current_title}</div>
-          )}
           <div className="h-1.5 bg-surface-hover rounded-full overflow-hidden">
             <div className="h-full bg-accent rounded-full transition-all duration-500" style={{ width: `${percent}%` }} />
           </div>

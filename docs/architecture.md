@@ -517,7 +517,7 @@ App
 │   ├── ImportSection   # URL/文本/文件输入
 │   ├── EngineSelect    # 引擎绑定
 │   ├── GenerateOptions # 模型/格式/风格/产物
-│   ├── EpubInterpretPanel # EPUB 一键解读（三态：进度条/继续上次/一键解读，epub 专属替代生成区）
+│   ├── EpubInterpretPanel # EPUB 一键解读（三态：进度条/继续上次/一键解读，epub 专属替代生成区；**状态来自后端任务队列**，组件卸载不影响，见模式 #73）
 │   └── ImageModeCards  # 图片处理模式选择
 ├── DocLibrary          # 文档列表/搜索/筛选
 │   └── SearchBar        # FTS5 关键词全文搜索（GET /api/search）

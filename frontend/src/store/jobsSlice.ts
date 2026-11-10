@@ -34,6 +34,8 @@ import {
   cancelJob as cancelJobApi, dismissJob as dismissJobApi, getJob, listJobs, type JobInfo,
 } from '../api/jobs'
 import { listTranscripts } from '../api/transcripts'
+import { getMarkdown } from '../api/client'
+import { toMarkdownMeta } from '../lib/markdownMeta'
 import type { Store } from './types'
 
 /** 轮询间隔。任务进度的上报粒度是「一次 pip 步骤 / 一次 LLM 调用」，1.5 秒完全够。 */
@@ -103,6 +105,67 @@ export const createJobsSlice: StateCreator<Store, [], [], JobsSlice> = (set, get
   }
 
   /**
+   * 一本「没人看着」的电子书解读完了：把产物接回界面。
+   *
+   * 这段逻辑原先住在 `EpubInterpretPanel` 里（组件自己 2s 轮询到 `running=false`
+   * 才执行），于是折叠侧栏就再也接不上了 —— 而解读照常在跑。现在它只依赖 `jobs`
+   * 的变化，与面板在不在无关（模式 #73）。
+   *
+   * 两条路分开对待：
+   * - **正开着这篇**：把 notes/polished 直接读进预览并跳到整理版（用户等的就是它）；
+   * - **没开着**：只需要刷新文档列表 —— `modes` 是列表拉取那一刻的快照，不刷新的话
+   *   切回这篇时预览区会因「没有产物」而不发请求，笔记看起来凭空消失。
+   */
+  const adoptFinishedEpub = async (job: JobInfo) => {
+    const result = (job.result ?? {}) as {
+      doc_id?: unknown; title?: unknown; chapters_failed?: unknown
+    }
+    const docId = typeof result.doc_id === 'string' ? result.doc_id : ''
+    if (!docId) return
+    const failed = typeof result.chapters_failed === 'number' ? result.chapters_failed : 0
+
+    if (get().currentDocId === docId) {
+      try {
+        const [notes, polished] = await Promise.all([
+          getMarkdown(docId, 'notes'), getMarkdown(docId, 'polished'),
+        ])
+        const st = get()
+        if (notes) {
+          st.setCurrentContent(notes.content)
+          st.setMarkdownMeta(toMarkdownMeta(notes))
+          const prev = st.markdownVersions
+          st.setMarkdownVersions([...(notes.versions || []), ...prev.filter(v => v.mode !== 'notes')])
+        }
+        if (polished?.content) {
+          st.setCurrentPolishedContent(polished.content)
+          const prev = st.markdownVersions
+          st.setMarkdownVersions([...(polished.versions || []), ...prev.filter(v => v.mode !== 'polished')])
+        }
+        // 解读完成 → 新产物无 edited → 标记自动清除（方案 5.3）
+        st.setMarkdownEdited('notes', false)
+        st.setMarkdownEdited('polished', false)
+        // 产物已落盘 → 补记产物位。不补则「切走再切回」时 `modes` 还说「没有产物」，
+        // 预览区一个请求都不发 —— 与 `DocsSlice.markArtifact` 的 docstring 同一条理由。
+        if (notes) st.markArtifact(docId, 'notes')
+        if (polished) st.markArtifact(docId, 'polished')
+        st.setActiveView('polished')
+      } catch {
+        // 读不到产物就别报「完成」—— 用户点过去只会看到旧内容
+        return
+      }
+    }
+
+    try {
+      set({ docs: await listTranscripts() })
+    } catch {
+      return
+    }
+    const title = typeof result.title === 'string' && result.title ? result.title : '电子书'
+    if (failed > 0) get().addToast(`《${title}》解读完成，${failed} 章失败已跳过`, 'error')
+    else get().addToast(`《${title}》解读完成`, 'success')
+  }
+
+  /**
    * 活跃任务从列表里消失之后要做的事。
    *
    * ⚠️ 消失**不等于**完成：默认列表只带「进行中 + 未忽略的失败」，所以完成、取消、
@@ -120,6 +183,7 @@ export const createJobsSlice: StateCreator<Store, [], [], JobsSlice> = (set, get
       // 失败 / 取消各有自己的出口：失败那行还留在面板上等人处理，取消是用户自己的动作。
       if (job.status !== 'done') continue
       if (job.kind === 'synthesis') await adoptFinishedSynthesis(job)
+      else if (job.kind === 'epub.interpret') await adoptFinishedEpub(job)
     }
   }
 

@@ -36,7 +36,10 @@ class CreateJobRequest(BaseModel):
     idempotency_key: str | None = None
 
 
-def _job_json(job: Job, queue) -> dict[str, Any]:
+def job_json(job: Job, queue) -> dict[str, Any]:
+    """任务的对外形状。**别的路由提交任务时也走这里**（`epub.py` 的 generate
+    直接返回刚建的那条）—— 各拼一份的话，`JobInfo` 加字段时总有一处漏掉，
+    而前端拿到的是「少一个字段」而不是错误。"""
     out = job.to_dict()
     # 未注册的 kind（降级安装、改了名字）回落成原字符串，而不是让整条记录读不出来。
     out["label"] = queue.kinds.get(job.kind, job.kind)
@@ -65,7 +68,7 @@ async def create_job(body: CreateJobRequest, queue=Depends(get_job_queue)):
     except ValueError as e:
         # 未注册的 kind 是请求本身的问题（不是服务端故障），报 400 并带上原话。
         raise AppError("JOB_UNKNOWN_KIND", str(e)) from e
-    return {"job": _job_json(job, queue), "created": created}
+    return {"job": job_json(job, queue), "created": created}
 
 
 @router.get("/jobs")
@@ -76,7 +79,7 @@ async def list_jobs(
 ):
     statuses = _parse_statuses(status)
     jobs = queue.store.list(statuses, limit=limit)
-    return {"jobs": [_job_json(j, queue) for j in jobs]}
+    return {"jobs": [job_json(j, queue) for j in jobs]}
 
 
 # ⚠️ 必须排在 `/jobs/{job_id}` **之前**：FastAPI 按声明顺序匹配，反过来写时
@@ -92,7 +95,7 @@ async def get_job(job_id: str, queue=Depends(get_job_queue)):
     job = queue.store.get(job_id)
     if job is None:
         raise AppError("JOB_NOT_FOUND", "任务不存在", status_code=404)
-    return {"job": _job_json(job, queue)}
+    return {"job": job_json(job, queue)}
 
 
 @router.post("/jobs/{job_id}/cancel")
@@ -102,7 +105,7 @@ async def cancel_job(job_id: str, queue=Depends(get_job_queue)):
     job = queue.request_cancel(job_id)
     if job is None:
         raise AppError("JOB_NOT_FOUND", "任务不存在", status_code=404)
-    return {"job": _job_json(job, queue)}
+    return {"job": job_json(job, queue)}
 
 
 @router.post("/jobs/{job_id}/dismiss")
@@ -111,4 +114,4 @@ async def dismiss_job(job_id: str, queue=Depends(get_job_queue)):
     job = queue.store.dismiss(job_id)
     if job is None:
         raise AppError("JOB_NOT_FOUND", "任务不存在", status_code=404)
-    return {"job": _job_json(job, queue)}
+    return {"job": job_json(job, queue)}

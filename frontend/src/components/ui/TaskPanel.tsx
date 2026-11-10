@@ -3,7 +3,7 @@ import { useStore, type DocEntry } from '../../store'
 import { cancelTask } from '../../api/taskManager'
 import {
   X, GripHorizontal, FileText, Image, RefreshCw, ListTodo, Check, AlertTriangle,
-  Download, RotateCcw, Package, Layers,
+  Download, RotateCcw, Package, Layers, BookOpen,
 } from 'lucide-react'
 import { useElapsed } from '../../hooks/useElapsed'
 import { isUpdateBusy } from '../../store/updateSlice'
@@ -220,6 +220,7 @@ export function TaskPanel() {
 const JOB_META: Record<string, { Icon: typeof Package; color: string; bg: string }> = {
   'plugin.install': { Icon: Package, color: 'text-accent', bg: 'bg-accent/10' },
   synthesis: { Icon: Layers, color: 'text-indigo-500', bg: 'bg-indigo-50' },
+  'epub.interpret': { Icon: BookOpen, color: 'text-amber-600', bg: 'bg-amber-50' },
 }
 
 /**
@@ -239,12 +240,14 @@ function JobTaskRow({ job }: { job: JobInfo }) {
   const queued = job.status === 'queued'
   const pct = active && job.progress !== null ? Math.round(job.progress * 100) : null
   // 一行说不清「是哪一个」的任务要补个目标：插件安装是插件名，合成是篇数
-  // （合成那条 payload 里没有 name，只有 doc_ids）。
+  // （合成那条 payload 里没有 name，只有 doc_ids），EPUB 解读是书名。
   const target = typeof job.payload?.name === 'string'
     ? job.payload.name
     : Array.isArray(job.payload?.doc_ids)
       ? `${job.payload.doc_ids.length} 篇`
-      : ''
+      : typeof job.payload?.title === 'string'
+        ? job.payload.title
+        : ''
 
   return (
     <div
