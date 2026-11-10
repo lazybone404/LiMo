@@ -13,6 +13,27 @@
 
 ## 排队中
 
-（空。上一批三条已在 2026-11-10 全部完成 —— 长操作托管见
-[roadmap.md](roadmap.md) 的 ✅ 行与 [job_handlers.py](../backend/app/services/job_handlers.py)
-的模块文档。）
+### 启动时间：先量再改
+
+**先做测量，不动结构。** 判据是「双击图标 → 主界面可点」的秒数，分三段各自记：
+① `limo.exe` 启动 → sidecar 进程起来；② sidecar 启动 → `GET /health` 200；
+③ `/health` 200 → 前端首屏可点。哪一段最贵，决定改哪一段。
+
+现有数字只有中间一小截：打包版日志实测，空库下「日志初始化完成 → Application
+startup complete」是 **0.68s**（2026-11-10，0.5.25 的 `LiMoBackend.exe`）。①、③
+与 PyInstaller 的导入段（发生在日志初始化**之前**，`perf` 打点看不到）都还没有数。
+
+三段里最可能贵的地方，按怀疑程度：
+
+- **PyInstaller 导入链**：`_internal/` 上千个 pyd，`import fastapi/pydantic/…` 全在
+  日志初始化之前。它在 `perf` 视野之外，也最可能是打包版比源码模式慢的全部差额。
+- **`Store(...)`**（[main.py](../backend/main.py) 的 `startup`，已有 `perf.timer("startup.store")`）：
+  索引不可用时是全库扫描重建，随文档数线性增长。
+- **`SearchEngine.rebuild`**（同函数内，**没有**打点）：启动时对每篇文档取正文 + 最新笔记
+  算索引文本，库大时是第二段线性开销。想动它之前先证明它贵 —— 「挪到后台」会改变
+  「启动即可搜」这个现有语义，不是纯优化。
+
+第一步：在真库（不是空库）上跑一次 0.5.25 打包版，读 `~/.limo/perf.log` 的
+`startup.store`，并补两个打点（进程启动 → 日志初始化、`SearchEngine.rebuild` 耗时），
+把三个数记到本条下面。**没有这三个数之前不合并任何「启动优化」改动** —— 凭直觉
+挪动启动顺序，改的是「哪一步先卡住」而不是总时长。
