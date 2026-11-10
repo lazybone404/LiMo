@@ -8,8 +8,16 @@ import os as _os
 import re
 import sys
 import threading
+import time as _time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+#: 启动链起点，必须排在下面那些**第三方重依赖 import 之前** —— `startup()` 用它记
+#: `startup.import`（从本模块开始执行到 startup 进入，主体就是 fastapi/pydantic 那一大串
+#: import）。⚠️ PyInstaller bootloader 加载 `_internal/` 下上千个 pyd 发生在**本模块执行
+#: 之前**，这一段在这里量不到，只能拿进程创建时刻去减（`limo_startup.log` 的 spawn 时间戳
+#: 对比后端日志的「日志初始化完成」）。两者相加才是「双击 → 日志就绪」。
+_BOOT_T0 = _time.perf_counter()
 
 # ⚠️ MCP 服务端模式（`LiMoBackend.exe --mcp`）：短路必须排在下面那段 stdout 归一化
 # **之前**。windowed 打包下 `sys.stdout is None`，归一化会把它换成 devnull —— 而 MCP
@@ -333,6 +341,10 @@ async def startup():
     # 一步（索引一旦不可用就是全库扫描重建），恰恰是最该留下数据的地方。
     perf.setup(config.get("data_dir", "data"))
 
+    # 「导入链花了多久」——从 `_BOOT_T0`（第三方 import 之前）到这里。与
+    # `limo_startup.log` 的 spawn 时间戳相减，剩下的就是 PyInstaller bootloader。
+    perf.record("startup.import", (_time.perf_counter() - _BOOT_T0) * 1000)
+
     # 凭据卫生自检 —— 位置有意义：配置已载（知道 data_dir 与 secrets_ref）、logger 就绪
     # （报得出来）、**早于任何业务写盘**（不会先写出明文再报警）。
     # ⚠️ 只报告、不阻断：明文凭据是**卫生问题**不是功能故障，为它拒绝启动等于让用户
@@ -351,18 +363,20 @@ async def startup():
     with perf.timer("startup.store"):
         app.state.store = Store(config.get("data_dir", "data"))
 
-    # 适配器
-    from app.adapters import init_adapters
-    init_adapters()
-    app.state.adapters_ready = True
+    # 适配器 + 引擎 + 插件（三步一起计时：2026-11-10 实测这一整段 0.7s，
+    # 拆成三组只会让 perf.log 里的组数变多而看不出更多东西）
+    with perf.timer("startup.engines"):
+        from app.adapters import init_adapters
+        init_adapters()
+        app.state.adapters_ready = True
 
-    # 引擎
-    from app.engines import init_engines
-    init_engines(config)
-    # 加载用户插件（在 init_engines 之后，允许插件覆盖内置引擎）
-    from app.engines.plugin_loader import init_plugins
-    init_plugins(config)
-    app.state.engines_ready = True
+        # 引擎
+        from app.engines import init_engines
+        init_engines(config)
+        # 加载用户插件（在 init_engines 之后，允许插件覆盖内置引擎）
+        from app.engines.plugin_loader import init_plugins
+        init_plugins(config)
+        app.state.engines_ready = True
 
     # 预置示例文档（首次启动创建一次，用户删除后不再复活；置于引擎初始化之后，
     # 避免引擎初始化失败时 marker 已写导致示例文档永不创建）
@@ -375,22 +389,28 @@ async def startup():
     # 全局并发控制 — 限制 LLM/引擎并发数，超限自动排队
     app.state.guard = ExecutionGuard(cloud_max=5, local_max=2)
 
-    # 全文搜索引擎 — 从已有转录重建索引（后台不阻塞启动）
+    # 全文搜索引擎 — 从已有转录对齐索引（阻塞启动，所以「启动即可搜」仍然成立）
     from app.core.search import SearchEngine
     from app.generation.doc_text import search_index_text
     _search_engine = SearchEngine(config.get("data_dir", "data"))
     app.state.search_engine = _search_engine
     try:
-        # 结构升级（2026-10-26：单字 → 二字组）会丢弃旧索引，故**只在这里做** ——
-        # `limo_cli --local` 也构造 SearchEngine，但它是只读工具，不能顺手 DROP 用户库。
-        # 迁移后紧接着的 `rebuild` 就是数据来源，两步必须成对。
-        _search_engine.migrate_schema()
-        _transcripts = app.state.store.list_transcripts()
-        def _get_content(tx_id: str) -> str:
-            # 索引文本 = rawText + 最新版笔记，判据只有 `search_index_text` 一处
-            # （与摄入 / 生成完成 / 编辑保存三个增量写点同源）。
-            return search_index_text(app.state.store, tx_id)
-        _search_engine.rebuild(_transcripts, _get_content)
+        with perf.timer("startup.search_index"):
+            # 结构升级（2026-10-26：单字 → 二字组）会丢弃旧索引，故**只在这里做** ——
+            # `limo_cli --local` 也构造 SearchEngine，但它是只读工具，不能顺手 DROP 用户库。
+            # 迁移后紧接着的 `sync` 就是数据来源，两步必须成对。
+            _search_engine.migrate_schema()
+            _transcripts = app.state.store.list_transcripts()
+            def _get_content(tx_id: str) -> str:
+                # 索引文本 = rawText + 最新版笔记，判据只有 `search_index_text` 一处
+                # （与摄入 / 生成完成 / 编辑保存三个增量写点同源）。
+                return search_index_text(app.state.store, tx_id)
+            # ⚠️ `sync` 而不是 `rebuild`（2026-11-10）：全量重排每次启动都要把全库正文
+            # 重新分词入库，185 篇的真库实测 3.4s（打包版 4.9s），占启动总时长的六成，
+            # 而其中几乎没有一篇真的变了。对账的判据是每篇的内容指纹 —— 与 `index()`
+            # 写入的是同一个函数、同一份入参，不会分叉。⚠️ `sync` 同样**阻塞**启动：
+            # 挪到后台会改变「启动即可搜」这个既有语义，不是纯优化。
+            _search_engine.sync(_transcripts, _get_content)
         # ⚠️ **不要在这里写 `import logging`**（2026-10-21 事故）：函数体内任意位置的
         # `import logging` 会让 `logging` 成为 `startup` 的**局部变量**，于是本函数里
         # 更早的那次读取（凭据自检分支，`logging.getLogger(__name__)`）抛

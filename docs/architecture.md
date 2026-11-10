@@ -230,9 +230,9 @@ data/
 
 `core/search.py` 的 `SearchEngine` 用 SQLite FTS5 虚拟表 `transcripts_fts(id, title, content, tokenize='unicode61')` 建全文索引，`search.db` 与文件系统存储互补（关键词全文搜索已实现；**embedding 语义搜索未做**）。
 
-- **写入**：摄入/重转录时 `engine.index(tx_id, title, raw_text)` 增量更新（先删后插）；删除文档调 `delete`；启动时 `rebuild()` 从零重建
-- **CJK 处理**：FTS5 `unicode61` 不处理中文分词 → 索引/查询均对 CJK 逐字插空格（「机器学习」→「机 器 学 习」），查询词加前缀通配符 + `AND` 组合；`sqlite3.OperationalError`（查询语法错）回退 `LIKE`
-- **结果**：`snippet()` 生成 `<mark>` 高亮上下文片段，按 `rank` 相关性排序
+- **写入**：摄入/重转录/生成完成/编辑保存时 `engine.index(tx_id, title, 索引文本)` 增量更新（先删后插）；删除文档调 `delete`；**启动时 `sync()` 按内容指纹对账** —— 只重排变了的篇目，不是全量重建（理由与实测数字见 [search-retrieval.md](search-retrieval.md) §1.3）
+- **CJK 处理**：FTS5 `unicode61` 不处理中文分词 → 索引侧写**二字组**进 `toks` 列（「机器学习」→「机器 器学 学习」），查询侧同样拆二字组并**用 `OR` 连接**（`AND` 等于一票否决，语义型查询会归零）
+- **三列分工**：`title` 与 `toks` 参与匹配，`body` 是 `UNINDEXED` 的原文副本 —— 摘要**从 `body` 取**（`snippet()` 只能读被索引的列，取出来会是二字组串，不可读）
 - **端点**：`GET /api/search?q=&limit=`（`routers/search.py`），前端 DocLibrary 顶栏 `SearchBar.tsx`「搜意思不搜字」之外的**关键词全文搜索**入口
 
 - 目录命名 `{sanitized_title}-{6位hex}`（标题变更时重命名目录），冲突时循环追加序号
@@ -445,7 +445,7 @@ class ExecutionGuard:
      → SSL 证书（certifi.where() → SSL_CERT_FILE/REQUESTS_CA_BUNDLE，PyInstaller 打包必需）
      → init_engines()（引擎注册 + 绑定清理，仅变更时保存配置）
      → sample_doc（无文档时生成首启示例）
-     → SearchEngine.rebuild()（FTS5 索引重建）
+     → SearchEngine.sync()（按内容指纹对账 FTS5 索引，只重排变了的篇目）
      → StaticFiles 挂载（store.root 动态路径）
      → uvicorn :7413
 ```

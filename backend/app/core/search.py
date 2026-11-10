@@ -8,6 +8,7 @@
   results = engine.search("关键词", limit=20)  # 返回 [(id, title, snippet), ...]
 """
 
+import hashlib
 import sqlite3
 import re
 import threading
@@ -25,6 +26,48 @@ _CREATE_SQL = """
     CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts
     USING fts5(id UNINDEXED, title, body UNINDEXED, toks, tokenize='unicode61')
 """
+
+#: 每篇内容指纹表 —— 启动时靠它判断「这篇的索引是不是已经是最新的」。
+#:
+#: 它是一张**缓存**，不是真相源：真相源永远是文档目录里的 `transcript.md` 与
+#: `markdowns/`。指纹与本函数（`_content_sig`）绑死：`index()` 写完立刻写指纹，
+#: 启动对账读同一份，两边不可能对「这篇变没变」得出不同结论。
+_CREATE_SIG_SQL = """
+    CREATE TABLE IF NOT EXISTS fts_doc_sig (
+        id  TEXT PRIMARY KEY,
+        sig TEXT NOT NULL
+    )
+"""
+
+#: 索引文本口径的版本号。**改了「哪些文本进索引」或分词方式就 +1**，
+#: 否则存量文档的指纹仍然相等、启动对账会跳过它们，而旧索引里是旧口径 ——
+#: 不报错，只是搜出来的东西和改动后的预期不符。
+#: 1 = 2026-11-10 引入指纹对账时的口径（title + rawText + 最新笔记，二字组）。
+_INDEX_VERSION = 1
+
+
+def _content_sig(title: str, content: str) -> str:
+    """一篇文档的索引内容指纹。
+
+    ⚠️ **入参必须与 `index()` 落库的完全一致**（title 与 content 同一个来源）。
+    两处各算一份不同的东西，失效形态是「每次启动都重排全库」或者反过来的
+    「改了笔记却永远不重排」—— 后者更糟，而且两种情况都不会报错。
+    """
+    h = hashlib.sha1()
+    h.update(str(_INDEX_VERSION).encode())
+    h.update(b"\x00")
+    h.update((title or "").encode("utf-8", "ignore"))
+    h.update(b"\x00")
+    h.update((content or "").encode("utf-8", "ignore"))
+    return h.hexdigest()
+
+
+def _put_sig(conn, tx_id: str, sig: str) -> None:
+    conn.execute(
+        "INSERT INTO fts_doc_sig(id, sig) VALUES (?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET sig = excluded.sig",
+        (tx_id, sig),
+    )
 
 
 class SearchEngine:
@@ -60,14 +103,19 @@ class SearchEngine:
                         err=str(e)[:200])
 
     def _init_db(self):
-        """创建 FTS5 虚拟表（如果不存在）。
+        """创建 FTS5 虚拟表与指纹表（如果不存在）。
 
         ⚠️ **这里刻意不做结构迁移** —— 迁移要 `DROP TABLE`，那是数据丢失。
         旧库由调用方显式调 `migrate_schema()`（只有应用启动路径会调，它紧接着
-        就会 `rebuild()`）。见 `migrate_schema` 的注释。
+        就会 `sync()`）。见 `migrate_schema` 的注释。
+
+        ⚠️ 指纹表用普通表（不是 FTS5），与虚拟表同一个库文件：两者必须**同生共死**
+        （`_recover_db` 删文件就一起没），分成两个文件才会出现「指纹还在、索引没了，
+        于是启动对账认为全都无需重排」—— 索引从此永久空着。
         """
         with self._lock, self._conn() as conn:
             conn.execute(_CREATE_SQL)
+            conn.execute(_CREATE_SIG_SQL)
             conn.commit()
 
     @contextmanager
@@ -207,6 +255,11 @@ class SearchEngine:
         with self._lock, self._conn() as conn:
             conn.execute("DROP TABLE transcripts_fts")
             conn.execute(_CREATE_SQL)
+            # ⚠️ 指纹**必须一起清**：索引行已按新结构重建为空，而指纹还在 ——
+            # 启动对账会认为每一篇都「没变」而全部跳过，索引永久空着。
+            # 这条是「新旧结构」与「新旧内容」两件事，不能只看 `_INDEX_VERSION`。
+            conn.execute(_CREATE_SIG_SQL)
+            conn.execute("DELETE FROM fts_doc_sig")
             conn.commit()
         log.warning("全文索引结构已升级，旧索引已丢弃，将由启动流程重建")
         return True
@@ -228,6 +281,9 @@ class SearchEngine:
                 "INSERT INTO transcripts_fts(id, title, body, toks) VALUES (?, ?, ?, ?)",
                 (tx_id, title, body, toks),
             )
+            # 指纹与索引行**同一个事务**写：只写一边时，另一种形态的失效都是静默的
+            # （只写索引 → 启动重排全库；只写指纹 → 改了笔记也永远不重排）。
+            _put_sig(conn, tx_id, _content_sig(title, content))
             conn.commit()
 
     def delete(self, tx_id: str):
@@ -236,6 +292,7 @@ class SearchEngine:
             return
         with self._lock, self._conn() as conn:
             conn.execute("DELETE FROM transcripts_fts WHERE id = ?", (tx_id,))
+            conn.execute("DELETE FROM fts_doc_sig WHERE id = ?", (tx_id,))
             conn.commit()
 
     def rebuild(self, transcripts: list[dict], get_content, *, vacuum: bool = False):
@@ -255,6 +312,7 @@ class SearchEngine:
             raise RuntimeError(self._last_error or "索引库不可用")
         with self._lock, self._conn() as conn:
             conn.execute("DELETE FROM transcripts_fts")
+            conn.execute("DELETE FROM fts_doc_sig")
             for tx in transcripts:
                 content = get_content(tx["id"])
                 title = tx.get("title", "")
@@ -268,6 +326,7 @@ class SearchEngine:
                     "INSERT INTO transcripts_fts(id, title, body, toks) VALUES (?, ?, ?, ?)",
                     (tx["id"], title, body, toks),
                 )
+                _put_sig(conn, tx["id"], _content_sig(title, content))
             conn.commit()
             if vacuum:
                 # ⚠️ 必须在上面的 commit 之后 —— 事务里执行 VACUUM 会报
@@ -276,6 +335,72 @@ class SearchEngine:
         self._last_error = None
         self._rebuilt_at = datetime.now().isoformat(timespec="seconds")
         log.info("全文索引重建完成", docs=len(transcripts), vacuum=vacuum)
+
+    def sync(self, transcripts: list[dict], get_content) -> dict:
+        """**启动路径用这个，不是 `rebuild()`** —— 只重排内容变了的篇目。
+
+        `rebuild()` 每次启动都把全库正文重新清洗、分词、写进 FTS5。2026-11-10 在
+        185 篇的真库上实测：这一步要 3.4s（打包版更慢），占「双击到 /health 200」
+        的 4.9/7.5s —— 而其中绝大多数篇目**一个字都没变**。改成按指纹对账之后，
+        同一份库只要 0.18s。
+
+        判据是 `fts_doc_sig` 里的内容指纹（`_content_sig`），它与 `index()` 写入的
+        是同一个函数、同一份入参，所以「增量写点刚写过」与「启动对账认为没变」
+        不会得出两种结论。
+
+        三件事各做一遍，缺一条都是静默失效：
+
+        - **指纹相同 → 跳过**：不读进 FTS5，只留下原有的行。
+        - **指纹不同 / 没有指纹 → 重排那一篇**（后者顺带覆盖「0.5.25 及更早的库
+          没有指纹表」这一次性场景：全部重排一遍，与改造前等价）。
+        - **索引里有、库里没有 → 删掉**（幽灵行）。以前靠 `DELETE FROM
+          transcripts_fts` 全清带过，增量之后必须显式做，否则删掉的文档
+          永远搜得出来。
+
+        ⚠️ **仍然阻塞启动**（与 `rebuild` 一样），所以「启动即可搜」的语义不变 ——
+        这不是「挪到后台」那种会改变可见行为的优化。
+        """
+        if not self.available and not self._recover_db():
+            raise RuntimeError(self._last_error or "索引库不可用")
+        reused = indexed = removed = 0
+        with self._lock, self._conn() as conn:
+            known = dict(conn.execute("SELECT id, sig FROM fts_doc_sig").fetchall())
+            live = {tx["id"] for tx in transcripts}
+            for gone in [i for i in known if i not in live]:
+                conn.execute("DELETE FROM transcripts_fts WHERE id = ?", (gone,))
+                conn.execute("DELETE FROM fts_doc_sig WHERE id = ?", (gone,))
+                removed += 1
+            for tx in transcripts:
+                tx_id = tx["id"]
+                content = get_content(tx_id)
+                title = tx.get("title", "")
+                sig = _content_sig(title, content)
+                if known.get(tx_id) == sig:
+                    reused += 1
+                    continue
+                # 与 `rebuild` 的跳过判据逐字相同：标题与正文**都**空才不写。
+                if not content and not title:
+                    conn.execute("DELETE FROM transcripts_fts WHERE id = ?", (tx_id,))
+                else:
+                    body = _clean_for_search(content)
+                    toks = " ".join(_tokenize(f"{title}\n{body}"))
+                    conn.execute("DELETE FROM transcripts_fts WHERE id = ?", (tx_id,))
+                    conn.execute(
+                        "INSERT INTO transcripts_fts(id, title, body, toks) "
+                        "VALUES (?, ?, ?, ?)",
+                        (tx_id, title, body, toks),
+                    )
+                _put_sig(conn, tx_id, sig)
+                indexed += 1
+            conn.commit()
+        self._last_error = None
+        # ⚠️ 只在真的写了东西时才更新 —— 每次启动都刷新的话，设置页那句
+        # 「上次重建于…」会永远是「刚才」，而它恰恰是用来回答「这个索引多久没动了」的。
+        if indexed or removed:
+            self._rebuilt_at = datetime.now().isoformat(timespec="seconds")
+        log.info("全文索引对账完成", docs=len(transcripts),
+                 reused=reused, indexed=indexed, removed=removed)
+        return {"reused": reused, "indexed": indexed, "removed": removed}
 
     # ── 搜索 ──
 

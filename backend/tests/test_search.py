@@ -543,6 +543,178 @@ def test_query_service_raises_when_index_unavailable():
         shutil.rmtree(d, ignore_errors=True)
 
 
+# ── 启动对账 `sync()`（2026-11-10） ──
+#
+# 背景：启动路径原先每次都 `rebuild()`，185 篇的真库实测 3.4s（打包版 4.9s），
+# 占「双击到 /health 200」的六成 —— 而其中几乎没有一篇真的变了。改成按内容指纹
+# 对账之后，全命中只要 0.18s。
+#
+# 这一组的共同前提：**跳过必须有判据，且跳过的那一行真的还在**。只断言「快」是不够的
+# —— 把 `sync` 写成空函数也会很快。
+
+_DOCS = [
+    {"id": "tr_a", "title": "第一篇"},
+    {"id": "tr_b", "title": "第二篇"},
+]
+
+
+def _content_map(mapping):
+    return lambda tid: mapping.get(tid, "")
+
+
+def test_sync_indexes_everything_first_time():
+    """首次对账（没有指纹表内容）要把每一篇都写进去，并记下指纹。"""
+    eng, d = _engine()
+    try:
+        stats = eng.sync(_DOCS, _content_map({"tr_a": "苹果香蕉糖", "tr_b": "橘子柚子茶"}))
+        assert stats == {"reused": 0, "indexed": 2, "removed": 0}, stats
+        assert len(eng.search("苹果香蕉糖", limit=10)) == 1
+        assert len(eng.search("橘子柚子茶", limit=10)) == 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_sync_skips_unchanged_but_rows_survive():
+    """⚠️ 本轮的核心判据：第二次对账全部 `reused`，**而且跳过的行仍然搜得到**。
+
+    只断言「reused==2」会漏掉「跳过之后索引其实是空的」这种写法 —— 那种实现
+    同样会给出 reused==2，而用户搜不到任何东西。
+    """
+    eng, d = _engine()
+    try:
+        cmap = _content_map({"tr_a": "苹果香蕉糖", "tr_b": "橘子柚子茶"})
+        eng.sync(_DOCS, cmap)
+        stats = eng.sync(_DOCS, cmap)
+        assert stats == {"reused": 2, "indexed": 0, "removed": 0}, stats
+        assert len(eng.search("苹果香蕉糖", limit=10)) == 1, "跳过的篇目必须仍在索引里"
+        assert len(eng.search("橘子柚子茶", limit=10)) == 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_sync_reindexes_changed_content():
+    """内容变了必须重排 —— 旧词搜不到、新词搜得到（证明是**替换**不是追加）。"""
+    eng, d = _engine()
+    try:
+        eng.sync(_DOCS, _content_map({"tr_a": "oldneedle", "tr_b": "橘子柚子茶"}))
+        stats = eng.sync(_DOCS, _content_map({"tr_a": "newneedle", "tr_b": "橘子柚子茶"}))
+        assert stats == {"reused": 1, "indexed": 1, "removed": 0}, stats
+        assert eng.search("oldneedle", limit=10) == [], "旧内容应已被替换"
+        assert len(eng.search("newneedle", limit=10)) == 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_sync_reindexes_changed_title():
+    """标题也进索引，标题变了同样要重排（指纹含 title，漏了就是「改名后搜不到」）。"""
+    eng, d = _engine()
+    try:
+        cmap = _content_map({"tr_a": "苹果香蕉糖", "tr_b": "橘子柚子茶"})
+        eng.sync(_DOCS, cmap)
+        docs2 = [{"id": "tr_a", "title": "改过的标题"}, _DOCS[1]]
+        stats = eng.sync(docs2, cmap)
+        assert stats["indexed"] == 1, stats
+        assert len(eng.search("改过的标题", limit=10)) == 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_sync_removes_ghost_rows():
+    """⚠️ 索引里有、库里没有的「幽灵行」必须删掉。
+
+    `rebuild` 靠 `DELETE FROM transcripts_fts` 全清顺带解决，增量之后没有那一下了
+    —— 漏了这条，**已删除的文档永远搜得出来**，而且没有任何报错。
+    """
+    eng, d = _engine()
+    try:
+        eng.sync(_DOCS, _content_map({"tr_a": "苹果香蕉糖", "tr_b": "橘子柚子茶"}))
+        stats = eng.sync([_DOCS[0]], _content_map({"tr_a": "苹果香蕉糖"}))
+        assert stats == {"reused": 1, "indexed": 0, "removed": 1}, stats
+        assert eng.search("橘子柚子茶", limit=10) == [], "已删除的文档不该还能搜到"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_index_write_is_visible_to_sync():
+    """⚠️ 增量写点（`index()`）与启动对账**必须同源**。
+
+    `index()` 不写指纹时，下次启动会把这一篇当成「没索引过」重排 —— 只是慢一点，
+    不报错。反过来（写了指纹但漏写索引行）才是致命的，故两条都断言。
+    """
+    eng, d = _engine()
+    try:
+        eng.index("tr_a", "第一篇", "苹果香蕉糖")
+        stats = eng.sync([_DOCS[0]], _content_map({"tr_a": "苹果香蕉糖"}))
+        assert stats == {"reused": 1, "indexed": 0, "removed": 0}, \
+            f"index() 写的指纹没被 sync 认出来：{stats}"
+        assert len(eng.search("苹果香蕉糖", limit=10)) == 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_sync_bootstraps_legacy_db_without_sig():
+    """0.5.25 及更早的 `search.db` 只有 FTS 行、没有指纹表内容。
+
+    这一次必须**全部重排**（与改造前行为等价），不能因为「索引行看起来在」就跳过。
+    """
+    eng, d = _engine()
+    try:
+        cmap = _content_map({"tr_a": "苹果香蕉糖", "tr_b": "橘子柚子茶"})
+        eng.sync(_DOCS, cmap)
+        # 模拟旧库：指纹表是空的（旧版本根本没写过它），FTS 行还在
+        conn = sqlite3.connect(str(Path(d) / "search.db"))
+        conn.execute("DELETE FROM fts_doc_sig")
+        conn.commit()
+        conn.close()
+
+        stats = eng.sync(_DOCS, cmap)
+        assert stats == {"reused": 0, "indexed": 2, "removed": 0}, stats
+        assert len(eng.search("苹果香蕉糖", limit=10)) == 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_schema_migration_clears_sig():
+    """⚠️ 结构迁移丢弃索引行时，指纹**必须一起清**。
+
+    留着指纹的话，紧接着的 `sync` 会认为每一篇都没变而全部跳过 ——
+    索引永久空着，而启动日志里写的是「对账完成：reused=170」。
+    """
+    d = tempfile.mkdtemp(prefix="limo_search_test_")
+    try:
+        conn = sqlite3.connect(str(Path(d) / "search.db"))
+        conn.execute(
+            "CREATE VIRTUAL TABLE transcripts_fts "
+            "USING fts5(id, title, content, tokenize='unicode61')"
+        )
+        conn.commit()
+        conn.close()
+
+        eng = SearchEngine(d)
+        eng.migrate_schema()
+        stats = eng.sync(_DOCS, _content_map({"tr_a": "苹果香蕉糖", "tr_b": "橘子柚子茶"}))
+        assert stats["indexed"] == 2, f"迁移后应全量重排，实际 {stats}"
+        assert len(eng.search("苹果香蕉糖", limit=10)) == 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_sync_skips_doc_with_neither_title_nor_body():
+    """标题与正文都空的文档不写索引行 —— 与 `rebuild` 的判据逐字一致。
+
+    但指纹仍要记下：否则每次启动都会把它算作「变了的篇目」。
+    """
+    eng, d = _engine()
+    try:
+        cmap = _content_map({"tr_a": ""})
+        stats = eng.sync([{"id": "tr_a", "title": ""}], cmap)
+        assert stats["indexed"] == 1
+        stats2 = eng.sync([{"id": "tr_a", "title": ""}], cmap)
+        assert stats2 == {"reused": 1, "indexed": 0, "removed": 0}, stats2
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     import traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
