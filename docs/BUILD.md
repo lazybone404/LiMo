@@ -98,6 +98,37 @@ nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM LiMoBackend.exe'
 
 ---
 
+## 两种安装包不能交叉覆盖（2026-11-12 实测）
+
+`bundle.targets: "all"` 会同时产出 NSIS 与 MSI。**它们互相不认对方装过什么**，
+任意方向交叉安装的结果都是「两份并存」，不是覆盖升级。
+
+| 场景 | 结果 |
+|---|---|
+| 已装 NSIS → 装 MSI | `Program Files\LiMo` 5498 个文件 + `%LOCALAPPDATA%\LiMo` 5498 个文件，控制面板**两条** LiMo |
+| 已装 MSI → 装 NSIS | 同上，两条卸载项，开始菜单出现**两个同名图标** |
+
+机制：两个安装器各按自己的登记项判断「有没有装过」，而它们是两套互不可见的键 ——
+
+- NSIS（`perMachine`）：落 `C:\Program Files\LiMo`，登记 `HKLM\...\Uninstall\LiMo`
+- MSI：落 `%LOCALAPPDATA%\LiMo`，登记 `HKLM\...\Uninstall\{79829E4D-…}`（ProductCode）
+
+NSIS 模板的 `RestorePreviousInstallLocation` 从 `...\Uninstall\LiMo` 读旧目录，MSI 那个键是
+GUID，读不到，于是回落到默认目录再装一份。卸载同理，各删各的文件 —— 这也是为什么并存时
+开始菜单会留下两个指向不同目录的同名快捷方式。
+
+⚠️ MSI 的落点 `%LOCALAPPDATA%\LiMo` **同时是 LiMo 的日志与密钥目录**（`logs/`、`secrets.bin`），
+程序文件会和这些用户数据混在一起；NSIS 的 perMachine 落点把两者分开了。这是选 NSIS
+作为唯一发行格式的第二个理由。
+
+**结论：只有一个安装格式能覆盖升级，同格式之间可以。** 现在 `scripts/release.py` 只认
+`LiMo_{v}_x64-setup.exe`，与这条一致；`targets: "all"` 产出的 MSI 不要发给用户。
+
+卸载任何一份都**不碰用户数据**：实测卸载后 `{data_dir}`（默认 `~/.limo`）的文档与
+`%LOCALAPPDATA%\LiMo` 下的 `logs/`、`secrets.bin` 都还在，只有程序文件被删。
+
+---
+
 ## 发版：签名与 `latest.json`
 
 上面的 1→2→3 是**日常打包**（打了包不发）。发版要多做三件事：签名、生成清单、上传。
