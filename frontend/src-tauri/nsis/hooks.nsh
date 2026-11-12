@@ -12,8 +12,9 @@
 ;    一个占着端口的进程，同样会让人以为卸载没干净。
 ;
 ; ② 移除另一份以 MSI 装的 LiMo。两套安装器互不可见对方的卸载登记：NSIS 登记
-;    HKLM\...\Uninstall\LiMo，MSI 登记一条 {ProductCode} 键，落点在 %LOCALAPPDATA%\LiMo。
-;    交叉安装的结果是两份并存 + 两个开始菜单图标（2026-11-12 实测双向复现）。
+;    HKLM\...\Uninstall\LiMo，MSI 登记一条 {ProductCode} 键。两者的**程序目录相同**
+;    （都是 C:\Program Files\LiMo，见 docs/BUILD.md），所以交叉安装的结果是控制面板
+;    两条卸载项指着同一份文件 + 两个开始菜单图标（2026-11-12 实测双向复现）。
 ;
 ; ⚠️ **模板里本来就有这段逻辑**（installer.nsi 的 PageReinstall，Tauri bundler #6859），
 ;    但它写在自定义页面函数里。`/S` 静默安装时 NSIS 不执行任何页面函数 —— 页面被整体
@@ -25,9 +26,13 @@
 ;    多打一行 DetailPrint 而已，不会重复执行 msiexec。
 ;
 ; ⚠️ 只覆盖 MSI → NSIS 一个方向。反方向没有可挂的钩子（Tauri 不开放 WiX 侧），
-;    只能靠下载页写明「二选一」与「换格式先卸载旧的」。Tauri 官方也是这个结论
-;    （plugins-workspace#1449：updater 必须与安装时同格式，MSI 装、NSIS perMachine
-;    更新是唯一走得通的方向）。
+;    只能靠下载页写明「二选一」与「换格式先卸载旧的」。
+;
+;    2026-11-12 起这条钩子只兜「用户手动下载了另一种格式的安装包」：应用内自动更新
+;    已经按安装格式各取各的包（tauri-plugin-updater ≥2.10 按 bundle_type() 先查清单的
+;    windows-x86_64-{nsis,msi}），MSI 用户的更新直接交给 msiexec，根本不经过这里，
+;    所以不会再出现「更新一次安装格式变了」的旧行为（plugins-workspace#1449 的结论
+;    在那之前成立，2.10.0 起已不适用）。
 ;
 ; 用到的寄存器：$R5-$R9。PREINSTALL 处在 Section Install 的最开头，模板此时还没
 ; 动过这几个（它自己在别处用 $R0-$R4），不会撞。

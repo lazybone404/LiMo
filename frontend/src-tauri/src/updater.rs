@@ -4,6 +4,13 @@
 //! 这些坑只有真发版才暴露，靠读代码发现不了。
 //!
 //! 关键判据（改动前先读）：
+//! - **下载哪个包由「应用当初怎么装的」决定，不由我们决定**（2026-11-12）：
+//!   插件按 `tauri_utils::platform::bundle_type()` 先查清单的 `windows-x86_64-nsis` /
+//!   `windows-x86_64-msi`，取不到再回落 `windows-x86_64`。那个值由 bundler 在打包时
+//!   **逐格式 patch** 进主程序二进制（实测构建日志：先 patch 成 msi 再打 msi 包，再 patch
+//!   成 nsis 再打 nsis 包）。所以 `.exe` 装的取 NSIS 包、`.msi` 装的取 MSI 包，各走各的，
+//!   不会再出现「更新一次安装格式变了」。这边唯一要配合的是**别给 msiexec 塞 `/D=`**，
+//!   见 `build_updater`。
 //! - **检查可以静默，安装必须由人点**。这里只提供四个命令（检查 / 下载 / 安装 / 查已备好），
 //!   什么时候调是前端的事。
 //! - **下载与安装是两个命令**（2026-11-08）：下载安全（不动任何进程），安装会退出应用。
@@ -223,11 +230,26 @@ fn build_updater(
             handle.cleanup_before_exit();
         });
 
-        // NSIS 默认会回落到「上一次写进注册表的目录」，实测过自定义安装目录被重置
-        // （P-ai v0.9.10）。`/D=` 必须在参数最后，插件保证 installer_arg 追加在内部参数之后。
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                builder = builder.installer_arg(format!("/D={}", dir.display()));
+        // `/D=` 只有 NSIS 认。2026-11-12 起 MSI 用户也走这条更新链路，而插件把
+        // `installer_arg` **原样追加在 msiexec 那条命令行末尾**（`updater_parameters`
+        // 的 Msi 分支：`/i <path> /passive /promptrestart <我们加的参数>`）。多一个
+        // `/D=…` 就成了未知选项，msiexec 弹出用法框、安装不执行 —— 症状是
+        // 「下载成功、验签通过、然后什么都没有」。
+        //
+        // 判据取「明确是 MSI 才跳过」：`bundle_type()` 在非打包场景（`tauri dev`、
+        // 二进制没被 bundler patch）返回 None，那种情况仍按 NSIS 处理，保持 2026-11-08
+        // 以来「自定义安装目录不被重置」的行为不变（P-ai v0.9.10 实测过那个回归）。
+        let is_msi = matches!(
+            tauri::utils::platform::bundle_type(),
+            Some(tauri::utils::config::BundleType::Msi)
+        );
+        if !is_msi {
+            // NSIS 默认会回落到「上一次写进注册表的目录」，实测过自定义安装目录被重置。
+            // `/D=` 必须在参数最后，插件保证 installer_arg 追加在内部参数之后。
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    builder = builder.installer_arg(format!("/D={}", dir.display()));
+                }
             }
         }
     }

@@ -98,22 +98,75 @@ nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM LiMoBackend.exe'
 
 ---
 
-## 两种安装包：能同时发，但不能交叉覆盖（2026-11-12 实测 / 同日修复）
+## 两种安装包：各走各的更新（2026-11-12 实测）
 
-`bundle.targets: "all"` 会同时产出 NSIS 与 MSI，两种都可以发给用户。但**它们互相不认
-对方装过什么**，任意方向交叉安装的结果都是「两份并存」，不是覆盖升级。
+`bundle.targets: "all"` 会同时产出 NSIS 与 MSI，两种都发给用户。应用内更新也会**按当前
+这份是怎么装的**去取对应的包，不会再出现「更新一次安装格式就变了」。
+
+### 客户端怎么知道自己是哪种装的
+
+bundler 在打包时把类型**逐格式 patch 进主程序二进制**（`__TAURI_BUNDLE_TYPE` 那个静态串）。
+2026-11-12 的构建日志直接印证了这个顺序 —— 打 msi 之前 patch 成 msi，打 nsis 之前
+patch 成 nsis：
+
+```
+Info Patching …\target\release\limo.exe with bundle type information: msi
+     Running candle … light … bundle\msi\LiMo_0.5.26_x64_en-US.msi
+Info Patching …\target\release\limo.exe with bundle type information: nsis
+     Running makensis … bundle\nsis\LiMo_0.5.26_x64-setup.exe
+```
+
+所以 `bundle/msi/` 里嵌的 exe 标记是 MSI，`bundle/nsis/` 里那份是 NSIS。
+（`target/release/limo.exe` 本身打完包会被还原成 `UNK`，别拿它当判据。）
+
+`tauri-plugin-updater`（≥2.10）在 `Updater::get_urls()` 里按这个标记查清单：先试
+`windows-x86_64-{nsis|msi}`，取不到再回落 `windows-x86_64`。因此 `latest.json` 写三个键：
+
+| 键 | 指向 | 谁读它 |
+|---|---|---|
+| `windows-x86_64-nsis` | `.exe` + 它的 `.sig` | `.exe` 装的客户端 |
+| `windows-x86_64-msi` | `.msi` + 它的 `.sig` | `.msi` 装的客户端 |
+| `windows-x86_64` | 与 nsis 键逐字相同 | 0.5.25 及更早的客户端（二进制里是 `UNK`，只认这个键） |
+
+⚠️ **三个键都要在。** 少了 msi 键时，MSI 客户端会回落到兜底键拿到 NSIS 包，更新完就是
+两份并存、控制面板两条 —— 这个回落是插件写死的，只能靠清单齐全来避免，`release.py
+--check` 会拦。
+
+### MSI 更新不能带 `/D=`
+
+`updater.rs` 原来无条件给安装器加 `/D=<当前目录>`（NSIS 自定义目录会被重置，P-ai v0.9.10
+踩过）。这条参数**只对 NSIS 有效**：插件把所有 `installer_arg` 原样追加在 msiexec 那条
+命令行末尾，多一个 `/D=…` 就是未知选项，msiexec 弹出用法框、安装不执行 —— 症状是
+「下载成功、验签通过、然后什么都没有」。
+
+现在按 `bundle_type()` 判断，明确是 MSI 才跳过。`bundle_type()` 返回 `None`（`tauri dev`、
+未 patch 的二进制）时仍按 NSIS 处理，保持原行为不变。
+
+### 手动交叉安装仍然是两份
+
+自动更新各走各的之后，交叉只剩**手动下载安装包**这一种场景：
 
 | 场景 | 结果 |
 |---|---|
-| 已装 NSIS → 装 MSI | `Program Files\LiMo` 与 `%LOCALAPPDATA%\LiMo` 各一份程序文件，控制面板**两条** LiMo |
-| 已装 MSI → 装 NSIS（修复前） | 同上，两条卸载项，开始菜单出现**两个同名图标** |
-| 已装 MSI → 装 NSIS（2026-11-12 起） | MSI 那份被自动移除，只剩 `Program Files` 一份 |
+| 已装 NSIS → 手动装 MSI | 程序文件仍是 `C:\Program Files\LiMo` 一份（**两者同目录**），控制面板多出**第二条** LiMo |
+| 已装 MSI → 手动装 NSIS（修复前） | 同上，两条卸载项，开始菜单出现**两个同名图标** |
+| 已装 MSI → 手动装 NSIS（2026-11-12 起） | MSI 那条被自动移除，只剩一条 |
 
-机制：两个安装器各按自己的登记项判断「有没有装过」，而它们是两套互不可见的键，还分住在
-两个注册表视图里 ——
+机制：两个安装器各按自己的登记项判断「有没有装过」，而那两套键互不可见、还分住两个
+注册表视图：
 
 - NSIS（`perMachine`）：落 `C:\Program Files\LiMo`，登记 `HKLM\...\Uninstall\LiMo`（**32 位视图**）
-- MSI：落 `%LOCALAPPDATA%\LiMo`，登记 `HKLM\...\Uninstall\{ProductCode}`（**64 位视图**）
+- MSI（`ALLUSERS=1`，也是 perMachine）：**同样落 `C:\Program Files\LiMo`**，登记
+  `HKLM\...\Uninstall\{ProductCode}`（**64 位视图**）
+
+⚠️ MSI 的落点此前在本文档里写成 `%LOCALAPPDATA%\LiMo`，那是错的。2026-11-12 用
+`msilib` 读 0.5.25 与 0.5.26 两版 MSI 的 `Directory` 表，`INSTALLDIR` 的父目录都是
+`ProgramFiles64Folder`，生成的 `main.wxs` 里也写着 `PlatformProgramFilesFolder =
+"ProgramFiles64Folder"`。
+
+**两者同目录**意味着「两份并存」不是两份独立的程序：文件被后装的那份覆盖，而控制面板
+留着两条卸载项 —— 卸载任意一条都会删掉共用的程序文件，另一条变成指向空目录的僵尸。
+这是交叉安装比「各占一个目录」更糟的地方，也是自动更新必须各取各包的另一个理由。
 
 NSIS 模板的 `RestorePreviousInstallLocation` 从 `...\Uninstall\LiMo` 读旧目录，MSI 那个键是
 GUID，读不到，于是回落到默认目录再装一份。
@@ -124,8 +177,8 @@ GUID，读不到，于是回落到默认目录再装一份。
 枚举卸载登记，找到 MSI 那份（子键名是 `{GUID}`、DisplayName 与 Publisher 与本产品一致）就
 `msiexec /x ... /qn /norestart` 卸掉它，再继续安装。
 
-应用内自动更新下载的永远是 NSIS 包（`latest.json` 只有一个 url，见下一节），所以 **MSI 用户
-点一次更新后，安装格式会变成 NSIS**。数据不动：实测卸载后 `~/.limo` 的文档库与
+这条只兜「用户手动下载了另一种格式的安装包」——自动更新不会走它（MSI 用户的更新直接
+交给 msiexec，不经过 NSIS 安装器）。实测这种切换不丢数据：`~/.limo` 的文档库与
 `%LOCALAPPDATA%\LiMo` 下的 `logs/`、`secrets.bin` 都还在，只有程序文件被删。
 
 ⚠️ **反方向（NSIS → MSI）没有钩子。** Tauri 不开放 WiX 侧的自定义点，只能靠下载页写明
@@ -155,8 +208,9 @@ Tauri bundler 从 1.3.0 起就有「检测到旧 WiX 安装时提示卸载」
 
 ### 用户侧规则
 
-- **同一格式内可以覆盖升级**，跨格式不行。
-- 普通用户只提供 NSIS；MSI 是给需要标准 MSI 部署的场景（Intune / SCCM / 组策略）用的。
+- **同一格式内可以覆盖升级**；跨格式是两份并存（NSIS 方向有钩子清掉，反向没有）。
+- 下载页仍推荐普通用户用 NSIS；MSI 是给需要标准 MSI 部署的场景（Intune / SCCM /
+  组策略）用的。**两种格式都走应用内更新**，各取各的包。
 - WOW6432Node 下可能残留一条 `LiMo` 卸载项，指向已不存在的 `Program Files\LiMo\uninstall.exe`
   （[tauri-apps/tauri#16183](https://github.com/tauri-apps/tauri/issues/16183)，卸载器用了
   `_?=` 无法自删）。它不影响下次安装，`RestorePreviousInstallLocation` 读到的仍是默认目录。
@@ -189,8 +243,9 @@ export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat C:/WorkPlace/Tool/LiMo/.release
 cd frontend
 npx tauri build --config src-tauri/tauri.release.conf.json
 # → target/release/bundle/nsis/LiMo_{v}_x64-setup.exe
-#   target/release/bundle/nsis/LiMo_{v}_x64-setup.exe.sig   ← 少了它客户端验签必失败
-#   target/release/bundle/msi/LiMo_{v}_x64_en-US.msi        ← 一起上传；不签名（自动更新只认 NSIS）
+#   target/release/bundle/nsis/LiMo_{v}_x64-setup.exe.sig   ← 少了它 .exe 用户验签必失败
+#   target/release/bundle/msi/LiMo_{v}_x64_en-US.msi
+#   target/release/bundle/msi/LiMo_{v}_x64_en-US.msi.sig    ← 少了它 .msi 用户验签必失败
 ```
 
 ### 生成并校验清单
@@ -201,13 +256,14 @@ python scripts/release.py --check          # 发版门禁，退出码 0/1/2
 python scripts/release.py --print-upload   # 打印 gh release create 命令 + SHA256
 ```
 
-`--print-upload` 打出来的命令含**四个文件**：NSIS 安装包、`.sig`、MSI、`latest.json`。
-少一个 `.sig` 时脚本直接报错退出（退出码 1）而不打印半条命令 —— 缺签名的 Release
-在页面上看不出任何异常，只有客户端下载完才会「装不上」。
+`--print-upload` 打出来的命令含**五个文件**：NSIS 安装包、它的 `.sig`、MSI、它的 `.sig`、
+`latest.json`。少任何一个 `.sig` 时脚本直接报错退出（退出码 1）而不打印半条命令 ——
+缺签名的 Release 在页面上看不出任何异常，只有对应那一半客户端下载完才会「装不上」。
 
-`--check` 的十条判据见脚本里 `collect_problems` 的注释。其中最关键的一条是
-**清单 `signature` 必须与 `.sig` 文件逐字相同**：重新构建后忘了重跑 `--write`，
-签名与包对不上，客户端下载完验签失败、更新装不上，而发版侧一切正常。
+`--check` 的判据见脚本里 `collect_problems` 的注释。其中最关键的一条是
+**清单每个键的 `signature` 必须与它自己那份产物的 `.sig` 逐字相同**：重新构建后忘了
+重跑 `--write`，签名与包对不上，客户端下载完验签失败、更新装不上，而发版侧一切正常。
+把 exe 的签名填进 msi 键是同一类错误，症状一致。
 
 `latest.json` 与 `*.sig` 都**不进 git**（见 `.gitignore`），它们只存在于 Release 上。
 

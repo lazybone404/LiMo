@@ -39,8 +39,24 @@ CARGO_TOML = Path("frontend/src-tauri/Cargo.toml")
 MANIFEST_PATH = Path("dist-release/latest.json")
 KEYS_DIR = ROOT.parent / ".release-keys"
 
-# 客户端只看这一个键（`frontend/src-tauri/src/updater.rs` 里 `platforms` 的 target 名）。
+# 平台基础键。**同时**它是老客户端的兜底键，不能删。
+#
+# 2026-11-12 起清单里写三个键：
+#   windows-x86_64-nsis  → tauri build 打出来的 .exe 装的客户端
+#   windows-x86_64-msi   → .msi 装的客户端
+#   windows-x86_64       → 兜底
+#
+# 查找顺序在 tauri-plugin-updater 的 `Updater::get_urls()` 里写死：先试
+# `{os}-{arch}-{installer}`，取不到再试 `{os}-{arch}`。`installer` 来自
+# `tauri_utils::platform::bundle_type()` —— 那个值由 bundler 在打包时**逐格式**
+# patch 进主程序二进制（2026-11-12 实测构建日志：先 patch 成 msi 再打 msi 包，
+# 再 patch 成 nsis 再打 nsis 包），所以两份安装包各自知道自己是哪种装的。
+#
+# 兜底键是给「装了 0.5.25 及更早版本」的客户端留的：那些 exe 要么是 UNK，
+# 要么根本不带这套查找逻辑，只会读 `windows-x86_64`。
 PLATFORM_KEY = "windows-x86_64"
+PLATFORM_KEY_NSIS = f"{PLATFORM_KEY}-nsis"
+PLATFORM_KEY_MSI = f"{PLATFORM_KEY}-msi"
 
 
 def read_version(root: Path = ROOT) -> str:
@@ -62,9 +78,8 @@ def signature_path(exe: Path) -> Path:
 def msi_path(root: Path, version: str) -> Path | None:
     """随 Release 一起上传的 MSI 包。
 
-    **它不参与自动更新**：`latest.json` 只有一个 url，客户端永远下载 NSIS 包
-    （MSI 用户点一次更新后安装格式会变成 NSIS，见 docs/BUILD.md）。
-    MSI 是给 Intune / SCCM / 组策略这类标准 MSI 部署场景用的。
+    2026-11-12 起它**也是自动更新的产物**：用 .msi 装出来的客户端会在这个键下取包。
+    MSI 用户与 NSIS 用户从此各走各的更新链路，不会再被「更新一次格式就变了」。
 
     文件名带 WiX 语言段（`_en-US`），用 glob 匹配 —— 改 `wix.language` 之后
     写死名字的那份就失效了，而且失效时只会表现为「明明打了包却说找不到」。
@@ -123,19 +138,18 @@ def manifest_notes(raw: str) -> str:
     return "\n".join(lines).strip()
 
 
-def build_manifest(version: str, notes: str, signature: str, url: str,
+def build_manifest(version: str, notes: str, platforms: dict[str, dict[str, str]],
                    pub_date: str | None = None) -> dict:
-    """纯函数：只拼结构，不读文件。测试直接喂参数。"""
+    """纯函数：只拼结构，不读文件。测试直接喂参数。
+
+    `platforms` 是 `{键: {"signature": …, "url": …}}`，键的顺序即写入顺序
+    （`windows-x86_64-nsis` / `windows-x86_64-msi` / `windows-x86_64`）。
+    """
     return {
         "version": version.lstrip("vV"),
         "notes": notes,
         "pub_date": pub_date or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "platforms": {
-            PLATFORM_KEY: {
-                "signature": signature,
-                "url": url,
-            }
-        },
+        "platforms": platforms,
     }
 
 
@@ -173,13 +187,28 @@ def collect_problems(root: Path, version: str, slug: str | None,
         problems.append(f"签名文件为空：{sig_path.relative_to(root)}")
         return problems
 
-    # 两种格式都发（2026-11-12 的决定）。MSI 不在自动更新链路上，但不上传就等于
-    # 用户拿不到 —— 而 Release 页面上少一个文件，当时是看不出来的。
-    if msi_path(root, version) is None:
+    # 两种格式都发（2026-11-12）。MSI 现在有自己的更新键（`windows-x86_64-msi`），
+    # 少了它，用 .msi 装的客户端根不到新版本 —— 而 Release 页面上少一个文件，
+    # 当时是看不出来的。
+    msi = msi_path(root, version)
+    if msi is None:
         problems.append(
             f"MSI 安装包不存在：{BUNDLE_MSI_DIR}/LiMo_{version}_*.msi"
             "（发行规则是 NSIS 与 MSI 都发）"
         )
+        return problems  # 后面的两个键都依赖它
+
+    msi_sig_path = signature_path(msi)
+    if not msi_sig_path.exists():
+        problems.append(
+            f"MSI 签名文件不存在：{msi_sig_path.relative_to(root)}"
+            "（构建时漏了 --config src-tauri/tauri.release.conf.json）"
+        )
+        return problems
+    msi_signature = msi_sig_path.read_text(encoding="utf-8").strip()
+    if not msi_signature:
+        problems.append(f"MSI 签名文件为空：{msi_sig_path.relative_to(root)}")
+        return problems
 
     # 公钥三处：配置里有、且与密钥目录里的 .pub 一致。
     # 不一致的表现是「签得出来，客户端验不过」，只在真实升级时暴露。
@@ -217,23 +246,39 @@ def collect_problems(root: Path, version: str, slug: str | None,
         # semver 解析会直接失败，客户端只会得到「没有更新」，不报错。
         problems.append(f"清单 version 不能带 v 前缀：{mv!r}")
 
-    platform = (manifest.get("platforms") or {}).get(PLATFORM_KEY) or {}
-    if not platform:
-        problems.append(f"清单缺少 platforms.{PLATFORM_KEY}")
-        return problems
+    # 三个键都要在，且每个都指向**自己那份产物与自己的签名**。
+    # 把 msi 键错填成 exe 的签名时，客户端下载完 MSI 会验签失败 ——
+    # 而下载地址、HTTP 状态码、Release 页面全都正常。
+    expected = {
+        PLATFORM_KEY_NSIS: (exe, signature),
+        PLATFORM_KEY_MSI: (msi, msi_signature),
+        # 兜底键必须与 NSIS 键逐字相同：读到它的都是只认基础键的老客户端，
+        # 而它们当初装的都是 NSIS 包。
+        PLATFORM_KEY: (exe, signature),
+    }
+    platforms = manifest.get("platforms") or {}
+    for key, (artifact, sig) in expected.items():
+        platform = platforms.get(key) or {}
+        if not platform:
+            problems.append(f"清单缺少 platforms.{key}")
+            continue
 
-    if str(platform.get("signature", "")).strip() != signature:
-        problems.append(
-            "清单 signature 与 .sig 文件不一致"
-            "（重新构建后忘了重跑 --write：客户端验签失败，更新装不上）"
-        )
+        if str(platform.get("signature", "")).strip() != sig:
+            problems.append(
+                f"清单 platforms.{key}.signature 与 {artifact.name} 的 .sig 不一致"
+                "（重新构建后忘了重跑 --write：客户端验签失败，更新装不上）"
+            )
 
-    url_name = str(platform.get("url", "")).rsplit("/", 1)[-1]
-    if url_name != exe.name:
-        problems.append(f"清单 url 的文件名 {url_name!r} 与产物 {exe.name!r} 不一致")
-    expected_url = download_url(slug, version, exe.name)
-    if str(platform.get("url", "")).strip() != expected_url:
-        problems.append(f"清单 url 不是预期的直连地址：{platform.get('url')!r}")
+        url = str(platform.get("url", "")).strip()
+        url_name = url.rsplit("/", 1)[-1]
+        if url_name != artifact.name:
+            problems.append(
+                f"清单 platforms.{key}.url 的文件名 {url_name!r}"
+                f" 与产物 {artifact.name!r} 不一致"
+            )
+        expected_url = download_url(slug, version, artifact.name)
+        if url != expected_url:
+            problems.append(f"清单 platforms.{key}.url 不是预期的直连地址：{url!r}")
 
     return problems
 
@@ -257,6 +302,23 @@ def cmd_write(root: Path = ROOT) -> int:
         print(f"[release] 签名文件为空：{sig_path.relative_to(root)}", file=sys.stderr)
         return 1
 
+    msi = msi_path(root, version)
+    if msi is None:
+        print(f"[release] MSI 安装包不存在：{BUNDLE_MSI_DIR}/LiMo_{version}_*.msi", file=sys.stderr)
+        return 1
+    msi_sig_path = signature_path(msi)
+    if not msi_sig_path.exists():
+        print(
+            f"[release] MSI 签名文件不存在：{msi_sig_path.relative_to(root)}\n"
+            "          构建时需带 --config src-tauri/tauri.release.conf.json",
+            file=sys.stderr,
+        )
+        return 1
+    msi_signature = msi_sig_path.read_text(encoding="utf-8").strip()
+    if not msi_signature:
+        print(f"[release] MSI 签名文件为空：{msi_sig_path.relative_to(root)}", file=sys.stderr)
+        return 1
+
     slug = git_origin_slug(root)
     if not slug:
         print("[release] 无法从 git remote 推导仓库地址", file=sys.stderr)
@@ -266,18 +328,28 @@ def cmd_write(root: Path = ROOT) -> int:
     notes = notes_file.read_text(encoding="utf-8") if notes_file.exists() else f"LiMo v{version}"
     notes = manifest_notes(notes)
 
+    exe_url = download_url(slug, version, exe.name)
     manifest = build_manifest(
         version=version,
         notes=notes,
-        signature=signature,
-        url=download_url(slug, version, exe.name),
+        platforms={
+            PLATFORM_KEY_NSIS: {"signature": signature, "url": exe_url},
+            PLATFORM_KEY_MSI: {
+                "signature": msi_signature,
+                "url": download_url(slug, version, msi.name),
+            },
+            PLATFORM_KEY: {"signature": signature, "url": exe_url},
+        },
     )
 
     out = root / MANIFEST_PATH
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[release] 已写入 {MANIFEST_PATH}")
-    print(f"[release] 版本 {version}  签名 {len(signature)} 字符")
+    print(f"[release] 版本 {version}")
+    print(f"[release]   {PLATFORM_KEY_NSIS} → {exe.name}（签名 {len(signature)} 字符）")
+    print(f"[release]   {PLATFORM_KEY_MSI}  → {msi.name}（签名 {len(msi_signature)} 字符）")
+    print(f"[release]   {PLATFORM_KEY}       → {exe.name}（老客户端兜底）")
     return 0
 
 
@@ -336,33 +408,40 @@ def cmd_print_upload(root: Path = ROOT) -> int:
 
     digest = hashlib.sha256(exe.read_bytes()).hexdigest()
     msi = msi_path(root, version)
-    msi_digest = hashlib.sha256(msi.read_bytes()).hexdigest() if msi else None
+    if msi is None:
+        print(f"[release] MSI 安装包不存在：{BUNDLE_MSI_DIR}/LiMo_{version}_*.msi"
+              "（两种格式都发，且 MSI 用户要靠它更新）", file=sys.stderr)
+        return 1
+    msi_sig = signature_path(msi)
+    if not msi_sig.exists() or not msi_sig.read_text(encoding="utf-8").strip():
+        print(f"[release] MSI 签名文件缺失或为空：{msi_sig.relative_to(root)}"
+              "（构建时漏了 --config src-tauri/tauri.release.conf.json）", file=sys.stderr)
+        return 1
+
+    msi_digest = hashlib.sha256(msi.read_bytes()).hexdigest()
     notes = release_notes_path(root, version)
     notes_arg = f"--notes-file {notes.relative_to(root).as_posix()}" if notes.exists() else f'--notes "LiMo v{version}"'
 
-    # ⚠️ 四样缺一不可（CLAUDE.md 发布门禁第 5 条 + 2026-11-12 「两种格式都发」）：
-    # NSIS 安装包、`.sig`、MSI 安装包、`latest.json`。
-    # 漏了 `.sig` 不影响 Release 页面上的「已发布」，但客户端拿不到签名就无法装 ——
-    # 表现为「提示有新版本，下载完成后什么都没发生」。漏了 MSI 则是下载页少一种格式，
-    # 页面上同样看不出异常。
+    # ⚠️ **五样**缺一不可（CLAUDE.md 发布门禁第 5 条 + 2026-11-12 两种格式各自更新）：
+    # NSIS 安装包 / 它的 `.sig` / MSI 安装包 / 它的 `.sig` / `latest.json`。
+    # 少任何一个 `.sig` 都不影响 Release 页面上的「已发布」，但对应那半用户
+    # 下载完成后验签失败 —— 表现为「提示有新版本，下载完成后什么都没发生」。
     print("# 上传是对外动作，确认前先跑一遍 --check")
-    print("# ⚠️ 四样都要传：NSIS 安装包 / .sig / MSI / latest.json（缺 .sig = 客户端下载完验签失败）")
+    print("# ⚠️ 五样都要传：NSIS 安装包 / NSIS .sig / MSI / MSI .sig / latest.json")
+    print("#     清单里 windows-x86_64-nsis 指向前两个，windows-x86_64-msi 指向中间两个")
     print(f"gh release create v{version} \\")
     print(f"  {exe.relative_to(root).as_posix()} \\")
     print(f"  {sig.relative_to(root).as_posix()} \\")
-    if msi:
-        print(f"  {msi.relative_to(root).as_posix()} \\")
-    else:
-        print(f"  # ⚠️ 缺少 MSI：{BUNDLE_MSI_DIR}/LiMo_{version}_*.msi（两种格式都发的规则）")
+    print(f"  {msi.relative_to(root).as_posix()} \\")
+    print(f"  {msi_sig.relative_to(root).as_posix()} \\")
     print(f"  {MANIFEST_PATH.as_posix()} \\")
     print(f"  --title \"LiMo {version}\" {notes_arg}")
     print()
     print(f"# {exe.name} SHA256")
     print(digest)
-    if msi_digest:
-        print()
-        print(f"# {msi.name} SHA256")
-        print(msi_digest)
+    print()
+    print(f"# {msi.name} SHA256")
+    print(msi_digest)
     return 0
 
 

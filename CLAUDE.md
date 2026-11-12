@@ -197,7 +197,7 @@ python scripts/sync-version.py
 | 2 | 验证门禁 | 后端测试全绿 + 前端测试全绿 + exe 启动 health 200 + 核心链路冒烟（导入→生成→导出） |
 | 3 | 文档同步 | `python scripts/changelog-build.py --write` 生成 `docs/changelog/releases/v{VERSION}.md` **并改写成用户视角**（四条改写规则见 [CHANGELOG.md](docs/CHANGELOG.md) 头部）；STATUS 版本号已同步 |
 | 4 | Tag + Notes + 校验 | 打 `v{VERSION}` tag；Release notes 取自第 3 条那份文件；附安装包 SHA256 校验和 |
-| 5 | 更新门禁 | `python scripts/release.py --check`（十条判据）；Release 上**必须**同时有 NSIS 安装包、`.sig`、MSI 与 `latest.json` 四样（**两种格式都发**，2026-11-12 起） |
+| 5 | 更新门禁 | `python scripts/release.py --check`；Release 上**必须**同时有 NSIS 安装包、它的 `.sig`、MSI、它的 `.sig` 与 `latest.json` 五样（**两种格式都发**，2026-11-12 起）。`latest.json` 要写三个键：`windows-x86_64-nsis` / `windows-x86_64-msi` / 兜底的 `windows-x86_64` —— 客户端按**自己当初怎么装的**取对应包（`bundle_type()` 由 bundler 逐格式 patch 进二进制），缺键时会回落拿错包、两份并存 |
 
 ⚠️ **第 5 条漏了是静默失效**：没有 `latest.json` 或 `signature` 为空时，客户端只会认为
 「没有新版本」，继续用旧版，全程不报错。发版构建要走
@@ -208,8 +208,9 @@ python scripts/sync-version.py
 
 用户提出发布后 → **先展示门禁清单**（版本/验证/文档/tag 状态）→ 用户确认 → 才执行：
 `git tag v{VERSION}` → `gh release create v{VERSION}`（notes 取自 `docs/changelog/releases/v{VERSION}.md`）→ 上传 NSIS/MSI 安装包 + SHA256。
-自动更新另需随安装包一起上传 `LiMo_{v}_x64-setup.exe.sig` 与 `dist-release/latest.json`
-（`python scripts/release.py --print-upload` 直接打印含这两样的完整命令）。
+自动更新另需随安装包一起上传 `LiMo_{v}_x64-setup.exe.sig`、
+`LiMo_{v}_x64_en-US.msi.sig` 与 `dist-release/latest.json`
+（`python scripts/release.py --print-upload` 直接打印含这五样文件的完整命令）。
 
 ## 提交纪律（2026-11-07）
 
