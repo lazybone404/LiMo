@@ -98,34 +98,68 @@ nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM LiMoBackend.exe'
 
 ---
 
-## 两种安装包不能交叉覆盖（2026-11-12 实测）
+## 两种安装包：能同时发，但不能交叉覆盖（2026-11-12 实测 / 同日修复）
 
-`bundle.targets: "all"` 会同时产出 NSIS 与 MSI。**它们互相不认对方装过什么**，
-任意方向交叉安装的结果都是「两份并存」，不是覆盖升级。
+`bundle.targets: "all"` 会同时产出 NSIS 与 MSI，两种都可以发给用户。但**它们互相不认
+对方装过什么**，任意方向交叉安装的结果都是「两份并存」，不是覆盖升级。
 
 | 场景 | 结果 |
 |---|---|
-| 已装 NSIS → 装 MSI | `Program Files\LiMo` 5498 个文件 + `%LOCALAPPDATA%\LiMo` 5498 个文件，控制面板**两条** LiMo |
-| 已装 MSI → 装 NSIS | 同上，两条卸载项，开始菜单出现**两个同名图标** |
+| 已装 NSIS → 装 MSI | `Program Files\LiMo` 与 `%LOCALAPPDATA%\LiMo` 各一份程序文件，控制面板**两条** LiMo |
+| 已装 MSI → 装 NSIS（修复前） | 同上，两条卸载项，开始菜单出现**两个同名图标** |
+| 已装 MSI → 装 NSIS（2026-11-12 起） | MSI 那份被自动移除，只剩 `Program Files` 一份 |
 
-机制：两个安装器各按自己的登记项判断「有没有装过」，而它们是两套互不可见的键 ——
+机制：两个安装器各按自己的登记项判断「有没有装过」，而它们是两套互不可见的键，还分住在
+两个注册表视图里 ——
 
-- NSIS（`perMachine`）：落 `C:\Program Files\LiMo`，登记 `HKLM\...\Uninstall\LiMo`
-- MSI：落 `%LOCALAPPDATA%\LiMo`，登记 `HKLM\...\Uninstall\{79829E4D-…}`（ProductCode）
+- NSIS（`perMachine`）：落 `C:\Program Files\LiMo`，登记 `HKLM\...\Uninstall\LiMo`（**32 位视图**）
+- MSI：落 `%LOCALAPPDATA%\LiMo`，登记 `HKLM\...\Uninstall\{ProductCode}`（**64 位视图**）
 
 NSIS 模板的 `RestorePreviousInstallLocation` 从 `...\Uninstall\LiMo` 读旧目录，MSI 那个键是
-GUID，读不到，于是回落到默认目录再装一份。卸载同理，各删各的文件 —— 这也是为什么并存时
-开始菜单会留下两个指向不同目录的同名快捷方式。
+GUID，读不到，于是回落到默认目录再装一份。
 
-⚠️ MSI 的落点 `%LOCALAPPDATA%\LiMo` **同时是 LiMo 的日志与密钥目录**（`logs/`、`secrets.bin`），
-程序文件会和这些用户数据混在一起；NSIS 的 perMachine 落点把两者分开了。这是选 NSIS
-作为唯一发行格式的第二个理由。
+### NSIS 安装器会主动清掉 MSI 那份
 
-**结论：只有一个安装格式能覆盖升级，同格式之间可以。** 现在 `scripts/release.py` 只认
-`LiMo_{v}_x64-setup.exe`，与这条一致；`targets: "all"` 产出的 MSI 不要发给用户。
+[nsis/hooks.nsh](../frontend/src-tauri/nsis/hooks.nsh) 的 `NSIS_HOOK_PREINSTALL` 在覆盖安装前
+枚举卸载登记，找到 MSI 那份（子键名是 `{GUID}`、DisplayName 与 Publisher 与本产品一致）就
+`msiexec /x ... /qn /norestart` 卸掉它，再继续安装。
 
-卸载任何一份都**不碰用户数据**：实测卸载后 `{data_dir}`（默认 `~/.limo`）的文档与
+应用内自动更新下载的永远是 NSIS 包（`latest.json` 只有一个 url，见下一节），所以 **MSI 用户
+点一次更新后，安装格式会变成 NSIS**。数据不动：实测卸载后 `~/.limo` 的文档库与
 `%LOCALAPPDATA%\LiMo` 下的 `logs/`、`secrets.bin` 都还在，只有程序文件被删。
+
+⚠️ **反方向（NSIS → MSI）没有钩子。** Tauri 不开放 WiX 侧的自定义点，只能靠下载页写明
+「换格式前先卸载旧的」。
+
+### 模板自带的 WiX 检测为什么没救场
+
+Tauri bundler 从 1.3.0 起就有「检测到旧 WiX 安装时提示卸载」
+（[tauri-apps/tauri#6859](https://github.com/tauri-apps/tauri/issues/6859)，落在
+`installer.nsi` 的 `PageReinstall`）。它在真机上一直没生效，有两个独立原因：
+
+1. **它住在自定义页面函数里。** `/S` 静默安装时 NSIS 不执行任何页面函数，`$WixMode`
+   停在默认值 0，后面的 `PageLeaveReinstall` 也就不会去卸 WiX 那份。
+2. **它没切注册表视图。** 安装器是 32 位进程，读 `HKLM\SOFTWARE\...` 会被 WOW64 重定向到
+   `WOW6432Node`，而 MSI 的登记在 64 位视图。整份 `installer.nsi` 里没有一处 `SetRegView`，
+   所以即使页面跑了也读不到。
+
+`hooks.nsh` 两条都补上了：不看当前是不是静默，PREINSTALL 一律自查一遍；查之前
+`SetRegView 64`，查完恢复 32（后面的安装步骤照旧写 32 位视图）。
+
+### 第三个坑：判据不要用 `${StrLoc}`
+
+`StrFunc.nsh` 的 `${StrLoc}` 内部会用 `$R1`/`$R2` 当临时变量，把结果变量传成这几个时
+会**静默归零**。2026-11-12 实测：明明命中 MSI 项，返回值却是 0，循环继续，最后选中本产品
+自己的 NSIS 卸载项，执行 `msiexec /x LiMo` 必然失败。判据改用键名（`{` 开头）后正常 ——
+本产品自己的 NSIS 项键名是 `LiMo`，两者靠这一点就能分开。
+
+### 用户侧规则
+
+- **同一格式内可以覆盖升级**，跨格式不行。
+- 普通用户只提供 NSIS；MSI 是给需要标准 MSI 部署的场景（Intune / SCCM / 组策略）用的。
+- WOW6432Node 下可能残留一条 `LiMo` 卸载项，指向已不存在的 `Program Files\LiMo\uninstall.exe`
+  （[tauri-apps/tauri#16183](https://github.com/tauri-apps/tauri/issues/16183)，卸载器用了
+  `_?=` 无法自删）。它不影响下次安装，`RestorePreviousInstallLocation` 读到的仍是默认目录。
 
 ---
 
@@ -156,6 +190,7 @@ cd frontend
 npx tauri build --config src-tauri/tauri.release.conf.json
 # → target/release/bundle/nsis/LiMo_{v}_x64-setup.exe
 #   target/release/bundle/nsis/LiMo_{v}_x64-setup.exe.sig   ← 少了它客户端验签必失败
+#   target/release/bundle/msi/LiMo_{v}_x64_en-US.msi        ← 一起上传；不签名（自动更新只认 NSIS）
 ```
 
 ### 生成并校验清单
@@ -166,11 +201,11 @@ python scripts/release.py --check          # 发版门禁，退出码 0/1/2
 python scripts/release.py --print-upload   # 打印 gh release create 命令 + SHA256
 ```
 
-`--print-upload` 打出来的命令含**三个文件**：安装包、`.sig`、`latest.json`。
+`--print-upload` 打出来的命令含**四个文件**：NSIS 安装包、`.sig`、MSI、`latest.json`。
 少一个 `.sig` 时脚本直接报错退出（退出码 1）而不打印半条命令 —— 缺签名的 Release
 在页面上看不出任何异常，只有客户端下载完才会「装不上」。
 
-`--check` 的九条判据见脚本里 `collect_problems` 的注释。其中最关键的一条是
+`--check` 的十条判据见脚本里 `collect_problems` 的注释。其中最关键的一条是
 **清单 `signature` 必须与 `.sig` 文件逐字相同**：重新构建后忘了重跑 `--write`，
 签名与包对不上，客户端下载完验签失败、更新装不上，而发版侧一切正常。
 

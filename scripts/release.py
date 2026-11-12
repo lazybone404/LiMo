@@ -33,6 +33,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 BUNDLE_NSIS_DIR = Path("frontend/src-tauri/target/release/bundle/nsis")
+BUNDLE_MSI_DIR = Path("frontend/src-tauri/target/release/bundle/msi")
 TAURI_CONF = Path("frontend/src-tauri/tauri.conf.json")
 CARGO_TOML = Path("frontend/src-tauri/Cargo.toml")
 MANIFEST_PATH = Path("dist-release/latest.json")
@@ -56,6 +57,23 @@ def installer_path(root: Path, version: str) -> Path:
 
 def signature_path(exe: Path) -> Path:
     return exe.with_name(exe.name + ".sig")
+
+
+def msi_path(root: Path, version: str) -> Path | None:
+    """随 Release 一起上传的 MSI 包。
+
+    **它不参与自动更新**：`latest.json` 只有一个 url，客户端永远下载 NSIS 包
+    （MSI 用户点一次更新后安装格式会变成 NSIS，见 docs/BUILD.md）。
+    MSI 是给 Intune / SCCM / 组策略这类标准 MSI 部署场景用的。
+
+    文件名带 WiX 语言段（`_en-US`），用 glob 匹配 —— 改 `wix.language` 之后
+    写死名字的那份就失效了，而且失效时只会表现为「明明打了包却说找不到」。
+    """
+    d = root / BUNDLE_MSI_DIR
+    if not d.is_dir():
+        return None
+    hits = sorted(d.glob(f"LiMo_{version}_*.msi"))
+    return hits[0] if hits else None
 
 
 def repo_slug_from_url(url: str) -> str | None:
@@ -154,6 +172,14 @@ def collect_problems(root: Path, version: str, slug: str | None,
     if not signature:
         problems.append(f"签名文件为空：{sig_path.relative_to(root)}")
         return problems
+
+    # 两种格式都发（2026-11-12 的决定）。MSI 不在自动更新链路上，但不上传就等于
+    # 用户拿不到 —— 而 Release 页面上少一个文件，当时是看不出来的。
+    if msi_path(root, version) is None:
+        problems.append(
+            f"MSI 安装包不存在：{BUNDLE_MSI_DIR}/LiMo_{version}_*.msi"
+            "（发行规则是 NSIS 与 MSI 都发）"
+        )
 
     # 公钥三处：配置里有、且与密钥目录里的 .pub 一致。
     # 不一致的表现是「签得出来，客户端验不过」，只在真实升级时暴露。
@@ -309,22 +335,34 @@ def cmd_print_upload(root: Path = ROOT) -> int:
         return 1
 
     digest = hashlib.sha256(exe.read_bytes()).hexdigest()
+    msi = msi_path(root, version)
+    msi_digest = hashlib.sha256(msi.read_bytes()).hexdigest() if msi else None
     notes = release_notes_path(root, version)
     notes_arg = f"--notes-file {notes.relative_to(root).as_posix()}" if notes.exists() else f'--notes "LiMo v{version}"'
 
-    # ⚠️ 三样缺一不可（CLAUDE.md 发布门禁第 5 条）：安装包、`.sig`、`latest.json`。
+    # ⚠️ 四样缺一不可（CLAUDE.md 发布门禁第 5 条 + 2026-11-12 「两种格式都发」）：
+    # NSIS 安装包、`.sig`、MSI 安装包、`latest.json`。
     # 漏了 `.sig` 不影响 Release 页面上的「已发布」，但客户端拿不到签名就无法装 ——
-    # 表现为「提示有新版本，下载完成后什么都没发生」。
+    # 表现为「提示有新版本，下载完成后什么都没发生」。漏了 MSI 则是下载页少一种格式，
+    # 页面上同样看不出异常。
     print("# 上传是对外动作，确认前先跑一遍 --check")
-    print("# ⚠️ 三样都要传：安装包 / .sig / latest.json（缺 .sig = 客户端下载完验签失败）")
+    print("# ⚠️ 四样都要传：NSIS 安装包 / .sig / MSI / latest.json（缺 .sig = 客户端下载完验签失败）")
     print(f"gh release create v{version} \\")
     print(f"  {exe.relative_to(root).as_posix()} \\")
     print(f"  {sig.relative_to(root).as_posix()} \\")
+    if msi:
+        print(f"  {msi.relative_to(root).as_posix()} \\")
+    else:
+        print(f"  # ⚠️ 缺少 MSI：{BUNDLE_MSI_DIR}/LiMo_{version}_*.msi（两种格式都发的规则）")
     print(f"  {MANIFEST_PATH.as_posix()} \\")
     print(f"  --title \"LiMo {version}\" {notes_arg}")
     print()
     print(f"# {exe.name} SHA256")
     print(digest)
+    if msi_digest:
+        print()
+        print(f"# {msi.name} SHA256")
+        print(msi_digest)
     return 0
 
 

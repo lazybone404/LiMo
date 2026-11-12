@@ -197,7 +197,7 @@ python scripts/sync-version.py
 | 2 | 验证门禁 | 后端测试全绿 + 前端测试全绿 + exe 启动 health 200 + 核心链路冒烟（导入→生成→导出） |
 | 3 | 文档同步 | `python scripts/changelog-build.py --write` 生成 `docs/changelog/releases/v{VERSION}.md` **并改写成用户视角**（四条改写规则见 [CHANGELOG.md](docs/CHANGELOG.md) 头部）；STATUS 版本号已同步 |
 | 4 | Tag + Notes + 校验 | 打 `v{VERSION}` tag；Release notes 取自第 3 条那份文件；附安装包 SHA256 校验和 |
-| 5 | 更新门禁 | `python scripts/release.py --check`（九条判据）；Release 上**必须**同时有安装包、`.sig` 与 `latest.json` 三样 |
+| 5 | 更新门禁 | `python scripts/release.py --check`（十条判据）；Release 上**必须**同时有 NSIS 安装包、`.sig`、MSI 与 `latest.json` 四样（**两种格式都发**，2026-11-12 起） |
 
 ⚠️ **第 5 条漏了是静默失效**：没有 `latest.json` 或 `signature` 为空时，客户端只会认为
 「没有新版本」，继续用旧版，全程不报错。发版构建要走

@@ -48,6 +48,8 @@ def project(tmp_path: Path):
     exe = release.installer_path(tmp_path, VERSION)
     _write(exe, "installer-bytes")
     _write(release.signature_path(exe), SIGNATURE)
+    # 两种格式都发（2026-11-12）：MSI 也在发行物里，只不参与 latest.json。
+    _write(tmp_path / release.BUNDLE_MSI_DIR / f"LiMo_{VERSION}_x64_en-US.msi", "msi-bytes")
 
     manifest = release.build_manifest(
         version=VERSION,
@@ -75,6 +77,15 @@ def test_missing_installer_is_reported(project):
     release.installer_path(root, VERSION).unlink()
     problems = release.collect_problems(root, VERSION, SLUG, keys_dir=keys)
     assert any("安装包不存在" in p for p in problems)
+
+
+def test_missing_msi_is_reported(project):
+    """两种格式都发：MSI 没被上传时 Release 页面看不出少了东西，只能在这里拦。"""
+    root, keys = project
+    for p in (root / release.BUNDLE_MSI_DIR).glob("*.msi"):
+        p.unlink()
+    problems = release.collect_problems(root, VERSION, SLUG, keys_dir=keys)
+    assert any("MSI 安装包不存在" in p for p in problems)
 
 
 def test_missing_signature_is_reported(project):
