@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useMemo, useState, type Ref } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { foldSections, type FoldSection } from '../../lib/fold-scan'
 import { MarkerContent } from './MarkerContent'
@@ -29,15 +29,29 @@ import { MarkerContent } from './MarkerContent'
  * 根容器的 `font-size: var(--read-font-size)` 是唯一接点（见 `styles/fold.css` 文件头）。
  */
 
+/** 窄条上「全部展开 / 全部收起」需要的两个动作（状态仍住在本组件）。 */
+export interface FoldViewHandle {
+  expandAll: () => void
+  collapseAll: () => void
+}
+
 interface FoldViewProps {
   variant: 'topic' | 'lead'
   content: string | null
   meta: { style: string; mode: string; version: number } | null
   sourceUrl?: string
   isVideo?: boolean
+  /** 给窄条上的「全部展开 / 全部收起」用。React 19 起 `ref` 是普通 prop，不必 forwardRef。 */
+  ref?: Ref<FoldViewHandle>
+  /**
+   * 展开状态回传 —— 按钮要据此在「全部展开」「全部收起」之间切换。
+   * ⚠️ 调用方必须用 `useCallback` 给它一个稳定引用：它进了 effect 依赖，
+   * 每次渲染换一个函数会让「上报 → setState → 重渲染」每帧跑一轮。
+   */
+  onExpandStateChange?: (state: { expandable: number; expanded: number }) => void
 }
 
-export function FoldView({ variant, content, meta, sourceUrl, isVideo }: FoldViewProps) {
+export function FoldView({ variant, content, meta, sourceUrl, isVideo, ref, onExpandStateChange }: FoldViewProps) {
   const { preamble, sections } = useMemo(() => foldSections(content), [content])
 
   /**
@@ -63,6 +77,29 @@ export function FoldView({ variant, content, meta, sourceUrl, isVideo }: FoldVie
     () => (preamble ? [preamble, ...sections] : sections),
     [preamble, sections],
   )
+
+  /**
+   * 「全部展开」只展开真的会多出东西的节（`hasBody && expandable`）。
+   * ⚠️ 名单与卡片上的可点判据是**同一对条件**：只按 `sections` 全展开的话，
+   * 只剩标题的节会变成一张空卡、只有一句话的节展开前后逐字一样 —— 都是
+   * 「看起来展开了、其实什么也没多」。
+   */
+  const openableKeys = useMemo(
+    () => items.filter(sec => sec.hasBody && sec.expandable).map(sec => sec.key),
+    [items],
+  )
+
+  useImperativeHandle(ref, () => ({
+    expandAll: () => setOpen(new Set(openableKeys)),
+    collapseAll: () => setOpen(new Set()),
+  }), [openableKeys])
+
+  useEffect(() => {
+    onExpandStateChange?.({
+      expandable: openableKeys.length,
+      expanded: openableKeys.filter(k => open.has(k)).length,
+    })
+  }, [openableKeys, open, onExpandStateChange])
 
   // 没有 H2 时折叠无从谈起 —— 回落整篇。`PreviewArea` 的 `canFold` 已经挡了一道，
   // 这里再挡一道是为了「调用方换了判据」时不至于渲染出一片空白。

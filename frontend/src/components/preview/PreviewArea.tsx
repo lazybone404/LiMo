@@ -26,7 +26,7 @@ import { TranscriptView } from './TranscriptView'
 import { MarkdownPreview } from './MarkdownPreview'
 import { CardSections } from './CardSections'
 import { MarkerContent } from './MarkerContent'
-import { FoldView } from './FoldView'
+import { FoldView, type FoldViewHandle } from './FoldView'
 import { canFold } from '../../lib/fold-scan'
 import type { FoldLevel } from '../../lib/fold-prefs'
 import { TextareaMarkdownEditor } from './TextareaMarkdownEditor'
@@ -212,6 +212,14 @@ export function PreviewArea() {
   // 生效值 `foldActive` 还要过「这个 tab 支不支持 / 够不够长 / 在不在流式或编辑中」三道。
   const fold = useStore(s => s.fold)
   const setFold = useStore(s => s.setFold)
+  // 「全部展开 / 全部收起」—— 展开状态仍住在 `FoldView`（只有它知道哪些节真会多出
+  // 东西），这里只持一个动作句柄与一个回传值。⚠️ 回传值决定按钮**文案**，不是叠两份
+  // 状态：两处各存一份时，用户手动点开最后一节，按钮会继续显示「全部展开」。
+  const foldRef = useRef<FoldViewHandle>(null)
+  const [foldAllOpen, setFoldAllOpen] = useState(false)
+  const handleFoldState = useCallback((s: { expandable: number; expanded: number }) => {
+    setFoldAllOpen(s.expandable > 0 && s.expanded === s.expandable)
+  }, [])
 
   // ratio 取自 lib/reading-prefs 的 CONTENT_WIDTH_RATIO（单源）——本表只补 label/icon
   const WIDTH_RATIO: Record<string, { label: string; icon: typeof Columns; ratio: number }> = {
@@ -950,9 +958,9 @@ export function PreviewArea() {
                   吃 8 套视觉方案），一句话档是纯列表，两者都不看 `skeleton`。
                   只有 `full` 才落到骨架轴的分派上 —— 那条路径逐字不变。 */}
               {foldActive === 'topic'
-                ? <FoldView variant="topic" sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
+                ? <FoldView ref={foldRef} onExpandStateChange={handleFoldState} variant="topic" sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
                 : foldActive === 'lead'
-                  ? <FoldView variant="lead" sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
+                  ? <FoldView ref={foldRef} onExpandStateChange={handleFoldState} variant="lead" sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
                   : skeleton === 'card'
                     ? <CardSections sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />
                     : <MarkerContent sourceUrl={sourceUrl} isVideo={isVideo} content={displayContent} meta={markdownMeta} />}
@@ -1244,6 +1252,16 @@ export function PreviewArea() {
               title={currentDoc.title}
               sourceUrl={currentDoc.sourceUrl}
               sourceType={currentDoc.sourceType}
+              /* 折叠态才有「全部展开 / 全部收起」——整篇是一屏可滚动正文时，
+                 这两个按钮点了也没有可折叠的东西。位置在原链接左侧。 */
+              foldActions={foldActive !== 'full' ? (
+                <button
+                  type="button"
+                  onClick={() => (foldAllOpen ? foldRef.current?.collapseAll() : foldRef.current?.expandAll())}
+                  className="text-[10px] text-muted hover:text-accent transition-colors"
+                  title={foldAllOpen ? '收起所有章节' : '展开所有章节'}
+                >{foldAllOpen ? '全部收起' : '全部展开'}</button>
+              ) : undefined}
               actions={canEditArtifact && !editingThisMode ? (
                 <>
                   {markdownEdited[artifactEditMode] && (

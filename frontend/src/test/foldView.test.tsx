@@ -12,11 +12,12 @@
  *   C. 用 `body` 判可点（它在切分器里含标题行，永不为空）→ 第 4 条会红。
  *   D. 字号写死 `16px` → 第 6 条（CSS 文本）会红。
  */
+import { createRef } from 'react'
 import { describe, it, expect } from 'vitest'
-import { render, fireEvent } from '@testing-library/react'
+import { render, fireEvent, act } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { FoldView } from '../components/preview/FoldView'
+import { FoldView, type FoldViewHandle } from '../components/preview/FoldView'
 
 const META = { style: 'plain', mode: 'notes', version: 1 }
 
@@ -163,6 +164,50 @@ describe('FoldView：一句话档', () => {
     fireEvent.click(rows[0])
     expect(container.textContent).toContain('第二段。')
     expect(container.querySelectorAll('.fold-close').length).toBe(1)
+  })
+})
+
+describe('FoldView：全部展开 / 全部收起', () => {
+  const MIXED = `## 甲
+第一段。
+
+第二段。
+
+## 乙
+一句话。
+`
+
+  it('expandAll 只展开真会多出东西的节，collapseAll 全部收回', () => {
+    const ref = createRef<FoldViewHandle>()
+    const { container } = render(<FoldView ref={ref} variant="topic" content={MIXED} meta={META} />)
+
+    act(() => ref.current!.expandAll())
+    // 甲有两段 → 展开；乙只有一句话 → 展开前后逐字一样，不展开（对照：按 sections
+    // 全展开时这里会是 2，卡片上出现一张「点了像没点」的空展开）
+    expect(container.querySelectorAll('.fold-close').length).toBe(1)
+    expect(container.textContent).toContain('第二段。')
+
+    act(() => ref.current!.collapseAll())
+    expect(container.querySelectorAll('.fold-close').length).toBe(0)
+    expect(container.textContent).not.toContain('第二段。')
+  })
+
+  it('⚠️ 回传 expandable / expanded —— 按钮文案靠它切，不是靠父组件另存一份', () => {
+    const seen: { expandable: number; expanded: number }[] = []
+    const cb = (s: { expandable: number; expanded: number }) => { seen.push(s) }
+    const ref = createRef<FoldViewHandle>()
+    const { container } = render(
+      <FoldView ref={ref} variant="topic" content={MIXED} meta={META} onExpandStateChange={cb} />,
+    )
+    expect(seen[seen.length - 1]).toEqual({ expandable: 1, expanded: 0 })
+
+    act(() => ref.current!.expandAll())
+    expect(seen[seen.length - 1]).toEqual({ expandable: 1, expanded: 1 })
+
+    // 手动点开再点收起，同样的数字要跟着回来（否则窄条会停在错误文案上）
+    act(() => ref.current!.collapseAll())
+    fireEvent.click(container.querySelectorAll('.md-card')[0])
+    expect(seen[seen.length - 1]).toEqual({ expandable: 1, expanded: 1 })
   })
 })
 

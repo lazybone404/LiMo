@@ -4,6 +4,10 @@ interface ContentBannerProps {
   title?: string
   sourceUrl?: string
   sourceType?: string
+  /** 折叠阅读的「全部展开 / 全部收起」—— 渲染在「原链接」**左侧**。
+   *  放在链接左边是因为它作用于整篇（阅读动作），而链接是跳出去的外部动作；
+   *  从左到右正好是「读这篇 → 查看原文 → 编辑这一版」的递增外扩。 */
+  foldActions?: ReactNode
   /** 右侧动作槽（编辑按钮 / 已手动编辑徽章）。
    *  ⚠️ 与「原链接」**同一行、同一组右对齐**：两者都是「针对这个文档/这一版」的动作，
    *  分成两行只会把正文往下推。 */
@@ -17,7 +21,7 @@ interface ContentBannerProps {
  *  落点。**什么时候渲染**由调用方（`PreviewArea` 的 `showContentBanner`）决定，
  *  本组件只负责这一行的形状。
  */
-export function ContentBanner({ title, sourceUrl, sourceType, actions }: ContentBannerProps) {
+export function ContentBanner({ title, sourceUrl, sourceType, foldActions, actions }: ContentBannerProps) {
   return (
     <div className="mb-4 overflow-hidden rounded-lg bg-surface-hover">
       <div className="flex items-center gap-2 px-3 py-1.5">
@@ -26,8 +30,9 @@ export function ContentBanner({ title, sourceUrl, sourceType, actions }: Content
         ) : (
           <span className="text-xs text-dimmed">{sourceType || '视频'}</span>
         )}
-        {(sourceUrl || actions) && (
+        {(sourceUrl || foldActions || actions) && (
           <div className="ml-auto flex shrink-0 items-center gap-2">
+            {foldActions}
             {sourceUrl && (
               <a
                 href={sourceUrl}
