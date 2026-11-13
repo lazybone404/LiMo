@@ -288,5 +288,12 @@ PROMPT_VERSION = "26"
 #
 # ⚠️ 更新方式：
 #   python -c "from app.generation.prompts.fingerprint import prompt_fingerprint; print(prompt_fingerprint())"
-PROMPT_FINGERPRINT = "a5f1866c"
+#
+# 2026-11-13（`d71afb0` 加「平实」风格档）：只更新本值，**不 bump `PROMPT_VERSION`**。
+#   `COMMON_NOTE_STYLES` 里新增的是**新键** `factual`，默认档仍是 plain，其余四档的
+#   文本一个字未动 —— 任何用户在当前选择下真正发给模型的 prompt 都不变。判据与
+#   `docs/prompts-inventory.md` §15（抽词 prompt 不 bump）同一条：看**产物变了没有**，
+#   不是看「动了几段 prompt」。⚠️ 那次是 `d71afb0` 先漏了本值、下一个提交才补上，
+#   指纹在这里红过一次，说明它确实拦得住人。
+PROMPT_FINGERPRINT = "f90dd18e"
 
