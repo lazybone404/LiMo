@@ -17,7 +17,7 @@
  */
 import { memo } from 'react'
 import { appUrl } from '../../api/client'
-import { CheckSquare, Square, Pencil, Trash2, Search, Layers } from 'lucide-react'
+import { Pencil, Trash2, Search, Layers } from 'lucide-react'
 import { SearchSnippet } from '../ui/SearchSnippet'
 import type { DocEntry } from '../../store/types'
 import type { Density } from './docLibraryPrefs'
@@ -35,10 +35,9 @@ export interface DocRowActions {
    * ⚠️ 行内交互元素上的双击**不会**传到这里 —— 守卫在 `DocRowImpl` 里（见那里）。
    */
   onRowDoubleClick: (e: React.MouseEvent, id: string) => void
-  onToggleSelect: (id: string) => void
   /**
    * 行根 mousedown —— **只给 Ctrl/Cmd 拖动划选用**，不改变点击语义。
-   * 修饰键判定与「点热区不算划选」的守卫都在 `useDocSelection` 里，
+   * 修饰键判定与「从编辑框里按下不算划选」的守卫都在 `useDocSelection` 里，
    * 这里只负责把事件连同 id 送过去。
    */
   onRowMouseDown: (e: React.MouseEvent, id: string) => void
@@ -81,10 +80,16 @@ function shortDate(iso: string): string {
   return `${d.getMonth() + 1}-${d.getDate()}`
 }
 
-/** active / selected 两个维度的底色 —— 两处密度共用，避免各写一份后长歪 */
+/**
+ * active / selected 两个维度的底色 —— 两处密度共用，避免各写一份后长歪。
+ *
+ * ⚠️ `selected` 不能再用 `bg-surface-hover`：行首的复选框在 2026-11-13 去掉了，
+ * 整行底色成了「这一篇被选中了」唯一的视觉信号。与 hover 同色时，鼠标划过去
+ * 和选中状态看起来一模一样。现在用 accent 浅底 + 调用处的 `ring-accent/30`。
+ */
 function rowTone(active: boolean, selected: boolean): string {
   if (active) return 'border-accent/30 bg-accent/5 shadow-sm'
-  if (selected) return 'border-transparent bg-surface-hover'
+  if (selected) return 'border-transparent bg-accent/15'
   return 'border-transparent hover:border-border-light hover:bg-surface-hover'
 }
 
@@ -95,8 +100,8 @@ function DocRowImpl({
    * 双击守卫 —— **在行根 div 上做一次判定**，而不是给子元素逐个补
    * `onDoubleClick={e => e.stopPropagation()}`。
    *
-   * 为什么不能枚举：行里的交互元素远不止复选框 / 编辑 / 删除三处（本文件有 6 个
-   * `<button>` + 3 个 `<input>`），**枚举必漏**。最典型的漏网是**双击标题输入框**——
+   * 为什么不能枚举：行里的交互元素远不止编辑 / 删除两种（两个密度各有一套常驻按钮，
+   * 标题与标签又是 `<input>`），**枚举必漏**。最典型的漏网是**双击标题输入框**——
    * 「双击选一个词」是最自然的输入动作，冒泡到行根就成了「钉标签」。而 `onClick`
    * 已经补过 `stopPropagation` 的地方反而更危险：它会给人一种「已经处理过」的错觉，
    * 可 `dblclick` 是**独立事件**，完全不受 `click` 的 handler 影响。
@@ -114,32 +119,6 @@ function DocRowImpl({
   // 「N 合 1」语义（N=1 是噪音），而 2 篇以上才配得上这个徽章。两者同时成立才画。
   const sourceCount = doc.sourceType === 'composite' ? (doc.sourceDocIds?.length ?? 0) : 0
   const isMerged = sourceCount >= 2
-  const selectedBox = (
-    <button
-      data-select-toggle
-      aria-label={selected ? `取消选择 ${doc.title}` : `选择 ${doc.title}`}
-      aria-pressed={selected}
-      onClick={e => { e.stopPropagation(); actions.onToggleSelect(doc.id) }}
-      // ⚠️ 热区是**整列**（24px 宽），不是图标那 14/18px：用户原话「勾选的小勾那个
-      // 操作逻辑有点反人类」，实际痛点是那个小勾根本点不中。图标尺寸不变，只把可点区域
-      // 撑到行高；`-ml-1` 收回行内 padding，让热区贴住面板边缘（VS Code 的行首列）。
-      className={`shrink-0 -ml-1 flex items-center justify-center rounded-md hover:bg-surface-hover ${
-        density === 'compact' ? 'w-6 h-6.5' : 'w-6 h-6'
-      }`}
-    >
-      {/* ⚠️ 未选中时**只在悬停 / 行内有焦点时可见**（VS Code 的行首列行为）：
-          整列热区 + Ctrl 划选已经覆盖了「怎么选」，一个常驻的空方框只是每行重复的噪音。
-          图标仍留在布局里（只改透明度）—— 否则隐藏时标题会左移、hover 时又弹回来。
-          `focus-within` 是给键盘用户的：Tab 进来必须看得见。
-          选中态**常显**：勾了却要 hover 才看得见，等于不告诉用户选了谁。 */}
-      {selected
-        ? <CheckSquare size={density === 'compact' ? 14 : 18} className="text-accent" />
-        : <Square
-            size={density === 'compact' ? 14 : 18}
-            className="text-disabled opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-          />}
-    </button>
-  )
 
   // ── 紧凑：26px 单行（与分组头同高，见文件头） ──
   if (density === 'compact') {
@@ -167,7 +146,6 @@ function DocRowImpl({
         )}
         {titleDraft === null ? (
           <>
-            {selectedBox}
             {/* 类型用 4×16 竖条而不是 16×16 方块：省 12px 横向空间，26px 行里这很值 */}
             <span aria-hidden className="w-1 h-4 rounded-full shrink-0" style={{ backgroundColor: colors.dot }} />
             {/* 「待转录」（2026-11-07）：只收纳了、正文还是占位文本。
@@ -275,12 +253,8 @@ function DocRowImpl({
         </div>
       ) : (
         <>
-          {/* 主行：复选框 + 缩略图 + 标题 + 操作按钮 */}
+          {/* 主行：缩略图 + 标题 + 操作按钮 */}
           <div className="flex items-start gap-2.5">
-            {/* 复选框**常驻在 DOM 里**（不是只在某个「批量模式」里出现）：它既是鼠标用户
-                唯一「只选不开」的路径，也是键盘用户的唯一选择入口。
-                视觉上未选中时随行 hover 出现（见 `selectedBox`），选中后常显。 */}
-            <span className="mt-0.5">{selectedBox}</span>
             {doc.coverUrl ? (
               <img src={appUrl(doc.coverUrl)} alt="" referrerPolicy="no-referrer"
                 className="w-10 h-10 rounded-lg object-cover shrink-0 mt-0.5" />

@@ -11,8 +11,9 @@
  * 左侧面板折叠会**卸载组件**（SlotLayout 是 `collapsed ? <PanelStrip/> : <Comp/>`），
  * 留在本地等于「收起再展开，勾选、滚动深度、禁用态全部归零」。
  *
- * ⚠️ 这里**没有** `selectMode` 这类「批量模式」开关：复选框常驻，批量条由
- * `selectedIds.size > 0` 派生。载体不存在，就不可能与选择集漂移。
+ * ⚠️ 这里**没有** `selectMode` 这类「批量模式」开关：选中入口常驻在行上
+ * （Ctrl/Cmd 或 Shift + 点击，见 `useDocSelection`），批量条由 `selectedIds.size > 0`
+ * 派生。载体不存在，就不可能与选择集漂移。
  */
 import type { StateCreator } from 'zustand'
 import type { Store, DocEntry, FolderEntry } from './types'

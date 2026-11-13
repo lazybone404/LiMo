@@ -17,7 +17,7 @@
  * 常量是因为它们落在两个不同组件的 Tailwind 类里，抽出来反而要绕过 Tailwind 的静态扫描。
  */
 import { useEffect, useState } from 'react'
-import { Check, CheckSquare, ChevronDown, ChevronRight, Folder, FolderPlus, Pencil, Square, SquareMinus, Trash2, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Folder, FolderPlus, Pencil, Trash2, X } from 'lucide-react'
 import type { DocGroup } from './useDocQuery'
 
 /** 缩进最多推到这一层（再深就只剩图标了，完整路径见 `title`） */
@@ -53,25 +53,23 @@ export interface GroupHeaderProps {
   descendantCount?: number
   onToggle: (key: string) => void
   /**
-   * 文件夹选中态与切换入口 —— 只有文件夹组（`group.editable`）才渲染这一列。
+   * 文件夹选中态 —— 选中时整行用 accent 浅底，与 `DocRow` 的选中态同一套视觉。
    *
-   * ⚠️ 它与 `onToggle`（折叠/展开）是**两个不同的点击目标**：复选框是一列独立按钮，
-   * 点它不折叠。合并成一个「点分组头就选中」就没有展开折叠的入口了。
+   * ⚠️ 2026-11-13 起行首不再有复选框（对齐 VS Code 的文件树）：选中入口是
+   * **Ctrl/Cmd + 点击分组头**，Shift + 点击选区间，与文档行的修饰键语义一致。
+   * 普通点击仍是折叠/展开，它才是这一行的主操作。
    * ⚠️ 文件夹选择集**与文档选择集分开**（见 docsSlice），故这里没有 `selectedIds`。
    */
   selected?: boolean
+  /** Ctrl/Cmd 加选（余下修饰键语义在 `useDocSelection::handleFolderSelect`） */
   onToggleSelect?: (e: React.MouseEvent, id: string) => void
   /**
-   * 组内文档的勾选状态 —— `group.docSelection` 为真时才有意义（未分类组）。
+   * 未分类组：Ctrl/Cmd + 点击分组头 = 选中/取消选中组内全部文档。
    *
-   * ⚠️ 与上面的 `selected` 是**两个选择集**：`selected` 读的是文件夹选择集（勾的是
-   * 这个文件夹本身，用于移动/删除文件夹），这里读的是文档选择集（勾的是组内每一篇）。
-   * 未分类不是实体，勾它只能表达「选中文档」。
-   *
-   * 三态是必需的：组内部分文档被单独选中时，复选框既不能说「全选了」也不能说
-   * 「没选」，否则用户点一下会得到「把已选的取消、把没选的选上」这种反直觉结果。
+   * ⚠️ 未分类不是实体（没有 `ref`），所以它进的是**文档选择集**，不是文件夹选择集。
+   * 去掉复选框后这里不再显示「全选 / 部分 / 未选」的三态读数，用户只能从批量条
+   * 的数字看出选了多少。
    */
-  docsSelected?: 'all' | 'some' | 'none'
   onToggleDocs?: (e: React.MouseEvent) => void
   /** 以下四项只有文件夹组会传（`group.editable` 时） */
   onRename?: (id: string, name: string) => Promise<boolean>
@@ -92,7 +90,7 @@ export interface GroupHeaderProps {
 
 export function GroupHeader({
   group, expanded, count, busy, compact, depth = 0, path, descendantCount = 0,
-  onToggle, selected, onToggleSelect, docsSelected = 'none', onToggleDocs,
+  onToggle, selected, onToggleSelect, onToggleDocs,
   onRename, onDelete, onDropDocs, onNewChild, onContextMenu,
   actionFor, onActionConsumed,
 }: GroupHeaderProps) {
@@ -174,7 +172,7 @@ export function GroupHeader({
     <div
       data-group-header={group.key}
       data-group-depth={depth}
-      className={`rounded-lg ${hover ? 'bg-accent/10 ring-1 ring-accent/40' : ''}`}
+      className={`rounded-lg ${hover ? 'bg-accent/10 ring-1 ring-accent/40' : selected ? 'bg-accent/15' : ''}`}
       {...(canEdit && onContextMenu
         ? { onContextMenu: (e: React.MouseEvent) => onContextMenu(e, group.ref) }
         : {})}
@@ -213,47 +211,22 @@ export function GroupHeader({
           />
         ) : (
           <>
-            {/* 复选框列 —— 与 `DocRow` 的同名列同一套交互：整列可点（不只是图标），
-                未选中时图标随行 hover 出现，选中后常显。
-                ⚠️ 列宽 `w-6` 与 `DocRow` 的复选框列**同值**：两者在同一个缩进流里上下相邻，
-                分组头窄一档会让它的勾比下面文档行的勾左移 4px，整棵树的竖线就对不齐了。
-                ⚠️ **两种语义各一个分支，勾的对象不同**：
-                  · 文件夹组（`editable`）勾的是「这个文件夹」，进文件夹选择集；
-                  · 未分类（`docSelection`）勾的是「组内全部文档」，进文档选择集。
-                类型/时间组两个都不是 —— 它们是派生值，勾选没有任何可作用的对象。 */}
-            {group.editable && onToggleSelect ? (
-              <button
-                data-folder-select-toggle={group.ref}
-                onClick={e => onToggleSelect(e, group.ref)}
-                aria-pressed={!!selected}
-                title={selected ? '取消选择此文件夹' : '选择此文件夹（Shift 选区间）'}
-                className={`w-6 shrink-0 -ml-1 flex items-center justify-center rounded hover:bg-surface ${compact ? 'h-6.5' : 'h-5'}`}
-              >
-                {selected
-                  ? <CheckSquare size={compact ? 14 : 15} className="text-accent" />
-                  : <Square size={compact ? 14 : 15} className="text-disabled opacity-0 transition-opacity group-hover/g:opacity-100" />}
-              </button>
-            ) : group.docSelection && onToggleDocs ? (
-              <button
-                data-docs-select-toggle={group.key}
-                onClick={onToggleDocs}
-                aria-pressed={docsSelected === 'all'}
-                title={docsSelected === 'all' ? '取消选择本组文档' : '选择本组文档'}
-                className={`w-6 shrink-0 -ml-1 flex items-center justify-center rounded hover:bg-surface ${compact ? 'h-6.5' : 'h-5'}`}
-              >
-                {docsSelected === 'all'
-                  ? <CheckSquare size={compact ? 14 : 15} className="text-accent" />
-                  : docsSelected === 'some'
-                    /* 组内只有一部分被单独选中 —— 常显（它是一句读数，不是待发现的入口），
-                       点一下补成全选 */
-                    ? <SquareMinus size={compact ? 14 : 15} className="text-accent" />
-                    : <Square size={compact ? 14 : 15} className="text-disabled opacity-0 transition-opacity group-hover/g:opacity-100" />}
-              </button>
-            ) : null}
+            {/* 折叠按钮同时是选择入口 —— 普通点击折叠/展开，带 Ctrl/Cmd 或 Shift
+                时把事件交给选择逻辑（与 `DocRow` 的修饰键语义对齐）。
+                ⚠️ 两条选择集的分派：文件夹组（`editable`）选的是「这个文件夹」，
+                未分类（`docSelection`）选的是「组内全部文档」。类型/时间组两个都不是，
+                它们是派生值，选中没有任何可作用的对象。 */}
             <button
               data-group-toggle={group.key}
-              onClick={() => onToggle(group.key)}
+              onClick={e => {
+                const mod = e.ctrlKey || e.metaKey || e.shiftKey
+                if (mod && group.editable && onToggleSelect) { onToggleSelect(e, group.ref); return }
+                if (mod && group.docSelection && onToggleDocs) { onToggleDocs(e); return }
+                onToggle(group.key)
+              }}
               aria-expanded={expanded}
+              aria-pressed={group.editable ? !!selected : undefined}
+              title={group.editable ? '点击折叠/展开，Ctrl 或 Shift + 点击选择文件夹' : undefined}
               className={`flex items-center gap-1 flex-1 min-w-0 text-left rounded hover:bg-surface-hover ${compact ? 'h-full' : 'py-1'}`}
             >
               <Chevron size={12} className="text-disabled shrink-0" />

@@ -53,7 +53,6 @@ function makeDocs(n: number): DocEntry[] {
 }
 
 const rowAt = (c: HTMLElement, i = 0) => c.querySelectorAll('[data-doc-row]')[i] as HTMLElement
-const toggleAt = (c: HTMLElement, i = 0) => c.querySelectorAll('[data-select-toggle]')[i] as HTMLElement
 
 function seedAndRender(density: 'detailed' | 'compact', n = 2) {
   localStorage.setItem('mbw_docLibPrefs', JSON.stringify({ density }))
@@ -88,10 +87,11 @@ describe.each(['detailed', 'compact'] as const)('打开语义（%s 密度）', (
     expect(S().pendingOpenMode).toBe('pinned')
   })
 
-  it('⚠️ 双击复选框 → 不产生任何标签意图', () => {
-    // 对照：守卫 `closest('button,…')` 漏掉 → 复选框双击冒泡成「钉标签」→ 红
+  it('⚠️ 双击行内按钮 → 不产生任何标签意图', () => {
+    // 对照：守卫 `closest('button,…')` 漏掉 → 按钮双击冒泡成「钉标签」→ 红。
+    // 行首复选框 2026-11-13 去掉后，行内只剩编辑 / 删除两种按钮，这里用删除那个。
     const { container } = seedAndRender(density)
-    fireEvent.doubleClick(toggleAt(container))
+    fireEvent.doubleClick(rowAt(container).querySelector('[title="删除"]') as HTMLElement)
     expect(S().pendingOpenMode).toBe(null)
     expect(S().docTabs).toEqual([])
   })

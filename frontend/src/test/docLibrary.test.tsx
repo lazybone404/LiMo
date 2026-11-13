@@ -93,9 +93,10 @@ describe('DocLibrary — 全选跨分批', () => {
     const { container } = render(<DocLibrary />)
     expect(container.querySelectorAll('[data-doc-row]').length).toBe(60)
 
-    // 勾中任意一行 → 批量工具条自己出现（已无「批量模式」按钮；一条都没勾时
+    // 选中任意一行 → 批量工具条自己出现（已无「批量模式」按钮；一条都没选时
     // 想让工具条出现，路径是列表内 Ctrl+A，不是常驻一个模式开关）
-    fireEvent.click(container.querySelector('[data-select-toggle]') as HTMLElement)
+    // 行首复选框 2026-11-13 去掉了，选中入口是 Ctrl/Cmd + 点击行。
+    fireEvent.click(container.querySelector('[data-doc-row]') as HTMLElement, { ctrlKey: true })
     fireEvent.click(screen.getByTitle(/全选当前筛选结果/))
 
     // ⚠️ 判据是 300 而不是 60：分批渲染只是「少画 DOM」，数据仍是 300 条。
@@ -165,7 +166,7 @@ describe('DocLibrary — 移动的部分失败', () => {
     })
     const { container } = render(<DocLibrary />)
 
-    fireEvent.click(container.querySelectorAll('[data-select-toggle]')[0] as HTMLElement)
+    fireEvent.click(container.querySelectorAll('[data-doc-row]')[0] as HTMLElement, { ctrlKey: true })
     fireEvent.click(screen.getByTitle(/全选当前筛选结果/))
     fireEvent.click(screen.getByTitle('移动到文件夹'))
     // ⚠️ 按 `data-move-target`（id）而非文案定位：文件夹允许重名，且分组头
@@ -191,7 +192,7 @@ describe('DocLibrary — 移动的部分失败', () => {
     })
     const { container } = render(<DocLibrary />)
 
-    fireEvent.click(container.querySelectorAll('[data-select-toggle]')[0] as HTMLElement)
+    fireEvent.click(container.querySelectorAll('[data-doc-row]')[0] as HTMLElement, { ctrlKey: true })
     fireEvent.click(screen.getByTitle(/全选当前筛选结果/))
     fireEvent.click(screen.getByTitle('移动到文件夹'))
     fireEvent.click(document.querySelector('[data-move-target="f2"]') as HTMLElement)

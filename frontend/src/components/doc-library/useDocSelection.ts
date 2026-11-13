@@ -2,9 +2,14 @@
  * 文档库多选 —— 常态多选（IDE 式），**没有「批量模式」这个状态**。
  *
  * ⚠️ 单击行 = **打开文档**（文档库唯一的主流程），**不改变选择集**。
- * 选中只有四条路径：复选框热区、Ctrl/Cmd + 点行、Shift + 点行、**Ctrl/Cmd + 按住拖动划选**。
+ * 选中只有三条路径：Ctrl/Cmd + 点行、Shift + 点行、**Ctrl/Cmd + 按住拖动划选**。
  * 若把单击也实现成 toggle，用户就再也打不开文档了——这是本模块最该先定死的一条，
  * 因为「点即选中」听起来完全合理，写出来也自洽，只是把主流程弄没了。
+ *
+ * ⚠️ 行首的复选框在 2026-11-13 去掉了（对齐 VS Code 的文件树）。去掉之后**没有任何
+ * 常驻的选中控件**，「一条都没选时怎么进去」只剩三条：列表内 Ctrl+A、批量条上的
+ * 全选按钮（要先有选中才出现）、右键菜单的「选中此篇」。改这一块时别再补一个
+ * 复选框回去当「兜底」。
  *
  * ⚠️ **划选的方向由起点行决定，不是无条件加选**：
  * - 起点**未选中** → 区间内全部选中（`base ∪ 区间`）
@@ -28,8 +33,8 @@
  * ⚠️ 划选结束那一下 `click` 必须被吞掉（`suppressRef`）：按下时按的仍是 Ctrl，
  * mouseup 之后浏览器照样派发一次 `click`，而带 Ctrl 的 click 会被解释成「toggle 这一行」
  * —— 起点行刚被划进选中集又被取消，用户看到的是「拖了一圈，第一行没选上」。
- * 抑制是**绑定行 id 的一次性事件**而不是纯时间窗：划选结束后立刻点另一行（或另一个
- * 复选框）必须正常工作，只有「起点行自己那一下」才是需要吞的。
+ * 抑制是**绑定行 id 的一次性事件**而不是纯时间窗：划选结束后立刻点另一行
+ * 必须正常工作，只有「起点行自己那一下」才是需要吞的。
  *
  * ⚠️ 划选期间**滚轮滚动也会扩展区间**：滚动本身不产生 `mousemove`，不监听 `scroll`
  * 的话，用户「拖到列表底部 → 滚轮往下翻」时指针下面的行已经换了、选区却停在原地，
@@ -189,7 +194,7 @@ export function useDocSelection(
   }, [setSelectedIds])
 
   /**
-   * 文件夹选择 —— 入口是分组头左侧的复选框热区（见 `GroupHeader`）。
+   * 文件夹选择 —— 入口是**Ctrl/Cmd 或 Shift + 点击分组头**（见 `GroupHeader`）。
    *
    * ⚠️ 与文档选择**刻意不共用一套 id 集合**（理由见 docsSlice 的 `selectedFolderIds`）。
    * ⚠️ 也**不参与 Ctrl 划选**：划选表达的是「一段连续的文档行」，而分组头与文档行在
@@ -233,8 +238,6 @@ export function useDocSelection(
   const handleRowMouseDown = useCallback((e: React.MouseEvent, id: string) => {
     if (e.button !== 0 || !(e.ctrlKey || e.metaKey)) return
     const t = e.target
-    // 复选框热区自己处理点击：按下即划选的话，单击热区会「选中又被抑制」等于点不动
-    if (t instanceof Element && t.closest('[data-select-toggle]')) return
     // 编辑框里 Ctrl+按下是「选中一段文字」，不是划选文档
     if (t instanceof Element && t.closest('input,textarea,select,[contenteditable="true"],[contenteditable=""]')) return
 
@@ -401,7 +404,7 @@ export function useDocSelection(
     if (e.key === 'Escape') clear()
   }, [setAll, clear])
 
-  /** 文件夹复选框点击 —— Shift 走区间，其余 toggle（与文档行那套修饰键语义对齐） */
+  /** 分组头的修饰键点击 —— Shift 走区间，其余 toggle（与文档行那套修饰键语义对齐） */
   const handleFolderSelect = useCallback((e: React.MouseEvent, id: string) => {
     e.stopPropagation()
     if (e.shiftKey) selectFolderRange(id)

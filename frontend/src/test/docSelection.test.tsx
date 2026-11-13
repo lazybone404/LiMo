@@ -52,7 +52,11 @@ function makeDocs(n: number): DocEntry[] {
 }
 
 const rowOf = (c: HTMLElement, i: number) => c.querySelectorAll('[data-doc-row]')[i] as HTMLElement
-const toggleOf = (c: HTMLElement, i: number) => c.querySelectorAll('[data-select-toggle]')[i] as HTMLElement
+/**
+ * 选中第 i 行 —— 行首复选框 2026-11-13 去掉了（对齐 VS Code 的文件树），
+ * 选中入口改为 **Ctrl/Cmd + 点击行**，这里把它包成一行。
+ */
+const selectRow = (c: HTMLElement, i: number) => fireEvent.click(rowOf(c, i), { ctrlKey: true })
 const selected = () => [...useStore.getState().selectedIds].sort()
 
 /** 等一帧 —— 滚动重算在 `requestAnimationFrame` 里跑（见 useDocSelection 的 onScroll） */
@@ -101,12 +105,12 @@ describe('选择模型 — 单击与修饰键', () => {
     expect('selectMode' in useStore.getState()).toBe(false)
   })
 
-  it('批量工具条由选中数**派生**：勾一条出现，取消到 0 消失', () => {
+  it('批量工具条由选中数**派生**：选中一条出现，取消到 0 消失', () => {
     useStore.setState({ docs: makeDocs(3) })
     const { container } = render(<DocLibrary />)
 
     expect(screen.queryByTitle('取消选择')).toBeNull()
-    fireEvent.click(toggleOf(container, 0))
+    selectRow(container, 0)
     expect(screen.getByText(/已选 1 项/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByTitle('取消选择'))
@@ -123,6 +127,21 @@ describe('选择模型 — 单击与修饰键', () => {
     // ⚠️ 对照（已验证有区分力）：只处理选择而忘了短路，ctrl+点会一路走到 onOpen ——
     // 用户每次加选都顺带把预览切走。
     expect(useStore.getState().currentDocId).toBeNull()
+  })
+
+  it('右键菜单的「选中此篇」= toggle 选择集（行首没有复选框后的可见入口）', () => {
+    useStore.setState({ docs: makeDocs(3) })
+    const { container } = render(<DocLibrary />)
+
+    fireEvent.contextMenu(rowOf(container, 1))
+    // ⚠️ 菜单 `createPortal` 到 `document.body`，查 `container` 永远是 null
+    const item = [...document.querySelectorAll('button')].find(b => b.textContent === '选中此篇')
+    expect(item).toBeTruthy()
+    fireEvent.click(item as HTMLElement)
+
+    expect(selected()).toEqual(['d1'])
+    // ⚠️ 对照（已验证有区分力）：菜单项只接 `openDocTab` 时选择集仍是空，本行红 ——
+    // 而界面上「选中此篇」看起来完全正常，点完只是批量条不出现。
   })
 
   it('Shift 点行 = 锚点到该行的**区间**（不是只加选一个）', () => {
@@ -309,19 +328,6 @@ describe('选择模型 — Ctrl 拖动划选', () => {
     expect(selected()).toEqual([])
   })
 
-  it('点复选框热区 = toggle，不启动划选（否则单击热区会被抑制掉）', () => {
-    useStore.setState({ docs: makeDocs(3) })
-    const { container } = render(<DocLibrary />)
-
-    fireEvent.mouseDown(toggleOf(container, 0), { button: 0, ctrlKey: true })
-    fireEvent.mouseMove(rowOf(container, 2), { buttons: 1 })
-    fireEvent.mouseUp(rowOf(container, 2))
-    fireEvent.click(toggleOf(container, 0))
-
-    // 只有热区那一次点击生效；拖动没有把 d1/d2 也划进来
-    expect(selected()).toEqual(['d0'])
-  })
-
   it('无修饰键的拖动仍走 DnD —— 且 Ctrl+拖动不产生 DnD', () => {
     useStore.setState({ docs: makeDocs(3), selectedIds: new Set(['d1']) })
     const { container } = render(<DocLibrary />)
@@ -354,26 +360,27 @@ describe('选择模型 — 文件夹多选（与文档选择集分开的第二�
     { id: 'fd2', name: '生活', createdAt: '2026-01-01T00:00:01', count: 0 },
     { id: 'fd3', name: '读书', createdAt: '2026-01-01T00:00:02', count: 0 },
   ]
+  /** 文件夹分组头的折叠按钮 —— 它同时是选中入口（普通点击折叠，Ctrl/Cmd 或 Shift 才选） */
   const folderToggle = (c: HTMLElement, id: string) =>
-    c.querySelector(`[data-folder-select-toggle="${id}"]`) as HTMLElement | null
+    c.querySelector(`[data-group-toggle="f:${id}"]`) as HTMLElement | null
   const folderSel = () => [...useStore.getState().selectedFolderIds].sort()
-  /** 分组头当前的展开态（复选框与折叠是两个不同的点击目标，见 GroupHeader） */
-  const expandedOf = (c: HTMLElement, id: string) => (c
-    .querySelector(`[data-folder-select-toggle="${id}"]`)
-    ?.closest('[data-group-header]')
-    ?.querySelector('[data-group-toggle]') as HTMLElement | null)?.getAttribute('aria-expanded')
+  /** 选中该文件夹。行首复选框 2026-11-13 去掉了，入口是 Ctrl/Cmd + 点击分组头 */
+  const selectFolder = (c: HTMLElement, id: string) =>
+    fireEvent.click(folderToggle(c, id)!, { ctrlKey: true })
+  /** 分组头当前的展开态 */
+  const expandedOf = (c: HTMLElement, id: string) => folderToggle(c, id)?.getAttribute('aria-expanded')
 
-  it('点分组头复选框 = 选中该文件夹：**不动文档选择集**，也不折叠它', () => {
+  it('Ctrl + 点分组头 = 选中该文件夹：**不动文档选择集**，也不折叠它', () => {
     useStore.setState({ docs: makeDocs(2), folders: makeFolders(), selectedIds: new Set(['d0']) })
     const { container } = render(<DocLibrary />)
 
-    fireEvent.click(folderToggle(container, 'fd1')!)
+    selectFolder(container, 'fd1')
 
     expect(folderSel()).toEqual(['fd1'])
     // ⚠️ 对照（已验证有区分力）：两个集合合并成一个 `selectedIds`，这里会多出 fd1；
     // 而它的下游是「把 fd_xxx 当文档 id 发去 /api/transcripts/batch」。
     expect(selected()).toEqual(['d0'])
-    // ⚠️ 对照（已验证有区分力）：把复选框并进 `onToggle`（折叠），点选文件夹会顺手把它收起来。
+    // ⚠️ 对照（已验证有区分力）：把选中并进 `onToggle`（折叠），Ctrl 点选文件夹会顺手把它收起来。
     expect(expandedOf(container, 'fd1')).toBe('true')
   })
 
@@ -381,7 +388,7 @@ describe('选择模型 — 文件夹多选（与文档选择集分开的第二�
     useStore.setState({ docs: makeDocs(2), folders: makeFolders() })
     const { container } = render(<DocLibrary />)
 
-    fireEvent.click(folderToggle(container, 'fd1')!)                 // 建立锚点
+    selectFolder(container, 'fd1')                                  // 建立锚点
     fireEvent.click(folderToggle(container, 'fd3')!, { shiftKey: true })
 
     expect(folderSel()).toEqual(['fd1', 'fd2', 'fd3'])
@@ -394,7 +401,7 @@ describe('选择模型 — 文件夹多选（与文档选择集分开的第二�
     const { container } = render(<DocLibrary />)
 
     expect(container.querySelector('[data-batch-delete-folders]')).toBeNull()
-    fireEvent.click(folderToggle(container, 'fd1')!)
+    selectFolder(container, 'fd1')
 
     expect(screen.getByText(/1 个文件夹/)).toBeInTheDocument()
     // 文档动作的 title 在「没选文档」时统一是这句 —— 逐个断言禁用

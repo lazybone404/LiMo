@@ -114,8 +114,9 @@ export function BatchBar({
           {!noDocs && !noFolders && ' · '}
           {!noFolders && `${folderCount} 个文件夹`}
         </span>
-        {/* 全选只作用于**文档**（文件夹有自己的一列复选框，且「全选当前筛选结果」这句
-            对文件夹没有对应的集合）——只选了文件夹时隐藏，免得点了像没反应 */}
+        {/* 全选只作用于**文档**（文件夹是另一套选择集，`onToggleSelectAll` 动不到它；
+            且「全选当前筛选结果」这句对文件夹也没有对应的集合）——只选了文件夹时隐藏，
+            免得点了像没反应 */}
         {!noDocs && (
           <button
             onClick={onToggleSelectAll}

@@ -24,7 +24,7 @@ import type { DocEntry } from '../api/core'
 
 const noop = () => {}
 const actions: DocRowActions = {
-  onRowClick: noop, onRowDoubleClick: noop, onToggleSelect: noop, onRowMouseDown: noop,
+  onRowClick: noop, onRowDoubleClick: noop, onRowMouseDown: noop,
   onContextMenu: noop, onEditTitle: noop, onEditTags: noop, onDelete: noop,
   onDragStart: noop, onDragEnd: noop, onTitleDraftChange: noop, onTitleCommit: noop,
   onTitleCancel: noop, onTagsDraftChange: noop, onTagsCommit: noop, onTagsCancel: noop,

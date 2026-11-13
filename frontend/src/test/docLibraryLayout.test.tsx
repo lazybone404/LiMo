@@ -352,10 +352,10 @@ describe('筛选区 / 列表区之间的分隔条', () => {
 describe('active（预览目标）与 selected（批量目标）是两个维度', () => {
   const two = () => [doc({ id: 'a', createdAt: '2026-01-02T00:00:00' }), doc({ id: 'b', createdAt: '2026-01-01T00:00:00' })]
 
-  it('预览 a、勾选 b → 两个标记落在**不同**元素上', () => {
+  it('预览 a、选中 b → 两个标记落在**不同**元素上', () => {
     useStore.setState({ docs: two(), folders: [], currentDocId: 'a' })
     const { container } = render(<DocLibrary />)
-    fireEvent.click(container.querySelectorAll('[data-select-toggle]')[1] as HTMLElement)
+    fireEvent.click(container.querySelectorAll('[data-doc-row]')[1] as HTMLElement, { ctrlKey: true })
 
     const activeEls = container.querySelectorAll('[data-active]')
     const selectedEls = container.querySelectorAll('[data-selected]')
@@ -368,10 +368,10 @@ describe('active（预览目标）与 selected（批量目标）是两个维度'
     expect(selectedEls[0].textContent).toContain('文档 b')
   })
 
-  it('两者可以叠加在同一行（正在看它、也勾了它）', () => {
+  it('两者可以叠加在同一行（正在看它、也选中了它）', () => {
     useStore.setState({ docs: two(), folders: [], currentDocId: 'a' })
     const { container } = render(<DocLibrary />)
-    fireEvent.click(container.querySelectorAll('[data-select-toggle]')[0] as HTMLElement)
+    fireEvent.click(container.querySelectorAll('[data-doc-row]')[0] as HTMLElement, { ctrlKey: true })
 
     const row = container.querySelector('[data-active]') as HTMLElement
     expect(row.getAttribute('data-selected')).toBe('true')

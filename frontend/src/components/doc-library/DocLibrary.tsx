@@ -28,7 +28,7 @@ import { optimisticDoc } from '../../lib/docEntry'
 import { ContextMenu } from '../ui/ContextMenu'
 import {
   Pencil, Trash2, BookOpen, MessageSquare, RefreshCw, Tag, Clipboard, FolderInput, Layers,
-  AlertTriangle, ChevronRight,
+  AlertTriangle, ChevronRight, SquareCheck,
 } from 'lucide-react'
 import {
   streamSynthesis, previewSynthesis, mergeSynthesis,
@@ -467,13 +467,13 @@ export function DocLibrary() {
   )
 
   const {
-    selectedIds, selectedFolderIds, hasSelection, toggle: toggleSelect, setAll: setSelectionAll,
+    selectedIds, selectedFolderIds, hasSelection, setAll: setSelectionAll, toggle: toggleSelect,
     clear: clearSelection, handleRowClick, handleRowMouseDown, handleRowDoubleClick,
     handleFolderSelect, onListKeyDown,
   } = useDocSelection(visibleIds, openDocTab, folderOrder)
 
   /**
-   * 勾选 / 取消「本组全部文档」—— 未分类分组头复选框的动作。
+   * 选中 / 取消「本组全部文档」—— 未分类分组头 **Ctrl/Cmd + 点击**的动作。
    *
    * ⚠️ 落点是**文档选择集**，不是文件夹选择集。未分类不是一个实体（没有 id、不能移动、
    * 不能删除、`FolderPicker` 里没有它的位置），把 `''` 塞进 `selectedFolderIds` 会让
@@ -529,7 +529,7 @@ export function DocLibrary() {
    * 走的是 docsSlice 的 setter，而排列偏好住在本组件外侧（`docLibraryPrefs`）。
    *
    * ⚠️ 判据必须是 `arrangeBy === 'folder'`，**不是 `grouped === null`**：按类型 / 按时间
-   * 排列时 `grouped` 同样非 null，但那些组的 `editable` 是 false、复选框根本不渲染
+   * 排列时 `grouped` 同样非 null，但那些组的 `editable` 是 false、分组头根本没有选中入口
    * —— 用 `grouped` 判会让「切到按类型」这条路径静默漏掉，而界面上那些文件夹已经消失。
    * 简略模式强制按文件夹（见上方 `arrangeBy`），所以它也走保留分支。
    */
@@ -790,11 +790,6 @@ export function DocLibrary() {
     // 按住 Ctrl/Cmd 拖 = **划选**（useDocSelection），不是把文档拖去文件夹：
     // 同一个手势在两套语义下含义不同，不掐掉 DnD 会一边划选一边显示拖拽幽灵图。
     if (e.ctrlKey || e.metaKey) { e.preventDefault(); return }
-    // 从复选框热区起手同理 —— 那里按下是「选中这一行」，不该变成拖动它
-    if (e.target instanceof Element && e.target.closest('[data-select-toggle]')) {
-      e.preventDefault()
-      return
-    }
     // 拖已选中的项 = 整批拖；拖未选中的项 = 只拖它自己
     const ids = selectedIds.has(doc.id) ? [...selectedIds] : [doc.id]
     setDraggingIds(new Set(ids))
@@ -1506,6 +1501,13 @@ export function DocLibrary() {
           setCtxMenu(null)
         },
       },
+      {
+        // 行首复选框 2026-11-13 去掉后，批量操作没有任何可见入口（选中入口只剩
+        // Ctrl/Cmd + 点击与列表内 Ctrl+A）。菜单里留一条，让不知道快捷键的人也能进去。
+        label: selectedIds.has(ctxDoc.id) ? '取消选中此篇' : '选中此篇',
+        icon: <SquareCheck size={14} />,
+        onClick: () => toggleSelect(ctxDoc.id),
+      },
       { label: '编辑标题', icon: <Pencil size={14} />, onClick: () => applyTitleEdit({ id: ctxDoc.id, value: ctxDoc.title }) },
       { label: '编辑标签', icon: <Tag size={14} />, onClick: () => applyTagsEdit({ id: ctxDoc.id, value: (ctxDoc.tags || []).join(', ') }) },
 
@@ -1519,7 +1521,7 @@ export function DocLibrary() {
       // ── 危险 ──
       { label: '删除', icon: <Trash2 size={14} />, onClick: () => setDeleteTargets([ctxDoc.id]), danger: true },
     ]
-  }, [ctxDoc, ctxMenu, openDocTab, copyMarkdown, applyTitleEdit, applyTagsEdit])
+  }, [ctxDoc, ctxMenu, openDocTab, copyMarkdown, applyTitleEdit, applyTagsEdit, selectedIds, toggleSelect])
 
   const onContextMenu = useCallback((e: React.MouseEvent, docId: string) => {
     e.preventDefault()
@@ -1590,7 +1592,6 @@ export function DocLibrary() {
   const rowActions: DocRowActions = useMemo(() => ({
     onRowClick: handleRowClick,
     onRowDoubleClick: handleRowDoubleClick,
-    onToggleSelect: toggleSelect,
     onRowMouseDown: handleRowMouseDown,
     onContextMenu,
     onEditTitle: d => applyTitleEdit({ id: d.id, value: d.title }),
@@ -1616,7 +1617,7 @@ export function DocLibrary() {
       if (cur) saveTags(cur.id, cur.value)
     },
     onTagsCancel: () => applyTagsEdit(null),
-  }), [handleRowClick, handleRowMouseDown, handleRowDoubleClick, toggleSelect, onContextMenu, applyTitleEdit, applyTagsEdit, handleRowDelete,
+  }), [handleRowClick, handleRowMouseDown, handleRowDoubleClick, onContextMenu, applyTitleEdit, applyTagsEdit, handleRowDelete,
        handleDragStart, handleDragEnd, saveTitle, saveTags])
 
   /**
@@ -1650,9 +1651,9 @@ export function DocLibrary() {
 
   const listProps = {
     collapsedGroups, countOf, folderBusy, docsLoading, hasMore,
-    // 文件夹选择集与文档选择集分开（见 docsSlice）：
-    // 文件夹组的勾读 `selectedFolderIds`，未分类组的勾读 `selectedIds`
-    selectedFolderIds, selectedIds, onFolderSelect: handleFolderSelect,
+    // 文件夹选择集与文档选择集分开（见 docsSlice）：分组头读的永远是 `selectedFolderIds`，
+    // 未分类组的「选中组内全部文档」走 `onToggleDocsSelect`，进的是文档选择集
+    selectedFolderIds, onFolderSelect: handleFolderSelect,
     onToggleDocsSelect: toggleGroupDocs,
     emptyText, truncated: hitsTruncated, searchError, semanticNote,
     draggingCategorized,

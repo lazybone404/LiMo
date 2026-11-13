@@ -186,10 +186,14 @@ function twoDocs(tags: string[] = []): DocEntry[] {
   ]
 }
 
-/** 勾中前 n 行的复选框（工具条随之出现） */
+/**
+ * 选中前 n 行（工具条随之出现）。
+ *
+ * 行首复选框 2026-11-13 去掉了（对齐 VS Code 的文件树），选中入口是 **Ctrl/Cmd + 点击行**。
+ */
 function selectRows(container: HTMLElement, n: number) {
-  const toggles = container.querySelectorAll('[data-select-toggle]')
-  for (let i = 0; i < n; i++) fireEvent.click(toggles[i] as HTMLElement)
+  const rows = container.querySelectorAll('[data-doc-row]')
+  for (let i = 0; i < n; i++) fireEvent.click(rows[i] as HTMLElement, { ctrlKey: true })
 }
 
 /**

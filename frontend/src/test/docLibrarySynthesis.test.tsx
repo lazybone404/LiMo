@@ -148,10 +148,14 @@ function twoDocs(): DocEntry[] {
   ]
 }
 
-/** 勾中前 n 行的复选框（工具条随之出现） */
+/**
+ * 选中前 n 行（工具条随之出现）。
+ *
+ * 行首复选框 2026-11-13 去掉了（对齐 VS Code 的文件树），选中入口是 **Ctrl/Cmd + 点击行**。
+ */
 function selectRows(container: HTMLElement, n: number) {
-  const toggles = container.querySelectorAll('[data-select-toggle]')
-  for (let i = 0; i < n; i++) fireEvent.click(toggles[i] as HTMLElement)
+  const rows = container.querySelectorAll('[data-doc-row]')
+  for (let i = 0; i < n; i++) fireEvent.click(rows[i] as HTMLElement, { ctrlKey: true })
 }
 
 /**
@@ -237,9 +241,9 @@ describe('DocLibrary — 合成按钮门控', () => {
     // 禁用时 title 必须解释「为什么不能点」，否则是个哑掉的按钮
     expect(synthBtn(container).title).toContain('至少选择 2 篇')
 
-    // 勾第二篇累加到 2 —— ⚠️ 不能复用 `selectRows(container, 2)`：它从第 0 行起勾，
-    // 会把刚勾上的第一篇**再点一次（= 取消）**，于是选中数停在 1、工具条还在但结果反了。
-    fireEvent.click(container.querySelectorAll('[data-select-toggle]')[1] as HTMLElement)
+    // 选中第二篇累加到 2 —— ⚠️ 不能复用 `selectRows(container, 2)`：它从第 0 行起选，
+    // 会把刚选上的第一篇**再点一次（= 取消）**，于是选中数停在 1、工具条还在但结果反了。
+    fireEvent.click(container.querySelectorAll('[data-doc-row]')[1] as HTMLElement, { ctrlKey: true })
     expect(synthBtn(container).disabled).toBe(false)
     expect(synthBtn(container).title).toContain('2 篇')
   })
