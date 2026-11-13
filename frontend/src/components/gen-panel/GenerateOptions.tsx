@@ -121,7 +121,7 @@ export function GenerateOptions(props: Props) {
   return <>
     {/* 模型 */}
     <div>
-      <span className="text-[12px] font-medium text-dimmed mb-2 block">模型</span>
+      <span className="text-[11px] font-medium text-dimmed mb-1.5 block">模型</span>
       {(() => {
         // 图片类型：仅显示有多模态能力的模型
         // 文档类型：显示全部模型（用户可能想用多模态模型处理图片密集型 PDF）
@@ -137,7 +137,7 @@ export function GenerateOptions(props: Props) {
         // 文档类型也会列出多模态模型（用「视觉」标记），方便用户选用
         return (
           <select value={p.selectedModelId || ''} onChange={e => p.setSelectedModelId(e.target.value ? Number(e.target.value) : null)}
-            className="w-full px-3 py-2 bg-surface border border-border-default rounded-[10px] text-[13px] outline-none">
+            className="w-full px-2.5 py-1.5 bg-surface border border-border-default rounded-[10px] text-[12px] outline-none">
             <option value="">场景默认</option>
             {filtered.map(m => {
               const isImage = m.capabilities?.includes('image')
@@ -161,47 +161,47 @@ export function GenerateOptions(props: Props) {
 
     {/* 链接/视频：笔记格式（Excel 不适用） */}
     {!p.typeMeta.isExcel && p.typeMeta.isMedia && (
-      <div className="pt-3 border-t border-border-light">
-        <span className="text-[12px] font-medium text-dimmed mb-2 block">笔记格式</span>
-        <div className="space-y-1.5">
+      <div className="pt-2.5 border-t border-border-light">
+        <span className="text-[11px] font-medium text-dimmed mb-1.5 block">笔记格式</span>
+        <div className="space-y-1">
           {/* ⚠️ 逐项可见性一律走 `isFormatVisible`（= 后端 `AVAILABLE_OPTIONS` 能力表），
               不在 JSX 里另写 `isVideo`/`isMedia` 判据 —— 那正是 P0-01 的成因：
               UI 显示一个后端不认的项 = 用户勾了、提交时被静默抹掉。 */}
           {isFormatVisible('toc', p.typeMeta) && (
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={p.formatToc} onChange={e => p.setFormatToc(e.target.checked)} className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">目录</span></label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={p.formatToc} onChange={e => p.setFormatToc(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
+              <span className="text-[12px]">目录</span></label>
           )}
           {isFormatVisible('link', p.typeMeta) && (
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={p.formatLink} onChange={e => p.setFormatLink(e.target.checked)} className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">原片跳转</span></label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={p.formatLink} onChange={e => p.setFormatLink(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
+              <span className="text-[12px]">原片跳转</span></label>
           )}
           {isFormatVisible('screenshot', p.typeMeta) && (
-            <label className="flex items-center gap-2 cursor-pointer">
+            <label className="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" checked={p.formatScreenshot} onChange={e => p.setFormatScreenshot(e.target.checked)}
-                className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">原片截图</span>
+                className="w-3.5 h-3.5 accent-accent" />
+              <span className="text-[12px]">原片截图</span>
               <span className="text-[10px] text-disabled">AI 在文中标记时间点 → 本地 ffmpeg 抽帧嵌入，不经过大模型</span>
             </label>
           )}
           {isFormatVisible('summary', p.typeMeta) && (
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={p.formatSummary} onChange={e => p.setFormatSummary(e.target.checked)} className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">AI 总结</span></label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={p.formatSummary} onChange={e => p.setFormatSummary(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
+              <span className="text-[12px]">AI 总结</span></label>
           )}
           {isFormatVisible('chart', p.typeMeta) && (
-            <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-              <input type="checkbox" checked={p.formatChart} onChange={e => p.setFormatChart(e.target.checked)} disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">图表</span>
+            <label className={`flex items-center gap-1.5 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+              <input type="checkbox" checked={p.formatChart} onChange={e => p.setFormatChart(e.target.checked)} disabled={isPolishedOnly} className="w-3.5 h-3.5 accent-accent" />
+              <span className="text-[12px]">图表</span>
               {isPolishedOnly
                 ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
                 : <span className="text-[10px] text-disabled">AI 选结构（9 种）→ 本地绘制 PNG 嵌入</span>}</label>
           )}
           {isFormatVisible('followup', p.typeMeta) && (
-            <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-              <input type="checkbox" checked={p.formatFollowUp} onChange={e => p.setFormatFollowUp(e.target.checked)} disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">追问卡片</span>
+            <label className={`flex items-center gap-1.5 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+              <input type="checkbox" checked={p.formatFollowUp} onChange={e => p.setFormatFollowUp(e.target.checked)} disabled={isPolishedOnly} className="w-3.5 h-3.5 accent-accent" />
+              <span className="text-[12px]">追问卡片</span>
               {isPolishedOnly
                 ? <span className="text-[10px] text-disabled">追问仅笔记产出</span>
                 : <span className="text-[10px] text-disabled">读完可点的问题，点了直接问 AI</span>}</label>
@@ -213,14 +213,14 @@ export function GenerateOptions(props: Props) {
     {/* PDF 直传 — 仅 PDF 显示（Word/PPT/Excel/EPUB 的厂商支持未查证，不给假入口）。
         它管的是**材料怎么给模型**（输入），故与下方「笔记格式」（输出）分开成块。 */}
     {p.typeMeta.isPDF && (
-      <div className="pt-3 border-t border-border-light">
-        <span className="text-[12px] font-medium text-dimmed mb-2 block">材料输入方式</span>
-        <label className={`flex items-center gap-2 ${p.hasDocumentModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+      <div className="pt-2.5 border-t border-border-light">
+        <span className="text-[11px] font-medium text-dimmed mb-1.5 block">材料输入方式</span>
+        <label className={`flex items-center gap-1.5 ${p.hasDocumentModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}
           title={!p.hasDocumentModel ? '当前模型不支持 PDF 直传' : '把 PDF 原件直接发给模型阅读，本地抽取的文本不进提示词'}>
           <input type="checkbox" checked={p.docDirect} onChange={e => p.setDocDirect(e.target.checked)}
-            disabled={!p.hasDocumentModel} className="w-4 h-4 accent-accent disabled:opacity-30" />
+            disabled={!p.hasDocumentModel} className="w-3.5 h-3.5 accent-accent disabled:opacity-30" />
           <Upload size={13} className="text-muted" />
-          <span className={`text-[13px] ${!p.hasDocumentModel ? 'text-disabled' : ''}`}>PDF 直传模型处理</span>
+          <span className={`text-[12px] ${!p.hasDocumentModel ? 'text-disabled' : ''}`}>PDF 直传模型处理</span>
           <span className="text-[10px] text-disabled">
             {p.hasDocumentModel ? '（原件发给模型，本地文本不进提示词）' : '需支持 PDF 直传的模型'}
           </span>
@@ -240,47 +240,47 @@ export function GenerateOptions(props: Props) {
         具体哪几项可见仍由 `isFormatVisible`（= 后端能力表）逐项裁定，这里只管区块开关。 */}
     {!p.typeMeta.isExcel && p.typeMeta.sourceType !== 'epub'
       && (p.typeMeta.sourceType === 'text' || p.typeMeta.isDoc || p.typeMeta.isComposite) && (
-      <div className="pt-3 border-t border-border-light">
-        <span className="text-[12px] font-medium text-dimmed mb-2 block">笔记格式</span>
-        <div className="space-y-1.5">
+      <div className="pt-2.5 border-t border-border-light">
+        <span className="text-[11px] font-medium text-dimmed mb-1.5 block">笔记格式</span>
+        <div className="space-y-1">
           {isFormatVisible('toc', p.typeMeta) && (
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={p.formatToc} onChange={e => p.setFormatToc(e.target.checked)} className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">目录</span></label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={p.formatToc} onChange={e => p.setFormatToc(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
+              <span className="text-[12px]">目录</span></label>
           )}
           {/* ⚠️ 此前这两项同包在 `{isPDF && <>…</>}` 里 —— 而能力表里 `formulas` 有
               **pdf/docx/pptx/text** 四类、`references` 只有 pdf。把「一组」当「一项」写，
               症状是 Word/PPT/文本下后端支持、UI 藏起来（P0-01 的目标形态）；
               若反过来只拆一半（留着 `isPDF` 给 formulas），则是「UI 显示、提交被抹掉」。 */}
           {isFormatVisible('formulas', p.typeMeta) && (
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={p.formatFormulas} onChange={e => p.setFormatFormulas(e.target.checked)} className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">公式集</span>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={p.formatFormulas} onChange={e => p.setFormatFormulas(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
+              <span className="text-[12px]">公式集</span>
               <span className="text-[10px] text-disabled">LaTeX 独立汇总</span></label>
           )}
           {isFormatVisible('references', p.typeMeta) && (
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={p.formatReferences} onChange={e => p.setFormatReferences(e.target.checked)} className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">参考文献</span>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={p.formatReferences} onChange={e => p.setFormatReferences(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
+              <span className="text-[12px]">参考文献</span>
               <span className="text-[10px] text-disabled">BibTeX + 可读列表</span></label>
           )}
           {isFormatVisible('summary', p.typeMeta) && (
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={p.formatSummary} onChange={e => p.setFormatSummary(e.target.checked)} className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">AI 总结</span></label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={p.formatSummary} onChange={e => p.setFormatSummary(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
+              <span className="text-[12px]">AI 总结</span></label>
           )}
           {isFormatVisible('chart', p.typeMeta) && (
-            <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-              <input type="checkbox" checked={p.formatChart} onChange={e => p.setFormatChart(e.target.checked)} disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">图表</span>
+            <label className={`flex items-center gap-1.5 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+              <input type="checkbox" checked={p.formatChart} onChange={e => p.setFormatChart(e.target.checked)} disabled={isPolishedOnly} className="w-3.5 h-3.5 accent-accent" />
+              <span className="text-[12px]">图表</span>
               {isPolishedOnly
                 ? <span className="text-[10px] text-disabled">图表仅笔记产出</span>
                 : <span className="text-[10px] text-disabled">AI 选结构（9 种）→ 本地绘制 PNG 嵌入</span>}</label>
           )}
           {isFormatVisible('followup', p.typeMeta) && (
-            <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
-              <input type="checkbox" checked={p.formatFollowUp} onChange={e => p.setFormatFollowUp(e.target.checked)} disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
-              <span className="text-[13px]">追问卡片</span>
+            <label className={`flex items-center gap-1.5 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+              <input type="checkbox" checked={p.formatFollowUp} onChange={e => p.setFormatFollowUp(e.target.checked)} disabled={isPolishedOnly} className="w-3.5 h-3.5 accent-accent" />
+              <span className="text-[12px]">追问卡片</span>
               {isPolishedOnly
                 ? <span className="text-[10px] text-disabled">追问仅笔记产出</span>
                 : <span className="text-[10px] text-disabled">读完可点的问题，点了直接问 AI</span>}</label>
@@ -289,15 +289,15 @@ export function GenerateOptions(props: Props) {
             <>
               {/* 三个正交维度，独立组合，互不依赖：
                   保留图片引用 / OCR 提取文字 / AI 分析图片 可任意搭配 */}
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label className="flex items-center gap-1.5 cursor-pointer">
                 <input type="checkbox" checked={p.formatImages} onChange={e => p.setFormatImages(e.target.checked)}
-                  className="w-4 h-4 accent-accent" />
-                <span className="text-[13px]">保留文档图片</span>
+                  className="w-3.5 h-3.5 accent-accent" />
+                <span className="text-[12px]">保留文档图片</span>
                 <span className="text-[10px] text-disabled">笔记中保留 ![](assets/xxx) 图片引用</span></label>
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label className="flex items-center gap-1.5 cursor-pointer">
                 <input type="checkbox" checked={p.ocrEnabled} onChange={e => p.setOcrEnabled(e.target.checked)}
-                  className="w-4 h-4 accent-accent" />
-                <span className="text-[13px]">OCR 提取图中文字</span>
+                  className="w-3.5 h-3.5 accent-accent" />
+                <span className="text-[12px]">OCR 提取图中文字</span>
                 <span className="text-[10px] text-disabled">先用 OCR 模型识别图片内容插入原文，再交给文本模型生成</span>
               </label>
               {p.ocrEnabled && (
@@ -318,15 +318,15 @@ export function GenerateOptions(props: Props) {
                   })()}
                 </div>
               )}
-              <label className={`flex items-center gap-2 ${p.hasImageModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+              <label className={`flex items-center gap-1.5 ${p.hasImageModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
                 <input type="checkbox" checked={p.imageAnalyze} onChange={e => p.setImageAnalyze(e.target.checked)}
-                  disabled={!p.hasImageModel} className="w-4 h-4 accent-accent disabled:opacity-30" />
-                <span className={`text-[13px] ${!p.hasImageModel ? 'text-disabled' : ''}`}>AI 分析图片</span>
+                  disabled={!p.hasImageModel} className="w-3.5 h-3.5 accent-accent disabled:opacity-30" />
+                <span className={`text-[12px] ${!p.hasImageModel ? 'text-disabled' : ''}`}>AI 分析图片</span>
                 <span className="text-[10px] text-disabled">
                   {p.hasImageModel ? '图片发给多模态 LLM 做视觉理解' : '需多模态模型（当前模型不支持图片）'}
                 </span></label>
               {p.imageAnalyze && (
-                <label className="flex items-center gap-2 cursor-pointer ml-10">
+                <label className="flex items-center gap-1.5 cursor-pointer ml-10">
                   <input type="checkbox" checked={p.imageOptimize} onChange={e => p.setImageOptimize(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
                   <span className="text-[12px]">图片预处理</span>
                   <span className="text-[10px] text-disabled">PIL 缩放（长边≤1024px），省 Token</span>
@@ -340,9 +340,9 @@ export function GenerateOptions(props: Props) {
 
     {/* 生成产物 — 非图片类型，从注册表动态渲染 */}
     {!p.typeMeta.isImage && p.typeMeta.coreProducts.length > 0 && (
-      <div className="pt-3 border-t border-border-light">
-        <span className="text-[12px] font-medium text-dimmed mb-2 block">生成产物</span>
-        <div className="space-y-1.5">
+      <div className="pt-2.5 border-t border-border-light">
+        <span className="text-[11px] font-medium text-dimmed mb-1.5 block">生成产物</span>
+        <div className="space-y-1">
           {p.typeMeta.coreProducts.map(prod => {
             const checked = p.selectedCore.includes(prod.name)
             const toggle = () => {
@@ -350,10 +350,10 @@ export function GenerateOptions(props: Props) {
               else p.setSelectedCore([...p.selectedCore, prod.name])
             }
             return (
-              <label key={prod.name} className="flex items-center gap-2 cursor-pointer">
+              <label key={prod.name} className="flex items-center gap-1.5 cursor-pointer">
                 <input type="checkbox" checked={checked} onChange={toggle}
-                  className="w-4 h-4 accent-accent" />
-                <span className="text-[13px]">{prod.label}</span>
+                  className="w-3.5 h-3.5 accent-accent" />
+                <span className="text-[12px]">{prod.label}</span>
               </label>
             )
           })}
@@ -366,16 +366,16 @@ export function GenerateOptions(props: Props) {
         后者是用户主动要开的功能（他要的是「为什么不能开」），而档位是模型的固有属性，
         给不支持的模型挂一个灰块只是噪音。 */}
     {p.reasoningSupported && (
-      <div className="pt-3 border-t border-border-light">
-        <span className="text-[12px] font-medium text-dimmed mb-2 block">思考强度</span>
+      <div className="pt-2.5 border-t border-border-light">
+        <span className="text-[11px] font-medium text-dimmed mb-1.5 block">思考强度</span>
         <div className="flex gap-1">
           {EFFORT_TIERS.map(t => (
             <button key={t.value} onClick={() => p.setReasoningEffort(t.value)}
-              className={`px-3 py-1.5 text-[13px] rounded-full font-medium transition-colors ${p.reasoningEffort === t.value ? 'bg-accent text-on-accent' : 'text-dimmed hover:bg-surface-hover'}`}>
+              className={`px-2.5 py-1 text-[12px] rounded-full font-medium transition-colors ${p.reasoningEffort === t.value ? 'bg-accent text-on-accent' : 'text-dimmed hover:bg-surface-hover'}`}>
               {t.label}</button>
           ))}
         </div>
-        <p className="text-[11px] text-disabled mt-1.5">
+        <p className="text-[10px] text-disabled mt-1">
           {p.reasoningEffort === 'max'
             ? '笔记与整理版都用最高档（更慢）'
             : isPolishedOnly
@@ -387,25 +387,25 @@ export function GenerateOptions(props: Props) {
 
     {/* AI 画面理解 — 视频专属 */}
     {p.typeMeta.isVideo && (
-      <div className="pt-3 border-t border-border-light">
-        <span className="text-[12px] font-medium text-dimmed mb-2 block">AI 画面理解</span>
-        <span className="text-[11px] text-disabled block -mt-1 mb-2">截取视频画面发给多模态模型辅助分析</span>
+      <div className="pt-2.5 border-t border-border-light">
+        <span className="text-[11px] font-medium text-dimmed mb-1.5 block">AI 画面理解</span>
+        <span className="text-[10px] text-disabled block -mt-1 mb-1.5">截取视频画面发给多模态模型辅助分析</span>
         {!p.hasImageModel && (
           <p className="text-[11px] text-warning mb-2">需多模态模型（当前模型不支持图片），请在设置中启用</p>
         )}
-        <label className={`flex items-center gap-2 mb-2 ${p.hasImageModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+        <label className={`flex items-center gap-1.5 mb-2 ${p.hasImageModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
           <input type="checkbox" checked={p.videoUnderstanding} onChange={e => p.setVideoUnderstanding(e.target.checked)}
-            disabled={!p.hasImageModel} className="w-4 h-4 accent-accent disabled:opacity-30" />
+            disabled={!p.hasImageModel} className="w-3.5 h-3.5 accent-accent disabled:opacity-30" />
           <Camera size={13} className="text-muted" />
-          <span className={`text-[13px] ${!p.hasImageModel ? 'text-disabled' : ''}`}>启用</span>
+          <span className={`text-[12px] ${!p.hasImageModel ? 'text-disabled' : ''}`}>启用</span>
         </label>
         {/* 视频直传模型处理：选中模型支持 video 时才可选（方案 §5.1） */}
-        <label className={`flex items-center gap-2 mb-2 ${p.hasVideoModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+        <label className={`flex items-center gap-1.5 mb-2 ${p.hasVideoModel ? 'cursor-pointer' : 'cursor-not-allowed'}`}
           title={!p.hasVideoModel ? '当前模型不支持视频直传' : '视频直接传给模型（服务端抽帧），无需本地截帧'}>
           <input type="checkbox" checked={p.videoDirect} onChange={e => p.setVideoDirect(e.target.checked)}
-            disabled={!p.hasVideoModel || !p.videoUnderstanding} className="w-4 h-4 accent-accent disabled:opacity-30" />
+            disabled={!p.hasVideoModel || !p.videoUnderstanding} className="w-3.5 h-3.5 accent-accent disabled:opacity-30" />
           <Upload size={13} className="text-muted" />
-          <span className={`text-[13px] ${!p.hasVideoModel || !p.videoUnderstanding ? 'text-disabled' : ''}`}>视频直传模型处理</span>
+          <span className={`text-[12px] ${!p.hasVideoModel || !p.videoUnderstanding ? 'text-disabled' : ''}`}>视频直传模型处理</span>
           <span className="text-[10px] text-disabled">（服务端抽帧，无需本地截帧）</span>
         </label>
         {p.videoUnderstanding && p.hasVideoModel && !p.videoDirect && (
@@ -446,13 +446,13 @@ export function GenerateOptions(props: Props) {
                   <input type="number" value={p.saveQuality} onChange={e => p.setSaveQuality(Math.max(1, Math.min(100, +e.target.value)))}
                     className="w-20 px-2 py-1.5 bg-surface border border-border-default rounded-lg text-[12px] outline-none" />
                 </div>
-                <label className="flex items-center gap-2 cursor-pointer">
+                <label className="flex items-center gap-1.5 cursor-pointer">
                   <input type="checkbox" checked={p.dedupeEnabled} onChange={e => p.setDedupeEnabled(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
                   <span className="text-[11px]">相邻重复帧去重</span></label>
-                <label className="flex items-center gap-2 cursor-pointer">
+                <label className="flex items-center gap-1.5 cursor-pointer">
                   <input type="checkbox" checked={p.frameQualityFilter} onChange={e => p.setFrameQualityFilter(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
                   <span className="text-[11px]">帧质量过滤（跳过模糊/纯色帧）</span></label>
-                <label className="flex items-center gap-2 cursor-pointer">
+                <label className="flex items-center gap-1.5 cursor-pointer">
                   <input type="checkbox" checked={p.imageOptimize} onChange={e => p.setImageOptimize(e.target.checked)} className="w-3.5 h-3.5 accent-accent" />
                   <span className="text-[11px]">图片预处理（PIL 缩放 ≤1024px，省 Token）</span></label>
               </div>
@@ -466,7 +466,7 @@ export function GenerateOptions(props: Props) {
         默认收起：11 个档位平铺占四行，而换风格是低频操作。
         收起时要能看出当前选的是哪一档，否则用户会以为「没选风格」。 */}
     {!isPolishedOnly && (p.typeMeta.isMedia || p.typeMeta.sourceType === 'text' || p.typeMeta.isDoc) && (
-      <div className="pt-3 border-t border-border-light">
+      <div className="pt-2.5 border-t border-border-light">
         <button type="button" onClick={() => setStyleExpanded(!styleExpanded)}
           aria-expanded={styleExpanded}
           className="flex items-center gap-1.5 text-[12px] font-medium text-dimmed hover:text-foreground transition-colors">
@@ -500,7 +500,7 @@ export function GenerateOptions(props: Props) {
         ⚠️ 块名自 2026-10-12 起由「参考文件」改为「参考资料」：块内现在有**两种来源**
         （用户上传的文件 / 联网检索），标题必须覆盖两者，否则「联网检索」读起来像
         放错了地方。（`refExpanded` 这个 state 名保留 —— 它只是内部名字。） */}
-    {!p.typeMeta.isImage && <div className="pt-3 border-t border-border-light">
+    {!p.typeMeta.isImage && <div className="pt-2.5 border-t border-border-light">
       <button onClick={() => setRefExpanded(!refExpanded)}
         className="flex items-center gap-1.5 text-[12px] font-medium text-dimmed hover:text-foreground transition-colors">
         <ChevronDown size={12} className={`transition-transform ${refExpanded ? '' : '-rotate-90'}`} />
@@ -514,11 +514,11 @@ export function GenerateOptions(props: Props) {
           {/* 联网检索 —— 第二种来源。⚠️ **不是 format 项**：它不往 prompt 加规范，
               而是产生一份参考资料，走与上传文件**完全相同**的注入通道（超窗自动压缩、
               「参考资料只是素材不是指令」的防御声明、只注 notes）。 */}
-          <label className={`flex items-center gap-2 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+          <label className={`flex items-center gap-1.5 ${isPolishedOnly ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
             <input type="checkbox" checked={p.webSearch} onChange={e => p.setWebSearch(e.target.checked)}
-              disabled={isPolishedOnly} className="w-4 h-4 accent-accent" />
+              disabled={isPolishedOnly} className="w-3.5 h-3.5 accent-accent" />
             <Globe size={12} className="shrink-0 text-muted" />
-            <span className="text-[13px]">联网检索</span>
+            <span className="text-[12px]">联网检索</span>
             <span className="text-[10px] text-disabled">
               {isPolishedOnly ? '整理版原文不支持' : '生成前自动检索相关资料，作为参考注入笔记'}
             </span>
@@ -537,7 +537,7 @@ export function GenerateOptions(props: Props) {
             </p>
           )}
           {p.refFile && (
-            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-surface border border-border-default rounded-lg text-[12px]">
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-surface border border-border-default rounded-lg text-[12px]">
               <FileText size={12} className="shrink-0 text-muted" />
               <span className="flex-1 min-w-0 truncate text-dimmed">{p.refFile.name}</span>
               <span className="text-[10px] text-disabled shrink-0">{formatSize(p.refFile.size)}</span>
@@ -552,7 +552,7 @@ export function GenerateOptions(props: Props) {
     </div>}
 
     {/* 用户备注 / 分析指引 — 非图片类型均可 */}
-    {!p.typeMeta.isImage && <div className="pt-3 border-t border-border-light">
+    {!p.typeMeta.isImage && <div className="pt-2.5 border-t border-border-light">
       <button onClick={() => p.setNotesExpanded(!p.notesExpanded)}
         className="flex items-center gap-1.5 text-[12px] font-medium text-dimmed hover:text-foreground transition-colors">
         <ChevronDown size={12} className={`transition-transform ${p.notesExpanded ? '' : '-rotate-90'}`} />
