@@ -17,7 +17,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { buildMetaChips, fmtChars, fmtTime } from '../lib/artifactMeta'
+import { buildMetaChips, fmtChars, fmtCost, fmtTime, fmtTokens } from '../lib/artifactMeta'
 import type { MarkdownMeta, MarkdownVersion } from '../store/types'
 
 const meta = (p: Partial<MarkdownMeta> = {}): MarkdownMeta =>
@@ -151,6 +151,70 @@ describe('fmtTime', () => {
     expect(out).not.toBe('')
     expect(out).toContain('2026')
     expect(out).toMatch(/\d{2}:\d{2}/)
+  })
+})
+
+// ── 用量与金额（2026-11-13） ─────────────────────────
+
+describe('用量', () => {
+  it('usage 齐备 → 一个标签：↑输入 ↓输出 · ¥金额', () => {
+    const chips = buildMetaChips(
+      meta({ usage: { input: 12345, output: 340, cost: 0.060482 } }),
+      [ver()],
+    )
+    expect(chips.find(c => c.key === 'usage')?.label).toBe('↑12.3k ↓340 · ¥0.06')
+  })
+
+  it('⚠️ 没有金额（单价没配全）→ 只显示 token，不补 ¥0.00', () => {
+    // 对照 F：`cost ?? 0` 会让用户以为这次生成免费——而实际是「不知道多少钱」
+    const chips = buildMetaChips(meta({ usage: { input: 1000, output: 0 } }), [ver()])
+    expect(chips.find(c => c.key === 'usage')?.label).toBe('↑1.0k ↓0')
+  })
+
+  it('⚠️ usage 缺失（历史产物 / 网关不回）→ 不给这个标签', () => {
+    expect(keysOf(meta(), [ver()])).not.toContain('usage')
+  })
+
+  it('排在最后：version → time → chars → model → prompt → usage', () => {
+    const keys = keysOf(
+      meta({ chars: 2480, source: 'qwen3.8-max', usage: { input: 1, output: 1, cost: 0 } }),
+      [ver({ promptVersion: '26' })],
+    )
+    expect(keys).toEqual(['version', 'time', 'chars', 'model', 'prompt', 'usage'])
+  })
+
+  it('⚠️ usage 只从 meta 取，不从版本行取（它不进 artifact_versions）', () => {
+    // 往版本行塞 usage 不该产生标签：那会绕开 `MarkdownMeta` 这条唯一通路
+    const row = { ...ver(), usage: { input: 999, output: 999, cost: 1 } } as unknown as MarkdownVersion
+    expect(buildMetaChips(meta(), [row]).map(c => c.key)).not.toContain('usage')
+  })
+})
+
+describe('fmtTokens', () => {
+  it('千位进位与个位原样', () => {
+    expect(fmtTokens(0)).toBe('0')
+    expect(fmtTokens(999)).toBe('999')
+    expect(fmtTokens(1000)).toBe('1.0k')
+    expect(fmtTokens(12345)).toBe('12.3k')
+    expect(fmtTokens(1_000_000)).toBe('1000.0k')
+  })
+
+  it('非法值 → 空串（不渲染 NaN / 负数）', () => {
+    expect(fmtTokens(NaN)).toBe('')
+    expect(fmtTokens(-5)).toBe('')
+  })
+})
+
+describe('fmtCost', () => {
+  it('undefined → 空串；0 → ¥0.00（两者含义不同）', () => {
+    expect(fmtCost(undefined)).toBe('')
+    expect(fmtCost(0)).toBe('¥0.00')
+  })
+
+  it('不足 1 分时多给两位小数（便宜模型的真实量级）', () => {
+    expect(fmtCost(0.0005)).toBe('¥0.0005')
+    expect(fmtCost(0.060482)).toBe('¥0.06')
+    expect(fmtCost(1.234)).toBe('¥1.23')
   })
 })
 

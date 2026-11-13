@@ -2079,10 +2079,11 @@ class Store:
                                      mode: str = "", version: int | None = None) -> list[dict]:
         """该文档的产物版本（含正文），**版本降序**（`[0]` 即最新）。
 
-        每条 = index 条目 + `content`（含自证头）+ **六个附加字段**：
+        每条 = index 条目 + `content`（含自证头）+ **七个附加字段**：
         `chars`（纯正文字数）/ `edited` / `source`（生成用的模型）/
-        `promptVersion`（生成提示词版本）/ `diskHash`（文件字节的 sha256，编辑
-        保存的乐观锁）/ `followUps`（追问建议）。
+        `promptVersion`（生成提示词版本）/ `usage`（本次生成的 token 与金额，
+        **有才给键**）/ `diskHash`（文件字节的 sha256，编辑保存的乐观锁）/
+        `followUps`（追问建议）。
 
         ⚠️ 前四个从自证头**现算**，刻意**不进 index**：index 一删就丢，而这些全都
         写在文件里（`generatedAt` / `generated.model` / `generated.promptVersion` / `edit`）。
@@ -2139,6 +2140,12 @@ class Store:
                 # 不要补 "0"（那等于伪造「它来自第 0 版提示词」）。
                 "promptVersion": (head.get("generated") or {}).get("promptVersion", ""),
             }
+            # 生成用量（token 数与金额）。与 `promptVersion` 同一条纪律：读时从文件头
+            # 派生、**不进 index**；读不出（历史产物 / 网关不回 usage）就**不给这个键**
+            # ——`{}` 与「没有」在界面上要能区分（后者不显示，前者会被当成「问了、是零」）。
+            _usage = (head.get("generated") or {}).get("usage")
+            if _usage:
+                item["usage"] = _usage
             # 追问旁路文件（本来就要逐版读盘，这里是搭车的一次 exists 快判）
             fu = self.read_artifact_followups(transcript_id, meta.get("mode", ""),
                                               meta.get("version", 0))

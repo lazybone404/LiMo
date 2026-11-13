@@ -81,6 +81,24 @@ describe('ArtifactMetaBar', () => {
     const { container } = render(<ArtifactMetaBar meta={meta()} />)
     expect(container.querySelector('[data-artifact-meta]')).not.toBeNull()
   })
+
+  it('用量标签：token 与金额同排，图标齐备', () => {
+    const { container } = render(
+      <ArtifactMetaBar
+        meta={meta({ usage: { input: 12345, output: 340, cost: 0.060482 } })}
+        versions={versions}
+      />,
+    )
+    const chip = container.querySelector('[data-meta-chip="usage"]')
+    expect(chip?.textContent).toBe('↑12.3k ↓340 · ¥0.06')
+    expect(chip?.querySelector('svg')).not.toBeNull()
+    expect(chip?.getAttribute('title')).toBeTruthy()
+  })
+
+  it('⚠️ 用量缺失 → 不出现 usage 标签（历史产物不该显示「0 token」）', () => {
+    const { container } = render(<ArtifactMetaBar meta={meta()} versions={versions} />)
+    expect(container.querySelector('[data-meta-chip="usage"]')).toBeNull()
+  })
 })
 
 // ── 接线守卫 ─────────────────────────

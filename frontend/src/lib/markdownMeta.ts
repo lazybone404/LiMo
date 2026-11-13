@@ -22,6 +22,9 @@ import type { MarkdownMeta } from '../store/types'
  * ⚠️ `followUps` 同理原样透传，且**不做「空数组当缺省」的归一**：后端是「有才给键、
  * 空不给」（`store.get_markdowns_by_transcript`），两者在这里必须保持可区分 ——
  * `[]` 与 `undefined` 的消费方（PreviewArea 的渲染条件）只判后者。
+ *
+ * ⚠️ `usage` 同样原样透传：`undefined` = 网关没回用量 / 历史产物，自证条据此
+ * **不显示**「输入 x / 输出 y」；补成 `{input: 0, output: 0}` 就是在伪造数据。
  */
 export function toMarkdownMeta(md: MarkdownView): MarkdownMeta {
   return {
@@ -34,5 +37,6 @@ export function toMarkdownMeta(md: MarkdownView): MarkdownMeta {
     source: md.source,
     followUps: md.followUps,
     diskHash: md.diskHash,
+    usage: md.usage,
   }
 }

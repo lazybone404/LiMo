@@ -9,7 +9,8 @@
  * ⚠️ **不是把自证头 JSON 全量铺开**：`params` / `sourceRefs` 是给 agent 读的，铺给
  * 用户只是噪音。取哪几项、什么顺序，判据在 `lib/artifactMeta.ts` 的 `buildMetaChips`
  * （本组件只负责「数据 → 图标 + 外观」）。`promptVersion` 2026-11-08 进表 —— 它回答
- * 「这版是哪套提示词生成的」，复盘时用得上。
+ * 「这版是哪套提示词生成的」，复盘时用得上。`usage` 2026-11-13 进表 —— 它是界面上
+ * 唯一能看到「这次生成花了多少」的地方。
  *
  * ⚠️ **接入点纪律**：与 `CardSections` / `MarkerContent` **同级**，只挂在 notes /
  * polished 的**只读态**。**绝不放 `MarkdownPreview` 内部**——那会静默扩散到 Excel
@@ -19,7 +20,7 @@
  * 「用户在预览栏看到的内容」。导出物里的元信息仍由 `.md` / `.html` 保留的自证头注释
  * 承载（`export.py::_pick_artifact` 用 `raw_content`）。
  */
-import { AlignLeft, Clock, Cpu, History, Sparkles, type LucideIcon } from 'lucide-react'
+import { AlignLeft, Clock, Cpu, Coins, History, Sparkles, type LucideIcon } from 'lucide-react'
 import type { MarkdownMeta, MarkdownVersion } from '../../store/types'
 import { buildMetaChips, type MetaChipKey } from '../../lib/artifactMeta'
 
@@ -31,6 +32,18 @@ const CHIP_ICONS: Record<MetaChipKey, LucideIcon> = {
   chars: AlignLeft,
   model: Cpu,
   prompt: Sparkles,
+  usage: Coins,
+}
+
+/** 悬停说明。⚠️ 与 `CHIP_ICONS` 同款**穷尽映射**：新增 chip 时两条都要补，
+ *  缺 title 只是少一句提示，缺图标是类型错——两者的严重度不同，刻意都写出来。 */
+const CHIP_TITLES: Record<MetaChipKey, string | undefined> = {
+  version: undefined,
+  time: undefined,
+  chars: undefined,
+  model: '生成模型',
+  prompt: '生成提示词版本',
+  usage: '本次生成的 token 用量与折算金额（单价取自设置里的模型价格）',
 }
 
 export interface ArtifactMetaBarProps {
@@ -55,7 +68,7 @@ export function ArtifactMetaBar({ meta, versions = [] }: ArtifactMetaBarProps) {
           <span
             key={c.key}
             data-meta-chip={c.key}
-            title={c.key === 'model' ? '生成模型' : c.key === 'prompt' ? '生成提示词版本' : undefined}
+            title={CHIP_TITLES[c.key]}
             className="inline-flex items-center gap-1 h-[21px] pl-1.5 pr-2 rounded-md
                        border border-border-light text-[11px] leading-none text-dimmed
                        transition-colors hover:border-border-default hover:text-foreground"

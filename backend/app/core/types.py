@@ -164,6 +164,10 @@ class MarkdownView:
     })
     more_options: list[str] = field(default_factory=list)
     generation_model: str = ""
+    # 这次生成的 token 用量与折算金额（`{"input", "output", "cost"?}`，见
+    # `core/pricing.py::usage_record`）。**空 dict = 拿不到**（网关不回 usage /
+    # 历史产物），自证头据此不写这个键——不写假数据。
+    usage: dict = field(default_factory=dict)
     version: int = 1
     status: str = "complete"  # "complete" | "partial" — 取消时保存 partial，续写后变 complete
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())

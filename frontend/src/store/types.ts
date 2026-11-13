@@ -14,6 +14,7 @@ import type { UiSlice } from './uiSlice'
 import type { ToastSlice } from './toastSlice'
 import type { UpdateSlice } from './updateSlice'
 import type { JobsSlice } from './jobsSlice'
+import type { ArtifactUsage } from '../api/core'
 
 // ── 公开类型 ──
 
@@ -99,6 +100,9 @@ export interface MarkdownMeta {
   /** 这一版**磁盘字节**的 sha256（后端读盘时算）。编辑保存时原样带回，用于发现
    *  「你编辑期间别的程序改过这个文件」。`undefined` = 后端没给，保存不做校验 */
   diskHash?: string
+  /** 这次生成的 token 用量与金额（读时从产物自证头派生）。
+   *  ⚠️ `undefined` = 拿不到（历史产物 / 网关不回 usage），自证条据此**不显示** */
+  usage?: ArtifactUsage
 }
 
 export interface MarkdownVersion {

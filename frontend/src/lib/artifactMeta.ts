@@ -33,7 +33,34 @@ export function fmtChars(n?: number): string {
   return `${(n / 1000).toFixed(1)}k字`
 }
 
-export type MetaChipKey = 'version' | 'time' | 'chars' | 'model' | 'prompt'
+/**
+ * token 数的人读写法：`1234` → `1.2k`，`340` → `340`。
+ *
+ * ⚠️ 与 `fmtChars` **分开**：字数的单位是「字」，token 数的单位是「token」，
+ * 混用一个函数会让「1.2k字」这种标签出现在用量位上。取整到 0.1k 是刻意的——
+ * 用量是量级信息，不需要精确到个位，而 `12345` 五个数字挤在 11px 的标签里读不出来。
+ */
+export function fmtTokens(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return ''
+  if (n < 1000) return `${n}`
+  return `${(n / 1000).toFixed(1)}k`
+}
+
+/**
+ * 金额：`0.060482` → `¥0.06`；不足 0.01 时多给两位（`¥0.0005`）。
+ *
+ * ⚠️ **`undefined` 与 `0` 必须分开**：`undefined` = 单价没配全 → 返回空串，调用方
+ * 只显示 token 数；`0` 理论上不会出现（后端不写 0），真出现了也照实显示「¥0.00」。
+ * 若把 `undefined` 也渲染成 `¥0.00`，用户会以为这次生成免费——那是假话。
+ */
+export function fmtCost(cost?: number): string {
+  if (cost === undefined || !Number.isFinite(cost)) return ''
+  if (cost === 0) return '¥0.00'
+  if (cost < 0.01) return `¥${cost.toFixed(4)}`
+  return `¥${cost.toFixed(2)}`
+}
+
+export type MetaChipKey = 'version' | 'time' | 'chars' | 'model' | 'prompt' | 'usage'
 
 export interface MetaChip {
   key: MetaChipKey
@@ -73,6 +100,11 @@ function pickVersionRow(meta: MarkdownMeta, versions: MarkdownVersion[]): Markdo
  * ⚠️ `promptVersion` 2026-11-08 **进了**这张表：它回答「这一版是第几版提示词生成的」，
  * 复盘时是有效信息（此前 `PROMPT_VERSION` 手抄漏 bump 过，界面上又一处都不显示，
  * 等于两个断点）。历史产物读不出时**不显示这个 chip**，不补默认值。
+ *
+ * ⚠️ `usage` 2026-11-13 **进了**这张表：它回答「这次生成花了多少」，是用户唯一能
+ * 在界面上看到成本的地方（此前只能去平台报表里按时间对）。排在最后是因为它比上面
+ * 各项都「细」，放在模型名后面读起来像附注。缺失（历史产物 / 网关不回 usage）时
+ * **整条不显示**；只有 token 没有金额时显示成 `↑1.2k ↓340`，不补金额。
  */
 export function buildMetaChips(
   meta: MarkdownMeta | null | undefined,
@@ -97,6 +129,17 @@ export function buildMetaChips(
   // 切版本时会出现「v1 的内容配 v3 的提示词版本」。
   const prompt = (row?.promptVersion ?? '').trim()
   if (prompt) chips.push({ key: 'prompt', label: `prompt ${prompt}` })
+
+  // 用量（`↑1.2k ↓340 · ¥0.06`）。⚠️ 只从 `meta` 取、不从版本行取：
+  // `usage` 不进 `artifact_versions`（那是契约测试钉住的精确键集），版本切换时
+  // 自证条跟随 `meta` 重建，两者天然同版。
+  // ⚠️ 缺金额时**只显示 token**，不补 `¥0.00`（理由见 `fmtCost`）。
+  const usage = meta.usage
+  if (usage) {
+    const tok = `↑${fmtTokens(usage.input)} ↓${fmtTokens(usage.output)}`
+    const cost = fmtCost(usage.cost)
+    chips.push({ key: 'usage', label: cost ? `${tok} · ${cost}` : tok })
+  }
 
   return chips
 }

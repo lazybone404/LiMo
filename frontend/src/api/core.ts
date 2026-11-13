@@ -435,6 +435,19 @@ export interface GenerateResult {
   style: string; mode: string; version: number
 }
 
+/** 一次生成的实际用量（`generated.usage` 的形状，见后端 `core/pricing.py`）。
+ *
+ *  ⚠️ `cost` **不一定有**：只填了输入/输出其中一个单价时不折算金额（不拿 0 冒充
+ *  「不花钱」），此时只显示 token 数。整个 `usage` 缺失则两者都不显示。 */
+export interface ArtifactUsage {
+  /** 输入 token 数 */
+  input: number
+  /** 输出 token 数 */
+  output: number
+  /** 折算金额（元）。`undefined` = 单价没配全，不是 0 元 */
+  cost?: number
+}
+
 export interface MarkdownView {
   id: string; transcriptId: string; content: string
   style: string; mode: string; version: number; createdAt: string
@@ -454,6 +467,9 @@ export interface MarkdownView {
    *  用于判定「你编辑期间有没有别的程序改过这个文件」。`undefined` = 后端没给
    *  （老后端 / 历史条目），此时保存不做校验。 */
   diskHash?: string
+  /** 这次生成的 token 用量与金额。`undefined` = 拿不到（历史产物 / 网关不回 usage），
+   *  自证条据此不显示用量标签。 */
+  usage?: ArtifactUsage
 }
 
 export interface ChatResult {

@@ -77,6 +77,7 @@ def artifact_meta(
     model: str = "",
     engine: str = "",
     params: dict | None = None,
+    usage: dict | None = None,
     source_refs: list[dict] | None = None,
 ) -> dict:
     """装配一份产物的自证头。
@@ -84,7 +85,7 @@ def artifact_meta(
     | 条 | 内容 | 来源 |
     |---|---|---|
     | ① 从哪来 | `source` | `doc_id`（= transcript id）+ 转录条目的 `sourceType` / `sourceUrl`（+ 合成文档的 `sourceRefs`） |
-    | ② 怎么来的 | `generated` | `model`（或 `engine`）+ `PROMPT_VERSION` + `params` + 时间 |
+    | ② 怎么来的 | `generated` | `model`（或 `engine`）+ `PROMPT_VERSION` + `params` + 时间 + `usage`（有才写）|
     | ③ 是什么 | `identity` | `mode`（version 见模块 docstring） |
     | ④ 可信度边界 | `trust` | **结构先留**：哪些是材料里说的、哪些是综合判断，需提示词侧配合标注 |
 
@@ -115,6 +116,11 @@ def artifact_meta(
         generated["model"] = model
     if engine:
         generated["engine"] = engine
+    # 这次生成的实际用量（`{"input", "output", "cost"?}`，见 `core/pricing.py`）。
+    # **空 dict 不写键**：网关不回 usage / 历史产物就是这么来的，写 `{}` 会让读方
+    # 以为「问了、答案是零」，而实际是「根本没问到」。
+    if usage:
+        generated["usage"] = dict(usage)
 
     return build_artifact_meta(
         kind,
@@ -136,7 +142,7 @@ def markdown_meta(mv: Any, tx: dict, *,
     的漂移是**静默**的：产物照样生成，只是离开 `.limo` 之后残缺（正是文档 §2 的现状）。
 
     `mv` 用鸭子类型标注（不 import `core.types`）：本函数只用到 `.mode` / `.style` /
-    `.transcript_id` / `.generation_model` 四个属性，为一个注解引入类型依赖不划算。
+    `.transcript_id` / `.generation_model` / `.usage` 五个属性，为一个注解引入类型依赖不划算。
 
     ⚠️ `generation_model` 由生成侧（`generator.py`）就地填——只有它和 `LLMService`
     知道实际用了哪个模型，落盘侧拿不到。
@@ -152,6 +158,7 @@ def markdown_meta(mv: Any, tx: dict, *,
         # 合成文档：把「`[文档 N]` 是哪篇」一并写进头（见 `source_refs_of`）。
         source_refs=source_refs_of(tx),
         model=getattr(mv, "generation_model", "") or "",
+        usage=getattr(mv, "usage", None) or None,
         params=compact_params(
             formats=list(formats or []),
             style=style,

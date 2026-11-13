@@ -112,10 +112,13 @@ class _FakeLLM:
     def __init__(self, supports: bool = True):
         self._supports = supports
         self.calls: list[tuple[str, str | None]] = []
-        # ⚠️ 替身必须与真身（`LLMService.model`）同步 —— `generator.py` 会把它写进
-        #    产物自证头的 `generated.model`，缺了这个属性就是 AttributeError。
-        #    这里只保证接口存在；meta 装配的正确性由 test_artifact_meta.py 负责。
+        # ⚠️ 替身必须与真身（`LLMService.model` / `.provider`）同步 —— `generator.py`
+        #    会把前两个写进产物自证头的 `generated.model`，并按 (`provider`, model)
+        #    去 `enabled_models` 查单价算 `usage.cost`，缺任一个就是 AttributeError。
+        #    这里只保证接口存在；meta 装配与金额换算的正确性由 test_artifact_meta.py /
+        #    test_usage_record.py 负责。
         self.model = "fake-model"
+        self.provider = "fake-provider"
 
     @property
     def supports_reasoning(self) -> bool:

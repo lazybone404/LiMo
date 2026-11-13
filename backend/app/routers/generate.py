@@ -26,6 +26,7 @@ from app.core.origin import ensure_trusted_request
 from app.core.reference_store import get_references
 from app.core import logging as log
 from app.core.model_resolver import resolve_llm_config, resolve_context_window
+from app.core.pricing import usage_record
 from app.core.provider_defaults import provider_requires_api_key
 from app.core.search import update_index
 from app.llm import LLMService, CancelledError
@@ -916,6 +917,9 @@ async def generate_stream(transcript_id: str, request: Request,
                 yield f"data: {json.dumps({'type': 'warning', 'kind': 'metadata_corrupt', 'message': '本文档的来源信息已损坏，来源清单不可用于核对'}, ensure_ascii=False)}\n\n"
 
             all_chunks: list[str] = []
+            # 单产物分支的用量（双产物那边在各 _run_product 里各自累计）。预置在这里
+            # 而不是 `try` 里：超时 / 取消（`except CancelledError`）两条路径也要读它。
+            single_usage: dict = {}
             # 联网检索的自证头字段（勾选了才有值）。两个分支（双产物 / 单产物）都要用，
             # 且两边各写一次初始化就得记得两处 —— 预置在这里，分支里只管赋值。
             web_param: dict | None = None
@@ -1008,28 +1012,35 @@ async def generate_stream(transcript_id: str, request: Request,
                 _notes_for_followup = ""
                 _queue: asyncio.Queue[dict] = asyncio.Queue()
 
-                async def _run_product(label: str, prompt: str, effort: str | None = None) -> tuple[list[str], bool, str | None]:
+                async def _run_product(label: str, prompt: str, effort: str | None = None) -> tuple[list[str], bool, str | None, dict]:
                     """单产物：最多 2 次尝试（首试 + 1 次重试），事件经 queue 汇合。
-                    返回 (chunks, cancelled, error_msg)。
+                    返回 (chunks, cancelled, error_msg, usage)。
 
                     effort：**已决策好的**思考强度（None = 不传参数），由 effort_for
-                    按产物名算出——本函数不认识档位表，也不该认识。"""
+                    按产物名算出——本函数不认识档位表，也不该认识。
+
+                    usage：`{"prompt_tokens", "completion_tokens"}`，**重试与续写时是
+                    累计值**（每次真实调用都花钱，只记最后一轮是少记）。"""
                     chunks: list[str] = []
                     err_msg: str | None = None
                     cancelled = False
+                    usage: dict = {}
                     # 静默期超时：按档位取（max 档思考更久）+ 直传时按原件解析耗时放宽
                     _dd = document is not None
                     chunk_timeout = chunk_timeout_for(effort, doc_direct=_dd)
                     if cancel_event and cancel_event.is_set():
                         cancelled = True
                         await _queue.put({"mode": label, "type": "cancelled", "saved_partial": False})
-                        return chunks, cancelled, None
+                        return chunks, cancelled, None, usage
 
                     async def _reasoning_cb(text: str):
                         # 思考链 → SSE 事件（前端 ProcessingPlaceholder 展示"模型思考中"）
                         await _queue.put({"mode": label, "type": "reasoning", "text": text})
 
                     for attempt in range(2):
+                        # 本轮的用量单独收，成功走完后再并入 `usage` —— 回调给的是
+                        # **这一次调用**的累计值，直接累加会把续写轮次重复计一遍。
+                        attempt_usage: dict = {}
                         try:
                             # 总超时按 formats 分档（_gen_timeout：勾选图表时放宽到
                             # _GEN_TIMEOUT_CHART）+ chunk 间隔超时按 effort 分档（150/180）：
@@ -1044,6 +1055,7 @@ async def generate_stream(transcript_id: str, request: Request,
                                         prompt, image_urls=image_urls, document=document,
                                         cancel_event=cancel_event,
                                         on_reasoning=_reasoning_cb,
+                                        on_usage=attempt_usage.update,
                                         reasoning_effort=effort,
                                     )
                                     while True:
@@ -1060,6 +1072,10 @@ async def generate_stream(transcript_id: str, request: Request,
                                             await _it.aclose()
                                         except Exception:
                                             pass
+                            # 本轮走完（正常结束 / 已拿到内容）→ 用量并入累计。
+                            # 空响应也合并：那一次调用照样烧了输入 token。
+                            for _k in ("prompt_tokens", "completion_tokens"):
+                                usage[_k] = usage.get(_k, 0) + attempt_usage.get(_k, 0)
                             if chunks:
                                 break  # 成功
                             # 空响应（LLM finish=stop 但 0 chars）→ 重试
@@ -1085,15 +1101,15 @@ async def generate_stream(transcript_id: str, request: Request,
                                 break  # 已有部分内容，不重试
                     if cancelled:
                         await _queue.put({"mode": label, "type": "cancelled", "saved_partial": bool(chunks)})
-                        return chunks, True, None
+                        return chunks, True, None, usage
                     if err_msg:
                         # P0-9：per-product 失败改发 warning——前端 onWarning 只标 partial + toast，
                         # 不清双产物 buffer（原 error 事件 → onError 清空两路 + failTask，一半已保存被误报整体失败）
                         await _queue.put({"mode": label, "type": "warning",
                                           "message": f"{label} 生成失败: {err_msg}"})
-                        return chunks, False, err_msg
+                        return chunks, False, err_msg, usage
                     await _queue.put({"mode": label, "type": "done"})
-                    return chunks, False, None
+                    return chunks, False, None, usage
 
                 # ⚠️ effort 按**产物名**传，不按 a/b 位置传：本列表与下方解包同为
                 # [notes, polished] 顺序，而 generator.generate_both 的 a/b 是反的
@@ -1118,8 +1134,9 @@ async def generate_stream(transcript_id: str, request: Request,
                     yield f"data: {json.dumps(_evt, ensure_ascii=False)}\n\n"
                 # gather 返回顺序 = 任务创建顺序（_tasks[0]=notes, _tasks[1]=polished）。
                 # 解包必须同序，否则 notes/polished 内容互换（此前解包反了 → 产物写反）
-                (notes_chunks, notes_cancelled, notes_error), \
-                    (polished_chunks, polished_cancelled, polished_error) = await asyncio.gather(*_tasks)
+                (notes_chunks, notes_cancelled, notes_error, notes_tokens), \
+                    (polished_chunks, polished_cancelled, polished_error, polished_tokens) = \
+                    await asyncio.gather(*_tasks)
                 was_cancelled = polished_cancelled or notes_cancelled
 
                 # 保存双产物：status 必须**逐路**判定（P1-8）
@@ -1145,6 +1162,10 @@ async def generate_stream(transcript_id: str, request: Request,
                         transcript_id=transcript_id, content=polished_content,
                         mode=GenerateMode.POLISHED, style=Style(style), status=polished_status,
                         generation_model=llm.model,
+                        usage=usage_record(
+                            polished_tokens.get("prompt_tokens"),
+                            polished_tokens.get("completion_tokens"),
+                            config=config, provider=llm.provider, model=llm.model),
                     )
                     store.save_markdown(mv, file_meta=markdown_meta(
                         mv, tx, formats=format_list, reasoning_effort=reasoning_effort))
@@ -1160,6 +1181,10 @@ async def generate_stream(transcript_id: str, request: Request,
                         transcript_id=transcript_id, content=notes_content,
                         mode=GenerateMode.NOTES, style=Style(style), status=notes_status,
                         generation_model=llm.model,
+                        usage=usage_record(
+                            notes_tokens.get("prompt_tokens"),
+                            notes_tokens.get("completion_tokens"),
+                            config=config, provider=llm.provider, model=llm.model),
                     )
                     store.save_markdown(mv, file_meta=markdown_meta(
                         mv, tx, formats=format_list, reasoning_effort=reasoning_effort,
@@ -1317,6 +1342,7 @@ async def generate_stream(transcript_id: str, request: Request,
                             prompt, image_urls=image_urls, document=document,
                             cancel_event=cancel_event,
                             on_reasoning=_reasoning_cb,
+                            on_usage=single_usage.update,
                             reasoning_effort=effort,
                         )
                         while True:
@@ -1355,6 +1381,10 @@ async def generate_stream(transcript_id: str, request: Request,
                         transcript_id=transcript_id, content=content,
                         mode=mv_mode, style=Style(style), status="partial",
                         generation_model=llm.model,
+                        usage=usage_record(
+                            single_usage.get("prompt_tokens"),
+                            single_usage.get("completion_tokens"),
+                            config=config, provider=llm.provider, model=llm.model),
                     )
                     store.save_markdown(mv, file_meta=markdown_meta(
                         mv, tx, formats=format_list, reasoning_effort=reasoning_effort))
@@ -1385,6 +1415,10 @@ async def generate_stream(transcript_id: str, request: Request,
                 transcript_id=transcript_id, content=content,
                 mode=mv_mode, style=Style(style),
                 generation_model=llm.model,
+                usage=usage_record(
+                    single_usage.get("prompt_tokens"),
+                    single_usage.get("completion_tokens"),
+                    config=config, provider=llm.provider, model=llm.model),
             )
             if partial_content:
                 # 续写完成 → 合并内容保存，标记 complete
@@ -1432,6 +1466,10 @@ async def generate_stream(transcript_id: str, request: Request,
                     transcript_id=transcript_id, content=content,
                     mode=mv_mode, style=Style(style), status="partial",
                     generation_model=llm.model,
+                    usage=usage_record(
+                        single_usage.get("prompt_tokens"),
+                        single_usage.get("completion_tokens"),
+                        config=config, provider=llm.provider, model=llm.model),
                 )
                 store.save_markdown(mv, file_meta=markdown_meta(
                     mv, tx, formats=format_list, reasoning_effort=reasoning_effort))

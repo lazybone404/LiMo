@@ -13,6 +13,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
+from app.core.pricing import usage_record
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.generation.effort import effort_for
 from app.generation.prompts import coerce_style
@@ -135,6 +136,16 @@ class Generator:
 
     # ── 公开接口 ──
 
+    def _usage_of(self, tokens: dict) -> dict:
+        """LLMService 回调的原始 token 数 → 自证头的 `generated.usage`（含金额）。
+
+        单价从 `self.config` 的已启用模型条目查（用户填的每百万 token 价），查不到
+        就没有 `cost` 键——**不拿 0 冒充「不花钱」**（见 `core/pricing.py`）。
+        """
+        return usage_record(
+            tokens.get("prompt_tokens"), tokens.get("completion_tokens"),
+            config=self.config, provider=self._llm.provider, model=self._llm.model)
+
     async def generate(
         self,
         raw_text: str,
@@ -195,12 +206,14 @@ class Generator:
         logger.info("Generating %s...", mode)
         # 档位按产物名决策（mode 即 product：notes/polished），与流式路径同源
         effort = effort_for(mode, reasoning_effort, self._llm.supports_reasoning)
+        tokens: dict = {}
         try:
             content = await self._llm.call(
                 prompt, image_urls=image_urls, document=document,
                 max_tokens=MAX_TOKENS,
                 temperature=0.7, max_continuations=3,
                 cancel_event=cancel_event, reasoning_effort=effort,
+                on_usage=tokens.update,
             )
             content = _post_process_content_markers(content)
             if formats and "screenshot" in formats:
@@ -224,6 +237,7 @@ class Generator:
             # 此前该字段声明了却从无赋值（死字段），文档 §2「markdown 条目没有生成模型」
             # 说的就是它。
             generation_model=self._llm.model,
+            usage=self._usage_of(tokens),
         )
 
     async def generate_both(
@@ -294,12 +308,13 @@ class Generator:
             # 而这条注释却写着「与流式路径一致」，于是它既描述不了流式（没有那回事），
             # 又让人不去检查流式（看起来已经一致）。
             effort = effort_for("notes", reasoning_effort, self._llm.supports_reasoning)
+            tokens: dict = {}
             try:
                 content = await self._llm.call(
                     prompt_a, image_urls=image_urls, document=document,
                     max_tokens=MAX_TOKENS, temperature=0.7,
                     max_continuations=3, cancel_event=cancel_event,
-                    reasoning_effort=effort,
+                    reasoning_effort=effort, on_usage=tokens.update,
                 )
                 content = _post_process_content_markers(content)
             finally:
@@ -310,6 +325,7 @@ class Generator:
                 style=_coerce_style(style),
                 mode=GenerateMode.NOTES,
                 generation_model=self._llm.model,
+                usage=self._usage_of(tokens),
             )
             polished = MarkdownView(
                 id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
@@ -317,6 +333,7 @@ class Generator:
                 style=_coerce_style(style),
                 mode=GenerateMode.POLISHED,
                 generation_model=self._llm.model,
+                usage=self._usage_of(tokens),
             )
             return polished, mv
 
@@ -327,18 +344,23 @@ class Generator:
         _supports_reasoning = self._llm.supports_reasoning
         effort_a = effort_for("polished", reasoning_effort, _supports_reasoning)
         effort_b = effort_for("notes", reasoning_effort, _supports_reasoning)
+        # ⚠️ 两个**独立**的累加器：两路并发跑在同一个 LLMService 实例上，共用一个
+        # dict 会把 A 的用量记到 B 头上（而两边都「有数字」，不比没有更容易发现）。
+        tokens_a: dict = {}
+        tokens_b: dict = {}
         try:
             task_a = self._llm.call(
                 prompt_a, image_urls=image_urls, document=document,
                 max_tokens=MAX_TOKENS,
                 temperature=0.7, max_continuations=3,
                 cancel_event=cancel_event, reasoning_effort=effort_a,
+                on_usage=tokens_a.update,
             )
             task_b = self._llm.call(
                 prompt_b, image_urls=image_urls, document=document,
                 max_tokens=MAX_TOKENS, temperature=0.7,
                 max_continuations=3, cancel_event=cancel_event,
-                reasoning_effort=effort_b,
+                reasoning_effort=effort_b, on_usage=tokens_b.update,
             )
             # P0-4：gather 默认遇单路异常立即传播 → 另一路成孤儿 task（烧 token 结果被丢弃 +
             # unhandled exception），finally 的 _cleanup_video 也可能在另一路运行时删视频。
@@ -370,6 +392,7 @@ class Generator:
             style=_coerce_style(style),
             mode=GenerateMode.POLISHED,
             generation_model=self._llm.model,
+            usage=self._usage_of(tokens_a),
         )
         notes = MarkdownView(
             id=f"md_{uuid.uuid4().hex[:12]}", transcript_id="",
@@ -377,6 +400,7 @@ class Generator:
             style=_coerce_style(style),
             mode=GenerateMode.NOTES,
             generation_model=self._llm.model,
+            usage=self._usage_of(tokens_b),
         )
         return polished, notes
 

@@ -40,6 +40,15 @@ DISABLE_THINKING_EXTRA: dict = {"thinking": {"type": "disabled"}}
 # 思考链回调签名：async (text: str) -> None
 AwaitableCallable = Callable[[str], Awaitable[None]]
 
+# 用量回调签名：sync (usage: dict) -> None
+#
+# ⚠️ 是**同步**回调（与 on_reasoning 的 async 不同）：调用点只做 `dict.update`，
+# 没有 await 的必要；而同步回调可以在生成器的收尾处无条件调用，包括事件循环正在
+# 退出的路径（`aclose()` 触发的 finally），async 回调在那里有「无法 await」的风险。
+#
+# 形状：`{"prompt_tokens": int, "completion_tokens": int}`，多轮续写时是**各轮之和**。
+UsageCallback = Callable[[dict], None]
+
 
 class LLMService:
     """统一的 LLM 通信层。构造时完成模型解析，后续只用 .stream() / .call()。
@@ -174,6 +183,7 @@ class LLMService:
         max_continuations: int = 3,
         cancel_event: asyncio.Event | None = None,
         on_reasoning: AwaitableCallable | None = None,
+        on_usage: UsageCallback | None = None,
         reasoning_effort: str | None = None,
         disable_thinking: bool = False,
     ) -> AsyncGenerator[str, None]:
@@ -183,6 +193,13 @@ class LLMService:
 
         on_reasoning：思考模型（deepseek-v4 等）的 reasoning_content 回调——
         推理链不混入正文，单独逐段回调，供前端展示"模型思考中"。
+
+        on_usage：**传了才向服务端要用量**（`stream_options.include_usage`），流结束时
+        以 `{"prompt_tokens", "completion_tokens"}` 回调一次，续写时是各轮之和。不传则
+        请求形状与从前逐字节相同——这是刻意的：`include_usage` 少数兼容网关不认，
+        不该让每一个调用点都冒着被拒的风险去换一份没人看的用量。
+        ⚠️ 回调在**每轮流结束后**触发一次（usage chunk 只在流末尾到），取消时可能一次
+        都不触发——那不是漏记，是服务端确实没给。
 
         reasoning_effort：思考强度（'low'/'high'/'max'，deepseek 专用）。
         仅对支持该参数的模型生效（qwen 等忽略 extra_body 未知字段）。
@@ -243,6 +260,8 @@ class LLMService:
                         self.provider, self.model, max_tokens)
 
         # ── 多轮续写循环 ──
+        # 用量累加器：每轮的 usage chunk（流末尾那一个）在这里汇总，回调时是总和。
+        usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
         for round_idx in range(max_continuations + 1):
             # 取消检查
             if cancel_event and cancel_event.is_set():
@@ -253,26 +272,42 @@ class LLMService:
             finish_reason = None
 
             for attempt in range(_RETRY_COUNT + 1):
+                _extra: dict = {}
+                if disable_thinking:
+                    # 关闭思考（DeepSeek V4 系列默认开启）——形状与理由见模块级
+                    # DISABLE_THINKING_EXTRA（追问那条直调 SDK 的路径共用同一份）。
+                    # ⚠️ 与 reasoning_effort **互斥**，故 elif：同传会被服务端校验拒绝。
+                    _extra.update(DISABLE_THINKING_EXTRA)
+                elif reasoning_effort:
+                    # deepseek-v4 思考强度（extra_body 兼容 OpenAI SDK 未声明参数）
+                    _extra["reasoning_effort"] = reasoning_effort
+                _create_kwargs: dict = {
+                    "model": self.model,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "stream": True,
+                    "extra_body": _extra or None,
+                }
+                if on_usage is not None:
+                    # 只要用量的调用点才带这个字段（理由见 docstring）。
+                    _create_kwargs["stream_options"] = {"include_usage": True}
                 try:
-                    _extra: dict = {}
-                    if disable_thinking:
-                        # 关闭思考（DeepSeek V4 系列默认开启）——形状与理由见模块级
-                        # DISABLE_THINKING_EXTRA（追问那条直调 SDK 的路径共用同一份）。
-                        # ⚠️ 与 reasoning_effort **互斥**，故 elif：同传会被服务端校验拒绝。
-                        _extra.update(DISABLE_THINKING_EXTRA)
-                    elif reasoning_effort:
-                        # deepseek-v4 思考强度（extra_body 兼容 OpenAI SDK 未声明参数）
-                        _extra["reasoning_effort"] = reasoning_effort
-                    stream = await self.client.chat.completions.create(
-                        model=self.model,
-                        messages=messages,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        stream=True,
-                        extra_body=_extra or None,
-                    )
+                    stream = await self.client.chat.completions.create(**_create_kwargs)
                     break
                 except Exception as e:
+                    if on_usage is not None and "stream_options" in _create_kwargs:
+                        # 少数兼容网关不认 stream_options 并直接 4xx。去掉它立刻重试
+                        # 一次：损失的是用量记录，不是生成本身——不能因为「想记一下
+                        # 花了多少」而让整次生成失败。之后照常按原有重试逻辑走。
+                        logger.warning(
+                            "LLM 流式带 stream_options 失败，去掉后重试: %s", str(e)[:120])
+                        _create_kwargs.pop("stream_options", None)
+                        try:
+                            stream = await self.client.chat.completions.create(**_create_kwargs)
+                            break
+                        except Exception as e2:
+                            e = e2
                     if attempt < _RETRY_COUNT:
                         # P1-14：重试退避期间检查取消——用户取消时不再多等 1~3s 退避
                         if cancel_event and cancel_event.is_set():
@@ -300,6 +335,13 @@ class LLMService:
                                round_idx, sum(len(p) for p in round_parts))
                     raise CancelledError()
 
+                # usage 只出现在流末尾那个 chunk 上，而它**没有 choices** —— 必须在
+                # 下面那条 `continue` 之前取，否则用量永远读不到且不报错。
+                _u = getattr(chunk, "usage", None)
+                if _u is not None:
+                    usage_total["prompt_tokens"] += getattr(_u, "prompt_tokens", 0) or 0
+                    usage_total["completion_tokens"] += getattr(_u, "completion_tokens", 0) or 0
+
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]
@@ -321,6 +363,11 @@ class LLMService:
             total_chars = sum(len(p) for p in round_parts)
             logger.info("LLM 流式响应: %d chars, model=%s, finish=%s, round=%d",
                        total_chars, self.model, finish_reason, round_idx)
+            # 本轮流已正常结束（usage chunk 已到），把**累计值**交出去：续写时下一轮
+            # 还会再回调一次，调用方总是拿最后一次的值即为总和，不必自己相加。
+            if on_usage is not None and (usage_total["prompt_tokens"]
+                                         or usage_total["completion_tokens"]):
+                on_usage(dict(usage_total))
 
             # 续写判断
             if finish_reason != "length" or round_idx >= max_continuations:
@@ -340,6 +387,7 @@ class LLMService:
         temperature: float = 0.1,
         max_continuations: int = 0,
         cancel_event: asyncio.Event | None = None,
+        on_usage: UsageCallback | None = None,
         reasoning_effort: str | None = None,
         disable_thinking: bool = False,
     ) -> str:
@@ -349,6 +397,7 @@ class LLMService:
         reasoning_effort：思考强度透传（参考文件摘要等忠实压缩类任务传 'low'，
         避开 DeepSeek 思考模式默认 effort=high 的数十秒静默期）。
         disable_thinking：**彻底关闭思考**（结构化抽取类任务，见 `stream()` 的同名参数）。
+        on_usage：用量回调（形状与触发时机见 `stream()` 的同名参数）。
         """
         parts: list[str] = []
         async for chunk in self.stream(
@@ -359,6 +408,7 @@ class LLMService:
             temperature=temperature,
             max_continuations=max_continuations,
             cancel_event=cancel_event,
+            on_usage=on_usage,
             reasoning_effort=reasoning_effort,
             disable_thinking=disable_thinking,
         ):
