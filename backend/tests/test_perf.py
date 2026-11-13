@@ -239,3 +239,92 @@ def test_噪音路径不产生打点(tmp_path):
     for p in ("/health", "/api/health", "/static/x.js", "/api/assets/a.png"):
         main._log_request(_fake_request(p, None), 200, 1.0)
     assert perf.snapshot()["groups"] == []
+
+
+# ── 前端回报端点（`POST /api/perf/client`，2026-11-13） ──
+#
+# 它是唯一一个「打点名与数值都由浏览器决定」的入口，故三条判据都关于**收窄**：
+# 名字走白名单、数值有界、来源可信。放宽任意一条的失效形态都是静默的 ——
+# 分组键被写满 `_MAX_GROUPS`(200) 之后，`record` 直接 return，**后端自己的启动打点
+# 从此全部丢失**，而 perf.log 里只少了行、不报错。
+
+class _FakeJsonRequest:
+    """只实现端点用到的那两样：`headers` 与 `await .json()`。"""
+
+    def __init__(self, body, headers=None):
+        self._body = body
+        self.headers = headers if headers is not None else {"x-limo-client": "1"}
+
+    async def json(self):
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self._body
+
+
+def _post_perf(body, headers=None):
+    import asyncio
+    import main
+    return asyncio.run(main.record_client_perf(_FakeJsonRequest(body, headers)))
+
+
+def test_前端打点落进同一份统计(tmp_path):
+    perf.setup(tmp_path)
+    assert _post_perf({"name": "startup.frontend_interactive", "ms": 1234.7}) == {"ok": True}
+    g = {x["name"]: x for x in perf.snapshot()["groups"]}
+    assert g["startup.frontend_interactive"]["count"] == 1
+    assert g["startup.frontend_interactive"]["max"] == 1234.7   # 一条不少、不取整到秒
+
+
+def test_前端打点落盘时带来源与后端已运行时长(tmp_path):
+    """`backendUpMs` 是核对「这条前端数据与后端同一次启动」的锚点。"""
+    import json
+    perf.setup(tmp_path)
+    _post_perf({"name": "startup.frontend_interactive", "ms": 900})
+    line = [ln for ln in (tmp_path / "perf.log").read_text(encoding="utf-8").splitlines() if ln.strip()][-1]
+    rec = json.loads(line)
+    assert rec["name"] == "startup.frontend_interactive"
+    assert rec["source"] == "frontend"
+    assert isinstance(rec["backendUpMs"], (int, float)) and rec["backendUpMs"] >= 0
+
+
+@pytest.mark.parametrize("body", [
+    {"name": "随便起的名字", "ms": 10},     # 白名单外
+    {"name": "", "ms": 10},
+    {"ms": 10},
+])
+def test_未知打点名被拒绝且不写统计(tmp_path, body):
+    from app.core.errors import AppError
+    perf.setup(tmp_path)
+    with pytest.raises(AppError) as ei:
+        _post_perf(body)
+    assert ei.value.code == "BAD_PERF_NAME"
+    assert perf.snapshot()["groups"] == []       # 拒绝必须是**一条都没记**
+
+
+@pytest.mark.parametrize("ms", ["abc", None, -1, 600_001])
+def test_ms非数字或越界被拒绝(tmp_path, ms):
+    from app.core.errors import AppError
+    perf.setup(tmp_path)
+    with pytest.raises(AppError) as ei:
+        _post_perf({"name": "startup.frontend_interactive", "ms": ms})
+    assert ei.value.code == "BAD_PERF_MS"
+    assert perf.snapshot()["groups"] == []
+
+
+def test_请求体不是JSON被拒绝(tmp_path):
+    from app.core.errors import AppError
+    perf.setup(tmp_path)
+    with pytest.raises(AppError) as ei:
+        _post_perf(ValueError("not json"))
+    assert ei.value.code == "BAD_PERF_BODY"
+
+
+def test_非可信来源被拒绝(tmp_path):
+    """外站网页不得往 perf.log 里写东西（与「有副作用的 GET」同一条守卫）。"""
+    from app.core.errors import AppError
+    perf.setup(tmp_path)
+    with pytest.raises(AppError) as ei:
+        _post_perf({"name": "startup.frontend_interactive", "ms": 10},
+                   headers={"origin": "https://evil.example.com"})
+    assert ei.value.code == "UNTRUSTED_ORIGIN"
+    assert perf.snapshot()["groups"] == []

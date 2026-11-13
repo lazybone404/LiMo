@@ -17,6 +17,7 @@ import { isDesktop } from './api/update'
 import { getUpdatePrefs, markNotified, shouldAutoCheck } from './lib/update-prefs'
 import { startHealthPoll } from './lib/health'
 import { toMarkdownMeta } from './lib/markdownMeta'
+import { reportFirstInteractive } from './lib/bootTiming'
 import {
   installWarningText, isInstallWarningDismissed, dismissInstallWarning,
   type InstallPathWarning,
@@ -172,6 +173,15 @@ export default function App() {
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
   }, [immersive])
+
+  // 首屏可交互打点（启动链最后一段，判据与失败语义见 `lib/bootTiming.ts`）。
+  // ⚠️ 三个条件缺一不可：后端就绪（否则界面还是加载屏）、没有失败屏（那上面没有主界面）、
+  // 首次向导已关（它是全屏遮罩，活动栏点不到）。
+  // ⚠️ 依赖里带 `showSetup` 是刻意的：向导关掉的那一刻本 effect 重跑，才量得到真正的首屏。
+  useEffect(() => {
+    if (!backendReady || startupFailure || showSetup) return
+    reportFirstInteractive()
+  }, [backendReady, startupFailure, showSetup])
 
   // 刷新 capabilities（引擎下拉/场景标签/文件类型的数据源）。
   // checkInterrupted：仅初始化时检查未完成生成标记，配置刷新不重复提示

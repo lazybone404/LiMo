@@ -450,6 +450,14 @@ class ExecutionGuard:
      → uvicorn :7413
 ```
 
+**启动耗时打点**（`GET /api/perf` 看进程内分位数，趋势读 `{data_dir}/perf.log`）：
+后端四段 `startup.import` / `startup.engines` / `startup.search_index` / 每请求一条；
+最后一段「`/health` 200 → 首屏可点」只有前端量得到，由 `frontend/src/lib/bootTiming.ts`
+在命中测试通过后 `POST /api/perf/client`（打点名走白名单 `_CLIENT_PERF_NAMES`，白名单外
+一律 400 —— 放任自由名字会占满 `_MAX_GROUPS`，此后后端自己的打点静默丢弃）。
+⚠️ **判据是「活动栏按钮中心点命中它自己」而不是 `DOMContentLoaded`**：加载屏与首次向导
+都是全屏遮罩，`DOMContentLoaded` 之后很久界面仍然点不动。
+
 ### Cookie 解析（core/cookie_parser.py）
 
 平台认证 Cookie 注入：解析 Netscape 格式/JSON/header 字符串三种输入，B 站提取 5 字段、YouTube 提取 7 字段，`_engine_config.cookies` 供下载器/适配器使用。

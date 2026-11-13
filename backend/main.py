@@ -152,6 +152,7 @@ def _log_request(request, status: int, duration_ms: float, response_headers=None
 # ⚠️ 正则住在 `app/core/origin.py`（与「有副作用的 GET」守卫**共用同一份**）：
 # 两处各写一份时，改一处漏一处的表现是「CORS 放行了、守卫拦了」或反过来。
 from app.core.origin import ALLOWED_ORIGIN_RE as _CORS_ALLOWED_ORIGIN_RE  # noqa: E402
+from app.core.origin import ensure_trusted_request  # noqa: E402
 
 app.add_middleware(
     CORSMiddleware,
@@ -550,6 +551,54 @@ async def view_perf():
     data = perf.snapshot()
     data["startedAt"] = getattr(app.state, "started_at", None)
     return data
+
+
+#: 前端可以回报的打点名 —— **白名单，不是自由字段**。
+#:
+#: 为什么要有白名单：`POST /api/perf/client` 是唯一一个由浏览器决定打点名与数值的
+#: 入口。自由字段等于把 perf.log 的分组键交给调用方 —— 一个写错的循环就能把
+#: `_MAX_GROUPS`（200）占满，此后后端自己的启动打点全部**静默丢弃**（`record` 在
+#: 组数超限时直接 return，不报错）。加新点名时改这里，不要放开成任意字符串。
+_CLIENT_PERF_NAMES = {"startup.frontend_interactive"}
+
+
+@app.post("/api/perf/client")
+async def record_client_perf(request: Request):
+    """前端回报一个打点（目前只有「首屏可交互」），落进**同一份** perf.log。
+
+    为什么要这个端点：`/health` 200 之后到用户能点界面之间还有一段，那段只存在于
+    前端（React 挂载、布局、后端就绪后的首屏渲染），后端量不到。判据与测量方式见
+    `frontend/src/lib/bootTiming.ts`（**不是** `DOMContentLoaded` —— 那时界面还
+    可能被加载屏盖着、按钮点了没反应）。
+
+    落盘统一走 `perf.record`：与后端那几段（`startup.import` / `startup.engines` /
+    `startup.search_index`）住同一份 JSONL，看趋势时不必另开一个文件对时间。
+    ⚠️ 附带 `backendUpMs`（后端自己从 boot 到收到这条回报的时长）：两边的时钟
+    不同源，这个字段是核对「前端那条数是不是与后端同一次启动」的锚点。
+    """
+    ensure_trusted_request(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise AppError("BAD_PERF_BODY", "打点请求体不是合法 JSON", status_code=400)
+    if not isinstance(body, dict):
+        raise AppError("BAD_PERF_BODY", "打点请求体必须是对象", status_code=400)
+
+    name = str(body.get("name") or "")
+    if name not in _CLIENT_PERF_NAMES:
+        # 不回显调用方给的名字 —— 那会把任意字符串写进日志
+        raise AppError("BAD_PERF_NAME", "未知的打点名", status_code=400)
+    try:
+        ms = float(body.get("ms"))
+    except (TypeError, ValueError):
+        raise AppError("BAD_PERF_MS", "ms 必须是数字", status_code=400)
+    # 负值只可能是前端时钟接错；上限 10 分钟 —— 再慢也不是「首屏」了，是用户没关过页面
+    if not (0 <= ms <= 600_000):
+        raise AppError("BAD_PERF_MS", "ms 超出合理范围", status_code=400)
+
+    perf.record(name, round(ms, 1), source="frontend",
+                backendUpMs=round((_time.perf_counter() - _BOOT_T0) * 1000, 1))
+    return {"ok": True}
 
 
 @app.get("/api/logs")
