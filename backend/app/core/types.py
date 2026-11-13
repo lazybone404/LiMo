@@ -37,6 +37,10 @@ class InputType(StrEnum):
 
 class Style(StrEnum):
     PLAIN = "plain"
+    # `factual` = 2026-11-13 加，与 `plain` 正交：plain 管**好读**（短句为主、术语
+    # 当场解释、不硬凑结构），factual 管**写得准**（不写空话、不写假话、不设理解
+    # 障碍）。两者不互斥也不互相覆盖，用户可以只选一个，故各自成一档。
+    FACTUAL = "factual"
     MINIMAL = "minimal"
     DETAILED = "detailed"
     ACADEMIC = "academic"

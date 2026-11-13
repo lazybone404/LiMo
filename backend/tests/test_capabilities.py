@@ -157,6 +157,29 @@ def test_dimension_presets_are_copies():
     assert _dimension_presets()[0]["dimensions"] == DIMENSION_PRESETS[ps[0]["key"]]
 
 
+def test_style_labels_cover_every_available_key():
+    """每个可能出现在按钮组里的风格 key 都必须有中文标签。
+
+    `_STYLE_LABELS` 是手写表，三张 MAP 加档时它不会自动跟。漏改不报错，只是那个
+    按钮显示成英文 key（`GenPanel` 用 `styleLabels[s] || s`）—— 与「后端加了一档，
+    前端看不到」是同一个病，症状反过来。
+
+    覆盖的是**三张表加 `none` 的并集**，不是只查 styles：文档与 Excel 各有自己的表，
+    只查一张时漏掉的 key 恰好只住在另一张表里。
+    """
+    from app.routers.capabilities import _STYLE_LABELS
+    from app.generation.prompts import VIDEO_NOTE_STYLES, DOC_NOTE_STYLES
+    from app.generation.prompt import EXCEL_STYLE_MAP
+
+    available = set(VIDEO_NOTE_STYLES) | set(DOC_NOTE_STYLES) | set(EXCEL_STYLE_MAP) | {"none"}
+    missing = sorted(available - set(_STYLE_LABELS))
+    assert not missing, f"这些风格 key 没有中文标签，按钮会显示成英文：{missing}"
+    assert all(v.strip() for v in _STYLE_LABELS.values()), "标签不得为空串"
+
+    # 负向对照：删掉任一标签后判据必须变红，否则这条断言只是恒真。
+    assert available - (set(_STYLE_LABELS) - {"plain"}) == {"plain"}
+
+
 if __name__ == "__main__":
     import traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

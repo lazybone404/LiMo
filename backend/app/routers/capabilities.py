@@ -225,6 +225,24 @@ def _scan_interrupted_generations(config: dict) -> list[dict]:
     return results
 
 
+# 风格键 → 中文按钮标签。**手写**，不会随三张 MAP（styles/docStyles/excelStyles）
+# 自动更新：新增风格档时必须同时改这里，否则按钮标签静默退化成英文 key
+# （`GenPanel` 用的是 `styleLabels[s] || s`）。`test_capabilities.py` 有守卫钉住
+# 「每个可用 key 都有标签」，漏改会让测试红，而不是等用户看见 `task_oriented`。
+_STYLE_LABELS: dict[str, str] = {
+    "none": "无",
+    # `plain` = 2026-10-05 起的全局默认档（Excel 除外，见 EXCEL_STYLE_MAP）
+    "plain": "通俗",
+    # `factual` 与 `plain` 正交：通俗管好读，平实管不写空话与假话（2026-11-13 加）
+    "factual": "平实",
+    "minimal": "精简", "detailed": "全文精要", "academic": "学术", "life": "生活",
+    "tutorial": "教程", "xiaohongshu": "小红书", "business": "商务",
+    "meeting": "会议纪要",
+    "task_oriented": "任务",
+    "imrad": "IMRaD 精读",
+}
+
+
 @router.get("/capabilities")
 async def capabilities(config=Depends(get_config)):
     has_dashscope = bool(config.get("cloud", {}).get("dashscope", ""))
@@ -402,20 +420,8 @@ async def capabilities(config=Depends(get_config)):
         "scenarioLabels": scenario_labels,
         # 引擎能力位 → 中文标签（取自 core/registry，前端 EngineSelect 消费）
         "engineLabels": ENGINE_CAPABILITY_LABELS,
-        # ⚠️ 这个 dict 是**手写**的，不会随三张 MAP（styles/docStyles/excelStyles）
-        # 自动更新——新增风格档时**必须同时改这里**，否则按钮标签静默退化成
-        # 英文 key（`GenPanel` 用 `styleLabels[s] || s`）。pi-docs 方案曾误以为
-        # 「三张 MAP 会自动带出」，实际带出的只是 key 列表，标签得手写。
-        "styleLabels": {
-            "none": "无",
-            # `plain` = 2026-10-05 起的全局默认档（Excel 除外，见 EXCEL_STYLE_MAP）
-            "plain": "通俗",
-            "minimal": "精简", "detailed": "全文精要", "academic": "学术", "life": "生活",
-            "tutorial": "教程", "xiaohongshu": "小红书", "business": "商务",
-            "meeting": "会议纪要",
-            "task_oriented": "任务",
-            "imrad": "IMRaD 精读",
-        },
+        # 手写表与可用 key 的一致性由 `test_capabilities.py` 守卫（见常量定义处）
+        "styleLabels": _STYLE_LABELS,
         # 多篇合成的对比维度预设（前端对话框「高级」区下拉 + 维度 textarea 预填）
         # ⚠️ 第一项即默认选中项（前端取 [0]）——顺序由 synthesis 侧保证。
         "dimensionPresets": _dimension_presets(),
