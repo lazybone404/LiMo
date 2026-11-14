@@ -553,7 +553,7 @@ export function ProviderSettings() {
                     </button>
                   </div>
                 )}
-                {selectedEngineId !== 'bcut' && selectedEngineId !== 'dashscope' && selectedEngineId !== 'doc-local' && (
+                {!selEngine.builtin && (
                   <button onClick={() => handleDeleteEngineProv(selectedEngineId)}
                     className="flex items-center gap-1 text-[11px] text-error hover:underline"><Trash2 size={11} />删除</button>
                 )}

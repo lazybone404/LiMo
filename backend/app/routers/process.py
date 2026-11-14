@@ -8,7 +8,6 @@
 """
 import asyncio
 import base64
-import copy
 import json
 import uuid
 from pathlib import Path
@@ -20,6 +19,7 @@ from app.core.errors import AppError, TranscribeError
 from app.core import logging as log
 
 from app.core.registry import EngineRegistry
+from app.engines.credentials import apply_provider_credentials
 from app.core.config import build_engine_models
 from app.core.provider_defaults import provider_requires_api_key
 from app.core.dependencies import get_store, get_config, get_guard
@@ -194,7 +194,6 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
             else:
                 # ── Engine 回退（LLM 不可用 → 无条件回退 OCR 引擎；不再有引擎降级链） ──
                 engine_models = build_engine_models(config)
-                engine_providers = config.get("engine_providers", [])
                 bindings = config.get("engine_bindings", {})
 
                 model_ids = bindings.get("ocr", [])
@@ -238,23 +237,13 @@ async def process_document(transcript_id: str, data: ProcessRequest, request: Re
                             log.info("Engine 跳过: 不支持该 mode", engine=eng_name, mode=mode)
                             continue
 
-                    api_key = ""
-                    base_url = ""
-                    for ep in engine_providers:
-                        if ep.get("id") == (provider_id or eng_name):
-                            api_key = ep.get("api_key", "")
-                            base_url = ep.get("base_url", "")
-                            break
-
-                    engine = copy.copy(engine)
-                    if hasattr(engine, 'api_key') and not engine.api_key:
-                        engine.api_key = api_key
-                    if hasattr(engine, 'base_url') and not engine.base_url:
-                        engine.base_url = base_url
+                    # 凭据注入的唯一入口（返回副本，不动注册表里的单例）
+                    engine = apply_provider_credentials(
+                        engine, config, provider_id or eng_name)
 
                     tried.append(eng_name)
                     log.info("Engine 尝试", engine=eng_name, mode=mode,
-                             key="configured" if api_key else "MISSING")
+                             key="configured" if getattr(engine, "api_key", "") else "MISSING")
 
                     try:
                         result = engine.run(file_path, model_name=model_name or "", mode=mode)

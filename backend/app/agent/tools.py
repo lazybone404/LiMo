@@ -19,6 +19,7 @@ import urllib.parse
 
 import httpx
 
+from app.core.deepseek_api import TOOL_FETCH_URL, TOOL_SEARCH_URL, deepseek_api_key
 from app.core.net import proxy_for
 
 logger = logging.getLogger(__name__)
@@ -146,26 +147,17 @@ def _get_config() -> dict:
 #: ⚠️ **刻意不从 `providers[].base_url` 拼**：那是 `chat/completions` 的根，而这两条是
 #: 独立的工具端点（同一把 Key、不同的服务）。用户自建的 OpenAI 兼容代理通常只转发
 #: chat，拿它的根去拼 `/tools/search` 会 404；要过代理请配 `config.fetch.proxy`。
+#: 端点常量与 Key 回退链住在 `core/deepseek_api.py`（OCR / ASR / Files 共用同一份）。
 _TAVILY_URL = "https://api.tavily.com/search"
-_DEEPSEEK_SEARCH_URL = "https://api.deepseek.com/v1/tools/search"
-_DEEPSEEK_FETCH_URL = "https://api.deepseek.com/v1/tools/fetch"
 
 
 def _deepseek_key(sc: dict, cfg: dict) -> str:
-    """DeepSeek Key —— 显式配置优先，为空则回退 `providers` 里 `id == "deepseek"` 那一项。
+    """DeepSeek Key —— 转发给 `core/deepseek_api.py::deepseek_api_key`。
 
-    回退的理由与 `routers/generate.py` 的「`llm.api_key` 为空时从 providers 回退」
-    同款：用户已经为对话配过一次 DeepSeek Key，再让他为联网搜索抄一遍是纯负担。
-    ⚠️ **只认 `id == "deepseek"`**，不按 `base_url` 猜 —— `id` 是唯一身份，而同一家
-    用户完全可能配两条不同 base_url 的 provider。
+    留这层薄壳是因为这里的两个调用点手上是 search 子配置；解析顺序本身
+    （显式 → `agent_tools.search` → `providers` → `engine_providers`）只写一次。
     """
-    key = (sc.get("deepseek_api_key") or "").strip()
-    if key:
-        return key
-    for p in cfg.get("providers") or []:
-        if isinstance(p, dict) and p.get("id") == "deepseek":
-            return (p.get("api_key") or "").strip()
-    return ""
+    return deepseek_api_key(cfg, (sc.get("deepseek_api_key") or "").strip())
 
 
 async def _deepseek_search(query: str, max_results: int, api_key: str,
@@ -181,9 +173,9 @@ async def _deepseek_search(query: str, max_results: int, api_key: str,
        决策。官方重试策略同样照此：408/429/5xx 才值得等，402 是充值，其余 4xx 不重试。
     """
     async with httpx.AsyncClient(timeout=15,
-                                 proxy=proxy_for(_DEEPSEEK_SEARCH_URL, proxy)) as client:
+                                 proxy=proxy_for(TOOL_SEARCH_URL, proxy)) as client:
         r = await client.post(
-            _DEEPSEEK_SEARCH_URL,
+            TOOL_SEARCH_URL,
             json={"query": query, "count": max_results, "need_content": False},
             headers={"Authorization": f"Bearer {api_key}"},
         )
@@ -216,9 +208,9 @@ async def _deepseek_fetch(url: str, api_key: str, proxy: str = "") -> str:
     ⚠️ 计费与 Search 同价；失败不收费。超时给 30s（与 Jina 同档）—— 抓取比搜索慢。
     """
     async with httpx.AsyncClient(timeout=30,
-                                 proxy=proxy_for(_DEEPSEEK_FETCH_URL, proxy)) as client:
+                                 proxy=proxy_for(TOOL_FETCH_URL, proxy)) as client:
         r = await client.post(
-            _DEEPSEEK_FETCH_URL,
+            TOOL_FETCH_URL,
             json={"url": url},
             headers={"Authorization": f"Bearer {api_key}"},
         )

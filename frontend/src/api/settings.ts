@@ -150,6 +150,8 @@ export async function setSceneModels(data: SceneModels) {
 export interface EngineProviderConfig {
   id: string; name: string; type: string; api_key: string
   base_url: string; capabilities: string[]
+  /** 内置厂商（后端 `_BUILTIN_ENGINE_PROVIDER_IDS`）——删了会被启动同步加回来，故不给删除入口 */
+  builtin?: boolean
 }
 export interface EngineModel {
   id: number; provider_id: string; model_name: string; category: string

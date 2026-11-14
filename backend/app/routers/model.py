@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.core.dependencies import get_config as get_cfg, get_config_lock
 from app.core.errors import AppError
 
+from app.core.config import DEFAULT_CONFIG
 from app.core.config_io import merge_sensitive, mask_sensitive
 from app.core.registry import EngineRegistry, ENGINE_CATEGORIES
 from app.core.url_utils import api_root
@@ -21,6 +22,15 @@ from app.core.provider_defaults import PROVIDER_DEFAULTS, provider_requires_api_
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+#: 内置引擎厂商的 id 集合 —— 从 `DEFAULT_CONFIG` 派生，不手写。
+#:
+#: 有两处判断依赖它：删除接口拒绝内置项、列表接口给每一项打 `builtin` 标记
+#: （前端据此决定显不显示删除按钮）。手写一份的失效形态是「新增厂商忘了补 →
+#: 删除按钮出现 → 点下去被启动同步 `_sync_missing_providers` 加回来」。
+_BUILTIN_ENGINE_PROVIDER_IDS = frozenset(
+    p["id"] for p in DEFAULT_CONFIG.get("engine_providers", [])
+)
 
 
 # ── Pydantic models ──
@@ -520,6 +530,8 @@ def list_engine_providers(request: Request, config=Depends(get_cfg)):
     # 脱敏返回
     for p in providers:
         p["api_key"] = mask_sensitive(p.get("api_key", ""))
+        # 前端据此决定是否显示「删除」（内置项删了会被启动同步加回来）
+        p["builtin"] = p["id"] in _BUILTIN_ENGINE_PROVIDER_IDS
     return providers
 
 
@@ -575,8 +587,8 @@ def update_engine_provider(provider_id: str, data: UpdateEngineProviderBody, req
 def delete_engine_provider(provider_id: str, request: Request, config=Depends(get_cfg), cfg_lock=Depends(get_config_lock)):
     with cfg_lock:
         cfg = _get_cfg(config)
-        # 只允许删自定义的
-        builtins = {"bcut", "dashscope", "pymupdf"}
+        # 只允许删自定义的（内置集合见 `_BUILTIN_ENGINE_PROVIDER_IDS`）
+        builtins = _BUILTIN_ENGINE_PROVIDER_IDS
         if provider_id in builtins:
             raise AppError("PROVIDER_BUILTIN", "不能删除内置引擎厂商")
         cfg["engine_providers"] = [p for p in cfg.get("engine_providers", []) if p["id"] != provider_id]

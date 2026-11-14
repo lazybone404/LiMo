@@ -223,6 +223,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
          "builtin_models": [
              {"model_name": "bcut", "category": "asr", "desc": "免费云转写 · 中文优化"},
          ]},
+        # DeepSeek 工具类端点（2026-11-14）—— OCR / ASR 与聊天共用同一把 Key，
+        # 故只有一个厂商条目。基址刻意留**空**：这两个引擎打的是
+        # `core/deepseek_api.py` 里写死的官方端点，不经 base_url（用户可能把它
+        # 指向只转发 chat 的兼容网关，拿它拼 /v1/tools/* 会 404）。
+        {"id": "deepseek", "name": "DeepSeek", "type": "cloud", "base_url": "", "api_key": "", "capabilities": ["asr", "ocr"],
+         "builtin_models": [
+             {"model_name": "deepseek-ocr", "category": "ocr", "desc": "文档解析 · 按页文本（100MiB / 1000 页）"},
+             {"model_name": "deepseek-asr", "category": "asr", "desc": "语音转写 · 自动按 110 秒切段"},
+         ]},
         {"id": "doc-local", "name": "本地文档引擎组", "type": "local", "base_url": "", "api_key": "", "capabilities": ["doc"],
          "builtin_models": [
              {"model_name": "pypdfium2", "category": "doc", "desc": "PDF 极速纯文字+表格+图片（BSD-3）"},

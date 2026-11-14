@@ -18,6 +18,7 @@ from app.core.protocols import PipelineAdapter
 from app.core.registry import EngineRegistry
 from app.core.errors import RetryableError, FatalError, retry
 from app.core.net import proxy_for
+from app.engines.credentials import apply_provider_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -500,16 +501,11 @@ class VideoAdapter(PipelineAdapter):
            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         return audio_path
 
-    def _get_dashscope_key(self) -> str:
-        """从注入的配置中读取 DashScope API Key"""
-        cfg = self._engine_config or {}
-        for ep in cfg.get("engine_providers", []):
-            if ep.get("id") == "dashscope":
-                return ep.get("api_key", "")
-        return ""
-
     def _resolve_asr_engine(self, cfg: dict | None = None):
-        """根据 engine_bindings.asr 解析第一个可用引擎（不再自动降级）"""
+        """根据 engine_bindings.asr 解析第一个可用引擎（不再自动降级）。
+
+        返回 `(注册名, 引擎, model_name, provider_id)`；provider_id 供
+        `apply_provider_credentials` 取凭据。"""
         cfg = cfg or self._engine_config or {}
         bindings = cfg.get("engine_bindings", {})
         engine_models = cfg.get("engine_models", [])
@@ -536,28 +532,24 @@ class VideoAdapter(PipelineAdapter):
                 eng_name = model_name
             engine = EngineRegistry.get("asr", eng_name)
             if engine:
-                return eng_name, engine, model_name
+                return eng_name, engine, model_name, provider_id
 
         # 所有绑定均不可用 → 不降级，返回空（调用方报错）
         logger.error("ASR 绑定链为空或全部失败，请在设置中更换 ASR 引擎")
-        return "", None, ""
+        return "", None, "", ""
 
     async def _transcribe(self, audio_path: Path, warnings: list) -> dict:
-        eng_name, engine, model_name = self._resolve_asr_engine()
+        eng_name, engine, model_name, provider_id = self._resolve_asr_engine()
         if not engine:
             warnings.append("ASR 引擎未注册: " + eng_name)
             return {"segments": [], "language": "unknown"}
 
-        # 动态注入模型名（SDK async_call 据此路由 paraformer / fun-asr）
+        # 凭据 + 模型名都注入到**副本**上（`apply_provider_credentials` 返回 copy）。
+        # ⚠️ 此前是直接写注册表里的单例，且带 `not engine.api_key` 前置判断 ——
+        #    第一次注入之后用户换 Key 不再生效，要重启才认，期间每次转写 401。
+        engine = apply_provider_credentials(engine, self._engine_config or {}, provider_id)
         if hasattr(engine, '_model_name'):
             engine._model_name = model_name
-
-        # 动态注入最新 API Key（引擎 init 时 key 可能为空，设置页保存后才填）
-        if eng_name == "dashscope-asr" and hasattr(engine, 'api_key') and not engine.api_key:
-            dashscope_key = self._get_dashscope_key()
-            if dashscope_key:
-                engine.api_key = dashscope_key
-                logger.info("ASR: 动态注入 DashScope API Key")
 
         # 单引擎执行（同步引擎放入 asyncio.to_thread 避免阻塞事件循环）
         # 这样客户端断连检测 _watch_disconnect 可以正常运行并 set cancel_event，

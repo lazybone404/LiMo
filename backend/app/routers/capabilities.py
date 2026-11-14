@@ -23,6 +23,8 @@ from app.generation.synthesis import (
     READER_INTENTS,
 )
 from app.generation.product_registry import to_capability_list
+from app.core.config import build_engine_models
+from app.core.deepseek_api import deepseek_api_key
 from app.core.provider_defaults import provider_requires_api_key
 from app.routers.model import _get_providers
 # 产物布局判据的家（`{mode}/v{N}.md`）——不要在本文件内联 md 文件路径
@@ -158,12 +160,39 @@ def _reader_intents() -> list[dict]:
     ]
 
 
+def _deepseek_engine_bound(config: dict) -> bool:
+    """DeepSeek 的引擎模型是否真的被 `engine_bindings` 绑定了。
+
+    ⚠️ **不要无条件把 deepseek 列进 missingKeys**：没绑它的时候那条提示指向一个
+    用不到的功能，设置页会常驻一条红色提醒，而没有任何东西依赖它。
+    判据是「绑定值里出现了 provider_id == deepseek 的引擎模型」：绑定存的是
+    `engine_models[].id`（旧格式也接受 model_name 字符串，见
+    `adapters/document.py::_resolve_doc_engine_chain`）。
+    """
+    ds_ids = {
+        m["id"] for m in build_engine_models(config)
+        if m.get("provider_id") == "deepseek"
+    }
+    if not ds_ids:
+        return False
+    for value in (config.get("engine_bindings") or {}).values():
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            if isinstance(item, int) and not isinstance(item, bool) and item in ds_ids:
+                return True
+            if isinstance(item, str) and item.startswith("deepseek-"):
+                return True
+    return False
+
+
 def _compute_missing_keys(config: dict) -> dict:
     """计算缺 key 项（P2.1 主动提示数据源）。
 
     - llm：llm_models 的厂商，对应 provider.api_key 为空（复用 model._get_providers——
       已含全局 llm.api_key 同步与 sk-ws/sk-ant 防错配；全局 key 非空会同步进 provider → 判已配）
-    - engine：dashscope（cloud.dashscope 空 → OCR/ASR 云端引擎不可用）
+    - engine：dashscope（cloud.dashscope 空 → OCR/ASR 云端引擎不可用）；
+      deepseek（引擎已绑定且 Key 全空 —— 它没有 `cloud.*` 那一级，Key 可能落在
+      `providers` / `engine_providers` / `agent_tools.search` 任一处）
     """
     providers_map = {p["id"]: p for p in _get_providers(config)}
     missing_llm = []
@@ -177,6 +206,8 @@ def _compute_missing_keys(config: dict) -> dict:
     missing_engine = []
     if not bool(config.get("cloud", {}).get("dashscope", "")):
         missing_engine.append("dashscope")
+    if not deepseek_api_key(config) and _deepseek_engine_bound(config):
+        missing_engine.append("deepseek")
     return {"llm": missing_llm, "engine": missing_engine}
 
 
@@ -398,6 +429,14 @@ async def capabilities(config=Depends(get_config)):
                 "name": "阿里云 DashScope",
                 "type": "cloud",
                 "keyConfigured": has_dashscope,
+                "capabilities": ["asr", "ocr"],
+            },
+            # DeepSeek 没有 `cloud.*` 那一级：它的 Key 与对话/联网搜索共用一把，
+            # 所以这里问的是 `deepseek_api_key()` 的四级回退，而不是某个单一字段。
+            "deepseek": {
+                "name": "DeepSeek",
+                "type": "cloud",
+                "keyConfigured": bool(deepseek_api_key(config)),
                 "capabilities": ["asr", "ocr"],
             },
             "doc-local": {

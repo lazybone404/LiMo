@@ -5,8 +5,8 @@
 > 注册与分派细节另见 [architecture.md](architecture.md) 的 Layer 1 与 [plugins.md](plugins.md)。
 
 `app/engines/__init__.py` → `EngineRegistry.register()`。五类引擎：
-- **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）。faster-whisper 已从内置移除（本地转写需自行安装；官方模板 [faster_whisper_plugin.py](../backend/plugins/examples/faster_whisper_plugin.py)，进程外 + 一键装依赖）
-- **OCR**：dashscope-ocr（云端，需 API Key，model_name 透传——`engine_bindings.ocr` 可绑 OCR 专用模型）。**OCR 名称检测**（2026-08-04）：`_PROVIDER_IMAGE_RULES` dashscope 匹配 `ocr` → qwen3.5-ocr 等自动标 image（生成时「OCR 模型」可选到图片转文字小模型）；检测结果用户可手动取消/标记（updateModel capabilities）。**默认绑定**：未绑定时自动绑 `qwen-vl-ocr-latest`（图片转文字专用）。**Tesseract 已从内置移除**（2026-08-02，体积修剪 + 插件化方向）——无 dashscope key 时本地 OCR 能力消失，扫描件出占位文本；需本地 OCR 请装三方插件参考模板 `backend/plugins/examples/tesseract_plugin.py`
+- **ASR**：bcut-asr（B站必剪，免费云转写）→ dashscope-asr（云端 Paraformer）→ **deepseek-asr**（2026-11-14，DeepSeek `POST /v1/tools/asr`，需 Key，见本节末尾）。faster-whisper 已从内置移除（本地转写需自行安装；官方模板 [faster_whisper_plugin.py](../backend/plugins/examples/faster_whisper_plugin.py)，进程外 + 一键装依赖）
+- **OCR**：dashscope-ocr（云端，需 API Key，model_name 透传——`engine_bindings.ocr` 可绑 OCR 专用模型）→ **deepseek-ocr**（2026-11-14，DeepSeek `POST /v1/tools/ocr`，需 Key，见本节末尾）。**OCR 名称检测**（2026-08-04）：`_PROVIDER_IMAGE_RULES` dashscope 匹配 `ocr` → qwen3.5-ocr 等自动标 image（生成时「OCR 模型」可选到图片转文字小模型）；检测结果用户可手动取消/标记（updateModel capabilities）。**默认绑定**：未绑定时自动绑 `qwen-vl-ocr-latest`（图片转文字专用）。**Tesseract 已从内置移除**（2026-08-02，体积修剪 + 插件化方向）——无 dashscope key 时本地 OCR 能力消失，扫描件出占位文本；需本地 OCR 请装三方插件参考模板 `backend/plugins/examples/tesseract_plugin.py`
 - **Doc**（全 MIT/BSD，AGPL 引擎不内置）：
   - **pypdfium2**（BSD-3，默认）：C 引擎直读文字 + 嵌入原图，毫秒级。pdfplumber (MIT) 辅助表格提取。**docling 已移除**（2026-08-03，依赖 torch ~2GB 无法打包，打包版一直不可用）
   - **pdf-image**（2026-08-04）：整体转图片——渲染每页为 PNG 嵌入 markdown（供 OCR/多模态），绑定 `doc:pdf` 替代文字提取，对纯图片/扫描 PDF 更稳（绕开提取嵌入图的坏图问题）；document.py 跳过其重复渲染+OCR
@@ -17,3 +17,15 @@
 - **插件引擎**：AGPL 引擎（pymupdf4llm）以插件形式进程外加载（`~/.limo/plugins/`，command 指向子目录 venv 隔离依赖），`plugin_loader.py` 动态注册进 EngineRegistry，capabilities 的 fileTypeMap 自动追加。**向量化插件**（`EmbeddingPlugin` 子类 → `_PluginEmbeddingAdapter`，2026-10-27）同样注册进 EngineRegistry，但 `category=embedding` 不进 fileTypeMap —— 它出现在 设置 → 通用 → 检索索引 的引擎下拉（`_embedding_models` 只读 `display_name`/`model_id`/`dimension`/`is_local`/`precheck()` ⇒ **前端零改动**）。**重排插件**（`RerankPlugin` → `_PluginRerankAdapter`，2026-10-29）同款，`_rerank_models` 少读一个 `dimension`。⚠️ **适配器分派表是 `_RESIDENT_ADAPTERS = {"embedding": …, "rerank": …}`**（`plugin_loader.py`），不在表里的 category 一律落 `_PluginEngineAdapter`（**doc 契约**）—— 这正是「加一个族必须同时改 `ENGINE_CATEGORIES` 和这张表」的原因：漏了后者时插件会被**静默注册成功**，形状合法、零报错，而每次调用都在要求一个它永远收不到的文件路径
 
 引擎绑定通过 `engine_bindings` 动态 key 分配，doc 拆为子场景（`doc:pdf` / `doc:word` / `doc:ppt` / `doc:excel` / `doc:epub`，text 变体引擎已删除无意义），设置页可独立配置。绑定值支持字符串/数字/列表三种格式，`init_engines` 启动时清理失效 key 与无效 id。
+
+## DeepSeek 两台引擎（2026-11-14）
+
+源码 [ocr_deepseek.py](../backend/app/engines/ocr_deepseek.py) 与 [asr_deepseek.py](../backend/app/engines/asr_deepseek.py)，厂商条目 `engine_providers[id="deepseek"]`（`builtin_models` 两条：`deepseek-ocr` / `deepseek-asr`）。
+
+**注册名必须等于 `model_name`**。两个解析器（`adapters/document.py::_resolve_ocr_engine`、`adapters/video.py::_resolve_asr_engine`）只对 dashscope / bcut 改写引擎名，其余厂商直接 `EngineRegistry.get(category, model_name)`。名字不一致时引擎已注册却永远解析不到，日志里只有一句「绑定链为空」。
+
+**OCR**：`purpose` 固定 `text_recognition`。另一个取值 `rich_layout_recognition` 多返回的是版面坐标，文本内容不变；把「表格模式」映射过去等于赋予接口一个不存在的语义。`supported_modes` 因此只有 `extract` / `table` / `digitize`，没有 `understand` —— 这个接口不产出描述。响应 `pages[].text` 按 `index` 排序后拼接，`<｜ref｜>` / `<｜box｜>` 标记整体摘掉（坐标没有消费方，留着会进生成稿、导出与全文索引）。`finish_reason == "length"` 记 warning，不往正文插占位。
+
+**ASR**：接口只收 16-bit PCM WAV / Ogg Opus、单段 ≤120 秒 / ≤8MiB，而适配器交给引擎的是 16k 单声道 MP3。转码与切段用**一条** ffmpeg 命令（`-f segment -segment_time 110`），110 秒而不是 120 秒是给两条限制都留余量（110 秒 16k WAV 约 3.5MB）。时间轴按每段响应的 `duration_ms` 累加，缺了按 WAV 体积估算；一律按 110 秒加会让越靠后的段偏得越多。超过 110 秒的素材会产生多次请求，**按音频时长计费**。单段失败整体抛错，不跳段 —— 跳段会产出中间缺一截的转录，界面上看不出来。
+
+**Key 在调用时注入，不在注册时定死**。引擎在 `init_engines(config)` 里注册成单例、Key 是那一刻读的，所以用户后填的 Key 只有靠 [credentials.py](../backend/app/engines/credentials.py) 在调用前补到**副本**上才生效。三个消费点（`adapters/document.py` 扫描件 OCR、`adapters/video.py` ASR、`routers/process.py` 手动 OCR）必须同时用它。Key 的解析顺序（显式 → `agent_tools.search` → `providers` → `engine_providers`）住在 [core/deepseek_api.py](../backend/app/core/deepseek_api.py)，与联网搜索共用同一份。

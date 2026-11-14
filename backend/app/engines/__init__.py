@@ -6,6 +6,7 @@
 import logging
 
 from app.core.registry import EngineRegistry
+from app.core.deepseek_api import deepseek_api_key as _deepseek_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -429,20 +430,64 @@ def init_engines(config: dict | None = None):
     except Exception as e:
         logger.warning(f"DashScope OCR init failed: {e}")
 
+    # DeepSeek 文档解析（OCR）与语音转写（ASR）— 2026-11-14
+    #
+    # ⚠️ 与 dashscope 同款**无条件注册**：没配 Key 时也要在设置页列得出来（显示「未配置」），
+    #    抛点推迟到真正调用时（`execute` 里检查 `api_key`）。
+    # ⚠️ 两支各自一个 try：它们与 dashscope 互不相关，共用时一支抛错会把另一支吞掉。
+    # ⚠️ 注册名必须**等于** builtin_models 里的 `model_name`（`deepseek-ocr` / `deepseek-asr`）：
+    #    `adapters/document.py::_resolve_ocr_engine` 与 `adapters/video.py::_resolve_asr_engine`
+    #    对非 dashscope/bcut 的厂商是「拿 model_name 当注册名」，名字不一致时引擎已注册
+    #    却永远解析不到，日志里只有一句「绑定链为空」。
+    deepseek_key = _deepseek_api_key(config)
+    try:
+        from .ocr_deepseek import DeepSeekOCREngine
+        ds_ocr = DeepSeekOCREngine(api_key=deepseek_key)
+        EngineRegistry.register("ocr", ds_ocr.name, ds_ocr)
+        logger.info(f"OCR engines: deepseek-ocr (key={'configured' if deepseek_key else 'NOT SET'})")
+    except ImportError as e:
+        logger.warning(f"DeepSeek OCR unavailable: {e}")
+    except Exception as e:
+        logger.warning(f"DeepSeek OCR init failed: {e}")
+
+    try:
+        from .asr_deepseek import DeepSeekASREngine
+        ds_asr = DeepSeekASREngine(api_key=deepseek_key)
+        EngineRegistry.register("asr", ds_asr.name, ds_asr)
+        logger.info(f"ASR engines: deepseek-asr (key={'configured' if deepseek_key else 'NOT SET'})")
+    except ImportError as e:
+        logger.warning(f"DeepSeek ASR unavailable: {e}")
+    except Exception as e:
+        logger.warning(f"DeepSeek ASR init failed: {e}")
+
     # OCR 默认绑定（2026-08-04）：未绑定且 dashscope 有 key → 默认 qwen-vl-ocr-latest
     # （图片转文字专用模型，比 VL 大模型便宜）。避免「无可用 OCR 引擎」
     # （扫描件 OCR / 图片处理回退）。用户可在设置页改绑。
-    if dashscope_ocr_key and not doc_bindings.get("ocr"):
-        ocr_mid = int(_hl.md5("engine:dashscope:qwen-vl-ocr-latest".encode()).hexdigest()[:8], 16)
-        if ocr_mid not in existing_ids:
-            engine_models.append({
-                "id": ocr_mid, "provider_id": "dashscope",
-                "model_name": "qwen-vl-ocr-latest", "category": "ocr",
-            })
-            existing_ids.add(ocr_mid)
-            models_changed = True
-        doc_bindings["ocr"] = ocr_mid
-        logger.info("Auto-bound OCR default: qwen-vl-ocr-latest (id=%d)", ocr_mid)
+    # 2026-11-14：dashscope 没 Key 而 DeepSeek 有时，绑到 deepseek-ocr —— 否则
+    # 「注册了但从不被选中」，表现是扫描件永远是占位文本，而设置页看起来已配好。
+    if not doc_bindings.get("ocr"):
+        if dashscope_ocr_key:
+            ocr_mid = int(_hl.md5("engine:dashscope:qwen-vl-ocr-latest".encode()).hexdigest()[:8], 16)
+            if ocr_mid not in existing_ids:
+                engine_models.append({
+                    "id": ocr_mid, "provider_id": "dashscope",
+                    "model_name": "qwen-vl-ocr-latest", "category": "ocr",
+                })
+                existing_ids.add(ocr_mid)
+                models_changed = True
+            doc_bindings["ocr"] = ocr_mid
+            logger.info("Auto-bound OCR default: qwen-vl-ocr-latest (id=%d)", ocr_mid)
+        elif deepseek_key and EngineRegistry.get("ocr", "deepseek-ocr") is not None:
+            ocr_mid = int(_hl.md5("engine:deepseek:deepseek-ocr".encode()).hexdigest()[:8], 16)
+            if ocr_mid not in existing_ids:
+                engine_models.append({
+                    "id": ocr_mid, "provider_id": "deepseek",
+                    "model_name": "deepseek-ocr", "category": "ocr",
+                })
+                existing_ids.add(ocr_mid)
+                models_changed = True
+            doc_bindings["ocr"] = ocr_mid
+            logger.info("Auto-bound OCR default: deepseek-ocr (id=%d)", ocr_mid)
 
     # Tesseract 已从内置移除（2026-08-02，体积修剪 + 插件化方向）。
     # 需本地 OCR 请使用三方插件参考模板：backend/plugins/examples/tesseract_plugin.py

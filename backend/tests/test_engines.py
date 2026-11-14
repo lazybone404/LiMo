@@ -37,6 +37,20 @@ def test_engine_registration():
     assert EngineRegistry.get("doc", "pypdfium2") is not None, "默认 PDF 引擎缺失"
 
 
+def test_deepseek_engines_registered_under_model_names():
+    """DeepSeek 两个引擎**必须无条件注册**，且注册名等于 `builtin_models` 的 model_name。
+
+    判据是名字而不是「能不能用」：没配 Key 时也要列得出来（设置页显示「未配置」），
+    而解析器（`_resolve_ocr_engine` / `_resolve_asr_engine`）对非 dashscope/bcut 的
+    厂商是「拿 model_name 当注册名」—— 名字不一致时引擎已注册却永远解析不到，
+    日志里只有一句「绑定链为空」。
+    """
+    assert EngineRegistry.get("ocr", "deepseek-ocr") is not None, \
+        f"deepseek-ocr 未注册，实际 {EngineRegistry.list_category('ocr')}"
+    assert EngineRegistry.get("asr", "deepseek-asr") is not None, \
+        f"deepseek-asr 未注册，实际 {EngineRegistry.list_category('asr')}"
+
+
 def test_engine_no_fallback():
     """绑定 markitdown 时，产物自报的 engine 必须是 markitdown —— 「无降级链」的可观测判据。
 

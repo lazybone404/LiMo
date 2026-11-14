@@ -17,6 +17,7 @@ from app.core.errors import FatalError
 from app.core.types import PipelineInput, AdapterOutput, RawMetadata, InputType, ProgressEvent
 from app.core.protocols import PipelineAdapter
 from app.core.registry import EngineRegistry
+from app.engines.credentials import apply_provider_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -230,17 +231,12 @@ class DocumentAdapter(PipelineAdapter):
                     chain.append((model_name, engine))
         return chain
 
-    def _get_dashscope_key(self) -> str:
-        cfg = self._engine_config or {}
-        for ep in cfg.get("engine_providers", []):
-            if ep.get("id") == "dashscope":
-                return ep.get("api_key", "")
-        return ""
-
-    def _resolve_ocr_engine(self) -> tuple[str, "Engine", str] | None:
+    def _resolve_ocr_engine(self) -> tuple[str, "Engine", str, str] | None:
         """根据 engine_bindings.ocr 解析第一个可用 OCR 引擎（无引擎降级链）。
 
-        绑定第一个可用引擎；绑定为空或不可用 → 返回 None（调用方报错/占位）。"""
+        绑定第一个可用引擎；绑定为空或不可用 → 返回 None（调用方报错/占位）。
+        返回 `(引擎注册名, 引擎, model_name, provider_id)` —— provider_id 是给
+        `apply_provider_credentials` 取 Key 用的，**不再在这里各记一张 Key 表**。"""
         cfg = self._engine_config or {}
         bindings = cfg.get("engine_bindings", {})
         engine_models = cfg.get("engine_models", [])
@@ -261,7 +257,7 @@ class DocumentAdapter(PipelineAdapter):
                 eng_name = "dashscope-ocr"
             engine = EngineRegistry.get("ocr", eng_name)
             if engine:
-                return (eng_name, engine, model_name)
+                return (eng_name, engine, model_name, provider_id)
         return None
 
     # ── Scanned PDF OCR ──
@@ -280,7 +276,6 @@ class DocumentAdapter(PipelineAdapter):
         success = 0
 
         ocr_engine_info = self._resolve_ocr_engine()
-        dashscope_key = self._get_dashscope_key()
 
         for i in range(pages):
             page_num = i + 1
@@ -303,11 +298,10 @@ class DocumentAdapter(PipelineAdapter):
             ocr_text = ""
             ocr_fail = ""
             if ocr_engine_info:
-                eng_name, ocr_engine, ocr_model = ocr_engine_info
-                ocr_engine = copy.copy(ocr_engine)
-                if hasattr(ocr_engine, 'api_key') and not ocr_engine.api_key:
-                    if dashscope_key:
-                        ocr_engine.api_key = dashscope_key
+                eng_name, ocr_engine, ocr_model, ocr_provider = ocr_engine_info
+                # 凭据注入的唯一入口（返回副本，不动注册表里的单例）
+                ocr_engine = apply_provider_credentials(
+                    ocr_engine, self._engine_config or {}, ocr_provider)
                 try:
                     ocr_result = ocr_engine.run(str(tmp_path), model_name=ocr_model)
                     if ocr_result and ocr_result.text:
