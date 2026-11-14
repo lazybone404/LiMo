@@ -21,6 +21,7 @@ import httpx
 import pytest
 
 from app.agent import tools
+from app.core.deepseek_api import TOOL_FETCH_URL, TOOL_SEARCH_URL
 
 
 # ═══════════════════════════════════════════════════════════
@@ -132,7 +133,7 @@ def test_请求体只发三个字段(monkeypatch):
 
     asyncio.run(tools._deepseek_search("量子计算", 7, "sk-abc"))
 
-    assert rec["url"] == tools._DEEPSEEK_SEARCH_URL
+    assert rec["url"] == TOOL_SEARCH_URL
     assert rec["json"] == {"query": "量子计算", "count": 7, "need_content": False}
     assert rec["headers"]["Authorization"] == "Bearer sk-abc"
 
@@ -142,9 +143,13 @@ def test_端点常量不依赖provider_base_url():
 
     后者是 `chat/completions` 的根；用户自建的 OpenAI 兼容代理通常只转发 chat，
     拿它的根拼 `/tools/search` 会 404 —— 而那看起来像「DeepSeek 挂了」。
+
+    ⚠️ 2026-11-14：这两个常量已搬进 `core/deepseek_api.py`（与 OCR / ASR / Files
+    同住一处，换域名只改一处），`agent/tools.py` 改为 import。所以这里断言的是
+    新家的值；「tools 里不得自带域名字面量」那条 AST 守卫在 `test_deepseek_api.py`。
     """
-    assert tools._DEEPSEEK_SEARCH_URL == "https://api.deepseek.com/v1/tools/search"
-    assert tools._DEEPSEEK_FETCH_URL == "https://api.deepseek.com/v1/tools/fetch"
+    assert TOOL_SEARCH_URL == "https://api.deepseek.com/v1/tools/search"
+    assert TOOL_FETCH_URL == "https://api.deepseek.com/v1/tools/fetch"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -322,7 +327,7 @@ def test_fetch_拼标题并截断4000(monkeypatch):
 
     out = asyncio.run(tools._deepseek_fetch("https://x.example/p", "sk-k"))
 
-    assert rec["url"] == tools._DEEPSEEK_FETCH_URL
+    assert rec["url"] == TOOL_FETCH_URL
     assert rec["json"] == {"url": "https://x.example/p"}
     assert out.startswith("# 论文标题\n\n")
     assert len(out) == 4000
@@ -351,7 +356,7 @@ def test_fetch_url走deepseek分支(monkeypatch):
 
     out = asyncio.run(tools.fetch_url("https://x.example/p"))
 
-    assert rec["url"] == tools._DEEPSEEK_FETCH_URL
+    assert rec["url"] == TOOL_FETCH_URL
     assert out == "# T\n\nC"
 
 
