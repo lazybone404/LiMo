@@ -74,7 +74,7 @@ from app.core import perf
 from app.core.logging import request_id, init_request_id_logging, RequestIDFilter
 from app.storage.store import Store
 
-app = FastAPI(title="LiMo", version="0.5.27")
+app = FastAPI(title="LiMo", version="0.5.28")
 
 @app.middleware("http")
 async def add_request_id(request, call_next):
@@ -507,7 +507,7 @@ async def shutdown():
 @app.get("/health")
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.5.27", "started_at": app.state.started_at}
+    return {"status": "ok", "version": "0.5.28", "started_at": app.state.started_at}
 
 
 # 路由（files 在 ingest 之前——/files/{id}/original 比 /files/{id}/{name} 更具体，必须先匹配）
