@@ -33,6 +33,7 @@ SEN = {
     "dashscope": "sk-dashscope-SENTINEL-9876",
     "alibaba": "LTAI-alibaba-SENTINEL-5432",
     "tavily": "tvly-SENTINEL-tavily-1111",
+    "deepseek": "sk-deepseek-SENTINEL-5555",
     "proxypw": "proxy-SENTINEL-pw-2222",
     "cookie": "SESSDATA-SENTINEL-cookie-3333",
     "netscape": ".bilibili.com\tTRUE\t/\tTRUE\t0\tSESSDATA\tSENTINEL-netscape-4444",
@@ -54,7 +55,11 @@ BASE_CFG = {
             "netscape": "# Netscape HTTP Cookie File\n" + SEN["netscape"],
         },
     },
-    "agent_tools": {"search": {"tavily_api_key": SEN["tavily"], "provider": "tavily"}},
+    "agent_tools": {"search": {
+        "tavily_api_key": SEN["tavily"],
+        "deepseek_api_key": SEN["deepseek"],
+        "provider": "tavily",
+    }},
     "scene_models": {"generate": 1},
     "data_dir": "C:/tmp/limo",
     "target_language": "zh-CN",
@@ -199,6 +204,43 @@ def test_other_secrets_masked(env):
     assert data["auth"]["bilibili"] and "***" in data["auth"]["bilibili"]
     assert "***" in data["agent_tools"]["search"]["tavily_api_key"]
     assert "***" in data["llm"]["api_key"]
+
+
+def test_agent_tools_keys_masked(env):
+    """`agent_tools.search` 里的每一把 Key 都脱敏 —— 此前只掩了 tavily，
+    DeepSeek 联网 Key 明文回传，两个字段在设置页上长得一模一样。"""
+    data = env.client.get("/config").json()
+    search = data["agent_tools"]["search"]
+    assert "***" in search["tavily_api_key"]
+    assert "***" in search["deepseek_api_key"]
+    assert search["provider"] == "tavily", "非敏感字段不能被顺手抹掉"
+
+
+def test_agent_tools_new_secret_path_auto_masked(env, monkeypatch):
+    """判据是「从 `SECRET_SCALARS` 派生」而不是「把 deepseek 也加进 if」——
+    往元组里补一条新路径后，不碰路由代码就该被掩码。"""
+    from app.core import config_io
+    monkeypatch.setattr(
+        config_io, "SECRET_SCALARS",
+        config_io.SECRET_SCALARS + ("agent_tools.fetch.future_api_key",))
+    env.cfg["agent_tools"]["fetch"] = {"future_api_key": "fk-SENTINEL-future-6666"}
+    data = env.client.get("/config").json()
+    assert "***" in data["agent_tools"]["fetch"]["future_api_key"]
+
+
+def test_post_masked_agent_keys_keep_original(env):
+    """成对判据的那一半：提交掩码值不能覆盖真实 Key。"""
+    body = env.client.get("/config").json()["agent_tools"]
+    env.client.post("/config", json={"agent_tools": body})
+    assert env.cfg["agent_tools"]["search"]["tavily_api_key"] == SEN["tavily"]
+    assert env.cfg["agent_tools"]["search"]["deepseek_api_key"] == SEN["deepseek"]
+
+
+def test_post_new_agent_key_replaces(env):
+    """回填不能把「用户真的换了 Key」也吃掉。"""
+    env.client.post("/config", json={"agent_tools": {
+        "search": {"deepseek_api_key": "sk-deepseek-NEW-7777"}}})
+    assert env.cfg["agent_tools"]["search"]["deepseek_api_key"] == "sk-deepseek-NEW-7777"
 
 
 def test_empty_auth_config(env):

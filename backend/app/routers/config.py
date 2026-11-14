@@ -2,6 +2,7 @@
 配置路由 — GET/POST /api/config
 """
 
+import copy
 import logging
 import re
 
@@ -13,7 +14,10 @@ from app.core.dependencies import get_config as get_config_dep, get_config_lock
 from app.core.errors import AppError
 
 from app.core.cookie_parser import auto_parse
-from app.core.config_io import save_config as _save_config, mask_sensitive, merge_sensitive
+from app.core.config_io import (
+    save_config as _save_config, mask_sensitive, merge_sensitive,
+    mask_secret_branch, merge_secret_branch,
+)
 from app.core.url_utils import api_root
 from app.core.provider_defaults import default_base_url, provider_requires_api_key
 # 代理 + 直连域名 —— 判据的唯一入口在 core/net.py（保存后立刻生效，见文件末尾）
@@ -24,13 +28,14 @@ router = APIRouter()
 
 
 def _mask_agent_tools(agent_tools: dict) -> dict:
-    """脱敏 agent_tools 中的敏感字段（Tavily API Key 等）"""
-    import copy
-    at = copy.deepcopy(agent_tools)
-    search = at.get("search", {})
-    if search.get("tavily_api_key"):
-        search["tavily_api_key"] = mask_sensitive(search["tavily_api_key"])
-    return at
+    """脱敏 `agent_tools` 段里的敏感字段。
+
+    字段清单从 `core/config_io.py::SECRET_SCALARS` 派生，**不在这里列举**。
+    此前这里手写了 `tavily_api_key` 一个字段，而同一张元组早已把
+    `agent_tools.search.deepseek_api_key` 列为敏感项 —— 结果同一张配置里
+    Tavily 是掩码、DeepSeek 是明文，两个字段在页面上长得一模一样。
+    """
+    return mask_secret_branch(agent_tools, "agent_tools")
 
 
 def _mask_fields(d: dict, fields: tuple[str, ...]) -> dict:
@@ -222,12 +227,11 @@ async def update_config(data: ConfigUpdate, request: Request, cfg=Depends(get_co
 
         # Agent 工具配置 — Tavily API Key 脱敏保护
         if data.agent_tools:
-            merged_at = {**cfg.get("agent_tools", {}), **data.agent_tools}
-            new_search = data.agent_tools.get("search", {})
-            old_search = cfg.get("agent_tools", {}).get("search", {})
-            if new_search.get("tavily_api_key"):
-                merged_at["search"]["tavily_api_key"] = merge_sensitive(
-                    new_search["tavily_api_key"], old_search.get("tavily_api_key", ""))
+            # 深拷贝后再合并：`data.agent_tools` 是请求体本身，就地改它等于把
+            # 掩码值写回请求对象，后续谁再读这个字段都会拿到脏值
+            merged_at = copy.deepcopy({**cfg.get("agent_tools", {}), **data.agent_tools})
+            # 与 GET 的 `_mask_agent_tools` 成对（字段清单同样来自 SECRET_SCALARS）
+            merge_secret_branch(merged_at, cfg.get("agent_tools", {}), "agent_tools")
             cfg["agent_tools"] = merged_at
 
         # 日志级别 — 立即生效

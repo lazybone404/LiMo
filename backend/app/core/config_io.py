@@ -381,3 +381,46 @@ def merge_sensitive(new_val: str, old_val: str) -> str:
     if new_val and is_masked(new_val) and old_val:
         return old_val
     return clean_api_key(new_val)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ② 整段脱敏 / 回填 —— 供 API 层按「配置的某一段」成对使用
+# ══════════════════════════════════════════════════════════════════════════
+
+def secret_paths_under(prefix: str) -> tuple[str, ...]:
+    """`SECRET_SCALARS` 里属于 `prefix` 段的路径，**已去掉前缀**（相对该段）。
+
+    例：`secret_paths_under("agent_tools")` → `("search.tavily_api_key",
+    "search.deepseek_api_key")`。
+    """
+    head = prefix + "."
+    return tuple(p[len(head):] for p in SECRET_SCALARS if p.startswith(head))
+
+
+def mask_secret_branch(branch: dict, prefix: str) -> dict:
+    """返回 `branch` 的深拷贝，把该段下的敏感字段逐个脱敏（值非空才动）。
+
+    ⚠️ **与 `merge_secret_branch` 成对**，两半必须同时存在：只有脱敏那半时，
+    前端把拿到的 `sk-a***z123` 原样提交回来，`merge_secret_branch` 缺位就会把
+    这个掩码值写进配置 —— 之后所有用这把 Key 的调用 401，而设置页仍显示「已配置」。
+    与 `routers/config.py::mask_proxy` 那处注释是同一个形状。
+
+    ⚠️ 字段清单**不在这里列举**，一律从 `SECRET_SCALARS` 派生：那张元组是
+    「哪些值必须离开 config.yaml」的唯一真相源，复制一份到 API 层就是第二真相源。
+    """
+    out = copy.deepcopy(branch or {})
+    for rel in secret_paths_under(prefix):
+        val = _dig(out, rel)
+        if isinstance(val, str) and val:
+            _poke(out, rel, mask_sensitive(val))
+    return out
+
+
+def merge_secret_branch(new_branch: dict, old_branch: dict, prefix: str) -> None:
+    """就地：把 `new_branch` 里的掩码值换回 `old_branch` 的真实值。"""
+    for rel in secret_paths_under(prefix):
+        new_val = _dig(new_branch or {}, rel)
+        if not isinstance(new_val, str) or not new_val:
+            continue
+        old_val = _dig(old_branch or {}, rel)
+        _poke(new_branch, rel, merge_sensitive(new_val, old_val if isinstance(old_val, str) else ""))
