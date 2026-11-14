@@ -35,6 +35,7 @@ Completions 的 `file` 块是本项目唯一逐次自证过的通道，换过去
 | google | OpenAI 兼容层**不支持**文档理解（Google 官方 forum 确认）——兼容层与原生 API 是两回事 | **不标** |
 | zhipu | 文件能力走独立端点（`layout_parsing` / `files` + `purpose`），**不是** message 内 file 块；且预设内无声明「文件」模态的模型 | **不标** |
 | moonshot | 同 zhipu：`files.create(purpose="file-extract")` **抽文本**再塞进 messages；官方明确「不支持用 file_id 引用文件内容作为上下文」 | **不标**（语义是抽文本，不是原件直传） |
+| deepseek | Files API 上传即解析，聊天里以 `file_id` 引用（≤100MiB，与 `deepseek-flash` 配合） | `deepseek-flash` **标 document**（2026-11-14，走 `_build_via_files_api`）；`deepseek-v4-pro` 不标 |
 | opencode 网关 | 未查证能否把 file 块转发到上游；且官方明写 PDF 理解**仅限华北2（北京）地域**，网关转发到非北京地域必失败 | **不标** |
 
 ⚠️ **dashscope 的坑**：官方 PDF 名单**只有 qwen3.8 系四个**，`qwen3-vl-flash` /
@@ -59,7 +60,13 @@ dashscope 对 **data-uri 形态**的 file 块有硬上限：实测 19MB PDF 直�
 想突破这个体积只能改走 Files API（先上传取 file_id），但**首包耗时才是真瓶颈**：
 实测 12KB → 3.4~4.7s、9.5MB → 131~143s（≈10s/MB，次线性，由页数主导），
 官方文档给出的最坏值则是「首包最长 300 秒」——150MB 量级没有任何用户等得起。
-故本轮不引入 Files API。
+**dashscope 因此至今没有 Files 路径**。
+
+DeepSeek 另有一条（2026-11-14）：官方 Files API 上传即解析，消息里只带
+`file_id`，闸门是 100MiB。它不受上面那条 data-uri 限制，所以 `provider == "deepseek"`
+时走 `_build_via_files_api`（`services/deepseek_files.py`）。注意那里的代价换了个
+形态：不再是 base64 的 4/3 膨胀与内存峰值，而是**上传本身要等解析完成**，
+在生成准备阶段占住执行线程。
 
 ## ⚠️ 双真相源：直传模式下 rawText 不是模型所见的真相源
 
@@ -151,15 +158,21 @@ def clean_filename(file_path: str) -> str:
     return name or "document.pdf"
 
 
-def build_pdf_document(file_path: str) -> dict | None:
-    """PDF 原件 → 直传文档块 `{"filename", "data_uri"}`。
+def build_pdf_document(file_path: str, *, provider: str = "", api_key: str = "",
+                       cache_dir: str = "") -> dict | None:
+    """PDF 原件 → 直传文档块。
+
+    两条路，按 provider 分叉：
+
+    - `provider == "deepseek"` → **Files API**（2026-11-14）：先上传换 `file_id`，
+      返回 `{"filename", "file_id"}`，闸门是官方的 100MiB。代价是上传会**发一次
+      网络请求并等解析完成**（超时 600 秒，见 `deepseek_files.py`），所以这条路
+      不是「纯编码」，调用方的执行线程会被占住一段时间。
+    - 其他 provider → 现有 data-uri 路径逐字不变（base64、14MiB、`{"filename", "data_uri"}`）。
 
     返回 None = **不可直传，调用方保持文本模式**（`clean_text` 原样不动）——
     注意这不是「换一条链路」，而是「零成本回到现状」。所有失败分支都
     log.warning 带原因，让「开了开关但没用上」在日志里可见。
-
-    只负责编码，不发起任何请求：真正的传输发生在生成调用里（LLMService.stream
-    的 file 块），因此这里的耗时是百毫秒级（读 14MB + base64），不需要超时包装。
     """
     # 扩展名闸门（纵深防御）：前端只在 isPDF 时显示开关，但 API 可直调——
     # MIME 被硬编码为 application/pdf，非 PDF 进来会以错误类型发出。
@@ -178,6 +191,9 @@ def build_pdf_document(file_path: str) -> dict | None:
     if size <= 0:
         log.warning("文档直传: 原件为空，改用文本模式", path=file_path)
         return None
+
+    if provider == "deepseek":
+        return _build_via_files_api(file_path, size, api_key, cache_dir)
 
     if size > DOC_DIRECT_MAX_BYTES:
         log.warning("文档直传: 超过 data-uri 体积闸门，改用文本模式",
@@ -200,3 +216,40 @@ def build_pdf_document(file_path: str) -> dict | None:
     log.info("文档直传: 原件已编码",
              filename=doc["filename"], size_mb=round(size / (1024 * 1024), 1))
     return doc
+
+
+def _build_via_files_api(file_path: str, size: int, api_key: str,
+                         cache_dir: str) -> dict | None:
+    """DeepSeek Files API 路径：上传换 `file_id`。
+
+    与 data-uri 路径的两处差别都是**刻意**的：
+    - 闸门是官方的 100MiB，不再受 base64 膨胀约束；
+    - 这里会真的发一次网络请求（上传 + 解析同一响应），耗时按百秒计。
+      失败一律降级为文本模式 —— 那是「零成本回到现状」，不是静默降级。
+    """
+    from app.services.deepseek_files import MAX_UPLOAD_BYTES, ensure_file_id
+
+    if size > MAX_UPLOAD_BYTES:
+        log.warning("文档直传: 超过 DeepSeek Files 上限，改用文本模式",
+                    size_mb=round(size / (1024 * 1024), 1),
+                    limit_mb=MAX_UPLOAD_BYTES // (1024 * 1024))
+        return None
+    if not api_key:
+        log.warning("文档直传: DeepSeek 缺少 API Key，改用文本模式")
+        return None
+
+    try:
+        file_id = ensure_file_id(file_path, api_key, cache_dir)
+    except Exception as e:  # noqa: BLE001 —— 任何上传失败都回到文本模式并留原因
+        log.warning("文档直传: DeepSeek Files 上传失败，改用文本模式",
+                    path=os.path.basename(file_path)[:80], error=str(e)[:160])
+        return None
+
+    if not file_id:
+        log.warning("文档直传: DeepSeek Files 未返回 file_id，改用文本模式")
+        return None
+
+    log.info("文档直传: 已上传到 DeepSeek Files",
+             filename=clean_filename(file_path), file_id=file_id,
+             size_mb=round(size / (1024 * 1024), 1))
+    return {"filename": clean_filename(file_path), "file_id": file_id}

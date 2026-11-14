@@ -50,6 +50,26 @@ AwaitableCallable = Callable[[str], Awaitable[None]]
 UsageCallback = Callable[[dict], None]
 
 
+def build_document_block(document: dict) -> dict:
+    """直传文档块 —— 两种形态的唯一住处。
+
+    - `{"file_id": ...}`（DeepSeek Files API 引用）：消息里只有 id，文件已在服务端。
+    - `{"filename", "data_uri"}`（base64 直传）：把整份文件塞进消息。
+
+    ⚠️ `file_id` 走官方给的**扁平**形状 `{"type": "file", "file_id": ...}`，
+    与 OpenAI 的 `{"file": {"file_id": ...}}` 嵌套形状不同 —— 别顺手「统一」成一种。
+    """
+    if document.get("file_id"):
+        return {"type": "file", "file_id": document["file_id"]}
+    return {
+        "type": "file",
+        "file": {
+            "filename": document.get("filename", "document.pdf"),
+            "file_data": document.get("data_uri", ""),
+        },
+    }
+
+
 class LLMService:
     """统一的 LLM 通信层。构造时完成模型解析，后续只用 .stream() / .call()。
 
@@ -218,7 +238,8 @@ class LLMService:
         递减对 DeepSeek 实际是空操作（保留是为兼容非思考模式与其他厂商模型）。
         top_p 则相反：仅思考模式生效，且低于 0.95 的取值按 0.95 处理。
 
-        document：文档直传块（`{"filename", "data_uri"}`，见 services/doc_understand.py）。
+        document：文档直传块（`{"filename", "data_uri"}` 或 `{"filename", "file_id"}`，
+        见 services/doc_understand.py 与 llm.service.build_document_block）。
         有它时**原件随消息发给模型**，prompt 里只有一句引用说明——这是「只发原文件」
         语义的落点，与 image_urls（图片走 image 能力）互不依赖。
         ⚠️ 直传模式下模型解析原件期间**一个 chunk 都不会到**（首包实测按 ~10s/MB 增长），
@@ -232,17 +253,12 @@ class LLMService:
         if document:
             messages: list[dict] = [{"role": "user", "content": [
                 {"type": "text", "text": prompt},
-                {
-                    "type": "file",
-                    "file": {
-                        "filename": document.get("filename", "document.pdf"),
-                        "file_data": document.get("data_uri", ""),
-                    },
-                },
+                build_document_block(document),
             ]}]
-            logger.info("LLM 文档直传流式: provider=%s model=%s filename=%s data_uri_chars=%dK",
+            logger.info("LLM 文档直传流式: provider=%s model=%s filename=%s %s",
                         self.provider, self.model, document.get("filename", ""),
-                        len(document.get("data_uri", "")) // 1000)
+                        f"file_id={document['file_id']}" if document.get("file_id")
+                        else f"data_uri_chars={len(document.get('data_uri', '')) // 1000}K")
         elif image_urls and self.supports_vision:
             content: list[dict] = [{"type": "text", "text": prompt}]
             for url in image_urls:

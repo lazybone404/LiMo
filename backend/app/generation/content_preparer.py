@@ -304,7 +304,16 @@ class ContentPreparer:
         if not has_capability(caps, "document"):
             logger.warning("文档直传: 当前模型未标注 document 能力，改用文本模式")
             return None
-        return build_pdf_document(doc_path)
+        # DeepSeek 走 Files API（上传换 file_id，闸门 100MiB），所以要把厂商名、
+        # Key 与缓存目录一并交下去 —— 缓存住 `{store_root}/cache/`（索引重建的
+        # 跳过名单里已有 cache，不会把它当成文档目录）。
+        cache_dir = str(Path(self.store_root) / "cache") if self.store_root else ""
+        return build_pdf_document(
+            doc_path,
+            provider=self.llm_config.get("provider", ""),
+            api_key=self.llm_config.get("api_key", ""),
+            cache_dir=cache_dir,
+        )
 
     @staticmethod
     def _run_vl_pipeline(vl_config: dict, source_url: str) -> tuple[list[str] | None, str | None]:

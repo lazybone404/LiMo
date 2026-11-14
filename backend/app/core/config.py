@@ -48,7 +48,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
             # supports_reasoning）——它不按 provider 判断，故新渠道要显式标注才会放开档位选择器。
             # ⚠️ 未标 ≠ 不支持，只表示「LiMo 未查证」：前端不展示档位选择器，后端拿到档位会
             # 记一条 warning（失败显式化），而不是静默当没选。
-            {"id": "deepseek-flash",  "name": "V4.1 Flash", "desc": "1M上下文 · 原生多模态 · 快", "capabilities": ["text", "image", "reasoning"], "context_window": 1000000},
+            # `document`（2026-11-14）：官方 Files API 上传即解析、聊天里以 `file_id`
+            # 引用（≤100MiB），且明确与 deepseek-flash 配合使用 —— 故只标 flash，
+            # v4-pro 不标。它走的是 Files 路径（services/deepseek_files.py），
+            # 不受 dashscope 那条 14MiB data-uri 闸门约束。
+            {"id": "deepseek-flash",  "name": "V4.1 Flash", "desc": "1M上下文 · 原生多模态 · 快", "capabilities": ["text", "image", "reasoning", "document"], "context_window": 1000000},
             {"id": "deepseek-v4-pro", "name": "V4 Pro",     "desc": "1M上下文 · 纯文本 · 推理强", "capabilities": ["text", "reasoning"],          "context_window": 1000000},
         ],
         # capabilities 的 "document" = 支持在消息里带 file 块（PDF 直传，见
