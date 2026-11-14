@@ -82,6 +82,15 @@ export interface ChatMsg {
   followUps?: string[]
   /** 追问建议生成失败的原因（非空 = 显式失败，不是「这轮没有」） */
   followUpError?: string
+  /**
+   * 深度联网的原始协议字段（服务端检索记录 + 正文引用标记）。
+   *
+   * ⚠️ 前端**不解释**它，只负责在 rebuild 时原样带回（官方要求多轮把上一轮的值
+   * 发回去，否则模型不记得读过哪些页面）。字段名与后端 `types.py::ChatMessage`
+   * 一致，`toBackendMsg` 与 `openConversation` 是它的成对两处。
+   */
+  serverToolCalls?: unknown[]
+  annotations?: unknown[]
 }
 
 /** 会话列表条目（轻量，来自 GET /api/conversations） */
@@ -162,6 +171,10 @@ const toBackendMsg = (m: ChatMsg) => ({
   ...(m.toolCalls && m.toolCalls.length ? { tool_calls: m.toolCalls.map(tc => ({ tool: tc.tool, display: tc.display, summary: tc.summary, sources: tc.sources })) } : {}),
   ...(m.thinking ? { thinking: m.thinking } : {}),
   ...(m.followUps && m.followUps.length ? { follow_ups: m.followUps } : {}),
+  // ⚠️ 深度联网的两个原始字段必须原样带回：漏一个，用户「编辑任意一条消息」之后
+  // 模型就再也接不上上一轮读过的页面（`rebuild` 的四个调用点共用本函数）。
+  ...(m.serverToolCalls && m.serverToolCalls.length ? { server_tool_calls: m.serverToolCalls } : {}),
+  ...(m.annotations && m.annotations.length ? { annotations: m.annotations } : {}),
 })
 
 /** 当前活跃流式请求的 AbortController（同一时刻只允许一条流式） */
@@ -235,6 +248,11 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
     // 三项一起读，一次 `loadChatPrefs()`（多次调用是同一个结果，只是白读几次）。
     const prefs = loadChatPrefs()
     const wantFollowUp = prefs.followUp
+    // ⚠️ **发送侧的闸门，不是偏好本身**：用户可能换了模型（按钮随之消失）或关了联网，
+    // 而 localStorage 里的 `deepWeb` 仍是 true —— 直接发 `deep_web=1` 会让后端每轮都
+    // 回退一次、每轮都弹一条「不支持」的提示。判据与按钮渲染同源（capabilities）。
+    const wantDeepWeb = prefs.deepWeb && prefs.webSearch
+      && !!useStore.getState().capabilities?.chatDeepWebAvailable
 
     streamChat(text, docIds, {
       onMeta(convId, meta) {
@@ -291,6 +309,26 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       onCompressed(count) {
         set({ compressedHint: `更早的 ${count} 条消息已摘要（节省上下文）` })
       },
+      onWarning(message) {
+        // ⚠️ 走 toast、**不走 `onError`**：这一轮照常有答案，只是用户点的那个开关
+        // 没生效（模型不支持 / 联网被关）。标成错误会让整条回答显示成失败。
+        useStore.getState().addToast(message, 'info')
+      },
+      onServerContext(serverToolCalls, annotations) {
+        // 收尾时（`done` 之前）推一次，挂到本轮那条 assistant 消息上 ——
+        // 见 `api/chat.ts::StreamChatCallbacks.onServerContext` 的注释。
+        updateLastBot(msg => ({ ...msg, serverToolCalls, annotations }))
+      },
+      onTitle(title) {
+        // 后端只在**真的改了**标题时才推（判据在 `SessionManager.set_title_if_default`），
+        // 所以这里无条件写回即可 —— 不做第二次判断（两份判据会分叉）。
+        const cur = get()
+        if (!title) return
+        set({
+          topic: cur.currentId ? title : cur.topic,
+          conversations: cur.conversations.map(c => c.id === cur.currentId ? { ...c, title } : c),
+        })
+      },
       onDone(usage) {
         // 每轮 token 用量（provider 拿不到则不带，费用显示随之隐藏）
         const p = usage?.prompt_tokens ?? 0
@@ -329,7 +367,7 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
         }))
       },
     }, { signal: controller.signal, conversationId: convId, docRefs, followUp: wantFollowUp, webSearch: prefs.webSearch,
-      answerMode: prefs.answerMode })
+      answerMode: prefs.answerMode, deepWeb: wantDeepWeb })
   }
 
   return {
@@ -387,6 +425,10 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
           // 追问建议（落盘字段 `follow_ups` → 前端 `followUps`）。⚠️ 与 `toBackendMsg`
           // **成对**：一个负责「重建时丢」，一个负责「恢复时捡回来」，缺任一都是静默丢卡。
           followUps: m.follow_ups?.length ? m.follow_ups : undefined,
+          // 深度联网的两个原始字段 —— 与 `toBackendMsg` **成对**：漏了这里，
+          // 用户「打开旧会话 → 改一条消息」就会把它们丢掉，而界面毫无变化。
+          serverToolCalls: m.server_tool_calls?.length ? m.server_tool_calls : undefined,
+          annotations: m.annotations?.length ? m.annotations : undefined,
         }))
         set({ currentId: id, topic: c.title, messages, streaming: false, generating: false, statusText: '' })
       } catch { /* 组件层 toast */ }

@@ -18,6 +18,7 @@ from app.core.dependencies import (
 )
 
 from app.core.disconnect import disconnect_watcher
+from app.core.deepseek_api import supports_deepseek_builtin
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -285,6 +286,26 @@ def _build_registry(store: object, *, allow_web: bool = True,
     return reg
 
 
+def _history_messages(raw_history: list[dict], deep_web: bool) -> list[dict]:
+    """历史消息 → 送给模型的 `messages`。
+
+    ⚠️ **普通请求仍只有 `{role, content}` 两个键**；深度联网请求额外带回
+    `server_tool_calls` / `annotations`（官方要求，否则第二轮模型不记得读过哪些页面）。
+    把这两个键无条件塞进每一轮，等于给不支持它们的端点发它不认识的字段。
+
+    抽成模块级是为了让测试直调（调用点在 `sse_stream` 的闭包里）。
+    """
+    out: list[dict] = []
+    for m in raw_history:
+        item = {"role": m["role"], "content": m["content"]}
+        if deep_web and m.get("role") == "assistant":
+            for key in ("server_tool_calls", "annotations"):
+                if m.get(key):
+                    item[key] = m[key]
+        out.append(item)
+    return out
+
+
 def _append_refs(refs: list[dict], seen: set[str], incoming: list | None) -> None:
     """把 `incoming` 里的引用按 `docId` **保序去重**后并入 `refs`（原地修改两个容器）。
 
@@ -412,6 +433,7 @@ async def chat_stream(
     follow_up: int = Query(0),
     web_search: int = Query(1),
     answer_mode: str = Query("strict"),
+    deep_web: int = Query(0),
     store=Depends(get_store),
     config=Depends(get_config),
     svc=Depends(get_query_service),
@@ -434,10 +456,18 @@ async def chat_stream(
     `answer_mode`：`strict`（默认，只用知识库）/ `open`（知识库优先，可补充）/
     `free`（自由对话，不围绕知识库）。**默认 `strict` = 改造前的行为**（原 `rules.md` 就是
     「无来源不说话」），非法值显式报错、不静默退回 `strict`（见 `_answer_mode`）。
+
+    `deep_web=1` = 用户开了「深度联网」：检索交给 DeepSeek 的内置服务端工具，
+    本轮**一个本地工具都不注册**（官方明确不能混用，见 `llm/agent.py` 该分支）。
+    **默认 0 = 改造前的行为**。模型不支持或联网开关关着时**不静默忽略** —— 推一条
+    `warning` 事件并回退普通模式（前端能显示，日志里也留痕）。
     """
 
     ensure_trusted_request(request)
     mode = _answer_mode(answer_mode)
+    # ⚠️ `allow_web` 驱动**两处**：工具表（下方 `_build_registry`）与 system prompt 的
+    # 联网层（`prompt_loader.build`）。拆成两个变量就是同源漂移的入口。
+    allow_web = bool(web_search)
 
     doc_list = [d.strip() for d in doc_ids.split(",") if d.strip()]
 
@@ -455,6 +485,8 @@ async def chat_stream(
     sessions = SessionManager(store)
     conv = sessions.load_or_create(conversation_id, question, model_id, doc_list)
     conversation_id = conv["id"]
+    # `title` 只在会话第一轮请求（后续轮次再要，等于每轮都让服务端改一次标题）
+    is_first_turn = not (conv.get("messages") or [])
 
     # ── 模型 ──
     if not model_id:
@@ -465,18 +497,31 @@ async def chat_stream(
         raise AppError("CHAT_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
     # ── 工具注册 + 上下文预算组装（C2：预算 = 窗口×0.7，分配 system→doc→history）──
-    # ⚠️ `allow_web` 驱动**两处**：工具表（这里）与 system prompt 的联网层（下方
-    #    `prompt_loader.build`）。拆成两个变量就是同源漂移的入口。
-    allow_web = bool(web_search)
+    # 深度联网：请求了、联网开着、且当前模型支持内置服务端工具 —— 三个条件缺一不可。
+    # 不满足时**回退普通模式并明说**（`warning` 事件），不静默按用户没开处理。
+    deep_web_ok = (bool(deep_web) and allow_web
+                   and supports_deepseek_builtin(llm.provider, llm.model))
+    deep_web_warning = ""
+    if deep_web and not deep_web_ok:
+        deep_web_warning = ("当前对话模型不支持深度联网，已按普通联网模式回答" if allow_web
+                            else "联网已关闭，深度联网不可用，已按普通对话回答")
+        log.info("深度联网不可用，回退普通模式", provider=llm.provider,
+                 model=llm.model, web=allow_web)
+    safety_check = bool(((config.get("agent_tools") or {}).get("deepseek_builtin") or {})
+                        .get("safety_check", False))
     # ⚠️ `cancel_event` 必须**先于工具注册**创建：`search_docs` 的查询改写要拿到它
     # （用户按了停止就别再发起一次新调用）。原先它在 `sse_stream` 前面几行才建，
     # 而注册点在它之前。上移而不是在 `search_docs` 里另建一个 —— `disconnect_watcher`
     # 要置的就是**这一个**事件，两个就分叉了。
     cancel_event = asyncio.Event()
     agent = AgentRunner(llm, max_rounds=3)
-    _build_registry(store, allow_web=allow_web, svc=svc, searcher=searcher,
-                    llm=llm, rewrite=_rewrite_enabled(config),
-                    cancel_event=cancel_event, reranker=reranker).apply_to(agent)
+    if not deep_web_ok:
+        # ⚠️ 深度联网时**刻意一个本地工具都不注册**：官方明确内置服务端工具不能与
+        # 其它工具混用。用户 @ 引用的文档仍由 `build_doc_context` 注入 system 文本，
+        # 所以「带文档提问」仍可用，不可用的只是模型主动检索知识库的那三个工具。
+        _build_registry(store, allow_web=allow_web, svc=svc, searcher=searcher,
+                        llm=llm, rewrite=_rewrite_enabled(config),
+                        cancel_event=cancel_event, reranker=reranker).apply_to(agent)
 
     window, budget = compute_budget(config, model_id)
     cc = config.get("chat_context") or {}
@@ -498,7 +543,8 @@ async def chat_stream(
     summary = conv.get("summary") or ""
     system_text = "\n\n".join(
         x for x in [doc_text, f"[历史摘要]\n{summary}" if summary else None] if x)
-    system = prompt_loader.build(system_text, web_search=allow_web, answer_mode=mode)
+    system = prompt_loader.build(system_text, web_search=allow_web, answer_mode=mode,
+                                 deep_web=deep_web_ok)
     tool_defs = agent._tool_defs
     used = estimate_tokens(system) + sum(estimate_tokens(json.dumps(t, ensure_ascii=False)) for t in tool_defs)
     hist_budget = max(0, budget - used)
@@ -506,7 +552,7 @@ async def chat_stream(
     clear_at = conv.get("clear_context_at") or 0
     msgs = conv.get("messages", [])[clear_at:]
     raw_history = trim_history(msgs, hist_budget, history_limit=cc.get("history_limit", 0))
-    history = [{"role": m["role"], "content": m["content"]} for m in raw_history]
+    history = _history_messages(raw_history, deep_web_ok)
     log.debug("Chat 历史裁剪", raw=len(msgs), kept=len(raw_history),
               hist_budget=hist_budget, limit=cc.get("history_limit", 0))
 
@@ -528,6 +574,9 @@ async def chat_stream(
         refs: list[dict] = []
         seen_ref_ids: set[str] = set()
         thinking_parts: list[str] = []
+        # 深度联网的原始协议字段（多轮连续性：下一轮要原样带回给服务端）
+        server_tool_calls: list = []
+        annotations: list = []
         # 追问补调的准入状态（判据见下方 `attempted`）
         saw_error = False
         cancelled = False
@@ -535,9 +584,15 @@ async def chat_stream(
             try:
                 if compressed_count:
                     yield f"data: {json.dumps({'type': 'compressed', 'count': compressed_count}, ensure_ascii=False)}\n\n"
+                if deep_web_warning:
+                    yield f"data: {json.dumps({'type': 'warning', 'message': deep_web_warning}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id, 'context_window': window, 'budget': budget, 'price_in': price_in, 'price_out': price_out}, ensure_ascii=False)}\n\n"
 
-                async for event in agent.stream_run(system, question, history, cancel_event=cancel_event):
+                async for event in agent.stream_run(
+                        system, question, history, cancel_event=cancel_event,
+                        server_tools=deep_web_ok,
+                        with_title=deep_web_ok and is_first_turn,
+                        safety_check=safety_check):
                     if event["type"] == "text":
                         full_answer.append(event["text"])
                     elif event["type"] == "tool_start":
@@ -553,6 +608,20 @@ async def chat_stream(
                         # `done` 有四处发出（agent.py：取消 / 错误 / CancelledError / 正常走完），
                         # 只有「正常走完且未取消」才允许补调追问。
                         cancelled = bool(event.get("cancelled"))
+                    elif event["type"] == "server_context":
+                        # 落盘供下一轮带回（本轮的 `append_assistant_message`），**同时**
+                        # 推给前端：前端不解释它，只负责在 `toBackendMsg` 重建消息时原样
+                        # 带回 —— 不推的话「编辑任意一条消息」就会让这份数据从库里消失，
+                        # 而界面上完全看不出来（深度联网的第二轮从此失忆）。
+                        server_tool_calls = event.get("server_tool_calls") or []
+                        annotations = event.get("annotations") or []
+                    elif event["type"] == "title":
+                        # 判据（只覆盖自动生成的标题）住在 `set_title_if_default`；
+                        # 它返回 False 就**不推事件** —— 否则前端照着一个后端刚拒绝的值
+                        # 改了本地会话标题，两边分叉且看不出来。
+                        if not sessions.set_title_if_default(
+                                conversation_id, event.get("title", ""), question):
+                            continue
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
                 answer = "".join(full_answer)
@@ -575,6 +644,8 @@ async def chat_stream(
                     tool_calls=tool_calls or None,
                     thinking="".join(thinking_parts) or None,
                     follow_ups=follow_ups,
+                    server_tool_calls=server_tool_calls or None,
+                    annotations=annotations or None,
                 )
 
                 if attempted:

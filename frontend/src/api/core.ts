@@ -348,6 +348,12 @@ export interface Capabilities {
     llm: { id: string; name: string }[]
     engine: string[]
   }
+  /**
+   * 「深度联网」开关是否可用 —— 后端按**当前对话模型**解析（只有支持内置服务端工具
+   * 的模型为真）。输入框据此决定显不显示那个按钮；前端不自己看模型名猜。
+   * 可选：老后端不返回时按不可用处理。
+   */
+  chatDeepWebAvailable?: boolean
 }
 
 /**

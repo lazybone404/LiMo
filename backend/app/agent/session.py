@@ -98,9 +98,12 @@ class SessionManager:
         tool_calls: list[dict] | None = None,
         thinking: str | None = None,
         follow_ups: list[str] | None = None,
+        server_tool_calls: list | None = None,
+        annotations: list | None = None,
     ) -> None:
         """追加 AI 回复到对话。扩展字段：doc_refs（引用文档）/ tool_calls（工具气泡）/
-        thinking（思考段）/ follow_ups（追问建议，独立第二次调用的产物）"""
+        thinking（思考段）/ follow_ups（追问建议，独立第二次调用的产物）/
+        server_tool_calls + annotations（深度联网的原始协议字段，只保管不解析）"""
         conv = self._store.get_conversation(conv_id)
         if not conv:
             return
@@ -112,7 +115,34 @@ class SessionManager:
             tool_calls=tool_calls,
             thinking=thinking,
             follow_ups=follow_ups,
+            server_tool_calls=server_tool_calls,
+            annotations=annotations,
         )
         conv.setdefault("messages", []).append(msg.to_dict())
         conv["updated_at"] = datetime.now().isoformat()
         self._store.save_conversation(conv)
+
+    def set_title_if_default(self, conv_id: str, title: str, question: str) -> bool:
+        """用模型给的短标题替换**自动生成的**标题；用户手改过的标题不动。
+
+        返回 `True` = 真的改了（调用方据此决定要不要推 `title` 事件）。
+        ⚠️ **判据留在这里一处**：前端只负责「收到事件就改本地状态」，不自己判断
+        「这个标题该不该覆盖」—— 那份判断要读会话的当前标题，前端手上那份可能是
+        上一轮同步下来的旧值，两边各判一次就会分叉（谁赢取决于时序）。
+        """
+        title = (title or "").strip()
+        if not title:
+            return False
+        conv = self._store.get_conversation(conv_id)
+        if not conv:
+            return False
+        # ⚠️ 与 `append_user_message` 生成默认标题的表达式**逐字同源**（含省略号那段）。
+        # 两处任一改动都会让「识别哪条标题是自动生成的」失效 —— 而失效方向是
+        # **用户的标题被模型覆盖**，界面上看起来只是「标题自己变了」。
+        default_title = question[:60] + ("..." if len(question) > 60 else "")
+        if conv.get("title") not in (default_title, "新对话"):
+            return False
+        conv["title"] = title[:80]
+        conv["updated_at"] = datetime.now().isoformat()
+        self._store.save_conversation(conv)
+        return True

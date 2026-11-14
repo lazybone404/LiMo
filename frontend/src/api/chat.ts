@@ -55,6 +55,31 @@ export interface StreamChatCallbacks {
    * `error` 非空 = 后端开了开关但没生成出来（**失败要显式**，不能静默当「这轮没有」）。
    */
   onFollowUp?: (questions: string[], error?: string | null) => void
+  /**
+   * 后端对本次请求的**显式提醒**（目前唯一来源：开了深度联网但当前模型不支持 /
+   * 联网被关着，于是按普通模式跑）。
+   *
+   * ⚠️ **不是错误**：这一轮照常出答案，只是用户点的那个开关没生效。用 info 提示，
+   * 不要走 `onError`（那会把正常回答标成失败）。
+   */
+  onWarning?: (message: string) => void
+  /**
+   * 深度联网时服务端给的会话短标题（**只有后端真的改动了标题才会推**）。
+   *
+   * ⚠️ 判据（只覆盖自动生成的标题、用户手改过的不动）住在
+   * `SessionManager.set_title_if_default`，前端**不做第二次判断** —— 两份判据会分叉，
+   * 而分叉的表现是「刷新后标题又变回去了」。
+   */
+  onTitle?: (title: string) => void
+  /**
+   * 深度联网的原始协议字段（检索记录 + 引用标记）—— 后端在收尾时推一次。
+   *
+   * ⚠️ 前端**不解释**它，只是挂到那条 assistant 消息上，好让
+   * `chatStore.ts::toBackendMsg` 在 rebuild 时原样带回。官方要求多轮把上一轮的值
+   * 发回去，落盘那份由后端写，**内存这份必须靠这里补** —— 不补则「本轮刚聊完就编辑
+   * 一条消息」会让这份数据从库里消失（刷新后第二轮失忆，而界面毫无变化）。
+   */
+  onServerContext?: (serverToolCalls: unknown[], annotations: unknown[]) => void
 }
 
 /** `streamChat` 的尾部可选参数 —— 收成对象：位置参数已经到 6 个，再加就是「第几个是哪个」的记忆题 */
@@ -78,6 +103,14 @@ export interface StreamChatOptions {
    * 默认档不发参数）。
    */
   answerMode?: AnswerMode
+  /**
+   * 用户开了「深度联网」→ 带 `deep_web=1`。
+   *
+   * ⚠️ 与 `followUp` **同向**（开着才带），理由也相同：深度联网是**新增能力**，
+   * 默认关 = 零回归。按钮是否存在由 capabilities 的 `chatDeepWebAvailable` 决定
+   * （模型不支持时输入框里根本没有这个开关，见 `lib/chat-prefs.ts`）。
+   */
+  deepWeb?: boolean
 }
 
 export function streamChat(
@@ -86,7 +119,7 @@ export function streamChat(
   callbacks: StreamChatCallbacks,
   options: StreamChatOptions = {},
 ): void {
-  const { signal, conversationId, docRefs, followUp, webSearch, answerMode } = options
+  const { signal, conversationId, docRefs, followUp, webSearch, answerMode, deepWeb } = options
   const params = new URLSearchParams({ question })
   if (docIds.length > 0) params.set('doc_ids', docIds.join(','))
   if (conversationId) params.set('conversation_id', conversationId)
@@ -100,6 +133,8 @@ export function streamChat(
   // ⚠️ 与上面同一条纪律：默认档（`strict`）**根本不设这个参数**。
   // 写成 `answer_mode=strict` 与不写是同一件事，而少一个参数是可被断言的形式。
   if (answerMode && answerMode !== 'strict') params.set('answer_mode', answerMode)
+  // 同一条纪律：默认（关）根本不设这个参数。
+  if (deepWeb) params.set('deep_web', '1')
 
   // 追踪 SSE 是否正常结束（收到 done/error）— 对齐 generate.ts。
   // 断连时 onDone/onError 都不会触发，若不追踪则聊天 UI 永久卡加载
@@ -144,6 +179,14 @@ export function streamChat(
         else if (data.type === 'error') callbacks.onError(data.message)
         // 追问建议（晚于 `done`，见 `onFollowUp` 的注释）
         else if (data.type === 'followup') callbacks.onFollowUp?.(data.questions ?? [], data.error ?? null)
+        // 深度联网的会话标题（后端只在**真的改了**标题时才推，见 `onTitle`）
+        else if (data.type === 'title') callbacks.onTitle?.(String(data.title ?? ''))
+        // 降级提醒（开了深度联网但没生效）：提示但**不算错误**，这一轮照常出答案
+        else if (data.type === 'warning') callbacks.onWarning?.(String(data.message ?? ''))
+        // 深度联网的原始协议字段（透传给消息，供 rebuild 时带回）
+        else if (data.type === 'server_context') {
+          callbacks.onServerContext?.(data.server_tool_calls ?? [], data.annotations ?? [])
+        }
       })
 
       if (!receivedDoneOrError) {
@@ -176,6 +219,15 @@ export interface ConvMessage {
   thinking?: string
   /** assistant 的追问建议（**独立第二次调用**的产物，不在 `content` 里） */
   follow_ups?: string[]
+  /**
+   * 深度联网的原始协议字段（服务端检索记录 + 正文引用标记）。
+   *
+   * ⚠️ 前端**不解释**它的内容，只负责在 rebuild 时原样带回（`chatStore.ts::toBackendMsg`）
+   * —— 官方要求多轮时把上一轮的值发回去，否则模型不记得读过哪些页面。任何一侧
+   * 试图「解析成更友好的结构」都会让这份协议出现第二个实现。
+   */
+  server_tool_calls?: unknown[]
+  annotations?: unknown[]
 }
 
 export interface ConvFull extends ConvEntry {
@@ -214,7 +266,12 @@ export async function archiveConversation(id: string, archived: boolean) {
 
 export async function rebuildConversationMessages(
   id: string,
-  messages: { id: string; role: string; content: string; doc_refs?: unknown; tool_calls?: unknown; thinking?: string; follow_ups?: unknown }[],
+  messages: {
+    id: string; role: string; content: string
+    doc_refs?: unknown; tool_calls?: unknown; thinking?: string; follow_ups?: unknown
+    /** 深度联网的原始协议字段（透传，不解释） */
+    server_tool_calls?: unknown; annotations?: unknown
+  }[],
 ) {
   return (await apiFetch(`${BASE}/conversations/${id}/messages`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },

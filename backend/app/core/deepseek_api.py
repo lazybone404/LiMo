@@ -37,6 +37,25 @@ TOOL_OCR_URL = f"{DEEPSEEK_BASE_URL}/v1/tools/ocr"
 TOOL_ASR_URL = f"{DEEPSEEK_BASE_URL}/v1/tools/asr"
 FILES_URL = f"{DEEPSEEK_BASE_URL}/files"
 
+#: 支持内置服务端工具（`deepseek_web_search` / `deepseek_read_url` / `title` /
+#: `safety_check`）的模型。官方文档只把文档与聊天工具挂到 flash 上；pro 不标。
+#: ⚠️ 这是**能力位之外的第二个判据**，不能合并：`enabled_models[].capabilities`
+#: 是用户可编辑的标签（`text` / `image` / `document`），而「这家网关的服务端工具」
+#: 是厂商侧的事实，用户改不了它。
+DEEPSEEK_BUILTIN_TOOL_MODELS: frozenset[str] = frozenset({"deepseek-flash"})
+
+
+def supports_deepseek_builtin(provider: str, model: str) -> bool:
+    """当前对话模型能否用 DeepSeek 内置服务端工具（深度联网模式的唯一判据）。
+
+    ⚠️ **一处判据、两个消费方**：`routers/capabilities.py` 据此下发
+    `chatDeepWebAvailable`（前端决定显不显示那个按钮），`routers/chat.py` 据此决定
+    走不走深度联网分支。两边各写一份表达式的失效形态是「按钮在那儿，点了却被静默
+    忽略」—— 而这两个文件读的是同一份配置、同一份清单，没有理由分叉。
+    """
+    return (provider or "") == "deepseek" and (model or "") in DEEPSEEK_BUILTIN_TOOL_MODELS
+
+
 #: 状态码 → (用户可读原因, 是否可重试)。官方错误表里出现的全部取值。
 _STATUS_REASONS: dict[int, tuple[str, bool]] = {
     400: ("请求参数有误（检查文件格式与 purpose）", False),

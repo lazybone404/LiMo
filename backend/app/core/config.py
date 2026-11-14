@@ -272,6 +272,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "deepseek_api_key": "",
         },
         "fetch":  {"provider": "trafilatura"},
+        # 深度联网（DeepSeek 内置服务端工具）的可选项。
+        # ⚠️ `web_search` / `read_url` **刻意不做开关**：深度联网固定带这两个工具，
+        # 关掉任何一个这个模式就没有意义了（那不是「配置」，是把它关掉）。
+        # `safety_check` 默认 False = 改造前的行为；打开 = 请求里带
+        # `{"level": "high"}`，被拦时正文为空并显式报错（见 `llm/agent.py` 该分支）。
+        "deepseek_builtin": {"safety_check": False},
     },
     # 检索 — 字面（FTS5，始终开启）与语义（向量，**默认关闭**）
     # ⚠️ 默认关不是谨慎，是「默认值必须等于改造前的行为」：打开它意味着后台 worker

@@ -9,7 +9,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import {
-  Send, Square, AtSign, FileText, X, MessageCircleQuestion, Globe,
+  Send, Square, AtSign, FileText, X, MessageCircleQuestion, Globe, Radar,
   BookOpen, Sparkles, Wand2, Check,
 } from 'lucide-react'
 import { useChatStore, type DocRef } from '../../store/chatStore'
@@ -63,7 +63,10 @@ export function ChatInput({ scale }: ChatInputProps) {
   // 三项发送偏好（`lib/chat-prefs.ts`）——⚠️ **订阅**而不是各自 `useState(初值)`：
   // 设置页是第二个入口，改完必须让这里跟着变（见 `useChatPrefs` 的注释）。
   // 真正的生效点仍是发送那一刻 `dispatchSend` 现读（那个位置要的是「此刻」）。
-  const { followUp, webSearch, answerMode } = useChatPrefs()
+  const { followUp, webSearch, answerMode, deepWeb } = useChatPrefs()
+  // 深度联网按钮**是否渲染**由后端能力决定（当前对话模型是否支持内置服务端工具）。
+  // ⚠️ 前端不自己看模型名猜 —— 猜错的表现是「按钮在那儿，点了后端却回退普通模式」。
+  const deepWebAvailable = useStore(st => st.capabilities?.chatDeepWebAvailable ?? false)
   const taRef = useRef<HTMLTextAreaElement>(null)
   // 输入区 + @ 浮层的共同祖先：判断「点在内部还是外部」的界
   const rootRef = useRef<HTMLDivElement>(null)
@@ -136,6 +139,10 @@ export function ChatInput({ scale }: ChatInputProps) {
   const toggleFollowUp = () => saveChatPrefs({ followUp: !followUp })
 
   const toggleWebSearch = () => saveChatPrefs({ webSearch: !webSearch })
+
+  // 深度联网：检索改由服务端完成，本轮**不注册任何本地工具**（含知识库那三个）——
+  // 这一点写进 title，否则用户会以为「库里的文档照样能搜」。
+  const toggleDeepWeb = () => saveChatPrefs({ deepWeb: !deepWeb })
 
   // 选档即落盘并收起浮层（与 @ 浮层选完文档就关一致）。
   // ⚠️ 不用 toggle —— 连点同一档不该变成「无档」，三档必须恒有一档。
@@ -231,6 +238,25 @@ export function ChatInput({ scale }: ChatInputProps) {
           className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${webSearch ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
           <Globe size={s.btn} />
         </button>
+        {/* 深度联网：只在当前对话模型支持时出现（`chatDeepWebAvailable`），且必须
+            联网开关开着 —— 关掉联网后深度联网没有意义，故置灰而不是隐藏（隐藏会让
+            「联网一关，旁边那个按钮不见了」看起来像应用坏了）。 */}
+        {deepWebAvailable && (
+          <button onClick={toggleDeepWeb} disabled={!webSearch}
+            data-deepweb-toggle={deepWeb && webSearch ? 'on' : 'off'}
+            title={!webSearch
+              ? '深度联网需要先开启「允许联网」'
+              : deepWeb
+                ? '深度联网已开启：检索由服务端完成，回答会带可点击的来源。'
+                  + '本轮不使用本地知识库工具（@ 引用的文档仍会交给模型）（点击关闭）'
+                : '深度联网已关闭：开启后由服务端检索并读网页，回答附带来源链接'
+                  + '（点击开启）'}
+            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${
+              !webSearch ? 'text-disabled cursor-not-allowed'
+                : deepWeb ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
+            <Radar size={s.btn} />
+          </button>
+        )}
         {/* 回答依据（三档）。⚠️ 图标随档变化 —— 光靠高亮分不出「当前是哪一档」，
             而这三档对用户的意义差别很大（尤其 free：它压根不查库）。 */}
         <button onClick={() => setOpenMenu(m => (m === 'mode' ? null : 'mode'))} data-answer-mode={answerMode}

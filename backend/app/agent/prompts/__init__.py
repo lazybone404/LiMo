@@ -1,10 +1,11 @@
 """
 分层 System Prompt 加载器 — 参照 Pi 的 AGENTS.md + APPEND_SYSTEM.md + environment.md
 
-分层叠加（下面每一行是一层；`scope_*` 三选一、`web_tools` / `no_web` 二选一）：
+分层叠加（下面每一行是一层；`scope_*` 三选一、`web_tools` / `deep_web` / `no_web` 三选一）：
   base.md          → 角色定义
   web_tools.md     → 联网能力（**仅在联网开关打开时注入**）
-  no_web.md        → 离线声明（**仅在联网开关关闭时注入**，与上一条互斥）
+  deep_web.md      → 深度联网（**仅在深度联网模式下注入**，此时本地工具一个都不注册）
+  no_web.md        → 离线声明（**仅在联网开关关闭时注入**，与上面两条互斥）
   scope_strict.md  → 只用知识库回答（**默认**）
   scope_open.md    → 允许在知识库之外补充
   scope_free.md    → 自由对话，不围绕知识库（三者互斥、三选一）
@@ -37,6 +38,14 @@
 为什么是「两个文件」而不是「一份文件 + 占位符」：占位符要引入第二套标记解析器
 （失败的形态是「用户看到 `{{WEB_TOOLS}}` 原文」，且没人会去测），而两份独立文案
 各自完整可读 —— 加一条只改一边时，不存在「另一半在哪」的推演。
+
+## 深度联网为什么是第三份文件（2026-11-14）
+
+深度联网模式下**一个本地工具都不注册**（官方明确内置服务端工具不能与其它工具混用，
+见 `llm/agent.py::_stream_with_server_tools`），而 `web_tools.md` 全文都在讲
+「用 `search_web` / `fetch_url`」—— 直接复用就是模型的工具表与 prompt 各说各话，
+正是本节开头要消灭的那种分叉。故新增 `deep_web.md` 作为**第三份互斥文案**
+（它同时压过 `web_tools` 与 `no_web`：深度联网本身就是联网）。
 
 ## 回答依据（2026-10-20）
 
@@ -73,6 +82,7 @@ class PromptLoader:
         self.rules = _read("rules.md")
         self.formats = _read("formats.md")
         self.web_tools = _read("web_tools.md")
+        self.deep_web = _read("deep_web.md")
         self.no_web = _read("no_web.md")
         self.scopes = {
             "strict": _read("scope_strict.md"),
@@ -81,7 +91,7 @@ class PromptLoader:
         }
 
     def build(self, doc_context: str = "", *, web_search: bool = True,
-              answer_mode: str = "strict") -> str:
+              answer_mode: str = "strict", deep_web: bool = False) -> str:
         """构建完整 system prompt。doc_context 为注入的文档摘要。
 
         `answer_mode`（三档，互斥）：
@@ -98,6 +108,10 @@ class PromptLoader:
         `web_search=False` → 注入离线声明而非联网能力（调用方须同时把联网工具
         从工具表里摘掉，见 `routers/chat.py::_build_registry`）。
 
+        `deep_web=True` → 注入深度联网文案，**优先于 `web_search`**（深度联网本身就是
+        联网，两者同时给真值时只有它成立）。调用方同样要保证工具表对得上：深度联网
+        模式下一个本地工具都不注册，见 `routers/chat.py::chat_stream`。
+
         ⚠️ `web_search` 默认 `True` = **改造前的现状**（联网一直可用）。这个默认值
         与产物侧的 `GenerateRequest.web_search: bool = False` **方向相反且都是对的**：
         产物侧那个开关是**新增能力**（默认关 = 零回归），这里的是**给已有能力加开关**
@@ -110,8 +124,12 @@ class PromptLoader:
         scope = self.scopes.get(answer_mode)
         if scope is None:
             raise ValueError(f"未知的 answer_mode：{answer_mode!r}")
-        parts = [self.base, self.web_tools if web_search else self.no_web,
-                 scope, self.rules, self.formats]
+        # 三选一。`deep_web` 排在最前：它蕴含「允许联网」，不该再被 `web_search`
+        # 的取值影响（调用方传 `web_search=False` + `deep_web=True` 是自相矛盾的组合，
+        # 但那时按深度联网说话比按「不能联网」说话更接近用户意图）。
+        web_layer = self.deep_web if deep_web else (
+            self.web_tools if web_search else self.no_web)
+        parts = [self.base, web_layer, scope, self.rules, self.formats]
         if doc_context:
             parts.append(f"\n--- 当前文档 ---\n{doc_context}")
         return "\n\n".join(parts)

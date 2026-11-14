@@ -204,6 +204,87 @@ def _extract_refs(tool_name: str, result: str) -> list[dict]:
     return []
 
 
+# ── 深度联网：内置服务端工具（DeepSeek，2026-11-14）──
+#
+# ⚠️ 这一族的四个名字是**官方协议字面量**，不是 LiMo 起的工具名：请求里带
+# `{"type": "deepseek_web_search"}` 这类字段，检索由**服务端**完成，模型不会产出
+# `tool_calls`。所以它们不走 `register_tool` / `_tool_fns` 那套本地工具循环 ——
+# 混进那套的唯一结果是服务端 400（官方明确「不能与其它工具混用」）。
+SERVER_SEARCH_TOOL = "deepseek_web_search"
+SERVER_READ_TOOL = "deepseek_read_url"
+SERVER_TOOLS: tuple[str, ...] = (SERVER_SEARCH_TOOL, SERVER_READ_TOOL)
+
+#: `server_tool_calls` 合成来源列表的展示上限（与 `_extract_sources` 的 5 条同口径）。
+_MAX_SERVER_SOURCES = 5
+
+
+def _extra(obj: object, key: str) -> object:
+    """读 SDK **未声明**的扩展字段（`server_tool_calls` / `annotations` / `title`）。
+
+    ⚠️ 一律经 `model_extra`，**不写** `getattr(delta, key)` 后假定它存在：这几个字段
+    不在 OpenAI SDK 的响应模型里，`getattr` 的默认值会让「字段没来」与「字段来了但是
+    空」变得无法区分 —— 而它们的语义差别很大（前者是这家端点没实现，后者是本轮没搜）。
+    """
+    extra = getattr(obj, "model_extra", None) or {}
+    return extra.get(key)
+
+
+def _server_tool_status(event: object) -> str:
+    """`server_tool_event` → 一句进度文案。只分两种，不做细粒度 UI。
+
+    载荷形状官方没给字段表，故按 JSON 里出没出现 `read_url` 粗分「检索 / 读网页」——
+    分错的代价只是进度文案不够准，不分则用户在一分钟的等待里看到的是空白。
+    """
+    try:
+        text = event if isinstance(event, str) else json.dumps(event, ensure_ascii=False)
+    except (TypeError, ValueError):
+        text = str(event)
+    return "正在读取网页..." if SERVER_READ_TOOL in text else "正在联网检索..."
+
+
+def _title_text(raw: object) -> str:
+    """`delta.title` → 纯文本标题。端点可能给字符串，也可能给 `{"title": ...}`。"""
+    if isinstance(raw, str):
+        return raw.strip()
+    if isinstance(raw, dict):
+        return str(raw.get("title") or raw.get("content") or "").strip()
+    return ""
+
+
+def _server_tool_sources(server_tool_calls: list | None) -> list[dict]:
+    """`server_tool_calls[].calls[].sources[]` → `[{title, url}]`（按 URL 去重、保序）。
+
+    ⚠️ 形状不明，故逐层 `isinstance` 收窄：这串数据来自服务端，`calls` / `sources`
+    任一缺失都不该让整轮回答炸掉 —— 来源列表是**附加信息**，正文才是主体。
+
+    ⚠️ URL 仍过 `_safe_http_url`：这里的链接来自公网检索，与 `search_web` 的返回
+    同级不可信。前端 `toChatSources` 会再过滤一遍（纵深防御），但主防线在这里。
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in server_tool_calls or []:
+        if not isinstance(item, dict):
+            continue
+        for call in item.get("calls") or []:
+            if not isinstance(call, dict):
+                continue
+            page = call.get("page")
+            page_title = str(page.get("title") or "") if isinstance(page, dict) else ""
+            for src in call.get("sources") or []:
+                if not isinstance(src, dict):
+                    continue
+                url = _safe_http_url(src.get("url"))
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                title = str(src.get("title") or src.get("page") or page_title
+                            or urlparse(url).netloc)[:200]
+                out.append({"title": title, "url": url})
+                if len(out) >= _MAX_SERVER_SOURCES:
+                    return out
+    return out
+
+
 class AgentRunner:
     """通用 Agent 循环：LLM + Tools，支持流式输出。
 
@@ -269,6 +350,10 @@ class AgentRunner:
         user_message: str,
         history: list[dict] | None = None,
         cancel_event: asyncio.Event | None = None,
+        *,
+        server_tools: bool = False,
+        with_title: bool = False,
+        safety_check: bool = False,
     ) -> AsyncGenerator[dict, None]:
         """流式多轮工具调用循环。
 
@@ -284,7 +369,20 @@ class AgentRunner:
           {"type": "text", "text": "..."}
           {"type": "done", "cancelled": bool}
           {"type": "error", "message": "..."}
+
+        `server_tools=True` 走**另一条分支**（`_stream_with_server_tools`），上面这套
+        本地工具循环整段不执行 —— 官方明确内置服务端工具不能与其它工具混用，
+        而 `self._tool_defs` 为空时本函数会误判成「无工具 → 直接流式回答」。
+        两个消费点（`routers/chat.py` 的流式与非流式）里只有流式会传它。
         """
+        if server_tools:
+            async for event in self._stream_with_server_tools(
+                system_prompt, user_message, history, cancel_event,
+                with_title=with_title, safety_check=safety_check,
+            ):
+                yield event
+            return
+
         messages: list[dict] = [{"role": "system", "content": system_prompt}]
         if history:
             # 已由 chat.py 预算引擎裁剪（token 预算），不再二次截断
@@ -397,6 +495,121 @@ class AgentRunner:
         })
         async for event in self._stream_response(messages, cancel_event):
             yield event
+
+    async def _stream_with_server_tools(
+        self,
+        system_prompt: str,
+        user_message: str,
+        history: list[dict] | None,
+        cancel_event: asyncio.Event | None,
+        *,
+        with_title: bool = False,
+        safety_check: bool = False,
+    ) -> AsyncGenerator[dict, None]:
+        """深度联网：只带两个内置服务端工具，一次请求出完整回答。
+
+        与本地工具循环的差别是**没有循环**：检索由服务端完成，模型不产出 `tool_calls`，
+        故一次性开流读到底即可。四条容易被误当成「没实现」的约束：
+
+        1. **不带 `tool_choice`**。官方写明它不能指定这两个工具，而设为 `none` 会连
+           读链接一起关掉 —— 设什么都比不设差。
+        2. **`title` 只在首轮带**（`with_title`），后续轮次带它等于每轮都让服务端改标题；
+           而改不改由 `SessionManager.set_title_if_default` 二次裁决（用户手改过的不动）。
+        3. **`finish_reason == "content_filter"` 必须发 `error`**：那种情况下正文为空是
+           **正常形态**，但用户看到的必须是「被审核拦下」而不是「AI 什么都没说」。
+        4. **`tool_start` / `tool_result` 照发**：前端的工具气泡、来源列表、落盘
+           `tool_calls` 全靠这对事件，少一个就变成「回答有引用、界面上没有来源」。
+           它们与本地工具同名同形，故 `_record_tool_result` / `toChatSources` 零改动。
+
+        额外的 `server_context` 事件是**给后端自己**的（多轮连续性：把上一轮的
+        `server_tool_calls` 原样带回，否则第二轮模型不记得读过哪些页面）。
+        `routers/chat.py` 会截下它、不转发给前端 —— 它的载荷是原始协议结构，前端无消费方。
+        """
+        messages: list[dict] = [{"role": "system", "content": system_prompt}]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": user_message})
+
+        extra: dict[str, Any] = {}
+        if with_title:
+            extra["title"] = {"enabled": True}
+        if safety_check:
+            extra["safety_check"] = {"level": "high"}
+
+        yield {"type": "tool_start", "tool": SERVER_SEARCH_TOOL, "args": {},
+               "display": "正在深度联网..."}
+
+        # 三个扩展字段都是「逐帧追加」：端点可能在多帧里分批给（尤其 sources）。
+        title = ""
+        server_tool_calls: list = []
+        annotations: list = []
+        last_status = ""
+        filtered = False
+        try:
+            stream = await _create_with_retry(
+                lambda: self.llm.client.chat.completions.create(
+                    model=self.llm.model,
+                    messages=messages,
+                    tools=[{"type": t} for t in SERVER_TOOLS],
+                    temperature=0.7,
+                    stream=True,
+                    # `title` / `safety_check` 不是 OpenAI 协议字段，只能走 extra_body
+                    extra_body=extra or None,
+                ))
+            async for chunk in stream:
+                if cancel_event and cancel_event.is_set():
+                    raise CancelledError()
+                choice = chunk.choices[0]
+                delta = choice.delta
+                if getattr(choice, "finish_reason", None) == "content_filter":
+                    filtered = True
+                # 进度事件官方写在 `choice` 上；两处都探一次只是因为它不在 SDK 模型里，
+                # 放错一层就整条进度线静默消失（而它不影响正文，很难被发现）。
+                event = _extra(choice, "server_tool_event") or _extra(delta, "server_tool_event")
+                if event:
+                    status = _server_tool_status(event)
+                    if status != last_status:
+                        last_status = status
+                        yield {"type": "agent_status", "message": status}
+                if getattr(delta, "reasoning_content", None):
+                    yield {"type": "thinking", "text": delta.reasoning_content}
+                if delta.content:
+                    yield {"type": "text", "text": delta.content}
+                for bucket, key in ((server_tool_calls, "server_tool_calls"),
+                                    (annotations, "annotations")):
+                    got = _extra(delta, key)
+                    if got:
+                        bucket.extend(got if isinstance(got, list) else [got])
+                got_title = _title_text(_extra(delta, "title"))
+                if got_title:
+                    title = got_title
+        except CancelledError:
+            yield {"type": "tool_result", "tool": SERVER_SEARCH_TOOL,
+                   "summary": "已停止", "refs": [], "sources": []}
+            yield {"type": "done", "cancelled": True}
+            return
+        except Exception as e:
+            # 工具气泡必须收尾，否则前端那个「正在深度联网」会一直转（同 `_stream_response`
+            # 的 error 路径不同：那里没有未闭合的工具气泡）。
+            yield {"type": "tool_result", "tool": SERVER_SEARCH_TOOL,
+                   "summary": "深度联网失败", "refs": [], "sources": []}
+            yield {"type": "error", "message": f"深度联网失败: {str(e)[:200]}"}
+            return
+
+        sources = _server_tool_sources(server_tool_calls)
+        yield {"type": "tool_result", "tool": SERVER_SEARCH_TOOL,
+               "summary": (f"深度联网完成（{len(sources)} 个来源）" if sources
+                           else "深度联网完成，未返回来源"),
+               "refs": [], "sources": sources}
+        if server_tool_calls or annotations:
+            yield {"type": "server_context", "server_tool_calls": server_tool_calls,
+                   "annotations": annotations}
+        if title:
+            yield {"type": "title", "title": title}
+        if filtered:
+            yield {"type": "error", "message": "内容安全审核拒绝，已停止生成"}
+            return
+        yield {"type": "done"}
 
     async def _stream_response(
         self, messages: list[dict], cancel_event: asyncio.Event | None,

@@ -64,8 +64,9 @@
 
 | 状态 | 功能 | 说明 |
 |------|------|------|
-| ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端)。faster-whisper 已从内置移除（本地转写需自行安装） |
-| ✅ | OCR 引擎 | dashscope VL (云端)。Tesseract 已从内置移除（需三方插件 `examples/tesseract_plugin.py`） |
+| ✅ | ASR 引擎 | bcut (B站必剪免费云转写) + dashscope Paraformer (云端) + **DeepSeek ASR（2026-11-14）**。faster-whisper 已从内置移除（本地转写需自行安装） |
+| ✅ | OCR 引擎 | dashscope VL (云端) + **DeepSeek OCR（2026-11-14）**。Tesseract 已从内置移除（需三方插件 `examples/tesseract_plugin.py`） |
+| ✅ | DeepSeek 引擎接入（2026-11-14） | `/v1/tools/ocr` 与 `/v1/tools/asr` 两台引擎 + 共同底座 `core/deepseek_api.py`（五个端点、Key 四级回退、状态码翻译的唯一住处）。⚠️ ASR 接口只收 WAV/Ogg、单段 ≤120 秒 / ≤8MiB，故引擎内一条 `ffmpeg` 命令完成转码与按 **110 秒**切段，时间轴按每段 `duration_ms` 累加；单段失败整体抛错（跳过会产出中间缺失的转录）。⚠️ `engines/credentials.py` 收口「调用时取 Key 补到副本上」，替代 `video.py` 直接写注册表单例的旧写法（换 Key 要重启才生效，期间每次 401） |
 | ✅ | Doc 引擎 | pypdfium2 (PDF默认,BSD-3) + pdfplumber (表格,MIT) + **pdf-image（整体转图片→OCR/多模态）** + python-docx/pptx/xlsx + openpyxl/.xls(xlrd) + markitdown + epub-container 自研 EPUB（ebooklib AGPL 已移除 2026-08-26；docling 已移除；.doc/.ppt 旧格式明确提示转 .docx/.pptx） |
 | ✅ | 引擎绑定 | `engine_bindings` 按子场景配置，doc 拆为 pdf / word / ppt / excel / epub |
 | ✅ | 引擎绑定只取第一个 | 绑定解析首个可用引擎，失败直接报错，不再静默降级 |
@@ -91,6 +92,7 @@
 
 | ✅ | 思考档位可配 | `generation/effort.py` 全系统唯一真相（此前 `"low"` 散落四处）；能力位 `reasoning` 按模型标注；**整理版恒 low 除非选 max** 且 UI 明示；静默期分档 150/180（不改则「选最高档反而更容易失败」）；AST 断言钉住无硬编码档位字面量 |
 | ✅ | PDF 直传（2026-09-23） | 用户可选**二选一**（文本模式默认 / 直传模式只发原文件）；`file` 块随生成请求发送（**必须走 Chat Completions**）；闸门 14 MiB（由 data-uri 20 MiB 上限倒推）；能力位 `document` 标 dashscope 官方名单的三个（qwen3.8-max / flash / 27b），**其他渠道逐家查证后一律不标**（理由见下）；双真相源 + rawText 过短完成期 warning |
+| ✅ | PDF 直传 · Files API（2026-11-14） | `provider == "deepseek"` 时改走 Files API：上传即解析、聊天里用 `file_id` 引用，闸门提到 **100MiB**（14 MiB 那条只对 data-uri 渠道成立）。本地按内容 SHA256 缓存 30 天，同一份 PDF 第二次生成不再重传；上传失败一律 warning + 退回文本模式（显式回退）。⚠️ 两种 `file` 块形状（官方扁平 `{type:"file", file_id}` vs OpenAI 嵌套 `{filename, file_data}`）在 `llm/service.py::build_document_block` 一处收口 |
 | ✅ | 默认文风通俗（2026-10-05） | 新增 `plain` 档并设为**全局默认**（Excel 例外，映射到 detailed 同值文案）；用户判断「大部分场景默认要通俗，论文类才要严谨详细」。落点 **8 处，缺一即静默无风格**；⚠️ 存量用户不受影响（localStorage 已存的 `style` 会覆盖新默认，**刻意不迁移**）；⚠️ polish 豁免元组同步加 plain（否则每次生成整理版刷一条 warning）；顺带修**三个静默改写风格档**的既有缺陷（meeting / none / 修 meeting 时的反向回归） |
 | ✅ | 语义标记 `limo-block` v1（2026-10-10） | 模型在笔记里写 `<!-- limo-block:v1 type="key-takeaway" -->` … `<!-- /limo-block -->`（**最初只有这一种类型**；2026-10-11 一天内扩到**九种**、2026-10-20 补 `cycle` / `sequence` / `quadrant` 共**十二种**，分两族——**九个语义强调块** `key-takeaway` / `alert` / `recommend` / `metric` / `steps` / `timeline` / `cycle` / `sequence` / `quadrant`（`steps`/`timeline`/`cycle`/`sequence`/`quadrant` 是**从图表管道迁来的**「用列表代替画图」——`steps`/`timeline` 删的是 `hchain`/`timeline` 两种引导，2026-10-20 又把图表引导由**七种收缩到三种**（`grid`/`flowchart`/`state`），撤下的 `layers`/`tree` 改走嵌套列表、`sequence`/`quadrant` 改走这两种新块）+ **三个内容卡片** `table` / `code` / `image`（**块内是真表格/真代码/真图片，一个字节不动**，只加外壳；用户原话「同种类型的表现形式只是在原有的基础上再加上了围栏而已」）；⚠️ **`card` 性质又是第三种**（2026-10-11 加，当时是第十个；2026-10-20 的 `sequence` / `quadrant` 排在它之后）—— 其余十一种是**块**、`card` 是**节修饰符**（写在 `## 标题` 下一行、无闭合标记），它是**骨架轴 `card` 的唯一触发源**，同日同批把该轴从「每个 H2 一张卡」改成「只给标记过的章节成卡」），形态差异全在 CSS。⚠️ **内容卡片族纳入既有「内容块装饰」开关的射程**（关掉 = 还原成没包过围栏的样子），**不新造开关**，渲染为轻量强调块。**本轮搭的是「正文协议元素」这套架构，不是单做一个重点块功能**（用户原始诉求含「失败标记一类与内容无关的东西要隔离」——那批只留口子、下一批接入）。三条不变量：专用标记隔离 / **零残留降级**（剥标记行、文字一字不丢、剥完与「从未写过标记」逐字相同）/ 围栏内零触碰。**只入 notes**、**无勾选项无条件注入**、规范**不教外观**。⚠️ **刻意不加完成期 warning** —— 无标记是正常文章不是失败。顺带修 4 个既有缺陷（`_CARD_TOKENS_CSS` 注入闸门漏 `paper`+有标记 / Word 把注释泄漏成可见段落 / 合成把标记当模型输入 / `chars` 把标记算进正文字数）。⚠️ **2026-10-11 首轮实机验收结果**：九种块**确实在用**（一篇写齐了 5 种），但 **`card` 标记 0 个** → 同批把 `card` 提到规范最前（`PROMPT_VERSION` `"13"`）并提亮中性面板族的容器边框；**新一轮实机验收待用户操作**（`card` 新位置的遵循率、两种骨架下的观感、Word 读回看）。⚠️ **2026-10-20 扩张 + 图表收缩**：新增 `sequence`（消息流）/ `quadrant`（二维评估）两种块，同时 `get_chart_format` 由七种收缩到**三种**、`layouts.py` 删掉两条写死的层数闸门（实测 8 层纯矩形只需 564px 却被判「层数过深」——用户撞到的正是这条假失败）、完成期 warning 判据放宽（勾了图表但产出五种替代块之一 → 不再误报「未生成」）。判据统一为「**文本结构能否保真表达这个关系**」 |
 
@@ -109,6 +111,7 @@
 |------|------|------|
 | ✅ | 5 个工具 | search_docs / lookup_doc / list_docs / search_web / fetch_url。⚠️ `search_docs` 2026-10-29 起与 `GET /api/search` 走同一份融合检索（此前是标题子串过滤，正文命中搜不到） |
 | ✅ | 搜索多级降级 | provider **四选一**：Tavily / **DeepSeek Search（2026-10-29）** / SearXNG 自动启动 / DuckDuckGo；选中的那个不可达（含没配 Key）统一降级 DDG。DeepSeek 另有 `fetch` 通道，失败降级 trafilatura |
+| ✅ | 深度联网（2026-11-14） | `deep_web=1` 时本轮**不注册任何本地工具**，只带 DeepSeek 的两个内置服务端工具（`deepseek_web_search` / `deepseek_read_url`），检索与读页都在服务端完成。可用性由 `core/deepseek_api.py::supports_deepseek_builtin` 一处判定、两个消费方（前端按钮 / 后端分支）；`deep_web=1` 但模型不支持时推 `warning` 回退普通模式，不静默忽略。首轮顺带请求会话标题（`set_title_if_default` 只覆盖自动生成的，用户手改过的不动）；`finish_reason == "content_filter"` 发 `error` 而不是空回答。⚠️ 多轮连续性靠 `server_tool_calls` / `annotations` 原样带回，落点五处（`ChatMessage` 字段 → `to_dict` 白名单 → `append_assistant_message` → `_history_messages` → 前端 `toBackendMsg` + `openConversation`） |
 | ✅ | SearXNG 便携版 | 自动检测 `.exe` 启动，asyncio.Lock 防并发 |
 | ✅ | SSE 流式 + 持久化 | 逐 token 推送 + 自动保存对话 + 历史按 token 预算裁剪（替代固定 40 条） |
 | ✅ | 对话 CRUD | 新建/重命名/删除/追加消息 + 归档（archived）+ 消息 rebuild（编辑/删除/分支截断） |

@@ -197,6 +197,13 @@ class ChatMessage:
     thinking: str | None = None       # assistant 思考段
     # assistant 的追问建议（独立第二次调用的产物，**不进 content**——见 agent/followup.py）
     follow_ups: list | None = None    # [str, ...] 追问问题文本
+    # 深度联网（DeepSeek 内置服务端工具）的原始协议字段，**原样存、原样带回**：
+    # 官方要求把上一轮 assistant 的 `server_tool_calls` 一起发回去，否则读过的页面
+    # 不在上下文里（症状是「第一轮有来源、第二轮模型失忆」）。LiMo 不解析它们，
+    # 只是保管 —— 解析出一份结构再重建，等于替对方协议做第二份实现。
+    # `annotations` 同批带回（正文里的引用标记靠它对上来源）。
+    server_tool_calls: list | None = None
+    annotations: list | None = None
 
     def to_dict(self) -> dict:
         # ⚠️ **这是显式白名单**：不在下面的字段**在写盘那一刻被丢掉**，而症状与前端
@@ -212,6 +219,10 @@ class ChatMessage:
             d["thinking"] = self.thinking
         if self.follow_ups:
             d["follow_ups"] = self.follow_ups
+        if self.server_tool_calls:
+            d["server_tool_calls"] = self.server_tool_calls
+        if self.annotations:
+            d["annotations"] = self.annotations
         return d
 
 

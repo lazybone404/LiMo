@@ -366,11 +366,17 @@ def test_接线_开关同时驱动_prompt():
     """⚠️ 这两行**必须在同一个函数里**且用同一个变量 —— 拆成两个来源就是同源漂移
     （工具摘了、prompt 还写着能用）。同一条 `test_接线_开关驱动工具表` 的理由。
     """
-    body = _chat_py()
-    # ⚠️ 2026-10-20 起这一行多了 `answer_mode=mode`（同一个 `build` 调用点）。
+    # ⚠️ 折行与缩进不参与断言（先把连续空白压成一个空格）：这条守的是**参数有没有
+    # 传**，不是代码怎么排版；排版一变就红的守卫会被人顺手改掉，也就守不住什么了。
+    flat = re.sub(r"\s+", " ", _chat_py())
+    # ⚠️ 2026-10-20 起这一行多了 `answer_mode=mode`（同一个 `build` 调用点）；
+    # 2026-11-14 起又多 `deep_web=deep_web_ok` —— 它是第三份互斥联网层
+    # （`web_tools.md` / `deep_web.md` / `no_web.md` 三选一），漏传就退化成
+    # 「深度联网下 prompt 仍写着可以用 search_web，而工具表里根本没有它」。
     # 断言贴着**完整调用**写，是因为它的目的是「流式那处没漏传」——
     # 只断言 `web_search=allow_web` 在场的话，将来有人重写这一行仍会漏掉别的参数。
-    assert "prompt_loader.build(system_text, web_search=allow_web, answer_mode=mode)" in body
+    assert ("prompt_loader.build(system_text, web_search=allow_web, answer_mode=mode, "
+            "deep_web=deep_web_ok)") in flat
 
 
 def test_接线_落盘走两个模块级函数():

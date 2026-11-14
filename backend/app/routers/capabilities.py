@@ -24,7 +24,8 @@ from app.generation.synthesis import (
 )
 from app.generation.product_registry import to_capability_list
 from app.core.config import build_engine_models
-from app.core.deepseek_api import deepseek_api_key
+from app.core.deepseek_api import deepseek_api_key, supports_deepseek_builtin
+from app.core.model_resolver import resolve_model
 from app.core.provider_defaults import provider_requires_api_key
 from app.routers.model import _get_providers
 # 产物布局判据的家（`{mode}/v{N}.md`）——不要在本文件内联 md 文件路径
@@ -183,6 +184,22 @@ def _deepseek_engine_bound(config: dict) -> bool:
             if isinstance(item, str) and item.startswith("deepseek-"):
                 return True
     return False
+
+
+def _chat_deep_web_available(config: dict) -> bool:
+    """「深度联网」开关是否该出现在输入框里 —— 判据只看**当前对话模型**。
+
+    ⚠️ 前端**不自己猜模型**（不读 `llmModels` 拼一个 `provider == "deepseek"`），
+    否则「按钮在那儿、点了却被后端回退」是最常见的形态。判据与
+    `routers/chat.py::chat_stream` 用的是**同一个函数**（`supports_deepseek_builtin`），
+    两处各写一份表达式就是分叉的入口。
+    """
+    model_id = (config.get("scene_models") or {}).get("chat")
+    resolved = resolve_model(config, model_id) if model_id else None
+    if not resolved:
+        return False
+    provider = resolved.get("provider", "")
+    return supports_deepseek_builtin(provider, (resolved.get("model") or {}).get(provider, ""))
 
 
 def _compute_missing_keys(config: dict) -> dict:
@@ -474,6 +491,8 @@ async def capabilities(config=Depends(get_config)):
         # 索引触发方式两档（设置页「什么时候建索引」）。同 releasePolicies：
         # 顺序 = `TRIGGERS` 声明顺序，文案只住 `_TRIGGER_META`。
         "triggerPolicies": _trigger_policies(),
+        # 深度联网开关是否可用（当前对话模型是否为支持内置服务端工具的 DeepSeek 模型）
+        "chatDeepWebAvailable": _chat_deep_web_available(config),
         # ── 未完成生成标记（应用重启/崩溃时残留，前端启动提示）──
         "interruptedGenerations": _scan_interrupted_generations(config),
         # ── 缺 key 项（P2.1 主动提示：配置向导第三屏 + 操作前 toast）──

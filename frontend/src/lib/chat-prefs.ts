@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 
 /**
- * LiMo — 对话侧的**发送偏好**（三项：联网、追问建议、回答依据）。
+ * LiMo — 对话侧的**发送偏好**（四项：联网、追问建议、回答依据、深度联网）。
  *
  * ⚠️ **与 `marker-prefs` / `card-prefs` 的关键区别：它不写 DOM 属性。**
  * 那两个控制「正文怎么显示」，属性挂在 `<html>` 上、由 CSS 选择器消费；
@@ -25,6 +25,7 @@ import { useSyncExternalStore } from 'react'
  * | `webSearch` | **`true`** | 联网一直可用 —— 这是**给已有能力加开关**，默认关就是砍功能 |
  * | `followUp` | `false` | 追问是**新增能力**，默认开就是替所有用户改了行为 |
  * | `answerMode` | **`'strict'`** | 改造前本就是「只用知识库、无来源不说话」，默认换档就是替所有人改了回答纪律 |
+ * | `deepWeb` | `false` | 深度联网是**新增能力**（并且换了检索实现），默认开等于替所有人改了联网方式 |
  *
  * 后端侧同款：`chat.py::chat_stream` 的 `web_search: int = Query(1)`、
  * `answer_mode: str = Query("strict")` vs 产物侧 `GenerateRequest.web_search: bool = False`。
@@ -78,10 +79,21 @@ export interface ChatPrefs {
   followUp: boolean
   /** 回答依据（默认 `strict` = 改造前的「只用知识库」） */
   answerMode: AnswerMode
+  /**
+   * `true` = 深度联网（检索交给 DeepSeek 内置服务端工具，本轮不注册任何本地工具）。
+   *
+   * 默认**关**：新增能力，默认开就是替所有用户改了「怎么联网」这件事。
+   * ⚠️ 只有当前对话模型支持时才可能出现（按钮渲染由 capabilities 的
+   * `chatDeepWebAvailable` 决定），且必须 `webSearch` 也开着 —— 关掉联网后
+   * 深度联网没有意义（输入框里那个按钮会置灰）。
+   */
+  deepWeb: boolean
 }
 
 /** ⚠️ 必须等于「改造前的现状」—— 改这里就是改变所有用户的行为 */
-export const CHAT_DEFAULTS: ChatPrefs = { webSearch: true, followUp: false, answerMode: 'strict' }
+export const CHAT_DEFAULTS: ChatPrefs = {
+  webSearch: true, followUp: false, answerMode: 'strict', deepWeb: false,
+}
 
 const CHAT_KEY = 'mbw_chatPrefs'
 
@@ -93,6 +105,7 @@ function parsePrefs(raw: string | null): ChatPrefs {
     return {
       webSearch: typeof v.webSearch === 'boolean' ? v.webSearch : CHAT_DEFAULTS.webSearch,
       followUp: typeof v.followUp === 'boolean' ? v.followUp : CHAT_DEFAULTS.followUp,
+      deepWeb: typeof v.deepWeb === 'boolean' ? v.deepWeb : CHAT_DEFAULTS.deepWeb,
       // 未知档位退回默认（**读回宽**）—— 写回是前端自己控制的枚举，
       // 唯一可能读到坏值是旧版本残留或手改 localStorage；此时落默认档比抛错安全。
       // ⚠️ 与后端 `_answer_mode`（**入口严**，非法值显式报错）刻意不同：

@@ -87,6 +87,8 @@ export function SettingsPage({ onBack, initialTab = 'model' }: {
   const [tavilyApiKey, setTavilyApiKey] = useState('')
   const [deepseekApiKey, setDeepseekApiKey] = useState('')
   const [fetchProvider, setFetchProvider] = useState('trafilatura')
+  // 深度联网时是否带内容安全（`agent_tools.deepseek_builtin.safety_check`）
+  const [deepSafetyCheck, setDeepSafetyCheck] = useState(false)
   const [targetLanguage, setTargetLanguage] = useState('zh-CN')
   const [loading, setLoading] = useState(true)
 
@@ -156,6 +158,9 @@ export function SettingsPage({ onBack, initialTab = 'model' }: {
         if (cfg.agent_tools.fetch) {
           setFetchProvider(cfg.agent_tools.fetch.provider || 'trafilatura')
         }
+        if (cfg.agent_tools.deepseek_builtin) {
+          setDeepSafetyCheck(!!cfg.agent_tools.deepseek_builtin.safety_check)
+        }
       }
     }).catch(err => console.error('加载配置失败:', err))
     .finally(() => setLoading(false))
@@ -177,6 +182,7 @@ export function SettingsPage({ onBack, initialTab = 'model' }: {
             tavily_api_key: tavilyApiKey, deepseek_api_key: deepseekApiKey,
           },
           fetch: { provider: fetchProvider },
+          deepseek_builtin: { safety_check: deepSafetyCheck },
         },
       })
       setSaved(true)
@@ -1235,6 +1241,26 @@ export function SettingsPage({ onBack, initialTab = 'model' }: {
                       Key 与「网络搜索」共用一把（那里留空则复用 DeepSeek 模型的 Key）。失败时自动降级到 trafilatura。
                     </p>
                   )}
+                </div>
+
+                {/* 深度联网的可选项（整组属于 `agent_tools`，随「保存设置」生效）。
+                    ⚠️ 放在这一页而不是「AI 对话偏好」那张卡：那张卡存的是**本机偏好**
+                    （即时生效、不进 config.yaml），而这一项要落盘进配置，两者形态不同，
+                    混在一起会让用户以为它也是即时生效。 */}
+                <div className="border-t border-border-light pt-5">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input type="checkbox" checked={deepSafetyCheck}
+                      onChange={e => setDeepSafetyCheck(e.target.checked)}
+                      className="mt-1 w-4 h-4 accent-accent shrink-0" />
+                    <span>
+                      <span className="text-[15px] font-medium block">深度联网时启用内容安全</span>
+                      <span className="text-[12px] text-muted block mt-1 leading-relaxed">
+                        开启后，输入框里打开「深度联网」的那几轮会要求在服务端做一次高等级内容检查。
+                        被拦下时这一轮不会有正文，界面上会明确提示「内容安全审核拒绝」，而不是空白回答。
+                        默认关闭（= 改造前的行为）。
+                      </span>
+                    </span>
+                  </label>
                 </div>
               </div>
             </div>
