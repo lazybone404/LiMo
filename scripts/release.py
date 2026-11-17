@@ -8,6 +8,7 @@
     python scripts/release.py --write           # 由构建产物生成 dist-release/latest.json
     python scripts/release.py --check           # 发版门禁（退出码 0/1/2）
     python scripts/release.py --print-upload    # 打印 gh release create 命令
+    python scripts/release.py --prune           # 只留最新 2 个版本的安装包（--dry-run 只看不删）
 
 退出码三态（与 check-secrets.py / migrate-secrets.py 一致）：
 
@@ -38,6 +39,18 @@ TAURI_CONF = Path("frontend/src-tauri/tauri.conf.json")
 CARGO_TOML = Path("frontend/src-tauri/Cargo.toml")
 MANIFEST_PATH = Path("dist-release/latest.json")
 KEYS_DIR = ROOT.parent / ".release-keys"
+
+# 本机保留的安装包版本数（2026-11-17 用户定下的规则：最多留两个）。
+#
+# 一份 NSIS + 一份 MSI 合计约 365MB，一次打包就多出一整套；包一旦传到 Release，
+# 本机这份的唯一用途是「出事时重传」或「比对上一版」，两个版本足够覆盖这两件事。
+# 三个以上留着，收益只体现在「省一次 5 分钟的重新打包」，代价是每次都要在
+# 一堆同名文件里找当前版本。
+BUNDLE_KEEP_VERSIONS = 2
+
+# `LiMo_0.5.28_x64-setup.exe` / `LiMo_0.5.28_x64_en-US.msi` / 各自的 `.sig` ——
+# 用前缀取版本号，`bundle_type` 那些格式差异与 `.sig` 后缀都不用单独处理。
+_BUNDLE_NAME_RE = re.compile(r"^LiMo_(\d+\.\d+\.\d+)_")
 
 # 平台基础键。**同时**它是老客户端的兜底键，不能删。
 #
@@ -445,12 +458,67 @@ def cmd_print_upload(root: Path = ROOT) -> int:
     return 0
 
 
+def collect_bundle_versions(root: Path = ROOT) -> dict[str, list[Path]]:
+    """`bundle/nsis` 与 `bundle/msi` 里出现过的版本 → 属于该版本的文件。
+
+    ⚠️ 判据是**文件名前缀**，不是目录里有什么：同一版本下 NSIS 的 exe、MSI 的 msi
+    与两份 `.sig` 都要一起算进这一个版本，删的时候才不会留下半套（留下 `.sig` 没有包，
+    或者反过来 —— 后者会让 `--check` 在下次发版时误判「签名缺失」）。
+    """
+    found: dict[str, list[Path]] = {}
+    for rel in (BUNDLE_NSIS_DIR, BUNDLE_MSI_DIR):
+        d = root / rel
+        if not d.is_dir():
+            continue
+        for f in d.iterdir():
+            m = _BUNDLE_NAME_RE.match(f.name)
+            if f.is_file() and m:
+                found.setdefault(m.group(1), []).append(f)
+    return found
+
+
+def cmd_prune(root: Path = ROOT, dry_run: bool = False) -> int:
+    """只保留最新的 `BUNDLE_KEEP_VERSIONS` 个版本的安装包，其余删掉。
+
+    按版本号排，不按文件时间：重新打包旧版本、或者 Git 检出切回去重建，都会让
+    时间戳与版本号不一致，而「哪个是上一版」问的是版本号。
+    """
+    versions = collect_bundle_versions(root)
+    if len(versions) <= BUNDLE_KEEP_VERSIONS:
+        print(f"[release] 本机 {len(versions)} 个版本的安装包，未超过 "
+              f"{BUNDLE_KEEP_VERSIONS} 个，无需清理")
+        return 0
+
+    ordered = sorted(versions, key=lambda v: tuple(int(x) for x in v.split(".")), reverse=True)
+    keep, drop = ordered[:BUNDLE_KEEP_VERSIONS], ordered[BUNDLE_KEEP_VERSIONS:]
+
+    print(f"[release] 保留：{', '.join(keep)}")
+    freed = 0
+    for v in drop:
+        for f in versions[v]:
+            size = f.stat().st_size
+            freed += size
+            rel = f.relative_to(root).as_posix()
+            if dry_run:
+                print(f"[release]   将删除 {rel}（{size / 1024 / 1024:.0f} MB）")
+            else:
+                f.unlink()
+                print(f"[release]   已删除 {rel}（{size / 1024 / 1024:.0f} MB）")
+    verb = "可释放" if dry_run else "已释放"
+    print(f"[release] {len(drop)} 个版本（{', '.join(drop)}）共{verb} "
+          f"{freed / 1024 / 1024:.0f} MB")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="生成并校验自动更新清单 latest.json")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--write", action="store_true", help="由构建产物生成 latest.json")
     group.add_argument("--check", action="store_true", help="发版门禁")
     group.add_argument("--print-upload", action="store_true", help="打印 gh release create 命令")
+    group.add_argument("--prune", action="store_true",
+                       help=f"只保留最新 {BUNDLE_KEEP_VERSIONS} 个版本的安装包")
+    parser.add_argument("--dry-run", action="store_true", help="与 --prune 连用：只报告不删除")
     args = parser.parse_args(argv)
 
     try:
@@ -458,6 +526,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_write()
         if args.print_upload:
             return cmd_print_upload()
+        if args.prune:
+            return cmd_prune(dry_run=args.dry_run)
         return cmd_check()
     except Exception as e:  # noqa: BLE001 —— 脚本自身出错必须与「查出问题」区分开
         import traceback
