@@ -160,3 +160,27 @@ describe('设置轴 —— 该跟随的跟随、该自持的自持', () => {
     expect(CSS).toMatch(/\.chat-card\s*\{[^}]*border: var\(--card-border\)/)
   })
 })
+
+describe('语义块 —— 类型标签与内容变种（2026-11-17）', () => {
+  it('五种语义块各有一行类型标签', () => {
+    // 图标是象形（`ClipboardList` 是摘要还是清单，读者要猜），标签把类型写出来。
+    for (const [cls, label] of [
+      ['chat-info-card', '信息'], ['chat-digest-card', '摘要'],
+      ['chat-caution', '注意'], ['chat-howto', '步骤'], ['chat-quote', '引用'],
+    ] as const) {
+      expect(CSS).toMatch(
+        new RegExp(`\\.${cls} \\.chat-block-body::before\\s*\\{[^}]*content:\\s*"${label}"`))
+    }
+  })
+
+  it('标签挂在 `body` 上而不是 flex 容器上', () => {
+    // 挂在 `.chat-block`（display:flex）上会变成第三个 flex 单元，把正文挤窄。
+    expect(CSS).toMatch(/^\.chat-block-body::before\s*\{/m)
+    expect(CSS).not.toMatch(/^\.chat-block::before\s*\{/m)
+  })
+
+  it('摘要卡单段正文时放大字号（内容变种）', () => {
+    expect(CSS).toContain(
+      '.chat-digest-card:has(.chat-block-body > p:only-child) .chat-block-body > p')
+  })
+})

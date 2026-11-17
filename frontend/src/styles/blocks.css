@@ -133,6 +133,66 @@
   margin-bottom: 0;
 }
 
+/* ── 类型标签（2026-11-17）─────────────────────────────────────────────
+   三种强调块形态本来就同族（左边框 + 淡底），只换语义色。颜色说不清「这一段
+   是什么」—— 读者看到一块淡底框，只能读正文反推是结论、提醒还是推荐。加一行
+   小标签，类型一眼可读，颜色退为辅助。
+
+   ⚠️ 用伪元素而不是在块里加一个节点：本文件是**导出侧的单一真相源**，加节点就要
+   Python 的 `render_blocks_html` 复刻一遍结构（模式 #54）。伪元素随 CSS 一起被
+   内联进导出 HTML，两侧天然一致，不需要任何后端改动。
+   ⚠️ 标签属于**装饰**：`data-marker-decor="off"` 时必须一起消失（见本节末尾）。
+   ⚠️ `metric` 不在此列 —— 它的 `### 名称` 本身就是标签。 */
+.md-block[data-block-type="key-takeaway"]::before,
+.md-block[data-block-type="alert"]::before,
+.md-block[data-block-type="recommend"]::before {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.md-block[data-block-type="key-takeaway"]::before { content: "结论"; color: var(--tk-accent); }
+.md-block[data-block-type="alert"]::before { content: "注意"; color: var(--tk-warning); }
+.md-block[data-block-type="recommend"]::before { content: "推荐"; color: var(--tk-success); }
+
+/* ── 结论块的两种内容变种（2026-11-17）─────────────────────────────────
+   同一个 `key-takeaway`，内容形态不同，合适的排版也不同。判据取**块内结构**
+   （只有一段文字 / 是一个列表），CSS 直接读，不需要模型配合，也不新增类型。
+
+   ⚠️ 为什么不新增 type：新类型要改协议、前端解析器、Python 渲染器与共享 fixture
+   四处（见 CLAUDE.md「加一个 type 必须同步 decor=off 归零规则」），而这里要区分的
+   是**同一个语义下两种排版**，不是两种语义。
+   ⚠️ `:has()` 的支持面与本文件其它规则一致（`cycle` 的环形增强已经依赖它）。
+   不支持时两条规则都不匹配，退回默认排版，**零残留**。 */
+
+/* ① 一句话结论：块内只有一段文字 → 给足字号与行距，让它读起来像一块引言 */
+.md-block[data-block-type="key-takeaway"]:has(> p:only-child) {
+  padding: 16px 20px;
+}
+
+.md-block[data-block-type="key-takeaway"]:has(> p:only-child) > p {
+  margin: 0;
+  font-size: 1.04em;
+  line-height: 1.75;
+}
+
+/* ② 分点结论：块内是列表 → 收紧缩进，项目符号跟随主色 */
+.md-block[data-block-type="key-takeaway"]:has(> ul),
+.md-block[data-block-type="key-takeaway"]:has(> ol) {
+  padding: 14px 20px;
+}
+
+.md-block[data-block-type="key-takeaway"] :is(ul, ol) {
+  margin: 2px 0 0;
+  padding-left: 1.2em;
+}
+
+.md-block[data-block-type="key-takeaway"] :is(ul, ol) li::marker {
+  color: var(--tk-accent);
+}
+
 /* ── 关掉装饰：只留内容 ────────────────────────────────────────────────
    ⚠️ **这不是「隐藏标记」**——块内的文字一个字都不少，只是没有边框与底色。
    ⚠️ `margin` 保持与默认态**同值**：这里的语义是「去掉装饰」，不是「把它变回普通
@@ -164,6 +224,17 @@
   border: none;
   border-radius: 0;
   background: none;
+}
+
+/* 类型标签也属于装饰 —— 关掉装饰后不能只剩「结论」两个字而没有块。
+   ⚠️ 用 `content: none` 而不是 `display: none`：这个开关的归零方式**只允许**改
+   margin / padding / border / border-radius / background 与伪元素的 `content`
+   （`artifactCardShape.test.ts` 有守卫钉住 `display: none`），因为后者不会让
+   任何真实节点消失。*/
+[data-marker-decor="off"] .md-block[data-block-type="key-takeaway"]::before,
+[data-marker-decor="off"] .md-block[data-block-type="alert"]::before,
+[data-marker-decor="off"] .md-block[data-block-type="recommend"]::before {
+  content: none;
 }
 
 /* ── 横向步骤条（steps）────────────────────────────────────────────────

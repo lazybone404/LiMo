@@ -124,6 +124,38 @@ describe('内容块装饰开关 —— 只收装饰，绝不吞内容', () => {
   })
 })
 
+describe('强调块 —— 类型标签与内容变种（2026-11-17）', () => {
+  // 三种强调块形态同族、只换语义色，颜色说不清「这一段是什么」。标签由伪元素承担，
+  // 故导出侧不需要改结构 —— 这条守卫正是钉住「别哪天改成往块里塞节点」。
+  it('三种强调块各有一行类型标签', () => {
+    for (const [type, label] of [
+      ['key-takeaway', '结论'], ['alert', '注意'], ['recommend', '推荐'],
+    ] as const) {
+      expect(BLOCKS).toMatch(
+        new RegExp(`\\.md-block\\[data-block-type="${type}"\\]::before\\s*\\{[^}]*content:\\s*"${label}"`))
+    }
+  })
+
+  it('标签用伪元素，不新增 DOM 节点（导出侧结构零改动）', () => {
+    // 反向判据：块内若靠真实元素承载标签，`render_blocks_html` 就得复刻一遍结构。
+    expect(BLOCKS).not.toMatch(/\.md-block-label/)
+  })
+
+  it('`metric` 不加标签（它的 `### 名称` 本身就是标签）', () => {
+    expect(BLOCKS).not.toMatch(/\.md-block\[data-block-type="metric"\]::before/)
+  })
+
+  it('结论块按块内结构分两种排版：单段 / 列表', () => {
+    expect(BLOCKS).toContain('.md-block[data-block-type="key-takeaway"]:has(> p:only-child)')
+    expect(BLOCKS).toContain('.md-block[data-block-type="key-takeaway"]:has(> ul)')
+  })
+
+  it('关掉装饰时标签用 `content: none` 收起（不是 `display: none`）', () => {
+    expect(BLOCKS).toMatch(
+      /\[data-marker-decor="off"\][^{]*key-takeaway[^{]*::before[^{]*\{[^}]*content:\s*none/)
+  })
+})
+
 describe('章节卡片 —— 长串与标题', () => {
   it('`.md-card` 有 `overflow-wrap`（长 URL 不撑破整节卡）', () => {
     const body = ruleBody(CARDS, '[data-skeleton="card"] .md-card')

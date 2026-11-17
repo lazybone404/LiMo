@@ -16,9 +16,10 @@
    ⚠️ **七种块**（2026-10-12：原四种 + `caution` / `how-to` / `quote`）分两档：
    卡片组（`card-group`，网格）与追问 chips（`follow-up`）各自成组；其余五种
    （`info` / `digest` / `caution` / `how-to` / `quote`）共用 `.chat-block` 外壳，
-   **形态差异只有图标与四边框色**（2026-10-17 由「左边框」改为四边框，见下）——
-   它们区别在「这是什么性质」，由这两样各承担一半即可；给五种各设计一套布局，
-   读者反而要重新学一遍。
+   **形态差异是图标、四边框色与一行类型标签**（2026-10-17 由「左边框」改为四边框；
+   2026-11-17 加标签，见下）—— 它们区别在「这是什么性质」，由这三样各承担一部分
+   即可；给五种各设计一套布局，读者反而要重新学一遍。内容形态的差异另由 `:has()`
+   变种承接（同日的「内容变种」一节），那部分只在块内结构真的不同时才生效。
 
    ── 视觉跟随 `--card-*`（2026-10-12 起）────────────────────────────────
 
@@ -502,6 +503,8 @@
 .chat-howto li::marker {
   color: var(--tk-accent);
   font-weight: 600;
+  /* 两位编号等宽，10 步以上时个位与十位不左右跳 */
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── `quote`：出处行 ─────────────────────────────────────────────────
@@ -514,6 +517,43 @@
   line-height: 1.4;
   text-align: right;
   color: var(--tk-dimmed);
+}
+
+/* ── 类型标签（2026-11-17）────────────────────────────────────────────
+   五种语义块共用一个外壳，原先只有图标与四边框色区分。图标是象形，读者要猜
+   （`ClipboardList` 到底是「摘要」还是「清单」）；加一行小字，类型直接读得出来，
+   图标退为辅助。与产物侧 `blocks.css` 的「结论 / 注意 / 推荐」同一套语言。
+
+   ⚠️ 标签挂在 `.chat-block-body` 而不是块容器上：容器是 `display: flex`，
+   往它里面塞 `::before` 会变成「图标、标签、正文」三个 flex 单元并排，把正文挤走。
+   挂在 body 上，它才是正文自己的第一行。
+   ⚠️ **不做成可关的装饰**：对话侧没有「内容块装饰」开关（见文件头），而这一行
+   正是「这一段是什么」的答案，关掉它只剩象形图标。
+   ⚠️ 尺寸用 em：三个字号档位下要跟着缩，与文件内其余规则一致。 */
+.chat-block-body::before {
+  display: block;
+  margin-bottom: 0.2em;
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+}
+
+.chat-info-card .chat-block-body::before { content: "信息"; color: var(--tk-accent); }
+.chat-digest-card .chat-block-body::before { content: "摘要"; color: var(--tk-muted); }
+.chat-caution .chat-block-body::before { content: "注意"; color: var(--tk-warning); }
+.chat-howto .chat-block-body::before { content: "步骤"; color: var(--tk-accent); }
+.chat-quote .chat-block-body::before { content: "引用"; color: var(--tk-dimmed); }
+
+/* ── 内容变种（2026-11-17）─────────────────────────────────────────────
+   判据取**块内结构**，由 CSS 直接读，不需要模型配合，也不新增块类型。
+   ⚠️ `:has()` 在本文件里是既有手法（卡片组按子元素数量切列数是同一套写法），
+   不支持时规则整体不匹配，退回默认排版，零残留。 */
+
+/* 摘要卡只有一段正文时放大字号：摘要的全部价值就在那一段，值得比正文多一点分量 */
+.chat-digest-card:has(.chat-block-body > p:only-child) .chat-block-body > p {
+  font-size: 1.06em;
+  line-height: 1.6;
 }
 
 /* ── 代码块（`ChatPre`）──────────────────────────────────────────────── */
