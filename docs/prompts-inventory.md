@@ -595,7 +595,8 @@ system = loader.build(doc_context, web_search=allow_web, answer_mode=mode)
 - `base.md` → 角色定义
 - **联网层**（2026-10-12）→ `web_tools.md`（能用 `search_web` / `fetch_url` + 搜索结果的使用规则）**或** `no_web.md`（明确声明没有联网能力，不许声称「根据最新数据」、不许编造来源）
 - **回答依据层**（2026-10-20）→ `scope_strict.md`（只用知识库：库里没有就说没找到）**或** `scope_open.md`（允许补充，文档优先、标明出处）**或** `scope_free.md`（自由对话，不要求先查库）
-- `rules.md` → 硬约束（禁止编造、区分出处…）
+- `rules.md` → 硬约束（禁止编造、区分出处…）+ 表达层（2026-11-17 加的第 4 节：
+  不写可删的修饰、评价要跟事实、不写读者没有的误解、比喻要能展开、不用破折号）
 - `formats.md` → 回答可用的**语义块**（`limo-block` 的**七个**对话侧类型：`card-group` 卡片组 / `follow-up` 追问建议 / `info` 信息卡 / `digest` 摘要卡 / `caution` 注意事项 / `how-to` 操作步骤 / `quote` 引用出处），见 9.5
 - `doc_context` → 运行时注入的文档内容（`smart_truncate(rawText, 1000)` 按句子边界截断）
 
@@ -1304,7 +1305,7 @@ process 产物确实带 `promptVersion`，而分类根本没有产物可带。
 | [backend/app/agent/prompts/base.md](../backend/app/agent/prompts/base.md) | Agent 角色定义层（分层 System Prompt 第一层） |
 | [backend/app/agent/prompts/web_tools.md](../backend/app/agent/prompts/web_tools.md) / [no_web.md](../backend/app/agent/prompts/no_web.md) | 联网层（一对互斥文件，第二层；由 `web_search` 二选一注入） |
 | [backend/app/agent/prompts/scope_strict.md](../backend/app/agent/prompts/scope_strict.md) / [scope_open.md](../backend/app/agent/prompts/scope_open.md) / [scope_free.md](../backend/app/agent/prompts/scope_free.md) | 回答依据层（三选一注入，第三层；由 `answer_mode` 决定，见 9.1） |
-| [backend/app/agent/prompts/rules.md](../backend/app/agent/prompts/rules.md) | Agent 硬约束层（禁止编造、区分出处…第四层；⚠️ 三档共用，不得写入任何一档的专属措辞） |
+| [backend/app/agent/prompts/rules.md](../backend/app/agent/prompts/rules.md) | Agent 硬约束层（禁止编造、区分出处…第四层；⚠️ 三档共用，不得写入任何一档的专属措辞）。第 4 节「表达」是文风约束，与笔记侧的「平实」档同源，见 9.1 |
 | [backend/app/agent/prompts/formats.md](../backend/app/agent/prompts/formats.md) | Agent 回答的语义块规范（`limo-block` 的七个对话侧类型 `card-group` / `follow-up` / `info` / `digest` / `caution` / `how-to` / `quote`，第五层；见 9.5） |
 | [backend/app/agent/prompts/__init__.py](../backend/app/agent/prompts/__init__.py) | `PromptLoader` — 组装 base + 联网层 + 回答依据层 + rules + formats + 动态 doc_context（chat.py 的旧内联 SYSTEM_PROMPT 已迁移至此） |
 | [backend/app/agent/tools.py](../backend/app/agent/tools.py) | 5 个工具 ToolDef + 工具描述（search_docs / lookup_doc / list_docs / search_web / fetch_url） |

@@ -101,6 +101,24 @@ def test_两种模式下_rules_与_formats_都在():
         assert "limo-block" in sys                  # formats.md
 
 
+def test_表达规范在两种模式下都注入():
+    """`rules.md` §4「表达」—— 与联网开关无关的常驻层。
+
+    ⚠️ 要防的失效是**整节被删而无人察觉**：`rules.md` 的另外三节都有测试盯着
+    （引用标注、禁止编造、区分出处），唯独表达这一节没有行为对照物 —— 删掉之后
+    所有用例照绿，回答只是变得更能用空话撑篇幅。
+    ⚠️ 也只断言这一节自己的措辞，不复制全文：改一句话不该连带把测试改一遍。
+    """
+    for web in (True, False):
+        sys = PromptLoader().build("", web_search=web)
+        assert "### 4. 表达" in sys
+        assert "不用破折号" in sys
+        assert "不写读者本来没有的误解" in sys
+        assert "情绪词不代替论证" in sys
+        # 边界句：代码块与原文引用不受这套约束
+        assert "代码块与原文引用照抄" in sys
+
+
 def test_两种模式下_doc_context_都注入():
     for web in (True, False):
         assert "--- 当前文档 ---" in PromptLoader().build("正文", web_search=web)
