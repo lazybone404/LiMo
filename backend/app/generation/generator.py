@@ -17,9 +17,26 @@ from app.core.pricing import usage_record
 from app.core.types import MarkdownView, Style, GenerateMode
 from app.generation.effort import effort_for
 from app.generation.prompts import coerce_style
+from app.generation.quality_revise import revise as revise_quality
 from app.generation.reference_compressor import compress_references_if_needed
 from app.llm.service import LLMService
 from app.services.chart_renderer import render_charts
+
+
+async def _revise_notes(llm, content: str, *, cancel_event=None) -> str:
+    """成稿检查与定点修订。**失败不销毁原稿** —— 修订是加分项，不是生成的一部分。
+
+    ⚠️ 只作用于 notes。整理版（polished）是对原文的忠实整理，改写句子就破坏了
+    「忠实」这个承诺；xlsx 那条路两个产物共用同一份内容，改它等于同时改整理版。
+    ⚠️ 异常在这里被吞成一条 warning：修订挂了而整篇笔记生成失败，是拿主要价值
+    换次要价值。日志里留痕，不静默。
+    """
+    try:
+        result = await revise_quality(llm, content, cancel_event=cancel_event)
+    except Exception as e:                                   # noqa: BLE001
+        logger.warning("质量修订失败，保留原稿 | %s", e)
+        return content
+    return result.content
 
 
 def _coerce_style(style: str) -> Style:
@@ -373,6 +390,9 @@ class Generator:
 
             content_a = _post_process_content_markers(content_a)
             content_b = _post_process_content_markers(content_b)
+            # 成稿检查与定点修订（notes 侧）。放在截图与图表渲染**之前**：
+            # 那时正文还是模型原样写的几句话，没有混进图片路径与图表占位。
+            content_b = await _revise_notes(self._llm, content_b, cancel_event=cancel_event)
             if formats and "screenshot" in formats:
                 # P1-1：ffmpeg 抽帧放线程池（两路并行），释放事件循环
                 content_a, content_b = await asyncio.gather(
