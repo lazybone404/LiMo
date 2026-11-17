@@ -82,10 +82,13 @@
 /* ── 指标块（metric）───────────────────────────────────────────────────
    形态 = 浅色小面板 + 「`### 名称` 收成小标签」+「紧随其后的段落放大成数字」。
 
-   ⚠️ **刻意不做并排**：并排需要网格容器，那是**结构**变化，而本文件是导出侧读的
-   单一真相源 —— 结构一变，Python 的 `render_blocks_html` 就得复刻一遍 React 的
-   结构（模式 #54），「预览所见 = 导出所得」随即变成靠人工对齐维持。这条约束直接
-   来自文件头那条纪律，代价是这里只能纵向排列。
+   ⚠️ **并排没有加包装节点**（2026-11-17 订正上一版结论）：原先这里写着「并排需要
+   网格容器，那是结构变化」，把 `display: grid` 与「给每张卡套一个容器」混成了一件
+   事。块本身就是网格容器时，子元素仍是 `h3` 与 `p` 交替，Python 的
+   `render_blocks_html` 一个字都不用改 —— 见下面「多指标」一节的做法。
+   ⚠️ **但不加 wrapper 就不能按「一个指标」分组**：网格只能定位到单个 `h3` / `p`，
+   故每张卡的上下两半靠「h3 与紧随其后的 p 共用同一块底色与边框」拼出来。这条
+   取巧成立的前提是**模型按约定写**（`### 名称` 紧跟数字，中间不插段落）。
    ⚠️ 放大靠 `h3 + p` **相邻兄弟选择器**，故模型必须按约定写（`### 名称` 后紧跟数字）
    —— 不按约定写就**自然退化成普通内容**（h3 是普通小标题、p 是普通段落），零残留。 */
 .md-block[data-block-type="metric"] {
@@ -140,18 +143,83 @@
   margin-bottom: 0;
 }
 
-/* ── 指标卡的规模变种（2026-11-17）─────────────────────────────────────
-   一个指标块可以放 1–4 个指标，块内是「`### 名称` + 数字」成对重复。全用 2.2em
-   时，四个指标纵向排下来会占掉半屏，而它们本该是一眼看全的一组数。
+/* ── 多指标：每个指标一张小卡（2026-11-17）─────────────────────────────
+   一个指标块可以放 1–4 个指标，块内是「`### 名称` + 数字」成对重复。纵向堆在
+   一块大面板里时，四个指标像四行流水账；改成每对一张小卡、两列排开，才像
+   「一组数」。
 
-   规则：第一个指标保持 2.2em，第二个及以后降到 1.55em。这样一块里读到的
-   顺序仍是「主指标 → 其余指标」，密度却回到了可扫读的范围。
-   ⚠️ 判据是**位置**（`h3:not(:first-child)`），不是项数：只有一项时什么都不变。
-   ⚠️ 刻意不做并排 —— 并排需要网格容器，那是**结构**变化，本文件是导出侧读的
-   单一真相源，结构一变 Python 的 `render_blocks_html` 就得复刻一遍（见本节头）。 */
-.md-block[data-block-type="metric"] h3:not(:first-child) + p {
-  font-size: 1.55em;
-  margin-bottom: 12px;
+   ⚠️ **纯 CSS，块内不加任何节点**：本文件是导出侧读的单一真相源，加包装节点
+   就要 Python 的 `render_blocks_html` 复刻一遍结构（模式 #54）。这里的做法是
+   用**列向网格**把「标签 + 数字」挤进同一列（`grid-auto-flow: column` +
+   `grid-template-rows`），再让 h3 与紧随其后的 p 共用同一块底色与边框：
+   两者上下相接、圆角各管一头，看上去就是一张卡。
+   ⚠️ 只在 **2–4 个**指标时启用（`:has(h3:nth-of-type(2)):not(:has(h3:nth-of-type(5)))`）。
+   一个指标保持原来的大数字面板；五个以上超出 prompt 约定的 1–4，退回纵向排列，
+   不会把内容排进看不见的格子。
+   ⚠️ `row-gap: 0`：同一张卡的上下两半必须相接，间距交给各自的 padding。 */
+.md-block[data-block-type="metric"]:has(h3:nth-of-type(2)):not(:has(h3:nth-of-type(5))) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 10px;
+  row-gap: 0;
+  padding: 10px;
+}
+
+/* ⚠️ 每个指标**显式定位**，不用 `grid-auto-flow: column`：自动列向流会把第 2 个
+   指标排到左下、第 3 个排到右上，读者按「先左右后上下」读到的顺序与原文不一致。
+   显式定位给出的是行优先：1 2 在上、3 4 在下，与书写顺序一致。 */
+.md-block[data-block-type="metric"] > h3:nth-of-type(1) { grid-area: 1 / 1; }
+.md-block[data-block-type="metric"] > h3:nth-of-type(2) { grid-area: 1 / 2; }
+.md-block[data-block-type="metric"] > h3:nth-of-type(3) { grid-area: 3 / 1; }
+.md-block[data-block-type="metric"] > h3:nth-of-type(4) { grid-area: 3 / 2; }
+
+.md-block[data-block-type="metric"] > h3:nth-of-type(1) + p { grid-area: 2 / 1; }
+.md-block[data-block-type="metric"] > h3:nth-of-type(2) + p { grid-area: 2 / 2; }
+.md-block[data-block-type="metric"] > h3:nth-of-type(3) + p { grid-area: 4 / 1; }
+.md-block[data-block-type="metric"] > h3:nth-of-type(4) + p { grid-area: 4 / 2; }
+
+/* 块末的补充说明（不属于任何指标）横跨两列，落在所有小卡下面 */
+.md-block[data-block-type="metric"]:has(h3:nth-of-type(2)) > p:last-child:not(h3 + p) {
+  grid-column: 1 / -1;
+  margin: 10px 0 0;
+  font-size: 0.92em;
+  color: var(--tk-dimmed);
+}
+
+/* 卡面：标签（上半）与数字（下半）共用一张底、一道边，圆角各管一头 */
+.md-block[data-block-type="metric"]:has(h3:nth-of-type(2)) h3 {
+  margin: 0;
+  padding: 9px 11px 0;
+  font-size: 0.78em;
+  background: color-mix(in srgb, var(--tk-accent) 5%, var(--tk-elevated));
+  border: 1px solid var(--tk-border-light);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+}
+
+.md-block[data-block-type="metric"]:has(h3:nth-of-type(2)) h3 + p {
+  margin: 0;
+  padding: 2px 11px 9px;
+  font-size: 1.62em;
+  line-height: 1.2;
+  background: color-mix(in srgb, var(--tk-accent) 5%, var(--tk-elevated));
+  border: 1px solid var(--tk-border-light);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+}
+
+/* 卡面上那颗小圆点：把「这是一组数里的一个」标出来，也让标签与左边的数字有锚点。
+   ⚠️ 图标做不到「按内容区分」—— CSS 读不到块里的文字，能按内容变的只有模型写进
+   来的东西（`### 名称` 里的字）。故这里只给一个统一的主色圆点，不做假图标。 */
+.md-block[data-block-type="metric"]:has(h3:nth-of-type(2)) h3::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--tk-accent);
+  vertical-align: 0.12em;
 }
 
 /* ── 类型标签（2026-11-17）─────────────────────────────────────────────

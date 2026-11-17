@@ -48,14 +48,27 @@ describe('metric 指标数字 —— 随主题 accent', () => {
     expect(BLOCKS).not.toContain('--tk-metric')
   })
 
-  it('多指标时第一个保持 2.2em，其余降到 1.55em（规模变种）', () => {
-    // 四个指标全按 2.2em 纵向排会占掉半屏，而它们本该是一眼看全的一组数。
+  it('多指标时排成两列小卡，且只在 2–4 个时启用', () => {
+    // ⚠️ 五个以上超出 prompt 约定，必须退回纵向排列，否则会被塞进看不见的格子。
     expect(BLOCKS).toMatch(
-      /\.md-block\[data-block-type="metric"\] h3:not\(:first-child\) \+ p\s*\{[^}]*font-size: 1\.55em/)
+      /\.md-block\[data-block-type="metric"\]:has\(h3:nth-of-type\(2\)\):not\(:has\(h3:nth-of-type\(5\)\)\)\s*\{[^}]*display: grid/)
   })
 
-  it('指标卡仍然纵向排列（并排需要网格容器 = 结构变化，导出侧要复刻）', () => {
-    expect(BLOCKS).not.toMatch(/\.md-block\[data-block-type="metric"\][^{]*\{[^}]*display:\s*(grid|flex)/)
+  it('⚠️ 每个指标显式定位（行优先），不用 `grid-auto-flow: column`', () => {
+    // 自动列向流会把第 2 个指标排到左下、第 3 个排到右上 —— 读者按「先左右后上下」
+    // 读到的顺序与原文不一致，而页面上看不出任何异常。
+    expect(BLOCKS).toContain('.md-block[data-block-type="metric"] > h3:nth-of-type(2) { grid-area: 1 / 2; }')
+    expect(BLOCKS).not.toMatch(/metric"\]:has[^{]*\{[^}]*grid-auto-flow:\s*column/)
+  })
+
+  it('块末的补充说明横跨两列（不落进某张小卡里）', () => {
+    expect(BLOCKS).toContain('> p:last-child:not(h3 + p)')
+  })
+
+  it('单指标仍是原来的大数字面板（不套网格）', () => {
+    // 判据是 h3 的个数：只有一个 `### 名称` 时上面那条网格规则不匹配。
+    expect(BLOCKS).toMatch(
+      /\.md-block\[data-block-type="metric"\] h3 \+ p\s*\{[^}]*font-size: 2\.2em/)
   })
 })
 
