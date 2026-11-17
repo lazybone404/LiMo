@@ -1,7 +1,7 @@
 /**
  * MessageItem — 单条对话消息。
  *
- * 气泡布局（用户右 / 助手左）+ 流式打字机 + 消息操作栏（复制/编辑/重新生成/删除，
+ * 布局（用户右、带气泡 / 助手左、不带气泡）+ 流式打字机 + 消息操作栏（复制/编辑/重新生成/删除，
  * 流式中仅停止）+ 工具气泡三态（含公网来源展开）+ 引用 chips + 思考段折叠。
  *
  * 打字机：streaming 时 ReactMarkdown key 保持 'loading'（增量重渲染），
@@ -124,7 +124,15 @@ export function MessageItem({ msg, scale }: MessageItemProps) {
       </div>
 
       <div className="max-w-[85%] min-w-0">
-        <div className={`mt-0.5 px-3.5 py-2 ${s.msg} rounded-2xl break-words ${isUser ? 'bg-accent text-on-accent rounded-br-md' : 'bg-surface text-foreground rounded-bl-md'}`}>
+        {/* ⚠️ **只有用户消息带气泡**（2026-11-17 用户要求）。助手回答是最长的正文，
+            外面再套一层带底色的圆角框，读起来像被关进一个对话框，可用宽度也少一圈。
+            用户那一侧保留气泡：它通常只有一两行，需要一眼和回答区分开，气泡正好
+            承担这个区分。⚠️ 不删 `px-3.5 py-2` 会留下「无底色但有内边距」的错位，
+            删了之后容器只剩对齐与换行语义。 */}
+        <div className={`mt-0.5 break-words ${s.msg} ${
+          isUser
+            ? 'rounded-2xl rounded-br-md bg-accent px-3.5 py-2 text-on-accent'
+            : 'text-foreground'}`}>
           {/* 思考段折叠（P5 后端 thinking 事件） */}
           {msg.thinking ? (
             <div className="mb-1">

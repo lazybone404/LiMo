@@ -108,7 +108,9 @@ export function MessageList({ scale }: MessageListProps) {
         {total === 0 && (
           <div className="flex gap-2">
             <div className={`${s.avatar} flex shrink-0 items-center justify-center rounded-full bg-surface-hover`}><Bot size={s.icon} className="text-dimmed" /></div>
-            <div className={`max-w-[95%] px-3.5 py-2 ${s.msg} rounded-2xl rounded-bl-md bg-surface`}>你好！我是你的知识库助手。选中文档后可以向我提问，也可以 @ 引用其他文档。</div>
+            {/* 开场白也按助手消息的形态渲染：**不带气泡**（与 `MessageItem` 的助手侧一致），
+                否则空会话第一眼看到的是一颗框，提问之后框又消失 */}
+            <div className={`max-w-[95%] ${s.msg} text-dimmed`}>你好！我是你的知识库助手。选中文档后可以向我提问，也可以 @ 引用其他文档。</div>
           </div>
         )}
         {sliced.map(msg => (
