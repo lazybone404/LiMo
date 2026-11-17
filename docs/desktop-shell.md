@@ -28,6 +28,7 @@ LiMo.exe (Rust) ──spawn──▶ python.exe (uvicorn :7413)
 - **CORS**：`main.py` 使用 **Origin 白名单**（`http(s)://tauri.localhost` + `tauri://localhost` + 本机 localhost 任意端口）+ `_ForceCORSMiddleware` **仅白名单 origin 回显凭证**——阻隔任意恶意网页跨站读取本地后端（2026-08-02 从 `allow_origin_regex=".*"` 收紧；⚠️ 生产 WebView2 实际 origin 是 `http://tauri.localhost`，白名单必须含它）
 - **配置**：`tauri.conf.json` — 1400×900 窗口 + `maximized: true` + `com.limo.app` 标识
 - **依赖**：Rust 端 `tauri` (features=["devtools"]) + `tauri-plugin-shell` + `tauri-plugin-log`
+- **外链一律交给系统浏览器**（2026-11-17）：`lib/external-link.ts::installExternalLinkHandler()` 在 `main.tsx` 里装一个 document 级 capture 监听，凡 `<a>` 的 `href` 是 http(s) 就 `preventDefault()` 再调 `@tauri-apps/plugin-shell` 的 `open()`，权限用 `capabilities/default.json` 已有的 `shell:allow-open`。⚠️ **WebView 里没有「新标签页」**：正文与对话里的来源链接原本都写着 `target="_blank"`，在桌面壳里点下去要么把 LiMo 界面整个顶掉、要么弹出一个小窗再报错（2026-11-17 用户实测反馈）。⚠️ **判据是 scheme，不是 `target`**：站内锚点与相对路径必须原样放行，否则目录跳转会被当成外链丢给浏览器。⚠️ 入口只有一个，不要在各处 `<a>` 上各写一份 onClick —— 链接散在正文 Markdown、对话来源、追问 chip、内容横幅、更新卡片、引导向导至少六处。
 
 ---
 

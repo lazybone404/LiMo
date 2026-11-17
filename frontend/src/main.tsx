@@ -17,6 +17,7 @@ import './styles/chat-blocks.css'
 // （后端不读它：导出物里只有正文，与 `ArtifactMetaBar` 同一条纪律）。
 // 必须排在 cards.css 之后：它对本档覆盖 `.md-card` 的固定 px 留白。
 import './styles/fold.css'
+import { installExternalLinkHandler } from './lib/external-link.ts'
 import App from './App.tsx'
 
 /**
@@ -29,6 +30,10 @@ import App from './App.tsx'
  * `./demo/*` 一起摇掉 —— 演示数据不进正式包。
  */
 async function bootstrap() {
+  // 外链走系统浏览器（判据与理由见 lib/external-link.ts）。
+  // ⚠️ 装在渲染**之前**：晚了的话首屏那几条链接（内容横幅、更新卡片）会先按
+  // WebView 默认行为导航走，页面被顶掉之后监听才挂上，等于没装。
+  installExternalLinkHandler()
   if (import.meta.env.VITE_DEMO === '1') {
     const { installDemoFetch } = await import('./demo/mock')
     installDemoFetch()
