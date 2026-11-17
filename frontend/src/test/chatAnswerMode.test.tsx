@@ -258,6 +258,8 @@ describe('两处入口共享一份状态', () => {
 
   it('联网 / 追问两个开关同样两处同源（不只是回答依据）', () => {
     const { container } = render(<ChatInput scale="md" />)
+    // 两颗开关住在「回答设置」浮层里（2026-11-17 起），先打开再读
+    fireEvent.click(container.querySelector('[data-settings-toggle]')!)
     const web = () => container.querySelector('[data-websearch-toggle]')!.getAttribute('data-websearch-toggle')
     const fu = () => container.querySelector('[data-followup-toggle]')!.getAttribute('data-followup-toggle')
     expect(web()).toBe('on')     // 默认开 = 改造前现状

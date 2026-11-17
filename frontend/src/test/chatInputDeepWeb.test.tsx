@@ -50,6 +50,15 @@ afterEach(() => { vi.restoreAllMocks() })
 const btn = (c: HTMLElement) => c.querySelector('[data-deepweb-toggle]')
 const stateOf = (c: HTMLElement) => btn(c)?.getAttribute('data-deepweb-toggle')
 
+/**
+ * 打开「回答设置」浮层 —— 联网 / 深度联网 / 追问三颗开关 2026-11-17 起都住在里面
+ * （此前是输入框上方并排的三颗图标，五颗横排会把浮窗变窄时的输入框挤成一条缝）。
+ * ⚠️ 按钮「在不在」的断言同样要先打开浮层：浮层没开时整张面板都不在 DOM 里，
+ * 不打开就断言 `toBeNull()` 会**永远通过**，与深层联网是否真的没渲染无关。
+ */
+const openSettings = (c: HTMLElement) =>
+  fireEvent.click(c.querySelector('[data-settings-toggle]')!)
+
 // ═══════════════════════════════════════════════════════════
 // 1. 按钮：渲不渲染、能不能点
 // ═══════════════════════════════════════════════════════════
@@ -60,18 +69,21 @@ describe('ChatInput 的深度联网按钮', () => {
     // 换对话模型，那个入口在设置页，不在这个按钮上。
     setDeepWebCapability(false)
     const { container } = render(<ChatInput scale="md" />)
+    openSettings(container)          // 浮层开着才谈得上「里面有没有这一行」
     expect(btn(container)).toBeNull()
   })
 
   it('模型支持 → 默认关闭态', () => {
     setDeepWebCapability(true)
     const { container } = render(<ChatInput scale="md" />)
+    openSettings(container)
     expect(stateOf(container)).toBe('off')
   })
 
   it('点一下 → 落盘并变开启态', () => {
     setDeepWebCapability(true)
     const { container } = render(<ChatInput scale="md" />)
+    openSettings(container)
     fireEvent.click(btn(container)!)
 
     expect(loadChatPrefs().deepWeb).toBe(true)
@@ -89,6 +101,7 @@ describe('ChatInput 的深度联网按钮', () => {
     setDeepWebCapability(true)
     saveChatPrefs({ webSearch: false, deepWeb: true })
     const { container } = render(<ChatInput scale="md" />)
+    openSettings(container)
 
     expect(btn(container)!.hasAttribute('disabled')).toBe(true)
     // 开着联网时偏好为真 —— 但因为联动闸门，按钮此刻显示 off（不会真发出去）

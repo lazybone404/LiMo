@@ -7,10 +7,10 @@
  * @ 文档引用：AtSign 按钮弹出文档选择浮层，选中文档 → docRef chips（本条消息引用）。
  * 发送时 docRefs 随 sendMessage 传入，docIds = 当前选中文档 + 本条引用（chatStore 组合去重）。
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  Send, Square, AtSign, FileText, X, MessageCircleQuestion, Globe, Radar,
-  BookOpen, Sparkles, Wand2, Check,
+  Send, Square, AtSign, FileText, X, MessageCircleQuestion, Globe, ScanSearch,
+  BookOpen, Sparkles, Wand2, Check, SlidersHorizontal,
 } from 'lucide-react'
 import { useChatStore, type DocRef } from '../../store/chatStore'
 import { useStore, type DocEntry } from '../../store'
@@ -38,6 +38,40 @@ const MODE_ICONS: Record<AnswerMode, typeof BookOpen> = {
 }
 const ANSWER_MODES = ANSWER_MODE_OPTIONS.map(o => ({ ...o, Icon: MODE_ICONS[o.key] }))
 
+/**
+ * 回答设置浮层里的一行开关：图标 + 名字 + 一句话说明 + 复选框，**整行可点**。
+ *
+ * ⚠️ 用 `<label>` 包住 `<input type="checkbox">` 而不是「按钮里塞一个复选框」：
+ * 复选框自己消费点击，套在 button 里会被内层吞掉一次、外层再响应一次（一次点击
+ * 连切两下 = 看起来没反应）。label 的默认行为就是「点哪都切换同一个复选框」。
+ * ⚠️ 关掉时**连说明文字一起变暗并写明原因**（比如「需先开启上面的联网」），
+ * 而不是只把复选框置灰 —— 置灰但不说为什么，用户只能去猜。
+ */
+function PrefRow({ icon, label, desc, checked, disabled, attr, onChange }: {
+  icon: ReactNode
+  label: string
+  desc: string
+  checked: boolean
+  disabled?: boolean
+  /** 测试与无障碍用的 `data-*`（形如 `{ 'data-websearch-toggle': 'on' }`） */
+  attr: Record<string, string>
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <label className={`flex items-start gap-2 rounded-lg px-2 py-1.5 transition-colors ${
+      disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-surface-hover'}`}>
+      <span className="mt-0.5 shrink-0 text-muted">{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[12px] text-dimmed">{label}</span>
+        <span className="mt-0.5 block text-[10px] leading-snug text-disabled">{desc}</span>
+      </span>
+      <input type="checkbox" checked={checked} disabled={disabled}
+        onChange={e => onChange(e.target.checked)}
+        className="mt-1 h-3.5 w-3.5 shrink-0 accent-accent" {...attr} />
+    </label>
+  )
+}
+
 export function ChatInput({ scale }: ChatInputProps) {
   const s = SCALES[scale]
   const streaming = useChatStore(st => st.streaming)
@@ -53,12 +87,14 @@ export function ChatInput({ scale }: ChatInputProps) {
   // 允许同时为真 ⇒ 两张浮层**精确重叠**，后渲染的那张盖住前一张，看上去像「点 @ 没反应、
   // 点开的是回答依据」（两个按钮紧挨着，用户根本分不清是谁开的）。
   // 改成单选后「同一时刻至多一张」由类型本身保证，不需要在每次 toggle 里手写互斥。
-  const [openMenu, setOpenMenu] = useState<'ref' | 'mode' | null>(null)
+  // 2026-11-17 起第二个浮层是「回答设置」（联网 / 深度联网 / 追问建议 / 回答依据四组），
+  // 不再是单独一个「回答依据」下拉 —— 横排五颗图标在浮窗宽度下把输入框挤成一条缝，
+  // 而图标本身说不出「追问」「回答依据」这些名字（用户反馈：认不出来是哪一颗）。
+  const [openMenu, setOpenMenu] = useState<'ref' | 'settings' | null>(null)
   const refOpen = openMenu === 'ref'
-  const modeOpen = openMenu === 'mode'
-  // 派生的打开/关闭：JSX 与 effect 继续读这两个名字，语义不变。
+  const settingsOpen = openMenu === 'settings'
+  // 派生的打开/关闭：JSX 与 effect 继续读这个名字，语义不变。
   const setRefOpen = (v: boolean) => setOpenMenu(v ? 'ref' : null)
-  const setModeOpen = (v: boolean) => setOpenMenu(v ? 'mode' : null)
   const [refSearch, setRefSearch] = useState('')
   // 三项发送偏好（`lib/chat-prefs.ts`）——⚠️ **订阅**而不是各自 `useState(初值)`：
   // 设置页是第二个入口，改完必须让这里跟着变（见 `useChatPrefs` 的注释）。
@@ -76,13 +112,12 @@ export function ChatInput({ scale }: ChatInputProps) {
   // 后代锁进浮窗自身的大小——`fixed inset-0` 遮罩实际只盖住对话窗那一块，点窗口外
   // 关不掉 @ 浮层（模式 #67）。浮层本身 `absolute bottom-full` 定位在这个输入区上，
   // Portal 到 body 会失去定位基准，故改为监听 document、用 `contains` 划内外界。
-  // ⚠️ 两个浮层（@ 引用 / 回答依据）共用这一个监听：它们都锚在同一个 `rootRef` 上、
+  // ⚠️ 两个浮层（@ 引用 / 回答设置）共用这一个监听：它们都锚在同一个 `rootRef` 上、
   // 都不该 Portal，各挂一个 document 监听只是让「什么时候该关」有两份实现。
-  // ⚠️ **Esc 也挂在这里**：回答依据浮层里没有任何可聚焦控件（三档是 `<button>`，
-  // 但按钮不消费 Esc），没有这条监听时它只能靠再点一次按钮或点外面关闭 —— 用户对
-  // 弹出层的直觉是「Esc 关掉」，而这个直觉在隔壁 @ 浮层上恰好成立（那里有个 input
-  // 自带 onKeyDown），于是两隔壁行为不一致。收口到同一处即可，@ 浮层那条 input 上的
-  // 监听保留无害（Esc 在两个层面都会关掉同一个东西）。
+  // ⚠️ **Esc 也挂在这里**：回答设置浮层里除了复选框没有需要 Esc 的控件，
+  // 没有这条监听时它只能靠再点一次按钮或点外面关闭 —— 用户对弹出层的直觉是
+  // 「Esc 关掉」，而这个直觉在隔壁 @ 浮层上恰好成立（那里有个 input 自带 onKeyDown），
+  // 于是两隔壁行为不一致。收口到同一处即可，@ 浮层那条 input 上的监听保留无害。
   useEffect(() => {
     if (!openMenu) return
     const onDown = (e: MouseEvent) => {
@@ -131,26 +166,23 @@ export function ChatInput({ scale }: ChatInputProps) {
 
   // 当前档（找不到时退回第一项 —— 枚举只有三个值，`??` 只是为了让类型收窄）
   const modeMeta = ANSWER_MODES.find(m => m.key === answerMode) ?? ANSWER_MODES[0]
-  const ModeIcon = modeMeta.Icon
 
   // ⚠️ `saveChatPrefs` 是**合并式**保存（参数 `Partial`），所以这里只写自己这一项 ——
   // 早先它是整对象覆盖，加第二个开关的那一刻就会「切 A 开关时把 B 开关重置回默认」，
   // 而那件事既没报错也没提示（用户的联网开关会自己打开）。合并搬进了函数内部。
-  const toggleFollowUp = () => saveChatPrefs({ followUp: !followUp })
-
-  const toggleWebSearch = () => saveChatPrefs({ webSearch: !webSearch })
-
-  // 深度联网：检索改由服务端完成，本轮**不注册任何本地工具**（含知识库那三个）——
-  // 这一点写进 title，否则用户会以为「库里的文档照样能搜」。
-  const toggleDeepWeb = () => saveChatPrefs({ deepWeb: !deepWeb })
 
   // 选档即落盘并收起浮层（与 @ 浮层选完文档就关一致）。
   // ⚠️ 不用 toggle —— 连点同一档不该变成「无档」，三档必须恒有一档。
   const chooseMode = (m: AnswerMode) => {
     saveChatPrefs({ answerMode: m })
-    setModeOpen(false)
+    setOpenMenu(null)
     taRef.current?.focus()
   }
+
+  // 「回答设置」图标是否点亮：四项里任何一项不是默认值就算（默认值是「改造前的现状」，
+  // 见 lib/chat-prefs.ts 的默认值表）。点亮只说明「这里改过东西」，
+  // 具体改了哪一项要打开浮层看 —— 图标替不了那四行文字。
+  const settingsTouched = !webSearch || followUp || deepWeb || answerMode !== 'strict'
 
   const addRef = (doc: DocEntry) => {
     if (docRefs.some(r => r.docId === doc.id)) return
@@ -196,10 +228,37 @@ export function ChatInput({ scale }: ChatInputProps) {
         </div>
       )}
 
-      {/* 回答依据浮层 —— 三档各占一行，直接把「库里没有时怎么办」写出来。
+      {/* 回答设置浮层 —— 联网 / 深度联网 / 追问建议 / 回答依据四组。
+          2026-11-17 之前是「四颗独立图标 + 一个回答依据下拉」并排，五颗横排会把
+          浮窗变窄时的输入框挤成一条缝，而图标本身说不出每项叫什么（用户反馈：
+          认不出是哪一颗）。收进一张浮层后，每项都有名字和一句话说明；
+          开/关交给复选框，不再只靠图标底色的深浅 —— 那个差别用户看不出来。
           ⚠️ `absolute` 锚在输入区上、不 Portal（同 @ 浮层，见上面 effect 的注释）。 */}
-      {modeOpen && (
-        <div className="absolute bottom-full left-3 z-10 mb-2 w-64 overflow-hidden rounded-xl border border-border-light bg-elevated p-1 shadow-xl">
+      {settingsOpen && (
+        <div className="absolute bottom-full left-3 z-10 mb-2 w-72 overflow-hidden rounded-xl border border-border-light bg-elevated p-1 shadow-xl" data-settings-panel>
+          <div className="px-2 pb-0.5 pt-1 text-[11px] font-medium text-dimmed">回答设置</div>
+
+          <PrefRow icon={<Globe size={14} />} label="联网" attr={{ 'data-websearch-toggle': webSearch ? 'on' : 'off' }}
+            desc="本地文档不够时允许模型搜索互联网"
+            checked={webSearch} onChange={v => saveChatPrefs({ webSearch: v })} />
+
+          {deepWebAvailable && (
+            <PrefRow icon={<ScanSearch size={14} />} label="深度联网"
+              attr={{ 'data-deepweb-toggle': deepWeb && webSearch ? 'on' : 'off' }}
+              desc={webSearch
+                ? '检索由服务端完成，回答附可点来源；本轮不使用知识库工具'
+                : '需先开启上面的「联网」'}
+              checked={deepWeb && webSearch} disabled={!webSearch}
+              onChange={v => saveChatPrefs({ deepWeb: v })} />
+          )}
+
+          <PrefRow icon={<MessageCircleQuestion size={14} />} label="追问建议"
+            attr={{ 'data-followup-toggle': followUp ? 'on' : 'off' }}
+            desc="每轮回答后给出可点击直发的追问"
+            checked={followUp} onChange={v => saveChatPrefs({ followUp: v })} />
+
+          <div className="my-1 border-t border-border-light" />
+          <div className="px-2 pb-0.5 pt-1 text-[11px] text-dimmed">回答依据</div>
           {ANSWER_MODES.map(({ key, label, desc, Icon }) => (
             <button key={key} onClick={() => chooseMode(key)} data-answer-mode-option={key}
               className={`flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-surface-hover ${key === answerMode ? 'bg-accent/5' : ''}`}>
@@ -219,50 +278,18 @@ export function ChatInput({ scale }: ChatInputProps) {
           className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${docRefs.length ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
           <AtSign size={s.btn} />
         </button>
-        {/* 追问建议开关：开启后每轮回答末尾给出可点击直发的问题。
-            ⚠️ `title` 里必须写「点击即发送」——那是一颗 chip 的真实行为，
-            不写清楚用户不敢点（看起来像普通文字）。 */}
-        <button onClick={toggleFollowUp} data-followup-toggle={followUp ? 'on' : 'off'}
-          title={followUp
-            ? '追问建议已开启：每轮回答后给出 4～6 个追问，点击即发送'
-            : '追问建议已关闭：开启后每轮回答都会给出追问（点击即发送）'}
-          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${followUp ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
-          <MessageCircleQuestion size={s.btn} />
-        </button>
-        {/* 联网开关：关掉后整组摘掉 search_web / fetch_url，模型只能看已导入的文档。
-            ⚠️ 默认**开**（= 改造前的现状，见 `lib/chat-prefs.ts` 的默认值表）。 */}
-        <button onClick={toggleWebSearch} data-websearch-toggle={webSearch ? 'on' : 'off'}
-          title={webSearch
-            ? '联网已开启：本地文档不够时模型可搜索互联网（点击关闭）'
-            : '联网已关闭：模型只能使用已导入的文档（点击开启）'}
-          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${webSearch ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
-          <Globe size={s.btn} />
-        </button>
-        {/* 深度联网：只在当前对话模型支持时出现（`chatDeepWebAvailable`），且必须
-            联网开关开着 —— 关掉联网后深度联网没有意义，故置灰而不是隐藏（隐藏会让
-            「联网一关，旁边那个按钮不见了」看起来像应用坏了）。 */}
-        {deepWebAvailable && (
-          <button onClick={toggleDeepWeb} disabled={!webSearch}
-            data-deepweb-toggle={deepWeb && webSearch ? 'on' : 'off'}
-            title={!webSearch
-              ? '深度联网需要先开启「允许联网」'
-              : deepWeb
-                ? '深度联网已开启：检索由服务端完成，回答会带可点击的来源。'
-                  + '本轮不使用本地知识库工具（@ 引用的文档仍会交给模型）（点击关闭）'
-                : '深度联网已关闭：开启后由服务端检索并读网页，回答附带来源链接'
-                  + '（点击开启）'}
-            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${
-              !webSearch ? 'text-disabled cursor-not-allowed'
-                : deepWeb ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
-            <Radar size={s.btn} />
-          </button>
-        )}
-        {/* 回答依据（三档）。⚠️ 图标随档变化 —— 光靠高亮分不出「当前是哪一档」，
-            而这三档对用户的意义差别很大（尤其 free：它压根不查库）。 */}
-        <button onClick={() => setOpenMenu(m => (m === 'mode' ? null : 'mode'))} data-answer-mode={answerMode}
-          title={`回答依据：${modeMeta.label}（${modeMeta.desc}）—— 点击切换`}
-          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${answerMode === 'strict' ? 'text-muted hover:bg-surface-hover' : 'bg-accent/10 text-accent'}`}>
-          <ModeIcon size={s.btn} />
+        {/* 回答设置：五项偏好（联网 / 深度联网 / 追问建议 / 回答依据）的唯一入口。
+            ⚠️ `data-answer-mode` 挂在这里而不是某个选项上：它是「当前档位」的展示位，
+            测试与无障碍读的都是它；具体三档在浮层里的 `data-answer-mode-option`。
+            ⚠️ 点亮判据是「任一项偏离默认」，不是「某一项开着」—— 四项里任何一项改过都算，
+            否则用户会以为「图标没亮 = 设置没变」。 */}
+        <button onClick={() => setOpenMenu(m => (m === 'settings' ? null : 'settings'))}
+          data-settings-toggle={settingsOpen ? 'open' : 'closed'}
+          data-answer-mode={answerMode}
+          title={`回答设置：${modeMeta.label}${webSearch ? '' : ' · 联网关'}`
+            + `${deepWeb && webSearch ? ' · 深度联网开' : ''}${followUp ? ' · 追问开' : ''}`}
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-colors ${settingsTouched ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface-hover'}`}>
+          <SlidersHorizontal size={s.btn} />
         </button>
         <textarea
           ref={taRef}
