@@ -43,6 +43,8 @@
   padding: 12px 18px;
   border-left: 3px solid var(--tk-accent);
   border-radius: 6px;
+  /* 本类型的语义色，供块内的列表项目符号与其它派生点引用（见「结构适配」一节） */
+  --block-mark: var(--tk-accent);
   /* 底色由**主色**派生而不是另立一个色号：换 accent 时强调块自动跟着走，
      与「颜色归主题」一致。7% 是「看得出底色、但字仍是正文对比度」的量。 */
   background: color-mix(in srgb, var(--tk-accent) 7%, var(--tk-elevated));
@@ -61,6 +63,7 @@
   padding: 12px 18px;
   border-left: 3px solid var(--tk-warning);
   border-radius: 6px;
+  --block-mark: var(--tk-warning);
   background: color-mix(in srgb, var(--tk-warning) 7%, var(--tk-elevated));
 }
 
@@ -72,6 +75,7 @@
   padding: 12px 18px;
   border-left: 3px solid var(--tk-success);
   border-radius: 6px;
+  --block-mark: var(--tk-success);
   background: color-mix(in srgb, var(--tk-success) 7%, var(--tk-elevated));
 }
 
@@ -113,10 +117,13 @@
 /* ⚠️ 只放大**紧跟在标签之后**的那一段：块内其余段落（补充说明）保持正文字号 ——
    指标卡的全部价值就是「这个小标签对应这个数字」，放大任意段落会把它变成强调块。 */
 .md-block[data-block-type="metric"] h3 + p {
-  margin: 0 0 14px;
+  margin: 0 0 16px;
   font-size: 2.2em;
   font-weight: 600;
-  line-height: 1.15;
+  /* 1.05 而不是 1.15：这一行只有数字，行高把上下空白撑开会让标签与数字看起来
+     不像一组。大字号下这点差值肉眼可见。 */
+  line-height: 1.05;
+  letter-spacing: -0.01em;
   /* ⚠️ **跟随主题 accent**（2026-10-17 由 `--tk-success` 改）：指标数字是「这篇
      笔记的主数据」，跟随用户选的配色才像同一个界面的一部分；写死 success 会让它在
      26 套 accent 下永远是一块孤立的绿。这也正是下方 `steps` 注释一直写着的分工
@@ -131,6 +138,20 @@
 
 .md-block[data-block-type="metric"] > :last-child {
   margin-bottom: 0;
+}
+
+/* ── 指标卡的规模变种（2026-11-17）─────────────────────────────────────
+   一个指标块可以放 1–4 个指标，块内是「`### 名称` + 数字」成对重复。全用 2.2em
+   时，四个指标纵向排下来会占掉半屏，而它们本该是一眼看全的一组数。
+
+   规则：第一个指标保持 2.2em，第二个及以后降到 1.55em。这样一块里读到的
+   顺序仍是「主指标 → 其余指标」，密度却回到了可扫读的范围。
+   ⚠️ 判据是**位置**（`h3:not(:first-child)`），不是项数：只有一项时什么都不变。
+   ⚠️ 刻意不做并排 —— 并排需要网格容器，那是**结构**变化，本文件是导出侧读的
+   单一真相源，结构一变 Python 的 `render_blocks_html` 就得复刻一遍（见本节头）。 */
+.md-block[data-block-type="metric"] h3:not(:first-child) + p {
+  font-size: 1.55em;
+  margin-bottom: 12px;
 }
 
 /* ── 类型标签（2026-11-17）─────────────────────────────────────────────
@@ -157,40 +178,66 @@
 .md-block[data-block-type="alert"]::before { content: "注意"; color: var(--tk-warning); }
 .md-block[data-block-type="recommend"]::before { content: "推荐"; color: var(--tk-success); }
 
-/* ── 结论块的两种内容变种（2026-11-17）─────────────────────────────────
-   同一个 `key-takeaway`，内容形态不同，合适的排版也不同。判据取**块内结构**
-   （只有一段文字 / 是一个列表），CSS 直接读，不需要模型配合，也不新增类型。
+/* ── 强调块的结构适配（2026-11-17）─────────────────────────────────────
+   三种强调块的语义不同（结论 / 提醒 / 推荐），**内容形态却共用同一套分法**：
+   只有一段文字、或是一个列表。排版跟着形态走，不跟着类型走 —— 同一套规则
+   写三遍，改一处不用记另外两处。
 
-   ⚠️ 为什么不新增 type：新类型要改协议、前端解析器、Python 渲染器与共享 fixture
-   四处（见 CLAUDE.md「加一个 type 必须同步 decor=off 归零规则」），而这里要区分的
-   是**同一个语义下两种排版**，不是两种语义。
+   ⚠️ 判据取**块内结构**，由 CSS 直接读，不需要模型配合，也不新增类型。为什么
+   不新增 type：新类型要改协议、前端解析器、Python 渲染器与共享 fixture 四处
+   （见 CLAUDE.md「加一个 type 必须同步 decor=off 归零规则」），而这里要区分的是
+   **同一个语义下的两种排版**，不是两种语义。
    ⚠️ `:has()` 的支持面与本文件其它规则一致（`cycle` 的环形增强已经依赖它）。
-   不支持时两条规则都不匹配，退回默认排版，**零残留**。 */
+   不支持时这些规则整组不匹配，退回默认排版，**零残留**。
+   ⚠️ 选择器**逐个类型写、用逗号并列**，不用 `:is()` 收拢：`:is()` 取参数里最高
+   的那个特异性，会把整组抬到 (0,4,0)，压过后面 `data-marker-decor="off"` 的
+   (0,3,0) —— 关掉装饰后内边距又回来了，而这件事不会报错。 */
 
-/* ① 一句话结论：块内只有一段文字 → 给足字号与行距，让它读起来像一块引言 */
-.md-block[data-block-type="key-takeaway"]:has(> p:only-child) {
+/* ① 单段：块内只有一段文字 → 放宽内边距、字号与行距，读起来像一块引言 */
+.md-block[data-block-type="key-takeaway"]:has(> p:only-child),
+.md-block[data-block-type="alert"]:has(> p:only-child),
+.md-block[data-block-type="recommend"]:has(> p:only-child) {
   padding: 16px 20px;
 }
 
-.md-block[data-block-type="key-takeaway"]:has(> p:only-child) > p {
+.md-block[data-block-type="key-takeaway"]:has(> p:only-child) > p,
+.md-block[data-block-type="alert"]:has(> p:only-child) > p,
+.md-block[data-block-type="recommend"]:has(> p:only-child) > p {
   margin: 0;
   font-size: 1.04em;
   line-height: 1.75;
 }
 
-/* ② 分点结论：块内是列表 → 收紧缩进，项目符号跟随主色 */
+/* ② 分点：块内是列表 → 收紧缩进，项目符号跟随该块的语义色 */
 .md-block[data-block-type="key-takeaway"]:has(> ul),
-.md-block[data-block-type="key-takeaway"]:has(> ol) {
+.md-block[data-block-type="key-takeaway"]:has(> ol),
+.md-block[data-block-type="alert"]:has(> ul),
+.md-block[data-block-type="alert"]:has(> ol),
+.md-block[data-block-type="recommend"]:has(> ul),
+.md-block[data-block-type="recommend"]:has(> ol) {
   padding: 14px 20px;
 }
 
-.md-block[data-block-type="key-takeaway"] :is(ul, ol) {
+.md-block[data-block-type="key-takeaway"] :is(ul, ol),
+.md-block[data-block-type="alert"] :is(ul, ol),
+.md-block[data-block-type="recommend"] :is(ul, ol) {
   margin: 2px 0 0;
   padding-left: 1.2em;
 }
 
-.md-block[data-block-type="key-takeaway"] :is(ul, ol) li::marker {
-  color: var(--tk-accent);
+/* 项目符号取**该类型自己的**语义色。`--block-mark` 由上面三种类型的本体规则给出；
+   没有它时 `::marker` 退回继承色，不会变透明。 */
+.md-block[data-block-type="key-takeaway"] :is(ul, ol) li::marker,
+.md-block[data-block-type="alert"] :is(ul, ol) li::marker,
+.md-block[data-block-type="recommend"] :is(ul, ol) li::marker {
+  color: var(--block-mark);
+}
+
+/* ③ 三条以上：行距收紧一档。条数越多，逐条分行读的收益越低，密度比舒展重要 */
+.md-block[data-block-type="key-takeaway"]:has(> :is(ul, ol) > li:nth-child(4)),
+.md-block[data-block-type="alert"]:has(> :is(ul, ol) > li:nth-child(4)),
+.md-block[data-block-type="recommend"]:has(> :is(ul, ol) > li:nth-child(4)) {
+  line-height: 1.6;
 }
 
 /* ── 关掉装饰：只留内容 ────────────────────────────────────────────────
@@ -281,6 +328,25 @@
   color: var(--tk-dimmed);
 }
 
+/* ── 步骤条的密度变种（2026-11-17）─────────────────────────────────────
+   五项以上时 chip 缩小一档、间距收紧，让一行尽量放得下。
+   ⚠️ 判据是**项数**，由 `:has()` 直接读 —— 同一套排版在 3 项与 6 项下合适的密度
+   不同，而模型不需要为此另写什么。卡片组按卡片数切列用的是同一条思路
+   （`chat-blocks.css`）。
+   ⚠️ 只写「多」的那一侧：少项是设计基准，为它也补一条会让两份数字要保持同步。 */
+.md-block[data-block-type="steps"]:has(> ul > li:nth-child(5)) ul {
+  gap: 20px;
+}
+
+.md-block[data-block-type="steps"]:has(> ul > li:nth-child(5)) li {
+  padding: 3px 10px;
+  font-size: 0.84em;
+}
+
+.md-block[data-block-type="steps"]:has(> ul > li:nth-child(5)) li:not(:last-child)::after {
+  right: -15px;
+}
+
 /* ── 竖向时间线（timeline）─────────────────────────────────────────────
    形态 = 块内**有序列表**，每项前面一个圆形编号、编号之间一条竖连线 —— 取代图表
    管道里的 `timeline`（阶段/时间线）。同样靠块内子元素类型区分（`<ol>`），纯 CSS。
@@ -310,6 +376,11 @@
 
 .md-block[data-block-type="timeline"] li:last-child {
   padding-bottom: 0;
+}
+
+/* 六项以上时逐项间距收紧一档（同上：只写「多」的那一侧） */
+.md-block[data-block-type="timeline"]:has(> ol > li:nth-child(6)) li {
+  padding-bottom: 10px;
 }
 
 .md-block[data-block-type="timeline"] li::before {

@@ -179,8 +179,19 @@ describe('语义块 —— 类型标签与内容变种（2026-11-17）', () => {
     expect(CSS).not.toMatch(/^\.chat-block::before\s*\{/m)
   })
 
-  it('摘要卡单段正文时放大字号（内容变种）', () => {
+  it('单段正文时放大字号，五种块共用同一条规则', () => {
+    // ⚠️ 判据要穿过 `.chat-block-body`：块的子元素是图标与 body，
+    // 直接写 `> p:only-child` 永远不匹配，而症状只是「这条规则没生效」。
+    expect(CSS).toContain('.chat-block:has(.chat-block-body > p:only-child) .chat-block-body > p')
+  })
+
+  it('块内是列表时收紧缩进，项目符号跟随该块的边框色', () => {
     expect(CSS).toContain(
-      '.chat-digest-card:has(.chat-block-body > p:only-child) .chat-block-body > p')
+      '.chat-block:has(.chat-block-body > :is(ul, ol):only-child) .chat-block-body > :is(ul, ol)')
+    expect(CSS).toMatch(/:is\(ul, ol\) li::marker\s*\{[^}]*var\(--block-edge/)
+  })
+
+  it('六步以上行距收紧（规模变种）', () => {
+    expect(CSS).toContain('.chat-howto:has(ol > li:nth-child(6)) ol')
   })
 })

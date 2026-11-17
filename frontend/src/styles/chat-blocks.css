@@ -546,14 +546,33 @@
 .chat-quote .chat-block-body::before { content: "引用"; color: var(--tk-dimmed); }
 
 /* ── 内容变种（2026-11-17）─────────────────────────────────────────────
-   判据取**块内结构**，由 CSS 直接读，不需要模型配合，也不新增块类型。
-   ⚠️ `:has()` 在本文件里是既有手法（卡片组按子元素数量切列数是同一套写法），
-   不支持时规则整体不匹配，退回默认排版，零残留。 */
+   判据取**块内结构**（只有一段文字 / 是一个列表）与**规模**（几项），由 CSS 直接
+   读，不需要模型配合，也不新增块类型。同一个语义下，内容形态不同、合适的排版不同。
 
-/* 摘要卡只有一段正文时放大字号：摘要的全部价值就在那一段，值得比正文多一点分量 */
-.chat-digest-card:has(.chat-block-body > p:only-child) .chat-block-body > p {
-  font-size: 1.06em;
+   ⚠️ `:has()` 在本文件里是既有手法（卡片组按子元素数量切列数是同一套写法），
+   不支持时规则整体不匹配，退回默认排版，零残留。
+   ⚠️ 判据要穿过 `.chat-block-body` —— 块的真实内容都在那一层里，直接对块用
+   `> p:only-child` 永远不匹配（块的子元素是图标与 body）。 */
+
+/* ① 单段：只有一段正文时字号放大一档。摘要卡尤其需要 —— 它的全部价值就在那一段 */
+.chat-block:has(.chat-block-body > p:only-child) .chat-block-body > p {
+  font-size: 1.05em;
   line-height: 1.6;
+}
+
+/* ② 分点：块内只有列表时收紧缩进，项目符号跟随该块的边框色 */
+.chat-block:has(.chat-block-body > :is(ul, ol):only-child) .chat-block-body > :is(ul, ol) {
+  margin: 0;
+  padding-left: 1.1em;
+}
+
+.chat-block:has(.chat-block-body > :is(ul, ol):only-child) :is(ul, ol) li::marker {
+  color: var(--block-edge, var(--tk-border));
+}
+
+/* ③ 六步以上：行距收紧一档（与产物侧 `steps` 的密度变种同一条思路） */
+.chat-howto:has(ol > li:nth-child(6)) ol {
+  line-height: 1.5;
 }
 
 /* ── 代码块（`ChatPre`）──────────────────────────────────────────────── */

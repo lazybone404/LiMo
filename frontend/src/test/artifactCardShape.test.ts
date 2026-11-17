@@ -47,6 +47,16 @@ describe('metric 指标数字 —— 随主题 accent', () => {
   it('没有引入 `--tk-metric` 这类新令牌（导出侧不认识的令牌会静默落空）', () => {
     expect(BLOCKS).not.toContain('--tk-metric')
   })
+
+  it('多指标时第一个保持 2.2em，其余降到 1.55em（规模变种）', () => {
+    // 四个指标全按 2.2em 纵向排会占掉半屏，而它们本该是一眼看全的一组数。
+    expect(BLOCKS).toMatch(
+      /\.md-block\[data-block-type="metric"\] h3:not\(:first-child\) \+ p\s*\{[^}]*font-size: 1\.55em/)
+  })
+
+  it('指标卡仍然纵向排列（并排需要网格容器 = 结构变化，导出侧要复刻）', () => {
+    expect(BLOCKS).not.toMatch(/\.md-block\[data-block-type="metric"\][^{]*\{[^}]*display:\s*(grid|flex)/)
+  })
 })
 
 describe('内容卡片 —— 宽表与大图', () => {
@@ -145,9 +155,31 @@ describe('强调块 —— 类型标签与内容变种（2026-11-17）', () => {
     expect(BLOCKS).not.toMatch(/\.md-block\[data-block-type="metric"\]::before/)
   })
 
-  it('结论块按块内结构分两种排版：单段 / 列表', () => {
-    expect(BLOCKS).toContain('.md-block[data-block-type="key-takeaway"]:has(> p:only-child)')
-    expect(BLOCKS).toContain('.md-block[data-block-type="key-takeaway"]:has(> ul)')
+  it('三种强调块共用同一套结构适配：单段 / 分点', () => {
+    for (const type of ['key-takeaway', 'alert', 'recommend']) {
+      expect(BLOCKS).toContain(`.md-block[data-block-type="${type}"]:has(> p:only-child)`)
+      expect(BLOCKS).toContain(`.md-block[data-block-type="${type}"]:has(> ul)`)
+    }
+  })
+
+  it('分点时的项目符号取该类型自己的语义色（`--block-mark` 三种都定义了）', () => {
+    for (const type of ['key-takeaway', 'alert', 'recommend']) {
+      expect(BLOCKS).toMatch(
+        new RegExp(`\\.md-block\\[data-block-type="${type}"\\] :is\\(ul, ol\\) li::marker`))
+    }
+    expect(BLOCKS).toMatch(/--block-mark:/)
+  })
+
+  it('⚠️ 结构适配的选择器逐个类型并列，不用 `:is()` 收拢', () => {
+    // `:is()` 取参数里最高的特异性，会把整组抬到 (0,4,0)，压过 `data-marker-decor="off"`
+    // 的 (0,3,0) —— 关掉装饰后内边距又回来了，零报错。
+    expect(BLOCKS).not.toMatch(
+      /\.md-block:is\(\[data-block-type="(?:key-takeaway|alert|recommend)"\][^{]*:has\(/)
+  })
+
+  it('密度变种：步骤条五项以上、时间线六项以上收紧', () => {
+    expect(BLOCKS).toContain('.md-block[data-block-type="steps"]:has(> ul > li:nth-child(5))')
+    expect(BLOCKS).toContain('.md-block[data-block-type="timeline"]:has(> ol > li:nth-child(6))')
   })
 
   it('关掉装饰时标签用 `content: none` 收起（不是 `display: none`）', () => {
