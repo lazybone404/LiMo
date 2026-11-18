@@ -105,7 +105,7 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 
 导入从「一件做完三件事」拆成两站：**收纳**（材料进库）与**转录**（正文晚点提取）。本步只做状态拆分 + 单篇转录入口，批量导入/批量转录/批量生成队列是后续。
 
-- **默认值按成本分两档**：媒体（`video`）**只收纳**；文档（`document` / `arxiv` / `webpage`）导入即提取；`text` / `image` 不参与、永远 `done`。⚠️ **这是一次真实的行为变更**（升级后导入 B 站视频不再自动转录），已写进 [README.md](README.md)。档位表 `_TIER_MEDIA` / `_TIER_DOC` + `_resolve_probe_only()` **住后端**（前端拿到一个 URL 时根本不知道它是视频还是文章，只有 adapter 选出来才谈得上分档），前端只传两个布尔偏好 `media_probe_only` / `doc_probe_only`，且**只在偏离默认时才发**（与 `web_search=0` 同一条纪律）。
+- **默认值按成本分两档**：媒体（`video` / `audio`）**只收纳**；文档（`document` / `arxiv` / `webpage`）导入即提取；`text` / `image` 不参与、永远 `done`。⚠️ **这是一次真实的行为变更**（升级后导入 B 站视频不再自动转录），已写进 [README.md](README.md)。档位表 `_TIER_MEDIA` / `_TIER_DOC` + `_resolve_probe_only()` **住后端**（前端拿到一个 URL 时根本不知道它是视频还是文章，只有 adapter 选出来才谈得上分档），前端只传两个布尔偏好 `media_probe_only` / `doc_probe_only`，且**只在偏离默认时才发**（与 `web_search=0` 同一条纪律）。
 - **`ready` / `transcribeState` / `_pending_ids` 三个同名但正交，绝不能合并**：`ready=False` 是 `transcript.md` 未写的**进程内瞬时态**（`list_transcripts` 直接隐藏，库里根本不存在）；`transcribeState` 是**用户可见的持久态**（缺键 = `"done"`，可能有几天）；`store._pending_ids` 是会话级豁免集合。合并之后要么 pending 文档被幽灵清理扫掉，要么占位条目漏进列表。
 - **九处落点，断任何一处都不报错**：`RawTranscript.transcribe_state` / `save_transcript` 拼 `data` / `_transcript_index_entry` / `save_transcript_full` 第六个守护 ｜ `_rebuild_index` 内联字面量 + `DOC_FIELDS` 回落 / `doc_meta.DOC_FIELDS` / `get_transcript` / `project_resource` 白名单 ｜ `_persist_ingest_result` 的**手写返回 dict**。⚠️ **前两处成对**：`data` 是从 dataclass 字段逐个拼的，dataclass 上没有字段就没有值可拼 ⇒ 收纳完的文档一进库就显示「已转录」（实测删掉 → 7 条测试红）。⚠️ **返回 dict 那处是另一条独立断点**：库里对、导入那一刻前端看不到（切去文档库重新拉列表反而正常，因为那条路读 index；实测删掉 → 8 条红）。
 - **第六个守护的实际射程（与计划原文不符，已实测修正）**：`save_transcript_full` 的 `if "transcribeState" not in tx_data` 守护**对今天的三个调用方（PATCH 改标题 / `retranscribe` / `_auto_title`）从不触发** —— 它们的 tx 全来自 `get_transcript()`，而第 7 处落点让它本就带着该字段。真正守住「改标题不抹状态」的是**第 7 处落点**，守护是它之上的第二道，只对「将来手工拼 tx 的调用方」有意义。测试因此拆成三条各考一件事（端到端回归 / 守护本身 / 读路径），并如实标注哪条有区分力 —— **别照抄「去掉守护这条必须红」**。
@@ -117,6 +117,9 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 - **顺带修一个既有缺口**：SSE 导入路径此前**从不写全文索引**（`_index_for_search` 只有非流式那条调，而前端主路径走 SSE ⇒ 今天经 SSE 导入的文档在下次重启前搜不到）。抽 `_index_if_persisted(request, result)`，判据与原文逐字相同，两条路径共用；顺序保持「先 persist、后索引、再投 done」，索引失败只 `warning` 不把导入报成失败。
 - **前端**：偏好住 localStorage（[lib/ingest-prefs.ts](frontend/src/lib/ingest-prefs.ts)，`mbw_ingestPrefs`）而非 config.yaml，形态照 `chat-prefs`（`useSyncExternalStore` + **快照稳定引用**，以磁盘原始串为键）。⚠️ **不能各自 `useState(loadIngestPrefs())`**：设置页改完后已挂载的 GenPanel 不会重挂载，显示旧值而导入按新值跑。**乐观条目收成一处** [lib/docEntry.ts](frontend/src/lib/docEntry.ts)::`optimisticDoc()`（此前五处手写字面量不会自动带上新字段，漏了的形态是「刚导入的那篇不显示待转录徽章，切去文档库刷新后又正常」）。**转录完怎么刷新只有一份** [hooks/useStartTranscription.ts](frontend/src/hooks/useStartTranscription.ts)（GenPanel 的「⟳ 重新转录」与预览区待转录卡片共用，成功后把 `docs` 该条置 `'done'`，否则正文已更新、列表徽章还挂着）。
 - **生成侧前置拦截**：`GenPanel` 生成前判据加 `transcribeState === 'pending'`，否则会拿占位文本生成一篇笔记。
+- **音频与视频共用 `VideoAdapter`，但 sourceType 分开**（2026-11-18）：本地音频（mp3 / wav / m4a / flac / ogg / opus …）走同一个适配器，因为两者都要先抽音轨再 ASR。`_adapter_to_source_type` 按扩展名把音频映射到 `audio`、视频映射到 `video` —— 不能合并成 `video`：那个类型会带出「视频截图」选项，音频选了必然失败。`AVAILABLE_OPTIONS["audio"]`、前端 `SOURCE_FILTERS` 与 prompt 的「转录类内容」分支早就备着这一类，缺的只是这处映射。
+  ⚠️ **所有媒体一律转码成 16k 单声道 mp3 再送引擎**，不做「已经是音频就跳过 ffmpeg」的例外。引擎认的格式各不相同（DeepSeek ASR 只吃 16-bit PCM WAV 或 Ogg Opus），跳过转码等于把「源文件格式」当成「引擎能吃的格式」，失效形态是 400 而两边都不解释。判据因此是「ffmpeg 能解」，不是任何引擎的白名单。
+  ⚠️ `_extract_audio` 的输出名带 `.asr` 后缀，不用 `with_suffix(".mp3")`：输入本身就是 `.mp3` 时那会算回同一个路径，ffmpeg 直接拒绝「输入与输出相同」。
 
 ### 批量导入（2026-11-07，第二步）
 
@@ -132,6 +135,14 @@ transcript × N ──→ POST /api/synthesis/stream ──→ 新的 composite 
 
 ### 生成与处理
 - **双产物并行**：非流式端点走 `generate_both()`（`asyncio.gather`）；流式端点（`/generate/{id}/stream`）用 `_run_product` 协程 ×2 + `asyncio.Queue` 汇合事件（chunk 交错到达 SSE 顺序安全）+ `asyncio.gather` 收拢。⚠️ **gather 返回顺序 = 任务创建顺序，解包变量名必须同序**（曾解包反了 → notes/polished 内容互换写进对方文件）。source_type 派发 prompt（视频/网页→通用，PDF/Document→文档 prompt，Excel→分析报告+数据摘要）
+- **成稿检查与定点修订（2026-11-18，只作用于 notes）**：生成完之后再走一步，把机械文风问题修掉。流程是「本地扫候选 → 一次模型判断与改写 → 按原句逐字替换 → 本地复检」，**有界两轮**，没有候选时一次调用都不发。
+  - 规则住 [quality_rules.py](../backend/app/generation/quality_rules.py)，编排放 [quality_revise.py](../backend/app/generation/quality_revise.py)。评测脚本 `_experiments/09-note-quality/score.py` import 的是同一份规则，不另抄。
+  - **规则只产出候选，不判决**：命中不等于要改（引文里的破折号是原文的一部分），每处连同「不必改的情形」交给模型判断，决定权（要不要检查、改哪几处、还改不改第二轮）留在程序。
+  - **只改被点名的句子**，不让模型重写全文：全文重写会顺手改掉数字与条件，而没有第二条判据能发现。评测里修订前后 20 个数字、14 组条件逐字一致。
+  - **改完候选数没下降就回退**，保留上一版并记日志；修订抛异常只 `warning`、保留原稿 —— 修订是加分项，不拿主要价值换次要价值。
+  - ⚠️ **必须 `disable_thinking=True`**：开着思考时 deepseek-flash 把回答全放进 reasoning、`content` 返回空串。第一版因此静默失效（日志写的是「候选 4 → 4，未改善」，看起来像模型拒绝修改）。同一个坑 `_experiments/07-rerank` 记过。
+  - ⚠️ **空回答与「逐条判为不用改」必须分开**：前者是故障要 warning，后者是正常结束。不分开就会把故障记成「模型认为没问题」。
+  - ⚠️ **不动整理版**：polished 是忠实整理，改写句子就破坏了「忠实」这个承诺；xlsx 那条路两个产物共用一份内容，同理不动。
 - **思考链（deepseek-v4）**：`reasoning_content` 逐段回调（`on_reasoning`，不混入正文）→ SSE `type=reasoning` → 前端 ProcessingPlaceholder"模型思考中"。思考链是临时展示，正式文本流式后直接替换。**思考强度**：`reasoning_effort` 经 `extra_body` 传递（qwen 忽略未知字段兼容），三档 low/high/max，**思考模式默认开启且 effort 默认 high**。polished 是忠实整理任务传 `"low"`（默认 high 思考静默 90s+）、参考文件摘要同传 `"low"`；chunk 间隔超时 150s 容忍长思考、总超时 330s（推理链 chunk 到达时 anext 正常返回不触发超时）。⚠️ **思考模式下 temperature / presence_penalty / frequency_penalty 不生效**（不报错，静默失效）——故续写时的 temperature 递减对 DeepSeek 是空操作（保留为兼容其他厂商）；`top_p` 相反，仅思考模式生效且 <0.95 按 0.95 处理（2026-09-23 依官方「思考模式」页补注）
 - **图片→LLM 双轨制**：视频和文档走不同路径。视频：「AI 画面理解」一键开关 = VL 管线 + 网格图发 LLM（对标 BiliNote），网格图不嵌入笔记。文档：保留文档图片→AI 分析图片→图片预处理三级，文档图片嵌入文章有价值。`send_to_llm = bool(image_analyze)`，前端保证门控。
 - **目标语言**：config.yaml `target_language` + prompt 参数化，8 语言可选

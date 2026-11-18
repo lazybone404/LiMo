@@ -26,6 +26,7 @@
 
 **OCR**：`purpose` 固定 `text_recognition`。另一个取值 `rich_layout_recognition` 多返回的是版面坐标，文本内容不变；把「表格模式」映射过去等于赋予接口一个不存在的语义。`supported_modes` 因此只有 `extract` / `table` / `digitize`，没有 `understand` —— 这个接口不产出描述。响应 `pages[].text` 按 `index` 排序后拼接，`<｜ref｜>` / `<｜box｜>` 标记整体摘掉（坐标没有消费方，留着会进生成稿、导出与全文索引）。`finish_reason == "length"` 记 warning，不往正文插占位。
 
-**ASR**：接口只收 16-bit PCM WAV / Ogg Opus、单段 ≤120 秒 / ≤8MiB，而适配器交给引擎的是 16k 单声道 MP3。转码与切段用**一条** ffmpeg 命令（`-f segment -segment_time 110`），110 秒而不是 120 秒是给两条限制都留余量（110 秒 16k WAV 约 3.5MB）。时间轴按每段响应的 `duration_ms` 累加，缺了按 WAV 体积估算；一律按 110 秒加会让越靠后的段偏得越多。超过 110 秒的素材会产生多次请求，**按音频时长计费**。单段失败整体抛错，不跳段 —— 跳段会产出中间缺一截的转录，界面上看不出来。
+**ASR**：接口只收 16-bit PCM WAV / Ogg Opus、单段 ≤120 秒 / ≤8MiB，而适配器交给引擎的是 **16k 单声道 MP3**。
+⚠️ **这个「交给引擎的一律是 16k 单声道 MP3」是 2026-11-18 定下的统一约定**：此前有「源文件已经是 mp3/m4a/aac/opus 就跳过 ffmpeg」的捷径，等于把**源格式**当成**引擎能吃的格式**，而三家引擎的白名单各不相同。现在本地音频与下载音频都无条件转码（`adapters/video.py::_extract_audio`），判据回到「ffmpeg 能解就能收」，加引擎不必再改格式表。转码与切段用**一条** ffmpeg 命令（`-f segment -segment_time 110`），110 秒而不是 120 秒是给两条限制都留余量（110 秒 16k WAV 约 3.5MB）。时间轴按每段响应的 `duration_ms` 累加，缺了按 WAV 体积估算；一律按 110 秒加会让越靠后的段偏得越多。超过 110 秒的素材会产生多次请求，**按音频时长计费**。单段失败整体抛错，不跳段 —— 跳段会产出中间缺一截的转录，界面上看不出来。
 
 **Key 在调用时注入，不在注册时定死**。引擎在 `init_engines(config)` 里注册成单例、Key 是那一刻读的，所以用户后填的 Key 只有靠 [credentials.py](../backend/app/engines/credentials.py) 在调用前补到**副本**上才生效。三个消费点（`adapters/document.py` 扫描件 OCR、`adapters/video.py` ASR、`routers/process.py` 手动 OCR）必须同时用它。Key 的解析顺序（显式 → `agent_tools.search` → `providers` → `engine_providers`）住在 [core/deepseek_api.py](../backend/app/core/deepseek_api.py)，与联网搜索共用同一份。
