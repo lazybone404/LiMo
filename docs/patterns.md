@@ -21,6 +21,12 @@
 
 以下模式是实现中易错的关键约束，新增代码必须遵守。
 
+> **新增或修改某一条时，提交信息末尾标上编号**（`fix(chat): …（模式 #51）`）。
+> 这是这份文档与 git 历史之间唯一的连接：`git log --grep="模式 #51"` 能列出这条规则的
+> 全部实现与修复，反过来 `git show <hash>` 也能知道那个提交碰的是哪条规则。
+> ⚠️ 存量条目没有标，也**不要回头改历史补标** —— 改历史会换掉哈希，而仓库里二十多处
+> 引用会静默失效（见 `CLAUDE.md` 的「两条回溯线索」）。
+
 ### 前端
 
 1. **processingTasks 键格式**：`{docId}__{kind}`，永不用裸 `docId` 查找。`clearDocTasks` 只清 store，必须先 `cancelTask` 再 `clearDocTasks`。详见 [frontend-patterns.md](frontend-patterns.md)。
