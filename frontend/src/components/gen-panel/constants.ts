@@ -10,7 +10,13 @@ export const EXT_TO_SUBTYPE: Record<string, string> = {
 
 /** 拖拽验证：每种类型的有效扩展名（纯静态） */
 export const DROP_ACCEPT: Record<string, string[]> = {
-  video: ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv'],
+  // 视频与音频同一档（后端都走 `VideoAdapter`，只是 sourceType 分开）。
+  // ⚠️ 这张表同时决定拖拽校验、批量识别与那个 `<input accept>` 三处，
+  // 加格式只改这里 —— 另抄一份的后果是「拖拽能进、选择器里选不中」。
+  video: [
+    '.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv',
+    '.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.opus', '.wma', '.amr', '.aiff', '.aif', '.ape',
+  ],
   image: ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.gif'],
   file:  ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.epub'],
 }

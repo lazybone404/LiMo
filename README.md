@@ -17,7 +17,7 @@
 - **网页**：贴 URL，自动提取正文
 - **订阅源**：贴 RSS / Atom 地址，把最新的若干条（最多 20）合成一篇——每条一个标题、链接、摘要。适合把每天要看的更新攒成一份再交给 AI 生成笔记
 - **arXiv 论文**：贴 `arxiv.org/abs/…` 或 `arxiv.org/pdf/…`，自动换成 PDF 链接拉全文，效果和直接导入一个 PDF 一样
-- **视频**：B 站、YouTube，或本地 mp4/mkv。默认先收纳，点「开始转录」再下字幕或语音转文字
+- **音视频**：B 站、YouTube，或本地视频（mp4/mkv/avi/mov/webm/flv/wmv）与音频（mp3/wav/m4a/aac/flac/ogg/opus/wma/amr 等）。默认先收纳，点「开始转录」再下字幕或语音转文字。音频一律先转成 16k 单声道再送引擎，所以 ffmpeg 能解的格式都能收
 - **文档**：PDF、Word、PPT、Excel、EPUB。导入即提取正文，自动解析文字和表格
 - **图片**：PNG、JPG 等，OCR 识别文字
 - **文本**：直接粘贴 Markdown 或纯文本

@@ -161,16 +161,32 @@ def _request_headers(url: str, cookie: str = "") -> dict:
     return headers
 
 
+#: 本地文件里算「视频」的扩展名。前端 `ImportSection` 的 `accept` 与这里必须同步 ——
+#: 前端不放行时用户根本选不中，后端放行也没用。
+VIDEO_FILE_EXTS = frozenset({".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv"})
+
+#: 本地文件里算「音频」的扩展名。
+#: ⚠️ **判据是「ffmpeg 能不能解」，不是「哪个 ASR 引擎认」**：所有媒体统一转码成
+#: 16k 单声道 mp3 再送引擎，所以这里不需要与任何引擎的格式白名单保持一致 ——
+#: 那样就有了第二份真相源，加一个引擎就要回来改一次这张表（2026-11-18）。
+AUDIO_FILE_EXTS = frozenset({
+    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus",
+    ".wma", ".amr", ".aiff", ".aif", ".ape",
+})
+
+
 class VideoAdapter(PipelineAdapter):
     name = "video"
     cookies: str = ""
     _engine_config: dict | None = None  # injected by ingest route
 
     def accept(self, input: PipelineInput) -> bool:
-        # 本地视频文件
+        # 本地视频或音频文件。音视频共用这条链路（都要先抽出音轨再走 ASR），
+        # 区别只在 `ingest._adapter_to_source_type` 把它们分成 video / audio 两个
+        # sourceType —— 后者决定生成侧给不给「视频截图」这类选项。
         if input.type == InputType.FILE:
             ext = Path(input.file_path or "").suffix.lower()
-            return ext in {".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv"}
+            return ext in VIDEO_FILE_EXTS or ext in AUDIO_FILE_EXTS
         # 视频 URL —— 按主机名判，不按子串（见 `_url_host` 的说明）
         if input.type == InputType.URL:
             return _is_video_url(input.url or "")
@@ -313,17 +329,16 @@ class VideoAdapter(PipelineAdapter):
 
         pg("downloading", "done", "音频下载完成", 35)
 
-        # ── Step 2: 提取音频（MP3 直接跳过）──
-        if video_path.suffix.lower() in (".mp3", ".m4a", ".aac", ".opus"):
-            audio_path = video_path
-            logger.info("音频已是 %s 格式，跳过 ffmpeg 提取", video_path.suffix)
-        else:
-            pg("extracting_audio", "running", "提取音频...", 40)
-            try:
-                audio_path = await asyncio.to_thread(self._extract_audio, video_path)
-                pg("extracting_audio", "done", "音频提取完成", 50)
-            except Exception as e:
-                raise FatalError(f"音频提取失败: {e}")
+        # ── Step 2: 提取音频（一律转码，与本地文件那条路径同源）──
+        # ⚠️ 原先这里有「下载回来的已是 mp3/m4a/aac/opus 就跳过」的捷径，与本地文件
+        # 那条路径是**同一个错误的两份**：引擎认的格式与下载格式是两回事。统一转码
+        # 之后，两条路径对「音频怎么进引擎」只有一个答案。
+        pg("extracting_audio", "running", "提取音频...", 40)
+        try:
+            audio_path = await asyncio.to_thread(self._extract_audio, video_path)
+            pg("extracting_audio", "done", "音频提取完成", 50)
+        except Exception as e:
+            raise FatalError(f"音频提取失败: {e}")
 
         # ── Step 3: ASR ──
         pg("transcribing", "running", "语音转写中...（可能需要几分钟）", 55)
@@ -490,8 +505,13 @@ class VideoAdapter(PipelineAdapter):
             raise FatalError(f"yt-dlp 下载失败: {e}") from e
 
     def _extract_audio(self, video_path: Path) -> Path:
-        """用 ffmpeg 提取/转换为 MP3（比 WAV 小 ~10×，云端 ASR 均支持）"""
-        audio_path = video_path.with_suffix(".mp3")
+        """用 ffmpeg 统一转成 16k 单声道 MP3（比 WAV 小 ~10×，云端 ASR 均支持）。
+
+        ⚠️ 输出名带 `.asr` 后缀而不是 `with_suffix(".mp3")`：输入本身就是 `.mp3` 时，
+        用 `with_suffix` 会算回同一个路径，ffmpeg 拒绝「输入与输出相同」。而
+        「输入是 mp3」正是加音频支持之后最常见的情况。
+        """
+        audio_path = video_path.with_name(f"{video_path.stem}.asr.mp3")
         subprocess.run([
             "ffmpeg", "-y", "-i", str(video_path),
             "-vn", "-acodec", "libmp3lame", "-b:a", "64k",
@@ -593,17 +613,15 @@ class VideoAdapter(PipelineAdapter):
         video_path = Path(input.file_path or "")
         pg("extracting_audio", "running", "提取音频...", 30)
 
-        # 已是音频格式 → 直接 ASR
-        ext = video_path.suffix.lower()
-        if ext in (".mp3", ".m4a", ".aac", ".opus", ".wav"):
-            audio_path = video_path
-            logger.info("本地音频: %s，跳过 ffmpeg", video_path.name)
-        else:
-            try:
-                audio_path = await asyncio.to_thread(self._extract_audio, video_path)
-            except Exception as e:
-                pg("extracting_audio", "error", f"音频提取失败: {e}", 50)
-                raise FatalError(f"音频提取失败: {e}")
+        # 一律转码，**不做「已经是音频就跳过」的例外**（2026-11-18 改）。
+        # 那条捷径会把原始文件直接交给引擎，而引擎认的格式各不相同：DeepSeek ASR
+        # 只吃 16-bit PCM WAV 或 Ogg Opus，喂它一个 48kHz 立体声 m4a 直接 400。
+        # 统一转成 16k 单声道 mp3 之后，「用户手上有多少种格式」就不再是问题。
+        try:
+            audio_path = await asyncio.to_thread(self._extract_audio, video_path)
+        except Exception as e:
+            pg("extracting_audio", "error", f"音频提取失败: {e}", 50)
+            raise FatalError(f"音频提取失败: {e}")
 
         pg("extracting_audio", "done", "音频提取完成", 50)
         pg("transcribing", "running", "语音转写中...（可能需要几分钟）", 60)

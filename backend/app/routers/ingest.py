@@ -403,9 +403,10 @@ _ADAPTER_SOURCE_MAP = {
 # ⚠️ **这张表住后端**。前端拿到一个 URL 时根本不知道它是 B 站视频还是博客文章 ——
 # 只有 `AdapterRegistry.route()` 选出了 adapter 才谈得上分档。前端只传两个布尔**偏好**。
 #
-# ⚠️ 音频今天走 `video` 适配器（`accept` 的 FILE 分支只列视频扩展名，播客导入
-# 还在待办里没做）。将来加独立 audio adapter 时把它加进 `_TIER_MEDIA` 一处即可。
-_TIER_MEDIA = frozenset({"video"})
+# ⚠️ 音频与视频**共用 `video` 适配器**，但 sourceType 分开（见 `_adapter_to_source_type`）。
+# 两者都归媒体档：和视频一样，默认只收纳、要转录时再点一下 —— 音频的 ASR 比视频
+# 抽取音轨还慢，自动跑等于替用户决定了「这段一小时录音现在就要转」。
+_TIER_MEDIA = frozenset({"video", "audio"})
 # `arxiv` 委托 `DocumentAdapter`（引擎链零复制），归文档档。
 _TIER_DOC = frozenset({"document", "arxiv", "webpage"})
 
@@ -670,6 +671,13 @@ def _adapter_to_source_type(name: str, file_path: str = "") -> str:
     document 适配器覆盖 5 种文件类型，根据扩展名细分为独立 sourceType，
     确保前端能正确区分 PDF 专属选项（翻译/公式/参考文献）和通用文档选项。
     """
+    if name == "video":
+        # 音视频共用 `VideoAdapter`（都要先抽音轨再 ASR），但 sourceType 必须分开：
+        # `video` 会带出「视频截图」这类只对视频有意义的选项，音频选了会失败。
+        # 判据是扩展名，与 `adapters/video.py::AUDIO_FILE_EXTS` 同源。
+        from app.adapters.video import AUDIO_FILE_EXTS
+        ext = Path(file_path).suffix.lower() if file_path else ""
+        return "audio" if ext in AUDIO_FILE_EXTS else "video"
     if name == "document":
         ext = Path(file_path).suffix.lower() if file_path else ""
         if ext == ".pdf":

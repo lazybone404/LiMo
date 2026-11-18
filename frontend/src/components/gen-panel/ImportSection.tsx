@@ -259,7 +259,7 @@ export function ImportSection(props: Props) {
                 className="w-full px-2.5 py-2 bg-elevated border border-border-default rounded-lg text-[13px] font-mono outline-none placeholder:text-disabled disabled:opacity-50" />
               <div className="flex items-center gap-2">
                 <div className="flex-1 h-px bg-border-default" />
-                <span className="text-[10px] text-disabled">或上传本地视频</span>
+                <span className="text-[10px] text-disabled">或上传本地音视频</span>
                 <div className="flex-1 h-px bg-border-default" />
               </div>
             </>
@@ -278,13 +278,13 @@ export function ImportSection(props: Props) {
               <>
                 <Upload size={20} className="text-disabled" />
                 <div>
-                  <div className="text-[12px] text-dimmed">拖拽或点击选择视频文件</div>
-                  <div className="text-[10px] text-disabled mt-0.5">MP4 · MKV · AVI · MOV · WebM · 可多选</div>
+                  <div className="text-[12px] text-dimmed">拖拽或点击选择视频或音频文件</div>
+                  <div className="text-[10px] text-disabled mt-0.5">视频 MP4 · MKV · MOV · WebM，音频 MP3 · WAV · M4A · FLAC · OGG · 可多选</div>
                 </div>
               </>
             )}
             <input type="file" className="hidden" multiple
-              accept=".mp4,.mkv,.avi,.mov,.webm,.flv,.wmv"
+              accept={DROP_ACCEPT.video.join(",")}
               onChange={e => {
                 const files = Array.from(e.target.files || [])
                 e.target.value = ''
