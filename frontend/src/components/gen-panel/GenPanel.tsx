@@ -1088,9 +1088,9 @@ export function GenPanel() {
               </div>
 
               {/* 重新转录 — 视频/文档有引擎选择，网页/文本仅重提取 */}
-              {(currentDoc.sourceType === 'video' || typeMeta.isDoc || currentDoc.sourceType === 'webpage' || currentDoc.sourceType === 'text') && (
+              {((currentDoc.sourceType === 'video' || currentDoc.sourceType === 'audio') || typeMeta.isDoc || currentDoc.sourceType === 'webpage' || currentDoc.sourceType === 'text') && (
                 <div className="space-y-2">
-                  {currentDoc.sourceType === 'video' && engineOptions.asr?.length > 0 && (
+                  {(currentDoc.sourceType === 'video' || currentDoc.sourceType === 'audio') && engineOptions.asr?.length > 0 && (
                     <EngineSelect category="asr" label="语音转写" options={engineOptions.asr}
                       binding={engineBindings.asr ?? null} onChange={handleEngineChange} variant="section" />
                   )}

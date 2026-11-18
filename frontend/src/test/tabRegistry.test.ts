@@ -161,3 +161,23 @@ describe('TabRegistry re-registration', () => {
     expect(t2!.label).toBe('测试覆盖2')
   })
 })
+
+/**
+ * 音频与视频共用同一条链（都要先抽音轨再 ASR），tab 集合必须一致。
+ *
+ * 2026-11-18 实测漏掉：`audio` 不在任何 tab 的 `sourceTypes` 里，导入一段 mp3
+ * 之后「笔记 / 整理版 / 转录」三个 tab 全都不出现 —— 界面上像一篇不认识的类型，
+ * 而没有任何报错。
+ */
+describe('音频与视频的 tab 集合一致', () => {
+  const keysOf = (st: string) => TabRegistry.forSourceType(st).map(t => t.key).sort()
+
+  it('audio 拿到的 tab 与 video 相同', () => {
+    expect(keysOf('audio')).toEqual(keysOf('video'))
+  })
+
+  it('audio 至少要有笔记 / 整理版 / 转录三个', () => {
+    const keys = keysOf('audio')
+    for (const k of ['summary', 'polished', 'transcript']) expect(keys).toContain(k)
+  })
+})

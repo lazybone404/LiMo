@@ -66,7 +66,9 @@ export function getTypeMeta(sourceType: string, genOptions: Record<string, strin
   const isExcel = st === 'xlsx'
   const isPDF = st === 'pdf'
   const isDoc = _ALL_DOC_TYPES.includes(st)
-  const isMedia = isVideo || st === 'webpage' || st === 'link'
+  // ⚠️ `audio` 必须在这里：2026-11-18 加音频导入时漏了它，结果是音频文档既没有
+  // 「笔记格式」也没有「风格」两组选项 —— 界面上像一篇「不认识的类型」，没有任何报错。
+  const isMedia = isVideo || st === 'audio' || st === 'webpage' || st === 'link'
   // ⚠️ composite **不在** `_ALL_DOC_TYPES` 里（它是二次产物，不是文档解析类型）——
   // 故必须显式给分支。不给的话会落到最末的默认支：显示「整理版原文」选项，
   // 而合成文档根本没有「原文」可整理（它的 rawText 本就是综述素材）。
