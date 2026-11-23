@@ -111,6 +111,14 @@ export interface StreamChatOptions {
    * （模型不支持时输入框里根本没有这个开关，见 `lib/chat-prefs.ts`）。
    */
   deepWeb?: boolean
+  /**
+   * 用户在预览区看的那一份（`notes` / `polished` / `transcript`）—— 后端据此决定
+   * 注入哪一份正文。**不带 = 逐字稿**（改造前的行为）。
+   *
+   * ⚠️ 传的是**产物名**不是 tab key（笔记 tab 的 key 是 `summary`，映射在
+   * `lib/tabRegistry.ts::VIEW_PART`）。
+   */
+  part?: string
 }
 
 export function streamChat(
@@ -119,7 +127,7 @@ export function streamChat(
   callbacks: StreamChatCallbacks,
   options: StreamChatOptions = {},
 ): void {
-  const { signal, conversationId, docRefs, followUp, webSearch, answerMode, deepWeb } = options
+  const { signal, conversationId, docRefs, followUp, webSearch, answerMode, deepWeb, part } = options
   const params = new URLSearchParams({ question })
   if (docIds.length > 0) params.set('doc_ids', docIds.join(','))
   if (conversationId) params.set('conversation_id', conversationId)
@@ -135,6 +143,8 @@ export function streamChat(
   if (answerMode && answerMode !== 'strict') params.set('answer_mode', answerMode)
   // 同一条纪律：默认（关）根本不设这个参数。
   if (deepWeb) params.set('deep_web', '1')
+  // 同一条纪律：默认（逐字稿）不设参数。
+  if (part && part !== 'transcript') params.set('part', part)
 
   // 追踪 SSE 是否正常结束（收到 done/error）— 对齐 generate.ts。
   // 断连时 onDone/onError 都不会触发，若不追踪则聊天 UI 永久卡加载

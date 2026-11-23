@@ -160,3 +160,55 @@ def split_by_h2(md: str) -> tuple[str, list[tuple[str, str, bool]]]:
         sections.append((lines[start], _trim_body(body_lines, card), card))
     preamble = "\n".join(lines[:h2[0][0]]).rstrip()
     return preamble, sections
+
+
+# ── 目录与按节读取（对话侧，2026-11-24） ──
+#
+# 用法见 `routers/chat.py::_make_lookup_doc`：模型先拿目录，再指名读某一节。
+# ⚠️ 两者都从 `iter_headings` 取标题 —— 这里不再写一遍「什么是标题」，
+# 否则围栏与标记块的判据会在本模块内部先分叉一次。
+
+
+def outline(md: str, min_level: int = 2, max_level: int = 3) -> list[dict]:
+    """文档目录：`[{title, level, line, offset}]`，按出现顺序。
+
+    默认只列到 H3：H1 是文档标题，H4 以下当正文（列进来会让目录失去概括作用）。
+    ⚠️ `offset` 是**该标题行**在全文中的字符位置，调用方据此标「第 N 字起」。
+    """
+    src = re.sub(r"\r\n?", "\n", md)
+    starts: list[int] = []
+    acc = 0
+    for line in src.split("\n"):
+        starts.append(acc)
+        acc += len(line) + 1
+    return [
+        {"title": text, "level": level, "line": lineno, "offset": starts[lineno]}
+        for lineno, level, text in iter_headings(src, min_level, max_level)
+    ]
+
+
+def find_section(md: str, name: str, *, max_level: int = 3) -> dict | None:
+    """按标题找一节，返回 `{title, level, offset, text, chars}`；找不到返回 `None`。
+
+    匹配顺序：**标题全等**优先，其次子串包含。全等优先是因为「二、RAG」既可能是
+    完整标题，也可能是另一节标题的一部分 —— 模型抄目录时给的是全等那一份。
+    节的范围到**下一个同级或更高级标题**为止，与 `split_by_h2` 的边界判据一致。
+    """
+    src = re.sub(r"\r\n?", "\n", md)
+    entries = outline(src, 2, 6 if max_level >= 4 else max_level)
+    if not entries:
+        return None
+    wanted = name.strip().lstrip("#").strip()
+
+    hit = next((e for e in entries if e["title"].strip() == wanted), None)
+    if hit is None:
+        hit = next((e for e in entries if wanted and wanted in e["title"]), None)
+    if hit is None:
+        return None
+
+    # 末尾：第一棵「级别不高于它」的后续标题
+    after = [e for e in entries if e["offset"] > hit["offset"] and e["level"] <= hit["level"]]
+    end = after[0]["offset"] if after else len(src)
+    text = src[hit["offset"]:end].rstrip()
+    return {"title": hit["title"], "level": hit["level"],
+            "offset": hit["offset"], "text": text, "chars": len(text)}

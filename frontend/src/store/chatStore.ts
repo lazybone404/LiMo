@@ -18,6 +18,7 @@ import { create } from 'zustand'
 import { streamChat, listConversations, getConversation, rebuildConversationMessages, clearConversationContext, refreshFollowUps as refreshFollowUpsApi } from '../api/chat'
 import { getErrorMessage } from '../api/core'
 import { effectiveWebMode, loadChatPrefs, webModeOf } from '../lib/chat-prefs'
+import { VIEW_PART } from '../lib/tabRegistry'
 import { toChatSources, type ChatSource } from '../lib/chat-sources'
 import { useStore } from './index'
 import { nextMsgId } from './toastSlice'
@@ -256,6 +257,9 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
       webModeOf(prefs), !!useStore.getState().capabilities?.chatDeepWebAvailable)
     const wantDeepWeb = webMode === 'server'
     const allowWeb = webMode !== 'off'
+    // 注入哪一份：用户此刻在看的那份（笔记 / 整理版 / 转录）。表里没有的视图
+    // （数据预览、思维导图、原图）不传 —— 那些不是「正文的某一份」。
+    const part = VIEW_PART[useStore.getState().activeView] ?? ''
 
     streamChat(text, docIds, {
       onMeta(convId, meta) {
@@ -370,7 +374,7 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
         }))
       },
     }, { signal: controller.signal, conversationId: convId, docRefs, followUp: wantFollowUp, webSearch: allowWeb,
-      answerMode: prefs.answerMode, deepWeb: wantDeepWeb })
+      answerMode: prefs.answerMode, deepWeb: wantDeepWeb, part })
   }
 
   return {

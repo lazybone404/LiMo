@@ -159,3 +159,74 @@ def split_segments_json(raw: str) -> tuple[list[dict], str] | None:
     if not rest.strip():
         rest = ""
     return clean, rest
+
+
+# ── 按问题在**一篇**正文里找片段（对话注入，2026-11-24） ──
+#
+# 与检索侧的 `search._tokenize` 不是一回事：那边给 FTS5 建索引（二字组 + OR），
+# 这边只需回答「问题里的词出现在哪」。刻意不 import 那边的分词——它的上限参数、
+# 清洗规则、返回的是 MATCH 串，借过来反而要多剥一层。
+
+def query_terms(query: str, limit: int = 8) -> list[str]:
+    """查询 → 用于定位的词表：英文/数字按词切，中文按二字组，去重保序。"""
+    import re
+
+    terms: list[str] = []
+    for chunk in re.findall(r"[0-9A-Za-z_]+|[一-鿿]+", query or ""):
+        if re.match(r"[0-9A-Za-z_]", chunk):
+            if len(chunk) >= 2:
+                terms.append(chunk.lower())
+        else:
+            terms.extend(chunk[i:i + 2] for i in range(len(chunk) - 1))
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in terms:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out[:limit]
+
+
+def find_passages(text: str, query: str, *,
+                  window: int = 600, max_parts: int = 3) -> list[tuple[int, int]]:
+    """在正文里找与查询相关的片段，返回 `[(start, end)]`，按出现顺序、互不重叠。
+
+    ⚠️ 判据是「**这个窗口里命中了几个不同的词**」，不是「第一次出现」。讲稿里查询
+    词的第一次出现通常落在开场寒暄（「今天想跟大家聊聊……」），按首次定位等于没定位。
+    """
+    terms = query_terms(query)
+    if not terms or not text:
+        return []
+    hay = text.lower()
+    half = max(1, window // 2)
+
+    starts: set[int] = set()
+    for term in terms:
+        at, hits = 0, 0
+        while hits < 20:
+            i = hay.find(term, at)
+            if i < 0:
+                break
+            starts.add(max(0, min(max(0, len(text) - window), i - half)))
+            at = i + len(term)
+            hits += 1
+    if not starts:
+        return []
+
+    scored = []
+    for s in starts:
+        e = min(len(text), s + window)
+        chunk = hay[s:e]
+        score = sum(1 for t in terms if t in chunk)
+        scored.append((score, s, e))
+    # 命中词最多的优先；并列时取靠前的（讲稿的开头通常更概括）
+    scored.sort(key=lambda x: (-x[0], x[1]))
+
+    picked: list[tuple[int, int]] = []
+    for _score, s, e in scored:
+        if len(picked) >= max_parts:
+            break
+        if any(not (e <= a or s >= b) for a, b in picked):
+            continue
+        picked.append((s, e))
+    return sorted(picked)

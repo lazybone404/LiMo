@@ -238,3 +238,20 @@ TabRegistry.register({
   contentSource: 'none', htmlMode: '', exportSuffix: '', exportLabel: 'OCR',
   processingKinds: ['import'],
 })
+
+
+/**
+ * 预览视图 → 对话注入用的产物名（后端 `lookup_doc` 的 `part`）。
+ *
+ * ⚠️ **笔记那个 tab 的 key 是 `summary`，而产物名是 `notes`** —— 两个名字不同，
+ * 直接透传 `activeView` 会让后端每次认不出、静默退回逐字稿（不报错，只是用户
+ * 明明在看笔记、模型读到的却是转录）。
+ *
+ * 表里没有的视图（数据预览 / 思维导图 / 原图 / 图片产物）一律不传：它们不是
+ * 「文档正文的某一份」，注入哪一份交给后端默认（逐字稿）。
+ */
+export const VIEW_PART: Record<string, string> = {
+  summary: 'notes',
+  polished: 'polished',
+  transcript: 'transcript',
+}

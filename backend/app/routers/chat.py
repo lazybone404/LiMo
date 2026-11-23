@@ -37,6 +37,7 @@ from app.agent.followup import followup_payload, generate_followups, should_atte
 from app.agent.prompts import loader as prompt_loader
 from app.core.artifact_blocks import parse_blocks
 from app.services.search_fuse import fused_search
+from app.services.markdown_sections import find_section, outline
 from app.services.query_rewrite import rewrite_queries
 
 router = APIRouter()
@@ -192,26 +193,98 @@ def _make_search_docs(store: object, svc: object = None, searcher: object = None
     return search_docs
 
 
-def _make_lookup_doc(store: object):
-    def lookup_doc(id: str, query: str = "") -> str:
+#: `lookup_doc` 不带 `section` 时给的正文长度 —— 与改造前逐字相同（零回归）。
+DOC_HEAD_CHARS = 2000
+#: `lookup_doc` 读某一节时的单次上限。超了只给该节开头，并告诉模型可以再要。
+DOC_SECTION_MAX_CHARS = 4000
+
+
+def _doc_parts(store: object, doc_id: str) -> list[str]:
+    """这篇文档有哪些可读的份：逐字稿 + 已生成的产物。读不出来就只报逐字稿。"""
+    parts = ["transcript"]
+    try:
+        modes = store.get_artifact_modes([doc_id]) or {}
+        parts.extend(modes.get(doc_id) or [])
+    except Exception:
+        pass
+    return parts
+
+
+def _make_lookup_doc(store: object, svc: object = None):
+    """`lookup_doc` —— 读一篇文档的某一**份**（逐字稿 / 笔记 / 整理版）或某一**节**。
+
+    ⚠️ 改造前它只读 `rawText` 的前 2000 字。于是「对话里看不到笔记与整理版」这件事
+    没有任何入口 —— 模型只能看到逐字稿，而用户问的往往是笔记里那句话。
+    （2026-11-23 用户点出：「@ 的文档用户一般可能想让 agent 看全」。）
+
+    ⚠️ **不带 `section` 时先给目录**（H2/H3 标题列表）：长产物截断后只给开头，模型
+    会以为「后面没有了」；给目录它才知道有哪几节、要不要读。目录的判据与卡片骨架
+    共用 `iter_headings`（围栏与标记块里的 `##` 不算标题）。
+
+    ⚠️ **找不到那一节要显式说**，并把现有目录还给它 —— 静默返回空会让模型以为
+    「这一节是空的」，而真实原因是它把标题抄错了一个字。
+    """
+    def lookup_doc(id: str, query: str = "", part: str = "", section: str = "") -> str:
         tx = store.get_transcript(id)
         if not tx:
             return json.dumps({"error": "not found"}, ensure_ascii=False)
-        raw = tx.get("rawText", "")
+        part = (part or "transcript").strip()
+        title = tx.get("title", "")
+
+        if part == "transcript":
+            content = tx.get("rawText", "") or ""
+        elif svc is None:
+            return json.dumps({"error": "产物读取不可用", "parts": _doc_parts(store, id)},
+                              ensure_ascii=False)
+        else:
+            try:
+                art = svc.resolve_latest(id, part)
+            except AppError:
+                art = None
+            if art is None:
+                return json.dumps({
+                    "error": f"这篇没有「{part}」",
+                    "parts": _doc_parts(store, id),
+                }, ensure_ascii=False)
+            content = art.content or ""
+
+        if section.strip():
+            hit = find_section(content, section)
+            if hit is None:
+                return json.dumps({
+                    "error": "没有这一节",
+                    "docId": id, "part": part,
+                    "sections": [s["title"] for s in outline(content)],
+                }, ensure_ascii=False)
+            text = hit["text"]
+            truncated = len(text) > DOC_SECTION_MAX_CHARS
+            if truncated:
+                text = text[:DOC_SECTION_MAX_CHARS] + "..."
+            return json.dumps({
+                "title": title, "docId": id, "part": part,
+                "section": hit["title"], "offset": hit["offset"],
+                "content": text, "totalLength": len(content),
+                "truncated": truncated,
+            }, ensure_ascii=False)
+
         if query:
-            lines = raw.split("\n")
+            lines = content.split("\n")
             matched = [l for l in lines if query.lower() in l.lower()][:10]
             return json.dumps({
-                "title": tx.get("title", ""),
-                "docId": id,
-                "matches": matched,
-                "totalLength": len(raw),
+                "title": title, "docId": id, "part": part,
+                "matches": matched, "totalLength": len(content),
             }, ensure_ascii=False)
-        return json.dumps({
-            "title": tx["title"],
-            "docId": id,
-            "content": raw[:2000],
-        }, ensure_ascii=False)
+
+        head = content[:DOC_HEAD_CHARS]
+        out: dict = {"title": title, "docId": id, "part": part,
+                     "content": head, "totalLength": len(content)}
+        if len(content) > len(head):
+            out["truncated"] = True
+            toc = outline(content)
+            if toc:
+                out["sections"] = [s["title"] for s in toc]
+                out["hint"] = "要看某一节，传 section"
+        return json.dumps(out, ensure_ascii=False)
     return lookup_doc
 
 
@@ -260,12 +333,16 @@ def _build_registry(store: object, *, allow_web: bool = True,
                           cancel_event=cancel_event, reranker=reranker),
     ))
     reg.register(ToolDef(
-        "lookup_doc", "查看指定文档的完整内容",
+        "lookup_doc", "查看指定文档的内容：可读逐字稿 / 笔记 / 整理版，也可只读某一节",
         {"type": "object", "properties": {
             "id": {"type": "string", "description": "文档ID"},
+            "part": {"type": "string", "enum": ["transcript", "notes", "polished"],
+                     "description": "读哪一份。transcript=逐字稿（默认），notes=笔记，polished=整理版"},
+            "section": {"type": "string",
+                        "description": "只读这一节（给标题）。不带时返回开头与目录"},
             "query": {"type": "string", "description": "可选：在文档内搜索的关键词"},
         }, "required": ["id"]},
-        _make_lookup_doc(store),
+        _make_lookup_doc(store, svc),
     ))
     reg.register(ToolDef(
         "list_docs", "列出当前知识库中的可用文档",
@@ -434,6 +511,7 @@ async def chat_stream(
     web_search: int = Query(1),
     answer_mode: str = Query("strict"),
     deep_web: int = Query(0),
+    part: str = Query(""),
     store=Depends(get_store),
     config=Depends(get_config),
     svc=Depends(get_query_service),
@@ -544,7 +622,19 @@ async def chat_stream(
         log.warning("压缩检查异常，跳过", error=str(e)[:120])
         compressed_count = 0
 
-    doc_text, _ = build_doc_context(store, doc_list, budget, cc.get("doc_mode", "auto"))
+    # 注入哪一份：用户在预览区看的那份（前端传 `part`），认不出就用逐字稿。
+    # ⚠️ **认不出不报错**：tab 名是界面概念，写错一个不该让整轮对话失败。
+    view_part = part if part in ("transcript", "notes", "polished") else ""
+
+    def _read_part(doc_id: str, which: str) -> str:
+        art = svc.resolve_latest(doc_id, which) if svc is not None else None
+        return art.content if art else ""
+
+    doc_text, _ = build_doc_context(
+        store, doc_list, budget, cc.get("doc_mode", "auto"),
+        query=question, part=view_part,
+        reader=_read_part if svc is not None else None,
+        can_read=wm.local_tools)
     log.debug("Chat 文档注入", docs=len(doc_list), chars=len(doc_text), mode=cc.get("doc_mode", "auto"))
     summary = conv.get("summary") or ""
     system_text = "\n\n".join(

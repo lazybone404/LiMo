@@ -66,3 +66,76 @@ def test_内容变了之后字数跟着变():
     _clear()
     assert "共 3000 字" in _ctx("这是一句话。" * 500)
     assert "共 6000 字" in _ctx("这是一句话。" * 1000)
+
+
+# ═══════════════════════════════════════════════════════════
+# 装不下时给「目录 + 相关片段」，不是只截开头（2026-11-24）
+#
+# 判据来自 2026-11-23 那次「@ 了文档却答找不到」：只给开头时，模型会把
+# 「我只看到前两千字」当成「后面没有」。
+# ═══════════════════════════════════════════════════════════
+
+_HEADED = (
+    "导语一句\n\n"
+    "## 一、起点\n\n" + "铺垫。" * 400 + "\n\n"
+    "## 二、检索怎么做的\n\n" + "这里讲检索增强的具体做法。" * 60 + "\n\n"
+    "## 三、结论\n\n" + "收尾。" * 400 + "\n"
+)
+
+
+def test_长文档带问题_给目录与相关片段():
+    _clear()
+    out, _ = build_doc_context(_FakeStore(_HEADED), ["d1"], 300_000,
+                               query="检索怎么做的")
+
+    assert "目录：" in out and "二、检索怎么做的" in out
+    assert "与问题相关的片段" in out
+    assert "检索增强的具体做法" in out
+    assert f"共 {len(_HEADED)} 字" in out
+    # 说明必须点出还有别的入口，否则模型不知道能读
+    assert "lookup_doc" in out
+
+
+def test_长文档没有问题时_只给目录():
+    _clear()
+    out, _ = build_doc_context(_FakeStore(_HEADED), ["d1"], 300_000)
+
+    assert "目录：" in out
+    assert "一、起点" in out
+    assert "与问题相关的片段" not in out
+
+
+def test_服务端检索那一轮_说明里不提工具():
+    """⚠️ 那一轮一个本地工具都没注册。说了「可以用 lookup_doc」，
+    模型会去调一个不存在的工具。"""
+    _clear()
+    out, _ = build_doc_context(_FakeStore(_HEADED), ["d1"], 300_000,
+                               query="检索", can_read=False)
+
+    assert "lookup_doc" not in out
+    assert "本轮没有读取工具" in out
+
+
+def test_按_part注入笔记而不是逐字稿():
+    _clear()
+    notes = "## 笔记一\n\n" + "笔记正文。" * 500
+    out, _ = build_doc_context(
+        _FakeStore("逐字稿正文。" * 500), ["d1"], 300_000,
+        part="notes", reader=lambda _id, _p: notes)
+
+    assert "笔记正文" in out
+    assert "逐字稿正文" not in out
+    assert "· notes" in out          # 标签写明注入的是哪一份
+
+
+def test_读产物失败时退回逐字稿且不崩():
+    _clear()
+
+    def _boom(_id, _part):
+        raise RuntimeError("产物读不出来")
+
+    out, _ = build_doc_context(_FakeStore("逐字稿正文。"), ["d1"], 300_000,
+                               part="notes", reader=_boom)
+
+    assert "逐字稿正文" in out
+    assert "· notes" not in out
