@@ -184,6 +184,8 @@ onCancelled → setGenerating(false) + setProcessing(key, null)
 
 ⚠️ 出队靠 store 订阅触发，所以**启动任务的闭包必须同步 `setProcessing`**。不同步占位时队列会以为槽位空着，一口气把整队都放出来。
 
+⚠️ **排队中的任务在面板里可见**（2026-11-24）：提交时写一条 `status: 'queued'` 的 `processingTasks` 条目（面板显示「排队中」，角标计入），出队时删掉它、由处理器写自己的 `running` 条目。只弹 toast 时，收起再打开面板看不到任何「我提交过」的痕迹。⚠️ **取消排队中的任务只能从队列摘**（`cancelQueued`）—— 那时还没有任务可取消，调后端的 `cancelTask` 只会得到「查无此任务」，而只删面板那一行则会让它在轮到时照跑。⚠️ `drain` 有**防重入**标志：出队过程本身要改两次 store（删排队行、处理器写 running），每次都会触发订阅，不挡住就会嵌套消费队列（实测三条只跑一条）。
+
 ### 重转录 / 图片处理（useTaskRunner，2026-08-01 抽取）
 
 `handleRetranscribe` / `handleProcessImage` 的公共骨架（前置检查 → capturedId → taskKey → abort → setProcessing → await → stale 检查 → 错误处理 → finally 清理）已抽取为 `hooks/useTaskRunner.ts`：

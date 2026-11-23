@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useStore } from '../store'
-import { submitTask, pendingCount, pendingTitles, clearQueue, MAX_CONCURRENT } from '../lib/task-queue'
+import { submitTask, pendingCount, pendingTitles, clearQueue, cancelQueued, MAX_CONCURRENT } from '../lib/task-queue'
 
 /** 把一个「正在跑」的任务塞进 store，模拟占位 */
 function occupy(kind: 'import' | 'generate', n: number) {
@@ -99,5 +99,63 @@ describe('上限只数 running', () => {
     const run = vi.fn()
     expect(submitTask('generate', 'C', run)).toBe(false)
     expect(run).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════
+// 排队在面板里可见（2026-11-24）
+//
+// 只弹一条 toast 时，任务面板里什么都没有 —— 用户收起面板再打开，
+// 看不到任何「我提交过」的痕迹。排队条目进 store 之后，它与正在跑的任务
+// 在同一个列表里，只是状态不同。
+// ═══════════════════════════════════════════════════════════
+
+describe('排队可见', () => {
+  it('排队时 store 里有一条 status=queued 的条目', () => {
+    occupy('generate', MAX_CONCURRENT.generate)
+    submitTask('generate', '看不见的那篇', vi.fn())
+
+    const queued = Object.values(useStore.getState().processingTasks)
+      .filter(t => t.status === 'queued') as { title: string }[]
+    expect(queued.map(t => t.title)).toEqual(['看不见的那篇'])
+  })
+
+  it('⚠️ 排队条目不计入并发上限（否则队列自己把自己堵死）', () => {
+    occupy('generate', MAX_CONCURRENT.generate)
+    submitTask('generate', 'A', vi.fn())
+    submitTask('generate', 'B', vi.fn())
+
+    // 上限只数 running：两条 queued 不占位，剩下的两条仍按顺序排着
+    expect(pendingCount('generate')).toBe(2)
+  })
+
+  it('出队后不再有 queued 条目', () => {
+    occupy('generate', MAX_CONCURRENT.generate)
+    const run = vi.fn()
+    submitTask('generate', 'C', run)
+
+    releaseAll()
+    expect(run).toHaveBeenCalledTimes(1)
+    const left = Object.values(useStore.getState().processingTasks)
+      .filter(t => t.status === 'queued')
+    expect(left).toEqual([])
+  })
+
+  it('⚠️ 取消排队 → 摘出队列，轮到它也不会跑', () => {
+    occupy('generate', MAX_CONCURRENT.generate)
+    const run = vi.fn()
+    submitTask('generate', 'D', run)
+
+    const key = Object.keys(useStore.getState().processingTasks)
+      .find(k => k.startsWith('__queued__'))!
+    expect(cancelQueued(key)).toBe(true)
+
+    releaseAll()
+    expect(run).not.toHaveBeenCalled(), '取消之后队列里不该还留着它'
+    expect(pendingCount('generate')).toBe(0)
+  })
+
+  it('对照：cancelQueued 对不在队列里的 key 返回 false', () => {
+    expect(cancelQueued('doc1__generate')).toBe(false)
   })
 })

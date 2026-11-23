@@ -3,8 +3,9 @@ import { useStore, type DocEntry } from '../../store'
 import { cancelTask } from '../../api/taskManager'
 import {
   X, GripHorizontal, FileText, Image, RefreshCw, ListTodo, Check, AlertTriangle,
-  Download, RotateCcw, Package, Layers, BookOpen,
+  Download, RotateCcw, Package, Layers, BookOpen, Clock,
 } from 'lucide-react'
+import { cancelQueued } from '../../lib/task-queue'
 import { useElapsed } from '../../hooks/useElapsed'
 import { isUpdateBusy } from '../../store/updateSlice'
 import { isJobActive } from '../../store/jobsSlice'
@@ -60,7 +61,8 @@ export function TaskPanel() {
   // 三个来源里有任何一个漏了，都会重现「自动关闭 + 任务还在跑」。
   const rowCount = entries.length + (showUpdate ? 1 : 0) + jobList.length
   // 安装会让应用退出，正在跑的生成 / 转录 / 后端任务会断在半路（没有断点续传）。
-  const anyTaskRunning = entries.some(([, t]) => t.status === 'running')
+  // ⚠️ 排队中的也算「有任务」：安装会退出应用，它同样会断在半路。
+  const anyTaskRunning = entries.some(([, t]) => t.status !== 'failed')
     || jobList.some(isJobActive)
   const hasCancellable = entries.length > 0 || jobList.some(isJobActive)
 
@@ -146,17 +148,24 @@ export function TaskPanel() {
             const meta = KIND_META[task.kind] || { label: task.kind, Icon: FileText, color: 'text-dimmed', bg: 'bg-surface-hover' }
             const title = getTitle(docId, task)
             const isFailed = task.status === 'failed'
+            const isQueued = task.status === 'queued'
             return (
               <div key={docId}
                 className={`group flex items-center gap-3 px-4 py-2.5 border-b border-black/[0.04] transition-colors last:border-b-0 ${isFailed ? 'bg-error/[0.04]' : 'hover:bg-surface-hover'}`}>
                 <div className={`shrink-0 flex items-center justify-center w-8 h-8 rounded-xl ${isFailed ? 'bg-error/10' : meta.bg}`}>
-                  {isFailed ? <AlertTriangle size={15} className="text-error" /> : <meta.Icon size={15} className={meta.color} />}
+                  {isFailed
+                    ? <AlertTriangle size={15} className="text-error" />
+                    : isQueued
+                      ? <Clock size={15} className="text-disabled" />
+                      : <meta.Icon size={15} className={meta.color} />}
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-[12px] font-medium text-foreground truncate leading-tight">{title}</p>
                   <p className="text-[11px] mt-0.5">
                     {isFailed ? (
                       <span className="text-error">{task.error || '未知错误'}</span>
+                    ) : isQueued ? (
+                      <span className="text-disabled">排队中 · 等前面的任务完成</span>
                     ) : (
                       <span className="flex items-center gap-1 text-disabled">
                         <span className="inline-block w-1 h-1 rounded-full bg-success animate-pulse" />
@@ -176,13 +185,15 @@ export function TaskPanel() {
                 ) : (
                   <button
                     onClick={() => {
+                      // ⚠️ 排队中的只能从队列里摘 —— 那时还没有任务可以取消
+                      if (isQueued) { cancelQueued(docId); setProcessing(docId, null); return }
                       // P2-7：导入任务按完整 taskKey 精确取消（不再归一成 __import__ 前缀），并发导入只取消本条
                       const baseKey = docId.startsWith('__import__') ? docId : docId.includes('__') ? docId.slice(0, docId.indexOf('__')) : docId
                       cancelTask(baseKey)
                       setProcessing(docId, null)
                     }}
                     className="shrink-0 opacity-50 group-hover:opacity-100 p-1 rounded-md hover:bg-error/10 text-disabled hover:text-error transition-all"
-                    title="取消任务">
+                    title={isQueued ? '取消排队' : '取消任务'}>
                     <X size={14} />
                   </button>
                 )}
@@ -197,8 +208,9 @@ export function TaskPanel() {
         <footer className="border-t border-border-light px-4 py-2 bg-surface flex justify-between items-center">
           <span className="text-[10px] text-disabled">拖拽移动</span>
           <button
-            onClick={() => { entries.forEach(([id]) => {
-              // P2-7：逐条精确取消（导入用完整 taskKey，不归一成 __import__ 前缀）
+            onClick={() => { entries.forEach(([id, t]) => {
+              // 排队中的从队列摘，其余走后端取消（P2-7：逐条精确取消，不归一成前缀）
+              if (t.status === 'queued') { cancelQueued(id); setProcessing(id, null); return }
               const baseKey = id.startsWith('__import__') ? id : id.includes('__') ? id.slice(0, id.indexOf('__')) : id
               cancelTask(baseKey)
               setProcessing(id, null)

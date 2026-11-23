@@ -32,7 +32,8 @@ export interface TaskInfo {
   kind: string
   mode?: string
   title?: string
-  status?: 'running' | 'failed'
+  /** `queued` = 已提交但还没开始（并发上限已满，见 `lib/task-queue.ts`） */
+  status?: 'running' | 'failed' | 'queued'
   error?: string  // 失败原因，保留 5 秒后自动清除
   /** 生成任务：各产物已生成字符数（进度显示） */
   progress?: { notes?: number; polished?: number }

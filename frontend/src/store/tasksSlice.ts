@@ -14,6 +14,8 @@ export interface TasksSlice {
   processingTasks: Record<string, TaskInfo>
   /** taskKey = `${docId}__${task.kind}` 或裸 docId（导入） */
   setProcessing: (taskKey: string, task: TaskInfo | null) => void
+  /** 写一条「排队中」的条目（还没开跑，因此没有 `startedAt`）。 */
+  queueTask: (taskKey: string, kind: string, title: string) => void
   /** 将任务标记为失败并保留 error 信息 */
   failTask: (taskKey: string, error: string) => void
   clearDocTasks: (docId: string) => void
@@ -62,6 +64,14 @@ export const createTasksSlice: StateCreator<Store, [], [], TasksSlice> = (set) =
     }
     return { processingTasks: tasks }
   }),
+  /** 排队中：`status` 只能是 `queued`，**不能走 `setProcessing`** —— 那个入口强制
+   *  写 `running`，用它会让排队任务在面板上显示成「正在跑」。 */
+  queueTask: (taskKey, kind, title) => set(s => ({
+    processingTasks: {
+      ...s.processingTasks,
+      [taskKey]: { kind, title, status: 'queued' },
+    },
+  })),
   /** 将任务标记为失败，5 秒后自动清除 */
   failTask: (taskKey, error) => set(s => {
     const tasks = { ...s.processingTasks }
