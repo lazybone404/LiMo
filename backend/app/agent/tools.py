@@ -1,10 +1,16 @@
 """
 Agent 工具 — 网络搜索 + 网页抓取
 
-给 AgentRunner 注册用的 search_web / fetch_url。
-SearXNG 优先，不可达自动降级 DuckDuckGo。
+给 AgentRunner 注册用的 `search_web` / `fetch_url`。两家共用**一张方案表**：
+配置里写的是哪一家、它此刻为什么不可用、失败之后退到哪儿 —— 三件事只回答一次
+（`_search_plans` / `_fetch_plans` 加两个 runner）。
+
 HTTP 请求统一走 config.fetch.proxy，**本地地址与直连域名除外** —— 判据收口在
 app/core/net.py 的 `proxy_for()`，各调用点不再自己写 `if proxy:`。
+
+⚠️ 降级对外的可见性刻意不对称：搜索结果带 `degraded` / `reason` 两个键交给模型转述，
+抓取结果的降级只进日志。换一家搜索引擎，结果集完全不同，用户必须知道；而降级的抓取
+仍是本地 trafilatura 提取的同一页正文，没有「另一份」可比。
 """
 
 import asyncio
@@ -15,7 +21,8 @@ import socket
 import subprocess
 import sys
 import time
-import urllib.parse
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 import httpx
 
@@ -186,20 +193,17 @@ async def _deepseek_search(query: str, max_results: int, api_key: str,
         # 显式抛而不是返回空列表：`_search_all` 对「结构异常」与「真的没搜到」
         # 的处置不同（前者要留日志证据），而空列表会把两件事抹平。
         raise ValueError(f"DeepSeek 返回结构异常: {str(data)[:120]}")
-    return json.dumps({
-        "results": [
-            {
-                "title": x.get("title", ""),
-                "url": x.get("url", ""),
-                "snippet": (x.get("snippet") or "")[:300],
-                # summary 是 DeepSeek 独有的「给模型读的摘要」；留在这里由
-                # `compose_reference` 决定用不用（它对别家逐字零回归）。
-                "summary": (x.get("summary") or "")[:800],
-            }
-            for x in items if isinstance(x, dict)
-        ],
-        "source": "deepseek",
-    }, ensure_ascii=False)
+    return [
+        {
+            "title": x.get("title", ""),
+            "url": x.get("url", ""),
+            "snippet": (x.get("snippet") or "")[:300],
+            # summary 是 DeepSeek 独有的「给模型读的摘要」；留在这里由
+            # `compose_reference` 决定用不用（它对别家逐字零回归）。
+            "summary": (x.get("summary") or "")[:800],
+        }
+        for x in items if isinstance(x, dict)
+    ]
 
 
 async def _deepseek_fetch(url: str, api_key: str, proxy: str = "") -> str:
@@ -239,99 +243,197 @@ async def _tavily_search(query: str, max_results: int, api_key: str,
         )
         r.raise_for_status()
         data = r.json()
-        return json.dumps({
-            "results": [
-                {"title": x["title"], "url": x["url"],
-                 "snippet": (x.get("content") or "")[:300]}
-                for x in data.get("results", [])
-            ],
-            "source": "tavily",
-        }, ensure_ascii=False)
+        return [
+            {"title": x["title"], "url": x["url"],
+             "snippet": (x.get("content") or "")[:300]}
+            for x in data.get("results", [])
+        ]
+
+
+def _json(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _default(kind: str, key: str) -> str:
+    """`DEFAULT_CONFIG` 里的同名字段 —— 默认值只许住在那里。
+
+    `load_config` 的深合并保证这些键恒存在，正常走不到这里；留它是为了手改 YAML
+    删掉整段时不该抛 KeyError，而默认值本身不能有第二份。
+    """
+    from app.core.config import DEFAULT_CONFIG
+    return str((DEFAULT_CONFIG["agent_tools"][kind] or {}).get(key) or "")
+
+
+def _configured(cfg: dict, kind: str) -> str:
+    """配置里的方案名；空值回退 `DEFAULT_CONFIG`。"""
+    name = str(((cfg.get("agent_tools") or {}).get(kind) or {}).get("provider") or "").strip()
+    return name or _default(kind, "provider")
+
+
+async def _in_thread(fn, *args):
+    return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
+
+
+@dataclass(frozen=True)
+class _SearchPlan:
+    """一个可用的搜索方案。`missing` 非空 = 缺前置条件（如 Key），调用前就跳过。"""
+
+    missing: str
+    call: Callable[[str, int], Awaitable[list[dict]]]
+
+
+@dataclass(frozen=True)
+class _FetchPlan:
+    missing: str
+    call: Callable[[str], Awaitable[str]]
+
+
+#: 搜索的兜底方案。**它必须零配置可用** —— 兜底再要求 Key 就兜不住了。
+_SEARCH_FALLBACK = "duckduckgo"
+#: 抓取的兜底方案。trafilatura 是本地提取，不依赖第三方服务。
+_FETCH_FALLBACK = "trafilatura"
+
+
+async def _searxng_auto(query: str, n: int, base_url: str, proxy: str) -> list[dict]:
+    """先确保本地实例在跑，再搜 —— 「可用」这一步是**动作**不是判断。
+
+    `_ensure_searxng` 找不到可执行文件时静默返回，于是 `_searxng_search` 随后
+    连接失败、由 runner 记进 `reason`。这一串不报错是刻意的：它是运行期失败，
+    不是配置错误，runner 会把它降级并写明原因。
+    """
+    await _ensure_searxng()
+    return await _searxng_search(query, n, base_url, proxy)
+
+
+def _search_plans(cfg: dict, proxy: str) -> dict[str, _SearchPlan]:
+    """把配置烘成可调用方案。加一家 = 这里加一行 + 一个 provider 函数。"""
+    sc = (cfg.get("agent_tools") or {}).get("search") or {}
+    ds_key = _deepseek_key(sc, cfg)
+    tavily_key = str(sc.get("tavily_api_key") or "").strip()
+    searx_url = str(sc.get("searxng_url") or "").strip() or _default("search", "searxng_url")
+    return {
+        "searxng": _SearchPlan(
+            "", lambda q, n: _searxng_auto(q, n, searx_url, proxy)),
+        "tavily": _SearchPlan(
+            "" if tavily_key else "未填 API Key",
+            lambda q, n: _tavily_search(q, n, tavily_key, proxy)),
+        "deepseek": _SearchPlan(
+            "" if ds_key else "未填 API Key",
+            lambda q, n: _deepseek_search(q, n, ds_key, proxy)),
+        "duckduckgo": _SearchPlan("", lambda q, n: _ddg_search(q, n, proxy)),
+    }
+
+
+def _fetch_plans(cfg: dict, proxy: str) -> dict[str, _FetchPlan]:
+    sc = (cfg.get("agent_tools") or {}).get("search") or {}
+    ds_key = _deepseek_key(sc, cfg)
+    return {
+        "trafilatura": _FetchPlan(
+            "", lambda url: _in_thread(_trafilatura_fetch, url, proxy)),
+        "jina": _FetchPlan("", lambda url: _jina_fetch(url, proxy)),
+        "deepseek": _FetchPlan(
+            "" if ds_key else "未填 API Key",
+            lambda url: _deepseek_fetch(url, ds_key, proxy)),
+    }
 
 
 async def search_web(query: str, max_results: int = 5) -> str:
-    """搜索互联网，返回 JSON 结果列表。
+    """搜索互联网，返回 JSON：`{results, source, degraded, reason?}`。
 
-    按 agent_tools.search.provider 选择方案：
-      tavily → Tavily API（AI 优化，需 API Key）
-      searxng → 本地 SearXNG（免费），不可达时降级 DuckDuckGo
-      deepseek → DeepSeek Search API（原生 JSON，按成功请求计费）
-      duckduckgo → 直接 DDG
+    按 `agent_tools.search.provider` 选方案（searxng / tavily / deepseek / duckduckgo）。
+    主方案失败或缺 Key 时降级 `_SEARCH_FALLBACK`，并在 `degraded` / `reason` 里写明
+    原因 —— 此前这一步只记日志，于是「配了 Tavily、实际走了 DDG」在界面与回答里
+    都看不出来，用户以为在用他配的那一家。
+
+    ⚠️ 未知方案名**直接报错，不落兜底**：那是配置写错了（拼错、旧值），静默用兜底
+    会把这个错误一直藏到有人去翻日志为止。
     """
     cfg = _get_config()
-    proxy = cfg.get("fetch", {}).get("proxy", "")
-    sc = cfg.get("agent_tools", {}).get("search", {})
-    # 兜底默认（load_config 深合并保证键恒存在，正常走不到这里）；
-    # 取值须与 config.py::DEFAULT_CONFIG 的同名字段一致，否则就是第二个真相源
-    provider = sc.get("provider", "duckduckgo")
+    proxy = (cfg.get("fetch") or {}).get("proxy", "")
+    primary = _configured(cfg, "search")
+    plans = _search_plans(cfg, proxy)
 
-    if provider == "tavily":
-        api_key = sc.get("tavily_api_key", "")
-        if not api_key:
-            logger.warning("Tavily API key 未配置，降级 DuckDuckGo")
-        else:
-            try:
-                return await _tavily_search(query, max_results, api_key, proxy)
-            except Exception as e:
-                logger.warning("Tavily 不可达，降级 DuckDuckGo: %s", str(e)[:80])
-    elif provider == "deepseek":
-        api_key = _deepseek_key(sc, cfg)
-        if not api_key:
-            logger.warning("DeepSeek API key 未配置，降级 DuckDuckGo")
-        else:
-            try:
-                return await _deepseek_search(query, max_results, api_key, proxy)
-            except Exception as e:
-                logger.warning("DeepSeek 不可达，降级 DuckDuckGo: %s", str(e)[:80])
-    elif provider == "searxng":
-        url = sc.get("searxng_url", "http://127.0.0.1:18080")
-        await _ensure_searxng()
+    plan = plans.get(primary)
+    if plan is None:
+        logger.error("未知的搜索方案: %r（可选：%s）", primary, "、".join(plans))
+        return _json({"results": [], "error": f"未知的搜索方案：{primary}"})
+
+    failures: list[str] = []
+    if plan.missing:
+        failures.append(f"{primary}：{plan.missing}")
+    else:
         try:
-            return await _searxng_search(query, max_results, url, proxy)
+            items = await plan.call(query, max_results)
+            return _json({"results": items, "source": primary, "degraded": False})
         except Exception as e:
-            logger.warning("SearXNG 不可达，降级 DuckDuckGo: %s", str(e)[:80])
-    return await _ddg_search(query, max_results, proxy)
+            failures.append(f"{primary}：{str(e)[:80]}")
+            logger.warning("%s 搜索失败，降级 %s: %s", primary, _SEARCH_FALLBACK, str(e)[:80])
+
+    if primary != _SEARCH_FALLBACK:
+        try:
+            items = await plans[_SEARCH_FALLBACK].call(query, max_results)
+            return _json({
+                "results": items,
+                "source": _SEARCH_FALLBACK,
+                "degraded": True,
+                "reason": "；".join(failures),
+            })
+        except Exception as e:
+            failures.append(f"{_SEARCH_FALLBACK}：{str(e)[:80]}")
+
+    return _json({
+        "results": [],
+        "source": "none",
+        "degraded": True,
+        "reason": "；".join(failures),
+    })
 
 
 async def fetch_url(url: str) -> str:
     """抓取网页正文，返回 Markdown（截断 4000 字）。
 
-    按 agent_tools.fetch.provider 选择方案。
-    同布 trafilatura 用 run_in_executor 防阻塞事件循环。
+    按 `agent_tools.fetch.provider` 选方案（trafilatura / jina / deepseek），
+    失败或缺 Key 时降级 `_FETCH_FALLBACK`。
+
+    ⚠️ 降级**不往正文里加提示**：兜底的 trafilatura 是本地提取，拿到的仍是这一页
+    本身，加一句「本页由 xx 提取」只会污染模型要读的正文。搜索侧之所以要标记，
+    是因为换一家搜索引擎的结果集完全不同（见模块文档）。
     """
     # SSRF 防护：校验 URL 安全性（协议 + 内网 IP）
     from app.utils.url_security import validate_url
     try:
         validate_url(url)
     except ValueError as e:
-        return json.dumps({"error": f"URL 安全校验失败: {str(e)[:120]}"}, ensure_ascii=False)
+        return _json({"error": f"URL 安全校验失败: {str(e)[:120]}"})
 
     cfg = _get_config()
-    proxy = cfg.get("fetch", {}).get("proxy", "")
-    fc = cfg.get("agent_tools", {}).get("fetch", {})
-    provider = fc.get("provider", "trafilatura")
+    proxy = (cfg.get("fetch") or {}).get("proxy", "")
+    primary = _configured(cfg, "fetch")
+    plans = _fetch_plans(cfg, proxy)
 
-    # ⚠️ Key 住在 `agent_tools.search` 段（与搜索共用同一把），不是 `fetch` 段 ——
-    # 两个 provider 各配一把 Key 只会让用户多抄一遍，而它们本来就是同一个账户。
-    if provider == "deepseek":
-        api_key = _deepseek_key(cfg.get("agent_tools", {}).get("search", {}), cfg)
-        if not api_key:
-            # 与 `search_web` 同款：没 Key 就降级而不是报错（抓取是工具调用，
-            # 返回纯文本比返回错误串更有用）。日志留证据。
-            logger.warning("DeepSeek API key 未配置，抓取降级 trafilatura")
-        else:
-            try:
-                return await _deepseek_fetch(url, api_key, proxy)
-            except Exception as e:
-                logger.warning("DeepSeek 抓取不可达，降级 trafilatura: %s", str(e)[:80])
+    plan = plans.get(primary)
+    if plan is None:
+        logger.error("未知的抓取方案: %r（可选：%s）", primary, "、".join(plans))
+        return _json({"error": f"未知的抓取方案：{primary}"})
 
-    try:
-        if provider == "jina":
-            return await _jina_fetch(url, proxy)
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _trafilatura_fetch, url, proxy)
-    except Exception as e:
-        return json.dumps({"error": f"抓取失败: {str(e)[:120]}"}, ensure_ascii=False)
+    failures: list[str] = []
+    if plan.missing:
+        failures.append(f"{primary}：{plan.missing}")
+    else:
+        try:
+            return await plan.call(url)
+        except Exception as e:
+            failures.append(f"{primary}：{str(e)[:120]}")
+            logger.warning("%s 抓取失败，降级 %s: %s", primary, _FETCH_FALLBACK, str(e)[:120])
+
+    if primary != _FETCH_FALLBACK:
+        try:
+            return await plans[_FETCH_FALLBACK].call(url)
+        except Exception as e:
+            failures.append(f"{_FETCH_FALLBACK}：{str(e)[:120]}")
+
+    logger.warning("网页抓取失败: %s", "；".join(failures))
+    return _json({"error": f"抓取失败: {'；'.join(failures)}"})
 
 
 # ── SearXNG ──
@@ -355,35 +457,32 @@ async def _searxng_search(query: str, max_results: int, base_url: str, proxy: st
             "snippet": item.get("content", "")[:300],
         } for item in data.get("results", [])[:max_results]]
         logger.info("SearXNG: %d 条结果", len(results))
-        return json.dumps({"results": results, "source": "searxng"}, ensure_ascii=False)
+        return results
 
 
 # ── DuckDuckGo（真实网页搜索）──
 
-async def _ddg_search(query: str, max_results: int, proxy: str) -> str:
+async def _ddg_search(query: str, max_results: int, proxy: str) -> list[dict]:
     """使用 duckduckgo_search 库进行真实网页搜索（替代废弃的 Instant Answer API）"""
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _ddg_search_sync, query, max_results, proxy)
+    return await _in_thread(_ddg_search_sync, query, max_results, proxy)
 
 
-def _ddg_search_sync(query: str, max_results: int, proxy: str) -> str:
-    """同步 DDG 搜索，在 executor 中运行"""
-    try:
-        from duckduckgo_search import DDGS
-        with DDGS(proxy=proxy or None) as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
-        items = []
-        for r in results:
-            items.append({
-                "title": r.get("title", ""),
-                "url": r.get("href", ""),
-                "snippet": (r.get("body", "") or "")[:300],
-            })
-        logger.info("DDG: %d 条结果", len(items))
-        return json.dumps({"results": items, "source": "duckduckgo"}, ensure_ascii=False)
-    except Exception as e:
-        logger.warning("DDG 搜索失败: %s", str(e)[:80])
-        return json.dumps({"results": [], "source": "duckduckgo_error"}, ensure_ascii=False)
+def _ddg_search_sync(query: str, max_results: int, proxy: str) -> list[dict]:
+    """同步 DDG 搜索，在 executor 中运行。
+
+    ⚠️ **不在这里吞异常**：失败要由 runner 记进 `reason`，否则「DDG 也挂了」与
+    「DDG 搜到了 0 条」在返回值上完全相同 —— 而前者需要用户去查网络。
+    """
+    from duckduckgo_search import DDGS
+    with DDGS(proxy=proxy or None) as ddgs:
+        results = list(ddgs.text(query, max_results=max_results))
+    items = [{
+        "title": r.get("title", ""),
+        "url": r.get("href", ""),
+        "snippet": (r.get("body", "") or "")[:300],
+    } for r in results]
+    logger.info("DDG: %d 条结果", len(items))
+    return items
 
 
 # ── 网页抓取 ──

@@ -106,7 +106,8 @@ def _sentinel_ddg(monkeypatch) -> list[dict]:
 
     async def _fake(query, max_results, proxy):
         calls.append({"query": query, "max_results": max_results})
-        return '{"results": [], "source": "duckduckgo"}'
+        # provider 现在的契约是「返回归一下来的条目列表」；信封由 `search_web` 组装
+        return []
 
     monkeypatch.setattr(tools, "_ddg_search", _fake)
     return calls
@@ -165,15 +166,14 @@ def test_归一成契约形状_并保留summary(monkeypatch):
         {"title": "标题乙", "url": "https://b.example/2"},
     ]})
 
-    data = json.loads(asyncio.run(tools._deepseek_search("q", 5, "k")))
+    items = asyncio.run(tools._deepseek_search("q", 5, "k"))
 
-    assert data["source"] == "deepseek"
-    assert len(data["results"]) == 2
+    assert len(items) == 2
     # 只留契约里的四个键 —— 其余（authority / site_name / content）不在任何消费方
-    assert set(data["results"][0]) == {"title", "url", "snippet", "summary"}
-    assert data["results"][0]["summary"].startswith("摘要甲")
+    assert set(items[0]) == {"title", "url", "snippet", "summary"}
+    assert items[0]["summary"].startswith("摘要甲")
     # 缺字段的条目照样归一，不 KeyError
-    assert data["results"][1]["snippet"] == ""
+    assert items[1]["snippet"] == ""
 
 
 def test_超长字段截断(monkeypatch):
@@ -185,7 +185,7 @@ def test_超长字段截断(monkeypatch):
     _patch_http(monkeypatch, 200, {"results": [{
         "title": "t", "url": "u", "snippet": "s" * 999, "summary": "m" * 9999}]})
 
-    r = json.loads(asyncio.run(tools._deepseek_search("q", 5, "k")))["results"][0]
+    r = asyncio.run(tools._deepseek_search("q", 5, "k"))[0]
 
     assert len(r["snippet"]) == 300
     assert len(r["summary"]) == 800
@@ -194,7 +194,7 @@ def test_超长字段截断(monkeypatch):
 def test_非dict条目被丢弃(monkeypatch):
     _patch_http(monkeypatch, 200, {"results": [{"title": "ok", "url": "u"}, "垃圾", None]})
 
-    r = json.loads(asyncio.run(tools._deepseek_search("q", 5, "k")))["results"]
+    r = asyncio.run(tools._deepseek_search("q", 5, "k"))
 
     assert len(r) == 1 and r[0]["title"] == "ok"
 
@@ -255,10 +255,13 @@ def test_HTTP错误降级DDG(monkeypatch, status):
     _patch_http(monkeypatch, status, {"error": "nope"})
     ddg = _sentinel_ddg(monkeypatch)
 
-    out = asyncio.run(tools.search_web("问题"))
+    out = json.loads(asyncio.run(tools.search_web("问题")))
 
     assert len(ddg) == 1, "必须降级到 DDG"
-    assert json.loads(out)["source"] == "duckduckgo"
+    assert out["source"] == "duckduckgo"
+    # ⚠️ 降级必须**说出来**：只换 `source` 时模型与用户都看不出自己用的是哪一家
+    assert out["degraded"] is True
+    assert "deepseek" in out["reason"] and str(status) in out["reason"]
 
 
 def test_响应不是JSON也降级(monkeypatch):
@@ -284,10 +287,12 @@ def test_成功时一次DDG都不调(monkeypatch):
     _patch_http(monkeypatch, 200, {"results": [{"title": "t", "url": "u", "summary": "s"}]})
     ddg = _sentinel_ddg(monkeypatch)
 
-    out = asyncio.run(tools.search_web("q"))
+    out = json.loads(asyncio.run(tools.search_web("q")))
 
     assert ddg == []
-    assert json.loads(out)["source"] == "deepseek"
+    assert out["source"] == "deepseek"
+    assert out["degraded"] is False
+    assert "reason" not in out
 
 
 # ═══════════════════════════════════════════════════════════
@@ -381,3 +386,64 @@ def test_fetch_url无Key不发请求(monkeypatch):
 
     assert asyncio.run(tools.fetch_url("https://x.example/p")) == "本地提取的正文"
     assert rec.get("constructed", 0) == 0
+
+
+# ═══════════════════════════════════════════════════════════
+# 7. 方案表：未知取值必须显式失败（2026-11-24 收口为一张表）
+# ═══════════════════════════════════════════════════════════
+
+def test_未知搜索方案显式报错而不是静默用兜底(monkeypatch):
+    """⚠️ 此前两段 if/elif 的形态是：名字对不上任何一个分支 → 直接 `return DDG`。
+
+    于是「tavly」这种拼写错误会**一直**用 DuckDuckGo，而配置页显示的是 Tavily ——
+    它看起来一切正常，直到有人去翻日志。现在它是配置错误，明确说出来。
+    """
+    monkeypatch.setattr(tools, "_get_config", lambda: _cfg(provider="tavly"))
+    ddg = _sentinel_ddg(monkeypatch)
+
+    out = json.loads(asyncio.run(tools.search_web("q")))
+
+    assert "未知的搜索方案" in out["error"]
+    assert ddg == [], "配置错误不该顺手用兜底把它盖过去"
+
+
+def test_未知抓取方案显式报错(monkeypatch):
+    _no_ssrf_check(monkeypatch)
+    cfg = _cfg(key="sk-x")
+    cfg["agent_tools"]["fetch"]["provider"] = "jinna"
+    monkeypatch.setattr(tools, "_get_config", lambda: cfg)
+
+    out = json.loads(asyncio.run(tools.fetch_url("https://x.example/p")))
+
+    assert "未知的抓取方案" in out["error"]
+
+
+def test_配置缺_provider_键时跟随_DEFAULT_CONFIG(monkeypatch):
+    """`_configured` 的回退读 `DEFAULT_CONFIG` —— 默认值只许有一处。
+
+    ⚠️ 判据要有区分力：改的是 `DEFAULT_CONFIG` 里的值，断言 `_configured` 跟着变。
+    写成「断言等于 duckduckgo」就区分不出「读表」与「硬编码一份碰巧相同」。
+    """
+    from app.core import config as C
+    monkeypatch.setitem(C.DEFAULT_CONFIG["agent_tools"]["search"], "provider", "searxng")
+
+    assert tools._configured({"agent_tools": {}}, "search") == "searxng"
+    # 显式给了名字就以它为准，不回头看表
+    assert tools._configured({"agent_tools": {"search": {"provider": "tavily"}}},
+                             "search") == "tavily"
+
+
+def test_主方案与兜底都挂掉时_source_为_none_并带两条原因(monkeypatch):
+    """「全挂了」不能伪装成「搜到了 0 条」—— `source` 就此区分开。"""
+    monkeypatch.setattr(tools, "_get_config", lambda: _cfg(provider="duckduckgo"))
+
+    async def _boom(query, max_results, proxy):
+        raise RuntimeError("DDG 也被限流了")
+
+    monkeypatch.setattr(tools, "_ddg_search", _boom)
+
+    out = json.loads(asyncio.run(tools.search_web("q")))
+
+    assert out["source"] == "none"
+    assert out["degraded"] is True
+    assert "DDG 也被限流了" in out["reason"]
