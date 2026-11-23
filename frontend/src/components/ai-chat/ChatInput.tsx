@@ -246,7 +246,10 @@ export function ChatInput({ scale }: ChatInputProps) {
             <PrefRow icon={<ScanSearch size={14} />} label="深度联网"
               attr={{ 'data-deepweb-toggle': deepWeb && webSearch ? 'on' : 'off' }}
               desc={webSearch
-                ? '检索由服务端完成，回答附可点来源；本轮不使用知识库工具'
+                // ⚠️ 两个副作用都要写出来：服务端检索**不看**设置里的搜索方案
+                // （用户配了 Tavily 也不会用），本轮也拿不到知识库三件套。
+                // 只写「由服务端完成」时，前一件对用户是完全不可见的。
+                ? '服务端检索，会忽略设置里的搜索方案；本轮不使用知识库工具'
                 : '需先开启上面的「联网」'}
               checked={deepWeb && webSearch} disabled={!webSearch}
               onChange={v => saveChatPrefs({ deepWeb: v })} />

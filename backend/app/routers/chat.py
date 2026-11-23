@@ -507,6 +507,12 @@ async def chat_stream(
         # 与用户所选不一致时**回退并明说**（`warning` 事件），不静默按用户没开处理。
         log.info("联网形态与所选不一致，已回退", mode=wm.key, provider=llm.provider,
                  model=llm.model, web=allow_web)
+    if wm.server_tools:
+        # 服务端形态**完全不读** `agent_tools.search.provider`。不记这一笔的话，
+        # 「我配了 Tavily 但搜出来不是 Tavily」只能靠读代码推断。
+        log.info("服务端检索形态：设置里的搜索方案本轮不生效",
+                 scheme=((config.get("agent_tools") or {}).get("search") or {})
+                 .get("provider"))
     safety_check = bool(((config.get("agent_tools") or {}).get("deepseek_builtin") or {})
                         .get("safety_check", False))
     # ⚠️ `cancel_event` 必须**先于工具注册**创建：`search_docs` 的查询改写要拿到它
