@@ -76,6 +76,17 @@ def build_doc_context(store: object, doc_ids: list[str], budget: int,
             if len(_doc_ctx_cache) >= _DOC_CACHE_MAX:
                 _doc_ctx_cache.clear()
             _doc_ctx_cache[ck] = (h, text)
+        # ⚠️ **截断必须告诉模型**（2026-11-24，借鉴 pi 的 `truncate.ts`：闸门装在层里，
+        # 不指望模型自觉）。只给省略号时，模型会把「我只看到前两千字」当成「文档里没有
+        # 这段」，然后断言「原文没提到」，而用户明知原文有 —— 这正是 2026-11-23 那次
+        # 「@ 了文档却答找不到」的直接成因。
+        # ⚠️ 说明接在缓存的纯截断文本之后，**不进缓存**：缓存键是 `docId:limit`，
+        # 而字数随时可变，混进去会让缓存失效判据变成两件事。
+        full_len = len(tx.get("rawText", ""))
+        if full_len > len(text):
+            shown = max(0, len(text) - 3)  # 去掉 smart_truncate 追加的 "..."
+            text = (f"{text}\n\n（这一篇共 {full_len} 字，以上只注入了开头 {shown} 字，"
+                    f"其余部分没有进入上下文。）")
         parts.append(f"[{tx.get('title', did)}]\n{text}")
         tokens += estimate_tokens(text)
     return ("\n\n".join(parts) if parts else "（未选中文档）"), tokens

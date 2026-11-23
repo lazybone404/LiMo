@@ -390,7 +390,7 @@ model_id → scene_models.image_process → scene_models.generate → Engine 回
 - **端点**：`POST /api/chat` + `GET /api/chat/stream`（SSE 8 事件：meta → compressed → agent_status → tool_start → tool_result → thinking → text → done/error；引用不独立成事件，随 `tool_result.refs` 携带）。完整协议见 [对话协议.md](对话协议.md)
 - **Agent 循环**：`llm/agent.py`（`stream_run`）；5 个工具经 `tool_registry.py` 的 `ToolDef` 注册，注册入口是 `routers/chat.py::_build_registry`——`search_docs`/`lookup_doc`/`list_docs` 的实现在该文件内就地定义（闭包工厂，需要 store），`search_web`/`fetch_url` 实现来自 `agent/tools.py`
 - **会话管理**：`agent/session.py` 的 `SessionManager`——会话 CRUD + `append_user_message`/`append_assistant_message` + 上下文边界（clear-context）
-- **上下文预算**：`core/chat_context.py`（compute_budget/trim_history/build_doc_context）+ `agent/compress.py`（超阈值 LLM 摘要早期消息）
+- **上下文预算**：`core/chat_context.py`（compute_budget/trim_history/build_doc_context）+ `agent/compress.py`（超阈值 LLM 摘要早期消息）。⚠️ **被截断的文档必须在注入文本里写明**（「这一篇共 N 字，以上只注入了开头 M 字」，2026-11-24 借鉴 pi 的 `truncate.ts`）—— 只给省略号时，模型会把节选当成全文，据此断言「原文没提到」，而用户明知原文有。闸门装在注入层，不指望模型自觉
 
 - 全部长时端点（generate/ingest/retranscribe/chat/process）复用 `disconnect_watcher` + `cancel_event`（见 `app/core/disconnect.py`）
 
