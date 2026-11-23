@@ -92,8 +92,9 @@ def test_长文档带问题_给目录与相关片段():
     assert "与问题相关的片段" in out
     assert "检索增强的具体做法" in out
     assert f"共 {len(_HEADED)} 字" in out
-    # 说明必须点出还有别的入口，否则模型不知道能读
+    # 说明必须点出还有别的入口，否则模型不知道能读；offset 要给具体数
     assert "lookup_doc" in out
+    assert "offset=" in out
 
 
 def test_长文档没有问题时_只给目录():

@@ -157,3 +157,45 @@ def test_超长节只给开头并标_truncated():
 
     assert out["truncated"] is True
     assert len(out["content"]) == DOC_SECTION_MAX_CHARS + 3   # + "..."
+
+
+# ── 按 offset 往后读（照 pi 的 `read(offset, limit)`） ──
+#
+# ⚠️ 逐字稿没有 H2，`section` 这条路对它不存在 —— 而长讲稿正是最初那个
+# 「说原文没提到」的场景。没有 offset 就没有「读完这一篇」的入口。
+
+def test_逐字稿可以按_offset_往后读():
+    body = "".join(f"第{i}段。" for i in range(1000))   # 无 H2 的长逐字稿
+    out = _call(_Store(body), id="d1", offset=2000, limit=500)
+
+    assert out["offset"] == 2000
+    assert out["content"] == body[2000:2500]
+    assert out["totalLength"] == len(body)
+    assert out["nextOffset"] == 2500
+
+
+def test_读到末尾时不再给_nextOffset():
+    body = "字" * 100
+    out = _call(_Store(body), id="d1", offset=50, limit=500)
+
+    assert out["content"] == body[50:]
+    assert "nextOffset" not in out
+
+
+def test_offset_超出长度时返回空正文而不是报错():
+    """是「已经读完了」而不是「文档不存在」——后者会让模型重新去找一篇。"""
+    out = _call(_Store(SHORT), id="d1", offset=9999)
+
+    assert out["content"] == ""
+    assert out["totalLength"] == len(SHORT)
+    assert "error" not in out
+
+
+def test_不带_section_的截断响应里给出_nextOffset():
+    """模型据此只用一次调用就能接着读，不必自己猜从哪开始。"""
+    big = "填充。" * 700 + "\n\n" + LONG
+    out = _call(_Store(big), id="d1")
+
+    assert out["truncated"] is True
+    assert out["nextOffset"] > 0
+    assert "nextOffset" in out["hint"]

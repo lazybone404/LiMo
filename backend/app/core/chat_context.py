@@ -79,9 +79,10 @@ def _compose_digest(title: str, full: str, limit: int, query: str,
     # ⚠️ 没有读取工具时（服务端检索那一轮）**必须**给，否则模型只有一张目录 ——
     # 它既读不到正文，也没法调工具。
     head_budget = max(0, min(900, limit // 2))
-    if head_budget > 100:
+    head_text = smart_truncate(full, head_budget) if head_budget > 100 else ""
+    if head_text:
         parts.append("开头：")
-        parts.append(smart_truncate(full, head_budget))
+        parts.append(head_text)
     if toc:
         parts.append("目录：")
         parts.extend(f"- {s['title']}" for s in toc)
@@ -91,10 +92,14 @@ def _compose_digest(title: str, full: str, limit: int, query: str,
             body = smart_truncate(full[start:end], window)
             parts.append(f"（第 {start}–{end} 字）\n{body}")
 
+    # 续读的起点要给**具体的数**（照 pi 的 `read(offset)`）：只说「可以再读」时，
+    # 模型得自己猜从哪开始；给了 nextOffset，它就只差一次调用。
     if can_read:
-        tail = ("其余内容没有进入上下文；需要哪一节可以用 lookup_doc 传 section 读。"
-                if toc else
-                "其余内容没有进入上下文；如果这里不够，可以再用 query 在文档内检索。")
+        nxt = max(0, len(head_text) - 3)   # smart_truncate 末尾追加的是 "..."
+        tail = ("其余内容没有进入上下文；要看某一节可以用 lookup_doc 传 section，"
+                f"要按顺序往后读传 offset={nxt}。" if toc else
+                f"其余内容没有进入上下文；要往后读可以用 lookup_doc 传 offset={nxt}，"
+                "或者在文档内用 query 检索。")
     else:
         tail = "其余内容没有进入上下文，本轮没有读取工具。"
     parts.append(tail)

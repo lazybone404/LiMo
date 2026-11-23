@@ -224,7 +224,8 @@ def _make_lookup_doc(store: object, svc: object = None):
     ⚠️ **找不到那一节要显式说**，并把现有目录还给它 —— 静默返回空会让模型以为
     「这一节是空的」，而真实原因是它把标题抄错了一个字。
     """
-    def lookup_doc(id: str, query: str = "", part: str = "", section: str = "") -> str:
+    def lookup_doc(id: str, query: str = "", part: str = "", section: str = "",
+                   offset: int = 0, limit: int = 0) -> str:
         tx = store.get_transcript(id)
         if not tx:
             return json.dumps({"error": "not found"}, ensure_ascii=False)
@@ -267,6 +268,21 @@ def _make_lookup_doc(store: object, svc: object = None):
                 "truncated": truncated,
             }, ensure_ascii=False)
 
+        # ⚠️ **按 offset 往后读**（2026-11-24，照 pi 的 `read(offset, limit)`）：
+        # 逐字稿没有 H2，`section` 这条路对它不存在 —— 而长讲稿正是最初那个
+        # 「说原文没提到」的场景。有 offset 才谈得上「读完这一篇」。
+        if offset and offset > 0:
+            window = limit if limit and limit > 0 else DOC_SECTION_MAX_CHARS
+            start = min(int(offset), len(content))
+            chunk = content[start:start + window]
+            nxt = start + len(chunk)
+            out = {"title": title, "docId": id, "part": part,
+                   "offset": start, "content": chunk, "totalLength": len(content)}
+            if nxt < len(content):
+                out["nextOffset"] = nxt
+                out["truncated"] = True
+            return json.dumps(out, ensure_ascii=False)
+
         if query:
             lines = content.split("\n")
             matched = [l for l in lines if query.lower() in l.lower()][:10]
@@ -280,10 +296,12 @@ def _make_lookup_doc(store: object, svc: object = None):
                      "content": head, "totalLength": len(content)}
         if len(content) > len(head):
             out["truncated"] = True
+            out["nextOffset"] = len(head)
             toc = outline(content)
             if toc:
                 out["sections"] = [s["title"] for s in toc]
-                out["hint"] = "要看某一节，传 section"
+            out["hint"] = ("要看某一节，传 section；"
+                           "要按顺序往后读，传 offset=nextOffset")
         return json.dumps(out, ensure_ascii=False)
     return lookup_doc
 
@@ -333,13 +351,18 @@ def _build_registry(store: object, *, allow_web: bool = True,
                           cancel_event=cancel_event, reranker=reranker),
     ))
     reg.register(ToolDef(
-        "lookup_doc", "查看指定文档的内容：可读逐字稿 / 笔记 / 整理版，也可只读某一节",
+        "lookup_doc",
+        "查看指定文档的内容：可读逐字稿 / 笔记 / 整理版。返回里带 totalLength 与 "
+        "nextOffset —— 没读完就再用 section 或 offset 接着读，不要凭开头猜全文",
         {"type": "object", "properties": {
             "id": {"type": "string", "description": "文档ID"},
             "part": {"type": "string", "enum": ["transcript", "notes", "polished"],
                      "description": "读哪一份。transcript=逐字稿（默认），notes=笔记，polished=整理版"},
             "section": {"type": "string",
                         "description": "只读这一节（给标题）。不带时返回开头与目录"},
+            "offset": {"type": "integer",
+                       "description": "从第几个字符往后读 —— 填上一次结果里的 nextOffset。逐字稿没有章节，用它读后面"},
+            "limit": {"type": "integer", "description": "这次最多读多少字，默认 4000"},
             "query": {"type": "string", "description": "可选：在文档内搜索的关键词"},
         }, "required": ["id"]},
         _make_lookup_doc(store, svc),
