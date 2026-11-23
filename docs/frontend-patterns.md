@@ -172,6 +172,18 @@ onError → setError(msg) + setGenerating(false) + setProcessing(key, null)
 onCancelled → setGenerating(false) + setProcessing(key, null)
 ```
 
+### 到并发上限时排队，不拒绝（2026-11-23）
+
+生成上限 2、导入上限 3。到上限时**不再弹「同时最多 N 个」然后什么都不做**，而是自动挂起，前面跑完自己开始。实现在 [lib/task-queue.ts](../frontend/src/lib/task-queue.ts)。
+
+三条约束，缺一条都会坏：
+
+- **队列住在模块里，不住组件里。** `GenPanel` 随左侧面板收起而卸载（`SlotLayout` 是 `collapsed ? <PanelStrip/> : <Comp/>`），队列放 `useState` 等于收起面板就把排队中的任务扔了 —— 而那正是「点了却没反应」的样子。模块级 + 直接 `useStore.subscribe` 出队，卸载不影响调度。
+- **存闭包，不存参数。** 提交那一刻处理器已经把「哪篇文档、哪些选项」读进局部变量；闭包捕获的是那份快照。存参数再在出队时重读状态，会排到用户后来切换的文档上。
+- **上限只数 `status === 'running'`。** `failTask` 的条目保留 5 秒，算进来会让「两次都失败、立刻重排第三个」被一条不存在的上限挡住（`genPanel.retry.test.tsx` 有对照用例）。
+
+⚠️ 出队靠 store 订阅触发，所以**启动任务的闭包必须同步 `setProcessing`**。不同步占位时队列会以为槽位空着，一口气把整队都放出来。
+
 ### 重转录 / 图片处理（useTaskRunner，2026-08-01 抽取）
 
 `handleRetranscribe` / `handleProcessImage` 的公共骨架（前置检查 → capturedId → taskKey → abort → setProcessing → await → stale 检查 → 错误处理 → finally 清理）已抽取为 `hooks/useTaskRunner.ts`：

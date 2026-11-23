@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useStore } from '../../store'
+import { submitTask, pendingCount, MAX_CONCURRENT } from '../../lib/task-queue'
 import { streamGenerate, getMarkdown, listEnabledModels, listProviders, ingestURL, ingestText, ingestFile, processImage, saveEngineBindings, getErrorMessage, type EnabledModel, type Provider, type IngestErrorInfo } from '../../api/client'
 import { registerAbort, unregisterAbort } from '../../api/taskManager'
 import { cancelTask } from '../../api/taskManager'
@@ -161,8 +162,6 @@ export function GenPanel() {
   const [importProgress, setImportProgress] = useState('')
   const [importPercent, setImportPercent] = useState<number | null>(null)
   const activeImportKeyRef = useRef<string | null>(null)  // 当前显示的导入 key
-  const MAX_CONCURRENT_IMPORTS = 3
-  const MAX_CONCURRENT_GENERATES = 2
   const [inputType, setInputType] = useState<'link' | 'video' | 'text' | 'file' | 'image'>('link')
   const [fileObj, setFileObj] = useState<File | null>(null)
   const [fileSubType, setFileSubType] = useState('pdf')
@@ -471,35 +470,29 @@ export function GenPanel() {
   }
 
   const handleImport = () => {
-    // ── 并发上限检查 ──
-    // ⚠️ 只数 `status === 'running'`：失败条目会保留 5 秒（见下条注释），把它算进来会让
-    // 「连挂三次 → 第四次重试」被一条**不存在**的并发上限拦住。
-    const activeImports = Object.values(useStore.getState().processingTasks)
-      .filter(t => t.kind === 'import' && t.status === 'running')
-    if (activeImports.length >= MAX_CONCURRENT_IMPORTS) {
-      addToast(`同时最多 ${MAX_CONCURRENT_IMPORTS} 个导入任务，请等待完成后再试`, 'info')
-      return
-    }
+    const importTitle = fileObj?.name || importInput.trim().slice(0, 40) || '导入'
 
     // P1-20：同源防重入——同一来源（文件名/URL/文本）已有导入任务在跑则忽略，
-    // 防连按 Enter/连点按钮产生重复任务；不同来源的并发导入仍受 MAX_CONCURRENT_IMPORTS 约束
+    // 防连按 Enter/连点按钮产生重复任务。这一段**留在提交时刻**，不进闭包：
+    // 排队后再执行时如果还判一次，会因为「前一个已经跑完」而失去防连点的意义。
     //
     // ⚠️ 判据必须含 `status === 'running'`：`failTask` 把条目标成 failed 后还**保留 5 秒**
     // （`tasksSlice.ts::failTask`），只判 kind/title 的话，用户看到错误卡片立刻点「重试」会被
     // 当成「该内容正在导入中」拦掉 —— 什么都不会发生，只弹一条**恰好相反**的 toast。
-    const pendingTitle = fileObj?.name || importInput.trim().slice(0, 40) || '导入'
     const sameSourceRunning = Object.values(useStore.getState().processingTasks)
-      .some(t => t.kind === 'import' && t.title === pendingTitle && t.status === 'running')
+      .some(t => t.kind === 'import' && t.title === importTitle && t.status === 'running')
     if (sameSourceRunning) {
       addToast('该内容正在导入中，请稍候', 'info')
       return
     }
 
+    // 从这一行起才真正发请求。包成闭包是为了排队：出队时用的仍是提交那一刻的文件与
+    // 选项，不受用户中途换文件影响（存参数再重读状态会导入成别的东西）。
+    const startImport = () => {
     if (inputType === 'file' || inputType === 'image' || inputType === 'video') {
       const url = importInput.trim()
       if (!fileObj && !url) return
       setImportError(null); setError(null)
-      const importTitle = fileObj?.name || importInput.slice(0, 40) || '导入'
       const importKey = `__import__${importSeqRef.current++}`
       const taskKey = importKey + '__import'
       activeImportKeyRef.current = importKey
@@ -611,6 +604,13 @@ export function GenPanel() {
     else { setImportProgress('导入中...'); ingestText(text, ev => updateImportProgress(ev), onDone, onError, signal, probeOpts) }
   }
 
+    // 有空位直接跑，没有就挂起排队（2026-11-23 用户要求：不要提示上限，自动排队）
+    const queued = submitTask('import', importTitle, startImport)
+    if (queued) {
+      addToast(`已有 ${MAX_CONCURRENT.import} 个导入在跑，「${importTitle}」已排队（前面还有 ${pendingCount('import') - 1} 个）`, 'info')
+    }
+  }
+
   const handleProcessImage = () => {
     if (!currentDocId) return
     // 与 `handleGenerate` 的 `if (isGenerating) return` 对称：失败红框的「重试」不受
@@ -683,18 +683,6 @@ export function GenPanel() {
       if (!window.confirm('重新生成将覆盖你手动编辑的内容（生成版自动保留为上一版可回退），继续？')) return
     }
 
-    // ── 全局并发上限检查 ──
-    // ⚠️ 只数 `status === 'running'`（与 `handleImport` 的 `activeImports` 同款）：
-    // `failTask` 的条目会保留 5 秒，把它算进来时「两个任务都失败 → 立刻重试」会被一条
-    // **不存在**的并发上限拦住，而提示语说的是「请等待完成后再试」——根本没东西在跑。
-    // 判 kind 走任务体而不是 key 后缀：key 的构造属于 `setProcessing` 的调用方，
-    // 值上的 `kind` 才是任务自己的属性。
-    const activeGenerates = Object.values(useStore.getState().processingTasks)
-      .filter(t => t.kind === 'generate' && t.status === 'running')
-    if (activeGenerates.length >= MAX_CONCURRENT_GENERATES) {
-      addToast(`同时最多 ${MAX_CONCURRENT_GENERATES} 个生成任务，请等待完成后再试`, 'info')
-      return
-    }
 
     // ── 操作冲突检查（per-doc）──
     if (isRetranscribing) { addToast('当前文档正在转录中，请等待完成后再生成', 'info'); return }
@@ -722,6 +710,9 @@ export function GenPanel() {
       })
       return
     }
+    // ⚠️ 从这一行起才是「真正开跑」。包成闭包是为了排队：出队时用的仍是**提交那一刻**
+    // 捕获的文档与选项，不受用户中途切换文档影响（存参数再重读状态会跑到别的文档上）。
+    const startGenerate = () => {
     const capturedId = currentDocId
     const taskKey = capturedId + '__generate'
     const signal = createAbort(taskKey)
@@ -1001,6 +992,14 @@ export function GenPanel() {
         }
       },
     }, signal)
+    }
+
+    // 有空位直接跑，没有就挂起排队（2026-11-23 用户要求：不要提示上限，自动排队）
+    const genTitle = useStore.getState().docs.find(d => d.id === currentDocId)?.title || '生成'
+    const queued = submitTask('generate', genTitle, startGenerate)
+    if (queued) {
+      addToast(`已有 ${MAX_CONCURRENT.generate} 个生成在跑，这一篇已排队（前面还有 ${pendingCount('generate') - 1} 个）`, 'info')
+    }
   }
 
   // P2-1：监听「继续生成」事件——PreviewArea 的 PartialBanner「继续生成」按钮
