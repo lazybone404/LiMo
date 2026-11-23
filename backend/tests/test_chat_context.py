@@ -140,3 +140,33 @@ def test_读产物失败时退回逐字稿且不崩():
 
     assert "逐字稿正文" in out
     assert "· notes" not in out
+
+
+def test_摘要形态不超出_limit():
+    """⚠️ `limit` 是单篇注入的唯一闸门：开头 + 无上限目录 + 三段片段自然拼起来
+    能到它的两倍以上（一篇几十节的笔记，目录项本身就上千字）。"""
+    _clear()
+    md = "\n\n".join(f"## 第{i}节\n\n" + "内容。" * 60 for i in range(80))
+    out, _ = build_doc_context(_FakeStore(md), ["d1"], 300_000,
+                               doc_mode="summary", query="第7节")
+    assert len(out) < 1300, f"实际 {len(out)} 字，闸门是 1000 + 说明"
+
+
+def test_产物正文不用逐字稿的缓存():
+    """缓存失效判据是 transcript 的 contentHash，拿它判产物有没有变是错的 ——
+    产物重新生成后 hash 不变，会把上一份的截断文本当成当前正文。"""
+    _clear()
+    texts = ["旧内容。" * 600, "新内容。" * 600]
+    calls = {"n": 0}
+
+    def _reader(_id, _part):
+        t = texts[min(calls["n"], 1)]
+        calls["n"] += 1
+        return t
+
+    out1, _ = build_doc_context(_FakeStore("逐字稿。"), ["d1"], 300_000,
+                                part="notes", reader=_reader)
+    out2, _ = build_doc_context(_FakeStore("逐字稿。"), ["d1"], 300_000,
+                                part="notes", reader=_reader)
+    assert "旧内容" in out1
+    assert "新内容" in out2

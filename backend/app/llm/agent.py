@@ -561,10 +561,10 @@ class AgentRunner:
         if safety_check:
             extra["safety_check"] = {"level": "high"}
 
-        # 对外只有两个动作：开头是「搜索」，服务端开始读页时换成「抓取」。
-        action = SERVER_TOOL_ALIASES[SERVER_SEARCH_TOOL]
-        yield {"type": "tool_start", "tool": action, "args": {},
-               "display": _SERVER_ACTION_DISPLAY[action]}
+        # 对外只有两个动作，**气泡等第一个事件到了再开**：先开一个「搜索」气泡的话，
+        # 服务端首事件就是读页时，界面上会先出现一次根本不存在的「搜索 · 检索完成」。
+        # `action` 为空 = 还没有气泡（本轮可能一次工具都没触发）。
+        action = ""
 
         # 三个扩展字段都是「逐帧追加」：端点可能在多帧里分批给（尤其 sources）。
         title = ""
@@ -595,15 +595,19 @@ class AgentRunner:
                 raw_event = _extra(choice, "server_tool_event") or _extra(delta, "server_tool_event")
                 if raw_event:
                     nxt = _server_tool_action(raw_event)
-                    if nxt != action:
+                    if not action:
+                        action = nxt
+                        yield {"type": "tool_start", "tool": action, "args": {},
+                               "display": _SERVER_ACTION_DISPLAY[action]}
+                    elif nxt != action:
                         # 换动作 = 关掉上一个气泡、开一个新的。少收一次，前端那个
                         # 「正在检索」就会一直转（同下面 cancel / error 两条路径的理由）。
                         yield {"type": "tool_result", "tool": action,
                                "summary": _SERVER_ACTION_DONE[action],
                                "refs": [], "sources": []}
-                        yield {"type": "tool_start", "tool": nxt, "args": {},
-                               "display": _SERVER_ACTION_DISPLAY[nxt]}
                         action = nxt
+                        yield {"type": "tool_start", "tool": action, "args": {},
+                               "display": _SERVER_ACTION_DISPLAY[action]}
                     status = _SERVER_ACTION_DISPLAY[nxt]
                     if status != last_status:
                         last_status = status
@@ -621,6 +625,10 @@ class AgentRunner:
                 if got_title:
                     title = got_title
         except CancelledError:
+            if not action:   # 一个事件都没来 —— 先把气泡开出来，否则没有可收尾的那一条
+                action = SERVER_TOOL_ALIASES[SERVER_SEARCH_TOOL]
+                yield {"type": "tool_start", "tool": action, "args": {},
+                       "display": _SERVER_ACTION_DISPLAY[action]}
             yield {"type": "tool_result", "tool": action,
                    "summary": "已停止", "refs": [], "sources": []}
             yield {"type": "done", "cancelled": True}
@@ -628,11 +636,20 @@ class AgentRunner:
         except Exception as e:
             # 工具气泡必须收尾，否则前端那个气泡会一直转（同 `_stream_response`
             # 的 error 路径不同：那里没有未闭合的工具气泡）。
+            if not action:
+                action = SERVER_TOOL_ALIASES[SERVER_SEARCH_TOOL]
+                yield {"type": "tool_start", "tool": action, "args": {},
+                       "display": _SERVER_ACTION_DISPLAY[action]}
             yield {"type": "tool_result", "tool": action,
                    "summary": "深度联网失败", "refs": [], "sources": []}
             yield {"type": "error", "message": f"深度联网失败: {str(e)[:200]}"}
             return
 
+        # 一次工具事件都没有：气泡在收尾时才出现（本轮其实没搜也没读，但来源要能显示）。
+        if not action:
+            action = SERVER_TOOL_ALIASES[SERVER_SEARCH_TOOL]
+            yield {"type": "tool_start", "tool": action, "args": {},
+                   "display": _SERVER_ACTION_DISPLAY[action]}
         sources = _server_tool_sources(server_tool_calls)
         yield {"type": "tool_result", "tool": action,
                "summary": (f"{_SERVER_ACTION_DONE[action]}（{len(sources)} 个来源）" if sources

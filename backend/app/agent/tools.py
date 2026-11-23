@@ -168,7 +168,7 @@ def _deepseek_key(sc: dict, cfg: dict) -> str:
 
 
 async def _deepseek_search(query: str, max_results: int, api_key: str,
-                           proxy: str = "") -> str:
+                           proxy: str = "") -> list[dict]:
     """DeepSeek Search API — 原生 JSON，**按成功请求计费**（$0.75 / 1000 次）。
 
     ⚠️ `need_content: False`：`summary`（600-800 字，官方写明 *intended to be read
@@ -232,7 +232,7 @@ async def _deepseek_fetch(url: str, api_key: str, proxy: str = "") -> str:
 
 
 async def _tavily_search(query: str, max_results: int, api_key: str,
-                        proxy: str = "") -> str:
+                        proxy: str = "") -> list[dict]:
     """Tavily Search API — AI 优化搜索，返回结构化结果"""
     async with httpx.AsyncClient(timeout=15,
                                  proxy=proxy_for(_TAVILY_URL, proxy)) as client:
@@ -438,7 +438,7 @@ async def fetch_url(url: str) -> str:
 
 # ── SearXNG ──
 
-async def _searxng_search(query: str, max_results: int, base_url: str, proxy: str) -> str:
+async def _searxng_search(query: str, max_results: int, base_url: str, proxy: str) -> list[dict]:
     client_kwargs: dict = {"timeout": 10.0}
     # ⚠️ 本地 SearXNG（默认 http://127.0.0.1:18080）**不该走代理**：以前这里只问
     # 「配了代理没」，不问「目标是谁」，于是本机地址也被塞进代理 —— 多数代理软件默认

@@ -137,7 +137,10 @@ export function GenPanel() {
     return Object.entries(processingTasks)
       .filter(([k]) => k.startsWith(currentDocId + '__'))
       .map(([, v]) => v)
-      .filter(t => t.status === 'running')
+      // ⚠️ 排队中的也算「这篇在忙」：否则同一篇能被排进两个生成任务（`submitTask`
+      // 不按文档去重，而 `docTasks` 只数 running 时看不到 queued 那条）。两个都出队
+      // 时各起一次同篇生成：界面流式交错、后端产出两份、双倍计费。
+      .filter(t => t.status !== 'failed')
   }, [currentDocId, processingTasks])
   const isGenerating = docTasks.some(t => t.kind === 'generate')
   const isRetranscribing = docTasks.some(t => t.kind === 'retranscribe')
@@ -479,8 +482,10 @@ export function GenPanel() {
     // ⚠️ 判据必须含 `status === 'running'`：`failTask` 把条目标成 failed 后还**保留 5 秒**
     // （`tasksSlice.ts::failTask`），只判 kind/title 的话，用户看到错误卡片立刻点「重试」会被
     // 当成「该内容正在导入中」拦掉 —— 什么都不会发生，只弹一条**恰好相反**的 toast。
+    // ⚠️ `status !== 'failed'`：排队中的同源导入同样算「已在处理」，不然连点两下
+    // 会排进两个（排队条目的标题就是这里比的这个），出队时同一份内容导两遍。
     const sameSourceRunning = Object.values(useStore.getState().processingTasks)
-      .some(t => t.kind === 'import' && t.title === importTitle && t.status === 'running')
+      .some(t => t.kind === 'import' && t.title === importTitle && t.status !== 'failed')
     if (sameSourceRunning) {
       addToast('该内容正在导入中，请稍候', 'info')
       return
@@ -743,18 +748,23 @@ export function GenPanel() {
 
     const isBoth = selectedCore.includes('notes') && selectedCore.includes('polished')
     const isPolishedOnly = selectedCore.includes('polished') && !selectedCore.includes('notes')
-    // 跳转到能实时看到流式的 tab：polished-only → 整理版 tab；否则 → 笔记 tab
-    // （此前强制跳 summary——polished-only 用户看不到整理版流式，误以为"一直在加载"）
-    setActiveView(isPolishedOnly ? 'polished' : 'summary')
+    // ⚠️ 排队任务出队时用户可能已经切走：这时**不能**改预览区的全局状态
+    // （`setActiveView` 会把正在读的 B 切到 A 的 tab，`setCurrentContent(null)`
+    // 直接清空 B 的正文）。流式内容仍写该文档自己的 buffer，切回去照样能看到。
+    if (capturedId === useStore.getState().currentDocId) {
+      // 跳转到能实时看到流式的 tab：polished-only → 整理版 tab；否则 → 笔记 tab
+      // （此前强制跳 summary——polished-only 用户看不到整理版流式，误以为"一直在加载"）
+      setActiveView(isPolishedOnly ? 'polished' : 'summary')
 
-    // 双产物新写：清空两个 tab（chunk 直接 append 到 current）
-    if (!isBoth) {
-      // 单产物新写：清空对应 tab
-      if (isPolishedOnly) setCurrentPolishedContent(null)
-      else setCurrentContent(null)
-    } else {
-      setCurrentContent(null)
-      setCurrentPolishedContent(null)
+      // 双产物新写：清空两个 tab（chunk 直接 append 到 current）
+      if (!isBoth) {
+        // 单产物新写：清空对应 tab
+        if (isPolishedOnly) setCurrentPolishedContent(null)
+        else setCurrentContent(null)
+      } else {
+        setCurrentContent(null)
+        setCurrentPolishedContent(null)
+      }
     }
 
     streamGenerate(capturedId, buildGenOptions(livePrefs, {
@@ -996,7 +1006,10 @@ export function GenPanel() {
 
     // 有空位直接跑，没有就挂起排队（2026-11-23 用户要求：不要提示上限，自动排队）
     const genTitle = useStore.getState().docs.find(d => d.id === currentDocId)?.title || '生成'
-    const queued = submitTask('generate', genTitle, startGenerate)
+    // 传 `queueKey`：排队条目因此落在 `${docId}__generate` 上，「这篇在忙」的既有判据
+    // （`docTasks` / `DocLibrary.isDocBusy`）能看见它，连点不会排进两个。
+    const queued = submitTask('generate', genTitle, startGenerate,
+                              currentDocId ? currentDocId + '__generate' : '')
     if (queued) {
       addToast(`已有 ${MAX_CONCURRENT.generate} 个生成在跑，这一篇已排队（前面还有 ${pendingCount('generate') - 1} 个）`, 'info')
     }

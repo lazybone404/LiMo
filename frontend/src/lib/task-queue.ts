@@ -129,13 +129,17 @@ function ensureSubscribed(): void {
  *
  * 返回 `true` 表示进了队列（调用方据此提示「已排队」），`false` 表示已经开始跑。
  */
-export function submitTask(kind: QueueKind, title: string, run: () => void): boolean {
+export function submitTask(kind: QueueKind, title: string, run: () => void,
+                           queueKey = ''): boolean {
   ensureSubscribed()
   if (runningCount(kind) < MAX_CONCURRENT[kind] && queues[kind].length === 0) {
     run()
     return false
   }
-  const key = `__queued__${kind}__${++seq}`
+  // 同一个目标已经在队里就不再排一次 —— 生成会给 `queueKey`（`${docId}__generate`），
+  // 于是排队条目能命中「这篇文档忙不忙」的既有判据，连点两下也不会排进两个。
+  if (queueKey && queues[kind].some(j => j.key === queueKey)) return true
+  const key = queueKey || `__queued__${kind}__${++seq}`
   queues[kind].push({ key, title, run })
   // ⚠️ 排队条目要**立刻进 store**：只弹一条 toast 时，面板里什么都看不到，
   // 用户以为「点了没反应」（2026-11-23 反馈）。

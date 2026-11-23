@@ -159,3 +159,23 @@ describe('排队可见', () => {
     expect(cancelQueued('doc1__generate')).toBe(false)
   })
 })
+
+describe('同一目标不重复排队', () => {
+  it('同一个 queueKey 连提交两次只排一个', () => {
+    occupy('generate', MAX_CONCURRENT.generate)
+    const run = vi.fn()
+    submitTask('generate', 'A', run, 'docA__generate')
+    submitTask('generate', 'A', run, 'docA__generate')
+
+    expect(pendingCount('generate')).toBe(1)
+    releaseAll()
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  it('不同 queueKey 各排各的', () => {
+    occupy('generate', MAX_CONCURRENT.generate)
+    submitTask('generate', 'A', vi.fn(), 'docA__generate')
+    submitTask('generate', 'B', vi.fn(), 'docB__generate')
+    expect(pendingCount('generate')).toBe(2)
+  })
+})

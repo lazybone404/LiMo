@@ -442,3 +442,24 @@ def test_接线_路由不再自己判_联网形态():
     assert "supports_deepseek_builtin" not in body
     assert "deep_web_ok" not in body
     assert "resolve_web_mode(" in body
+
+
+def test_首事件是读页时不出现虚假的搜索气泡():
+    """⚠️ 气泡等第一个事件到了再开。先开「搜索」的话，服务端首事件是读页时
+    界面上会先出现一次根本不存在的「搜索 · 检索完成」。"""
+    agent = AgentRunner(_FakeLLM([
+        _Chunk(_Choice(_Delta(None), server_tool_event={"tool": SERVER_READ_TOOL})),
+    ]))
+    events = _run(agent)
+
+    assert [e["tool"] for e in events if e["type"] == "tool_start"] == ["fetch_url"]
+    assert [e["tool"] for e in events if e["type"] == "tool_result"] == ["fetch_url"]
+
+
+def test_一次工具事件都没有时_收尾仍有一对气泡():
+    """没有气泡的话 `_record_tool_result` 配不上对，来源会静默不显示。"""
+    agent = AgentRunner(_FakeLLM([_Chunk(_Choice(_Delta("答")))]))
+    events = _run(agent)
+
+    assert [e["tool"] for e in events if e["type"] == "tool_start"] == ["search_web"]
+    assert [e["tool"] for e in events if e["type"] == "tool_result"] == ["search_web"]

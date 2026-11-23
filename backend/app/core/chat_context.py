@@ -75,29 +75,60 @@ def _compose_digest(title: str, full: str, limit: int, query: str,
     passages = find_passages(full, query, window=window, max_parts=3) if query.strip() else []
 
     parts: list[str] = [f"（这一篇共 {len(full)} 字。）"]
+    # ⚠️ **整段输出受 `limit` 约束**：`limit` 是调用方给单篇注入定的唯一闸门，
+    # 而「开头 + 无上限的目录 + 三段片段」自然拼起来能到它的两倍以上 —— 一篇
+    # 几十节的笔记，目录项本身就有上千字。所以每加一块都先问还剩多少额度。
+    budget = max(400, limit - 200)      # 末尾那段说明无论如何都要留出位置
+    used = len(parts[0])
+
+    def _add(block: str) -> bool:
+        nonlocal used
+        if used + len(block) + 1 > budget:
+            return False
+        parts.append(block)
+        used += len(block) + 1
+        return True
+
     # 开头总是给一段：目录是地图，但「这一篇在讲什么」还是要读几句正文才知道。
     # ⚠️ 没有读取工具时（服务端检索那一轮）**必须**给，否则模型只有一张目录 ——
     # 它既读不到正文，也没法调工具。
-    head_budget = max(0, min(900, limit // 2))
+    head_budget = max(0, min(900, budget // 2))
     head_text = smart_truncate(full, head_budget) if head_budget > 100 else ""
     if head_text:
-        parts.append("开头：")
-        parts.append(head_text)
+        _add(f"开头：\n{head_text}")
+
+    toc_shown = False
     if toc:
-        parts.append("目录：")
-        parts.extend(f"- {s['title']}" for s in toc)
+        # 目录最多占剩余额度的三分之二；放不下就砍条目并写明还有多少节
+        room = max(0, int((budget - used) * 2 / 3))
+        lines: list[str] = []
+        acc = 0
+        for s in toc:
+            line = f"- {s['title']}"
+            if acc + len(line) + 1 > room:
+                break
+            lines.append(line)
+            acc += len(line) + 1
+        if lines:
+            rest = len(toc) - len(lines)
+            block = "目录：\n" + "\n".join(lines)
+            if rest > 0:
+                block += f"\n（另有 {rest} 节未列出）"
+            toc_shown = _add(block)
+
     if passages:
-        parts.append("与问题相关的片段：")
+        _add("与问题相关的片段：")
         for start, end in passages:
             body = smart_truncate(full[start:end], window)
-            parts.append(f"（第 {start}–{end} 字）\n{body}")
+            if not _add(f"（第 {start}–{end} 字）\n{body}"):
+                break
 
     # 续读的起点要给**具体的数**（照 pi 的 `read(offset)`）：只说「可以再读」时，
     # 模型得自己猜从哪开始；给了 nextOffset，它就只差一次调用。
     if can_read:
         nxt = max(0, len(head_text) - 3)   # smart_truncate 末尾追加的是 "..."
         tail = ("其余内容没有进入上下文；要看某一节可以用 lookup_doc 传 section，"
-                f"要按顺序往后读传 offset={nxt}。" if toc else
+                f"要按顺序往后读传 offset={nxt}。" if toc_shown else
                 f"其余内容没有进入上下文；要往后读可以用 lookup_doc 传 offset={nxt}，"
                 "或者在文档内用 query 检索。")
     else:
@@ -147,16 +178,21 @@ def build_doc_context(store: object, doc_ids: list[str], budget: int,
             if digest:
                 text = _compose_digest(title, full, limit, query, can_read)
             else:
+                # ⚠️ **只有逐字稿走缓存**：缓存失效判据用的是 transcript 的
+                # `contentHash/createdAt`，拿它去判笔记 / 整理版有没有变是错的
+                # （产物重新生成后 hash 不变）—— 那样会把上一份的截断文本当成
+                # 当前正文注入。产物本来就每次 `resolve_latest` 读盘，跳过缓存即可。
                 ck = f"{did}:{limit}"
                 h = str(tx.get("contentHash") or tx.get("createdAt") or "")
-                cached = _doc_ctx_cache.get(ck)
+                cached = _doc_ctx_cache.get(ck) if not label else None
                 if cached and cached[0] == h:
                     text = cached[1]
                 else:
                     text = smart_truncate(full, limit)
-                    if len(_doc_ctx_cache) >= _DOC_CACHE_MAX:
-                        _doc_ctx_cache.clear()
-                    _doc_ctx_cache[ck] = (h, text)
+                    if not label:
+                        if len(_doc_ctx_cache) >= _DOC_CACHE_MAX:
+                            _doc_ctx_cache.clear()
+                        _doc_ctx_cache[ck] = (h, text)
                 # ⚠️ **截断必须告诉模型**（借鉴 pi 的 `truncate.ts`：闸门装在层里，
                 # 不指望模型自觉）。只给省略号时，模型会把「只看到前两千字」当成
                 # 「文档里没有这段」，然后断言「原文没提到」。
