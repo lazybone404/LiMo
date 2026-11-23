@@ -1,7 +1,11 @@
 import { useSyncExternalStore } from 'react'
 
 /**
- * LiMo — 对话侧的**发送偏好**（四项：联网、追问建议、回答依据、深度联网）。
+ * LiMo — 对话侧的**发送偏好**（三项：联网形态、追问建议、回答依据）。
+ *
+ * ⚠️ 「联网」是**一个三选一**（关闭 / 本地检索 / 服务端检索，见 `WebMode`），
+ * 不是两个开关。界面上曾经是「联网」+「深度联网」两个复选框，那会派生出
+ * 「关了联网却开着服务端检索」这种没有意义的组合。
  *
  * ⚠️ **与 `marker-prefs` / `card-prefs` 的关键区别：它不写 DOM 属性。**
  * 那两个控制「正文怎么显示」，属性挂在 `<html>` 上、由 CSS 选择器消费；
@@ -80,14 +84,61 @@ export interface ChatPrefs {
   /** 回答依据（默认 `strict` = 改造前的「只用知识库」） */
   answerMode: AnswerMode
   /**
-   * `true` = 深度联网（检索交给 DeepSeek 内置服务端工具，本轮不注册任何本地工具）。
+   * `true` = 服务端检索（检索交给 DeepSeek 内置服务端工具，本轮不注册任何本地工具）。
    *
    * 默认**关**：新增能力，默认开就是替所有用户改了「怎么联网」这件事。
-   * ⚠️ 只有当前对话模型支持时才可能出现（按钮渲染由 capabilities 的
-   * `chatDeepWebAvailable` 决定），且必须 `webSearch` 也开着 —— 关掉联网后
-   * 深度联网没有意义（输入框里那个按钮会置灰）。
+   * ⚠️ 只有当前对话模型支持时才可能出现（`chatDeepWebAvailable`）；
+   * 关掉 `webSearch` 时它没有意义 —— `webModeOf` 会把这种组合归一成 `off`。
    */
   deepWeb: boolean
+}
+
+/**
+ * 联网的三种形态 —— **对外概念**，不是存储格式。
+ *
+ * 存储仍是 `webSearch` + `deepWeb` 两个布尔量（2026-11-24 决定不动存储：改它要迁移
+ * 老用户的 localStorage，而唯一的好处是「类型上不可能出现无效组合」，那件事由
+ * `webModeOf` 归一化读取 + `saveWebMode` 一次写两个键来保证）。
+ *
+ * 为什么要有这一层：`(false, true)`（关了联网却开着服务端检索）在存储与协议上
+ * 都合法，但没有意义。两个复选框的界面会派生出它，于是判据散成三处
+ * （`deepWeb && webSearch`、按钮置灰、后端 `bool(deep_web) and allow_web`）。
+ * 三选一的控件从界面结构上就不产生这个组合。
+ */
+export type WebMode = 'off' | 'local' | 'server'
+
+/**
+ * 三种形态的**文案与说明**（唯一一份）—— 输入框的浮层与设置页共用。
+ *
+ * 顺序按能力从弱到强，不是「默认档排第一」（`ANSWER_MODE_OPTIONS` 是后者）：
+ * 这里读者要在「不联网 / 我这边联网 / 对方那边联网」之间比较，递进比默认值好读。
+ */
+export const WEB_MODE_OPTIONS: { key: WebMode; label: string; desc: string }[] = [
+  { key: 'off', label: '关闭', desc: '只用你导入的文档，不访问互联网' },
+  { key: 'local', label: '本地检索', desc: '搜索与读页在本机发起，知识库工具照常可用' },
+  { key: 'server', label: '服务端检索', desc: '由模型厂商检索并读页；本轮不使用知识库工具，也不看你配的搜索方案' },
+]
+
+/** 存储的两个布尔量 → 三态。`webSearch` 关着时 `deepWeb` 一律无效（归一成 `off`）。 */
+export function webModeOf(p: ChatPrefs): WebMode {
+  if (!p.webSearch) return 'off'
+  return p.deepWeb ? 'server' : 'local'
+}
+
+/** 三态 → 存储的两个布尔量。**一次写两个键**，避免出现 `(false, true)` 这种残局。 */
+export function saveWebMode(m: WebMode): void {
+  saveChatPrefs({ webSearch: m !== 'off', deepWeb: m === 'server' })
+}
+
+/**
+ * 当前**有效**的形态：模型不支持服务端检索时按本地跑。
+ *
+ * ⚠️ 两个消费方（浮层的选中态、发送侧带的参数）必须用同一条判据 ——
+ * 各自写一遍 `mode === 'server' && available` 就是会分叉的那种判据：
+ * 一边显示服务端、一边按本地发，或者反过来发出去被后端回退。
+ */
+export function effectiveWebMode(m: WebMode, deepAvailable: boolean): WebMode {
+  return m === 'server' && !deepAvailable ? 'local' : m
 }
 
 /** ⚠️ 必须等于「改造前的现状」—— 改这里就是改变所有用户的行为 */

@@ -256,17 +256,19 @@ describe('两处入口共享一份状态', () => {
     expect(loadChatPrefs().answerMode).toBe('free')
   })
 
-  it('联网 / 追问两个开关同样两处同源（不只是回答依据）', () => {
+  it('联网三态 / 追问开关同样两处同源（不只是回答依据）', () => {
     const { container } = render(<ChatInput scale="md" />)
-    // 两颗开关住在「回答设置」浮层里（2026-11-17 起），先打开再读
+    // 两组都住在「回答设置」浮层里（2026-11-17 起），先打开再读
     fireEvent.click(container.querySelector('[data-settings-toggle]')!)
-    const web = () => container.querySelector('[data-websearch-toggle]')!.getAttribute('data-websearch-toggle')
+    // 联网是**三选一**（2026-11-24 起合并了原来的「联网 + 深度联网」两个复选框）
+    const webChecked = (k: string) =>
+      container.querySelector(`[data-web-mode-option="${k}"]`)!.getAttribute('aria-checked')
     const fu = () => container.querySelector('[data-followup-toggle]')!.getAttribute('data-followup-toggle')
-    expect(web()).toBe('on')     // 默认开 = 改造前现状
+    expect(webChecked('local')).toBe('true')   // 默认本地检索 = 改造前现状
     expect(fu()).toBe('off')
 
     act(() => { saveChatPrefs({ webSearch: false, followUp: true }) })
-    expect(web()).toBe('off')
+    expect(webChecked('off')).toBe('true')
     expect(fu()).toBe('on')
   })
 
@@ -298,7 +300,9 @@ describe('源码守卫：没有第二份状态、也没有第二份文案', () =
     expect(src).not.toContain('useState(loadChatPrefs')
 
     // 三项都要有写入口（漏一项 = 设置页少了那个开关，用户找不到）
-    expect(src).toContain('saveChatPrefs({ webSearch')
+    // ⚠️ 联网走 `saveWebMode` 而不是 `saveChatPrefs({ webSearch })`：一次要写
+    // 两个布尔量（`webSearch` + `deepWeb`），分开写会留下「改了甲没改乙」的残局。
+    expect(src).toContain('saveWebMode(')
     expect(src).toContain('saveChatPrefs({ followUp')
     expect(src).toContain('saveChatPrefs({ answerMode')
   })

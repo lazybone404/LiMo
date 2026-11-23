@@ -7,7 +7,10 @@ import { BASE_OPTIONS } from '../../lib/theme-base'
 import { PARA_STYLE_OPTIONS, LINE_HEIGHT_RANGE, MEASURE_RANGE, MEASURE_DEFAULT_ON, FONT_SCALE_RANGE, READING_DEFAULTS, READING_PRESETS, matchReadingPreset } from '../../lib/reading-prefs'
 import { SKELETON_OPTIONS, CARD_STYLE_OPTIONS, CARD_BG_OPTIONS, CARD_BORDER_OPTIONS, isLiftDisabled } from '../../lib/card-prefs'
 import { LAYOUT_OPTIONS } from '../../lib/layout-prefs'
-import { useChatPrefs, saveChatPrefs, ANSWER_MODE_OPTIONS } from '../../lib/chat-prefs'
+import {
+  useChatPrefs, saveChatPrefs, ANSWER_MODE_OPTIONS, WEB_MODE_OPTIONS,
+  effectiveWebMode, saveWebMode, webModeOf,
+} from '../../lib/chat-prefs'
 import { useIngestPrefs, saveIngestPrefs } from '../../lib/ingest-prefs'
 import { THEME_PRESETS } from '../../lib/theme-presets'
 import { ArrowLeft, CheckCircle, Circle, Info, Cpu, Key, Globe, Settings, Wrench, Loader2, Palette, Puzzle } from 'lucide-react'
@@ -124,6 +127,9 @@ export function SettingsPage({ onBack, initialTab = 'model' }: {
   const setExportPrefs = useStore(s => s.setExportPrefs)
   // 对话侧三项偏好 —— 与输入框里的按钮**同一份状态**（订阅，不是各存一份初值）
   const chatPrefs = useChatPrefs()
+  // 服务端检索那一项是否出现，与输入框浮层同一条判据（capabilities）
+  const deepWebAvailable = useStore(s => s.capabilities?.chatDeepWebAvailable ?? false)
+  const webMode = effectiveWebMode(webModeOf(chatPrefs), deepWebAvailable)
   // 导入行为两档 —— 与 GenPanel 的导入调用点**同一份状态**（订阅；用 `useState` 读一次
   // 会让设置页改完之后已挂载的 GenPanel 仍按旧值跑，界面上完全看不出来）
   const ingestPrefs = useIngestPrefs()
@@ -1115,18 +1121,31 @@ export function SettingsPage({ onBack, initialTab = 'model' }: {
                   AI 对话（改动立即生效）。输入框里也有同样的开关，两边是同一份设置。
                 </p>
 
-                <label className="flex items-start gap-3 cursor-pointer">
-                  <input type="checkbox" checked={chatPrefs.webSearch}
-                    onChange={e => saveChatPrefs({ webSearch: e.target.checked })}
-                    className="mt-1 w-4 h-4 accent-accent shrink-0" />
-                  <span>
-                    <span className="text-[15px] font-medium block">允许联网</span>
-                    <span className="text-[12px] text-muted block mt-1 leading-relaxed">
-                      开启后，AI 在文档不够时可以搜索互联网、打开外部链接（搜到的东西会在回答的工具气泡里列出链接）。
-                      关闭则只能使用你导入的文档。
-                    </span>
+                <div>
+                  <span className="text-[15px] font-medium block">联网</span>
+                  <span className="text-[12px] text-muted block mt-1 mb-2 leading-relaxed">
+                    AI 在文档不够时可以搜索互联网、打开外部链接（来源会列在回答的工具气泡里）。
+                    「本地检索」用你配的搜索方案；「服务端检索」由模型厂商完成，本轮不使用知识库工具。
                   </span>
-                </label>
+                  <div className="space-y-1">
+                    {WEB_MODE_OPTIONS
+                      .filter(o => o.key !== 'server' || deepWebAvailable)
+                      .map(o => (
+                        <label key={o.key} data-web-mode-option={o.key}
+                          className={`flex items-start gap-3 cursor-pointer rounded-lg px-2 py-1.5 transition-colors hover:bg-surface-hover ${webMode === o.key ? 'bg-accent/5' : ''}`}>
+                          <input type="radio" name="chatWebMode" checked={webMode === o.key}
+                            onChange={() => saveWebMode(o.key)}
+                            className="mt-1 w-4 h-4 accent-accent shrink-0" />
+                          <span>
+                            <span className={`text-[13px] block ${webMode === o.key ? 'text-accent font-medium' : 'text-dimmed'}`}>
+                              {o.label}
+                            </span>
+                            <span className="text-[12px] text-muted block leading-relaxed">{o.desc}</span>
+                          </span>
+                        </label>
+                      ))}
+                  </div>
+                </div>
 
                 <label className="flex items-start gap-3 cursor-pointer">
                   <input type="checkbox" checked={chatPrefs.followUp}

@@ -17,7 +17,7 @@
 import { create } from 'zustand'
 import { streamChat, listConversations, getConversation, rebuildConversationMessages, clearConversationContext, refreshFollowUps as refreshFollowUpsApi } from '../api/chat'
 import { getErrorMessage } from '../api/core'
-import { loadChatPrefs } from '../lib/chat-prefs'
+import { effectiveWebMode, loadChatPrefs, webModeOf } from '../lib/chat-prefs'
 import { toChatSources, type ChatSource } from '../lib/chat-sources'
 import { useStore } from './index'
 import { nextMsgId } from './toastSlice'
@@ -248,11 +248,14 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
     // 三项一起读，一次 `loadChatPrefs()`（多次调用是同一个结果，只是白读几次）。
     const prefs = loadChatPrefs()
     const wantFollowUp = prefs.followUp
-    // ⚠️ **发送侧的闸门，不是偏好本身**：用户可能换了模型（按钮随之消失）或关了联网，
+    // ⚠️ **发送侧的闸门，不是偏好本身**：用户可能换了模型（选项随之消失）或改了联网形态，
     // 而 localStorage 里的 `deepWeb` 仍是 true —— 直接发 `deep_web=1` 会让后端每轮都
-    // 回退一次、每轮都弹一条「不支持」的提示。判据与按钮渲染同源（capabilities）。
-    const wantDeepWeb = prefs.deepWeb && prefs.webSearch
-      && !!useStore.getState().capabilities?.chatDeepWebAvailable
+    // 回退一次、每轮都弹一条「不支持」的提示。判据与浮层选中态同源：
+    // 都走 `effectiveWebMode`（`lib/chat-prefs.ts`），一处把「存了但当前不可用」归一掉。
+    const webMode = effectiveWebMode(
+      webModeOf(prefs), !!useStore.getState().capabilities?.chatDeepWebAvailable)
+    const wantDeepWeb = webMode === 'server'
+    const allowWeb = webMode !== 'off'
 
     streamChat(text, docIds, {
       onMeta(convId, meta) {
@@ -366,7 +369,7 @@ export const useChatStore = create<ChatStoreState>()((set, get) => {
           followUpError: error || undefined,
         }))
       },
-    }, { signal: controller.signal, conversationId: convId, docRefs, followUp: wantFollowUp, webSearch: prefs.webSearch,
+    }, { signal: controller.signal, conversationId: convId, docRefs, followUp: wantFollowUp, webSearch: allowWeb,
       answerMode: prefs.answerMode, deepWeb: wantDeepWeb })
   }
 

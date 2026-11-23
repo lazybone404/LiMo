@@ -9,7 +9,10 @@
  *
  *  · 收起时只有两颗按钮 → 不再挤（第 1 组）
  *  · 每项都有中文名字与一句话说明 → 不靠图标猜（第 2 组）
- *  · 开/关由复选框承担，且关掉时写明原因 → 状态看得见（第 3 组）
+ *  · 当前状态看得见（联网是三选一、其余是复选框）→ 状态不再靠底色猜（第 3 组）
+ *
+ * ⚠️ 2026-11-24 起「联网 + 深度联网」两个复选框合成一个三选一，见 `lib/chat-prefs.ts`
+ * 的 `WebMode`：两个布尔量会派生出「关了联网却开着服务端检索」这种没有意义的组合。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, fireEvent, act } from '@testing-library/react'
@@ -39,22 +42,23 @@ afterEach(() => { vi.restoreAllMocks() })
 const trigger = (c: HTMLElement) => c.querySelector('[data-settings-toggle]')!
 const panel = (c: HTMLElement) => c.querySelector('[data-settings-panel]')
 const openMenu = (c: HTMLElement) => fireEvent.click(trigger(c))
+const opt = (c: HTMLElement, key: string) => c.querySelector(`[data-web-mode-option="${key}"]`)
 
 // ═══════════════════════════════════════════════════════════
 // 1. 收起态：一行只有两颗按钮
 // ═══════════════════════════════════════════════════════════
 
 describe('收起时不占宽度', () => {
-  it('默认只渲染 @ 与「回答设置」两颗，四组开关都不在 DOM 里', () => {
+  it('默认只渲染 @ 与「回答设置」两颗，所有开关都不在 DOM 里', () => {
     setDeepWebCapability(true)
     const { container } = render(<ChatInput scale="md" />)
 
     expect(trigger(container)).toBeTruthy()
     expect(panel(container)).toBeNull()
-    // 对照实验：把这几个开关改回并排渲染 → 这三条红，而症状正是「输入框被挤窄」
-    expect(container.querySelector('[data-websearch-toggle]')).toBeNull()
+    // 对照实验：把这几个开关改回并排渲染 → 这几条红，而症状正是「输入框被挤窄」
+    expect(opt(container, 'off')).toBeNull()
+    expect(opt(container, 'local')).toBeNull()
     expect(container.querySelector('[data-followup-toggle]')).toBeNull()
-    expect(container.querySelector('[data-deepweb-toggle]')).toBeNull()
   })
 
   it('点开后再点一次收起（不是只能点外面）', () => {
@@ -65,10 +69,10 @@ describe('收起时不占宽度', () => {
     expect(panel(container)).toBeNull()
   })
 
-  it('点面板内部不收起（点开关本身不该把面板关掉）', () => {
+  it('点面板内部不收起（点选项本身不该把面板关掉）', () => {
     const { container } = render(<ChatInput scale="md" />)
     openMenu(container)
-    fireEvent.mouseDown(container.querySelector('[data-websearch-toggle]')!)
+    fireEvent.mouseDown(opt(container, 'local')!)
     expect(panel(container)).not.toBeNull()
   })
 
@@ -85,61 +89,57 @@ describe('收起时不占宽度', () => {
 // ═══════════════════════════════════════════════════════════
 
 describe('每一项都写名字', () => {
-  it('四组的名字与说明都在面板里', () => {
+  it('三组的名字与说明都在面板里', () => {
     setDeepWebCapability(true)
     const { container } = render(<ChatInput scale="md" />)
     openMenu(container)
 
     const text = panel(container)!.textContent!
-    for (const s of ['联网', '深度联网', '追问建议', '回答依据']) expect(text).toContain(s)
-    // 深度联网必须写明「本轮不使用知识库工具」—— 否则用户会以为库里的文档照样能搜
+    for (const s of ['联网', '追问建议', '回答依据']) expect(text).toContain(s)
+    // 联网那组是三选一，三项都要有名字
+    for (const s of ['关闭', '本地检索', '服务端检索']) expect(text).toContain(s)
+    // 服务端检索必须写明「本轮不使用知识库工具」——
+    // 否则用户会以为库里的文档照样能搜（这是它与本地检索最大的行为差别）
     expect(text).toContain('本轮不使用知识库工具')
   })
 
-  it('模型不支持深度联网时，那一行也不出现（与按钮时代的判据一致）', () => {
+  it('模型不支持时，「服务端检索」那一项不出现（不是置灰）', () => {
     setDeepWebCapability(false)
     const { container } = render(<ChatInput scale="md" />)
     openMenu(container)
 
-    expect(panel(container)!.textContent).not.toContain('深度联网')
-    expect(container.querySelector('[data-deepweb-toggle]')).toBeNull()
+    expect(panel(container)!.textContent).not.toContain('服务端检索')
+    expect(opt(container, 'server')).toBeNull()
+    // 其余两项照常
+    expect(opt(container, 'off')).not.toBeNull()
   })
 })
 
 // ═══════════════════════════════════════════════════════════
-// 3. 开/关看得见，关掉时说明原因
+// 3. 状态看得见
 // ═══════════════════════════════════════════════════════════
 
-describe('开关状态与联动', () => {
-  it('点复选框即落盘，反射到 data-* 与偏好', () => {
-    const { container } = render(<ChatInput scale="md" />)
-    openMenu(container)
-
-    const web = () => container.querySelector('[data-websearch-toggle]')!
-    expect(web().getAttribute('data-websearch-toggle')).toBe('on')   // 默认开
-
-    fireEvent.click(web())
-    expect(loadChatPrefs().webSearch).toBe(false)
-    expect(web().getAttribute('data-websearch-toggle')).toBe('off')
-  })
-
-  it('联网关着时深度联网那一行置灰，并**写出原因**（不只是变灰）', () => {
+describe('状态与联动', () => {
+  it('点选项即落盘，选中态跟着变', () => {
     setDeepWebCapability(true)
-    saveChatPrefs({ webSearch: false })
     const { container } = render(<ChatInput scale="md" />)
     openMenu(container)
 
-    expect(container.querySelector('[data-deepweb-toggle]')!.hasAttribute('disabled')).toBe(true)
-    expect(panel(container)!.textContent).toContain('需先开启')
+    expect(opt(container, 'local')!.getAttribute('aria-checked')).toBe('true')   // 默认
+
+    fireEvent.click(opt(container, 'off')!)
+    expect(loadChatPrefs().webSearch).toBe(false)
+    expect(opt(container, 'off')!.getAttribute('aria-checked')).toBe('true')
+    expect(opt(container, 'local')!.getAttribute('aria-checked')).toBe('false')
   })
 
-  it('⚠️ 四项全默认时图标不点亮，任一偏离即点亮', () => {
+  it('⚠️ 三项全默认时图标不点亮，任一偏离即点亮', () => {
     // ⚠️ 外部的 `saveChatPrefs` 要包 `act`：它是另一个入口（设置页）的写法，
     // 不包的话重渲染排在断言之后，读到的是旧 class（看起来像「点亮失效」）。
     const { container } = render(<ChatInput scale="md" />)
     expect(trigger(container).className).not.toContain('bg-accent/10')
 
-    // 关掉联网（默认开）也算偏离
+    // 关掉联网（默认本地检索）也算偏离
     act(() => { saveChatPrefs({ webSearch: false }) })
     expect(trigger(container).className).toContain('bg-accent/10')
 
