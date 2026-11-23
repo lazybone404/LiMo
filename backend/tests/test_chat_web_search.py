@@ -371,8 +371,10 @@ def test_接线_开关驱动工具表():
     body = _chat_py()
     # ⚠️ 2026-10-29 起这一行多了 `svc=svc, searcher=searcher`（`search_docs` 要接真检索），
     # 故断言从「带右括号的完整调用」改成「同一行还接着别的参数」—— 两者都能证明
-    # `allow_web` 真的传下去了，而后一条顺便证明检索依赖也没丢（去掉它们会退回这个形态）。
-    assert "_build_registry(store, allow_web=allow_web," in body
+    # 联网开关真的传下去了，而后一条顺便证明检索依赖也没丢（去掉它们会退回这个形态）。
+    # ⚠️ 2026-11-24 起传的是 `wm.net_tools`（形态对象），不是裸 `allow_web`：
+    # 后者等于这里又自己解释了一次「这一轮要不要联网工具」。
+    assert "_build_registry(store, allow_web=wm.net_tools," in body
     # 判据必须来自请求参数，不能写死
     assert "allow_web = bool(web_search)" in body
     # ⚠️ 不断言「`_build_registry(store)` 不存在」：非流式 `POST /chat` 那处**刻意**
@@ -388,13 +390,15 @@ def test_接线_开关同时驱动_prompt():
     # 传**，不是代码怎么排版；排版一变就红的守卫会被人顺手改掉，也就守不住什么了。
     flat = re.sub(r"\s+", " ", _chat_py())
     # ⚠️ 2026-10-20 起这一行多了 `answer_mode=mode`（同一个 `build` 调用点）；
-    # 2026-11-14 起又多 `deep_web=deep_web_ok` —— 它是第三份互斥联网层
+    # 2026-11-14 起又多 `deep_web=...` —— 它是第三份互斥联网层
     # （`web_tools.md` / `deep_web.md` / `no_web.md` 三选一），漏传就退化成
     # 「深度联网下 prompt 仍写着可以用 search_web，而工具表里根本没有它」。
-    # 断言贴着**完整调用**写，是因为它的目的是「流式那处没漏传」——
-    # 只断言 `web_search=allow_web` 在场的话，将来有人重写这一行仍会漏掉别的参数。
-    assert ("prompt_loader.build(system_text, web_search=allow_web, answer_mode=mode, "
-            "deep_web=deep_web_ok)") in flat
+    # 2026-11-24 起两个值都取自 `wm`（`resolve_web_mode` 的返回值）——
+    # ⚠️ 这里必须断言 `wm.` 前缀，不能退回 `allow_web` / `deep_web_ok`：
+    # 后者意味着 prompt 层又自己解释了一次「这一轮怎么联网」，
+    # 与工具表那条判据重新分叉。
+    assert ("prompt_loader.build(system_text, web_search=wm.allow_web, answer_mode=mode, "
+            "deep_web=wm.server_tools)") in flat
 
 
 def test_接线_落盘走两个模块级函数():

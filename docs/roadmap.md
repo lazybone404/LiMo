@@ -112,7 +112,7 @@
 |------|------|------|
 | ✅ | 5 个工具 | search_docs / lookup_doc / list_docs / search_web / fetch_url。⚠️ `search_docs` 2026-10-29 起与 `GET /api/search` 走同一份融合检索（此前是标题子串过滤，正文命中搜不到） |
 | ✅ | 搜索多级降级 | provider **四选一**：Tavily / **DeepSeek Search（2026-10-29）** / SearXNG 自动启动 / DuckDuckGo；选中的那个不可达（含没配 Key）统一降级 DDG。DeepSeek 另有 `fetch` 通道，失败降级 trafilatura |
-| ✅ | 深度联网（2026-11-14） | `deep_web=1` 时本轮**不注册任何本地工具**，只带 DeepSeek 的两个内置服务端工具（`deepseek_web_search` / `deepseek_read_url`），检索与读页都在服务端完成。可用性由 `core/deepseek_api.py::supports_deepseek_builtin` 一处判定、两个消费方（前端按钮 / 后端分支）；`deep_web=1` 但模型不支持时推 `warning` 回退普通模式，不静默忽略。首轮顺带请求会话标题（`set_title_if_default` 只覆盖自动生成的，用户手改过的不动）；`finish_reason == "content_filter"` 发 `error` 而不是空回答。⚠️ 多轮连续性靠 `server_tool_calls` / `annotations` 原样带回，落点五处（`ChatMessage` 字段 → `to_dict` 白名单 → `append_assistant_message` → `_history_messages` → 前端 `toBackendMsg` + `openConversation`） |
+| ✅ | 深度联网（2026-11-14） | `deep_web=1` 时本轮**不注册任何本地工具**，只带 DeepSeek 的两个内置服务端工具（`deepseek_web_search` / `deepseek_read_url`），检索与读页都在服务端完成。可用性由 `core/deepseek_api.py::supports_deepseek_builtin` 一处判定、两个消费方（前端按钮 / `agent/web_mode.py` 决定这一轮形态）；`deep_web=1` 但模型不支持时推 `warning` 回退普通模式，不静默忽略。首轮顺带请求会话标题（`set_title_if_default` 只覆盖自动生成的，用户手改过的不动）；`finish_reason == "content_filter"` 发 `error` 而不是空回答。⚠️ 多轮连续性靠 `server_tool_calls` / `annotations` 原样带回，落点五处（`ChatMessage` 字段 → `to_dict` 白名单 → `append_assistant_message` → `_history_messages` → 前端 `toBackendMsg` + `openConversation`） |
 | ✅ | SearXNG 便携版 | 自动检测 `.exe` 启动，asyncio.Lock 防并发 |
 | ✅ | SSE 流式 + 持久化 | 逐 token 推送 + 自动保存对话 + 历史按 token 预算裁剪（替代固定 40 条） |
 | ✅ | 对话 CRUD | 新建/重命名/删除/追加消息 + 归档（archived）+ 消息 rebuild（编辑/删除/分支截断） |

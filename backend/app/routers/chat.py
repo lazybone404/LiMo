@@ -18,7 +18,7 @@ from app.core.dependencies import (
 )
 
 from app.core.disconnect import disconnect_watcher
-from app.core.deepseek_api import supports_deepseek_builtin
+from app.agent.web_mode import resolve_web_mode
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -286,10 +286,10 @@ def _build_registry(store: object, *, allow_web: bool = True,
     return reg
 
 
-def _history_messages(raw_history: list[dict], deep_web: bool) -> list[dict]:
+def _history_messages(raw_history: list[dict], server_tools: bool) -> list[dict]:
     """历史消息 → 送给模型的 `messages`。
 
-    ⚠️ **普通请求仍只有 `{role, content}` 两个键**；深度联网请求额外带回
+    ⚠️ **普通请求仍只有 `{role, content}` 两个键**；服务端形态额外带回
     `server_tool_calls` / `annotations`（官方要求，否则第二轮模型不记得读过哪些页面）。
     把这两个键无条件塞进每一轮，等于给不支持它们的端点发它不认识的字段。
 
@@ -298,7 +298,7 @@ def _history_messages(raw_history: list[dict], deep_web: bool) -> list[dict]:
     out: list[dict] = []
     for m in raw_history:
         item = {"role": m["role"], "content": m["content"]}
-        if deep_web and m.get("role") == "assistant":
+        if server_tools and m.get("role") == "assistant":
             for key in ("server_tool_calls", "annotations"):
                 if m.get(key):
                     item[key] = m[key]
@@ -497,15 +497,15 @@ async def chat_stream(
         raise AppError("CHAT_NO_API_KEY", "LLM API Key 未配置，请在设置中填写", recoverable=False)
 
     # ── 工具注册 + 上下文预算组装（C2：预算 = 窗口×0.7，分配 system→doc→history）──
-    # 深度联网：请求了、联网开着、且当前模型支持内置服务端工具 —— 三个条件缺一不可。
-    # 不满足时**回退普通模式并明说**（`warning` 事件），不静默按用户没开处理。
-    deep_web_ok = (bool(deep_web) and allow_web
-                   and supports_deepseek_builtin(llm.provider, llm.model))
-    deep_web_warning = ""
-    if deep_web and not deep_web_ok:
-        deep_web_warning = ("当前对话模型不支持深度联网，已按普通联网模式回答" if allow_web
-                            else "联网已关闭，深度联网不可用，已按普通对话回答")
-        log.info("深度联网不可用，回退普通模式", provider=llm.provider,
+    # 「这一轮怎么联网」只问一次（`web_mode.resolve_web_mode`），下面五处全部照它的
+    # 三个布尔量做：工具表、prompt 层、历史消息、SSE warning、AgentRunner 参数。
+    # 此前是 `deep_web_ok = bool(deep_web) and allow_web and supports_...` 一个三目
+    # 表达式，再由各调用点各自解释 —— 加一个条件就要记得改五处。
+    wm = resolve_web_mode(allow_web=allow_web, want_deep=bool(deep_web),
+                          provider=llm.provider, model=llm.model)
+    if wm.note:
+        # 与用户所选不一致时**回退并明说**（`warning` 事件），不静默按用户没开处理。
+        log.info("联网形态与所选不一致，已回退", mode=wm.key, provider=llm.provider,
                  model=llm.model, web=allow_web)
     safety_check = bool(((config.get("agent_tools") or {}).get("deepseek_builtin") or {})
                         .get("safety_check", False))
@@ -515,11 +515,11 @@ async def chat_stream(
     # 要置的就是**这一个**事件，两个就分叉了。
     cancel_event = asyncio.Event()
     agent = AgentRunner(llm, max_rounds=3)
-    if not deep_web_ok:
-        # ⚠️ 深度联网时**刻意一个本地工具都不注册**：官方明确内置服务端工具不能与
+    if wm.local_tools:
+        # ⚠️ 服务端形态下**刻意一个本地工具都不注册**：官方明确内置服务端工具不能与
         # 其它工具混用。用户 @ 引用的文档仍由 `build_doc_context` 注入 system 文本，
         # 所以「带文档提问」仍可用，不可用的只是模型主动检索知识库的那三个工具。
-        _build_registry(store, allow_web=allow_web, svc=svc, searcher=searcher,
+        _build_registry(store, allow_web=wm.net_tools, svc=svc, searcher=searcher,
                         llm=llm, rewrite=_rewrite_enabled(config),
                         cancel_event=cancel_event, reranker=reranker).apply_to(agent)
 
@@ -543,8 +543,8 @@ async def chat_stream(
     summary = conv.get("summary") or ""
     system_text = "\n\n".join(
         x for x in [doc_text, f"[历史摘要]\n{summary}" if summary else None] if x)
-    system = prompt_loader.build(system_text, web_search=allow_web, answer_mode=mode,
-                                 deep_web=deep_web_ok)
+    system = prompt_loader.build(system_text, web_search=wm.allow_web, answer_mode=mode,
+                                 deep_web=wm.server_tools)
     tool_defs = agent._tool_defs
     used = estimate_tokens(system) + sum(estimate_tokens(json.dumps(t, ensure_ascii=False)) for t in tool_defs)
     hist_budget = max(0, budget - used)
@@ -552,7 +552,7 @@ async def chat_stream(
     clear_at = conv.get("clear_context_at") or 0
     msgs = conv.get("messages", [])[clear_at:]
     raw_history = trim_history(msgs, hist_budget, history_limit=cc.get("history_limit", 0))
-    history = _history_messages(raw_history, deep_web_ok)
+    history = _history_messages(raw_history, wm.server_tools)
     log.debug("Chat 历史裁剪", raw=len(msgs), kept=len(raw_history),
               hist_budget=hist_budget, limit=cc.get("history_limit", 0))
 
@@ -584,14 +584,14 @@ async def chat_stream(
             try:
                 if compressed_count:
                     yield f"data: {json.dumps({'type': 'compressed', 'count': compressed_count}, ensure_ascii=False)}\n\n"
-                if deep_web_warning:
-                    yield f"data: {json.dumps({'type': 'warning', 'message': deep_web_warning}, ensure_ascii=False)}\n\n"
+                if wm.note:
+                    yield f"data: {json.dumps({'type': 'warning', 'message': wm.note}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id, 'context_window': window, 'budget': budget, 'price_in': price_in, 'price_out': price_out}, ensure_ascii=False)}\n\n"
 
                 async for event in agent.stream_run(
                         system, question, history, cancel_event=cancel_event,
-                        server_tools=deep_web_ok,
-                        with_title=deep_web_ok and is_first_turn,
+                        server_tools=wm.server_tools,
+                        with_title=wm.server_tools and is_first_turn,
                         safety_check=safety_check):
                     if event["type"] == "text":
                         full_answer.append(event["text"])

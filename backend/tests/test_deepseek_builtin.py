@@ -25,6 +25,7 @@ import pytest
 
 from app.agent.prompts import loader as prompt_loader
 from app.agent.session import SessionManager
+from app.agent.web_mode import resolve_web_mode
 from app.core.deepseek_api import supports_deepseek_builtin
 from app.llm.agent import (
     SERVER_READ_TOOL,
@@ -322,3 +323,73 @@ def test_prompt_swaps_web_layer_in_deep_web_mode():
 
     normal = prompt_loader.build(web_search=True, deep_web=False)
     assert "search_web" in normal and "深度联网" not in normal
+
+
+# ── 联网形态：三选一，一处判定（`agent/web_mode.py`，2026-11-24） ──
+#
+# 此前是 `(web_search, deep_web)` 两个布尔量，四处各自解释：「按钮亮不亮」在
+# 前端、「能不能用」在路由的三目表达式、prompt 层在 `build` 里三选一、
+# 历史字段在 `_history_messages` 再判一次。下面这几条钉住的是**只有一处**。
+
+@pytest.mark.parametrize("allow,want,provider,model,key,local,net,server", [
+    # 联网关：本地工具表还在（库里还能查），但联网两个被摘掉
+    (False, False, "deepseek", "deepseek-flash", "off", True, False, False),
+    # 联网关 + 要了深度：仍是 off，且要说「联网已关闭」
+    (False, True, "deepseek", "deepseek-flash", "off", True, False, False),
+    # 普通联网
+    (True, False, "deepseek", "deepseek-flash", "local", True, True, False),
+    # 要深度、模型支持 → server，且**不注册任何本地工具**
+    (True, True, "deepseek", "deepseek-flash", "server", False, False, True),
+    # 要深度、模型不支持 → 退回 local 并说明
+    (True, True, "deepseek", "deepseek-v4-pro", "local", True, True, False),
+])
+def test_联网形态三选一(allow, want, provider, model, key, local, net, server):
+    wm = resolve_web_mode(allow_web=allow, want_deep=want,
+                          provider=provider, model=model)
+    assert (wm.key, wm.local_tools, wm.net_tools, wm.server_tools) == (key, local, net, server)
+
+
+def test_联网关优先于模型判据():
+    """⚠️ 顺序判据：`web_search=0, deep_web=1` 时该说「联网已关闭」而不是
+    「模型不支持深度联网」—— 前者是用户点一下就能解决的，后者不是。
+    """
+    wm = resolve_web_mode(allow_web=False, want_deep=True,
+                          provider="deepseek", model="deepseek-flash")
+    assert wm.key == "off"
+    assert "联网已关闭" in wm.note
+
+
+def test_模型不支持时退回本地并说明():
+    wm = resolve_web_mode(allow_web=True, want_deep=True,
+                          provider="openai", model="gpt-x")
+    assert wm.key == "local"
+    assert "不支持深度联网" in wm.note
+
+
+def test_一切正常时不带说明():
+    """`note` 是「与所选不一致」的信号。正常路径上它必须为空 ——
+    否则前端每一轮都会弹一条无意义的 warning。
+    """
+    for wm in (resolve_web_mode(allow_web=True, want_deep=False,
+                                provider="x", model="y"),
+               resolve_web_mode(allow_web=True, want_deep=True,
+                                provider="deepseek", model="deepseek-flash")):
+        assert wm.note == ""
+
+
+def test_接线_路由不再自己判_联网形态():
+    """⚠️ 源码守卫：`routers/chat.py` 里出现 `supports_deepseek_builtin`
+    或裸的 `deep_web_ok`，就说明判定又长回了第二处。
+
+    失效形态是**静默**的：两个判据在绝大多数组合下给出同一个答案，
+    只在「模型刚被换掉」这类少数组合上分叉 —— 那时按钮亮着但这一轮没联网。
+    """
+    import re
+    from pathlib import Path
+    body = (Path(__file__).resolve().parents[1] / "app" / "routers" / "chat.py").read_text(
+        encoding="utf-8")
+    # ⚠️ 先剥注释再判：注释里提到旧写法不算真在用（同 `test_chat_web_search` 的 `_chat_py`）
+    body = re.sub(r"^\s*#.*$", "", body, flags=re.M)
+    assert "supports_deepseek_builtin" not in body
+    assert "deep_web_ok" not in body
+    assert "resolve_web_mode(" in body

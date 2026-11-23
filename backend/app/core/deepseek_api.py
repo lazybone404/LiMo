@@ -46,12 +46,17 @@ DEEPSEEK_BUILTIN_TOOL_MODELS: frozenset[str] = frozenset({"deepseek-flash"})
 
 
 def supports_deepseek_builtin(provider: str, model: str) -> bool:
-    """当前对话模型能否用 DeepSeek 内置服务端工具（深度联网模式的唯一判据）。
+    """当前对话模型能否用 DeepSeek 内置服务端工具（「这个模型支不支持」）。
 
     ⚠️ **一处判据、两个消费方**：`routers/capabilities.py` 据此下发
-    `chatDeepWebAvailable`（前端决定显不显示那个按钮），`routers/chat.py` 据此决定
-    走不走深度联网分支。两边各写一份表达式的失效形态是「按钮在那儿，点了却被静默
-    忽略」—— 而这两个文件读的是同一份配置、同一份清单，没有理由分叉。
+    `chatDeepWebAvailable`（前端决定显不显示那个按钮），`agent/web_mode.py` 据此
+    决定这一轮的形态是 `server` 还是退回 `local`。两边各写一份表达式的失效形态是
+    「按钮在那儿，点了却被静默忽略」—— 而这两个文件读的是同一份配置、同一份清单，
+    没有理由分叉。
+
+    ⚠️ 它回答的是**能力**（这个模型行不行），不是**这一轮用什么** —— 后者是
+    `web_mode.resolve_web_mode` 的事（还要看联网开关关没关）。两问分开问，
+    是因为在设置页里换模型之后，「按钮该不该显示」与「当前这轮怎么跑」的时机不同。
     """
     return (provider or "") == "deepseek" and (model or "") in DEEPSEEK_BUILTIN_TOOL_MODELS
 
