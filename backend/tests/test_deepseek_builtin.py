@@ -211,6 +211,55 @@ def test_server_tool_event_becomes_status():
     assert statuses == ["正在联网检索...", "正在读取网页..."], "同一条文案不重复推"
 
 
+def test_服务端事件对外只用搜索与抓取两个名字():
+    """⚠️ 厂商名（`deepseek_web_search` / `deepseek_read_url`）只许出现在**请求载荷**
+    与日志里。它漏进事件的形态是「用户看到一个叫 deepseek_web_search 的工具」——
+    而它就是「搜索」，同一个动作两套名字，下游每多一个消费方就多认一个厂商名。
+    """
+    agent = AgentRunner(_FakeLLM([_Chunk(_Choice(_Delta("答")))]))
+    used = {e["tool"] for e in _run(agent) if "tool" in e}
+
+    assert used == {"search_web"}
+    assert SERVER_SEARCH_TOOL not in used
+
+
+def test_开始读页时先收尾搜索气泡再开抓取气泡():
+    """两个动作各一个气泡 —— 否则「正在读取网页」挂在一个叫「搜索」的气泡下面。
+
+    ⚠️ 必须**一收一开**：只开不收的话，前端上一个气泡永远停在 running。
+    """
+    agent = AgentRunner(_FakeLLM([
+        _Chunk(_Choice(_Delta(None), server_tool_event={"tool": SERVER_SEARCH_TOOL})),
+        _Chunk(_Choice(_Delta(None), server_tool_event={"tool": SERVER_READ_TOOL})),
+    ]))
+    events = _run(agent)
+
+    assert [e["tool"] for e in events if e["type"] == "tool_start"] == ["search_web", "fetch_url"]
+    assert [(e["tool"], e["summary"]) for e in events if e["type"] == "tool_result"] == [
+        ("search_web", "检索完成"), ("fetch_url", "读取完成，未返回来源")]
+
+
+def test_两个气泡都能被落盘配对():
+    """端到端：事件 → `_record_tool_*` → 两条都闭合。配对规则是「同名且摘要为空」，
+    两个动作名不同，所以顺序对了就各归各位。
+    """
+    from app.routers.chat import _record_tool_result, _record_tool_start
+
+    agent = AgentRunner(_FakeLLM([
+        _Chunk(_Choice(_Delta(None), server_tool_event={"tool": SERVER_SEARCH_TOOL})),
+        _Chunk(_Choice(_Delta(None), server_tool_event={"tool": SERVER_READ_TOOL})),
+    ]))
+    tcs: list[dict] = []
+    for e in _run(agent):
+        if e["type"] == "tool_start":
+            _record_tool_start(tcs, e)
+        elif e["type"] == "tool_result":
+            _record_tool_result(tcs, e)
+
+    assert [(t["tool"], t["summary"]) for t in tcs] == [
+        ("search_web", "检索完成"), ("fetch_url", "读取完成，未返回来源")]
+
+
 def test_cancel_mid_stream_keeps_bubbles_paired():
     agent = AgentRunner(_FakeLLM([_Chunk(_Choice(_Delta("答")))]))
     cancel = asyncio.Event()

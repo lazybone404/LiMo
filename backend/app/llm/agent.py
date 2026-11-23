@@ -206,13 +206,29 @@ def _extract_refs(tool_name: str, result: str) -> list[dict]:
 
 # ── 深度联网：内置服务端工具（DeepSeek，2026-11-14）──
 #
-# ⚠️ 这一族的四个名字是**官方协议字面量**，不是 LiMo 起的工具名：请求里带
+# ⚠️ 这两个名字是**官方协议字面量**，不是 LiMo 起的工具名：请求里带
 # `{"type": "deepseek_web_search"}` 这类字段，检索由**服务端**完成，模型不会产出
 # `tool_calls`。所以它们不走 `register_tool` / `_tool_fns` 那套本地工具循环 ——
 # 混进那套的唯一结果是服务端 400（官方明确「不能与其它工具混用」）。
 SERVER_SEARCH_TOOL = "deepseek_web_search"
 SERVER_READ_TOOL = "deepseek_read_url"
 SERVER_TOOLS: tuple[str, ...] = (SERVER_SEARCH_TOOL, SERVER_READ_TOOL)
+
+#: 厂商工具名 → 我们对外的那两个动作名。
+#:
+#: ⚠️ 厂商名**只出现在请求载荷**（`tools=[{"type": ...}]`）与日志里。事件、落盘、
+#: 前端气泡一律用 `search_web` / `fetch_url` —— 用户看到的概念始终只有「搜索」与
+#: 「抓取」两个动作，检索跑在本地还是服务端是实现细节，不是第三个功能。
+#: 不做这层映射的代价：同一个动作有两套名字，下游每多一个消费方（气泡文案、
+#: 落盘白名单、来源抽取）就要多认一个厂商名，而漏认是静默的 —— 只是少一条来源。
+SERVER_TOOL_ALIASES: dict[str, str] = {
+    SERVER_SEARCH_TOOL: "search_web",
+    SERVER_READ_TOOL: "fetch_url",
+}
+
+#: 两个动作在服务端形态下的进度文案与完成文案（本地形态的文案在 `_tool_display`）。
+_SERVER_ACTION_DISPLAY = {"search_web": "正在联网检索...", "fetch_url": "正在读取网页..."}
+_SERVER_ACTION_DONE = {"search_web": "检索完成", "fetch_url": "读取完成"}
 
 #: `server_tool_calls` 合成来源列表的展示上限（与 `_extract_sources` 的 5 条同口径）。
 _MAX_SERVER_SOURCES = 5
@@ -229,17 +245,22 @@ def _extra(obj: object, key: str) -> object:
     return extra.get(key)
 
 
-def _server_tool_status(event: object) -> str:
-    """`server_tool_event` → 一句进度文案。只分两种，不做细粒度 UI。
+def _server_tool_action(event: object) -> str:
+    """`server_tool_event` → 当前动作名（`search_web` / `fetch_url`）。只分两种。
 
-    载荷形状官方没给字段表，故按 JSON 里出没出现 `read_url` 粗分「检索 / 读网页」——
-    分错的代价只是进度文案不够准，不分则用户在一分钟的等待里看到的是空白。
+    载荷形状官方没给字段表，故按 JSON 里出没出现厂商名粗分「检索 / 读网页」——
+    分错的代价只是气泡文案不够准，不分则用户在一分钟的等待里看到的是空白。
     """
     try:
         text = event if isinstance(event, str) else json.dumps(event, ensure_ascii=False)
     except (TypeError, ValueError):
         text = str(event)
-    return "正在读取网页..." if SERVER_READ_TOOL in text else "正在联网检索..."
+    # 先认「读」：两个厂商名不会同时出现，但把更具体的判在前面，
+    # 将来多一个读取类工具时不会因为先匹配到 search 而判错。
+    for vendor in (SERVER_READ_TOOL, SERVER_SEARCH_TOOL):
+        if vendor in text:
+            return SERVER_TOOL_ALIASES[vendor]
+    return "search_web"
 
 
 def _title_text(raw: object) -> str:
@@ -519,7 +540,11 @@ class AgentRunner:
            **正常形态**，但用户看到的必须是「被审核拦下」而不是「AI 什么都没说」。
         4. **`tool_start` / `tool_result` 照发**：前端的工具气泡、来源列表、落盘
            `tool_calls` 全靠这对事件，少一个就变成「回答有引用、界面上没有来源」。
-           它们与本地工具同名同形，故 `_record_tool_result` / `toChatSources` 零改动。
+           事件里的 `tool` 用**我们自己的动作名**（`SERVER_TOOL_ALIASES`），不是厂商名
+           —— 于是落盘、气泡、来源抽取看到的始终只有「搜索 / 抓取」两个动作。
+        5. **服务端开始读页时换一个气泡**：一轮里可能先检索再读页，两个动作各一个
+           气泡，用户才看得出它做了什么。换动作必须先给上一个 `tool_result` 收尾，
+           否则前端那个气泡会一直转。
 
         额外的 `server_context` 事件是**给后端自己**的（多轮连续性：把上一轮的
         `server_tool_calls` 原样带回，否则第二轮模型不记得读过哪些页面）。
@@ -536,8 +561,10 @@ class AgentRunner:
         if safety_check:
             extra["safety_check"] = {"level": "high"}
 
-        yield {"type": "tool_start", "tool": SERVER_SEARCH_TOOL, "args": {},
-               "display": "正在深度联网..."}
+        # 对外只有两个动作：开头是「搜索」，服务端开始读页时换成「抓取」。
+        action = SERVER_TOOL_ALIASES[SERVER_SEARCH_TOOL]
+        yield {"type": "tool_start", "tool": action, "args": {},
+               "display": _SERVER_ACTION_DISPLAY[action]}
 
         # 三个扩展字段都是「逐帧追加」：端点可能在多帧里分批给（尤其 sources）。
         title = ""
@@ -565,9 +592,19 @@ class AgentRunner:
                     filtered = True
                 # 进度事件官方写在 `choice` 上；两处都探一次只是因为它不在 SDK 模型里，
                 # 放错一层就整条进度线静默消失（而它不影响正文，很难被发现）。
-                event = _extra(choice, "server_tool_event") or _extra(delta, "server_tool_event")
-                if event:
-                    status = _server_tool_status(event)
+                raw_event = _extra(choice, "server_tool_event") or _extra(delta, "server_tool_event")
+                if raw_event:
+                    nxt = _server_tool_action(raw_event)
+                    if nxt != action:
+                        # 换动作 = 关掉上一个气泡、开一个新的。少收一次，前端那个
+                        # 「正在检索」就会一直转（同下面 cancel / error 两条路径的理由）。
+                        yield {"type": "tool_result", "tool": action,
+                               "summary": _SERVER_ACTION_DONE[action],
+                               "refs": [], "sources": []}
+                        yield {"type": "tool_start", "tool": nxt, "args": {},
+                               "display": _SERVER_ACTION_DISPLAY[nxt]}
+                        action = nxt
+                    status = _SERVER_ACTION_DISPLAY[nxt]
                     if status != last_status:
                         last_status = status
                         yield {"type": "agent_status", "message": status}
@@ -584,22 +621,22 @@ class AgentRunner:
                 if got_title:
                     title = got_title
         except CancelledError:
-            yield {"type": "tool_result", "tool": SERVER_SEARCH_TOOL,
+            yield {"type": "tool_result", "tool": action,
                    "summary": "已停止", "refs": [], "sources": []}
             yield {"type": "done", "cancelled": True}
             return
         except Exception as e:
-            # 工具气泡必须收尾，否则前端那个「正在深度联网」会一直转（同 `_stream_response`
+            # 工具气泡必须收尾，否则前端那个气泡会一直转（同 `_stream_response`
             # 的 error 路径不同：那里没有未闭合的工具气泡）。
-            yield {"type": "tool_result", "tool": SERVER_SEARCH_TOOL,
+            yield {"type": "tool_result", "tool": action,
                    "summary": "深度联网失败", "refs": [], "sources": []}
             yield {"type": "error", "message": f"深度联网失败: {str(e)[:200]}"}
             return
 
         sources = _server_tool_sources(server_tool_calls)
-        yield {"type": "tool_result", "tool": SERVER_SEARCH_TOOL,
-               "summary": (f"深度联网完成（{len(sources)} 个来源）" if sources
-                           else "深度联网完成，未返回来源"),
+        yield {"type": "tool_result", "tool": action,
+               "summary": (f"{_SERVER_ACTION_DONE[action]}（{len(sources)} 个来源）" if sources
+                           else f"{_SERVER_ACTION_DONE[action]}，未返回来源"),
                "refs": [], "sources": sources}
         if server_tool_calls or annotations:
             yield {"type": "server_context", "server_tool_calls": server_tool_calls,
