@@ -341,7 +341,7 @@ git config core.hooksPath .githooks
 ### 门禁（提交前跑这个）
 
 ```bash
-bash scripts/check-all            # 全部六项（后端 53s / 1688 用例，前端 21s / 1481 用例，2026-11-07 实测）
+bash scripts/check-all            # 全部六项（后端 81s / 1957 用例，前端 24s / 1713 用例，2026-11-24 实测）
 bash scripts/check-all frontend   # 只改前端时（tsc + lint + vitest）
 bash scripts/check-all backend    # 只改后端时（pytest）
 bash scripts/check-all cli        # 只改 limo_cli / QueryService 时（16 项契约）
@@ -386,7 +386,7 @@ uv run uvicorn main:app --host 127.0.0.1 --port 7413 --reload
 # .py 变更时**不会重载**，对话侧会继续用旧规范而零报错（改了 prompts 却没生效的静默版本）。
 
 # 运行测试：全量走 `bash scripts/check-all backend`；单跑某个文件直接
-# `pytest tests/test_xxx.py`（文件名与 docstring 写明用途，共 119 个文件 / 1688 用例）
+# `pytest tests/test_xxx.py`（文件名与 docstring 写明用途，共 135 个文件 / 1957 用例）
 # ⚠️ 带 `pytest` 标记的四个（2026-10-06 起）必须用 pytest 调用：它们原先顶层是模块级
 # 裸调用，`python tests/x.py` 能跑，但 `pytest tests/` 扫过去**一片绿而根本不产生用例**（假绿）
 pytest tests/test_adapters.py        # 适配器注册 + 路由
@@ -404,7 +404,7 @@ python tests/test_e2e_smoke.py       # 端到端冒烟（36 断言，需后端�
 ```bash
 cd frontend
 npm run dev       # 开发服务器，端口 5173，API 代理 → 127.0.0.1:7413
-npm test          # vitest（102 文件 / 1481 用例，2026-11-07 实测 21s）
+npm test          # vitest（121 文件 / 1713 用例，2026-11-24 实测 24s）
 npm run build     # 类型检查 + 生产构建
 npm run lint      # oxlint
 ```
